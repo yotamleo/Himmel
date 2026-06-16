@@ -8,6 +8,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../guardrails/lib.sh"
 
+# Bootstrap exemption: a repo's first-ever commit legitimately lands on the
+# initial branch (main) — there is no existing main to protect yet, so
+# worktree-isolation does not apply. An unborn HEAD (zero commits) means the
+# scaffold is being committed for the first time; allow it. Without this, a
+# fresh vault (git init + run setup.sh, then commit the scaffold) is blocked
+# on its very first commit and has to be committed on a throwaway branch and
+# have main recreated by hand.
+if ! git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    exit 0
+fi
+
 is_on_main
 rc=$?
 case "$rc" in

@@ -1,0 +1,17 @@
+# gitleaks config for the luna second-brain vault.
+# Keeps the full built-in ruleset and only adds a path allowlist for the
+# vendored third-party Obsidian plugin bundles shipped under .obsidian/plugins/.
+# Those bundles are minified upstream code; gitleaks' generic-api-key rule flags
+# high-entropy minified identifiers (e.g. node-forge's pki.setRsaPrivateKey in
+# obsidian-local-rest-api) as false-positive "secrets". The pre-commit
+# `exclude: '^\.obsidian/'` does NOT reach gitleaks (the hook scans the staged
+# diff directly), so the allowlist has to live here. Real credentials
+# (.env, plugins' data.json) are gitignored.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored third-party Obsidian plugin bundles (minified upstream code)"
+paths = [
+  '''\.obsidian/plugins/''',
+]
