@@ -36,11 +36,21 @@ if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
     exit 2
 fi
 
-branch=$(git branch --show-current)
+# Resolve THIS worktree's branch via lib.sh::_branch (HIMMEL-323). `git branch
+# --show-current` is worktree-correct under a normal pre-push but reads the
+# PRIMARY worktree's HEAD if GIT_DIR is aimed at the shared .git; routing through
+# _branch keeps the pre-push gates' branch reads on one path, and its rc=2 lets us fail
+# CLOSED on an unreadable HEAD instead of letting `set -e` abort opaquely.
+rc=0
+branch=$(_branch) || rc=$?
+if [ "$rc" -eq 2 ]; then
+    echo "→ code-review: cannot resolve current branch (lib.sh::_branch rc=2) — refusing the push (fix the repo state or bypass with SKIP_CR=1)" >&2
+    exit 2
+fi
 
 # Skip on a protected default (main OR master) / detached HEAD — pushing the
 # default branch is blocked elsewhere and there's no meaningful diff to review.
-if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+if [ -z "$branch" ] || is_on_main; then
     exit 0
 fi
 
@@ -56,7 +66,7 @@ fi
 # 'origin/db' (i.e. origin is ahead), use 'origin/db' so we don't diff against a
 # stale local copy and generate false-positive markers. No network call — git
 # merge-base --is-ancestor uses only locally-fetched refs. If neither ref
-# exists, skip with WARNING.
+# exists, fail CLOSED (HIMMEL-323) — see the else arm.
 db=$(default_branch)
 diff_base=""
 if git rev-parse --verify --quiet "$db" >/dev/null && \
@@ -71,12 +81,25 @@ elif git rev-parse --verify --quiet "$db" >/dev/null; then
 elif git rev-parse --verify --quiet "origin/$db" >/dev/null; then
     diff_base="origin/$db"
 else
-    echo "→ code-review: no '$db' or 'origin/$db' ref — skipping (WARNING: cannot compute diff for review)" >&2
-    exit 0
+    # Neither '$db' nor 'origin/$db' resolves: we cannot compute a diff, so we
+    # cannot write a meaningful CR marker — and skipping silently would let an
+    # unreviewed change reach `gh pr create` ungated. Fail CLOSED (HIMMEL-323).
+    # This hook does no fetch, so an unresolvable base is a genuinely broken
+    # state (a normal clone always has origin/<default>). Bypass with SKIP_CR=1.
+    echo "→ code-review: no '$db' or 'origin/$db' ref — refusing the push (cannot compute diff for review; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+    exit 2
 fi
 
-# Skip on docs-only / merge-only diffs to avoid pointless review gating
-changed=$(git diff --name-only "${diff_base}...HEAD")
+# Skip on docs-only / merge-only diffs to avoid pointless review gating.
+# Fail CLOSED if the diff can't be computed (HIMMEL-323) — the 3-dot range needs
+# a merge base, so an orphan/unrelated-history branch makes `git diff` exit
+# non-zero. Without the guard `set -e` would abort with git's opaque exit code;
+# refuse the push with a clear rc=2 instead so an unreviewable change can't slip
+# past the CR marker ungated. A genuinely empty diff still skips below.
+if ! changed=$(git diff --name-only "${diff_base}...HEAD" 2>/dev/null); then
+    echo "→ code-review: cannot compute diff vs ${diff_base} (no merge base / git error) — refusing the push (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+    exit 2
+fi
 if [ -z "$changed" ]; then
     echo "→ code-review: no diff vs ${diff_base} — skipping" >&2
     exit 0

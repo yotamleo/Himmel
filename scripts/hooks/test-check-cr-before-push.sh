@@ -347,6 +347,79 @@ else
     fail "diverged: expected marker for code diff" "out: $hook_out3"
 fi
 
+# ── HIMMEL-323 item 1: fail-CLOSED when no diff base resolves ───────────────
+# A repo with no main/master ref and no remote: default_branch falls back to
+# "main", which doesn't exist. This hook does no fetch, so an unresolvable base
+# is a genuinely-broken state -> fail CLOSED (exit 2), not a silent skip that
+# would let an unreviewed change reach `gh pr create` ungated. Bypass: SKIP_CR=1.
+echo "TEST: unresolvable diff base -> fail CLOSED (exit 2)"
+NB="$TMP_ROOT/nobase"
+git init -q -b feat/x "$NB"
+(
+    cd "$NB"
+    git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    echo 'function f(){}' > code.sh
+    git -c user.email=t@t -c user.name=t add code.sh
+    git -c user.email=t@t -c user.name=t commit -q -m "code"
+)
+rc=0; out=$(cd "$NB" && bash "$HOOK" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then pass "unresolvable base -> exit 2 (fail closed)"; else fail "unresolvable base -> expected exit 2 got $rc" "out: $out"; fi
+rc=0; out=$(cd "$NB" && SKIP_CR=1 bash "$HOOK" 2>&1) || rc=$?
+if [ "$rc" -eq 0 ]; then pass "unresolvable base + SKIP_CR=1 -> exit 0 (bypass)"; else fail "SKIP_CR bypass -> expected exit 0 got $rc" "out: $out"; fi
+
+# ── HIMMEL-323 item 2: branch resolved via lib.sh::_branch ──────────────────
+echo "TEST: non-git dir -> rc=2 fail-closed (cannot read branch)"
+NG="$TMP_ROOT/nongit"; mkdir -p "$NG"
+rc=0; out=$(cd "$NG" && bash "$HOOK" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then pass "non-git dir -> exit 2"; else fail "non-git dir -> expected exit 2 got $rc" "out: $out"; fi
+
+# Regression-PIN, not a fix-prover: `git branch --show-current` is already
+# worktree-correct in the natural env (GIT_DIR at the worktree's own gitdir), so
+# this passes on old code too. The genuine new-behaviour prover for the _branch
+# switch is the non-git-dir rc=2 case above (old code aborted via set -e, rc=128).
+echo "TEST: linked worktree (primary on main) -> reads worktree branch, writes marker"
+WB="$TMP_ROOT/wtbase"
+git init -q -b main "$WB"
+( cd "$WB"; git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
+git -C "$WB" worktree add -q -b feat/wt "$TMP_ROOT/wtbase-wt" >/dev/null 2>&1
+(
+    cd "$TMP_ROOT/wtbase-wt"
+    echo 'function f(){}' > code.sh
+    git -c user.email=t@t -c user.name=t add code.sh
+    git -c user.email=t@t -c user.name=t commit -q -m "code on worktree"
+)
+wtgd="$WB/.git/worktrees/$(basename "$TMP_ROOT/wtbase-wt")"
+rc=0; out=$(cd "$TMP_ROOT/wtbase-wt" && env GIT_DIR="$wtgd" bash "$HOOK" 2>&1) || rc=$?
+wm="$WB/.git/cr-pending/feat/wt"
+if [ "$rc" -eq 0 ] && [ -f "$wm" ]; then
+    pass "linked worktree: read worktree branch (feat/wt) + wrote marker"
+else
+    fail "linked worktree: expected exit 0 + marker at $wm got rc=$rc" "out: $out"
+fi
+git -C "$WB" worktree remove --force "$TMP_ROOT/wtbase-wt" >/dev/null 2>&1 || true
+
+# ── HIMMEL-323 item 1 (CR follow-up): fail-CLOSED when the diff itself errors ──
+# An orphan/unrelated-history branch has no merge base, so `git diff base...HEAD`
+# exits non-zero. Without the guard `set -e` would abort with git's opaque code;
+# the hook now refuses the push with a clear rc=2 so an unreviewable change can't
+# slip past the CR marker ungated. Bypass: SKIP_CR=1.
+echo "TEST: orphan branch (no merge base) -> fail CLOSED (exit 2)"
+OB="$TMP_ROOT/orphan"
+git init -q -b main "$OB"
+(
+    cd "$OB"
+    git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    git checkout -q --orphan feat/x
+    git rm -rfq . 2>/dev/null || true
+    echo 'function f(){}' > code.sh
+    git -c user.email=t@t -c user.name=t add code.sh
+    git -c user.email=t@t -c user.name=t commit -q -m "orphan code"
+)
+rc=0; out=$(cd "$OB" && bash "$HOOK" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then pass "orphan branch -> exit 2 (fail closed)"; else fail "orphan branch -> expected exit 2 got $rc" "out: $out"; fi
+rc=0; out=$(cd "$OB" && SKIP_CR=1 bash "$HOOK" 2>&1) || rc=$?
+if [ "$rc" -eq 0 ]; then pass "orphan branch + SKIP_CR=1 -> exit 0 (bypass)"; else fail "orphan SKIP_CR bypass -> expected exit 0 got $rc" "out: $out"; fi
+
 # Summary ------------------------------------------------------------
 
 echo

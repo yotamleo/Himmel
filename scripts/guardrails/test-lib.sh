@@ -234,6 +234,32 @@ git -C "$work" fetch -q origin
 if is_behind_origin_main "$work"; then pass "behind (master default) -> true"; else fail "behind (master default) -> expected 0 got $?"; fi
 rm -rf "$work" "$origin"
 
+echo "== default_branch: both local main+master, origin/HEAD unset -> main + stderr ambiguity note (HIMMEL-323) =="
+# A repo with NO remote (so origin/HEAD is unset) that has BOTH local main and
+# master. The local-ref order returns main, but silently — HIMMEL-323 adds a
+# stderr ambiguity note so the wrong-on-a-master-default-mirror guess is visible.
+d=$(mktemp -d)
+git -C "$d" init -q -b main
+git -C "$d" config user.email t@t
+git -C "$d" config user.name t
+git -C "$d" commit --allow-empty -q -m "init"
+git -C "$d" branch master   # both refs/heads/main and refs/heads/master now exist
+errf=$(mktemp)
+db_out=$(default_branch "$d" 2>"$errf")
+db_err=$(cat "$errf"); rm -f "$errf"
+if [ "$db_out" = "main" ]; then pass "ambiguous main+master -> stdout 'main' (stable default)"; else fail "ambiguous main+master -> expected stdout 'main' got [$db_out]"; fi
+case "$db_err" in
+    *"both local 'main' and 'master' exist"*) pass "ambiguous main+master -> stderr ambiguity note emitted (no longer silent)" ;;
+    *) fail "ambiguous main+master -> expected stderr ambiguity note, got [$db_err]" ;;
+esac
+# Counter-case: only one default-candidate ref present -> NO note (no ambiguity).
+git -C "$d" branch -D master >/dev/null 2>&1
+errf=$(mktemp)
+db_out=$(default_branch "$d" 2>"$errf")
+db_err=$(cat "$errf"); rm -f "$errf"
+if [ "$db_out" = "main" ] && [ -z "$db_err" ]; then pass "single default-candidate -> 'main', no ambiguity note"; else fail "single default-candidate -> expected 'main' + no note, got out=[$db_out] err=[$db_err]"; fi
+rm -rf "$d"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

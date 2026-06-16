@@ -255,6 +255,85 @@ d=$(mktemp -d)
 assert_rc "on master branch — skip"                   0 "$(run_in "$d")"
 rm -rf "$d"
 
+# --- HIMMEL-323 item 1: fail-CLOSED on an unresolvable diff base ---
+# A repo with NO main/master ref and NO remote: default_branch falls back to
+# "main", which doesn't exist, so no diff base resolves. ONLINE (no *_NO_FETCH)
+# this is a genuinely-broken state -> fail CLOSED (exit 2). With NO_FETCH the
+# operator opted into offline mode -> skip (exit 0) with a loud warning, so
+# offline/shallow workflows are preserved.
+make_no_default_repo() {
+    local files="$1" msg="$2" dir
+    dir=$(mktemp -d)
+    (
+        cd "$dir" || exit 1
+        git init -q -b feat/x   # HEAD on a feature branch; no main/master ref ever created
+        git config user.email t@t
+        git config user.name t
+        # shellcheck disable=SC2086 # files is space-separated, intentional split
+        for f in $files; do mkdir -p "$(dirname "$f")"; echo x > "$f"; done
+        git add -A
+        git -c commit.gpgsign=false commit -q -m "$msg"
+    )
+    echo "$dir"
+}
+
+d=$(make_no_default_repo "scripts/foo.sh" "feat: add foo")
+assert_rc "unresolvable base, online -> fail CLOSED (exit 2)"         2 "$(run_in "$d")"
+assert_rc "unresolvable base, NO_FETCH -> skip + warn (exit 0)"       0 "$(run_in "$d" "PLATFORMS_TESTED_NO_FETCH=1")"
+rm -rf "$d"
+
+# --- HIMMEL-323 item 2: branch resolved via lib.sh::_branch (worktree-correct) ---
+# Non-git dir: _branch returns rc=2 -> hook fails CLOSED (exit 2) with a clear
+# diagnostic, rather than letting `set -e` abort on git's opaque exit 128.
+ngd=$(mktemp -d)
+assert_rc "non-git dir -> rc=2 fail-closed (cannot read branch)"     2 "$(run_in "$ngd")"
+rm -rf "$ngd"
+
+# Pin that the gate FIRES from a LINKED worktree on a feature branch while the
+# PRIMARY checkout sits on main: under the natural pre-push env (git points
+# GIT_DIR at the worktree's own gitdir) the gate must read the worktree branch
+# (feat/x), see the sensitive .sh, and BLOCK — never read the primary's 'main'
+# and skip. Pins worktree-correct behaviour so future branch-resolution changes
+# can't silently regress it.
+origin=$(mktemp -d); base=$(mktemp -d)
+( cd "$origin" || exit 1; git init -q --bare -b main ) >/dev/null 2>&1
+(
+    cd "$base" || exit 1
+    git clone -q "$origin" . >/dev/null 2>&1
+    git config user.email t@t
+    git config user.name t
+    echo r > README.md; git add -A; git -c commit.gpgsign=false commit -q -m init
+    git push -q origin main >/dev/null 2>&1
+    git worktree add -q -b feat/x "${base}-wt" >/dev/null 2>&1
+    mkdir -p "${base}-wt/scripts"; echo 'echo hi' > "${base}-wt/scripts/new.sh"
+    git -C "${base}-wt" add -A
+    git -C "${base}-wt" -c commit.gpgsign=false commit -q -m "feat: shell, no attestation"
+) >/dev/null 2>&1
+wtgd="${base}/.git/worktrees/$(basename "${base}-wt")"
+rc_wt=$( cd "${base}-wt" && env GIT_DIR="$wtgd" PLATFORMS_TESTED_NO_FETCH=1 bash "$HOOK" >/dev/null 2>&1; echo $? )
+assert_rc "linked worktree (primary on main): reads worktree branch + blocks" 1 "$rc_wt"
+git -C "$base" worktree remove --force "${base}-wt" >/dev/null 2>&1 || true
+rm -rf "$origin" "$base" "${base}-wt"
+
+# --- HIMMEL-323 item 1 (CR follow-up): fail-CLOSED when the diff itself errors ---
+# An orphan/unrelated-history branch has no merge base, so `git diff base...HEAD`
+# exits non-zero. The old `|| true` swallowed that to an empty changed-set -> a
+# silent PASS on a branch never inspected. Now it fails CLOSED (exit 2).
+d=$(mktemp -d)
+(
+    cd "$d" || exit 1
+    git init -q -b main
+    git config user.email t@t
+    git config user.name t
+    echo r > README.md; git add -A; git -c commit.gpgsign=false commit -q -m init
+    git checkout -q --orphan feat/x
+    git rm -rfq . 2>/dev/null || true
+    mkdir -p scripts; echo 'echo x' > scripts/foo.sh
+    git add -A; git -c commit.gpgsign=false commit -q -m "feat: orphan sensitive"
+) >/dev/null 2>&1
+assert_rc "orphan branch (no merge base) -> fail CLOSED (exit 2)"    2 "$(run_in "$d" "PLATFORMS_TESTED_NO_FETCH=1")"
+rm -rf "$d"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

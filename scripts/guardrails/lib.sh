@@ -43,10 +43,15 @@ guard_call() {
     return "$rc"
 }
 
-# Internal: current branch name from the worktree-specific HEAD file.
-# `git branch --show-current` resolves main-repo HEAD from linked worktrees,
-# which is the wrong answer when we want THIS worktree's branch. Read HEAD
-# directly to match the existing check-worktree-isolation.sh logic.
+# Internal: current branch name from the resolved git-dir's HEAD file. Reading
+# HEAD here (rather than `git branch --show-current`) keeps every guardrail on
+# ONE branch-read path and exposes an rc distinction show-current lacks
+# (0=branch, 1=detached, 2=cannot read) for fail-closed callers under `set -e`.
+# `git branch --show-current` is worktree-correct under normal invocation; it
+# misreads the PRIMARY worktree's HEAD only when GIT_DIR is aimed at the shared
+# .git — and reading HEAD via `--absolute-git-dir` follows that same GIT_DIR, so
+# this is consistency + rc semantics, NOT a defense against a mis-aimed GIT_DIR
+# (HIMMEL-323).
 #
 # Detached-HEAD handling: prints empty string and returns rc=1 (no current
 # branch). Callers MUST distinguish empty branch from a valid branch name -
@@ -84,18 +89,34 @@ _branch() {
 # -> init.defaultBranch -> "main". Used as the diff base by the merged/behind
 # predicates + the CR diff-base scripts so they work on either default
 # (HIMMEL-297: support main AND master). Always prints a non-empty name.
+#
+# Tie-break (HIMMEL-323): when origin/HEAD is UNSET *and* BOTH local `main` and
+# `master` exist, the local-ref order silently prefers `main` — wrong on a
+# master-default mirror that picked up a stray local `main`. We still return
+# `main` (stable, documented default) but emit a one-line stderr ambiguity note
+# so the wrong answer is no longer SILENT. origin/HEAD (set by `clone`, or
+# `git remote set-head origin -a`) resolves the ambiguity deterministically and
+# short-circuits this branch entirely. The note goes to stderr (fd 2), so it
+# never pollutes the stdout callers capture via `$(default_branch)`.
 default_branch() {
     local dir="${1:-.}" ref b
     if ref=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null); then
         b="${ref#origin/}"
         [ -n "$b" ] && { printf '%s' "$b"; return 0; }
     fi
-    if git -C "$dir" rev-parse --verify --quiet refs/heads/main >/dev/null 2>&1; then
+    # `if` form (not `cmd && flag=1`) so a missing ref — `git rev-parse` exits 1
+    # — never trips a caller's `set -e`: an `if` condition is exempt, an `&&`
+    # list's non-final failure is murkier. Both candidates are probed before the
+    # tie-break decision.
+    local has_main=0 has_master=0
+    if git -C "$dir" rev-parse --verify --quiet refs/heads/main   >/dev/null 2>&1; then has_main=1; fi
+    if git -C "$dir" rev-parse --verify --quiet refs/heads/master >/dev/null 2>&1; then has_master=1; fi
+    if [ "$has_main" = 1 ] && [ "$has_master" = 1 ]; then
+        echo "guardrails: default_branch - both local 'main' and 'master' exist and origin/HEAD is unset; defaulting to 'main' (run 'git remote set-head origin -a' to disambiguate)" >&2
         printf 'main'; return 0
     fi
-    if git -C "$dir" rev-parse --verify --quiet refs/heads/master >/dev/null 2>&1; then
-        printf 'master'; return 0
-    fi
+    if [ "$has_main" = 1 ];   then printf 'main';   return 0; fi
+    if [ "$has_master" = 1 ]; then printf 'master'; return 0; fi
     b=$(git -C "$dir" config init.defaultBranch 2>/dev/null)
     [ -n "$b" ] && { printf '%s' "$b"; return 0; }
     printf 'main'
