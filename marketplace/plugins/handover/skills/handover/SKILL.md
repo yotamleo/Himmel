@@ -23,7 +23,7 @@ Full algorithm + canonicalisation rules: `references/routing.md` (load only on a
 
 ## Bucket Resolution (HIMMEL-129)
 
-Some registered repos (notably `yotam_docs`) split `<state-root>` into per-source-repo buckets to keep work from multiple code repos disambiguated:
+Some registered repos — the **state-root host** an operator chose at `/handover-setup` (for this maintainer's setup, a repo named `yotam_docs`) — split `<state-root>` into per-source-repo buckets to keep work from multiple code repos disambiguated:
 
 ```
 <state-root>/
@@ -108,6 +108,10 @@ Before any file write to `<state-root>`:
 `handover-resume` and `/handover repos` are read-only — no worktree gate.
 
 ## Commands
+
+### `/handover-setup`
+
+**First-time bootstrap (run this once per machine/operator before anything else).** Asks *where* handover state should live — inline at `<repo-root>/handovers/` (Mode A) or an external state repo (Mode B) — then persists a Mode-B choice to `<repo-root>/.env` as `HANDOVER_DIR` via `scripts/handover/set-handover-dir.sh` (idempotent), and hands off to `init` (new state) or `register` (existing state). Never assumes a specific repo name — the location is always prompted. Full runbook: the plugin's `commands/handover-setup.md`. The downstream resolver (`scripts/lib/handover-path.sh`) + the shell loader (`scripts/lib/load-dotenv.sh`) read that `HANDOVER_DIR`; `init`/`register` below assume setup already chose the location.
 
 ### `/handover init`
 
@@ -535,12 +539,12 @@ Templates carry `template_version: <integer>` frontmatter. Parsers read the vers
 
 ## Supplementary Files
 
-Two freeform files. **As of HIMMEL-13 + HIMMEL-124 (2026-05-25)** all personal handover state — including these freeform files — lives in the centralized `yotam_docs` repo:
+Two freeform files. They live at the **state-root host**'s `handovers/` root — the external repo chosen at `/handover-setup` (Mode B) when one is configured, else the inline `<repo-root>/handovers/` (Mode A):
 
-- **`<yotam_docs-root>/handovers/manual_notes.md`** — running TODO list. Human-maintained.
-- **`<yotam_docs-root>/handovers/random_dreams.md`** — product ideas / roadmap seeds. Human-maintained.
+- **`<state-root-host>/handovers/manual_notes.md`** — running TODO list. Human-maintained.
+- **`<state-root-host>/handovers/random_dreams.md`** — product ideas / roadmap seeds. Human-maintained.
 
-Resolution: if `yotam_docs` is registered (expected post-HIMMEL-124), read from its `<repo-root>/handovers/`. Otherwise fall back to looking for these files at any registered repo's `<repo-root>/handovers/` root — early registries (pre-HIMMEL-13) had them in himmel.
+Resolution: read from the `HANDOVER_DIR` host repo's `handovers/` root if Mode B is configured; otherwise fall back to looking for these files at any registered repo's `<repo-root>/handovers/` root.
 
 Rules:
 - Never auto-generate or overwrite.
@@ -552,8 +556,8 @@ Rules:
 ```
 <repo-root>/
   handovers/
-    manual_notes.md                      ← freeform, human-maintained (now in yotam_docs per HIMMEL-13)
-    random_dreams.md                     ← freeform, human-maintained (now in yotam_docs per HIMMEL-13)
+    manual_notes.md                      ← freeform, human-maintained (at the state-root host; Mode B if configured)
+    random_dreams.md                     ← freeform, human-maintained (at the state-root host; Mode B if configured)
     <user>/                              ← <state-root>
       status.md                          ← auto-generated
       roadmap.md                         ← auto-generated (NEW in v2)

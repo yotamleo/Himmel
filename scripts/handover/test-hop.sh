@@ -125,6 +125,25 @@ out=$(bash "$HOP" --handover-root "$TMP/handovers/yotam" --message "force-test" 
 arm_line=$(printf '%s\n' "$out" | grep -E '^DRY hop: would invoke' | head -1)
 assert_contains "T14 dry-run with --force includes --force flag" " --force" "$arm_line"
 
+# --- HIMMEL-335: de-hardcoded HANDOVER_DIR + USER_SLUG resolution ---
+
+# T15: HANDOVER_DIR (Mode B) joined to USER_SLUG → <dir>/<slug>/ snapshot.
+mkdir -p "$TMP/state/tester"
+out=$(HANDOVER_DIR="$TMP/state" USER_SLUG=tester bash "$HOP" --message "h335" --print --dry-run 2>&1)
+rc=$?
+assert_rc "T15 HANDOVER_DIR resolution rc=0" 0 "$rc"
+assert_contains "T15 snapshot under <HANDOVER_DIR>/<USER_SLUG>" "$TMP/state/tester/context-hop-" "$out"
+
+# T16: snapshot body cites the resolved root, never a hardcoded repo name.
+assert_contains "T16 body cites resolved root" "$TMP/state/tester/next-session-resume.md" "$out"
+assert_not_contains "T16 no yotam_docs in output" "yotam_docs" "$out"
+
+# T17: HANDOVER_DIR pointing at a missing dir → fail-closed rc=2 (no hardcode).
+out=$(HANDOVER_DIR="$TMP/state-missing" USER_SLUG=tester bash "$HOP" --print --dry-run 2>&1)
+rc=$?
+assert_rc "T17 missing HANDOVER_DIR fail-closed rc=2" 2 "$rc"
+assert_contains "T17 diagnostic" "cannot resolve handover root" "$out"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

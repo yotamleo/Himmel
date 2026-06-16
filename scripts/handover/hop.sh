@@ -36,8 +36,9 @@
 #   bash scripts/handover/hop.sh [--message "what to pick up"] [--delay 2] [--print] [--dry-run]
 #
 # Optional:
-#   --handover-root <dir>  Override snapshot destination. Default: $HANDOVER_DIR
-#                          if set, else yotam_docs/handovers/yotam/.
+#   --handover-root <dir>  Override snapshot destination. Default: the shared
+#                          resolver (HANDOVER_DIR Mode B, else <repo>/handovers)
+#                          joined to your USER_SLUG.
 #   --message <text>       Text embedded into the snapshot body.
 #                          Use this for "load this todo list" handoffs.
 #   --delay <minutes>      Schedule mode only. Default 2.
@@ -55,6 +56,22 @@
 #   4  scheduler invocation failed
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/load-dotenv.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/load-dotenv.sh"
+# shellcheck source=../lib/user-slug.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/user-slug.sh"
+# shellcheck source=../lib/handover-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/handover-path.sh"
+
+# HIMMEL-335: pull HANDOVER_DIR / USER_SLUG from <repo>/.env when the
+# launching shell didn't export them (a live env value still wins). Makes
+# .env a real config source for the handover root instead of a hardcode.
+load_dotenv HANDOVER_DIR USER_SLUG
+
 MESSAGE=""
 DELAY_MINUTES=2
 MODE=schedule
@@ -63,10 +80,10 @@ FORCE=0
 HANDOVER_ROOT=""
 
 # Capture ORIGIN repo BEFORE any work — this is the repo claude should
-# run from in the relaunched session. The snapshot lives under
-# yotam_docs/handovers/ but arm-resume's default RESUME_CWD derivation
-# would land claude in yotam_docs (wrong repo). Pass through arm-resume's
-# --cwd flag to override.
+# run from in the relaunched session. The snapshot lives under the
+# handover root (often a separate state repo), but arm-resume's default
+# RESUME_CWD derivation would land claude in that repo (wrong repo). Pass
+# through arm-resume's --cwd flag to override.
 if ! ORIGIN_REPO=$(git rev-parse --show-toplevel 2>/dev/null); then
     ORIGIN_REPO="$(pwd)"
 fi
@@ -80,9 +97,9 @@ Mid-session jump to a fresh claude session. Writes a context-hop
 snapshot then either schedules a relaunch via arm-resume.sh (default)
 or prints the command to run manually (--print).
 
-Default: writes snapshot to $HANDOVER_DIR/context-hop-<ts>.md (or
-yotam_docs/handovers/yotam/ fallback), then schedules a relaunch in
-2 minutes via arm-resume.sh.
+Default: writes the snapshot under the resolved handover root
+(<HANDOVER_DIR or repo/handovers>/<USER_SLUG>/context-hop-<ts>.md), then
+schedules a relaunch in 2 minutes via arm-resume.sh.
 EOF
 }
 
@@ -109,15 +126,22 @@ if ! [[ "$DELAY_MINUTES" =~ ^[0-9]+$ ]] || [ "$DELAY_MINUTES" -lt 1 ] || [ "$DEL
 fi
 
 # Resolve handover root. Priority:
-#   1. --handover-root flag
-#   2. $HANDOVER_DIR
-#   3. yotam_docs/handovers/yotam/ at the conventional path
+#   1. --handover-root flag (explicit override; used verbatim)
+#   2. shared resolver (HANDOVER_DIR Mode B, else <repo>/handovers inline)
+#      joined to the operator's user slug — <state-root> = <root>/<slug>.
 if [ -z "$HANDOVER_ROOT" ]; then
-    if [ -n "${HANDOVER_DIR:-}" ]; then
-        HANDOVER_ROOT="$HANDOVER_DIR/yotam"
-    else
-        HANDOVER_ROOT="$HOME/Documents/github/yotam_docs/handovers/yotam"
+    if ! _hop_root=$(handover_root); then
+        echo "ERR hop: cannot resolve handover root." >&2
+        echo "    Set HANDOVER_DIR (in .env or the launching shell) or pass" >&2
+        echo "    --handover-root <existing-dir>." >&2
+        exit 2
     fi
+    if ! _hop_slug=$(user_slug); then
+        echo "ERR hop: cannot resolve USER_SLUG (set it in .env or the" >&2
+        echo "    launching shell), or pass --handover-root <existing-dir>." >&2
+        exit 2
+    fi
+    HANDOVER_ROOT="$_hop_root/$_hop_slug"
 fi
 if [ ! -d "$HANDOVER_ROOT" ]; then
     echo "ERR hop: handover root does not exist: $HANDOVER_ROOT" >&2
@@ -162,14 +186,14 @@ write_snapshot() {
         # shellcheck disable=SC2016  # backticks here are inline markdown, not shell substitution
         printf -- '- Open PRs: query via `gh pr list --author @me`\n'
         # shellcheck disable=SC2016
-        printf -- '- See `yotam_docs/handovers/yotam/next-session-resume.md` for the persistent next-session plan.\n\n'
+        printf -- '- See `%s/next-session-resume.md` for the persistent next-session plan.\n\n' "$HANDOVER_ROOT"
         printf -- '## Cold-start prompt for the hopped session\n\n'
         printf -- '```\n'
         printf -- 'Cold-start context-hop. Read this snapshot top-to-bottom.\n'
         printf -- 'Pick up from the operator message above. Your cwd is the\n'
         printf -- 'origin repo recorded in the Origin section. Active state\n'
         printf -- 'of the origin session is in\n'
-        printf -- 'yotam_docs/handovers/yotam/next-session-resume.md.\n'
+        printf -- '%s/next-session-resume.md.\n' "$HANDOVER_ROOT"
         printf -- '```\n'
     } > "$target"
 }

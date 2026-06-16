@@ -15,7 +15,7 @@ Use this when the current session is approaching ~75–80% of its context window
 Written to `<handover-root>/context-hop-<UTC-timestamp>.md`. Body:
 
 - Operator message (if `--message` passed) — short text describing what the hopped session should pick up.
-- Origin context: cwd, git branch + HEAD short, pointer to `yotam_docs/handovers/yotam/next-session-resume.md` for the persistent next-session plan.
+- Origin context: cwd, git branch + HEAD short, pointer to `<handover-root>/next-session-resume.md` for the persistent next-session plan.
 - Cold-start prompt block (used by the spawned claude on relaunch).
 
 The snapshot is **NOT** a substitute for `next-session-resume.md` — it's a thin point-in-time pin so the hopped session knows what the immediately-prior session was doing. For long-running state, edit `next-session-resume.md` directly before hopping.
@@ -45,13 +45,16 @@ bash scripts/handover/hop.sh $ARGUMENTS
 
 ## Handover root resolution
 
-In priority order:
+In priority order (HIMMEL-335):
 
-1. `--handover-root <dir>` flag.
-2. `$HANDOVER_DIR/yotam` env var.
-3. `$HOME/Documents/github/yotam_docs/handovers/yotam` (post-HIMMEL-124 default).
+1. `--handover-root <dir>` flag (used verbatim).
+2. The shared resolver `scripts/lib/handover-path.sh` joined to `USER_SLUG` —
+   `<HANDOVER_DIR or <repo>/handovers>/<USER_SLUG>`. `HANDOVER_DIR` /
+   `USER_SLUG` are read from the launching shell or `<repo>/.env` (via
+   `scripts/lib/load-dotenv.sh`).
 
-Fails (`rc=2`) if the resolved root does not exist.
+Fails (`rc=2`) if neither resolves or the resolved root does not exist — no
+hardcoded fallback path.
 
 ## Exit codes
 

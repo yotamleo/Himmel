@@ -21,6 +21,16 @@ leaves no partial disk state.
 
 Bootstraps a **new** repo (no existing handover state on disk).
 
+**Where state lives is chosen by `/handover-setup`, not here (HIMMEL-335).**
+`/handover-setup` is the first-time entry point: it prompts inline (Mode A,
+`<repo-root>/handovers/`) vs external (Mode B, a separate state repo), and on a
+Mode-B choice writes `HANDOVER_DIR=` into `<repo-root>/.env` (via
+`scripts/handover/set-handover-dir.sh`) so every later session resolves the same
+location. `init` then operates on the resolved `<state-root-host>` — the
+`HANDOVER_DIR` host when set, else the inline default. Never hardcode a specific
+state repo (e.g. `yotam_docs`); it is always the operator-chosen location. The
+`path` input below is the **code repo being tracked**, not the state-root host.
+
 ### Inputs (interactive prompt via `AskUserQuestion` or text)
 
 | Field | Default | Validation |
