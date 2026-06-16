@@ -88,7 +88,16 @@ export async function discoverMetadata(projectsToTrack) {
   // (= JIRA_PROJECT_KEY for single-project users) since check-required now
   // resolves to default_project when --project is omitted.
   const tracked = projectsToTrack
-    .map((k) => allProjects.find((p) => p.key === k))
+    .map((k) => {
+      const found = allProjects.find((p) => p.key === k);
+      if (!found) {
+        // Don't silently drop a configured key — every other degraded path in
+        // this function warns; a typo'd/no-access key would otherwise cache 0
+        // projects with no clue why (HIMMEL-334).
+        process.stderr.write(`[jira-init] warning: configured project '${k}' not found via /project/search (typo or no access?) — skipping; it will NOT be cached\n`);
+      }
+      return found;
+    })
     .filter(Boolean);
   out.default_project = tracked[0]?.key;
   for (const p of tracked) {
@@ -111,7 +120,10 @@ export async function discoverMetadata(projectsToTrack) {
     }
     let transitions = {};
     try {
-      const search = await jiraFetch('GET', `/search?jql=project=${p.key}&maxResults=1&fields=summary`);
+      // Enhanced JQL search endpoint — the old /search?jql= was removed
+      // (Atlassian CHANGE-2046, HTTP 410); /search/jql returns the same
+      // `issues` shape (HIMMEL-337).
+      const search = await jiraFetch('GET', `/search/jql?jql=project=${p.key}&maxResults=1&fields=summary`);
       if (search.issues?.[0]) {
         const tx = await jiraFetch('GET', `/issue/${search.issues[0].key}/transitions`);
         transitions = Object.fromEntries(tx.transitions.map((tr) => [tr.to?.name ?? tr.name, tr.id]));
