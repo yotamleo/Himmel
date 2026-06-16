@@ -1,0 +1,58 @@
+# Vendored Obsidian plugin binaries + per-operator workspace state churn on
+# every save. Excluded globally so the basic hooks don't rewrite them on
+# every operator's machine. Tracked separately if/when we move to plugin
+# installer + community-plugins.json driven setup.
+exclude: '^\.obsidian/'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: worktree-isolation
+        name: Worktree isolation check (refuse commits on main)
+        language: system
+        entry: bash scripts/hooks/check-worktree-isolation.sh
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+      - id: no-push-to-main
+        name: Block direct push to main
+        language: system
+        entry: bash scripts/hooks/check-push-target.sh
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: no-force-push
+        name: Refuse force-push to protected refs
+        language: system
+        entry: bash scripts/hooks/check-no-force-push.sh
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: conventional-commit-msg
+        name: Conventional commit message (TICKET-N optional)
+        language: system
+        entry: bash scripts/hooks/check-commit-msg.sh
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]

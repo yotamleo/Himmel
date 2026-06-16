@@ -1,0 +1,12 @@
+# Pinned upstream for the telegram-himmel fork. The check-telegram-fork-drift
+# pre-commit hook fails when the installed claude-plugins-official/telegram
+# cache no longer matches this pin (= upstream bumped → re-sync per README).
+version=0.0.6
+server_sha256=20087f27c81be642cbb0f0254626092330052a5c31b5abde8dec2569889a11e4
+
+# Generic fields read by scripts/check-plugin-drift.sh (HIMMEL-322) — the
+# proactive, network-based cross-fork checker. upstream_sha256 mirrors
+# server_sha256 (sha256 of the upstream server.ts the fork is synced to).
+upstream_repo=anthropics/claude-plugins-official
+upstream_path=external_plugins/telegram/server.ts
+upstream_sha256=20087f27c81be642cbb0f0254626092330052a5c31b5abde8dec2569889a11e4

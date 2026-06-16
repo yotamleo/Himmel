@@ -1,0 +1,140 @@
+/* Quarto outline sidebar view (QmdOutlineView) */
+
+.qmd-outline {
+  padding: var(--size-4-2) var(--size-4-1);
+}
+
+.qmd-outline-empty {
+  padding: var(--size-4-2) var(--size-4-3);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.qmd-outline-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.qmd-outline-item {
+  padding: var(--size-2-1) var(--size-4-3);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.qmd-outline-item:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.qmd-outline-item:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+  color: var(--text-normal);
+}
+
+/* Indentation by heading level — driven by the data-level attribute so the
+   view itself sets no inline styles. Each level adds one --size-4-4 step. */
+.qmd-outline-item[data-level='1'] { padding-left: var(--size-4-3); }
+.qmd-outline-item[data-level='2'] { padding-left: calc(var(--size-4-3) + var(--size-4-4)); }
+.qmd-outline-item[data-level='3'] { padding-left: calc(var(--size-4-3) + var(--size-4-4) * 2); }
+.qmd-outline-item[data-level='4'] { padding-left: calc(var(--size-4-3) + var(--size-4-4) * 3); }
+.qmd-outline-item[data-level='5'] { padding-left: calc(var(--size-4-3) + var(--size-4-4) * 4); }
+.qmd-outline-item[data-level='6'] { padding-left: calc(var(--size-4-3) + var(--size-4-4) * 5); }
+
+/* Code editor views (QmdCodeFileView — YAML and Lua files) */
+
+.qmd-code-view {
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  background: var(--background-primary);
+}
+
+.qmd-code-view .cm-editor {
+  height: 100%;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  line-height: var(--line-height-tight);
+  outline: none;
+}
+
+.qmd-code-view .cm-scroller {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  line-height: var(--line-height-tight);
+}
+
+.qmd-code-view .cm-content {
+  min-height: 100%;
+  padding: var(--size-4-4);
+  caret-color: var(--text-normal);
+  tab-size: 2;
+}
+
+.qmd-code-view .cm-focused {
+  box-shadow: inset 0 0 0 2px var(--interactive-accent);
+}
+
+.qmd-code-view.qmd-code-view .cm-editor .cm-selectionBackground {
+  background: var(--text-selection);
+}
+
+.qmd-yaml-key {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.qmd-yaml-colon,
+.qmd-yaml-list-marker,
+.qmd-yaml-doc-marker {
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+.qmd-yaml-string {
+  color: var(--text-normal);
+}
+
+.qmd-yaml-number,
+.qmd-yaml-boolean,
+.qmd-yaml-anchor,
+.qmd-yaml-block,
+.qmd-yaml-quarto-format {
+  color: var(--interactive-accent);
+}
+
+.qmd-yaml-comment {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.qmd-yaml-scalar {
+  color: var(--text-normal);
+}
+
+/* Lua editor view tokens */
+
+.qmd-lua-keyword {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.qmd-lua-string {
+  color: var(--interactive-accent);
+}
+
+.qmd-lua-number {
+  color: var(--interactive-accent);
+}
+
+.qmd-lua-comment {
+  color: var(--text-muted);
+  font-style: italic;
+}

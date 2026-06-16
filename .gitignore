@@ -1,0 +1,35 @@
+/.claude/worktrees
+.env
+scripts/jira/dist/
+scripts/jira/node_modules/
+/node_modules/
+/.claude/settings.local.json
+# end-session-wiki hook local artifacts — contain raw transcript excerpts (potential secrets).
+# Match any .claude/ dir (the hook writes into the cwd's .claude/, e.g. scripts/telegram/.claude/).
+**/.claude/end-session-wiki.log
+**/.claude/end-session-wiki.log.old
+# Handover transient state
+.last-consolidate.json
+**/handovers/*/.last-consolidate.json
+# auto-arm-on-cap / auto-arm-on-subagent-cap runtime snapshots (HIMMEL-276) —
+# the hooks write these into himmel handovers/ as untracked clutter on main.
+# (Followup: redirect the hook write path to HANDOVER_DIR — see HIMMEL ticket.)
+handovers/auto-arm-status-*.md
+# Cross-project handover content moved to yotam_docs in HIMMEL-13 —
+# prevent accidental re-tracking if the operator's local copy still
+# exists or gets re-created here by an out-of-date tool.
+/handovers/luna/
+/handovers/manual_notes.md
+/handovers/random_dreams.md
+# Runtime artifacts that pollute primary-worktree git status
+.claire/
+/.claude/scheduled_tasks.lock
+/.playwright-mcp
+# /improve disk artifacts — Mode A inline path. Mode B writes under HANDOVER_DIR.
+/.improve/
+# /gemini-bg background-run output sink (HIMMEL-158)
+logs/gemini/
+# superpowers design docs were removed for OSS (HIMMEL-297); overnight-mode
+# Mode A (no HANDOVER_DIR) regenerates plans under docs/superpowers/plans/ —
+# keep those local, never re-track the folder into the public repo.
+/docs/superpowers/

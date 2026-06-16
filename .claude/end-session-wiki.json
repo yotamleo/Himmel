@@ -1,0 +1,5 @@
+{
+  "enabled": true,
+  "dry_run": false,
+  "min_duration_seconds": 60
+}

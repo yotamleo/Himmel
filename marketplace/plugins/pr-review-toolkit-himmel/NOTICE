@@ -1,0 +1,12 @@
+pr-review-toolkit-himmel
+Copyright 2026 yotamleo
+
+This product is a derivative work of the "pr-review-toolkit" plugin from the
+claude-plugins-official marketplace, published by Anthropic, and licensed
+under the Apache License, Version 2.0. See LICENSE for the full text.
+
+Modifications by yotamleo, licensed under the Apache License, Version 2.0:
+- Vendored agents/code-reviewer.md only, with an appended
+  "Verify-before-critical (HIMMEL-178)" section.
+
+See README.md for the full fork rationale and the upstream-watch protocol.

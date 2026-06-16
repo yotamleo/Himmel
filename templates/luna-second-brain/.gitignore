@@ -1,0 +1,35 @@
+# Per-operator secrets
+.env
+.env.*
+!.env.example
+
+# Per-operator Obsidian state (workspace layout, hot-reload cache).
+# Keep app.json / community-plugins.json / core-plugins.json / appearance.json
+# checked in so a fresh clone inherits the vault's plugin set.
+.obsidian/workspace*.json
+.obsidian/cache/
+.obsidian/hotkeys.json
+
+# obsidian-local-rest-api stores apiKey + RSA private key + TLS cert in
+# its data.json on first enable. NEVER commit — the plugin regenerates
+# these on first enable per-operator, so each clone gets its own keys.
+# (Other plugin data.json files stay tracked so fresh clones inherit
+# usable defaults; they're audited free of credentials.)
+.obsidian/plugins/obsidian-local-rest-api/data.json
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Tooling caches
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Claude worktrees
+/.claude/worktrees/
+/.claude/settings.local.json
+
+# Handover scratch state
+.last-consolidate.json

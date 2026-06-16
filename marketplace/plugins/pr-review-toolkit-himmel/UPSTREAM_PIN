@@ -1,0 +1,13 @@
+# Pinned upstream for the pr-review-toolkit-himmel fork (HIMMEL-322). The fork
+# vendors agents/code-reviewer.md from anthropics/claude-plugins-official's
+# pr-review-toolkit plugin + the HIMMEL-178 verify-before-critical patch.
+#
+# scripts/check-plugin-drift.sh fetches the upstream file and compares its
+# sha256 to upstream_sha256 below; a mismatch means upstream's code-reviewer.md
+# changed → re-sync the fork (re-apply the HIMMEL-178 patch onto the new base)
+# and update upstream_sha256. See README.md § fork rationale + upstream-watch.
+#
+# Baseline established 2026-06-16 against upstream HEAD at the time.
+upstream_repo=anthropics/claude-plugins-official
+upstream_path=plugins/pr-review-toolkit/agents/code-reviewer.md
+upstream_sha256=019395c3ce457460115cc703e2f4a86fed4bbe560dc58355051c4d877155d366

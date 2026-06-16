@@ -1,0 +1,26 @@
+{
+  "name": "jira-cli",
+  "version": "1.0.0",
+  "description": "Jira CLI for himmel project",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "jira": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "pretest": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.6"
+  }
+}

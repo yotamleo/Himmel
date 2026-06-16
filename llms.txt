@@ -1,0 +1,39 @@
+# himmel
+
+> A harness for running Claude Code as a managed, orchestrated, PR-gated, overnight-capable agent. himmel makes an agent's behaviour *structurally* safe and repeatable — hooks + gates + guardrails enforce the workflow at the tool-call layer rather than relying on the model to remember prose. Memory is Camp 2: durable, hand-editable markdown (the handover system + the companion luna vault) that compounds across sessions — no vector DB. Targets solo-operator / small-team work at Tier 3-4 Claude Code maturity (orchestrated + 24/7 autonomous).
+
+If you are an LLM working in this repo, read CLAUDE.md first — it is the authoritative rule set and is loaded into every session. The links below are the canonical docs; each owns its topic, so prefer reading the linked file over re-deriving from code.
+
+## Start here
+
+- [docs/getting-started.md](docs/getting-started.md): the ~15-minute onboarding path — install, minimal config, your first PR-gated loop, and what himmel adds to a repo (every guard is opt-out).
+- [CLAUDE.md](CLAUDE.md): the authoritative repo rules — git workflow, Jira-via-plugin (not MCP), subagent policy, operator conventions, and the structural enforcement map. Read before acting.
+- [README.md](README.md): human overview — advantages, who-it's-for (Tier 3-4), Camp-2 memory stance, quickstart, the core loop.
+
+## Workflows
+
+- [docs/daily-loop.md](docs/daily-loop.md): the narrated end-to-end loop (worktree → commit → PR → merge → clean → handover) with each hook/gate explained where it fires.
+- [docs/handover/overnight-mode.md](docs/handover/overnight-mode.md): autonomous end-to-end execution of a scoped ticket — the 11-phase pipeline, attestation discipline, block-only criteria, and the auto-mode classifier behaviour.
+- [docs/commands-catalog.md](docs/commands-catalog.md): the project-local slash commands under `.claude/commands/`.
+
+## Enforcement (structural, not prose)
+
+- [docs/internals/enforcement.md](docs/internals/enforcement.md): every PreToolUse/PostToolUse hook, the pre-commit/pre-push gates, the guardrail predicate matrix, and the Claude-invocation billing rules.
+- [docs/internals/stuck-playbook.md](docs/internals/stuck-playbook.md): guardrail-recovery escape-hatches — what to do when an auto-mode write is denied, a permission prompt hangs, or a pre-push gate fails.
+
+## Subsystems
+
+- [docs/internals/handover-system.md](docs/internals/handover-system.md): the full cross-session handover system + user-slug resolution. Plugin: [marketplace/plugins/handover/README.md](marketplace/plugins/handover/README.md).
+- [docs/internals/jira-plugin.md](docs/internals/jira-plugin.md): the local Jira CLI (`scripts/jira/`) — preferred over the Atlassian MCP server — and the op↔MCP mapping.
+- [docs/operator-conventions.md](docs/operator-conventions.md): durable operator working-habits (Jira CLI invocation, CR/merge habits).
+- [docs/tooling-catalog.md](docs/tooling-catalog.md): every tool/script/plugin in active use.
+
+## Setup
+
+- [docs/setup/new-machine.md](docs/setup/new-machine.md): fresh-machine setup — required environment + per-platform (Linux / macOS / Windows Git Bash) install.
+- [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md): adopting the portable core (hooks + worktree workflow) in another repo.
+
+## Optional
+
+- [docs/tool-adoption/rubric.md](docs/tool-adoption/rubric.md): the decision method every community-tool evaluation runs through (goal/KPI, trust tiers, ADOPT/PILOT/REJECT).
+- [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md): dependency-license attribution (audited clean, fully permissive; MIT root license).

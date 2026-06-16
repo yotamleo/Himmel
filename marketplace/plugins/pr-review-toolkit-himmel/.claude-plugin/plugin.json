@@ -1,0 +1,8 @@
+{
+  "name": "pr-review-toolkit-himmel",
+  "description": "[yotamleo fork — vendor + verify-before-critical patch, see README.md] Minimal fork of pr-review-toolkit. Vendors only the code-reviewer agent with the HIMMEL-178 verify-before-critical sub-rule patched in. All other agents (silent-failure-hunter, comment-analyzer, pr-test-analyzer, type-design-analyzer, code-simplifier) stay upstream — invoke via pr-review-toolkit:* namespace.",
+  "author": {
+    "name": "Anthropic (upstream) / yotamleo (fork)",
+    "email": "support@anthropic.com"
+  }
+}

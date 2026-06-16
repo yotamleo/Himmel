@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Pre-commit hook: enforce npm lockfile integrity.
+#
+# For every package.json under scripts/ (same scoping as check-npm-audit.sh):
+#   1. A sibling package-lock.json must exist.
+#   2. That lockfile must be tracked in git.
+#   3. `npm ci --dry-run --ignore-scripts` must succeed (catches lock drift).
+#
+# Blocks the commit on any failure. See docs/security/npm-policy.md.
+set -euo pipefail
+
+# Scoped to scripts/ so we don't recurse into nested worktrees under .claude/.
+mapfile -t pkgs < <(find scripts -maxdepth 3 -name package.json -not -path '*/node_modules/*')
+
+if [ ${#pkgs[@]} -eq 0 ]; then
+    echo "→ lockfile-integrity: no npm projects under scripts/, skipping"
+    exit 0
+fi
+
+fail=0
+for pkg in "${pkgs[@]}"; do
+    dir=$(dirname "$pkg")
+    lock="$dir/package-lock.json"
+
+    if [ ! -f "$lock" ]; then
+        echo "ERROR: missing lockfile: $lock" >&2
+        echo "       Every package.json must ship a committed sibling package-lock.json." >&2
+        fail=1
+        continue
+    fi
+
+    if ! git ls-files --error-unmatch "$lock" >/dev/null 2>&1; then
+        echo "ERROR: lockfile not tracked in git: $lock" >&2
+        echo "       Run: git add $lock" >&2
+        fail=1
+        continue
+    fi
+
+    echo "→ lockfile-integrity: npm ci --dry-run in $dir"
+    if ! (cd "$dir" && npm ci --dry-run --ignore-scripts); then
+        echo "ERROR: lockfile drift detected in $dir" >&2
+        echo "       package-lock.json is out of sync with package.json." >&2
+        echo "       Run 'npm install' in $dir, then commit the updated lockfile." >&2
+        fail=1
+    fi
+done
+
+if [ $fail -ne 0 ]; then
+    echo "" >&2
+    echo "ERROR: lockfile-integrity check failed. Commit blocked." >&2
+fi
+
+exit $fail

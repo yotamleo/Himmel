@@ -1,0 +1,1458 @@
+'use strict';
+
+var obsidian = require('obsidian');
+var child_process = require('child_process');
+var path = require('path');
+var electron = require('electron');
+var state = require('@codemirror/state');
+var view = require('@codemirror/view');
+var commands = require('@codemirror/commands');
+
+function _interopNamespaceDefault(e) {
+    var n = Object.create(null);
+    if (e) {
+        Object.keys(e).forEach(function (k) {
+            if (k !== 'default') {
+                var d = Object.getOwnPropertyDescriptor(e, k);
+                Object.defineProperty(n, k, d.get ? d : {
+                    enumerable: true,
+                    get: function () { return e[k]; }
+                });
+            }
+        });
+    }
+    n.default = e;
+    return Object.freeze(n);
+}
+
+var path__namespace = /*#__PURE__*/_interopNamespaceDefault(path);
+
+// --- Quarto outline -------------------------------------------------------
+//
+// Obsidian's core Outline panel reads headings from metadataCache, which
+// only parses .md files — a .qmd opened via registerExtensions still gets
+// no heading cache, so the panel stays blank (issue #3). parseQmdHeadings
+// scans the file text directly: ATX headings (`# ...`, up to 3 spaces of
+// indent per CommonMark) only — setext headings (underlined with === / ---)
+// are intentionally not supported, they are vanishingly rare in Quarto and
+// the --- form collides with YAML/frontmatter syntax. The scan skips the
+// YAML frontmatter block and fenced code blocks (``` / ~~~) so a `#` line
+// inside an R/Python cell is not mistaken for a heading.
+const QMD_OUTLINE_VIEW = 'qmd-outline-view';
+function parseQmdHeadings(content) {
+    const lines = content.split(/\r?\n/);
+    const headings = [];
+    let inFrontmatter = false;
+    // Open code-fence state. Per CommonMark, a fence closes only on the same
+    // marker char with a run at least as long as the opener — so a longer
+    // ```` inside a ``` block, or a ~~~ inside a ``` block, does not close it.
+    let fenceMarker = null; // '`' or '~' while inside a code block
+    let fenceLength = 0; // length of the run that opened the current block
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // YAML frontmatter is only frontmatter when --- is the very first line.
+        if (i === 0 && /^---\s*$/.test(line)) {
+            inFrontmatter = true;
+            continue;
+        }
+        if (inFrontmatter) {
+            if (/^(---|\.\.\.)\s*$/.test(line))
+                inFrontmatter = false;
+            continue;
+        }
+        // Fenced code block: a run of >=3 backticks or tildes, up to 3 spaces
+        // of indent.
+        const fence = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+        if (fence) {
+            const run = fence[1];
+            const marker = run[0];
+            if (fenceMarker === null) {
+                fenceMarker = marker;
+                fenceLength = run.length;
+            }
+            else if (marker === fenceMarker && run.length >= fenceLength) {
+                fenceMarker = null;
+                fenceLength = 0;
+            }
+            continue;
+        }
+        if (fenceMarker !== null)
+            continue;
+        const h = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*$/);
+        if (h) {
+            // Drop a trailing pandoc/quarto attribute block: `## Title {#id .cls}`.
+            const text = h[2].replace(/\s*\{[^}]*\}\s*$/, '').trim();
+            if (text)
+                headings.push({ level: h[1].length, text, line: i });
+        }
+    }
+    return headings;
+}
+class QmdOutlineView extends obsidian.ItemView {
+    constructor(leaf, plugin) {
+        super(leaf);
+        this.plugin = plugin;
+    }
+    getViewType() {
+        return QMD_OUTLINE_VIEW;
+    }
+    getDisplayText() {
+        return 'Quarto outline';
+    }
+    getIcon() {
+        return 'list';
+    }
+    async onOpen() {
+        // The outline may already be the active leaf at this point (opened via
+        // command/setting), so capture the underlying .qmd before rendering.
+        this.plugin.trackActiveQuartoFile();
+        this.render();
+    }
+    // Find the open markdown view for a file, regardless of which leaf is
+    // active. .qmd files open as 'markdown' leaves (registerExtensions).
+    markdownViewFor(file) {
+        for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+            if (leaf.view instanceof obsidian.MarkdownView && leaf.view.file?.path === file.path) {
+                return leaf.view;
+            }
+        }
+        return null;
+    }
+    render() {
+        const container = this.contentEl;
+        container.empty();
+        container.addClass('qmd-outline');
+        const file = this.plugin.lastActiveQuartoFile;
+        if (!file) {
+            container.createDiv({
+                cls: 'qmd-outline-empty',
+                text: 'No Quarto (.qmd) file is active.',
+            });
+            return;
+        }
+        // Read live content from the open editor rather than the active leaf —
+        // clicking inside this sidebar makes it the active leaf.
+        const mdView = this.markdownViewFor(file);
+        if (!mdView) {
+            container.createDiv({
+                cls: 'qmd-outline-empty',
+                text: `Open ${file.name} to see its outline.`,
+            });
+            return;
+        }
+        const headings = parseQmdHeadings(mdView.editor.getValue());
+        if (headings.length === 0) {
+            container.createDiv({
+                cls: 'qmd-outline-empty',
+                text: 'No headings in this file.',
+            });
+            return;
+        }
+        const list = container.createDiv({ cls: 'qmd-outline-list' });
+        for (const heading of headings) {
+            const item = list.createDiv({
+                cls: 'qmd-outline-item',
+                text: heading.text,
+                // Keyboard-accessible: focusable, announced as a link, and the
+                // keydown handler below makes Enter/Space activate it.
+                attr: { tabindex: '0', role: 'link' },
+            });
+            // Indentation is driven by CSS off this attribute — no inline styles.
+            item.dataset.level = String(heading.level);
+            const jumpTo = () => {
+                // Resolve the editor by file, not by "active leaf" — the click
+                // itself just moved focus to this sidebar.
+                const view = this.markdownViewFor(file);
+                if (!view)
+                    return;
+                const pos = { line: heading.line, ch: 0 };
+                this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
+                view.editor.setCursor(pos);
+                view.editor.scrollIntoView({ from: pos, to: pos }, true);
+                view.editor.focus();
+            };
+            item.addEventListener('click', jumpTo);
+            item.addEventListener('keydown', (evt) => {
+                if (evt.key === 'Enter' || evt.key === ' ') {
+                    evt.preventDefault();
+                    jumpTo();
+                }
+            });
+        }
+    }
+}
+
+const QMD_YAML_VIEW = 'qmd-yaml-view';
+const QMD_LUA_VIEW = 'qmd-lua-view';
+const yamlHighlightField = state.StateField.define({
+    create(state) {
+        return buildYamlDecorations(state.doc);
+    },
+    update(decorations, transaction) {
+        if (transaction.docChanged) {
+            return buildYamlDecorations(transaction.state.doc);
+        }
+        return decorations.map(transaction.changes);
+    },
+    provide: (field) => view.EditorView.decorations.from(field),
+});
+function buildYamlDecorations(doc) {
+    const builder = new state.RangeSetBuilder();
+    for (let lineNumber = 1; lineNumber <= doc.lines; lineNumber++) {
+        const line = doc.line(lineNumber);
+        decorateYamlLine(builder, line.from, line.text);
+    }
+    return builder.finish();
+}
+function decorateYamlLine(builder, lineStart, line) {
+    const indent = line.match(/^\s*/)?.[0] ?? '';
+    const content = line.slice(indent.length);
+    const contentStart = lineStart + indent.length;
+    if (!content)
+        return;
+    if (content.startsWith('#')) {
+        markYamlToken(builder, contentStart, lineStart + line.length, 'qmd-yaml-comment');
+        return;
+    }
+    const markerMatch = content.match(/^(-\s+)(.*)$/);
+    if (markerMatch) {
+        const markerLength = markerMatch[1].length;
+        markYamlToken(builder, contentStart, contentStart + markerLength, 'qmd-yaml-list-marker');
+        decorateYamlSegment(builder, contentStart + markerLength, markerMatch[2]);
+        return;
+    }
+    decorateYamlSegment(builder, contentStart, content);
+}
+function decorateYamlSegment(builder, segmentStart, segment) {
+    const docMatch = segment.match(/^(\.{3}|-{3})(\s*(#.*)?)$/);
+    if (docMatch) {
+        const markerLength = docMatch[1].length;
+        markYamlToken(builder, segmentStart, segmentStart + markerLength, 'qmd-yaml-doc-marker');
+        decorateYamlValue(builder, segmentStart + markerLength, docMatch[2] ?? '');
+        return;
+    }
+    const colon = findYamlKeyColon(segment);
+    if (colon !== -1) {
+        markYamlToken(builder, segmentStart, segmentStart + colon, 'qmd-yaml-key');
+        markYamlToken(builder, segmentStart + colon, segmentStart + colon + 1, 'qmd-yaml-colon');
+        decorateYamlValue(builder, segmentStart + colon + 1, segment.slice(colon + 1));
+        return;
+    }
+    decorateYamlValue(builder, segmentStart, segment);
+}
+function decorateYamlValue(builder, valueStart, value) {
+    const leading = value.match(/^\s*/)?.[0] ?? '';
+    const rest = value.slice(leading.length);
+    const restStart = valueStart + leading.length;
+    if (!rest)
+        return;
+    const commentIndex = findYamlComment(rest);
+    const scalar = commentIndex === -1 ? rest : rest.slice(0, commentIndex);
+    decorateYamlScalar(builder, restStart, scalar);
+    if (commentIndex !== -1) {
+        markYamlToken(builder, restStart + commentIndex, restStart + rest.length, 'qmd-yaml-comment');
+    }
+}
+function decorateYamlScalar(builder, scalarStart, scalar) {
+    const trailing = scalar.match(/\s*$/)?.[0] ?? '';
+    const token = trailing ? scalar.slice(0, scalar.length - trailing.length) : scalar;
+    if (!token)
+        return;
+    const className = yamlScalarClass(token);
+    markYamlToken(builder, scalarStart, scalarStart + token.length, className);
+}
+function yamlScalarClass(token) {
+    if (/^['"].*['"]$/.test(token))
+        return 'qmd-yaml-string';
+    if (/^[&*][A-Za-z0-9_-]+$/.test(token))
+        return 'qmd-yaml-anchor';
+    // YAML 1.2 (what Quarto/Pandoc use): only true/false/null/~ are
+    // booleans/null. yes/no/on/off are plain scalars, not booleans.
+    if (/^(true|false|null|~)$/i.test(token))
+        return 'qmd-yaml-boolean';
+    if (/^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(token))
+        return 'qmd-yaml-number';
+    if (/^[>|][+-]?$/.test(token))
+        return 'qmd-yaml-block';
+    if (/^(html|pdf|typst|latex|beamer|revealjs|docx|odt|epub|gfm|jats|dashboard)$/i.test(token)) {
+        return 'qmd-yaml-quarto-format';
+    }
+    return 'qmd-yaml-scalar';
+}
+function findYamlKeyColon(segment) {
+    let singleQuoted = false;
+    let doubleQuoted = false;
+    for (let i = 0; i < segment.length; i++) {
+        const char = segment[i];
+        const prev = i > 0 ? segment[i - 1] : '';
+        if (char === "'" && !doubleQuoted) {
+            singleQuoted = !singleQuoted;
+        }
+        else if (char === '"' && !singleQuoted && prev !== '\\') {
+            doubleQuoted = !doubleQuoted;
+        }
+        else if (char === ':' && !singleQuoted && !doubleQuoted) {
+            const next = segment[i + 1] ?? '';
+            const key = segment.slice(0, i).trim();
+            if (key && (!next || /\s/.test(next)))
+                return i;
+        }
+    }
+    return -1;
+}
+function findYamlComment(value) {
+    let singleQuoted = false;
+    let doubleQuoted = false;
+    for (let i = 0; i < value.length; i++) {
+        const char = value[i];
+        const prev = i > 0 ? value[i - 1] : '';
+        if (char === "'" && !doubleQuoted) {
+            singleQuoted = !singleQuoted;
+        }
+        else if (char === '"' && !singleQuoted && prev !== '\\') {
+            doubleQuoted = !doubleQuoted;
+        }
+        else if (char === '#' && !singleQuoted && !doubleQuoted && (i === 0 || /\s/.test(prev))) {
+            return i;
+        }
+    }
+    return -1;
+}
+function markYamlToken(builder, from, to, className) {
+    if (to <= from)
+        return;
+    builder.add(from, to, view.Decoration.mark({ class: className }));
+}
+// --- Lua highlighting -----------------------------------------------------
+//
+// Minimal Lua syntax highlighting for the Lua file view — enough to make
+// pandoc/Quarto filter scripts readable. A single forward scan over the
+// whole document text marks comments, strings, numbers and keywords;
+// everything else is left unstyled. The forward scan guarantees the
+// RangeSetBuilder receives ranges in ascending, non-overlapping order.
+const LUA_KEYWORDS = new Set([
+    'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
+    'goto', 'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then',
+    'true', 'until', 'while',
+]);
+const luaHighlightField = state.StateField.define({
+    create(state) {
+        return buildLuaDecorations(state.doc);
+    },
+    update(decorations, transaction) {
+        if (transaction.docChanged) {
+            return buildLuaDecorations(transaction.state.doc);
+        }
+        return decorations.map(transaction.changes);
+    },
+    provide: (field) => view.EditorView.decorations.from(field),
+});
+function buildLuaDecorations(doc) {
+    const builder = new state.RangeSetBuilder();
+    const s = doc.toString();
+    const len = s.length;
+    const mark = (from, to, className) => {
+        if (to > from)
+            builder.add(from, to, view.Decoration.mark({ class: className }));
+    };
+    // If a Lua long bracket opens at `open` (`[`, `[=[`, `[==[`, …), return the
+    // index just past its matching close; an unterminated bracket runs to EOF.
+    // Returns -1 when `open` is not a long-bracket opener.
+    const longBracketEnd = (open) => {
+        if (s[open] !== '[')
+            return -1;
+        let j = open + 1;
+        let level = 0;
+        while (s[j] === '=') {
+            level++;
+            j++;
+        }
+        if (s[j] !== '[')
+            return -1;
+        const close = ']' + '='.repeat(level) + ']';
+        const idx = s.indexOf(close, j + 1);
+        return idx === -1 ? len : idx + close.length;
+    };
+    let i = 0;
+    while (i < len) {
+        const c = s[i];
+        // comment: line (`-- …`) or block (`--[[ … ]]`, `--[==[ … ]==]`)
+        if (c === '-' && s[i + 1] === '-') {
+            const block = longBracketEnd(i + 2);
+            if (block !== -1) {
+                mark(i, block, 'qmd-lua-comment');
+                i = block;
+                continue;
+            }
+            let j = i + 2;
+            while (j < len && s[j] !== '\n')
+                j++;
+            mark(i, j, 'qmd-lua-comment');
+            i = j;
+            continue;
+        }
+        // long-bracket string
+        if (c === '[') {
+            const long = longBracketEnd(i);
+            if (long !== -1) {
+                mark(i, long, 'qmd-lua-string');
+                i = long;
+                continue;
+            }
+        }
+        // quoted string (single or double); does not span lines
+        if (c === '"' || c === "'") {
+            let j = i + 1;
+            while (j < len && s[j] !== c && s[j] !== '\n') {
+                if (s[j] === '\\')
+                    j++;
+                j++;
+            }
+            if (j < len && s[j] === c)
+                j++;
+            mark(i, j, 'qmd-lua-string');
+            i = j;
+            continue;
+        }
+        // number (decimal, hex, fractional, exponent)
+        if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(s[i + 1] ?? ''))) {
+            let j = i;
+            if (c === '0' && (s[i + 1] === 'x' || s[i + 1] === 'X')) {
+                j = i + 2;
+                while (j < len && /[0-9a-fA-F.]/.test(s[j]))
+                    j++;
+            }
+            else {
+                while (j < len && /[0-9.]/.test(s[j]))
+                    j++;
+                if (s[j] === 'e' || s[j] === 'E') {
+                    j++;
+                    if (s[j] === '+' || s[j] === '-')
+                        j++;
+                    while (j < len && /[0-9]/.test(s[j]))
+                        j++;
+                }
+            }
+            mark(i, j, 'qmd-lua-number');
+            i = j;
+            continue;
+        }
+        // identifier — only keywords get marked
+        if (/[A-Za-z_]/.test(c)) {
+            let j = i + 1;
+            while (j < len && /[A-Za-z0-9_]/.test(s[j]))
+                j++;
+            if (LUA_KEYWORDS.has(s.slice(i, j)))
+                mark(i, j, 'qmd-lua-keyword');
+            i = j;
+            continue;
+        }
+        i++;
+    }
+    return builder.finish();
+}
+const YAML_CODE_VIEW = {
+    label: 'YAML file',
+    ariaLabel: 'YAML file contents',
+    highlightField: yamlHighlightField,
+};
+const LUA_CODE_VIEW = {
+    label: 'Lua file',
+    ariaLabel: 'Lua file contents',
+    highlightField: luaHighlightField,
+};
+// A minimal CodeMirror-backed file view, shared by the YAML and Lua file
+// views. The only per-language difference is the highlight StateField and
+// the labels, supplied through CodeViewConfig.
+//
+// getViewType() is left abstract on purpose: Obsidian's View constructor
+// calls getViewType() *during* super(), before subclass constructor params
+// and field initializers have run, so it cannot read instance state. Each
+// concrete subclass returns a module-level literal instead.
+class QmdCodeFileView extends obsidian.TextFileView {
+    constructor(leaf, config) {
+        super(leaf);
+        this.config = config;
+        this.editorView = null;
+        this.settingViewData = false;
+    }
+    getDisplayText() {
+        return this.file?.name ?? this.config.label;
+    }
+    getIcon() {
+        return 'file-code';
+    }
+    onload() {
+        super.onload();
+        this.contentEl.empty();
+        this.contentEl.addClass('qmd-code-view');
+        this.editorView = new view.EditorView({
+            parent: this.contentEl,
+            state: state.EditorState.create({
+                doc: this.data ?? '',
+                extensions: [
+                    state.EditorState.tabSize.of(2),
+                    this.config.highlightField,
+                    view.EditorView.contentAttributes.of({
+                        'aria-label': this.config.ariaLabel,
+                        autocapitalize: 'off',
+                        autocomplete: 'off',
+                        spellcheck: 'false',
+                    }),
+                    view.keymap.of([
+                        { key: 'Tab', run: commands.indentMore },
+                        { key: 'Shift-Tab', run: commands.indentLess },
+                    ]),
+                    view.EditorView.updateListener.of((update) => {
+                        if (!update.docChanged || this.settingViewData)
+                            return;
+                        this.data = update.state.doc.toString();
+                        this.requestSave();
+                    }),
+                ],
+            }),
+        });
+        this.register(() => {
+            this.editorView?.destroy();
+            this.editorView = null;
+        });
+    }
+    getViewData() {
+        return this.editorView?.state.doc.toString() ?? this.data ?? '';
+    }
+    setViewData(data) {
+        this.data = data;
+        const view = this.editorView;
+        if (!view)
+            return;
+        const current = view.state.doc.toString();
+        if (current === data)
+            return;
+        this.settingViewData = true;
+        try {
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: current.length,
+                    insert: data,
+                },
+            });
+        }
+        finally {
+            this.settingViewData = false;
+        }
+    }
+    clear() {
+        this.setViewData('');
+    }
+}
+class QmdYamlFileView extends QmdCodeFileView {
+    constructor(leaf) {
+        super(leaf, YAML_CODE_VIEW);
+    }
+    getViewType() {
+        return QMD_YAML_VIEW;
+    }
+}
+class QmdLuaFileView extends QmdCodeFileView {
+    constructor(leaf) {
+        super(leaf, LUA_CODE_VIEW);
+    }
+    getViewType() {
+        return QMD_LUA_VIEW;
+    }
+}
+
+// --- Quarto output plumbing -----------------------------------------------
+//
+// Node's spawn-stream chunks don't align with line boundaries — a single
+// data event can contain a partial line, and a logical line can be split
+// across two events. Build a per-stream processor that buffers the
+// trailing partial line and only emits whole lines. Call .flush() on the
+// close handler to release any final partial line.
+//
+// logQuartoLine routes a single line to console by severity prefix:
+// "ERROR:" -> console.error, "WARNING:"/"WARN:" -> console.warn,
+// everything else -> console.log. Centralised so both the preview and
+// render paths stay in sync and new prefixes only need handling here.
+function logQuartoLine(prefix, line) {
+    if (/^ERROR:/.test(line)) {
+        console.error(`${prefix}: ${line}`);
+    }
+    else if (/^WARN(ING)?:/.test(line)) {
+        console.warn(`${prefix}: ${line}`);
+    }
+    else {
+        console.log(`${prefix}: ${line}`);
+    }
+}
+function makeLineProcessor(handle) {
+    let buffer = '';
+    const proc = ((chunk) => {
+        buffer += chunk;
+        const lines = buffer.split(/\r?\n/);
+        // Last element is the trailing fragment after the final newline
+        // (or the whole chunk if there was no newline at all). Keep it
+        // for the next chunk.
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+            if (line)
+                handle(line);
+        }
+    });
+    proc.flush = () => {
+        if (buffer) {
+            handle(buffer);
+            buffer = '';
+        }
+    };
+    return proc;
+}
+const ANSI_ESCAPE_RE = new RegExp(String.fromCharCode(27) + '\\[[0-?]*[ -/]*[@-~]', 'g');
+function stripAnsiCodes(text) {
+    return text.replace(ANSI_ESCAPE_RE, '');
+}
+function previewUrlFromLine(line) {
+    const match = stripAnsiCodes(line).match(/Browse at\s+(https?:\/\/\S+)/);
+    return match?.[1] ?? null;
+}
+const DEFAULT_SETTINGS = {
+    quartoPath: 'quarto',
+    enableQmdLinking: true,
+    quartoTypst: '',
+    openPdfInObsidian: false,
+    previewInObsidian: true,
+    previewMarkdownFiles: false,
+    showYamlFiles: false,
+    showLuaFiles: false,
+    showOutline: false,
+};
+class QmdAsMdPlugin extends obsidian.Plugin {
+    constructor() {
+        super(...arguments);
+        this.activePreviewProcesses = new Map();
+        // The .qmd file the outline should describe. Tracked separately from the
+        // active leaf: clicking inside the outline sidebar makes *it* the active
+        // leaf, so the outline must remember the last real .qmd rather than ask
+        // "what is active now?" each render.
+        this.lastActiveQuartoFile = null;
+    }
+    async onload() {
+        try {
+            await this.loadSettings();
+            this.registerView(QMD_OUTLINE_VIEW, (leaf) => new QmdOutlineView(leaf, this));
+            this.registerView(QMD_YAML_VIEW, (leaf) => new QmdYamlFileView(leaf));
+            this.registerView(QMD_LUA_VIEW, (leaf) => new QmdLuaFileView(leaf));
+            if (this.settings.enableQmdLinking) {
+                this.registerQmdExtension();
+            }
+            if (this.settings.showYamlFiles) {
+                this.registerYamlExtensions();
+            }
+            if (this.settings.showLuaFiles) {
+                this.registerLuaExtensions();
+            }
+            this.addSettingTab(new QmdSettingTab(this.app, this));
+            this.addRibbonIcon('eye', 'Toggle Quarto preview', async () => {
+                const file = this.getActiveQuartoCommandFile();
+                if (file)
+                    await this.togglePreview(file);
+            });
+            this.addCommand({
+                id: 'toggle-quarto-preview',
+                name: 'Toggle Quarto preview',
+                callback: async () => {
+                    const file = this.getActiveQuartoCommandFile();
+                    if (file)
+                        await this.togglePreview(file);
+                },
+            });
+            this.addCommand({
+                id: 'toggle-quarto-preview-in-obsidian',
+                name: 'Toggle Quarto preview in Obsidian',
+                callback: async () => {
+                    const file = this.getActiveQuartoCommandFile();
+                    if (file)
+                        await this.togglePreview(file, 'obsidian');
+                },
+            });
+            this.addCommand({
+                id: 'toggle-quarto-preview-external',
+                name: 'Toggle Quarto preview in external browser',
+                callback: async () => {
+                    const file = this.getActiveQuartoCommandFile();
+                    if (file)
+                        await this.togglePreview(file, 'external');
+                },
+            });
+            this.addRibbonIcon('file-output', 'Render Quarto to PDF', async () => {
+                const file = this.getActiveQuartoCommandFile();
+                if (file)
+                    await this.renderPdf(file);
+            });
+            this.registerRenderCommand('render-quarto-pdf', 'Render Quarto (use format defined in YAML)');
+            this.registerRenderCommand('render-quarto-pdf-typst', 'Render Quarto to PDF (Typst engine)', 'typst');
+            this.registerRenderCommand('render-quarto-pdf-latex', 'Render Quarto to PDF (LaTeX engine)', 'pdf');
+            this.addCommand({
+                id: 'open-quarto-outline',
+                name: 'Open Quarto outline',
+                callback: () => this.activateOutlineView(),
+            });
+            // Keep any open outline view in sync with the focused file and its
+            // edits. Debounced so a burst of keystrokes re-parses once it settles.
+            const refresh = obsidian.debounce(() => {
+                this.trackActiveQuartoFile();
+                this.refreshOutlineViews();
+            }, 250, true);
+            this.registerEvent(this.app.workspace.on('active-leaf-change', refresh));
+            this.registerEvent(this.app.workspace.on('editor-change', refresh));
+            // Opt-in: only auto-open the outline when the user enabled it. The
+            // command above always works regardless of this setting.
+            if (this.settings.showOutline) {
+                this.app.workspace.onLayoutReady(() => this.activateOutlineView());
+            }
+        }
+        catch (error) {
+            console.error('Error loading plugin:', error);
+            new obsidian.Notice('Failed to load the QMD as md plugin. Check the developer console for details.');
+        }
+    }
+    onunload() {
+        this.stopAllPreviews();
+    }
+    async loadSettings() {
+        const loaded = (await this.loadData());
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    }
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+    isQuartoFile(file) {
+        return file.extension === 'qmd';
+    }
+    isMarkdownFile(file) {
+        return file.extension === 'md';
+    }
+    hasQuartoProjectConfigInPath(file) {
+        let dir = file.parent?.path ?? '';
+        while (true) {
+            const configPath = obsidian.normalizePath(dir ? `${dir}/_quarto.yml` : '_quarto.yml');
+            if (this.app.vault.getAbstractFileByPath(configPath) instanceof obsidian.TFile) {
+                return true;
+            }
+            if (!dir)
+                return false;
+            const slash = dir.lastIndexOf('/');
+            dir = slash === -1 ? '' : dir.slice(0, slash);
+        }
+    }
+    getActiveQuartoCommandFile() {
+        const activeView = this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
+        const file = activeView?.file;
+        if (!file) {
+            new obsidian.Notice(this.settings.previewMarkdownFiles
+                ? 'Quarto commands require an active .qmd or .md file.'
+                : 'Quarto commands require an active .qmd file.');
+            return null;
+        }
+        if (this.isQuartoFile(file)) {
+            return file;
+        }
+        if (this.isMarkdownFile(file)) {
+            if (!this.settings.previewMarkdownFiles) {
+                new obsidian.Notice('Markdown support is off. Enable it in settings to preview or render .md files with Quarto.');
+                return null;
+            }
+            if (!this.hasQuartoProjectConfigInPath(file)) {
+                new obsidian.Notice('Markdown Quarto commands require _quarto.yml in this file folder or an ancestor up to the vault root.');
+                return null;
+            }
+            return file;
+        }
+        if (this.settings.previewMarkdownFiles) {
+            new obsidian.Notice('Quarto commands require an active .qmd or .md file.');
+        }
+        else {
+            new obsidian.Notice('Quarto commands require an active .qmd file.');
+        }
+        return null;
+    }
+    getVaultFullPath(file) {
+        const adapter = this.app.vault.adapter;
+        if (adapter instanceof obsidian.FileSystemAdapter) {
+            return adapter.getFullPath(file.path);
+        }
+        new obsidian.Notice('Vault is not on a local filesystem; cannot run Quarto.');
+        return null;
+    }
+    pdfPathFor(file) {
+        return file.path.replace(/\.(qmd|md)$/i, '.pdf');
+    }
+    // Pull the TFile a leaf currently shows, without resorting to
+    // `as any`. The built-in PDF view (and most file-backed views)
+    // extend FileView, which exposes a typed `file: TFile | null`.
+    leafFile(leaf) {
+        return leaf.view instanceof obsidian.FileView ? leaf.view.file : null;
+    }
+    // Open (or reuse) a leaf showing the given vault-relative PDF path in
+    // Obsidian's native PDF viewer. Returns the leaf so callers can keep
+    // refreshing it on subsequent preview compiles.
+    //
+    // Leaf-resolution order:
+    //   1. Caller's captured ref, if still attached to the workspace.
+    //   2. Any open 'pdf' leaf already showing this exact file (user may
+    //      have opened it manually, or renderPdf may have opened it).
+    //   3. New vertical split.
+    async openOrRefreshPdfPreview(vaultPath, existingLeaf) {
+        const pdfTFile = await this.waitForVaultFile(vaultPath);
+        if (!pdfTFile) {
+            new obsidian.Notice(`Quarto preview produced ${vaultPath} but it did not appear in the vault within the timeout.`);
+            return null;
+        }
+        try {
+            const reusable = existingLeaf?.parent != null
+                ? existingLeaf
+                : this.app.workspace
+                    .getLeavesOfType('pdf')
+                    .find((l) => this.leafFile(l)?.path === pdfTFile.path) ?? null;
+            const leaf = reusable ?? this.app.workspace.getLeaf('split', 'vertical');
+            // Skip the openFile call when the leaf already shows this file —
+            // calling openFile in that case is harmless for the file display
+            // but still triggers a reveal/focus shuffle the user does not want.
+            // Obsidian's PDF viewer picks up the file rewrite via its own
+            // mtime watcher, so live reload still works without our help.
+            const currentFile = this.leafFile(leaf);
+            if (!currentFile || currentFile.path !== pdfTFile.path) {
+                await leaf.openFile(pdfTFile, { active: false });
+            }
+            await this.app.workspace.revealLeaf(leaf);
+            return leaf;
+        }
+        catch (err) {
+            console.error('[qmd-as-md] Failed to open PDF preview in native viewer:', err);
+            new obsidian.Notice(`Could not open ${vaultPath} in Obsidian's PDF viewer.`);
+            return null;
+        }
+    }
+    async openPreviewUrl(url, mode) {
+        console.log('[qmd-as-md][diag] openPreviewUrl called. url:', url, 'mode:', mode);
+        new obsidian.Notice(`Preview available at ${url}`);
+        if (mode === 'external') {
+            // Quarto is launched with --no-browser in every mode; this opens the
+            // captured URL once while leaving Quarto's live-reload client in charge
+            // after the page is loaded.
+            try {
+                await electron.shell.openExternal(url);
+            }
+            catch (err) {
+                console.error('[qmd-as-md] Failed to open external preview:', err);
+                new obsidian.Notice(`Could not open external browser. Preview URL: ${url}`, 10000);
+            }
+            return;
+        }
+        // The "Web viewer" core plugin (Obsidian 1.8+) registers the
+        // 'webviewer' view type. If the user has it disabled, setViewState
+        // silently fails / leaves an empty leaf, and the user is left
+        // wondering why nothing opened. Detect and report instead.
+        const internalPlugins = this.app.internalPlugins;
+        const webviewerOn = internalPlugins?.getEnabledPluginById?.('webviewer') != null ||
+            internalPlugins?.plugins?.webviewer?.enabled === true;
+        if (!webviewerOn) {
+            new obsidian.Notice('Obsidian core plugin "Web viewer" is disabled — cannot show preview in-app. ' +
+                'Enable it in Settings → Core plugins, or use "Toggle Quarto preview in external browser" instead. ' +
+                'Falling back to your external browser.', 10000);
+            console.warn('[qmd-as-md] webviewer core plugin disabled; preview URL was:', url);
+            void electron.shell.openExternal(url);
+            return;
+        }
+        try {
+            const leaf = this.app.workspace.getLeaf('tab');
+            await leaf.setViewState({
+                type: 'webviewer',
+                active: true,
+                state: { url },
+            });
+            await this.app.workspace.revealLeaf(leaf);
+        }
+        catch (err) {
+            console.error('[qmd-as-md] Failed to open preview in webviewer:', err);
+            new obsidian.Notice("Could not open preview in Obsidian's web viewer. Falling back to external browser.");
+            void electron.shell.openExternal(url);
+        }
+    }
+    registerRenderCommand(id, name, toFormat) {
+        this.addCommand({
+            id,
+            name,
+            icon: 'file-output',
+            callback: async () => {
+                const file = this.getActiveQuartoCommandFile();
+                if (file)
+                    await this.renderPdf(file, toFormat);
+            },
+        });
+    }
+    registerQmdExtension() {
+        this.registerExtensions(['qmd'], 'markdown');
+    }
+    registerYamlExtensions() {
+        this.registerExtensions(['yml', 'yaml'], QMD_YAML_VIEW);
+    }
+    registerLuaExtensions() {
+        this.registerExtensions(['lua'], QMD_LUA_VIEW);
+    }
+    // Open the Quarto outline in the right sidebar, reusing an existing
+    // outline leaf if one is already open.
+    async activateOutlineView() {
+        const { workspace } = this.app;
+        // Capture the current .qmd before opening the outline — setViewState
+        // with active:true makes the outline the active leaf, after which the
+        // active markdown view is gone.
+        this.trackActiveQuartoFile();
+        let leaf = workspace.getLeavesOfType(QMD_OUTLINE_VIEW)[0] ?? null;
+        if (!leaf) {
+            leaf = workspace.getRightLeaf(false);
+            await leaf?.setViewState({ type: QMD_OUTLINE_VIEW, active: true });
+        }
+        if (leaf)
+            await workspace.revealLeaf(leaf);
+        this.refreshOutlineViews();
+    }
+    // Remember the active .qmd file. Called whenever the active leaf changes;
+    // a non-.qmd active leaf (including the outline sidebar itself) leaves the
+    // last value untouched so the outline keeps describing that file.
+    trackActiveQuartoFile() {
+        const view = this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
+        if (view?.file && this.isQuartoFile(view.file)) {
+            this.lastActiveQuartoFile = view.file;
+        }
+    }
+    // Re-render every open outline view. No-op when none are open.
+    refreshOutlineViews() {
+        for (const leaf of this.app.workspace.getLeavesOfType(QMD_OUTLINE_VIEW)) {
+            if (leaf.view instanceof QmdOutlineView) {
+                leaf.view.render();
+            }
+        }
+    }
+    // Close any open outline views — used when the user turns the setting off.
+    detachOutlineViews() {
+        for (const leaf of this.app.workspace.getLeavesOfType(QMD_OUTLINE_VIEW)) {
+            leaf.detach();
+        }
+    }
+    defaultPreviewMode() {
+        return this.settings.previewInObsidian ? 'obsidian' : 'external';
+    }
+    async togglePreview(file, mode = this.defaultPreviewMode()) {
+        const activePreview = this.activePreviewProcesses.get(file.path);
+        if (activePreview?.mode === mode) {
+            await this.stopPreview(file);
+        }
+        else {
+            if (activePreview) {
+                await this.stopPreview(file);
+            }
+            await this.startPreview(file, mode);
+        }
+    }
+    async startPreview(file, mode = this.defaultPreviewMode()) {
+        const activePreview = this.activePreviewProcesses.get(file.path);
+        if (activePreview?.mode === mode) {
+            return; // Preview already running for this file in this mode.
+        }
+        if (activePreview) {
+            await this.stopPreview(file);
+        }
+        try {
+            const abstractFile = this.app.vault.getAbstractFileByPath(file.path);
+            if (!abstractFile || !(abstractFile instanceof obsidian.TFile)) {
+                new obsidian.Notice(`File ${file.path} not found`);
+                return;
+            }
+            const filePath = this.getVaultFullPath(abstractFile);
+            if (!filePath)
+                return;
+            const workingDir = path__namespace.dirname(filePath);
+            const envVars = { ...process.env };
+            if (this.settings.quartoTypst.trim()) {
+                envVars.QUARTO_TYPST = this.settings.quartoTypst.trim();
+            }
+            // Always suppress Quarto's own browser launch. The plugin opens the
+            // captured URL exactly once for the selected target, which avoids
+            // duplicate tabs and avoids Quarto-managed browser navigation closing
+            // the preview process on subsequent source changes.
+            const args = ['preview', filePath, '--no-browser'];
+            // detached: `quarto preview` forks a separate long-lived server
+            // process. Making the spawned process a process-group leader (POSIX)
+            // lets killPreviewProcess signal the whole group — a plain kill() of
+            // the wrapper would orphan the server, leaving it serving and
+            // recompiling after "stop". No process groups on Windows; the kill
+            // there goes through taskkill instead.
+            const quartoProcess = child_process.spawn(this.settings.quartoPath, args, {
+                cwd: workingDir,
+                env: envVars,
+                detached: process.platform !== 'win32',
+            });
+            let previewUrl = null;
+            // PDF-preview state. Quarto emits "Output created: foo.pdf" on
+            // every recompile (often several times per recompile); the
+            // handler dedups so we don't spawn tabs on every save.
+            //
+            //  leaf:  current PDF tab, if any.
+            //  path:  the path that leaf is showing (and the path of an
+            //         in-flight open call, recorded synchronously when it
+            //         is scheduled). Also gates the preview-URL skip logic
+            //         on the "Browse at" branch below — when a PDF
+            //         preview is active, we don't open Quarto's PDF.js
+            //         wrapper page in the webviewer too.
+            //  busy:  a call to openOrRefreshPdfPreview is in flight.
+            //
+            // Schedule open when any of:
+            //   - leaf is detached (user closed the tab manually)
+            //   - the new output path differs from the tracked one
+            //     (multi-format project, or rename)
+            //   - we never opened in this session
+            // Skip when busy (bursts of emissions during recompile dedup
+            // automatically; the final emission of a burst wins because it
+            // arrives after busy clears).
+            let pdfPreviewLeaf = null;
+            let pdfPreviewPath = null;
+            let pdfPreviewBusy = false;
+            const schedulePdfPreview = (vaultPath) => {
+                if (pdfPreviewBusy)
+                    return;
+                const leafAttached = pdfPreviewLeaf?.parent != null;
+                const pathSame = pdfPreviewPath === vaultPath;
+                if (leafAttached && pathSame)
+                    return;
+                pdfPreviewBusy = true;
+                pdfPreviewPath = vaultPath;
+                this.openOrRefreshPdfPreview(vaultPath, pdfPreviewLeaf)
+                    .then((leaf) => {
+                    if (leaf)
+                        pdfPreviewLeaf = leaf;
+                })
+                    .catch((err) => {
+                    console.error('[qmd-as-md] PDF preview open failed:', err);
+                    pdfPreviewLeaf = null;
+                    pdfPreviewPath = null;
+                })
+                    .finally(() => {
+                    pdfPreviewBusy = false;
+                });
+            };
+            // Quarto "ERROR:" lines from this preview run. Used both to surface
+            // recompile failures live (preview keeps running, so the close
+            // handler never fires) and to explain a startup exit in the Notice.
+            const errorLines = [];
+            // Dedupe: a single failed recompile emits the same ERROR: block on
+            // every save until fixed — only Notice when the error text changes.
+            let lastErrorShown = '';
+            // Per-line handler: log the line, then look for the two markers
+            // we care about ("Output created:" and "Browse at").
+            const handlePreviewLine = (line) => {
+                logQuartoLine('Quarto Preview', line);
+                if (/^ERROR:/.test(line)) {
+                    errorLines.push(line);
+                    if (line !== lastErrorShown) {
+                        lastErrorShown = line;
+                        new obsidian.Notice(`Quarto preview error:\n${line}`, 15000);
+                    }
+                    return;
+                }
+                // A clean compile clears the dedupe guard so the same error
+                // reappearing after a good build is surfaced again.
+                if (line.includes('Output created:')) {
+                    lastErrorShown = '';
+                }
+                // Detect "Output created: <path>" — quarto prints this on every
+                // compile in preview mode. If the output is a PDF, route to
+                // Obsidian's native PDF viewer rather than the webviewer page
+                // Quarto serves at /web/viewer.html. Subsequent compiles refresh
+                // the same leaf so live reload still works.
+                const outMatch = line.match(/Output created:\s*(.+?)\s*$/);
+                if (outMatch && /\.pdf$/i.test(outMatch[1].trim()) && mode === 'obsidian') {
+                    const outBasename = path__namespace.basename(outMatch[1].trim());
+                    const sourceDir = file.parent?.path ?? '';
+                    const vaultPath = obsidian.normalizePath(sourceDir ? `${sourceDir}/${outBasename}` : outBasename);
+                    schedulePdfPreview(vaultPath);
+                    return;
+                }
+                const matchedPreviewUrl = previewUrlFromLine(line);
+                if (!previewUrl && matchedPreviewUrl) {
+                    console.log('[qmd-as-md][diag] Browse-at line seen.', 'matched:', matchedPreviewUrl, 'pdfPreviewPath:', pdfPreviewPath, 'mode:', mode);
+                    previewUrl = matchedPreviewUrl;
+                    // If we already opened a native PDF preview, skip the
+                    // webviewer URL — Quarto's PDF.js wrapper would just be
+                    // a worse version of the same content.
+                    if (pdfPreviewPath) {
+                        new obsidian.Notice(`PDF preview opened natively. Server URL: ${previewUrl}`);
+                    }
+                    else {
+                        void this.openPreviewUrl(previewUrl, mode);
+                    }
+                }
+            };
+            // One buffered processor per stream — stdout and stderr each
+            // need their own partial-line buffer, or interleaved fragments
+            // from the two streams would be spliced into synthetic lines.
+            const previewStdout = makeLineProcessor(handlePreviewLine);
+            const previewStderr = makeLineProcessor(handlePreviewLine);
+            quartoProcess.stdout?.on('data', (data) => previewStdout(data.toString()));
+            quartoProcess.stderr?.on('data', (data) => previewStderr(data.toString()));
+            // child_process.spawn does not throw on a missing binary; it emits
+            // an 'error' event later. Without this listener an ENOENT just
+            // produced a silent "exit 1" close with no output to console.
+            quartoProcess.on('error', (err) => {
+                console.error('[qmd-as-md] Failed to spawn quarto for preview:', err);
+                new obsidian.Notice(`Failed to spawn '${this.settings.quartoPath}': ${err.message}. ` +
+                    'Check the Quarto path setting and that Quarto is on PATH.');
+                if (this.activePreviewProcesses.get(file.path)?.process === quartoProcess) {
+                    this.activePreviewProcesses.delete(file.path);
+                }
+            });
+            quartoProcess.on('close', (code, signal) => {
+                previewStdout.flush(); // release any final partial line
+                previewStderr.flush();
+                if (code !== null && code !== 0) {
+                    const reason = errorLines.length > 0
+                        ? errorLines.join('\n')
+                        : 'Check the developer console for details.';
+                    new obsidian.Notice(`Quarto preview exited with code ${code}.\n${reason}`, 15000);
+                }
+                else if (code === null && signal && signal !== 'SIGTERM' && signal !== 'SIGKILL') {
+                    // SIGTERM/SIGKILL come from our own stopPreview / onunload — silent.
+                    new obsidian.Notice(`Quarto preview process was terminated by ${signal}`);
+                }
+                if (this.activePreviewProcesses.get(file.path)?.process === quartoProcess) {
+                    this.activePreviewProcesses.delete(file.path);
+                }
+            });
+            this.activePreviewProcesses.set(file.path, { process: quartoProcess, mode });
+            new obsidian.Notice(`Quarto preview started (${mode === 'obsidian' ? 'Obsidian' : 'external browser'})`);
+        }
+        catch (error) {
+            console.error('Failed to start Quarto preview:', error);
+            new obsidian.Notice('Failed to start Quarto preview');
+        }
+    }
+    // `quarto preview` forks a long-lived server as a child of the spawned
+    // process, so killing only the wrapper leaves that server running. Signal
+    // the whole process tree: the process group on POSIX (the child was
+    // spawned detached, see startPreview), or taskkill /t on Windows.
+    killPreviewProcess(quartoProcess) {
+        if (quartoProcess.killed || quartoProcess.pid === undefined)
+            return;
+        if (process.platform === 'win32') {
+            child_process.spawn('taskkill', ['/pid', String(quartoProcess.pid), '/t', '/f']);
+            return;
+        }
+        try {
+            // Negative PID targets the whole process group.
+            process.kill(-quartoProcess.pid, 'SIGTERM');
+        }
+        catch {
+            // Group already gone, or never became a leader — best-effort direct kill.
+            try {
+                quartoProcess.kill('SIGTERM');
+            }
+            catch {
+                /* already dead */
+            }
+        }
+    }
+    async stopPreview(file) {
+        const activePreview = this.activePreviewProcesses.get(file.path);
+        if (activePreview) {
+            this.killPreviewProcess(activePreview.process);
+            this.activePreviewProcesses.delete(file.path);
+            new obsidian.Notice('Quarto preview stopped');
+        }
+    }
+    stopAllPreviews() {
+        const hadPreviews = this.activePreviewProcesses.size > 0;
+        this.activePreviewProcesses.forEach((activePreview, filePath) => {
+            this.killPreviewProcess(activePreview.process);
+            this.activePreviewProcesses.delete(filePath);
+        });
+        if (hadPreviews) {
+            new obsidian.Notice('All Quarto previews stopped');
+        }
+    }
+    async renderPdf(file, toFormat) {
+        try {
+            const abstractFile = this.app.vault.getAbstractFileByPath(file.path);
+            if (!abstractFile || !(abstractFile instanceof obsidian.TFile)) {
+                new obsidian.Notice(`File ${file.path} not found`);
+                return;
+            }
+            // A running `quarto preview` keeps recompiling the same source and
+            // writes to overlapping output paths. Stop it before a one-shot
+            // render so the two Quarto processes do not fight over the output.
+            if (this.activePreviewProcesses.has(file.path)) {
+                await this.stopPreview(file);
+            }
+            const filePath = this.getVaultFullPath(abstractFile);
+            if (!filePath)
+                return;
+            const workingDir = path__namespace.dirname(filePath);
+            const envVars = { ...process.env };
+            if (this.settings.quartoTypst.trim()) {
+                envVars.QUARTO_TYPST = this.settings.quartoTypst.trim();
+            }
+            const engineLabel = toFormat === 'typst' ? 'Typst' : toFormat === 'pdf' ? 'LaTeX' : 'format defined in YAML';
+            new obsidian.Notice(`Rendering Quarto (${engineLabel})...`);
+            // Best-guess path used for the pre-render leaf-capture (so we can
+            // reuse an existing PDF tab on recompile). The authoritative path
+            // comes from quarto's "Output created:" stdout line, parsed below.
+            const guessedPdfPath = this.pdfPathFor(file);
+            const existingLeaf = this.app.workspace
+                .getLeavesOfType('pdf')
+                .find((l) => this.leafFile(l)?.path === guessedPdfPath);
+            const args = ['render', filePath];
+            if (toFormat)
+                args.push('--to', toFormat);
+            const quartoProcess = child_process.spawn(this.settings.quartoPath, args, {
+                cwd: workingDir,
+                env: envVars,
+            });
+            let detectedOutputBasename = null;
+            // Quarto prints the human-readable cause on "ERROR:" lines (bad YAML,
+            // missing engine, etc.). Keep them so a failing close can surface the
+            // real reason in the Notice instead of a bare exit code.
+            const errorLines = [];
+            // Per-line handler: log the line, then watch for "Output created:".
+            const handleRenderLine = (line) => {
+                logQuartoLine('Quarto', line);
+                const match = line.match(/Output created:\s*(.+?)\s*$/);
+                if (match) {
+                    detectedOutputBasename = path__namespace.basename(match[1].trim());
+                }
+                if (/^ERROR:/.test(line)) {
+                    errorLines.push(line);
+                }
+            };
+            // One buffered processor per stream — stdout and stderr each
+            // need their own partial-line buffer, or interleaved fragments
+            // from the two streams would be spliced into synthetic lines.
+            const renderStdout = makeLineProcessor(handleRenderLine);
+            const renderStderr = makeLineProcessor(handleRenderLine);
+            quartoProcess.stdout?.on('data', (data) => renderStdout(data.toString()));
+            quartoProcess.stderr?.on('data', (data) => renderStderr(data.toString()));
+            // child_process.spawn does not throw on a missing binary; it emits
+            // an 'error' event later. Without this listener an ENOENT just
+            // produced a silent "exit 1" close with no output to console.
+            quartoProcess.on('error', (err) => {
+                console.error('[qmd-as-md] Failed to spawn quarto for render:', err);
+                new obsidian.Notice(`Failed to spawn '${this.settings.quartoPath}': ${err.message}. ` +
+                    'Check the Quarto path setting and that Quarto is on PATH.');
+            });
+            quartoProcess.on('close', (code, signal) => {
+                void (async () => {
+                    renderStdout.flush(); // release any final partial line
+                    renderStderr.flush();
+                    // A clean exit is code 0. Anything else is a failure, except a
+                    // termination by SIGTERM/SIGKILL — that means the process was
+                    // intentionally cancelled (matching the preview handler, which
+                    // suppresses notices for those signals). Stay quiet then.
+                    if (code === 0) {
+                        // fall through to the success path below
+                    }
+                    else if (code === null && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+                        console.error(`[qmd-as-md] Quarto render cancelled (${signal}).`);
+                        return;
+                    }
+                    else {
+                        const exitLabel = code !== null
+                            ? `exit ${code}`
+                            : signal
+                                ? `terminated by ${signal}`
+                                : 'terminated';
+                        // The full output was already streamed line-by-line through
+                        // console.log / console.error as it arrived — no need to
+                        // re-dump it. Surface the actual ERROR: line(s) in the Notice so
+                        // the user sees the cause (bad YAML, missing engine, ...) without
+                        // having to open the developer console.
+                        console.error(`[qmd-as-md] Quarto render failed (${exitLabel}).`);
+                        const reason = errorLines.length > 0
+                            ? errorLines.join('\n')
+                            : 'Check the developer console for details.';
+                        new obsidian.Notice(`Quarto render failed (${exitLabel}).\n${reason}`, 15000);
+                        return;
+                    }
+                    const sourceDir = file.parent?.path ?? '';
+                    const outputVaultPath = obsidian.normalizePath(detectedOutputBasename
+                        ? (sourceDir ? `${sourceDir}/${detectedOutputBasename}` : detectedOutputBasename)
+                        : guessedPdfPath);
+                    const outputTFile = await this.waitForVaultFile(outputVaultPath);
+                    if (!outputTFile) {
+                        new obsidian.Notice(`Quarto rendered, but ${outputVaultPath} did not appear in the vault within the timeout. Check Quarto's output-dir or vault sync.`);
+                        return;
+                    }
+                    const isPdf = outputVaultPath.toLowerCase().endsWith('.pdf');
+                    if (!this.settings.openPdfInObsidian || !isPdf) {
+                        new obsidian.Notice(isPdf
+                            ? `PDF rendered: ${outputVaultPath}`
+                            : `Rendered: ${outputVaultPath} (Obsidian's built-in viewer only handles PDFs).`);
+                        return;
+                    }
+                    try {
+                        const leaf = existingLeaf?.parent != null
+                            ? existingLeaf
+                            : this.app.workspace.getLeaf('split', 'vertical');
+                        await leaf.openFile(outputTFile, { active: false });
+                        await this.app.workspace.revealLeaf(leaf);
+                        new obsidian.Notice(`Opened ${outputVaultPath}`);
+                    }
+                    catch (err) {
+                        console.error('Failed to open PDF in Obsidian:', err);
+                        new obsidian.Notice(`PDF rendered at ${outputVaultPath}, but Obsidian could not open it (no PDF viewer registered?).`);
+                    }
+                })().catch((err) => {
+                    console.error('[qmd-as-md] Quarto render close handler failed:', err);
+                });
+            });
+        }
+        catch (error) {
+            console.error('Failed to render Quarto PDF:', error);
+            new obsidian.Notice('Failed to render Quarto PDF');
+        }
+    }
+    async waitForVaultFile(vaultPath, timeoutMs = 5000) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            const f = this.app.vault.getAbstractFileByPath(vaultPath);
+            if (f instanceof obsidian.TFile)
+                return f;
+            await new Promise((r) => window.setTimeout(r, 200));
+        }
+        return null;
+    }
+}
+class QmdSettingTab extends obsidian.PluginSettingTab {
+    constructor(app, plugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+    display() {
+        const { containerEl } = this;
+        containerEl.empty();
+        new obsidian.Setting(containerEl)
+            .setName('Quarto path')
+            .setDesc('Path to the Quarto executable (e.g. quarto, /usr/local/bin/quarto)')
+            .addText((text) => text
+            .setPlaceholder('quarto')
+            .setValue(this.plugin.settings.quartoPath)
+            .onChange(async (value) => {
+            this.plugin.settings.quartoPath = value;
+            await this.plugin.saveSettings();
+        }));
+        new obsidian.Setting(containerEl)
+            .setName('Enable editing Quarto files')
+            .setDesc('When on, .qmd files open in the Markdown editor. Turn off if another plugin handles .qmd editing.')
+            .addToggle((toggle) => toggle
+            .setValue(this.plugin.settings.enableQmdLinking)
+            .onChange(async (value) => {
+            this.plugin.settings.enableQmdLinking = value;
+            if (value) {
+                this.plugin.registerQmdExtension();
+            }
+            await this.plugin.saveSettings();
+        }));
+        new obsidian.Setting(containerEl)
+            .setName('QUARTO_TYPST variable')
+            .setDesc('Value for the QUARTO_TYPST environment variable (leave empty to unset).')
+            .addText((text) => text
+            .setPlaceholder('e.g. typst_path')
+            .setValue(this.plugin.settings.quartoTypst)
+            .onChange(async (value) => {
+            this.plugin.settings.quartoTypst = value;
+            await this.plugin.saveSettings();
+        }));
+        new obsidian.Setting(containerEl)
+            .setName('Open compiled PDF in Obsidian')
+            .setDesc("When rendering to PDF, open the resulting file inside Obsidian using the built-in PDF viewer. The .qmd source must live in the vault so the rendered PDF is accessible.")
+            .addToggle((toggle) => toggle
+            .setValue(this.plugin.settings.openPdfInObsidian)
+            .onChange(async (value) => {
+            this.plugin.settings.openPdfInObsidian = value;
+            await this.plugin.saveSettings();
+        }));
+        new obsidian.Setting(containerEl)
+            .setName('Open Quarto preview in Obsidian')
+            .setDesc('Default target for the generic Toggle Quarto preview command and ribbon icon. ' +
+            "When on: PDF previews (format: typst / pdf) open in Obsidian's native PDF viewer; " +
+            "non-PDF previews (HTML, etc.) open in Obsidian 1.8's built-in web viewer. " +
+            'When off, the plugin opens Quarto\'s preview URL in your default external browser. ' +
+            'Use the explicit preview commands to choose a target without changing this setting.')
+            .addToggle((toggle) => toggle
+            .setValue(this.plugin.settings.previewInObsidian)
+            .onChange(async (value) => {
+            this.plugin.settings.previewInObsidian = value;
+            await this.plugin.saveSettings();
+        }));
+        new obsidian.Setting(containerEl)
+            .setName('Preview and render Markdown files with Quarto')
+            .setDesc('When on, Quarto preview and render commands also accept .md files that have _quarto.yml in their folder or an ancestor up to the vault root. Leave off to restrict commands to .qmd files.')
+            .addToggle((toggle) => toggle
+            .setValue(this.plugin.settings.previewMarkdownFiles)
+            .onChange(async (value) => {
+            this.plugin.settings.previewMarkdownFiles = value;
+            await this.plugin.saveSettings();
+        }));
+        new obsidian.Setting(containerEl)
+            .setName('Show YAML files')
+            .setDesc('When on, .yml and .yaml files appear in Obsidian using a CodeMirror editor with Quarto-oriented YAML highlighting. Turn off and reload the plugin to hide them again.')
+            .addToggle((toggle) => toggle
+            .setValue(this.plugin.settings.showYamlFiles)
+            .onChange(async (value) => {
+            this.plugin.settings.showYamlFiles = value;
+            if (value) {
+                this.plugin.registerYamlExtensions();
+            }
+            else {
+                new obsidian.Notice('Reload the plugin to hide YAML files again.');
+            }
+            await this.plugin.saveSettings();
+        }));
+        new obsidian.Setting(containerEl)
+            .setName('Show Lua files')
+            .setDesc('When on, .lua files appear in Obsidian using a CodeMirror editor with minimal Lua syntax highlighting — handy for editing Quarto/pandoc filter scripts. Turn off and reload the plugin to hide them again.')
+            .addToggle((toggle) => toggle
+            .setValue(this.plugin.settings.showLuaFiles)
+            .onChange(async (value) => {
+            this.plugin.settings.showLuaFiles = value;
+            if (value) {
+                this.plugin.registerLuaExtensions();
+            }
+            else {
+                new obsidian.Notice('Reload the plugin to hide Lua files again.');
+            }
+            await this.plugin.saveSettings();
+        }));
+        new obsidian.Setting(containerEl)
+            .setName('Show Quarto outline')
+            .setDesc("Add a sidebar outline of the active .qmd file's headings (Obsidian's " +
+            'core Outline panel cannot read .qmd files). Active file only — ' +
+            'headings from included files are not listed. The "Open Quarto ' +
+            'outline" command works regardless of this toggle.')
+            .addToggle((toggle) => toggle
+            .setValue(this.plugin.settings.showOutline)
+            .onChange(async (value) => {
+            this.plugin.settings.showOutline = value;
+            await this.plugin.saveSettings();
+            if (value) {
+                await this.plugin.activateOutlineView();
+            }
+            else {
+                this.plugin.detachOutlineViews();
+            }
+        }));
+    }
+}
+
+module.exports = QmdAsMdPlugin;
+
+
+/* nosourcemap */

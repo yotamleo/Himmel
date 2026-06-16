@@ -1,0 +1,15 @@
+{
+  "name": "himmel-ops",
+  "version": "0.1.0",
+  "description": "Harness-meta operational skills for himmel. Load-on-trigger guardrail-recovery playbook (stuck-playbook) that surfaces escape-hatches when an auto-mode write is denied, a Bash command falls through to the classifier, a permission prompt hangs, or a pre-push gate fails — so operational/troubleshooting rules stay out of the always-on root CLAUDE.md (HIMMEL-211).",
+  "author": {
+    "name": "yotam"
+  },
+  "keywords": [
+    "himmel",
+    "guardrails",
+    "operational",
+    "stuck",
+    "load-on-trigger"
+  ]
+}

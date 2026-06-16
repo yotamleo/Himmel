@@ -1,0 +1,13 @@
+mutation ReplyToReviewThread($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: $threadId,
+    body: $body
+  }) {
+    comment {
+      id
+      url
+      author { login }
+      bodyText
+    }
+  }
+}

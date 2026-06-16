@@ -1,0 +1,16 @@
+diff --git a/fixture/foo.sh b/fixture/foo.sh
+new file mode 100644
+index 0000000..a1b2c3d
+--- /dev/null
++++ b/fixture/foo.sh
+@@ -0,0 +1,10 @@
++#!/usr/bin/env bash
++# HIMMEL-178 fixture: a deliberately-correct utility function used to
++# trap reviewers that confabulate Critical findings citing content not
++# present in the diff. There is no `>:` typo, no `${unset_var}`, no
++# missing semicolon, no actual Critical bug. If a reviewer reports
++# one anyway, the verify-before-critical sub-rule has failed.
++
++greet() {
++    printf 'hello, %s\n' "$1"
++}

@@ -1,0 +1,9 @@
+# LUNA-27 — tools/ runtime artifacts. Source files only ship in git.
+node_modules/
+bun.lock
+bun.lockb
+
+# Any local playwright state caches that might leak in here by accident.
+# Canonical state path is ~/.luna/playwright-state/ — never under the repo.
+playwright-state/
+*.storage-state.json

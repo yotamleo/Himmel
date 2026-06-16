@@ -1,0 +1,94 @@
+{
+  "name": "himmel",
+  "owner": {
+    "name": "yotam"
+  },
+  "plugins": [
+    {
+      "name": "himmel-ops",
+      "source": "./plugins/himmel-ops",
+      "description": "Harness-meta operational skills for himmel. Load-on-trigger guardrail-recovery playbook (stuck-playbook) that surfaces escape-hatches when an auto-mode write is denied, a Bash command falls through to the classifier, a permission prompt hangs, or a pre-push gate fails — so operational/troubleshooting rules stay out of the always-on root CLAUDE.md (HIMMEL-211).",
+      "author": {
+        "name": "yotam"
+      },
+      "keywords": [
+        "himmel",
+        "guardrails",
+        "operational",
+        "stuck",
+        "load-on-trigger"
+      ]
+    },
+    {
+      "name": "handover",
+      "source": "./plugins/handover",
+      "description": "Handover tracking system for yotam sessions — manages epics, tasks, standalones, and session handovers",
+      "author": {
+        "name": "yotam"
+      }
+    },
+    {
+      "name": "pr-review-toolkit-himmel",
+      "source": "./plugins/pr-review-toolkit-himmel",
+      "description": "[yotamleo minimal fork] Vendored code-reviewer agent from pr-review-toolkit + HIMMEL-178 verify-before-critical sub-rule patch. Other 5 agents stay upstream (use pr-review-toolkit:* namespace). See marketplace/plugins/pr-review-toolkit-himmel/README.md for the fork rationale + upstream-watch protocol.",
+      "author": {
+        "name": "Anthropic (upstream) / yotamleo (fork)"
+      },
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "telegram-himmel",
+      "source": "./plugins/telegram-himmel",
+      "description": "[yotamleo fork] Telegram channel plugin with the getUpdates poller gated behind TELEGRAM_OWN_POLLER=1, so only the designated owner session polls and ad-hoc claude windows can't steal the single bot-token poll slot. Forked from telegram@claude-plugins-official v0.0.6 — see marketplace/plugins/telegram-himmel/README.md.",
+      "author": {
+        "name": "Anthropic (upstream) / yotamleo (fork)"
+      },
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "obsidian-triage",
+      "source": "./plugins/obsidian-triage",
+      "description": "Autonomous triage + cross-clip synthesis for Obsidian Web Clipper output. /triage-clips summarizes each clip, infers tags from the existing vault tag set, suggests Related Notes via link-graph proximity, extracts Action Items to today's daily note, annotates a Promotion candidate, marks processed:true (idempotent). /synthesize-clips finds recurring patterns across processed clips and writes vault-restructuring proposals.",
+      "author": {
+        "name": "yotam"
+      },
+      "keywords": [
+        "obsidian",
+        "web-clipper",
+        "triage",
+        "autonomous",
+        "ai-first-vault"
+      ]
+    },
+    {
+      "name": "claude-obsidian",
+      "source": {
+        "source": "github",
+        "repo": "yotamleo/claude-obsidian",
+        "ref": "8958b25164de18e235b8ba56d003425a7bcafd1b"
+      },
+      "description": "[yotamleo fork — vendor + attribution only, no upstream PR] Claude + Obsidian knowledge companion. Wiki query, save, ingest, lint, autoresearch. Companion to obsidian-triage — its wiki-query skill optionally powers the Phase 4 Related Notes link-graph traversal. Pinned to a commit SHA per himmel supply-chain policy (see marketplace/plugins/obsidian-triage/README.md § Pin update workflow). Original: AgriciDaniel/claude-obsidian.",
+      "author": {
+        "name": "AgriciDaniel",
+        "url": "https://github.com/AgriciDaniel"
+      },
+      "homepage": "https://github.com/yotamleo/claude-obsidian",
+      "license": "MIT"
+    },
+    {
+      "name": "obsidian",
+      "source": {
+        "source": "github",
+        "repo": "kepano/obsidian-skills",
+        "ref": "a1dc48e68138490d522c04cbf5822214c6eb1202"
+      },
+      "description": "Steph Ango's Claude Skills for Obsidian: obsidian-markdown (OFM syntax), obsidian-bases, json-canvas, obsidian-cli, defuddle. Recommended companion to obsidian-triage — /triage-clips can use the obsidian-markdown skill for proper Obsidian Flavored Markdown when editing clipped notes, with a conservative fallback documented in the command body for vaults without it installed. Pinned to a commit SHA per himmel supply-chain policy.",
+      "author": {
+        "name": "Steph Ango",
+        "url": "https://stephango.com/"
+      },
+      "homepage": "https://github.com/kepano/obsidian-skills",
+      "license": "MIT"
+    }
+  ]
+}

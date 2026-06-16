@@ -1,0 +1,22 @@
+query ListReviewThreads($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        totalCount
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          comments(first: 1) {
+            nodes {
+              author { login }
+              bodyText
+            }
+          }
+        }
+      }
+    }
+  }
+}

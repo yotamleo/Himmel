@@ -1,0 +1,24 @@
+{
+  "name": "obsidian-triage-tools",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "description": "Playwright crawlers + batch tooling for the obsidian-triage plugin. LUNA-27.",
+  "type": "module",
+  "engines": {
+    "bun": ">=1.0.0",
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "auth:x": "bun playwright-auth-save.mjs x",
+    "auth:youtube": "bun playwright-auth-save.mjs youtube",
+    "crawl:x": "bun playwright-crawl-x.mjs",
+    "crawl:youtube": "bun playwright-crawl-youtube.mjs",
+    "enrich:x": "bun fxtwitter-enrich.mjs",
+    "dedup": "bun dedup-sweep.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.58.0",
+    "js-yaml": "4.1.1"
+  }
+}

@@ -1,0 +1,42 @@
+# Hooks exported for OTHER repos to consume via pre-commit's remote-repo
+# mechanism (HIMMEL-214: worktree isolation was enforced only in himmel;
+# luna and other operator repos relied on prose). himmel's OWN gates stay
+# wired as `repo: local` in .pre-commit-config.yaml — that file remains the
+# source of truth for what runs HERE.
+#
+# Consumer example (full snippet + luna's PR-lane regex:
+# docs/luna/pr-lane-guard.md):
+#
+#   - repo: https://github.com/yotamleo/Himmel
+#     rev: <commit SHA>   # pin; bump with `pre-commit autoupdate --bleeding-edge`
+#     hooks:
+#       - id: pr-lane-isolation
+#         files: ^(_Templates/|_?CLAUDE\.md$|docs/|\.gitignore$|\.obsidian/)
+#
+# `language: script` (NOT system): pre-commit runs the entry relative to the
+# clone of THIS repo in its cache, so the scripts can source their sibling
+# scripts/guardrails/lib.sh wherever they're consumed.
+
+- id: pr-lane-isolation
+  name: PR-lane isolation (block main commits touching PR-lane paths)
+  description: >-
+    Refuse commits on main that touch paths matched by the consuming
+    repo's `files:` filter. Scope it to your PR-lane paths; everything
+    else still commits straight to main. Without a `files:` filter it
+    matches all staged files (degrades to full isolation). Do NOT set
+    `always_run: true` or `pass_filenames: false` on this hook — both
+    starve it of filenames and degrade it to a no-op.
+  entry: scripts/hooks/check-pr-lane-isolation.sh
+  language: script
+  stages: [pre-commit]
+
+- id: worktree-isolation
+  name: Worktree isolation (block ALL commits on main)
+  description: >-
+    himmel-grade full isolation: refuse every commit on main, regardless
+    of paths. For repos where all work goes through worktree branches + PRs.
+  entry: scripts/hooks/check-worktree-isolation.sh
+  language: script
+  pass_filenames: false
+  always_run: true
+  stages: [pre-commit]

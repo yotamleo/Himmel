@@ -1,0 +1,15 @@
+# gitleaks config for himmel.
+# Keeps the full built-in ruleset and only adds a path allowlist for vendored
+# third-party Obsidian plugin bundles shipped in the luna-second-brain template.
+# Those bundles are minified upstream code; gitleaks' generic-api-key rule flags
+# high-entropy minified identifiers (e.g. node-forge's pki.setRsaPrivateKey in
+# obsidian-local-rest-api) as false-positive "secrets". The plugins' data.json
+# files were manually audited free of real credentials before bundling.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored third-party Obsidian plugin bundles (minified upstream code)"
+paths = [
+  '''templates/luna-second-brain/\.obsidian/plugins/''',
+]

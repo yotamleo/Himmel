@@ -1,0 +1,14 @@
+version: 2
+
+mergeable:
+  - when: pull_request.opened, pull_request.edited, pull_request.synchronize, pull_request.reopened
+    validate:
+      - do: title
+        must_include:
+          regex: '^(feat|fix|chore|docs|refactor|test)(\([^)]+\))?: (HIMMEL-\d+ )?.+$'
+          regex_flag: 'none'
+          message: 'PR title must follow conventional commits format: `type(scope): [HIMMEL-N ]message`. Allowed types: feat, fix, chore, docs, refactor, test.'
+      - do: description
+        no_empty:
+          enabled: true
+          message: 'PR description cannot be empty. Add a Summary and Test plan.'

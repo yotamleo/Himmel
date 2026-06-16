@@ -1,0 +1,8 @@
+{
+  "name": "handover",
+  "version": "2.0.0",
+  "description": "Multi-repo handover tracking — epics, tasks, standalones, session handovers across any registered repo. State lives per-repo under <repo>/handovers/<user>/. Registry at ~/.claude/handover/registry.json.",
+  "author": {
+    "name": "yotam"
+  }
+}

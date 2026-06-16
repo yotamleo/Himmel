@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+# Resolve symlinks portably (readlink -f is GNU-only; macOS BSD readlink
+# lacked -f until 12.3 (2022); stay portable for older macOS).
+SCRIPT="$0"
+i=0
+while [ -L "$SCRIPT" ]; do
+  i=$((i + 1))
+  if [ "$i" -gt 40 ]; then
+    printf '%s\n' "himmel-run: symlink loop detected at $SCRIPT" >&2
+    exit 1
+  fi
+  link="$(readlink "$SCRIPT")"
+  case "$link" in
+    /*) SCRIPT="$link" ;;
+    *)  SCRIPT="$(dirname "$SCRIPT")/$link" ;;
+  esac
+done
+DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+ENTRY="$DIR/dist/index.js"
+if [ ! -f "$ENTRY" ]; then
+  printf '%s\n' "himmel-run: $ENTRY not found. run: (cd $DIR && npm install && npm run build)" >&2
+  exit 127
+fi
+exec node "$ENTRY" "$@"

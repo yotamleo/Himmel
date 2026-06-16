@@ -1,0 +1,201 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp *)",
+      "Bash(rm *)",
+      "Bash(mkdir -p *)",
+      "Bash(git *)",
+      "Bash(rtk *)",
+      "Bash(gh *)",
+      "Bash(pre-commit *)",
+      "Bash(pip install *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(chmod *)",
+      "Bash(head *)",
+      "Bash(cat *)",
+      "PowerShell(New-Item *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(git *)",
+      "PowerShell(gh *)",
+      "PowerShell(npm *)",
+      "PowerShell(npx *)",
+      "PowerShell(node *)",
+      "PowerShell(Set-Location *)",
+      "PowerShell(Push-Location *)",
+      "PowerShell(Pop-Location)",
+      "mcp__obsidian-vault__obsidian_list_files_in_vault",
+      "mcp__obsidian-vault__obsidian_list_files_in_dir",
+      "mcp__obsidian-vault__obsidian_append_content",
+      "mcp__obsidian-vault__obsidian_patch_content",
+      "mcp__obsidian-vault__obsidian_get_file_contents",
+      "mcp__obsidian-vault__obsidian_batch_get_file_contents",
+      "mcp__obsidian-vault__obsidian_simple_search",
+      "mcp__obsidian-vault__obsidian_complex_search",
+      "mcp__obsidian-vault__obsidian_delete_file",
+      "Bash(jira *)",
+      "Bash(node scripts/jira/dist/index.js:*)",
+      "Bash(bash -n *)",
+      "Bash(shellcheck *)",
+      "Bash(uv run --with shellcheck-py shellcheck *)",
+      "Bash(ssh -p *)",
+      "Bash(command -v *)",
+      "Bash(bash scripts/clean-garden.sh *)",
+      "Bash(bash scripts/handover/arm-resume.sh *)",
+      "Bash(bash scripts/handover/hop.sh *)",
+      "Bash(bash scripts/*)",
+      "Bash(bash tests/*)",
+      "Bash(bash marketplace/plugins/*)",
+      "Bash(claude plugin *)",
+      "Bash(sed *)",
+      "Bash(awk *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(wc *)",
+      "Bash(cut *)",
+      "Bash(tr *)",
+      "Bash(diff *)",
+      "Bash(cmp *)",
+      "Bash(tail *)",
+      "Bash(basename *)",
+      "Bash(dirname *)",
+      "Bash(realpath *)",
+      "Bash(date *)",
+      "Bash(echo *)",
+      "Bash(printf *)",
+      "Bash(test *)",
+      "Bash(mktemp *)",
+      "Bash(mv *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(Select-String *)",
+      "PowerShell(Measure-Object *)",
+      "PowerShell(Move-Item *)",
+      "PowerShell(Get-Date *)",
+      "Edit(.claude/worktrees/**)",
+      "Write(.claude/worktrees/**)",
+      "Skill(*)",
+      "WebFetch(domain:code.claude.com)",
+      "Bash(schtasks /query *)",
+      "Bash(tasklist *)",
+      "mcp__plugin_qmd_qmd__query",
+      "mcp__plugin_qmd_qmd__get"
+    ],
+    "deny": [
+      "Bash(git push --force)",
+      "Bash(git push --force *)",
+      "Bash(git push -f*)",
+      "Bash(git push --mirror*)",
+      "Bash(git push --delete*)",
+      "Bash(git push origin --delete*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(git clean -d*)",
+      "Bash(git checkout -- *)",
+      "Bash(git rebase -i *)",
+      "Bash(git filter-branch *)",
+      "Bash(git reflog delete *)",
+      "Bash(rtk git push --force)",
+      "Bash(rtk git push --force *)",
+      "Bash(rtk git push -f*)",
+      "Bash(rtk git push --mirror*)",
+      "Bash(rtk git push --delete*)",
+      "Bash(rtk git reset --hard*)",
+      "Bash(rtk git clean -f*)",
+      "Bash(rtk git clean -d*)",
+      "Bash(gh repo delete *)",
+      "Bash(gh release delete *)",
+      "Bash(rm -r *)",
+      "Bash(rm -R *)",
+      "Bash(rm -rf *)",
+      "Bash(rm -Rf *)",
+      "PowerShell(Remove-Item * -Recurse -Force *)",
+      "Edit(.claude/worktrees/**/.env)",
+      "Edit(.claude/worktrees/**/.env.*)",
+      "Write(.claude/worktrees/**/.env)",
+      "Write(.claude/worktrees/**/.env.*)",
+      "Edit(.claude/worktrees/**/.git/**)",
+      "Write(.claude/worktrees/**/.git/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/auto-approve-safe-bash.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/check-cr-marker-on-pr-create.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell|Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/block-read-secrets.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_atlassian_atlassian__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/block-mcp-when-plugin-exists.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/auto-arm-on-cap.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/auto-arm-on-subagent-cap.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/improve-on-submit.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

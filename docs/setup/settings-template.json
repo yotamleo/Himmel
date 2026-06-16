@@ -1,0 +1,112 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<himmel-path>/scripts/hooks/rtk-hook-guard.sh\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"<node-path>\" \"<claude-dir>/hooks/caveman-mode-tracker.js\"",
+            "timeout": 5,
+            "statusMessage": "Tracking caveman mode..."
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"<node-path>\" \"<claude-dir>/hooks/caveman-activate.js\"",
+            "timeout": 5,
+            "statusMessage": "Loading caveman mode..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File \"<himmel-path>/scripts/hooks/end-session-wiki.ps1\"",
+            "shell": "powershell",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"<himmel-path>/scripts/hooks/end-session-wiki.sh\"",
+            "shell": "bash",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"<statusline-path>/bin/statusline.sh\""
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "skill-creator@claude-plugins-official": true,
+    "github@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true,
+    "pr-review-toolkit@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "ralph-loop@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true,
+    "plugin-dev@claude-plugins-official": true,
+    "agent-sdk-dev@claude-plugins-official": true,
+    "hookify@claude-plugins-official": true,
+    "playground@claude-plugins-official": true,
+    "atlassian@claude-plugins-official": true,
+    "obsidian@obsidian-skills": true,
+    "qmd@qmd": true,
+    "caveman@caveman": true,
+    "warp@claude-code-warp": true,
+    "claude-obsidian@claude-obsidian-marketplace": true,
+    "handover@himmel": true
+  },
+  "extraKnownMarketplaces": {
+    "obsidian-skills": {
+      "source": { "source": "github", "repo": "kepano/obsidian-skills" }
+    },
+    "qmd": {
+      "source": { "source": "github", "repo": "tobi/qmd" }
+    },
+    "caveman": {
+      "source": { "source": "github", "repo": "JuliusBrussee/caveman" }
+    },
+    "claude-code-warp": {
+      "source": { "source": "github", "repo": "warpdotdev/claude-code-warp" }
+    },
+    "himmel": {
+      "source": { "source": "directory", "path": "<himmel-path>/marketplace" }
+    },
+    "claude-obsidian-marketplace": {
+      "source": { "source": "github", "repo": "yotamleo/claude-obsidian" }
+    }
+  },
+  "autoUpdatesChannel": "latest",
+  "theme": "dark"
+}

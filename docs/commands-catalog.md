@@ -1,0 +1,94 @@
+# Slash Commands Catalog
+
+Project-local slash commands in `.claude/commands/` (auto-discovered by
+Claude Code). Each row's description is the **verbatim** `description:`
+frontmatter of that command file.
+
+Operator-invokable commands shipped by **vendored plugins** under
+`marketplace/plugins/` are also listed (see the
+[Clipper pipeline](#clipper-pipeline-obsidian-triage-plugin) section) —
+their source is the plugin's `commands/<name>.md`, not `.claude/commands/`,
+and their rows are paraphrased one-liners rather than verbatim frontmatter
+(the plugin descriptions are multi-sentence).
+
+> **Keep this current.** When a ticket adds, renames, or removes a command
+> under `.claude/commands/`, update the matching row here in the same PR.
+> The snippet below emits one verbatim row per command (alphabetical) —
+> paste its output and re-group into the sections below:
+> ```bash
+> cd .claude/commands
+> for f in *.md; do
+>   d=$(awk -F': ' '/^description:/{sub(/^description: */,"");print;exit}' "$f")
+>   printf '| /%s | %s |\n' "${f%.md}" "$d"
+> done
+> ```
+
+## Worktree lifecycle
+
+| Command | What it does |
+|---|---|
+| /worktree | Create a new worktree under .claude/worktrees/ (no prune). Thin alias for /clean_garden --no-prune. |
+| /clean | Prune merged-PR worktrees (no create). Thin alias for /clean_garden --prune-only. |
+| /clean_garden | Prune merged-PR worktrees and (optionally) create a new one in the same shot |
+
+## PR / code review
+
+| Command | What it does |
+|---|---|
+| /pr-triage | Lightweight 4-step PR triage gate (steipete) — decide if a PR is even worth a deep multi-agent CR before running /pr-check |
+| /pr-check | Run the multi-agent CR review on the current branch and clear the pre-push marker on clean output |
+| /claude-md-audit | Audit changed CLAUDE.md files against the claude-md-improver rubric before PR — audit-only, applies no edits on its own |
+
+## Handover
+
+| Command | What it does |
+|---|---|
+| /handover-arm-resume | Arm the OS scheduler to relaunch claude at the given time with the given handover. Dedup-guarded. Direct schtasks/at invoke. HIMMEL-122. |
+| /handover-commit | Auto-commit *.md changes in the handover root (Mode B / external HANDOVER_DIR only). HIMMEL-59 MVP. |
+| /handover-flush | Session-end consolidation sweep across handover/* branches (HIMMEL-143). |
+| /handover-link | Report or check where Claude is reading/writing handover state (inline ./handovers or external $HANDOVER_DIR) |
+| /handover-pr-open | Open or update the PR for the current handover/<TICKET>-<slug> branch (HIMMEL-141). |
+| /handover-pr-merge | Squash-merge the PR for the current handover/<TICKET>-<slug> branch (HIMMEL-141). |
+| /handover-resume-armed | Fast-resume from the last armed session — surface its transcript + stop-point (the answered AskUserQuestion = the agreed continuation) with no manual JSONL archaeology. HIMMEL-208. |
+
+## Session / context
+
+| Command | What it does |
+|---|---|
+| /context-hop | Mid-session jump to a fresh claude session when context window is approaching the soft budget. Sibling of /handover-arm-resume. HIMMEL-130. |
+| /overnight-shift | Auto-dispatch N tickets from Jira as parallel subagents — emits plan + confirms before fanout (HIMMEL-134). |
+| /pipeline-cadence | Arm/inspect/remove the recurring clip-pipeline cadence (weekly /synthesize-clips + /archive-clips, monthly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped. Dedup-guarded. HIMMEL-255/265. |
+| /stop | Graceful-halt marker for in-progress /overnight-shift sessions (HIMMEL-137). |
+
+## Prompt / discovery
+
+| Command | What it does |
+|---|---|
+| /improve | Refine a draft prompt via hybrid clarifying-Q workflow. Writes an audit artifact to .improve/ + returns the refined prompt for resubmission. HIMMEL-127. |
+| /skill-find | Embedding-indexed lookup over installed skills/commands/agents — eliminates wrong-namespace mistakes (HIMMEL-33). |
+| /luna-ingest | Chain-following triage for a github repo URL. Thin wrapper that delegates to the obsidian-triage:luna-ingest skill (LUNA-9 skill conversion — see marketplace/plugins/obsidian-triage/skills/luna-ingest/SKILL.md for the runbook). |
+| /telegram-clip | File a Telegram message (text / bare URL / forward) as a harvest-ready LUNA-2 clip note in the luna vault's Clippings/. Thin wrapper that delegates to the obsidian-triage:telegram-clip skill (LUNA-58 — see marketplace/plugins/obsidian-triage/skills/telegram-clip/SKILL.md for the runbook). |
+| /roadmap-clips | Aggregate actionable items across the luna vault (daily action items, _deferred.md backlog, synthesis proposals, promotion candidates, component inventory), cluster into a sequenced roadmap mapped to tools, dedup candidate tickets against open Jira, and write a 60-Maps/ roadmap note. Proposals only. Thin wrapper that delegates to the obsidian-triage:roadmap-clips skill (LUNA-59 — see marketplace/plugins/obsidian-triage/skills/roadmap-clips/SKILL.md for the runbook). |
+
+## Clipper pipeline (obsidian-triage plugin)
+
+Four-stage pipeline over the luna vault's `Clippings/` inbox
+(HARVEST → TRIAGE → SYNTHESIZE → ARCHIVE). Plugin-provided
+(`marketplace/plugins/obsidian-triage/commands/`); full spec in that
+plugin's `README.md`. `/luna-ingest` (under Prompt / discovery above) is
+the github-repo ingest skill these dispatch to.
+
+| Command | What it does |
+|---|---|
+| /harvest-clips | Stage 1 — autonomous HARVEST pass: mark unharvested clips (`harvested_at:`), dispatch github URLs to `luna-ingest`, clip-body for the rest. Idempotent. |
+| /triage-clips | Stage 2 — autonomous triage: summarize, infer tags, suggest Related Notes, extract action items → daily note, annotate promotion candidate, mark `processed: true`. Idempotent. |
+| /synthesize-clips | Stage 3 — cross-clip synthesis: find recurring patterns across processed clips, write proposal pages to `Clippings/_synthesis/` (proposals only, never restructures). |
+| /archive-clips | Stage 4 (LUNA-55) — graduate fully-chained clips (harvested ∧ processed ∧ in-synthesis) to `Clippings/_done/<YYYY-MM>/`, rewrite inbound links (literal, boundary-safe), dedup by canonical URL, (re)generate `Clippings/_deferred.md`. |
+
+## Utility
+
+| Command | What it does |
+|---|---|
+| /open-warp | Open a new Warp tab at a directory, optionally pre-loading a command |
+| /oz-offload | Offload a long-running independent task to a separate local Warp tab running `warp agent run` (fire-and-forget; same-machine only) |
+| /quiet-run | Run a noisy command quietly — one OK/ERR line + log path |
