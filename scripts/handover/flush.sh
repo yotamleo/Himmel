@@ -7,8 +7,9 @@
 #   - Unpushed (HEAD ahead of origin/<branch>, or origin/<branch>
 #     missing): `git push -u origin <branch>`.
 #   - No open PR: invoke `scripts/handover/pr-open.sh` to open one.
-#   - Merged into origin/main: report (default) or delete the local
-#     branch via `git branch -D` when --cleanup is passed.
+#   - Merged into the default branch (origin/main or origin/master): report
+#     (default) or delete the local branch via `git branch -D` when
+#     --cleanup is passed.
 #
 # Wired into `/context-hop` so cap-resume hand-off cannot leave un-pushed
 # state; explicit `/handover-flush` covers the manual case.
@@ -29,13 +30,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/handover-path.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/handover-path.sh"
+# default_branch() resolves the handover repo's default (main OR master,
+# HIMMEL-297) for the PR base / merged-check below.
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../guardrails/lib.sh"
 
 GH_CMD="${GH_CMD:-gh}"
 GIT_CMD="${GIT_CMD:-git}"
 DRY_RUN=0
 CLEANUP=0
 NO_PR_OPEN=0
-DEFAULT_BASE="${HANDOVER_PR_BASE:-main}"
+# Empty unless explicitly pinned; resolved to the handover repo's default
+# branch (main OR master) once the repo root is known (HIMMEL-297).
+DEFAULT_BASE="${HANDOVER_PR_BASE:-}"
 
 usage() {
     cat <<'EOF'
@@ -51,13 +59,15 @@ Always prints a per-branch status table and a footer summary.
 
 Optional:
   --dry-run      Print intended actions; touch nothing.
-  --cleanup      Delete local handover/* branches merged into origin/main.
+  --cleanup      Delete local handover/* branches merged into the default
+                 branch (origin/main or origin/master).
   --no-pr-open   Skip the pr-open step. Useful when gh is unreachable;
                  flush still pushes + reports.
 
 Environment:
   HANDOVER_DIR            Required (Mode B only).
-  HANDOVER_PR_BASE        Default base for new PRs. Default `main`.
+  HANDOVER_PR_BASE        Default base for new PRs. Defaults to the handover
+                          repo's default branch (main or master).
   GH_CMD / GIT_CMD        Test overrides.
 EOF
 }
@@ -90,6 +100,12 @@ if ! handover_repo=$($GIT_CMD -C "$root" rev-parse --show-toplevel 2>&1); then
     exit 2
 fi
 
+# Resolve the PR base = the handover repo's default branch (main OR master,
+# HIMMEL-297), unless HANDOVER_PR_BASE pinned it explicitly above.
+if [ -z "$DEFAULT_BASE" ]; then
+    DEFAULT_BASE=$(default_branch "$handover_repo")
+fi
+
 # Detect whether gh is usable (auth + on PATH). When unusable, fall
 # back to "report + dump commands" mode for the PR step.
 gh_usable=1
@@ -110,7 +126,7 @@ if [ ${#branches[@]} -eq 0 ]; then
     exit 0
 fi
 
-# Ensure origin/main is up-to-date for the merged check. Best-effort.
+# Ensure origin/<default> is up-to-date for the merged check. Best-effort.
 $GIT_CMD -C "$handover_repo" fetch -q origin "$DEFAULT_BASE" 2>/dev/null || true
 
 # Per-branch reconciliation -------------------------------------------
@@ -197,17 +213,17 @@ for branch in "${branches[@]}"; do
     fi
 
     # 3. Merged state ---------------------------------------------------
-    # `git branch --merged origin/main` lists branches whose tip is an
-    # ancestor of origin/main — covers fast-forward + merge-commit. For
-    # squash-merged branches (which is the HIMMEL-141 mode), the tip is
-    # NOT an ancestor; instead detect via `git cherry origin/main <branch>`
-    # — all commits with a `-` prefix means everything was applied to main.
+    # `merge-base --is-ancestor <branch> origin/<default>` covers
+    # fast-forward + merge-commit (tip is an ancestor of the default branch).
+    # For squash-merged branches (the HIMMEL-141 mode), the tip is NOT an
+    # ancestor; instead detect via `git cherry origin/<default> <branch>`
+    # — all commits with a `-` prefix means everything was applied upstream.
     is_merged=0
     if $GIT_CMD -C "$handover_repo" merge-base --is-ancestor "$branch" "origin/$DEFAULT_BASE" 2>/dev/null; then
         is_merged=1
     else
         # Squash detection: are all commits on <branch> patch-equivalent to
-        # commits on origin/main? `git cherry` prints `+` for missing,
+        # commits on origin/<default>? `git cherry` prints `+` for missing,
         # `-` for applied. Empty `+` output → all applied → merged.
         if $GIT_CMD -C "$handover_repo" rev-parse --verify --quiet "origin/$DEFAULT_BASE" >/dev/null 2>&1; then
             cherry_missing=$($GIT_CMD -C "$handover_repo" cherry "origin/$DEFAULT_BASE" "$branch" 2>/dev/null | grep -c '^+' || true)

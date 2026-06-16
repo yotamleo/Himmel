@@ -26,7 +26,8 @@ esac
 
 usage() {
     cat >&2 <<'EOF'
-Usage: git diff main...HEAD | gemini-first-pass.sh [--model <name>]
+Usage: git diff origin/HEAD...HEAD | gemini-first-pass.sh [--model <name>]
+       (origin/HEAD resolves to the default branch — main OR master)
 
 Reads a unified diff on stdin, runs the gemini first-pass review, prints
 findings in the /pr-check heading contract (stable [gemini-N] IDs).

@@ -10,8 +10,9 @@
 # - Drains stdin so the pre-commit framework doesn't deadlock when the
 #   push contains many refs.
 # - Resolves the current branch via `git symbolic-ref HEAD`.
-# - Skips on main / detached HEAD (no PR ever opens for main; detached
-#   pushes have no head ref to query).
+# - Skips on a protected default (main OR master — HIMMEL-297) / detached
+#   HEAD (no PR ever opens for the default branch; detached pushes have no
+#   head ref to query).
 # - Queries `gh pr view --head <branch> --json mergeable`. When no PR
 #   exists, exits 0 (nothing to gate on).
 # - Refuses (exit 1) when `mergeable` is `CONFLICTING`. Surfaces the
@@ -34,7 +35,7 @@ if [ "${SKIP_PR_MERGEABLE:-0}" = "1" ]; then
 fi
 
 branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
-if [ -z "$branch" ] || [ "$branch" = "main" ]; then
+if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
     exit 0
 fi
 

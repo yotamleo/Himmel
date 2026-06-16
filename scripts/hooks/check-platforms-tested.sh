@@ -33,13 +33,25 @@
 # Exit codes:
 #   0 — pass (no sensitive files, attestation present, or bypass)
 #   1 — block (sensitive files changed + no attestation + no bypass)
+#   2 — block (cannot source guardrails/lib.sh — fail-closed, cannot evaluate)
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# default_branch() resolves the protected default (main OR master, HIMMEL-297)
+# used as the diff base below. Fail-closed: a missing guardrail substrate means
+# we cannot compute the right base, so refuse the push.
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+    echo "→ platforms-check: cannot source guardrails/lib.sh — refusing the push (rc=2 = cannot evaluate; bypass with git push --no-verify)" >&2
+    exit 2
+fi
 
 branch=$(git branch --show-current)
 
-# Detached HEAD or main push: skip — `no-push-to-main` covers main, and we
-# can't compute a sensible diff base on detached HEAD.
-if [ -z "$branch" ] || [ "$branch" = "main" ]; then
+# Detached HEAD or default-branch push: skip — `no-push-to-main` covers
+# main/master, and we can't compute a sensible diff base on detached HEAD.
+if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
     exit 0
 fi
 
@@ -48,32 +60,33 @@ if [ "${PLATFORMS_TESTED_OK:-0}" = "1" ]; then
     exit 0
 fi
 
-# Resolve diff base. HIMMEL-113: prefer origin/main, NOT local main.
-# Rationale: linked git worktrees cannot fast-forward their local `main`
-# ref while the primary worktree owns the `main` checkout. That made
-# `git diff main...HEAD` re-flag every shell/script file that was
-# already on origin/main but not yet in the linked worktree's local
-# main - producing the friction we hit on HIMMEL-104, -110, -108 etc.
-# origin/main is the actual push target; comparing against it is what
-# the gate is conceptually about.
+# Resolve diff base. HIMMEL-113: prefer origin/<default>, NOT local <default>.
+# Rationale: linked git worktrees cannot fast-forward their local default-branch
+# ref while the primary worktree owns that checkout. That made
+# `git diff <default>...HEAD` re-flag every shell/script file that was
+# already on origin/<default> but not yet in the linked worktree's local
+# copy - producing the friction we hit on HIMMEL-104, -110, -108 etc.
+# origin/<default> is the actual push target; comparing against it is what
+# the gate is conceptually about. <default> = main OR master (HIMMEL-297).
 #
-# Refresh origin/main first (silent, single ref, ~1s) so offline / very
+# Refresh origin/<default> first (silent, single ref, ~1s) so offline / very
 # stale clones still get a fair comparison. Failure (no network, no
-# remote, etc.) is non-fatal - we fall back to whatever origin/main is
+# remote, etc.) is non-fatal - we fall back to whatever origin/<default> is
 # locally.
 #
 # PLATFORMS_TESTED_NO_FETCH=1 skips the fetch for offline workflows.
+db=$(default_branch)
 if [ "${PLATFORMS_TESTED_NO_FETCH:-0}" != "1" ]; then
-    git fetch -q origin main 2>/dev/null || true
+    git fetch -q origin "$db" 2>/dev/null || true
 fi
 
 diff_base=""
-if git rev-parse --verify --quiet origin/main >/dev/null; then
-    diff_base=origin/main
-elif git rev-parse --verify --quiet main >/dev/null; then
-    diff_base=main
+if git rev-parse --verify --quiet "origin/$db" >/dev/null; then
+    diff_base="origin/$db"
+elif git rev-parse --verify --quiet "$db" >/dev/null; then
+    diff_base="$db"
 else
-    echo "→ platforms-check: no 'origin/main' or local 'main' ref — skipping (cannot compute diff)" >&2
+    echo "→ platforms-check: no 'origin/$db' or local '$db' ref — skipping (cannot compute diff)" >&2
     exit 0
 fi
 

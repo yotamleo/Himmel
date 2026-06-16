@@ -58,13 +58,25 @@
 # Exit codes:
 #   0 — pass (docs-only diff, attestation present, or bypass)
 #   1 — block (code changed + no attestation + no bypass)
+#   2 — block (cannot source guardrails/lib.sh — fail-closed, cannot evaluate)
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# default_branch() resolves the protected default (main OR master, HIMMEL-297)
+# used as the diff base below. Fail-closed: a missing guardrail substrate means
+# we cannot compute the right base, so refuse the push.
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+    echo "→ security-review: cannot source guardrails/lib.sh — refusing the push (rc=2 = cannot evaluate; bypass with git push --no-verify)" >&2
+    exit 2
+fi
 
 branch=$(git branch --show-current)
 
-# Detached HEAD or main push: skip. no-push-to-main covers main, and we
-# can't compute a sensible diff base on detached HEAD.
-if [ -z "$branch" ] || [ "$branch" = "main" ]; then
+# Detached HEAD or default-branch push: skip. no-push-to-main covers
+# main/master, and we can't compute a sensible diff base on detached HEAD.
+if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
     exit 0
 fi
 
@@ -73,20 +85,21 @@ if [ "${SKIP_SECURITY_REVIEW:-0}" = "1" ]; then
     exit 0
 fi
 
-# Resolve diff base. Mirror check-platforms-tested.sh — prefer origin/main
-# over local main so linked worktrees do not re-flag work already on the
-# push target.
+# Resolve diff base. Mirror check-platforms-tested.sh — prefer origin/<default>
+# over local <default> so linked worktrees do not re-flag work already on the
+# push target. <default> = main OR master (HIMMEL-297).
+db=$(default_branch)
 if [ "${SECURITY_REVIEW_NO_FETCH:-0}" != "1" ]; then
-    git fetch -q origin main 2>/dev/null || true
+    git fetch -q origin "$db" 2>/dev/null || true
 fi
 
 diff_base=""
-if git rev-parse --verify --quiet origin/main >/dev/null; then
-    diff_base=origin/main
-elif git rev-parse --verify --quiet main >/dev/null; then
-    diff_base=main
+if git rev-parse --verify --quiet "origin/$db" >/dev/null; then
+    diff_base="origin/$db"
+elif git rev-parse --verify --quiet "$db" >/dev/null; then
+    diff_base="$db"
 else
-    echo "→ security-review: no 'origin/main' or local 'main' ref — skipping (cannot compute diff)" >&2
+    echo "→ security-review: no 'origin/$db' or local '$db' ref — skipping (cannot compute diff)" >&2
     exit 0
 fi
 
