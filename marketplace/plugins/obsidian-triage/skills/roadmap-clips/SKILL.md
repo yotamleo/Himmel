@@ -1,6 +1,6 @@
 ---
 name: roadmap-clips
-description: Use when the operator wants a cross-source roadmap from the luna vault — aggregates actionable items across daily-note action items, the clipper pipeline backlog (_deferred.md), synthesis proposals, promotion candidates, and the component inventory, clusters them into sequenced themes (effort/impact + target repo), dedups candidate tickets against open Jira, and writes a 60-Maps/ roadmap note. Proposals only — never auto-files tickets or restructures the vault. Triggers on /roadmap-clips at the user prompt OR programmatic Skill-tool dispatch. Idempotent per day. LUNA-59.
+description: Use when the operator wants a cross-source roadmap from the luna vault — aggregates actionable items across daily-note action items, the clipper pipeline backlog (_deferred.md), synthesis proposals, promotion candidates, and the component inventory, clusters them into sequenced themes (effort/impact + code vs vault-only target), dedups candidate tickets against the operator's configured Jira projects, and writes a 60-Maps/ roadmap note. Proposals only — never auto-files tickets or restructures the vault. Triggers on /roadmap-clips at the user prompt OR programmatic Skill-tool dispatch. Idempotent per day. LUNA-59.
 ---
 
 # roadmap-clips — cross-source roadmap synthesis (LUNA-59)
@@ -44,21 +44,32 @@ many items you dropped so coverage is honest.
 
 ### 3. Sequence + map to tools (judgement)
 Order themes by a rough **effort × impact** read (cheap-high-impact first).
-For each theme, annotate the **target tool/repo** it would land in: `himmel`
-(harness/plugin work), `luna` (vault content/templates), `luna_brain`, or
-`vault-only` (a note/MOC, no code). These are hints, not commitments.
+For each theme, annotate the **target** it would land in: `code` (harness /
+plugin / tooling work in a tracked repo) or `vault-only` (a note/MOC, no
+code). These are hints, not commitments. Don't assume any particular repo —
+which repo `code` maps to is the operator's call.
 
-### 4. Dedup candidate tickets against open Jira
-Fetch open issues for both projects (single literal commands):
+### 4. Dedup candidate tickets against open Jira (skip when no project configured)
+Dedup against the operator's **tracked** Jira project(s) — never a hardcoded
+project. The tracked keys are the keys of `projects` in the jira metadata
+cache that `/jira-init` writes (not a secret — project keys + issue types):
+`~/.cache/himmel-cli/jira/metadata.json` (POSIX) /
+`%LOCALAPPDATA%/himmel-cli/jira/metadata.json` (Windows).
+
+If the cache is missing or has no projects, **SKIP this step**: emit no Jira
+candidate list and mark every candidate `(new)` — i.e. vault-only proposals
+(a user who doesn't track this work in Jira gets no spurious ticket
+suggestions). Otherwise, for each tracked project KEY, fetch open issues (one
+literal command per project):
 ```bash
-node scripts/jira/dist/index.js list --project LUNA --status "To Do,In Progress,Backlog" --limit 50
-node scripts/jira/dist/index.js list --project HIMMEL --status "To Do,In Progress,Backlog" --limit 50
+node scripts/jira/dist/index.js list --project <KEY> --status "To Do,In Progress,Backlog" --limit 50
 ```
 For each theme you'd propose as a ticket, compare its title against the open
-summaries. If an open issue clearly already covers it, mark the candidate
-`already-tracked: <KEY>` and EXCLUDE it from the "propose to file" list. Only
-genuinely-new work reaches the candidate list. **Do NOT create tickets** — that
-is the operator's call (and an external write the auto-mode classifier gates).
+summaries across all tracked projects. If an open issue clearly already covers
+it, mark the candidate `already-tracked: <KEY>` and EXCLUDE it from the
+"propose to file" list. Only genuinely-new work reaches the candidate list.
+**Do NOT create tickets** — that is the operator's call (and an external write
+the auto-mode classifier gates).
 
 ### 5. Write the roadmap note (skip entirely under `--dry-run` — print instead)
 Deterministic path `60-Maps/<TODAY>-roadmap.md` (`TODAY=$(date +%Y-%m-%d)`).
@@ -78,11 +89,11 @@ source_counts: { deferred: N, synthesis-proposal: M, ... }   # = the aggregator'
 > nothing here is filed or restructured automatically.
 
 ## Themes (sequenced: cheap-high-impact first)
-### 1. <theme> — effort:<lo|med|hi> impact:<lo|med|hi> → <target repo>
+### 1. <theme> — effort:<lo|med|hi> impact:<lo|med|hi> → <target: code|vault-only>
 <1–2 line synthesis>. Supporting items (<count>): [[<origin>]], …
 
-## Candidate tickets (deduped vs open Jira — NOT filed)
-- [ ] <title> → <repo>  (new)
+## Candidate tickets (deduped vs open Jira — NOT filed; omitted when no Jira project is configured)
+- [ ] <title> → <target>  (new)
 - ~~<title>~~ already-tracked: <KEY>
 
 ## Sources scanned
