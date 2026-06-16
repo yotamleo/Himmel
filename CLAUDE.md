@@ -32,6 +32,19 @@ relevant, it belongs in a doc, not here.
 
 ## RULES
 
+### Working principles (general defaults)
+These ship in the repo so a project-scope clone gets them even without the
+operator's user-scope `~/.claude/CLAUDE.md`. Use judgement on trivial tasks.
+1. **Think before coding** — state assumptions; if multiple readings exist,
+   ask, don't pick silently; if a simpler approach exists, say so.
+2. **Simplicity first** — minimum code that solves the problem; nothing
+   speculative (no unrequested features, abstractions, or config).
+3. **Surgical changes** — touch only what the task requires; match existing
+   style; don't refactor what isn't broken; remove only the orphans your own
+   change created.
+4. **Goal-driven execution** — turn the task into a verifiable success
+   criterion, then loop until it passes.
+
 ### Git workflow
 - All feature work in git worktrees. Never commit directly to main.
 - All changes via PR. No direct pushes to main. PRs need ≥1 approval before merge.

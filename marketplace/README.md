@@ -11,6 +11,13 @@ take none and just read the source.
 
 ## Install just one plugin
 
+`<name>` is the plugin name from the table below (e.g. `obsidian-triage`).
+Each plugin is independent — you install only what you name; nothing else
+comes along. Pick a **scope** — both use the same marketplace, they just
+differ in *where* the choice is recorded:
+
+### User scope — available in every project (the simple default)
+
 From inside any Claude Code session:
 
 ```text
@@ -18,12 +25,54 @@ From inside any Claude Code session:
 /plugin install <name>@himmel                 # grab a single plugin
 ```
 
-`<name>` is the plugin name from the table below (e.g.
-`/plugin install obsidian-triage@himmel`). Each plugin is independent — you
-install only what you name; nothing else comes along.
+The plugin is enabled for **you**, across all your projects, recorded in
+`~/.claude/settings.json`. Best when it's your own setup and you want it
+everywhere.
 
-Prefer a local checkout? Point the marketplace at the cloned path instead:
-`/plugin marketplace add /path/to/himmel`.
+### Project scope — pinned to one repo, shared with collaborators
+
+Commit the marketplace + the plugins you want into the repo's
+`.claude/settings.json`, so anyone who clones it gets them auto-known and
+enabled (Claude Code still prompts each person to trust the marketplace on
+first use):
+
+```jsonc
+{
+  "extraKnownMarketplaces": {
+    "himmel": { "source": { "source": "github", "repo": "yotamleo/himmel" } }
+  },
+  "enabledPlugins": {
+    "obsidian-triage@himmel": true
+  }
+}
+```
+
+Or let the CLI write that block for you — run from the target repo:
+`claude plugin install <name>@himmel --scope project` (also accepts `--scope
+local` for the gitignored `.claude/settings.local.json`). The himmel setup
+scripts expose the same choice: `scripts/machine-setup/install-plugins.{sh,ps1}
+--scope project`, and the top-level setup prompts for it.
+
+Best when the plugin is part of *this project's* workflow and you want
+contributors to pick it up on clone. (Heads-up: committing
+`extraKnownMarketplaces` ships a "trust this third-party registry" into the
+repo — fine for your own repos, a supply-chain call to make if it has
+outside contributors.)
+
+### Remove, or move between scopes
+
+- **Remove (user scope):** `/plugin uninstall <name>@himmel`.
+- **Remove (project scope):** delete that plugin's `enabledPlugins` line from
+  the repo's `.claude/settings.json` (drop the `extraKnownMarketplaces.himmel`
+  block too once no himmel plugin is left).
+- **Move user → project:** `/plugin uninstall <name>@himmel`, then add it to
+  the repo's `.claude/settings.json` as shown above.
+- **Move project → user:** remove its `enabledPlugins` line from the repo
+  settings, then `/plugin install <name>@himmel` in a session.
+
+Prefer a local checkout over GitHub? Point the marketplace at the cloned path
+instead: `/plugin marketplace add /path/to/himmel` (user scope), or use
+`{ "source": "/path/to/himmel" }` as the project-scope source.
 
 ## What's in here
 

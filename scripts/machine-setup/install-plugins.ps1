@@ -5,14 +5,21 @@
 # Reads `enabledPlugins` and `extraKnownMarketplaces` from the template,
 # registers each marketplace via `claude plugin marketplace add`, then
 # installs each plugin via `claude plugin install <plugin>@<marketplace>
-# --scope user`. Both CLI calls are idempotent.
+# --scope <scope>`. Both CLI calls are idempotent.
 #
 # Usage:
-#   pwsh install-plugins.ps1 [-DryRun] [-Template PATH] [-HimmelPath PATH]
+#   pwsh install-plugins.ps1 [-DryRun] [-Scope SCOPE] [-Template PATH] [-HimmelPath PATH]
+#
+# -Scope is user (default, ~/.claude — every project), project (this repo's
+# .claude/settings.json, shared on clone), or local (this repo's gitignored
+# .claude/settings.local.json). For project/local the target is the CURRENT
+# directory — run from the repo you want the plugins scoped to.
 
 [CmdletBinding()]
 param(
     [switch]$DryRun,
+    [ValidateSet('user', 'project', 'local')]
+    [string]$Scope = 'user',
     [string]$Template,
     [string]$HimmelPath
 )
@@ -56,15 +63,15 @@ foreach ($name in $cfg.extraKnownMarketplaces.PSObject.Properties.Name) {
     }
     if (-not $val) { Write-Host "  skip: $name (unknown source type)"; continue }
     Write-Host "  marketplace add: $val"
-    try { Invoke-OrDry @('claude', 'plugin', 'marketplace', 'add', $val) }
+    try { Invoke-OrDry @('claude', 'plugin', 'marketplace', 'add', $val, '--scope', $Scope) }
     catch { Write-Host "    (non-zero — already registered or transient failure)" }
 }
 
 # ── Install plugins ─────────────────────────────────────────────────────────
-Write-Host '──── Installing plugins ────'
+Write-Host "──── Installing plugins ($Scope scope) ────"
 foreach ($spec in $cfg.enabledPlugins.PSObject.Properties.Name) {
     Write-Host "  install: $spec"
-    try { Invoke-OrDry @('claude', 'plugin', 'install', $spec, '--scope', 'user') }
+    try { Invoke-OrDry @('claude', 'plugin', 'install', $spec, '--scope', $Scope) }
     catch { Write-Host "    (non-zero — already installed or transient failure)" }
 }
 
