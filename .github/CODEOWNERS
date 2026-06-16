@@ -1,0 +1,7 @@
+# Code owners for Himmel.
+# The owner listed here is automatically requested for review on every PR that
+# touches matching paths. Enable "Require review from Code Owners" in the
+# branch-protection ruleset for `main` to make that review mandatory.
+
+# Everything is owned by the maintainer.
+* @yotamleo
