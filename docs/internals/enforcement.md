@@ -86,7 +86,7 @@ Companion artifacts:
 operator's original draft + refined prompt verbatim. If a draft
 includes credentials, API keys, or sensitive context, those land on
 disk. Mode A artifacts are gitignored (`/.improve/` in `.gitignore`);
-Mode B writes to `yotam_docs` which is also private. Treat the
+Mode B writes to `<state-repo>` which is also private. Treat the
 `.improve/` directory as sensitive regardless — do not commit it,
 do not copy it off-disk without redacting first.
 
@@ -292,7 +292,7 @@ Spec: `scripts/hooks/test-auto-arm-on-cap.sh` (paired smoke suite).
    absolute himmel path (idempotent, prompt-gated, mirrors the
    end-session-wiki registration). The hook resolves its lib +
    arm-resume relative to its own location, so it works from any
-   project's session — luna and yotam_docs sessions get cap protection
+   project's session — luna and <state-repo> sessions get cap protection
    too. NOTE: with both layers active, himmel sessions run the hook
    twice per tool call — harmless (the throttle marker is shared, so
    the second invocation is a single stat() no-op).

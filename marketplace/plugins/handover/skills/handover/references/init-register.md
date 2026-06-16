@@ -28,7 +28,7 @@ Mode-B choice writes `HANDOVER_DIR=` into `<repo-root>/.env` (via
 `scripts/handover/set-handover-dir.sh`) so every later session resolves the same
 location. `init` then operates on the resolved `<state-root-host>` — the
 `HANDOVER_DIR` host when set, else the inline default. Never hardcode a specific
-state repo (e.g. `yotam_docs`); it is always the operator-chosen location. The
+state repo (e.g. `<state-repo>`); it is always the operator-chosen location. The
 `path` input below is the **code repo being tracked**, not the state-root host.
 
 ### Inputs (interactive prompt via `AskUserQuestion` or text)
@@ -230,7 +230,7 @@ jira:   <KEY or —>
 
 ## Migration recipe — himmel
 
-Porting the existing `himmel/handovers/yotam/` state into the registry:
+Porting the existing `himmel/handovers/<USER_SLUG>/` state into the registry:
 
 ```bash
 # Inside any cwd:
@@ -279,7 +279,7 @@ v2 adds four optional fields to each repo entry. All have safe defaults; absence
         "zombie": 90
       },
 
-      // HIMMEL-307 — host-repo-only addition (set on the state-root host, e.g. yotam_docs):
+      // HIMMEL-307 — host-repo-only addition (set on the state-root host, e.g. <state-repo>):
       "source_buckets_extra": ["luna-medic"] // optional; extra source-bucket names beyond the 4 built-ins. Absent/empty ⇒ 4-set.
     }
   }
@@ -300,8 +300,8 @@ v2 adds four optional fields to each repo entry. All have safe defaults; absence
 ### `source_buckets_extra` (HIMMEL-307)
 
 Optional **host-repo-only** field — set it on the registry entry whose
-`<state-root>` actually hosts the per-source-repo bucket directories (for this
-operator, `yotam_docs`). It extends the **recognized source-bucket set** (see
+`<state-root>` actually hosts the per-source-repo bucket directories (e.g.
+`<state-repo>`). It extends the **recognized source-bucket set** (see
 SKILL.md "Bucket Resolution") beyond the four built-ins
 (`himmel`/`luna`/`luna_brain`/`cross`).
 
