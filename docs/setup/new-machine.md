@@ -240,6 +240,33 @@ After restoring plugins, verify skills load:
 
 Note: `obsidian` and `claude-obsidian` are pinned to commit SHAs in himmel's `marketplace/.claude-plugin/marketplace.json` per supply-chain policy. To update either, bump the `ref` field in a deliberate PR (same gate as a dep bump).
 
+### Scope: user vs project
+
+The `/plugin install` flow above records the plugin at **user scope** (`~/.claude/settings.json`) — enabled for you across every project. That's the right default for personal-workflow plugins. The alternative is **project scope**: declare the marketplace + plugins in a *repo's* `.claude/settings.json`, so anyone who clones that repo gets them auto-known and enabled (each person is still prompted to trust the marketplace on first use).
+
+The setup scripts let you pick: `scripts/machine-setup/install-plugins.{sh,ps1}` take `--scope user|project|local` (default `user`), and the top-level `ubuntu.sh` / `win11.ps1` setup prompts you to choose. For project/local the target is the **current directory**, so run from the repo you want the plugins scoped to. The CLI does it directly too — `claude plugin install <name>@himmel --scope project` writes the block below for you. Same keys, different file:
+
+```jsonc
+// <repo>/.claude/settings.json
+{
+  "extraKnownMarketplaces": {
+    "himmel": { "source": { "source": "github", "repo": "yotamleo/himmel" } }
+  },
+  "enabledPlugins": {
+    "obsidian-triage@himmel": true
+  }
+}
+```
+
+Pick by intent: *yours, everywhere* → user scope; *part of this project, shared on clone* → project scope. Committing `extraKnownMarketplaces` ships a "trust this third-party registry" into the repo — fine for your own repos, a supply-chain call if it has outside contributors. (The JSON above is the illustrative hand-edit form. himmel's setup scripts instead read [`settings-template.json`](settings-template.json) — which registers the marketplace from a local `directory` source rather than the GitHub repo shown above — and apply the plugin set at whichever `--scope` you pick.)
+
+### Remove / move between scopes
+
+- **Remove (user scope):** `/plugin uninstall <name>@himmel`.
+- **Remove (project scope):** delete that plugin's `enabledPlugins` line from the repo's `.claude/settings.json` (and drop the `extraKnownMarketplaces.himmel` block once no himmel plugin is left).
+- **Move user → project:** `/plugin uninstall <name>@himmel`, then add it to the repo's `.claude/settings.json` as above.
+- **Move project → user:** remove its `enabledPlugins` line from the repo settings, then `/plugin install <name>@himmel`.
+
 ---
 
 ## 7. End-session wiki hook (auto-capture to Luna vault)

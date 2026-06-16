@@ -212,9 +212,16 @@ Invoke-NonFatal "git insteadOf" {
 }
 
 Write-Step "Install Claude plugins from manifest"
+# Scope choice: user = ~/.claude (every project); project = this repo's
+# .claude/settings.json (shared on clone). The third scope `local` is
+# reachable only via install-plugins.ps1 -Scope local, not this prompt.
+# Empty input keeps the user default.
+$scopeRaw = Read-Host "Install plugins at [u]ser scope (all projects) or [p]roject scope (this repo only)? [default: user]"
+$PluginScope = if (-not [string]::IsNullOrWhiteSpace($scopeRaw) -and $scopeRaw.Trim() -match '^[Pp]') { 'project' } else { 'user' }
+Write-Host "  -> installing at $PluginScope scope"
 Invoke-NonFatal "install plugins from manifest" {
     & pwsh -NoProfile -File "$HimmelPath\scripts\machine-setup\install-plugins.ps1" `
-        -HimmelPath $HimmelPath
+        -Scope $PluginScope -HimmelPath $HimmelPath
 }
 
 Invoke-NonFatal "caveman Windows patch" {

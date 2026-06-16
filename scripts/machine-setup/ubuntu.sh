@@ -191,8 +191,19 @@ step "Rewrite git@github.com SSH URLs to HTTPS (public-repo clone fix)"
 
 step "Install Claude plugins from manifest"
 {
+  # Scope choice: user = ~/.claude (every project); project = this repo's
+  # .claude/settings.json (shared on clone). The third scope `local` is
+  # reachable only via install-plugins.sh --scope local, not this prompt.
+  # `|| true` so a non-interactive run (no TTY / EOF) falls through to the
+  # default instead of aborting.
+  read -r -p "Install plugins at [u]ser scope (all projects) or [p]roject scope (this repo only)? [default: user]: " PLUGIN_SCOPE_CHOICE || true
+  case "${PLUGIN_SCOPE_CHOICE:-u}" in
+    [Pp]*) PLUGIN_SCOPE="project" ;;
+    *)     PLUGIN_SCOPE="user" ;;
+  esac
+  echo "  → installing at $PLUGIN_SCOPE scope"
   bash "$HIMMEL_PATH/scripts/machine-setup/install-plugins.sh" \
-    --himmel-path "$HIMMEL_PATH"
+    --scope "$PLUGIN_SCOPE" --himmel-path "$HIMMEL_PATH"
 } || fail_nonfatal "install plugins from manifest"
 
 step "Clone Luna vault + install pre-commit hooks"
