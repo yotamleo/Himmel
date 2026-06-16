@@ -56,7 +56,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash \"<statusline-path>/bin/statusline.sh\""
+    "command": "bash \"<himmel-path>/scripts/statusline/bin/statusline.sh\""
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,

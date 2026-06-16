@@ -19,7 +19,7 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck disable=SC2034
 HIMMEL_PATH="$HOME/github/himmel"
-STATUSLINE_PATH="$HOME/github/claude-statusline"
+STATUSLINE_PATH="$HIMMEL_PATH/scripts/statusline"  # vendored in himmel (HIMMEL-331)
 LUNA_VAULT_PATH="$HOME/Documents/luna"
 CLAUDE_DIR="$HOME/.claude"
 
@@ -31,7 +31,7 @@ mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
 # ── Progress ────────────────────────────────────────────────────────────────
-TOTAL_STEPS=20
+TOTAL_STEPS=19
 STEP=0
 FAILURES=()
 
@@ -151,11 +151,7 @@ ln -sf "$HIMMEL_PATH/scripts/himmel-run/bin/himmel-run" "$HOME/.local/bin/himmel
 # Non-fatal from here — failures logged but don't abort
 set +e
 
-step "Clone claude-statusline"
-{
-  mkdir -p "$(dirname "$STATUSLINE_PATH")"
-  git clone https://github.com/yotamleo/claude-statusline.git "$STATUSLINE_PATH"
-} || fail_nonfatal "clone statusline"
+# statusline is vendored at $HIMMEL_PATH/scripts/statusline (HIMMEL-331) — no clone needed.
 
 step "Copy Claude config"
 {
