@@ -63,6 +63,25 @@ describe('check-required', () => {
     expect(r.stdout).toContain('required: summary,issuetype');
   });
 
+  it('falls back to default_project when --project is omitted (portable: no hardcoded HIMMEL)', () => {
+    const env = cacheEnv(dir);
+    const meta = {
+      fetched_at: new Date().toISOString(),
+      default_project: 'ACME',
+      projects: {
+        ACME: {
+          issue_types: {
+            Task: { required_fields: ['summary'] },
+          },
+        },
+      },
+    };
+    writeStubMeta(dir, meta);
+    const r = run(['--type', 'Task'], env);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('required: summary');
+  });
+
   it('prints (cache stale...) to stderr when fetched_at is >30 days old', () => {
     const env = cacheEnv(dir);
     const fortyDaysAgo = new Date(Date.now() - 40 * 86400_000).toISOString();

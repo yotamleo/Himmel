@@ -2,10 +2,50 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureEnvKeys, appendEnvKeys, UNSAFE_VALUE_RE, loadEnvIntoProcess } from '../lib/init-flow.mjs';
+import { ensureEnvKeys, appendEnvKeys, UNSAFE_VALUE_RE, loadEnvIntoProcess, resolveProjects, runInit } from '../lib/init-flow.mjs';
 
 let dir;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'himmel-init-')); });
+
+describe('resolveProjects (config-driven, no hardcoded HIMMEL)', () => {
+  it('uses JIRA_PROJECT_KEY when no flag and no JIRA_PROJECTS', () => {
+    expect(resolveProjects({ env: { JIRA_PROJECT_KEY: 'ACME' } })).toEqual(['ACME']);
+  });
+
+  it('prefers --projects flag over both env vars', () => {
+    const env = { JIRA_PROJECTS: 'X,Y', JIRA_PROJECT_KEY: 'Z' };
+    expect(resolveProjects({ rawArg: 'ACME', env })).toEqual(['ACME']);
+  });
+
+  it('prefers JIRA_PROJECTS over JIRA_PROJECT_KEY', () => {
+    const env = { JIRA_PROJECTS: 'A,B', JIRA_PROJECT_KEY: 'Z' };
+    expect(resolveProjects({ env })).toEqual(['A', 'B']);
+  });
+
+  it('splits a comma-list and trims whitespace / drops empties', () => {
+    expect(resolveProjects({ rawArg: ' A , ,B, ' })).toEqual(['A', 'B']);
+  });
+
+  it('returns [] when nothing is configured (caller fails loud)', () => {
+    expect(resolveProjects({ env: {} })).toEqual([]);
+  });
+
+  it('treats an empty-string env value as unset', () => {
+    expect(resolveProjects({ env: { JIRA_PROJECT_KEY: '' } })).toEqual([]);
+  });
+
+  it('coerces a valueless --projects (boolean true) to [] instead of throwing', () => {
+    // arg parser maps `--projects` with no value to `true`; must not crash.
+    expect(() => resolveProjects({ rawArg: true, env: {} })).not.toThrow();
+    expect(resolveProjects({ rawArg: true, env: {} })).toEqual([]);
+  });
+});
+
+describe('runInit project guard (defense in depth)', () => {
+  it('rejects when called with no projects (no network)', async () => {
+    await expect(runInit({ projects: [] })).rejects.toThrow(/no projects/);
+  });
+});
 
 describe('ensureEnvKeys', () => {
   it('returns all keys when file missing', () => {

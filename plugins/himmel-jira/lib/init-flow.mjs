@@ -34,6 +34,19 @@ export function ensureEnvKeys(envPath, keys) {
   return keys.filter((k) => !current[k]);
 }
 
+// Resolve the project key(s) to discover, in precedence order:
+//   --projects flag  >  JIRA_PROJECTS (comma-list)  >  JIRA_PROJECT_KEY
+// Returns a clean array (whitespace trimmed, empties dropped). An empty array
+// means "nothing configured" — the caller must fail loud, never default to a
+// project. `rawArg` may be the boolean `true` when `--projects` is passed with
+// no value (arg parser quirk); coerce non-strings to '' so that misuse routes
+// to the empty-array path instead of a TypeError.
+export function resolveProjects({ rawArg, env = process.env } = {}) {
+  const raw = (typeof rawArg === 'string' ? rawArg : '')
+    || env.JIRA_PROJECTS || env.JIRA_PROJECT_KEY || '';
+  return raw.split(',').map((p) => p.trim()).filter(Boolean);
+}
+
 export const UNSAFE_VALUE_RE = /[=\n\r]|^["'](?!.*\1$)/;
 
 export function appendEnvKeys(envPath, kvs) {
@@ -70,7 +83,13 @@ export async function discoverMetadata(projectsToTrack) {
     process.stderr.write('[jira-init] warning: /project/search returned no projects\n');
     return out;
   }
-  const tracked = allProjects.filter((p) => projectsToTrack.includes(p.key));
+  // Order by the configured projectsToTrack (not the API's response order) so
+  // default_project is deterministic — it must equal the first configured key
+  // (= JIRA_PROJECT_KEY for single-project users) since check-required now
+  // resolves to default_project when --project is omitted.
+  const tracked = projectsToTrack
+    .map((k) => allProjects.find((p) => p.key === k))
+    .filter(Boolean);
   out.default_project = tracked[0]?.key;
   for (const p of tracked) {
     // Use paginated createmeta endpoints (old combined endpoint deprecated June 2024).
@@ -126,7 +145,10 @@ export async function autoFetchAccountId(email) {
   }
 }
 
-export async function runInit({ envOverride, projects = ['HIMMEL'], emails = [] } = {}) {
+export async function runInit({ envOverride, projects = [], emails = [] } = {}) {
+  if (!projects.length) {
+    throw new Error('runInit: no projects to discover — set JIRA_PROJECT_KEY (or JIRA_PROJECTS) and re-run');
+  }
   const envFile = envFilePath(envOverride);
   loadEnvIntoProcess(envFile);
   const missing = ensureEnvKeys(envFile, ['JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_BASE_URL']);

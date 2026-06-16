@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ensureEnvKeys, appendEnvKeys, runInit, loadEnvIntoProcess } from './init-flow.mjs';
+import { ensureEnvKeys, appendEnvKeys, runInit, loadEnvIntoProcess, resolveProjects } from './init-flow.mjs';
 import { envFilePath } from './jira-fetch.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).map((a, i, arr) => {
@@ -39,7 +39,16 @@ if (args['write-env']) {
 if (args.discover) {
   const envFile = envFilePath(args['env-path']);
   loadEnvIntoProcess(envFile);
-  const projects = (args.projects || 'HIMMEL').split(',');
+  // No hardcoded HIMMEL/LUNA — resolve the project(s) to cache from config so
+  // the plugin is portable for users who don't work on himmel (mirrors the
+  // CLI's HIMMEL-146 JIRA_PROJECT_KEY portability). resolveProjects honours
+  // --projects > JIRA_PROJECTS (comma-list) > JIRA_PROJECT_KEY. No project
+  // configured → fail loud, never silently default to HIMMEL.
+  const projects = resolveProjects({ rawArg: args.projects, env: process.env });
+  if (!projects.length) {
+    console.error('no project configured: set JIRA_PROJECT_KEY (or JIRA_PROJECTS=A,B for several) in your .env, then re-run');
+    process.exit(2);
+  }
   try {
     const res = await runInit({ projects });
     console.log(res.summary || 'OK');
@@ -50,5 +59,5 @@ if (args.discover) {
   }
 }
 
-console.error('usage: init-cli.mjs --check | --write-env --email E --token T | --discover --projects P,Q');
+console.error('usage: init-cli.mjs --check | --write-env --email E --token T | --discover [--projects P,Q]');
 process.exit(2);
