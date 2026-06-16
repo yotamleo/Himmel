@@ -41,8 +41,17 @@ it any time; it is idempotent.
 > `export PATH="$HOME/.local/bin:$PATH"` to your shell rc (setup reminds you at
 > the end).
 
-Prefer to add himmel's portable core (hooks + worktree workflow) to an existing
-repo instead? See [use-on-your-project.md](setup/use-on-your-project.md).
+Prefer to add himmel to an **existing repo** (or just your user scope)? One
+command from a himmel clone brings the harness over — hooks + guardrails +
+worktree commands + marketplace plugins/skills:
+
+```bash
+bash scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
+```
+
+Profiles (`core` / `luna` / `all`), scopes (`project` / `user`), the Windows
+`adopt.ps1` twin, and the à-la-carte parts are all in
+[use-on-your-project.md](setup/use-on-your-project.md).
 
 Installing the Claude Code plugins (handover, triage, obsidian, …)? You choose
 where they're recorded: **user scope** (`~/.claude`, available in every project

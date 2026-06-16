@@ -219,7 +219,11 @@ gotchas (macOS bash 4, Windows MSYS_NO_PATHCONV, realpath fallbacks),
 per-platform shell setup — lives at
 [`docs/setup/new-machine.md`](docs/setup/new-machine.md).
 
-Adopting the portable core (hooks + worktree workflow) in your own repo:
+Adopting himmel in your own repo (or user scope) is one command —
+`bash scripts/adopt.sh --profile core --scope project --target /path/to/repo`
+brings the harness (hooks + guardrails + worktree commands + marketplace
+plugins/skills) over in one shot. Profiles, scopes, the Windows `adopt.ps1`
+twin, and the à-la-carte parts:
 [`docs/setup/use-on-your-project.md`](docs/setup/use-on-your-project.md).
 
 Claude Code global config (`~/.claude/`) setup: see
