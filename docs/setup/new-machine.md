@@ -260,6 +260,37 @@ The setup scripts let you pick: `scripts/machine-setup/install-plugins.{sh,ps1}`
 
 Pick by intent: *yours, everywhere* → user scope; *part of this project, shared on clone* → project scope. Committing `extraKnownMarketplaces` ships a "trust this third-party registry" into the repo — fine for your own repos, a supply-chain call if it has outside contributors. (The JSON above is the illustrative hand-edit form. himmel's setup scripts instead read [`settings-template.json`](settings-template.json) — which registers the marketplace from a local `directory` source rather than the GitHub repo shown above — and apply the plugin set at whichever `--scope` you pick.)
 
+### Direct install (copy-paste, no setup script)
+
+The [Install sequence](#install-sequence) above runs as part of the machine
+setup. To skip setup and just add the marketplace + the plugins you want —
+choosing the scope per command — copy-paste instead:
+
+```bash
+# Register the marketplace (once; the GitHub slug is case-insensitive)
+claude plugin marketplace add yotamleo/himmel
+
+# Install plugins — --scope user (default, every project) or
+# --scope project (this repo's .claude/settings.json, shared on clone)
+claude plugin install handover@himmel         --scope user
+claude plugin install obsidian-triage@himmel  --scope user
+claude plugin install claude-obsidian@himmel  --scope user
+claude plugin install obsidian@himmel         --scope user
+claude plugin install himmel-ops@himmel       --scope user
+# optional operator-coupled forks: telegram-himmel@himmel, pr-review-toolkit-himmel@himmel
+```
+
+Or install the entire manifest (the himmel plugins plus the official ones it
+builds on) in one shot from a clone, at a chosen scope:
+
+```bash
+git clone https://github.com/yotamleo/Himmel
+bash Himmel/scripts/machine-setup/install-plugins.sh --scope project
+```
+
+The plugins carry their own slash commands + skills — that's all you need to use
+them.
+
 ### Remove / move between scopes
 
 - **Remove (user scope):** `/plugin uninstall <name>@himmel`.
