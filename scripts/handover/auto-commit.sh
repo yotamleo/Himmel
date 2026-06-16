@@ -122,9 +122,11 @@ supported by this MVP. Auto-committing there would land handover noise
 on your active himmel feature branch and risk leaking into a feature PR.
 
 To use auto-commit:
-  1. Move handover state to a separate repo (e.g., yotam_docs/handovers).
-  2. export HANDOVER_DIR=/abs/path/to/that/repo/handovers (in the shell
-     that launches Claude Code).
+  1. Keep handover state in a separate repo (run /handover-setup to choose
+     the location — it writes HANDOVER_DIR to .env).
+  2. export HANDOVER_DIR=/abs/path/to/that/repo/handovers in the shell that
+     launches Claude Code (or set it in .env; scripts/lib/load-dotenv.sh
+     loads it).
   3. Re-run.
 
 See HIMMEL-118 (handover root resolver) and HIMMEL-59 (this Epic) for
@@ -141,8 +143,8 @@ if ! root=$(handover_root_ensure); then
 fi
 
 # Find the git repo that owns the root. Root may be a subdir of the
-# external repo (yotam_docs/handovers/ inside yotam_docs/), so walk
-# up to the toplevel rather than assuming root == toplevel.
+# external state repo (e.g. <state-repo>/handovers/ inside <state-repo>/),
+# so walk up to the toplevel rather than assuming root == toplevel.
 if ! handover_repo=$(git -C "$root" rev-parse --show-toplevel 2>&1); then
     echo "ERR auto-commit: handover root is not inside a git repo:" >&2
     echo "    root=$root" >&2

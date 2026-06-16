@@ -41,6 +41,7 @@ though the himmel repo also wires explicit `/handover *` commands.
 
 | Command | Purpose |
 |---|---|
+| `/handover-setup` | **First-time bootstrap.** Asks where handover state should live (inline vs an external state repo), persists a Mode-B choice to `.env` as `HANDOVER_DIR`, then runs `init`/`register`. No hardcoded repo. |
 | `/handover init` | Bootstrap a **new** repo (no existing state). Seeds `_templates/`, `status.md`, `roadmap.md`, registers in the registry. |
 | `/handover register` | Adopt **existing** state in a repo (idempotent — scans for `#N` dirs, derives the next ID, detects duplicates). |
 | `/handover repos <list\|add\|remove\|where>` | Manage the repo registry (read-only `list`/`where`; `add`/`remove` touch the registry only, never repo files). |

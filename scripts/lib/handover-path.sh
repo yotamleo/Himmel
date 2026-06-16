@@ -37,16 +37,15 @@
 #     which uses pure; flush.sh refuses Mode A explicitly and only runs
 #     in Mode B where pure and _ensure behave identically.)
 #
-# Post-HIMMEL-124 deployment guidance:
-#   All personal handover state has been centralized in the yotam_docs
-#   repo (see yotam_docs/README.md). The inline default (Mode A) in this
-#   resolver still works for any script that lives in himmel, but it
-#   now points at a near-empty himmel/handovers/ — only the README stub
-#   that points at yotam_docs remains there. To get the migrated
-#   content, set HANDOVER_DIR to yotam_docs/handovers in the shell that
-#   launches Claude:
+# Deployment guidance (HIMMEL-335):
+#   Mode A (inline <repo>/handovers/) is the default and works out of the
+#   box. To centralize handover state in a separate repo (Mode B) — so
+#   handover commits don't land on your feature branches — run
+#   `/handover-setup`: it prompts for the location and writes HANDOVER_DIR
+#   into <repo>/.env. The shell loader scripts/lib/load-dotenv.sh feeds
+#   that value to handover scripts; you can also export it directly:
 #
-#       export HANDOVER_DIR="$HOME/Documents/github/yotam_docs/handovers"
+#       export HANDOVER_DIR="/abs/path/to/your-state-repo/handovers"
 #
 #   HIMMEL-129 (done 2026-05-25) shipped the bucket-layout layer that
 #   splits <state-root>/ into per-repo subfolders
