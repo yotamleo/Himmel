@@ -208,6 +208,56 @@ else
 fi
 git -C "$REPO" checkout -q main
 
+# ── HIMMEL-297: master-default repo ─────────────────────────────────────────
+# A repo whose default branch is `master` (no `main` ref at all). Pre-fix the
+# hook diffed against a non-existent `main` and skipped with a WARNING (false
+# no-marker). Post-fix default_branch resolves master, so: master branch skips,
+# and a feature branch with code writes a full-lane marker against master.
+
+echo "TEST: master-default repo — master branch -> exit 0, no marker"
+MREPO="$TMP_ROOT/mrepo"
+git init -q --initial-branch=master "$MREPO" 2>/dev/null || {
+    git init -q "$MREPO"
+    git -C "$MREPO" symbolic-ref HEAD refs/heads/master || true
+}
+git -C "$MREPO" -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "init"
+git -C "$MREPO" branch -m master 2>/dev/null || true
+
+run_hook_m() { ( cd "$MREPO" && bash "$HOOK" 2>&1 ); }
+mmarker_path() {
+    local branch="$1" git_dir
+    git_dir=$(git -C "$MREPO" rev-parse --git-common-dir)
+    case "$git_dir" in /*|?:/*|?:\\*) ;; *) git_dir="$MREPO/$git_dir" ;; esac
+    echo "${git_dir}/cr-pending/${branch}"
+}
+
+rc=0
+out=$(run_hook_m) || rc=$?
+mm=$(mmarker_path master)
+if [ "$rc" -eq 0 ] && [ ! -f "$mm" ]; then
+    pass "master branch -> exit 0, no marker"
+else
+    fail "master branch -> expected exit 0 + no marker" "rc=$rc marker=$mm out=$out"
+fi
+
+echo "TEST: master-default repo — feat branch with code diff -> full marker (diff_base=master)"
+git -C "$MREPO" checkout -q -b feat/on-master
+echo "function f() {}" > "$MREPO/code.sh"
+git -C "$MREPO" -c user.email=t@test.com -c user.name=test add code.sh
+git -C "$MREPO" -c user.email=t@test.com -c user.name=test commit -q -m "code"
+out=$(run_hook_m)
+mfeat=$(mmarker_path feat/on-master)
+if [ -f "$mfeat" ]; then
+    lane_m=$(awk -F' [|] ' '{print $3; exit}' "$mfeat" 2>/dev/null || true)
+    if [ "$lane_m" = "full" ]; then
+        pass "master-default feat+code -> full marker (resolved master as diff base)"
+    else
+        fail "master-default marker lane '$lane_m' != full" "out: $out"
+    fi
+else
+    fail "expected marker for code diff in master-default repo (proves master base resolved, not skipped)" "out: $out"
+fi
+
 # ── HIMMEL-295: ancestor-preference for diff_base ───────────────────────────
 #
 # Set up a second repo that acts as origin, advance it ahead of local main,

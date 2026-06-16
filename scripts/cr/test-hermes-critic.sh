@@ -104,5 +104,25 @@ unset STUB_PROMPT_CAPTURE
 grep -q "CONTEXT PACK TRUNCATED AT 200 BYTES" "$work/pack-capture" || fail "truncation: sentinel missing from pack"
 echo "  ok" >&2
 
+# 7. Master-default repo, NO --base → auto-resolves the diff base via the
+#    master arm of the merge-base fallback chain (HIMMEL-297). With no `main`
+#    anywhere, origin/main / origin/master / main all miss and `master` is the
+#    arm that resolves; reaching the stub at all (exit 0) proves a base was
+#    found rather than the "could not resolve a diff base" exit 2.
+echo "test: master-default auto-resolve base" >&2
+mrepo="$work/mrepo"
+mkdir -p "$mrepo"
+git -C "$mrepo" init -q -b master
+git -C "$mrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+git -C "$mrepo" checkout -q -b feat/x
+printf 'echo hi\n' > "$mrepo/app.sh"
+git -C "$mrepo" add app.sh
+git -C "$mrepo" -c user.email=t@t -c user.name=t commit -q -m change
+out="$(STUB_RESPONSE='{"passed": true, "security_concerns": [], "logic_errors": [], "architectural_mismatches": [], "suggestions": [], "summary": "ok"}' \
+    bash "$CRITIC" --repo "$mrepo" --goal "test goal")"
+rc=$?
+[ "$rc" -eq 0 ] || fail "master-default auto-resolve: expected exit 0 (base resolved via master arm), got $rc"
+echo "  ok" >&2
+
 echo "PASS: all hermes-critic.sh tests passed." >&2
 exit 0

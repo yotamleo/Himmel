@@ -44,6 +44,21 @@ export HOME="$ISOLATED_HOME"
 # Also clear GIT_CONFIG_GLOBAL for git 2.32+ which has its own override.
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM 2>/dev/null || true
 
+# Stub `gh` as an exported shell function so the resolver's GitHub-username
+# source is deterministic (a real gh would resolve to the operator's login and
+# mask the git-config fallback + refuse paths). A function shadows gh portably —
+# no PATH/.exe lookup quirks on Git Bash. Prints $STUB_GH_LOGIN when set, else
+# returns non-zero (= gh unauthenticated). export -f so the resolve() subshell
+# and `bash -c` children inherit it.
+gh() {
+    if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+        if [ -n "${STUB_GH_LOGIN:-}" ]; then printf '%s' "$STUB_GH_LOGIN"; return 0; fi
+        return 1
+    fi
+    return 1
+}
+export -f gh
+
 # Each test runs in an isolated tmp repo so git config doesn't pollute
 # globally.
 REPO="$TMP_ROOT/repo"
@@ -113,6 +128,20 @@ echo "TEST: empty USER_SLUG falls through"
 out=$(USER_SLUG='' resolve 2>/dev/null) && rc=0 || rc=$?
 assert_eq "empty env rc=0" "0" "$rc"
 assert_eq "empty env -> git" "fred" "$out"
+
+# Test 7: GitHub username (gh) takes precedence over git config ------
+echo "TEST: gh api user login -> slugified, preferred over git config"
+( cd "$REPO" && git config user.name "Should Not Win" )
+out=$(USER_SLUG='' STUB_GH_LOGIN='Octocat-Hub' resolve 2>/dev/null) && rc=0 || rc=$?
+assert_eq "gh source rc=0" "0" "$rc"
+assert_eq "gh login slugified, beats git config" "octocat-hub" "$out"
+
+# Test 8: verify reports the GitHub username source -----------------
+echo "TEST: user_slug_verify reports the gh source"
+out=$(USER_SLUG='' STUB_GH_LOGIN='Octocat-Hub' bash -c "set -uo pipefail; cd '$REPO'; . '$LIB'; user_slug_verify" 2>&1) && rc=0 || rc=$?
+assert_eq "verify gh rc=0" "0" "$rc"
+assert_contains "verify mentions gh source" "GitHub username via gh api user" "$out"
+assert_contains "verify reports gh slug" "octocat-hub" "$out"
 
 echo
 echo "===================================="

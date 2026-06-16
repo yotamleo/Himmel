@@ -25,11 +25,22 @@
 # subprocess block is gone.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# default_branch() resolves the repo's protected default (main OR master,
+# HIMMEL-297) used as the diff base below. Fail-closed: a missing guardrail
+# substrate means we cannot compute the right base, so refuse the push.
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+    echo "→ code-review: cannot source guardrails/lib.sh — refusing the push (fix the guardrail lib or bypass with SKIP_CR=1)" >&2
+    exit 2
+fi
+
 branch=$(git branch --show-current)
 
-# Skip on main / detached HEAD — pushing main is blocked elsewhere and there's
-# no meaningful diff to review.
-if [ -z "$branch" ] || [ "$branch" = "main" ]; then
+# Skip on a protected default (main OR master) / detached HEAD — pushing the
+# default branch is blocked elsewhere and there's no meaningful diff to review.
+if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
     exit 0
 fi
 
@@ -40,25 +51,27 @@ if [ "${SKIP_CR:-0}" = "1" ]; then
 fi
 
 # Resolve diff base: prefer the more up-to-date ref.
-# When both 'main' and 'origin/main' exist and local 'main' is an ancestor of
-# 'origin/main' (i.e. origin is ahead), use 'origin/main' so we don't diff
-# against a stale local copy and generate false-positive markers. No network
-# call — git merge-base --is-ancestor uses only locally-fetched refs.
-# If neither ref exists, skip with WARNING.
+# 'db' is the repo's protected default (main OR master, HIMMEL-297). When both
+# the local 'db' and 'origin/db' exist and local 'db' is an ancestor of
+# 'origin/db' (i.e. origin is ahead), use 'origin/db' so we don't diff against a
+# stale local copy and generate false-positive markers. No network call — git
+# merge-base --is-ancestor uses only locally-fetched refs. If neither ref
+# exists, skip with WARNING.
+db=$(default_branch)
 diff_base=""
-if git rev-parse --verify --quiet main >/dev/null && \
-   git rev-parse --verify --quiet origin/main >/dev/null; then
-    if git merge-base --is-ancestor main origin/main 2>/dev/null; then
-        diff_base=origin/main
+if git rev-parse --verify --quiet "$db" >/dev/null && \
+   git rev-parse --verify --quiet "origin/$db" >/dev/null; then
+    if git merge-base --is-ancestor "$db" "origin/$db" 2>/dev/null; then
+        diff_base="origin/$db"
     else
-        diff_base=main
+        diff_base="$db"
     fi
-elif git rev-parse --verify --quiet main >/dev/null; then
-    diff_base=main
-elif git rev-parse --verify --quiet origin/main >/dev/null; then
-    diff_base=origin/main
+elif git rev-parse --verify --quiet "$db" >/dev/null; then
+    diff_base="$db"
+elif git rev-parse --verify --quiet "origin/$db" >/dev/null; then
+    diff_base="origin/$db"
 else
-    echo "→ code-review: no 'main' or 'origin/main' ref — skipping (WARNING: cannot compute diff for review)" >&2
+    echo "→ code-review: no '$db' or 'origin/$db' ref — skipping (WARNING: cannot compute diff for review)" >&2
     exit 0
 fi
 

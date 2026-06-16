@@ -50,7 +50,7 @@ guard_call() {
 #
 # Detached-HEAD handling: prints empty string and returns rc=1 (no current
 # branch). Callers MUST distinguish empty branch from a valid branch name -
-# `is_on_main` does this via the string compare to "main".
+# `is_on_main` does this via the string compare to main/master.
 _branch() {
     local dir="${1:-.}"
     local git_dir
@@ -78,22 +78,47 @@ _branch() {
     esac
 }
 
+# default_branch [DIR]
+# Resolves the repo's default/integration branch name (main or master).
+# Order: origin/HEAD symbolic-ref -> whichever of main/master exists locally
+# -> init.defaultBranch -> "main". Used as the diff base by the merged/behind
+# predicates + the CR diff-base scripts so they work on either default
+# (HIMMEL-297: support main AND master). Always prints a non-empty name.
+default_branch() {
+    local dir="${1:-.}" ref b
+    if ref=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null); then
+        b="${ref#origin/}"
+        [ -n "$b" ] && { printf '%s' "$b"; return 0; }
+    fi
+    if git -C "$dir" rev-parse --verify --quiet refs/heads/main >/dev/null 2>&1; then
+        printf 'main'; return 0
+    fi
+    if git -C "$dir" rev-parse --verify --quiet refs/heads/master >/dev/null 2>&1; then
+        printf 'master'; return 0
+    fi
+    b=$(git -C "$dir" config init.defaultBranch 2>/dev/null)
+    [ -n "$b" ] && { printf '%s' "$b"; return 0; }
+    printf 'main'
+}
+
 # is_on_main [DIR]
-# True iff current branch is exactly "main".
-# Returns 1 on detached HEAD (no current branch is "main").
+# True iff current branch is a protected default branch (main OR master).
+# Returns 1 on detached HEAD / feature branch; rc=2 if branch can't be read.
+# (Name kept for caller stability; semantics widened to main+master — HIMMEL-297.)
 is_on_main() {
     local b rc
     b=$(_branch "${1:-.}"); rc=$?
     if [ "$rc" -eq 2 ]; then return 2; fi
-    [ "$b" = "main" ]
+    [ "$b" = "main" ] || [ "$b" = "master" ]
 }
 
 # is_main_ref REF
-# True iff REF is refs/heads/main. Used by check-push-target.sh which reads
-# remote refs from git's pre-push stdin contract.
-# UNLIKE the other predicates, this takes a REF string (not a directory).
+# True iff REF is refs/heads/main OR refs/heads/master. Used by
+# check-push-target.sh which reads remote refs from git's pre-push stdin.
+# Both protected branches match so a direct push to either is blocked
+# (HIMMEL-297). UNLIKE the other predicates, this takes a REF string.
 is_main_ref() {
-    [ "${1:-}" = "refs/heads/main" ]
+    [ "${1:-}" = "refs/heads/main" ] || [ "${1:-}" = "refs/heads/master" ]
 }
 
 # is_dirty [DIR]
@@ -108,6 +133,9 @@ is_dirty() {
 }
 
 # is_merged_into_main [DIR]
+# NOTE (HIMMEL-297): "main" throughout this docstring denotes the resolved
+# default branch (main OR master) per default_branch() — the predicate operates
+# against whichever is the repo's default, not literally "main".
 # True iff current branch is reachable from main via either:
 #   (a) direct merge: `git branch --merged main` lists it
 #   (b) squash-merge: every commit on this branch has a patch-equivalent
@@ -117,8 +145,9 @@ is_dirty() {
 #   - detached HEAD
 #   - branches at main's tip with NO divergence either way
 #     (ahead=0 AND behind=0); see HIMMEL-114 short-circuit
-# Returns 2 if local `main` ref is missing or git plumbing fails (predicate
-# cannot be evaluated - e.g., shallow clones missing the merge base).
+# Returns 2 if the resolved default-branch ref (main or master) is missing or
+# git plumbing fails (predicate cannot be evaluated - e.g., shallow clones
+# missing the merge base).
 #
 # Known limitations (chosen tradeoffs, NOT bugs):
 # - FAST-FORWARD MERGE AMBIGUITY (HIMMEL-114): a branch that was FF-merged
@@ -142,13 +171,16 @@ is_merged_into_main() {
     local b rc
     b=$(_branch "$dir"); rc=$?
     if [ "$rc" -eq 2 ]; then return 2; fi
-    # rc=1 (detached HEAD) or empty/main branch => not a merged feature branch.
-    if [ -z "$b" ] || [ "$b" = "main" ]; then
+    # rc=1 (detached HEAD) or empty/default branch => not a merged feature branch.
+    if [ -z "$b" ] || [ "$b" = "main" ] || [ "$b" = "master" ]; then
         return 1
     fi
-    # Bail with rc=2 when we cannot resolve `main` - the rest of this function
-    # would silently produce a false answer otherwise.
-    if ! git -C "$dir" rev-parse --verify --quiet refs/heads/main >/dev/null 2>&1; then
+    # Resolve the default branch (main or master) to use as the merge base.
+    local db
+    db=$(default_branch "$dir")
+    # Bail with rc=2 when we cannot resolve the default branch - the rest of
+    # this function would silently produce a false answer otherwise.
+    if ! git -C "$dir" rev-parse --verify --quiet "refs/heads/$db" >/dev/null 2>&1; then
         return 2
     fi
 
@@ -162,8 +194,8 @@ is_merged_into_main() {
     # SHA because `git branch --merged main` lists every ref at main's SHA,
     # which blocked the FIRST commit on docs/feat branches.
     local ahead behind
-    ahead=$(git -C "$dir" rev-list main..HEAD --count 2>/dev/null) || return 2
-    behind=$(git -C "$dir" rev-list HEAD..main --count 2>/dev/null) || return 2
+    ahead=$(git -C "$dir" rev-list "$db..HEAD" --count 2>/dev/null) || return 2
+    behind=$(git -C "$dir" rev-list "HEAD..$db" --count 2>/dev/null) || return 2
     if [ "$ahead" = "0" ] && [ "$behind" = "0" ]; then
         # Branch is at main's SHA with no divergence in either direction.
         return 1
@@ -176,7 +208,7 @@ is_merged_into_main() {
     # earlier pipeline element gets killed mid-write and the pipeline rc is
     # misread as success.
     local merged_raw merged
-    merged_raw=$(git -C "$dir" branch --merged main 2>/dev/null) || return 2
+    merged_raw=$(git -C "$dir" branch --merged "$db" 2>/dev/null) || return 2
     merged=$(printf '%s\n' "$merged_raw" | sed 's/^[* ]*//' | grep -Fx -- "$b" || true)
     if [ -n "$merged" ]; then
         return 0
@@ -185,7 +217,7 @@ is_merged_into_main() {
     # Squash-merge arm: every commit cherry-pick-equivalent on main.
     # Capture first to avoid SIGPIPE races (see merged_raw note above).
     local unique_raw unique
-    unique_raw=$(git -C "$dir" log --cherry-pick --right-only --no-merges "main...HEAD" --pretty=format:'%h' 2>/dev/null) || return 2
+    unique_raw=$(git -C "$dir" log --cherry-pick --right-only --no-merges "$db...HEAD" --pretty=format:'%h' 2>/dev/null) || return 2
     unique=$(printf '%s' "$unique_raw" | head -1)
     if [ -z "$unique" ]; then
         return 0
@@ -194,16 +226,19 @@ is_merged_into_main() {
 }
 
 # is_behind_origin_main [DIR]
-# True iff origin/main has commits not in HEAD. Caller is responsible for
-# running `git fetch` first if freshness matters - this predicate reads the
-# current refs as-is.
-# Returns 1 (not behind) if origin/main ref doesn't exist locally.
+# True iff origin/<default> has commits not in HEAD, where <default> is the
+# resolved default branch (main OR master) per default_branch() — HIMMEL-297.
+# Caller is responsible for running `git fetch` first if freshness matters -
+# this predicate reads the current refs as-is.
+# Returns 1 (not behind) if the origin/<default> ref doesn't exist locally.
 is_behind_origin_main() {
     local dir="${1:-.}"
-    if ! git -C "$dir" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null 2>&1; then
+    local db
+    db=$(default_branch "$dir")
+    if ! git -C "$dir" rev-parse --verify --quiet "refs/remotes/origin/$db" >/dev/null 2>&1; then
         return 1
     fi
     local behind
-    behind=$(git -C "$dir" rev-list HEAD..origin/main --count 2>/dev/null) || return 2
+    behind=$(git -C "$dir" rev-list "HEAD..origin/$db" --count 2>/dev/null) || return 2
     [ "${behind:-0}" -gt 0 ]
 }

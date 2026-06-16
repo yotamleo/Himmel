@@ -156,12 +156,14 @@ git_subcmd_is_read() {
 #   * subcommand is `push` AND a `--force-with-lease[=…]` flag is present;
 #   * NO bare `--force` / `-f` anywhere (the no-lease form clobbers without the
 #     stale-tip check, so it stays deny-listed);
-#   * NO token names main as the push target (`main`, `origin/main`,
-#     `refs/heads/main`, `…:main`, `main:…`);
-#   * current HEAD resolves to a branch that is NOT main (detached HEAD, empty,
-#     or non-repo → NOT granted; fail safe).
+#   * NO token names main OR master as the push target (`main`, `origin/main`,
+#     `refs/heads/main`, `…:main`, `main:…`, and the `master` equivalents —
+#     HIMMEL-297, both are protected defaults);
+#   * current HEAD resolves to a branch that is NOT main/master (detached HEAD,
+#     empty, or non-repo → NOT granted; fail safe).
 # Not granted → falls through to the normal prompt; the pre-push hook still
-# hard-refuses any force to main, so this is defense in depth, not the sole gate.
+# hard-refuses any force to main/master, so this is defense in depth, not the
+# sole gate.
 git_push_force_with_lease_is_safe() {
     local -a g=("$@")            # g[0] == git
     local n=${#g[@]} j=1 t
@@ -184,10 +186,13 @@ git_push_force_with_lease_is_safe() {
         case "$k" in
             --force-with-lease|--force-with-lease=*) has_lease=1 ;;
             --force|-f)                              has_bare_force=1 ;;
-            # Any refspec that writes remote main — incl. the `+`-force prefix
-            # (`+main` ≡ `+main:main`) and explicit `src:main` colon forms.
+            # Any refspec that writes remote main OR master (both protected
+            # defaults, HIMMEL-297) — incl. the `+`-force prefix (`+main` ≡
+            # `+main:main`) and explicit `src:main` colon forms.
             main|+main|origin/main|+origin/main|refs/heads/main|+refs/heads/main|\
-            *:main|*:refs/heads/main|main:*) targets_main=1 ;;
+            *:main|*:refs/heads/main|main:*|\
+            master|+master|origin/master|+origin/master|refs/heads/master|+refs/heads/master|\
+            *:master|*:refs/heads/master|master:*) targets_main=1 ;;
         esac
     done
     [ "$has_lease" -eq 1 ]      || return 1
@@ -195,8 +200,10 @@ git_push_force_with_lease_is_safe() {
     [ "$targets_main" -eq 1 ]   && return 1
     local br
     br=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
+    # main AND master are both protected defaults (HIMMEL-297) — never
+    # auto-approve a lease push made while sitting on either.
     case "$br" in
-        ''|HEAD|main) return 1 ;;
+        ''|HEAD|main|master) return 1 ;;
     esac
     return 0
 }

@@ -27,7 +27,8 @@
 #   hermes-critic.sh [--repo <dir>] [--base <ref>] [--goal "<text>"|--goal-file <p>]
 #                    [--model <name>] [--max-pack-bytes <n>]
 #
-# Defaults: repo = cwd; base = merge-base with origin/main (fallback main);
+# Defaults: repo = cwd; base = merge-base with the default branch — origin/main,
+# origin/master, main, then master in order (HIMMEL-297);
 # model = nvidia/nemotron-3-nano-30b-a3b (spike 2026-06-12: 8s latency,
 # strict JSON obedience on NIM free tier; the 550b ultra took 105s+ on a
 # trivial prompt and times out on review-shaped ones).
@@ -81,15 +82,20 @@ if [ -n "$goal_file" ]; then
 fi
 [ -n "$goal" ] || goal="(no task goal provided — review the change on its own merits)"
 
-# Resolve the diff base: explicit --base, else merge-base with origin/main,
-# else main. The diff is the FINAL code change only (reviewer isolation).
-# Two-dot semantics ($base HEAD) everywhere: with a merge-base SHA the result
-# equals three-dot, and with an explicit --base ref two-dot is what the
-# caller literally asked to compare against.
+# Resolve the diff base: explicit --base, else merge-base with the default
+# branch (main OR master, HIMMEL-297) — origin first, then local. The diff is
+# the FINAL code change only (reviewer isolation). Two-dot semantics ($base
+# HEAD) everywhere: with a merge-base SHA the result equals three-dot, and with
+# an explicit --base ref two-dot is what the caller literally asked to compare
+# against.
 if [ -z "$base" ]; then
-    base="$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || echo "")"
+    base="$(git merge-base HEAD origin/main 2>/dev/null \
+        || git merge-base HEAD origin/master 2>/dev/null \
+        || git merge-base HEAD main 2>/dev/null \
+        || git merge-base HEAD master 2>/dev/null \
+        || echo "")"
 fi
-[ -n "$base" ] || { echo "hermes-critic.sh: could not resolve a diff base (no origin/main or main merge-base — pass --base)" >&2; exit 2; }
+[ -n "$base" ] || { echo "hermes-critic.sh: could not resolve a diff base (no origin/main, origin/master, main, or master merge-base — pass --base)" >&2; exit 2; }
 
 diff_text="$(git diff "$base" HEAD)" || { echo "hermes-critic.sh: git diff failed for base $base" >&2; exit 2; }
 if [ -z "$diff_text" ]; then
