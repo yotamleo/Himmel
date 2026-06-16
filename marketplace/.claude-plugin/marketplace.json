@@ -65,7 +65,7 @@
       "source": {
         "source": "github",
         "repo": "yotamleo/claude-obsidian",
-        "ref": "8958b25164de18e235b8ba56d003425a7bcafd1b"
+        "ref": "f102ee61bf5c00f78bb0af134501bc3020cdf66e"
       },
       "description": "[yotamleo fork — vendor + attribution only, no upstream PR] Claude + Obsidian knowledge companion. Wiki query, save, ingest, lint, autoresearch. Companion to obsidian-triage — its wiki-query skill optionally powers the Phase 4 Related Notes link-graph traversal. Pinned to a commit SHA per himmel supply-chain policy (see marketplace/plugins/obsidian-triage/README.md § Pin update workflow). Original: AgriciDaniel/claude-obsidian.",
       "author": {
