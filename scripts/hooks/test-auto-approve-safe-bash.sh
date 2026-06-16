@@ -240,6 +240,13 @@ assert "lease+bare force on feat"  PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git
 assert "fwl targets main ref"      PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin main')")"
 assert "fwl targets origin/main"   PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin HEAD:main')")"
 assert "fwl +main force refspec"   PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin +main')")"
+# HIMMEL-297: master is a protected default too — targeting it is refused
+# even from a feature branch, same as main.
+assert "fwl targets master ref"    PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin master')")"
+assert "fwl targets HEAD:master"   PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin HEAD:master')")"
+assert "fwl +master force refspec" PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin +master')")"
+assert "fwl targets origin/master" PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin/master')")"
+assert "fwl master:* refspec"      PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin master:feat/x')")"
 # Exec-sink global flags refuse even with a lease push.
 assert "fwl with -c pager sink"    PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git -c core.pager=sh push --force-with-lease')")"
 # A plain (non-force) push still falls through — unchanged behavior.
@@ -248,6 +255,10 @@ assert "plain push still PASS"     PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git
 # On main: even a lease push is NOT auto-approved (fail safe; pre-push refuses).
 git -C "$FWL_REPO" checkout -q main
 assert "fwl on main branch"        PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease')")"
+# On master: master is a protected default too (HIMMEL-297) — a lease push made
+# while sitting on master is NOT auto-approved either.
+git -C "$FWL_REPO" checkout -q -b master
+assert "fwl on master branch"      PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease')")"
 # Detached HEAD: branch unresolvable → NOT granted.
 git -C "$FWL_REPO" checkout -q --detach
 assert "fwl detached HEAD"         PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease')")"

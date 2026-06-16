@@ -115,7 +115,7 @@ Bootstrap a **new** target repo (no existing state). Refuses if `<repo-root>/han
 
 Full spec: `references/init-register.md`.
 
-Short flow: prompt for name, path (default = `parent(--git-common-dir)` of cwd, canonicalised), user (default = slugged `git config user.name`), aliases. Create state dirs (`epics/`, `standalones/`, `_templates/`). Seed default templates from `${CLAUDE_PLUGIN_ROOT}/templates/` into `<state-root>/_templates/`. Write empty `status.md`, `backlog.md`. Register in `~/.claude/handover/registry.json` (atomic write).
+Short flow: prompt for name, path (default = `parent(--git-common-dir)` of cwd, canonicalised), user (default = resolved via `scripts/lib/user-slug.sh`: GitHub username via `gh api user`, else slugged `git config user.name`), aliases. Create state dirs (`epics/`, `standalones/`, `_templates/`). Seed default templates from `${CLAUDE_PLUGIN_ROOT}/templates/` into `<state-root>/_templates/`. Write empty `status.md`, `backlog.md`. Register in `~/.claude/handover/registry.json` (atomic write).
 
 - After seeding `_templates/`, generate the first `roadmap.md` and `tech-debt.md` in `<state-root>/` by copying the `_templates/roadmap.md` and `_templates/tech-debt.md` files and filling in the active bucket vocab names + empty sections.
 

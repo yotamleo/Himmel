@@ -16,11 +16,22 @@
 # log file. Pass --verbose to stream everything to the terminal too.
 #
 # Side effects:
-#   1. git fetch origin main (refresh refs only — does not modify local main)
-#   2. git worktree add <path> -b <branch> origin/main
+#   1. git fetch origin <default> (refresh refs only — does not modify local
+#      default branch; <default> = main OR master, resolved per HIMMEL-297)
+#   2. git worktree add <path> -b <branch> origin/<default>
 #   3. Unless --no-install: npm install --omit=dev in scripts/jira/ so the
 #      pre-push license-check hook can validate without per-push setup.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# default_branch() resolves the repo's default integration branch (main OR
+# master) so new worktrees branch off the real default (HIMMEL-297).
+# shellcheck source=guardrails/lib.sh
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/guardrails/lib.sh" 2>/dev/null; then
+    echo "ERR new-worktree: cannot source guardrails/lib.sh" >&2
+    exit 1
+fi
 
 usage() {
     echo "Usage: $0 <branch-name> [--no-install] [--verbose]" >&2
@@ -62,6 +73,10 @@ COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null) || { echo "ERR new-work
 # resolve to absolute via `cd`-and-`pwd` so PRIMARY_WORKTREE is reliable.
 PRIMARY_WORKTREE=$(cd "$(dirname "$COMMON_DIR")" && pwd)
 
+# Resolve the repo's default integration branch (main OR master, HIMMEL-297)
+# so the fetch + worktree-add below target the real default.
+DEFAULT_BRANCH=$(default_branch "$PRIMARY_WORKTREE")
+
 WORKTREE_RELATIVE=".claude/worktrees/${BRANCH//\//+}"
 WORKTREE_PATH="$PRIMARY_WORKTREE/$WORKTREE_RELATIVE"
 LOG="${TMPDIR:-/tmp}/new-worktree-$(date +%Y%m%d-%H%M%S)-$$.log"
@@ -88,7 +103,7 @@ fi
     echo "=== new-worktree $BRANCH @ $(date -Iseconds) ==="
 } >>"$LOG"
 
-if ! run git -C "$PRIMARY_WORKTREE" fetch origin main --quiet; then
+if ! run git -C "$PRIMARY_WORKTREE" fetch origin "$DEFAULT_BRANCH" --quiet; then
     # Common unattended-run failure (e.g. arm-resume relaunch): git's stored
     # credential (Windows Git Credential Manager, or an expired PAT git uses) is
     # stale while `gh` holds a SEPARATE valid token. `gh auth setup-git` wires git
@@ -102,7 +117,7 @@ if ! run git -C "$PRIMARY_WORKTREE" fetch origin main --quiet; then
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
         echo "WARN new-worktree: git fetch failed; gh is authenticated — running 'gh auth setup-git' and retrying" >&2
         run gh auth setup-git || true
-        if ! run git -C "$PRIMARY_WORKTREE" fetch origin main --quiet; then
+        if ! run git -C "$PRIMARY_WORKTREE" fetch origin "$DEFAULT_BRANCH" --quiet; then
             echo "ERR new-worktree: git fetch still failing after gh auth setup-git retry — auth may not be the cause; see log: $LOG" >&2
             exit 1
         fi
@@ -111,7 +126,7 @@ if ! run git -C "$PRIMARY_WORKTREE" fetch origin main --quiet; then
         exit 1
     fi
 fi
-if ! run git -C "$PRIMARY_WORKTREE" worktree add "$WORKTREE_RELATIVE" -b "$BRANCH" origin/main; then
+if ! run git -C "$PRIMARY_WORKTREE" worktree add "$WORKTREE_RELATIVE" -b "$BRANCH" "origin/$DEFAULT_BRANCH"; then
     echo "ERR new-worktree: worktree add failed (log: $LOG)" >&2
     exit 1
 fi

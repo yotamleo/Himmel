@@ -190,9 +190,11 @@ Handover bucket paths (`<state-root>/<USER_SLUG>/...`), registry.json
 Resolved by `scripts/lib/user-slug.sh`:
 
 1. `$USER_SLUG` env var (preferred — explicit operator intent).
-2. `git config user.name` slugified (kebab-case, lowercase, non-alnum
-   → dash, ≤30 chars).
-3. Fail with a hint pointing at `.env.example` + `git config` setup.
+2. GitHub username via `gh api user -q .login`, slugified (HIMMEL-297 — the
+   slug is the GitHub user id; one network call, gated behind `$USER_SLUG`).
+3. `git config user.name` slugified (kebab-case, lowercase, non-alnum
+   → dash, ≤30 chars) — offline fallback when gh is absent/unauthenticated.
+4. Fail with a hint pointing at `.env.example` + `gh auth` / `git config` setup.
 
 Callers source the lib + call `user_slug` (raw) or `user_slug_verify`
 (prints resolved value + source to stderr; used in `setup.sh`'s

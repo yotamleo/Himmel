@@ -38,8 +38,10 @@ Steps:
 
    **Step 3.0 — gemini first-pass (decimal substep, runs BEFORE any Agent dispatch):**
    ```bash
+   # Resolve the protected default (main OR master, HIMMEL-297) for the diff base.
+   db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
    diff_rc=0
-   diff_out=$(git diff main...HEAD) || diff_rc=$?
+   diff_out=$(git diff "$db...HEAD") || diff_rc=$?
    if [ "$diff_rc" -ne 0 ]; then
        # git itself failed — treat as gemini first-pass unavailable, not empty-diff skip.
        echo "gemini first-pass unavailable — claude-only review (git diff failed rc=$diff_rc: $diff_out)" >&2
@@ -54,7 +56,7 @@ Steps:
        #       retry once with the rtk proxy form below before falling back.)
    fi
    ```
-   If the environment token-proxies git (rtk), the plain git diff above returns a stat summary, not a unified diff — the script exits 2 ('stdin is not a unified diff'). Produce the diff with `rtk proxy git diff main...HEAD` in that case.
+   If the environment token-proxies git (rtk), the plain git diff above returns a stat summary, not a unified diff — the script exits 2 ('stdin is not a unified diff'). Produce the diff with `rtk proxy git diff "$db...HEAD"` in that case.
 
    The script's `[gemini-N]` Critical/Important findings are BLOCKING
    CANDIDATES under the adjudication rules below. Its Suggestions are NOT

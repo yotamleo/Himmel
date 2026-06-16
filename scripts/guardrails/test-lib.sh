@@ -173,6 +173,67 @@ is_merged_into_main "$d"; rc=$?
 if [ "$rc" -eq 0 ]; then pass "squash-merged -> true"; else fail "squash-merged -> expected 0 got $rc"; fi
 rm -rf "$d"
 
+# HIMMEL-297: master is a protected default too. A repo whose default branch is
+# `master` (no `main` ref at all) must resolve default_branch=master, treat
+# master as on-main, and use master as the merge/behind base.
+setup_master_repo() {
+    # $1 = branch name to leave HEAD on
+    local dir
+    dir="$(mktemp -d)"
+    git -C "$dir" init -q -b master
+    git -C "$dir" config user.email t@t
+    git -C "$dir" config user.name t
+    git -C "$dir" commit --allow-empty -q -m "init"
+    if [ "$1" != "master" ]; then
+        git -C "$dir" checkout -q -b "$1"
+    fi
+    printf '%s' "$dir"
+}
+
+echo "== master-default repo (HIMMEL-297) =="
+d=$(setup_master_repo master)
+db=$(default_branch "$d")
+if [ "$db" = "master" ]; then pass "default_branch -> master"; else fail "default_branch -> expected master got [$db]"; fi
+if is_on_main "$d"; then pass "is_on_main on master -> true"; else fail "is_on_main master -> expected 0 got $?"; fi
+if is_main_ref refs/heads/master; then pass "is_main_ref master -> true"; else fail "is_main_ref master -> expected 0"; fi
+rm -rf "$d"
+
+echo "== is_merged_into_main: master base =="
+d=$(setup_master_repo feat/m)
+git -C "$d" commit --allow-empty -q -m "feat: m"
+git -C "$d" checkout -q master
+git -C "$d" merge --no-ff -q feat/m -m "merge"
+git -C "$d" checkout -q feat/m
+is_merged_into_main "$d"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "merged into master -> true"; else fail "merged into master -> expected 0 got $rc"; fi
+rm -rf "$d"
+
+d=$(setup_master_repo feat/n)
+git -C "$d" commit --allow-empty -q -m "feat: n"
+is_merged_into_main "$d"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "unmerged (master base) -> false"; else fail "unmerged (master base) -> expected 1 got $rc"; fi
+rm -rf "$d"
+
+echo "== is_behind_origin_main: master default =="
+# Bare origin whose default is master; clone wires origin/HEAD -> origin/master,
+# so default_branch resolves master and the behind check reads origin/master.
+origin=$(mktemp -d)
+git -C "$origin" init -q --bare -b master
+work=$(mktemp -d)
+git clone -q "$origin" "$work"
+git -C "$work" config user.email t@t
+git -C "$work" config user.name t
+git -C "$work" commit --allow-empty -q -m "base"
+git -C "$work" push -q origin master
+git -C "$work" checkout -q -b feat/z
+git -C "$work" checkout -q master
+git -C "$work" commit --allow-empty -q -m "advance"
+git -C "$work" push -q origin master
+git -C "$work" checkout -q feat/z
+git -C "$work" fetch -q origin
+if is_behind_origin_main "$work"; then pass "behind (master default) -> true"; else fail "behind (master default) -> expected 0 got $?"; fi
+rm -rf "$work" "$origin"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
