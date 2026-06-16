@@ -12,6 +12,47 @@ is operator-personal and safely skippable.
 
 ---
 
+## Quickest path — one-shot adopt
+
+From a himmel clone, `scripts/adopt.sh` (or `adopt.ps1` on Windows) brings the
+whole harness over in **one command**. Pick a **profile** (a logical block) and
+a **scope**:
+
+```bash
+# The himmel harness — portable hooks + guardrails + worktree commands +
+# marketplace plugins/skills — wired into YOUR repo (project scope). Commit the
+# result and anyone who clones the repo gets it:
+bash scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
+
+# ...or at user scope (enabled for you in every project on this machine):
+bash scripts/adopt.sh --profile core --scope user
+
+# core + the luna second-brain vault scaffold (the vault goes to --luna-target,
+# default ~/Documents/luna; core still goes to --target):
+bash scripts/adopt.sh --profile all --scope project --target /path/to/your/repo
+```
+
+Windows: `pwsh scripts/adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo`.
+
+| Profile | Brings |
+|---------|--------|
+| `core` | portable hooks + guardrails + worktree commands + the marketplace plugins/skills + a requirements check |
+| `luna` | the luna second-brain vault scaffold (`templates/luna-second-brain`) |
+| `all`  | `core` + `luna` |
+
+`--scope project` copies the scripts into your repo and wires its
+`.claude/settings.json`; `--scope user` wires `~/.claude/settings.json` to
+reference the himmel clone. `--dry-run` previews; re-running is idempotent.
+(jira / qmd / telegram / handover stay à-la-carte — install those separately.)
+
+**Want only PARTS?** The manual steps below install just the portable hooks +
+worktree workflow; [`new-machine.md §6`](new-machine.md#scope-user-vs-project)
+covers installing just the plugins at a chosen scope; the
+[luna template README](../../templates/luna-second-brain/README.md) covers just
+the vault.
+
+---
+
 ## What you get out of the box
 
 Three hooks are portable — they have no himmel-specific dependencies and
