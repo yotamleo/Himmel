@@ -20,13 +20,37 @@ depth*, not a prerequisite — the steps below stand on their own.
 
 ## 1. Install (≈3 min hands-on, plus install time)
 
+Two ways in — pick by what you want.
+
+### A. Add himmel to your own project — *most people start here*
+
+Bring himmel's hooks, guardrails, worktree workflow, and marketplace
+plugins/skills into a repo you already have, in one command. The full adopter
+guide is **[use-on-your-project.md](setup/use-on-your-project.md)** — start
+there.
+
+**Prerequisites** (the adopt script checks them and fails fast with hints):
+`git`, `bash` 3.2+ (**Git Bash** on Windows), `jq`, `python3`, and the
+[Claude Code](https://claude.com/claude-code) CLI on your `PATH`. `gh` is
+optional — only the worktree-prune step uses it.
+
 ```bash
 git clone https://github.com/yotamleo/Himmel
-cd himmel
+bash Himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
+# Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
+```
 
-# Linux / macOS / Git Bash
-bash scripts/setup.sh
-# Windows PowerShell:  powershell -File scripts\setup.ps1
+`--profile core` brings the harness; `--scope project` wires it into your repo
+(commit the result and anyone who clones it gets it). Profiles
+(`core` / `luna` / `all`), `--scope user`, remove/move, and the à-la-carte parts
+are all in [use-on-your-project.md](setup/use-on-your-project.md).
+
+### B. Run / develop himmel itself standalone
+
+```bash
+git clone https://github.com/yotamleo/Himmel
+cd Himmel
+bash scripts/setup.sh    # Windows: powershell -File scripts\setup.ps1
 ```
 
 `setup.sh` is non-destructive and tells you exactly what it does at each step:
@@ -41,24 +65,11 @@ it any time; it is idempotent.
 > `export PATH="$HOME/.local/bin:$PATH"` to your shell rc (setup reminds you at
 > the end).
 
-Prefer to add himmel to an **existing repo** (or just your user scope)? One
-command from a himmel clone brings the harness over — hooks + guardrails +
-worktree commands + marketplace plugins/skills:
-
-```bash
-bash scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
-```
-
-Profiles (`core` / `luna` / `all`), scopes (`project` / `user`), the Windows
-`adopt.ps1` twin, and the à-la-carte parts are all in
-[use-on-your-project.md](setup/use-on-your-project.md).
-
-Installing the Claude Code plugins (handover, triage, obsidian, …)? You choose
-where they're recorded: **user scope** (`~/.claude`, available in every project
-— the default) or **project scope** (this repo's `.claude/settings.json`, shared
-with anyone who clones it). The plugin-install step prompts you, or pass
-`--scope` to `install-plugins` — see
-[plugin scope](setup/new-machine.md#scope-user-vs-project).
+Either way, when the Claude Code plugins (handover, triage, obsidian, …) get
+installed you choose where they're recorded: **user scope** (`~/.claude`, every
+project — the default) or **project scope** (this repo's `.claude/settings.json`,
+shared with anyone who clones it). The plugin step prompts you, or pass
+`--scope` — see [plugin scope](setup/new-machine.md#scope-user-vs-project).
 
 ## 2. Minimal config (≈1 minute)
 
