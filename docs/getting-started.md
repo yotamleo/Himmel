@@ -44,6 +44,13 @@ it any time; it is idempotent.
 Prefer to add himmel's portable core (hooks + worktree workflow) to an existing
 repo instead? See [use-on-your-project.md](setup/use-on-your-project.md).
 
+Installing the Claude Code plugins (handover, triage, obsidian, …)? You choose
+where they're recorded: **user scope** (`~/.claude`, available in every project
+— the default) or **project scope** (this repo's `.claude/settings.json`, shared
+with anyone who clones it). The plugin-install step prompts you, or pass
+`--scope` to `install-plugins` — see
+[plugin scope](setup/new-machine.md#scope-user-vs-project).
+
 ## 2. Minimal config (≈1 minute)
 
 himmel needs almost nothing to start:
