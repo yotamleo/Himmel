@@ -250,6 +250,52 @@ origin=$(mktemp -d)
 assert_rc "linked-worktree: docs-only feat, ignore origin-only code" 0 "$(run_in "$d" "SECURITY_REVIEW_NO_FETCH=1")"
 rm -rf "$d" "$origin"
 
+# --- HIMMEL-297: master-default repo ---
+# A repo whose default branch is master (no main ref). Pre-fix the hook found
+# neither origin/main nor local main and SKIPPED (false pass). Post-fix
+# default_branch resolves master, so a code file with no attestation BLOCKS,
+# and a push while sitting on master is skipped.
+make_master_repo() {
+    local files="$1" msg="$2" dir
+    dir=$(mktemp -d)
+    (
+        cd "$dir" || exit 1
+        git init -q -b master
+        git config user.email t@t
+        git config user.name t
+        echo r > README.md
+        git add README.md
+        git -c commit.gpgsign=false commit -q -m "init"
+        git checkout -q -b feat/x
+        # shellcheck disable=SC2086 # files is space-separated, intentional split
+        for f in $files; do
+            mkdir -p "$(dirname "$f")"
+            echo "x" > "$f"
+        done
+        git add -A
+        git -c commit.gpgsign=false commit -q -m "$msg"
+    )
+    echo "$dir"
+}
+
+d=$(make_master_repo "src/foo.ts" "feat: add foo")
+assert_rc "master-default: code + no attestation = block (base resolved to master)" 1 "$(run_in "$d" "SECURITY_REVIEW_NO_FETCH=1")"
+rm -rf "$d"
+
+d=$(mktemp -d)
+(
+    cd "$d" || exit 1
+    git init -q -b master
+    git config user.email t@t
+    git config user.name t
+    mkdir -p src
+    echo r > src/foo.ts
+    git add -A
+    git -c commit.gpgsign=false commit -q -m "feat: foo"
+) >/dev/null 2>&1
+assert_rc "on master branch — skip"                  0 "$(run_in "$d")"
+rm -rf "$d"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

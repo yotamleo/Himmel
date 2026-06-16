@@ -90,6 +90,14 @@ out=$( cd "$REPO" || exit 99; printf '' | bash "$HOOK" 2>&1 ) || rc=$?
 assert_rc "main rc=0" "0" "$rc"
 ( cd "$REPO" || exit 99; git checkout -q feat/test )
 
+# Test 1b: master branch -> exit 0 (HIMMEL-297) -----------------------
+echo "TEST: master branch exits 0 (HIMMEL-297 — master is a protected default too)"
+( cd "$REPO" || exit 99; git checkout -q -b master )
+rc=0
+out=$( cd "$REPO" || exit 99; printf '' | bash "$HOOK" 2>&1 ) || rc=$?
+assert_rc "master rc=0" "0" "$rc"
+( cd "$REPO" || exit 99; git checkout -q feat/test; git branch -D master 2>/dev/null || true )
+
 # Test 2: gh missing -> exit 0 ----------------------------------------
 echo "TEST: gh missing -> best-effort exit 0"
 rc=0
