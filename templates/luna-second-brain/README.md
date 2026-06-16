@@ -6,24 +6,32 @@ guardrails, and a SHA-pinned plugin marketplace so a fresh clone
 becomes a working AI-first second brain in under five minutes.
 
 luna-brain is the **skeleton**: the inert structure that turns into a
-personal vault on first run. Your live vault starts as a clone of this
-repo and accumulates content over time. The skeleton does not ship
+personal vault on first run. Your live vault starts as a copy of this
+template and accumulates content over time. The skeleton does not ship
 content — only the bones, hooks, and plugin pointers.
 
-> **Companion repo:** [himmel](https://github.com/yotamleo/Himmel) is
-> the dev engine that ships the worktree / handover / PR-flow tooling
-> luna-brain inherits. luna-brain reuses the subset that applies to a
-> vault repo (pre-commit, guardrails, handover-path resolver).
+> **Where this lives:** this template ships inside the public
+> [Himmel](https://github.com/yotamleo/Himmel) repo (the dev engine that
+> provides the worktree / handover / PR-flow tooling the vault inherits).
+> To create a vault, copy this folder *out* of Himmel into its own git
+> repo — see Quickstart.
 
 ## Quickstart
 
 Requires `bash`, `git`, `python3` (verified by `scripts/setup.sh` step
 `[1/6]`). See `docs/setup/new-machine.md` for per-platform install notes.
 
+This template lives inside Himmel, so the install is "copy the folder out,
+make it its own repo, run setup." Your vault **must** be its own git repo:
+`setup.sh` resolves `git rev-parse --show-toplevel`, so running it while the
+folder is still nested inside the Himmel checkout would target Himmel, not
+your vault.
+
 ```bash
 git clone https://github.com/yotamleo/Himmel
 cp -r Himmel/templates/luna-second-brain my-vault
 cd my-vault
+git init                                            # your vault is its own repo
 
 # Linux / macOS / Git Bash
 bash scripts/setup.sh
@@ -47,7 +55,14 @@ Optional: install `obsidian-second-brain` for PARA capture/daily/project
 skills. Operator-driven (3rd-party install.sh):
 <https://github.com/eugeniughelbur/obsidian-second-brain#install>
 
-Open the cloned folder in Obsidian to start using the vault.
+Open your vault folder in Obsidian to start using the vault.
+
+> **Keep your vault out of Himmel's history.** If you created the vault
+> *inside* the Himmel checkout (e.g. `Himmel/my-vault`) rather than as a
+> sibling, add its path to Himmel's `.gitignore` so your personal vault
+> content never lands in a Himmel commit. The cleanest layout is to keep
+> the vault as its own repo in a separate directory and delete the Himmel
+> clone you copied it from.
 
 **Plugin credentials:** `obsidian-local-rest-api`'s `data.json` is
 gitignored. When you enable that plugin in Obsidian the first time, it
@@ -125,9 +140,10 @@ See `docs/contributing.md` for the full contribution workflow.
 
 ## Relationship to other repos
 
-- **himmel** — dev engine. Source of the pre-commit + guardrails
-  patterns ported here.
-- **luna** — personal vault. Clone of luna-brain that has accumulated
+- **Himmel** — dev engine and **host repo**: this template ships under
+  `templates/luna-second-brain/` and inherits Himmel's pre-commit +
+  guardrails patterns.
+- **luna** — personal vault. A copy of this template that has accumulated
   content. Stays private.
 - **claude-obsidian** (upstream) — knowledge-companion plugin pinned
   in `marketplace/`.

@@ -55,6 +55,12 @@ himmel needs almost nothing to start:
   later by filling `JIRA_*` in `.env` (see the
   [env table](../README.md#quickstart)); the local CLI needs only four values
   and **no cloud ID**.
+- **Want the companion vault?** himmel ships a ready-to-use AI-first Obsidian
+  vault skeleton at
+  [`templates/luna-second-brain/`](../templates/luna-second-brain/) — copy it
+  out into its own git repo and run its `setup.sh`. Its
+  [README](../templates/luna-second-brain/README.md#quickstart) has the
+  install steps.
 
 **For your first loop you need none of this** — `setup.sh` already did the work.
 Skip straight to step 3.
