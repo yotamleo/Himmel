@@ -2,6 +2,6 @@
   "name": "himmel-gh",
   "version": "0.2.0",
   "description": "Claude Code plugin wrapping the gh CLI over himmel-run. Skills auto-trigger on GitHub PR intent; /gh-* slash commands for explicit invocation. Phase 3 adds CR loop: /gh-pr-review, /gh-pr-comment, /gh-pr-comments, /gh-pr-reply, /gh-pr-resolve.",
-  "author": "yotam",
+  "author": "yotamleo",
   "homepage": "https://github.com/yotamleo/Himmel"
 }

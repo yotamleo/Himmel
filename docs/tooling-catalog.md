@@ -168,7 +168,7 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 
 #### handover (`handover@himmel`)
 
-**What:** Session handover and work tracking system for Claude Code. Operationalizes `handovers/yotam/` via a skill.
+**What:** Session handover and work tracking system for Claude Code. Operationalizes `handovers/<USER_SLUG>/` via a skill.
 **Skill:** `handover:handover` — invoke with phrases like "new epic", "new task", "end session", "update status"
 **Skill file:** `marketplace/plugins/handover/skills/handover/SKILL.md`
 **Commands:**
@@ -182,7 +182,7 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 | `end-session [id]` | Creates `next-session-N.md` (sequential, never overwrites) with cold-start prompt |
 
 **Session files:** `next-session-1.md`, `next-session-2.md` ... (append-only, highest = latest).
-**Tracking root:** `handovers/yotam/` — all state is versioned markdown.
+**Tracking root:** `handovers/<USER_SLUG>/` — all state is versioned markdown.
 
 #### obsidian-triage (`obsidian-triage@himmel`)
 

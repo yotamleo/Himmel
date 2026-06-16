@@ -205,6 +205,6 @@ Doc references to operator-specific paths should use the
 `{{USER_SLUG}}` placeholder in templates + `<USER_SLUG>` in prose.
 `scripts/test-user-slug-resolve.sh` smoke-tests all paths (18/18 pass).
 
-This is the HIMMEL-132 Phase 2 envification. Existing `yotam`-hardcoded
+This is the HIMMEL-132 Phase 2 envification. Existing `<USER_SLUG>`-hardcoded
 references in journal/docs/* paths are out of scope — sweep deferred
 to a follow-up ticket if/when an alternate operator joins.

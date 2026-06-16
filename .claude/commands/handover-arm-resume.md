@@ -32,10 +32,10 @@ multi-day sentinel) is scheduled correctly — schtasks gets `/sd <date>`, `at`
 gets `-t <stamp>` (fixes the old "time already passed today → never fires" bug).
 
 Common invocations:
-- `/handover-arm-resume --time smart --handover handovers/yotam/status.md`
-- `/handover-arm-resume --time 07:22 --handover handovers/yotam/himmel/epics/HIMMEL-70-github-warp/next-session-12.md`
-- `/handover-arm-resume --time auto --handover handovers/yotam/himmel/standalones/HIMMEL-44-windows-install-test/next-session.md --force`
-- `/handover-arm-resume --time 14:00 --handover handovers/yotam/status.md --dry-run`
+- `/handover-arm-resume --time smart --handover handovers/<USER_SLUG>/status.md`
+- `/handover-arm-resume --time 07:22 --handover handovers/<USER_SLUG>/himmel/epics/HIMMEL-70-github-warp/next-session-12.md`
+- `/handover-arm-resume --time auto --handover handovers/<USER_SLUG>/himmel/standalones/HIMMEL-44-windows-install-test/next-session.md --force`
+- `/handover-arm-resume --time 14:00 --handover handovers/<USER_SLUG>/status.md --dry-run`
 
 Exit codes: 0 armed, 1 usage error, 2 env unusable, 3 dedup block, 4 scheduler failed.
 

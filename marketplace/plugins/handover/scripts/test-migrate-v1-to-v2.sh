@@ -7,6 +7,7 @@
 #   0 — all cases passed
 #   1 — at least one case failed
 set -uo pipefail
+SLUG="hbtest$$"   # generated neutral test user-slug (not hardcoded)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MIGRATE="$SCRIPT_DIR/migrate-v1-to-v2.sh"
@@ -18,11 +19,11 @@ fail=0
 fixture_setup() {
   local dir="$1"
   rm -rf "$dir"
-  mkdir -p "$dir/handovers/yotam/epics" "$dir/handovers/yotam/standalones"
+  mkdir -p "$dir/handovers/$SLUG/epics" "$dir/handovers/$SLUG/standalones"
 
   # v1 item WITH Jira key
-  mkdir -p "$dir/handovers/yotam/epics/#15-rename-himmel-and-jira/tasks"
-  cat > "$dir/handovers/yotam/epics/#15-rename-himmel-and-jira/master-plan.md" <<'EOF'
+  mkdir -p "$dir/handovers/$SLUG/epics/#15-rename-himmel-and-jira/tasks"
+  cat > "$dir/handovers/$SLUG/epics/#15-rename-himmel-and-jira/master-plan.md" <<'EOF'
 ---
 template_version: 1
 ---
@@ -33,8 +34,8 @@ template_version: 1
 EOF
 
   # v1 item WITHOUT Jira key (will be marked pending_jira_link with --no-jira-create)
-  mkdir -p "$dir/handovers/yotam/standalones/#3-legacy-item"
-  cat > "$dir/handovers/yotam/standalones/#3-legacy-item/brief.md" <<'EOF'
+  mkdir -p "$dir/handovers/$SLUG/standalones/#3-legacy-item"
+  cat > "$dir/handovers/$SLUG/standalones/#3-legacy-item/brief.md" <<'EOF'
 ---
 template_version: 1
 ---
@@ -44,7 +45,7 @@ template_version: 1
 EOF
 
   # Init the v1 counter
-  printf "# Counter\nNext: 16\n" > "$dir/handovers/yotam/counter.md"
+  printf "# Counter\nNext: 16\n" > "$dir/handovers/$SLUG/counter.md"
 }
 
 assert_dir_exists() {
@@ -80,19 +81,19 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fixture_setup "$TMP"
 "$MIGRATE" --root "$TMP" --no-jira-create --quiet >/dev/null 2>&1 || true
-assert_dir_exists "$TMP/handovers/yotam/epics/HIMMEL-15-rename-himmel-and-jira"
-assert_dir_absent "$TMP/handovers/yotam/epics/#15-rename-himmel-and-jira"
-assert_grep "$TMP/handovers/yotam/epics/HIMMEL-15-rename-himmel-and-jira/master-plan.md" "template_version: 2"
-assert_grep "$TMP/handovers/yotam/epics/HIMMEL-15-rename-himmel-and-jira/master-plan.md" "^jira: HIMMEL-15"
+assert_dir_exists "$TMP/handovers/$SLUG/epics/HIMMEL-15-rename-himmel-and-jira"
+assert_dir_absent "$TMP/handovers/$SLUG/epics/#15-rename-himmel-and-jira"
+assert_grep "$TMP/handovers/$SLUG/epics/HIMMEL-15-rename-himmel-and-jira/master-plan.md" "template_version: 2"
+assert_grep "$TMP/handovers/$SLUG/epics/HIMMEL-15-rename-himmel-and-jira/master-plan.md" "^jira: HIMMEL-15"
 
 # Case 2: items without Jira keys stay #N when --no-jira-create
-assert_dir_exists "$TMP/handovers/yotam/standalones/#3-legacy-item"
-assert_grep "$TMP/handovers/yotam/standalones/#3-legacy-item/brief.md" "pending_jira_link: true"
+assert_dir_exists "$TMP/handovers/$SLUG/standalones/#3-legacy-item"
+assert_grep "$TMP/handovers/$SLUG/standalones/#3-legacy-item/brief.md" "pending_jira_link: true"
 
 # Case 3: re-running is idempotent
 "$MIGRATE" --root "$TMP" --no-jira-create --quiet >/dev/null 2>&1 || true
-assert_dir_exists "$TMP/handovers/yotam/epics/HIMMEL-15-rename-himmel-and-jira"
-assert_dir_absent "$TMP/handovers/yotam/epics/#15-rename-himmel-and-jira"
+assert_dir_exists "$TMP/handovers/$SLUG/epics/HIMMEL-15-rename-himmel-and-jira"
+assert_dir_absent "$TMP/handovers/$SLUG/epics/#15-rename-himmel-and-jira"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

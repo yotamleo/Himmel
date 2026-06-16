@@ -193,8 +193,8 @@ Output as table:
 
 ```
 NAME      PATH                                                              USER     ALIASES                       JIRA
-himmel    c:/users/<user>/documents/github/himmel                             yotam    himmel,internal                HIMMEL
-luna      c:/users/<user>/documents/github/luna                               yotam    luna,vault,second-brain        —
+himmel    c:/users/<user>/documents/github/himmel                             <USER_SLUG>    himmel,internal                HIMMEL
+luna      c:/users/<user>/documents/github/luna                               <USER_SLUG>    luna,vault,second-brain        —
 ```
 
 If empty: `No repos registered. Run /handover init or /handover register.`
@@ -238,7 +238,7 @@ Porting the existing `himmel/handovers/<USER_SLUG>/` state into the registry:
 # Prompts:
 #   name = himmel
 #   path = c:/users/<user>/documents/github/himmel
-#   user = yotam
+#   user = <USER_SLUG>
 #   aliases = himmel, internal
 #   keywords = (empty)
 #   branch_prefix = handover/    # default as of HIMMEL-139 (was feat/ pre-HIMMEL-139)

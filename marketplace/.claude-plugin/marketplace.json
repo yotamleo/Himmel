@@ -1,7 +1,7 @@
 {
   "name": "himmel",
   "owner": {
-    "name": "yotam"
+    "name": "yotamleo"
   },
   "plugins": [
     {
@@ -9,7 +9,7 @@
       "source": "./plugins/himmel-ops",
       "description": "Harness-meta operational skills for himmel. Load-on-trigger guardrail-recovery playbook (stuck-playbook) that surfaces escape-hatches when an auto-mode write is denied, a Bash command falls through to the classifier, a permission prompt hangs, or a pre-push gate fails — so operational/troubleshooting rules stay out of the always-on root CLAUDE.md (HIMMEL-211).",
       "author": {
-        "name": "yotam"
+        "name": "yotamleo"
       },
       "keywords": [
         "himmel",
@@ -22,9 +22,9 @@
     {
       "name": "handover",
       "source": "./plugins/handover",
-      "description": "Handover tracking system for yotam sessions — manages epics, tasks, standalones, and session handovers",
+      "description": "Handover tracking system — manages epics, tasks, standalones, and session handovers",
       "author": {
-        "name": "yotam"
+        "name": "yotamleo"
       }
     },
     {
@@ -50,7 +50,7 @@
       "source": "./plugins/obsidian-triage",
       "description": "Autonomous triage + cross-clip synthesis for Obsidian Web Clipper output. /triage-clips summarizes each clip, infers tags from the existing vault tag set, suggests Related Notes via link-graph proximity, extracts Action Items to today's daily note, annotates a Promotion candidate, marks processed:true (idempotent). /synthesize-clips finds recurring patterns across processed clips and writes vault-restructuring proposals.",
       "author": {
-        "name": "yotam"
+        "name": "yotamleo"
       },
       "keywords": [
         "obsidian",
