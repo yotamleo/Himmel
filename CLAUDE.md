@@ -134,11 +134,11 @@ Three tiers for luna-touching artifacts:
    day 1; plugin specs stay in `plugins/<plugin>/README.md`).
 2. **Personal-state work artifacts** (handovers, work/decision logs,
    journal-style decision records, next-session-resume) →
-   `yotam_docs/handovers/<USER_SLUG>/<repo-bucket>/` (cross-cutting → `…/cross/`).
+   `<state-repo>/handovers/<USER_SLUG>/<repo-bucket>/` (cross-cutting → `…/cross/`).
 3. **Vault content** (clips, notes, daily entries) → unchanged, stays in luna.
 
 Author new luna-touching reference docs in `docs/luna/`; author
-journal-style decision records under the appropriate yotam_docs bucket.
+journal-style decision records under the appropriate <state-repo> bucket.
 
 **Luna recent context (HIMMEL-254):** read `~/Documents/luna/hot.md` (if present)
 first for recent vault context (~500-word Tier-2 hot cache) before crawling luna
@@ -156,8 +156,9 @@ Pick by intent: fresh feature = `/worktree`, prune cycle = `/clean`,
 both = `/clean_garden`. (Superseded, don't use: `/new-worktree`, `/clean_gone`.)
 
 ### Handover
-All personal handover state is centralized in the `yotam_docs` repo
-(himmel `handovers/` is a stub). The v2 handover skill +
+All personal handover state is centralized in your handover state repo
+(configured via `/handover-setup` / `$HANDOVER_DIR`; himmel `handovers/`
+is a stub). The v2 handover skill +
 `~/.claude/handover/registry.json` are the live source of truth —
 inspect/change via `/handover repos|register|init`, never by editing
 docs. Branched auto-commit + PR-open + flush flows + the single-root

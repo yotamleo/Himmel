@@ -1,6 +1,6 @@
 # Overnight Mode — Autonomous Pipeline
 
-> **Trigger phrase:** when a user prompt includes the phrase **"overnight mode"** alongside a `next-session-*.md` path (e.g. `load handovers/yotam/himmel/epics/HIMMEL-XX-…/next-session-N.md overnight mode`), execute this pipeline end-to-end without pausing for confirmation between phases.
+> **Trigger phrase:** when a user prompt includes the phrase **"overnight mode"** alongside a `next-session-*.md` path (e.g. `load handovers/<USER_SLUG>/himmel/epics/HIMMEL-XX-…/next-session-N.md overnight mode`), execute this pipeline end-to-end without pausing for confirmation between phases.
 
 ## When to use it
 
@@ -14,7 +14,7 @@ Do **not** use overnight mode when:
 ## The 11 phases
 
 1. **Plan** — `superpowers:writing-plans` on the active brief; commit to `<plans-root>/YYYY-MM-DD-<slug>.md` where `<plans-root>` resolves as:
-   - `$HANDOVER_DIR/plans/` when `HANDOVER_DIR` is set (Mode B — plans live with handover state in `yotam_docs/handovers/plans/`).
+   - `$HANDOVER_DIR/plans/` when `HANDOVER_DIR` is set (Mode B — plans live with handover state in `<state-repo>/handovers/plans/`).
    - `<repo>/docs/superpowers/plans/` otherwise (Mode A default — backwards-compat;
      this path is **gitignored**, so Mode-A plans stay local and are never committed
      to the public repo, per HIMMEL-297).

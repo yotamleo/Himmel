@@ -298,7 +298,7 @@ state:
 
 The handover skill writes a structured summary of what was done, what is
 in-flight, and what the next session should pick up. State is stored in
-the `yotam_docs` repo (not in himmel's `handovers/` stub). To resume in
+your handover state repo (not in himmel's `handovers/` stub). To resume in
 a future session, use `/handover-resume-armed` or browse the handover
 registry via `/handover repos`.
 

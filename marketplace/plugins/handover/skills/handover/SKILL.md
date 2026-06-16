@@ -23,7 +23,7 @@ Full algorithm + canonicalisation rules: `references/routing.md` (load only on a
 
 ## Bucket Resolution (HIMMEL-129)
 
-Some registered repos — the **state-root host** an operator chose at `/handover-setup` (for this maintainer's setup, a repo named `yotam_docs`) — split `<state-root>` into per-source-repo buckets to keep work from multiple code repos disambiguated:
+Some registered repos — the **state-root host** an operator chose at `/handover-setup` (e.g. a repo named `<state-repo>`) — split `<state-root>` into per-source-repo buckets to keep work from multiple code repos disambiguated:
 
 ```
 <state-root>/
@@ -65,7 +65,7 @@ Top-level files (`status.md`, `roadmap.md`, `backlog.md`, `tech-debt.md`, `count
 
 **v2 additions:** each repo entry may also carry `bucket_vocab`, `buckets_custom`, `defaults: {}`, and `stale_thresholds_days: {}`. See `references/init-register.md` for the full schema and key reference. Absence of any v2 field means "use built-in default".
 
-**`source_buckets_extra` (HIMMEL-307):** the state-root **host** repo entry (e.g. `yotam_docs`) may carry `source_buckets_extra` — an optional array of extra source-bucket names (kebab-case) that extends the recognized source-bucket set beyond the four built-ins (see Bucket Resolution). This is a **different axis** from `buckets_custom` (which renames the time-horizon vocab) and from `bucket_name` (a per-source-repo label used by the prefix rule). Absent or empty ⇒ the four built-ins only.
+**`source_buckets_extra` (HIMMEL-307):** the state-root **host** repo entry (e.g. `<state-repo>`) may carry `source_buckets_extra` — an optional array of extra source-bucket names (kebab-case) that extends the recognized source-bucket set beyond the four built-ins (see Bucket Resolution). This is a **different axis** from `buckets_custom` (which renames the time-horizon vocab) and from `bucket_name` (a per-source-repo label used by the prefix rule). Absent or empty ⇒ the four built-ins only.
 
 ### Reading and writing the registry
 

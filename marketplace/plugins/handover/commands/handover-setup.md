@@ -10,7 +10,7 @@ Bootstrap the handover system for this operator/repo. The job of this command
 is the one-time **setup** the rest of the handover skill assumes is already
 done: pick *where* handover state lives, persist that choice so every later
 session resolves it the same way, and hand off to the skill's `init`/`register`
-flow. Do **not** hardcode any specific repo (e.g. `yotam_docs`) — always ask.
+flow. Do **not** hardcode any specific repo (e.g. `<state-repo>`) — always ask.
 
 ### 1. Resolve the target repo root
 

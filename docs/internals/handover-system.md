@@ -9,7 +9,8 @@
 > `/handover repos|register|init` slash commands, not by editing docs.
 
 **Post-HIMMEL-124 (2026-05-25):** all personal handover state has been
-centralized in the `yotam_docs` repo. himmel `handovers/yotam/` is
+centralized in your handover state repo (configured via `/handover-setup`
+/ `$HANDOVER_DIR`). himmel `handovers/<USER_SLUG>/` is
 empty except for a README pointer. Three resolution layers — the v2
 handover skill's multi-repo registry (preferred for skills), the
 HIMMEL-118 single-root resolver (still wired for scripts), and a
@@ -134,7 +135,7 @@ Smoke test: `bash scripts/hooks/test-check-cr-before-push.sh`
 
 Pre-HIMMEL-124 the skill resolved per-repo state under
 `<repo-root>/handovers/<user>/`. Post-HIMMEL-124 the expected target
-is **yotam_docs** for any personal state regardless of which repo
+is the **`<state-repo>`** for any personal state regardless of which repo
 triggered the skill. HIMMEL-129 added the bucket layer
 (`<state-root>/<repo>/{epics,standalones}/` where `<repo>` ∈
 himmel | luna | luna_brain | cross) — SKILL.md resolver auto-detects
@@ -152,7 +153,7 @@ shell scripts use when they only know about one root:
 - **Mode B — external**: `HANDOVER_DIR` set → that path. **Recommended
   default** post-HIMMEL-124:
   ```bash
-  export HANDOVER_DIR="$HOME/Documents/github/yotam_docs/handovers"
+  export HANDOVER_DIR="$HOME/Documents/github/<state-repo>/handovers"
   ```
 
 Consumed by `scripts/handover/auto-commit.sh`,
@@ -171,16 +172,16 @@ misconfiguration).
 
 - **HIMMEL-13** (done) — initial migration of cross-project subset
   (luna/, manual_notes.md, random_dreams.md) from himmel/handovers/
-  → yotam_docs/handovers/.
+  → <state-repo>/handovers/.
 - **HIMMEL-124** (in progress) — full centralization. 234 files
-  migrated from himmel/handovers/yotam/* → yotam_docs/handovers/yotam/
+  migrated from himmel/handovers/<USER_SLUG>/* → <state-repo>/handovers/<USER_SLUG>/
   (PR #138). himmel side reduced to a stub README. **Remaining:**
-  registry.json + SKILL.md updates to make yotam_docs the resolved
+  registry.json + SKILL.md updates to make <state-repo> the resolved
   default for personal-state ops.
 - **HIMMEL-129** (done 2026-05-25) — split flat
-  `yotam_docs/handovers/yotam/` layout into `cross/himmel/luna/luna_brain/`
+  `<state-repo>/handovers/<USER_SLUG>/` layout into `cross/himmel/luna/luna_brain/`
   subfolders. 17 standalones + 15 epics routed by ticket prefix.
-  `yotam_docs/README.md` + SKILL.md resolver updated; bucket layer is
+  `<state-repo>/README.md` + SKILL.md resolver updated; bucket layer is
   opt-in (activated by presence of any bucket dir under `<state-root>`).
 
 ## User-slug resolution (HIMMEL-145)

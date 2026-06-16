@@ -111,6 +111,6 @@ refinements when the operator wants to tweak.
 **Sensitivity note:** artifacts contain the original draft + refined prompt
 verbatim. If the operator pasted credentials, API keys, or sensitive context
 into the draft, those values land on disk inside the artifact. Mode A
-artifacts are gitignored; Mode B writes to private `yotam_docs`. Treat the
+artifacts are gitignored; Mode B writes to private `<state-repo>`. Treat the
 `.improve/` directory as sensitive regardless — do not commit + do not copy
 off-disk without redacting first.

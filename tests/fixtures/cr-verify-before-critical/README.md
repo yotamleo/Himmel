@@ -68,4 +68,4 @@ git branch -D fixture/cr-verify-before-critical
 - `marketplace/plugins/pr-review-toolkit-himmel/agents/code-reviewer.md` § Verify-before-critical
 - `.claude/commands/pr-check.md` step 3 (the wire that uses this agent)
 - HIMMEL-178 ticket
-- ADR: `yotam_docs/handovers/yotam/cross/HIMMEL-178-reviewer-verify-before-critical.md`
+- ADR: `<state-repo>/handovers/<USER_SLUG>/cross/HIMMEL-178-reviewer-verify-before-critical.md`

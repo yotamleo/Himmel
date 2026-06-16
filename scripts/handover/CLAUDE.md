@@ -9,7 +9,8 @@ to resolve the handover directory. **Never hardcode `./handovers/`** — the
 single-root resolver + `HANDOVER_DIR` bridge depend on it.
 
 ## Conventions
-- Personal handover state is centralized in the `yotam_docs` repo; himmel
+- Personal handover state is centralized in your handover state repo
+  (configured via `/handover-setup` / `$HANDOVER_DIR`); himmel
   `handovers/` is a stub. Don't write durable state into himmel.
 - The live source of truth is the v2 handover skill +
   `~/.claude/handover/registry.json` — change it via `/handover`, never by

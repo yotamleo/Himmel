@@ -109,6 +109,11 @@ inside an active session. Then the day-to-day loop is:
                              #   next session (or a teammate) resumes with full context
 ```
 
+> **First time using `/handover`?** Run **`/handover-setup`** once to point it at
+> your own state store — an inline `handovers/` folder in the repo, or a separate
+> git repo (via `HANDOVER_DIR`). It's configurable, not hardcoded, so your
+> cross-session notes land wherever you want them.
+
 **How to tell it's working:** `pre-commit run --all-files` should pass, and if you
 try to edit a file on `main` you'll get a `block-edit-on-main` message pointing you
 back into a worktree (`/clean_garden` or `/worktree`). That message is the guardrail

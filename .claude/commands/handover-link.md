@@ -7,7 +7,7 @@ Wraps `scripts/handover-link.sh`. Default verb is `status`.
 
 Modes:
 - **A — inline**: `HANDOVER_DIR` unset; handovers live in `<repo>/handovers/`. Default for fresh clones.
-- **B — external**: `HANDOVER_DIR` points to an existing directory (typically a separate repo like `yotam_docs/handovers`). Set in the shell that launched Claude Code — env is session-sticky.
+- **B — external**: `HANDOVER_DIR` points to an existing directory (typically a separate repo like `<state-repo>/handovers`). Set in the shell that launched Claude Code — env is session-sticky.
 
 Verbs:
 - `/handover-link` — print resolved root + mode (default `status`).
