@@ -7,6 +7,7 @@
 #   0 — all checks pass
 #   1 — at least one check failed
 set -uo pipefail
+SLUG="hbtest$$"   # generated neutral test user-slug (not hardcoded)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
@@ -53,17 +54,17 @@ done
 if [ "$missing" -eq 0 ]; then ok "SKILL.md references all v2 docs"; else ko "$missing references missing from SKILL.md"; fi
 
 # 6. Post-migration himmel state: zero #N dirs (excluding .gitkeep)
-nstale=$(find "$ROOT/handovers/yotam" -type d -name '#*' 2>/dev/null | wc -l)
+nstale=$(find "$ROOT/handovers/$SLUG" -type d -name '#*' 2>/dev/null | wc -l)
 if [ "$nstale" -eq 0 ]; then ok "no #N dirs in himmel state"; else ko "$nstale stray #N dirs in himmel state"; fi
 
 # 7. status.md / roadmap.md / tech-debt.md all present in himmel
-STATE="$ROOT/handovers/yotam"
+STATE="$ROOT/handovers/$SLUG"
 for f in status.md roadmap.md tech-debt.md counter.md; do
   if [ -f "$STATE/$f" ]; then ok "$f exists"; else ko "$f missing"; fi
 done
 
 # 8. Every item has v2 frontmatter (template_version: 2)
-v1_items=$(find "$ROOT/handovers/yotam" -type f -name '*.md' -exec grep -lE '^template_version: 1$' {} \; 2>/dev/null | wc -l)
+v1_items=$(find "$ROOT/handovers/$SLUG" -type f -name '*.md' -exec grep -lE '^template_version: 1$' {} \; 2>/dev/null | wc -l)
 if [ "$v1_items" -eq 0 ]; then ok "no v1 frontmatter in items"; else ko "$v1_items items still v1"; fi
 
 echo "Total: pass=$pass fail=$fail"

@@ -81,7 +81,7 @@ The **Travels** column tells you how portable a plugin is on its own:
 - **✅ standalone** — works in any repo/vault, no himmel assumptions.
 - **🔶 fork** — a vendored fork of an upstream plugin; portable, but read the
   plugin's README for the fork delta and upstream-watch note.
-- **🔗 harness-coupled** — assumes the himmel harness or yotam's personal
+- **🔗 harness-coupled** — assumes the himmel harness or the operator's personal
   setup. Installable anywhere, but only useful in context.
 
 | Plugin | What you get | Travels | License |
@@ -92,7 +92,7 @@ The **Travels** column tells you how portable a plugin is on its own:
 | **pr-review-toolkit-himmel** | Vendored `code-reviewer` agent + a verify-before-critical sub-rule patch (HIMMEL-178). The other 5 agents stay on upstream `pr-review-toolkit:*`. | 🔶 fork | Apache-2.0 |
 | **telegram-himmel** | Telegram channel MCP plugin with the `getUpdates` poller gated behind `TELEGRAM_OWN_POLLER=1`, so only the owner session polls the single bot-token slot. Fork of `telegram@claude-plugins-official` v0.0.6. | 🔶 fork | Apache-2.0 |
 | **himmel-ops** | Harness-meta operational skill: `stuck-playbook` surfaces guardrail-recovery escape-hatches when an auto-mode write is denied, a Bash command falls through to the classifier, a permission prompt hangs, or a pre-push gate fails (HIMMEL-211). | 🔗 harness-coupled | — |
-| **handover** | Session handover tracking — manages epics, tasks, standalones, and session handovers via `~/.claude/handover/registry.json`. Built around yotam's multi-session workflow. | 🔗 harness-coupled | — |
+| **handover** | Session handover tracking — manages epics, tasks, standalones, and session handovers via `~/.claude/handover/registry.json`. Built around the operator's multi-session workflow. | 🔗 harness-coupled | — |
 
 Per-plugin detail (and fork rationale / upstream-watch protocol where it
 applies) lives in each plugin's own README under

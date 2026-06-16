@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Autonomous triage of Obsidian Web Clipper output. /triage-clips processes Clippings/ — summarize, infer tags, suggest Related Notes from the link graph, extract action items to today's daily note, annotate promotion candidates. Idempotent via processed:true marker. /synthesize-clips finds cross-clip patterns and suggests vault restructuring. Designed to fork cleanly back to eugeniughelbur/obsidian-second-brain — pure-markdown commands, no himmel-specific runtime deps.",
   "author": {
-    "name": "yotam"
+    "name": "yotamleo"
   },
   "homepage": "https://github.com/yotamleo/Himmel",
   "keywords": [
