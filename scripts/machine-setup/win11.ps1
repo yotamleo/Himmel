@@ -8,13 +8,13 @@ $ErrorActionPreference = 'Stop'
 
 # ── Paths ───────────────────────────────────────────────────────────────────
 $HimmelPath     = "$env:USERPROFILE\Documents\github\himmel"
-$StatuslinePath = "$env:USERPROFILE\Documents\github\claude-statusline"
+$StatuslinePath = "$HimmelPath\scripts\statusline"  # vendored in himmel (HIMMEL-331)
 $LunaVaultPath  = "$env:USERPROFILE\Documents\luna"
 $ClaudeDir      = "$env:USERPROFILE\.claude"
 $RepoRoot       = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 # ── Progress ────────────────────────────────────────────────────────────────
-$TotalSteps = 19
+$TotalSteps = 18
 $Script:Step = 0
 $Script:Failures = @()
 
@@ -167,12 +167,7 @@ if ($UserPath -notlike "*$BinDir*") {
 }
 
 # ── Non-fatal steps (9–16) ──────────────────────────────────────────────────
-Write-Step "Clone claude-statusline"
-Invoke-NonFatal "clone statusline" {
-    $StatuslineParent = Split-Path $StatuslinePath -Parent
-    New-Item -ItemType Directory -Force $StatuslineParent | Out-Null
-    git clone https://github.com/yotamleo/claude-statusline.git $StatuslinePath
-}
+# statusline is vendored at $HimmelPath\scripts\statusline (HIMMEL-331) — no clone needed.
 
 Write-Step "Copy Claude config"
 Invoke-NonFatal "copy Claude config" {

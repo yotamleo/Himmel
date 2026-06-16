@@ -227,16 +227,15 @@ On every new session: writes `~/.claude/.caveman-active` flag, emits the full ca
 
 ---
 
-## claude-statusline (yotamleo fork)
+## claude-statusline (vendored, HIMMEL-331)
 
-**Repo:** `yotamleo/claude-statusline` (fork of `nilbuild/claude-statusline`)
-**Path:** `C:\Users\<user>\Documents\github\claude-statusline\`
-**Script:** `bin/statusline.sh`
-**Config:** `~/.claude/settings.json` → `statusLine.command`
+**Vendored in himmel:** `scripts/statusline/` (`bin/statusline.sh`, `test/`, `LICENSE`, `README.md`, provenance in `VENDORED.md`).
+**Config:** `~/.claude/settings.json` → `statusLine.command` (machine-setup points it at `<himmel-path>/scripts/statusline/bin/statusline.sh` — no external clone).
 **What:** Bash script receiving Claude Code session JSON via stdin, outputs formatted status bar.
 
 Displays: model, context %, git branch, rate-limit bars (current/weekly/extra), cache TTL countdown, per-session and all-sessions cache read/write/hit/savings.
 
+**Source fork:** `yotamleo/claude-statusline` (fork of `nilbuild/claude-statusline`) — kept as upstream-tracking source; edits to the vendored script are pushed back to the fork so both mirror.
 **Patch applied:** `docs/patches/2026-05-16-cache-statusline.md`
 **Upstream:** `nilbuild/claude-statusline` (PR not yet opened)
 
