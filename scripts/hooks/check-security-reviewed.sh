@@ -58,7 +58,9 @@
 # Exit codes:
 #   0 — pass (docs-only diff, attestation present, or bypass)
 #   1 — block (code changed + no attestation + no bypass)
-#   2 — block (cannot source guardrails/lib.sh — fail-closed, cannot evaluate)
+#   2 — block (cannot evaluate — fail-closed: can't source guardrails/lib.sh,
+#       can't read the current branch, or no diff base resolves on the online
+#       path; HIMMEL-323)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,11 +74,22 @@ if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
     exit 2
 fi
 
-branch=$(git branch --show-current)
+# Resolve THIS worktree's branch via lib.sh::_branch (HIMMEL-323). `git branch
+# --show-current` is worktree-correct under a normal pre-push (git points GIT_DIR
+# at the worktree's own gitdir) but reads the PRIMARY worktree's HEAD if GIT_DIR
+# is aimed at the shared .git; routing through _branch keeps the pre-push gates'
+# branch reads on one path. _branch also returns rc=2 on an unreadable HEAD so we fail
+# CLOSED with a clear diagnostic instead of letting `set -e` abort opaquely.
+rc=0
+branch=$(_branch) || rc=$?
+if [ "$rc" -eq 2 ]; then
+    echo "→ security-review: cannot resolve current branch (lib.sh::_branch rc=2) — refusing the push (cannot evaluate; bypass with git push --no-verify)" >&2
+    exit 2
+fi
 
-# Detached HEAD or default-branch push: skip. no-push-to-main covers
-# main/master, and we can't compute a sensible diff base on detached HEAD.
-if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+# Detached HEAD (empty branch, rc=1) or a protected default (main/master): skip.
+# no-push-to-main covers main/master; detached HEAD has no sensible diff base.
+if [ -z "$branch" ] || is_on_main; then
     exit 0
 fi
 
@@ -98,12 +111,33 @@ if git rev-parse --verify --quiet "origin/$db" >/dev/null; then
     diff_base="origin/$db"
 elif git rev-parse --verify --quiet "$db" >/dev/null; then
     diff_base="$db"
-else
-    echo "→ security-review: no 'origin/$db' or local '$db' ref — skipping (cannot compute diff)" >&2
+elif [ "${SECURITY_REVIEW_NO_FETCH:-0}" = "1" ]; then
+    # No resolvable base AND the operator opted into offline mode (NO_FETCH):
+    # a shallow/offline clone legitimately may not carry the default ref. We
+    # cannot evaluate the gate, but blocking here would break the documented
+    # offline workflow — skip with a LOUD warning (HIMMEL-323).
+    echo "→ security-review: no 'origin/$db' or local '$db' ref and SECURITY_REVIEW_NO_FETCH=1 — cannot compute diff; SKIPPING the gate (WARNING: security surface NOT checked — confirm review ran before merge)" >&2
     exit 0
+else
+    # Online path: we attempted `git fetch origin $db` and STILL cannot resolve
+    # any base. That is a genuinely broken state (default renamed and origin/HEAD
+    # not pointing at it, corrupt refs) — not a normal clone, which always has
+    # origin/<default>. Fail CLOSED (HIMMEL-323): refusing the push beats silently
+    # skipping the gate on an unattested code change.
+    echo "→ security-review: no 'origin/$db' or local '$db' ref after fetch — refusing the push (rc=2 = cannot evaluate the gate). Set SECURITY_REVIEW_NO_FETCH=1 for a known-offline/shallow clone, or bypass with SKIP_SECURITY_REVIEW=1 / git push --no-verify." >&2
+    exit 2
 fi
 
-changed=$(git diff --name-only "${diff_base}...HEAD" || true)
+# Fail CLOSED if the diff itself can't be computed (HIMMEL-323). The 3-dot
+# range needs a merge base; an orphan/unrelated-history branch makes `git diff`
+# exit non-zero. The old `|| true` swallowed that to an empty list, which the
+# `[ -z ]` line below then treated as "no changes" → a silent PASS on a branch
+# we never actually inspected. An empty diff (genuinely no changes) still exits
+# 0 via rev-parse'd success + the `[ -z ]` skip.
+if ! changed=$(git diff --name-only "${diff_base}...HEAD" 2>/dev/null); then
+    echo "→ security-review: cannot compute diff vs ${diff_base} (no merge base / git error) — refusing the push (rc=2 = cannot evaluate; bypass with SKIP_SECURITY_REVIEW=1 or git push --no-verify)" >&2
+    exit 2
+fi
 [ -z "$changed" ] && exit 0
 
 # Docs-only skip — same filter shape as check-cr-before-push.sh:
