@@ -86,6 +86,14 @@ repos:
         always_run: true
         stages: [pre-commit]
 
+      - id: artifact-leakage
+        name: block stray generated artifacts from being committed (HIMMEL-371)
+        language: system
+        entry: bash scripts/hooks/check-artifact-leakage.sh
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
       - id: no-push-to-main
         name: Block direct push to main
         language: system
