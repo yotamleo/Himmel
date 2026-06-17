@@ -271,13 +271,16 @@ if [ ! -f "$ARM_BIN" ]; then
     exit 1
 fi
 set +e
-arm_out=$(bash "$ARM_BIN" --time smart --handover "$snapshot" 2>&1)
+# --dedup-any (HIMMEL-340): a subagent-cap is a machine-wide event — this
+# safety arm must defer to ANY queued resume so it never fans out duplicate
+# relaunches alongside the PreToolUse watchdog or a sibling session.
+arm_out=$(bash "$ARM_BIN" --dedup-any --time smart --handover "$snapshot" 2>&1)
 arm_rc=$?
 set -e
 
 case "$arm_rc" in
     0|3)
-        # 0 = armed; 3 = a HIMMEL-Resume-* job already exists — goal met.
+        # 0 = armed; 3 = a HIMMEL-Resume job already exists — goal met.
         touch "$fired_marker" 2>/dev/null || true
         armed_word="RESUME ARMED (--time smart)"
         [ "$arm_rc" = "3" ] && armed_word="a resume is ALREADY armed (dedup)"

@@ -4,10 +4,13 @@
 # Unlike scripts/handover/schedule-resume.sh (which prints the
 # platform scheduler command for operator copy-paste review), this
 # script:
-#   1. dedupes against any existing HIMMEL-Resume-* job in the OS
-#      scheduler — refuses (rc=3) or replaces with --force, so we
-#      never end up with two claude sessions cron-relaunched for the
-#      same handover (the user's stated requirement for HIMMEL-122)
+#   1. dedupes against the CURRENT handover's HIMMEL-Resume-<name> job
+#      in the OS scheduler — refuses (rc=3) or replaces with --force,
+#      so we never end up with two claude sessions cron-relaunched for
+#      the SAME handover (the user's stated requirement for HIMMEL-122).
+#      Distinct handovers each get their own slot (HIMMEL-340); pass
+#      --dedup-any to instead defer to ANY existing slot (the auto-arm
+#      watchdog safety-arm semantics — never queue a duplicate relaunch).
 #   2. directly invokes schtasks / at / crontab — does NOT round-trip
 #      through schedule-resume.sh's mixed prose+command stdout (the
 #      v1 attempt at this script did, which silently failed because
@@ -24,7 +27,7 @@
 #
 # Usage:
 #   bash scripts/handover/arm-resume.sh \
-#     --time <HH:MM> --handover <path> [--force] [--dry-run]
+#     --time <HH:MM> --handover <path> [--force] [--dedup-any] [--dry-run]
 #
 # Required:
 #   --time <HH:MM>     24h local time. Today if future, tomorrow if past.
@@ -33,9 +36,16 @@
 #                      picks up state.
 #
 # Optional:
-#   --force            Replace any existing HIMMEL-Resume-* job.
+#   --force            Replace the existing same-handover HIMMEL-Resume job
+#                      (with --dedup-any, any existing HIMMEL-Resume job).
 #                      Default refuses (rc=3) — explicit opt-in only.
+#   --dedup-any        Dedup against ANY HIMMEL-Resume job, not just this
+#                      handover's (HIMMEL-340 safety-arm semantics).
 #   --dry-run          Print what would be scheduled, touch nothing.
+#
+# Env:
+#   ARM_MAX_SLOTS      Soft cap on concurrent resume slots (default 4, 0
+#                      disables). Arming past it WARNs but never blocks.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -43,7 +53,8 @@
 #   2  required tool missing or env unusable (no schtasks/at/crontab;
 #      no platform match; dedup-check tool itself errored — fail-closed
 #      rather than risk a duplicate)
-#   3  dedup block — existing HIMMEL-Resume-* job; pass --force to replace
+#   3  dedup block — a same-handover HIMMEL-Resume job exists (or, under
+#      --dedup-any, any HIMMEL-Resume job exists); pass --force to replace
 #   4  scheduler invocation failed (job NOT armed; stderr above)
 #   5  refused — --channels passed while the bun Telegram bridge is live
 #      (HIMMEL-225: a 2nd getUpdates consumer 409s + the dev-channels prompt
@@ -57,6 +68,7 @@ FORCE=0
 DRY_RUN=0
 RESUME_CWD_OVERRIDE=""
 CHANNELS=""
+DEDUP_ANY=0
 
 # Local HH:MM from an epoch (armored python3 — portable, no GNU `date -d`;
 # capture via file so a wedged Store stub can't hang the $() call sites).
@@ -64,7 +76,7 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--force] [--dry-run]
+Usage: arm-resume.sh --time <HH:MM> --handover <path> [--force] [--dedup-any] [--dry-run]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
@@ -106,8 +118,18 @@ Optional:
                      it and relaunch PLAIN (bridge reaches Telegram on its
                      own). Override only after `bun supervisor.ts --kill`
                      with ARM_CHANNELS_OK=1. Omit for a silent relaunch.
-  --force            Replace existing HIMMEL-Resume-* job
+  --force            Replace the existing same-handover HIMMEL-Resume job
+  --dedup-any        Dedup against ANY HIMMEL-Resume job, not just this
+                     handover's: arm only if NO resume slot exists at all.
+                     The safety-arm semantics the auto-arm watchdogs use so
+                     a machine-wide cap can never queue duplicate relaunches.
+                     Default (omitted) is per-handover dedup — N distinct
+                     handovers each get their own slot (HIMMEL-340).
   --dry-run          Print what would be scheduled, touch nothing
+
+Env:
+  ARM_MAX_SLOTS      Soft cap on concurrent resume slots (default 4, 0
+                     disables). Arming past it WARNs but never blocks.
 EOF
 }
 
@@ -125,6 +147,7 @@ while [ $# -gt 0 ]; do
         --channels)    CHANNELS="${2:-}"; shift 2 ;;
         --channels=*)  CHANNELS="${1#--channels=}"; shift ;;
         --force)       FORCE=1; shift ;;
+        --dedup-any)   DEDUP_ANY=1; shift ;;
         --dry-run)     DRY_RUN=1; shift ;;
         -h|--help)     usage; exit 0 ;;
         *)             echo "ERR arm-resume: unknown arg: $1" >&2; usage >&2; exit 1 ;;
@@ -501,9 +524,17 @@ else
     unset _fm_cwd _fm_cwd_found
 fi
 
-# Dedup: list existing HIMMEL-Resume-* jobs. Fail-CLOSED if the
-# listing tool itself errors — silent empty result + arm = duplicate.
+# Dedup: list existing HIMMEL-Resume jobs. Fail-CLOSED if the listing
+# tool itself errors — silent empty result + arm = duplicate.
+#
+# Scope ($1, HIMMEL-340):
+#   task — only the CURRENT $TASK_NAME (per-handover dedup; the default for
+#          an explicit arm, so N distinct handovers each get their own slot).
+#   all  — every HIMMEL-Resume-* job (the legacy broad behavior; used by the
+#          --dedup-any safety arms and by the soft slot-cap count).
+# Defaults to "all" so any unscoped caller keeps the pre-340 semantics.
 list_existing() {
+    local scope="${1:-all}"
     case "$PLATFORM" in
         windows)
             # schtasks /query: stderr captured separately. CSV output's
@@ -533,11 +564,17 @@ list_existing() {
                 fi
             fi
             rm -f "$err_file"
+            local names
             # shellcheck disable=SC1003  # `"\\'` strips both quote and literal backslash from schtasks's path-prefixed task names
-            printf '%s\n' "$out" \
+            names=$(printf '%s\n' "$out" \
                 | grep -o '"\\\?HIMMEL-Resume-[^"]*"' 2>/dev/null \
                 | tr -d '"\\' \
-                | sort -u || true
+                | sort -u || true)
+            if [ "$scope" = task ]; then
+                printf '%s\n' "$names" | grep -Fx "$TASK_NAME" || true
+            else
+                printf '%s\n' "$names"
+            fi
             ;;
         linux|macos)
             if command -v atq >/dev/null 2>&1; then
@@ -561,13 +598,26 @@ list_existing() {
                     local job_id
                     job_id=$(printf '%s' "$line" | awk '{print $1}')
                     [ -z "$job_id" ] && continue
-                    if at -c "$job_id" 2>/dev/null | grep -q 'HIMMEL-Resume-'; then
-                        printf 'at-job-%s\n' "$job_id"
+                    if [ "$scope" = task ]; then
+                        # Exact whole-line marker (# $TASK_NAME) so a task
+                        # whose name is a prefix of another's can't match it.
+                        at -c "$job_id" 2>/dev/null | grep -qxF "# $TASK_NAME" \
+                            && printf 'at-job-%s\n' "$job_id"
+                    else
+                        at -c "$job_id" 2>/dev/null | grep -q 'HIMMEL-Resume-' \
+                            && printf 'at-job-%s\n' "$job_id"
                     fi
                 done <<< "$atq_out"
             elif command -v crontab >/dev/null 2>&1; then
                 # crontab fallback: grep crontab for our marker.
-                crontab -l 2>/dev/null | grep -F 'HIMMEL-Resume-' || true
+                if [ "$scope" = task ]; then
+                    # Anchor the marker comment at end-of-line so a prefix
+                    # task name can't match a longer one. TASK_NAME is
+                    # sanitized to [:alnum:]_- so it carries no BRE specials.
+                    crontab -l 2>/dev/null | grep -E "# ${TASK_NAME}$" || true
+                else
+                    crontab -l 2>/dev/null | grep -F 'HIMMEL-Resume-' || true
+                fi
             fi
             ;;
     esac
@@ -595,7 +645,9 @@ delete_existing() {
                     exit 2
                 fi
             else
-                # crontab marker — rewrite without HIMMEL-Resume lines.
+                # crontab marker is the full matched crontab LINE — rewrite
+                # without exactly that line (HIMMEL-340: scoped delete so a
+                # --force on one handover can't wipe sibling slots).
                 # Snapshot first so a mid-pipeline failure doesn't wipe.
                 local snap
                 snap=$(mktemp -t crontab.snap.XXXXXX)
@@ -604,18 +656,24 @@ delete_existing() {
                     rm -f "$snap"
                     exit 2
                 fi
-                if ! grep -v 'HIMMEL-Resume' "$snap" | crontab - 2>/dev/null; then
+                if ! grep -vxF "$marker" "$snap" | crontab - 2>/dev/null; then
                     echo "ERR arm-resume: crontab rewrite failed; original saved at $snap" >&2
                     exit 2
                 fi
                 rm -f "$snap"
-                echo "arm-resume: removed HIMMEL-Resume crontab entries"
+                echo "arm-resume: removed crontab entry: $marker"
             fi
             ;;
     esac
 }
 
-existing=$(list_existing)
+# HIMMEL-340: dedup against the CURRENT handover's $TASK_NAME by default
+# (so N distinct handovers each arm their own slot), or against ANY
+# HIMMEL-Resume job under --dedup-any (the safety-arm semantics the
+# auto-arm watchdogs rely on — defer to whatever is already queued).
+DEDUP_SCOPE=task
+[ "$DEDUP_ANY" -eq 1 ] && DEDUP_SCOPE=all
+existing=$(list_existing "$DEDUP_SCOPE")
 if [ -n "$existing" ]; then
     if [ "$FORCE" -eq 1 ]; then
         echo "arm-resume: --force set; replacing existing job(s):" >&2
@@ -630,7 +688,11 @@ if [ -n "$existing" ]; then
         done <<< "$existing"
     else
         {
-            echo "ERR arm-resume: a HIMMEL-Resume-* job is already scheduled:"
+            if [ "$DEDUP_SCOPE" = task ]; then
+                echo "ERR arm-resume: a resume job for THIS handover is already scheduled:"
+            else
+                echo "ERR arm-resume: a HIMMEL-Resume-* job is already scheduled:"
+            fi
             while IFS= read -r marker; do
                 [ -z "$marker" ] && continue
                 echo "    $marker"
@@ -650,6 +712,41 @@ if [ -n "$existing" ]; then
             telemetry_emit handover-arm-resume dedup-block "time=$RESUME_TIME"
         fi
         exit 3
+    fi
+fi
+
+# Soft slot cap (HIMMEL-340): WARN — never block — when arming would push the
+# machine past ARM_MAX_SLOTS concurrent resume slots. Each fired slot is
+# another concurrent claude process + API spend, so the operator gets a
+# heads-up while still being allowed to proceed. Skipped under --dedup-any
+# (such arms add at most one slot and only when none exists, so they can't be
+# the arm that pushes past the cap) and when ARM_MAX_SLOTS=0 (disabled).
+# Reached only on a net-change path: a new arm (no same-handover job) or a
+# --force replace (the no-force same-handover case already exited rc 3 above),
+# so the predicted total is computed as "every OTHER slot, plus this one" —
+# robust whether or not --force already deleted the old job.
+if [ "$DEDUP_ANY" -eq 0 ]; then
+    _max_slots="${ARM_MAX_SLOTS:-4}"
+    case "$_max_slots" in ''|*[!0-9]*) _max_slots=4 ;; esac
+    if [ "$_max_slots" -gt 0 ]; then
+        # Bare assignments (not <<< "$(list_existing …)" here-strings) so a
+        # list_existing fail-closed `exit 2` propagates and aborts rather than
+        # being swallowed by the command-substitution subshell — the soft-cap
+        # count inherits the same fail-closed contract as the dedup check.
+        _all_list=$(list_existing all)
+        _same_list=$(list_existing task)
+        _all_count=0
+        while IFS= read -r _l; do
+            [ -n "$_l" ] && _all_count=$((_all_count + 1))
+        done <<< "$_all_list"
+        _same_count=0
+        while IFS= read -r _l; do
+            [ -n "$_l" ] && _same_count=$((_same_count + 1))
+        done <<< "$_same_list"
+        _predicted=$((_all_count - _same_count + 1))
+        if [ "$_predicted" -gt "$_max_slots" ]; then
+            echo "WARN arm-resume: arming this slot brings the total to $_predicted concurrent resume slots (soft cap ARM_MAX_SLOTS=$_max_slots). Each fired slot is another concurrent claude process + API spend. Proceeding anyway — raise ARM_MAX_SLOTS or prune stale jobs to silence this." >&2
+        fi
     fi
 fi
 
