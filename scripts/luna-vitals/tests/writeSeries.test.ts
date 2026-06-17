@@ -35,7 +35,7 @@ test("refuses to write a metric that has an unresolved conflict", async () => {
   const dir = tmp();
   const a: ReviewArtifact = {
     bucket: "x",
-    conflicts: [{ metric: "migraine", date: "2024-06-14", values: [{ value: 2, source: "a" }, { value: 3, source: "b" }] }],
+    conflicts: [{ metric: "migraine", date: "2024-06-14", values: [{ value: 2, source: "a" }, { value: 3, source: "b" }], chosen: { value: 2, source: "a" } }],
     rows: [{ metric: "migraine", date: "2024-06-14", value: 2, source: "a" }],
   };
   await expect(writeSeries(a, dir)).rejects.toThrow(/unresolved conflict/);
@@ -45,11 +45,17 @@ test("allowConflicts:true bypasses the conflict guard and writes", async () => {
   const dir = tmp();
   const a: ReviewArtifact = {
     bucket: "x",
-    conflicts: [{ metric: "migraine", date: "2024-06-14", values: [{ value: 2, source: "a" }, { value: 3, source: "b" }] }],
+    conflicts: [{ metric: "migraine", date: "2024-06-14", values: [{ value: 2, source: "a" }, { value: 3, source: "b" }], chosen: { value: 2, source: "a" } }],
     rows: [{ metric: "migraine", date: "2024-06-14", value: 2, source: "a" }],
   };
   await writeSeries(a, dir, { allowConflicts: true });
   expect(await Bun.file(join(dir, "migraine.csv")).text()).toBe("date,value\n2024-06-14,2\n");
+});
+
+test("an empty artifact (rows: []) writes nothing and returns []", async () => {
+  const dir = tmp();
+  const res = await writeSeries({ bucket: "x", conflicts: [], rows: [] }, dir);
+  expect(res).toEqual([]);
 });
 
 test("skips malformed rows in an existing CSV (no NaN / misaligned values seeded)", async () => {

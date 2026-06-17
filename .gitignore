@@ -2,6 +2,7 @@
 .env
 scripts/jira/dist/
 scripts/jira/node_modules/
+scripts/luna-vitals/node_modules/
 /node_modules/
 /.claude/settings.local.json
 # end-session-wiki hook local artifacts — contain raw transcript excerpts (potential secrets).
