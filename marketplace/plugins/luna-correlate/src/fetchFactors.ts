@@ -12,7 +12,9 @@ export type BBox = { latMin: number; lonMin: number; latMax: number; lonMax: num
 export type GridCell = { lat: number; lon: number };
 export type DateRange = { start: string; end: string };
 export type CachedCell = { lat: number; lon: number; daily: DailyAgg[] };
-export type AggMetric = "min" | "mean" | "max";
+// Derived from DailyAgg so the metric set can't drift from the available daily
+// aggregates (adding/removing a DailyAgg field updates this in lockstep).
+export type AggMetric = keyof Omit<DailyAgg, "date">;
 export type FactorCache = {
   factor: string; field: string; unit: string; metric: AggMetric; label: string;
   bbox: BBox; dateRange: DateRange; cells: CachedCell[];

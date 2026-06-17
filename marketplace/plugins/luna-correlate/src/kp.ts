@@ -1,5 +1,8 @@
 import { join } from "path";
-import type { KpPoint } from "./correlate";
+
+// Kp-specific factor sample. Owned here (the kp parser/cache module) rather than
+// in correlate.ts, which is now factor-agnostic (joins the generic FactorPoint).
+export type KpPoint = { date: string; kp: number };
 
 // Resolve the cache against this module's dir (not cwd) so the cache location
 // is stable no matter where the MCP server / CLI is launched from (#541 nit).

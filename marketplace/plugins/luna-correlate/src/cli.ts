@@ -1,7 +1,7 @@
 import { parseSeriesCsv } from "./series";
-import { parseKpAuto, KP_CACHE } from "./kp";
+import { parseKpAuto, KP_CACHE, type KpPoint } from "./kp";
 import { correlate } from "./correlate";
-import type { KpPoint, FactorPoint, Signal } from "./correlate";
+import type { FactorPoint, Signal } from "./correlate";
 
 // This CLI is the manual Kp path; location factors go through the MCP. Map the
 // {date,kp} cache shape to the generic {date,value} factor and keep the Kp split
