@@ -1,8 +1,8 @@
-export type KpPoint = { date: string; kp: number };
 export type SeriesPoint = { date: string; value: number };
 // A generic factor sample: a date-keyed value. Kp maps {date,kp}->{date,value};
 // location factors (pressure/pollen/aq) arrive in this shape from the proximity
-// index. The join below is identical regardless of factor.
+// index. The join below is identical regardless of factor. (KpPoint lives in
+// kp.ts now — this module is factor-agnostic.)
 export type FactorPoint = { date: string; value: number };
 export type Signal = {
   series: string; factor: string; lagDays: number;

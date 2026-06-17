@@ -1,8 +1,8 @@
 import { fetchKpToCache } from "./fetchKp";
-import { KP_CACHE } from "./kp";
+import { KP_CACHE, type KpPoint } from "./kp";
 import { loadSeries } from "./loadSeries";
 import { correlate } from "./correlate";
-import type { KpPoint, FactorPoint, SeriesPoint, Signal } from "./correlate";
+import type { FactorPoint, SeriesPoint, Signal } from "./correlate";
 import { formatSignalsNote } from "./signalsNote";
 import {
   fetchFactorToCache, factorCachePath, LOCATION_FACTORS, type FactorCache, type DateRange,
