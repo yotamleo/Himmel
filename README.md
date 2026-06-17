@@ -43,6 +43,9 @@ The payoff of running Claude Code through himmel rather than bare:
   context window (and the bill) small.
 - **Memory you can read and edit by hand.** A plain-markdown Camp-2 substrate — no
   vector DB to trust, debug, or re-embed.
+- **Forge-agnostic.** The worktree→PR→merge loop, PR review threads, and
+  luna-ingest work the same on GitHub or Bitbucket Cloud — the backend is chosen
+  per-repo from the `origin` remote, so nothing in the day-to-day loop changes.
 - **Cross-platform.** Linux, macOS, and Windows Git Bash, with the platform gotchas
   already handled.
 
@@ -181,6 +184,7 @@ detail. This README points at them; the full map is in
 | **Handover system (multi-repo registry + auto-branch + PR + flush)** | [`docs/internals/handover-system.md`](docs/internals/handover-system.md) |
 | **Overnight mode (unattended dispatch)**   | [`docs/handover/overnight-mode.md`](docs/handover/overnight-mode.md)  |
 | **Jira plugin (token-cheap local CLI)**    | [`scripts/jira/`](scripts/jira/) + [`docs/internals/jira-plugin.md`](docs/internals/jira-plugin.md) |
+| **Forge support (GitHub + Bitbucket Cloud, auto-detected from `origin`)** | [`scripts/bitbucket/`](scripts/bitbucket/) + [`plugins/himmel-gh/`](plugins/himmel-gh/) |
 | **Guardrails (shared git-state predicates)** | [`scripts/guardrails/`](scripts/guardrails/) + [`docs/internals/enforcement.md`](docs/internals/enforcement.md) |
 | **`/improve` prompt-refinement hook**      | [`.claude/commands/improve.md`](.claude/commands/improve.md) (HIMMEL-127) |
 | **`/overnight-shift` ticket fanout**       | [`.claude/commands/overnight-shift.md`](.claude/commands/overnight-shift.md) (HIMMEL-134) |
