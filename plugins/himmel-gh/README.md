@@ -1,6 +1,8 @@
 # himmel-gh
 
-Thin Claude Code plugin wrapping `gh` CLI through `scripts/himmel-run/`.
+Thin Claude Code plugin wrapping the `gh` CLI through `scripts/himmel-run/`.
+Forge-aware: commands route to `gh` on GitHub repos and to the himmel `bitbucket`
+CLI on Bitbucket Cloud repos, chosen per-repo from the `origin` remote.
 
 ## Install
 
