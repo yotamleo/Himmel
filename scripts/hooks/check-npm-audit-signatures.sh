@@ -15,6 +15,20 @@ fi
 fail=0
 for pkg in "${pkgs[@]}"; do
     dir=$(dirname "$pkg")
+
+    # Bun-package detection (mirrors check-npm-audit.sh): `npm audit signatures`
+    # only works on an npm-installed tree with a package-lock; a bun package has
+    # no registry-signed npm manifest to verify, so skip it. Detect via a bun
+    # lockfile or a package.json that drives `bun install`.
+    if [ -f "$dir/bun.lock" ] || [ -f "$dir/bun.lockb" ]; then
+        echo "→ npm audit signatures: skipping $dir — bun lockfile present (not an npm package)"
+        continue
+    fi
+    if grep -q '"bun install' "$dir/package.json" 2>/dev/null; then
+        echo "→ npm audit signatures: skipping $dir — package.json scripts use 'bun install' (bun package, not npm)"
+        continue
+    fi
+
     # Block-by-default: missing node_modules means the registry-signed manifest
     # was never materialized locally, so we cannot verify anything. Letting
     # the push through would silently disable the gate.

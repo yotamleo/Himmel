@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Pre-commit hook: enforce npm lockfile integrity.
+# Pre-commit hook: enforce lockfile integrity (npm + bun).
 #
 # For every package.json under scripts/ (same scoping as check-npm-audit.sh):
-#   1. A sibling package-lock.json must exist.
+#   1. A sibling package-lock.json (npm) or bun.lock (bun) must exist.
 #   2. That lockfile must be tracked in git.
-#   3. `npm ci --dry-run --ignore-scripts` must succeed (catches lock drift).
+#   3. Package manager ci/install verification succeeds (catches lock drift).
 #
 # Blocks the commit on any failure. See docs/security/npm-policy.md.
 set -euo pipefail
@@ -13,18 +13,31 @@ set -euo pipefail
 mapfile -t pkgs < <(find scripts -maxdepth 3 -name package.json -not -path '*/node_modules/*')
 
 if [ ${#pkgs[@]} -eq 0 ]; then
-    echo "→ lockfile-integrity: no npm projects under scripts/, skipping"
+    echo "→ lockfile-integrity: no npm/bun projects under scripts/, skipping"
     exit 0
 fi
 
 fail=0
 for pkg in "${pkgs[@]}"; do
     dir=$(dirname "$pkg")
-    lock="$dir/package-lock.json"
+
+    # Determine lockfile type (bun.lock takes precedence). Warn if both are
+    # present so a stray package-lock.json during an npm→bun migration can't
+    # silently drop npm validation without anyone noticing.
+    if [ -f "$dir/bun.lock" ]; then
+        lock="$dir/bun.lock"
+        pm="bun"
+        if [ -f "$dir/package-lock.json" ]; then
+            echo "→ lockfile-integrity: WARNING: both bun.lock and package-lock.json in $dir — using bun.lock" >&2
+        fi
+    else
+        lock="$dir/package-lock.json"
+        pm="npm"
+    fi
 
     if [ ! -f "$lock" ]; then
         echo "ERROR: missing lockfile: $lock" >&2
-        echo "       Every package.json must ship a committed sibling package-lock.json." >&2
+        echo "       Every package.json must ship a committed sibling package-lock.json (npm) or bun.lock (bun)." >&2
         fail=1
         continue
     fi
@@ -36,12 +49,25 @@ for pkg in "${pkgs[@]}"; do
         continue
     fi
 
-    echo "→ lockfile-integrity: npm ci --dry-run in $dir"
-    if ! (cd "$dir" && npm ci --dry-run --ignore-scripts); then
-        echo "ERROR: lockfile drift detected in $dir" >&2
-        echo "       package-lock.json is out of sync with package.json." >&2
-        echo "       Run 'npm install' in $dir, then commit the updated lockfile." >&2
-        fail=1
+    if [ "$pm" = "npm" ]; then
+        echo "→ lockfile-integrity: npm ci --dry-run in $dir"
+        if ! (cd "$dir" && npm ci --dry-run --ignore-scripts); then
+            echo "ERROR: lockfile drift detected in $dir" >&2
+            echo "       package-lock.json is out of sync with package.json." >&2
+            echo "       Run 'npm install' in $dir, then commit the updated lockfile." >&2
+            fail=1
+        fi
+    else
+        # bun: --frozen-lockfile errors if the lockfile is out of sync with
+        # package.json; --dry-run resolves without installing. This is the bun
+        # analogue of `npm ci --dry-run` — same drift-detection guarantee.
+        echo "→ lockfile-integrity: bun install --frozen-lockfile --dry-run in $dir"
+        if ! (cd "$dir" && bun install --frozen-lockfile --dry-run); then
+            echo "ERROR: lockfile drift detected in $dir" >&2
+            echo "       bun.lock is out of sync with package.json." >&2
+            echo "       Run 'bun install' in $dir, then commit the updated bun.lock." >&2
+            fail=1
+        fi
     fi
 done
 
