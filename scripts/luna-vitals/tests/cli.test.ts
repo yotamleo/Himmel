@@ -40,6 +40,19 @@ test("parse --note-date anchors inline fields, then merge --det/--llm keeps dete
   expect(m.conflicts).toEqual([]);
 });
 
+test("merge warns on stderr (naming the file) for a positional arg that is not a .json artifact", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "luna-vitals-cli-warn-"));
+  const det = join(dir, "det.json");
+  await Bun.write(det, JSON.stringify({ bucket: "x", conflicts: [], rows: [{ metric: "migraine", date: "2024-06-14", value: 3, source: "s" }] }));
+  const merged = join(dir, "merged.json");
+  const p = Bun.spawn(["bun", "run", "cli.ts", "merge", det, "notes.md", "--out", merged], { cwd: ROOT, stderr: "pipe" });
+  const err = await new Response(p.stderr).text();
+  expect(await p.exited).toBe(0);
+  expect(err).toContain("notes.md");
+  // the ignored positional must not corrupt the real merge — det.json's row survives
+  expect((await readJson(merged)).rows).toContainEqual({ metric: "migraine", date: "2024-06-14", value: 3, source: "s" });
+});
+
 test("CLI exits non-zero (not 0) when the parse input file is missing", async () => {
   const p = Bun.spawn(["bun", "run", "cli.ts", "parse", join(tmpdir(), "does-not-exist-xyz.md"), "--out", join(tmpdir(), "o.json")], { cwd: ROOT, stderr: "pipe" });
   expect(await p.exited).toBe(1);

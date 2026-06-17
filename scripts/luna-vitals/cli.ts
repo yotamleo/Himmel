@@ -46,6 +46,10 @@ async function main(): Promise<void> {
         const art = await readArtifact(a);
         pool.push(...art.rows);
         buckets.push(art.bucket);
+      } else if (!a.endsWith(".json")) {
+        // A bare positional that is not a .json artifact is not an input — warn
+        // (naming it) instead of silently dropping it, so a typo'd path is visible.
+        console.error(`[luna-vitals] warning: ignoring positional argument that is not a .json artifact: ${a}`);
       }
     }
     if (!det.length && !llm.length) { console.error("usage: merge [--det <det.json>...] [--llm <llm.json>...] --out <merged.json> (no input artifacts found)"); process.exit(1); }

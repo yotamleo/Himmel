@@ -20,7 +20,14 @@ export function mergeRows(
     rows.push(pool[0]);
     const distinct = [...new Set(pool.map(r => r.value))];
     if (distinct.length > 1) {
-      conflicts.push({ metric: pool[0].metric, date: pool[0].date, values: pool.map(r => ({ value: r.value, source: r.source })) });
+      // `chosen` mirrors the emitted row (pool[0]) so the artifact records which
+      // candidate won, not just that there was a disagreement.
+      conflicts.push({
+        metric: pool[0].metric,
+        date: pool[0].date,
+        values: pool.map(r => ({ value: r.value, source: r.source })),
+        chosen: { value: pool[0].value, source: pool[0].source },
+      });
     }
   }
   rows.sort((a, b) => (a.metric < b.metric ? -1 : a.metric > b.metric ? 1 : a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
