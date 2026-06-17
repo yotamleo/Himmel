@@ -145,6 +145,24 @@ install_plugins() {
   fi
 }
 
+# statusLine — part of the core harness (HIMMEL-359). Wired into the
+# scope-appropriate settings.json. Both scopes reference THIS himmel clone's
+# vendored statusline (it is never copied per-repo), so a project-scope
+# settings.json carries this machine's clone path by design.
+wire_statusline_core() {
+  local settings
+  if [[ "$SCOPE" == "project" ]]; then
+    settings="$TARGET/.claude/settings.json"
+  else
+    settings="$HOME/.claude/settings.json"
+  fi
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: wire statusLine → $settings (himmel: $HIMMEL_ROOT)"
+    return
+  fi
+  bash "$HIMMEL_ROOT/scripts/lib/wire-statusline.sh" "$settings" "$HIMMEL_ROOT"
+}
+
 do_core() {
   require_tools
   if [[ "$SCOPE" == "project" ]]; then
@@ -159,6 +177,7 @@ do_core() {
     echo "  worktree commands run from the himmel clone: bash $HIMMEL_ROOT/scripts/worktree.sh feat/slug"
   fi
   install_plugins
+  wire_statusline_core
   echo "  (optional) pre-commit gates: see $HIMMEL_ROOT/docs/setup/use-on-your-project.md (Pre-commit hooks)"
 }
 
