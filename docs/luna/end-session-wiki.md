@@ -88,7 +88,7 @@ Every hook invocation appends one line: `[<UTC-ISO timestamp>] <message>`. Messa
 
 ## Inspecting captured notes
 
-Notes live under `<luna-vault>/sessions/YYYY/MM/`. Default vault root: `$HOME/Documents/luna` (override with `LUNA_VAULT_PATH`).
+Notes live under `<luna-vault>/sessions/YYYY/MM/`. Default vault root: `$HOME/Documents/luna`, overridable per-repo with `vault_path` in `.claude/end-session-wiki.json` or globally with `LUNA_VAULT_PATH` (see [Choosing the target vault](#choosing-the-target-vault)).
 
 Search across captured sessions via the Obsidian MCP:
 

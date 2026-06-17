@@ -168,6 +168,8 @@ pre-commit run --all-files
 
 Hooks: `gitleaks` (secrets scan) + standard hooks. Luna-specific rules live in `~/Documents/luna/CLAUDE.md` (not linked here — it's in a different repo).
 
+> Vault not at `~/Documents/luna`, or want to route a repo's session notes to a different vault? Point the end-session-wiki capture at it — see [Choosing the target vault](../luna/end-session-wiki.md#choosing-the-target-vault) (and §7 below).
+
 ### 5a. Optional — Obsidian Web Clipper templates ([Jira LUNA-2](https://yotamleo.atlassian.net/browse/LUNA-2))
 
 If you'll be clipping web pages into Luna (X posts, articles, Reddit threads, newsletters, YouTube videos), install the Obsidian Web Clipper Chrome extension + drop in the 6 pre-built JSON templates that ship with Luna. **Skip if you only want to use Luna for native notes.**
