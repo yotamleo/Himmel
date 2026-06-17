@@ -972,6 +972,47 @@ out=$(TMPDIR="$TMP" SCHED_DB="$DB31" SCHED_DB_DIR="$DB31D" PATH="$STATEFUL_STUB:
 assert_rc "T31d re-arm 'jobcollide' dedups exactly itself (rc 3)" 3 "$?"
 
 # ---------------------------------------------------------------------------
+# T32: the relaunch is SELF-CLEANING — the spawned launcher deletes its own
+#      scheduler entry as its first action so a fired /sc ONCE task (or a
+#      recurring crontab entry) never lingers to block a same-handover re-arm
+#      or fire twice. --force --dry-run isolates from the live scheduler and
+#      prints the launcher body. Platform-branched: schtasks .bat carries a
+#      self-/delete; the crontab fallback entry self-removes its marker line;
+#      the at path needs nothing (atd auto-removes one-shot jobs).
+# ---------------------------------------------------------------------------
+HO=$(make_handover "$WORK_REPO")
+out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T32 self-clean dry-run exits 0" 0 "$rc"
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_contains "T32 .bat self-deletes its own task" 'schtasks /delete /tn "HIMMEL-Resume-' "$out"
+        # The delete must be the FIRST line of the .bat body (not merely
+        # somewhere before cd) — extract the first body line printed after the
+        # ".bat content:" header and assert it is the delete. A weaker "before
+        # cd" check would still pass if a future edit inserted a command
+        # between the delete and cd.
+        first_bat_line=$(printf '%s\n' "$out" | awk '/\.bat content:/{getline; print; exit}')
+        assert_contains "T32 self-delete is the FIRST .bat line" "schtasks /delete" "$first_bat_line"
+        ;;
+    *)
+        if command -v at >/dev/null 2>&1; then
+            # at queue auto-removes the job after it runs, so the body must
+            # carry NO self-delete line — adding one would be wrong.
+            assert_contains "T32 at body emitted" "would at -t" "$out"
+            assert_not_contains "T32 at body has no spurious self-delete" "schtasks /delete" "$out"
+        else
+            # crontab fallback: the entry self-removes its own marker line
+            # first, ANCHORED (grep -vE …$) so a prefix-related sibling
+            # survives — must NOT regress to the unanchored grep -vF.
+            assert_contains "T32 crontab entry self-removes its marker (anchored)" "grep -vE '# HIMMEL-Resume-" "$out"
+            assert_not_contains "T32 crontab self-clean is not unanchored grep -vF" "grep -vF '# HIMMEL-Resume-" "$out"
+            assert_contains "T32 crontab note says one-shot" "self-removes on first fire" "$out"
+        fi
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 if [ "$FAILED" -gt 0 ]; then
