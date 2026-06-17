@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "error": {
+    "message": "You can't merge until you resolve all merge conflicts."
+  }
+}

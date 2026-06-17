@@ -22,7 +22,17 @@
 #   operator works offline.
 #
 # Bypass: SKIP_PR_MERGEABLE=1 git push ... (logs WARNING).
+#
+# HIMMEL-326: routes through the forge seam (scripts/lib/forge.sh), so it gates
+# GitHub and Bitbucket Cloud. On Bitbucket forge_pr_mergeable always returns
+# UNKNOWN (no pre-merge mergeable signal — spec §5.1), so this hook never blocks
+# a Bitbucket push; the conflict surfaces at merge time instead.
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/forge.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/forge.sh"
 
 # Drain stdin first so pre-commit doesn't deadlock when push touches
 # many refs. We don't actually need stdin content for the mergeable
@@ -39,30 +49,25 @@ if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
     exit 0
 fi
 
-GH_CMD="${GH_CMD:-gh}"
-
-if ! command -v "${GH_CMD%% *}" >/dev/null 2>&1; then
-    echo "→ pr-mergeable: gh CLI missing — skipping (best-effort)" >&2
+# Determine the forge; without an origin we can't gate — skip best-effort.
+if ! forge_detect >/dev/null 2>&1; then
+    echo "→ pr-mergeable: cannot determine forge (no github/bitbucket origin) — skipping (best-effort)" >&2
     exit 0
 fi
 
-if ! $GH_CMD auth status >/dev/null 2>&1; then
-    echo "→ pr-mergeable: gh CLI not authenticated — skipping (best-effort)" >&2
+# Best-effort: a hard refuse would block pushes whenever the operator works
+# offline or the forge CLI is missing / unauthenticated.
+if ! forge_auth_status 2>/dev/null; then
+    echo "→ pr-mergeable: forge CLI missing or unauthenticated — skipping (best-effort)" >&2
     exit 0
 fi
 
-mergeable=""
-if pr_json=$($GH_CMD pr view --json mergeable,url,number --jq '{m: .mergeable, u: .url, n: .number}' "$branch" 2>/dev/null); then
-    # gh prints "null" or empty when no PR exists.
-    if [ -n "$pr_json" ] && [ "$pr_json" != "null" ]; then
-        # Parse the three fields without a jq dep — gh already pre-formatted.
-        mergeable=$(printf '%s' "$pr_json" | grep -oE '"m":"[^"]*"' | head -1 | sed 's/.*:"\(.*\)"/\1/')
-        pr_url=$(printf '%s' "$pr_json" | grep -oE '"u":"[^"]*"' | head -1 | sed 's/.*:"\(.*\)"/\1/')
-        pr_num=$(printf '%s' "$pr_json" | grep -oE '"n":[0-9]+' | head -1 | sed 's/.*://')
-    fi
-fi
+# Query mergeability for this branch's open PR. forge_pr_mergeable accepts a
+# branch ref (the github backend's `gh pr view <branch>` resolves it) and prints
+# MERGEABLE / CONFLICTING / UNKNOWN, or empty when no PR exists.
+mergeable=$(forge_pr_mergeable "$branch" 2>/dev/null || true)
 
-if [ -z "$mergeable" ]; then
+if [ -z "$mergeable" ] || [ "$mergeable" = "null" ]; then
     # No PR for this branch — nothing to gate on. The pr-open step
     # will create one on the next push.
     exit 0
@@ -70,26 +75,28 @@ fi
 
 case "$mergeable" in
     CONFLICTING)
+        # Only GitHub yields CONFLICTING here — Bitbucket's forge_pr_mergeable
+        # is hardcoded UNKNOWN — so the inspect hint stays gh-flavored.
         cat >&2 <<EOF
-ERROR: PR #${pr_num} for branch '$branch' is in CONFLICTING state.
+ERROR: the open PR for branch '$branch' is in CONFLICTING state.
        Resolve merge conflicts before pushing.
 
-       Inspect: gh pr view ${pr_num} --json mergeable,mergeStateStatus
-       PR URL:  ${pr_url}
+       Inspect: gh pr view $branch --json mergeable,mergeStateStatus
 
 Bypass: SKIP_PR_MERGEABLE=1 git push ...
 EOF
         exit 1
         ;;
     MERGEABLE|UNKNOWN|*)
-        # MERGEABLE: clearly OK. UNKNOWN: gh hasn't computed yet — let it
-        # through; the gh pr merge gate will block again at merge time
-        # if it's actually conflicting. Anything else: be lenient.
+        # MERGEABLE: clearly OK. UNKNOWN: not computed yet (GitHub) or no
+        # pre-merge signal (Bitbucket) — let it through; the merge gate blocks
+        # again at merge time if it's actually conflicting. Anything else:
+        # be lenient.
         #
         # Two-stage UNKNOWN handling (HIMMEL-179): this pre-push pass-through
         # is stage 1. Stage 2 is the bounded mergeability poll in
         # scripts/handover/pr-merge.sh, which waits for UNKNOWN to settle to
-        # MERGEABLE/CONFLICTING before the real `gh pr merge`.
+        # MERGEABLE/CONFLICTING before the real merge.
         exit 0
         ;;
 esac

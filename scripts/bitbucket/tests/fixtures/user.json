@@ -1,0 +1,12 @@
+{
+  "type": "user",
+  "display_name": "Example User",
+  "username": "example",
+  "nickname": "example",
+  "account_id": "000000:00000000-0000-0000-0000-000000000000",
+  "uuid": "{00000000-0000-0000-0000-000000000000}",
+  "account_status": "active",
+  "links": {
+    "self": { "href": "https://api.bitbucket.org/2.0/user" }
+  }
+}

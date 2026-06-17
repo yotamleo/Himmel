@@ -12,7 +12,7 @@
 #      expose --updated-since, so we list all Done and cross-reference
 #      against the commit/PR set).
 #
-# Output schema mirrors yotam_docs/handovers/yotam/overnight-summary-2026-05-24.md:
+# Output schema mirrors <state-repo>/handovers/<USER_SLUG>/overnight-summary-2026-05-24.md:
 #   - Title with the date.
 #   - `## Code shipped (N PRs merged to main)` table.
 #   - `## Commits` raw `git log --oneline` listing.
@@ -32,6 +32,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/handover-path.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/handover-path.sh"
+# forge_detect (HIMMEL-326): the date-ranged merged-PR query below is a
+# GitHub-specific `gh pr list --search` (no forge-seam verb covers a date range),
+# so it's gated to a github origin.
+# shellcheck source=../lib/forge.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/forge.sh"
 
 GH_CMD="${GH_CMD:-gh}"
 GIT_CMD="${GIT_CMD:-git}"
@@ -143,10 +149,12 @@ mapfile -t ticket_keys < <(printf '%s\n' "$commits_raw" \
     | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' \
     | sort -u)
 
-# Merged PRs via gh (best-effort).
+# Merged PRs via gh (best-effort) — GitHub only (date-ranged `--search`, no
+# forge-seam equivalent; a bitbucket repo renders the "no merged PRs" fallback).
 pr_table=""
 pr_count=0
-if command -v "${GH_CMD%% *}" >/dev/null 2>&1; then
+briefing_forge=$(forge_detect 2>/dev/null || true)
+if [ "$briefing_forge" = "github" ] && command -v "${GH_CMD%% *}" >/dev/null 2>&1; then
     # gh pr list --json bundles number/title/mergedAt/mergeCommit; filter
     # by `merged:>SINCE_DATE` via --search.
     if pr_json=$($GH_CMD pr list --state merged --search "merged:>$SINCE_DATE" --limit 100 --json number,title,mergedAt 2>/dev/null); then

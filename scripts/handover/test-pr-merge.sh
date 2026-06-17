@@ -103,6 +103,10 @@ STUB
         git config user.name t
         git commit -q --allow-empty -m init
         git checkout -q -b "$branch" 2>/dev/null || git checkout -q "$branch"
+        # Forge seam (HIMMEL-326): pr-merge resolves the forge from origin. A
+        # github origin selects the github backend, which reproduces the exact
+        # `gh pr merge` shapes (incl. --admin fallback) these asserts expect.
+        git remote add origin https://github.com/test/test.git
         GH_LOG="$ghlog" GH_VIEW_COUNT="$tmp/view.count" \
             PATH="$tmp/bin:$PATH" GH_CMD=gh \
             PR_MERGE_POLL_INTERVAL="${PR_MERGE_POLL_INTERVAL:-0}" \
@@ -158,9 +162,9 @@ fi
 
 # --- --dry-run prints plain command on stdout, invokes no merge ---
 if run_case "handover/x-slug" 0 "dry-run exits 0" -- --dry-run; then
-    assert_out_has   "would invoke: gh pr merge 42 --squash --delete-branch" "dry-run prints plain command"
-    assert_out_lacks "--admin"                                               "dry-run command omits --admin"
-    assert_log_lacks "pr merge"                                              "dry-run invokes no real merge"
+    assert_out_has   "would squash-merge PR #42 on github" "dry-run prints plain squash-merge intent"
+    assert_out_lacks "--admin"                             "dry-run command omits --admin"
+    assert_log_lacks "pr merge"                            "dry-run invokes no real merge"
 fi
 
 # --- plain fails + admin authorized => retries WITH --admin, succeeds ---

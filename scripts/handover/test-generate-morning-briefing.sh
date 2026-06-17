@@ -78,6 +78,8 @@ git init -q --initial-branch=main "$REPO" 2>/dev/null || {
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "fix(scope): HIMMEL-902 bug B"
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "chore: nothing"
 )
+# Forge seam (HIMMEL-326): the merged-PR section is gated to a github origin.
+git -C "$REPO" remote add origin https://github.com/test/test.git
 MARKER=$(cat "$TMP_ROOT/MARKER")
 
 run_script() {

@@ -120,3 +120,58 @@ describe.skipIf(IS_WIN)('threads-list-cli signal-killed gh subprocess', () => {
     expect(res.stderr).not.toMatch(/unexpected response shape/);
   });
 });
+
+// Bitbucket forge route (spec §5.3): FORGE=bitbucket + a node-stub bitbucket CLI
+// that emits the `pr comments` payload. Runs on Windows too (HIMMEL-345): the
+// JSON-array BITBUCKET_CLI form is parsed as exact argv with no space-split, so
+// the space in process.execPath (C:\Program Files\nodejs\node.exe) is safe.
+describe('threads-list-cli — bitbucket forge route', () => {
+  let stub;
+  function writeBbStub(body) {
+    stub = join(dir, 'bb-stub.mjs');
+    writeFileSync(stub, body);
+  }
+  function envBb() {
+    // envForTest() supplies the platform-correct cache root (LOCALAPPDATA on
+    // Windows, XDG_CACHE_HOME/HOME on POSIX) so the cachePath() assertion below
+    // matches where the spawned CLI writes — required now that this runs on Windows.
+    return {
+      ...process.env,
+      ...envForTest(),
+      FORGE: 'bitbucket',
+      BITBUCKET_CLI: JSON.stringify([process.execPath, stub]),
+    };
+  }
+
+  it('routes through the bitbucket CLI, caches threads, prints the summary', () => {
+    writeBbStub(
+      `const a = process.argv.slice(2);
+       if (a[0]==='pr'&&a[1]==='comments'&&a[2]==='3') {
+         process.stdout.write(JSON.stringify({ threads: [
+           { id: 10, path: 'src/x.ts', line: 42, isResolved: false, author: 'rev', body: 'fix this' },
+           { id: 20, path: 'src/y.ts', line: 7, isResolved: true, author: 'me', body: 'done' }
+         ], truncated: false, pages: 1 })); process.exit(0);
+       }
+       process.stderr.write('bad args'); process.exit(9);`,
+    );
+    const res = spawnSync(
+      process.execPath,
+      [cli, '--owner', 'ws', '--repo', 'repo', '--number', '3'],
+      { env: envBb(), cwd: dir, encoding: 'utf8' },
+    );
+    expect(res.status).toBe(0);
+    expect(res.stdout).toMatch(/threads=2 unresolved=1/);
+    expect(existsSync(cachePath(cacheRoot, 'ws', 'repo', 3))).toBe(true);
+  });
+
+  it('propagates a non-zero bitbucket CLI exit as failure (no silent empty list)', () => {
+    writeBbStub(`process.stderr.write('bb auth 401\\n'); process.exit(1);`);
+    const res = spawnSync(
+      process.execPath,
+      [cli, '--owner', 'ws', '--repo', 'repo', '--number', '3'],
+      { env: envBb(), cwd: dir, encoding: 'utf8' },
+    );
+    expect(res.status).toBe(1);
+    expect(res.stderr).toMatch(/bb auth 401/);
+  });
+});

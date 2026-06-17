@@ -146,6 +146,33 @@ for phase in "## Phase 1" "## Phase 2" "## Phase 3" "## Phase 4" "## Dry-run mod
     assert "skill body has section: $phase" "yes" "$present"
 done
 
+echo "Test 8: bitbucket.org routing branch is documented (HIMMEL-329)"
+# The Bitbucket branch is the forge-routed parallel to the github phases. These
+# invariants block silent rot of the bitbucket contract that /harvest-clips and
+# operators depend on.
+for marker in \
+    "## Bitbucket branch" \
+    "### B-repo" \
+    "### B-PR" \
+    "### B-issue" \
+    "bitbucket.org" \
+    "source_type: bitbucket"; do
+    if grep -qF "$marker" "$SKILL"; then
+        present=yes
+    else
+        present=no
+    fi
+    assert "skill body documents bitbucket marker: $marker" "yes" "$present"
+done
+
+# The description must advertise bitbucket so the skill picker routes BB URLs here.
+if printf '%s\n' "$fm_lines" | grep -qF "bitbucket.org"; then
+    desc_bb=yes
+else
+    desc_bb=no
+fi
+assert "description advertises bitbucket.org" "yes" "$desc_bb"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 if [ "$fail" -gt 0 ]; then

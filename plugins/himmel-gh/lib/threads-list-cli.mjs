@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { writeThreadCache } from './thread-cache.mjs';
+import { detectForge } from './forge/detect.mjs';
+import { listThreads } from './forge/bitbucket-threads.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const QUERY_FILE = join(__dirname, '..', 'graphql', 'list-threads.gql');
@@ -63,30 +65,43 @@ if (!owner || !repo || !number) {
   process.exit(2);
 }
 
-let raw;
+// Extract the review-thread nodes from a GitHub GraphQL response body.
+function parseGhNodes(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    process.stderr.write(`parse error: ${e.message}\n`);
+    process.exit(1);
+  }
+  const nodes = parsed?.data?.repository?.pullRequest?.reviewThreads?.nodes;
+  if (!Array.isArray(nodes)) {
+    process.stderr.write(`unexpected response shape (no reviewThreads.nodes)\n`);
+    process.exit(1);
+  }
+  return nodes;
+}
+
+// Resolve thread nodes from the active forge. `--stdin-json` stays the GitHub
+// test seam. Bitbucket has no GraphQL (spec §5.3), so it routes through the
+// bitbucket CLI backend, which returns nodes already in the GraphQL node shape.
+let nodes;
 if (stdinJson) {
-  raw = await readStdin();
+  nodes = parseGhNodes(await readStdin());
+} else if (detectForge() === 'bitbucket') {
+  try {
+    nodes = await listThreads({ number: Number(number) });
+  } catch (e) {
+    process.stderr.write(`${e.message}\n`);
+    process.exit(1);
+  }
 } else {
   const res = await execGhApi(owner, repo, Number(number));
   if (res.exitCode !== 0) {
     process.stderr.write(res.stderr || `gh api graphql failed (exit ${res.exitCode})\n`);
     process.exit(res.exitCode);
   }
-  raw = res.stdout;
-}
-
-let parsed;
-try {
-  parsed = JSON.parse(raw);
-} catch (e) {
-  process.stderr.write(`parse error: ${e.message}\n`);
-  process.exit(1);
-}
-
-const nodes = parsed?.data?.repository?.pullRequest?.reviewThreads?.nodes;
-if (!Array.isArray(nodes)) {
-  process.stderr.write(`unexpected response shape (no reviewThreads.nodes)\n`);
-  process.exit(1);
+  nodes = parseGhNodes(res.stdout);
 }
 
 const data = writeThreadCache(undefined, owner, repo, Number(number), nodes);

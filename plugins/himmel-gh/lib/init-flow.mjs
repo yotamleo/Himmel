@@ -28,6 +28,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { detectForge } from './forge/detect.mjs';
+import { bitbucketCli, spawnForge } from './forge/bitbucket-cli.mjs';
 
 export const REQUIRED_SCOPES = ['repo', 'read:org', 'workflow'];
 
@@ -128,11 +130,75 @@ function execGhDefault() {
   });
 }
 
+// ── bitbucket auth ───────────────────────────────────────────────────────────
+// Bitbucket Cloud has no OAuth-scope concept (token = app password / API token
+// with workspace-level grants), so the bitbucket AuthStatusResult carries an
+// empty scopes/missingScopes — only the OK/NOT-authenticated distinction matters.
+// Mode 'bitbucket' on success; 'unauth' on failure. Mirrors bb_forge_auth_status
+// (exit 0 = creds OK) in scripts/lib/forge-bitbucket.sh.
+
+function execBitbucketAuthDefault() {
+  return spawnForge(bitbucketCli(), ['auth', 'status']);
+}
+function execBitbucketUserSlugDefault() {
+  return spawnForge(bitbucketCli(), ['user', '--slug']);
+}
+
 /**
- * @param {{ execGh?: () => Promise<{stdout: string, stderr: string, exitCode: number}>, env?: NodeJS.ProcessEnv }} [opts]
+ * @param {{ execAuth: () => Promise<{stdout: string, stderr: string, exitCode: number}>, execUserSlug: () => Promise<{stdout: string, stderr: string, exitCode: number}> }} runners
  * @returns {Promise<AuthStatusResult>}
  */
-export async function runInit({ execGh = execGhDefault, env = process.env } = {}) {
+async function runBitbucketInit({ execAuth, execUserSlug }) {
+  const { exitCode } = await execAuth();
+  if (exitCode !== 0) {
+    return {
+      mode: 'unauth',
+      user: null,
+      scopes: [],
+      missingScopes: [],
+      exitCode: 1,
+      summary:
+        'bitbucket NOT authenticated. set BITBUCKET_EMAIL + BITBUCKET_API_TOKEN',
+    };
+  }
+  // user --slug is best-effort: if it fails, fall back to '?' rather than
+  // downgrading an otherwise-OK auth to a failure.
+  let user = null;
+  try {
+    const u = await execUserSlug();
+    if (u.exitCode === 0) user = u.stdout.trim() || null;
+  } catch {
+    user = null;
+  }
+  return {
+    mode: 'bitbucket',
+    user,
+    scopes: [],
+    missingScopes: [],
+    exitCode: 0,
+    summary: `bitbucket OK: ${user ?? '?'} @ bitbucket.org`,
+  };
+}
+
+/**
+ * @param {{ execGh?: () => Promise<{stdout: string, stderr: string, exitCode: number}>, env?: NodeJS.ProcessEnv, forge?: 'github'|'bitbucket', execBitbucketAuth?: () => Promise<{stdout: string, stderr: string, exitCode: number}>, execBitbucketUserSlug?: () => Promise<{stdout: string, stderr: string, exitCode: number}> }} [opts]
+ * @returns {Promise<AuthStatusResult>}
+ */
+export async function runInit({
+  execGh = execGhDefault,
+  env = process.env,
+  forge,
+  execBitbucketAuth = execBitbucketAuthDefault,
+  execBitbucketUserSlug = execBitbucketUserSlugDefault,
+} = {}) {
+  const resolvedForge = forge ?? detectForge(process.cwd(), env);
+  if (resolvedForge === 'bitbucket') {
+    return runBitbucketInit({
+      execAuth: execBitbucketAuth,
+      execUserSlug: execBitbucketUserSlug,
+    });
+  }
+
   const { stdout, stderr, exitCode } = await execGh();
   if (exitCode === 127) {
     return {

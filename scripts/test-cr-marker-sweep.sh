@@ -48,6 +48,9 @@ git init -q --initial-branch=main "$REPO" 2>/dev/null || {
 }
 git -C "$REPO" -c user.email=t@test.com -c user.name=t commit -q --allow-empty -m "init"
 git -C "$REPO" branch -m main 2>/dev/null || true
+# Forge seam (HIMMEL-326): clean-garden resolves the forge from origin; a github
+# origin selects the github backend (bare `gh` via the stub on PATH).
+git -C "$REPO" remote add origin https://github.com/owner/repo.git
 
 COMMON_DIR=$(git -C "$REPO" rev-parse --git-common-dir)
 case "$COMMON_DIR" in /*|?:/*|?:\\*) ;; *) COMMON_DIR="$REPO/$COMMON_DIR" ;; esac
@@ -75,8 +78,10 @@ make_stub_gh() {
     local count="${2:-0}"
     cat > "$stub_dir/gh" <<STUB
 #!/usr/bin/env bash
-# Stub gh: returns open PR count for branch '$branch'.
-# Accepts: gh [--repo R] pr list --head BRANCH --state open --json number --jq length
+# Stub gh for the forge github backend. Open-PR query (forge_pr_find_open) uses
+# \`--jq '.[0].number // ""'\`, so it emits a PR NUMBER when an open PR exists
+# for branch '$branch' (count $count) or empty otherwise. Merged query
+# (forge_pr_has_merged) uses \`--jq length\`, so it emits a count.
 args="\$*"
 if echo "\$args" | grep -q "auth status"; then
     exit 0
@@ -85,11 +90,18 @@ if echo "\$args" | grep -q "repo view"; then
     echo "owner/repo"
     exit 0
 fi
-if echo "\$args" | grep -q -- "--head $branch" && echo "\$args" | grep -q "open"; then
-    echo "$count"
+if echo "\$args" | grep -q -- "--state open"; then
+    # forge_pr_find_open → PR number (open exists) or empty (none).
+    if echo "\$args" | grep -q -- "--head $branch" && [ "$count" -gt 0 ]; then
+        echo "42"
+    fi
     exit 0
 fi
-echo "0"
+if echo "\$args" | grep -q -- "--state merged"; then
+    # forge_pr_has_merged → count.
+    echo "0"
+    exit 0
+fi
 exit 0
 STUB
     chmod +x "$stub_dir/gh"

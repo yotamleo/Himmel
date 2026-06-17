@@ -35,6 +35,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../guardrails/lib.sh"
+# Forge-dispatch seam (HIMMEL-326): the PR-state queries route through forge_*,
+# so flush works against a GitHub or Bitbucket Cloud handover repo.
+# shellcheck source=../lib/forge.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/forge.sh"
 
 GH_CMD="${GH_CMD:-gh}"
 GIT_CMD="${GIT_CMD:-git}"
@@ -106,16 +111,20 @@ if [ -z "$DEFAULT_BASE" ]; then
     DEFAULT_BASE=$(default_branch "$handover_repo")
 fi
 
-# Detect whether gh is usable (auth + on PATH). When unusable, fall
-# back to "report + dump commands" mode for the PR step.
-gh_usable=1
-if ! command -v "${GH_CMD%% *}" >/dev/null 2>&1; then
-    gh_usable=0
-elif ! $GH_CMD auth status >/dev/null 2>&1; then
-    gh_usable=0
+# Forge queries run pinned to the handover repo — its origin determines the
+# forge (GitHub or Bitbucket, HIMMEL-326) — regardless of flush's own cwd.
+forge_in_handover() { ( cd "$handover_repo" && "$@" ); }
+
+# Detect whether the forge CLI is usable (forge resolvable + authenticated).
+# When unusable, fall back to "report + dump commands" mode for the PR step.
+forge_usable=1
+if ! forge_in_handover forge_detect >/dev/null 2>&1; then
+    forge_usable=0
+elif ! forge_in_handover forge_auth_status >/dev/null 2>&1; then
+    forge_usable=0
 fi
-if [ "$gh_usable" -eq 0 ] && [ "$NO_PR_OPEN" -eq 0 ]; then
-    echo "flush: WARNING — gh CLI not usable (missing or unauthenticated). PR-open step will be replaced with command dumps." >&2
+if [ "$forge_usable" -eq 0 ] && [ "$NO_PR_OPEN" -eq 0 ]; then
+    echo "flush: WARNING — forge CLI not usable (missing or unauthenticated). PR-open step will be replaced with command dumps." >&2
 fi
 
 # Collect local handover/* branches. Sorted for deterministic output.
@@ -175,15 +184,15 @@ for branch in "${branches[@]}"; do
     # 2. PR state -------------------------------------------------------
     if [ "$NO_PR_OPEN" -eq 1 ]; then
         pr_state="skipped"
-    elif [ "$gh_usable" -eq 0 ]; then
-        pr_state="GH-UNAVAIL"
+    elif [ "$forge_usable" -eq 0 ]; then
+        pr_state="FORGE-UNAVAIL"
         pr_dumped=$((pr_dumped+1))
         # Dump the command operator should run.
-        echo "flush: gh unavailable — to open the PR for $branch, run:" >&2
+        echo "flush: forge CLI unavailable — to open the PR for $branch, run:" >&2
         echo "    cd $handover_repo && git checkout $branch && bash $SCRIPT_DIR/pr-open.sh --base $DEFAULT_BASE" >&2
     else
         pr_num=""
-        if pr_num=$($GH_CMD pr list --head "$branch" --state open --json number --jq '.[0].number // ""' 2>/dev/null); then :; fi
+        if pr_num=$(forge_in_handover forge_pr_find_open "$branch" 2>/dev/null); then :; fi
         if [ -n "$pr_num" ]; then
             pr_state="#$pr_num"
         else

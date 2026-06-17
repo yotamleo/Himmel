@@ -5,6 +5,8 @@ description: Use ONLY when user explicitly asks to bootstrap, set up, initialize
 
 # gh-init
 
-The user wants to verify the gh CLI is authenticated with the right scopes (or wants instructions to log in).
+The user wants to verify forge auth (or wants instructions to log in).
 
-Run `/gh-init`. Output the single one-line summary the slash command prints. If it exits non-zero with `gh NOT logged in`, tell the user to run `gh auth login --web` from their own terminal — that flow is interactive (browser) and cannot be automated.
+Run `/gh-init`. It detects the forge from the `origin` remote (defaulting to GitHub): on a GitHub repo it verifies `gh` auth + scopes; on a Bitbucket repo it checks the himmel `bitbucket` CLI auth (`BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN`) instead of `gh` OAuth scopes.
+
+Output the single one-line summary the slash command prints. If it exits non-zero with `gh NOT logged in`, tell the user to run `gh auth login --web` from their own terminal — that flow is interactive (browser) and cannot be automated. If it exits non-zero with `bitbucket NOT authenticated`, tell the user to set `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN`.

@@ -2,6 +2,8 @@
 import { spawn } from 'node:child_process';
 import { readCache, writeCache } from './repo-context.mjs';
 import { buildErrorStderr } from './init-flow.mjs';
+import { detectForge } from './forge/detect.mjs';
+import { bitbucketCli, spawnForge } from './forge/bitbucket-cli.mjs';
 
 function execGhRepoView() {
   return new Promise((resolve) => {
@@ -33,25 +35,53 @@ if (cached) {
   process.exit(0);
 }
 
-const { stdout, stderr, exitCode } = await execGhRepoView();
-if (exitCode !== 0) {
-  process.stderr.write(stderr || `gh repo view failed (exit ${exitCode})\n`);
-  process.exit(exitCode);
-}
+const forge = detectForge(cwd, process.env);
 
-let parsed;
-try {
-  parsed = JSON.parse(stdout);
-} catch (e) {
-  process.stderr.write(`gh repo view: invalid JSON: ${e.message}\n`);
-  process.exit(1);
-}
-
-const owner = parsed?.owner?.login;
-const name = parsed?.name;
-if (!owner || !name) {
-  process.stderr.write(`gh repo view: missing owner/name in response\n`);
-  process.exit(1);
+let owner;
+let name;
+if (forge === 'bitbucket') {
+  // bitbucket: `<bitbucketCli> repo view` → JSON {workspace, repo_slug, …}.
+  // Project to the SAME owner/name shape the github path emits + caches.
+  const { stdout, stderr, exitCode } = await spawnForge(bitbucketCli(process.env), [
+    'repo',
+    'view',
+  ]);
+  if (exitCode !== 0) {
+    process.stderr.write(stderr || `bitbucket repo view failed (exit ${exitCode})\n`);
+    process.exit(exitCode);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (e) {
+    process.stderr.write(`bitbucket repo view: invalid JSON: ${e.message}\n`);
+    process.exit(1);
+  }
+  owner = parsed?.workspace;
+  name = parsed?.repo_slug;
+  if (!owner || !name) {
+    process.stderr.write(`bitbucket repo view: missing workspace/repo_slug in response\n`);
+    process.exit(1);
+  }
+} else {
+  const { stdout, stderr, exitCode } = await execGhRepoView();
+  if (exitCode !== 0) {
+    process.stderr.write(stderr || `gh repo view failed (exit ${exitCode})\n`);
+    process.exit(exitCode);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (e) {
+    process.stderr.write(`gh repo view: invalid JSON: ${e.message}\n`);
+    process.exit(1);
+  }
+  owner = parsed?.owner?.login;
+  name = parsed?.name;
+  if (!owner || !name) {
+    process.stderr.write(`gh repo view: missing owner/name in response\n`);
+    process.exit(1);
+  }
 }
 
 try {

@@ -1,13 +1,17 @@
 ---
 name: luna-ingest
-description: Use when ingesting a github repo OR issue URL into the luna Obsidian vault — repo URLs fetch metadata + README, follow 1-hop references, classify each (integrate / take-parts / inspire / skip / api_failure) and write a structured tech-ingest note under 30-Resources/Tech/; issue URLs (github.com/<owner>/<repo>/issues/<n>, HIMMEL-239) fetch the issue + comments and write an issue note. Triggers on /luna-ingest <github-url> at user prompt OR programmatic Skill-tool dispatch from inside another runbook (e.g. obsidian-triage:harvest-clips github-URL dispatch branch). MVP: github URLs only — rejects twitter / article inputs.
+description: Use when ingesting a github OR bitbucket.org repo / issue / PR URL into the luna Obsidian vault — repo URLs fetch metadata + README, follow 1-hop references, classify each (integrate / take-parts / inspire / skip / api_failure) and write a structured tech-ingest note under 30-Resources/Tech/; issue URLs (github.com or bitbucket.org) fetch the issue and write an issue note; bitbucket PR URLs (HIMMEL-329) write a PR note. Triggers on /luna-ingest <url> at user prompt OR programmatic Skill-tool dispatch from inside another runbook (e.g. obsidian-triage:harvest-clips repo-URL dispatch branch). Host-routed: github.com via gh, bitbucket.org via the himmel bitbucket CLI. Rejects twitter / article inputs.
 ---
 
 # luna-ingest — chain-following triage (LUNA-5 Wedge B, MVP; skill conversion LUNA-9)
 
-You are running the github-flavored slice of LUNA-5 Wedge B. Take a github URL, follow its README references one hop, classify each, and produce a structured tech-ref note in the luna vault.
+You are running LUNA-5 Wedge B. Take a github OR bitbucket.org URL, follow its README references one hop (github sources only — see below), classify each, and produce a structured tech-ref note in the luna vault.
 
-**Scope (MVP):** github URLs only. Twitter (`x.com/...`) and article URLs raise an explicit "not yet" error and point at LUNA-5 v2. Issue URLs (`/issues/<n>`) take the dedicated issue branch below (HIMMEL-239); PR (`/pull/<n>`) and discussion URLs remain out of scope.
+**Scope:** github + bitbucket.org URLs. Twitter (`x.com/...`) and article URLs raise an explicit "not yet" error and point at LUNA-5 v2.
+- **github.com:** repo URLs run Phases 1–4; issue URLs (`/issues/<n>`) take the issue branch (HIMMEL-239); PR (`/pull/<n>`) and discussion URLs remain out of scope.
+- **bitbucket.org (HIMMEL-329):** repo, PR (`/pull-requests/<n>`), and issue (`/issues/<n>`) URLs take the **Bitbucket branch** below. They dispatch to the himmel bitbucket CLI (`node scripts/bitbucket/dist/index.js …`) instead of `gh`.
+
+**Forge routing (HIMMEL-329):** the URL **host** selects the path — parallel to how the dev-loop routes on the git origin. `github.com` (or bare `<owner>/<repo>`) → the github Phases below, unchanged. `bitbucket.org` → the **Bitbucket branch**. Everything in Phases 1–4 and the issue branch is the github path; the Bitbucket branch reuses the shared Phase 1.5 safety pre-filter and Phase 3/4 heuristics but swaps the fetch transport.
 
 **Invocation surfaces (LUNA-9):**
 
@@ -18,21 +22,22 @@ Both surfaces feed the same argument shape into the runbook below. Wherever this
 
 ## Inputs
 
-`$ARGUMENTS` is `<github-url> [--vault <path>] [--dest <category>] [--limit <N>] [--dry-run]`.
+`$ARGUMENTS` is `<url> [--vault <path>] [--dest <category>] [--limit <N>] [--dry-run]`.
 
 Parse:
-- `<github-url>` — required. Accepted shapes:
-  - `https://github.com/<owner>/<repo>`
-  - `https://github.com/<owner>/<repo>/`
-  - `https://github.com/<owner>/<repo>/tree/<branch>`
-  - `https://github.com/<owner>/<repo>/blob/<branch>/<path>`
-  - `https://github.com/<owner>/<repo>/issues/<n>` — routes to the issue branch (HIMMEL-239)
-  - bare `<owner>/<repo>`
+- `<url>` — required. Accepted shapes:
+  - `https://github.com/<owner>/<repo>` (+ `/`, `/tree/<branch>`, `/blob/<branch>/<path>`)
+  - `https://github.com/<owner>/<repo>/issues/<n>` — routes to the github issue branch (HIMMEL-239)
+  - bare `<owner>/<repo>` — treated as github
+  - `https://bitbucket.org/<ws>/<repo>` (+ `/`, `/src/<branch>/...`) — routes to the **Bitbucket branch** (HIMMEL-329)
+  - `https://bitbucket.org/<ws>/<repo>/pull-requests/<n>` — Bitbucket PR branch
+  - `https://bitbucket.org/<ws>/<repo>/issues/<n>` — Bitbucket issue branch
 - `--vault <path>` — luna vault root. Default: `$HOME/Documents/luna`. Refuse with rc=2 if the dir does not exist OR is not an Obsidian vault (no `.obsidian/` dir).
 - `--dest <category>` — vault destination category override. Default: `30-Resources/Tech`. Validate against the vault's PARA folders (`00-Inbox`, `10-Projects/*`, `20-Areas/*`, `30-Resources/Tech`, `30-Resources/Concepts`, `30-Resources/Components`). Anything else → rc=2.
 - `--limit <N>` — max 1-hop refs to follow. Default `10`. Clamp to [1, 25].
 - `--dry-run` — print what would be written + verdicts, touch no files. rc=0.
 - `--allow-unsafe` — opt-in flag to ingest a repo flagged by the LUNA-43 safety-keyword pre-filter (Phase 1.5). Without this flag, repos whose name/description/topics match red-flag terms exit rc=6 before fetching the README.
+- `--repo <ws/repo>` is NOT a luna-ingest flag — it is the bitbucket CLI's own override, set internally by the Bitbucket branch from the parsed URL. Operators pass the bitbucket.org URL, not `--repo`.
 - `--deep` — LUNA-57: after classification, run the component scan
   (`tools/component-scan.mjs`) over the source repo (always) and over each
   1-hop ref verdicted `integrate` or `take-parts`. Inventories reusable
@@ -55,10 +60,10 @@ Parse:
   only in MVP (1-hop refs are not researched). The harvest-clips github
   dispatch MUST NOT pass `--research` (cost + scope safety).
 
-Reject `x.com/`, `twitter.com/`, or any non-github URL with:
+Reject `x.com/`, `twitter.com/`, or any host that is neither `github.com` nor `bitbucket.org` with:
 
 ```
-ERR luna-ingest: only github URLs supported in MVP. Twitter + article inputs ship in LUNA-5 v2.
+ERR luna-ingest: only github.com and bitbucket.org URLs supported. Twitter + article inputs ship in LUNA-5 v2.
 ```
 
 ## Issue branch — github issue URLs (HIMMEL-239)
@@ -136,6 +141,144 @@ safety_flag: <term-or-blank>
 ```
 
 Exit codes are the standard set (0 written, 2 env, 3 exists, 5 source fetch failed, 6 safety-blocked). The harvest-clips github dispatch needs no change: issue clips it dispatches here now land an issue note, and its rc=3 dedup contract holds (back-reference the existing `<owner>-<repo>-issue-<n>` note).
+
+## Bitbucket branch — bitbucket.org URLs (HIMMEL-329)
+
+When the URL host is `bitbucket.org`, run THIS branch instead of the github
+Phases 1–4 / issue branch. It dispatches to the himmel **bitbucket CLI** —
+`node <himmel-root>/scripts/bitbucket/dist/index.js <verb> --repo <ws>/<repo>`
+— the `gh` analogue for Bitbucket Cloud. `<himmel-root>` is the himmel primary
+checkout; the CLI's `dist/` is gitignored, so it must be built once
+(`cd scripts/bitbucket && npm i && npm run build`). Auth comes from the repo-root
+env file (`BITBUCKET_EMAIL` / `BITBUCKET_API_TOKEN`); a missing build or missing
+creds surfaces as a CLI error → rc=2 (env unusable).
+
+**B-0 — Parse + route.** Strip protocol/query/fragment, then:
+- `bitbucket.org/<ws>/<repo>/pull-requests/<n>` → **B-PR** sub-branch.
+- `bitbucket.org/<ws>/<repo>/issues/<n>` → **B-issue** sub-branch.
+- otherwise (`/<ws>/<repo>`, optionally `/src/<branch>/…`) → **B-repo** sub-branch.
+
+Extract `<ws>/<repo>` by stripping any `/src/…`, `/pull-requests/…`, `/issues/…`
+suffix and a trailing `/`. Validate `<ws>/<repo>` with the **same** Phase 1
+regex (`^[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*$`, leading-char
+rule rejecting `.`/`..`); else rc=1. The CLI receives it verbatim via `--repo`.
+
+### B-repo — repository ingest
+
+**B-repo-1 Fetch.** `bitbucket repo get --repo <ws>/<repo>` → JSON `{name,
+full_name, description, language, default_branch, url, updated_on, is_private,
+readme}`. CLI rc≠0 (network / auth / repo 404) → **rc=5**, nothing written
+(same contract as github Phase 1 source-fetch failure). `readme: null` (no
+`README.md` on the default branch) → record `README: missing`.
+
+**B-repo-1.5 Safety pre-filter.** Run the **Phase 1.5** algorithm unchanged over
+`name`, `description`, and the first 8 KB of `readme`. Bitbucket has **no
+`topics[]`** — skip that field. Same rc=6 / `--allow-unsafe` semantics and the
+same `safety_flag` propagation.
+
+**B-repo-2 Reference extraction + classification.** Write `readme` to a temp file
+and run the **existing Phase 2 + Phase 3 unchanged** — they extract `github.com`
+refs and classify them via `gh api`. github refs in a Bitbucket README are the
+common, supported case. **bitbucket.org refs are NOT followed in MVP**
+(BB→BB ref-following is a v2 follow-up): extract them separately
+(`grep -oE 'https://bitbucket\.org/[^ )]+'`) and list them under § Open questions
+as `bitbucket.org refs not followed (HIMMEL-329 MVP — v2 follow-up)`. `--limit`
+applies to the github refs as usual.
+
+**B-repo-3 Trust tier (bitbucket variant).** Bitbucket Cloud exposes **no
+`stargazers_count`**. Apply the Phase 4 "Trust-tier auto-classification" rules
+with these deltas:
+- rule 0 (safety short-circuit), rule 1 (`anthropic-official`), rule 2
+  (`known-author`, owner = `<ws>` lowercased) — **unchanged**.
+- rule 3 (`community-active`) — **cannot fire** (no star signal) → skip it.
+- rule 4 (`community-thin`) — default for any non-allowlisted owner.
+
+`trust_tier_reason` for the rule-4 case: `bitbucket: no star signal,
+updated_on=<YYYY-MM-DD> → community-thin`.
+
+**B-repo-4 Synthesis.** Write the **same Phase 4 note shape** under
+`<vault>/<dest>/<ws>-<repo>.md` (same slugify + path-safety invariant + rc=3 on
+existing), with these frontmatter deltas:
+- `source_type: bitbucket` (not `github`).
+- **Omit `stars:` and `topics:`** — no Bitbucket equivalent; do NOT emit a fake
+  `0` / empty list.
+- `language:` from `repo get`; `license: unknown` (`repo get` returns no SPDX).
+- `tags:` — first tag is `bitbucket` (parallel to github's first-tag `github`);
+  since there are no `topics[]`, infer 2–4 domain tags from name + description +
+  README per the Tags-derivation **rule 3** fallback (prefer the vault's existing
+  tag vocabulary). Minimum 2 tags.
+- The `## Referenced repos (1-hop)` section lists the **github** refs only;
+  the `## Open questions` section carries the unfollowed-bitbucket-refs note.
+
+`--deep` source-scan is **skipped on a Bitbucket source** (the LUNA-57
+`component-scan.mjs` is `gh`-API-only and cannot scan a Bitbucket repo) — emit a
+one-line stderr warn and continue; integrate/take-parts **github** refs are still
+scanned. `--research` (LUNA-64) is forge-agnostic (WebSearch) and runs normally.
+
+### B-PR — pull-request ingest
+
+`bitbucket.org/<ws>/<repo>/pull-requests/<n>`. Flat fetch → write (like the
+github issue branch — a PR has no README + ref pool).
+
+**B-PR-1 Fetch.** `bitbucket pr get <n> --repo <ws>/<repo>` → `{id, title, state,
+description, author, source_branch, destination_branch, url, created_on,
+updated_on}`. CLI rc≠0 → rc=5, nothing written. Also fetch `bitbucket repo get
+--repo <ws>/<repo>` for the trust-tier owner input; if THAT fails but the PR
+fetch succeeded, continue with `trust_tier: community-thin`,
+`trust_tier_reason: repo metadata unavailable → conservative default`.
+
+**B-PR-2 Safety pre-filter.** Phase 1.5 algorithm over PR `title` +
+`description` (first 8 KB). Same rc=6 / `--allow-unsafe` semantics.
+
+**B-PR-3 Write.** `<vault>/<dest>/<ws>-<repo>-pr-<n>.md` (slugify `<ws>-<repo>`;
+rc=3 if it exists). Compute `trust_tier` from the repo owner via B-repo-3.
+Frontmatter mirrors the github issue note with `source_type: bitbucket-pr`,
+`pr_state`, `pr_author`, `source_branch`, `destination_branch`; `tags:`
+`bitbucket`, `bitbucket-pr`, then up to 3 inferred domain tags. Body:
+
+```markdown
+# <repo> PR #<n> — <title>
+
+## Source
+[<ws>/<repo> PR #<n>](<url>) — <state>, opened <created_on> by @<author>; <source_branch> → <destination_branch>
+
+## Summary
+<3-5 bullet TL;DR of what the PR changes, derived from title + description>
+
+## Description
+<the PR description verbatim as markdown; `_(no description)_` if empty>
+
+## Audit log
+- API calls: <1-or-2>
+- Trust tier: <tier> (<reason>)
+- Safety flag: <term-or-none>
+```
+
+### B-issue — issue ingest
+
+`bitbucket.org/<ws>/<repo>/issues/<n>`.
+
+**B-issue-1 Fetch.** `bitbucket issue get <n> --repo <ws>/<repo>` → `{id, title,
+state, kind, content, reporter, url, created_on, updated_on}`. The CLI exits **3**
+when the issue tracker is disabled OR the issue is gone (404) → map to **rc=5**,
+nothing written (parallel to the github issue branch's 404 → rc=5). Other CLI
+rc≠0 → rc=2. Also fetch `repo get` for the trust-tier owner (same degrade as
+B-PR-1 on failure).
+
+**B-issue-2 Safety pre-filter.** Phase 1.5 over issue `title` + `content`
+(first 8 KB). Same rc=6 / `--allow-unsafe` semantics.
+
+**B-issue-3 Write.** `<vault>/<dest>/<ws>-<repo>-issue-<n>.md` (rc=3 if exists).
+Frontmatter mirrors the github issue note with `source_type: bitbucket-issue`,
+`issue_state`, `issue_kind`, `issue_reporter`; `tags:` `bitbucket`,
+`bitbucket-issue`, then up to 3 inferred domain tags. Body mirrors the github
+issue note's `# … issue #<n>`, `## Source`, `## Summary`, `## Issue body`,
+`## Audit log` (drop `## Key comments` — the MVP bitbucket issue read fetches no
+comment thread; note that under § Audit log as `Comments: not fetched (MVP)`).
+
+The harvest-clips dispatch contract is unchanged: a bitbucket.org clip dispatched
+here now lands the matching note, and the rc=3 dedup invariant holds (back-ref
+the existing `<ws>-<repo>[-pr|-issue]-<n>` note).
 
 ## Phase 1 — Source fetch (github URL)
 
@@ -543,13 +686,13 @@ When `--dry-run` is passed:
 
 - 0: synthesized + written (or dry-run completed) — all refs classified
 - 1: usage / input error (bad URL, missing required arg)
-- 2: env unusable (vault not found, gh api unreachable for source repo, dest category invalid)
+- 2: env unusable (vault not found, gh api / bitbucket CLI unreachable or unbuilt for source repo, dest category invalid)
 - 3: target file exists (no overwrite in MVP)
 - 4: **partial run** — synthesis written but ≥1 ref was marked `api_failure` (rate-limit / network / auth). Re-run later to retry the failed refs; the dedup-by-existing-file invariant means the existing synthesis stays unless `--force`. (LUNA-6)
 - 4 (extended): also returned when `--deep` component scan reported ≥1
   component-fetch failure (partial inventory). Synthesis is still written.
-- 5: gh api failed for the SOURCE repo (network / rate limit / 404 on Phase 1) — nothing written, retry the whole call
-- 6: **safety-blocked** — Phase 1.5 matched a red-flag keyword in name/description/topics/README, and `--allow-unsafe` was NOT passed. Nothing written. Re-run with `--allow-unsafe` to ingest with `safety_flag` annotation (which exits rc=0, NOT rc=6, on success — `--allow-unsafe` plus a match is a known-risk acknowledged ingest, not an error). (LUNA-43)
+- 5: source fetch failed — `gh api` (github Phase 1) or the `bitbucket` CLI (HIMMEL-329 Bitbucket branch) failed for the SOURCE repo / PR / issue (network / rate limit / 404 / issues-disabled) — nothing written, retry the whole call
+- 6: **safety-blocked** — Phase 1.5 matched a red-flag keyword in name/description/topics/README (github) or name/description/README (bitbucket — no topics), and `--allow-unsafe` was NOT passed. Nothing written. Re-run with `--allow-unsafe` to ingest with `safety_flag` annotation (which exits rc=0, NOT rc=6, on success — `--allow-unsafe` plus a match is a known-risk acknowledged ingest, not an error). (LUNA-43)
 
 `--research` (LUNA-64) never changes the exit code: a web-search failure
 degrades gracefully (annotated section + § Open questions note) and the
@@ -559,7 +702,10 @@ synthesis is still written at the rc the rest of the run would have produced.
 
 - Twitter URL input via `/x-read`
 - Article URL input via `/defuddle` + `/research`
-- PR (`/pull/<n>`) + discussion URL ingestion (issue URLs landed in HIMMEL-239)
+- github PR (`/pull/<n>`) + discussion URL ingestion (github issue URLs landed in HIMMEL-239; bitbucket repo/PR/issue landed in HIMMEL-329)
+- bitbucket-source → bitbucket-ref 1-hop following (HIMMEL-329 MVP follows only github refs from a bitbucket README)
+- bitbucket PR comment-thread + issue comment ingestion (the MVP bitbucket PR/issue notes carry no comment thread)
+- `--deep` component scan of a bitbucket SOURCE repo (component-scan is `gh`-API-only)
 - Dynamic destination routing based on verdict mix
 - Daily-note backref (Phase 5)
 - Promotion candidate (Phase 6)
