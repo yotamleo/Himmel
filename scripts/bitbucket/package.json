@@ -1,0 +1,26 @@
+{
+  "name": "bitbucket-cli",
+  "version": "1.0.0",
+  "description": "Bitbucket Cloud CLI for himmel project (forge-dispatch transport)",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "bitbucket": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "pretest": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@coderabbitai/bitbucket": "^1.1.4",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.6"
+  }
+}

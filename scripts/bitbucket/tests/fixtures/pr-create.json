@@ -1,0 +1,11 @@
+{
+  "type": "pullrequest",
+  "id": 1,
+  "title": "smoke PR",
+  "state": "OPEN",
+  "source": { "branch": { "name": "feat/smoke" } },
+  "destination": { "branch": { "name": "main" } },
+  "links": {
+    "html": { "href": "https://bitbucket.org/myws/myrepo/pull-requests/1" }
+  }
+}

@@ -25,15 +25,28 @@
 #   4  gh pr merge failed
 #
 # Environment overrides:
-#   GH_CMD                   Default `gh`. Tests can set to `echo`.
+#   FORGE / GH_CMD / BITBUCKET_CMD   Forge-seam overrides (HIMMEL-326). The PR
+#                            merge routes through scripts/lib/forge.sh, so this
+#                            works on GitHub and Bitbucket Cloud. The github
+#                            backend still honors GH_CMD (tests set it to a stub).
 #   GH_ADMIN_MERGE_OK        When `1`, authorizes the `--admin` fallback on a
-#                            non-cosmetic plain-merge failure. Default off.
+#                            non-cosmetic plain-merge failure (GitHub only).
+#                            Default off. The github backend reads this directly.
 #   PR_MERGE_POLL_ATTEMPTS   Mergeability-poll attempts (HIMMEL-179). Default 5.
 #   PR_MERGE_POLL_INTERVAL   Seconds slept between poll attempts. Default 3.
 set -euo pipefail
 
-GH_CMD="${GH_CMD:-gh}"
-GH_ADMIN_MERGE_OK="${GH_ADMIN_MERGE_OK:-0}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Forge-dispatch seam: forge_pr_find_open / forge_pr_mergeable / forge_pr_merge
+# route to the github or bitbucket backend per the repo's origin (HIMMEL-326).
+# The admin-fallback + cosmetic-branch-delete handling lives in the github
+# backend (gh_forge_pr_merge); this script orchestrates find → poll → merge.
+# shellcheck source=../lib/forge.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/forge.sh"
+
+# GH_ADMIN_MERGE_OK is consumed by the github backend (gh_forge_pr_merge) — it
+# reads the env var directly, so this script no longer normalizes it.
 POLL_ATTEMPTS="${PR_MERGE_POLL_ATTEMPTS:-5}"
 POLL_INTERVAL="${PR_MERGE_POLL_INTERVAL:-3}"
 DRY_RUN=0
@@ -66,10 +79,6 @@ if ! command -v git >/dev/null 2>&1; then
     echo "ERR pr-merge: required tool 'git' not on PATH" >&2
     exit 2
 fi
-if ! command -v "${GH_CMD%% *}" >/dev/null 2>&1; then
-    echo "ERR pr-merge: ${GH_CMD%% *} not on PATH" >&2
-    exit 2
-fi
 
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 if [ -z "$repo_root" ]; then
@@ -86,13 +95,19 @@ case "$current_branch" in
         ;;
 esac
 
-# Locate the PR for this branch. Distinguish a genuine `gh pr list` failure
-# (auth expired / network / GitHub 5xx) from "no PR exists": the former must
+# Determine the forge (github/bitbucket) from origin. Unlike pr-open, a merge is
+# NOT best-effort — an undetermined forge is a hard misconfiguration (exit 2).
+if ! forge=$(forge_detect); then
+    exit 2
+fi
+
+# Locate the PR for this branch via the forge seam. Distinguish a genuine API
+# failure (auth expired / network / 5xx) from "no PR exists": the former must
 # NOT be reported as a clean no-op or an overnight run silently fails to ship
 # (HIMMEL-224 CR — silent-failure-hunter).
 pr_num=""
-if ! pr_num=$($GH_CMD pr list --head "$current_branch" --state open --json number --jq '.[0].number // ""'); then
-    echo "ERR pr-merge: 'gh pr list' failed for $current_branch (auth/network?). Cannot determine PR state — refusing to report success." >&2
+if ! pr_num=$(forge_pr_find_open "$current_branch"); then
+    echo "ERR pr-merge: open-PR lookup failed for $current_branch (auth/network?). Cannot determine PR state — refusing to report success." >&2
     exit 4
 fi
 if [ -z "$pr_num" ]; then
@@ -101,91 +116,69 @@ if [ -z "$pr_num" ]; then
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    echo "DRY pr-merge: would invoke: $GH_CMD pr merge $pr_num --squash --delete-branch"
+    echo "DRY pr-merge: would squash-merge PR #$pr_num on $forge (delete source branch)"
     exit 0
 fi
 
-# Bounded poll for mergeability to settle before merging (HIMMEL-179 sharp#1).
-# This is the SECOND stage of the two-stage UNKNOWN handling. The pre-push
-# gate (scripts/hooks/check-pr-mergeable.sh, HIMMEL-136) lets `mergeable:
-# UNKNOWN` pass through because GitHub hasn't finished computing mergeability
-# in the window right after a push. That pass-through can leave the real
-# `gh pr merge` below to fail. Here we wait for `mergeable` to settle:
-#   MERGEABLE   -> proceed to merge.
-#   CONFLICTING -> fail fast (exit 4); a conflict won't self-resolve.
-#   UNKNOWN     -> retry after a short sleep; if attempts exhaust while still
-#                  UNKNOWN, fall through to the merge attempt (preserve the
-#                  pre-check's pass-through behavior — don't hard-fail).
-# `gh pr view` command errors (transient gh/network) skip polling and fall
-# through too, rather than crashing. Sleep ONLY between attempts.
-attempt=1
-while [ "$attempt" -le "$POLL_ATTEMPTS" ]; do
-    if ! mergeable=$($GH_CMD pr view "$pr_num" --json mergeable --jq '.mergeable' 2>/dev/null); then
-        # gh itself failed (not a status value) — don't crash; let the merge
-        # attempt below surface any real problem.
-        break
-    fi
-    case "$mergeable" in
-        MERGEABLE)
-            break
-            ;;
-        CONFLICTING)
-            echo "ERR pr-merge: PR #$pr_num is CONFLICTING — resolve conflicts before merging. Refusing." >&2
-            exit 4
-            ;;
-        *)
-            # UNKNOWN (or empty/unexpected): GitHub may still be computing.
-            # Retry after a sleep, but never sleep after the final attempt.
-            if [ "$attempt" -lt "$POLL_ATTEMPTS" ]; then
-                echo "pr-merge: PR #$pr_num mergeable=${mergeable:-<empty>} (attempt $attempt/$POLL_ATTEMPTS) — waiting ${POLL_INTERVAL}s" >&2
-                sleep "$POLL_INTERVAL"
-            fi
-            ;;
-    esac
-    attempt=$((attempt + 1))
-done
-
-# A held-worktree branch-delete error is cosmetic — the remote PR is merged
-# either way. Detect it so both the plain and admin attempts treat it as success.
-is_cosmetic_branch_delete() {
-    printf '%s' "$1" | grep -qE "failed to run git: fatal: '?main'? is already used by worktree"
-}
-
-# Attempt 1: plain squash merge — NO --admin (HIMMEL-224).
-if out=$($GH_CMD pr merge "$pr_num" --squash --delete-branch 2>&1); then
-    echo "pr-merge: merged PR #$pr_num"
-    exit 0
+# Bounded poll for mergeability to settle before merging (HIMMEL-179 sharp#1) —
+# GitHub only. This is the SECOND stage of the two-stage UNKNOWN handling: the
+# pre-push gate (scripts/hooks/check-pr-mergeable.sh, HIMMEL-136) lets
+# `mergeable: UNKNOWN` pass through because GitHub hasn't finished computing
+# mergeability right after a push; that pass-through can leave the real merge
+# below to fail, so we wait for `mergeable` to settle:
+#   MERGEABLE       -> proceed to merge.
+#   CONFLICTING     -> fail fast (exit 4); a conflict won't self-resolve.
+#   UNKNOWN / empty -> retry after a short sleep; if attempts exhaust while still
+#                      unsettled, fall through to the merge attempt (preserve the
+#                      pre-check's pass-through behavior — don't hard-fail). A
+#                      transient view-query failure surfaces as empty here too.
+# Bitbucket Cloud has no mergeable field (forge_pr_mergeable returns UNKNOWN), so
+# the poll is pointless there — the 400 at merge time is the only conflict signal
+# (spec §5.1), surfaced by forge_pr_merge. Skip the poll entirely for bitbucket.
+if [ "$forge" = "github" ]; then
+    attempt=1
+    while [ "$attempt" -le "$POLL_ATTEMPTS" ]; do
+        mergeable=$(forge_pr_mergeable "$pr_num")
+        case "$mergeable" in
+            MERGEABLE)
+                break
+                ;;
+            CONFLICTING)
+                echo "ERR pr-merge: PR #$pr_num is CONFLICTING — resolve conflicts before merging. Refusing." >&2
+                exit 4
+                ;;
+            *)
+                # UNKNOWN (or empty/unexpected): still computing or a transient
+                # view failure. Retry after a sleep; never sleep after the last.
+                if [ "$attempt" -lt "$POLL_ATTEMPTS" ]; then
+                    echo "pr-merge: PR #$pr_num mergeable=${mergeable:-<empty>} (attempt $attempt/$POLL_ATTEMPTS) — waiting ${POLL_INTERVAL}s" >&2
+                    sleep "$POLL_INTERVAL"
+                fi
+                ;;
+        esac
+        attempt=$((attempt + 1))
+    done
 fi
-if is_cosmetic_branch_delete "$out"; then
-    echo "pr-merge: merged PR #$pr_num (local branch-delete cosmetic-fail, ignored)"
+
+# Squash-merge via the forge seam. The github backend does a PLAIN squash first
+# and escalates to --admin only when GH_ADMIN_MERGE_OK=1 (HIMMEL-224); it also
+# absorbs the cosmetic worktree-held branch-delete error. The bitbucket backend
+# maps a 400 merge-conflict (spec §5.1, atomic — nothing merged) to a distinct
+# failure. Either way: rc 0 = merged, non-zero = real failure.
+merge_rc=0
+forge_pr_merge "$pr_num" || merge_rc=$?
+if [ "$merge_rc" -eq 0 ]; then
     exit 0
 fi
 
-# Plain merge failed for a real reason. Escalate to --admin ONLY if explicitly
-# authorized; otherwise surface the error and stop (never silently escalate).
-if [ "$GH_ADMIN_MERGE_OK" != "1" ]; then
-    echo "ERR pr-merge: plain squash merge of PR #$pr_num failed:" >&2
-    printf '%s\n' "$out" >&2
-    cat >&2 <<'EOF'
-pr-merge: this is likely a branch-protection / approval gate. Do NOT retry via
-another path (the auto-mode classifier flags that as evasion). Either set
-GH_ADMIN_MERGE_OK=1 in the LAUNCHING shell (only if real branch protection is in
-play), or defer the merge to the operator as a one-action handover. See
+# forge_pr_merge already printed the backend-specific error. Add the himmel
+# recovery guidance (forge-agnostic) and propagate the failure.
+cat >&2 <<'EOF'
+pr-merge: merge refused. Do NOT retry via another command path — the auto-mode
+classifier flags that as evasion. On GitHub this is usually a branch-protection
+/ approval gate: set GH_ADMIN_MERGE_OK=1 in the LAUNCHING shell only if real
+branch protection is in play, else defer the merge to the operator. On Bitbucket
+a conflict (CLI exit 2) means rebase-and-retry. See
 docs/internals/stuck-playbook.md § "a PR merge was blocked".
 EOF
-    exit 4
-fi
-
-# Attempt 2: authorized --admin fallback.
-echo "pr-merge: plain merge failed; GH_ADMIN_MERGE_OK=1 — retrying with --admin" >&2
-if out=$($GH_CMD pr merge "$pr_num" --squash --admin --delete-branch 2>&1); then
-    echo "pr-merge: merged PR #$pr_num (--admin fallback)"
-    exit 0
-fi
-if is_cosmetic_branch_delete "$out"; then
-    echo "pr-merge: merged PR #$pr_num (--admin fallback; local branch-delete cosmetic-fail, ignored)"
-    exit 0
-fi
-echo "ERR pr-merge: gh pr merge --admin failed:" >&2
-printf '%s\n' "$out" >&2
-exit 4
+exit "$merge_rc"

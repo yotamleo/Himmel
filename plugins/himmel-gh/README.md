@@ -47,6 +47,13 @@ Then run `/gh-init` to verify scopes.
 - `/gh-pr-resolve <prefix>` — resolve a thread by 6-char prefix (same cache
   lookup semantics as `/gh-pr-reply`).
 
+The three thread commands are **forge-aware** (spec §5.3): on a `github.com`
+repo they use GitHub GraphQL; on a `bitbucket.org` repo they route through the
+`bitbucket` CLI's `pr comments|reply|resolve` REST verbs (Bitbucket Cloud has no
+GraphQL, so its flat comment+`parent` model is mapped into the same thread
+abstraction). The 6-char prefix cache is identical across forges — only the
+fetch/mutate calls differ.
+
 Each command has a matching skill that auto-triggers on PR/GitHub intent. Skills explicitly do NOT trigger on Jira tickets (HIMMEL-N pattern → himmel-jira plugin), ambiguous "show issue" prompts, or whole-PR ops when the user means a thread.
 
 ## Logs + cache

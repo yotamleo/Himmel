@@ -177,7 +177,7 @@ pre-commit install
 pre-commit install --hook-type pre-push
 pre-commit install --hook-type commit-msg
 
-echo "[3/8] Installing Jira CLI..."
+echo "[3/8] Installing Jira + Bitbucket CLIs..."
 if command -v node &>/dev/null; then
   if [ -d "$REPO_ROOT/scripts/jira/node_modules" ] && [ -f "$REPO_ROOT/scripts/jira/dist/index.js" ]; then
     echo "  jira CLI already built (node_modules + dist present) -- skipping install + build"
@@ -198,6 +198,21 @@ if command -v node &>/dev/null; then
 else
   echo "  node not found -- skipping Jira CLI. Install Node 18+ then run:"
   echo "  cd scripts/jira && npm install && npm run build && NPM_CONFIG_PREFIX=\"\$HOME/.local\" npm link"
+fi
+
+# Bitbucket Cloud CLI — the forge-bitbucket transport (HIMMEL-326). No `npm
+# link`: it's invoked as `node scripts/bitbucket/dist/index.js` (the
+# BITBUCKET_CMD default in scripts/lib/forge-bitbucket.sh), so it only needs
+# dist/ built. Best-effort — a build failure must not abort setup, since only a
+# Bitbucket-forge repo ever invokes it (github operators never do).
+if command -v node &>/dev/null && [ -f "$REPO_ROOT/scripts/bitbucket/package.json" ]; then
+  if [ -d "$REPO_ROOT/scripts/bitbucket/node_modules" ] && [ -f "$REPO_ROOT/scripts/bitbucket/dist/index.js" ]; then
+    echo "  Bitbucket CLI already built (node_modules + dist present) -- skipping."
+  elif (cd "$REPO_ROOT/scripts/bitbucket" && npm install --silent && npm run build --silent); then
+    echo "  Bitbucket CLI built (used only when the repo origin is a Bitbucket Cloud remote)."
+  else
+    echo "  WARNING: Bitbucket CLI build failed -- continuing (only needed for a Bitbucket forge)." >&2
+  fi
 fi
 
 # --- qmd collection ---

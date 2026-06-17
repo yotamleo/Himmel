@@ -38,6 +38,7 @@ assert_contains() {
 TMP_ROOT=$(mktemp -d)
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
 echo "test: TMP_ROOT=$TMP_ROOT"
+SLUG="dpz$$"
 
 # Fake gh that pretends auth is OK and returns canned responses.
 FAKE_GH="$TMP_ROOT/gh-fake.sh"
@@ -72,7 +73,7 @@ git clone -q "$ORIGIN" "$HANDOVER" 2>/dev/null
       || git -c user.email=t@test.com -c user.name=test push -q -u origin HEAD:main
 )
 
-mkdir -p "$HANDOVER/handovers/yotam"
+mkdir -p "$HANDOVER/handovers/$SLUG"
 
 # A "himmel" repo for cwd context (flush.sh needs handover-path.sh's
 # resolver — which only requires HANDOVER_DIR + an existing dir).
@@ -93,7 +94,10 @@ run_flush() {
         # shellcheck disable=SC2030
         export FAKE_GH_LOG="$TMP_ROOT/gh.log"
         : > "$FAKE_GH_LOG"
-        GH_CMD="$FAKE_GH" bash "$FLUSH" "$@" 2>&1
+        # FORGE=github pins the forge seam to the github backend (HIMMEL-326);
+        # the handover repo's real origin is a local bare repo, used only for
+        # git push/clone mechanics, so forge_detect can't read it from the URL.
+        FORGE=github GH_CMD="$FAKE_GH" bash "$FLUSH" "$@" 2>&1
     )
 }
 
@@ -104,9 +108,9 @@ make_branch_with_commit() {
         cd "$HANDOVER"
         git checkout -q main 2>/dev/null || true
         git checkout -q -b "$branch"
-        mkdir -p handovers/yotam
-        printf '%s\n' "$body" > "handovers/yotam/$file"
-        git -c user.email=t@test.com -c user.name=test add "handovers/yotam/$file"
+        mkdir -p handovers/$SLUG
+        printf '%s\n' "$body" > "handovers/$SLUG/$file"
+        git -c user.email=t@test.com -c user.name=test add "handovers/$SLUG/$file"
         git -c user.email=t@test.com -c user.name=test commit -q -m "handover: $branch seed"
     )
 }
@@ -195,10 +199,10 @@ out=$(
     # shellcheck disable=SC2030,SC2031
     export FAKE_GH_LOG="$TMP_ROOT/gh.log"
     : > "$FAKE_GH_LOG"
-    GH_CMD="$FAKE_GH" FAKE_GH_AUTH="fail" bash "$FLUSH" 2>&1
+    FORGE=github GH_CMD="$FAKE_GH" FAKE_GH_AUTH="fail" bash "$FLUSH" 2>&1
 )
 printf '%s\n' "$out" | awk '{print "  > "$0}'
-assert_contains "warning about gh unusable"   "gh CLI not usable" "$out"
+assert_contains "warning about forge unusable"   "forge CLI not usable" "$out"
 assert_contains "summary lists PR command dumps" "PR command dumps" "$out"
 if git -C "$ORIGIN" show-ref --verify --quiet "refs/heads/handover/HIMMEL-905-five"; then
     pass "push still happened despite gh unavailable"
@@ -219,12 +223,12 @@ git clone -q "$ORIGIN2" "$HANDOVER2" 2>/dev/null
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "init"
     git -c user.email=t@test.com -c user.name=test push -q -u origin HEAD:main
 )
-mkdir -p "$HANDOVER2/handovers/yotam"
+mkdir -p "$HANDOVER2/handovers/$SLUG"
 out=$(
     cd "$HIMMEL"
     # shellcheck disable=SC2031
     export HANDOVER_DIR="$HANDOVER2/handovers"
-    GH_CMD="$FAKE_GH" bash "$FLUSH" 2>&1
+    FORGE=github GH_CMD="$FAKE_GH" bash "$FLUSH" 2>&1
 )
 assert_contains "empty repo says nothing to do" "no local handover/* branches" "$out"
 

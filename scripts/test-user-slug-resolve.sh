@@ -64,6 +64,10 @@ export -f gh
 REPO="$TMP_ROOT/repo"
 git init -q "$REPO"
 ( cd "$REPO" && git config user.email "test@test.com" )
+# Forge seam (HIMMEL-326): source #2 resolves via forge_user_slug, which needs a
+# resolvable forge. A github origin selects the github backend, whose
+# `gh api user` is the exported stub function below.
+git -C "$REPO" remote add origin https://github.com/test/test.git
 
 resolve() {
     (
@@ -140,7 +144,7 @@ assert_eq "gh login slugified, beats git config" "octocat-hub" "$out"
 echo "TEST: user_slug_verify reports the gh source"
 out=$(USER_SLUG='' STUB_GH_LOGIN='Octocat-Hub' bash -c "set -uo pipefail; cd '$REPO'; . '$LIB'; user_slug_verify" 2>&1) && rc=0 || rc=$?
 assert_eq "verify gh rc=0" "0" "$rc"
-assert_contains "verify mentions gh source" "GitHub username via gh api user" "$out"
+assert_contains "verify mentions forge source" "forge username via github CLI" "$out"
 assert_contains "verify reports gh slug" "octocat-hub" "$out"
 
 echo

@@ -45,11 +45,13 @@ case "$1 $2" in
         ;;
     "pr view")
         if [ "${FAKE_GH_NO_PR:-0}" = "1" ]; then
-            echo "null"; exit 1
+            # gh pr view exits non-zero with no stdout when no PR exists; the
+            # forge backend's `|| true` turns that into an empty mergeable.
+            exit 1
         fi
-        # Emit a JSON object compatible with the script's grep-based parser.
-        mergeable="${FAKE_GH_MERGEABLE:-MERGEABLE}"
-        printf '{"m":"%s","u":"https://test/pull/42","n":42}\n' "$mergeable"
+        # forge_pr_mergeable calls `gh pr view <branch> --json mergeable --jq
+        # .mergeable`, so gh emits just the bare status value.
+        printf '%s\n' "${FAKE_GH_MERGEABLE:-MERGEABLE}"
         exit 0
         ;;
 esac
@@ -65,19 +67,21 @@ git init -q --initial-branch=main "$REPO" 2>/dev/null || git init -q "$REPO"
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "init"
     git branch -m main 2>/dev/null || true
     git checkout -q -b feat/test
+    # Forge seam (HIMMEL-326): the hook resolves the forge from origin; a github
+    # origin selects the github backend (gh pr view via the GH_CMD stub).
+    git remote add origin https://github.com/test/test.git
 )
 
-# Hook accepts GH_CMD env override (HIMMEL-136 refactor). Pass the fake
-# directly via GH_CMD — avoids Git Bash PATH-lookup quirks where a
-# bare `gh` script without `.exe` extension fails to override the real
-# gh binary in PATH.
+# The forge github backend invokes "${GH_CMD}" by its absolute path (no PATH
+# lookup, no word-split), so GH_CMD must be a single executable — point it at
+# the +x fake directly (HIMMEL-326; was `bash $FAKE_GH` before the seam).
 # shellcheck disable=SC2120
 run() {
     (
         # shellcheck disable=SC2030,SC2031,SC2164
         cd "$REPO" || exit 99
         # shellcheck disable=SC2030,SC2031
-        export GH_CMD="bash $FAKE_GH"
+        export GH_CMD="$FAKE_GH"
         printf 'refs/heads/feat/test sha refs/heads/feat/test sha\n' | bash "$HOOK" "$@"
     )
 }
@@ -148,7 +152,7 @@ out=$(
     # shellcheck disable=SC2030,SC2031,SC2164
     cd "$REPO" || exit 99
     # shellcheck disable=SC2030,SC2031
-    export GH_CMD="bash $FAKE_GH"
+    export GH_CMD="$FAKE_GH"
     printf 'a b c d\ne f g h\n' | bash "$HOOK" 2>&1
 ) || rc=$?
 assert_rc "multi-line stdin rc=0" "0" "$rc"

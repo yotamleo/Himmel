@@ -32,6 +32,11 @@ if ! . "$SCRIPT_DIR/guardrails/lib.sh" 2>/dev/null; then
     echo "ERR new-worktree: cannot source guardrails/lib.sh" >&2
     exit 1
 fi
+# forge_detect (HIMMEL-326): the gh-auth-setup-git fetch self-heal below is
+# GitHub-specific, so it only fires for a github origin.
+# shellcheck source=lib/forge.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/forge.sh"
 
 usage() {
     echo "Usage: $0 <branch-name> [--no-install] [--verbose]" >&2
@@ -113,8 +118,11 @@ if ! run git -C "$PRIMARY_WORKTREE" fetch origin "$DEFAULT_BRANCH" --quiet; then
     # gh IS authenticated, even a non-auth fetch failure (network/DNS) triggers the
     # setup-git retry, then surfaces a distinct 'auth may not be the cause' error
     # if it stays broken. Self-healing so an unattended worktree-create doesn't
-    # hard-fail on a recoverable auth gap.
-    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    # hard-fail on a recoverable auth gap. GitHub-only: `gh auth setup-git` wires
+    # github credentials, so a bitbucket origin falls straight through to the
+    # plain error (HIMMEL-326).
+    forge_kind=$( ( cd "$PRIMARY_WORKTREE" && forge_detect 2>/dev/null ) || true )
+    if [ "$forge_kind" = "github" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
         echo "WARN new-worktree: git fetch failed; gh is authenticated — running 'gh auth setup-git' and retrying" >&2
         run gh auth setup-git || true
         if ! run git -C "$PRIMARY_WORKTREE" fetch origin "$DEFAULT_BRANCH" --quiet; then

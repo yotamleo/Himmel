@@ -31,12 +31,21 @@
 #   3  not in a handover branch (refuses; misuse)
 #
 # Environment overrides:
-#   GH_CMD       Default `gh`. Tests can set GH_CMD=echo to capture calls.
+#   FORGE / GH_CMD / BITBUCKET_CMD   Forge-seam overrides (HIMMEL-326). The PR
+#                ops route through scripts/lib/forge.sh, so this works on GitHub
+#                and Bitbucket Cloud alike. The github backend still honors the
+#                GH_CMD test seam (tests set GH_CMD=<stub> to capture calls).
 #   JIRA_CMD     Default `node $repo/scripts/jira/dist/index.js`.
 #   HANDOVER_PR_AUTO=0  Skip PR open/update entirely (env-gated opt-out).
 set -euo pipefail
 
-GH_CMD="${GH_CMD:-gh}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Forge-dispatch seam: forge_pr_find_open / forge_pr_create / forge_pr_set_body
+# route to the github or bitbucket backend per the repo's origin (HIMMEL-326).
+# shellcheck source=../lib/forge.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/forge.sh"
+
 JIRA_CMD="${JIRA_CMD:-}"
 DRY_RUN=0
 BASE_REF="${HANDOVER_PR_BASE:-main}"
@@ -193,15 +202,19 @@ EOF
 
 # Idempotent open/update ------------------------------------------------------
 
-# Detect existing PR via gh. We do NOT fail on gh-absent — that's the
-# explicit best-effort failure mode.
-if ! command -v "${GH_CMD%% *}" >/dev/null 2>&1; then
-    echo "pr-open: ${GH_CMD%% *} not on PATH — skipping (best-effort)" >&2
+# Determining the forge needs an origin remote. If we can't, skip best-effort:
+# the branch is still pushed, so an operator can open the PR later — this is the
+# documented "best-effort wedge", not a load-bearing step.
+if ! forge=$(forge_detect 2>/dev/null); then
+    echo "pr-open: cannot determine forge (need a github.com or bitbucket.org origin) — skipping (best-effort)" >&2
     exit 0
 fi
 
+# Detect an existing open PR via the forge seam. A forge/CLI failure here is
+# tolerated (treated as "no PR found") — the create attempt below is itself
+# best-effort, so an unusable CLI still exits 0 with the branch pushed.
 existing_pr=""
-if existing_pr=$($GH_CMD pr list --head "$current_branch" --json number --jq '.[0].number // ""' 2>/dev/null); then
+if existing_pr=$(forge_pr_find_open "$current_branch" 2>/dev/null); then
     :
 else
     existing_pr=""
@@ -209,9 +222,9 @@ fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
     if [ -z "$existing_pr" ]; then
-        echo "DRY pr-open: would invoke: $GH_CMD pr create --title \"$title\" --body <body> --base $BASE_REF"
+        echo "DRY pr-open: would create a PR on $forge (base $BASE_REF, head $current_branch)"
     else
-        echo "DRY pr-open: would invoke: $GH_CMD pr edit $existing_pr --body <body>"
+        echo "DRY pr-open: would update the body of PR #$existing_pr on $forge"
     fi
     echo "--- body ---"
     printf '%s\n' "$body"
@@ -220,15 +233,15 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 if [ -z "$existing_pr" ]; then
-    if ! out=$($GH_CMD pr create --title "$title" --body "$body" --base "$BASE_REF" --head "$current_branch" 2>&1); then
-        echo "pr-open: gh pr create failed (best-effort, branch is still pushed):" >&2
+    if ! out=$(forge_pr_create "$title" "$body" "$BASE_REF" "$current_branch" 2>&1); then
+        echo "pr-open: PR create failed (best-effort, branch is still pushed):" >&2
         printf '%s\n' "$out" >&2
         exit 0
     fi
     echo "pr-open: opened $out"
 else
-    if ! out=$($GH_CMD pr edit "$existing_pr" --body "$body" 2>&1); then
-        echo "pr-open: gh pr edit failed (best-effort, PR remains as-is):" >&2
+    if ! out=$(forge_pr_set_body "$existing_pr" "$title" "$body" 2>&1); then
+        echo "pr-open: PR body update failed (best-effort, PR remains as-is):" >&2
         printf '%s\n' "$out" >&2
         exit 0
     fi

@@ -5,8 +5,9 @@
 #   ./scripts/clean-garden.sh [branch-name] [flags]
 #
 # Prune phase: removes any non-primary worktree whose branch has a merged PR
-# (preferred signal: `gh pr list --state merged`) or is marked [gone] in
-# `git branch -v` (fallback when gh unavailable).
+# (preferred signal: the forge seam's merged-PR query — GitHub or Bitbucket,
+# HIMMEL-326) or is marked [gone] in `git branch -v` (fallback when the forge
+# CLI is unavailable).
 #
 # Create phase: when branch-name supplied, delegates to scripts/_new-worktree.sh
 # after the prune.
@@ -24,6 +25,13 @@
 #   --verbose, -v        Stream subprocess output.
 #   -h, --help           Print usage.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Forge-dispatch seam (HIMMEL-326): the merged-PR + open-PR prune signals route
+# through forge_* so prune works on GitHub and Bitbucket Cloud alike.
+# shellcheck source=lib/forge.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/forge.sh"
 
 # shellcheck disable=SC2016  # literal text, no expansion intended
 USAGE_TEXT='Usage: clean-garden.sh [branch-name] [flags]
@@ -98,33 +106,35 @@ log() {
     fi
 }
 
-# Detect PR-merge-detection mode once. Also pin the gh repo scope to the
-# primary worktree's nameWithOwner so a checkout with multiple remotes (or a
-# fork) cannot mis-match a merged PR on an unrelated upstream.
-HAVE_GH=0
-GH_REPO=""
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    HAVE_GH=1
-    GH_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
-    if [ -n "$GH_REPO" ]; then
-        log "clean-garden: gh CLI available — using merged-PR signal (repo: $GH_REPO)"
+# Detect PR-merge-detection mode once. Forge queries run pinned to the primary
+# worktree (forge_in_primary) so they use the primary's origin regardless of the
+# script's cwd — the cwd-independent, forge-agnostic replacement for the old
+# `gh --repo <nameWithOwner>` scoping (forge_detect always keys off `origin`).
+forge_in_primary() { ( cd "$PRIMARY_WORKTREE" && "$@" ); }
+
+HAVE_FORGE=0
+FORGE_KIND=""
+FORGE_NWO=""
+if FORGE_KIND=$(forge_in_primary forge_detect 2>/dev/null) && forge_in_primary forge_auth_status 2>/dev/null; then
+    HAVE_FORGE=1
+    FORGE_NWO=$(forge_in_primary forge_repo_nwo 2>/dev/null || true)
+    if [ -n "$FORGE_NWO" ]; then
+        log "clean-garden: $FORGE_KIND CLI available — using merged-PR signal (repo: $FORGE_NWO)"
     else
-        log "clean-garden: gh CLI available but repo view failed — gh queries will run unscoped"
+        log "clean-garden: $FORGE_KIND CLI available but repo lookup failed — queries use the origin's repo"
     fi
 else
-    log "clean-garden: gh CLI unavailable — falling back to [gone] tracking"
+    log "clean-garden: forge CLI unavailable — falling back to [gone] tracking"
 fi
 
 # Return 0 if the branch has a merged PR (or is [gone] in fallback mode).
 # Returns 1 (do-not-prune) on any error so transient failures are safe.
 is_branch_mergeable_for_prune() {
     local branch="$1"
-    if [ "$HAVE_GH" -eq 1 ]; then
+    if [ "$HAVE_FORGE" -eq 1 ]; then
         local count
-        local -a gh_args=(pr list --head "$branch" --state merged --json number --jq 'length')
-        [ -n "$GH_REPO" ] && gh_args=(--repo "$GH_REPO" "${gh_args[@]}")
-        if ! count=$(gh "${gh_args[@]}" 2>/dev/null); then
-            echo "WARN clean-garden: gh PR query failed for $branch — treating as not-mergeable (worktree kept)" >&2
+        if ! count=$(forge_in_primary forge_pr_has_merged "$branch" 2>/dev/null); then
+            echo "WARN clean-garden: forge PR query failed for $branch — treating as not-mergeable (worktree kept)" >&2
             return 1
         fi
         # The test exit code is intentionally the function's return value.
@@ -278,36 +288,28 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 CR_KEPT=$((CR_KEPT+1))
                 continue
             fi
-            # Branch is gone locally. Check for an open PR if gh is available.
-            # Mirror the same scoping pattern as is_branch_mergeable_for_prune:
-            # use --repo when GH_REPO is known, otherwise call unscoped.
-            if [ "$HAVE_GH" -eq 1 ]; then
-                open_count=0
-                if [ -n "$GH_REPO" ]; then
-                    open_count=$(gh --repo "$GH_REPO" pr list --head "$marker_branch" \
-                        --state open --json number --jq 'length' 2>/dev/null) || open_count="ERR"
-                else
-                    open_count=$(gh pr list --head "$marker_branch" \
-                        --state open --json number --jq 'length' 2>/dev/null) || open_count="ERR"
-                fi
-                # gh failure (network/auth) is NOT "no open PR" — unknown state
-                # must keep the marker, else a transient error sweeps a marker
-                # whose branch still has an active PR.
-                if [ "$open_count" = "ERR" ] || [ -z "$open_count" ]; then
-                    echo "WARN clean-garden: gh query failed for $marker_branch — keeping marker (PR state unknown)" >&2
+            # Branch is gone locally. Check for an open PR via the forge seam if
+            # the forge CLI is available. forge_pr_find_open prints the open PR
+            # number (→ keep) or empty (→ sweep); a non-zero exit is a real query
+            # failure (network/auth) — unknown state must KEEP the marker, else a
+            # transient error sweeps a marker whose branch still has an open PR.
+            if [ "$HAVE_FORGE" -eq 1 ]; then
+                open_pr=""
+                if ! open_pr=$(forge_in_primary forge_pr_find_open "$marker_branch" 2>/dev/null); then
+                    echo "WARN clean-garden: forge query failed for $marker_branch — keeping marker (PR state unknown)" >&2
                     CR_NOTED=$((CR_NOTED+1))
                     continue
                 fi
-                if [ "${open_count:-0}" -gt 0 ]; then
+                if [ -n "$open_pr" ]; then
                     echo "NOTE clean-garden: cr-pending marker kept for $marker_branch (open PR exists — review still needed)" >&2
                     CR_NOTED=$((CR_NOTED+1))
                     continue
                 fi
             fi
-            # HAVE_GH=0: gh unavailable; can't confirm no open PR — sweep
+            # HAVE_FORGE=0: forge unavailable; can't confirm no open PR — sweep
             # anyway since the branch is gone locally (same signal as [gone]
             # fallback used by is_branch_mergeable_for_prune).
-            # Branch gone locally, no open PR (or gh unavailable) — sweep.
+            # Branch gone locally, no open PR (or forge unavailable) — sweep.
             if [ "$DRY_RUN" -eq 1 ]; then
                 echo "DRY clean-garden: would sweep stale cr-pending marker for $marker_branch"
                 CR_SWEPT=$((CR_SWEPT+1))

@@ -1,0 +1,10 @@
+{
+  "type": "repository",
+  "full_name": "myws/myrepo",
+  "name": "myrepo",
+  "slug": "myrepo",
+  "is_private": true,
+  "scm": "git",
+  "mainbranch": { "name": "main", "type": "branch" },
+  "workspace": { "type": "workspace", "slug": "myws", "name": "myws" }
+}

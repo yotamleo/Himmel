@@ -64,6 +64,7 @@ if command -v cygpath >/dev/null 2>&1; then
     TMP_ROOT=$(cygpath -m "$TMP_ROOT")
 fi
 echo "test: TMP_ROOT=$TMP_ROOT"
+SLUG="dpz$$"
 
 # Fake gh CLI ---------------------------------------------------------
 # Behavior is controlled by env vars set inside each test:
@@ -124,10 +125,14 @@ git init -q --initial-branch=main "$REPO" 2>/dev/null || git init -q "$REPO"
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "init"
     git branch -m main 2>/dev/null || true
     git checkout -q -b handover/HIMMEL-141-pr-finisher
-    mkdir -p handovers/yotam
-    echo "content" > handovers/yotam/state.md
-    git -c user.email=t@test.com -c user.name=test add handovers/yotam/state.md
+    mkdir -p handovers/$SLUG
+    echo "content" > handovers/$SLUG/state.md
+    git -c user.email=t@test.com -c user.name=test add handovers/$SLUG/state.md
     git -c user.email=t@test.com -c user.name=test commit -q -m "handover: HIMMEL-141 seed"
+    # Forge seam (HIMMEL-326): pr-open/pr-merge resolve the forge from origin.
+    # A github origin makes forge_detect pick the github backend, which
+    # reproduces the exact `gh` call shapes the stub + asserts below expect.
+    git remote add origin https://github.com/test/test.git
 )
 
 export FAKE_GH_LOG="$TMP_ROOT/gh.log"
@@ -144,7 +149,7 @@ assert_contains "body has ## Summary"        "## Summary"        "$out"
 assert_contains "body has ## Files changed"  "## Files changed"  "$out"
 assert_contains "body has ## Ticket"         "## Ticket"         "$out"
 assert_contains "body has HIMMEL-141 link"   "HIMMEL-141"        "$out"
-assert_contains "dry-run announces create"   "would invoke: $FAKE_GH pr create" "$out"
+assert_contains "dry-run announces create"   "would create a PR on github" "$out"
 
 # Test 2: refuses non-handover branch ---------------------------------
 
@@ -197,16 +202,18 @@ out=$(
 assert_eq       "rc=0 (best-effort)" "0" "$rc"
 assert_contains "stderr explains best-effort" "best-effort" "$out"
 
-# Test 6: pr-merge --dry-run prints squash --admin --------------------
+# Test 6: pr-merge --dry-run prints the plain squash-merge intent ------
+# HIMMEL-224 dropped --admin from the default/dry-run; HIMMEL-326 made the
+# message forge-aware. The dry-run now states intent, not a literal command.
 
-echo "TEST: pr-merge --dry-run prints squash --admin --delete-branch"
+echo "TEST: pr-merge --dry-run prints the plain squash-merge intent"
 out=$(
     cd "$REPO"
     GH_CMD="$FAKE_GH" FAKE_GH_PR_LIST="42" bash "$PR_MERGE" --dry-run 2>&1
 )
-assert_contains "dry-run prints squash flag"        "--squash"        "$out"
-assert_contains "dry-run prints admin flag"         "--admin"         "$out"
-assert_contains "dry-run prints delete-branch flag" "--delete-branch" "$out"
+assert_contains "dry-run mentions squash-merge"     "squash-merge"  "$out"
+assert_contains "dry-run names the PR"              "#42"           "$out"
+assert_contains "dry-run names the forge"           "github"        "$out"
 
 # Test 7: pr-merge exits 0 when no PR found ---------------------------
 

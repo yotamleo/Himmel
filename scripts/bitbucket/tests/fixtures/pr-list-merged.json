@@ -1,0 +1,18 @@
+{
+  "pagelen": 50,
+  "size": 1,
+  "page": 1,
+  "values": [
+    {
+      "type": "pullrequest",
+      "id": 1,
+      "title": "smoke PR",
+      "state": "MERGED",
+      "source": { "branch": { "name": "feat/smoke" } },
+      "destination": { "branch": { "name": "main" } },
+      "links": {
+        "html": { "href": "https://bitbucket.org/myws/myrepo/pull-requests/1" }
+      }
+    }
+  ]
+}
