@@ -87,7 +87,9 @@ himmel needs almost nothing to start:
   [`templates/luna-second-brain/`](../templates/luna-second-brain/) — copy it
   out into its own git repo and run its `setup.sh`. Its
   [README](../templates/luna-second-brain/README.md#quickstart) has the
-  install steps.
+  install steps. With the vault in place, each Claude session is auto-captured
+  into it — [point the capture at a specific vault](luna/end-session-wiki.md#choosing-the-target-vault)
+  if it doesn't live at the default `~/Documents/luna`.
 
 **For your first loop you need none of this** — `setup.sh` already did the work.
 Skip straight to step 3.

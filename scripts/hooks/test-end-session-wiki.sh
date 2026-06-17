@@ -104,6 +104,21 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 1d: a leading ~/ in config.vault_path expands to $HOME --------------
+# A JSON config value can't rely on shell tilde expansion, so the hook expands a
+# leading "~/" itself. HOME is pinned to a sandbox so the note must land under it.
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude" "$SB/home"
+printf '{"vault_path":"~/myvault"}\n' > "$SB/proj/.claude/end-session-wiki.json"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env -u LUNA_VAULT_PATH OSTYPE="linux-gnu" OS="" HOME="$SB/home" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"
+if [ -n "$(find "$SB/home/myvault/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
+    pass "config.vault_path leading ~/ expands to \$HOME/myvault"
+else
+    fail "config.vault_path ~/ did not expand under \$HOME/myvault"
+fi
+rm -rf "$SB"
+
 # --- Case 2: FS fallback writes a note when no API key is available ----------
 SB="$(make_sandbox)"
 RC="$(run_hook "$SB")"
