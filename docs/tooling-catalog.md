@@ -195,6 +195,16 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 | `telegram-clip.mjs` | LUNA-58. Telegram → `Clippings/` ingestion entry point. Maps one message (text / bare URL / forward) to a LUNA-2 Web-Clipper-shaped clip note so `harvest-clips` ingests it; classifies by URL host, preserves sender/ts/msg-id provenance, idempotent per message-id. Pure Node, no runtime deps (the test uses the vendored `js-yaml`). |
 | `roadmap-aggregate.mjs` | LUNA-59. Read-only cross-source roadmap-item aggregator for `roadmap-clips`. Scans daily-note action items, `_deferred.md` backlog, synthesis proposals, promotion candidates, and the component inventory; emits a JSON item inventory the skill clusters into a sequenced 60-Maps roadmap. Pure Node, no runtime deps. |
 
+#### luna-correlate (`luna-correlate@himmel`)
+
+**What:** Offline health-factor correlation MCP. Correlates personal health series (sleep, HRV, resting HR) against public environmental factors (geomagnetic Kp, lunar phase, daylight hours) and a gated country-level grid fetcher for location factors (barometric pressure, pollen, PM2.5 air quality). Boundary B+C: only `factors.cache` touches the network; all joins and computations are offline. Outputs are candidate signals only — never a diagnosis, never causation.
+
+**M3 operator-facing tool:** `signals.dashboard` — lag-swept (±3 days default), best-lag-per-pair, Benjamini-Hochberg FDR-controlled (q=0.1) analysis over device series × factors. Writes `dashboard.md` + `dashboard.json` to `LUNA_SIGNALS_DIR` (must be set; luna-medic `60-Signals/` by convention).
+
+**MCP tools:** `factors.cache` (network, gated), `series.load`, `correlate`, `signals.report`, `signals.dashboard` (all offline).
+**Offline factors:** `kp` (GFZ Potsdam, CC BY 4.0), `lunar_phase` (astronomical formula, zero network), `daylight` (bbox-centroid latitude, zero network). Location factors (`pressure`, `pollen`, `aq`) via Open-Meteo, opt-in via `LUNA_REGION_BBOX`.
+**Plugin path:** `marketplace/plugins/luna-correlate/`
+
 ---
 
 ## Hooks

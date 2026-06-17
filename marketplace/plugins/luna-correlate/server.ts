@@ -2,12 +2,12 @@
 /**
  * luna-correlate MCP server.
  *
- * Wraps the offline health-factor correlator as four MCP tools. Posture A is
+ * Wraps the offline health-factor correlator as five MCP tools. Posture A is
  * preserved: only `factors.cache` (the gated bulk fetcher) touches the network —
  * Kp is a global date-only archive; location factors (pressure/pollen/aq) are a
  * country-level GRID fetch with NO PHI and NO operator coordinates. `series.load`,
- * `correlate`, and `signals.report` are fully offline. Outputs are candidate
- * signals only — never a diagnosis, never causation.
+ * `correlate`, `signals.report`, and `signals.dashboard` are fully offline. Outputs
+ * are candidate signals only — never a diagnosis, never causation.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -21,6 +21,7 @@ import {
   seriesLoadLogic,
   correlateLogic,
   signalsReportLogic,
+  signalsDashboardLogic,
 } from "./src/mcp";
 import type { DateRange } from "./src/fetchFactors";
 
@@ -93,6 +94,32 @@ export const TOOLS = [
       required: ["series"],
     },
   },
+  {
+    name: "signals.dashboard",
+    description:
+      "Lag-swept, FDR-ranked correlation dashboard over multiple series × factors. Offline by default: kp/lunar_phase/daylight need no location or network. pressure/aq/pollen are opt-in (require a populated cache + LUNA_LOCATION_FILE). Writes dashboard.md + dashboard.json to outDir (or LUNA_SIGNALS_DIR). Returns markdown + paths + survivorCount.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        seriesNames: {
+          type: "array", items: { type: "string" },
+          description: "Series names to correlate (default: sleep_hours, rhr_bpm, hrv_ms). sleep_hours and rhr_bpm are era-split at the Fitbit→Galaxy boundary.",
+        },
+        factors: {
+          type: "array", items: { type: "string" },
+          description: "Factor names to correlate against (default: kp, lunar_phase, daylight). Add pressure|pollen|aq when cache + location are ready.",
+        },
+        lagWindow: { type: "number", description: "Lag sweep ±N days (default: 3)." },
+        minN: { type: "number", description: "Minimum overlapping days for a row to be included in FDR (default: 20)." },
+        fdrQ: { type: "number", description: "Benjamini-Hochberg FDR q threshold (default: 0.1)." },
+        region: { type: "string", description: "Region bbox 'lat_min,lon_min,lat_max,lon_max' for the daylight centroid-lat (default: LUNA_REGION_BBOX)." },
+        location: { type: "string", description: "Location factors only. Path to the operator's local date,lat,lon CSV (default: LUNA_LOCATION_FILE)." },
+        dir: { type: "string", description: "Override the series dir (default: LUNA_SERIES_DIR)." },
+        outDir: { type: "string", description: "Directory to write dashboard.md + dashboard.json (default: LUNA_SIGNALS_DIR)." },
+      },
+      required: [],
+    },
+  },
 ] as const;
 
 type Args = Record<string, unknown>;
@@ -117,6 +144,11 @@ function optDateRange(v: unknown, field: string): DateRange | undefined {
   if (typeof v !== "object" || v === null) throw new Error(`"${field}" must be an object {start,end}`);
   const o = v as Record<string, unknown>;
   return { start: str(o.start, `${field}.start`), end: str(o.end, `${field}.end`) };
+}
+function optStrArr(v: unknown, field: string): string[] | undefined {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v)) throw new Error(`"${field}" must be a string array`);
+  return v.map((item, i) => str(item, `${field}[${i}]`));
 }
 
 export async function callTool(name: string, args: Args): Promise<unknown> {
@@ -146,6 +178,18 @@ export async function callTool(name: string, args: Args): Promise<unknown> {
         location: optStr(args.location, "location"),
         outPath: optStr(args.outPath, "outPath"),
       });
+    case "signals.dashboard":
+      return signalsDashboardLogic({
+        seriesNames: optStrArr(args.seriesNames, "seriesNames"),
+        factors: optStrArr(args.factors, "factors"),
+        lagWindow: optNum(args.lagWindow, "lagWindow"),
+        minN: optNum(args.minN, "minN"),
+        fdrQ: optNum(args.fdrQ, "fdrQ"),
+        region: optStr(args.region, "region"),
+        location: optStr(args.location, "location"),
+        dir: optStr(args.dir, "dir"),
+        outDir: optStr(args.outDir, "outDir"),
+      });
     default:
       throw new Error(`unknown tool: ${name}`);
   }
@@ -158,10 +202,11 @@ const mcp = new Server(
     instructions: [
       "luna-correlate surfaces CANDIDATE associations between local health/status series and external factors. It never diagnoses and never asserts causation — every output carries caveats for the operator and clinicians to interpret.",
       "",
-      "Posture A: only `factors.cache` touches the network. Kp is a generic global date-only fetch; location factors (pressure/pollen/aq) are a country-level GRID fetch — no PHI and no operator coordinates. `series.load`, `correlate`, and `signals.report` are fully offline; location factors meet the operator's local date×place only inside the offline proximity index.",
+      "Posture A: only `factors.cache` touches the network. Kp is a generic global date-only fetch; location factors (pressure/pollen/aq) are a country-level GRID fetch — no PHI and no operator coordinates. `series.load`, `correlate`, `signals.report`, and `signals.dashboard` are fully offline; location factors meet the operator's local date×place only inside the offline proximity index.",
       "",
       "Kp flow: factors.cache({factor:'kp'}) once → correlate({series:'migraine', lag:1}).",
       "Location flow: factors.cache({factor:'pressure', region:'47,5,55,15', dateRange:{start,end}}) → correlate({series:'migraine', factor:'pressure', lag:1, location:'…/places.csv'}).",
+      "Dashboard: signals.dashboard({seriesNames, factors, outDir}) runs a lag-swept, BH-FDR-ranked multi-series correlation and writes dashboard.md + dashboard.json — fully offline for kp/lunar_phase/daylight (no factors.cache needed).",
     ].join("\n"),
   },
 );

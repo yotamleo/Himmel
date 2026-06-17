@@ -108,9 +108,9 @@ test("callTool validates the location-factor dateRange shape", async () => {
   await expect(callTool("factors.cache", { factor: "pressure", dateRange: 5 })).rejects.toThrow(/must be an object/);
 });
 
-test("server exposes exactly the 4 documented tools", () => {
+test("server exposes exactly the 5 documented tools", () => {
   expect(TOOLS.map(t => t.name).sort()).toEqual(
-    ["correlate", "factors.cache", "series.load", "signals.report"],
+    ["correlate", "factors.cache", "series.load", "signals.dashboard", "signals.report"],
   );
 });
 

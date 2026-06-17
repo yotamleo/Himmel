@@ -20,6 +20,7 @@ library. Mirrors the `telegram-himmel` packaging (`.mcp.json` →
 | `series.load({name, dir?})` | no | Load a local health/status series by name as generic `(date,value)` points from `<dir or LUNA_SERIES_DIR>/<name>.csv` (explicit `dir` wins). |
 | `correlate({series, factor?, lag?, dir?, location?})` | no | Offline join of a named series against the cached factor at an optional day lag → a candidate `Signal`. For location factors, resolves the operator's local `date,lat,lon` (`location` / `LUNA_LOCATION_FILE`) to the nearest cached grid cell first. |
 | `signals.report({series, factor?, lag?, dir?, location?, outPath?})` | no | Run a correlation and render the candidate-signal vault note (markdown with caveats + never-diagnose disclaimer); writes to `outPath` when given. |
+| `signals.dashboard({seriesNames?, factors?, lagWindow?, minN?, fdrQ?, region?, location?, outDir?})` | no | **M3 dashboard.** Lag-swept (default −3..+3 days), best-lag-per-pair, Benjamini-Hochberg FDR (default q=0.1) analysis over device series × factors. Writes `dashboard.md` + `dashboard.json` to `outDir` (default: `LUNA_SIGNALS_DIR`, i.e. luna-medic `60-Signals/`). Default series: `sleep_hours`, `rhr_bpm`, `hrv_ms`; default factors: `kp`, `lunar_phase`, `daylight`. Device series are era-split at the Fitbit→Galaxy boundary (`2025-01-01`). Banner discloses total comparisons; best-lag selection is caveated — survivors are candidates, not confirmations. |
 
 Series live wherever `LUNA_SERIES_DIR` points (e.g. the luna-medic `50-Vitals/` dir).
 `series.load`/`correlate`/`signals.report` accept any series name — `migraine`, `pain`,
@@ -28,14 +29,40 @@ Series live wherever `LUNA_SERIES_DIR` points (e.g. the luna-medic `50-Vitals/` 
 ### Factors
 
 - `kp` — global geomagnetic Kp index (date-only, no location). High/low split at Kp≥5.
+- `lunar_phase` — lunar illumination fraction (0 = new moon, 1 = full moon), computed offline from date.
+  **Posture-A: zero network, zero PHI.** Date-only; no location required.
+- `daylight` — daylight hours for each date, computed offline from the region-centroid
+  latitude derived from `LUNA_REGION_BBOX`. **Posture-A: zero network, zero PHI** (the
+  latitude is the bbox midpoint, never the operator's precise coordinates).
 - `pressure` — barometric pressure, **daily-min** (exposes the front-passage pressure
-  drop, a prime migraine trigger). Location factor.
-- `pollen` / `aq` — grass pollen / PM2.5, **daily-mean**. Location factors (shorter
-  history via the air-quality API).
+  drop, a prime migraine trigger). Location factor (Open-Meteo grid; network, gated).
+- `pollen` / `aq` — grass pollen / PM2.5, **daily-mean**. Location factors; served via
+  the air-quality API (shorter history than archive-API pressure — captured real fixture
+  at `tests/fixtures/air-quality-pm25.json` for offline replay regression tests).
 
 Continuous location factors have no universal high/low cutoff, so their event-rate split
 uses the **median** of the joined values (a generic rule, no per-factor magic number);
 Pearson correlation is reported alongside. Kp keeps its geomagnetic-storm cutoff (≥5).
+
+### M3 methodology (signals.dashboard)
+
+The `signals.dashboard` tool runs a **lag-swept, multi-series, FDR-controlled** analysis:
+
+1. **Lag sweep** — each series×factor pair is tested at lags −`lagWindow`..+`lagWindow`
+   days (default ±3); the lag with the highest |r| (absolute Pearson correlation) among lags meeting min-n is selected as the best lag (its p-value is then computed and FDR-corrected).
+2. **Era split** — device series (`sleep_hours`, `rhr_bpm`, `hrv_ms`) are split at the
+   Fitbit→Galaxy boundary (`2025-01-01`) before correlation, so the era step-change in
+   sensor baselines does not contaminate results.
+3. **Benjamini-Hochberg FDR** — all best-lag p-values are corrected together at
+   q=`fdrQ` (default 0.1). The dashboard banner discloses the total number of
+   comparisons.
+4. **Interpretation caveat** — best-lag selection inflates the false-positive rate
+   beyond the nominal q; survivors are **candidate signals for further investigation,
+   not confirmations**. The output notes this explicitly.
+
+**Constraint:** `migraine` and `skin_flare` have **no daily source yet** — self-report
+correlation awaits a daily symptom log. These series cannot be included in the dashboard
+until a daily `<name>.csv` is available.
 
 ## Kp data source
 
@@ -66,7 +93,8 @@ Pearson correlation is reported alongside. Kp keeps its geomagnetic-storm cutoff
   observed e.g. 52.5→52.478; the privacy guarantee does not depend on that — it rests on the
   fetcher only ever sending bbox grid corners.)
 - **Coverage:** the pressure Archive API has long history; the pollen/air-quality API serves
-  only a recent rolling window, so historical `dateRange`s fail loud for `pollen`/`aq`.
+  only a recent rolling window, so historical `dateRange`s fail loud for `pollen`/`aq`. Both
+  `pollen` and `aq` have captured real-world fixtures for offline replay testing.
 
 **Rubric verdict (docs/tool-adoption/rubric.md):** PILOT (PILOT-MEASURE).
 - Goal/KPI: first location factor under Boundary B+C — country-grid fetch, offline proximity
