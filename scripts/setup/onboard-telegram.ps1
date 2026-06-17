@@ -1,5 +1,6 @@
-# onboard-telegram.ps1 — Telegram-bridge + Warp onboarding for a fresh machine
-# (HIMMEL-227). PowerShell counterpart of onboard-telegram.sh; called from
+# onboard-telegram.ps1 — Telegram-bridge onboarding for a fresh machine
+# (HIMMEL-227; Warp split out into onboard-warp.ps1 per HIMMEL-360). PowerShell
+# counterpart of onboard-telegram.sh; called from
 # scripts/setup.ps1, also safe standalone:
 #   pwsh -File scripts/setup/onboard-telegram.ps1
 #
@@ -11,7 +12,7 @@
 #   - NEVER starts or stops the bridge process (single getUpdates owner —
 #     a blind start could 409-conflict a live poller).
 #
-# Env overrides (tests): $env:TELEGRAM_CHANNEL_DIR, $env:WARP_EXE
+# Env overrides (tests): $env:TELEGRAM_CHANNEL_DIR
 #
 # Exit codes: 0 = ok (missing token/pairing is a reported next-step);
 #             1 = hard failure (cannot create the channel dir / write the
@@ -81,19 +82,5 @@ Write-Host "  bridge bring-up (run yourself once token + pairing are in place):"
 Write-Host "    pwsh -File scripts/telegram/restart-bridge.ps1"
 Write-Host "    reboot persistence (optional logon task, operator-run once):"
 Write-Host "      pwsh -File scripts/telegram/install-logon-task.ps1"
-
-Write-Host ""
-Write-Host "-- Warp integration --"
-Write-Host "  skills: /open-warp + /oz-offload are repo-local (.claude/commands/) -- ship with the clone"
-Write-Host "  plugin: warp@claude-code-warp installs via scripts/machine-setup/install-plugins.ps1"
-$WarpExe = if ($env:WARP_EXE) { $env:WARP_EXE }
-           else { Join-Path $env:LOCALAPPDATA 'Programs\Warp\warp.exe' }
-if (Get-Command warp -ErrorAction SilentlyContinue) {
-    Write-Host "  warp binary: $((Get-Command warp).Source)"
-} elseif (Test-Path $WarpExe) {
-    Write-Host "  warp binary: $WarpExe"
-} else {
-    Write-Host "  warp binary: MISSING -- install from https://www.warp.dev (warp skills no-op without it)"
-}
 
 exit 0
