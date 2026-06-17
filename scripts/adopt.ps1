@@ -126,6 +126,25 @@ function Install-Plugins {
     }
 }
 
+# statusLine — part of the core harness (HIMMEL-359). Wired into the
+# scope-appropriate settings.json via the shared helper. Both scopes reference
+# THIS himmel clone's vendored statusline (never copied per-repo).
+function Wire-StatuslineCore {
+    $settings = if ($Scope -eq 'project') {
+        Join-Path $Target '.claude\settings.json'
+    } else {
+        Join-Path $HOME '.claude\settings.json'
+    }
+    if ($DryRun) {
+        Write-Host "DRY: wire statusLine → $settings (himmel: $HimmelRoot)"
+        return
+    }
+    $wsl = Join-Path $HimmelRoot 'scripts\lib\wire-statusline.ps1'
+    & pwsh -NoProfile -File $wsl -SettingsPath $settings -HimmelPath $HimmelRoot
+    # Parity with adopt.sh (set -e aborts on a non-zero helper): surface failure.
+    if ($LASTEXITCODE -ne 0) { throw "wire-statusline failed (exit $LASTEXITCODE)" }
+}
+
 function Do-Core {
     Require-Tools
     if ($Scope -eq 'project') {
@@ -137,6 +156,7 @@ function Do-Core {
         Write-Host "  worktree commands run from the himmel clone: bash $HimmelRoot/scripts/worktree.sh feat/slug"
     }
     Install-Plugins
+    Wire-StatuslineCore
     Write-Host "  (optional) pre-commit gates: see $HimmelRoot\docs\setup\use-on-your-project.md"
 }
 

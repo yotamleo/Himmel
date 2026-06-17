@@ -19,7 +19,6 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck disable=SC2034
 HIMMEL_PATH="$HOME/github/himmel"
-STATUSLINE_PATH="$HIMMEL_PATH/scripts/statusline"  # vendored in himmel (HIMMEL-331)
 LUNA_VAULT_PATH="$HOME/Documents/luna"
 CLAUDE_DIR="$HOME/.claude"
 
@@ -326,7 +325,6 @@ step "Patch ~/.claude/settings.json"
 {
   SETTINGS="$CLAUDE_DIR/settings.json"
   TEMPLATE="$HIMMEL_PATH/docs/setup/settings-template.json"
-  STATUSLINE_CMD="bash \"$STATUSLINE_PATH/bin/statusline.sh\""
 
   # Strip SessionEnd from template — the next step ("Configure end-session-wiki
   # SessionEnd hook") owns that key end-to-end and prompts the user. Writing
@@ -350,12 +348,13 @@ step "Patch ~/.claude/settings.json"
     # PowerShell installed (Ubuntu's default), logging a confusing warning.
     # The Windows path adds the pwsh entry via win11.ps1; the cross-platform
     # template carries neither so each setup script can register the right one.
+    # statusLine is wired separately via scripts/lib/wire-statusline.sh after
+    # this patch (HIMMEL-359) — single source of truth, so it is NOT in this
+    # jq object.
     PATCH=$(jq \
-      --arg sl "$STATUSLINE_CMD" \
       --arg lv "$LUNA_VAULT_PATH" \
       --arg hp "$HIMMEL_PATH" \
       '. + {
-        statusLine: { type: "command", command: $sl },
         mcpServers: {
           "obsidian-vault": { command: "uvx", args: ["mcp-obsidian", $lv] }
         },
@@ -391,8 +390,12 @@ step "Patch ~/.claude/settings.json"
       # Deep-merge: existing settings win on key conflict (idempotent re-runs)
       MERGED=$(printf '%s\n' "$PATCH" | jq -s '.[0] * .[1]' - "$SETTINGS")
       write_settings_json "$MERGED" "$SETTINGS"
+      # statusLine via the shared helper (HIMMEL-359) — runs after the merge so
+      # it is authoritative and refreshes any stale path on idempotent re-runs.
+      bash "$HIMMEL_PATH/scripts/lib/wire-statusline.sh" "$SETTINGS" "$HIMMEL_PATH"
     else
       write_settings_json "$PATCH" "$SETTINGS"
+      bash "$HIMMEL_PATH/scripts/lib/wire-statusline.sh" "$SETTINGS" "$HIMMEL_PATH"
     fi
   fi
 } || fail_nonfatal "patch settings.json"

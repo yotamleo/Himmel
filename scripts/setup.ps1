@@ -30,7 +30,7 @@ Write-Host ""
 # PS-friendly path (pre-commit + jira plugin); operator-facing tooling
 # expects Git Bash for the bash-driven scripts. We still verify the
 # foundational tools so the operator knows what's missing.
-Write-Host "[0/8] Verifying foundational tools on PATH..."
+Write-Host "[0/10] Verifying foundational tools on PATH..."
 $missing = @()
 $hints = @{
     'git'     = 'https://git-scm.com (includes Git Bash on Windows)'
@@ -70,7 +70,7 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
 
 # --- JIRA_PROJECT_KEY verify (HIMMEL-146; gated per HIMMEL-285) ---
 # Mirrors scripts/setup/check-jira-key.sh: hard-fail only with -WithJira.
-Write-Host "[0.4/8] Verifying JIRA_PROJECT_KEY..."
+Write-Host "[0.4/10] Verifying JIRA_PROJECT_KEY..."
 if ($env:JIRA_PROJECT_KEY) {
     Write-Host "  JIRA_PROJECT_KEY=$($env:JIRA_PROJECT_KEY)"
 } elseif ($WithJira) {
@@ -86,7 +86,7 @@ if ($env:JIRA_PROJECT_KEY) {
 Write-Host ""
 
 # --- Python / pre-commit ---
-Write-Host "[1/8] Installing pre-commit..."
+Write-Host "[1/10] Installing pre-commit..."
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Write-Error "python not found. Install Python 3.10+ first."
     exit 1
@@ -97,12 +97,12 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "[2/8] Installing git hooks (pre-commit, pre-push, commit-msg)..."
+Write-Host "[2/10] Installing git hooks (pre-commit, pre-push, commit-msg)..."
 python -m pre_commit install
 python -m pre_commit install --hook-type pre-push
 python -m pre_commit install --hook-type commit-msg
 
-Write-Host "[3/8] Installing Jira CLI..."
+Write-Host "[3/10] Installing Jira CLI..."
 if (Get-Command node -ErrorAction SilentlyContinue) {
     if ((Test-Path "$RepoRoot\scripts\jira\node_modules") -and (Test-Path "$RepoRoot\scripts\jira\dist\index.js")) {
         Write-Host "  jira CLI already built (node_modules + dist present) -- skipping install + build"
@@ -150,10 +150,10 @@ function Test-Qmd {
     return [bool](Get-Command qmd -ErrorAction SilentlyContinue)
 }
 
-Write-Host "[4/8] Registering qmd collection 'himmel'..."
+Write-Host "[4/10] Registering qmd collection 'himmel'..."
 # Neutralize the broken qmd plugin-cache stub first so plain `qmd` works
 # inside Claude's Bash tool too (HIMMEL-163). The fixer is bash; Git Bash is
-# a verified prereq ([0/8]) so it is always present here. Native exe non-zero
+# a verified prereq ([0/10]) so it is always present here. Native exe non-zero
 # exits do NOT throw in pwsh -- check $LASTEXITCODE explicitly.
 & bash "$RepoRoot/scripts/lib/fix-qmd-stub.sh"
 if ($LASTEXITCODE -ne 0) {
@@ -184,7 +184,7 @@ if (Test-Qmd) {
 }
 
 # --- .env ---
-Write-Host "[5/8] Checking .env..."
+Write-Host "[5/10] Checking .env..."
 if (-not (Test-Path ".env")) {
     if (Test-Path ".env.example") {
         Copy-Item ".env.example" ".env"
@@ -210,7 +210,7 @@ if (-not (Test-Path ".env")) {
 # common in CI / scripted contexts. The misconfig branch is the whole
 # point of step 6 -- if it can be silenced by a caller's preference,
 # the gate has no teeth.
-Write-Host "[6/8] Handover root check..."
+Write-Host "[6/10] Handover root check..."
 $GitBash = "C:\Program Files\Git\bin\bash.exe"
 if (-not (Test-Path $GitBash)) {
     $BashCmd = Get-Command bash -ErrorAction SilentlyContinue
@@ -260,7 +260,7 @@ Write-Host ""
 # writes access.json and NEVER starts the bridge (operator-managed --
 # injection surface + single-getUpdates-owner rule). Non-fatal: a fresh
 # machine legitimately has none of this configured yet.
-Write-Host "[7/8] Telegram bridge + Warp onboarding..."
+Write-Host "[7/10] Telegram bridge + Warp onboarding..."
 $savedEAP = $ErrorActionPreference
 try {
     $ErrorActionPreference = 'Continue'
@@ -273,12 +273,54 @@ try {
 }
 Write-Host ""
 
+# --- Claude plugins (HIMMEL-359) ---
+# The standalone-himmel path (this script) is what README + getting-started
+# point new users at, then tell them to run /handover — so it installs the
+# marketplace plugins (handover, triage, obsidian, …), not just the repo
+# tooling. User scope (~/.claude); setup.ps1 has no scope/profile flag.
+# Idempotent. Skipped with a notice when claude is not on PATH.
+Write-Host "[8/10] Installing Claude plugins (user scope)..."
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    $savedEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & pwsh -NoProfile -File (Join-Path $RepoRoot "scripts\machine-setup\install-plugins.ps1") `
+            -Scope user -HimmelPath $RepoRoot
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  WARNING: install-plugins reported a problem; setup continues." -ForegroundColor Yellow
+        }
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+} else {
+    Write-Host "  Skipped: 'claude' not on PATH (install it, then re-run setup)."
+}
+Write-Host ""
+
+# --- statusline (HIMMEL-359) ---
+# Wire the himmel statusline into ~/.claude/settings.json via the shared helper.
+# Independent of the plugin step (writes settings.json, needs no claude binary);
+# idempotent.
+Write-Host "[9/10] Wiring statusline (user scope)..."
+$savedEAP = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "scripts\lib\wire-statusline.ps1") `
+        -SettingsPath (Join-Path $HOME ".claude\settings.json") -HimmelPath $RepoRoot
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  WARNING: wire-statusline failed; setup continues." -ForegroundColor Yellow
+    }
+} finally {
+    $ErrorActionPreference = $savedEAP
+}
+Write-Host ""
+
 # --- claude-squad (cs) -- OPTIONAL (HIMMEL-151) ---
 # Opt-in only. Triggered by -WithCs OR interactive prompt (default N).
 # Non-interactive shells without the switch skip silently.
 #
 # Failure here is non-fatal: cs is optional. WARN and continue.
-Write-Host "[8/8] OPTIONAL: claude-squad (cs)..."
+Write-Host "[10/10] OPTIONAL: claude-squad (cs)..."
 $installCs = $false
 if ($WithCs) {
     $installCs = $true

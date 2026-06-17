@@ -8,7 +8,6 @@ $ErrorActionPreference = 'Stop'
 
 # ── Paths ───────────────────────────────────────────────────────────────────
 $HimmelPath     = "$env:USERPROFILE\Documents\github\himmel"
-$StatuslinePath = "$HimmelPath\scripts\statusline"  # vendored in himmel (HIMMEL-331)
 $LunaVaultPath  = "$env:USERPROFILE\Documents\luna"
 $ClaudeDir      = "$env:USERPROFILE\.claude"
 $RepoRoot       = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -286,8 +285,8 @@ Invoke-NonFatal "patch settings.json" {
     $TemplatePath = "$HimmelPath\docs\setup\settings-template.json"
     $Template = Get-Content $TemplatePath -Raw | ConvertFrom-Json
 
-    $StatuslineCmd = "bash `"$($StatuslinePath.Replace('\', '/'))/bin/statusline.sh`""
-    $Template.statusLine = [PSCustomObject]@{ type = "command"; command = $StatuslineCmd }
+    # statusLine is wired separately via scripts/lib/wire-statusline.ps1 after
+    # this patch (HIMMEL-359) — single source of truth, so it is NOT set here.
     $Template | Add-Member -NotePropertyName "mcpServers" -NotePropertyValue ([PSCustomObject]@{
         "obsidian-vault" = [PSCustomObject]@{
             command = "uvx"
@@ -372,6 +371,14 @@ Invoke-NonFatal "patch settings.json" {
     } else {
         Write-SettingsJson $SettingsFile $Template
     }
+
+    # statusLine via the shared helper (HIMMEL-359) — runs after the write so it
+    # is authoritative and refreshes any stale path on idempotent re-runs.
+    & pwsh -NoProfile -File "$HimmelPath\scripts\lib\wire-statusline.ps1" `
+        -SettingsPath $SettingsFile -HimmelPath $HimmelPath
+    # Surface a helper failure so the enclosing Invoke-NonFatal logs it (parity
+    # with ubuntu.sh's `|| fail_nonfatal`); native exit codes don't auto-throw.
+    if ($LASTEXITCODE -ne 0) { throw "wire-statusline failed (exit $LASTEXITCODE)" }
 }
 
 Write-Step "Configure end-session-wiki SessionEnd hook"
