@@ -4,7 +4,9 @@ Auto-captures every Claude Code session as a structured note in the Luna Obsidia
 
 ## What it does
 
-On every `SessionEnd` event, a hook runs `scripts/hooks/end-session-wiki.{ps1,sh}`. It reads the session transcript + git metadata, renders a session note matching the schema, and PUTs it into the Luna vault at `sessions/YYYY/MM/YYYY-MM-DD-HHMM-<repo>-<branch>.md` via the Obsidian Local REST API. The hook is silent on success and never blocks session end.
+On every `SessionEnd` event, a hook runs `scripts/hooks/end-session-wiki.{ps1,sh}`. It reads the session transcript + git metadata, renders a session note matching the schema, and writes it into the Luna vault at `sessions/YYYY/MM/YYYY-MM-DD-HHMM-<repo>-<branch>.md`. The hook is silent on success and never blocks session end.
+
+The note is delivered via the Obsidian Local REST API when an API key is available. If no key is found, or the REST PUT fails (e.g. Obsidian isn't running), the hook falls back to writing the note directly to the vault on disk — Obsidian picks up on-disk changes automatically, so capture works whether or not the plugin is up.
 
 ## Security note — log files contain raw transcript text
 
@@ -63,7 +65,7 @@ Every hook invocation appends one line: `[<UTC-ISO timestamp>] <message>`. Messa
 
 ## Inspecting captured notes
 
-Notes live under `<luna-vault>/sessions/YYYY/MM/`. Default vault root: `$HOME/Documents/luna/luna` (override with `LUNA_VAULT_PATH`).
+Notes live under `<luna-vault>/sessions/YYYY/MM/`. Default vault root: `$HOME/Documents/luna` (override with `LUNA_VAULT_PATH`).
 
 Search across captured sessions via the Obsidian MCP:
 

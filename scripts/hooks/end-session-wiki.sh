@@ -63,6 +63,18 @@ log_msg() {
     return 0
 }
 
+# write_note_to_file <abs_path> <content> — local-filesystem fallback used when
+# the Obsidian Local REST API is unavailable (no API key, or PUT failed).
+# Obsidian picks up on-disk changes automatically, so a direct write produces
+# the same note without depending on the plugin being running.
+write_note_to_file() {
+    local path="$1" content="$2" dir
+    dir="$(dirname "$path")"
+    mkdir -p "$dir" 2>/dev/null || return 1
+    printf '%s' "$content" > "$path" 2>/dev/null || return 1
+    return 0
+}
+
 # EXIT trap: forces exit code 0 regardless of how we got here.
 # We track an explicit $HOOK_OK flag so the trap knows whether to log a FAILED
 # message. The trap is fired on:
@@ -294,10 +306,10 @@ HHMM="$(date -u +%H%M)"
 YEAR="$(date -u +%Y)"
 MONTH="$(date -u +%m)"
 
-VAULT_ROOT="${LUNA_VAULT_PATH:-$HOME/Documents/luna/luna}"
+VAULT_ROOT="${LUNA_VAULT_PATH:-$HOME/Documents/luna}"
 if [ ! -d "$VAULT_ROOT" ] && [ -n "${USERPROFILE:-}" ]; then
     # Windows-via-Git-Bash fallback: derive the Windows home generically.
-    VAULT_ROOT_WIN="$(cygpath -u "$USERPROFILE" 2>/dev/null)/Documents/luna/luna"
+    VAULT_ROOT_WIN="$(cygpath -u "$USERPROFILE" 2>/dev/null)/Documents/luna"
     [ -d "$VAULT_ROOT_WIN" ] && VAULT_ROOT="$VAULT_ROOT_WIN"
 fi
 
@@ -455,7 +467,12 @@ if [ -z "$API_KEY" ]; then
     fi
 fi
 if [ -z "$API_KEY" ]; then
-    log_msg "ERROR: no API key (set OBSIDIAN_API_KEY or install Obsidian Local REST API)"
+    # No REST API key — fall back to a direct on-disk write into the vault.
+    if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
+        log_msg "wrote (local fs, no api key) ${REL_PATH}"
+    else
+        log_msg "ERROR: local fs write failed: $ABS_PATH"
+    fi
     HOOK_OK=1
     exit 0
 fi
@@ -488,7 +505,12 @@ END_MS="$(date +%s%3N 2>/dev/null || echo 0)"
 ELAPSED=$((END_MS - START_MS))
 
 if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
-    log_msg "ERROR: PUT $ENDPOINT returned HTTP $HTTP_CODE"
+    # REST PUT failed (e.g. Obsidian not running) — fall back to on-disk write.
+    if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
+        log_msg "PUT $ENDPOINT returned HTTP $HTTP_CODE; wrote (local fs fallback) ${REL_PATH}"
+    else
+        log_msg "ERROR: PUT $ENDPOINT HTTP $HTTP_CODE and local fs fallback failed: $ABS_PATH"
+    fi
     HOOK_OK=1
     exit 0
 fi
