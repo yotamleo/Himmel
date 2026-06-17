@@ -462,12 +462,32 @@ export function withDeadline(p: Promise<RunResult>, ms: number): Promise<RunResu
 // Default deadline: the child's own timeout + a minute of grace for clean settle.
 const RUN_DEADLINE_MS = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000) + 60 * 1000;
 
-// notify (HIMMEL-260/263): called with kind "backoff" once per BACKOFF EPISODE
-// when a run settles unsuccessful, and with kind "giveup" once when the retry
-// cap parks the session. main wires it to a direct poller-side sendMessage so
-// the chat is told instead of going silent. A clean run ends the episode. The
-// episode set is in-memory: a bridge restart may re-notice once — harmless.
-export type NotifyFn = (session: string, retryAt: string, kind: "backoff" | "giveup" | "blocked") => Promise<void>;
+// notify (HIMMEL-260/263): called once per BACKOFF EPISODE when a run settles
+// unsuccessful — kind "cap" for a genuine usage cap (CAP_SENTINELS in run.ts),
+// kind "transient" for any other non-zero exit (server overload, timeout, crash)
+// — and with kind "giveup" once when the retry cap parks the session. The
+// cap/transient split keeps the notice honest: a 529 Overloaded must not read as
+// a quota cap (HIMMEL-261/263/313 family — transient mislabeled as cap). main
+// wires it to a direct poller-side sendMessage so the chat is told instead of
+// going silent. A clean run ends the episode. The episode set is in-memory: a
+// bridge restart may re-notice once — harmless.
+export type NotifyKind = "cap" | "transient" | "giveup" | "blocked";
+export type NotifyFn = (session: string, retryAt: string, kind: NotifyKind) => Promise<void>;
+// noticeText (HIMMEL-353): the operator-facing notice string per kind. Pure +
+// exported so the cap-vs-transient honesty (a 529 must say "NOT a usage cap",
+// never the cap wording) is unit-testable, and the `never` default makes a new
+// kind that forgets its notice a COMPILE error — not a silent transient mislabel
+// (the very class HIMMEL-261/263/313 exists to kill). `when` is the pre-rendered
+// retry time; `maxRetries` only used by the giveup wording.
+export function noticeText(kind: NotifyKind, when: string, maxRetries: number): string {
+  switch (kind) {
+    case "giveup":    return `❌ gave up after ${maxRetries} failed runs — your message is still queued. Reply here to retry, or handle it from the terminal (see run.log in the session dir).`;
+    case "blocked":   return `⛔ a reply was blocked by the content-filter policy (this is NOT a usage cap). Retrying won't help — the same output is blocked each time. Your message is still queued; investigate from the terminal (see run.log in the session dir).`;
+    case "cap":       return `⏳ hit the usage cap — your message is queued, retrying ~${when}.`;
+    case "transient": return `⏳ a run failed transiently (e.g. server overload) — your message is queued, retrying ~${when}. This is NOT a usage cap.`;
+    default:          return ((_: never) => { throw new Error(`unhandled notify kind: ${String(_)}`); })(kind);
+  }
+}
 // Retry cap (HIMMEL-263): a shipping-class ask that exceeds the bounded-run
 // deadline would otherwise loop forever (kill → 15-min backoff → re-peek the
 // SAME pending → restart from scratch — observed live: "ship 241+249" died at
@@ -483,7 +503,7 @@ export type VaultForFn = (chatId: number) => string | null;
 export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn): RunFn {
   const retryAt = () => new Date(Date.now() + RETRY_MS).toISOString();
   const noticed = new Set<string>();
-  const safeNotify = async (session: string, retryAtIso: string, kind: "backoff" | "giveup" | "blocked") => {
+  const safeNotify = async (session: string, retryAtIso: string, kind: NotifyKind) => {
     if (!notify) return;
     try { await notify(session, retryAtIso, kind); }
     catch (e) { console.error("[poller] " + kind + " notify failed for " + session + ": " + e); }
@@ -544,7 +564,8 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
       await writeMeta(root, session, { ...m, fail_count: fails });
       if (!noticed.has(session)) {                              // first failure of an episode → tell the chat
         noticed.add(session);
-        await safeNotify(session, m.retry_at ?? "", "backoff");
+        // genuine cap vs generic transient failure (529, timeout, crash) — keep the notice honest
+        await safeNotify(session, m.retry_at ?? "", res.capped ? "cap" : "transient");
       }
     }
   };
@@ -650,18 +671,14 @@ export async function main(): Promise<void> {
   const token = await loadToken();
   const access = await loadAccess();
   const allow = makeAllow(access);
-  // backoff/giveup notice (HIMMEL-260/263): poller-side direct send — works
-  // exactly when the claude layer can't run (quota cap), so failure is never silent
+  // cap/transient/giveup/blocked notice (HIMMEL-260/263/353): poller-side direct
+  // send — works exactly when the claude layer can't run (quota cap), so failure
+  // is never silent. Text per kind lives in the exported pure noticeText().
   const notify: NotifyFn = async (session, retryAt, kind) => {
     const m = await readMeta(root, session);
     if (!m) return;
     const when = retryAt ? retryAt.slice(11, 16) + " UTC" : "soon";
-    const text = kind === "giveup"
-      ? `❌ gave up after ${MAX_RETRIES} failed runs — your message is still queued. Reply here to retry, or handle it from the terminal (see run.log in the session dir).`
-      : kind === "blocked"
-      ? `⛔ a reply was blocked by the content-filter policy (this is NOT a usage cap). Retrying won't help — the same output is blocked each time. Your message is still queued; investigate from the terminal (see run.log in the session dir).`
-      : `⏳ run failed or hit the usage cap — your message is queued, retrying ~${when}.`;
-    await sendMessage(token, m.chat_id, text);
+    await sendMessage(token, m.chat_id, noticeText(kind, when, MAX_RETRIES));
   };
   // documents sent to a chat are filed into the vault resolved from access.json (HIMMEL-321)
   const vaultFor: VaultForFn = (chatId) => vaultForChat(access, chatId);
