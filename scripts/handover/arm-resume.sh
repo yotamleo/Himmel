@@ -20,6 +20,11 @@
 #      body so POSIX dedup actually matches (v1 grepped for a marker
 #      that schedule-resume.sh never emitted)
 #   4. emits a loud post-arm banner reminding operator to /exit
+#   5. makes the relaunch self-cleaning: the spawned launcher deletes
+#      its OWN scheduler entry as its first action (schtasks .bat
+#      self-/delete; crontab entry self-removes; at auto-removes), so a
+#      fired slot never lingers to block a same-handover re-arm or fire
+#      twice.
 #
 # This is the *arm* half of HIMMEL-122 (auto-resume on usage-cap
 # detection). The *detect* half (monitoring claude-statusline / API
@@ -838,6 +843,15 @@ schedule_arm() {
                 cs="${cs//|/^|}"
                 ch=" --channels \"$cs\""
             fi
+            # Self-clean FIRST: a /sc ONCE task lingers in Task Scheduler
+            # after it fires (Ready/completed), accumulating stale jobs and
+            # blocking a future same-handover arm without --force. So the
+            # launcher deletes its OWN task as its first action. Deleting a
+            # one-shot task's registration does NOT terminate the already-
+            # spawned action process, so claude still launches below.
+            # Non-fatal (>nul 2>&1, no `|| exit`): a failed cleanup must
+            # never block the relaunch. TASK_NAME is sanitized to
+            # [:alnum:]_- so it carries no CMD metacharacters.
             # cd /d switches drive + path in one step; quoted to survive
             # spaces. `|| exit /b 1` ensures the .bat aborts instead of
             # silently falling through to claude.exe in the wrong CWD
@@ -847,6 +861,7 @@ schedule_arm() {
             # (consumes following args), so a trailing positional prompt
             # gets parsed as a bogus channel entry ("must be tagged" → exit 1).
             {
+                printf 'schtasks /delete /tn "%s" /f >nul 2>&1\r\n' "$TASK_NAME"
                 printf 'cd /d "%s" || exit /b 1\r\n' "$c"
                 printf '"%s" "%s"%s\r\n' "$claude_cmd_win" "$p" "$ch"
             } > "$bat_path"
@@ -872,6 +887,9 @@ schedule_arm() {
             ;;
         linux|macos)
             if command -v at >/dev/null 2>&1; then
+                # at jobs are one-shot and atd removes them from the queue
+                # after they run, so (unlike schtasks ONCE and crontab) the
+                # at body needs no self-clean line — the queue cleans itself.
                 # at heredoc body INCLUDES the HIMMEL-Resume-<name>
                 # marker as a comment line so list_existing's grep
                 # actually matches. v1 omitted this; dedup was dead.
@@ -919,21 +937,36 @@ CMD
                 fi
                 rm -f "$err_file"
             else
-                # crontab fallback — recurring entry tagged with the
-                # marker so we can find + remove it. Operator manually
-                # cleans up after first fire. printf '%q' shell-quotes
-                # the prompt so cron's /bin/sh -c can't re-interpret
-                # $/backticks/etc in a handover path.
+                # crontab fallback — crontab entries are RECURRING, so the
+                # entry SELF-REMOVES as its first action (the cron analogue of
+                # the schtasks .bat self-/delete above): it rewrites the
+                # crontab without its own marker line before running cd+claude,
+                # turning the recurring entry into a one-shot. The running
+                # /bin/sh -c continues after the rewrite, so claude still
+                # launches. The marker match is ANCHORED at end-of-line
+                # (grep -vE '# <TASK_NAME>$'), mirroring the dedup detector's
+                # crontab branch in list_existing so a sibling slot whose
+                # TASK_NAME is a strict PREFIX of this one is not cross-matched
+                # and survives. TASK_NAME is sanitized to [:alnum:]_- so it
+                # carries no ERE specials. The terminal `crontab -` is NOT
+                # error-suppressed: a silently-failed rewrite would leave the
+                # entry RECURRING (a daily relaunch loop) while we told the
+                # operator it is one-shot, so let cron surface the failure
+                # (mail/log) — the manual-prune hint printed below is the
+                # backstop. printf '%q' shell-quotes the prompt so cron's
+                # /bin/sh -c can't re-interpret $/backticks/etc in a handover
+                # path.
                 local hh="${RESUME_TIME%:*}" mm="${RESUME_TIME#*:}"
                 local q_prompt q_cwd q_channels=""
                 q_prompt=$(printf '%q' "$RESUME_PROMPT")
                 q_cwd=$(printf '%q' "$RESUME_CWD")
                 [ -n "$CHANNELS" ] && q_channels="--channels $(printf '%q' "$CHANNELS") "
-                local entry="$mm $hh * * * cd $q_cwd && claude $q_prompt $q_channels # $TASK_NAME"
+                local self_clean="crontab -l 2>/dev/null | grep -vE '# ${TASK_NAME}\$' | crontab -;"
+                local entry="$mm $hh * * * $self_clean cd $q_cwd && claude $q_prompt $q_channels # $TASK_NAME"
                 if [ "$DRY_RUN" -eq 1 ]; then
                     echo "DRY arm-resume: would add crontab entry:"
                     echo "    $entry"
-                    echo "DRY arm-resume: NOTE: crontab is RECURRING; remove after first fire."
+                    echo "DRY arm-resume: NOTE: entry self-removes on first fire (one-shot)."
                     return 0
                 fi
                 local snap
@@ -949,7 +982,8 @@ CMD
                     exit 4
                 }
                 rm -f "$snap"
-                echo "arm-resume: NOTE: crontab is RECURRING; remove after first fire with:"
+                echo "arm-resume: NOTE: crontab entry self-removes on first fire (one-shot)."
+                echo "    If it never fires, prune manually with:"
                 echo "    crontab -l | grep -v 'HIMMEL-Resume' | crontab -"
             fi
             ;;
