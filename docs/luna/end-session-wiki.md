@@ -98,6 +98,17 @@ mcp__obsidian-vault__obsidian_simple_search query:"end-session-wiki"
 
 Or filter by branch in the file path: `sessions/2026/05/2026-05-18-*-feat-end-session-wiki-*.md`.
 
+## Connecting notes into the graph
+
+The hook files each note but does not maintain an index, so a fresh capture is an *orphan* (no inbound links) and its `[[<repo>]]` preamble link dangles until a hub note exists. Run `scripts/sessions-reindex.sh` to fix both, idempotently:
+
+```bash
+bash scripts/sessions-reindex.sh                       # default ~/Documents/luna
+bash scripts/sessions-reindex.sh --vault ~/Documents/luna-medic
+```
+
+It regenerates `<vault>/sessions/_index.md` (links every session note → no orphans) and creates a `sessions/<repo>.md` hub for each repo that doesn't already resolve `[[<repo>]]` somewhere in the vault. Lean-invoke: run on demand after a batch of captures (or wire it into the clip-pipeline cadence).
+
 ## Disabling per-session
 
 One-shot disable for a single Claude run, no config edit needed:
