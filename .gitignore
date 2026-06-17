@@ -1,10 +1,17 @@
 /.claude/worktrees
 .env
 scripts/jira/dist/
-scripts/jira/node_modules/
-scripts/luna-vitals/node_modules/
-/node_modules/
+# node_modules anywhere — none are tracked. A per-package list let
+# marketplace/plugins/*/node_modules/ slip through and be sweepable (HIMMEL-371).
+node_modules/
 /.claude/settings.local.json
+# Generated/junk artifacts that must never be committed (HIMMEL-371).
+# NOT package-lock.json — 6 legit npm packages track theirs; the wrong-PM
+# lockfile case (a package-lock.json inside a bun package) is caught by the
+# check-artifact-leakage pre-commit hook instead.
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
 # end-session-wiki hook local artifacts — contain raw transcript excerpts (potential secrets).
 # Match any .claude/ dir (the hook writes into the cwd's .claude/, e.g. scripts/telegram/.claude/).
 **/.claude/end-session-wiki.log
