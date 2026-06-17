@@ -79,7 +79,7 @@ repos:
         stages: [pre-commit]
 
       - id: lockfile-integrity
-        name: lockfile integrity (npm)
+        name: lockfile integrity (npm + bun)
         language: system
         entry: bash scripts/hooks/check-lockfile-integrity.sh
         pass_filenames: false

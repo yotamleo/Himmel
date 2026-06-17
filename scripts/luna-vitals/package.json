@@ -1,0 +1,7 @@
+{
+  "name": "luna-vitals",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
+  "devDependencies": { "@types/bun": "latest" }
+}
