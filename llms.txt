@@ -25,6 +25,7 @@ If you are an LLM working in this repo, read CLAUDE.md first — it is the autho
 
 - [docs/internals/handover-system.md](docs/internals/handover-system.md): the full cross-session handover system + user-slug resolution. Plugin: [marketplace/plugins/handover/README.md](marketplace/plugins/handover/README.md).
 - [docs/internals/jira-plugin.md](docs/internals/jira-plugin.md): the local Jira CLI (`scripts/jira/`) — preferred over the Atlassian MCP server — and the op↔MCP mapping.
+- [plugins/himmel-gh/README.md](plugins/himmel-gh/README.md): forge-agnostic git ops — the worktree→PR→merge loop, PR review threads, and luna-ingest route to `gh` on GitHub or the himmel Bitbucket CLI ([scripts/bitbucket/README.md](scripts/bitbucket/README.md)) on Bitbucket Cloud, chosen per-repo from `origin`.
 - [docs/operator-conventions.md](docs/operator-conventions.md): durable operator working-habits (Jira CLI invocation, CR/merge habits).
 - [docs/tooling-catalog.md](docs/tooling-catalog.md): every tool/script/plugin in active use.
 
