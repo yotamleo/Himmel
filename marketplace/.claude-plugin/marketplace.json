@@ -5,6 +5,21 @@
   },
   "plugins": [
     {
+      "name": "luna-correlate",
+      "source": "./plugins/luna-correlate",
+      "description": "Offline health-factor correlation MCP (Posture A). Cross-references local health/status series against external factors — Kp geomagnetic index (date-only) and location factors (barometric pressure, pollen, air-quality) resolved offline via a proximity index — and surfaces ranked CANDIDATE signals with caveats; never a diagnosis, never causation. Only the gated factors.cache fetcher touches the network (country-level grid, no PHI, no operator coordinates).",
+      "author": {
+        "name": "yotamleo"
+      },
+      "keywords": [
+        "luna",
+        "health",
+        "correlation",
+        "mcp",
+        "offline"
+      ]
+    },
+    {
       "name": "himmel-ops",
       "source": "./plugins/himmel-ops",
       "description": "Harness-meta operational skills for himmel. Load-on-trigger guardrail-recovery playbook (stuck-playbook) that surfaces escape-hatches when an auto-mode write is denied, a Bash command falls through to the classifier, a permission prompt hangs, or a pre-push gate fails — so operational/troubleshooting rules stay out of the always-on root CLAUDE.md (HIMMEL-211).",
