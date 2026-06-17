@@ -63,6 +63,18 @@ log_msg() {
     return 0
 }
 
+# write_note_to_file <abs_path> <content> — local-filesystem fallback used when
+# the Obsidian Local REST API is unavailable (no API key, or PUT failed).
+# Obsidian picks up on-disk changes automatically, so a direct write produces
+# the same note without depending on the plugin being running.
+write_note_to_file() {
+    local path="$1" content="$2" dir
+    dir="$(dirname "$path")"
+    mkdir -p "$dir" 2>/dev/null || return 1
+    printf '%s' "$content" > "$path" 2>/dev/null || return 1
+    return 0
+}
+
 # EXIT trap: forces exit code 0 regardless of how we got here.
 # We track an explicit $HOOK_OK flag so the trap knows whether to log a FAILED
 # message. The trap is fired on:
@@ -110,6 +122,7 @@ fi
 CFG_ENABLED="true"
 CFG_DRY_RUN="false"
 CFG_MIN_DUR=60
+CFG_VAULT_PATH=""
 if [ -r "$CONFIG_PATH" ]; then
     # Use `has(...)` instead of `//` because jq treats `false` and `0` as falsy,
     # so `.enabled // true` would return `true` when the user set `false`.
@@ -117,13 +130,15 @@ if [ -r "$CONFIG_PATH" ]; then
         [
             (if has("enabled") then .enabled else true end | tostring),
             (if has("dry_run") then .dry_run else false end | tostring),
-            (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring)
+            (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring),
+            (if has("vault_path") then .vault_path else "" end | tostring)
         ] | @tsv
     ' "$CONFIG_PATH" 2>/dev/null)"
     if [ -n "$parsed" ]; then
         CFG_ENABLED="$(printf '%s' "$parsed" | cut -f1)"
         CFG_DRY_RUN="$(printf '%s' "$parsed" | cut -f2)"
         CFG_MIN_DUR="$(printf '%s' "$parsed" | cut -f3)"
+        CFG_VAULT_PATH="$(printf '%s' "$parsed" | cut -f4)"
     else
         log_msg "config parse failed (using defaults): $CONFIG_PATH"
     fi
@@ -294,12 +309,23 @@ HHMM="$(date -u +%H%M)"
 YEAR="$(date -u +%Y)"
 MONTH="$(date -u +%m)"
 
-VAULT_ROOT="${LUNA_VAULT_PATH:-$HOME/Documents/luna/luna}"
-if [ ! -d "$VAULT_ROOT" ] && [ -n "${USERPROFILE:-}" ]; then
-    # Windows-via-Git-Bash fallback: derive the Windows home generically.
-    VAULT_ROOT_WIN="$(cygpath -u "$USERPROFILE" 2>/dev/null)/Documents/luna/luna"
-    [ -d "$VAULT_ROOT_WIN" ] && VAULT_ROOT="$VAULT_ROOT_WIN"
+# Vault root precedence: per-repo config.vault_path > LUNA_VAULT_PATH env > default.
+if [ -n "$CFG_VAULT_PATH" ]; then
+    VAULT_ROOT="$CFG_VAULT_PATH"
+elif [ -n "${LUNA_VAULT_PATH:-}" ]; then
+    VAULT_ROOT="$LUNA_VAULT_PATH"
+else
+    VAULT_ROOT="$HOME/Documents/luna"
+    if [ ! -d "$VAULT_ROOT" ] && [ -n "${USERPROFILE:-}" ]; then
+        # Windows-via-Git-Bash fallback: derive the Windows home generically.
+        # Only meaningful for the default location.
+        VAULT_ROOT_WIN="$(cygpath -u "$USERPROFILE" 2>/dev/null)/Documents/luna"
+        [ -d "$VAULT_ROOT_WIN" ] && VAULT_ROOT="$VAULT_ROOT_WIN"
+    fi
 fi
+# Expand a leading ~/ (a JSON config value can't rely on shell tilde expansion).
+# shellcheck disable=SC2088  # the "~/" here is a literal case-pattern match, not an expansion
+case "$VAULT_ROOT" in "~/"*) VAULT_ROOT="$HOME/${VAULT_ROOT#\~/}" ;; esac
 
 REL_DIR="sessions/${YEAR}/${MONTH}"
 BASE_NAME="${DATE_STR}-${HHMM}-${RAW_SLUG}"
@@ -455,7 +481,12 @@ if [ -z "$API_KEY" ]; then
     fi
 fi
 if [ -z "$API_KEY" ]; then
-    log_msg "ERROR: no API key (set OBSIDIAN_API_KEY or install Obsidian Local REST API)"
+    # No REST API key — fall back to a direct on-disk write into the vault.
+    if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
+        log_msg "wrote (local fs, no api key) ${REL_PATH}"
+    else
+        log_msg "ERROR: local fs write failed: $ABS_PATH"
+    fi
     HOOK_OK=1
     exit 0
 fi
@@ -488,7 +519,12 @@ END_MS="$(date +%s%3N 2>/dev/null || echo 0)"
 ELAPSED=$((END_MS - START_MS))
 
 if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
-    log_msg "ERROR: PUT $ENDPOINT returned HTTP $HTTP_CODE"
+    # REST PUT failed (e.g. Obsidian not running) — fall back to on-disk write.
+    if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
+        log_msg "PUT $ENDPOINT returned HTTP $HTTP_CODE; wrote (local fs fallback) ${REL_PATH}"
+    else
+        log_msg "ERROR: PUT $ENDPOINT HTTP $HTTP_CODE and local fs fallback failed: $ABS_PATH"
+    fi
     HOOK_OK=1
     exit 0
 fi

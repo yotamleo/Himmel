@@ -63,6 +63,21 @@ function Write-HookLog {
     }
 }
 
+function Write-NoteToFile {
+    # Local-filesystem fallback used when the Obsidian Local REST API is
+    # unavailable (no API key, or the PUT failed). Obsidian picks up on-disk
+    # changes automatically, so a direct write produces the same note without
+    # depending on the plugin being running.
+    param([string]$Path, [string]$Content)
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    # UTF-8 without BOM, matching the REST API write.
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
+
 try {
     $ErrorActionPreference = 'Stop'
     Set-StrictMode -Version Latest
@@ -81,6 +96,7 @@ try {
     $cfgEnabled = $true
     $cfgDryRun  = $false
     $cfgMinDur  = 60
+    $cfgVaultPath = ''
     if (Test-Path $configPath) {
         try {
             $cfgRaw = Get-Content -LiteralPath $configPath -Raw
@@ -88,6 +104,7 @@ try {
             if ($cfg.PSObject.Properties['enabled']) { $cfgEnabled = [bool]$cfg.enabled }
             if ($cfg.PSObject.Properties['dry_run']) { $cfgDryRun  = [bool]$cfg.dry_run }
             if ($cfg.PSObject.Properties['min_duration_seconds']) { $cfgMinDur = [int]$cfg.min_duration_seconds }
+            if ($cfg.PSObject.Properties['vault_path']) { $cfgVaultPath = [string]$cfg.vault_path }
         } catch {
             Write-HookLog "config parse failed (using defaults): $($_.Exception.Message)"
         }
@@ -273,9 +290,16 @@ try {
     $year    = $nowUtc.ToString('yyyy')
     $month   = $nowUtc.ToString('MM')
 
-    # Luna vault root: prefer env var, else default per memory project_luna_vault.md
-    $vaultRoot = $env:LUNA_VAULT_PATH
-    if (-not $vaultRoot) { $vaultRoot = Join-Path $env:USERPROFILE 'Documents\luna\luna' }
+    # Vault root precedence: per-repo config.vault_path > LUNA_VAULT_PATH env > default.
+    if ($cfgVaultPath) {
+        $vaultRoot = $cfgVaultPath
+    } elseif ($env:LUNA_VAULT_PATH) {
+        $vaultRoot = $env:LUNA_VAULT_PATH
+    } else {
+        $vaultRoot = Join-Path $env:USERPROFILE 'Documents\luna'
+    }
+    # Expand a leading ~/ or ~\ (a JSON config value can't rely on tilde expansion).
+    if ($vaultRoot -match '^~[\\/](.*)$') { $vaultRoot = Join-Path $env:USERPROFILE $matches[1] }
 
     $relDir = "sessions/$year/$month"
     $baseName = "$dateStr-$hhmm-$rawSlug"
@@ -436,7 +460,13 @@ $rawSection
         }
     }
     if (-not $apiKey) {
-        Write-HookLog "ERROR: no API key found (set OBSIDIAN_API_KEY or install Obsidian Local REST API plugin)"
+        # No REST API key — fall back to a direct on-disk write into the vault.
+        try {
+            Write-NoteToFile -Path $absPath -Content $markdown
+            Write-HookLog "wrote (local fs, no api key) $relPath"
+        } catch {
+            Write-HookLog "ERROR: local fs write failed ($absPath): $($_.Exception.Message)"
+        }
         exit 0
     }
 
@@ -473,7 +503,14 @@ $rawSection
     try {
         Invoke-RestMethod @irmArgs | Out-Null
     } catch {
-        Write-HookLog "ERROR: PUT $endpoint failed: $($_.Exception.Message)"
+        # REST PUT failed (e.g. Obsidian not running) — fall back to on-disk write.
+        Write-HookLog "WARN: PUT $endpoint failed ($($_.Exception.Message)); falling back to local fs"
+        try {
+            Write-NoteToFile -Path $absPath -Content $markdown
+            Write-HookLog "wrote (local fs fallback) $relPath"
+        } catch {
+            Write-HookLog "ERROR: local fs fallback write failed ($absPath): $($_.Exception.Message)"
+        }
         exit 0
     }
     $elapsed = ((Get-Date) - $startTime).TotalMilliseconds

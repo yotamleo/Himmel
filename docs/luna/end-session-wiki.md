@@ -4,7 +4,9 @@ Auto-captures every Claude Code session as a structured note in the Luna Obsidia
 
 ## What it does
 
-On every `SessionEnd` event, a hook runs `scripts/hooks/end-session-wiki.{ps1,sh}`. It reads the session transcript + git metadata, renders a session note matching the schema, and PUTs it into the Luna vault at `sessions/YYYY/MM/YYYY-MM-DD-HHMM-<repo>-<branch>.md` via the Obsidian Local REST API. The hook is silent on success and never blocks session end.
+On every `SessionEnd` event, a hook runs `scripts/hooks/end-session-wiki.{ps1,sh}`. It reads the session transcript + git metadata, renders a session note matching the schema, and writes it into the Luna vault at `sessions/YYYY/MM/YYYY-MM-DD-HHMM-<repo>-<branch>.md`. The hook is silent on success and never blocks session end.
+
+The note is delivered via the Obsidian Local REST API when an API key is available. If no key is found, or the REST PUT fails (e.g. Obsidian isn't running), the hook falls back to writing the note directly to the vault on disk — Obsidian picks up on-disk changes automatically, so capture works whether or not the plugin is up.
 
 ## Security note — log files contain raw transcript text
 
@@ -50,8 +52,31 @@ Fields:
 | `enabled` | bool | `true` | `false` → hook exits 0 after logging `skipped: config disabled` |
 | `dry_run` | bool | `false` | `true` → render note to log file instead of writing to vault |
 | `min_duration_seconds` | int | `60` | Sessions shorter than this are skipped (prevents capturing accidental opens) |
+| `vault_path` | string | `""` | Absolute path (a leading `~/` is expanded) to the Obsidian vault this repo's sessions are captured into. Empty → fall back to `LUNA_VAULT_PATH` env, then the default. See [Choosing the target vault](#choosing-the-target-vault) below. |
 
-Missing file → defaults applied (`enabled: true`, `dry_run: false`, `min_duration_seconds: 60`).
+Missing file → defaults applied (`enabled: true`, `dry_run: false`, `min_duration_seconds: 60`, `vault_path: ""`).
+
+## Choosing the target vault
+
+Your vault almost certainly does not live where the operator's does, and you may keep more than one (e.g. a general vault plus a project-specific one). The hook resolves the target vault in this order — **first match wins**:
+
+1. **`vault_path` in `.claude/end-session-wiki.json`** (per-repo) — the most specific. Set this in a repo (or a multi-repo's shared config) to route *that* repo's sessions to a particular vault, regardless of the global default. This is what lets, say, a medical-notes repo capture into a separate vault from your day-to-day work.
+2. **`LUNA_VAULT_PATH` environment variable** (global) — your default vault for everything that doesn't override it per-repo. Set it in your shell profile or your `.env` (see `.env.example`).
+3. **Built-in default** — `~/Documents/luna` (`$HOME`/`$USERPROFILE`), so a stock install still works with zero config.
+
+Because the path is what you configure (not a vault *name*), **renaming or moving the vault just means updating the path** in step 1 or 2 — nothing else references the old location.
+
+**Set it interactively** with the luna template setup (`templates/luna-second-brain/scripts/setup.{sh,ps1}`) or the `/end-session-wiki-setup` command, which write the value for you. Or set it by hand:
+
+```json
+// .claude/end-session-wiki.json — capture THIS repo's sessions into a specific vault
+{ "vault_path": "~/Documents/my-vault" }
+```
+
+```bash
+# .env or shell profile — global default vault for all repos
+LUNA_VAULT_PATH="$HOME/Documents/my-vault"
+```
 
 ## Logs
 
@@ -63,7 +88,7 @@ Every hook invocation appends one line: `[<UTC-ISO timestamp>] <message>`. Messa
 
 ## Inspecting captured notes
 
-Notes live under `<luna-vault>/sessions/YYYY/MM/`. Default vault root: `$HOME/Documents/luna/luna` (override with `LUNA_VAULT_PATH`).
+Notes live under `<luna-vault>/sessions/YYYY/MM/`. Default vault root: `$HOME/Documents/luna` (override with `LUNA_VAULT_PATH`).
 
 Search across captured sessions via the Obsidian MCP:
 
