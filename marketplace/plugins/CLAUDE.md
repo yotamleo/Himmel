@@ -17,6 +17,11 @@ needs (`commands/`, `skills/`, `agents/`, `tools/`). Live plugins:
   the plugin's `README.md`, so the divergence from upstream is auditable.
 - A plugin's skills follow the same authoring rules as any skill — invoke
   the `skill-creator` / `plugin-dev` skills rather than hand-rolling.
+- **Test a plugin that declares its own deps via `bash scripts/plugin-test.sh
+  <plugin>`**, not raw `bun test` (HIMMEL-366). A fresh worktree only installs
+  `scripts/jira/` deps, so raw `bun test` here starts RED ("Cannot find module
+  '@modelcontextprotocol/sdk/…'") and masks real regressions; the helper
+  `bun install`s first so the baseline is GREEN.
 
 ## Reference
 - Tooling catalog (what each plugin does):
