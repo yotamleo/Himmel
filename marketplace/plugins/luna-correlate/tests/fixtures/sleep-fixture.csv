@@ -1,0 +1,13 @@
+# SYNTHETIC sleep series — completely fake data, no PHI, for testing only.
+# value = sleep duration in hours. Generic (date,value) shape.
+date,value
+2026-05-01,7.5
+2026-05-02,6.0
+2026-05-03,5.5
+2026-05-04,8.0
+2026-05-05,7.0
+2026-05-06,6.5
+2026-05-07,5.0
+2026-05-08,7.5
+2026-05-09,4.5
+2026-05-10,6.0

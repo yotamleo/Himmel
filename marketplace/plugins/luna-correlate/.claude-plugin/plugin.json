@@ -1,0 +1,12 @@
+{
+  "name": "luna-correlate",
+  "description": "Offline health-factor correlation MCP (Posture A). Cross-references local health/status series against external factors — Kp geomagnetic index (date-only) and location factors (barometric pressure, pollen, air-quality) resolved offline via a proximity index — and surfaces ranked CANDIDATE signals with caveats; never a diagnosis, never causation. Only the gated factors.cache fetcher touches the network (country-level grid, no PHI, no operator coordinates).",
+  "version": "0.2.0",
+  "keywords": [
+    "luna",
+    "health",
+    "correlation",
+    "mcp",
+    "offline"
+  ]
+}

@@ -1,0 +1,13 @@
+# SYNTHETIC stress series — completely fake data, no PHI, for testing only.
+# value = self-reported stress score 0-10. Generic (date,value) shape.
+date,value
+2026-05-01,3
+2026-05-02,5
+2026-05-03,7
+2026-05-04,2
+2026-05-05,1
+2026-05-06,4
+2026-05-07,6
+2026-05-08,3
+2026-05-09,8
+2026-05-10,4
