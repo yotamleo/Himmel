@@ -3,9 +3,12 @@
 # install-plugins.sh.
 #
 # Reads `enabledPlugins` and `extraKnownMarketplaces` from the template,
-# registers each marketplace via `claude plugin marketplace add`, then
-# installs each plugin via `claude plugin install <plugin>@<marketplace>
-# --scope <scope>`. Both CLI calls are idempotent.
+# registers each marketplace via `claude plugin marketplace add`, sets
+# `autoUpdate: true` on every template-flagged marketplace already registered in
+# the scope's settings.json (the CLI has no auto-update flag, so this is patched
+# straight into that file — HIMMEL-365), then installs each plugin via
+# `claude plugin install <plugin>@<marketplace> --scope <scope>`. Both CLI calls
+# are idempotent.
 #
 # Usage:
 #   pwsh install-plugins.ps1 [-DryRun] [-Scope SCOPE] [-Template PATH] [-HimmelPath PATH]
@@ -65,6 +68,51 @@ foreach ($name in $cfg.extraKnownMarketplaces.PSObject.Properties.Name) {
     Write-Host "  marketplace add: $val"
     try { Invoke-OrDry @('claude', 'plugin', 'marketplace', 'add', $val, '--scope', $Scope) }
     catch { Write-Host "    (non-zero — already registered or transient failure)" }
+}
+
+# ── Enable marketplace auto-update (HIMMEL-365) ──────────────────────────────
+# `claude plugin marketplace add` writes each settings.json entry WITHOUT
+# autoUpdate, so a fresh install leaves auto-update OFF (only a manual /plugin UI
+# toggle ever turned it on, and that never propagated to new machines). The CLI
+# has no auto-update flag, so set the canonical field
+# (extraKnownMarketplaces.<name>.autoUpdate, mirrored into the runtime
+# known_marketplaces.json) directly in the scope's settings file, for every
+# template entry flagged autoUpdate. Patch only entries already registered there,
+# so a marketplace-name vs template-key mismatch can't create an orphan entry.
+$settingsFile = switch ($Scope) {
+    'user'    { Join-Path $HOME '.claude\settings.json' }
+    'project' { Join-Path $PWD.Path '.claude\settings.json' }
+    'local'   { Join-Path $PWD.Path '.claude\settings.local.json' }
+}
+Write-Host "──── Enabling marketplace auto-update ($settingsFile) ────"
+$autoNames = @($cfg.extraKnownMarketplaces.PSObject.Properties |
+    Where-Object { $_.Value.autoUpdate -eq $true } |
+    ForEach-Object { $_.Name })
+foreach ($name in $autoNames) {
+    if ($DryRun) {
+        Write-Host "DRY: set autoUpdate=true for '$name' in $settingsFile"
+        continue
+    }
+    if (-not (Test-Path $settingsFile)) {
+        Write-Host "  skip: $name (no $settingsFile)"; continue
+    }
+    try { $settings = Get-Content $settingsFile -Raw | ConvertFrom-Json }
+    catch { Write-Host "  skip: $settingsFile not valid JSON — refusing to patch"; continue }
+    $mkts = $settings.extraKnownMarketplaces
+    if (-not $mkts -or ($mkts.PSObject.Properties.Name -notcontains $name)) {
+        Write-Host "  skip: '$name' not registered in $settingsFile"; continue
+    }
+    $mkts.$name | Add-Member -NotePropertyName autoUpdate -NotePropertyValue $true -Force
+    # Write UTF-8 WITHOUT BOM, to a temp then atomic Move-Item: `Set-Content
+    # -Encoding utf8` emits a BOM on Windows PowerShell 5.1 (none on pwsh 7),
+    # and a leading BOM makes Node's JSON.parse reject the file — so a manual
+    # 5.1 run would corrupt the operator's real settings.json. WriteAllText with
+    # UTF8Encoding($false) is BOM-free on both; the temp+move mirrors the bash
+    # twin's crash-safety (-Depth 100 covers settings.json's nesting).
+    $tmp = "$settingsFile.autoupdate.tmp"
+    [System.IO.File]::WriteAllText($tmp, ($settings | ConvertTo-Json -Depth 100), (New-Object System.Text.UTF8Encoding $false))
+    Move-Item -Force -LiteralPath $tmp -Destination $settingsFile
+    Write-Host "  autoUpdate=true: $name"
 }
 
 # ── Install plugins ─────────────────────────────────────────────────────────

@@ -15,6 +15,8 @@
 #   1. Default (no flag) → `--scope user` on install + marketplace add.
 #   2. `--scope project` → `--scope project` on both.
 #   3. Invalid `--scope bogus` → exit 2 (validation rejects before preflight).
+#   4. autoUpdate patch (HIMMEL-365) → dry-run emits the autoUpdate intent for a
+#      template-flagged marketplace, targeting the scope-correct settings file.
 
 set -euo pipefail
 
@@ -48,6 +50,19 @@ assert_scope() {
     printf '%s' "$out" | grep -q "DRY: claude plugin install .* --scope $want" \
         || fail "plugin install missing --scope $want (args: $*)"
     echo "ok: scope '$want' threads through (args: ${*:-<default>})"
+
+    # autoUpdate (HIMMEL-365): dry-run prints the patch intent for a flagged
+    # marketplace (himmel) against the scope-correct settings file. $HOME/$PWD
+    # are inherited by the child script, so they match what it computes.
+    local sf
+    case "$want" in
+      user)    sf="$HOME/.claude/settings.json" ;;
+      project) sf="$PWD/.claude/settings.json" ;;
+      local)   sf="$PWD/.claude/settings.local.json" ;;
+    esac
+    printf '%s' "$out" | grep -qF "DRY: set autoUpdate=true for 'himmel' in $sf" \
+        || fail "autoUpdate dry line missing/wrong file for scope $want (want $sf)"
+    echo "ok: autoUpdate targets $sf for scope '$want'"
 }
 
 assert_scope user                      # default

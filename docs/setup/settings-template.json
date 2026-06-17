@@ -89,22 +89,28 @@
   },
   "extraKnownMarketplaces": {
     "obsidian-skills": {
-      "source": { "source": "github", "repo": "kepano/obsidian-skills" }
+      "source": { "source": "github", "repo": "kepano/obsidian-skills" },
+      "autoUpdate": true
     },
     "qmd": {
-      "source": { "source": "github", "repo": "tobi/qmd" }
+      "source": { "source": "github", "repo": "tobi/qmd" },
+      "autoUpdate": true
     },
     "caveman": {
-      "source": { "source": "github", "repo": "JuliusBrussee/caveman" }
+      "source": { "source": "github", "repo": "JuliusBrussee/caveman" },
+      "autoUpdate": true
     },
     "claude-code-warp": {
-      "source": { "source": "github", "repo": "warpdotdev/claude-code-warp" }
+      "source": { "source": "github", "repo": "warpdotdev/claude-code-warp" },
+      "autoUpdate": true
     },
     "himmel": {
-      "source": { "source": "directory", "path": "<himmel-path>/marketplace" }
+      "source": { "source": "directory", "path": "<himmel-path>/marketplace" },
+      "autoUpdate": true
     },
     "claude-obsidian-marketplace": {
-      "source": { "source": "github", "repo": "yotamleo/claude-obsidian" }
+      "source": { "source": "github", "repo": "yotamleo/claude-obsidian" },
+      "autoUpdate": true
     }
   },
   "autoUpdatesChannel": "latest",

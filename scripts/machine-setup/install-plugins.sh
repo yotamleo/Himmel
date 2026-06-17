@@ -4,8 +4,11 @@
 #
 # Reads `enabledPlugins` (plugin@marketplace keys) and
 # `extraKnownMarketplaces` from the template, registers each marketplace
-# via `claude plugin marketplace add`, then installs each plugin via
-# `claude plugin install <plugin>@<marketplace> --scope <scope>`.
+# via `claude plugin marketplace add`, sets `autoUpdate: true` on every
+# template-flagged marketplace already registered in the scope's settings.json
+# (the CLI has no auto-update flag, so this is patched straight into that file —
+# HIMMEL-365), then installs each plugin via `claude plugin install
+# <plugin>@<marketplace> --scope <scope>`.
 #
 # Both CLI calls are idempotent — re-running this script on a fully
 # installed machine is a no-op.
@@ -93,6 +96,59 @@ echo "$EXPANDED" | jq -r '
   run claude plugin marketplace add "$SRC" --scope "$SCOPE" \
     || echo "    (non-zero — already registered or transient failure)"
 done
+
+# ── Enable marketplace auto-update (HIMMEL-365) ──────────────────────────────
+# `claude plugin marketplace add` writes each settings.json extraKnownMarketplaces
+# entry WITHOUT autoUpdate, so a fresh install leaves every marketplace's
+# auto-update OFF (only a manual /plugin UI toggle ever turned it on, and that
+# never propagated to new machines). The CLI exposes no auto-update flag, so set
+# the canonical field — extraKnownMarketplaces.<name>.autoUpdate, which the
+# runtime known_marketplaces.json mirrors — directly in the scope's settings
+# file, for every template entry flagged autoUpdate:true. Patch only entries that
+# already exist there, so a marketplace-name vs template-key mismatch can't
+# create an orphan entry.
+case "$SCOPE" in
+  user)    SETTINGS_FILE="$HOME/.claude/settings.json" ;;
+  project) SETTINGS_FILE="$PWD/.claude/settings.json" ;;
+  local)   SETTINGS_FILE="$PWD/.claude/settings.local.json" ;;
+esac
+
+echo "──── Enabling marketplace auto-update ($SETTINGS_FILE) ────"
+# tr -d '\r': jq emits CRLF on Windows; a trailing \r would corrupt the name key.
+AUTO_NAMES=$(echo "$EXPANDED" | jq -r '
+  .extraKnownMarketplaces // {}
+  | to_entries[]
+  | select(.value.autoUpdate == true)
+  | .key
+' | tr -d '\r')
+while IFS= read -r NAME; do
+  [[ -z "$NAME" ]] && continue
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: set autoUpdate=true for '$NAME' in $SETTINGS_FILE"
+    continue
+  fi
+  [[ -f "$SETTINGS_FILE" ]] || { echo "  skip: $NAME (no $SETTINGS_FILE)"; continue; }
+  if ! jq -e . "$SETTINGS_FILE" >/dev/null 2>&1; then
+    echo "  skip: $SETTINGS_FILE not valid JSON — refusing to patch" >&2
+    continue
+  fi
+  if [[ "$(jq --arg n "$NAME" '(.extraKnownMarketplaces // {}) | has($n)' "$SETTINGS_FILE")" != "true" ]]; then
+    echo "  skip: '$NAME' not registered in $SETTINGS_FILE"
+    continue
+  fi
+  # if/else (not `&& mv`): a bare `jq … && mv` is a standalone statement, so a
+  # jq failure trips `set -e` and aborts the whole script mid-run — skipping the
+  # install + verify steps for a merely-cosmetic patch. Tolerate it like the
+  # `marketplace add` / `install` steps do, and clean up the temp on failure.
+  if jq --arg n "$NAME" '.extraKnownMarketplaces[$n].autoUpdate = true' \
+       "$SETTINGS_FILE" > "$SETTINGS_FILE.autoupdate.tmp"; then
+    mv "$SETTINGS_FILE.autoupdate.tmp" "$SETTINGS_FILE"
+    echo "  autoUpdate=true: $NAME"
+  else
+    rm -f "$SETTINGS_FILE.autoupdate.tmp"
+    echo "  skip: $NAME (jq patch failed — $SETTINGS_FILE left unchanged)" >&2
+  fi
+done <<< "$AUTO_NAMES"
 
 # ── Install plugins ─────────────────────────────────────────────────────────
 echo "──── Installing plugins ($SCOPE scope) ────"
