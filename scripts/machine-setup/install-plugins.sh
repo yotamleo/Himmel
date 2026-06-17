@@ -87,7 +87,7 @@ echo "$EXPANDED" | jq -r '
     elif .source == "url"       then .url
     else "UNKNOWN:" + (.|tostring)
     end
-' | while read -r SRC; do
+' | tr -d '\r' | while read -r SRC; do
   [[ -z "$SRC" || "$SRC" == UNKNOWN:* ]] && { echo "  skip: $SRC"; continue; }
   echo "  marketplace add: $SRC"
   run claude plugin marketplace add "$SRC" --scope "$SCOPE" \
@@ -96,10 +96,58 @@ done
 
 # ── Install plugins ─────────────────────────────────────────────────────────
 echo "──── Installing plugins ($SCOPE scope) ────"
-echo "$EXPANDED" | jq -r '.enabledPlugins | keys[]' | while read -r SPEC; do
+# tr -d '\r': jq emits CRLF on Windows; a trailing \r would corrupt both the
+# install spec and the later presence comparison (INSTALLED_SPECS is \r-free).
+SPECS=$(echo "$EXPANDED" | jq -r '.enabledPlugins | keys[]' | tr -d '\r')
+while IFS= read -r SPEC; do
+  [[ -z "$SPEC" ]] && continue
   echo "  install: $SPEC"
   run claude plugin install "$SPEC" --scope "$SCOPE" \
     || echo "    (non-zero — already installed or transient failure)"
-done
+done <<< "$SPECS"
 
+# ── Verify (post-install presence check, HIMMEL-361) ─────────────────────────
+# `claude plugin install` can legitimately exit non-zero on an already-installed
+# plugin, so install exit codes can't tell a real failure from an idempotent
+# no-op — which is exactly how a failed handover@himmel install used to look
+# identical to "already installed". Verify by PRESENCE instead: list the
+# installed plugins and confirm every enabledPlugins spec is there. Skipped
+# under --dry-run (nothing was installed).
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "──── Done (dry-run; verify skipped) ────"
+  exit 0
+fi
+
+echo "──── Verifying installed plugins ────"
+# Fail closed: a verify step that cannot run has confirmed NOTHING, so it must
+# not report success — that silent pass is the exact bug HIMMEL-361 kills. The
+# pre-flight already proved `claude` is on PATH, so a `list` failure here is a
+# real anomaly. Capture stderr (2>&1) so the operator sees WHY it failed.
+if ! INSTALLED=$(claude plugin list 2>&1); then
+  echo "ERROR: 'claude plugin list' failed — cannot verify plugin installs:" >&2
+  # shellcheck disable=SC2001
+  # Per-line indent — parameter expansion doesn't replicate sed's per-line anchor cleanly.
+  echo "$INSTALLED" | sed 's/^/    /' >&2
+  exit 1
+fi
+# Pull the bare <plugin>@<marketplace> tokens out of the list output (grep -oE);
+# the exact whole-line compare happens below via `grep -qxF`, which is what
+# avoids substring/prefix false-positives.
+INSTALLED_SPECS=$(echo "$INSTALLED" | grep -oE '[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+' || true)
+
+MISSING=()
+while IFS= read -r SPEC; do
+  [[ -z "$SPEC" ]] && continue
+  grep -qxF "$SPEC" <<< "$INSTALLED_SPECS" || MISSING+=("$SPEC")
+done <<< "$SPECS"
+
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo "ERROR: ${#MISSING[@]} plugin(s) not present after install:" >&2
+  for SPEC in "${MISSING[@]}"; do
+    echo "    $SPEC — retry: claude plugin install $SPEC --scope $SCOPE" >&2
+  done
+  exit 1
+fi
+
+echo "  All $(grep -c . <<< "$SPECS") enabled plugins present."
 echo "──── Done ────"

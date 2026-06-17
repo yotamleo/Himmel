@@ -30,6 +30,16 @@ function Assert-Has {
     }
 }
 
+function Assert-Lacks {
+    param([string]$Label, [string]$Needle, [string]$Haystack)
+    if ($Haystack.Contains($Needle)) {
+        Write-Host "FAIL $Label -- output unexpectedly contains: $Needle"
+        $script:Failed++
+    } else {
+        Write-Host "PASS $Label"
+    }
+}
+
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ('himmel-onboard-test-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force $Tmp | Out-Null
 
@@ -67,7 +77,9 @@ try {
     }
     Assert-Has 'fresh run reports missing pairing' 'access.json: MISSING' $out
     Assert-Has 'fresh run prints bridge bring-up' 'bridge bring-up' $out
-    Assert-Has 'fresh run mentions warp' 'Warp integration' $out
+    # Warp onboarding split out into onboard-warp.ps1 (HIMMEL-360) -- the
+    # telegram step must no longer emit any Warp output.
+    Assert-Lacks 'fresh run no longer mentions warp' 'Warp' $out
 
     # 2. idempotence: existing .env (with a token) is never rewritten
     Set-Content -Path $EnvFile -Value "TELEGRAM_BOT_TOKEN=123:abc`n# operator custom line" -NoNewline
