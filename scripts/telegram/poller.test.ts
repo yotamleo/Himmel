@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 
 const root = () => mkdtempSync(join(tmpdir(), "poller-"));
@@ -28,7 +28,7 @@ test("retry cap: after maxRetries consecutive failures the session parks as fail
   await runFn("S");                                            // parked → no spawn
   expect(spawns).toBe(3);
   expect(notices.filter((k) => k === "giveup").length).toBe(1);
-  expect(notices.filter((k) => k === "backoff").length).toBe(1);   // first failure of the episode
+  expect(notices.filter((k) => k === "transient").length).toBe(1);   // capped:false → transient, not cap (HIMMEL: first failure of the episode)
   expect((await peekPending(r, "S")).count).toBe(1);           // message preserved, not lost
 });
 
@@ -71,6 +71,57 @@ test("content-filter block takes precedence over a simultaneous cap (blocked win
   expect(m?.retry_at).toBe(null);          // not the capped back-off
   expect(spawns).toBe(1);                  // one run, no retry climb
   expect(notices).toEqual(["blocked"]);    // not "backoff"
+});
+
+test("transient non-zero exit (e.g. 529 Overloaded) notifies 'transient' not 'cap', and still backs off + retries", async () => {
+  // Regression guard for the 529-mislabeled-as-cap bug: a run that exits non-zero
+  // WITHOUT a genuine cap sentinel (capped:false) must surface the transient notice,
+  // never the usage-cap one — while still backing off (status=capped is the shared
+  // generic back-off state) and re-peeking the still-uncommitted pending.
+  const r = root(); await ensureSession(r, "S");
+  await writeMeta(r, "S", freshMeta(9));
+  await appendLine(join(sessionDir(r, "S"), "inbox.jsonl"), JSON.stringify({ text: "5 X links" }));
+  const overloaded = async () => ({ code: 1, capped: false, blocked: false, pid: 1, tail: "API Error: 529 Overloaded" });
+  const notices: Array<[string, string]> = [];
+  const notify = async (_s: string, retryAt: string, kind: string) => { notices.push([kind, retryAt]); };
+  const runFn = makeRunFn(r, "/repo", overloaded, 5000, notify, 3);
+  await runFn("S");
+  const m = await readMeta(r, "S");
+  expect(notices.map((n) => n[0])).toEqual(["transient"]);   // honest label — NOT "cap"
+  expect(notices[0][1]).toBeTruthy();              // carries retry_at so the notice renders a real time
+  expect(m?.status).toBe("capped");                // shared back-off state retained
+  expect(m?.retry_at).toBeTruthy();                // retry scheduled
+  expect(m?.fail_count).toBe(1);                   // counted toward the cap
+  expect((await peekPending(r, "S")).count).toBe(1);   // pending preserved, re-peekable
+});
+
+test("noticeText: cap vs transient strings are honest (529 must not read as a usage cap)", () => {
+  // The literal point of HIMMEL-353 — assert the operator-facing wording, not just
+  // the kind token. A future edit that swapped the two arms or dropped the disclaimer
+  // would otherwise ship green.
+  const cap = noticeText("cap", "01:49 UTC", 3);
+  expect(cap).toContain("usage cap");
+  expect(cap).not.toContain("NOT a usage cap");
+  expect(cap).toContain("01:49 UTC");              // renders the retry time
+
+  const transient = noticeText("transient", "01:49 UTC", 3);
+  expect(transient).toContain("NOT a usage cap");  // the honest disclaimer
+  expect(transient).toContain("transiently");
+  expect(transient).toContain("01:49 UTC");
+
+  expect(noticeText("giveup", "", 3)).toContain("gave up after 3 failed runs");
+  expect(noticeText("blocked", "", 3)).toContain("content-filter policy");
+});
+
+test("genuine cap (capped:true) notifies 'cap'", async () => {
+  const r = root(); await ensureSession(r, "S");
+  await writeMeta(r, "S", freshMeta(9));
+  await appendLine(join(sessionDir(r, "S"), "inbox.jsonl"), JSON.stringify({ text: "a" }));
+  const cappedRun = async () => ({ code: 1, capped: true, pid: 1 });
+  const notices: string[] = [];
+  const notify = async (_s: string, _r: string, kind: string) => { notices.push(kind); };
+  await makeRunFn(r, "/repo", cappedRun, 5000, notify, 3)("S");
+  expect(notices).toEqual(["cap"]);                // genuine cap keeps the cap wording
 });
 
 test("retry cap: a message arriving DURING the final failing run prevents the park (no stranding)", async () => {
