@@ -1,0 +1,23 @@
+fix(luna): end-session-wiki writes to ~/Documents/luna + on-disk fallback
+
+The end-session-wiki SessionEnd hook defaulted its vault root to the
+stale double-nested ~/Documents/luna/luna path, so it looked for the
+Obsidian Local REST API key under an empty wrapper dir, never found it,
+and silently captured nothing on every session.
+
+- Correct the default vault root to the canonical flat ~/Documents/luna
+  in both the .ps1 and .sh twins, so the existing key auto-discovery
+  finds the plugin's data.json.
+- Add a local-filesystem fallback: when no REST API key is available or
+  the PUT fails (e.g. Obsidian not running), write the rendered note
+  directly to <vault>/sessions/... Obsidian ingests on-disk changes, so
+  capture no longer depends on the plugin being up. Fail-open preserved.
+- Add scripts/hooks/test-end-session-wiki.sh smoke test (default-path
+  regression guard + no-key + PUT-failure fallback + dry-run).
+- Update docs/luna/end-session-wiki.md (correct default path + document
+  the fallback).
+
+Platforms tested: windows
+Security reviewed: manual
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

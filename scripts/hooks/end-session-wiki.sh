@@ -122,6 +122,7 @@ fi
 CFG_ENABLED="true"
 CFG_DRY_RUN="false"
 CFG_MIN_DUR=60
+CFG_VAULT_PATH=""
 if [ -r "$CONFIG_PATH" ]; then
     # Use `has(...)` instead of `//` because jq treats `false` and `0` as falsy,
     # so `.enabled // true` would return `true` when the user set `false`.
@@ -129,13 +130,15 @@ if [ -r "$CONFIG_PATH" ]; then
         [
             (if has("enabled") then .enabled else true end | tostring),
             (if has("dry_run") then .dry_run else false end | tostring),
-            (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring)
+            (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring),
+            (if has("vault_path") then .vault_path else "" end | tostring)
         ] | @tsv
     ' "$CONFIG_PATH" 2>/dev/null)"
     if [ -n "$parsed" ]; then
         CFG_ENABLED="$(printf '%s' "$parsed" | cut -f1)"
         CFG_DRY_RUN="$(printf '%s' "$parsed" | cut -f2)"
         CFG_MIN_DUR="$(printf '%s' "$parsed" | cut -f3)"
+        CFG_VAULT_PATH="$(printf '%s' "$parsed" | cut -f4)"
     else
         log_msg "config parse failed (using defaults): $CONFIG_PATH"
     fi
@@ -306,12 +309,23 @@ HHMM="$(date -u +%H%M)"
 YEAR="$(date -u +%Y)"
 MONTH="$(date -u +%m)"
 
-VAULT_ROOT="${LUNA_VAULT_PATH:-$HOME/Documents/luna}"
-if [ ! -d "$VAULT_ROOT" ] && [ -n "${USERPROFILE:-}" ]; then
-    # Windows-via-Git-Bash fallback: derive the Windows home generically.
-    VAULT_ROOT_WIN="$(cygpath -u "$USERPROFILE" 2>/dev/null)/Documents/luna"
-    [ -d "$VAULT_ROOT_WIN" ] && VAULT_ROOT="$VAULT_ROOT_WIN"
+# Vault root precedence: per-repo config.vault_path > LUNA_VAULT_PATH env > default.
+if [ -n "$CFG_VAULT_PATH" ]; then
+    VAULT_ROOT="$CFG_VAULT_PATH"
+elif [ -n "${LUNA_VAULT_PATH:-}" ]; then
+    VAULT_ROOT="$LUNA_VAULT_PATH"
+else
+    VAULT_ROOT="$HOME/Documents/luna"
+    if [ ! -d "$VAULT_ROOT" ] && [ -n "${USERPROFILE:-}" ]; then
+        # Windows-via-Git-Bash fallback: derive the Windows home generically.
+        # Only meaningful for the default location.
+        VAULT_ROOT_WIN="$(cygpath -u "$USERPROFILE" 2>/dev/null)/Documents/luna"
+        [ -d "$VAULT_ROOT_WIN" ] && VAULT_ROOT="$VAULT_ROOT_WIN"
+    fi
 fi
+# Expand a leading ~/ (a JSON config value can't rely on shell tilde expansion).
+# shellcheck disable=SC2088  # the "~/" here is a literal case-pattern match, not an expansion
+case "$VAULT_ROOT" in "~/"*) VAULT_ROOT="$HOME/${VAULT_ROOT#\~/}" ;; esac
 
 REL_DIR="sessions/${YEAR}/${MONTH}"
 BASE_NAME="${DATE_STR}-${HHMM}-${RAW_SLUG}"

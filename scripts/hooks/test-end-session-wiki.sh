@@ -73,11 +73,36 @@ if grep -q 'Documents/luna/luna' "$HOOK"; then
 else
     pass "default vault root no longer uses Documents/luna/luna"
 fi
-if grep -q 'Documents/luna}' "$HOOK"; then
+# Behavioural: with LUNA_VAULT_PATH unset (and USERPROFILE unset to skip the
+# Windows fallback), the default resolves to $HOME/Documents/luna — exercising
+# the changed default-resolution line, not just its source text.
+SB="$(make_sandbox)"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+RC="$(printf '%s' "$payload" | env -u LUNA_VAULT_PATH -u USERPROFILE OSTYPE="linux-gnu" OS="" HOME="$SB/home" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"; echo $?)"
+if [ -n "$(find "$SB/home/Documents/luna/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
     pass "default vault root resolves to \$HOME/Documents/luna"
 else
-    fail "expected default vault root \$HOME/Documents/luna not found"
+    fail "default did not write under \$HOME/Documents/luna (last rc line: $RC)"
 fi
+rm -rf "$SB"
+
+# --- Case 1c: config.vault_path overrides the LUNA_VAULT_PATH env (precedence) -
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude" "$SB/cfgvault" "$SB/envvault"
+printf '{"vault_path":"%s"}\n' "$SB/cfgvault" > "$SB/proj/.claude/end-session-wiki.json"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env OSTYPE="linux-gnu" OS="" LUNA_VAULT_PATH="$SB/envvault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"
+if [ -n "$(find "$SB/cfgvault/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
+    pass "config.vault_path wins over LUNA_VAULT_PATH env"
+else
+    fail "config.vault_path did not take precedence (no note under cfgvault)"
+fi
+if [ -z "$(find "$SB/envvault/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
+    pass "env-vault NOT written when config.vault_path is set"
+else
+    fail "note wrongly written to the env vault despite config.vault_path"
+fi
+rm -rf "$SB"
 
 # --- Case 2: FS fallback writes a note when no API key is available ----------
 SB="$(make_sandbox)"

@@ -96,6 +96,7 @@ try {
     $cfgEnabled = $true
     $cfgDryRun  = $false
     $cfgMinDur  = 60
+    $cfgVaultPath = ''
     if (Test-Path $configPath) {
         try {
             $cfgRaw = Get-Content -LiteralPath $configPath -Raw
@@ -103,6 +104,7 @@ try {
             if ($cfg.PSObject.Properties['enabled']) { $cfgEnabled = [bool]$cfg.enabled }
             if ($cfg.PSObject.Properties['dry_run']) { $cfgDryRun  = [bool]$cfg.dry_run }
             if ($cfg.PSObject.Properties['min_duration_seconds']) { $cfgMinDur = [int]$cfg.min_duration_seconds }
+            if ($cfg.PSObject.Properties['vault_path']) { $cfgVaultPath = [string]$cfg.vault_path }
         } catch {
             Write-HookLog "config parse failed (using defaults): $($_.Exception.Message)"
         }
@@ -288,9 +290,16 @@ try {
     $year    = $nowUtc.ToString('yyyy')
     $month   = $nowUtc.ToString('MM')
 
-    # Luna vault root: prefer env var, else default per memory project_luna_vault.md
-    $vaultRoot = $env:LUNA_VAULT_PATH
-    if (-not $vaultRoot) { $vaultRoot = Join-Path $env:USERPROFILE 'Documents\luna' }
+    # Vault root precedence: per-repo config.vault_path > LUNA_VAULT_PATH env > default.
+    if ($cfgVaultPath) {
+        $vaultRoot = $cfgVaultPath
+    } elseif ($env:LUNA_VAULT_PATH) {
+        $vaultRoot = $env:LUNA_VAULT_PATH
+    } else {
+        $vaultRoot = Join-Path $env:USERPROFILE 'Documents\luna'
+    }
+    # Expand a leading ~/ or ~\ (a JSON config value can't rely on tilde expansion).
+    if ($vaultRoot -match '^~[\\/](.*)$') { $vaultRoot = Join-Path $env:USERPROFILE $matches[1] }
 
     $relDir = "sessions/$year/$month"
     $baseName = "$dateStr-$hhmm-$rawSlug"
