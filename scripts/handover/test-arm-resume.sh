@@ -487,10 +487,14 @@ printf '# HIMMEL-Resume-stub\n'
 EOF
 chmod +x "$STUB_BIN/schtasks" "$STUB_BIN/atq" "$STUB_BIN/at"
 
+# --dedup-any (HIMMEL-340): STUB_BIN fabricates a job named HIMMEL-Resume-stub
+# whose name will not match this random handover's $TASK_NAME under the new
+# per-handover dedup. --dedup-any restores the broad "any slot blocks" match
+# so this test keeps exercising the shared dedup-block path (telemetry + rc 3).
 TELEMETRY_T21="$TMP/telemetry-t21"
 HO=$(make_handover "$WORK_REPO")
 out=$(PATH="$STUB_BIN:$PATH" SKILL_TELEMETRY_DIR="$TELEMETRY_T21" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" 2>&1)
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dedup-any 2>&1)
 rc=$?
 assert_rc "T21 dedup still blocks (rc 3)" 3 "$rc"
 assert_contains "T21 ERR text preserved" "already scheduled" "$out"
@@ -528,7 +532,7 @@ else
     echo "PASS T22 dry-run appends no telemetry"
 fi
 out=$(PATH="$STUB_BIN:$PATH" SKILL_TELEMETRY_DIR="$TELEMETRY_T22" SKILL_TELEMETRY_DISABLE=1 \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" 2>&1)
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dedup-any 2>&1)
 rc=$?
 assert_rc "T22 kill-switched dedup still blocks (rc 3)" 3 "$rc"
 if [ -f "$TELEMETRY_T22/skill-usage.jsonl" ]; then
@@ -539,7 +543,7 @@ fi
 # else-branch — the path the --force --dry-run case above bypasses):
 # must still block rc 3 AND must not emit (touch-nothing contract).
 out=$(PATH="$STUB_BIN:$PATH" SKILL_TELEMETRY_DIR="$TELEMETRY_T22" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dedup-any --dry-run 2>&1)
 rc=$?
 assert_rc "T22 dry-run (no --force) dedup still blocks (rc 3)" 3 "$rc"
 assert_contains "T22 dry-run dedup ERR text preserved" "already scheduled" "$out"
@@ -659,10 +663,13 @@ FAILOPEN="$TMP/failopen"
 mkdir -p "$FAILOPEN/handover" "$FAILOPEN/lib"
 cp "$ARM" "$FAILOPEN/handover/arm-resume.sh"
 cp "$(dirname "$ARM")/../lib/py-armor.sh" "$FAILOPEN/lib/py-armor.sh"
-# (a) lib ABSENT — dedup must still block rc 3 with the ERR text intact
+# (a) lib ABSENT — dedup must still block rc 3 with the ERR text intact.
+#     --dedup-any: STUB_BIN's fabricated HIMMEL-Resume-stub won't match this
+#     random handover's $TASK_NAME under per-handover dedup (HIMMEL-340), so
+#     the broad scope is what reproduces the dedup-block path under test here.
 HO=$(make_handover "$WORK_REPO")
 out=$(PATH="$STUB_BIN:$PATH" \
-    bash "$FAILOPEN/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" 2>&1)
+    bash "$FAILOPEN/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" --dedup-any 2>&1)
 rc=$?
 assert_rc "T24 absent lib: dedup still blocks (rc 3)" 3 "$rc"
 assert_contains "T24 absent lib: ERR text intact" "already scheduled" "$out"
@@ -670,7 +677,7 @@ assert_contains "T24 absent lib: ERR text intact" "already scheduled" "$out"
 #     successful arm still completes end-to-end (rc 0, banner printed)
 printf 'if [ broken\nthen (\n' > "$FAILOPEN/lib/telemetry.sh"
 out=$(PATH="$STUB_BIN:$PATH" \
-    bash "$FAILOPEN/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" 2>&1)
+    bash "$FAILOPEN/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" --dedup-any 2>&1)
 rc=$?
 assert_rc "T24 broken lib: dedup still blocks (rc 3)" 3 "$rc"
 assert_contains "T24 broken lib: ERR text intact" "already scheduled" "$out"
@@ -679,6 +686,290 @@ out=$(TMPDIR="$TMP" PATH="$ARMED_STUB:$PATH" \
 rc=$?
 assert_rc "T24 broken lib: successful arm still completes (rc 0)" 0 "$rc"
 assert_contains "T24 broken lib: arm banner printed" "RESUME ARMED" "$out"
+
+# ---------------------------------------------------------------------------
+# Multislot (HIMMEL-340): per-handover dedup lets N distinct handovers each
+# arm their own slot, while the SAME handover still dedups. These need a
+# STATEFUL scheduler stub (the empty/always-one stubs above can't model a
+# growing set of jobs): /create records the task, /query lists what was
+# recorded, /delete removes one. Selected by platform exactly as arm-resume
+# selects it (schtasks on Windows; at/atq/atrm on POSIX), sharing one state
+# location so dedup is actually exercised.
+# ---------------------------------------------------------------------------
+make_stateful_sched() {
+    local dir="$1"
+    mkdir -p "$dir"
+    cat > "$dir/schtasks" <<'EOF'
+#!/usr/bin/env bash
+# Stateful schtasks stub. State = $SCHED_DB (flat file, one task name/line).
+db="${SCHED_DB:?SCHED_DB unset}"
+cmd="${1:-}"; shift || true
+tn=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        /tn)   tn="${2:-}"; shift 2 ;;
+        /tn=*) tn="${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "$cmd" in
+    /query)
+        [ -f "$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "$t" ] && printf '"\\%s","2026-01-01","Ready"\n' "$t"
+        done < "$db"
+        exit 0 ;;
+    /create) printf '%s\n' "$tn" >> "$db"; exit 0 ;;
+    /delete)
+        if [ -f "$db" ]; then
+            grep -vFx "$tn" "$db" > "$db.tmp" 2>/dev/null || : > "$db.tmp"
+            mv "$db.tmp" "$db"
+        fi
+        exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+    cat > "$dir/at" <<'EOF'
+#!/usr/bin/env bash
+# Stateful at stub. State = $SCHED_DB_DIR (job-<id> files + .counter).
+d="${SCHED_DB_DIR:?SCHED_DB_DIR unset}"; mkdir -p "$d"
+case "${1:-}" in
+    -c) cat "$d/job-${2:-}" 2>/dev/null; exit 0 ;;
+    -t)
+        n=$(cat "$d/.counter" 2>/dev/null || echo 0); n=$((n + 1))
+        printf '%s' "$n" > "$d/.counter"
+        cat > "$d/job-$n"
+        exit 0 ;;
+    *) cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
+EOF
+    cat > "$dir/atq" <<'EOF'
+#!/usr/bin/env bash
+d="${SCHED_DB_DIR:?SCHED_DB_DIR unset}"; [ -d "$d" ] || exit 0
+for f in "$d"/job-*; do
+    [ -f "$f" ] || continue
+    printf '%s\tThu Jun 11 09:00:00 2026 a user\n' "${f##*/job-}"
+done
+exit 0
+EOF
+    cat > "$dir/atrm" <<'EOF'
+#!/usr/bin/env bash
+d="${SCHED_DB_DIR:?SCHED_DB_DIR unset}"; rm -f "$d/job-${1:-}" 2>/dev/null || true
+exit 0
+EOF
+    cat > "$dir/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude"
+}
+
+# Count armed slots in the platform's state location.
+#   $1 = SCHED_DB file (windows); $2 = SCHED_DB_DIR dir (posix)
+count_slots() {
+    case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+        msys*|cygwin*|win32*|MINGW*)
+            if [ -f "$1" ]; then grep -c . "$1" 2>/dev/null || echo 0; else echo 0; fi ;;
+        *)
+            find "$2" -maxdepth 1 -name 'job-*' 2>/dev/null | wc -l | tr -d ' ' ;;
+    esac
+}
+
+STATEFUL_STUB="$TMP/stateful-sched"
+make_stateful_sched "$STATEFUL_STUB"
+
+# ---------------------------------------------------------------------------
+# T25: two DISTINCT handovers both arm — the multislot core. Under the old
+#      HIMMEL-Resume-* wildcard dedup the second arm was refused (rc 3); with
+#      per-$TASK_NAME dedup both succeed and TWO distinct jobs exist.
+# ---------------------------------------------------------------------------
+DB25="$TMP/db25.tasks"; DB25D="$TMP/db25.atdir"; : > "$DB25"; mkdir -p "$DB25D"
+HO_A=$(make_handover "$WORK_REPO")
+HO_B=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHED_DB="$DB25" SCHED_DB_DIR="$DB25D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_A" 2>&1)
+rc=$?
+assert_rc "T25a first distinct handover arms (rc 0)" 0 "$rc"
+assert_contains "T25a arm banner printed" "RESUME ARMED" "$out"
+out=$(TMPDIR="$TMP" SCHED_DB="$DB25" SCHED_DB_DIR="$DB25D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_B" 2>&1)
+rc=$?
+assert_rc "T25b second DISTINCT handover ALSO arms (rc 0, multislot)" 0 "$rc"
+assert_contains "T25b arm banner printed" "RESUME ARMED" "$out"
+assert_not_contains "T25b second distinct arm is NOT a dedup block" "already scheduled" "$out"
+if [ "$(count_slots "$DB25" "$DB25D")" = "2" ]; then
+    echo "PASS T25c two distinct slots coexist"
+else
+    echo "FAIL T25c expected 2 slots, got $(count_slots "$DB25" "$DB25D")"
+    FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# T26: the SAME handover armed twice still dedups — second arm refused (rc 3),
+#      one slot only. Preserves the "never two sessions for one handover"
+#      invariant the original wildcard dedup enforced too broadly.
+# ---------------------------------------------------------------------------
+DB26="$TMP/db26.tasks"; DB26D="$TMP/db26.atdir"; : > "$DB26"; mkdir -p "$DB26D"
+HO=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHED_DB="$DB26" SCHED_DB_DIR="$DB26D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" 2>&1)
+rc=$?
+assert_rc "T26a same handover first arm (rc 0)" 0 "$rc"
+out=$(TMPDIR="$TMP" SCHED_DB="$DB26" SCHED_DB_DIR="$DB26D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" 2>&1)
+rc=$?
+assert_rc "T26b same handover re-arm still blocks (rc 3)" 3 "$rc"
+assert_contains "T26b dedup ERR text preserved" "already scheduled" "$out"
+if [ "$(count_slots "$DB26" "$DB26D")" = "1" ]; then
+    echo "PASS T26c same-handover dedup keeps exactly one slot"
+else
+    echo "FAIL T26c expected 1 slot, got $(count_slots "$DB26" "$DB26D")"
+    FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# T27: --force replaces ONLY the same-handover job — one slot before, one
+#      after (delete + recreate), never a duplicate.
+# ---------------------------------------------------------------------------
+DB27="$TMP/db27.tasks"; DB27D="$TMP/db27.atdir"; : > "$DB27"; mkdir -p "$DB27D"
+HO=$(make_handover "$WORK_REPO")
+TMPDIR="$TMP" SCHED_DB="$DB27" SCHED_DB_DIR="$DB27D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" >/dev/null 2>&1
+out=$(TMPDIR="$TMP" SCHED_DB="$DB27" SCHED_DB_DIR="$DB27D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --force 2>&1)
+rc=$?
+assert_rc "T27a same handover --force re-arms (rc 0)" 0 "$rc"
+if [ "$(count_slots "$DB27" "$DB27D")" = "1" ]; then
+    echo "PASS T27b --force replaces in place (still one slot)"
+else
+    echo "FAIL T27b expected 1 slot after --force, got $(count_slots "$DB27" "$DB27D")"
+    FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# T28: --dedup-any restores the broad "defer to ANY existing slot" semantics
+#      the auto-arm watchdogs rely on — a DISTINCT handover is refused (rc 3)
+#      when any HIMMEL-Resume job already exists, so safety arms never fan out.
+# ---------------------------------------------------------------------------
+DB28="$TMP/db28.tasks"; DB28D="$TMP/db28.atdir"; : > "$DB28"; mkdir -p "$DB28D"
+HO_A=$(make_handover "$WORK_REPO")
+HO_B=$(make_handover "$WORK_REPO")
+TMPDIR="$TMP" SCHED_DB="$DB28" SCHED_DB_DIR="$DB28D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_A" >/dev/null 2>&1
+out=$(TMPDIR="$TMP" SCHED_DB="$DB28" SCHED_DB_DIR="$DB28D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_B" --dedup-any 2>&1)
+rc=$?
+assert_rc "T28a --dedup-any distinct handover blocks when any slot exists (rc 3)" 3 "$rc"
+assert_contains "T28a dedup ERR text preserved" "already scheduled" "$out"
+# Sanity: WITHOUT --dedup-any the same distinct arm would succeed (T25 proves
+# this), so the rc 3 here is the flag's doing, not a stuck scheduler.
+if [ "$(count_slots "$DB28" "$DB28D")" = "1" ]; then
+    echo "PASS T28b --dedup-any left the single slot untouched"
+else
+    echo "FAIL T28b expected 1 slot, got $(count_slots "$DB28" "$DB28D")"
+    FAILED=$((FAILED + 1))
+fi
+# --dedup-any against an EMPTY scheduler still arms (rc 0).
+DB28E="$TMP/db28e.tasks"; DB28ED="$TMP/db28e.atdir"; : > "$DB28E"; mkdir -p "$DB28ED"
+HO=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHED_DB="$DB28E" SCHED_DB_DIR="$DB28ED" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dedup-any 2>&1)
+rc=$?
+assert_rc "T28c --dedup-any on empty scheduler arms (rc 0)" 0 "$rc"
+
+# ---------------------------------------------------------------------------
+# T29: soft slot cap (HIMMEL-340 decision: WARN, never block). With
+#      ARM_MAX_SLOTS=2, arming a third distinct handover still succeeds
+#      (rc 0) but emits a soft-cap WARN naming the count; arms below the cap
+#      stay silent.
+# ---------------------------------------------------------------------------
+DB29="$TMP/db29.tasks"; DB29D="$TMP/db29.atdir"; : > "$DB29"; mkdir -p "$DB29D"
+HO1=$(make_handover "$WORK_REPO")
+HO2=$(make_handover "$WORK_REPO")
+HO3=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" ARM_MAX_SLOTS=2 SCHED_DB="$DB29" SCHED_DB_DIR="$DB29D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO1" 2>&1)
+assert_not_contains "T29a first arm below cap — no soft-cap warn" "soft cap" "$out"
+out=$(TMPDIR="$TMP" ARM_MAX_SLOTS=2 SCHED_DB="$DB29" SCHED_DB_DIR="$DB29D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO2" 2>&1)
+assert_not_contains "T29b arm reaching cap (2/2) — no soft-cap warn" "soft cap" "$out"
+out=$(TMPDIR="$TMP" ARM_MAX_SLOTS=2 SCHED_DB="$DB29" SCHED_DB_DIR="$DB29D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO3" 2>&1)
+rc=$?
+assert_rc "T29c arm exceeding soft cap still succeeds (rc 0)" 0 "$rc"
+assert_contains "T29c arm exceeding soft cap WARNs" "soft cap" "$out"
+# The over-cap arm WARNs but must still create the slot (warn ≠ block).
+if [ "$(count_slots "$DB29" "$DB29D")" = "3" ]; then
+    echo "PASS T29d over-cap arm still created the slot (3 total)"
+else
+    echo "FAIL T29d expected 3 slots after over-cap arm, got $(count_slots "$DB29" "$DB29D")"
+    FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# T30: --force on a GENUINE multislot scenario replaces ONLY the targeted
+#      handover — two distinct slots, --force re-arm one, still TWO slots. A
+#      regression to the legacy broad-scope delete (wiping siblings) would
+#      pass T27 (single slot) but fail here — the precise wipe HIMMEL-340 kills.
+# ---------------------------------------------------------------------------
+DB30="$TMP/db30.tasks"; DB30D="$TMP/db30.atdir"; : > "$DB30"; mkdir -p "$DB30D"
+HO_A=$(make_handover "$WORK_REPO")
+HO_B=$(make_handover "$WORK_REPO")
+TMPDIR="$TMP" SCHED_DB="$DB30" SCHED_DB_DIR="$DB30D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_A" >/dev/null 2>&1
+TMPDIR="$TMP" SCHED_DB="$DB30" SCHED_DB_DIR="$DB30D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_B" >/dev/null 2>&1
+out=$(TMPDIR="$TMP" SCHED_DB="$DB30" SCHED_DB_DIR="$DB30D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_A" --force 2>&1)
+rc=$?
+assert_rc "T30a --force re-arm of one of two distinct slots (rc 0)" 0 "$rc"
+if [ "$(count_slots "$DB30" "$DB30D")" = "2" ]; then
+    echo "PASS T30b --force replaced ONLY the targeted handover (sibling survived, 2 slots)"
+else
+    echo "FAIL T30b expected 2 slots (sibling preserved), got $(count_slots "$DB30" "$DB30D")"
+    FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# T31: prefix-named task collision — the dedup match is whole-line/exact, so a
+#      handover whose sanitized $TASK_NAME is a strict PREFIX of another's must
+#      not cross-match. The discriminating order is LONGER-first: arm the
+#      superset name, then arm the prefix name — under a regression from the
+#      exact `grep -Fx` to substring `grep -F`, the prefix name's marker would
+#      be found *inside* the superset's marker and falsely deduped (rc 3). With
+#      the exact match it must arm (rc 0). Names are EXTENSIONLESS so the
+#      sanitizer (tr -cd '[:alnum:]_-', which strips '.') can't insert a char
+#      that breaks the prefix relationship (e.g. job.md→jobmd vs jobx.md→jobxmd
+#      is NOT a prefix pair — the spurious-green trap a prior version fell into).
+# ---------------------------------------------------------------------------
+DB31="$TMP/db31.tasks"; DB31D="$TMP/db31.atdir"; : > "$DB31"; mkdir -p "$DB31D"
+# Sanitized task names: ...pfxcollide_jobcollide  (prefix)
+#                       ...pfxcollide_jobcollidex (strict superset — extra 'x')
+PFX_DIR="$HANDOVER_DIR/pfxcollide"; mkdir -p "$PFX_DIR"
+HO_SHORT="$PFX_DIR/jobcollide"; HO_LONG="$PFX_DIR/jobcollidex"
+for _f in "$HO_SHORT" "$HO_LONG"; do
+    printf -- '---\nsession_kind: test\n---\n# prefix collision handover\n' > "$_f"
+done
+# Arm the LONGER (superset) name first so the prefix arm below is the one a
+# substring regression would falsely match.
+out=$(TMPDIR="$TMP" SCHED_DB="$DB31" SCHED_DB_DIR="$DB31D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_LONG" 2>&1)
+assert_rc "T31a superset handover 'jobcollidex' arms (rc 0)" 0 "$?"
+# The PREFIX name must ALSO arm — exact match means it does not collide with the
+# superset already present. (Substring grep -F regression → false rc 3 here.)
+out=$(TMPDIR="$TMP" SCHED_DB="$DB31" SCHED_DB_DIR="$DB31D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_SHORT" 2>&1)
+assert_rc "T31b prefix handover 'jobcollide' also arms — no substring cross-match (rc 0)" 0 "$?"
+if [ "$(count_slots "$DB31" "$DB31D")" = "2" ]; then
+    echo "PASS T31c both prefix-related handovers coexist (2 slots)"
+else
+    echo "FAIL T31c expected 2 slots, got $(count_slots "$DB31" "$DB31D")"
+    FAILED=$((FAILED + 1))
+fi
+# Re-arming the prefix name must dedup ONLY itself (rc 3), proving exact match.
+out=$(TMPDIR="$TMP" SCHED_DB="$DB31" SCHED_DB_DIR="$DB31D" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_SHORT" 2>&1)
+assert_rc "T31d re-arm 'jobcollide' dedups exactly itself (rc 3)" 3 "$?"
 
 # ---------------------------------------------------------------------------
 # Summary

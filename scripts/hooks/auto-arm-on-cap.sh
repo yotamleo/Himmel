@@ -416,12 +416,15 @@ PY
         exit 1
     fi
     set +e
-    arm_out=$(bash "$ARM_BIN" --time "$slot_hhmm" --handover "$snapshot" 2>&1)
+    # --dedup-any (HIMMEL-340): this is a machine-wide SAFETY arm, not a
+    # per-handover work arm — it must defer to ANY queued resume so a wedged
+    # cache across concurrent sessions can never fan out duplicate relaunches.
+    arm_out=$(bash "$ARM_BIN" --dedup-any --time "$slot_hhmm" --handover "$snapshot" 2>&1)
     arm_rc=$?
     set -e
     case "$arm_rc" in
         0|3)
-            # 0 = armed; 3 = a HIMMEL-Resume-* job already exists — goal
+            # 0 = armed; 3 = a HIMMEL-Resume job already exists — goal
             # met either way (same dedup contract as the threshold trip).
             armed_word="SAFETY RESUME ARMED at ${slot_hhmm}"
             [ "$arm_rc" = "3" ] && armed_word="a resume is ALREADY armed (dedup)"
@@ -653,13 +656,17 @@ if [ ! -f "$ARM_BIN" ]; then
     exit 1
 fi
 set +e
-arm_out=$(bash "$ARM_BIN" --time smart --handover "$snapshot" 2>&1)
+# --dedup-any (HIMMEL-340): a machine-wide cap is a machine-wide event — this
+# safety arm must defer to ANY queued resume (operator/supervisor/sibling
+# session) so concurrent sessions hitting the cap never double-book the
+# scheduler. Per-handover multislot is for explicit work arms, not this.
+arm_out=$(bash "$ARM_BIN" --dedup-any --time smart --handover "$snapshot" 2>&1)
 arm_rc=$?
 set -e
 
 case "$arm_rc" in
     0|3)
-        # 0 = armed; 3 = a HIMMEL-Resume-* job already exists — goal met
+        # 0 = armed; 3 = a HIMMEL-Resume job already exists — goal met
         # either way (dedup with operator/supervisor arms is by design).
         touch "$fired_marker" 2>/dev/null || true
         rm -f "$failcount_file" 2>/dev/null || true
