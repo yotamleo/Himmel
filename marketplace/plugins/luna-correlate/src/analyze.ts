@@ -6,11 +6,19 @@ export type FactorSpec = {
   name: string; label: string; points: FactorPoint[]; highThreshold?: number;
 };
 
+// One swept-lag sample, retained per pair so the dashboard can chart r-vs-lag
+// (the diagnostic that shows whether the reported best-lag is a real peak vs a
+// cherry-picked maximum). `r` is null at lags where the correlation is undefined.
+export type LagPoint = { lag: number; r: number | null; n: number };
+
 export type DashboardRow = {
   series: string; factor: string; bestLag: number;
   n: number; correlation: number | null; pValue: number | null;
   rateHigh: number; rateLow: number; rateRatio: number | null;
   belowMinN: boolean; fdrSurvivor: boolean;
+  // Full swept window, ascending by lag; the entry at `bestLag` has r === correlation
+  // and n === this row's n (the charted best-lag point equals the headline number).
+  lagProfile: LagPoint[];
 };
 
 export type DashboardResult = {
@@ -59,10 +67,12 @@ export function analyze(
       // Sweep lags; pick the best-lag signal. Prefer lags meeting min-n, by max |r|;
       // if none meet min-n, fall back to the largest-n lag (still flagged belowMinN).
       let best: { lag: number; r: number | null; sig: ReturnType<typeof correlate> } | null = null;
+      const lagProfile: LagPoint[] = [];
       for (const lag of lags) {
         const sig = correlate(s.points, f.points, lag, {
           minN, highThreshold: f.highThreshold, factorLabel: f.label, seriesName: s.name,
         });
+        lagProfile.push({ lag, r: sig.correlation, n: sig.n });
         const eligible = !sig.belowMinN;
         if (best === null) { best = { lag, r: sig.correlation, sig }; continue; }
         const bestEligible = !best.sig.belowMinN;
@@ -79,7 +89,7 @@ export function analyze(
         n: b.n, correlation: b.correlation,
         pValue: !b.belowMinN && b.correlation !== null ? pearsonPValue(b.correlation, b.n) : null,
         rateHigh: b.rateHigh, rateLow: b.rateLow, rateRatio: b.rateRatio,
-        belowMinN: b.belowMinN, fdrSurvivor: false,
+        belowMinN: b.belowMinN, fdrSurvivor: false, lagProfile,
       });
     }
   }

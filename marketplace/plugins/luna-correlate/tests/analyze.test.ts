@@ -50,6 +50,18 @@ test("analyze finds the planted lag and shape", () => {
   expect(res.rows[0].fdrSurvivor).toBe(true);
 });
 
+test("each row carries a lagProfile spanning the swept window, aligned to bestLag", () => {
+  const dates = Array.from({ length: 30 }, (_, i) => `2025-03-${String(i + 1).padStart(2, "0")}`);
+  const factor: FactorSpec = { name: "f", label: "f", points: dates.map((d, i) => ({ date: d, value: i % 7 })) };
+  const series: SeriesSpec = { name: "s", points: dates.map((d, i) => ({ date: d, value: i >= 1 ? (i - 1) % 7 : 0 })) };
+  const res = analyze([series], [factor], { lagWindow: 2, minN: 10 });
+  const r = res.rows[0];
+  expect(r.lagProfile.map(e => e.lag)).toEqual([-2, -1, 0, 1, 2]);
+  const bestEntry = r.lagProfile.find(e => e.lag === r.bestLag)!;
+  expect(bestEntry.r).toBe(r.correlation);   // the charted best-lag point equals the row's r
+  expect(bestEntry.n).toBe(r.n);
+});
+
 test("below-min-n rows are excluded from the FDR family but still reported", () => {
   const series: SeriesSpec = { name: "s", points: [{ date: "2025-01-01", value: 1 }] };
   const factor: FactorSpec = { name: "f", label: "f", points: [{ date: "2025-01-01", value: 2 }] };
