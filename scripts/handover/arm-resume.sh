@@ -74,6 +74,7 @@ DRY_RUN=0
 RESUME_CWD_OVERRIDE=""
 CHANNELS=""
 DEDUP_ANY=0
+WORKTREE_BRANCH=""
 
 # Local HH:MM from an epoch (armored python3 — portable, no GNU `date -d`;
 # capture via file so a wedged Store stub can't hang the $() call sites).
@@ -107,12 +108,20 @@ Optional:
                      file. Override when the handover lives in a
                      different repo than the one claude should run
                      from (e.g. hop.sh writes the snapshot under
-                     yotam_docs but the origin session was in himmel).
+                     the state repo but the origin session was in himmel).
                      If the handover file's YAML frontmatter contains
                      'resume_cwd: <path>', that value is used when
                      --cwd is omitted (set this for cross-repo
                      handovers so the correct repo is used without
                      requiring an explicit --cwd every time).
+  --worktree <branch>  Run the relaunch in a FRESH himmel worktree for
+                     <branch> (type/slug) instead of a shared checkout —
+                     for code arms that must not collide with concurrent
+                     github-sync / Telegram-bridge sessions. Creates the
+                     worktree at arm time and resumes there. Mutually
+                     exclusive with --cwd (the worktree IS the cwd). A
+                     handover 'resume_worktree: <branch>' frontmatter key
+                     does the same when the flag is omitted. (HIMMEL-387)
   --channels <spec>  Pass --channels <spec> to the relaunched claude so
                      the spawned session opens that channel. NOT for
                      Telegram: the always-on bun bridge (HIMMEL-207/208)
@@ -149,6 +158,8 @@ while [ $# -gt 0 ]; do
         --handover=*)  HANDOVER_PATH="${1#--handover=}"; shift ;;
         --cwd)         RESUME_CWD_OVERRIDE="${2:-}"; shift 2 ;;
         --cwd=*)       RESUME_CWD_OVERRIDE="${1#--cwd=}"; shift ;;
+        --worktree)    WORKTREE_BRANCH="${2:-}"; shift 2 ;;
+        --worktree=*)  WORKTREE_BRANCH="${1#--worktree=}"; shift ;;
         --channels)    CHANNELS="${2:-}"; shift 2 ;;
         --channels=*)  CHANNELS="${1#--channels=}"; shift ;;
         --force)       FORCE=1; shift ;;
@@ -471,14 +482,75 @@ RESUME_PROMPT="load $HANDOVER_PATH overnight mode"
 #
 # Priority:
 #   1. --cwd override. hop.sh (HIMMEL-130) passes the ORIGIN repo here
-#      because the handover lives in yotam_docs but claude must run
-#      from the origin repo, not yotam_docs.
+#      because the handover lives in the state repo but claude must run
+#      from the origin repo, not the state repo.
 #   2. resume_cwd: in the handover file's YAML frontmatter. Lets a
-#      handover in yotam_docs declare its own work-repo without
+#      handover in the state repo declare its own work-repo without
 #      requiring an explicit --cwd at every arm-resume call.
 #   3. Auto-detect: git toplevel containing the handover file.
 #   4. Fallback: handover's parent dir if it isn't tracked by git.
-if [ -n "$RESUME_CWD_OVERRIDE" ]; then
+#
+# Priority 0 (HIMMEL-387): --worktree <branch> / 'resume_worktree:' frontmatter
+# short-circuits all of the above — the relaunch runs in a FRESH himmel
+# worktree instead of a shared checkout. Required when github-sync / the
+# Telegram bridge run concurrently, so an autonomous code arm never mutates a
+# checkout another session has open. Explicit opt-in only: vault arms
+# (luna/luna-medic) must stay single-tree, so this is never inferred.
+
+# Resolve the worktree branch from frontmatter when not given on the CLI
+# (flag wins, same precedence as --cwd over resume_cwd).
+if [ -z "$WORKTREE_BRANCH" ]; then
+    _fm_wt=$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$HANDOVER_PATH" \
+        | sed -n 's/^resume_worktree:[[:space:]]*//p' | head -1)
+    _fm_wt="${_fm_wt%"${_fm_wt##*[![:space:]]}"}"   # rtrim (incl trailing \r)
+    _fm_wt="${_fm_wt#\'}" ; _fm_wt="${_fm_wt%\'}"
+    _fm_wt="${_fm_wt#\"}" ; _fm_wt="${_fm_wt%\"}"
+    WORKTREE_BRANCH="$_fm_wt"
+    unset _fm_wt
+fi
+
+if [ -n "$WORKTREE_BRANCH" ]; then
+    if [ -n "$RESUME_CWD_OVERRIDE" ]; then
+        echo "ERR arm-resume: --cwd and --worktree are mutually exclusive (the worktree IS the cwd)" >&2
+        exit 1
+    fi
+    if ! printf '%s' "$WORKTREE_BRANCH" | grep -qE '^(feat|fix|chore|docs|refactor|test)/[A-Za-z0-9._-]+$'; then
+        echo "ERR arm-resume: --worktree branch must be type/slug (type in feat|fix|chore|docs|refactor|test): '$WORKTREE_BRANCH'" >&2
+        exit 1
+    fi
+    # clean-garden.sh (which worktree.sh wraps) creates the worktree under the
+    # checkout's own .claude/worktrees/<type>+<slug>/. Compute that path so the
+    # dry-run can report it and the pre-trust below can target it. SCRIPT_DIR is
+    # scripts/handover, so ../.. is the repo root of THIS checkout (run from the
+    # primary checkout per the operator rule).
+    _wt_root=$(cd "$SCRIPT_DIR/../.." && pwd)
+    _wt_path="$_wt_root/.claude/worktrees/${WORKTREE_BRANCH/\//+}"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY arm-resume: would create worktree '$WORKTREE_BRANCH' at '$_wt_path' and resume there"
+        RESUME_CWD="$_wt_path"
+    else
+        if [ -d "$_wt_path" ]; then
+            echo "arm-resume: reusing existing worktree at '$_wt_path'"
+        else
+            # ARM_WORKTREE_CMD is a test seam (default: the real worktree.sh).
+            # ARM_WORKTREE_PATH lets a stub create the exact computed dir; the
+            # real worktree.sh ignores it (it computes the same path itself).
+            _wt_cmd="${ARM_WORKTREE_CMD:-bash $SCRIPT_DIR/../worktree.sh}"
+            # _wt_cmd is an intentional cmd+args split — word-splitting wanted.
+            # shellcheck disable=SC2086
+            if ! ARM_WORKTREE_PATH="$_wt_path" $_wt_cmd "$WORKTREE_BRANCH"; then
+                echo "ERR arm-resume: worktree create failed for branch '$WORKTREE_BRANCH'" >&2
+                exit 4
+            fi
+        fi
+        if [ ! -d "$_wt_path" ]; then
+            echo "ERR arm-resume: expected worktree dir not found after create: '$_wt_path'" >&2
+            exit 4
+        fi
+        RESUME_CWD=$(_arm_realpath "$_wt_path")
+    fi
+    unset _wt_root _wt_path
+elif [ -n "$RESUME_CWD_OVERRIDE" ]; then
     if [ ! -d "$RESUME_CWD_OVERRIDE" ]; then
         echo "ERR arm-resume: --cwd path does not exist: $RESUME_CWD_OVERRIDE" >&2
         exit 1
@@ -527,6 +599,18 @@ else
         fi
     fi
     unset _fm_cwd _fm_cwd_found
+fi
+
+# Pre-trust the resolved cwd (HIMMEL-386) so the fired relaunch doesn't stall
+# on Claude Code's interactive workspace-trust prompt ("Is this a project you
+# trust?"). An autonomous relaunch has no human to answer it and its stdin is
+# closed, so an untrusted cwd silently wastes the whole run. Non-fatal: a
+# pre-seed failure must never block the arm itself.
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "DRY arm-resume: would pre-trust workspace '$RESUME_CWD' in ~/.claude.json"
+else
+    "$SCRIPT_DIR/../lib/ensure-workspace-trust.sh" "$RESUME_CWD" \
+        || echo "WARN arm-resume: workspace-trust pre-seed failed for '$RESUME_CWD' (arm continues; first relaunch may prompt to trust the folder)" >&2
 fi
 
 # Dedup: list existing HIMMEL-Resume jobs. Fail-CLOSED if the listing

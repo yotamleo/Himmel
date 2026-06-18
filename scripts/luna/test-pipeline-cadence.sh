@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Smoke test for scripts/luna/pipeline-cadence.sh (HIMMEL-255 schtasks
-# path + HIMMEL-265 cron path).
+# path + HIMMEL-265 cron path + HIMMEL-357 daily harvest+triage leg +
+# HIMMEL-362 XML-based schtasks create carrying StartWhenAvailable).
+#
+# Three cadence tasks are armed: HIMMEL-Pipeline-Harvest (daily 02:00 ->
+# /harvest-clips + /triage-clips), HIMMEL-Pipeline-Synthesize (weekly Sun
+# 03:00 -> /synthesize-clips + /archive-clips), HIMMEL-Pipeline-Health
+# (monthly 1st 04:00 -> /obsidian-health). The harvest leg is exercised
+# alongside synth/health throughout the dry-run / arm / shape / status /
+# dedup / force / disarm / rollback tests below.
 #
 # Strategy: replace the scheduler with a fake — schtasks via the
 # PIPELINE_SCHTASKS seam (records /create args + simulates /query and
@@ -53,9 +61,11 @@
 #   1.  Missing/unknown subcommand -> exit 1.
 #   2.  Invalid --synth-time / --synth-day / --health-day / vault -> exit 1.
 #   3.  status with empty scheduler -> both tasks "not armed".
-#   4.  arm --dry-run prints both creates + .bat bodies, registers nothing.
-#   5.  arm registers both tasks with the operator-decision defaults
-#       (WEEKLY SUN 03:00, MONTHLY 1 04:00) + writes both .bats.
+#   4.  arm --dry-run prints the XML creates (trigger + StartWhenAvailable)
+#       + .bat bodies, registers nothing.
+#   5.  arm registers all three tasks from XML carrying StartWhenAvailable
+#       (HIMMEL-362) at the operator-decision defaults (DAILY 02:00, WEEKLY
+#       SUN 03:00, MONTHLY 1 04:00) + writes the .bats.
 #   6.  Armed .bats are interactive-claude shaped: bounded `< NUL`,
 #       chained synthesize->archive prompt, NO -p/--print/--bg.
 #   7.  status after arm -> both ARMED.
@@ -66,8 +76,10 @@
 #   10. disarm removes both tasks + .bats; second disarm is a no-op (rc 0).
 #   11. cmd_escape: hostile-but-legal vault dirname (% & ^) lands escaped
 #       in the .bat (%%, ^&, ^^) — no fire-time injection.
-#   12. Half-arm: second /create fails -> rc 4, first task rolled back,
-#       no task state left.
+#   12. Half-arm: last /create (health) fails -> rc 4, harvest + synth
+#       rolled back, no task state left.
+#   12b. Mid-create (synth) fails -> rc 4, harvest rolled back, health
+#        never attempted, no task state left.
 #   13. Fail-closed dedup: /query listing fails (rc 1 + stderr) -> arm
 #       exits 2 instead of treating the scheduler as empty.
 #   14. Disarm under /query failure -> nonzero exit, .bats NOT deleted,
@@ -134,11 +146,28 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP_ROOT/bin/claude"
 chmod +x "$TMP_ROOT/bin/claude"
 export PATH="$TMP_ROOT/bin:$PATH"
 
+# HIMMEL-386: redirect the workspace-trust pre-seed (cmd_arm / cron_arm now
+# pre-trust the vault) at a throwaway config so non-dry-run arm tests never
+# mutate the operator's real ~/.claude.json.
+export WORKSPACE_TRUST_CONFIG="$TMP_ROOT/claude-trust.json"
+
 VAULT="$TMP_ROOT/vault"
 mkdir -p "$VAULT"
 
 # Same pattern the no-headless-claude pre-commit gate uses (HIMMEL-128).
 HEADLESS_RE='(^|[^A-Za-z0-9_-])claude[[:space:]]+(-p|--print|--bg)($|[^A-Za-z0-9_-])'
+
+# ============================================================================
+# xml_escape unit (HIMMEL-362) — the one non-trivial new string transform.
+# Pure + platform-agnostic, so it runs on EVERY platform: extract the
+# function from the script and call it directly. Pins the &-first ordering
+# (escaping & last would double-escape the &lt;/&gt; entities) so a
+# BAT_DIR path containing & / < / > yields well-formed task XML.
+# ============================================================================
+echo "TEST: xml_escape escapes & < > with & ordered first"
+xesc=$( { sed -n '/^xml_escape()/,/^}/p' "$SCRIPT"; echo "xml_escape 'a & b < c > d'"; } | bash )
+assert_contains "xml_escape produces well-formed entities (& first)" "a &amp; b &lt; c &gt; d" "$xesc"
+assert_not_contains "xml_escape leaves no bare ampersand" "a & b" "$xesc"
 
 # ============================================================================
 # POSIX (cron) suite — HIMMEL-265. Runs on EVERY platform: the cron code
@@ -205,12 +234,15 @@ run_cron() {
 
 echo "TEST: cron status with no crontab installed"
 out=$(run_cron status)
+assert_contains "cron harvest not armed"    "not armed  HIMMEL-Pipeline-Harvest"    "$out"
 assert_contains "cron synthesize not armed" "not armed  HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "cron health not armed"     "not armed  HIMMEL-Pipeline-Health"     "$out"
 
 # Test C12: shared validation wired into the cron path -----------------------
 
 echo "TEST: cron arm rejects invalid input (shared validation)"
+rc=0; out=$(run_cron arm --vault "$VAULT" --harvest-time 24:61 2>&1) || rc=$?
+assert_rc "cron bad --harvest-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_cron arm --vault "$VAULT" --synth-time 25:00 2>&1) || rc=$?
 assert_rc "cron bad --synth-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_cron arm --vault "$VAULT" --health-day 31 2>&1) || rc=$?
@@ -220,10 +252,13 @@ assert_rc "cron bad --health-day (31) -> rc 1" 1 "$rc"
 
 echo "TEST: cron arm --dry-run prints plan, installs nothing"
 out=$(run_cron arm --vault "$VAULT" --dry-run)
+assert_contains "dry-run daily harvest entry" "00 02 * * *" "$out"
 assert_contains "dry-run weekly entry"  "00 03 * * 0" "$out"
 assert_contains "dry-run monthly entry" "00 04 1 * *" "$out"
+assert_contains "dry-run harvest marker" "# HIMMEL-Pipeline-Harvest" "$out"
 assert_contains "dry-run synth marker"  "# HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "dry-run shows bounded run" "< /dev/null" "$out"
+assert_contains "dry-run pre-trusts vault (HIMMEL-386)" "would pre-trust workspace '$VAULT'" "$out"
 if [ ! -f "$CSTATE/crontab" ]; then
     pass "dry-run installed no crontab"
 else
@@ -241,15 +276,23 @@ echo "TEST: cron arm installs entries with defaults, preserves unrelated lines"
 printf '5 5 * * * /usr/bin/true # keep-me\n' > "$CSTATE/crontab"
 out=$(run_cron arm --vault "$VAULT")
 assert_contains "cron arm banner" "PIPELINE CADENCE ARMED" "$out"
+# HIMMEL-386: the real (non-dry-run) arm pre-trusts the vault in the (temp) config.
+if command -v node >/dev/null 2>&1; then
+    trust=$(WT_F="$WORKSPACE_TRUST_CONFIG" WT_K="$VAULT" node -e 'try{const j=JSON.parse(require("fs").readFileSync(process.env.WT_F,"utf8"));process.stdout.write(String(j.projects&&j.projects[process.env.WT_K]&&j.projects[process.env.WT_K].hasTrustDialogAccepted))}catch(e){process.stdout.write("ERR")}')
+    assert_contains "cron arm pre-trusts vault in config" "true" "$trust"
+fi
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
+assert_contains "daily harvest entry 02:00"  "00 02 * * *" "$tab"
 assert_contains "weekly entry SUN 03:00"  "00 03 * * 0" "$tab"
 assert_contains "monthly entry 1st 04:00" "00 04 1 * *" "$tab"
+assert_contains "harvest entry marker-tagged" "# HIMMEL-Pipeline-Harvest"     "$tab"
 assert_contains "synth entry marker-tagged"  "# HIMMEL-Pipeline-Synthesize" "$tab"
 assert_contains "health entry marker-tagged" "# HIMMEL-Pipeline-Health"     "$tab"
+assert_contains "harvest entry fires the runner" "pipeline-harvest.sh"    "$tab"
 assert_contains "synth entry fires the runner"  "pipeline-synthesize.sh" "$tab"
 assert_contains "health entry fires the runner" "pipeline-health.sh"     "$tab"
 assert_contains "unrelated entry preserved" "keep-me" "$tab"
-if [ -x "$CRON_DIR/pipeline-synthesize.sh" ] && [ -x "$CRON_DIR/pipeline-health.sh" ]; then
+if [ -x "$CRON_DIR/pipeline-harvest.sh" ] && [ -x "$CRON_DIR/pipeline-synthesize.sh" ] && [ -x "$CRON_DIR/pipeline-health.sh" ]; then
     pass "runner .sh files written + executable"
 else
     fail "runner .sh files missing or not executable" "$(ls -l "$CRON_DIR" 2>/dev/null || true)"
@@ -258,8 +301,13 @@ fi
 # Test C4: runner .sh is interactive-claude shaped -----------------------------
 
 echo "TEST: runner .sh is bounded interactive claude (no headless flags)"
+harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
 synth_sh=$(cat "$CRON_DIR/pipeline-synthesize.sh" 2>/dev/null || echo MISSING)
 health_sh=$(cat "$CRON_DIR/pipeline-health.sh" 2>/dev/null || echo MISSING)
+assert_contains "harvest runner cds into vault" "cd $VAULT || exit 1" "$harvest_sh"
+assert_contains "harvest runner runs /harvest-clips" "/harvest-clips" "$harvest_sh"
+assert_contains "harvest runner chains /triage-clips" "/triage-clips" "$harvest_sh"
+assert_contains "harvest runner bounded run"         "< /dev/null"    "$harvest_sh"
 assert_contains "synth runner cds into vault" "cd $VAULT || exit 1" "$synth_sh"
 assert_contains "synth runner runs /synthesize-clips" "/synthesize-clips" "$synth_sh"
 assert_contains "synth runner chains /archive-clips"  "/archive-clips"    "$synth_sh"
@@ -271,7 +319,7 @@ assert_contains "synth runner stamps every fire" '[fired' "$synth_sh"
 assert_contains "synth runner captures output to log" '>> "$log" 2>&1' "$synth_sh"
 assert_contains "health runner runs /obsidian-health" "/obsidian-health" "$health_sh"
 assert_contains "health runner bounded run"           "< /dev/null"      "$health_sh"
-for what in synth health; do
+for what in harvest synth health; do
     body=$(eval "printf '%s' \"\$${what}_sh\"")
     if printf '%s\n' "$body" | grep -E "$HEADLESS_RE" >/dev/null 2>&1; then
         fail "$what runner is headless-shaped" "$body"
@@ -284,6 +332,7 @@ done
 
 echo "TEST: cron status reflects armed entries"
 out=$(run_cron status)
+assert_contains "cron harvest armed"    "ARMED      HIMMEL-Pipeline-Harvest"    "$out"
 assert_contains "cron synthesize armed" "ARMED      HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "cron health armed"     "ARMED      HIMMEL-Pipeline-Health"     "$out"
 assert_contains "cron status surfaces run log state" "run log" "$out"
@@ -314,7 +363,7 @@ echo "TEST: cron re-arm without --force blocked (rc 3)"
 rc=0; out=$(run_cron arm --vault "$VAULT" 2>&1) || rc=$?
 assert_rc "cron dedup block rc 3" 3 "$rc"
 assert_contains "cron dedup message names existing entries" "HIMMEL-Pipeline-Synthesize" "$out"
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 2 ]; then
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
     pass "no duplicate entries after blocked re-arm"
 else
     fail "entry count changed on blocked re-arm" "$(cat "$CSTATE/crontab")"
@@ -324,13 +373,14 @@ fi
 
 echo "TEST: cron re-arm --force applies flag overrides"
 out=$(run_cron arm --vault "$VAULT" --force \
-    --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
+    --harvest-time 01:15 --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
+assert_contains "cron daily harvest override"                  "15 01 * * *" "$tab"
 assert_contains "cron weekly override (lowercase day upcased)" "30 02 * * 1" "$tab"
 assert_contains "cron monthly override"                        "00 05 15 * *" "$tab"
 assert_contains "unrelated entry survives --force re-arm" "keep-me" "$tab"
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 2 ]; then
-    pass "still exactly two entries after --force re-arm"
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
+    pass "still exactly three entries after --force re-arm"
 else
     fail "duplicate entries after --force re-arm" "$(cat "$CSTATE/crontab")"
 fi
@@ -341,7 +391,7 @@ echo "TEST: cron dry-run disarm prints DRY tail, touches nothing"
 out=$(run_cron disarm --dry-run)
 assert_contains "cron dry disarm lists removals" "would remove crontab entry" "$out"
 assert_contains "cron dry disarm closing summary" "no changes made" "$out"
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 2 ]; then
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
     pass "dry-run disarm removed no entries"
 else
     fail "dry-run disarm changed crontab state" "$(cat "$CSTATE/crontab")"
@@ -360,7 +410,7 @@ assert_contains "cron disarm reports" "cadence disarmed" "$out"
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 assert_not_contains "cadence entries removed" "HIMMEL-Pipeline-" "$tab"
 assert_contains "unrelated entry survives disarm" "keep-me" "$tab"
-if [ ! -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ ! -f "$CRON_DIR/pipeline-health.sh" ]; then
+if [ ! -f "$CRON_DIR/pipeline-harvest.sh" ] && [ ! -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ ! -f "$CRON_DIR/pipeline-health.sh" ]; then
     pass "runner .sh files removed"
 else
     fail "runner .sh files left after disarm"
@@ -421,7 +471,7 @@ if ! grep -q 'HIMMEL-Pipeline-' "$CSTATE/crontab" 2>/dev/null; then
 else
     fail "cadence entries installed despite write failure" "$(cat "$CSTATE/crontab")"
 fi
-if [ ! -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ ! -f "$CRON_DIR/pipeline-health.sh" ]; then
+if [ ! -f "$CRON_DIR/pipeline-harvest.sh" ] && [ ! -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ ! -f "$CRON_DIR/pipeline-health.sh" ]; then
     pass "no runner promoted to its final path on write failure"
 else
     fail "runner files left despite write failure" "$(ls "$CRON_DIR" 2>/dev/null || true)"
@@ -454,7 +504,7 @@ if ! compgen -G "$CRON_DIR/*.tmp.*" >/dev/null; then
 else
     fail "staged .tmp runner litter left" "$(ls "$CRON_DIR")"
 fi
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 2 ]; then
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
     pass "old entries still armed after failed --force re-arm"
 else
     fail "entry count changed on failed --force re-arm" "$(cat "$CSTATE/crontab")"
@@ -473,7 +523,7 @@ touch "$CSTATE/fail-write"
 rc=0; out=$(run_cron disarm 2>&1) || rc=$?
 assert_rc "cron disarm install failure rc 4" 4 "$rc"
 assert_contains "disarm install failure surfaces stderr" "error writing new crontab" "$out"
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 2 ]; then
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
     pass "entries still in crontab after failed disarm install"
 else
     fail "entries lost despite failed disarm install" "$(cat "$CSTATE/crontab")"
@@ -651,7 +701,7 @@ cat >"$FAKE_SCHTASKS" <<FAKE
 STATE="$STATE"
 FAKE
 cat >>"$FAKE_SCHTASKS" <<'FAKE'
-tn=""; mode=""; fmt=""
+tn=""; mode=""; fmt=""; xmlpath=""
 args=("$@")
 i=0
 while [ $i -lt ${#args[@]} ]; do
@@ -659,6 +709,7 @@ while [ $i -lt ${#args[@]} ]; do
         /create|/delete|/query) mode="${args[$i]}" ;;
         /tn) i=$((i+1)); tn="${args[$i]}" ;;
         /fo) i=$((i+1)); fmt="${args[$i]}" ;;
+        /xml) i=$((i+1)); xmlpath="${args[$i]}" ;;
     esac
     i=$((i+1))
 done
@@ -670,7 +721,18 @@ case "$mode" in
             echo "ERROR: Access is denied." >&2
             exit 1
         fi
-        printf '%s\n' "$*" > "$STATE/tasks/$tn"
+        # HIMMEL-362: real arm now creates from XML (/create /tn X /xml F).
+        # Store the XML file's CONTENT under $STATE/tasks/<tn> so assertions
+        # can inspect the trigger + StartWhenAvailable + Exec command. The
+        # xml path arrives Windows-form (schtasks gets a cygpath -w'd path);
+        # convert back to POSIX to read it. Fall back to recording the argv
+        # for any non-/xml create (back-compat).
+        if [ -n "$xmlpath" ]; then
+            xml_posix=$(cygpath -u "$xmlpath" 2>/dev/null || echo "$xmlpath")
+            cat "$xml_posix" > "$STATE/tasks/$tn"
+        else
+            printf '%s\n' "$*" > "$STATE/tasks/$tn"
+        fi
         echo "SUCCESS: The scheduled task \"$tn\" has successfully been created."
         ;;
     /delete)
@@ -746,6 +808,8 @@ assert_rc "unknown subcommand -> rc 1" 1 "$rc"
 # Test 2: input validation --------------------------------------------------
 
 echo "TEST: invalid inputs rejected"
+rc=0; out=$(run_pc arm --vault "$VAULT" --harvest-time 9:00 2>&1) || rc=$?
+assert_rc "bad --harvest-time (no leading zero) -> rc 1" 1 "$rc"
 rc=0; out=$(run_pc arm --vault "$VAULT" --synth-time 25:00 2>&1) || rc=$?
 assert_rc "bad --synth-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_pc arm --vault "$VAULT" --synth-day FUNDAY 2>&1) || rc=$?
@@ -766,8 +830,15 @@ assert_contains "health not armed"     "not armed  HIMMEL-Pipeline-Health"     "
 
 echo "TEST: arm --dry-run prints plan, registers nothing"
 out=$(run_pc arm --vault "$VAULT" --dry-run)
-assert_contains "dry-run weekly create"  "/tn HIMMEL-Pipeline-Synthesize /sc WEEKLY /d SUN /st 03:00" "$out"
-assert_contains "dry-run monthly create" "/tn HIMMEL-Pipeline-Health /sc MONTHLY /d 1 /st 04:00"      "$out"
+# HIMMEL-362: create is now XML-based; dry-run previews the /xml create line
+# + the generated task XML (trigger + StartWhenAvailable).
+assert_contains "dry-run daily create"   "/tn HIMMEL-Pipeline-Harvest /xml" "$out"
+assert_contains "dry-run weekly create"  "/tn HIMMEL-Pipeline-Synthesize /xml" "$out"
+assert_contains "dry-run monthly create" "/tn HIMMEL-Pipeline-Health /xml" "$out"
+assert_contains "dry-run XML has StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAvailable>" "$out"
+assert_contains "dry-run XML daily schedule"   "<ScheduleByDay>"   "$out"
+assert_contains "dry-run XML weekly Sunday"    "<Sunday />"        "$out"
+assert_contains "dry-run XML monthly day 1"    "<Day>1</Day>"      "$out"
 assert_contains "dry-run shows bounded run" "< NUL" "$out"
 if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ]; then
     pass "dry-run registered no tasks"
@@ -785,18 +856,36 @@ fi
 echo "TEST: arm registers weekly SUN 03:00 + monthly 1st 04:00"
 out=$(run_pc arm --vault "$VAULT")
 assert_contains "arm banner" "PIPELINE CADENCE ARMED" "$out"
+harvest_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Harvest" 2>/dev/null || echo MISSING)
 synth_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Synthesize" 2>/dev/null || echo MISSING)
 health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Health" 2>/dev/null || echo MISSING)
-assert_contains "weekly schedule"  "/sc WEEKLY /d SUN /st 03:00"  "$synth_args"
-assert_contains "monthly schedule" "/sc MONTHLY /d 1 /st 04:00"   "$health_args"
-assert_contains "synth /tr points at runner bat"  "pipeline-synthesize.bat" "$synth_args"
-assert_contains "health /tr points at runner bat" "pipeline-health.bat"     "$health_args"
+# HIMMEL-362: tasks are created from XML; the fake records the XML content.
+assert_contains "daily schedule (XML)"   "<ScheduleByDay>"  "$harvest_args"
+assert_contains "daily time (XML)"       "T02:00:00"        "$harvest_args"
+assert_contains "weekly schedule (XML)"  "<Sunday />"       "$synth_args"
+assert_contains "weekly time (XML)"      "T03:00:00"        "$synth_args"
+assert_contains "monthly schedule (XML)" "<Day>1</Day>"     "$health_args"
+assert_contains "monthly time (XML)"     "T04:00:00"        "$health_args"
+assert_contains "harvest XML StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAvailable>" "$harvest_args"
+assert_contains "synth XML StartWhenAvailable"   "<StartWhenAvailable>true</StartWhenAvailable>" "$synth_args"
+assert_contains "health XML StartWhenAvailable"  "<StartWhenAvailable>true</StartWhenAvailable>" "$health_args"
+assert_contains "harvest Exec points at runner bat" "pipeline-harvest.bat"  "$harvest_args"
+assert_contains "synth Exec points at runner bat"  "pipeline-synthesize.bat" "$synth_args"
+assert_contains "health Exec points at runner bat" "pipeline-health.bat"     "$health_args"
 
 # Test 6: .bat runners are interactive-claude shaped ------------------------
 
 echo "TEST: .bat runners are bounded interactive claude (no headless flags)"
+harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
 synth_bat=$(cat "$BAT_DIR/pipeline-synthesize.bat" 2>/dev/null || echo MISSING)
 health_bat=$(cat "$BAT_DIR/pipeline-health.bat" 2>/dev/null || echo MISSING)
+assert_contains "harvest bat cds into vault" 'cd /d "' "$harvest_bat"
+assert_contains "harvest bat runs /harvest-clips" "/harvest-clips" "$harvest_bat"
+assert_contains "harvest bat chains /triage-clips" "/triage-clips" "$harvest_bat"
+assert_contains "harvest bat bounded run"          "< NUL"         "$harvest_bat"
+assert_contains "harvest bat appends run log" 'pipeline-harvest.log" 2>&1' "$harvest_bat"
+assert_contains "harvest bat rotates the log before firing" 'move /y' "$harvest_bat"
+assert_contains "harvest bat stamps every fire" 'echo [fired %DATE% %TIME%]' "$harvest_bat"
 assert_contains "synth bat cds into vault" 'cd /d "' "$synth_bat"
 assert_contains "synth bat runs /synthesize-clips" "/synthesize-clips" "$synth_bat"
 assert_contains "synth bat chains /archive-clips"  "/archive-clips"    "$synth_bat"
@@ -812,7 +901,7 @@ fi
 assert_contains "health bat runs /obsidian-health" "/obsidian-health"  "$health_bat"
 assert_contains "health bat bounded run"           "< NUL"             "$health_bat"
 assert_contains "health bat appends run log" 'pipeline-health.log" 2>&1'     "$health_bat"
-for what in synth health; do
+for what in harvest synth health; do
     body=$(eval "printf '%s' \"\$${what}_bat\"")
     if printf '%s\n' "$body" | grep -E "$HEADLESS_RE" >/dev/null 2>&1; then
         fail "$what bat is headless-shaped" "$body"
@@ -825,6 +914,7 @@ done
 
 echo "TEST: status reflects armed tasks"
 out=$(run_pc status)
+assert_contains "harvest armed"    "ARMED      HIMMEL-Pipeline-Harvest"    "$out"
 assert_contains "synthesize armed" "ARMED      HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "health armed"     "ARMED      HIMMEL-Pipeline-Health"     "$out"
 assert_contains "status surfaces run log state" "run log" "$out"
@@ -851,7 +941,7 @@ echo "TEST: re-arm without --force blocked (rc 3)"
 rc=0; out=$(run_pc arm --vault "$VAULT" 2>&1) || rc=$?
 assert_rc "dedup block rc 3" 3 "$rc"
 assert_contains "dedup message names existing tasks" "HIMMEL-Pipeline-Synthesize" "$out"
-if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 2 ]; then
+if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
     pass "no duplicate tasks after blocked re-arm"
 else
     fail "task count changed on blocked re-arm" "$(ls "$STATE/tasks")"
@@ -861,13 +951,17 @@ fi
 
 echo "TEST: re-arm --force applies flag overrides"
 out=$(run_pc arm --vault "$VAULT" --force \
-    --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
+    --harvest-time 01:15 --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
+harvest_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Harvest" 2>/dev/null || echo MISSING)
 synth_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Synthesize" 2>/dev/null || echo MISSING)
 health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Health" 2>/dev/null || echo MISSING)
-assert_contains "weekly override (lowercase day upcased)" "/sc WEEKLY /d MON /st 02:30" "$synth_args"
-assert_contains "monthly override"                        "/sc MONTHLY /d 15 /st 05:00" "$health_args"
-if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 2 ]; then
-    pass "still exactly two tasks after --force re-arm"
+assert_contains "daily override (XML time)"               "T01:15:00"   "$harvest_args"
+assert_contains "weekly override (lowercase day upcased)" "<Monday />"  "$synth_args"
+assert_contains "weekly override (XML time)"              "T02:30:00"   "$synth_args"
+assert_contains "monthly override (XML day)"              "<Day>15</Day>" "$health_args"
+assert_contains "monthly override (XML time)"             "T05:00:00"   "$health_args"
+if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
+    pass "still exactly three tasks after --force re-arm"
 else
     fail "duplicate tasks after --force re-arm" "$(ls "$STATE/tasks")"
 fi
@@ -882,7 +976,7 @@ if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ]; then
 else
     fail "tasks left after disarm" "$(ls "$STATE/tasks")"
 fi
-if [ ! -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ ! -f "$BAT_DIR/pipeline-health.bat" ]; then
+if [ ! -f "$BAT_DIR/pipeline-harvest.bat" ] && [ ! -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ ! -f "$BAT_DIR/pipeline-health.bat" ]; then
     pass ".bat runners removed"
 else
     fail ".bat runners left after disarm"
@@ -902,11 +996,16 @@ assert_contains "percent doubled (%% in bat)" '%%X%%' "$synth_bat"
 assert_contains "ampersand careted (^& in bat)" '^&' "$synth_bat"
 assert_contains "caret doubled (^^ in bat)" '^^' "$synth_bat"
 assert_not_contains "raw &ult survives unescaped" 'va&ult' "$synth_bat"
+# Harvest .bat goes through the same cmd_escape path — assert it too.
+harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
+assert_contains "harvest: percent doubled (%% in bat)" '%%X%%' "$harvest_bat"
+assert_contains "harvest: ampersand careted (^& in bat)" '^&' "$harvest_bat"
+assert_not_contains "harvest: raw &ult survives unescaped" 'va&ult' "$harvest_bat"
 run_pc disarm >/dev/null
 
 # Test 12: half-arm rollback when the SECOND /create fails --------------------
 
-echo "TEST: health /create failure rolls back the synthesize task (rc 4)"
+echo "TEST: health /create failure rolls back harvest + synthesize (rc 4)"
 touch "$STATE/fail-create-HIMMEL-Pipeline-Health"
 rc=0; out=$(run_pc arm --vault "$VAULT" 2>&1) || rc=$?
 assert_rc "half-arm fails rc 4" 4 "$rc"
@@ -917,6 +1016,22 @@ else
     fail "task state left after rollback" "$(ls "$STATE/tasks")"
 fi
 rm -f "$STATE/fail-create-HIMMEL-Pipeline-Health"
+
+# Test 12b: middle-create (synthesize) failure rolls back the harvest task
+# that DID register; health is never attempted. Pins the harvest-only
+# rollback branch.
+
+echo "TEST: synth /create failure rolls back the harvest task (rc 4)"
+touch "$STATE/fail-create-HIMMEL-Pipeline-Synthesize"
+rc=0; out=$(run_pc arm --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "mid half-arm fails rc 4" 4 "$rc"
+assert_contains "failure names the synth create" "HIMMEL-Pipeline-Synthesize failed" "$out"
+if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ]; then
+    pass "no task state left after harvest rollback"
+else
+    fail "task state left after harvest rollback" "$(ls "$STATE/tasks")"
+fi
+rm -f "$STATE/fail-create-HIMMEL-Pipeline-Synthesize"
 
 # Test 13: dedup listing failure is fail-CLOSED (pins the inverted classifier)
 
@@ -992,7 +1107,7 @@ echo "TEST: dry-run disarm prints DRY tail, touches nothing"
 out=$(run_pc disarm --dry-run)
 assert_contains "dry disarm lists deletions" "would delete" "$out"
 assert_contains "dry disarm closing summary" "no changes made" "$out"
-if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 2 ]; then
+if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
     pass "dry-run disarm deleted no tasks"
 else
     fail "dry-run disarm changed task state" "$(ls "$STATE/tasks")"
