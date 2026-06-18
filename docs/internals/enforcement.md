@@ -374,6 +374,24 @@ their own fixture spec, `scripts/machine-setup/test-ubuntu-settings-jq.sh`
 (22 asserts, drift-guarded mirrors; the win11.ps1 PowerShell twin is
 manually verified only).
 
+**Standalone reconcile (HIMMEL-399).** The inline swap above only runs
+inside full machine-setup, which invokes `rtk init -g` exactly once. When
+an operator runs `rtk init -g` on its own it can stack duplicate bare
+entries, and the swap by itself never collapses the result (guard + a
+freshly re-added bare entry, swapped again, = two guard entries).
+`scripts/lib/reconcile-rtk-hook.sh <settings-json> <himmel-path>` is the
+on-demand reconcile: swap every bare `rtk hook claude` entry to the guard
+AND collapse to exactly ONE guard entry, idempotently (spec:
+`scripts/hooks/test-reconcile-rtk-hook.sh`, 16 asserts). Reconcile **user
+scope only** — `rtk init -g` is global and the guard is an absolute path,
+so a project-scope copy would only double-fire the hook. Expected
+side effect: rtk identifies its own hook by the `rtk hook claude`
+signature, which the guard wrapper replaces, so `rtk init --show` reports
+`Hook: not found` and rewritten commands print a `[rtk] /!\ No hook
+installed` banner to stderr — benign noise (the guard is installed and rewriting
+works), with no rtk flag to quiet it. Do not "resolve" it by re-running
+`rtk init -g`; that just re-adds the bare entry the reconcile removes.
+
 ### `check-platforms-tested.sh` — pre-push gate (`.pre-commit-config.yaml`)
 
 Not a Claude PreToolUse hook — runs from the pre-commit framework at

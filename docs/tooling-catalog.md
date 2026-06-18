@@ -278,6 +278,8 @@ Specs saved to: `docs/superpowers/specs/YYYY-MM-DD-feature.md`
 **Auto-rewriting:** Requires `rtk init -g` to install the shell hook. Without it, prefix commands manually with `rtk`.
 **Verify:** `rtk gain` — shows token savings analytics.
 **Note:** Name collision risk — `reachingforthejack/rtk` (Rust Type Kit) is a different tool. If `rtk gain` fails, check which binary is installed.
+**Reconcile after a standalone `rtk init -g` (HIMMEL-399):** `rtk init -g` appends a bare `rtk hook claude` entry without checking for an existing one, so running it outside full machine-setup can stack duplicates. himmel swaps that bare entry for the `rtk-hook-guard.sh` wrapper (HIMMEL-241). The full machine-setup scripts run `rtk init -g` once and reconcile inline; for an on-demand reconcile run `bash scripts/lib/reconcile-rtk-hook.sh ~/.claude/settings.json <himmel-path>` — idempotent + duplicate-safe (collapses to exactly one guard entry). Reconcile **user scope only** (`~/.claude/settings.json`): `rtk init -g` is global and the guard is an absolute path, so a project-scope copy would just double-fire the hook.
+**Expected banner noise:** after the guard swap, `rtk init --show` reports `Hook: not found` and every rewritten command prints `[rtk] /!\ No hook installed — run rtk init -g` to stderr. This is benign: rtk detects its hook by its own `rtk hook claude` signature, which the guard wrapper replaces by design. The guard IS installed and rewriting works; rtk exposes no flag/config to quiet the banner (an upstream limitation). Not a real missing-hook signal — do not "fix" it by re-running `rtk init -g` (that just re-adds the bare entry).
 
 ---
 
