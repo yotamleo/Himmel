@@ -170,6 +170,48 @@ case "$err" in
 esac
 rm -rf "$GUARDRAILLESS" 2>/dev/null || true
 
+# --- T18: primary checkout on a FEATURE branch must ALLOW (rc=0) with no
+# stderr (HIMMEL-392). Regression guard for the set -e crash: a bare
+# `is_on_main` call returning rc=1 aborted the script rc=1 with empty stderr
+# BEFORE the rc=1 ALLOW path, surfacing as "hook error: No stderr output" on
+# every primary-checkout feature-branch edit. The existing T7 only ever
+# exercises primary-on-main (see the WARN below), so this path was untested.
+# A throwaway repo on a feature branch isolates the scenario from the runner's
+# own HEAD. T18 (the rc check) is what actually catches the crash — the buggy
+# bare-call version exits rc=1 here. T18b (empty stderr) does NOT discriminate
+# the bug (the set -e abort was silent too); it guards against a FUTURE change
+# that leaks stderr onto the ALLOW path.
+FEATREPO=$(mktemp -d)
+git -C "$FEATREPO" init -q
+git -C "$FEATREPO" symbolic-ref HEAD refs/heads/feat/regress-392
+mkdir -p "$FEATREPO/src"
+rc=$(printf '%s' "{\"tool_input\":{\"file_path\":\"$FEATREPO/src/foo.jsx\"}}" | CLAUDE_PROJECT_DIR="$FEATREPO" bash "$HOOK" >/dev/null 2>&1; echo "$?")
+assert_rc "T18 feature-branch primary edit allows" 0 "$rc"
+stderr_bytes=$(printf '%s' "{\"tool_input\":{\"file_path\":\"$FEATREPO/src/foo.jsx\"}}" | CLAUDE_PROJECT_DIR="$FEATREPO" bash "$HOOK" 2>&1 >/dev/null | wc -c)
+assert_rc "T18b feature-branch primary edit silent stderr" 0 "$stderr_bytes"
+rm -rf "$FEATREPO" 2>/dev/null || true
+
+# --- T19: unreadable branch (is_on_main rc=2) must fail CLOSED (rc=2) with the
+# "cannot determine branch" message (HIMMEL-392 CR). This is the OTHER consumer
+# of the branch_rc plumbing the fix touched — the security-load-bearing arm
+# that exits 2 when the branch can't be read. A git repo with HEAD removed
+# makes _branch's `git rev-parse --absolute-git-dir` reject THIS dir — but git
+# would then walk UP and find an enclosing repo if the runner's TMPDIR sits
+# inside one (a real CI corner case), reading the OUTER HEAD and yielding rc=0/1
+# instead of rc=2. GIT_CEILING_DIRECTORIES=dirname pins the discovery to this
+# dir so rc=2 is deterministic regardless of where mktemp lands.
+RC2REPO=$(mktemp -d)
+git -C "$RC2REPO" init -q
+rm -f "$RC2REPO/.git/HEAD"
+mkdir -p "$RC2REPO/src"
+err=$(printf '%s' "{\"tool_input\":{\"file_path\":\"$RC2REPO/src/foo.jsx\"}}" | GIT_CEILING_DIRECTORIES="$(dirname "$RC2REPO")" CLAUDE_PROJECT_DIR="$RC2REPO" bash "$HOOK" 2>&1 >/dev/null); rc=$?
+assert_rc "T19 unreadable branch fails closed" 2 "$rc"
+case "$err" in
+    *"cannot determine branch"*) echo "PASS T19 refusal message" ;;
+    *) echo "FAIL T19 refusal message — got: $err"; FAILED=$((FAILED + 1)) ;;
+esac
+rm -rf "$RC2REPO" 2>/dev/null || true
+
 # --- T7 env-dep note. T7 only blocks if the runner's primary repo HEAD is
 # actually `main`. Surface a clear SKIP if it isn't, so the test passing
 # on a non-main runner doesn't mask a regression.
