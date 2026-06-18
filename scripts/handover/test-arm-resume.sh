@@ -23,6 +23,11 @@ export SKILL_TELEMETRY_DIR="$TMP/telemetry-default"
 # Unset the kill switch so T21/T23 (which assert a record IS written) are
 # not spuriously broken by an operator shell that exports it (HIMMEL-384).
 unset SKILL_TELEMETRY_DISABLE 2>/dev/null || true
+# Global workspace-trust shield (HIMMEL-386): arm-resume now pre-trusts the
+# resolved cwd in ~/.claude.json. The non-dry-run arm cases below (T14-T20
+# bridge/channel checks, dedup-any) would otherwise write the operator's real
+# config — redirect the pre-seed at a throwaway file for the whole suite.
+export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -64,10 +69,10 @@ WORK_REPO="$TMP/work-repo"
 mkdir -p "$WORK_REPO"
 git init -q "$WORK_REPO"
 
-# A separate directory for handover files (simulates yotam_docs).
-HANDOVER_DIR="$TMP/yotam-docs/handovers"
+# A separate directory for handover files (simulates the state repo).
+HANDOVER_DIR="$TMP/statedocs/handovers"
 mkdir -p "$HANDOVER_DIR"
-git init -q "$TMP/yotam-docs"
+git init -q "$TMP/statedocs"
 
 # A fixed time in the future (HH:MM format) — just needs to parse.
 FUTURE_TIME="23:59"
@@ -121,7 +126,9 @@ out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover 
 rc=$?
 assert_rc "T1 --cwd flag exits 0" 0 "$rc"
 assert_contains "T1 RESUME_CWD matches --cwd arg" "RESUME_CWD=$WORK_REPO" "$out"
-assert_not_contains "T1 --cwd does not resolve to yotam-docs" "RESUME_CWD=$HANDOVER_DIR" "$out"
+assert_not_contains "T1 --cwd does not resolve to statedocs" "RESUME_CWD=$HANDOVER_DIR" "$out"
+# HIMMEL-386: the arm pre-trusts the resolved cwd (dry-run reports, doesn't mutate).
+assert_contains "T1 dry-run pre-trusts resolved cwd" "would pre-trust workspace '$WORK_REPO'" "$out"
 
 # ---------------------------------------------------------------------------
 # T2: handover WITH resume_cwd pointing to a valid dir, NO --cwd
@@ -158,10 +165,10 @@ out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover 
 rc=$?
 assert_rc "T4 no-cwd fallback exits 0" 0 "$rc"
 assert_contains "T4 emits discoverability warning" "no --cwd and no 'resume_cwd:' in handover frontmatter" "$out"
-# RESUME_CWD should resolve to the git toplevel of $TMP/yotam-docs.
+# RESUME_CWD should resolve to the git toplevel of $TMP/statedocs.
 # Compute the expected value the same way arm-resume does (git rev-parse).
-EXPECTED_T4=$(git -C "$TMP/yotam-docs" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$TMP/yotam-docs")
-assert_contains "T4 RESUME_CWD resolves to yotam-docs git-toplevel" "RESUME_CWD=$EXPECTED_T4" "$out"
+EXPECTED_T4=$(git -C "$TMP/statedocs" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$TMP/statedocs")
+assert_contains "T4 RESUME_CWD resolves to statedocs git-toplevel" "RESUME_CWD=$EXPECTED_T4" "$out"
 
 # ---------------------------------------------------------------------------
 # T5: resume_cwd value with surrounding double quotes is handled correctly
@@ -1011,6 +1018,86 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         fi
         ;;
 esac
+
+# ---------------------------------------------------------------------------
+# W1-W5: --worktree isolation for code arms (HIMMEL-387)
+# ---------------------------------------------------------------------------
+# W1: --worktree dry-run computes the type+slug path, resumes there, pre-trusts it.
+HO=$(make_handover "")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/wt-test --dry-run 2>&1)
+rc=$?
+assert_rc "W1 --worktree dry-run exits 0" 0 "$rc"
+assert_contains "W1 announces worktree create" "would create worktree 'feat/wt-test'" "$out"
+assert_contains "W1 path uses type+slug dir" ".claude/worktrees/feat+wt-test" "$out"
+assert_contains "W1 RESUME_CWD set to worktree" "RESUME_CWD=" "$out"
+assert_contains "W1 pre-trusts the worktree (HIMMEL-386 wiring)" "would pre-trust workspace" "$out"
+
+# W2: invalid branch (no type/slug) → loud rc 1, no scheduler touched.
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree not-valid --dry-run 2>&1)
+rc=$?
+assert_rc "W2 invalid worktree branch exits 1" 1 "$rc"
+assert_contains "W2 explains type/slug requirement" "must be type/slug" "$out"
+
+# W3: --cwd and --worktree together → rc 1 (the worktree IS the cwd).
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/wt-test --cwd "$WORK_REPO" --dry-run 2>&1)
+rc=$?
+assert_rc "W3 --cwd + --worktree exits 1" 1 "$rc"
+assert_contains "W3 says mutually exclusive" "mutually exclusive" "$out"
+
+# W4: resume_worktree frontmatter used when the flag is omitted.
+HO_WT="$HANDOVER_DIR/handover-wt-fm.md"
+{ printf -- '---\n'; printf 'resume_worktree: fix/wt-fm\n'; printf -- '---\n'; printf '# fm worktree\n'; } > "$HO_WT"
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_WT" --dry-run 2>&1)
+rc=$?
+assert_rc "W4 resume_worktree frontmatter exits 0" 0 "$rc"
+assert_contains "W4 frontmatter worktree used" ".claude/worktrees/fix+wt-fm" "$out"
+
+# W5: non-dry-run — a stub worktree cmd creates the dir; the arm resumes there
+# and pre-trusts the worktree path in the (shielded) config.
+WT_STUB="$TMP/wt-stub.sh"
+# The literal $ARM_WORKTREE_PATH is intentional — the stub expands it at runtime.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nmkdir -p "$ARM_WORKTREE_PATH"\n' > "$WT_STUB"
+chmod +x "$WT_STUB"
+HO=$(make_handover "")
+out=$(PATH="$SCHED_STUB_T17:$PATH" ARM_WORKTREE_CMD="bash $WT_STUB" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/wt-real 2>&1)
+rc=$?
+assert_rc "W5 non-dry worktree arm exits 0" 0 "$rc"
+# The non-dry arm doesn't echo RESUME_CWD (that's dry-run only); proof the
+# worktree path was used as cwd is that it got pre-trusted in the config below.
+if command -v node >/dev/null 2>&1; then
+    trust=$(WT_F="$WORKSPACE_TRUST_CONFIG" node -e 'try{const j=JSON.parse(require("fs").readFileSync(process.env.WT_F,"utf8"));const hit=Object.entries(j.projects||{}).some(([k,v])=>k.includes("feat+wt-real")&&v&&v.hasTrustDialogAccepted===true);process.stdout.write(String(hit))}catch(e){process.stdout.write("ERR")}')
+    assert_contains "W5 worktree pre-trusted in config" "true" "$trust"
+fi
+# Tidy the empty stub-created worktree dir (gitignored, but don't leave litter).
+rm -rf "$(cd "$(dirname "$ARM")/../.." && pwd)/.claude/worktrees/feat+wt-real" 2>/dev/null || true
+
+# Stub worktree commands (real scripts — an inline `bash -c '...'` would be
+# word-split by the seam's intentional cmd+args split, mangling the quotes).
+WT_FAIL_STUB="$TMP/wt-fail-stub.sh"; printf '#!/usr/bin/env bash\nexit 1\n' > "$WT_FAIL_STUB"; chmod +x "$WT_FAIL_STUB"
+WT_NODIR_STUB="$TMP/wt-nodir-stub.sh"; printf '#!/usr/bin/env bash\nexit 0\n' > "$WT_NODIR_STUB"; chmod +x "$WT_NODIR_STUB"
+
+# W6: worktree cmd fails → arm aborts loudly with rc 4 (no silent half-arm).
+out=$(PATH="$SCHED_STUB_T17:$PATH" ARM_WORKTREE_CMD="bash $WT_FAIL_STUB" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/wt-fail 2>&1)
+rc=$?
+assert_rc "W6 worktree create failure exits 4" 4 "$rc"
+assert_contains "W6 reports create failure" "worktree create failed" "$out"
+
+# W7: worktree cmd returns 0 but creates no dir → post-create check exits 4.
+out=$(PATH="$SCHED_STUB_T17:$PATH" ARM_WORKTREE_CMD="bash $WT_NODIR_STUB" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/wt-nodir 2>&1)
+rc=$?
+assert_rc "W7 create-but-no-dir exits 4" 4 "$rc"
+assert_contains "W7 reports missing worktree dir" "expected worktree dir not found" "$out"
+
+# W8: existing worktree dir → reused (create cmd NOT invoked), arm still succeeds.
+# The stub would exit 1 IF called; rc 0 proves the reuse branch skipped it.
+W8_DIR="$(cd "$(dirname "$ARM")/../.." && pwd)/.claude/worktrees/feat+wt-reuse"
+mkdir -p "$W8_DIR"
+out=$(PATH="$SCHED_STUB_T17:$PATH" ARM_WORKTREE_CMD="bash $WT_FAIL_STUB" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/wt-reuse 2>&1)
+rc=$?
+assert_rc "W8 reuse existing worktree exits 0 (cmd not called)" 0 "$rc"
+assert_contains "W8 announces reuse" "reusing existing worktree" "$out"
+rm -rf "$W8_DIR"
 
 # ---------------------------------------------------------------------------
 # Summary
