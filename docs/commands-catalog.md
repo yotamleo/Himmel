@@ -93,3 +93,4 @@ the github-repo ingest skill these dispatch to.
 | /open-warp | Open a new Warp tab at a directory, optionally pre-loading a command |
 | /oz-offload | Offload a long-running independent task to a separate local Warp tab running `warp agent run` (fire-and-forget; same-machine only) |
 | /quiet-run | Run a noisy command quietly — one OK/ERR line + log path |
+| /update | Update this himmel checkout — git pull + marketplace re-sync. autoUpdate does NOT deliver himmel updates. |
