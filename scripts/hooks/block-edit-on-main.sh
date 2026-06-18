@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # PreToolUse hook for Edit/Write/MultiEdit/NotebookEdit.
 #
-# Blocks edits that target the primary worktree when HEAD == main. Forces
-# all feature work into a `.claude/worktrees/<name>/` subdir per CLAUDE.md
-# ("All feature work in git worktrees. Never commit directly to main.").
+# Blocks edits whose target FILE lives in a git repo that is currently on
+# main/master, forcing all feature work into a worktree per CLAUDE.md ("All
+# feature work in git worktrees. Never commit directly to main.").
+#
+# The repo is resolved from the EDITED FILE's path (walking up its own ancestors
+# for a `.git`), NOT from CLAUDE_PROJECT_DIR / the launch dir. That way it still
+# protects a nested repo on main even when Claude Code is launched from a
+# directory ABOVE it (Himmel#45) — anchoring to the launch dir silently read the
+# wrong repo's branch and let the edit through.
 #
 # Pre-existing pre-commit `check-worktree-isolation.sh` catches this at
 # commit time. This hook catches it at EDIT time so the operator gets
@@ -13,7 +19,7 @@
 #   0 — allow (default for any non-blocking path)
 #   2 — block; stderr is shown to Claude and the user
 #
-# Refs: handovers/yotam/backlog.md B1 (pre-edit worktree guard)
+# Refs: handovers/<USER_SLUG>/backlog.md B1 (pre-edit worktree guard)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,6 +45,13 @@ fi
 # --- Capability checks (fail CLOSED on missing deps; security boundary) ---
 if ! command -v jq >/dev/null 2>&1; then
     echo "block-edit-on-main: jq not on PATH — refusing to evaluate; install jq or comment the hook in .claude/settings.json" >&2
+    exit 2
+fi
+# git drives the branch read (is_on_main → lib.sh). Missing git would otherwise
+# surface only as a confusing rc=2 deep in the branch check — fail CLOSED here
+# with a clear message instead (matches the jq check; HIMMEL-401 CR).
+if ! command -v git >/dev/null 2>&1; then
+    echo "block-edit-on-main: git not on PATH — refusing to evaluate; install git or comment the hook in .claude/settings.json" >&2
     exit 2
 fi
 
@@ -104,67 +117,78 @@ input=$(cat)
 file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || true)
 [ -z "$file_path" ] && exit 0
 
-project_dir="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-
-# `|| proj_real=""` suppresses set -e on canon failure so the empty-check
-# below catches the case with its actionable message instead of `set -e`
-# aborting with rc=1 and no diagnostic.
-proj_real=""; proj_real=$(canon "$project_dir") || proj_real=""
+# `|| file_real=""` suppresses set -e on canon failure so the empty-check below
+# catches it with an actionable message instead of set -e aborting rc=1.
 file_real=""; file_real=$(canon "$file_path") || file_real=""
 
-# Fail CLOSED on empty canonicalisation results — a permission error or odd
-# input that returns empty would otherwise prefix-match nothing and exit 0,
-# functionally re-opening the bypass we just plugged.
-if [ -z "$proj_real" ] || [ -z "$file_real" ]; then
+# Fail CLOSED on empty canonicalisation — an odd input that returns empty would
+# otherwise prefix-match nothing and exit 0, re-opening the `worktrees/../foo.sh`
+# traversal bypass.
+if [ -z "$file_real" ]; then
     _hint=""
     if [ -n "${CANON_FORCE:-}" ]; then
         _hint=" (CANON_FORCE=$CANON_FORCE — likely a wedged python3/python Store stub; unset CANON_FORCE or kill the stub process)"
     fi
-    echo "block-edit-on-main: canonicalisation returned empty (proj='$proj_real', file='$file_real')${_hint} — refusing to evaluate" >&2
+    echo "block-edit-on-main: canonicalisation returned empty (file='$file_real')${_hint} — refusing to evaluate" >&2
     exit 2
 fi
 
-# Strip any trailing slash defensively (canon should already normalise, but
-# belt-and-suspenders against odd inputs).
-proj_real="${proj_real%/}"
+# Resolve the EDITED FILE's git repo root — NOT the launch/project dir
+# (CLAUDE_PROJECT_DIR). Anchoring to the launch dir silently no-oped the guard
+# when Claude was started ABOVE the repo: a nested repo on main went unguarded
+# because the OUTER dir's branch was read instead (Himmel#45). Walk up the
+# file's OWN canonicalised ancestors looking for a `.git` (a directory in a
+# normal checkout, a FILE in a linked worktree or submodule). Walking
+# file_real's ancestors — rather than `git -C <dir> rev-parse --show-toplevel`
+# — keeps repo_real a literal PREFIX of file_real (no git-vs-canon path-form
+# mismatch on the handovers/ check) AND lets us distinguish "inside a repo whose
+# branch we cannot read" (→ fail CLOSED in the branch check) from "not inside
+# any repo" (→ allow) — `git rev-parse` collapses both to rc=128. The check is
+# `.git`-EXISTENCE only (no git invocation), so a not-yet-created Write target
+# whose parent dirs are missing simply keeps walking up to the repo root, and
+# the loop terminates at the filesystem root where dirname stops changing
+# (robust on both `/...` and bare-drive `C:/...` forms — no `git -C C:` foot-gun).
+repo_real=""
+_d=$(dirname "$file_real")
+_prev=""
+while [ "$_d" != "$_prev" ]; do
+    if [ -e "$_d/.git" ]; then repo_real="$_d"; break; fi
+    _prev="$_d"
+    # `|| _d="$_prev"` keeps a (near-impossible) dirname failure from aborting
+    # the hook with no stderr under set -e — it just terminates the loop.
+    _d=$(dirname "$_d") || _d="$_prev"
+done
 
-# Skip if the edit is outside the project (global config, system files, etc.)
+# File is not inside any git repo (global config, /tmp, system files) → allow.
+[ -z "$repo_real" ] && exit 0
+repo_real="${repo_real%/}"
+
+# Skip handover/status doc edits — pure docs the operator may update from the
+# primary checkout on main. Anchored to the FILE's repo root (Himmel#45).
 case "$file_real" in
-    "$proj_real"/*) ;;
-    "$proj_real") ;;
-    *) exit 0 ;;
+    "$repo_real"/handovers/*) exit 0 ;;
 esac
 
-# Skip if the edit is inside any worktree subdir.
-case "$file_real" in
-    "$proj_real"/.claude/worktrees/*) exit 0 ;;
-esac
+# No explicit `.claude/worktrees/` skip is needed: a git worktree carries its
+# own `.git` file, so the walk above resolves repo_real to the worktree dir
+# (checked out on a feature branch) and the branch check below ALLOWS the edit
+# via rc=1. The old launch-dir-anchored worktrees skip was itself part of the
+# Himmel#45 mis-anchoring.
 
-# Skip if the edit is a handover/status doc edit (operator may legitimately
-# update those from primary). These are pure docs, never code.
-case "$file_real" in
-    "$proj_real"/handovers/*) exit 0 ;;
-esac
-
-# At this point: edit is inside primary worktree, not in a sub-worktree, not a
-# handover file. Check the branch via the shared predicate. rc=2 means we
-# could not determine the branch (git missing, .git unreadable, etc.) - fail
-# CLOSED on that case to match the rest of this script's security posture
-# (jq/realpath capability checks above also fail closed). Bare `if is_on_main`
-# would collapse rc=2 into "not on main" and silently allow the edit.
-#
-# The call MUST go through `|| branch_rc=$?` (not a bare `is_on_main`): under
-# `set -e` a bare predicate call returning rc=1 (feature branch) aborts the
-# script rc=1 with NO stderr — before the rc=1 ALLOW path below — surfacing as
-# Claude Code's "hook error: No stderr output" on every primary-checkout
-# feature-branch edit (HIMMEL-392).
+# Check the branch of the FILE's repo. rc=2 (branch unreadable — e.g. a repo
+# with a corrupt/removed HEAD) fails CLOSED to match this script's security
+# posture (jq/git/realpath capability checks above also fail closed). The call
+# MUST go through `|| branch_rc=$?` (not a bare `is_on_main`): under set -e a
+# bare call returning rc=1 (feature branch) aborts the script rc=1 with NO
+# stderr — before the rc=1 ALLOW path below — surfacing as Claude Code's "hook
+# error: No stderr output" (HIMMEL-392).
 branch_rc=0
-is_on_main "$project_dir" || branch_rc=$?
+is_on_main "$repo_real" || branch_rc=$?
 if [ "$branch_rc" -eq 1 ]; then
     exit 0
 fi
 if [ "$branch_rc" -ne 0 ]; then
-    echo "block-edit-on-main: is_on_main returned rc=$branch_rc (cannot determine branch) - refusing to evaluate" >&2
+    echo "block-edit-on-main: is_on_main returned rc=$branch_rc (cannot determine branch for '$repo_real') - refusing to evaluate" >&2
     exit 2
 fi
 
@@ -176,8 +200,8 @@ if [ "${EDIT_ON_MAIN_OK:-0}" = "1" ]; then
 fi
 
 cat >&2 <<EOF
-⛔ block-edit-on-main: refusing to edit \`$file_path\` from PRIMARY worktree while HEAD == main.
-(resolved path: $file_real)
+⛔ block-edit-on-main: refusing to edit \`$file_path\` — its repo is on main/master.
+(file: $file_real — repo: $repo_real)
 
 Feature work must go in a worktree per CLAUDE.md. To start one:
 
