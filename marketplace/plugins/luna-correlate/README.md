@@ -31,9 +31,11 @@ Series live wherever `LUNA_SERIES_DIR` points (e.g. the luna-medic `50-Vitals/` 
 - `kp` — global geomagnetic Kp index (date-only, no location). High/low split at Kp≥5.
 - `lunar_phase` — lunar illumination fraction (0 = new moon, 1 = full moon), computed offline from date.
   **Posture-A: zero network, zero PHI.** Date-only; no location required.
-- `daylight` — daylight hours for each date, computed offline from the region-centroid
-  latitude derived from `LUNA_REGION_BBOX`. **Posture-A: zero network, zero PHI** (the
-  latitude is the bbox midpoint, never the operator's precise coordinates).
+- `daylight` — daylight hours for each date, computed offline. When a location file is
+  set (`LUNA_LOCATION_FILE` / `location`) each date uses **its own day's latitude**, so
+  daylight stays correct across a relocation (e.g. an IL→Berlin move); otherwise it falls
+  back to the region-centroid latitude from `LUNA_REGION_BBOX`. **Posture-A: zero network,
+  zero PHI** — the location file is local-only and never egresses; only daylight math reads it.
 - `pressure` — barometric pressure, **daily-min** (exposes the front-passage pressure
   drop, a prime migraine trigger). Location factor (Open-Meteo grid; network, gated).
 - `pollen` / `aq` — grass pollen / PM2.5, **daily-mean**. Location factors; served via
@@ -59,6 +61,12 @@ The `signals.dashboard` tool runs a **lag-swept, multi-series, FDR-controlled** 
 4. **Interpretation caveat** — best-lag selection inflates the false-positive rate
    beyond the nominal q; survivors are **candidate signals for further investigation,
    not confirmations**. The output notes this explicitly.
+5. **Visualization** — `dashboard.md` augments the ranked table with two
+   [Obsidian Charts](https://github.com/phibr0/obsidian-charts) blocks: a ranked
+   horizontal |r| bar (FDR survivors marked ✓) and a per-signal lag-profile line
+   (r across the swept window) — the latter shows whether the reported best-lag is a
+   real peak vs selection noise. The note degrades to a plain code block if the Charts
+   plugin is absent. Sub-`0.001` p-values render as `<0.001` (not a misleading `0`).
 
 **Constraint:** `migraine` and `skin_flare` have **no daily source yet** — self-report
 correlation awaits a daily symptom log. These series cannot be included in the dashboard

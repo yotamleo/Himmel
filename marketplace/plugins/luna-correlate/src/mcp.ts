@@ -10,7 +10,7 @@ import {
 import { loadLocation, resolveFactorSeries } from "./proximity";
 import { splitEra } from "./era";
 import { lunarPhaseSeries } from "./lunar";
-import { daylightSeries, bboxCentroidLat } from "./daylight";
+import { daylightSeries, daylightSeriesFromLocation, bboxCentroidLat } from "./daylight";
 import { analyze, type SeriesSpec, type FactorSpec } from "./analyze";
 import { formatDashboard, dashboardJson } from "./dashboardNote";
 import { join } from "path";
@@ -172,12 +172,31 @@ async function buildFactorSpecs(
     } else if (f === "lunar_phase") {
       out.push({ name: f, label: "lunar illumination (0=new,1=full)", points: lunarPhaseSeries(allDates) });
     } else if (f === "daylight") {
-      const bbox = region ?? process.env.LUNA_REGION_BBOX;
-      if (!bbox) throw new Error('region unset — pass region or set LUNA_REGION_BBOX="lat_min,lon_min,lat_max,lon_max"');
-      out.push({
-        name: f, label: "daylight (hours, region-centroid lat)",
-        points: daylightSeries(allDates, bboxCentroidLat(bbox)),
-      });
+      // Prefer per-day latitude from the operator's local location file (correct
+      // across moves — e.g. the Berlin relocation); fall back to the fixed
+      // region-centroid latitude when no location file is configured.
+      const locFile = location ?? process.env.LUNA_LOCATION_FILE;
+      if (locFile) {
+        const loc = await loadLocation(locFile);
+        // Fail loud on an empty/header-only location file — same Posture-A posture
+        // as the location-factor branch below. Without this, an empty file yields a
+        // 0-point factor caught only by the generic trailing guard, whose "re-run
+        // factors.cache" remedy is wrong here (daylight has no cache; the file is).
+        if (loc.length === 0) {
+          throw new Error(`[luna-correlate] daylight: location file ${locFile} has no data rows — cannot derive per-day daylight`);
+        }
+        out.push({
+          name: f, label: "daylight (hours, per-day latitude)",
+          points: daylightSeriesFromLocation(loc),
+        });
+      } else {
+        const bbox = region ?? process.env.LUNA_REGION_BBOX;
+        if (!bbox) throw new Error('daylight needs a location file (LUNA_LOCATION_FILE / location arg) or region (LUNA_REGION_BBOX="lat_min,lon_min,lat_max,lon_max")');
+        out.push({
+          name: f, label: "daylight (hours, region-centroid lat)",
+          points: daylightSeries(allDates, bboxCentroidLat(bbox)),
+        });
+      }
     } else {
       if (!LOCATION_FACTORS.includes(f)) {
         throw new Error(`[luna-correlate] unsupported factor "${f}" — supported: kp, lunar_phase, daylight, ${LOCATION_FACTORS.join(", ")}`);

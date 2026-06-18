@@ -1,4 +1,5 @@
 import type { FactorPoint } from "./correlate";
+import type { LocationDay } from "./proximity";
 import { parseBbox } from "./fetchFactors";
 
 // Offline daylight-duration factor. Daylight hours from date + latitude only.
@@ -21,6 +22,14 @@ export function daylightHours(date: string, latDeg: number): number {
 
 export function daylightSeries(dates: string[], latDeg: number): FactorPoint[] {
   return dates.map(d => ({ date: d, value: daylightHours(d, latDeg) }));
+}
+
+// Per-day daylight from the operator's local date×latitude series (offline,
+// Posture-A — the location file never leaves the box). Each day uses ITS OWN
+// latitude, so daylight is correct across a relocation (e.g. the Berlin move)
+// where a single region-centroid latitude would be wrong on both sides.
+export function daylightSeriesFromLocation(location: LocationDay[]): FactorPoint[] {
+  return location.map(l => ({ date: l.date, value: daylightHours(l.date, l.lat) }));
 }
 
 /** Region-centroid latitude of a "lat_min,lon_min,lat_max,lon_max" bbox. */
