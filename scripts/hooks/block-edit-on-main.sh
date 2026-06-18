@@ -152,8 +152,14 @@ esac
 # CLOSED on that case to match the rest of this script's security posture
 # (jq/realpath capability checks above also fail closed). Bare `if is_on_main`
 # would collapse rc=2 into "not on main" and silently allow the edit.
-is_on_main "$project_dir"
-branch_rc=$?
+#
+# The call MUST go through `|| branch_rc=$?` (not a bare `is_on_main`): under
+# `set -e` a bare predicate call returning rc=1 (feature branch) aborts the
+# script rc=1 with NO stderr — before the rc=1 ALLOW path below — surfacing as
+# Claude Code's "hook error: No stderr output" on every primary-checkout
+# feature-branch edit (HIMMEL-392).
+branch_rc=0
+is_on_main "$project_dir" || branch_rc=$?
 if [ "$branch_rc" -eq 1 ]; then
     exit 0
 fi
