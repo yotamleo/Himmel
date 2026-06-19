@@ -33,3 +33,11 @@ __pycache__/
 
 # Handover scratch state
 .last-consolidate.json
+
+# Vault-template upgrade state (HIMMEL-389). The version stamp (.vault-template.json)
+# IS tracked — it travels with the vault. These are upgrade-managed scratch:
+# the 3-way-merge base snapshot, an unresolved _CLAUDE.md conflict sidecar, and
+# any temp left by an interrupted atomic write.
+.vault-template.base/
+*.template-merge
+*.upgrade-tmp.*
