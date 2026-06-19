@@ -14,8 +14,10 @@
 #
 #   --template-dir DIR  fresh himmel template root (contains marketplace/ +
 #                       _CLAUDE.md). Default resolution: --template-dir >
-#                       $HIMMEL_DIR/templates/luna-second-brain > a sibling-dir
-#                       scan for a himmel checkout carrying the template.
+#                       $HIMMEL_DIR/templates/luna-second-brain > generic
+#                       $HOME-relative candidate paths ($HOME[/Documents]/github/
+#                       {himmel,Himmel}) > a sibling-dir scan for a himmel
+#                       checkout carrying the template.
 #   --vault-dir DIR     the vault to upgrade. Default: the parent of this
 #                       script's dir (scripts/.. — i.e. run from inside a vault).
 #   --dry-run           print the plan, make zero filesystem changes.
@@ -51,7 +53,8 @@ upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
   bash scripts/upgrade.sh [--template-dir DIR] [--vault-dir DIR] [--dry-run] [--yes]
 
   --template-dir DIR  fresh himmel template root (default: --template-dir >
-                      $HIMMEL_DIR/templates/luna-second-brain > sibling scan).
+                      $HIMMEL_DIR/templates/luna-second-brain > $HOME-relative
+                      candidate paths (github/{himmel,Himmel}) > sibling scan).
   --vault-dir DIR     the vault to upgrade (default: scripts/.. — run from a vault).
   --dry-run           print the plan, make zero filesystem changes.
   --yes, -y           skip the confirm prompt.
@@ -66,11 +69,45 @@ USAGE
 done
 
 # ---------------------------------------------------------------------------
-# Resolve template dir: --template-dir > $HIMMEL_DIR > sibling-dir scan.
+# Resolve template dir: --template-dir > $HIMMEL_DIR > generic $HOME-relative
+# candidate paths > sibling-dir scan. Explicit config (--template-dir /
+# $HIMMEL_DIR) ALWAYS wins over the candidate paths.
 resolve_template() {
     local rel="templates/luna-second-brain"
     if [ -n "$TEMPLATE_DIR" ]; then printf '%s' "$TEMPLATE_DIR"; return; fi
     if [ -n "${HIMMEL_DIR:-}" ] && [ -d "$HIMMEL_DIR/$rel" ]; then printf '%s' "$HIMMEL_DIR/$rel"; return; fi
+    # Generic $HOME-relative candidate paths: common himmel clone conventions so
+    # the skill/CLI work zero-config when the vault and himmel are NOT siblings.
+    # Public-safe — derived from $HOME, never an operator-specific string. Both
+    # the lowercase `himmel` and capitalized `Himmel` clone-dir conventions. A
+    # candidate must carry a real template (marketplace.json present), so a
+    # half-populated decoy dir is skipped rather than selected-then-aborted. If
+    # more than one PHYSICALLY-distinct checkout matches (e.g. a stale clone
+    # beside the live one — the dual-clone trap), warn and use the first; the
+    # operator disambiguates with --template-dir / $HIMMEL_DIR.
+    # Loop order is contractual: earlier entries win on a tie (github/ before
+    # Documents/github/); test T19 pins this. Do not reorder without updating it.
+    if [ -n "${HOME:-}" ]; then
+        local h cand_dir cand_key first_dir="" first_key=""
+        for h in "$HOME/github/himmel" "$HOME/github/Himmel" \
+                 "$HOME/Documents/github/himmel" "$HOME/Documents/github/Himmel"; do
+            cand_dir="$h/$rel"
+            [ -f "$cand_dir/marketplace/.claude-plugin/marketplace.json" ] || continue
+            # Identity key dedupes case-spelling variants of ONE physical dir
+            # (case-insensitive FS on Windows/macOS) so a single clone never
+            # looks like "multiple checkouts". device:inode via GNU then BSD
+            # stat; lowercased-path fallback when stat is unavailable.
+            cand_key="$(stat -c '%d:%i' "$cand_dir" 2>/dev/null || stat -f '%d:%i' "$cand_dir" 2>/dev/null)"
+            [ -n "$cand_key" ] || cand_key="$(printf '%s' "$cand_dir" | tr '[:upper:]' '[:lower:]')"
+            if [ -z "$first_dir" ]; then
+                first_dir="$cand_dir"; first_key="$cand_key"
+            elif [ "$cand_key" != "$first_key" ]; then
+                echo "upgrade: WARNING — multiple himmel checkouts found under \$HOME; using $first_dir. Pass --template-dir or set HIMMEL_DIR to disambiguate." >&2
+                break
+            fi
+        done
+        [ -n "$first_dir" ] && { printf '%s' "$first_dir"; return; }
+    fi
     # Sibling scan: look one level up from the vault for a himmel checkout.
     local base; base="$(cd "$VAULT_DIR/.." 2>/dev/null && pwd)"
     if [ -n "$base" ]; then
