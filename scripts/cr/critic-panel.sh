@@ -9,6 +9,8 @@
 #      CRITIC_TIMEOUT_SECS — per-member wall-clock timeout in seconds (default 150;
 #          comfortably above fast critics' ~90s observed latency but bounds a true hang).
 #          Requires GNU coreutils 'timeout'; gracefully degrades without it.
+#      CRITIC_PARALLEL — set to 1 to run critics concurrently (default 0 = sequential).
+#          Output is byte-identical to sequential: results merged in registry order.
 set -uo pipefail
 LC_ALL=C
 export LC_ALL
@@ -28,6 +30,13 @@ if expr "$CRITIC_TIMEOUT_SECS" : '^[0-9][0-9]*$' > /dev/null 2>&1 && [ "$CRITIC_
 else
     echo "critic-panel.sh: CRITIC_TIMEOUT_SECS=$CRITIC_TIMEOUT_SECS invalid, using 150" >&2
     CRITIC_TIMEOUT_SECS="150"
+fi
+
+# Validate CRITIC_PARALLEL
+CRITIC_PARALLEL="${CRITIC_PARALLEL:-0}"
+if [ "$CRITIC_PARALLEL" != "0" ] && [ "$CRITIC_PARALLEL" != "1" ]; then
+    echo "critic-panel.sh: CRITIC_PARALLEL=$CRITIC_PARALLEL invalid, using 0" >&2
+    CRITIC_PARALLEL="0"
 fi
 
 # Detect timeout binary once (before the loop).
@@ -62,7 +71,9 @@ fi
 
 # Write diff to a temp file so each member can read it via stdin redirect
 tmp="$(mktemp -t critic-panel.XXXXXX)"
-trap 'rm -f "$tmp"' EXIT
+_seq_out=""
+outdir=""
+trap 'rm -f "$tmp"; [ -n "$_seq_out" ] && rm -f "$_seq_out"; [ -n "$outdir" ] && rm -rf "$outdir"' EXIT
 printf '%s' "$diff_in" > "$tmp"
 
 # Run each panel member; collect per-member output and renumber globally.
@@ -76,29 +87,31 @@ agg_crit=""
 agg_imp=""
 agg_sug=""
 
-# Process each "slug<TAB>model" line
-# We use printf/read loop which is Bash 3.2 safe
-while IFS="	" read -r slug model; do
-    [ -n "$slug" ] || continue
-    total=$((total + 1))
+# ---------------------------------------------------------------------------
+# process_member: shared per-member logic called from both sequential and
+# parallel result loops. Runs in the MAIN shell so it can update global_id,
+# responded, agg_crit, agg_imp, agg_sug directly.
+#
+# $1 = slug
+# $2 = path to member stdout file
+# $3 = rc value (integer string)
+# $4 = path to member stderr file (optional; pass "" to skip)
+# ---------------------------------------------------------------------------
+process_member() {
+    _pm_slug="$1"
+    _pm_out_file="$2"
+    _pm_rc="$3"
+    _pm_err_file="${4:-}"
 
-    # Run this member (with per-member timeout if available)
-    if [ -n "$_TIMEOUT_BIN" ]; then
-        member_out="$("$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" 2>/dev/null)"
-        rc=$?
-    else
-        member_out="$(bash "$CFP" --model "$model" --slug "$slug" < "$tmp" 2>/dev/null)"
-        rc=$?
+    if [ "$_pm_rc" -eq 124 ] || [ "$_pm_rc" -eq 137 ]; then
+        echo "panel-availability: $_pm_slug unavailable (timeout ${CRITIC_TIMEOUT_SECS}s)" >&2
+        return
     fi
-    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-        echo "panel-availability: $slug unavailable (timeout ${CRITIC_TIMEOUT_SECS}s)" >&2
-        continue
+    if [ "$_pm_rc" -ne 0 ]; then
+        echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
+        return
     fi
-    if [ "$rc" -ne 0 ]; then
-        echo "panel-availability: $slug unavailable (rc=$rc)" >&2
-        continue
-    fi
-    echo "panel-availability: $slug ok" >&2
+    echo "panel-availability: $_pm_slug ok" >&2
     responded=$((responded + 1))
 
     # Parse the member output sections and renumber bullets globally.
@@ -115,7 +128,8 @@ while IFS="	" read -r slug model; do
     #
     # We parse with awk, passing the current global_id base,
     # and collect section bullets. Output format: "S<TAB>bullet" where S=1,2,3
-    member_parsed="$(printf '%s\n' "$member_out" | awk -v base="$global_id" -v slug="$slug" '
+    _pm_member_out="$(cat "$_pm_out_file")"
+    member_parsed="$(printf '%s\n' "$_pm_member_out" | awk -v base="$global_id" -v slug="$_pm_slug" '
         BEGIN { sec = 0; max_id = base }
         /^## Critical Issues \([0-9]+ found\)/ { sec = 1; next }
         /^## Important Issues \([0-9]+ found\)/ { sec = 2; next }
@@ -171,10 +185,80 @@ while IFS="	" read -r slug model; do
             agg_sug="$sug_bullets"
         fi
     fi
+}
 
-done << ROWSEOF
+# ---------------------------------------------------------------------------
+# Sequential path (CRITIC_PARALLEL=0, default)
+# ---------------------------------------------------------------------------
+if [ "$CRITIC_PARALLEL" = "0" ]; then
+    # Use a temp file per member so process_member can read from a path
+    _seq_out="$(mktemp -t critic-panel-seq.XXXXXX)"
+
+    while IFS="	" read -r slug model; do
+        [ -n "$slug" ] || continue
+        total=$((total + 1))
+
+        # Run this member (with per-member timeout if available)
+        if [ -n "$_TIMEOUT_BIN" ]; then
+            "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>/dev/null
+            rc=$?
+        else
+            bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>/dev/null
+            rc=$?
+        fi
+
+        process_member "$slug" "$_seq_out" "$rc" ""
+
+    done << ROWSEOF
 $rows
 ROWSEOF
+
+# ---------------------------------------------------------------------------
+# Parallel path (CRITIC_PARALLEL=1)
+# ---------------------------------------------------------------------------
+else
+    outdir="$(mktemp -d -t critic-panel-par.XXXXXX)"
+
+    # Launch each member indexed by position i (i=0,1,2,...)
+    i=0
+    while IFS="	" read -r slug model; do
+        [ -n "$slug" ] || continue
+        total=$((total + 1))
+        # Write slug and model so the result loop can recover them
+        printf '%s' "$slug"  > "$outdir/$i.slug"
+        printf '%s' "$model" > "$outdir/$i.model"
+        (
+            if [ -n "$_TIMEOUT_BIN" ]; then
+                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                echo $? > "$outdir/$i.rc"
+            else
+                bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                echo $? > "$outdir/$i.rc"
+            fi
+        ) &
+        i=$((i + 1))
+    done << ROWSEOF
+$rows
+ROWSEOF
+
+    wait  # Bash 3.2 plain wait — waits for ALL background jobs
+
+    # Process results in registry order (i=0, 1, 2, ..., total-1)
+    i=0
+    while [ "$i" -lt "$total" ]; do
+        slug=""
+        read -r slug < "$outdir/$i.slug" || true
+        rc_val=1
+        read -r rc_val < "$outdir/$i.rc" || true
+        # Note: if .rc is absent (subshell received a signal during the .out write,
+        # e.g. outer timeout SIGKILLs mid-run before the echo $? line runs),
+        # rc_val stays at its initialized 1 → process_member treats the member as
+        # unavailable (safe). The benign case (rc=0, .out empty) is also handled:
+        # process_member sees zero findings and counts the member as responded.
+        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err"
+        i=$((i + 1))
+    done
+fi
 
 # Count bullets per section
 nc=0; ni=0; ns=0

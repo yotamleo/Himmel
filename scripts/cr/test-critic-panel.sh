@@ -155,6 +155,113 @@ else
     echo "ok - J1: SKIP (no timeout binary)"
 fi
 
+# Tests K1+K2+K3: parallel mode (CRITIC_PARALLEL=1)
+# Wrapped in timeout guard like J1 — parallel tests require the 'timeout' binary
+# to bound CI runs if something hangs.
+if command -v timeout > /dev/null 2>&1; then
+
+    # K1: Determinism — parallel output must be byte-identical to sequential.
+    # The real proof: critic-0 (qwen3coder, index 0 in registry) is SLOW (sleep 2),
+    # critic-1 (gptoss, index 1) is INSTANT. In parallel mode critic-1 finishes first,
+    # but the merged output MUST still be in registry order (qwen3coder findings first,
+    # numbered before gptoss findings). We assert:
+    #   (a) parallel stdout == sequential stdout (byte-identical convergence)
+    #   (b) qwen3coder slug-IDs come before gptoss slug-IDs in the merged output
+    # A bug that merged in completion order would put gptoss-1 before qwen3coder-*
+    # and fail both assertions.
+    STUB_SLOW="$tmp/stub-cfp-slow.sh"
+    # stub-cfp-slow.py: same as stub-cfp.py but qwen3coder sleeps 2s first
+    python3 - "$tmp" <<'PYEOF'
+import sys, os
+src = os.path.join(sys.argv[1], "stub-cfp-slow.py")
+open(src, "w").write("""\
+#!/usr/bin/env python3
+import sys, time
+
+model = ""
+slug = ""
+args = sys.argv[1:]
+i = 0
+while i < len(args):
+    if args[i] == "--model" and i+1 < len(args):
+        model = args[i+1]; i += 2
+    elif args[i] == "--slug" and i+1 < len(args):
+        slug = args[i+1]; i += 2
+    else:
+        i += 1
+
+sys.stdin.read()
+
+if model == "qwen/qwen3-coder-480b-a35b-instruct":
+    time.sleep(2)  # slow: finishes AFTER gptoss in parallel mode
+    print("# qwen3coder First-Pass Review")
+    print("")
+    print("## Critical Issues (1 found)")
+    print("- [qwen3coder-1]: null dereference in handler [foo.sh:3]")
+    print("")
+    print("## Important Issues (1 found)")
+    print("- [qwen3coder-2]: unused variable x [foo.sh:5]")
+    print("")
+    print("## Suggestions (1 found)")
+    print("- [qwen3coder-3]: rename for clarity [foo.sh:7]")
+    sys.exit(0)
+elif model == "openai/gpt-oss-120b":
+    # instant: finishes BEFORE qwen3coder in parallel mode
+    print("# gptoss First-Pass Review")
+    print("")
+    print("## Critical Issues (0 found)")
+    print("")
+    print("## Important Issues (1 found)")
+    print("- [gptoss-1]: missing error check [bar.sh:2]")
+    print("")
+    print("## Suggestions (0 found)")
+    sys.exit(0)
+else:
+    print("stub-cfp-slow: unknown model:", model, file=sys.stderr)
+    sys.exit(1)
+""")
+PYEOF
+    printf '%s\n' '#!/usr/bin/env bash' > "$STUB_SLOW"
+    printf 'exec python3 "%s/stub-cfp-slow.py" "$@"\n' "$tmp" >> "$STUB_SLOW"
+    chmod +x "$STUB_SLOW"
+
+    DATA_2='{"panel":[
+  {"slug":"qwen3coder","model":"qwen/qwen3-coder-480b-a35b-instruct","provider":"test","tier":"free"},
+  {"slug":"gptoss","model":"openai/gpt-oss-120b","provider":"test","tier":"free"}
+]}'
+    printf '%s' "$DATA_2" > "$tmp/critics-2.json"
+
+    # (a) byte-identical convergence: slow-critic-0 + instant-critic-1, parallel == sequential
+    out_seq="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-2.json" CRITIC_FIRST_PASS="$STUB_SLOW" CRITIC_PARALLEL=0 timeout 30 bash "$PANEL" 2>/dev/null)"
+    out_par="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-2.json" CRITIC_FIRST_PASS="$STUB_SLOW" CRITIC_PARALLEL=1 timeout 30 bash "$PANEL" 2>/dev/null)"
+    check "K1: parallel output identical to sequential (slow critic-0)" "$out_seq" "$out_par"
+
+    # (b) registry order: qwen3coder-1 must appear before gptoss-* in merged output
+    qwen_line="$(printf '%s\n' "$out_par" | grep -n '\[qwen3coder-1\]:' | head -1 | cut -d: -f1)"
+    gptoss_line="$(printf '%s\n' "$out_par" | grep -n '\[gptoss-' | head -1 | cut -d: -f1)"
+    if [ -n "$qwen_line" ] && [ -n "$gptoss_line" ] && [ "$qwen_line" -lt "$gptoss_line" ]; then
+        echo "ok - K1: qwen3coder-* before gptoss-* in merged output (registry order)"
+    else
+        echo "FAIL - K1: registry order not preserved (qwen3coder line=$qwen_line gptoss line=$gptoss_line)"
+        fails=$((fails + 1))
+    fi
+
+    # K2: Parallel member-drop — kimi fails in parallel mode; check availability + header
+    # Note: critics-all.json has kimi which fails (stub exits 1 for kimi model)
+    # Run twice: once for stderr, once for stdout (can't capture both at once cleanly)
+    stderr_k2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" CRITIC_PARALLEL=1 timeout 30 bash "$PANEL" 2>&1 >/dev/null)"
+    out_k2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" CRITIC_PARALLEL=1 timeout 30 bash "$PANEL" 2>/dev/null)"
+    check "K2: parallel kimi unavailable" "$(printf '%s\n' "$stderr_k2" | grep -cF 'panel-availability: kimi unavailable')" "1"
+    check "K2: parallel header 2/3" "$(printf '%s\n' "$out_k2" | grep -cF '(2/3 critics responded)')" "1"
+
+else
+    echo "ok - K1: SKIP (no timeout binary)"
+    echo "ok - K1: SKIP (no timeout binary)"
+    echo "ok - K1: SKIP (no timeout binary)"
+    echo "ok - K2: SKIP (no timeout binary)"
+    echo "ok - K2: SKIP (no timeout binary)"
+fi
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

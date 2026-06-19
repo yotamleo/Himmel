@@ -159,6 +159,7 @@ Number IDs sequentially across all sections. Critical = certain
 bug/security/data-loss. Important = likely bug or risky pattern.
 Suggestion = style/cleanup. Do not invent findings; an empty review is
 acceptable and better than a fabricated one.
+Do NOT call any tools. Respond ONLY with the review in the structure above.
 $trunc_note
 
 DIFF:
@@ -166,9 +167,25 @@ $diff_in"
 
 pf="$(mktemp "${TMPDIR:-/tmp}/cfp-prompt.XXXXXX")"
 printf '%s' "$role_prompt" > "$pf"
-raw="$(bash "$INVOKE" --model "$model" --prompt-file "$pf")"
-rc=$?
-if [ "$rc" -ne 0 ]; then
+
+_attempt=0
+raw=""
+rc=1
+while [ "$_attempt" -lt 3 ]; do
+    _attempt=$((_attempt + 1))
+    raw="$(bash "$INVOKE" --model "$model" --prompt-file "$pf")"
+    rc=$?
+    _trimmed="$(printf '%s' "$raw" | tr -d '[:space:]')"
+    if [ "$rc" -eq 0 ] && [ -n "$_trimmed" ]; then
+        break
+    fi
+    if [ "$_attempt" -lt 3 ]; then
+        echo "critic-first-pass.sh: empty/failed hermes response (attempt $_attempt/3) — retrying" >&2
+        sleep 1
+    fi
+done
+
+if [ "$rc" -ne 0 ] || [ -z "$(printf '%s' "$raw" | tr -d '[:space:]')" ]; then
     # Raw-output log intentionally NOT cleaned up — it is the fail-open diagnostic artifact.
     log="$(mktemp -t cfp-raw.XXXXXX)" || log=""
     if [ -n "$log" ]; then
