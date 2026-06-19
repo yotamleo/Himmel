@@ -77,4 +77,55 @@ PY
 out3="$(printf '%s' "$DIFF" | HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug s 2>/dev/null)"
 check "hallucinated cite dropped" "$(printf '%s' "$out3" | grep -c '^## Critical Issues (0 found)')" "1"
 
+# --- test: retry recovers on first-attempt empty response ---
+# Counter file: bash shim increments it, decides which stub.py to exec.
+counter_file="$tmp/retry_counter"
+printf '0' > "$counter_file"
+cat > "$tmp/stub_retry_empty.py" <<'PY'
+# Returns nothing (empty output, rc 0) — simulates hermes producing no response.
+PY
+cat > "$tmp/stub_retry_good.py" <<'PY'
+print("## Critical Issues (1 found)")
+print("- [CRITIC-1]: off-by-one in loop bound [foo.sh:3]")
+print("## Important Issues (0 found)")
+print("## Suggestions (0 found)")
+PY
+# The shim increments a bash counter, then picks empty on call 1 and good from call 2 onward.
+cat > "$tmp/py_retry.sh" <<SHEOF
+#!/usr/bin/env bash
+n=\$(cat "$counter_file")
+n=\$((n + 1))
+printf '%s' "\$n" > "$counter_file"
+if [ "\$n" -le 1 ]; then
+    exec python3 "$tmp/stub_retry_empty.py"
+else
+    exec python3 "$tmp/stub_retry_good.py"
+fi
+SHEOF
+chmod +x "$tmp/py_retry.sh"
+out4="$(printf '%s' "$DIFF" | HERMES_PY="$tmp/py_retry.sh" bash "$CFP" --model x/y --slug s 2>/dev/null)"
+rc4=$?
+check "retry recovers rc" "$rc4" "0"
+check "retry recovers output" "$(printf '%s' "$out4" | grep -c '^## Critical Issues (1 found)')" "1"
+check "retry used 2 attempts" "$(cat "$counter_file")" "2"
+
+# --- test: fail-open after exhaustion (3 retries all empty) ---
+counter_file2="$tmp/exhaust_counter"
+printf '0' > "$counter_file2"
+cat > "$tmp/stub_exhaust_empty.py" <<'PY'
+# Always returns nothing (empty output, rc 0).
+PY
+cat > "$tmp/py_exhaust.sh" <<SHEOF
+#!/usr/bin/env bash
+n=\$(cat "$counter_file2")
+n=\$((n + 1))
+printf '%s' "\$n" > "$counter_file2"
+exec python3 "$tmp/stub_exhaust_empty.py"
+SHEOF
+chmod +x "$tmp/py_exhaust.sh"
+printf '%s' "$DIFF" | HERMES_PY="$tmp/py_exhaust.sh" bash "$CFP" --model x/y --slug s >/dev/null 2>&1
+rc5=$?
+check "exhausted retries fail-open rc1" "$rc5" "1"
+check "exhausted retries tried 3 times" "$(cat "$counter_file2")" "3"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi
