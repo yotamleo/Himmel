@@ -217,6 +217,71 @@ got_ver=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["versio
 assert_eq "T15 write-failure does not advance stamp" "0.1.0" "$got_ver"
 
 # ---------------------------------------------------------------------------
+# T16: resolver — generic known-path discovery (HIMMEL-389 Phase 2). With
+# --template-dir AND $HIMMEL_DIR unset and no himmel sibling, the resolver finds
+# the template via a generic $HOME-relative candidate path. Simulate by pointing
+# $HOME at a temp tree that holds github/himmel/templates/luna-second-brain.
+T16HOME="$TMP/t16-home"; T="$T16HOME/github/himmel/templates/luna-second-brain"; make_template "$T" "1.0.0"
+V="$TMP/t16-vault"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.1.0"
+printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+out=$(env -u HIMMEL_DIR HOME="$T16HOME" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1); rc=$?
+assert_eq "T16 candidate-path rc" "0" "$rc"
+case "$out" in *"t16-home/github/himmel/templates/luna-second-brain"*) pass "T16 resolves via generic candidate path" ;; *) fail "T16 resolves via generic candidate path" "got: $out" ;; esac
+# A SINGLE clone must never false-warn. On a case-insensitive FS (Windows/macOS)
+# the `himmel` and `Himmel` candidate spellings BOTH resolve to this one dir, so
+# this case exercises the device:inode dedup branch (same key => no warn).
+case "$out" in *"multiple himmel checkouts"*) fail "T16 single clone: no false multi-checkout warn" "warned: $out" ;; *) pass "T16 single clone: no false multi-checkout warn (dedup branch)" ;; esac
+
+# ---------------------------------------------------------------------------
+# T17: resolver — explicit config ALWAYS wins over the candidate paths.
+#   (a) $HIMMEL_DIR beats a candidate-path template.
+#   (b) --template-dir beats both $HIMMEL_DIR and the candidate.
+T17HOME="$TMP/t17-home"; CAND="$T17HOME/github/himmel/templates/luna-second-brain"; make_template "$CAND" "9.9.9"
+HD="$TMP/t17-hd"; make_template "$HD/templates/luna-second-brain" "2.0.0"
+TDARG="$TMP/t17-td"; make_template "$TDARG" "3.0.0"
+V="$TMP/t17-vault"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+out=$(HOME="$T17HOME" HIMMEL_DIR="$HD" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1)
+case "$out" in *"t17-hd/templates/luna-second-brain"*) pass "T17a HIMMEL_DIR wins over candidate path" ;; *) fail "T17a HIMMEL_DIR wins over candidate path" "got: $out" ;; esac
+case "$out" in *"t17-home/github/himmel"*) fail "T17a HIMMEL_DIR wins over candidate path" "candidate leaked: $out" ;; *) pass "T17a candidate path not used when HIMMEL_DIR set" ;; esac
+out=$(HOME="$T17HOME" HIMMEL_DIR="$HD" bash "$UPGRADE" --template-dir "$TDARG" --vault-dir "$V" --dry-run 2>&1)
+case "$out" in *"t17-td"*) pass "T17b --template-dir wins over HIMMEL_DIR + candidate" ;; *) fail "T17b --template-dir wins over HIMMEL_DIR + candidate" "got: $out" ;; esac
+
+# ---------------------------------------------------------------------------
+# T18: resolver — clear error + hint when nothing resolves (no --template-dir,
+# $HIMMEL_DIR unset, $HOME has no candidate, vault has no himmel sibling).
+V="$TMP/t18-iso/vault"; mkdir -p "$V"
+out=$(env -u HIMMEL_DIR HOME="$TMP/t18-emptyhome" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1); rc=$?
+assert_eq "T18 no-resolve rc" "2" "$rc"
+case "$out" in *"set HIMMEL_DIR"*) pass "T18 prints the set-HIMMEL_DIR hint" ;; *) fail "T18 prints the set-HIMMEL_DIR hint" "got: $out" ;; esac
+
+# ---------------------------------------------------------------------------
+# T19: resolver — TWO physically-distinct candidate checkouts under $HOME warn
+# and resolve to the FIRST in loop order (github/himmel before Documents/...).
+# Guards the silent dual-clone auto-pick (HIMMEL-389 Phase 2 CR).
+T19HOME="$TMP/t19-home"
+make_template "$T19HOME/github/himmel/templates/luna-second-brain" "1.1.1"
+make_template "$T19HOME/Documents/github/himmel/templates/luna-second-brain" "2.2.2"
+V="$TMP/t19-vault"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+out=$(env -u HIMMEL_DIR HOME="$T19HOME" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1); rc=$?
+assert_eq "T19 multi-checkout rc" "0" "$rc"
+case "$out" in *"multiple himmel checkouts"*) pass "T19 warns on multiple distinct checkouts" ;; *) fail "T19 warns on multiple distinct checkouts" "got: $out" ;; esac
+case "$out" in *"(v1.1.1)"*) pass "T19 resolves to first candidate (github/himmel, v1.1.1)" ;; *) fail "T19 resolves to first candidate (github/himmel, v1.1.1)" "got: $out" ;; esac
+case "$out" in *"(v2.2.2)"*) fail "T19 must not pick the later Documents candidate" "v2.2.2 leaked: $out" ;; *) pass "T19 does not pick the later Documents candidate" ;; esac
+
+# ---------------------------------------------------------------------------
+# T20: resolver — a candidate dir WITHOUT marketplace.json is a decoy: skip it
+# and resolve a later valid candidate instead of selecting-then-aborting. One
+# valid candidate => no multi-checkout warning.
+T20HOME="$TMP/t20-home"
+mkdir -p "$T20HOME/github/himmel/templates/luna-second-brain"   # decoy: dir, no marketplace.json
+make_template "$T20HOME/Documents/github/himmel/templates/luna-second-brain" "3.3.3"
+V="$TMP/t20-vault"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+out=$(env -u HIMMEL_DIR HOME="$T20HOME" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1); rc=$?
+assert_eq "T20 decoy-skip rc" "0" "$rc"
+case "$out" in *"(v3.3.3)"*) pass "T20 skips the decoy and resolves the valid candidate" ;; *) fail "T20 skips the decoy and resolves the valid candidate" "got: $out" ;; esac
+case "$out" in *"multiple himmel checkouts"*) fail "T20 must not warn (only one valid)" "warned: $out" ;; *) pass "T20 no false multi-checkout warn with a decoy present" ;; esac
+
+# ---------------------------------------------------------------------------
 # T11: ACCEPTANCE — run against a COPY of the real luna vault, never the live one.
 LUNA="$HOME/Documents/luna"
 if [ -d "$LUNA" ] && [ -d "$LUNA/50-Journal" ]; then
