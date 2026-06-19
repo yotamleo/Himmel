@@ -1,8 +1,10 @@
 # GEMINI.md — himmel
 
-Context for gemini-cli when it runs inside the himmel repo — as the CR
-first-pass reviewer (`scripts/cr/gemini-first-pass.sh`), the
-`gemini-subagent` second opinion, or `/gemini`. Mirrors the team's
+Context for gemini-cli when it runs inside the himmel repo — as the
+`gemini-subagent` second opinion, or `/gemini`. (The CR first-pass lane
+previously used `scripts/cr/gemini-first-pass.sh`; it was retired by
+HIMMEL-412/415 in favour of the multi-model critic panel
+`scripts/cr/critic-panel.sh`.) Mirrors the team's
 `CLAUDE.md` so Claude and gemini share one operating frame. Kept short on
 purpose: every line is loaded on every gemini call.
 

@@ -1,0 +1,47 @@
+diff --git a/scripts/lib/batch-runner.sh b/scripts/lib/batch-runner.sh
+index 3a7b1c2..8d4f9e1 100644
+--- a/scripts/lib/batch-runner.sh
++++ b/scripts/lib/batch-runner.sh
+@@ -1,6 +1,6 @@
+ #!/usr/bin/env bash
+-# batch-runner.sh — process a list of items read from a file
++# batch-runner.sh — process a list of items read from an input file
+ # Exit 0 on success, 1 on any item failure.
+ set -euo pipefail
+
+@@ -14,13 +14,15 @@ if [ ! -f "$1" ]; then
+     exit 1
+ fi
+
+-# Read all items into an array
+-mapfile -t items < "$1"
++# Read all items into an indexed array
++mapfile -t items < "$1"
++item_count=${#items[@]}
+
+-for i in $(seq 0 ${#items[@]}); do
+-    process_item "${items[$i]}"
++# BUG: loop bound is item_count (inclusive) — items[$item_count] is unset,
++# process_item receives an empty string on the final iteration.
++for i in $(seq 0 $item_count); do
++    process_item "${items[$i]}"
+ done
+
+ exit 0
+diff --git a/scripts/lib/process-item.sh b/scripts/lib/process-item.sh
+index c1f2e83..2b9a4d1 100644
+--- a/scripts/lib/process-item.sh
++++ b/scripts/lib/process-item.sh
+@@ -1,10 +1,10 @@
+ #!/usr/bin/env bash
+-# process-item.sh — handle a single work item
++# process-item.sh — handle a single work item (called by batch-runner.sh)
+ set -euo pipefail
+
+ process_item() {
+     local item="$1"
+-    echo "Processing: $item"
++    echo "[batch] Processing: $item"
+     # stub: real implementation delegates to downstream tool
+     return 0
+ }

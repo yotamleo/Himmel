@@ -325,7 +325,10 @@ Specs saved to: `docs/superpowers/specs/YYYY-MM-DD-feature.md`
 Shell scripts that implement `/pr-check` sub-steps. Called by the `/pr-check` command; not invoked standalone in normal workflows.
 
 - `scripts/cr/file-deferred-issues.sh` — reads `/pr-review-toolkit:review-pr` output, dedupes low-severity findings by content hash, and files them as GitHub issues tagged `cr-deferred`. Called by `/pr-check` step 7. Idempotent; `--dry-run` mode for inspection.
-- `scripts/cr/gemini-first-pass.sh` — gemini first-pass CR reviewer (HIMMEL-270): diff on stdin → findings in the /pr-check heading contract with stable `[gemini-N]` IDs; called by `/pr-check` step 3.0. Tests: `scripts/cr/test-gemini-first-pass.sh` (deterministic, PATH-stubbed fake gemini).
+- `scripts/cr/critic-first-pass.sh` — generic model-parametrized CR reviewer (HIMMEL-415, supersedes retired `gemini-first-pass.sh`): diff on stdin → findings with stable `[<slug>-N]` IDs; routes through `scripts/hermes/invoke.sh`; `--model`/`--slug` flags select the model. Tests: `scripts/cr/test-critic-first-pass.sh` (deterministic, PATH-stubbed fake hermes).
+- `scripts/cr/critic-panel.sh` + `scripts/cr/critics.json` — 3-model NIM critic panel (gptoss+kimi=`free` tier, qwen3coder=`thorough` tier; defined in `critics.json`). `/pr-check` **auto-runs the fast-free panel (gptoss+kimi, ~3min) by default**. `CR_PROFILE=none` = instant claude-only (skip panel). `CR_PROFILE=thorough` = adds qwen-480B (all 3 critics, ~5min+). Any other value passes through as `CRITIC_PANEL_TIERS`. Tier filter passed via `CRITIC_PANEL_TIERS` env var. Retired the gemini-only CR lane (HIMMEL-412/415). Per-member hang protection via `CRITIC_TIMEOUT_SECS` (default 150 s, requires `timeout`).
+- `scripts/cr/ledger-append.sh` — appends per-critic correctness verdicts (`VERDICT [<slug>-N] = …`) to the CR ledger (`cr-ledger.jsonl`); called by `/pr-check` adjudication step.
+- `scripts/cr/cr-scores.sh` — generates a per-critic correctness scorecard from the ledger; surfaced via `/cr-scores`.
 
 ---
 
