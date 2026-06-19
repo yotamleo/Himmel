@@ -69,52 +69,69 @@ USAGE
 done
 
 # ---------------------------------------------------------------------------
+# Pick a template dir from a list of candidate himmel-checkout ROOTS read on
+# stdin (one per line; "$rel" is appended to each). Echo the FIRST root that
+# carries a real template (marketplace.json present) — a half-populated decoy
+# root is skipped rather than selected-then-aborted. If more than one
+# PHYSICALLY-distinct checkout matches (e.g. a stale clone beside the live one
+# — the dual-clone trap), warn to stderr and use the first; the operator
+# disambiguates with --template-dir / $HIMMEL_DIR. Returns 1 (echoes nothing)
+# when none match. Used for BOTH the $HOME-candidate step and the sibling scan
+# so the two surfaces behave identically (HIMMEL-420). Loop/input order is
+# contractual: earlier roots win on a tie (tests T19/T22 pin this).
+pick_template_root() {
+    local rel="$1" root tdir key first_dir="" first_key=""
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        tdir="$root/$rel"
+        [ -f "$tdir/marketplace/.claude-plugin/marketplace.json" ] || continue
+        # Identity key dedupes case-spelling variants of ONE physical dir
+        # (case-insensitive FS on Windows/macOS) so a single clone never looks
+        # like "multiple checkouts". device:inode via GNU then BSD stat;
+        # lowercased-path fallback when stat is unavailable.
+        key="$(stat -c '%d:%i' "$tdir" 2>/dev/null || stat -f '%d:%i' "$tdir" 2>/dev/null)"
+        [ -n "$key" ] || key="$(printf '%s' "$tdir" | tr '[:upper:]' '[:lower:]')"
+        if [ -z "$first_dir" ]; then
+            first_dir="$tdir"; first_key="$key"
+        elif [ "$key" != "$first_key" ]; then
+            echo "upgrade: WARNING — multiple himmel checkouts found; using $first_dir. Pass --template-dir or set HIMMEL_DIR to disambiguate." >&2
+            break
+        fi
+    done
+    [ -n "$first_dir" ] || return 1
+    printf '%s' "$first_dir"
+}
+
+# ---------------------------------------------------------------------------
 # Resolve template dir: --template-dir > $HIMMEL_DIR > generic $HOME-relative
 # candidate paths > sibling-dir scan. Explicit config (--template-dir /
-# $HIMMEL_DIR) ALWAYS wins over the candidate paths.
+# $HIMMEL_DIR) ALWAYS wins over the discovered candidates.
 resolve_template() {
-    local rel="templates/luna-second-brain"
+    local rel="templates/luna-second-brain" got
     if [ -n "$TEMPLATE_DIR" ]; then printf '%s' "$TEMPLATE_DIR"; return; fi
     if [ -n "${HIMMEL_DIR:-}" ] && [ -d "$HIMMEL_DIR/$rel" ]; then printf '%s' "$HIMMEL_DIR/$rel"; return; fi
-    # Generic $HOME-relative candidate paths: common himmel clone conventions so
-    # the skill/CLI work zero-config when the vault and himmel are NOT siblings.
-    # Public-safe — derived from $HOME, never an operator-specific string. Both
-    # the lowercase `himmel` and capitalized `Himmel` clone-dir conventions. A
-    # candidate must carry a real template (marketplace.json present), so a
-    # half-populated decoy dir is skipped rather than selected-then-aborted. If
-    # more than one PHYSICALLY-distinct checkout matches (e.g. a stale clone
-    # beside the live one — the dual-clone trap), warn and use the first; the
-    # operator disambiguates with --template-dir / $HIMMEL_DIR.
-    # Loop order is contractual: earlier entries win on a tie (github/ before
-    # Documents/github/); test T19 pins this. Do not reorder without updating it.
+    # Generic $HOME-relative candidate checkouts: common himmel clone conventions
+    # so the skill/CLI work zero-config when the vault and himmel are NOT
+    # siblings. Public-safe — derived from $HOME, never an operator-specific
+    # string. Both the lowercase `himmel` and capitalized `Himmel` conventions.
+    # Order is contractual: github/ before Documents/github/ (test T19 pins it).
     if [ -n "${HOME:-}" ]; then
-        local h cand_dir cand_key first_dir="" first_key=""
-        for h in "$HOME/github/himmel" "$HOME/github/Himmel" \
-                 "$HOME/Documents/github/himmel" "$HOME/Documents/github/Himmel"; do
-            cand_dir="$h/$rel"
-            [ -f "$cand_dir/marketplace/.claude-plugin/marketplace.json" ] || continue
-            # Identity key dedupes case-spelling variants of ONE physical dir
-            # (case-insensitive FS on Windows/macOS) so a single clone never
-            # looks like "multiple checkouts". device:inode via GNU then BSD
-            # stat; lowercased-path fallback when stat is unavailable.
-            cand_key="$(stat -c '%d:%i' "$cand_dir" 2>/dev/null || stat -f '%d:%i' "$cand_dir" 2>/dev/null)"
-            [ -n "$cand_key" ] || cand_key="$(printf '%s' "$cand_dir" | tr '[:upper:]' '[:lower:]')"
-            if [ -z "$first_dir" ]; then
-                first_dir="$cand_dir"; first_key="$cand_key"
-            elif [ "$cand_key" != "$first_key" ]; then
-                echo "upgrade: WARNING — multiple himmel checkouts found under \$HOME; using $first_dir. Pass --template-dir or set HIMMEL_DIR to disambiguate." >&2
-                break
-            fi
-        done
-        [ -n "$first_dir" ] && { printf '%s' "$first_dir"; return; }
+        if got="$(printf '%s\n' \
+                "$HOME/github/himmel" "$HOME/github/Himmel" \
+                "$HOME/Documents/github/himmel" "$HOME/Documents/github/Himmel" \
+                | pick_template_root "$rel")"; then
+            printf '%s' "$got"; return
+        fi
     fi
-    # Sibling scan: look one level up from the vault for a himmel checkout.
+    # Sibling scan: look one level up from the vault for a himmel checkout. Goes
+    # through pick_template_root too, so it is decoy-safe and warns on multiple
+    # distinct sibling checkouts, matching the $HOME surface (HIMMEL-420).
     local base; base="$(cd "$VAULT_DIR/.." 2>/dev/null && pwd)"
     if [ -n "$base" ]; then
         local c
-        for c in "$base"/himmel "$base"/Himmel "$base"/*/; do
-            [ -d "$c/$rel" ] && { printf '%s' "$c/$rel"; return; }
-        done
+        if got="$( { for c in "$base"/himmel "$base"/Himmel "$base"/*/; do printf '%s\n' "${c%/}"; done; } | pick_template_root "$rel")"; then
+            printf '%s' "$got"; return
+        fi
     fi
     return 1
 }
