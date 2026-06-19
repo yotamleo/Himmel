@@ -171,6 +171,45 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 4: per-repo `vault` NAME routes via the ~/Documents/<name> convention
+# (HIMMEL-403). A real vault needs an .obsidian/ marker; FS fallback then writes.
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude" "$SB/home/Documents/medic/.obsidian"
+printf '%s\n' '{"vault":"medic"}' > "$SB/proj/.claude/end-session-wiki.json"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env -u LUNA_VAULT_PATH -u USERPROFILE OSTYPE="linux-gnu" OS="" HOME="$SB/home" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"
+if [ -n "$(find "$SB/home/Documents/medic/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
+    pass "vault NAME routes to ~/Documents/medic via convention"
+else
+    fail "vault NAME did not route to the convention vault"
+fi
+rm -rf "$SB"
+
+# --- Case 5: an invalid `vault` NAME is fail-closed — skip, no write anywhere --
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude" "$SB/home"
+printf '%s\n' '{"vault":"../evil"}' > "$SB/proj/.claude/end-session-wiki.json"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+RC="$(printf '%s' "$payload" | env -u LUNA_VAULT_PATH -u USERPROFILE OSTYPE="linux-gnu" OS="" HOME="$SB/home" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"; echo $?)"
+if [ "$RC" = "0" ]; then pass "invalid vault name still exits 0"; else fail "invalid vault name exit was $RC, expected 0"; fi
+if [ -z "$(find "$SB/home" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
+    pass "invalid vault name wrote no note anywhere"
+else
+    fail "invalid vault name unexpectedly wrote a note"
+fi
+if grep -q 'skipped: vault' "$SB/proj/.claude/end-session-wiki.log" 2>/dev/null; then
+    pass "log records the fail-closed skip"
+else
+    fail "log does not record the vault skip"
+fi
+# I1 regression guard: the skip must NOT trip the EXIT trap's phantom FAILED line.
+if grep -q 'FAILED' "$SB/proj/.claude/end-session-wiki.log" 2>/dev/null; then
+    fail "skip path logged a phantom FAILED line (HOOK_OK not set)"
+else
+    pass "skip path leaves no phantom FAILED log line"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0
