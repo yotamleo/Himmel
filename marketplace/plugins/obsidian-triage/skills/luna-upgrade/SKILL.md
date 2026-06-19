@@ -3,7 +3,7 @@ name: luna-upgrade
 description: Use when an existing luna-second-brain vault needs to pull newer himmel template updates — refreshed bundled-plugin assets, .obsidian config, _CLAUDE.md operating-manual changes, scripts/hooks, scaffold docs, and the PLUGINS-SETUP manual-install list — WITHOUT touching user content (journal, notes, clips). Previews the change plan (dry-run), surfaces any _CLAUDE.md merge conflict or changed manual-install table, asks the operator to confirm, then applies. Triggers on /luna-upgrade at the user prompt OR programmatic Skill-tool dispatch. Distinct from himmel harness self-update and Claude Code marketplace autoUpdate — this is VAULT content/config (HIMMEL-389).
 ---
 
-# luna-upgrade — content-preserving vault/template upgrade (HIMMEL-389 Phase 2)
+# luna-upgrade — content-preserving vault/template upgrade (HIMMEL-389)
 
 You bring an EXISTING luna-second-brain vault up to the current himmel template
 without clobbering the user's own content. Vaults are scaffolded once and never
@@ -27,14 +27,31 @@ string supplied via either path.
 
 ## Inputs
 
-`$ARGUMENTS` is `[--vault <path>] [--template-dir <path>]` (both optional).
+`$ARGUMENTS` is `[--check] [--vault <path>] [--template-dir <path>]` (all optional).
 
+- `--check` — report whether an upgrade is available and stop (no plan, no
+  confirm, no changes). See "Check-only mode" below.
 - `--vault <path>` — the vault to upgrade. Default: resolve from the current
   session (see Step 1).
 - `--template-dir <path>` — explicit himmel template root override. Default:
   resolve the himmel checkout (see Step 0). The engine's own resolver order is
   `--template-dir` > `$HIMMEL_DIR` > generic `$HOME`-relative candidate paths >
   sibling scan, so on a normal layout you pass neither flag.
+
+## Check-only mode (`--check`)
+
+When `--check` is in `$ARGUMENTS`, do Steps 0 and 1 (locate himmel + the vault),
+then run the engine in check mode and surface its single-line result verbatim —
+do NOT run the dry-run/confirm/apply sequence:
+
+```bash
+bash "$UPGRADE" --template-dir "$TEMPLATE" --vault-dir "$VAULT" --check
+```
+
+It prints either `luna-second-brain: template vX.Y.Z available …` (an upgrade
+exists — tell the operator they can run `/luna-upgrade` to apply it) or
+`luna-second-brain: vault is current …`. It changes nothing and exits 0. STOP
+after surfacing the line.
 
 ## Step 0 — Locate himmel's upgrade.sh
 

@@ -309,6 +309,35 @@ case "$out" in *"(v5.5.5)"*) pass "T22 sibling resolves to explicit 'himmel' fir
 case "$out" in *"(v6.6.6)"*) fail "T22 must not pick the later glob match zzz-himmel" "v6.6.6 leaked: $out" ;; *) pass "T22 sibling does not pick the later glob match" ;; esac
 
 # ---------------------------------------------------------------------------
+# T23: --check on a BEHIND vault prints the upgrade-available nudge, exits 0, and
+# mutates nothing (HIMMEL-423 Phase 3).
+T="$TMP/t23-tmpl"; V="$TMP/t23-vault"; make_template "$T" "2.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "1.0.0"
+printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+before=$(find "$V" -type f -exec sha256sum {} \; | sort)
+out=$(run_upgrade --check 2>&1); rc=$?
+after=$(find "$V" -type f -exec sha256sum {} \; | sort)
+assert_eq "T23 --check behind rc" "0" "$rc"
+case "$out" in *"template v2.0.0 available"*) pass "T23 --check prints the upgrade-available nudge" ;; *) fail "T23 --check prints the upgrade-available nudge" "got: $out" ;; esac
+assert_eq "T23 --check made zero changes" "$before" "$after"
+# --check is a single-line nudge: it must NOT print the upgrade banner/plan.
+case "$out" in *"==> luna-second-brain upgrade"*) fail "T23 --check must not print the upgrade banner" "got: $out" ;; *) pass "T23 --check emits no upgrade banner/plan" ;; esac
+
+# ---------------------------------------------------------------------------
+# T24: --check on a CURRENT vault prints the already-current line, exits 0.
+T="$TMP/t24-tmpl"; V="$TMP/t24-vault"; make_template "$T" "1.0.0"; mkdir -p "$V"; stamp_vault "$V" "1.0.0"
+out=$(run_upgrade --check 2>&1); rc=$?
+assert_eq "T24 --check current rc" "0" "$rc"
+case "$out" in *"vault is current (v1.0.0)"*) pass "T24 --check reports current" ;; *) fail "T24 --check reports current" "got: $out" ;; esac
+
+# ---------------------------------------------------------------------------
+# T25: --check on an UN-STAMPED (pre-versioning) vault — the most likely first-run
+# state — treats it as v0.0.0 and reports the upgrade as available, exit 0.
+T="$TMP/t25-tmpl"; V="$TMP/t25-vault"; make_template "$T" "1.0.0"; mkdir -p "$V"
+out=$(run_upgrade --check 2>&1); rc=$?
+assert_eq "T25 --check un-stamped rc" "0" "$rc"
+case "$out" in *"(vault is v0.0.0)"*) pass "T25 --check treats un-stamped vault as v0.0.0 (available)" ;; *) fail "T25 --check treats un-stamped vault as v0.0.0 (available)" "got: $out" ;; esac
+
+# ---------------------------------------------------------------------------
 # T11: ACCEPTANCE — run against a COPY of the real luna vault, never the live one.
 LUNA="$HOME/Documents/luna"
 if [ -d "$LUNA" ] && [ -d "$LUNA/50-Journal" ]; then
