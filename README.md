@@ -189,7 +189,7 @@ detail. This README points at them; the full map is in
 | **`/improve` prompt-refinement hook**      | [`.claude/commands/improve.md`](.claude/commands/improve.md) (HIMMEL-127) |
 | **`/overnight-shift` ticket fanout**       | [`.claude/commands/overnight-shift.md`](.claude/commands/overnight-shift.md) (HIMMEL-134) |
 | **`/stop` graceful-halt marker**           | [`.claude/commands/stop.md`](.claude/commands/stop.md) (HIMMEL-137)   |
-| **VM tooling (ralph-loop, etc.)** — `oz-cli` / `/oz-offload` is **beta** (Warp-offload, known issues) | [`docs/setup/`](docs/setup/)               |
+| **VM tooling (ralph-loop, etc.)**          | [`docs/setup/`](docs/setup/)               |
 
 ## Usage — the core loop
 

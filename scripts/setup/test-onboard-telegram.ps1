@@ -77,7 +77,7 @@ try {
     }
     Assert-Has 'fresh run reports missing pairing' 'access.json: MISSING' $out
     Assert-Has 'fresh run prints bridge bring-up' 'bridge bring-up' $out
-    # Warp onboarding split out into onboard-warp.ps1 (HIMMEL-360) -- the
+    # Warp onboarding (split out HIMMEL-360, removed/archived HIMMEL-421) -- the
     # telegram step must no longer emit any Warp output.
     Assert-Lacks 'fresh run no longer mentions warp' 'Warp' $out
 

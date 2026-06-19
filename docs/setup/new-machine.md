@@ -266,7 +266,7 @@ Plugins live at `~/.claude/plugins/`. Different install methods per plugin — r
 | Plugin | Source | Install method | Why |
 |--------|--------|----------------|-----|
 | `obsidian-second-brain` | `eugeniughelbur/obsidian-second-brain` | manual clone (NOT in himmel marketplace) | Daily notes, kanban, ADRs, vault operating manual |
-| `caveman` | separate marketplace `claude-code-warp` (NOT in himmel marketplace) | `/plugin marketplace add` then `/plugin install` | Caveman compression mode + cavecrew subagents |
+| `caveman` | separate marketplace `caveman` (`JuliusBrussee/caveman`, NOT in himmel marketplace) | `/plugin marketplace add` then `/plugin install` | Caveman compression mode + cavecrew subagents |
 | `handover` | himmel marketplace | `/plugin install` after adding himmel marketplace | Handover doc workflows for cross-session continuity |
 | `obsidian-triage` (LUNA-3) | himmel marketplace | `/plugin install` after adding himmel marketplace | Autonomous triage of Web Clipper output: `/triage-clips` + `/synthesize-clips`. Required only if you set up the Web Clipper templates in §5a |
 | `obsidian` (Steph Ango's skills) | himmel marketplace (sources `kepano/obsidian-skills`, SHA-pinned) | `/plugin install` after adding himmel marketplace | `obsidian-markdown`, `obsidian-bases`, `json-canvas`, `obsidian-cli`, `defuddle`. `obsidian-triage` can use `obsidian-markdown` for proper OFM when editing clipped notes (recommended, not required — fallback documented in the command body) |
@@ -422,7 +422,7 @@ Configure in Claude Code settings (`~/.claude/settings.json`):
 
 ---
 
-## 8.6. Telegram bridge + Warp onboarding (HIMMEL-227)
+## 8.6. Telegram bridge onboarding (HIMMEL-227)
 
 > **Skip** if you don't use the Telegram bridge for sending messages to Claude. This is operator-specific infrastructure; it is not required for any core himmel workflow.
 
@@ -442,12 +442,7 @@ run standalone. It:
   `cd scripts/telegram && bun supervisor.ts` (Linux/macOS). Reboot
   persistence + full ops:
   [`scripts/telegram/README.md`](../../scripts/telegram/README.md) /
-  [`docs/internals/telegram-bridge.md`](../internals/telegram-bridge.md);
-- verifies the Warp surface: `/open-warp` + `/oz-offload` skills are
-  repo-local (`.claude/commands/`, ship with the clone), the
-  `warp@claude-code-warp` plugin installs via
-  `scripts/machine-setup/install-plugins.{sh,ps1}`, and the Warp app binary
-  gets a presence check + install hint.
+  [`docs/internals/telegram-bridge.md`](../internals/telegram-bridge.md).
 
 ## 8.7. Uninstall / offboard (HIMMEL-227)
 

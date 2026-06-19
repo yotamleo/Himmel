@@ -1,5 +1,5 @@
 # onboard-telegram.ps1 — Telegram-bridge onboarding for a fresh machine
-# (HIMMEL-227; Warp split out into onboard-warp.ps1 per HIMMEL-360). PowerShell
+# (HIMMEL-227; Warp split out per HIMMEL-360, then removed/archived per HIMMEL-421). PowerShell
 # counterpart of onboard-telegram.sh; called from
 # scripts/setup.ps1, also safe standalone:
 #   pwsh -File scripts/setup/onboard-telegram.ps1

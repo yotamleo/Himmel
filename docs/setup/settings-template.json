@@ -88,7 +88,6 @@
     "obsidian@obsidian-skills": true,
     "qmd@qmd": true,
     "caveman@caveman": true,
-    "warp@claude-code-warp": true,
     "claude-obsidian@claude-obsidian-marketplace": true,
     "handover@himmel": true
   },
@@ -103,10 +102,6 @@
     },
     "caveman": {
       "source": { "source": "github", "repo": "JuliusBrussee/caveman" },
-      "autoUpdate": true
-    },
-    "claude-code-warp": {
-      "source": { "source": "github", "repo": "warpdotdev/claude-code-warp" },
       "autoUpdate": true
     },
     "himmel": {

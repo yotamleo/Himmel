@@ -43,7 +43,8 @@ more useful classification.
 
 ## Audit table
 
-24 units total. Type column reflects the practical reading.
+22 units total. Type column reflects the practical reading. (Originally 24;
+`open-warp` + `oz-offload` removed per HIMMEL-421, 2026-06-19.)
 
 | # | Unit | Type | Notes |
 |---|---|---|---|
@@ -64,26 +65,24 @@ more useful classification.
 | 15 | `.claude/commands/handover-pr-open.md` | Formatter | Args + diff → PR body spec. Output is the PR. |
 | 16 | `.claude/commands/improve.md` | Formatter | Draft prompt → refined prompt + audit artifact. Pure shape transform. |
 | 17 | `.claude/commands/luna-ingest.md` | Researcher | Thin wrapper — type matches the delegate (entry 2). |
-| 18 | `.claude/commands/open-warp.md` | Formatter | Args → warp tab spec. |
-| 19 | `.claude/commands/overnight-shift.md` | **Multi-type** | Researcher (Jira pull) + Formatter (plan emit) + Refactorer (subagent fan-out spawns persistent work). Three phases bundled. |
-| 20 | `.claude/commands/oz-offload.md` | Formatter | Task description → warp agent run spec. |
-| 21 | `.claude/commands/pr-check.md` | **Multi-type** | Validator (multi-agent CR review) + Refactorer (clears pre-push marker file on clean output). Called out as the canonical example in the HIMMEL-181 brief. |
-| 22 | `.claude/commands/quiet-run.md` | Reporter | Runs a command; emits one OK/ERR line + log path. The summary IS the output. |
-| 23 | `.claude/commands/skill-find.md` | Researcher | Embedding-indexed lookup over installed skills. Gather-only. |
-| 24 | `.claude/commands/stop.md` | Formatter | Args → halt-marker file. The marker IS the spec for the in-flight /overnight-shift to read. |
+| 18 | `.claude/commands/overnight-shift.md` | **Multi-type** | Researcher (Jira pull) + Formatter (plan emit) + Refactorer (subagent fan-out spawns persistent work). Three phases bundled. |
+| 19 | `.claude/commands/pr-check.md` | **Multi-type** | Validator (multi-agent CR review) + Refactorer (clears pre-push marker file on clean output). Called out as the canonical example in the HIMMEL-181 brief. |
+| 20 | `.claude/commands/quiet-run.md` | Reporter | Runs a command; emits one OK/ERR line + log path. The summary IS the output. |
+| 21 | `.claude/commands/skill-find.md` | Researcher | Embedding-indexed lookup over installed skills. Gather-only. |
+| 22 | `.claude/commands/stop.md` | Formatter | Args → halt-marker file. The marker IS the spec for the in-flight /overnight-shift to read. |
 
 ## Type distribution
 
 | Type | Count | Units |
 |---|---|---|
-| Formatter | 7 | worktree, handover-arm-resume, handover-pr-open, improve, open-warp, oz-offload, stop |
+| Formatter | 5 | worktree, handover-arm-resume, handover-pr-open, improve, stop |
 | Validator | 0 | (none pure — see pr-check Multi-type) |
 | Researcher | 4 | luna-ingest (skill), luna-ingest (cmd wrapper), synthesize-clips, skill-find |
 | Refactorer | 3 | clean, handover-commit, handover-pr-merge |
 | Reporter | 2 | handover-link, quiet-run |
 | **Multi-type** | **8** | handover skill, harvest-clips, triage-clips, clean_garden, context-hop, handover-flush, overnight-shift, pr-check |
 
-8/24 (33%) are Multi-type. The concept page argues pure single-type
+8/22 (36%) are Multi-type. The concept page argues pure single-type
 skills compose better; this audit confirms the spread is wide enough
 that a follow-up sprint to split the highest-friction Multi-type units
 is justified.

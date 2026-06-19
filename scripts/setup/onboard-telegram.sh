@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # onboard-telegram.sh — Telegram-bridge onboarding for a fresh machine
-# (HIMMEL-227; Warp split out into onboard-warp.sh per HIMMEL-360). Called from
+# (HIMMEL-227; Warp split out per HIMMEL-360, then removed/archived per HIMMEL-421). Called from
 # scripts/setup.sh as the onboarding step; also safe to run standalone:
 #   bash scripts/setup/onboard-telegram.sh
 #

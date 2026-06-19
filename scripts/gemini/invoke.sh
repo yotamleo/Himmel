@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # scripts/gemini/invoke.sh — single chokepoint for shelling out to gemini-cli.
 #
-# All himmel entrypoints (/gemini slash, gemini-subagent Agent, /gemini-bg
-# Warp launcher) funnel through here so auth/model/flag resolution lives in
-# one place. Story A of the gemini-cli integration (HIMMEL-158).
+# All himmel entrypoints (/gemini slash, gemini-subagent Agent) funnel
+# through here so auth/model/flag resolution lives in one place. Story A of
+# the gemini-cli integration (HIMMEL-158).
 #
 # Auth: defers ENTIRELY to gemini-cli. No pre-flight credential check.
 # gemini-cli resolves auth itself (precedence: force-flags GOOGLE_GENAI_USE_*

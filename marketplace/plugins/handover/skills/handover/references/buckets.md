@@ -47,8 +47,8 @@ WIP (bucket 0) is **never enforced as a hard limit**. The skill never refuses or
         leave it but exclude from wip. Set X to wip. No prompt.
    b. X is a child task of a current-wip epic?
       → silently allow coexistence. No prompt.
-   c. Parallel-dispatch context active (recent Task tool invocation or
-      oz-offload within the same session)?
+   c. Parallel-dispatch context active (recent Task tool invocation
+      within the same session)?
       → silently allow coexistence. No prompt.
    d. None of the above and current wip set is non-empty?
       → soft prompt via AskUserQuestion:
