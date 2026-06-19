@@ -43,6 +43,12 @@ A bucket layer is active when **any recognized source bucket** dir exists direct
 
 Top-level files (`status.md`, `roadmap.md`, `backlog.md`, `tech-debt.md`, `counter.md`, `sync.log`, `next-session-resume.md`, `luna-wave-resume.md`, `overnight-summary-*.md`, `_templates/`) remain at `<state-root>/` root regardless of bucket layer. They're cross-bucket index files.
 
+### Internal specs (design / plan / decision) — HIMMEL-409
+
+Each source bucket also holds a `specs/<type>/` subtree — the single home for **internal, non-customer-facing** design artifacts that aren't handover items: design docs, implementation plans, decision records. Path: `<state-root>/<bucket>/specs/<type>/` (e.g. `…/himmel/specs/design/`, `…/himmel/specs/plan/`).
+
+These live in the **state repo**, never in the code repo's `docs/` (which is for operator-facing reference + any OSS-public docs). This rule travels with the handover skill, so it holds while working in **any** registered repo — not only where that repo's `CLAUDE.md` is loaded. The `<type>` set is **operator-controlled and extensible**: add a subfolder (`decision/`, `research/`, `adr/`, …) as needed; the two defaults are `design/` and `plan/`. `specs/` is NOT scanned by `update-status` / roadmap (these are reference artifacts, not tracked items).
+
 ## Registry
 
 `~/.claude/handover/registry.json` — single JSON file, atomic writes (tmp+rename on same volume).
