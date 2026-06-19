@@ -81,7 +81,7 @@ if [ "$wrap_exists" = "yes" ]; then
 fi
 
 echo "Test 7: skill body documents the upgrade contract (engine + dry-run -> confirm -> apply + --vault-dir)"
-for marker in "upgrade.sh" "--dry-run" "--vault-dir" "--yes"; do
+for marker in "upgrade.sh" "--dry-run" "--vault-dir" "--yes" "--check"; do
     if grep -qF -e "$marker" "$SKILL"; then present=yes; else present=no; fi
     assert "skill body references: $marker" "yes" "$present"
 done

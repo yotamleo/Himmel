@@ -10,7 +10,7 @@
 # autoUpdate (HIMMEL-365): this is VAULT CONTENT/config, not the harness.
 #
 # Usage:
-#   bash scripts/upgrade.sh [--template-dir DIR] [--vault-dir DIR] [--dry-run] [--yes]
+#   bash scripts/upgrade.sh [--template-dir DIR] [--vault-dir DIR] [--check] [--dry-run] [--yes]
 #
 #   --template-dir DIR  fresh himmel template root (contains marketplace/ +
 #                       _CLAUDE.md). Default resolution: --template-dir >
@@ -20,6 +20,8 @@
 #                       checkout carrying the template.
 #   --vault-dir DIR     the vault to upgrade. Default: the parent of this
 #                       script's dir (scripts/.. — i.e. run from inside a vault).
+#   --check             print a one-line nudge of whether an upgrade is available
+#                       (no banner, no plan, no changes), then exit 0.
 #   --dry-run           print the plan, make zero filesystem changes.
 #   --yes               skip the confirm prompt (used by the /luna-upgrade skill).
 #
@@ -38,6 +40,7 @@ TEMPLATE_DIR=""
 VAULT_DIR=""
 DRY_RUN=0
 ASSUME_YES=0
+CHECK_ONLY=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 while [ $# -gt 0 ]; do
@@ -45,17 +48,20 @@ while [ $# -gt 0 ]; do
         --template-dir) TEMPLATE_DIR="${2:-}"; shift 2 ;;
         --vault-dir)    VAULT_DIR="${2:-}"; shift 2 ;;
         --dry-run)      DRY_RUN=1; shift ;;
+        --check)        CHECK_ONLY=1; shift ;;
         --yes|-y)       ASSUME_YES=1; shift ;;
         -h|--help)
             cat <<'USAGE'
 upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
 
-  bash scripts/upgrade.sh [--template-dir DIR] [--vault-dir DIR] [--dry-run] [--yes]
+  bash scripts/upgrade.sh [--template-dir DIR] [--vault-dir DIR] [--check] [--dry-run] [--yes]
 
   --template-dir DIR  fresh himmel template root (default: --template-dir >
                       $HIMMEL_DIR/templates/luna-second-brain > $HOME-relative
                       candidate paths (github/{himmel,Himmel}) > sibling scan).
   --vault-dir DIR     the vault to upgrade (default: scripts/.. — run from a vault).
+  --check             print a one-line nudge of whether an upgrade is available
+                      (no banner, no plan, no changes), then exit 0.
   --dry-run           print the plan, make zero filesystem changes.
   --yes, -y           skip the confirm prompt.
 
@@ -181,6 +187,18 @@ ver_lt() {
     local lo; lo="$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)"
     [ "$lo" = "$1" ]
 }
+
+# --check: report whether an upgrade is available, then exit. No banner, no
+# plan, no filesystem changes — a soft nudge for setup / SessionStart surfaces
+# (HIMMEL-423). The /luna-upgrade skill's --check path surfaces this line.
+if [ "$CHECK_ONLY" = 1 ]; then
+    if ver_lt "$VAULT_VERSION" "$TEMPLATE_VERSION"; then
+        echo "luna-second-brain: template v$TEMPLATE_VERSION available (vault is v$VAULT_VERSION). Run: bash scripts/upgrade.sh (or /luna-upgrade)."
+    else
+        echo "luna-second-brain: vault is current (v$VAULT_VERSION)."
+    fi
+    exit 0
+fi
 
 echo "==> luna-second-brain upgrade"
 echo "    template : $TEMPLATE_DIR (v$TEMPLATE_VERSION)"

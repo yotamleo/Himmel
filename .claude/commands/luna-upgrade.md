@@ -1,10 +1,10 @@
 ---
 allowed-tools: Bash, Read, Skill
-description: Content-preserving upgrade of an existing luna-second-brain vault to the current himmel template (dry-run → confirm → apply). Thin wrapper that delegates to the obsidian-triage:luna-upgrade skill (HIMMEL-389 Phase 2 — see marketplace/plugins/obsidian-triage/skills/luna-upgrade/SKILL.md for the runbook).
-argument-hint: [--vault <path>] [--template-dir <path>]
+description: Content-preserving upgrade of an existing luna-second-brain vault to the current himmel template (dry-run → confirm → apply, or --check to just report whether an upgrade is available). Thin wrapper that delegates to the obsidian-triage:luna-upgrade skill (HIMMEL-389 — see marketplace/plugins/obsidian-triage/skills/luna-upgrade/SKILL.md for the runbook).
+argument-hint: [--check] [--vault <path>] [--template-dir <path>]
 ---
 
-# /luna-upgrade — slash-command wrapper (HIMMEL-389 Phase 2)
+# /luna-upgrade — slash-command wrapper (HIMMEL-389)
 
 Invoke the `obsidian-triage:luna-upgrade` skill via the `Skill` tool with `$ARGUMENTS` as the literal `args` parameter — do NOT inline or paraphrase the runbook body here, the skill is the single source of truth.
 
