@@ -156,10 +156,6 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 
 **What:** Skills for working with Obsidian vaults — reading notes, searching, creating entries.
 
-### warp (`warpdotdev/claude-code-warp`)
-
-**What:** Warp terminal integration for Claude Code.
-
 ### himmel (local directory marketplace)
 
 **Source:** `<himmel-path>/marketplace/` (typically `C:\Users\<user>\Documents\github\himmel\marketplace\`)

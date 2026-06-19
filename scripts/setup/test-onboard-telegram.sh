@@ -64,8 +64,8 @@ else
 fi
 assert_has "fresh run reports missing pairing" "access.json: MISSING" "$out"
 assert_has "fresh run prints bridge bring-up" "bridge bring-up" "$out"
-# Warp onboarding split out into onboard-warp.sh (HIMMEL-360) — the telegram
-# step must no longer emit any Warp output.
+# Warp onboarding (split out HIMMEL-360, removed/archived HIMMEL-421) — the
+# telegram step must no longer emit any Warp output.
 assert_lacks "fresh run no longer mentions warp" "Warp" "$out"
 
 # 2. idempotence: existing .env (with a token) is never rewritten

@@ -28,10 +28,6 @@ The plugin lives in this repo. Add via:
 
 - `/gemini <prompt> [--model <name>] [--json] [--yolo]` — run gemini-cli
   synchronously and return its stdout. Thin wrapper around `invoke.sh`.
-- `/gemini-bg <prompt>` — dispatch gemini-cli in a background Warp tab
-  (fire-and-forget). Returns the log path immediately; output lands under
-  `<repo-top>/logs/gemini/<UTC-ts>-<slug>.log`. Forked from the `oz-offload`
-  two-file Warp launcher (`scripts/gemini/offload-bg.ps1`).
 
 There is also a `gemini-subagent` Agent (`.claude/agents/gemini-subagent.md`)
 that triggers on phrases like "delegate to gemini", "second opinion",
