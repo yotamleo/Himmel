@@ -1,0 +1,12 @@
+{
+  "report_path": "_lint-report-{date}.md",
+  "log_path": null,
+  "egress_locked": true,
+  "bulk_dirs": ["_raw/**", "_noise/**", "_ocr-tmp*/**"],
+  "orphan_exempt": ["_*.md", "sessions/**", "Clippings/**", "Home.md", "index.md"],
+  "frontmatter_exempt": ["_*.md", "*CLAUDE.md", "README.md", "index.md"],
+  "duplicate_exempt": ["_*.md", "README.md"],
+  "link_scan_exclude": ["60-Maps/*lint*", "60-Maps/*broken*", "sessions/**"],
+  "known_unbuilt_links": [],
+  "stale_task_days": 30
+}
