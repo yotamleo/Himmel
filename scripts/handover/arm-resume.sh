@@ -25,6 +25,11 @@
 #      self-/delete; crontab entry self-removes; at auto-removes), so a
 #      fired slot never lingers to block a same-handover re-arm or fire
 #      twice.
+#   6. checks for time collisions with other HIMMEL-* claude-launching
+#      scheduled tasks (HIMMEL-407): HARD-REFUSES (rc=6) on an exact-
+#      minute match; WARNs (continues) within ±COLLISION_WINDOW_MINUTES
+#      (default 5 min). --force bypasses both. --dedup-any arms run
+#      WARN-ONLY so unattended watchdog arms never refuse.
 #
 # This is the *arm* half of HIMMEL-122 (auto-resume on usage-cap
 # detection). The *detect* half (monitoring claude-statusline / API
@@ -44,13 +49,18 @@
 #   --force            Replace the existing same-handover HIMMEL-Resume job
 #                      (with --dedup-any, any existing HIMMEL-Resume job).
 #                      Default refuses (rc=3) — explicit opt-in only.
+#                      Also bypasses the time-collision check (HIMMEL-407).
 #   --dedup-any        Dedup against ANY HIMMEL-Resume job, not just this
 #                      handover's (HIMMEL-340 safety-arm semantics).
 #   --dry-run          Print what would be scheduled, touch nothing.
 #
 # Env:
-#   ARM_MAX_SLOTS      Soft cap on concurrent resume slots (default 4, 0
-#                      disables). Arming past it WARNs but never blocks.
+#   ARM_MAX_SLOTS           Soft cap on concurrent resume slots (default 4, 0
+#                           disables). Arming past it WARNs but never blocks.
+#   COLLISION_WINDOW_MINUTES Minutes around another HIMMEL-* task's fire time
+#                           that trigger a WARN (default 5). An exact-minute
+#                           match always refuses (rc=6) unless --force.
+#   ARM_COLLISION_WINDOW    Test seam: overrides COLLISION_WINDOW_MINUTES.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -65,6 +75,9 @@
 #      (HIMMEL-225: a 2nd getUpdates consumer 409s + the dev-channels prompt
 #      hangs an unattended relaunch). Drop --channels (the bun bridge owns
 #      Telegram) or, after stopping the bridge, override with ARM_CHANNELS_OK=1.
+#   6  time collision — the requested time exactly matches another HIMMEL-*
+#      scheduled task (HIMMEL-407). Pass --force to override, or choose a
+#      different time (suggest_free_slot prints nearby free options).
 set -euo pipefail
 
 RESUME_TIME=""
@@ -132,7 +145,8 @@ Optional:
                      it and relaunch PLAIN (bridge reaches Telegram on its
                      own). Override only after `bun supervisor.ts --kill`
                      with ARM_CHANNELS_OK=1. Omit for a silent relaunch.
-  --force            Replace the existing same-handover HIMMEL-Resume job
+  --force            Replace the existing same-handover HIMMEL-Resume job;
+                     also bypasses the time-collision check (HIMMEL-407).
   --dedup-any        Dedup against ANY HIMMEL-Resume job, not just this
                      handover's: arm only if NO resume slot exists at all.
                      The safety-arm semantics the auto-arm watchdogs use so
@@ -142,8 +156,12 @@ Optional:
   --dry-run          Print what would be scheduled, touch nothing
 
 Env:
-  ARM_MAX_SLOTS      Soft cap on concurrent resume slots (default 4, 0
-                     disables). Arming past it WARNs but never blocks.
+  ARM_MAX_SLOTS           Soft cap on concurrent resume slots (default 4, 0
+                          disables). Arming past it WARNs but never blocks.
+  COLLISION_WINDOW_MINUTES Minutes on either side of another HIMMEL-* task's
+                          fire time that trigger a near-collision WARN (default
+                          5). An exact-minute overlap always refuses (rc=6)
+                          unless --force. Set ARM_COLLISION_WINDOW in tests.
 EOF
 }
 
@@ -756,6 +774,236 @@ delete_existing() {
     esac
 }
 
+# HIMMEL-407: time-collision check against all other HIMMEL-* scheduled tasks.
+#
+# list_collision_candidates(): query the scheduler for all HIMMEL-* tasks
+# (broader than the HIMMEL-Resume- filter used by list_existing), parse each
+# next-run datetime, and emit "<name><TAB><HH:MM>" lines. Excludes the Resume
+# slot being armed (already handled by dedup above — no double-reporting).
+# ARM_COLLISION_CANDIDATES is a test seam: when set, its content replaces the
+# real scheduler query (one "<name><TAB><HH:MM>" per line; empty = no others).
+list_collision_candidates() {
+    if [ -n "${ARM_COLLISION_CANDIDATES+x}" ]; then
+        printf '%s' "$ARM_COLLISION_CANDIDATES"
+        return 0
+    fi
+    case "$PLATFORM" in
+        windows)
+            local err_file out rc
+            err_file=$(mktemp -t arm-resume.coll.err.XXXXXX)
+            # MSYS_NO_PATHCONV=1: see HIMMEL-125 note in list_existing.
+            out=$(MSYS_NO_PATHCONV=1 schtasks /query /fo CSV /nh 2>"$err_file")
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+                if grep -qiE 'access|denied|cannot|fail' "$err_file" 2>/dev/null; then
+                    echo "WARN arm-resume: schtasks /query for collision check failed (rc=$rc) — skipping collision check" >&2
+                    rm -f "$err_file"
+                    return 0
+                else
+                    echo "WARN arm-resume: schtasks /query returned rc=$rc (unrecognised error) — skipping collision check" >&2
+                    rm -f "$err_file"
+                    return 0
+                fi
+            fi
+            rm -f "$err_file"
+            # Parse all HIMMEL-* tasks from CSV, excluding our own Resume slot.
+            # CSV format (from /fo CSV /nh): "TaskName","Next Run Time","Status"
+            # TaskName is path-prefixed: "\HIMMEL-Pipeline-Harvest"
+            # Next Run Time is locale datetime: "6/20/2026 2:00:00 AM" or "N/A"
+            local raw_lines name datetime hhmm
+            # shellcheck disable=SC1003  # `"\\\?HIMMEL-"` — BRE \? = optional backslash; matches both "\HIMMEL-" and "HIMMEL-" (same style as list_existing)
+            raw_lines=$(printf '%s\n' "$out" | grep -i '"\\\?HIMMEL-' 2>/dev/null || true)
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                # Extract task name (field 1, strip quotes + leading backslash)
+                # shellcheck disable=SC1003  # `'\\'` strips the literal backslash schtasks path-prefixes task names with
+                name=$(printf '%s' "$line" | cut -d'"' -f2 | tr -d '\\')
+                [ -z "$name" ] && continue
+                # Skip our own Resume task (dedup already handles it)
+                [ "$name" = "$TASK_NAME" ] && continue
+                # Only check HIMMEL-* tasks (all are toolchain-owned; any that
+                # launches claude could collide — we don't inspect the body)
+                case "$name" in HIMMEL-*) ;; *) continue ;; esac
+                # Extract Next Run Time (field 4 = 4th quoted token)
+                datetime=$(printf '%s' "$line" | cut -d'"' -f4)
+                # "N/A" or empty = never fires / already ran → skip
+                case "$datetime" in N/A|"") continue ;; esac
+                # Parse HH:MM from locale datetime via armored python3.
+                # Locale-safe: datetime module parses M/D/YYYY H:MM:SS AM/PM.
+                # Failure = WARN + skip (never block an arm on parse errors).
+                if py_armor_capture -c '
+import sys, datetime as dt
+s = sys.argv[1]
+for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+    try:
+        print(dt.datetime.strptime(s, fmt).strftime("%H:%M"))
+        break
+    except ValueError:
+        pass
+' "$datetime" 2>/dev/null; then
+                    hhmm="$PY_ARMOR_OUT"
+                    [ -n "$hhmm" ] && printf '%s\t%s\n' "$name" "$hhmm"
+                else
+                    echo "WARN arm-resume: could not parse next-run time '$datetime' for task '$name' — skipping in collision check" >&2
+                fi
+            done <<< "$raw_lines"
+            ;;
+        linux|macos)
+            # crontab: grep all HIMMEL-* marker lines, parse HH:MM from the
+            # cron fields (minute=$1, hour=$2 in standard crontab format).
+            if command -v crontab >/dev/null 2>&1; then
+                local crontab_out line mm hh name
+                crontab_out=$(crontab -l 2>/dev/null || true)
+                while IFS= read -r line; do
+                    [ -z "$line" ] && continue
+                    case "$line" in *HIMMEL-*) ;; *) continue ;; esac
+                    # Extract task name from trailing # HIMMEL-... marker
+                    name=$(printf '%s' "$line" | grep -o 'HIMMEL-[^[:space:]]*$' || true)
+                    [ -z "$name" ] && continue
+                    [ "$name" = "$TASK_NAME" ] && continue
+                    # Parse minute (field 1) and hour (field 2) from cron entry
+                    mm=$(printf '%s' "$line" | awk '{print $1}')
+                    hh=$(printf '%s' "$line" | awk '{print $2}')
+                    # Skip wildcard or complex expressions (only plain numbers)
+                    case "$mm$hh" in *[^0-9]*) continue ;; esac
+                    printf '%s\t%02d:%02d\n' "$name" "$hh" "$mm"
+                done <<< "$crontab_out"
+            fi
+            # at queue: inspect each job body for a HIMMEL- marker;
+            # at doesn't expose the fire time per-job via atq in a reliable
+            # parsed format across platforms → skip (collision guard is
+            # best-effort on POSIX; the crontab branch covers the common case).
+            ;;
+    esac
+}
+
+# _minutes_from_midnight <HH:MM>: convert HH:MM to minutes since midnight (pure bash).
+_minutes_from_midnight() {
+    local t="$1" hh mm
+    hh="${t%:*}"; mm="${t#*:}"
+    # strip leading zeros to avoid octal interpretation
+    hh="${hh#0}"; hh="${hh:-0}"
+    mm="${mm#0}"; mm="${mm:-0}"
+    printf '%d' $(( hh * 60 + mm ))
+}
+
+# suggest_free_slot <requested_HH:MM> <candidates_block>:
+# Step outward from the requested time in ±WINDOW increments until a minute
+# clear of all candidates ±window. Print "Suggested free slots: HH:MM or HH:MM"
+# plus a re-run hint. candidates_block is the output of list_collision_candidates.
+suggest_free_slot() {
+    local req_hhmm="$1" candidates="$2"
+    local window="${ARM_COLLISION_WINDOW:-${COLLISION_WINDOW_MINUTES:-5}}"
+    case "$window" in ''|*[!0-9]*) window=5 ;; esac
+    local req_min
+    req_min=$(_minutes_from_midnight "$req_hhmm")
+
+    # Collect candidate minutes
+    local cand_mins=""
+    while IFS=$'\t' read -r _cname chhmm; do
+        [ -z "$chhmm" ] && continue
+        cand_mins="$cand_mins $(_minutes_from_midnight "$chhmm")"
+    done <<< "$candidates"
+
+    # _is_free <minute>: rc 0 if that minute is clear of all candidates ±window
+    _is_free() {
+        local m="$1" cm diff
+        for cm in $cand_mins; do
+            diff=$(( m - cm ))
+            [ "$diff" -lt 0 ] && diff=$(( -diff ))
+            # Midnight wrap: if abs diff > 720, use 1440-diff
+            [ "$diff" -gt 720 ] && diff=$(( 1440 - diff ))
+            [ "$diff" -le "$window" ] && return 1
+        done
+        return 0
+    }
+
+    local slots="" step
+    for step in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        local try_plus try_minus
+        try_plus=$(( (req_min + step * (window + 1)) % 1440 ))
+        try_minus=$(( (req_min - step * (window + 1) + 1440) % 1440 ))
+        if _is_free "$try_plus"; then
+            local hh mm
+            hh=$(( try_plus / 60 )); mm=$(( try_plus % 60 ))
+            local s
+            s=$(printf '%02d:%02d' "$hh" "$mm")
+            case "$slots" in *"$s"*) ;; *) slots="${slots:+$slots or }$s" ;; esac
+        fi
+        if _is_free "$try_minus" && [ "$try_minus" -ne "$try_plus" ]; then
+            local hh2 mm2
+            hh2=$(( try_minus / 60 )); mm2=$(( try_minus % 60 ))
+            local s2
+            s2=$(printf '%02d:%02d' "$hh2" "$mm2")
+            case "$slots" in *"$s2"*) ;; *) slots="${slots:+$slots or }$s2" ;; esac
+        fi
+        # Stop once we have two suggestions
+        local count=0
+        case "$slots" in *" or "*) count=2 ;; *) [ -n "$slots" ] && count=1 ;; esac
+        [ "$count" -ge 2 ] && break
+    done
+
+    if [ -n "$slots" ]; then
+        echo "    Suggested free slots: $slots"
+        echo "    Re-run: bash scripts/handover/arm-resume.sh --time <HH:MM> --handover <path>"
+    fi
+    echo "    Or pass --force to arm at $req_hhmm anyway (HIMMEL-407)."
+}
+
+# check_collision(): compare RESUME_TIME against all other HIMMEL-* tasks.
+# Exact-minute match → HARD-REFUSE rc=6 (unless --force or --dedup-any → WARN).
+# Within ±window → WARN (continue).
+# Outside window → silent.
+check_collision() {
+    local window="${ARM_COLLISION_WINDOW:-${COLLISION_WINDOW_MINUTES:-5}}"
+    case "$window" in ''|*[!0-9]*) window=5 ;; esac
+    local candidates
+    candidates=$(list_collision_candidates)
+    [ -z "$candidates" ] && return 0
+
+    local req_min
+    req_min=$(_minutes_from_midnight "$RESUME_TIME")
+
+    local exact_hits="" near_hits=""
+    while IFS=$'\t' read -r cname chhmm; do
+        [ -z "$cname" ] || [ -z "$chhmm" ] && continue
+        local cm diff
+        cm=$(_minutes_from_midnight "$chhmm")
+        diff=$(( req_min - cm ))
+        [ "$diff" -lt 0 ] && diff=$(( -diff ))
+        [ "$diff" -gt 720 ] && diff=$(( 1440 - diff ))
+        if [ "$diff" -eq 0 ]; then
+            exact_hits="${exact_hits:+$exact_hits, }$cname ($chhmm)"
+        elif [ "$diff" -le "$window" ]; then
+            near_hits="${near_hits:+$near_hits, }$cname ($chhmm, ${diff}min away)"
+        fi
+    done <<< "$candidates"
+
+    if [ -n "$exact_hits" ]; then
+        if [ "$FORCE" -eq 1 ]; then
+            echo "WARN arm-resume: --force: ignoring exact time collision at $RESUME_TIME with: $exact_hits" >&2
+        elif [ "$DEDUP_ANY" -eq 1 ]; then
+            # --dedup-any (unattended watchdog): WARN-ONLY, never refuse
+            echo "WARN arm-resume: exact time collision at $RESUME_TIME with: $exact_hits (continuing — --dedup-any watchdog path; pass --force to suppress)" >&2
+        else
+            {
+                echo "ERR arm-resume: time collision — $RESUME_TIME exactly matches another HIMMEL-* task:"
+                echo "    $exact_hits"
+                echo "Two concurrent claude sessions would launch at $RESUME_TIME, risking hung harvests,"
+                echo "doubled API spend, and ~/.claude.json write races."
+                suggest_free_slot "$RESUME_TIME" "$candidates"
+            } >&2
+            return 6
+        fi
+    fi
+
+    if [ -n "$near_hits" ]; then
+        echo "WARN arm-resume: near time collision (within ${window}min of $RESUME_TIME): $near_hits — two claude sessions may overlap. Pass --force to suppress." >&2
+    fi
+
+    return 0
+}
+
 # HIMMEL-340: dedup against the CURRENT handover's $TASK_NAME by default
 # (so N distinct handovers each arm their own slot), or against ANY
 # HIMMEL-Resume job under --dedup-any (the safety-arm semantics the
@@ -837,6 +1085,16 @@ if [ "$DEDUP_ANY" -eq 0 ]; then
             echo "WARN arm-resume: arming this slot brings the total to $_predicted concurrent resume slots (soft cap ARM_MAX_SLOTS=$_max_slots). Each fired slot is another concurrent claude process + API spend. Proceeding anyway — raise ARM_MAX_SLOTS or prune stale jobs to silence this." >&2
         fi
     fi
+fi
+
+# HIMMEL-407: time-collision check — runs AFTER the same-handover dedup block
+# and BEFORE schedule_arm. Runs even under --dry-run (it mutates nothing).
+# On exact-minute collision: rc=6 (HARD-REFUSE) unless --force or --dedup-any.
+# Near collision (within window): WARN only. Outside window: silent.
+_collision_rc=0
+check_collision || _collision_rc=$?
+if [ "$_collision_rc" -eq 6 ]; then
+    exit 6
 fi
 
 # Build and execute the scheduler command directly — no round-trip

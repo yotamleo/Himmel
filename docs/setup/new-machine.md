@@ -112,8 +112,13 @@ Source of truth: [`docs/setup/global-claude-md.md`](global-claude-md.md) and [`d
 RTK is a token-saving CLI proxy that wraps common commands.
 
 ```bash
-# Install
+# Install (Linux / macOS)
 cargo install rtk   # or download binary from releases
+
+# Install (Windows — single self-contained exe, no cargo needed)
+# Download rtk-x86_64-pc-windows-msvc.zip from
+# https://github.com/rtk-ai/rtk/releases for the current tag,
+# extract, and overwrite the binary at its existing PATH location.
 
 # Verify (must show rtk, NOT reachingforthejack/rtk)
 rtk --version
@@ -121,6 +126,38 @@ rtk gain
 ```
 
 ⚠️ Name collision risk — see [`docs/setup/rtk-md.md`](rtk-md.md).
+
+### 3a. Expected post-setup state: "No hook installed" banner
+
+After himmel machine-setup, `rtk init --show` reports:
+
+```
+[--] Hook: not found
+[warn] settings.json: exists but RTK hook not configured
+```
+
+And every rewritten command prints `[rtk] /!\ No hook installed` to stderr.
+
+**Both are benign and expected.** himmel replaces rtk's bare `rtk hook claude`
+PreToolUse entry with `scripts/hooks/rtk-hook-guard.sh` (HIMMEL-241), which
+proxies rtk internally and adds a compound-predicate filter to fix broken
+`find` rewrites. rtk's self-check looks for its own `rtk hook claude` signature —
+which the guard replaces — so it can't find the hook even though rewriting is
+fully operational. `rtk gain` will show real token savings accumulating.
+
+**Do NOT run `rtk init -g` to "fix" it.** That re-adds the bare entry the setup
+already replaced. The next run of `reconcile-rtk-hook.sh` collapses it back,
+but there's no need to create the problem in the first place.
+
+**If bare entries do accumulate** (e.g. you ran `rtk init -g` outside of
+machine-setup), run the idempotent reconciler:
+
+```bash
+bash scripts/lib/reconcile-rtk-hook.sh ~/.claude/settings.json <himmel-path>
+```
+
+This swaps every bare `rtk hook claude` entry to the guard and collapses the
+result to exactly one guard entry. Safe to run multiple times.
 
 ---
 

@@ -3,9 +3,13 @@
 > Extracted from `CLAUDE.md` per HIMMEL-164 (state-not-prompt slimming).
 > The rule ("prefer the local Jira CLI over Atlassian MCP") stays in
 > CLAUDE.md and is enforced structurally by the
-> `block-mcp-when-plugin-exists.sh` PreToolUse hook + the `mcp-plugin-refs`
+> `block-backend-tier.sh` PreToolUse hook + the `mcp-plugin-refs`
 > pre-commit gate (see `docs/internals/enforcement.md`). This file is the
 > per-operation lookup table.
+>
+> Routing is registry-driven: `scripts/backends.json` lists jira with
+> `chain: [cli, api, mcp]` — CLI first, raw REST (curl/WebFetch) second,
+> MCP last. Add or reorder tiers there; no hook edit needed.
 
 For Jira ops in this repo, default to the local CLI at
 `scripts/jira/dist/index.js` instead of the Atlassian MCP server
@@ -39,7 +43,7 @@ For Jira ops in this repo, default to the local CLI at
 **Use MCP only when the plugin lacks the operation** (custom-field
 discovery, account-ID lookup via `lookupJiraAccountId`, Confluence
 operations — there is no Confluence plugin yet). The MCP block in
-`block-mcp-when-plugin-exists.sh` derives its blocked-set by introspecting
+`block-backend-tier.sh` derives its blocked-set by introspecting
 the CLI's verbs (`node …/index.js --list-commands`) against a small
 verb→MCP-method map (HIMMEL-231) — an MCP method is refused iff its mapped
 verb is a real CLI verb, so the set tracks this table automatically instead

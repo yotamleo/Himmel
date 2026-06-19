@@ -15,6 +15,32 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
+# ─── --check / --dry-run mode ────────────────────────────────────────────────
+# Reports behind/ahead counts; pulls nothing. Exit 0 always.
+if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+    git fetch --quiet origin 2>/dev/null || {
+        echo "update --check: could not reach origin (offline or no remote configured)."
+        exit 0
+    }
+    upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || {
+        echo "update --check: no upstream configured for branch '$branch'."
+        exit 0
+    }
+    behind=$(git rev-list --count "HEAD..$upstream" 2>/dev/null || echo "?")
+    ahead=$(git rev-list --count "$upstream..HEAD" 2>/dev/null || echo "?")
+    echo "branch:   $branch"
+    echo "upstream: $upstream"
+    echo "behind:   $behind"
+    echo "ahead:    $ahead"
+    if [ "$behind" = "0" ]; then
+        echo "status:   up to date — nothing to pull."
+    elif [ "$behind" != "?" ]; then
+        echo "status:   $behind commit(s) behind — run /update (or bash scripts/update.sh) to pull."
+    fi
+    exit 0
+fi
+
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
 
 # 1. Pull. --ff-only so a diverged/feature branch fails loudly instead of

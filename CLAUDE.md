@@ -57,21 +57,18 @@ operator's user-scope `~/.claude/CLAUDE.md`. Use judgement on trivial tasks.
   `himmel-ops:stuck-playbook` skill /
   [`docs/internals/stuck-playbook.md`](docs/internals/stuck-playbook.md).
 
-### Jira — prefer plugin over MCP (strict)
+### Jira — prefer plugin over MCP
 Always invoke by ABSOLUTE path from the primary checkout —
 `node <repo-root>/scripts/jira/dist/index.js <op>` — never relative from a
 worktree (`dist/` is an untracked build artifact; worktrees lack it →
-MODULE_NOT_FOUND, silent create failures). Never the
-Atlassian MCP server (hook + `mcp-plugin-refs` gate enforce this), never
-the global `jira` shim (unrelated, often-broken npm package). MCP only
-for ops the plugin lacks (Confluence, `lookupJiraAccountId`,
-custom-field discovery). `JIRA_PROJECT_KEY` is required (no fallback).
-`transition` takes a status NAME; multi-line bodies via
-`--comment-file`/`--desc-file`.
-The auto-approve hook grants the CLI reads AND writes (HIMMEL-205); the
-auto-mode classifier above it can still veto when the session's stated
-workflow omits Jira.
-Op↔MCP mapping: [`docs/internals/jira-plugin.md`](docs/internals/jira-plugin.md);
+MODULE_NOT_FOUND, silent create failures). Never the global `jira` shim
+(unrelated, often-broken npm package). `JIRA_PROJECT_KEY` is required.
+`transition` takes a status NAME; multi-line bodies via `--comment-file`/`--desc-file`.
+Routing is enforced by `block-backend-tier.sh` (registry: `scripts/backends.json`,
+default chain `cli → api → mcp`; hard-blocks MCP if CLI has the verb; advisory
+to prefer raw REST before MCP for ops the CLI lacks). The auto-approve hook
+grants the CLI reads AND writes (HIMMEL-205).
+Op↔MCP mapping + registry detail: [`docs/internals/jira-plugin.md`](docs/internals/jira-plugin.md);
 denial recovery: `himmel-ops:stuck-playbook` skill.
 
 ### Claude invocation billing (HIMMEL-128)
@@ -184,8 +181,8 @@ Autonomous end-to-end execution of a well-scoped ticket: see
 
 himmel enforces structurally, not by prose: **6 PreToolUse hooks**
 (`auto-approve-safe-bash`, `block-edit-on-main`, `block-read-secrets`,
-`block-mcp-when-plugin-exists`, `auto-arm-on-cap`,
-`check-cr-marker-on-pr-create`), **1 PostToolUse hook**
+`block-backend-tier` — registry-driven MCP guard, replaces `block-mcp-when-plugin-exists`,
+`auto-arm-on-cap`, `check-cr-marker-on-pr-create`), **1 PostToolUse hook**
 (`auto-arm-on-subagent-cap` — detects cap in Agent tool results, HIMMEL-276),
 **pre-commit/commit-msg/pre-push gates** (source of truth
 `.pre-commit-config.yaml`; pre-push incl. `check-platforms-tested`), a
