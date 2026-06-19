@@ -37,6 +37,8 @@ is_exempt() {
     case "$1" in
         scripts/hooks/block-mcp-when-plugin-exists.sh) return 0 ;;
         scripts/hooks/test-block-mcp-when-plugin-exists.sh) return 0 ;;
+        scripts/hooks/block-backend-tier.sh) return 0 ;;
+        scripts/hooks/test-block-backend-tier.sh) return 0 ;;
         scripts/hooks/check-mcp-plugin-refs.sh) return 0 ;;
         scripts/hooks/test-check-mcp-plugin-refs.sh) return 0 ;;
         *) return 1 ;;

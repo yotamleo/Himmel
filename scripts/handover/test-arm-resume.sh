@@ -1100,6 +1100,95 @@ assert_contains "W8 announces reuse" "reusing existing worktree" "$out"
 rm -rf "$W8_DIR"
 
 # ---------------------------------------------------------------------------
+# T33-T37: time-collision check (HIMMEL-407)
+#
+# These tests use the ARM_COLLISION_CANDIDATES seam (set to "<name>\t<HH:MM>"
+# lines, empty string = no candidates) so they never touch the real scheduler
+# and run on every platform. The stateful stub from T25-T31 is reused for the
+# database (so the dedup block doesn't interfere with the collision check).
+#
+# make_stateful_sched already ran above; STATEFUL_STUB is set.
+# ---------------------------------------------------------------------------
+
+# Helper: build a stub HIMMEL-Pipeline-Harvest candidate at a given HH:MM.
+# We need a fresh stateful DB per test so dedup doesn't bleed.
+_collision_db() { printf '%s' "$TMP/coll-db-$RANDOM"; }
+_collision_dbdir() { printf '%s' "$TMP/coll-dbdir-$RANDOM"; }
+
+# ---------------------------------------------------------------------------
+# T33: EXACT collision → rc=6 + ERR text + free-slot suggestion.
+#      The stateful scheduler has an EMPTY db so the dedup block doesn't fire.
+# ---------------------------------------------------------------------------
+DB33=$(_collision_db); DB33D=$(_collision_dbdir); : > "$DB33"; mkdir -p "$DB33D"
+HO=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHED_DB="$DB33" SCHED_DB_DIR="$DB33D" PATH="$STATEFUL_STUB:$PATH" \
+    ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
+    bash "$ARM" --time "02:00" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "T33 exact collision refuses (rc 6)" 6 "$rc"
+assert_contains "T33 ERR names the collision" "time collision" "$out"
+assert_contains "T33 ERR names the colliding task" "HIMMEL-Pipeline-Harvest" "$out"
+assert_contains "T33 ERR mentions concurrent claude sessions" "claude sessions" "$out"
+assert_contains "T33 free-slot suggestion printed" "Suggested free slots:" "$out"
+assert_contains "T33 --force note printed" "--force" "$out"
+
+# ---------------------------------------------------------------------------
+# T34: NEAR collision (within window, not exact) → rc=0 + WARN.
+#      Request 02:03, candidate at 02:00 (3 min away, within default 5-min window).
+# ---------------------------------------------------------------------------
+DB34=$(_collision_db); DB34D=$(_collision_dbdir); : > "$DB34"; mkdir -p "$DB34D"
+HO=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHED_DB="$DB34" SCHED_DB_DIR="$DB34D" PATH="$STATEFUL_STUB:$PATH" \
+    ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
+    bash "$ARM" --time "02:03" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "T34 near collision still exits 0 (warn-only)" 0 "$rc"
+assert_contains "T34 WARN printed for near collision" "WARN arm-resume: near time collision" "$out"
+assert_contains "T34 WARN names the colliding task" "HIMMEL-Pipeline-Harvest" "$out"
+assert_not_contains "T34 no ERR text on near collision" "ERR arm-resume: time collision" "$out"
+
+# ---------------------------------------------------------------------------
+# T35: OUTSIDE window → rc=0, no warn, no ERR.
+#      Request 02:10, candidate at 02:00 (10 min away, outside default 5-min window).
+# ---------------------------------------------------------------------------
+DB35=$(_collision_db); DB35D=$(_collision_dbdir); : > "$DB35"; mkdir -p "$DB35D"
+HO=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHED_DB="$DB35" SCHED_DB_DIR="$DB35D" PATH="$STATEFUL_STUB:$PATH" \
+    ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
+    bash "$ARM" --time "02:10" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "T35 outside window exits 0 silently" 0 "$rc"
+assert_not_contains "T35 no collision warn outside window" "collision" "$out"
+
+# ---------------------------------------------------------------------------
+# T36: --force bypasses EXACT collision → rc=0 + override WARN (not ERR).
+# ---------------------------------------------------------------------------
+DB36=$(_collision_db); DB36D=$(_collision_dbdir); : > "$DB36"; mkdir -p "$DB36D"
+HO=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHED_DB="$DB36" SCHED_DB_DIR="$DB36D" PATH="$STATEFUL_STUB:$PATH" \
+    ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
+    bash "$ARM" --time "02:00" --handover "$HO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T36 --force bypasses exact collision (rc 0)" 0 "$rc"
+assert_not_contains "T36 no ERR on --force collision bypass" "ERR arm-resume: time collision" "$out"
+assert_contains "T36 --force emits override WARN" "WARN arm-resume: --force: ignoring exact time collision" "$out"
+
+# ---------------------------------------------------------------------------
+# T37: --dedup-any (unattended watchdog) exact collision → WARN-ONLY (rc=0),
+#      never refuses. Ensures unattended watchdog arms always succeed even when
+#      another HIMMEL-* task fires at the same time.
+# ---------------------------------------------------------------------------
+DB37=$(_collision_db); DB37D=$(_collision_dbdir); : > "$DB37"; mkdir -p "$DB37D"
+HO=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHED_DB="$DB37" SCHED_DB_DIR="$DB37D" PATH="$STATEFUL_STUB:$PATH" \
+    ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
+    bash "$ARM" --time "02:00" --handover "$HO" --dedup-any --dry-run 2>&1)
+rc=$?
+assert_rc "T37 --dedup-any exact collision is warn-only (rc 0)" 0 "$rc"
+assert_not_contains "T37 no ERR on --dedup-any collision" "ERR arm-resume: time collision" "$out"
+assert_contains "T37 --dedup-any emits WARN for exact collision" "WARN arm-resume: exact time collision" "$out"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 if [ "$FAILED" -gt 0 ]; then
