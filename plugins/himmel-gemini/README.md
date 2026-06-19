@@ -15,10 +15,14 @@ The plugin lives in this repo. Add via:
 ## Prerequisites
 
 - gemini-cli installed and on PATH.
-- Auth configured (OAuth web login by default — `~/.gemini/oauth_creds.json`).
-  `invoke.sh` defers entirely to gemini-cli for auth; no API key required for
-  the OAuth free tier. See `invoke.sh` for the `GEMINI_API_KEY` /
-  `GOOGLE_API_KEY` / force-flag precedence.
+- Auth configured. **As of 2026-06-18 Google sunset "Login with Google"
+  (OAuth) for Gemini CLI on consumer tiers — free *and* Google AI Pro/Ultra**;
+  the old `~/.gemini/oauth_creds.json` web-login path no longer serves those
+  accounts. gemini-cli now needs either an **API key** (`GEMINI_API_KEY` from
+  Google AI Studio, or `GOOGLE_API_KEY` for Vertex AI) or a paid **Gemini Code
+  Assist Standard/Enterprise** account. `invoke.sh` defers entirely to
+  gemini-cli for auth — it reads no credentials itself; see `invoke.sh` for the
+  `GEMINI_API_KEY` / `GOOGLE_API_KEY` / force-flag precedence.
 
 ## Commands
 
