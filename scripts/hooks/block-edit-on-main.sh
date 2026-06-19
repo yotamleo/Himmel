@@ -15,6 +15,12 @@
 # commit time. This hook catches it at EDIT time so the operator gets
 # immediate feedback instead of losing changes after a doomed commit.
 #
+# Opt-out: a local `.single-writer` file at a repo's root (gitignored via
+# global excludes, never committed) opts that repo out of the block —
+# personal vaults and state repos that commit straight to main by design.
+# The check is anchored to repo_real (the EDITED FILE's repo root), so a
+# marker in a parent repo cannot leak the opt-out onto a nested repo.
+#
 # Hook input arrives on stdin as JSON. Exit codes:
 #   0 — allow (default for any non-blocking path)
 #   2 — block; stderr is shown to Claude and the user
@@ -199,6 +205,21 @@ if [ "${EDIT_ON_MAIN_OK:-0}" = "1" ]; then
     exit 0
 fi
 
+# Single-writer opt-in (HIMMEL-404): a repo with a local `.single-writer`
+# marker at its root commits straight to main by design (personal vaults /
+# state repos) — the worktree-forcing block does not apply. Anchored to
+# repo_real (the edited file's repo), so a parent's marker never leaks the
+# opt-out onto a nested repo. The marker is gitignored (global excludes) so
+# it never propagates to a clone/fork — a checkout without it stays protected.
+# POSIX `[ -f ]` is true for a regular file OR a symlink that resolves to one,
+# and false for a directory, unreadable file, or broken symlink (fail-closed).
+# That is acceptable: the marker is a deliberate local opt-in, not a security
+# boundary (the operator can equally use EDIT_ON_MAIN_OK=1 or comment the hook,
+# and anyone able to create the marker could just touch it directly).
+if [ -f "$repo_real/.single-writer" ]; then
+    exit 0
+fi
+
 cat >&2 <<EOF
 ⛔ block-edit-on-main: refusing to edit \`$file_path\` — its repo is on main/master.
 (file: $file_real — repo: $repo_real)
@@ -217,6 +238,13 @@ hook process). Example:
 
 The bypass lasts for the entire Claude Code session (it's session-sticky,
 not per-edit). Restart Claude without the env var to re-enable the guard.
+
+Or, if this is a single-writer repo you always commit to main directly
+(a personal vault / state repo), opt it out locally:
+
+    touch "$repo_real/.single-writer"
+
+(Local + gitignored — never committed, so it cannot weaken a shared clone.)
 
 Or temporarily comment out the hook stanza in .claude/settings.json.
 EOF

@@ -153,7 +153,12 @@ Spec: `scripts/hooks/test-auto-approve-safe-bash.sh`.
 Fires on Edit/Write/MultiEdit/NotebookEdit. Refuses any edit targeting
 the primary worktree while HEAD == main. Paths are canonicalised via
 `realpath -m` first, so `..` traversal and symlink tricks cannot
-bypass. `handovers/**` is exempt. Bypass: `EDIT_ON_MAIN_OK=1`.
+bypass. `handovers/**` is exempt. Bypass: `EDIT_ON_MAIN_OK=1`. Per-repo opt-out:
+place a local `.single-writer` file at the repo root (gitignored via global
+excludes — never committed, so clones stay protected by default); the hook
+allows all on-main edits in that repo and skips the block entirely. Anchored
+to the edited file's repo (`repo_real`), so a marker in a parent repo cannot
+leak the opt-out onto a nested repo.
 
 Dependencies: `jq` plus either GNU `realpath -m` (Linux native; Git
 Bash on Windows includes it) or `python3` (macOS default — uses
