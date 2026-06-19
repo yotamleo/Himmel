@@ -36,7 +36,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     if [ "$behind" = "0" ]; then
         echo "status:   up to date — nothing to pull."
     elif [ "$behind" != "?" ]; then
-        echo "status:   $behind commit(s) behind — run /update (or bash scripts/update.sh) to pull."
+        echo "status:   $behind commit(s) behind — run /himmel-update (or bash scripts/himmel-update.sh) to pull."
     fi
     exit 0
 fi

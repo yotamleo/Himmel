@@ -92,4 +92,5 @@ the github-repo ingest skill these dispatch to.
 | Command | What it does |
 |---|---|
 | /quiet-run | Run a noisy command quietly — one OK/ERR line + log path |
-| /update | Update this himmel checkout — git pull + marketplace re-sync. autoUpdate does NOT deliver himmel updates. |
+| /himmel-update | Update this himmel checkout (harness) — git pull + marketplace re-sync. autoUpdate does NOT deliver himmel updates. |
+| /himmel-update-all | Update BOTH the himmel harness (/himmel-update) and the luna vault (/luna-upgrade) in one shot; `--check` dry-runs both. |

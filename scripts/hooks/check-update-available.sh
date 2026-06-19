@@ -97,7 +97,7 @@ case "$behind" in ''|*[!0-9]*) exit 0 ;; esac
 # ─── emit nudge ──────────────────────────────────────────────────────────────
 cat <<EOF
 <system-reminder>
-himmel is $behind commit(s) behind $upstream. Run /update to pull the latest fixes and hooks.
+himmel is $behind commit(s) behind $upstream. Run /himmel-update to pull the latest fixes and hooks.
 (This check won't repeat for another ${INTERVAL}s.)
 </system-reminder>
 EOF

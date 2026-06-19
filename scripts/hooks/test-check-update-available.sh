@@ -140,7 +140,7 @@ SD="$TMP/s4"; mkdir -p "$SD"
 out=$(UPDATE_CHECK_STATE_DIR="$SD" CLAUDE_PROJECT_DIR="$CHECKOUT_DIR" bash "$HOOK" 2>/dev/null) || true
 assert_contains "behind=2: system-reminder tag" "system-reminder" "$out"
 assert_contains "behind=2: count in output" "2 commit" "$out"
-assert_contains "behind=2: /update mention" "/update" "$out"
+assert_contains "behind=2: /himmel-update mention" "/himmel-update" "$out"
 
 # ─── Test 5: no remote at all → silent (fetch-exit path) ───────────────────────────────────
 echo "Test 5: no remote → silent (fetch-exit path)"
