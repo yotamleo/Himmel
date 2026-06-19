@@ -184,7 +184,10 @@ himmel enforces structurally, not by prose: **6 PreToolUse hooks**
 `UserPromptSubmit` hook (`improve-on-submit.sh`,
 default OFF), and shared **guardrail predicates** (`scripts/guardrails/lib.sh`).
 Hook bypass = session env var set in the LAUNCHING shell (e.g.
-`EDIT_ON_MAIN_OK=1 claude`); a per-call prefix does NOT work. Per-hook
+`EDIT_ON_MAIN_OK=1 claude`); a per-call prefix does NOT work. Per-repo opt-out:
+a local gitignored `.single-writer` at a repo root allows on-main edits there
+(single-writer repos — personal vaults, state repos — that commit straight to
+main by design); clones without the marker stay protected. Per-hook
 behaviour, the full gate list, and the guardrail matrix:
 [`docs/internals/enforcement.md`](docs/internals/enforcement.md). Required
 environment (HIMMEL-123):

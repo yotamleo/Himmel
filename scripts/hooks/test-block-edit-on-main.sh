@@ -264,6 +264,65 @@ case "$err" in
 esac
 rm -rf "$GUARDRAILLESS" 2>/dev/null || true
 
+# --- HIMMEL-404: .single-writer opt-in cases ---
+
+# A nested repo for the "parent has marker but nested lacks it" case.
+mkrepo "$SANDBOX/swparent" main
+mkrepo "$SANDBOX/swparent/sc/nested" main
+mkdir -p "$SANDBOX/swparent/sc/nested/src"
+touch "$SANDBOX/swparent/.single-writer"   # marker on the PARENT only
+
+# T20: single-writer marker present on main → ALLOW.
+mkrepo "$SANDBOX/swrepo" main
+touch "$SANDBOX/swrepo/.single-writer"
+mkdir -p "$SANDBOX/swrepo/src"
+assert_rc "T20 single-writer marker present on main allows" 0 \
+    "$(rc_of "$SANDBOX/swrepo/src/foo.md")"
+
+# T21: single-writer marker absent on main → BLOCK.
+mkrepo "$SANDBOX/nswrepo" main
+mkdir -p "$SANDBOX/nswrepo/src"
+assert_rc "T21 single-writer marker absent on main blocks" 2 \
+    "$(rc_of "$SANDBOX/nswrepo/src/foo.md")"
+
+# T22: nested repo on main without its own marker → BLOCK even though the
+# parent repo has a .single-writer. Anchored to the edited file's repo (repo_real),
+# so the parent's marker must never leak the opt-out onto the nested repo.
+assert_rc "T22 nested repo without own marker blocks (parent marker does not leak)" 2 \
+    "$(rc_of "$SANDBOX/swparent/sc/nested/src/foo.md" CLAUDE_PROJECT_DIR="$SANDBOX/swparent")"
+
+# T23: EDIT_ON_MAIN_OK=1 allows without a .single-writer marker (pre-existing bypass
+# still works when the repo has no marker — regression guard).
+assert_rc "T23 EDIT_ON_MAIN_OK=1 allows with no marker" 0 \
+    "$(rc_of "$SANDBOX/nswrepo/src/foo.md" EDIT_ON_MAIN_OK=1)"
+
+# T24: .single-writer is a DIRECTORY → fail-CLOSED (BLOCK).
+# [ -f ] is false for a directory; the hook must not treat a mis-shaped marker
+# as an opt-out. Design doc names this case explicitly as fail-closed.
+mkrepo "$SANDBOX/swdir" main
+mkdir -p "$SANDBOX/swdir/.single-writer"   # marker is a directory, not a file
+mkdir -p "$SANDBOX/swdir/src"
+assert_rc "T24 dir-shaped marker on main blocks (fail-closed)" 2 \
+    "$(rc_of "$SANDBOX/swdir/src/foo.md")"
+
+# T25: .single-writer present + FEATURE branch → ALLOW via normal branch path.
+# Confirms the marker does not interfere with the feature-branch path: a
+# marked repo on a feature branch is still allowed through the normal rc=1
+# is_on_main path (the marker check is never reached). Paired with T2 (no
+# marker, feature branch → allow) and T20 (marker, main → allow), this
+# documents the marker is orthogonal to the branch check.
+mkrepo "$SANDBOX/swfeat" feat/x
+touch "$SANDBOX/swfeat/.single-writer"
+assert_rc "T25 marker present on feature branch allows (normal branch path)" 0 \
+    "$(rc_of "$SANDBOX/swfeat/foo.md")"
+
+# T26: EDIT_ON_MAIN_OK=1 + marker present on main → ALLOW via env bypass.
+# Confirms the env bypass fires regardless of whether a .single-writer marker
+# is present — closes the spec sentence "EDIT_ON_MAIN_OK=1 still allows
+# regardless of marker". Reuses swrepo (has marker, on main).
+assert_rc "T26 EDIT_ON_MAIN_OK=1 + marker present allows (env bypass wins)" 0 \
+    "$(rc_of "$SANDBOX/swrepo/src/foo.md" EDIT_ON_MAIN_OK=1)"
+
 # Clean up the worktree registration before removing the sandbox (avoids a
 # dangling `git worktree` admin record under SANDBOX/wtrepo).
 git -C "$SANDBOX/wtrepo" worktree remove --force "$SANDBOX/wtrepo/.claude/worktrees/feat+x" 2>/dev/null || true

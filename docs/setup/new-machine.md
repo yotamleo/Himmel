@@ -148,6 +148,25 @@ jira list
 pre-commit run --all-files
 ```
 
+### 4a. Optional — single-writer opt-out (HIMMEL-404)
+
+For personal repos that commit straight to main (luna, luna-medic, yotam_docs),
+opt them out of the `block-edit-on-main` hook by dropping a local `.single-writer`
+marker at each repo's root. The marker is gitignored (via global excludes) so it
+never propagates to a clone — a checkout without it stays protected.
+
+```bash
+# Single-writer opt-out for block-edit-on-main (HIMMEL-404): ignore the marker
+# globally (once), then drop one in each single-writer repo.
+EX="$(git config --global core.excludesfile)"
+[ -z "$EX" ] && EX="$HOME/.config/git/ignore" && mkdir -p "$(dirname "$EX")" && git config --global core.excludesfile "$EX"
+grep -qxF ".single-writer" "$EX" 2>/dev/null || printf '.single-writer\n' >> "$EX"
+touch ~/Documents/luna/.single-writer ~/Documents/luna-medic/.single-writer ~/Documents/github/yotam_docs/.single-writer
+```
+
+This lets those repos opt out of the on-main edit block locally without the marker
+ever being committed.
+
 ---
 
 ## 5. Luna Vault
