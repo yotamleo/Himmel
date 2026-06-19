@@ -1,0 +1,7 @@
+{
+  "panel": [
+    { "slug": "gptoss",     "model": "openai/gpt-oss-120b",                 "provider": "nvidia", "tier": "free" },
+    { "slug": "kimi",       "model": "moonshotai/kimi-k2.6",                "provider": "nvidia", "tier": "free" },
+    { "slug": "qwen3coder", "model": "qwen/qwen3-coder-480b-a35b-instruct", "provider": "nvidia", "tier": "thorough" }
+  ]
+}

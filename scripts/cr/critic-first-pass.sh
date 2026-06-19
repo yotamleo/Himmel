@@ -1,57 +1,68 @@
 #!/usr/bin/env bash
-# scripts/cr/gemini-first-pass.sh — gemini first-pass CR reviewer (HIMMEL-270).
+# scripts/cr/critic-first-pass.sh — generic model-parametrized first-pass CR reviewer (HIMMEL-415).
 #
-# Reads a unified diff on stdin, reviews it via gemini-cli through the
-# scripts/gemini/invoke.sh chokepoint (never calls `gemini` directly),
-# validates + normalizes the findings, and prints them in the /pr-check
-# heading contract.
+# Reads a unified diff on stdin, reviews it via the hermes chokepoint
+# (scripts/hermes/invoke.sh, --prompt-file pattern), validates + normalizes
+# the findings, and prints them in the /pr-check heading contract.
 #
 # Exit codes:
 #   0  findings emitted (including zero findings)
-#   1  gemini invoke failed or output malformed — caller proceeds claude-only
-#   2  usage error (no/empty stdin, unknown flag)
+#   1  invoke failed or output malformed — caller proceeds claude-only
+#   2  usage error (no/empty stdin, unknown flag, missing --model)
 #
-# Env: GEMINI_FIRST_PASS_CAP_BYTES — diff byte cap (default 204800).
+# Env: CRITIC_FIRST_PASS_CAP_BYTES — diff byte cap (default 204800).
 # Bash 3.2 safe.
 set -uo pipefail
 LC_ALL=C
 export LC_ALL
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INVOKE="$SCRIPT_DIR/../gemini/invoke.sh"
-CAP_BYTES="${GEMINI_FIRST_PASS_CAP_BYTES:-204800}"
+INVOKE="$SCRIPT_DIR/../hermes/invoke.sh"
+CAP_BYTES="${CRITIC_FIRST_PASS_CAP_BYTES:-204800}"
 case "$CAP_BYTES" in
-    ''|*[!0-9]*) echo "gemini-first-pass.sh: invalid GEMINI_FIRST_PASS_CAP_BYTES='$CAP_BYTES' — using default 204800" >&2; CAP_BYTES=204800 ;;
+    ''|*[!0-9]*) echo "critic-first-pass.sh: invalid CRITIC_FIRST_PASS_CAP_BYTES='$CAP_BYTES' — using default 204800" >&2; CAP_BYTES=204800 ;;
 esac
 
 usage() {
     cat >&2 <<'EOF'
-Usage: git diff origin/HEAD...HEAD | gemini-first-pass.sh [--model <name>]
+Usage: git diff origin/HEAD...HEAD | critic-first-pass.sh --model <name> [--slug <s>]
        (origin/HEAD resolves to the default branch — main OR master)
 
-Reads a unified diff on stdin, runs the gemini first-pass review, prints
-findings in the /pr-check heading contract (stable [gemini-N] IDs).
-Exit: 0 = findings emitted; 1 = gemini failed/malformed (fail-open);
+Reads a unified diff on stdin, runs the first-pass review via hermes, prints
+findings in the /pr-check heading contract (stable [<slug>-N] IDs).
+Exit: 0 = findings emitted; 1 = invoke failed/malformed (fail-open);
 2 = usage error. Never call on an empty diff — guard at the call site.
 EOF
 }
 
 model=""
+slug=""
+pf=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --model)
-            [ $# -ge 2 ] || { echo "gemini-first-pass.sh: --model requires a value" >&2; exit 2; }
+            [ $# -ge 2 ] || { echo "critic-first-pass.sh: --model requires a value" >&2; exit 2; }
             model="$2"; shift 2 ;;
+        --slug)
+            [ $# -ge 2 ] || { echo "critic-first-pass.sh: --slug requires a value" >&2; exit 2; }
+            slug="$2"; shift 2 ;;
         -h|--help)
             usage; exit 0 ;;
         *)
-            echo "gemini-first-pass.sh: unknown arg: $1" >&2; usage; exit 2 ;;
+            echo "critic-first-pass.sh: unknown arg: $1" >&2; usage; exit 2 ;;
     esac
 done
 
+[ -n "$model" ] || { echo "critic-first-pass.sh: --model is required" >&2; usage; exit 2; }
+if [ -z "${slug:-}" ]; then
+    # last /-segment, lowercased, non-alphanumerics stripped, truncated to 16
+    slug="$(printf '%s' "$model" | awk -F/ '{print $NF}' | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | cut -c1-16)"
+    [ -n "$slug" ] || slug="critic"
+fi
+
 diff_in="$(cat)"
 if [ -z "$diff_in" ]; then
-    echo "gemini-first-pass.sh: empty stdin — pipe a unified diff" >&2
+    echo "critic-first-pass.sh: empty stdin — pipe a unified diff" >&2
     usage
     exit 2
 fi
@@ -62,7 +73,7 @@ case "$diff_in" in
     "diff --git "*|*"
 diff --git "*) : ;;
     *)
-        echo "gemini-first-pass.sh: stdin is not a unified diff (no 'diff --git' line) — if a token-proxy rewrites git output, produce the diff via 'rtk proxy git diff' or equivalent" >&2
+        echo "critic-first-pass.sh: stdin is not a unified diff (no 'diff --git' line) — if a token-proxy rewrites git output, produce the diff via 'rtk proxy git diff' or equivalent" >&2
         usage
         exit 2 ;;
 esac
@@ -94,11 +105,11 @@ if [ "$diff_bytes" -gt "$CAP_BYTES" ]; then
 fi
 
 # New-file hunk ranges "file start end" per line — used by the citation guard
-# (Task 5) and computed on the (possibly truncated) diff.
+# and computed on the (possibly truncated) diff.
 # shellcheck disable=SC2317,SC2329  # cleanup is invoked indirectly via trap (SC2329 = false-positive for trap-invoked functions)
-cleanup() { rm -f "${ranges_file:-}"; }
+cleanup() { rm -f "${ranges_file:-}" "${pf:-}"; }
 trap cleanup EXIT
-ranges_file="$(mktemp -t gfp-ranges.XXXXXX)" || { echo "gemini-first-pass.sh: mktemp failed — fail-open, proceed claude-only" >&2; exit 1; }
+ranges_file="$(mktemp -t cfp-ranges.XXXXXX)" || { echo "critic-first-pass.sh: mktemp failed — fail-open, proceed claude-only" >&2; exit 1; }
 printf '%s\n' "$diff_in" | awk '
     /^\+\+\+ / {
         # $2 handles unquoted paths. Git-quoted paths (spaces / non-ASCII) are
@@ -108,7 +119,7 @@ printf '%s\n' "$diff_in" | awk '
         # we accept the limitation and document it so the drop is visible.
         f = $2
         if (substr(f, 1, 1) == "\"") {
-            print "gemini-first-pass.sh: git-quoted path in +++ line — citation guard may drop findings for this file (spaces/non-ASCII in path)" > "/dev/stderr"
+            print "critic-first-pass.sh: git-quoted path in +++ line — citation guard may drop findings for this file (spaces/non-ASCII in path)" > "/dev/stderr"
         }
         sub(/^b\//, "", f)
         next
@@ -133,13 +144,13 @@ Review ONLY the unified diff below. Output EXACTLY this markdown structure
 and nothing else (no preamble, no fences):
 
 ## Critical Issues (N found)
-- [gemini-1]: <one-line issue> [<file>:<line>]
+- [CRITIC-1]: <one-line issue> [<file>:<line>]
 
 ## Important Issues (N found)
-- [gemini-2]: <one-line issue> [<file>:<line>]
+- [CRITIC-2]: <one-line issue> [<file>:<line>]
 
 ## Suggestions (N found)
-- [gemini-3]: <one-line suggestion> [<file>:<line>]
+- [CRITIC-3]: <one-line suggestion> [<file>:<line>]
 
 Rules: replace N with the exact bullet count under that heading (0 is
 allowed, then put no bullets under it). Every bullet MUST end with a
@@ -153,20 +164,18 @@ $trunc_note
 DIFF:
 $diff_in"
 
-if [ -n "$model" ]; then
-    raw="$(printf '%s' "$role_prompt" | bash "$INVOKE" --model "$model" -)"
-else
-    raw="$(printf '%s' "$role_prompt" | bash "$INVOKE" -)"
-fi
+pf="$(mktemp "${TMPDIR:-/tmp}/cfp-prompt.XXXXXX")"
+printf '%s' "$role_prompt" > "$pf"
+raw="$(bash "$INVOKE" --model "$model" --prompt-file "$pf")"
 rc=$?
 if [ "$rc" -ne 0 ]; then
     # Raw-output log intentionally NOT cleaned up — it is the fail-open diagnostic artifact.
-    log="$(mktemp -t gfp-raw.XXXXXX)" || log=""
+    log="$(mktemp -t cfp-raw.XXXXXX)" || log=""
     if [ -n "$log" ]; then
         printf '%s\n' "$raw" > "$log"
-        echo "gemini-first-pass.sh: gemini invoke failed (rc=$rc) — fail-open, proceed claude-only. Raw output: $log" >&2
+        echo "critic-first-pass.sh: invoke failed (rc=$rc) — fail-open, proceed claude-only. Raw output: $log" >&2
     else
-        echo "gemini-first-pass.sh: gemini invoke failed (rc=$rc) — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
+        echo "critic-first-pass.sh: invoke failed (rc=$rc) — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
         printf '%s\n' "$raw" >&2
     fi
     exit 1
@@ -174,7 +183,7 @@ fi
 
 # Validate the raw output, drop hallucinated citations, renumber IDs,
 # recompute per-section counts. awk exits 3 on malformed structure.
-final="$(printf '%s\n' "$raw" | awk -v rf="$ranges_file" -v trunc="$truncated" '
+final="$(printf '%s\n' "$raw" | awk -v rf="$ranges_file" -v trunc="$truncated" -v slug="$slug" '
 function getn(s) { match(s, /\([0-9]+ found\)/); return substr(s, RSTART + 1, RLENGTH - 8) + 0 }
 BEGIN {
     nr = 0
@@ -192,14 +201,14 @@ BEGIN {
 # Non-bullet, non-heading, non-empty lines inside a section (e.g. wrapped
 # continuation text from multi-line findings) are silently discarded.
 # Emit a stderr note to keep the no-silent-drops property visible.
-/^[^# \t-]/ { if (sec > 0 && length($0) > 0) { print "gemini-first-pass.sh: discarded non-bullet line in section " sec " (multi-line finding continuation?): " $0 > "/dev/stderr" } }
+/^[^# \t-]/ { if (sec > 0 && length($0) > 0) { print "critic-first-pass.sh: discarded non-bullet line in section " sec " (multi-line finding continuation?): " $0 > "/dev/stderr" } }
 END {
     for (i = 1; i <= 3; i++) {
         if (!seen[i]) {
-            print "gemini-first-pass.sh: malformed — missing heading: " name[i] > "/dev/stderr"; exit 3
+            print "critic-first-pass.sh: malformed — missing heading: " name[i] > "/dev/stderr"; exit 3
         }
         if (declared[i] != count[i] + 0) {
-            print "gemini-first-pass.sh: malformed — " name[i] " declared " declared[i] " vs " count[i] + 0 " bullets" > "/dev/stderr"; exit 3
+            print "critic-first-pass.sh: malformed — " name[i] " declared " declared[i] " vs " count[i] + 0 " bullets" > "/dev/stderr"; exit 3
         }
     }
     # Citation guard: keep a bullet only when its trailing [file:line] names a
@@ -222,14 +231,14 @@ END {
                 }
             }
             if (!okc) {
-                print "gemini-first-pass.sh: dropped hallucinated/missing citation: " b > "/dev/stderr"
+                print "critic-first-pass.sh: dropped hallucinated/missing citation: " b > "/dev/stderr"
                 continue
             }
             kept[i]++
             keep[i, kept[i]] = b
         }
     }
-    print "# Gemini First-Pass Review" (trunc ? " (truncated input)" : "")
+    print "# " slug " First-Pass Review" (trunc ? " (truncated input)" : "")
     id = 0
     for (i = 1; i <= 3; i++) {
         print ""
@@ -237,8 +246,8 @@ END {
         for (j = 1; j <= kept[i] + 0; j++) {
             b = keep[i, j]
             id++
-            if (b ~ /^- \[[^]]*\]:/) sub(/^- \[[^]]*\]:/, "- [gemini-" id "]:", b)
-            else sub(/^- /, "- [gemini-" id "]: ", b)
+            if (b ~ /^- \[[^]]*\]:/) sub(/^- \[[^]]*\]:/, "- [" slug "-" id "]:", b)
+            else sub(/^- /, "- [" slug "-" id "]: ", b)
             print b
         }
     }
@@ -246,12 +255,12 @@ END {
 rc=$?
 if [ "$rc" -ne 0 ]; then
     # Raw-output log intentionally NOT cleaned up — it is the fail-open diagnostic artifact.
-    log="$(mktemp -t gfp-raw.XXXXXX)" || log=""
+    log="$(mktemp -t cfp-raw.XXXXXX)" || log=""
     if [ -n "$log" ]; then
         printf '%s\n' "$raw" > "$log"
-        echo "gemini-first-pass.sh: malformed gemini output — fail-open, proceed claude-only. Raw output: $log" >&2
+        echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. Raw output: $log" >&2
     else
-        echo "gemini-first-pass.sh: malformed gemini output — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
+        echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
         printf '%s\n' "$raw" >&2
     fi
     exit 1

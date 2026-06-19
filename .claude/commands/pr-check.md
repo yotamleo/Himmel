@@ -28,38 +28,68 @@ Steps:
    - `lane = docs-audit` → run the **docs-audit lane** (step 2.5 below), NOT the full matrix. A docs-only PR is never zero-CR, but it gets ONE reviewer with a docs charter, not the 6-reviewer set.
    - `lane = full` or empty (legacy markers) → the normal flow (step 3 onward).
 
-2.5. **Docs-audit lane (only when `lane = docs-audit`).** Dispatch ONE `pr-review-toolkit:code-reviewer` Agent (upstream type + the HIMMEL-178 directive prepended, same as step 3) with the docs charter and NOTHING else (no gemini first-pass, no other matrix agents):
+2.5. **Docs-audit lane (only when `lane = docs-audit`).** Dispatch ONE `pr-review-toolkit:code-reviewer` Agent (upstream type + the HIMMEL-178 directive prepended, same as step 3) with the docs charter and NOTHING else (no critic panel, no other matrix agents):
 
    > **Docs-audit charter (HIMMEL-299/303) — audit ONLY these five dimensions, nothing else (no prose-style nitpicks):** (1) factual accuracy of every repo claim (hooks/gates/flags/paths/commands) vs the actual code/config; (2) every markdown link resolves; (3) no stale file/flag/ticket references; (4) example blocks have correct paths + flags + syntax; (5) internal consistency. Return findings tagged `[ACCURACY|DEAD-LINK|STALE|EXAMPLE|CONSISTENCY]` with file:line + fix; say `DOCS-AUDIT CLEAN` if none. (`CLAUDE.md` diffs: prefer `/claude-md-audit` for the rubric pass; this charter still applies for accuracy.)
 
    Treat any `[ACCURACY|DEAD-LINK|STALE|EXAMPLE]` finding as a blocking Critical for the step 5/6 decision (`[CONSISTENCY]` is Important). Then go to step 4 with these counts. Skip steps 3 / 3.0 entirely.
 
-3. **Gemini first-pass, then dispatch reviewer agents in parallel (HIMMEL-178, HIMMEL-270).**
+3. **Critic panel first-pass, then dispatch reviewer agents in parallel (HIMMEL-178, HIMMEL-270, HIMMEL-415).**
 
-   **Step 3.0 — gemini first-pass (decimal substep, runs BEFORE any Agent dispatch):**
+   **Step 3.0 — critic panel first-pass (decimal substep, runs BEFORE any Agent dispatch):**
+
+   `/pr-check` runs the fast-free cross-model panel (gptoss+kimi, ~3min) by **default**. Control via `CR_PROFILE`:
+   - `CR_PROFILE` unset/empty → **DEFAULT**: run panel with `CRITIC_PANEL_TIERS=free` (fast gptoss+kimi). Print note: "Default free cross-model CR (~3min; set CR_PROFILE=none for instant claude-only, CR_PROFILE=thorough to add qwen-480B)."
+   - `CR_PROFILE=none` → **claude-only** (skip panel entirely); print a one-line note and skip.
+   - `CR_PROFILE=thorough` → run panel with `CRITIC_PANEL_TIERS="free,thorough"` (all 3 critics, ~5min+).
+   - any other value → pass through as `CRITIC_PANEL_TIERS` (advanced/custom tier filter).
+
+   Per-member hang protection: `CRITIC_TIMEOUT_SECS` (default 150 s). `CR_PROFILE=none` skips the panel entirely.
+
    ```bash
    # Resolve the protected default (main OR master, HIMMEL-297) for the diff base.
    db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
    diff_rc=0
    diff_out=$(git diff "$db...HEAD") || diff_rc=$?
-   if [ "$diff_rc" -ne 0 ]; then
-       # git itself failed — treat as gemini first-pass unavailable, not empty-diff skip.
-       echo "gemini first-pass unavailable — claude-only review (git diff failed rc=$diff_rc: $diff_out)" >&2
+   panel_avail_lines=""   # will hold "panel-availability: <slug> ok" or "panel-availability: <slug> unavailable (rc=N)" stderr lines
+   panel_findings=""      # will hold the merged findings block on stdout
+   if [ "${CR_PROFILE:-}" = "none" ]; then
+       # Explicit claude-only opt-out. Skip panel.
+       echo "claude-only review (CR_PROFILE=none)"
+   elif [ "$diff_rc" -ne 0 ]; then
+       # git itself failed — treat as panel unavailable, not empty-diff skip.
+       echo "critic panel unavailable — claude-only review (git diff failed rc=$diff_rc: $diff_out)" >&2
    elif [ -z "$diff_out" ]; then
-       echo "empty diff — gemini first-pass skipped"
+       echo "empty diff — critic panel skipped"
    else
-       printf '%s' "$diff_out" | bash scripts/cr/gemini-first-pass.sh
-       # rc=0: capture stdout as the gemini findings block.
-       # rc=1 or rc=2: print a warning, set the findings block to
-       #       "(gemini first-pass unavailable — claude-only review)" and continue.
-       #       (rc=2 = the script rejected stdin — usually a token-proxied git diff;
-       #       retry once with the rtk proxy form below before falling back.)
+       # Determine tier filter: unset/empty=free, thorough=free+thorough, other=passthrough.
+       if [ -z "${CR_PROFILE:-}" ]; then
+           panel_tiers="free"
+           echo "Default free cross-model CR (~3min; set CR_PROFILE=none for instant claude-only, CR_PROFILE=thorough to add qwen-480B)."
+       elif [ "$CR_PROFILE" = "thorough" ]; then
+           panel_tiers="free,thorough"
+       else
+           panel_tiers="$CR_PROFILE"
+       fi
+       panel_tmp=$(mktemp -t cr-panel-avail.XXXXXX)
+       panel_findings=$(printf '%s' "$diff_out" | CRITIC_PANEL_TIERS="$panel_tiers" bash scripts/cr/critic-panel.sh 2>"$panel_tmp")
+       panel_rc=$?
+       panel_avail_lines=$(cat "$panel_tmp"); rm -f "$panel_tmp"
+       if [ "$panel_rc" -ne 0 ]; then
+           # rc=1 = all critics failed — fail-open, continue with claude-only.
+           echo "critic panel unavailable (all critics failed) — claude-only review" >&2
+           panel_findings=""
+       fi
+       # If the environment token-proxies git (rtk), the plain git diff above
+       # returns a stat summary, not a unified diff — critic-panel.sh will exit 1
+       # (no valid diff). Retry once with the rtk proxy form before falling back.
+       # rc=1 after retry → claude-only (same fail-open contract as above).
    fi
    ```
-   If the environment token-proxies git (rtk), the plain git diff above returns a stat summary, not a unified diff — the script exits 2 ('stdin is not a unified diff'). Produce the diff with `rtk proxy git diff "$db...HEAD"` in that case.
+   If the panel runs and the environment token-proxies git (rtk), the plain `git diff "$db...HEAD"` returns a stat summary, not a unified diff — `critic-panel.sh` exits 1 (no critics responded). Retry once with `rtk proxy git diff "$db...HEAD"` before falling back to claude-only. On retry, the retry's output REPLACES (overwrites, not appends) `panel_findings` and the captured `panel-availability:` lines from the first attempt.
 
-   The script's `[gemini-N]` Critical/Important findings are BLOCKING
-   CANDIDATES under the adjudication rules below. Its Suggestions are NOT
+   The panel's `[<slug>-N]` Critical/Important findings are BLOCKING
+   CANDIDATES under the adjudication rules below. Panel Suggestions are NOT
    forwarded to agents — append them directly to the aggregate
    `## Suggestions` section in step 3's output (step 7 files them).
 
@@ -83,24 +113,28 @@ Steps:
 
    > **Hard rule (HIMMEL-178 verify-before-critical):** before reporting any Critical finding, grep the actual diff (or read the file at the cited line) for the cited line / token / pattern. If the cited content does NOT appear verbatim, downgrade to Minor or drop entirely. Note any downgrade with reason `verify-before-critical: cited content not in diff`. Hallucinated Critical findings derail overnight-mode fix batches (~6 reviewers/PR × 50-60 dispatches/session) and burn tokens. This rule applies ONLY to Critical (91-100) findings — Important (80-89) and below tolerate inference.
 
-   When the gemini first-pass produced findings, ALSO prepend this directive
-   plus the gemini Critical/Important findings to each agent prompt:
+   When the critic panel first-pass produced findings, ALSO prepend this directive
+   plus the panel Critical/Important findings to each agent prompt:
 
-   > **Cross-model adjudication (HIMMEL-270):** the gemini first-pass findings
-   > below are blocking candidates, each tagged `[gemini-N]`. For each finding
-   > relevant to your role: AGREE (confirm with cited evidence from the
-   > diff/file) or DISPROVE (grep the diff, read the file at the cited line,
-   > or run a test proving it wrong). Record verdicts referencing the ID:
-   > `cross-model-adjudication: [gemini-N] agreed — <evidence>` or
-   > `cross-model-adjudication: [gemini-N] disproved — <evidence>`. Do not
-   > silently ignore a finding relevant to your role.
+   > **Cross-model adjudication (HIMMEL-270, HIMMEL-415):** the critic panel
+   > findings below are blocking candidates, each tagged `[<slug>-N]`. For
+   > each finding relevant to your role: AGREE (confirm with cited evidence
+   > from the diff/file) or DISPROVE (grep the diff, read the file at the
+   > cited line, or run a test proving it wrong). Emit exactly ONE verdict
+   > line per adjudicated finding, using this exact format:
+   > `VERDICT [<slug>-N] = agreed|disproved|conflict|unaddressed`
+   > — `agreed` = confirmed with evidence; `disproved` = refuted with
+   > evidence; `conflict` = evidence-backed AGREE AND DISPROVE (surface
+   > verbatim to operator); `unaddressed` = relevant to your role but
+   > cannot confirm or refute. Do not silently ignore a finding relevant
+   > to your role.
 
    The `code-reviewer` dispatch's prompt additionally gets:
-   **"You are the mandatory adjudicator: render a verdict on EVERY
-   `[gemini-N]` Critical/Important, whether or not it looks relevant to your
-   role — read the cited file if it is outside the diff context you were
-   given."** (Closes the orphaned-finding hole — every gemini finding gets at
-   least one verdict.)
+   **"You are the mandatory adjudicator: render a `VERDICT [<slug>-N] = …`
+   line on EVERY `[<slug>-N]` Critical/Important finding from the panel,
+   whether or not it looks relevant to your role — read the cited file if
+   it is outside the diff context you were given."** (Closes the
+   orphaned-finding hole — every panel finding gets at least one verdict.)
 
    Aggregate the per-agent results into the structured output format below (for downstream parsing by step 4):
 
@@ -126,18 +160,57 @@ Steps:
    - `Critical Issues (N found)`
    - `Important Issues (N found)`
 
-   **Gemini adjudication cross-check (HIMMEL-270):** when step 3.0 produced
-   findings, recompute the counts with this severity-partitioned rule before
-   the step 5/6 decision:
-   - A gemini Critical/Important is EXCLUDED from its count ONLY when it has
-     at least one `disproved` verdict AND zero `agreed` verdicts. Every other
-     state blocks: agreed-only, conflict (evidence-backed AGREE + DISPROVE —
-     surface verbatim to the operator), and unaddressed (no verdict at all —
-     append it to the Critical count as unaddressed, fail-closed).
-   - Gemini Suggestions never enter blocking counts and need no verdict.
-   Mechanically: every `[gemini-N]` Critical/Important forwarded in step 3
-   must appear in the aggregate with at least one
-   `cross-model-adjudication: [gemini-N] …` verdict line.
+   **Panel adjudication cross-check (HIMMEL-270, HIMMEL-415):** when step 3.0
+   produced panel findings, recompute the counts using `VERDICT` lines as the
+   SINGLE verdict source (one parser, not two — retire the old
+   `cross-model-adjudication:` prose parsing):
+
+   For each `[<slug>-N]` Critical/Important forwarded in step 3:
+   - Collect all `VERDICT [<slug>-N] = <v>` lines emitted by any reviewer.
+   - **Excluded from blocking count** ONLY when: at least one `disproved`
+     verdict AND zero `agreed` verdicts.
+   - **Blocks** in every other state:
+     - `agreed` (any) → blocks.
+     - `conflict` (AGREE + DISPROVE both present) → blocks; surface verbatim
+       to the operator.
+     - `unaddressed` (no verdict line at all, or all verdicts are
+       `unaddressed`) → append to the Critical count, fail-closed.
+   - Panel Suggestions never enter blocking counts and need no verdict.
+
+   Every `[<slug>-N]` Critical/Important forwarded in step 3 must appear in
+   the aggregate with at least one `VERDICT [<slug>-N] = …` line (the
+   mandatory `code-reviewer` adjudicator ensures this).
+
+4.5. **Ledger append (runs after verdict extraction, before the step 5/6 gate decision; no-op when `panel_findings` is empty, i.e. claude-only path).** Single-writer: only this orchestrator step writes the ledger.
+
+   For each `[<slug>-N]` finding emitted by the panel (Critical, Important, or
+   Suggestion), extract its severity (`crit`, `imp`, or `sug`), file, line, and
+   the resolved verdict (`agreed|disproved|conflict|unaddressed`), then call:
+   ```bash
+   bash scripts/cr/ledger-append.sh finding \
+       --branch "$branch" --head "$head" \
+       --model "<slug>" --id "<slug>-N" \
+       --severity <crit|imp|sug> \
+       --file <file> --line <line> \
+       --verdict <agreed|disproved|conflict|unaddressed>
+   ```
+
+   For each `panel-availability:` line captured in `$panel_avail_lines` from
+   step 3.0 (format: `panel-availability: <slug> ok` for responders, or
+   `panel-availability: <slug> unavailable (rc=N)` for drops), call.
+   Parsing: the slug is the 2nd whitespace-delimited token and the status is
+   the 3rd token (`ok` or `unavailable`) — ignore any trailing ` (rc=N)`.
+   Pass `--status` as exactly `ok` or `unavailable`.
+   ```bash
+   bash scripts/cr/ledger-append.sh avail \
+       --branch "$branch" --head "$head" \
+       --model "<slug>" --status <ok|unavailable>
+   ```
+
+   Both calls are best-effort — ledger errors are logged to stderr but do NOT
+   block the gate decision in steps 5/6. The ledger is deduped on
+   `(head, finding_id)` for findings and `(head, model)` for avail records, so
+   re-running `/pr-check` on the same HEAD is safe.
 
 5. If both `N == 0`:
    - Delete `$marker` (`rm -f "$marker"`).
@@ -147,6 +220,17 @@ Steps:
    - Leave the marker in place.
    - Surface the Critical / Important findings to the user.
    - Instruct: address the findings, commit fixes, then re-run `/pr-check`. (A new commit invalidates the SHA in the marker too, but the marker is still present until `/pr-check` clears it.)
+
+6.5. **Critic-score footer (append after the gate decision in steps 5/6).** Emit a per-model verdict tally for this run plus the cumulative agreed% from the ledger:
+   ```bash
+   bash scripts/cr/cr-scores.sh
+   ```
+   For any critic slug that appeared in the panel registry but whose
+   `panel-availability:` line was `unavailable` (or absent entirely), append an
+   **"absent this run"** note next to that model's row so the operator can see
+   transient drop-outs. If the ledger has no records yet (first run),
+   `cr-scores.sh` prints `no critic scores recorded yet` — emit that verbatim
+   rather than suppressing it.
 
 7. **Auto-file deferred nits (HIMMEL-30).** Runs whenever the review surfaces low-severity findings worth tracking, independently of steps 5/6:
    - Recognise findings tagged `NIT`, `LOW`, `SUGGESTION`, `IMPROVEMENT`, or `DEFERRED` (typically in a `## Suggestions (N found)` section per the `/pr-review-toolkit:review-pr` template).
@@ -183,4 +267,4 @@ Steps:
 Notes:
 - The PreToolUse hook (`scripts/hooks/check-cr-marker-on-pr-create.sh`) blocks `gh pr create` whenever the marker exists, regardless of SHA match — stale or fresh, you have to clear it.
 - Bypass for emergencies: `SKIP_CR=1 git push` skips the marker write at push time, and a missing marker means `gh pr create` is allowed. Document any bypass in the PR body.
-- COUPLING: this command parses the exact heading 'Critical Issues (N found)' / 'Important Issues (N found)' from TWO producers — /pr-review-toolkit:review-pr output AND `scripts/cr/gemini-first-pass.sh` (HIMMEL-270) — and recognises the deferred-class severities listed above. If either producer changes the format, update this command, the other producer, and `scripts/cr/file-deferred-issues.sh` in lockstep.
+- COUPLING: this command parses the exact heading 'Critical Issues (N found)' / 'Important Issues (N found)' from TWO producers — `/pr-review-toolkit:review-pr` output AND `scripts/cr/critic-panel.sh` (HIMMEL-415) — and recognises the deferred-class severities listed above. If either producer changes the format, update this command, the other producer, and `scripts/cr/file-deferred-issues.sh` in lockstep. Note: `file-deferred-issues.sh` keys on the `file:LINE: SEVERITY:` line shape, NOT on `[<slug>-N]` bracket tags — those tags pass through untouched (expected no-op).
