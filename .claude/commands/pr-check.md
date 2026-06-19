@@ -212,6 +212,32 @@ Steps:
    `(head, finding_id)` for findings and `(head, model)` for avail records, so
    re-running `/pr-check` on the same HEAD is safe.
 
+4.6. **Handover CR-findings capture (HIMMEL-416 F2 / C2) — runs alongside 4.5; best-effort, single-writer for the `## CR Findings` section, graceful skip when there is no active handover item.** Mirrors the panel findings into the current work-item's `reviewer-notes.md` so CR results survive the session (the F1 ledger is machine state; this is the human-readable trail surfaced on resume).
+
+   Resolve the active item ONCE; skip the whole block (no error) if there is none:
+   ```bash
+   item_dir=""
+   if item_dir=$(bash scripts/handover/resolve-active-item.sh --branch "$branch" 2>/dev/null); then
+       notes="$item_dir/reviewer-notes.md"
+       today=$(date +%F)
+       pr_ref=$(gh pr view --json number -q .number 2>/dev/null || echo "")
+   else
+       item_dir=""   # rc 3 (no item) or rc 2 (error) -> skip capture, never block the gate
+       echo "F2: no active handover item for $branch — CR-findings capture skipped" >&2
+   fi
+   ```
+
+   When `item_dir` is set, for each `[<slug>-N]` finding emitted by the panel (the SAME findings iterated in step 4.5 — Critical, Important, or Suggestion), extract its severity (`crit|imp|sug`), file, line, the finding's one-line title/description (from the step-3 aggregate), and the resolved verdict, then call:
+   ```bash
+   bash scripts/handover/append-cr-findings.sh \
+       --notes "$notes" --head "$head" --date "$today" ${pr_ref:+--pr "$pr_ref"} \
+       --id "<slug>-N" --severity <crit|imp|sug> \
+       --file <file> --line <line> --title "<one-line finding title>" \
+       --verdict <agreed|disproved|conflict|unaddressed>
+   ```
+
+   Like 4.5, this is **deduped** — `append-cr-findings.sh` skips a `(head, <slug>-N)` already present, so re-running `/pr-check` on the same HEAD adds nothing. Errors are best-effort: a missing `reviewer-notes.md` or unwritable state repo logs to stderr and does NOT block steps 5/6.
+
 5. If both `N == 0`:
    - Delete `$marker` (`rm -f "$marker"`).
    - Report: `CR clean — marker cleared for $branch (HEAD=$head). Safe to gh pr create.`
