@@ -282,6 +282,33 @@ case "$out" in *"(v3.3.3)"*) pass "T20 skips the decoy and resolves the valid ca
 case "$out" in *"multiple himmel checkouts"*) fail "T20 must not warn (only one valid)" "warned: $out" ;; *) pass "T20 no false multi-checkout warn with a decoy present" ;; esac
 
 # ---------------------------------------------------------------------------
+# T21: sibling scan — a decoy sibling (dir, no marketplace.json) is SKIPPED and a
+# later valid sibling resolves; one valid => no warning (HIMMEL-420 — the sibling
+# surface now matches the $HOME-candidate surface). Forces the sibling path with
+# $HIMMEL_DIR unset + a $HOME holding no candidate, and the vault under $base.
+T21BASE="$TMP/t21-base"
+mkdir -p "$T21BASE/himmel/templates/luna-second-brain"   # decoy sibling: no marketplace.json
+make_template "$T21BASE/ztools-himmel/templates/luna-second-brain" "4.4.4"
+V="$T21BASE/vault"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+out=$(env -u HIMMEL_DIR HOME="$TMP/t21-emptyhome" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1); rc=$?
+assert_eq "T21 sibling decoy-skip rc" "0" "$rc"
+case "$out" in *"(v4.4.4)"*) pass "T21 sibling scan skips the decoy and resolves the valid sibling" ;; *) fail "T21 sibling scan skips the decoy and resolves the valid sibling" "got: $out" ;; esac
+case "$out" in *"multiple himmel checkouts"*) fail "T21 sibling must not warn (only one valid)" "warned: $out" ;; *) pass "T21 sibling no false multi-checkout warn with a decoy present" ;; esac
+
+# ---------------------------------------------------------------------------
+# T22: sibling scan — TWO physically-distinct valid sibling checkouts warn and
+# resolve to the explicit `himmel` first (HIMMEL-420).
+T22BASE="$TMP/t22-base"
+make_template "$T22BASE/himmel/templates/luna-second-brain" "5.5.5"
+make_template "$T22BASE/zzz-himmel/templates/luna-second-brain" "6.6.6"
+V="$T22BASE/vault"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+out=$(env -u HIMMEL_DIR HOME="$TMP/t22-emptyhome" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1); rc=$?
+assert_eq "T22 sibling multi rc" "0" "$rc"
+case "$out" in *"multiple himmel checkouts"*) pass "T22 sibling scan warns on multiple distinct checkouts" ;; *) fail "T22 sibling scan warns on multiple distinct checkouts" "got: $out" ;; esac
+case "$out" in *"(v5.5.5)"*) pass "T22 sibling resolves to explicit 'himmel' first" ;; *) fail "T22 sibling resolves to explicit 'himmel' first" "got: $out" ;; esac
+case "$out" in *"(v6.6.6)"*) fail "T22 must not pick the later glob match zzz-himmel" "v6.6.6 leaked: $out" ;; *) pass "T22 sibling does not pick the later glob match" ;; esac
+
+# ---------------------------------------------------------------------------
 # T11: ACCEPTANCE — run against a COPY of the real luna vault, never the live one.
 LUNA="$HOME/Documents/luna"
 if [ -d "$LUNA" ] && [ -d "$LUNA/50-Journal" ]; then
