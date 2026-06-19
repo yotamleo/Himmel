@@ -140,6 +140,14 @@ Three tiers for luna-touching artifacts:
 Author new luna-touching reference docs in `docs/luna/`; author
 journal-style decision records under the appropriate <state-repo> bucket.
 
+**Internal specs/plans → state repo, not himmel `docs/` (HIMMEL-409).** Design
+docs, implementation plans, and decision records are work artifacts → the
+state bucket `<state-repo>/handovers/<USER_SLUG>/<repo-bucket>/specs/<type>/`
+(subfolders `design/`, `plan/`, …; extensible). They never live in himmel
+`docs/` (reference + OSS-public only). Cross-repo source of truth = the
+**handover skill** (loaded in any repo, unlike this project-scoped file);
+existing `docs/specs/` files migrate per-ticket.
+
 **Luna recent context (HIMMEL-254):** read `~/Documents/luna/hot.md` (if present)
 first for recent vault context (~500-word Tier-2 hot cache) before crawling luna
 `index.md`.

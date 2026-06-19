@@ -1,7 +1,7 @@
 # scripts/bitbucket — Bitbucket Cloud CLI source
 
-Loads only when working in this subtree. The forge-seam design lives in
-`docs/specs/2026-06-16-bitbucket-cloud-forge-support-design.md`; the shell
+Loads only when working in this subtree. The forge-seam design lives in the
+state-repo handover specs (`…/himmel/specs/design/`, HIMMEL-409); the shell
 dispatch seam is `scripts/lib/forge*.sh`.
 
 ## What this is
