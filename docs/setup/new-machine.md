@@ -171,7 +171,7 @@ bash scripts/setup.sh
 
 `scripts/setup.sh` handles: pre-commit install, Jira CLI build, `.env` from `.env.example`.
 
-To **update** an existing checkout later, run `/update` (or `bash scripts/update.sh`):
+To **update** an existing checkout later, run `/himmel-update` (or `bash scripts/himmel-update.sh`):
 `git pull` is what delivers himmel updates — marketplace `autoUpdate` does not.
 See [`updating.md`](updating.md).
 

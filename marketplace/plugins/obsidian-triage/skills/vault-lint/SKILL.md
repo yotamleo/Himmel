@@ -37,5 +37,5 @@ Run the vault-lint engine against a vault root. Deterministic, report-only, file
 the profile location; `--no-report` suppresses the written report (stdout-only run).
 
 **Vendor-drift guard:** `marketplace/plugins/obsidian-triage/skills/vault-lint/check-vendor-drift.sh`
-(lean-invoke — run manually or via `/update`; not a pre-commit hook) flags when the upstream
+(lean-invoke — run manually or via `/himmel-update`; not a pre-commit hook) flags when the upstream
 `claude-obsidian:wiki-lint` this skill generalizes has changed, so capability gaps surface for review.

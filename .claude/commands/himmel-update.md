@@ -1,5 +1,5 @@
 ---
-description: Update this himmel checkout — git pull + marketplace re-sync. autoUpdate does NOT deliver himmel updates.
+description: Update this himmel checkout (harness) — git pull + marketplace re-sync. autoUpdate does NOT deliver himmel updates. For the luna vault, use /luna-upgrade; for both at once, /himmel-update-all.
 ---
 
 Updates an existing himmel install. **`git pull` is the only thing that
@@ -15,7 +15,7 @@ freshly-pulled dir.
 Run:
 
 ```bash
-bash scripts/update.sh
+bash scripts/himmel-update.sh
 ```
 
 After it finishes: hooks are live immediately; **restart any running Claude

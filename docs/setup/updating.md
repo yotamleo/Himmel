@@ -1,8 +1,12 @@
 # Updating himmel
 
 **TL;DR — `git pull` your himmel checkout. Marketplace `autoUpdate` does NOT
-deliver himmel updates on its own.** Run `/update` (or `bash scripts/update.sh`)
-to do the pull + marketplace re-sync in one step.
+deliver himmel updates on its own.** Run `/himmel-update` (or `bash
+scripts/himmel-update.sh`) to do the pull + marketplace re-sync in one step.
+
+> This updates the himmel **harness**. To refresh an existing **luna vault**
+> from the current template, use [`/luna-upgrade`](../../marketplace/plugins/obsidian-triage/skills/luna-upgrade/SKILL.md);
+> to do both in one shot, use `/himmel-update-all`.
 
 ## Why a pull is required
 
@@ -39,12 +43,12 @@ covers the core hooks.**
 ## How to update
 
 ```bash
-/update                 # inside Claude Code
+/himmel-update                 # inside Claude Code
 # or
-bash scripts/update.sh  # from a shell, in the himmel checkout
+bash scripts/himmel-update.sh  # from a shell, in the himmel checkout
 ```
 
-`scripts/update.sh`:
+`scripts/himmel-update.sh`:
 1. `git pull --ff-only` (fails loudly if your branch has diverged from upstream
    or local edits block the update — reconcile manually, updates land on the
    default branch).
