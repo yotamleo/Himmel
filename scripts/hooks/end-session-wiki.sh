@@ -122,7 +122,8 @@ fi
 CFG_ENABLED="true"
 CFG_DRY_RUN="false"
 CFG_MIN_DUR=60
-CFG_VAULT_PATH=""
+# vault_path / vault are read by resolve_vault_root (scripts/lib/vault-resolve.sh),
+# not here, so the shared @tsv parse stays focused on the gate fields.
 if [ -r "$CONFIG_PATH" ]; then
     # Use `has(...)` instead of `//` because jq treats `false` and `0` as falsy,
     # so `.enabled // true` would return `true` when the user set `false`.
@@ -130,15 +131,13 @@ if [ -r "$CONFIG_PATH" ]; then
         [
             (if has("enabled") then .enabled else true end | tostring),
             (if has("dry_run") then .dry_run else false end | tostring),
-            (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring),
-            (if has("vault_path") then .vault_path else "" end | tostring)
+            (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring)
         ] | @tsv
     ' "$CONFIG_PATH" 2>/dev/null)"
     if [ -n "$parsed" ]; then
         CFG_ENABLED="$(printf '%s' "$parsed" | cut -f1)"
         CFG_DRY_RUN="$(printf '%s' "$parsed" | cut -f2)"
         CFG_MIN_DUR="$(printf '%s' "$parsed" | cut -f3)"
-        CFG_VAULT_PATH="$(printf '%s' "$parsed" | cut -f4)"
     else
         log_msg "config parse failed (using defaults): $CONFIG_PATH"
     fi
@@ -309,19 +308,24 @@ HHMM="$(date -u +%H%M)"
 YEAR="$(date -u +%Y)"
 MONTH="$(date -u +%m)"
 
-# Vault root precedence: per-repo config.vault_path > LUNA_VAULT_PATH env > default.
-if [ -n "$CFG_VAULT_PATH" ]; then
-    VAULT_ROOT="$CFG_VAULT_PATH"
-elif [ -n "${LUNA_VAULT_PATH:-}" ]; then
-    VAULT_ROOT="$LUNA_VAULT_PATH"
-else
-    VAULT_ROOT="$HOME/Documents/luna"
-    if [ ! -d "$VAULT_ROOT" ] && [ -n "${USERPROFILE:-}" ]; then
-        # Windows-via-Git-Bash fallback: derive the Windows home generically.
-        # Only meaningful for the default location.
-        VAULT_ROOT_WIN="$(cygpath -u "$USERPROFILE" 2>/dev/null)/Documents/luna"
-        [ -d "$VAULT_ROOT_WIN" ] && VAULT_ROOT="$VAULT_ROOT_WIN"
-    fi
+# Vault root: resolved by scripts/lib/vault-resolve.sh (HIMMEL-403).
+# Precedence: config.vault_path > validated config.vault NAME (operator registry
+# ~/.claude/luna-vaults.json -> ~/Documents/<name> w/ .obsidian marker) >
+# LUNA_VAULT_PATH > default luna. An empty result means a vault was declared but
+# could not be resolved (invalid/missing) -> skip the capture (fail-closed).
+_VR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/vault-resolve.sh"
+# shellcheck source=/dev/null
+. "$_VR_LIB"
+VAULT_ROOT="$(resolve_vault_root "$CONFIG_PATH" "$HOME/.claude/luna-vaults.json" "$CFG_DRY_RUN")"
+if [ -z "$VAULT_ROOT" ]; then
+    log_msg "skipped: vault unresolved (invalid name / no real vault / unparseable config) — no write"
+    HOOK_OK=1   # clean intentional skip — keep the EXIT trap from logging a phantom FAILED
+    exit 0
+fi
+# Windows-via-Git-Bash fallback for the DEFAULT location only (unchanged intent).
+if [ ! -d "$VAULT_ROOT" ] && [ "$VAULT_ROOT" = "$HOME/Documents/luna" ] && [ -n "${USERPROFILE:-}" ]; then
+    VAULT_ROOT_WIN="$(cygpath -u "$USERPROFILE" 2>/dev/null)/Documents/luna"
+    [ -d "$VAULT_ROOT_WIN" ] && VAULT_ROOT="$VAULT_ROOT_WIN"
 fi
 # Expand a leading ~/ (a JSON config value can't rely on shell tilde expansion).
 # shellcheck disable=SC2088  # the "~/" here is a literal case-pattern match, not an expansion

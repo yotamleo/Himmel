@@ -96,7 +96,8 @@ try {
     $cfgEnabled = $true
     $cfgDryRun  = $false
     $cfgMinDur  = 60
-    $cfgVaultPath = ''
+    # vault_path / vault are read by Resolve-VaultRoot (scripts/lib/vault-resolve.ps1),
+    # not here, so this parse stays focused on the gate fields.
     if (Test-Path $configPath) {
         try {
             $cfgRaw = Get-Content -LiteralPath $configPath -Raw
@@ -104,7 +105,6 @@ try {
             if ($cfg.PSObject.Properties['enabled']) { $cfgEnabled = [bool]$cfg.enabled }
             if ($cfg.PSObject.Properties['dry_run']) { $cfgDryRun  = [bool]$cfg.dry_run }
             if ($cfg.PSObject.Properties['min_duration_seconds']) { $cfgMinDur = [int]$cfg.min_duration_seconds }
-            if ($cfg.PSObject.Properties['vault_path']) { $cfgVaultPath = [string]$cfg.vault_path }
         } catch {
             Write-HookLog "config parse failed (using defaults): $($_.Exception.Message)"
         }
@@ -290,15 +290,19 @@ try {
     $year    = $nowUtc.ToString('yyyy')
     $month   = $nowUtc.ToString('MM')
 
-    # Vault root precedence: per-repo config.vault_path > LUNA_VAULT_PATH env > default.
-    if ($cfgVaultPath) {
-        $vaultRoot = $cfgVaultPath
-    } elseif ($env:LUNA_VAULT_PATH) {
-        $vaultRoot = $env:LUNA_VAULT_PATH
-    } else {
-        $vaultRoot = Join-Path $env:USERPROFILE 'Documents\luna'
+    # Vault root: resolved by scripts/lib/vault-resolve.ps1 (HIMMEL-403), the
+    # PowerShell twin of vault-resolve.sh. Precedence: config.vault_path >
+    # validated config.vault NAME (operator registry ~/.claude/luna-vaults.json
+    # -> <USERPROFILE>\Documents\<name> w/ .obsidian marker) > LUNA_VAULT_PATH >
+    # default luna. Empty result => declared-but-unresolved => skip (fail-closed).
+    . (Join-Path $PSScriptRoot '..\lib\vault-resolve.ps1')
+    $vaultRoot = Resolve-VaultRoot -ConfigPath $configPath `
+        -RegistryPath (Join-Path $env:USERPROFILE '.claude\luna-vaults.json') -DryRun $cfgDryRun
+    if (-not $vaultRoot) {
+        Write-HookLog "skipped: vault unresolved (invalid name / no real vault / unparseable config) — no write"
+        exit 0
     }
-    # Expand a leading ~/ or ~\ (a JSON config value can't rely on tilde expansion).
+    # Expand a leading ~/ or ~\ (registry values / config can't rely on tilde expansion).
     if ($vaultRoot -match '^~[\\/](.*)$') { $vaultRoot = Join-Path $env:USERPROFILE $matches[1] }
 
     $relDir = "sessions/$year/$month"
