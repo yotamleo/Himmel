@@ -15,12 +15,21 @@
 #
 # Config path: $WORKSPACE_TRUST_CONFIG, else $HOME/.claude.json.
 #
+# Concurrency (HIMMEL-418): the read-modify-write commits via write-to-temp +
+# atomic rename, so a coincident reader/writer never sees a half-written file.
+# A small randomized jitter (TRUST_WRITE_JITTER_MS, default 500, 0 disables)
+# runs before the read to de-synchronize two launches that fire within ~1s,
+# reducing the residual lost-update race (both read the old file, last write
+# wins, one trust entry lost) that minute-granularity collision checks miss.
+#
 # Exit codes:
 #   0  flag is set (already-true is a no-op that also exits 0)
 #   2  bad usage / dir does not exist / node missing
 #   3  config exists but is unreadable, not parseable JSON, or not a JSON
 #      object — REFUSES to overwrite (never clobber Claude's state on a
 #      transient read or parse error)
+#   4  the temp write or atomic rename failed — warns, leaves any existing
+#      config untouched (rename never happened), and orphans no temp file
 #
 # Callers MUST treat a non-zero exit as NON-FATAL (warn, then continue): a
 # trust pre-seed problem must never block an arm. The exit codes exist so
@@ -57,6 +66,16 @@ fi
 
 config="${WORKSPACE_TRUST_CONFIG:-$HOME/.claude.json}"
 
+# HIMMEL-418: jitter the read-modify-write so two launches within ~1s don't
+# read the same old file and lose one update (atomic rename below already
+# prevents corruption; this addresses the residual lost-update race). Default
+# 500ms cap; 0 disables (test seam). Git Bash `sleep` accepts fractional secs.
+jitter_ms="${TRUST_WRITE_JITTER_MS:-500}"
+if [ "$jitter_ms" -gt 0 ] 2>/dev/null; then
+    ms=$(( RANDOM % (jitter_ms + 1) ))          # 0..jitter_ms milliseconds
+    sleep "$(printf '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))")" 2>/dev/null || true
+fi
+
 # node does the read-modify-write: tolerant of a missing file (fresh create),
 # strict on a present-but-unparseable file (refuse to clobber), atomic via
 # write-to-temp + rename. Key/config passed by env to avoid all shell quoting.
@@ -90,6 +109,14 @@ if (!j.projects[key] || typeof j.projects[key] !== "object" || Array.isArray(j.p
 if (j.projects[key].hasTrustDialogAccepted === true) process.exit(0);
 j.projects[key].hasTrustDialogAccepted = true;
 const tmp = p + ".tmp-trust-" + process.pid;
-fs.writeFileSync(tmp, JSON.stringify(j, null, 2));
-fs.renameSync(tmp, p);
+try {
+    fs.writeFileSync(tmp, JSON.stringify(j, null, 2));
+    fs.renameSync(tmp, p);
+} catch (e) {
+    // Fail-open (HIMMEL-386/418): warn, leave any existing config untouched
+    // (the rename is the commit point and never ran), orphan no temp file.
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    console.error("ensure-workspace-trust: could not write " + p + ": " + e.message);
+    process.exit(4);
+}
 '
