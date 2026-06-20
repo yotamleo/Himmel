@@ -41,3 +41,8 @@ logs/gemini/
 # Mode A (no HANDOVER_DIR) regenerates plans under docs/superpowers/plans/ —
 # keep those local, never re-track the folder into the public repo.
 /docs/superpowers/
+# Codex auto-generated artifacts (deferred until codex is wired up — HIMMEL-427).
+# AGENTS.md itself IS tracked (thin pointer to CLAUDE.md); only codex's local
+# runtime config + its auto-generated slash-command→skill mirrors are ignored.
+.codex/
+.agents/skills/source-command-*/
