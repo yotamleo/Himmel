@@ -155,4 +155,19 @@ ptab="$(bash "$B" list --porcelain --bugs "$F")"
 check "porc: tab field count = 4" "$(printf '%s' "$ptab" | awk -F'\t' 'NR==1{print NF}')" "4"
 check "porc: tab sanitized"       "$(printf '%s' "$ptab" | grep -c $'^BUG-1\topen\t0\ttab here$')" "1"
 
+# --finding-id (HIMMEL-446): stored on its own body bullet, queryable with
+# status via `find`, drives the CR->bug bridge dedup/reopen/resolve logic.
+seed
+b1="$(bash "$B" add --bugs "$F" --symptom "panel race" --finding-id "gptoss-3")"
+check "finding-id: bullet rendered"   "$(grep -c -- '^- \*\*CR finding:\*\* gptoss-3$' "$F")" "1"
+check "find: returns BUG-N<TAB>open"  "$(bash "$B" find --bugs "$F" --finding-id "gptoss-3")" "$(printf '%s\topen' "$b1")"
+check "find: missing id is empty"     "$(bash "$B" find --bugs "$F" --finding-id "nope")" ""
+# add without --finding-id still works and renders the placeholder em-dash.
+bash "$B" add --bugs "$F" --symptom "no finding id" >/dev/null
+check "add: no finding-id -> em-dash" "$(grep -c -- '^- \*\*CR finding:\*\* —$' "$F")" "1"
+check "find: skips em-dash placeholder" "$(bash "$B" find --bugs "$F" --finding-id "—")" ""
+# status reflected in find output (drives reopen-vs-skip in the bridge).
+bash "$B" status --bugs "$F" --id "$b1" --to resolved >/dev/null
+check "find: status tracks resolve"   "$(bash "$B" find --bugs "$F" --finding-id "gptoss-3")" "$(printf '%s\tresolved' "$b1")"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

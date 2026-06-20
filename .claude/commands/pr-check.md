@@ -238,6 +238,24 @@ Steps:
 
    Like 4.5, this is **deduped** — `append-cr-findings.sh` skips a `(head, <slug>-N)` already present, so re-running `/pr-check` on the same HEAD adds nothing. Errors are best-effort: a missing `reviewer-notes.md` or unwritable state repo logs to stderr and does NOT block steps 5/6.
 
+4.7. **CR→bug-tracker lifecycle (HIMMEL-446) — runs alongside 4.5/4.6; best-effort, graceful skip when there is no active handover item.** Where 4.6 writes a flat human-readable trail, 4.7 gives Critical/Important findings a tracked **open→resolved lifecycle** in the item's `bugs.md`, closing the CR-ledger / bug-tracker / handover triangle.
+
+   **Names its own inputs — do NOT assume 4.6's shell vars persist** (each `pr-check.md` ```bash``` fence runs independently). Re-resolve the item dir, then write two temp files and call the bridge:
+   ```bash
+   if item_dir=$(bash scripts/handover/resolve-active-item.sh --branch "$branch" 2>/dev/null); then
+       cr_find=$(mktemp -t cr-bugs-find.XXXXXX); cr_avail=$(mktemp -t cr-bugs-avail.XXXXXX)
+       # Critical/Important panel findings → "<finding-id>\t<severity>\t<symptom>" (one per line, REAL tabs).
+       # (write each [<slug>-N] Critical/Important finding from the step-3 aggregate here)
+       # panel-availability lines → "<slug>\tok|unavailable" (strip any trailing " (rc=N)").
+       # (write each $panel_avail_lines entry here)
+       bash scripts/handover/append-cr-bugs.sh --bugs "$item_dir/bugs.md" --findings "$cr_find" --avail "$cr_avail"
+       rm -f "$cr_find" "$cr_avail"
+   else
+       echo "4.7: no active handover item for $branch — CR-bug lifecycle skipped" >&2
+   fi
+   ```
+   The bridge is idempotent (dedups by finding-id), reopens a `resolved` bug whose finding reappears (regression), and resolves a vanished finding ONLY when its critic was `panel-availability: ok` that HEAD (a flaky critic drop-out must not falsely resolve a still-open bug). Best-effort — it always exits 0 and never blocks steps 5/6.
+
 5. If both `N == 0`:
    - Delete `$marker` (`rm -f "$marker"`).
    - Report: `CR clean — marker cleared for $branch (HEAD=$head). Safe to gh pr create.`

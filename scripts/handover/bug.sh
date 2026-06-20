@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034
 # scripts/handover/bug.sh — per-item bug tracker over one bugs.md
-# (HIMMEL-416 F2 / C3). Subcommands: add | fix | status | list.
+# (HIMMEL-416 F2 / C3). Subcommands: add | fix | status | list | find.
 # Bug ids are per-item sequential (BUG-1, BUG-2, …), stable within the item.
+# `--finding-id` (HIMMEL-446) tags a bug with the CR finding-id that raised it,
+# so the CR->bug bridge can dedup/reopen/resolve by that id (`find` queries it).
 set -uo pipefail
 
 sub="${1:-}"; [ $# -gt 0 ] && shift
-bugs="" symptom="" id="" outcome="" note="" to="" only_open="" porcelain=""
+bugs="" symptom="" id="" outcome="" note="" to="" only_open="" porcelain="" finding_id=""
 while [ $# -gt 0 ]; do case "$1" in
   --bugs) bugs="$2"; shift 2;; --symptom) symptom="$2"; shift 2;;
   --id) id="$2"; shift 2;; --outcome) outcome="$2"; shift 2;;
   --note) note="$2"; shift 2;; --to) to="$2"; shift 2;;
+  --finding-id) finding_id="$2"; shift 2;;
   --open) only_open=1; shift;; --porcelain) porcelain=1; shift;;
   *) echo "bug.sh: unknown arg $1" >&2; exit 2;;
 esac; done
@@ -40,6 +43,7 @@ case "$sub" in
       printf -- '- **Fixes tried:**\n'
       printf -- '- **Resolution:** —\n'
       printf -- '- **CR link:** —\n'
+      printf -- '- **CR finding:** %s\n' "${finding_id:-—}"
     } >> "$bugs" || { echo "bug.sh add: write failed" >&2; exit 2; }
     echo "BUG-$n"
     ;;
@@ -113,6 +117,24 @@ case "$sub" in
         f=$0; sub(/^  - /,"  ",f); fixbuf[nf++]=f
       }
       END { flush() }
+    ' "$bugs"
+    ;;
+  find)
+    # Query by CR finding-id → echo "BUG-N<TAB>status" for the FIRST bug whose
+    # `**CR finding:**` bullet matches (finding-ids are unique per bugs.md by the
+    # bridge's contract). Empty output if none. The em-dash placeholder is never
+    # matchable (bridge always passes a real id). status comes from the bug's
+    # heading comment, same source `list` uses.
+    [ -n "$finding_id" ] || { echo "bug.sh find: --finding-id required" >&2; exit 2; }
+    [ "$finding_id" = "—" ] && exit 0
+    [ -f "$bugs" ] || exit 0
+    awk -v want="$finding_id" '
+      /^### BUG-[0-9]+ — / {
+        id=$0; sub(/^### BUG-/,"",id); sub(/ — .*/,"",id)
+        st="open"
+        if ($0 ~ /<!-- status: [a-z]+ -->/) { st=$0; sub(/.*<!-- status: /,"",st); sub(/ -->.*/,"",st) }
+      }
+      $0 ~ ("^- \\*\\*CR finding:\\*\\* " want "$") { printf "BUG-%s\t%s\n", id, st; exit }
     ' "$bugs"
     ;;
   *) echo "bug.sh: unknown subcommand '$sub'" >&2; exit 2;;
