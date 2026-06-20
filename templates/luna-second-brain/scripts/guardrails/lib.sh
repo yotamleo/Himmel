@@ -89,3 +89,19 @@ is_dirty() {
     out=$(git -C "$dir" status --porcelain 2>/dev/null) || return 2
     [ -n "$out" ]
 }
+
+# is_single_writer_repo [DIR]
+# True iff the repo containing DIR (default PWD) has a local `.single-writer`
+# marker file at its top level. The marker is a gitignored, per-clone opt-in
+# that designates a repo as committing/pushing straight to main by design
+# (personal vaults / state repos). Mirrors himmel's block-edit-on-main.sh: a
+# clone without the marker stays protected by worktree-isolation.
+# `[ -f ]` is true for a regular file or a symlink resolving to one, false for
+# a directory / missing / broken symlink — so an ambiguous marker does NOT
+# grant the opt-out (fail-closed). Returns 2 if the repo root cannot be found.
+is_single_writer_repo() {
+    local dir="${1:-.}"
+    local top
+    top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 2
+    [ -f "$top/.single-writer" ]
+}

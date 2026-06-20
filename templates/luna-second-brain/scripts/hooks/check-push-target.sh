@@ -8,6 +8,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../guardrails/lib.sh"
 
+# Single-writer opt-in: a repo with a local `.single-writer` marker pushes
+# main directly by design (personal vaults / state repos). Mirrors the
+# worktree-isolation pre-commit gate / block-edit-on-main.sh.
+if is_single_writer_repo; then
+    exit 0
+fi
+
 while read -r _local_ref _local_sha remote_ref _remote_sha; do
     if is_main_ref "$remote_ref"; then
         echo "ERROR: Direct push to 'main' is not allowed."

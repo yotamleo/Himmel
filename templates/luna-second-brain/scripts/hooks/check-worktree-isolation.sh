@@ -19,6 +19,15 @@ if ! git rev-parse --verify -q HEAD >/dev/null 2>&1; then
     exit 0
 fi
 
+# Single-writer opt-in: a repo with a local `.single-writer` marker at its
+# root commits straight to main by design (personal vaults / state repos);
+# the worktree-forcing block does not apply. Mirrors block-edit-on-main.sh.
+# On internal error the predicate returns false (fail-closed) and we fall
+# through to the normal is_on_main check below.
+if is_single_writer_repo; then
+    exit 0
+fi
+
 is_on_main
 rc=$?
 case "$rc" in
