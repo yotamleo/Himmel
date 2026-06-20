@@ -278,15 +278,16 @@ Plugins live at `~/.claude/plugins/`. Different install methods per plugin — r
 # 1. obsidian-second-brain — manual clone (no marketplace)
 git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/plugins/obsidian-second-brain
 
-# 2. himmel marketplace (carries handover + obsidian-triage + obsidian + claude-obsidian)
+# 2. himmel marketplace (carries handover + obsidian-triage + claude-obsidian)
 # inside Claude Code:
 #   /plugin marketplace add yotamleo/himmel
 #   /plugin install handover
 #
 #   # Optional — Web Clipper triage stack (skip if §5a was skipped)
 #   /plugin install obsidian-triage
-#   /plugin install obsidian            # kepano/obsidian-skills, SHA-pinned
-#   /plugin install claude-obsidian     # yotamleo/claude-obsidian (vendor fork of AgriciDaniel/claude-obsidian), SHA-pinned
+#   /plugin install claude-obsidian     # yotamleo/claude-obsidian (vendor fork of AgriciDaniel/claude-obsidian), tag-pinned
+#   # obsidian (kepano) is NOT in the himmel marketplace — install from its own:
+#   /plugin marketplace add kepano/obsidian-skills && /plugin install obsidian@obsidian-skills
 
 # 3. caveman — separate marketplace
 #   /plugin marketplace add wfgilreath/caveman      # adjust to your fork/source
@@ -300,7 +301,7 @@ After restoring plugins, verify skills load:
 /triage-clips --dry-run    # from obsidian-triage; should exit 0 with "no Clippings/" or per-clip preview
 ```
 
-Note: `obsidian` and `claude-obsidian` are pinned to commit SHAs in himmel's `marketplace/.claude-plugin/marketplace.json` per supply-chain policy. To update either, bump the `ref` field in a deliberate PR (same gate as a dep bump).
+Note: `claude-obsidian` is pinned to an immutable **tag** in himmel's `marketplace/.claude-plugin/marketplace.json` per supply-chain policy (a bare commit SHA is not installable). To update it, follow the Pin update workflow in `marketplace/plugins/obsidian-triage/README.md`. `obsidian` (kepano) is not in himmel's marketplace — install it from `obsidian@obsidian-skills` (HIMMEL-435).
 
 ### Scope: user vs project
 
@@ -337,8 +338,10 @@ claude plugin marketplace add yotamleo/himmel
 claude plugin install handover@himmel         --scope user
 claude plugin install obsidian-triage@himmel  --scope user
 claude plugin install claude-obsidian@himmel  --scope user
-claude plugin install obsidian@himmel         --scope user
 claude plugin install himmel-ops@himmel       --scope user
+# obsidian (kepano) is NOT in himmel's marketplace (HIMMEL-435) — install from its own:
+claude plugin marketplace add kepano/obsidian-skills
+claude plugin install obsidian@obsidian-skills --scope user
 # optional operator-coupled forks: telegram-himmel@himmel, pr-review-toolkit-himmel@himmel
 ```
 

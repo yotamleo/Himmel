@@ -13,8 +13,9 @@ bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 # 1. Syntax.
 if bash -n "$SCRIPT"; then ok "syntax (bash -n)"; else bad "syntax"; fi
 
-# 2. The marketplace.json parser yields the SHA-pinned remotes (>=1; expect
-#    claude-obsidian + obsidian). Mirrors the script's own parser.
+# 2. The marketplace.json parser yields the github-pinned remotes (>=1; expect
+#    claude-obsidian — obsidian/kepano was dropped, it installs from its own
+#    marketplace, HIMMEL-435). Mirrors the script's own parser.
 pins="$(python3 - "$MJSON" <<'PY' | tr -d '\r'
 import json, sys
 m = json.load(open(sys.argv[1]))
@@ -25,7 +26,7 @@ for p in m.get("plugins", []):
 PY
 )"
 if echo "$pins" | grep -qx "claude-obsidian"; then ok "parser finds claude-obsidian pin"; else bad "parser missing claude-obsidian"; fi
-if echo "$pins" | grep -qx "obsidian"; then ok "parser finds obsidian (kepano) pin"; else bad "parser missing obsidian"; fi
+if echo "$pins" | grep -qx "obsidian"; then bad "obsidian pin still present — should have been dropped (HIMMEL-435)"; else ok "obsidian (kepano) pin absent — dropped as expected"; fi
 
 # 3. Every fork UPSTREAM_PIN carries the generic fields the checker reads.
 for pin in "$ROOT"/marketplace/plugins/*/UPSTREAM_PIN; do
