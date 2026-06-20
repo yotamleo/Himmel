@@ -83,8 +83,22 @@ if `autonomous`, proceed.
 
 ## Terminal
 
-You now hold a critic-hardened, approved implementation plan. minerva STOPS
-here — it does not start implementation. Offer the hand-off:
+You now hold a critic-hardened, approved implementation plan. What happens next
+depends on the **`execute` leg** of the initiative grammar (HIMMEL-444). Read the
+active legs (transport wrapper → the shared resolver; fail-open):
 
-> Plan ready. Execute with `superpowers:subagent-driven-development`
-> (recommended) or `superpowers:executing-plans`?
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/legs.sh"
+```
+
+- If mode is `autonomous` (Stage 0) **AND** the output contains `execute`: do NOT
+  stop — **invoke `superpowers:subagent-driven-development`** on the hardened plan
+  to implement it task-by-task. This is the execute-seam auto-handoff that makes
+  the loop continuous. (You remain the parent: own synthesis across the subagents.)
+- Otherwise (interactive mode, or `execute` not active): minerva STOPS here — it
+  does not start implementation. Offer the hand-off:
+
+  > Plan ready. Execute with `superpowers:subagent-driven-development`
+  > (recommended) or `superpowers:executing-plans`?
+
+Interactive mode never auto-executes (a human is present to choose).
