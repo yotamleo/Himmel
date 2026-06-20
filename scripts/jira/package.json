@@ -6,7 +6,8 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "jira": "./dist/index.js"
+    "jira": "./dist/index.js",
+    "confluence": "./dist/confluence.js"
   },
   "scripts": {
     "build": "tsc",

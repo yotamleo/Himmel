@@ -12,6 +12,11 @@ import { registerMove } from './commands/move.js';
 import { registerProjects } from './commands/projects.js';
 import { registerProjectCreate } from './commands/project-create.js';
 import { registerLink } from './commands/link.js';
+import { registerAssign } from './commands/assign.js';
+import { registerAttachments } from './commands/attachments.js';
+import { registerWorklog } from './commands/worklog.js';
+import { registerWatchers } from './commands/watchers.js';
+import { registerSprint } from './commands/sprint.js';
 
 const program = new Command();
 
@@ -32,6 +37,11 @@ registerMove(program);
 registerProjects(program);
 registerProjectCreate(program);
 registerLink(program);
+registerAssign(program);
+registerAttachments(program);
+registerWorklog(program);
+registerWatchers(program);
+registerSprint(program);
 
 // HIMMEL-159: expose the CLI verbs over the Model Context Protocol on stdio.
 // The MCP SDK is heavy, so import it lazily inside the action — keeping it out

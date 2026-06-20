@@ -8,6 +8,10 @@ restated here.
 The Jira CLI itself (`jira-cli`). Run from repo root as
 `node scripts/jira/dist/index.js <op>`. ESM (`"type": "module"`),
 arg-parsing via `commander`. One file per op in `src/commands/`.
+A second binary ships from the same package: the **Confluence CLI**
+(`node scripts/jira/dist/confluence.js <op>`, entry `src/confluence.ts`,
+ops under `src/commands/confluence/`) — shares `client.ts` auth + ADF
+helpers (HIMMEL-437).
 
 ## Editing conventions
 - **`dist/` is gitignored — not committed.** After editing `src/`, run

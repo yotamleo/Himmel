@@ -157,3 +157,71 @@ describe('baseUrl', () => {
     expect(message).not.toMatch(/yotamleo/);
   });
 });
+
+describe('requestAt base composition (HIMMEL-437)', () => {
+  const origBase = process.env.JIRA_BASE_URL;
+  afterEach(() => {
+    if (origBase === undefined) delete process.env.JIRA_BASE_URL; else process.env.JIRA_BASE_URL = origBase;
+    vi.restoreAllMocks();
+  });
+
+  it('prefixes the apiBase + path onto baseUrl for each named helper', async () => {
+    process.env.JIRA_BASE_URL = 'https://x.example';
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => '{}' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { agileRequest, confluenceV2, confluenceV1 } = await import('./client.js');
+    await agileRequest('GET', '/board');
+    await confluenceV2('GET', '/pages/1');
+    await confluenceV1('GET', '/search');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://x.example/rest/agile/1.0/board');
+    expect(fetchMock.mock.calls[1][0]).toBe('https://x.example/wiki/api/v2/pages/1');
+    expect(fetchMock.mock.calls[2][0]).toBe('https://x.example/wiki/rest/api/search');
+  });
+});
+
+describe('confluenceAuthHeader (HIMMEL-437)', () => {
+  const keys = ['JIRA_EMAIL', 'JIRA_API_TOKEN', 'CONFLUENCE_EMAIL', 'CONFLUENCE_API_TOKEN'];
+  const orig: Record<string, string | undefined> = {};
+  for (const k of keys) orig[k] = process.env[k];
+  afterEach(() => {
+    for (const k of keys) {
+      if (orig[k] === undefined) delete process.env[k]; else process.env[k] = orig[k];
+    }
+  });
+
+  it('uses CONFLUENCE_* creds when both are set', async () => {
+    process.env.JIRA_EMAIL = 'j@x'; process.env.JIRA_API_TOKEN = 'jtok';
+    process.env.CONFLUENCE_EMAIL = 'c@x'; process.env.CONFLUENCE_API_TOKEN = 'ctok';
+    const { confluenceAuthHeader } = await import('./client.js');
+    expect(confluenceAuthHeader()).toBe(`Basic ${Buffer.from('c@x:ctok').toString('base64')}`);
+  });
+
+  it('falls back to JIRA_* creds when CONFLUENCE_* is not fully set', async () => {
+    process.env.JIRA_EMAIL = 'j@x'; process.env.JIRA_API_TOKEN = 'jtok';
+    delete process.env.CONFLUENCE_EMAIL; delete process.env.CONFLUENCE_API_TOKEN;
+    const { confluenceAuthHeader, authHeader } = await import('./client.js');
+    expect(confluenceAuthHeader()).toBe(authHeader());
+  });
+});
+
+describe('resolveAccountId (HIMMEL-437)', () => {
+  const origBase = process.env.JIRA_BASE_URL;
+  afterEach(() => {
+    if (origBase === undefined) delete process.env.JIRA_BASE_URL; else process.env.JIRA_BASE_URL = origBase;
+    vi.restoreAllMocks();
+  });
+
+  it('returns the input unchanged when it has no @ (accountId passthrough)', async () => {
+    const { resolveAccountId } = await import('./client.js');
+    expect(await resolveAccountId('5b10ac8d82e05b22cc7d4ef5')).toBe('5b10ac8d82e05b22cc7d4ef5');
+  });
+
+  it('looks up an email and returns the first accountId', async () => {
+    process.env.JIRA_BASE_URL = 'https://x.example';
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => '[{"accountId":"abc"}]' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { resolveAccountId } = await import('./client.js');
+    expect(await resolveAccountId('a@b.com')).toBe('abc');
+    expect(decodeURIComponent(String(fetchMock.mock.calls[0][0]))).toContain('/user/search?query=a@b.com');
+  });
+});

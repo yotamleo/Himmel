@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 
 function repoRoot(): string {
@@ -50,6 +50,9 @@ export function normalizeEnv(): void {
     'JIRA_API_TOKEN',
     'JIRA_PROJECT_KEY',
     'JIRA_SEVERITY_FIELD',
+    'JIRA_BOARD_ID',
+    'CONFLUENCE_EMAIL',
+    'CONFLUENCE_API_TOKEN',
   ]) {
     const raw = process.env[key];
     if (raw === undefined) continue;
@@ -98,22 +101,41 @@ export const projectKey = (): string => {
 export const severityField = (): string | undefined =>
   process.env.JIRA_SEVERITY_FIELD || undefined;
 
+export const boardId = (): string | undefined =>
+  process.env.JIRA_BOARD_ID || undefined;
+
 export function authHeader(): string {
   const email = process.env.JIRA_EMAIL ?? '';
   const token = process.env.JIRA_API_TOKEN ?? '';
   return `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`;
 }
 
-export async function request<T>(
+// Confluence often needs its OWN Atlassian token: a *scoped* Jira API token
+// 401s against /wiki (Confluence), same as the bitbucket CLI needs a separate
+// scoped token. Use CONFLUENCE_EMAIL/CONFLUENCE_API_TOKEN when BOTH are set;
+// otherwise fall back to the Jira creds (works when JIRA_API_TOKEN is a
+// scopeless/full-account token covering both products).
+export function confluenceAuthHeader(): string {
+  const email = process.env.CONFLUENCE_EMAIL;
+  const token = process.env.CONFLUENCE_API_TOKEN;
+  if (email && token) {
+    return `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`;
+  }
+  return authHeader();
+}
+
+export async function requestAt<T>(
+  apiBase: string,
   method: string,
   path: string,
   body?: unknown,
+  auth: string = authHeader(),
 ): Promise<T> {
-  const url = `${baseUrl()}/rest/api/3${path}`;
+  const url = `${baseUrl()}${apiBase}${path}`;
   const res = await fetch(url, {
     method,
     headers: {
-      Authorization: authHeader(),
+      Authorization: auth,
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
@@ -127,22 +149,32 @@ export async function request<T>(
   return (text.trim() ? JSON.parse(text) : {}) as T;
 }
 
-export async function uploadAttachment(
-  issueKey: string,
+export const request = <T>(method: string, path: string, body?: unknown) =>
+  requestAt<T>('/rest/api/3', method, path, body);
+export const agileRequest = <T>(method: string, path: string, body?: unknown) =>
+  requestAt<T>('/rest/agile/1.0', method, path, body);
+export const confluenceV2 = <T>(method: string, path: string, body?: unknown) =>
+  requestAt<T>('/wiki/api/v2', method, path, body, confluenceAuthHeader());
+export const confluenceV1 = <T>(method: string, path: string, body?: unknown) =>
+  requestAt<T>('/wiki/rest/api', method, path, body, confluenceAuthHeader());
+
+export async function uploadMultipart(
+  url: string,
   filePath: string,
+  field = 'file',
+  auth: string = authHeader(),
 ): Promise<unknown> {
   if (!existsSync(filePath)) {
     throw new Error(`attachment not found: ${filePath}`);
   }
   const data = readFileSync(filePath);
   const fd = new FormData();
-  fd.append('file', new Blob([data]), basename(filePath));
+  fd.append(field, new Blob([data]), basename(filePath));
 
-  const url = `${baseUrl()}/rest/api/3/issue/${issueKey}/attachments`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      Authorization: authHeader(),
+      Authorization: auth,
       'X-Atlassian-Token': 'no-check',
       // intentionally NO Content-Type — fetch must set multipart boundary
     },
@@ -154,4 +186,43 @@ export async function uploadAttachment(
   }
   const text = await res.text();
   return text.trim() ? JSON.parse(text) : {};
+}
+
+// Back-compat wrapper: Jira issue attachment upload composes its own URL.
+export function uploadAttachment(issueKey: string, filePath: string): Promise<unknown> {
+  return uploadMultipart(
+    `${baseUrl()}/rest/api/3/issue/${issueKey}/attachments`,
+    filePath,
+  );
+}
+
+export async function downloadTo(fullUrl: string, outPath: string, auth: string = authHeader()): Promise<number> {
+  const res = await fetch(fullUrl, { headers: { Authorization: auth } });
+  if (!res.ok) {
+    const text = (await res.text()).slice(0, 500);
+    throw new Error(`HTTP ${res.status}: ${text}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  writeFileSync(outPath, buf);
+  return buf.length;
+}
+
+// Jira accountIds are 24-hex or "<provider>:<uuid>"; an '@' means it's an email.
+export async function resolveAccountId(emailOrId: string): Promise<string> {
+  if (!emailOrId.includes('@')) return emailOrId;
+  const users = await request<Array<{ accountId: string }>>(
+    'GET',
+    `/user/search?query=${encodeURIComponent(emailOrId)}`,
+  );
+  if (!users.length) throw new Error(`no Jira user found for "${emailOrId}"`);
+  return users[0].accountId;
+}
+
+export async function resolveSpaceId(spaceKey: string): Promise<string> {
+  const r = await confluenceV2<{ results: Array<{ id: string }> }>(
+    'GET',
+    `/spaces?keys=${encodeURIComponent(spaceKey)}`,
+  );
+  if (!r.results?.length) throw new Error(`no Confluence space with key "${spaceKey}"`);
+  return r.results[0].id;
 }
