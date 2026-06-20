@@ -41,6 +41,13 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: template-himmel-plugins
+        name: settings-template enables every vendored @himmel plugin
+        entry: bash scripts/hooks/check-template-himmel-plugins.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: merged-branch-check
         name: Merged branch check
         language: system

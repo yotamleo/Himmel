@@ -34,16 +34,40 @@ there.
 [Claude Code](https://claude.com/claude-code) CLI on your `PATH`. `gh` is
 optional — only the worktree-prune step uses it.
 
+Clone once, then run the one-shot adopt for the profile you want:
+
 ```bash
 git clone https://github.com/yotamleo/Himmel
+```
+
+**`core`** — the harness (hooks + guardrails + worktree commands + marketplace
+plugins/skills) wired into your repo. *Most people start here.*
+
+```bash
 bash Himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
 # Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
 ```
 
-`--profile core` brings the harness; `--scope project` wires it into your repo
-(commit the result and anyone who clones it gets it). Profiles
-(`core` / `luna` / `all`), `--scope user`, remove/move, and the à-la-carte parts
-are all in [use-on-your-project.md](setup/use-on-your-project.md).
+**`luna`** — the luna second-brain vault scaffold only (no harness). `--target`
+is the vault directory.
+
+```bash
+bash Himmel/scripts/adopt.sh --profile luna --target ~/Documents/luna
+# Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile luna -Target $HOME\Documents\luna
+```
+
+**`all`** — `core` + `luna`. The harness lands in `--target`; the vault in
+`--luna-target` (default `~/Documents/luna`).
+
+```bash
+bash Himmel/scripts/adopt.sh --profile all --scope project --target /path/to/your/repo --luna-target ~/Documents/luna
+# Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile all -Scope project -Target C:\path\to\repo -LunaTarget $HOME\Documents\luna
+```
+
+`--scope project` wires it into your repo (commit the result and anyone who
+clones it gets it); `--scope user` enables it for you in every project on this
+machine. `--scope user`, remove/move, and the à-la-carte parts are all in
+[use-on-your-project.md](setup/use-on-your-project.md).
 
 ### B. Run / develop himmel itself standalone
 
