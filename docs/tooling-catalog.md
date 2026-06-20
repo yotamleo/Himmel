@@ -324,6 +324,20 @@ Specs saved to: `docs/superpowers/specs/YYYY-MM-DD-feature.md`
 
 ---
 
+## Pre-commit Hook Scripts (`scripts/hooks/`)
+
+Shell scripts that run as pre-commit / pre-push gates (wired in `.pre-commit-config.yaml`). Full detail and rc contracts in `docs/internals/enforcement.md`.
+
+- `scripts/hooks/check-doc-guard.sh` — **doc-guard gate** (himmel-dev only, HIMMEL-454). Blocks committing a new command or skill file (`.claude/commands/**`, `marketplace/plugins/*/{commands,skills}/**`) without also touching `docs/commands-catalog.md`. Added-files-only (`--diff-filter=A`); modifications don't trigger it. Gated behind `.himmel-dev` marker at repo root — absent → exit 0 (adopters unaffected). rc: 0 pass | 1 violation | 2 fail-closed. Bypass: `DOC_GUARD_OK=1`. `.ps1` twin: `scripts/hooks/check-doc-guard.ps1`. Smoke test: `scripts/hooks/test-doc-guard.sh` (+ `.ps1` twin).
+
+---
+
+## Release Scripts (`scripts/`)
+
+- `scripts/gen-changelog.sh` — **CHANGELOG generator** (HIMMEL-454). On-demand (not a gate); writes `CHANGELOG.md` from conventional-commit history. Groups commits into a single `## [Unreleased]` section: `feat` → Added, `fix` → Fixed, `chore|refactor|docs|test` → Changed, everything else → Other. Idempotent on immediate re-run; do not hand-edit the generated file. `.ps1` twin: `scripts/gen-changelog.ps1`.
+
+---
+
 ## Luna Scripts (`scripts/luna/`)
 
 Shell scripts for luna vault maintenance and session import. Operator-invoked

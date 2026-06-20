@@ -30,6 +30,10 @@ Stages currently wired:
   uv-lock-integrity, pip-hashes (requirements*.txt must use --generate-hashes).
 - **Commit-msg:** conventional-commit-msg (validates conventional format +
   optional HIMMEL-N).
+- **Doc-guard (pre-commit + pre-push, himmel-dev only):** check-doc-guard
+  (blocks ADDING a command/skill file without a matching update to
+  `docs/commands-catalog.md`; gated behind `.himmel-dev` marker so adopters
+  are never affected — see `check-doc-guard.sh` below).
 - **Pre-push:** no-push-to-main, npm-audit (high+), npm-licenses (allowlist),
   npm-audit-signatures, code-review-before-push (multi-agent CR via
   pr-review-toolkit), platforms-tested (cross-platform attestation for
@@ -545,6 +549,66 @@ push, which is where bugs like missing `shell:true`, `$Args` collision,
 BOM mojibake, and `python` vs `python3` keep slipping through CR.
 Bypass: `PLATFORMS_TESTED_OK=1 git push ...` or include
 `[skip platforms-check]` in any commit message in the push range.
+
+### `check-doc-guard.sh` — doc-guard gate (`.pre-commit-config.yaml`, himmel-dev only)
+
+Not a Claude PreToolUse hook — runs from the pre-commit framework at
+`git commit` time (pre-commit stage) and at `git push` time (pre-push stage
+via `--pre-push`). A `.ps1` twin (`check-doc-guard.ps1`) provides identical
+behaviour in PowerShell-context hooks. HIMMEL-454.
+
+**Trigger:** a command or skill file is ADDED (not merely modified) in any of
+the watched source paths:
+- `.claude/commands/**`
+- `marketplace/plugins/*/commands/**`
+- `marketplace/plugins/*/skills/**`
+
+…without also touching `docs/commands-catalog.md` in the same change set.
+The path → required-doc mapping lives in `scripts/hooks/doc-guard-map.tsv`
+so the set of guarded paths can be extended without editing the hook.
+
+**Added-only rationale:** the gate uses `git diff --diff-filter=A` and checks
+only newly-added files. Modifications to existing commands/skills are not
+gated — catalog decay on edits is acceptable friction; adding a wholly new
+command/skill without a catalog entry is the primary gap this closes.
+
+**`.himmel-dev` opt-in scoping:** the gate is himmel-CONTRIBUTOR-only. At the
+top of each run the hook calls the `is_himmel_dev_repo` predicate in
+`scripts/guardrails/lib.sh`, which returns true iff a `.himmel-dev` marker
+file exists at the repo root. When the marker is absent the hook exits 0
+immediately — downstream adopters who only run himmel as a harness are never
+gated. `.himmel-dev` is gitignored (never committed to the repo), so a fresh
+clone has no marker and the gate is inert by default. The
+`scripts/himmel-update.sh --plugins-check` run emits a non-fatal
+`warn_doc_guard_off` nudge when a himmel-source checkout (detected by the
+presence of `scripts/hooks/check-doc-guard.sh`) lacks the marker, prompting
+the contributor to create it.
+
+**rc contract:**
+- `0` — pass (marker absent, no new source files, or all additions paired
+  with a catalog touch).
+- `1` — violation: one or more new command/skill files have no corresponding
+  `docs/commands-catalog.md` update. The hook prints the offending paths and
+  blocks the commit/push.
+- `2` — cannot-evaluate (fail-closed): git, awk, or another required tool is
+  missing; the change set cannot be parsed. Blocks rather than silently passes.
+
+**Bypass:** `DOC_GUARD_OK=1` set in the shell that LAUNCHED the git command
+(`DOC_GUARD_OK=1 git commit …`). Per-call prefix works here because this is a
+pre-commit script (not a Claude hook), so the env var is visible to the child
+process. Test seam: `DOC_GUARD_FORCE_ERR=1` forces an exit-2 to verify
+fail-closed behaviour; `DOC_GUARD_NO_FETCH=1` keeps the pre-push path fully
+offline (skips any remote introspection).
+
+**Pre-commit vs pre-push modes:**
+- **Pre-commit (default):** inspects the staged set (`git diff --cached
+  --diff-filter=A`). Paired doc touch must also be staged in the same commit.
+- **Pre-push (`--pre-push` flag):** reads the push range `base...HEAD` and
+  checks ALL commits in the range. A command added in commit 1 and the catalog
+  updated in commit 3 of the same push PASSES — the gate only requires the pair
+  to appear somewhere in the pushed range, not necessarily in the same commit.
+
+Smoke test: `scripts/hooks/test-doc-guard.sh` (+ `.ps1` twin).
 
 ## Guardrails (`scripts/guardrails/`)
 

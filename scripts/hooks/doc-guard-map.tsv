@@ -1,0 +1,3 @@
+# added-path-regex	required-doc
+^\.claude/commands/	docs/commands-catalog.md
+^marketplace/plugins/[^/]+/(commands|skills)/	docs/commands-catalog.md

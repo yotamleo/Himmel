@@ -260,6 +260,27 @@ db_err=$(cat "$errf"); rm -f "$errf"
 if [ "$db_out" = "main" ] && [ -z "$db_err" ]; then pass "single default-candidate -> 'main', no ambiguity note"; else fail "single default-candidate -> expected 'main' + no note, got out=[$db_out] err=[$db_err]"; fi
 rm -rf "$d"
 
+echo "== is_himmel_dev_repo =="
+td=$(mktemp -d); git -C "$td" init -q; : > "$td/.himmel-dev"
+if ( cd "$td" && . "$REPO_ROOT/scripts/guardrails/lib.sh" && is_himmel_dev_repo ); then
+  pass "is_himmel_dev_repo true when marker present"; else fail "is_himmel_dev_repo true when marker present"; fi
+rm -rf "$td"
+
+td=$(mktemp -d); git -C "$td" init -q
+if ( cd "$td" && . "$REPO_ROOT/scripts/guardrails/lib.sh" && ! is_himmel_dev_repo ); then
+  pass "is_himmel_dev_repo false when marker absent"; else fail "is_himmel_dev_repo false when marker absent"; fi
+rm -rf "$td"
+
+echo "== warn_doc_guard_off =="
+R=$(mktemp -d); mkdir -p "$R/docs"; : > "$R/docs/commands-catalog.md"; : > "$R/.pre-commit-config.yaml"
+out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$R" 2>&1 )
+if printf '%s' "$out" | grep -qi "\.himmel-dev"; then pass "warns when source checkout lacks marker"; else fail "warns when source checkout lacks marker"; fi
+
+: > "$R/.himmel-dev"
+out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$R" 2>&1 )
+if [ -z "$out" ]; then pass "silent when marker present"; else fail "silent when marker present"; fi
+rm -rf "$R"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

@@ -48,6 +48,13 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: doc-guard
+        name: command/skill added requires catalog update (himmel-dev only)
+        entry: bash scripts/hooks/check-doc-guard.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: merged-branch-check
         name: Merged branch check
         language: system
@@ -163,6 +170,14 @@ repos:
         entry: bash scripts/hooks/check-platforms-tested.sh
         pass_filenames: false
         always_run: true
+        stages: [pre-push]
+
+      - id: doc-guard-push
+        name: command/skill added requires catalog update (pre-push range)
+        entry: bash scripts/hooks/check-doc-guard.sh --pre-push
+        language: system
+        always_run: true
+        pass_filenames: false
         stages: [pre-push]
 
       - id: security-reviewed

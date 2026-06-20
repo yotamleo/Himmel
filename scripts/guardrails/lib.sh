@@ -263,3 +263,25 @@ is_behind_origin_main() {
     behind=$(git -C "$dir" rev-list "HEAD..origin/$db" --count 2>/dev/null) || return 2
     [ "${behind:-0}" -gt 0 ]
 }
+
+# is_himmel_dev_repo [DIR]
+# True only in a himmel-contributor checkout, signalled by an untracked,
+# gitignored `.himmel-dev` marker dropped by contributor setup.
+# Keeps the doc-guard gate OFF for adopters/users who run himmel as a harness.
+# Returns rc: 0 present | 1 absent | 2 cannot resolve repo root (fail-closed).
+is_himmel_dev_repo() {
+    local top
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || return 2
+    [ -f "$top/.himmel-dev" ]
+}
+
+# warn_doc_guard_off DIR — non-fatal nudge (stderr) when DIR is a himmel-source
+# checkout (catalog + pre-commit config present) but the opt-in .himmel-dev
+# marker is absent, so the doc-guard gate is silently off. Always rc 0.
+warn_doc_guard_off() {
+    local d="${1:-.}"
+    if [ -f "$d/docs/commands-catalog.md" ] && [ -f "$d/.pre-commit-config.yaml" ] && [ ! -f "$d/.himmel-dev" ]; then
+        echo "⚠ doc-guard is OFF: this looks like a himmel-source checkout but .himmel-dev is missing. Run 'touch .himmel-dev' (see docs/contributing.md) to enable the catalog-sync gate." >&2
+    fi
+    return 0
+}
