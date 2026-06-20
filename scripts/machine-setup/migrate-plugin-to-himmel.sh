@@ -26,9 +26,11 @@
 #     --apply          actually run the uninstall/install/marketplace-remove
 #     --target <name>  destination marketplace name (default: himmel)
 #
-# Example (the obsidian plugins this ticket is about):
+# Example (migrating claude-obsidian off BOTH stale sources — the fork
+# marketplace and the luna vault's bundled luna-brain marketplace — onto @himmel):
 #   migrate-plugin-to-himmel.sh --apply \
-#     claude-obsidian@claude-obsidian-marketplace obsidian@obsidian-skills
+#     claude-obsidian@claude-obsidian-marketplace claude-obsidian@luna-brain \
+#     obsidian@obsidian-skills
 set -euo pipefail
 
 TARGET="himmel"

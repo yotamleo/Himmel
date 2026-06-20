@@ -89,3 +89,36 @@ pre-commit run --all-files   # all hooks should pass
 
 Open the cloned folder in Obsidian to confirm the vault loads. Start
 capturing into `00-Inbox/`.
+
+## 5. Vault git + optional autosync
+
+`setup.{sh,ps1}` makes the vault a git repo on first run: a download with no
+`.git` is `git init`-ed on `main` and the scaffold is committed; a local vault
+with no remote gets a gitignored `.single-writer` marker so commits land on
+`main` by design (the worktree-isolation guardrail honors it). A clone that
+already has a remote is left as-is.
+
+Autosync is **opt-in and off by default**. Enable it explicitly to
+auto-commit + push the vault to its remote:
+
+```bash
+LUNA_VAULT_AUTOSYNC=1 bash scripts/vault-autosync.sh      # or scripts\vault-autosync.ps1
+```
+
+It commits **through** pre-commit (never `--no-verify`), so the `gitleaks`
+hook blocks any API key before it can be committed or pushed; `.gitignore`
+(`.env`, `.single-writer`) is the second layer. With the flag off — or on but
+with no remote configured — it is a no-op (no commit, no network).
+
+### Push authentication
+
+Pushing needs a remote and credentials:
+
+- **HTTPS** — git needs a credential helper. If you have `gh` but no helper
+  configured, run `gh auth setup-git` once; it makes git use `gh`'s token for
+  `github.com`. (`setup.{sh,ps1}` does **not** run this for you.)
+- **SSH** — add the remote with an SSH URL (`git@github.com:you/vault.git`);
+  no helper needed once your key is on the host. If a remote is already HTTPS
+  and you'd rather push over SSH, git's
+  `url."git@github.com:".insteadOf "https://github.com/"` rewrite works, but
+  configuring it is left to you.

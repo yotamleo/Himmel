@@ -76,6 +76,29 @@ run() {
   fi
 }
 
+# ── Helper: run a `claude` CLI step with LOUD, classified diagnostics ─────────
+# Replaces the old muted `|| echo "(non-zero — transient failure)"`: on a
+# non-zero step, surface WHICH step failed and the CLI's own output, instead of
+# a one-line shrug that hid the cause. Classification is ADVISORY ONLY — it never
+# changes pass/fail. The end presence-verify is authoritative, so an unmatched
+# failure falls through (never aborts the loop, never false-fatals an idempotent
+# re-run). A benign "already installed/registered" match stays a quiet line.
+run_step() {
+  if [[ $DRY_RUN -eq 1 ]]; then echo "DRY: $*"; return 0; fi
+  # `|| rc=$?` (not `; rc=$?`): under `set -e` a bare `out=$(failing_cmd)` aborts
+  # the script at the assignment before we can classify — the `||` absorbs it.
+  local out rc=0
+  out=$("$@" 2>&1) || rc=$?
+  [[ $rc -eq 0 ]] && return 0
+  if printf '%s' "$out" | grep -qiE 'already (installed|registered|exists)'; then
+    echo "    (already present, skipping): $*"
+  else
+    echo "    !! step FAILED (exit $rc): $*" >&2
+    printf '%s\n' "$out" | sed 's/^/       | /' >&2
+  fi
+  return 0   # advisory; presence-verify below is the authoritative gate
+}
+
 # ── Expand <himmel-path> in template ─────────────────────────────────────────
 EXPANDED=$(sed "s|<himmel-path>|$HIMMEL_PATH|g" "$TEMPLATE")
 
@@ -93,8 +116,7 @@ echo "$EXPANDED" | jq -r '
 ' | tr -d '\r' | while read -r SRC; do
   [[ -z "$SRC" || "$SRC" == UNKNOWN:* ]] && { echo "  skip: $SRC"; continue; }
   echo "  marketplace add: $SRC"
-  run claude plugin marketplace add "$SRC" --scope "$SCOPE" \
-    || echo "    (non-zero — already registered or transient failure)"
+  run_step claude plugin marketplace add "$SRC" --scope "$SCOPE"
 done
 
 # ── Enable marketplace auto-update (HIMMEL-365) ──────────────────────────────
@@ -158,8 +180,7 @@ SPECS=$(echo "$EXPANDED" | jq -r '.enabledPlugins | keys[]' | tr -d '\r')
 while IFS= read -r SPEC; do
   [[ -z "$SPEC" ]] && continue
   echo "  install: $SPEC"
-  run claude plugin install "$SPEC" --scope "$SCOPE" \
-    || echo "    (non-zero — already installed or transient failure)"
+  run_step claude plugin install "$SPEC" --scope "$SCOPE"
 done <<< "$SPECS"
 
 # ── Verify (post-install presence check, HIMMEL-361) ─────────────────────────

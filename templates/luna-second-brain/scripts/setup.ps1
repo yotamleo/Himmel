@@ -1,8 +1,43 @@
 # New-machine setup for the luna-brain repo (Windows PowerShell).
 # Run once after cloning: .\scripts\setup.ps1
 
-$RepoRoot = git rev-parse --show-toplevel
-Set-Location $RepoRoot
+# --- [0/6] git state ---
+# Lockstep with setup.sh: a non-repo download is initialized + scaffold-committed;
+# a local vault with no remote gets a .single-writer marker; a clone/remote is
+# left as-is. Set $RepoRoot ourselves so a non-repo `git rev-parse` can't blank it.
+$RepoRoot = git rev-parse --show-toplevel 2>$null
+if ($LASTEXITCODE -eq 0 -and $RepoRoot) {
+    $RepoRoot = "$RepoRoot".Trim()
+    Set-Location $RepoRoot
+    if ([string]::IsNullOrWhiteSpace(((git remote) -join ''))) {
+        if (-not (Test-Path (Join-Path $RepoRoot '.single-writer'))) {
+            New-Item -ItemType File -Path (Join-Path $RepoRoot '.single-writer') | Out-Null
+            Write-Host "[0/6] Local-only vault: created .single-writer (commits/pushes go to main by design)."
+        }
+    }
+} else {
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+    Set-Location $RepoRoot
+    git init -b main 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { git init 2>$null | Out-Null; git symbolic-ref HEAD refs/heads/main }
+    # Path-scoped initial commit — NEVER `git add -A`. The protection is the
+    # explicit allow-list (an untracked secret is never in the loop), NOT index
+    # ordering; .gitignore is staged first only so the first tracked state
+    # carries the ignore rules.
+    git add .gitignore 2>$null
+    foreach ($p in @('.env.example', '.gitattributes', '.pre-commit-config.yaml', '.vault-template.json', 'README.md', '_CLAUDE.md', 'index.md', 'log.md', 'scripts', 'marketplace', 'docs', '_Templates', '00-Inbox', '10-Projects', '20-Areas', '30-Resources', '40-Archive', '50-Journal', '60-Maps')) {
+        if (Test-Path (Join-Path $RepoRoot $p)) { git add $p 2>$null }
+    }
+    New-Item -ItemType File -Path (Join-Path $RepoRoot '.single-writer') -Force | Out-Null
+    # Report honestly — on a fresh machine git identity may be unset, aborting the
+    # commit. Don't claim "committed" when HEAD is unborn.
+    git commit -q -m "chore: initial luna-brain scaffold" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[0/6] Initialized git repo (main) + committed scaffold; created .single-writer marker."
+    } else {
+        Write-Host "[0/6] Initialized git repo (main) + created .single-writer, but the scaffold commit did NOT land (git identity unset, or a hook blocked it). Set a git identity and run 'git add -A; git commit -m \"initial scaffold\"' before enabling autosync." -ForegroundColor Yellow
+    }
+}
 
 $ErrorActionPreference = 'Stop'
 trap { Write-Host "setup interrupted: $_" -ForegroundColor Red; exit 1 }
@@ -135,8 +170,9 @@ Write-Host "  1. (optional) Edit .env to override USER_SLUG / HANDOVER_DIR defau
 Write-Host "  2. Install the SHA-pinned plugin marketplace from inside Claude Code:"
 Write-Host ""
 Write-Host "       claude plugin marketplace add $RepoRoot\marketplace"
-Write-Host "       claude plugin install claude-obsidian@luna-brain"
 Write-Host "       claude plugin install obsidian@luna-brain"
+Write-Host ""
+Write-Host "     (claude-obsidian now ships via the himmel marketplace — install himmel to get it.)"
 Write-Host ""
 Write-Host "  3. (optional) Install obsidian-second-brain for PARA capture/daily/project skills."
 Write-Host "     This is a 3rd-party install.sh (review before piping to bash):"

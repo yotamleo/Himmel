@@ -47,9 +47,11 @@ Code (setup prints the exact commands):
 
 ```
 claude plugin marketplace add <repo>/marketplace
-claude plugin install claude-obsidian@luna-brain
 claude plugin install obsidian@luna-brain
 ```
+
+(`claude-obsidian` now ships via the **himmel** marketplace — install himmel to
+get it.)
 
 Optional: install `obsidian-second-brain` for PARA capture/daily/project
 skills. Operator-driven (3rd-party install.sh):
@@ -90,7 +92,7 @@ the detail.
 | **Shared git-state predicates**                 | `scripts/guardrails/lib.sh` (`is_on_main`, `is_main_ref`, `is_dirty` + `guard_call`)   |
 | **Handover-path resolver (HIMMEL-118)**         | `scripts/lib/handover-path.sh` (Mode A inline default, Mode B external via HANDOVER_DIR) |
 | **USER_SLUG resolver (HIMMEL-145)**             | `scripts/lib/user-slug.sh` (env var → git config fallback)                             |
-| **SHA-pinned vault plugin marketplace**         | `marketplace/.claude-plugin/marketplace.json` (claude-obsidian + obsidian-skills)      |
+| **SHA-pinned vault plugin marketplace**         | `marketplace/.claude-plugin/marketplace.json` (obsidian-skills)                        |
 | **Setup scripts (sh + ps1)**                    | `scripts/setup.sh`, `scripts/setup.ps1`                                                |
 
 ## Vault layout
@@ -145,8 +147,6 @@ See `docs/contributing.md` for the full contribution workflow.
   guardrails patterns.
 - **luna** — personal vault. A copy of this template that has accumulated
   content. Stays private.
-- **claude-obsidian** (upstream) — knowledge-companion plugin pinned
-  in `marketplace/`.
 - **obsidian-skills** (upstream, Steph Ango) — Obsidian Flavored
   Markdown skill pack pinned in `marketplace/`.
 - **obsidian-second-brain** (upstream, eugeniughelbur) — optional

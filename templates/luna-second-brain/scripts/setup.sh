@@ -5,8 +5,47 @@ set -e
 
 trap 'echo "setup interrupted by signal" >&2; exit 130' INT TERM
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
+# --- [0/6] git state ---
+# A vault downloaded as a zip (or copied without its .git) is not a repo, yet
+# the guardrails (worktree-isolation, secret hooks) and the optional autosync
+# all need one. Bootstrap here, and set REPO_ROOT ourselves — a bare
+# `git rev-parse --show-toplevel` `set -e`-exits in a non-repo dir.
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+  REPO_ROOT="$(git rev-parse --show-toplevel)"
+  cd "$REPO_ROOT"
+  if [ -n "$(git remote)" ]; then
+    : # repo + remote → a clone/shared repo; leave its branch policy as-is.
+  elif [ ! -f "$REPO_ROOT/.single-writer" ]; then
+    # repo + no remote → a local-only vault; commits land on main by design.
+    touch "$REPO_ROOT/.single-writer"
+    echo "[0/6] Local-only vault: created .single-writer (commits/pushes go to main by design)."
+  fi
+else
+  # Not a repo → init one rooted at the script's parent and commit the scaffold.
+  REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  cd "$REPO_ROOT"
+  git init -b main >/dev/null 2>&1 || { git init >/dev/null 2>&1 && git symbolic-ref HEAD refs/heads/main; }
+  # Path-scoped initial commit — NEVER `git add -A`. The protection is the
+  # explicit allow-list below (an untracked .env / secret is simply never in the
+  # loop), NOT index ordering; `git add .gitignore` is staged first only so the
+  # repo's first tracked state already carries the ignore rules.
+  git add .gitignore 2>/dev/null || true
+  for _p in .env.example .gitattributes .pre-commit-config.yaml .vault-template.json \
+            README.md _CLAUDE.md index.md log.md scripts marketplace docs _Templates \
+            00-Inbox 10-Projects 20-Areas 30-Resources 40-Archive 50-Journal 60-Maps; do
+    [ -e "$REPO_ROOT/$_p" ] && git add "$_p"
+  done
+  touch "$REPO_ROOT/.single-writer"
+  # Report the scaffold commit honestly — on a fresh machine git identity may be
+  # unset, which aborts the commit. Don't claim "committed" when HEAD is unborn.
+  if git commit -q -m "chore: initial luna-brain scaffold" >/dev/null 2>&1; then
+    echo "[0/6] Initialized git repo (main) + committed scaffold; created .single-writer marker."
+  else
+    echo "[0/6] Initialized git repo (main) + created .single-writer, but the scaffold commit did NOT land" >&2
+    echo "      (git user.name/email unset, or a hook blocked it). Set a git identity and run" >&2
+    echo "      'git add -A && git commit -m \"initial scaffold\"' before enabling autosync." >&2
+  fi
+fi
 
 mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
@@ -119,8 +158,9 @@ echo "  1. (optional) Edit .env to override USER_SLUG / HANDOVER_DIR defaults."
 echo "  2. Install the SHA-pinned plugin marketplace from inside Claude Code:"
 echo ""
 echo "       claude plugin marketplace add $REPO_ROOT/marketplace"
-echo "       claude plugin install claude-obsidian@luna-brain"
 echo "       claude plugin install obsidian@luna-brain"
+echo ""
+echo "     (claude-obsidian now ships via the himmel marketplace — install himmel to get it.)"
 echo ""
 echo "  3. (optional) Install obsidian-second-brain for PARA capture/daily/project skills."
 echo "     This is a 3rd-party install.sh (review before piping to bash):"

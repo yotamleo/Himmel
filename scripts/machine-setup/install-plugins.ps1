@@ -49,6 +49,26 @@ function Invoke-OrDry {
     }
 }
 
+# Loud, classified diagnostics for a `claude` CLI step (PS twin of run_step in
+# install-plugins.sh). Advisory only — never aborts; the end presence-verify is
+# authoritative. (A native non-zero exit does NOT throw in PowerShell, so the old
+# try/catch almost never fired — this checks $LASTEXITCODE explicitly.) Benign
+# "already installed/registered" stays a quiet line; anything else surfaces the
+# step + the captured CLI output.
+function Invoke-Step {
+    param([string[]]$Cmd)
+    if ($DryRun) { Write-Host "DRY: $($Cmd -join ' ')"; return }
+    $out = (& $Cmd[0] @($Cmd | Select-Object -Skip 1) 2>&1 | Out-String)
+    $rc  = $LASTEXITCODE
+    if ($rc -eq 0) { return }
+    if ($out -match 'already (installed|registered|exists)') {
+        Write-Host "    (already present, skipping): $($Cmd -join ' ')"
+    } else {
+        Write-Host "    !! step FAILED (exit $rc): $($Cmd -join ' ')"
+        $out.TrimEnd() -split "`n" | ForEach-Object { Write-Host "       | $($_.TrimEnd())" }
+    }
+}
+
 # ── Expand <himmel-path> in template ─────────────────────────────────────────
 $raw      = Get-Content $Template -Raw
 $expanded = $raw -replace '<himmel-path>', ($HimmelPath -replace '\\', '\\\\')
@@ -66,8 +86,7 @@ foreach ($name in $cfg.extraKnownMarketplaces.PSObject.Properties.Name) {
     }
     if (-not $val) { Write-Host "  skip: $name (unknown source type)"; continue }
     Write-Host "  marketplace add: $val"
-    try { Invoke-OrDry @('claude', 'plugin', 'marketplace', 'add', $val, '--scope', $Scope) }
-    catch { Write-Host "    (non-zero — already registered or transient failure)" }
+    Invoke-Step @('claude', 'plugin', 'marketplace', 'add', $val, '--scope', $Scope)
 }
 
 # ── Enable marketplace auto-update (HIMMEL-365) ──────────────────────────────
@@ -120,8 +139,7 @@ Write-Host "──── Installing plugins ($Scope scope) ────"
 $specs = @($cfg.enabledPlugins.PSObject.Properties.Name)
 foreach ($spec in $specs) {
     Write-Host "  install: $spec"
-    try { Invoke-OrDry @('claude', 'plugin', 'install', $spec, '--scope', $Scope) }
-    catch { Write-Host "    (non-zero — already installed or transient failure)" }
+    Invoke-Step @('claude', 'plugin', 'install', $spec, '--scope', $Scope)
 }
 
 # ── Verify (post-install presence check, HIMMEL-361) ─────────────────────────
