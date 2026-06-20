@@ -139,6 +139,16 @@ if [ -n "$NOTE" ] && grep -q 'type: session' "$NOTE"; then
 else
     fail "note missing 'type: session' frontmatter"
 fi
+if [ -n "$NOTE" ] && grep -q '^session_id:' "$NOTE"; then
+    pass "note carries session_id field"
+else
+    fail "note missing 'session_id' frontmatter field"
+fi
+if [ -n "$NOTE" ] && grep -q '^source: live$' "$NOTE"; then
+    pass "note carries source: live"
+else
+    fail "note missing 'source: live' frontmatter field"
+fi
 rm -rf "$SB"
 
 # --- Case 2b: REST PUT failure falls back to an on-disk write ----------------

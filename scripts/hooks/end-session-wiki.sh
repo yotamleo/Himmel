@@ -206,66 +206,17 @@ fi
 
 # ---------- 3. Read transcript ----------------------------------------------
 
-FIRST_TS=""
-LAST_ASSISTANT=""
-COMMANDS=""
-TRANSCRIPT_READABLE=1
+_ST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/session-transcript.sh"
+# shellcheck source=/dev/null
+. "$_ST_LIB"
 
-if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
-    # First timestamp (earliest line with .timestamp)
-    FIRST_TS="$(jq -r 'select(.timestamp) | .timestamp' "$TRANSCRIPT_PATH" 2>/dev/null | head -n1)"
-    # Last assistant turn text (concat text blocks). Supports both top-level
-    # role/content and nested message.role/message.content shapes.
-    LAST_ASSISTANT="$(
-        jq -r '
-            . as $line
-            | (
-                (if .role then {role:.role, content:.content} else null end) //
-                (if .message and .message.role then {role:.message.role, content:.message.content} else null end)
-              )
-            | select(. != null and .role == "assistant")
-            | (if (.content|type) == "string"
-               then .content
-               else (.content // [] | map(select(.type=="text") | .text) | join("\n"))
-              end)
-            | select(length > 0)
-        ' "$TRANSCRIPT_PATH" 2>/dev/null | tail -n 200
-    )"
-    # Bash/PowerShell tool commands (in chronological order)
-    COMMANDS="$(
-        jq -r '
-            . as $line
-            | (
-                (if .role then .content else null end) //
-                (if .message then .message.content else null end)
-              )
-            | select(. != null and (type == "array"))
-            | .[]?
-            | select(.type == "tool_use" and (.name == "Bash" or .name == "PowerShell"))
-            | .input.command // empty
-        ' "$TRANSCRIPT_PATH" 2>/dev/null
-    )"
-else
-    TRANSCRIPT_READABLE=0
-fi
+parse_session_transcript "$TRANSCRIPT_PATH"
 
 # Compute duration_seconds + duration_minutes (UTC now - first_ts)
 NOW_EPOCH="$(date -u +%s)"
 NOW_ISO="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-DURATION_SECONDS=0
-DURATION_MINUTES=0
-if [ -n "$FIRST_TS" ]; then
-    # GNU date understands ISO 8601 with Z; fall back to 0 on failure
-    START_EPOCH="$(date -u -d "$FIRST_TS" +%s 2>/dev/null || echo "")"
-    if [ -n "$START_EPOCH" ] && [ "$START_EPOCH" -gt 0 ]; then
-        DELTA=$(( NOW_EPOCH - START_EPOCH ))
-        [ "$DELTA" -lt 0 ] && DELTA=0
-        DURATION_SECONDS="$DELTA"
-        DIFF=$(( (DELTA + 30) / 60 ))
-        [ "$DIFF" -lt 0 ] && DIFF=0
-        DURATION_MINUTES="$DIFF"
-    fi
-fi
+
+compute_duration "$FIRST_TS" "$NOW_EPOCH"
 
 # Min-duration skip (only when we have a transcript timestamp; otherwise we
 # can't compute duration and the cautious choice is to capture rather than drop).
@@ -275,13 +226,7 @@ if [ -n "$FIRST_TS" ] && [ "$DURATION_SECONDS" -lt "$CFG_MIN_DUR" ] 2>/dev/null;
     exit 0
 fi
 
-# Filter trivial commands and cap at last 20
-KEPT_COMMANDS=""
-if [ -n "$COMMANDS" ]; then
-    KEPT_COMMANDS="$(printf '%s\n' "$COMMANDS" \
-        | grep -Ev '^(ls|cd|pwd|echo)( |$)' \
-        | tail -n 20 || true)"
-fi
+filter_commands "$COMMANDS"
 
 # ---------- 4. Compute path --------------------------------------------------
 
@@ -362,49 +307,9 @@ fi
 
 # ---------- 5. Render markdown ----------------------------------------------
 
-# Summary: first 4 non-empty lines of last assistant turn
-SUMMARY=""
-if [ -n "$LAST_ASSISTANT" ]; then
-    SUMMARY="$(printf '%s\n' "$LAST_ASSISTANT" | awk 'NF' | head -n 4)"
-fi
-if [ -z "$SUMMARY" ]; then
-    SUMMARY="_Transcript unavailable; auto-summary not generated._ (speculation)"
-fi
-
-PREAMBLE="Auto-captured Claude Code session in repo [[${REPO_NAME}]] on branch \`${BRANCH}\`. Filed by the end-session-wiki hook (epic #7 / task #26)."
-
-# Files section
-if [ "$FILES_COUNT" -eq 0 ]; then
-    FILES_SECTION="_None._"
-else
-    # shellcheck disable=SC2016  # the backticks are literal markdown, not command subs
-    SHOWN="$(printf '%s\n' "$FILES_RAW" | head -n 50 | sed 's/^/- `/; s/$/`/')"
-    FILES_SECTION="$SHOWN"
-    if [ "$FILES_COUNT" -gt 50 ]; then
-        REMAIN=$((FILES_COUNT - 50))
-        FILES_SECTION="${FILES_SECTION}
-- _+${REMAIN} more (use git log to inspect)_"
-    fi
-fi
-
-# Commands fenced block
-CMDS_SECTION='```bash'
-if [ -n "$KEPT_COMMANDS" ]; then
-    CMDS_SECTION="${CMDS_SECTION}
-${KEPT_COMMANDS}"
-fi
-CMDS_SECTION="${CMDS_SECTION}
-\`\`\`"
-
-# Raw conversation callout
-if [ "$TRANSCRIPT_READABLE" -eq 1 ] && [ -n "$LAST_ASSISTANT" ]; then
-    RAW_BODY="$(printf '%s\n' "$LAST_ASSISTANT" | sed 's/^/> /')"
-    RAW_SECTION="> [!note]- Raw conversation
-${RAW_BODY}"
-else
-    RAW_SECTION="> [!note]- Raw conversation
-> _Transcript unavailable._"
-fi
+_SN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/session-note.sh"
+# shellcheck source=/dev/null
+. "$_SN_LIB"
 
 # Normalize separators defensively: on *nix this is a no-op (path already uses
 # `/`). Paranoia for the case where bash runs on a Windows-format path despite
@@ -412,47 +317,20 @@ fi
 # `worktree` frontmatter field is deterministic regardless of which hook fires.
 WORKTREE_ABS="${SESSION_CWD//\\//}"
 
-MARKDOWN="$(cat <<EOF
----
-date: ${NOW_ISO}
-type: session
-repo: ${REPO_NAME}
-branch: ${BRANCH}
-worktree: ${WORKTREE_ABS}
-duration_minutes: ${DURATION_MINUTES}
-files_touched: ${FILES_COUNT}
-tags:
-  - session
-  - autocapture
-ai-first: true
----
-
-${PREAMBLE}
-
-## Summary
-
-${SUMMARY}
-
-## Decisions
-
-_None._
-
-## Files Touched
-
-${FILES_SECTION}
-
-## Commands
-
-${CMDS_SECTION}
-
-## Follow-ups
-
-_None._
-
-## Raw Conversation
-
-${RAW_SECTION}
-EOF
+MARKDOWN="$(
+    REPO_NAME="$REPO_NAME" \
+    BRANCH="$BRANCH" \
+    WORKTREE_ABS="$WORKTREE_ABS" \
+    FILES_COUNT="$FILES_COUNT" \
+    FILES_RAW="$FILES_RAW" \
+    NOW_ISO="$NOW_ISO" \
+    DURATION_MINUTES="$DURATION_MINUTES" \
+    SESSION_ID="$SESSION_ID" \
+    SOURCE="live" \
+    LAST_ASSISTANT="$LAST_ASSISTANT" \
+    TRANSCRIPT_READABLE="$TRANSCRIPT_READABLE" \
+    KEPT_COMMANDS="$KEPT_COMMANDS" \
+    render_session_note
 )"
 
 # ---------- 6. Dry-run short-circuit ----------------------------------------
