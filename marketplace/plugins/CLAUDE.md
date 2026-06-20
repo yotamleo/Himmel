@@ -8,11 +8,13 @@ Each plugin has a `.claude-plugin/` manifest plus the component dirs it
 needs (`commands/`, `skills/`, `agents/`, `tools/`). Local plugins (sourced
 from this subtree): `handover`, `obsidian-triage`, `pr-review-toolkit-himmel`,
 `telegram-himmel`, `himmel-ops`, `luna-correlate`. The marketplace also
-declares two **github-pinned** vendored plugins that do NOT live here —
-`claude-obsidian` and `obsidian` (pinned upstream sources — `claude-obsidian`
-by immutable **tag** since a bare SHA is not installable, `obsidian` by SHA;
-see their entries in `marketplace/.claude-plugin/marketplace.json` and the Pin
-update workflow in `obsidian-triage/README.md`).
+declares one **github-pinned** vendored plugin that does NOT live here —
+`claude-obsidian`, pinned by immutable **tag** (a bare SHA is not installable;
+see its entry in `marketplace/.claude-plugin/marketplace.json` and the Pin
+update workflow in `obsidian-triage/README.md`). Steph Ango's `obsidian`
+(kepano/obsidian-skills) is NOT declared here (HIMMEL-435) — a bare-SHA pin
+can't be installed and kepano publishes no tags, so it installs from its own
+marketplace (`obsidian@obsidian-skills`).
 
 ## Conventions
 - **Plugin specs belong in `<plugin>/README.md`** (luna-docs tier-1,

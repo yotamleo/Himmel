@@ -89,21 +89,6 @@
       },
       "homepage": "https://github.com/yotamleo/claude-obsidian",
       "license": "MIT"
-    },
-    {
-      "name": "obsidian",
-      "source": {
-        "source": "github",
-        "repo": "kepano/obsidian-skills",
-        "ref": "a1dc48e68138490d522c04cbf5822214c6eb1202"
-      },
-      "description": "Steph Ango's Claude Skills for Obsidian: obsidian-markdown (OFM syntax), obsidian-bases, json-canvas, obsidian-cli, defuddle. Recommended companion to obsidian-triage — /triage-clips can use the obsidian-markdown skill for proper Obsidian Flavored Markdown when editing clipped notes, with a conservative fallback documented in the command body for vaults without it installed. Pinned to a commit SHA per himmel supply-chain policy.",
-      "author": {
-        "name": "Steph Ango",
-        "url": "https://stephango.com/"
-      },
-      "homepage": "https://github.com/kepano/obsidian-skills",
-      "license": "MIT"
     }
   ]
 }
