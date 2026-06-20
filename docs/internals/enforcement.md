@@ -325,6 +325,31 @@ Spec: `scripts/hooks/test-auto-arm-on-cap.sh` (paired smoke suite).
    twice per tool call — harmless (the throttle marker is shared, so
    the second invocation is a single stat() no-op).
 
+### `inject-minerva-critic.sh` — plugin PreToolUse(Skill) critic injector (HIMMEL-429)
+
+The one PreToolUse hook NOT wired in `.claude/settings.json` (so it is not
+counted in the "six hooks" above): it ships in the **himmel-ops plugin**
+(`marketplace/plugins/himmel-ops/hooks/hooks.json`, `matcher: "Skill"`), so any
+himmel-ops install gets it — himmel sessions and external installs alike — with
+no repo wiring.
+
+Closes the no-`/minerva` bypass. When `superpowers:brainstorming` or
+`superpowers:writing-plans` is invoked by ANY path (auto-trigger, direct
+`/skill`, sub-skill handoff) without going through `/minerva`, it injects a
+scoped `additionalContext` directive so the model still runs the matching
+minerva adversarial critic loop (spec-critic / plan-critic; `himmel-ops:minerva`
+Stage 2 / Stage 4 charters). The invoked skill name is read at `tool_input.skill`
+(field path confirmed by the HIMMEL-429 spike); per the CC hooks reference a
+PreToolUse `additionalContext` is wrapped in a system reminder and inserted next
+to the tool result, where the model reads it on the next request.
+
+ADVISORY context, not a permission change — it cannot widen what any hook
+allows. **FAIL-OPEN** (unlike the block-* hooks): it only ever exits 0 with
+either the injection envelope or empty stdout, so it never blocks a Skill call
+on its own error (a PreToolUse exit 2 would block the tool). Kill switch:
+`MINERVA_HOOK_DISABLE=1` in the launching shell (bypass convention as above).
+Paired smoke test: `hooks/test-inject-minerva-critic.sh`.
+
 ## Claude SessionStart Hooks
 
 Wired in the `SessionStart` array of `.claude/settings.json`; fires once when a
