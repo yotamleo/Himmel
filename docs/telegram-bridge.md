@@ -54,7 +54,7 @@ TELEGRAM_OWN_POLLER=1 claude "telegram bridge owner — standby" --dangerously-l
 ```
 
 Confirm: the session prints `Listening for channel messages from:
-plugin:telegram-himmel@himmel`. DM `@overlord_luna_bot` from the allowlisted
+plugin:telegram-himmel@himmel`. DM your bot (`@<your-bot-username>`) from the allowlisted
 account → the message appears in the session as a `<channel …>` block; reply
 flows back to Telegram.
 

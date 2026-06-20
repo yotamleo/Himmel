@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { isAllowed, isGroupAllowed, vaultForChat } from "./gate";
 
 // Real access.json shape (~/.claude/channels/telegram/access.json):
-//   { "dmPolicy": "allowlist", "allowFrom": ["7282416230"], "groups": {}, "pending": {} }
+//   { "dmPolicy": "allowlist", "allowFrom": ["1000000001"], "groups": {}, "pending": {} }
 // The fork's gate() compares String(from.id) against allowFrom (string array).
 
 test("allows listed sender, rejects others", () => {
@@ -32,20 +32,20 @@ test("fails closed on malformed allowlist", () => {
 // allows the chat. Covers groups (-…) and channels (-100…) alike.
 
 test("isGroupAllowed: allows a chat_id present in groups, rejects others", () => {
-  const access = { allowFrom: ["1"], groups: { "-5072730283": {} } };
-  expect(isGroupAllowed(access, -5072730283)).toBe(true);
-  expect(isGroupAllowed(access, "-5072730283")).toBe(true);
+  const access = { allowFrom: ["1"], groups: { "-1009999999": {} } };
+  expect(isGroupAllowed(access, -1009999999)).toBe(true);
+  expect(isGroupAllowed(access, "-1009999999")).toBe(true);
   expect(isGroupAllowed(access, -999)).toBe(false);
-  expect(isGroupAllowed(access, 7282416230)).toBe(false);   // DM id not in groups
+  expect(isGroupAllowed(access, 1000000001)).toBe(false);   // DM id not in groups
 });
 
 test("isGroupAllowed: fails closed on missing/empty/malformed groups", () => {
-  expect(isGroupAllowed({}, -5072730283)).toBe(false);
-  expect(isGroupAllowed({ groups: {} }, -5072730283)).toBe(false);
-  expect(isGroupAllowed({ groups: ["-5072730283"] } as any, -5072730283)).toBe(false);
-  expect(isGroupAllowed({ groups: "-5072730283" } as any, -5072730283)).toBe(false);
-  expect(isGroupAllowed(null as any, -5072730283)).toBe(false);
-  expect(isGroupAllowed(undefined as any, -5072730283)).toBe(false);
+  expect(isGroupAllowed({}, -1009999999)).toBe(false);
+  expect(isGroupAllowed({ groups: {} }, -1009999999)).toBe(false);
+  expect(isGroupAllowed({ groups: ["-1009999999"] } as any, -1009999999)).toBe(false);
+  expect(isGroupAllowed({ groups: "-1009999999" } as any, -1009999999)).toBe(false);
+  expect(isGroupAllowed(null as any, -1009999999)).toBe(false);
+  expect(isGroupAllowed(undefined as any, -1009999999)).toBe(false);
 });
 
 test("isGroupAllowed: a non-empty per-group allowFrom restricts senders (fork GroupPolicy)", () => {
@@ -82,7 +82,7 @@ test("vaultForChat: a group without its own vault falls back to defaultVault", (
 test("vaultForChat: an unknown chat still gets defaultVault (covers DMs too)", () => {
   const access = { defaultVault: "/luna", groups: { "-50": {} } };
   expect(vaultForChat(access, -999)).toBe("/luna");
-  expect(vaultForChat(access, 7282416230)).toBe("/luna");
+  expect(vaultForChat(access, 1000000001)).toBe("/luna");
 });
 
 test("vaultForChat: null when no vault and no default (fails closed → file nothing)", () => {

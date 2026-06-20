@@ -120,7 +120,7 @@ dropped) OR the chat is allowlisted: its chat_id is a key in `groups` in
 `~/.claude/channels/telegram/access.json`:
 
 ```json
-"groups": { "-5072730283": {} }
+"groups": { "-1009999999": {} }
 ```
 
 A non-empty per-group `allowFrom` (the fork's GroupPolicy shape) restricts
@@ -162,11 +162,10 @@ message lands in `~/.claude/handover/bridge/inbound.jsonl` with its `chat_id`.
 The poller reads access.json ONCE at startup — restart the bridge after every
 allowlist edit.
 
-**Verified live (2026-06-10, HIMMEL-238 acceptance):** group `-5072730283`
-(AI TODO) — plain message ingested, bounded run replied INTO the group, DM
-untouched; channel `-1004267040815` — first post surfaced its id via the
-gated-out log, allowlisted + restarted, posts then processed with replies
-into the channel. Both ids live in the operator's access.json.
+**Verified live (2026-06-10, HIMMEL-238 acceptance):** an allowlisted group
+— plain message ingested, bounded run replied INTO the group, DM untouched;
+an allowlisted channel — first post surfaced its id via the gated-out log,
+allowlisted + restarted, posts then processed with replies into the channel.
 
 **Consolidation pattern:** Telegram channels don't contain groups — to funnel
 many sources through one allowlisted chat, forward/post their content INTO a
@@ -263,7 +262,7 @@ $env:WHISPER_INTEGRATION_TEST = "1"; bun test scripts/telegram/transcribe-integr
 | `install-logon-task.ps1` | register/remove/report the `HimmelTelegramBridge` reboot-persistence task |
 | `run-prompt.md` | the prompt contract handed to each bounded run |
 
-Bot: `@overlord_luna_bot`. Token: `~/.claude/channels/telegram/.env`
+Bot: `@<your-bot-username>`. Token: `~/.claude/channels/telegram/.env`
 (`TELEGRAM_BOT_TOKEN=`). Logs + pidfile: `~/.claude/channels/telegram/`.
 Bus (sessions, inbound.jsonl, offset): `~/.claude/handover/bridge/`
 (`BRIDGE_ROOT` to override).
