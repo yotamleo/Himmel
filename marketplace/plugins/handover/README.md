@@ -50,6 +50,9 @@ though the himmel repo also wires explicit `/handover *` commands.
 | `new-standalone <name>` | Create a standalone (optional Jira Story). |
 | `update-status` | Regenerate `status.md` + `roadmap.md` + `tech-debt.md` from filesystem state. Run after any mutation. |
 | `handover-resume #N` | Resume a tracked item — surface its brief, decisions, and stop-point. Read-only (no worktree gate). |
+| `/handover bug <add\|fix\|status>` | Quick-add / update a bug in the active item's `bugs.md` (status + FAILED/WORKED fixes-tried). The circular-debugging breaker. |
+| `/handover bugs [--open]` | Cross-item dashboard of every tracked bug (item / id / status / symptom / #fixes + totals). Read-only. |
+| `/handover lessons` | Proposal-only sweep: recurring resolved-bug symptoms + CR findings as lesson candidates. Writes nothing. |
 | `end-session [id]` | Consolidate session work into a `next-session-N.md` snapshot for the named item. |
 | `/handover bucket <id> <bucket>` | Move an item between source buckets (HIMMEL-307). |
 | `/handover priority <id> <priority>` | Set an item's priority. |
