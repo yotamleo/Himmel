@@ -67,3 +67,34 @@ guidance available the moment it is relevant (memory:
 
 - Full playbook: [`docs/internals/stuck-playbook.md`](../../../docs/internals/stuck-playbook.md)
 - Enforcement detail (hooks + gates + classifier): [`docs/internals/enforcement.md`](../../../docs/internals/enforcement.md)
+
+## minerva — brainstorm → critic → spec → critic → plan (`/minerva`)
+
+`/minerva` (skill `himmel-ops:minerva`) runs the recurring idea→plan workflow as
+one pipeline with an adversarial critic between each stage, so every artifact is
+red-teamed before it advances:
+
+1. **Brainstorm → spec** — drives `superpowers:brainstorming`, halted before its
+   auto-handoff to writing-plans.
+2. **Spec critic** — a fresh adversarial subagent red-teams the spec (hidden
+   assumptions, scope creep, feasibility, contradictions, missing success
+   criteria); loop fix→re-critic, cap 2 rounds.
+3. **Plan** — drives `superpowers:writing-plans` on the approved spec.
+4. **Plan critic** — adversarial subagent red-teams the plan (unordered deps,
+   untestable steps, missing verification, over/under-decomposition, assumptions
+   not grounded in the spec); cap 2 rounds.
+5. **Terminal** — a critic-hardened plan; offers hand-off to
+   `superpowers:subagent-driven-development` / `executing-plans`. minerva does
+   not implement.
+
+**Gates are mode-driven.** `scripts/autonomy-mode.sh` reports `autonomous` when
+`HIMMEL_INITIATIVE` or `HIMMEL_INITIATIVE_OVERNIGHT` is set to a non-falsy value
+(non-empty, not `0`/`false`/`off`/`no`; initiative mode, HIMMEL-425) — then the
+critics are the only gate and the pipeline auto-advances.
+Otherwise it reports `interactive` and minerva pauses for the operator after each
+critic-cleaned artifact.
+
+**Distribution:** ships in this plugin (skill + command + helper), so it installs
+system-wide and works in any repo, with no `superpowers` fork. A deferred
+companion (HIMMEL-429) adds a Skill-tool hook so the critic also fires when
+brainstorming/writing-plans is triggered without `/minerva`.
