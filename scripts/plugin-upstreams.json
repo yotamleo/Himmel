@@ -1,0 +1,8 @@
+{
+  "_comment": "Per-plugin TRUE-upstream overrides for scripts/check-plugin-drift.sh. A himmel fork's marketplace.json `repo` points at OUR fork, so the drift guard would otherwise only catch fork-vs-pin drift, never the real signal: the original upstream advancing. Each entry here makes the guard track that true upstream instead. `track:release` compares the upstream's latest version TAG (highest semver via `sort -V` — not the GitHub Releases API, which omits tag-only/prerelease versions) against `synced_base` (the upstream version our fork is currently merged to). On a fork re-sync, bump `synced_base` here in the same PR. Keyed by plugin name (matches marketplace.json).",
+  "claude-obsidian": {
+    "upstream_repo": "AgriciDaniel/claude-obsidian",
+    "track": "release",
+    "synced_base": "v1.9.2"
+  }
+}

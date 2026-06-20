@@ -9,8 +9,10 @@ needs (`commands/`, `skills/`, `agents/`, `tools/`). Local plugins (sourced
 from this subtree): `handover`, `obsidian-triage`, `pr-review-toolkit-himmel`,
 `telegram-himmel`, `himmel-ops`, `luna-correlate`. The marketplace also
 declares two **github-pinned** vendored plugins that do NOT live here —
-`claude-obsidian` and `obsidian` (SHA-pinned upstream sources; see their
-entries in `marketplace/.claude-plugin/marketplace.json`).
+`claude-obsidian` and `obsidian` (pinned upstream sources — `claude-obsidian`
+by immutable **tag** since a bare SHA is not installable, `obsidian` by SHA;
+see their entries in `marketplace/.claude-plugin/marketplace.json` and the Pin
+update workflow in `obsidian-triage/README.md`).
 
 ## Conventions
 - **Plugin specs belong in `<plugin>/README.md`** (luna-docs tier-1,
