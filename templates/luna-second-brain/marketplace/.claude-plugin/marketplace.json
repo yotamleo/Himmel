@@ -10,30 +10,13 @@
   },
   "plugins": [
     {
-      "name": "claude-obsidian",
-      "source": {
-        "source": "github",
-        "repo": "AgriciDaniel/claude-obsidian",
-        "ref": "75d3b6feb77b96c6bb16599c4550cc9703553d87"
-      },
-      "description": "Claude + Obsidian knowledge companion. Persistent wiki vault (Karpathy LLM Wiki pattern). Wiki query, save, ingest, lint, autoresearch, canvas. Pinned to SHA for supply-chain hygiene; bump deliberately.",
-      "version": "1.6.0",
-      "author": {
-        "name": "AgriciDaniel",
-        "url": "https://github.com/AgriciDaniel"
-      },
-      "homepage": "https://github.com/AgriciDaniel/claude-obsidian",
-      "repository": "https://github.com/AgriciDaniel/claude-obsidian",
-      "license": "MIT"
-    },
-    {
       "name": "obsidian",
       "source": {
         "source": "github",
         "repo": "kepano/obsidian-skills",
         "ref": "553ef99aa3306dd23f268e1ba9af752577684f69"
       },
-      "description": "Steph Ango's Claude Skills for Obsidian: obsidian-markdown (OFM syntax), obsidian-bases, json-canvas, obsidian-cli, defuddle. Used by claude-obsidian + your own vault edits for correct Obsidian Flavored Markdown. Pinned to SHA.",
+      "description": "Steph Ango's Claude Skills for Obsidian: obsidian-markdown (OFM syntax), obsidian-bases, json-canvas, obsidian-cli, defuddle. Used for correct Obsidian Flavored Markdown in your own vault edits. Pinned to SHA.",
       "version": "1.0.1",
       "author": {
         "name": "Steph Ango",

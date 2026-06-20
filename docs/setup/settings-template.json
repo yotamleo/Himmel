@@ -88,7 +88,7 @@
     "obsidian@obsidian-skills": true,
     "qmd@qmd": true,
     "caveman@caveman": true,
-    "claude-obsidian@claude-obsidian-marketplace": true,
+    "claude-obsidian@himmel": true,
     "handover@himmel": true,
     "luna-correlate@himmel": true,
     "himmel-ops@himmel": true,
@@ -111,10 +111,6 @@
     },
     "himmel": {
       "source": { "source": "directory", "path": "<himmel-path>/marketplace" },
-      "autoUpdate": true
-    },
-    "claude-obsidian-marketplace": {
-      "source": { "source": "github", "repo": "yotamleo/claude-obsidian" },
       "autoUpdate": true
     }
   },

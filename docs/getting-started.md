@@ -64,9 +64,21 @@ bash Himmel/scripts/adopt.sh --profile all --scope project --target /path/to/you
 # Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile all -Scope project -Target C:\path\to\repo -LunaTarget $HOME\Documents\luna
 ```
 
+**User scope** — enable himmel for *you* in every project on this machine
+(wires `~/.claude/settings.json` to reference this clone; nothing is copied
+per-repo). Copy-paste:
+
+```bash
+# core only:
+bash Himmel/scripts/adopt.sh --profile core --scope user
+# core + luna vault (vault defaults to ~/Documents/luna):
+bash Himmel/scripts/adopt.sh --profile all --scope user --luna-target ~/Documents/luna
+# Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile all -Scope user -LunaTarget $HOME\Documents\luna
+```
+
 `--scope project` wires it into your repo (commit the result and anyone who
 clones it gets it); `--scope user` enables it for you in every project on this
-machine. `--scope user`, remove/move, and the à-la-carte parts are all in
+machine. Remove/move and the à-la-carte parts are in
 [use-on-your-project.md](setup/use-on-your-project.md).
 
 ### B. Run / develop himmel itself standalone
@@ -159,6 +171,70 @@ what each guard does.
 
 Going unattended later: `/overnight-shift --limit 5` dispatches scoped tickets as
 parallel agents that open PRs while you sleep ([overnight mode](handover/overnight-mode.md)).
+
+## Initiative mode + planning pipelines
+
+Two optional accelerators sit on top of the loop. Both are opt-in.
+
+### `HIMMEL_INITIATIVE` — drive-to-ship
+
+When set, each session proactively drives finished work toward shipping at
+*natural completion points* (a logical chunk is done **and** verified), instead
+of waiting for you to say "ship it" each time. The chain has four legs, run in
+order:
+
+1. **`prcheck`** — run `/pr-check` and loop until the review is clean.
+2. **`pr`** — open or refresh the PR.
+3. **`ticket`** — transition the Jira ticket.
+4. **`handover`** — write the handover.
+
+> **It never merges.** Merge is *always* an explicit action you take — there is
+> no auto-merge leg. The directive also can't relax any safety rail (the
+> CR-marker hook still gates `gh pr create`; attestation trailers are still
+> required; reactive `--amend` and settings self-edits stay vetoed).
+
+**Enable it in the launching shell** (it's read at session start):
+
+```bash
+HIMMEL_INITIATIVE=all claude        # all four legs
+HIMMEL_INITIATIVE=prcheck,pr claude # just CR + open the PR
+```
+
+Grammar: a master switch `1`/`true`/`on`/`yes`/`all` (= all four legs), or a
+comma-separated subset of `prcheck,pr,ticket,handover`. Case-insensitive,
+whitespace-tolerant; an unset/falsy/typo value is **OFF** (the default), a
+byte-identical no-op.
+
+**Most people should leave the aggressive legs OFF.** Default is OFF for a
+reason — auto-opening PRs and transitioning tickets is a lot of initiative. If
+you want some of it, start conservative (`prcheck`, or `prcheck,handover`) and
+reserve `all` for trusted/overnight contexts.
+
+**Per-project override (user default + per-repo tightening).** Beyond the
+launching-shell variable, you can set it via the `env` block in
+`settings.json`, which Claude Code makes visible to the session's hooks. Per
+Claude Code's settings precedence, a **project** `.claude/settings.json`
+deep-merges over your **user** `~/.claude/settings.json`, so you can set a
+machine-wide default and override it per repo:
+
+```jsonc
+// ~/.claude/settings.json — your default for every repo
+{ "env": { "HIMMEL_INITIATIVE": "prcheck,handover" } }
+
+// <repo>/.claude/settings.json — make THIS repo stricter (off) or freer (all)
+{ "env": { "HIMMEL_INITIATIVE": "" } }
+```
+
+A value exported in the launching shell takes precedence over `settings.json`
+(per Claude Code's docs), and any change needs a **session restart** to take
+effect.
+
+### `/himmel-ops:minerva` — idea → critic-hardened plan
+
+Runs brainstorm → spec → plan as one pipeline with an adversarial critic between
+each stage, so every artifact is red-teamed before it advances. Use it for any
+feature/design work before writing code. It stops at the plan (it doesn't
+implement) and hands off.
 
 ## You're in control
 

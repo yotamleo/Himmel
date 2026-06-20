@@ -22,6 +22,8 @@ bash scripts/himmel-update.sh
 
 Only `--check` is forwarded to the harness step — the vault-specific flags (`--vault`, `--template-dir`) are not understood by `himmel-update.sh` and must NOT be passed to it.
 
+The harness step's plugin install-state report flags any himmel-marketplace plugin still served from another marketplace whose `autoUpdate` shadows the `@himmel` pin (e.g. `claude-obsidian` left over from `claude-obsidian-marketplace` or the luna vault's `luna-brain`). If it reports a shadow, run the `migrate-plugin-to-himmel.sh --apply <name@market> …` command it prints (operator-present) to converge onto `@himmel`.
+
 **Step 2 — luna vault.** Delegate to the skill, forwarding the full `$ARGUMENTS` (the skill handles `--check` / `--vault` / `--template-dir` itself, and runs its own dry-run → confirm → apply gate):
 
 ```

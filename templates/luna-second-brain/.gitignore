@@ -31,6 +31,13 @@ __pycache__/
 /.claude/worktrees/
 /.claude/settings.local.json
 
+# Single-writer opt-in marker. A per-clone, gitignored file that designates
+# THIS clone as committing/pushing straight to main by design (a personal,
+# local-only vault). setup.{sh,ps1} create it for a local vault with no remote;
+# the guardrail predicates (scripts/guardrails/lib.sh) honor it. A clone WITHOUT
+# the marker stays protected by worktree-isolation, so it never travels via git.
+.single-writer
+
 # Handover scratch state
 .last-consolidate.json
 

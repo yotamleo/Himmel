@@ -59,11 +59,12 @@ From inside Claude Code, after `setup.sh` completes:
 
 ```
 claude plugin marketplace add <repo>/marketplace
-claude plugin install claude-obsidian@luna-brain
 claude plugin install obsidian@luna-brain
 ```
 
-Verify `claude plugin list` shows the two installed. Run any plugin
+(`claude-obsidian` now ships via the himmel marketplace, not luna-brain.)
+
+Verify `claude plugin list` shows it installed. Run any plugin
 command (e.g. `/wiki-query`, `/save`) to confirm one demo skill
 operates end-to-end.
 
