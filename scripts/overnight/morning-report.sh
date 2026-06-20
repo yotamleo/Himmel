@@ -43,11 +43,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ROWS_FILE=""
 OUT_FILE=""
+ACTIONS_FILE=""
 DRY_RUN=0
 
 usage() {
     cat <<'EOF'
-Usage: morning-report.sh [--rows FILE] [--out PATH] [--dry-run]
+Usage: morning-report.sh [--rows FILE] [--out PATH] [--actions FILE] [--dry-run]
 
 Reads one TSV row per dispatched ticket (stdin by default):
 
@@ -63,6 +64,11 @@ Optional:
                 <handover-root>/overnight-report-YYYY-MM-DD.md, resolved
                 via handover_root_ensure (scripts/lib/handover-path.sh).
                 A broken HANDOVER_DIR fails closed (exit 2) — no fallback.
+  --actions FILE  Standing operator actions appended verbatim as a
+                "## Standing operator actions" section. Default:
+                <dirname OUT_FILE>/operator-actions.md. A durable list that
+                survives every regeneration (one-off notes elsewhere do not
+                resurface in a regenerated report). Skipped when absent/blank.
   --dry-run     Print the report to stdout; touch no files.
 
 Environment overrides:
@@ -78,6 +84,9 @@ while [ $# -gt 0 ]; do
         --out)
             [ -n "${2:-}" ] || { echo "ERR morning-report: --out requires a PATH" >&2; exit 1; }
             OUT_FILE="$2"; shift 2 ;;
+        --actions)
+            [ -n "${2:-}" ] || { echo "ERR morning-report: --actions requires a FILE" >&2; exit 1; }
+            ACTIONS_FILE="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *)         echo "ERR morning-report: unknown arg: $1" >&2; usage >&2; exit 1 ;;
@@ -164,6 +173,18 @@ if [ -z "$OUT_FILE" ]; then
     fi
 fi
 
+# Resolve standing operator actions. Default sits next to the report so it
+# follows the same handover-root resolution. Read verbatim (markdown), strip
+# CRs (CRLF-edited files on Windows), and treat whitespace-only as absent.
+if [ -z "$ACTIONS_FILE" ]; then
+    ACTIONS_FILE="$(dirname "$OUT_FILE")/operator-actions.md"
+fi
+actions_body=""
+if [ -f "$ACTIONS_FILE" ]; then
+    actions_body=$(tr -d '\r' < "$ACTIONS_FILE")
+    printf '%s' "$actions_body" | grep -q '[^[:space:]]' || actions_body=""
+fi
+
 # Order rows decisions-first --------------------------------------------
 # Decorate (has-decision rank, status rank, input order) → sort → strip.
 
@@ -210,6 +231,11 @@ EOF
         printf "| %s | `%s` | %s | %s | %s |\n", $1, $2, pr, $4, $5
     }'
 )
+
+# Append standing operator actions verbatim (durable — survives regeneration).
+if [ -n "$actions_body" ]; then
+    report="$report"$'\n\n'"## Standing operator actions"$'\n\n'"$actions_body"
+fi
 
 # Write / print ----------------------------------------------------------
 

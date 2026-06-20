@@ -304,6 +304,58 @@ else
     pass "no CR chars leak into the report"
 fi
 
+# Test 18: standing operator actions appended from --actions -------------
+
+echo "TEST: standing operator actions appended (verbatim, after tickets)"
+printf '%s\n' $'HIMMEL-380\tfeat/HIMMEL-380-x\thttps://example.com/pr/12\tdone\tShipped' > "$ROWS"
+acts="$TMP_ROOT/operator-actions.md"
+printf '🔴 SINGLE-SESSION-ONLY:\n- Run the leak history rewrite.\n' > "$acts"
+report=$(HANDOVER_DIR="$hroot" bash "$SCRIPT" --rows "$ROWS" --actions "$acts" --dry-run)
+assert_contains "standing-actions heading" "## Standing operator actions" "$report"
+assert_contains "standing-actions content" "Run the leak history rewrite." "$report"
+assert_before "tickets before standing actions" "## Tickets" "## Standing operator actions" "$report"
+
+# Test 19: blank/whitespace-only actions file -> no section --------------
+
+echo "TEST: blank actions file -> no standing-actions section"
+printf '   \n\n' > "$acts"
+report=$(HANDOVER_DIR="$hroot" bash "$SCRIPT" --rows "$ROWS" --actions "$acts" --dry-run)
+if printf '%s' "$report" | grep -qF "## Standing operator actions"; then
+    fail "blank actions file produced a section"
+else
+    pass "blank actions file -> no section"
+fi
+
+# Test 20: --actions missing value -> exit 1 ----------------------------
+
+echo "TEST: --actions missing value rejected"
+rc=0
+out=$(bash "$SCRIPT" --actions 2>&1 </dev/null) || rc=$?
+case "$rc" in
+    1) pass "exit 1 on --actions as last arg" ;;
+    *) fail "expected rc=1, got $rc" "$out" ;;
+esac
+assert_contains "--actions diagnostic" "--actions requires a FILE" "$out"
+
+# Test 21: default actions path resolves next to OUT_FILE ----------------
+
+echo "TEST: default actions path = <dirname OUT_FILE>/operator-actions.md"
+out_dir="$TMP_ROOT/acts-default"
+mkdir -p "$out_dir"
+printf '%s\n' $'HIMMEL-381\tfeat/HIMMEL-381-y\thttps://example.com/pr/13\tdone\tShipped' > "$ROWS"
+printf -- '- Default-path standing action.\n' > "$out_dir/operator-actions.md"
+report=$(bash "$SCRIPT" --rows "$ROWS" --out "$out_dir/report.md" --dry-run)
+assert_contains "default actions path picked up" "Default-path standing action." "$report"
+
+# Test 22: actions body is appended VERBATIM (not pipe-escaped) ----------
+# Locks the verbatim contract so a future "let's escape it" refactor breaks here.
+
+echo "TEST: actions body appended verbatim (markdown/pipes un-escaped)"
+printf -- '- Action with a | pipe and **bold**.\n' > "$acts"
+printf '%s\n' $'HIMMEL-382\tfeat/HIMMEL-382-z\thttps://example.com/pr/14\tdone\tShipped' > "$ROWS"
+report=$(HANDOVER_DIR="$hroot" bash "$SCRIPT" --rows "$ROWS" --actions "$acts" --dry-run)
+assert_contains "actions body verbatim (pipe un-escaped)" "Action with a | pipe and **bold**." "$report"
+
 # Summary --------------------------------------------------------------
 
 echo

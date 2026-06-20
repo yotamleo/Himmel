@@ -104,6 +104,16 @@ batched into a single entry point. Work the decisions block first, then
 review PRs in report order (`/pr-check`). Merging stays human — only the
 review *surface* is batched.
 
+**Standing operator actions (HIMMEL-450).** The report is *regenerated* every
+run, so a one-off note elsewhere won't resurface. Durable manual actions —
+especially **single-session-only** ones (e.g. a history rewrite) — go in
+`<handover-root>/operator-actions.md`; `morning-report.sh` appends them verbatim
+as a `## Standing operator actions` section to *every* report until you delete
+them. Use plain bullets (not headings — they'd compete with the report's H2s);
+absent or blank ⇒ no section. The run-end command relies on the default path
+(`<dirname report>/operator-actions.md`) — no `--actions` flag needed. With no
+overnight run, just read the file directly; it's plain markdown.
+
 ## Budget (informational)
 
 - **Subagent dispatches:** ~50-60 per overnight run. Per phase 3, impl is ~3 subagents per task (implementer + 2 reviewers); a 16-task plan = ~48 just for impl. Add ~6-12 for phase 5 heavy CR over 1-2 rounds, plus fix-batch dispatches (5-10).
