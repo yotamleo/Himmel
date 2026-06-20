@@ -32,6 +32,13 @@ try {
     $env:LUNA_VAULT_PATH = 'C:\envvault'
     Check 'LUNA_VAULT_PATH env' 'C:\envvault' (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath $noreg)
 
+    # F1-SC5 (HIMMEL-458): the value wire-luna-vault writes to settings.json
+    # .env.LUNA_VAULT_PATH is actually consumed at resolver step 3. Empty config
+    # object + empty registry -> falls through to LUNA_VAULT_PATH.
+    MkCfg '{}'
+    $env:LUNA_VAULT_PATH = 'C:\scaffolded'
+    Check 'F1-SC5 LUNA_VAULT_PATH consumed (empty cfg+reg)' 'C:\scaffolded' (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath $noreg)
+
     # default via registry[luna] (literal ~/ preserved)
     Set-Content -LiteralPath (Join-Path $SB 'regluna.json') -Value '{"vaults":{"luna":"~/Documents/luna-alt"}}' -NoNewline
     MkCfg '{"enabled":true}'

@@ -38,6 +38,13 @@ mkcfg '{"enabled":true}'
 check "LUNA_VAULT_PATH env" "/tmp/envvault" \
   "$(LUNA_VAULT_PATH=/tmp/envvault resolve_vault_root "$SB/cfg.json" "$NOREG")"
 
+# F1-SC5 (HIMMEL-458): the value wire-luna-vault writes to settings.json
+# .env.LUNA_VAULT_PATH is actually consumed at resolver step 3. Empty config
+# object + empty registry -> falls through to LUNA_VAULT_PATH.
+mkcfg '{}'
+check "F1-SC5 LUNA_VAULT_PATH consumed (empty cfg+reg)" "/tmp/scaffolded" \
+  "$(LUNA_VAULT_PATH=/tmp/scaffolded resolve_vault_root "$SB/cfg.json" "$NOREG")"
+
 printf '{"vaults":{"luna":"~/Documents/luna-alt"}}\n' >"$SB/regluna.json"
 mkcfg '{"enabled":true}'
 check "default via registry[luna]" "$T/Documents/luna-alt" \

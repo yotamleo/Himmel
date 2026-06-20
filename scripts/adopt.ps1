@@ -42,6 +42,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Capture whether -LunaTarget was passed explicitly BEFORE the default fills it,
+# so `-Profile luna -LunaTarget` can honor it (HIMMEL-458 critic #3).
+$LunaTargetSet = $PSBoundParameters.ContainsKey('LunaTarget')
+
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $HimmelRoot  = (Resolve-Path (Join-Path $ScriptDir '..')).Path
 if (-not $Target)     { $Target     = (Get-Location).Path }
@@ -166,6 +170,24 @@ function Wire-HimmelRepoCore {
     if ($LASTEXITCODE -ne 0) { throw "wire-himmel-repo failed (exit $LASTEXITCODE)" }
 }
 
+# env.LUNA_VAULT_PATH — persist the scaffolded vault path (HIMMEL-458) so the
+# end-session-wiki resolver finds it without a manual export. Sibling of
+# Wire-HimmelRepoCore; written to the scope-appropriate settings.json.
+function Wire-LunaVaultPath([string]$Dest) {
+    $settings = if ($Scope -eq 'project') {
+        Join-Path $Target '.claude\settings.json'
+    } else {
+        Join-Path $HOME '.claude\settings.json'
+    }
+    if ($DryRun) {
+        Write-Host "DRY: wire env.LUNA_VAULT_PATH → $settings (vault: $Dest)"
+        return
+    }
+    $wlv = Join-Path $HimmelRoot 'scripts\lib\wire-luna-vault.ps1'
+    & pwsh -NoProfile -File $wlv -SettingsPath $settings -VaultPath $Dest
+    if ($LASTEXITCODE -ne 0) { throw "wire-luna-vault failed (exit $LASTEXITCODE)" }
+}
+
 # -FillEnv (HIMMEL-453): fill the himmel clone's .env via the bash fill-env.sh.
 # Targets $HimmelRoot\.env for BOTH scopes (adopt copies hooks, never the Jira
 # CLI, so an adopted repo always uses the clone's CLI reading $HimmelRoot\.env).
@@ -225,6 +247,9 @@ function Do-Luna([string]$Dest) {
     } else {
         Write-Host "DRY: copy templates\luna-second-brain → $Dest"
     }
+    # Persist the vault path UNCONDITIONALLY — a re-run over an existing scaffold
+    # must still wire a previously-unwired install (HIMMEL-458).
+    Wire-LunaVaultPath $Dest
     Write-Host "  next: cd `"$Dest`"; bash scripts/setup.sh   (idempotent; prints the plugin-install commands)"
 }
 
@@ -232,7 +257,10 @@ $dryNote = if ($DryRun) { ' (dry-run)' } else { '' }
 Write-Host "==> himmel adopt — profile=$Profile scope=$Scope$dryNote"
 switch ($Profile) {
     'core' { Do-Core }
-    'luna' { Do-Luna $Target }
+    # `luna` historically used -Target; also honor an explicit -LunaTarget so the
+    # intuitive `-Profile luna -LunaTarget` is no longer a silent no-op
+    # (HIMMEL-458 critic #3). -Target still wins when -LunaTarget is absent.
+    'luna' { if ($LunaTargetSet) { Do-Luna $LunaTarget } else { Do-Luna $Target } }
     'all'  { Do-Core; Do-Luna $LunaTarget }
 }
 Write-Host "──── Done ────"
