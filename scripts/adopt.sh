@@ -29,6 +29,8 @@
 #                       `--profile luna`. Default: current directory.
 #   --luna-target PATH  Vault dir when `--profile all`. Default: ~/Documents/luna.
 #   --dry-run           Print actions instead of doing them.
+#   --fill-env          Interactively fill the himmel clone's .env (creates it
+#                       from .env.example if absent). Enter to skip a var.
 #
 # Idempotent: re-running adds nothing already present.
 set -euo pipefail
@@ -42,6 +44,7 @@ SCOPE="project"
 TARGET="$PWD"
 LUNA_TARGET=""
 DRY_RUN=0
+FILL_ENV=0
 
 # ── Parse args ───────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -51,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --target)       TARGET="$2"; shift 2 ;;
     --luna-target)  LUNA_TARGET="$2"; shift 2 ;;
     --dry-run)      DRY_RUN=1; shift ;;
+    --fill-env)     FILL_ENV=1; shift ;;
     -h|--help)      sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
     *) echo "ERROR: unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -163,6 +167,38 @@ wire_statusline_core() {
   bash "$HIMMEL_ROOT/scripts/lib/wire-statusline.sh" "$settings" "$HIMMEL_ROOT"
 }
 
+# env.HIMMEL_REPO — default-by-install (HIMMEL-453). Sibling of
+# wire_statusline_core: write THIS himmel clone's path into the scope-appropriate
+# settings.json so the leg resolver + minerva anchor get it without a manual set.
+wire_himmel_repo_core() {
+  local settings
+  if [[ "$SCOPE" == "project" ]]; then
+    settings="$TARGET/.claude/settings.json"
+  else
+    settings="$HOME/.claude/settings.json"
+  fi
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: wire env.HIMMEL_REPO → $settings (himmel: $HIMMEL_ROOT)"
+    return
+  fi
+  bash "$HIMMEL_ROOT/scripts/lib/wire-himmel-repo.sh" "$settings" "$HIMMEL_ROOT"
+}
+
+# --fill-env (HIMMEL-453): fill the himmel clone's .env. We target
+# $HIMMEL_ROOT/.env (NOT $TARGET/.env) for BOTH scopes because adopt copies only
+# portable hooks — never the Jira CLI — so an adopted repo always invokes
+# `node $HIMMEL_ROOT/scripts/jira/...`, whose repoRoot() reads $HIMMEL_ROOT/.env.
+fill_env_core() {
+  [[ $DRY_RUN -eq 1 ]] && { echo "DRY: fill $HIMMEL_ROOT/.env"; return; }
+  if [[ ! -f "$HIMMEL_ROOT/.env" ]] && [[ -f "$HIMMEL_ROOT/.env.example" ]]; then
+    cp "$HIMMEL_ROOT/.env.example" "$HIMMEL_ROOT/.env"
+  fi
+  if [[ -f "$HIMMEL_ROOT/.env" ]]; then
+    bash "$HIMMEL_ROOT/scripts/setup/fill-env.sh" "$HIMMEL_ROOT/.env" "$HIMMEL_ROOT/.env.example" \
+      || echo "  WARNING: fill-env failed; continuing." >&2
+  fi
+}
+
 do_core() {
   require_tools
   if [[ "$SCOPE" == "project" ]]; then
@@ -178,6 +214,8 @@ do_core() {
   fi
   install_plugins
   wire_statusline_core
+  wire_himmel_repo_core
+  [[ $FILL_ENV -eq 1 ]] && fill_env_core
   echo "  (optional) pre-commit gates: see $HIMMEL_ROOT/docs/setup/use-on-your-project.md (Pre-commit hooks)"
 }
 
