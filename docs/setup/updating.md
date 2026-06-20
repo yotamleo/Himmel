@@ -88,3 +88,8 @@ Plain `git pull` works too if you don't need the marketplace re-sync.
   pinned `@himmel` source **operator-present, in a fresh session**:
   `bash scripts/machine-setup/migrate-plugin-to-himmel.sh --apply <name@market> …`
   (it mutates `settings.json` via `claude plugin`, so it is an operator step).
+  Run it from a shell where the `claude` CLI is on `PATH` — on Windows that is
+  PowerShell, **not** a bare Git Bash (which exits `ERROR: claude CLI required
+  on PATH`). The external marketplace can silently re-appear later (its
+  `autoUpdate` re-adds it), so re-run the migrate whenever `--plugins-check`
+  flags the shadow again.

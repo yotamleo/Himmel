@@ -102,6 +102,86 @@ EOF
     return 0
 }
 
+# ─── hermes junior-tier update (HIMMEL-426) ──────────────────────────────────
+# Hermes (NousResearch/hermes-agent) is an EDITABLE install from a local git
+# checkout (default %LOCALAPPDATA%/hermes/hermes-agent), NOT a himmel plugin and
+# NOT in this repo — so `git pull` of this checkout never updates it. This step
+# pulls that checkout and refreshes the editable install. Operator-personal +
+# à-la-carte: absent on most machines, so it skips cleanly and is always
+# best-effort (never fails the himmel update). HERMES_HOME (install root) /
+# HERMES_PY (venv python) override the defaults; HERMES_PY mirrors
+# scripts/hermes/invoke.sh resolution.
+update_hermes() {
+    local mode="$1"   # check | apply
+    # HERMES_HOME is the hermes install ROOT (the runbook + operator env set it
+    # to %LOCALAPPDATA%\hermes) — config + venv + the editable git checkout, the
+    # last living in the hermes-agent/ subdir. So the checkout we pull is
+    # $root/hermes-agent. Default root: %LOCALAPPDATA%\hermes. We also tolerate
+    # HERMES_HOME pointing straight at the checkout (… /.git) for robustness.
+    local root="${HERMES_HOME:-}"
+    [ -n "$root" ] || root="${LOCALAPPDATA:-$HOME/AppData/Local}/hermes"
+    local src="$root/hermes-agent"
+    [ -d "$src/.git" ] || { [ -d "$root/.git" ] && src="$root"; }
+
+    echo ""
+    echo "==> hermes junior-tier update"
+    if [ ! -d "$src/.git" ]; then
+        echo "    skip: hermes not installed as a git checkout ($src) — see docs/hermes-runbook.md."
+        return 0
+    fi
+    if ! git -C "$src" remote get-url origin 2>/dev/null | grep -q "NousResearch/hermes-agent"; then
+        echo "    skip: $src is not a NousResearch/hermes-agent checkout — leaving it alone."
+        return 0
+    fi
+
+    if [ "$mode" = "check" ]; then
+        if ! git -C "$src" fetch -q origin 2>/dev/null; then
+            echo "    skip: could not reach origin (offline?)."
+            return 0
+        fi
+        local here there
+        here=$(git -C "$src" rev-parse @ 2>/dev/null || echo "?")
+        there=$(git -C "$src" rev-parse '@{u}' 2>/dev/null || echo "")
+        if [ -n "$there" ] && [ "$here" != "$there" ]; then
+            echo "    update available — run /himmel-update (no --check) to pull + reinstall."
+        else
+            echo "    hermes is current."
+        fi
+        return 0
+    fi
+
+    # apply
+    if ! git -C "$src" pull --ff-only; then
+        echo "    warn: hermes git pull was not fast-forward (local edits / diverged?) — resolve in $src." >&2
+        return 0
+    fi
+    local py="${HERMES_PY:-}"
+    if [ -z "$py" ]; then
+        if   [ -x "$src/venv/Scripts/python.exe" ]; then py="$src/venv/Scripts/python.exe"
+        elif [ -x "$src/venv/bin/python" ];        then py="$src/venv/bin/python"
+        fi
+    fi
+    if [ -n "$py" ] && [ -x "$py" ]; then
+        # uv-created venvs ship WITHOUT pip (uv venv default), so a plain
+        # `$py -m pip install` fails with "No module named pip". Bootstrap pip
+        # via stdlib ensurepip first — best-effort, harmless if pip is present.
+        "$py" -m pip --version >/dev/null 2>&1 \
+            || "$py" -m ensurepip --upgrade >/dev/null 2>&1 \
+            || echo "    warn: could not bootstrap pip in the hermes venv (ensurepip failed) — see docs/hermes-runbook.md." >&2
+        echo "    refreshing editable install (deps may have changed)…"
+        "$py" -m pip install -e "$src" --quiet \
+            || echo "    warn: pip editable refresh failed (non-fatal) — see docs/hermes-runbook.md (recover a broken venv pip) if hermes misbehaves." >&2
+    else
+        echo "    note: hermes venv python not found — code pulled, but run 'pip install -e .' in the venv if pyproject changed."
+    fi
+    return 0
+}
+
+# Test seam: source with HIMMEL_UPDATE_LIB=1 to load the functions above without
+# running any update mode (lets test-himmel-update-hermes.sh call update_hermes
+# directly with HERMES_HOME fixtures — no network, no repo mutation).
+[ "${HIMMEL_UPDATE_LIB:-}" = "1" ] && return 0
+
 # ─── --plugins-check mode ────────────────────────────────────────────────────
 # Just the plugin install-state report; no git, no network. Exit 0 always.
 if [ "${1:-}" = "--plugins-check" ]; then
@@ -135,6 +215,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
         echo "status:   $behind commit(s) behind — run /himmel-update (or bash scripts/himmel-update.sh) to pull."
     fi
     report_plugin_gap
+    update_hermes check
     exit 0
 fi
 
@@ -162,7 +243,11 @@ else
     echo "update: claude CLI not on PATH — skipping marketplace re-sync." >&2
 fi
 
-# 3. Report any himmel-marketplace plugins not installed from @himmel — the
+# 3. Update the hermes junior tier (separate editable git checkout outside this
+#    repo — see update_hermes). Best-effort; skips cleanly when hermes is absent.
+update_hermes apply
+
+# 4. Report any himmel-marketplace plugins not installed from @himmel — the
 #    marketplace re-sync above can't surface these (it only touches plugins that
 #    are already installed). Advisory; never fails the update.
 report_plugin_gap
@@ -173,4 +258,6 @@ cat <<'EOF'
     - Hooks are live immediately (PreToolUse/etc. re-read from disk per call).
     - Plugins / slash commands / skills load at session start — RESTART any
       running Claude session to pick them up.
+    - hermes (if installed) was pulled + reinstalled; restart its gateway to
+      pick up changes (docs/hermes-runbook.md).
 EOF
