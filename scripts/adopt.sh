@@ -43,6 +43,7 @@ PROFILE="core"
 SCOPE="project"
 TARGET="$PWD"
 LUNA_TARGET=""
+LUNA_TARGET_SET=0
 DRY_RUN=0
 FILL_ENV=0
 
@@ -52,7 +53,7 @@ while [[ $# -gt 0 ]]; do
     --profile)      PROFILE="$2"; shift 2 ;;
     --scope)        SCOPE="$2"; shift 2 ;;
     --target)       TARGET="$2"; shift 2 ;;
-    --luna-target)  LUNA_TARGET="$2"; shift 2 ;;
+    --luna-target)  LUNA_TARGET="$2"; LUNA_TARGET_SET=1; shift 2 ;;
     --dry-run)      DRY_RUN=1; shift ;;
     --fill-env)     FILL_ENV=1; shift ;;
     -h|--help)      sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
@@ -184,6 +185,24 @@ wire_himmel_repo_core() {
   bash "$HIMMEL_ROOT/scripts/lib/wire-himmel-repo.sh" "$settings" "$HIMMEL_ROOT"
 }
 
+# env.LUNA_VAULT_PATH — persist the scaffolded vault path (HIMMEL-458) so the
+# end-session-wiki resolver (vault-resolve.sh step 3) finds the vault the
+# operator scaffolded without a manual export. Sibling of wire_himmel_repo_core;
+# written to the scope-appropriate settings.json. $1 = the scaffolded vault dir.
+wire_luna_vault_path() {
+  local dest="$1" settings
+  if [[ "$SCOPE" == "project" ]]; then
+    settings="$TARGET/.claude/settings.json"
+  else
+    settings="$HOME/.claude/settings.json"
+  fi
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: wire env.LUNA_VAULT_PATH → $settings (vault: $dest)"
+    return
+  fi
+  bash "$HIMMEL_ROOT/scripts/lib/wire-luna-vault.sh" "$settings" "$dest"
+}
+
 # --fill-env (HIMMEL-453): fill the himmel clone's .env. We target
 # $HIMMEL_ROOT/.env (NOT $TARGET/.env) for BOTH scopes because adopt copies only
 # portable hooks — never the Jira CLI — so an adopted repo always invokes
@@ -228,6 +247,9 @@ do_luna() {
     run mkdir -p "$(dirname "$dest")"
     run cp -r "$HIMMEL_ROOT/templates/luna-second-brain" "$dest"
   fi
+  # Persist the vault path UNCONDITIONALLY — a re-run over an existing scaffold
+  # (skipped copy above) must still wire a previously-unwired install (HIMMEL-458).
+  wire_luna_vault_path "$dest"
   echo "  next: cd \"$dest\" && bash scripts/setup.sh   (idempotent; prints the plugin-install commands)"
 }
 
@@ -235,7 +257,10 @@ _dry_note=""; [[ $DRY_RUN -eq 1 ]] && _dry_note=" (dry-run)"
 echo "==> himmel adopt — profile=$PROFILE scope=$SCOPE${_dry_note}"
 case "$PROFILE" in
   core) do_core ;;
-  luna) do_luna "$TARGET" ;;
+  # `luna` historically used --target; also honor an explicit --luna-target so
+  # the intuitive `--profile luna --luna-target` is no longer a silent no-op
+  # (HIMMEL-458 critic #3). --target still wins when --luna-target is absent.
+  luna) if [[ $LUNA_TARGET_SET -eq 1 ]]; then do_luna "$LUNA_TARGET"; else do_luna "$TARGET"; fi ;;
   all)  do_core; do_luna "$LUNA_TARGET" ;;
 esac
 echo "──── Done ────"
