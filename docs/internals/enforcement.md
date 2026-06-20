@@ -325,6 +325,48 @@ Spec: `scripts/hooks/test-auto-arm-on-cap.sh` (paired smoke suite).
    twice per tool call — harmless (the throttle marker is shared, so
    the second invocation is a single stat() no-op).
 
+## Claude SessionStart Hooks
+
+Wired in the `SessionStart` array of `.claude/settings.json`; fires once when a
+session starts. Stdout on exit 0 is injected as additional context.
+`check-update-available.sh` (the himmel-update nudge) also runs here.
+
+### `inject-initiative.sh` — opt-in initiative mode (HIMMEL-425)
+
+Default: OFF. When `HIMMEL_INITIATIVE=1` is set in the launching shell, the
+session is given a scoped "drive to ship" directive so a normal session
+proactively runs the `/pr-check` → open PR → transition ticket → handover
+sequence at *natural completion points*, without the operator saying "ship it"
+each time. Drains stdin; never blocks session start (always exits 0).
+
+Master switch: `1`, `true`, `on`, `yes`, `all` (case-insensitive) → all four
+parts. All falsy / unset values (`0`, `false`, `off`, `no`, empty) leave it
+off — a byte-identical no-op, so default behaviour is unchanged.
+
+**Per-part control (mirrors `CRITIC_PANEL_TIERS`):** set `HIMMEL_INITIATIVE`
+to a comma-separated subset of the canonical parts
+`prcheck,pr,ticket,handover` to inject only those steps (e.g.
+`HIMMEL_INITIATIVE=prcheck,pr` = run CR + open the PR, but don't auto-transition
+the ticket or write the handover). Parsing is case-insensitive and
+whitespace-tolerant (`PR, ticket` works); unknown tokens are ignored, and a
+value that resolves to no recognized part is treated as off; steps always
+render in canonical chain order regardless of input order. The directive
+echoes the recognized tokens (`Active steps: …`) so a typo is visible
+in-session. No dependency enforcement — a degenerate subset (e.g. `handover`
+alone) just narrows the advice; the structural rails still apply, so it
+degrades gracefully rather than doing anything unsafe.
+
+The injected text is **advisory context, not a permission change** — it cannot
+widen what the hooks allow. The rails still HARD-block: `check-cr-marker-on-pr-
+create` gates `gh pr create` until a clean `/pr-check`; attestation trailers
+must be in the FIRST commit; reactive `git commit --amend` and self-editing
+`.claude/settings.json` to widen rules are still vetoed; **merge stays an
+operator action** (the directive explicitly excludes merge).
+
+Companion: `scripts/hooks/test-inject-initiative.sh` (paired smoke suite).
+Sits alongside the bypass/opt-in flags (`EDIT_ON_MAIN_OK`, `READ_SECRETS_OK`,
+`IMPROVE_ON_SUBMIT`) — all set in the shell that LAUNCHED Claude.
+
 ## Claude PostToolUse Hooks
 
 One hook wired in `.claude/settings.json` fires AFTER a tool call completes.
