@@ -122,14 +122,21 @@ Tracked in the operator's private handover repo (LUNA-3 next-session notes). Cal
 
 ## Pin update workflow
 
-External plugins (`obsidian`, `claude-obsidian`) are pinned to commit SHAs in himmel's `marketplace/.claude-plugin/marketplace.json`. To bump:
+External plugins (`obsidian`, `claude-obsidian`) are pinned in himmel's `marketplace/.claude-plugin/marketplace.json`. The `ref` MUST be an **immutable tag**, never a bare commit SHA: `claude plugin install` clones the source with `git clone --branch <ref>`, and `--branch` only resolves branch/tag *names* — a 40-hex SHA (even one that is the tip of `main`) fails with `fatal: Remote branch <sha> not found`. A branch name would install but moves, breaking reproducibility. So: **tag, not SHA, not branch.** This keeps the same hygiene posture as `npm-audit-signatures` / `pip-hashes` / `lockfile-integrity` — no moving refs in production marketplace entries — while staying installable.
 
-1. Verify the upstream commit is what you expect: `gh api repos/<owner>/<repo>/commits/main --jq .sha`
-2. Update the `ref` field in `marketplace.json` (deliberate PR, same gate as a dep bump).
-3. PR description should include a one-line note on what changed upstream and why we're picking it up now.
+### Bumping a vendored fork (`claude-obsidian`)
 
-This is the same hygiene posture as `npm-audit-signatures`, `pip-hashes`, `lockfile-integrity` — no moving-`main` refs in production marketplace entries.
+`claude-obsidian` is pinned to the `yotamleo/claude-obsidian` vendor fork (not upstream `AgriciDaniel/claude-obsidian`), carrying a small himmel twist (the unsupported prompt-type SessionStart/PostCompact hooks removed — Claude Code's SessionStart accepts `command`/`mcp_tool` only). To pick up a new upstream release:
 
-### Vendor-fork SHA immutability (LUNA-4)
+1. Sync the fork: merge the new upstream release tag into `yotamleo/claude-obsidian` `main`, reapplying the hook twist + attribution on any `hooks.json`/`README.md` conflict.
+2. Tag the synced commit `vX.Y.Z-himmel.N` (upstream base version + himmel patch level — upstream's own `vX.Y.Z` tag lives on a different commit, so the suffix avoids ambiguity) and push the tag.
+3. In **one himmel PR**: bump `marketplace.json` `ref` → the new tag, AND bump `synced_base` in [`scripts/plugin-upstreams.json`](../../../scripts/plugin-upstreams.json) → the new upstream `vX.Y.Z`.
+4. PR description: one line on what changed upstream and why we're picking it up now.
 
-`claude-obsidian` is pinned to the `yotamleo/claude-obsidian` vendor fork, not the upstream `AgriciDaniel/claude-obsidian`. SHAs on an operator-controlled fork are not implicitly immutable — to keep the pinned SHA reachable, branch protection on `yotamleo/claude-obsidian` `main` enforces `allow_force_pushes: false` + `allow_deletions: false` + `enforce_admins: true`. Any future fork-side change (e.g. a new attribution banner update) goes through PR + new commit, never a force-push over a pinned SHA.
+### Drift detection (track the TRUE upstream)
+
+Because the marketplace `repo` for a fork points at OUR fork, a naive pin-vs-HEAD check would only ever catch fork-vs-pin drift — never the real signal, the original upstream advancing. `scripts/plugin-upstreams.json` declares each fork's true upstream so `scripts/check-plugin-drift.sh` compares the upstream's latest **version tag** (highest semver — not the GitHub Releases API, which would silently miss a tag-only or prerelease version) against `synced_base` and reports BEHIND when upstream ships a newer version. Run `bash scripts/check-plugin-drift.sh` on demand (or on a cadence) to know when a re-sync is due. Direct (non-fork) SHA pins like `obsidian` → `kepano/obsidian-skills` need no override; note kepano publishes no tags, which is why `obsidian` is served from its own marketplace rather than installed from `@himmel`.
+
+### Fork tag immutability (LUNA-4)
+
+Tags on an operator-controlled fork are not implicitly immutable — to keep a pinned tag reachable and unmovable, branch protection on `yotamleo/claude-obsidian` enforces `allow_force_pushes: false` + `allow_deletions: false` + `enforce_admins: true`. Any future fork-side change goes through PR + a new commit + a new `-himmel.N` tag, never a force-push or a moved tag over a pinned ref.

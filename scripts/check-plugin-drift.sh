@@ -4,9 +4,19 @@
 # forks + pinned plugins current with upstream?" (HIMMEL-322).
 #
 # Two plugin classes are checked, each against its TRUE upstream via `gh api`:
-#   1. SHA-pinned remotes — any plugin in marketplace.json whose source is
-#      {github, repo, ref}. Drift = the pinned `ref` != the upstream repo's
-#      default-branch HEAD. (claude-obsidian, kepano/obsidian, + any future pin.)
+#   1. Pinned remotes — any plugin in marketplace.json whose source is
+#      {github, repo, ref}. Two sub-cases:
+#        a. Plain pin (no override): drift = the pinned `ref` (a 40-hex SHA) !=
+#           the marketplace repo's default-branch HEAD. (kepano/obsidian.)
+#        b. Fork-with-upstream override (scripts/plugin-upstreams.json): the
+#           marketplace `repo` is OUR fork, so a HEAD compare would only catch
+#           fork-vs-pin drift, never the real signal. The override names the TRUE
+#           upstream and `track:release` compares its latest VERSION TAG (highest
+#           semver, not the GitHub Releases API which omits tag-only/prereleases)
+#           against our recorded `synced_base`. Drift = upstream tagged a newer
+#           version than the one our fork is merged to. (claude-obsidian -> AgriciDaniel.)
+#           This sub-case also makes tag-name refs (e.g. v1.9.2-himmel.1) work —
+#           we never compare a tag name to a SHA.
 #   2. Vendored forks — any marketplace/plugins/<p>/UPSTREAM_PIN that carries the
 #      generic fields `upstream_repo` / `upstream_path` / `upstream_sha256`. Drift
 #      = the recorded sha256 != the sha256 of that upstream file fetched now.
@@ -25,7 +35,9 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MJSON="$ROOT/marketplace/.claude-plugin/marketplace.json"
+# Paths are env-overridable so the test harness can point at fixtures.
+MJSON="${DRIFT_MJSON:-$ROOT/marketplace/.claude-plugin/marketplace.json}"
+UPSTREAMS="${DRIFT_UPSTREAMS:-$ROOT/scripts/plugin-upstreams.json}"  # per-plugin true-upstream overrides (may be absent)
 
 if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
   echo "drift-check: gh CLI not available/authenticated — skipping (fail-open)."
@@ -35,29 +47,90 @@ fi
 drift=0
 incomplete=0
 
-echo "== SHA-pinned remotes (pin vs upstream default-branch HEAD) =="
+echo "== pinned remotes (SHA-pin vs HEAD; fork → true-upstream release) =="
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "  ? python3 not available — cannot parse marketplace.json; SHA-pin class UNCHECKED."
+  echo "  ? python3 not available — cannot parse marketplace.json; pinned-remote class UNCHECKED."
   incomplete=1
 else
   # Capture the parser output + its exit status separately, so a python3 crash
   # (the Windows Store stub can wedge) is treated as UNCHECKED, never as "0 pins".
-  pins_out="$(python3 - "$MJSON" <<'PY' 2>/dev/null | tr -d '\r'
-import json, sys
+  # Each line: name|repo|ref|upstream_repo|track|synced_base (last three empty
+  # unless scripts/plugin-upstreams.json declares a true-upstream override).
+  pins_out="$(python3 - "$MJSON" "$UPSTREAMS" <<'PY' 2>/dev/null | tr -d '\r'
+import json, os, sys
 m = json.load(open(sys.argv[1]))
+ups = {}
+if os.path.exists(sys.argv[2]):
+    ups = json.load(open(sys.argv[2]))   # malformed -> raises -> class UNCHECKED
 for p in m.get("plugins", []):
     s = p.get("source")
     if isinstance(s, dict) and s.get("source") == "github" and s.get("ref"):
-        print(f"{p['name']}|{s['repo']}|{s['ref']}")
+        o = ups.get(p["name"]) or {}
+        print("|".join([p["name"], s["repo"], s["ref"],
+                        o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", "")]))
 PY
 )"
   pins_rc=$?  # pipefail makes this the pipeline's status (= python3's, if it failed)
   if [ "$pins_rc" -ne 0 ]; then
-    echo "  ? marketplace.json parse failed (python3 error) — SHA-pin class UNCHECKED."
+    echo "  ? marketplace.json / plugin-upstreams.json parse failed (python3 error) — pinned-remote class UNCHECKED."
     incomplete=1
   else
-    while IFS='|' read -r name repo ref; do
+    while IFS='|' read -r name repo ref up_repo up_track up_base; do
       [ -n "$name" ] || continue
+      # Sub-case (b): fork with a true-upstream override. The marketplace `repo`
+      # is OUR fork; check the named upstream's latest STABLE version TAG against
+      # synced_base. We use the highest stable semver tag (sort -V), NOT the
+      # GitHub Releases API: releases/latest silently omits tag-only releases,
+      # which would read as CURRENT while upstream had actually moved — exactly
+      # the false-negative this script's header forbids. Prereleases are excluded
+      # below (a stale same-version prerelease would otherwise read as BEHIND).
+      if [ -n "$up_repo" ]; then
+        if [ "$up_track" != "release" ]; then
+          echo "  $name: ? upstream override has unknown track='$up_track' — UNCHECKED"
+          incomplete=1
+          continue
+        fi
+        # A malformed override (missing synced_base) must be UNCHECKED, never a
+        # comparison — else a real upstream tag != "" reads as a phantom BEHIND.
+        if [ -z "$up_base" ]; then
+          echo "  $name: ? upstream override missing synced_base — UNCHECKED (fix scripts/plugin-upstreams.json)"
+          incomplete=1
+          continue
+        fi
+        # Capture raw tags first and gate on gh's EXIT STATUS (a pipe would mask
+        # it behind sort/tail). per_page=100 so the newest tag is in the page.
+        tags_raw="$(gh api "repos/$up_repo/tags?per_page=100" --jq '.[].name' 2>/dev/null)"; api_rc=$?
+        if [ "$api_rc" -ne 0 ] || [ -z "$tags_raw" ]; then
+          echo "  $name: ? true upstream unreachable ($up_repo tags) — UNCHECKED"
+          incomplete=1
+          continue
+        fi
+        # Consider STABLE version tags only (vMAJOR.MINOR[.PATCH], no -suffix).
+        # synced_base is a stable release; including prereleases would let a stale
+        # same-version prerelease (e.g. v1.9.2-alpha, which `sort -V` ranks AFTER
+        # v1.9.2) be picked as "latest" and read as a phantom BEHIND against a
+        # current base. A real new stable release still trips the BEHIND path.
+        latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)"
+        if [ -z "$latest" ]; then
+          echo "  $name: ? no stable version tags found on $up_repo — UNCHECKED"
+          incomplete=1
+          continue
+        fi
+        if [ "$latest" = "$up_base" ]; then
+          echo "  $name: CURRENT  (fork tracks $up_repo @ $up_base; pin $ref)"
+        else
+          echo "  $name: BEHIND   ($up_repo latest tag $latest; fork synced to $up_base — re-sync fork, bump synced_base + fork tag, then bump marketplace ref)"
+          drift=1
+        fi
+        continue
+      fi
+      # Sub-case (a): plain pin — ref must be a 40-hex SHA to compare against HEAD.
+      # A non-SHA ref (tag/branch) with no override can't be compared meaningfully.
+      if ! printf '%s' "$ref" | grep -qE '^[0-9a-f]{40}$'; then
+        echo "  $name: ? non-SHA ref '$ref' with no upstream override — UNCHECKED (declare it in scripts/plugin-upstreams.json)"
+        incomplete=1
+        continue
+      fi
       head="$(gh api "repos/$repo/commits/HEAD" --jq '.sha' 2>/dev/null)"; api_rc=$?
       # Gate on gh's EXIT STATUS, not stdout emptiness: gh api prints a non-empty
       # error body to stdout on HTTP 4xx/5xx. Also require a 40-hex sha so any
