@@ -34,8 +34,19 @@
 #
 # Known limitations (consciously accepted — gate targets accidental leaks,
 # not a determined attacker):
-#   * `bash -c 'cat .env'` — the quoted body is one shell token; we never
-#     see `cat` and `.env` as separate tokens after metachar splitting.
+#   * `bash -c 'cat .env'` IS now caught (HIMMEL-440): when the clause command
+#     resolves to a shell interpreter (bash/sh/zsh/dash/ksh/ash), the matcher
+#     recurses into the `-c '<body>'` and re-runs the reader+secret check on the
+#     body's first statement (the body is real shell, so this is FP-free —
+#     unlike node -e / python -c non-shell bodies). Remaining `-c` gaps:
+#     variable bodies `bash -c "$CMD"` (variable indirection, below), process
+#     substitution `bash <(echo 'cat .env')`, and exotic flag interleavings
+#     where `-c` follows a non-flag operand. (Multi-statement bodies like
+#     `bash -c 'echo hi; cat .env'` already block via the later clause.) A
+#     secret passed as a POSITIONAL into the body (`bash -c 'cat "$1"' _ .env`)
+#     reaches the reader via `$1` — the same accepted variable-indirection gap
+#     below, not a literal arg. Scanning stops at the body's closing quote, so a
+#     trailing positional after a NON-secret body read is not over-blocked.
 #   * `git show HEAD:.env`, `git cat-file -p HEAD:.env` — git not in
 #     reader list (would false-positive on most git commands).
 #   * Cross-command exfil: `cp .env /tmp/x; cat /tmp/x` — cp is write-only,
@@ -113,6 +124,17 @@ is_reader_cmd() {
         xxd|od|hexdump|strings|base64|file)    return 0 ;;
         # PowerShell readers (Bash matcher may still see these via pwsh -c).
         Get-Content|gc|Select-String|sls|type) return 0 ;;
+    esac
+    return 1
+}
+
+is_interp_cmd() {
+    # Shell interpreters whose `-c '<body>'` body IS shell — so re-running the
+    # matcher on the body is correct and FP-free (HIMMEL-440). Deliberately
+    # EXCLUDES node/python/etc.: their `-e`/`-c` bodies are NOT shell, and
+    # scanning them is exactly what caused the HIMMEL-436 false positives.
+    case "$1" in
+        bash|sh|zsh|dash|ksh|ash) return 0 ;;
     esac
     return 1
 }
@@ -199,6 +221,15 @@ case "$tool" in
             secret_after=0
             inplace=0
             prev=""
+            # HIMMEL-440 recursion state (interpreter `-c` body re-resolution):
+            interp=0          # cmdtok resolved to a shell interpreter
+            found_c=0         # a -c / -*c flag has been seen
+            rec_cmd=""        # the recursed command (body's first token)
+            rec_reader=0
+            rec_secret=0
+            rec_inplace=0
+            bodyq=""          # the -c body's outer quote char (' or "), if any
+            bodyclosed=0      # past the body's closing quote → tokens are $0/$1…
             # shellcheck disable=SC2086 # intentional word split for tokenisation
             for tok in $clause; do
                 # Redirect-from-secret: authoritative for `<`-redirects and
@@ -219,18 +250,83 @@ case "$tool" in
                     esac
                     cmdtok="$tok"
                     if is_reader_cmd "$cmdtok"; then reader=1; fi
+                    if is_interp_cmd "$cmdtok"; then interp=1; fi
                     prev="$tok"
                     continue
                 fi
                 # Past the command token: scan its arguments.
                 if is_inplace_token "$tok"; then inplace=1; fi
                 if is_secret_path "$tok";   then secret_after=1; fi
+
+                # HIMMEL-440: when the command is a shell interpreter, recurse
+                # into its `-c '<body>'`. The body is real shell, so re-running
+                # the reader+secret check on it is correct (and FP-free, unlike
+                # node -e / python -c non-shell bodies). Only the FIRST
+                # statement of the body needs this — any `;`/`|`/`&`-separated
+                # later statements are already their own clauses.
+                if [ "$interp" = "1" ]; then
+                    if [ -z "$rec_cmd" ]; then
+                        if [ "$found_c" = "0" ]; then
+                            # Hunt for -c: skip interpreter flags; a -c or a
+                            # combined trailing-c bundle (-lc, -ic, -xc) arms
+                            # the next operand as the recursed command. A
+                            # non-flag operand BEFORE any -c (`bash run.sh`)
+                            # means this isn't a -c invocation → abort recursion.
+                            case "$tok" in
+                                --*)    : ;;
+                                -c|-*c) found_c=1 ;;
+                                -*)     : ;;
+                                *)      interp=0 ;;
+                            esac
+                        else
+                            # -c seen; the first non-flag operand is the body's
+                            # command. Note the body's outer quote char so we can
+                            # stop scanning at its close (everything after is
+                            # $0/$1… positionals the body does not read). Strip
+                            # ONE leading quote glued on by the quote-naive
+                            # tokeniser (`'cat` → `cat`); bash-3.2-safe.
+                            case "$tok" in
+                                -*) : ;;
+                                *)
+                                    case "$tok" in
+                                        \'*) bodyq="'" ;;
+                                        \"*) bodyq='"' ;;
+                                    esac
+                                    rtok="${tok#\'}"; rtok="${rtok#\"}"
+                                    rec_cmd="$rtok"
+                                    if is_reader_cmd "$rec_cmd"; then rec_reader=1; fi
+                                    # Unquoted single-word body (`bash -c cat .env`)
+                                    # has no args of its own — the rest are
+                                    # positionals. Mark the body already closed.
+                                    [ -z "$bodyq" ] && bodyclosed=1
+                                    ;;
+                            esac
+                        fi
+                    elif [ "$bodyclosed" = "0" ]; then
+                        # Inside the body: scan ITS args. is_secret_path already
+                        # strips one trailing quote (`.env'` → `.env`).
+                        if is_inplace_token "$tok"; then rec_inplace=1; fi
+                        if is_secret_path "$tok";   then rec_secret=1; fi
+                        # A token bearing the body's closing quote ends the body;
+                        # subsequent tokens are positionals (`bash -c 'cat x' .env`
+                        # — the `.env` is $0, never read). Quote-naive: matches the
+                        # outer quote only (escaped/nested quotes are accepted gaps).
+                        case "$tok" in
+                            *\') [ "$bodyq" = "'" ] && bodyclosed=1 ;;
+                            *\") [ "$bodyq" = '"' ] && bodyclosed=1 ;;
+                        esac
+                    fi
+                fi
                 prev="$tok"
             done
             # A clause leaks only when its COMMAND is a reader and a secret
             # follows as an arg. In-place sed/awk rewrites (carved per-clause,
             # so a global `-i` can't mask a separate read clause) don't leak.
             if [ "$reader" = "1" ] && [ "$secret_after" = "1" ] && [ "$inplace" = "0" ]; then
+                block=1
+            fi
+            # HIMMEL-440: the recursed interpreter `-c` body leaked a secret.
+            if [ "$rec_reader" = "1" ] && [ "$rec_secret" = "1" ] && [ "$rec_inplace" = "0" ]; then
                 block=1
             fi
         done <<EOF
