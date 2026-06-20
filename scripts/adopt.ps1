@@ -23,6 +23,8 @@
 #                     -Profile luna. Default: current directory.
 #   -LunaTarget PATH  Vault dir when -Profile all. Default: ~/Documents/luna.
 #   -DryRun           Print actions instead of doing them.
+#   -FillEnv          Interactively fill the himmel clone's .env (creates it from
+#                     .env.example if absent). Needs Git Bash. Enter to skip a var.
 #
 # Idempotent: re-running adds nothing already present.
 
@@ -34,7 +36,8 @@ param(
     [string]$Scope = 'project',
     [string]$Target,
     [string]$LunaTarget,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$FillEnv
 )
 
 $ErrorActionPreference = 'Stop'
@@ -145,6 +148,55 @@ function Wire-StatuslineCore {
     if ($LASTEXITCODE -ne 0) { throw "wire-statusline failed (exit $LASTEXITCODE)" }
 }
 
+# env.HIMMEL_REPO — default-by-install (HIMMEL-453). Sibling of
+# Wire-StatuslineCore: write THIS himmel clone's path into the scope-appropriate
+# settings.json so the leg resolver + minerva anchor get it without a manual set.
+function Wire-HimmelRepoCore {
+    $settings = if ($Scope -eq 'project') {
+        Join-Path $Target '.claude\settings.json'
+    } else {
+        Join-Path $HOME '.claude\settings.json'
+    }
+    if ($DryRun) {
+        Write-Host "DRY: wire env.HIMMEL_REPO → $settings (himmel: $HimmelRoot)"
+        return
+    }
+    $whr = Join-Path $HimmelRoot 'scripts\lib\wire-himmel-repo.ps1'
+    & pwsh -NoProfile -File $whr -SettingsPath $settings -HimmelPath $HimmelRoot
+    if ($LASTEXITCODE -ne 0) { throw "wire-himmel-repo failed (exit $LASTEXITCODE)" }
+}
+
+# -FillEnv (HIMMEL-453): fill the himmel clone's .env via the bash fill-env.sh.
+# Targets $HimmelRoot\.env for BOTH scopes (adopt copies hooks, never the Jira
+# CLI, so an adopted repo always uses the clone's CLI reading $HimmelRoot\.env).
+# Resolve GIT Bash explicitly -- a bare `bash` often resolves to the System32 WSL
+# stub, which cannot read C:/... paths. Require-Tools does not verify bash.
+function FillEnv-Core {
+    if ($DryRun) { Write-Host "DRY: fill $HimmelRoot\.env"; return }
+    $gitBash = "C:\Program Files\Git\bin\bash.exe"
+    if (-not (Test-Path $gitBash)) {
+        $bc = Get-Command bash -ErrorAction SilentlyContinue
+        $gitBash = if ($bc -and $bc.Source -notmatch 'System32') { $bc.Source } else { $null }
+    }
+    if (-not $gitBash) {
+        Write-Host "  -FillEnv skipped: Git Bash not found (edit .env by hand)." -ForegroundColor Yellow
+        return
+    }
+    $envF = Join-Path $HimmelRoot '.env'
+    $exF  = Join-Path $HimmelRoot '.env.example'
+    if ((-not (Test-Path $envF)) -and (Test-Path $exF)) { Copy-Item $exF $envF }
+    if (-not (Test-Path $envF)) { return }
+    $fe = (Join-Path $HimmelRoot 'scripts/setup/fill-env.sh').Replace('\', '/')
+    $savedEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $gitBash $fe $envF.Replace('\', '/') $exF.Replace('\', '/')
+        if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: fill-env failed; continuing." -ForegroundColor Yellow }
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+}
+
 function Do-Core {
     Require-Tools
     if ($Scope -eq 'project') {
@@ -157,6 +209,8 @@ function Do-Core {
     }
     Install-Plugins
     Wire-StatuslineCore
+    Wire-HimmelRepoCore
+    if ($FillEnv) { FillEnv-Core }
     Write-Host "  (optional) pre-commit gates: see $HimmelRoot\docs\setup\use-on-your-project.md"
 }
 

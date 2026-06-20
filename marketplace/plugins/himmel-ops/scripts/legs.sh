@@ -4,11 +4,14 @@
 # the leg `case` lives in exactly one place. This wrapper holds ZERO leg logic.
 #
 # minerva (a plugin) cannot relative-path to the himmel checkout when installed
-# outside it, so we resolve the repo by, in order: $HIMMEL_REPO override → the
+# outside it, so we resolve the repo by, in order: $HIMMEL_REPO override -> the
 # git toplevel of the current dir (himmel-dev sessions run with cwd in the
-# checkout) → the git toplevel of this wrapper's own dir (plugin loaded from the
-# repo's marketplace/). If none yields the resolver, fail open (empty, exit 0) —
-# minerva then keeps its prose hand-off, never erroring on a missing resolver.
+# checkout) -> the git toplevel of this wrapper's own dir (plugin loaded from the
+# repo's marketplace/) -> the canonical default install path
+# ($HOME/Documents/github/himmel, HIMMEL-453: we control the himmel install, so
+# it sits at a known path, resolving even outside any git checkout). If none
+# yields the resolver, fail open (empty, exit 0) -- minerva then keeps its prose
+# hand-off, never erroring on a missing resolver.
 set -u
 
 _find_repo() {
@@ -22,6 +25,10 @@ _find_repo() {
   fi
   cand="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$cand" ] && [ -f "$cand/scripts/lib/initiative-legs.sh" ]; then
+    printf '%s' "$cand"; return 0
+  fi
+  cand="$HOME/Documents/github/himmel"      # canonical default install (HIMMEL-453)
+  if [ -f "$cand/scripts/lib/initiative-legs.sh" ]; then
     printf '%s' "$cand"; return 0
   fi
   return 1

@@ -21,14 +21,16 @@ cd "$REPO_ROOT"
 # no flag uses them yet, but reserve the pattern.
 WITH_CS=0
 WITH_JIRA=0
+FILL_ENV=0
 setup_extra_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-cs) WITH_CS=1 ;;
     --with-jira) WITH_JIRA=1 ;;
+    --fill-env) FILL_ENV=1 ;;
     --help|-h)
       cat <<'USAGE'
-Usage: bash scripts/setup.sh [--with-cs] [--with-jira]
+Usage: bash scripts/setup.sh [--with-cs] [--with-jira] [--fill-env]
 
 Optional flags:
   --with-cs    Install claude-squad (cs) at the end of setup.
@@ -37,6 +39,9 @@ Optional flags:
   --with-jira  Require Jira configuration: abort setup if JIRA_PROJECT_KEY
                is unset. Without the flag the check downgrades to a skip
                notice and Jira-dependent next-steps are omitted.
+  --fill-env   After creating .env, interactively prompt for each must-set
+               value (Enter to skip / keep current). Non-interactive shells
+               no-op. Without the flag, .env keeps the .env.example placeholders.
 USAGE
       exit 0
       ;;
@@ -262,6 +267,14 @@ if [ ! -f ".env" ]; then
 else
   echo "  .env already exists -- skipping"
 fi
+# --fill-env (HIMMEL-453): prompt for the must-set values now. Default-off keeps
+# unattended runs unchanged; non-interactive shells no-op inside fill-env.sh.
+if [ "$FILL_ENV" = "1" ] && [ -f ".env" ]; then
+  bash "$REPO_ROOT/scripts/setup/fill-env.sh" "$REPO_ROOT/.env" "$REPO_ROOT/.env.example" \
+    || echo "  WARNING: fill-env failed; continuing." >&2
+elif [ -f ".env" ]; then
+  echo "  (re-run with --fill-env to be prompted for .env values)"
+fi
 
 # --- handover root ---
 # Reports where Claude will read/write handover state (per HIMMEL-118
@@ -315,13 +328,17 @@ else
 fi
 echo ""
 
-# --- statusline (HIMMEL-359) ---
-# Wire the himmel statusline into ~/.claude/settings.json via the shared helper.
-# Independent of the plugin step (writes settings.json, needs no claude binary);
-# idempotent.
-echo "[9/10] Wiring statusline (user scope)..."
+# --- statusline + HIMMEL_REPO (HIMMEL-359 / HIMMEL-453) ---
+# Wire the himmel statusline AND env.HIMMEL_REPO into ~/.claude/settings.json via
+# the shared helpers. Both write settings.json, need no claude binary, idempotent.
+# HIMMEL_REPO default-by-install: the installer knows the clone path, so the leg
+# resolver + minerva anchor get it without a manual export.
+echo "[9/10] Wiring statusline + HIMMEL_REPO (user scope)..."
 if ! bash "$REPO_ROOT/scripts/lib/wire-statusline.sh" "$HOME/.claude/settings.json" "$REPO_ROOT"; then
   echo "  WARNING: wire-statusline failed; setup continues." >&2
+fi
+if ! bash "$REPO_ROOT/scripts/lib/wire-himmel-repo.sh" "$HOME/.claude/settings.json" "$REPO_ROOT"; then
+  echo "  WARNING: wire-himmel-repo failed; setup continues." >&2
 fi
 echo ""
 

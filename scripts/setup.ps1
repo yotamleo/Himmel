@@ -7,11 +7,15 @@
 # -WithJira : require Jira configuration — abort if JIRA_PROJECT_KEY is
 #             unset. Without the switch the check downgrades to a skip
 #             notice (HIMMEL-285).
+# -FillEnv  : after creating .env, interactively prompt for each must-set value
+#             (Enter to skip). Non-interactive shells no-op. Shells out to the
+#             bash fill-env.sh (Git Bash verified in [0/10]). (HIMMEL-453)
 
 [CmdletBinding()]
 param(
     [switch]$WithCs,
-    [switch]$WithJira
+    [switch]$WithJira,
+    [switch]$FillEnv
 )
 
 $RepoRoot = git rev-parse --show-toplevel
@@ -195,6 +199,34 @@ if (-not (Test-Path ".env")) {
 } else {
     Write-Host "  .env already exists -- skipping"
 }
+# -FillEnv (HIMMEL-453): prompt for the must-set values via the bash fill-env.sh
+# (one implementation). Default-off; non-interactive shells no-op inside
+# fill-env.sh. Resolve GIT Bash explicitly -- a bare `bash` on Windows often
+# resolves to the System32 WSL stub, which cannot read C:/... paths.
+if ($FillEnv -and (Test-Path ".env")) {
+    $gitBash = "C:\Program Files\Git\bin\bash.exe"
+    if (-not (Test-Path $gitBash)) {
+        $bc = Get-Command bash -ErrorAction SilentlyContinue
+        $gitBash = if ($bc -and $bc.Source -notmatch 'System32') { $bc.Source } else { $null }
+    }
+    if (-not $gitBash) {
+        Write-Host "  -FillEnv skipped: Git Bash not found (edit .env by hand)." -ForegroundColor Yellow
+    } else {
+        $fe   = (Join-Path $RepoRoot "scripts/setup/fill-env.sh").Replace('\', '/')
+        $envF = (Join-Path $RepoRoot ".env").Replace('\', '/')
+        $exF  = (Join-Path $RepoRoot ".env.example").Replace('\', '/')
+        $savedEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & $gitBash $fe $envF $exF
+            if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: fill-env failed; continuing." -ForegroundColor Yellow }
+        } finally {
+            $ErrorActionPreference = $savedEAP
+        }
+    }
+} elseif (Test-Path ".env") {
+    Write-Host "  (re-run with -FillEnv to be prompted for .env values)"
+}
 
 # --- handover root ---
 # Reports where Claude will read/write handover state (per HIMMEL-118
@@ -297,18 +329,23 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 }
 Write-Host ""
 
-# --- statusline (HIMMEL-359) ---
-# Wire the himmel statusline into ~/.claude/settings.json via the shared helper.
-# Independent of the plugin step (writes settings.json, needs no claude binary);
-# idempotent.
-Write-Host "[9/10] Wiring statusline (user scope)..."
+# --- statusline + HIMMEL_REPO (HIMMEL-359 / HIMMEL-453) ---
+# Wire the himmel statusline AND env.HIMMEL_REPO into ~/.claude/settings.json via
+# the shared helpers. Both write settings.json, need no claude binary, idempotent.
+Write-Host "[9/10] Wiring statusline + HIMMEL_REPO (user scope)..."
+$settingsJson = Join-Path $HOME ".claude\settings.json"
 $savedEAP = $ErrorActionPreference
 try {
     $ErrorActionPreference = 'Continue'
     & pwsh -NoProfile -File (Join-Path $RepoRoot "scripts\lib\wire-statusline.ps1") `
-        -SettingsPath (Join-Path $HOME ".claude\settings.json") -HimmelPath $RepoRoot
+        -SettingsPath $settingsJson -HimmelPath $RepoRoot
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  WARNING: wire-statusline failed; setup continues." -ForegroundColor Yellow
+    }
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "scripts\lib\wire-himmel-repo.ps1") `
+        -SettingsPath $settingsJson -HimmelPath $RepoRoot
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  WARNING: wire-himmel-repo failed; setup continues." -ForegroundColor Yellow
     }
 } finally {
     $ErrorActionPreference = $savedEAP
