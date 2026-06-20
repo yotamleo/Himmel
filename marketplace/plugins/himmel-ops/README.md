@@ -81,14 +81,16 @@ red-teamed before it advances:
    criteria); loop fix→re-critic, cap 2 rounds.
 3. **Plan** — drives `superpowers:writing-plans` on the approved spec.
 4. **Plan critic** — adversarial subagent red-teams the plan (unordered deps,
-   untestable steps, missing verification, over/under-decomposition); cap 2 rounds.
+   untestable steps, missing verification, over/under-decomposition, assumptions
+   not grounded in the spec); cap 2 rounds.
 5. **Terminal** — a critic-hardened plan; offers hand-off to
    `superpowers:subagent-driven-development` / `executing-plans`. minerva does
    not implement.
 
 **Gates are mode-driven.** `scripts/autonomy-mode.sh` reports `autonomous` when
-`HIMMEL_INITIATIVE` or `HIMMEL_INITIATIVE_OVERNIGHT` is set (initiative mode,
-HIMMEL-425) — then the critics are the only gate and the pipeline auto-advances.
+`HIMMEL_INITIATIVE` or `HIMMEL_INITIATIVE_OVERNIGHT` is set to a non-falsy value
+(non-empty, not `0`/`false`/`off`/`no`; initiative mode, HIMMEL-425) — then the
+critics are the only gate and the pipeline auto-advances.
 Otherwise it reports `interactive` and minerva pauses for the operator after each
 critic-cleaned artifact.
 

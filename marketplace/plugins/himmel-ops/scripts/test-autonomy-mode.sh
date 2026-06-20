@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-autonomy-mode.sh
-set -uo pipefail
+set -euo pipefail
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/autonomy-mode.sh"
 fail=0
 check() { [ "$1" = "$2" ] || { echo "FAIL: $3 (got '$1' want '$2')"; fail=1; }; }
@@ -14,5 +14,7 @@ out=$(HIMMEL_INITIATIVE=false bash "$SCRIPT"); check "$out" "interactive" "initi
 out=$(HIMMEL_INITIATIVE=off bash "$SCRIPT"); check "$out" "interactive" "initiative=off -> interactive"
 out=$(HIMMEL_INITIATIVE=no bash "$SCRIPT"); check "$out" "interactive" "initiative=no -> interactive"
 out=$(HIMMEL_INITIATIVE="" bash "$SCRIPT"); check "$out" "interactive" "initiative='' -> interactive"
-out=$(HIMMEL_INITIATIVE_OVERNIGHT=1 bash "$SCRIPT"); check "$out" "autonomous" "overnight=1 -> autonomous"
+out=$(env -u HIMMEL_INITIATIVE HIMMEL_INITIATIVE_OVERNIGHT=1 bash "$SCRIPT"); check "$out" "autonomous" "overnight=1 (isolated) -> autonomous"
+out=$(env -u HIMMEL_INITIATIVE HIMMEL_INITIATIVE_OVERNIGHT=false bash "$SCRIPT"); check "$out" "interactive" "overnight=false -> interactive"
+out=$(HIMMEL_INITIATIVE=0 HIMMEL_INITIATIVE_OVERNIGHT=1 bash "$SCRIPT"); check "$out" "autonomous" "initiative=0 overnight=1 (OR) -> autonomous"
 [ "$fail" = "0" ] && echo "ALL PASS"; exit "$fail"
