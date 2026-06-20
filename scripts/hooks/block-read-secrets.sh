@@ -13,8 +13,16 @@
 # Detection model:
 #   * Read tool   → block when file_path matches a secret pattern
 #   * Grep tool   → block when path matches a secret pattern
-#   * Bash/PS tool → block when the command tokenises to (reader cmd) +
-#                    (secret file), OR contains `< secretfile` redirect
+#   * Bash/PS tool → split the command into clauses at shell separators
+#                    (; | & ( ) ` newlines); for each clause the first token
+#                    that isn't an env-assignment / wrapper (sudo,doas,env,
+#                    xargs) / shell keyword is the COMMAND. Block when that
+#                    command is a reader (cat/grep/head/jq/sed/awk/…) AND a
+#                    secret-file arg follows, OR on a `< secretfile` redirect.
+#                    In-place sed/awk (`-i`) is carved out per-clause. This
+#                    command-position model (HIMMEL-436) replaced a global
+#                    reader-OR-secret scan that false-positived on inline
+#                    interpreter bodies (`node -e "…obj.key…file…"`).
 #
 # Reader command list intentionally narrow: cat/grep/head/jq/sed/awk/etc.
 # In-place forms of sed and awk (`sed -i …`, `awk -i inplace …`) are
@@ -33,8 +41,24 @@
 #   * Cross-command exfil: `cp .env /tmp/x; cat /tmp/x` — cp is write-only,
 #     and the second command targets a non-secret path.
 #   * Variable indirection: `F=.env; cat $F` — no `.env` token after `cat`.
-#   * Heredoc/string bodies containing the literal substring `.env` may
-#     produce false positives because the tokeniser strips shell quoting.
+#   * Inline interpreter bodies (`node -e`, `python -c`): command-position
+#     fixes the COMMON false positive (coincidental `obj.key` property access
+#     and reader-named identifiers like `file`/`type`). A body that literally
+#     contains `<separator><reader-name><secretfile>` adjacent (e.g.
+#     `node -e "x; cat .env"`) still fragments to a `cat .env` clause and
+#     blocks — same class as `bash -c 'cat .env'`.
+#   * A reader whose own filter/arg equals a secret name: `jq .env file.json`
+#     (filter literally `.env`) blocks — jq is the command, `.env` its arg;
+#     command-position can't tell a jq filter path from a filename.
+#   * Wrappers are carved out only in their bare form, where the command is
+#     the wrapper's immediate next token: {sudo,doas,env,xargs,time,nice,
+#     command,nohup}. A wrapper with leading ARGS before the command
+#     (`timeout 5 cat .env`, `nice -n5 cat .env`, `sudo -u u cat .env`) makes
+#     that arg the command token → the read is allowed through. Likewise
+#     wrappers outside the set (`strace`, `flatpak-spawn`). Determined-attacker
+#     territory; the gate targets the common accidental shapes.
+#   * `cat <<< .env` here-string normalises to `cat < < < .env` and trips the
+#     `<`-redirect path though it reads no file.
 #
 # Hook input arrives on stdin as JSON. Exit codes:
 #   0 — allow (default)
@@ -151,36 +175,69 @@ case "$tool" in
         cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
         [ -z "$cmd" ] && exit 0
 
-        # Normalise shell separators to whitespace so tokens like `cat .env`
-        # split cleanly. Preserve `<` as its own token to catch `<.env`.
-        normalized=$(printf '%s' "$cmd" | sed -e 's/[;|&()`]/ /g' -e 's/</ < /g' -e 's/>/ > /g')
+        # Split the command into CLAUSES at shell separators so a reader and a
+        # secret in UNRELATED parts of the command don't cross-trip (the old
+        # global-OR did — it blocked any reader-named token anywhere plus any
+        # secret-glob token anywhere, which false-positived on inline
+        # interpreter bodies like `node -e "…cfg.key…file…"`). Separators
+        # ; | & ( ) ` and newlines each become a clause boundary — a literal
+        # newline via a POSIX backslash-newline sed replacement (works on BSD
+        # and GNU sed; do NOT use GNU-only `\n` in the replacement). `<`/`>`
+        # are spaced into their own tokens so a `< secretfile` redirect stays
+        # detectable. Shell quoting is intentionally NOT parsed (see header).
+        normalized=$(printf '%s' "$cmd" | sed -e 's/[;|&()`]/\
+/g' -e 's/</ < /g' -e 's/>/ > /g')
 
-        saw_reader=0
-        saw_secret=0
-        saw_inplace=0
-        saw_redirect_from_secret=0
-        prev=""
-        # shellcheck disable=SC2086 # intentional word split for tokenisation
-        for tok in $normalized; do
-            if is_reader_cmd "$tok";   then saw_reader=1;  fi
-            if is_secret_path "$tok";  then saw_secret=1;  fi
-            if is_inplace_token "$tok"; then saw_inplace=1; fi
-            if [ "$prev" = "<" ] && is_secret_path "$tok"; then
-                saw_redirect_from_secret=1
+        block=0
+        # Iterate clause-by-clause. bash 3.2-safe: a while-read heredoc, NOT
+        # mapfile (bash 4) and NOT a for-loop over unquoted $normalized (which
+        # would re-split on spaces and destroy clause boundaries).
+        while IFS= read -r clause; do
+            if [ -z "$clause" ]; then continue; fi
+            cmdtok=""
+            reader=0
+            secret_after=0
+            inplace=0
+            prev=""
+            # shellcheck disable=SC2086 # intentional word split for tokenisation
+            for tok in $clause; do
+                # Redirect-from-secret: authoritative for `<`-redirects and
+                # independent of command position (e.g. `done <.env`).
+                if [ "$prev" = "<" ] && is_secret_path "$tok"; then
+                    block=1
+                fi
+                if [ -z "$cmdtok" ]; then
+                    # Still hunting the command token: skip leading redirect
+                    # tokens, env-assignments (VAR=val), common reader-wrapping
+                    # commands, and shell keywords.
+                    case "$tok" in
+                        "<"|">")                            prev="$tok"; continue ;;
+                        [A-Za-z_]*=*)                       prev="$tok"; continue ;;
+                        sudo|doas|env|xargs|time|nice|command|nohup)
+                                                            prev="$tok"; continue ;;
+                        if|while|until|then|else|elif|"!")  prev="$tok"; continue ;;
+                    esac
+                    cmdtok="$tok"
+                    if is_reader_cmd "$cmdtok"; then reader=1; fi
+                    prev="$tok"
+                    continue
+                fi
+                # Past the command token: scan its arguments.
+                if is_inplace_token "$tok"; then inplace=1; fi
+                if is_secret_path "$tok";   then secret_after=1; fi
+                prev="$tok"
+            done
+            # A clause leaks only when its COMMAND is a reader and a secret
+            # follows as an arg. In-place sed/awk rewrites (carved per-clause,
+            # so a global `-i` can't mask a separate read clause) don't leak.
+            if [ "$reader" = "1" ] && [ "$secret_after" = "1" ] && [ "$inplace" = "0" ]; then
+                block=1
             fi
-            prev="$tok"
-        done
+        done <<EOF
+$normalized
+EOF
 
-        # In-place sed/awk rewrites a file without leaking content; carve
-        # out cleanly so legit .env edits work. Redirect-from-secret is
-        # still a leak (`while read l; do :; done < .env`) so it ignores
-        # the carve-out.
-        if [ "$saw_inplace" = "1" ] && [ "$saw_redirect_from_secret" = "0" ]; then
-            exit 0
-        fi
-
-        if { [ "$saw_reader" = "1" ] && [ "$saw_secret" = "1" ]; } \
-           || [ "$saw_redirect_from_secret" = "1" ]; then
+        if [ "$block" = "1" ]; then
             [ "${READ_SECRETS_OK:-0}" = "1" ] && exit 0
             echo "⛔ block-read-secrets: refusing $tool command that reads a secret file:" >&2
             echo "    $cmd" >&2
