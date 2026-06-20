@@ -69,3 +69,16 @@ test("buildPrompt without a vault adds no file-into-vault clause (HIMMEL-321)", 
   const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r" });
   expect(p).not.toContain("into the Obsidian vault");   // matches the real clause text
 });
+test("buildPrompt sanctions non-destructive Jira ticket ops (HIMMEL-424 followup — lifts the classifier veto)", () => {
+  const p = buildPrompt("__chat__", { inbox:"i", outbox:"o", context:"c", cwd:"/repo" });
+  // the absolute jira CLI path, derived from cwd (avoids the worktree dist/ trap)
+  expect(p).toContain("/repo/scripts/jira/dist/index.js");
+  // Jira ticket work is stated as IN-SCOPE so the auto-mode classifier doesn't veto it
+  expect(p).toContain("Jira");
+  expect(p.toLowerCase()).toMatch(/create|edit|comment|transition/);
+  // explicit non-destructive boundary: assert the FORBIDDANCE phrasing, not just the
+  // keyword (a prompt that said "you may delete" would otherwise pass — CR gptoss-1)
+  expect(p).toMatch(/NOT delete/i);                       // no deletion
+  expect(p).toMatch(/do NOT use [`']?move/i);             // no move (closes the source ticket)
+  expect(p).toContain("project-create");                  // admin op named in the exclusion
+});

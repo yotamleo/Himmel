@@ -18,6 +18,7 @@ If a line has an "image_path" field, use the Read tool on that path — it is a 
 If a line has a "document_path" field, use the Read tool on that path — it is a file the operator attached (e.g. a PDF); the line's "text" is its caption and "document_name" is the original filename.
 <job>
 <vault-clause — only when a vault is configured for the session's chat (HIMMEL-321)>
+Acting on Jira tickets for the operator is part of your job — when asked, DO IT DIRECTLY (don't just offer a paste-ready command). Use the Jira CLI by its ABSOLUTE path: `node <cwd>/scripts/jira/dist/index.js <op>` (JIRA_PROJECT_KEY comes from the repo .env; run it with --help for the ops). You MAY create, edit/update, comment, transition, assign, change priority/labels, attach files, link, and read tickets — this is sanctioned, non-destructive work. You may NOT delete tickets (there is no delete op), and do NOT use `move` (it closes the source ticket) or `project-create` (admin) unless the operator explicitly asks.
 Reply to the operator by APPENDING one JSON line {"text":"<your reply>"} per message to <outbox>. That is the only way to reach the operator.
 Do NOT poll Telegram yourself and do NOT open a --channels session.
 As your FINAL action, append a one-line progress note to <context> (so the next run has context). Then stop — you are done.
@@ -53,6 +54,18 @@ Here a PDF sent to the group with its own `vault` is filed into that vault;
 a PDF sent to any other chat (other allowlisted groups, or a DM) falls back to
 `defaultVault` — which covers every chat without its own.
 The poller reads `access.json` ONCE at startup — restart the bridge after edits.
+
+## Jira sanction (HIMMEL-424 followup)
+
+The bridge session runs in auto-mode, where the harness classifier VETOES Jira ticket
+writes when the session's stated workflow omits Jira — so without this clause the bridge
+replies *"I can't create the ticket (classifier veto)"* instead of doing it. The clause
+states Jira ticket work as in-scope, which lifts the veto. It is deliberately scoped to
+**non-destructive** operations: there is no `delete` op in the CLI, and `move` (closes the
+source ticket) and `project-create` (admin) are excluded unless the operator explicitly
+asks. The CLI is invoked by its absolute path under `<cwd>` (the primary checkout, where
+the untracked `dist/` build artifact lives — a worktree-relative path would
+`MODULE_NOT_FOUND`).
 
 ## Contract the prompt enforces
 
