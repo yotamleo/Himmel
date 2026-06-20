@@ -99,7 +99,12 @@ the env var.
 
 Six hooks wired in `.claude/settings.json` fire BEFORE Claude executes
 tool calls. Five BLOCK risky operations; one (`auto-approve-safe-bash`)
-GRANTS permission for safe ones so they don't hang.
+GRANTS permission for safe ones so they don't hang. A seventh block hook,
+`block-docker-privesc.sh` (HIMMEL-441), is shipped via the **himmel-ops
+plugin `hooks.json`** rather than `.claude/settings.json` (so it can be
+agent-installed without a settings self-mod veto — same delivery path as
+`inject-minerva-critic.sh`); it is live only after `/himmel-update`
+(marketplace re-sync) + a fresh session.
 
 **Bypass convention (applies to the four DENY hooks):** session-sticky
 env vars must be set in the shell that LAUNCHED Claude Code
@@ -186,6 +191,38 @@ print or grep the contents of a secret file (`.env`, `.env.*`,
 print file contents to stdout (`awk '{print}' .env`, `sed s/X/Y/ .env`).
 Prefer asking the operator to echo specific values via the `!` prefix
 instead of bypassing.
+
+### `block-docker-privesc.sh` — root-equivalent container guard (HIMMEL-441)
+
+Fires on Bash/PowerShell. Membership in the `docker` group is
+root-equivalent: an agent in it can start a container as root and bind-mount
+any host path writable, bypassing file permissions, `block-read-secrets`,
+AND `block-edit-on-main` (the motivating case wrote `/etc` as root via
+`docker run -v /etc:/host-etc:rw … install …`). Blocks `docker`/`podman`
+`run|exec|create` (and `docker cp`) when it detects:
+
+- **Secret-bearing bind-mount — any mode (`:ro` or `:rw`):** `/`, `/etc`,
+  `/root`, the docker socket, `$HOME` itself, `$HOME` dotdirs
+  (`.ssh .aws .gnupg .kube .docker .config`), and the Windows home tree
+  `C:\Users\<user>`. `/home` is NOT a blanket prefix — `$HOME/Documents/proj`
+  is allowed.
+- **System-integrity bind-mount — writable only:** `/usr /bin /sbin /lib
+  /lib64 /boot /var /sys /proc /dev` (read-only mounts leak no secret;
+  a small read-only allowlist under `/etc` — `localtime`, `timezone`,
+  `resolv.conf`, `hosts`, `ssl/certs`, `ca-certificates` — is carved out).
+- **Privilege flags:** `--privileged`, `--pid=host`/`--pid host`,
+  `--user 0|root` / `-u 0|0:* ` / `-u0` / `--user=0|root`, `--cap-add` of a
+  root-equivalent cap (`SYS_ADMIN SYS_PTRACE DAC_OVERRIDE DAC_READ_SEARCH ALL`),
+  `--device` of a host block device, `--volumes-from`.
+
+Host paths are normalised first (expand `~`/`$HOME`; `$PWD`/relative →
+project-local/allowed; Windows `\`→`/` with drive-colon-aware `-v` splitting;
+collapse `/./`, `/../`, `//`, trailing `/`). Bypass: `DOCKER_PRIVESC_OK=1`.
+Accepted limitations (header): `docker exec` into an already-privileged
+container, `--volumes-from` re-mounts, env-substituted paths it cannot
+resolve, `/proc/self/root`/symlinks, rootless podman (treated the same), and
+a container COMMAND arg that literally equals a privesc flag (rare FP → use
+the bypass). Spec: `scripts/hooks/test-block-docker-privesc.sh`.
 
 ### `block-backend-tier.sh` — service-agnostic backend-routing guard (HIMMEL-400)
 
