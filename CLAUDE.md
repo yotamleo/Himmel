@@ -192,8 +192,12 @@ Hook bypass = session env var set in the LAUNCHING shell (e.g.
 `EDIT_ON_MAIN_OK=1 claude`); a per-call prefix does NOT work. Per-repo opt-out:
 a local gitignored `.single-writer` at a repo root allows on-main edits there
 (single-writer repos — personal vaults, state repos — that commit straight to
-main by design); clones without the marker stay protected. Per-hook
-behaviour, the full gate list, and the guardrail matrix:
+main by design); clones without the marker stay protected. Remote auto-actions
+(Telegram `/arm`, HIMMEL-424): the trusted bridge parses + invokes directly (agent
+out of the trust path); operator-identity (DM or allowlisted group), typed-only,
+forwarded-refused; default OFF behind `TELEGRAM_AUTO_ACTIONS` (per-op flag, grammar
+mirrors `HIMMEL_INITIATIVE`). Per-hook
+behaviour, the full gate list, the guardrail matrix, and the `/arm` surface:
 [`docs/internals/enforcement.md`](docs/internals/enforcement.md). Required
 environment (HIMMEL-123):
 [`docs/setup/new-machine.md`](docs/setup/new-machine.md#1-required-environment-himmel-123).

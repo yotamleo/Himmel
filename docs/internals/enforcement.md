@@ -491,6 +491,59 @@ before forwarding to `gh`). `--admin` is INSPECTED but forwarded.
 
 Run after any edit to `lib.sh` or `guard-gh.sh` before pushing.
 
+## Remote auto-actions — Telegram `/arm` (HIMMEL-424)
+
+A sanctioned surface for the operator to trigger a bounded privileged action from
+Telegram. Auth model **B2**: the **trusted bridge** (`scripts/telegram/`) parses a
+structured command and invokes the action DIRECTLY — the spawned `claude` agent is
+**never in the trust path**. So a conversational "resume HIMMEL-x" to the agent does
+NOT arm anything; only the bridge-parsed `/arm` does. Auth = **operator-identity**: the
+allowlisted operator (sender ∈ global `allowFrom`) sent a non-forwarded, typed `/arm`
+in a DM **or an allowlisted group** — never body content an attacker could inject.
+
+**Command:** `/arm <ticket|path> [at HH:MM | auto | smart]` (default `smart`).
+A ticket (`^[A-Z][A-Z0-9]+-[0-9]+$`) resolves to a resume handover under
+`handover_root` (case-insensitive, `specs/` excluded, `type: handover` preferred,
+ambiguity refused — never silently picked); a path must exist and resolve **under**
+`handover_root`. The bridge shells `auto-action.sh` → `arm-resume.sh` (per-handover
+dedup; no `--force`/`--dedup-any` remotely).
+
+**Activation flag — `TELEGRAM_AUTO_ACTIONS` (default OFF, operator-only).** A per-op
+enable-list whose grammar **mirrors `HIMMEL_INITIATIVE`** (so users learn one
+convention): unset / `0`/`off`/`no` → no ops (inert; `/arm` is ordinary chat);
+`1`/`all`/`on`/`yes` → every op; else a comma-list of op names (case-insensitive,
+unknown tokens dropped, pure-typo → off). v1 ships one op (`arm-resume`), so `=1`
+and `=arm-resume` are equivalent. The dispatch-table keys (`OPS`/`KNOWN_OPS` in
+`auto-action.ts`) are the closed op allow-list, re-asserted in `auto-action.sh`.
+Set it in the bridge's launching env + restart the bridge to activate.
+
+**Guards (fail-closed):**
+- **Operator-identity** — an auto-command runs only when the SENDER is the allowlisted
+  operator (`isAllowed(access, from)` — the global `allowFrom`). This authorizes `/arm`
+  from the operator in a DM **or an allowlisted group** (groups carry distinct per-group
+  context). A non-operator member of a shared group has a `from` not in `allowFrom`, so
+  their `/arm` falls through to ordinary (powerless) chat. The chat is *also* already
+  allowlisted upstream by `makeAllow` at ingest, so this is operator-identity on top of
+  chat-allowlisting. The reply routes back to the originating chat (group → its own
+  `group_<id>` session). (Earlier DM-only restriction relaxed for hardcoded
+  operator-only groups; identity check keeps it safe if a third party ever joins.)
+- **Typed-only** — a media-caption or voice-transcript `/arm` (`caption: true`) is
+  not eligible; only a genuinely typed `m.text` command is.
+- **Forward-refuse** — a forwarded `/arm` (any Telegram forward marker) is refused
+  and audited (`refused-forwarded`); this kills the prompt-injection vector.
+- The arm runs fire-and-forget off the ingest loop (a slow `--time smart` arm can't
+  stall polling); the operator reply goes via the chat outbox + flush.
+
+**Audit:** one append-only, sanitized line per attempt (executed OR refused) to
+`bridgeRoot()/auto-action-audit.log`:
+`<iso-ts> chat=<id> user=<id> fwd=<0|1> op=<op> arg=<arg> resolved=<basename> time=<t> rc=<n> result=<armed|already-armed|ambiguous|refused-forwarded|no-match|error>`.
+
+**Still HARD-blocked (out of scope):** editing `access.json`/`settings.json`,
+`--force`/`--dedup-any` arms, merging PRs, ops other than `arm-resume`.
+
+Tests: `scripts/telegram/{router,auto-action,poller}.test.ts` (bun) +
+`scripts/telegram/test-auto-action.sh` (privileged-script smoke).
+
 ## Claude invocation billing (HIMMEL-128)
 
 From **2026-06-15** onward, Anthropic splits headless Claude Code

@@ -2,7 +2,8 @@ import { readFile, writeFile, rename, mkdir, readdir, unlink, stat } from "node:
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, truncateFullyConsumed, type Meta } from "./bus";
-import { classify } from "./router";
+import { classify, type Route } from "./router";
+import { dispatchAutoAction, parseEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { isAllowed, isGroupAllowed, loadAccess, vaultForChat, type Access } from "./gate";
 import { runSession, buildPrompt, type BusPaths } from "./run";
@@ -20,7 +21,12 @@ const RETRY_MS = Number(process.env.TELEGRAM_RETRY_MS ?? 15 * 60 * 1000);
 // Invariant: document_path is only ever present alongside document_name (set as
 // a pair); document_name without document_path means the download failed and the
 // message degraded to caption-only forwarding.
-export type Inbound = { from: number; chat_id: number; text: string; ts: number; update_id: number; image_path?: string; document_path?: string; document_name?: string };
+// forwarded/caption (HIMMEL-424 B2): always explicit booleans, never optional — they
+// gate the privileged `/arm` auto-command. `forwarded` = any Telegram forward marker
+// present (the injection-refuse signal). `caption` = the text came from a media caption
+// or voice transcript, NOT a genuinely typed m.text. Both fail toward "not a typed
+// command" so an undefined-deserialized value can never fail OPEN.
+export type Inbound = { from: number; chat_id: number; text: string; ts: number; update_id: number; forwarded: boolean; caption: boolean; image_path?: string; document_path?: string; document_name?: string };
 export type AllowFn = (fromId: number, chatId: number) => boolean;
 // Downloads a photo by file_id, returns the local path (null on failure).
 export type FetchImageFn = (file_id: string, update_id: number) => Promise<string | null>;
@@ -159,6 +165,10 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
       continue;
     }
     const caption = typeof m.caption === "string" ? m.caption.trim() : "";
+    // forwarded (HIMMEL-424): any Telegram forward marker. forward_origin is the
+    // authoritative modern field; the rest are deprecated back-compat. (is_automatic_forward
+    // posts are already dropped at the top of the loop.) Presence => forwarded, the safe side.
+    const forwarded = !!(m.forward_origin ?? m.forward_date ?? m.forward_from ?? m.forward_from_chat ?? m.forward_sender_name);
     let text: string;
     if (voice) {
       // transcription not wired → drop like other unsupported media (stickers)
@@ -182,14 +192,15 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
       } else {
         text = (caption ? caption + "\n" : "") + "[voice transcript] " + transcript;
       }
-      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id });
+      // caption:true — a voice transcript is never a typed command (auto-ineligible).
+      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: true });
     } else if (doc && fetchDoc) {
       // Document (e.g. PDF) — same concurrent, time-bounded download as photos (HIMMEL-321).
       const docName = typeof doc.file_name === "string" ? doc.file_name : "file";
       text = caption || `[document: ${docName}]`;
       const downloadP = fetchDoc(doc.file_id, u.update_id, docName)
         .catch((e: unknown) => { console.error(`[poller] document download failed for update ${u.update_id}: ${e}`); return null; });
-      pendingDocs.push({ rec: { from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, document_name: docName }, p: downloadP });
+      pendingDocs.push({ rec: { from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, document_name: docName, forwarded, caption: true }, p: downloadP });
     } else if (photo && fetchImage) {
       // Start the download immediately (after allow gate) but do NOT await it here —
       // downloads run concurrently across the batch (HIMMEL-266); each one is
@@ -197,13 +208,15 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
       text = caption || "[photo]";
       const downloadP = fetchImage(photo.file_id, u.update_id)
         .catch((e: unknown) => { console.error(`[poller] photo download failed for update ${u.update_id}: ${e}`); return null; });
-      pendingPhotos.push({ rec: { from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id }, p: downloadP });
+      pendingPhotos.push({ rec: { from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: true }, p: downloadP });
     } else {
       // plain text, or photo/document with no fetch fn wired (forward caption text only)
       text = photo ? (caption || "[photo]")
            : doc ? (caption || `[document: ${typeof doc.file_name === "string" ? doc.file_name : "file"}]`)
            : m.text;
-      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id });
+      // caption:true iff the text came from a media caption (photo/doc present), else it
+      // is a genuinely typed m.text (caption:false) — the only auto-command-eligible shape.
+      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: !!(photo || doc) });
     }
   }
   // Write all non-photo inbox entries.
@@ -245,12 +258,24 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
   if (maxId >= offset) await saveOffset(root, maxId + 1);
 }
 
-export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; image_path?: string; document_path?: string; document_name?: string };
+export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; forwarded?: boolean; caption?: boolean; image_path?: string; document_path?: string; document_name?: string };
 export type RunFn = (session: string) => Promise<void>;
+
+// Auto-command gate (HIMMEL-424 B2). `fire` is FIRE-AND-FORGET so a slow arm never
+// blocks the ingest loop; `enabledOps` is parsed from TELEGRAM_AUTO_ACTIONS (empty by
+// default ⇒ inert). `authorize(from, chat_id)` is the SELF-SUFFICIENT auth check: the
+// SENDER must be the allowlisted operator (global allowFrom) AND the chat must be
+// allowlisted (a DM or an allowlisted group). This authorizes `/arm` from the operator
+// in a DM or an allowlisted group (groups carry distinct per-group context), refuses a
+// non-operator member of a shared group, and does NOT depend on the upstream ingest
+// gate as the chat-scope check (defense-in-depth, CR S1). Wired only in main(); absent
+// in unit tests that don't exercise /arm.
+export type AutoFire = (msg: DeliveredMsg, route: Extract<Route, { kind: "auto" }>) => void;
+export type AutoGate = { enabledOps: Set<string>; authorize: (from: number, chat_id: number) => boolean; fire: AutoFire };
 
 // Single-threaded dispatch: the poller calls handleInbound serially, so the
 // "status === running" in-flight check needs no atomic CAS.
-export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn): Promise<void> {
+export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn, auto?: AutoGate): Promise<void> {
   const route = classify(msg.text);
   // control verbs act directly; minimal handling for v2.2 (status/sessions/stop)
   if (route.kind === "control") {
@@ -260,11 +285,24 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn)
     }
     return; // status/sessions reporting is wired in the main loop (replies via outbox)
   }
+  // Auto-command (HIMMEL-424 B2): a message AUTHORIZED by auto.authorize(from, chat_id)
+  // — the sender is the allowlisted operator (global allowFrom) AND the chat is
+  // allowlisted (DM or allowlisted group); a non-operator member of a shared group is
+  // refused (fix C1) — that is genuinely TYPED (caption===false — a media-caption/voice
+  // /arm is refused, fix C2) and an ENABLED op is invoked DIRECTLY by the trusted bridge
+  // — the agent never sees it. The forwarded-refuse decision lives in handleAutoCommand.
+  // Any condition false ⇒ falls through to ordinary (powerless) chat below (so a
+  // non-operator/caption/disabled-op /arm is just chat).
+  if (route.kind === "auto" && auto && auto.authorize(msg.from, msg.chat_id) && msg.caption === false && auto.enabledOps.has(route.op)) {
+    auto.fire(msg, route);
+    return;
+  }
   // Non-DM chats (negative chat_id = group/channel) get their own session keyed
   // by chat_id so meta.chat_id pins replies to that chat, not the operator DM
   // (HIMMEL-238). "_" not ":" — the session id is an NTFS directory name.
   const chatSession = msg.chat_id < 0 ? `group_${msg.chat_id}` : "__chat__";
-  const session = route.kind === "chat" ? chatSession : route.ticket;
+  // A non-eligible auto-command (group / caption / disabled-op) routes as chat.
+  const session = (route.kind === "chat" || route.kind === "auto") ? chatSession : route.ticket;
   const { created } = await ensureSession(root, session);
   let meta = await readMeta(root, session);
   if (created || !meta) {
@@ -279,6 +317,47 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn)
   const line = route.kind === "followup" ? route.text : msg.text;
   await appendLine(join(sessionDir(root, session), "inbox.jsonl"), JSON.stringify({ text: line, from: msg.from, ts: msg.ts ?? 0, ...(msg.image_path ? { image_path: msg.image_path } : {}), ...(msg.document_path ? { document_path: msg.document_path, document_name: msg.document_name } : {}) }));
   if (meta.status === "idle" || meta.status === "done") await run(session);
+}
+
+// Map the auto-action.sh exit code to an audit result label.
+function auditResult(rc: number): string {
+  switch (rc) {
+    case 0:  return "armed";
+    case 3:  return "no-match";
+    case 4:  return "ambiguous";
+    case 5:  return "already-armed";
+    default: return "error";
+  }
+}
+
+export type AutoCommandDeps = {
+  runScript: RunScriptFn;
+  reply: (chat_id: number, text: string) => Promise<void>;
+  audit: (f: AuditFields) => Promise<void>;
+};
+
+// The auto-command flow (HIMMEL-424 B2). Run FIRE-AND-FORGET off the ingest loop (via
+// the gate's `fire`) so a slow `--time smart` arm can't stall polling. A FORWARDED /arm
+// is refused + audited (the injection kill-switch — `root` reserved for future use);
+// otherwise the bridge invokes auto-action.sh and relays the result. Every attempt —
+// executed OR refused — is audited.
+export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: Extract<Route, { kind: "auto" }>, deps: AutoCommandDeps): Promise<void> {
+  void root;
+  // The AUDIT is the security event and is written FIRST; the operator reply is
+  // best-effort and must NEVER swallow the audit (CR I1: a reply-delivery failure
+  // after a successful privileged arm would otherwise leave no durable record).
+  const reply = async (text: string) => {
+    try { await deps.reply(msg.chat_id, text); }
+    catch (e) { console.error(`[poller] auto-action reply could not be delivered for chat ${msg.chat_id}: ${e}`); }
+  };
+  if (msg.forwarded === true) {
+    await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: true, op: route.op, arg: route.arg, time: route.time, rc: -1, result: "refused-forwarded" });
+    await reply("⚠️ forwarded commands are not executed");
+    return;
+  }
+  const res = await dispatchAutoAction({ runScript: deps.runScript }, route);
+  await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, resolved: res.resolved, time: route.time, rc: res.rc, result: auditResult(res.rc) });
+  await reply(res.message);
 }
 
 // tail: last chunk of the run's stdout+stderr (HIMMEL-262) — persisted to run.log
@@ -665,6 +744,22 @@ async function sessionsList(root: string): Promise<string[]> {
   try { return await readdir(join(root, "sessions")); } catch { return []; }
 }
 
+// Reply via the originating chat's outbox (HIMMEL-424): consistent with every other
+// operator-facing message in the bridge (send-then-commit durability + per-chat throttle
+// via flushOutboxes), and — unlike a direct sendMessage in the ingest loop — it does not
+// block polling. Routes to the SAME session the chat uses (group_<id> for a group, so a
+// group `/arm` reply lands in that group and its per-group context is preserved;
+// __chat__ for a DM) — mirrors handleInbound's chatSession routing.
+export async function replyViaOutbox(root: string, chat_id: number, text: string): Promise<void> {
+  const session = chat_id < 0 ? `group_${chat_id}` : "__chat__";
+  const { created } = await ensureSession(root, session);
+  const meta = await readMeta(root, session);
+  if (created || !meta) {
+    await writeMeta(root, session, { chat_id, status: "idle", last_run_pid: null, last_run_at: null, task_name: null, retry_at: null });
+  }
+  await appendLine(join(sessionDir(root, session), "outbox.jsonl"), JSON.stringify({ text }));
+}
+
 export async function main(): Promise<void> {
   const root = bridgeRoot();
   const repoCwd = process.env.HIMMEL_REPO ?? process.cwd();
@@ -728,6 +823,42 @@ export async function main(): Promise<void> {
     await sendMessage(token, chatId, `⚠️ couldn't download "${name}" (it may exceed Telegram's ~20MB limit) — I forwarded your caption only.`);
   };
   const send = async (chat: number, text: string) => { await sendMessage(token, chat, text); };
+  // Remote auto-actions (HIMMEL-424 B2): the trusted bridge parses a structured `/arm`
+  // and invokes auto-action.sh DIRECTLY — the agent is never in the trust path. Inert
+  // unless TELEGRAM_AUTO_ACTIONS enables an op (default OFF). `runScript` spawns the
+  // privileged script argv-array (no shell string — fix I2) with cwd=repoCwd. The child
+  // INHERITS the full bridge env BY DESIGN ("inherit the system" — the operator
+  // requirement): arm-resume.sh needs .env/HANDOVER_DIR/PATH/py-armor, and anticipated
+  // future ops need more (file-ticket → Jira token, run-named-skill → ANTHROPIC) — so a
+  // secret denylist is wrong here. The env is NOT an attacker surface: the child is
+  // himmel's own trusted script and the /arm arg is passed as validated positional args,
+  // never into env. We strip only TELEGRAM_BOT_TOKEN (+ TELEGRAM_OWN_POLLER) — the one
+  // credential the arm path demonstrably never needs (fix M3). The arm runs
+  // FIRE-AND-FORGET (autoFire) so a slow `--time smart` arm never stalls the ingest loop.
+  const enabledOps = parseEnabledOps(process.env.TELEGRAM_AUTO_ACTIONS, KNOWN_OPS);
+  if (enabledOps.size > 0) console.error(`[poller] auto-actions enabled: ${[...enabledOps].join(",")}`);
+  const autoScript = join(import.meta.dir, "auto-action.sh");
+  const runScript: RunScriptFn = async (op, arg, time) => {
+    const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    delete env.TELEGRAM_BOT_TOKEN;
+    delete env.TELEGRAM_OWN_POLLER;
+    const p = Bun.spawn(["bash", autoScript, op, arg, time], { cwd: repoCwd, env, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+    return { code, stdout, stderr };
+  };
+  const auditFn = appendAuditLine(root);
+  const autoFire: AutoFire = (msg, route) => {
+    void handleAutoCommand(root, msg, route, { runScript, reply: (chat, text) => replyViaOutbox(root, chat, text), audit: auditFn })
+      .catch((e) => console.error(`[poller] auto-action failed for op ${route.op}: ${e}`));
+  };
+  // authorize = operator-identity (global allowFrom) AND chat-allowlisted (makeAllow):
+  // the operator in a DM or an allowlisted group arms; a non-operator group member or a
+  // non-allowlisted chat is refused. Self-sufficient — re-asserts the chat gate (CR S1).
+  const autoGate: AutoGate = { enabledOps, authorize: (from, chat_id) => isAllowed(access, from) && allow(from, chat_id), fire: autoFire };
   // typing indicator while a session's bounded child works (HIMMEL-260)
   const TYPING_MS = Number(process.env.TELEGRAM_TYPING_MS ?? 4000);
   const typingTimer = setInterval(guarded(() => signalTyping(root, dispatch.isInFlight, () => sessionsList(root), (chat) => sendChatAction(token, chat))), TYPING_MS);
@@ -748,7 +879,7 @@ export async function main(): Promise<void> {
     const fresh = await readNewLines(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"));
     // dispatch (not runFn) everywhere: runs fire WITHOUT blocking this loop —
     // ingest keeps polling while bounded children work (HIMMEL-246)
-    for (const i of fresh) await handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, dispatch);
+    for (const i of fresh) await handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, dispatch, autoGate);
     await deliverAllPending(root, dispatch, new Date(), () => sessionsList(root));
     await sweepStuckRunning(root, dispatch.isInFlight, () => sessionsList(root));
   }
