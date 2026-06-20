@@ -57,6 +57,10 @@ skills. Operator-driven (3rd-party install.sh):
 
 Open your vault folder in Obsidian to start using the vault.
 
+To import historical sessions and learn how the capture → triage → synthesize
+pipeline compounds over time, see the
+[compounding loop guide](https://github.com/yotamleo/himmel/blob/main/docs/luna/compounding.md).
+
 > **Keep your vault out of Himmel's history.** If you created the vault
 > *inside* the Himmel checkout (e.g. `Himmel/my-vault`) rather than as a
 > sibling, add its path to Himmel's `.gitignore` so your personal vault

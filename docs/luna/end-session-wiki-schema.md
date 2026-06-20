@@ -80,6 +80,8 @@ tags:
   - session
   - autocapture
 ai-first: true
+session_id: <uuid from SessionEnd payload>
+source: live
 ---
 ```
 
@@ -98,6 +100,10 @@ ai-first: true
 | `files_touched` | integer | yes | `git -C $cwd diff --name-only HEAD@{session-start}..HEAD \| wc -l` — count only | If git unreadable: write `0` |
 | `tags` | list of strings | yes | always includes `session` and `autocapture`; may append `epic-N`, `task-N` when those are known | n/a — defaults guarantee non-empty list |
 | `ai-first` | boolean | yes | constant `true` (Luna vault AI-First Vault Rule §0) | n/a |
+| `session_id` | string | yes | `session_id` from `SessionEnd` payload | Write empty string `""` if absent in payload |
+| `source` | string | yes | `"live"` for hook captures; `"claude-backfill"` for backfill tool writes | n/a — always set by the writer |
+
+**Backfill rules:** when `source=claude-backfill`, set `branch=""` (empty, branch at capture time is unknown), `files_touched=0` (no diff available), `session_id` from the transcript filename or a derived identifier.
 
 **Optional-field convention:** for `epic` and `task`, **omit the key entirely** rather than emitting `null`, `""`, or `~`. Rationale: Obsidian Dataview and frontmatter consumers treat absent keys consistently (`is undefined`), and absent keys keep notes scannable. Empty-string would falsely match prefix searches; `null` clutters the YAML.
 

@@ -113,7 +113,9 @@ himmel needs almost nothing to start:
   [README](../templates/luna-second-brain/README.md#quickstart) has the
   install steps. With the vault in place, each Claude session is auto-captured
   into it — [point the capture at a specific vault](luna/end-session-wiki.md#choosing-the-target-vault)
-  if it doesn't live at the default `~/Documents/luna`.
+  if it doesn't live at the default `~/Documents/luna`. To import existing
+  sessions and understand how capture → triage → synthesize compound over time,
+  see the [compounding loop guide](luna/compounding.md).
 
 **For your first loop you need none of this** — `setup.sh` already did the work.
 Skip straight to step 3.

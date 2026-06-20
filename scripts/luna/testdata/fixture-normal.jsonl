@@ -1,0 +1,4 @@
+{"timestamp":"2026-06-20T06:00:00Z","cwd":"__CWD_PLACEHOLDER__","sessionId":"test-session-normal-001"}
+{"timestamp":"2026-06-20T07:00:00Z","cwd":"__CWD_PLACEHOLDER__","message":{"role":"assistant","content":[{"type":"text","text":"Implemented the backfill tool.\nFixed a bug in session parsing.\nTests pass."}]}}
+{"timestamp":"2026-06-20T07:30:00Z","cwd":"__CWD_PLACEHOLDER__","message":{"role":"user","content":[{"type":"text","text":"looks good"}]}}
+{"timestamp":"2026-06-20T08:00:00Z","cwd":"__CWD_PLACEHOLDER__","message":{"role":"assistant","content":[{"type":"text","text":"Done. Backfill tool is complete."}]}}

@@ -391,6 +391,8 @@ tags:
   - session
   - autocapture
 ai-first: true
+session_id: $sessionId
+source: live
 ---
 
 $preamble

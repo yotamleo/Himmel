@@ -1,0 +1,2 @@
+{"timestamp":"2026-06-19T06:00:00Z","cwd":"/nonexistent/path/that/does/not/exist","sessionId":"test-session-orphaned-003"}
+{"timestamp":"2026-06-19T07:00:00Z","cwd":"/nonexistent/path/that/does/not/exist","message":{"role":"assistant","content":[{"type":"text","text":"Session from a repo that no longer exists."}]}}

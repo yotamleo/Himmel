@@ -1,0 +1,2 @@
+{"timestamp":"2026-06-20T10:00:00Z","cwd":"__CWD_PLACEHOLDER__","sessionId":"test-session-short-002"}
+{"timestamp":"2026-06-20T10:00:45Z","cwd":"__CWD_PLACEHOLDER__","message":{"role":"assistant","content":[{"type":"text","text":"Short session."}]}}

@@ -324,6 +324,22 @@ Specs saved to: `docs/superpowers/specs/YYYY-MM-DD-feature.md`
 
 ---
 
+## Luna Scripts (`scripts/luna/`)
+
+Shell scripts for luna vault maintenance and session import. Operator-invoked
+on demand; nothing here runs automatically.
+
+- `scripts/luna/backfill-sessions.sh` — Render historical Claude session
+  transcripts into the luna vault as structured session notes (same schema as
+  the live `end-session-wiki` hook, with `source: claude-backfill`). CREATE-only
+  (never overwrites); idempotent via ledger at `~/.claude/luna-backfill-state.json`.
+  Scope flags: default = current project, `--all` = every project, `--project
+  <path>` (repeatable) = specific repo(s). `--dry-run` prints counts without
+  writing. Primary surface: `/luna-backfill`. Full flag reference in
+  `.claude/commands/luna-backfill.md`.
+
+---
+
 ## CR Scripts (`scripts/cr/`)
 
 Shell scripts that implement `/pr-check` sub-steps. Called by the `/pr-check` command; not invoked standalone in normal workflows.
