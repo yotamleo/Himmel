@@ -187,6 +187,7 @@ do_luna() {
   if [[ -e "$dest" && $DRY_RUN -ne 1 ]]; then
     echo "  $dest already exists — skipping copy (re-run the vault's own setup to update)"
   else
+    run mkdir -p "$(dirname "$dest")"
     run cp -r "$HIMMEL_ROOT/templates/luna-second-brain" "$dest"
   fi
   echo "  next: cd \"$dest\" && bash scripts/setup.sh   (idempotent; prints the plugin-install commands)"
