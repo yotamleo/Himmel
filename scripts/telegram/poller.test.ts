@@ -425,10 +425,10 @@ test("chat routes to __chat__ session", async () => {
 
 test("group chat routes to its own group_<chat_id> session with meta.chat_id = the group", async () => {
   const r = root(); const ran: string[] = [];
-  await handleInbound(r, { from:1, chat_id:-5072730283, text:"hello group" }, async (s:string)=>{ran.push(s);});
-  expect(ran).toEqual(["group_-5072730283"]);
-  const m = await readMeta(r, "group_-5072730283");
-  expect(m?.chat_id).toBe(-5072730283);
+  await handleInbound(r, { from:1, chat_id:-1009999999, text:"hello group" }, async (s:string)=>{ran.push(s);});
+  expect(ran).toEqual(["group_-1009999999"]);
+  const m = await readMeta(r, "group_-1009999999");
+  expect(m?.chat_id).toBe(-1009999999);
 });
 
 test("ticket session chat_id is pinned by its creator; a group followup does not re-route it", async () => {
