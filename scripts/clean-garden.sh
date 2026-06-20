@@ -149,6 +149,50 @@ is_branch_mergeable_for_prune() {
         | awk -v b="$branch" '$1 == b && /\[gone\]/ { found=1 } END { exit !found }'
 }
 
+# Is an untracked path a known, discardable stray? (HIMMEL-431)
+# Allowlist (survey-grounded): bun package-lock.json, codex AGENTS.md / .codex/.
+# Scoped to "may be discarded when pruning a MERGED worktree" — NOT a decision
+# about repo tracking of codex files (that is HIMMEL-417).
+is_ignorable_stray() {
+    case "$1" in
+        AGENTS.md|*/AGENTS.md)                 return 0 ;;
+        .codex/*|*/.codex/*)                   return 0 ;;
+        package-lock.json|*/package-lock.json) return 0 ;;
+    esac
+    return 1
+}
+
+# Classify a worktree's working-tree state for the merged-prune decision.
+# Echoes exactly one verdict token (rc always 0; git failures -> "scanfail"):
+#   scanfail            a git status/ls-files call failed
+#   tracked             tracked modifications present (real WIP)
+#   clean               no tracked changes, no untracked files
+#   forgotten <paths>   tracked-clean, but untracked file(s) NOT on the allowlist
+#   strays <paths>      tracked-clean, all untracked file(s) are ignorable strays
+classify_worktree() {
+    local wt="$1" tracked untracked u nonign="" strays=""
+    if ! tracked=$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null); then
+        echo "scanfail"; return 0
+    fi
+    if [ -n "$tracked" ]; then echo "tracked"; return 0; fi
+    if ! untracked=$(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null); then
+        echo "scanfail"; return 0
+    fi
+    if [ -z "$untracked" ]; then echo "clean"; return 0; fi
+    while IFS= read -r u; do
+        [ -z "$u" ] && continue
+        if is_ignorable_stray "$u"; then
+            strays="${strays:+$strays }$u"
+        else
+            nonign="${nonign:+$nonign }$u"
+        fi
+    done <<EOF
+$untracked
+EOF
+    if [ -n "$nonign" ]; then echo "forgotten $nonign"; return 0; fi
+    echo "strays $strays"; return 0
+}
+
 # Read worktree list into parallel arrays.
 WT_PATHS=()
 WT_BRANCHES=()
@@ -217,35 +261,61 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             continue
         fi
 
-        # Dirty check. Pruning uses `git worktree remove` (no --force) so git
-        # itself will also refuse if the worktree gets re-dirtied between this
-        # check and the remove call — defense in depth against TOCTOU.
-        # Capture stderr separately so a status self-failure (e.g. stale
-        # .git/index.lock from a crashed process) is surfaced instead of
-        # being misread as a clean tree.
-        status_out=""
-        status_err=""
-        status_rc=0
-        { status_out=$(git -C "$wt" status --porcelain 2>/dev/null); status_rc=$?; } || true
-        if [ "$status_rc" -ne 0 ]; then
-            status_err=$(git -C "$wt" status --porcelain 2>&1 >/dev/null || true)
-            echo "WARN clean-garden: $br git status failed (rc=$status_rc) — skipped ($wt): ${status_err}" >&2
-            SKIPPED=$((SKIPPED+1))
-            continue
-        fi
-        if [ -n "$status_out" ]; then
-            echo "WARN clean-garden: $br has uncommitted changes — skipped ($wt)" >&2
-            SKIPPED=$((SKIPPED+1))
-            continue
-        fi
+        # Working-tree check (HIMMEL-431). Base the prune decision on TRACKED
+        # changes only: a merged worktree's real work is already in main, so its
+        # untracked files are strays. Known-regenerable strays (bun lockfile,
+        # codex files) are discarded with the prune; tracked WIP or an unknown
+        # untracked file (possible forgotten work) keeps the worktree + warns.
+        # `|| verdict=scanfail` backstops the rc-always-0 contract: if a future
+        # edit ever lets classify_worktree exit non-zero, degrade to the safe
+        # skip rather than aborting the whole sweep under `set -e`.
+        verdict=$(classify_worktree "$wt") || verdict="scanfail"
+        case "$verdict" in
+            scanfail)
+                echo "WARN clean-garden: $br working-tree scan failed — skipped ($wt)" >&2
+                SKIPPED=$((SKIPPED+1)); continue ;;
+            tracked)
+                echo "WARN clean-garden: $br has uncommitted changes — skipped ($wt)" >&2
+                SKIPPED=$((SKIPPED+1)); continue ;;
+            "forgotten "*)
+                echo "WARN clean-garden: $br has untracked files that are not known strays (possible forgotten work) — skipped ($wt): ${verdict#forgotten }" >&2
+                SKIPPED=$((SKIPPED+1)); continue ;;
+        esac
+        # verdict is "clean" or "strays <paths>".
+        strays=""
+        case "$verdict" in "strays "*) strays="${verdict#strays }" ;; esac
 
         if [ "$DRY_RUN" -eq 1 ]; then
-            echo "DRY clean-garden: would prune $br ($wt)"
+            if [ -n "$strays" ]; then
+                echo "DRY clean-garden: would prune $br ($wt), discarding untracked strays: $strays"
+            else
+                echo "DRY clean-garden: would prune $br ($wt)"
+            fi
             PRUNED=$((PRUNED+1))
             continue
         fi
 
-        if git -C "$PRIMARY_WORKTREE" worktree remove "$wt" >/dev/null 2>&1; then
+        # `git worktree remove` (no --force) refuses on untracked files, so the
+        # strays case needs --force. Re-classify immediately before forcing so a
+        # tracked change OR a new non-stray untracked file appearing in the window
+        # still aborts (restores the defense-in-depth the plain path gets free).
+        remove_args=()
+        if [ -n "$strays" ]; then
+            verdict2=$(classify_worktree "$wt") || verdict2="scanfail"
+            case "$verdict2" in
+                "strays "*) ;;         # still only strays — safe to force
+                "clean") strays="" ;;  # strays vanished; plain remove now works
+                *)
+                    echo "WARN clean-garden: $br changed during prune ($verdict2) — skipped ($wt)" >&2
+                    SKIPPED=$((SKIPPED+1)); continue ;;
+            esac
+            if [ -n "$strays" ]; then
+                remove_args=(--force)
+                echo "NOTE clean-garden: $br — pruning merged worktree, discarding untracked strays: $strays ($wt)" >&2
+            fi
+        fi
+
+        if git -C "$PRIMARY_WORKTREE" worktree remove "${remove_args[@]}" "$wt" >/dev/null 2>&1; then
             if git -C "$PRIMARY_WORKTREE" branch -D "$br" >/dev/null 2>&1; then
                 echo "OK clean-garden: pruned $br ($wt)"
                 PRUNED=$((PRUNED+1))
