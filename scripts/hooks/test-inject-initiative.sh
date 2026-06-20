@@ -220,6 +220,37 @@ out=$(printf '{}' | HIMMEL_INITIATIVE=pr,pr, bash "$hook")
 assert_has   "pr step present"       "open or refresh the PR"   "$out"
 assert_lacks "no second numbered step" "2\."                    "$out"
 
+# ---------- 17. execute leg renders an execution-handoff step (HIMMEL-443) ----
+echo "Test 17: 'prcheck,execute' renders the execute handoff"
+out=$(printf '{}' | HIMMEL_INITIATIVE=prcheck,execute bash "$hook")
+assert_has "execute step present" "subagent-driven-development" "$out"
+
+# ---------- 18. merge leg renders a merge step + drops the no-merge line ------
+echo "Test 18: 'prcheck,merge' points at pr-merge.sh, guards --admin, no no-merge line"
+out=$(printf '{}' | HIMMEL_INITIATIVE=prcheck,merge bash "$hook")
+assert_has   "merge step names pr-merge.sh" "pr-merge.sh"       "$out"
+assert_has   "merge step guards --admin"    "never .*--admin"   "$out"
+assert_lacks "no-merge line dropped when merge active" "Do NOT merge" "$out"
+
+# ---------- 19. public leg renders a PREP-ONLY step --------------------------
+echo "Test 19: 'merge,public' renders a prep-only public step (stops before push)"
+out=$(printf '{}' | HIMMEL_INITIATIVE=merge,public bash "$hook")
+assert_has "public step is prep-only" "PREP"                    "$out"
+assert_has "public step says do not push" "DO NOT push"         "$out"
+
+# ---------- 20. overnight profile: selector reads the overnight var ----------
+echo "Test 20: HIMMEL_OVERNIGHT=1 + HIMMEL_INITIATIVE_OVERNIGHT=all → 6-leg set"
+out=$(printf '{}' | HIMMEL_OVERNIGHT=1 HIMMEL_INITIATIVE_OVERNIGHT=all bash "$hook")
+assert_has "overnight has execute" "subagent-driven-development" "$out"
+assert_has "overnight has merge"   "pr-merge.sh"                  "$out"
+assert_has "overnight header names the overnight var" "HIMMEL_INITIATIVE_OVERNIGHT is active" "$out"
+
+# ---------- 21. plan token reserved → no plan-specific prose -----------------
+echo "Test 21: 'plan,prcheck' → plan emits no step, prcheck numbered first"
+out=$(printf '{}' | HIMMEL_INITIATIVE=plan,prcheck bash "$hook")
+assert_has   "prcheck numbered first (plan consumes no number)" "1\. Run" "$out"
+assert_lacks "no second numbered step from plan"               "2\."     "$out"
+
 echo
 echo "RESULTS: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

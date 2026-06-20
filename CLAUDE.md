@@ -188,9 +188,11 @@ himmel enforces structurally, not by prose: **6 PreToolUse hooks**
 `.pre-commit-config.yaml`; pre-push incl. `check-platforms-tested`), a
 `UserPromptSubmit` hook (`improve-on-submit.sh`,
 default OFF), a `SessionStart` hook (`inject-initiative.sh` — opt-in
-`HIMMEL_INITIATIVE` drive-to-ship directive: `1`/`all` for the full chain or a
-comma-separated subset of `prcheck,pr,ticket,handover`, default OFF, advisory
-only; HIMMEL-425), and shared **guardrail predicates** (`scripts/guardrails/lib.sh`).
+`HIMMEL_INITIATIVE` drive-to-ship directive over the shared leg grammar
+(`scripts/lib/initiative-legs.sh`, HIMMEL-443): `1`/`all` or a comma-subset of
+`plan,execute,prcheck,pr,ticket,merge,public,handover`; `HIMMEL_OVERNIGHT`
+selects the overnight profile reading `HIMMEL_INITIATIVE_OVERNIGHT`; default OFF,
+advisory only; HIMMEL-425), and shared **guardrail predicates** (`scripts/guardrails/lib.sh`).
 Hook bypass = session env var set in the LAUNCHING shell (e.g.
 `EDIT_ON_MAIN_OK=1 claude`); a per-call prefix does NOT work. Per-repo opt-out:
 a local gitignored `.single-writer` at a repo root allows on-main edits there
