@@ -37,6 +37,7 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 |---|---|
 | /pr-triage | Lightweight 4-step PR triage gate (steipete) — decide if a PR is even worth a deep multi-agent CR before running /pr-check |
 | /pr-check | Run the multi-agent CR review on the current branch and clear the pre-push marker on clean output |
+| /cr-scores | Print the per-critic agreed/availability scorecard and surface drop advice |
 | /claude-md-audit | Audit changed CLAUDE.md files against the claude-md-improver rubric before PR — audit-only, applies no edits on its own |
 
 ## Handover
@@ -50,6 +51,7 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 | /handover-pr-open | Open or update the PR for the current handover/<TICKET>-<slug> branch (HIMMEL-141). |
 | /handover-pr-merge | Squash-merge the PR for the current handover/<TICKET>-<slug> branch (HIMMEL-141). |
 | /handover-resume-armed | Fast-resume from the last armed session — surface its transcript + stop-point (the answered AskUserQuestion = the agreed continuation) with no manual JSONL archaeology. HIMMEL-208. |
+| /handover-setup | First-time handover bootstrap — asks where handover state should live, persists it to .env as HANDOVER_DIR, then runs init (new) or register (existing). Use on a fresh machine/repo before /handover new-epic etc. |
 
 ## Session / context
 
@@ -87,6 +89,20 @@ the github-repo ingest skill these dispatch to.
 | /triage-clips | Stage 2 — autonomous triage: summarize, infer tags, suggest Related Notes, extract action items → daily note, annotate promotion candidate, mark `processed: true`. Idempotent. |
 | /synthesize-clips | Stage 3 — cross-clip synthesis: find recurring patterns across processed clips, write proposal pages to `Clippings/_synthesis/` (proposals only, never restructures). |
 | /archive-clips | Stage 4 (LUNA-55) — graduate fully-chained clips (harvested ∧ processed ∧ in-synthesis) to `Clippings/_done/<YYYY-MM>/`, rewrite inbound links (literal, boundary-safe), dedup by canonical URL, (re)generate `Clippings/_deferred.md`. |
+
+## Plugin skills & ops (himmel-ops, obsidian-triage)
+
+Skills shipped by vendored plugins. Most trigger on a symptom or a slash
+alias rather than a bare command; rows are paraphrased one-liners. Source
+is the plugin's `skills/<name>/SKILL.md` (or `commands/<name>.md` where a
+slash alias exists).
+
+| Skill / command | What it does |
+|---|---|
+| /minerva (himmel-ops) | Run the brainstorm→critic→spec→critic→plan pipeline as ONE pass with an adversarial critic loop between stages — one idea to a critic-hardened implementation plan. Slash alias + dispatchable skill. |
+| stuck-playbook (himmel-ops) | Load-on-trigger guardrail-recovery escape-hatches — fires on a denial/friction symptom (auto-mode Bash/Jira write denied, hung permission prompt, missing attestation trailer). Surfaces escape-hatches kept out of the always-on root CLAUDE.md (HIMMEL-211). |
+| vault-lint (obsidian-triage) | Filesystem-only, report-only vault health lint — a single deterministic Python pass that converges on large PARA vaults (orphans, broken wikilinks, audit). Vault-agnostic. |
+| luna-vitals-extract (obsidian-triage) | Backfill luna-medic health series for one vault time-bucket (HIMMEL-355) — extracts (date, metric, value) tuples via the luna-vitals CLI + an LLM prose pass, writing one per-bucket review artifact. Single-writer; never writes 50-Vitals/ directly. |
 
 ## Utility
 

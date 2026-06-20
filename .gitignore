@@ -46,3 +46,5 @@ logs/gemini/
 # runtime config + its auto-generated slash-command→skill mirrors are ignored.
 .codex/
 .agents/skills/source-command-*/
+# himmel-contributor marker (opt-in; enables doc-guard gate) — never commit it
+.himmel-dev

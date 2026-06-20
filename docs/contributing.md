@@ -78,6 +78,19 @@ this doc. Highlights:
 - Windows operators run via Git Bash. `cygpath -m` normalizes paths when
   needed.
 
+## Enable the doc-guard gate
+
+The catalog-sync gate (`doc-guard`, `scripts/hooks/check-doc-guard.sh`) is **opt-in** — it guards
+himmel contributors but must stay off for adopters who use himmel only as a
+harness. Enable it by dropping a gitignored marker at the repo root:
+
+```bash
+touch .himmel-dev
+```
+
+Without this marker, `scripts/himmel-update.sh --plugins-check` will remind
+you the gate is off. The marker is listed in `.gitignore` and never committed.
+
 ## Smoke tests
 
 Every new shell hook or handover script ships with a paired smoke test

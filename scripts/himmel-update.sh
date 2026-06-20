@@ -14,6 +14,9 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
+# shellcheck source=guardrails/lib.sh
+# shellcheck disable=SC1091
+. "$ROOT/scripts/guardrails/lib.sh"
 
 # ─── plugin install-state gap report (HIMMEL-434) ────────────────────────────
 # Advisory: `marketplace update` only re-syncs plugins that are ALREADY
@@ -186,6 +189,7 @@ update_hermes() {
 # Just the plugin install-state report; no git, no network. Exit 0 always.
 if [ "${1:-}" = "--plugins-check" ]; then
     report_plugin_gap
+    warn_doc_guard_off "$ROOT"
     exit 0
 fi
 

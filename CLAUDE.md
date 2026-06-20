@@ -188,7 +188,10 @@ himmel-ops plugin `hooks.json` so it's live only after `/himmel-update` + a fres
 session), **1 PostToolUse hook**
 (`auto-arm-on-subagent-cap` — detects cap in Agent tool results, HIMMEL-276),
 **pre-commit/commit-msg/pre-push gates** (source of truth
-`.pre-commit-config.yaml`; pre-push incl. `check-platforms-tested`), a
+`.pre-commit-config.yaml`; pre-push incl. `check-platforms-tested`;
+pre-commit+pre-push `doc-guard` — himmel-dev-only, blocks ADDING a
+command/skill without updating `docs/commands-catalog.md`, gated by
+`.himmel-dev` marker), a
 `UserPromptSubmit` hook (`improve-on-submit.sh`,
 default OFF), a `SessionStart` hook (`inject-initiative.sh` — opt-in
 `HIMMEL_INITIATIVE` drive-to-ship directive over the shared leg grammar
