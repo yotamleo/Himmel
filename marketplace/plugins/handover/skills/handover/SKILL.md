@@ -1,6 +1,6 @@
 ---
 name: handover
-description: Use when the user says "new epic", "new task", "new standalone", "end session", "update status", "handover", "handover-resume #N", "handover init", "handover register", "handover repos", or asks to create/track work items in the handover system. Also use when wrapping up a session or resuming tracked work. Triggers on phrases like "wrap up", "session done", "start epic", "add task to #N", "handover-resume", "resume session", "register handover for <repo>".
+description: Use when the user says "new epic", "new task", "new standalone", "end session", "update status", "handover", "handover-resume #N", "handover bug", "log a bug", "track a bug", "fix didn't work", "handover bugs", "bug dashboard", "handover lessons", "lessons sweep", "handover init", "handover register", "handover repos", or asks to create/track work items in the handover system. Also use when wrapping up a session or resuming tracked work. Triggers on phrases like "wrap up", "session done", "start epic", "add task to #N", "handover-resume", "resume session", "register handover for <repo>".
 ---
 
 # Handover System
@@ -237,7 +237,7 @@ Regenerates `<state-root>/status.md` + `roadmap.md` + `tech-debt.md` from filesy
 2. List `<state-root>/{,<bucket>/}epics/<form>-*/` → read each `master-plan.md` for Status, Task Index, frontmatter (bucket, priority, severity, jira, pending_jira_link).
 3. List `<state-root>/{,<bucket>/}epics/*/tasks/<form>-*/` → read each `brief.md`.
 4. List `<state-root>/{,<bucket>/}standalones/<form>-*/` → read each `brief.md`.
-5. Count open bugs across all `bugs.md` files; count blocked items.
+5. Count open bugs across all `bugs.md` files (an open bug = a `### BUG-<n>` heading whose inline `<!-- status: ... -->` is `open` or `fixing`; legacy table-format files have no such headings → count 0); count blocked items.
 6. **Regenerate three auto-files in one pass:**
 
    a. `<state-root>/status.md` — summary table with new columns Bucket and Priority:
@@ -304,6 +304,45 @@ The skill produces `<state-root>/tech-debt.md` on every `update-status` call. Al
 
 Items with `pending_jira_link: true` are listed under their dedicated section, not the stale tiers, regardless of age.
 
+### `/handover bug <add|fix|status>`
+
+Quick-add / update a bug in the **active item's** `bugs.md` (resolved from the
+current branch's ticket via `scripts/handover/resolve-active-item.sh` — C1; if it
+exits non-zero, tell the user there's no active handover item and stop). Backed by
+`scripts/handover/bug.sh`. Run by absolute path from the repo root.
+
+- `add "<symptom>"` → `bug.sh add --bugs <item>/bugs.md --symptom "<symptom>"`. Echoes the new `BUG-<n>` id.
+- `fix <BUG-n> <FAILED|WORKED> "<note>"` → `bug.sh fix --bugs <item>/bugs.md --id <BUG-n> --outcome <FAILED|WORKED> --note "<note>"`. Records a fix attempt under `Fixes tried:`.
+- `status <BUG-n> <open|fixing|resolved|wontfix>` → `bug.sh status --bugs <item>/bugs.md --id <BUG-n> --to <status>`.
+
+Resolve `<item>` once: `item="$(bash scripts/handover/resolve-active-item.sh)"` (exit 3 → no active item → skip with a one-line note). The bug id is per-item sequential and stable.
+
+### `/handover bugs [--open]`
+
+Cross-item **dashboard** of every tracked bug (read-only). Renders a markdown
+table (Item / Bug / Status / Symptom / #Fixes) across all `bugs.md` under the
+handover root, with totals. `--open` restricts to `open`/`fixing`. Backed by
+`scripts/handover/bugs-dashboard.sh`; run by absolute path from the repo root:
+
+```
+bash scripts/handover/bugs-dashboard.sh [--open]
+```
+
+No active-item resolve needed — it aggregates the whole root. Prints
+`_No bugs tracked._` when clean (`_No open bugs tracked._` under `--open`).
+
+### `/handover lessons`
+
+Proposal-only **lessons sweep** (read-only, writes nothing). Surfaces symptoms
+of `resolved`/`wontfix` bugs and CR-finding titles that recur across ≥2 items
+as lesson **candidates**, followed by a full digest. The operator promotes
+what's worth keeping — there is no auto-write to the vault or `CLAUDE.md`.
+Backed by `scripts/handover/lessons-sweep.sh`:
+
+```
+bash scripts/handover/lessons-sweep.sh
+```
+
 ### `handover-resume #N`
 
 Resolves any ID and outputs the cold-start prompt to resume work in a new session. Read-only.
@@ -322,6 +361,7 @@ Resolves any ID and outputs the cold-start prompt to resume work in a new sessio
 5. List `next-session-*.md` in target dir. Find highest-numbered file.
 6. **If session file exists:** read in full, locate the `## Cold-Start Prompt` heading, print every line **after** the heading up to the next `## ` heading or EOF (exclude the heading line itself, trim leading/trailing blank lines). Print under header `Cold-start prompt for #N (repo: <name>):`.
 7. **No session file:** fallback — print `context.md` (epic) or `brief.md` (task/standalone), prefixed `No session file yet for #N in <repo-name>. Showing context:`.
+7.5. **Surface open bugs + latest CR findings (C5).** Run `bash scripts/handover/resume-context.sh --item <resolved-item-dir>` (the dir found in step 3). If it prints anything, append it to the output under a blank line — so the resuming session sees open bugs (with FAILED/WORKED fixes-tried, to avoid re-trying a failed fix) and the most recent CR-findings block before continuing. Prints nothing for an item with no open bugs and no CR findings — leave the output clean.
 8. **Stale nudge** — if `<state-root>/tech-debt.md` has any entries under `## Lingering` or `## Zombie`, append the top 3 to the printed output:
 
    ```
@@ -635,6 +675,10 @@ Registry (machine-global, not per-repo):
 ## Capturing Human Feedback
 
 When user gives feedback on work during chat, capture it to the relevant `reviewer-notes.md` under `## Human Feedback`. Proactively — don't wait to be asked. Resolves under the **target repo** of the work being reviewed.
+
+## Capturing Bug Fixes
+
+When a fix is attempted during debugging and **fails**, append it to the active item's bug before moving on — proactively, don't wait to be asked: `/handover bug fix <BUG-n> FAILED "<what you tried + why it failed>"` (or `bug add "<symptom>"` first if the bug isn't tracked yet). When a fix works, record `WORKED` and set status `resolved`. This `Fixes tried` FAILED/WORKED ledger is the circular-debugging breaker — it stops a later session (or a post-compaction you) from re-trying a fix that already failed. Resolves under the **target repo** of the work being debugged (same resolver as Human Feedback).
 
 ## References (load on demand)
 
