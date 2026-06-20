@@ -115,6 +115,36 @@ assert_rc "Bash nice cat .env"               2 "$(run_case "$(j_bash 'nice cat .
 # separate `cat .env` clause (today's global carve-out wrongly ALLOWs this).
 assert_rc "Bash sed -i foo; cat .env"        2 "$(run_case "$(j_bash 'sed -i s/a/b/ foo.txt; cat .env')")"
 
+# --- HIMMEL-440: recurse into bash -c / sh -c bodies ---
+# An interpreter `-c '<reader> <secret>'` body IS shell, so re-running the
+# matcher on it is correct (unlike node -e / python -c non-shell bodies, which
+# is why HIMMEL-436 must NOT re-open). New BLOCK: the secret-read is the
+# first/only statement of the -c body.
+assert_rc "Bash bash -c 'cat .env'"          2 "$(run_case "$(j_bash "bash -c 'cat .env'")")"
+assert_rc "Bash sh -c \"cat .env\""          2 "$(run_case "$(j_bash 'sh -c "cat .env"')")"
+assert_rc "Bash bash -lc 'cat .env'"         2 "$(run_case "$(j_bash "bash -lc 'cat .env'")")"
+assert_rc "Bash env bash -c 'cat .env'"      2 "$(run_case "$(j_bash "env bash -c 'cat .env'")")"
+assert_rc "Bash zsh -c 'grep X .env'"        2 "$(run_case "$(j_bash "zsh -c 'grep X .env'")")"
+# Regression (already green via the <-redirect path, must stay green).
+assert_rc "Bash bash -c 'read x <.env'"      2 "$(run_case "$(j_bash "bash -c 'read x <.env'")")"
+# PRESERVED ALLOW: -c body with no secret-read, and no -c at all.
+assert_rc "Bash bash -c 'echo hi'"           0 "$(run_case "$(j_bash "bash -c 'echo hi'")")"
+assert_rc "Bash sh -c 'ls -la'"              0 "$(run_case "$(j_bash "sh -c 'ls -la'")")"
+assert_rc "Bash bash run.sh (no -c)"         0 "$(run_case "$(j_bash 'bash run.sh')")"
+assert_rc "Bash bash script.sh .env (no -c)" 0 "$(run_case "$(j_bash 'bash script.sh .env')")"
+# More interpreters + flag-shape coverage of the -c hunt state machine.
+assert_rc "Bash dash -c 'cat .env'"          2 "$(run_case "$(j_bash "dash -c 'cat .env'")")"
+assert_rc "Bash bash -x -c 'cat .env'"       2 "$(run_case "$(j_bash "bash -x -c 'cat .env'")")"
+assert_rc "Bash bash --norc -c 'cat .env'"   2 "$(run_case "$(j_bash "bash --norc -c 'cat .env'")")"
+# Multi-statement body blocks via the LATER clause (design's load-bearing claim).
+assert_rc "Bash bash -c 'echo hi; cat .env'" 2 "$(run_case "$(j_bash "bash -c 'echo hi; cat .env'")")"
+# In-place carve-out propagates into the -c body (recursive twin of sed -i).
+assert_rc "Bash bash -c 'sed -i s/a/b/ .env'" 0 "$(run_case "$(j_bash "bash -c 'sed -i s/a/b/ .env'")")"
+# No FP on a trailing positional ($0) after a quoted body that reads a NON-secret
+# (the body reads config.json; .env is the unused $0, never read) — body-quote
+# boundary tracking stops the recursed-arg scan at the body's closing quote.
+assert_rc "Bash bash -c 'cat config.json' .env" 0 "$(run_case "$(j_bash "bash -c 'cat config.json' .env")")"
+
 # --- BYPASS case (expect rc=0 with READ_SECRETS_OK=1) ---
 assert_rc "Bypass cat .env"                0 "$(run_case "$(j_bash 'cat .env')" "READ_SECRETS_OK=1")"
 assert_rc "Bypass Read .env"               0 "$(run_case "$(j_read '/proj/.env')" "READ_SECRETS_OK=1")"
