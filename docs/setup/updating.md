@@ -54,6 +54,11 @@ bash scripts/himmel-update.sh  # from a shell, in the himmel checkout
    default branch).
 2. `claude plugin marketplace update himmel` — refresh plugins from the
    freshly-pulled local dir.
+3. **Plugin install-state report** (HIMMEL-434) — `marketplace update` only
+   re-syncs *already-installed* plugins, so it can't surface a himmel plugin
+   that is missing or being served from a non-`@himmel` marketplace. The report
+   prints the `claude plugin install …@himmel` / migrate commands for any gap.
+   Run it standalone with `bash scripts/himmel-update.sh --plugins-check`.
 
 Plain `git pull` works too if you don't need the marketplace re-sync.
 
@@ -77,3 +82,9 @@ Plain `git pull` works too if you don't need the marketplace re-sync.
 - Whether the *default* registration should switch to a github (floating) source
   so plugins auto-deliver without a pull is tracked as a deliberate trade-off in
   HIMMEL-398 (it would leave the core hooks pull-only regardless).
+- **Vendored plugin served from its external marketplace?** If `--plugins-check`
+  flags `claude-obsidian` / `obsidian` as "served from another marketplace", an
+  external auto-updating copy is shadowing the himmel SHA pin. Migrate it to the
+  pinned `@himmel` source **operator-present, in a fresh session**:
+  `bash scripts/machine-setup/migrate-plugin-to-himmel.sh --apply <name@market> …`
+  (it mutates `settings.json` via `claude plugin`, so it is an operator step).

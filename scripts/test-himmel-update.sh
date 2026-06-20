@@ -102,6 +102,38 @@ out=$(bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
 assert_contains "behind=0: behind count is 0" "behind:   0" "$out"
 assert_contains "behind=0: up to date message" "up to date" "$out"
 
+# ─── Test 3: --plugins-check gap report (HIMMEL-434) ─────────────────────────
+# Fixtures: marketplace declares a/b/c. installed has a@himmel (ok),
+# b@ext-market (shadowed), c absent (missing). Drive the detection via the
+# env-overridable input paths so no real ~/.claude state is touched.
+echo "Test 3: --plugins-check → classifies installed / shadowed / missing"
+make_repo_behind 0   # reuse a mock clone so the script resolves a valid ROOT
+PFIX="$TMP/plugins_fix"
+mkdir -p "$PFIX"
+cat > "$PFIX/marketplace.json" <<'JSON'
+{ "name": "himmel", "plugins": [ {"name":"a"}, {"name":"b"}, {"name":"c"} ] }
+JSON
+cat > "$PFIX/installed.json" <<'JSON'
+{ "version": 1, "plugins": { "a@himmel": [], "b@ext-market": [], "z@himmel": [] } }
+JSON
+out=$(HIMMEL_MARKETPLACE_JSON="$PFIX/marketplace.json" \
+      HIMMEL_INSTALLED_PLUGINS_JSON="$PFIX/installed.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --plugins-check 2>&1) || true
+assert_contains "gap: counts 1/3 from @himmel" "1/3 @himmel plugins installed" "$out"
+assert_contains "gap: missing 'c' → install hint" "claude plugin install c@himmel" "$out"
+assert_contains "gap: shadowed 'b' names the foreign market" "b@ext-market" "$out"
+assert_contains "gap: shadowed section points at migrate script" "migrate-plugin-to-himmel.sh" "$out"
+
+# ─── Test 4: --plugins-check all-installed → clean line ──────────────────────
+echo "Test 4: --plugins-check → all installed from @himmel reports clean"
+cat > "$PFIX/installed-all.json" <<'JSON'
+{ "version": 1, "plugins": { "a@himmel": [], "b@himmel": [], "c@himmel": [] } }
+JSON
+out=$(HIMMEL_MARKETPLACE_JSON="$PFIX/marketplace.json" \
+      HIMMEL_INSTALLED_PLUGINS_JSON="$PFIX/installed-all.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --plugins-check 2>&1) || true
+assert_contains "all-installed: clean message" "all 3 @himmel plugins installed" "$out"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
 echo "RESULTS: $pass passed, $fail failed"
