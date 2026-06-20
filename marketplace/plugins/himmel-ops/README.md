@@ -95,6 +95,13 @@ Otherwise it reports `interactive` and minerva pauses for the operator after eac
 critic-cleaned artifact.
 
 **Distribution:** ships in this plugin (skill + command + helper), so it installs
-system-wide and works in any repo, with no `superpowers` fork. A deferred
-companion (HIMMEL-429) adds a Skill-tool hook so the critic also fires when
-brainstorming/writing-plans is triggered without `/minerva`.
+system-wide and works in any repo, with no `superpowers` fork.
+
+**Skill-tool hook (HIMMEL-429).** A `PreToolUse` hook (`hooks/hooks.json`,
+`matcher: "Skill"`) closes the no-`/minerva` bypass: when
+`superpowers:brainstorming` or `superpowers:writing-plans` is invoked by ANY
+path without going through `/minerva`, the hook injects a scoped directive so the
+critic loop still fires (spec-critic after brainstorming, plan-critic after
+writing-plans). It is advisory context, not a permission change, and is
+**fail-open** — it never blocks a Skill call. Disable it with
+`MINERVA_HOOK_DISABLE=1` in the shell that launched Claude Code.
