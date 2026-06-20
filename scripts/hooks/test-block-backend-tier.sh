@@ -67,6 +67,17 @@ STUB_EMPTY="$TMPDIR_TEST/cli-empty.js"
 STUB_TRANS_ONLY="$TMPDIR_TEST/cli-transitions-only.js"
 make_stub "$STUB_TRANS_ONLY" get transitions
 
+# Confluence CLI stub (HIMMEL-437). Page verbs are MULTI-WORD ("page get") and
+# MUST be passed quoted so make_stub emits them as single lines — this is what
+# exercises the introspection strip fix (CR/LF/TAB stripped, internal space kept).
+STUB_CONF="$TMPDIR_TEST/cli-confluence.js"
+make_stub "$STUB_CONF" "page get" "page create" "page update" "page delete" \
+    search spaces comments comment attachments attach download
+
+# Reduced confluence stub: no 'page get', no 'search' → those routes fail open.
+STUB_CONF_REDUCED="$TMPDIR_TEST/cli-confluence-reduced.js"
+make_stub "$STUB_CONF_REDUCED" spaces comments
+
 # --- Registry fixture helpers -----------------------------------------------
 # write_registry <path> <json> — write a fixture backends.json.
 write_registry() {
@@ -127,12 +138,13 @@ run_case() {
     local input="$1"
     local cli="${2:-$STUB_FULL}"
     local extra_env="${3:-}"
-    # Build env: always set JIRA_CLI for backward compat seam.
-    local cmd_env="JIRA_CLI=$cli"
+    local conf="${4:-$STUB_CONF}"
+    # Build env: set both CLI seams so routing is deterministic regardless of
+    # whether a built dist/confluence.js exists at the resolved repo root.
     if [ -n "$extra_env" ]; then
-        printf '%s' "$input" | env "$cmd_env" "$extra_env" bash "$HOOK" >/dev/null 2>&1
+        printf '%s' "$input" | env "JIRA_CLI=$cli" "CONFLUENCE_CLI=$conf" "$extra_env" bash "$HOOK" >/dev/null 2>&1
     else
-        printf '%s' "$input" | env "$cmd_env" bash "$HOOK" >/dev/null 2>&1
+        printf '%s' "$input" | env "JIRA_CLI=$cli" "CONFLUENCE_CLI=$conf" bash "$HOOK" >/dev/null 2>&1
     fi
     echo "$?"
 }
@@ -159,9 +171,9 @@ assert_rc() {
 }
 
 assert_stderr_contains() {
-    local label="$1" input="$2" needle="$3" cli="${4:-$STUB_FULL}"
+    local label="$1" input="$2" needle="$3" cli="${4:-$STUB_FULL}" conf="${5:-$STUB_CONF}"
     local out
-    out=$(printf '%s' "$input" | env "JIRA_CLI=$cli" bash "$HOOK" 2>&1 >/dev/null || true)
+    out=$(printf '%s' "$input" | env "JIRA_CLI=$cli" "CONFLUENCE_CLI=$conf" bash "$HOOK" 2>&1 >/dev/null || true)
     case "$out" in
         *"$needle"*) echo "PASS $label" ;;
         *)
@@ -220,14 +232,15 @@ assert_stderr_contains "stderr names 'link' verb" \
     '{"tool_name":"mcp__plugin_atlassian_atlassian__createIssueLink","tool_input":{}}' \
     'jira/dist/index.js link'
 
-# --- Allowed Atlassian tools (no verb in the map → no plugin equivalent) ---
+# --- Allowed Atlassian tools (no verb in EITHER map → no plugin equivalent) ---
+# NOTE: the Confluence page/search/spaces/comment methods are NO LONGER here —
+# they now route to the confluence CLI (see the Confluence section below).
 for tool in lookupJiraAccountId getJiraIssueTypeMetaWithFields \
             getJiraProjectIssueTypesMetadata getIssueLinkTypes \
             addWorklogToJiraIssue atlassianUserInfo \
             getAccessibleAtlassianResources fetch search \
             getJiraIssueRemoteIssueLinks \
-            getConfluencePage createConfluencePage updateConfluencePage \
-            getConfluenceSpaces searchConfluenceUsingCql; do
+            getConfluencePageInlineComments createConfluenceInlineComment; do
     rc=$(run_case "{\"tool_name\":\"mcp__plugin_atlassian_atlassian__${tool}\",\"tool_input\":{}}")
     assert_rc "allow $tool" 0 "$rc"
 done
@@ -372,6 +385,92 @@ case "$out_no_api" in
         echo "PASS chain without api tier: api advisory absent from stderr"
         ;;
 esac
+
+# ============================================================================
+# 3. CONFLUENCE ROUTING (HIMMEL-437) — two services share the Atlassian prefix
+# ============================================================================
+
+echo ""
+echo "=== Confluence routing (HIMMEL-437) ==="
+
+# The confluence SERVICE must be in the active registry for it to be evaluated.
+# A repo backends.json (resolved via CLAUDE_PROJECT_DIR) may predate this change,
+# so force the CODE DEFAULTS path (which includes confluence) via a missing
+# BACKENDS_REGISTRY — identical to the "absent registry" jira case above — and
+# point both CLI seams at the stubs.
+# run a confluence case through forced code-defaults; $1=input, $2=confluence stub.
+run_case_conf() {
+    local input="$1" conf="${2:-$STUB_CONF}"
+    printf '%s' "$input" \
+        | env "BACKENDS_REGISTRY=$REG_MISSING" "JIRA_CLI=$STUB_FULL" "CONFLUENCE_CLI=$conf" bash "$HOOK" >/dev/null 2>&1
+    echo "$?"
+}
+
+# Registry FILE that includes BOTH atlassian services (mirrors the real
+# scripts/backends.json after HIMMEL-437). Exercises the registry-file path —
+# the one that actually runs in production — not just the code-defaults path.
+REG_ATLASSIAN_BOTH="$TMPDIR_TEST/reg-atlassian-both.json"
+write_registry "$REG_ATLASSIAN_BOTH" "{
+  \"jira\": {
+    \"enabled\": true,
+    \"mcp_prefix\": \"mcp__plugin_atlassian_atlassian__\",
+    \"cli\": \"${STUB_FULL}\",
+    \"chain\": [\"cli\", \"api\", \"mcp\"]
+  },
+  \"confluence\": {
+    \"enabled\": true,
+    \"mcp_prefix\": \"mcp__plugin_atlassian_atlassian__\",
+    \"cli\": \"${STUB_CONF}\",
+    \"chain\": [\"cli\", \"api\", \"mcp\"]
+  }
+}"
+
+# Block each Confluence MCP method whose mapped verb the confluence CLI has.
+# getConfluencePage → "page get" exercises the multi-word strip fix (Step 5).
+for tool in getConfluencePage createConfluencePage updateConfluencePage \
+            searchConfluenceUsingCql getConfluenceSpaces \
+            getConfluencePageFooterComments createConfluenceFooterComment; do
+    rc=$(run_case_conf "{\"tool_name\":\"mcp__plugin_atlassian_atlassian__${tool}\",\"tool_input\":{}}")
+    assert_rc "block $tool (confluence verb present)" 2 "$rc"
+done
+
+# Multi-word verb survives whitespace strip: getConfluencePage → "page get".
+out=$(printf '%s' '{"tool_name":"mcp__plugin_atlassian_atlassian__getConfluencePage","tool_input":{}}' \
+    | env "BACKENDS_REGISTRY=$REG_MISSING" "JIRA_CLI=$STUB_FULL" "CONFLUENCE_CLI=$STUB_CONF" bash "$HOOK" 2>&1 >/dev/null || true)
+case "$out" in
+    *"confluence.js page get"*) echo "PASS stderr names confluence 'page get' verb" ;;
+    *) echo "FAIL stderr names confluence 'page get' verb"; echo "--- got ---"; echo "$out"; echo "-----------"; FAILED=$((FAILED + 1)) ;;
+esac
+
+# Allow when the confluence CLI lacks the mapped verb (reduced stub: no 'page get').
+rc=$(run_case_conf '{"tool_name":"mcp__plugin_atlassian_atlassian__getConfluencePage","tool_input":{}}' "$STUB_CONF_REDUCED")
+assert_rc "allow getConfluencePage when confluence CLI lacks 'page get'" 0 "$rc"
+
+# Jira call is still routed to the jira CLI and NOT shadowed by the confluence arm.
+out=$(printf '%s' '{"tool_name":"mcp__plugin_atlassian_atlassian__getJiraIssue","tool_input":{}}' \
+    | env "BACKENDS_REGISTRY=$REG_MISSING" "JIRA_CLI=$STUB_FULL" "CONFLUENCE_CLI=$STUB_CONF" bash "$HOOK" 2>&1 >/dev/null || true)
+case "$out" in
+    *"jira/dist/index.js get"*) echo "PASS jira call names jira CLI (not confluence)" ;;
+    *) echo "FAIL jira call names jira CLI (not confluence)"; echo "--- got ---"; echo "$out"; echo "-----------"; FAILED=$((FAILED + 1)) ;;
+esac
+
+# Per-service bypass for confluence (generic MCP_<SERVICE>_OK eval path).
+rc=$(printf '%s' '{"tool_name":"mcp__plugin_atlassian_atlassian__getConfluencePage","tool_input":{}}' \
+    | env "BACKENDS_REGISTRY=$REG_MISSING" "CONFLUENCE_CLI=$STUB_CONF" MCP_CONFLUENCE_OK=1 bash "$HOOK" >/dev/null 2>&1; echo "$?")
+assert_rc "MCP_CONFLUENCE_OK=1 per-service bypass" 0 "$rc"
+
+# REGISTRY-FILE path (production): drive a Confluence call through a registry
+# that includes the confluence service — this is the path that runs when
+# scripts/backends.json exists. Guards against the backends.json entry being
+# dropped (the code-defaults cases above would still pass without it).
+rc=$(printf '%s' '{"tool_name":"mcp__plugin_atlassian_atlassian__getConfluencePage","tool_input":{}}' \
+    | env "BACKENDS_REGISTRY=$REG_ATLASSIAN_BOTH" bash "$HOOK" >/dev/null 2>&1; echo "$?")
+assert_rc "registry-file path: block getConfluencePage (confluence service in registry)" 2 "$rc"
+
+# The jira service in the SAME shared-prefix registry still blocks (loop covers both).
+rc=$(printf '%s' '{"tool_name":"mcp__plugin_atlassian_atlassian__getJiraIssue","tool_input":{}}' \
+    | env "BACKENDS_REGISTRY=$REG_ATLASSIAN_BOTH" bash "$HOOK" >/dev/null 2>&1; echo "$?")
+assert_rc "registry-file path: block getJiraIssue (jira not shadowed by confluence)" 2 "$rc"
 
 # ============================================================================
 # Summary

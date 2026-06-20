@@ -5,6 +5,12 @@
     "cli": "scripts/jira/dist/index.js",
     "chain": ["cli", "api", "mcp"]
   },
+  "confluence": {
+    "enabled": true,
+    "mcp_prefix": "mcp__plugin_atlassian_atlassian__",
+    "cli": "scripts/jira/dist/confluence.js",
+    "chain": ["cli", "api", "mcp"]
+  },
   "bitbucket": {
     "enabled": true,
     "mcp_prefix": null,

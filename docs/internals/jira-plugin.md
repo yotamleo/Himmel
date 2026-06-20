@@ -39,10 +39,15 @@ For Jira ops in this repo, default to the local CLI at
 | Move        | `... move HIMMEL-N --to-project LUNA [--type Story] [--dry-run]` (HIMMEL-197 — close source + create target + copy comments) | (none — Jira Cloud REST API has no direct project-change endpoint) |
 | Projects    | `... projects` / `... project-create ...`                                   | `getVisibleJiraProjects` / no equivalent for create              |
 | Link        | `... link HIMMEL-A HIMMEL-B --type Relates` (HIMMEL-210; case-insensitive type, validated against the live type list) | `createIssueLink` (+ `getIssueLinkTypes` for the type list) |
+| Assign      | `... assign HIMMEL-N <email\|accountId>` (`-`/`unassigned` clears, `auto` = default assignee; email → accountId via `/user/search`) (HIMMEL-437) | `editJiraIssue` (assignee field) |
+| Attachments | `... attachments HIMMEL-N` (list) / `... download HIMMEL-N [id] [--all] [--out dir]` (HIMMEL-437) | (none — MCP has no attachment download) |
+| Worklog     | `... worklog add HIMMEL-N --time 1h [--comment ...]` / `... worklog list HIMMEL-N` (HIMMEL-437) | `addWorklogToJiraIssue` (no list) |
+| Watchers    | `... watch HIMMEL-N [user]` / `... unwatch HIMMEL-N [user]` / `... watchers HIMMEL-N` (HIMMEL-437) | (none) |
+| Sprint      | `... boards` / `... sprints [--board N]` / `... sprint HIMMEL-N <sprintId\|backlog>` (Agile API `/rest/agile/1.0`; `JIRA_BOARD_ID` default) (HIMMEL-437) | (none — MCP has no Agile-board ops) |
 
 **Use MCP only when the plugin lacks the operation** (custom-field
-discovery, account-ID lookup via `lookupJiraAccountId`, Confluence
-operations — there is no Confluence plugin yet). The MCP block in
+discovery, account-ID lookup via `lookupJiraAccountId`). Confluence now has
+a sibling CLI (see below) — prefer it over the Confluence MCP tools. The MCP block in
 `block-backend-tier.sh` derives its blocked-set by introspecting
 the CLI's verbs (`node …/index.js --list-commands`) against a small
 verb→MCP-method map (HIMMEL-231) — an MCP method is refused iff its mapped
@@ -65,3 +70,38 @@ scripts/jira/dist/index.js list` works with an empty shell environment.
 A `JIRA_PROJECT_KEY` *unset in your shell* is irrelevant and is **not**
 the cause of a `projectKey()` error; check the repo-root `.env` instead.
 Only pass `--project FOO` for a one-off call against a different project.
+
+## Confluence CLI (HIMMEL-437)
+
+A sibling binary `scripts/jira/dist/confluence.js` (same package, same
+`.env` auth) covers routine Confluence ops. It is registered as the
+`confluence` service in `scripts/backends.json` (same Atlassian MCP prefix
+as jira, `chain: [cli, api, mcp]`), so `block-backend-tier.sh` hard-blocks
+the equivalent Confluence MCP tools — the routing hook evaluates BOTH
+atlassian-prefixed services and blocks on whichever has the mapped verb
+(Jira/Confluence method suffixes are disjoint).
+
+**API surface:** Confluence Cloud REST **v2** (`/wiki/api/v2`) is the
+default; two ops have no v2 equivalent and stay on **v1**
+(`/wiki/rest/api`): **CQL search** and **attachment upload**.
+
+**Auth (HIMMEL-437):** a *scoped* Jira API token returns `401` against
+Confluence (`/wiki`) — same gotcha as the bitbucket CLI. The confluence CLI
+uses `CONFLUENCE_EMAIL` / `CONFLUENCE_API_TOKEN` when **both** are set
+(point them at a Confluence-capable, i.e. scopeless/full-account, Atlassian
+token); otherwise it falls back to `JIRA_EMAIL` / `JIRA_API_TOKEN` (which
+works only if that token covers Confluence too).
+
+| Op            | Plugin (`node scripts/jira/dist/confluence.js …`)                    | MCP                                  |
+|---------------|----------------------------------------------------------------------|--------------------------------------|
+| Get page      | `page get <id>` (renders body ADF→text)                              | `getConfluencePage`                  |
+| Create page   | `page create --space KEY --title ... --body-file f [--parent id]`    | `createConfluencePage`               |
+| Update page   | `page update <id> [--title ...] [--body-file f]` (auto version-bump) | `updateConfluencePage`               |
+| Delete page   | `page delete <id>`                                                    | (none)                               |
+| Search        | `search --cql "..." [--limit N]` (v1)                                | `searchConfluenceUsingCql`           |
+| Spaces        | `spaces [--limit N]`                                                  | `getConfluenceSpaces`                |
+| Comments      | `comments <pageId>` (list) / `comment <pageId> "text" [--body-file f]` (add footer)  | `getConfluencePageFooterComments` / `createConfluenceFooterComment` |
+| Attachments   | `attachments <pageId>` (list) / `attach <pageId> file...` (upload, v1) / `download <pageId> [id] [--all] [--out dir]` | (none) |
+
+The verb↔MCP-method rows above mirror `_CONFLUENCE_VERB_METHOD_MAP` in
+`block-backend-tier.sh` — keep them in sync.

@@ -29,8 +29,8 @@
 #
 # Bypass env vars (set in the shell that LAUNCHED Claude Code):
 #   MCP_ALL_OK=1              — global; bypasses every service.
-#   MCP_JIRA_OK=1             — Jira only (backward-compat alias for MCP_JIRA_OK).
-#   MCP_<SERVICE_UPPER>_OK=1  — per-service (e.g. MCP_GITHUB_OK=1).
+#   MCP_JIRA_OK=1             — Jira only (legacy name; still honoured).
+#   MCP_<SERVICE_UPPER>_OK=1  — per-service (e.g. MCP_GITHUB_OK=1, MCP_CONFLUENCE_OK=1).
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,7 @@ set -euo pipefail
 # chain is colon-separated tiers (cli:api:mcp or mcp:cli:api etc.)
 # ---------------------------------------------------------------------------
 _DEFAULTS="jira|true|mcp__plugin_atlassian_atlassian__|scripts/jira/dist/index.js|cli:api:mcp
+confluence|true|mcp__plugin_atlassian_atlassian__|scripts/jira/dist/confluence.js|cli:api:mcp
 bitbucket|true||scripts/bitbucket/dist/index.js|cli:api:mcp
 github|true||gh|cli:api:mcp"
 
@@ -57,6 +58,22 @@ _JIRA_VERB_METHOD_MAP=$(printf '%s\n' \
     "link	createIssueLink")
 
 # ---------------------------------------------------------------------------
+# Confluence verb->MCP-method map. Verb strings match `confluence.js
+# --list-commands` EXACTLY (page verbs are space-joined: "page get").
+# Jira and Confluence method-name SUFFIXES are disjoint (*Jira* vs
+# *Confluence*), so at most one service maps any given MCP suffix — the
+# multi-service loop below can never double-attribute.
+# ---------------------------------------------------------------------------
+_CONFLUENCE_VERB_METHOD_MAP=$(printf '%s\n' \
+    "page get	getConfluencePage" \
+    "page create	createConfluencePage" \
+    "page update	updateConfluencePage" \
+    "search	searchConfluenceUsingCql" \
+    "spaces	getConfluenceSpaces" \
+    "comments	getConfluencePageFooterComments" \
+    "comment	createConfluenceFooterComment")
+
+# ---------------------------------------------------------------------------
 # Replacement hint per verb, keyed by service and verb.
 # Format: <service>:<verb> → human-readable replacement command.
 # ---------------------------------------------------------------------------
@@ -72,6 +89,15 @@ replacement_for() {
         jira:projects)   echo 'node scripts/jira/dist/index.js projects' ;;
         jira:link)       echo 'node scripts/jira/dist/index.js link HIMMEL-A HIMMEL-B --type Relates' ;;
         jira:*)          echo 'node scripts/jira/dist/index.js --help' ;;
+        # Confluence — note the page verbs carry an internal space in the arm key.
+        "confluence:page get")    echo 'node scripts/jira/dist/confluence.js page get <id>' ;;
+        "confluence:page create") echo 'node scripts/jira/dist/confluence.js page create --space <KEY> --title "..." --body-file <f>' ;;
+        "confluence:page update") echo 'node scripts/jira/dist/confluence.js page update <id> --body-file <f>' ;;
+        confluence:search)        echo 'node scripts/jira/dist/confluence.js search --cql "<cql>"' ;;
+        confluence:spaces)        echo 'node scripts/jira/dist/confluence.js spaces' ;;
+        confluence:comments)      echo 'node scripts/jira/dist/confluence.js comments <pageId>' ;;
+        confluence:comment)       echo 'node scripts/jira/dist/confluence.js comment <pageId> "<text>"' ;;
+        confluence:*)             echo 'node scripts/jira/dist/confluence.js --help' ;;
         *)               echo "${service} CLI --help" ;;
     esac
 }
@@ -81,7 +107,8 @@ replacement_for() {
 # ---------------------------------------------------------------------------
 verb_method_map_for() {
     case "$1" in
-        jira) printf '%s\n' "$_JIRA_VERB_METHOD_MAP" ;;
+        jira)       printf '%s\n' "$_JIRA_VERB_METHOD_MAP" ;;
+        confluence) printf '%s\n' "$_CONFLUENCE_VERB_METHOD_MAP" ;;
         *)    : ;;  # no map → nothing matches → allow
     esac
 }
@@ -184,147 +211,10 @@ else
     services_list=$(printf '%s\n' "$_DEFAULTS")
 fi
 
-# Iterate services
-matched_service=""
-matched_chain=""
-matched_cli=""
-matched_prefix=""
-
-while IFS='|' read -r svc_name svc_enabled svc_mcp_prefix svc_cli svc_chain; do
-    # Strip \r from values — jq on Windows may produce CRLF output.
-    svc_name="${svc_name//$'\r'/}"
-    svc_enabled="${svc_enabled//$'\r'/}"
-    svc_mcp_prefix="${svc_mcp_prefix//$'\r'/}"
-    svc_cli="${svc_cli//$'\r'/}"
-    svc_chain="${svc_chain//$'\r'/}"
-
-    [ -z "$svc_name" ] && continue
-
-    # Skip disabled services
-    [ "$svc_enabled" = "false" ] && continue
-
-    # Skip services with no MCP prefix (no Atlassian-style MCP namespace → nothing to match)
-    [ -z "$svc_mcp_prefix" ] && continue
-
-    # Does the tool_name start with this service's prefix?
-    case "$tool_name" in
-        "${svc_mcp_prefix}"*)
-            matched_service="$svc_name"
-            matched_prefix="$svc_mcp_prefix"
-            matched_chain="$svc_chain"
-            matched_cli="$svc_cli"
-            break
-            ;;
-    esac
-done <<EOF
-$services_list
-EOF
-
-# No prefix matched → allow
-[ -z "$matched_service" ] && exit 0
-
-# Per-service bypass (MCP_<SERVICE_UPPER>_OK=1)
-# Also honour legacy MCP_JIRA_OK=1 for the jira service.
-svc_upper=$(printf '%s' "$matched_service" | tr '[:lower:]' '[:upper:]')
-bypass_var="MCP_${svc_upper}_OK"
-# Use indirect lookup that is bash 3.2-safe.
-# Security: eval is used to build a variable name from svc_upper.  Before
-# eval, we validate that svc_upper contains ONLY [A-Z0-9_] — if it holds
-# any other character (possible if a registry file has an adversarial key)
-# we skip the bypass (no eval, no expansion, no injection).  The explicit
-# case arms below cover the known services without any eval.
-bypass_val=""
-case "$bypass_var" in
-    MCP_JIRA_OK)      bypass_val="${MCP_JIRA_OK:-0}" ;;
-    MCP_BITBUCKET_OK) bypass_val="${MCP_BITBUCKET_OK:-0}" ;;
-    MCP_GITHUB_OK)    bypass_val="${MCP_GITHUB_OK:-0}" ;;
-    # Generic fallback for services added via the registry.
-    # eval is safe ONLY when bypass_var contains [A-Z0-9_]+ (validated below).
-    *)
-        case "$svc_upper" in
-            *[!A-Z0-9_]*)
-                # Service name contains unsafe characters — skip bypass, no eval.
-                ;;
-            *)
-                eval "bypass_val=\"\${${bypass_var}:-0}\""
-                ;;
-        esac
-        ;;
-esac
-[ "$bypass_val" = "1" ] && exit 0
-
 # ---------------------------------------------------------------------------
-# Determine if chain ranks cli ABOVE mcp (hard-block applies)
-# ---------------------------------------------------------------------------
-# Strip \r from matched_chain — jq on Windows may emit CRLF line endings,
-# producing e.g. "cli:api:mcp\r" which breaks the case arm matching "mcp".
-matched_chain="${matched_chain//$'\r'/}"
-cli_above_mcp=0
-seen_cli=0
-IFS=':' read -ra chain_tiers <<< "$matched_chain"
-for tier in "${chain_tiers[@]}"; do
-    # Strip any residual whitespace from tier name (defensive)
-    tier="${tier//[$' \t\r\n']/}"
-    case "$tier" in
-        cli) seen_cli=1 ;;
-        mcp)
-            # If we've already seen cli before hitting mcp, cli is ranked higher
-            [ "$seen_cli" -eq 1 ] && cli_above_mcp=1
-            ;;
-    esac
-done
-
-# If mcp is ranked at or above cli, no hard block for this service
-[ "$cli_above_mcp" -eq 0 ] && exit 0
-
-# Check if api advisory tier is present in the chain
-api_in_chain=0
-for tier in "${chain_tiers[@]}"; do
-    tier="${tier//[$' \t\r\n']/}"
-    [ "$tier" = "api" ] && api_in_chain=1
-done
-
-# ---------------------------------------------------------------------------
-# Extract MCP method suffix and reverse-map to CLI verb
-# ---------------------------------------------------------------------------
-suffix="${tool_name#"${matched_prefix}"}"
-
-verb_method_map=$(verb_method_map_for "$matched_service")
-if [ -z "$verb_method_map" ]; then
-    # No verb map for this service → no known equivalent → allow
-    exit 0
-fi
-
-verb=""
-while IFS="$(printf '\t')" read -r map_verb map_method; do
-    [ -z "$map_method" ] && continue
-    if [ "$map_method" = "$suffix" ]; then
-        verb="$map_verb"
-        break
-    fi
-done <<EOF
-$verb_method_map
-EOF
-
-# Unmapped MCP method → no plugin equivalent → allow
-[ -z "$verb" ] && exit 0
-
-# ---------------------------------------------------------------------------
-# Introspect the CLI's actual verbs (fail OPEN on any introspection failure)
-# ---------------------------------------------------------------------------
-# Resolve CLI path: relative paths resolved from repo_root; absolute pass-through.
-cli_bin="$matched_cli"
-case "$cli_bin" in
-    /*) : ;;  # absolute — keep as-is
-    *)  cli_bin="$repo_root/$cli_bin" ;;
-esac
-
-# Allow test seam: JIRA_CLI overrides the jira service CLI path (backward compat).
-if [ "$matched_service" = "jira" ] && [ -n "${JIRA_CLI:-}" ]; then
-    cli_bin="$JIRA_CLI"
-fi
-
 # node-based CLI (*.js) → invoke via node; others invoke directly.
+# Defined once at top level (used by evaluate_service).
+# ---------------------------------------------------------------------------
 invoke_cli() {
     local bin="$1"
     case "$bin" in
@@ -343,71 +233,184 @@ invoke_cli() {
     esac
 }
 
-if [ ! -f "$cli_bin" ] && ! command -v "$cli_bin" >/dev/null 2>&1; then
-    exit 0
-fi
+# ---------------------------------------------------------------------------
+# evaluate_service <name> <chain> <cli> <prefix>
+#   Evaluate ONE prefix-matching service. Returns:
+#     2 — block (refusal already printed to stderr)
+#     0 — no block for this service (caller should try the next match)
+#   Reads globals: tool_name, repo_root, env bypass vars, JIRA_CLI/CONFLUENCE_CLI.
+#   Every "no block" path returns 0 (NOT exit) so the multi-service loop below
+#   can keep going; only a genuine block returns 2. Call it from an `if`
+#   condition so `set -e` is suspended for its dynamic extent (a `return 2`
+#   must not abort the script prematurely).
+# ---------------------------------------------------------------------------
+evaluate_service() {
+    local matched_service="$1" matched_chain="$2" matched_cli="$3" matched_prefix="$4"
+    local svc_upper bypass_var bypass_val
+    local cli_above_mcp seen_cli api_in_chain tier chain_tiers
+    local suffix verb_method_map verb map_verb map_method
+    local cli_bin commands line verb_present
+    local replacement bypass_var_alias api_advisory bypass_launch
 
-commands=$(invoke_cli "$cli_bin") || exit 0
-[ -z "$commands" ] && exit 0
+    # Per-service bypass (MCP_<SERVICE_UPPER>_OK=1); legacy MCP_JIRA_OK honoured.
+    # Security: eval builds a var name from svc_upper only after validating it
+    # is [A-Z0-9_]+ (adversarial registry keys → no eval, no injection).
+    svc_upper=$(printf '%s' "$matched_service" | tr '[:lower:]' '[:upper:]')
+    bypass_var="MCP_${svc_upper}_OK"
+    bypass_val=""
+    case "$bypass_var" in
+        MCP_JIRA_OK)      bypass_val="${MCP_JIRA_OK:-0}" ;;
+        MCP_BITBUCKET_OK) bypass_val="${MCP_BITBUCKET_OK:-0}" ;;
+        MCP_GITHUB_OK)    bypass_val="${MCP_GITHUB_OK:-0}" ;;
+        *)
+            case "$svc_upper" in
+                *[!A-Z0-9_]*) ;;  # unsafe chars — skip bypass, no eval
+                *) eval "bypass_val=\"\${${bypass_var}:-0}\"" ;;
+            esac
+            ;;
+    esac
+    [ "$bypass_val" = "1" ] && return 0
 
-# Block iff the mapped verb is present — exact whole-line match.
-verb_present=0
-while IFS= read -r line; do
-    line="${line//[$' \t\r\n']/}"
-    if [ "$line" = "$verb" ]; then
-        verb_present=1
-        break
+    # Determine if chain ranks cli ABOVE mcp (hard-block applies).
+    matched_chain="${matched_chain//$'\r'/}"
+    cli_above_mcp=0
+    seen_cli=0
+    IFS=':' read -ra chain_tiers <<< "$matched_chain"
+    for tier in "${chain_tiers[@]}"; do
+        tier="${tier//[$' \t\r\n']/}"
+        case "$tier" in
+            cli) seen_cli=1 ;;
+            mcp) [ "$seen_cli" -eq 1 ] && cli_above_mcp=1 ;;
+        esac
+    done
+    # mcp ranked at or above cli → no hard block for this service.
+    [ "$cli_above_mcp" -eq 0 ] && return 0
+
+    api_in_chain=0
+    for tier in "${chain_tiers[@]}"; do
+        tier="${tier//[$' \t\r\n']/}"
+        [ "$tier" = "api" ] && api_in_chain=1
+    done
+
+    # Extract MCP method suffix and reverse-map to a CLI verb.
+    suffix="${tool_name#"${matched_prefix}"}"
+    verb_method_map=$(verb_method_map_for "$matched_service")
+    [ -z "$verb_method_map" ] && return 0  # no map → no known equivalent → allow
+    verb=""
+    while IFS="$(printf '\t')" read -r map_verb map_method; do
+        [ -z "$map_method" ] && continue
+        if [ "$map_method" = "$suffix" ]; then
+            verb="$map_verb"
+            break
+        fi
+    done <<EOF
+$verb_method_map
+EOF
+    [ -z "$verb" ] && return 0  # unmapped MCP method → allow
+
+    # Introspect the CLI's actual verbs (fail OPEN on any introspection failure).
+    cli_bin="$matched_cli"
+    case "$cli_bin" in
+        /*) : ;;  # absolute — keep as-is
+        *)  cli_bin="$repo_root/$cli_bin" ;;
+    esac
+    # Test seams: JIRA_CLI / CONFLUENCE_CLI override the resolved CLI path.
+    if [ "$matched_service" = "jira" ] && [ -n "${JIRA_CLI:-}" ]; then
+        cli_bin="$JIRA_CLI"
     fi
-done <<EOF
+    if [ "$matched_service" = "confluence" ] && [ -n "${CONFLUENCE_CLI:-}" ]; then
+        cli_bin="$CONFLUENCE_CLI"
+    fi
+
+    if [ ! -f "$cli_bin" ] && ! command -v "$cli_bin" >/dev/null 2>&1; then
+        return 0
+    fi
+    commands=$(invoke_cli "$cli_bin") || return 0
+    [ -z "$commands" ] && return 0
+
+    # Block iff the mapped verb is present — exact whole-line match. Strip only
+    # CR/LF/TAB (NOT internal spaces) from both the verb and each introspected
+    # line, so multi-word verbs like "page get" survive. Jira verbs have no
+    # internal spaces, so this is a no-op for them.
+    verb="${verb//[$'\t\r\n']/}"
+    verb_present=0
+    while IFS= read -r line; do
+        line="${line//[$'\t\r\n']/}"
+        if [ "$line" = "$verb" ]; then
+            verb_present=1
+            break
+        fi
+    done <<EOF
 $commands
 EOF
+    [ "$verb_present" -eq 1 ] || return 0
 
-[ "$verb_present" -eq 1 ] || exit 0
-
-# ---------------------------------------------------------------------------
-# Build refusal message and block (exit 2)
-# ---------------------------------------------------------------------------
-replacement=$(replacement_for "$matched_service" "$verb")
-
-# Determine bypass var names for the message.
-# bypass_var (MCP_${svc_upper}_OK) is already set above and is used for the
-# copy-pasteable command example.  For jira, the legacy alias MCP_JIRA_OK is
-# the same value (svc_upper=JIRA), so no alias note is needed.
-# bypass_var_alias holds an optional parenthetical alias note (non-empty only
-# when the service has a well-known alternative name).
-bypass_var_alias=""
-# Currently no service has a *different* alias var; the old jira display was
-# "MCP_JIRA_OK (or MCP_JIRA_OK)" which was redundant and garbled.  Leave the
-# slot here for future services that genuinely need one.
-
-api_advisory=""
-if [ "$api_in_chain" -eq 1 ]; then
-    api_advisory="
+    # Build refusal message and block (return 2).
+    replacement=$(replacement_for "$matched_service" "$verb")
+    bypass_var_alias=""
+    api_advisory=""
+    if [ "$api_in_chain" -eq 1 ]; then
+        api_advisory="
 For ops the CLI lacks, prefer raw REST (curl/WebFetch) before falling back to MCP.
 "
-fi
+    fi
+    bypass_launch="${bypass_var}=1 claude"
+    {
+        printf 'block-backend-tier: refusing MCP call "%s".\n\n' "$tool_name"
+        printf '%s plugin has an equivalent — use it instead:\n\n' "$matched_service"
+        printf '    %s\n' "$replacement"
+        if [ -n "$api_advisory" ]; then
+            printf '\n%s\n' "$api_advisory"
+        fi
+        printf '\nWhy: the plugin is one shell call with --help schema, far fewer tokens than\n'
+        printf 'the MCP schema fetch + response, and dogfoods code we ship. Routing is\n'
+        printf 'governed by scripts/backends.json (chain: %s, cli ranked above mcp).\n\n' "$matched_chain"
+        if [ -n "$bypass_var_alias" ]; then
+            printf 'Bypass for a genuine carve-out: set %s=1 (or %s=1)\n' "$bypass_var" "$bypass_var_alias"
+        else
+            printf 'Bypass for a genuine carve-out: set %s=1\n' "$bypass_var"
+        fi
+        printf 'in the shell that launched Claude Code. Per-call prefix does not work;\n'
+        printf 'the bypass lasts the session. Restart without the var to re-enable.\n\n'
+        printf '    %s\n\n' "$bypass_launch"
+        printf 'Or temporarily comment the hook stanza in .claude/settings.json.\n'
+    } >&2
+    return 2
+}
 
-# Use printf to avoid unquoted heredoc expansion of untrusted tool_name content.
-# All user-data variables are passed as %s arguments, not embedded in a format string.
-bypass_launch="${bypass_var}=1 claude"
-{
-    printf 'block-backend-tier: refusing MCP call "%s".\n\n' "$tool_name"
-    printf '%s plugin has an equivalent — use it instead:\n\n' "$matched_service"
-    printf '    %s\n' "$replacement"
-    if [ -n "$api_advisory" ]; then
-        printf '\n%s\n' "$api_advisory"
-    fi
-    printf '\nWhy: the plugin is one shell call with --help schema, far fewer tokens than\n'
-    printf 'the MCP schema fetch + response, and dogfoods code we ship. Routing is\n'
-    printf 'governed by scripts/backends.json (chain: %s, cli ranked above mcp).\n\n' "$matched_chain"
-    if [ -n "$bypass_var_alias" ]; then
-        printf 'Bypass for a genuine carve-out: set %s=1 (or %s=1)\n' "$bypass_var" "$bypass_var_alias"
+# ---------------------------------------------------------------------------
+# Evaluate EVERY service whose mcp_prefix matches tool_name (no break-on-first:
+# jira + confluence share the Atlassian prefix). Block on the first matching
+# service whose mapped verb its CLI has; otherwise continue. Jira/Confluence
+# method suffixes are disjoint, so at most one service maps a given suffix.
+# ---------------------------------------------------------------------------
+while IFS='|' read -r svc_name svc_enabled svc_mcp_prefix svc_cli svc_chain; do
+    # Strip \r — jq on Windows may produce CRLF output.
+    svc_name="${svc_name//$'\r'/}"
+    svc_enabled="${svc_enabled//$'\r'/}"
+    svc_mcp_prefix="${svc_mcp_prefix//$'\r'/}"
+    svc_cli="${svc_cli//$'\r'/}"
+    svc_chain="${svc_chain//$'\r'/}"
+
+    [ -z "$svc_name" ] && continue
+    [ "$svc_enabled" = "false" ] && continue
+    [ -z "$svc_mcp_prefix" ] && continue
+
+    # Skip services whose prefix does not match this tool_name.
+    case "$tool_name" in
+        "${svc_mcp_prefix}"*) ;;
+        *) continue ;;
+    esac
+
+    if evaluate_service "$svc_name" "$svc_chain" "$svc_cli" "$svc_mcp_prefix"; then
+        : # returned 0 → no block for this service, try the next match
     else
-        printf 'Bypass for a genuine carve-out: set %s=1\n' "$bypass_var"
+        rc=$?
+        [ "$rc" -eq 2 ] && exit 2
     fi
-    printf 'in the shell that launched Claude Code. Per-call prefix does not work;\n'
-    printf 'the bypass lasts the session. Restart without the var to re-enable.\n\n'
-    printf '    %s\n\n' "$bypass_launch"
-    printf 'Or temporarily comment the hook stanza in .claude/settings.json.\n'
-} >&2
-exit 2
+done <<EOF
+$services_list
+EOF
+
+# No matching service blocked → allow
+exit 0
