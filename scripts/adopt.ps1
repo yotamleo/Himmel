@@ -165,6 +165,8 @@ function Do-Luna([string]$Dest) {
     if ((Test-Path $Dest) -and -not $DryRun) {
         Write-Host "  $Dest already exists — skipping copy (re-run the vault's own setup to update)"
     } elseif (-not $DryRun) {
+        $parent = Split-Path $Dest
+        if ($parent) { New-Item -ItemType Directory -Force $parent | Out-Null }
         Copy-Item -Recurse -Force (Join-Path $HimmelRoot 'templates\luna-second-brain') $Dest
     } else {
         Write-Host "DRY: copy templates\luna-second-brain → $Dest"
