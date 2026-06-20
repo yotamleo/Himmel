@@ -179,10 +179,13 @@ Autonomous end-to-end execution of a well-scoped ticket: see
 
 ## ENFORCEMENT (runs automatically)
 
-himmel enforces structurally, not by prose: **6 PreToolUse hooks**
+himmel enforces structurally, not by prose: **7 PreToolUse hooks**
 (`auto-approve-safe-bash`, `block-edit-on-main`, `block-read-secrets`,
 `block-backend-tier` — registry-driven MCP guard, replaces `block-mcp-when-plugin-exists`,
-`auto-arm-on-cap`, `check-cr-marker-on-pr-create`), **1 PostToolUse hook**
+`auto-arm-on-cap`, `check-cr-marker-on-pr-create`, and `block-docker-privesc` —
+root-equivalent docker/podman mount+privilege guard, HIMMEL-441, shipped via the
+himmel-ops plugin `hooks.json` so it's live only after `/himmel-update` + a fresh
+session), **1 PostToolUse hook**
 (`auto-arm-on-subagent-cap` — detects cap in Agent tool results, HIMMEL-276),
 **pre-commit/commit-msg/pre-push gates** (source of truth
 `.pre-commit-config.yaml`; pre-push incl. `check-platforms-tested`), a
