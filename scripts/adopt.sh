@@ -107,14 +107,22 @@ copy_portable() {
 # Merge the three PreToolUse hook stanzas into a settings.json, idempotently.
 # $1 = settings.json path, $2 = command path prefix (literal, e.g.
 # '$CLAUDE_PROJECT_DIR' for project scope or the himmel abs path for user scope).
+# The hook path is FORWARD-SLASHED and QUOTED in the command: an unquoted Windows
+# backslash path (`bash C:\Users\...\X.sh`) collapses when the hook command is
+# parsed by a shell (`\U`->`U`), so the hook silently never fires.
+# Dedup is by hook BASENAME with REPLACE semantics: re-running adopt overwrites a
+# previously-wired (incl. broken backslash) himmel hook rather than appending a
+# duplicate — so a re-run repairs a bad install and never double-wires.
 wire_settings() {
   local settings="$1" prefix="$2"
+  # shellcheck disable=SC1003  # '\' is a literal backslash to replace, not a quote escape
+  local pfx="${prefix//'\'//}"   # forward-slash any backslashes in the prefix
   local desired
   desired=$(cat <<JSON
 [
-  {"matcher":"Bash","hooks":[{"type":"command","command":"bash ${prefix}/scripts/hooks/auto-approve-safe-bash.sh"}]},
-  {"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash ${prefix}/scripts/hooks/block-edit-on-main.sh"}]},
-  {"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash ${prefix}/scripts/hooks/block-read-secrets.sh"}]}
+  {"matcher":"Bash","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/auto-approve-safe-bash.sh\""}]},
+  {"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/block-edit-on-main.sh\""}]},
+  {"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/block-read-secrets.sh\""}]}
 ]
 JSON
 )
@@ -125,13 +133,20 @@ JSON
   mkdir -p "$(dirname "$settings")"
   local base="{}"
   [[ -f "$settings" ]] && base=$(cat "$settings")
+  # Drop only the himmel hook OBJECTS (not whole stanzas) from each existing
+  # PreToolUse entry, then drop any stanza left empty, then append the fresh
+  # stanzas. Hook-object granularity preserves a non-himmel hook (rtk-hook-guard,
+  # the operator's own) even when it is co-located in the SAME hooks[] array as a
+  # himmel hook — a stanza-level filter would take it down with the himmel one.
   printf '%s' "$base" | jq --argjson add "$desired" '
     .hooks = (.hooks // {})
     | .hooks.PreToolUse = (
-        (.hooks.PreToolUse // []) as $ex
-        | $ex + [ $add[]
-                  | select( (.hooks[0].command) as $c
-                            | ($ex | map(.hooks[]?.command) | index($c)) | not ) ]
+        ((.hooks.PreToolUse // [])
+          | map(.hooks = ((.hooks // [])
+              | map(select((.command // "")
+                    | test("scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)[.]sh") | not))))
+          | map(select((.hooks | length) > 0)))
+        + $add
       )
   ' > "$settings.adopt.tmp" && mv "$settings.adopt.tmp" "$settings"
   echo "  wired PreToolUse hooks → $settings"

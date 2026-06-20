@@ -160,4 +160,40 @@ got=$(jq -r '.env.LUNA_VAULT_PATH' "$fh4/.claude/settings.json")
 [ "$got" = "$(norm "$fv4")" ] || fail "dest-preexists: LUNA_VAULT_PATH not written ([$got] != [$(norm "$fv4")])"
 echo "ok: re-run over existing scaffold still wires LUNA_VAULT_PATH (unconditional)"
 
+# ── 9. hook paths forward-slashed + quoted; re-wire REPLACES a
+#       pre-existing broken backslash entry (basename dedup), keeps non-himmel ──
+h9="$work/h9"; mkdir -p "$h9/.claude"
+# seed a BROKEN backslash auto-approve entry (the adopt.ps1 bug) + a non-himmel hook
+printf '%s' '{"hooks":{"PreToolUse":[
+  {"matcher":"Bash","hooks":[{"type":"command","command":"bash C:\\Users\\me\\Himmel/scripts/hooks/auto-approve-safe-bash.sh"}]},
+  {"matcher":"Bash","hooks":[{"type":"command","command":"bash \"C:/x/scripts/hooks/rtk-hook-guard.sh\""}]}
+]}}' > "$h9/.claude/settings.json"
+HOME="$h9" bash "$adopt" --profile core --scope user --target "$work/ign9" >/dev/null
+s9="$h9/.claude/settings.json"
+aa=$(jq -r '.hooks.PreToolUse[].hooks[].command | select(test("auto-approve-safe-bash"))' "$s9")
+[ -n "$aa" ] || fail "hookpath: auto-approve hook missing after re-wire"
+[ "$(printf '%s\n' "$aa" | wc -l)" = "1" ] || fail "hookpath: expected exactly ONE auto-approve entry (got: $aa)"
+# shellcheck disable=SC1003  # '\' is a literal-backslash glob pattern, not a quote escape
+case "$aa" in *'\'*) fail "hookpath: auto-approve command still contains a backslash: $aa" ;; esac
+case "$aa" in 'bash "'*'/scripts/hooks/auto-approve-safe-bash.sh"') : ;; *) fail "hookpath: auto-approve not forward-slash+quoted: $aa" ;; esac
+jq -e '.hooks.PreToolUse[].hooks[].command | select(test("rtk-hook-guard"))' "$s9" >/dev/null || fail "hookpath: rtk-hook-guard not preserved"
+echo "ok: hooks forward-slash+quoted; broken entry replaced; rtk kept"
+
+# 9b. hook-object granularity: a non-himmel hook co-located in the SAME hooks[]
+#     array as a himmel hook must SURVIVE re-wire (not dropped with the stanza).
+h9b="$work/h9b"; mkdir -p "$h9b/.claude"
+printf '%s' '{"hooks":{"PreToolUse":[
+  {"matcher":"Bash","hooks":[
+    {"type":"command","command":"bash C:\\old\\Himmel/scripts/hooks/auto-approve-safe-bash.sh"},
+    {"type":"command","command":"bash \"C:/x/scripts/hooks/rtk-hook-guard.sh\""}
+  ]}
+]}}' > "$h9b/.claude/settings.json"
+HOME="$h9b" bash "$adopt" --profile core --scope user --target "$work/ign9b" >/dev/null
+s9b="$h9b/.claude/settings.json"
+jq -e '.hooks.PreToolUse[].hooks[].command | select(test("rtk-hook-guard"))' "$s9b" >/dev/null \
+  || fail "hookpath(nested): co-located rtk-hook-guard dropped with the himmel stanza"
+[ "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("auto-approve-safe-bash"))] | length' "$s9b")" = "1" ] \
+  || fail "hookpath(nested): expected exactly one auto-approve after re-wire"
+echo "ok: co-located non-himmel hook survives re-wire (hook-object granularity)"
+
 echo "PASS"
