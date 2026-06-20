@@ -29,6 +29,7 @@ __pycache__/
 
 # Claude worktrees
 /.claude/worktrees/
+/.worktrees/
 /.claude/settings.local.json
 
 # Single-writer opt-in marker. A per-clone, gitignored file that designates
