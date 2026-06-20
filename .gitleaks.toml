@@ -1,12 +1,23 @@
 # gitleaks config for himmel.
-# Keeps the full built-in ruleset and only adds a path allowlist for vendored
-# third-party Obsidian plugin bundles shipped in the luna-second-brain template.
-# Those bundles are minified upstream code; gitleaks' generic-api-key rule flags
+# Keeps the full built-in ruleset and adds (1) a path allowlist for vendored
+# third-party Obsidian plugin bundles shipped in the luna-second-brain template,
+# and (2) an explicit Telegram bot-token rule.
+# The bundles are minified upstream code; gitleaks' generic-api-key rule flags
 # high-entropy minified identifiers (e.g. node-forge's pki.setRsaPrivateKey in
 # obsidian-local-rest-api) as false-positive "secrets". The plugins' data.json
 # files were manually audited free of real credentials before bundling.
 [extend]
 useDefault = true
+
+# Telegram bot token: <8-10 digit bot id>:<35-char secret>. gitleaks' built-in
+# telegram rule keys on the word "telegram" being nearby; this keyword-free rule
+# also catches a bare token pasted into a doc/script without that context. The
+# format is distinctive enough that false positives are near-zero (placeholders
+# like 123:abc or 123456789:AAH... are too short to match).
+[[rules]]
+id = "himmel-telegram-bot-token"
+description = "Telegram bot API token"
+regex = '''[0-9]{8,10}:[A-Za-z0-9_-]{35}'''
 
 [allowlist]
 description = "Vendored third-party Obsidian plugin bundles (minified upstream code)"
