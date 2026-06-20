@@ -95,6 +95,26 @@ assert_rc "Grep path=src"                  0 "$(run_case "$(j_grep 'src/')")"
 assert_rc "Unknown tool passthrough"       0 "$(run_case '{"tool_name":"WebFetch","tool_input":{"url":".env"}}')"
 assert_rc "Empty input passthrough"        0 "$(run_case '{}')"
 
+# --- HIMMEL-436: clause-aware, command-position matcher ---
+# Inline interpreter bodies must NOT trip when a BARE reader-named identifier
+# (head/file) coexists with a secret-glob token (cfg.key) in the body. The
+# bare reader token is what makes these orig=BLOCK / new=ALLOW — i.e. they
+# actually exercise the global-OR bug (an assignment form like `head=1` would
+# already pass on the old hook and guard nothing).
+assert_rc "Bash node -e bare head+cfg.key"   0 "$(run_case "$(j_bash 'node -e "const x = head; const k = cfg.key;"')")"
+assert_rc "Bash python -c bare file+cfg.key" 0 "$(run_case "$(j_bash 'python -c "t = file; k = cfg.key"')")"
+# Multi-clause: a reader in one clause + a secret-looking token in another
+# (different command) must NOT cross-trip (the old global-OR bug).
+assert_rc "Bash cat README.md; node cert.key" 0 "$(run_case "$(j_bash 'cat README.md; node x.js cert.key')")"
+# Wrapper-skip: the reader is the real command behind a common wrapper.
+assert_rc "Bash sudo cat .env"               2 "$(run_case "$(j_bash 'sudo cat .env')")"
+assert_rc "Bash xargs cat .env"              2 "$(run_case "$(j_bash 'xargs cat .env')")"
+assert_rc "Bash time cat .env"               2 "$(run_case "$(j_bash 'time cat .env')")"
+assert_rc "Bash nice cat .env"               2 "$(run_case "$(j_bash 'nice cat .env')")"
+# In-place carve-out is per-clause: a global `sed -i` must not mask a
+# separate `cat .env` clause (today's global carve-out wrongly ALLOWs this).
+assert_rc "Bash sed -i foo; cat .env"        2 "$(run_case "$(j_bash 'sed -i s/a/b/ foo.txt; cat .env')")"
+
 # --- BYPASS case (expect rc=0 with READ_SECRETS_OK=1) ---
 assert_rc "Bypass cat .env"                0 "$(run_case "$(j_bash 'cat .env')" "READ_SECRETS_OK=1")"
 assert_rc "Bypass Read .env"               0 "$(run_case "$(j_read '/proj/.env')" "READ_SECRETS_OK=1")"
