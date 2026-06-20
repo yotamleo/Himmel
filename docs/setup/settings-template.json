@@ -89,7 +89,12 @@
     "qmd@qmd": true,
     "caveman@caveman": true,
     "claude-obsidian@claude-obsidian-marketplace": true,
-    "handover@himmel": true
+    "handover@himmel": true,
+    "luna-correlate@himmel": true,
+    "himmel-ops@himmel": true,
+    "obsidian-triage@himmel": true,
+    "pr-review-toolkit-himmel@himmel": true,
+    "telegram-himmel@himmel": true
   },
   "extraKnownMarketplaces": {
     "obsidian-skills": {
