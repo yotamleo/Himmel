@@ -34,6 +34,11 @@ Stages currently wired:
   (blocks ADDING a command/skill file without a matching update to
   `docs/commands-catalog.md`; gated behind `.himmel-dev` marker so adopters
   are never affected — see `check-doc-guard.sh` below).
+- **AGENTS.md-fresh (pre-commit, himmel-dev only):** check-agents-md-fresh
+  (blocks committing a stale `AGENTS.md` when `CLAUDE.md` / `AGENTS.md` /
+  `scripts/agents-md/*` is staged; `AGENTS.md` is generated from `CLAUDE.md` by
+  `scripts/agents-md/generate.mjs` so the two never drift, HIMMEL-471; gated
+  behind `.himmel-dev`; bypass `AGENTS_MD_OK=1`).
 - **Pre-push:** no-push-to-main, npm-audit (high+), npm-licenses (allowlist),
   npm-audit-signatures, code-review-before-push (multi-agent CR via
   pr-review-toolkit), platforms-tested (cross-platform attestation for

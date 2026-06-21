@@ -50,6 +50,7 @@ is_exempt() {
         scripts/hooks/check-no-headless-gemini.sh) return 0 ;;
         scripts/hooks/test-check-no-headless-gemini.sh) return 0 ;;
         CLAUDE.md) return 0 ;;
+        AGENTS.md) return 0 ;;
         docs/*) return 0 ;;
         handovers/*) return 0 ;;
         .agents/*) return 0 ;;
