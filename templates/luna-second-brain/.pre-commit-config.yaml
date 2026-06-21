@@ -8,8 +8,14 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # Vault notes are user prose, not code — pre-commit must VALIDATE them
+      # (gitleaks/check-*) but never REWRITE them. trailing-whitespace would
+      # strip Markdown hard-line-breaks (two trailing spaces), and the churn
+      # from either fixer aborts the unattended autosync commit. So skip `.md`.
       - id: trailing-whitespace
+        exclude: '\.md$'
       - id: end-of-file-fixer
+        exclude: '\.md$'
       - id: check-yaml
       - id: check-json
 

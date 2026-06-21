@@ -64,17 +64,29 @@ if ($LASTEXITCODE -ne 0) {
 # Commit THROUGH pre-commit (NEVER --no-verify): the gitleaks/secret hooks are
 # the egress guard. A blocked commit exits non-zero, and the push below is gated
 # on this success, so nothing leaves.
+#
+# A pre-commit AUTO-FIXER (e.g. end-of-file-fixer on a stray non-.md file) may
+# modify a staged file, which aborts the commit and leaves the tree dirty — at a
+# glance indistinguishable from a real block. So retry ONCE: re-stage and commit
+# again. A genuine gitleaks/secret rejection survives both passes (gitleaks never
+# auto-fixes, so the second commit fails too) and still aborts the push.
 git commit -q -m "chore: vault autosync"
 if ($LASTEXITCODE -ne 0) {
-    # Distinguish a benign "nothing left to commit" (a pre-commit auto-fixer may
-    # have re-cleaned the tree) from a real block — a gitleaks/secret rejection
-    # or a hook that modified files leaves the tree dirty.
     if ([string]::IsNullOrWhiteSpace(((git status --porcelain) -join ''))) {
         Log "nothing to commit after hooks ran — no-op."
         exit 0
     }
-    Log "commit BLOCKED by pre-commit (secret detected, or a hook modified files) — NOT pushing."
-    exit 1
+    # A hook auto-fixed files — re-stage and retry once.
+    git add -A
+    git commit -q -m "chore: vault autosync"
+    if ($LASTEXITCODE -ne 0) {
+        if ([string]::IsNullOrWhiteSpace(((git status --porcelain) -join ''))) {
+            Log "nothing to commit after retry — no-op."
+            exit 0
+        }
+        Log "commit BLOCKED by pre-commit (secret detected, or a hook keeps modifying files) — NOT pushing."
+        exit 1
+    }
 }
 Log "committed."
 

@@ -234,6 +234,61 @@ else
       "$(yn "$([ "$(git_in "$VF" rev-parse HEAD)" != "$f_local_before" ] && echo 0 || echo 1)")"
     assert_eq "F3 remote unchanged (push refused, nothing leaked)" "$seed_before" "$(git_in "$SEED" rev-parse HEAD)"
   fi
+
+  # =========================================================================
+  # Phase G — auto-fixer resilience (HIMMEL-501: "autosync blocked so much").
+  # G1-G3: a churny .md note (Markdown hard-break = two trailing spaces, no
+  #        final newline) is committed UNMODIFIED — pre-commit no longer
+  #        rewrites prose, so the unattended commit isn't aborted and the
+  #        note's line breaks survive.
+  # G4-G7: a NON-.md file a fixer DOES rewrite still lands — the first commit
+  #        aborts when the hook modifies it, and autosync re-stages + retries
+  #        instead of skipping the push.
+  # =========================================================================
+  VG="$TMP/fixer"
+  make_vault "$VG"
+  run_setup "$VG"
+  if [ -f "$VG/.git/hooks/pre-commit" ]; then
+    BARE_G="$TMP/fixer-bare.git"
+    git init --bare -b main "$BARE_G" >/dev/null 2>&1
+    (cd "$VG" && git remote add origin "$BARE_G")
+    g_base=$(git_in "$VG" rev-list --count HEAD)
+
+    printf 'first line  \nsecond line' >"$VG/00-Inbox/md-fixer.md" # 2 trailing spaces + NO final newline
+    cp "$VG/00-Inbox/md-fixer.md" "$TMP/md-fixer.orig"
+    (cd "$VG" && LUNA_VAULT_AUTOSYNC=1 bash "$VG/scripts/vault-autosync.sh") >/dev/null 2>&1
+    assert_ok "G1 autosync with a churny .md note: exit 0 (not blocked)" "$?"
+    assert_eq "G2 autosync commit landed" "yes" \
+      "$(yn "$([ "$(git_in "$VG" rev-list --count HEAD)" -gt "$g_base" ] && echo 0 || echo 1)")"
+    cmp -s "$VG/00-Inbox/md-fixer.md" "$TMP/md-fixer.orig"
+    assert_ok "G3 .md left UNMODIFIED by pre-commit (hard-breaks + no-final-newline preserved)" "$?"
+
+    g2_base=$(git_in "$VG" rev-list --count HEAD)
+    printf 'data with trailing space   \n' >"$VG/00-Inbox/data.txt" # non-.md → a fixer WILL rewrite it
+    (cd "$VG" && LUNA_VAULT_AUTOSYNC=1 bash "$VG/scripts/vault-autosync.sh") >/dev/null 2>&1
+    assert_ok "G4 autosync recovers from a fixer-modified non-.md file: exit 0" "$?"
+    assert_eq "G5 retry committed after the fixer ran (HEAD advanced)" "yes" \
+      "$(yn "$([ "$(git_in "$VG" rev-list --count HEAD)" -gt "$g2_base" ] && echo 0 || echo 1)")"
+    assert_eq "G6 data.txt landed in the committed tree" "1" \
+      "$(git_in "$VG" ls-tree -r HEAD --name-only | grep -c 'data\.txt' || true)"
+    git_in "$BARE_G" rev-parse --verify main >/dev/null 2>&1
+    assert_ok "G7 fixer-retry result pushed to remote" "$?"
+
+    # G8-G10: the retry must NOT weaken the egress guard. A NON-.md file with
+    # BOTH a fixer defect (trailing whitespace) AND a planted secret: pass 1
+    # aborts, the re-stage pass re-runs gitleaks on the same secret, and the
+    # commit stays blocked — nothing committed, nothing pushed. (Key assembled
+    # at runtime so this test's source stays clean.)
+    g8_local_before=$(git_in "$VG" rev-parse HEAD)
+    g8_bare_before=$(git_in "$BARE_G" rev-parse main)
+    _akp="AKIA"
+    _aks="1234567890ABCDEF"
+    printf 'leaky data   \naws_key = "%s%s"\n' "$_akp" "$_aks" >"$VG/30-Resources/leak.txt"
+    (cd "$VG" && LUNA_VAULT_AUTOSYNC=1 bash "$VG/scripts/vault-autosync.sh") >/dev/null 2>&1
+    assert_nz "G8 fixer-defect + secret (non-.md): autosync blocked through the retry" "$?"
+    assert_eq "G9 local HEAD unchanged (retry did not commit the secret)" "$g8_local_before" "$(git_in "$VG" rev-parse HEAD)"
+    assert_eq "G10 bare remote unchanged (nothing pushed)" "$g8_bare_before" "$(git_in "$BARE_G" rev-parse main)"
+  fi
 fi
 
 echo ""
