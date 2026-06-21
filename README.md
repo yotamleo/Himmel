@@ -81,7 +81,10 @@ Mem0, no RAG over embeddings of extracted facts). himmel does run a local search
 index ([qmd](https://www.npmjs.com/package/@tobilu/qmd) — BM25 + vectors) *over*
 the same markdown, but that index is a derived, drop-and-rebuild view that points
 you back at the real file; the files remain the single source of truth, never
-replaced by the index.
+replaced by the index. The line is *what gets embedded and returned*, not whether
+embeddings are used: qmd embeds the files and returns a pointer to the source,
+whereas a Camp 1 backend embeds extracted facts and returns the fact in the
+file's place.
 
 The reasoning: for a single operator, the operator *is* the source of truth and
 can read and edit the substrate by hand. Camp 1 backends (extract → embed →
