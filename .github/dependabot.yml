@@ -1,0 +1,32 @@
+# Dependabot dependency updates for himmel (HIMMEL-500).
+# One npm entry per package manifest (npm ecosystem also covers bun.lock).
+# github-actions is included for when CI workflows land (HIMMEL-494) — it is a
+# no-op until .github/workflows/ exists.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directories:
+      - "/scripts/jira"
+      - "/scripts/bitbucket"
+      - "/scripts/himmel-run"
+      - "/scripts/luna-vitals"
+      - "/marketplace/plugins/luna-correlate"
+      - "/marketplace/plugins/obsidian-triage/tools"
+      - "/marketplace/plugins/telegram-himmel"
+      - "/plugins/himmel-gh"
+      - "/plugins/himmel-jira"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Batch minor/patch bumps into one PR per directory to cut review churn;
+      # majors still come as individual PRs.
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
