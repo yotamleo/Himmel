@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "commander": "^12.1.0"
+    "commander": "^15.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
