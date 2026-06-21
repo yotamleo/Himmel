@@ -6,7 +6,42 @@ scripts/himmel-update.sh`) to do the pull + marketplace re-sync in one step.
 
 > This updates the himmel **harness**. To refresh an existing **luna vault**
 > from the current template, use [`/luna-upgrade`](../../marketplace/plugins/obsidian-triage/skills/luna-upgrade/SKILL.md);
-> to do both in one shot, use `/himmel-update-all`.
+> to do both in one shot, use `/himmel-update-all`. To bring **multiple**
+> luna-family vaults up to the current template in one pass, use
+> [`/luna-upgrade-all`](../../marketplace/plugins/obsidian-triage/skills/luna-upgrade-all/SKILL.md)
+> (see [Updating multiple vaults](#updating-multiple-luna-vaults) below).
+
+## Updating multiple luna vaults
+
+If you keep more than one luna-family vault (e.g. a personal vault plus a
+work vault), [`/luna-upgrade-all`](../../marketplace/plugins/obsidian-triage/skills/luna-upgrade-all/SKILL.md)
+sweeps them all in **one best-effort, dry-run-first pass** instead of running
+`/luna-upgrade` once per vault:
+
+1. **Sweep** — discovers your vaults (from `~/.claude/luna-vaults.json` and a
+   scan of `~/Documents`), classifies each (luna-family vs not-yet-stamped), and
+   prints a per-vault table: already-current / clean-upgrade / conflict.
+2. **Per-vault confirm** — it never auto-applies. You approve each vault before
+   it is upgraded.
+3. **Backup before every apply** — a timestamped snapshot is written to
+   `~/.claude/luna-upgrade-backups/<vault-slug>/<timestamp>/` *before* any change
+   (`<vault-slug>` is the vault's directory name with non-alphanumeric characters
+   replaced by `_`). If a backup can't be written, the upgrade is aborted and the
+   vault is left untouched. To undo a vault, run
+   `luna-upgrade-all.sh restore --vault <path>` (add `--list` to see available
+   backups).
+4. **Conflict help** — if your customized `_CLAUDE.md` conflicts with the new
+   template, the command proposes a merged version for you to approve rather than
+   failing or silently overwriting your edits.
+
+It is **best-effort**: a vault with uncommitted git changes still appears in the
+sweep table (flagged `dirty=true`, plan shown), but `apply` refuses it until the
+working tree is clean — commit or stash first. A vault that errors during its
+dry-run is reported with `error` state and the sweep continues to the rest. Your
+notes, journal, and data are never touched — only template-owned files are
+refreshed. Obsidian vaults without a luna stamp show as `unstamped` and are left
+alone (upgrade them deliberately, per vault, with `apply --force-unstamped`);
+directories that aren't Obsidian vaults are skipped entirely.
 
 ## Why a pull is required
 
