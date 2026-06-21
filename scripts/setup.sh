@@ -9,12 +9,11 @@ set -e
 # WARNING then continue to the success footer, fooling the operator.
 trap 'echo "setup interrupted by signal" >&2; exit 130' INT TERM
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
-
-# shellcheck source=lib/qmd-bin.sh
-# shellcheck disable=SC1091
-. "$REPO_ROOT/scripts/lib/qmd-bin.sh"
+# REPO_ROOT is resolved AFTER the [0/10] preflight (R6, HIMMEL-460): the
+# preflight may auto-install git, so `git rev-parse --show-toplevel` must not run
+# before it. Until then, resolve THIS script's own dir (no git needed) so the
+# preflight can source its sibling helper.
+SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- arg parse (HIMMEL-151) ---
 # Optional flags only. Unknown args land in setup_extra_args for now —
@@ -74,6 +73,24 @@ for _tool in bash git node npm bun python3 jq gh mktemp; do
   fi
 done
 
+# R6 (HIMMEL-460): best-effort FETCH of the auto-installable missing tools
+# (git/jq/python3) via the platform package manager BEFORE failing — the operator
+# asked "setup should fetch it". The rest keep the flag-loud fallback below. This
+# runs before the relocated `git rev-parse`, so a fresh box missing git is
+# repaired here instead of dying on a cryptic git error.
+if [ "${#_missing[@]}" -gt 0 ]; then
+  echo "  Missing: ${_missing[*]} — attempting auto-install of the installable ones..."
+  # Subprocess (not sourced): ensure-tools.sh runs `set -uo pipefail`, which would
+  # otherwise leak into this `set -e`-only script. It installs system-wide; we
+  # re-check `command -v` below to see what truly remains.
+  bash "$SETUP_DIR/setup/ensure-tools.sh" "${_missing[@]}" || true
+  _still=()
+  for _tool in "${_missing[@]}"; do
+    command -v "$_tool" >/dev/null 2>&1 || _still+=("$_tool")
+  done
+  _missing=("${_still[@]}")
+fi
+
 # Bash version: 8 scripts use mapfile (bash 4+). Warn on bash 3.x rather
 # than fail-hard — those scripts will error at invocation time with a
 # clear "mapfile: command not found", and the foundational ones (e.g.
@@ -105,6 +122,16 @@ if [ "${#_missing[@]}" -gt 0 ]; then
 fi
 echo "  All foundational tools present."
 echo ""
+
+# --- repo root (relocated past the preflight — R6, HIMMEL-460) ---
+# git is now guaranteed present (preflight verified / auto-installed it), so it is
+# safe to resolve the checkout root. A non-zero here means setup.sh was run from
+# outside a git checkout — fail loud rather than letting downstream paths break.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+# shellcheck source=lib/qmd-bin.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/qmd-bin.sh"
 
 # --- Claude Code CLI (the runtime himmel harnesses) — soft check ---
 # Not a hard requirement of setup itself (the steps below configure the repo and
@@ -333,12 +360,29 @@ echo ""
 # the shared helpers. Both write settings.json, need no claude binary, idempotent.
 # HIMMEL_REPO default-by-install: the installer knows the clone path, so the leg
 # resolver + minerva anchor get it without a manual export.
-echo "[9/10] Wiring statusline + HIMMEL_REPO (user scope)..."
-if ! bash "$REPO_ROOT/scripts/lib/wire-statusline.sh" "$HOME/.claude/settings.json" "$REPO_ROOT"; then
+echo "[9/10] Wiring statusline + HIMMEL_REPO + UNIVERSAL hooks (user scope)..."
+_user_settings="$HOME/.claude/settings.json"
+if ! bash "$REPO_ROOT/scripts/lib/wire-statusline.sh" "$_user_settings" "$REPO_ROOT"; then
   echo "  WARNING: wire-statusline failed; setup continues." >&2
 fi
-if ! bash "$REPO_ROOT/scripts/lib/wire-himmel-repo.sh" "$HOME/.claude/settings.json" "$REPO_ROOT"; then
+if ! bash "$REPO_ROOT/scripts/lib/wire-himmel-repo.sh" "$_user_settings" "$REPO_ROOT"; then
   echo "  WARNING: wire-himmel-repo failed; setup continues." >&2
+fi
+# R3 (HIMMEL-460): wire the UNIVERSAL hooks at USER scope so a session launched
+# ANYWHERE (not just inside this repo) gets the portable safety + auto-approve
+# trio AND the SessionStart leg-injector. Referenced by THIS clone's abs path;
+# basename-dedup keeps a re-run from double-wiring. The HIMMEL-DEV-ONLY hooks
+# (check-cr-marker, backend-tier, auto-arm, check-update-available) stay project
+# scope — they only make sense inside the himmel repo. Invoked as a SUBPROCESS
+# (not sourced) so the lib's `set -euo pipefail` does not leak into this script's
+# `set -e`-only shell.
+bash "$REPO_ROOT/scripts/lib/wire-pretooluse-hooks.sh" "$_user_settings" "$REPO_ROOT" \
+  || echo "  WARNING: wire-pretooluse-hooks failed; setup continues." >&2
+bash "$REPO_ROOT/scripts/lib/wire-pretooluse-hooks.sh" --sessionstart "$_user_settings" "$REPO_ROOT" "inject-initiative.sh" \
+  || echo "  WARNING: wire SessionStart inject-initiative failed; setup continues." >&2
+# R4 (HIMMEL-460): advise on user/project hook duplication (silent in-repo).
+if ! bash "$REPO_ROOT/scripts/lib/detect-hook-dup.sh" "$_user_settings" "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT"; then
+  : # detect-hook-dup is advisory-only; never fail setup on it.
 fi
 echo ""
 

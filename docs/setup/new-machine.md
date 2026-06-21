@@ -169,7 +169,12 @@ cd himmel
 bash scripts/setup.sh
 ```
 
-`scripts/setup.sh` handles: pre-commit install, Jira CLI build, `.env` from `.env.example`.
+`scripts/setup.sh` handles: pre-commit install, Jira CLI build, `.env` from
+`.env.example`, plugin install, and wiring the statusline + `env.HIMMEL_REPO` +
+the **UNIVERSAL hooks** into `~/.claude/settings.json` (user scope — see §4b).
+A missing required tool (git/jq/python3) is auto-fetched via the platform
+package manager when possible, else setup fails loud with the manual command
+(HIMMEL-460).
 
 To **update** an existing checkout later, run `/himmel-update` (or `bash scripts/himmel-update.sh`):
 `git pull` is what delivers himmel updates — marketplace `autoUpdate` does not.
@@ -203,6 +208,43 @@ touch ~/Documents/luna/.single-writer ~/Documents/luna-medic/.single-writer ~/Do
 
 This lets those repos opt out of the on-main edit block locally without the marker
 ever being committed.
+
+### 4b. Hook scope: user vs project (HIMMEL-460)
+
+himmel's hooks split into two scopes. `scripts/setup.sh` (and `adopt --scope
+user`) wires the **UNIVERSAL** set into your **user-scope** `~/.claude/settings.json`
+so they apply to *every* Claude session, in any directory — not just inside the
+himmel clone:
+
+- **UNIVERSAL (user scope):** `auto-approve-safe-bash`, `block-edit-on-main`,
+  `block-read-secrets` (PreToolUse) + `inject-initiative` (SessionStart). Without
+  user-scope wiring, a session launched outside the repo has no auto-approve (so
+  the allow-listed Jira CLI gets denied) and no leg-injector (so `HIMMEL_INITIATIVE`
+  never fires).
+- **HIMMEL-DEV-ONLY (project scope):** `check-cr-marker-on-pr-create`,
+  `block-backend-tier`, `auto-arm-on-cap`, `check-update-available`, … — they only
+  make sense while working inside the himmel repo, so they stay in the repo's
+  committed `.claude/settings.json` and are **not** user-wired.
+
+The hooks reference **this clone's absolute path** and dedup by hook *basename*, so
+re-running setup after moving the clone repairs the wiring instead of double-wiring.
+A fresh contributor who clones himmel still gets the safety hooks from the committed
+project `.claude/settings.json` even before running setup.
+
+**Duplication is benign.** Inside the himmel repo the UNIVERSAL hooks are wired at
+both scopes and fire twice — that is idempotent (two auto-approve passes = the same
+allow; two block passes = the same block), so setup stays silent about it in-repo.
+For *another* adopted project that also carries a project-scope copy, setup prints
+an advisory listing the dupes + the `unwire-pretooluse-hooks --scope project
+--target <repo>` command to collapse them (never automatic).
+
+`HIMMEL_INITIATIVE` and the overnight pair are read from the himmel clone's `.env`
+by the SessionStart hook (a value exported in the launching shell or set in
+settings.json `env` still wins); they ship **commented** in `.env.example`, so the
+opt-in default-OFF is preserved — uncomment one line to enable.
+
+`scripts/uninstall.sh` step `[6/6]` is the symmetric teardown — it removes exactly
+what setup/adopt wired (preserving your non-himmel keys); `--skip-settings` keeps it.
 
 ---
 
@@ -464,10 +506,14 @@ does NOT revoke the bot token; revoke via @BotFather when decommissioning,
 (3) remove `HIMMEL-Resume-*` scheduled jobs + the `HimmelTelegramBridge`
 logon task, (4) uninstall the settings-template plugins + marketplaces via
 `scripts/machine-setup/uninstall-plugins.{sh,ps1}` (**user-scope — affects
-every repo on the machine**), (5) `pre-commit uninstall` ×3 hook types.
-Partial offboard via `--keep-telegram-state` / `--skip-plugins` /
-`--skip-tasks` / `--skip-hooks` (PS: `-KeepTelegramState` etc.). Not
-touched: `~/.claude/settings.json`, the himmel clone + `.env`, handover
+every repo on the machine**), (5) `pre-commit uninstall` ×3 hook types,
+(6) unwire `~/.claude/settings.json` — remove the statusLine, `env.HIMMEL_REPO`,
+`env.LUNA_VAULT_PATH`, and the UNIVERSAL hooks that setup/adopt wired (each
+helper removes ONLY its own key/stanza; non-himmel keys — your own hooks, MCP
+config, the rtk guard — are preserved; HIMMEL-460). Partial offboard via
+`--keep-telegram-state` / `--skip-plugins` / `--skip-tasks` / `--skip-hooks` /
+`--skip-settings` (PS: `-KeepTelegramState` etc.). Not touched: the himmel
+clone + `.env`, your non-himmel `~/.claude/settings.json` keys, handover
 state outside the bridge root.
 
 ---

@@ -2,11 +2,13 @@
 # PowerShell counterpart of uninstall.sh. Symmetric teardown of what
 # setup.ps1 + install-plugins.ps1 onboard:
 #
-#   [1/5] stop the telegram bun bridge      (bun supervisor.ts --kill)
-#   [2/5] remove telegram pairing + bridge state
-#   [3/5] remove HIMMEL-Resume-* scheduled tasks + HimmelTelegramBridge
-#   [4/5] uninstall Claude plugins + marketplaces (uninstall-plugins.ps1)
-#   [5/5] uninstall git hooks (pre-commit/pre-push/commit-msg)
+#   [1/6] stop the telegram bun bridge      (bun supervisor.ts --kill)
+#   [2/6] remove telegram pairing + bridge state
+#   [3/6] remove HIMMEL-Resume-* scheduled tasks + HimmelTelegramBridge
+#   [4/6] uninstall Claude plugins + marketplaces (uninstall-plugins.ps1)
+#   [5/6] uninstall git hooks (pre-commit/pre-push/commit-msg)
+#   [6/6] unwire ~/.claude/settings.json (statusLine, env.HIMMEL_REPO,
+#         env.LUNA_VAULT_PATH, the UNIVERSAL hooks — what setup.ps1/adopt wired)
 #
 # Destructive. Fail-closed: without -Yes an interactive run prompts; a
 # non-interactive run aborts (rc=2). -DryRun prints actions only.
@@ -14,6 +16,7 @@
 # Usage:
 #   pwsh -File scripts/uninstall.ps1 [-DryRun] [-Yes]
 #        [-KeepTelegramState] [-SkipPlugins] [-SkipTasks] [-SkipHooks]
+#        [-SkipSettings]
 #
 # Env overrides (tests): $env:TELEGRAM_CHANNEL_DIR, $env:BRIDGE_ROOT
 
@@ -24,7 +27,8 @@ param(
     [switch]$KeepTelegramState,
     [switch]$SkipPlugins,
     [switch]$SkipTasks,
-    [switch]$SkipHooks
+    [switch]$SkipHooks,
+    [switch]$SkipSettings
 )
 
 $RepoRoot = Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..')
@@ -33,6 +37,9 @@ $ChannelDir = if ($env:TELEGRAM_CHANNEL_DIR) { $env:TELEGRAM_CHANNEL_DIR }
               else { Join-Path $HOME '.claude\channels\telegram' }
 $BridgeRoot = if ($env:BRIDGE_ROOT) { $env:BRIDGE_ROOT }
               else { Join-Path $HOME '.claude\handover\bridge' }
+# Test override so the [6/6] settings-unwire targets a temp file, not the real one.
+$UserSettings = if ($env:HIMMEL_USER_SETTINGS) { $env:HIMMEL_USER_SETTINGS }
+                else { Join-Path $HOME '.claude\settings.json' }
 
 # Locale-independent existence check for an exact scheduled-task name.
 # Returns $true if the task exists, $false if absent. Throws only on
@@ -71,6 +78,12 @@ if (-not $SkipHooks) {
 } else {
     Write-Host "  5. keep git hooks (-SkipHooks)"
 }
+if (-not $SkipSettings) {
+    Write-Host "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
+    Write-Host "     LUNA_VAULT_PATH, UNIVERSAL hooks -- non-himmel keys untouched)"
+} else {
+    Write-Host "  6. keep ~/.claude/settings.json wiring (-SkipSettings)"
+}
 Write-Host ""
 
 if ($DryRun) {
@@ -87,12 +100,12 @@ if ($DryRun) {
 }
 Write-Host ""
 
-# --- [1/5] stop the bridge ---------------------------------------------------
+# --- [1/6] stop the bridge ---------------------------------------------------
 # $BridgeMaybeRunning gates step 2: removing state while a supervisor may
 # still be live would be recreated by it, and its open handles make the
 # Remove-Item fail partway on Windows.
 $BridgeMaybeRunning = $false
-Write-Host "[1/5] Stopping telegram bridge..."
+Write-Host "[1/6] Stopping telegram bridge..."
 $PidFile = Join-Path $BridgeRoot 'supervisor.pid'
 if (-not (Test-Path $PidFile)) {
     Write-Host "  no supervisor.pid under $BridgeRoot -- bridge not running, skipping."
@@ -123,8 +136,8 @@ if (-not (Test-Path $PidFile)) {
 }
 Write-Host ""
 
-# --- [2/5] remove telegram pairing + bridge state ------------------------------
-Write-Host "[2/5] Removing telegram pairing + bridge state..."
+# --- [2/6] remove telegram pairing + bridge state ------------------------------
+Write-Host "[2/6] Removing telegram pairing + bridge state..."
 if ($KeepTelegramState) {
     Write-Host "  kept (-KeepTelegramState)."
 } elseif ($BridgeMaybeRunning) {
@@ -174,8 +187,8 @@ if ($KeepTelegramState) {
 }
 Write-Host ""
 
-# --- [3/5] remove scheduled tasks ----------------------------------------------
-Write-Host "[3/5] Removing scheduled tasks (HIMMEL-Resume-*, HimmelTelegramBridge)..."
+# --- [3/6] remove scheduled tasks ----------------------------------------------
+Write-Host "[3/6] Removing scheduled tasks (HIMMEL-Resume-*, HimmelTelegramBridge)..."
 if ($SkipTasks) {
     Write-Host "  kept (-SkipTasks)."
 } else {
@@ -243,8 +256,8 @@ if ($SkipTasks) {
 }
 Write-Host ""
 
-# --- [4/5] uninstall plugins + marketplaces -------------------------------------
-Write-Host "[4/5] Uninstalling Claude plugins + marketplaces..."
+# --- [4/6] uninstall plugins + marketplaces -------------------------------------
+Write-Host "[4/6] Uninstalling Claude plugins + marketplaces..."
 if ($SkipPlugins) {
     Write-Host "  kept (-SkipPlugins)."
 } elseif (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
@@ -259,9 +272,9 @@ if ($SkipPlugins) {
 }
 Write-Host ""
 
-# --- [5/5] uninstall git hooks ----------------------------------------------------
+# --- [5/6] uninstall git hooks ----------------------------------------------------
 # Mirror of setup.ps1 step 2 (which installs via python -m pre_commit).
-Write-Host "[5/5] Uninstalling git hooks (this repo)..."
+Write-Host "[5/6] Uninstalling git hooks (this repo)..."
 if ($SkipHooks) {
     Write-Host "  kept (-SkipHooks)."
 } elseif (-not (Get-Command python -ErrorAction SilentlyContinue)) {
@@ -287,9 +300,37 @@ if ($SkipHooks) {
 }
 Write-Host ""
 
+# --- [6/6] unwire user-scope settings.json (HIMMEL-460) ----------------------
+# Symmetric inverse of setup.ps1 [9/10] + adopt -Scope user: remove the
+# statusLine, env.HIMMEL_REPO, env.LUNA_VAULT_PATH, and the UNIVERSAL hooks.
+# Each helper removes ONLY its own key/stanza (refuses invalid JSON, preserves
+# every non-himmel key). The single-key helpers have no dry-run flag, so -DryRun
+# is gated here; unwire-pretooluse-hooks has its own switch.
+Write-Host "[6/6] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, hooks)..."
+if ($SkipSettings) {
+    Write-Host "  kept (-SkipSettings)."
+} elseif (-not (Test-Path $UserSettings)) {
+    Write-Host "  no $UserSettings -- nothing to unwire."
+} elseif ($DryRun) {
+    Write-Host "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH from $UserSettings"
+    & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\lib\unwire-pretooluse-hooks.ps1') -SettingsPath $UserSettings -DryRun
+} else {
+    foreach ($u in @('unwire-statusline', 'unwire-himmel-repo', 'unwire-luna-vault')) {
+        & pwsh -NoProfile -File (Join-Path $RepoRoot "scripts\lib\$u.ps1") -SettingsPath $UserSettings
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  WARN: $u reported a problem; setup-state may remain." -ForegroundColor Yellow
+        }
+    }
+    & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\lib\unwire-pretooluse-hooks.ps1') -SettingsPath $UserSettings
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  WARN: unwire-pretooluse-hooks reported a problem." -ForegroundColor Yellow
+    }
+}
+Write-Host ""
+
 Write-Host "Uninstall complete."
 Write-Host ""
 Write-Host "NOT touched (by design):"
-Write-Host "  - ~/.claude/settings.json (hooks/MCP config -- prune manually if wanted)"
+Write-Host "  - ~/.claude/settings.json non-himmel keys (MCP config, your own hooks, rtk guard)"
 Write-Host "  - the himmel clone itself, .env, and worktrees"
 Write-Host "  - ~/.claude/handover/registry.json + handover state outside the bridge root"

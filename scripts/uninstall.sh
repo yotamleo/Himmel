@@ -2,14 +2,16 @@
 # uninstall.sh — offboard the himmel operator surface (HIMMEL-227).
 # Symmetric teardown of what setup.sh + install-plugins.sh onboard:
 #
-#   [1/5] stop the telegram bun bridge      (bun supervisor.ts --kill)
-#   [2/5] remove telegram pairing + bridge state
+#   [1/6] stop the telegram bun bridge      (bun supervisor.ts --kill)
+#   [2/6] remove telegram pairing + bridge state
 #         (channel dir incl. access.json + bot-token .env; bridge root)
-#   [3/5] remove HIMMEL-Resume-* scheduled jobs (+ HimmelTelegramBridge
+#   [3/6] remove HIMMEL-Resume-* scheduled jobs (+ HimmelTelegramBridge
 #         logon task on Windows)
-#   [4/5] uninstall Claude plugins + marketplaces
+#   [4/6] uninstall Claude plugins + marketplaces
 #         (machine-setup/uninstall-plugins.sh — user-scope, affects all repos)
-#   [5/5] uninstall git hooks (pre-commit/pre-push/commit-msg)
+#   [5/6] uninstall git hooks (pre-commit/pre-push/commit-msg)
+#   [6/6] unwire ~/.claude/settings.json (statusLine, env.HIMMEL_REPO,
+#         env.LUNA_VAULT_PATH, the UNIVERSAL hooks — what setup.sh/adopt wired)
 #
 # Destructive. Fail-closed: without --yes an interactive run prompts; a
 # non-interactive run aborts (rc=2). --dry-run prints every action without
@@ -18,6 +20,7 @@
 # Usage:
 #   bash scripts/uninstall.sh [--dry-run] [--yes]
 #        [--keep-telegram-state] [--skip-plugins] [--skip-tasks] [--skip-hooks]
+#        [--skip-settings]
 #
 # Flags:
 #   --dry-run              Print actions instead of running them.
@@ -27,11 +30,14 @@
 #   --skip-plugins         Keep Claude plugins + marketplaces installed.
 #   --skip-tasks           Keep HIMMEL-Resume-* / HimmelTelegramBridge jobs.
 #   --skip-hooks           Keep the repo's pre-commit git hooks.
+#   --skip-settings        Keep the user-scope ~/.claude/settings.json wiring
+#                          (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, hooks).
 #
 # Env overrides (tests):
 #   TELEGRAM_CHANNEL_DIR — default $HOME/.claude/channels/telegram
 #   BRIDGE_ROOT          — default $HOME/.claude/handover/bridge
 #                          (same var the bridge's bus.ts honors)
+#   HIMMEL_USER_SETTINGS — default $HOME/.claude/settings.json (the [6/6] target)
 #
 # Exit codes: 0 = done (per-step problems are WARNs); 2 = aborted
 # (no confirmation) or bad flag.
@@ -45,6 +51,7 @@ KEEP_TELEGRAM_STATE=0
 SKIP_PLUGINS=0
 SKIP_TASKS=0
 SKIP_HOOKS=0
+SKIP_SETTINGS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)             DRY_RUN=1 ;;
@@ -53,6 +60,7 @@ while [ $# -gt 0 ]; do
     --skip-plugins)        SKIP_PLUGINS=1 ;;
     --skip-tasks)          SKIP_TASKS=1 ;;
     --skip-hooks)          SKIP_HOOKS=1 ;;
+    --skip-settings)       SKIP_SETTINGS=1 ;;
     -h|--help)
       sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//' | head -n -1
       exit 0
@@ -64,6 +72,9 @@ done
 
 CHANNEL_DIR="${TELEGRAM_CHANNEL_DIR:-$HOME/.claude/channels/telegram}"
 BRIDGE_ROOT="${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}"
+# Test override (HIMMEL_USER_SETTINGS) so the [6/6] settings-unwire can target a
+# temp file instead of the operator's real ~/.claude/settings.json.
+USER_SETTINGS="${HIMMEL_USER_SETTINGS:-$HOME/.claude/settings.json}"
 
 run() {
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -111,6 +122,12 @@ if [ "$SKIP_HOOKS" -eq 0 ]; then
 else
   echo "  5. keep git hooks (--skip-hooks)"
 fi
+if [ "$SKIP_SETTINGS" -eq 0 ]; then
+  echo "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
+  echo "     LUNA_VAULT_PATH, UNIVERSAL hooks — non-himmel keys untouched)"
+else
+  echo "  6. keep ~/.claude/settings.json wiring (--skip-settings)"
+fi
 echo ""
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -131,7 +148,7 @@ elif [ "$YES" -ne 1 ]; then
 fi
 echo ""
 
-# --- [1/5] stop the bridge -------------------------------------------------
+# --- [1/6] stop the bridge -------------------------------------------------
 # Uses the documented cross-platform lever (supervisor.pid under the bridge
 # root; see docs/internals/telegram-bridge.md). BRIDGE_ROOT is passed through
 # so a non-default root kills the matching bridge, not another one.
@@ -139,7 +156,7 @@ echo ""
 # still be live would be recreated by it (and on Windows, locked files make
 # the removal fail partway).
 bridge_maybe_running=0
-echo "[1/5] Stopping telegram bridge..."
+echo "[1/6] Stopping telegram bridge..."
 if [ ! -f "$BRIDGE_ROOT/supervisor.pid" ]; then
   echo "  no supervisor.pid under $BRIDGE_ROOT — bridge not running, skipping."
 elif ! command -v bun >/dev/null 2>&1; then
@@ -164,8 +181,8 @@ else
 fi
 echo ""
 
-# --- [2/5] remove telegram pairing + bridge state ----------------------------
-echo "[2/5] Removing telegram pairing + bridge state..."
+# --- [2/6] remove telegram pairing + bridge state ----------------------------
+echo "[2/6] Removing telegram pairing + bridge state..."
 if [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
   echo "  kept (--keep-telegram-state)."
 elif [ "$bridge_maybe_running" -eq 1 ]; then
@@ -195,10 +212,10 @@ else
 fi
 echo ""
 
-# --- [3/5] remove scheduled jobs ---------------------------------------------
+# --- [3/6] remove scheduled jobs ---------------------------------------------
 # Mirrors scripts/handover/arm-resume.sh job discovery: schtasks task names
 # on Windows; at-job body marker / crontab line marker on Linux/macOS.
-echo "[3/5] Removing scheduled jobs (HIMMEL-Resume-*, HimmelTelegramBridge)..."
+echo "[3/6] Removing scheduled jobs (HIMMEL-Resume-*, HimmelTelegramBridge)..."
 if [ "$SKIP_TASKS" -eq 1 ]; then
   echo "  kept (--skip-tasks)."
 elif command -v schtasks >/dev/null 2>&1; then
@@ -306,8 +323,8 @@ EOF
 fi
 echo ""
 
-# --- [4/5] uninstall plugins + marketplaces ----------------------------------
-echo "[4/5] Uninstalling Claude plugins + marketplaces..."
+# --- [4/6] uninstall plugins + marketplaces ----------------------------------
+echo "[4/6] Uninstalling Claude plugins + marketplaces..."
 if [ "$SKIP_PLUGINS" -eq 1 ]; then
   echo "  kept (--skip-plugins)."
 elif ! command -v claude >/dev/null 2>&1; then
@@ -321,9 +338,9 @@ else
 fi
 echo ""
 
-# --- [5/5] uninstall git hooks -------------------------------------------------
+# --- [5/6] uninstall git hooks -------------------------------------------------
 # Mirror of setup-hooks.sh / setup.sh step 2.
-echo "[5/5] Uninstalling git hooks (this repo)..."
+echo "[5/6] Uninstalling git hooks (this repo)..."
 if [ "$SKIP_HOOKS" -eq 1 ]; then
   echo "  kept (--skip-hooks)."
 elif ! command -v pre-commit >/dev/null 2>&1; then
@@ -344,9 +361,38 @@ else
 fi
 echo ""
 
+# --- [6/6] unwire user-scope settings.json (HIMMEL-460) ----------------------
+# Symmetric inverse of setup.sh [9/10] + adopt --scope user: remove the
+# statusLine, env.HIMMEL_REPO, env.LUNA_VAULT_PATH, and the UNIVERSAL hooks that
+# himmel wired into ~/.claude/settings.json. Each helper removes ONLY its own
+# key/stanza (refuses invalid JSON, preserves every non-himmel key: rtk guard,
+# the operator's own hooks, MCP config). --dry-run flows through to each.
+echo "[6/6] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, hooks)..."
+_user_settings="$USER_SETTINGS"
+if [ "$SKIP_SETTINGS" -eq 1 ]; then
+  echo "  kept (--skip-settings)."
+elif [ ! -f "$_user_settings" ]; then
+  echo "  no $_user_settings — nothing to unwire."
+elif [ "$DRY_RUN" -eq 1 ]; then
+  # The single-key unwire helpers have no dry-run flag, so gate at this level to
+  # keep --dry-run a true no-op (SC6). unwire-pretooluse-hooks has its own flag.
+  echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH from $_user_settings"
+  bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$_user_settings" 1 \
+    || echo "  WARN: unwire-pretooluse-hooks dry-run reported a problem." >&2
+else
+  for _unwire in unwire-statusline unwire-himmel-repo unwire-luna-vault; do
+    if ! bash "$REPO_ROOT/scripts/lib/$_unwire.sh" "$_user_settings"; then
+      echo "  WARN: $_unwire reported a problem; setup-state may remain." >&2
+    fi
+  done
+  bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$_user_settings" \
+    || echo "  WARN: unwire-pretooluse-hooks reported a problem." >&2
+fi
+echo ""
+
 echo "Uninstall complete."
 echo ""
 echo "NOT touched (by design):"
-echo "  - ~/.claude/settings.json (hooks/MCP config — prune manually if wanted)"
+echo "  - ~/.claude/settings.json non-himmel keys (MCP config, your own hooks, rtk guard)"
 echo "  - the himmel clone itself, .env, and worktrees"
 echo "  - ~/.claude/handover/registry.json + handover state outside the bridge root"

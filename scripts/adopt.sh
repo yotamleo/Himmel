@@ -38,6 +38,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
+# Shared wire helpers (the PreToolUse trio + SessionStart) — one implementation
+# for adopt.sh and setup.sh (HIMMEL install/uninstall symmetry).
+# shellcheck source=scripts/lib/wire-pretooluse-hooks.sh
+. "$SCRIPT_DIR/lib/wire-pretooluse-hooks.sh"
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 PROFILE="core"
 SCOPE="project"
@@ -102,54 +107,6 @@ copy_portable() {
     run chmod +x "$TARGET/$f"
     echo "  $f"
   done
-}
-
-# Merge the three PreToolUse hook stanzas into a settings.json, idempotently.
-# $1 = settings.json path, $2 = command path prefix (literal, e.g.
-# '$CLAUDE_PROJECT_DIR' for project scope or the himmel abs path for user scope).
-# The hook path is FORWARD-SLASHED and QUOTED in the command: an unquoted Windows
-# backslash path (`bash C:\Users\...\X.sh`) collapses when the hook command is
-# parsed by a shell (`\U`->`U`), so the hook silently never fires.
-# Dedup is by hook BASENAME with REPLACE semantics: re-running adopt overwrites a
-# previously-wired (incl. broken backslash) himmel hook rather than appending a
-# duplicate — so a re-run repairs a bad install and never double-wires.
-wire_settings() {
-  local settings="$1" prefix="$2"
-  # shellcheck disable=SC1003  # '\' is a literal backslash to replace, not a quote escape
-  local pfx="${prefix//'\'//}"   # forward-slash any backslashes in the prefix
-  local desired
-  desired=$(cat <<JSON
-[
-  {"matcher":"Bash","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/auto-approve-safe-bash.sh\""}]},
-  {"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/block-edit-on-main.sh\""}]},
-  {"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/block-read-secrets.sh\""}]}
-]
-JSON
-)
-  if [[ $DRY_RUN -eq 1 ]]; then
-    echo "DRY: merge 3 PreToolUse hook stanzas into $settings (prefix: $prefix)"
-    return
-  fi
-  mkdir -p "$(dirname "$settings")"
-  local base="{}"
-  [[ -f "$settings" ]] && base=$(cat "$settings")
-  # Drop only the himmel hook OBJECTS (not whole stanzas) from each existing
-  # PreToolUse entry, then drop any stanza left empty, then append the fresh
-  # stanzas. Hook-object granularity preserves a non-himmel hook (rtk-hook-guard,
-  # the operator's own) even when it is co-located in the SAME hooks[] array as a
-  # himmel hook — a stanza-level filter would take it down with the himmel one.
-  printf '%s' "$base" | jq --argjson add "$desired" '
-    .hooks = (.hooks // {})
-    | .hooks.PreToolUse = (
-        ((.hooks.PreToolUse // [])
-          | map(.hooks = ((.hooks // [])
-              | map(select((.command // "")
-                    | test("scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)[.]sh") | not))))
-          | map(select((.hooks | length) > 0)))
-        + $add
-      )
-  ' > "$settings.adopt.tmp" && mv "$settings.adopt.tmp" "$settings"
-  echo "  wired PreToolUse hooks → $settings"
 }
 
 install_plugins() {
@@ -239,11 +196,14 @@ do_core() {
     copy_portable
     # Literal $CLAUDE_PROJECT_DIR — Claude Code expands it at hook-fire time.
     # shellcheck disable=SC2016
-    wire_settings "$TARGET/.claude/settings.json" '$CLAUDE_PROJECT_DIR'
+    wire_pretooluse_hooks "$TARGET/.claude/settings.json" '$CLAUDE_PROJECT_DIR' "$DRY_RUN"
     echo "  worktree commands: bash $TARGET/scripts/worktree.sh feat/slug"
   else
-    # user scope: reference this himmel clone, don't copy per-repo.
-    wire_settings "$HOME/.claude/settings.json" "$HIMMEL_ROOT"
+    # user scope: reference this himmel clone, don't copy per-repo. Wire the full
+    # UNIVERSAL set — the PreToolUse trio AND the SessionStart leg-injector — so a
+    # session launched anywhere gets the legs (parity with setup.sh / R3).
+    wire_pretooluse_hooks "$HOME/.claude/settings.json" "$HIMMEL_ROOT" "$DRY_RUN"
+    wire_sessionstart_hook "$HOME/.claude/settings.json" "$HIMMEL_ROOT" "inject-initiative.sh" "$DRY_RUN"
     echo "  worktree commands run from the himmel clone: bash $HIMMEL_ROOT/scripts/worktree.sh feat/slug"
   fi
   install_plugins

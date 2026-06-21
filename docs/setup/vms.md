@@ -4,6 +4,26 @@ Local VMs for testing and automation. Credentials stored in `.env` — see `.env
 
 To provision a fresh Ubuntu VM run: `python scripts/machine-setup/ubuntu-vm-setup.py`
 
+## Dependency split — test-harness vs user-runtime (HIMMEL-469)
+
+Two **different** dependency sets; do not conflate them:
+
+| Set | Who needs it | Deps | Installed by |
+|-----|--------------|------|--------------|
+| **Test harness** | throwaway test VMs + CI runners (to *run* himmel's bash suites) | `bash git jq` | `scripts/machine-setup/test-bootstrap.sh` |
+| **User runtime** | himmel adopters (to *use* himmel) | `bash git node npm bun python3 jq gh mktemp` (+ `claude`) | `scripts/setup.sh` `[0/10]` (R6 `ensure-tools` auto-installs git/jq/python3, flags the rest) |
+
+A bare test VM only needs `test-bootstrap.sh` to run the suites — it does **not**
+need the full user runtime. `bash scripts/machine-setup/test-bootstrap.sh`
+(`--check` to report only, `--no-sudo` if already root).
+
+**Provision test VMs / CI with NOPASSWD sudo** (or run as root) so `test-bootstrap`
+and the R6 `ensure-tools` apt path run non-interactively — a password-prompted
+`sudo` over a non-TTY ssh fails with `A terminal is required to authenticate`.
+The host-driven validator `scripts/test-install-symmetry-vm.sh [user@host] [port]
+[identity]` GAP-skips the git-dependent suites when git is absent rather than
+failing, so it stays green on a not-yet-bootstrapped box.
+
 ---
 
 ## Ubuntu VM

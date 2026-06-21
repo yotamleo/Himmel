@@ -9,12 +9,19 @@
 #
 # Usage — source this file, then:
 #   load_dotenv [KEY ...]
-# With no args, loads the default keys: HANDOVER_DIR USER_SLUG.
+#   load_dotenv --root <dir> [KEY ...]
+# With no keys, loads the default keys: HANDOVER_DIR USER_SLUG.
 #
 # The .env path is resolved like the Jira CLI: the parent of
 # `git rev-parse --git-common-dir`, so from inside a git worktree it still
 # finds the PRIMARY checkout's .env (the gitignored .env is not copied into
 # worktrees). Falls back to two levels up from this script if git is absent.
+#
+# `--root <dir>` (HIMMEL-460): load <dir>/.env and BYPASS the CWD-based
+# `_load_dotenv_root` resolution entirely (no `git rev-parse` against the
+# process CWD). The caller has already resolved the correct root — used by the
+# SessionStart inject-initiative hook so a session launched inside an UNRELATED
+# git repo never reads THAT repo's .env.
 #
 # Safety: never `source`s the file (no arbitrary code execution). Extracts
 # only the requested `KEY=` lines; skips comments, blanks, and lines without
@@ -39,11 +46,16 @@ _load_dotenv_root() {
 }
 
 load_dotenv() {
+    local root=""
+    if [ "${1:-}" = "--root" ]; then
+        root="$2"; shift 2
+    fi
     local keys=("$@")
     [ "${#keys[@]}" -eq 0 ] && keys=(HANDOVER_DIR USER_SLUG)
 
-    local root envfile
-    root=$(_load_dotenv_root) || return 0
+    local envfile
+    # An explicit --root bypasses CWD git resolution (never trust the CWD repo).
+    [ -n "$root" ] || { root=$(_load_dotenv_root) || return 0; }
     envfile="$root/.env"
     [ -f "$envfile" ] || return 0
 

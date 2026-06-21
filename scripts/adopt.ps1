@@ -48,6 +48,11 @@ $LunaTargetSet = $PSBoundParameters.ContainsKey('LunaTarget')
 
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $HimmelRoot  = (Resolve-Path (Join-Path $ScriptDir '..')).Path
+
+# Shared wire helpers (PreToolUse trio + SessionStart) -- one implementation for
+# adopt.ps1 and setup.ps1 (HIMMEL install/uninstall symmetry).
+. (Join-Path $ScriptDir 'lib/wire-pretooluse-hooks.ps1')
+
 if (-not $Target)     { $Target     = (Get-Location).Path }
 if (-not $LunaTarget) { $LunaTarget = Join-Path $HOME 'Documents\luna' }
 
@@ -84,50 +89,6 @@ function Copy-Portable {
         Copy-Item -Force $src $dst
         Write-Host "  $f"
     }
-}
-
-# Merge the three PreToolUse hook stanzas into a settings.json, idempotently.
-# The hook path is FORWARD-SLASHED and QUOTED: an unquoted Windows backslash path
-# (`bash C:\Users\...\X.sh`) collapses when the hook command is parsed by a shell
-# (`\U`->`U`), so the hook silently never fires. Dedup is by hook
-# BASENAME with REPLACE semantics — a re-run repairs a bad install, never dups.
-function Wire-Settings([string]$SettingsPath, [string]$Prefix) {
-    $pfx = $Prefix.Replace('\', '/')   # forward-slash any backslashes in the prefix
-    $desired = @(
-        [pscustomobject]@{ matcher = 'Bash'; hooks = @([pscustomobject]@{ type = 'command'; command = "bash `"$pfx/scripts/hooks/auto-approve-safe-bash.sh`"" }) },
-        [pscustomobject]@{ matcher = 'Edit|Write|MultiEdit|NotebookEdit'; hooks = @([pscustomobject]@{ type = 'command'; command = "bash `"$pfx/scripts/hooks/block-edit-on-main.sh`"" }) },
-        [pscustomobject]@{ matcher = 'Bash|PowerShell|Read|Grep'; hooks = @([pscustomobject]@{ type = 'command'; command = "bash `"$pfx/scripts/hooks/block-read-secrets.sh`"" }) }
-    )
-    if ($DryRun) { Write-Host "DRY: merge 3 PreToolUse hook stanzas into $SettingsPath (prefix: $Prefix)"; return }
-    New-Item -ItemType Directory -Force (Split-Path $SettingsPath) | Out-Null
-
-    if (Test-Path $SettingsPath) {
-        $cfg = Get-Content $SettingsPath -Raw | ConvertFrom-Json
-    } else {
-        $cfg = [pscustomobject]@{}
-    }
-    if (-not $cfg.PSObject.Properties['hooks']) {
-        $cfg | Add-Member -NotePropertyName hooks -NotePropertyValue ([pscustomobject]@{})
-    }
-    if (-not $cfg.hooks.PSObject.Properties['PreToolUse']) {
-        $cfg.hooks | Add-Member -NotePropertyName PreToolUse -NotePropertyValue @()
-    }
-    # Drop only the himmel hook OBJECTS (not whole stanzas), keep stanzas that
-    # still have hooks, then append the fresh stanzas. Hook-object granularity
-    # preserves a non-himmel hook (rtk-hook-guard / operator's own) co-located in
-    # the SAME hooks[] array as a himmel hook (basename REPLACE, not append).
-    $himmelRe = 'scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)\.sh'
-    $kept = @()
-    foreach ($st in @($cfg.hooks.PreToolUse)) {
-        $keepHooks = @($st.hooks | Where-Object { $_.command -notmatch $himmelRe })
-        if ($keepHooks.Count -gt 0) {
-            $st.hooks = $keepHooks
-            $kept += $st
-        }
-    }
-    $cfg.hooks.PreToolUse = @($kept + $desired)
-    $cfg | ConvertTo-Json -Depth 12 | Set-Content $SettingsPath -Encoding utf8
-    Write-Host "  wired PreToolUse hooks → $SettingsPath"
 }
 
 function Install-Plugins {
@@ -235,10 +196,15 @@ function Do-Core {
     Require-Tools
     if ($Scope -eq 'project') {
         Copy-Portable
-        Wire-Settings (Join-Path $Target '.claude\settings.json') '$CLAUDE_PROJECT_DIR'
+        Set-PretooluseHooks -SettingsPath (Join-Path $Target '.claude\settings.json') -Prefix '$CLAUDE_PROJECT_DIR' -DryRun:$DryRun
         Write-Host "  worktree commands: bash $Target/scripts/worktree.sh feat/slug"
     } else {
-        Wire-Settings (Join-Path $HOME '.claude\settings.json') $HimmelRoot
+        # user scope: wire the full UNIVERSAL set -- the PreToolUse trio AND the
+        # SessionStart leg-injector -- so a session launched anywhere gets the legs
+        # (parity with setup.ps1 / R3).
+        $userSettings = Join-Path $HOME '.claude\settings.json'
+        Set-PretooluseHooks -SettingsPath $userSettings -Prefix $HimmelRoot -DryRun:$DryRun
+        Set-SessionStartHook -SettingsPath $userSettings -Prefix $HimmelRoot -HookBasename 'inject-initiative.sh' -DryRun:$DryRun
         Write-Host "  worktree commands run from the himmel clone: bash $HimmelRoot/scripts/worktree.sh feat/slug"
     }
     Install-Plugins

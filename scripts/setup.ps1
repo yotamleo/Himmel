@@ -18,8 +18,9 @@ param(
     [switch]$FillEnv
 )
 
-$RepoRoot = git rev-parse --show-toplevel
-Set-Location $RepoRoot
+# $RepoRoot is resolved AFTER the [0/10] preflight (R6, HIMMEL-460): the preflight
+# may auto-install git, so `git rev-parse` must not run before it.
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # Surface Ctrl-C / pipeline failures rather than letting the script
 # continue past a broken step. Mirrors `trap ... INT TERM` in setup.sh.
@@ -51,6 +52,39 @@ foreach ($tool in @('git', 'node', 'npm', 'bun', 'python', 'jq', 'gh', 'bash')) 
         $missing += $tool
     }
 }
+
+# R6 (HIMMEL-460): best-effort FETCH of the auto-installable missing tools
+# (git/jq/python) via winget -> scoop -> choco BEFORE failing. The rest keep the
+# flag-loud fallback below. Mirrors setup.sh's ensure-tools step.
+if ($missing.Count -gt 0) {
+    $wingetIds = @{ 'git' = 'Git.Git'; 'jq' = 'jqlang.jq'; 'python' = 'Python.Python.3.12' }
+    $installer = $null
+    if (Get-Command winget -ErrorAction SilentlyContinue) { $installer = 'winget' }
+    elseif (Get-Command scoop -ErrorAction SilentlyContinue) { $installer = 'scoop' }
+    elseif (Get-Command choco -ErrorAction SilentlyContinue) { $installer = 'choco' }
+    if ($installer) {
+        Write-Host "  Missing: $($missing -join ', ') — attempting auto-install via $installer..."
+        foreach ($tool in $missing) {
+            if (-not $wingetIds.ContainsKey($tool)) {
+                Write-Host "    no known $installer package for '$tool' — install it manually." -ForegroundColor Yellow
+                continue
+            }
+            try {
+                switch ($installer) {
+                    'winget' { winget install --id $wingetIds[$tool] --silent --accept-source-agreements --accept-package-agreements | Out-Null }
+                    'scoop'  { scoop install $tool | Out-Null }
+                    'choco'  { choco install $tool -y | Out-Null }
+                }
+            } catch {
+                Write-Host "    $installer install '$tool' failed — install it manually." -ForegroundColor Yellow
+            }
+        }
+        $missing = @($missing | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+    } else {
+        Write-Host "  No supported installer (winget/scoop/choco) found — cannot auto-install." -ForegroundColor Yellow
+    }
+}
+
 if ($missing.Count -gt 0) {
     Write-Error "missing required tools: $($missing -join ', ')"
     Write-Host "  Install hints (see docs/setup/new-machine.md for full per-platform table):" -ForegroundColor Yellow
@@ -61,6 +95,11 @@ if ($missing.Count -gt 0) {
 }
 Write-Host "  All foundational tools present."
 Write-Host ""
+
+# --- repo root (relocated past the preflight — R6, HIMMEL-460) ---
+# git is now guaranteed present; safe to resolve the checkout root.
+$RepoRoot = git rev-parse --show-toplevel
+Set-Location $RepoRoot
 
 # --- Claude Code CLI (the runtime himmel harnesses) — soft check ---
 # Soft, not hard-fail: setup configures the repo and never invokes claude, so a
@@ -332,7 +371,7 @@ Write-Host ""
 # --- statusline + HIMMEL_REPO (HIMMEL-359 / HIMMEL-453) ---
 # Wire the himmel statusline AND env.HIMMEL_REPO into ~/.claude/settings.json via
 # the shared helpers. Both write settings.json, need no claude binary, idempotent.
-Write-Host "[9/10] Wiring statusline + HIMMEL_REPO (user scope)..."
+Write-Host "[9/10] Wiring statusline + HIMMEL_REPO + UNIVERSAL hooks (user scope)..."
 $settingsJson = Join-Path $HOME ".claude\settings.json"
 $savedEAP = $ErrorActionPreference
 try {
@@ -347,6 +386,14 @@ try {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  WARNING: wire-himmel-repo failed; setup continues." -ForegroundColor Yellow
     }
+    # R3 (HIMMEL-460): wire the UNIVERSAL hooks (PreToolUse trio + SessionStart
+    # inject-initiative) at USER scope so a session launched anywhere gets them.
+    . (Join-Path $RepoRoot "scripts\lib\wire-pretooluse-hooks.ps1")
+    try { Set-PretooluseHooks -SettingsPath $settingsJson -Prefix $RepoRoot } catch { Write-Host "  WARNING: wire-pretooluse-hooks failed; setup continues." -ForegroundColor Yellow }
+    try { Set-SessionStartHook -SettingsPath $settingsJson -Prefix $RepoRoot -HookBasename 'inject-initiative.sh' } catch { Write-Host "  WARNING: wire SessionStart inject-initiative failed; setup continues." -ForegroundColor Yellow }
+    # R4 (HIMMEL-460): advise on user/project hook duplication (silent in-repo).
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "scripts\lib\detect-hook-dup.ps1") `
+        -UserSettings $settingsJson -ProjectSettings (Join-Path $RepoRoot ".claude\settings.json") -HimmelRoot $RepoRoot
 } finally {
     $ErrorActionPreference = $savedEAP
 }

@@ -86,6 +86,30 @@ mkdir -p "$NONGIT"
 out=$( cd "$NONGIT" && unset HANDOVER_DIR && load_dotenv HANDOVER_DIR; rc=$?; printf '%s|%s' "${HANDOVER_DIR:-<unset>}" "$rc" )
 assert_eq "T10 git-absent fallback clean no-op" "<unset>|0" "$out"
 
+# ── --root mode (HIMMEL-460): explicit root, CWD git resolution bypassed ─────
+ROOTDIR="$TMP/explicit-root"
+mkdir -p "$ROOTDIR"
+printf 'HIMMEL_INITIATIVE=prcheck,pr\n' > "$ROOTDIR/.env"
+
+# T11: --root loads <dir>/.env regardless of CWD.
+got=$( cd "$NONGIT" && unset HIMMEL_INITIATIVE && load_dotenv --root "$ROOTDIR" HIMMEL_INITIATIVE && printf '%s' "${HIMMEL_INITIATIVE:-<unset>}" )
+assert_eq "T11 --root loads its .env" "prcheck,pr" "$got"
+
+# T12: --root NEVER reads the CWD repo's .env (the CWD-safety guarantee). Launch
+# from inside a DECOY git repo whose .env sets a different value; --root must win.
+DECOY="$TMP/decoy"; mkdir -p "$DECOY"; git -C "$DECOY" init --quiet
+printf 'HIMMEL_INITIATIVE=DECOY_VALUE\n' > "$DECOY/.env"
+got=$( cd "$DECOY" && unset HIMMEL_INITIATIVE && load_dotenv --root "$ROOTDIR" HIMMEL_INITIATIVE && printf '%s' "$HIMMEL_INITIATIVE" )
+assert_eq "T12 --root ignores CWD repo .env" "prcheck,pr" "$got"
+
+# T13: --root is still non-clobbering (process env wins).
+got=$( cd "$NONGIT" && export HIMMEL_INITIATIVE=live && load_dotenv --root "$ROOTDIR" HIMMEL_INITIATIVE && printf '%s' "$HIMMEL_INITIATIVE" )
+assert_eq "T13 --root non-clobbering" "live" "$got"
+
+# T14: --root pointing at a dir with no .env → clean no-op, rc=0.
+out=$( cd "$NONGIT" && unset HIMMEL_INITIATIVE && load_dotenv --root "$NONGIT" HIMMEL_INITIATIVE; rc=$?; printf '%s|%s' "${HIMMEL_INITIATIVE:-<unset>}" "$rc" )
+assert_eq "T14 --root no .env no-op" "<unset>|0" "$out"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "All load-dotenv tests passed."

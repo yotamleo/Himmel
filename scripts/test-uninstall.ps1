@@ -55,6 +55,13 @@ New-Item -ItemType Directory -Force $Tmp | Out-Null
 
 $SavedChannelDir = $env:TELEGRAM_CHANNEL_DIR
 $SavedBridgeRoot = $env:BRIDGE_ROOT
+$SavedUserSettings = $env:HIMMEL_USER_SETTINGS
+
+# Redirect the [6/6] settings-unwire target away from the operator's REAL
+# ~/.claude/settings.json for the whole suite (HIMMEL-460). SC6 cases re-seed it.
+$UserSettingsFile = Join-Path $Tmp 'user-settings.json'
+$env:HIMMEL_USER_SETTINGS = $UserSettingsFile
+Set-Content -Path $UserSettingsFile -Value '{}'
 
 function New-State {
     $script:Channel = Join-Path $Tmp 'channels\telegram'
@@ -328,9 +335,77 @@ function Unregister-ScheduledTask {
         Write-Host 'FAIL access.json gone despite open handle'; $script:Failed++
     }
     }
+
+    # ── SC6 (HIMMEL-460): [6/6] settings unwire ─────────────────────────────
+    $SeedSettings = {
+        @'
+{
+  "statusLine": {"type":"command","command":"bash \"C:/h/scripts/statusline/bin/statusline.sh\""},
+  "env": {"HIMMEL_REPO":"C:/h","LUNA_VAULT_PATH":"C:/v","KEEP_ME":"1"},
+  "hooks": {
+    "PreToolUse": [
+      {"matcher":"Bash","hooks":[
+        {"type":"command","command":"bash C:/h/scripts/hooks/auto-approve-safe-bash.sh"},
+        {"type":"command","command":"bash /opt/rtk-hook-guard.sh"}
+      ]},
+      {"matcher":"*","hooks":[{"type":"command","command":"bash C:/h/scripts/hooks/auto-arm-on-cap.sh"}]}
+    ],
+    "SessionStart": [
+      {"hooks":[
+        {"type":"command","command":"bash C:/h/scripts/hooks/check-update-available.sh"},
+        {"type":"command","command":"bash C:/h/scripts/hooks/inject-initiative.sh"}
+      ]}
+    ]
+  },
+  "permissions": {"allow":["mcp__obsidian-vault__obsidian_simple_search"]}
+}
+'@ | Set-Content -Path $UserSettingsFile -Encoding utf8
+    }
+    function JqU($expr) { Get-Content $UserSettingsFile -Raw | jq -r $expr }
+
+    # 11. [6/6] clears the wiring, preserves non-himmel keys.
+    New-State
+    $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n1'
+    $env:BRIDGE_ROOT = Join-Path $Tmp 'n1b'
+    & $SeedSettings
+    $out = Invoke-Uninstall @('-Yes', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+    Assert-Rc '[6/6] run exits 0' 0 $script:Rc
+    Assert-Has '[6/6] banner present' '[6/6] Unwiring' $out
+    Assert-Rc 'statusLine removed'      'null' (JqU '.statusLine // "null"')
+    Assert-Rc 'HIMMEL_REPO removed'     'null' (JqU '.env.HIMMEL_REPO // "null"')
+    Assert-Rc 'LUNA_VAULT_PATH removed' 'null' (JqU '.env.LUNA_VAULT_PATH // "null"')
+    Assert-Rc 'non-himmel env kept'     '1'    (JqU '.env.KEEP_ME')
+    Assert-Rc 'UNIVERSAL hook removed'  '0'    (JqU '[.hooks.PreToolUse[].hooks[].command|select(test("auto-approve-safe-bash"))]|length')
+    Assert-Rc 'rtk guard preserved'     '1'    (JqU '[.hooks.PreToolUse[].hooks[].command|select(test("rtk-hook-guard"))]|length')
+    Assert-Rc 'dev-only hook preserved' '1'    (JqU '[.hooks.PreToolUse[].hooks[].command|select(test("auto-arm-on-cap"))]|length')
+    Assert-Rc 'inject-initiative removed' '0'  (JqU '[.hooks.SessionStart[].hooks[].command|select(test("inject-initiative"))]|length')
+    Assert-Rc 'SessionStart sibling kept' '1'  (JqU '[.hooks.SessionStart[].hooks[].command|select(test("check-update-available"))]|length')
+
+    # 12. -SkipSettings keeps the wiring intact.
+    New-State
+    $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n2'
+    $env:BRIDGE_ROOT = Join-Path $Tmp 'n2b'
+    & $SeedSettings
+    $before = Get-Content $UserSettingsFile -Raw
+    $out = Invoke-Uninstall @('-Yes', '-SkipSettings', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+    Assert-Rc '-SkipSettings run exits 0' 0 $script:Rc
+    Assert-Has '-SkipSettings honored' 'kept (-SkipSettings)' $out
+    Assert-Rc '-SkipSettings leaves file unchanged' $before (Get-Content $UserSettingsFile -Raw)
+
+    # 13. -DryRun does not mutate the settings file.
+    New-State
+    $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n3'
+    $env:BRIDGE_ROOT = Join-Path $Tmp 'n3b'
+    & $SeedSettings
+    $before = Get-Content $UserSettingsFile -Raw
+    $out = Invoke-Uninstall @('-DryRun', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+    Assert-Rc 'dry-run [6/6] exits 0' 0 $script:Rc
+    Assert-Has 'dry-run prints [6/6] DRY' 'DRY: unwire statusLine' $out
+    Assert-Rc 'dry-run leaves settings unchanged' $before (Get-Content $UserSettingsFile -Raw)
 } finally {
     $env:TELEGRAM_CHANNEL_DIR = $SavedChannelDir
     $env:BRIDGE_ROOT = $SavedBridgeRoot
+    $env:HIMMEL_USER_SETTINGS = $SavedUserSettings
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }
 
