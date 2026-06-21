@@ -7,32 +7,57 @@ to **other coding harnesses** — Codex first — so an operator can decide what
 *port*, what to *guard*, and what to *accept as Claude-only*.
 
 > **Status:** the **Codex** column is triple-validated (openai/codex source +
-> context7 `/openai/codex` v0.75.0 + official docs, 2026-06-21, HIMMEL-427).
-> Cursor / Copilot / Gemini columns are **not yet audited** — tracked in
-> HIMMEL-472. Treat their cells as best-effort until then.
+> context7 `/openai/codex` v0.75.0 + official docs, 2026-06-21, HIMMEL-427). The
+> **Cursor / Copilot / Gemini** columns were audited 2026-06-21 (HIMMEL-472,
+> official docs + superpowers' shipped cross-harness manifests); a few cells with
+> no authoritative source are marked *unverified* inline.
 >
 > This doc is the HIMMEL-427 deliverable under epic **HIMMEL-470** (multi-harness
 > support). The ports it recommends are tracked as 470's children: **427**
 > (guardrail hook port), **471** (AGENTS.md generation), **472**
-> (Cursor / Copilot / Gemini audit), **473** (per-critic prompt adaptation).
+> (Cursor / Copilot / Gemini audit), **473** (per-critic prompt adaptation). The
+> 472 audit spawned follow-ups **487** (Cursor hooks), **488** (Codex CR review
+> skill), **489** (soft-deferred Gemini/Copilot ports).
 
 ## Frame matrix
 
 | Surface | Claude Code | Codex | Cursor | Copilot CLI | Gemini CLI |
 |---|---|---|---|---|---|
-| **PreToolUse guardrail hooks** | native | ✅ Claude-compatible engine (`ClaudeHooksEngine`); same stdin/decision contract | ⚠️ hooks exist (`hooks-cursor.json`, `CURSOR_PLUGIN_ROOT`) — TBD 472 | ⚠️ `COPILOT_CLI` detected by superpowers — TBD 472 | ❓ TBD 472 |
+| **PreToolUse guardrail hooks** | native | ✅ Claude-compatible engine (`ClaudeHooksEngine`); same stdin/decision contract | ✅ `.cursor/hooks.json`; events **camelCase** (`preToolUse`, `beforeShellExecution`); **fails OPEN** unless `failClosed:true` | ✅ `.github/hooks/*.json`; camel/Pascal; **fails CLOSED**; ⚠️ headless `-p` disables repo hooks unless `GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=true` | ✅ `.gemini/settings.json` `hooks`; events **PascalCase** (`BeforeTool`); stdin JSON |
 | **pre-commit / pre-push git gates** | ✅ | ✅ harness-independent (git runs them) | ✅ | ✅ | ✅ |
-| **Plugins / marketplace** | native | ✅ marketplaces + `@himmel` plugins load (`config.toml`) | ❌ no marketplace (per operator) | ❓ TBD 472 | ❌ none |
-| **Skills** | native | ✅ native skill loading (superpowers confirms) | ⚠️ partial — TBD 472 | ⚠️ partial — TBD 472 | ⚠️ `activate_skill` — TBD 472 |
-| **Slash commands** | `.claude/commands/` | ⚠️ Codex has its own slash-command surface — himmel's `.claude/commands/` do NOT auto-load — TBD | ❓ TBD 472 | ❓ TBD 472 | ❓ TBD 472 |
-| **Instruction file** | `CLAUDE.md` (always loaded) | ⚠️ **`AGENTS.md` only — CLAUDE.md is NOT read** | `.cursor/rules` (MDC) + `AGENTS.md` | `AGENTS.md` | `GEMINI.md` |
-| **Subagents** | `.claude/agents/*.md` | ⚠️ `.codex/agents/*.toml` (different format) | ❓ TBD 472 | ❓ TBD 472 | ❓ TBD 472 |
+| **Plugins / marketplace** | native | ✅ marketplaces + `@himmel` plugins load (`config.toml`) | ✅ marketplace exists (`.cursor-plugin/plugin.json`) — *corrects "no marketplace"* | ✅ `marketplace.json` registries (`copilot plugin marketplace add`) | ✅ "extensions" gallery (`gemini-extension.json`) |
+| **Skills** | native | ✅ native skill loading | ✅ `SKILL.md`; reads `.cursor/skills` **+ `.claude/skills` + `.codex/skills`** | ✅ `SKILL.md`; reads `.github/skills` **+ `.claude/skills`** | ✅ `SKILL.md` (gemini-native); `.gemini/skills/` |
+| **Slash commands** | `.claude/commands/` | ⚠️ own slash surface; `.claude/commands/` don't auto-load | ✅ `.cursor/commands/*.md` | ⚠️ via plugins/skills/agents (`/name`); dedicated file unverified | ✅ **TOML** `.gemini/commands/` (`:` namespacing) |
+| **Instruction file** | `CLAUDE.md` (always loaded) | ⚠️ **`AGENTS.md` only** | `.cursor/rules/*.mdc` + **`AGENTS.md`** | **`AGENTS.md`** (also reads `CLAUDE.md`/`GEMINI.md`) | **`GEMINI.md`** |
+| **Subagents** | `.claude/agents/*.md` | ⚠️ `.codex/agents/*.toml` | ✅ `.cursor/agents/*.md` (reads **`.claude/agents`**) | ✅ `*.agent.md` (`.github/agents/`) | ✅ `.gemini/agents/*.md` |
 
-**Headline:** under Codex the **git-level gates survive** (the safety net), the
-**hook engine is Claude-compatible** (so the guardrail *scripts* are reusable),
-but two things silently break unless ported: the **project hook wiring**
-(`.codex/hooks.json` path/env bug, below) and the **rule file** (CLAUDE.md is
-invisible; AGENTS.md must carry the rules).
+> **Status (HIMMEL-472, 2026-06-21):** Cursor / Copilot / Gemini columns are now
+> audited (web + official docs). Several earlier hints were **stale** and are
+> corrected above: Cursor **does** have a marketplace; all three have blocking
+> hooks, `SKILL.md` skills, subagents, and custom commands; `CURSOR_PLUGIN_ROOT`
+> and `COPILOT_CLI` env vars are **unverified / non-existent** in current docs.
+
+**Headline.** Two facts dominate the port decisions:
+1. **The rule file is nearly free.** **Copilot CLI and Cursor both read
+   `AGENTS.md`** — so the generated `AGENTS.md` from **HIMMEL-471 covers them once
+   it lands** (471 is in flight; today's repo `AGENTS.md` is still the thin
+   pointer — see §2). Only **Gemini** needs a distinct `GEMINI.md` (same content,
+   different filename — a one-line generator target).
+2. **Skills + subagents are near drop-in; hooks are not.** Cursor and Copilot
+   read `.claude/skills` and `.claude/agents` directly, so himmel's skills +
+   subagents largely carry. But each harness's **hook schema differs** —
+   event-name casing (camel vs Pascal), fail posture (Cursor fails OPEN, Copilot
+   fails CLOSED), and payload transport (Cursor env vars incl. a `CLAUDE_PROJECT_DIR`
+   alias; Copilot + Gemini stdin JSON). himmel's guardrail *scripts* are reusable
+   but the *wiring* is per-harness. As under Codex, the **git gates survive on
+   every harness** — the safety net.
+
+**Prioritization (operator, 2026-06-21).** **Codex is primary** (operator has
+Codex-primary users; free OAuth usage via hermes). **Cursor** is a reasonable
+second (rule file already covered by AGENTS.md; skills/agents near drop-in).
+**Gemini + Copilot are soft-deferred** — no free usage tier, so the cost of
+porting + running guardrails there is not yet justified; file the subtasks but
+leave them low-priority until there's demand.
 
 ## Codex deep-dive
 
@@ -124,17 +149,70 @@ Codex's config surface (`~/.codex/config.toml`) ≠ `.claude/settings.json`:
 `[mcp_servers.*]`, `[projects.*]` trust levels, `[windows] sandbox`. Permissions
 and hook wiring live here, not in `.claude/`.
 
+## Cursor / Copilot / Gemini deep-dive (HIMMEL-472)
+
+Audited 2026-06-21 (official docs + superpowers' shipped `hooks-cursor.json`,
+`.cursor-plugin/`, `.codex-plugin/`, `gemini-extension.json`). Per-harness
+port/guard/accept:
+
+### Cursor (priority: second after Codex)
+- **Rule file — ACCEPT (covered once HIMMEL-471 lands).** Cursor reads
+  `AGENTS.md`, so HIMMEL-471's generated file works as-is. Optional upside: a
+  `.cursor/rules/*.mdc` variant for glob-scoped rules (defer).
+- **Skills / subagents — ACCEPT.** Cursor reads `.claude/skills` and
+  `.claude/agents` directly → near drop-in.
+- **Hooks — PORT.** `.cursor/hooks.json`, **camelCase** events
+  (`preToolUse`/`beforeShellExecution`), and **fails OPEN** by default — himmel's
+  fail-closed posture needs explicit `failClosed:true`. Reuse the guardrail
+  scripts; new wiring file. Cursor injects `CURSOR_PROJECT_DIR` (+ a
+  `CLAUDE_PROJECT_DIR` alias) so the project-dir resolution is easier than Codex's.
+- **Marketplace — ACCEPT** (exists, contrary to the earlier "no marketplace" note).
+
+### Copilot CLI (SOFT-DEFER — no free usage)
+- **Rule file — ACCEPT.** Reads `AGENTS.md` (HIMMEL-471 covers it once shipped);
+  also reads `CLAUDE.md`/`GEMINI.md`.
+- **Skills — ACCEPT** (reads `.claude/skills`). **Subagents** `*.agent.md` — port selectively.
+- **Hooks — PORT, with a gotcha.** `.github/hooks/*.json`, fails CLOSED, BUT
+  **headless `-p` disables repo hooks** unless `GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=true`
+  — himmel's auto-mode guardrails would silently not fire. Note `COPILOT_CLI` env
+  var (superpowers reference) does **not** exist in current docs.
+
+### Gemini CLI (SOFT-DEFER — no free usage)
+- **Rule file — PORT (small).** Needs `GEMINI.md` (distinct filename); same body
+  as AGENTS.md → a one-line extra target on the HIMMEL-471 generator. Soft-deferred.
+- **Skills / subagents** — gemini-native `SKILL.md` (`.gemini/skills/`) +
+  `.gemini/agents/*.md` — port selectively.
+- **Hooks — PORT.** `.gemini/settings.json` `hooks`, **PascalCase** events
+  (`BeforeTool`), stdin-JSON payload (no env vars). New wiring.
+
+### CR reviewer under non-Claude harnesses (answers "pr-review-toolkit for codex?")
+The **cross-model critic panel** (`scripts/cr/critic-panel.sh` + hermes) is pure
+shell → already runs under any harness. Only the **Claude-subagent** layer
+(`/pr-check`'s `.claude/agents/code-reviewer.md`) doesn't auto-carry. No 1:1
+codex mirror of pr-review-toolkit exists; the closest trusted analog is
+**`hyhmrright/brooks-lint`** (921★, MIT — an AI code-review *codex skill*),
+catalogued in **`ComposioHQ/awesome-codex-skills`** (~14k★ live 2026-06-21,
+active; the vault clip `luna/30-Resources/Tech/composiohq-awesome-codex-skills.md`
+recorded 13.5k earlier and already flags it
+"take-parts, directly relevant to pr-review-toolkit"). Codex skills are
+`SKILL.md`-based (same shape himmel uses), installable into `$CODEX_HOME/skills/`.
+**Decision:** author a himmel codex review `SKILL.md` OR adopt/adapt brooks-lint
+via the [tool-adoption rubric](../tool-adoption/rubric.md) — tracked as a 472
+follow-up subtask (priority: with Codex).
+
 ## Port / guard / accept decisions
 
 | Item | Decision | Where |
 |---|---|---|
-| Git gates (pre-commit/push) | **Accept** — already fire | — |
-| PreToolUse guardrails | **Port** — via himmel-ops plugin (CLAUDE_PLUGIN_ROOT) or hardened project file | HIMMEL-427 |
-| Rule file (CLAUDE.md → AGENTS.md) | **Port** — generate GPT-adapted AGENTS.md | HIMMEL-471 |
-| Plugins/marketplace | **Accept** — loads; ext-plugin `description` warnings benign | — |
-| Slash commands | **Guard/port selectively** | TBD |
-| Subagents (.toml) | **Port selectively** | TBD |
-| Cursor / Copilot / Gemini frame | **Audit** | HIMMEL-472 |
+| Git gates (pre-commit/push) | **Accept** — fire on every harness | — |
+| PreToolUse guardrails (Codex) | **Port** — via himmel-ops plugin (CLAUDE_PLUGIN_ROOT) or hardened project file | HIMMEL-427 |
+| Rule file (CLAUDE.md → AGENTS.md) | **Port** — covers Codex **+ Copilot + Cursor** | HIMMEL-471 |
+| Rule file → `GEMINI.md` | **Port (small), SOFT-DEFER** — extra generator target | HIMMEL-489 |
+| Hooks → Cursor (`.cursor/hooks.json`, fail-open) | **Port** (priority 2) | HIMMEL-487 |
+| Hooks → Copilot / Gemini | **Port, SOFT-DEFER** (no free usage) | HIMMEL-489 |
+| Skills / subagents (Cursor, Copilot) | **Accept** — read `.claude/*` directly | — |
+| CR reviewer skill for Codex | **Port/adopt** — codex `SKILL.md` or brooks-lint | HIMMEL-488 |
+| Marketplace (all) | **Accept** — each has one | — |
 
 ## Prompt anatomy — why rules must be *adapted*, not copied
 
@@ -167,3 +245,12 @@ XML/`IMPORTANT`.
 - [Codex AGENTS.md discovery](https://developers.openai.com/codex/guides/agents-md)
 - [GPT-5 prompting guide](https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide)
 - context7 `/luohaothu/everything-codex` (everything-claude-code → Codex migration).
+- **HIMMEL-472 (Cursor/Copilot/Gemini, 2026-06-21):** cursor.com/docs (hooks,
+  rules, plugins, skills, subagents, slash-commands) · docs.github.com/copilot
+  (hooks-configuration/reference, custom-instructions, CLI plugins + marketplace,
+  skills, custom agents) · geminicli.com/docs (hooks, GEMINI.md, extensions,
+  skills, subagents, custom-commands) · superpowers v6.0.3 shipped
+  `hooks-cursor.json` / `hooks-codex.json` / `.cursor-plugin` / `gemini-extension.json`.
+- **CR-under-Codex:** `ComposioHQ/awesome-codex-skills` (~14k★ live 2026-06-21) +
+  `hyhmrright/brooks-lint` (921★, MIT) — vault clip
+  `luna/30-Resources/Tech/composiohq-awesome-codex-skills.md`.
