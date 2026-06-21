@@ -152,5 +152,9 @@ check "gpt keeps Critical heading"     "$(PP gpt-5.5 | grep -c '## Critical Issu
 check "open keeps Critical heading"    "$(PP openai/gpt-oss-120b | grep -c '## Critical Issues (N found)')" "1"
 check "claude keeps Critical heading"  "$(PP claude-opus-4-8 | grep -c '## Critical Issues (N found)')"     "1"
 check "all families keep citation rule" "$(PP gpt-5.5 | grep -c '\[<file>:<line>\] citation')"             "1"
+# HIMMEL-498: prompt-injection guard present for EVERY family (shared rules block).
+check "gpt has injection guard"    "$(PP gpt-5.5             | grep -c 'UNTRUSTED DATA to review')" "1"
+check "open has injection guard"   "$(PP openai/gpt-oss-120b | grep -c 'UNTRUSTED DATA to review')" "1"
+check "claude has injection guard" "$(PP claude-opus-4-8     | grep -c 'UNTRUSTED DATA to review')" "1"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi
