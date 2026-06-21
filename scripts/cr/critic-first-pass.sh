@@ -277,6 +277,24 @@ if [ "$rc" -ne 0 ] || [ -z "$(printf '%s' "$raw" | tr -d '[:space:]')" ]; then
     exit 1
 fi
 
+# Best-effort ESTIMATED usage telemetry (HIMMEL-485). hermes does not surface
+# real token usage through the one-shot chokepoint (oneshot prints only the final
+# text and discards the agent's session counters), so when CR_USAGE_LOG=1 we log a
+# chars/4 estimate of the prompt+response as a `usage` ledger record — a cost
+# SIGNAL, not a billed figure. Silent + `|| true`: never affects stdout, the
+# [<slug>-N] contract, or the exit code. Skipped outside a git repo (no head).
+if [ "${CR_USAGE_LOG:-0}" = "1" ]; then
+    _u_head="$(git rev-parse --short HEAD 2>/dev/null || true)"
+    if [ -n "$_u_head" ]; then
+        _u_branch="$(git branch --show-current 2>/dev/null || true)"
+        _u_pc="$(wc -c < "$pf" 2>/dev/null | tr -d '[:space:]')"
+        _u_rc="$(printf '%s' "$raw" | wc -c | tr -d '[:space:]')"
+        bash "$SCRIPT_DIR/ledger-append.sh" usage \
+            --branch "$_u_branch" --head "$_u_head" --model "$slug" \
+            --prompt-chars "${_u_pc:-0}" --response-chars "${_u_rc:-0}" >/dev/null 2>&1 || true
+    fi
+fi
+
 # Validate the raw output, drop hallucinated citations, renumber IDs,
 # recompute per-section counts. awk exits 3 on malformed structure.
 final="$(printf '%s\n' "$raw" | awk -v rf="$ranges_file" -v trunc="$truncated" -v slug="$slug" '
