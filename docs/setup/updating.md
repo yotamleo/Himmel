@@ -105,6 +105,29 @@ Plain `git pull` works too if you don't need the marketplace re-sync.
 - **Plugins / slash commands / skills**: loaded at session start — **restart**
   any running Claude session to pick them up.
 
+## Uninstalling / offboarding
+
+The inverse of setup is [`scripts/uninstall.sh`](../../scripts/uninstall.sh)
+(`scripts\uninstall.ps1` on Windows) — a symmetric six-step teardown of what
+`setup.sh`/`adopt` onboard: stops the Telegram bridge, removes its pairing +
+bridge state, deletes the `HIMMEL-Resume-*` scheduled jobs, uninstalls the
+Claude plugins + marketplaces, uninstalls the repo's git hooks, and unwires the
+user-scope `~/.claude/settings.json` keys himmel added. It is destructive and
+fail-closed (a non-interactive run aborts without `--yes`); preview any run with
+`--dry-run`, and skip individual steps with `--skip-plugins` / `--skip-hooks` /
+`--skip-tasks` / `--skip-settings`.
+
+```bash
+bash scripts/uninstall.sh --dry-run    # preview; nothing is executed
+bash scripts/uninstall.sh --yes        # actually offboard
+```
+
+It deliberately leaves the himmel clone, your `.env`, worktrees, handover state
+outside the bridge root, and non-himmel `settings.json` keys untouched. **hermes
+is not torn down** — it installs outside the repo (`%LOCALAPPDATA%\hermes` /
+`$HERMES_HOME`); stop its gateway and remove that directory by hand if you are
+decommissioning it (see the [hermes runbook](../hermes-runbook.md)).
+
 ## Notes
 
 - **On a feature branch?** A pull lands updates on the default branch; merge or
