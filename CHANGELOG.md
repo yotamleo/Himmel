@@ -4,6 +4,10 @@
 ## [Unreleased]
 
 ### Added
+- [HIMMEL-462] multi-vault luna template upgrade sweep + backup/restore
+- himmel-native full-range session analyzer (#97)
+- [HIMMEL-469] install/uninstall symmetry + user-scope universal hooks (#96)
+- [HIMMEL-454] doc-guard catalog-sync gate + CHANGELOG generator (#93)
 - [HIMMEL-441] block-docker-privesc — root-equivalent container guard (#89)
 - [HIMMEL-440] block-read-secrets recurse into bash -c / sh -c bodies (#88)
 - CR->bug-tracker bridge (#87)
@@ -49,6 +53,8 @@
 - choose user vs project plugin install scope (#9)
 
 ### Fixed
+- forward-slash + quote user-scope hook paths so Windows hooks fire (#95)
+- persist scaffolded luna vault path + global himmel-update commands (#94)
 - create parent dir before luna vault scaffold (#90)
 - [HIMMEL-438] canonicalize claude-obsidian + harden installer + luna git autosync (#83)
 - [HIMMEL-436] clause-aware command-position secret-read matcher (#79)
