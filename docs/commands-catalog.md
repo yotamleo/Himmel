@@ -39,6 +39,8 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 | /pr-check | Run the multi-agent CR review on the current branch and clear the pre-push marker on clean output |
 | /cr-scores | Print the per-critic agreed/availability scorecard and surface drop advice |
 | /claude-md-audit | Audit changed CLAUDE.md files against the claude-md-improver rubric before PR — audit-only, applies no edits on its own |
+| /shell-lint | Pre-emptive advisory shell lint — run shellcheck + UTF-8 BOM + errexit-leak checks on staged shell (or named files) BEFORE the commit attempt, so the loop fixes issues instead of bouncing off the pre-commit gate (HIMMEL-478). |
+| /guardrail-sim | Pre-flight guardrail simulator — feed planned Bash commands on stdin and it flags/rewrites the predictable himmel guardrail collisions (compound→single, WSL-bash→Git Bash, destructive-git, on-main-write) + a curated learnings file, before they stall a run (HIMMEL-475). |
 
 ## Handover
 

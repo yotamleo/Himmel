@@ -1,0 +1,6 @@
+$ deploy app to prod
+  FLAG[learned]: production deploy — confirm with operator before running
+$ git status
+  OK: no predicted guardrail collision.
+$ rm -rf /
+  REFUSE[learned]: recursive delete of filesystem root — refuse

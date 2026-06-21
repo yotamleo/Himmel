@@ -57,19 +57,77 @@ dispatch step from `docs/handover/overnight-mode.md`.
    - `block-mcp-when-plugin-exists.sh` — refuses MCP calls when a
      plugin equivalent exists (existing).
 
-5. **After all subagents return — write the consolidated morning report
-   (HIMMEL-258).**
-   Collect ONE TSV row per dispatched ticket from the subagent results —
+5. **After all subagents return — self-heal pass (HIMMEL-476, C2).**
+   The fanout is fire-and-forget: a returned subagent can't be resumed,
+   only replaced. Before writing the report, run a POST-RETURN
+   retry/triage pass so one mechanical gate slip doesn't silently kill a
+   ticket.
+
+   a. **Capture** each subagent's result/log to a file and build a
+      *swarm result ledger* (one row per dispatched ticket):
+
+      ```
+      KEY \t BRANCH \t PR \t STATUS \t OUTCOME \t LOGFILE
+      ```
+
+      (`STATUS` ∈ `done|blocked|partial`; `LOGFILE` = path to that
+      subagent's captured output, empty for clean `done` rows.)
+
+   b. **Classify** — done rows pass through; a CLOSED allow-list of
+      mechanical failures (lint / encoding / diff-range) is HELD with a
+      fix-subagent dispatch spec; substantive/CR failures are TRIAGED
+      (reported, never auto-fixed — fail-safe):
+
+      ```bash
+      bash scripts/overnight/self-heal.sh classify \
+        --rows-in /tmp/overnight-ledger.tsv \
+        --rows-out /tmp/overnight-rows.tsv \
+        --dispatch-out /tmp/overnight-fix-plan.tsv
+      ```
+
+   c. **Dispatch fresh fix subagents** — for each row in the dispatch
+      plan, dispatch ONE new Task subagent (`isolation: worktree`) on that
+      branch with the spec's `FIX_INSTRUCTION` (scoped: fix the mechanical
+      finding ONLY, keep the same attestation trailers, push). Single-writer
+      holds — each fix subagent writes ONLY its own branch; the parent never
+      edits a branch. Re-collect their results into a *fixed* TSV
+      (`KEY \t BRANCH \t PR \t STATUS \t OUTCOME`).
+
+   d. **Reconcile** — merge the re-collected fixes back into the report
+      rows. Auto-fixed-green becomes `done`; a fix that still fails (or a
+      fix subagent that never returned) becomes an operator-gated blocker
+      (bounded — one auto-fix attempt, never a loop):
+
+      ```bash
+      bash scripts/overnight/self-heal.sh reconcile \
+        --plan /tmp/overnight-fix-plan.tsv \
+        --fixed /tmp/overnight-fixed.tsv \
+        --rows-in /tmp/overnight-rows.tsv \
+        --rows-out /tmp/overnight-final.tsv
+      ```
+
+   If the fanout produced no mechanical failures, the dispatch plan
+   (`/tmp/overnight-fix-plan.tsv`) is empty and `classify`'s `--rows-out`
+   (`/tmp/overnight-rows.tsv`) is ALREADY the final TSV — skip c/d entirely
+   and feed THAT file to the report in step 6 (there is no
+   `/tmp/overnight-final.tsv` in this case, because reconcile never ran).
+
+6. **Write the consolidated morning report (HIMMEL-258).**
+   Feed the final rows —
 
    ```
    KEY \t BRANCH \t PR \t STATUS \t OUTCOME [\t DECISION]
    ```
 
    where `STATUS` ∈ `done|blocked|partial` and a non-empty `DECISION`
-   marks an item needing a human call. Write the rows to a temp file and
-   run:
+   marks an item needing a human call — into `morning-report.sh`. Use the
+   reconcile output when there were mechanical failures, else the classify
+   output:
 
    ```bash
+   # mechanical failures were dispatched + reconciled (step 5d ran):
+   bash scripts/overnight/morning-report.sh --rows /tmp/overnight-final.tsv
+   # OR — no mechanical failures (steps 5c/5d skipped):
    bash scripts/overnight/morning-report.sh --rows /tmp/overnight-rows.tsv
    ```
 
@@ -86,6 +144,28 @@ dispatch step from `docs/handover/overnight-mode.md`.
    "Decisions needed" block in chat. Morning review = the operator reads
    that ONE report, then drills into PRs (`/pr-check`) — no per-ticket
    discovery.
+
+7. **Drop a durable resume breadcrumb (HIMMEL-477, C3).**
+   This post-fanout step is one of the seams the breadcrumb writer
+   piggybacks (there is no per-leg dispatch runtime). Record where the run
+   stopped so a crashed/interrupted resume reconstructs intent instead of
+   silently grounding in raw repo state:
+
+   ```bash
+   bash scripts/handover/breadcrumb.sh write \
+     --ticket "$EPIC_OR_RUN_KEY" \
+     --next-step "review overnight report; merge green PRs; triage blockers" \
+     --completed "fanout dispatched" --completed "self-heal + morning report written"
+   ```
+
+   On the next session, resolve it BEFORE acting — a fresh breadcrumb gives
+   a deterministic resume; a missing/stale one is flagged
+   `DEGRADED — confirm before proceeding` (exit 3) with intent
+   reconstructed from `git log` + Jira, never a silent degrade:
+
+   ```bash
+   bash scripts/handover/breadcrumb.sh resolve --ticket "$EPIC_OR_RUN_KEY"
+   ```
 
 ## Flags forwarded to `build-plan.sh`
 
@@ -107,6 +187,7 @@ dispatch step from `docs/handover/overnight-mode.md`.
 ```bash
 bash scripts/overnight/test-build-plan.sh
 bash scripts/overnight/test-morning-report.sh
+bash scripts/overnight/test-self-heal.sh
 ```
 
-24/24 + 35/35 pass on Git Bash.
+24/24 + 35/35 + 43/43 pass on Git Bash.

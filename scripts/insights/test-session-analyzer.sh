@@ -248,6 +248,99 @@ for _opt in --projects-dir --out --since; do
 done
 
 # ---------------------------------------------------------------------------
+# Case 10: genuine-block vs mention discrimination (the metric-gaming gate)
+#
+# Friction tallies must distinguish a GENUINE gate block (the hook's ⛔ BLOCK
+# exit text) from a mere mention — e.g. a passing `Platforms tested:` attestation
+# trailer must count as a mention but NOT as a genuine block. Isolated in its own
+# projects dir so the exact-count assertions above are untouched.
+# ---------------------------------------------------------------------------
+printf '\nCase 10: genuine-block vs mention discrimination\n'
+
+PROJ_ROOT2="$TMP_ROOT/projects2"
+mkdir -p "$PROJ_ROOT2/proj-x"
+
+# Genuine PreToolUse block: real ⛔ exit text from block-edit-on-main.
+BLOCK_MAIN='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Tool result: ⛔ block-edit-on-main: refusing to edit x.sh — its repo is on main/master."}]},"timestamp":"2026-03-01T10:00:00Z"}'
+# Passing attestation trailer — mentions the gate names but is NOT a block.
+TRAILER='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"commit body — Platforms tested: Windows ; Security reviewed: manual ; shellcheck passed clean"}]},"timestamp":"2026-03-02T10:00:00Z"}'
+# Genuine pre-push gate blocks: real ⛔ exit text from both attestation gates.
+BLOCK_PUSH='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"⛔ platforms-check: this push touches cross-platform-sensitive files but no Platforms tested: attestation found. ⛔ security-review: this push touches non-docs code but no Security reviewed: attestation."}]},"timestamp":"2026-03-03T10:00:00Z"}'
+# Genuine pre-commit failure: real pre-commit output. Its block signature
+# `- exit code: N` begins with a dash — a regression guard that the grep call
+# uses `--` so the pattern is not parsed as a grep option.
+BLOCK_PRECOMMIT='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"pre-commit hook failed: trailing-whitespace - hook id: trailing-whitespace - exit code: 1"}]},"timestamp":"2026-03-04T10:00:00Z"}'
+# Genuine block-read-secrets block — exercises that gate's genuine ERE.
+BLOCK_SECRETS='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"⛔ block-read-secrets: refusing Read of secret file: config/.env"}]},"timestamp":"2026-03-05T10:00:00Z"}'
+# A shellcheck MENTION only (matches the mention ERE, NOT the genuine one) — the
+# zero-genuine path: its `.block` tally must render 0 (missing-file default), NOT
+# the mention count, and it must be absent from Top Sessions per Genuine Block.
+MENTION_SHELLCHECK='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"discussion: a shellcheck error came up earlier but the commit went through fine"}]},"timestamp":"2026-03-06T10:00:00Z"}'
+
+_write_jsonl "$PROJ_ROOT2/proj-x/s-block-main.jsonl"      "2026-03-01T09:00:00Z" "2026-03-01T11:00:00Z" "/tmp/proj-x" "$BLOCK_MAIN"
+_write_jsonl "$PROJ_ROOT2/proj-x/s-trailer.jsonl"         "2026-03-02T09:00:00Z" "2026-03-02T11:00:00Z" "/tmp/proj-x" "$TRAILER"
+_write_jsonl "$PROJ_ROOT2/proj-x/s-block-push.jsonl"      "2026-03-03T09:00:00Z" "2026-03-03T11:00:00Z" "/tmp/proj-x" "$BLOCK_PUSH"
+_write_jsonl "$PROJ_ROOT2/proj-x/s-precommit.jsonl"       "2026-03-04T09:00:00Z" "2026-03-04T11:00:00Z" "/tmp/proj-x" "$BLOCK_PRECOMMIT"
+_write_jsonl "$PROJ_ROOT2/proj-x/s-secrets-block.jsonl"   "2026-03-05T09:00:00Z" "2026-03-05T11:00:00Z" "/tmp/proj-x" "$BLOCK_SECRETS"
+_write_jsonl "$PROJ_ROOT2/proj-x/s-shellcheck-ment.jsonl" "2026-03-06T09:00:00Z" "2026-03-06T11:00:00Z" "/tmp/proj-x" "$MENTION_SHELLCHECK"
+
+REPORT10="$(bash "$ANALYZER" --projects-dir "$PROJ_ROOT2" 2>&1)"
+
+assert_contains "genuine-block: friction table has Genuine Blocks column" "Genuine Blocks" "$REPORT10"
+
+# block-edit-on-main: 1 mention (s-block-main), 1 genuine (s-block-main)
+if printf '%s' "$REPORT10" | grep -qE 'block-edit-on-main *\| *1 *\| *1 *\|'; then
+    pass "genuine-block: block-edit-on-main mentions=1 genuine=1"
+else
+    fail "genuine-block: block-edit-on-main should be 1/1" "$(printf '%s' "$REPORT10" | grep 'block-edit-on-main')"
+fi
+
+# platforms-tested-gate: 2 mentions (trailer + push-block), 1 genuine (push-block).
+# This is the metric-gaming gate: the passing trailer inflates mentions but is
+# NOT a genuine block.
+if printf '%s' "$REPORT10" | grep -qE 'platforms-tested-gate *\| *2 *\| *1 *\|'; then
+    pass "genuine-block: platforms-tested-gate mentions=2 genuine=1 (trailer excluded)"
+else
+    fail "genuine-block: platforms-tested-gate should be 2/1" "$(printf '%s' "$REPORT10" | grep 'platforms-tested-gate')"
+fi
+
+# security-reviewed-gate: same shape — 2 mentions, 1 genuine.
+if printf '%s' "$REPORT10" | grep -qE 'security-reviewed-gate *\| *2 *\| *1 *\|'; then
+    pass "genuine-block: security-reviewed-gate mentions=2 genuine=1 (trailer excluded)"
+else
+    fail "genuine-block: security-reviewed-gate should be 2/1" "$(printf '%s' "$REPORT10" | grep 'security-reviewed-gate')"
+fi
+
+# pre-commit-failure: the `- exit code: N` block signature begins with a dash —
+# guards that grep -E -- reads it as a regex, not an option (genuine must be 1).
+if printf '%s' "$REPORT10" | grep -qE 'pre-commit-failure *\| *1 *\| *1 *\|'; then
+    pass "genuine-block: pre-commit-failure mentions=1 genuine=1 (dash-pattern guard)"
+else
+    fail "genuine-block: pre-commit-failure should be 1/1" "$(printf '%s' "$REPORT10" | grep 'pre-commit-failure')"
+fi
+
+# block-read-secrets: exercises that gate's genuine ⛔ ERE (1 mention, 1 genuine).
+if printf '%s' "$REPORT10" | grep -qE 'block-read-secrets *\| *1 *\| *1 *\|'; then
+    pass "genuine-block: block-read-secrets mentions=1 genuine=1"
+else
+    fail "genuine-block: block-read-secrets should be 1/1" "$(printf '%s' "$REPORT10" | grep 'block-read-secrets')"
+fi
+
+# Zero-genuine path: shellcheck is mentioned but never genuinely blocked, so its
+# Genuine Blocks tally must be 0 (missing-.block default), NOT the mention count.
+if printf '%s' "$REPORT10" | grep -qE 'shellcheck-failure *\| *1 *\| *0 *\|'; then
+    pass "genuine-block: shellcheck-failure mentions=1 genuine=0 (zero-genuine default)"
+else
+    fail "genuine-block: shellcheck-failure should be 1/0" "$(printf '%s' "$REPORT10" | grep 'shellcheck-failure')"
+fi
+
+# Top Sessions per Genuine Block renders genuine-block session basenames (only
+# this section prints session filenames, so a bare basename grep is section-scoped).
+assert_contains "genuine-block: Top Sessions renders a genuine-block session" "s-block-push.jsonl" "$REPORT10"
+# ...and omits a mention-only (zero-genuine) session.
+assert_not_contains "genuine-block: Top Sessions omits the mention-only session" "s-shellcheck-ment.jsonl" "$REPORT10"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n====================================\n'
