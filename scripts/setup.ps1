@@ -47,17 +47,36 @@ $hints = @{
     'gh'      = 'https://cli.github.com (GitHub CLI v2.x)'
     'bash'    = 'Install Git for Windows (Git Bash) — most operator scripts need bash'
 }
+# Reject the Windows Store "App Execution Alias" stubs (HIMMEL-499): a fresh
+# Windows ships 0-byte python/python3 reparse points under WindowsApps that print
+# "Python was not found ... Microsoft Store" and exit non-zero. Get-Command finds
+# them, so python looks present, then `python -m pip` fails downstream. Treat a
+# WindowsApps-sourced command as missing so the real package installs instead.
+function Test-RealCommand($name) {
+    # -All so a real install behind a WindowsApps stub in PATH order still counts.
+    $cmd = Get-Command $name -All -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1
+    return [bool]$cmd
+}
 foreach ($tool in @('git', 'node', 'npm', 'bun', 'python', 'jq', 'gh', 'bash')) {
-    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+    if (-not (Test-RealCommand $tool)) {
         $missing += $tool
     }
 }
 
-# R6 (HIMMEL-460): best-effort FETCH of the auto-installable missing tools
-# (git/jq/python) via winget -> scoop -> choco BEFORE failing. The rest keep the
-# flag-loud fallback below. Mirrors setup.sh's ensure-tools step.
+# R6 (HIMMEL-460): best-effort FETCH of the auto-installable missing tools via
+# winget -> scoop -> choco BEFORE failing. node/npm/bun ARE winget-installable
+# (HIMMEL-499) so a clean PS+winget box can complete setup; npm ships with node.
+# Mirrors setup.sh's ensure-tools step. NOTE: the check below is a HARD exit, not
+# a soft flag — a still-missing required tool aborts setup.
 if ($missing.Count -gt 0) {
-    $wingetIds = @{ 'git' = 'Git.Git'; 'jq' = 'jqlang.jq'; 'python' = 'Python.Python.3.12' }
+    $wingetIds = @{
+        'git'    = 'Git.Git'
+        'jq'     = 'jqlang.jq'
+        'python' = 'Python.Python.3.12'
+        'node'   = 'OpenJS.NodeJS'   # bundles npm
+        'bun'    = 'Oven-sh.Bun'
+    }
     $installer = $null
     if (Get-Command winget -ErrorAction SilentlyContinue) { $installer = 'winget' }
     elseif (Get-Command scoop -ErrorAction SilentlyContinue) { $installer = 'scoop' }
@@ -65,6 +84,9 @@ if ($missing.Count -gt 0) {
     if ($installer) {
         Write-Host "  Missing: $($missing -join ', ') — attempting auto-install via $installer..."
         foreach ($tool in $missing) {
+            # npm ships with node; bash comes from Git for Windows (handled below) —
+            # neither has its own package, so skip them in the install loop.
+            if ($tool -eq 'npm' -or $tool -eq 'bash') { continue }
             if (-not $wingetIds.ContainsKey($tool)) {
                 Write-Host "    no known $installer package for '$tool' — install it manually." -ForegroundColor Yellow
                 continue
@@ -79,7 +101,35 @@ if ($missing.Count -gt 0) {
                 Write-Host "    $installer install '$tool' failed — install it manually." -ForegroundColor Yellow
             }
         }
-        $missing = @($missing | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+        # winget/scoop/choco do NOT update the running process PATH (HIMMEL-499 F3) —
+        # re-hydrate from the registry so the re-check below sees freshly-installed tools.
+        $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+        # Git for Windows ships bash.exe in its bin\ but does NOT add it to PATH, and a
+        # bare `bash` on Windows otherwise resolves to the WSL System32 stub (can't read
+        # C:/). himmel's hooks invoke `bash`, so prepend Git\bin (has bash.exe + git.exe
+        # but NOT find/sort — those live in usr\bin — so no Windows-coreutils shadowing).
+        $gitBin = 'C:\Program Files\Git\bin'
+        if ((Test-Path (Join-Path $gitBin 'bash.exe')) -and ($env:Path -notlike "*$gitBin*")) {
+            $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+            if ($userPath -notlike "*$gitBin*") {
+                try {
+                    [Environment]::SetEnvironmentVariable('Path', "$gitBin;$userPath", 'User')
+                    Write-Host "  Added $gitBin to User PATH so 'bash' resolves to Git Bash (not the WSL stub)."
+                } catch {
+                    Write-Host "  WARN could not persist $gitBin to User PATH ($_); set for this session only." -ForegroundColor Yellow
+                }
+            }
+            $env:Path = "$gitBin;$env:Path"
+        }
+        # winget's real Python may land behind the WindowsApps stub in PATH order;
+        # prepend the real install dir so `python` resolves to it (HIMMEL-499 F4).
+        $realPy = Get-Command python -All -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1
+        if ($realPy) {
+            $pyDir = Split-Path -Parent $realPy.Source
+            if ($env:Path -notlike "*$pyDir*") { $env:Path = "$pyDir;$env:Path" }
+        }
+        $missing = @($missing | Where-Object { -not (Test-RealCommand $_) })
     } else {
         Write-Host "  No supported installer (winget/scoop/choco) found — cannot auto-install." -ForegroundColor Yellow
     }
@@ -97,8 +147,11 @@ Write-Host "  All foundational tools present."
 Write-Host ""
 
 # --- repo root (relocated past the preflight — R6, HIMMEL-460) ---
-# git is now guaranteed present; safe to resolve the checkout root.
-$RepoRoot = git rev-parse --show-toplevel
+# git is now guaranteed present; safe to resolve the checkout root. Resolve from
+# the SCRIPT's own location ($PSScriptRoot = scripts/), not the caller's cwd, so
+# setup works when invoked from anywhere (HIMMEL-499 F5).
+$RepoRoot = git -C $PSScriptRoot rev-parse --show-toplevel
+if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent $PSScriptRoot }
 Set-Location $RepoRoot
 
 # --- Claude Code CLI (the runtime himmel harnesses) — soft check ---
