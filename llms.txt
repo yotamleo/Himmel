@@ -2,7 +2,23 @@
 
 > A harness for running Claude Code as a managed, orchestrated, PR-gated, overnight-capable agent. himmel makes an agent's behaviour *structurally* safe and repeatable — hooks + gates + guardrails enforce the workflow at the tool-call layer rather than relying on the model to remember prose. Memory is Camp 2: durable, hand-editable markdown (the handover system + the companion luna vault) that compounds across sessions — no vector DB. Targets solo-operator / small-team work at Tier 3-4 Claude Code maturity (orchestrated + 24/7 autonomous).
 
-If you are an LLM working in this repo, read CLAUDE.md first — it is the authoritative rule set and is loaded into every session. The links below are the canonical docs; each owns its topic, so prefer reading the linked file over re-deriving from code.
+If you are an LLM **working inside** this repo, read CLAUDE.md first — it is the authoritative rule set and is loaded into every session. If you were just **pointed at this repo** to set it up, start with the next section. Either way the links below are the canonical docs; each owns its topic, so prefer reading the linked file over re-deriving from code.
+
+## If you were just pointed at this repo (install / doctor)
+
+himmel is a harness *for* [Claude Code](https://claude.com/claude-code) — install that first (`curl -fsSL https://claude.ai/install.sh | bash`, or `irm https://claude.ai/install.ps1 | iex` on Windows). Prereqs for everything below: `git`, `bash` 3.2+ (Git Bash on Windows), `node`, `npm`, `bun`, `python3`, `jq` (`gh` optional); the setup/adopt scripts verify them and fail fast. The three things people ask for first — each is idempotent, non-destructive, and narrates what it does:
+
+1. **Add himmel to an existing repo** (most common) — the portable core: hooks + guardrails + worktree workflow + marketplace plugins/skills.
+   ```bash
+   git clone https://github.com/yotamleo/himmel
+   bash himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
+   # Windows:  pwsh himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
+   ```
+   Full adopter guide + à-la-carte parts: [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md).
+2. **Run / develop himmel standalone** — `git clone https://github.com/yotamleo/himmel && cd himmel && bash scripts/setup.sh` (Windows: `powershell -File scripts\setup.ps1`). Verifies tools, installs the git hooks, builds the Jira CLI, registers the qmd index, writes a ready `.env`. Walkthrough: [docs/getting-started.md](docs/getting-started.md).
+3. **Diagnose an install that already exists** — run the `himmel-ops:himmel-doctor` skill (`/himmel-doctor`): a read-only, severity-grouped health report for the field problems that bite himmel installs (SessionStart `node: command not found`, a shadowed claude-obsidian plugin, a dirty single-writer luna vault, a repo missing from the handover registry, PATH-fragile MCP servers, un-pruned merged-PR worktrees). `--fix` heals the node wiring; everything else points you at the right command.
+
+Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/himmel-update` — `git pull` + marketplace re-sync; `autoUpdate` does NOT deliver himmel), upgrade a luna vault with `/luna-upgrade`, and offboard with `scripts/uninstall.sh`. All three: [docs/setup/updating.md](docs/setup/updating.md).
 
 ## Start here
 
@@ -27,12 +43,14 @@ If you are an LLM working in this repo, read CLAUDE.md first — it is the autho
 - [docs/internals/jira-plugin.md](docs/internals/jira-plugin.md): the local Jira CLI (`scripts/jira/`) — preferred over the Atlassian MCP server — and the op↔MCP mapping.
 - [plugins/himmel-gh/README.md](plugins/himmel-gh/README.md): forge-agnostic git ops — the worktree→PR→merge loop, PR review threads, and luna-ingest route to `gh` on GitHub or the himmel Bitbucket CLI ([scripts/bitbucket/README.md](scripts/bitbucket/README.md)) on Bitbucket Cloud, chosen per-repo from `origin`.
 - [docs/operator-conventions.md](docs/operator-conventions.md): durable operator working-habits (Jira CLI invocation, CR/merge habits).
+- [docs/hermes-runbook.md](docs/hermes-runbook.md): hermes — himmel's opt-in free-inference junior tier for chore-shaped work. Config lives OUTSIDE the repo (`%LOCALAPPDATA%\hermes` / `$HERMES_HOME`), so it is part of himmel even when absent from a checkout; refreshed by `/himmel-update`.
 - [docs/tooling-catalog.md](docs/tooling-catalog.md): every tool/script/plugin in active use.
 
 ## Setup
 
 - [docs/setup/new-machine.md](docs/setup/new-machine.md): fresh-machine setup — required environment + per-platform (Linux / macOS / Windows Git Bash) install; the user-vs-project hook-scope model (§4b) and the symmetric `uninstall.sh` teardown.
 - [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md): adopting the portable core (hooks + worktree workflow) in another repo.
+- [docs/setup/updating.md](docs/setup/updating.md): the update/upgrade lifecycle — `/himmel-update` (harness git pull + marketplace re-sync, incl. the hermes editable-checkout refresh), `/luna-upgrade` (vault template), why a plain `git pull` is required, and the symmetric `scripts/uninstall.sh` offboarding.
 
 ## Optional
 

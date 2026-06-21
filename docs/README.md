@@ -11,6 +11,7 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 
 - [setup/new-machine.md](setup/new-machine.md) — fresh-machine setup: required tools + per-platform (Linux / macOS / Windows Git Bash) install.
 - [setup/use-on-your-project.md](setup/use-on-your-project.md) — adopt the portable core (hooks + worktree workflow) in an existing repo.
+- [setup/updating.md](setup/updating.md) — update the harness (`/himmel-update`) and upgrade luna vaults (`/luna-upgrade`); also points to the symmetric `scripts/uninstall.sh` teardown.
 - [setup/global-claude-md.md](setup/global-claude-md.md) — Claude Code global config (`~/.claude/`).
 - [setup/vms.md](setup/vms.md) — VM-based dev machines for cross-platform testing.
 - [setup/claude-squad.md](setup/claude-squad.md) — optional `claude-squad` (cs) install.
