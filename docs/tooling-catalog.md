@@ -240,6 +240,28 @@ node ~/.claude/hooks/caveman-activate.js
 ```
 On every new session: writes `~/.claude/.caveman-active` flag, emits the full caveman ruleset as hidden session context. Ensures mode is active from turn 1.
 
+**Node resolution (macOS/Linux):** a GUI-launched session has no `node` on PATH,
+so this hook is wired through `scripts/lib/run-node.sh` (a runtime launcher that
+resolves node every call via `scripts/lib/resolve-node.sh` — PATH → homebrew →
+newest nvm/fnm → Windows install dir, `sort -V` so never a stale EOL node — and
+fail-opens silently if none, instead of erroring every session). `ubuntu.sh` and
+`scripts/lib/wire-caveman-node.sh` (the idempotent heal helper, also used by
+`/himmel-doctor --fix`) install the wrapper form; win11.ps1 keeps the stable
+absolute Windows path. See `/himmel-doctor` (C1).
+
+---
+
+## himmel-doctor (`scripts/himmel-doctor.sh`)
+
+The `/himmel-doctor` diagnostic. Read-only except `--fix`. Checks: C1 node/caveman
+SessionStart wiring (+ `--fix` heal), C2 shadowed claude-obsidian, C3 dirty
+single-writer luna vault, C4 Bitbucket-remote-where-`gh`-fails, C5 repo not in the
+handover registry, C6 PATH-fragile bare-interpreter MCP servers (uvx/bun — same
+GUI-launch failure class as the node hook). Prints a severity-grouped report (FAIL/WARN/INFO); `--file-issue
+[--repo owner/name]` files ONE deduped consolidated public GitHub issue (resolves
+the repo from `--repo` → `$HIMMEL_DOCTOR_ISSUE_REPO` → github origin). Exit 1 on any
+FAIL. Tests: `scripts/test-himmel-doctor.sh`, `scripts/lib/test-{resolve,run,wire-caveman}-node.sh`.
+
 ---
 
 ## claude-statusline (vendored, HIMMEL-331)

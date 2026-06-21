@@ -372,9 +372,11 @@ step "Patch ~/.claude/settings.json"
       # HIMMEL-264: resolve <himmel-path> placeholders the template carries
       # (the PreToolUse rtk-hook-guard entry) so a freshly written
       # settings.json never holds a dangling <himmel-path>. Scope note:
-      # ONLY <himmel-path> — the caveman <node-path>/<claude-dir>
-      # placeholders are not resolved on Ubuntu (caveman hook wiring is
-      # Windows-only, via win11.ps1).
+      # ONLY <himmel-path> here — the caveman <node-path>/<claude-dir>
+      # placeholders are rewritten to the runtime node wrapper
+      # (scripts/lib/run-node.sh) by wire-caveman-node.sh below, so a GUI-launched
+      # macOS/Linux session resolves node at hook time instead of failing on a
+      # PATH-less launch / a moved node (the /himmel-doctor node-resolver fix).
       | walk(if type == "string" then gsub("<himmel-path>"; $hp) else . end)' \
       "$TEMPLATE")
 
@@ -393,9 +395,14 @@ step "Patch ~/.claude/settings.json"
       # statusLine via the shared helper (HIMMEL-359) — runs after the merge so
       # it is authoritative and refreshes any stale path on idempotent re-runs.
       bash "$HIMMEL_PATH/scripts/lib/wire-statusline.sh" "$SETTINGS" "$HIMMEL_PATH"
+      # Route the caveman node hooks through the runtime wrapper (resolve node at
+      # hook time, not setup time) — heals the macOS/Linux "node: command not
+      # found" SessionStart error and survives node upgrades.
+      bash "$HIMMEL_PATH/scripts/lib/wire-caveman-node.sh" "$SETTINGS" "$HIMMEL_PATH" "$CLAUDE_DIR"
     else
       write_settings_json "$PATCH" "$SETTINGS"
       bash "$HIMMEL_PATH/scripts/lib/wire-statusline.sh" "$SETTINGS" "$HIMMEL_PATH"
+      bash "$HIMMEL_PATH/scripts/lib/wire-caveman-node.sh" "$SETTINGS" "$HIMMEL_PATH" "$CLAUDE_DIR"
     fi
   fi
 } || fail_nonfatal "patch settings.json"
