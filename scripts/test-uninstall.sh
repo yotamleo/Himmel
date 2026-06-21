@@ -55,6 +55,12 @@ FAILED=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# Redirect the [6/6] settings-unwire target away from the operator's REAL
+# ~/.claude/settings.json for the whole suite (HIMMEL-460). The dedicated SC6
+# cases re-seed this file per-test; the others simply never touch the real one.
+export HIMMEL_USER_SETTINGS="$TMP/user-settings.json"
+printf '{}\n' > "$HIMMEL_USER_SETTINGS"
+
 mk_state() {
     CHANNEL="$TMP/channels/telegram"
     BRIDGE="$TMP/bridge"
@@ -403,6 +409,69 @@ else
         echo "FAIL state removed though bridge could not be stopped"; FAILED=$((FAILED + 1))
     fi
 fi
+
+# ── SC6 (HIMMEL-460): [6/6] settings unwire ─────────────────────────────────
+# Seed a settings.json carrying everything setup/adopt wire PLUS non-himmel keys
+# that MUST survive (rtk guard, a custom statusLine sibling, an MCP allow).
+seed_settings() {
+  cat > "$HIMMEL_USER_SETTINGS" <<'JSON'
+{
+  "statusLine": {"type":"command","command":"bash \"C:/h/scripts/statusline/bin/statusline.sh\""},
+  "env": {"HIMMEL_REPO":"C:/h","LUNA_VAULT_PATH":"C:/v","KEEP_ME":"1"},
+  "hooks": {
+    "PreToolUse": [
+      {"matcher":"Bash","hooks":[
+        {"type":"command","command":"bash C:/h/scripts/hooks/auto-approve-safe-bash.sh"},
+        {"type":"command","command":"bash /opt/rtk-hook-guard.sh"}
+      ]},
+      {"matcher":"*","hooks":[{"type":"command","command":"bash C:/h/scripts/hooks/auto-arm-on-cap.sh"}]}
+    ],
+    "SessionStart": [
+      {"hooks":[
+        {"type":"command","command":"bash C:/h/scripts/hooks/check-update-available.sh"},
+        {"type":"command","command":"bash C:/h/scripts/hooks/inject-initiative.sh"}
+      ]}
+    ]
+  },
+  "permissions": {"allow":["mcp__obsidian-vault__obsidian_simple_search"]}
+}
+JSON
+}
+
+# 13. [6/6] clears the wiring, preserves non-himmel keys.
+seed_settings
+out=$(TELEGRAM_CHANNEL_DIR="$TMP/none1" BRIDGE_ROOT="$TMP/none1b" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+assert_rc "[6/6] run exits 0" 0 "$rc"
+assert_has "[6/6] banner present" "[6/6] Unwiring" "$out"
+assert_rc "statusLine removed"      "null"   "$(jq -r '.statusLine // "null"' "$HIMMEL_USER_SETTINGS")"
+assert_rc "HIMMEL_REPO removed"     "null"   "$(jq -r '.env.HIMMEL_REPO // "null"' "$HIMMEL_USER_SETTINGS")"
+assert_rc "LUNA_VAULT_PATH removed" "null"   "$(jq -r '.env.LUNA_VAULT_PATH // "null"' "$HIMMEL_USER_SETTINGS")"
+assert_rc "non-himmel env kept"     "1"      "$(jq -r '.env.KEEP_ME' "$HIMMEL_USER_SETTINGS")"
+assert_rc "UNIVERSAL hook removed"  "0"      "$(jq -r '[.hooks.PreToolUse[].hooks[].command|select(test("auto-approve-safe-bash"))]|length' "$HIMMEL_USER_SETTINGS")"
+assert_rc "rtk guard preserved"     "1"      "$(jq -r '[.hooks.PreToolUse[].hooks[].command|select(test("rtk-hook-guard"))]|length' "$HIMMEL_USER_SETTINGS")"
+assert_rc "dev-only hook preserved" "1"      "$(jq -r '[.hooks.PreToolUse[].hooks[].command|select(test("auto-arm-on-cap"))]|length' "$HIMMEL_USER_SETTINGS")"
+assert_rc "inject-initiative removed" "0"    "$(jq -r '[.hooks.SessionStart[].hooks[].command|select(test("inject-initiative"))]|length' "$HIMMEL_USER_SETTINGS")"
+assert_rc "SessionStart sibling kept" "1"    "$(jq -r '[.hooks.SessionStart[].hooks[].command|select(test("check-update-available"))]|length' "$HIMMEL_USER_SETTINGS")"
+assert_rc "MCP allow preserved"     "mcp__obsidian-vault__obsidian_simple_search" "$(jq -r '.permissions.allow[0]' "$HIMMEL_USER_SETTINGS")"
+
+# 14. --skip-settings keeps the wiring intact.
+seed_settings
+before=$(cat "$HIMMEL_USER_SETTINGS")
+out=$(TELEGRAM_CHANNEL_DIR="$TMP/none2" BRIDGE_ROOT="$TMP/none2b" \
+    bash "$CLI" --yes --skip-settings --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+assert_rc "--skip-settings run exits 0" 0 "$rc"
+assert_has "--skip-settings honored" "kept (--skip-settings)" "$out"
+assert_rc "--skip-settings leaves file unchanged" "$before" "$(cat "$HIMMEL_USER_SETTINGS")"
+
+# 15. --dry-run does not mutate the settings file.
+seed_settings
+before=$(cat "$HIMMEL_USER_SETTINGS")
+out=$(TELEGRAM_CHANNEL_DIR="$TMP/none3" BRIDGE_ROOT="$TMP/none3b" \
+    bash "$CLI" --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+assert_rc "dry-run [6/6] exits 0" 0 "$rc"
+assert_has "dry-run prints [6/6] DRY" "DRY: unwire statusLine" "$out"
+assert_rc "dry-run leaves settings unchanged" "$before" "$(cat "$HIMMEL_USER_SETTINGS")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

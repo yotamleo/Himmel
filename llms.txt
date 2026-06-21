@@ -31,7 +31,7 @@ If you are an LLM working in this repo, read CLAUDE.md first — it is the autho
 
 ## Setup
 
-- [docs/setup/new-machine.md](docs/setup/new-machine.md): fresh-machine setup — required environment + per-platform (Linux / macOS / Windows Git Bash) install.
+- [docs/setup/new-machine.md](docs/setup/new-machine.md): fresh-machine setup — required environment + per-platform (Linux / macOS / Windows Git Bash) install; the user-vs-project hook-scope model (§4b) and the symmetric `uninstall.sh` teardown.
 - [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md): adopting the portable core (hooks + worktree workflow) in another repo.
 
 ## Optional

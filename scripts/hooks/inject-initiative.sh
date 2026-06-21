@@ -61,6 +61,24 @@ else
     cat >/dev/null 2>&1 || true
 fi
 
+# --- Source the himmel clone's .env for the initiative vars (R1, HIMMEL-460) -
+# The hook reads HIMMEL_INITIATIVE* from the process env, but a session launched
+# from a shell that never exported them (and without a settings.json `env` block)
+# would see no legs. Populate them from the himmel clone's .env — but ONLY for
+# vars not already set (process env / settings.json env still wins; load_dotenv is
+# non-clobbering). Resolve the himmel root EXPLICITLY (HIMMEL_REPO, else the git
+# toplevel of THIS hook script) and never trust the CWD: a session launched inside
+# a DIFFERENT git repo must not read that repo's .env. Fail-open on any miss.
+_ii_root="${HIMMEL_REPO:-}"
+if [ -z "$_ii_root" ]; then
+    _ii_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel 2>/dev/null) || _ii_root=""
+fi
+if [ -n "$_ii_root" ] && [ -f "$_ii_root/.env" ]; then
+    # shellcheck source=/dev/null
+    . "$(dirname "${BASH_SOURCE[0]}")/../lib/load-dotenv.sh"
+    load_dotenv --root "$_ii_root" HIMMEL_INITIATIVE HIMMEL_OVERNIGHT HIMMEL_INITIATIVE_OVERNIGHT || true
+fi
+
 # --- Resolve the active legs via the shared resolver (HIMMEL-443) -----------
 # The leg grammar lives in ONE place: scripts/lib/initiative-legs.sh. We pass
 # the relevant env vars as named arguments (the resolver never reads ambient

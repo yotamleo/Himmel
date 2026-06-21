@@ -34,6 +34,15 @@ fi
 pass=0
 fail=0
 
+# Hermetic isolation (HIMMEL-460): the hook now sources the himmel clone's .env
+# for HIMMEL_INITIATIVE*. Point HIMMEL_REPO at an EMPTY temp dir so the existing
+# process-env cases are unaffected by whatever .env exists on the test machine.
+# The SC3 cases below override HIMMEL_REPO per-case to a fixture with a real .env.
+TMPII=$(mktemp -d)
+trap 'rm -rf "$TMPII"' EXIT
+mkdir -p "$TMPII/noenv"
+export HIMMEL_REPO="$TMPII/noenv"
+
 assert_pass() {
     pass=$((pass + 1))
     echo "  PASS: $1"
@@ -250,6 +259,41 @@ echo "Test 21: 'plan,prcheck' → plan emits no step, prcheck numbered first"
 out=$(printf '{}' | HIMMEL_INITIATIVE=plan,prcheck bash "$hook")
 assert_has   "prcheck numbered first (plan consumes no number)" "1\. Run" "$out"
 assert_lacks "no second numbered step from plan"               "2\."     "$out"
+
+# ---------- SC3 (HIMMEL-460): legs sourced from the himmel clone's .env --------
+# Fixture himmel root with an .env that activates a subset.
+FIX="$TMPII/himmel"; mkdir -p "$FIX"
+printf 'HIMMEL_INITIATIVE=prcheck,pr\n' > "$FIX/.env"
+
+# 22. env var UNSET → legs come from .env.
+echo "Test 22: HIMMEL_INITIATIVE unset → legs resolved from the himmel .env"
+out=$(unset HIMMEL_INITIATIVE; printf '{}' | HIMMEL_REPO="$FIX" bash "$hook")
+assert_has "active from .env (prcheck)" "fix every finding"      "$out"
+assert_has "active from .env (pr)"      "open or refresh the PR" "$out"
+assert_has "active-steps echoes .env subset" "Active steps: prcheck,pr" "$out"
+
+# 23. process env OVERRIDES .env (non-clobber: live value wins).
+echo "Test 23: process env overrides the .env value"
+out=$(printf '{}' | HIMMEL_REPO="$FIX" HIMMEL_INITIATIVE=handover bash "$hook")
+assert_has   "process-env handover wins" "Write the handover"    "$out"
+assert_lacks " .env prcheck suppressed"  "fix every finding"     "$out"
+
+# 24. CWD-safety: launched inside a DIFFERENT git repo with a decoy .env, the
+# himmel .env (HIMMEL_REPO) is used — the decoy repo's .env is NEVER read.
+echo "Test 24: a sibling repo's .env is not read (CWD-safety)"
+DECOY="$TMPII/decoy"; mkdir -p "$DECOY"; git -C "$DECOY" init --quiet
+printf 'HIMMEL_INITIATIVE=ticket\n' > "$DECOY/.env"
+out=$(cd "$DECOY" && unset HIMMEL_INITIATIVE; printf '{}' | HIMMEL_REPO="$FIX" bash "$hook")
+assert_has   "himmel .env subset used"   "fix every finding"          "$out"
+assert_lacks "decoy .env subset ignored" "Transition the Jira ticket" "$out"
+
+# 25. fail-open: HIMMEL_REPO points at a dir with no .env, env unset → OFF, exit 0.
+echo "Test 25: no .env at the resolved root → fail-open OFF"
+out=$(unset HIMMEL_INITIATIVE; printf '{}' | HIMMEL_REPO="$TMPII/noenv" bash "$hook"; echo "rc=$?")
+assert_has  "fail-open exits 0" "rc=0" "$out"
+# stdout should be only the rc marker (no directive).
+body=$(unset HIMMEL_INITIATIVE; printf '{}' | HIMMEL_REPO="$TMPII/noenv" bash "$hook")
+if [ -z "$body" ]; then assert_pass "no directive when no .env + env unset"; else assert_fail "expected OFF, got: $body"; fi
 
 echo
 echo "RESULTS: $pass passed, $fail failed"
