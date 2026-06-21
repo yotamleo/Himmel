@@ -13,9 +13,20 @@ pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1 — $2"; FAILED=$((FAILED + 1)); }
 assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$2', got '$3'"; fi; }
 
-command -v node >/dev/null 2>&1 || { echo "SKIP all — node not on PATH"; exit 0; }
-command -v python3 >/dev/null 2>&1 || { echo "SKIP all — python3 not on PATH"; exit 0; }
+# The engine's real deps are a WORKING python + git + sha256sum (NOT node — it
+# is never invoked; the prior node gate was vestigial). A working python means
+# one whose stdout actually runs: on Windows `python3` is the Microsoft Store
+# stub (on PATH but emits nothing), so gate on real output, not `command -v`.
+PY=""
+_resolve_py() {
+    for c in python3 python py; do
+        command -v "$c" >/dev/null 2>&1 && [ "$("$c" -c 'print(1)' 2>/dev/null)" = "1" ] && { PY="$c"; return 0; }
+    done
+    return 1
+}
+_resolve_py || { echo "SKIP all — no working python (python3/python/py) on PATH"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "SKIP all — git not on PATH"; exit 0; }
+command -v sha256sum >/dev/null 2>&1 || { echo "SKIP all — sha256sum not on PATH"; exit 0; }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -74,7 +85,7 @@ assert_eq "T2 diverged script restored to template" "$(sha_of "$T/scripts/hooks/
 T="$TMP/t3-tmpl"; V="$TMP/t3-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.obsidian"; stamp_vault "$V" "0.1.0"
 printf '%s\n' '["dataview","calendar","user-added"]' > "$V/.obsidian/community-plugins.json"
 run_upgrade --yes >/dev/null 2>&1
-merged=$(python3 -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
+merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
 assert_eq "T3 merge keeps user-added + adds new" "calendar,dataview,new,user-added" "$merged"
 
 # ---------------------------------------------------------------------------
@@ -117,7 +128,7 @@ case "$out" in *_CLAUDE.md.template-merge*|*conflict*|*CONFLICT*) pass "T6 confl
 # A conflicted run must NOT advance the version stamp (else the conflict is
 # silently masked on the next run) and must exit non-zero.
 if [ "$rc" -ne 0 ]; then pass "T6 conflict exits non-zero"; else fail "T6 conflict exits non-zero" "rc=0"; fi
-got_ver=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
+got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
 assert_eq "T6 conflict does not advance the stamp" "0.1.0" "$got_ver"
 
 # ---------------------------------------------------------------------------
@@ -155,7 +166,7 @@ printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
 run_upgrade --yes >/dev/null 2>&1; rc=$?
 assert_eq "T10 pre-versioning rc" "0" "$rc"
 if [ -f "$V/.vault-template.json" ]; then pass "T10 stamp written at end"; else fail "T10 stamp written at end" "no stamp"; fi
-got_ver=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
+got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
 assert_eq "T10 stamp records template version" "1.0.0" "$got_ver"
 
 # ---------------------------------------------------------------------------
@@ -213,7 +224,7 @@ printf 'I AM A FILE NOT A DIR\n' > "$V/scripts/extra"   # blocks the write of sc
 out=$(run_upgrade --yes 2>&1); rc=$?
 if [ "$rc" -ne 0 ]; then pass "T15 write-failure exits non-zero"; else fail "T15 write-failure exits non-zero" "rc=0"; fi
 case "$out" in *"NOT writing the version stamp"*) pass "T15 write-failure refuses the stamp" ;; *) fail "T15 write-failure refuses the stamp" "got: $out" ;; esac
-got_ver=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
+got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
 assert_eq "T15 write-failure does not advance stamp" "0.1.0" "$got_ver"
 
 # ---------------------------------------------------------------------------
@@ -369,8 +380,8 @@ fi
 # stranding the 501+460 template changes). Guard so the anchors can never
 # silently diverge again.
 REALTMPL="$(cd "$HERE/.." && pwd)"
-mkt_ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metadata"]["version"])' "$REALTMPL/marketplace/.claude-plugin/marketplace.json" 2>/dev/null)
-seed_ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$REALTMPL/.vault-template.json" 2>/dev/null)
+mkt_ver=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["metadata"]["version"])' "$REALTMPL/marketplace/.claude-plugin/marketplace.json" 2>/dev/null)
+seed_ver=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$REALTMPL/.vault-template.json" 2>/dev/null)
 # Non-empty guard: a read failure (renamed key/path) would leave both empty and
 # make a naked assert_eq "" "" pass green — defeating the guard. Fail loud instead.
 if [ -z "$mkt_ver" ] || [ -z "$seed_ver" ]; then

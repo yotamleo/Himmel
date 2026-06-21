@@ -20,9 +20,42 @@ need the full user runtime. `bash scripts/machine-setup/test-bootstrap.sh`
 **Provision test VMs / CI with NOPASSWD sudo** (or run as root) so `test-bootstrap`
 and the R6 `ensure-tools` apt path run non-interactively — a password-prompted
 `sudo` over a non-TTY ssh fails with `A terminal is required to authenticate`.
+On Ubuntu the provisioner (`ubuntu-vm-setup.py`, step 7c) installs this
+automatically: a *command-scoped* drop-in `/etc/sudoers.d/90-<user>-nopasswd`
+(`apt-get`/`apt`/`dpkg`/`systemctl`/`tee` only — never a blanket `NOPASSWD:ALL`),
+`visudo -cf`-validated before install and written `0440 root:root` (HIMMEL-492).
 The host-driven validator `scripts/test-install-symmetry-vm.sh [user@host] [port]
 [identity]` GAP-skips the git-dependent suites when git is absent rather than
 failing, so it stays green on a not-yet-bootstrapped box.
+
+The upgrade-path counterpart `scripts/test-luna-upgrade-vm.sh [user@host] [port]
+[identity]` (HIMMEL-493 Linux, HIMMEL-522 Windows) stages the real
+`templates/luna-second-brain/` to the VM and proves the `/luna-upgrade` ENGINE
+(`scripts/upgrade.sh`): it runs the shipped hermetic engine suite + a real
+scaffold→rollback→upgrade roundtrip (asserts owned files refresh, user content is
+preserved byte-identical, the version stamp advances, and a re-run is
+idempotent). Deterministic — no claude call. It is **cross-OS** and
+auto-detects the guest via `echo %OS%` (`Windows_NT` on cmd.exe — the Windows
+OpenSSH default shell — vs the literal `%OS%` on a POSIX guest):
+
+- **Ubuntu** (`… 2222 …`): runs the suite + roundtrip under the guest shell.
+- **Windows** (`<winuser>@localhost 2223 <key>`): runs the engine under Git Bash.
+  Two distinct cmd.exe-dodges: (a) **staging** streams a plain `tar` over ssh
+  stdin to avoid scp Windows-path translation and cmd quoting; (b) the **remote
+  assertion body** is fed via stdin with its vars *prepended* (not a POSIX
+  `VAR=x cmd` env-prefix, which cmd.exe — the default ssh shell — does not honor).
+  It ALSO runs the PowerShell smoke `test-upgrade.ps1` to prove the PS entry
+  (`upgrade.ps1` → Git Bash → `upgrade.sh`) wires through on real Windows. Needs
+  the host pubkey in the guest's
+  `%ProgramData%\ssh\administrators_authorized_keys` (the provisioner installs it).
+
+The engine's real deps are a **working python + git + sha256sum** — NOT `node`
+(it is never invoked; the prior node gate was vestigial). On Windows `python3` is
+the Microsoft Store stub (on PATH but emits no stdout), so the engine and the
+harness resolve a working interpreter by probing stdout, not `command -v`, and
+fall back `python3 → python → py`. A bootstrap-floor Linux VM lacking python3
+gets a best-effort `sudo apt-get install python3` (scoped NOPASSWD, HIMMEL-492).
+Both VM e2e scripts exit 3 (not 1) when the VM is unreachable.
 
 ---
 
@@ -118,6 +151,7 @@ python scripts/machine-setup/ubuntu-vm-setup.py
 | 5 | Create `/usr/local/bin/vboxclient-all` wrapper | guest |
 | 6 | Create `/etc/xdg/autostart/vboxclient.desktop` | guest |
 | 7 | Copy SSH public key to `~/.ssh/authorized_keys` | guest |
+| 7c | Install scoped NOPASSWD sudoers drop-in (`visudo`-validated, `0440 root`) | guest |
 | 8 | Set bidirectional clipboard (requires VM off → on) | host |
 
 ---
@@ -133,9 +167,34 @@ systemctl status sleep.target   # verify: masked
 
 ## Windows VM
 
-> Planned. Will add when configured.
+`win11_base_himmel` — NAT port forward host `2223` → guest `22` (Windows
+OpenSSH). The default ssh shell is **cmd.exe**; the himmel runtime runs under
+**Git Bash** (`C:\Program Files\Git`, both `cmd` and `bin` on PATH so `git` and
+`bash` are directly callable). `node`, `python` (NOT `python3` — that name is the
+Microsoft Store stub), `sha256sum`/`find`/`tar` (via Git Bash), and PowerShell 7
+(`pwsh`) are present.
 
-Expected `.env` variables: `windows_vm_user`, `windows_vm_pass`
+### Credentials
+Read from `.env`: `windows_vm_user`, `windows_vm_pass`.
+
+### SSH key auth
+Members of Administrators authenticate via the SYSTEM-wide
+`%ProgramData%\ssh\administrators_authorized_keys` (NOT `~/.ssh`), with an ACL
+restricted to `SYSTEM` + `BUILTIN\Administrators`. The provisioner
+(`windows-vm-setup.py`, `install_pubkey`) appends the host pubkey and resets the
+ACL. If key auth is rejected, (re)install the pubkey there — password auth via
+`scripts/lib/vmsdk.py` still works as the fallback.
+
+### Provision / drive
+`python scripts/machine-setup/windows-vm-setup.py` (bootstrap floor: Git Bash +
+jq via winget). Drive over SSH with `scripts/lib/vmsdk.py` (`VM('win11_base_himmel')`,
+password + key-fallback auth). Inline `bash -lc '…'` through cmd.exe mangles
+pipes/quotes — feed bodies via stdin or `powershell -EncodedCommand`.
+
+### Connect
+```bash
+ssh -p 2223 <windows_vm_user>@127.0.0.1
+```
 
 ---
 
@@ -144,4 +203,4 @@ Expected `.env` variables: `windows_vm_user`, `windows_vm_pass`
 | VM | Port | User var | Pass var | Key |
 |----|------|----------|----------|-----|
 | Ubuntu | 2222 | `ubuntu_vm_user` | `ubuntu_vm_pass` | `~/.ssh/id_ed25519` |
-| Windows | TBD | `windows_vm_user` | `windows_vm_pass` | TBD |
+| Windows (`win11_base_himmel`) | 2223 | `windows_vm_user` | `windows_vm_pass` | `~/.ssh/id_ed25519` → `administrators_authorized_keys` |

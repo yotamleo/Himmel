@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci/check-no-secrets.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # --severity=warning makes the gate deterministic across shellcheck
+      # versions: SC2329 (note-level, "function never invoked") is the only
+      # check newer shellchecks add over the pre-commit-pinned 0.10.x, and it
+      # only fires on pre-existing files. pre-commit stays the strict
+      # style-level local gate; CI catches warnings+errors regardless of the
+      # runner's shellcheck version.
+      # git pathspec `*` crosses `/`, so 'scripts/*.sh' matches every depth
+      # (top-level setup.sh/adopt.sh/… included). 'scripts/**/*.sh' would NOT —
+      # in a git pathspec `**/` requires an intervening directory, silently
+      # dropping the 34 top-level scripts. xargs -r: no files -> don't run
+      # shellcheck on stdin.
+      - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | xargs -0 -r shellcheck --severity=warning
+
+  node-suites:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pkg: [jira, bitbucket, himmel-run]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: scripts/${{ matrix.pkg }}
+      - run: npm test
+        working-directory: scripts/${{ matrix.pkg }}
+
+  bun-suites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: cd scripts/luna-vitals && bun install --frozen-lockfile && bun test
+
+  shell-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci/run-shell-tests.sh
