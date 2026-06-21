@@ -354,6 +354,36 @@ on demand; nothing here runs automatically.
 
 ---
 
+## Multi-vault upgrade engine (`scripts/luna-upgrade-all.sh`)
+
+Multi-vault luna template upgrade sweep (HIMMEL-462). The MULTI-vault layer
+above the proven single-vault engine (`templates/luna-second-brain/scripts/upgrade.sh`).
+Operator-invoked on demand via `/luna-upgrade-all` or directly.
+
+- `scripts/luna-upgrade-all.sh` — Discover candidate luna-second-brain vaults
+  from the registry (`~/.claude/luna-vaults.json`) and a depth-1 scan of
+  `--roots` (default `~/Documents`); classify each as `luna-family` / `unstamped`
+  / `not-a-vault` (classification: what the vault IS); dry-run sweep per
+  luna-family vault using himmel's `upgrade.sh`; and emit a per-vault table
+  (sweep state: `already-current` / `clean-upgrade` / `conflict` / `error`,
+  from→to versions, dirty flag). Note: classification (`luna-family`/`unstamped`)
+  describes vault identity; sweep state describes the upgrade outcome for
+  `luna-family` vaults only. `unstamped` appears as a porcelain row with empty
+  from/to/dirty columns (no sweep performed for unstamped vaults).
+  Apply is always per-vault and operator-confirmed. Creates a timestamped backup
+  under `~/.claude/luna-upgrade-backups/<vault-slug>/<UTC-ts>/` before any write.
+  Subcommands: `sweep [--roots] [--registry] [--template-dir] [--porcelain]`,
+  `apply --vault <path> [--template-dir] [--force-unstamped]`,
+  `restore --vault <path> [--from <ts>] [--list]`.
+  Output signals: `BACKUP\t<dest>`, `OK\t<vault>`, `SKIPPED-DIRTY\t<vault>`,
+  `PARTIAL\t<vault>`, `CONFLICT\t<vault>\t<sidecar>`, `RESTORED\t<vault>\t<ts>`.
+  `.ps1` twin: `scripts/luna-upgrade-all.ps1` (thin Git-Bash forwarder).
+  Primary surface: `/luna-upgrade-all` (skill: `obsidian-triage:luna-upgrade-all`
+  — runbook at `marketplace/plugins/obsidian-triage/skills/luna-upgrade-all/SKILL.md`).
+  Bash 3.2-safe; cross-platform (Windows Git Bash + macOS + Linux).
+
+---
+
 ## CR Scripts (`scripts/cr/`)
 
 Shell scripts that implement `/pr-check` sub-steps. Called by the `/pr-check` command; not invoked standalone in normal workflows.
