@@ -53,6 +53,12 @@ not_contains() { echo "$2" | grep -qF "$3" && { echo "FAIL - $1: output must NOT
   echo '{"kind":"avail","ts":"2026-01-01T00:00:00Z","branch":"b","head":"H4","model":"alpha","status":"ok"}'
   echo '{"kind":"avail","ts":"2026-01-01T00:00:00Z","branch":"b","head":"H1","model":"beta","status":"ok"}'
   echo '{"kind":"avail","ts":"2026-01-01T00:00:00Z","branch":"b","head":"H2","model":"beta","status":"ok"}'
+  # usage (HIMMEL-485): codex 2 calls (est_total 1200 + 600 = 1800), alpha 1 call (400).
+  # ts are LATER than every other record so per-head ts minima (and thus the window
+  # ordering exercised by test 8) are unchanged by these rows.
+  echo '{"kind":"usage","ts":"2026-01-01T00:02:00Z","branch":"b","head":"H1","model":"codex","prompt_chars":4000,"response_chars":800,"est_prompt_tokens":1000,"est_completion_tokens":200,"est_total_tokens":1200,"estimated":true}'
+  echo '{"kind":"usage","ts":"2026-01-01T00:02:01Z","branch":"b","head":"H2","model":"codex","prompt_chars":2000,"response_chars":400,"est_prompt_tokens":500,"est_completion_tokens":100,"est_total_tokens":600,"estimated":true}'
+  echo '{"kind":"usage","ts":"2026-01-01T00:02:02Z","branch":"b","head":"H1","model":"alpha","prompt_chars":1200,"response_chars":400,"est_prompt_tokens":300,"est_completion_tokens":100,"est_total_tokens":400,"estimated":true}'
 } >> "$L"
 
 # ── Run the script and capture output ──────────────────────────────────────
@@ -113,6 +119,29 @@ contains "all-time alpha total 12 appears" "$win_out" "12"
 # We confirm via the agreed% in the windowed section: alpha H3 has 0 agreed -> "0%"
 # which differs from all-time alpha 67%. Assert "0%" appears (windowed agreed%).
 contains "windowed alpha shows different agreed pct" "$win_out" "0%"
+
+# 9. Usage section (HIMMEL-485): per-model est tokens + cumulative.
+contains "usage section header present" "$out" "Usage (estimated tokens"
+contains "usage codex row present" "$out" "codex"
+contains "usage codex est_total 1800" "$out" "1800"
+contains "usage cumulative line (2200 over 3)" "$out" "cumulative: est_total=2200 over 3"
+
+# 9b. A usage-ONLY model (codex has no finding/avail records) must NOT appear as a
+#     phantom zero row in the score tables — it should show ONLY in the Usage
+#     section. Both score tables + the usage table start a codex line at col 0, so
+#     before the fix codex would start 3 lines; after, exactly 1 (the usage row).
+check "usage-only model absent from score tables" "$(echo "$out" | grep -c '^codex')" "1"
+
+# 10. No usage section when the ledger has no usage records (output unchanged).
+not_contains "no usage section without usage records" "$small_out" "Usage (estimated tokens"
+
+# 11. cr-scores tolerates a usage record MISSING est_* fields (older/hand-edited
+#     schema): the Number()||0 guards must render numeric zeros, never NaN.
+L3="$tmp/partial-usage.jsonl"
+echo '{"kind":"usage","ts":"2026-01-01T00:00:00Z","branch":"b","head":"H1","model":"codex"}' > "$L3"
+partial_out="$(CR_LEDGER="$L3" bash "$CS" 2>&1)"
+not_contains "partial usage record produces no NaN" "$partial_out" "NaN"
+contains "partial usage record cumulative is 0" "$partial_out" "cumulative: est_total=0 over 1"
 
 # ── Final ──────────────────────────────────────────────────────────────────
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

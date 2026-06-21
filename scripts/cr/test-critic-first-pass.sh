@@ -157,4 +157,27 @@ check "gpt has injection guard"    "$(PP gpt-5.5             | grep -c 'UNTRUSTE
 check "open has injection guard"   "$(PP openai/gpt-oss-120b | grep -c 'UNTRUSTED DATA to review')" "1"
 check "claude has injection guard" "$(PP claude-opus-4-8     | grep -c 'UNTRUSTED DATA to review')" "1"
 
+# --- HIMMEL-485: ESTIMATED usage telemetry (CR_USAGE_LOG, opt-in) ----------
+cat > "$tmp/stub.py" <<'PY'
+print("## Critical Issues (0 found)")
+print("## Important Issues (0 found)")
+print("## Suggestions (0 found)")
+PY
+# CR_USAGE_LOG=1 → a `usage` record is appended (best-effort), keyed by slug.
+u_ledger="$tmp/usage-ledger.jsonl"
+printf '%s' "$DIFF" | CR_USAGE_LOG=1 CR_LEDGER="$u_ledger" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1
+check "usage record written when CR_USAGE_LOG=1" "$([ -f "$u_ledger" ] && grep -c '"kind":"usage"' "$u_ledger" || echo 0)" "1"
+check "usage record carries slug as model"       "$([ -f "$u_ledger" ] && grep -c '"model":"codex"' "$u_ledger" || echo 0)" "1"
+check "usage est_total_tokens positive"          "$(u="$u_ledger" node -e 'const o=require("fs").readFileSync(process.env.u,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="usage");process.stdout.write(String(o.est_total_tokens>0))' 2>/dev/null)" "true"
+
+# CR_USAGE_LOG unset (default) → NO usage record (telemetry is opt-in).
+u_off="$tmp/usage-ledger-off.jsonl"
+printf '%s' "$DIFF" | CR_LEDGER="$u_off" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1
+check "no usage record when CR_USAGE_LOG unset" "$([ -f "$u_off" ] && grep -c '"kind":"usage"' "$u_off" || echo 0)" "0"
+
+# stdout contract is byte-intact whether or not usage logging is on.
+out_on="$(printf '%s' "$DIFF" | CR_USAGE_LOG=1 CR_LEDGER="$tmp/u3.jsonl" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug s 2>/dev/null)"
+out_off="$(printf '%s' "$DIFF" | CR_LEDGER="$tmp/u4.jsonl" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug s 2>/dev/null)"
+check "stdout identical with/without usage logging" "$out_on" "$out_off"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

@@ -73,7 +73,10 @@ Steps:
            panel_tiers="$CR_PROFILE"
        fi
        panel_tmp=$(mktemp -t cr-panel-avail.XXXXXX)
-       panel_findings=$(printf '%s' "$diff_out" | CRITIC_PANEL_TIERS="$panel_tiers" bash scripts/cr/critic-panel.sh 2>"$panel_tmp")
+       # CR_USAGE_LOG=1 (HIMMEL-485): each critic logs a chars/4 ESTIMATED `usage`
+       # ledger record (hermes does not expose real usage via the one-shot
+       # chokepoint). Best-effort; surfaced per-model + cumulative by cr-scores.sh.
+       panel_findings=$(printf '%s' "$diff_out" | CR_USAGE_LOG=1 CRITIC_PANEL_TIERS="$panel_tiers" bash scripts/cr/critic-panel.sh 2>"$panel_tmp")
        panel_rc=$?
        panel_avail_lines=$(cat "$panel_tmp"); rm -f "$panel_tmp"
        if [ "$panel_rc" -ne 0 ]; then
