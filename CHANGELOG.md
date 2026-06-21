@@ -4,7 +4,11 @@
 ## [Unreleased]
 
 ### Added
-- [HIMMEL-462] multi-vault luna template upgrade sweep + backup/restore
+- [HIMMEL-498] prompt-injection guard for the CR critic prompt (#105)
+- [HIMMEL-473] adapt CR critic prompt per model family (#103)
+- [HIMMEL-471] generate GPT-adapted AGENTS.md from CLAUDE.md (#102)
+- [HIMMEL-417] add codex (gpt-5.5) as opt-in paid CR critic (#101)
+- [HIMMEL-462] multi-vault luna template upgrade sweep + backup/restore (#98)
 - himmel-native full-range session analyzer (#97)
 - [HIMMEL-469] install/uninstall symmetry + user-scope universal hooks (#96)
 - [HIMMEL-454] doc-guard catalog-sync gate + CHANGELOG generator (#93)
@@ -53,6 +57,7 @@
 - choose user vs project plugin install scope (#9)
 
 ### Fixed
+- stop pre-commit rewriting vault .md + autosync retry on auto-fixer (#99)
 - forward-slash + quote user-scope hook paths so Windows hooks fire (#95)
 - persist scaffolded luna vault path + global himmel-update commands (#94)
 - create parent dir before luna vault scaffold (#90)
@@ -80,6 +85,8 @@
 - [HIMMEL-323] harden pre-push gates (fail-closed base + _branch + default_branch tie-break) (#6)
 
 ### Changed
+- docs(internals): [HIMMEL-472] audit Cursor/Copilot/Gemini frame + port decisions (#104)
+- docs(internals): [HIMMEL-427] harness compatibility matrix (himmel under Codex) (#100)
 - chore(luna): ignore /.worktrees/ in vault template gitignore (#92)
 - chore(setup): [HIMMEL-453] self-document env.example + HIMMEL_REPO default-by-install (#91)
 - chore: proper AGENTS.md (CLAUDE.md pointer) + gitignore codex artifacts (#78)
