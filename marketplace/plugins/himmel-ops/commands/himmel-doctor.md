@@ -16,6 +16,12 @@ interpreter (`uvx mcp-obsidian`, `bun …`) that a PATH-less macOS GUI launch ca
 find, so the server and all its tools silently fail to start (same root cause as
 the node hook).
 
+It also runs a **merged-PR worktree scan** (C7, read-only) — detects non-primary,
+non-locked worktrees whose branch maps to an already-merged PR (shipped work that
+was never pruned).  C7 only emits findings and points to `/clean` (which dry-runs
+first); it never deletes or modifies anything.  On forge outage (rc 2) it emits a
+single INFO "skipped" rather than a false WARN.
+
 It is read-only EXCEPT `--fix`, which heals the C1 node wiring by rewriting the
 caveman hooks in the **user-scope** `~/.claude/settings.json` (outside any repo —
 the on-main / repo-settings self-mod guards do not apply) to route through the

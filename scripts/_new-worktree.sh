@@ -37,6 +37,11 @@ fi
 # shellcheck source=lib/forge.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/forge.sh"
+# branch_has_merged_pr (HIMMEL-512): refuse creating a worktree for a branch
+# that was already shipped via a merged PR.
+# shellcheck source=lib/branch-shipped.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/branch-shipped.sh"
 
 usage() {
     echo "Usage: $0 <branch-name> [--no-install] [--verbose]" >&2
@@ -103,6 +108,28 @@ if git -C "$PRIMARY_WORKTREE" show-ref --verify --quiet "refs/heads/$BRANCH"; th
     echo "ERR new-worktree: local branch '$BRANCH' exists — delete with: git branch -D $BRANCH" >&2
     exit 1
 fi
+
+# HIMMEL-512: refuse creating a worktree for a branch that maps to a merged PR.
+# Run BEFORE the network fetch so the refusal is cheap and early.
+# FORGE / GH_CMD must be exported to propagate into branch_has_merged_pr's
+# timeout subprocess (they are test seams and may be set by the caller).
+export FORGE GH_CMD 2>/dev/null || true
+_bs_rc=0
+branch_has_merged_pr "$BRANCH" "$PRIMARY_WORKTREE" || _bs_rc=$?
+case "$_bs_rc" in
+    0)
+        if [ "${REUSE_MERGED_BRANCH_OK:-0}" = "1" ]; then
+            : # override: continue
+        else
+            echo "ERR new-worktree: branch '$BRANCH' maps to a merged PR — pick a fresh name, or set REUSE_MERGED_BRANCH_OK=1 to override" >&2
+            exit 1
+        fi
+        ;;
+    2)
+        echo "WARN new-worktree: uniqueness-vs-merged-PR check skipped (forge unreachable)" >&2
+        ;;
+    *) : ;; # rc 1 (not merged) — continue silently
+esac
 
 {
     echo "=== new-worktree $BRANCH @ $(date -Iseconds) ==="

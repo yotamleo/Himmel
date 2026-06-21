@@ -209,6 +209,77 @@ EOF
     fi
 }
 
+# --- C7: lingering merged-PR worktrees (READ-ONLY detective check) --------------
+# Scans non-primary, non-locked, non-detached worktrees and flags any whose
+# branch has a merged PR.  Never issues a destructive git verb; only emits
+# findings and points to /clean.
+check_c7() {
+    local wt_root="${DOCTOR_WORKTREE_ROOT:-$REPO_ROOT}"
+    # shellcheck source=scripts/lib/branch-shipped.sh
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/scripts/lib/branch-shipped.sh"
+
+    local warned=0 info_emitted=0
+    local wt_path="" wt_branch="" is_locked=0 is_detached=0
+
+    _c7_eval_record() {
+        [ -n "$wt_path" ] || return 0
+        local canonical_root canonical_path
+        canonical_root="$(cd "$wt_root" 2>/dev/null && pwd)" || canonical_root="$wt_root"
+        canonical_path="$(cd "$wt_path" 2>/dev/null && pwd)" || canonical_path="$wt_path"
+        if [ "$canonical_path" = "$canonical_root" ]; then
+            return 0
+        fi
+        if [ "$is_locked" = 1 ]; then
+            return 0
+        fi
+        if [ "$is_detached" = 1 ] || [ -z "$wt_branch" ]; then
+            return 0
+        fi
+        branch_has_merged_pr "$wt_branch" "$wt_root"
+        local brc=$?
+        if [ "$brc" -eq 0 ]; then
+            emit WARN C7-shipped \
+                "worktree $wt_path (branch $wt_branch) maps to a MERGED PR — shipped work lingering" \
+                "verify, then prune with /clean (dry-runs first); do NOT reuse this branch name"
+            warned=$((warned+1))
+        elif [ "$brc" -eq 2 ]; then
+            if [ "$info_emitted" -eq 0 ]; then
+                emit INFO C7-shipped \
+                    "merged-PR worktree scan skipped (forge unreachable)" \
+                    "ensure gh is authenticated and retry; or manually prune stale worktrees"
+                info_emitted=1
+            fi
+        fi
+    }
+
+    while IFS= read -r line; do
+        case "$line" in
+            worktree\ *)
+                _c7_eval_record
+                wt_path="${line#worktree }"
+                wt_branch=""; is_locked=0; is_detached=0
+                ;;
+            branch\ refs/heads/*)
+                wt_branch="${line#branch refs/heads/}"
+                ;;
+            locked*)
+                is_locked=1
+                ;;
+            detached)
+                is_detached=1
+                ;;
+        esac
+    done <<EOF
+$(git -C "$wt_root" worktree list --porcelain 2>/dev/null)
+EOF
+    _c7_eval_record
+
+    if [ "$warned" -eq 0 ] && [ "$info_emitted" -eq 0 ]; then
+        emit OK C7-shipped "no lingering merged-PR worktrees"
+    fi
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -255,6 +326,7 @@ check_c3
 check_c4
 check_c5
 check_c6
+check_c7
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
