@@ -1,0 +1,59 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd auto-approve-safe-bash.sh" },
+          { "type": "command", "command": ".codex/run-hook.cmd check-cr-marker-on-pr-create.sh" }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd block-edit-on-main.sh" }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell|Read|Grep",
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd block-read-secrets.sh" }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_atlassian_atlassian__.*",
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd block-backend-tier.sh" }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd auto-arm-on-cap.sh" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd auto-arm-on-subagent-cap.sh" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd check-update-available.sh", "timeout": 15 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd improve-on-submit.sh" }
+        ]
+      }
+    ]
+  }
+}
