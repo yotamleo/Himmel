@@ -37,8 +37,10 @@ guardrails are welcome.
   prereqs).
 - Hook + guardrail additions that apply broadly to vault repos.
 - README / docs improvements.
-- New SHA-pinned plugin entries in `marketplace/.claude-plugin/marketplace.json`
-  for upstream vault plugins that fit the skeleton's intent.
+- New pointers to upstream Claude Code plugins that fit the skeleton's
+  intent. Route adopters to each plugin's own upstream marketplace —
+  luna-brain does not mirror plugins, because a bare-SHA pin is not
+  installable and most upstreams publish no tags (HIMMEL-435/449).
 
 ## What changes are out-of-scope
 

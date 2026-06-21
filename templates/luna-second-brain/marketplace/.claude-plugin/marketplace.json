@@ -5,26 +5,8 @@
     "url": "https://github.com/yotamleo"
   },
   "metadata": {
-    "description": "luna-brain — OSS Obsidian vault skeleton for Claude Code workflows. Marketplace ships SHA-pinned vault-knowledge + markdown-helper plugins. Pair with obsidian-second-brain (installed separately via its upstream install.sh) for PARA capture/daily/project skills.",
-    "version": "0.1.0"
+    "description": "luna-brain — OSS Obsidian vault skeleton for Claude Code workflows. This marketplace ships NO plugins: Steph Ango's obsidian skill pack installs from its own upstream marketplace (obsidian@obsidian-skills) because kepano publishes no tags and a bare-SHA pin is not installable (HIMMEL-435/449); claude-obsidian ships via the himmel marketplace; pair with obsidian-second-brain (installed via its upstream install.sh) for PARA capture skills. metadata.version below is the template version read by scripts/upgrade.sh.",
+    "version": "0.2.0"
   },
-  "plugins": [
-    {
-      "name": "obsidian",
-      "source": {
-        "source": "github",
-        "repo": "kepano/obsidian-skills",
-        "ref": "553ef99aa3306dd23f268e1ba9af752577684f69"
-      },
-      "description": "Steph Ango's Claude Skills for Obsidian: obsidian-markdown (OFM syntax), obsidian-bases, json-canvas, obsidian-cli, defuddle. Used for correct Obsidian Flavored Markdown in your own vault edits. Pinned to SHA.",
-      "version": "1.0.1",
-      "author": {
-        "name": "Steph Ango",
-        "url": "https://stephango.com/"
-      },
-      "homepage": "https://github.com/kepano/obsidian-skills",
-      "repository": "https://github.com/kepano/obsidian-skills",
-      "license": "MIT"
-    }
-  ]
+  "plugins": []
 }
