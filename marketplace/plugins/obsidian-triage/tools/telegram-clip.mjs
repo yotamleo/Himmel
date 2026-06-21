@@ -27,8 +27,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, relative, join } from "node:path";
 import { homedir } from "node:os";
-import { classifyMessage, buildClip, clipFilename, deriveTitle, tweetStatusId } from "./lib/telegram-clip.mjs";
-import { canonicalize, unquote } from "./lib/url-canonical.mjs";
+import { classifyMessage, buildClip, clipFilename, deriveTitle } from "./lib/telegram-clip.mjs";
+import { unquote } from "./lib/url-canonical.mjs";
+import { clipUrlKeys, matchesUrl } from "./lib/clip-lookup.mjs";
 
 const TODAY = process.env.TELEGRAM_CLIP_TODAY || new Date().toISOString().slice(0, 10);
 
@@ -150,15 +151,11 @@ function fmValue(fm, key) {
  * Kept separate from alreadyFiled (single responsibility) — a second O(N) scan,
  * fine for the serial low-volume bridge; no premature combined pass (YAGNI).
  */
-function alreadyFiledByUrl(clippingsDir, source) {
-  const wantId = tweetStatusId(source);
-  const wantCanon = wantId ? null : canonicalize(source);
-  if (!wantId && !wantCanon) return null; // no usable URL key (e.g. a note)
+export function alreadyFiledByUrl(clippingsDir, source) {
+  const keys = clipUrlKeys(source);
+  if (!keys.statusId && !keys.canon) return null; // no usable URL key (e.g. a note)
 
-  const matches = (val) => {
-    if (!val) return false;
-    return wantId ? tweetStatusId(val) === wantId : canonicalize(val) === wantCanon;
-  };
+  const matches = (val) => matchesUrl(val, keys);
   const fileMatches = (p) => {
     let content;
     try {
@@ -300,7 +297,15 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((e) => {
-  process.stderr.write(`telegram-clip: fatal: ${e && e.message ? e.message : e}\n`);
-  process.exit(2);
-});
+// Run as a CLI only — importers (e.g. the clip-lookup equivalence test) reuse
+// the exported alreadyFiledByUrl without triggering main().
+// import.meta.main is bun-only; fall back to argv[1] basename match for node.
+const _argv1 = (process.argv[1] || "").replace(/\\/g, "/");
+const _isMain = import.meta.main === true || _argv1.endsWith("telegram-clip.mjs");
+
+if (_isMain) {
+  main().catch((e) => {
+    process.stderr.write(`telegram-clip: fatal: ${e && e.message ? e.message : e}\n`);
+    process.exit(2);
+  });
+}

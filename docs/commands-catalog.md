@@ -93,6 +93,8 @@ the github-repo ingest skill these dispatch to.
 | /synthesize-clips | Stage 3 — cross-clip synthesis: find recurring patterns across processed clips, write proposal pages to `Clippings/_synthesis/` (proposals only, never restructures). |
 | /archive-clips | Stage 4 (LUNA-55) — graduate fully-chained clips (harvested ∧ processed ∧ in-synthesis) to `Clippings/_done/<YYYY-MM>/`, rewrite inbound links (literal, boundary-safe), dedup by canonical URL, (re)generate `Clippings/_deferred.md`. |
 
+**Companion (not a stage):** `/read-link <url>` (obsidian-triage, LUNA-78) — vault-first link reader: read an already-harvested clip for a URL before any live fetch; enrich a thin clip, else live-fetch (fxtwitter / WebFetch / luna-ingest) as the last resort. Never Grok. UX inspired by eugeniughelbur/obsidian-second-brain's `/x-read` (clean-room, no vendored fork).
+
 ## Plugin skills & ops (himmel-ops, obsidian-triage)
 
 Skills shipped by vendored plugins. Most trigger on a symptom or a slash

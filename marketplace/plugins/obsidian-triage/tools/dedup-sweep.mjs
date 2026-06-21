@@ -34,6 +34,7 @@ import { join, relative, sep, basename } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { canonicalize, unquote } from "./lib/url-canonical.mjs";
+import { clipUrlKeys } from "./lib/clip-lookup.mjs";
 
 const TODAY = process.env.DEDUP_TODAY || new Date().toISOString().slice(0, 10);
 
@@ -373,7 +374,7 @@ function indexVault(vault) {
     const { fm, fmRaw, body, present } = parseFrontmatter(text);
     if (!present) continue;
     const sourceVal = fm.harvest_url_canonical || fm.source || "";
-    const canonical = canonicalize(sourceVal);
+    const canonical = clipUrlKeys(sourceVal).canon;
     const processed = (fm.processed || "").toLowerCase().replace(/^"|"$/g, "") === "true";
     const normalised = processed ? normaliseBodyForHash(body) : "";
     const hash = processed ? sha256(normalised) : null;
