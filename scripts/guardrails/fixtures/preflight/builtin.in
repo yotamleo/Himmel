@@ -1,0 +1,10 @@
+git status
+bash scripts/foo.sh
+cat a && rm b
+git reset --hard HEAD~1
+echo hi > report.md
+git checkout -- src/file.ts
+node scripts/jira/dist/index.js view HIMMEL-1
+set -uo pipefail
+& bash scripts/foo.sh
+bash deploy.sh && echo log > out.txt

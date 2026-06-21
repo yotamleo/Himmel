@@ -1,0 +1,25 @@
+$ git status
+  OK: no predicted guardrail collision.
+$ bash scripts/foo.sh
+  REWRITE[wsl-bash]: bare 'bash' hits the WSL System32 stub on Windows (cannot read C:/, exit 127) — call Git Bash explicitly.
+  -> "C:\Program Files\Git\bin\bash.exe" scripts/foo.sh
+$ cat a && rm b
+  FLAG[compound]: a shell operator (&& || | ; $() backtick $var) makes the native permission matcher bail (HIMMEL-203) and hang in auto/headless — split into literal single commands.
+$ git reset --hard HEAD~1
+  FLAG[destructive-git]: 'git reset --hard' discards commits/working changes irreversibly — prefer a recoverable op (git stash) or confirm intent.
+$ echo hi > report.md
+  FLAG[on-main-write]: redirects into an in-repo path ('report.md') — on main this is block-edit-on-main territory; send report output to a temp dir.
+$ git checkout -- src/file.ts
+  FLAG[destructive-git]: 'git checkout --' discards uncommitted changes to the named paths irreversibly — prefer 'git stash' or confirm intent.
+$ node scripts/jira/dist/index.js view HIMMEL-1
+  OK: no predicted guardrail collision.
+$ set -uo pipefail
+  OK: no predicted guardrail collision.
+$ & bash scripts/foo.sh
+  REWRITE[wsl-bash]: bare 'bash' hits the WSL System32 stub on Windows (cannot read C:/, exit 127) — call Git Bash explicitly.
+  -> & "C:\Program Files\Git\bin\bash.exe" scripts/foo.sh
+$ bash deploy.sh && echo log > out.txt
+  REWRITE[wsl-bash]: bare 'bash' hits the WSL System32 stub on Windows (cannot read C:/, exit 127) — call Git Bash explicitly.
+  -> "C:\Program Files\Git\bin\bash.exe" deploy.sh && echo log > out.txt
+  FLAG[compound]: a shell operator (&& || | ; $() backtick $var) makes the native permission matcher bail (HIMMEL-203) and hang in auto/headless — split into literal single commands.
+  FLAG[on-main-write]: redirects into an in-repo path ('out.txt') — on main this is block-edit-on-main territory; send report output to a temp dir.

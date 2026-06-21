@@ -1,0 +1,6 @@
+# Test learnings file (PATTERN|||VERDICT|||MESSAGE).
+deploy.*prod|||FLAG|||production deploy — confirm with operator before running
+
+# a comment between rules (must be skipped)
+malformed-line-without-delimiters
+rm -rf /($| )|||REFUSE|||recursive delete of filesystem root — refuse

@@ -12,6 +12,13 @@
 # Session inclusion: NON-subagent transcripts only (paths with /subagents/ excluded).
 # Output: local markdown report — no network calls.
 #
+# Friction signals are reported as TWO tallies: Mentions (upper bound — the marker
+# name anywhere, conflating genuine blocks / passing-gate mentions / discussion)
+# and Genuine Blocks (the hook BLOCK exit text or a real non-zero gate result).
+# Genuine Blocks is the precision gate that keeps the friction ranking trustworthy
+# (per the Self-Evolving-Agents lens: an optimization loop without a precision gate
+# optimizes noise).
+#
 # bash 3.2-safe; shellcheck-clean; cross-platform (Git Bash / macOS / Linux).
 
 set -uo pipefail
@@ -278,6 +285,26 @@ platforms-tested-gate|Platforms tested
 security-reviewed-gate|Security reviewed
 classifier-prompt|classifier.*veto|blocked by classifier"
 
+# Genuine-block ERE for a friction label: the hook's actual BLOCK exit text or a
+# real non-zero gate result — NOT just the marker name. This is the precision gate
+# that separates a genuine block from a mention or a passing attestation trailer
+# (e.g. `Platforms tested:` appears in EVERY shell-PR trailer, but `⛔ platforms-check:`
+# only on a real block). permission-denied / classifier-prompt are already
+# error-string based, so their genuine pattern equals the mention pattern.
+_friction_block_pattern() {
+    case "$1" in
+        block-edit-on-main)     printf '%s' '⛔ block-edit-on-main: refusing' ;;
+        block-read-secrets)     printf '%s' '⛔ block-read-secrets: refusing' ;;
+        platforms-tested-gate)  printf '%s' '⛔ platforms-check:' ;;
+        security-reviewed-gate) printf '%s' '⛔ security-review:' ;;
+        pre-commit-failure)     printf '%s' '- exit code: [1-9]' ;;
+        shellcheck-failure)     printf '%s' 'shellcheck.*Failed|SC[0-9][0-9][0-9][0-9]' ;;
+        permission-denied)      printf '%s' 'Permission denied' ;;
+        classifier-prompt)      printf '%s' 'classifier.*veto|blocked by classifier' ;;
+        *)                      printf '%s' '' ;;
+    esac
+}
+
 if [ -s "$TMP_SESSIONS" ]; then
     # Read all included session paths into a variable (needed for xargs)
     # Use while-loop + grep -l for each pattern (grep reads the file list via stdin)
@@ -288,8 +315,16 @@ if [ -s "$TMP_SESSIONS" ]; then
         # Pipe file list to xargs grep -l (portable, avoids ARG_MAX)
         # Null-terminate for xargs -0. Use octal \000, not \0 — BSD/macOS tr
         # treats \0 literally; \000 is the portable POSIX null escape.
-        tr '\n' '\000' < "$TMP_SESSIONS" | xargs -0 grep -lE "$pattern" 2>/dev/null \
+        # `--` ends grep options so a pattern beginning with `-` (e.g. the
+        # pre-commit `- exit code: N` block signature) is read as a regex, not a flag.
+        tr '\n' '\000' < "$TMP_SESSIONS" | xargs -0 grep -lE -- "$pattern" 2>/dev/null \
             >> "$frict_file" || true
+        # Second pass with the genuine-block pattern → $frict_file.block.
+        block_pattern="$(_friction_block_pattern "$label")"
+        if [ -n "$block_pattern" ]; then
+            tr '\n' '\000' < "$TMP_SESSIONS" | xargs -0 grep -lE -- "$block_pattern" 2>/dev/null \
+                >> "$frict_file.block" || true
+        fi
     done
 fi
 
@@ -351,22 +386,29 @@ GENERATED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
     printf '\n'
 
     printf '## Friction Signals\n\n'
-    printf '_Guardrail / gate markers detected across session transcripts._\n\n'
-    printf '| Signal | Sessions Hit |\n'
-    printf '|--------|-------------|\n'
+    printf '_Guardrail / gate markers across session transcripts. **Mentions** is a\n'
+    printf 'mention-prevalence upper bound (the marker name anywhere — conflates genuine\n'
+    printf 'blocks, passing-gate mentions, and discussion). **Genuine Blocks** matches the\n'
+    printf 'hook BLOCK exit text or a real non-zero gate result, so it is the trustworthy\n'
+    printf 'tally for prioritisation (the precision gate against metric-gaming)._\n\n'
+    printf '| Signal | Mentions | Genuine Blocks |\n'
+    printf '|--------|----------|----------------|\n'
     printf '%s' "$FRICTION_DEFS" | while IFS='|' read -r label pattern; do
         [ -z "$label" ] && continue
         frict_file="$TMP_FRICTION_DIR/$label"
         count=0
         [ -f "$frict_file" ] && count="$(wc -l < "$frict_file" | tr -d ' ')"
-        printf '| %s | %d |\n' "$label" "$count"
+        bcount=0
+        [ -f "$frict_file.block" ] && bcount="$(wc -l < "$frict_file.block" | tr -d ' ')"
+        printf '| %s | %d | %d |\n' "$label" "$count" "$bcount"
     done
     printf '\n'
 
-    printf '### Top Sessions per Friction Signal\n\n'
+    printf '### Top Sessions per Genuine Block\n\n'
+    printf '_Sessions where a real BLOCK exit text / non-zero gate result was detected._\n\n'
     printf '%s' "$FRICTION_DEFS" | while IFS='|' read -r label pattern; do
         [ -z "$label" ] && continue
-        frict_file="$TMP_FRICTION_DIR/$label"
+        frict_file="$TMP_FRICTION_DIR/$label.block"
         [ -f "$frict_file" ] || continue
         count="$(wc -l < "$frict_file" | tr -d ' ')"
         case "$count" in 0|"") continue ;; esac

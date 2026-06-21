@@ -168,6 +168,39 @@ points to a missing path. Mode + root are reportable via
 `/handover-link` (`status` default, `doctor` exits non-zero on
 misconfiguration).
 
+## Durable resume breadcrumb + resolver (HIMMEL-477, C3)
+
+`scripts/handover/breadcrumb.sh` makes an interrupted/armed resume
+failure-survivable. Twice an armed overnight resume found "no captured
+stop-point" and silently grounded in raw repo state, losing the armed work.
+C3 closes that: the loop drops a versioned breadcrumb after each pipeline
+stage, and the resolver REFUSES to silently degrade.
+
+- **`write`** — a versioned JSON breadcrumb at
+  `<handover-root>/breadcrumbs/<ticket>.json` (root via the single-root
+  resolver above; never hardcoded): `ticket`, `branch`, `base_sha`,
+  `head_sha`, `completed[]`, `next_step`. Auto-detects the git facts from the
+  `--cwd` repo. Emitted from the seams that already run between stages
+  (`/overnight-shift` post-fanout step 7, `/pr-check`, the handover writer) —
+  there is no per-leg dispatch runtime to hook (`inject-initiative.sh` is
+  SessionStart-only; the legs are self-paced prose).
+- **`resolve`** — on resume, classifies the stop-point:
+  - **FRESH** (`exit 0`) — breadcrumb's `head_sha` == current `HEAD` →
+    deterministic resume; prints the recorded `next_step` + `completed`.
+  - **DEGRADED** (`exit 3`) — breadcrumb missing, stale (HEAD/branch moved),
+    or corrupt → reconstructs candidate intent from `git log` (commits naming
+    the ticket) + open Jira, and prints
+    `DEGRADED — confirm before proceeding`. NEVER silent. Jira enrichment is
+    fail-soft (`--jira-cmd` override / `--no-jira`; a jira failure degrades to
+    git-only, never crashes).
+
+Neighbour to `handover-resume-armed` (HIMMEL-208) and the armed-resume
+profile (HIMMEL-457) — it does not replace them; it adds the
+reconstruct-and-flag layer they lacked. Tests:
+`scripts/handover/test-breadcrumb.sh` (hermetic — temp `HANDOVER_DIR` + temp
+git repo + jira stub), incl. the epic-done self-test (deleted breadcrumb →
+flagged recovery; valid → deterministic).
+
 ## Migration timeline + open work
 
 - **HIMMEL-13** (done) — initial migration of cross-project subset

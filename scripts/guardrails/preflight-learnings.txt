@@ -1,0 +1,15 @@
+# Curated guardrail learnings — preflight-sim.sh reads this on every invocation.
+#
+# Format:  PATTERN|||VERDICT|||MESSAGE
+#   PATTERN  = an ERE matched against the whole command line
+#   VERDICT  = FLAG or REFUSE
+#   MESSAGE  = the advice shown to the operator
+# Lines starting with # are comments.
+#
+# Append a new block->fix pattern here as real friction recurs — a deliberate act,
+# not always-on observation (this is a lean-invoke layer; it cannot watch other
+# sessions). Keep patterns specific to avoid false positives. Examples:
+#   rm -rf /($| )|||REFUSE|||recursive delete of filesystem root — refuse
+#   curl .*\| ?(ba)?sh|||FLAG|||piping curl to a shell runs unreviewed remote code
+#
+# (Seeded with no active entries — add yours below.)
