@@ -72,6 +72,34 @@ Companion plugins — read the **Install method** column carefully (different so
 /synthesize-clips --dry-run
 ```
 
+## Vault-first link reading (LUNA-78)
+
+When a link (X post, article, repo URL) is handed to the agent, read it from
+the vault **first** — the harvest/clipper pipeline has usually already captured
+the full clip body — instead of live-fetching. The priority order:
+
+1. **Vault clip, enriched** → read it; stop, no network.
+2. **Vault clip, thin** (skeleton/placeholder body) → enrich it (fxtwitter for X;
+   firecrawl for articles when enabled+gated), then read.
+3. **No clip** → live fetch as a last resort: `fxtwitter-enrich.mjs`
+   (api.fxtwitter.com) for X, WebFetch for articles, `luna-ingest` for repos.
+4. **Never Grok.** `/x-read`'s x.ai path is dead (no credits) and is never called.
+
+`/read-link <url>` is the operator-facing command. `tools/lib/clip-lookup.mjs`
+is the single source of truth for *"is this URL already harvested (and
+enriched)?"* — a filesystem-only canonical-URL/status-id match plus a per-type
+`isThinClipBody` thinness predicate. `telegram-clip.mjs` (`alreadyFiledByUrl`)
+and `dedup-sweep.mjs` (`indexVault`) derive their URL key from it, and
+`harvest-clips` shells out to `is-thin-cli.mjs` so a thin article clip on a
+default machine is marked `harvest_status: partial` + `harvest_flag: thin-body`
+rather than `ok` with an empty body. No vault / no clip degrades silently to
+live fetch (adopter-safe).
+
+`/read-link`'s UX is inspired by
+[eugeniughelbur/obsidian-second-brain](https://github.com/eugeniughelbur/obsidian-second-brain)'s
+`/x-read`; this is a clean-room himmel-native reimplementation that skips Grok —
+not a vendored fork (no `UPSTREAM_PIN`, no `plugin-upstreams.json` entry).
+
 ## Idempotency
 
 `/triage-clips`:
