@@ -155,6 +155,140 @@ out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME=
 if printf '%s' "$out" | grep -q 'OK   C6-mcp'; then pass "C6 -> OK (absolute)"; else fail "C6 -> $(printf '%s' "$out" | grep C6)"; fi
 rm -rf "$t"
 
+# ── C7: merged-PR worktree detective check ───────────────────────────────────
+# Build a real temp git repo with real worktrees; stub the forge via GH_CMD.
+
+# make_wt_repo <dir> — init a minimal git repo + first commit so worktrees work.
+make_wt_repo() {
+    local d="$1"
+    mkdir -p "$d"
+    git -C "$d" init -q
+    git -C "$d" config user.email t@t
+    git -C "$d" config user.name t
+    printf 'init\n' > "$d/README.md"
+    git -C "$d" add README.md
+    git -C "$d" commit -q -m "init"
+}
+
+# make_gh_stub <dir> <merged_branch> — creates a gh stub that echoes 1 merged PR for
+# the given branch and 0 for everything else.  If merged_branch is "FAIL", the stub
+# exits 1 for every call.
+# The real call shape from forge-github.sh gh_forge_pr_has_merged is:
+#   gh pr list --head <branch> --state merged --json number --jq 'length'
+# So args: $1=pr $2=list $3=--head $4=BRANCH $5=--state $6=merged $7=--json $8=number $9=--jq $10=length
+make_gh_stub() {
+    local d="$1" merged_branch="$2"
+    mkdir -p "$d"
+    if [ "$merged_branch" = "FAIL" ]; then
+        printf '#!/bin/sh\nexit 1\n' > "$d/gh"
+    else
+        cat > "$d/gh" <<EOF
+#!/bin/sh
+# Stub for: gh pr list --head BRANCH --state merged --json number --jq length
+if [ "\$4" = "$merged_branch" ]; then echo 1; else echo 0; fi
+EOF
+    fi
+    chmod +x "$d/gh"
+}
+
+echo "== C7: merged-PR worktree -> WARN C7-shipped =="
+t="$(mktemp -d)"
+make_wt_repo "$t/repo"
+# Capture default branch name before creating the feature branch.
+_defbranch="$(git -C "$t/repo" rev-parse --abbrev-ref HEAD)"
+git -C "$t/repo" checkout -q -b feat/shipped
+git -C "$t/repo" checkout -q "$_defbranch"
+git -C "$t/repo" worktree add -q "$t/wt-shipped" "feat/shipped"
+make_gh_stub "$t/stub" "feat/shipped"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    FORGE=github GH_CMD="$t/stub/gh" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN' && printf '%s' "$out" | grep -q 'C7-shipped' && printf '%s' "$out" | grep -q 'feat/shipped'; then
+    pass "C7 -> WARN (merged branch flagged)"
+else
+    fail "C7 -> expected WARN C7-shipped feat/shipped; got: $(printf '%s' "$out" | grep C7)"
+fi
+rm -rf "$t"
+
+echo "== C7: no merged worktrees -> OK C7-shipped =="
+t="$(mktemp -d)"
+make_wt_repo "$t/repo"
+_defbranch2="$(git -C "$t/repo" rev-parse --abbrev-ref HEAD)"
+git -C "$t/repo" checkout -q -b feat/not-merged
+git -C "$t/repo" checkout -q "$_defbranch2"
+git -C "$t/repo" worktree add -q "$t/wt-live" "feat/not-merged"
+make_gh_stub "$t/stub" "__no_match__"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    FORGE=github GH_CMD="$t/stub/gh" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C7-shipped'; then
+    pass "C7 -> OK (no merged worktrees)"
+else
+    fail "C7 -> expected OK C7-shipped; got: $(printf '%s' "$out" | grep C7)"
+fi
+rm -rf "$t"
+
+echo "== C7: forge-error -> INFO C7-shipped skipped =="
+t="$(mktemp -d)"
+make_wt_repo "$t/repo"
+_defbranch3="$(git -C "$t/repo" rev-parse --abbrev-ref HEAD)"
+git -C "$t/repo" checkout -q -b feat/unreachable
+git -C "$t/repo" checkout -q "$_defbranch3"
+git -C "$t/repo" worktree add -q "$t/wt-unreachable" "feat/unreachable"
+make_gh_stub "$t/stub" "FAIL"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    FORGE=github GH_CMD="$t/stub/gh" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'INFO' && printf '%s' "$out" | grep -q 'C7-shipped' && printf '%s' "$out" | grep -q 'skipped'; then
+    pass "C7 -> INFO (forge unreachable)"
+else
+    fail "C7 -> expected INFO C7-shipped skipped; got: $(printf '%s' "$out" | grep C7)"
+fi
+rm -rf "$t"
+
+echo "== C7: locked worktree with merged branch -> NOT flagged =="
+t="$(mktemp -d)"
+make_wt_repo "$t/repo"
+_defbranch4="$(git -C "$t/repo" rev-parse --abbrev-ref HEAD)"
+git -C "$t/repo" checkout -q -b feat/locked-merged
+git -C "$t/repo" checkout -q "$_defbranch4"
+git -C "$t/repo" worktree add -q "$t/wt-locked" "feat/locked-merged"
+git -C "$t/repo" worktree lock "$t/wt-locked" 2>/dev/null || true
+make_gh_stub "$t/stub" "feat/locked-merged"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    FORGE=github GH_CMD="$t/stub/gh" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+# Locked worktree must NOT produce a WARN for feat/locked-merged.
+if printf '%s' "$out" | grep 'WARN' | grep -q 'C7-shipped'; then
+    fail "C7 -> locked worktree must not be flagged; got WARN"
+else
+    pass "C7 -> locked worktree not flagged"
+fi
+rm -rf "$t"
+
+echo "== C7 STATIC: check_c7 body must not contain destructive git verbs =="
+# Extract only the check_c7 function body from himmel-doctor.sh and assert
+# none of the forbidden verbs appear.  Mechanically checkable without shimming git.
+_c7_body="$(awk '/^check_c7\(\)/{found=1} found{print} found && /^\}$/{exit}' "$DOC")"
+_static_fail=0
+for _verb in "worktree remove" "branch -D" " push " " reset " " checkout " "rm " "git clean" "clean -"; do
+    if printf '%s' "$_c7_body" | grep -qF "$_verb"; then
+        fail "C7 STATIC: found forbidden verb '$_verb' in check_c7 body"
+        _static_fail=1
+    fi
+done
+if [ "$_static_fail" -eq 0 ]; then
+    pass "C7 STATIC: no destructive verbs in check_c7 body"
+fi
+
 rm -rf "$FAKEROOT"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

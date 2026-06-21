@@ -108,11 +108,12 @@ the env var.
 
 Six hooks wired in `.claude/settings.json` fire BEFORE Claude executes
 tool calls. Five BLOCK risky operations; one (`auto-approve-safe-bash`)
-GRANTS permission for safe ones so they don't hang. A seventh block hook,
-`block-docker-privesc.sh` (HIMMEL-441), is shipped via the **himmel-ops
-plugin `hooks.json`** rather than `.claude/settings.json` (so it can be
+GRANTS permission for safe ones so they don't hang. A seventh and eighth
+block hook, `block-docker-privesc.sh` (HIMMEL-441) and
+`block-merged-pr-commit.sh` (HIMMEL-512), are shipped via the **himmel-ops
+plugin `hooks.json`** rather than `.claude/settings.json` (so they can be
 agent-installed without a settings self-mod veto — same delivery path as
-`inject-minerva-critic.sh`); it is live only after `/himmel-update`
+`inject-minerva-critic.sh`); both are live only after `/himmel-update`
 (marketplace re-sync) + a fresh session.
 
 **Bypass convention (applies to the four DENY hooks):** session-sticky
@@ -242,6 +243,32 @@ container, `--volumes-from` re-mounts, env-substituted paths it cannot
 resolve, `/proc/self/root`/symlinks, rootless podman (treated the same), and
 a container COMMAND arg that literally equals a privesc flag (rare FP → use
 the bypass). Spec: `scripts/hooks/test-block-docker-privesc.sh`.
+
+### `block-merged-pr-commit.sh` — merged-PR branch commit guard (HIMMEL-512)
+
+Fires on Bash/PowerShell. Blocks a `git commit` whose target branch has an
+already-MERGED pull request on the forge. The signal is
+`forge_pr_has_merged <branch>` from `scripts/lib/branch-shipped.sh` (via
+`forge.sh`), which calls `gh pr list --state merged --head <branch>` and
+returns a merge count.
+
+**Fail-OPEN posture (hygiene guard, not a security boundary):** every
+uncertain path exits 0 and lets the commit proceed — missing `jq`, unreadable
+stdin, non-literal `cd` / `-C` arguments, detached HEAD, forge unreachable,
+timeout (default 10 s), non-numeric payload. Only a positively confirmed
+merged-branch commit triggers a block. The guard warns to stderr on
+forge-unreachable paths so the uncertainty is visible without blocking.
+
+**Bypass:** `MERGED_PR_COMMIT_OK=1` set in the shell that LAUNCHED Claude
+(`MERGED_PR_COMMIT_OK=1 claude`) — follows the same session-sticky convention
+as the other block-* hooks.
+
+**Delivery:** shipped via the **himmel-ops plugin `hooks.json`** (same
+exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as `block-docker-privesc`);
+live only after `/himmel-update` (marketplace re-sync) + a fresh session.
+
+Paired artifacts: `scripts/lib/branch-shipped.sh` (predicate),
+`scripts/hooks/test-block-merged-pr-commit.sh` (smoke suite).
 
 ### `block-backend-tier.sh` — service-agnostic backend-routing guard (HIMMEL-400)
 
