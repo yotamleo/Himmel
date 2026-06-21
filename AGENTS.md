@@ -111,8 +111,10 @@ denial recovery: `himmel-ops:stuck-playbook` skill.
 
 ### Claude invocation billing (HIMMEL-128)
 Headless invocations (`claude -p`/`--print`/`--bg`/Agent SDK; same for
-gemini-cli, HIMMEL-157) bill to a separate bucket from **2026-06-15** —
-scripts here prefer interactive `claude "$prompt"`. The
+gemini-cli, HIMMEL-157) bill to a separate bucket (announced **2026-06-15**;
+**currently PAUSED** by Anthropic as of 2026-06-21 — preference kept because
+the split is volatile and may re-activate). Scripts here prefer interactive
+`claude "$prompt"`. The
 `no-headless-claude`/`no-headless-gemini` pre-commit gates block new
 headless calls unless marked `# headless-claude-ok: <reason>` /
 `# headless-gemini-ok: <reason>` on the call line or the line above.

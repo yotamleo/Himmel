@@ -756,17 +756,27 @@ Tests: `scripts/telegram/{router,auto-action,poller}.test.ts` (bun) +
 
 ## Claude invocation billing (HIMMEL-128)
 
-From **2026-06-15** onward, Anthropic splits headless Claude Code
+From **2026-06-15** onward, Anthropic was to split headless Claude Code
 invocations (`claude -p`, `claude --print`, `claude --bg`, Agent SDK)
 onto a separate monthly Agent SDK credit bucket on Max subscriptions.
 Interactive `claude "$prompt"` calls (no flag) stay on the regular
 Max quota.
 
+> **Status (as of 2026-06-21): the 2026-06-15 split is PAUSED.** Anthropic
+> did not enforce the headless/interactive billing separation at the
+> announced cutover; headless calls currently bill against the regular
+> Max quota like interactive ones. The repo's interactive-first preference
+> and the `no-headless-claude` gate are **kept in place anyway** — the
+> pause is volatile and could re-activate without notice, so the cheapest
+> posture is to stay interactive-by-default rather than churn the gate off
+> and back on. Treat the rule below as "the policy if/when the split
+> returns," not a description of today's billing.
+
 **Rule for scripts in this repo:** prefer interactive invocation —
 arm-resume + similar cron/at/schtasks-spawned shells already use the
-interactive form and are safe under the new billing. New `claude -p`
-calls would silently start eating a separate credit bucket from
-2026-06-15 onward.
+interactive form and would be safe under the split. New `claude -p`
+calls would silently start eating a separate credit bucket if/when the
+split returns.
 
 The `no-headless-claude` pre-commit hook
 (`scripts/hooks/check-no-headless-claude.sh`) enforces this. It
