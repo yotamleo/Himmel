@@ -359,5 +359,25 @@ else
     echo "SKIP T11 acceptance — no real luna vault at $LUNA"
 fi
 
+# ---------------------------------------------------------------------------
+# T26 (HIMMEL-521): the REAL template's two version sources must agree.
+# upgrade.sh reads marketplace.json metadata.version (the authoritative version
+# for the upgrade comparison + the written stamp); setup.sh seeds a freshly
+# scaffolded vault from .vault-template.json. If the two drift, /luna-upgrade
+# reports "already current" for already-stamped vaults even when template
+# content shipped — exactly the HIMMEL-501 regression (it bumped only the seed,
+# stranding the 501+460 template changes). Guard so the anchors can never
+# silently diverge again.
+REALTMPL="$(cd "$HERE/.." && pwd)"
+mkt_ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metadata"]["version"])' "$REALTMPL/marketplace/.claude-plugin/marketplace.json" 2>/dev/null)
+seed_ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$REALTMPL/.vault-template.json" 2>/dev/null)
+# Non-empty guard: a read failure (renamed key/path) would leave both empty and
+# make a naked assert_eq "" "" pass green — defeating the guard. Fail loud instead.
+if [ -z "$mkt_ver" ] || [ -z "$seed_ver" ]; then
+    fail "T26 marketplace.json metadata.version == .vault-template.json version (no drift)" "could not read a version (marketplace='$mkt_ver' seed='$seed_ver')"
+else
+    assert_eq "T26 marketplace.json metadata.version == .vault-template.json version (no drift)" "$mkt_ver" "$seed_ver"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

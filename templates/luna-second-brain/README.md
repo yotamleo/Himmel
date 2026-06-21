@@ -2,8 +2,8 @@
 
 OSS Obsidian vault skeleton for Claude Code workflows. Ships a PARA
 folder layout, daily/weekly templates, pre-commit + branch-hygiene
-guardrails, and a SHA-pinned plugin marketplace so a fresh clone
-becomes a working AI-first second brain in under five minutes.
+guardrails, and pointers to upstream Claude Code plugins so a fresh
+clone becomes a working AI-first second brain in under five minutes.
 
 luna-brain is the **skeleton**: the inert structure that turns into a
 personal vault on first run. Your live vault starts as a copy of this
@@ -11,9 +11,9 @@ template and accumulates content over time. The skeleton does not ship
 content — only the bones, hooks, and plugin pointers.
 
 > **Where this lives:** this template ships inside the public
-> [Himmel](https://github.com/yotamleo/Himmel) repo (the dev engine that
+> [himmel](https://github.com/yotamleo/Himmel) repo (the dev engine that
 > provides the worktree / handover / PR-flow tooling the vault inherits).
-> To create a vault, copy this folder *out* of Himmel into its own git
+> To create a vault, copy this folder *out* of himmel into its own git
 > repo — see Quickstart.
 
 ## Quickstart
@@ -21,15 +21,15 @@ content — only the bones, hooks, and plugin pointers.
 Requires `bash`, `git`, `python3` (verified by `scripts/setup.sh` step
 `[1/6]`). See `docs/setup/new-machine.md` for per-platform install notes.
 
-This template lives inside Himmel, so the install is "copy the folder out,
+This template lives inside himmel, so the install is "copy the folder out,
 make it its own repo, run setup." Your vault **must** be its own git repo:
 `setup.sh` resolves `git rev-parse --show-toplevel`, so running it while the
-folder is still nested inside the Himmel checkout would target Himmel, not
+folder is still nested inside the himmel checkout would target himmel, not
 your vault.
 
 ```bash
 git clone https://github.com/yotamleo/Himmel
-cp -r Himmel/templates/luna-second-brain my-vault
+cp -r Himmel/templates/luna-second-brain my-vault   # name it whatever you like
 cd my-vault
 git init                                            # your vault is its own repo
 
@@ -42,16 +42,18 @@ powershell -File scripts\setup.ps1
 
 Setup is idempotent — re-run safely after pulling.
 
-After setup, install the SHA-pinned vault plugins from inside Claude
+After setup, install the Obsidian markdown skill pack from inside Claude
 Code (setup prints the exact commands):
 
 ```
-claude plugin marketplace add <repo>/marketplace
-claude plugin install obsidian@luna-brain
+claude plugin marketplace add kepano/obsidian-skills
+claude plugin install obsidian@obsidian-skills
 ```
 
-(`claude-obsidian` now ships via the **himmel** marketplace — install himmel to
-get it.)
+(`obsidian` is Steph Ango's skill pack, installed from its own upstream
+marketplace — luna-brain no longer mirrors it, because kepano publishes no
+tags and a bare-SHA pin is not installable. `claude-obsidian` ships via the
+**himmel** marketplace — install himmel to get it.)
 
 Optional: install `obsidian-second-brain` for PARA capture/daily/project
 skills. Operator-driven (3rd-party install.sh):
@@ -61,13 +63,13 @@ Open your vault folder in Obsidian to start using the vault.
 
 To import historical sessions and learn how the capture → triage → synthesize
 pipeline compounds over time, see the
-[compounding loop guide](https://github.com/yotamleo/himmel/blob/main/docs/luna/compounding.md).
+[compounding loop guide](https://github.com/yotamleo/Himmel/blob/main/docs/luna/compounding.md).
 
-> **Keep your vault out of Himmel's history.** If you created the vault
-> *inside* the Himmel checkout (e.g. `Himmel/my-vault`) rather than as a
-> sibling, add its path to Himmel's `.gitignore` so your personal vault
-> content never lands in a Himmel commit. The cleanest layout is to keep
-> the vault as its own repo in a separate directory and delete the Himmel
+> **Keep your vault out of himmel's history.** If you created the vault
+> *inside* the himmel checkout (e.g. `himmel/my-vault`) rather than as a
+> sibling, add its path to himmel's `.gitignore` so your personal vault
+> content never lands in a himmel commit. The cleanest layout is to keep
+> the vault as its own repo in a separate directory and delete the himmel
 > clone you copied it from.
 
 **Plugin credentials:** `obsidian-local-rest-api`'s `data.json` is
@@ -96,7 +98,6 @@ the detail.
 | **Shared git-state predicates**                 | `scripts/guardrails/lib.sh` (`is_on_main`, `is_main_ref`, `is_dirty` + `guard_call`)   |
 | **Handover-path resolver (HIMMEL-118)**         | `scripts/lib/handover-path.sh` (Mode A inline default, Mode B external via HANDOVER_DIR) |
 | **USER_SLUG resolver (HIMMEL-145)**             | `scripts/lib/user-slug.sh` (env var → git config fallback)                             |
-| **SHA-pinned vault plugin marketplace**         | `marketplace/.claude-plugin/marketplace.json` (obsidian-skills)                        |
 | **Setup scripts (sh + ps1)**                    | `scripts/setup.sh`, `scripts/setup.ps1`                                                |
 
 ## Vault layout
@@ -146,13 +147,14 @@ See `docs/contributing.md` for the full contribution workflow.
 
 ## Relationship to other repos
 
-- **Himmel** — dev engine and **host repo**: this template ships under
-  `templates/luna-second-brain/` and inherits Himmel's pre-commit +
+- **himmel** — dev engine and **host repo**: this template ships under
+  `templates/luna-second-brain/` and inherits himmel's pre-commit +
   guardrails patterns.
 - **luna** — personal vault. A copy of this template that has accumulated
   content. Stays private.
 - **obsidian-skills** (upstream, Steph Ango) — Obsidian Flavored
-  Markdown skill pack pinned in `marketplace/`.
+  Markdown skill pack; installed from its own upstream marketplace
+  (`obsidian@obsidian-skills`).
 - **obsidian-second-brain** (upstream, eugeniughelbur) — optional
   PARA capture plugin. Operator-installed via its native install.sh.
 

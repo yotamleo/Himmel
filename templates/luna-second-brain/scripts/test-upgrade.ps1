@@ -46,6 +46,16 @@ finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
 
+# T26 (HIMMEL-521): the REAL template's two version sources must agree.
+# upgrade.sh/.ps1 read marketplace.json metadata.version (authoritative);
+# setup.ps1 seeds a new vault from .vault-template.json. If they drift,
+# /luna-upgrade reports "already current" even when template content shipped
+# (the HIMMEL-501 regression). Guard so the anchors can never diverge again.
+$realTmpl = Split-Path -Parent $here
+$mktVer  = (Get-Content -Raw (Join-Path $realTmpl 'marketplace\.claude-plugin\marketplace.json') | ConvertFrom-Json).metadata.version
+$seedVer = (Get-Content -Raw (Join-Path $realTmpl '.vault-template.json') | ConvertFrom-Json).version
+Assert 'T26 marketplace.json metadata.version == .vault-template.json version (no drift)' ($mktVer -eq $seedVer) "marketplace=$mktVer seed=$seedVer"
+
 Write-Host ''
 if ($failed -eq 0) { Write-Host 'All upgrade.ps1 smoke tests passed.' }
 else { Write-Host "$failed test(s) failed."; exit 1 }

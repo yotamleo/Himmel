@@ -58,14 +58,15 @@ Setup complete.
 From inside Claude Code, after `setup.sh` completes:
 
 ```
-claude plugin marketplace add <repo>/marketplace
-claude plugin install obsidian@luna-brain
+claude plugin marketplace add kepano/obsidian-skills
+claude plugin install obsidian@obsidian-skills
 ```
 
-(`claude-obsidian` now ships via the himmel marketplace, not luna-brain.)
+(`obsidian` is Steph Ango's skill pack, installed from its own upstream
+marketplace; `claude-obsidian` ships via the himmel marketplace.)
 
-Verify `claude plugin list` shows it installed. Run any plugin
-command (e.g. `/wiki-query`, `/save`) to confirm one demo skill
+Verify `claude plugin list` shows it installed. Run an obsidian skill
+(e.g. the `obsidian-markdown` skill) to confirm one demo skill
 operates end-to-end.
 
 ## Worktree isolation smoke
