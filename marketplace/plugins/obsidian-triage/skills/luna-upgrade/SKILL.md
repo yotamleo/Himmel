@@ -142,6 +142,30 @@ Report the engine's outcome, preserving its loud signals:
 Do NOT attempt to resolve a conflict or re-run automatically — the
 content-preserving contract is the engine's; your job is to surface its result.
 
+## Step 7 — Offer to commit (single-writer vaults only)
+
+`upgrade.sh` writes template files but never commits — and the vault's
+`vault-autosync.sh` is opt-in (default OFF) and wired to no trigger, so a fresh
+upgrade leaves a dirty working tree that silently never lands (the "N uncommitted
+changes after /luna-upgrade" surprise). On a **successful apply (exit 0)**, close
+that gap:
+
+```bash
+# only if the vault commits straight to main by design AND has pending changes
+[ -f "$VAULT/.single-writer" ] && [ -n "$(git -C "$VAULT" status --porcelain)" ] && echo offer
+```
+
+If both hold, OFFER to commit (operator confirms — do not auto-commit):
+
+```bash
+git -C "$VAULT" add -A && git -C "$VAULT" commit -m "chore: luna vault upgrade → template vX.Y.Z"
+```
+
+If the vault is not single-writer (no `.single-writer`), do NOT offer — those
+vaults gate vault writes through a PR lane; just tell the operator the upgrade
+left uncommitted changes to review. (`/himmel-doctor` C3 is the standing backstop
+that flags a dirty single-writer vault later.)
+
 ## Exit codes (from the engine)
 
 - `0` — applied (or dry-run completed, or already current).
