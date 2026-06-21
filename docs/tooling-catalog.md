@@ -407,6 +407,21 @@ Operator-invoked on demand via `/luna-upgrade-all` or directly.
 
 ---
 
+## CI Workflow + Runner (`scripts/ci/`)
+
+GitHub Actions workflow (`.github/workflows/ci.yml`, HIMMEL-494) and the
+helper scripts it calls. Triggered manually (`workflow_dispatch`-only); runs
+on a dedicated public fork using free public runners.
+
+- `scripts/ci/check-no-secrets.sh` — asserts no `${{ secrets.* }}` interpolation in `.github/workflows/`. Enforces the secret-free rail: all CI jobs run with zero credentials.
+- `scripts/ci/run-shell-tests.sh` — discovers and runs all hermetic `test-*.sh` suites under a scan-root. Maintains a `SKIP_LIST` ledger of suites that need a live VM, hermes runtime, or network — none of which exist on a bare runner. Flags: `--list` (plan without running), `--skip-extra <relpath>` (ad-hoc skip). Exit 1 on any failure.
+
+**Five jobs:** `secret-scan` (check-no-secrets), `lint` (shellcheck --severity=warning over `scripts/**/*.sh`), `node-suites` (npm matrix: jira/bitbucket/himmel-run), `bun-suites` (luna-vitals bun test), `shell-unit` (run-shell-tests.sh).
+
+Full reference: [`scripts/ci/README.md`](../scripts/ci/README.md).
+
+---
+
 ## CR Scripts (`scripts/cr/`)
 
 Shell scripts that implement `/pr-check` sub-steps. Called by the `/pr-check` command; not invoked standalone in normal workflows.

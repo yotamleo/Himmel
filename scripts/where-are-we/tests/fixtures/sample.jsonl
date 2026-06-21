@@ -1,0 +1,3 @@
+{"ts":"1","source":"jira","key":"HIMMEL-9","kind":"ticket","status":"in-progress"}
+{"ts":"1","source":"handover","key":"HIMMEL-9","kind":"ticket","next_action":"finish fold"}
+{"ts":"1","source":"git","key":"HIMMEL-2","kind":"ticket","awaiting_operator":["merge"]}

@@ -4,8 +4,10 @@
 
 .DESCRIPTION
   Windows entry point for the vault upgrade. The upgrade engine is upgrade.sh
-  (bash): it needs git merge-file (3-way _CLAUDE.md merge), sha256sum, and
-  python3 — the same toolchain every other himmel hook already requires. Rather
+  (bash): it needs git merge-file (3-way _CLAUDE.md merge), sha256sum, and a
+  working python (upgrade.sh resolves python3 -> python -> py; on Windows
+  `python3` is the non-functional Microsoft Store stub, so `python`/`py` are
+  used) — the same toolchain every other himmel hook already requires. Rather
   than maintain a second, drifting implementation of the merge/classification
   logic, this twin locates Git Bash and runs upgrade.sh with the same arguments.
 

@@ -160,20 +160,37 @@ if [ ! -f "$MARKETPLACE_JSON" ]; then
     exit 2
 fi
 
-for _t in python3 git sha256sum; do
+# Resolve a WORKING python. On Windows `python3` is often the Microsoft Store
+# stub: it is on PATH (so `command -v python3` succeeds) but non-functional —
+# it prints "Python was not found", exits nonzero, and emits NO stdout. So probe
+# actual stdout (`print(1)` -> `1`), not exit status, and pick the first that
+# really runs. Order keeps python3 canonical on Linux/macOS.
+_resolve_python() {
+    for c in python3 python py; do
+        if command -v "$c" >/dev/null 2>&1 \
+           && [ "$("$c" -c 'print(1)' 2>/dev/null)" = "1" ]; then
+            printf '%s\n' "$c"; return 0
+        fi
+    done
+    return 1
+}
+PYTHON="$(_resolve_python || true)"
+[ -n "$PYTHON" ] || { echo "upgrade: required tool not on PATH: a working python (tried python3/python/py)" >&2; exit 2; }
+
+for _t in git sha256sum; do
     command -v "$_t" >/dev/null 2>&1 || { echo "upgrade: required tool not on PATH: $_t" >&2; exit 2; }
 done
 
 # ---------------------------------------------------------------------------
 # Versions
-TEMPLATE_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metadata"]["version"])' "$MARKETPLACE_JSON" 2>/dev/null)"
+TEMPLATE_VERSION="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["metadata"]["version"])' "$MARKETPLACE_JSON" 2>/dev/null)"
 if [ -z "$TEMPLATE_VERSION" ]; then echo "upgrade: could not read metadata.version from $MARKETPLACE_JSON" >&2; exit 2; fi
 
 STAMP="$VAULT_DIR/.vault-template.json"
 if [ -f "$STAMP" ]; then
     # A present-but-unreadable stamp is distinct from no stamp: warn (so a
     # corrupt stamp doesn't silently escalate to a from-scratch full pass).
-    if ! VAULT_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$STAMP" 2>/dev/null)" || [ -z "$VAULT_VERSION" ]; then
+    if ! VAULT_VERSION="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$STAMP" 2>/dev/null)" || [ -z "$VAULT_VERSION" ]; then
         echo "upgrade: WARNING — $STAMP is unreadable or has no version; treating vault as un-stamped (full pass)." >&2
         VAULT_VERSION="0.0.0"
     fi
@@ -268,7 +285,7 @@ CLAUDE_MERGE_RESULT=""   # set to clean|copied|conflict|error during execute
 # (one per line) to stdout; with EXECUTE=1 also writes the merged file.
 plugins_merge() {
     local vault_f="$1" tmpl_f="$2" execute="$3"
-    EXECUTE="$execute" python3 - "$vault_f" "$tmpl_f" <<'PY'
+    EXECUTE="$execute" "$PYTHON" - "$vault_f" "$tmpl_f" <<'PY'
 import json, os, sys
 vault_p, tmpl_p = sys.argv[1], sys.argv[2]
 execute = os.environ.get("EXECUTE") == "1"
@@ -470,7 +487,7 @@ if [ "$WRITE_FAILURES" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "
     exit 1
 fi
 
-if ! python3 - "$STAMP" "$TEMPLATE_VERSION" <<'PY'
+if ! "$PYTHON" - "$STAMP" "$TEMPLATE_VERSION" <<'PY'
 import json, sys, datetime
 stamp_p, ver = sys.argv[1], sys.argv[2]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -11,6 +11,7 @@ Usage:
   python scripts/machine-setup/ubuntu-vm-setup.py [--vm-name ubuntu_new]
 """
 
+import base64
 import os
 import subprocess
 import sys
@@ -67,6 +68,50 @@ def vboxmanage(*args):
     return result.returncode, result.stdout + result.stderr
 
 
+# Command-scoped NOPASSWD set (HIMMEL-492). These are the only programs
+# test-bootstrap.sh + setup.sh's R6 ensure-tools invoke under sudo, and they run
+# over a non-TTY ssh where a password-prompted sudo fails with "a terminal is
+# required to authenticate". Scoped deliberately — NEVER a blanket NOPASSWD:ALL.
+NOPASSWD_CMDS = "/usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg, /usr/bin/systemctl, /usr/bin/tee"
+
+
+def nopasswd_dropin(user):
+    """Build the scoped sudoers drop-in line for `user`.
+
+    Fail-safe: refuse to emit a blanket NOPASSWD:ALL — that is exactly the
+    over-broad grant this drop-in exists to avoid.
+    """
+    line = f"{user} ALL=(ALL) NOPASSWD: {NOPASSWD_CMDS}\n"
+    if "NOPASSWD: ALL" in line or "NOPASSWD:ALL" in line:
+        raise ValueError("refusing to build a blanket NOPASSWD:ALL drop-in")
+    return line
+
+
+def install_nopasswd_sudoers(client, user):
+    """Install /etc/sudoers.d/90-<user>-nopasswd (scoped NOPASSWD, HIMMEL-492).
+
+    Validates with `visudo -cf` on a staged temp file BEFORE installing, so a
+    malformed drop-in can never land in /etc/sudoers.d and lock out sudo.
+    Installed 0440 root:root — the canonical sudoers.d mode.
+    """
+    tmp = f"/tmp/90-{user}-nopasswd"
+    dest = f"/etc/sudoers.d/90-{user}-nopasswd"
+    # Transfer the sudoers *content* via base64 so it can never break out of the
+    # shell quoting / inject — the encoded blob is [A-Za-z0-9+/=] only. (`user`
+    # in the paths below is operator-controlled .env config, same trust as the
+    # ssh username, not attacker input.)
+    blob = base64.b64encode(nopasswd_dropin(user).encode()).decode()
+    run(client, f"printf '%s' '{blob}' | base64 -d > {tmp}")
+    rc, _ = run(client, f"visudo -cf {tmp}")
+    if rc != 0:
+        raise RuntimeError(f"visudo rejected {tmp}; refusing to install {dest}")
+    # tmp is user-owned, so its rm needs no sudo; only the install lands as root.
+    rc, _ = run(client, f"install -o root -g root -m 0440 {tmp} {dest}", sudo=True)
+    if rc != 0:
+        raise RuntimeError(f"failed to install {dest} (install rc={rc})")
+    run(client, f"rm -f {tmp}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--vm-name", default="ubuntu_new", help="VirtualBox VM name")
@@ -107,6 +152,9 @@ def main():
     else:
         print("  WARNING: no SSH key found at", PUBKEY_PATH)
         print("  Run: ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ''")
+
+    print("[7c] Installing scoped NOPASSWD sudoers drop-in (HIMMEL-492)...")
+    install_nopasswd_sudoers(client, USER)
 
     print("  Rebooting guest...")
     run(client, "reboot", sudo=True)
