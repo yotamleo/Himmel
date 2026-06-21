@@ -191,7 +191,9 @@ session), **1 PostToolUse hook**
 `.pre-commit-config.yaml`; pre-push incl. `check-platforms-tested`;
 pre-commit+pre-push `doc-guard` — himmel-dev-only, blocks ADDING a
 command/skill without updating `docs/commands-catalog.md`, gated by
-`.himmel-dev` marker), a
+`.himmel-dev` marker; pre-commit `agents-md-fresh` — himmel-dev-only, blocks a
+stale `AGENTS.md` (regenerate from this file via
+`scripts/agents-md/generate.mjs`, HIMMEL-471)), a
 `UserPromptSubmit` hook (`improve-on-submit.sh`,
 default OFF), a `SessionStart` hook (`inject-initiative.sh` — opt-in
 `HIMMEL_INITIATIVE` drive-to-ship directive over the shared leg grammar

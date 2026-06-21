@@ -47,7 +47,8 @@ fi
 # so an attacker can't drop an evil file at any path with an exempt
 # basename. Exemptions cover:
 #   - this hook + its smoke test (talk about the pattern)
-#   - docs/ + handovers/ + CLAUDE.md (documentation/anti-recommendations)
+#   - docs/ + handovers/ + CLAUDE.md + AGENTS.md (documentation/anti-recommendations;
+#     AGENTS.md is generated from CLAUDE.md, HIMMEL-471)
 #   - .agents/ (vendored caveman skills — upstream code, can't modify)
 #   - .claude/commands/*.md (slash-command docs, often anti-recommend)
 is_exempt() {
@@ -55,6 +56,7 @@ is_exempt() {
         scripts/hooks/check-no-headless-claude.sh) return 0 ;;
         scripts/hooks/test-check-no-headless-claude.sh) return 0 ;;
         CLAUDE.md) return 0 ;;
+        AGENTS.md) return 0 ;;
         docs/*) return 0 ;;
         handovers/*) return 0 ;;
         .agents/*) return 0 ;;

@@ -1,0 +1,17 @@
+[
+  {
+    "from": "the Skill tool",
+    "to": "your skill-invocation mechanism",
+    "note": "Claude-Code tool name -> behavioral. Full-phrase ('the X tool') so it only matches unambiguous tool references, never factual prose."
+  },
+  {
+    "from": "the Agent tool",
+    "to": "your subagent-dispatch mechanism",
+    "note": "Full-phrase only; deliberately does NOT match bare 'Agent tool' which appears inside a factual hook description in CLAUDE.md."
+  },
+  {
+    "from": "the Bash tool",
+    "to": "your shell-execution mechanism",
+    "note": "Full-phrase tool reference -> behavioral text."
+  }
+]

@@ -55,6 +55,13 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: agents-md-fresh
+        name: AGENTS.md must be regenerated from CLAUDE.md (himmel-dev only)
+        entry: bash scripts/hooks/check-agents-md-fresh.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: merged-branch-check
         name: Merged branch check
         language: system
