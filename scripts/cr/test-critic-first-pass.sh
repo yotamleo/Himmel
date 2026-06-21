@@ -128,4 +128,29 @@ rc5=$?
 check "exhausted retries fail-open rc1" "$rc5" "1"
 check "exhausted retries tried 3 times" "$(cat "$counter_file2")" "3"
 
+# --- HIMMEL-473: per-family prompt adaptation -----------------------------
+# Family classification is verified through the prompt the model receives
+# (--print-prompt builds the family-adapted prompt without invoking hermes).
+PP(){ printf '%s' "$DIFF" | bash "$CFP" --model "$1" --print-prompt 2>/dev/null; }
+
+# gpt/codex family → spec tags + explicit non-contradiction.
+check "codex (gpt-5.5) → gpt: has <task> tag"        "$(PP gpt-5.5 | grep -c '<task>')"                "1"
+check "codex (gpt-5.5) → gpt: non-contradiction"     "$(PP gpt-5.5 | grep -c 'internally consistent')" "1"
+check "codex (gpt-5.5) → gpt: no-preamble clause"    "$(PP gpt-5.5 | grep -c 'no preamble, no commentary, no code fences')" "1"
+# gpt-oss is OPEN-weights — must get the rigid open framing, NOT the gpt tags.
+check "gpt-oss → open framing (reproduce precisely)" "$(PP openai/gpt-oss-120b | grep -c 'reproduce precisely')" "1"
+check "gpt-oss → NOT gpt (<task> absent)"            "$(PP openai/gpt-oss-120b | grep -c '<task>')"     "0"
+check "kimi → open framing"                          "$(PP moonshotai/kimi-k2.6 | grep -c 'reproduce precisely')" "1"
+check "qwen → open framing"                          "$(PP qwen/qwen3-coder-480b | grep -c 'reproduce precisely')" "1"
+check "unknown → open framing (rigid default)"       "$(PP some/unknown-model | grep -c 'reproduce precisely')" "1"
+# claude family → XML + IMPORTANT.
+check "claude → IMPORTANT line"                      "$(PP claude-opus-4-8 | grep -c 'IMPORTANT:')"    "1"
+check "claude → NOT open (no rigid FORMAT framing)"  "$(PP claude-opus-4-8 | grep -c 'reproduce precisely')" "0"
+
+# The parseable contract is family-INVARIANT (downstream awk depends on it).
+check "gpt keeps Critical heading"     "$(PP gpt-5.5 | grep -c '## Critical Issues (N found)')"            "1"
+check "open keeps Critical heading"    "$(PP openai/gpt-oss-120b | grep -c '## Critical Issues (N found)')" "1"
+check "claude keeps Critical heading"  "$(PP claude-opus-4-8 | grep -c '## Critical Issues (N found)')"     "1"
+check "all families keep citation rule" "$(PP gpt-5.5 | grep -c '\[<file>:<line>\] citation')"             "1"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

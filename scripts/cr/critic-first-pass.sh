@@ -25,19 +25,23 @@ esac
 
 usage() {
     cat >&2 <<'EOF'
-Usage: git diff origin/HEAD...HEAD | critic-first-pass.sh --model <name> [--slug <s>]
+Usage: git diff origin/HEAD...HEAD | critic-first-pass.sh --model <name> [--slug <s>] [--print-prompt]
        (origin/HEAD resolves to the default branch — main OR master)
 
 Reads a unified diff on stdin, runs the first-pass review via hermes, prints
-findings in the /pr-check heading contract (stable [<slug>-N] IDs).
-Exit: 0 = findings emitted; 1 = invoke failed/malformed (fail-open);
-2 = usage error. Never call on an empty diff — guard at the call site.
+findings in the /pr-check heading contract (stable [<slug>-N] IDs). The review
+prompt is adapted to the model FAMILY (HIMMEL-473): gpt/codex, open, claude.
+--print-prompt builds + prints the family-adapted prompt and exits WITHOUT
+invoking hermes (tests/debug).
+Exit: 0 = findings emitted (or prompt printed); 1 = invoke failed/malformed
+(fail-open); 2 = usage error. Never call on an empty diff — guard at call site.
 EOF
 }
 
 model=""
 slug=""
 pf=""
+print_prompt=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --model)
@@ -46,12 +50,37 @@ while [ $# -gt 0 ]; do
         --slug)
             [ $# -ge 2 ] || { echo "critic-first-pass.sh: --slug requires a value" >&2; exit 2; }
             slug="$2"; shift 2 ;;
+        --print-prompt)
+            # Build the family-adapted prompt, print it, and exit 0 WITHOUT
+            # invoking hermes. For tests + debugging the per-family scaffolding.
+            print_prompt=1; shift ;;
         -h|--help)
             usage; exit 0 ;;
         *)
             echo "critic-first-pass.sh: unknown arg: $1" >&2; usage; exit 2 ;;
     esac
 done
+
+# family_for_model NAME -> gpt | open | claude (HIMMEL-473). Each model FAMILY
+# gets prompt scaffolding tuned to its anatomy (HIMMEL-427 prompt-anatomy):
+# GPT/codex = explicit non-contradiction + spec tags; open models = rigid
+# format-obedience (they drift from the contract + over-report); Claude =
+# XML + IMPORTANT. The shared [<slug>-N] + heading contract is identical across
+# families so the downstream awk validator + pr-check.md parse unchanged.
+family_for_model() {
+    # Lowercase once; classify by pattern. ORDER MATTERS: gpt-oss / gptoss are
+    # OPEN-weights models whose name contains "gpt" — they must match BEFORE the
+    # real-GPT (codex) branch, or they'd be misfiled as gpt.
+    local lc
+    lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$lc" in
+        *gpt-oss*|*gptoss*)                                  echo open ;;
+        *claude*|*anthropic*)                                echo claude ;;
+        *gpt-5*|*gpt5*|*gpt-4*|*gpt4*|*o1*|*o3*|*codex*)     echo gpt ;;
+        *qwen*|*kimi*|*moonshot*|*glm*|*deepseek*|*mistral*|*llama*) echo open ;;
+        *)                                                   echo open ;;  # unknown → open family (rigid scaffolding) = safest default
+    esac
+}
 
 [ -n "$model" ] || { echo "critic-first-pass.sh: --model is required" >&2; usage; exit 2; }
 if [ -z "${slug:-}" ]; then
@@ -139,31 +168,80 @@ if [ "$truncated" -eq 1 ]; then
     trunc_note="NOTE: the diff below was TRUNCATED to fit size limits; review only what is present."
 fi
 
-role_prompt="You are the first-pass code reviewer in an automated review pipeline.
-Review ONLY the unified diff below. Output EXACTLY this markdown structure
-and nothing else (no preamble, no fences):
-
-## Critical Issues (N found)
+# --- Shared, family-INVARIANT output contract -----------------------------
+# These two blocks are byte-identical across every family so the downstream
+# awk validator + pr-check.md parse the same output regardless of model.
+structure="## Critical Issues (N found)
 - [CRITIC-1]: <one-line issue> [<file>:<line>]
 
 ## Important Issues (N found)
 - [CRITIC-2]: <one-line issue> [<file>:<line>]
 
 ## Suggestions (N found)
-- [CRITIC-3]: <one-line suggestion> [<file>:<line>]
+- [CRITIC-3]: <one-line suggestion> [<file>:<line>]"
 
-Rules: replace N with the exact bullet count under that heading (0 is
-allowed, then put no bullets under it). Every bullet MUST end with a
-[<file>:<line>] citation pointing into the diff (new-file line numbers).
-Number IDs sequentially across all sections. Critical = certain
-bug/security/data-loss. Important = likely bug or risky pattern.
-Suggestion = style/cleanup. Do not invent findings; an empty review is
-acceptable and better than a fabricated one.
-Do NOT call any tools. Respond ONLY with the review in the structure above.
+# Precision-first rules (shared). The ledger shows open critics over-report
+# (low cross-model agreement) → the rules push hard on confidence + omission.
+rules="Rules:
+- Replace N with the exact bullet count under that heading (0 is allowed; then put no bullets under it).
+- Every bullet MUST end with a [<file>:<line>] citation pointing into the diff (new-file line numbers).
+- Number IDs sequentially across all sections.
+- Critical = certain bug / security / data-loss. Important = likely bug or risky pattern. Suggestion = style / cleanup.
+- PRECISION OVER RECALL: do not invent findings. If you are not confident, OMIT it. When uncertain between two severities, pick the LOWER. An empty review is acceptable and BETTER than a fabricated one.
+- Do NOT call any tools."
+
+family="$(family_for_model "$model")"
+
+# --- Family-ADAPTED framing (HIMMEL-473) ----------------------------------
+case "$family" in
+    gpt)
+        # GPT/codex: spec-style tags + an explicit non-contradiction guarantee
+        # (GPT-5 burns reasoning reconciling apparent conflicts — tell it there
+        # are none and to follow literally).
+        role_prompt="You are the first-pass code reviewer in an automated review pipeline.
+<task>Review ONLY the unified diff in <diff></diff> and report findings.</task>
+The instructions below are exhaustive and internally consistent; follow them literally without re-deriving intent.
+<output_format>
+$structure
+</output_format>
+$rules
+Respond with only the <output_format> content — no preamble, no commentary, no code fences.
+$trunc_note
+<diff>
+$diff_in
+</diff>" ;;
+    claude)
+        # Claude: XML structure + an IMPORTANT emphasis line.
+        role_prompt="You are the first-pass code reviewer in an automated review pipeline.
+Review ONLY the unified diff in <diff></diff>.
+<output_format>
+$structure
+</output_format>
+$rules
+IMPORTANT: Output EXACTLY the structure in <output_format> and nothing else — no preamble, no explanation, no code fences.
+$trunc_note
+<diff>
+$diff_in
+</diff>" ;;
+    *)
+        # open models: rigid format-obedience scaffolding (they drift from the
+        # contract). Repeat the EXACT shape + a no-extra-text demand.
+        role_prompt="You are the first-pass code reviewer in an automated review pipeline.
+Review ONLY the unified diff below. You MUST output EXACTLY the structure shown and NOTHING ELSE — no preamble, no prose, no code fences.
+FORMAT (reproduce precisely, including the '(N found)' counts):
+$structure
+$rules
+Reproduce the three headings EXACTLY as written. Each bullet MUST match: - [CRITIC-N]: <text> [<file>:<line>]. Output ONLY the three headings and their bullets.
 $trunc_note
 
 DIFF:
-$diff_in"
+$diff_in" ;;
+esac
+
+if [ "$print_prompt" -eq 1 ]; then
+    printf '%s\n' "$role_prompt"
+    exit 0
+fi
 
 pf="$(mktemp "${TMPDIR:-/tmp}/cfp-prompt.XXXXXX")"
 printf '%s' "$role_prompt" > "$pf"
