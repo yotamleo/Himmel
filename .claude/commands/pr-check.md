@@ -42,7 +42,8 @@ Steps:
    - `CR_PROFILE` unset/empty → **DEFAULT**: run panel with `CRITIC_PANEL_TIERS=free` (fast gptoss+kimi). Print note: "Default free cross-model CR (~3min; set CR_PROFILE=none for instant claude-only, CR_PROFILE=thorough to add qwen-480B)."
    - `CR_PROFILE=none` → **claude-only** (skip panel entirely); print a one-line note and skip.
    - `CR_PROFILE=thorough` → run panel with `CRITIC_PANEL_TIERS="free,thorough"` (all 3 critics, ~5min+).
-   - any other value → pass through as `CRITIC_PANEL_TIERS` (advanced/custom tier filter).
+   - `CR_PROFILE=paid` → run the **paid escalation** critic (codex / `gpt-5.5` via hermes `openai-codex` OAuth, HIMMEL-417) — for high-stakes PRs or when the free panel disagrees. Consumes your OpenAI usage bank. Combine with the free panel via `CR_PROFILE=free,paid`.
+   - any other value → pass through as `CRITIC_PANEL_TIERS` (advanced/custom tier filter, e.g. `free,paid`).
 
    Per-member hang protection: `CRITIC_TIMEOUT_SECS` (default 150 s). `CR_PROFILE=none` skips the panel entirely.
 
