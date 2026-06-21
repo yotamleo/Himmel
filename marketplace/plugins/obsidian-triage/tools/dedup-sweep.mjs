@@ -349,7 +349,9 @@ async function writeClipFrontmatterAsync(clipPath, mutator, dryRun) {
   }
   try {
     const yaml = await import("js-yaml");
-    yaml.default.load(disk.fmRaw);
+    // namespace `.load`, not `.default.load`: js-yaml 5 is ESM-only and dropped
+    // the default export (`.load` works under both v4 and v5).
+    yaml.load(disk.fmRaw);
   } catch (e) {
     writeFileSync(clipPath, text, { encoding: "utf-8" });
     return { ok: false, message: `frontmatter-yaml-write: ${e.message}; reverted` };

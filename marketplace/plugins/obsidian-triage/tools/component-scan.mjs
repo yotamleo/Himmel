@@ -275,7 +275,10 @@ function renderNote(record) {
  */
 async function loadYaml(opts) {
   if (opts && opts._yaml) return opts._yaml;
-  const mod = (await import("js-yaml")).default;
+  // Use the module namespace (named `load` export), not `.default`: js-yaml 5
+  // is ESM-only and dropped the default export. The namespace's `.load` works
+  // under both v4 and v5, matching every other caller in this dir.
+  const mod = await import("js-yaml");
   if (opts) opts._yaml = mod;
   return mod;
 }
