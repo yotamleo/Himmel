@@ -23,7 +23,7 @@ to **other coding harnesses** — Codex first — so an operator can decide what
 
 | Surface | Claude Code | Codex | Cursor | Copilot CLI | Gemini CLI |
 |---|---|---|---|---|---|
-| **PreToolUse guardrail hooks** | native | ✅ Claude-compatible engine (`ClaudeHooksEngine`); same stdin/decision contract | ✅ `.cursor/hooks.json`; events **camelCase** (`preToolUse`, `beforeShellExecution`); **fails OPEN** unless `failClosed:true` | ✅ `.github/hooks/*.json`; camel/Pascal; **fails CLOSED**; ⚠️ headless `-p` disables repo hooks unless `GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=true` | ✅ `.gemini/settings.json` `hooks`; events **PascalCase** (`BeforeTool`); stdin JSON |
+| **PreToolUse guardrail hooks** | native | ✅ Claude-compatible engine (`ClaudeHooksEngine`); same stdin schema, but blocks via JSON `permissionDecision:"deny"` **not exit 2** — himmel bridges via `.codex/run-hook.cmd`→`codex-hook-adapter.sh` (HIMMEL-427, live-verified) | ✅ `.cursor/hooks.json`; events **camelCase** (`preToolUse`, `beforeShellExecution`); **fails OPEN** unless `failClosed:true` | ✅ `.github/hooks/*.json`; camel/Pascal; **fails CLOSED**; ⚠️ headless `-p` disables repo hooks unless `GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=true` | ✅ `.gemini/settings.json` `hooks`; events **PascalCase** (`BeforeTool`); stdin JSON |
 | **pre-commit / pre-push git gates** | ✅ | ✅ harness-independent (git runs them) | ✅ | ✅ | ✅ |
 | **Plugins / marketplace** | native | ✅ marketplaces + `@himmel` plugins load (`config.toml`) | ✅ marketplace exists (`.cursor-plugin/plugin.json`) — *corrects "no marketplace"* | ✅ `marketplace.json` registries (`copilot plugin marketplace add`) | ✅ "extensions" gallery (`gemini-extension.json`) |
 | **Skills** | native | ✅ native skill loading | ✅ `SKILL.md`; reads `.cursor/skills` **+ `.claude/skills` + `.codex/skills`** | ✅ `SKILL.md`; reads `.github/skills` **+ `.claude/skills`** | ✅ `SKILL.md` (gemini-native); `.gemini/skills/` |
@@ -61,7 +61,7 @@ leave them low-priority until there's demand.
 
 ## Codex deep-dive
 
-### 1. Hooks — Claude-compatible, with a Windows wiring bug
+### 1. Hooks — Claude-compatible; Windows wiring + block-decision fixed (HIMMEL-427)
 
 Codex implements a hook engine literally named `ClaudeHooksEngine`. The
 PreToolUse contract mirrors Claude Code's:
@@ -83,26 +83,50 @@ PreToolUse contract mirrors Claude Code's:
   inject a project-dir var for project hooks — `cwd` arrives via stdin JSON.
 - **execution:** commands run via `cmd.exe` (Windows) / `/bin/sh` (Unix).
 
-**The bug.** himmel's (untracked) repo `.codex/hooks.json` was hand-ported from
-`.claude/settings.json` and uses `bash $CLAUDE_PROJECT_DIR/scripts/hooks/…`. Two
-failure modes on Windows under Codex:
-1. `$CLAUDE_PROJECT_DIR` is **unset** for project hooks → the path resolves to
-   `/scripts/hooks/…` (broken).
-2. Bare `bash` via `cmd.exe` hits the **WSL `System32\bash.exe` stub trap** →
-   can't read `C:/`, exit 127.
+**The bugs (3 — the third found only by live verification).** himmel's original
+hand-ported `.codex/hooks.json` used `bash $CLAUDE_PROJECT_DIR/scripts/hooks/…`,
+which fails on Windows under Codex because (1) `$CLAUDE_PROJECT_DIR` is **unset**
+for project hooks → path resolves to `/scripts/hooks/…`; and (2) bare `bash` via
+`cmd.exe` hits the **WSL `System32\bash.exe` stub trap** (can't read `C:/`, exit
+127). A live `codex exec` run (codex-cli **0.141.0**, 2026-06-21) surfaced a
+third, deeper one: (3) himmel guardrails signal a block by **exiting 2** (Claude
+convention), but **Codex does not act on exit 2** — it blocks a tool call ONLY
+on a JSON `{"hookSpecificOutput":{"permissionDecision":"deny",…}}` on stdout. A
+guardrail that merely exits 2 is reported as a *failed (non-blocking)* hook and
+**the tool call proceeds**. So even with the path bugs fixed, the guardrails
+would *fire but never block*.
 
-So himmel's PreToolUse guardrails almost certainly **do not fire** under Codex
-today, despite being registered.
+**The fix (HIMMEL-427, shipped + live-verified).** Tracked `.codex/hooks.json`
+routes every hook through a polyglot wrapper `.codex/run-hook.cmd` (cmd.exe on
+Windows / bash on Unix) that derives + exports `CLAUDE_PROJECT_DIR` from its own
+location and finds Git Bash explicitly (skipping the System32 stub). The wrapper
+delegates to `.codex/codex-hook-adapter.sh`, which runs the guardrail and, on
+exit 2, re-emits the block as Codex's JSON `permissionDecision:"deny"` (the
+guardrail's stderr → reason) and exits 0; all other outcomes pass through. The
+guardrails stay single-sourced — they keep working verbatim under Claude Code,
+which never invokes the adapter (only `.codex/hooks.json` does). Verified live
+against codex-cli 0.141.0: a secret read (`block-read-secrets`) is **Blocked**;
+a benign command is allowed. Unit-tested both polyglot branches +
+exit-2→deny translation (`scripts/hooks/test-codex-run-hook.{sh,ps1}`).
 
-**Fix paths** (HIMMEL-427 follow-on):
-- **Preferred — plugin delivery.** Ship the guardrails through the `himmel-ops`
-  plugin (it already ships a `hooks.json`). Codex injects `CLAUDE_PLUGIN_ROOT`
-  for plugin hooks, so `${CLAUDE_PLUGIN_ROOT}/…` resolves. Add a
-  `hooks-codex.json` variant if the Claude/Codex shapes ever diverge (superpowers
-  ships one).
-- **Or — harden the project file.** Mirror superpowers' `run-hook.cmd` polyglot
-  (finds Git Bash explicitly; avoids the WSL stub) and derive the project dir
-  from stdin `cwd` instead of `$CLAUDE_PROJECT_DIR`.
+**Live-verification caveats (codex-cli 0.141.0, Windows):**
+- Codex runs each hook **inside the tool's sandbox**. Under `-s read-only` the
+  hooks' side effects are suppressed; a writable sandbox (the interactive
+  default `workspace-write`) is needed for them to act. The adapter writes **no
+  temp files** for this reason.
+- Run from a git **worktree**, Codex resolves the project root to the **main
+  checkout** (the worktree's `.git` is a file, not a dir) and loads *its*
+  `.codex/hooks.json` — so the live hook config is the main checkout's, not the
+  worktree's. Edit/trust hooks in the primary checkout.
+- New project hooks are **trust-hashed on first use**; non-interactive
+  `codex exec` needs `--dangerously-bypass-hook-trust` to run not-yet-trusted
+  hooks (interactive Codex prompts to trust them once).
+
+**Alternative considered — plugin delivery.** Shipping via the `himmel-ops`
+plugin (Codex injects `CLAUDE_PLUGIN_ROOT` for plugin hooks) would fix the *path*
+bugs but **not** the exit-2-vs-JSON one — the adapter translation is required
+regardless of delivery mechanism. Project-file delivery + adapter was chosen as
+the smaller change.
 
 ### 2. Instruction file — CLAUDE.md is invisible; AGENTS.md must carry the rules
 
