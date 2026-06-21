@@ -100,6 +100,39 @@ try {
         Assert 'clone autosync: exit 0' ($LASTEXITCODE -eq 0)
         Assert 'clone autosync recreated .single-writer' (Test-Path (Join-Path $V '.single-writer'))
         Assert 'clone autosync commit landed past unborn HEAD' (([int]((git -C $V rev-list --count HEAD).Trim())) -gt ([int]$eBase))
+
+        # Phase G (HIMMEL-501) — auto-fixer resilience.
+        # A churny .md note (hard-break = 2 trailing spaces, no final newline):
+        # pre-commit must NOT rewrite it, so the commit isn't aborted.
+        $gBase = (git -C $V rev-list --count HEAD).Trim()
+        $mdPath = Join-Path $V '00-Inbox\md-fixer.md'
+        Set-Content -NoNewline -Path $mdPath -Value "first line  `nsecond line"
+        $mdOrig = Get-Content -Raw $mdPath
+        Push-Location $V; & pwsh -NoProfile -File $autosync *> $null; Pop-Location
+        Assert 'G1 autosync with churny .md: exit 0 (not blocked)' ($LASTEXITCODE -eq 0)
+        Assert 'G2 autosync commit landed' (([int]((git -C $V rev-list --count HEAD).Trim())) -gt ([int]$gBase))
+        Assert 'G3 .md left UNMODIFIED by pre-commit' ((Get-Content -Raw $mdPath) -eq $mdOrig)
+
+        # A NON-.md file a fixer DOES rewrite still lands (re-stage + retry).
+        $g2Base = (git -C $V rev-list --count HEAD).Trim()
+        Set-Content -NoNewline -Path (Join-Path $V '00-Inbox\data.txt') -Value "data with trailing space   `n"
+        Push-Location $V; & pwsh -NoProfile -File $autosync *> $null; Pop-Location
+        Assert 'G4 autosync recovers from fixer-modified non-.md: exit 0' ($LASTEXITCODE -eq 0)
+        Assert 'G5 retry committed after fixer ran' (([int]((git -C $V rev-list --count HEAD).Trim())) -gt ([int]$g2Base))
+        Assert 'G6 data.txt landed in committed tree' ([bool]((git -C $V ls-tree -r HEAD --name-only) -match 'data\.txt'))
+        Assert 'G7 fixer-retry result pushed to remote' (((git -C $bare rev-parse main).Trim()) -eq ((git -C $V rev-parse HEAD).Trim()))
+
+        # The retry must NOT weaken the egress guard: a NON-.md file with BOTH a
+        # fixer defect (trailing whitespace) AND a planted secret stays blocked
+        # through the re-stage pass — nothing committed, nothing pushed.
+        $g8Local = (git -C $V rev-parse HEAD).Trim()
+        $g8Bare = (git -C $bare rev-parse main).Trim()
+        $akp = 'AKIA'; $aks = '1234567890ABCDEF'
+        Set-Content -Path (Join-Path $V '30-Resources\leak.txt') -Value "leaky data   `naws_key = ""$akp$aks"""
+        Push-Location $V; & pwsh -NoProfile -File $autosync *> $null; Pop-Location
+        Assert 'G8 fixer-defect + secret (non-.md): blocked through retry (non-zero)' ($LASTEXITCODE -ne 0)
+        Assert 'G9 local HEAD unchanged (retry did not commit the secret)' (((git -C $V rev-parse HEAD).Trim()) -eq $g8Local)
+        Assert 'G10 bare remote unchanged (nothing pushed)' (((git -C $bare rev-parse main).Trim()) -eq $g8Bare)
     }
 }
 finally {
