@@ -98,8 +98,16 @@ rm -f "$SANDBOX/brokenrepo/.git/HEAD"
 # T1: file in a repo on main → BLOCK
 assert_rc "T1 main-repo edit blocks" 2 "$(rc_of "$SANDBOX/mainrepo/src/foo.js")"
 
-# T2: file in a repo on a feature branch → ALLOW
-assert_rc "T2 feature-repo edit allows" 0 "$(rc_of "$SANDBOX/featrepo/foo.js")"
+# T2: feature branch in the PRIMARY checkout (its `.git` is a directory) → BLOCK
+# (HIMMEL-507: feature work belongs in a worktree, not a branch checked out in
+# the primary tree). T2b asserts the message names the feature-branch case,
+# distinct from the on-main message.
+assert_rc "T2 feature branch in primary checkout blocks (HIMMEL-507)" 2 "$(rc_of "$SANDBOX/featrepo/foo.js")"
+t2err=$(printf '%s' "{\"tool_input\":{\"file_path\":\"$SANDBOX/featrepo/foo.js\"}}" | bash "$HOOK" 2>&1 >/dev/null)
+case "$t2err" in
+    *"on a feature branch"*) echo "PASS T2b primary-feature block message" ;;
+    *) echo "FAIL T2b primary-feature block message — got: $t2err"; FAILED=$((FAILED + 1)) ;;
+esac
 
 # T3 (Himmel#45 regression): nested repo on main, launched from the OUTER repo
 # (on a feature branch). The hook must read the NESTED repo's branch → BLOCK,
@@ -108,11 +116,19 @@ assert_rc "T2 feature-repo edit allows" 0 "$(rc_of "$SANDBOX/featrepo/foo.js")"
 assert_rc "T3 nested-on-main under outer-feature blocks (Himmel#45)" 2 \
     "$(rc_of "$SANDBOX/outer/sc/nested/src/foo.js" CLAUDE_PROJECT_DIR="$SANDBOX/outer")"
 
-# T3b (inverse): nested repo on a FEATURE branch inside an outer repo on MAIN —
-# must ALLOW. Guards against a regression that re-anchors to a parent/outer repo
-# instead of the launch dir specifically (which would wrongly BLOCK this edit).
-assert_rc "T3b nested-on-feature under outer-main allows" 0 \
+# T3b (inverse): nested repo on a FEATURE branch (a PRIMARY checkout) inside an
+# outer repo on MAIN. Post-HIMMEL-507 BOTH branches block, so the rc alone no
+# longer proves anchoring — assert the MESSAGE is the primary-feature one. If
+# the hook wrongly re-anchored to the outer (main) repo it would print the
+# on-main message instead, so this still guards the Himmel#45 anchoring.
+assert_rc "T3b nested-on-feature in primary blocks (HIMMEL-507)" 2 \
     "$(rc_of "$SANDBOX/outer2/sc/nested/src/foo.js" CLAUDE_PROJECT_DIR="$SANDBOX/outer2")"
+t3berr=$(printf '%s' "{\"tool_input\":{\"file_path\":\"$SANDBOX/outer2/sc/nested/src/foo.js\"}}" \
+    | env CLAUDE_PROJECT_DIR="$SANDBOX/outer2" bash "$HOOK" 2>&1 >/dev/null)
+case "$t3berr" in
+    *"on a feature branch"*) echo "PASS T3b message proves nested-repo anchoring (not outer-main)" ;;
+    *) echo "FAIL T3b anchoring message — got: $t3berr"; FAILED=$((FAILED + 1)) ;;
+esac
 
 # T3c (sibling): launched in a feature-branch repo, editing a file in an
 # UNRELATED repo on main → BLOCK. Proves the launch dir is ignored even with no
@@ -127,8 +143,10 @@ else
     echo "SKIP T4 (SANDBOX inside a repo)"
 fi
 
-# T5: file inside a real git worktree (feature branch) → ALLOW (the worktree's
-# own `.git` file is found by the walk; branch check allows via rc=1).
+# T5: file inside a real git worktree (feature branch) → ALLOW. The worktree's
+# own `.git` is a FILE (not a directory), so the HIMMEL-507 primary-checkout
+# block does not apply — a linked worktree is exactly where feature work belongs.
+# This is the case T2 (feature branch in the PRIMARY checkout) contrasts with.
 assert_rc "T5 worktree (feature branch) edit allows" 0 \
     "$(rc_of "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/foo.js")"
 
@@ -139,9 +157,14 @@ assert_rc "T6 handover doc on main allows" 0 "$(rc_of "$SANDBOX/mainrepo/handove
 # (the `.git` walk skips the missing dirs and finds the repo root).
 assert_rc "T7 new file in new subdir on main blocks" 2 "$(rc_of "$SANDBOX/mainrepo/new/deep/foo.js")"
 
-# T7b: same shape but in a FEATURE repo → ALLOW (the walk doesn't over-shoot to a
-# parent; it stops at the feature repo's own .git).
-assert_rc "T7b new file in new subdir on feature allows" 0 "$(rc_of "$SANDBOX/featrepo/new/deep/foo.js")"
+# T7b: same shape but in a FEATURE repo (primary checkout) → BLOCK post-HIMMEL-507
+# (the walk stops at the feature repo's own `.git` directory → primary-feature block;
+# it does not over-shoot to a parent). T7c: the SAME new-subdir shape inside a linked
+# worktree → ALLOW (worktree `.git` is a file), confirming the walk + the file/dir
+# distinction both work for a not-yet-existing target.
+assert_rc "T7b new file in new subdir on feature-primary blocks (HIMMEL-507)" 2 "$(rc_of "$SANDBOX/featrepo/new/deep/foo.js")"
+assert_rc "T7c new file in new subdir inside a worktree allows" 0 \
+    "$(rc_of "$SANDBOX/wtrepo/.claude/worktrees/feat+x/new/deep/foo.js")"
 
 # T8: bypass on a main repo → ALLOW, and T8b: with zero stderr.
 assert_rc "T8 bypass allows" 0 "$(rc_of "$SANDBOX/mainrepo/src/foo.js" EDIT_ON_MAIN_OK=1)"
@@ -193,12 +216,14 @@ else
 fi
 
 # --- Cross-canonicaliser coverage: force the python3 canon branch end-to-end
-# (main → block, feature → allow). Skip if python3 not on the runner.
+# (main → block; worktree → allow). The allow path uses the worktree (not a
+# feature-branch primary checkout, which now blocks per HIMMEL-507) so python
+# canon still exercises a real ALLOW. Skip if python3 not on the runner.
 if command -v python3 >/dev/null 2>&1; then
     assert_rc "T15 python3 canon — main blocks" 2 \
         "$(rc_of "$SANDBOX/mainrepo/src/foo.js" CANON_FORCE=python3)"
-    assert_rc "T15b python3 canon — feature allows" 0 \
-        "$(rc_of "$SANDBOX/featrepo/foo.js" CANON_FORCE=python3)"
+    assert_rc "T15b python3 canon — worktree allows" 0 \
+        "$(rc_of "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/foo.js" CANON_FORCE=python3)"
 else
     echo "SKIP T15 (no python3 on PATH)"
 fi
@@ -305,15 +330,14 @@ mkdir -p "$SANDBOX/swdir/src"
 assert_rc "T24 dir-shaped marker on main blocks (fail-closed)" 2 \
     "$(rc_of "$SANDBOX/swdir/src/foo.md")"
 
-# T25: .single-writer present + FEATURE branch → ALLOW via normal branch path.
-# Confirms the marker does not interfere with the feature-branch path: a
-# marked repo on a feature branch is still allowed through the normal rc=1
-# is_on_main path (the marker check is never reached). Paired with T2 (no
-# marker, feature branch → allow) and T20 (marker, main → allow), this
-# documents the marker is orthogonal to the branch check.
+# T25: .single-writer present + FEATURE branch in the PRIMARY checkout → ALLOW
+# via the marker opt-out. Post-HIMMEL-507 this case would otherwise BLOCK (a
+# feature branch in the primary tree), so this proves the .single-writer opt-out
+# covers the new primary-feature block path too, not just on-main. Paired with
+# T21 (no marker, would-block → block) and T20 (marker, main → allow).
 mkrepo "$SANDBOX/swfeat" feat/x
 touch "$SANDBOX/swfeat/.single-writer"
-assert_rc "T25 marker present on feature branch allows (normal branch path)" 0 \
+assert_rc "T25 marker present on feature-branch primary allows (opt-out covers HIMMEL-507)" 0 \
     "$(rc_of "$SANDBOX/swfeat/foo.md")"
 
 # T26: EDIT_ON_MAIN_OK=1 + marker present on main → ALLOW via env bypass.
@@ -322,6 +346,13 @@ assert_rc "T25 marker present on feature branch allows (normal branch path)" 0 \
 # regardless of marker". Reuses swrepo (has marker, on main).
 assert_rc "T26 EDIT_ON_MAIN_OK=1 + marker present allows (env bypass wins)" 0 \
     "$(rc_of "$SANDBOX/swrepo/src/foo.md" EDIT_ON_MAIN_OK=1)"
+
+# T27 (HIMMEL-507): EDIT_ON_MAIN_OK=1 bypasses the feature-branch-in-primary
+# block too (no marker present) — confirms the env bypass covers the new block
+# path, mirroring T23 (bypass on main with no marker). featrepo is a primary
+# checkout on a feature branch with no .single-writer.
+assert_rc "T27 EDIT_ON_MAIN_OK=1 allows feature branch in primary (HIMMEL-507)" 0 \
+    "$(rc_of "$SANDBOX/featrepo/foo.js" EDIT_ON_MAIN_OK=1)"
 
 # Clean up the worktree registration before removing the sandbox (avoids a
 # dangling `git worktree` admin record under SANDBOX/wtrepo).

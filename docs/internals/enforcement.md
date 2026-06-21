@@ -164,15 +164,25 @@ Spec: `scripts/hooks/test-auto-approve-safe-bash.sh`.
 
 ### `block-edit-on-main.sh` — pre-edit guard
 
-Fires on Edit/Write/MultiEdit/NotebookEdit. Refuses any edit targeting
-the primary worktree while HEAD == main. Paths are canonicalised via
-`realpath -m` first, so `..` traversal and symlink tricks cannot
-bypass. `handovers/**` is exempt. Bypass: `EDIT_ON_MAIN_OK=1`. Per-repo opt-out:
-place a local `.single-writer` file at the repo root (gitignored via global
-excludes — never committed, so clones stay protected by default); the hook
-allows all on-main edits in that repo and skips the block entirely. Anchored
-to the edited file's repo (`repo_real`), so a marker in a parent repo cannot
-leak the opt-out onto a nested repo.
+Fires on Edit/Write/MultiEdit/NotebookEdit. Refuses any edit targeting the
+**primary checkout** of a repo — forcing all feature work into a worktree.
+Two block cases: (1) the repo is on `main`/`master` (the original case), and
+(2) **HIMMEL-507** — the repo is on a feature branch but the edit lands in the
+primary checkout rather than a linked worktree. The structural signal for
+"primary checkout vs worktree" is the `.git` entry: a normal checkout has a
+`.git` **directory**, a linked worktree (and a submodule) has a `.git`
+**file**. So an edit inside a `.claude/worktrees/…` linked worktree on a
+feature branch is always allowed — that is where feature work belongs — while
+the *same* feature branch checked out in the primary tree is blocked. This
+closes the gap where an autonomous session did feature work on a PR branch in
+the primary checkout instead of isolating it in a worktree. Paths are
+canonicalised via `realpath -m` first, so `..` traversal and symlink tricks
+cannot bypass. `handovers/**` is exempt. Bypass: `EDIT_ON_MAIN_OK=1` (covers
+both block cases). Per-repo opt-out: place a local `.single-writer` file at the
+repo root (gitignored via global excludes — never committed, so clones stay
+protected by default); the hook then allows edits in that repo (both cases) and
+skips the block entirely. Anchored to the edited file's repo (`repo_real`), so
+a marker in a parent repo cannot leak the opt-out onto a nested repo.
 
 Dependencies: `jq` plus either GNU `realpath -m` (Linux native; Git
 Bash on Windows includes it) or `python3` (macOS default — uses

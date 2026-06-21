@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # PreToolUse hook for Edit/Write/MultiEdit/NotebookEdit.
 #
-# Blocks edits whose target FILE lives in a git repo that is currently on
-# main/master, forcing all feature work into a worktree per CLAUDE.md ("All
-# feature work in git worktrees. Never commit directly to main.").
+# Blocks edits whose target FILE lives in the PRIMARY checkout of a git repo,
+# forcing all feature work into a worktree per CLAUDE.md ("All feature work in
+# git worktrees. Never commit directly to main."). Two block cases:
+#   - the repo is on main/master (the original case), OR
+#   - the repo is on a feature branch but is the PRIMARY checkout, NOT a linked
+#     worktree (HIMMEL-507 — closes the gap where feature work happened on a
+#     branch checked out in the primary tree instead of an isolated worktree).
+# A linked worktree carries its own `.git` FILE (vs the primary checkout's
+# `.git` DIRECTORY); edits inside one are always allowed — that is the intended
+# place for feature work.
 #
 # The repo is resolved from the EDITED FILE's path (walking up its own ancestors
 # for a `.git`), NOT from CLAUDE_PROJECT_DIR / the launch dir. That way it still
@@ -176,10 +183,11 @@ case "$file_real" in
 esac
 
 # No explicit `.claude/worktrees/` skip is needed: a git worktree carries its
-# own `.git` file, so the walk above resolves repo_real to the worktree dir
-# (checked out on a feature branch) and the branch check below ALLOWS the edit
-# via rc=1. The old launch-dir-anchored worktrees skip was itself part of the
-# Himmel#45 mis-anchoring.
+# own `.git` FILE, so the walk above resolves repo_real to the worktree dir,
+# and the branch check below ALLOWS the edit at the `.git`-is-not-a-directory
+# test (a feature branch in the PRIMARY checkout, whose `.git` is a directory,
+# is blocked instead — HIMMEL-507). The old launch-dir-anchored worktrees skip
+# was itself part of the Himmel#45 mis-anchoring.
 
 # Check the branch of the FILE's repo. rc=2 (branch unreadable — e.g. a repo
 # with a corrupt/removed HEAD) fails CLOSED to match this script's security
@@ -190,17 +198,38 @@ esac
 # error: No stderr output" (HIMMEL-392).
 branch_rc=0
 is_on_main "$repo_real" || branch_rc=$?
+
+# Map the branch state to a block reason — or allow. The hook's job is to force
+# ALL feature work into a worktree (header), so an edit in the PRIMARY checkout
+# is blocked whether the branch is main OR a feature branch; only a linked
+# worktree (its own `.git` is a FILE, not a directory) is allowed (HIMMEL-507).
+#   rc=1 + repo_real/.git is a FILE → linked worktree / submodule → ALLOW
+#   rc=1 + repo_real/.git is a DIR  → feature branch in the PRIMARY checkout → BLOCK
+#   rc=0                            → main/master → BLOCK
+#   rc>=2                           → branch unreadable → fail CLOSED
+block_reason=""
 if [ "$branch_rc" -eq 1 ]; then
-    exit 0
-fi
-if [ "$branch_rc" -ne 0 ]; then
+    # A linked worktree (and a submodule) carries a `.git` FILE; the primary
+    # checkout a `.git` DIRECTORY. Feature work belongs in a worktree, so the
+    # worktree case is the only feature-branch path that ALLOWS the edit.
+    if [ ! -d "$repo_real/.git" ]; then
+        exit 0
+    fi
+    block_reason="primary-feature"
+elif [ "$branch_rc" -ne 0 ]; then
     echo "block-edit-on-main: is_on_main returned rc=$branch_rc (cannot determine branch for '$repo_real') - refusing to evaluate" >&2
     exit 2
+else
+    block_reason="main"
 fi
 
-# Branch is main. Honour bypass BEFORE printing the block message so the
-# operator does not see a misleading "refusing" warning when the edit will
-# actually succeed.
+# Both block reasons are "feature work in the PRIMARY checkout" (on main, or on
+# a feature branch). Honour the shared opt-outs BEFORE printing a block message
+# so the operator never sees a misleading "refusing" warning for an edit that
+# will actually succeed.
+#
+# EDIT_ON_MAIN_OK=1 — session bypass (set in the LAUNCHING shell; a per-edit
+# prefix cannot reach the hook process).
 if [ "${EDIT_ON_MAIN_OK:-0}" = "1" ]; then
     exit 0
 fi
@@ -218,6 +247,29 @@ fi
 # and anyone able to create the marker could just touch it directly).
 if [ -f "$repo_real/.single-writer" ]; then
     exit 0
+fi
+
+if [ "$block_reason" = "primary-feature" ]; then
+    cat >&2 <<EOF
+⛔ block-edit-on-main: refusing to edit \`$file_path\` — its repo is the PRIMARY
+checkout on a feature branch. Feature work must be isolated in a worktree per
+CLAUDE.md, not done on a branch checked out in the primary tree (HIMMEL-507).
+(file: $file_real — repo: $repo_real)
+
+Move the work into a worktree (a linked worktree carries its own \`.git\` file,
+so edits there are allowed):
+
+    /clean_garden feat/<scope>          # prune merged worktrees + create new
+    cd .claude/worktrees/feat+<scope>   # switch in the existing shell
+
+Bypass / single-writer opt-out behave the same as the on-main case:
+
+    EDIT_ON_MAIN_OK=1 claude            # session bypass (set in the launching shell)
+    touch "$repo_real/.single-writer"   # local, gitignored single-writer opt-in
+
+Or temporarily comment out the hook stanza in .claude/settings.json.
+EOF
+    exit 2
 fi
 
 cat >&2 <<EOF
