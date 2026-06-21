@@ -224,3 +224,4 @@ environment (HIMMEL-123):
 - [`docs/tooling-catalog.md`](docs/tooling-catalog.md) — all tools/scripts/plugins in active use.
 - [`docs/commands-catalog.md`](docs/commands-catalog.md) — project-local slash commands (`.claude/commands/`).
 - [`docs/setup/new-machine.md`](docs/setup/new-machine.md) — fresh-machine setup.
+- [`docs/internals/harness-compat.md`](docs/internals/harness-compat.md) — running himmel under Codex / other harnesses (compat matrix + port/guard/accept decisions, HIMMEL-470).
