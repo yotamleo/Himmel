@@ -18,7 +18,7 @@
     "dedup": "bun dedup-sweep.mjs"
   },
   "dependencies": {
-    "playwright": "1.58.0",
+    "playwright": "1.61.0",
     "js-yaml": "5.0.0"
   }
 }
