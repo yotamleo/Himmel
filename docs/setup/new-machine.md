@@ -84,6 +84,57 @@ These tools show up in only one script — easy to drop if not on PATH (the affe
 - **Obsidian** — https://obsidian.md (for luna vault).
 - **Claude Code CLI** — see foundational table above.
 
+### Required `.env` values (per-variable walkthrough)
+
+`scripts/setup.sh` / `setup.ps1` copy `.env.example` → `.env` for you (§4); you
+then fill in your own values. Run setup with `--fill-env` (PowerShell:
+`-FillEnv`) to be **prompted** for each one — the prompt prints a short help
+blurb (what the value is + where to get it, sourced from the `.env.example`
+comments) before each field, so you don't have to read the file first. Press
+Enter at a prompt to keep the current value; non-interactive shells skip the
+prompt entirely.
+
+Two kinds of variable live in `.env` and they reach code **differently** — this
+is the classic "I set it in `.env` but nothing happened" tax. The same split is
+documented at the top of [`.env.example`](../../.env.example):
+
+- **TOOL-LOADED** — a himmel CLI reads `.env` itself, so a value sitting in the
+  file is enough; no shell export needed.
+- **PROCESS-ENV** — hooks, shell scripts, and skill tools read the **live**
+  environment, not the file. Export these in the shell that launches `claude`,
+  or set them in `~/.claude/settings.json` `"env": {}`. A value sitting only in
+  `.env` is not seen — **except** the ones bridged from `.env` by
+  `scripts/lib/load-dotenv.sh` (`HANDOVER_DIR`, `USER_SLUG`, and the
+  `HIMMEL_INITIATIVE*` set), noted below.
+
+**TOOL-LOADED** (a value in `.env` is enough):
+
+| Variable | What it is | Where to get it |
+|---|---|---|
+| `USER_SLUG` | Operator slug — names handover bucket paths + `registry.json`. Falls back to your git `user.name` slugified if unset. Also bridged into the live env. | Pick a short kebab-case handle. |
+| `JIRA_BASE_URL` | Your Atlassian site URL. | `https://<your-site>.atlassian.net` |
+| `JIRA_EMAIL` | Atlassian account email. | The address you sign into Jira with. |
+| `JIRA_API_TOKEN` | Jira / Confluence CLI auth token. | id.atlassian.com/manage-profile/security/api-tokens |
+| `JIRA_PROJECT_KEY` | Default project for `jira` ops. | Your Jira project key (e.g. `ACME`). |
+| `JIRA_CLOUD_ID` | Atlassian tenant cloud id (REST / MCP). | Atlassian admin console, or the `getAccessibleAtlassianResources` API. |
+
+**PROCESS-ENV** (export, or set in `settings.json` `"env"` — a value only in
+`.env` is not read unless it's a bridged exception):
+
+| Variable | What it is | Where to get it / note |
+|---|---|---|
+| `HIMMEL_REPO` | Path to your himmel checkout. | **Auto-set** by setup/adopt into `settings.json`; set explicitly only for a non-default clone path. |
+| `HANDOVER_DIR` | Handover state root (Mode B — external state repo). | Run `/handover-setup`. Bridged from `.env`. Unset = inline `<repo>/handovers/`. |
+| `LUNA_VAULT_PATH` | Luna vault root for end-session capture. | Your Obsidian vault path. **Not** bridged — export it. Unset → `~/Documents/luna`. |
+| `HIMMEL_INITIATIVE` | Drive-to-ship legs (opt-in, default OFF). | Uncomment one line in `.env` (leg grammar documented inline in `.env.example`); read from `.env` by the SessionStart hook. |
+| `PERPLEXITY_API_KEY` | Perplexity Sonar — `/research`, `/research-deep`. | Perplexity API settings. Optional (blank = feature off). |
+| `XAI_API_KEY` | xAI Grok — `/x-read`, `/x-pulse`, `/youtube`. | xAI API console. Optional. |
+| `GEMINI_API_KEY` | Gemini — `scripts/gemini/invoke.sh`. | Google AI Studio API key. Optional. |
+
+For the full inventory — optional Bitbucket, Confluence, VM, and hermes keys —
+read the annotated [`.env.example`](../../.env.example); it is the single source
+of truth and every entry there carries its own inline guidance.
+
 ---
 
 ---
@@ -180,9 +231,12 @@ To **update** an existing checkout later, run `/himmel-update` (or `bash scripts
 `git pull` is what delivers himmel updates — marketplace `autoUpdate` does not.
 See [`updating.md`](updating.md).
 
-After setup:
+After setup, fill in your `.env` values — see the per-variable walkthrough in
+[§1 Required `.env` values](#required-env-values-per-variable-walkthrough), or
+re-run setup with `--fill-env` to be prompted with inline help for each field:
+
 ```bash
-# Fill in Jira token
+# Fill in Jira token (or run setup with --fill-env for guided prompts)
 vi .env   # set JIRA_API_TOKEN=...
 
 # Verify
