@@ -67,6 +67,59 @@ printf '#!/bin/sh\necho 1000\n' > "$nbin/id"; chmod +x "$nbin/id"
 out=$( PATH="$nbin" ensure_tools git 2>&1 )
 check "SC7 no-sudo message" "$(has 'no root/sudo' "$out")" "yes"
 
+# ── HIMMEL-548 bun branch 1: official installer SUCCEEDS (mocked, no real curl).
+# bun has no homebrew-core/apt/dnf package, so it is bootstrapped via its official
+# installer (`curl -fsSL https://bun.sh/install` piped to bash), which lands the
+# binary in $HOME/.bun/bin. A stub curl emits a tiny installer script on stdout;
+# HOME is a temp dir so the install is hermetic. The install/fail branches call the
+# helper directly (calling `ensure_tools bun` would short-circuit on any ambient
+# bun already on the tester's PATH); the no-curl case below covers the routing.
+bbin="$td/bun-ok"; mkdir -p "$bbin"
+cat > "$bbin/curl" <<'EOF'
+#!/usr/bin/env bash
+# fake bun installer source: emit a script that drops bun into $HOME/.bun/bin.
+cat <<'INSTALLER'
+mkdir -p "$HOME/.bun/bin"
+printf '#!/usr/bin/env bash\necho stub-bun\n' > "$HOME/.bun/bin/bun"
+chmod +x "$HOME/.bun/bin/bun"
+INSTALLER
+EOF
+chmod +x "$bbin/curl"
+bhome="$td/bun-ok-home"; mkdir -p "$bhome"
+out=$( HOME="$bhome" PATH="$bbin:$PATH" _ensure_install_bun 2>&1 )
+present=$( [ -x "$bhome/.bun/bin/bun" ] && echo yes || echo no )
+check "bun official-installer drops bun in ~/.bun/bin" "$present" "yes"
+
+# ── HIMMEL-548 bun branch 2: installer FAILS (curl returns non-zero) → fail-loud,
+# no bun, honest manual hint.
+fbun="$td/bun-fail"; mkdir -p "$fbun"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$fbun/curl"; chmod +x "$fbun/curl"
+fhome="$td/bun-fail-home"; mkdir -p "$fhome"
+out=$( HOME="$fhome" PATH="$fbun:$PATH" _ensure_install_bun 2>&1 )
+check "bun installer-fails leaves no bun" "$( [ -x "$fhome/.bun/bin/bun" ] && echo yes || echo no )" "no"
+check "bun installer-fails manual hint" "$(has 'install bun manually' "$out")" "yes"
+
+# ── HIMMEL-548 bun branch 2b: curl SUCCEEDS but the installer BODY fails (network
+# OK, install script errors) — the more realistic production failure. A stub curl
+# emits a non-empty installer that exits non-zero when piped to bash → fail-loud,
+# no bun, same honest manual hint as the curl-fails path.
+xbun="$td/bun-installerfail"; mkdir -p "$xbun"
+printf '#!/usr/bin/env bash\necho exit 1\n' > "$xbun/curl"; chmod +x "$xbun/curl"
+xhome="$td/bun-installerfail-home"; mkdir -p "$xhome"
+out=$( HOME="$xhome" PATH="$xbun:$PATH" _ensure_install_bun 2>&1 )
+check "bun installer-body-fails leaves no bun" "$( [ -x "$xhome/.bun/bin/bun" ] && echo yes || echo no )" "no"
+check "bun installer-body-fails manual hint" "$(has 'install bun manually' "$out")" "yes"
+
+# ── HIMMEL-548 bun branch 3: routed through ensure_tools, curl absent → fail-loud
+# manual hint (no crash). Empty PATH guarantees no ambient bun short-circuits it.
+out=$( HOME="$td/bun-nocurl-home" PATH="$td/empty-nonexistent" ensure_tools bun 2>&1 )
+check "bun no-curl manual hint" "$(has 'needs curl' "$out")" "yes"
+
+# ── HIMMEL-548 setup.sh: ~/.bun/bin is added to PATH after ensure-tools so the
+# re-check + downstream see a freshly-installed bun, and a persist-PATH hint is
+# printed. Assert the wiring exists in setup.sh.
+check "setup.sh adds ~/.bun/bin to PATH" "$(has 'HOME/.bun/bin' "$(cat "$setup_sh")")" "yes"
+
 # ── SC7 ordering invariant: REPO_ROOT git rev-parse runs AFTER the preflight.
 # Line number of the [0/10] preflight banner vs the REPO_ROOT assignment.
 pf_line=$(grep -n '\[0/10\] Verifying foundational tools' "$setup_sh" | head -1 | cut -d: -f1)

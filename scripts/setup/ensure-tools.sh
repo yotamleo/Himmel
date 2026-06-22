@@ -6,8 +6,10 @@
 # failed install, the tool simply stays missing and the CALLER fails loud with
 # the manual hint -- ensure_tools never claims success it didn't achieve.
 #
-# Only tools with a known package name are attempted (git, jq, python3). Tools
-# that need a bespoke installer (node, bun, gh) are left to the caller's hint.
+# Tools with a known package name are attempted via the package manager (git,
+# jq, python3). bun has no homebrew-core/apt/dnf package, so it is bootstrapped
+# via its official installer (HIMMEL-548). Tools that still need a bespoke
+# installer (node, gh) are left to the caller's hint.
 #
 # Usage:  source ensure-tools.sh; ensure_tools git jq ...   (re-check after).
 #         bash ensure-tools.sh git jq ...                   (direct).
@@ -32,6 +34,28 @@ _ensure_detect_pm() {
   echo ""; return 1
 }
 
+# bun bootstrap -- bun is not in homebrew-core / apt / dnf, so the official
+# installer is the portable path (mac + linux, no tap). It lands the binary in
+# $HOME/.bun/bin, which is NOT on PATH in this subprocess -- the CALLER (setup.sh)
+# adds ~/.bun/bin to PATH and re-checks. The installer source is captured first
+# (then piped to bash) so a curl failure is detected directly rather than masked
+# by `bash` succeeding on empty stdin. Honest fallback: if curl is absent or the
+# fetch fails, bun stays missing and the caller fails loud with the manual hint.
+_ensure_install_bun() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "  ensure-tools: 'bun' needs curl to bootstrap (curl not found) -- install bun manually: https://bun.sh" >&2
+    return 1
+  fi
+  echo "  ensure-tools: installing 'bun' via the official installer (https://bun.sh/install)..."
+  local installer
+  installer=$(curl -fsSL https://bun.sh/install 2>/dev/null) || installer=""
+  if [ -n "$installer" ] && printf '%s' "$installer" | bash >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "  ensure-tools: bun official installer failed -- install bun manually: https://bun.sh" >&2
+  return 1
+}
+
 # Echo the sudo prefix needed for apt/dnf: "" when root, "sudo" when a sudo
 # binary exists, "__NOSUDO__" (rc 1) when neither (caller skips that tool).
 _ensure_sudo_prefix() {
@@ -45,12 +69,19 @@ _ensure_sudo_prefix() {
 ensure_tools() {
   [ "$#" -gt 0 ] || return 0
   local pm t pkg sudo_pfx
-  if ! pm=$(_ensure_detect_pm); then
-    echo "  ensure-tools: no supported package manager (apt-get/dnf/brew) found -- cannot auto-install; install manually." >&2
-    return 0
-  fi
+  pm=$(_ensure_detect_pm) || pm=""   # bun needs no pm; others fall through below
   for t in "$@"; do
     command -v "$t" >/dev/null 2>&1 && continue
+    # bun: no system package -- bootstrap via its official installer (mac + linux),
+    # independent of any package manager.
+    if [ "$t" = bun ]; then
+      _ensure_install_bun
+      continue
+    fi
+    if [ -z "$pm" ]; then
+      echo "  ensure-tools: no supported package manager (apt-get/dnf/brew) found -- cannot auto-install '$t'; install it manually." >&2
+      continue
+    fi
     pkg=$(_ensure_pkg_for "$t")
     if [ -z "$pkg" ]; then
       echo "  ensure-tools: no known $pm package for '$t' -- install it manually." >&2

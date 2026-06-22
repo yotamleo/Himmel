@@ -4,8 +4,9 @@
 # forks + pinned plugins current with upstream?" (HIMMEL-322).
 #
 # Two plugin classes are checked, each against its TRUE upstream via `gh api`:
-#   1. Pinned remotes — any plugin in marketplace.json whose source is
-#      {github, repo, ref}. Two sub-cases:
+#   1. Pinned remotes — any plugin in marketplace.json whose source is a git
+#      remote with a ref: {github, repo, ref} or {url, url, ref} (the explicit
+#      HTTPS url form claude-obsidian uses after HIMMEL-549). Two sub-cases:
 #        a. Plain pin (no override): drift = the pinned `ref` (a 40-hex SHA) !=
 #           the marketplace repo's default-branch HEAD. (kepano/obsidian.)
 #        b. Fork-with-upstream override (scripts/plugin-upstreams.json): the
@@ -62,11 +63,22 @@ m = json.load(open(sys.argv[1]))
 ups = {}
 if os.path.exists(sys.argv[2]):
     ups = json.load(open(sys.argv[2]))   # malformed -> raises -> class UNCHECKED
+def repo_of(s):
+    # github source carries owner/repo directly; the explicit-https url source
+    # (claude-obsidian after HIMMEL-549) encodes it in the url. repo is only used
+    # for the plain-pin HEAD compare + message text — fork overrides ignore it.
+    if s.get("source") == "github":
+        return s.get("repo", "")
+    u = s.get("url", "")
+    if "github.com/" in u:
+        r = u.split("github.com/", 1)[1].rstrip("/")
+        return r[:-4] if r.endswith(".git") else r
+    return ""
 for p in m.get("plugins", []):
     s = p.get("source")
-    if isinstance(s, dict) and s.get("source") == "github" and s.get("ref"):
+    if isinstance(s, dict) and s.get("source") in ("github", "url") and s.get("ref"):
         o = ups.get(p["name"]) or {}
-        print("|".join([p["name"], s["repo"], s["ref"],
+        print("|".join([p["name"], repo_of(s), s["ref"],
                         o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", "")]))
 PY
 )"

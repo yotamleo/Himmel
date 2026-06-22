@@ -13,15 +13,17 @@ bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 # 1. Syntax.
 if bash -n "$SCRIPT"; then ok "syntax (bash -n)"; else bad "syntax"; fi
 
-# 2. The marketplace.json parser yields the github-pinned remotes (>=1; expect
-#    claude-obsidian — obsidian/kepano was dropped, it installs from its own
-#    marketplace, HIMMEL-435). Mirrors the script's own parser.
+# 2. The marketplace.json parser yields the git-remote pinned remotes (>=1; expect
+#    claude-obsidian — sourced via an explicit HTTPS url since HIMMEL-549, so the
+#    parser must accept both the {github,repo} and {url,url} shapes; obsidian/kepano
+#    was dropped, it installs from its own marketplace, HIMMEL-435). Mirrors the
+#    script's own parser.
 pins="$(python3 - "$MJSON" <<'PY' | tr -d '\r'
 import json, sys
 m = json.load(open(sys.argv[1]))
 for p in m.get("plugins", []):
     s = p.get("source")
-    if isinstance(s, dict) and s.get("source") == "github" and s.get("ref"):
+    if isinstance(s, dict) and s.get("source") in ("github", "url") and s.get("ref"):
         print(p["name"])
 PY
 )"
@@ -55,11 +57,19 @@ if [ -f "$UPS" ]; then
 import json, os, sys
 m = json.load(open(sys.argv[1]))
 ups = json.load(open(sys.argv[2])) if os.path.exists(sys.argv[2]) else {}
+def repo_of(s):
+    if s.get("source") == "github":
+        return s.get("repo", "")
+    u = s.get("url", "")
+    if "github.com/" in u:
+        r = u.split("github.com/", 1)[1].rstrip("/")
+        return r[:-4] if r.endswith(".git") else r
+    return ""
 for p in m.get("plugins", []):
     s = p.get("source")
-    if isinstance(s, dict) and s.get("source") == "github" and s.get("ref"):
+    if isinstance(s, dict) and s.get("source") in ("github", "url") and s.get("ref"):
         o = ups.get(p["name"]) or {}
-        print("|".join([p["name"], s["repo"], s["ref"],
+        print("|".join([p["name"], repo_of(s), s["ref"],
                         o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", "")]))
 PY
 )"
