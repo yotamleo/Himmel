@@ -43,7 +43,6 @@ SUITE_TIMEOUT="${SUITE_TIMEOUT:-180}"
 SKIP_LIST="
 test-install-symmetry-vm.sh          # drives a real VM over SSH
 test-luna-upgrade-vm.sh              # drives a real (Ubuntu or Windows) VM over SSH
-test-e2e-symmetry.sh                 # full install/uninstall e2e against a VM
 test-himmel-update.sh                # live git pull + marketplace re-sync
 test-himmel-update-hermes.sh         # needs the hermes runtime
 hermes/test-invoke.sh                # needs the hermes runtime

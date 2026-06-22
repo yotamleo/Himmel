@@ -2,6 +2,13 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      force_all_os:
+        description: 'Run shell-unit on all 3 OSes (verification aid for the nightly matrix)'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 7 * * *'   # nightly, UTC
 
 permissions:
   contents: read
@@ -52,8 +59,24 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: cd scripts/luna-vitals && bun install --frozen-lockfile && bun test
 
+  # Multi-OS, gated to the nightly to stay free-tier-cheap: a plain
+  # workflow_dispatch (and any non-schedule event) runs ubuntu only; `schedule`
+  # — or a dispatch with force_all_os=true — adds windows (2x) + macOS (10x),
+  # paid once a night. windows/macOS are NON-GATING this phase (continue-on-error
+  # scoped to the non-ubuntu legs): their per-suite PASS/FAIL is advisory in the
+  # job log while ubuntu stays the required gate. Tightening the new OSes to
+  # gating-green is the data-driven follow-up (HIMMEL-494 phase 3).
   shell-unit:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ (github.event_name == 'schedule' || inputs.force_all_os)
+               && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]')
+               || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
+      # Explicit `bash` prefix: on windows-latest the default run shell is pwsh,
+      # but Git Bash is preinstalled + on PATH, so `bash …` runs under MSYS2.
       - run: bash scripts/ci/run-shell-tests.sh
