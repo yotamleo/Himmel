@@ -57,6 +57,26 @@ fall back `python3 → python → py`. A bootstrap-floor Linux VM lacking python
 gets a best-effort `sudo apt-get install python3` (scoped NOPASSWD, HIMMEL-492).
 Both VM e2e scripts exit 3 (not 1) when the VM is unreachable.
 
+### Skill-pass VM e2e (HIMMEL-493)
+
+`python scripts/test-luna-upgrade-skill-vm.py` (`--help` for options) is the
+**dogfood path**: it drives the `/luna-upgrade` SKILL via an interactive
+`claude` session on the `ubuntu_new` VM against a scaffolded old-version vault
+and asserts the upgrade roundtrip on filesystem state. Where `test-luna-upgrade-vm.sh`
+invokes `upgrade.sh` directly (deterministic, no claude call), this probe exercises
+the full user-facing path — the same `/luna-upgrade` a real adopter hits. It
+builds on the central VM control SDK (`scripts/lib/vmsdk.py`: `sync_repo` /
+`install_plugin` / `drive_claude`).
+
+Exit codes: `0` pass · `1` assertion failed · `3` environment (VM unreachable,
+`claude` not installed / not authenticated, plugin-install env-block) — exit 3
+is **not a defect**.
+
+**NON-GATING**: a local on-demand probe only. It is NOT wired into pre-push /
+pre-commit / PR CI — LLM-in-the-loop, VM-dependent, and billing-consuming means
+it must never block a merge. Requires the `ubuntu_new` VM up with an authenticated
+`claude`.
+
 ### Security-posture audit (HIMMEL-495)
 
 `python scripts/lib/vm_posture.py <vm> [--json]` runs a fixed battery of

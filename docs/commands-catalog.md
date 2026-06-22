@@ -60,8 +60,9 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 | Command | What it does |
 |---|---|
 | /context-hop | Mid-session jump to a fresh claude session when context window is approaching the soft budget. Sibling of /handover-arm-resume. HIMMEL-130. |
+| /retitle | Infer a himmel-canonical session name (TICKET-ID + meaningful name) from the current branch and print a ready-to-paste built-in /rename line. |
 | /overnight-shift | Auto-dispatch N tickets from Jira as parallel subagents — emits plan + confirms before fanout (HIMMEL-134). |
-| /pipeline-cadence | Arm/inspect/remove the recurring clip-pipeline cadence (weekly /synthesize-clips + /archive-clips, monthly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped. Dedup-guarded. HIMMEL-255/265. |
+| /pipeline-cadence | Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, weekly /synthesize-clips + /archive-clips, monthly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped. Dedup-guarded. HIMMEL-255/265/357. |
 | /end-session-wiki-setup | Configure which Obsidian vault the end-session-wiki hook captures sessions into — writes LUNA_VAULT_PATH (global) or .claude/end-session-wiki.json vault_path (this repo only). |
 | /stop | Graceful-halt marker for in-progress /overnight-shift sessions (HIMMEL-137). |
 
@@ -106,6 +107,7 @@ slash alias exists).
 |---|---|
 | /minerva (himmel-ops) | Run the brainstorm→critic→spec→critic→plan pipeline as ONE pass with an adversarial critic loop between stages — one idea to a critic-hardened implementation plan. Slash alias + dispatchable skill. |
 | stuck-playbook (himmel-ops) | Load-on-trigger guardrail-recovery escape-hatches — fires on a denial/friction symptom (auto-mode Bash/Jira write denied, hung permission prompt, missing attestation trailer). Surfaces escape-hatches kept out of the always-on root CLAUDE.md (HIMMEL-211). |
+| vm (himmel-ops) | Lean-invoke VM lifecycle + e2e runbook — front door to the central VM-control SDK (`scripts/lib/vmsdk.py`); covers up/down/snapshot/restore/baseline/clone/provision/e2e verbs, the engine pass + skill pass probes, and the `sync_repo`/`install_plugin`/`drive_claude` SDK primitives (HIMMEL-491/493). |
 | vault-lint (obsidian-triage) | Filesystem-only, report-only vault health lint — a single deterministic Python pass that converges on large PARA vaults (orphans, broken wikilinks, audit). Vault-agnostic. |
 | luna-vitals-extract (obsidian-triage) | Backfill luna-medic health series for one vault time-bucket (HIMMEL-355) — extracts (date, metric, value) tuples via the luna-vitals CLI + an LLM prose pass, writing one per-bucket review artifact. Single-writer; never writes 50-Vitals/ directly. |
 
