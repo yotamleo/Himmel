@@ -24,9 +24,13 @@ references the script directly rather than npm-installing it.
 
 ## Wiring
 
-`docs/setup/settings-template.json` and `scripts/machine-setup/{win11.ps1,ubuntu.sh}`
-point `statusLine.command` at `<himmel-path>/scripts/statusline/bin/statusline.sh`.
-There is no longer an external clone step.
+`docs/setup/settings-template.json` and the `wire-statusline.{sh,ps1}` helpers
+(used by `scripts/machine-setup/{win11.ps1,ubuntu.sh}`) point `statusLine.command`
+at the himmel wrapper `<himmel-path>/scripts/where-are-we/statusline.sh`
+(HIMMEL-538), which **composes this vendored `bin/statusline.sh` verbatim** and
+appends one where-are-we line (active handover + epic progression). The vendored
+file here is **not edited** by that feature — so it triggers no re-vendor
+obligation. There is no external clone step.
 
 ## Keeping in sync with the fork
 

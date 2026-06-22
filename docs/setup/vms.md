@@ -57,6 +57,21 @@ fall back `python3 → python → py`. A bootstrap-floor Linux VM lacking python
 gets a best-effort `sudo apt-get install python3` (scoped NOPASSWD, HIMMEL-492).
 Both VM e2e scripts exit 3 (not 1) when the VM is unreachable.
 
+### Security-posture audit (HIMMEL-495)
+
+`python scripts/lib/vm_posture.py <vm> [--json]` runs a fixed battery of
+**read-only forensic checks** over the `vmsdk.VM` SSH layer and prints a
+severity-grouped report (authorized_keys, listening sockets + NIC, auth.log
+non-local logins, sudoers NOPASSWD, IP-forwarding). It replaces the throwaway
+`$TEMP` paramiko *forensic* sweeps every e2e session used to re-write: it is
+reusable, hermetically tested (no VM needed to run `test-vm_posture.py`), and
+read-only (re-running changes nothing on the guest — it never powers the VM
+on/off). Exit `0` = no FAIL; `1` = a real violation; `3` = VM unreachable (bring
+it up first); `4` = non-ubuntu guest (v1 is Ubuntu-only). This audits *security
+posture* only — the *functional* smoke ("is claude installed, is the vault
+present" — the `vm-probe*.py` `$TEMP` scripts) is a separate, still-needed
+concern and is NOT replaced by this tool.
+
 ---
 
 ## Ubuntu VM

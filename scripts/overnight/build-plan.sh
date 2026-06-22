@@ -63,6 +63,11 @@ Environment overrides:
   OVERNIGHT_STATUS   Default status filter.
   OVERNIGHT_LIMIT    Default limit.
   OVERNIGHT_PRIORITY Default priority order.
+  WHERE_ARE_WE_LEDGER  Override the where-are-we ledger path (HIMMEL-517 L3
+                     push-side provisioning; default
+                     `$repo/.where-are-we/ledger.jsonl`). Tests seed a temp ledger.
+  PROVISION_CMD      Override the provision CLI (default
+                     `node $repo/scripts/where-are-we/provision.mjs`).
 EOF
 }
 
@@ -83,11 +88,15 @@ if ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || [ "$LIMIT" -lt 1 ]; then
     exit 1
 fi
 
-# Resolve jira CLI. Default: node $repo/scripts/jira/dist/index.js. We
-# walk up from this script's dir to find the repo root that holds it.
+# Resolve the repo root unconditionally (HIMMEL-517): the where-are-we
+# provisioning seams below need it even when JIRA_CMD is injected (tests do), so
+# it must NOT be assigned only inside the `if [ -z "$JIRA_CMD" ]` block — under
+# `set -u` an unset $repo_root would abort the script.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root=$(cd "$script_dir/../.." && pwd)
+
+# Resolve jira CLI. Default: node $repo/scripts/jira/dist/index.js.
 if [ -z "$JIRA_CMD" ]; then
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    repo_root=$(cd "$script_dir/../.." && pwd)
     if [ -f "$repo_root/scripts/jira/dist/index.js" ] && command -v node >/dev/null 2>&1; then
         JIRA_CMD="node $repo_root/scripts/jira/dist/index.js"
     else
@@ -95,6 +104,12 @@ if [ -z "$JIRA_CMD" ]; then
         exit 2
     fi
 fi
+
+# where-are-we L3 push-side provisioning (HIMMEL-517): each non-epic ticket's
+# subagent prompt is pre-loaded with that ticket's prior ledger slice. Both
+# seams are overridable for hermetic tests (mirrors JIRA_CMD).
+LEDGER="${WHERE_ARE_WE_LEDGER:-$repo_root/.where-are-we/ledger.jsonl}"
+PROVISION_CMD="${PROVISION_CMD:-node $repo_root/scripts/where-are-we/provision.mjs}"
 
 # Query. The jira CLI emits TSV: KEY \t TYPE \t STATUS \t TITLE.
 if ! tickets_raw=$($JIRA_CMD list --project "$PROJECT" --status "$STATUS" --limit "$LIMIT" 2>/dev/null); then
@@ -168,6 +183,15 @@ plan=$(
                 echo "$i. **$key** — $type — $status — $title"
                 echo "   - worktree: \`$wtype/$key-$slug\`"
                 echo "   - subagent prompt: \"Read $key spec via jira plugin, implement per ticket, run tests, commit + push + open PR\""
+                # L3 push-side provisioning (HIMMEL-517): embed this ticket's prior
+                # ledger slice. Fail-open — no node/ledger/item → empty → block
+                # skipped → plan unchanged (the `2>/dev/null || true` + empty-test
+                # IS the guard; no separate node-presence check needed).
+                slice=$($PROVISION_CMD slice --ledger "$LEDGER" --for "$key" 2>/dev/null || true)
+                if [ -n "$slice" ]; then
+                    echo "   - prior ledger state:"
+                    printf '%s\n' "$slice" | sed 's/^/     /'
+                fi
             fi
         done <<< "$tickets_raw"
         echo

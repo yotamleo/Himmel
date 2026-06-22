@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { run } from '../index.mjs';
+import { UsageError } from '../lib/errors.mjs';
 
 const fix = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'sample.jsonl');
 
@@ -49,4 +50,22 @@ test('--for KEY md uses the dash fallback when the item has no status', () => {
   assert.ok(out.startsWith('# HIMMEL-3'));
   assert.ok(out.includes('status: —'));
   assert.ok(out.includes('next: do thing'));
+});
+
+// HIMMEL-530 Task 3: CLI error hygiene — UsageError for expected user-input errors
+test('run([]) throws a UsageError with the --ledger-required message', () => {
+  let thrown = null;
+  try { run([]); } catch (e) { thrown = e; }
+  assert.ok(thrown instanceof UsageError, 'missing --ledger must throw UsageError');
+  assert.match(thrown.message, /--ledger.*required/i);
+});
+
+test('run on a malformed ledger throws a non-UsageError (unexpected runtime error)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'waw-cli-'));
+  const p = join(dir, 'bad.jsonl');
+  writeFileSync(p, 'not json\n');
+  let thrown = null;
+  try { run(['--ledger', p]); } catch (e) { thrown = e; }
+  assert.ok(thrown !== null, 'malformed ledger must throw');
+  assert.ok(!(thrown instanceof UsageError), 'a runtime error must NOT be a UsageError');
 });

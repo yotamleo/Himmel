@@ -1,6 +1,9 @@
 /.claude/worktrees
 .env
 scripts/jira/dist/
+# where-are-we ledger L2 (HIMMEL-516): regenerated-from-live-sources cache, not
+# source of truth — never commit it.
+/.where-are-we/
 # node_modules anywhere — none are tracked. A per-package list let
 # marketplace/plugins/*/node_modules/ slip through and be sweepable (HIMMEL-371).
 node_modules/

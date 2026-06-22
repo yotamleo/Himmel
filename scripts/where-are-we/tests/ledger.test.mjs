@@ -51,3 +51,14 @@ test('malformed JSON line throws with correct 1-based line number', () => {
   assert.ok(thrown !== null, 'expected an error to be thrown');
   assert.ok(thrown.message.includes('2'), `expected line number 2 in error message, got: ${thrown.message}`);
 });
+
+// HIMMEL-530 Task 3b: readRecords re-throws non-ENOENT errors (no existsSync TOCTOU).
+// Reading a directory as a file fails with a non-ENOENT code (EISDIR on POSIX,
+// EISDIR/EPERM on Windows) — assert it threw and was NOT swallowed as "absent".
+test('read of a path that is a directory re-throws (not treated as absent)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'waw-'));
+  let thrown = null;
+  try { readRecords(dir); } catch (e) { thrown = e; }
+  assert.ok(thrown !== null, 'reading a directory must throw, not return []');
+  assert.notEqual(thrown.code, 'ENOENT', 'a directory is not ENOENT — must not be swallowed');
+});

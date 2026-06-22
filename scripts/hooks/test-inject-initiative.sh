@@ -295,6 +295,44 @@ assert_has  "fail-open exits 0" "rc=0" "$out"
 body=$(unset HIMMEL_INITIATIVE; printf '{}' | HIMMEL_REPO="$TMPII/noenv" bash "$hook")
 if [ -z "$body" ]; then assert_pass "no directive when no .env + env unset"; else assert_fail "expected OFF, got: $body"; fi
 
+# ---------- 26. tasklist-seed preamble (HIMMEL-539) --------------------------
+# An armed/resumed session must be instructed at start to seed the native
+# tasklist (TaskCreate/TaskUpdate) from the handover's ordered steps. The
+# instruction is an UNNUMBERED, handover-conditional preamble inside the active
+# block — so it renders whenever the directive renders, never when OFF, and does
+# NOT perturb the numbered leg list.
+echo "Test 26: tasklist-seed preamble present when active"
+out=$(printf '{}' | HIMMEL_INITIATIVE=1 bash "$hook")
+assert_has "tasklist-seed preamble present"   "seed your native tasklist" "$out"
+assert_has "preamble names TaskCreate"        "TaskCreate"                "$out"
+assert_has "preamble is handover-conditional" "resumed from a handover"   "$out"
+
+echo "Test 27: preamble present for a single-leg subset (not leg-gated)"
+out=$(printf '{}' | HIMMEL_INITIATIVE=prcheck bash "$hook")
+assert_has   "preamble present for prcheck subset"  "seed your native tasklist" "$out"
+# Belt: the preamble did not perturb leg numbering — prcheck is still leg 1, and
+# no second numbered leg appears (mirrors tests 8/16).
+assert_has   "prcheck still numbered first"         "1\. Run"            "$out"
+assert_lacks "no second numbered leg from preamble" "2\."                "$out"
+# Belt: the preamble is printed BEFORE the numbered legs, so it can never acquire
+# a leg number. A refactor moving it after the legs would keep the assertions
+# above green (preamble still present; legs still numbered) yet silently break
+# the ordering contract — assert the position directly.
+seed_ln=$(printf '%s\n' "$out" | grep -n "seed your native tasklist" | head -1 | cut -d: -f1)
+leg1_ln=$(printf '%s\n' "$out" | grep -n "1\. Run" | head -1 | cut -d: -f1)
+if [ -n "$seed_ln" ] && [ -n "$leg1_ln" ] && [ "$seed_ln" -lt "$leg1_ln" ]; then
+    assert_pass "preamble precedes the numbered legs (pos $seed_ln < $leg1_ln)"
+else
+    assert_fail "preamble must precede leg 1 (seed_ln=$seed_ln leg1_ln=$leg1_ln)"
+fi
+
+echo "Test 28: preamble present in the overnight profile"
+out=$(printf '{}' | HIMMEL_OVERNIGHT=1 HIMMEL_INITIATIVE_OVERNIGHT=all bash "$hook")
+assert_has "preamble present in overnight profile" "seed your native tasklist" "$out"
+
+# OFF-guard: tests 1/4/7/25 already assert empty stdout when unset/falsy, which
+# is the structural proof the preamble cannot leak outside the active block.
+
 echo
 echo "RESULTS: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

@@ -111,6 +111,20 @@ _steps_csv=$(printf '%s' "$active" | tr ' ' ',')
 # list is built dynamically, so it renumbers to the active subset.
 printf '<system-reminder>\n%s is active for this Claude Code session (%s profile).\n' "$_var" "$_profile"
 printf 'Active steps: %s\n' "$_steps_csv"
+# Tasklist-seed preamble (HIMMEL-539): an UNNUMBERED, handover-conditional
+# instruction printed BEFORE the numbered legs (so it cannot acquire a leg
+# number and does not break the "completion point:" → list coupling). The native
+# tasklist is an agent-side tool (TaskCreate/TaskList/TaskUpdate) no shell can
+# call — this prose is the only way to seed it on an armed/resumed session.
+cat <<'EOF'
+
+First — if this session was resumed from a handover (you were asked to "load
+<handover>"), seed your native tasklist from the handover's ordered step list
+BEFORE anything else, whatever heading that list uses (e.g. a "How to execute"
+/ numbered-steps section): call TaskCreate once per step, then TaskUpdate each
+task as you start and finish it so progress stays glanceable. Keeping it updated
+through the run is best-effort. If you were not resumed from a handover, skip this.
+EOF
 cat <<'EOF'
 
 Take initiative: drive the current work to done without waiting for an

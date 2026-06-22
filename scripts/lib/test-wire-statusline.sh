@@ -10,7 +10,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # 1. fresh file gets a valid statusLine
 bash "$HELPER" "$TMP/s1.json" "/c/Users/me/himmel" >/dev/null
 [ "$(jq -r .statusLine.type "$TMP/s1.json")" = "command" ] || fail "fresh type"
-[ "$(jq -r .statusLine.command "$TMP/s1.json")" = 'bash "/c/Users/me/himmel/scripts/statusline/bin/statusline.sh"' ] || fail "fresh command"
+[ "$(jq -r .statusLine.command "$TMP/s1.json")" = 'bash "/c/Users/me/himmel/scripts/where-are-we/statusline.sh"' ] || fail "fresh command"
 echo "ok 1 fresh file"
 
 # 2. existing keys preserved
@@ -30,7 +30,7 @@ echo "ok 3 idempotent"
 
 # 4. backslash himmel path normalized to forward slashes
 bash "$HELPER" "$TMP/s4.json" 'C:\Users\me\himmel' >/dev/null
-[ "$(jq -r .statusLine.command "$TMP/s4.json")" = 'bash "C:/Users/me/himmel/scripts/statusline/bin/statusline.sh"' ] || fail "backslash normalize"
+[ "$(jq -r .statusLine.command "$TMP/s4.json")" = 'bash "C:/Users/me/himmel/scripts/where-are-we/statusline.sh"' ] || fail "backslash normalize"
 echo "ok 4 backslash normalized"
 
 # 5. overwrites a stale statusLine (authoritative)

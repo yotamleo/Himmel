@@ -23,8 +23,12 @@ unwire_statusline() {
     echo "unwire-statusline: $settings is not valid JSON -- refusing to modify" >&2
     return 1
   fi
+  # Match either the himmel wrapper (scripts/where-are-we/statusline.sh,
+  # HIMMEL-538) or the older vendored path (scripts/statusline/bin/statusline.sh,
+  # for sessions wired before the wrapper landed) — both are "the himmel
+  # statusLine". A user's own custom statusLine matches neither and is left alone.
   printf '%s' "$base" | jq '
-    if ((.statusLine.command? // "") | test("scripts/statusline/bin/statusline[.]sh"))
+    if ((.statusLine.command? // "") | test("scripts/(statusline/bin/statusline|where-are-we/statusline)[.]sh"))
     then del(.statusLine) else . end
   ' > "$settings.unwiresl.tmp" && mv "$settings.unwiresl.tmp" "$settings"
   echo "  removed himmel statusLine (if present) -> $settings"

@@ -20,6 +20,11 @@ printf '%s' '{"statusLine":{"type":"command","command":"bash \"C:/h/scripts/stat
 bash "$sl" "$s" >/dev/null
 check "statusLine removed"      "$(jq -r 'has("statusLine")' "$s")" "false"
 check "statusLine sibling kept" "$(jq -r '.env.X' "$s")" "1"
+# 1b. removes the himmel WRAPPER path too (scripts/where-are-we/statusline.sh; HIMMEL-538).
+s="$td/sl1b.json"
+printf '%s' '{"statusLine":{"type":"command","command":"bash \"C:/h/scripts/where-are-we/statusline.sh\""},"env":{"X":"1"}}' > "$s"
+bash "$sl" "$s" >/dev/null
+check "wrapper statusLine removed" "$(jq -r 'has("statusLine")' "$s")" "false"
 # 2. a NON-himmel custom statusLine is left untouched.
 s="$td/sl2.json"
 printf '%s' '{"statusLine":{"type":"command","command":"bash /opt/my-own-statusline.sh"}}' > "$s"

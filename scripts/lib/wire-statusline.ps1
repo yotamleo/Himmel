@@ -7,7 +7,9 @@
 #   pwsh -File wire-statusline.ps1 -SettingsPath <path> -HimmelPath <path>
 #
 # Sets .statusLine = { type: "command",
-#   command: 'bash "<himmel>/scripts/statusline/bin/statusline.sh"' }
+#   command: 'bash "<himmel>/scripts/where-are-we/statusline.sh"' }
+# (the himmel wrapper composes the VENDORED scripts/statusline/bin/statusline.sh
+#  with the where-are-we segment — active handover + epic progression; HIMMEL-538)
 # Idempotent, atomic (temp + move), non-destructive (other keys preserved;
 # file + parent dir created if absent). Normalizes JSON through `jq --indent 2`
 # when jq is on PATH (matches win11.ps1's Write-SettingsJson), else falls back
@@ -27,7 +29,7 @@ function Set-HimmelStatusLine {
 
     # Forward-slash the himmel path so the `bash "..."` command is valid.
     $himmelFwd = $HimmelPath.Replace('\', '/')
-    $cmd = "bash `"$himmelFwd/scripts/statusline/bin/statusline.sh`""
+    $cmd = "bash `"$himmelFwd/scripts/where-are-we/statusline.sh`""
 
     if (Test-Path $SettingsPath) {
         $raw = Get-Content $SettingsPath -Raw
