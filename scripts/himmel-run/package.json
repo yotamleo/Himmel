@@ -20,7 +20,7 @@
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
