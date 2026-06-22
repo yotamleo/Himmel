@@ -74,6 +74,72 @@ else
   echo "FAIL: fillable_keys errored on real .env.example"; fails=$((fails+1))
 fi
 
+# dotenv_help: contiguous `#` block above a key + inline trailing comment
+# (HIMMEL-546). Fixture exercises multi-line block, block+inline, inline-only
+# (a KEY line directly above breaks contiguity), blank-line break, and absent.
+f6="$td/help.env"
+{
+  printf '# === SECTION: TEST ===\n'
+  printf '\n'
+  printf '# Operator slug help line one.\n'
+  printf '# help line two.\n'
+  printf 'USER_SLUG=your-slug\n'
+  printf '# group header ---\n'
+  printf 'FIRST=a   # inline for first\n'
+  printf 'SECOND=b  # inline for second\n'
+  printf '\n'
+  printf '# stray comment\n'
+  printf '\n'
+  printf 'THIRD=c\n'
+} > "$f6"
+check "help multi-line block (no inline)" "$(dotenv_help "$f6" USER_SLUG | tr '\n' '|')" "Operator slug help line one.|help line two.|"
+check "help block + inline"               "$(dotenv_help "$f6" FIRST | tr '\n' '|')" "group header ---|inline for first|"
+check "help inline only (key line above)" "$(dotenv_help "$f6" SECOND | tr '\n' '|')" "inline for second|"
+check "help blank line breaks contiguity" "$(dotenv_help "$f6" THIRD | tr '\n' '|')" ""
+check "help empty when key absent"        "$(dotenv_help "$f6" MISSING)" ""
+
+# dotenv_help: a commented-out `# OTHERKEY=...` assignment is a doc-block
+# boundary (belongs to the previous var) -> it resets the block and never leaks
+# as a literal KEY=value help line. Prose that merely contains '=' is kept.
+f6c="$td/help-boundary.env"
+{
+  printf '# Help for projects.\n'
+  printf '# JIRA_PROJECTS=HIMMEL,LUNA\n'
+  printf '# Help for board id only.\n'
+  printf '# set X=Y in your shell to override.\n'
+  printf 'JIRA_BOARD_ID=123\n'
+} > "$f6c"
+check "help: commented KEY= resets block (no leak)" "$(dotenv_help "$f6c" JIRA_BOARD_ID | tr '\n' '|')" "Help for board id only.|set X=Y in your shell to override.|"
+
+# dotenv_help: key match is exact (anchored on `KEY=`), no prefix collision.
+f6d="$td/help-prefix.env"
+{
+  printf '# Help for FOO.\n'
+  printf 'FOO=1\n'
+  printf '# Help for FOOBAR.\n'
+  printf 'FOOBAR=2\n'
+} > "$f6d"
+check "help: no prefix collision (FOO)"    "$(dotenv_help "$f6d" FOO | tr '\n' '|')" "Help for FOO.|"
+check "help: no prefix collision (FOOBAR)" "$(dotenv_help "$f6d" FOOBAR | tr '\n' '|')" "Help for FOOBAR.|"
+
+# _fe_format_help: non-empty -> leading blank line + 4-space indent per line.
+check "format_help non-empty" "$(_fe_format_help "$(printf 'a\nb')" | tr '\n' '|')" "|    a|    b|"
+# _fe_format_help: empty input -> no output (bare prompt).
+check "format_help empty" "$(_fe_format_help "")" ""
+
+# dotenv_help CRLF-safe: \r on comment + key lines is stripped from the output.
+f6b="$td/help-crlf.env"
+printf '# crlf help line.\r\nKEY=v   # crlf inline\r\n' > "$f6b"
+check "help strips CR (block+inline)" "$(dotenv_help "$f6b" KEY | tr '\n' '|')" "crlf help line.|crlf inline|"
+
+# dotenv_help smoke on real .env.example: JIRA_API_TOKEN's inline carries the
+# token-URL (where-to-get-it), so help is non-empty.
+if [ -n "$(dotenv_help "$here/../../.env.example" JIRA_API_TOKEN)" ]; then
+  echo "ok - dotenv_help smoke on real .env.example (JIRA_API_TOKEN non-empty)"
+else
+  echo "FAIL: dotenv_help empty for JIRA_API_TOKEN on real .env.example"; fails=$((fails+1))
+fi
+
 # fill_env non-interactive (stdin not a TTY) -> rc 0, file unchanged.
 f5="$td/f5.env"
 printf 'JIRA_API_TOKEN=keepme\n' > "$f5"

@@ -55,6 +55,76 @@ dotenv_set() {
   fi
 }
 
+# _fe_inline_comment <line> -- text of a trailing ` # comment` on a `KEY=` line
+# (the first whitespace-preceded '#'), trimmed; empty if none. A '#' NOT preceded
+# by whitespace (e.g. inside a URL fragment) is left as part of the value.
+_fe_inline_comment() {
+  local line="$1" rest
+  line="${line%$'\r'}"
+  case "$line" in
+    *[[:space:]]"#"*) rest="${line#*[[:space:]]#}" ;;
+    *) return 0 ;;
+  esac
+  _fe_trim "$rest"
+}
+
+# dotenv_help <example-file> <key> -- the per-var help blurb for KEY: the
+# contiguous `#` comment block immediately ABOVE the first `KEY=` line, followed
+# by KEY's inline trailing comment, one cleaned line each. Empty if none.
+# Contiguity is broken by a blank line, any non-comment line, OR a commented-out
+# `# OTHERKEY=...` assignment (it delimits the *previous* variable's doc block,
+# so it is not this key's help). A section/group-header comment directly above a
+# key (e.g. `# --- Jira ... ---`) IS included as the first help line, by design.
+# CR-tolerant. Keeps .env.example the single source of truth -- the script holds
+# no duplicate map. Reads ONLY the example file, never the live .env (HIMMEL-546).
+dotenv_help() {
+  local file="$1" key="$2" line trimmed txt keyhead block="" inline=""
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    trimmed="$(_fe_trim "$line")"
+    case "$trimmed" in
+      "$key="*)
+        inline="$(_fe_inline_comment "$line")"
+        printf '%s' "$block"
+        [ -n "$inline" ] && printf '%s\n' "$inline"
+        return 0
+        ;;
+      "#"*)
+        txt="${trimmed#\#}"; txt="${txt# }"    # strip one leading '#' then space
+        keyhead="${txt%%=*}"
+        case "$txt" in
+          # A commented-out `IDENT=...` assignment (clean identifier before '=',
+          # not prose that merely contains '=') is a doc-block boundary -> reset.
+          [A-Za-z_]*=*)
+            case "$keyhead" in
+              *[!A-Za-z0-9_]*) block="${block}${txt}"$'\n' ;;   # space etc. -> prose
+              *) block="" ;;                                     # real KEY= -> boundary
+            esac
+            ;;
+          *) block="${block}${txt}"$'\n' ;;
+        esac
+        ;;
+      "")
+        block=""                               # blank line breaks contiguity
+        ;;
+      *)
+        block=""                               # any other line breaks contiguity
+        ;;
+    esac
+  done < "$file"
+}
+
+# _fe_format_help <help-text> -- render a help blurb for the interactive prompt:
+# a leading blank line then each line indented four spaces. Empty input emits
+# nothing (the prompt then shows bare). Pure (stdout only).
+_fe_format_help() {
+  local help="$1" hl
+  [ -n "$help" ] || return 0
+  echo ""
+  printf '%s\n' "$help" | while IFS= read -r hl; do printf '    %s\n' "$hl"; done
+}
+
 # fillable_keys <example-file> -- names of every UNCOMMENTED `KEY=` line, in file
 # order (whole file; no section logic). CR-tolerant.
 fillable_keys() {
@@ -82,6 +152,8 @@ fill_env() {
   echo "Fill .env values (press Enter to skip / keep current):"
   while IFS= read -r key; do
     cur="$(dotenv_get "$envfile" "$key")"
+    # Per-var help blurb from the .env.example comments, indented above the prompt.
+    _fe_format_help "$(dotenv_help "$example" "$key")"
     printf '  %s [%s]: ' "$key" "$cur"
     IFS= read -r ans || ans=""
     if [ -n "$ans" ]; then
