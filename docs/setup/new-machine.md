@@ -452,6 +452,29 @@ bash Himmel/scripts/machine-setup/install-plugins.sh --scope project
 The plugins carry their own slash commands + skills — that's all you need to use
 them.
 
+### Troubleshooting: `Host key verification failed` on plugin install (HIMMEL-549)
+
+Every `@himmel` plugin installs from the **local** marketplace clone except
+`claude-obsidian`, which is sourced from a separate GitHub repo and is the only
+one Claude Code must `git clone` over the network. himmel's manifest now points
+it at an explicit **HTTPS** url so a fresh machine clones over HTTPS (no SSH
+host key needed). If you still hit:
+
+```
+Failed to clone repository: ... No ED25519 host key is known for github.com
+and you have requested strict checking. Host key verification failed.
+```
+
+your git is rewriting HTTPS → SSH (a `url."git@github.com:".insteadOf
+"https://github.com/"` in `~/.gitconfig`), so the clone resolves over SSH on a
+box with no `github.com` entry in `~/.ssh/known_hosts`. Pre-seed the host key
+once, then retry the install:
+
+```bash
+ssh-keyscan github.com >> ~/.ssh/known_hosts
+claude plugin install claude-obsidian@himmel --scope user
+```
+
 ### Remove / move between scopes
 
 - **Remove (user scope):** `/plugin uninstall <name>@himmel`.

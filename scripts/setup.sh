@@ -84,6 +84,15 @@ if [ "${#_missing[@]}" -gt 0 ]; then
   # otherwise leak into this `set -e`-only script. It installs system-wide; we
   # re-check `command -v` below to see what truly remains.
   bash "$SETUP_DIR/setup/ensure-tools.sh" "${_missing[@]}" || true
+  # bun's official installer (ensure-tools.sh) drops the binary in ~/.bun/bin,
+  # which isn't on PATH in this process yet — add it so the re-check below and the
+  # rest of setup find the freshly-installed bun, and hint the operator to persist
+  # it for future shells (HIMMEL-548).
+  if [ -x "$HOME/.bun/bin/bun" ] && ! command -v bun >/dev/null 2>&1; then
+    PATH="$HOME/.bun/bin:$PATH"; export PATH
+    echo "  bun installed to ~/.bun/bin — add it to PATH permanently:"
+    echo "    echo 'export PATH=\"\$HOME/.bun/bin:\$PATH\"' >> ~/.zshrc   # or ~/.bashrc"
+  fi
   _still=()
   for _tool in "${_missing[@]}"; do
     command -v "$_tool" >/dev/null 2>&1 || _still+=("$_tool")
