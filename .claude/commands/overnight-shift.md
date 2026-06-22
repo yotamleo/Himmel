@@ -112,6 +112,34 @@ dispatch step from `docs/handover/overnight-mode.md`.
    and feed THAT file to the report in step 6 (there is no
    `/tmp/overnight-final.tsv` in this case, because reconcile never ran).
 
+   e. **Emit structured status back to the ledger (HIMMEL-517, L3 push-side).**
+      The orchestrator holds the structured signal the where-are-we ledger's
+      `next_action`/`blockers`/`awaiting_operator` fields exist for — populate
+      them so the **next** session's L2 view surfaces real status (closes the
+      loop: L3 write → ledger → L2 read). For each final row that is `blocked`
+      or carries a `DECISION`, emit through the single writer (judgement-driven —
+      you decide what is blocked; skip cleanly when the ledger dir is absent /
+      where-are-we is OFF):
+
+      ```bash
+      # blocked row → record the blocker(s):
+      node scripts/where-are-we/provision.mjs emit \
+        --ledger .where-are-we/ledger.jsonl --key "$KEY" --blockers "$REASON"
+      # operator-decision row → record the operator-ask:
+      node scripts/where-are-we/provision.mjs emit \
+        --ledger .where-are-we/ledger.jsonl --key "$KEY" --awaiting "$DECISION"
+      # a row that went green → clear any stale blocker:
+      node scripts/where-are-we/provision.mjs emit \
+        --ledger .where-are-we/ledger.jsonl --key "$KEY" --clear-blockers
+      ```
+
+      `emit` only writes the three fields the orchestrator owns — `next_action`
+      and `blockers` are handover-authoritative, `awaiting_operator` is
+      authoritative for any source; `status`/`branch` stay jira/git-owned and
+      would vanish in fold from a handover record. It appends via the same
+      `appendRecords` lock the collectors use (single-writer rule holds). Skip
+      entirely if `.where-are-we/` does not exist.
+
 6. **Write the consolidated morning report (HIMMEL-258).**
    Feed the final rows —
 

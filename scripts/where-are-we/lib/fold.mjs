@@ -1,7 +1,7 @@
 // scripts/where-are-we/lib/fold.mjs
 import { hasField, isClear, validateRecord } from './schema.mjs';
 
-const TERMINAL = new Set(['done', 'merged']);
+export const TERMINAL = new Set(['done', 'merged']);
 const MERGEABLE = ['status', 'pr', 'branch', 'next_action', 'blockers', 'awaiting_operator', 'lock'];
 
 function authoritative(field, source, kind) {

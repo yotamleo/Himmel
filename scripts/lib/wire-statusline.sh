@@ -9,7 +9,9 @@
 #
 # Sets:
 #   .statusLine = { type: "command",
-#                   command: "bash \"<himmel>/scripts/statusline/bin/statusline.sh\"" }
+#                   command: "bash \"<himmel>/scripts/where-are-we/statusline.sh\"" }
+# The himmel wrapper composes the VENDORED scripts/statusline/bin/statusline.sh
+# with the where-are-we segment (active handover + epic progression; HIMMEL-538).
 #
 # Idempotent (re-setting the same value is a no-op), atomic (temp file + mv),
 # and non-destructive (all other keys preserved; file + parent dir created if
@@ -24,7 +26,7 @@ wire_statusline() {
   # Forward-slash the himmel path so the `bash "..."` command is valid even
   # when a caller passes a Windows backslash path (Git Bash tolerates /c/... ).
   local himmel_fwd="${himmel//\\//}"
-  local cmd="bash \"${himmel_fwd}/scripts/statusline/bin/statusline.sh\""
+  local cmd="bash \"${himmel_fwd}/scripts/where-are-we/statusline.sh\""
 
   mkdir -p "$(dirname "$settings")"
   local base="{}"

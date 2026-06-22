@@ -483,12 +483,64 @@ if [ -n "$CHANNELS" ] && [ -z "${ARM_CHANNELS_OK:-}" ] && bridge_poller_live; th
     exit 5
 fi
 
-# Task name — sanitize handover path for use as a task identifier.
-# Matches the convention from schedule-resume.sh:88 so jobs created by
-# either route share a name space (operator can manage them with the
-# same schtasks/atq commands).
-# shellcheck disable=SC1003  # `\\` in single quotes is two backslashes which tr collapses to one literal `\` — intentional
-TASK_NAME="HIMMEL-Resume-$(printf '%s' "$HANDOVER_PATH" | tr '/\\' '__' | tr -cd '[:alnum:]_-')"
+# Ticket inference for the scheduler task name (HIMMEL-540). The task name is
+# built AFTER the cwd/worktree resolution block below (so $WORKTREE_BRANCH is
+# fully resolved); these helpers are defined here and used there.
+#
+# _validate_key <raw> — echo the canonical ticket key (uppercased) or empty.
+# errexit-safe: a `case` glob (never a bare `grep -q`); the last command is the
+# `case` (rc 0 on every branch), so it never aborts under `set -euo pipefail`.
+_validate_key() {
+    local k
+    k=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')   # himmel-540 -> HIMMEL-540
+    # Fully-anchored canonical shape <KEY>-<NUM> with nothing trailing, so a
+    # malformed value (e.g. ABC-123-456 or trailing junk) is rejected rather than
+    # truncated-and-accepted. `grep -qE` inside `if` is errexit-safe; the `if` is
+    # the function's last command and returns rc 0 whether or not it matched.
+    if printf '%s' "$k" | grep -qE '^[A-Z][A-Z0-9]*-[0-9]+$'; then
+        printf '%s' "$k"
+    fi
+}
+
+# _infer_ticket <handover_path> — echo the inferred ticket key or empty. Sources,
+# most-robust-first, falling through on miss:
+#   1. ticket: front-matter key (consume-if-present; forward-compat).
+#   2. worktree branch type/<ticket>-slug ($WORKTREE_BRANCH; lowercase->uppercase).
+#   3. first H1 (`# `) line's first canonical [A-Z][A-Z0-9]+-[0-9]+ key.
+# Each `grep` is `|| true`-guarded — grep exits 1 on no-match and `set -o
+# pipefail` would otherwise abort the assignment. The last command (`_validate_key`
+# of src-3) returns rc 0, so the function is safe to call from an errexit context.
+_infer_ticket() {
+    local _ho="$1" _raw _key
+    # src-1: ticket: frontmatter (same awk/sed/rtrim/unquote idiom as resume_cwd:).
+    # `|| true` keeps the assignment errexit-safe even if head closes the pipe
+    # early (SIGPIPE), matching the explicit guards on src-2/src-3 below.
+    _raw=$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$_ho" \
+        | sed -n 's/^ticket:[[:space:]]*//p' | head -1) || true
+    _raw="${_raw%"${_raw##*[![:space:]]}"}"   # rtrim (incl trailing \r)
+    _raw="${_raw#\'}" ; _raw="${_raw%\'}"
+    _raw="${_raw#\"}" ; _raw="${_raw%\"}"
+    _key=$(_validate_key "$_raw")
+    if [ -n "$_key" ]; then printf '%s' "$_key"; return 0; fi
+    # src-2: worktree branch type/<ticket>-slug — real branches are lowercase,
+    # so _validate_key uppercases. Takes the FIRST word-digits token from the
+    # slug; for the himmel convention (type/<key>-N-rest) that IS the ticket.
+    # Best-effort: a non-conventional slug that merely looks keyed (e.g.
+    # feat/release-2024-x) yields a cosmetically-wrong row name only — the
+    # per-handover-unique path-suffix still keys dedup/collision correctly.
+    if [ -n "$WORKTREE_BRANCH" ]; then
+        _raw=$(printf '%s\n' "${WORKTREE_BRANCH#*/}" \
+            | grep -oiE '[A-Za-z][A-Za-z0-9]*-[0-9]+' | head -1) || true
+        _key=$(_validate_key "$_raw")
+        if [ -n "$_key" ]; then printf '%s' "$_key"; return 0; fi
+    fi
+    # src-3: first H1 line only, first canonical (uppercase) key. H1-only so a
+    # stray ticket *mention* in the body can't be welded into the scheduler name.
+    _raw=$(sed -n '/^# /{p;q}' "$_ho")
+    _raw=$(printf '%s\n' "$_raw" | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' | head -1) || true
+    _validate_key "$_raw"
+}
+
 RESUME_PROMPT="load $HANDOVER_PATH overnight mode"
 
 # Compute working directory for the relaunched claude process. Without
@@ -618,6 +670,24 @@ else
     fi
     unset _fm_cwd _fm_cwd_found
 fi
+
+# Task name — ticket-aware (HIMMEL-540). Inject the inferred ticket ID so
+# scheduler rows (schtasks /query, atq) are scannable + attributable. The
+# HIMMEL-Resume- prefix AND the per-handover-unique <path-suffix> are preserved,
+# so every dedup/collision/marker site that reads $TASK_NAME is unaffected — only
+# the value gains a leading <TICKET>- segment. Built HERE (not at parse time) so
+# $WORKTREE_BRANCH (resolved above) is available to _infer_ticket. The path-suffix
+# matches the schedule-resume.sh:88 convention so broad cross-route dedup (the
+# HIMMEL-Resume- prefix grep) still matches between routes.
+_ho_ticket=$(_infer_ticket "$HANDOVER_PATH")
+# shellcheck disable=SC1003  # `\\` in single quotes is two backslashes which tr collapses to one literal `\` — intentional
+_path_suffix=$(printf '%s' "$HANDOVER_PATH" | tr '/\\' '__' | tr -cd '[:alnum:]_-')
+if [ -n "$_ho_ticket" ]; then
+    TASK_NAME="HIMMEL-Resume-${_ho_ticket}-${_path_suffix}"
+else
+    TASK_NAME="HIMMEL-Resume-${_path_suffix}"
+fi
+unset _ho_ticket _path_suffix
 
 # Pre-trust the resolved cwd (HIMMEL-386) so the fired relaunch doesn't stall
 # on Claude Code's interactive workspace-trust prompt ("Is this a project you

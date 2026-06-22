@@ -35,6 +35,13 @@ assert_contains() {
     local name="$1" needle="$2" haystack="$3"
     if printf '%s' "$haystack" | grep -qF -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
 }
+assert_not_contains() {
+    local name="$1" needle="$2" haystack="$3"
+    if printf '%s' "$haystack" | grep -qF -- "$needle"; then fail "$name" "unexpected: $needle"; else pass "$name"; fi
+}
+
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+PROVISION_REAL="node $REPO_ROOT/scripts/where-are-we/provision.mjs"
 
 TMP_ROOT=$(mktemp -d)
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
@@ -141,6 +148,34 @@ fi
 echo "TEST: empty title falls back to 'ticket' slug"
 plan=$(JIRA_CMD="$FAKE_JIRA" FAKE_JIRA_OUT=$'HIMMEL-50\tTask\tTo Do\t' bash "$SCRIPT")
 assert_contains "empty title slug uses fallback" "feat/HIMMEL-50-ticket" "$plan"
+
+# Test 9: L3 push-side provisioning — seeded ledger embeds the slice ---
+# (HIMMEL-517). A substantive record for HIMMEL-101 → the plan gains a
+# "prior ledger state:" block with that ticket's card.
+
+echo "TEST: seeded ledger embeds the prior slice in the subagent prompt"
+L3_LEDGER="$TMP_ROOT/wa-ledger.jsonl"
+{
+    printf '%s\n' '{"ts":"2026-06-22T10:00:00Z","source":"jira","key":"HIMMEL-101","kind":"ticket","status":"in-progress"}'
+    printf '%s\n' '{"ts":"2026-06-22T10:05:00Z","source":"handover","key":"HIMMEL-101","kind":"ticket","next_action":"write the dock tests"}'
+} >"$L3_LEDGER"
+plan=$(JIRA_CMD="$FAKE_JIRA" FAKE_JIRA_OUT=$'HIMMEL-101\tTask\tTo Do\tWidget A
+HIMMEL-102\tStory\tIn Progress\tWidget B' \
+    WHERE_ARE_WE_LEDGER="$L3_LEDGER" PROVISION_CMD="$PROVISION_REAL" \
+    bash "$SCRIPT" --project HIMMEL --limit 2)
+assert_contains "provisioning block present"   "prior ledger state:"        "$plan"
+assert_contains "slice shows the ticket card"  "# HIMMEL-101"               "$plan"
+assert_contains "slice shows the next_action"  "- next: write the dock tests" "$plan"
+# HIMMEL-102 has no ledger record → no slice block for it (miss is silent).
+
+# Test 10: no ledger -> no provisioning block (fail-open, plan unchanged) ---
+
+echo "TEST: absent ledger emits no provisioning block"
+plan=$(JIRA_CMD="$FAKE_JIRA" FAKE_JIRA_OUT=$'HIMMEL-101\tTask\tTo Do\tWidget A' \
+    WHERE_ARE_WE_LEDGER="$TMP_ROOT/does-not-exist.jsonl" PROVISION_CMD="$PROVISION_REAL" \
+    bash "$SCRIPT" --project HIMMEL --limit 1)
+assert_contains     "plan still builds"            "HIMMEL-101"          "$plan"
+assert_not_contains "no provisioning block w/o ledger" "prior ledger state:" "$plan"
 
 # Summary --------------------------------------------------------------
 

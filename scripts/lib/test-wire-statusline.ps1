@@ -20,7 +20,7 @@ function Wire([string]$path, [string]$himmel) {
 # 1 fresh file + backslash path normalized
 Wire "$tmp\s1.json" 'C:\fake\himmel' | Out-Null
 $s1 = Get-Content "$tmp\s1.json" -Raw | ConvertFrom-Json
-Check ($s1.statusLine.command -eq 'bash "C:/fake/himmel/scripts/statusline/bin/statusline.sh"') "1 fresh+backslash-normalized"
+Check ($s1.statusLine.command -eq 'bash "C:/fake/himmel/scripts/where-are-we/statusline.sh"') "1 fresh+backslash-normalized"
 
 # 2 existing keys preserved
 '{"theme":"dark"}' | Set-Content "$tmp\s2.json"

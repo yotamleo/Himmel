@@ -61,7 +61,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash \"<himmel-path>/scripts/statusline/bin/statusline.sh\""
+    "command": "bash \"<himmel-path>/scripts/where-are-we/statusline.sh\""
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,

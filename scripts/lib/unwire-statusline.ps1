@@ -17,7 +17,9 @@ function Remove-Statusline {
     if ([string]::IsNullOrWhiteSpace($raw)) { return }
     $raw | jq -e . > $null 2>&1
     if ($LASTEXITCODE -ne 0) { throw "unwire-statusline: $SettingsPath is not valid JSON -- refusing to modify" }
-    $filter = 'if ((.statusLine.command? // "") | test("scripts/statusline/bin/statusline[.]sh")) then del(.statusLine) else . end'
+    # Match either the himmel wrapper (scripts/where-are-we/statusline.sh,
+    # HIMMEL-538) or the older vendored path — both are the himmel statusLine.
+    $filter = 'if ((.statusLine.command? // "") | test("scripts/(statusline/bin/statusline|where-are-we/statusline)[.]sh")) then del(.statusLine) else . end'
     $out = $raw | jq --indent 2 $filter
     if ($LASTEXITCODE -ne 0) { throw "unwire-statusline: jq transform failed" }
     $tmp = "$SettingsPath.unwiresl.tmp"

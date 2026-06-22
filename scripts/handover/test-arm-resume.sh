@@ -95,6 +95,26 @@ make_handover() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper (HIMMEL-540): a TICKET-BEARING handover, dedicated + separate from
+# make_handover so the dedup/collision/multislot suite stays ticketless.
+#   $1 = H1 title text, $2 = optional 'ticket:' frontmatter value,
+#   $3 = optional body line (printed AFTER the closing --- and H1 — i.e. body,
+#        not frontmatter — so N5 can mention a ticket key OUTSIDE the H1 scan).
+# ---------------------------------------------------------------------------
+make_handover_titled() {
+    local path="$HANDOVER_DIR/ho-titled-$RANDOM.md"
+    {
+        printf -- '---\n'
+        printf 'session_kind: test\n'
+        [ -n "${2:-}" ] && printf 'ticket: %s\n' "$2"
+        printf -- '---\n'
+        printf '# %s\n' "$1"
+        [ -n "${3:-}" ] && printf '%s\n' "$3"
+    } > "$path"
+    printf '%s' "$path"
+}
+
+# ---------------------------------------------------------------------------
 # Scheduler stub for T1-T7 (HIMMEL-380): these tests use --dry-run to probe
 # cwd-resolution logic and never intend to touch the real scheduler. Without
 # a stub, list_existing() calls the real schtasks/atq on a machine that may
@@ -1187,6 +1207,99 @@ rc=$?
 assert_rc "T37 --dedup-any exact collision is warn-only (rc 0)" 0 "$rc"
 assert_not_contains "T37 no ERR on --dedup-any collision" "ERR arm-resume: time collision" "$out"
 assert_contains "T37 --dedup-any emits WARN for exact collision" "WARN arm-resume: exact time collision" "$out"
+
+# ---------------------------------------------------------------------------
+# N1-N6: ticket-in-name + ticket-aware dedup/collision (HIMMEL-540)
+#
+# The scheduler task name now carries the inferred ticket ID:
+#   HIMMEL-Resume-<TICKET>-<path-suffix>   (ticket inferable)
+#   HIMMEL-Resume-<path-suffix>            (no ticket — unchanged form)
+# Every dry-run name check runs with PATH="$SCHED_STUB_T17:$PATH" so
+# list_existing hits the empty stub, not the real scheduler (a live armed job
+# would otherwise spuriously rc 3). The asserted substring HIMMEL-Resume-HIMMEL-540-
+# is interpolated whole into the dry-run scheduler line on every platform.
+# make_handover STAYS ticketless — these positive cases use make_handover_titled.
+# ---------------------------------------------------------------------------
+
+# N1: ticket: front-matter (src-1) → exact HIMMEL-Resume-HIMMEL-540- segment.
+HO=$(make_handover_titled "Test handover" "HIMMEL-540")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "N1 ticket: frontmatter arm exits 0" 0 "$rc"
+assert_contains "N1 name carries the front-matter ticket" "HIMMEL-Resume-HIMMEL-540-" "$out"
+
+# N2: H1-title-derived (src-3), no front-matter → exact ticket segment.
+HO=$(make_handover_titled "Resume: foo HIMMEL-540 (bar)")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "N2 H1-title-derived arm exits 0" 0 "$rc"
+assert_contains "N2 name carries the H1-title ticket" "HIMMEL-Resume-HIMMEL-540-" "$out"
+
+# N3: worktree branch (src-2), REAL LOWERCASE form feat/himmel-540-x →
+# uppercased HIMMEL-540 in the name. Proves src-2 normalizes AND that inference
+# runs after the relocated TASK_NAME build (the F3 ordering guard: at the old
+# line 491, the frontmatter/CLI worktree branch was resolved but the name was
+# built before it). Asserts the portable substring (not a Windows-only line).
+HO=$(make_handover "")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/himmel-540-x --dry-run 2>&1)
+rc=$?
+assert_rc "N3 worktree-branch arm exits 0" 0 "$rc"
+assert_contains "N3 lowercase branch ticket is uppercased into the name" "HIMMEL-Resume-HIMMEL-540-" "$out"
+
+# N4: ticketless fallback → current HIMMEL-Resume-<path-suffix> form, NO doubled
+# HIMMEL-...HIMMEL- segment (no regression for arms with no inferable ticket).
+HO=$(make_handover_titled "Test handover")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "N4 ticketless arm exits 0" 0 "$rc"
+assert_contains "N4 name keeps the HIMMEL-Resume- prefix" "HIMMEL-Resume-" "$out"
+assert_not_contains "N4 no ticket segment for a ticketless handover" "HIMMEL-Resume-HIMMEL-" "$out"
+
+# N5: body-mention-not-title — H1 has no key, a body line mentions LUNA-9. The
+# H1-only scan must NOT pick up the body key (a stray reference can't be welded
+# into the scheduler name). Falls back to the path-only name.
+HO=$(make_handover_titled "No ticket title" "" "see LUNA-9 for context")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "N5 body-mention arm exits 0" 0 "$rc"
+assert_not_contains "N5 body LUNA-9 is NOT welded into the name" "HIMMEL-Resume-LUNA-9-" "$out"
+assert_not_contains "N5 no ticket segment at all (H1 had no key)" "HIMMEL-Resume-HIMMEL-" "$out"
+
+# N6: collision (HIMMEL-407) is unbroken by the doubled-HIMMEL- name. A
+# ticket-bearing handover whose TASK_NAME is HIMMEL-Resume-HIMMEL-540-... still
+# HARD-REFUSES (rc 6) on an exact-minute collision with a DIFFERENT HIMMEL task.
+# Stateful stub + fresh empty DB so the dedup block doesn't fire first; the
+# ARM_COLLISION_CANDIDATES seam supplies a different task at the same minute.
+# (Self-exclusion is NOT asserted: the seam returns verbatim BEFORE the real
+# name-parse/self-exclude, so it is unreachable here by construction.)
+DBN6=$(_collision_db); DBN6D=$(_collision_dbdir); : > "$DBN6"; mkdir -p "$DBN6D"
+HO=$(make_handover_titled "Resume: HIMMEL-540 collision case")
+out=$(TMPDIR="$TMP" SCHED_DB="$DBN6" SCHED_DB_DIR="$DBN6D" PATH="$STATEFUL_STUB:$PATH" \
+    ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
+    bash "$ARM" --time "02:00" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "N6 collision still HARD-REFUSES with a ticket-prefixed name (rc 6)" 6 "$rc"
+assert_contains "N6 ERR names the collision" "time collision" "$out"
+
+# N7: ticket: front-matter with surrounding quotes AND CRLF line endings — src-1
+# reuses the exact rtrim-then-unquote idiom T5/T6/T7 prove fragile for resume_cwd:
+# on Windows-authored YAML. A `ticket: "HIMMEL-540"\r` must still resolve.
+HO_N7="$HANDOVER_DIR/ho-n7-crlf-$RANDOM.md"
+printf -- '---\r\nsession_kind: test\r\nticket: "HIMMEL-540"\r\n---\r\n# No key in title\r\n' > "$HO_N7"
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_N7" --dry-run 2>&1)
+rc=$?
+assert_rc "N7 quoted+CRLF ticket: arm exits 0" 0 "$rc"
+assert_contains "N7 quoted+CRLF ticket: resolves into the name" "HIMMEL-Resume-HIMMEL-540-" "$out"
+assert_not_contains "N7 no stray quote/CR welded into the name" 'HIMMEL-540"' "$out"
+
+# N8: malformed multi-dash ticket: value is REJECTED by _validate_key (anchored
+# ^<KEY>-<NUM>$) — falls back to the path-only name, no junk segment.
+HO_N8=$(make_handover_titled "No key title" "ABC-123-456")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_N8" --dry-run 2>&1)
+rc=$?
+assert_rc "N8 malformed multi-dash ticket: arm exits 0" 0 "$rc"
+assert_not_contains "N8 malformed key is not welded into the name" "HIMMEL-Resume-ABC-123" "$out"
+assert_contains "N8 falls back to the HIMMEL-Resume- path-only prefix" "HIMMEL-Resume-" "$out"
 
 # ---------------------------------------------------------------------------
 # Summary
