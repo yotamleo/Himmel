@@ -20,14 +20,14 @@ depth*, not a prerequisite — the steps below stand on their own.
 
 ## 1. Install (≈3 min hands-on, plus install time)
 
-Two ways in — pick by what you want.
+This guide is for **using himmel on your own project** — the common case. Bring
+himmel's hooks, guardrails, worktree workflow, and marketplace plugins/skills
+into a repo you already have, in one command. The full adopter guide is
+**[use-on-your-project.md](setup/use-on-your-project.md)** — start there.
 
-### A. Add himmel to your own project — *most people start here*
-
-Bring himmel's hooks, guardrails, worktree workflow, and marketplace
-plugins/skills into a repo you already have, in one command. The full adopter
-guide is **[use-on-your-project.md](setup/use-on-your-project.md)** — start
-there.
+> **Developing himmel itself** — running the repo standalone with `setup.sh`,
+> hacking on the harness — is a different path. It's not covered here; see
+> [setup/new-machine.md](setup/new-machine.md#4-himmel-repo).
 
 **Prerequisites** (the adopt script checks them and fails fast with hints):
 `git`, `bash` 3.2+ (**Git Bash** on Windows), `jq`, `python3`, and the
@@ -37,31 +37,31 @@ optional — only the worktree-prune step uses it.
 Clone once, then run the one-shot adopt for the profile you want:
 
 ```bash
-git clone https://github.com/yotamleo/Himmel
+git clone https://github.com/yotamleo/himmel
 ```
 
 **`core`** — the harness (hooks + guardrails + worktree commands + marketplace
 plugins/skills) wired into your repo. *Most people start here.*
 
 ```bash
-bash Himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
-# Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
+bash himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
+# Windows:  pwsh himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
 ```
 
 **`luna`** — the luna second-brain vault scaffold only (no harness). `--target`
 is the vault directory.
 
 ```bash
-bash Himmel/scripts/adopt.sh --profile luna --target ~/Documents/luna
-# Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile luna -Target $HOME\Documents\luna
+bash himmel/scripts/adopt.sh --profile luna --target ~/Documents/luna
+# Windows:  pwsh himmel\scripts\adopt.ps1 -Profile luna -Target $HOME\Documents\luna
 ```
 
 **`all`** — `core` + `luna`. The harness lands in `--target`; the vault in
 `--luna-target` (default `~/Documents/luna`).
 
 ```bash
-bash Himmel/scripts/adopt.sh --profile all --scope project --target /path/to/your/repo --luna-target ~/Documents/luna
-# Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile all -Scope project -Target C:\path\to\repo -LunaTarget $HOME\Documents\luna
+bash himmel/scripts/adopt.sh --profile all --scope project --target /path/to/your/repo --luna-target ~/Documents/luna
+# Windows:  pwsh himmel\scripts\adopt.ps1 -Profile all -Scope project -Target C:\path\to\repo -LunaTarget $HOME\Documents\luna
 ```
 
 **User scope** — enable himmel for *you* in every project on this machine
@@ -70,10 +70,10 @@ per-repo). Copy-paste:
 
 ```bash
 # core only:
-bash Himmel/scripts/adopt.sh --profile core --scope user
+bash himmel/scripts/adopt.sh --profile core --scope user
 # core + luna vault (vault defaults to ~/Documents/luna):
-bash Himmel/scripts/adopt.sh --profile all --scope user --luna-target ~/Documents/luna
-# Windows:  pwsh Himmel\scripts\adopt.ps1 -Profile all -Scope user -LunaTarget $HOME\Documents\luna
+bash himmel/scripts/adopt.sh --profile all --scope user --luna-target ~/Documents/luna
+# Windows:  pwsh himmel\scripts\adopt.ps1 -Profile all -Scope user -LunaTarget $HOME\Documents\luna
 ```
 
 `--scope project` wires it into your repo (commit the result and anyone who
@@ -81,27 +81,7 @@ clones it gets it); `--scope user` enables it for you in every project on this
 machine. Remove/move and the à-la-carte parts are in
 [use-on-your-project.md](setup/use-on-your-project.md).
 
-### B. Run / develop himmel itself standalone
-
-```bash
-git clone https://github.com/yotamleo/Himmel
-cd Himmel
-bash scripts/setup.sh    # Windows: powershell -File scripts\setup.ps1
-```
-
-`setup.sh` is non-destructive and tells you exactly what it does at each step:
-it verifies the [required tools](setup/new-machine.md#foundational-every-platform--verified-at-setup),
-installs the pre-commit + git hooks, builds the local Jira CLI, registers the
-qmd search index, and creates a ready-to-use `.env` from `.env.example`
-(placeholder values — you do **not** need to edit it for the core loop). Re-run
-it any time; it is idempotent.
-
-> One PATH note: setup installs `jira`, `pre-commit`, and `uv` into
-> `~/.local/bin`. If a fresh shell can't find them, add
-> `export PATH="$HOME/.local/bin:$PATH"` to your shell rc (setup reminds you at
-> the end).
-
-Either way, when the Claude Code plugins (handover, triage, obsidian, …) get
+When the Claude Code plugins (handover, triage, obsidian, …) get
 installed you choose where they're recorded: **user scope** (`~/.claude`, every
 project — the default) or **project scope** (this repo's `.claude/settings.json`,
 shared with anyone who clones it). The plugin step prompts you, or pass
