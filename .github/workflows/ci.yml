@@ -58,6 +58,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - run: cd scripts/luna-vitals && bun install --frozen-lockfile && bun test
+      # --frozen-lockfile fails if bun.lock has drifted from package.json. Catches
+      # the class of bug where a dep range is bumped in package.json but the
+      # lockfile is never regenerated (HIMMEL-553). Install-only: test coverage for
+      # luna-correlate is out of scope for this guard.
+      - run: cd marketplace/plugins/luna-correlate && bun install --frozen-lockfile
 
   # Multi-OS, gated to the nightly to stay free-tier-cheap: a plain
   # workflow_dispatch (and any non-schedule event) runs ubuntu only; `schedule`
