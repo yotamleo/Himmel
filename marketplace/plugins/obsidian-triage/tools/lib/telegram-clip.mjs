@@ -150,9 +150,16 @@ function yamlQuote(s) {
  * message. The clip carries NO `harvested_at:` so /harvest-clips treats it as
  * unharvested and ingests it. The original message text is preserved verbatim
  * in the body. Provenance keys: clipped_via / telegram_sender / telegram_ts /
- * telegram_msg_id.
+ * telegram_msg_id / telegram_chat_id.
+ *
+ * The clip carries NO `processed:`/`lifecycle:` marker and lands top-level in
+ * Clippings/, so by the 3-state derivation (design §12.A: state = folder +
+ * existing markers, no `lifecycle:` enum) it IS inbox-state — there is no marker
+ * to set (LUNA-91). `telegram_chat_id` is optional provenance the LUNA-91
+ * promotion digest needs to target a reply; it is omitted when not supplied
+ * (backward-compatible with clips filed before LUNA-91).
  */
-export function buildClip({ sender, ts, msgId, text, type, source, today }) {
+export function buildClip({ sender, ts, msgId, chatId, text, type, source, today }) {
   if (!CLIP_TYPES.includes(type)) {
     throw new Error(`buildClip: unknown clip type "${type}"`);
   }
@@ -169,6 +176,7 @@ export function buildClip({ sender, ts, msgId, text, type, source, today }) {
     `telegram_sender: ${yamlQuote(sender)}`,
     `telegram_ts: ${yamlQuote(ts)}`,
     `telegram_msg_id: ${yamlQuote(String(msgId))}`,
+    ...(chatId ? [`telegram_chat_id: ${yamlQuote(String(chatId))}`] : []),
     "---",
   ];
   const bodyText = String(text || "").trim();

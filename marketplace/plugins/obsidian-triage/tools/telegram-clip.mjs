@@ -13,7 +13,7 @@
  *
  * Usage:
  *   node telegram-clip.mjs --sender <user> --msg-id <id> --ts <iso>
- *       --text "<message>" [--text-file <path>] [--vault <path>] [--dry-run]
+ *       [--chat-id <id>] --text "<message>" [--text-file <path>] [--vault <path>] [--dry-run]
  *
  * Exit codes:
  *   0 — clip written, or skipped because the msg-id is already filed,
@@ -50,6 +50,7 @@ function parseArgs(argv) {
       case "--sender": a.sender = next(); break;
       case "--ts": a.ts = next(); break;
       case "--msg-id": a.msgId = next(); break;
+      case "--chat-id": a.chatId = next(); break;
       case "--text": a.text = next(); break;
       case "--text-file": a.textFile = next(); break;
       default: die(1, `unknown arg: ${k}`);
@@ -59,7 +60,7 @@ function parseArgs(argv) {
 }
 
 const USAGE = `Usage: node telegram-clip.mjs --sender <user> --msg-id <id> [--ts <iso>] \\
-    (--text "<message>" | --text-file <path>) [--vault <path>] [--dry-run]`;
+    [--chat-id <id>] (--text "<message>" | --text-file <path>) [--vault <path>] [--dry-run]`;
 
 function resolveVault(arg) {
   const candidate = arg || process.env.OBSIDIAN_VAULT_PATH || join(homedir(), "Documents", "luna");
@@ -225,7 +226,7 @@ async function main() {
   const { type, source } = classifyMessage({ text });
   const title = deriveTitle({ text, type, source });
   const clip = buildClip({
-    sender: args.sender, ts: args.ts || "", msgId: args.msgId,
+    sender: args.sender, ts: args.ts || "", msgId: args.msgId, chatId: args.chatId || "",
     text, type, source, today: TODAY,
   });
   const fname = clipFilename({ msgId: args.msgId, title });

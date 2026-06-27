@@ -158,7 +158,7 @@ assert "re-run added no duplicate" 1 "$n"
 # run from TOOLS_DIR so the bare 'js-yaml' import finds the vendored package).
 (cd "$TOOLS_DIR" && CLIPF="$clipfile" node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-const yaml = (await import('js-yaml')).default;
+const _y = await import('js-yaml'); const yaml = _y.default ?? _y;
 const t = readFileSync(process.env.CLIPF,'utf8').replace(/\r\n/g,'\n');
 const fm = t.slice(4, t.indexOf('\n---', 4));
 yaml.load(fm);
@@ -204,7 +204,7 @@ node "$SCRIPT" --vault "$VAULT" --sender 'a"b\c' --msg-id 950 --text 'quote test
 qf="$(find "$VAULT/Clippings" -name 'telegram-950-*.md')"
 (cd "$TOOLS_DIR" && CLIPF="$qf" node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-const yaml = (await import('js-yaml')).default;
+const _y = await import('js-yaml'); const yaml = _y.default ?? _y;
 const t = readFileSync(process.env.CLIPF,'utf8').replace(/\r\n/g,'\n');
 const fm = yaml.load(t.slice(4, t.indexOf('\n---', 4)));
 console.log(fm.telegram_sender === 'a\"b\\\\c' ? 'match' : 'MISMATCH:'+fm.telegram_sender);

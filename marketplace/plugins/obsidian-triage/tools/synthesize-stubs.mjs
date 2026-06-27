@@ -29,6 +29,7 @@ import {
 } from "./lib/frontmatter.mjs";
 import { planStubs, normalizeName } from "./lib/stub-synthesis.mjs";
 import { repoSlugFromCanonical, claimTailSkippedRow } from "./lib/deferred-reconcile.mjs";
+import { buildPromotionDigest } from "./lib/telegram-digest.mjs";
 
 const SELF = path.basename(fileURLToPath(import.meta.url));
 const out = (s) => process.stdout.write(s + "\n");
@@ -37,7 +38,7 @@ function die(code, msg) { err(`${SELF}: ${msg}`); process.exit(code); }
 
 // ── args ─────────────────────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const a = { mode: "dry-run", vault: null, ledger: null, revertPath: null };
+  const a = { mode: "dry-run", vault: null, ledger: null, revertPath: null, telegramDigest: true };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
@@ -45,6 +46,9 @@ function parseArgs(argv) {
     else if (t === "--apply") a.mode = "apply";
     else if (t === "--revert") { a.mode = "revert"; a.revertPath = argv[++i]; }
     else if (t === "--ledger") a.ledger = argv[++i];
+    // LUNA-91: suppress the telegram promotion digest (e.g. the first big
+    // synthesize run after the LUNA-86 migration backfill — design §12.F).
+    else if (t === "--no-telegram-digest") a.telegramDigest = false;
     else rest.push(t);
   }
   if (rest.length) a.vault = rest[0];
@@ -53,6 +57,10 @@ function parseArgs(argv) {
 
 function ledgerPathFor(vault, override) {
   return override || path.join(vault, ".synthesize-stubs.ledger.jsonl");
+}
+
+function digestPathFor(vault) {
+  return path.join(vault, ".synthesize-stubs.telegram-digest.json");
 }
 
 // ── clip scan (flat _evidence/, excludes _rejected/) ─────────────────────────
@@ -215,6 +223,9 @@ function runApply(vault, ledgerPath, dryRun) {
   const decisions = planStubs(clips, fuzzyMatcher(vault));
 
   let created = 0, densified = 0, skipped = 0;
+  // LUNA-91: { subject, clipAbs } per contributor NEWLY stamped this run — fed to
+  // the telegram promotion digest (filtered to telegram-origin clips in main()).
+  const promotions = [];
 
   for (const d of decisions) {
     if (d.action === "skip") {
@@ -237,7 +248,8 @@ function runApply(vault, ledgerPath, dryRun) {
       }
 
       fs.writeFileSync(subjectAbs, plan.newContent);
-      const promotedValue = `"[[${subjectRel.replace(/\.md$/, "")}]]"`;
+      const densifyLink = `[[${subjectRel.replace(/\.md$/, "")}]]`;
+      const promotedValue = `"${densifyLink}"`;
       const stamped = [];
       for (const c of plan.fresh) {
         const cur = fs.readFileSync(c.abs, "utf8");
@@ -245,6 +257,7 @@ function runApply(vault, ledgerPath, dryRun) {
         if (bounds && hasKey(lines, bounds.close, "promoted_to")) continue;
         fs.writeFileSync(c.abs, insertScalar(cur, "promoted_to", promotedValue));
         stamped.push(c.rel);
+        promotions.push({ subject: densifyLink, clipAbs: c.abs });
       }
       fs.appendFileSync(ledgerPath, JSON.stringify({
         ts: new Date().toISOString(),
@@ -285,13 +298,15 @@ function runApply(vault, ledgerPath, dryRun) {
 
     // Stamp promoted_to on each contributor (skip if already stamped).
     const stamped = [];
-    const promotedValue = `"[[${d.target.folder}/${d.subjectName}]]"`;
+    const createLink = `[[${d.target.folder}/${d.subjectName}]]`;
+    const promotedValue = `"${createLink}"`;
     for (const c of contributors) {
       const cur = fs.readFileSync(c.abs, "utf8");
       const { lines, bounds } = parse(cur);
       if (bounds && hasKey(lines, bounds.close, "promoted_to")) continue;
       fs.writeFileSync(c.abs, insertScalar(cur, "promoted_to", promotedValue));
       stamped.push(c.rel);
+      promotions.push({ subject: createLink, clipAbs: c.abs });
     }
 
     // Append the ledger entry per-page (right after the page + stamps land), so
@@ -319,6 +334,42 @@ function runApply(vault, ledgerPath, dryRun) {
   }
 
   out(`${SELF}: ${created} ${dryRun ? "would-create" : "created"}, ${densified} ${dryRun ? "would-densify" : "densified"}, ${skipped} skipped`);
+  return promotions;
+}
+
+// ── telegram promotion digest (LUNA-91) ──────────────────────────────────────
+// Build the batched digest from THIS run's promotions and persist it to
+// <vault>/.synthesize-stubs.telegram-digest.json for the synthesize-stubs
+// runbook to send through the telegram bridge `reply` tool (ONE reply per
+// originating chat, the live send operator-gated per HARD GUARDRAIL #4). The
+// file is rewritten every apply: non-empty → the run's digest; empty (no
+// telegram-origin promotions, or a re-run that promoted nothing new) → removed,
+// so a stale digest is never re-sent. Suppressed entirely with
+// --no-telegram-digest (migration backfill).
+function emitTelegramDigest(vault, promotions, suppress) {
+  const digestPath = digestPathFor(vault);
+  const enriched = (promotions || []).map((p) => {
+    let clip = {};
+    try {
+      const { lines, bounds } = parse(fs.readFileSync(p.clipAbs, "utf8"));
+      if (bounds) {
+        clip = {
+          clipped_via: fmScalar(lines, bounds.close, "clipped_via"),
+          telegram_msg_id: fmScalar(lines, bounds.close, "telegram_msg_id"),
+          telegram_chat_id: fmScalar(lines, bounds.close, "telegram_chat_id"),
+        };
+      }
+    } catch { /* unreadable clip → contributes nothing to the digest */ }
+    return { subject: p.subject, clip };
+  });
+  const digest = buildPromotionDigest(enriched, { suppress });
+  if (digest.length) {
+    fs.writeFileSync(digestPath, JSON.stringify({ ts: new Date().toISOString(), replies: digest }, null, 2) + "\n");
+    const total = digest.length;
+    out(`${SELF}: telegram digest → ${total} repl${total === 1 ? "y" : "ies"} queued (${path.basename(digestPath)}); send via the bridge reply tool`);
+  } else if (fs.existsSync(digestPath)) {
+    fs.rmSync(digestPath); // clear a stale digest so nothing is re-sent
+  }
 }
 
 // LUNA-89: claim the open _deferred.md tail-skipped rows for each github
@@ -429,5 +480,9 @@ if (a.mode === "revert") {
     out(`${SELF}: no Clippings/ — nothing to synthesize`);
     process.exit(0);
   }
-  runApply(a.vault, ledgerPathFor(a.vault, a.ledger), a.mode === "dry-run");
+  const dryRun = a.mode === "dry-run";
+  const promotions = runApply(a.vault, ledgerPathFor(a.vault, a.ledger), dryRun);
+  // LUNA-91: only a live --apply produces promotion feedback (a --dry-run stamps
+  // nothing). Suppress with --no-telegram-digest during migration backfill.
+  if (!dryRun) emitTelegramDigest(a.vault, promotions, !a.telegramDigest);
 }
