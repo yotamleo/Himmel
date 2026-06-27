@@ -94,6 +94,8 @@ the github-repo ingest skill these dispatch to.
 | /synthesize-clips | Stage 3 — cross-clip synthesis: find recurring patterns across processed clips, write proposal pages to `Clippings/_synthesis/` (proposals only, never restructures). |
 | /archive-clips | Stage 4 (LUNA-55) — graduate fully-chained clips (harvested ∧ processed ∧ in-synthesis) to `Clippings/_done/<YYYY-MM>/`, rewrite inbound links (literal, boundary-safe), dedup by canonical URL, (re)generate `Clippings/_deferred.md`. |
 
+**One-time backfill (not a stage):** `/migrate-clip-lifecycle <vault> [--dry-run | --apply [--month YYYY-MM] | --rollback <manifest>]` (obsidian-triage, LUNA-86) — deterministic, reversible, resumable engine (`tools/migrate-clip-lifecycle.mjs`) that migrates the historical top-level `processed: true` clips into `Clippings/_evidence/`, stamping `evidence_kind:` and rewriting every inbound wikilink across SIX literal boundary forms (3 plain + 3 `.md`-suffixed, the silent-dangle guard). Folder-keyed idempotent; byte-identical rollback via the manifest. Run ONCE behind a mandatory staging gate — not a recurring pipeline stage.
+
 **Companion (not a stage):** `/read-link <url>` (obsidian-triage, LUNA-78) — vault-first link reader: read an already-harvested clip for a URL before any live fetch; enrich a thin clip, else live-fetch (fxtwitter / WebFetch / luna-ingest) as the last resort. Never Grok. UX inspired by eugeniughelbur/obsidian-second-brain's `/x-read` (clean-room, no vendored fork).
 
 ## Plugin skills & ops (himmel-ops, obsidian-triage)

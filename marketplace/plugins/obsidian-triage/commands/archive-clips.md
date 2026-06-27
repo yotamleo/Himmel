@@ -6,9 +6,11 @@ argument-hint: "[vault-path] [--dry-run] [--limit N]"
 
 ## Your task
 
-Run an autonomous ARCHIVE pass over the vault's `Clippings/` folder. Treat `Clippings/` as an **inbox**: a clip that has completed the full pipeline chain graduates to `Clippings/_done/<YYYY-MM>/`, leaving only active/incomplete clips in the inbox view (mirrors how `00-Inbox/` drains). Also (re)generate `Clippings/_deferred.md` — the running list of work the pipeline logged but deliberately did not do.
+Run an autonomous ARCHIVE pass over the vault's `Clippings/` folder. The **inbox now drains at TRIAGE** (LUNA-84 moves processed clips to `Clippings/_evidence/`); with the 3-state model, graduation to `Clippings/_done/<YYYY-MM>/` is now **optional terminal housekeeping / de-clutter — not the inbox drainer**. A default run graduates **~nothing** after Phase 1: eligible clips have already been moved to `_evidence/` (excluded from archive's scans by LUNA-83), so few top-level stragglers remain. Archive **never reads / never graduates** `Clippings/_evidence/` — the pool is owned by triage and synthesize. Also (re)generate `Clippings/_deferred.md` — the running list of work the pipeline logged but deliberately did not do.
 
-This is **Stage 4** of the clipper pipeline (HARVEST → TRIAGE → SYNTHESIZE → **ARCHIVE**; LUNA-55). Run it AFTER `/synthesize-clips`, because the graduation gate depends on synthesis pages existing and wikilinking their evidence clips.
+This is **Stage 4** of the clipper pipeline (HARVEST → TRIAGE → SYNTHESIZE → **ARCHIVE**; LUNA-55). Run it AFTER `/synthesize-clips`, because the graduation gate (for any stragglers still at the top-level inbox) depends on synthesis pages existing and wikilinking their evidence clips.
+
+**Deferred Phase-2 opt-in:** when `promoted_to:` is set on a fully-absorbed evidence clip by Phase-2 code, a future `--graduate-absorbed` flag will graduate it from `_evidence/` to `_done/`; that path is not built in Phase 1 (no clip carries `promoted_to:` yet).
 
 Default: process every eligible clip. With `--dry-run`: report the move + link-rewrite + dedup plan and the `_deferred.md` it would write, touch nothing. With `--limit N`: stop after N graduations (calibration runs).
 
@@ -91,11 +93,13 @@ These names under `Clippings/` are NEVER source clips and MUST be excluded from 
 - `_synthesis/` — `/synthesize-clips` output (proposal pages).
 - `_done/` — this command's archive destination (already-graduated clips).
 - `_deferred.md` — this command's deferred-work log.
+- `_evidence/` — the reviewed-evidence pool (LUNA-83): `Clippings/_evidence/` and its `_rejected/` subfolder hold clips that have been manually reviewed and promoted; excluded from inbox/eligibility scans. Archive **never reads / never graduates** `Clippings/_evidence/` (belt-and-suspenders: the pool is owned by triage/synthesize). (`/synthesize-clips` intentionally keeps visibility into `_evidence/`.)
 
-The canonical clip scan (used by harvest/triage/synthesize/archive) is:
+The canonical clip scan (used by harvest/triage/archive) is:
 ```bash
 find "<vault>/Clippings" -maxdepth 3 -type f -name '*.md' \
-  -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' -print0
+  -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' \
+  -not -path '*/_evidence/*' -print0
 ```
 (`maxdepth 3` so `_done/<YYYY-MM>/<clip>.md` is reachable when this command itself needs to read the archive for dedup — but the ELIGIBILITY scan in Phase 2 stays at the inbox top level and applies the same exclusions.)
 
