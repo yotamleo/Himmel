@@ -107,11 +107,12 @@ A clip is **unharvested** if its YAML frontmatter does NOT contain a line matchi
 
 ```bash
 find "<vault>/Clippings" -maxdepth 2 -type f -name '*.md' \
-  -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' -print0 \
+  -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' \
+  -not -path '*/_evidence/*' -print0 \
   | xargs -0 -I {} sh -c 'grep -qE "^harvested_at:[[:space:]]*\S" "$1" || echo "$1"' _ {}
 ```
 
-Maxdepth 2 captures subfolders. The exclusions skip the three inbox-internal names that are NEVER source clips (LUNA-53 + LUNA-55): `_synthesis/` (`/synthesize-clips` output — `type: synthesis` proposal pages), `_done/` (`/archive-clips` archive of graduated clips, which already completed harvest), and `_deferred.md` (`/archive-clips` backlog log). Without these, the scan re-catches derived/archived content every run and pollutes it with `harvest_*` frontmatter. Sort by `date_clipped` ascending (oldest first). Apply `--limit N` cap.
+Maxdepth 2 captures subfolders. The exclusions skip the four inbox-internal names that are NEVER source clips (LUNA-53 + LUNA-55 + LUNA-83): `_synthesis/` (`/synthesize-clips` output — `type: synthesis` proposal pages), `_done/` (`/archive-clips` archive of graduated clips, which already completed harvest), `_deferred.md` (`/archive-clips` backlog log), and `_evidence/` (`Clippings/_evidence/` is the reviewed-evidence pool — including its `_rejected/` subfolder — excluded from inbox/eligibility scans; visible to `/synthesize-clips` only). Without these, the scan re-catches derived/archived content every run and pollutes it with `harvest_*` frontmatter. Sort by `date_clipped` ascending (oldest first). Apply `--limit N` cap.
 
 If zero unharvested clips: exit 0 with `harvest-clips: 0 unharvested clips in Clippings/ — nothing to do`.
 

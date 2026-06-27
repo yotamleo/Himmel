@@ -32,9 +32,11 @@ Exit non-zero.
 
 Every per-clip outcome MUST emit exactly one line to stdout BEFORE the final summary, in one of these formats:
 
-- Success: `✓ <clip-filename.md> — {summary-len}c summary, {N} tags, {M} related, {K} actions → daily, promotion → <folder>`
+- Success (phases 1–7 + move): `✓ <clip-filename.md> — {summary-len}c summary, {N} tags, {M} related, {K} actions → daily, promotion → <folder> → _evidence/, {L} links rewritten`
 - Skip: `⊘ <clip-filename.md> — skipped (<phase>): <reason>`
-- Where `<phase>` is one of: `phase-0-baseline`, `phase-1-read`, `phase-2-summary`, `phase-3-tags`, `phase-4-related`, `phase-5-actions`, `phase-6-promotion`, `phase-7-mark`, `frontmatter`.
+- Where `<phase>` is one of: `phase-0-baseline`, `phase-1-read`, `phase-2-summary`, `phase-3-tags`, `phase-4-related`, `phase-5-actions`, `phase-6-promotion`, `phase-7-mark`, `phase-8-move`, `frontmatter`.
+
+The `{L}` count in the success line is the number of link occurrences rewritten across all inbound files during Phase 8. The ✓ line is emitted ONLY after Phase 8 completes; if Phase 8 fails and reverts, the clip logs `⊘ … skipped (phase-8-move): …; reverted` instead and counts toward `M`.
 
 The final summary MUST count: `triage-clips: N processed, M skipped. (See ✓ / ⊘ lines above.)` — and `M` MUST equal the number of `⊘` lines. If they disagree, that's a bug — abort with a clear error.
 
@@ -66,11 +68,12 @@ A clip is **unprocessed** if its YAML frontmatter does NOT contain a line matchi
 # (Git Bash returns 1 even when files are listed). Count the printed
 # lines instead:
 find "<vault>/Clippings" -maxdepth 2 -type f -name '*.md' \
-  -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' -print0 \
+  -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' \
+  -not -path '*/_evidence/*' -print0 \
   | xargs -0 -I {} sh -c 'grep -q "^processed:[[:space:]]*true[[:space:]]*$" "$1" || echo "$1"' _ {}
 ```
 
-Maxdepth 2 captures one level of subfolders (e.g., `Clippings/2026-05/foo.md`). The exclusions skip the three inbox-internal names that are NEVER source clips (LUNA-53 + LUNA-55): `_synthesis/` (`/synthesize-clips` output — `type: synthesis` pages lack `processed: true`, so without this exclusion triage would try to "process" its own synthesis output), `_done/` (`/archive-clips` archive — already triaged), and `_deferred.md` (`/archive-clips` backlog log). Sort by `date_clipped` ascending (oldest first) so newer clips get the benefit of patterns learned earlier in the pass.
+Maxdepth 2 captures one level of subfolders (e.g., `Clippings/2026-05/foo.md`). The exclusions skip the four inbox-internal names that are NEVER source clips (LUNA-53 + LUNA-55 + LUNA-83): `_synthesis/` (`/synthesize-clips` output — `type: synthesis` pages lack `processed: true`, so without this exclusion triage would try to "process" its own synthesis output), `_done/` (`/archive-clips` archive — already triaged), `_deferred.md` (`/archive-clips` backlog log), and `_evidence/` (`Clippings/_evidence/` is the reviewed-evidence pool — including its `_rejected/` subfolder — excluded from inbox/eligibility scans; visible to `/synthesize-clips` only). After LUNA-84, every clip Phase 7 marks `processed: true` is also moved to `Clippings/_evidence/<basename>.md` in Phase 8; consequently the inbox top-level retains ONLY unprocessed clips after a successful run. The `grep -q processed:true` inline filter is a safety net for the rare case where Phase 7 succeeded but Phase 8 reverted the move (those clips stay top-level for retry). Sort by `date_clipped` ascending (oldest first) so newer clips get the benefit of patterns learned earlier in the pass.
 
 If zero unprocessed clips: exit 0 with `triage-clips: 0 unprocessed clips in Clippings/ — nothing to do`.
 
@@ -211,7 +214,48 @@ The flag (and its `harvest_flag_detail:` sibling) is never written or cleared by
     - processed: true   # WRONG
   ```
 
-- Idempotency contract: a re-run sees `processed: true` and skips the clip in the Scan step. To re-trigger triage on a clip, the user deletes BOTH `processed: true` AND `triaged_at:` lines manually.
+- Idempotency contract: after Phase 8, a successfully processed clip lives in `Clippings/_evidence/<basename>.md` and is excluded from future triage scans by the `-not -path '*/_evidence/*'` flag — it will not appear in the scan at all. To re-trigger triage on a clip, the user must (1) delete `processed: true`, `triaged_at:`, and `evidence_kind:` from the clip's frontmatter AND (2) move the clip back to `Clippings/<basename>.md` (top-level inbox). Deleting only the frontmatter markers while the clip remains in `_evidence/` is insufficient — the scan excludes that folder entirely.
+
+**Phase 8 — Move to evidence pool (runs ONLY after Phase 7 successfully marked `processed: true`).**
+
+When `DRY_RUN=1`, skip all moves and writes for this phase. The clip emits a `⊘` skip line (`⊘ <clip> — skipped (phase-8-move): dry-run — would move → _evidence/<basename>.md, {L} links would be rewritten`), so it counts toward `M skipped` (NOT `N processed`) in the final `N processed, M skipped` summary — consistent with the glyph→count mapping in the Logging contract (every `⊘` line increments `M`). No clip is reported as `processed` under `--dry-run`, since nothing is written.
+
+1. **Set `evidence_kind:` in frontmatter.** Infer the value by running:
+   ```bash
+   node "<plugin>/tools/lib/evidence-kind.mjs" --type "<type>" --url "<harvest_url_canonical or source>" --tags "<comma,joined,tags>"
+   ```
+   This prints a JSON array (e.g., `["concepts","tools"]`). Write it as a zero-indent block-list YAML key, using the SAME placement contract as `processed:` / `triaged_at:` (before the closing `---`, never inside any list, parse-before-write and validate; abort this clip on YAML error):
+   ```yaml
+   evidence_kind:
+     - concepts
+     - tools
+   ```
+
+2. **`mkdir -p "<vault>/Clippings/_evidence"`** (creates the flat evidence pool if absent).
+
+3. **Move + inbound-link rewrite, atomic per clip.** Mirror archive-clips Phase 4 steps 3–6 with `<NEW> = _evidence/<basename>` instead of `_done/<YYYY-MM>/`:
+   - `<OLD>` = the clip's current path relative to `Clippings/`, without `.md` (e.g. `@karpathy – 2026-05-25T031232+0200`). Clip ids routinely contain `+`, `(`, `.`, `?`, space — use **LITERAL (fixed-string)** matching, NEVER regex.
+   - **Enumerate inbound links BEFORE moving** with the SIX explicit boundary forms (`grep -rlF`) — the three plain forms PLUS the three `.md`-suffixed forms (mirrors the migration engine's `sixForms()`):
+     ```bash
+     grep -rlF \
+       -e "[[Clippings/<OLD>]]"    -e "[[Clippings/<OLD>|"    -e "[[Clippings/<OLD>#" \
+       -e "[[Clippings/<OLD>.md]]" -e "[[Clippings/<OLD>.md|" -e "[[Clippings/<OLD>.md#" \
+       "<vault>" --include='*.md' 2>/dev/null
+     ```
+     Listing these six forms is what prevents `<OLD>=foo` from touching `[[Clippings/foobar]]`, AND catches real `_synthesis/` pages that cite clips WITH the `.md` extension (`[[Clippings/<OLD>.md]]`). A 3-form (no-`.md`) enumerate+verify reports clean while a `.md`-form inbound link silently dangles after the move. The daily-note backref written in Phase 5 is among the hits. Count total occurrences as `{L}`.
+   - **Move the file:** `mv "<vault>/Clippings/<OLD>.md" "<vault>/Clippings/_evidence/<basename>.md"`.
+   - **Rewrite inbound links — LITERAL only** (bash `${//}`, never `sed`/regex). Plain forms map to the no-`.md` `<NEW>` target; `.md` forms keep the `.md`:
+     - `[[Clippings/<OLD>]]`    → `[[Clippings/<NEW>]]`
+     - `[[Clippings/<OLD>|`     → `[[Clippings/<NEW>|`
+     - `[[Clippings/<OLD>#`     → `[[Clippings/<NEW>#`
+     - `[[Clippings/<OLD>.md]]` → `[[Clippings/<NEW>.md]]`
+     - `[[Clippings/<OLD>.md|`  → `[[Clippings/<NEW>.md|`
+     - `[[Clippings/<OLD>.md#`  → `[[Clippings/<NEW>.md#`
+     Each replacement preserves the `|alias`/`#heading`/`]]` tail and never touches a prefix-sibling clip. The plain `]]` form never matches `.md]]` (the boundary char after `<OLD>` differs), so the six replacements do not collide.
+     **Self-ref remap (LUNA-60).** Phase 6 appended a `## Promotion candidate` section whose bi-temporal-anchor bullet carries a backticked `[[Clippings/<OLD>]]`. That wikilink is among the step-3 hits. Apply the same six literal replacements to the moved clip at its **new** path (`<vault>/Clippings/_evidence/<basename>.md`) — do NOT write to the old inbox path (it is gone after `mv`).
+   - **Verify (literal, boundary-complete).** Re-run the same six-form `grep -rlF`. Must return zero matches. If any remain, **revert**: move the file back (`mv <dest> <old-inbox-path>`), undo the link edits in each inbound file, and unset `evidence_kind:`, `processed: true`, and `triaged_at:` from the clip's frontmatter so it retries cleanly on the next run. Log `⊘ <clip> — skipped (phase-8-move): <N> stale links remained; reverted`. Count as skipped (`M`).
+
+4. **Emit the per-clip success line** (ONLY now, after Phase 8 completes): `✓ <clip-filename.md> — {summary-len}c summary, {N} tags, {M} related, {K} actions → daily, promotion → <folder> → _evidence/, {L} links rewritten`.
 
 ### Tracking
 

@@ -16,7 +16,35 @@ Together: harvest → **enrich** (X body-fill via `tools/fxtwitter-enrich.mjs` �
 
 The **enrich** stage runs `fxtwitter-enrich.mjs` (X) and `ig-embed-enrich.mjs` (Instagram) between harvest and triage. For X it fills a thin telegram bare-URL stub's `## The Idea` from the tweet text and de-anonymizes `author`/`title` (the `x.com/i/status/<id>` forwards), so triage tags a rich body on its first pass. The same enrich also fires **inline** at `telegram-clip` filing time (best-effort) so group links are usually born rich. Authenticated long tail (protected tweets, login-walled IG) defers to the `playwright-crawl-*` rung.
 
-**Inbox-internal names** (never source clips; excluded from every stage's scan): `_synthesis/` (synthesize output), `_done/` (archive of graduated clips), `_deferred.md` (archive backlog log).
+**Inbox-internal names** (never source clips; excluded from harvest/triage/archive scans): `_synthesis/` (synthesize output), `_done/` (archive of graduated clips), `_deferred.md` (archive backlog log), `_evidence/` (reviewed-evidence pool — see below; `/synthesize-clips` intentionally keeps visibility into it).
+
+### Evidence-pool substrate (LUNA-83)
+
+A flat `Clippings/_evidence/` folder serves as the **reviewed-evidence pool**: clips that have been manually reviewed and promoted out of the inbox but are not yet archived to `_done/`. Rejected clips land in `Clippings/_evidence/_rejected/`. **State is encoded by folder location** — there is no `lifecycle:` enum.
+
+When a clip is promoted to `_evidence/`, its `evidence_kind:` frontmatter field (a multi-valued YAML list) is populated using the shared helper `tools/lib/evidence-kind.mjs`. Kinds are drawn from the closed set `authors | concepts | misc | patterns | questions | tools`; `misc` is the fallback when no other kind matches. A clip can hold multiple kinds (e.g. a GitHub repo that is also a conceptual framework gets `[concepts, tools]`). The `promoted_to:` field records the promotion timestamp.
+
+`tools/lib/evidence-kind.mjs` is dependency-free (pure ESM, bare `node`). Harvest, triage, and archive exclude `_evidence/` from their inbox scans; `/synthesize-clips` deliberately keeps visibility into it so synthesis can reference promoted evidence.
+
+### One-time backfill: `/migrate-clip-lifecycle` (LUNA-86)
+
+LUNA-84 made **triage** drain new `processed: true` clips into `_evidence/`
+going forward; the clips processed *before* that change still sit in the
+top-level `Clippings/` inbox. `/migrate-clip-lifecycle` (engine:
+`tools/migrate-clip-lifecycle.mjs`, dependency-light, reuses `evidence-kind.mjs`)
+is the **one-time** backfill that migrates them. It is deterministic, idempotent,
+resumable (folder-keyed), and **byte-identically reversible** via a reverse
+manifest. Eligible = top-level (depth 1–2) `processed: true` clips only; it never
+touches `_evidence/` / `_done/` / `_synthesis/` / `_deferred.md` / unprocessed
+clips. Inbound links are rewritten across **SIX literal boundary forms** — the
+three plain forms PLUS their `.md`-suffixed twins (`[[Clippings/<id>.md]]`, etc.),
+because real `_synthesis/` pages cite clips with the `.md` extension and a
+3-form rewrite would leave those dangling silently. Modes: `--dry-run` (plan +
+reverse manifest, mutates nothing), `--apply [--month YYYY-MM]` (per-month
+staged or all), `--rollback <manifest.json>`. **Not a recurring stage** — run
+ONCE behind the mandatory staging gate documented in
+`commands/migrate-clip-lifecycle.md` (copy vault → git oracle → apply → assert
+zero `.md`-form danglers → rollback → assert `git diff` empty → only then live).
 
 ## Why a plugin
 
