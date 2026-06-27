@@ -46,6 +46,38 @@ ONCE behind the mandatory staging gate documented in
 `commands/migrate-clip-lifecycle.md` (copy vault → git oracle → apply → assert
 zero `.md`-form danglers → rollback → assert `git diff` empty → only then live).
 
+### Daily timeline + telegram feedback (LUNA-90/91 — Phase 3 wiring)
+
+The final phase connects the pipeline to the operator's two daily surfaces, so
+the vault visibly compounds where the operator already looks.
+
+**Daily timeline (LUNA-90).** `tools/daily-timeline.mjs --vault <v> --date <d>`
+upserts a single `## Clip pipeline` section into `50-Journal/Daily/<date>.md`
+logging the day's flow: **N captured → inbox**, **N reviewed → evidence (by
+kind)**, **N promoted → subjects** (with `[[subject]]` backrefs), **N densified
+subjects**. It is a **state recount** — it recomputes every metric from vault
+state (`date_clipped`/`triaged_at`/`evidence_kind`) plus the synthesize-stubs
+ledger — so it is idempotent by construction: re-running the same day UPDATES the
+one section, never appends a second or double-counts (bi-temporal: clips carry
+`date_clipped`, subjects their own `date`, the daily note anchors *when* review
+/ promotion happened). Triage calls it once after Phase 5; `/synthesize-stubs`
+calls it after a live `--apply`. A missing daily note is a no-op (Phase 5 owns
+creation — no phantom file). Section surgery is byte/CRLF-preserving
+(`tools/lib/daily-timeline.mjs`).
+
+**Telegram promotion feedback (LUNA-91).** A telegram capture is **inbox-state by
+folder placement** — top-level in `Clippings/` with no `processed:`/`lifecycle:`
+marker (design §12.A, no enum); `telegram-clip` adds `telegram_chat_id`
+provenance (alongside `telegram_msg_id`) so a later promotion can reply to the
+originating chat. When `/synthesize-stubs --apply` promotes a telegram-origin
+clip to a subject, the engine writes a **batched digest** to
+`<vault>/.synthesize-stubs.telegram-digest.json` — **ONE reply per originating
+chat**, not one per promotion (design §12.F) — listing the new `[[subject]]`(s);
+the `/synthesize-stubs` runbook sends it through the telegram bridge `reply` tool
+(operator-gated live send). A re-run that promotes nothing new clears the stale
+digest, and `--no-telegram-digest` suppresses it entirely during the LUNA-86
+migration backfill. Pure builder: `tools/lib/telegram-digest.mjs`.
+
 ## Why a plugin
 
 LUNA-2 ships the install pipeline (Web Clipper extension + JSON templates landed in luna PR #11, see `_Templates/Web-Clipper/import/`). Without triage, clips become a bookmark graveyard inside the vault — the exact failure the source article called out. This plugin owns the triage rhythm.
@@ -157,6 +189,10 @@ A `tests/test-synthesize-invariants.sh` covers the synthesize-side invariants (p
 `tests/test-telegram-clip.sh` (LUNA-58) covers the telegram entry point: URL→type classification, frontmatter shape + provenance, idempotent re-run dedup, `--dry-run` no-write, no-sender refusal, and YAML-validity of the written clip. Requires `bun install` (or `npm install`) in `tools/` first (the YAML-validity check resolves the vendored `js-yaml`).
 
 `tests/test-roadmap-aggregate.sh` (LUNA-59) covers the roadmap aggregator: per-source parsers (daily action items, `_deferred.md` sections, synthesis `## Proposed vault change`, promotion-candidate frontmatter, component inventory), CLI JSON shape + counts, `_done`-exclusion, empty-source graceful, and vault validation. Pure Node — no `bun install` needed.
+
+`tests/test-daily-timeline.sh` (LUNA-90) is the fixture-gated acceptance test for the daily `## Clip pipeline` timeline: correct captured/reviewed-by-kind/promoted/densified counts anchored to the target date, byte-identical second-run idempotency, in-place refresh on state change, CRLF preservation, missing-note no-op, and the triage/synthesize runbook wiring. Pure Node.
+
+`tests/test-telegram-digest.sh` + `tests/test-synthesize-telegram-digest.sh` + `tests/test-telegram-clip-inbox.sh` (LUNA-91) cover the promotion digest (one batched reply per chat — not per promotion — distinct-subject dedup, non-telegram/suppression exclusion, reply threading), its end-to-end emission from `synthesize-stubs --apply` (digest file written, stale-cleared on no-op re-run, suppressed under `--no-telegram-digest`), and the telegram-clip inbox-state contract (no `processed:`/`lifecycle:` marker, `telegram_chat_id` provenance). Pure Node.
 
 ## Known issues (as of audit cycle 2026-05-25)
 

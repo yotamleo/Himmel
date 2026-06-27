@@ -34,6 +34,9 @@ Resolve these from the dispatch context:
 - **sender** — the Telegram `user` (from the `<channel … user="…">` tag, or the
   operator when invoked via `/telegram-clip`). Required.
 - **message-id** — the `message_id` attribute. Required; the idempotency key.
+- **chat-id** — the `chat_id` attribute. Optional; recorded as `telegram_chat_id`
+  provenance so a later promotion (synthesize-stubs) can send the LUNA-91 "now a
+  subject" reply back to the chat this clip came from. Omit if not present.
 - **ts** — the `ts` attribute (ISO timestamp). Optional.
 - **text** — the message body. For a forward or a bare link, this is the link
   plus any caption. Required (non-empty).
@@ -56,9 +59,11 @@ the operator supplies.
 2. **File the clip.** Run the CLI (single command, literal flags):
    ```bash
    node <plugin>/tools/telegram-clip.mjs \
-     --sender "$SENDER" --msg-id "$MSG_ID" --ts "$TS" \
+     --sender "$SENDER" --msg-id "$MSG_ID" --ts "$TS" [--chat-id "$CHAT_ID"] \
      --text-file "$tf" [--vault "$VAULT"] [--dry-run]
    ```
+   Pass `--chat-id` when the `<channel>` tag carries `chat_id` (it enables the
+   LUNA-91 promotion reply); omit it otherwise.
    `<plugin>` is this skill's plugin root (`marketplace/plugins/obsidian-triage`).
 3. **Report verbatim.** Surface the CLI's single status line:
    - `✓ telegram-clip: wrote Clippings/<file> (type=<t>, source=<url|none>)`

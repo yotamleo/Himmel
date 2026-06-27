@@ -95,6 +95,47 @@ diverged (the operator opened, edited, or densified it) is **REFUSED** and left
 untouched — "delete to undo" is forbidden once a stub has been hand-edited. That
 refusal IS the Phase-2 rollback contract.
 
+### Daily timeline (LUNA-90 — after a live `--apply`)
+
+A successful `--apply` promotes/densifies subjects, which is pipeline activity
+the daily note should record. After the apply against the live vault, refresh
+today's `## Clip pipeline` section (state recount — idempotent, one section, no
+double-count):
+
+```bash
+node tools/daily-timeline.mjs --vault <vault> --date "$(date +%Y-%m-%d)"
+```
+
+It reads the promoted/densified counts from the same
+`.synthesize-stubs.ledger.jsonl` this run appended (and captured/reviewed from
+clip state). A missing daily note is a no-op. Skip after a `--dry-run` (nothing
+was promoted) and after `--revert`.
+
+### Telegram promotion feedback (LUNA-91 — after a live `--apply`)
+
+When a promoted clip was **captured via telegram**, let the operator see the
+vault compounding from the same surface they captured on (design §8). The engine
+already did the work: on `--apply` it writes a **batched digest** to
+`<vault>/.synthesize-stubs.telegram-digest.json` — **ONE reply per originating
+chat** (not one per promotion; §12.F), filtered to telegram-origin clips, and it
+**removes** that file when a run promoted nothing new (so nothing stale is
+re-sent). Pass `--no-telegram-digest` to suppress entirely (the first big
+synthesize run after the LUNA-86 migration backfill).
+
+After a live `--apply`, if the digest file exists, send it (operator-gated — the
+live telegram send is the irreversible step, HARD GUARDRAIL #4):
+
+1. Read `<vault>/.synthesize-stubs.telegram-digest.json`. Its `replies` array is
+   `[{ chat_id, reply_to, text }, …]`.
+2. For each entry, send ONE message through the **telegram bridge `reply` tool**
+   (NOT a raw API call — the bridge is the only sanctioned send path): pass
+   `chat_id`, `text`, and `reply_to`. The bridge enforces its own outbound gate.
+3. After all replies send successfully, **delete the digest file** so a later run
+   never re-sends it.
+
+Do this only against the live bridge with operator confirmation; in staging,
+inspect the JSON and do not send.
+
 ### Headless refusal (HIMMEL-128)
 
 <!-- headless-claude-ok: prohibition note, not an invocation -->
