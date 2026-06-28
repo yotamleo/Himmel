@@ -62,3 +62,13 @@ what makes the block land (Codex ignores exit 2). Caveats observed live:
   trust them once (non-interactive `codex exec` needs
   `--dangerously-bypass-hook-trust`).
 See `docs/internals/harness-compat.md` §"Codex deep-dive → Hooks" for detail.
+
+## codex-cli 0.142.0 note (HIMMEL-533)
+Once the project hooks are **already trusted** (persisted from a prior
+interactive trust, or this checkout's hooks already hashed), plain
+`codex exec "<prompt>"` runs **without** `--dangerously-bypass-hook-trust` — the
+flag is only the first-run / still-untrusted non-interactive path. (The flag
+still exists in 0.142.0; this README's live-verified block above is 0.141.0.)
+Skill discovery: Codex reads **project-local `.agents/skills/<name>/SKILL.md`**
+from the run cwd — live-verified under 0.142.0 (HIMMEL-533 ships the himmel
+driver skills there).
