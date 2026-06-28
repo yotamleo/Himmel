@@ -25,6 +25,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKFILL="$SCRIPT_DIR/backfill-sessions.sh"
 GOLDEN="$SCRIPT_DIR/../hooks/testdata/session-note.golden.md"
 FIXTURE_DIR="$SCRIPT_DIR/testdata"
+TRANSCRIPT_FIXTURES="$SCRIPT_DIR/../hooks/testdata/transcripts"
+CLAUDE_STUB="$SCRIPT_DIR/../hooks/testdata/bin/claude-stub.sh"
 
 [ -f "$BACKFILL" ] || { echo "FAIL: backfill-sessions.sh not found at $BACKFILL"; exit 1; }
 [ -f "$GOLDEN" ]   || { echo "FAIL: golden fixture not found at $GOLDEN"; exit 1; }
@@ -539,6 +541,383 @@ out8b=$(bash "$BACKFILL" \
     --dry-run \
     2>&1)
 assert_contains "collision-dedup: re-run idempotent (new=0)" "new=0" "$out8b"
+
+# ============================================================================
+# Case 9: husk-skip — a contentless transcript writes NO note (HIMMEL-576)
+# ============================================================================
+echo ""
+echo "Case 9: husk-skip (contentless transcript)"
+
+SB="$TMP_ROOT/case9"
+VAULT9="$SB/vault"
+REPO9="$SB/repo"
+PROJ_ROOT9="$SB/projects"
+STATE9="$SB/state.json"
+mkdir -p "$VAULT9" "$REPO9" "$PROJ_ROOT9"
+
+_p9="$REPO9"
+if command -v cygpath >/dev/null 2>&1; then
+    _p9="$(cygpath -w "$_p9" 2>/dev/null || printf '%s' "$_p9")"
+fi
+SLUG9="$(printf '%s' "$_p9" | awk '{gsub(/[:\\\/]/, "-"); gsub(/^-+/, ""); print}')"
+PROJ_DIR9="$PROJ_ROOT9/$SLUG9"
+mkdir -p "$PROJ_DIR9" "$REPO9/.claude"
+printf '{"enabled":true,"vault_path":"%s"}\n' "$VAULT9" > "$REPO9/.claude/end-session-wiki.json"
+
+# Contentless: user line only, no assistant content of any kind → HAS_CONTENT=0.
+printf '%s\n' '{"timestamp":"2026-06-20T00:00:00Z","type":"user","message":{"role":"user","content":"hi"}}' \
+    > "$PROJ_DIR9/test-session-husk-009.jsonl"
+
+out9=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT9" \
+    --project "$REPO9" \
+    --state-file "$STATE9" \
+    --vault-registry /dev/null \
+    2>&1)
+assert_contains "husk-skip: husk count reported" "husk-skip=1" "$out9"
+assert_contains "husk-skip: nothing counted as new" "new=0" "$out9"
+if [ -z "$(find "$VAULT9/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
+    pass "husk-skip: no note written for a contentless transcript"
+else
+    fail "husk-skip: a husk note was written"
+fi
+
+# ============================================================================
+# Reheal helpers (HIMMEL-576 Phase 3)
+# ============================================================================
+# Write a husk note (crystallized unset/false + "_Transcript unavailable._" +
+# Files Touched "_None._") at $1 with session_id $2.
+write_husk_note() {
+    local path="$1" sid="$2"
+    mkdir -p "$(dirname "$path")"
+    cat > "$path" <<EOF
+---
+date: 2026-06-20T00:00:00Z
+type: session
+repo: testrepo
+branch:
+worktree: /tmp/testrepo
+duration_minutes: 5
+files_touched: 0
+tags:
+  - session
+  - autocapture
+ai-first: true
+session_id: ${sid}
+source: live
+crystallized: false
+crystallized_at:
+---
+
+Auto-captured session.
+
+## Summary
+
+_Transcript unavailable; auto-summary not generated._ (speculation)
+
+## Decisions
+
+_None._
+
+## Files Touched
+
+_None._
+
+## Commands
+
+\`\`\`bash
+\`\`\`
+
+## Follow-ups
+
+_None._
+
+## Raw Conversation
+
+> [!note]- Raw conversation
+> _Transcript unavailable._
+EOF
+}
+
+# Drop a transcript fixture into a projects dir as <session_id>.jsonl so reheal
+# can locate it (the project slug is irrelevant — reheal globs */<sid>.jsonl).
+seed_named_transcript() {
+    local proj_root="$1" sid="$2" fixture="$3"
+    local pd="$proj_root/some-reheal-project"
+    mkdir -p "$pd"
+    cp "$fixture" "$pd/$sid.jsonl"
+}
+
+# Build a PATH that contains every tool backfill needs EXCEPT `claude`, so the
+# mechanical-re-render branch is exercised without breaking jq/git/awk (which on
+# Windows Git Bash live outside /usr/bin). Excludes claude's own directory.
+_claudeless_path() {
+    local claude_dir t d out=""
+    claude_dir="$(command -v claude 2>/dev/null || true)"
+    [ -n "$claude_dir" ] && claude_dir="$(dirname "$claude_dir")"
+    for t in bash sh jq awk find sed grep git cat head tail tr wc \
+             basename dirname sleep rm cp mv mkdir mktemp date \
+             sha256sum shasum chmod paste; do
+        d="$(command -v "$t" 2>/dev/null)" || continue
+        [ -n "$d" ] || continue
+        d="$(dirname "$d")"
+        [ -n "$claude_dir" ] && [ "$d" = "$claude_dir" ] && continue
+        case ":$out:" in *":$d:"*) ;; *) out="${out:+$out:}$d" ;; esac
+    done
+    printf '%s' "$out"
+}
+
+# ============================================================================
+# Case 10: reheal with claude — husk overwritten, idempotent re-run
+# ============================================================================
+echo ""
+echo "Case 10: reheal (claude available) heals a husk + is idempotent"
+
+if [ ! -r "$CLAUDE_STUB" ]; then
+    fail "reheal: claude-stub.sh not found at $CLAUDE_STUB"
+else
+    chmod +x "$CLAUDE_STUB" 2>/dev/null || true
+    SB="$TMP_ROOT/case10"
+    VAULT10="$SB/vault"
+    PROJ_ROOT10="$SB/projects"
+    STATE10="$SB/state.json"
+    NOTE10="$VAULT10/sessions/2026/06/2026-06-20-0000-testrepo.md"
+    mkdir -p "$VAULT10" "$PROJ_ROOT10"
+    write_husk_note "$NOTE10" "reheal-sess-001"
+    seed_named_transcript "$PROJ_ROOT10" "reheal-sess-001" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+
+    out10=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+        CRYSTALLIZE_PID_DIR="$SB/pids" \
+        bash "$BACKFILL" --reheal \
+        --projects-dir "$PROJ_ROOT10" \
+        --luna-vault-path "$VAULT10" \
+        --state-file "$STATE10" \
+        --vault-registry /dev/null \
+        2>&1)
+
+    assert_contains "reheal: healed count reported" "healed=1" "$out10"
+    if grep -q '^crystallized: true$' "$NOTE10"; then
+        pass "reheal: husk note crystallized: true after heal"
+    else
+        fail "reheal: husk note not crystallized" "$out10"
+    fi
+    if grep -q '_Crystallized by stub' "$NOTE10"; then
+        pass "reheal: Summary section rewritten by crystallizer"
+    else
+        fail "reheal: Summary not rewritten"
+    fi
+    if grep -q '^session_id: reheal-sess-001$' "$NOTE10"; then
+        pass "reheal: session_id preserved"
+    else
+        fail "reheal: session_id mutated"
+    fi
+    if [ -f "$NOTE10" ]; then
+        pass "reheal: note path preserved (overwrite in place)"
+    else
+        fail "reheal: note path changed"
+    fi
+
+    # Re-run: already crystallized -> no-op (healed=0, bytes unchanged)
+    SHA10="$(_file_sha256 "$NOTE10")"
+    out10b=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+        CRYSTALLIZE_PID_DIR="$SB/pids" \
+        bash "$BACKFILL" --reheal \
+        --projects-dir "$PROJ_ROOT10" \
+        --luna-vault-path "$VAULT10" \
+        --state-file "$STATE10" \
+        --vault-registry /dev/null \
+        2>&1)
+    assert_contains "reheal: re-run is a no-op (healed=0)" "healed=0" "$out10b"
+    if [ "$SHA10" = "$(_file_sha256 "$NOTE10")" ]; then
+        pass "reheal: re-run leaves healed note byte-unchanged"
+    else
+        fail "reheal: re-run mutated an already-healed note"
+    fi
+fi
+
+# ============================================================================
+# Case 11: reheal leaves a contentless husk as-is
+# ============================================================================
+echo ""
+echo "Case 11: reheal leaves an inert (contentless) husk as-is"
+
+SB="$TMP_ROOT/case11"
+VAULT11="$SB/vault"
+PROJ_ROOT11="$SB/projects"
+STATE11="$SB/state.json"
+NOTE11="$VAULT11/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT11" "$PROJ_ROOT11"
+write_husk_note "$NOTE11" "reheal-sess-empty"
+seed_named_transcript "$PROJ_ROOT11" "reheal-sess-empty" "$TRANSCRIPT_FIXTURES/contentless.jsonl"
+SHA11="$(_file_sha256 "$NOTE11")"
+
+out11=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" \
+    bash "$BACKFILL" --reheal \
+    --projects-dir "$PROJ_ROOT11" \
+    --luna-vault-path "$VAULT11" \
+    --state-file "$STATE11" \
+    --vault-registry /dev/null \
+    2>&1)
+assert_contains "reheal: inert husk counted" "inert=1" "$out11"
+if [ "$SHA11" = "$(_file_sha256 "$NOTE11")" ]; then
+    pass "reheal: contentless husk left byte-unchanged"
+else
+    fail "reheal: contentless husk was modified" "$out11"
+fi
+
+# ============================================================================
+# Case 12: reheal mechanical re-render when claude is absent
+# ============================================================================
+echo ""
+echo "Case 12: reheal mechanical re-render (claude absent)"
+
+SB="$TMP_ROOT/case12"
+VAULT12="$SB/vault"
+PROJ_ROOT12="$SB/projects"
+STATE12="$SB/state.json"
+NOTE12="$VAULT12/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT12" "$PROJ_ROOT12"
+write_husk_note "$NOTE12" "reheal-sess-mech"
+seed_named_transcript "$PROJ_ROOT12" "reheal-sess-mech" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+
+# No CRYSTALLIZE_CLAUDE_BIN and a claude-free PATH (real tools, no `claude`):
+# reheal must mechanically re-render rather than leaving the husk.
+CLP="$(_claudeless_path)"
+if PATH="$CLP" command -v claude >/dev/null 2>&1; then
+    fail "reheal(mech): test setup leaked a real claude into PATH (skipped to avoid billing)"
+else
+    out12=$(env -u CRYSTALLIZE_CLAUDE_BIN PATH="$CLP" \
+        CRYSTALLIZE_PID_DIR="$SB/pids" \
+        bash "$BACKFILL" --reheal \
+        --projects-dir "$PROJ_ROOT12" \
+        --luna-vault-path "$VAULT12" \
+        --state-file "$STATE12" \
+        --vault-registry /dev/null \
+        2>&1)
+    assert_contains "reheal(mech): healed count reported" "healed=1" "$out12"
+    NOTE12_BODY="$(cat "$NOTE12" 2>/dev/null)"
+    assert_contains "reheal(mech): real summary rendered" "Summary line one." "$NOTE12_BODY"
+    assert_contains "reheal(mech): real command rendered" "git commit -m x" "$NOTE12_BODY"
+    assert_not_contains "reheal(mech): no longer a husk (transcript marker gone)" \
+        "_Transcript unavailable._" "$NOTE12_BODY"
+    if grep -q '^crystallized: false$' "$NOTE12"; then
+        pass "reheal(mech): stays crystallized: false (no LLM)"
+    else
+        fail "reheal(mech): crystallized flag wrong for mechanical render"
+    fi
+    if grep -q '^session_id: reheal-sess-mech$' "$NOTE12"; then
+        pass "reheal(mech): session_id preserved"
+    else
+        fail "reheal(mech): session_id mutated"
+    fi
+fi
+
+# ============================================================================
+# Case 13: reheal mechanical on a tool-only transcript (no prose turn) is a
+#          convergent no-op when claude is absent — a mechanical re-render can't
+#          clear the husk predicate (Raw Conversation stays "_Transcript
+#          unavailable._"), so the note must be LEFT AS-IS (idempotent), not
+#          rewritten on every run.
+# ============================================================================
+echo ""
+echo "Case 13: reheal tool-only transcript w/o claude is a convergent no-op"
+
+SB="$TMP_ROOT/case13"
+VAULT13="$SB/vault"
+PROJ_ROOT13="$SB/projects"
+STATE13="$SB/state.json"
+NOTE13="$VAULT13/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT13" "$PROJ_ROOT13"
+write_husk_note "$NOTE13" "reheal-sess-toolonly"
+seed_named_transcript "$PROJ_ROOT13" "reheal-sess-toolonly" "$TRANSCRIPT_FIXTURES/thinking-tool-only.jsonl"
+SHA13="$(_file_sha256 "$NOTE13")"
+
+CLP13="$(_claudeless_path)"
+if PATH="$CLP13" command -v claude >/dev/null 2>&1; then
+    fail "reheal(tool-only): test setup leaked a real claude into PATH (skipped)"
+else
+    out13=$(env -u CRYSTALLIZE_CLAUDE_BIN PATH="$CLP13" \
+        CRYSTALLIZE_PID_DIR="$SB/pids" \
+        bash "$BACKFILL" --reheal \
+        --projects-dir "$PROJ_ROOT13" \
+        --luna-vault-path "$VAULT13" \
+        --state-file "$STATE13" \
+        --vault-registry /dev/null \
+        2>&1)
+    assert_contains "reheal(tool-only): counted inert, not healed" "healed=0" "$out13"
+    assert_contains "reheal(tool-only): inert reported" "inert=1" "$out13"
+    if [ "$SHA13" = "$(_file_sha256 "$NOTE13")" ]; then
+        pass "reheal(tool-only): husk left byte-unchanged (idempotent, no rewrite loop)"
+    else
+        fail "reheal(tool-only): note was rewritten despite staying a husk" "$out13"
+    fi
+fi
+
+# ============================================================================
+# Case 14: reheal --dry-run counts a recoverable husk but writes nothing
+# ============================================================================
+echo ""
+echo "Case 14: reheal --dry-run reports recoverable count, touches nothing"
+
+SB="$TMP_ROOT/case14"
+VAULT14="$SB/vault"
+PROJ_ROOT14="$SB/projects"
+STATE14="$SB/state.json"
+NOTE14="$VAULT14/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT14" "$PROJ_ROOT14"
+write_husk_note "$NOTE14" "reheal-sess-dry"
+seed_named_transcript "$PROJ_ROOT14" "reheal-sess-dry" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+SHA14="$(_file_sha256 "$NOTE14")"
+
+out14=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" \
+    bash "$BACKFILL" --reheal --dry-run \
+    --projects-dir "$PROJ_ROOT14" \
+    --luna-vault-path "$VAULT14" \
+    --state-file "$STATE14" \
+    --vault-registry /dev/null \
+    2>&1)
+assert_contains "reheal(dry): recoverable husk counted" "healed=1" "$out14"
+if [ "$SHA14" = "$(_file_sha256 "$NOTE14")" ]; then
+    pass "reheal(dry): note byte-unchanged (no write under --dry-run)"
+else
+    fail "reheal(dry): --dry-run mutated the note" "$out14"
+fi
+
+# ============================================================================
+# Case 15: claude available but the crystallizer FAILS -> note left as-is
+#          (never mechanically overwritten after a claude attempt — guards
+#          against clobbering a partial LLM edit), counted inert, idempotent.
+# ============================================================================
+echo ""
+echo "Case 15: reheal with a FAILING crystallizer leaves the husk as-is"
+
+SB="$TMP_ROOT/case15"
+VAULT15="$SB/vault"
+PROJ_ROOT15="$SB/projects"
+STATE15="$SB/state.json"
+NOTE15="$VAULT15/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT15" "$PROJ_ROOT15"
+write_husk_note "$NOTE15" "reheal-sess-fail"
+seed_named_transcript "$PROJ_ROOT15" "reheal-sess-fail" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+SHA15="$(_file_sha256 "$NOTE15")"
+
+out15=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=fail \
+    CRYSTALLIZE_PID_DIR="$SB/pids" \
+    bash "$BACKFILL" --reheal \
+    --projects-dir "$PROJ_ROOT15" \
+    --luna-vault-path "$VAULT15" \
+    --state-file "$STATE15" \
+    --vault-registry /dev/null \
+    2>&1)
+assert_contains "reheal(fail): not counted healed" "healed=0" "$out15"
+assert_contains "reheal(fail): counted inert" "inert=1" "$out15"
+if [ "$SHA15" = "$(_file_sha256 "$NOTE15")" ]; then
+    pass "reheal(fail): husk left byte-unchanged (no mechanical clobber after claude attempt)"
+else
+    fail "reheal(fail): note was overwritten despite the crystallizer failing" "$out15"
+fi
 
 # ============================================================================
 # Summary

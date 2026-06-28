@@ -1,0 +1,2 @@
+{"timestamp":"2026-06-20T00:00:00Z","type":"user","message":{"role":"user","content":"hi"}}
+{"timestamp":"2026-06-20T00:01:00Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done. Summary line one.\nSummary line two."},{"type":"tool_use","name":"Bash","input":{"command":"git commit -m x"}}]}}

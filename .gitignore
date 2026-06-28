@@ -9,9 +9,11 @@ scripts/jira/dist/
 node_modules/
 /.claude/settings.local.json
 # Generated/junk artifacts that must never be committed (HIMMEL-371).
-# NOT package-lock.json — 6 legit npm packages track theirs; the wrong-PM
-# lockfile case (a package-lock.json inside a bun package) is caught by the
-# check-artifact-leakage pre-commit hook instead.
+# NOT package-lock.json globally — 6 legit npm packages track theirs. The
+# wrong-PM lockfile case (a package-lock.json inside a bun package, left by the
+# npm-audit pre-push gates) is prevented per-bun-package via that package's own
+# .gitignore (e.g. marketplace/plugins/luna-correlate/, scripts/luna-vitals/),
+# and still backstopped by the check-artifact-leakage pre-commit hook.
 *.tsbuildinfo
 .DS_Store
 Thumbs.db

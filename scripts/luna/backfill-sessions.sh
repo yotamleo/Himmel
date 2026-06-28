@@ -19,6 +19,17 @@
 #   --vault-registry <path>  Override vault registry (default: ~/.claude/luna-vaults.json)
 #   --luna-vault-path <dir>  Override default vault path (sets LUNA_VAULT_PATH)
 #
+# Reheal mode (HIMMEL-576):
+#   --reheal               Instead of importing transcripts, scan the resolved
+#                          vault's sessions/**/*.md for husk notes (crystallized
+#                          != true AND "_Transcript unavailable._" AND Files
+#                          Touched "_None._"), locate the matching transcript by
+#                          session_id, and overwrite the note in place via the
+#                          crystallizer (or a mechanical re-render when `claude`
+#                          is unavailable). Inert husks (contentless / missing
+#                          transcript) are left as-is. Idempotent. Honours
+#                          --dry-run and --vault-registry/--luna-vault-path.
+#
 # bash 3.2-safe; shellcheck-clean; cross-platform (Windows Git Bash / macOS / Linux).
 
 set -uo pipefail
@@ -43,6 +54,7 @@ INCLUDE_ORPHANED=false
 SCOPE_ALL=false
 ONLY_GLOB=""
 EXCLUDE_GLOB=""
+REHEAL=false
 
 # Home resolution (cross-platform)
 if [ -n "${HOME:-}" ]; then
@@ -83,6 +95,8 @@ while [ $# -gt 0 ]; do
             shift; EXCLUDE_GLOB="$1"; shift ;;
         --dry-run)
             DRY_RUN=true; shift ;;
+        --reheal)
+            REHEAL=true; shift ;;
         --state-file)
             shift; STATE_FILE="$1"; shift ;;
         --vault-registry)
@@ -297,6 +311,7 @@ CNT_LEDGER=0
 CNT_OPTOUT=0
 CNT_ORPHANED=0
 CNT_UNDERMIN=0
+CNT_HUSK=0
 
 # ---------------------------------------------------------------------------
 # Process one JSONL file (called from main shell loop — counters propagate)
@@ -314,6 +329,17 @@ _process_one() {
     local last_assistant="$LAST_ASSISTANT" commands="$COMMANDS"
     # shellcheck disable=SC2153
     local transcript_readable="$TRANSCRIPT_READABLE"
+    # shellcheck disable=SC2153
+    local has_content="$HAS_CONTENT"
+
+    # Husk-skip gate (HIMMEL-576): a transcript with no salvageable content would
+    # render a content-free "Transcript unavailable" husk note (FILES_COUNT is
+    # always 0 in backfill, so the live hook's files_touched term doesn't apply).
+    # Skip it — this is what kills the same-minute collision flood.
+    if [ "${has_content:-0}" -eq 0 ]; then
+        CNT_HUSK=$((CNT_HUSK + 1))
+        return 0
+    fi
 
     # Parse cwd
     local cwd_raw cwd
@@ -501,6 +527,207 @@ _process_one() {
     fi
 }
 
+# ===========================================================================
+# Reheal mode (HIMMEL-576 Phase 3) — recover husk notes already in the vault.
+# ===========================================================================
+CNT_REHEAL=0
+CNT_REHEAL_INERT=0
+CNT_REHEAL_SKIP=0
+
+# Read a frontmatter field's value from a note (between the first two `---`
+# lines). Echoes the value (may be empty); nothing if the key is absent.
+_note_fm() { # <field> <note>
+    awk -v key="$1" '
+        /^---$/ { c++; if (c==2) exit; next }
+        c==1 && $0 ~ "^"key":" { sub("^"key": ?", "", $0); print; exit }
+    ' "$2" 2>/dev/null
+}
+
+# Husk-note predicate (note-level, distinct from the transcript-level
+# HAS_CONTENT gate): crystallized is NOT true AND the Raw Conversation carries
+# the literal "_Transcript unavailable._" AND the Files Touched section is
+# exactly "_None._".  Returns 0 (husk) / 1 (not a husk).
+_is_husk_note() { # <note>
+    local f="$1"
+    grep -q '^crystallized: true$' "$f" 2>/dev/null && return 1
+    grep -qF '_Transcript unavailable._' "$f" 2>/dev/null || return 1
+    local files_body
+    files_body="$(awk '
+        /^## / { if (ins) exit; if ($0 == "## Files Touched") ins=1; next }
+        ins { print }
+    ' "$f" 2>/dev/null | awk 'NF')"
+    [ "$files_body" = "_None._" ] || return 1
+    return 0
+}
+
+# Locate the transcript JSONL for a session_id under PROJECTS_DIR/*/<id>.jsonl.
+# Echoes the first match; nothing if none.
+_find_transcript() { # <session_id>
+    local sid="$1" d cand
+    [ -n "$sid" ] || return 1
+    for d in "$PROJECTS_DIR"/*/; do
+        cand="${d}${sid}.jsonl"
+        [ -f "$cand" ] && { printf '%s' "$cand"; return 0; }
+    done
+    return 1
+}
+
+# Is a `claude` binary reachable (real or test stub)?  Mirrors crystallize-note.sh.
+_claude_available() {
+    [ -n "${CRYSTALLIZE_CLAUDE_BIN:-}" ] && return 0
+    command -v claude >/dev/null 2>&1 && return 0
+    return 1
+}
+
+# Mechanical re-render fallback (no claude): overwrite the husk note in place
+# from the now-content-bearing transcript, preserving the note's identity
+# frontmatter.  Stays crystallized: false (no LLM synthesis).
+_mechanical_reheal() { # <note> <transcript>
+    local note="$1" jl="$2"
+    parse_session_transcript "$jl"
+    # shellcheck disable=SC2153  # globals set by the sourced session-transcript.sh lib
+    filter_commands "$COMMANDS"
+
+    local repo branch worktree date_iso src dur sid
+    repo="$(_note_fm repo "$note")"
+    branch="$(_note_fm branch "$note")"
+    worktree="$(_note_fm worktree "$note")"
+    date_iso="$(_note_fm date "$note")"
+    src="$(_note_fm source "$note")"
+    dur="$(_note_fm duration_minutes "$note")"
+    sid="$(_note_fm session_id "$note")"
+    [ -n "$dur" ] || dur=0
+
+    local markdown
+    markdown="$(
+        REPO_NAME="$repo" \
+        BRANCH="$branch" \
+        WORKTREE_ABS="$worktree" \
+        FILES_COUNT=0 \
+        FILES_RAW="" \
+        NOW_ISO="$date_iso" \
+        DURATION_MINUTES="$dur" \
+        SESSION_ID="$sid" \
+        SOURCE="$src" \
+        LAST_ASSISTANT="$LAST_ASSISTANT" \
+        TRANSCRIPT_READABLE="$TRANSCRIPT_READABLE" \
+        KEPT_COMMANDS="${KEPT_COMMANDS:-}" \
+        CRYSTALLIZED="false" \
+        CRYSTALLIZED_AT="" \
+        render_session_note
+    )"
+    # Guarded, atomic overwrite (this clobbers an existing note, unlike the
+    # create path): refuse an empty render, write to a temp, and promote with
+    # mv only on success — a failed/partial write never truncates the husk.
+    [ -n "$markdown" ] || return 1
+    local tmp="${note}.reheal.$$"
+    if printf '%s' "$markdown" > "$tmp" 2>/dev/null && mv -f "$tmp" "$note" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# Reheal one note: skip non-husks; for a husk, find its transcript, and if that
+# transcript now has content, heal it (crystallizer or mechanical re-render);
+# otherwise leave it as-is (inert).
+_reheal_one() { # <note>
+    local note="$1"
+    if ! _is_husk_note "$note"; then
+        CNT_REHEAL_SKIP=$((CNT_REHEAL_SKIP + 1))
+        return 0
+    fi
+
+    local sid jl
+    sid="$(_note_fm session_id "$note")"
+    jl="$(_find_transcript "$sid")"
+    if [ -z "$jl" ]; then
+        # Transcript gone — cannot recover.
+        CNT_REHEAL_INERT=$((CNT_REHEAL_INERT + 1))
+        return 0
+    fi
+
+    parse_session_transcript "$jl"
+    # shellcheck disable=SC2153  # global set by the sourced lib
+    if [ "${HAS_CONTENT:-0}" -eq 0 ]; then
+        # Genuinely contentless transcript — leave the husk as-is.
+        CNT_REHEAL_INERT=$((CNT_REHEAL_INERT + 1))
+        return 0
+    fi
+
+    # Recoverable in principle (a content-bearing transcript). In dry-run this is
+    # the count the operator wants — how many husks could be lifted.
+    if [ "$DRY_RUN" = "true" ]; then
+        CNT_REHEAL=$((CNT_REHEAL + 1))
+        return 0
+    fi
+
+    # Apply. The husk predicate clears only two ways:
+    #   * the LLM crystallizer sets `crystallized: true`, OR
+    #   * a mechanical re-render produces a real Raw Conversation, which needs a
+    #     non-empty final assistant turn (a tool/thinking-only transcript still
+    #     renders "_Transcript unavailable._", so a mechanical pass cannot lift
+    #     it out of husk-hood — only the crystallizer can).
+    local healed=0
+    # shellcheck disable=SC2153  # LAST_ASSISTANT set by parse_session_transcript
+    if _claude_available; then
+        # Trust the crystallizer when claude is available. Synchronous (not
+        # detached): reheal is a batch op, one note at a time; crystallize-note.sh
+        # is idempotent and fail-open. If it does NOT clear the husk (cap / race /
+        # error), LEAVE the note as-is for a later run — never mechanically
+        # overwrite after a claude attempt, which could clobber a partial LLM edit.
+        bash "$SCRIPT_DIR/crystallize-note.sh" "$note" "$jl" || true
+        _is_husk_note "$note" || healed=1
+    elif [ -n "${LAST_ASSISTANT:-}" ]; then
+        # No claude: a mechanical re-render recovers a real Summary/Commands and
+        # clears the husk (the prose turn fills Raw Conversation). Guarded write —
+        # only counts healed when the overwrite actually succeeds.
+        if _mechanical_reheal "$note" "$jl"; then healed=1; fi
+    fi
+    if [ "$healed" -eq 1 ]; then
+        CNT_REHEAL=$((CNT_REHEAL + 1))
+    else
+        # Couldn't clear the husk this run (crystallizer unavailable/failed, or
+        # no claude AND no prose turn). Left byte-unchanged — idempotent; a later
+        # run with claude available can still crystallize it.
+        CNT_REHEAL_INERT=$((CNT_REHEAL_INERT + 1))
+    fi
+}
+
+# Enumerate husk-candidate notes (all sessions/**/*.md) into TMP_JSONL_LIST.
+_run_reheal() {
+    local vault_root
+    vault_root="$(resolve_vault_root "/reheal-no-config-placeholder" "$VAULT_REGISTRY" "$DRY_RUN")"
+    if [ -z "$vault_root" ]; then
+        printf 'backfill: reheal: vault unresolved (set --luna-vault-path or a registry default)\n' >&2
+        exit 1
+    fi
+    # shellcheck disable=SC2088
+    case "$vault_root" in "~/"*) vault_root="$_HOME/${vault_root#\~/}" ;; esac
+
+    local sessions_dir="$vault_root/sessions"
+    if [ ! -d "$sessions_dir" ]; then
+        printf 'backfill: reheal: no sessions/ under %s\n' "$vault_root" >&2
+        printf 'reheal: healed=0 inert=0 non-husk-skip=0\n'
+        return 0
+    fi
+
+    # Collect note paths first (avoid the pipe-subshell counter problem).
+    find "$sessions_dir" -type f -name '*.md' 2>/dev/null > "$TMP_JSONL_LIST"
+    while IFS= read -r note; do
+        [ -n "$note" ] || continue
+        _reheal_one "$note"
+    done < "$TMP_JSONL_LIST"
+
+    printf 'reheal: healed=%d inert=%d non-husk-skip=%d\n' \
+        "$CNT_REHEAL" "$CNT_REHEAL_INERT" "$CNT_REHEAL_SKIP"
+}
+
+if [ "$REHEAL" = "true" ]; then
+    _run_reheal
+    exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Main: collect paths to temp file, then loop in main shell (no pipe!)
 # ---------------------------------------------------------------------------
@@ -514,5 +741,5 @@ done < "$TMP_JSONL_LIST"
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-printf 'backfill: new=%d already-in-ledger=%d opt-out-skip=%d orphaned-skip=%d under-min=%d\n' \
-    "$CNT_NEW" "$CNT_LEDGER" "$CNT_OPTOUT" "$CNT_ORPHANED" "$CNT_UNDERMIN"
+printf 'backfill: new=%d already-in-ledger=%d opt-out-skip=%d orphaned-skip=%d under-min=%d husk-skip=%d\n' \
+    "$CNT_NEW" "$CNT_LEDGER" "$CNT_OPTOUT" "$CNT_ORPHANED" "$CNT_UNDERMIN" "$CNT_HUSK"

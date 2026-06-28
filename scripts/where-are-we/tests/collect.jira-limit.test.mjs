@@ -14,7 +14,7 @@ import { jiraQueries, main } from '../collect.mjs';
 
 const statusOf = (q) => q[q.indexOf('--status') + 1];
 const isStatusQuery = (q) => q.includes('--status');
-const isDoneQuery = (q) => q.some((a) => typeof a === 'string' && a.startsWith('status = Done'));
+const isKeyQuery = (q) => q.some((a) => typeof a === 'string' && a.startsWith('key in ('));
 
 test('jiraQueries: pulls In Progress and To Do as separate queries (no combined comma filter)', () => {
   const statuses = jiraQueries([]).filter(isStatusQuery).map(statusOf);
@@ -31,24 +31,24 @@ test('jiraQueries: every status query carries an explicit --limit above the CLI 
   }
 });
 
-test('jiraQueries: no Done query when nothing is in flight', () => {
-  assert.ok(!jiraQueries([]).some(isDoneQuery), 'empty active set → no Done query');
+test('jiraQueries: no by-key query when nothing is in flight', () => {
+  assert.ok(!jiraQueries([]).some(isKeyQuery), 'empty active set → no by-key query');
 });
 
-test('jiraQueries: Done self-clear is scoped to the active in-flight keys only', () => {
-  const done = jiraQueries(['HIMMEL-1', 'HIMMEL-2']).find(isDoneQuery);
-  assert.ok(done, 'active keys → a Done-by-keys query');
-  const jql = done[done.indexOf('--jql') + 1];
-  assert.match(jql, /key in \(HIMMEL-1,HIMMEL-2\)/);
+test('jiraQueries: the by-key status read is scoped to the active in-flight keys only', () => {
+  const byKey = jiraQueries(['HIMMEL-1', 'HIMMEL-2']).find(isKeyQuery);
+  assert.ok(byKey, 'active keys → a by-key query');
+  const jql = byKey[byKey.indexOf('--jql') + 1];
+  assert.match(jql, /^key in \(HIMMEL-1,HIMMEL-2\)$/, 'all statuses — not scoped to Done');
 });
 
 test('jiraQueries: sanitizes keys so a malformed entry cannot inject JQL', () => {
-  const done = jiraQueries(['HIMMEL-1', 'HIMMEL-1) OR status != Done --', 'evil']).find(isDoneQuery);
-  const jql = done[done.indexOf('--jql') + 1];
-  assert.match(jql, /key in \(HIMMEL-1\)$/, 'only well-formed ticket keys survive');
+  const byKey = jiraQueries(['HIMMEL-1', 'HIMMEL-1) OR status != Done --', 'evil']).find(isKeyQuery);
+  const jql = byKey[byKey.indexOf('--jql') + 1];
+  assert.match(jql, /^key in \(HIMMEL-1\)$/, 'only well-formed ticket keys survive');
 });
 
-test('main: derives active in-flight ticket keys from the ledger and scopes the Done read to them', () => {
+test('main: derives active in-flight ticket keys from the ledger and scopes the by-key read to them', () => {
   const dir = mkdtempSync(join(tmpdir(), 'waw-jira-limit-'));
   const ledger = join(dir, 'ledger.jsonl');
   writeFileSync(ledger, [
@@ -64,5 +64,5 @@ test('main: derives active in-flight ticket keys from the ledger and scopes the 
     readWorktrees: () => '',
   };
   main(['--ledger', ledger, '--now', '2026-02-01T00:00:00Z'], { readers });
-  assert.deepEqual(captured, ['HIMMEL-1'], 'only the non-terminal ticket key is passed for the Done self-clear read');
+  assert.deepEqual(captured, ['HIMMEL-1'], 'only the non-terminal ticket key is passed for the by-key status read');
 });

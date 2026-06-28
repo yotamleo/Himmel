@@ -372,8 +372,17 @@ on demand; nothing here runs automatically.
   (never overwrites); idempotent via ledger at `~/.claude/luna-backfill-state.json`.
   Scope flags: default = current project, `--all` = every project, `--project
   <path>` (repeatable) = specific repo(s). `--dry-run` prints counts without
-  writing. Primary surface: `/luna-backfill`. Full flag reference in
-  `.claude/commands/luna-backfill.md`.
+  writing. `--reheal` is a recovery mode that overwrites existing husk notes in
+  place via the crystallizer (or a mechanical re-render). Primary surface:
+  `/luna-backfill`. Full flag reference in `.claude/commands/luna-backfill.md`.
+- `scripts/luna/crystallize-note.sh` — Best-effort background LLM "crystallizer"
+  (HIMMEL-576): upgrades a just-written mechanical session note into a real
+  synthesis via a bounded interactive `claude` run (Max-billed, no API key,
+  HIMMEL-128-safe), flipping the note to `crystallized: true`. Spawned detached
+  by the `end-session-wiki` hook on every success-write, and reused by
+  `backfill-sessions.sh --reheal`. Fail-open (no `claude` / over the concurrency
+  cap → leaves the mechanical note untouched). Detail:
+  `docs/luna/end-session-wiki.md` → Crystallization.
 
 ---
 

@@ -111,6 +111,15 @@ the e2e harness uses internally:
 - **`drive_claude(prompt, cwd)`** — drive an interactive `claude "<prompt>"`
   session on the guest (positional prompt, not `-p`/`--print`, so it is
   non-headless and billing-safe per HIMMEL-128); returns `(rc, output)`.
+  **Permissions policy (HIMMEL-575):** the drive runs with
+  `--dangerously-skip-permissions` *on purpose* — a VM is throwaway, isolated,
+  and holds no operator data, and the non-interactive drive (`< /dev/null`) has
+  no human to answer a tool-use prompt, so the guest is allowed to "run wild";
+  the blast radius is the disposable VM. This is intentionally the OPPOSITE of
+  the user-facing unattended path (the pipeline-cadence runner on the operator's
+  real machine), which never skips permissions and instead injects a curated
+  allowlist+guardrail via `claude --settings <fragment>` (the grant-only
+  auto-approve-safe-bash hook). **VM = run wild; real machine = allowlist.**
 
 ## Typical session
 

@@ -29,6 +29,41 @@ On every `SessionEnd` event, a hook runs `scripts/hooks/end-session-wiki.{ps1,sh
 
 The note is delivered via the Obsidian Local REST API when an API key is available. If no key is found, or the REST PUT fails (e.g. Obsidian isn't running), the hook falls back to writing the note directly to the vault on disk — Obsidian picks up on-disk changes automatically, so capture works whether or not the plugin is up.
 
+## Crystallization (LLM upgrade)
+
+The hook first writes a **mechanical** note: frontmatter + the six sections rendered straight from the transcript (last assistant turn → Summary, parsed commands → Commands, the git diff → Files Touched). That note carries `crystallized: false`. Immediately afterward, on every success-write path, the hook spawns a best-effort background **crystallizer** that asks a bounded `claude` run to rewrite the four prose sections — Summary, Decisions, Files Touched, Follow-ups — into a real synthesis of the session, then flips the note to `crystallized: true` (+ `crystallized_at`). All other frontmatter (date, session_id, repo, branch, worktree, source) and the Raw Conversation callout are preserved verbatim.
+
+A note that stays `crystallized: false` is the valid mechanical baseline, **not** a failure — the crystallizer is fail-open and recoverable (see [Reheal](#reheal-recover-existing-husk-notes)).
+
+**Mechanism — bounded `claude`, billed to Max.** The crystallizer is `scripts/luna/crystallize-note.sh`. It runs `claude "<prompt>" </dev/null` (an *interactive* bounded run, not headless `-p`), so it bills to the operator's Max plan and needs **no API key** — and is HIMMEL-128-safe. It runs in the himmel repo root so the spawned session inherits himmel's own `auto-approve-safe-bash` posture, with `--permission-mode acceptEdits` scoping the single note edit. The spawn is fully detached (`scripts/lib/detach.sh` — `setsid`, or a double-fork on macOS) so it outlives the hook's process-group teardown; the hook never blocks on it and never exits non-zero because of it.
+
+**Recursion guards.** The throwaway crystallizer session must not re-fire the session-end hooks. `crystallize-note.sh` exports two env vars into the spawned `claude`:
+
+| Env var | Effect |
+|---------|--------|
+| `CLAUDE_END_SESSION_WIKI=0` | Silences this hook in the crystallizer subsession (no nested capture). |
+| `HIMMEL_WHERE_ARE_WE=0` | Silences the where-are-we session-end refresh (HIMMEL-572) so a crystallizer subsession doesn't kick off a jira/gh/git ledger refresh. |
+
+**Safety rails (best-effort, fail-open).** Any unavailability leaves the mechanical note untouched and exits 0:
+
+- **No `claude` on PATH** → no-op (the mechanical note stands).
+- **Concurrency cap** (`CRYSTALLIZE_MAX_CONCURRENCY`, default 2) — never piles up N full `claude` processes for N simultaneous session-ends; over the cap → skip.
+- **Retry-read** — the live hook may have just written the note via the Obsidian REST API (async flush); the crystallizer retries the read a few times before giving up.
+- **Already crystallized** → no-op.
+
+**Husk-skip (the empty-note gate).** A session with no salvageable content — no assistant text, no thinking/tool_use, no extracted commands — would render a content-free "Transcript unavailable" husk. The hook (and backfill) detect this (`HAS_CONTENT==0`, plus `files_touched==0` for the live hook) and **skip the write entirely**, logging `skipped: husk (no content)`. A thinking/tool-only session (real work, no final prose turn) is **not** a husk: its Summary surfaces the command activity instead.
+
+**Disable crystallization** (keep mechanical capture): set `"crystallize": false` in `.claude/end-session-wiki.json`. The mechanical note is then the final note. Pin a model with `"crystallize_model"`.
+
+### Reheal — recover existing husk notes
+
+If husk notes already exist in a vault (e.g. captured before the husk-skip gate landed, or sessions whose crystallizer didn't run), `backfill-sessions.sh --reheal` recovers them. It scans the resolved vault's `sessions/**/*.md` for **husk notes** — frontmatter `crystallized` is not `true` **AND** the Raw Conversation contains `_Transcript unavailable._` **AND** Files Touched is `_None._` — locates the matching transcript by `session_id` under `~/.claude/projects/*/`, and:
+
+- if the transcript now has salvageable content → overwrites the note in place via the crystallizer (or, when `claude` is unavailable, a **mechanical re-render** — but only when the transcript has a final assistant prose turn, which is what clears the "Transcript unavailable" marker; a tool/thinking-only session can only be lifted by the LLM crystallizer);
+- if the transcript is genuinely contentless, missing, or only mechanically un-liftable this run → leaves the husk as-is (a later run with `claude` available crystallizes it).
+
+Idempotent: a healed (`crystallized: true`) note — and any note a mechanical pass can't lift — is left byte-unchanged on re-run (no rewrite loop). Inert husks persist — there is no auto-delete. See [`/luna-backfill --reheal`](../../.claude/commands/luna-backfill.md).
+
 ## Security note — log files contain raw transcript text
 
 The hook writes diagnostic output to `.claude/end-session-wiki.log` and (during dry-run mode) the full rendered note including the `## Raw Conversation` callout that quotes the tail of your session transcript. Anything you typed into Claude — pasted credentials, API keys, secrets — can appear verbatim in those logs.
@@ -62,7 +97,8 @@ Edit `.claude/end-session-wiki.json`:
 {
   "enabled": false,
   "dry_run": false,
-  "min_duration_seconds": 60
+  "min_duration_seconds": 60,
+  "crystallize": true
 }
 ```
 
@@ -73,6 +109,8 @@ Fields:
 | `enabled` | bool | `true` | `false` → hook exits 0 after logging `skipped: config disabled` |
 | `dry_run` | bool | `false` | `true` → render note to log file instead of writing to vault |
 | `min_duration_seconds` | int | `60` | Sessions shorter than this are skipped (prevents capturing accidental opens) |
+| `crystallize` | bool | `true` | `false` → never spawn the LLM crystallizer; the mechanical note is the final note. See [Crystallization](#crystallization-llm-upgrade). |
+| `crystallize_model` | string | _(absent)_ | Pin the crystallizer to a specific model (e.g. `"claude-haiku-4-5-20251001"`). Absent → the crystallizer's default model. |
 | `vault_path` | string | `""` | Absolute path (a leading `~/` is expanded) to the Obsidian vault this repo's sessions are captured into. Empty → fall back to `vault`, then `LUNA_VAULT_PATH` env, then the default. See [Choosing the target vault](#choosing-the-target-vault) below. |
 | `vault` | string | _(absent)_ | Vault **name** (not a path) — e.g. `"luna-medic"`. Distributable/safe to commit; resolved to a path per-machine (registry, then the `~/Documents/<name>` convention). An invalid or unresolvable name **skips** the capture rather than misrouting it. See [Choosing the target vault](#choosing-the-target-vault). |
 

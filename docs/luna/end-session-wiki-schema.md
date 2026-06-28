@@ -82,6 +82,8 @@ tags:
 ai-first: true
 session_id: <uuid from SessionEnd payload>
 source: live
+crystallized: false
+crystallized_at:
 ---
 ```
 
@@ -102,8 +104,12 @@ source: live
 | `ai-first` | boolean | yes | constant `true` (Luna vault AI-First Vault Rule §0) | n/a |
 | `session_id` | string | yes | `session_id` from `SessionEnd` payload | Write empty string `""` if absent in payload |
 | `source` | string | yes | `"live"` for hook captures; `"claude-backfill"` for backfill tool writes | n/a — always set by the writer |
+| `crystallized` | boolean | yes | `false` on the mechanical render; flipped to `true` once an LLM crystallization pass has rewritten the body sections | n/a — defaults to `false` |
+| `crystallized_at` | string (ISO 8601 UTC) or empty | yes | empty on the mechanical render; set to the crystallization time when `crystallized: true` | empty string when not crystallized |
 
 **Backfill rules:** when `source=claude-backfill`, set `branch=""` (empty, branch at capture time is unknown), `files_touched=0` (no diff available), `session_id` from the transcript filename or a derived identifier.
+
+**Crystallization fields:** every note is first written *mechanically* (`crystallized: false`, `crystallized_at:` empty). A best-effort background LLM pass — the **crystallizer** — may then rewrite the four body sections (Summary / Decisions / Files Touched / Follow-ups), preserving all other frontmatter and setting `crystallized: true` + `crystallized_at`. A note that stays `crystallized: false` is the valid mechanical baseline, not a failure. Operational detail (config, recursion guards, the husk-skip gate, and `--reheal` recovery): [`end-session-wiki.md` → Crystallization](./end-session-wiki.md#crystallization-llm-upgrade).
 
 **Optional-field convention:** for `epic` and `task`, **omit the key entirely** rather than emitting `null`, `""`, or `~`. Rationale: Obsidian Dataview and frontmatter consumers treat absent keys consistently (`is undefined`), and absent keys keep notes scannable. Empty-string would falsely match prefix searches; `null` clutters the YAML.
 
