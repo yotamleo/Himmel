@@ -80,7 +80,7 @@ mkvault() {
 }
 
 # ── Vault A: two telegram-origin clips on one concept → 1 stub, 1 digest ──────
-A="$(mktemp -d)"; trap 'rm -rf "$A" "$B" "$C"' EXIT
+A="$(mktemp -d)"; trap 'rm -rf "$A" "$B" "$C" "$E"' EXIT
 mkvault "$A"
 tg_clip "$A" tg1.md "Alice R" "https://alpha.com/x"  "agent-loops" 555 11
 tg_clip "$A" tg2.md "Bob W"   "https://beta.org/y"   "agent-loops" 555 12
@@ -135,7 +135,47 @@ node "$TOOL" "$C" --apply --no-telegram-digest >/dev/null 2>&1
 if [ -f "$DIGEST_C" ]; then f=present; else f=absent; fi
 assert "no digest written under --no-telegram-digest" "absent" "$f"
 
-echo "Test 5: structural — synthesize-stubs runbook documents the digest send"
+# ── Vault E: real-bridge COMPOSITE telegram_msg_id, NO separate chat_id ──────
+# Some bridges file chat+message into one composite id. The digest must derive
+# the chat + numeric reply target from it end-to-end — no telegram_chat_id, no
+# backfill (the pre-LUNA-91 clips still work).
+E="$(mktemp -d)"
+mkvault "$E"
+comp_clip() { # name author url tag composite_msg_id
+    cat > "$E/Clippings/_evidence/$1" <<EOF
+---
+title: "comp $1"
+author: $2
+source: $3
+harvest_url_canonical: $3
+type: article
+processed: true
+triaged_at: 2026-06-28
+evidence_kind:
+  - concepts
+clipped_via: telegram
+telegram_sender: "1087968824"
+telegram_msg_id: "$5"
+tags:
+  - $4
+---
+clip $1
+EOF
+}
+comp_clip e1.md "Gina P" "https://one.com/x" "voice-ui" "telegram-tg-group_-1003985279697-1782605997"
+comp_clip e2.md "Hal R"  "https://two.org/y" "voice-ui" "tg-group_-1003985279697-1782605414-7"
+DIGEST_E="$E/.synthesize-stubs.telegram-digest.json"
+
+echo "Test 5: composite telegram_msg_id (no chat_id) → digest with derived chat + numeric reply_to"
+node "$TOOL" "$E" --apply >/dev/null 2>&1
+if [ -f "$DIGEST_E" ]; then f=yes; else f=no; fi
+assert "digest written from composite-id telegram clips" "yes" "$f"
+chat_e=$(node -e 'const j=require(process.argv[1]); console.log(j.replies[0].chat_id)' "$DIGEST_E" 2>/dev/null)
+assert "chat derived from the composite id" "-1003985279697" "$chat_e"
+reply_e=$(node -e 'const j=require(process.argv[1]); console.log(j.replies[0].reply_to)' "$DIGEST_E" 2>/dev/null)
+assert "reply_to is the numeric message id (most recent)" "1782605997" "$reply_e"
+
+echo "Test 6: structural — synthesize-stubs runbook documents the digest send"
 if grep -qF 'telegram-digest.json' "$PLUGIN_DIR/commands/synthesize-stubs.md"; then f=yes; else f=no; fi
 assert "synthesize-stubs.md documents the telegram digest reply step" "yes" "$f"
 
