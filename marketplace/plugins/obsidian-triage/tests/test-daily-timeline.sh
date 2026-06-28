@@ -20,6 +20,11 @@
 
 set -u -o pipefail
 
+# Pin a fixed UTC+2 zone so the ledger UTC→local-date conversion (localDateOf)
+# is deterministic regardless of the runner's machine timezone. Etc/GMT-2 is a
+# fixed (no-DST) UTC+2 offset — note the IANA sign inversion.
+export TZ='Etc/GMT-2'
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOL="$PLUGIN_DIR/tools/daily-timeline.mjs"
@@ -197,7 +202,7 @@ if [ -f "$tmp/50-Journal/Daily/2030-01-01.md" ]; then f=created; else f=absent; 
 assert "no phantom daily note created" "absent" "$f"
 
 # ── State-truth: a reverted stub (page gone) drops from the recount ──────────
-echo "Test 12: a created-then-reverted stub (page deleted) is NOT listed (no dangling backref)"
+echo "Test 11: a created-then-reverted stub (page deleted) is NOT listed (no dangling backref)"
 rm -f "$tmp/30-Resources/Concepts/Agent-Loops.md"   # simulate synthesize-stubs --revert
 node "$TOOL" --vault "$tmp" --date "$D" >/dev/null 2>&1
 prom_line=$(grep -F 'Promoted → subjects:' "$DAILY")
@@ -207,7 +212,7 @@ if printf '%s' "$prom_line" | grep -qF '[[30-Resources/Concepts/Context-Windows]
 assert "surviving subject still listed" "yes" "$f"
 
 # ── Cross-folder captured: a clip captured today but already moved to _evidence ─
-echo "Test 13: captured counts a date_clipped==D clip that moved into _evidence/"
+echo "Test 12: captured counts a date_clipped==D clip that moved into _evidence/"
 cat > "$tmp/Clippings/_evidence/cap-moved.md" <<EOF
 ---
 title: "captured then reviewed same day"
@@ -222,8 +227,26 @@ cap_line=$(grep -F 'Captured → inbox:' "$DAILY")
 if printf '%s' "$cap_line" | grep -qE '\*\* 3$'; then f=yes; else f=no; fi
 assert "captured now 3 (cap-a, cap-b, cap-moved in _evidence)  [$cap_line]" "yes" "$f"
 
+# ── Timezone boundary: ledger UTC ts maps to the operator's LOCAL day ────────
+# Under TZ=Etc/GMT-2 (UTC+2), a promotion logged at 23:30 UTC on 06-30 happened
+# at 01:30 LOCAL on 07-01 — it must land in the 07-01 daily note (the operator's
+# wall-clock day), NOT the 06-30 UTC note. Regression for the off-by-one a naive
+# ts.slice(0,10) caused (found in live staging).
+echo "Test 13: ledger UTC ts is bucketed by LOCAL day, not UTC day"
+BD="2026-07-01"; BUTC="2026-06-30"
+printf -- '---\nstatus: stub\n---\n# Boundary Subject\n' > "$tmp/30-Resources/Concepts/Boundary-Subject.md"
+printf '%s\n' "{\"ts\":\"${BUTC}T23:30:00.000Z\",\"action\":\"stub-create\",\"subject\":\"30-Resources/Concepts/Boundary-Subject.md\",\"concept_key\":\"boundary\"}" >> "$LED"
+printf -- '---\ntype: daily\ndate: %s\n---\n\n# %s\n' "$BD" "$BD"     > "$tmp/50-Journal/Daily/$BD.md"
+printf -- '---\ntype: daily\ndate: %s\n---\n\n# %s\n' "$BUTC" "$BUTC" > "$tmp/50-Journal/Daily/$BUTC.md"
+node "$TOOL" --vault "$tmp" --date "$BD"   >/dev/null 2>&1
+node "$TOOL" --vault "$tmp" --date "$BUTC" >/dev/null 2>&1
+if grep -F 'Promoted → subjects:' "$tmp/50-Journal/Daily/$BD.md" | grep -qF '[[30-Resources/Concepts/Boundary-Subject]]'; then f=yes; else f=no; fi
+assert "promotion lands in the LOCAL-day note ($BD)" "yes" "$f"
+if grep -F 'Promoted → subjects:' "$tmp/50-Journal/Daily/$BUTC.md" | grep -qF 'Boundary-Subject'; then f=leaked; else f=excluded; fi
+assert "promotion does NOT appear in the UTC-day note ($BUTC)" "excluded" "$f"
+
 # ── Structural: runbooks invoke the tool ─────────────────────────────────────
-echo "Test 11: triage + synthesize runbooks wire daily-timeline.mjs"
+echo "Test 14: triage + synthesize runbooks wire daily-timeline.mjs"
 if grep -qF 'tools/daily-timeline.mjs' "$PLUGIN_DIR/commands/triage-clips.md"; then f=yes; else f=no; fi
 assert "triage-clips.md invokes daily-timeline.mjs" "yes" "$f"
 if grep -qF 'tools/daily-timeline.mjs' "$PLUGIN_DIR/commands/synthesize-stubs.md"; then f=yes; else f=no; fi
