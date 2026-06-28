@@ -130,15 +130,15 @@ Slash command: `/handover-flush` (+ `--dry-run`, `--cleanup`,
 
 **Pre-push CR runs on `handover/*` branches (HIMMEL-142):**
 The `code-review-before-push` pre-commit hook
-(`.pre-commit-config.yaml` line 100) has no `handover/*` exclusion
+(`.pre-commit-config.yaml` lines 154–161) has no `handover/*` exclusion
 — intentional. Operator decision: CR runs as a sanity audit to catch
 accidental code edits sneaking into handover branches. The
 docs-only-skip already wired into
-`scripts/hooks/check-cr-before-push.sh` (line 61 filters out `.md`
+`scripts/hooks/check-cr-before-push.sh` (line 115 filters out `.md`
 / `.txt` / `docs/` / `handovers/` paths) gives the right behavior:
 
 - Pure handover state diff (only `.md` / `handovers/*` files) →
-  hook prints `docs-only change — skipping marker write`, exits 0.
+  hook prints `handover-state-only change — skipping marker write`, exits 0.
   No CR gate. Runtime effectively 0s.
 - Mixed code + state diff (code creep into a handover branch) →
   CR marker written; operator must run `/pr-check` (or

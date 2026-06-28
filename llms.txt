@@ -43,7 +43,7 @@ Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/him
 - [docs/internals/jira-plugin.md](docs/internals/jira-plugin.md): the local Jira CLI (`scripts/jira/`) — preferred over the Atlassian MCP server — and the op↔MCP mapping.
 - [plugins/himmel-gh/README.md](plugins/himmel-gh/README.md): forge-agnostic git ops — the worktree→PR→merge loop, PR review threads, and luna-ingest route to `gh` on GitHub or the himmel Bitbucket CLI ([scripts/bitbucket/README.md](scripts/bitbucket/README.md)) on Bitbucket Cloud, chosen per-repo from `origin`.
 - [docs/operator-conventions.md](docs/operator-conventions.md): durable operator working-habits (Jira CLI invocation, CR/merge habits).
-- [docs/hermes-runbook.md](docs/hermes-runbook.md): hermes — himmel's opt-in free-inference junior tier for chore-shaped work. Config lives OUTSIDE the repo (`%LOCALAPPDATA%\hermes` / `$HERMES_HOME`), so it is part of himmel even when absent from a checkout; refreshed by `/himmel-update`.
+- [docs/hermes-runbook.md](docs/hermes-runbook.md): hermes ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)) in three tiers — a **CR-critic** lane wired into `/pr-check` and a free-inference **junior** lane (both working), plus an **alpha** `himmel_agent` main tier. Includes the new-user install + configure how-to. Config lives OUTSIDE the repo (`$HERMES_HOME` / `$HERMES_PY`; default `%LOCALAPPDATA%\hermes`), so it is part of himmel even when absent from a checkout; refreshed by `/himmel-update`.
 - [docs/tooling-catalog.md](docs/tooling-catalog.md): every tool/script/plugin in active use.
 
 ## Setup
@@ -51,6 +51,7 @@ Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/him
 - [docs/setup/new-machine.md](docs/setup/new-machine.md): fresh-machine setup — required environment + per-platform (Linux / macOS / Windows Git Bash) install; the user-vs-project hook-scope model (§4b) and the symmetric `uninstall.sh` teardown.
 - [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md): adopting the portable core (hooks + worktree workflow) in another repo.
 - [docs/setup/updating.md](docs/setup/updating.md): the update/upgrade lifecycle — `/himmel-update` (harness git pull + marketplace re-sync, incl. the hermes editable-checkout refresh), `/luna-upgrade` (vault template), why a plain `git pull` is required, and the symmetric `scripts/uninstall.sh` offboarding.
+- [docs/internals/environment-gotchas.md](docs/internals/environment-gotchas.md): Windows / Git-Bash / Bash-tool / content-filter environment traps you may hit on a fresh machine (generic, adopter-facing).
 
 ## Optional
 

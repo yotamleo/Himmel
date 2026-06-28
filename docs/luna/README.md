@@ -15,6 +15,10 @@ features in this repo live here. Personal-state work artifacts
   a structured note in the Luna vault. Opt-out, dry-run, repo-config.
 - [`end-session-wiki-schema.md`](end-session-wiki-schema.md) —
   On-disk schema for session notes the hook writes.
+- [`compounding.md`](compounding.md) — how auto-memory + the clipper
+  pipeline compound into vault substrate (the capture map).
+- [`pr-lane-guard.md`](pr-lane-guard.md) — the luna PR-lane isolation
+  guard and its `.single-writer` opt-out.
 
 ## Where things go
 

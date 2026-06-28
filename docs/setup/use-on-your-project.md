@@ -67,9 +67,9 @@ go inert cleanly when the subsystems they reference are absent:
 Three more hooks in `.claude/settings.json` go **inert cleanly** when their
 subsystems are missing:
 
-- `block-mcp-when-plugin-exists.sh` — blocks Atlassian Jira MCP tools that
-  have a himmel-jira plugin equivalent. With no Jira setup, no Atlassian MCP
-  calls are made, so the hook never fires.
+- `block-backend-tier.sh` — registry-driven backend-routing guard (CLI→API→MCP);
+  blocks an MCP call (e.g. Atlassian Jira) when the local CLI covers the verb.
+  With no Jira/backend setup, no such calls are made, so the hook never fires.
 - `auto-arm-on-cap.sh` + `auto-arm-on-subagent-cap.sh` — usage-cap watchdog.
   Requires a claude-statusline usage cache at `/tmp/claude/statusline-usage-cache.json`.
   Without it the hook exits 0 silently on every check.
@@ -220,7 +220,7 @@ effect on the three portable hooks or the worktree workflow.
 
 | Subsystem | What it is | Skip signal |
 |-----------|-----------|-------------|
-| **Jira** (`scripts/jira/`) | Local Jira CLI + `block-mcp-when-plugin-exists.sh` hook. | `setup.sh --with-jira` activates the Jira path; without the flag setup completes cleanly and the hook never fires. |
+| **Jira** (`scripts/jira/`) | Local Jira CLI + `block-backend-tier.sh` hook. | `setup.sh --with-jira` activates the Jira path; without the flag setup completes cleanly and the hook never fires. |
 | **luna / Obsidian** (`scripts/luna/`, `docs/luna/`) | Vault management, clip pipeline, `obsidian-second-brain` plugin. | Entirely absent from the portable core. |
 | **Telegram** (`scripts/telegram/`) | Bot poller + bridge for sending/receiving Claude messages via Telegram. | Absent unless you configure a bot token. |
 | **hermes** (`scripts/hermes/`) | Free-model junior-tier routing (flash, OpenRouter). | Absent unless you configure API keys. |
@@ -243,7 +243,7 @@ When you are ready to add Jira:
    ```
 2. Run `bash scripts/setup.sh --with-jira` — this builds the Jira CLI and
    validates your credentials.
-3. Add the `block-mcp-when-plugin-exists.sh` stanza to `.claude/settings.json`
+3. Add the `block-backend-tier.sh` stanza to `.claude/settings.json`
    (see [`docs/internals/enforcement.md`](../internals/enforcement.md) for the
    exact matcher + command).
 

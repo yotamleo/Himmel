@@ -2,7 +2,7 @@
 
 Defines the structure of every session note auto-filed into the Luna Obsidian vault by the epic #7 `SessionEnd` hook. Schema is the founding convention for the `sessions/` tree (no prior notes exist there as of 2026-05-18).
 
-**Status:** schema only — automation lands in tasks #26 (vault-write-integration) and #27 (opt-out-and-failure-handling).
+**Status:** shipped — the `SessionEnd` hook writes these notes live; see [`end-session-wiki.md`](end-session-wiki.md) for the operational controls (opt-out, dry-run, repo-config).
 
 **Cross-references:**
 - Epic context: HIMMEL-18 end-session-wiki-hook (tracked in the operator's private handover repo)
