@@ -128,6 +128,17 @@ bugs but **not** the exit-2-vs-JSON one — the adapter translation is required
 regardless of delivery mechanism. Project-file delivery + adapter was chosen as
 the smaller change.
 
+The converse bit himmel later (HIMMEL-589): two SECURITY guards that *do* ship
+via the `himmel-ops` plugin `hooks.json` — `block-docker-privesc.sh` (HIMMEL-441)
+and `block-merged-pr-commit.sh` (HIMMEL-512) — resolve their script via
+`$CLAUDE_PROJECT_DIR`, which Codex injects for **neither** plugin nor project
+hooks (plugin hooks get `CLAUDE_PLUGIN_ROOT` instead — see §1), so under Codex
+the wrapper's `[ -f "$h" ]` was false and the guards silently no-op'd
+(root-equivalent docker mounts + merged-PR commits went unguarded). Fix: mirror both into `.codex/hooks.json` via `run-hook.cmd`, which
+derives the root from its own location. The non-security plugin hooks
+(`inject-where-are-we` / `refresh-where-are-we-on-end`) share the same
+root-resolution bug and stay broken under Codex pending HIMMEL-554.
+
 ### 2. Instruction file — CLAUDE.md is invisible; AGENTS.md must carry the rules
 
 **Codex does not read `CLAUDE.md`.** It reads `AGENTS.md`, checking

@@ -11,12 +11,19 @@ full compat matrix.
   Kept to the strict schema (only a top-level `hooks` key — Codex's parser uses
   `deny_unknown_fields`, so an extra key like `description`/`_comment` would make
   it skip the hooks).
+  Includes `block-docker-privesc.sh` + `block-merged-pr-commit.sh` (HIMMEL-589):
+  these two SECURITY guards ship via the `himmel-ops` plugin `hooks.json` using
+  `$CLAUDE_PROJECT_DIR`, which Codex leaves unset for plugin hooks — so they
+  silently no-op under Codex unless mirrored here, where `run-hook.cmd` derives
+  the repo root from its own location.
 - **`run-hook.cmd`** — a **polyglot** wrapper (cmd.exe batch on Windows, bash on
   Unix) that fixes the three reasons the old hand-ported `.codex/hooks.json` did
   **not** block on Windows under Codex:
-  1. **No `CLAUDE_PROJECT_DIR`.** Codex injects it only for *plugin* hooks, not
-     *project* hooks. The wrapper derives the repo root from its **own** location
-     (`.codex/..`) and exports `CLAUDE_PROJECT_DIR` for the guardrail scripts.
+  1. **No `CLAUDE_PROJECT_DIR`.** Codex injects no `CLAUDE_PROJECT_DIR` for
+     project hooks (plugin hooks get `CLAUDE_PLUGIN_ROOT`, not
+     `CLAUDE_PROJECT_DIR`). The wrapper derives the repo root from its **own**
+     location (`.codex/..`) and exports `CLAUDE_PROJECT_DIR` for the guardrail
+     scripts.
   2. **Bare `bash` → WSL stub.** Via `cmd.exe`, bare `bash` resolves to
      `C:\Windows\System32\bash.exe` (the WSL stub — can't read `C:\`, exit 127).
      The wrapper finds **Git Bash** explicitly (`Program Files\Git`), and the

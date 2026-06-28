@@ -21,6 +21,13 @@
         ]
       },
       {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd block-docker-privesc.sh" },
+          { "type": "command", "command": ".codex/run-hook.cmd block-merged-pr-commit.sh" }
+        ]
+      },
+      {
         "matcher": "mcp__plugin_atlassian_atlassian__.*",
         "hooks": [
           { "type": "command", "command": ".codex/run-hook.cmd block-backend-tier.sh" }
