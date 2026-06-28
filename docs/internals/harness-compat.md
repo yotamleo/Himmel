@@ -158,6 +158,24 @@ Skills load natively under Codex. himmel's project-local **slash commands**
 (`.claude/commands/*.md`) do **not** auto-load — Codex has its own
 slash-command surface. **Accept / port selectively** (TBD per command).
 
+**Codex skill-discovery root = project-local `.agents/skills/<name>/SKILL.md`**
+(HIMMEL-533, live-verified codex-cli 0.142.0: a project-local probe skill
+loaded + ran from the worktree). The `.gitignore` ignores only
+`.agents/skills/source-command-*/` (the external-installer mirror that trips
+`clean-garden`); hand-authored `.agents/skills/<name>/` is tracked.
+
+**HIMMEL-533 delivered** the high-value "driver" commands as thin **tracked**
+`.agents/skills/` wrappers that shell the same harness-neutral `scripts/` the
+Claude commands use (no logic duplication; Claude `.claude/commands/*.md`
+untouched): `worktree`, `clean`, `clean-garden`, `shell-lint`, `guardrail-sim`,
+and `pr-check`. `pr-check` is the **panel-only** subset — it runs the pure-shell
+critic panel (`scripts/cr/critic-panel.sh`) and clears the CR marker only when
+the panel reports 0 Critical + 0 Important (retains on findings, panel
+unavailable, or a `docs-audit` lane). It does **not** dispatch the Claude
+`pr-review-toolkit` reviewer agents. Codex native `/review` participation is a
+post-HIMMEL-527 follow-up. Tier-A skills already load natively (verified live —
+`stuck-playbook` triggered under Codex).
+
 ### 5. Subagents
 
 Codex uses `.codex/agents/*.toml` (`name`, `description`,
@@ -235,7 +253,8 @@ follow-up subtask (priority: with Codex).
 | Hooks → Cursor (`.cursor/hooks.json`, fail-open) | **Port** (priority 2) | HIMMEL-487 |
 | Hooks → Copilot / Gemini | **Port, SOFT-DEFER** (no free usage) | HIMMEL-489 |
 | Skills / subagents (Cursor, Copilot) | **Accept** — read `.claude/*` directly | — |
-| CR reviewer skill for Codex | **Port/adopt** — codex `SKILL.md` or brooks-lint | HIMMEL-488 |
+| Driver commands → Codex skills | **Ported (delivered)** — thin tracked `.agents/skills/` wrappers (worktree/clean/clean-garden/shell-lint/guardrail-sim/pr-check) shelling existing `scripts/`; live-verified under codex-cli 0.142.0 | HIMMEL-533 |
+| CR reviewer skill for Codex | **Ported (panel-only)** — Codex `pr-check` skill runs the shell panel + clears the CR marker on clean; native `/review` participation deferred post-HIMMEL-527 | HIMMEL-533 |
 | Marketplace (all) | **Accept** — each has one | — |
 
 ## Prompt anatomy — why rules must be *adapted*, not copied
