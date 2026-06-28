@@ -21,8 +21,13 @@ try {
     # ---- backward-compat ----
     $env:LUNA_VAULT_PATH = ''
     $env:USERPROFILE = (Join-Path $SB 'home')
+    # HIMMEL-590 F7: undeclared default requires a REAL luna vault (.obsidian) or
+    # dry-run; otherwise skip so the hook never materializes a phantom vault.
     MkCfg '{"enabled":true}'
-    Check 'undeclared -> default luna' (Join-Path $docDocs 'luna') (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath $noreg)
+    Check 'undeclared + no real luna vault -> skip' '' (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath $noreg)
+    Check 'undeclared + dry-run -> convention path' (Join-Path $docDocs 'luna') (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath $noreg -DryRun $true)
+    New-Item -ItemType Directory -Path (Join-Path (Join-Path $docDocs 'luna') '.obsidian') -Force | Out-Null
+    Check 'undeclared + real luna vault (.obsidian) -> convention path' (Join-Path $docDocs 'luna') (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath $noreg)
 
     MkCfg '{"vault_path":"C:\\explicit"}'
     $env:LUNA_VAULT_PATH = 'C:\env'

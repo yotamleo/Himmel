@@ -85,7 +85,7 @@ setup_projects_dir() {
     if command -v cygpath >/dev/null 2>&1; then
         p="$(cygpath -w "$p" 2>/dev/null || printf '%s' "$p")"
     fi
-    slug="$(printf '%s' "$p" | awk '{gsub(/[:\\\/]/, "-"); gsub(/^-+/, ""); print}')"
+    slug="$(printf '%s' "$p" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
 
     local proj_dir="$proj_root/$slug"
     mkdir -p "$proj_dir"
@@ -111,7 +111,7 @@ setup_disabled_project() {
     if command -v cygpath >/dev/null 2>&1; then
         p="$(cygpath -w "$p" 2>/dev/null || printf '%s' "$p")"
     fi
-    slug="$(printf '%s' "$p" | awk '{gsub(/[:\\\/]/, "-"); gsub(/^-+/, ""); print}')"
+    slug="$(printf '%s' "$p" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
 
     local proj_dir="$proj_root/$slug"
     mkdir -p "$proj_dir"
@@ -145,7 +145,7 @@ setup_short_project() {
     if command -v cygpath >/dev/null 2>&1; then
         p="$(cygpath -w "$p" 2>/dev/null || printf '%s' "$p")"
     fi
-    slug="$(printf '%s' "$p" | awk '{gsub(/[:\\\/]/, "-"); gsub(/^-+/, ""); print}')"
+    slug="$(printf '%s' "$p" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
 
     local proj_dir="$proj_root/$slug"
     mkdir -p "$proj_dir"
@@ -186,6 +186,15 @@ if [ -n "$NOTE" ]; then
     pass "first run wrote a note"
 else
     fail "first run wrote no note" "$out1"
+fi
+
+# F3 (HIMMEL-590): a real import prints the --reheal crystallization nudge.
+assert_contains "F3: real import prints the --reheal nudge" "--reheal" "$out1"
+# The imported note is mechanical (crystallized: false) until reheal runs.
+if grep -q '^crystallized: false$' "$NOTE" 2>/dev/null; then
+    pass "F3: imported note is mechanical (crystallized: false)"
+else
+    fail "F3: imported note not crystallized:false"
 fi
 
 # Portable sha256 for a file: first field only
@@ -482,7 +491,7 @@ _p8="$REPO8"
 if command -v cygpath >/dev/null 2>&1; then
     _p8="$(cygpath -w "$_p8" 2>/dev/null || printf '%s' "$_p8")"
 fi
-SLUG8="$(printf '%s' "$_p8" | awk '{gsub(/[:\\\/]/, "-"); gsub(/^-+/, ""); print}')"
+SLUG8="$(printf '%s' "$_p8" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
 
 PROJ_DIR8="$PROJ_ROOT8/$SLUG8"
 mkdir -p "$PROJ_DIR8"
@@ -559,7 +568,7 @@ _p9="$REPO9"
 if command -v cygpath >/dev/null 2>&1; then
     _p9="$(cygpath -w "$_p9" 2>/dev/null || printf '%s' "$_p9")"
 fi
-SLUG9="$(printf '%s' "$_p9" | awk '{gsub(/[:\\\/]/, "-"); gsub(/^-+/, ""); print}')"
+SLUG9="$(printf '%s' "$_p9" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
 PROJ_DIR9="$PROJ_ROOT9/$SLUG9"
 mkdir -p "$PROJ_DIR9" "$REPO9/.claude"
 printf '{"enabled":true,"vault_path":"%s"}\n' "$VAULT9" > "$REPO9/.claude/end-session-wiki.json"
@@ -917,6 +926,119 @@ if [ "$SHA15" = "$(_file_sha256 "$NOTE15")" ]; then
     pass "reheal(fail): husk left byte-unchanged (no mechanical clobber after claude attempt)"
 else
     fail "reheal(fail): note was overwritten despite the crystallizer failing" "$out15"
+fi
+
+# ============================================================================
+# Case 16: path->slug FULL encoding — a repo path containing a char beyond
+#          : \ / (here a dot AND an underscore) must resolve to Claude Code's
+#          real project slug (every non-alphanumeric char -> '-'), not be
+#          swallowed with a "no project dir" warning. Regression for the bug
+#          where _path_to_slug mapped only : \ / so a dotted/underscored path
+#          produced the wrong slug -> the whole project was silently skipped.
+# ============================================================================
+echo ""
+echo "Case 16: path->slug full encoding (dotted/underscored repo not swallowed)"
+
+SB="$TMP_ROOT/case16"
+VAULT16="$SB/vault"
+REPO16="$SB/repo.dotted_v2"     # dot AND underscore in the final path component
+PROJ_ROOT16="$SB/projects"
+STATE16="$SB/state.json"
+mkdir -p "$VAULT16" "$REPO16" "$PROJ_ROOT16"
+
+# Ground-truth slug = Claude Code's REAL encoding (verified empirically against
+# ~/.claude/projects): Windows form via cygpath, then EVERY non-alphanumeric
+# char -> '-', leading dashes stripped. This is deliberately NOT the old
+# ':\/'-only mapping — that mismatch is the bug under test.
+_p16="$REPO16"
+if command -v cygpath >/dev/null 2>&1; then
+    _p16="$(cygpath -w "$_p16" 2>/dev/null || printf '%s' "$_p16")"
+fi
+SLUG16="$(printf '%s' "$_p16" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
+PROJ_DIR16="$PROJ_ROOT16/$SLUG16"
+mkdir -p "$PROJ_DIR16"
+
+# Anchor to the real Claude Code contract with a LITERAL (not just a mirror of
+# the production awk): the final path component "repo.dotted_v2" must encode to
+# "repo-dotted-v2" (dot AND underscore -> '-'), and the raw dotted form must NOT
+# survive in the slug. This catches a future divergence where production and the
+# helper drift to the SAME wrong encoding (which a self-referential slug check
+# would miss).
+assert_contains "path-slug: dot+underscore both map to dash (literal anchor)" "repo-dotted-v2" "$SLUG16"
+assert_not_contains "path-slug: raw 'repo.dotted_v2' absent from slug" "repo.dotted_v2" "$SLUG16"
+
+mkdir -p "$REPO16/.claude"
+printf '{"enabled":true,"vault_path":"%s"}\n' "$VAULT16" > "$REPO16/.claude/end-session-wiki.json"
+
+_cwd_escaped16="$(printf '%s' "$REPO16" | sed 's|\\|\\\\|g; s|/|\\/|g')"
+sed "s|__CWD_PLACEHOLDER__|$_cwd_escaped16|g" "$FIXTURE_DIR/fixture-normal.jsonl" \
+    > "$PROJ_DIR16/session-dotted-001.jsonl"
+
+out16=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT16" \
+    --project "$REPO16" \
+    --state-file "$STATE16" \
+    --vault-registry /dev/null \
+    2>&1)
+
+assert_contains "path-slug: dotted/underscored repo imported (new=1)" "new=1" "$out16"
+assert_not_contains "path-slug: no 'no project dir' swallow warning" "no project dir for" "$out16"
+NOTE16="$(find "$VAULT16/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if [ -n "$NOTE16" ]; then
+    pass "path-slug: note written for a dotted/underscored repo path"
+else
+    fail "path-slug: no note written (project was swallowed)" "$out16"
+fi
+
+# ============================================================================
+# Case 17: full-scope --all routes TWO repos to TWO DIFFERENT vaults
+#          (HIMMEL-590 F4). Each repo's per-repo config carries its own
+#          vault_path, so a single `--all` pass must file each session into its
+#          OWN vault — not pool both into one default. This locks the
+#          per-session resolve_vault_root routing that makes multi-vault work.
+# ============================================================================
+echo ""
+echo "Case 17: --all routes two repos to two different vaults (multi-vault)"
+
+SB="$TMP_ROOT/case17"
+VAULT_A="$SB/vaultA"
+VAULT_B="$SB/vaultB"
+REPO_A="$SB/repo-alpha"
+REPO_B="$SB/repo-beta"
+PROJ_ROOT17="$SB/projects"
+STATE17="$SB/state.json"
+mkdir -p "$VAULT_A" "$VAULT_B" "$REPO_A" "$REPO_B" "$PROJ_ROOT17"
+setup_projects_dir "$PROJ_ROOT17" "$REPO_A" "$VAULT_A"
+setup_projects_dir "$PROJ_ROOT17" "$REPO_B" "$VAULT_B"
+
+out17=$(bash "$BACKFILL" \
+    --all \
+    --projects-dir "$PROJ_ROOT17" \
+    --state-file "$STATE17" \
+    --vault-registry /dev/null \
+    2>&1)
+
+NOTE_A="$(find "$VAULT_A/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+NOTE_B="$(find "$VAULT_B/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if [ -n "$NOTE_A" ]; then pass "multi-vault: repo-alpha session filed under vaultA"; else fail "multi-vault: no note under vaultA" "$out17"; fi
+if [ -n "$NOTE_B" ]; then pass "multi-vault: repo-beta session filed under vaultB"; else fail "multi-vault: no note under vaultB" "$out17"; fi
+# Cross-contamination guard: each vault holds exactly its own repo's note.
+CNT_A="$(find "$VAULT_A/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+CNT_B="$(find "$VAULT_B/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$CNT_A" = "1" ] && [ "$CNT_B" = "1" ]; then
+    pass "multi-vault: no cross-contamination (one note per vault)"
+else
+    fail "multi-vault: cross-contamination (vaultA=$CNT_A vaultB=$CNT_B)" "$out17"
+fi
+if [ -n "$NOTE_A" ] && grep -q "repo: $(basename "$REPO_A")" "$NOTE_A" 2>/dev/null; then
+    pass "multi-vault: vaultA note carries repo-alpha identity"
+else
+    fail "multi-vault: vaultA note has wrong repo identity" "$out17"
+fi
+if [ -n "$NOTE_B" ] && grep -q "repo: $(basename "$REPO_B")" "$NOTE_B" 2>/dev/null; then
+    pass "multi-vault: vaultB note carries repo-beta identity (no swapped routing)"
+else
+    fail "multi-vault: vaultB note has wrong repo identity" "$out17"
 fi
 
 # ============================================================================

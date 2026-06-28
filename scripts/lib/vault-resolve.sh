@@ -13,7 +13,10 @@
 #      (the convention path is used only if it exists with an .obsidian/ marker,
 #       or in dry-run); an invalid name or no real vault => empty (skip).
 #   3. LUNA_VAULT_PATH env
-#   4. default: registry["luna"] -> else ~/Documents/luna
+#   4. default: registry["luna"] -> else the ~/Documents/luna convention, but
+#      ONLY if it's a real vault (.obsidian/ marker) or in dry-run. No configured
+#      and no real luna vault => empty (skip) — the hook never materializes a
+#      phantom vault for an adopter who never set luna up (HIMMEL-590 F7).
 
 # Emit a file's text with a leading UTF-8 BOM (EF BB BF) stripped, if present.
 # A BOM makes jq treat the file as invalid JSON, so the resolver would skip and
@@ -48,7 +51,7 @@ _vault_name_valid() { # <name>  -> 0 valid / 1 invalid
 
 resolve_vault_root() { # <config_json> <registry_json> [<dry_run>]
   local config="$1" registry="$2" dry_run="${3:-false}"
-  local cfg_vault_path has_vault cfg_vault reg conv def
+  local cfg_vault_path has_vault cfg_vault reg conv def up
 
   # Fail-closed: skip if the config exists but is not a valid JSON OBJECT —
   # invalid JSON, an empty file, or a non-object (null/false/[]/"str"/42). A
@@ -105,12 +108,32 @@ resolve_vault_root() { # <config_json> <registry_json> [<dry_run>]
     return 0
   fi
 
-  # 4. default: registry["luna"] else ~/Documents/luna.
+  # 4. default: registry["luna"] (explicit operator config -> honored unchecked,
+  #    like vault_path) else the ~/Documents/luna convention, but ONLY if it's a
+  #    REAL vault (.obsidian/ marker) or in dry-run. An adopter who never
+  #    configured luna has no such directory -> empty (skip), so the session-end
+  #    hook never writes into / creates a phantom vault (HIMMEL-590 F7).
   def="$(_vault_jq "$registry" '.vaults.luna // ""')"
   if [ -n "$def" ]; then
     printf '%s\n' "$def"
     return 0
   fi
-  printf '%s\n' "$HOME/Documents/luna"
+  conv="$HOME/Documents/luna"
+  if [ "$dry_run" = "true" ] || [ -d "$conv/.obsidian" ]; then
+    printf '%s\n' "$conv"
+    return 0
+  fi
+  # Windows: $HOME (MSYS) can differ from the USERPROFILE Windows path; honor a
+  # real vault under the USERPROFILE form too before declaring "no vault". The
+  # HOME-form string is returned unchanged — the hook reconciles it to the
+  # Windows form (end-session-wiki.sh) just as it did before this guard.
+  if [ -n "${USERPROFILE:-}" ] && command -v cygpath >/dev/null 2>&1; then
+    up="$(cygpath -u "$USERPROFILE" 2>/dev/null)"
+    if [ -n "$up" ] && [ -d "$up/Documents/luna/.obsidian" ]; then
+      printf '%s\n' "$conv"
+      return 0
+    fi
+  fi
+  printf ''                                                      # no configured/real luna vault => skip
   return 0
 }

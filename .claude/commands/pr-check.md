@@ -34,6 +34,26 @@ Steps:
 
    Treat any `[ACCURACY|DEAD-LINK|STALE|EXAMPLE]` finding as a blocking Critical for the step 5/6 decision (`[CONSISTENCY]` is Important). Then go to step 4 with these counts. Skip steps 3 / 3.0 entirely.
 
+2.7. **Doc-freshness advisory (HIMMEL-587) — advisory, NEVER blocks.** When the `advise` leg of `HIMMEL_DOC_FRESHNESS` is on, print changelog-scoped doc-drift findings over the diff base. This does NOT gate the marker — `doc-guard` already enforced `block` rows at pre-push.
+
+   ```bash
+   db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
+   # Pick up HIMMEL_DOC_FRESHNESS from .env for leg parity with the session/
+   # morning surfaces (round-2 critic #2) — process env still wins.
+   [ -f .env ] && { . scripts/lib/load-dotenv.sh; load_dotenv --root . HIMMEL_DOC_FRESHNESS || true; }
+   . scripts/lib/doc-freshness.sh
+   if df_leg_active advise; then
+       drift=$(df_detect "$db...HEAD" 2>/dev/null || true)
+       if [ -n "$drift" ]; then
+           echo "📄 Doc-freshness (advisory) — mapped sources changed without their docs:"
+           printf '%s\n' "$drift" | awk -F'\t' 'NF>=2{printf "  - %s → update %s\n", $1, $2}'
+           echo "(Advisory only — does not block this PR.)"
+       else
+           echo "📄 Doc-freshness: no mapped-source-vs-doc drift in range."
+       fi
+   fi
+   ```
+
 3. **Critic panel first-pass, then dispatch reviewer agents in parallel (HIMMEL-178, HIMMEL-270, HIMMEL-415).**
 
    **Step 3.0 — critic panel first-pass (decimal substep, runs BEFORE any Agent dispatch):**
@@ -110,6 +130,9 @@ Steps:
    | Comments / docs changed (`**/*.md`, comment-only diffs in code) | `comment-analyzer` | Upstream — `pr-review-toolkit:comment-analyzer` |
    | Error-handling code changed (try/catch, error-return, panic, etc.) | `silent-failure-hunter` | Upstream — `pr-review-toolkit:silent-failure-hunter` |
    | Types added / modified (`*.ts`, `*.d.ts`, type-defs in Python/Rust/etc.) | `type-design-analyzer` | Upstream — `pr-review-toolkit:type-design-analyzer` |
+   | Doc-freshness `advise` findings present AND `HIMMEL_DOC_FRESHNESS` `advise` leg on | `code-reviewer` with the **docs-audit charter** (step 2.5), SCOPED to only the mapped docs whose sources changed in range | Upstream — `pr-review-toolkit:code-reviewer`. Advisory: its findings are surfaced to the operator, NEVER added to the blocking Critical/Important counts of steps 4–6. |
+
+   **Signal-3 (doc-freshness LLM advisory) is advisory-only.** When dispatched, scope its prompt to the specific mapped docs surfaced by step 2.7 (e.g. "audit `docs/internals/enforcement.md` for factual drift vs the changed `scripts/hooks/` code in this range") using the docs-audit charter text from step 2.5. Its output is reported to the operator but is excluded from the step-4 `Critical Issues (N found)` / `Important Issues (N found)` counts — doc-freshness never blocks the PR (the only blocker is `doc-guard` at pre-push). This row is the deferrable piece per the spec; the deterministic step 2.7 print ships regardless.
 
    `code-simplifier` (the 6th pr-review-toolkit agent) is intentionally NOT in this auto-dispatch matrix — matches the upstream `/pr-review-toolkit:review-pr` behavior, where simplification is invoked explicitly via `simplify` argument rather than auto-routed. If the operator wants simplification, they call `pr-review-toolkit:code-simplifier` directly. The verify-before-critical rule does not apply to it (simplification proposes refactors, not Critical findings).
 

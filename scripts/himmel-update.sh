@@ -17,6 +17,9 @@ cd "$ROOT"
 # shellcheck source=guardrails/lib.sh
 # shellcheck disable=SC1091
 . "$ROOT/scripts/guardrails/lib.sh"
+# shellcheck source=lib/cadence-format.sh
+# shellcheck disable=SC1091
+. "$ROOT/scripts/lib/cadence-format.sh"
 
 # ─── plugin install-state gap report (HIMMEL-434) ────────────────────────────
 # Advisory: `marketplace update` only re-syncs plugins that are ALREADY
@@ -180,6 +183,22 @@ update_hermes() {
     return 0
 }
 
+# ─── stale pipeline-cadence runner nudge (HIMMEL-588) ────────────────────────
+# The pipeline-cadence runners (.bat/.sh) are GENERATED at arm time and NOT
+# regenerated on a code pull — so a `git pull` that changes the runner format
+# leaves an already-armed cadence firing the OLD format until a manual
+# `arm --force`. This surfaces that right after the pull. Advisory; never fails
+# the update. PIPELINE_BAT_DIR mirrors pipeline-cadence.sh's runner-home seam.
+report_cadence_stale() {
+    local bat_dir="${PIPELINE_BAT_DIR:-$HOME/.claude/pipeline-cadence}" ver
+    ver="$(cadence_runner_stamp "$bat_dir")" || return 0
+    [ "$ver" -lt "$CADENCE_RUNNER_FORMAT_VERSION" ] || return 0
+    echo ""
+    echo "==> pipeline-cadence runners are STALE (format v$ver < v$CADENCE_RUNNER_FORMAT_VERSION)"
+    echo "    Armed before a runner-format change — re-arm to pick up the new format:"
+    echo "        bash scripts/luna/pipeline-cadence.sh arm --force"
+}
+
 # Test seam: source with HIMMEL_UPDATE_LIB=1 to load the functions above without
 # running any update mode (lets test-himmel-update-hermes.sh call update_hermes
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
@@ -220,6 +239,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     fi
     report_plugin_gap
     update_hermes check
+    report_cadence_stale
     exit 0
 fi
 
@@ -255,6 +275,10 @@ update_hermes apply
 #    marketplace re-sync above can't surface these (it only touches plugins that
 #    are already installed). Advisory; never fails the update.
 report_plugin_gap
+
+# 5. Nudge if an armed pipeline-cadence is firing pre-change (stale) runners
+#    that this pull's code won't regenerate on its own (HIMMEL-588). Advisory.
+report_cadence_stale
 
 cat <<'EOF'
 

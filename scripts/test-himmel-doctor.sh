@@ -289,6 +289,34 @@ if [ "$_static_fail" -eq 0 ]; then
     pass "C7 STATIC: no destructive verbs in check_c7 body"
 fi
 
+# ── C8: stale pipeline-cadence runner detection (HIMMEL-588) ──────────────────
+echo "== C8: no armed cadence runners -> OK C8-cadence =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/cadence-empty" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C8-cadence'; then pass "C8 -> OK (no runners)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
+rm -rf "$t"
+
+echo "== C8: stale runner (no format stamp) -> WARN C8-cadence =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/cadence"; write_settings "$t/claude" "$WRAPPER"
+# A runner with NO format marker simulates a cadence armed before HIMMEL-588.
+printf '#!/bin/sh\necho old runner\n' > "$t/cadence/pipeline-harvest.sh"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/cadence" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN C8-cadence'; then pass "C8 -> WARN (stale runner)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
+rm -rf "$t"
+
+echo "== C8: current runner (stamped) -> OK C8-cadence =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/cadence"; write_settings "$t/claude" "$WRAPPER"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: 1\necho current runner\n' > "$t/cadence/pipeline-harvest.sh"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/cadence" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C8-cadence' && printf '%s' "$out" | grep -q 'current'; then pass "C8 -> OK (current runner)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
+rm -rf "$t"
+
 rm -rf "$FAKEROOT"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

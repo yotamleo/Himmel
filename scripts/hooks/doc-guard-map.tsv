@@ -1,3 +1,6 @@
-# added-path-regex	required-doc
-^\.claude/commands/	docs/commands-catalog.md
-^marketplace/plugins/[^/]+/(commands|skills)/	docs/commands-catalog.md
+# strength	trigger	path-regex	required-doc
+block	add	^\.claude/commands/	docs/commands-catalog.md
+block	add	^marketplace/plugins/[^/]+/(commands|skills)/	docs/commands-catalog.md
+block	add	^marketplace/plugins/[^/]+/\.claude-plugin/plugin\.json	llms.txt
+advise	modify	^scripts/hooks/	docs/internals/enforcement.md
+advise	modify	^scripts/(jira|bitbucket)/	docs/internals/jira-plugin.md

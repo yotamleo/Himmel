@@ -5,6 +5,9 @@
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 OUT="$ROOT/CHANGELOG.md"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/commit-class.sh"
 added=""; fixed=""; changed=""; other=""
 while IFS=$'\t' read -r subj; do
     # Added/Fixed are single-type sections (the heading conveys feat/fix), so
@@ -13,12 +16,11 @@ while IFS=$'\t' read -r subj; do
     # `: ` (colon-space); a malformed no-space subject keeps its prefix.
     # Changed is mixed-type (chore/refactor/docs/test) so the type stays
     # informative — keep the full subject; Other keeps the raw subject.
-    case "$subj" in
-        feat:*|feat\(*) added="${added}- ${subj#*: }"$'\n';;
-        fix:*|fix\(*) fixed="${fixed}- ${subj#*: }"$'\n';;
-        chore:*|chore\(*|refactor:*|refactor\(*|docs:*|docs\(*|test:*|test\(*)
-            changed="${changed}- ${subj}"$'\n';;
-        *) other="${other}- ${subj}"$'\n';;
+    case "$(cc_classify "$subj")" in
+        feat)    added="${added}- ${subj#*: }"$'\n';;
+        fix)     fixed="${fixed}- ${subj#*: }"$'\n';;
+        changed) changed="${changed}- ${subj}"$'\n';;
+        *)       other="${other}- ${subj}"$'\n';;
     esac
 done < <(git log --no-merges --format='%s')
 # Blank line goes BEFORE each heading (not after each section) so the file

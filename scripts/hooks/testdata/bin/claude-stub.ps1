@@ -2,16 +2,37 @@
 # stand-in for crystallize-note.ps1 tests (HIMMEL-576). Pointed at via
 # CRYSTALLIZE_CLAUDE_BIN so the suite stays hermetic (no model call / network).
 #
-# STUB_MODE (default success): success edits the note ($CRYSTALLIZE_NOTE) — fills
-# the 4 sections, sets crystallized: true / crystallized_at, preserves all other
-# frontmatter; fail exits 7 without writing; noop exits 0 without writing; slow
-# sleeps 1s THEN behaves as success (detach timing). Touches $CRYSTALLIZE_MARKER
-# on invocation (after the slow sleep) and dumps the recursion-guard env vars to
-# $CRYSTALLIZE_ENV_DUMP. Extra args (the prompt + flags) are ignored.
+# STUB_MODE (default success): success edits the note ($CRYSTALLIZE_NOTE) —
+# rewrites the Summary body, preserving all frontmatter; the crystallized flag is
+# owned by crystallize-note.ps1 (set from the body diff, HIMMEL-590 T1d), NOT
+# here. fail exits 7 without writing; noop exits 0 without writing; slow sleeps 1s
+# THEN behaves as success (detach timing). Touches $CRYSTALLIZE_MARKER on
+# invocation (after the slow sleep) and dumps the recursion-guard env vars to
+# $CRYSTALLIZE_ENV_DUMP. When $CRYSTALLIZE_ARGV_DUMP is set, records cwd + every
+# argv entry there so a test can assert the workspace shape (T1c).
 param([Parameter(ValueFromRemainingArguments = $true)] $Rest)
 $ErrorActionPreference = 'SilentlyContinue'
 
 $mode = if ($env:STUB_MODE) { $env:STUB_MODE } else { 'success' }
+
+if ($env:CRYSTALLIZE_ARGV_DUMP) {
+    $lines = @("cwd=$((Get-Location).Path)")
+    $wantSettings = $false
+    foreach ($a in $Rest) {
+        $lines += "arg=$a"
+        # Capture the --settings fragment's CONTENT while it still exists
+        # (crystallize-note.ps1 cleans it up on exit) so a test can assert it
+        # actually wires the hook, not just that the flag is present.
+        if ($wantSettings) {
+            $wantSettings = $false
+            if (Test-Path -LiteralPath $a) {
+                foreach ($l in (Get-Content -LiteralPath $a)) { $lines += "settings:$l" }
+            }
+        }
+        if ($a -eq '--settings') { $wantSettings = $true }
+    }
+    Set-Content -LiteralPath $env:CRYSTALLIZE_ARGV_DUMP -Value $lines
+}
 
 # slow sleeps BEFORE signalling so the detach-survival test can kill the launching
 # process during the sleep; the marker then proves the child outlived it.
@@ -30,12 +51,11 @@ if ($mode -eq 'noop') { exit 0 }
 $note = $env:CRYSTALLIZE_NOTE
 if (-not $note -or -not (Test-Path -LiteralPath $note)) { exit 0 }
 
-$now = '2026-06-28T12:00:00Z'
+# Rewrite ONLY the Summary body; leave the frontmatter untouched (the script owns
+# the crystallized flag from the body diff).
 $out = New-Object System.Collections.Generic.List[string]
 $skip = $false
 foreach ($line in (Get-Content -LiteralPath $note)) {
-    if ($line -eq 'crystallized: false') { $out.Add('crystallized: true'); continue }
-    if ($line -eq 'crystallized_at:')    { $out.Add("crystallized_at: $now"); continue }
     if ($skip) { if ($line -match '^## ') { $skip = $false } else { continue } }
     if ($line -eq '## Summary') {
         $out.Add($line); $out.Add(''); $out.Add('_Crystallized by stub: session synthesized._'); $out.Add('')

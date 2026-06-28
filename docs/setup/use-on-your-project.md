@@ -269,6 +269,60 @@ repos that allow some direct-to-main commits.
 
 ---
 
+## Doc-freshness advisory (opt-in, HIMMEL-587)
+
+himmel's doc-freshness feature notices when a `feat`/`fix` commit touches a
+mapped source file without also touching its required doc, and surfaces an
+advisory nudge — never a hard block.
+
+**How to opt in for your project:**
+
+1. **Drop your own `scripts/hooks/doc-guard-map.tsv`** pointing at YOUR docs:
+
+   ```
+   # strength	trigger	path-regex	required-doc
+   advise	modify	^src/api/	docs/api-reference.md
+   advise	modify	^src/cli/commands/	docs/commands.md
+   ```
+
+   **Important:** columns must be separated by literal tab characters — the
+   loader reads `IFS=$'	'`; space-separated rows are silently skipped.
+
+   The path-regex matches against files changed in the commit range (relative
+   to the repo root). The required-doc path is also repo-relative.
+
+   If you want the **blocking** gate too, add `block / add` rows — but note
+   the block gate is himmel-dev-only (gated by `.himmel-dev`), so it fires
+   only when you place a `.himmel-dev` marker at your repo root.
+
+2. **Enable the advisory legs** by setting `HIMMEL_DOC_FRESHNESS` in your
+   himmel `.env` (uncomment the line added by HIMMEL-587):
+
+   ```bash
+   HIMMEL_DOC_FRESHNESS=all     # advise + session + morning
+   # or a subset:
+   # HIMMEL_DOC_FRESHNESS=session,advise
+   ```
+
+   The `session` and `morning` legs read this from `.env` via
+   `scripts/lib/load-dotenv.sh`; the `advise` leg reads it at `/pr-check`
+   time. A value exported in the launching shell overrides `.env`.
+
+**Key properties for adopters:**
+- **Project-relative.** The detector resolves the map and doc paths from YOUR
+  repo root, so it checks your docs against your code — never himmel's.
+- **Advisory-only.** `df_detect` always exits 0; the SessionStart hook traps
+  all errors and exits 0. Nothing blocks.
+- **No surprise hard-block.** The blocking `doc-guard` gate (`check-doc-guard.sh`)
+  is himmel-dev-only — gated by `.himmel-dev`. A fresh clone of himmel (or any
+  other repo) has no marker and the block gate is inert. Adopters only ever see
+  the advisory surface.
+- **Inert when map absent.** If `scripts/hooks/doc-guard-map.tsv` does not exist,
+  the detector exits 0 silently. If the map exists but carries no live `advise` rows
+  (target doc missing from disk), it exits 0 and emits a single stderr note.
+
+---
+
 ## Reference
 
 - First full loop, hook by hook (worktree → PR → merge → handover): [`docs/daily-loop.md`](../daily-loop.md)

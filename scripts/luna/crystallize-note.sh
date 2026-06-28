@@ -55,8 +55,14 @@ done
 [ "$live" -ge "$MAX" ] && exit 0
 MY_PID="$PID_DIR/$$.pid"
 printf '%s' "$$" > "$MY_PID" 2>/dev/null || true
-# shellcheck disable=SC2317  # invoked via trap
-_cleanup() { rm -f "$MY_PID" 2>/dev/null || true; }
+# SETTINGS_TMP is the per-run `claude --settings` fragment (set below); cleaned up
+# here so it never leaks even on early exit.
+SETTINGS_TMP=""
+# shellcheck disable=SC2317,SC2329  # invoked via trap
+_cleanup() {
+    rm -f "$MY_PID" 2>/dev/null || true
+    if [ -n "$SETTINGS_TMP" ]; then rm -f "$SETTINGS_TMP" 2>/dev/null || true; fi
+}
 trap _cleanup EXIT
 
 # Retry-read: the live hook may have just written the note via the Obsidian REST
@@ -71,6 +77,24 @@ done
 # Already crystallized -> nothing to do.
 grep -q '^crystallized: true$' "$NOTE_PATH" 2>/dev/null && exit 0
 
+# The note lives in the luna vault, OUTSIDE the himmel repo. The original
+# crystallizer ran `claude` in HIMMEL_ROOT, but `--permission-mode acceptEdits`
+# only auto-approves edits to files INSIDE the spawned run's workspace — so the
+# out-of-workspace note Edit fell through to a permission prompt, `</dev/null`
+# EOFed it, and the note was left BYTE-UNCHANGED with `crystallized: false`
+# (HIMMEL-590 F1; confirmed by capturing the spawned run's stdout: "each write to
+# the note is waiting on your permission grant"). The stub-based suite masked it
+# because the stub edits the note directly.
+#
+# Fix (same class as HIMMEL-575): put the note's directory in the workspace by
+# running `claude` with cwd = the note's directory, add the transcript's
+# directory via `--add-dir`, and inject himmel's `auto-approve-safe-bash`
+# PreToolUse hook by ABSOLUTE path via `--settings` (the vault cwd carries no
+# himmel project settings, so any bash the run does would otherwise stall on the
+# HIMMEL-203 compound-bash prompt). The LLM rewrites only the four body sections;
+# the `crystallized` flag is owned DETERMINISTICALLY by this script, set only
+# when the note body actually changed (T1d) — so a no-op never falsely flags and
+# a real synthesis always does, regardless of what the model touched.
 PROMPT="You are crystallizing a Claude Code session note for an Obsidian vault.
 Read the session transcript at: ${TRANSCRIPT_PATH}
 Read the note at: ${NOTE_PATH}
@@ -79,27 +103,71 @@ Rewrite ONLY these sections of that note, in place, distilling the session:
 - ## Decisions     (bullet list of decisions made, or _None._)
 - ## Files Touched (keep the existing list; do not invent files)
 - ## Follow-ups    (bullet list of open items, or _None._)
-Set frontmatter 'crystallized: true' and 'crystallized_at:' to the current UTC
-ISO-8601 time. Preserve every other frontmatter field (date, session_id, repo,
-branch, worktree, source) verbatim, and do NOT touch the Raw Conversation
-callout. Make the edit with your file tools, then stop."
+Do NOT touch the frontmatter or the Raw Conversation callout. Make the edit with
+your file tools, then stop."
 
-# Run in the himmel repo root so the spawned claude inherits himmel's project
-# settings (auto-approve-safe-bash active -> no compound-bash stall, the
-# HIMMEL-575 posture). --permission-mode acceptEdits lets the single note Edit
-# land without a prompt (narrow; the prompt scopes the run to one file).
-# </dev/null bounds the run (a stray prompt EOFs out instead of hanging).
 HIMMEL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
+AUTO_APPROVE_HOOK="$HIMMEL_ROOT/scripts/hooks/auto-approve-safe-bash.sh"
 
-# Optional model pin. bash 3.2-safe empty-array expansion guard under `set -u`.
-MODEL_ARGS=()
-[ -n "${CRYSTALLIZE_MODEL:-}" ] && MODEL_ARGS=(--model "$CRYSTALLIZE_MODEL")
+# Settings fragment wiring auto-approve-safe-bash by absolute path (HIMMEL-575).
+# HIMMEL_ROOT comes from `pwd`, so it is already forward-slash (JSON-safe and
+# bash-readable) on Git Bash / macOS / Linux alike.
+SETTINGS_TMP="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/crys-settings-$$.json")"
+cat > "$SETTINGS_TMP" <<JSON
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash ${AUTO_APPROVE_HOOK}" }
+        ]
+      }
+    ]
+  }
+}
+JSON
+
+# Optional model pin + transcript --add-dir. bash 3.2-safe empty-array guard.
+EXTRA_ARGS=()
+[ -n "${CRYSTALLIZE_MODEL:-}" ] && EXTRA_ARGS=(--model "$CRYSTALLIZE_MODEL")
+NOTE_DIR="$(cd "$(dirname "$NOTE_PATH")" 2>/dev/null && pwd)"
+TR_DIR=""
+[ -n "$TRANSCRIPT_PATH" ] && TR_DIR="$(cd "$(dirname "$TRANSCRIPT_PATH")" 2>/dev/null && pwd)"
+[ -n "$TR_DIR" ] && EXTRA_ARGS=(${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} --add-dir "$TR_DIR")
+
+# Pre-hash: the edit-confirmed flag-set keys off whether the body actually moved.
+_hash() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null; } | awk '{print $1}'; }
+HASH_BEFORE="$(_hash "$NOTE_PATH")"
 
 (
-    cd "$HIMMEL_ROOT" 2>/dev/null || cd "$(dirname "$NOTE_PATH")" || exit 0
+    cd "$NOTE_DIR" 2>/dev/null || exit 0
     CRYSTALLIZE_NOTE="$NOTE_PATH" CRYSTALLIZE_TRANSCRIPT="$TRANSCRIPT_PATH" \
-        "$CLAUDE_BIN" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+        "$CLAUDE_BIN" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+        --settings "$SETTINGS_TMP" \
         --permission-mode acceptEdits "$PROMPT" </dev/null >/dev/null 2>&1
 ) || true
+
+# Edit-confirmed flag-set (T1d): only stamp crystallized:true when the note body
+# actually changed. A failed/no-op run leaves the note byte-unchanged and the
+# flag stays false; a real synthesis always flips it, with a deterministic UTC
+# timestamp this script owns (CRYSTALLIZE_NOW overridable for hermetic tests).
+HASH_AFTER="$(_hash "$NOTE_PATH")"
+# Both hashes must be measurable (errs toward leaving the flag false when a hash
+# can't be taken — never fabricates a crystallized:true) — matches the .ps1 twin.
+if [ -n "$HASH_BEFORE" ] && [ -n "$HASH_AFTER" ] && [ "$HASH_BEFORE" != "$HASH_AFTER" ]; then
+    NOW="${CRYSTALLIZE_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    STAMP_TMP="${NOTE_PATH}.stamp.$$"
+    if awk -v now="$NOW" '
+        /^---$/ { fmc++; print; next }
+        fmc==1 && /^crystallized: / { print "crystallized: true"; next }
+        fmc==1 && /^crystallized_at:/ { print "crystallized_at: " now; next }
+        { print }
+    ' "$NOTE_PATH" > "$STAMP_TMP" 2>/dev/null; then
+        mv -f "$STAMP_TMP" "$NOTE_PATH" 2>/dev/null || rm -f "$STAMP_TMP" 2>/dev/null || true
+    else
+        rm -f "$STAMP_TMP" 2>/dev/null || true
+    fi
+fi
 
 exit 0

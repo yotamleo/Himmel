@@ -129,6 +129,37 @@ run_test "pre-push blocks when range never touches catalog (rc=1)" '
   expect_rc 1 env DOC_GUARD_NO_FETCH=1 bash "$SCRIPT" --pre-push
 '
 
+run_test "blocks added plugin manifest without llms.txt (rc=1)" '
+  setup_repo; cd "$R";
+  mkdir -p marketplace/plugins/foo/.claude-plugin; : > llms.txt;
+  : > marketplace/plugins/foo/.claude-plugin/plugin.json;
+  git add marketplace/plugins/foo/.claude-plugin/plugin.json;
+  expect_rc 1 bash "$SCRIPT"
+'
+
+run_test "passes added plugin manifest WITH llms.txt staged (rc=0)" '
+  setup_repo; cd "$R";
+  mkdir -p marketplace/plugins/foo/.claude-plugin; : > llms.txt;
+  : > marketplace/plugins/foo/.claude-plugin/plugin.json;
+  git add marketplace/plugins/foo/.claude-plugin/plugin.json llms.txt;
+  expect_rc 0 bash "$SCRIPT"
+'
+
+run_test "non-manifest file under a plugin does NOT require llms.txt (rc=0)" '
+  setup_repo; cd "$R";
+  mkdir -p marketplace/plugins/foo/lib; : > llms.txt;
+  : > marketplace/plugins/foo/lib/util.sh;
+  git add marketplace/plugins/foo/lib/util.sh;
+  expect_rc 0 bash "$SCRIPT"
+'
+
+run_test "advise-row add does NOT block (rc=0): new file matching only advise row reaches block loop but exits clean" '
+  setup_repo; cd "$R";
+  mkdir -p scripts/hooks;
+  : > scripts/hooks/newhook.sh; git add scripts/hooks/newhook.sh;
+  expect_rc 0 bash "$SCRIPT"
+'
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

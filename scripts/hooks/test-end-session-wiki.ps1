@@ -234,6 +234,52 @@ try {
     if (Test-Path $spawnMark) { Pass 'crystallizer spawned for a non-husk note' } else { Fail 'crystallizer was not spawned' }
     $env:STUB_MODE = 'noop'; Remove-Item Env:\CRYSTALLIZE_MARKER -ErrorAction SilentlyContinue
 
+    # Case 9 (HIMMEL-590 F2): the mechanical Summary drops a leading system-reminder
+    # reaction and surfaces the substantive line. Exercises the PowerShell-side
+    # heuristic (independent from the bash twin) through the real hook. Only the
+    # Summary SECTION is asserted (the Raw Conversation echoes the full turn).
+    $f2Ts = Join-Path $huskProj 'transcript-f2.jsonl'
+    Set-Content -LiteralPath $f2Ts -Value @(
+        '{"timestamp":"2026-06-17T01:11:00Z","type":"user","message":{"role":"user","content":"go"}}',
+        '{"timestamp":"2026-06-17T01:11:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I''ll ignore the TaskCreate reminder.\nFixed the parser off-by-one and added a test."}]}}'
+    )
+    Invoke-HookCustom -Transcript $f2Ts -VaultPath $huskVault -ProjPath $huskProj
+    $f2Note = Notes (Join-Path $huskVault 'sessions') | Sort-Object LastWriteTime | Select-Object -Last 1
+    $f2Summary = ''
+    if ($f2Note) {
+        $inS = $false; $acc = @()
+        foreach ($l in (Get-Content -LiteralPath $f2Note.FullName)) {
+            if ($l -eq '## Summary') { $inS = $true; continue }
+            if ($inS -and ($l -match '^## ')) { break }
+            if ($inS) { $acc += $l }
+        }
+        $f2Summary = ($acc -join "`n")
+    }
+    if ($f2Summary -match 'Fixed the parser off-by-one') { Pass 'F2(ps): substantive Summary line surfaced' } else { Fail 'F2(ps): substantive line missing from Summary' }
+    if ($f2Summary -notmatch 'TaskCreate reminder') { Pass 'F2(ps): leading TaskCreate-reminder preamble dropped' } else { Fail 'F2(ps): preamble leaked into Summary' }
+
+    # Case 9b (F2 ack branch, twin parity with bash Case 1c/2): an uppercase +
+    # trailing-whitespace bare acknowledgment leading line is dropped; the
+    # substantive line surfaces. Exercises the PS bare-ack regex specifically.
+    $f2Ts2 = Join-Path $huskProj 'transcript-f2b.jsonl'
+    Set-Content -LiteralPath $f2Ts2 -Value @(
+        '{"timestamp":"2026-06-17T02:22:00Z","type":"user","message":{"role":"user","content":"go"}}',
+        '{"timestamp":"2026-06-17T02:22:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"OKAY.   \nWired the webhook retry path."}]}}'
+    )
+    Invoke-HookCustom -Transcript $f2Ts2 -VaultPath $huskVault -ProjPath $huskProj
+    $f2Note2 = Notes (Join-Path $huskVault 'sessions') | Sort-Object LastWriteTime | Select-Object -Last 1
+    $f2Sum2 = ''
+    if ($f2Note2) {
+        $inS = $false; $acc = @()
+        foreach ($l in (Get-Content -LiteralPath $f2Note2.FullName)) {
+            if ($l -eq '## Summary') { $inS = $true; continue }
+            if ($inS -and ($l -match '^## ')) { break }
+            if ($inS) { $acc += $l }
+        }
+        $f2Sum2 = ($acc -join "`n").Trim()
+    }
+    if ($f2Sum2 -match '^Wired the webhook retry path') { Pass 'F2(ps): leading uppercase/trailing-ws ack dropped (twin parity)' } else { Fail 'F2(ps): bare-ack branch did not drop the ack line' }
+
     Remove-Item -LiteralPath $huskVault -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $huskProj  -Recurse -Force -ErrorAction SilentlyContinue
 

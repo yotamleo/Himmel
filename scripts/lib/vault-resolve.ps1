@@ -9,7 +9,10 @@
 #   2. config.vault NAME (validated) -> registry[name] -> else
 #      <USERPROFILE>\Documents\<name> (only if it has an .obsidian marker, or dry-run)
 #   3. LUNA_VAULT_PATH env
-#   4. default: registry["luna"] -> else <USERPROFILE>\Documents\luna
+#   4. default: registry["luna"] -> else the <USERPROFILE>\Documents\luna
+#      convention, but ONLY if it's a real vault (.obsidian marker) or dry-run.
+#      No configured and no real luna vault => '' (skip) — the hook never
+#      materializes a phantom vault for an adopter (HIMMEL-590 F7).
 
 function Remove-Bom {
     # Strip a leading UTF-8 BOM (U+FEFF) so ConvertFrom-Json doesn't treat the
@@ -96,8 +99,14 @@ function Resolve-VaultRoot {
     # 3. LUNA_VAULT_PATH env.
     if ($env:LUNA_VAULT_PATH) { return $env:LUNA_VAULT_PATH }
 
-    # 4. default: registry["luna"] else <USERPROFILE>\Documents\luna.
+    # 4. default: registry["luna"] (explicit operator config -> honored unchecked,
+    #    like vault_path) else the Documents\luna convention, but ONLY if it's a
+    #    REAL vault (.obsidian marker) or in dry-run. An adopter who never
+    #    configured luna has no such directory -> '' (skip), so the session-end
+    #    hook never writes into / creates a phantom vault (HIMMEL-590 F7).
     $def = Get-RegistryVault -RegistryPath $RegistryPath -Key 'luna'
     if ($def) { return $def }
-    return (Join-Path (Join-Path $userHome 'Documents') 'luna')
+    $conv = Join-Path (Join-Path $userHome 'Documents') 'luna'
+    if ($DryRun -or (Test-Path -LiteralPath (Join-Path $conv '.obsidian'))) { return $conv }
+    return ''
 }

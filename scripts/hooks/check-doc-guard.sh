@@ -13,6 +13,10 @@ fi
 if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
     echo "→ doc-guard: cannot source guardrails/lib.sh — fail-closed" >&2; exit 2
 fi
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/../lib/doc-guard-map.sh" 2>/dev/null; then
+    echo "→ doc-guard: cannot source lib/doc-guard-map.sh — fail-closed" >&2; exit 2
+fi
 rc=0; is_himmel_dev_repo || rc=$?
 [ "$rc" -eq 2 ] && { echo "→ doc-guard: cannot resolve repo root — fail-closed" >&2; exit 2; }
 [ "$rc" -eq 1 ] && exit 0   # not a contributor checkout → no-op
@@ -50,9 +54,10 @@ fi
 [ -z "$added" ] && exit 0
 
 violations=""
-# Read map (skip blanks/comments). Bash 3.2-safe: while-read, no assoc arrays.
+# Read map via the shared loader, filtered to block+add (behaviour unchanged —
+# the legacy 2 rows are now block+add; the new llms.txt row extends the gate).
+# bash 3.2-safe: while-read, no assoc arrays.
 while IFS=$'\t' read -r re doc; do
-    case "$re" in ''|\#*) continue;; esac
     [ -f "$doc" ] || continue        # path-keying: target doc absent → pair inert
     if printf '%s\n' "$added" | grep -qE "$re"; then
         if ! printf '%s\n' "$touched" | grep -qxF "$doc"; then
@@ -60,7 +65,7 @@ while IFS=$'\t' read -r re doc; do
             violations="${violations}     ${hit}  →  must also update ${doc}"$'\n'
         fi
     fi
-done < "$MAP"
+done < <(dgm_rows "$MAP" block add)
 
 [ -z "$violations" ] && exit 0
 cat >&2 <<EOF

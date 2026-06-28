@@ -4,13 +4,13 @@ Auto-captures every Claude Code session as a structured note in the Luna Obsidia
 
 ## Quickstart — multi-vault in 30 seconds
 
-- **Default (zero config):** sessions capture into `~/Documents/luna`. Nothing to do.
+- **Default (zero config):** sessions capture into `~/Documents/luna` **if that's a real Obsidian vault** (the luna template creates it). With no configured vault and no real `~/Documents/luna`, the hook skips rather than creating a phantom vault (HIMMEL-590).
 - **One command:** run `/end-session-wiki-setup` from the code repo whose sessions you want captured — it walks the options and writes the config for you.
 - **The four targeting options** (first match wins):
   1. **`vault_path`** — an absolute path, this repo only (machine-specific; don't commit on a shared repo).
   2. **`vault`** — a vault *name*, distributable and safe to commit; resolves per-machine via `~/.claude/luna-vaults.json`, else the `~/Documents/<name>` convention. **Recommended for shared repos.**
   3. **`LUNA_VAULT_PATH`** — an env var, your global default for every repo.
-  4. **default** → `~/Documents/luna`.
+  4. **default** → `~/Documents/luna` (only if it's a real vault; otherwise the hook skips — no phantom vault, HIMMEL-590).
 
 The registry (`~/.claude/luna-vaults.json`) is **optional** — you only need it for a vault that doesn't live at `~/Documents/<name>`. Full detail + examples: [Choosing the target vault](#choosing-the-target-vault).
 
@@ -29,13 +29,54 @@ On every `SessionEnd` event, a hook runs `scripts/hooks/end-session-wiki.{ps1,sh
 
 The note is delivered via the Obsidian Local REST API when an API key is available. If no key is found, or the REST PUT fails (e.g. Obsidian isn't running), the hook falls back to writing the note directly to the vault on disk — Obsidian picks up on-disk changes automatically, so capture works whether or not the plugin is up.
 
+## Flow — three separate pipelines (don't conflate them)
+
+Session capture is **one of three independent lanes** that touch the vault.
+They're often confused; only the first writes `sessions/`:
+
+```mermaid
+flowchart TD
+    subgraph L1["Lane 1 — Session capture (this hook + /luna-backfill)"]
+        A1["SessionEnd hook (live)"] --> H{"husk-skip gate<br/>(no salvageable content?)"}
+        A2["/luna-backfill (historical)"] --> H
+        H -- "content-free" --> SKIP["skip (no note)"]
+        H -- "has content" --> M["mechanical note<br/>crystallized: false"]
+        M --> C{"crystallize?"}
+        C -- "live: auto-spawn now<br/>backfill: later, via --reheal" --> X["LLM crystallizer<br/>→ crystallized: true"]
+        C -- "no claude / capped / disabled<br/>(plain backfill stops here)" --> KEEP["mechanical note stands"]
+        X --> S["&lt;vault&gt;/sessions/YYYY/MM/"]
+        KEEP --> S
+        S -. "sessions-reindex.sh (on demand)" .-> G["session graph<br/>(_index.md + repo hubs)"]
+    end
+    subgraph L2["Lane 2 — Clip pipeline (pipeline-cadence)"]
+        CL["Clippings/ only"] --> CLP["harvest → triage → synthesize → archive"]
+    end
+    subgraph L3["Lane 3 — Memory-compound (HIMMEL-564)"]
+        MEM["agent project_* memories"] --> SUB["luna substrate"]
+    end
+```
+
+- **Lane 1 (session capture)** routes per session to its configured vault
+  (multi-vault under `--all`; no configured/real vault → skip — HIMMEL-590 F7).
+  **There is no nightly pass over `sessions/`.**
+- **Lane 2 (clip pipeline)** is the `pipeline-cadence` nightly/weekly/monthly and
+  operates on `Clippings/` **only** — it does **not** touch `sessions/`.
+- **Lane 3 (memory-compound)** compounds the agent's `project_*` memories into the
+  luna substrate (HIMMEL-564) — separate again, not session notes.
+
+**Known gap (future work):** there is no cross-session synthesis/compounding of
+session **notes** yet — the `sessions/` analogue of `synthesize-clips`. That's a
+distinct future ticket, separate from HIMMEL-564 (which mines agent memories).
+
 ## Crystallization (LLM upgrade)
 
-The hook first writes a **mechanical** note: frontmatter + the six sections rendered straight from the transcript (last assistant turn → Summary, parsed commands → Commands, the git diff → Files Touched). That note carries `crystallized: false`. Immediately afterward, on every success-write path, the hook spawns a best-effort background **crystallizer** that asks a bounded `claude` run to rewrite the four prose sections — Summary, Decisions, Files Touched, Follow-ups — into a real synthesis of the session, then flips the note to `crystallized: true` (+ `crystallized_at`). All other frontmatter (date, session_id, repo, branch, worktree, source) and the Raw Conversation callout are preserved verbatim.
+The hook first writes a **mechanical** note: frontmatter + the six sections rendered straight from the transcript (last assistant turn → Summary, parsed commands → Commands, the git diff → Files Touched). That note carries `crystallized: false`. Immediately afterward, on every success-write path, the hook spawns a best-effort background **crystallizer** that asks a bounded `claude` run to rewrite the four prose sections — Summary, Decisions, Files Touched, Follow-ups — into a real synthesis of the session. When the body actually changes, the **script** (not the model) flips the note to `crystallized: true` (+ `crystallized_at`). All other frontmatter (date, session_id, repo, branch, worktree, source) and the Raw Conversation callout are preserved verbatim.
 
 A note that stays `crystallized: false` is the valid mechanical baseline, **not** a failure — the crystallizer is fail-open and recoverable (see [Reheal](#reheal-recover-existing-husk-notes)).
 
-**Mechanism — bounded `claude`, billed to Max.** The crystallizer is `scripts/luna/crystallize-note.sh`. It runs `claude "<prompt>" </dev/null` (an *interactive* bounded run, not headless `-p`), so it bills to the operator's Max plan and needs **no API key** — and is HIMMEL-128-safe. It runs in the himmel repo root so the spawned session inherits himmel's own `auto-approve-safe-bash` posture, with `--permission-mode acceptEdits` scoping the single note edit. The spawn is fully detached (`scripts/lib/detach.sh` — `setsid`, or a double-fork on macOS) so it outlives the hook's process-group teardown; the hook never blocks on it and never exits non-zero because of it.
+**Mechanism — bounded `claude`, billed to Max.** The crystallizer is `scripts/luna/crystallize-note.sh`. It runs `claude "<prompt>" </dev/null` (an *interactive* bounded run, not headless `-p`), so it bills to the operator's Max plan and needs **no API key** — and is HIMMEL-128-safe. The note lives in the luna vault, **outside** the himmel repo, so the run uses **cwd = the note's directory** (which puts the note in the spawned run's workspace, so `--permission-mode acceptEdits` can auto-approve the edit), `--add-dir <transcript-dir>` (to read the transcript), and injects himmel's `auto-approve-safe-bash` PreToolUse hook by absolute path via `--settings` (the vault cwd carries no himmel project settings). Earlier versions ran in the himmel repo root and the out-of-workspace note edit silently fell through to a permission prompt that `</dev/null` EOFed — leaving the note byte-unchanged at `crystallized: false` (HIMMEL-590 F1). The spawn is fully detached (`scripts/lib/detach.sh` — `setsid`, or a double-fork on macOS) so it outlives the hook's process-group teardown; the hook never blocks on it and never exits non-zero because of it.
+
+**Edit-confirmed flag (HIMMEL-590).** The `crystallized` flag is owned by the script, not the LLM: it compares the note's hash before/after the `claude` run and sets `crystallized: true` only when the note actually changed (the prompt forbids touching the frontmatter, so any change is a body change). A no-op run (cap hit, refusal, EOF) leaves the note byte-unchanged at `crystallized: false`; a real synthesis always flips it — so the flag can never be falsely set, and a hermetic test asserts the spawn's workspace shape so the F1 boundary regression can't return.
 
 **Recursion guards.** The throwaway crystallizer session must not re-fire the session-end hooks. `crystallize-note.sh` exports two env vars into the spawned `claude`:
 
@@ -125,7 +166,7 @@ Your vault almost certainly does not live where the operator's does, and you may
 1. **`vault_path` in `.claude/end-session-wiki.json`** (per-repo, absolute path) — the most specific, highest priority. An absolute path is machine-specific, so prefer `vault` (below) for anything you commit and share.
 2. **`vault` name in `.claude/end-session-wiki.json`** (per-repo, **distributable**) — a vault *name* instead of a path, so the same committed config works on every machine. Resolved per-machine: first the operator registry `~/.claude/luna-vaults.json`, else the convention `~/Documents/<name>`. The convention target must be a real vault (contain an `.obsidian/` folder); a name that resolves to no real vault — or fails validation (1–64 chars, must match `[A-Za-z0-9._-]`, start alphanumeric, no `/` or `..`) — **skips the capture rather than misrouting it** (logged as `skipped: vault …`). A config file that exists but is **not valid JSON** also skips (fail-closed) rather than falling through to the default, so a malformed config can't silently leak a sensitive repo's sessions into the general vault.
 3. **`LUNA_VAULT_PATH` environment variable** (global) — your default vault for everything that doesn't override it per-repo. Set it in your shell profile or your `.env` (see `.env.example`).
-4. **Built-in default** — the `luna` vault: the `luna` entry in `~/.claude/luna-vaults.json` if you have one, else `~/Documents/luna` (`$HOME`/`$USERPROFILE`), so a stock install still works with zero config.
+4. **Built-in default** — the `luna` vault: the `luna` entry in `~/.claude/luna-vaults.json` if you have one, else the `~/Documents/luna` (`$HOME`/`$USERPROFILE`) convention. The bare convention is honored **only when it is a real vault** (contains an `.obsidian/` folder), so a stock luna install works with zero config. With no configured vault **and** no real `~/Documents/luna`, the hook **skips** (logged `skipped: vault unresolved …`) rather than materializing a phantom vault for someone who never set luna up (HIMMEL-590). An explicit `luna` registry entry is honored as-is (no existence check), like `vault_path`.
 
 `vault_path` configures a path (renaming/moving the vault means updating that path). `vault` configures a name and each machine resolves the path — so the same committed value works everywhere: an operator either follows the `~/Documents/<name>` convention (zero extra config) or maps the name in their registry.
 
