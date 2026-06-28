@@ -206,7 +206,7 @@ before_branch=$(git -C "$HANDOVER_REPO" rev-parse --abbrev-ref HEAD)
 echo "direct content" > "$HANDOVER_REPO/handovers/yotam/direct.md"
 out=$(
     cd "$HIMMEL_FAKE"
-    # shellcheck disable=SC2031  # subshell-scoped export is intentional
+    # shellcheck disable=SC2030,SC2031  # subshell-scoped export is intentional
     export HANDOVER_DIR="$HANDOVER_REPO/handovers"
     env GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=t@test.com \
         GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=t@test.com \
@@ -320,6 +320,171 @@ else
     echo "  FAIL: tracked branch missing worker seed commit (suggests fetch+track didn't happen)"
     FAIL=$((FAIL+1))
 fi
+
+# HIMMEL-571: single-writer marker → commit on default branch, never branch,
+# refuse if parked. Runs in its OWN fresh repo + bare origin so the marker
+# never contaminates the shared HANDOVER_REPO cases above and the
+# "no handover/* ref" assertion is meaningful.
+
+echo "TEST: HIMMEL-571 single-writer marker"
+
+assert_rc() {
+    local name="$1" exp="$2" act="$3"
+    if [ "$exp" = "$act" ]; then
+        echo "  PASS: $name"
+        PASS=$((PASS+1))
+    else
+        echo "  FAIL: $name (expected rc $exp, got $act)"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+SW_ORIGIN="$TMP_ROOT/sw-origin.git"
+SW_REPO="$TMP_ROOT/sw"
+git init -q --bare "$SW_ORIGIN"
+(
+    cd "$TMP_ROOT"
+    git clone -q "$SW_ORIGIN" sw
+    cd sw
+    git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "init sw"
+    git -c user.email=t@test.com -c user.name=test push -q origin main 2>/dev/null \
+      || git -c user.email=t@test.com -c user.name=test push -q origin HEAD:main
+    git branch -m main 2>/dev/null || true
+    # Establish origin/HEAD so _default_branch resolves to 'main'. NOT --auto
+    # (fails against a local bare origin).
+    git remote set-head origin main 2>/dev/null || true
+)
+
+# Drive auto-commit with HANDOVER_DIR pointing at the single-writer repo.
+run_sw_auto_commit() {
+    (
+        cd "$HIMMEL_FAKE"
+        # shellcheck disable=SC2030,SC2031  # subshell-scoped export is intentional
+        export HANDOVER_DIR="$SW_REPO/handovers"
+        env GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=t@test.com \
+            GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=t@test.com \
+            bash "$SCRIPT_UNDER_TEST" "$@"
+    )
+}
+
+# Per-case hygiene: start from a clean main, optionally create the feature
+# branch off main, (re)create the marker (clean -fdq strips untracked files),
+# and ensure the handovers dir exists.
+sw_prepare() {
+    local branch="$1"
+    git -C "$SW_REPO" checkout -q main
+    git -C "$SW_REPO" checkout -q -- . 2>/dev/null || true
+    git -C "$SW_REPO" clean -fdq
+    if [ "$branch" != "main" ]; then
+        git -C "$SW_REPO" checkout -q -B "$branch"
+    fi
+    : > "$SW_REPO/.single-writer"
+    mkdir -p "$SW_REPO/handovers/yotam"
+}
+
+# T-sw1: happy path — marker + on main + md change → commit on main, no branch.
+sw_prepare main
+echo "sw happy" > "$SW_REPO/handovers/yotam/sw1.md"
+rc=0; out=$(run_sw_auto_commit --no-push "HIMMEL-571 happy" 2>&1) || rc=$?
+printf '%s\n' "$out" | awk '{print "  > "$0}'
+assert_rc "sw1: happy path exits 0" "0" "$rc"
+assert_eq "sw1: lands on main" "main" "$(git -C "$SW_REPO" rev-parse --abbrev-ref HEAD)"
+sw1_handover_refs=$(git -C "$SW_REPO" for-each-ref --format='%(refname)' refs/heads/handover 2>/dev/null)
+if [ -z "$sw1_handover_refs" ]; then
+    echo "  PASS: sw1: no handover/* branch created"; PASS=$((PASS+1))
+else
+    echo "  FAIL: sw1: handover branch created: $sw1_handover_refs"; FAIL=$((FAIL+1))
+fi
+assert_contains "sw1: commit subject is a handover commit" "handover:" "$(git -C "$SW_REPO" log -1 --pretty=%s)"
+
+# T-sw2: guard refuses — marker + parked on handover branch + md change → exit 7.
+sw_prepare handover/HIMMEL-571-x
+echo "sw parked" > "$SW_REPO/handovers/yotam/sw2.md"
+sw2_before=$(git -C "$SW_REPO" rev-parse HEAD)
+rc=0; out=$(run_sw_auto_commit --no-push "HIMMEL-571 parked" 2>&1) || rc=$?
+printf '%s\n' "$out" | awk '{print "  > "$0}'
+assert_rc "sw2: parked refuses with exit 7" "7" "$rc"
+assert_contains "sw2: error names the checkout fix" "checkout" "$out"
+assert_eq "sw2: no commit created (HEAD unchanged)" "$sw2_before" "$(git -C "$SW_REPO" rev-parse HEAD)"
+
+# T-sw3: no-op stays no-op — marker + parked + NO md change → exit 0, not 7.
+sw_prepare handover/HIMMEL-571-x
+sw3_before=$(git -C "$SW_REPO" rev-parse HEAD)
+rc=0; out=$(run_sw_auto_commit --no-push "HIMMEL-571 noop" 2>&1) || rc=$?
+printf '%s\n' "$out" | awk '{print "  > "$0}'
+assert_rc "sw3: no-op on parked repo exits 0" "0" "$rc"
+assert_contains "sw3: reports nothing to do" "nothing to do" "$out"
+assert_eq "sw3: HEAD unchanged" "$sw3_before" "$(git -C "$SW_REPO" rev-parse HEAD)"
+
+# T-sw4: escape hatch — HANDOVER_DIRECT_MAIN=1 on a parked branch commits there
+# (no exit 7), proving the guard is marker-scoped.
+sw_prepare handover/HIMMEL-571-x
+echo "sw escape" > "$SW_REPO/handovers/yotam/sw4.md"
+sw4_before=$(git -C "$SW_REPO" rev-parse HEAD)
+rc=0
+out=$(
+    cd "$HIMMEL_FAKE"
+    # shellcheck disable=SC2030,SC2031  # subshell-scoped export is intentional
+    export HANDOVER_DIR="$SW_REPO/handovers"
+    env GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=t@test.com \
+        GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=t@test.com \
+        HANDOVER_DIRECT_MAIN=1 \
+        bash "$SCRIPT_UNDER_TEST" --no-push "HIMMEL-571 escape" 2>&1
+) || rc=$?
+printf '%s\n' "$out" | awk '{print "  > "$0}'
+assert_rc "sw4: escape hatch exits 0 (not 7)" "0" "$rc"
+assert_eq "sw4: stays on the feature branch" "handover/HIMMEL-571-x" "$(git -C "$SW_REPO" rev-parse --abbrev-ref HEAD)"
+if [ "$sw4_before" != "$(git -C "$SW_REPO" rev-parse HEAD)" ]; then
+    echo "  PASS: sw4: commit landed on the feature branch"; PASS=$((PASS+1))
+else
+    echo "  FAIL: sw4: no commit landed"; FAIL=$((FAIL+1))
+fi
+
+# T-sw5: dry-run happy — marker + on main → plan names .single-writer, no commit.
+sw_prepare main
+echo "sw dry happy" > "$SW_REPO/handovers/yotam/sw5.md"
+sw5_before=$(git -C "$SW_REPO" rev-parse HEAD)
+rc=0; out=$(run_sw_auto_commit --dry-run --no-push "HIMMEL-571 dry happy" 2>&1) || rc=$?
+printf '%s\n' "$out" | awk '{print "  > "$0}'
+assert_rc "sw5: dry-run happy exits 0" "0" "$rc"
+assert_contains "sw5: dry-run names .single-writer trigger" ".single-writer" "$out"
+if printf '%s' "$out" | grep -q "HANDOVER_DIRECT_MAIN"; then
+    echo "  FAIL: sw5: dry-run mislabels trigger as HANDOVER_DIRECT_MAIN"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: sw5: dry-run does not mislabel the trigger"; PASS=$((PASS+1))
+fi
+assert_eq "sw5: dry-run leaves HEAD untouched" "$sw5_before" "$(git -C "$SW_REPO" rev-parse HEAD)"
+
+# T-sw6: dry-run parked — marker + parked → plan reveals the refusal, no commit.
+sw_prepare handover/HIMMEL-571-x
+echo "sw dry parked" > "$SW_REPO/handovers/yotam/sw6.md"
+sw6_before=$(git -C "$SW_REPO" rev-parse HEAD)
+rc=0; out=$(run_sw_auto_commit --dry-run --no-push "HIMMEL-571 dry parked" 2>&1) || rc=$?
+printf '%s\n' "$out" | awk '{print "  > "$0}'
+assert_rc "sw6: dry-run parked exits 0" "0" "$rc"
+assert_contains "sw6: dry-run reveals the refusal" "would REFUSE (exit 7)" "$out"
+assert_eq "sw6: dry-run leaves HEAD untouched" "$sw6_before" "$(git -C "$SW_REPO" rev-parse HEAD)"
+
+# T-sw7: fail-open — marker + parked but origin/HEAD UNRESOLVABLE → must NOT
+# refuse (and must NOT abort with git's 128 under pipefail); commits on the
+# current branch with a WARN. This is the documented fail-open; without the
+# `|| true` guard in _default_branch the script would abort (exit 128).
+# Run LAST: it deletes origin/HEAD on the shared SW_REPO.
+sw_prepare handover/HIMMEL-571-x
+git -C "$SW_REPO" remote set-head origin -d >/dev/null 2>&1 \
+  || git -C "$SW_REPO" update-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
+echo "sw failopen" > "$SW_REPO/handovers/yotam/sw7.md"
+sw7_before=$(git -C "$SW_REPO" rev-parse HEAD)
+rc=0; out=$(run_sw_auto_commit --no-push "HIMMEL-571 failopen" 2>&1) || rc=$?
+printf '%s\n' "$out" | awk '{print "  > "$0}'
+assert_rc "sw7: fail-open does not refuse or abort (exit 0)" "0" "$rc"
+assert_eq "sw7: fail-open commits on the current branch" "handover/HIMMEL-571-x" "$(git -C "$SW_REPO" rev-parse --abbrev-ref HEAD)"
+if [ "$sw7_before" != "$(git -C "$SW_REPO" rev-parse HEAD)" ]; then
+    echo "  PASS: sw7: commit landed (fail-open)"; PASS=$((PASS+1))
+else
+    echo "  FAIL: sw7: no commit landed"; FAIL=$((FAIL+1))
+fi
+assert_contains "sw7: warns about unresolvable origin/HEAD" "could not resolve origin/HEAD" "$out"
 
 # Summary --------------------------------------------------------------
 

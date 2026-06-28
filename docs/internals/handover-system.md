@@ -70,6 +70,20 @@ fully validated). `--no-push` skips the push step (useful for tests
 or offline work). Smoke test:
 `bash scripts/handover/test-auto-commit.sh`.
 
+**Single-writer handover repos (HIMMEL-571):** a handover repo carrying a
+gitignored `.single-writer` marker at its root commits handover state
+**directly on its default branch (main)** — `auto-commit.sh` skips the
+per-ticket branch + PR entirely (same direct path as `HANDOVER_DIRECT_MAIN=1`,
+detected via `[ -f "$handover_repo/.single-writer" ]`). If such a repo is
+parked on a non-default branch it **refuses** (exit 7) rather than entangle
+handover state onto a feature branch — fail-loud, pointing the operator at
+`git checkout <default>`. The default branch is read from
+`refs/remotes/origin/HEAD`; when that is unknown the repo is treated as
+on-default (fail-open, never mis-refused). This is the design personal
+handover/state repos and vaults use so every session/worktree reads and
+writes one shared `main` — preventing the parallel-branch entanglement that
+blocked the HIMMEL-564 close-out.
+
 **PR open/update + squash finisher (HIMMEL-141):**
 After every push on the branched path, `auto-commit.sh` invokes
 `scripts/handover/pr-open.sh` to open (first push) or update (later

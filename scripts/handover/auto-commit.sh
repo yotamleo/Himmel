@@ -33,6 +33,12 @@
 #   4  commit failed (git error)
 #   5  push failed (commit landed locally, push didn't)
 #   6  branch create/checkout failed
+#   7  single-writer repo parked off its default branch — refused
+#
+# .single-writer marker at the handover repo root (HIMMEL-571) → commit
+# directly on the default branch (no per-ticket branch, no PR), the same
+# path as HANDOVER_DIRECT_MAIN. Refuses (exit 7) if the repo is parked on a
+# non-default branch rather than entangle handover state onto a feature branch.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,6 +78,10 @@ Environment:
   HANDOVER_DIRECT_MAIN=1    Skip branching; commit on the current branch
                             (v1 behavior). Default opt-out kept until the
                             branched path is fully validated.
+
+A `.single-writer` marker at the handover repo root forces direct-on-default-
+branch commits (no branch, no PR) and refuses (exit 7) if the repo is parked
+on a non-default branch (HIMMEL-571).
 
 The positional form lets the /handover-commit slash command pass
 $ARGUMENTS unquoted (so trailing --no-push / --dry-run still parse as
@@ -323,14 +333,46 @@ _switch_to_branch() {
     return 0
 }
 
+# Echo the repo's default branch name (origin/HEAD short name, minus the
+# `origin/` prefix), or empty when it can't be determined. Used by the
+# single-writer guard (HIMMEL-571) to decide whether HEAD is parked off the
+# default branch. Empty result → guard treats the repo as on-default
+# (fail-open: never mis-refuse a repo whose default we can't read).
+_default_branch() {
+    # `|| true` is load-bearing: under `set -o pipefail`, git's exit 128 when
+    # refs/remotes/origin/HEAD is absent would propagate out of the pipeline
+    # and (via the unguarded `sw_default=$(…)` call site under `set -e`) abort
+    # the whole script. Swallow it so the function fails OPEN (empty stdout).
+    git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
+        | sed 's@^origin/@@' || true
+}
+
 # ----------------------------------------------------------------------------
 
 # Resolve target branch BEFORE staging — switching with staged content is
 # risky when the new branch's tree differs significantly from current HEAD.
 # HANDOVER_DIRECT_MAIN=1 short-circuits the resolution and keeps v1
-# behavior (commit on whatever branch is checked out).
+# behavior (commit on whatever branch is checked out). A .single-writer
+# marker (HIMMEL-571) does the same but additionally guards that HEAD is on
+# the default branch (sw_parked → refuse later, exit 7).
+direct_reason=""
+sw_parked=0
 if [ "${HANDOVER_DIRECT_MAIN:-0}" = "1" ]; then
     target_branch=""
+    direct_reason="HANDOVER_DIRECT_MAIN"
+elif [ -f "$handover_repo/.single-writer" ]; then
+    target_branch=""
+    direct_reason=".single-writer"
+    sw_default=$(_default_branch "$handover_repo")
+    sw_current=$(git -C "$handover_repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [ -n "$sw_default" ] && [ "$sw_current" != "$sw_default" ]; then
+        sw_parked=1
+    elif [ -z "$sw_default" ]; then
+        # Fail-open, but LOUD (himmel no-silent-failure): we can't tell whether
+        # HEAD is the default branch, so we commit on the current branch rather
+        # than refuse. Warn so the degraded path is debuggable.
+        echo "WARN auto-commit: .single-writer repo but could not resolve origin/HEAD — committing on current branch '$sw_current' (run: git -C '$handover_repo' remote set-head origin -a)" >&2
+    fi
 else
     branch_prefix=$(_lookup_branch_prefix "$handover_repo")
     target_branch=$(_compute_branch_name "$MESSAGE" "$branch_prefix")
@@ -350,10 +392,14 @@ fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY auto-commit: mode=B root=$root repo=$handover_repo"
+    if [ "$sw_parked" -eq 1 ]; then
+        echo "DRY auto-commit: would REFUSE (exit 7): single-writer repo on non-default branch '$sw_current' — checkout '$sw_default' first"
+        exit 0
+    fi
     if [ -n "$target_branch" ]; then
         echo "DRY auto-commit: would switch to branch '$target_branch' (prefix='$branch_prefix')"
     else
-        echo "DRY auto-commit: HANDOVER_DIRECT_MAIN=1 — would commit on current branch"
+        echo "DRY auto-commit: ${direct_reason} — would commit on current branch"
     fi
     echo "DRY auto-commit: would stage *.md under $root (rel: $rel_root)"
     if [ -z "$mdchanges" ]; then
@@ -370,6 +416,16 @@ if [ "$DRY_RUN" -eq 1 ]; then
         fi
     fi
     exit 0
+fi
+
+# Single-writer guard (HIMMEL-571): a .single-writer repo must commit on its
+# default branch. If it's parked elsewhere, refuse rather than entangle the
+# handover state onto a feature branch. Enforced AFTER the no-op early-exit
+# above (a no-op stays a quiet exit 0) and BEFORE staging (nothing committed).
+if [ "$sw_parked" -eq 1 ]; then
+    echo "ERR auto-commit: single-writer repo '$handover_repo' is on '$sw_current', not the default branch '$sw_default'." >&2
+    echo "    Handover state must land on '$sw_default'. Run: git -C '$handover_repo' checkout $sw_default" >&2
+    exit 7
 fi
 
 # Switch to the target branch on the branched path. Done BEFORE staging
