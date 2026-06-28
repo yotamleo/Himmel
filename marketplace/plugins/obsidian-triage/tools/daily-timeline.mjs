@@ -125,6 +125,21 @@ function countReviewedByKind(vault, date) {
   return { total, byKind };
 }
 
+/** Local calendar date (YYYY-MM-DD) of an ISO timestamp. The daily note is named
+ *  by the operator's LOCAL day and `triaged_at` is written local (runbook
+ *  `date +%Y-%m-%d`), but the synthesize-stubs ledger `ts` is UTC ISO — slicing
+ *  its first 10 chars would misfile promotions into the UTC day near the
+ *  local/UTC midnight boundary. Convert via local Date components. Falls back to
+ *  a plain slice for a non-parseable / date-only value. */
+function localDateOf(ts) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts).slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 /** Read ledger subjects for a date, partitioned into promoted (stub-create) /
  *  densified (densify, excluding ones also created today). Order: first seen. */
 function ledgerSubjects(vault, date) {
@@ -140,7 +155,7 @@ function ledgerSubjects(vault, date) {
     if (!t) continue;
     let e;
     try { e = JSON.parse(t); } catch { continue; }
-    if (!e || typeof e.ts !== "string" || e.ts.slice(0, 10) !== date) continue;
+    if (!e || typeof e.ts !== "string" || localDateOf(e.ts) !== date) continue;
     if (!e.subject) continue;
     // Stay a pure recount of STATE: the ledger is append-only, but `--revert`
     // deletes a reverted stub's page without truncating the ledger. Skip any
