@@ -15,8 +15,9 @@
 #                   cache fires a DETACHED, lock-gated refresh (statusline-rollup.sh).
 #
 # FAIL-OPEN everywhere: any error omits only its own part; never errors/hangs.
-# Gated by HIMMEL_WHERE_ARE_WE (default OFF) — defense-in-depth (the wrapper also
-# gates) so the segment is testable in isolation.
+# Gated by HIMMEL_WHERE_ARE_WE (default ON, HIMMEL-556 — opt-out on an explicit
+# 0|false|off|no) — defense-in-depth (the wrapper also gates) so the segment is
+# testable in isolation.
 #
 # Test seams: --branch / --cwd ; HANDOVER_DIR (breadcrumb root, existing) ;
 #   --ledger (provision.mjs ledger path) ; HIMMEL_WHERE_ARE_WE_ROLLUP_DIR
@@ -40,13 +41,15 @@ input=""
 if [ ! -t 0 ]; then input="$(cat 2>/dev/null || true)"; fi
 
 # --- Gate -------------------------------------------------------------------
-_truthy() {
+# Default ON (HIMMEL-556): enabled unless HIMMEL_WHERE_ARE_WE is an explicit
+# opt-out (0|false|off|no). Unset / empty / any other value → enabled.
+_enabled() {
     case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
-        ""|0|false|off|no) return 1 ;;
+        0|false|off|no) return 1 ;;
         *) return 0 ;;
     esac
 }
-_truthy "${HIMMEL_WHERE_ARE_WE:-}" || exit 0
+_enabled "${HIMMEL_WHERE_ARE_WE:-}" || exit 0
 
 SD="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SD/../.." && pwd)"

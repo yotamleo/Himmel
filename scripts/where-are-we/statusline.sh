@@ -5,7 +5,9 @@
 # with ONE where-are-we line (statusline-segment.sh), gated by HIMMEL_WHERE_ARE_WE.
 #
 # Not a parallel status line: it runs the exact vendored script for the base bar
-# and only appends a line. Gate OFF (default) → adds ZERO bytes beyond the base.
+# and only appends a line. Gate default ON (HIMMEL-556, opt-out): an explicit
+# falsy HIMMEL_WHERE_ARE_WE (0|false|off|no) suppresses the segment → adds ZERO
+# bytes beyond the base; unset/empty → segment renders.
 #
 # Fail-open: a missing/erroring base or segment never errors the bar. The segment
 # is `timeout`-bounded (it does one node spawn) so a hung child degrades to
@@ -30,14 +32,16 @@ base="$(printf '%s' "$input" | bash "$BASE" 2>/dev/null || true)"
 base="${base%$'\n'}"
 printf '%s' "$base"
 
-_truthy() {
+# Default ON (HIMMEL-556): enabled unless HIMMEL_WHERE_ARE_WE is an explicit
+# opt-out (0|false|off|no). Unset / empty / any other value → enabled.
+_enabled() {
     case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
-        ""|0|false|off|no) return 1 ;;
+        0|false|off|no) return 1 ;;
         *) return 0 ;;
     esac
 }
 
-if _truthy "${HIMMEL_WHERE_ARE_WE:-}"; then
+if _enabled "${HIMMEL_WHERE_ARE_WE:-}"; then
     # Bound the segment with GNU `timeout` or macOS coreutils `gtimeout`. If
     # neither exists the segment still self-bounds its one node spawn (C1), so
     # the unguarded fallback is safe.

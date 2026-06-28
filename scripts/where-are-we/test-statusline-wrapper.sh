@@ -42,15 +42,29 @@ printf '%s\n' '#!/usr/bin/env bash' "cat >/dev/null 2>&1 || true" "printf 'BASE_
 
 INPUT='{"cwd":"/tmp","model":{"display_name":"x"}}'
 
-# --- Case 1: gate OFF → wrapper output == base output, ZERO bytes added -----
+# --- Case 1: explicit opt-out → wrapper output == base, ZERO bytes added -----
+# (HIMMEL-556: default is now ON, so suppression requires an explicit falsy value.)
 want="$(printf '%s' "$INPUT" | bash "$BASE")"
-got="$(HIMMEL_WHERE_ARE_WE="" HIMMEL_STATUSLINE_BASE="$BASE" HIMMEL_STATUSLINE_SEGMENT="$SEG_OK" \
-       bash "$SUT" <<<"$INPUT" 2>/dev/null)"
-if [ "$got" = "$want" ]; then
-    pass "gate OFF -> wrapper adds zero bytes (== base)"
-else
-    fail "gate OFF -> got '$got' want '$want'"
-fi
+for off in 0 false off no FALSE Off " no "; do
+    got="$(HIMMEL_WHERE_ARE_WE="$off" HIMMEL_STATUSLINE_BASE="$BASE" HIMMEL_STATUSLINE_SEGMENT="$SEG_OK" \
+           bash "$SUT" <<<"$INPUT" 2>/dev/null)"
+    if [ "$got" = "$want" ]; then
+        pass "opt-out '$off' -> wrapper adds zero bytes (== base)"
+    else
+        fail "opt-out '$off' -> got '$got' want '$want'"
+    fi
+done
+
+# --- Case 1b: default ON (unset/empty) → segment renders --------------------
+for on in "" "  "; do
+    got="$(HIMMEL_WHERE_ARE_WE="$on" HIMMEL_STATUSLINE_BASE="$BASE" HIMMEL_STATUSLINE_SEGMENT="$SEG_OK" \
+           bash "$SUT" <<<"$INPUT" 2>/dev/null)"
+    if [ "$got" = "$(printf 'BASE_L1\nBASE_L2\nWAW_LINE')" ]; then
+        pass "default ON (HIMMEL_WHERE_ARE_WE='$on') -> segment renders"
+    else
+        fail "default ON ('$on') -> got '$got'"
+    fi
+done
 
 # --- Case 2: gate ON + segment line → base + \n + line ----------------------
 got="$(HIMMEL_WHERE_ARE_WE=1 HIMMEL_STATUSLINE_BASE="$BASE" HIMMEL_STATUSLINE_SEGMENT="$SEG_OK" \
