@@ -240,7 +240,7 @@ re-run setup with `--fill-env` to be prompted with inline help for each field:
 vi .env   # set JIRA_API_TOKEN=...
 
 # Verify
-jira list
+node scripts/jira/dist/index.js list
 pre-commit run --all-files
 ```
 
@@ -607,7 +607,7 @@ state outside the bridge root.
 ### OPTIONAL — per integration
 
 **Jira / HIMMEL project:**
-- [ ] `jira list` returns HIMMEL issues
+- [ ] `node scripts/jira/dist/index.js list` returns HIMMEL issues
 
 **Luna vault:**
 - [ ] `pre-commit run --all-files` passes in Luna vault

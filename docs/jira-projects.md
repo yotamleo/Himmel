@@ -7,7 +7,7 @@ PR introducing this file).
 | Key | ID | Name | Scope | Notes |
 |-----|----|------|-------|-------|
 | HIMMEL | 10033 | Himmel | himmel repo — engineering, infra, tooling. | Default project for the `jira` CLI (`JIRA_PROJECT_KEY=HIMMEL` in `.env`). All Epics for himmel work live here. Standalones historically NOT tracked here. |
-| LUNA | 10066 | Luna | Luna vault (personal second brain). | Created 2026-05-19 via `jira project-create`. Template: Kanban classic. For tickets tracking Luna-specific work. Vault content lives in the `luna` repo; Luna handover docs live in himmel `handovers/<USER_SLUG>/`. |
+| LUNA | 10066 | Luna | Luna vault (personal second brain). | Created 2026-05-19 via `jira project-create`. Template: Kanban classic. For tickets tracking Luna-specific work. Vault content lives in the `luna` repo; Luna handover docs live in the handover state repo `<state-repo>/handovers/<USER_SLUG>/luna/` (himmel `handovers/` is a stub). |
 
 ## Usage
 

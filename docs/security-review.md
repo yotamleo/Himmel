@@ -91,6 +91,6 @@ If any answer is "yes, and I'm not 100% sure the fix is right", file a follow-up
 
 ## Why this pattern (and not a literal upstream-action wrapper)?
 
-[HIMMEL-128](../CLAUDE.md#claude-invocation-billing-himmel-128) splits headless Claude calls onto a separate Agent SDK credit bucket from 2026-06-15. Wrapping `anthropics/claude-code-security-review` as a literal pre-push hook would fire a headless Claude call on every push, against the same bucket — at scale, that bucket would be the bottleneck.
+[HIMMEL-128](../CLAUDE.md#claude-invocation-billing-himmel-128) splits headless Claude calls onto a separate Agent SDK credit bucket (announced for 2026-06-15; **currently PAUSED by Anthropic as of 2026-06-21** — the preference is kept because the split is volatile and may re-activate). Wrapping `anthropics/claude-code-security-review` as a literal pre-push hook would fire a headless Claude call on every push, against the same bucket — at scale, that bucket would be the bottleneck.
 
 Lean-invoke (operator runs review on demand) + structural attestation gate (push blocked without the line) gives the same enforcement strength without the headless cost. The trade-off: the operator owns picking the right review method per diff. The recommended-tokens table above is the playbook.

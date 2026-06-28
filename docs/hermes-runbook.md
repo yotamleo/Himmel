@@ -1,13 +1,110 @@
-# Hermes junior tier — provider-route runbook (HIMMEL-278)
+# Hermes — tiers, install, config & provider runbook (HIMMEL-278, HIMMEL-557)
 
-Hermes (NousResearch hermes-agent) runs as himmel's junior tier for
-chore-shaped work (vault inbox capture, summaries, note-taking) on free
-inference — see the registry row in
-[`docs/tool-adoption/registry.md`](tool-adoption/registry.md) (HIMMEL-272
-rubric) for the adoption rationale, trust posture, and write fence.
+Hermes ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent))
+is a self-hosted, terminal-native AI agent with its own provider chain, profiles,
+memory, and pre-tool guards. himmel drives it in **three tiers** (config lives
+OUTSIDE this repo, so hermes is part of himmel even when a checkout doesn't show
+it):
 
-This runbook captures the provider wiring (config lives OUTSIDE this
-repo) so a machine rebuild can reproduce it.
+| Tier | What it does | Status |
+|------|--------------|--------|
+| **CR critic** | Independent model-family reviewer over a branch diff, wired into `/pr-check` (`scripts/cr/hermes-critic.sh` + `critic-first-pass.sh` → `scripts/hermes/invoke.sh`). Free panel default `nemotron-3-nano`; paid escalation `codex`/`gpt-5.5`. Fail-closed verdict, fail-open transport. | **Working — the production hermes lane today.** |
+| **Junior** | Chore-shaped work (vault inbox capture, summaries, note-taking) on free inference, behind a read-only `luna_vault_guard` write fence. | **Working.** |
+| **`himmel_agent` main tier** | A full-control orchestrator (Codex / GPT-5.5) carrying `parity_guard` instead of the junior fence — does real engineering / research / vault work. | **Alpha — guard parity is not complete; treat as experimental.** |
+
+See the registry row in [`docs/tool-adoption/registry.md`](tool-adoption/registry.md)
+(HIMMEL-272 rubric) for the adoption rationale and trust posture. The rest of this
+runbook is the install + configure + provider-wiring reference — config lives
+OUTSIDE this repo, so a machine rebuild reproduces it from here.
+
+## Quick start: install & configure (new user)
+
+himmel ships **no base-hermes installer** and never writes your hermes identity
+(`SOUL.md`, `config.yaml`, `.env`, profiles). You install and configure hermes
+itself with hermes's own tooling; himmel only adds the optional `himmel_agent`
+profile on top. Four steps — steps 1–3 give you the working CR-critic and junior
+tiers; step 4 is the alpha main tier.
+
+### 1. Install hermes (upstream)
+
+Use the official installer
+([quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)):
+
+```bash
+# Linux / macOS / WSL2 / Termux:
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+source ~/.bashrc            # or ~/.zshrc — reload PATH
+```
+
+```powershell
+# Windows (PowerShell):
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+This installs a `hermes` CLI and a config home (upstream default `~/.hermes/`;
+this machine uses `%LOCALAPPDATA%\hermes` — see [Install layout](#install-layout-windows)
+below). Hermes requires a model with **≥64K context**.
+
+### 2. Configure hermes (provider + keys)
+
+Hermes keeps **secrets in `<home>/.env`, everything else in `<home>/config.yaml`**
+([config docs](https://hermes-agent.nousresearch.com/docs/user-guide/configuration));
+`hermes config set KEY VAL` auto-routes (API keys → `.env`, the rest →
+`config.yaml`). Pick one path:
+
+```bash
+hermes setup --portal       # fastest: one OAuth → Nous provider + Tool Gateway
+hermes model                # or: interactive provider/model picker
+# or wire a key + model by hand (secrets land in .env automatically):
+hermes config set OPENROUTER_API_KEY sk-or-...
+hermes config set model.default <provider/model>
+```
+
+The `model:` block in `config.yaml` is `{default, provider, base_url}`, with an
+ordered `fallback_providers:` list for resilience — himmel's live chain and
+fallback policy are in [Provider routes](#provider-routes-wired-2026-06-12-himmel-278)
+below. For himmel's **CR paid-escalation** lane (`codex` / `gpt-5.5`), log in to
+Codex once:
+
+```bash
+hermes auth                 # choose Codex (ChatGPT) — saved to <home>/auth.json
+```
+
+Verify with `hermes doctor` (provider connectivity) and `hermes config check`
+(missing settings after an upgrade).
+
+### 3. Point himmel at your hermes
+
+himmel's hermes scripts resolve the install **and default to Windows paths**, so
+on macOS/Linux (or any non-default location) export both vars in the shell that
+launches Claude:
+
+- **`HERMES_HOME`** — install root; used by `/himmel-update` and the profile
+  provisioner. Fallback: `%LOCALAPPDATA%\hermes` → `~/.local/share/hermes`.
+- **`HERMES_PY`** — the venv python; used by the CR lane (`scripts/hermes/invoke.sh`).
+  Fallback: `<home>/hermes-agent/venv/{Scripts/python.exe,bin/python}`.
+
+```bash
+export HERMES_HOME="$HOME/.hermes"
+export HERMES_PY="$HERMES_HOME/hermes-agent/venv/bin/python"
+```
+
+Smoke-test the CR chokepoint (spends your provider's free credits, not paid
+budget):
+
+```bash
+bash scripts/hermes/invoke.sh "Reply with exactly: OK"
+```
+
+A clean `OK` means `/pr-check`'s hermes critic is wired. That is the whole
+working setup — the CR-critic and junior tiers need nothing further.
+
+### 4. (Optional, alpha) add the `himmel_agent` main tier
+
+The full-control orchestrator tier is **experimental** — its guard parity isn't
+complete. It is not required for the CR-critic or junior tiers. If you want it,
+provision the additive profile per [Profiles](#profiles-your-default--himmels-himmel_agent-main-tier-himmel-557)
+below.
 
 ## Install layout (Windows)
 
@@ -16,6 +113,68 @@ repo) so a machine rebuild can reproduce it.
   `.env` (API keys), venv at `hermes-agent\venv\Scripts\hermes`.
 - Hermes reads its OWN `.env` (`%LOCALAPPDATA%\hermes\.env`) — shell
   env and himmel's repo-root `.env` are irrelevant to it.
+
+## Profiles: your `default` + himmel's `himmel_agent` main tier (HIMMEL-557)
+
+> **Alpha.** The `himmel_agent` main tier is **experimental** — its
+> `parity_guard` is not yet at full parity with what Claude/himmel enforce, so
+> running a free-tier-capable agent with write/git/PR control still carries
+> risk. The working, production hermes lanes today are the **CR critic** and
+> **junior** tiers (top of this doc). Use `himmel_agent` only knowingly.
+
+Hermes supports named **profiles** (`hermes profile create|list|use|show`), each
+an isolated workspace at `<home>/profiles/<name>/` with its own `SOUL.md`,
+`config.yaml`, `.env`, memories, and hooks. himmel uses this to add a capable
+main tier **without touching your existing setup**:
+
+- **`default`** (and any profile you already have) — **yours, never touched.**
+  himmel ships **no** `SOUL.md` and has **no** hermes installer; it never
+  creates, writes, or overwrites your `SOUL.md`, `config.yaml`, profiles, or
+  `.env`. A fresh hermes with no `SOUL.md` uses hermes's own built-in identity.
+- **`himmel_agent`** — an **additive** profile provisioned on demand by
+  `scripts/hermes/install-himmel-profile.sh` (Windows: `.ps1`). It is himmel's
+  main-tier orchestrator (Codex / GPT-5.5): a generalist that does real
+  engineering, research, vault, and writing work — the "main puller" when
+  Claude capacity is scarce. It carries `agent-hooks/parity_guard.py` instead
+  of the junior `luna_vault_guard.py`: the write/repo fence and routine
+  git/gh/rm blocks are dropped, but the secret-read fence, self-protection (it
+  can't rewrite its own guard/config/SOUL), and catastrophic-shell blocks
+  (`rm -rf`, force-push, scheduler/disk mutation, `curl|sh`) stay — parity with
+  what Claude/himmel themselves enforce.
+
+```
+# provision (or refresh) the himmel_agent profile — additive, idempotent:
+bash scripts/hermes/install-himmel-profile.sh
+# also point selected/all OTHER profiles at parity_guard (swap-only,
+# non-destructive — a profile with no luna_vault_guard hook is left untouched):
+bash scripts/hermes/install-himmel-profile.sh --parity-guard=all
+bash scripts/hermes/install-himmel-profile.sh --parity-guard=default,research
+```
+
+The provisioner clones your `default` (for working keys), then overwrites only
+the new profile's `SOUL.md` (himmel owns that one) and wires its hook. After
+running it, `hermes gateway restart` and approve the new hook once. Reach the
+profile with `hermes profile use himmel_agent` (or the generated wrapper).
+`SOUL.md` is identity only — project specifics (repo conventions, vault rules)
+stay in each context's `AGENTS.md` / `CLAUDE.md` / vault `_CLAUDE.md`.
+
+**Tier coupling — capability follows the model, not the other way round.**
+A weaker free-tier model holding the full `parity_guard` (write code, run git,
+open PRs) is risky, and the pre-tool guard can't tell at call time which model
+will answer. So couple them structurally instead:
+
+- The **`himmel_agent`** (full control) runs on the **trusted premium model
+  only** (Codex / GPT-5.5) with **no free fallback** (`fallback_providers: []`).
+  If the premium model is rate-limited, the main tier simply pauses — it does
+  not degrade into a powerful agent backed by a free model.
+- The **free tier lives on the read-only junior** (your `default` /
+  `luna_vault_guard` profile) on a free model (e.g. OpenRouter
+  `nvidia/nemotron-3-ultra-550b-a55b:free`, which draws no paid budget). It runs
+  **in parallel** — always-available, low-stakes capacity — so when the premium
+  model is down you still have a safe agent, just not a writing one.
+
+In short: fall back to free **only** by also dropping to read-only; never pair a
+free model with write/git/PR control.
 
 ## Keeping it updated (HIMMEL-426)
 
@@ -31,6 +190,12 @@ update, **restart the hermes gateway** (`hermes gateway restart`, when no
 session is running) to pick up changes.
 
 ## Provider routes (wired 2026-06-12, HIMMEL-278)
+
+> **SUPERSEDED 2026-06-24 — the live route is now Codex / `gpt-5.5` via the
+> `openai-codex` provider** (all profiles), not the NVIDIA/OpenRouter chain
+> documented below. The Nemotron block is kept for history; a full re-doc of
+> the current routing is tracked. Verify the live model with
+> `hermes profile list` (Model column) or `hermes model`.
 
 Routing policy per the ticket: free routes first, fail-open down the
 chain with a visible note. The gemini-cli / Google-OAuth subscription

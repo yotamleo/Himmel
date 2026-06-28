@@ -25,7 +25,7 @@ Pre-commit hook `lockfile-integrity` (registered in
 `.pre-commit-config.yaml`) runs `scripts/hooks/check-lockfile-integrity.sh`
 on every commit. For each `package.json` under `scripts/` it asserts:
 
-1. A sibling `package-lock.json` exists.
+1. A sibling `package-lock.json` (npm) — or `bun.lock` (bun; e.g. `scripts/luna-vitals`, which takes precedence when both are present) — exists.
 2. The lockfile is tracked in git.
 3. `npm ci --dry-run --ignore-scripts` succeeds — this is the lock-drift
    detector: `npm ci` refuses to run when the lockfile is out of sync with

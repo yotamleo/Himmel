@@ -437,7 +437,10 @@ Paired smoke test: `hooks/test-inject-minerva-critic.sh`.
 
 Wired in the `SessionStart` array of `.claude/settings.json`; fires once when a
 session starts. Stdout on exit 0 is injected as additional context.
-`check-update-available.sh` (the himmel-update nudge) also runs here.
+`check-update-available.sh` (the himmel-update nudge) also runs here. A third
+SessionStart hook, `inject-where-are-we.sh` (HIMMEL-516, plugin-delivered via
+the himmel-ops `hooks.json`), injects the relevant slice of the where-are-we
+ledger; opt-in behind `HIMMEL_WHERE_ARE_WE`, fail-open and advisory.
 
 ### `inject-initiative.sh` — opt-in initiative mode (HIMMEL-425)
 
@@ -452,8 +455,9 @@ parts. All falsy / unset values (`0`, `false`, `off`, `no`, empty) leave it
 off — a byte-identical no-op, so default behaviour is unchanged.
 
 **Per-part control (mirrors `CRITIC_PANEL_TIERS`):** set `HIMMEL_INITIATIVE`
-to a comma-separated subset of the canonical parts
-`prcheck,pr,ticket,handover` to inject only those steps (e.g.
+to a comma-separated subset of the leg vocabulary
+`plan,execute,prcheck,pr,ticket,merge,public,handover` (the master switch `all`
+enables `prcheck,pr,ticket,handover`) to inject only those steps (e.g.
 `HIMMEL_INITIATIVE=prcheck,pr` = run CR + open the PR, but don't auto-transition
 the ticket or write the handover). Parsing is case-insensitive and
 whitespace-tolerant (`PR, ticket` works); unknown tokens are ignored, and a

@@ -94,7 +94,8 @@ himmel needs almost nothing to start:
 - **`USER_SLUG`** — your kebab-case handle (e.g. `jane-doe`). If you skip it,
   himmel derives it from your `git config user.name`. That's it for the core.
 - **Everything else is optional.** luna (the companion vault), Telegram,
-  [hermes](hermes-runbook.md) (himmel's free-inference junior-tier model lane),
+  [hermes](hermes-runbook.md) (himmel's hermes lanes — a CR-critic reviewer for
+  `/pr-check` and a free-inference junior tier),
   and Jira are all opt-in — the harness runs fully without any of them. Add Jira
   later by filling `JIRA_*` in `.env` (see the
   [env table](../README.md#quickstart)); the local CLI needs only four values
