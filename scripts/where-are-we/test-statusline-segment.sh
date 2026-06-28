@@ -37,9 +37,23 @@ printf '%s\n' '{"foo":1}' > "$ROLLDIR_BADSHAPE/where-are-we-rollup-HIMMEL-538.js
 run() { HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_COLD" \
         bash "$SUT" "$@" </dev/null 2>/dev/null; }
 
-# --- Case 1: off-gate → empty -----------------------------------------------
-o="$(HIMMEL_WHERE_ARE_WE="" HANDOVER_DIR="$HROOT" bash "$SUT" --branch feat/HIMMEL-538-x </dev/null 2>/dev/null)"
-if [ -z "$o" ]; then pass "off-gate -> empty"; else fail "off-gate -> '$o'"; fi
+# --- Case 1: explicit opt-out → empty ---------------------------------------
+# (HIMMEL-556: default is now ON, so only an explicit falsy value suppresses.)
+for off in 0 false off no FALSE Off " no "; do
+    o="$(HIMMEL_WHERE_ARE_WE="$off" HANDOVER_DIR="$HROOT" bash "$SUT" --branch feat/HIMMEL-538-x </dev/null 2>/dev/null)"
+    if [ -z "$o" ]; then pass "opt-out '$off' -> empty"; else fail "opt-out '$off' -> '$o'"; fi
+done
+
+# --- Case 1b: default ON (unset/empty) on a ticket branch → renders ----------
+for on in "" "  "; do
+    o="$(HIMMEL_WHERE_ARE_WE="$on" HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_COLD" \
+         bash "$SUT" --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl" </dev/null 2>/dev/null)"
+    if printf '%s' "$o" | grep -qF '⎇ HIMMEL-538'; then
+        pass "default ON (HIMMEL_WHERE_ARE_WE='$on') -> ticket renders"
+    else
+        fail "default ON ('$on') -> '$o'"
+    fi
+done
 
 # --- Case 2: main branch → empty (no key) -----------------------------------
 o="$(run --branch main)"
@@ -210,16 +224,29 @@ else
 fi
 
 # --- Case 17: stdin .cwd + git branch detection (production input route) -----
-# Feed JSON with .cwd = this worktree (on feat/himmel-538-status-line); no
-# --branch seam, so the segment must resolve the branch via git.
+# Feed JSON with .cwd = this worktree; no --branch seam, so the segment must
+# resolve the branch via git. Derive the EXPECTED key from the worktree's actual
+# branch (the same branchToKey rule the SUT applies) rather than hardcoding one
+# ticket — so the case is correct on whatever branch the test runs from.
 WT="$(cd "$DIR/../.." && pwd)"
-o="$(printf '%s' '{"cwd":"'"$WT"'"}' | HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT2" \
-     HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_COLD" HIMMEL_WHERE_ARE_WE_ROLLUP_CMD="true" \
-     bash "$SUT" --ledger "$TMP/none.jsonl" 2>/dev/null)"
-if printf '%s' "$o" | grep -qF '⎇ HIMMEL-538'; then
-    pass "stdin .cwd + git branch detection -> ticket shown"
+wt_branch="$(git -C "$WT" symbolic-ref --short HEAD 2>/dev/null || true)"
+# Mirror the SUT's branchToKey exactly: a key is only extracted when the branch
+# has a `type/` prefix (case "$branch" in */*) in statusline-segment.sh).
+exp_key=""
+case "$wt_branch" in
+    */*) exp_key="$(printf '%s' "${wt_branch#*/}" | sed -n 's/^\([A-Za-z][A-Za-z]*-[0-9][0-9]*\).*/\1/p' | tr '[:lower:]' '[:upper:]')" ;;
+esac
+if [ -n "$exp_key" ]; then
+    o="$(printf '%s' '{"cwd":"'"$WT"'"}' | HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT2" \
+         HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_COLD" HIMMEL_WHERE_ARE_WE_ROLLUP_CMD="true" \
+         bash "$SUT" --ledger "$TMP/none.jsonl" 2>/dev/null)"
+    if printf '%s' "$o" | grep -qF "⎇ $exp_key"; then
+        pass "stdin .cwd + git branch detection -> ticket shown ($exp_key)"
+    else
+        fail "stdin .cwd path -> '$o' (expected ⎇ $exp_key)"
+    fi
 else
-    fail "stdin .cwd path -> '$o'"
+    pass "stdin .cwd + git branch detection -> SKIPPED (branch '$wt_branch' has no ticket key)"
 fi
 
 echo "---"

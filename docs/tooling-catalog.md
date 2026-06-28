@@ -267,7 +267,7 @@ FAIL. Tests: `scripts/test-himmel-doctor.sh`, `scripts/lib/test-{resolve,run,wir
 ## claude-statusline (vendored, HIMMEL-331)
 
 **Vendored in himmel:** `scripts/statusline/` (`bin/statusline.sh`, `test/`, `LICENSE`, `README.md`, provenance in `VENDORED.md`).
-**Config:** `~/.claude/settings.json` → `statusLine.command` (machine-setup points it at the himmel wrapper `<himmel-path>/scripts/where-are-we/statusline.sh`, which composes this vendored `bin/statusline.sh` + a where-are-we line — active handover + epic progression, HIMMEL-538, opt-in `HIMMEL_WHERE_ARE_WE`; no external clone).
+**Config:** `~/.claude/settings.json` → `statusLine.command` (machine-setup points it at the himmel wrapper `<himmel-path>/scripts/where-are-we/statusline.sh`, which composes this vendored `bin/statusline.sh` + a where-are-we line — active handover + epic progression, HIMMEL-538; the segment is default-ON since HIMMEL-556 — opt out with an explicit falsy `HIMMEL_WHERE_ARE_WE` (`0|false|off|no`); no external clone).
 **What:** Bash script receiving Claude Code session JSON via stdin, outputs formatted status bar.
 
 Displays: model, context %, git branch, rate-limit bars (current/weekly/extra), cache TTL countdown, per-session and all-sessions cache read/write/hit/savings.
