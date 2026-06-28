@@ -18,10 +18,22 @@ Armed defaults (operator decision pinned on HIMMEL-255, overridable via flags):
 | `HIMMEL-Pipeline-Health` | monthly 1st 04:00 | `/obsidian-health` |
 
 Each task launches a **bounded interactive** claude session in the luna
-vault — `claude "<prompt>" < NUL` (the `< /dev/null` bounded-run
-primitive). NOT `claude -p`/`--print`: headless invocations bill to the
-separate Agent SDK bucket from 2026-06-15 (HIMMEL-128); this stays on Max
+vault — `claude --settings <fragment> "<prompt>" < NUL` (the `< /dev/null`
+bounded-run primitive). NOT `claude -p`/`--print`: headless invocations bill to
+the separate Agent SDK bucket from 2026-06-15 (HIMMEL-128); this stays on Max
 quota and passes the `no-headless-claude` gate without a marker.
+
+**Auto-approve injection (HIMMEL-575).** The runs fire in the luna vault cwd,
+which has no himmel `.claude/settings.json` — so without help, an autonomous run
+would STALL on the HIMMEL-203 compound-bash permission prompt (the static
+matcher bails on any `$var`/`$()`/pipe/compound command, and a `< NUL` run has
+nobody to answer the prompt). At **arm time** the runner writes a tiny
+`cadence-settings.json` next to the `.bat`/`.sh` that wires himmel's
+`auto-approve-safe-bash` PreToolUse hook by **absolute path**, and each run is
+launched with `--settings <that fragment>`. The hook only ever *grants* (it
+never blocks), so this widens nothing the block-* deny hooks guard — it just
+restores the auto-approve posture in the luna cwd. The fragment is created on
+`arm` and removed on `disarm`.
 
 ## Guarantees
 - **Dedup safeguard:** `arm` refuses (rc=3) if any `HIMMEL-Pipeline-*` task

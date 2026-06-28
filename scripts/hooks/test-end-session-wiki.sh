@@ -20,6 +20,16 @@ set -uo pipefail
 HOOK="$(cd "$(dirname "$0")" && pwd)/end-session-wiki.sh"
 [ -r "$HOOK" ] || { echo "FAIL: hook not found at $HOOK"; exit 1; }
 
+# Crystallizer test seam (HIMMEL-576): point the backgrounded crystallizer at the
+# claude STUB (no-op by default) so these tests NEVER spawn a real `claude` /
+# bill the Max plan. Exported -> inherited by every `env ... bash "$HOOK"` run.
+STUB="$(cd "$(dirname "$0")" && pwd)/testdata/bin/claude-stub.sh"
+chmod +x "$STUB" 2>/dev/null || true
+export CRYSTALLIZE_CLAUDE_BIN="$STUB"
+export STUB_MODE="noop"
+CRYSTALLIZE_PID_DIR="$(mktemp -d)"
+export CRYSTALLIZE_PID_DIR
+
 FAILED=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; FAILED=1; }
@@ -218,6 +228,61 @@ if grep -q 'FAILED' "$SB/proj/.claude/end-session-wiki.log" 2>/dev/null; then
 else
     pass "skip path leaves no phantom FAILED log line"
 fi
+rm -rf "$SB"
+
+# --- Case 6: husk-skip — a contentless transcript writes NO note (HIMMEL-576) -
+SB="$(make_sandbox)"
+printf '%s\n' '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"hi"}}' > "$SB/transcript.jsonl"
+RC="$(run_hook "$SB")"
+if [ "$RC" = "0" ]; then pass "husk: hook exits 0"; else fail "husk: exit was $RC, expected 0"; fi
+if [ -z "$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
+    pass "husk: no note written for a contentless transcript"
+else
+    fail "husk: a note was written for a contentless transcript"
+fi
+if grep -q 'skipped: husk (no content)' "$SB/proj/.claude/end-session-wiki.log" 2>/dev/null; then
+    pass "husk: log records the skip"
+else
+    fail "husk: log does not record the husk skip"
+fi
+rm -rf "$SB"
+
+# --- Case 7: a thinking/tool-only session IS captured (not a husk) -----------
+SB="$(make_sandbox)"
+printf '%s\n' \
+  '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}' \
+  '{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"x"},{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}' > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if [ -n "$NOTE" ]; then pass "tool-only: note written (not a husk)"; else fail "tool-only: no note written"; fi
+if [ -n "$NOTE" ] && grep -q 'Tool-only session' "$NOTE"; then
+    pass "tool-only: Summary surfaces command activity (not 'Transcript unavailable')"
+else
+    fail "tool-only: Summary did not surface command activity"
+fi
+rm -rf "$SB"
+
+# --- Case 8: hook spawns the crystallizer for a non-husk note (HIMMEL-576) ----
+SB="$(make_sandbox)"
+MARK="$SB/marker.txt"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env OSTYPE="linux-gnu" OS="" LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    STUB_MODE="success" CRYSTALLIZE_MARKER="$MARK" CRYSTALLIZE_PID_DIR="$SB/pids" bash "$HOOK"
+# Poll up to ~3s for the detached crystallizer to touch the marker.
+i=0; while [ ! -s "$MARK" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+if [ -s "$MARK" ]; then pass "crystallizer spawned for a non-husk note"; else fail "crystallizer was not spawned"; fi
+rm -rf "$SB"
+
+# --- Case 9: crystallize:false suppresses the spawn --------------------------
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude"
+MARK="$SB/marker.txt"
+printf '%s\n' '{"enabled":true,"crystallize":false}' > "$SB/proj/.claude/end-session-wiki.json"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env OSTYPE="linux-gnu" OS="" LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    STUB_MODE="success" CRYSTALLIZE_MARKER="$MARK" CRYSTALLIZE_PID_DIR="$SB/pids" bash "$HOOK"
+sleep 0.5
+if [ ! -s "$MARK" ]; then pass "crystallize:false suppresses the spawn"; else fail "crystallize:false still spawned the crystallizer"; fi
 rm -rf "$SB"
 
 if [ "$FAILED" -eq 0 ]; then

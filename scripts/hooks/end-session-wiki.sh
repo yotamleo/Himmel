@@ -75,6 +75,30 @@ write_note_to_file() {
     return 0
 }
 
+# spawn_crystallizer — best-effort detached LLM crystallization (HIMMEL-576) of
+# the just-written note. Called before each successful-write exit. Ensures the
+# note is on disk first (a REST PUT flushes to disk asynchronously, so the
+# backgrounded crystallizer could otherwise read a not-yet-present file), then
+# fully detaches crystallize-note.sh so it outlives this hook's process-group
+# teardown. Fire-and-forget: never blocks, never affects the hook's exit.
+spawn_crystallizer() {
+    [ "${CFG_CRYSTALLIZE:-true}" = "false" ] && return 0
+    # Guarantee on-disk even on the REST-PUT path (idempotent — same content).
+    write_note_to_file "$ABS_PATH" "$MARKDOWN" 2>/dev/null || return 0
+    local crys
+    crys="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../luna/crystallize-note.sh"
+    [ -r "$crys" ] || return 0
+    [ -n "${CFG_CRYSTALLIZE_MODEL:-}" ] && export CRYSTALLIZE_MODEL="$CFG_CRYSTALLIZE_MODEL"
+    # Fully detach so the child survives this hook's process-group teardown
+    # (shared helper, also used by refresh-where-are-we-on-end.sh / HIMMEL-572).
+    local detach_lib
+    detach_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/detach.sh"
+    # shellcheck source=/dev/null
+    [ -r "$detach_lib" ] && . "$detach_lib" || return 0
+    detach_run bash "$crys" "$ABS_PATH" "$TRANSCRIPT_PATH"
+    return 0
+}
+
 # EXIT trap: forces exit code 0 regardless of how we got here.
 # We track an explicit $HOOK_OK flag so the trap knows whether to log a FAILED
 # message. The trap is fired on:
@@ -122,6 +146,8 @@ fi
 CFG_ENABLED="true"
 CFG_DRY_RUN="false"
 CFG_MIN_DUR=60
+CFG_CRYSTALLIZE="true"
+CFG_CRYSTALLIZE_MODEL=""
 # vault_path / vault are read by resolve_vault_root (scripts/lib/vault-resolve.sh),
 # not here, so the shared @tsv parse stays focused on the gate fields.
 if [ -r "$CONFIG_PATH" ]; then
@@ -131,13 +157,17 @@ if [ -r "$CONFIG_PATH" ]; then
         [
             (if has("enabled") then .enabled else true end | tostring),
             (if has("dry_run") then .dry_run else false end | tostring),
-            (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring)
+            (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring),
+            (if has("crystallize") then .crystallize else true end | tostring),
+            (if has("crystallize_model") then .crystallize_model else "" end | tostring)
         ] | @tsv
     ' "$CONFIG_PATH" 2>/dev/null)"
     if [ -n "$parsed" ]; then
         CFG_ENABLED="$(printf '%s' "$parsed" | cut -f1)"
         CFG_DRY_RUN="$(printf '%s' "$parsed" | cut -f2)"
         CFG_MIN_DUR="$(printf '%s' "$parsed" | cut -f3)"
+        CFG_CRYSTALLIZE="$(printf '%s' "$parsed" | cut -f4)"
+        CFG_CRYSTALLIZE_MODEL="$(printf '%s' "$parsed" | cut -f5)"
     else
         log_msg "config parse failed (using defaults): $CONFIG_PATH"
     fi
@@ -222,6 +252,16 @@ compute_duration "$FIRST_TS" "$NOW_EPOCH"
 # can't compute duration and the cautious choice is to capture rather than drop).
 if [ -n "$FIRST_TS" ] && [ "$DURATION_SECONDS" -lt "$CFG_MIN_DUR" ] 2>/dev/null; then
     log_msg "skipped: duration ${DURATION_SECONDS}s < min ${CFG_MIN_DUR}s"
+    HOOK_OK=1
+    exit 0
+fi
+
+# Husk-skip gate (HIMMEL-576): a session with NO salvageable transcript content
+# AND no files touched would render a content-free "Transcript unavailable" husk
+# note. Writing it floods the vault (same-minute collision pileup when first_ts is
+# also empty). Skip the write entirely — there is nothing to capture.
+if [ "${HAS_CONTENT:-0}" -eq 0 ] && [ "${FILES_COUNT:-0}" -eq 0 ]; then
+    log_msg "skipped: husk (no content)"
     HOOK_OK=1
     exit 0
 fi
@@ -366,6 +406,7 @@ if [ -z "$API_KEY" ]; then
     # No REST API key — fall back to a direct on-disk write into the vault.
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "wrote (local fs, no api key) ${REL_PATH}"
+        spawn_crystallizer
     else
         log_msg "ERROR: local fs write failed: $ABS_PATH"
     fi
@@ -404,6 +445,7 @@ if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "
     # REST PUT failed (e.g. Obsidian not running) — fall back to on-disk write.
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "PUT $ENDPOINT returned HTTP $HTTP_CODE; wrote (local fs fallback) ${REL_PATH}"
+        spawn_crystallizer
     else
         log_msg "ERROR: PUT $ENDPOINT HTTP $HTTP_CODE and local fs fallback failed: $ABS_PATH"
     fi
@@ -412,5 +454,6 @@ if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "
 fi
 
 log_msg "wrote ${REL_PATH} (${ELAPSED}ms)"
+spawn_crystallizer
 HOOK_OK=1
 exit 0

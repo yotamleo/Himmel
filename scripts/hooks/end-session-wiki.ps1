@@ -96,6 +96,8 @@ try {
     $cfgEnabled = $true
     $cfgDryRun  = $false
     $cfgMinDur  = 60
+    $cfgCrystallize = $true
+    $cfgCrystallizeModel = ''
     # vault_path / vault are read by Resolve-VaultRoot (scripts/lib/vault-resolve.ps1),
     # not here, so this parse stays focused on the gate fields.
     if (Test-Path $configPath) {
@@ -105,6 +107,8 @@ try {
             if ($cfg.PSObject.Properties['enabled']) { $cfgEnabled = [bool]$cfg.enabled }
             if ($cfg.PSObject.Properties['dry_run']) { $cfgDryRun  = [bool]$cfg.dry_run }
             if ($cfg.PSObject.Properties['min_duration_seconds']) { $cfgMinDur = [int]$cfg.min_duration_seconds }
+            if ($cfg.PSObject.Properties['crystallize']) { $cfgCrystallize = [bool]$cfg.crystallize }
+            if ($cfg.PSObject.Properties['crystallize_model']) { $cfgCrystallizeModel = [string]$cfg.crystallize_model }
         } catch {
             Write-HookLog "config parse failed (using defaults): $($_.Exception.Message)"
         }
@@ -183,6 +187,11 @@ try {
     $lastAssistantText = ''
     $bashCommands = New-Object System.Collections.Generic.List[string]
     $transcriptReadable = $true
+    # HAS_CONTENT (HIMMEL-576): any salvageable signal — a non-empty string-content
+    # assistant turn, a text/thinking block, or ANY tool_use block. Drives the
+    # husk-skip gate so content-free sessions never write a "Transcript unavailable"
+    # husk note.
+    $hasContent = $false
 
     if ($transcriptPath -and (Test-Path $transcriptPath)) {
         try {
@@ -211,9 +220,13 @@ try {
                 if ($role -eq 'assistant' -and $content) {
                     $turnText = New-Object System.Text.StringBuilder
                     if ($content -is [string]) {
+                        if ($content.Length -gt 0) { $hasContent = $true }
                         [void]$turnText.Append($content)
                     } else {
                         foreach ($block in $content) {
+                            if ($block -and $block.PSObject.Properties['type'] -and ($block.type -eq 'text' -or $block.type -eq 'thinking' -or $block.type -eq 'tool_use')) {
+                                $hasContent = $true
+                            }
                             if ($block -and $block.PSObject.Properties['type'] -and $block.type -eq 'text' -and $block.PSObject.Properties['text']) {
                                 [void]$turnText.AppendLine($block.text)
                             }
@@ -259,6 +272,14 @@ try {
     # can't compute duration and the cautious choice is to capture rather than drop).
     if ($firstTs -and $durationSeconds -lt $cfgMinDur) {
         Write-HookLog "skipped: duration ${durationSeconds}s < min ${cfgMinDur}s"
+        exit 0
+    }
+
+    # Husk-skip gate (HIMMEL-576): no salvageable transcript content AND no files
+    # touched would render a content-free "Transcript unavailable" husk note. Skip
+    # it — writing husks floods the vault (same-minute collision pileup).
+    if (-not $hasContent -and $filesCount -eq 0) {
+        Write-HookLog "skipped: husk (no content)"
         exit 0
     }
 
@@ -341,7 +362,13 @@ try {
         $summaryLines = @($lastAssistantText -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 4)
     }
     if ($summaryLines.Count -eq 0) {
-        $summary = "_Transcript unavailable; auto-summary not generated._ (speculation)"
+        # A thinking/tool-only session still did real work — surface the command
+        # activity instead of claiming the transcript was unavailable (HIMMEL-576).
+        if ($keptCommands.Count -gt 0) {
+            $summary = "_Tool-only session: $($keptCommands.Count) command(s) run, no prose turn captured._"
+        } else {
+            $summary = "_Transcript unavailable; auto-summary not generated._ (speculation)"
+        }
     } else {
         $summary = ($summaryLines -join "`n").Trim()
     }
@@ -393,6 +420,8 @@ tags:
 ai-first: true
 session_id: $sessionId
 source: live
+crystallized: false
+crystallized_at:
 ---
 
 $preamble
@@ -447,6 +476,23 @@ $rawSection
         exit 0
     }
 
+    # Invoke-Crystallizer — best-effort DETACHED LLM crystallization (HIMMEL-576)
+    # of the just-written note. Start-Process spawns an independent pwsh that
+    # outlives this hook (the Windows analogue of setsid). Ensures the note is on
+    # disk first (a REST PUT flushes asynchronously). Fire-and-forget.
+    function Invoke-Crystallizer {
+        if (-not $cfgCrystallize) { return }
+        try { Write-NoteToFile -Path $absPath -Content $markdown } catch { return }
+        $crys = Join-Path $PSScriptRoot '..\luna\crystallize-note.ps1'
+        if (-not (Test-Path $crys)) { return }
+        if ($cfgCrystallizeModel) { $env:CRYSTALLIZE_MODEL = $cfgCrystallizeModel }
+        try {
+            Start-Process -FilePath (Get-Command pwsh).Source `
+                -ArgumentList @('-NoProfile', '-File', $crys, $absPath, $transcriptPath) `
+                -WindowStyle Hidden | Out-Null
+        } catch { }
+    }
+
     # ---------- 7. Discover Obsidian Local REST API key + PUT --------------------
 
     # Token discovery priority:
@@ -470,6 +516,7 @@ $rawSection
         try {
             Write-NoteToFile -Path $absPath -Content $markdown
             Write-HookLog "wrote (local fs, no api key) $relPath"
+            Invoke-Crystallizer
         } catch {
             Write-HookLog "ERROR: local fs write failed ($absPath): $($_.Exception.Message)"
         }
@@ -514,6 +561,7 @@ $rawSection
         try {
             Write-NoteToFile -Path $absPath -Content $markdown
             Write-HookLog "wrote (local fs fallback) $relPath"
+            Invoke-Crystallizer
         } catch {
             Write-HookLog "ERROR: local fs fallback write failed ($absPath): $($_.Exception.Message)"
         }
@@ -522,6 +570,7 @@ $rawSection
     $elapsed = ((Get-Date) - $startTime).TotalMilliseconds
 
     Write-HookLog "wrote $relPath (${elapsed}ms)"
+    Invoke-Crystallizer
     exit 0
 
 } catch {

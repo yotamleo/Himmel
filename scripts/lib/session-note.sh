@@ -17,6 +17,8 @@
 #   DURATION_MINUTES    — integer duration in minutes
 #   SESSION_ID          — session identifier from the SessionEnd payload
 #   SOURCE              — capture source ("live" for hook, "claude-backfill" for backfill)
+#   CRYSTALLIZED        — "true" if an LLM crystallized the note, else "false" (default false)
+#   CRYSTALLIZED_AT     — ISO 8601 timestamp of crystallization, else empty (default empty)
 #   LAST_ASSISTANT      — last assistant turn text (may be empty)
 #   TRANSCRIPT_READABLE — 1 if transcript was readable, 0 otherwise
 #   KEPT_COMMANDS       — filtered command list (may be empty)
@@ -28,7 +30,17 @@ render_session_note() {
         summary="$(printf '%s\n' "$LAST_ASSISTANT" | awk 'NF' | head -n 4)"
     fi
     if [ -z "$summary" ]; then
-        summary="_Transcript unavailable; auto-summary not generated._ (speculation)"
+        # A thinking/tool-only session (no final prose turn) still did real work —
+        # surface the command activity instead of claiming the transcript was
+        # unavailable (HIMMEL-576). Only fall back to "unavailable" when there is
+        # genuinely nothing.
+        if [ -n "${KEPT_COMMANDS:-}" ]; then
+            local _ncmd
+            _ncmd="$(printf '%s\n' "$KEPT_COMMANDS" | awk 'NF' | wc -l | tr -d ' ')"
+            summary="_Tool-only session: ${_ncmd} command(s) run, no prose turn captured._"
+        else
+            summary="_Transcript unavailable; auto-summary not generated._ (speculation)"
+        fi
     fi
 
     local preamble
@@ -88,6 +100,8 @@ tags:
 ai-first: true
 session_id: ${SESSION_ID}
 source: ${SOURCE}
+crystallized: ${CRYSTALLIZED:-false}
+crystallized_at: ${CRYSTALLIZED_AT:-}
 ---
 
 ${preamble}

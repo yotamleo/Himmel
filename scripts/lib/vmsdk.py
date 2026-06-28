@@ -333,7 +333,17 @@ class VM:
         # Step 3: pre-seed workspace trust (non-fatal)
         self.run(f"bash ~/github/himmel/scripts/lib/ensure-workspace-trust.sh {abscwd}")
 
-        # Step 4: build and run the drive command
+        # Step 4: build and run the drive command.
+        # --dangerously-skip-permissions policy (HIMMEL-575): this is the VM
+        # driver, and a VM is throwaway + isolated + carries no operator data, so
+        # a non-interactive drive (`< /dev/null`, no human to answer a tool-use
+        # prompt) skips permissions wholesale — the blast radius is the disposable
+        # guest. This is DELIBERATELY different from the *user-facing* unattended
+        # path (the pipeline-cadence runner), which must NOT skip permissions: it
+        # runs on the operator's real machine and instead injects a curated
+        # allowlist+guardrail (`claude --settings <fragment>` wiring the
+        # grant-only auto-approve-safe-bash hook). Rule of thumb: VM = run wild;
+        # real machine = allowlist.
         inner = f"cd {abscwd} && {claude_bin} {shlex.quote(prompt)} --dangerously-skip-permissions < /dev/null"
         outer = f"timeout --signal=KILL {timeout} bash -lc {shlex.quote(inner)}"
         return self.run(outer)

@@ -16,6 +16,14 @@ $HOOK = Join-Path $PSScriptRoot 'end-session-wiki.ps1'
 $TestdataDir = Join-Path $PSScriptRoot 'testdata'
 $FixturePath = Join-Path $TestdataDir 'fixture.jsonl'
 $BaselinePath = Join-Path $TestdataDir 'session-note.baseline.md'
+
+# Crystallizer test seam (HIMMEL-576): point the detached crystallizer at the
+# claude STUB (no-op) so these tests NEVER spawn a real claude / bill the Max plan.
+# Inherited by the hook child pwsh and onward to crystallize-note.ps1.
+$env:CRYSTALLIZE_CLAUDE_BIN = (Join-Path $TestdataDir 'bin\claude-stub.ps1')
+$env:STUB_MODE = 'noop'
+$env:CRYSTALLIZE_PID_DIR = (Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-pids-" + [guid]::NewGuid().ToString('N')))
+
 $script:fails = 0
 function Pass([string]$m) { "PASS: $m" }
 function Fail([string]$m) { "FAIL: $m"; $script:fails++ }
@@ -140,7 +148,7 @@ try {
     # All other content (frontmatter skeleton, Files Touched, Commands,
     # Decisions, Follow-ups) must match the baseline exactly.
     if ($note3) {
-        $skipPattern = '^(date:|worktree:|duration_minutes:|session_id:|source:)'
+        $skipPattern = '^(date:|worktree:|duration_minutes:|session_id:|source:|crystallized:|crystallized_at:)'
         function Remove-Section {
             param([string[]]$Lines, [string]$StartHeader, [string]$EndHeader)
             $inside = $false
@@ -179,6 +187,55 @@ try {
 
     Remove-Item -LiteralPath $sb3Vault -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $sb3Proj  -Recurse -Force -ErrorAction SilentlyContinue
+
+    # ---- Husk-skip cases (Cases 6–7, HIMMEL-576) -----------------------------
+    $huskVault = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-husk-" + [guid]::NewGuid().ToString('N'))
+    $huskProj  = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-huskp-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $huskVault -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $huskProj '.claude') -Force | Out-Null
+
+    function Invoke-HookCustom {
+        param([string]$Transcript, [string]$VaultPath, [string]$ProjPath)
+        $pl = @{ transcript_path = $Transcript; cwd = $ProjPath; session_id = 't'; reason = 'other' } | ConvertTo-Json -Compress
+        $env:USERPROFILE = (Join-Path $SB 'home')
+        $env:CLAUDE_PROJECT_DIR = $ProjPath
+        $env:OBSIDIAN_API_KEY = ''
+        $env:LUNA_VAULT_PATH = $VaultPath
+        $pl | pwsh -NoProfile -File $HOOK | Out-Null
+    }
+
+    # Case 6: a contentless transcript → husk → no note + skip logged.
+    $huskTs = Join-Path $huskProj 'transcript.jsonl'
+    Set-Content -LiteralPath $huskTs -Value '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"hi"}}'
+    Invoke-HookCustom -Transcript $huskTs -VaultPath $huskVault -ProjPath $huskProj
+    if (Notes (Join-Path $huskVault 'sessions')) { Fail 'husk: a note was written for a contentless transcript' }
+    else { Pass 'husk: no note written for a contentless transcript' }
+    $huskLog = Get-Content -LiteralPath (Join-Path $huskProj '.claude\end-session-wiki.log') -Raw -ErrorAction SilentlyContinue
+    if ($huskLog -match 'skipped: husk \(no content\)') { Pass 'husk: skip logged' } else { Fail 'husk: skip not logged' }
+
+    # Case 7: a thinking/tool-only session IS captured with a command-activity summary.
+    $toolTs = Join-Path $huskProj 'transcript2.jsonl'
+    Set-Content -LiteralPath $toolTs -Value @(
+        '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}',
+        '{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"x"},{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}'
+    )
+    Invoke-HookCustom -Transcript $toolTs -VaultPath $huskVault -ProjPath $huskProj
+    $toolNote = Notes (Join-Path $huskVault 'sessions') | Select-Object -First 1
+    if ($toolNote) { Pass 'tool-only: note written (not a husk)' } else { Fail 'tool-only: no note written' }
+    if ($toolNote -and ((Get-Content -LiteralPath $toolNote.FullName -Raw) -match 'Tool-only session')) {
+        Pass 'tool-only: Summary surfaces command activity'
+    } else { Fail 'tool-only: Summary did not surface command activity' }
+
+    # Case 8: the hook spawns the detached crystallizer for a non-husk note.
+    $spawnMark = Join-Path $huskProj 'spawn-marker.txt'
+    $env:STUB_MODE = 'success'; $env:CRYSTALLIZE_MARKER = $spawnMark
+    Invoke-HookCustom -Transcript $toolTs -VaultPath $huskVault -ProjPath $huskProj
+    $w = 0; while (-not (Test-Path $spawnMark) -and $w -lt 60) { Start-Sleep -Milliseconds 100; $w++ }
+    if (Test-Path $spawnMark) { Pass 'crystallizer spawned for a non-husk note' } else { Fail 'crystallizer was not spawned' }
+    $env:STUB_MODE = 'noop'; Remove-Item Env:\CRYSTALLIZE_MARKER -ErrorAction SilentlyContinue
+
+    Remove-Item -LiteralPath $huskVault -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $huskProj  -Recurse -Force -ErrorAction SilentlyContinue
 
     $script:reached = $true
 }

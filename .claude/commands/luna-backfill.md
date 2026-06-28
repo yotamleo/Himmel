@@ -1,6 +1,6 @@
 ---
 description: Backfill old Claude session transcripts into the luna vault as structured session notes. TOKEN-INTENSIVE — warns before running and recommends --dry-run first.
-argument-hint: [--all | --project <path>] [--dry-run] [--include-orphaned] [--only <glob>] [--exclude <glob>] [--projects-dir <dir>] [--state-file <path>] [--vault-registry <path>] [--luna-vault-path <dir>]
+argument-hint: [--all | --project <path>] [--reheal] [--dry-run] [--include-orphaned] [--only <glob>] [--exclude <glob>] [--projects-dir <dir>] [--state-file <path>] [--vault-registry <path>] [--luna-vault-path <dir>]
 ---
 
 > **TOKEN-USAGE WARNING:** Backfill seeds many session notes into the vault at
@@ -32,6 +32,7 @@ and ledger entries are never overwritten (idempotent re-runs are safe).
 --include-orphaned       Also import sessions whose cwd no longer exists on disk
 --only <glob>            Only process projects matching glob (repo path)
 --exclude <glob>         Exclude projects matching glob (repo path)
+--reheal                 Recover existing husk notes in the vault (see below)
 --projects-dir <dir>     Override transcripts root (default: ~/.claude/projects) — testing
 --state-file <path>      Override ledger path (default: ~/.claude/luna-backfill-state.json)
 --vault-registry <path>  Override vault registry (default: ~/.claude/luna-vaults.json)
@@ -41,7 +42,8 @@ and ledger entries are never overwritten (idempotent re-runs are safe).
 ## Recommended workflow
 
 1. **Dry-run first** — see how many sessions would be imported, split by
-   category (new / already-in-ledger / opt-out-skip / orphaned-skip / under-min):
+   category (new / already-in-ledger / opt-out-skip / orphaned-skip / under-min /
+   husk-skip):
    ```bash
    bash scripts/luna/backfill-sessions.sh --dry-run
    ```
@@ -64,6 +66,45 @@ and ledger entries are never overwritten (idempotent re-runs are safe).
   choice to import them regardless.
 - The ledger (`~/.claude/luna-backfill-state.json`) short-circuits sessions
   already imported — re-running is safe at any time.
+
+## Reheal mode (`--reheal`)
+
+`--reheal` is a recovery sweep, not an import. Instead of reading transcripts
+into new notes, it scans the **resolved vault's** `sessions/**/*.md` for **husk
+notes** and overwrites them in place. A note is a husk when ALL hold:
+
+- frontmatter `crystallized` is **not** `true`, **AND**
+- its Raw Conversation contains the literal `_Transcript unavailable._`, **AND**
+- its Files Touched section is `_None._`.
+
+For each husk it reads `session_id`, locates
+`~/.claude/projects/*/<session_id>.jsonl`, and:
+
+- if that transcript now has salvageable content → overwrites the note via the
+  crystallizer; when `claude` is unavailable, a **mechanical re-render** instead
+  (real Summary/Commands, still `crystallized: false`) — but only when the
+  transcript has a final assistant prose turn. A tool/thinking-only session
+  (no prose turn) can only be lifted by the LLM crystallizer, so without
+  `claude` it is left as-is for a later run;
+- if the transcript is genuinely contentless or missing → leaves the husk
+  untouched (cannot recover).
+
+Idempotent: a healed (`crystallized: true`) note — and any note a mechanical
+pass can't lift this run — is left byte-unchanged on re-run (no rewrite loop).
+Inert husks persist — there is **no auto-delete** (the operator may delete them
+by hand). Honours `--dry-run` (reports `healed=N inert=M non-husk-skip=K`, writes
+nothing) and the vault-targeting flags. The reheal sweep needs a resolvable
+vault: pass `--luna-vault-path <dir>` or rely on `LUNA_VAULT_PATH` / the
+registry default.
+
+```bash
+# Preview: how many husks are recoverable vs inert?
+bash scripts/luna/backfill-sessions.sh --reheal --dry-run --luna-vault-path ~/Documents/luna
+# Apply:
+bash scripts/luna/backfill-sessions.sh --reheal --luna-vault-path ~/Documents/luna
+```
+
+Background: [`docs/luna/end-session-wiki.md` → Crystallization](../../docs/luna/end-session-wiki.md#crystallization-llm-upgrade).
 
 ## First-run note (live-capture overlap)
 

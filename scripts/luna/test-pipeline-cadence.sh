@@ -328,6 +328,46 @@ for what in harvest synth health; do
     fi
 done
 
+# Test C4b: --settings injection wires the auto-approve hook (HIMMEL-575) -------
+
+echo "TEST: cron runners inject --settings + fragment wires auto-approve hook"
+assert_contains "harvest runner injects --settings" "--settings" "$harvest_sh"
+assert_contains "synth runner injects --settings"   "--settings" "$synth_sh"
+assert_contains "health runner injects --settings"  "--settings" "$health_sh"
+assert_contains "harvest runner --settings targets the fragment" "cadence-settings.json" "$harvest_sh"
+frag="$CRON_DIR/cadence-settings.json"
+if [ -f "$frag" ]; then
+    pass "settings fragment written to the runner dir"
+else
+    fail "settings fragment missing at $frag"
+fi
+frag_body=$(cat "$frag" 2>/dev/null || echo MISSING)
+if command -v jq >/dev/null 2>&1; then
+    if printf '%s' "$frag_body" | jq -e '.hooks.PreToolUse[0].matcher == "Bash"' >/dev/null 2>&1; then
+        pass "fragment is valid JSON wiring a PreToolUse Bash hook"
+    else
+        fail "fragment JSON does not wire a PreToolUse Bash hook" "$frag_body"
+    fi
+    hookcmd=$(printf '%s' "$frag_body" | jq -r '.hooks.PreToolUse[0].hooks[0].command' 2>/dev/null || echo "")
+else
+    hookcmd="$frag_body"
+fi
+assert_contains "fragment command references auto-approve-safe-bash" "auto-approve-safe-bash.sh" "$hookcmd"
+# The referenced hook must be an ABSOLUTE path that actually exists on disk.
+hookpath=$(printf '%s' "$hookcmd" | sed -n 's/^bash //p')
+case "$hookpath" in
+    /*|?:/*) pass "fragment references the hook by absolute path" ;;
+    *)       fail "fragment hook path is not absolute" "$hookpath" ;;
+esac
+# Resolve to a checkable path (mixed C:/ form maps back through cygpath on Win).
+hookpath_check="$hookpath"
+if command -v cygpath >/dev/null 2>&1; then hookpath_check=$(cygpath -u "$hookpath" 2>/dev/null || printf '%s' "$hookpath"); fi
+if [ -f "$hookpath_check" ]; then
+    pass "fragment hook path resolves to a real file"
+else
+    fail "fragment hook path does not resolve to a file" "$hookpath_check"
+fi
+
 # Test C5: status after arm ----------------------------------------------------
 
 echo "TEST: cron status reflects armed entries"
@@ -415,6 +455,11 @@ if [ ! -f "$CRON_DIR/pipeline-harvest.sh" ] && [ ! -f "$CRON_DIR/pipeline-synthe
 else
     fail "runner .sh files left after disarm"
 fi
+if [ ! -f "$CRON_DIR/cadence-settings.json" ]; then
+    pass "settings fragment removed on disarm (HIMMEL-575)"
+else
+    fail "settings fragment left after disarm"
+fi
 rc=0; out=$(run_cron disarm) || rc=$?
 assert_rc "cron second disarm rc 0" 0 "$rc"
 assert_contains "cron second disarm is a no-op" "no-op" "$out"
@@ -480,6 +525,13 @@ if ! compgen -G "$CRON_DIR/*.tmp.*" >/dev/null; then
     pass "no staged .tmp runner litter on write failure"
 else
     fail "staged .tmp runner litter left" "$(ls "$CRON_DIR")"
+fi
+# HIMMEL-575: the settings fragment is staged + promoted on the SAME gate, so a
+# failed fresh arm must leave NO orphan cadence-settings.json (and no .tmp).
+if [ ! -f "$CRON_DIR/cadence-settings.json" ]; then
+    pass "no orphan settings fragment on write failure"
+else
+    fail "settings fragment orphaned on failed arm" "$(ls "$CRON_DIR")"
 fi
 rm -f "$CSTATE/fail-write"
 run_cron disarm >/dev/null
@@ -620,8 +672,12 @@ log=$(cat "$FIRE_DIR/pipeline-synthesize.log" 2>/dev/null || echo MISSING)
 assert_contains "fire log captures claude output" "claude-stub-ran" "$log"
 assert_contains "fire log carries the [fired stamp" "[fired" "$log"
 recdata=$(cat "$REC" 2>/dev/null || echo MISSING)
-assert_contains "prompt arrives as a SINGLE argv" "argc=1" "$recdata"
-assert_contains "chained prompt intact in that argv" \
+# HIMMEL-575: the runner now injects `--settings <fragment>` before the prompt,
+# so claude sees exactly three argv: --settings, the fragment path, the prompt.
+assert_contains "claude invoked with --settings injection" "argc=3" "$recdata"
+assert_contains "settings flag passed to claude" "arg=--settings" "$recdata"
+assert_contains "settings fragment path passed to claude" "cadence-settings.json" "$recdata"
+assert_contains "chained prompt intact as a SINGLE argv" \
     "arg=Run /synthesize-clips to completion, then run /archive-clips." "$recdata"
 expected_cwd=$(cd "$FIRE_VAULT" && pwd)
 assert_contains "runner cd'd into the (hostile) vault" "cwd=$expected_cwd" "$recdata"
@@ -910,6 +966,37 @@ for what in harvest synth health; do
     fi
 done
 
+# Test 6b: --settings injection wires the auto-approve hook (HIMMEL-575) ------
+
+echo "TEST: .bat runners inject --settings + fragment wires auto-approve hook"
+assert_contains "harvest bat injects --settings" "--settings" "$harvest_bat"
+assert_contains "synth bat injects --settings"   "--settings" "$synth_bat"
+assert_contains "health bat injects --settings"  "--settings" "$health_bat"
+assert_contains "harvest bat --settings targets the fragment" "cadence-settings.json" "$harvest_bat"
+wfrag="$BAT_DIR/cadence-settings.json"
+if [ -f "$wfrag" ]; then
+    pass "settings fragment written to the .bat dir"
+else
+    fail "settings fragment missing at $wfrag"
+fi
+wfrag_body=$(cat "$wfrag" 2>/dev/null || echo MISSING)
+if command -v jq >/dev/null 2>&1; then
+    if printf '%s' "$wfrag_body" | jq -e '.hooks.PreToolUse[0].matcher == "Bash"' >/dev/null 2>&1; then
+        pass "fragment is valid JSON wiring a PreToolUse Bash hook"
+    else
+        fail "fragment JSON does not wire a PreToolUse Bash hook" "$wfrag_body"
+    fi
+    whookcmd=$(printf '%s' "$wfrag_body" | jq -r '.hooks.PreToolUse[0].hooks[0].command' 2>/dev/null || echo "")
+else
+    whookcmd="$wfrag_body"
+fi
+assert_contains "fragment command references auto-approve-safe-bash" "auto-approve-safe-bash.sh" "$whookcmd"
+# Path must be JSON-safe (forward slashes, no raw backslashes that break JSON / bash).
+case "$whookcmd" in
+    *\\*) fail "fragment hook path contains backslashes (not JSON/bash safe)" "$whookcmd" ;;
+    *)    pass "fragment hook path is forward-slash (JSON/bash safe)" ;;
+esac
+
 # Test 7: status after arm ---------------------------------------------------
 
 echo "TEST: status reflects armed tasks"
@@ -980,6 +1067,11 @@ if [ ! -f "$BAT_DIR/pipeline-harvest.bat" ] && [ ! -f "$BAT_DIR/pipeline-synthes
     pass ".bat runners removed"
 else
     fail ".bat runners left after disarm"
+fi
+if [ ! -f "$BAT_DIR/cadence-settings.json" ]; then
+    pass "settings fragment removed on disarm (HIMMEL-575)"
+else
+    fail "settings fragment left after disarm"
 fi
 rc=0; out=$(run_pc disarm) || rc=$?
 assert_rc "second disarm rc 0" 0 "$rc"

@@ -12,6 +12,8 @@ tags:
 ai-first: true
 session_id: test-session-id-001
 source: live
+crystallized: false
+crystallized_at:
 ---
 
 Auto-captured Claude Code session in repo [[himmel]] on branch `feat/luna-backfill`. Filed by the end-session-wiki hook (epic #7 / task #26).

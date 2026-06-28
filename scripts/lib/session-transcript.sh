@@ -7,7 +7,8 @@
 #
 # Functions:
 #   parse_session_transcript <transcript_path>
-#     Sets: FIRST_TS, LAST_TS, LAST_ASSISTANT, COMMANDS, TRANSCRIPT_READABLE
+#     Sets: FIRST_TS, LAST_TS, LAST_ASSISTANT, COMMANDS, TRANSCRIPT_READABLE,
+#           HAS_CONTENT (1 if any salvageable signal, 0 for a content-free husk)
 #
 #   compute_duration <first_ts> <now_epoch>
 #     Sets: DURATION_SECONDS, DURATION_MINUTES
@@ -27,6 +28,7 @@ parse_session_transcript() {
     LAST_ASSISTANT=""
     COMMANDS=""
     TRANSCRIPT_READABLE=1
+    HAS_CONTENT=0
 
     if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
         # First timestamp (earliest line with .timestamp)
@@ -64,6 +66,32 @@ parse_session_transcript() {
                 | .input.command // empty
             ' "$transcript_path" 2>/dev/null
         )"
+        # HAS_CONTENT: 1 if the transcript carries ANY salvageable signal — a
+        # non-empty string-content assistant turn, an assistant text/thinking
+        # block, or ANY tool_use block (any tool, not just Bash). Used by the
+        # husk-skip gate (HIMMEL-576) so content-free sessions never write a
+        # "Transcript unavailable" husk note. A thinking/tool-only session (no
+        # final text turn → empty LAST_ASSISTANT) is therefore NOT a husk.
+        if [ -n "$COMMANDS" ]; then
+            HAS_CONTENT=1
+        else
+            local _sig
+            _sig="$(
+                jq -r '
+                    . as $line
+                    | (
+                        (if .role then {role:.role, content:.content} else null end) //
+                        (if .message and .message.role then {role:.message.role, content:.message.content} else null end)
+                      )
+                    | select(. != null and .role == "assistant")
+                    | (if (.content|type) == "string"
+                       then (if (.content|length) > 0 then "x" else empty end)
+                       else (.content // [] | map(select(.type=="text" or .type=="thinking" or .type=="tool_use")) | if length > 0 then "x" else empty end)
+                      end)
+                ' "$transcript_path" 2>/dev/null | head -n1
+            )"
+            [ -n "$_sig" ] && HAS_CONTENT=1
+        fi
     else
         TRANSCRIPT_READABLE=0
     fi

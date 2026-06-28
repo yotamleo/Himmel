@@ -3,14 +3,15 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { jiraRecords, prRecords, gitRecords } from './lib/collect.mjs';
+import { branchToKey } from './lib/query.mjs';
 import { appendRecords } from './lib/append.mjs';
 import { readRecords } from './lib/ledger.mjs';
 import { fold, inFlight } from './lib/fold.mjs';
 import { UsageError } from './lib/errors.mjs';
 
-// Well-formed Jira ticket key, e.g. HIMMEL-567 / LUNA-44. Used both to filter
-// the active-key set passed into the Done self-clear query (no JQL injection)
-// and to keep PR keys (#7) out of it.
+// Well-formed Jira ticket key, e.g. HIMMEL-567 / LUNA-44. Used to filter the
+// active-key set passed into the by-key status query (no JQL injection) and to
+// keep PR keys (#7) out of it.
 const TICKET_KEY_RE = /^[A-Z][A-Z0-9]+-\d+$/;
 
 // Explicit page size for the live working set. The jira CLI defaults to
@@ -29,18 +30,23 @@ const _repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const _jiraCli = join(_repoRoot, 'scripts', 'jira', 'dist', 'index.js');
 
 // Build the jira CLI arg-lists for one collection pass. Pure + exported so the
-// query shapes (per-status, explicit --limit, scoped Done) are unit-testable
+// query shapes (per-status, explicit --limit, by-key all-status) are unit-testable
 // without shelling out.
 //
 // The old single `--status 'To Do,In Progress,Done'` query truncated at the CLI
 // default of 25 rows — with hundreds of historical Done tickets matching, the
 // page filled before any In-Progress row, so live work never reached the ledger
 // (HIMMEL-567). Instead:
-//   - In-Progress + To-Do are read on their own with an explicit high --limit
-//     (the real in-flight working set, always small);
-//   - Done is read ONLY for keys already tracked in-flight, so a Done transition
-//     still self-clears (fold treats 'done' as terminal) without re-reading the
-//     entire unbounded Done history each pass.
+//   - In-Progress + To-Do are read project-wide with an explicit high --limit
+//     (the HIMMEL working set, always small);
+//   - every ACTIVE key is re-read by key across ALL statuses. This serves two
+//     ends: (a) a HIMMEL ticket still self-clears on its Done transition (fold
+//     treats 'done' as terminal) without re-reading the unbounded Done history;
+//     (b) a cross-project LUNA *harness* ticket (one with a himmel footprint —
+//     open PR / locked worktree) shows its real status even though it never
+//     appears in the HIMMEL-project status lists (HIMMEL-573). LUNA vault/content
+//     tickets carry no footprint, so they never become active keys and never
+//     enter the report.
 export function jiraQueries(activeKeys = []) {
   const queries = [
     ['list', '--status', 'In Progress', '--limit', JIRA_LIMIT],
@@ -48,7 +54,7 @@ export function jiraQueries(activeKeys = []) {
   ];
   const safeKeys = activeKeys.filter((k) => TICKET_KEY_RE.test(k));
   if (safeKeys.length) {
-    queries.push(['list', '--jql', `status = Done AND key in (${safeKeys.join(',')})`]);
+    queries.push(['list', '--jql', `key in (${safeKeys.join(',')})`]);
   }
   return queries;
 }
@@ -107,8 +113,19 @@ function readWorktrees() {
 // ---------------------------------------------------------------------------
 
 export function collectAll(now, readers = { readJira, readPRs, readWorktrees }, activeKeys = []) {
-  const jira = jiraRecords(readers.readJira(activeKeys), now);
-  const prs = prRecords(readers.readPRs(), now);
+  const prList = readers.readPRs();
+  // Cross-project harness tickets (HIMMEL-573): a LUNA ticket carrying an OPEN
+  // himmel PR is harness work and must show its real Jira status, even though it
+  // never appears in the HIMMEL-project status lists. Seed those branch keys into
+  // the active set so jiraQueries reads them by key. OPEN only — merged/closed
+  // history would re-query hundreds of terminal tickets every pass.
+  const prKeys = prList
+    .filter((p) => String(p.state).toUpperCase() === 'OPEN')
+    .map((p) => branchToKey(p.headRefName))
+    .filter((k) => k && TICKET_KEY_RE.test(k));
+  const allKeys = [...new Set([...activeKeys, ...prKeys])];
+  const jira = jiraRecords(readers.readJira(allKeys), now);
+  const prs = prRecords(prList, now);
   const git = gitRecords(readers.readWorktrees(), now);
   return [...jira, ...prs, ...git];
 }

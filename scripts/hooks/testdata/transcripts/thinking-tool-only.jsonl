@@ -1,0 +1,2 @@
+{"timestamp":"2026-06-20T00:00:00Z","type":"user","message":{"role":"user","content":"do it"}}
+{"timestamp":"2026-06-20T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me run a command"},{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}

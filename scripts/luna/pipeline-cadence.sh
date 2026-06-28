@@ -79,6 +79,19 @@ CRONTAB_BIN="${PIPELINE_CRONTAB:-crontab}"
 # the cadence.
 BAT_DIR="${PIPELINE_BAT_DIR:-$HOME/.claude/pipeline-cadence}"
 
+# HIMMEL-575: a `claude --settings` fragment that wires himmel's
+# auto-approve-safe-bash PreToolUse hook by ABSOLUTE path. The cadence fires in
+# the luna vault cwd, which carries no himmel .claude/settings.json — so without
+# this an autonomous run STALLS on the HIMMEL-203 compound-bash permission
+# prompt (the static matcher bails on any `$var`/`$()`/pipe/compound command and
+# prompts; an unattended `< NUL` run has nobody to answer it, wasting the run).
+# Injecting the hook by absolute himmel path — resolved here at arm time —
+# restores the auto-approve posture in the luna cwd. The hook only ever GRANTS
+# (fail-open; never blocks), so this widens nothing the block-* hooks guard.
+HIMMEL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
+AUTO_APPROVE_HOOK="$HIMMEL_ROOT/scripts/hooks/auto-approve-safe-bash.sh"
+SETTINGS_FRAGMENT="$BAT_DIR/cadence-settings.json"
+
 # Operator-decision defaults (HIMMEL-255 pinned comment, 2026-06-10;
 # harvest leg added on HIMMEL-357, 2026-06-17).
 HARVEST_TIME="02:00"
@@ -415,7 +428,7 @@ cmd_disarm() {
     # every delete succeeded (delete_task exits 4 otherwise) — safe to
     # remove the runners now.
     if [ "$DRY_RUN" -eq 0 ]; then
-        rm -f "$BAT_DIR/pipeline-harvest.bat" "$BAT_DIR/pipeline-synthesize.bat" "$BAT_DIR/pipeline-health.bat"
+        rm -f "$BAT_DIR/pipeline-harvest.bat" "$BAT_DIR/pipeline-synthesize.bat" "$BAT_DIR/pipeline-health.bat" "$SETTINGS_FRAGMENT"
     fi
     if [ "$found" -eq 0 ]; then
         echo "pipeline-cadence: nothing armed — disarm is a no-op"
@@ -439,11 +452,33 @@ cmd_disarm() {
 # transient console (03:00 Sunday) whose output would otherwise vanish;
 # `status` surfaces the log.
 emit_bat() {
-    local vault_win_esc="$1" claude_win="$2" prompt_esc="$3" log_win_esc="$4"
+    local vault_win_esc="$1" claude_win="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5"
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$vault_win_esc" "$log_win_esc"
-    printf '"%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win" "$prompt_esc" "$log_win_esc"
+    printf '"%s" --settings "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win" "$settings_esc" "$prompt_esc" "$log_win_esc"
+}
+
+# Emit the JSON settings fragment that wires the auto-approve-safe-bash hook by
+# absolute path (HIMMEL-575). hook_path must be a forward-slash, JSON-safe
+# absolute path (no backslashes — use cygpath -m on Windows). The command is
+# unquoted to match himmel's own .claude/settings.json hook wiring convention.
+emit_settings_fragment() {
+    local hook_path="$1"
+    cat <<JSON
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash ${hook_path}" }
+        ]
+      }
+    ]
+  }
+}
+JSON
 }
 
 # --- schtasks task XML (HIMMEL-362) ---------------------------------------
@@ -685,6 +720,19 @@ cmd_arm() {
     log_synth_esc=$(cmd_escape "$bat_dir_win\\pipeline-synthesize.log")
     log_health_esc=$(cmd_escape "$bat_dir_win\\pipeline-health.log")
 
+    # Settings fragment (HIMMEL-575): the `claude --settings` target inside each
+    # .bat (a Windows path, cmd-escaped) plus the auto-approve hook's mixed
+    # (C:/...) path embedded in the fragment JSON (forward-slash so it's both
+    # JSON-safe and bash-readable when claude runs the hook command).
+    local settings_esc hook_path_m
+    settings_esc=$(cmd_escape "$bat_dir_win\\cadence-settings.json")
+    if ! hook_path_m=$(cygpath -m "$AUTO_APPROVE_HOOK" 2>&1); then
+        echo "ERR pipeline-cadence: cygpath -m failed for hook path: $hook_path_m" >&2
+        exit 4
+    fi
+    [ -r "$AUTO_APPROVE_HOOK" ] || \
+        echo "WARN pipeline-cadence: auto-approve hook not readable at $AUTO_APPROVE_HOOK (cadence runs may stall on compound-bash prompts)" >&2
+
     # Per-cadence schedule fragments for the task XML (HIMMEL-362). Built
     # once and reused by the dry-run preview and the real create below.
     local sched_harvest sched_synth sched_health
@@ -711,12 +759,14 @@ cmd_arm() {
     fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
+        emit_settings_fragment "$hook_path_m" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_harvest:"
-        emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_synth:"
-        emit_bat "$vault_esc" "$claude_win" "$synth_esc" "$log_synth_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$synth_esc" "$log_synth_esc" "$settings_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_health:"
-        emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_HARVEST /xml <daily $HARVEST_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_harvest_win" "$HARVEST_TIME" "$sched_harvest" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_SYNTH /xml <weekly $SYNTH_DAY $SYNTH_TIME, StartWhenAvailable=true> /f"
@@ -728,9 +778,10 @@ cmd_arm() {
     fi
 
     mkdir -p "$BAT_DIR"
-    emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" > "$bat_harvest"
-    emit_bat "$vault_esc" "$claude_win" "$synth_esc"  "$log_synth_esc"  > "$bat_synth"
-    emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" > "$bat_health"
+    emit_settings_fragment "$hook_path_m" > "$SETTINGS_FRAGMENT"
+    emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" > "$bat_harvest"
+    emit_bat "$vault_esc" "$claude_win" "$synth_esc"  "$log_synth_esc"  "$settings_esc" > "$bat_synth"
+    emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" > "$bat_health"
 
     local err_file
     err_file=$(mktemp -t pipeline-cadence.err.XXXXXX)
@@ -890,7 +941,7 @@ cron_existing() {
 # arrive pre-quoted with printf %q.
 # shellcheck disable=SC2016  # single-quoted $log/$(date)/_rc are emitted literally for the runner's own /bin/sh to expand at fire time
 emit_runner() {
-    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_node_dir="${6:-}"
+    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_node_dir="${7:-}"
     printf '#!/bin/sh\n'
     printf '# %s runner — generated by pipeline-cadence.sh arm (HIMMEL-265)\n' "$name"
     # Prepend the arm-time node directory so nvm-managed node is found
@@ -910,7 +961,7 @@ emit_runner() {
     printf '{\n'
     printf '    echo "[fired $(date '\''+%%Y-%%m-%%d %%H:%%M:%%S'\'')]"\n'
     printf '    cd %s || exit 1\n' "$q_vault"
-    printf '    _rc=0; %s %s < /dev/null || _rc=$?\n' "$q_claude" "$q_prompt"
+    printf '    _rc=0; %s --settings %s %s < /dev/null || _rc=$?\n' "$q_claude" "$q_settings" "$q_prompt"
     printf '    echo "[exit rc=$_rc]"\n'
     printf '} >> "$log" 2>&1\n'
 }
@@ -944,7 +995,7 @@ cron_disarm() {
         # Trusted-empty read (cron_read exits 2 otherwise) — safe to
         # sweep the runners like the schtasks path does.
         if [ "$DRY_RUN" -eq 0 ]; then
-            rm -f "$CRON_RUNNER_HARVEST" "$CRON_RUNNER_SYNTH" "$CRON_RUNNER_HEALTH"
+            rm -f "$CRON_RUNNER_HARVEST" "$CRON_RUNNER_SYNTH" "$CRON_RUNNER_HEALTH" "$SETTINGS_FRAGMENT"
         fi
         echo "pipeline-cadence: nothing armed — disarm is a no-op"
         return 0
@@ -965,7 +1016,7 @@ cron_disarm() {
     # removed — a failed install (exit 4) leaves the entries live and
     # they must keep pointing at existing runner files.
     cron_install "$newtab" || exit 4
-    rm -f "$CRON_RUNNER_HARVEST" "$CRON_RUNNER_SYNTH" "$CRON_RUNNER_HEALTH"
+    rm -f "$CRON_RUNNER_HARVEST" "$CRON_RUNNER_SYNTH" "$CRON_RUNNER_HEALTH" "$SETTINGS_FRAGMENT"
     echo "pipeline-cadence: cadence disarmed"
 }
 
@@ -1038,6 +1089,13 @@ cron_arm() {
     q_log_harvest=$(printf '%q' "$BAT_DIR/pipeline-harvest.log")
     q_log_synth=$(printf '%q' "$BAT_DIR/pipeline-synthesize.log")
     q_log_health=$(printf '%q' "$BAT_DIR/pipeline-health.log")
+    # Settings fragment (HIMMEL-575): the `claude --settings` target, shared by
+    # all three runners. The hook path inside the fragment is the POSIX absolute
+    # path (JSON-safe — no backslashes — and bash-readable).
+    local q_settings
+    q_settings=$(printf '%q' "$SETTINGS_FRAGMENT")
+    [ -r "$AUTO_APPROVE_HOOK" ] || \
+        echo "WARN pipeline-cadence: auto-approve hook not readable at $AUTO_APPROVE_HOOK (cadence runs may stall on compound-bash prompts)" >&2
 
     local dow harvest_hh harvest_mm synth_hh synth_mm health_hh health_mm
     dow=$(dow_num "$SYNTH_DAY")
@@ -1050,12 +1108,14 @@ cron_arm() {
     entry_health="$health_mm $health_hh $HEALTH_DAY * * $(cron_escape "$CRON_RUNNER_HEALTH") # $TASK_HEALTH"
 
     if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
+        emit_settings_fragment "$AUTO_APPROVE_HOOK" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HARVEST:"
-        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_node_dir" | sed 's/^/    /'
+        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_SYNTH:"
-        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_node_dir" | sed 's/^/    /'
+        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_node_dir" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HEALTH:"
-        emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_node_dir" | sed 's/^/    /'
+        emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would add crontab entries:"
         echo "    $entry_harvest"
         echo "    $entry_synth"
@@ -1070,10 +1130,17 @@ cron_arm() {
     # let a failed install (exit 4) leave the OLD crontab live while
     # the runner files already carry the NEW config — a silent
     # half-state under --force re-arm.
+    # Stage the settings fragment (HIMMEL-575) alongside the runners and promote
+    # it on the SAME success gate — writing it in place before the install would
+    # leave an orphan cadence-settings.json on a failed fresh arm, and under a
+    # --force re-arm that changes HIMMEL_ROOT then fails to install, the live old
+    # runners would silently pick up the new hook path via the shared fragment.
     local tmp_harvest="$CRON_RUNNER_HARVEST.tmp.$$" tmp_synth="$CRON_RUNNER_SYNTH.tmp.$$" tmp_health="$CRON_RUNNER_HEALTH.tmp.$$"
-    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_node_dir" > "$tmp_harvest"
-    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_node_dir" > "$tmp_synth"
-    emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_node_dir" > "$tmp_health"
+    local tmp_settings="$SETTINGS_FRAGMENT.tmp.$$"
+    emit_settings_fragment "$AUTO_APPROVE_HOOK" > "$tmp_settings"
+    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" > "$tmp_harvest"
+    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_node_dir" > "$tmp_synth"
+    emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" > "$tmp_health"
     chmod +x "$tmp_harvest" "$tmp_synth" "$tmp_health"
 
     # Single atomic rewrite: everything that isn't ours, then all three
@@ -1088,14 +1155,15 @@ cron_arm() {
     } > "$newtab"
     if ! cron_install "$newtab"; then
         # Pre-existing runners were never touched; sweep the staged
-        # new-config ones so no half-state survives the failed install.
-        rm -f "$tmp_harvest" "$tmp_synth" "$tmp_health"
+        # new-config ones (runners + fragment) so no half-state survives.
+        rm -f "$tmp_harvest" "$tmp_synth" "$tmp_health" "$tmp_settings"
         echo "    existing runner files left untouched" >&2
         exit 4
     fi
     mv -f "$tmp_harvest" "$CRON_RUNNER_HARVEST"
     mv -f "$tmp_synth"  "$CRON_RUNNER_SYNTH"
     mv -f "$tmp_health" "$CRON_RUNNER_HEALTH"
+    mv -f "$tmp_settings" "$SETTINGS_FRAGMENT"
 
     cat <<EOF
 

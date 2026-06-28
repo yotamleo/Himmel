@@ -1,5 +1,3 @@
-cache/
-node_modules/
 # This is a bun package (bun.lock is the tracked lockfile). The npm-audit
 # pre-push gates run npm here and leave a spurious package-lock.json — ignore it
 # so the wrong-PM artifact never lands (HIMMEL-575 follow-up).
