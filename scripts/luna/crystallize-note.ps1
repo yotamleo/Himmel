@@ -39,6 +39,9 @@ Get-ChildItem -Path $pidDir -Filter '*.pid' -ErrorAction SilentlyContinue | ForE
 if ($live -ge $maxC) { exit 0 }
 $myPid = Join-Path $pidDir "$PID.pid"
 Set-Content -LiteralPath $myPid -Value $PID -ErrorAction SilentlyContinue
+# Declared before the try so the outer finally always cleans it up (parity with
+# the bash EXIT trap) even if a throw lands between its creation and the run.
+$settingsTmp = $null
 try {
     # Retry-read: the live hook may have just written the note via the Obsidian
     # REST API, which flushes to disk asynchronously.
@@ -58,30 +61,78 @@ Rewrite ONLY these sections of that note, in place, distilling the session:
 - ## Decisions     (bullet list of decisions made, or _None._)
 - ## Files Touched (keep the existing list; do not invent files)
 - ## Follow-ups    (bullet list of open items, or _None._)
-Set frontmatter 'crystallized: true' and 'crystallized_at:' to the current UTC
-ISO-8601 time. Preserve every other frontmatter field (date, session_id, repo,
-branch, worktree, source) verbatim, and do NOT touch the Raw Conversation
-callout. Make the edit with your file tools, then stop.
+Do NOT touch the frontmatter or the Raw Conversation callout. Make the edit with
+your file tools, then stop.
 "@
 
-    # Run in the himmel repo root so the spawned claude inherits himmel's project
-    # settings (auto-approve-safe-bash -> no compound-bash stall, the HIMMEL-575
-    # posture). --permission-mode acceptEdits lets the single note edit land
-    # without a prompt. Pipe $null -> bounded stdin (a stray prompt EOFs out).
+    # The note lives in the luna vault, OUTSIDE the himmel repo. Running claude in
+    # HIMMEL_ROOT left the out-of-workspace note edit waiting on a permission
+    # prompt that bounded stdin EOFed -> byte-unchanged note (HIMMEL-590 F1). Fix
+    # (HIMMEL-575 class): cwd = the note's directory, --add-dir the transcript
+    # dir, and inject auto-approve-safe-bash by absolute path via --settings. The
+    # LLM rewrites only the body; this script owns the crystallized flag from the
+    # body diff (T1d).
     $himmelRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $hookPath = ((Join-Path $himmelRoot 'scripts\hooks\auto-approve-safe-bash.sh') -replace '\\', '/')
+    $settingsTmp = Join-Path ([System.IO.Path]::GetTempPath()) "crys-settings-$PID.json"
+    $settingsJson = @"
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash $hookPath" }
+        ]
+      }
+    ]
+  }
+}
+"@
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($settingsTmp, $settingsJson, $enc)
+
+    $noteDir = Split-Path -Parent (Resolve-Path -LiteralPath $NotePath).Path
     $claudeArgs = @()
     if ($env:CRYSTALLIZE_MODEL) { $claudeArgs += @('--model', $env:CRYSTALLIZE_MODEL) }
-    $claudeArgs += @('--permission-mode', 'acceptEdits', $prompt)
+    if ($TranscriptPath) {
+        $trParent = Split-Path -Parent $TranscriptPath
+        if ($trParent -and (Test-Path -LiteralPath $trParent)) { $claudeArgs += @('--add-dir', $trParent) }
+    }
+    $claudeArgs += @('--settings', $settingsTmp, '--permission-mode', 'acceptEdits', $prompt)
     $env:CRYSTALLIZE_NOTE = $NotePath
     $env:CRYSTALLIZE_TRANSCRIPT = $TranscriptPath
-    Push-Location $himmelRoot
-    [Environment]::CurrentDirectory = $himmelRoot
+
+    # Pre-hash: the edit-confirmed flag-set keys off whether the body moved.
+    $hashBefore = (Get-FileHash -LiteralPath $NotePath -Algorithm SHA256).Hash
+
+    Push-Location $noteDir
+    [Environment]::CurrentDirectory = $noteDir
     try {
         $null | & $bin @claudeArgs *> $null
     } finally {
         Pop-Location
     }
+
+    # Edit-confirmed flag-set (T1d): stamp crystallized:true only when the note
+    # body actually changed. A no-op leaves it byte-unchanged + crystallized:false;
+    # a real synthesis flips it with a deterministic UTC timestamp this script owns
+    # (CRYSTALLIZE_NOW overridable for hermetic tests). LF-preserving write.
+    $hashAfter = (Get-FileHash -LiteralPath $NotePath -Algorithm SHA256).Hash
+    if ($hashBefore -and $hashAfter -and ($hashBefore -ne $hashAfter)) {
+        $now = if ($env:CRYSTALLIZE_NOW) { $env:CRYSTALLIZE_NOW } else { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        $fmc = 0
+        $stamped = New-Object System.Collections.Generic.List[string]
+        foreach ($line in (Get-Content -LiteralPath $NotePath)) {
+            if ($line -eq '---') { $fmc++; $stamped.Add($line); continue }
+            if ($fmc -eq 1 -and $line -match '^crystallized: ') { $stamped.Add('crystallized: true'); continue }
+            if ($fmc -eq 1 -and $line -match '^crystallized_at:') { $stamped.Add("crystallized_at: $now"); continue }
+            $stamped.Add($line)
+        }
+        [System.IO.File]::WriteAllText($NotePath, (($stamped -join "`n") + "`n"), $enc)
+    }
 } finally {
     Remove-Item -LiteralPath $myPid -Force -ErrorAction SilentlyContinue
+    if ($settingsTmp) { Remove-Item -LiteralPath $settingsTmp -Force -ErrorAction SilentlyContinue }
 }
 exit 0

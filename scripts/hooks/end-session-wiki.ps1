@@ -356,10 +356,27 @@ try {
 
     $dateIso = $nowUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-    # Summary: first 4 non-empty lines of last assistant turn, or fallback
+    # Summary: distil the last assistant turn into its first 4 substantive lines.
+    # Opening lines are often throwaway preamble — a reaction to an injected
+    # system reminder ("I'll ignore the TaskCreate reminder…") or a bare
+    # acknowledgment ("Sure.") — not a distillation (HIMMEL-590 F2). Drop those
+    # LEADING meta lines, then take the first few substantive lines. The reminder
+    # match requires `reminder` to CO-OCCUR with the injected `TaskCreate` marker
+    # (or the literal `system-reminder` tag), so a reaction line drops but a
+    # substantive line that merely names one token survives. `-match` is
+    # case-insensitive; in lockstep with session-note.sh (crystallization is the
+    # real quality path; this only sharpens the fallback).
     $summaryLines = @()
     if ($lastAssistantText) {
-        $summaryLines = @($lastAssistantText -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 4)
+        $seen = $false
+        $kept = foreach ($ln in ($lastAssistantText -split "`n")) {
+            if (-not $ln.Trim()) { continue }
+            if (-not $seen -and ((($ln -match 'reminder') -and ($ln -match 'TaskCreate')) -or ($ln -match 'system-reminder'))) { continue }
+            if (-not $seen -and ($ln -match '^(Sure|Okay|OK|Alright|Got it|Understood|Perfect|Great|Done)[\p{P}\s]*$')) { continue }
+            $seen = $true
+            $ln
+        }
+        $summaryLines = @($kept | Select-Object -First 4)
     }
     if ($summaryLines.Count -eq 0) {
         # A thinking/tool-only session still did real work — surface the command

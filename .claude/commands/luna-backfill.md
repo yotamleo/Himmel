@@ -23,6 +23,22 @@ and ledger entries are never overwritten (idempotent re-runs are safe).
 | `--all` | Every project under `~/.claude/projects` |
 | `--project <path>` | A specific repo path (repeatable for multiple) |
 
+### Full-scope, multi-vault routing (`--all`)
+
+`--all` resolves the vault **per session**, not once for the whole run: each
+session is routed to the vault its own repo configures (`.claude/end-session-wiki.json`
+`vault_path` / `vault` name, then `LUNA_VAULT_PATH`, then the registry default).
+So a single `--all` pass across repos that target **different** vaults files each
+repo's sessions into its **own** vault — e.g. a work repo → a work vault and a
+personal repo → a personal vault, in one command. Single-vault setups behave
+exactly as before (everything lands in the one default). This routing is locked
+by a multi-vault test (two repos → two vaults, no cross-contamination).
+
+> **No configured vault → skip (HIMMEL-590).** If no vault is configured for a
+> session — no `vault_path`/`vault`, no `LUNA_VAULT_PATH`, no registry entry, and
+> no real `~/Documents/luna` (an `.obsidian/` marker) — that session is **skipped**
+> with a `vault unresolved` notice. Backfill never materializes a phantom vault.
+
 ## All flags
 
 ```
@@ -52,6 +68,16 @@ and ledger entries are never overwritten (idempotent re-runs are safe).
 3. **Real run** — only after reviewing the dry-run output:
    ```bash
    bash scripts/luna/backfill-sessions.sh
+   ```
+4. **Crystallize (quality pass)** — backfill writes **mechanical** notes
+   (`crystallized: false`): a slugged Summary from the transcript, no LLM
+   synthesis. Only the live `end-session-wiki` hook and `--reheal` run the LLM
+   crystallizer. Backfill deliberately does **not** auto-crystallize each note
+   (a bulk `--all` import would fan out an unbounded number of billed `claude`
+   runs); instead it prints a nudge and you run the one explicit,
+   concurrency-capped, idempotent quality pass over what just landed:
+   ```bash
+   bash scripts/luna/backfill-sessions.sh --reheal   # add the same scope flags
    ```
 
 ## Opt-out + skip rules

@@ -24,10 +24,28 @@
 #   KEPT_COMMANDS       — filtered command list (may be empty)
 
 render_session_note() {
-    # Summary: first 4 non-empty lines of last assistant turn
+    # Summary: distil the last assistant turn into its first 4 substantive lines.
+    # The opening lines are often throwaway preamble — a reaction to an injected
+    # system reminder ("I'll ignore the TaskCreate reminder…") or a bare
+    # acknowledgment ("Sure.", "Got it.") — not a distillation (HIMMEL-590 F2).
+    # Drop those LEADING meta lines, then take the first few substantive lines.
+    # The reminder match requires `reminder` to CO-OCCUR with the injected
+    # `TaskCreate` marker (or the literal `system-reminder` tag), so it drops a
+    # reaction line ("I'll ignore the TaskCreate reminder…") but NOT a substantive
+    # line that merely names one token (e.g. "TaskCreate was wired into the queue"
+    # or "Reminder banner implemented"). Case-insensitive + trailing-whitespace-
+    # tolerant to stay in lockstep with the PowerShell twin (end-session-wiki.ps1).
+    # Crystallization (when claude is available) is the real quality path; this
+    # only sharpens the mechanical fallback, and never drops content once a
+    # substantive line begins.
     local summary=""
     if [ -n "${LAST_ASSISTANT:-}" ]; then
-        summary="$(printf '%s\n' "$LAST_ASSISTANT" | awk 'NF' | head -n 4)"
+        summary="$(printf '%s\n' "$LAST_ASSISTANT" | awk '
+            NF == 0 { next }
+            seen == 0 && ((tolower($0) ~ /reminder/ && tolower($0) ~ /taskcreate/) || tolower($0) ~ /system-reminder/) { next }
+            seen == 0 && (tolower($0) ~ /^(sure|okay|ok|alright|got it|understood|perfect|great|done)[[:punct:][:space:]]*$/) { next }
+            { seen = 1; print }
+        ' | head -n 4)"
     fi
     if [ -z "$summary" ]; then
         # A thinking/tool-only session (no final prose turn) still did real work —

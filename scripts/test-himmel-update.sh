@@ -84,6 +84,13 @@ make_repo_behind() {
     # Drop the script under test into the clone so BASH_SOURCE/.. == clone root.
     mkdir -p "$clone/scripts"
     cp "$SCRIPT" "$clone/scripts/himmel-update.sh"
+    # himmel-update.sh sources guardrails/lib.sh + lib/cadence-format.sh relative
+    # to its resolved root, so the mock clone needs them too — otherwise the
+    # script dies at the source line under `set -e` before any --check logic runs.
+    local src_scripts; src_scripts="$(dirname "$SCRIPT")"
+    mkdir -p "$clone/scripts/guardrails" "$clone/scripts/lib"
+    cp "$src_scripts/guardrails/lib.sh"      "$clone/scripts/guardrails/lib.sh"
+    cp "$src_scripts/lib/cadence-format.sh"  "$clone/scripts/lib/cadence-format.sh"
     CHECKOUT_DIR="$clone"
 }
 

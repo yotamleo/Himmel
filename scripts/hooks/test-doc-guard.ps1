@@ -139,6 +139,48 @@ try {
 } finally { Remove-Item -LiteralPath $r5 -Recurse -Force -ErrorAction SilentlyContinue }
 
 # ---------------------------------------------------------------------------
+# Case 6: blocks added plugin manifest without llms.txt (rc=1)
+# ---------------------------------------------------------------------------
+$r6 = New-TestRepo
+try {
+    New-Item -Path (Join-Path $r6 'marketplace\plugins\foo\.claude-plugin') -ItemType Directory -Force | Out-Null
+    New-Item -Path (Join-Path $r6 'llms.txt') -ItemType File -Force | Out-Null
+    New-Item -Path (Join-Path $r6 'marketplace\plugins\foo\.claude-plugin\plugin.json') -ItemType File -Force | Out-Null
+    & git -C $r6 add 'marketplace/plugins/foo/.claude-plugin/plugin.json' 2>$null
+    $rc = Invoke-Guard -RepoDir $r6
+    if ($rc -eq 1) { Pass 'blocks added plugin manifest without llms.txt (rc=1)' }
+    else           { Fail "blocks added plugin manifest without llms.txt: expected rc=1, got $rc" }
+} finally { Remove-Item -LiteralPath $r6 -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ---------------------------------------------------------------------------
+# Case 7: passes added plugin manifest WITH llms.txt staged (rc=0)
+# ---------------------------------------------------------------------------
+$r7 = New-TestRepo
+try {
+    New-Item -Path (Join-Path $r7 'marketplace\plugins\foo\.claude-plugin') -ItemType Directory -Force | Out-Null
+    New-Item -Path (Join-Path $r7 'llms.txt') -ItemType File -Force | Out-Null
+    New-Item -Path (Join-Path $r7 'marketplace\plugins\foo\.claude-plugin\plugin.json') -ItemType File -Force | Out-Null
+    & git -C $r7 add 'marketplace/plugins/foo/.claude-plugin/plugin.json' 'llms.txt' 2>$null
+    $rc = Invoke-Guard -RepoDir $r7
+    if ($rc -eq 0) { Pass 'passes added plugin manifest WITH llms.txt (rc=0)' }
+    else           { Fail "passes added plugin manifest WITH llms.txt: expected rc=0, got $rc" }
+} finally { Remove-Item -LiteralPath $r7 -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ---------------------------------------------------------------------------
+# Case 8: non-manifest file under a plugin does NOT require llms.txt (rc=0)
+# ---------------------------------------------------------------------------
+$r8 = New-TestRepo
+try {
+    New-Item -Path (Join-Path $r8 'marketplace\plugins\foo\lib') -ItemType Directory -Force | Out-Null
+    New-Item -Path (Join-Path $r8 'llms.txt') -ItemType File -Force | Out-Null
+    New-Item -Path (Join-Path $r8 'marketplace\plugins\foo\lib\util.sh') -ItemType File -Force | Out-Null
+    & git -C $r8 add 'marketplace/plugins/foo/lib/util.sh' 2>$null
+    $rc = Invoke-Guard -RepoDir $r8
+    if ($rc -eq 0) { Pass 'non-manifest file under a plugin does NOT require llms.txt (rc=0)' }
+    else           { Fail "non-manifest under plugin: expected rc=0, got $rc" }
+} finally { Remove-Item -LiteralPath $r8 -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 if ($script:fails -eq 0) { 'ALL PASS'; exit 0 }

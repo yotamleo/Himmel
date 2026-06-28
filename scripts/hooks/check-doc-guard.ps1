@@ -93,19 +93,18 @@ $mapLines = Get-Content -LiteralPath $MAP | Where-Object { $_ -notmatch '^\s*#' 
 
 $violations = @()
 foreach ($line in $mapLines) {
-    $parts = $line -split "`t", 2
-    if ($parts.Count -lt 2) { continue }
-    $regex = $parts[0].Trim()
-    $doc   = $parts[1].Trim()
+    $parts = $line -split "`t", 4
+    if ($parts.Count -lt 4) { continue }
+    $strength = $parts[0].Trim(); $trigger = $parts[1].Trim()
+    $regex    = $parts[2].Trim(); $doc     = $parts[3].Trim()
     if (-not $regex -or -not $doc) { continue }
+    if ($strength -ne 'block' -or $trigger -ne 'add') { continue }
 
     # Path-keying: if the required doc does not exist on disk, the pair is inert.
     if (-not (Test-Path -LiteralPath (Join-Path $top $doc))) { continue }
 
-    # Check if any added path matches the regex.
     $hit = $addedLines | Where-Object { $_ -match $regex } | Select-Object -First 1
     if ($hit) {
-        # Violation only if the doc is not in the touched set.
         $docTouched = $touchedLines | Where-Object { $_ -eq $doc }
         if (-not $docTouched) {
             $violations += "     $hit  ->  must also update $doc"

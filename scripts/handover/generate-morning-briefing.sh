@@ -11,6 +11,7 @@
 #   ## 🔴 In-flight WIP   — jira In Progress correlated to worktrees/open-PRs
 #   ## 🧹 Stale worktrees — worktrees on MERGED-PR branches
 #   ## 📋 Backlog         — flat To-Do list (--llm clusters by theme)
+#   ## 📄 Docs drift     — mapped sources changed without their docs (HIMMEL-587)
 #   ## Suggested order    — heuristic ordering (--llm enriches)
 #
 # Default run costs ~no Claude tokens. `--llm` enriches TL;DR + Suggested
@@ -153,6 +154,23 @@ if [ -z "$JIRA_CMD" ]; then
 fi
 
 briefing_forge=$(forge_detect 2>/dev/null || true)
+
+# Docs drift (HIMMEL-587) — advisory; gated by HIMMEL_DOC_FRESHNESS morning leg.
+# Source the clone's .env so the morning leg activates when himmel turned it on
+# there (mirrors inject-where-are-we.sh; the cadence/skill may not export it).
+if [ -f "$repo_root/.env" ]; then
+    # shellcheck source=../lib/load-dotenv.sh
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/load-dotenv.sh"
+    load_dotenv --root "$repo_root" HIMMEL_DOC_FRESHNESS || true
+fi
+# shellcheck source=../lib/doc-freshness.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/doc-freshness.sh"
+docs_drift=""
+if df_leg_active morning; then
+    docs_drift="$(df_detect "${SINCE_SHA}..HEAD" "" "$repo_root" 2>/dev/null || true)"
+fi
 
 # Reachability flags — distinguish "tool returned nothing" from "tool call
 # FAILED" so a jira/gh outage doesn't render as a confident all-clear (a 0 must
@@ -431,6 +449,17 @@ EOF_WIP
         fi
     else
         printf '_No To-Do tickets (or jira unavailable)._\n'
+    fi
+
+    # Docs drift (HIMMEL-587) -------------------------------------------------
+    printf '\n## 📄 Docs drift\n\n'
+    if ! df_leg_active morning; then
+        # shellcheck disable=SC2016  # backticks here are markdown literal, not subshell
+        printf '_Doc-freshness off (set HIMMEL_DOC_FRESHNESS to include `morning`)._\n'
+    elif [ -n "$docs_drift" ]; then
+        printf '%s\n' "$docs_drift" | awk -F'\t' 'NF>=2{printf "- %s → update %s\n", $1, $2}'
+    else
+        printf '_No mapped-source-vs-doc drift since %s._\n' "$SINCE_SHA"
     fi
 
     # Suggested order ---------------------------------------------------------

@@ -83,14 +83,27 @@ if grep -q 'Documents/luna/luna' "$HOOK"; then
 else
     pass "default vault root no longer uses Documents/luna/luna"
 fi
-# Behavioural: with LUNA_VAULT_PATH unset (and USERPROFILE unset to skip the
-# Windows fallback), the default resolves to $HOME/Documents/luna — exercising
-# the changed default-resolution line, not just its source text.
+# Behavioural (HIMMEL-590 F7): the bare ~/Documents/luna default now requires a
+# REAL vault (.obsidian marker). With NO such vault the hook must SKIP and not
+# materialize a phantom vault; with the marker present it resolves + writes.
+# F7a — no marker -> skip, no phantom vault dir created.
 SB="$(make_sandbox)"
 payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
 RC="$(printf '%s' "$payload" | env -u LUNA_VAULT_PATH -u USERPROFILE OSTYPE="linux-gnu" OS="" HOME="$SB/home" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"; echo $?)"
+if [ ! -d "$SB/home/Documents/luna/sessions" ]; then
+    pass "F7: no configured luna vault -> hook skips, no phantom vault created"
+else
+    fail "F7: hook materialized a phantom vault with no .obsidian marker (rc: $RC)"
+fi
+rm -rf "$SB"
+# F7b — with the .obsidian marker, the default resolves to $HOME/Documents/luna
+# and writes, exercising the default-resolution line (not just its source text).
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/Documents/luna/.obsidian"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+RC="$(printf '%s' "$payload" | env -u LUNA_VAULT_PATH -u USERPROFILE OSTYPE="linux-gnu" OS="" HOME="$SB/home" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"; echo $?)"
 if [ -n "$(find "$SB/home/Documents/luna/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
-    pass "default vault root resolves to \$HOME/Documents/luna"
+    pass "default vault root resolves to \$HOME/Documents/luna (real vault)"
 else
     fail "default did not write under \$HOME/Documents/luna (last rc line: $RC)"
 fi

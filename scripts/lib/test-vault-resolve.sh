@@ -25,10 +25,35 @@ trap 'rm -rf "$SB"' EXIT
 mkcfg() { printf '%s\n' "$1" >"$SB/cfg.json"; }
 NOREG="$SB/none.json" # nonexistent registry
 
-# ---- backward-compat paths (Task 1) ----
+# ---- undeclared default requires a REAL luna vault (HIMMEL-590 F7) ----
+# An adopter who never configured luna has no ~/Documents/luna/.obsidian, so the
+# bare convention default must SKIP (empty) — the hook never materializes a
+# phantom vault. dry-run + a real .obsidian marker still resolve the convention.
 mkcfg '{"enabled":true}'
-check "undeclared -> default luna" "$HOME/Documents/luna" \
-  "$(LUNA_VAULT_PATH='' resolve_vault_root "$SB/cfg.json" "$NOREG")"
+FAKEHOME="$SB/fakehome"; mkdir -p "$FAKEHOME/Documents"
+# USERPROFILE='' also disables the Windows USERPROFILE-form fallback so the test
+# is hermetic on a real Windows box (which has its own ~/Documents/luna vault).
+check "undeclared + no real luna vault -> skip" "" \
+  "$(HOME="$FAKEHOME" USERPROFILE='' LUNA_VAULT_PATH='' resolve_vault_root "$SB/cfg.json" "$NOREG")"
+check "undeclared + dry-run -> convention path" "$FAKEHOME/Documents/luna" \
+  "$(HOME="$FAKEHOME" USERPROFILE='' LUNA_VAULT_PATH='' resolve_vault_root "$SB/cfg.json" "$NOREG" true)"
+mkdir -p "$FAKEHOME/Documents/luna/.obsidian"
+check "undeclared + real luna vault (.obsidian) -> convention path" "$FAKEHOME/Documents/luna" \
+  "$(HOME="$FAKEHOME" USERPROFILE='' LUNA_VAULT_PATH='' resolve_vault_root "$SB/cfg.json" "$NOREG")"
+
+# Windows USERPROFILE-form fallback (HIMMEL-590 F7): when $HOME (MSYS) has no
+# vault but a real one exists under the USERPROFILE Windows-form path, the
+# convention is honored and the resolver returns the HOME-form (the hook
+# reconciles). cygpath-gated — only meaningful on Windows Git Bash.
+if command -v cygpath >/dev/null 2>&1; then
+    mkcfg '{"enabled":true}'
+    FH2="$SB/fakehome2"; mkdir -p "$FH2/Documents"
+    UP_WIN="$(cygpath -w "$SB/upwin" 2>/dev/null)"
+    UP_U="$(cygpath -u "$UP_WIN" 2>/dev/null)"
+    mkdir -p "$UP_U/Documents/luna/.obsidian"
+    check "undeclared + USERPROFILE-form real vault -> conv (HOME form)" "$FH2/Documents/luna" \
+      "$(HOME="$FH2" USERPROFILE="$UP_WIN" LUNA_VAULT_PATH='' resolve_vault_root "$SB/cfg.json" "$NOREG")"
+fi
 
 mkcfg '{"vault_path":"/tmp/explicit"}'
 check "vault_path wins" "/tmp/explicit" \

@@ -129,14 +129,20 @@ trap _cleanup EXIT
 # ---------------------------------------------------------------------------
 # Path-to-project-slug (mirrors Claude Code's path->slug encoding)
 # On Windows (cygpath available): convert POSIX -> Windows form first.
-# Then replace : \ / with - and strip leading -.
+# Then replace EVERY non-alphanumeric char with - and strip leading -.
+# Claude Code encodes a project dir as the cwd with every [^a-zA-Z0-9] char
+# mapped to '-' (verified empirically against ~/.claude/projects: '.claude' ->
+# '-claude', 'work_notes' -> 'work-notes'). Mapping only : \ / (the old
+# behaviour) produced the wrong slug for any path containing a dot / underscore
+# / space, so the project dir was never found and the whole project was silently
+# skipped (HIMMEL-588).
 # ---------------------------------------------------------------------------
 _path_to_slug() {
     local p="$1"
     if command -v cygpath >/dev/null 2>&1; then
         p="$(cygpath -w "$p" 2>/dev/null || printf '%s' "$p")"
     fi
-    printf '%s' "$p" | awk '{gsub(/[:\\\/]/, "-"); gsub(/^-+/, ""); print}'
+    printf '%s' "$p" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}'
 }
 
 # ---------------------------------------------------------------------------
@@ -743,3 +749,16 @@ done < "$TMP_JSONL_LIST"
 # ---------------------------------------------------------------------------
 printf 'backfill: new=%d already-in-ledger=%d opt-out-skip=%d orphaned-skip=%d under-min=%d husk-skip=%d\n' \
     "$CNT_NEW" "$CNT_LEDGER" "$CNT_OPTOUT" "$CNT_ORPHANED" "$CNT_UNDERMIN" "$CNT_HUSK"
+
+# Crystallization nudge (HIMMEL-590 F3): plain backfill writes MECHANICAL notes
+# (crystallized: false) — only the live end-session hook and `--reheal` run the
+# LLM crystallizer. Auto-spawning it per imported note during a bulk `--all`
+# import would fan out an unbounded number of billed `claude` runs, so backfill
+# deliberately does NOT; instead it points the operator at the one explicit,
+# concurrency-capped, idempotent quality pass. Printed only when notes landed.
+if [ "$DRY_RUN" != "true" ] && [ "$CNT_NEW" -gt 0 ]; then
+    printf '\nbackfill: %d new note(s) are mechanical (crystallized: false).\n' "$CNT_NEW"
+    printf 'backfill: run the LLM crystallizer over them with:\n'
+    printf '    bash scripts/luna/backfill-sessions.sh --reheal\n'
+    printf 'backfill: (add the same --all / --luna-vault-path / --vault-registry scope you used here).\n'
+fi

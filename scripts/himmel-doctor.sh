@@ -13,6 +13,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/himmel-doctor.sh" ] || REPO_ROOT="${HIMMEL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/scripts/lib/resolve-node.sh"
+# shellcheck source=lib/cadence-format.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/cadence-format.sh"
 
 CLAUDE_DIR_R="${CLAUDE_DIR:-${HOME:-}/.claude}"
 SETTINGS="$CLAUDE_DIR_R/settings.json"
@@ -280,6 +283,33 @@ EOF
     fi
 }
 
+# --- C8: stale pipeline-cadence runners (armed before a format change) ----------
+# The pipeline-cadence runners (.bat/.sh) are GENERATED at arm time and NOT
+# regenerated on a code change (HIMMEL-588), so a cadence armed before a
+# runner-format change (e.g. the HIMMEL-575 --settings auto-approve injection)
+# keeps firing the old format with no nudge. Read-only: compare the version
+# stamped into the runners against the current CADENCE_RUNNER_FORMAT_VERSION and
+# point a stale one at `arm --force`. No --fix — a re-arm touches the OS
+# scheduler, so this stays advisory (mirrors C7).
+check_c8() {
+    # Default must match pipeline-cadence.sh's runner home EXACTLY — that is
+    # $HOME/.claude/pipeline-cadence (it keys off $HOME, NOT $CLAUDE_DIR), so use
+    # $HOME here too rather than $CLAUDE_DIR_R, which would diverge when an
+    # operator relocates .claude via CLAUDE_DIR. PIPELINE_BAT_DIR overrides both.
+    local bat_dir="${PIPELINE_BAT_DIR:-${HOME:-}/.claude/pipeline-cadence}" ver
+    if ! ver="$(cadence_runner_stamp "$bat_dir")"; then
+        emit OK C8-cadence "no armed pipeline-cadence runners (skipped)"
+        return
+    fi
+    if [ "$ver" -lt "$CADENCE_RUNNER_FORMAT_VERSION" ]; then
+        emit WARN C8-cadence \
+            "pipeline-cadence runners are stale (format v$ver < v$CADENCE_RUNNER_FORMAT_VERSION) — armed before a runner-format change, still firing the old format" \
+            "re-arm: bash scripts/luna/pipeline-cadence.sh arm --force"
+    else
+        emit OK C8-cadence "pipeline-cadence runners current (format v$ver)"
+    fi
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -327,6 +357,7 @@ check_c4
 check_c5
 check_c6
 check_c7
+check_c8
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

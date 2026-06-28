@@ -656,6 +656,64 @@ offline (skips any remote introspection).
 
 Smoke test: `scripts/hooks/test-doc-guard.sh` (+ `.ps1` twin).
 
+### Advisory doc-freshness detector — `doc-freshness.sh` (HIMMEL-587)
+
+Companion to `check-doc-guard.sh` — advisory-only, never blocks. Ships
+alongside the blocking gate as the "drift nudge" surface for doc staleness.
+
+**4-column map (`scripts/hooks/doc-guard-map.tsv`):**
+
+The map is now a 4-column TSV (`strength / trigger / path-regex /
+`required-doc`); previously it held only two columns (`path-regex` /
+`required-doc`):
+
+- **`block` rows** — consumed by `check-doc-guard.sh` (and its `.ps1` twin on Windows) (unchanged behaviour):
+  - `block / add / ^\.claude/commands/ / docs/commands-catalog.md`
+  - `block / add / ^marketplace/plugins/[^/]+/(commands|skills)/ / docs/commands-catalog.md`
+  - `block / add / ^marketplace/plugins/[^/]+/\.claude-plugin/plugin\.json / llms.txt` — new in HIMMEL-587: adding a plugin manifest requires a `llms.txt` update.
+- **`advise` rows** — consumed exclusively by `scripts/lib/doc-freshness.sh`:
+  - `advise / modify / ^scripts/hooks/ / docs/internals/enforcement.md`
+  - `advise / modify / ^scripts/(jira|bitbucket)/ / docs/internals/jira-plugin.md`
+
+**`scripts/lib/doc-freshness.sh` — the advisory detector.** Reads only
+`advise` rows; double-filtered for near-zero false positives:
+1. **Changelog scoping:** only files touched by a `feat`/`fix` commit in the
+   range count as in-scope (chore / docs / refactor commits are excluded).
+2. **Doc-presence suppression:** if the required doc itself changed in the
+   range it is already updated — the row is silently skipped.
+
+When both filters pass and a matched in-scope file is found, the detector
+emits a tab-separated finding line (`source-file TAB required-doc TAB reason`).
+It **always exits 0** — a broken advisory must never stall a session.
+
+**Three legs, all gated by `HIMMEL_DOC_FRESHNESS`:**
+- **`advise` leg** — `/pr-check` prints findings at review time (pre-push).
+- **`session` leg** — `scripts/hooks/inject-doc-freshness.sh` (SessionStart
+  hook) injects a `<system-reminder>` block over `origin/main...HEAD` at the
+  start of each feature-branch session.
+- **`morning` leg** — `generate-morning-briefing.sh` includes a freshness
+  section in the daily morning report.
+
+**`HIMMEL_DOC_FRESHNESS` grammar** (default OFF; grammar mirrors `HIMMEL_INITIATIVE`):
+- `1` / `all` / `true` / `on` / `yes` — all three legs active.
+- Comma-subset e.g. `advise,session` — only those legs; `morning` stays off.
+- `0` / `false` / `off` / `no` / unset — all legs off.
+- No `gate` leg — the hard blocking gate is `check-doc-guard.sh`, controlled
+  by `.himmel-dev` + `DOC_GUARD_OK`.
+
+Read from the himmel clone's `.env` by the `session` and `morning` surfaces
+(via `scripts/lib/load-dotenv.sh`); the `advise` leg also reads `.env` at
+`/pr-check` call time. A value exported in the launching shell or set in
+`~/.claude/settings.json "env" {}` overrides `.env`.
+
+**Bash-only — no `.ps1` twin.** There is no PowerShell execution path for
+these three surfaces: `/pr-check` is a Claude slash command running in Bash,
+the SessionStart hook is wired via Bash, and `generate-morning-briefing.sh`
+is a Bash script.
+
+Smoke tests: `scripts/lib/test-doc-freshness.sh`,
+`scripts/hooks/test-inject-doc-freshness.sh`.
+
 ## Guardrails (`scripts/guardrails/`)
 
 Shared shell library of git-state predicates consumed by THREE layers:
