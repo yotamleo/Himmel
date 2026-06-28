@@ -196,7 +196,7 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 
 **What:** Offline health-factor correlation MCP. Correlates personal health series (sleep, HRV, resting HR) against public environmental factors (geomagnetic Kp, lunar phase, daylight hours) and a gated country-level grid fetcher for location factors (barometric pressure, pollen, PM2.5 air quality). Boundary B+C: only `factors.cache` touches the network; all joins and computations are offline. Outputs are candidate signals only — never a diagnosis, never causation.
 
-**M3 operator-facing tool:** `signals.dashboard` — lag-swept (±3 days default), best-lag-per-pair, Benjamini-Hochberg FDR-controlled (q=0.1) analysis over device series × factors. Writes `dashboard.md` + `dashboard.json` to `LUNA_SIGNALS_DIR` (must be set; luna-medic `60-Signals/` by convention).
+**M3 operator-facing tool:** `signals.dashboard` — lag-swept (±3 days default), best-lag-per-pair, Benjamini-Hochberg FDR-controlled (q=0.1) analysis over device series × factors. Writes `dashboard.md` + `dashboard.json` to `LUNA_SIGNALS_DIR` (must be set; a salus vault's `60-Signals/` by convention).
 
 **MCP tools:** `factors.cache` (network, gated), `series.load`, `correlate`, `signals.report`, `signals.dashboard` (all offline).
 **Offline factors:** `kp` (GFZ Potsdam, CC BY 4.0), `lunar_phase` (astronomical formula, zero network), `daylight` (bbox-centroid latitude, zero network). Location factors (`pressure`, `pollen`, `aq`) via Open-Meteo, opt-in via `LUNA_REGION_BBOX`.

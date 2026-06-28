@@ -153,7 +153,7 @@ Fields:
 | `crystallize` | bool | `true` | `false` → never spawn the LLM crystallizer; the mechanical note is the final note. See [Crystallization](#crystallization-llm-upgrade). |
 | `crystallize_model` | string | _(absent)_ | Pin the crystallizer to a specific model (e.g. `"claude-haiku-4-5-20251001"`). Absent → the crystallizer's default model. |
 | `vault_path` | string | `""` | Absolute path (a leading `~/` is expanded) to the Obsidian vault this repo's sessions are captured into. Empty → fall back to `vault`, then `LUNA_VAULT_PATH` env, then the default. See [Choosing the target vault](#choosing-the-target-vault) below. |
-| `vault` | string | _(absent)_ | Vault **name** (not a path) — e.g. `"luna-medic"`. Distributable/safe to commit; resolved to a path per-machine (registry, then the `~/Documents/<name>` convention). An invalid or unresolvable name **skips** the capture rather than misrouting it. See [Choosing the target vault](#choosing-the-target-vault). |
+| `vault` | string | _(absent)_ | Vault **name** (not a path) — e.g. `"salus"`. Distributable/safe to commit; resolved to a path per-machine (registry, then the `~/Documents/<name>` convention). An invalid or unresolvable name **skips** the capture rather than misrouting it. See [Choosing the target vault](#choosing-the-target-vault). |
 
 Missing file → defaults applied (`enabled: true`, `dry_run: false`, `min_duration_seconds: 60`); `vault_path`/`vault` absent.
 
@@ -179,13 +179,13 @@ Your vault almost certainly does not live where the operator's does, and you may
 
 ```json
 // .claude/end-session-wiki.json — distributable: route by vault NAME (safe to commit)
-{ "vault": "luna-medic" }
+{ "vault": "salus" }
 ```
 
 ```json
 // ~/.claude/luna-vaults.json — per-machine name→path map (optional;
 // only needed for vaults that don't live at ~/Documents/<name>)
-{ "vaults": { "luna-medic": "~/Documents/luna-medic" } }
+{ "vaults": { "salus": "~/Documents/salus" } }
 ```
 
 ```bash
@@ -219,7 +219,7 @@ The hook files each note but does not maintain an index, so a fresh capture is a
 
 ```bash
 bash scripts/sessions-reindex.sh                       # default ~/Documents/luna
-bash scripts/sessions-reindex.sh --vault ~/Documents/luna-medic
+bash scripts/sessions-reindex.sh --vault ~/Documents/salus
 ```
 
 It regenerates `<vault>/sessions/_index.md` (links every session note → no orphans) and creates a `sessions/<repo>.md` hub for each repo that doesn't already resolve `[[<repo>]]` somewhere in the vault. Lean-invoke: run on demand after a batch of captures (or wire it into the clip-pipeline cadence).

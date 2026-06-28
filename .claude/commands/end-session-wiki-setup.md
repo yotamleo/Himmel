@@ -22,7 +22,7 @@ Run this from the **code repo** whose sessions you want captured. Be idempotent 
    - **GLOBAL (every repo)** — your default vault for all repos via `LUNA_VAULT_PATH`. Go to step 2c.
 
 2a. **By name.**
-   - Ask for the **vault name** (e.g. `luna-medic`). Validate: 1–64 chars, `[A-Za-z0-9._-]`, must start alphanumeric, no `/` or `..`. Reject otherwise.
+   - Ask for the **vault name** (e.g. `salus`). Validate: 1–64 chars, `[A-Za-z0-9._-]`, must start alphanumeric, no `/` or `..`. Reject otherwise.
    - Resolve the name to a path: if `~/Documents/<name>/.obsidian/` exists, that's the convention target — **no registry entry needed**. Otherwise ask for the absolute vault path (or `~/`-prefixed) and write the mapping into `~/.claude/luna-vaults.json`, preserving existing entries:
      `jq '.vaults = ((.vaults // {}) + {($n): $p})' --arg n "<name>" --arg p "<path>"` (create the file as `{ "vaults": { "<name>": "<path>" } }` if absent). The path should contain an `.obsidian/` marker.
    - Merge `"vault": "<name>"` into this repo's `.claude/end-session-wiki.json`, preserving existing keys: `jq '. + {vault: $n}' --arg n "<name>"`. Create as `{ "vault": "<name>" }` if absent.
