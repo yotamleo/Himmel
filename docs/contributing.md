@@ -35,6 +35,23 @@ keep that working at any team size.
 
    `scripts/hooks/check-commit-msg.sh` validates the format on `commit-msg`.
 
+   The `Co-Authored-By: Claude` trailer is emitted by Claude Code itself, not
+   by any himmel script. To turn it off, set the `attribution` key in your
+   user-scope `~/.claude/settings.json` (keeps it personal and out of the repo;
+   for a project-local override use the gitignored `.claude/settings.local.json`):
+
+   ```json
+   {
+     "attribution": { "commit": "", "pr": "" }
+   }
+   ```
+
+   `attribution` (Claude Code 2.0.62+) supersedes the deprecated
+   `includeCoAuthoredBy` boolean and takes precedence over it. Either disables
+   the trailer; prefer `attribution`. This does not affect the
+   `Platforms tested:` / `Security reviewed:` attestation trailers, which the
+   pre-push gates require independently.
+
 4. **Push** opens a multi-agent CR marker (HIMMEL-26). Run
    `/pr-check` (or `/pr-review-toolkit:review-pr`) in your Claude session
    before opening the PR; the marker blocks `gh pr create` until CR is clean.
