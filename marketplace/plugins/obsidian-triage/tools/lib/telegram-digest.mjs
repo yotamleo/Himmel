@@ -22,15 +22,46 @@ export function basenameLink(link) {
   return `[[${base}]]`;
 }
 
-/** reply_to target for a chat: the numerically-largest (most recent) msg id when
- *  all are numeric, else the first seen — deterministic either way. */
-export function pickReplyTo(msgIds) {
-  const ids = (msgIds || []).map((s) => String(s)).filter(Boolean);
-  if (!ids.length) return null;
-  if (ids.every((s) => /^\d+$/.test(s))) {
-    return ids.reduce((a, b) => (BigInt(b) > BigInt(a) ? b : a));
+/**
+ * Composite telegram id form some bridges file under, e.g.
+ * `telegram-tg-group_-1003985279697-1782605997` (single) or
+ * `tg-group_-1003985279697-1782605414-7` (one drop of a multi-link message):
+ * `…_<chat_id>-<message_id>[-<drop>]`, chat possibly negative (supergroup).
+ * Captures group 1 = chat_id, group 2 = the numeric Telegram message_id.
+ */
+const COMPOSITE_REF_RE = /_(-?\d+)-(\d+)(?:-\d+)?$/;
+
+/**
+ * Resolve a clip's chat id + a NUMERIC reply target from its telegram fields,
+ * tolerant of both the clean shape (separate `telegram_chat_id`, numeric
+ * `telegram_msg_id`) and a composite `telegram_msg_id` that embeds both. The
+ * digest never reaches into the vault — this derives from what the clip already
+ * carries, so composite-id clips work for replies with no backfill.
+ * @returns {{chatId:string|null, replyTo:string|null}} replyTo is null when no
+ *          numeric message id is recoverable (→ send the reply unthreaded).
+ */
+export function parseTelegramRef(clip) {
+  const c = clip || {};
+  const rawMsg = c.telegram_msg_id != null ? String(c.telegram_msg_id) : "";
+  let chatId = (c.telegram_chat_id != null && String(c.telegram_chat_id) !== "")
+    ? String(c.telegram_chat_id) : null;
+  let replyTo = /^\d+$/.test(rawMsg) ? rawMsg : null;
+  if (!chatId || !replyTo) {
+    const m = rawMsg.match(COMPOSITE_REF_RE);
+    if (m) {
+      if (!chatId) chatId = m[1];
+      if (!replyTo) replyTo = m[2];
+    }
   }
-  return ids[0];
+  return { chatId, replyTo };
+}
+
+/** reply_to target for a chat: the numerically-largest (most recent) message id
+ *  among the resolved numeric targets, or null (→ unthreaded) when none. */
+export function pickReplyTo(replyTargets) {
+  const ids = (replyTargets || []).map((s) => String(s)).filter((s) => /^\d+$/.test(s));
+  if (!ids.length) return null;
+  return ids.reduce((a, b) => (BigInt(b) > BigInt(a) ? b : a));
 }
 
 /** "📌 Saved → now a subject: [[X]]" / "… now subjects: [[X]], [[Y]]". */
@@ -47,28 +78,32 @@ export function renderDigestText(subjectLinks) {
  *                telegram_chat_id?:string}}>} promotions — one entry per
  *        (subject, contributing-clip) newly promoted in THIS run.
  * @param {{suppress?:boolean}} [opts] — suppress=true (migration backfill) → [].
+ * Chat id + reply target are resolved via parseTelegramRef, so clips whose
+ * bridge filed a composite `telegram_msg_id` (chat embedded, no separate
+ * `telegram_chat_id`) still produce a correctly-targeted reply with no backfill.
+ *
  * @returns {Array<{chat_id:string, reply_to:string|null, text:string}>} at most
- *          one digest per originating telegram chat. Empty when there are no
- *          telegram-origin promotions or when suppressed. Distinct subjects only
- *          (a subject promoted from two telegram clips is listed once).
+ *          one digest per originating telegram chat. reply_to is null when no
+ *          numeric message id is recoverable (→ send unthreaded). Empty when
+ *          there are no telegram-origin promotions or when suppressed. Distinct
+ *          subjects only (a subject promoted from two telegram clips is once).
  */
 export function buildPromotionDigest(promotions, opts = {}) {
   if (opts.suppress) return [];
-  const byChat = new Map(); // chat_id -> { subjects:[], seen:Set, msgIds:[] }
+  const byChat = new Map(); // chat_id -> { subjects:[], seen:Set, replyTos:[] }
   for (const p of promotions || []) {
     const c = p && p.clip;
-    if (!c || c.clipped_via !== "telegram") continue;
-    const chatId = c.telegram_chat_id;
-    const msgId = c.telegram_msg_id;
-    if (!chatId || !msgId || !p.subject) continue;
-    let g = byChat.get(String(chatId));
-    if (!g) { g = { subjects: [], seen: new Set(), msgIds: [] }; byChat.set(String(chatId), g); }
+    if (!c || c.clipped_via !== "telegram" || !p.subject) continue;
+    const { chatId, replyTo } = parseTelegramRef(c);
+    if (!chatId) continue; // no chat to target → can't reply
+    let g = byChat.get(chatId);
+    if (!g) { g = { subjects: [], seen: new Set(), replyTos: [] }; byChat.set(chatId, g); }
     if (!g.seen.has(p.subject)) { g.seen.add(p.subject); g.subjects.push(p.subject); }
-    g.msgIds.push(String(msgId));
+    if (replyTo) g.replyTos.push(replyTo);
   }
   const digests = [];
   for (const [chatId, g] of byChat) {
-    digests.push({ chat_id: chatId, reply_to: pickReplyTo(g.msgIds), text: renderDigestText(g.subjects) });
+    digests.push({ chat_id: chatId, reply_to: pickReplyTo(g.replyTos), text: renderDigestText(g.subjects) });
   }
   return digests;
 }
