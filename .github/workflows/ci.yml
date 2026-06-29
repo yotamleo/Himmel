@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  # Post-merge verification (HIMMEL-511): re-run the cheap ubuntu gates when code
+  # lands on main, catching anything that reached main outside the PR path. The
+  # shell-unit matrix stays ubuntu-only on `push` (the paid windows/macOS legs are
+  # schedule-only), so this adds no multi-OS cost.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       force_all_os:
@@ -63,6 +69,74 @@ jobs:
       # lockfile is never regenerated (HIMMEL-553). Install-only: test coverage for
       # luna-correlate is out of scope for this guard.
       - run: cd marketplace/plugins/luna-correlate && bun install --frozen-lockfile
+
+  # Security / dependency scanning lane (HIMMEL-510): mirrors the local
+  # pre-commit/pre-push security gates (.pre-commit-config.yaml) by invoking the
+  # SAME scripts/hooks/* gate scripts, so CI and the author-time hooks stay in
+  # lockstep — a vuln/license/lockfile/secret problem that blocks a local push
+  # also blocks the PR. Secret-free + ubuntu-only; the only network reached is
+  # public (GitHub releases for the gitleaks binary, the npm registry for audit/
+  # license/signature checks). Deferred to a follow-up: bandit (python SAST —
+  # needs a baseline #nosec triage of pre-existing VM/SSH tooling before it can
+  # gate green) and better-npm-audit (redundant with the npm-audit gate below).
+  security-scan:
+    runs-on: ubuntu-latest
+    # This job does the most network I/O in the workflow (gitleaks download +
+    # `npm ci` across ~9 packages); cap it so a hung download/install can't
+    # burn a full 6h runner slot (codex-3 CR hardening).
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+
+      # gitleaks: pinned to the SAME version as the pre-commit hook
+      # (.pre-commit-config.yaml → gitleaks rev v8.21.2) and reuses .gitleaks.toml,
+      # so a secret the local hook catches is caught here too. `dir` scans the
+      # checked-out working tree; gitleaks exits non-zero when a leak is found.
+      - name: gitleaks secret scan (reuses .gitleaks.toml)
+        run: |
+          ver=8.21.2
+          # Pin the exact release bytes: verify the published SHA256 before
+          # extracting/executing, so a tampered or MITM'd download cannot run
+          # (it would be silly for the SECURITY lane to run an unverified
+          # scanner binary). Update `sha` in lockstep with `ver`.
+          sha=5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          echo "${sha}  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks dir . --config .gitleaks.toml --redact --no-banner
+
+      # Lockfile integrity (npm + bun) — pre-commit `lockfile-integrity`.
+      # npm path is `npm ci --dry-run` (no install needed); bun path is
+      # `bun install --frozen-lockfile --dry-run` (setup-bun above provides bun).
+      - name: lockfile integrity (npm + bun)
+        run: bash scripts/hooks/check-lockfile-integrity.sh
+
+      # uv lock integrity (python) — pre-commit `uv-lock-integrity`. No
+      # pyproject.toml in the tree today, so this self-skips (kept for lockstep:
+      # the day a python project lands, CI gates its uv.lock with no further edit).
+      - name: uv lock integrity (python)
+        run: bash scripts/hooks/check-uv-lock.sh
+
+      # npm audit (production, high+) — pre-push `npm-audit`. Self-installs prod
+      # deps (`npm ci --omit=dev --ignore-scripts`) for every committed
+      # package.json, leaving node_modules in place for the signatures step below.
+      - name: npm audit (production, high+)
+        run: bash scripts/hooks/check-npm-audit.sh
+
+      # npm license allowlist — pre-push `npm-licenses`.
+      - name: npm license allowlist
+        run: bash scripts/hooks/check-npm-licenses.sh
+
+      # npm audit signatures (production) — pre-push `npm-audit-signatures`. This
+      # gate does NOT self-install; it relies on the node_modules the npm-audit
+      # step above materialized for the scripts/{jira,bitbucket,himmel-run}
+      # packages, so it MUST run after that step.
+      - name: npm audit signatures (production)
+        run: bash scripts/hooks/check-npm-audit-signatures.sh
 
   # Multi-OS, gated to the nightly to stay free-tier-cheap: a plain
   # workflow_dispatch (and any non-schedule event) runs ubuntu only; `schedule`
