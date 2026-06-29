@@ -370,13 +370,13 @@ step "Patch ~/.claude/settings.json"
             }])
       }
       # HIMMEL-264: resolve <himmel-path> placeholders the template carries
-      # (the PreToolUse rtk-hook-guard entry) so a freshly written
-      # settings.json never holds a dangling <himmel-path>. Scope note:
-      # ONLY <himmel-path> here — the caveman <node-path>/<claude-dir>
-      # placeholders are rewritten to the runtime node wrapper
-      # (scripts/lib/run-node.sh) by wire-caveman-node.sh below, so a GUI-launched
-      # macOS/Linux session resolves node at hook time instead of failing on a
-      # PATH-less launch / a moved node (the /himmel-doctor node-resolver fix).
+      # (the PreToolUse rtk-hook-guard entry + the caveman run-node.sh wrapper
+      # commands, HIMMEL-614) so a freshly written settings.json never holds a
+      # dangling <himmel-path>. The caveman commands ship in the runtime-wrapper
+      # form (no <node-path> to dangle); wire-caveman-node.sh below resolves the
+      # remaining <claude-dir> and normalizes them, so a GUI-launched macOS/Linux
+      # session resolves node at hook time instead of failing on a PATH-less
+      # launch / a moved node (the /himmel-doctor node-resolver fix).
       | walk(if type == "string" then gsub("<himmel-path>"; $hp) else . end)' \
       "$TEMPLATE")
 

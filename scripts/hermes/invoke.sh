@@ -117,18 +117,15 @@ else
     prompt_file="$tmp_prompt"
 fi
 
-# Resolve the hermes interpreter. HERMES_PY overrides (tests stub through it).
-py="${HERMES_PY:-}"
-if [ -z "$py" ]; then
-    base="${LOCALAPPDATA:-$HOME/AppData/Local}/hermes/hermes-agent/venv/Scripts/python.exe"
-    if [ -x "$base" ]; then
-        py="$base"
-    else
-        # POSIX venv layout fallback
-        alt="${LOCALAPPDATA:-$HOME/AppData/Local}/hermes/hermes-agent/venv/bin/python"
-        [ -x "$alt" ] && py="$alt"
-    fi
-fi
+# Resolve the hermes interpreter at RUNTIME via the shared resolver (HIMMEL-613):
+# HERMES_PY overrides (tests stub through it) ONLY when it still points at an
+# executable, else probe the venv — a moved/rebuilt venv re-resolves instead of
+# breaking on a stale path.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/resolve-hermes-py.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/resolve-hermes-py.sh"
+py="$(resolve_hermes_py)" || py=""
 if [ -z "$py" ]; then
     echo "invoke.sh: hermes interpreter not found (set HERMES_PY or install hermes)" >&2
     exit 3

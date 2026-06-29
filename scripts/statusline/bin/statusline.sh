@@ -58,18 +58,18 @@ format_epoch_time() {
     local result=""
     case "$style" in
         time)
-            result=$(date -j -r "$epoch" +"%l:%M%p" 2>/dev/null)
-            [ -z "$result" ] && result=$(date -d "@$epoch" +"%l:%M%P" 2>/dev/null)
+            result=$(LC_ALL=C date -j -r "$epoch" +"%l:%M%p" 2>/dev/null)
+            [ -z "$result" ] && result=$(LC_ALL=C date -d "@$epoch" +"%l:%M%P" 2>/dev/null)
             result=$(echo "$result" | sed 's/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
             ;;
         datetime)
-            result=$(date -j -r "$epoch" +"%b %-d, %l:%M%p" 2>/dev/null)
-            [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d, %l:%M%P" 2>/dev/null)
+            result=$(LC_ALL=C date -j -r "$epoch" +"%b %-d, %l:%M%p" 2>/dev/null)
+            [ -z "$result" ] && result=$(LC_ALL=C date -d "@$epoch" +"%b %-d, %l:%M%P" 2>/dev/null)
             result=$(echo "$result" | sed 's/  / /g; s/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
             ;;
         *)
-            result=$(date -j -r "$epoch" +"%b %-d" 2>/dev/null)
-            [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d" 2>/dev/null)
+            result=$(LC_ALL=C date -j -r "$epoch" +"%b %-d" 2>/dev/null)
+            [ -z "$result" ] && result=$(LC_ALL=C date -d "@$epoch" +"%b %-d" 2>/dev/null)
             result=$(echo "$result" | tr '[:upper:]' '[:lower:]')
             ;;
     esac
@@ -421,9 +421,9 @@ if [ "$extra_enabled" = "true" ] && [ -n "$usage_data" ]; then
     extra_bar=$(build_bar "$extra_pct" "$bar_width")
     extra_pct_color=$(color_for_pct "$extra_pct")
 
-    extra_reset=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    extra_reset=$(LC_ALL=C date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
     if [ -z "$extra_reset" ]; then
-        extra_reset=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+        extra_reset=$(LC_ALL=C date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
     fi
 
     [ -n "$rate_lines" ] && rate_lines+="\n"

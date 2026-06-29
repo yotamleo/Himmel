@@ -66,6 +66,22 @@ EOF
     chmod +x "$1/gh"
 }
 
+echo "== STATIC: shipped settings-template.json carries no dangling <node-path> (HIMMEL-614) =="
+# A literal copy of the template must not leave a dangling <node-path> that C1
+# flags as fail-dangling. The caveman hooks ship in the run-node.sh wrapper form.
+_tmpl="$REPO_ROOT/docs/setup/settings-template.json"
+_cav_cmds="$(jq -r '[.hooks.UserPromptSubmit[]?.hooks[]?, .hooks.SessionStart[]?.hooks[]?]
+    | map(.command // "") | map(select(test("caveman-(activate|mode-tracker)\\.js"))) | .[]' "$_tmpl")"
+if printf '%s' "$_cav_cmds" | grep -q '<node-path>'; then
+    fail "template caveman cmd still carries <node-path>"
+elif [ -z "$_cav_cmds" ]; then
+    fail "template has no caveman hook commands to check"
+elif printf '%s' "$_cav_cmds" | grep -q 'run-node.sh'; then
+    pass "template caveman cmds are wrapper-form (no <node-path>)"
+else
+    fail "template caveman cmds are neither wrapper-form nor dangling: $_cav_cmds"
+fi
+
 echo "== clean (wrapper-form, node resolvable) -> exit 0, C1 OK =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$WRAPPER"
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?

@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"<node-path>\" \"<claude-dir>/hooks/caveman-mode-tracker.js\"",
+            "command": "bash \"<himmel-path>/scripts/lib/run-node.sh\" \"<claude-dir>/hooks/caveman-mode-tracker.js\"",
             "timeout": 5,
             "statusMessage": "Tracking caveman mode..."
           }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"<node-path>\" \"<claude-dir>/hooks/caveman-activate.js\"",
+            "command": "bash \"<himmel-path>/scripts/lib/run-node.sh\" \"<claude-dir>/hooks/caveman-activate.js\"",
             "timeout": 5,
             "statusMessage": "Loading caveman mode..."
           },

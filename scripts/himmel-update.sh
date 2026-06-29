@@ -20,6 +20,9 @@ cd "$ROOT"
 # shellcheck source=lib/cadence-format.sh
 # shellcheck disable=SC1091
 . "$ROOT/scripts/lib/cadence-format.sh"
+# shellcheck source=lib/resolve-hermes-py.sh
+# shellcheck disable=SC1091
+. "$ROOT/scripts/lib/resolve-hermes-py.sh"
 
 # ─── plugin install-state gap report (HIMMEL-434) ────────────────────────────
 # Advisory: `marketplace update` only re-syncs plugins that are ALREADY
@@ -161,12 +164,11 @@ update_hermes() {
         echo "    warn: hermes git pull was not fast-forward (local edits / diverged?) — resolve in $src." >&2
         return 0
     fi
-    local py="${HERMES_PY:-}"
-    if [ -z "$py" ]; then
-        if   [ -x "$src/venv/Scripts/python.exe" ]; then py="$src/venv/Scripts/python.exe"
-        elif [ -x "$src/venv/bin/python" ];        then py="$src/venv/bin/python"
-        fi
-    fi
+    # Resolve the venv python at RUNTIME (HIMMEL-613): HERMES_PY wins only when
+    # it still points at an executable, else probe $src/venv — a moved/rebuilt
+    # venv (or a stale HERMES_PY) re-resolves instead of breaking the refresh.
+    local py
+    py="$(resolve_hermes_py "$src")" || py=""
     if [ -n "$py" ] && [ -x "$py" ]; then
         # uv-created venvs ship WITHOUT pip (uv venv default), so a plain
         # `$py -m pip install` fails with "No module named pip". Bootstrap pip
