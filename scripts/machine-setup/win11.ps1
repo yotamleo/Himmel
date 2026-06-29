@@ -278,8 +278,7 @@ Invoke-NonFatal "Luna vault setup" {
 
 Write-Step "Patch ~/.claude/settings.json"
 Invoke-NonFatal "patch settings.json" {
-    $NodePath = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
-    if (-not $NodePath) { $NodePath = "C:\Program Files\nodejs\node.exe" }
+    $himmelFwd = $HimmelPath.Replace('\', '/')
 
     $SettingsFile = "$ClaudeDir\settings.json"
     $TemplatePath = "$HimmelPath\docs\setup\settings-template.json"
@@ -314,12 +313,17 @@ Invoke-NonFatal "patch settings.json" {
         throw "settings-template.json missing .hooks.SessionStart[0].hooks (expected array) — refusing to patch (would clobber existing entries)"
     }
 
+    # Route the caveman node hooks through the runtime wrapper (resolve node at
+    # hook time via scripts/lib/run-node.sh, not setup time) — the template
+    # carries the wrapper form so a raw copy never dangles a <node-path>
+    # placeholder (HIMMEL-614). Substitute the <himmel-path>/<claude-dir>
+    # placeholders the wrapper command carries.
     $ups = $Template.hooks.UserPromptSubmit[0].hooks[0].command
     $ss  = $Template.hooks.SessionStart[0].hooks[0].command
     $Template.hooks.UserPromptSubmit[0].hooks[0].command = `
-        $ups -replace '<node-path>', $NodePath -replace '<claude-dir>', $ClaudeDir
+        $ups -replace '<himmel-path>', $himmelFwd -replace '<claude-dir>', $ClaudeDir
     $Template.hooks.SessionStart[0].hooks[0].command = `
-        $ss  -replace '<node-path>', $NodePath -replace '<claude-dir>', $ClaudeDir
+        $ss  -replace '<himmel-path>', $himmelFwd -replace '<claude-dir>', $ClaudeDir
 
     # HIMMEL-105: append the check-hookspath.ps1 SessionStart entry. Only
     # the pwsh entry is registered on Windows — the bash sibling would
@@ -327,7 +331,6 @@ Invoke-NonFatal "patch settings.json" {
     # without Git Bash on PATH, logging a confusing warning. The Linux
     # path adds the bash entry via ubuntu.sh; the cross-platform template
     # carries neither so each setup script can register the right one.
-    $himmelFwd = $HimmelPath.Replace('\', '/')
     $psHookspathEntry = [PSCustomObject]@{
         type    = 'command'
         command = "pwsh -NoProfile -File `"$himmelFwd/scripts/hooks/check-hookspath.ps1`""
