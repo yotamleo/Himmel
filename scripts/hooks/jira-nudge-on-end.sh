@@ -28,11 +28,12 @@
 # This hook runs under bash on every platform (no .ps1 twin), so do NOT add a
 # msys/cygwin guard — that would silence the nudge on Windows/Git-Bash.
 
-# Error isolation: do NOT use `set -e`/`pipefail` + an ERR trap — the sourced
-# parse_session_transcript() returns non-zero on a content-free transcript (its
-# last `&&` short-circuits), which an ERR trap would mistake for a fatal error.
-# Instead run with set +e and force a clean exit via the EXIT trap (a SessionEnd
-# advisory hook must NEVER block teardown, regardless of how it got here).
+# Error isolation: do NOT use `set -e`/`pipefail` + an ERR trap — the many
+# best-effort probes below (jq pipelines, `git log`, the `|| exit 0`
+# short-circuits) routinely return non-zero on a content-free transcript or a
+# missing tool, which an ERR trap would mistake for a fatal error. Instead run
+# with set +e and force a clean exit via the EXIT trap (a SessionEnd advisory
+# hook must NEVER block teardown, regardless of how it got here).
 set +e
 set -u 2>/dev/null || true
 trap 'exit 0' EXIT
@@ -89,9 +90,17 @@ if [ -r "$HOOK_LIB/initiative-legs.sh" ]; then
 fi
 
 # --- Session-start epoch from the transcript's first timestamp --------------
-# shellcheck source=/dev/null
-. "$HOOK_LIB/session-transcript.sh"
-parse_session_transcript "$TRANSCRIPT_PATH"
+# Only the FIRST timestamp is needed. Extract it directly rather than via
+# parse_session_transcript(), which runs FOUR full-file jq scans
+# (FIRST_TS/LAST_TS/LAST_ASSISTANT/COMMANDS) — three of which this hook never
+# uses. On a long transcript those synchronous scans are what race Claude Code's
+# SessionEnd teardown ("Hook cancelled"); the single-scan path keeps detection
+# cheap so the nudge stays SYNCHRONOUS (its stdout/transcript surface survives)
+# without a full-body detach. HIMMEL-636.
+FIRST_TS=""
+if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
+    FIRST_TS="$(jq -r 'select(.timestamp) | .timestamp' "$TRANSCRIPT_PATH" 2>/dev/null | head -n1)"
+fi
 [ -n "${FIRST_TS:-}" ] || exit 0
 START_EPOCH="$(date -u -d "$FIRST_TS" +%s 2>/dev/null || echo "")"
 if [ -z "$START_EPOCH" ]; then

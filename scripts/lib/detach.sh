@@ -25,6 +25,13 @@
 #      hanging; stdout/stderr to /dev/null so the child never holds the hook's
 #      output pipe open.
 #
+# CONSTRAINT (HIMMEL-636): detached SessionEnd work must be self-contained host
+# tooling (node/git/curl). It must NOT depend on headless `claude` print/--bg
+# modes — those bill to a separate, volatile bucket (HIMMEL-128) and a detached
+# failure is silent. If a SessionEnd step ever needs an LLM (e.g. the HIMMEL-576
+# crystallizer), migrate it to an ARMED-session model (a scheduled INTERACTIVE
+# `claude` via the arm-resume scheduler), not a fire-and-forget child here.
+#
 # bash 3.2-safe (`disown` is a 3.2 builtin; it is guarded so a non-bash sh that
 # happens to source this still degrades to a plain background job).
 # DETACH_NO_SETSID=1 forces the no-setsid fallback even where setsid exists — a

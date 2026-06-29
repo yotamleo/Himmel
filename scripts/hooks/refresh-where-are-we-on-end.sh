@@ -27,14 +27,42 @@
 # Test seams (used only by test-refresh-where-are-we-on-end.sh):
 #   WHERE_ARE_WE_STATE_DIR            override the state dir (default $root/.where-are-we)
 #   HIMMEL_WHERE_ARE_WE_COLLECT_CMD   override the refresh command (default node collect.mjs)
+#   HIMMEL_WHERE_ARE_WE_TEST_DELAY    sleep N seconds at the START of the detached
+#                                     child body. Proves the full-body detach keeps
+#                                     the PARENT fast: a regression that un-detaches
+#                                     the body would make this delay block teardown,
+#                                     failing the fast-return assertion (Case 5).
 
 set -euo pipefail
 
 # Always exit clean; never block session teardown on our own bug.
 trap 'exit 0' ERR
 
-# Drain stdin (SessionEnd pipes a JSON payload) so the contract doesn't break.
-if [ -t 0 ]; then :; else cat >/dev/null 2>&1 || true; fi
+# --- Full-body detach (HIMMEL-636) ------------------------------------------
+# Re-exec ourselves DETACHED and return 0 instantly so the synchronous preamble
+# below (git rev-parse, .env load, node resolution) runs in the detached child
+# and can never race Claude Code's SessionEnd teardown timer — the residual
+# "Hook cancelled" that HIMMEL-623/635 left behind by detaching only the collect
+# sub-step while the preamble still ran in the foreground. The child writes only
+# files (ledger + freshness marker), so deferring it loses no operator-visible
+# surface; HIMMEL-576 proved such a child survives the hook's process-group
+# teardown.
+if [ "${1:-}" != "__himmel_detached" ]; then
+    # Drain stdin (SessionEnd pipes a JSON payload) so the contract doesn't break.
+    if [ -t 0 ]; then :; else cat >/dev/null 2>&1 || true; fi
+    # shellcheck source=/dev/null
+    . "$(dirname "${BASH_SOURCE[0]}")/../lib/detach.sh"
+    detach_run bash "$0" __himmel_detached
+    exit 0
+fi
+
+# === Detached child: the real refresh (parent already returned 0) ===========
+
+# Test-only preamble-latency seam (see header). if-guarded, not `&& sleep`, so an
+# unset value can't trip `set -e` + the ERR trap into a premature exit 0.
+if [ -n "${HIMMEL_WHERE_ARE_WE_TEST_DELAY:-}" ]; then
+    sleep "$HIMMEL_WHERE_ARE_WE_TEST_DELAY"
+fi
 
 # --- Resolve the himmel root (never trust CWD) ------------------------------
 _wa_root="${HIMMEL_REPO:-}"
