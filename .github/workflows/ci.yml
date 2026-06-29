@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  # PR gating (HIMMEL-594): the cheap ubuntu-only jobs run on every PR so a
+  # non-conventional commit, a secret, a shellcheck warning, or a failing shell
+  # suite blocks merge. The EXPENSIVE multi-OS matrix stays nightly-only — the
+  # shell-unit matrix below expands to windows+macOS only on `schedule`
+  # (or a dispatch with force_all_os), so a PR never triggers the paid legs.
+  pull_request:
   # Post-merge verification (HIMMEL-511): re-run the cheap ubuntu gates when code
   # lands on main, catching anything that reached main outside the PR path. The
   # shell-unit matrix stays ubuntu-only on `push` (the paid windows/macOS legs are
@@ -25,6 +31,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/check-no-secrets.sh
+
+  # Commit-message governance (HIMMEL-594): every commit in the PR range must be
+  # conventional + (if a HIMMEL- ticket is present) well-formed. Reuses the local
+  # commit-msg gate (scripts/hooks/check-commit-msg.sh) over the range so CI and
+  # the author-time hook agree. fetch-depth: 0 → full history for the range walk.
+  commit-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Lint commit messages in the PR range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            bash scripts/ci/check-commit-range.sh "${{ github.event.pull_request.base.sha }}"
+          else
+            bash scripts/ci/check-commit-range.sh
+          fi
 
   lint:
     runs-on: ubuntu-latest

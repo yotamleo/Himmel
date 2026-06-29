@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git init:*)"
+    ],
+    "deny": [
+      "WebSearch",
+      "WebFetch",
+      "Bash(git push:*)",
+      "Bash(git remote add:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(curl:*)",
+      "Bash(curl.exe:*)",
+      "Bash(wget:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          { "type": "command", "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/block-cloud-egress.sh" }
+        ]
+      }
+    ]
+  }
+}
