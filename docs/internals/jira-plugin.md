@@ -105,3 +105,22 @@ works only if that token covers Confluence too).
 
 The verb↔MCP-method rows above mirror `_CONFLUENCE_VERB_METHOD_MAP` in
 `block-backend-tier.sh` — keep them in sync.
+
+## Mutation breadcrumbs (HIMMEL-618)
+
+Every ticket-workflow mutating verb (`transition`, `comment`, `create`, `move`,
+`edit`, `assign`, `worklog`, `link`, `sprint`) writes a breadcrumb file under
+`~/.claude/jira-breadcrumbs/` immediately after its request **resolves** — not
+gated on the command's exit code, so a mutation that landed before a later
+non-fatal failure (e.g. an attachment upload) still leaves a breadcrumb.
+
+The file is keyed by **repo + branch**, not session id: the standalone CLI
+process (spawned via the Bash tool) never receives the Claude `session_id`, so
+the writer (`scripts/jira/src/breadcrumb.ts`) and the SessionEnd hook reader
+(`scripts/lib/jira-breadcrumb.sh` ← `scripts/hooks/jira-nudge-on-end.sh`) agree
+on a `repo-key` (basename of `git remote get-url origin`, `.git` stripped —
+stable across worktrees) and let the hook match on `epoch >= session-start`.
+The path + token sanitization (`[^A-Za-z0-9._-]` → `-`) MUST stay byte-identical
+between the TS writer and the bash reader. The nudge hook consumes these to
+decide whether a ticket-scoped session already synced Jira (advisory, default
+OFF).

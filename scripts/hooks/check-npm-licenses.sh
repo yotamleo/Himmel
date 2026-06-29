@@ -30,6 +30,19 @@ fi
 fail=0
 for pkg in "${pkgs[@]}"; do
     dir=$(dirname "$pkg")
+    # HIMMEL-523: skip bun-managed packages. A package with a bun lockfile
+    # (bun.lock / bun.lockb) and NO package-lock.json is bun-managed (e.g.
+    # scripts/luna-vitals — only a @types/bun devDep). For such a package
+    # `npm install --omit=dev` installs nothing and `license-checker --production`
+    # then errors "No packages found in this path", failing this always-run gate
+    # on EVERY push (forcing SKIP=npm-licenses, which disables the check for ALL
+    # packages). bun packages carry no npm production deps to license-check here
+    # and are covered by the bun-suites CI; skip them. A package that ALSO has a
+    # package-lock.json is treated as npm-managed (not skipped).
+    if { [ -f "$dir/bun.lock" ] || [ -f "$dir/bun.lockb" ]; } && [ ! -f "$dir/package-lock.json" ]; then
+        echo "→ license-checker: $dir is bun-managed (bun lockfile, no package-lock.json) — skipping npm license check (bun deps covered by bun-suites)"
+        continue
+    fi
     # Self-install prod deps when node_modules is missing (e.g. fresh worktree).
     # --ignore-scripts is critical: never execute third-party postinstall scripts in a pre-push gate.
     if [ ! -d "$dir/node_modules" ]; then

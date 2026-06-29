@@ -15,6 +15,8 @@
 # Usage: bash scripts/hooks/test-check-npm-licenses.sh
 set -uo pipefail
 
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-npm-licenses.sh"
+
 FAILED=0
 
 assert_eq() {
@@ -110,6 +112,32 @@ if printf '%s\n' "$new_out" | grep -q 'node_modules'; then
 else
     echo "PASS node_modules package.json excluded from enumeration"
 fi
+
+# Case 5: HIMMEL-523 — a bun-managed package (bun.lock, no package-lock.json) is
+# SKIPPED by the gate, so a repo whose only package is bun-managed passes (rc 0)
+# instead of erroring "No packages found in this path". Runs the REAL script
+# against a throwaway repo; the skip happens before any npm/npx call (no network).
+BUN_REPO=$(mktemp -d)
+(
+    cd "$BUN_REPO" || exit 1
+    git init -q -b main
+    git config user.email t@t
+    git config user.name t
+    mkdir -p scripts/luna-vitals
+    echo '{"name":"luna-vitals","devDependencies":{"@types/bun":"latest"}}' > scripts/luna-vitals/package.json
+    : > scripts/luna-vitals/bun.lock   # bun lockfile, no package-lock.json
+    git add -A
+    git -c commit.gpgsign=false commit -q -m "bun-only package"
+)
+bun_out=$( cd "$BUN_REPO" && bash "$SCRIPT" 2>&1 ); bun_rc=$?
+if [ "$bun_rc" -eq 0 ] && printf '%s' "$bun_out" | grep -qi "bun-managed"; then
+    echo "PASS bun-managed package skipped — gate passes (rc 0), no 'No packages found'"
+else
+    echo "FAIL bun-managed skip: rc=$bun_rc"
+    echo "     out: $bun_out"
+    FAILED=$((FAILED + 1))
+fi
+rm -rf "$BUN_REPO"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
