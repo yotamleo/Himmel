@@ -127,7 +127,7 @@ different source. **Periodically distil the auto-memory into the vault:**
    reusable gotcha or decision — as distinct from ephemeral status (PR numbers,
    "merged", ticket state, dates). Status is already recoverable from your issue
    tracker, git history, and the session captures in `sessions/`.
-2. **Land** that learning in a vault reference note under `30-Resources/`
+2. **Land** that learning in a vault reference note under `30-Resources/Tech/`
    (grouped by theme — environment traps, harness gotchas, operator
    conventions, …) so it becomes [qmd](../tooling-catalog.md)-searchable
    substrate rather than always-loaded weight.
