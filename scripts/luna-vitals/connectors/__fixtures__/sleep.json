@@ -1,0 +1,162 @@
+{
+  "dataPoints": [
+    {
+      "name": "users/REDACTED/dataTypes/sleep/dataPoints/1",
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "sleep": {
+        "interval": {
+          "startTime": "2026-06-28T01:24:00Z",
+          "startUtcOffset": "7200s",
+          "endTime": "2026-06-28T09:55:00Z",
+          "endUtcOffset": "7200s"
+        },
+        "type": "STAGES",
+        "stages": [
+          {
+            "startTime": "2026-06-28T01:24:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T01:44:00Z",
+            "endUtcOffset": "7200s",
+            "type": "AWAKE"
+          },
+          {
+            "startTime": "2026-06-28T01:44:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T03:10:00Z",
+            "endUtcOffset": "7200s",
+            "type": "LIGHT"
+          },
+          {
+            "startTime": "2026-06-28T03:10:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T04:05:00Z",
+            "endUtcOffset": "7200s",
+            "type": "DEEP"
+          },
+          {
+            "startTime": "2026-06-28T04:05:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T04:55:00Z",
+            "endUtcOffset": "7200s",
+            "type": "REM"
+          },
+          {
+            "startTime": "2026-06-28T04:55:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T06:30:00Z",
+            "endUtcOffset": "7200s",
+            "type": "LIGHT"
+          },
+          {
+            "startTime": "2026-06-28T06:30:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T07:15:00Z",
+            "endUtcOffset": "7200s",
+            "type": "DEEP"
+          },
+          {
+            "startTime": "2026-06-28T07:15:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T08:10:00Z",
+            "endUtcOffset": "7200s",
+            "type": "REM"
+          },
+          {
+            "startTime": "2026-06-28T08:10:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T09:55:00Z",
+            "endUtcOffset": "7200s",
+            "type": "LIGHT"
+          }
+        ]
+      }
+    },
+    {
+      "name": "users/REDACTED/dataTypes/sleep/dataPoints/2",
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "sleep": {
+        "interval": {
+          "startTime": "2026-06-28T14:00:00Z",
+          "startUtcOffset": "7200s",
+          "endTime": "2026-06-28T14:40:00Z",
+          "endUtcOffset": "7200s"
+        },
+        "type": "STAGES",
+        "stages": [
+          {
+            "startTime": "2026-06-28T14:00:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-28T14:40:00Z",
+            "endUtcOffset": "7200s",
+            "type": "LIGHT"
+          }
+        ]
+      }
+    },
+    {
+      "name": "users/REDACTED/dataTypes/sleep/dataPoints/3",
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "sleep": {
+        "interval": {
+          "startTime": "2026-06-26T22:30:00Z",
+          "startUtcOffset": "7200s",
+          "endTime": "2026-06-27T05:30:00Z",
+          "endUtcOffset": "7200s"
+        },
+        "type": "STAGES",
+        "stages": [
+          {
+            "startTime": "2026-06-26T22:30:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-27T00:00:00Z",
+            "endUtcOffset": "7200s",
+            "type": "LIGHT"
+          },
+          {
+            "startTime": "2026-06-27T00:00:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-27T01:20:00Z",
+            "endUtcOffset": "7200s",
+            "type": "DEEP"
+          },
+          {
+            "startTime": "2026-06-27T01:20:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-27T02:15:00Z",
+            "endUtcOffset": "7200s",
+            "type": "REM"
+          },
+          {
+            "startTime": "2026-06-27T02:15:00Z",
+            "startUtcOffset": "7200s",
+            "endTime": "2026-06-27T05:30:00Z",
+            "endUtcOffset": "7200s",
+            "type": "LIGHT"
+          }
+        ]
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

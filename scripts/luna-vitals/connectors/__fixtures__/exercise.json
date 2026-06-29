@@ -1,0 +1,23 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "exercise": {
+        "interval": {
+          "startTime": "2026-06-28T17:00:00Z",
+          "startUtcOffset": "7200s",
+          "endTime": "2026-06-28T17:30:00Z",
+          "endUtcOffset": "7200s"
+        }
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

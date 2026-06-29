@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { agileRequest, boardId } from '../client.js';
+import { writeJiraBreadcrumb } from '../breadcrumb.js';
 
 export function resolveBoard(optBoard?: string): string {
   const b = optBoard ?? boardId();
@@ -35,9 +36,11 @@ export function registerSprint(program: Command): void {
       const t = sprintTarget(target);
       if (t.backlog) {
         await agileRequest('POST', '/backlog/issue', { issues: [key] });
+        writeJiraBreadcrumb(key);
         console.log(`${key} moved to backlog`);
       } else {
         await agileRequest('POST', `/sprint/${t.sprintId}/issue`, { issues: [key] });
+        writeJiraBreadcrumb(key);
         console.log(`${key} moved to sprint ${t.sprintId}`);
       }
     });

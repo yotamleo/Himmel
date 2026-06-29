@@ -8,6 +8,14 @@ if [ -z "$input" ]; then
     exit 0
 fi
 
+# Everything below parses the stdin JSON with jq. Without jq the bar would
+# render near-blank (every extraction silently yields empty). Degrade VISIBLY
+# instead of silently so a missing dependency is obvious. (HIMMEL-612)
+if ! command -v jq >/dev/null 2>&1; then
+    printf 'Claude \033[38;2;255;176;85m⚠ statusline degraded: jq not found\033[0m'
+    exit 0
+fi
+
 # ── Colors ──────────────────────────────────────────────
 blue='\033[38;2;0;153;255m'
 orange='\033[38;2;255;176;85m'
@@ -138,17 +146,42 @@ cache_breadcrumb() {
 }
 
 # ── Extract JSON data ───────────────────────────────────
-model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
-model_id=$(echo "$input" | jq -r '.model.id // "claude-sonnet"')
-transcript_path=$(echo "$input" | jq -r '.transcript_path // ""')
-session_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // ""')
+# Pull EVERY stdin field in ONE jq pass (was ~14 separate `echo|jq` pipes).
+# On Windows/MSYS each process spawn costs ~1-2s, so collapsing the per-render
+# fork storm here is the dominant render-latency win (HIMMEL-612). Fields are
+# joined with US (\x1f, unit separator): a NON-whitespace delimiter so `read`
+# preserves empty fields (a whitespace IFS like tab coalesces runs of the
+# delimiter, which would shift every field after an empty one). \x1f never
+# occurs in the JSON values; all fields carry a default so no null reaches it.
+US=$'\037'
+IFS="$US" read -r model_name model_id transcript_path session_cost \
+    size input_tokens cache_create cache_read cwd session_start \
+    b_five_pct b_five_reset b_seven_pct b_seven_reset <<EOF
+$(printf '%s' "$input" | jq -r --arg sep "$US" '
+    [ (.model.display_name // "Claude"),
+      (.model.id // "claude-sonnet"),
+      (.transcript_path // ""),
+      (.cost.total_cost_usd // ""),
+      (.context_window.context_window_size // 200000),
+      (.context_window.current_usage.input_tokens // 0),
+      (.context_window.current_usage.cache_creation_input_tokens // 0),
+      (.context_window.current_usage.cache_read_input_tokens // 0),
+      (.cwd // ""),
+      (.session.start_time // ""),
+      (.rate_limits.five_hour.used_percentage // ""),
+      (.rate_limits.five_hour.resets_at // ""),
+      (.rate_limits.seven_day.used_percentage // ""),
+      (.rate_limits.seven_day.resets_at // "")
+    ] | map(tostring) | join($sep)' 2>/dev/null)
+EOF
 
-size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
+[ -n "$model_name" ] || model_name="Claude"
+[ -n "$model_id" ] || model_id="claude-sonnet"
+[ -n "$size" ] || size=200000
 [ "$size" -eq 0 ] 2>/dev/null && size=200000
-
-input_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
-cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
-cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
+[ -n "$input_tokens" ] || input_tokens=0
+[ -n "$cache_create" ] || cache_create=0
+[ -n "$cache_read" ] || cache_read=0
 current=$(( input_tokens + cache_create + cache_read ))
 
 if [ "$size" -gt 0 ]; then
@@ -165,7 +198,7 @@ fi
 
 # ── LINE 1: Model │ Context % │ Directory (branch) │ Session │ Effort ──
 pct_color=$(color_for_pct "$pct_used")
-cwd=$(echo "$input" | jq -r '.cwd // ""')
+# cwd extracted in the batched jq read above.
 [ -z "$cwd" ] || [ "$cwd" = "null" ] && cwd=$(pwd)
 dirname=$(basename "$cwd")
 
@@ -179,7 +212,7 @@ if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 session_duration=""
-session_start=$(echo "$input" | jq -r '.session.start_time // empty')
+# session_start extracted in the batched jq read above.
 if [ -n "$session_start" ] && [ "$session_start" != "null" ]; then
     start_epoch=$(iso_to_epoch "$session_start")
     if [ -n "$start_epoch" ]; then
@@ -228,15 +261,16 @@ five_hour_reset_epoch=""
 seven_day_pct=""
 seven_day_reset_epoch=""
 
-stdin_five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+# Rate-limit fields come from the batched jq read above (b_* vars).
+stdin_five_pct="$b_five_pct"
 stdin_seven_pct=""
 if [ -n "$stdin_five_pct" ]; then
     has_stdin_rates=true
     five_hour_pct=$(printf "%.0f" "$stdin_five_pct")
-    five_hour_reset_epoch=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-    stdin_seven_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+    five_hour_reset_epoch="$b_five_reset"
+    stdin_seven_pct="$b_seven_pct"
     seven_day_pct=$(printf "%s" "$stdin_seven_pct" | awk '{printf "%.0f", $1}')
-    seven_day_reset_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+    seven_day_reset_epoch="$b_seven_reset"
 fi
 
 # ── Fallback: API call (cached) ────────────────────────
@@ -329,11 +363,15 @@ else
         usage_data=$(cat "$cache_file" 2>/dev/null)
         # Require an object, not just valid JSON — a bare string/number/array
         # would make the ($prev // {}) + {} merge below a type error on every
-        # render, freezing the cache permanently.
-        if [ -n "$usage_data" ] && echo "$usage_data" | jq -e 'type == "object"' >/dev/null 2>&1; then
-            extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
-        else
-            usage_data=""
+        # render, freezing the cache permanently. Object-check + is_enabled in
+        # ONE jq pass (was two echo|jq pipes; HIMMEL-612).
+        if [ -n "$usage_data" ]; then
+            extra_enabled=$(printf '%s' "$usage_data" \
+                | jq -r 'if type == "object" then (.extra_usage.is_enabled // false | tostring) else "__notobj__" end' 2>/dev/null)
+            if [ "$extra_enabled" = "__notobj__" ] || [ -z "$extra_enabled" ]; then
+                usage_data=""
+                extra_enabled="false"
+            fi
         fi
     fi
 
@@ -507,23 +545,82 @@ read_session_cache_stats() {
     sess_reads=0; sess_writes=0; sess_inputs=0; last_5m_iso=""; last_1h_iso=""
     [ -z "$transcript" ] || [ ! -f "$transcript" ] && return
 
-    local stats
-    stats=$(jq -s '{
-        reads:   ([.[] | select(.type == "assistant") | .message.usage.cache_read_input_tokens   // 0] | add // 0),
-        writes:  ([.[] | select(.type == "assistant") | .message.usage.cache_creation_input_tokens // 0] | add // 0),
-        inputs:  ([.[] | select(.type == "assistant") | .message.usage.input_tokens              // 0] | add // 0),
-        last_5m: ([.[] | select(.type == "assistant" and ((.message.usage.cache_creation.ephemeral_5m_input_tokens // 0) > 0))] | last | .timestamp // ""),
-        last_1h: ([.[] | select(.type == "assistant" and ((.message.usage.cache_creation.ephemeral_1h_input_tokens // 0) > 0))] | last | .timestamp // "")
-    }' "$transcript" 2>/dev/null) || return
+    # One jq pass joining on US \x1f (was a slurp + 5 echo|jq extractions;
+    # HIMMEL-612). US is non-whitespace so `read` preserves empty timestamp
+    # fields instead of coalescing them (a tab IFS would shift columns when
+    # last_5m is empty but last_1h is set).
+    local stats US=$'\037'
+    stats=$(jq -rs --arg sep "$US" '[
+        ([.[] | select(.type == "assistant") | .message.usage.cache_read_input_tokens   // 0] | add // 0),
+        ([.[] | select(.type == "assistant") | .message.usage.cache_creation_input_tokens // 0] | add // 0),
+        ([.[] | select(.type == "assistant") | .message.usage.input_tokens              // 0] | add // 0),
+        ([.[] | select(.type == "assistant" and ((.message.usage.cache_creation.ephemeral_5m_input_tokens // 0) > 0))] | last | .timestamp // ""),
+        ([.[] | select(.type == "assistant" and ((.message.usage.cache_creation.ephemeral_1h_input_tokens // 0) > 0))] | last | .timestamp // "")
+    ] | map(tostring) | join($sep)' "$transcript" 2>/dev/null) || return
+    [ -n "$stats" ] || return
 
-    sess_reads=$(echo  "$stats" | jq -r '.reads   // 0')
-    sess_writes=$(echo "$stats" | jq -r '.writes  // 0')
-    sess_inputs=$(echo "$stats" | jq -r '.inputs  // 0')
-    last_5m_iso=$(echo "$stats" | jq -r '.last_5m // ""')
-    last_1h_iso=$(echo "$stats" | jq -r '.last_1h // ""')
+    IFS="$US" read -r sess_reads sess_writes sess_inputs last_5m_iso last_1h_iso <<EOF
+$stats
+EOF
+    [ -n "$sess_reads" ]  || sess_reads=0
+    [ -n "$sess_writes" ] || sess_writes=0
+    [ -n "$sess_inputs" ] || sess_inputs=0
+}
+# Resolves the bottom cache-row aggregation window for a period. Sets, in the
+# CALLER's scope: window_id, window_start (inclusive epoch), window_end
+# (exclusive epoch).
+#   - all   → window_id "all-stats", unbounded. This keeps the legacy cache
+#             filenames (cache-all-stats{,-index}.json) byte-for-byte, so the
+#             default path and any external consumer are untouched.
+#   - week  → ISO Monday-start (local), 7-day span.
+#   - month → calendar month (local), 1st 00:00 to next 1st 00:00.
+#   - invalid → falls back to all + a one-line stderr warning.
+# `now` is overridable via HIMMEL_STATUSLINE_NOW (epoch) so a test can cross a
+# week/month boundary without faking the wall clock (the script otherwise has
+# no seam — it calls `date +%s` inline). The per-window filenames also give the
+# boundary reset for free: a new window_id is a new file → cache miss → rebuild.
+resolve_window() {
+    local period="$1"
+    local now="${HIMMEL_STATUSLINE_NOW:-$(date +%s)}"
+    case "$period" in
+        week)
+            local dow ymd midnight
+            dow=$(date -d "@$now" +%u 2>/dev/null || date -r "$now" +%u 2>/dev/null || echo 1)
+            ymd=$(date -d "@$now" +%Y-%m-%d 2>/dev/null || date -r "$now" +%Y-%m-%d 2>/dev/null)
+            midnight=$(date -d "$ymd 00:00:00" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$ymd 00:00:00" +%s 2>/dev/null)
+            window_start=$(( midnight - (dow - 1) * 86400 ))
+            window_end=$(( window_start + 7 * 86400 ))
+            window_id="week-$(date -d "@$window_start" +%Y%m%d 2>/dev/null || date -r "$window_start" +%Y%m%d 2>/dev/null)"
+            ;;
+        month)
+            local ym nextym
+            ym=$(date -d "@$now" +%Y-%m 2>/dev/null || date -r "$now" +%Y-%m 2>/dev/null)
+            window_start=$(date -d "$ym-01 00:00:00" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$ym-01 00:00:00" +%s 2>/dev/null)
+            # Resolve the NEXT month's label first, then re-parse a clean local
+            # midnight for the end — adding "+1 month" to a datetime can drift an
+            # hour on some date(1) builds, so we never use it as an epoch directly.
+            nextym=$(date -d "$ym-01 00:00:00 +1 month" +%Y-%m 2>/dev/null || date -j -v+1m -f "%Y-%m-%d %H:%M:%S" "$ym-01 00:00:00" +%Y-%m 2>/dev/null)
+            window_end=$(date -d "$nextym-01 00:00:00" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$nextym-01 00:00:00" +%s 2>/dev/null)
+            window_id="month-${ym/-/}"
+            ;;
+        all)
+            window_id="all-stats"; window_start=0; window_end=9999999999
+            ;;
+        *)
+            echo "statusline: invalid HIMMEL_STATUSLINE_PERIOD='$period'; falling back to all" >&2
+            window_id="all-stats"; window_start=0; window_end=9999999999
+            ;;
+    esac
 }
 # Rebuilds the all-sessions cache incrementally. Sets nothing; writes totals
 # to $2 (cache_file) and a per-file sums index to $3 (index_file), atomically.
+# Optional $4/$5 (win_start/win_end epochs) switch on WINDOWED mode: files whose
+# mtime predates win_start are dropped (they can hold no in-window messages —
+# bounds the scan), and surviving files are re-summed per-message on
+# `.timestamp ∈ [win_start,win_end)`. Per-window-id per-file sums are still
+# immutable (a fixed week/month + an unchanged file = a fixed sum), so the same
+# `-newer` memoization stays valid within a window. With no win args the path is
+# the legacy unbounded immutable-per-file index, byte-identical to before.
 #
 # Why this is not a one-line glob: the old version ran
 #   cat "$HOME/.claude/projects"/*/*.jsonl | timeout 10 jq -s ...
@@ -541,6 +638,7 @@ read_session_cache_stats() {
 # through temp files / stdin, never jq args, to stay under the argv limit.
 rebuild_all_sessions_index() {
     local proj_root="$1" cache_file="$2" index_file="$3"
+    local win_start="${4:-}" win_end="${5:-}"
     local old_index all_paths recompute_paths recomputed out
     local tmp_old tmp_all tmp_rc tmp
 
@@ -551,6 +649,36 @@ rebuild_all_sessions_index() {
     # never hits the argv limit the glob did.
     all_paths=$(find "$proj_root" -mindepth 2 -maxdepth 2 -name '*.jsonl' 2>/dev/null)
     [ -z "$all_paths" ] && return
+
+    # Windowed mode: drop files whose mtime predates the window start — none of
+    # their messages can fall in [start,end), so this only bounds the scan, it
+    # never changes the result. The `all` path skips this and keeps every file.
+    #
+    # The mtime filter MUST run inside a single `find`, not a bash stat-per-file
+    # loop: each `stat` is a separate process, and on a large history (1000+
+    # transcripts) that is 1000+ process spawns — on Git-Bash/Windows that alone
+    # overruns the render timeout, so the backgrounded rebuild never finishes and
+    # the per-window cache stays at 0 (the "week/month row renders 0" bug). We
+    # use a reference file + POSIX `-newer` (portable GNU/BSD) rather than the
+    # GNU-only `-newermt`; the reference mtime is win_start-1 so the boundary
+    # stays inclusive (>=), matching the per-message [start,end) test below.
+    if [ -n "$win_start" ]; then
+        local _ref="" _reffail=""
+        _ref=$(mktemp 2>/dev/null) || _reffail=1
+        if [ -z "$_reffail" ]; then
+            touch -d "@$(( win_start - 1 ))" "$_ref" 2>/dev/null \
+                || touch -t "$(date -r "$(( win_start - 1 ))" +%Y%m%d%H%M.%S 2>/dev/null)" "$_ref" 2>/dev/null \
+                || _reffail=1
+        fi
+        if [ -z "$_reffail" ]; then
+            all_paths=$(find "$proj_root" -mindepth 2 -maxdepth 2 -name '*.jsonl' -newer "$_ref" 2>/dev/null)
+        fi
+        # If the reference file could not be built, all_paths keeps the unbounded
+        # list: the per-message jq still yields a correct windowed sum, only the
+        # scan is unbounded — a slow-but-correct render beats a 0.
+        [ -n "$_ref" ] && rm -f "$_ref" 2>/dev/null
+        [ -z "$all_paths" ] && return
+    fi
 
     # Files to recompute: those modified since the last index write (so the
     # active session and any new files), or everything on a cold first run.
@@ -567,10 +695,24 @@ rebuild_all_sessions_index() {
         local fpath sums line
         while IFS= read -r fpath; do
             [ -z "$fpath" ] && continue
-            sums=$(jq -rs '[ ([.[] | select(.type == "assistant") | .message.usage.cache_read_input_tokens   // 0] | add // 0),
-                             ([.[] | select(.type == "assistant") | .message.usage.cache_creation_input_tokens // 0] | add // 0),
-                             ([.[] | select(.type == "assistant") | .message.usage.input_tokens               // 0] | add // 0)
-                           ] | @tsv' "$fpath" 2>/dev/null)
+            if [ -n "$win_start" ]; then
+                # Windowed: keep only assistant messages whose timestamp falls
+                # in [win_start, win_end). Fractional ".000Z" is stripped before
+                # fromdateiso8601; an unparseable timestamp → -1 → excluded.
+                sums=$(jq -rs --argjson s "$win_start" --argjson e "$win_end" \
+                    '[ .[] | select(.type == "assistant")
+                           | ((.timestamp // "") | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601? // -1) as $te
+                           | select($te >= $s and $te < $e) ]
+                     | [ ([.[] | .message.usage.cache_read_input_tokens   // 0] | add // 0),
+                         ([.[] | .message.usage.cache_creation_input_tokens // 0] | add // 0),
+                         ([.[] | .message.usage.input_tokens               // 0] | add // 0)
+                       ] | @tsv' "$fpath" 2>/dev/null)
+            else
+                sums=$(jq -rs '[ ([.[] | select(.type == "assistant") | .message.usage.cache_read_input_tokens   // 0] | add // 0),
+                                 ([.[] | select(.type == "assistant") | .message.usage.cache_creation_input_tokens // 0] | add // 0),
+                                 ([.[] | select(.type == "assistant") | .message.usage.input_tokens               // 0] | add // 0)
+                               ] | @tsv' "$fpath" 2>/dev/null)
+            fi
             [ -z "$sums" ] && sums=$(printf '0\t0\t0')
             line=$(printf '%s\t%s' "$fpath" "$sums")
             recomputed="${recomputed}${line}"$'\n'
@@ -626,10 +768,16 @@ EOF
 # Returns all-sessions cache totals, refreshing via a single locked background
 # rebuild (30s throttle). Sets: all_reads all_writes all_inputs
 read_all_sessions_cache_stats() {
+    local period="${1:-all}"
     all_reads=0; all_writes=0; all_inputs=0
 
-    local cache_file="/tmp/claude/cache-all-stats.json"
-    local index_file="/tmp/claude/cache-all-stats-index.json"
+    local window_id window_start window_end
+    resolve_window "$period"
+
+    # For period=all, window_id="all-stats" → the legacy filenames are
+    # reproduced byte-for-byte; week/month get their own per-window files.
+    local cache_file="/tmp/claude/cache-${window_id}.json"
+    local index_file="/tmp/claude/cache-${window_id}-index.json"
     local cache_max_age=30
     local needs_refresh=true
 
@@ -654,19 +802,30 @@ read_all_sessions_cache_stats() {
         # while a slow cold-start scan of a large history is in flight.
         if mkdir "$lock" 2>/dev/null; then
             local _pr="$proj_root" _cf="$cache_file" _if="$index_file" _lk="$lock"
+            local _ws="$window_start" _we="$window_end" _wid="$window_id"
             ( trap 'rmdir "$_lk" 2>/dev/null' EXIT
-              rebuild_all_sessions_index "$_pr" "$_cf" "$_if"
+              if [ "$_wid" = "all-stats" ]; then
+                  rebuild_all_sessions_index "$_pr" "$_cf" "$_if"
+              else
+                  rebuild_all_sessions_index "$_pr" "$_cf" "$_if" "$_ws" "$_we"
+              fi
             ) & disown 2>/dev/null || true
         fi
     fi
 
     # Return last cached totals immediately (may be one render stale during refresh).
     [ ! -f "$cache_file" ] && return
-    local data
+    local data joined US=$'\037'
     data=$(cat "$cache_file" 2>/dev/null) || return
-    all_reads=$(echo  "$data" | jq -r '.reads  // 0')
-    all_writes=$(echo "$data" | jq -r '.writes // 0')
-    all_inputs=$(echo "$data" | jq -r '.inputs // 0')
+    # One jq pass (was 3 echo|jq extractions; HIMMEL-612).
+    joined=$(printf '%s' "$data" | jq -r --arg sep "$US" '[(.reads // 0), (.writes // 0), (.inputs // 0)] | map(tostring) | join($sep)' 2>/dev/null)
+    [ -n "$joined" ] || return
+    IFS="$US" read -r all_reads all_writes all_inputs <<EOF
+$joined
+EOF
+    [ -n "$all_reads" ]  || all_reads=0
+    [ -n "$all_writes" ] || all_writes=0
+    [ -n "$all_inputs" ] || all_inputs=0
 }
 # Assembles cache display lines (TTL bars + session + all-sessions rows).
 # Sets: cache_lines (multi-line string with ANSI codes)
@@ -747,7 +906,11 @@ build_cache_lines() {
     sess_line+="${dim}net${reset} ${net_color}${net_sign}\$${net_abs}${reset}${cost_part}"
 
     # ── All-sessions stats line ────────────────────────────
-    read_all_sessions_cache_stats
+    # Bottom-row period (HIMMEL-617): week | month | all (default all). An
+    # invalid value renders the `all` label and resolve_window falls back to
+    # the all-stats window, so the row degrades to the unchanged default.
+    local period="${HIMMEL_STATUSLINE_PERIOD:-all}"
+    read_all_sessions_cache_stats "$period"
     local ar_fmt aw_fmt all_hit all_net all_abs all_sign all_color
     ar_fmt=$(format_tokens "$all_reads")
     aw_fmt=$(format_tokens "$all_writes")
@@ -765,7 +928,14 @@ build_cache_lines() {
         all_sign="-"; all_color="$red"
     fi
 
-    local all_line="${white}all${reset}      "
+    # Label = active period, padded to the session-row label width (9 cols).
+    # The `all` arm is byte-identical to the original line.
+    local all_line
+    case "$period" in
+        week)  all_line="${white}week${reset}     " ;;
+        month) all_line="${white}month${reset}    " ;;
+        *)     all_line="${white}all${reset}      " ;;
+    esac
     all_line+="${dim}r:${reset}${white}${ar_fmt}${reset}  ${dim}w:${reset}${white}${aw_fmt}${reset}  "
     all_line+="${dim}hit:${reset}${white}${all_hit}%${reset}  "
     all_line+="${dim}net${reset} ${all_color}${all_sign}\$${all_abs}${reset}"

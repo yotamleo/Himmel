@@ -73,6 +73,12 @@ REHEAL=false
 RECRYSTALLIZE=false
 RECRYS_LIMIT=0
 
+# Progress cadence (HIMMEL-627): print a periodic scan heartbeat to stderr every
+# N notes during the reheal/recrystallize loop so a long run on a large vault
+# (~800+ candidate notes, each globbing ~188 project dirs in _find_transcript) is
+# observably-working, not silent-for-minutes. Overridable for tests only.
+PROGRESS_EVERY="${BACKFILL_PROGRESS_EVERY:-50}"
+
 # Home resolution (cross-platform)
 if [ -n "${HOME:-}" ]; then
     _HOME="$HOME"
@@ -717,6 +723,8 @@ _reheal_one() { # <note>
     fi
     if [ "$healed" -eq 1 ]; then
         CNT_REHEAL=$((CNT_REHEAL + 1))
+        # Per-note line (HIMMEL-627): show each heal as it lands on a real run.
+        printf 'reheal: healed %s (%d)\n' "$(basename "$note")" "$CNT_REHEAL" >&2
     else
         # Couldn't clear the husk this run (crystallizer unavailable/failed, or
         # no claude AND no prose turn). Left byte-unchanged — idempotent; a later
@@ -775,6 +783,10 @@ _recrystallize_one() { # <note>
     bash "$SCRIPT_DIR/crystallize-note.sh" "$note" "$jl" || true
     if grep -q '^crystallized: true$' "$note" 2>/dev/null; then
         CNT_RECRYS=$((CNT_RECRYS + 1))
+        # Per-note line (HIMMEL-627): on a real run, show each crystallization as
+        # it lands so --limit chunk progress is visible note-by-note. stderr only;
+        # the machine-parseable summary stays on stdout.
+        printf 'recrystallize: crystallized %s (%d)\n' "$(basename "$note")" "$CNT_RECRYS" >&2
     else
         CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))   # cap/race/error — left for a later run
     fi
@@ -807,12 +819,34 @@ _run_reheal() {
 
     # Collect note paths first (avoid the pipe-subshell counter problem).
     find "$sessions_dir" -type f -name '*.md' 2>/dev/null > "$TMP_JSONL_LIST"
+
+    # Total candidate count drives the X/total heartbeat below. Perf follow-up
+    # (HIMMEL-627, NOT built here): _find_transcript globs all ~188 project dirs
+    # per note -> the scan is O(notes * projectdirs); a one-time project-dir index
+    # (session_id -> path) would cut it to O(N + projectdirs).
+    local total scanned=0
+    total="$(awk 'END{print NR}' "$TMP_JSONL_LIST" 2>/dev/null)"
+    [ -n "$total" ] || total=0
+
     while IFS= read -r note; do
         [ -n "$note" ] || continue
+        scanned=$((scanned + 1))
         if [ "$mode" = "recrystallize" ]; then
             _recrystallize_one "$note"
         else
             _reheal_one "$note"
+        fi
+        # Periodic heartbeat to stderr (HIMMEL-627): every PROGRESS_EVERY notes,
+        # report scanned X/total + running counts so a multi-minute run is
+        # observably alive. Summary line (stdout) is unaffected.
+        if [ "$PROGRESS_EVERY" -gt 0 ] && [ $((scanned % PROGRESS_EVERY)) -eq 0 ]; then
+            if [ "$mode" = "recrystallize" ]; then
+                printf 'recrystallize: scanned %d/%d (crystallized %d, skipped %d)\n' \
+                    "$scanned" "$total" "$CNT_RECRYS" "$CNT_RECRYS_SKIP" >&2
+            else
+                printf 'reheal: scanned %d/%d (healed %d, inert %d, non-husk-skip %d)\n' \
+                    "$scanned" "$total" "$CNT_REHEAL" "$CNT_REHEAL_INERT" "$CNT_REHEAL_SKIP" >&2
+            fi
         fi
     done < "$TMP_JSONL_LIST"
 

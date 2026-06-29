@@ -1,0 +1,45 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "DERIVED",
+        "device": {
+          "displayName": "Sense 2"
+        },
+        "platform": "FITBIT"
+      },
+      "dailyHeartRateVariability": {
+        "date": {
+          "year": 2024,
+          "month": 9,
+          "day": 15
+        },
+        "averageHeartRateVariabilityMilliseconds": 24.799,
+        "nonRemHeartRateBeatsPerMinute": "71",
+        "entropy": 2.357,
+        "deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds": 20.788
+      }
+    },
+    {
+      "dataSource": {
+        "recordingMethod": "DERIVED",
+        "device": {
+          "displayName": "Sense 2"
+        },
+        "platform": "FITBIT"
+      },
+      "dailyHeartRateVariability": {
+        "date": {
+          "year": 2024,
+          "month": 9,
+          "day": 14
+        },
+        "averageHeartRateVariabilityMilliseconds": 26.112,
+        "nonRemHeartRateBeatsPerMinute": "68",
+        "entropy": 2.241,
+        "deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds": 21.904
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

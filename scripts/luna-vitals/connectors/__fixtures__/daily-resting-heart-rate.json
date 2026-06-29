@@ -1,0 +1,39 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "DERIVED",
+        "device": {
+          "displayName": "Sense 2"
+        },
+        "platform": "FITBIT"
+      },
+      "dailyRestingHeartRate": {
+        "date": {
+          "year": 2024,
+          "month": 9,
+          "day": 16
+        },
+        "beatsPerMinute": "77"
+      }
+    },
+    {
+      "dataSource": {
+        "recordingMethod": "DERIVED",
+        "device": {
+          "displayName": "Sense 2"
+        },
+        "platform": "FITBIT"
+      },
+      "dailyRestingHeartRate": {
+        "date": {
+          "year": 2024,
+          "month": 9,
+          "day": 15
+        },
+        "beatsPerMinute": "76"
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

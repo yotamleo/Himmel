@@ -505,8 +505,8 @@ The setup also handles the existing-config case: if `hooks.SessionEnd` already e
     "hooks": [
       {
         "type": "command",
-        "command": "pwsh -NoProfile -File \"<himmel-path>/scripts/hooks/end-session-wiki.ps1\"",
-        "shell": "powershell",
+        "command": "bash \"<himmel-path>/scripts/lib/run-pwsh.sh\" \"<himmel-path>/scripts/hooks/end-session-wiki.ps1\"",
+        "shell": "bash",
         "timeout": 30
       },
       {
@@ -519,6 +519,8 @@ The setup also handles the existing-config case: if `hooks.SessionEnd` already e
   }
 ]
 ```
+
+The PowerShell twin routes through `scripts/lib/run-pwsh.sh` (rather than a bare `pwsh …`) so that on a host **without** PowerShell it exits silently instead of printing `pwsh: command not found` every session — the bash twin does the capture there. Both twins self-guard by platform, so exactly one writes the note.
 
 For per-repo opt-out, env-var disable, dry-run mode, and full operational reference, see [`docs/luna/end-session-wiki.md`](../luna/end-session-wiki.md).
 

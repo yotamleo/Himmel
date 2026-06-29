@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { Command } from 'commander';
 import { request } from '../client.js';
+import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import { markdownToAdf } from '../adf.js';
 import { uploadAll } from './attach-helper.js';
 import { readBodyFile } from './body-file.js';
@@ -45,6 +46,9 @@ export function registerComment(program: Command): void {
           body = markdownToAdf(markdown);
         }
         await request('POST', `/issue/${key}/comment`, { body });
+        // Breadcrumb BEFORE attachments: the comment mutation has landed even
+        // if a later attachment upload fails and we exit 1 (HIMMEL-618 F11).
+        writeJiraBreadcrumb(key);
 
         // Print the success indicator to STDOUT immediately, BEFORE
         // attempting attachments. Scripted callers piping stdout still

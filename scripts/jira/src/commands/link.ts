@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { request } from '../client.js';
+import { writeJiraBreadcrumb } from '../breadcrumb.js';
 
 interface IssueLinkType {
   name: string;
@@ -47,6 +48,7 @@ export function registerLink(program: Command): void {
           inwardIssue: { key: inwardKey },
           outwardIssue: { key: outwardKey },
         });
+        writeJiraBreadcrumb(inwardKey);
         console.log(`Linked ${inwardKey} ${match.name} ${outwardKey}`);
       },
     );

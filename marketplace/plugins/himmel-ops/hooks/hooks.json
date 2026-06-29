@@ -55,6 +55,14 @@
             "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/refresh-where-are-we-on-end.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/jira-nudge-on-end.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
+          }
+        ]
       }
     ]
   }

@@ -1,0 +1,26 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "dailyOxygenSaturation": {
+        "date": {
+          "year": 2026,
+          "month": 6,
+          "day": 28
+        },
+        "averagePercentage": 94,
+        "lowerBoundPercentage": 94,
+        "upperBoundPercentage": 94,
+        "standardDeviationPercentage": 0.9
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

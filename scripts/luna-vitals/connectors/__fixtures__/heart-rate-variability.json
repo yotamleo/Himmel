@@ -1,0 +1,32 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "DERIVED",
+        "device": {
+          "displayName": "Sense 2"
+        },
+        "platform": "FITBIT"
+      },
+      "heartRateVariability": {
+        "sampleTime": {
+          "physicalTime": "2024-09-15T11:35:00Z",
+          "utcOffset": "0s",
+          "civilTime": {
+            "date": {
+              "year": 2024,
+              "month": 9,
+              "day": 15
+            },
+            "time": {
+              "hours": 11,
+              "minutes": 35
+            }
+          }
+        },
+        "rootMeanSquareOfSuccessiveDifferencesMilliseconds": 20.435
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

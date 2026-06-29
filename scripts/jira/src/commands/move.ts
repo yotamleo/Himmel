@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { request } from '../client.js';
+import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import type { JiraTransition } from '../types.js';
 
 // HIMMEL-197: Jira Cloud REST API does NOT support direct project-change
@@ -241,6 +242,10 @@ export function registerMove(program: Command): void {
           // Match the create command's output line so existing
           // "Created (HIMMEL|LUNA)-N" verifier scripts keep working.
           console.log(`Created ${created.key}`);
+          // Breadcrumb on the source ticket: the move has mutated Jira (target
+          // created) even if a later step (comment copy / transition) partially
+          // fails, so the SessionEnd nudge must not fire (HIMMEL-618 F5/F11).
+          writeJiraBreadcrumb(srcKey);
 
           // 4. Copy comments — per-iteration try/catch so a single failure does
           // NOT abandon the rest. Target is much more useful with most comments

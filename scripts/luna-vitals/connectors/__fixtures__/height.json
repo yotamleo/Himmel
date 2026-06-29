@@ -1,0 +1,26 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "MANUAL",
+        "platform": "FITBIT"
+      },
+      "height": {
+        "sampleTime": {
+          "physicalTime": "2016-05-19T00:00:00Z",
+          "utcOffset": "0s",
+          "civilTime": {
+            "date": {
+              "year": 2016,
+              "month": 5,
+              "day": 19
+            },
+            "time": {}
+          }
+        },
+        "heightMillimeters": "1810"
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

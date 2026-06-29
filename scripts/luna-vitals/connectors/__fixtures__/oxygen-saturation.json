@@ -1,0 +1,33 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "oxygenSaturation": {
+        "sampleTime": {
+          "physicalTime": "2026-06-28T01:24:00Z",
+          "utcOffset": "7200s",
+          "civilTime": {
+            "date": {
+              "year": 2026,
+              "month": 6,
+              "day": 28
+            },
+            "time": {
+              "hours": 3,
+              "minutes": 24
+            }
+          }
+        },
+        "percentage": 94
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

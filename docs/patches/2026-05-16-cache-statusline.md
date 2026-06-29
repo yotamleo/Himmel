@@ -64,6 +64,32 @@ The harness uses `sed` + `eval` to extract only the cache functions section from
 
 ---
 
+## Bottom-row period (HIMMEL-617)
+
+The `all` bottom row is period-configurable via `HIMMEL_STATUSLINE_PERIOD`:
+
+| Value | Window | Label |
+|-------|--------|-------|
+| `all` (default) | unbounded — every session ever | `all` |
+| `week` | current ISO week, **Monday 00:00 local** to next Monday | `week` |
+| `month` | current calendar month, 1st 00:00 to next 1st | `month` |
+
+- Default `all` is byte-for-byte unchanged (it keeps the legacy
+  `/tmp/claude/cache-all-stats{,-index}.json` files and the immutable
+  per-file index path).
+- An invalid value falls back to `all` (and warns once on stderr).
+- `week`/`month` aggregate by **per-message `.timestamp`** within the window
+  (not file mtime — resumed/multi-day sessions would mis-bucket), so the row
+  resets cleanly at each boundary: a new window gets its own
+  `cache-<window_id>.json` (e.g. `cache-week-20260622.json`,
+  `cache-month-202606.json`), so a window flip is a cache miss → rebuild.
+- ISO-Monday week start is intentional (matches ISO-8601 week numbering).
+- Test seam: `HIMMEL_STATUSLINE_NOW` (epoch) overrides "now" so boundary
+  tests can cross a week/month edge without faking the wall clock.
+
+Deferred to a follow-up behind demonstrated need: `quarter | half | year |
+range` (range also needs label-width/truncation handling v1 omits).
+
 ## Windows hacks
 
 See `docs/tooling-catalog.md` → "Windows gotchas" section.

@@ -11,10 +11,13 @@ after `/luna-upgrade`, which writes but never commits), a **Bitbucket repo** whe
 `/commit-push-pr`'s hardcoded `gh` can't open a PR, and a **repo not in the
 handover registry** (so `handover-resume` finds nothing).
 
-It also flags **PATH-fragile MCP servers** (C6) — servers wired as a bare
+It also flags **PATH-fragile MCP servers** (C6-mcp) — servers wired as a bare
 interpreter (`uvx mcp-obsidian`, `bun …`) that a PATH-less macOS GUI launch can't
 find, so the server and all its tools silently fail to start (same root cause as
-the node hook).
+the node hook) — and **PATH-fragile hooks** (C6-hooks) — a hook command leading
+with a bare interpreter that is *not installed on this host* (e.g. a
+`pwsh -NoProfile -File …` SessionEnd twin copied onto a host without PowerShell),
+which prints `<interp>: command not found` every session.
 
 It also runs a **merged-PR worktree scan** (C7, read-only) — detects non-primary,
 non-locked worktrees whose branch maps to an already-merged PR (shipped work that
