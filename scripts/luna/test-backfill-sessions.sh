@@ -189,7 +189,7 @@ else
 fi
 
 # F3 (HIMMEL-590): a real import prints the --reheal crystallization nudge.
-assert_contains "F3: real import prints the --reheal nudge" "--reheal" "$out1"
+assert_contains "F3: real import prints the --recrystallize nudge" "--recrystallize" "$out1"
 # The imported note is mechanical (crystallized: false) until reheal runs.
 if grep -q '^crystallized: false$' "$NOTE" 2>/dev/null; then
     pass "F3: imported note is mechanical (crystallized: false)"
@@ -648,6 +648,62 @@ _None._
 EOF
 }
 
+# A CONTENT-bearing crystallized:false note (HIMMEL-620): real Raw Conversation
+# (NOT "_Transcript unavailable._"), so it is NOT a husk — --reheal skips it,
+# --recrystallize crystallizes it. This is the shape of an F1-affected live note
+# and a backfilled prose-session note.
+write_content_note() {
+    local path="$1" sid="$2"
+    mkdir -p "$(dirname "$path")"
+    cat > "$path" <<EOF
+---
+date: 2026-06-20T00:00:00Z
+type: session
+repo: testrepo
+branch:
+worktree: /tmp/testrepo
+duration_minutes: 5
+files_touched: 0
+tags:
+  - session
+  - autocapture
+ai-first: true
+session_id: ${sid}
+source: live
+crystallized: false
+crystallized_at:
+---
+
+Auto-captured session.
+
+## Summary
+
+Did some real work here (mechanical first line).
+
+## Decisions
+
+_None._
+
+## Files Touched
+
+_None._
+
+## Commands
+
+\`\`\`bash
+\`\`\`
+
+## Follow-ups
+
+_None._
+
+## Raw Conversation
+
+> [!note]- Raw conversation
+> Real assistant prose turn — this note is NOT a husk.
+EOF
+}
+
 # Drop a transcript fixture into a projects dir as <session_id>.jsonl so reheal
 # can locate it (the project slug is irrelevant — reheal globs */<sid>.jsonl).
 seed_named_transcript() {
@@ -1040,6 +1096,85 @@ if [ -n "$NOTE_B" ] && grep -q "repo: $(basename "$REPO_B")" "$NOTE_B" 2>/dev/nu
 else
     fail "multi-vault: vaultB note has wrong repo identity" "$out17"
 fi
+
+# ============================================================================
+# Case 18: --recrystallize crystallizes a CONTENT-bearing note that --reheal
+#          SKIPS (HIMMEL-620). The note is crystallized:false with a real Raw
+#          Conversation (not a husk). --reheal must skip it (non-husk-skip);
+#          --recrystallize must crystallize it (crystallized:true).
+# ============================================================================
+echo ""
+echo "Case 18: --recrystallize crystallizes a content-note that --reheal skips"
+
+SB="$TMP_ROOT/case18"
+VAULT18="$SB/vault"
+PROJ_ROOT18="$SB/projects"
+STATE18="$SB/state.json"
+NOTE18="$VAULT18/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT18" "$PROJ_ROOT18"
+write_content_note "$NOTE18" "recrys-sess-001"
+seed_named_transcript "$PROJ_ROOT18" "recrys-sess-001" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+
+# 18a: --reheal SKIPS it (proves the gap — it's not a husk).
+out18r=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" \
+    bash "$BACKFILL" --reheal \
+    --projects-dir "$PROJ_ROOT18" --luna-vault-path "$VAULT18" \
+    --state-file "$STATE18" --vault-registry /dev/null 2>&1)
+assert_contains "recrys: --reheal skips the content-note (non-husk)" "non-husk-skip=1" "$out18r"
+if grep -q '^crystallized: false$' "$NOTE18"; then pass "recrys: --reheal left it crystallized:false"; else fail "recrys: --reheal wrongly changed it" "$out18r"; fi
+
+# 18b: --recrystallize crystallizes it.
+out18=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-29T00:00:00Z" \
+    bash "$BACKFILL" --recrystallize \
+    --projects-dir "$PROJ_ROOT18" --luna-vault-path "$VAULT18" \
+    --state-file "$STATE18" --vault-registry /dev/null 2>&1)
+assert_contains "recrys: --recrystallize reports crystallized=1" "crystallized=1" "$out18"
+if grep -q '^crystallized: true$' "$NOTE18"; then pass "recrys: content-note crystallized:true"; else fail "recrys: content-note not crystallized" "$out18"; fi
+
+# 18c: idempotent — re-run skips the now-crystallized note.
+out18b=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" \
+    bash "$BACKFILL" --recrystallize \
+    --projects-dir "$PROJ_ROOT18" --luna-vault-path "$VAULT18" \
+    --state-file "$STATE18" --vault-registry /dev/null 2>&1)
+assert_contains "recrys: idempotent re-run crystallizes nothing" "crystallized=0" "$out18b"
+
+# ============================================================================
+# Case 19: --recrystallize --dry-run counts but writes nothing; --limit caps.
+# ============================================================================
+echo ""
+echo "Case 19: --recrystallize --dry-run (no write) + --limit caps real runs"
+
+SB="$TMP_ROOT/case19"
+VAULT19="$SB/vault"
+PROJ_ROOT19="$SB/projects"
+STATE19="$SB/state.json"
+N19A="$VAULT19/sessions/2026/06/2026-06-20-0000-a.md"
+N19B="$VAULT19/sessions/2026/06/2026-06-20-0001-b.md"
+mkdir -p "$VAULT19" "$PROJ_ROOT19"
+write_content_note "$N19A" "recrys-a"; seed_named_transcript "$PROJ_ROOT19" "recrys-a" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+write_content_note "$N19B" "recrys-b"; seed_named_transcript "$PROJ_ROOT19" "recrys-b" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+
+# dry-run: counts both, writes nothing.
+SHA19A="$(_file_sha256 "$N19A")"
+out19d=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success CRYSTALLIZE_PID_DIR="$SB/pids" \
+    bash "$BACKFILL" --recrystallize --dry-run \
+    --projects-dir "$PROJ_ROOT19" --luna-vault-path "$VAULT19" \
+    --state-file "$STATE19" --vault-registry /dev/null 2>&1)
+assert_contains "recrys(dry): both content-notes counted" "crystallized=2" "$out19d"
+if [ "$SHA19A" = "$(_file_sha256 "$N19A")" ]; then pass "recrys(dry): note byte-unchanged"; else fail "recrys(dry): --dry-run mutated a note" "$out19d"; fi
+
+# --limit 1: only one crystallized this run.
+out19l=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-29T00:00:00Z" \
+    bash "$BACKFILL" --recrystallize --limit 1 \
+    --projects-dir "$PROJ_ROOT19" --luna-vault-path "$VAULT19" \
+    --state-file "$STATE19" --vault-registry /dev/null 2>&1)
+assert_contains "recrys(limit): --limit 1 crystallizes exactly one" "crystallized=1" "$out19l"
+_cryst_count=$(grep -l '^crystallized: true$' "$N19A" "$N19B" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$_cryst_count" = "1" ]; then pass "recrys(limit): exactly one note crystallized on disk"; else fail "recrys(limit): $_cryst_count crystallized (expected 1)" "$out19l"; fi
 
 # ============================================================================
 # Summary

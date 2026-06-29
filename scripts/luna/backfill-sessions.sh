@@ -30,6 +30,21 @@
 #                          transcript) are left as-is. Idempotent. Honours
 #                          --dry-run and --vault-registry/--luna-vault-path.
 #
+# Recrystallize mode (HIMMEL-620):
+#   --recrystallize        Like --reheal, but the broader predicate: crystallize
+#                          ANY note with crystallized != true that has a
+#                          recoverable (content-bearing) transcript — NOT just
+#                          husks. Covers content-bearing-but-uncrystallized notes
+#                          that --reheal skips (an F1-affected live note, or a
+#                          backfilled prose-session note). LLM-only (no claude ->
+#                          skip; a mechanical re-render does not crystallize).
+#                          Idempotent; honours --dry-run + the vault flags.
+#   --limit <N>            Cap real crystallizations per run (token-cost guard;
+#                          0 = unbounded). --dry-run reports the FULL count so you
+#                          can size batches. Remaining notes recover on a later run.
+#                          RUN --recrystallize --dry-run FIRST to see the scale —
+#                          it is one real `claude` run per note.
+#
 # bash 3.2-safe; shellcheck-clean; cross-platform (Windows Git Bash / macOS / Linux).
 
 set -uo pipefail
@@ -55,6 +70,8 @@ SCOPE_ALL=false
 ONLY_GLOB=""
 EXCLUDE_GLOB=""
 REHEAL=false
+RECRYSTALLIZE=false
+RECRYS_LIMIT=0
 
 # Home resolution (cross-platform)
 if [ -n "${HOME:-}" ]; then
@@ -97,6 +114,12 @@ while [ $# -gt 0 ]; do
             DRY_RUN=true; shift ;;
         --reheal)
             REHEAL=true; shift ;;
+        --recrystallize)
+            RECRYSTALLIZE=true; shift ;;
+        --limit)
+            shift
+            case "$1" in [0-9]*) RECRYS_LIMIT="$1" ;; *) printf 'backfill: --limit needs a number\n' >&2; exit 1 ;; esac
+            shift ;;
         --state-file)
             shift; STATE_FILE="$1"; shift ;;
         --vault-registry)
@@ -539,6 +562,8 @@ _process_one() {
 CNT_REHEAL=0
 CNT_REHEAL_INERT=0
 CNT_REHEAL_SKIP=0
+CNT_RECRYS=0
+CNT_RECRYS_SKIP=0
 
 # Read a frontmatter field's value from a note (between the first two `---`
 # lines). Echoes the value (may be empty); nothing if the key is absent.
@@ -700,6 +725,61 @@ _reheal_one() { # <note>
     fi
 }
 
+# ===========================================================================
+# Recrystallize mode (HIMMEL-620) — crystallize ANY note with crystallized != true
+# that has a recoverable (content-bearing) transcript, NOT just husks. --reheal is
+# husk-only (crystallized!=true AND "_Transcript unavailable._" AND Files None), so
+# it SKIPS content-bearing-but-uncrystallized notes — which is the common shape of
+# both an F1-affected live note and a backfilled prose-session note. This mode
+# closes that gap. Crystallization needs the LLM (a mechanical re-render stays
+# crystallized:false), so a missing `claude` skips rather than degrades.
+# ===========================================================================
+_recrystallize_one() { # <note>
+    local note="$1"
+    # Already crystallized -> nothing to do (idempotent).
+    if grep -q '^crystallized: true$' "$note" 2>/dev/null; then
+        CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))
+        return 0
+    fi
+    local sid jl
+    sid="$(_note_fm session_id "$note")"
+    jl="$(_find_transcript "$sid")"
+    if [ -z "$jl" ]; then
+        CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))   # transcript gone — can't crystallize
+        return 0
+    fi
+    parse_session_transcript "$jl"
+    # shellcheck disable=SC2153  # global set by the sourced lib
+    if [ "${HAS_CONTENT:-0}" -eq 0 ]; then
+        CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))   # no salvageable content to distil
+        return 0
+    fi
+    if ! _claude_available; then
+        CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))   # recrystallize is LLM-only
+        return 0
+    fi
+    # Dry-run reports the FULL recoverable count (limit not applied) so the operator
+    # can size --limit batches against the real token cost.
+    if [ "$DRY_RUN" = "true" ]; then
+        CNT_RECRYS=$((CNT_RECRYS + 1))
+        return 0
+    fi
+    # --limit caps real crystallizations (token-cost guard); remaining are skipped
+    # and recoverable on a later run (idempotent).
+    if [ "$RECRYS_LIMIT" -gt 0 ] && [ "$CNT_RECRYS" -ge "$RECRYS_LIMIT" ]; then
+        CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))
+        return 0
+    fi
+    # Synchronous (not detached): batch op, one note at a time; crystallize-note.sh
+    # is idempotent + fail-open. Count crystallized only when the flag actually flips.
+    bash "$SCRIPT_DIR/crystallize-note.sh" "$note" "$jl" || true
+    if grep -q '^crystallized: true$' "$note" 2>/dev/null; then
+        CNT_RECRYS=$((CNT_RECRYS + 1))
+    else
+        CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))   # cap/race/error — left for a later run
+    fi
+}
+
 # Enumerate husk-candidate notes (all sessions/**/*.md) into TMP_JSONL_LIST.
 _run_reheal() {
     local vault_root
@@ -711,10 +791,17 @@ _run_reheal() {
     # shellcheck disable=SC2088
     case "$vault_root" in "~/"*) vault_root="$_HOME/${vault_root#\~/}" ;; esac
 
+    local mode="reheal"
+    [ "$RECRYSTALLIZE" = "true" ] && mode="recrystallize"
+
     local sessions_dir="$vault_root/sessions"
     if [ ! -d "$sessions_dir" ]; then
-        printf 'backfill: reheal: no sessions/ under %s\n' "$vault_root" >&2
-        printf 'reheal: healed=0 inert=0 non-husk-skip=0\n'
+        printf 'backfill: %s: no sessions/ under %s\n' "$mode" "$vault_root" >&2
+        if [ "$mode" = "recrystallize" ]; then
+            printf 'recrystallize: crystallized=0 skipped=0\n'
+        else
+            printf 'reheal: healed=0 inert=0 non-husk-skip=0\n'
+        fi
         return 0
     fi
 
@@ -722,14 +809,24 @@ _run_reheal() {
     find "$sessions_dir" -type f -name '*.md' 2>/dev/null > "$TMP_JSONL_LIST"
     while IFS= read -r note; do
         [ -n "$note" ] || continue
-        _reheal_one "$note"
+        if [ "$mode" = "recrystallize" ]; then
+            _recrystallize_one "$note"
+        else
+            _reheal_one "$note"
+        fi
     done < "$TMP_JSONL_LIST"
 
-    printf 'reheal: healed=%d inert=%d non-husk-skip=%d\n' \
-        "$CNT_REHEAL" "$CNT_REHEAL_INERT" "$CNT_REHEAL_SKIP"
+    if [ "$mode" = "recrystallize" ]; then
+        printf 'recrystallize: crystallized=%d skipped=%d' "$CNT_RECRYS" "$CNT_RECRYS_SKIP"
+        [ "$RECRYS_LIMIT" -gt 0 ] && printf ' (--limit %d)' "$RECRYS_LIMIT"
+        printf '\n'
+    else
+        printf 'reheal: healed=%d inert=%d non-husk-skip=%d\n' \
+            "$CNT_REHEAL" "$CNT_REHEAL_INERT" "$CNT_REHEAL_SKIP"
+    fi
 }
 
-if [ "$REHEAL" = "true" ]; then
+if [ "$REHEAL" = "true" ] || [ "$RECRYSTALLIZE" = "true" ]; then
     _run_reheal
     exit 0
 fi
@@ -750,15 +847,19 @@ done < "$TMP_JSONL_LIST"
 printf 'backfill: new=%d already-in-ledger=%d opt-out-skip=%d orphaned-skip=%d under-min=%d husk-skip=%d\n' \
     "$CNT_NEW" "$CNT_LEDGER" "$CNT_OPTOUT" "$CNT_ORPHANED" "$CNT_UNDERMIN" "$CNT_HUSK"
 
-# Crystallization nudge (HIMMEL-590 F3): plain backfill writes MECHANICAL notes
-# (crystallized: false) — only the live end-session hook and `--reheal` run the
-# LLM crystallizer. Auto-spawning it per imported note during a bulk `--all`
-# import would fan out an unbounded number of billed `claude` runs, so backfill
-# deliberately does NOT; instead it points the operator at the one explicit,
-# concurrency-capped, idempotent quality pass. Printed only when notes landed.
+# Crystallization nudge (HIMMEL-590 F3 / HIMMEL-620): plain backfill writes
+# MECHANICAL notes (crystallized: false) — only the live end-session hook and the
+# crystallize passes run the LLM crystallizer. Auto-spawning it per imported note
+# during a bulk `--all` import would fan out an unbounded number of billed
+# `claude` runs, so backfill deliberately does NOT; instead it points the operator
+# at the explicit, concurrency-capped, idempotent pass. A backfilled prose-session
+# note is content-bearing (NOT a husk), so `--recrystallize` (not `--reheal`,
+# which is husk-only) is the mode that crystallizes it. Printed only when notes
+# landed.
 if [ "$DRY_RUN" != "true" ] && [ "$CNT_NEW" -gt 0 ]; then
     printf '\nbackfill: %d new note(s) are mechanical (crystallized: false).\n' "$CNT_NEW"
-    printf 'backfill: run the LLM crystallizer over them with:\n'
-    printf '    bash scripts/luna/backfill-sessions.sh --reheal\n'
+    printf 'backfill: preview the crystallize cost, then run it (one real claude run per note):\n'
+    printf '    bash scripts/luna/backfill-sessions.sh --recrystallize --dry-run   # count\n'
+    printf '    bash scripts/luna/backfill-sessions.sh --recrystallize [--limit N] # apply\n'
     printf 'backfill: (add the same --all / --luna-vault-path / --vault-registry scope you used here).\n'
 fi

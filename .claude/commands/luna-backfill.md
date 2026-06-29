@@ -1,6 +1,6 @@
 ---
 description: Backfill old Claude session transcripts into the luna vault as structured session notes. TOKEN-INTENSIVE — warns before running and recommends --dry-run first.
-argument-hint: [--all | --project <path>] [--reheal] [--dry-run] [--include-orphaned] [--only <glob>] [--exclude <glob>] [--projects-dir <dir>] [--state-file <path>] [--vault-registry <path>] [--luna-vault-path <dir>]
+argument-hint: [--all | --project <path>] [--reheal | --recrystallize [--limit N]] [--dry-run] [--include-orphaned] [--only <glob>] [--exclude <glob>] [--projects-dir <dir>] [--state-file <path>] [--vault-registry <path>] [--luna-vault-path <dir>]
 ---
 
 > **TOKEN-USAGE WARNING:** Backfill seeds many session notes into the vault at
@@ -48,7 +48,10 @@ by a multi-vault test (two repos → two vaults, no cross-contamination).
 --include-orphaned       Also import sessions whose cwd no longer exists on disk
 --only <glob>            Only process projects matching glob (repo path)
 --exclude <glob>         Exclude projects matching glob (repo path)
---reheal                 Recover existing husk notes in the vault (see below)
+--reheal                 Recover existing HUSK notes in the vault (see below)
+--recrystallize          Crystallize ANY uncrystallized note with a content-bearing
+                         transcript (not just husks) — see below
+--limit <N>              Cap real crystallizations per --recrystallize run (0 = unbounded)
 --projects-dir <dir>     Override transcripts root (default: ~/.claude/projects) — testing
 --state-file <path>      Override ledger path (default: ~/.claude/luna-backfill-state.json)
 --vault-registry <path>  Override vault registry (default: ~/.claude/luna-vaults.json)
@@ -71,13 +74,17 @@ by a multi-vault test (two repos → two vaults, no cross-contamination).
    ```
 4. **Crystallize (quality pass)** — backfill writes **mechanical** notes
    (`crystallized: false`): a slugged Summary from the transcript, no LLM
-   synthesis. Only the live `end-session-wiki` hook and `--reheal` run the LLM
-   crystallizer. Backfill deliberately does **not** auto-crystallize each note
+   synthesis. Backfill deliberately does **not** auto-crystallize each note
    (a bulk `--all` import would fan out an unbounded number of billed `claude`
-   runs); instead it prints a nudge and you run the one explicit,
-   concurrency-capped, idempotent quality pass over what just landed:
+   runs); instead it prints a nudge and you run the explicit, concurrency-capped,
+   idempotent pass over what just landed. A backfilled prose-session note is
+   **content-bearing** (not a husk), so **`--recrystallize`** is the mode that
+   crystallizes it — `--reheal` is husk-only and would skip it. **Dry-run first**
+   to see the count (one real `claude` run per note); `--limit` bounds a batch:
    ```bash
-   bash scripts/luna/backfill-sessions.sh --reheal   # add the same scope flags
+   bash scripts/luna/backfill-sessions.sh --recrystallize --dry-run   # count
+   bash scripts/luna/backfill-sessions.sh --recrystallize --limit 25  # apply a batch
+   # (add the same --all / --luna-vault-path / --vault-registry scope you used)
    ```
 
 ## Opt-out + skip rules
@@ -131,6 +138,35 @@ bash scripts/luna/backfill-sessions.sh --reheal --luna-vault-path ~/Documents/lu
 ```
 
 Background: [`docs/luna/end-session-wiki.md` → Crystallization](../../docs/luna/end-session-wiki.md#crystallization-llm-upgrade).
+
+## Recrystallize mode (`--recrystallize`)
+
+`--reheal` only recovers **husks** (`crystallized != true` **AND**
+`_Transcript unavailable._` **AND** Files Touched `_None._`). But the common
+uncrystallized note is **content-bearing, not a husk** — e.g. a backfilled
+prose-session note, or a live note left `crystallized: false` by an earlier
+crystallizer bug. `--reheal` *skips* those (`non-husk-skip`).
+
+`--recrystallize` closes that gap: it crystallizes **any** note with
+`crystallized != true` that has a **recoverable (content-bearing) transcript**,
+husk or not. It is **LLM-only** — with no `claude` it skips (a mechanical
+re-render can't crystallize). Idempotent (already-`true` notes are skipped), and
+it honours the same `--dry-run` + vault-targeting flags.
+
+Because it is **one real `claude` run per note**, always **dry-run first** to see
+the count, then bound a batch with `--limit <N>` (remaining notes recover on a
+later run):
+
+```bash
+# Preview: how many uncrystallized content-notes would crystallize?
+bash scripts/luna/backfill-sessions.sh --recrystallize --dry-run --luna-vault-path ~/Documents/luna
+# Apply a bounded batch (e.g. 25 at a time):
+bash scripts/luna/backfill-sessions.sh --recrystallize --limit 25 --luna-vault-path ~/Documents/luna
+```
+
+> **Sequencing:** run `--recrystallize` to fully crystallize the session corpus
+> **before** a memory-compound pass (HIMMEL-564), so compounding works over real
+> distilled notes rather than mechanical ones.
 
 ## First-run note (live-capture overlap)
 
