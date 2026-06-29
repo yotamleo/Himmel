@@ -1,7 +1,7 @@
 {
   "name": "himmel-ops",
-  "version": "0.2.0",
-  "description": "Harness-meta operational skills for himmel. Load-on-trigger guardrail-recovery playbook (stuck-playbook) that surfaces escape-hatches when an auto-mode write is denied, a Bash command falls through to the classifier, a permission prompt hangs, or a pre-push gate fails — so operational/troubleshooting rules stay out of the always-on root CLAUDE.md (HIMMEL-211). Plus the minerva pipeline skill (/minerva): brainstorm→critic→spec→critic→plan with adversarial critic loops between stages (HIMMEL-428).",
+  "version": "0.3.0",
+  "description": "Harness-meta operational skills for himmel. Load-on-trigger guardrail-recovery playbook (stuck-playbook) that surfaces escape-hatches when an auto-mode write is denied, a Bash command falls through to the classifier, a permission prompt hangs, or a pre-push gate fails — so operational/troubleshooting rules stay out of the always-on root CLAUDE.md (HIMMEL-211). Plus the minerva pipeline skill (/minerva): brainstorm→critic→spec→critic→plan with adversarial critic loops between stages (HIMMEL-428); and memory-compound (/memory-compound): lean-invoke compaction of the per-project auto-memory into qmd-searchable luna/himmel reference notes with a findability gate (HIMMEL-569).",
   "author": {
     "name": "yotamleo"
   },
@@ -12,6 +12,8 @@
     "stuck",
     "load-on-trigger",
     "minerva",
-    "pipeline"
+    "pipeline",
+    "memory-compound",
+    "auto-memory"
   ]
 }

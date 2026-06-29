@@ -205,8 +205,8 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 #### himmel-ops (`himmel-ops@himmel`)
 
 **What:** Harness-meta operational skills for himmel.
-**Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493).
-**Command:** `/minerva` — runs the minerva pipeline.
+**Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493), `himmel-ops:memory-compound` (lean-invoke auto-memory→vault compaction with a qmd findability gate, HIMMEL-569).
+**Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass.
 **Hook:** `hooks/hooks.json` wires a PreToolUse(`matcher: "Skill"`) hook `inject-minerva-critic.sh` (HIMMEL-429) — injects the minerva critic loop when `superpowers:brainstorming`/`writing-plans` fires without `/minerva`. Advisory, fail-open; kill switch `MINERVA_HOOK_DISABLE=1`.
 **Plugin path:** `marketplace/plugins/himmel-ops/`
 

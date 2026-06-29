@@ -105,3 +105,26 @@ critic loop still fires (spec-critic after brainstorming, plan-critic after
 writing-plans). It is advisory context, not a permission change, and is
 **fail-open** — it never blocks a Skill call. Disable it with
 `MINERVA_HOOK_DISABLE=1` in the shell that launched Claude Code.
+
+## memory-compound — distil auto-memory into searchable substrate (`/memory-compound`)
+
+`/memory-compound` (skill `himmel-ops:memory-compound`) compacts Claude Code's
+per-project **auto-memory** — the always-loaded `MEMORY.md` index plus its
+topic files at `~/.claude/projects/<project-slug>/memory/` — when it nears its
+~24.4KB load budget (content past the limit is silently dropped at load =
+partial recall). It encodes the by-hand HIMMEL-564 compaction as one pass:
+
+1. **Mine** (READ-ONLY reader fan-out, single-writer rule) each topic file for
+   its durable gotcha / decision vs ephemeral status.
+2. **Land** (one writer) each durable learning in the matching luna
+   `30-Resources/Tech/` note — or himmel `docs/internals/` if adopter-generic —
+   deduping against existing curated content.
+3. **qmd gate** — `qmd update` + `qmd embed` + spot-check findability **before**
+   any deletion.
+4. **Slim** `MEMORY.md` to one-line `→ luna [[note]]` pointers (back it up
+   first), then **delete** the compounded topic files only after the gate passes.
+
+Lean-invoke, operator-run on demand (HIMMEL-177) — NOT an always-on hook: the
+durable-vs-disposable classification, dedupe, and placement need judgement. The
+over-budget load warning is the natural cue. Documented pass:
+[`docs/luna/compounding.md` §"A second loop: auto-memory → vault"](../../../docs/luna/compounding.md#a-second-loop-auto-memory--vault).
