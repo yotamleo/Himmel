@@ -1,0 +1,43 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "steps": {
+        "interval": {
+          "startTime": "2026-06-28T08:00:00Z",
+          "startUtcOffset": "7200s",
+          "endTime": "2026-06-28T09:00:00Z",
+          "endUtcOffset": "7200s"
+        },
+        "count": "1234"
+      }
+    },
+    {
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "steps": {
+        "interval": {
+          "startTime": "2026-06-27T10:00:00Z",
+          "startUtcOffset": "7200s",
+          "endTime": "2026-06-27T11:00:00Z",
+          "endUtcOffset": "7200s"
+        },
+        "count": "876"
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

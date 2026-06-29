@@ -9,6 +9,13 @@ external repo or hand-editing global `~/.claude/settings.json`.
 - **Vendored at commit:** `dd68f9b` (`fix(cache): incremental all-sessions scan + hide stale cache tier`)
 - **himmel cache-metrics patch:** `docs/patches/2026-05-16-cache-statusline.md`
 
+> **Local divergence pending re-vendor (HIMMEL-617):** `bin/statusline.sh` here
+> carries the `HIMMEL_STATUSLINE_PERIOD` bottom-row period knob (week/month/all),
+> which is **not yet in the fork**. This vendored copy is the deployed artifact,
+> so the feature ships; but it MUST be mirrored to `yotamleo/claude-statusline`
+> and the "Vendored at commit" SHA above bumped to the resulting fork commit on
+> the next fork push. (The local-hash drift guard is a separate follow-up.)
+
 ## What's here
 
 | File | Purpose |

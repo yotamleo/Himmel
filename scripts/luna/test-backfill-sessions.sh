@@ -1177,6 +1177,119 @@ _cryst_count=$(grep -l '^crystallized: true$' "$N19A" "$N19B" 2>/dev/null | wc -
 if [ "$_cryst_count" = "1" ]; then pass "recrys(limit): exactly one note crystallized on disk"; else fail "recrys(limit): $_cryst_count crystallized (expected 1)" "$out19l"; fi
 
 # ============================================================================
+# Case 20: progress logging (HIMMEL-627) — periodic heartbeat + per-note lines
+#          appear on stderr for a multi-note recrystallize run; the stdout
+#          summary line stays byte-stable; --limit chunk boundaries are
+#          observable per-note.
+# ============================================================================
+echo ""
+echo "Case 20: progress logging (heartbeat + per-note + summary byte-stable)"
+
+SB="$TMP_ROOT/case20"
+VAULT20="$SB/vault"
+PROJ_ROOT20="$SB/projects"
+STATE20="$SB/state.json"
+N20A="$VAULT20/sessions/2026/06/2026-06-20-0000-a.md"
+N20B="$VAULT20/sessions/2026/06/2026-06-20-0001-b.md"
+N20C="$VAULT20/sessions/2026/06/2026-06-20-0002-c.md"
+mkdir -p "$VAULT20" "$PROJ_ROOT20"
+write_content_note "$N20A" "prog-a"; seed_named_transcript "$PROJ_ROOT20" "prog-a" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+write_content_note "$N20B" "prog-b"; seed_named_transcript "$PROJ_ROOT20" "prog-b" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+write_content_note "$N20C" "prog-c"; seed_named_transcript "$PROJ_ROOT20" "prog-c" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+
+# --limit 2 + a heartbeat every note (BACKFILL_PROGRESS_EVERY=1): two notes
+# crystallize, one is capped. Capture stdout and stderr separately so the
+# byte-stable summary check is not polluted by the progress stream.
+ERR20="$SB/err.txt"
+out20=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-29T00:00:00Z" \
+    BACKFILL_PROGRESS_EVERY=1 \
+    bash "$BACKFILL" --recrystallize --limit 2 \
+    --projects-dir "$PROJ_ROOT20" --luna-vault-path "$VAULT20" \
+    --state-file "$STATE20" --vault-registry /dev/null 2>"$ERR20")
+err20="$(cat "$ERR20" 2>/dev/null)"
+
+# Heartbeat fired on stderr (scanned X/total). All three notes are scanned even
+# though only two are crystallized (the third is capped by --limit).
+assert_contains "progress: heartbeat shows scanned 1/3" "scanned 1/3" "$err20"
+assert_contains "progress: heartbeat shows final scanned 3/3" "scanned 3/3" "$err20"
+
+# Per-note lines: exactly two crystallizations observed (one per --limit chunk).
+PERNOTE20="$(printf '%s\n' "$err20" | grep -c 'recrystallize: crystallized .*\.md (' )"
+if [ "$PERNOTE20" = "2" ]; then
+    pass "progress: exactly two per-note crystallization lines (--limit 2 observable)"
+else
+    fail "progress: expected 2 per-note lines, got $PERNOTE20" "$err20"
+fi
+
+# Summary line on stdout is byte-stable (tests + scripts parse it).
+SUMMARY20="$(printf '%s\n' "$out20" | grep '^recrystallize: crystallized=')"
+if [ "$SUMMARY20" = "recrystallize: crystallized=2 skipped=1 (--limit 2)" ]; then
+    pass "progress: stdout summary line byte-stable under --limit"
+else
+    fail "progress: summary line changed" "got: [$SUMMARY20]"
+fi
+
+# Progress goes to stderr only — the stdout stream carries no heartbeat noise.
+assert_not_contains "progress: no heartbeat leaked onto stdout" "scanned " "$out20"
+
+# ============================================================================
+# Case 21: heartbeat is PERIODIC, not every-note (HIMMEL-627). With
+#          BACKFILL_PROGRESS_EVERY=2 over 3 notes the heartbeat fires at note 2
+#          only — "scanned 2/3" present, "scanned 1/3" and "scanned 3/3" absent.
+#          (Case 20 used EVERY=1, which fires every note and so does NOT prove
+#          the modulo gate.)
+# ============================================================================
+echo ""
+echo "Case 21: heartbeat fires periodically (EVERY=2), not every note"
+
+SB="$TMP_ROOT/case21"
+VAULT21="$SB/vault"; PROJ_ROOT21="$SB/projects"; STATE21="$SB/state.json"
+mkdir -p "$VAULT21" "$PROJ_ROOT21"
+for n in a b c; do
+    write_content_note "$VAULT21/sessions/2026/06/2026-06-20-000${n}-${n}.md" "per-$n"
+    seed_named_transcript "$PROJ_ROOT21" "per-$n" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+done
+ERR21="$SB/err.txt"
+env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-29T00:00:00Z" \
+    BACKFILL_PROGRESS_EVERY=2 \
+    bash "$BACKFILL" --recrystallize \
+    --projects-dir "$PROJ_ROOT21" --luna-vault-path "$VAULT21" \
+    --state-file "$STATE21" --vault-registry /dev/null >/dev/null 2>"$ERR21"
+err21="$(cat "$ERR21" 2>/dev/null)"
+assert_contains "periodic: heartbeat fires at note 2 (scanned 2/3)" "scanned 2/3" "$err21"
+assert_not_contains "periodic: no heartbeat at note 1 (every-2, not every-1)" "scanned 1/3" "$err21"
+assert_not_contains "periodic: no heartbeat at note 3 (3 % 2 != 0)" "scanned 3/3" "$err21"
+
+# ============================================================================
+# Case 22: --reheal emits progress too (HIMMEL-627). The reheal arm has its own
+#          per-note line + 5-field heartbeat, written independently of the
+#          recrystallize arm — Case 20/21 cover only recrystallize.
+# ============================================================================
+echo ""
+echo "Case 22: reheal mode emits heartbeat + per-note progress"
+
+SB="$TMP_ROOT/case22"
+VAULT22="$SB/vault"; PROJ_ROOT22="$SB/projects"; STATE22="$SB/state.json"
+NOTE22="$VAULT22/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT22" "$PROJ_ROOT22"
+write_husk_note "$NOTE22" "reheal-prog-001"
+seed_named_transcript "$PROJ_ROOT22" "reheal-prog-001" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+ERR22="$SB/err.txt"
+out22=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" BACKFILL_PROGRESS_EVERY=1 \
+    bash "$BACKFILL" --reheal \
+    --projects-dir "$PROJ_ROOT22" --luna-vault-path "$VAULT22" \
+    --state-file "$STATE22" --vault-registry /dev/null 2>"$ERR22")
+err22="$(cat "$ERR22" 2>/dev/null)"
+assert_contains "reheal-progress: heartbeat (reheal: scanned 1/1)" "reheal: scanned 1/1" "$err22"
+assert_contains "reheal-progress: per-note healed line" "reheal: healed 2026-06-20-0000-testrepo.md" "$err22"
+# Summary line on stdout unchanged + no progress leak.
+assert_contains "reheal-progress: stdout summary intact (healed=1)" "healed=1" "$out22"
+assert_not_contains "reheal-progress: no heartbeat leak onto stdout" "scanned " "$out22"
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""

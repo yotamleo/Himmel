@@ -414,5 +414,174 @@ assert_eq "per-field guard: valid five_hour cached despite bad seven_day" \
 assert_eq "per-field guard: bad seven_day stored as null, not aborted" \
     "$(jq -r '.seven_day.utilization' "$USAGE_CACHE" 2>/dev/null)" "null"
 
+# ── resolve_window: week/month/all + invalid (HIMMEL-617) ─────
+# `now` is pinned via HIMMEL_STATUSLINE_NOW so boundaries are deterministic.
+# Expected epochs are computed via `date` (not hardcoded) → tz-independent.
+mkdate() { date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$1" +%s; }
+NOW_WED=$(mkdate "2026-06-24 12:00:00")   # a Wednesday
+
+HIMMEL_STATUSLINE_NOW="$NOW_WED" resolve_window week
+assert_eq "week window_start = Monday 00:00" "$window_start" "$(mkdate "2026-06-22 00:00:00")"
+assert_eq "week window spans exactly 7 days"  "$(( window_end - window_start ))" "604800"
+assert_eq "week window_id labelled by Monday"  "$window_id" "week-20260622"
+
+HIMMEL_STATUSLINE_NOW="$NOW_WED" resolve_window month
+assert_eq "month window_start = 1st 00:00"   "$window_start" "$(mkdate "2026-06-01 00:00:00")"
+assert_eq "month window_end = next 1st 00:00" "$window_end"   "$(mkdate "2026-07-01 00:00:00")"
+assert_eq "month window_id"                   "$window_id"    "month-202606"
+
+resolve_window all
+assert_eq "all window_id keeps legacy name" "$window_id"    "all-stats"
+assert_eq "all window_start unbounded"      "$window_start" "0"
+
+# Invalid period → all window + a one-line stderr warning.
+RW_ERR=$(mktemp)
+HIMMEL_STATUSLINE_NOW="$NOW_WED" resolve_window "year" 2>"$RW_ERR"
+assert_eq "invalid period → all-stats window" "$window_id"    "all-stats"
+assert_eq "invalid period → start 0"          "$window_start" "0"
+grep -q "falling back to all" "$RW_ERR" \
+    && { echo "PASS: invalid period warns on stderr"; PASS=$(( PASS + 1 )); } \
+    || { echo "FAIL: invalid period emitted no stderr warning"; FAIL=$(( FAIL + 1 )); }
+rm -f "$RW_ERR"
+
+# ── Boundary reset: window_id flips across the Monday boundary ────
+SUN_LATE=$(mkdate "2026-06-21 23:59:00")   # Sunday → prior week
+MON_EARLY=$(mkdate "2026-06-22 00:01:00")  # Monday → new week
+HIMMEL_STATUSLINE_NOW="$SUN_LATE"  resolve_window week; WID_SUN="$window_id"
+HIMMEL_STATUSLINE_NOW="$MON_EARLY" resolve_window week; WID_MON="$window_id"
+if [ "$WID_SUN" != "$WID_MON" ]; then
+    echo "PASS: week window_id resets at Monday boundary ($WID_SUN → $WID_MON)"; PASS=$(( PASS + 1 ))
+else
+    echo "FAIL: week window_id did not reset across Monday ($WID_SUN)"; FAIL=$(( FAIL + 1 ))
+fi
+WED_SAME=$(mkdate "2026-06-24 09:00:00")
+HIMMEL_STATUSLINE_NOW="$WED_SAME" resolve_window week; WID_SAME="$window_id"
+assert_eq "same-week now keeps one window_id (cache reused)" "$WID_SAME" "$WID_MON"
+
+# ── Windowed aggregation: per-message timestamp re-sum (HIMMEL-617) ──
+# A file with messages spanning two months; the window must count only the
+# messages whose .timestamp falls in [start,end), not the whole-file sums the
+# `all` immutable index would carry.
+TMPDIR_WIN=$(mktemp -d)
+WP="$TMPDIR_WIN/.claude/projects"
+mkdir -p "$WP/proj"
+cat > "$WP/proj/s.jsonl" <<'EOF'
+{"type":"assistant","timestamp":"2026-05-10T10:00:00.000Z","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":111,"cache_read_input_tokens":222}}}
+{"type":"assistant","timestamp":"2026-06-05T10:00:00.000Z","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":1000,"cache_read_input_tokens":2000}}}
+{"type":"assistant","timestamp":"2026-06-20T10:00:00.000Z","message":{"usage":{"input_tokens":3,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}}}
+EOF
+JUN_S=$(mkdate "2026-06-01 00:00:00"); JUN_E=$(mkdate "2026-07-01 00:00:00")
+W_CACHE="$TMPDIR_WIN/c.json"; W_INDEX="$TMPDIR_WIN/i.json"
+rebuild_all_sessions_index "$WP" "$W_CACHE" "$W_INDEX" "$JUN_S" "$JUN_E" || true
+assert_eq "windowed reads = June messages only"  "$(jq -r '.reads'  "$W_CACHE" 2>/dev/null)" "6000"
+assert_eq "windowed writes = June messages only" "$(jq -r '.writes' "$W_CACHE" 2>/dev/null)" "4000"
+assert_eq "windowed inputs = June messages only" "$(jq -r '.inputs' "$W_CACHE" 2>/dev/null)" "5"
+
+# Same file, May window → only the May message (proves the window, not the file,
+# decides membership — the moving-window correctness the `all` index can't give).
+MAY_S=$(mkdate "2026-05-01 00:00:00"); MAY_E=$(mkdate "2026-06-01 00:00:00")
+W_CACHE5="$TMPDIR_WIN/c5.json"; W_INDEX5="$TMPDIR_WIN/i5.json"
+rebuild_all_sessions_index "$WP" "$W_CACHE5" "$W_INDEX5" "$MAY_S" "$MAY_E" || true
+assert_eq "windowed reads = May message only"  "$(jq -r '.reads'  "$W_CACHE5" 2>/dev/null)" "222"
+assert_eq "windowed inputs = May message only" "$(jq -r '.inputs' "$W_CACHE5" 2>/dev/null)" "1"
+rm -rf "$TMPDIR_WIN"
+
+# ── mtime prefilter: bound the scan without dropping in-window files (HIMMEL-617) ─
+# Regression guard for the "week/month row renders 0" bug: the windowed prefilter
+# used a bash stat-per-file loop (one process per transcript). On a large history
+# (1000+ files) that overran the render timeout, so the backgrounded rebuild never
+# finished and the per-window cache stayed at 0. The fix moves the mtime filter
+# into a single `find` (reference file + POSIX -newer). This test pins NOW via
+# HIMMEL_STATUSLINE_NOW, resolves the real week window, then proves the prefilter
+# (a) KEEPS a file whose mtime sits exactly on win_start (inclusive boundary — the
+# ref mtime is win_start-1), and (b) DROPS a file modified before the window — and
+# the resulting windowed sum is correct AND non-zero.
+TMPDIR_PF=$(mktemp -d)
+PF="$TMPDIR_PF/.claude/projects"; mkdir -p "$PF/proj"
+WK_S=$(mkdate "2026-06-22 00:00:00")        # this week's Monday 00:00 (= win_start)
+# In-window file: message inside [Mon,next Mon); mtime pinned to win_start exactly.
+echo '{"type":"assistant","timestamp":"2026-06-24T10:00:00.000Z","message":{"usage":{"input_tokens":7,"cache_creation_input_tokens":300,"cache_read_input_tokens":900}}}' > "$PF/proj/cur.jsonl"
+touch -d "@$WK_S" "$PF/proj/cur.jsonl" 2>/dev/null \
+    || touch -t "$(date -r "$WK_S" +%Y%m%d%H%M.%S 2>/dev/null)" "$PF/proj/cur.jsonl" 2>/dev/null
+# Out-of-window file: pre-window message AND mtime a day before win_start → dropped.
+echo '{"type":"assistant","timestamp":"2026-05-01T10:00:00.000Z","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":5000,"cache_read_input_tokens":9999}}}' > "$PF/proj/old.jsonl"
+touch -d "@$(( WK_S - 86400 ))" "$PF/proj/old.jsonl" 2>/dev/null \
+    || touch -t "$(date -r "$(( WK_S - 86400 ))" +%Y%m%d%H%M.%S 2>/dev/null)" "$PF/proj/old.jsonl" 2>/dev/null
+HIMMEL_STATUSLINE_NOW="$NOW_WED" resolve_window week
+PF_C="$TMPDIR_PF/c.json"; PF_I="$TMPDIR_PF/i.json"
+rebuild_all_sessions_index "$PF" "$PF_C" "$PF_I" "$window_start" "$window_end" || true
+assert_eq "prefilter: windowed reads = in-window file only"  "$(jq -r '.reads'  "$PF_C" 2>/dev/null)" "900"
+assert_eq "prefilter: windowed writes = in-window file only" "$(jq -r '.writes' "$PF_C" 2>/dev/null)" "300"
+assert_eq "prefilter: windowed inputs = in-window file only" "$(jq -r '.inputs' "$PF_C" 2>/dev/null)" "7"
+PF_READS=$(jq -r '.reads' "$PF_C" 2>/dev/null)
+if [ "${PF_READS:-0}" -gt 0 ] 2>/dev/null; then
+    echo "PASS: windowed reads non-zero (regression: timeout left it at 0)"; PASS=$(( PASS + 1 ))
+else
+    echo "FAIL: windowed reads is 0 — windowed aggregation regressed"; FAIL=$(( FAIL + 1 ))
+fi
+rm -rf "$TMPDIR_PF"
+
+# ── period=all bottom rows are byte-exact vs committed golden ─────
+# Guards the default path: my change must not alter a single byte of the `all`
+# render. The golden was captured from the PRE-EDIT script on this fixture.
+GOLDEN="$SCRIPT_DIR/golden-all-row.txt"
+if [ -f "$GOLDEN" ]; then
+    TMPDIR_G=$(mktemp -d)
+    mkdir -p "$TMPDIR_G/.claude/projects/test"
+    G_TX="$TMPDIR_G/sess.jsonl"
+    cat > "$G_TX" <<'EOF'
+{"type":"assistant","timestamp":"2026-05-16T10:00:00.000Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":100,"cache_creation_input_tokens":5000,"cache_read_input_tokens":20000,"output_tokens":50}}}
+{"type":"assistant","timestamp":"2026-05-16T10:05:00.000Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":18000,"output_tokens":80}}}
+EOF
+    cp "$G_TX" "$TMPDIR_G/.claude/projects/test/sess.jsonl"
+    mkdir -p /tmp/claude
+    # Let any in-flight all-stats rebuild spawned by an earlier test finish — it
+    # holds the lock dir while writing, and could otherwise clobber the pinned
+    # cache between our write and read (the same shared-cache race the all_reads
+    # test carries; a clean /tmp/claude with no live sessions has neither).
+    for _w in 1 2 3 4 5 6 7 8 9 10; do
+        [ -d /tmp/claude/cache-all-stats-index.json.lock ] || break
+        sleep 0.3
+    done
+    rm -f /tmp/claude/cache-all-stats-index.json
+    echo '{"reads":26800000,"writes":965000,"inputs":250000}' > /tmp/claude/cache-all-stats.json
+    # Fresh cache (age 0 < 30s) → no rebuild spawns → the pinned totals are read.
+    HOME="$TMPDIR_G" HIMMEL_STATUSLINE_PERIOD=all \
+        build_cache_lines "$G_TX" "claude-sonnet-4-6" "0.0400"
+    GOT_RENDER=$(printf "%b" "$cache_lines")
+    WANT_RENDER=$(cat "$GOLDEN")
+    assert_eq "period=all bottom rows match committed golden (byte-exact)" \
+        "$GOT_RENDER" "$WANT_RENDER"
+    rm -rf "$TMPDIR_G"
+else
+    echo "FAIL: golden fixture $GOLDEN missing"; FAIL=$(( FAIL + 1 ))
+fi
+
+# ── Label reflects the active period (HIMMEL-617) ────────────────
+# End-to-end through build_cache_lines: period=month renders a "month" label and
+# reads the per-window cache file (cache-month-202606.json — unique to this test,
+# so no race with the shared all-stats cache).
+TMPDIR_LBL=$(mktemp -d)
+mkdir -p "$TMPDIR_LBL/.claude/projects/p"
+LBL_TX="$TMPDIR_LBL/s.jsonl"
+echo '{"type":"assistant","timestamp":"2026-06-20T10:00:00.000Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}}' > "$LBL_TX"
+cp "$LBL_TX" "$TMPDIR_LBL/.claude/projects/p/s.jsonl"
+mkdir -p /tmp/claude
+echo '{"reads":6000,"writes":4000,"inputs":5}' > /tmp/claude/cache-month-202606.json
+HOME="$TMPDIR_LBL" HIMMEL_STATUSLINE_PERIOD=month HIMMEL_STATUSLINE_NOW="$NOW_WED" \
+    build_cache_lines "$LBL_TX" "claude-sonnet-4-6" ""
+plain_lbl=$(printf "%b" "$cache_lines" | sed 's/\x1b\[[0-9;]*m//g')
+echo "$plain_lbl" | grep -qE '^month ' \
+    && { echo "PASS: period=month renders a 'month' label"; PASS=$(( PASS + 1 )); } \
+    || { echo "FAIL: month label missing in: $plain_lbl"; FAIL=$(( FAIL + 1 )); }
+echo "$plain_lbl" | grep -qE '^all ' \
+    && { echo "FAIL: stale 'all' label present under period=month: $plain_lbl"; FAIL=$(( FAIL + 1 )); } \
+    || { echo "PASS: no 'all' label under period=month"; PASS=$(( PASS + 1 )); }
+echo "$plain_lbl" | grep -q "r:6k" \
+    && { echo "PASS: month row reads from per-window cache (6k)"; PASS=$(( PASS + 1 )); } \
+    || { echo "FAIL: month windowed totals missing in: $plain_lbl"; FAIL=$(( FAIL + 1 )); }
+rm -f /tmp/claude/cache-month-202606.json
+rm -rf "$TMPDIR_LBL"
+
 echo ""; echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

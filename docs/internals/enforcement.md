@@ -479,6 +479,53 @@ Companion: `scripts/hooks/test-inject-initiative.sh` (paired smoke suite).
 Sits alongside the bypass/opt-in flags (`EDIT_ON_MAIN_OK`, `READ_SECRETS_OK`,
 `IMPROVE_ON_SUBMIT`) — all set in the shell that LAUNCHED Claude.
 
+## Claude SessionEnd Hooks
+
+Wired in the `SessionEnd` array of the himmel-ops plugin `hooks.json`
+(exec-if-exists); fire once when a session ends. Stdout lands in the session
+transcript (not operator-visible live). Coexist with any user-level SessionEnd
+hook (e.g. `end-session-wiki`); Claude Code runs all registered SessionEnd
+hooks. Alongside `refresh-where-are-we-on-end.sh` (HIMMEL-572):
+
+### `jira-nudge-on-end.sh` — advisory Jira-update nudge (HIMMEL-618)
+
+Default: OFF. When `HIMMEL_JIRA_NUDGE` is truthy (`1`/`true`/`on`/`yes`,
+resolved from the launching shell OR the session repo's `.env`), this hook
+emits **one** advisory line if a session committed work clearly tied to a Jira
+ticket but made **no** Jira mutation that session — so the operator keeps the
+tracker in sync. It is **advisory only**: it never performs a Jira write and
+never blocks teardown (always exits 0).
+
+Detection (ALL must hold, else silent no-nudge): a parseable transcript
+first-timestamp (session-start epoch via `session-transcript.sh`); at least one
+in-window commit (`git log --since=@<start>` — read-only sessions never nudge);
+`JIRA_PROJECT_KEY` resolvable from the repo `.env`; the branch name OR an
+in-window commit subject references `<KEY>-<N>`; and **no** jira-mutation
+breadcrumb dated at/after the session start.
+
+The breadcrumb is the "did this session touch Jira" signal: every mutating jira
+CLI verb (`transition`, `comment`, `create`, `move`, `edit`, `assign`,
+`worklog add`, `link`, `sprint`) calls a shared `writeJiraBreadcrumb()`
+(`scripts/jira/src/breadcrumb.ts`) immediately after its mutating request
+resolves — NOT gated on the command's exit code, so a mutation that landed
+before a later non-fatal failure (e.g. an attachment upload) still counts. The
+breadcrumb is a machine-global append-only log at
+`~/.claude/jira-breadcrumbs/<repo-key>__<branch>.log` (line `<epoch>\t<TICKET>`),
+keyed by the basename of `git remote get-url origin` (stable across worktrees,
+so the CLI writer and the hook reader agree). Session-id keying is impossible —
+the standalone CLI process never receives the Claude `session_id` — so the hook
+matches on `epoch >= session-start`; residual cross-session suppression (two
+parallel sessions on one ticket) is an accepted limitation. The reader path
+lives in `scripts/lib/jira-breadcrumb.sh`.
+
+Suppressed when the `ticket` initiative leg is active (`HIMMEL_INITIATIVE`
+includes `ticket`) — that leg already injects the same reminder at SessionStart,
+so this is the second advisory surface for when the leg is OFF, not a structural
+backstop. Nudge surface: stdout + a Telegram relay when configured
+(`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, or the `JIRA_NUDGE_RELAY_CMD`
+override) — the only operator-reaching channel for an unattended session.
+Paired hermetic suite: `scripts/hooks/test-jira-nudge-on-end.sh`.
+
 ## Claude PostToolUse Hooks
 
 One hook wired in `.claude/settings.json` fires AFTER a tool call completes.

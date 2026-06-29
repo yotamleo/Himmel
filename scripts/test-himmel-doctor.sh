@@ -171,6 +171,32 @@ out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME=
 if printf '%s' "$out" | grep -q 'OK   C6-mcp'; then pass "C6 -> OK (absolute)"; else fail "C6 -> $(printf '%s' "$out" | grep C6)"; fi
 rm -rf "$t"
 
+# C6-hooks (HIMMEL-611): a hook command leading with a bare interpreter that is
+# absent on THIS host. Use $TOOLS_PATH (real coreutils dirs — keeps bash + its
+# DLLs working on MINGW) which excludes pwsh; guard the WARN assertion in case a
+# host genuinely has pwsh on that path.
+echo "== C6-hooks: bare pwsh hook on a host without pwsh -> WARN =="
+if PATH="$TOOLS_PATH" bash -c '! command -v pwsh >/dev/null 2>&1' 2>/dev/null; then
+    t="$(mktemp -d)"; mkdir -p "$t/claude"
+    cat > "$t/claude/settings.json" <<'EOF'
+{ "mcpServers": {}, "hooks": { "SessionEnd": [ { "hooks": [ { "type": "command", "command": "pwsh -NoProfile -File \"/x/end-session-wiki.ps1\"", "shell": "powershell" } ] } ] } }
+EOF
+    out="$(PATH="$TOOLS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+    if printf '%s' "$out" | grep -q 'WARN C6-hooks' && printf '%s' "$out" | grep -q 'pwsh'; then pass "C6-hooks -> WARN (pwsh absent)"; else fail "C6-hooks -> $(printf '%s' "$out" | grep C6-hooks)"; fi
+    rm -rf "$t"
+else
+    pass "C6-hooks -> WARN (skipped: pwsh present under TOOLS_PATH on this host)"
+fi
+
+echo "== C6-hooks: wrapper-routed pwsh twin (leading bash) -> OK =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "mcpServers": {}, "hooks": { "SessionEnd": [ { "hooks": [ { "type": "command", "command": "bash \"/x/scripts/lib/run-pwsh.sh\" \"/x/end-session-wiki.ps1\"", "shell": "bash" } ] } ] } }
+EOF
+out="$(PATH="$TOOLS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C6-hooks'; then pass "C6-hooks -> OK (wrapper-routed)"; else fail "C6-hooks -> $(printf '%s' "$out" | grep C6-hooks)"; fi
+rm -rf "$t"
+
 # ── C7: merged-PR worktree detective check ───────────────────────────────────
 # Build a real temp git repo with real worktrees; stub the forge via GH_CMD.
 

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { Command } from 'commander';
 import { request, projectKey } from '../client.js';
+import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import { markdownToAdf } from '../adf.js';
 import type { CreateIssueResponse } from '../types.js';
 import { uploadAll } from './attach-helper.js';
@@ -63,6 +64,9 @@ export function registerCreate(program: Command): void {
         if (options.labels !== undefined) fields['labels'] = parseLabels(options.labels);
 
         const result = await request<CreateIssueResponse>('POST', '/issue', { fields });
+        // Breadcrumb BEFORE attachments (same rationale as comment): the issue
+        // exists even if a later attachment upload fails (HIMMEL-618 F11).
+        writeJiraBreadcrumb(result.key);
 
         // Print the issue key to STDOUT immediately on success, BEFORE
         // attempting attachments. Scripted callers like

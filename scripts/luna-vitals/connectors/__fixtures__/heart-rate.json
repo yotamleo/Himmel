@@ -1,0 +1,63 @@
+{
+  "dataPoints": [
+    {
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "heartRate": {
+        "sampleTime": {
+          "physicalTime": "2026-06-28T21:13:00Z",
+          "utcOffset": "7200s",
+          "civilTime": {
+            "date": {
+              "year": 2026,
+              "month": 6,
+              "day": 28
+            },
+            "time": {
+              "hours": 23,
+              "minutes": 13
+            }
+          }
+        },
+        "beatsPerMinute": "81",
+        "metadata": {}
+      }
+    },
+    {
+      "dataSource": {
+        "recordingMethod": "UNKNOWN",
+        "device": {},
+        "application": {
+          "packageName": "com.sec.android.app.shealth"
+        },
+        "platform": "HEALTH_CONNECT"
+      },
+      "heartRate": {
+        "sampleTime": {
+          "physicalTime": "2026-06-28T05:45:00Z",
+          "utcOffset": "7200s",
+          "civilTime": {
+            "date": {
+              "year": 2026,
+              "month": 6,
+              "day": 28
+            },
+            "time": {
+              "hours": 7,
+              "minutes": 45
+            }
+          }
+        },
+        "beatsPerMinute": "58",
+        "metadata": {}
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

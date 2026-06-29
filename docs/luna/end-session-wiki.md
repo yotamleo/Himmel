@@ -42,7 +42,7 @@ flowchart TD
         H -- "content-free" --> SKIP["skip (no note)"]
         H -- "has content" --> M["mechanical note<br/>crystallized: false"]
         M --> C{"crystallize?"}
-        C -- "live: auto-spawn now<br/>backfill: later, via --reheal" --> X["LLM crystallizer<br/>→ crystallized: true"]
+        C -- "live: auto-spawn now<br/>backfill: later, via --recrystallize" --> X["LLM crystallizer<br/>→ crystallized: true"]
         C -- "no claude / capped / disabled<br/>(plain backfill stops here)" --> KEEP["mechanical note stands"]
         X --> S["&lt;vault&gt;/sessions/YYYY/MM/"]
         KEEP --> S
@@ -72,9 +72,9 @@ distinct future ticket, separate from HIMMEL-564 (which mines agent memories).
 
 The hook first writes a **mechanical** note: frontmatter + the six sections rendered straight from the transcript (last assistant turn → Summary, parsed commands → Commands, the git diff → Files Touched). That note carries `crystallized: false`. Immediately afterward, on every success-write path, the hook spawns a best-effort background **crystallizer** that asks a bounded `claude` run to rewrite the four prose sections — Summary, Decisions, Files Touched, Follow-ups — into a real synthesis of the session. When the body actually changes, the **script** (not the model) flips the note to `crystallized: true` (+ `crystallized_at`). All other frontmatter (date, session_id, repo, branch, worktree, source) and the Raw Conversation callout are preserved verbatim.
 
-A note that stays `crystallized: false` is the valid mechanical baseline, **not** a failure — the crystallizer is fail-open and recoverable (see [Reheal](#reheal-recover-existing-husk-notes)).
+A note that stays `crystallized: false` is the valid mechanical baseline, **not** a failure — the crystallizer is fail-open and recoverable (see [Reheal](#reheal--recover-existing-husk-notes)).
 
-**Mechanism — bounded `claude`, billed to Max.** The crystallizer is `scripts/luna/crystallize-note.sh`. It runs `claude "<prompt>" </dev/null` (an *interactive* bounded run, not headless `-p`), so it bills to the operator's Max plan and needs **no API key** — and is HIMMEL-128-safe. The note lives in the luna vault, **outside** the himmel repo, so the run uses **cwd = the note's directory** (which puts the note in the spawned run's workspace, so `--permission-mode acceptEdits` can auto-approve the edit), `--add-dir <transcript-dir>` (to read the transcript), and injects himmel's `auto-approve-safe-bash` PreToolUse hook by absolute path via `--settings` (the vault cwd carries no himmel project settings). Earlier versions ran in the himmel repo root and the out-of-workspace note edit silently fell through to a permission prompt that `</dev/null` EOFed — leaving the note byte-unchanged at `crystallized: false` (HIMMEL-590 F1). The spawn is fully detached (`scripts/lib/detach.sh` — `setsid`, or a double-fork on macOS) so it outlives the hook's process-group teardown; the hook never blocks on it and never exits non-zero because of it.
+**Mechanism — bounded `claude`, billed to Max.** The crystallizer is `scripts/luna/crystallize-note.sh`. It runs `claude "<prompt>" </dev/null` (an *interactive* bounded run, not headless `-p`), so it bills to the operator's Max plan and needs **no API key** — and is HIMMEL-128-safe. The note lives in the luna vault, **outside** the himmel repo, so the run uses **cwd = the note's directory** (which puts the note in the spawned run's workspace, so `--permission-mode acceptEdits` can auto-approve the edit), `--add-dir <transcript-dir>` (to read the transcript), and injects himmel's `auto-approve-safe-bash` PreToolUse hook by absolute path via `--settings` (the vault cwd carries no himmel project settings). Earlier versions ran in the himmel repo root and the out-of-workspace note edit silently fell through to a permission prompt that `</dev/null` EOFed — leaving the note byte-unchanged at `crystallized: false` (HIMMEL-590 F1). The spawn is fully detached (`scripts/lib/detach.sh` — `setsid` where available, else a backgrounded job released with `disown` so the hook's exit never waits for it — HIMMEL-623) so it outlives the hook's process-group teardown; the hook never blocks on it and never exits non-zero because of it.
 
 **Edit-confirmed flag (HIMMEL-590).** The `crystallized` flag is owned by the script, not the LLM: it compares the note's hash before/after the `claude` run and sets `crystallized: true` only when the note actually changed (the prompt forbids touching the frontmatter, so any change is a body change). A no-op run (cap hit, refusal, EOF) leaves the note byte-unchanged at `crystallized: false`; a real synthesis always flips it — so the flag can never be falsely set, and a hermetic test asserts the spawn's workspace shape so the F1 boundary regression can't return.
 
@@ -104,6 +104,15 @@ If husk notes already exist in a vault (e.g. captured before the husk-skip gate 
 - if the transcript is genuinely contentless, missing, or only mechanically un-liftable this run → leaves the husk as-is (a later run with `claude` available crystallizes it).
 
 Idempotent: a healed (`crystallized: true`) note — and any note a mechanical pass can't lift — is left byte-unchanged on re-run (no rewrite loop). Inert husks persist — there is no auto-delete. See [`/luna-backfill --reheal`](../../.claude/commands/luna-backfill.md).
+
+### Recrystallize — crystallize content-bearing notes `--reheal` skips (HIMMEL-620)
+
+`--reheal` is **husk-only** (the three-part predicate above), so it skips a note that has a real Raw Conversation but is still `crystallized: false` — which is exactly the shape of a backfilled prose-session note (plain `backfill-sessions.sh` writes mechanical `crystallized: false` notes) and of an F1-affected live note. `backfill-sessions.sh --recrystallize` closes that gap: it crystallizes **any** note with `crystallized != true` that has a recoverable (content-bearing) transcript, not just husks. It is **LLM-only** (a mechanical re-render stays `crystallized: false`), so a missing `claude` skips rather than degrades.
+
+- **`--limit N`** caps real crystallizations per run (token-cost guard; one `claude` run per note). Remaining notes recover on a later run (idempotent). Run **`--recrystallize --dry-run` first** — it reports the FULL recoverable count (ignores `--limit`) so you can size batches against the real cost.
+- A long run is **observably-progressing** (HIMMEL-627): a periodic `scanned X/total` heartbeat plus a per-note line as each crystallization lands print to stderr; the machine-parseable summary line stays on stdout. See [`/luna-backfill`](../../.claude/commands/luna-backfill.md).
+
+So: **`--reheal`** for husks (contentless-looking notes captured before the husk-skip gate), **`--recrystallize`** for content-bearing-but-uncrystallized notes (backfilled prose sessions, the common case).
 
 ## Security note — log files contain raw transcript text
 

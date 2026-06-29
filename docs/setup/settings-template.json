@@ -45,8 +45,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh -NoProfile -File \"<himmel-path>/scripts/hooks/end-session-wiki.ps1\"",
-            "shell": "powershell",
+            "command": "bash \"<himmel-path>/scripts/lib/run-pwsh.sh\" \"<himmel-path>/scripts/hooks/end-session-wiki.ps1\"",
+            "shell": "bash",
             "timeout": 30
           },
           {

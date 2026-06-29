@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { request } from '../client.js';
+import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import type { JiraTransition } from '../types.js';
 
 export function findTransition(
@@ -29,6 +30,7 @@ export function registerTransition(program: Command): void {
       await request('POST', `/issue/${key}/transitions`, {
         transition: { id: match.id },
       });
+      writeJiraBreadcrumb(key);
       console.log(`${key} → ${match.name}`);
     });
 }

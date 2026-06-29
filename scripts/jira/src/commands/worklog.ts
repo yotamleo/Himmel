@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { request } from '../client.js';
+import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import { markdownToAdf } from '../adf.js';
 
 export function buildWorklogBody(opts: { time: string; comment?: string; started?: string }): Record<string, unknown> {
@@ -21,6 +22,7 @@ export function registerWorklog(program: Command): void {
     .option('--started <iso>', 'Start time, Jira ISO (e.g. 2026-06-20T10:00:00.000+0000)')
     .action(async (key: string, opts: { time: string; comment?: string; started?: string }) => {
       await request('POST', `/issue/${key}/worklog`, buildWorklogBody(opts));
+      writeJiraBreadcrumb(key);
       console.log(`Logged ${opts.time} on ${key}`);
     });
   wl.command('list <key>')

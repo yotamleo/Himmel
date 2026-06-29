@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { request, severityField } from '../client.js';
+import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import { markdownToAdf } from '../adf.js';
 import { readBodyFile } from './body-file.js';
 import { parseLabels } from './labels.js';
@@ -88,6 +89,7 @@ export function registerEdit(program: Command): void {
       }
       const fields = buildEditFields(options);
       await request('PUT', `/issue/${key}`, { fields });
+      writeJiraBreadcrumb(key);
       console.log(`${key} edited`);
     });
 }

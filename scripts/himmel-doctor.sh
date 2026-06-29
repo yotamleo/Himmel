@@ -186,10 +186,19 @@ check_c5() {
     fi
 }
 
-# --- C6: PATH-fragile bare-interpreter MCP servers ------------------------------
+# --- C6: PATH-fragile bare-interpreter MCP servers + hooks ----------------------
 # Same failure class as C1 node: a macOS GUI launch has a minimal PATH, so an MCP
 # server wired as a bare interpreter name (uvx/bun/deno/python/pwsh) silently fails
 # to start and all its tools vanish. Scans user settings + the himmel plugins.
+#
+# C6-hooks (HIMMEL-611) extends the scan to HOOK commands. A hook wired to lead
+# with a bare interpreter that is NOT installed on THIS host (the canonical case:
+# a `pwsh -NoProfile -File …` SessionEnd twin copied literally onto a host without
+# PowerShell) prints `pwsh: command not found` every session. Unlike the MCP scan
+# (which flags any bare interpreter, since the GUI PATH differs), the hook scan
+# gates on the interpreter being genuinely absent here — that is the actual
+# per-session error. The shipped template routes the pwsh twin through
+# scripts/lib/run-pwsh.sh (leading token `bash`), so a current wiring never trips.
 check_c6() {
     local fragile="" name c
     _scan_mcp() { # $1 = json file with .mcpServers
@@ -209,6 +218,28 @@ EOF
         emit WARN C6-mcp "MCP server(s) wired as a bare interpreter a PATH-less GUI launch often lacks:$fragile — the server + its tools silently fail to start on macOS app launch" "expose the interpreter's bin dir on the launch PATH, or wire an absolute command"
     else
         emit OK C6-mcp "no PATH-fragile bare-interpreter MCP servers"
+    fi
+
+    # C6-hooks: bare-interpreter hook commands whose interpreter is MISSING here.
+    local hook_bad="" cmd lead
+    if [ -f "$SETTINGS" ]; then
+        while IFS= read -r cmd; do
+            [ -n "$cmd" ] || continue
+            lead="${cmd%% *}"          # leading token = the interpreter
+            case "$lead" in */*) continue ;; esac
+            case "$lead" in
+                uvx|uv|bun|node|deno|python|python3|pwsh)
+                    command -v "$lead" >/dev/null 2>&1 || hook_bad="$hook_bad ${lead}"
+                    ;;
+            esac
+        done <<EOF
+$(jq -r '(.hooks // {}) | to_entries[] | .value[]? | .hooks[]? | .command // empty' "$SETTINGS" 2>/dev/null)
+EOF
+    fi
+    if [ -n "$hook_bad" ]; then
+        emit WARN C6-hooks "hook(s) wired to a bare interpreter not installed on this host:$hook_bad — every session prints '<interp>: command not found'" "install the interpreter, or route the hook through a guarded wrapper (e.g. scripts/lib/run-pwsh.sh) / re-run himmel setup"
+    else
+        emit OK C6-hooks "no hooks wired to a missing bare interpreter"
     fi
 }
 
