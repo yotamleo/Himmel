@@ -171,6 +171,57 @@ build_case "$PAST" "feat/HIMMEL-123" "did work" 0 0
 OUT="$(run_hook 1 "")"
 assert_no_nudge "unresolved-key suppresses" "$OUT"
 
+# 8b. Relay is DETACHED + FIRED (HIMMEL-635): drive the real Telegram path (no
+#     JIRA_NUDGE_RELAY_CMD seam) with a `curl` stub that DROPS A MARKER then
+#     sleeps past the hook budget. The hook must return FAST (proving detach) AND
+#     the marker must land (proving the relay was actually launched — the hook's
+#     `trap exit 0` returns 0 on every path, so timing alone can't tell "detached"
+#     from "never fired"). Skipped where GNU coreutils `timeout` is absent (stock
+#     macOS); the detach primitive's setsid+disown branches are covered portably
+#     by scripts/lib/test-detach.sh, so this case only proves the hook WIRES it.
+if command -v timeout >/dev/null 2>&1; then
+    build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+    CURL_MARK="$ROOT_TMP/curl-fired"
+    rm -f "$CURL_MARK"
+    # Unquoted heredoc so $CURL_MARK bakes into the stub; the surrounding quotes
+    # stay literal (only $CURL_MARK expands).
+    cat > "$STUB_DIR/curl" <<CURLEOF
+#!/usr/bin/env bash
+: > "$CURL_MARK"
+sleep 12
+CURLEOF
+    chmod +x "$STUB_DIR/curl"
+    _t0=$(date +%s)
+    printf '%s' "$CASE_PAYLOAD" | timeout 15 env -u JIRA_PROJECT_KEY \
+        -u HIMMEL_INITIATIVE -u HIMMEL_INITIATIVE_OVERNIGHT -u HIMMEL_OVERNIGHT \
+        HOME="$CASE_HOME" USERPROFILE="$CASE_HOME" PATH="$STUB_DIR:$PATH" \
+        HIMMEL_JIRA_NUDGE=1 TELEGRAM_BOT_TOKEN=t TELEGRAM_CHAT_ID=c \
+        bash "$HOOK" >/dev/null 2>&1
+    _rc=$?
+    _elapsed=$(( $(date +%s) - _t0 ))
+    # The detached curl writes its marker asynchronously — wait briefly for it.
+    _w=0; while [ ! -f "$CURL_MARK" ] && [ "$_w" -lt 5 ]; do sleep 1; _w=$((_w + 1)); done
+    rm -f "$STUB_DIR/curl"
+    if [ "$_rc" -eq 0 ] && [ "$_elapsed" -lt 10 ] && [ -f "$CURL_MARK" ]; then
+        pass "relay detached + fired (returns fast AND curl was launched)"
+    else
+        fail "relay detached + fired (rc=$_rc elapsed=${_elapsed}s marker=$([ -f "$CURL_MARK" ] && echo Y || echo N))"
+    fi
+    rm -f "$CURL_MARK"
+else
+    echo "SKIP relay-detached (no GNU coreutils timeout on this runner)"
+fi
+
+# 8c. Relay configured for NEITHER channel (no seam, no TELEGRAM_*) — the default
+#     production posture. The hook must still emit the stdout nudge and exit 0.
+build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+OUT="$(printf '%s' "$CASE_PAYLOAD" | env -u JIRA_PROJECT_KEY \
+    -u HIMMEL_INITIATIVE -u HIMMEL_INITIATIVE_OVERNIGHT -u HIMMEL_OVERNIGHT \
+    -u JIRA_NUDGE_RELAY_CMD -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID \
+    HOME="$CASE_HOME" USERPROFILE="$CASE_HOME" PATH="$STUB_DIR:$PATH" \
+    HIMMEL_JIRA_NUDGE=1 bash "$HOOK" 2>/dev/null)"
+assert_nudge "neither-channel still nudges stdout" "$OUT"
+
 # 9. Tripwire: the jira CLI (node) was never invoked across all cases.
 if [ -f "$TRIPWIRE" ]; then fail "jira CLI never invoked"; else pass "jira CLI never invoked"; fi
 

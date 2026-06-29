@@ -82,6 +82,18 @@ jobs:
     continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
+      # arm-resume's non-dry-run cases exercise the real `at` scheduler backend,
+      # which the supported runtime provides (HIMMEL-594 `ubuntu.sh` installs +
+      # enables at/atd). GitHub's ubuntu image ships without `at`, so CI fell back
+      # to the crontab path and ~2 arm-resume cases diverged from a real install.
+      # Install + enable it on Linux so CI mirrors the supported runtime
+      # (HIMMEL-619). Scoped to Linux: no-op on the nightly windows/macOS legs.
+      - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y at
+          sudo systemctl enable --now atd || sudo service atd start || true
       # Explicit `bash` prefix: on windows-latest the default run shell is pwsh,
       # but Git Bash is preinstalled + on PATH, so `bash …` runs under MSYS2.
       - run: bash scripts/ci/run-shell-tests.sh

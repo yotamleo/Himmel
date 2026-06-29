@@ -139,11 +139,19 @@ relay_nudge() {
     fi
     if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ] \
         && command -v curl >/dev/null 2>&1; then
-        curl -sS -m 10 -o /dev/null \
+        # Detach the relay (HIMMEL-635, extends the HIMMEL-623 detach pattern):
+        # a synchronous `curl -m 10` can block
+        # session teardown up to 10s and trip the SessionEnd hook budget (the
+        # recurring "Hook cancelled"). The relay is best-effort and its result is
+        # irrelevant to the ending session, so fire it in a setsid/disown child
+        # (lib/detach.sh) and return immediately. detach_run already redirects the
+        # child's std{in,out,err} to /dev/null, so it never holds the hook's pipes.
+        # shellcheck source=/dev/null
+        . "$HOOK_LIB/detach.sh"
+        detach_run curl -sS -m 10 -o /dev/null \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
             --data-urlencode "text=${msg}" \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            >/dev/null 2>&1 || true
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
     fi
 }
 relay_nudge "$NUDGE"
