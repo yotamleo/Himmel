@@ -108,9 +108,15 @@ compute_duration() {
     DURATION_MINUTES=0
 
     if [ -n "$first_ts" ] && [ -n "$now_epoch" ]; then
-        # GNU date understands ISO 8601 with Z; fall back to 0 on failure
-        local start_epoch
-        start_epoch="$(date -u -d "$first_ts" +%s 2>/dev/null || echo "")"
+        # GNU date parses ISO 8601 via `-d`; macOS/BSD date has no `-d` and needs
+        # `-j -f <fmt>` over a fixed-format input. Normalise to seconds precision
+        # (strip fractional secs AND a trailing Z) so the BSD format matches both
+        # `...:SS.sssZ` and `...:SSZ` shapes. Try GNU first, then BSD; 0 on failure. (GH#192)
+        local start_epoch bsd_ts
+        bsd_ts="${first_ts%%.*}"; bsd_ts="${bsd_ts%Z}"
+        start_epoch="$(date -u -d "$first_ts" +%s 2>/dev/null \
+            || date -u -j -f "%Y-%m-%dT%H:%M:%S" "$bsd_ts" +%s 2>/dev/null \
+            || echo "")"
         if [ -n "$start_epoch" ] && [ "$start_epoch" -gt 0 ]; then
             local delta diff
             delta=$(( now_epoch - start_epoch ))
