@@ -300,6 +300,26 @@ opt-in default-OFF is preserved — uncomment one line to enable.
 `scripts/uninstall.sh` step `[6/6]` is the symmetric teardown — it removes exactly
 what setup/adopt wired (preserving your non-himmel keys); `--skip-settings` keeps it.
 
+### 4c. Scheduler backend (auto-arm resume) (HIMMEL-594)
+
+The usage-cap auto-resume (`auto-arm-on-cap` → `arm-resume.sh`) schedules a
+relaunch via the OS scheduler. The watchdog hook is wired above, but the
+*scheduler backend* it relies on must exist or the armed resume silently never
+fires:
+
+- **Linux** — needs `at` + a running `atd`. `ubuntu.sh` installs+enables it
+  (prompted); or do it by hand: `sudo apt install -y at && sudo systemctl
+  enable --now atd`. (crontab is only a weaker fallback when `at` is absent.)
+- **macOS** — uses `crontab` (arm-resume skips `at`/atrun, which is
+  off-by-default / SIP-fragile). Run `scripts/machine-setup/macos.sh` (**ALPHA**
+  — validate it fires and file an issue). cron may need Full Disk Access on
+  modern macOS.
+- **Windows** — `schtasks` is always present; nothing to do.
+
+Diagnose any existing install with `/himmel-doctor` (the **C9-scheduler** check
+reports OK / WARN + the exact per-OS remediation; it never runs a privileged
+command).
+
 ---
 
 ## 5. Luna Vault
@@ -376,7 +396,7 @@ git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/plug
 
 # 2. himmel marketplace (carries handover + obsidian-triage + claude-obsidian)
 # inside Claude Code:
-#   /plugin marketplace add yotamleo/himmel
+#   /plugin marketplace add yotamleo/Himmel
 #   /plugin install handover
 #
 #   # Optional — Web Clipper triage stack (skip if §5a was skipped)
@@ -409,7 +429,7 @@ The setup scripts let you pick: `scripts/machine-setup/install-plugins.{sh,ps1}`
 // <repo>/.claude/settings.json
 {
   "extraKnownMarketplaces": {
-    "himmel": { "source": { "source": "github", "repo": "yotamleo/himmel" } }
+    "himmel": { "source": { "source": "github", "repo": "yotamleo/Himmel" } }
   },
   "enabledPlugins": {
     "obsidian-triage@himmel": true
@@ -427,7 +447,7 @@ choosing the scope per command — copy-paste instead:
 
 ```bash
 # Register the marketplace (once; the GitHub slug is case-insensitive)
-claude plugin marketplace add yotamleo/himmel
+claude plugin marketplace add yotamleo/Himmel
 
 # Install plugins — --scope user (default, every project) or
 # --scope project (this repo's .claude/settings.json, shared on clone)

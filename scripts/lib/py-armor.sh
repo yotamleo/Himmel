@@ -21,12 +21,16 @@
 #      probe usually means System32 timeout.exe shadows coreutils on
 #      PATH, i.e. the armor is off exactly where the wedge class lives.
 #      stderr only; no adopter stdout contract is touched.
-#   2. The wedged stub can spawn an ORPHAN child that inherits stdout.
-#      timeout kills the stub, but the orphan keeps the pipe open and
-#      `$(python3 ...)` command substitution waits on EOF forever
-#      (verified live — `timeout -k` alone was not enough). So: stdout
-#      goes to a FILE, never a $() pipe. py_armor_capture owns that
-#      convention for callers that need the output in a variable.
+#   2. The wedged stub can spawn an ORPHAN child that inherits the
+#      caller's stdout AND stderr fds. timeout kills the stub, but the
+#      orphan keeps those fds open and a `$(python3 ...)` (or
+#      `$(python3 ... 2>&1)`) command substitution waits on EOF forever
+#      (verified live — `timeout -k` alone was not enough). So BOTH
+#      streams go to FILES, never a $() pipe: stdout always, and stderr
+#      too (HIMMEL-626 — an orphan holding the caller's stderr through a
+#      `2>&1` capture hung the watchdog ~30s despite the kill).
+#      py_armor_capture owns that convention for callers that need the
+#      output in a variable.
 #
 # API:
 #   py_armor [args...]
@@ -37,9 +41,11 @@
 #       Armored python3 with stdout routed through a temp FILE into
 #       the global $PY_ARMOR_OUT (newlines preserved; trailing newline
 #       stripped, same as $()). Returns python's rc — 124/137 means
-#       the timeout killed a wedged interpreter. stderr is left alone
-#       so callers keep their own diagnostics. Safe inside $() — the
-#       python stdout fd is the temp file, not the substitution pipe.
+#       the timeout killed a wedged interpreter. stderr is ALSO buffered
+#       to a temp file and replayed to the caller's stderr after the call
+#       (HIMMEL-626), so callers keep their diagnostics without an orphan
+#       holding the caller's stderr fd. Safe inside $() and $( ... 2>&1)
+#       — neither python stream's fd is the substitution pipe.
 #   py_armor_mtime <path>
 #       Portable file mtime: GNU stat -c / BSD stat -f / armored
 #       python fallback. Prints epoch seconds, or "" when every probe
@@ -94,15 +100,33 @@ py_armor() {
 
 py_armor_capture() {
     PY_ARMOR_OUT=""
-    local _out_file _rc=0
+    local _out_file _err_file _rc=0
     if ! _out_file=$(mktemp -t py-armor.out.XXXXXX 2>/dev/null); then
         echo "WARN py-armor: mktemp failed — cannot create temp file for py_armor_capture output" >&2
         return 1
     fi
+    # HIMMEL-626: buffer the interpreter's STDERR to a file too, then replay
+    # it to the caller's stderr AFTER the call returns. Otherwise a wedged
+    # python3's orphaned child keeps the caller's INHERITED stderr fd open;
+    # a caller that captures via $(... 2>&1) (a pipe) then blocks in the
+    # command substitution until the orphan exits (~30s), defeating
+    # timeout -k's bounded kill — the same orphan-holds-the-pipe hazard the
+    # stdout routing already dodges. An orphan that only ever holds
+    # regular-file fds cannot block the caller's pipe (file reads return at
+    # EOF). Best-effort: if the stderr temp file can't be created, fall back
+    # to leaving stderr on the caller's fd (the pre-HIMMEL-626 behavior — the
+    # bounded kill is not improved in that rare case, but nothing regresses).
     # `|| _rc=$?` keeps this errexit-safe when the caller runs set -e:
     # the rc is captured, cleanup runs, and the function's own return
     # status carries the failure.
-    py_armor "$@" >"$_out_file" || _rc=$?
+    _err_file=$(mktemp -t py-armor.err.XXXXXX 2>/dev/null) || _err_file=""
+    if [ -n "$_err_file" ]; then
+        py_armor "$@" >"$_out_file" 2>"$_err_file" || _rc=$?
+        cat "$_err_file" >&2 2>/dev/null || true   # replay python's stderr
+        rm -f "$_err_file" 2>/dev/null || true
+    else
+        py_armor "$@" >"$_out_file" || _rc=$?
+    fi
     # Reading a regular file never blocks on an orphan writer (unlike a
     # $() pipe) — cat reads to current EOF and returns.
     PY_ARMOR_OUT=$(cat "$_out_file" 2>/dev/null) || PY_ARMOR_OUT=""

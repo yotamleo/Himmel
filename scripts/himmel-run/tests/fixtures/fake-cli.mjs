@@ -80,5 +80,13 @@ if (mode === 'self-sigkill') {
   setTimeout(() => process.exit(99), 5000);
 }
 
-process.stderr.write(`unknown mode: ${mode}\n`);
-process.exit(2);
+// `sleep-forever` and `self-sigkill` intentionally register a timer and keep
+// the event loop alive (no exit) so the harness can deliver SIGKILL; ESM has no
+// top-level `return`, so guard the unknown-mode default from firing for them —
+// otherwise the synchronous process.exit(2) below would win the race and the
+// child would exit 2 before it is ever killed (POSIX-only, masked on Windows
+// where the SIGKILL tests are skipped).
+if (mode !== 'sleep-forever' && mode !== 'self-sigkill') {
+  process.stderr.write(`unknown mode: ${mode}\n`);
+  process.exit(2);
+}

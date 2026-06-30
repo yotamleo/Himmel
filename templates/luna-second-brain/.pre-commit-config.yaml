@@ -8,14 +8,26 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
-      # Vault notes are user prose, not code — pre-commit must VALIDATE them
-      # (gitleaks/check-*) but never REWRITE them. trailing-whitespace would
-      # strip Markdown hard-line-breaks (two trailing spaces), and the churn
-      # from either fixer aborts the unattended autosync commit. So skip `.md`.
+      # Vault content is user data, not code — pre-commit must VALIDATE it
+      # (gitleaks/check-*) but never REWRITE it. So these two auto-fixers run
+      # ONLY on the code/config files himmel ships (allowlist), never on notes
+      # or ingested sources. Two reasons, both real:
+      #   1. trailing-whitespace strips Markdown hard-line-breaks (two trailing
+      #      spaces) from prose, and the churn from either fixer aborts the
+      #      unattended autosync commit (HIMMEL-501).
+      #   2. On Windows the fixers print the filename to a cp1252 stdout, so a
+      #      non-ASCII name (Hebrew/CJK/accented source notes) raises
+      #      UnicodeEncodeError — and they rewrite the file BEFORE crashing,
+      #      leaving a silent whitespace-only diff (HIMMEL-615). An allowlist of
+      #      ASCII-named code/config files sidesteps this entirely; a denylist
+      #      cannot enumerate every non-ASCII name a vault might hold.
+      # Code/config files are ASCII-named by convention, so trailing-ws fixing
+      # on them is both safe and wanted. (himmel-managed scripts are .sh/.ps1;
+      # configs are .yaml/.yml/.json/.toml.)
       - id: trailing-whitespace
-        exclude: '\.md$'
+        files: '\.(sh|ps1|yaml|yml|json|toml)$'
       - id: end-of-file-fixer
-        exclude: '\.md$'
+        files: '\.(sh|ps1|yaml|yml|json|toml)$'
       - id: check-yaml
       - id: check-json
 

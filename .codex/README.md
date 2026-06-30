@@ -7,7 +7,8 @@ full compat matrix.
 
 ## Files
 - **`hooks.json`** — the project hook config (Codex recognises a project
-  `.codex/hooks.json` layer). Every command invokes `run-hook.cmd <script.sh>`.
+  `.codex/hooks.json` layer). Every tracked command invokes
+  `run-hook.cmd --sandbox <script.sh>`.
   Kept to the strict schema (only a top-level `hooks` key — Codex's parser uses
   `deny_unknown_fields`, so an extra key like `description`/`_comment` would make
   it skip the hooks).
@@ -33,12 +34,18 @@ full compat matrix.
      `permissionDecision:"deny"` on stdout — it ignores exit 2 (the tool would
      proceed). The wrapper delegates to `codex-hook-adapter.sh` (below) to bridge
      this.
-  After finding Git Bash, the wrapper execs the adapter and propagates its exit
-  code (`exit /b %ERRORLEVEL%` at top level — a bare `exit /b` inside a cmd
-  `if (...)` block returns 0, not the child's code). If **no Git Bash** is found
-  the wrapper **fails CLOSED** by emitting a JSON `deny` on stdout (an `exit 2`
-  would fail *open* under Codex) with a loud reason — Git Bash is a hard
-  dependency, so a missing-bash env is surfaced, never silently run unprotected.
+  After finding Git Bash, the wrapper accepts an optional `--sandbox` /
+  `--no-sandbox` mode flag. Sandbox mode is the default and the tracked setup;
+  it smoke-tests startup, calls the adapter, and propagates its exit code
+  (`exit /b %ERRORLEVEL%` at top level — a bare `exit /b` inside a cmd
+  `if (...)` block returns 0, not the child's code). If **no Git Bash** is found,
+  the adapter is missing, or Git Bash exists but cannot start inside the hook
+  sandbox, the wrapper **fails CLOSED** by emitting a JSON `deny` on stdout (an
+  `exit 2` would fail *open* under Codex) with a loud reason — Git Bash is a hard
+  dependency, so a broken-bash env is surfaced, never silently run unprotected.
+  `HIMMEL_CODEX_HOOK_BASH` can override the detected Bash path for
+  tests/diagnostics. `--no-sandbox` is reserved for trusted/manual diagnostics:
+  it skips the startup smoke check and surfaces the raw child exit code.
 - **`codex-hook-adapter.sh`** — the exit-code→JSON-decision bridge. Runs the
   named guardrail with the hook JSON on **stdin** (inherited untouched) and, when
   it exits 2 (block), re-emits the block as Codex's JSON
@@ -52,7 +59,19 @@ full compat matrix.
 - `scripts/hooks/test-codex-run-hook.ps1` — the Windows (cmd.exe) branch.
 Both assert: `CLAUDE_PROJECT_DIR` derived+exported, stdin forwarded, a non-block
 exit code propagated, an **exit-2 block translated to a JSON `deny`** (stderr →
-reason), missing-name → rc 2.
+reason), and fail-closed JSON denies for wrapper/adapter precondition failures.
+The Windows test also covers Git Bash startup failure before adapter execution,
+plus explicit `--sandbox` and diagnostic `--no-sandbox` modes.
+
+## Setup modes
+- **Sandboxed project hooks (recommended):** use the tracked `.codex/hooks.json`
+  as-is. It passes `--sandbox` to every wrapper invocation, which keeps the
+  Windows Git Bash startup preflight fail-closed. Codex needs a writable sandbox
+  (`workspace-write` or wider); `read-only` can suppress hook side effects.
+- **No-sandbox diagnostics:** invoke `.codex/run-hook.cmd --no-sandbox <script.sh>`
+  manually when debugging a trusted local runtime and you want the raw child exit
+  code. Do not wire `--no-sandbox` into project hooks; it is intentionally a
+  diagnostic escape hatch, not the default guardrail posture.
 
 ## Live-verified (codex-cli 0.141.0, Windows, HIMMEL-427)
 Confirmed against a real `codex exec` run: `.codex/hooks.json` parses (no

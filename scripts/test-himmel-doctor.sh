@@ -359,6 +359,32 @@ out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/cadence" \
 if printf '%s' "$out" | grep -q 'OK   C8-cadence' && printf '%s' "$out" | grep -q 'current'; then pass "C8 -> OK (current runner)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
 rm -rf "$t"
 
+echo "== C9 linux at+atd live -> OK =="
+t="$(mktemp -d)"; b="$t/bin"; mkdir -p "$b"
+printf '#!/bin/sh\nexit 0\n' > "$b/at"; chmod +x "$b/at"
+out="$(SCHEDULER_BACKEND_OS=linux SCHEDULER_BACKEND_ATD_ACTIVE=1 PATH="$b:$TOOLS_PATH" \
+       CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C9-scheduler'; then pass "C9 linux ok"; else fail "C9 linux ok: $(printf '%s' "$out" | grep C9)"; fi
+rm -rf "$t"
+
+echo "== C9 linux at+atd dead -> WARN + remediation =="
+t="$(mktemp -d)"; b="$t/bin"; mkdir -p "$b"
+printf '#!/bin/sh\nexit 0\n' > "$b/at"; chmod +x "$b/at"
+out="$(SCHEDULER_BACKEND_OS=linux SCHEDULER_BACKEND_ATD_ACTIVE=0 PATH="$b:$TOOLS_PATH" \
+       CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN C9-scheduler'; then pass "C9 linux disabled WARN"; else fail "C9 disabled: $(printf '%s' "$out" | grep C9)"; fi
+if printf '%s' "$out" | grep -q 'systemctl enable --now atd'; then pass "C9 remediation shown"; else fail "C9 remediation missing"; fi
+rm -rf "$t"
+
+echo "== C9 macos crontab -> WARN ok-cron, NOT 'install at' =="
+t="$(mktemp -d)"; b="$t/bin"; mkdir -p "$b"
+printf '#!/bin/sh\nexit 0\n' > "$b/crontab"; chmod +x "$b/crontab"
+out="$(SCHEDULER_BACKEND_OS=macos PATH="$b:$TOOLS_PATH" \
+       CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN C9-scheduler'; then pass "C9 macos warn"; else fail "C9 macos: $(printf '%s' "$out" | grep C9)"; fi
+if printf '%s' "$out" | grep -q 'apt install'; then fail "C9 macos wrongly suggests apt"; else pass "C9 macos no apt advice"; fi
+rm -rf "$t"
+
 rm -rf "$FAKEROOT"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

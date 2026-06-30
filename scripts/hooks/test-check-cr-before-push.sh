@@ -41,6 +41,7 @@ TMP_ROOT=$(mktemp -d)
 if command -v cygpath >/dev/null 2>&1; then
     TMP_ROOT=$(cygpath -m "$TMP_ROOT")
 fi
+SLUG="dpz$$"
 REPO="$TMP_ROOT/repo"
 git init -q --initial-branch=main "$REPO" 2>/dev/null || {
     git init -q "$REPO"
@@ -77,9 +78,9 @@ marker_path() {
 
 echo "TEST: handover/HIMMEL-142 with state-only diff (markdown) -> no marker"
 git -C "$REPO" checkout -q -b handover/HIMMEL-142-state-only
-mkdir -p "$REPO/handovers/yotam"
-echo "state" > "$REPO/handovers/yotam/state.md"
-git -C "$REPO" -c user.email=t@test.com -c user.name=test add handovers/yotam/state.md
+mkdir -p "$REPO/handovers/$SLUG"
+echo "state" > "$REPO/handovers/$SLUG/state.md"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add handovers/$SLUG/state.md
 git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "handover: state"
 
 out=$(run_hook)
@@ -188,10 +189,10 @@ git -C "$REPO" checkout -q main
 
 echo "TEST: docs + handover-state diff (no code) -> docs-audit marker"
 git -C "$REPO" checkout -q -b feat/mixed-docs-handover
-mkdir -p "$REPO/docs" "$REPO/handovers/yotam"
+mkdir -p "$REPO/docs" "$REPO/handovers/$SLUG"
 echo "# m" > "$REPO/docs/mixed.md"
-echo "state2" > "$REPO/handovers/yotam/state2.md"
-git -C "$REPO" -c user.email=t@test.com -c user.name=test add docs/mixed.md handovers/yotam/state2.md
+echo "state2" > "$REPO/handovers/$SLUG/state2.md"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add docs/mixed.md handovers/$SLUG/state2.md
 git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "docs+handover"
 
 out=$(run_hook)

@@ -93,6 +93,7 @@ if command -v cygpath >/dev/null 2>&1; then
     TMP_ROOT=$(cygpath -m "$TMP_ROOT")
 fi
 echo "test: TMP_ROOT=$TMP_ROOT"
+SLUG="dpz$$"
 
 HIMMEL_FAKE="$TMP_ROOT/himmel"
 HANDOVER_ORIGIN="$TMP_ROOT/handover-origin.git"
@@ -118,7 +119,7 @@ git init -q --bare "$HANDOVER_ORIGIN"
     git branch -m main 2>/dev/null || true
 )
 
-mkdir -p "$HANDOVER_REPO/handovers/yotam"
+mkdir -p "$HANDOVER_REPO/handovers/$SLUG"
 
 # Helper to invoke auto-commit.sh inside HIMMEL_FAKE with HANDOVER_DIR
 # pointing at the handover-repo's handovers/ root.
@@ -138,7 +139,7 @@ run_auto_commit() {
 
 echo "TEST: branch creation from ticket-tagged message"
 
-echo "first content" > "$HANDOVER_REPO/handovers/yotam/notes.md"
+echo "first content" > "$HANDOVER_REPO/handovers/$SLUG/notes.md"
 out=$(run_auto_commit "HIMMEL-140 add notes" 2>&1)
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 assert_contains "creates handover/HIMMEL-140 branch" \
@@ -156,11 +157,11 @@ git -C "$HANDOVER_REPO" checkout -q main 2>/dev/null \
   || git -C "$HANDOVER_REPO" checkout -q master 2>/dev/null \
   || true
 # Recreate the handovers tree — checkout main strips any tree that only
-# exists on a feature branch (handovers/yotam/notes.md was added on
+# exists on a feature branch (handovers/$SLUG/notes.md was added on
 # handover/HIMMEL-140-... and main has no commits touching that path).
-mkdir -p "$HANDOVER_REPO/handovers/yotam"
+mkdir -p "$HANDOVER_REPO/handovers/$SLUG"
 
-echo "more content" > "$HANDOVER_REPO/handovers/yotam/notes.md"
+echo "more content" > "$HANDOVER_REPO/handovers/$SLUG/notes.md"
 out=$(run_auto_commit "HIMMEL-140 add more notes" 2>&1)
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 # Slug differs because message text differs; assert branch name pattern
@@ -168,7 +169,7 @@ assert_contains "reuses prefix on second invocation" "handover/HIMMEL-140-" "$ou
 
 # Re-run with EXACT same message → branch should already exist; checkout
 # path is taken.
-echo "exact same message" > "$HANDOVER_REPO/handovers/yotam/notes.md"
+echo "exact same message" > "$HANDOVER_REPO/handovers/$SLUG/notes.md"
 out=$(run_auto_commit "HIMMEL-140 add more notes" 2>&1)
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 assert_contains "exact-msg re-run reuses same branch" "handover/HIMMEL-140-add-more-notes" "$out"
@@ -182,10 +183,10 @@ git -C "$HANDOVER_REPO" checkout -q main 2>/dev/null \
   || git -C "$HANDOVER_REPO" checkout -q master 2>/dev/null \
   || true
 # Recreate the handovers tree — checkout main strips any tree that only
-# exists on a feature branch (handovers/yotam/notes.md was added on
+# exists on a feature branch (handovers/$SLUG/notes.md was added on
 # handover/HIMMEL-140-... and main has no commits touching that path).
-mkdir -p "$HANDOVER_REPO/handovers/yotam"
-echo "untagged content" > "$HANDOVER_REPO/handovers/yotam/freeform.md"
+mkdir -p "$HANDOVER_REPO/handovers/$SLUG"
+echo "untagged content" > "$HANDOVER_REPO/handovers/$SLUG/freeform.md"
 out=$(run_auto_commit "freeform thought" 2>&1)
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 assert_contains "session fallback branch" "handover/session-$today" "$out"
@@ -199,11 +200,11 @@ git -C "$HANDOVER_REPO" checkout -q main 2>/dev/null \
   || git -C "$HANDOVER_REPO" checkout -q master 2>/dev/null \
   || true
 # Recreate the handovers tree — checkout main strips any tree that only
-# exists on a feature branch (handovers/yotam/notes.md was added on
+# exists on a feature branch (handovers/$SLUG/notes.md was added on
 # handover/HIMMEL-140-... and main has no commits touching that path).
-mkdir -p "$HANDOVER_REPO/handovers/yotam"
+mkdir -p "$HANDOVER_REPO/handovers/$SLUG"
 before_branch=$(git -C "$HANDOVER_REPO" rev-parse --abbrev-ref HEAD)
-echo "direct content" > "$HANDOVER_REPO/handovers/yotam/direct.md"
+echo "direct content" > "$HANDOVER_REPO/handovers/$SLUG/direct.md"
 out=$(
     cd "$HIMMEL_FAKE"
     # shellcheck disable=SC2030,SC2031  # subshell-scoped export is intentional
@@ -226,10 +227,10 @@ git -C "$HANDOVER_REPO" checkout -q main 2>/dev/null \
   || git -C "$HANDOVER_REPO" checkout -q master 2>/dev/null \
   || true
 # Recreate the handovers tree — checkout main strips any tree that only
-# exists on a feature branch (handovers/yotam/notes.md was added on
+# exists on a feature branch (handovers/$SLUG/notes.md was added on
 # handover/HIMMEL-140-... and main has no commits touching that path).
-mkdir -p "$HANDOVER_REPO/handovers/yotam"
-echo "nopush content" > "$HANDOVER_REPO/handovers/yotam/nopush.md"
+mkdir -p "$HANDOVER_REPO/handovers/$SLUG"
+echo "nopush content" > "$HANDOVER_REPO/handovers/$SLUG/nopush.md"
 out=$(run_auto_commit --no-push "HIMMEL-999 nopush check" 2>&1)
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 if printf '%s' "$out" | grep -q "auto-commit: pushed."; then
@@ -256,11 +257,11 @@ git -C "$HANDOVER_REPO" checkout -q main 2>/dev/null \
   || git -C "$HANDOVER_REPO" checkout -q master 2>/dev/null \
   || true
 # Recreate the handovers tree — checkout main strips any tree that only
-# exists on a feature branch (handovers/yotam/notes.md was added on
+# exists on a feature branch (handovers/$SLUG/notes.md was added on
 # handover/HIMMEL-140-... and main has no commits touching that path).
-mkdir -p "$HANDOVER_REPO/handovers/yotam"
+mkdir -p "$HANDOVER_REPO/handovers/$SLUG"
 sha_before=$(git -C "$HANDOVER_REPO" rev-parse HEAD)
-echo "dryrun content" > "$HANDOVER_REPO/handovers/yotam/dryrun.md"
+echo "dryrun content" > "$HANDOVER_REPO/handovers/$SLUG/dryrun.md"
 out=$(run_auto_commit --dry-run "HIMMEL-998 dry run" 2>&1)
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 sha_after=$(git -C "$HANDOVER_REPO" rev-parse HEAD)
@@ -269,7 +270,7 @@ assert_contains "--dry-run announces target branch" \
     "handover/HIMMEL-998-dry-run" "$out"
 
 # Clean up dryrun.md so it doesn't bleed into later tests.
-rm -f "$HANDOVER_REPO/handovers/yotam/dryrun.md"
+rm -f "$HANDOVER_REPO/handovers/$SLUG/dryrun.md"
 
 # Test 7: cross-machine resume — origin has a branch the local clone hasn't fetched.
 # Simulates: machine A pushed `handover/HIMMEL-777-cross-machine` directly to
@@ -283,9 +284,9 @@ git clone -q "$HANDOVER_ORIGIN" "$WORKER_REPO"
 (
     cd "$WORKER_REPO"
     git checkout -q -b handover/HIMMEL-777-cross-machine
-    mkdir -p handovers/yotam
-    echo "from worker" > handovers/yotam/worker.md
-    git -c user.email=t@test.com -c user.name=test add handovers/yotam/worker.md
+    mkdir -p handovers/$SLUG
+    echo "from worker" > handovers/$SLUG/worker.md
+    git -c user.email=t@test.com -c user.name=test add handovers/$SLUG/worker.md
     git -c user.email=t@test.com -c user.name=test commit -q -m "handover: HIMMEL-777 worker seed"
     git -c user.email=t@test.com -c user.name=test push -q -u origin handover/HIMMEL-777-cross-machine
 )
@@ -300,8 +301,8 @@ fi
 git -C "$HANDOVER_REPO" checkout -q main 2>/dev/null \
   || git -C "$HANDOVER_REPO" checkout -q master 2>/dev/null \
   || true
-mkdir -p "$HANDOVER_REPO/handovers/yotam"
-echo "from primary" > "$HANDOVER_REPO/handovers/yotam/cross-machine-add.md"
+mkdir -p "$HANDOVER_REPO/handovers/$SLUG"
+echo "from primary" > "$HANDOVER_REPO/handovers/$SLUG/cross-machine-add.md"
 
 out=$(run_auto_commit "HIMMEL-777 cross machine" 2>&1)
 printf '%s\n' "$out" | awk '{print "  > "$0}'
@@ -313,7 +314,7 @@ assert_branch_exists "tracking branch exists locally" \
 # The primary clone's tip should now contain BOTH the worker's seed file
 # AND the local cross-machine-add.md — proving the local commit landed
 # on top of the worker's commit, not on a fresh branch off main.
-if git -C "$HANDOVER_REPO" log --oneline handover/HIMMEL-777-cross-machine -- handovers/yotam/worker.md 2>/dev/null | grep -q "."; then
+if git -C "$HANDOVER_REPO" log --oneline handover/HIMMEL-777-cross-machine -- handovers/$SLUG/worker.md 2>/dev/null | grep -q "."; then
     echo "  PASS: tracked branch contains worker seed commit"
     PASS=$((PASS+1))
 else
@@ -379,12 +380,12 @@ sw_prepare() {
         git -C "$SW_REPO" checkout -q -B "$branch"
     fi
     : > "$SW_REPO/.single-writer"
-    mkdir -p "$SW_REPO/handovers/yotam"
+    mkdir -p "$SW_REPO/handovers/$SLUG"
 }
 
 # T-sw1: happy path — marker + on main + md change → commit on main, no branch.
 sw_prepare main
-echo "sw happy" > "$SW_REPO/handovers/yotam/sw1.md"
+echo "sw happy" > "$SW_REPO/handovers/$SLUG/sw1.md"
 rc=0; out=$(run_sw_auto_commit --no-push "HIMMEL-571 happy" 2>&1) || rc=$?
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 assert_rc "sw1: happy path exits 0" "0" "$rc"
@@ -399,7 +400,7 @@ assert_contains "sw1: commit subject is a handover commit" "handover:" "$(git -C
 
 # T-sw2: guard refuses — marker + parked on handover branch + md change → exit 7.
 sw_prepare handover/HIMMEL-571-x
-echo "sw parked" > "$SW_REPO/handovers/yotam/sw2.md"
+echo "sw parked" > "$SW_REPO/handovers/$SLUG/sw2.md"
 sw2_before=$(git -C "$SW_REPO" rev-parse HEAD)
 rc=0; out=$(run_sw_auto_commit --no-push "HIMMEL-571 parked" 2>&1) || rc=$?
 printf '%s\n' "$out" | awk '{print "  > "$0}'
@@ -419,12 +420,12 @@ assert_eq "sw3: HEAD unchanged" "$sw3_before" "$(git -C "$SW_REPO" rev-parse HEA
 # T-sw4: escape hatch — HANDOVER_DIRECT_MAIN=1 on a parked branch commits there
 # (no exit 7), proving the guard is marker-scoped.
 sw_prepare handover/HIMMEL-571-x
-echo "sw escape" > "$SW_REPO/handovers/yotam/sw4.md"
+echo "sw escape" > "$SW_REPO/handovers/$SLUG/sw4.md"
 sw4_before=$(git -C "$SW_REPO" rev-parse HEAD)
 rc=0
 out=$(
     cd "$HIMMEL_FAKE"
-    # shellcheck disable=SC2030,SC2031  # subshell-scoped export is intentional
+    # shellcheck disable=SC2031  # subshell-scoped export is intentional
     export HANDOVER_DIR="$SW_REPO/handovers"
     env GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=t@test.com \
         GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=t@test.com \
@@ -442,7 +443,7 @@ fi
 
 # T-sw5: dry-run happy — marker + on main → plan names .single-writer, no commit.
 sw_prepare main
-echo "sw dry happy" > "$SW_REPO/handovers/yotam/sw5.md"
+echo "sw dry happy" > "$SW_REPO/handovers/$SLUG/sw5.md"
 sw5_before=$(git -C "$SW_REPO" rev-parse HEAD)
 rc=0; out=$(run_sw_auto_commit --dry-run --no-push "HIMMEL-571 dry happy" 2>&1) || rc=$?
 printf '%s\n' "$out" | awk '{print "  > "$0}'
@@ -457,7 +458,7 @@ assert_eq "sw5: dry-run leaves HEAD untouched" "$sw5_before" "$(git -C "$SW_REPO
 
 # T-sw6: dry-run parked — marker + parked → plan reveals the refusal, no commit.
 sw_prepare handover/HIMMEL-571-x
-echo "sw dry parked" > "$SW_REPO/handovers/yotam/sw6.md"
+echo "sw dry parked" > "$SW_REPO/handovers/$SLUG/sw6.md"
 sw6_before=$(git -C "$SW_REPO" rev-parse HEAD)
 rc=0; out=$(run_sw_auto_commit --dry-run --no-push "HIMMEL-571 dry parked" 2>&1) || rc=$?
 printf '%s\n' "$out" | awk '{print "  > "$0}'
@@ -473,7 +474,7 @@ assert_eq "sw6: dry-run leaves HEAD untouched" "$sw6_before" "$(git -C "$SW_REPO
 sw_prepare handover/HIMMEL-571-x
 git -C "$SW_REPO" remote set-head origin -d >/dev/null 2>&1 \
   || git -C "$SW_REPO" update-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
-echo "sw failopen" > "$SW_REPO/handovers/yotam/sw7.md"
+echo "sw failopen" > "$SW_REPO/handovers/$SLUG/sw7.md"
 sw7_before=$(git -C "$SW_REPO" rev-parse HEAD)
 rc=0; out=$(run_sw_auto_commit --no-push "HIMMEL-571 failopen" 2>&1) || rc=$?
 printf '%s\n' "$out" | awk '{print "  > "$0}'

@@ -10,7 +10,7 @@ Automate a bare OS → full dev environment. Run **before** the himmel repo is a
 
 ```powershell
 # 1. Download
-Invoke-WebRequest "https://raw.githubusercontent.com/yotamleo/himmel/main/scripts/machine-setup/win11.ps1" -OutFile "$env:TEMP\win11.ps1"
+Invoke-WebRequest "https://raw.githubusercontent.com/yotamleo/Himmel/main/scripts/machine-setup/win11.ps1" -OutFile "$env:TEMP\win11.ps1"
 
 # 2. Run
 pwsh -ExecutionPolicy Bypass -File "$env:TEMP\win11.ps1" -LunaRemote "https://github.com/<you>/<your-vault>.git"
@@ -28,15 +28,42 @@ pwsh -ExecutionPolicy Bypass -File "$env:TEMP\win11.ps1" -LunaRemote "https://gi
 
 ```bash
 # 1. Download
-curl -fsSL "https://raw.githubusercontent.com/yotamleo/himmel/main/scripts/machine-setup/ubuntu.sh" -o /tmp/ubuntu.sh
+curl -fsSL "https://raw.githubusercontent.com/yotamleo/Himmel/main/scripts/machine-setup/ubuntu.sh" -o /tmp/ubuntu.sh
 
 # 2. Run
 bash /tmp/ubuntu.sh --luna-remote "https://github.com/<you>/<your-vault>.git"
 ```
 
-**What it installs:** apt packages (git, python3, jq, curl), node LTS via NodeSource, uv+uvx, Claude Code CLI, RTK (.deb), himmel repo + setup, claude-statusline, CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (jq deep-merge), **end-session-wiki SessionEnd hook (prompted: Y/n, bash-only)**, Obsidian (.deb).
+**What it installs:** apt packages (git, python3, jq, curl), node LTS via NodeSource, uv+uvx, Claude Code CLI, RTK (.deb), himmel repo + setup, claude-statusline, CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (jq deep-merge), **end-session-wiki SessionEnd hook (prompted: Y/n, bash-only)**, **`at` + atd (auto-arm scheduler backend, prompted: Y/n)**, Obsidian (.deb).
 
 **After run:** Complete the printed manual checklist (Jira token, Atlassian MCP token, qmd embed).
+
+---
+
+## macOS (alpha)
+
+> **ALPHA — unvalidated on real macOS.** There is no macOS CI/VM in this project,
+> so `macos.sh` is exercised only by mocked unit tests. Please validate that
+> auto-arm actually fires and **file an issue** if it does not.
+
+**Requirements (prerequisites — NOT installed by this script):** git, node, the
+Claude CLI, and the himmel clone already present. This is **not** a full
+bootstrap (no brew/node/CLI/vault install — that is a later epic); it wires only
+the himmel-specific bits the usage-cap auto-arm chain needs.
+
+```bash
+# 1. Download
+curl -fsSL "https://raw.githubusercontent.com/yotamleo/Himmel/main/scripts/machine-setup/macos.sh" -o /tmp/macos.sh
+
+# 2. Run (from anywhere; honors CLAUDE_DIR / HIMMEL_PATH)
+bash /tmp/macos.sh
+```
+
+**What it wires:** the himmel statusline (the cap *trigger*), the
+auto-arm-on-cap PreToolUse hook (the cap *action*), and verifies `crontab` (the
+macOS scheduler backend — arm-resume uses crontab, **not** `at`/atrun, which is
+off-by-default / SIP-fragile). Idempotent. On modern macOS, cron may need Full
+Disk Access granted to `/usr/sbin/cron` — the script prints this caveat.
 
 ---
 

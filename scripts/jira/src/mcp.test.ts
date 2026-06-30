@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createTools, buildServer, type ToolDeps, type JiraTool } from './mcp.js';
 
 // Unit coverage for the MCP surface (HIMMEL-159). We mock the underlying
@@ -101,6 +101,10 @@ describe('MCP server wiring', () => {
 });
 
 describe('MCP tool happy-path routing', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('get → GET /issue/<key> and formats with description', async () => {
     const { deps, request } = mockDeps({
       key: 'HIMMEL-1',
@@ -154,6 +158,10 @@ describe('MCP tool happy-path routing', () => {
   });
 
   it('create with attach uploads each file via the injected uploadAttachment', async () => {
+    // This path omits `project`, so the handler falls back to projectKey(),
+    // which reads JIRA_PROJECT_KEY. Set it here so the test is hermetic and
+    // does not depend on the operator's ambient .env (CI runs with none).
+    vi.stubEnv('JIRA_PROJECT_KEY', 'HIMMEL');
     const { deps, uploadAttachment } = mockDeps({ key: 'HIMMEL-10', id: '2' });
     const out = await tool('create').handler(
       { type: 'Task', title: 'T', attach: ['a.png', 'b.png'] },

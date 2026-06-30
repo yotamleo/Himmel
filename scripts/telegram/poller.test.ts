@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
 import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
-import { isAllowed } from "./gate";
+import { isAllowed, vaultForChat } from "./gate";
 
 const root = () => mkdtempSync(join(tmpdir(), "poller-"));
 const allowAll = () => true;
@@ -885,9 +885,9 @@ test("makeRunFn resolves the chat's vault and threads it into the run prompt (HI
   await appendLine(join(sessionDir(r, "group_-50"), "inbox.jsonl"), JSON.stringify({ text: "file this", document_path: "/att/x.pdf", document_name: "x.pdf" }));
   let captured = "";
   const runImpl = async (prompt: string) => { captured = prompt; return { code: 0, capped: false, pid: 1 }; };
-  const vaultFor = (chatId: number) => chatId === -50 ? "/luna-medic" : null;
+  const vaultFor = (chatId: number) => chatId === -50 ? "/vaults/medic" : null;
   await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, vaultFor)("group_-50");
-  expect(captured).toContain("/luna-medic");
+  expect(captured).toContain("/vaults/medic");
   expect(captured).toContain("document_path");
 });
 
@@ -1428,4 +1428,57 @@ test("handleAutoCommand: a reply-delivery failure does NOT swallow the audit nor
   audits.length = 0;
   await handleAutoCommand(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", forwarded:true, caption:false }, armRoute, deps);
   expect(audits[0].result).toBe("refused-forwarded");
+});
+
+// --- HIMMEL-578: per-chat vault cwd + scoped bypassPermissions ---
+test("makeRunFn: a vault-configured chat spawns in the vault cwd with bypassPermissions; jira path stays on repoCwd", async () => {
+  const r = root(); await ensureSession(r, "V");
+  await writeMeta(r, "V", freshMeta(42));
+  await appendLine(join(sessionDir(r, "V"), "inbox.jsonl"), JSON.stringify({ text: "file this photo" }));
+  const calls: Array<{ prompt: string; cwd: string; mode?: string }> = [];
+  const spy = async (prompt: string, cwd: string, mode?: string) => { calls.push({ prompt, cwd, mode }); return { code: 0, capped: false, pid: 1 }; };
+  const vaultFor = (chatId: number) => chatId === 42 ? "/vaults/medic" : null;
+  await makeRunFn(r, "/repo", spy, 5000, undefined, 3, vaultFor)("V");
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls[0].cwd).toBe("/vaults/medic");                       // spawned IN the vault (loads its hooks)
+  expect(calls[0].mode).toBe("bypassPermissions");                  // scoped bypass for vault sessions
+  expect(calls[0].prompt).toContain("/repo/scripts/jira/dist/index.js"); // jira path decoupled onto repoCwd
+  expect(calls[0].prompt).toContain("running in /vaults/medic");
+});
+test("makeRunFn: a NON-vault chat spawns in repoCwd with NO bypass (default posture unchanged)", async () => {
+  const r = root(); await ensureSession(r, "N");
+  await writeMeta(r, "N", freshMeta(7));
+  await appendLine(join(sessionDir(r, "N"), "inbox.jsonl"), JSON.stringify({ text: "hi" }));
+  const calls: Array<{ cwd: string; mode?: string }> = [];
+  const spy = async (_p: string, cwd: string, mode?: string) => { calls.push({ cwd, mode }); return { code: 0, capped: false, pid: 1 }; };
+  const vaultFor = (_chatId: number) => null;
+  await makeRunFn(r, "/repo", spy, 5000, undefined, 3, vaultFor)("N");
+  expect(calls[0].cwd).toBe("/repo");
+  expect(calls[0].mode).toBeUndefined();
+});
+
+// HIMMEL-578 CR follow-ups (test-analyzer findings):
+// blast-radius — a configured defaultVault routes EVERY unconfigured chat (DMs,
+// unknown groups) into a vault cwd WITH bypassPermissions. Pin that composed
+// behavior with the REAL vaultForChat (the unit tests above stubbed it).
+test("makeRunFn + real vaultForChat: a defaultVault grants vault-cwd+bypass to an UNCONFIGURED chat (blast radius)", async () => {
+  const r = root(); await ensureSession(r, "D");
+  await writeMeta(r, "D", freshMeta(99999));            // not in groups
+  await appendLine(join(sessionDir(r, "D"), "inbox.jsonl"), JSON.stringify({ text: "hi" }));
+  const access = { dmPolicy: "allowlist", allowFrom: ["99999"], defaultVault: "/vaults/luna", groups: {}, pending: {} } as any;
+  const calls: Array<{ cwd: string; mode?: string }> = [];
+  const spy = async (_p: string, cwd: string, mode?: string) => { calls.push({ cwd, mode }); return { code: 0, capped: false, pid: 1 }; };
+  await makeRunFn(r, "/repo", spy, 5000, undefined, 3, (id) => vaultForChat(access, id))("D");
+  expect(calls[0].cwd).toBe("/vaults/luna");            // defaultVault → vault cwd even for an unconfigured chat
+  expect(calls[0].mode).toBe("bypassPermissions");      // …and bypass follows (documented blast radius)
+});
+test("makeRunFn: an empty-string vault normalizes to null (repoCwd, no bypass) — no incoherent cwd \"\"", async () => {
+  const r = root(); await ensureSession(r, "E");
+  await writeMeta(r, "E", freshMeta(8));
+  await appendLine(join(sessionDir(r, "E"), "inbox.jsonl"), JSON.stringify({ text: "hi" }));
+  const calls: Array<{ cwd: string; mode?: string }> = [];
+  const spy = async (_p: string, cwd: string, mode?: string) => { calls.push({ cwd, mode }); return { code: 0, capped: false, pid: 1 }; };
+  await makeRunFn(r, "/repo", spy, 5000, undefined, 3, () => "")("E");   // blank vault
+  expect(calls[0].cwd).toBe("/repo");                   // not "" — normalized
+  expect(calls[0].mode).toBeUndefined();                // no bypass for a falsy vault
 });

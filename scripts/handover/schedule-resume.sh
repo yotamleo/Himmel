@@ -36,7 +36,7 @@ set -uo pipefail
 if [ "$#" -lt 2 ]; then
     cat >&2 <<EOF
 usage: bash scripts/handover/schedule-resume.sh <RESUME_TIME_LOCAL> <HANDOVER_PATH>
-example: bash scripts/handover/schedule-resume.sh 07:22 handovers/yotam/himmel/epics/HIMMEL-70-github-warp/next-session-12.md
+example: bash scripts/handover/schedule-resume.sh 07:22 handovers/<USER_SLUG>/himmel/epics/HIMMEL-70-github-warp/next-session-12.md
 EOF
     exit 2
 fi

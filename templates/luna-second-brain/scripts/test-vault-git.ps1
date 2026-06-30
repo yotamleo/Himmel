@@ -113,26 +113,46 @@ try {
         Assert 'G2 autosync commit landed' (([int]((git -C $V rev-list --count HEAD).Trim())) -gt ([int]$gBase))
         Assert 'G3 .md left UNMODIFIED by pre-commit' ((Get-Content -Raw $mdPath) -eq $mdOrig)
 
-        # A NON-.md file a fixer DOES rewrite still lands (re-stage + retry).
+        # An allowlisted code/config file a fixer DOES rewrite still lands
+        # (re-stage + retry). Vault notes/sources are off the fixer allowlist, so
+        # a `.toml` is used to force a rewrite.
         $g2Base = (git -C $V rev-list --count HEAD).Trim()
-        Set-Content -NoNewline -Path (Join-Path $V '00-Inbox\data.txt') -Value "data with trailing space   `n"
+        Set-Content -NoNewline -Path (Join-Path $V '00-Inbox\data.toml') -Value "key = ""value""   `n"
         Push-Location $V; & pwsh -NoProfile -File $autosync *> $null; Pop-Location
-        Assert 'G4 autosync recovers from fixer-modified non-.md: exit 0' ($LASTEXITCODE -eq 0)
+        Assert 'G4 autosync recovers from fixer-modified allowlisted file: exit 0' ($LASTEXITCODE -eq 0)
         Assert 'G5 retry committed after fixer ran' (([int]((git -C $V rev-list --count HEAD).Trim())) -gt ([int]$g2Base))
-        Assert 'G6 data.txt landed in committed tree' ([bool]((git -C $V ls-tree -r HEAD --name-only) -match 'data\.txt'))
+        Assert 'G6 data.toml landed in committed tree' ([bool]((git -C $V ls-tree -r HEAD --name-only) -match 'data\.toml'))
         Assert 'G7 fixer-retry result pushed to remote' (((git -C $bare rev-parse main).Trim()) -eq ((git -C $V rev-parse HEAD).Trim()))
 
-        # The retry must NOT weaken the egress guard: a NON-.md file with BOTH a
-        # fixer defect (trailing whitespace) AND a planted secret stays blocked
-        # through the re-stage pass — nothing committed, nothing pushed.
+        # The retry must NOT weaken the egress guard: an allowlisted file with
+        # BOTH a fixer defect (trailing whitespace) AND a planted secret stays
+        # blocked through the re-stage pass — nothing committed, nothing pushed.
         $g8Local = (git -C $V rev-parse HEAD).Trim()
         $g8Bare = (git -C $bare rev-parse main).Trim()
         $akp = 'AKIA'; $aks = '1234567890ABCDEF'
-        Set-Content -Path (Join-Path $V '30-Resources\leak.txt') -Value "leaky data   `naws_key = ""$akp$aks"""
+        Set-Content -Path (Join-Path $V '30-Resources\leak.toml') -Value "note = ""leaky data""   `naws_key = ""$akp$aks"""
         Push-Location $V; & pwsh -NoProfile -File $autosync *> $null; Pop-Location
-        Assert 'G8 fixer-defect + secret (non-.md): blocked through retry (non-zero)' ($LASTEXITCODE -ne 0)
+        Assert 'G8 fixer-defect + secret (allowlisted): blocked through retry (non-zero)' ($LASTEXITCODE -ne 0)
         Assert 'G9 local HEAD unchanged (retry did not commit the secret)' (((git -C $V rev-parse HEAD).Trim()) -eq $g8Local)
         Assert 'G10 bare remote unchanged (nothing pushed)' (((git -C $bare rev-parse main).Trim()) -eq $g8Bare)
+
+        # Phase H (HIMMEL-615) — a non-ASCII (Hebrew) source-note name must NOT
+        # crash the trailing-whitespace fixer NOR get rewritten. This is the
+        # native-Windows runner, where the cp1252 UnicodeEncodeError actually
+        # fires (Linux only ever validates the "not rewritten" half). The name
+        # is built from char code points so this source stays ASCII.
+        Remove-Item -Force (Join-Path $V '30-Resources\leak.toml') # drop G8's uncommitted secret
+        $hBase = (git -C $V rev-list --count HEAD).Trim()
+        $heb = ([char]0x05EA + [char]0x05D9 + [char]0x05E7 + '.txt') # Hebrew "tik.txt"
+        $hebPath = Join-Path $V (Join-Path '00-Inbox' $heb)
+        Set-Content -NoNewline -Path $hebPath -Value "verbatim line with trailing space   `nsecond line`n"
+        $hebOrig = Get-Content -Raw $hebPath
+        Push-Location $V; & pwsh -NoProfile -File $autosync *> $null; Pop-Location
+        Assert 'H1 autosync with a Hebrew-named .txt: exit 0 (no UnicodeEncodeError)' ($LASTEXITCODE -eq 0)
+        Assert 'H2 autosync commit landed' (([int]((git -C $V rev-list --count HEAD).Trim())) -gt ([int]$hBase))
+        Assert 'H3 Hebrew .txt left UNMODIFIED (no silent whitespace mangling)' ((Get-Content -Raw $hebPath) -eq $hebOrig)
+        git -C $V ls-files --error-unmatch -- "00-Inbox/$heb" *> $null
+        Assert 'H4 Hebrew .txt is tracked in the committed tree' ($LASTEXITCODE -eq 0)
     }
 }
 finally {

@@ -124,6 +124,44 @@ Workarounds:
 - It's intermittent (a per-turn classifier threshold) — in an interactive
   terminal a blocked turn is usually transient and re-sending succeeds.
 
+## Windows: pre-commit auto-fixers crash on non-ASCII filenames (and mangle the file first)
+
+The pre-commit-hooks `trailing-whitespace` and `end-of-file-fixer` fixers print
+the path of each file they touch (e.g. trailing-whitespace's
+`print(f'Fixing {filename}')`). On Windows that
+`print` goes to a cp1252-encoded stdout, so a filename containing non-ASCII
+characters — Hebrew/CJK/accented source notes, common in luna / Salus medical
+vaults — raises `UnicodeEncodeError: 'charmap' codec can't encode…` and the hook
+exits non-zero. **Worse: the fixer rewrites the file (strips trailing whitespace
+across the whole file) *before* it prints, so the abort leaves a silent
+whitespace-only diff** — a 217-page verbatim extraction once produced a 20k-line
+diff that had to be manually restored.
+
+Two independent mitigations:
+
+- **Repo-config (preferred, inherited):** don't let the auto-fixers run on
+  non-code files at all. In a content repo (a vault), notes and ingested sources
+  are user data — pre-commit should validate them (gitleaks/check-*) but never
+  rewrite them. Constrain both fixers to an ASCII-named code/config **allowlist**
+  rather than a denylist (a denylist can't enumerate every non-ASCII name a vault
+  might hold):
+
+  ```yaml
+  - id: trailing-whitespace
+    files: '\.(sh|ps1|yaml|yml|json|toml)$'
+  - id: end-of-file-fixer
+    files: '\.(sh|ps1|yaml|yml|json|toml)$'
+  ```
+
+  This is what the luna-second-brain template ships (HIMMEL-615). pre-commit has
+  **no per-hook `env:` key**, so encoding can't be forced from the config itself.
+- **Machine env (defense-in-depth, for code repos where the fixers must run on
+  arbitrary paths):** export `PYTHONUTF8=1` (or `PYTHONIOENCODING=utf-8`) in the
+  shell that runs `git commit`, which forces every Python hook to a UTF-8 stdout
+  and stops the crash. Note this only prevents the *crash* — the fixer still
+  rewrites the matched file, so it's not a substitute for the allowlist when the
+  rewrite itself is unwanted.
+
 ## rtk token-proxy rewrites top-level Bash-tool commands
 
 If you run [rtk](../setup/rtk-md.md) as a Claude Code PreToolUse rewrite hook, be

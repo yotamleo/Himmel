@@ -28,6 +28,8 @@ $dummy = "read -r line || true`necho `"PROJDIR=[`$CLAUDE_PROJECT_DIR]`"`necho `"
 [System.IO.File]::WriteAllText((Join-Path $T 'scripts\hooks\dummy.sh'), $dummy)
 $blocker = "read -r line || true`necho `"blocking-reason-xyz`" >&2`nexit 2`n"
 [System.IO.File]::WriteAllText((Join-Path $T 'scripts\hooks\blocker.sh'), $blocker)
+$fakeBash = Join-Path $T 'fake-bash.cmd'
+[System.IO.File]::WriteAllText($fakeBash, "@echo off`r`nexit /b 99`r`n")
 
 try {
     # 1) ALLOW path: non-block exit code propagates; env + stdin forwarded.
@@ -42,6 +44,16 @@ try {
     # Match the prefix only — PowerShell pipes CRLF, so `read -r` may keep a
     # trailing \r inside the brackets; stdin forwarding is what we're asserting.
     Check "stdin forwarded to the guardrail" ($out -match 'STDIN=\[fromstdin')
+
+    # 1b) Explicit sandbox mode is the tracked hook setup; it should behave like
+    #     the default sandbox path and still propagate non-block guardrail rc.
+    Push-Location $T
+    $fout = ('fromstdin' | & cmd.exe /c '.codex\run-hook.cmd' --sandbox dummy.sh 2>&1 | Out-String)
+    $frc = $LASTEXITCODE
+    Pop-Location
+
+    Check "explicit --sandbox flag preserves non-block rc propagation (rc=7)" ($frc -eq 7)
+    Check "explicit --sandbox flag still forwards stdin" ($fout -match 'STDIN=\[fromstdin')
 
     # 2) BLOCK path: exit 2 -> Codex JSON deny on stdout, wrapper exits 0. Use a
     #    DISTINCT inbound event so the hookEventName mirror is load-bearing and the
@@ -70,8 +82,34 @@ try {
     $rc3 = $LASTEXITCODE
     Pop-Location
     Check "missing guardrail file -> fail-closed deny (rc 0)" (($rc3 -eq 0) -and ($gout -match '"permissionDecision":"deny"'))
+
+    # 3c) Git Bash exists but cannot start inside the hook sandbox -> fail closed
+    #     before the adapter path. This preserves normal guardrail rc propagation
+    #     (dummy.sh rc=7 above) while making a broken bash runtime a deny.
+    $oldHookBash = $env:HIMMEL_CODEX_HOOK_BASH
+    $env:HIMMEL_CODEX_HOOK_BASH = $fakeBash
+    Push-Location $T
+    $sout = ('{}' | & cmd.exe /c '.codex\run-hook.cmd' --sandbox dummy.sh 2>&1 | Out-String)
+    $rc4 = $LASTEXITCODE
+    Pop-Location
+    if ($null -eq $oldHookBash) { Remove-Item Env:\HIMMEL_CODEX_HOOK_BASH -ErrorAction SilentlyContinue }
+    else { $env:HIMMEL_CODEX_HOOK_BASH = $oldHookBash }
+    Check "explicit --sandbox bash startup failure -> fail-closed deny (rc 0)" (($rc4 -eq 0) -and ($sout -match '"permissionDecision":"deny"') -and ($sout -match 'Git Bash failed startup check'))
+
+    # 3d) No-sandbox diagnostics skip the startup smoke check and surface the
+    #     raw child rc. The tracked hook config must not use this mode.
+    $oldHookBash = $env:HIMMEL_CODEX_HOOK_BASH
+    $env:HIMMEL_CODEX_HOOK_BASH = $fakeBash
+    Push-Location $T
+    $nsout = ('{}' | & cmd.exe /c '.codex\run-hook.cmd' --no-sandbox dummy.sh 2>&1 | Out-String)
+    $rc5 = $LASTEXITCODE
+    Pop-Location
+    if ($null -eq $oldHookBash) { Remove-Item Env:\HIMMEL_CODEX_HOOK_BASH -ErrorAction SilentlyContinue }
+    else { $env:HIMMEL_CODEX_HOOK_BASH = $oldHookBash }
+    Check "explicit --no-sandbox skips startup deny and surfaces child rc" (($rc5 -eq 99) -and ($nsout -notmatch '"permissionDecision":"deny"'))
 }
 finally {
+    Remove-Item Env:\HIMMEL_CODEX_HOOK_BASH -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force -LiteralPath $T -ErrorAction SilentlyContinue
 }
 

@@ -163,6 +163,28 @@ EOF
   elapsed=$(( $(date +%s) - start ))
   assert "capture returned without waiting for the orphan (got ${elapsed}s)" test "$elapsed" -lt 10
   assert "output captured despite the orphan" grep -q '^OUT-BEFORE-ORPHAN$' <<<"$out"
+
+  echo "[test-py-armor] hang armor: orphan holding STDERR does not stall a 2>&1 capture (HIMMEL-626)"
+  # The T20 shape: an orphan inherits the interpreter's stderr fd, and the
+  # caller captures via $(... 2>&1) (a pipe). Pre-fix, python's stderr WAS the
+  # caller's pipe, so the orphan held it and the substitution blocked ~20s
+  # despite timeout -k. Post-fix, stderr is buffered to a file and replayed,
+  # so the orphan only holds a regular-file fd — the capture returns at once
+  # and the diagnostic is still relayed.
+  cat > "$tmpdir/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+( sleep 20 ) &
+echo "ERR-DIAG" >&2
+echo "OUT-LINE"
+exit 0
+EOF
+  chmod +x "$tmpdir/bin/python3"
+  start=$(date +%s)
+  out="$(run_with_fakes -- 'py_armor_capture -c "x" 2>&1; printf "OUTVAR=%s" "$PY_ARMOR_OUT"')"
+  elapsed=$(( $(date +%s) - start ))
+  assert "2>&1 capture returned without waiting for the stderr-orphan (got ${elapsed}s)" test "$elapsed" -lt 10
+  assert "python stderr replayed through the 2>&1 capture" grep -q '^ERR-DIAG$' <<<"$out"
+  assert "stdout still captured into PY_ARMOR_OUT" grep -q 'OUTVAR=OUT-LINE' <<<"$out"
 else
   echo "[test-py-armor] SKIP hang-armor cases (no GNU coreutils timeout on this runner)"
 fi

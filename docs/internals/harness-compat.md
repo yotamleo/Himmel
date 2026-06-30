@@ -16,8 +16,10 @@ to **other coding harnesses** — Codex first — so an operator can decide what
 > support). The ports it recommends are tracked as 470's children: **427**
 > (guardrail hook port), **471** (AGENTS.md generation), **472**
 > (Cursor / Copilot / Gemini audit), **473** (per-critic prompt adaptation). The
-> 472 audit spawned follow-ups **487** (Cursor hooks), **488** (Codex CR review
-> skill), **489** (soft-deferred Gemini/Copilot ports).
+> 472 audit spawned follow-ups **487** (Cursor hooks), **488** (rejected Hermes
+> CR-skill integration), **489** (soft-deferred Gemini/Copilot ports), and
+> **554** (Codex where-are-we/status context). **533** now owns selective Codex
+> command/skill ports, including `pr-check`.
 
 ## Frame matrix
 
@@ -38,11 +40,11 @@ to **other coding harnesses** — Codex first — so an operator can decide what
 > and `COPILOT_CLI` env vars are **unverified / non-existent** in current docs.
 
 **Headline.** Two facts dominate the port decisions:
-1. **The rule file is nearly free.** **Copilot CLI and Cursor both read
-   `AGENTS.md`** — so the generated `AGENTS.md` from **HIMMEL-471 covers them once
-   it lands** (471 is in flight; today's repo `AGENTS.md` is still the thin
-   pointer — see §2). Only **Gemini** needs a distinct `GEMINI.md` (same content,
-   different filename — a one-line generator target).
+1. **The rule file is nearly free.** **Codex, Copilot CLI, and Cursor read
+   `AGENTS.md`** — so HIMMEL-471's generated repo `AGENTS.md` now carries
+   himmel's rules for those harnesses, with freshness enforced by the
+   `agents-md-fresh` gate. Only **Gemini** needs a distinct `GEMINI.md` (same
+   content, different filename — a one-line generator target).
 2. **Skills + subagents are near drop-in; hooks are not.** Cursor and Copilot
    read `.claude/skills` and `.claude/agents` directly, so himmel's skills +
    subagents largely carry. But each harness's **hook schema differs** —
@@ -97,23 +99,35 @@ guardrail that merely exits 2 is reported as a *failed (non-blocking)* hook and
 would *fire but never block*.
 
 **The fix (HIMMEL-427, shipped + live-verified).** Tracked `.codex/hooks.json`
-routes every hook through a polyglot wrapper `.codex/run-hook.cmd` (cmd.exe on
+routes every hook through a polyglot wrapper `.codex/run-hook.cmd --sandbox` (cmd.exe branch on
 Windows / bash on Unix) that derives + exports `CLAUDE_PROJECT_DIR` from its own
-location and finds Git Bash explicitly (skipping the System32 stub). The wrapper
-delegates to `.codex/codex-hook-adapter.sh`, which runs the guardrail and, on
-exit 2, re-emits the block as Codex's JSON `permissionDecision:"deny"` (the
-guardrail's stderr → reason) and exits 0; all other outcomes pass through. The
+location and finds Git Bash explicitly (skipping the System32 stub). Before
+invoking the adapter, the wrapper smoke-tests Git Bash startup and fails closed
+with Codex deny JSON if Git Bash is present but unusable in the hook sandbox. The
+wrapper delegates to `.codex/codex-hook-adapter.sh`, which runs the guardrail and,
+for PreToolUse/PermissionRequest exit 2, re-emits the block as Codex's JSON
+`permissionDecision:"deny"` (the guardrail's stderr → reason) and exits 0.
+Non-exit-2 outcomes pass through. For other events, exit 2 currently falls back
+to a bogus PreToolUse deny. PostToolUse auto-arm uses exit 2 after arming, so
+that event remains an explicit adapter follow-up. The
 guardrails stay single-sourced — they keep working verbatim under Claude Code,
 which never invokes the adapter (only `.codex/hooks.json` does). Verified live
 against codex-cli 0.141.0: a secret read (`block-read-secrets`) is **Blocked**;
-a benign command is allowed. Unit-tested both polyglot branches +
-exit-2→deny translation (`scripts/hooks/test-codex-run-hook.{sh,ps1}`).
+a benign command is allowed. Unit-tested both polyglot branches, exit-2→deny
+translation, explicit sandbox/no-sandbox mode parsing, and Windows
+Git-Bash-startup fail-closed handling
+(`scripts/hooks/test-codex-run-hook.{sh,ps1}`).
 
-**Live-verification caveats (codex-cli 0.141.0, Windows):**
-- Codex runs each hook **inside the tool's sandbox**. Under `-s read-only` the
-  hooks' side effects are suppressed; a writable sandbox (the interactive
-  default `workspace-write`) is needed for them to act. The adapter writes **no
-  temp files** for this reason.
+**Setup options / live-verification caveats (codex-cli 0.141.0, Windows):**
+- **Sandboxed project hooks are the supported setup.** The tracked
+  `.codex/hooks.json` passes `--sandbox` to each wrapper invocation. Under
+  `-s read-only` hook side effects are suppressed; a writable sandbox (the
+  interactive default `workspace-write`) is needed for them to act. The adapter
+  writes **no temp files** for this reason.
+- **No-sandbox mode is diagnostic-only.** `.codex/run-hook.cmd --no-sandbox
+  <script.sh>` skips the Windows Git Bash startup preflight and surfaces the raw
+  child exit code. Do not wire it into `.codex/hooks.json`; it is for trusted
+  local debugging, not normal guardrail enforcement.
 - Run from a git **worktree**, Codex resolves the project root to the **main
   checkout** (the worktree's `.git` is a file, not a dir) and loads *its*
   `.codex/hooks.json` — so the live hook config is the main checkout's, not the
@@ -146,13 +160,16 @@ root-resolution bug and stay broken under Codex pending HIMMEL-554.
 the project root, concatenating root→local (local wins), capped at
 `project_doc_max_bytes` (32 KiB).
 
-himmel's repo `AGENTS.md` is a thin "read CLAUDE.md first" pointer — a **dead end
-under Codex**, because Codex won't follow it to CLAUDE.md. Result: himmel's
-*entire* rule system (git workflow, prefer-plugin-over-MCP, conventional commits,
-subagent policy, …) is **absent** under Codex.
+HIMMEL-471 has landed: himmel now generates a real repo `AGENTS.md` from
+`CLAUDE.md`, adapted to GPT anatomy (see §Prompt anatomy). `CLAUDE.md` remains
+the source of truth; `AGENTS.md` is the Codex/Copilot/Cursor-facing generated
+artifact with a generated-file banner, explicit precedence ladder, and
+non-Claude-harness reading note. Freshness is enforced by the pre-commit
+`agents-md-fresh` gate, and the direct check is:
 
-**Fix:** generate a real `AGENTS.md` from `CLAUDE.md`, adapted to GPT anatomy
-(see §Prompt anatomy) — tracked in **HIMMEL-471**.
+```bash
+node scripts/agents-md/generate.mjs --check
+```
 
 ### 3. Plugins / marketplace — works
 
@@ -184,8 +201,10 @@ critic panel (`scripts/cr/critic-panel.sh`) and clears the CR marker only when
 the panel reports 0 Critical + 0 Important (retains on findings, panel
 unavailable, or a `docs-audit` lane). It does **not** dispatch the Claude
 `pr-review-toolkit` reviewer agents. Codex native `/review` participation is a
-post-HIMMEL-527 follow-up. Tier-A skills already load natively (verified live —
-`stuck-playbook` triggered under Codex).
+post-HIMMEL-527 follow-up (shared `cr-context.sh` assembler). Tier-A skills
+(minerva, handover, obsidian-triage wrappers, himmel-update, stuck-playbook,
+vm) already load natively — verified live (`stuck-playbook` triggered under
+Codex).
 
 ### 5. Subagents
 
@@ -202,6 +221,45 @@ Codex's config surface (`~/.codex/config.toml`) ≠ `.claude/settings.json`:
 `[mcp_servers.*]`, `[projects.*]` trust levels, `[windows] sandbox`. Permissions
 and hook wiring live here, not in `.claude/`.
 
+### 7. Status context — statusLine is Claude-only (HIMMEL-554)
+
+Claude's `statusLine.command` is wired through `scripts/where-are-we/statusline.sh`;
+Codex has no equivalent visual statusline surface. The Codex port should inject
+the same advisory context through a Codex-native context path (likely
+SessionStart/UserPromptSubmit additional context), not by porting the rendered
+bar. Reuse the existing status ledgers as the source of truth:
+`.where-are-we/ledger.jsonl` via `scripts/where-are-we/{dock,provision}.mjs`,
+and the CR score/usage ledger (`cr-critic-scores.jsonl`, `CR_USAGE_LOG=1`,
+`scripts/cr/cr-scores.sh`) for review status. The context path must stay
+offline/fail-open and must not widen guardrail permissions.
+
+### 8. Flow-audit follow-ups (HIMMEL-470 record)
+
+After the Codex hook-wrapper port landed, the completed HIMMEL-470 audit left
+follow-up work rather than another broad implementation pass. The internal matrix classifies each high-value
+flow as works under Codex, needs a Codex adapter, Claude-only by
+design, a separate feature request, or unknown pending evidence.
+Public/reference docs should point to the owner tickets rather than duplicate
+that working matrix.
+
+- **PR flow:** design a Codex `pr-check` skill under **HIMMEL-533**. It should
+  reuse the shell critic panel, define how explicit external-diff approval is
+  captured, decide whether Codex native `/review` participates, and clear the CR
+  marker only after adjudication.
+- **Status context:** keep Codex where-are-we/status work under **HIMMEL-554**.
+  Reuse ledgers; do not emulate Claude's visual statusline.
+- **Hook confidence:** file an owner ticket for no-token fixture coverage of
+  individual guardrails and lifecycle events before any live Codex probe. The
+  first lifecycle case should resolve PostToolUse auto-arm's exit-2 contract
+  without emitting a bogus PreToolUse deny.
+- **Install/update confidence:** file an owner ticket for disposable VM or
+  temp-config checks covering setup, update, hook trust, and uninstall before
+  live harness probes.
+
+Do not start command ports or Codex status-context wiring from the audit chunk
+itself. A live Codex probe should run only after the matrix row names the exact
+question it answers and the no-token preconditions that must pass first.
+
 ## Cursor / Copilot / Gemini deep-dive (HIMMEL-472)
 
 Audited 2026-06-21 (official docs + superpowers' shipped `hooks-cursor.json`,
@@ -209,7 +267,7 @@ Audited 2026-06-21 (official docs + superpowers' shipped `hooks-cursor.json`,
 port/guard/accept:
 
 ### Cursor (priority: second after Codex)
-- **Rule file — ACCEPT (covered once HIMMEL-471 lands).** Cursor reads
+- **Rule file — ACCEPT (covered by HIMMEL-471).** Cursor reads
   `AGENTS.md`, so HIMMEL-471's generated file works as-is. Optional upside: a
   `.cursor/rules/*.mdc` variant for glob-scoped rules (defer).
 - **Skills / subagents — ACCEPT.** Cursor reads `.claude/skills` and
@@ -222,7 +280,7 @@ port/guard/accept:
 - **Marketplace — ACCEPT** (exists, contrary to the earlier "no marketplace" note).
 
 ### Copilot CLI (SOFT-DEFER — no free usage)
-- **Rule file — ACCEPT.** Reads `AGENTS.md` (HIMMEL-471 covers it once shipped);
+- **Rule file — ACCEPT.** Reads `AGENTS.md` (HIMMEL-471 covers it);
   also reads `CLAUDE.md`/`GEMINI.md`.
 - **Skills — ACCEPT** (reads `.claude/skills`). **Subagents** `*.agent.md` — port selectively.
 - **Hooks — PORT, with a gotcha.** `.github/hooks/*.json`, fails CLOSED, BUT
@@ -241,24 +299,19 @@ port/guard/accept:
 ### CR reviewer under non-Claude harnesses (answers "pr-review-toolkit for codex?")
 The **cross-model critic panel** (`scripts/cr/critic-panel.sh` + hermes) is pure
 shell → already runs under any harness. Only the **Claude-subagent** layer
-(`/pr-check`'s `.claude/agents/code-reviewer.md`) doesn't auto-carry. No 1:1
-codex mirror of pr-review-toolkit exists; the closest trusted analog is
-**`hyhmrright/brooks-lint`** (921★, MIT — an AI code-review *codex skill*),
-catalogued in **`ComposioHQ/awesome-codex-skills`** (~14k★ live 2026-06-21,
-active; the vault clip `luna/30-Resources/Tech/composiohq-awesome-codex-skills.md`
-recorded 13.5k earlier and already flags it
-"take-parts, directly relevant to pr-review-toolkit"). Codex skills are
-`SKILL.md`-based (same shape himmel uses), installable into `$CODEX_HOME/skills/`.
-**Decision:** author a himmel codex review `SKILL.md` OR adopt/adapt brooks-lint
-via the [tool-adoption rubric](../tool-adoption/rubric.md) — tracked as a 472
-follow-up subtask (priority: with Codex).
+(`/pr-check`'s `pr-review-toolkit:*` Agent dispatches) does not auto-carry. The 472
+audit identified brooks-lint as a possible analog, but HIMMEL-488 later rejected
+the deeper Hermes review-skill integration as redundant and unsafe for himmel's
+guardrails. **Current decision:** HIMMEL-533 owns a thin Codex `pr-check` skill
+over the existing shell panel, with the Codex native `/review` role decided after
+HIMMEL-527 supplies the shared context assembler.
 
 ## Port / guard / accept decisions
 
 | Item | Decision | Where |
 |---|---|---|
 | Git gates (pre-commit/push) | **Accept** — fire on every harness | — |
-| PreToolUse guardrails (Codex) | **Port** — via himmel-ops plugin (CLAUDE_PLUGIN_ROOT) or hardened project file | HIMMEL-427 |
+| PreToolUse guardrails (Codex) | **Ported** — tracked `.codex/hooks.json` through `run-hook.cmd` + adapter | HIMMEL-427 |
 | Rule file (CLAUDE.md → AGENTS.md) | **Port** — covers Codex **+ Copilot + Cursor** | HIMMEL-471 |
 | Rule file → `GEMINI.md` | **Port (small), SOFT-DEFER** — extra generator target | HIMMEL-489 |
 | Hooks → Cursor (`.cursor/hooks.json`, fail-open) | **Port** (priority 2) | HIMMEL-487 |
@@ -266,6 +319,7 @@ follow-up subtask (priority: with Codex).
 | Skills / subagents (Cursor, Copilot) | **Accept** — read `.claude/*` directly | — |
 | Driver commands → Codex skills | **Ported (delivered)** — thin tracked `.agents/skills/` wrappers (worktree/clean/clean-garden/shell-lint/guardrail-sim/pr-check) shelling existing `scripts/`; live-verified under codex-cli 0.142.0 | HIMMEL-533 |
 | CR reviewer skill for Codex | **Ported (panel-only)** — Codex `pr-check` skill runs the shell panel + clears the CR marker on clean; native `/review` participation deferred post-HIMMEL-527 | HIMMEL-533 |
+| where-are-we / status context for Codex | **Port** — use Codex-native advisory context, not Claude `statusLine.command` | HIMMEL-554 |
 | Marketplace (all) | **Accept** — each has one | — |
 
 ## Prompt anatomy — why rules must be *adapted*, not copied
@@ -288,7 +342,10 @@ differences (GPT-5 prompting guide + the `everything-codex` migration):
 The same per-model adaptation applies to the CR critic panel (HIMMEL-473):
 GPT/codex critics get contradiction-resolution + spec tags; open models
 (qwen/kimi) need stronger JSON-obedience scaffolding; Claude adjudicators get
-XML/`IMPORTANT`.
+XML/`IMPORTANT`. When reviewing prompt behavior, use the status ledgers too:
+`CR_USAGE_LOG=1` records estimated prompt/response usage, and
+`scripts/cr/cr-scores.sh` summarizes availability, agreement, drop advice, and
+usage without coupling the prompt contract to one harness.
 
 ## Sources
 

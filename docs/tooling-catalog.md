@@ -257,10 +257,28 @@ The `/himmel-doctor` diagnostic. Read-only except `--fix`. Checks: C1 node/cavem
 SessionStart wiring (+ `--fix` heal), C2 shadowed claude-obsidian, C3 dirty
 single-writer luna vault, C4 Bitbucket-remote-where-`gh`-fails, C5 repo not in the
 handover registry, C6 PATH-fragile bare-interpreter MCP servers (uvx/bun — same
-GUI-launch failure class as the node hook). Prints a severity-grouped report (FAIL/WARN/INFO); `--file-issue
+GUI-launch failure class as the node hook), C7 lingering merged-PR worktrees, C8
+stale pipeline-cadence runners, C9 auto-arm scheduler backend (HIMMEL-594 — reads
+`scripts/lib/scheduler-backend.sh`; never sudos). Prints a severity-grouped report (FAIL/WARN/INFO); `--file-issue
 [--repo owner/name]` files ONE deduped consolidated public GitHub issue (resolves
 the repo from `--repo` → `$HIMMEL_DOCTOR_ISSUE_REPO` → github origin). Exit 1 on any
 FAIL. Tests: `scripts/test-himmel-doctor.sh`, `scripts/lib/test-{resolve,run,wire-caveman}-node.sh`.
+
+---
+
+## auto-arm scheduler backend (`scripts/lib/scheduler-backend.sh`, HIMMEL-594)
+
+Pure, sourceable, bash-3.2-safe detection/remediation lib whose status mirrors
+what `arm-resume.sh` actually selects (windows=schtasks, linux=`at`+atd else
+crontab, macos=crontab) so the usage-cap auto-resume can't silently no-op on a
+missing/dead backend. `scheduler_backend_os` / `_status` (`ok|ok-cron|disabled|
+missing`) / `_remediation`. Consumed by `/himmel-doctor` C9 and the installers.
+Enable lives in installers (needs sudo): `ubuntu.sh` installs+enables `at`/atd;
+**`scripts/machine-setup/macos.sh`** (ALPHA, unvalidated — adopters validate +
+file issues) wires the statusline + auto-arm hook + verifies crontab, reusing the
+idempotent `scripts/lib/register-auto-arm-hook.sh`. Tests:
+`scripts/lib/test-scheduler-backend.sh`, `scripts/machine-setup/test-macos.sh`,
+`scripts/lib/test-register-auto-arm-hook.sh`, macOS cases in `scripts/handover/test-arm-resume.sh`.
 
 ---
 

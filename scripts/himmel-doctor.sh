@@ -341,6 +341,27 @@ check_c8() {
     fi
 }
 
+# --- C9: auto-arm scheduler backend (read-only; enable needs sudo) -------------
+# arm-resume.sh schedules the usage-cap auto-resume via an OS scheduler backend
+# (windows=schtasks, linux=at+atd else crontab, macos=crontab). If that backend
+# is absent/disabled the armed resume silently never fires. Detect + remediate
+# only — NEVER sudo (enable lives in the installers). WARN never FAILs: auto-arm
+# is a safety net, its absence must not flip the scripted exit code (mirrors
+# C7/C8). HIMMEL-594.
+check_c9() {
+    # shellcheck source=scripts/lib/scheduler-backend.sh
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/scripts/lib/scheduler-backend.sh"
+    local os status remedy; os="$(scheduler_backend_os)"; status="$(scheduler_backend_status)"
+    remedy="$(scheduler_backend_remediation)"
+    case "$status" in
+        ok)       emit OK   C9-scheduler "auto-arm scheduler backend present ($os)" ;;
+        ok-cron)  emit WARN C9-scheduler "auto-arm: only crontab available ($os) — weaker one-shot (fires at next HH:MM, misses if asleep)" "$remedy" ;;
+        disabled) emit WARN C9-scheduler "auto-arm: 'at' present but atd not running — armed resumes silently won't fire" "$remedy" ;;
+        *)        emit WARN C9-scheduler "auto-arm: no scheduler backend — can't schedule a resume" "$remedy" ;;
+    esac
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -389,6 +410,7 @@ check_c5
 check_c6
 check_c7
 check_c8
+check_c9
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

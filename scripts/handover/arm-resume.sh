@@ -359,7 +359,7 @@ case "$PLATFORM" in
         if ! command -v at >/dev/null 2>&1 && ! command -v crontab >/dev/null 2>&1; then
             echo "ERR arm-resume: neither 'at' nor 'crontab' on PATH" >&2
             echo "    Install 'at': Debian/Ubuntu: sudo apt install at && sudo systemctl enable --now atd" >&2
-            echo "    macOS:        at is preinstalled; enable atd via launchctl" >&2
+            echo "    macOS:        uses crontab — ensure crontab is available" >&2
             exit 2
         fi
         ;;
@@ -565,7 +565,7 @@ RESUME_PROMPT="load $HANDOVER_PATH overnight mode"
 # worktree instead of a shared checkout. Required when github-sync / the
 # Telegram bridge run concurrently, so an autonomous code arm never mutates a
 # checkout another session has open. Explicit opt-in only: vault arms
-# (luna/luna-medic) must stay single-tree, so this is never inferred.
+# (luna/salus) must stay single-tree, so this is never inferred.
 
 # Resolve the worktree branch from frontmatter when not given on the CLI
 # (flag wins, same precedence as --cwd over resume_cwd).
@@ -710,6 +710,22 @@ fi
 #   all  — every HIMMEL-Resume-* job (the legacy broad behavior; used by the
 #          --dedup-any safety arms and by the soft slot-cap count).
 # Defaults to "all" so any unscoped caller keeps the pre-340 semantics.
+
+# _crontab_list <scope> — grep the crontab for our HIMMEL-Resume markers
+# (HIMMEL-594: shared by the linux crontab fallback + the macOS crontab-only
+# branch so dedup reads the same store the schedule wrote).
+_crontab_list() {
+    local scope="${1:-all}"
+    if [ "$scope" = task ]; then
+        # Anchor the marker comment at end-of-line so a prefix task name can't
+        # match a longer one. TASK_NAME is sanitized to [:alnum:]_- so it
+        # carries no BRE specials.
+        crontab -l 2>/dev/null | grep -E "# ${TASK_NAME}$" || true
+    else
+        crontab -l 2>/dev/null | grep -F 'HIMMEL-Resume-' || true
+    fi
+}
+
 list_existing() {
     local scope="${1:-all}"
     case "$PLATFORM" in
@@ -753,7 +769,7 @@ list_existing() {
                 printf '%s\n' "$names"
             fi
             ;;
-        linux|macos)
+        linux)
             if command -v atq >/dev/null 2>&1; then
                 local err_file rc atq_out
                 err_file=$(mktemp -t arm-resume.err.XXXXXX)
@@ -775,29 +791,69 @@ list_existing() {
                     local job_id
                     job_id=$(printf '%s' "$line" | awk '{print $1}')
                     [ -z "$job_id" ] && continue
+                    # NB: use `if … then printf; fi`, NOT `grep … && printf`.
+                    # A non-matching job makes grep exit 1; as the last command
+                    # in this loop body that 1 would propagate out of the while
+                    # loop → list_existing returns 1 → `existing=$(list_existing)`
+                    # aborts under `set -e` (the multislot-on-Linux bug: arming a
+                    # 2nd distinct handover failed whenever a non-matching at-job
+                    # was already queued). The `if` always exits 0.
                     if [ "$scope" = task ]; then
                         # Exact whole-line marker (# $TASK_NAME) so a task
                         # whose name is a prefix of another's can't match it.
-                        at -c "$job_id" 2>/dev/null | grep -qxF "# $TASK_NAME" \
-                            && printf 'at-job-%s\n' "$job_id"
+                        if at -c "$job_id" 2>/dev/null | grep -qxF "# $TASK_NAME"; then
+                            printf 'at-job-%s\n' "$job_id"
+                        fi
                     else
-                        at -c "$job_id" 2>/dev/null | grep -q 'HIMMEL-Resume-' \
-                            && printf 'at-job-%s\n' "$job_id"
+                        if at -c "$job_id" 2>/dev/null | grep -q 'HIMMEL-Resume-'; then
+                            printf 'at-job-%s\n' "$job_id"
+                        fi
                     fi
                 done <<< "$atq_out"
             elif command -v crontab >/dev/null 2>&1; then
-                # crontab fallback: grep crontab for our marker.
-                if [ "$scope" = task ]; then
-                    # Anchor the marker comment at end-of-line so a prefix
-                    # task name can't match a longer one. TASK_NAME is
-                    # sanitized to [:alnum:]_- so it carries no BRE specials.
-                    crontab -l 2>/dev/null | grep -E "# ${TASK_NAME}$" || true
-                else
-                    crontab -l 2>/dev/null | grep -F 'HIMMEL-Resume-' || true
-                fi
+                _crontab_list "$scope"
             fi
             ;;
+        macos)
+            # macOS uses crontab only (see schedule_arm header) — read the same
+            # store schedule writes so dedup operates on it, never the at queue.
+            _crontab_list "$scope"
+            ;;
     esac
+}
+
+# _crontab_delete <marker> — remove exactly one crontab LINE (HIMMEL-594:
+# shared by the linux crontab branch + the macOS crontab-only branch).
+_crontab_delete() {
+    local marker="$1"
+    # marker is the full matched crontab LINE — rewrite without exactly that
+    # line (HIMMEL-340: scoped delete so a --force on one handover can't wipe
+    # sibling slots). Snapshot first so a mid-pipeline failure doesn't wipe.
+    local snap
+    snap=$(mktemp -t crontab.snap.XXXXXX)
+    if ! crontab -l > "$snap" 2>/dev/null; then
+        echo "ERR arm-resume: crontab -l failed; aborting before rewrite" >&2
+        rm -f "$snap"
+        exit 2
+    fi
+    # grep -v exits 1 when it filters out EVERY line (deleting the LAST entry is
+    # a valid empty result, not an error). Under `set -o pipefail` the old
+    # `grep … | crontab -` read that grep-rc-1 as a rewrite failure and aborted
+    # before schedule_arm could re-add — so capture tolerantly (rc 1 ok, rc>1 =
+    # real grep error), then write + check crontab's OWN rc.
+    local filtered rc=0
+    filtered=$(grep -vxF "$marker" "$snap") || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        echo "ERR arm-resume: crontab filter failed (grep rc=$rc); original saved at $snap" >&2
+        exit 2
+    fi
+    # $filtered empty → install an empty crontab (correct); else write the lines.
+    if ! { [ -z "$filtered" ] || printf '%s\n' "$filtered"; } | crontab - 2>/dev/null; then
+        echo "ERR arm-resume: crontab rewrite failed; original saved at $snap" >&2
+        exit 2
+    fi
+    rm -f "$snap"
+    echo "arm-resume: removed crontab entry: $marker"
 }
 
 delete_existing() {
@@ -812,7 +868,7 @@ delete_existing() {
                 exit 2
             fi
             ;;
-        linux|macos)
+        linux)
             if [[ "$marker" == at-job-* ]]; then
                 local job_id="${marker#at-job-}"
                 if atrm "$job_id" 2>/dev/null; then
@@ -822,24 +878,13 @@ delete_existing() {
                     exit 2
                 fi
             else
-                # crontab marker is the full matched crontab LINE — rewrite
-                # without exactly that line (HIMMEL-340: scoped delete so a
-                # --force on one handover can't wipe sibling slots).
-                # Snapshot first so a mid-pipeline failure doesn't wipe.
-                local snap
-                snap=$(mktemp -t crontab.snap.XXXXXX)
-                if ! crontab -l > "$snap" 2>/dev/null; then
-                    echo "ERR arm-resume: crontab -l failed; aborting before rewrite" >&2
-                    rm -f "$snap"
-                    exit 2
-                fi
-                if ! grep -vxF "$marker" "$snap" | crontab - 2>/dev/null; then
-                    echo "ERR arm-resume: crontab rewrite failed; original saved at $snap" >&2
-                    exit 2
-                fi
-                rm -f "$snap"
-                echo "arm-resume: removed crontab entry: $marker"
+                _crontab_delete "$marker"
             fi
+            ;;
+        macos)
+            # macOS: crontab-only, so the marker is always a crontab line
+            # (the at-job-* arm is unreachable here).
+            _crontab_delete "$marker"
             ;;
     esac
 }
@@ -1169,6 +1214,62 @@ fi
 
 # Build and execute the scheduler command directly — no round-trip
 # through schedule-resume.sh's mixed-prose stdout (the v1 bug).
+# _crontab_schedule — install the one-shot crontab entry (HIMMEL-594: shared by
+# the linux crontab fallback + the macOS crontab-only branch). Uses the script
+# globals RESUME_TIME/RESUME_PROMPT/RESUME_CWD/CHANNELS/TASK_NAME/DRY_RUN only.
+# A `return 0` here (dry-run) returns to the schedule_arm case, which then ends
+# and returns 0 — equivalent to the pre-extraction inline `return 0`.
+_crontab_schedule() {
+    # crontab fallback — crontab entries are RECURRING, so the
+    # entry SELF-REMOVES as its first action (the cron analogue of
+    # the schtasks .bat self-/delete above): it rewrites the
+    # crontab without its own marker line before running cd+claude,
+    # turning the recurring entry into a one-shot. The running
+    # /bin/sh -c continues after the rewrite, so claude still
+    # launches. The marker match is ANCHORED at end-of-line
+    # (grep -vE '# <TASK_NAME>$'), mirroring the dedup detector's
+    # crontab branch in list_existing so a sibling slot whose
+    # TASK_NAME is a strict PREFIX of this one is not cross-matched
+    # and survives. TASK_NAME is sanitized to [:alnum:]_- so it
+    # carries no ERE specials. The terminal `crontab -` is NOT
+    # error-suppressed: a silently-failed rewrite would leave the
+    # entry RECURRING (a daily relaunch loop) while we told the
+    # operator it is one-shot, so let cron surface the failure
+    # (mail/log) — the manual-prune hint printed below is the
+    # backstop. printf '%q' shell-quotes the prompt so cron's
+    # /bin/sh -c can't re-interpret $/backticks/etc in a handover
+    # path.
+    local hh="${RESUME_TIME%:*}" mm="${RESUME_TIME#*:}"
+    local q_prompt q_cwd q_channels=""
+    q_prompt=$(printf '%q' "$RESUME_PROMPT")
+    q_cwd=$(printf '%q' "$RESUME_CWD")
+    [ -n "$CHANNELS" ] && q_channels="--channels $(printf '%q' "$CHANNELS") "
+    local self_clean="crontab -l 2>/dev/null | grep -vE '# ${TASK_NAME}\$' | crontab -;"
+    local entry="$mm $hh * * * $self_clean cd $q_cwd && claude $q_prompt $q_channels # $TASK_NAME"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY arm-resume: would add crontab entry:"
+        echo "    $entry"
+        echo "DRY arm-resume: NOTE: entry self-removes on first fire (one-shot)."
+        return 0
+    fi
+    local snap
+    snap=$(mktemp -t crontab.snap.XXXXXX)
+    if ! crontab -l > "$snap" 2>/dev/null; then
+        : > "$snap"
+    fi
+    {
+        cat "$snap"
+        echo "$entry"
+    } | crontab - || {
+        echo "ERR arm-resume: crontab rewrite failed; snapshot at $snap" >&2
+        exit 4
+    }
+    rm -f "$snap"
+    echo "arm-resume: NOTE: crontab entry self-removes on first fire (one-shot)."
+    echo "    If it never fires, prune manually with:"
+    echo "    crontab -l | grep -v 'HIMMEL-Resume' | crontab -"
+}
+
 schedule_arm() {
     case "$PLATFORM" in
         windows)
@@ -1297,7 +1398,7 @@ schedule_arm() {
             fi
             rm -f "$err_file"
             ;;
-        linux|macos)
+        linux)
             if command -v at >/dev/null 2>&1; then
                 # at jobs are one-shot and atd removes them from the queue
                 # after they run, so (unlike schtasks ONCE and crontab) the
@@ -1349,56 +1450,15 @@ CMD
                 fi
                 rm -f "$err_file"
             else
-                # crontab fallback — crontab entries are RECURRING, so the
-                # entry SELF-REMOVES as its first action (the cron analogue of
-                # the schtasks .bat self-/delete above): it rewrites the
-                # crontab without its own marker line before running cd+claude,
-                # turning the recurring entry into a one-shot. The running
-                # /bin/sh -c continues after the rewrite, so claude still
-                # launches. The marker match is ANCHORED at end-of-line
-                # (grep -vE '# <TASK_NAME>$'), mirroring the dedup detector's
-                # crontab branch in list_existing so a sibling slot whose
-                # TASK_NAME is a strict PREFIX of this one is not cross-matched
-                # and survives. TASK_NAME is sanitized to [:alnum:]_- so it
-                # carries no ERE specials. The terminal `crontab -` is NOT
-                # error-suppressed: a silently-failed rewrite would leave the
-                # entry RECURRING (a daily relaunch loop) while we told the
-                # operator it is one-shot, so let cron surface the failure
-                # (mail/log) — the manual-prune hint printed below is the
-                # backstop. printf '%q' shell-quotes the prompt so cron's
-                # /bin/sh -c can't re-interpret $/backticks/etc in a handover
-                # path.
-                local hh="${RESUME_TIME%:*}" mm="${RESUME_TIME#*:}"
-                local q_prompt q_cwd q_channels=""
-                q_prompt=$(printf '%q' "$RESUME_PROMPT")
-                q_cwd=$(printf '%q' "$RESUME_CWD")
-                [ -n "$CHANNELS" ] && q_channels="--channels $(printf '%q' "$CHANNELS") "
-                local self_clean="crontab -l 2>/dev/null | grep -vE '# ${TASK_NAME}\$' | crontab -;"
-                local entry="$mm $hh * * * $self_clean cd $q_cwd && claude $q_prompt $q_channels # $TASK_NAME"
-                if [ "$DRY_RUN" -eq 1 ]; then
-                    echo "DRY arm-resume: would add crontab entry:"
-                    echo "    $entry"
-                    echo "DRY arm-resume: NOTE: entry self-removes on first fire (one-shot)."
-                    return 0
-                fi
-                local snap
-                snap=$(mktemp -t crontab.snap.XXXXXX)
-                if ! crontab -l > "$snap" 2>/dev/null; then
-                    : > "$snap"
-                fi
-                {
-                    cat "$snap"
-                    echo "$entry"
-                } | crontab - || {
-                    echo "ERR arm-resume: crontab rewrite failed; snapshot at $snap" >&2
-                    exit 4
-                }
-                rm -f "$snap"
-                echo "arm-resume: NOTE: crontab entry self-removes on first fire (one-shot)."
-                echo "    If it never fires, prune manually with:"
-                echo "    crontab -l | grep -v 'HIMMEL-Resume' | crontab -"
+                _crontab_schedule
             fi
             ;;
+        macos)
+            # macOS deliberately uses crontab, NOT at: atrun (com.apple.atrun)
+            # is off-by-default and may be unenableable under SIP, so an `at -t`
+            # job would silently never fire. crontab is the per-user one-shot
+            # primitive needing no privileged daemon. (HIMMEL-594)
+            _crontab_schedule ;;
     esac
 }
 

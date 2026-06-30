@@ -1,5 +1,8 @@
 # New-machine setup for the luna-brain repo (Windows PowerShell).
-# Run once after cloning: .\scripts\setup.ps1
+# Run once after cloning: .\scripts\setup.ps1 [-Medical]
+#   -Medical: also apply the salus medical-vault overlay (medic skill +
+#   PHI-egress floor + skin scaffolds). Lockstep with setup.sh --medical.
+param([switch]$Medical)
 
 # --- [0/6] git state ---
 # Lockstep with setup.sh: a non-repo download is initialized + scaffold-committed;
@@ -160,6 +163,18 @@ if ($missingDirs.Count -gt 0) {
     Write-Host "  Re-clone or re-create the scaffold before using vault commands." -ForegroundColor Yellow
 } else {
     Write-Host "  Vault PARA dirs present."
+}
+
+# --- [7/7] salus medical overlay (optional, -Medical) ---
+if ($Medical) {
+    Write-Host "[7/7] Applying salus medical-vault overlay..."
+    . (Join-Path $RepoRoot 'scripts/lib/Salus-Overlay.ps1')
+    if (Invoke-SalusOverlay -RepoRoot $RepoRoot) {
+        Write-Host "  salus overlay applied (medic skill + egress floor + skin scaffolds + .salus-profile)."
+    } else {
+        Write-Host "  ERROR: salus overlay not found -- is this the luna template?" -ForegroundColor Red
+        exit 1
+    }
 }
 
 Write-Host ""

@@ -82,6 +82,9 @@ repos:
         language: system
         entry: bash scripts/hooks/check-no-headless-claude.sh
         pass_filenames: true
+        # archive/ holds inert reference copies of removed features — moving a
+        # file there is not "introducing" a headless call (HIMMEL-421).
+        exclude: '^archive/'
         stages: [pre-commit]
 
       - id: no-headless-gemini
@@ -89,6 +92,7 @@ repos:
         language: system
         entry: bash scripts/hooks/check-no-headless-gemini.sh
         pass_filenames: true
+        exclude: '^archive/'
         stages: [pre-commit]
 
       - id: hookspath-misconfig

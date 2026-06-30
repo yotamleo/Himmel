@@ -12,6 +12,10 @@ def strip_code(text: str) -> str:
     return _INLINE.sub("", _FENCE.sub("", text))
 
 def link_target(raw: str) -> str:
+    # Table-escaped alias pipes (`[[target\|alias]]` inside a markdown table use
+    # `\|` so the pipe doesn't break the cell) are plain alias separators — strip
+    # the escape so the target doesn't keep a trailing backslash and dead-link.
+    raw = raw.replace("\\|", "|")
     return raw.split("|", 1)[0].split("#", 1)[0].split("^", 1)[0].strip()
 
 def extract_links(text: str) -> list:
