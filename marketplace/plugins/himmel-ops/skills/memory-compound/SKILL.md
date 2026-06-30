@@ -131,10 +131,13 @@ cp "$MEMDIR/MEMORY.md" "$MEMDIR/MEMORY.md.bak" || { echo "backup failed — abor
 
 Then, in the index:
 - **Drop** pure-status entries outright.
-- **Collapse** each compounded entry to a one-line pointer:
-  `- [Title](file.md) — hook → luna [[note-name]]` becomes a pointer with no
-  surviving topic file, i.e. a bare `- <hook> → luna [[note-name]]` line (or
-  `→ himmel docs/internals/<doc>.md`). Keep the searchable hook; drop the body.
+- **Collapse** each compounded entry to a one-line pointer. The topic file is
+  being deleted in step 6, so the `[Title](file.md)` markdown link MUST be
+  dropped — a surviving `[…](file.md)` would dangle at a file that no longer
+  exists. Rewrite `- [Title](file.md) — hook → luna [[note-name]]` to a **bare**
+  `- <hook> → luna [[note-name]]` line (or `→ himmel docs/internals/<doc>.md`):
+  no `[…](file.md)` link, keep the searchable hook + the `→ luna [[note]]`
+  pointer, drop the body.
 
 The goal is an index back under budget where every dropped body is now
 qmd-findable substrate.
@@ -146,6 +149,22 @@ whose index entry is now a pointer (step 5), delete it:
 ```bash
 rm "$MEMDIR/<compounded-topic>.md"
 ```
+
+**Post-slim gate — no dangling links.** Same discipline as the step-4 qmd gate:
+a check, not a hope. After the deletions, every `[Title](file.md)` link in
+`MEMORY.md` must point at a file that still exists — a link to a just-deleted
+topic file is exactly the drift this guard catches (HIMMEL-641). Scan the index
+for any `](…md)` whose target is now missing:
+
+```bash
+grep -oE '\]\(([^)]+\.md)\)' "$MEMDIR/MEMORY.md" | sed -E 's/^\]\(//; s/\)$//' | while read -r link; do
+  [ -e "$MEMDIR/$link" ] || echo "DANGLING: $link"
+done
+```
+
+Any `DANGLING:` line means a step-5 collapse was missed — go back and rewrite
+that entry to a bare `- <hook> → luna [[note]]` pointer (drop the dead
+`[…](file.md)` link), then re-run the scan. No clean scan → the pass is not done.
 
 Leave any file you could not confidently compound (ambiguous, still-active
 project state) in place — partial progress is fine and safe. Keep
