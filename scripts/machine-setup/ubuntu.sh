@@ -30,7 +30,7 @@ mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
 # ── Progress ────────────────────────────────────────────────────────────────
-TOTAL_STEPS=19
+TOTAL_STEPS=20
 STEP=0
 FAILURES=()
 
@@ -558,6 +558,18 @@ step "Swap rtk hook for rtk-hook-guard wrapper (HIMMEL-241)"
     fi
   fi
 } || fail_nonfatal "swap rtk hook for guard"
+
+step "Seed operator leak denylist (private tooling — skipped if absent)"
+{
+  # Private-only helper (in PRIVATE_PATHS): present on the operator's mirror,
+  # absent on adopter clones → guarded skip. Idempotent.
+  SEEDER="$HIMMEL_PATH/scripts/lib/seed-leak-denylist.sh"
+  if [[ -f "$SEEDER" ]]; then
+    bash "$SEEDER"
+  else
+    echo "  skipped: $SEEDER not present (public/adopter clone)"
+  fi
+} || fail_nonfatal "seed leak denylist"
 
 step "Install Obsidian + open vault"
 {

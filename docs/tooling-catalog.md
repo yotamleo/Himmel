@@ -259,7 +259,10 @@ single-writer luna vault, C4 Bitbucket-remote-where-`gh`-fails, C5 repo not in t
 handover registry, C6 PATH-fragile bare-interpreter MCP servers (uvx/bun — same
 GUI-launch failure class as the node hook), C7 lingering merged-PR worktrees, C8
 stale pipeline-cadence runners, C9 auto-arm scheduler backend (HIMMEL-594 — reads
-`scripts/lib/scheduler-backend.sh`; never sudos). Prints a severity-grouped report (FAIL/WARN/INFO); `--file-issue
+`scripts/lib/scheduler-backend.sh`; never sudos), C10 private→public propagation
+drift (HIMMEL-640 — read-only advisory; surfaces MISSING/DRIFT/REVERSE-LEAK
+between the private mirror and the public clone; skips cleanly on adopter clones).
+Prints a severity-grouped report (FAIL/WARN/INFO); `--file-issue
 [--repo owner/name]` files ONE deduped consolidated public GitHub issue (resolves
 the repo from `--repo` → `$HIMMEL_DOCTOR_ISSUE_REPO` → github origin). Exit 1 on any
 FAIL. Tests: `scripts/test-himmel-doctor.sh`, `scripts/lib/test-{resolve,run,wire-caveman}-node.sh`.

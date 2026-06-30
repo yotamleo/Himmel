@@ -385,6 +385,50 @@ if printf '%s' "$out" | grep -q 'WARN C9-scheduler'; then pass "C9 macos warn"; 
 if printf '%s' "$out" | grep -q 'apt install'; then fail "C9 macos wrongly suggests apt"; else pass "C9 macos no apt advice"; fi
 rm -rf "$t"
 
+# ── C10: private→public propagation drift (HIMMEL-640) ────────────────────────
+# mk10 <seed> <bare> <clone> — commit seed contents on main, bare-clone, work-clone.
+mk10() {
+    git -C "$1" init -q; git -C "$1" config user.email t@t; git -C "$1" config user.name t
+    git -C "$1" config core.autocrlf false
+    git -C "$1" add -A; git -C "$1" commit -qm x; git -C "$1" branch -M main
+    git clone -q --bare "$1" "$2"; git clone -q "$2" "$3"
+}
+
+echo "== C10: no public clone -> OK C10-propagation (skip-clean) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(HIMMEL_PUBLIC_CLONE="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'OK   C10-propagation' && [ "$rc" -eq 0 ]; then pass "C10 -> OK (skip, no clone)"; else fail "C10 -> rc=$rc; $(printf '%s' "$out" | grep C10)"; fi
+rm -rf "$t"
+
+echo "== C10: seeded drift fixture -> WARN C10-propagation =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+ps="$t/ps"; mkdir -p "$ps/scripts"; printf 'stub\n' > "$ps/scripts/propagate-public.sh"; printf 'new doc\n' > "$ps/onlypriv.md"
+us="$t/us"; mkdir -p "$us"; printf 'base\n' > "$us/base.md"
+mk10 "$ps" "$t/ps.git" "$t/pc"
+mk10 "$us" "$t/us.git" "$t/uc"
+out="$(HIMMEL_PRIV_ROOT="$t/pc" HIMMEL_PUBLIC_CLONE="$t/uc" HIMMEL_PUBLIC_REMOTE="us.git" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN C10-propagation' && printf '%s' "$out" | grep -q 'onlypriv.md'; then pass "C10 -> WARN (seeded drift, MISSING flagged)"; else fail "C10 -> $(printf '%s' "$out" | grep -A6 C10)"; fi
+rm -rf "$t"
+
+echo "== C10: unreadable origin/main -> WARN (stale/unreadable refs, not false-clean) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+# priv has the marker but its default branch is NOT 'main' -> ls-tree origin/main
+# is empty -> detector WARNs -> C10 must surface WARN, never OK "no drift".
+ps="$t/ps"; mkdir -p "$ps/scripts"; printf 'stub\n' > "$ps/scripts/propagate-public.sh"
+git -C "$ps" init -q; git -C "$ps" config user.email t@t; git -C "$ps" config user.name t
+git -C "$ps" config core.autocrlf false
+git -C "$ps" add -A; git -C "$ps" commit -qm x; git -C "$ps" branch -M notmain
+us="$t/us"; mkdir -p "$us"; printf 'base\n' > "$us/base.md"
+mk10 "$us" "$t/us.git" "$t/uc"
+out="$(HIMMEL_PRIV_ROOT="$ps" HIMMEL_PUBLIC_CLONE="$t/uc" HIMMEL_PUBLIC_REMOTE="us.git" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN C10-propagation' && ! printf '%s' "$out" | grep -q 'OK   C10-propagation'; then pass "C10 -> WARN (unreadable refs, not false-clean)"; else fail "C10 unreadable -> $(printf '%s' "$out" | grep -A4 C10)"; fi
+rm -rf "$t"
+
 rm -rf "$FAKEROOT"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

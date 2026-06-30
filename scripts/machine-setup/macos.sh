@@ -23,7 +23,7 @@ HIMMEL_PATH="${HIMMEL_PATH:-$(cd "$(dirname "$0")/../.." && pwd)}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 SETTINGS="$CLAUDE_DIR/settings.json"
 
-TOTAL_STEPS=4
+TOTAL_STEPS=5
 STEP=0
 FAILURES=()
 step() {
@@ -88,6 +88,14 @@ step "Report scheduler-backend status"
     echo "  scheduler backend status: $(scheduler_backend_status) ($(scheduler_backend_os))"
   fi
 } || fail_nonfatal "report scheduler-backend status"
+
+step "Seed operator leak denylist (private tooling — skipped if absent)"
+{
+  # Private-only helper (in PRIVATE_PATHS): present on the operator's mirror,
+  # absent on adopter clones → guarded skip. Idempotent.
+  SEEDER="$HIMMEL_PATH/scripts/lib/seed-leak-denylist.sh"
+  if [ -f "$SEEDER" ]; then bash "$SEEDER"; else echo "  skipped: $SEEDER not present (public/adopter clone)"; fi
+} || fail_nonfatal "seed leak denylist"
 
 echo ""
 echo "════════════════════════════════════════"
