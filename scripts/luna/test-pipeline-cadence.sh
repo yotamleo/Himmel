@@ -179,7 +179,9 @@ assert_not_contains "xml_escape leaves no bare ampersand" "a & b" "$xesc"
 # hit (vault resolved to /home/<user>/Documents/luna, not the real profile).
 # ============================================================================
 echo "TEST: default_vault resolves the cross-platform default vault"
-DV_SRC="$(sed -n '/^default_vault()/,/^}/p' "$SCRIPT")"
+# default_vault delegates the home part to resolve_user_home (HIMMEL-645), so
+# extract BOTH functions for the standalone call.
+DV_SRC="$(sed -n '/^resolve_user_home()/,/^}/p' "$SCRIPT"; sed -n '/^default_vault()/,/^}/p' "$SCRIPT")"
 run_dv() { env "$@" bash -c "$DV_SRC"$'\n'"default_vault"; }
 
 # USERPROFILE set too, so this proves LUNA_VAULT_PATH wins even when the
@@ -219,6 +221,32 @@ if command -v cygpath >/dev/null 2>&1; then
     assert_not_contains "default_vault does NOT use the MSYS \$HOME on Windows" "/home/msysuser" "$dv_c"
 else
     echo "  SKIP: default_vault Windows-profile case (cygpath absent — POSIX host)"
+fi
+
+# ============================================================================
+# resolve_user_home unit (HIMMEL-645) — the shared home resolver that ALSO
+# backs the BAT_DIR default ($(resolve_user_home)/.claude/pipeline-cadence).
+# Pins the same cross-platform contract directly on the helper so a BAT_DIR
+# regression (runners landing under the MSYS home on Windows) is caught even
+# though BAT_DIR itself is computed at script load.
+# ============================================================================
+echo "TEST: resolve_user_home resolves the cross-platform user home"
+RUH_SRC="$(sed -n '/^resolve_user_home()/,/^}/p' "$SCRIPT")"
+run_ruh() { env "$@" bash -c "$RUH_SRC"$'\n'"resolve_user_home"; }
+
+ruh_posix=$(run_ruh -u USERPROFILE HOME="/posix/home")
+assert_contains "resolve_user_home POSIX shape is \$HOME" "/posix/home" "$ruh_posix"
+assert_not_contains "resolve_user_home returns home only (no Documents append)" "Documents" "$ruh_posix"
+
+ruh_floor=$(run_ruh -u USERPROFILE -u HOME)
+assert_contains "resolve_user_home floor is /tmp when HOME+USERPROFILE unset" "/tmp" "$ruh_floor"
+
+if command -v cygpath >/dev/null 2>&1; then
+    ruh_win=$(run_ruh USERPROFILE='C:\Users\testuser' HOME="/home/msysuser")
+    assert_contains "resolve_user_home prefers Windows profile over MSYS \$HOME" "$(cygpath -u 'C:\Users\testuser')" "$ruh_win"
+    assert_not_contains "resolve_user_home does NOT use the MSYS \$HOME on Windows" "/home/msysuser" "$ruh_win"
+else
+    echo "  SKIP: resolve_user_home Windows-profile case (cygpath absent — POSIX host)"
 fi
 
 # ============================================================================
