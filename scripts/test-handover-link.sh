@@ -67,8 +67,16 @@ bash "$CLI" wat >/dev/null 2>&1
 assert_rc "T6 unknown verb rc=64" 64 "$?"
 
 # T7: doctor on healthy mode A → rc=0
+# Mode A resolves <repo-root>/handovers via `git rev-parse` from cwd. In the
+# public mirror, handovers/ is a PRIVATE_PATH (absent), so running doctor from
+# this checkout would fail-closed (rc=2 → doctor rc=1). Run it inside an
+# isolated temp git repo that owns its own handovers/ dir — hermetic, no
+# dependence on the checkout having handovers/.
 unset HANDOVER_DIR
-bash "$CLI" doctor >/dev/null 2>&1
+T7REPO="$TMP/modeA-repo"
+mkdir -p "$T7REPO/handovers"
+git init -q "$T7REPO"
+( cd "$T7REPO" && bash "$CLI" doctor ) >/dev/null 2>&1
 assert_rc "T7 doctor mode A healthy" 0 "$?"
 
 if [ "$FAILED" -gt 0 ]; then
