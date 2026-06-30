@@ -106,7 +106,30 @@ SYNTH_DAY="SUN"
 SYNTH_TIME="03:00"
 HEALTH_DAY="1"
 HEALTH_TIME="04:00"
-VAULT="$HOME/Documents/luna"
+
+# Default vault resolution (cross-platform; HIMMEL-642). Honors
+# LUNA_VAULT_PATH first — the vault path adopt.sh persists into
+# .claude/settings.json (HIMMEL-458) and himmel-doctor probes first — so an
+# adopted setup needs no --vault. Otherwise fall back to <home>/Documents/luna.
+# On Windows Git-Bash $HOME can be the MSYS home (/home/<user>) while the luna
+# vault lives under the Windows user profile, so resolve USERPROFILE via cygpath
+# BEFORE $HOME (the bare "$HOME/Documents/luna" default failed closed there).
+# POSIX hosts have USERPROFILE unset and fall straight through to $HOME,
+# unchanged. Explicit --vault always overrides (parsed below).
+default_vault() {
+    if [ -n "${LUNA_VAULT_PATH:-}" ]; then
+        printf '%s' "$LUNA_VAULT_PATH"
+        return
+    fi
+    local home
+    if [ -n "${USERPROFILE:-}" ] && command -v cygpath >/dev/null 2>&1; then
+        home="$(cygpath -u "$USERPROFILE" 2>/dev/null || printf '%s' "$USERPROFILE")"
+    else
+        home="${HOME:-${USERPROFILE:-/tmp}}"
+    fi
+    printf '%s/Documents/luna' "$home"
+}
+VAULT="$(default_vault)"
 FORCE=0
 DRY_RUN=0
 
@@ -141,7 +164,9 @@ Flags (arm only, except --dry-run):
                          max 28 — 29-31 rejected: schtasks MONTHLY skips
                          months lacking that day)
   --health-time <HH:MM>  Monthly health time, 24h local    (default 04:00)
-  --vault <PATH>         Luna vault root (default ~/Documents/luna)
+  --vault <PATH>         Luna vault root (default: $LUNA_VAULT_PATH if set,
+                         else <user-profile>/Documents/luna — on Windows
+                         Git-Bash the Windows profile, not the MSYS $HOME)
   --force                Replace existing HIMMEL-Pipeline-* tasks
   --dry-run              Print what would happen, touch nothing
                          (honored by arm AND disarm)
