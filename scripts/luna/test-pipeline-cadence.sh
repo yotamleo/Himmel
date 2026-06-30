@@ -170,6 +170,58 @@ assert_contains "xml_escape produces well-formed entities (& first)" "a &amp; b 
 assert_not_contains "xml_escape leaves no bare ampersand" "a & b" "$xesc"
 
 # ============================================================================
+# default_vault unit (HIMMEL-642) — cross-platform default --vault resolution.
+# Pure (reads only env + cygpath), so it runs on EVERY platform: extract the
+# function from the script and call it under controlled env. Pins: (1)
+# LUNA_VAULT_PATH wins; (2) POSIX shape (USERPROFILE unset) is $HOME-based,
+# unchanged; (3) on Windows Git-Bash the Windows profile (USERPROFILE via
+# cygpath) wins over the MSYS $HOME — the exact failure the bare $HOME default
+# hit (vault resolved to /home/<user>/Documents/luna, not the real profile).
+# ============================================================================
+echo "TEST: default_vault resolves the cross-platform default vault"
+DV_SRC="$(sed -n '/^default_vault()/,/^}/p' "$SCRIPT")"
+run_dv() { env "$@" bash -c "$DV_SRC"$'\n'"default_vault"; }
+
+# USERPROFILE set too, so this proves LUNA_VAULT_PATH wins even when the
+# Windows branch would otherwise fire — platform-independently (on POSIX
+# USERPROFILE would otherwise be unset and only the $HOME branch tested).
+dv_a=$(run_dv LUNA_VAULT_PATH="/some/explicit/vault" USERPROFILE='C:\Users\x')
+assert_contains "default_vault honors LUNA_VAULT_PATH" "/some/explicit/vault" "$dv_a"
+assert_not_contains "LUNA_VAULT_PATH used verbatim (no Documents/luna append)" "Documents/luna" "$dv_a"
+
+dv_b=$(run_dv -u LUNA_VAULT_PATH -u USERPROFILE HOME="/posix/home")
+assert_contains "default_vault POSIX shape is \$HOME/Documents/luna" "/posix/home/Documents/luna" "$dv_b"
+
+# Last-resort fallback: HOME + USERPROFILE both unset -> /tmp (the documented
+# floor). Locks the ${HOME:-${USERPROFILE:-/tmp}} chain against an accidental
+# drop of the /tmp guard.
+dv_d=$(run_dv -u LUNA_VAULT_PATH -u USERPROFILE -u HOME)
+assert_contains "default_vault falls back to /tmp when HOME+USERPROFILE unset" "/tmp/Documents/luna" "$dv_d"
+
+# cygpath present but FAILING on the input -> fall back to the raw USERPROFILE
+# (the `cygpath -u … || printf '%s' "$USERPROFILE"` arm). Inject a stub cygpath
+# that exits nonzero so this runs platform-independently (the stub IS the only
+# cygpath on POSIX, and shadows the real one on Windows).
+DV_FAKE_CYGPATH="$TMP_ROOT/fake-cygpath-fail"
+mkdir -p "$DV_FAKE_CYGPATH"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$DV_FAKE_CYGPATH/cygpath"
+chmod +x "$DV_FAKE_CYGPATH/cygpath"
+# PATH entries must be POSIX-style for MSYS `command -v` to search them
+# ($TMP_ROOT is the cygpath -m mixed C:/ form). On POSIX it's already POSIX.
+DV_FAKE_PATH="$DV_FAKE_CYGPATH"
+if command -v cygpath >/dev/null 2>&1; then DV_FAKE_PATH="$(cygpath -u "$DV_FAKE_CYGPATH")"; fi
+dv_e=$(run_dv -u LUNA_VAULT_PATH -u HOME USERPROFILE='C:\Users\x' PATH="$DV_FAKE_PATH:$PATH")
+assert_contains "default_vault falls back to raw USERPROFILE when cygpath -u fails" 'C:\Users\x/Documents/luna' "$dv_e"
+
+if command -v cygpath >/dev/null 2>&1; then
+    dv_c=$(run_dv -u LUNA_VAULT_PATH USERPROFILE='C:\Users\testuser' HOME="/home/msysuser")
+    assert_contains "default_vault prefers Windows profile over MSYS \$HOME" "$(cygpath -u 'C:\Users\testuser')/Documents/luna" "$dv_c"
+    assert_not_contains "default_vault does NOT use the MSYS \$HOME on Windows" "/home/msysuser" "$dv_c"
+else
+    echo "  SKIP: default_vault Windows-profile case (cygpath absent — POSIX host)"
+fi
+
+# ============================================================================
 # POSIX (cron) suite — HIMMEL-265. Runs on EVERY platform: the cron code
 # path is forced via an OSTYPE override + the PIPELINE_CRONTAB seam.
 # ============================================================================
