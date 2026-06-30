@@ -41,6 +41,7 @@ HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 # Shared wire helpers (the PreToolUse trio + SessionStart) — one implementation
 # for adopt.sh and setup.sh (HIMMEL install/uninstall symmetry).
 # shellcheck source=scripts/lib/wire-pretooluse-hooks.sh
+# shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/wire-pretooluse-hooks.sh"
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
@@ -88,13 +89,22 @@ PORTABLE_FILES=(
 
 require_tools() {
   local missing=() t
-  for t in bash git jq python3 claude; do
+  # bash/git/jq/python3 are the harness-agnostic core deps — hard-required.
+  for t in bash git jq python3; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo "ERROR: missing required tools: ${missing[*]}" >&2
     echo "  see $HIMMEL_ROOT/docs/setup/new-machine.md (Required environment)" >&2
     exit 1
+  fi
+  # `claude` is SOFT (HIMMEL-600): the portable core + git gates are
+  # harness-agnostic, and only the Claude plugin-install step needs the CLI. A
+  # Codex-only (or any non-Claude) adopter still gets the core — don't reject it.
+  if ! command -v claude >/dev/null 2>&1; then
+    CLAUDE_AVAILABLE=0
+    echo "WARN: 'claude' not found — installing the harness-agnostic core only;" >&2
+    echo "      skipping the Claude plugin-install step (Codex-only adopter is fine)." >&2
   fi
 }
 
@@ -110,6 +120,10 @@ copy_portable() {
 }
 
 install_plugins() {
+  if [[ "${CLAUDE_AVAILABLE:-1}" -eq 0 ]]; then
+    echo "──── Skipping plugin install ('claude' not found — non-Claude adopter) ────"
+    return 0
+  fi
   echo "──── Installing plugins (--scope $SCOPE) ────"
   local args=(--scope "$SCOPE")
   [[ $DRY_RUN -eq 1 ]] && args+=(--dry-run)

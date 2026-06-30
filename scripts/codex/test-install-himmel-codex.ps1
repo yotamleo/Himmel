@@ -62,12 +62,17 @@ exit 0
     if (-not $codexBin) { $codexBin = $Stub }
     $env:CODEX_BIN = $codexBin
     $env:CODEX_STUB_STATE = $state
+    # CODEX_HOME -> an empty temp dir so the wired sanitize-plugin-hooks step
+    # (HIMMEL-651) finds no plugin cache and no-ops, keeping the test hermetic
+    # (never touches the real ~/.codex cache).
+    $env:CODEX_HOME = Join-Path $TMP "codex-home"
     try {
       $out = & pwsh -NoProfile -File $Installer @iargs 2>&1 | Out-String
       $code = $LASTEXITCODE
     } finally {
       Remove-Item Env:CODEX_BIN -ErrorAction SilentlyContinue
       Remove-Item Env:CODEX_STUB_STATE -ErrorAction SilentlyContinue
+      Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue
     }
     return @{ Out = $out; Code = $code }
   }

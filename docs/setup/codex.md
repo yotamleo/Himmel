@@ -38,9 +38,14 @@ Codex loads marketplaces + `@himmel` plugins from `config.toml`. The himmel
 marketplace and the `himmel-ops` plugin (stuck-playbook / minerva / vm /
 himmel-doctor skills **and** the plugin-delivered security hooks) are enabled
 there (HIMMEL-597). Verify your `~/.codex/config.toml` registers the himmel
-marketplace and enables `himmel-ops@himmel`. The non-`description` plugin
-`hooks.json` shape is accepted by Codex's strict parser; a few external plugins'
-top-level `description` key is skipped harmlessly (see harness-compat.md §3).
+marketplace and enables `himmel-ops@himmel`. A few external plugins (warp,
+hookify, ralph-loop, security-guidance) ship a top-level `description` in their
+`hooks.json` that Codex's strict parser rejects ("unknown field description") and
+skips with a boot warning. `install-himmel-codex.{sh,ps1}` strips it automatically
+as its final phase via `scripts/codex/sanitize-plugin-hooks.{sh,ps1}` (HIMMEL-651);
+re-run that script standalone after a `codex` plugin update re-adds the field
+(`bash scripts/codex/sanitize-plugin-hooks.sh`, or the `.ps1` twin). See
+harness-compat.md §3.
 
 ## 4. Hooks — the PreToolUse guardrails
 
