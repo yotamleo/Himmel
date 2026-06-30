@@ -740,6 +740,78 @@ assert_rc "both-null exits 1 (MALFUNCTION, not silent)" 1 $?
 assert_file "no arm call on all-null signal" absent "$ARM_LOG"
 assert_grep "MALFUNCTION surfaced for all-null cache" "MALFUNCTION" "$STDERR_LOG"
 
+# ─── HIMMEL-625: out-of-range utilization (a leaked epoch timestamp) ─────
+# Fresh cache, threshold-trip python path. The statusline writer leaked a
+# Unix epoch (1782696700 ~ 1.78e9) into five_hour.utilization on 2026-06-29;
+# the watchdog armed a spurious resume because 1.78e9 >= 90. An out-of-range
+# numeric must be treated as UNKNOWN (like null), never as a cap.
+LEAKED_TS=1782696700
+
+echo "Test 33: leaked-timestamp utilization on five_hour, seven_day normal (the 2026-06-29 incident) — UNKNOWN, no spurious arm"
+S="$TMP/s33"; mkdir -p "$S"
+C="$TMP/c33.json"; write_cache "$C" "$LEAKED_TS" 47
+rm -f "$ARM_LOG"
+run_hook "$S" "$C"
+assert_rc "out-of-range five_hour does not trip (exits 0)" 0 $?
+assert_file "no spurious arm on a leaked-timestamp utilization" absent "$ARM_LOG"
+assert_grep "out-of-range warning surfaced on stderr" "out of plausible range" "$STDERR_LOG"
+
+echo "Test 34: out-of-range on five_hour but seven_day genuinely above threshold — still ARMs on the good window"
+S="$TMP/s34"; mkdir -p "$S"
+C="$TMP/c34.json"; write_cache "$C" "$LEAKED_TS" 95
+rm -f "$ARM_LOG"
+run_hook "$S" "$C"
+assert_rc "real seven_day cap still trips despite garbage five_hour (exits 2)" 2 $?
+assert_file "arm called on the genuinely-high window" present "$ARM_LOG"
+assert_grep "block names seven_day as the binding window" "seven_day" "$STDERR_LOG"
+rm -f "$ARM_LOG"
+
+echo "Test 35: BOTH windows out-of-range — MALFUNCTION exit 1, NOT a spurious arm, NOT a silent no-op"
+S="$TMP/s35"; mkdir -p "$S"
+C="$TMP/c35.json"; write_cache "$C" "$LEAKED_TS" "$LEAKED_TS"
+rm -f "$ARM_LOG"
+run_hook "$S" "$C"
+assert_rc "all-out-of-range exits 1 (MALFUNCTION, not silent)" 1 $?
+assert_file "no arm call on an all-garbage cache" absent "$ARM_LOG"
+assert_grep "MALFUNCTION surfaced for all-out-of-range cache" "MALFUNCTION" "$STDERR_LOG"
+
+echo "Test 36: negative utilization is also out-of-range — treated as UNKNOWN"
+S="$TMP/s36"; mkdir -p "$S"
+C="$TMP/c36.json"; write_cache "$C" -5 30
+rm -f "$ARM_LOG"
+run_hook "$S" "$C"
+assert_rc "negative five_hour does not trip (exits 0)" 0 $?
+assert_file "no arm on a negative utilization" absent "$ARM_LOG"
+assert_grep "negative value travels the out-of-range warn path" "out of plausible range" "$STDERR_LOG"
+
+echo "Test 37: utilization exactly at SANITY_MAX (1000) is IN range — still a real cap, trips"
+# Pins the inclusive ceiling: a future <= -> < or 1000 -> 100 drift breaks this.
+S="$TMP/s37"; mkdir -p "$S"
+C="$TMP/c37.json"; write_cache "$C" 1000 30
+rm -f "$ARM_LOG"
+run_hook "$S" "$C"
+assert_rc "util==SANITY_MAX trips (exits 2)" 2 $?
+assert_file "arm called at the inclusive ceiling" present "$ARM_LOG"
+rm -f "$ARM_LOG"
+
+echo "Test 38: utilization just over SANITY_MAX (1001) — out-of-range, treated as UNKNOWN"
+S="$TMP/s38"; mkdir -p "$S"
+C="$TMP/c38.json"; write_cache "$C" 1001 30
+rm -f "$ARM_LOG"
+run_hook "$S" "$C"
+assert_rc "util just over the ceiling does not trip (exits 0)" 0 $?
+assert_file "no arm just over the ceiling" absent "$ARM_LOG"
+assert_grep "over-ceiling warning surfaced on stderr" "out of plausible range" "$STDERR_LOG"
+
+echo "Test 39: a legitimate over-100 overage reading (150) stays valid — trips (design intent of SANITY_MAX>100)"
+S="$TMP/s39"; mkdir -p "$S"
+C="$TMP/c39.json"; write_cache "$C" 150 30
+rm -f "$ARM_LOG"
+run_hook "$S" "$C"
+assert_rc "real over-100 overage still trips (exits 2)" 2 $?
+assert_file "arm called on a 150% overage" present "$ARM_LOG"
+rm -f "$ARM_LOG"
+
 echo
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

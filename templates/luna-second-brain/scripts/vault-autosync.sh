@@ -67,7 +67,7 @@ fi
 # the egress guard. A blocked commit (e.g. an API key slipped in) exits non-zero
 # here, and because the push below is gated on this success, nothing leaves.
 #
-# A pre-commit AUTO-FIXER (e.g. end-of-file-fixer on a stray non-.md file) may
+# A pre-commit AUTO-FIXER (e.g. end-of-file-fixer on a staged code/config file) may
 # modify a staged file, which aborts the commit and leaves the tree dirty — at a
 # glance indistinguishable from a real block. So retry ONCE: re-stage the fixer's
 # changes and commit again. A genuine gitleaks/secret rejection survives both

@@ -44,6 +44,15 @@ case "$out" in
   *) bad "stdin forwarded ($out)";;
 esac
 
+# 1b) Explicit sandbox mode is the tracked hook setup; it should behave like the
+#     default sandbox path and still propagate non-block guardrail rc.
+fout="$(printf 'fromstdin\n' | bash "$T/.codex/run-hook.cmd" --sandbox dummy.sh)"; frc=$?
+if [ "$frc" -eq 7 ]; then ok "explicit --sandbox flag preserves non-block rc propagation (rc=7)"; else bad "explicit --sandbox flag preserves non-block rc propagation (rc=$frc, want 7)"; fi
+case "$fout" in
+  *"STDIN=[fromstdin]"*) ok "explicit --sandbox flag still forwards stdin";;
+  *) bad "explicit --sandbox flag still forwards stdin ($fout)";;
+esac
+
 # 2) BLOCK path: a guardrail that exits 2 is translated to Codex's JSON deny on
 #    stdout (stderr -> reason) and the wrapper exits 0 (the block lives in the
 #    JSON, not the exit code — Codex ignores exit 2). Use a DISTINCT inbound event

@@ -13,7 +13,7 @@
 #
 # Resolution of the .improve/ root:
 #   1. If HANDOVER_DIR is set + exists → <HANDOVER_DIR>/.improve/
-#      (Mode B, post-HIMMEL-124 default for yotam.)
+#      (Mode B, post-HIMMEL-124 default for the operator.)
 #   2. Else → <repo-root>/.improve/ (Mode A, inline).
 #   Failure modes: HANDOVER_DIR set but missing → rc=2.
 #

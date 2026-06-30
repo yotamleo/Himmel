@@ -1,6 +1,6 @@
 ---
-description: Arm/inspect/remove the recurring clip-pipeline cadence (weekly /synthesize-clips + /archive-clips, monthly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped. Dedup-guarded. HIMMEL-255/265.
-argument-hint: arm|status|disarm [--synth-day DAY] [--synth-time HH:MM] [--health-day N] [--health-time HH:MM] [--vault PATH] [--force] [--dry-run]
+description: Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, weekly /synthesize-clips + /archive-clips, monthly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped. Dedup-guarded. HIMMEL-255/265/357.
+argument-hint: arm|status|disarm [--harvest-time HH:MM] [--synth-day DAY] [--synth-time HH:MM] [--health-day N] [--health-time HH:MM] [--vault PATH] [--force] [--dry-run]
 ---
 
 Register the luna clip-pipeline's recurring maintenance runs with the OS
@@ -10,12 +10,20 @@ scheduler invoke, dedup guard, runner indirection (`.bat` with
 `cygpath`-converted paths on Windows; `.sh` with `printf %q`-quoted
 values on POSIX, crontab entries marker-tagged `# HIMMEL-Pipeline-*`).
 
-Armed defaults (operator decision pinned on HIMMEL-255, overridable via flags):
+Armed defaults (operator decision pinned on HIMMEL-255; daily harvest leg
+added on HIMMEL-357; overridable via flags):
 
 | Task | Schedule | Runs |
 |---|---|---|
+| `HIMMEL-Pipeline-Harvest` | daily 02:00 | `/harvest-clips`, then `/triage-clips` chained in the same session |
 | `HIMMEL-Pipeline-Synthesize` | weekly Sun 03:00 | `/synthesize-clips`, then `/archive-clips` chained in the same session |
 | `HIMMEL-Pipeline-Health` | monthly 1st 04:00 | `/obsidian-health` |
+
+The cadence splits the Luna Digest by frequency: **daily** harvest+triage is
+cheap and idempotent so it keeps the `Clippings/` inbox flowing; **weekly**
+synthesize+archive runs less often because synthesis needs a *batch* to find
+cross-clip themes and archive only graduates clips synthesis has wikilinked;
+**monthly** health is the periodic vault check.
 
 Each task launches a **bounded interactive** claude session in the luna
 vault — `claude --settings <fragment> "<prompt>" < NUL` (the `< /dev/null`
@@ -45,7 +53,7 @@ restores the auto-approve posture in the luna cwd. The fragment is created on
   failed listing is never silently treated as "nothing armed", so arm
   can't overwrite an armed cadence it failed to see.
 - **Fire-time evidence:** each runner writes claude output to a `.log`
-  next to it (`pipeline-synthesize.log` / `pipeline-health.log`),
+  next to it (`pipeline-harvest.log` / `pipeline-synthesize.log` / `pipeline-health.log`),
   rotated per fire (previous run kept as `.log.prev`), stamped
   `[fired <date> <time>]` and capturing `cd` errors — the log exists on
   every fire even if the vault moved; `status` surfaces each log's mtime +
@@ -53,6 +61,15 @@ restores the auto-approve posture in the luna cwd. The fragment is created on
 - **Persistent runners:** the `.bat`/`.sh` runners live in
   `~/.claude/pipeline-cadence/` (not `%TEMP%`/`/tmp` — cleanup sweeps
   would silently kill a recurring task).
+- **Catch-up after a missed start (Windows, HIMMEL-362):** the schtasks
+  tasks are created from an XML definition carrying
+  `StartWhenAvailable=true`, so a run skipped because the PC was off/asleep
+  at the scheduled time fires as soon as the PC is next on. (No wake timer —
+  battery-safe; a sleeping laptop is not woken.) This is why the Windows arm
+  path uses `schtasks /create /xml` rather than the flag-based `/sc` create
+  (`/create` has no flag for `StartWhenAvailable`). POSIX/cron has the same
+  missed-run gap with no equivalent here yet (would need anacron / a
+  `@reboot` catch-up leg).
 - **Cron-safe by design:** every pipeline stage is idempotent (markers:
   `harvested_at`, `processed`, synthesis dedup window, `_done/` move), so a
   fired run that finds nothing to do exits clean.
@@ -66,7 +83,7 @@ bash scripts/luna/pipeline-cadence.sh $ARGUMENTS
 Common invocations:
 - `/pipeline-cadence status`
 - `/pipeline-cadence arm`
-- `/pipeline-cadence arm --synth-day MON --synth-time 02:30 --force`
+- `/pipeline-cadence arm --harvest-time 01:30 --synth-day MON --synth-time 02:30 --force`
 - `/pipeline-cadence arm --dry-run`
 - `/pipeline-cadence disarm`
 

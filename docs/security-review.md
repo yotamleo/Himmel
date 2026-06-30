@@ -2,7 +2,7 @@
 
 The `security-reviewed` pre-push hook (`scripts/hooks/check-security-reviewed.sh`) gates pushes on a `Security reviewed: <token>` attestation in a commit body or PR description whenever the diff vs `origin/main` touches non-docs code. The hook does NOT run the review itself — that would introduce a new headless-Claude call and conflict with [HIMMEL-128](../CLAUDE.md#claude-invocation-billing-himmel-128). The operator runs the review on demand using whichever mechanism fits the change, then attests the result.
 
-This file is the recommended playbook for picking a review method and writing the attestation line.
+This file is the recommended playbook for picking a review method and writing the attestation line. For *after* something sensitive has already been committed/pushed (token, bot username, chat/user id, PII), see the [leak-scrub runbook](leak-scrub-runbook.md).
 
 ## When does the gate fire?
 

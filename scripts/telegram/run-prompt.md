@@ -31,12 +31,39 @@ As your FINAL action, append a one-line progress note to <context> (so the next 
 - **Anything else** (e.g. `__chat__`):
   `Answer the operator's message(s) conversationally.`
 
-## Document → vault routing (`<vault-clause>`, HIMMEL-321)
+## Attachment → vault routing (`<vault-clause>`, HIMMEL-321 / HIMMEL-578)
 
-When a document (e.g. a PDF) is sent to a chat that has a vault configured,
-`buildPrompt` appends a clause telling the run to file the document's content
-into that Obsidian vault, following the vault's `_CLAUDE.md` conventions
-(via the `obsidian-second-brain` skill) and to confirm in its reply.
+When a document (e.g. a PDF) **or an image** is sent to a chat that has a vault
+configured, `buildPrompt` appends a clause telling the run to FILE the
+attachment's content into that Obsidian vault (not just read it), following the
+vault's `_CLAUDE.md` conventions — using the vault's own filing skill (e.g. a
+`medic` skill) if it has one, else the `obsidian-second-brain` skill — and to
+confirm in its reply. (Pre-HIMMEL-578 only documents filed; images were read but
+never filed.)
+
+## Per-chat session cwd (HIMMEL-578)
+
+A chat with a configured vault SPAWNS its session with `cwd = <vault>` (not the
+himmel repo), so the vault's own `.claude/hooks` load — e.g. a medical vault's
+PHI-egress floor is then in force for the session that handles its photos. The
+"running in" line reports the vault cwd (`p.sessionCwd`), while the Jira-CLI path
+stays anchored on the himmel repo (`p.cwd`, where `dist/` lives). The poller also
+passes `--permission-mode bypassPermissions` for vault sessions ONLY — under the
+vault cwd himmel's `auto-approve-safe-bash` hook is not loaded, so without it the
+stdin-closed run would deadlock on un-answerable permission prompts; the vault's
+own PreToolUse hooks still enforce containment (they run regardless of permission
+mode).
+
+**Blast radius — `defaultVault` (HIMMEL-578).** `vaultForChat` falls back to
+`access.defaultVault` for any chat without its own `vault`. So if `defaultVault`
+is set, EVERY otherwise-unconfigured chat — including DMs and unknown groups —
+now spawns in that vault's cwd WITH `bypassPermissions`. The containment for
+those sessions is therefore the default vault's OWN PreToolUse hooks: set
+`defaultVault` only to a vault you trust to run sessions under bypass (a vault
+with no restraining hooks would run effectively unrestricted). To keep the
+vault-cwd+bypass posture scoped to specific groups, leave `defaultVault` unset
+and configure each group's `vault` explicitly. (Pinned by the
+`makeRunFn + real vaultForChat … blast radius` test.)
 
 The vault is resolved by `gate.vaultForChat(access, chat_id)` from
 `~/.claude/channels/telegram/access.json`: a group's own `vault` wins, else

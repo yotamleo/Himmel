@@ -241,9 +241,10 @@ else
   #        final newline) is committed UNMODIFIED — pre-commit no longer
   #        rewrites prose, so the unattended commit isn't aborted and the
   #        note's line breaks survive.
-  # G4-G7: a NON-.md file a fixer DOES rewrite still lands — the first commit
-  #        aborts when the hook modifies it, and autosync re-stages + retries
-  #        instead of skipping the push.
+  # G4-G7: an allowlisted code/config file a fixer DOES rewrite still lands —
+  #        the first commit aborts when the hook modifies it, and autosync
+  #        re-stages + retries instead of skipping the push. (Vault notes/sources
+  #        are off the fixer allowlist, so a `.toml` is used to force a rewrite.)
   # =========================================================================
   VG="$TMP/fixer"
   make_vault "$VG"
@@ -264,18 +265,18 @@ else
     assert_ok "G3 .md left UNMODIFIED by pre-commit (hard-breaks + no-final-newline preserved)" "$?"
 
     g2_base=$(git_in "$VG" rev-list --count HEAD)
-    printf 'data with trailing space   \n' >"$VG/00-Inbox/data.txt" # non-.md → a fixer WILL rewrite it
+    printf 'key = "value"   \n' >"$VG/00-Inbox/data.toml" # allowlisted → a fixer WILL rewrite it
     (cd "$VG" && LUNA_VAULT_AUTOSYNC=1 bash "$VG/scripts/vault-autosync.sh") >/dev/null 2>&1
-    assert_ok "G4 autosync recovers from a fixer-modified non-.md file: exit 0" "$?"
+    assert_ok "G4 autosync recovers from a fixer-modified allowlisted file: exit 0" "$?"
     assert_eq "G5 retry committed after the fixer ran (HEAD advanced)" "yes" \
       "$(yn "$([ "$(git_in "$VG" rev-list --count HEAD)" -gt "$g2_base" ] && echo 0 || echo 1)")"
-    assert_eq "G6 data.txt landed in the committed tree" "1" \
-      "$(git_in "$VG" ls-tree -r HEAD --name-only | grep -c 'data\.txt' || true)"
+    assert_eq "G6 data.toml landed in the committed tree" "1" \
+      "$(git_in "$VG" ls-tree -r HEAD --name-only | grep -c 'data\.toml' || true)"
     git_in "$BARE_G" rev-parse --verify main >/dev/null 2>&1
     assert_ok "G7 fixer-retry result pushed to remote" "$?"
 
-    # G8-G10: the retry must NOT weaken the egress guard. A NON-.md file with
-    # BOTH a fixer defect (trailing whitespace) AND a planted secret: pass 1
+    # G8-G10: the retry must NOT weaken the egress guard. An allowlisted file
+    # with BOTH a fixer defect (trailing whitespace) AND a planted secret: pass 1
     # aborts, the re-stage pass re-runs gitleaks on the same secret, and the
     # commit stays blocked — nothing committed, nothing pushed. (Key assembled
     # at runtime so this test's source stays clean.)
@@ -283,11 +284,35 @@ else
     g8_bare_before=$(git_in "$BARE_G" rev-parse main)
     _akp="AKIA"
     _aks="1234567890ABCDEF"
-    printf 'leaky data   \naws_key = "%s%s"\n' "$_akp" "$_aks" >"$VG/30-Resources/leak.txt"
+    printf 'note = "leaky data"   \naws_key = "%s%s"\n' "$_akp" "$_aks" >"$VG/30-Resources/leak.toml"
     (cd "$VG" && LUNA_VAULT_AUTOSYNC=1 bash "$VG/scripts/vault-autosync.sh") >/dev/null 2>&1
-    assert_nz "G8 fixer-defect + secret (non-.md): autosync blocked through the retry" "$?"
+    assert_nz "G8 fixer-defect + secret (allowlisted): autosync blocked through the retry" "$?"
     assert_eq "G9 local HEAD unchanged (retry did not commit the secret)" "$g8_local_before" "$(git_in "$VG" rev-parse HEAD)"
     assert_eq "G10 bare remote unchanged (nothing pushed)" "$g8_bare_before" "$(git_in "$BARE_G" rev-parse main)"
+
+    # =========================================================================
+    # Phase H (HIMMEL-615) — a non-ASCII (Hebrew) source-note name must NOT
+    # crash the trailing-whitespace fixer (on Windows it prints the path to a
+    # cp1252 stdout → UnicodeEncodeError, after rewriting the file → silent
+    # whitespace mangling) NOR get rewritten. The allowlist keeps both fixers
+    # off non-code content, so the note commits byte-for-byte. The filename is
+    # built from octal escapes so the construction line carries no literal
+    # non-ASCII (a non-ASCII line that also carries a shellcheck finding can
+    # crash the linter — see docs/internals/environment-gotchas.md).
+    # =========================================================================
+    rm -f "$VG/30-Resources/leak.toml" # drop G8's still-uncommitted planted secret
+    h_base=$(git_in "$VG" rev-list --count HEAD)
+    heb=$'\327\252\327\231\327\247.txt' # octal escapes decode to Hebrew "tik.txt"
+    printf 'verbatim line with trailing space   \nsecond line\n' >"$VG/00-Inbox/$heb"
+    cp "$VG/00-Inbox/$heb" "$TMP/heb.orig"
+    (cd "$VG" && LUNA_VAULT_AUTOSYNC=1 bash "$VG/scripts/vault-autosync.sh") >/dev/null 2>&1
+    assert_ok "H1 autosync with a Hebrew-named .txt: exit 0 (no UnicodeEncodeError)" "$?"
+    assert_eq "H2 autosync commit landed" "yes" \
+      "$(yn "$([ "$(git_in "$VG" rev-list --count HEAD)" -gt "$h_base" ] && echo 0 || echo 1)")"
+    cmp -s "$VG/00-Inbox/$heb" "$TMP/heb.orig"
+    assert_ok "H3 Hebrew .txt left UNMODIFIED (no silent whitespace mangling)" "$?"
+    (cd "$VG" && git ls-files --error-unmatch -- "00-Inbox/$heb") >/dev/null 2>&1
+    assert_ok "H4 Hebrew .txt is tracked in the committed tree" "$?"
   fi
 fi
 

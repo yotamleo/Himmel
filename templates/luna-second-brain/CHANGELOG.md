@@ -8,6 +8,19 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.1] — 2026-06-29
+
+### Fixed
+- **Windows pre-commit crash on non-ASCII (Hebrew/CJK/accented) filenames**
+  (HIMMEL-615). `trailing-whitespace` / `end-of-file-fixer` print each fixed
+  path to a cp1252 stdout, so a non-ASCII source-note name raised
+  `UnicodeEncodeError` — and the fixer rewrote the file *before* crashing,
+  leaving a silent whitespace-only diff. Both fixers are now constrained to an
+  ASCII-named code/config **allowlist** (`.sh/.ps1/.yaml/.yml/.json/.toml`)
+  instead of the `.md`-only denylist, so they never touch notes or ingested
+  sources — no crash, no mangling, regardless of vault directory layout. Vault
+  content is still scanned by gitleaks / check-yaml / check-json.
+
 ## [0.2.0] — 2026-06-21
 
 ### Fixed

@@ -32,6 +32,13 @@ class TestExtraction(unittest.TestCase):
         self.assertEqual(vl.link_target("Note#Heading"), "Note")
         self.assertEqual(vl.link_target("Note^block1"), "Note")
         self.assertEqual(vl.link_target("  Note  "), "Note")
+        # Table-escaped alias pipe (`[[target\|alias]]` inside a markdown table)
+        # must not leave a trailing backslash on the target (HIMMEL-411).
+        self.assertEqual(vl.link_target(r"path/Note\|Alias"), "path/Note")
+        self.assertEqual(
+            vl.extract_links(r"| [[30-Resources/Tech/caveman\|caveman]] | x |"),
+            ["30-Resources/Tech/caveman"],
+        )
     def test_strip_code_removes_fenced_and_inline(self):
         t = "real [[A]]\n```\ncode [[B]]\n```\nand `inline [[C]]` end"
         s = vl.strip_code(t)

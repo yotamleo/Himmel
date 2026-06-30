@@ -5,8 +5,16 @@ import { spawn } from "bun";
 // `claude "<p>" </dev/null` exits 0 (~6s, Max quota, no -p). Strips
 // TELEGRAM_OWN_POLLER from the child env so the spawned session never owns the
 // poller. NO -p/--print/--channels — interactive billing + behaviour only.
-export function buildRunArgs(prompt: string) {
-  return { cmd: ["claude", prompt], stdin: "ignore" as const };
+// PermissionMode (HIMMEL-578): the only mode the bridge ever injects is
+// "bypassPermissions" (for vault sessions — see runSession). A union (not bare
+// string) makes a typo a compile error instead of a malformed `--permission-mode`
+// flag that only fails inside the spawned, stdin-closed claude run.
+export type PermissionMode = "bypassPermissions";
+// permissionMode (HIMMEL-578): when set, injected as `--permission-mode <mode>`
+// BEFORE the prompt.
+export function buildRunArgs(prompt: string, permissionMode?: PermissionMode) {
+  const cmd = permissionMode ? ["claude", "--permission-mode", permissionMode, prompt] : ["claude", prompt];
+  return { cmd, stdin: "ignore" as const };
 }
 
 // The bounded-run PROMPT. Tells the spawned claude session what it is, where to
@@ -14,24 +22,29 @@ export function buildRunArgs(prompt: string) {
 // chat_id needed), where its cross-run memory lives (context.md), and to stop
 // when done. Source of truth for run-prompt.md. A ticket-shaped session id does
 // the ticket's work; anything else (e.g. "__chat__") just answers the operator.
-// `vault` (HIMMEL-321): when set, an attached document (a line with
-// "document_path") is filed into that Obsidian vault; resolved per-chat by the
-// poller via gate.vaultForChat.
-export type BusPaths = { inbox: string; outbox: string; context: string; cwd: string };
+// `vault` (HIMMEL-321): when set, an attached document OR image (a line with
+// "document_path" / "image_path") is filed into that Obsidian vault; resolved
+// per-chat by the poller via gate.vaultForChat.
+// `cwd` vs `sessionCwd` (HIMMEL-578): the session SPAWNS in `sessionCwd` (the
+// chat's vault when one is configured, so the vault's `.claude/hooks` — e.g. a
+// medical PHI-egress floor — load), but the Jira-CLI path stays anchored on
+// `cwd` (the himmel repo root) because `dist/` only exists there. The "running
+// in" line reports the actual spawn cwd.
+export type BusPaths = { inbox: string; outbox: string; context: string; cwd: string; sessionCwd?: string };
 export function buildPrompt(session: string, p: BusPaths, vault?: string | null): string {
   const isTicket = /^[A-Z][A-Z0-9]+-[0-9]+$/.test(session);
   const job = isTicket
     ? `You are working on ticket ${session}. Do the ticket's work.`
     : `Answer the operator's message(s) conversationally.`;
   return [
-    `You are Telegram bridge session "${session}", running in ${p.cwd}.`,
+    `You are Telegram bridge session "${session}", running in ${p.sessionCwd ?? p.cwd}.`,
     `First, read your cross-run memory at ${p.context} to resume where the last run left off (it may be empty on a first run).`,
     `Then read your pending messages from ${p.inbox} — each line is a JSON object {"text": "..."}; treat them as the operator's requests, in order.`,
     `If a line has an "image_path" field, use the Read tool on that path — it is a photo the operator attached; the line's "text" is its caption.`,
     `If a line has a "document_path" field, use the Read tool on that path — it is a file the operator attached (e.g. a PDF); the line's "text" is its caption and "document_name" is the original filename.`,
     job,
     ...(vault ? [
-      `When a message carries a "document_path", file the document's content into the Obsidian vault at ${vault}: read that vault's _CLAUDE.md first and follow its filing conventions (use the obsidian-second-brain skill). In your reply, confirm what you filed and where.`,
+      `When a message carries a "document_path" OR an "image_path", FILE that attachment's content into the Obsidian vault at ${vault} (not just read it): read that vault's _CLAUDE.md first and follow its filing conventions — if the vault has a "medic" skill (or another vault-local filing skill) use it, otherwise use the obsidian-second-brain skill. In your reply, confirm what you filed and where.`,
     ] : []),
     // Jira sanction (HIMMEL-424 followup): without this, the auto-mode classifier
     // VETOES ticket writes because the bridge session's stated workflow omits Jira —
@@ -72,18 +85,22 @@ export function killTree(pid: number, kill: (sig?: number | NodeJS.Signals) => v
   try { kill("SIGKILL"); } catch {}
 }
 
-export async function runSession(prompt: string, cwd: string): Promise<{ code: number; capped: boolean; blocked: boolean; pid: number; tail?: string }> {
+export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode): Promise<{ code: number; capped: boolean; blocked: boolean; pid: number; tail?: string }> {
   const env = { ...process.env }; delete (env as any).TELEGRAM_OWN_POLLER;
-  // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203):
+  // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
   // and runs with stdin closed (EOF) so it CANNOT answer a permission prompt. Any
   // tool the `auto-approve-safe-bash` hook doesn't grant falls through to a prompt
   // that the harness auto-mode then denies (e.g. the intermittent Jira ticket-create
-  // denials). The first-line fix is broadening the auto-approve matcher; if denials
-  // recur, the escalation is `--permission-mode bypassPermissions` here — the himmel
-  // PreToolUse hooks (block-edit-on-main, block-read-secrets, …) still fire and
-  // enforce, only the un-answerable prompt goes away. Tracked so we don't relitigate.
-  const p = spawn(["claude", prompt], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
+  // denials). The first-line fix is broadening the auto-approve matcher.
+  // HIMMEL-578: when the session spawns in a VAULT cwd (sessionCwd != repoCwd),
+  // himmel's OWN project hooks (incl. auto-approve-safe-bash) no longer load — so
+  // the poller passes permissionMode="bypassPermissions" for vault sessions ONLY,
+  // else the FILE-and-commit flow deadlocks on un-answerable prompts. bypass does
+  // NOT loosen containment: the VAULT's PreToolUse hooks (e.g. block-cloud-egress)
+  // still fire and HARD-block web/cloud/push. Non-vault sessions keep the default.
+  const { cmd } = buildRunArgs(prompt, permissionMode);
+  const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
   const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000);
   let timedOut = false;

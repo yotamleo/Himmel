@@ -499,10 +499,20 @@ if not isinstance(data, dict):
     sys.exit(2)
 
 WINDOW_LEN = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
+# Sanity ceiling on utilization (HIMMEL-625 false-positive fix). Utilization
+# is a 0-100 percentage (a small overage past 100 is conceivable); anything
+# wildly beyond that is corruption, not a real cap. Observed 2026-06-29: the
+# statusline writer leaked a Unix epoch timestamp (1782696700, ~1.78e9,
+# decodes to 2026-06-29T01:31:40) into five_hour.utilization, and the watchdog
+# armed a spurious resume because 1.78e9 >= 90 with 5 sessions running and no
+# cap. A value outside [0, SANITY_MAX] is treated as UNKNOWN (like null), NOT
+# as a 1.78-billion-percent cap. 1000 is 10x the cap -- impossible for a real
+# reading, yet catches all timestamp-class garbage.
+SANITY_MAX = 1000.0
 now = time.time()
 best = None
 parseable = 0
-null_windows = []
+unusable_windows = []
 for w in ("five_hour", "seven_day"):
     o = data.get(w)
     if not isinstance(o, dict):
@@ -511,12 +521,18 @@ for w in ("five_hour", "seven_day"):
         continue  # schema drift — key absent, not explicitly null
     raw = o["utilization"]
     if raw is None:
-        null_windows.append(w)
+        unusable_windows.append(w)
         sys.stderr.write(f"auto-arm-on-cap: {w.replace('_','-')} utilization is null — treating as UNKNOWN\n")
         continue
     try:
         u = float(raw)
     except (TypeError, ValueError):
+        continue
+    if not (0.0 <= u <= SANITY_MAX):
+        # Numeric but out of plausible range — corrupt cache (e.g. a leaked
+        # timestamp). Treat as UNKNOWN, NOT a cap: skip the window.
+        unusable_windows.append(w)
+        sys.stderr.write(f"auto-arm-on-cap: {w.replace('_','-')} utilization {u:.0f} out of plausible range [0,{SANITY_MAX:.0f}] — treating as UNKNOWN (corrupt cache, e.g. a leaked timestamp)\n")
         continue
     parseable += 1
     if best is None or u > best[0]:
@@ -527,8 +543,8 @@ for w in ("five_hour", "seven_day"):
             bucket = int(now // WINDOW_LEN[w])
             display, key = "unknown", f"bucket{bucket}"
         best = (u, w, display, key)
-if parseable == 0 and null_windows:
-    sys.exit(4)  # fresh cache but all utilization fields null — surface as MALFUNCTION
+if parseable == 0 and unusable_windows:
+    sys.exit(4)  # fresh cache but all utilization fields unusable (null or out-of-range) — surface as MALFUNCTION
 if parseable == 0 or best is None:
     sys.exit(2)  # schema drift / no usable signal — NOT "0%, all fine"
 if best[0] >= threshold:
@@ -547,10 +563,12 @@ if [ "$rc" -eq 3 ]; then
     exit 1
 fi
 if [ "$rc" -eq 4 ]; then
-    # Fresh cache but all utilization fields null — statusline PR #2 guard wrote null.
-    # An unknown utilization must NOT silently disable the watchdog (parallel to
-    # python3-missing MALFUNCTION above: we have a cache but cannot evaluate it).
-    warn "MALFUNCTION: all utilization fields are null in a fresh cache — $(head -3 "$py_err" 2>/dev/null || echo 'no detail')"
+    # Fresh cache but EVERY window's utilization is unusable — null (statusline
+    # PR #2 guard wrote null) or out-of-range corruption (HIMMEL-625: a leaked
+    # timestamp). An unevaluable utilization must NOT silently disable the
+    # watchdog (parallel to python3-missing MALFUNCTION above: we have a cache
+    # but cannot trust it), but it must NOT arm on garbage either.
+    warn "MALFUNCTION: all utilization fields are unusable (null or out-of-range) in a fresh cache — $(head -3 "$py_err" 2>/dev/null || echo 'no detail')"
     exit 1
 fi
 if [ "$rc" -ne 0 ]; then

@@ -107,12 +107,12 @@ describe('adfToPlainText', () => {
           type: 'paragraph',
           content: [
             { type: 'text', text: 'cc ' },
-            { type: 'mention', attrs: { displayName: 'yotam' } },
+            { type: 'mention', attrs: { displayName: 'tester' } },
           ],
         },
       ],
     };
-    expect(adfToPlainText(doc)).toBe('cc @yotam');
+    expect(adfToPlainText(doc)).toBe('cc @tester');
   });
 
   it('renders deleted-user mention as @user:<id>', () => {

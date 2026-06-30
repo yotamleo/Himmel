@@ -6,7 +6,7 @@ import { classify, type Route } from "./router";
 import { dispatchAutoAction, parseEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { isAllowed, isGroupAllowed, loadAccess, vaultForChat, type Access } from "./gate";
-import { runSession, buildPrompt, type BusPaths } from "./run";
+import { runSession, buildPrompt, type BusPaths, type PermissionMode } from "./run";
 import { transcribe } from "./transcribe";
 
 // Retry backoff for a capped session (ms). On a cap, settle retry_at = now + RETRY_MS
@@ -579,7 +579,7 @@ const MAX_RETRIES = Number(process.env.TELEGRAM_MAX_RETRIES ?? 3);
 // are filed into, from its meta.chat_id (gate.vaultForChat over loaded access).
 // Optional — when absent or it returns null, the prompt carries no file-into-vault clause.
 export type VaultForFn = (chatId: number) => string | null;
-export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn): RunFn {
+export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn): RunFn {
   const retryAt = () => new Date(Date.now() + RETRY_MS).toISOString();
   const noticed = new Set<string>();
   const safeNotify = async (session: string, retryAtIso: string, kind: NotifyKind) => {
@@ -597,9 +597,20 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
       await truncateFullyConsumed(inbox, inbox + ".consumed");
       return;
     }
-    const paths: BusPaths = { inbox: join(sd, "inbox.pending.jsonl"), outbox: join(sd, "outbox.jsonl"), context: join(sd, "context.md"), cwd: repoCwd };
-    const vault = vaultFor && parked ? vaultFor(parked.chat_id) : null;
-    const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, vault), repoCwd), deadlineMs), undefined, retryAt);
+    // `|| null` normalizes a falsy vault ("" from a blank access.json `vault:`) to
+    // null, so the nullish-coalescing `?? repoCwd` below stays coherent with the
+    // truthy `vault ?` checks (an empty string would otherwise spawn in cwd "" with
+    // no bypass and no file-into-vault clause — an incoherent posture).
+    const vault = (vaultFor && parked ? vaultFor(parked.chat_id) : null) || null;
+    // HIMMEL-578: spawn the session in the chat's vault cwd when one is configured,
+    // so the vault's own .claude/hooks load (e.g. a medical PHI-egress floor). The
+    // Jira-CLI path stays on repoCwd (himmel) — `dist/` only exists there. Vault
+    // sessions get bypassPermissions because himmel's auto-approve hook isn't loaded
+    // under the vault cwd; the vault's hooks still enforce containment.
+    const sessionCwd = vault ?? repoCwd;
+    const permissionMode = vault ? "bypassPermissions" : undefined;
+    const paths: BusPaths = { inbox: join(sd, "inbox.pending.jsonl"), outbox: join(sd, "outbox.jsonl"), context: join(sd, "context.md"), cwd: repoCwd, sessionCwd };
+    const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, vault), sessionCwd, permissionMode), deadlineMs), undefined, retryAt);
     // run.log (HIMMEL-262): persist the run's output tail — before this, a dead
     // run's stdout/stderr vanished and failures were undebuggable
     const logHead = `[${new Date().toISOString()}] session=${session} code=${res.code} capped=${res.capped} blocked=${res.blocked ?? false} pid=${res.pid}\n`;

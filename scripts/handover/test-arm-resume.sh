@@ -1302,6 +1302,60 @@ assert_not_contains "N8 malformed key is not welded into the name" "HIMMEL-Resum
 assert_contains "N8 falls back to the HIMMEL-Resume- path-only prefix" "HIMMEL-Resume-" "$out"
 
 # ---------------------------------------------------------------------------
+# macOS backend: crontab for schedule + dedup + --force (HIMMEL-594)
+# ---------------------------------------------------------------------------
+# at/atq present but must NOT be used on macOS — arm-resume picks crontab there
+# (atrun is off-by-default / SIP-fragile). Shim at/atq present so the
+# at-vs-crontab mismatch is actually exercised, plus a file-backed crontab.
+MACBIN="$TMP/macbin"; mkdir -p "$MACBIN"
+CRON_STORE="$TMP/cron.store"; : > "$CRON_STORE"
+printf '#!/bin/sh\necho "at MUST NOT be called on macOS" >&2; exit 1\n' > "$MACBIN/at";  chmod +x "$MACBIN/at"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN/atq"; chmod +x "$MACBIN/atq"
+cat > "$MACBIN/crontab" <<CRONEOF
+#!/bin/sh
+case "\$1" in
+  -l) cat "$CRON_STORE" 2>/dev/null ;;
+  -) cat > "$CRON_STORE" ;;
+  *) exit 0 ;;
+esac
+CRONEOF
+chmod +x "$MACBIN/crontab"
+
+MAC_HO="$(make_handover "$WORK_REPO")"
+mac_env() { env PATH="$MACBIN:$PATH" OSTYPE="darwin23" "$@"; }
+
+# (a) schedule emits a crontab entry, not at -t
+out="$(mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$MAC_HO" --dry-run 2>&1)"; rc=$?
+assert_rc "macOS schedule dry-run" 0 "$rc"
+assert_contains "macOS uses crontab entry" "crontab entry" "$out"
+assert_not_contains "macOS avoids at -t" "at -t" "$out"
+
+# (b) real arm then a 2nd arm is deduped (proves list_existing reads crontab)
+mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$MAC_HO" >/dev/null 2>&1
+out="$(mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$MAC_HO" 2>&1)"; rc=$?
+assert_rc "macOS 2nd arm deduped (rc=3)" 3 "$rc"
+
+# (c) --force removes + replaces the crontab entry (one entry remains)
+mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$MAC_HO" --force >/dev/null 2>&1
+n="$(grep -c 'HIMMEL-Resume-' "$CRON_STORE" 2>/dev/null)" || n=0
+if [ "$n" -eq 1 ]; then echo "PASS macOS --force keeps single entry"; else echo "FAIL macOS --force entries=$n"; FAILED=$((FAILED+1)); fi
+
+# (d) scoped --force on macOS leaves a SIBLING handover's crontab line intact
+# (HIMMEL-340 invariant on the crontab path: the full-line grep -vxF delete must
+# remove ONLY handover A's marker, never B's). B uses a distinct time so the
+# advisory collision check has nothing to flag.
+a_line="$(grep 'HIMMEL-Resume-' "$CRON_STORE" | head -1)"
+MAC_HO2="$(make_handover "$WORK_REPO")"
+mac_env bash "$ARM" --time "23:58" --handover "$MAC_HO2" >/dev/null 2>&1   # arm sibling B
+n="$(grep -c 'HIMMEL-Resume-' "$CRON_STORE" 2>/dev/null)" || n=0
+if [ "$n" -eq 2 ]; then echo "PASS macOS two distinct handovers coexist"; else echo "FAIL macOS expected 2 slots, got $n"; FAILED=$((FAILED+1)); fi
+b_line="$(grep -vF "$a_line" "$CRON_STORE" | grep 'HIMMEL-Resume-' | head -1)"
+mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$MAC_HO" --force >/dev/null 2>&1   # force A
+n="$(grep -c 'HIMMEL-Resume-' "$CRON_STORE" 2>/dev/null)" || n=0
+if [ "$n" -eq 2 ]; then echo "PASS macOS --force on A leaves sibling B (2 slots)"; else echo "FAIL macOS sibling preserve entries=$n"; FAILED=$((FAILED+1)); fi
+if [ -n "$b_line" ] && grep -qF "$b_line" "$CRON_STORE" 2>/dev/null; then echo "PASS macOS sibling B line survived --force on A"; else echo "FAIL macOS sibling B line wiped"; FAILED=$((FAILED+1)); fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 if [ "$FAILED" -gt 0 ]; then

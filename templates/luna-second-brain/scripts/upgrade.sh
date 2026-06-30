@@ -441,6 +441,7 @@ fi
 echo ""
 
 if [ "$DRY_RUN" = 1 ]; then
+    [ -f "$VAULT_DIR/.salus-profile" ] && echo "  (salus profile: would refresh medic skill + egress floor — operator content untouched)"
     echo "--dry-run: no changes made."
     exit 0
 fi
@@ -457,6 +458,24 @@ n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway
 WRITE_FAILURES=0
 CLAUDE_MERGE_RESULT=""
 process 1
+
+# salus medical profile (HIMMEL-577): on a vault that opted into the salus profile
+# (.salus-profile present), refresh the medic skill + PHI-egress floor from the
+# template via the tested overlay apply. PROFILE-GATED so a non-medical luna vault
+# never receives the egress floor (which HARD-blocks its MCP/web workflows).
+# Content-safe: the apply re-installs only code/config — the _-root scaffolds are
+# scaffold-new-only and the operator's settings.json / _skin-photo-archive.md are
+# never clobbered (see lib/salus-overlay.sh).
+if [ -f "$VAULT_DIR/.salus-profile" ] && [ -f "$TEMPLATE_DIR/scripts/lib/salus-overlay.sh" ]; then
+    mkdir -p "$VAULT_DIR/_profiles"
+    cp -R "$TEMPLATE_DIR/_profiles/salus" "$VAULT_DIR/_profiles/"
+    # shellcheck source=lib/salus-overlay.sh
+    # shellcheck disable=SC1091
+    . "$TEMPLATE_DIR/scripts/lib/salus-overlay.sh"
+    if apply_salus_overlay "$VAULT_DIR" >/dev/null; then
+        echo "  salus profile: refreshed medic skill + egress floor (operator content untouched)."
+    fi
+fi
 
 # Step 4: reprint the manual-install table if PLUGINS-SETUP.md changed.
 if [ "$(sha_of "$TEMPLATE_DIR/$PLUGINS_SETUP_REL")" != "$PLUGINS_SETUP_PRIOR_SHA" ] && [ -f "$VAULT_DIR/$PLUGINS_SETUP_REL" ]; then

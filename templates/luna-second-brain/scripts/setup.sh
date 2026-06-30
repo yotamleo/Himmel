@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 # New-machine setup for the luna-brain repo.
-# Run once after cloning: bash scripts/setup.sh
+# Run once after cloning: bash scripts/setup.sh [--medical]
+#   --medical (alias --salus): also apply the salus medical-vault overlay
+#   (medic skill + PHI-egress floor + skin scaffolds). See _profiles/salus/README.md.
 set -e
 
 trap 'echo "setup interrupted by signal" >&2; exit 130' INT TERM
+
+# --- arg parse ---
+MEDICAL=0
+for _arg in "$@"; do
+  case "$_arg" in
+    --medical|--salus) MEDICAL=1 ;;
+    *) echo "setup: unknown arg '$_arg' (supported: --medical)" >&2; exit 2 ;;
+  esac
+done
 
 # --- [0/6] git state ---
 # A vault downloaded as a zip (or copied without its .git) is not a repo, yet
@@ -148,6 +159,20 @@ if [ "${#_missing_dirs[@]}" -gt 0 ]; then
   echo "  Re-clone or re-create the scaffold before using vault commands." >&2
 else
   echo "  Vault PARA dirs present."
+fi
+
+# --- [7/7] salus medical overlay (optional, --medical) ---
+if [ "$MEDICAL" -eq 1 ]; then
+  echo "[7/7] Applying salus medical-vault overlay..."
+  # shellcheck source=lib/salus-overlay.sh
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/scripts/lib/salus-overlay.sh"
+  if apply_salus_overlay "$REPO_ROOT"; then
+    echo "  salus overlay applied (medic skill + egress floor + skin scaffolds + .salus-profile)."
+  else
+    echo "  ERROR: salus overlay not found — is this the luna template?" >&2
+    exit 1
+  fi
 fi
 
 echo ""

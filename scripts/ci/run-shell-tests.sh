@@ -37,6 +37,12 @@ SUITE_TIMEOUT="${SUITE_TIMEOUT:-180}"
 # Suites that cannot run on a bare runner. One SCAN-ROOT-RELATIVE path per
 # entry. Each: "<relpath>   # <reason>". Keep the reason — it documents the gap.
 #
+# CI policy (HIMMEL-594): CI runs UNIT tests only — no API keys, no secrets, no
+# 3rd-party/network (claude / hermes / codex-OAuth / Jira-API). Suites needing
+# those are INTEGRATION tests and belong on the VM e2e (host .env keys copied in,
+# codex via OAuth), not here. The VM-e2e-with-keys harness + per-skill/plugin
+# test reorg are tracked as a follow-up epic; until then these are skipped on CI.
+#
 # Paths are relative to $scan (default: scripts), so the entry
 # "test-install-symmetry-vm.sh" matches scripts/test-install-symmetry-vm.sh
 # when the default scan root is used.
@@ -47,6 +53,11 @@ test-himmel-update.sh                # live git pull + marketplace re-sync
 test-himmel-update-hermes.sh         # needs the hermes runtime
 hermes/test-invoke.sh                # needs the hermes runtime
 gemini/test-invoke.sh                # needs the gemini-cli binary
+cr/test-hermes-critic.sh             # integration: needs the hermes runtime (no keys on CI) — VM e2e covers it
+handover/test-hop.sh                 # integration: needs a live 'claude' (--print relaunch) — VM e2e covers it
+handover/test-resume-armed.sh        # integration: needs the bun runtime + armed-resume flow — VM e2e covers it
+luna/test-pipeline-cadence.sh        # integration: drives a live 'claude' (--settings fragment) — VM e2e covers it
+test-plugin-test.sh                  # integration: self-bootstraps a plugin's deps over npm/network — VM e2e covers it
 "
 
 # extra_skips accumulates paths added via --skip-extra flags.
