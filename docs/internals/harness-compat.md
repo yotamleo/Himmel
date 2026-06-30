@@ -220,10 +220,20 @@ critic panel (`scripts/cr/critic-panel.sh`) and clears the CR marker only when
 the panel reports 0 Critical + 0 Important (retains on findings, panel
 unavailable, or a `docs-audit` lane). It does **not** dispatch the Claude
 `pr-review-toolkit` reviewer agents. Codex native `/review` participation is a
-post-HIMMEL-527 follow-up (shared `cr-context.sh` assembler). Tier-A skills
-(minerva, handover, obsidian-triage wrappers, himmel-update, stuck-playbook,
-vm) already load natively — verified live (`stuck-playbook` triggered under
-Codex).
+post-HIMMEL-527 follow-up (shared `cr-context.sh` assembler).
+
+Tier-A skills split by **delivery mechanism**: the enabled himmel plugins
+(`handover@himmel`, `obsidian-triage@himmel`, `telegram-himmel@himmel`) carry
+their own skills/commands. The **himmel-ops** skills (minerva, stuck-playbook,
+vm, himmel-doctor, himmel-update) require `himmel-ops@himmel` enabled in
+user-global `~/.codex/config.toml` — provisioned **reproducibly** by
+`scripts/codex/install-himmel-codex.{sh,ps1}` (HIMMEL-597; the codex-CLI half of
+the install split, twin of the hermes `scripts/hermes/install-himmel-profile.*`).
+The installer drives the `codex` CLI (`codex plugin marketplace add` /
+`codex plugin add`), idempotent + non-destructive. Independent of plugin-skill
+loading, the **verified** Codex skill-discovery path is project-local
+`.agents/skills/<name>/SKILL.md` (HIMMEL-533); guaranteed wrappers for the
+minerva/stuck-playbook/vm cluster are tracked in HIMMEL-604/607.
 
 ### 5. Subagents
 
