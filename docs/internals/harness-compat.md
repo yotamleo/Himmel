@@ -32,6 +32,7 @@ to **other coding harnesses** — Codex first — so an operator can decide what
 | **Slash commands** | `.claude/commands/` | ⚠️ own slash surface; `.claude/commands/` don't auto-load | ✅ `.cursor/commands/*.md` | ⚠️ via plugins/skills/agents (`/name`); dedicated file unverified | ✅ **TOML** `.gemini/commands/` (`:` namespacing) |
 | **Instruction file** | `CLAUDE.md` (always loaded) | ⚠️ **`AGENTS.md` only** | `.cursor/rules/*.mdc` + **`AGENTS.md`** | **`AGENTS.md`** (also reads `CLAUDE.md`/`GEMINI.md`) | **`GEMINI.md`** |
 | **Subagents** | `.claude/agents/*.md` | ⚠️ `.codex/agents/*.toml` | ✅ `.cursor/agents/*.md` (reads **`.claude/agents`**) | ✅ `*.agent.md` (`.github/agents/`) | ✅ `.gemini/agents/*.md` |
+| **Interactive questions (`AskUserQuestion`)** | native tool | ❌ no equivalent question-tool → **degrades to a conversational prose question** (HIMMEL-595) | ❌ same | ❌ same | ❌ same |
 
 > **Status (HIMMEL-472, 2026-06-21):** Cursor / Copilot / Gemini columns are now
 > audited (web + official docs). Several earlier hints were **stale** and are
@@ -357,6 +358,44 @@ Do not start command ports or Codex status-context wiring from the audit chunk
 itself. A live Codex probe should run only after the matrix row names the exact
 question it answers and the no-token preconditions that must pass first.
 
+### 9. Interactive questions (`AskUserQuestion`) — Claude-only, graceful prose degradation (HIMMEL-595)
+
+`AskUserQuestion` is a **Claude-Code-only interactive multiple-choice tool**, not
+a lifecycle hook event — so unlike the SessionStart/Stop ports (596/599) there is
+**nothing to wire** in `.codex/hooks.json`; Codex's 10-event set (and
+Cursor/Copilot/Gemini) has no question-tool equivalent. When a skill that says
+"ask via `AskUserQuestion`" runs under Codex, the tool is simply absent and the
+model **degrades to asking the same question as plain conversational prose**. What
+is lost is the structured-choice UI, **not** the question/answer exchange — no
+*functional* capability is lost and nothing silently does the wrong thing (the
+562 audit's "functional breakage" label overstates it).
+
+**The one real risk** is a model that, seeing "use `AskUserQuestion`", tries to
+*call a tool that does not exist* and stalls/errors at a **confirm/disambiguation
+gate** instead of narrating. HIMMEL-595 mitigates this on the **3 gates where
+failing to ask would matter** with a one-line "if `AskUserQuestion` is unavailable,
+ask the same question as plain text and act on the typed answer" guard:
+`/overnight-shift` dispatch confirm (`.claude/commands/overnight-shift.md`),
+handover repo-resolution (`…/handover/SKILL.md` + `…/references/routing.md`). The
+handover **bucket** prompt (`…/references/buckets.md`) already shipped a
+degradation-aware line (its safe default is the *opposite* pattern — auto-apply
+default and skip, because it *has* a safe default; the gates above must still ask).
+
+**Cosmetic sites are intentionally left untouched** — they self-degrade to prose
+with no gate semantics: `/improve` clarifying Qs; `jira-init|create|comment`;
+`gh-pr-review|resolve|reply`; `handover-setup`; handover `init`/`register`
+(`references/init-register.md`, already self-documents "or text"); handover
+slug/hygiene prompts. `luna-upgrade`/`luna-upgrade-all` already confirm via prose
+(they never used the tool) and needed no change.
+
+**Follow-up (HIMMEL-649, deferred by operator 2026-06-30):** the *complete* Codex
+treatment — measure the actual usage gap on the cosmetic sites under real Codex
+runs, and consider a harness-agnostic structured-confirm convention/helper so a
+skill expresses "ask a multiple-choice question" once and it renders as
+`AskUserQuestion` under Claude and a numbered prose prompt elsewhere (with
+input-format validation/retry on the typed answer), instead of per-skill fallback
+prose. "The content isn't lacked, just rough around the edges."
+
 ## Cursor / Copilot / Gemini deep-dive (HIMMEL-472)
 
 Audited 2026-06-21 (official docs + superpowers' shipped `hooks-cursor.json`,
@@ -418,6 +457,7 @@ HIMMEL-527 supplies the shared context assembler.
 | CR reviewer skill for Codex | **Ported (panel-only)** — Codex `pr-check` skill runs the shell panel + clears the CR marker on clean; native `/review` participation deferred post-HIMMEL-527 | HIMMEL-533 |
 | where-are-we / status context for Codex | **Port** — use Codex-native advisory context, not Claude `statusLine.command` | HIMMEL-554 |
 | Marketplace (all) | **Accept** — each has one | — |
+| `AskUserQuestion` (interactive tool) | **Accept (degrades to prose) + guard the 3 gates** — Claude-only tool, no equivalent elsewhere; minimal conversational-fallback line on the confirm/disambiguation gates; complete treatment deferred | HIMMEL-595 → HIMMEL-649 |
 
 ## Prompt anatomy — why rules must be *adapted*, not copied
 

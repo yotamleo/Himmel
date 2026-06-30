@@ -37,6 +37,10 @@ dispatch step from `docs/handover/overnight-mode.md`.
    - `Edit filter` — re-run `/overnight-shift` with different flags.
    - `Abort` — stop without dispatching.
 
+   If `AskUserQuestion` is unavailable (non-Claude harness, e.g. Codex), ask the
+   same confirm as plain text and act on the typed answer — never dispatch
+   without an explicit go.
+
 4. **Fan out subagents (only when operator confirms).**
    For each non-epic ticket in the plan, dispatch a Task subagent
    in parallel (single message, multiple Agent tool calls):

@@ -63,6 +63,7 @@ When step 1 and step 2 fail:
 - Render an `AskUserQuestion` with options = registered repos (up to 4; if more than 4, include top by usage + "Other").
 - Header label: short repo name. Description: registered path.
 - The choice is **not cached** — repeated invocations re-prompt. Reason: routing errors are silent and expensive; cheap prompts beat sticky misroutes.
+- If `AskUserQuestion` is unavailable (non-Claude harness, e.g. Codex), ask the same question as plain text — a numbered list of the registered repos (name + path) — and route on the typed answer. Never silently pick a repo; a misroute is silent and expensive.
 
 If the registry is empty, the response is:
 

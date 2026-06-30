@@ -13,7 +13,7 @@ Every command resolves a **target repo** before reading or writing state. Order:
 
 1. **CWD match (primary).** Run `git -C <cwd> rev-parse --path-format=absolute --git-common-dir`. Take its parent directory (handles worktrees AND regular checkouts — `--path-format=absolute` returns an absolute path either way, so the parent is always the main repo root). Canonicalise (lowercase drive on Windows, forward slashes, `$HOME` expansion). Compare against canonical `path` of each entry in `~/.claude/handover/registry.json`. Exact match wins.
 2. **Conversation alias (fallback).** Only if step 1 produces no match. Scan recent user turns for any registered alias or keyword (case-insensitive substring). Unambiguous hit → use it.
-3. **Ambiguous or none → prompt** via `AskUserQuestion`. No session cache — always prompt when ambiguous, every invocation.
+3. **Ambiguous or none → prompt** via `AskUserQuestion`. No session cache — always prompt when ambiguous, every invocation. (If `AskUserQuestion` is unavailable — non-Claude harness, e.g. Codex — ask the same question as plain text and route on the typed answer; never silently pick a repo.)
 
 Once resolved, `<repo-root>` = registry path, `<state-root>` = `<repo-root>/handovers/<user>/` (user from registry).
 
