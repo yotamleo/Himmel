@@ -126,6 +126,34 @@ execution, then exits 2 only to feed its "write a handover now" message to the
 model — previously the adapter mistranslated that to a **bogus PreToolUse deny**
 (wrong event, and a permission gate for a tool that already ran).
 
+**Advisory SessionStart/UserPromptSubmit wiring (HIMMEL-596).** Three advisory
+SessionStart hooks (`inject-initiative`, `inject-where-are-we`,
+`inject-doc-freshness`) are wired into `.codex/hooks.json` SessionStart via
+`run-hook.cmd --sandbox`, alongside `check-update-available`. Because these hooks
+deliver their `<system-reminder>` on **stdout at exit 0** (not exit 2), the
+adapter now wraps such a hook's output into the SAME
+`hookSpecificOutput.additionalContext` JSON channel. The wrap is **gated on the
+event** (`hook_event_name ∈ {SessionStart, UserPromptSubmit}`), NOT on the exit
+code: it captures the combined output and always exits 0 (exit-0 stdout AND a
+defensive exit-2's stderr both funnel to additionalContext — there is no deny
+path for these no-permission-gate events). Event-gating means it never touches
+the PreToolUse stdout-decision passthrough (auto-approve's JSON `allow` must pass
+verbatim). Raw stdout is NOT a reliable Codex context channel (the JSON
+`additionalContext` field is — same reasoning as the 565 exit-2 path), so the
+wrap is correct-by-construction whether or not Codex also honours raw stdout.
+**Verification scope:** the fixture
+(`scripts/hooks/test-codex-sessionstart-hooks.sh`) proves the adapter emits the
+`additionalContext` JSON end-to-end through `run-hook.cmd`; a **live Codex
+SessionStart probe** (does Codex inject that additionalContext into the model at
+session start?) remains pending — the same open follow-up as the 565 PostToolUse
+probe, and it also retroactively covers the pre-existing `check-update-available`
+wiring. Two operational notes: (a) adding hooks changes the trusted set, so the
+next Codex session re-trust-hashes `.codex/hooks.json` (non-interactive
+`codex exec` needs `--dangerously-bypass-hook-trust` until trusted); (b)
+`inject-where-are-we`'s detached background ledger refresh likely won't survive
+Codex's hook sandbox, so under Codex the synchronous render still fires but the
+ledger may not refresh (known limitation; the render is the load-bearing half).
+
 The guardrails stay single-sourced — they keep working verbatim under Claude
 Code, which never invokes the adapter (only `.codex/hooks.json` does). Verified
 live against codex-cli 0.141.0: a secret read (`block-read-secrets`) is
@@ -168,9 +196,13 @@ and `block-merged-pr-commit.sh` (HIMMEL-512) — resolve their script via
 hooks (plugin hooks get `CLAUDE_PLUGIN_ROOT` instead — see §1), so under Codex
 the wrapper's `[ -f "$h" ]` was false and the guards silently no-op'd
 (root-equivalent docker mounts + merged-PR commits went unguarded). Fix: mirror both into `.codex/hooks.json` via `run-hook.cmd`, which
-derives the root from its own location. The non-security plugin hooks
-(`inject-where-are-we` / `refresh-where-are-we-on-end`) share the same
-root-resolution bug and stay broken under Codex pending HIMMEL-554.
+derives the root from its own location. The non-security plugin SessionStart
+hooks (`inject-where-are-we` / `inject-doc-freshness`) shared the same
+root-resolution bug; **HIMMEL-596** mirrors them (plus `inject-initiative`) into
+`.codex/hooks.json` SessionStart with the exit-0 `additionalContext` wrap above
+(live Codex firing pending a probe). The SessionEnd half
+(`refresh-where-are-we-on-end`) is still pending — leg HIMMEL-599 (SessionEnd →
+Codex `Stop`).
 
 ### 2. Instruction file — CLAUDE.md is invisible; AGENTS.md must carry the rules
 
