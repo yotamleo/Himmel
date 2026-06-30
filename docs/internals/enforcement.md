@@ -106,9 +106,9 @@ the env var.
 
 ## Claude PreToolUse Hooks
 
-Six hooks wired in `.claude/settings.json` fire BEFORE Claude executes
-tool calls. Five BLOCK risky operations; one (`auto-approve-safe-bash`)
-GRANTS permission for safe ones so they don't hang. A seventh and eighth
+Seven hooks wired in `.claude/settings.json` fire BEFORE Claude executes
+tool calls. Six BLOCK risky operations; one (`auto-approve-safe-bash`)
+GRANTS permission for safe ones so they don't hang. An eighth and ninth
 block hook, `block-docker-privesc.sh` (HIMMEL-441) and
 `block-merged-pr-commit.sh` (HIMMEL-512), are shipped via the **himmel-ops
 plugin `hooks.json`** rather than `.claude/settings.json` (so they can be
@@ -211,6 +211,34 @@ print or grep the contents of a secret file (`.env`, `.env.*`,
 print file contents to stdout (`awk '{print}' .env`, `sed s/X/Y/ .env`).
 Prefer asking the operator to echo specific values via the `!` prefix
 instead of bypassing.
+
+### `block-rogue-claude-schedule.sh` — raw scheduler-arm guard (HIMMEL-647)
+
+Fires on Bash/PowerShell. Refuses a tool call that registers an OS scheduler
+job which launches claude **without** routing through the sanctioned arming
+tools (`arm-resume.sh`, `pipeline-cadence.sh`, `schedule-resume.sh`). Blocks
+when the command BOTH (a) registers a job — `schtasks /create`,
+`Register-ScheduledTask`/`Register-ScheduledJob`, a `crontab` write, or
+`at <timespec>` — AND (b)
+launches the claude executable (`claude.exe`/`.cmd`/`.ps1`, a `/claude` or
+`\claude` binary path, or a bare `claude "<prompt>"`). Bypass:
+`ROGUE_SCHEDULE_OK=1`.
+
+Why: a hand-rolled `schtasks /create … /tr <bat>` whose `.bat` is just
+`"claude.exe" "load <handover> …"` (no `cd /d`, no Start In) fires with the
+scheduler's default cwd `C:\Windows\System32`, so the relaunch runs OUTSIDE the
+repo — a stray `~/.claude/projects/C--Windows-System32` project gets registered,
+`block-edit-on-main` can't find `.git`, relative handover paths break, and the
+autonomous run is wasted. `arm-resume.sh` already emits the
+`cd /d "$RESUME_CWD" || exit /b 1` guard, pre-trusts the cwd (HIMMEL-386),
+dedups and self-cleans; this guard forces scheduled claude relaunches back
+through it.
+
+**Known limitation (accepted):** only catches a rogue arm that writes the
+launcher AND registers it in ONE tool call (the HIMMEL-647 incident shape). A
+split across two calls — write the `.bat` in call 1, `schtasks /create
+/tr that.bat` in call 2 — carries no `claude` token on the register call and
+is not caught. Targets the accidental shape, not a determined bypass.
 
 ### `block-docker-privesc.sh` — root-equivalent container guard (HIMMEL-441)
 
