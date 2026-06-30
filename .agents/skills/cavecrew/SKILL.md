@@ -80,3 +80,12 @@ Skip investigator. Hand exact path:line to `cavecrew-builder` directly.
 ## Auto-clarity (inherited)
 
 Subagents drop caveman → normal English for security warnings, irreversible-action confirmations, and any output where fragment ambiguity could be misread. Resume caveman after.
+
+## Dispatch syntax (harness-specific)
+
+The WHEN-to-use guidance above is harness-neutral; the **dispatch mechanism is
+not**. The cavecrew presets (`cavecrew-investigator`/`-builder`/`-reviewer`) are
+defined as **Claude Agent types** (caveman plugin `agents/`):
+
+- **Under Claude Code:** dispatch via the Agent tool, e.g. `subagent_type: "caveman:cavecrew-investigator"` (send 2-3 in one message to run them in parallel).
+- **Under Codex (or another harness):** there is no Claude Agent tool — use the harness-native subagent surface (Codex `.codex/agents/*.toml`). If the cavecrew presets are not registered there, either invoke the equivalent harness-native subagent or run the work inline. Do **not** assume `subagent_type: "caveman:…"` resolves outside Claude.
