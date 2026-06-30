@@ -13,7 +13,7 @@ $ClaudeDir      = "$env:USERPROFILE\.claude"
 $RepoRoot       = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 # ── Progress ────────────────────────────────────────────────────────────────
-$TotalSteps = 18
+$TotalSteps = 19
 $Script:Step = 0
 $Script:Failures = @()
 
@@ -619,6 +619,22 @@ Invoke-NonFatal "swap rtk hook for guard" {
 
     Write-SettingsJson $SettingsFile $settings
     Write-Host "  Swapped $swapped 'rtk hook claude' entry(s) -> bash $GuardPath"
+}
+
+Write-Step "Seed operator leak denylist (private tooling — skipped if absent)"
+Invoke-NonFatal "seed leak denylist" {
+    # Single bash helper (no PS twin → no lockstep drift); run via Git Bash so it
+    # writes to the SAME ~/.claude path the bash leak-scan reads. Private-only (in
+    # PRIVATE_PATHS): present on the operator mirror, absent on adopter clones →
+    # guarded skip. Idempotent.
+    $GitBash = "C:\Program Files\Git\bin\bash.exe"
+    $SeederWin = "$HimmelPath\scripts\lib\seed-leak-denylist.sh"
+    if (Test-Path $SeederWin) {
+        $SeederUnix = $SeederWin.Replace('\', '/')
+        & $GitBash -c "bash '$SeederUnix'"
+    } else {
+        Write-Host "  skipped: $SeederWin not present (public/adopter clone)"
+    }
 }
 
 Write-Step "Install Obsidian + open vault"

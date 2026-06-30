@@ -362,6 +362,58 @@ check_c9() {
     esac
 }
 
+# --- C10: private→public propagation drift (read-only advisory) -----------------
+# Sources the drift detector (Component A) and surfaces MISSING/DRIFT/REVERSE-LEAK
+# between the private mirror and the public clone. Private-only tooling: on a
+# public/adopter clone propagate-public.sh + propagation-drift.sh are absent →
+# skipped, OK. NON-fatal (WARN never FAILs), no --fix — like C7. The detector's
+# own cwd/clone/fetch guards make a non-private or clone-less run skip cleanly.
+check_c10() {
+    local drift_lib="$REPO_ROOT/scripts/lib/propagation-drift.sh"
+    if [ ! -f "$REPO_ROOT/scripts/propagate-public.sh" ] || [ ! -f "$drift_lib" ]; then
+        emit OK C10-propagation "skipped (no private mirror tooling)"
+        return
+    fi
+    # shellcheck source=scripts/lib/public-clone-paths.sh
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/scripts/lib/public-clone-paths.sh"
+    # shellcheck source=scripts/lib/propagation-drift.sh
+    # shellcheck disable=SC1091
+    . "$drift_lib"
+    local out; out="$(propagation_drift 2>/dev/null)"
+    case "$out" in
+        *"propagation-drift: skipped"*)
+            emit OK C10-propagation "$(printf '%s\n' "$out" | sed -n 's/^propagation-drift: //p' | head -1)"
+            return ;;
+    esac
+    local total; total="$(printf '%s\n' "$out" | grep -c '^DRIFT-BUCKET ' || true)"
+    # A WARN line (fetch failed → stale/local refs, or unreadable/empty origin/main)
+    # means the comparison did NOT run against fresh trees — a "0 buckets" result
+    # there is NOT a clean bill of health, so surface it as WARN, never OK.
+    local warned; warned="$(printf '%s\n' "$out" | grep -c '^propagation-drift: WARN' || true)"
+    if [ "${total:-0}" -eq 0 ] && [ "${warned:-0}" -gt 0 ]; then
+        emit WARN C10-propagation \
+            "drift comparison ran against stale/unreadable refs — cannot assert clean" \
+            "re-run with network access (fetch origin/main on both private + public clone)"
+        printf '%s\n' "$out" | grep '^propagation-drift: WARN' | sed 's/^propagation-drift: /       /'
+        return
+    fi
+    if [ "${total:-0}" -eq 0 ]; then
+        emit OK C10-propagation "no private→public propagation drift"
+        return
+    fi
+    emit WARN C10-propagation \
+        "$total private→public propagation-drift finding(s) — public mirror behind/diverged" \
+        "review + propagate: scripts/propagate-public.sh prep/new (genericize MISSING-needs-review by hand)"
+    # Surface any fetch/unreadable WARN too — if drift was found AGAINST stale refs
+    # the counts may be inaccurate, and the operator must know the compare wasn't fresh.
+    printf '%s\n' "$out" | grep '^propagation-drift: WARN' | sed 's/^propagation-drift: /       /'
+    # One-screen breakdown: per-bucket counts + up to 5 example paths.
+    printf '%s\n' "$out" | sed -n '/propagation-drift summary/,$p' | grep -v 'summary (private' | sed 's/^/       /'
+    printf '       examples:\n'
+    printf '%s\n' "$out" | grep '^DRIFT-BUCKET ' | head -5 | sed 's/^DRIFT-BUCKET /       · /'
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -411,6 +463,7 @@ check_c6
 check_c7
 check_c8
 check_c9
+check_c10
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

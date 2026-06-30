@@ -25,6 +25,19 @@ was never pruned).  C7 only emits findings and points to `/clean` (which dry-run
 first); it never deletes or modifies anything.  On forge outage (rc 2) it emits a
 single INFO "skipped" rather than a false WARN.
 
+It also runs a **private→public propagation-drift check** (C10, read-only) — for
+the maintainer's private mirror it compares the private repo against the public
+clone by git blob SHA and surfaces what never propagated: MISSING (public-eligible
+files absent from public), DRIFT (present-but-stale), and REVERSE-LEAK (a path present
+in public but absent from private — typically a leaked `PRIVATE_PATHS` file). It folds
+out the deliberate divergence axes — slug/clone-dir casing + the genericization map,
+plus the public-maintained files (LICENSE/README/.github) excluded on both sides — so
+genuine gaps stand out, and tags genericization-sensitive files `*-needs-review`. C10
+is advisory only (never `--fix`, never propagates) and points at `propagate-public.sh`;
+on a public/adopter clone the private tooling is absent so it prints `skipped` and stays
+OK. A WARN ("stale/unreadable refs") means the compare couldn't fetch fresh `origin/main`
+— a 0-finding result there is not a clean bill of health.
+
 It is read-only EXCEPT `--fix`, which heals the C1 node wiring by rewriting the
 caveman hooks in the **user-scope** `~/.claude/settings.json` (outside any repo —
 the on-main / repo-settings self-mod guards do not apply) to route through the
