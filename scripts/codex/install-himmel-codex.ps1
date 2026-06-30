@@ -108,6 +108,20 @@ foreach ($p in $PluginSet) {
   }
 }
 
+# --- 3. sanitize external-plugin hooks.json (HIMMEL-651) ---
+# Codex's strict plugin-hooks parser rejects a top-level `description` key that
+# several external plugins ship in their hooks.json ("unknown field
+# description") and skips those hooks at boot. Strip it so codex boots clean.
+# Idempotent + non-fatal (cosmetic cleanup must never fail the install).
+Write-Host ""
+Write-Host "--- 3. sanitize external-plugin hooks.json (codex strict-parser workaround) ---"
+$sanitizer = Join-Path $PSScriptRoot "sanitize-plugin-hooks.ps1"
+try {
+  if ($DryRun) { & $sanitizer -DryRun } else { & $sanitizer }
+} catch {
+  Write-Warning "sanitize step failed (non-fatal): $($_.Exception.Message)"
+}
+
 Write-Host ""
 if ($DryRun) {
   Write-Host "DRY-RUN: $changed change(s) would be made. Re-run without -DryRun to apply."

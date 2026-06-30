@@ -273,11 +273,15 @@ node scripts/agents-md/generate.mjs --check
 ### 3. Plugins / marketplace — works
 
 `config.toml` registers the himmel marketplace + `handover@himmel`,
-`obsidian-triage@himmel`, `telegram-himmel@himmel` (enabled). The only known
-issue is benign: 4 **external** plugins' `hooks.json` carry a top-level
-`description` key that Codex's strict parser rejects ("unknown field
+`obsidian-triage@himmel`, `telegram-himmel@himmel` (enabled). A few **external**
+plugins' `hooks.json` (warp, hookify, ralph-loop, security-guidance) carry a
+top-level `description` key that Codex's strict parser rejects ("unknown field
 description") — Codex skips just those hooks and runs normally. No himmel-owned
-plugin ships that shape. **Accept** (operator decision 2026-06-20).
+plugin ships that shape. **Sanitize** (supersedes the 2026-06-20 "accept",
+operator decision 2026-06-30, HIMMEL-651): `scripts/codex/sanitize-plugin-hooks.{sh,ps1}`
+strips the top-level `description` from every `hooks.json` under
+`~/.codex/plugins/cache/` (idempotent; re-run after a plugin update re-adds the
+field). `install-himmel-codex.{sh,ps1}` runs it automatically as its final phase.
 
 ### 4. Skills / slash commands
 

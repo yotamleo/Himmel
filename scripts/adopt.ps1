@@ -49,6 +49,12 @@ $LunaTargetSet = $PSBoundParameters.ContainsKey('LunaTarget')
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $HimmelRoot  = (Resolve-Path (Join-Path $ScriptDir '..')).Path
 
+# Default-to-available, mirroring adopt.sh's `${CLAUDE_AVAILABLE:-1}` (HIMMEL-600).
+# Require-Tools flips this to $false when `claude` is absent; initializing it here
+# keeps the flag an explicit boolean (never $null) so Install-Plugins' read is
+# unambiguous and strict-mode-safe.
+$script:ClaudeAvailable = $true
+
 # Shared wire helpers (PreToolUse trio + SessionStart) -- one implementation for
 # adopt.ps1 and setup.ps1 (HIMMEL install/uninstall symmetry).
 . (Join-Path $ScriptDir 'lib/wire-pretooluse-hooks.ps1')
@@ -71,11 +77,18 @@ $PortableFiles = @(
 
 function Require-Tools {
     $missing = @()
-    foreach ($t in @('git', 'jq', 'python3', 'claude')) {
+    # git/jq/python3 are the harness-agnostic core deps — hard-required.
+    foreach ($t in @('git', 'jq', 'python3')) {
         if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { $missing += $t }
     }
     if ($missing.Count -gt 0) {
         Write-Error "missing required tools: $($missing -join ', ') (see $HimmelRoot\docs\setup\new-machine.md)"
+    }
+    # `claude` is SOFT (HIMMEL-600): only the plugin-install step needs the CLI;
+    # a Codex-only (or any non-Claude) adopter still gets the harness-agnostic core.
+    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+        $script:ClaudeAvailable = $false
+        Write-Warning "'claude' not found — installing the harness-agnostic core only; skipping the Claude plugin-install step (Codex-only adopter is fine)."
     }
 }
 
@@ -92,6 +105,10 @@ function Copy-Portable {
 }
 
 function Install-Plugins {
+    if ($script:ClaudeAvailable -eq $false) {
+        Write-Host "──── Skipping plugin install ('claude' not found — non-Claude adopter) ────"
+        return
+    }
     Write-Host "──── Installing plugins (-Scope $Scope) ────"
     $pluginArgs = @('-Scope', $Scope)
     if ($DryRun) { $pluginArgs += '-DryRun' }

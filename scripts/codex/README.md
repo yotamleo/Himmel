@@ -27,8 +27,17 @@ line endings). It is **idempotent** and **non-destructive**:
    himmel-doctor / himmel-update skills + the himmel-ops hooks to Codex
    (the HIMMEL-597 target).
 
-It only ever *adds*; it never removes or disables a plugin, and a re-run on a
-provisioned machine is a no-op.
+3. **Sanitizes external-plugin `hooks.json`** as a final phase (HIMMEL-651): a
+   few external plugins (warp, hookify, ralph-loop, security-guidance) ship a
+   top-level `description` that Codex's strict parser rejects ("unknown field
+   description"), skipping those hooks with a boot warning. The installer strips
+   it via `sanitize-plugin-hooks.{sh,ps1}` (idempotent; non-fatal). himmel-owned
+   plugins never ship that shape.
+
+For plugin enablement it only ever *adds* — it never removes or disables a
+plugin, and a re-run on a provisioned machine is a no-op. (The sanitize phase
+edits external-plugin cache files in place, removing only the offending
+`description` key.)
 
 ## Usage
 
@@ -46,6 +55,18 @@ pwsh -NoProfile -File scripts\codex\install-himmel-codex.ps1 -All
 
 Env override: `CODEX_BIN` (path to the `codex` CLI). After a change, restart
 Codex so the plugins load; new project hooks are trust-hashed on first use.
+
+Run the hooks sanitizer standalone (e.g. after a `codex` plugin update re-adds a
+`description`) — env override `CODEX_HOME` (default `~/.codex`):
+
+```sh
+bash scripts/codex/sanitize-plugin-hooks.sh              # strip in place
+bash scripts/codex/sanitize-plugin-hooks.sh --dry-run    # report, change nothing
+```
+
+```powershell
+pwsh -NoProfile -File scripts\codex\sanitize-plugin-hooks.ps1 -DryRun
+```
 
 ## Skill loading caveat
 

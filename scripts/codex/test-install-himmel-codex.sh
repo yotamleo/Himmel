@@ -69,7 +69,10 @@ mk_state() {  # $1 = state dir; seeds empty marketplaces + plugins + calls
 
 run() {  # state-dir, then installer args
   local s="$1"; shift
-  CODEX_BIN="$STUB" CODEX_STUB_STATE="$s" bash "$INSTALLER" "$@"
+  # CODEX_HOME -> an empty temp dir so the wired sanitize-plugin-hooks step
+  # (HIMMEL-651) finds no plugin cache and no-ops, keeping the test hermetic
+  # (never touches the real ~/.codex cache).
+  CODEX_BIN="$STUB" CODEX_STUB_STATE="$s" CODEX_HOME="$TMP/codex-home" bash "$INSTALLER" "$@"
 }
 
 DEFAULT_SET="himmel-ops handover obsidian-triage telegram-himmel"

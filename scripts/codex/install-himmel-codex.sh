@@ -102,6 +102,19 @@ for p in $PLUGINS; do
   fi
 done
 
+# --- 3. sanitize external-plugin hooks.json (HIMMEL-651) ---------------------
+# Codex's strict plugin-hooks parser rejects a top-level `description` key that
+# several external plugins ship in their hooks.json ("unknown field
+# description") and skips those hooks at boot. Strip it so `codex` boots clean.
+# Idempotent + non-fatal (cosmetic cleanup must never fail the install).
+echo ""
+echo "--- 3. sanitize external-plugin hooks.json (codex strict-parser workaround) ---"
+if [ "$DRY_RUN" = "1" ]; then
+  bash "$SCRIPT_DIR/sanitize-plugin-hooks.sh" --dry-run || echo "WARN: sanitize step failed (non-fatal)" >&2
+else
+  bash "$SCRIPT_DIR/sanitize-plugin-hooks.sh" || echo "WARN: sanitize step failed (non-fatal)" >&2
+fi
+
 echo ""
 if [ "$DRY_RUN" = "1" ]; then
   echo "DRY-RUN: $changed change(s) would be made. Re-run without --dry-run to apply."
