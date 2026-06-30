@@ -34,7 +34,7 @@ Parse:
   - `https://bitbucket.org/<ws>/<repo>/issues/<n>` — Bitbucket issue branch
 - `--vault <path>` — luna vault root. Default: `$HOME/Documents/luna`. Refuse with rc=2 if the dir does not exist OR is not an Obsidian vault (no `.obsidian/` dir).
 - `--dest <category>` — vault destination category override. Default: `30-Resources/Tech`. Validate against the vault's PARA folders (`00-Inbox`, `10-Projects/*`, `20-Areas/*`, `30-Resources/Tech`, `30-Resources/Concepts`, `30-Resources/Components`). Anything else → rc=2.
-- `--limit <N>` — max 1-hop refs to follow. Default `10`. Clamp to [1, 25].
+- `--limit <N>` — max 1-hop refs to follow. Default `250` (LUNA-92: capture all refs by default — the prior `[1,25]` clamp left high-fanout awesome-lists partial and silently dropped sources). No upper clamp; reject `< 1` with rc=1. `250` is a generous safety ceiling for unattended `harvest-clips` dispatch (which passes no `--limit`), not a quality cap — the largest list we have hit is 188 refs. Pass `--limit <N>` to bound a noisy meta-list downward. The LUNA-6 rate-limit contract (api_failure verdict + rc=4 resume) is the backstop if a pathological list exceeds the gh-api hourly budget.
 - `--dry-run` — print what would be written + verdicts, touch no files. rc=0.
 - `--allow-unsafe` — opt-in flag to ingest a repo flagged by the LUNA-43 safety-keyword pre-filter (Phase 1.5). Without this flag, repos whose name/description/topics match red-flag terms exit rc=6 before fetching the README.
 - `--repo <ws/repo>` is NOT a luna-ingest flag — it is the bitbucket CLI's own override, set internally by the Bitbucket branch from the parsed URL. Operators pass the bitbucket.org URL, not `--repo`.
@@ -367,7 +367,7 @@ Strip refs whose path has more than one `/` (sub-paths inside the same repo — 
 awk -F/ 'NF==2 && $1 !~ /^\.+$/ && $2 !~ /^\.+$/' /tmp/luna-ingest-refs.$$.txt > /tmp/luna-ingest-refs.clean.$$.txt
 ```
 
-Apply the `--limit` cap. If more refs exist than limit, log "tail-skipped: N refs" in the synthesis under § Open questions.
+Apply the `--limit` cap (the explicit `--limit <N>` if passed, else the default `250`). If more refs exist than the cap, log "tail-skipped: N refs" in the synthesis under § Open questions. With the default `250`, a tail-skip now signals a genuinely huge meta-list (re-run with an explicit higher `--limit`), not the old routine `[1,25]`-clamp truncation.
 
 **LUNA-7 size telemetry:** measure the decoded README size with `wc -c < /tmp/luna-ingest-readme.$$.md` and record it in the synthesis § Audit log. If the size exceeds **512 KB**, emit a single stderr warning before Phase 3 starts:
 
