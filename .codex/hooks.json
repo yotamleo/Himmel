@@ -51,7 +51,10 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox check-update-available.sh", "timeout": 15 }
+          { "type": "command", "command": ".codex/run-hook.cmd --sandbox check-update-available.sh", "timeout": 15 },
+          { "type": "command", "command": ".codex/run-hook.cmd --sandbox inject-initiative.sh", "timeout": 10 },
+          { "type": "command", "command": ".codex/run-hook.cmd --sandbox inject-where-are-we.sh", "timeout": 15 },
+          { "type": "command", "command": ".codex/run-hook.cmd --sandbox inject-doc-freshness.sh", "timeout": 10 }
         ]
       }
     ],

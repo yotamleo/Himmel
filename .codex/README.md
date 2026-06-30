@@ -17,6 +17,15 @@ full compat matrix.
   `$CLAUDE_PROJECT_DIR`, which Codex leaves unset for plugin hooks — so they
   silently no-op under Codex unless mirrored here, where `run-hook.cmd` derives
   the repo root from its own location.
+  Also wires the three advisory **SessionStart** hooks `inject-initiative.sh`,
+  `inject-where-are-we.sh`, `inject-doc-freshness.sh` (HIMMEL-596) for the same
+  root-resolution reason. These are advisory (always exit 0) and emit their
+  `<system-reminder>` on stdout, so `codex-hook-adapter.sh` wraps a
+  SessionStart/UserPromptSubmit hook's output into the
+  `hookSpecificOutput.additionalContext` JSON channel (raw stdout is not a
+  reliable Codex context channel). The wrap is gated on the **event**, not the
+  exit code (any exit code → additionalContext; these events have no deny path).
+  Adding hooks re-trust-hashes `.codex/hooks.json` on the next Codex session.
 - **`run-hook.cmd`** — a **polyglot** wrapper (cmd.exe batch on Windows, bash on
   Unix) that fixes the three reasons the old hand-ported `.codex/hooks.json` did
   **not** block on Windows under Codex:
@@ -62,6 +71,10 @@ exit code propagated, an **exit-2 block translated to a JSON `deny`** (stderr �
 reason), and fail-closed JSON denies for wrapper/adapter precondition failures.
 The Windows test also covers Git Bash startup failure before adapter execution,
 plus explicit `--sandbox` and diagnostic `--no-sandbox` modes.
+- `scripts/hooks/test-codex-sessionstart-hooks.sh` — asserts the three advisory
+  SessionStart hooks (HIMMEL-596) are wired through `run-hook.cmd --sandbox`, the
+  strict schema holds, and `inject-initiative` fires end-to-end through the
+  adapter as `additionalContext` JSON (gate ON) / no-op (gate OFF).
 
 ## Setup modes
 - **Sandboxed project hooks (recommended):** use the tracked `.codex/hooks.json`

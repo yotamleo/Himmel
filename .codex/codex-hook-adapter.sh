@@ -79,6 +79,32 @@ script="$proj/scripts/hooks/$name"
 
 input="$(cat)"
 
+# Inbound lifecycle event, parsed once. SessionStart / UserPromptSubmit are
+# advisory CONTEXT events with no permission gate. Under Codex a hook feeds the
+# model via `hookSpecificOutput.additionalContext`, NOT raw stdout — that JSON
+# channel is exactly why HIMMEL-565 added emit_context. So for these two events
+# the guardrail's output (stdout for an exit-0 advisory hook like
+# inject-initiative / inject-where-are-we / inject-doc-freshness; stderr for a
+# defensive exit-2) is captured and re-emitted through emit_context; empty output
+# → nothing injected, exit 0. This is what makes himmel's advisory SessionStart /
+# UserPromptSubmit hooks actually FIRE under Codex (HIMMEL-596) instead of being
+# wired-but-inert. PreToolUse / PermissionRequest / PostToolUse keep the
+# stdout-passthrough contract below (auto-approve emits its JSON decision on
+# stdout — it MUST pass through verbatim, so it must NOT be wrapped).
+ev="$(printf '%s' "$input" | jq -r '.hook_event_name // "PreToolUse"' 2>/dev/null || echo PreToolUse)"
+case "$ev" in
+  SessionStart|UserPromptSubmit)
+    # Combine stdout+stderr (an advisory context message has no separate channels
+    # to preserve) and run the guardrail exactly once. $(...) strips trailing
+    # newlines; also drop a stray CR (Windows). emit_context exits 0; an empty
+    # body is an advisory no-op (exit 0) — these hooks never block session start.
+    cbody="$( printf '%s' "$input" | bash "$script" 2>&1 )"
+    cbody="${cbody%$'\r'}"
+    [ -n "$cbody" ] && emit_context "$cbody" "$ev"
+    exit 0
+    ;;
+esac
+
 # Run the guardrail with the hook JSON on stdin. Capture its STDERR into a var
 # while its STDOUT (e.g. an auto-approve decision) passes straight through to the
 # real stdout (fd 3). No temp files: Codex runs hooks inside the tool sandbox
@@ -95,7 +121,8 @@ reason="${captured%EXIT:*}"
 reason="${reason%$'\n'}"; reason="${reason%$'\r'}"   # drop the guardrail's trailing CR/LF
 
 if [ "$code" = "2" ]; then
-  ev="$(printf '%s' "$input" | jq -r '.hook_event_name // "PreToolUse"' 2>/dev/null || echo PreToolUse)"
+  # ev parsed above; SessionStart/UserPromptSubmit already returned, so this only
+  # sees PreToolUse/PermissionRequest (→ deny) and PostToolUse/unknown (→ context).
   case "$ev" in
     PreToolUse|PermissionRequest)
       # Block: translate to Codex's JSON deny. hookEventName mirrors the inbound event.
