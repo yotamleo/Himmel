@@ -78,6 +78,74 @@ case "$bout" in
   *) bad "block -> hookEventName mirrors the inbound event ($bout)";;
 esac
 
+# 2b) NON-PERMISSION lifecycle exit-2 (HIMMEL-565): a guardrail that exits 2 on a
+#     non-permission event (PostToolUse auto-arm success, SessionStart,
+#     UserPromptSubmit) must surface its message via additionalContext — NOT a
+#     bogus PreToolUse permission deny. Those events have no permission gate; the
+#     guardrail's side effects (e.g. arm + snapshot) already ran during execution,
+#     so exit 2 only needs to feed the advisory message to the model.
+pout="$(printf '{"hook_event_name":"PostToolUse"}\n' | bash "$T/.codex/run-hook.cmd" blocker.sh)"; prc=$?
+if [ "$prc" -eq 0 ]; then ok "PostToolUse exit-2 -> wrapper exits 0 (signal is in stdout JSON)"; else bad "PostToolUse exit-2 -> wrapper exits 0 (got $prc)"; fi
+case "$pout" in
+  *'"hookEventName":"PostToolUse"'*) ok "PostToolUse exit-2 -> hookEventName mirrors PostToolUse";;
+  *) bad "PostToolUse exit-2 -> hookEventName mirrors PostToolUse ($pout)";;
+esac
+case "$pout" in
+  *'"additionalContext"'*) ok "PostToolUse exit-2 -> surfaces additionalContext";;
+  *) bad "PostToolUse exit-2 -> surfaces additionalContext ($pout)";;
+esac
+case "$pout" in
+  *permissionDecision*) bad "PostToolUse exit-2 -> must NOT emit a permission decision ($pout)";;
+  *) ok "PostToolUse exit-2 -> no bogus permissionDecision";;
+esac
+case "$pout" in
+  *"blocking-reason-xyz"*) ok "PostToolUse exit-2 -> guardrail stderr becomes the additionalContext reason";;
+  *) bad "PostToolUse exit-2 -> guardrail stderr becomes the additionalContext reason ($pout)";;
+esac
+
+# 2c) Coherence: SessionStart exit-2 follows the same non-permission contract,
+#     incl. the additionalContext channel carrying the guardrail's reason.
+ssout="$(printf '{"hook_event_name":"SessionStart"}\n' | bash "$T/.codex/run-hook.cmd" blocker.sh)"; ssrc=$?
+if [ "$ssrc" -eq 0 ]; then ok "SessionStart exit-2 -> wrapper exits 0"; else bad "SessionStart exit-2 -> wrapper exits 0 (got $ssrc)"; fi
+case "$ssout" in
+  *'"hookEventName":"SessionStart"'*) ok "SessionStart exit-2 -> hookEventName mirrors SessionStart";;
+  *) bad "SessionStart exit-2 -> hookEventName mirrors SessionStart ($ssout)";;
+esac
+case "$ssout" in
+  *'"additionalContext"'*"blocking-reason-xyz"*) ok "SessionStart exit-2 -> guardrail stderr becomes the additionalContext reason";;
+  *) bad "SessionStart exit-2 -> guardrail stderr becomes the additionalContext reason ($ssout)";;
+esac
+case "$ssout" in
+  *permissionDecision*) bad "SessionStart exit-2 -> must NOT emit a permission decision ($ssout)";;
+  *) ok "SessionStart exit-2 -> no bogus permissionDecision";;
+esac
+
+# 2d) Coherence: UserPromptSubmit exit-2 mirrors its own event (3rd whitelist arm).
+upout="$(printf '{"hook_event_name":"UserPromptSubmit"}\n' | bash "$T/.codex/run-hook.cmd" blocker.sh)"
+case "$upout" in
+  *'"hookEventName":"UserPromptSubmit"'*) ok "UserPromptSubmit exit-2 -> hookEventName mirrors UserPromptSubmit";;
+  *) bad "UserPromptSubmit exit-2 -> hookEventName mirrors UserPromptSubmit ($upout)";;
+esac
+
+# 2e) Unknown/garbage inbound event on exit-2 is NORMALISED to PostToolUse — it
+#     must NOT echo the attacker-controllable event string into the hookEventName
+#     const (Codex's strict parser would reject it, dropping the message), and
+#     must NOT become a permission deny.
+unkout="$(printf '{"hook_event_name":"Stop"}\n' | bash "$T/.codex/run-hook.cmd" blocker.sh)"; unkrc=$?
+if [ "$unkrc" -eq 0 ]; then ok "unknown-event exit-2 -> wrapper exits 0"; else bad "unknown-event exit-2 -> wrapper exits 0 (got $unkrc)"; fi
+case "$unkout" in
+  *'"hookEventName":"PostToolUse"'*) ok "unknown-event exit-2 -> normalised to PostToolUse";;
+  *) bad "unknown-event exit-2 -> normalised to PostToolUse ($unkout)";;
+esac
+case "$unkout" in
+  *'"Stop"'*) bad "unknown-event exit-2 -> must NOT echo the raw event string ($unkout)";;
+  *) ok "unknown-event exit-2 -> raw event string not echoed";;
+esac
+case "$unkout" in
+  *permissionDecision*) bad "unknown-event exit-2 -> must NOT emit a permission decision ($unkout)";;
+  *) ok "unknown-event exit-2 -> no bogus permissionDecision";;
+esac
+
 # 3) FAIL-CLOSED paths: under Codex a bare exit 2 fails OPEN, so the adapter must
 #    emit a JSON deny (exit 0) on its own precondition errors, not just on a
 #    guardrail block.
