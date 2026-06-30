@@ -107,16 +107,35 @@ with Codex deny JSON if Git Bash is present but unusable in the hook sandbox. Th
 wrapper delegates to `.codex/codex-hook-adapter.sh`, which runs the guardrail and,
 for PreToolUse/PermissionRequest exit 2, re-emits the block as Codex's JSON
 `permissionDecision:"deny"` (the guardrail's stderr → reason) and exits 0.
-Non-exit-2 outcomes pass through. For other events, exit 2 currently falls back
-to a bogus PreToolUse deny. PostToolUse auto-arm uses exit 2 after arming, so
-that event remains an explicit adapter follow-up. The
-guardrails stay single-sourced — they keep working verbatim under Claude Code,
-which never invokes the adapter (only `.codex/hooks.json` does). Verified live
-against codex-cli 0.141.0: a secret read (`block-read-secrets`) is **Blocked**;
-a benign command is allowed. Unit-tested both polyglot branches, exit-2→deny
-translation, explicit sandbox/no-sandbox mode parsing, and Windows
+Non-exit-2 outcomes pass through.
+
+**Lifecycle exit-2 contract (HIMMEL-565).** Exit 2 on a **non-permission**
+lifecycle event (PostToolUse, SessionStart, UserPromptSubmit) does NOT translate
+to a permission deny — those events have no permission gate, and their
+`*.command.output` schema (per the openai/codex *generated* schemas) carries
+`hookSpecificOutput.additionalContext` (which Codex appends to the model's
+context), not a `permissionDecision`. **Verification scope:** the schema shape is
+confirmed against those generated schemas and the fixture proves the *adapter*
+emits it; a live Codex runtime probe of the auto-arm path (does Codex honour
+additionalContext on PostToolUse end-to-end) is still pending. The adapter's
+`emit_context` re-emits such an exit 2 as `additionalContext` with the inbound
+`hookEventName` (unrecognised events normalise to PostToolUse so the
+`hookEventName` const stays valid), exit 0. This is what
+`auto-arm-on-subagent-cap.sh` (the lone PostToolUse guardrail) needs: it arms a resume + writes a snapshot during
+execution, then exits 2 only to feed its "write a handover now" message to the
+model — previously the adapter mistranslated that to a **bogus PreToolUse deny**
+(wrong event, and a permission gate for a tool that already ran).
+
+The guardrails stay single-sourced — they keep working verbatim under Claude
+Code, which never invokes the adapter (only `.codex/hooks.json` does). Verified
+live against codex-cli 0.141.0: a secret read (`block-read-secrets`) is
+**Blocked**; a benign command is allowed. Unit-tested both polyglot branches,
+exit-2→deny translation, **exit-2→additionalContext for PostToolUse/SessionStart
+(HIMMEL-565)**, explicit sandbox/no-sandbox mode parsing, and Windows
 Git-Bash-startup fail-closed handling
-(`scripts/hooks/test-codex-run-hook.{sh,ps1}`).
+(`scripts/hooks/test-codex-run-hook.{sh,ps1}`). Live Codex lifecycle probes of
+the auto-arm path remain a follow-up; the no-token fixture is the gate that has
+now passed.
 
 **Setup options / live-verification caveats (codex-cli 0.141.0, Windows):**
 - **Sandboxed project hooks are the supported setup.** The tracked
@@ -250,8 +269,10 @@ that working matrix.
   Reuse ledgers; do not emulate Claude's visual statusline.
 - **Hook confidence:** file an owner ticket for no-token fixture coverage of
   individual guardrails and lifecycle events before any live Codex probe. The
-  first lifecycle case should resolve PostToolUse auto-arm's exit-2 contract
-  without emitting a bogus PreToolUse deny.
+  first lifecycle case — PostToolUse auto-arm's exit-2 contract — is **resolved
+  (HIMMEL-565)**: exit 2 on non-permission events now emits `additionalContext`,
+  not a bogus PreToolUse deny (see §1). Live auto-arm lifecycle probe still
+  pending.
 - **Install/update confidence:** file an owner ticket for disposable VM or
   temp-config checks covering setup, update, hook trust, and uninstall before
   live harness probes.

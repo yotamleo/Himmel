@@ -68,6 +68,40 @@ try {
     Check "block -> guardrail stderr becomes the deny reason" ($bout -match 'blocking-reason-xyz')
     Check "block -> hookEventName mirrors the inbound event" ($bout -match '"hookEventName":"PermissionRequest"')
 
+    # 2b) NON-PERMISSION lifecycle exit-2 (HIMMEL-565): a guardrail that exits 2 on
+    #     a non-permission event (PostToolUse auto-arm success) must surface its
+    #     message via additionalContext, NOT a bogus PreToolUse permission deny.
+    Push-Location $T
+    $pout = ('{"hook_event_name":"PostToolUse"}' | & cmd.exe /c '.codex\run-hook.cmd' blocker.sh 2>&1 | Out-String)
+    $prc = $LASTEXITCODE
+    Pop-Location
+    Check "PostToolUse exit-2 -> wrapper exits 0 (signal is in stdout JSON)" ($prc -eq 0)
+    Check "PostToolUse exit-2 -> hookEventName mirrors PostToolUse" ($pout -match '"hookEventName":"PostToolUse"')
+    Check "PostToolUse exit-2 -> surfaces additionalContext" ($pout -match '"additionalContext"')
+    Check "PostToolUse exit-2 -> must NOT emit a permission decision" ($pout -notmatch 'permissionDecision')
+    Check "PostToolUse exit-2 -> guardrail stderr becomes the additionalContext reason" ($pout -match 'blocking-reason-xyz')
+
+    # 2c) Coherence: SessionStart exit-2 follows the same non-permission contract.
+    Push-Location $T
+    $ssout = ('{"hook_event_name":"SessionStart"}' | & cmd.exe /c '.codex\run-hook.cmd' blocker.sh 2>&1 | Out-String)
+    $ssrc = $LASTEXITCODE
+    Pop-Location
+    Check "SessionStart exit-2 -> wrapper exits 0" ($ssrc -eq 0)
+    Check "SessionStart exit-2 -> hookEventName mirrors SessionStart" ($ssout -match '"hookEventName":"SessionStart"')
+    Check "SessionStart exit-2 -> surfaces additionalContext" ($ssout -match '"additionalContext"')
+    Check "SessionStart exit-2 -> must NOT emit a permission decision" ($ssout -notmatch 'permissionDecision')
+
+    # 2e) Unknown/garbage inbound event on exit-2 normalises to PostToolUse — never
+    #     echoes the raw event string into the hookEventName const, never a deny.
+    Push-Location $T
+    $unkout = ('{"hook_event_name":"Stop"}' | & cmd.exe /c '.codex\run-hook.cmd' blocker.sh 2>&1 | Out-String)
+    $unkrc = $LASTEXITCODE
+    Pop-Location
+    Check "unknown-event exit-2 -> wrapper exits 0" ($unkrc -eq 0)
+    Check "unknown-event exit-2 -> normalised to PostToolUse" ($unkout -match '"hookEventName":"PostToolUse"')
+    Check "unknown-event exit-2 -> must NOT echo the raw event string" ($unkout -notmatch '"Stop"')
+    Check "unknown-event exit-2 -> must NOT emit a permission decision" ($unkout -notmatch 'permissionDecision')
+
     # 3) FAIL-CLOSED paths: a bare exit 2 fails OPEN under Codex, so precondition
     #    errors must emit a JSON deny (rc 0) instead.
     # 3a) Missing script name -> fail-closed deny (rc 0).

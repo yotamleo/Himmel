@@ -37,6 +37,34 @@ emit_deny() {
   exit 0
 }
 
+# emit_context <reason> <event> — print Codex's non-blocking additionalContext
+# JSON on stdout and exit 0 (HIMMEL-565). Used for guardrail exit 2 on lifecycle
+# events that have NO permission gate (PostToolUse, SessionStart, UserPromptSubmit).
+# Their `*.command.output` schema (openai/codex generated schemas) carries
+# `hookSpecificOutput.additionalContext` — appended to the model's context — not a
+# permissionDecision. (The fixture proves the adapter emits this shape; a live
+# Codex runtime probe of the auto-arm path is still pending — see harness-compat.md.)
+# A PostToolUse auto-arm (auto-arm-on-subagent-cap.sh) exits 2 AFTER its side
+# effects ran, so the message belongs in additionalContext — emitting a PreToolUse
+# deny here is the wrong lifecycle event AND a bogus permission gate for a tool
+# that already ran.
+emit_context() {
+  local r="$1" ev="$2"
+  # Normalise to a known additionalContext-carrying event; default to PostToolUse
+  # (the only non-permission event himmel wires a blocking/exit-2 guardrail on —
+  # the SessionStart/UserPromptSubmit hooks in .codex/hooks.json are advisory). An
+  # unrecognised inbound event would otherwise yield an invalid `hookEventName`
+  # const that Codex's strict parser rejects, dropping the message.
+  case "$ev" in PostToolUse|SessionStart|UserPromptSubmit) ;; *) ev="PostToolUse" ;; esac
+  # No jq-less fallback: reaching here means the exit-2 dispatcher already parsed
+  # the inbound event with jq, so jq is present (a jq-less run resolves ev to
+  # PreToolUse → emit_deny, never here). emit_deny keeps its fallback because its
+  # precondition callers run before any jq use.
+  jq -cn --arg ev "$ev" --arg r "$r" \
+    '{hookSpecificOutput:{hookEventName:$ev,additionalContext:$r}}'
+  exit 0
+}
+
 name="${1:-}"
 [ -n "$name" ] || emit_deny "codex-hook-adapter: missing script name — fail closed"
 # run-hook.cmd's cmd.exe branch exports CLAUDE_PROJECT_DIR with backslashes;
@@ -67,9 +95,18 @@ reason="${captured%EXIT:*}"
 reason="${reason%$'\n'}"; reason="${reason%$'\r'}"   # drop the guardrail's trailing CR/LF
 
 if [ "$code" = "2" ]; then
-  # Block: translate to Codex's JSON deny. hookEventName mirrors the inbound event.
   ev="$(printf '%s' "$input" | jq -r '.hook_event_name // "PreToolUse"' 2>/dev/null || echo PreToolUse)"
-  emit_deny "$reason" "$ev"
+  case "$ev" in
+    PreToolUse|PermissionRequest)
+      # Block: translate to Codex's JSON deny. hookEventName mirrors the inbound event.
+      emit_deny "$reason" "$ev"
+      ;;
+    *)
+      # Non-permission lifecycle event (PostToolUse, SessionStart, UserPromptSubmit):
+      # surface the guardrail's message as additionalContext, never a permission deny.
+      emit_context "$reason" "$ev"
+      ;;
+  esac
 fi
 
 # Non-block: surface the guardrail's stderr (advisory) and propagate its code.
