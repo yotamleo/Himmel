@@ -171,7 +171,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/block-mcp-when-plugin-exists.sh"
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/block-backend-tier.sh"
           }
         ]
       },
@@ -202,6 +202,22 @@
           {
             "type": "command",
             "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/improve-on-submit.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/check-update-available.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/inject-initiative.sh",
+            "timeout": 10
           }
         ]
       }
