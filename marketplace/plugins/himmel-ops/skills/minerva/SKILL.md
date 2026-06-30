@@ -15,10 +15,25 @@ stage — you decide when each critic runs and when to advance.
 
 ## Mode (gates)
 
-Determine once, up front, whether to pause for the operator between stages:
+Determine once, up front, whether to pause for the operator between stages.
+`CLAUDE_PLUGIN_ROOT` is set under Claude Code but **empty in a Codex skill
+shell** (HIMMEL-606), so resolve the himmel-ops scripts dir with a fallback
+chain before invoking — the resolver below is reused verbatim in the Terminal
+section (keep both copies byte-identical):
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/autonomy-mode.sh"
+# >>> himmel-ops scripts resolver (CLAUDE_PLUGIN_ROOT is empty in a Codex skill shell)
+S="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}"
+if [ -z "${S:-}" ] || [ ! -f "$S/autonomy-mode.sh" ]; then
+  R="${HIMMEL_REPO:-}"; [ -f "$R/scripts/lib/initiative-legs.sh" ] || R="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -f "$R/scripts/lib/initiative-legs.sh" ] || R="$HOME/Documents/github/himmel"
+  S="$R/marketplace/plugins/himmel-ops/scripts"
+  [ -f "$S/autonomy-mode.sh" ] || for d in "$HOME"/.codex/plugins/cache/himmel/himmel-ops/*/scripts; do
+    [ -f "$d/autonomy-mode.sh" ] && { S="$d"; break; }
+  done
+fi
+# <<< himmel-ops scripts resolver
+bash "$S/autonomy-mode.sh" 2>/dev/null || echo interactive
 ```
 
 - Output `interactive` → after each critic-cleaned artifact, PAUSE for the
@@ -85,10 +100,23 @@ if `autonomous`, proceed.
 
 You now hold a critic-hardened, approved implementation plan. What happens next
 depends on the **`execute` leg** of the initiative grammar (HIMMEL-444). Read the
-active legs (transport wrapper → the shared resolver; fail-open):
+active legs (transport wrapper → the shared resolver; fail-open). Re-resolve the
+scripts dir (this runs in a separate shell from the Mode section — same resolver,
+byte-identical):
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/legs.sh"
+# >>> himmel-ops scripts resolver (CLAUDE_PLUGIN_ROOT is empty in a Codex skill shell)
+S="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}"
+if [ -z "${S:-}" ] || [ ! -f "$S/autonomy-mode.sh" ]; then
+  R="${HIMMEL_REPO:-}"; [ -f "$R/scripts/lib/initiative-legs.sh" ] || R="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -f "$R/scripts/lib/initiative-legs.sh" ] || R="$HOME/Documents/github/himmel"
+  S="$R/marketplace/plugins/himmel-ops/scripts"
+  [ -f "$S/autonomy-mode.sh" ] || for d in "$HOME"/.codex/plugins/cache/himmel/himmel-ops/*/scripts; do
+    [ -f "$d/autonomy-mode.sh" ] && { S="$d"; break; }
+  done
+fi
+# <<< himmel-ops scripts resolver
+bash "$S/legs.sh" 2>/dev/null || true
 ```
 
 - If mode is `autonomous` (Stage 0) **AND** the output contains `execute`: do NOT
