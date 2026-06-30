@@ -103,6 +103,24 @@ case "$ev" in
     [ -n "$cbody" ] && emit_context "$cbody" "$ev"
     exit 0
     ;;
+  Stop)
+    # SessionEnd-class hooks (HIMMEL-599): refresh-where-are-we-on-end,
+    # jira-nudge-on-end, end-session-wiki. Unlike SessionStart/UserPromptSubmit,
+    # Codex's stop.command.output schema has NO additionalContext / hookSpecificOutput
+    # — only a continue/decision/systemMessage gate. himmel's SessionEnd hooks are
+    # ADVISORY + side-effecting (refresh the ledger / write the session note / nudge
+    # via Telegram) and must NEVER block teardown. So run the hook for its side
+    # effects and route any stdout+stderr to OUR stderr as advisory — NOT to Codex's
+    # Stop *decision* parser (raw advisory text there is mis-parsed), and NOT through
+    # the generic exit-2 path (which would emit a hookSpecificOutput shape Stop's
+    # strict deny_unknown_fields schema rejects). Always exit 0. Under Codex,
+    # jira-nudge's operator surface is its Telegram relay, not this stdout. $(...)
+    # strips trailing newlines; drop a stray CR (Windows). Empty body = no-op.
+    cbody="$( printf '%s' "$input" | bash "$script" 2>&1 )"
+    cbody="${cbody%$'\r'}"
+    [ -n "$cbody" ] && printf '%s\n' "$cbody" >&2
+    exit 0
+    ;;
 esac
 
 # Run the guardrail with the hook JSON on stdin. Capture its STDERR into a var
@@ -121,8 +139,8 @@ reason="${captured%EXIT:*}"
 reason="${reason%$'\n'}"; reason="${reason%$'\r'}"   # drop the guardrail's trailing CR/LF
 
 if [ "$code" = "2" ]; then
-  # ev parsed above; SessionStart/UserPromptSubmit already returned, so this only
-  # sees PreToolUse/PermissionRequest (→ deny) and PostToolUse/unknown (→ context).
+  # ev parsed above; SessionStart/UserPromptSubmit/Stop already returned, so this
+  # only sees PreToolUse/PermissionRequest (→ deny) and PostToolUse/unknown (→ context).
   case "$ev" in
     PreToolUse|PermissionRequest)
       # Block: translate to Codex's JSON deny. hookEventName mirrors the inbound event.
