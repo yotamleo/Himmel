@@ -158,6 +158,15 @@
         ]
       },
       {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/block-rogue-claude-schedule.sh"
+          }
+        ]
+      },
+      {
         "matcher": "mcp__plugin_atlassian_atlassian__.*",
         "hooks": [
           {
