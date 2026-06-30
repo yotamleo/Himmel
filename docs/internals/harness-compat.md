@@ -6,6 +6,11 @@ guardrail hooks, a plugin/marketplace system, skills, slash commands, and
 to **other coding harnesses** — Codex first — so an operator can decide what to
 *port*, what to *guard*, and what to *accept as Claude-only*.
 
+> **Setting up himmel under Codex?** The operational step-by-step (prereqs,
+> AGENTS.md, `config.toml`, hook trust, `.agents/skills`, and a guard-blocks
+> verification) lives in [`docs/setup/codex.md`](../setup/codex.md). This doc is
+> the *why*; that one is the *how*.
+
 > **Status:** the **Codex** column is triple-validated (openai/codex source +
 > context7 `/openai/codex` v0.75.0 + official docs, 2026-06-21, HIMMEL-427). The
 > **Cursor / Copilot / Gemini** columns were audited 2026-06-21 (HIMMEL-472,
@@ -197,7 +202,15 @@ and `block-merged-pr-commit.sh` (HIMMEL-512) — resolve their script via
 hooks (plugin hooks get `CLAUDE_PLUGIN_ROOT` instead — see §1), so under Codex
 the wrapper's `[ -f "$h" ]` was false and the guards silently no-op'd
 (root-equivalent docker mounts + merged-PR commits went unguarded). Fix: mirror both into `.codex/hooks.json` via `run-hook.cmd`, which
-derives the root from its own location. The non-security plugin SessionStart
+derives the root from its own location. **Both guards are now live-verified under
+Codex (codex-cli 0.142.0, HIMMEL-650):** with the project `.codex/hooks.json`
+already trusted (no `--dangerously-bypass-hook-trust`), a `codex exec` attempt of
+`docker run … -v /etc:…:rw` and a `git commit` on a merged-PR branch (cwd = a
+merged worktree) each surface as a Codex `PreToolUse Blocked` carrying the guard's
+verbatim reason — so the docker-privesc and merged-PR-commit guards genuinely
+*block* (not just fire) at Codex runtime. Adapter-level probes (a PreToolUse
+payload through `run-hook.cmd` → `permissionDecision:"deny"`, benign control
+allowed) back the same conclusion at zero token cost. The non-security plugin SessionStart
 hooks (`inject-where-are-we` / `inject-doc-freshness`) shared the same
 root-resolution bug; **HIMMEL-596** mirrors them (plus `inject-initiative`) into
 `.codex/hooks.json` SessionStart with the exit-0 `additionalContext` wrap above
