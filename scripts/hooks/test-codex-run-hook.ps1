@@ -93,13 +93,15 @@ try {
 
     # 2e) Unknown/garbage inbound event on exit-2 normalises to PostToolUse — never
     #     echoes the raw event string into the hookEventName const, never a deny.
+    #     Use a clearly-bogus event name: `Stop` is now a first-class adapter branch
+    #     (HIMMEL-599), so it is no longer "unknown".
     Push-Location $T
-    $unkout = ('{"hook_event_name":"Stop"}' | & cmd.exe /c '.codex\run-hook.cmd' blocker.sh 2>&1 | Out-String)
+    $unkout = ('{"hook_event_name":"BogusEvent"}' | & cmd.exe /c '.codex\run-hook.cmd' blocker.sh 2>&1 | Out-String)
     $unkrc = $LASTEXITCODE
     Pop-Location
     Check "unknown-event exit-2 -> wrapper exits 0" ($unkrc -eq 0)
     Check "unknown-event exit-2 -> normalised to PostToolUse" ($unkout -match '"hookEventName":"PostToolUse"')
-    Check "unknown-event exit-2 -> must NOT echo the raw event string" ($unkout -notmatch '"Stop"')
+    Check "unknown-event exit-2 -> must NOT echo the raw event string" ($unkout -notmatch '"BogusEvent"')
     Check "unknown-event exit-2 -> must NOT emit a permission decision" ($unkout -notmatch 'permissionDecision')
 
     # 3) FAIL-CLOSED paths: a bare exit 2 fails OPEN under Codex, so precondition

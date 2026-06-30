@@ -200,9 +200,43 @@ derives the root from its own location. The non-security plugin SessionStart
 hooks (`inject-where-are-we` / `inject-doc-freshness`) shared the same
 root-resolution bug; **HIMMEL-596** mirrors them (plus `inject-initiative`) into
 `.codex/hooks.json` SessionStart with the exit-0 `additionalContext` wrap above
-(live Codex firing pending a probe). The SessionEnd half
-(`refresh-where-are-we-on-end`) is still pending — leg HIMMEL-599 (SessionEnd →
-Codex `Stop`).
+(live Codex firing pending a probe).
+
+**SessionEnd → Codex `Stop` (HIMMEL-596 follow-up, HIMMEL-599).** himmel's three
+SessionEnd hooks — `refresh-where-are-we-on-end` + `jira-nudge-on-end` (himmel-ops
+plugin) and `end-session-wiki` (user-scope settings-template) — are now wired into
+a `.codex/hooks.json` **`Stop`** key via `run-hook.cmd --sandbox`, the same
+root-resolution fix. Stop is a real Codex event (one of 10); its **input** schema
+(`stop.command.input`) carries `cwd` + `transcript_path` (both consumed by the
+hooks; it has no `reason` field — `last_assistant_message`/`stop_hook_active`
+instead — but `end-session-wiki` reads `.reason // "other"` harmlessly). Unlike
+SessionStart, the Stop **output** schema (`stop.command.output`) has **no
+`additionalContext` / `hookSpecificOutput`** — only a `continue`/`decision`/
+`systemMessage` gate. So the adapter does NOT wrap Stop output as
+`additionalContext`; it has a dedicated **`Stop` branch** that runs the hook for
+its side effects, routes any output to the adapter's stderr as advisory (never to
+Codex's Stop *decision* parser, and never through the generic exit-2 path that
+would emit a `hookSpecificOutput` shape Stop's strict `deny_unknown_fields` schema
+rejects), and always exits 0 — a SessionEnd advisory hook must never block
+teardown. `jira-nudge`'s operator-reaching surface under Codex is its Telegram
+relay, not stdout. Covered by the no-token fixture
+`scripts/hooks/test-codex-stop-hooks.sh` (static wiring + behavioral, incl. a
+gate-ON nudge case and the exit-2-protection case).
+
+**Caveats (do not overclaim).** (1) `end-session-wiki.sh` self-guards out on
+`msys*/cygwin*/Windows_NT` (its `.ps1` twin is the Windows-Claude path, and
+`run-hook.cmd` is bash-only), so under Codex on **Windows it captures nothing** —
+only `refresh-where-are-we-on-end` + `jira-nudge-on-end` (no platform guard) fire
+there (2/3). end-session-wiki capture works on **Linux/macOS/VM Codex**. (2) Even
+where it fires, its config path (`$CLAUDE_PROJECT_DIR/.claude/end-session-wiki.json`)
+may be Codex-blind (the Codex setup writes elsewhere), so it can capture to a
+default/possibly-wrong vault rather than the configured one (separate gap). (3)
+Side effects need a `workspace-write` sandbox (Codex suppresses hook writes under
+`-s read-only`). (4) `end-session-wiki` runs synchronously (transcript scan + a
+`curl` with no `-m` timeout) and can block teardown to its `timeout: 30`. (5)
+Whether Codex fires `Stop` on `codex exec` exit (vs only interactive) is unprobed.
+A **live Codex `Stop` probe** is the follow-up (same posture as 565/596; the
+fixture is the gate now).
 
 ### 2. Instruction file — CLAUDE.md is invisible; AGENTS.md must carry the rules
 

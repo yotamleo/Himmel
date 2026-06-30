@@ -64,6 +64,15 @@
           { "type": "command", "command": ".codex/run-hook.cmd --sandbox improve-on-submit.sh" }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd --sandbox refresh-where-are-we-on-end.sh", "timeout": 15 },
+          { "type": "command", "command": ".codex/run-hook.cmd --sandbox jira-nudge-on-end.sh", "timeout": 15 },
+          { "type": "command", "command": ".codex/run-hook.cmd --sandbox end-session-wiki.sh", "timeout": 30 }
+        ]
+      }
     ]
   }
 }

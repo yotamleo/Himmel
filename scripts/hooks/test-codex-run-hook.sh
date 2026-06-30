@@ -130,15 +130,16 @@ esac
 # 2e) Unknown/garbage inbound event on exit-2 is NORMALISED to PostToolUse — it
 #     must NOT echo the attacker-controllable event string into the hookEventName
 #     const (Codex's strict parser would reject it, dropping the message), and
-#     must NOT become a permission deny.
-unkout="$(printf '{"hook_event_name":"Stop"}\n' | bash "$T/.codex/run-hook.cmd" blocker.sh)"; unkrc=$?
+#     must NOT become a permission deny. Use a clearly-bogus event name: `Stop` is
+#     now a first-class adapter branch (HIMMEL-599), so it is no longer "unknown".
+unkout="$(printf '{"hook_event_name":"BogusEvent"}\n' | bash "$T/.codex/run-hook.cmd" blocker.sh)"; unkrc=$?
 if [ "$unkrc" -eq 0 ]; then ok "unknown-event exit-2 -> wrapper exits 0"; else bad "unknown-event exit-2 -> wrapper exits 0 (got $unkrc)"; fi
 case "$unkout" in
   *'"hookEventName":"PostToolUse"'*) ok "unknown-event exit-2 -> normalised to PostToolUse";;
   *) bad "unknown-event exit-2 -> normalised to PostToolUse ($unkout)";;
 esac
 case "$unkout" in
-  *'"Stop"'*) bad "unknown-event exit-2 -> must NOT echo the raw event string ($unkout)";;
+  *'"BogusEvent"'*) bad "unknown-event exit-2 -> must NOT echo the raw event string ($unkout)";;
   *) ok "unknown-event exit-2 -> raw event string not echoed";;
 esac
 case "$unkout" in
