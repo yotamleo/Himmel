@@ -137,12 +137,12 @@ working while it runs; intervene only if one goes off track or is
 missing context. Tier by job: **Haiku** = bulk mechanical work;
 **Sonnet** = most implementation, research, synthesis; **Opus** =
 reasoning-heavy subagent phases (deep review, plan drafts, tradeoff
-analysis); the **Fable main thread** orchestrates and owns final
+analysis); the **main thread** orchestrates and owns final
 judgment + synthesis across everything it spawned. **Every dispatch
-names an explicit model** — an unnamed dispatch inherits the Fable
-main loop and burns the time-limited Fable quota on work a cheaper
+names an explicit model** — an unnamed dispatch inherits the main
+loop and burns the time-limited top-tier quota on work a cheaper
 tier handles.
-Raise *effort* before raising model tier — Fable-5 `low` ≈ prior-gen
+Raise *effort* before raising model tier — on Claude, Fable-5 `low` ≈ prior-gen
 `xhigh`, and the same shift applies down-tier.
 Invariants (not model-tuned; survive the HIMMEL-282 revert): spawn-depth
 limit **2** (nesting is now platform-supported to ~depth 5, staged and
