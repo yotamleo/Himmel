@@ -34,8 +34,8 @@ Load latest session: <state-root>/epics/#M-<epic-slug>/tasks/#N-<slug>/next-sess
 
 If the user prompt includes the phrase **"overnight mode"** alongside this file path, run the full autonomous pipeline end-to-end without pausing for confirmation between phases.
 
-Standing instructions for the autonomous run (HIMMEL-281, autonomous-run preamble):
-<!-- source of truth: docs/handover/overnight-mode.md § Autonomous-run launch preamble — edit there first, then sync the three template copies -->
+Standing instructions for the autonomous run (HIMMEL-281, Fable-5 preamble):
+<!-- source of truth: docs/handover/overnight-mode.md § Fable-5 launch preamble — edit there first, then sync the three template copies -->
 
 > When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue in user-facing messages. If you are weighing a choice, give a recommendation, not an exhaustive survey. This does not apply to thinking blocks.
 

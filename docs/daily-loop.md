@@ -157,7 +157,7 @@ fix(scripts): HIMMEL-42 correct bash exit code
 Platforms tested: linux, windows
 Security reviewed: manual
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ```
 
 Trailers go in the **first commit** after genuinely testing and reviewing
