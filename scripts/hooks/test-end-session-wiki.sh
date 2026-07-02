@@ -298,6 +298,59 @@ sleep 0.5
 if [ ! -s "$MARK" ]; then pass "crystallize:false suppresses the spawn"; else fail "crystallize:false still spawned the crystallizer"; fi
 rm -rf "$SB"
 
+# --- Case 10: BSD/macOS `date +%s%3N` must not crash the REST-success path (GH#202)
+# `%N` is a GNU extension. On BSD date, `+%s%3N` is NOT an error (exit 0, so the
+# hook's `|| echo 0` guard never fires) — it yields a non-numeric string like
+# `17514160003N`. Under `set +e` the failed `$((END_MS - START_MS))` leaves
+# ELAPSED UNSET; the success-path log line `wrote ... (${ELAPSED}ms)` then
+# referenced it under `set -u` -> "unbound variable" -> the hook aborted BEFORE
+# its success log + crystallizer spawn (HIMMEL-576). Note delivered by the PUT,
+# but crystallization silently never fired on macOS. On a GNU box `%3N` works,
+# so reaching this needs a `date` shim emitting the BSD-shaped value for `%3N`
+# (real date otherwise) — the GNU-host technique from test-compute-duration.sh
+# (HIMMEL-653/GH#192) — plus a `curl` shim forcing HTTP 200 so the REST-success
+# branch (the only ELAPSED reader) is actually exercised.
+SB="$(make_sandbox)"
+SHIMDIR="$SB/bin"; mkdir -p "$SHIMDIR"
+REAL_DATE="$(command -v date)"
+cat > "$SHIMDIR/date" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+    *%3N*) printf '%sN\n' "\$('$REAL_DATE' +%s)"; exit 0 ;;
+esac
+exec '$REAL_DATE' "\$@"
+EOF
+chmod +x "$SHIMDIR/date"
+# Stub curl to report HTTP 200 for the vault PUT (the hook's only curl call),
+# so the hook takes the success path that reads ELAPSED.
+cat > "$SHIMDIR/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '200'
+EOF
+chmod +x "$SHIMDIR/curl"
+MARK="$SB/marker.txt"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+RC="$(printf '%s' "$payload" | env OSTYPE="linux-gnu" OS="" PATH="$SHIMDIR:$PATH" \
+        LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="dummy-key" \
+        STUB_MODE="success" CRYSTALLIZE_MARKER="$MARK" CRYSTALLIZE_PID_DIR="$SB/pids" \
+        CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"; echo $?)"
+if [ "$RC" = "0" ]; then pass "GH#202: BSD-shaped %3N — hook still exits 0"; else fail "GH#202: exit was $RC, expected 0"; fi
+if grep -q 'wrote ' "$SB/proj/.claude/end-session-wiki.log" 2>/dev/null \
+   && ! grep -q 'unbound variable\|FAILED' "$SB/proj/.claude/end-session-wiki.log" 2>/dev/null; then
+    pass "GH#202: REST-success log line survives a non-numeric %3N (no unbound-var crash)"
+else
+    fail "GH#202: non-numeric %3N crashed the success path before the 'wrote' log"
+fi
+# The crystallizer spawn is line 457 — reached only if line 456's ELAPSED
+# reference didn't abort. Poll for the marker the same way as Case 8.
+i=0; while [ ! -s "$MARK" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+if [ -s "$MARK" ]; then
+    pass "GH#202: crystallizer still spawns after a non-numeric %3N"
+else
+    fail "GH#202: %3N crash pre-empted the crystallizer spawn"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

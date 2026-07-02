@@ -439,7 +439,17 @@ HTTP_CODE="$(curl -sk -o /dev/null -w '%{http_code}' \
     --data-binary "$MARKDOWN" \
     "$ENDPOINT" 2>/dev/null || echo "000")"
 END_MS="$(date +%s%3N 2>/dev/null || echo 0)"
-ELAPSED=$((END_MS - START_MS))
+# `%3N` (nanoseconds) is a GNU extension. On macOS/BSD date it is NOT an error
+# (exit 0, so the `|| echo 0` guard never fires) — it yields a non-numeric
+# string like `17514160003N`. Under `set +e` the failed `$(( ))` leaves ELAPSED
+# UNSET, and the later `${ELAPSED}` reference in the success-path log line then
+# tripped `set -u` ("unbound variable"), aborting the hook before its success
+# log + crystallizer spawn. So only compute the (cosmetic) elapsed ms when both
+# stamps are pure integers; otherwise report 0. (GH#202 — sibling of GH#192.)
+case "${START_MS}:${END_MS}" in
+    *[!0-9:]*) ELAPSED=0 ;;
+    *) ELAPSED=$((END_MS - START_MS)) ;;
+esac
 
 if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
     # REST PUT failed (e.g. Obsidian not running) — fall back to on-disk write.
