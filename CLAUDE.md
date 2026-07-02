@@ -90,7 +90,34 @@ what `auto-approve-safe-bash` does/doesn't cover: `himmel-ops:stuck-playbook`
 skill / [`docs/internals/stuck-playbook.md`](docs/internals/stuck-playbook.md).
 
 ### Subagent policy (HIMMEL-166)
-Frame-shaping rule (per HIMMEL-177 — changes how the whole task is decomposed, so it lives in this file, not lean-invoke). Tier subagents by job (source: @PawelHuryn clip, via synthesis Clippings/_synthesis/2026-05-26-concept-claude-code-architecture-layers.md): Haiku = bulk mechanical work; Sonnet = scoped research/synthesis; Opus = planning, tradeoffs, judgement. Don't escalate tiers without a concrete reason. Spawn-depth limit is 2; Haiku does NOT spawn further subagents. The parent owns the final output + synthesis across everything it spawned. Single-writer rule (@waldenyan, `Clippings/synthesis/2026-05-26-concept-multi-agent-single-writer.md): many readers, ONE writer — never fan parallel writes at one shared artifact. /overnight-shift` parallel fanout is a valid exception: each subagent writes its OWN branch (per-ticket isolation = independent products, not concurrent writes to shared state); parent/operator does the merge + synthesis. Structural PreToolUse enforcement is deferred — the harness doesn't expose current-session spawn-depth or model, so depth-limit-2 and Haiku-no-spawn can't be checked. Revisit per HIMMEL-195 if drift appears.
+<!-- FABLE-WINDOW: Fable-5-tuned delegation block (HIMMEL-281; re-applied 2026-07-02 per HIMMEL-300 after Fable access returned).
+     On loss of Fable access, revert to the Opus-4.8 original preserved verbatim in HIMMEL-282.
+     Markers are documentary; the text between them is live prose — revert = REPLACE it. -->
+Frame-shaping rule (HIMMEL-177). **Default to delegating during
+execution:** hand any self-contained subtask to a subagent and keep
+working while it runs; intervene only if one goes off track or is
+missing context. Tier by job: **Haiku** = bulk mechanical work;
+**Sonnet** = most implementation, research, synthesis; **Opus** =
+reasoning-heavy subagent phases (deep review, plan drafts, tradeoff
+analysis); the **Fable main thread** orchestrates and owns final
+judgment + synthesis across everything it spawned. **Every dispatch
+names an explicit model** — an unnamed dispatch inherits the Fable
+main loop and burns the time-limited Fable quota on work a cheaper
+tier handles.
+Raise *effort* before raising model tier — Fable-5 `low` ≈ prior-gen
+`xhigh`, and the same shift applies down-tier.
+Invariants (not model-tuned; survive the HIMMEL-282 revert): spawn-depth
+limit **2** (nesting is now platform-supported to ~depth 5, staged and
+surface-dependent — we keep 2 on cost: measured nested-vs-flat overhead
+1.63-1.84×, coordination layers ate 32-71% of budget); **Haiku does NOT
+spawn** further subagents;
+single-writer —
+many readers, ONE writer, never fan parallel writes at one shared
+artifact (`/overnight-shift` per-ticket branches are independent
+products, a valid exception; parent/operator does merge + synthesis).
+Structural enforcement deferred per HIMMEL-195 (harness doesn't expose
+spawn-depth/model).
+<!-- /FABLE-WINDOW -->
 
 ### Operator conventions (calibrated through repeated sessions)
 These shape WHERE new rules/capabilities live. Treat as defaults; deviate

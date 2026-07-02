@@ -21,7 +21,7 @@ Do **not** use overnight mode when:
 
    The Mode B path collocates the plan with the per-ticket session notes (`<state-root>/<repo>/{epics,standalones}/<TICKET>/next-session-N.md`), so a reviewer auditing the work can grep one root for plan + decisions + outcomes. Mode A keeps plans inside the code repo for solo-operator no-env-var setups.
 2. **Worktree** — `/clean_garden feat/himmel-<N>-<slug>`.
-3. **Impl** — `superpowers:subagent-driven-development`. Sequential per task: implementer subagent → spec-compliance reviewer → code-quality reviewer → fix-on-finding → next task. **Verifier cadence (HIMMEL-281):** every 3 completed tasks, dispatch one fresh-context verifier subagent that re-checks the accumulated branch diff against the Phase-1 plan. Fresh-context verification beats self-critique, and the per-task reviewers see one task at a time — this is the layer that catches cross-task drift before Phase 4. **Stop-check (HIMMEL-137):** before EACH subagent dispatch in this loop, run `bash scripts/overnight/stop-marker.sh check` (silent; rc=0 = stop marker present, rc=1 = clear). When rc=0, finish the in-flight subagent if one is running, then halt the loop gracefully (write a `next-session-N.md` snapshot at the partial-completion point, file followup tickets for remaining tasks, and exit Phase 3). Operator-triggered via `/stop` (soft) or `/stop --hard` (also `TaskStop`s in-flight). `/stop --reset` clears the marker.
+3. **Impl** — `superpowers:subagent-driven-development`. Sequential per task: implementer subagent → spec-compliance reviewer → code-quality reviewer → fix-on-finding → next task. **Verifier cadence (HIMMEL-281, Fable-5 scaffolding):** every 3 completed tasks, dispatch one fresh-context verifier subagent that re-checks the accumulated branch diff against the Phase-1 plan. Fresh-context verification beats self-critique, and the per-task reviewers see one task at a time — this is the layer that catches cross-task drift before Phase 4. **Stop-check (HIMMEL-137):** before EACH subagent dispatch in this loop, run `bash scripts/overnight/stop-marker.sh check` (silent; rc=0 = stop marker present, rc=1 = clear). When rc=0, finish the in-flight subagent if one is running, then halt the loop gracefully (write a `next-session-N.md` snapshot at the partial-completion point, file followup tickets for remaining tasks, and exit Phase 3). Operator-triggered via `/stop` (soft) or `/stop --hard` (also `TaskStop`s in-flight). `/stop --reset` clears the marker.
 4. **Final review** — one holistic `code-reviewer` subagent across the full diff vs main. Any solo/holistic review pass uses the `pr-review-toolkit(-himmel)` `code-reviewer` — NEVER `caveman:cavecrew-reviewer` as the sole reviewer (solo cavecrew produced 2 false Criticals of 4 findings on the HIMMEL-292–296 fix batch, while the 4-reviewer toolkit round on #453 was clean — HIMMEL-299). **Never zero CR (HIMMEL-299, 2026-06-13):** a docs-only diff still gets ONE **docs-audit** `code-reviewer` subagent scoped to the docs charter — repo-claim accuracy (hooks/gates/flags/paths/commands vs actual code), dead links, stale file/flag/ticket refs, example correctness, internal consistency; NOT prose nitpicks (`CLAUDE.md` → `/claude-md-audit`). Review is never skipped outright.
 5. **Heavy CR** — dispatch 6 reviewers IN PARALLEL: 5 from `pr-review-toolkit` (`code-reviewer`, `pr-test-analyzer`, `comment-analyzer`, `silent-failure-hunter`, `type-design-analyzer`) + `caveman:cavecrew-reviewer`. `cavecrew-reviewer` is the heavy-CR sixth opinion ONLY — never a solo/holistic reviewer (HIMMEL-299: 2 false Criticals when run solo). Aggregate Critical/Important/Minor findings by file. For docs-only or test-free PRs, skip reviewers that don't apply (e.g. `pr-test-analyzer`, `type-design-analyzer`, `silent-failure-hunter` are no-ops on a pure-markdown PR) and dispatch only the relevant subset. **`/code-review ultra` sits ABOVE this tier (HIMMEL-299 eval — ADOPT):** it is the MOST expensive lane — more than this 6-reviewer heavy CR — so it is the top/last-resort escalation for the biggest/riskiest PRs, run AFTER heavy CR, never as a cheaper first reach. It is operator-triggered + billed; the agent cannot launch it — record an `ultra` pass as a one-action operator step.
 6. **Fix batch** — dispatch fix subagent(s) for ALL Critical + Important findings. Run tests after each batch.
@@ -36,15 +36,13 @@ Do **not** use overnight mode when:
 10. **Jira** — invoke the CLI as `node scripts/jira/dist/index.js transition <KEY> "<state>"` (NOT the global `jira` shim — it points at an unrelated, often-broken `jira-cli` package). This runs autonomously **provided the specific standing allow-rule `Bash(node scripts/jira/dist/index.js:*)` is present** — a generic `Bash(node *)` is NOT enough to authorize an external write (see § Auto-mode classifier). If the rule is missing, a transition is classifier-blocked; do NOT retry via a different path (evasion) — record it as an operator action in Phase 11 and have the operator add the rule once (it then works for all future runs).
 11. **Handover** — write `next-session-<N+1>.md` (or whichever increment) in the right dir, file followup tickets for non-blocking findings, record any classifier-blocked Jira transitions as explicit operator actions, update `status.md` + `roadmap.md`, commit + push (trailers in the first commit per Phase 8).
 
-## Autonomous-run launch preamble (HIMMEL-281)
+## Fable-5 launch preamble (HIMMEL-281)
 
 Any prompt that launches an overnight/armed run (the next-session
 `Overnight Mode Trigger` block — also reached by `arm-resume.sh`
 relaunches, whose prompt loads a next-session file carrying this block —
 and manual "overnight mode" invocations) carries these two standing
-instructions (model-agnostic autonomous-run guidance — Opus 4.8 already
-bakes both into its system prompt, but injecting them keeps the behaviour
-explicit and portable across surfaces):
+instructions, verbatim from the [official Fable-5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5):
 
 > When you have enough information to act, act. Do not re-derive facts
 > already established in the conversation, re-litigate a decision the
@@ -57,11 +55,18 @@ explicit and portable across surfaces):
 > new session on account of context limits. Continue the work.
 
 The first counters overplanning on long autonomous turns; the second
-counters context-budget anxiety (models occasionally wrap up early when
-they believe context is short). The grounded-progress-claims and
-early-stopping guidance is NOT duplicated here — the attestation
+counters context-budget anxiety (Fable 5 occasionally wraps up early when
+it believes context is short). The guide's grounded-progress-claims and
+early-stopping snippets are NOT duplicated here — the attestation
 discipline (§ Auto-mode classifier) and the block-only criteria already
 cover them.
+
+**Safety-classifier reroute is not a failure.** ~5% of Fable sessions trip
+a (trigger-happy) safety classifier and route to Opus 4.8 **with a
+notification** (community-measured, @PawelHuryn). This is a different
+layer from the auto-mode classifier below: nothing was blocked, the floor
+is Opus 4.8, and the run should simply continue — do not halt, retry, or
+escalate to the operator over a reroute notice.
 
 ## Artifacts to keep in sync
 
@@ -119,7 +124,7 @@ overnight run, just read the file directly; it's plain markdown.
 - **Subagent dispatches:** ~50-60 per overnight run. Per phase 3, impl is ~3 subagents per task (implementer + 2 reviewers); a 16-task plan = ~48 just for impl. Add ~6-12 for phase 5 heavy CR over 1-2 rounds, plus fix-batch dispatches (5-10).
 - **Wall time:** ~3-4 hours.
 - **Inference cost:** ~$10-20 on Sonnet. Bump to Opus for the planning / final-review phases if extra rigor is wanted; Sonnet is enough for impl + per-task reviews.
-- **Effort tiering (HIMMEL-281):** raising *effort* is cheaper than raising the model *tier* — this strengthens the HIMMEL-166 don't-escalate rule. For mechanical subagent work, raise effort before reaching for an Opus-class model; escalate the tier only with a concrete reason. Default effort `high`; `max` is a re-verification tax (2-3× time for the same answer, community-measured) — reserve it for capability-critical single calls, not pipeline phases.
+- **Effort tiering (Fable-5, HIMMEL-281):** on Fable 5, `low` effort ≈ `xhigh` on prior models — this strengthens the HIMMEL-166 don't-escalate rule. For mechanical subagent work, raise effort before raising the model tier; reach for Opus-class only with a concrete reason. Default effort `high`; `max` is a re-verification tax (2-3× time for the same answer, community-measured) — reserve it for capability-critical single calls, not pipeline phases.
 
 These are estimates from HIMMEL-97. The operator decides when to stop — no auto-pause guardrails.
 
