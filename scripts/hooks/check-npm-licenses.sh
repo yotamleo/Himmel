@@ -16,10 +16,10 @@ if ! pkgs_raw=$(git ls-files '*package.json' ':(exclude)*/node_modules/*'); then
     echo "ERROR: 'git ls-files' failed — cannot enumerate packages to license-check." >&2
     exit 1
 fi
+pkgs=()
 if [ -n "$pkgs_raw" ]; then
-    mapfile -t pkgs <<<"$pkgs_raw"
-else
-    pkgs=()
+    # bash 3.2-safe (macOS): no mapfile.
+    while IFS= read -r _line; do pkgs+=("$_line"); done <<<"$pkgs_raw"
 fi
 
 if [ ${#pkgs[@]} -eq 0 ]; then

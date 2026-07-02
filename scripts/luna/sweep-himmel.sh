@@ -245,11 +245,12 @@ EOF
         echo "_No merged PRs in this window._"
         echo ""
     else
-        # Use mapfile to avoid `jq | while read` subshell — silent jq
-        # failures inside a pipe-fed while loop would leave the script
-        # rc=0 with partial output. mapfile keeps the loop in the parent
-        # shell so `set -e` actually fires on per-line jq failure.
-        mapfile -t PR_LINES < <(printf '%s' "$PR_JSON" | jq -r '.[] | @json')
+        # Read via process substitution (not `jq | while read`) so the loop
+        # runs in the PARENT shell — a pipe-fed while loop would swallow silent
+        # jq failures and leave the script rc=0 with partial output. bash
+        # 3.2-safe (macOS): no mapfile.
+        PR_LINES=()
+        while IFS= read -r _line; do PR_LINES+=("$_line"); done < <(printf '%s' "$PR_JSON" | jq -r '.[] | @json')
         for pr_line in "${PR_LINES[@]}"; do
             pr_number=$(echo "$pr_line" | jq -r '.number')
             pr_title=$(echo "$pr_line" | jq -r '.title')

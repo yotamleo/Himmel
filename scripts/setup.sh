@@ -100,14 +100,14 @@ if [ "${#_missing[@]}" -gt 0 ]; then
   _missing=("${_still[@]}")
 fi
 
-# Bash version: 8 scripts use mapfile (bash 4+). Warn on bash 3.x rather
-# than fail-hard — those scripts will error at invocation time with a
-# clear "mapfile: command not found", and the foundational ones (e.g.
-# Claude PreToolUse hooks) are all bash 3.2-compatible.
+# Bash version: a few non-foundational scripts use bash 4+ features (associative
+# arrays via `declare -A`, e.g. scripts/skill-index/build-skill-index.sh). Warn on
+# bash 3.x rather than fail-hard — the foundational ones (e.g. Claude PreToolUse
+# hooks) are all bash 3.2-compatible.
 _bash_major=$(bash -c 'echo "${BASH_VERSION:0:1}"' 2>/dev/null || echo "?")
 if [ "$_bash_major" != "?" ] && [ "$_bash_major" -lt 4 ] 2>/dev/null; then
   echo "  WARN bash $BASH_VERSION detected (system default on macOS is 3.2)." >&2
-  echo "       Foundational scripts work; 8 hooks under scripts/hooks/check-* + scripts/luna/sweep-himmel.sh use mapfile (bash 4+)." >&2
+  echo "       Foundational scripts work; a few non-foundational scripts use bash 4+ features (associative arrays)." >&2
   echo "       Fix: brew install bash  (then ensure /opt/homebrew/bin or /usr/local/bin is on PATH)." >&2
 fi
 

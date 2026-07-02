@@ -6,7 +6,9 @@
 # Soft-fail when `uv` is missing so contributors who don't touch Python aren't blocked.
 set -euo pipefail
 
-mapfile -t projects < <(find . -maxdepth 4 -name pyproject.toml \
+# bash 3.2-safe (macOS): no mapfile.
+projects=()
+while IFS= read -r _line; do projects+=("$_line"); done < <(find . -maxdepth 4 -name pyproject.toml \
     -not -path '*/.venv/*' \
     -not -path '*/node_modules/*' \
     -not -path '*/.claude/*')

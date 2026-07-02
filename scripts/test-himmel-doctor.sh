@@ -401,6 +401,14 @@ out="$(HIMMEL_PUBLIC_CLONE="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json
 if printf '%s' "$out" | grep -q 'OK   C10-propagation' && [ "$rc" -eq 0 ]; then pass "C10 -> OK (skip, no clone)"; else fail "C10 -> rc=$rc; $(printf '%s' "$out" | grep C10)"; fi
 rm -rf "$t"
 
+# Public/adopter clones lack the private-only mirror tooling
+# (scripts/propagate-public.sh + scripts/lib/propagation-drift.sh), so the doctor's
+# C10 check short-circuits to a clean "skipped (no private mirror tooling)" OK
+# BEFORE it ever consults HIMMEL_PRIV_ROOT (see check_c10() in himmel-doctor.sh). On such a
+# checkout the seeded-drift / unreadable-refs fixtures can never surface a WARN —
+# so the assertion is gated on whether this checkout actually carries the tooling.
+if [ -f "$REPO_ROOT/scripts/propagate-public.sh" ] && [ -f "$REPO_ROOT/scripts/lib/propagation-drift.sh" ]; then C10_TOOLING=1; else C10_TOOLING=0; fi
+
 echo "== C10: seeded drift fixture -> WARN C10-propagation =="
 t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 ps="$t/ps"; mkdir -p "$ps/scripts"; printf 'stub\n' > "$ps/scripts/propagate-public.sh"; printf 'new doc\n' > "$ps/onlypriv.md"
@@ -410,7 +418,11 @@ mk10 "$us" "$t/us.git" "$t/uc"
 out="$(HIMMEL_PRIV_ROOT="$t/pc" HIMMEL_PUBLIC_CLONE="$t/uc" HIMMEL_PUBLIC_REMOTE="us.git" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C10-propagation' && printf '%s' "$out" | grep -q 'onlypriv.md'; then pass "C10 -> WARN (seeded drift, MISSING flagged)"; else fail "C10 -> $(printf '%s' "$out" | grep -A6 C10)"; fi
+if [ "$C10_TOOLING" -eq 1 ]; then
+    if printf '%s' "$out" | grep -q 'WARN C10-propagation' && printf '%s' "$out" | grep -q 'onlypriv.md'; then pass "C10 -> WARN (seeded drift, MISSING flagged)"; else fail "C10 -> $(printf '%s' "$out" | grep -A6 C10)"; fi
+else
+    if printf '%s' "$out" | grep -q 'OK   C10-propagation' && printf '%s' "$out" | grep -q 'skipped (no private mirror tooling)'; then pass "C10 -> skip (public checkout, no mirror tooling)"; else fail "C10 -> $(printf '%s' "$out" | grep -A6 C10)"; fi
+fi
 rm -rf "$t"
 
 echo "== C10: unreadable origin/main -> WARN (stale/unreadable refs, not false-clean) =="
@@ -426,7 +438,11 @@ mk10 "$us" "$t/us.git" "$t/uc"
 out="$(HIMMEL_PRIV_ROOT="$ps" HIMMEL_PUBLIC_CLONE="$t/uc" HIMMEL_PUBLIC_REMOTE="us.git" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C10-propagation' && ! printf '%s' "$out" | grep -q 'OK   C10-propagation'; then pass "C10 -> WARN (unreadable refs, not false-clean)"; else fail "C10 unreadable -> $(printf '%s' "$out" | grep -A4 C10)"; fi
+if [ "$C10_TOOLING" -eq 1 ]; then
+    if printf '%s' "$out" | grep -q 'WARN C10-propagation' && ! printf '%s' "$out" | grep -q 'OK   C10-propagation'; then pass "C10 -> WARN (unreadable refs, not false-clean)"; else fail "C10 unreadable -> $(printf '%s' "$out" | grep -A4 C10)"; fi
+else
+    if printf '%s' "$out" | grep -q 'OK   C10-propagation' && printf '%s' "$out" | grep -q 'skipped (no private mirror tooling)'; then pass "C10 -> skip (public checkout, no mirror tooling)"; else fail "C10 unreadable -> $(printf '%s' "$out" | grep -A4 C10)"; fi
+fi
 rm -rf "$t"
 
 rm -rf "$FAKEROOT"
