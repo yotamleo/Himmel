@@ -191,7 +191,9 @@ fi
 commit_count=$(printf '%s\n' "$commits_raw" | grep -c . || true)
 
 # Extract HIMMEL-N / LUNA-N ticket keys from commit messages.
-mapfile -t ticket_keys < <(printf '%s\n' "$commits_raw" \
+# bash 3.2-safe (macOS): no mapfile.
+ticket_keys=()
+while IFS= read -r _line; do ticket_keys+=("$_line"); done < <(printf '%s\n' "$commits_raw" \
     | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' \
     | sort -u)
 

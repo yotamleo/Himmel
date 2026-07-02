@@ -5,7 +5,9 @@
 set -euo pipefail
 
 # Scoped to scripts/ so we don't recurse into nested worktrees under .claude/.
-mapfile -t pkgs < <(find scripts -maxdepth 3 -name package.json -not -path '*/node_modules/*')
+# bash 3.2-safe (macOS): no mapfile.
+pkgs=()
+while IFS= read -r _line; do pkgs+=("$_line"); done < <(find scripts -maxdepth 3 -name package.json -not -path '*/node_modules/*')
 
 if [ ${#pkgs[@]} -eq 0 ]; then
     echo "→ npm audit signatures: no package.json found under scripts/ — nothing to verify"

@@ -7,9 +7,9 @@ is how to safely edit a hook.
 ## Editing conventions
 - Most hooks have a paired smoke test `test-<name>.sh` (the suite is the
   spec). **Update it when you change such a hook; add one for new hooks.**
-- **bash 3.2-compatible by default** (macOS ships 3.2). Only reach for bash
-  4 features (`mapfile`/associative arrays) when necessary — 8 scripts do,
-  the rest must stay 3.2-safe.
+- **bash 3.2-compatible by default** (macOS ships 3.2). Avoid bash 4 features
+  (`mapfile` — use a `while IFS= read -r` loop; associative arrays). All hooks
+  here are 3.2-safe.
 - Hooks fail-closed (non-zero exit blocks the action). Preserve that.
   Exception: `auto-arm-on-cap.sh` is a WATCHDOG, deliberately fail-open
   (it must never block tool calls on its own bugs) — do not "fix" it

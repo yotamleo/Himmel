@@ -50,7 +50,8 @@ is_exempt() {
 # always_run usage also works.
 files=("$@")
 if [ "${#files[@]}" -eq 0 ]; then
-    mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+    # bash 3.2-safe (macOS): no mapfile.
+    while IFS= read -r _line; do files+=("$_line"); done < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
 fi
 [ "${#files[@]}" -eq 0 ] && exit 0
 

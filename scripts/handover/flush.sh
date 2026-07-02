@@ -128,7 +128,9 @@ if [ "$forge_usable" -eq 0 ] && [ "$NO_PR_OPEN" -eq 0 ]; then
 fi
 
 # Collect local handover/* branches. Sorted for deterministic output.
-mapfile -t branches < <($GIT_CMD -C "$handover_repo" for-each-ref --format='%(refname:short)' 'refs/heads/handover/' 2>/dev/null | sort)
+# bash 3.2-safe (macOS): no mapfile.
+branches=()
+while IFS= read -r _line; do branches+=("$_line"); done < <($GIT_CMD -C "$handover_repo" for-each-ref --format='%(refname:short)' 'refs/heads/handover/' 2>/dev/null | sort)
 
 if [ ${#branches[@]} -eq 0 ]; then
     echo "flush: no local handover/* branches — nothing to do."
