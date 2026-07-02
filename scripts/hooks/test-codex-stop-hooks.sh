@@ -31,10 +31,11 @@
 #      through run-hook.cmd and exits 0 emitting NO hookSpecificOutput on stdout
 #      (proves the Stop branch is taken, not the additionalContext wrap, and that an
 #      advisory hook never blocks teardown).
-#   3) BEHAVIORAL positive (jira-nudge gate ON, hermetic temp git repo) - the nudge
-#      reaches the adapter's STDERR as advisory and is NOT on stdout / NOT a
-#      hookSpecificOutput JSON. Directly validates the Stop-branch design (vs the
-#      vacuous gated-off "no JSON").
+#   3) BEHAVIORAL positive (jira-nudge gate ON, hermetic temp git repo) - since
+#      HIMMEL-661 the hook full-body-detaches, so the adapter surfaces NO nudge
+#      text on stdout or stderr; this case polls a stubbed relay-command log for
+#      the ticket and separately asserts stdout stays empty (nothing reaches the
+#      Codex Stop decision parser).
 #   4) EXIT-2 protection (adapter direct, temp CLAUDE_PROJECT_DIR fixture) - a Stop
 #      hook that exits 2 emitting hookSpecificOutput-looking stdout still yields
 #      adapter exit 0 with NO hookSpecificOutput on stdout (locks in that Stop never
@@ -139,9 +140,13 @@ for h in $STOP_HOOKS; do
   if ! grep -q 'hookSpecificOutput' "$out" 2>/dev/null; then ok "$h smoke: no hookSpecificOutput on stdout"; else bad "$h smoke: stdout leaked hookSpecificOutput ($(cat "$out"))"; fi
 done
 
-# == 3) Behavioral positive: jira-nudge gate ON -> nudge on STDERR, not stdout ==
+# == 3) Behavioral positive: jira-nudge gate ON -> detached relay fires ==
 # Hermetic temp git repo with a commit referencing TESTKEY-1 inside the session
 # window (transcript first-timestamp = far past), no breadcrumb, relay stubbed.
+# Since HIMMEL-661 the hook full-body-detaches: the adapter surfaces NO nudge
+# text (parent returns ~0.1s, child stdout goes to /dev/null) — the operator
+# surface is the relay, so this case polls for the stubbed relay's marker
+# written by the detached child.
 NUDGE_REPO="$TMP_ROOT/nudgerepo"
 mkdir -p "$NUDGE_REPO"
 (
@@ -163,16 +168,31 @@ if [ -z "$nudge_cmd" ]; then
 else
   nout="$TMP_ROOT/nudge.out"; nerr="$TMP_ROOT/nudge.err"
   # HIMMEL_INITIATIVE stripped (else the `ticket` leg would suppress the nudge);
-  # gate ON; JIRA_PROJECT_KEY injected (temp repo has no .env); relay -> `true`.
+  # gate ON; JIRA_PROJECT_KEY injected (temp repo has no .env); relay -> a stub
+  # that appends its argument to a log (the detached child's only observable).
   # HOME=$TMP_ROOT so the no-mutation breadcrumb check reads a temp store, never the
   # real ~/.claude/jira-breadcrumbs (a stale machine-global file could otherwise
   # suppress the nudge and false-FAIL this case).
+  NUDGE_RELAY_LOG="$TMP_ROOT/nudge-relay.log"
+  NUDGE_RELAY="$TMP_ROOT/nudge-relay"
+  cat > "$NUDGE_RELAY" <<RELAYEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$NUDGE_RELAY_LOG"
+RELAYEOF
+  chmod +x "$NUDGE_RELAY"
   # shellcheck disable=SC2086 # $ENV_CLEAN flags + $nudge_cmd are intentional splits
   ( cd "$REPO_ROOT" && printf '%s' "$NUDGE_PAYLOAD" \
-      | env $ENV_CLEAN HOME="$TMP_ROOT" HIMMEL_JIRA_NUDGE=1 JIRA_PROJECT_KEY=TESTKEY JIRA_NUDGE_RELAY_CMD=true \
+      | env $ENV_CLEAN HOME="$TMP_ROOT" HIMMEL_JIRA_NUDGE=1 JIRA_PROJECT_KEY=TESTKEY JIRA_NUDGE_RELAY_CMD="$NUDGE_RELAY" \
         bash $nudge_cmd >"$nout" 2>"$nerr" ); rc=$?
   if [ "$rc" -eq 0 ]; then ok "jira-nudge positive: adapter exit 0"; else bad "jira-nudge positive: adapter exit 0 (got rc=$rc)"; fi
-  if grep -q 'TESTKEY-1' "$nerr" 2>/dev/null; then ok "jira-nudge positive: nudge surfaced on adapter STDERR (advisory)"; else bad "jira-nudge positive: nudge expected on stderr (stderr: $(cat "$nerr" 2>/dev/null); stdout: $(cat "$nout" 2>/dev/null))"; fi
+  # The detached child runs the full detection (~1-2s of spawns) before firing
+  # the relay — poll for the marker rather than asserting adapter output.
+  _w=0; while [ ! -f "$NUDGE_RELAY_LOG" ] && [ "$_w" -lt 10 ]; do sleep 1; _w=$((_w + 1)); done
+  if grep -q 'TESTKEY-1' "$NUDGE_RELAY_LOG" 2>/dev/null; then
+    ok "jira-nudge positive: detached child fired the relay with the ticket"
+  else
+    bad "jira-nudge positive: detached relay expected (log: $(cat "$NUDGE_RELAY_LOG" 2>/dev/null); stderr: $(cat "$nerr" 2>/dev/null))"
+  fi
   if [ ! -s "$nout" ]; then
     ok "jira-nudge positive: stdout fully empty (nothing reaches Codex Stop decision parser)"
   else
