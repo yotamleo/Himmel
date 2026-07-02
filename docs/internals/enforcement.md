@@ -549,9 +549,18 @@ lives in `scripts/lib/jira-breadcrumb.sh`.
 Suppressed when the `ticket` initiative leg is active (`HIMMEL_INITIATIVE`
 includes `ticket`) — that leg already injects the same reminder at SessionStart,
 so this is the second advisory surface for when the leg is OFF, not a structural
-backstop. Nudge surface: stdout + a Telegram relay when configured
-(`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, or the `JIRA_NUDGE_RELAY_CMD`
-override) — the only operator-reaching channel for an unattended session.
+backstop. The whole detection body runs **full-body detached** (HIMMEL-661,
+same `__himmel_detached` re-exec pattern as `refresh-where-are-we-on-end.sh`):
+the parent parks the SessionEnd payload in a temp file and returns in ~0.1s,
+so in practice it no longer loses the teardown race ("Hook cancelled") — even
+the gate-off path previously cost ~1.7s of process spawns on Windows Git Bash.
+Nudge surface: the Telegram relay when configured (`TELEGRAM_BOT_TOKEN` +
+`TELEGRAM_CHAT_ID`, or the `JIRA_NUDGE_RELAY_CMD` override) — the only
+operator-reaching channel for an unattended session; the stdout print survives
+only for direct child-mode invocation (`bash jira-nudge-on-end.sh
+__himmel_detached <payload-file>` — tests or a manual debug run reproducing
+that contract; a plain manual invocation goes through the detaching parent and
+produces no stdout).
 Paired hermetic suite: `scripts/hooks/test-jira-nudge-on-end.sh`.
 
 ## Claude PostToolUse Hooks

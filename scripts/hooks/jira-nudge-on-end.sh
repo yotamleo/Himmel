@@ -18,12 +18,25 @@
 #   7. NO jira-mutation breadcrumb exists with epoch >= session start
 #      (scripts/jira/src/breadcrumb.ts drops these on every mutating verb).
 #
-# Nudge surface: stdout (transcript) + relay via the Telegram bridge when
-# configured (the only operator-reaching channel unattended). Best-effort.
+# Nudge surface: the Telegram relay when configured (the only operator-reaching
+# channel unattended). The stdout print survives only for direct CHILD-MODE
+# invocation — `bash jira-nudge-on-end.sh __himmel_detached <payload-file>`
+# (tests, or a manual debug run reproducing that contract); a plain manual
+# invocation goes through the detaching parent and produces no stdout, since in
+# production the whole body runs full-body DETACHED (HIMMEL-661, see below).
+# Best-effort. NOTE: since HIMMEL-661 the hook depends on lib/detach.sh to do
+# anything at all (pre-661 a missing detach.sh only degraded the relay).
 #
 # Wiring: himmel-ops plugin hooks.json SessionEnd (exec-if-exists), default OFF.
-# Test seams (used only by test-jira-nudge-on-end.sh):
-#   JIRA_NUDGE_RELAY_CMD   override the relay command (default Telegram curl)
+# Test seams:
+#   JIRA_NUDGE_RELAY_CMD    override the relay command (default Telegram curl);
+#                           used by test-jira-nudge-on-end.sh AND
+#                           test-codex-stop-hooks.sh.
+#   JIRA_NUDGE_TEST_DELAY   (test-jira-nudge-on-end.sh only) sleep N seconds at
+#                           the START of the detached child body. Proves the
+#                           full-body detach keeps the PARENT fast: a regression
+#                           that un-detaches the body would make this delay
+#                           block teardown.
 
 # This hook runs under bash on every platform (no .ps1 twin), so do NOT add a
 # msys/cygwin guard — that would silence the nudge on Windows/Git-Bash.
@@ -38,9 +51,52 @@ set +e
 set -u 2>/dev/null || true
 trap 'exit 0' EXIT
 
-# Drain stdin (SessionEnd pipes a JSON payload).
-PAYLOAD=""
-if [ -t 0 ]; then :; else PAYLOAD="$(cat 2>/dev/null || true)"; fi
+# --- Full-body detach (HIMMEL-661, extends the HIMMEL-636 pattern) -----------
+# Re-exec ourselves DETACHED with the SessionEnd payload parked in a temp file,
+# and return 0 instantly. Even the gate-off fast path costs ~1.7s of process
+# spawns on Windows Git Bash (payload jq, git rev-parse, dotenv) — all BEFORE
+# the gate check — which loses the race against Claude Code's SessionEnd
+# teardown: the recurring "Hook cancelled" that HIMMEL-635 (relay detach) and
+# HIMMEL-636 (single-scan transcript parse) shaved but did not eliminate. The
+# sibling refresh-where-are-we-on-end.sh returns in ~0.1s with this same
+# full-body detach and no longer errors. The stdout nudge surface this hook
+# previously stayed synchronous to preserve was already unreliable (a cancelled
+# hook loses stdout AND relay); after this change the (already-detached) relay
+# is the operator-reaching surface, and stdout survives for direct child-mode
+# invocation only.
+if [ "${1:-}" != "__himmel_detached" ]; then
+    # Drain stdin (SessionEnd pipes a JSON payload) so the contract doesn't break.
+    PAYLOAD=""
+    if [ -t 0 ]; then :; else PAYLOAD="$(cat 2>/dev/null || true)"; fi
+    [ -n "$PAYLOAD" ] || exit 0
+    _tmp="$(mktemp "${TMPDIR:-/tmp}/jira-nudge-payload.XXXXXX" 2>/dev/null)" || exit 0
+    printf '%s' "$PAYLOAD" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; exit 0; }
+    # Guarded source: unlike the pre-661 flow (where a missing detach.sh only
+    # degraded the relay), the parent now depends on it for the hook to do
+    # ANYTHING — so on failure, clean up our own temp file instead of leaking
+    # one per session with no child to delete it.
+    _dlib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/detach.sh"
+    if [ -r "$_dlib" ]; then
+        # shellcheck source=/dev/null
+        . "$_dlib"
+        detach_run bash "${BASH_SOURCE[0]}" __himmel_detached "$_tmp"
+    else
+        rm -f "$_tmp"
+    fi
+    exit 0
+fi
+
+# === Detached child: detection + nudge (parent already returned 0) ===========
+
+# Test-only child-latency seam (see header). if-guarded so an unset value is a
+# clean no-op.
+if [ -n "${JIRA_NUDGE_TEST_DELAY:-}" ]; then
+    sleep "$JIRA_NUDGE_TEST_DELAY"
+fi
+
+# Recover the payload the parent parked; delete it whatever happens next.
+PAYLOAD="$(cat "${2:-}" 2>/dev/null || true)"
+rm -f "${2:-}" 2>/dev/null || true
 
 # Need jq + git to decide anything; absent → fail-safe (no nudge).
 command -v jq  >/dev/null 2>&1 || exit 0
@@ -93,10 +149,9 @@ fi
 # Only the FIRST timestamp is needed. Extract it directly rather than via
 # parse_session_transcript(), which runs FOUR full-file jq scans
 # (FIRST_TS/LAST_TS/LAST_ASSISTANT/COMMANDS) — three of which this hook never
-# uses. On a long transcript those synchronous scans are what race Claude Code's
-# SessionEnd teardown ("Hook cancelled"); the single-scan path keeps detection
-# cheap so the nudge stays SYNCHRONOUS (its stdout/transcript surface survives)
-# without a full-body detach. HIMMEL-636.
+# uses (HIMMEL-636). We now run detached (HIMMEL-661) so teardown no longer
+# races this scan, but keep the single-scan path — the detached child should
+# still be cheap on a long transcript.
 FIRST_TS=""
 if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
     FIRST_TS="$(jq -r 'select(.timestamp) | .timestamp' "$TRANSCRIPT_PATH" 2>/dev/null | head -n1)"
