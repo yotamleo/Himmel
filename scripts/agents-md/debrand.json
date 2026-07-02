@@ -13,5 +13,25 @@
     "from": "the Bash tool",
     "to": "your shell-execution mechanism",
     "note": "Full-phrase tool reference -> behavioral text."
+  },
+  {
+    "from": "the **Fable main thread**",
+    "to": "the **main thread**",
+    "note": "HIMMEL-559: identity claim — a Codex/GPT session must not read itself as the Fable main thread. Fable mentions in FABLE-WINDOW provenance comments stay (documentary, not identity)."
+  },
+  {
+    "from": "inherits the Fable\nmain loop",
+    "to": "inherits the main\nloop",
+    "note": "HIMMEL-559: spans CLAUDE.md's hard wrap — the embedded newline is load-bearing; if CLAUDE.md rewraps this phrase the entry stops matching and the debrand test's leak check catches it."
+  },
+  {
+    "from": "the time-limited Fable quota",
+    "to": "the time-limited top-tier quota",
+    "note": "HIMMEL-559: quota claim — neutral tier language; every harness has some premium-tier budget the rule protects."
+  },
+  {
+    "from": "Fable-5 `low` ≈ prior-gen\n`xhigh`",
+    "to": "on Claude, Fable-5 `low` ≈ prior-gen\n`xhigh`",
+    "note": "HIMMEL-559: the effort calibration is a Claude-family fact (false for GPT) — attribute it instead of asserting it about the reading model. Embedded newline matches CLAUDE.md's wrap, same caveat as above."
   }
 ]
