@@ -193,7 +193,9 @@ layer — the classifier substitute the GLM lane otherwise lacks (third-party
 lanes have no auto-mode classifier, and `bypassPermissions` removes the prompt
 layer). It fires on `Bash|PowerShell|mcp__.*`, detects the lane by
 `ANTHROPIC_BASE_URL` containing `api.z.ai`, and on-lane hard-blocks `git push`,
-remote-URL rewrites, the entire `gh` CLI, network CLIs
+remote-URL rewrites, the `gh` CLI EXCEPT the issue-ops + pr/run-reads carve-out
+below (`gh pr create/merge/edit/review/comment/ready`, `gh api`, `gh repo`,
+`gh release`, `gh gist`, … stay blocked), network CLIs
 (`curl`/`wget`/`Invoke-WebRequest`/`Invoke-RestMethod`, plus the `iwr`/`irm`
 aliases), and all `mcp__*` tools EXCEPT the qmd KB carve-out.
 Off-lane sessions exit immediately.
@@ -201,8 +203,14 @@ Off-lane sessions exit immediately.
 **Allowed on-lane (operator policy 2026-07-03 — audited-action carve-out):**
 the **Jira CLI** (`node scripts/jira/dist/index.js …` or bare `jira`) — writes
 are audited in Jira history and recoverable, so GLM workers may update status,
-add comments, and file followup tickets; and **qmd KB reads**
-(`mcp__plugin_qmd_qmd__*`). Atlassian MCP stays blocked (Jira routing is
+add comments, and file followup tickets; **qmd KB reads**
+(`mcp__plugin_qmd_qmd__*`); and (HIMMEL-675) **`gh issue <anything>`** — the
+full issue surface, reads AND writes, because cr-deferred followups are gh
+issues (audited in GitHub + recoverable) — plus read-only **PR/CI context**
+(`gh pr view|diff|checks|status|list`, `gh run view|list|watch`). The gh
+carve-out is compound-smuggle-safe: the hook counts command-position gh
+occurrences vs allowed ones, so `gh pr view 1 && gh pr merge 1` still denies
+(total 2 > allowed 1). Atlassian MCP stays blocked (Jira routing is
 CLI-first — `block-backend-tier` enforces that in every session), and the
 obsidian-vault MCP stays blocked (vault offload is the v2 follow-up).
 
@@ -229,6 +237,16 @@ is not enough):
 2. The checkout that `spawn-glm` runs from contains the merged script — workers
    `git worktree add` from the **parent checkout's HEAD** (not "main"), so the
    operator's checkout must have pulled the merge.
+
+**A hooks.json change ships live only with a plugin VERSION BUMP.** The
+installed-plugin cache is **version-keyed**
+(`~/.claude/plugins/cache/…/himmel-ops/<version>/`), so a same-version
+`hooks.json` edit is invisible to `/himmel-update`'s re-sync — the cache never
+refreshes and the new/changed hook never reaches workers. #856 added a
+`hooks.json` entry without bumping `himmel-ops`'s `version`, which is exactly
+why the deny-hook did not go live until the HIMMEL-675 `0.4.0` bump. Bump the
+plugin `version` in `.claude-plugin/plugin.json` whenever you change its
+`hooks.json`.
 
 Until BOTH hold, the lane is unhardened and the low-blast-radius "chores only"
 restriction stays.
