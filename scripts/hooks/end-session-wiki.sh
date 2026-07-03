@@ -89,6 +89,16 @@ spawn_crystallizer() {
     crys="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../luna/crystallize-note.sh"
     [ -r "$crys" ] || return 0
     [ -n "${CFG_CRYSTALLIZE_MODEL:-}" ] && export CRYSTALLIZE_MODEL="$CFG_CRYSTALLIZE_MODEL"
+    if [ -n "${CFG_CRYSTALLIZE_RULES:-}" ]; then
+        local rules_expanded="$CFG_CRYSTALLIZE_RULES"
+        # shellcheck disable=SC2088  # ~/ expansion handled explicitly below
+        case "$rules_expanded" in "~/"*) rules_expanded="$HOME/${rules_expanded#\~/}" ;; esac
+        # Fail-open but not invisible: the crystallizer silently skips an
+        # unreadable rules file, so surface the misconfiguration here.
+        [ -r "$rules_expanded" ] || \
+            log_msg "crystallize_rules not readable (rules will NOT apply): $rules_expanded"
+        export CRYSTALLIZE_RULES_FILE="$rules_expanded"
+    fi
     # Fully detach so the child survives this hook's process-group teardown
     # (shared helper, also used by refresh-where-are-we-on-end.sh / HIMMEL-572).
     local detach_lib
@@ -148,6 +158,7 @@ CFG_DRY_RUN="false"
 CFG_MIN_DUR=60
 CFG_CRYSTALLIZE="true"
 CFG_CRYSTALLIZE_MODEL=""
+CFG_CRYSTALLIZE_RULES=""
 # vault_path / vault are read by resolve_vault_root (scripts/lib/vault-resolve.sh),
 # not here, so the shared @tsv parse stays focused on the gate fields.
 if [ -r "$CONFIG_PATH" ]; then
@@ -159,7 +170,8 @@ if [ -r "$CONFIG_PATH" ]; then
             (if has("dry_run") then .dry_run else false end | tostring),
             (if has("min_duration_seconds") then .min_duration_seconds else 60 end | tostring),
             (if has("crystallize") then .crystallize else true end | tostring),
-            (if has("crystallize_model") then .crystallize_model else "" end | tostring)
+            (if has("crystallize_model") then .crystallize_model else "" end | tostring),
+            (if has("crystallize_rules") then .crystallize_rules else "" end | tostring)
         ] | @tsv
     ' "$CONFIG_PATH" 2>/dev/null)"
     if [ -n "$parsed" ]; then
@@ -168,6 +180,7 @@ if [ -r "$CONFIG_PATH" ]; then
         CFG_MIN_DUR="$(printf '%s' "$parsed" | cut -f3)"
         CFG_CRYSTALLIZE="$(printf '%s' "$parsed" | cut -f4)"
         CFG_CRYSTALLIZE_MODEL="$(printf '%s' "$parsed" | cut -f5)"
+        CFG_CRYSTALLIZE_RULES="$(printf '%s' "$parsed" | cut -f6)"
     else
         log_msg "config parse failed (using defaults): $CONFIG_PATH"
     fi

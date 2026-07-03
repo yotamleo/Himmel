@@ -10,11 +10,18 @@
 # sweep recovers it. Test seam: CRYSTALLIZE_CLAUDE_BIN overrides claude with a stub.
 param(
     [string]$NotePath,
-    [string]$TranscriptPath
+    [string]$TranscriptPath,
+    [string]$RulesFile
 )
 $ErrorActionPreference = 'SilentlyContinue'
 
 if (-not $NotePath) { exit 0 }
+
+# Optional operator rules/context file: 3rd positional arg, overridden by env
+# CRYSTALLIZE_RULES_FILE (env wins — same precedence as CRYSTALLIZE_MODEL).
+$rulesFile = if ($env:CRYSTALLIZE_RULES_FILE) { $env:CRYSTALLIZE_RULES_FILE } else { $RulesFile }
+# Refresh (re-consolidation) mode: re-run an already-synthesized note.
+$refresh = ($env:CRYSTALLIZE_REFRESH -eq '1')
 
 # Recursion guards: the throwaway claude subsession must not re-fire the session-
 # end hooks (end-session-wiki + HIMMEL-572 where-are-we refresh).
@@ -39,9 +46,10 @@ Get-ChildItem -Path $pidDir -Filter '*.pid' -ErrorAction SilentlyContinue | ForE
 if ($live -ge $maxC) { exit 0 }
 $myPid = Join-Path $pidDir "$PID.pid"
 Set-Content -LiteralPath $myPid -Value $PID -ErrorAction SilentlyContinue
-# Declared before the try so the outer finally always cleans it up (parity with
-# the bash EXIT trap) even if a throw lands between its creation and the run.
+# Declared before the try so the outer finally always cleans them up (parity with
+# the bash EXIT trap) even if a throw lands between their creation and the run.
 $settingsTmp = $null
+$snapTmp = $null
 try {
     # Retry-read: the live hook may have just written the note via the Obsidian
     # REST API, which flushes to disk asynchronously.
@@ -49,10 +57,39 @@ try {
     while (-not (Test-Path -LiteralPath $NotePath) -and $i -lt 3) { Start-Sleep -Seconds 1; $i++ }
     if (-not (Test-Path -LiteralPath $NotePath)) { exit 0 }
 
-    # Already crystallized -> nothing to do.
-    if (Select-String -LiteralPath $NotePath -Pattern '^crystallized: true$' -Quiet) { exit 0 }
+    # Already crystallized -> nothing to do, UNLESS refresh mode re-runs it.
+    if (-not $refresh -and (Select-String -LiteralPath $NotePath -Pattern '^crystallized: true$' -Quiet)) { exit 0 }
 
-    $prompt = @"
+    if ($refresh) {
+        # Loss-proofing (refresh only): a refresh rewrites PREVIOUSLY-GOOD
+        # synthesis, so a partial/failed claude edit must never be accepted.
+        # Snapshot pre-run; the result is validated structurally below and
+        # restored from this snapshot if it fails. Can't snapshot -> can't
+        # roll back -> don't run (fail-open, note untouched).
+        $snapTmp = "$NotePath.snap.$PID"
+        try { Copy-Item -LiteralPath $NotePath -Destination $snapTmp -Force -ErrorAction Stop }
+        catch { $snapTmp = $null; exit 0 }
+    }
+
+    if ($refresh) {
+        # Refresh (re-consolidation): CONSOLIDATE — update/extend the four
+        # sections, preserving prior synthesis content still correct.
+        $prompt = @"
+You are re-consolidating an already-synthesized Claude Code session note for an Obsidian vault.
+Read the session transcript at: $TranscriptPath
+Read the note at: $NotePath
+This note was already synthesized. Re-read the transcript and the existing sections;
+UPDATE/EXTEND the four sections below, preserving prior synthesis content that is
+still correct — do not discard it:
+- ## Summary       (3-6 lines: what was done and the outcome)
+- ## Decisions     (bullet list of decisions made, or _None._)
+- ## Files Touched (keep the existing list; do not invent files)
+- ## Follow-ups    (bullet list of open items, or _None._)
+Do NOT touch the frontmatter or the Raw Conversation callout. Make the edit with
+your file tools, then stop.
+"@
+    } else {
+        $prompt = @"
 You are crystallizing a Claude Code session note for an Obsidian vault.
 Read the session transcript at: $TranscriptPath
 Read the note at: $NotePath
@@ -64,6 +101,22 @@ Rewrite ONLY these sections of that note, in place, distilling the session:
 Do NOT touch the frontmatter or the Raw Conversation callout. Make the edit with
 your file tools, then stop.
 "@
+    }
+
+    # Operator rules/context injection: append a readable rules file's content as
+    # a clearly delimited block. Unreadable / missing / empty -> append nothing.
+    if ($rulesFile -and (Test-Path -LiteralPath $rulesFile)) {
+        $rulesContent = (Get-Content -LiteralPath $rulesFile -Raw)
+        if ($rulesContent) {
+            $prompt = $prompt + @"
+
+Additionally apply these operator rules when synthesizing:
+--- begin operator rules ---
+$rulesContent
+--- end operator rules ---
+"@
+        }
+    }
 
     # The note lives in the luna vault, OUTSIDE the himmel repo. Running claude in
     # HIMMEL_ROOT left the out-of-workspace note edit waiting on a permission
@@ -120,19 +173,44 @@ your file tools, then stop.
     # (CRYSTALLIZE_NOW overridable for hermetic tests). LF-preserving write.
     $hashAfter = (Get-FileHash -LiteralPath $NotePath -Algorithm SHA256).Hash
     if ($hashBefore -and $hashAfter -and ($hashBefore -ne $hashAfter)) {
-        $now = if ($env:CRYSTALLIZE_NOW) { $env:CRYSTALLIZE_NOW } else { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
-        $fmc = 0
-        $stamped = New-Object System.Collections.Generic.List[string]
-        foreach ($line in (Get-Content -LiteralPath $NotePath)) {
-            if ($line -eq '---') { $fmc++; $stamped.Add($line); continue }
-            if ($fmc -eq 1 -and $line -match '^crystallized: ') { $stamped.Add('crystallized: true'); continue }
-            if ($fmc -eq 1 -and $line -match '^crystallized_at:') { $stamped.Add("crystallized_at: $now"); continue }
-            $stamped.Add($line)
+        # Refresh loss-proofing: a changed-but-structurally-broken result
+        # (truncated note, lost frontmatter/sections — the shape of a
+        # half-applied edit) is ROLLED BACK to the pre-run snapshot and NOT
+        # re-stamped, so a hash-based caller naturally counts a skip.
+        # Non-refresh runs never enter the rollback branch (no snapshot).
+        $valid = $true
+        if ($refresh) {
+            # Frontmatter intact (first line `---`, a second `---` exists),
+            # all four section headers, and the Raw Conversation callout the
+            # renderer emits (scripts/lib/session-note.sh) still present.
+            $rl = @(Get-Content -LiteralPath $NotePath)
+            if (-not $rl -or $rl[0] -ne '---') { $valid = $false }
+            elseif (@($rl | Where-Object { $_ -eq '---' }).Count -lt 2) { $valid = $false }
+            elseif (($rl -notcontains '## Summary') -or ($rl -notcontains '## Decisions') -or
+                    ($rl -notcontains '## Files Touched') -or ($rl -notcontains '## Follow-ups')) { $valid = $false }
+            elseif ($rl -notcontains '> [!note]- Raw conversation') { $valid = $false }
         }
-        [System.IO.File]::WriteAllText($NotePath, (($stamped -join "`n") + "`n"), $enc)
+        if (-not $valid) {
+            if ($snapTmp -and (Test-Path -LiteralPath $snapTmp)) {
+                Move-Item -LiteralPath $snapTmp -Destination $NotePath -Force
+                $snapTmp = $null
+            }
+        } else {
+            $now = if ($env:CRYSTALLIZE_NOW) { $env:CRYSTALLIZE_NOW } else { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+            $fmc = 0
+            $stamped = New-Object System.Collections.Generic.List[string]
+            foreach ($line in (Get-Content -LiteralPath $NotePath)) {
+                if ($line -eq '---') { $fmc++; $stamped.Add($line); continue }
+                if ($fmc -eq 1 -and $line -match '^crystallized: ') { $stamped.Add('crystallized: true'); continue }
+                if ($fmc -eq 1 -and $line -match '^crystallized_at:') { $stamped.Add("crystallized_at: $now"); continue }
+                $stamped.Add($line)
+            }
+            [System.IO.File]::WriteAllText($NotePath, (($stamped -join "`n") + "`n"), $enc)
+        }
     }
 } finally {
     Remove-Item -LiteralPath $myPid -Force -ErrorAction SilentlyContinue
     if ($settingsTmp) { Remove-Item -LiteralPath $settingsTmp -Force -ErrorAction SilentlyContinue }
+    if ($snapTmp) { Remove-Item -LiteralPath $snapTmp -Force -ErrorAction SilentlyContinue }
 }
 exit 0

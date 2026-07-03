@@ -6,7 +6,9 @@
 # rewrites the Summary body, preserving all frontmatter; the crystallized flag is
 # owned by crystallize-note.ps1 (set from the body diff, HIMMEL-590 T1d), NOT
 # here. fail exits 7 without writing; noop exits 0 without writing; slow sleeps 1s
-# THEN behaves as success (detach timing). Touches $CRYSTALLIZE_MARKER on
+# THEN behaves as success (detach timing); corrupt overwrites the note with a
+# truncated fragment (half-applied edit, refresh loss-proofing, HIMMEL-663).
+# Touches $CRYSTALLIZE_MARKER on
 # invocation (after the slow sleep) and dumps the recursion-guard env vars to
 # $CRYSTALLIZE_ENV_DUMP. When $CRYSTALLIZE_ARGV_DUMP is set, records cwd + every
 # argv entry there so a test can assert the workspace shape (T1c).
@@ -42,7 +44,8 @@ if ($env:CRYSTALLIZE_MARKER) { Add-Content -LiteralPath $env:CRYSTALLIZE_MARKER 
 if ($env:CRYSTALLIZE_ENV_DUMP) {
     $w = if ($null -ne $env:CLAUDE_END_SESSION_WIKI) { $env:CLAUDE_END_SESSION_WIKI } else { '<unset>' }
     $a = if ($null -ne $env:HIMMEL_WHERE_ARE_WE) { $env:HIMMEL_WHERE_ARE_WE } else { '<unset>' }
-    Set-Content -LiteralPath $env:CRYSTALLIZE_ENV_DUMP -Value @("CLAUDE_END_SESSION_WIKI=$w", "HIMMEL_WHERE_ARE_WE=$a")
+    $r = if ($null -ne $env:CRYSTALLIZE_RULES_FILE) { $env:CRYSTALLIZE_RULES_FILE } else { '<unset>' }
+    Set-Content -LiteralPath $env:CRYSTALLIZE_ENV_DUMP -Value @("CLAUDE_END_SESSION_WIKI=$w", "HIMMEL_WHERE_ARE_WE=$a", "CRYSTALLIZE_RULES_FILE=$r")
 }
 
 if ($mode -eq 'fail') { exit 7 }
@@ -50,6 +53,14 @@ if ($mode -eq 'noop') { exit 0 }
 
 $note = $env:CRYSTALLIZE_NOTE
 if (-not $note -or -not (Test-Path -LiteralPath $note)) { exit 0 }
+
+# corrupt simulates a half-applied edit (quota kill mid-write): the note is left
+# as a truncated fragment — no frontmatter, only one section header.
+if ($mode -eq 'corrupt') {
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($note, "## Summary`n`nhalf-written fragment`n", $enc)
+    exit 0
+}
 
 # Rewrite ONLY the Summary body; leave the frontmatter untouched (the script owns
 # the crystallized flag from the body diff).

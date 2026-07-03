@@ -117,6 +117,7 @@ documented at the top of [`.env.example`](../../.env.example):
 | `JIRA_API_TOKEN` | Jira / Confluence CLI auth token. | id.atlassian.com/manage-profile/security/api-tokens |
 | `JIRA_PROJECT_KEY` | Default project for `jira` ops. | Your Jira project key (e.g. `ACME`). |
 | `JIRA_CLOUD_ID` | Atlassian tenant cloud id (REST / MCP). | Atlassian admin console, or the `getAccessibleAtlassianResources` API. |
+| `ZAI_API_KEY` | Z.ai GLM key for the `claude-glm` overflow launcher (see [tooling-catalog](../tooling-catalog.md#claude-glm-scriptsclaude-glm-ps1-twin-himmel-665)). The launcher takes the shell env value first, else reads it from `.env`; **never** from `settings.json`. | z.ai account → API keys. Optional — only if you use `claude-glm`. |
 
 **PROCESS-ENV** (export, or set in `settings.json` `"env"` — a value only in
 `.env` is not read unless it's a bridged exception):
@@ -319,6 +320,25 @@ fires:
 Diagnose any existing install with `/himmel-doctor` (the **C9-scheduler** check
 reports OK / WARN + the exact per-OS remediation; it never runs a privileged
 command).
+
+### 4d. Optional — PHI vault marker for claude-glm (HIMMEL-665)
+
+If you use the `claude-glm` overflow launcher (Claude Code on the Z.ai GLM
+flat-rate lane — see [tooling-catalog](../tooling-catalog.md#claude-glm-scriptsclaude-glm-ps1-twin-himmel-665)),
+drop a `.salus` marker file at the root of every PHI-bearing vault (e.g.
+`~/Documents/salus`). The launcher **refuses to start (exit 3, no override)**
+when the marker sits in the directory you launch from — the check is
+**per-directory, not subtree**: launching from a subdirectory of a marked
+vault does not see the marker. The marker is **net-new — nothing places it
+today**, so you must create it by hand:
+
+```bash
+touch ~/Documents/salus/.salus
+```
+
+For **whole-subtree** coverage (any launch cwd under the root refused), also
+list the absolute PHI roots one-per-line in `~/.config/claude-glm/phi-roots` —
+same PHI-tier refusal, but subtree-wide.
 
 ---
 

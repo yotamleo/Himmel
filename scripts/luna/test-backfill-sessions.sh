@@ -455,7 +455,11 @@ else
     fail "vault-resolve: note wrongly written to default vault"
 fi
 
-# Also assert --dry-run does not write but reports correct counts
+# Also assert --dry-run does not write but reports correct counts. The first run
+# already wrote this session's note into the custom vault, so with a FRESH ledger
+# (STATE7B) the vault scan (HIMMEL-662) now recognizes it as already-in-vault=1
+# rather than re-counting it as a new import — this is the self-healing property
+# (a lost ledger is rebuilt from the vault's own notes).
 STATE7B="$SB/state7b.json"
 out7b=$(LUNA_VAULT_PATH="$VAULT7_DEFAULT" bash "$BACKFILL" \
     --projects-dir "$PROJ_ROOT7" \
@@ -464,7 +468,7 @@ out7b=$(LUNA_VAULT_PATH="$VAULT7_DEFAULT" bash "$BACKFILL" \
     --vault-registry /dev/null \
     --dry-run \
     2>&1)
-assert_contains "vault-resolve dry-run: new=1" "new=1" "$out7b"
+assert_contains "vault-resolve dry-run: already-in-vault=1 (fresh ledger, note already in vault)" "already-in-vault=1" "$out7b"
 if [ -z "$(find "$VAULT7/sessions" -type f -name '*.md' 2>/dev/null | head -1)" ]; then
     pass "vault-resolve dry-run: no note written under custom vault"
 else
@@ -1288,6 +1292,316 @@ assert_contains "reheal-progress: per-note healed line" "reheal: healed 2026-06-
 # Summary line on stdout unchanged + no progress leak.
 assert_contains "reheal-progress: stdout summary intact (healed=1)" "healed=1" "$out22"
 assert_not_contains "reheal-progress: no heartbeat leak onto stdout" "scanned " "$out22"
+
+# Flip a crystallized:false note to crystallized:true with an OLD timestamp,
+# in place (portable — no sed -i), so --refresh tests have an already-synthesized
+# note to re-consolidate.
+mark_crystallized() { # <note>
+    awk '
+        /^crystallized: false$/ { print "crystallized: true"; next }
+        /^crystallized_at:$/ { print "crystallized_at: 2026-01-01T00:00:00Z"; next }
+        { print }
+    ' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+
+# ============================================================================
+# Case 23: --refresh without --recrystallize errors (guard).
+# ============================================================================
+echo ""
+echo "Case 23: --refresh requires --recrystallize (errors otherwise)"
+
+SB="$TMP_ROOT/case23"
+VAULT23="$SB/vault"; PROJ_ROOT23="$SB/projects"; STATE23="$SB/state.json"
+mkdir -p "$VAULT23" "$PROJ_ROOT23"
+rc23=0
+out23=$(bash "$BACKFILL" --refresh \
+    --projects-dir "$PROJ_ROOT23" --luna-vault-path "$VAULT23" \
+    --state-file "$STATE23" --vault-registry /dev/null 2>&1) || rc23=$?
+if [ "$rc23" -ne 0 ]; then pass "refresh-guard: --refresh alone exits non-zero"; else fail "refresh-guard: --refresh alone did not error" "$out23"; fi
+assert_contains "refresh-guard: error names the requirement" "requires --recrystallize" "$out23"
+
+# ============================================================================
+# Case 24: --recrystallize --refresh re-consolidates an already-crystallized note
+#          (bypasses the crystallized:true skip), counts it, re-stamps
+#          crystallized_at; plain --recrystallize (no --refresh) still skips it.
+# ============================================================================
+echo ""
+echo "Case 24: --recrystallize --refresh re-runs an already-crystallized note"
+
+SB="$TMP_ROOT/case24"
+VAULT24="$SB/vault"; PROJ_ROOT24="$SB/projects"; STATE24="$SB/state.json"
+NOTE24="$VAULT24/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT24" "$PROJ_ROOT24"
+write_content_note "$NOTE24" "refresh-sess-001"
+mark_crystallized "$NOTE24"
+seed_named_transcript "$PROJ_ROOT24" "refresh-sess-001" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+
+# Plain --recrystallize skips the already-crystallized note.
+out24s=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success CRYSTALLIZE_PID_DIR="$SB/pids" \
+    bash "$BACKFILL" --recrystallize \
+    --projects-dir "$PROJ_ROOT24" --luna-vault-path "$VAULT24" \
+    --state-file "$STATE24" --vault-registry /dev/null 2>&1)
+assert_contains "refresh: plain --recrystallize skips already-crystallized" "crystallized=0 skipped=1" "$out24s"
+
+# --refresh re-runs it (stub rewrites Summary -> content change -> counted).
+out24=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T00:00:00Z" \
+    bash "$BACKFILL" --recrystallize --refresh \
+    --projects-dir "$PROJ_ROOT24" --luna-vault-path "$VAULT24" \
+    --state-file "$STATE24" --vault-registry /dev/null 2>&1)
+assert_contains "refresh: --refresh re-runs already-crystallized (crystallized=1)" "crystallized=1" "$out24"
+assert_contains "refresh: summary line carries the (--refresh) token" "(--refresh)" "$out24"
+if grep -q '^crystallized: true$' "$NOTE24"; then pass "refresh: note stays crystallized:true"; else fail "refresh: crystallized flag lost" "$out24"; fi
+if grep -q '_Crystallized by stub' "$NOTE24"; then pass "refresh: Summary re-consolidated"; else fail "refresh: Summary not updated"; fi
+if grep -q '^crystallized_at: 2026-06-30T00:00:00Z$' "$NOTE24"; then pass "refresh: crystallized_at re-stamped"; else fail "refresh: crystallized_at not re-stamped"; fi
+
+# ============================================================================
+# Case 25: --recrystallize --refresh --dry-run counts already-crystallized
+#          eligible, writes nothing.
+# ============================================================================
+echo ""
+echo "Case 25: --recrystallize --refresh --dry-run counts eligible incl. crystallized"
+
+SB="$TMP_ROOT/case25"
+VAULT25="$SB/vault"; PROJ_ROOT25="$SB/projects"; STATE25="$SB/state.json"
+NOTE25="$VAULT25/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT25" "$PROJ_ROOT25"
+write_content_note "$NOTE25" "refresh-dry-001"
+mark_crystallized "$NOTE25"
+seed_named_transcript "$PROJ_ROOT25" "refresh-dry-001" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+SHA25="$(_file_sha256 "$NOTE25")"
+
+out25=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success CRYSTALLIZE_PID_DIR="$SB/pids" \
+    bash "$BACKFILL" --recrystallize --refresh --dry-run \
+    --projects-dir "$PROJ_ROOT25" --luna-vault-path "$VAULT25" \
+    --state-file "$STATE25" --vault-registry /dev/null 2>&1)
+assert_contains "refresh(dry): already-crystallized note counted eligible" "crystallized=1" "$out25"
+if [ "$SHA25" = "$(_file_sha256 "$NOTE25")" ]; then pass "refresh(dry): note byte-unchanged (no write)"; else fail "refresh(dry): --dry-run mutated the note" "$out25"; fi
+
+# ============================================================================
+# Case 26: --recrystallize --refresh --limit caps real refresh runs.
+# ============================================================================
+echo ""
+echo "Case 26: --recrystallize --refresh --limit caps real runs"
+
+SB="$TMP_ROOT/case26"
+VAULT26="$SB/vault"; PROJ_ROOT26="$SB/projects"; STATE26="$SB/state.json"
+N26A="$VAULT26/sessions/2026/06/2026-06-20-0000-a.md"
+N26B="$VAULT26/sessions/2026/06/2026-06-20-0001-b.md"
+mkdir -p "$VAULT26" "$PROJ_ROOT26"
+write_content_note "$N26A" "refresh-cap-a"; mark_crystallized "$N26A"
+write_content_note "$N26B" "refresh-cap-b"; mark_crystallized "$N26B"
+seed_named_transcript "$PROJ_ROOT26" "refresh-cap-a" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+seed_named_transcript "$PROJ_ROOT26" "refresh-cap-b" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+
+out26=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T00:00:00Z" \
+    bash "$BACKFILL" --recrystallize --refresh --limit 1 \
+    --projects-dir "$PROJ_ROOT26" --luna-vault-path "$VAULT26" \
+    --state-file "$STATE26" --vault-registry /dev/null 2>&1)
+assert_contains "refresh(limit): --limit 1 refreshes exactly one" "crystallized=1" "$out26"
+assert_contains "refresh(limit): summary carries both tokens" "(--limit 1) (--refresh)" "$out26"
+_refreshed_count=$(grep -l '_Crystallized by stub' "$N26A" "$N26B" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$_refreshed_count" = "1" ]; then pass "refresh(limit): exactly one note re-consolidated on disk"; else fail "refresh(limit): $_refreshed_count re-consolidated (expected 1)" "$out26"; fi
+
+# ============================================================================
+# Case 27: --rules content reaches the crystallizer prompt (backfill); an
+#          unreadable --rules file errors.
+# ============================================================================
+echo ""
+echo "Case 27: --rules content reaches the crystallizer prompt (backfill)"
+
+SB="$TMP_ROOT/case27"
+VAULT27="$SB/vault"; PROJ_ROOT27="$SB/projects"; STATE27="$SB/state.json"
+NOTE27="$VAULT27/sessions/2026/06/2026-06-20-0000-testrepo.md"
+RULES27="$SB/rules.txt"; ARGVD27="$SB/argv.txt"
+mkdir -p "$VAULT27" "$PROJ_ROOT27"
+write_content_note "$NOTE27" "rules-sess-001"
+seed_named_transcript "$PROJ_ROOT27" "rules-sess-001" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+printf 'BACKFILL_RULES_MARKER\n' > "$RULES27"
+
+out27=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ARGV_DUMP="$ARGVD27" \
+    bash "$BACKFILL" --recrystallize --rules "$RULES27" \
+    --projects-dir "$PROJ_ROOT27" --luna-vault-path "$VAULT27" \
+    --state-file "$STATE27" --vault-registry /dev/null 2>&1)
+if grep -qF 'BACKFILL_RULES_MARKER' "$ARGVD27" 2>/dev/null; then pass "rules(backfill): --rules content reaches the crystallizer prompt"; else fail "rules(backfill): rules content not in prompt" "$out27"; fi
+
+rc27=0
+out27b=$(bash "$BACKFILL" --recrystallize --rules "$SB/nope.txt" \
+    --projects-dir "$PROJ_ROOT27" --luna-vault-path "$VAULT27" \
+    --state-file "$STATE27" --vault-registry /dev/null 2>&1) || rc27=$?
+if [ "$rc27" -ne 0 ]; then pass "rules(backfill): unreadable --rules file errors"; else fail "rules(backfill): unreadable --rules did not error" "$out27b"; fi
+
+# ============================================================================
+# Case 28: a CORRUPTING refresh is rolled back and counted skipped, not
+#          refreshed (loss-proofing, HIMMEL-663). The corrupt stub truncates the
+#          note; the crystallizer restores the snapshot (byte-identical), so the
+#          backfill hash-compare must record skipped=1 / crystallized=0.
+# ============================================================================
+echo ""
+echo "Case 28: corrupted refresh rolled back + counted skipped"
+
+SB="$TMP_ROOT/case28"
+VAULT28="$SB/vault"; PROJ_ROOT28="$SB/projects"; STATE28="$SB/state.json"
+NOTE28="$VAULT28/sessions/2026/06/2026-06-20-0000-testrepo.md"
+mkdir -p "$VAULT28" "$PROJ_ROOT28"
+write_content_note "$NOTE28" "refresh-corrupt-001"
+mark_crystallized "$NOTE28"
+seed_named_transcript "$PROJ_ROOT28" "refresh-corrupt-001" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+SHA28="$(_file_sha256 "$NOTE28")"
+
+out28=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=corrupt \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T00:00:00Z" \
+    bash "$BACKFILL" --recrystallize --refresh \
+    --projects-dir "$PROJ_ROOT28" --luna-vault-path "$VAULT28" \
+    --state-file "$STATE28" --vault-registry /dev/null 2>&1)
+assert_contains "refresh(corrupt): counted skipped, not refreshed" "crystallized=0 skipped=1" "$out28"
+if [ "$SHA28" = "$(_file_sha256 "$NOTE28")" ]; then pass "refresh(corrupt): note restored byte-identical (prior synthesis kept)"; else fail "refresh(corrupt): corrupted result persisted" "$out28"; fi
+
+# ============================================================================
+# Case 23: already-in-vault dedup (HIMMEL-662) — a session captured live by
+#          end-session-wiki.sh already sits in the vault under a DIFFERENT
+#          filename shape (end-time + repo-branch slug, source: live) and is
+#          invisible to the (backfill-only) ledger. Plain backfill must scan the
+#          vault, skip that session (already-in-vault=1), ledger it, and NOT
+#          write a duplicate — while a genuinely-missing session still imports.
+# ============================================================================
+echo ""
+echo "Case 23: already-in-vault dedup (live note invisible to ledger)"
+
+SB="$TMP_ROOT/case23"
+VAULT23="$SB/vault"
+REPO23="$SB/repo"
+PROJ_ROOT23="$SB/projects"
+STATE23="$SB/state.json"
+mkdir -p "$VAULT23" "$REPO23" "$PROJ_ROOT23"
+setup_projects_dir "$PROJ_ROOT23" "$REPO23" "$VAULT23"   # writes test-session-normal-001.jsonl
+
+# Live-captured note already in the vault: end-time + repo-branch filename shape
+# (NOT backfill's start-time + repo-only slug), source: live, and a session_id
+# that matches the transcript basename. Backfill must recognize it via the vault
+# scan even though the ledger is blind to live notes.
+LIVE23="$VAULT23/sessions/2026/06/2026-06-20-1830-repo-feat-branch.md"
+write_content_note "$LIVE23" "test-session-normal-001"
+
+# A genuinely-missing session (no live note in the vault) must still import.
+_p23="$REPO23"
+if command -v cygpath >/dev/null 2>&1; then
+    _p23="$(cygpath -w "$_p23" 2>/dev/null || printf '%s' "$_p23")"
+fi
+SLUG23="$(printf '%s' "$_p23" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
+_cwd_escaped23="$(printf '%s' "$REPO23" | sed 's|\\|\\\\|g; s|/|\\/|g')"
+sed "s|__CWD_PLACEHOLDER__|$_cwd_escaped23|g; s|test-session-normal-001|test-session-normal-777|g" \
+    "$FIXTURE_DIR/fixture-normal.jsonl" > "$PROJ_ROOT23/$SLUG23/test-session-normal-777.jsonl"
+
+out23=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT23" \
+    --project "$REPO23" \
+    --state-file "$STATE23" \
+    --vault-registry /dev/null \
+    2>&1)
+
+assert_contains "in-vault: live-captured session skipped (already-in-vault=1)" "already-in-vault=1" "$out23"
+assert_contains "in-vault: genuinely-missing session still imported (new=1)" "new=1" "$out23"
+
+# Vault holds exactly 2 notes: the pre-existing live note + the one new import
+# (no duplicate for the already-in-vault session).
+NOTE23_COUNT="$(find "$VAULT23/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE23_COUNT" -eq 2 ]; then
+    pass "in-vault: no duplicate written (live note + one import = 2 notes)"
+else
+    fail "in-vault: note count wrong (expected 2, got $NOTE23_COUNT)" "$out23"
+fi
+
+# Ledger gained the in-vault session (self-healing) AND the imported one.
+if grep -q "test-session-normal-001" "$STATE23" 2>/dev/null; then
+    pass "in-vault: already-in-vault session ledgered (self-healing)"
+else
+    fail "in-vault: already-in-vault session not added to ledger" "$out23"
+fi
+if grep -q "test-session-normal-777" "$STATE23" 2>/dev/null; then
+    pass "in-vault: imported session ledgered"
+else
+    fail "in-vault: imported session not in ledger" "$out23"
+fi
+
+# Second run against the same populated vault + ledger: both sessions now take
+# the cheap ledger path (already-in-ledger=2) and the scan path reports nothing
+# (already-in-vault=0) — the consequence of the self-healing _ledger_add above.
+out23b=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT23" \
+    --project "$REPO23" \
+    --state-file "$STATE23" \
+    --vault-registry /dev/null \
+    2>&1)
+assert_contains "in-vault(2nd run): both sessions on the cheap ledger path" "already-in-ledger=2" "$out23b"
+assert_contains "in-vault(2nd run): scan path idle (already-in-vault=0)" "already-in-vault=0" "$out23b"
+assert_contains "in-vault(2nd run): nothing re-imported (new=0)" "new=0" "$out23b"
+
+# ============================================================================
+# Case 24: --dry-run counts already-in-vault but does NOT write the ledger
+#          (HIMMEL-662 — the scan is read-only so it runs in dry-run, but
+#          _ledger_add stays dry-run-guarded).
+# ============================================================================
+echo ""
+echo "Case 24: already-in-vault under --dry-run counts but does not ledger"
+
+SB="$TMP_ROOT/case24"
+VAULT24="$SB/vault"
+REPO24="$SB/repo"
+PROJ_ROOT24="$SB/projects"
+STATE24="$SB/state.json"
+mkdir -p "$VAULT24" "$REPO24" "$PROJ_ROOT24"
+setup_projects_dir "$PROJ_ROOT24" "$REPO24" "$VAULT24"
+
+LIVE24="$VAULT24/sessions/2026/06/2026-06-20-1830-repo-feat-branch.md"
+write_content_note "$LIVE24" "test-session-normal-001"
+
+out24=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT24" \
+    --project "$REPO24" \
+    --state-file "$STATE24" \
+    --vault-registry /dev/null \
+    --dry-run \
+    2>&1)
+assert_contains "in-vault(dry): already-in-vault counted" "already-in-vault=1" "$out24"
+if [ ! -f "$STATE24" ] || ! grep -q "test-session-normal-001" "$STATE24" 2>/dev/null; then
+    pass "in-vault(dry): ledger NOT written under --dry-run"
+else
+    fail "in-vault(dry): --dry-run wrote to the ledger" "$out24"
+fi
+
+# ============================================================================
+# Case 25: broken-scan advisory (HIMMEL-662 CR round) — a vault whose sessions/
+#          tree holds .md notes but yields ZERO session_id frontmatter means the
+#          dedup is inactive; the scan must say so on stderr instead of silently
+#          degrading to duplicate-possible behavior. A genuinely-new session
+#          must still import (empty set never false-skips).
+# ============================================================================
+echo ""
+echo "Case 25: empty scan of a non-empty vault warns (dedup inactive)"
+
+SB="$TMP_ROOT/case25"
+VAULT25="$SB/vault"
+REPO25="$SB/repo"
+PROJ_ROOT25="$SB/projects"
+STATE25="$SB/state.json"
+mkdir -p "$VAULT25/sessions/2026/06" "$REPO25" "$PROJ_ROOT25"
+setup_projects_dir "$PROJ_ROOT25" "$REPO25" "$VAULT25"
+
+# A note WITHOUT any session_id frontmatter (hand-authored / foreign shape).
+printf -- '---\ntitle: stray note\n---\n\nNo session_id here.\n' \
+    > "$VAULT25/sessions/2026/06/2026-06-01-0900-stray.md"
+
+out25=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT25" \
+    --project "$REPO25" \
+    --state-file "$STATE25" \
+    --vault-registry /dev/null \
+    2>&1)
+assert_contains "broken-scan: stderr advisory emitted" "already-in-vault dedup inactive" "$out25"
+assert_contains "broken-scan: new session still imports (no false-skip)" "new=1" "$out25"
 
 # ============================================================================
 # Summary

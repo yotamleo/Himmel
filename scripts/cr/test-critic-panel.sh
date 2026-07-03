@@ -98,7 +98,7 @@ stderr_e="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/does-not-exist.json" CRITIC
 out_e="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/does-not-exist.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
 check "E: warning on missing registry" "$(printf '%s\n' "$stderr_e" | grep -cF 'anchor-only')" "1"
 check "E: anchor used (1/1)" "$(printf '%s\n' "$out_e" | grep -cF '(1/1 critics responded)')" "1"
-check_contains "E: gptoss finding present" "$out_e" "[gptoss-"
+check_contains "E: qwen3coder finding present" "$out_e" "[qwen3coder-"
 
 printf '{}' > "$tmp/critics-empty.json"
 stderr_e2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-empty.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
@@ -129,7 +129,7 @@ printf '{not json}' > "$tmp/critics-bad.json"
 stderr_i2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-bad.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
 out_i2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-bad.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
 check "I2: malformed JSON -> anchor warning" "$(printf '%s\n' "$stderr_i2" | grep -cF 'anchor-only')" "1"
-check_contains "I2: malformed JSON -> anchor finding present" "$out_i2" "[gptoss-"
+check_contains "I2: malformed JSON -> anchor finding present" "$out_i2" "[qwen3coder-"
 
 # Test J: per-member timeout — hung member bounded and dropped
 STUB_HANG="$tmp/stub-hang.sh"
