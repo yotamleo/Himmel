@@ -32,15 +32,15 @@ test("worker prompt embeds minted session paths + contract", () => {
 });
 
 test("transcript dir derives from escaped cwd, not slug", () => {
-  const d = transcriptDirFor("C:\\Users\\yotam\\Documents\\github\\himmel\\.claude\\worktrees\\glm+a");
+  const d = transcriptDirFor("C:\\Users\\alice\\Documents\\github\\himmel\\.claude\\worktrees\\glm+a");
   expect(d).toBe(join(homedir(), ".claude", "projects",
-    "C--Users-yotam-Documents-github-himmel--claude-worktrees-glm-a"));
+    "C--Users-alice-Documents-github-himmel--claude-worktrees-glm-a"));
 });
 
 test("transcript dir escapes EVERY non-alphanumeric (underscore too — matches real CC dirs)", () => {
-  // ground truth on this machine: ...\my_notes → ...-my-notes
-  const d = transcriptDirFor("C:\\Users\\yotam\\Documents\\github\\my_notes");
-  expect(d).toBe(join(homedir(), ".claude", "projects", "C--Users-yotam-Documents-github-my-notes"));
+  // ground truth from real CC project dirs: ...\my_docs → ...-my-docs
+  const d = transcriptDirFor("C:\\Users\\alice\\Documents\\github\\my_docs");
+  expect(d).toBe(join(homedir(), ".claude", "projects", "C--Users-alice-Documents-github-my-docs"));
 });
 
 test("pushurl poison makes bare git push fail in the worktree", () => {

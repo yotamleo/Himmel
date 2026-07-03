@@ -17,7 +17,7 @@ export function glmSessionRoot(): string {
 
 // Claude Code keys transcript dirs by the ESCAPED CWD — EVERY non-alphanumeric
 // char → "-" (ground truth: real project dirs escape "_" and "." too, e.g.
-// my_notes → my-notes). Not keyed by any name/slug.
+// my_docs → my-docs). Not keyed by any name/slug.
 export function transcriptDirFor(cwd: string): string {
   return join(homedir(), ".claude", "projects", resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-"));
 }
