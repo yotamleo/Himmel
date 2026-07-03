@@ -3,10 +3,13 @@
   claude-glm.ps1 - thin launcher: Claude Code on the Z.ai GLM flat-rate lane.
   HIMMEL-654 WS1 (child HIMMEL-665). PowerShell twin of scripts/claude-glm
   (bash). Behaviour-parallel: same 7-var env contract; same exit codes on the
-  enumerated paths (2 = missing key, 3 = egress refusal, 4 = failed seed). A guard
-  config (phi-roots / egress-denylist) that exists but is not a readable regular file
-  also fails CLOSED with the bash-parity message ("guard config <path> exists but is
-  not a readable file — failing closed.") and exit 3. Spec: himmel/specs/design/ws1-claude-glm-wrapper.md
+  enumerated paths (2 = missing key, 3 = egress refusal / unreadable guard
+  config, 4 = failed seed, 5 = claude not on PATH). A guard config (phi-roots /
+  egress-denylist) that exists but is not a readable regular file fails CLOSED
+  with the bash-parity message ("guard config <path> exists but is not a
+  readable file — failing closed.") and exit 3. Any OTHER failure fails CLOSED
+  via a PowerShell terminating error (exit 1) rather than matching the bash
+  exit code. Spec: himmel/specs/design/ws1-claude-glm-wrapper.md
 
   Flags LEAD, then everything else passes to `claude` verbatim - mirrors the
   bash flags-lead rule. This is deliberately a PLAIN script with NO declared
@@ -176,16 +179,30 @@ function Copy-SeedConfig {
     $p = Join-Path $src $f
     if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ConfigDir $f) -Force }
   }
+  # Clean re-mirror: remove the destination subtree BEFORE copying so a -Reseed
+  # drops files deleted from the source instead of leaving them stale. No-op on
+  # the first seed. (Parity with the bash twin's rm -rf-then-copy.) The remove
+  # is guarded by Test-Path instead of -ErrorAction SilentlyContinue so a REAL
+  # removal failure (locked file, ACL denial) terminates under Stop and never
+  # reaches the sentinel write — same "no sentinel on any failure" contract.
   foreach ($d in 'commands', 'skills', 'hooks', 'agents') {
     $p = Join-Path $src $d
-    if (Test-Path -LiteralPath $p -PathType Container) { Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force }
+    if (Test-Path -LiteralPath $p -PathType Container) {
+      $dst = Join-Path $ConfigDir $d
+      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
+      Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force
+    }
   }
   foreach ($p in 'installed_plugins.json', 'known_marketplaces.json') {
     $sp = Join-Path $src (Join-Path 'plugins' $p)
     if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination (Join-Path $ConfigDir (Join-Path 'plugins' $p)) -Force }
   }
   $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
-  if (Test-Path -LiteralPath $mp -PathType Container) { Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force }
+  if (Test-Path -LiteralPath $mp -PathType Container) {
+    $mdst = Join-Path $ConfigDir (Join-Path 'plugins' 'marketplaces')
+    if (Test-Path -LiteralPath $mdst) { Remove-Item -LiteralPath $mdst -Recurse -Force }
+    Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force
+  }
   # sentinel LAST: only a fully-populated seed reads as "seeded"
   New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
 }
@@ -212,6 +229,11 @@ $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $GlmHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $GlmModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $GlmModel
 $env:CLAUDE_CONFIG_DIR            = $ConfigDir
+
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+  [Console]::Error.WriteLine("claude-glm: 'claude' not found on PATH")
+  exit 5
+}
 
 & claude @ClaudeArgs
 exit $LASTEXITCODE

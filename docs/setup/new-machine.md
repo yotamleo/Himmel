@@ -329,8 +329,8 @@ drop a `.salus` marker file at the root of every PHI-bearing vault (e.g.
 `~/Documents/salus`). The launcher **refuses to start (exit 3, no override)**
 when the marker sits in the directory you launch from — the check is
 **per-directory, not subtree**: launching from a subdirectory of a marked
-vault does not see the marker. The marker is **net-new — nothing places it
-today**, so you must create it by hand:
+vault does not see the marker. The marker is **not placed by any himmel
+script** — create it by hand:
 
 ```bash
 touch ~/Documents/salus/.salus
