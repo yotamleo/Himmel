@@ -15,8 +15,9 @@ import { UsageError } from './lib/errors.mjs';
 const TICKET_KEY_RE = /^[A-Z][A-Z0-9]+-\d+$/;
 
 // Explicit page size for the live working set. The jira CLI defaults to
-// --limit 25; In-Progress + To-Do are well under this but the default is a trap
-// (HIMMEL-567), so we pin a high ceiling rather than rely on it.
+// --limit 25; the project-wide In-Progress set is well under this but the
+// default is a trap (HIMMEL-567), so we pin a high ceiling rather than rely on
+// it.
 const JIRA_LIMIT = '200';
 
 // ---------------------------------------------------------------------------
@@ -37,20 +38,27 @@ const _jiraCli = join(_repoRoot, 'scripts', 'jira', 'dist', 'index.js');
 // default of 25 rows — with hundreds of historical Done tickets matching, the
 // page filled before any In-Progress row, so live work never reached the ledger
 // (HIMMEL-567). Instead:
-//   - In-Progress + To-Do are read project-wide with an explicit high --limit
-//     (the HIMMEL working set, always small);
-//   - every ACTIVE key is re-read by key across ALL statuses. This serves two
+//   - In-Progress is read project-wide with an explicit high --limit (the HIMMEL
+//     live working set, always small);
+//   - every ACTIVE key is re-read by key across ALL statuses. This serves three
 //     ends: (a) a HIMMEL ticket still self-clears on its Done transition (fold
 //     treats 'done' as terminal) without re-reading the unbounded Done history;
 //     (b) a cross-project LUNA *harness* ticket (one with a himmel footprint —
 //     open PR / locked worktree) shows its real status even though it never
-//     appears in the HIMMEL-project status lists (HIMMEL-573). LUNA vault/content
-//     tickets carry no footprint, so they never become active keys and never
-//     enter the report.
+//     appears in the HIMMEL-project status lists (HIMMEL-573); (c) a To-Do ticket
+//     surfaces ONLY when it carries a real footprint (an open PR / a locked
+//     worktree / a prior-pass ledger breadcrumb seeds it into activeKeys).
+//     LUNA vault/content tickets carry no footprint, so they never become active
+//     keys and never enter the report.
+//
+// The blanket `--status 'To Do'` read was DROPPED (HIMMEL-679): reading every
+// backlog ticket project-wide folded the entire To-Do backlog (~188 keys) into
+// "Other in-flight" and drowned the real live work. HIMMEL-567's actual goal —
+// not truncating In-Progress — is preserved: that bug was the combined query
+// filling the page with Done rows, not the To-Do read itself.
 export function jiraQueries(activeKeys = []) {
   const queries = [
     ['list', '--status', 'In Progress', '--limit', JIRA_LIMIT],
-    ['list', '--status', 'To Do', '--limit', JIRA_LIMIT],
   ];
   const safeKeys = activeKeys.filter((k) => TICKET_KEY_RE.test(k));
   if (safeKeys.length) {

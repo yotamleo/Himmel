@@ -481,10 +481,18 @@ format_tokens() {
 get_model_savings_rate() {
     local model_id="${1:-claude-sonnet}"
     local input_price cache_read_price cache_write_price
+    # Rates per 1M tokens. Cache convention: read = 0.1x input, write = 2x
+    # input (1h TTL; 5m write = 1.25x). Cache rows derived from the standard
+    # prompt-caching multipliers. Case ORDER matters: higher-priced /
+    # more-specific globs must precede glm/gpt/default so they win.
     case "$model_id" in
-        claude-opus*)   input_price=15.00; cache_read_price=1.50;  cache_write_price=30.00 ;;
-        claude-haiku*)  input_price=0.80;  cache_read_price=0.08;  cache_write_price=1.60  ;;
-        claude-sonnet*) input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ;;
+        claude-fable*)  input_price=10.00; cache_read_price=1.00;  cache_write_price=20.00 ;; # 1h; 5m=12.50
+        claude-mythos*) input_price=10.00; cache_read_price=1.00;  cache_write_price=20.00 ;; # 1h; 5m=12.50
+        claude-opus*)   input_price=5.00;  cache_read_price=0.50;  cache_write_price=10.00 ;; # 1h; 5m=6.25
+        claude-haiku*)  input_price=1.00;  cache_read_price=0.10;  cache_write_price=2.00  ;; # 1h; 5m=1.25
+        claude-sonnet*) input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ;; # 1h; 5m=3.75
+        glm-*)          input_price=1.40;  cache_read_price=0.26;  cache_write_price=1.40  ;; # z.ai promo: free cache-write, write_overhead 0
+        gpt-5*)         input_price=5.00;  cache_read_price=0.50;  cache_write_price=5.00  ;; # gpt-5.5 standard tier: no write premium, write_overhead 0
         *)              input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ;;
     esac
     read_savings_rate=$(awk  -v i="$input_price" -v r="$cache_read_price"  'BEGIN{printf "%.8f",(i-r)/1000000}')

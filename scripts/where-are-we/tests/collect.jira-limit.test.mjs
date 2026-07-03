@@ -3,11 +3,16 @@
 // with no --limit. The CLI defaults to --limit 25, and with Done in the filter
 // (hundreds of historical tickets) the 25-row page filled with To-Do rows — live
 // In-Progress tickets never entered the ledger ("In flight: none" while work was
-// in progress). These tests pin the fix: per-status queries with an explicit high
-// limit, plus a Done read scoped to the active in-flight keys (for self-clear).
+// in progress). These tests pin the fix: an In-Progress project-wide read with an
+// explicit high limit, plus an all-status by-key read scoped to the active
+// in-flight keys (for self-clear + footprint-bearing To-Do surfacing).
+//
+// HIMMEL-679: the blanket `--status 'To Do'` read was DROPPED — it folded the
+// whole backlog into "Other in-flight". A To-Do ticket now surfaces only via the
+// by-key read (an open PR / a ledger breadcrumb seeds it into activeKeys).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jiraQueries, main } from '../collect.mjs';
@@ -16,11 +21,15 @@ const statusOf = (q) => q[q.indexOf('--status') + 1];
 const isStatusQuery = (q) => q.includes('--status');
 const isKeyQuery = (q) => q.some((a) => typeof a === 'string' && a.startsWith('key in ('));
 
-test('jiraQueries: pulls In Progress and To Do as separate queries (no combined comma filter)', () => {
+test('jiraQueries: reads In Progress project-wide (no combined comma filter)', () => {
   const statuses = jiraQueries([]).filter(isStatusQuery).map(statusOf);
   assert.ok(statuses.includes('In Progress'), 'must query In Progress on its own');
-  assert.ok(statuses.includes('To Do'), 'must query To Do on its own');
   assert.ok(!statuses.some((s) => s.includes(',')), 'must NOT use a combined comma status filter (the truncation source)');
+});
+
+test('jiraQueries: does NOT issue a blanket To-Do status read (HIMMEL-679 flood fix)', () => {
+  const statuses = jiraQueries([]).filter(isStatusQuery).map(statusOf);
+  assert.ok(!statuses.includes('To Do'), 'the whole-backlog To-Do read is dropped; To-Do surfaces only by footprint key');
 });
 
 test('jiraQueries: every status query carries an explicit --limit above the CLI default of 25', () => {
@@ -65,4 +74,28 @@ test('main: derives active in-flight ticket keys from the ledger and scopes the 
   };
   main(['--ledger', ledger, '--now', '2026-02-01T00:00:00Z'], { readers });
   assert.deepEqual(captured, ['HIMMEL-1'], 'only the non-terminal ticket key is passed for the by-key status read');
+});
+
+test('main: a footprint-bearing To-Do ticket surfaces as a to-do record via the by-key read (end-to-end, no blanket To-Do read)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'waw-jira-todo-'));
+  const ledger = join(dir, 'ledger.jsonl');
+  // Prior-pass breadcrumb: HIMMEL-9 was in-progress, so it is a non-terminal
+  // ledger key and activeTicketKeys seeds it into the by-key read.
+  writeFileSync(ledger,
+    JSON.stringify({ ts: '2026-01-01T00:00:00Z', source: 'jira', key: 'HIMMEL-9', kind: 'ticket', status: 'in-progress' }) + '\n');
+
+  const readers = {
+    // The by-key read now reports HIMMEL-9 as To Do (it moved back to the
+    // backlog). Without the blanket To-Do read, the footprint key is the ONLY
+    // path that carries it — assert it still lands in the ledger as to-do.
+    readJira: (activeKeys) =>
+      activeKeys.includes('HIMMEL-9') ? [{ key: 'HIMMEL-9', status: 'To Do' }] : [],
+    readPRs: () => [],
+    readWorktrees: () => '',
+  };
+  main(['--ledger', ledger, '--now', '2026-02-01T00:00:00Z'], { readers });
+
+  const records = readFileSync(ledger, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const latest = records.filter((r) => r.key === 'HIMMEL-9').at(-1);
+  assert.equal(latest.status, 'to-do', 'the footprint To-Do ticket is recorded (normalized) via the by-key read');
 });
