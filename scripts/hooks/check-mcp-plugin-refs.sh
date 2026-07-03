@@ -41,6 +41,7 @@ is_exempt() {
         scripts/hooks/test-block-backend-tier.sh) return 0 ;;
         scripts/hooks/check-mcp-plugin-refs.sh) return 0 ;;
         scripts/hooks/test-check-mcp-plugin-refs.sh) return 0 ;;
+        scripts/hooks/test-block-glm-external-writes.sh) return 0 ;;
         *) return 1 ;;
     esac
 }

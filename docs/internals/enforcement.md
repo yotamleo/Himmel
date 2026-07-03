@@ -298,6 +298,50 @@ live only after `/himmel-update` (marketplace re-sync) + a fresh session.
 Paired artifacts: `scripts/lib/branch-shipped.sh` (predicate),
 `scripts/hooks/test-block-merged-pr-commit.sh` (smoke suite).
 
+### `block-glm-external-writes.sh` — GLM-lane external-write deny (HIMMEL-654)
+
+Fires on `Bash|PowerShell|mcp__.*`. The deterministic classifier substitute for
+third-party offload lanes, which have no auto-mode classifier and usually run
+`--permission-mode bypassPermissions` (GLM workers via `spawn-glm.ts`,
+`claude-glm` sessions). Detects the lane by `ANTHROPIC_BASE_URL` containing
+`api.z.ai` (set by `glm-env.ts` `buildGlmEnv` / the `scripts/claude-glm{,.ps1}`
+launchers, inherited by hook processes); off-lane sessions exit 0 on the first
+env check — near-zero overhead, before the jq check.
+
+On-lane it hard-blocks: `git push`, remote-URL rewrites (`git remote set-url`,
+`git config …url` — keeps the poisoned-pushurl tripwire un-poisonable), the
+entire `gh` CLI (PR/issue/API writes are parent-session actions), network CLIs
+(`curl`/`wget`/`Invoke-WebRequest`/`Invoke-RestMethod`/`iwr`/`irm`), and all
+`mcp__*` tools except the qmd carve-out below (v1 chores are repo-local; a
+blanket deny beats a write-verb list). `git commit`/`add`/`status`/`diff` and
+`bun`/`npm install` stay allowed.
+
+**Allowed on-lane (operator policy 2026-07-03 — audited-action carve-out):** the
+**Jira CLI** (`scripts/jira/` path or a bare `jira`) — writes are audited in
+Jira history and recoverable, so GLM workers may update status/comments and file
+followup tickets; and **qmd KB reads** (`mcp__plugin_qmd_qmd__*`, allowed before
+the blanket `mcp__*` deny). Atlassian MCP stays blocked — Jira routing is
+CLI-first (`block-backend-tier` enforces that in every session).
+
+**Fail-CLOSED:** missing `jq` on the GLM lane blocks (parity with
+`block-rogue-claude-schedule`). Command-position matching (start, or after
+`; & | (` — not space/quote) keeps commit-message prose mentioning "git push"
+from false-blocking. **Bypass:** `GLM_EXTERNAL_WRITES_OK=1` set in the shell
+that spawns the worker (session-sticky).
+
+Known limitations (accidental-shape guard, backstopped by the poisoned pushurl
+tripwire + the parent CR gate — the two load-bearing controls): a wrapper that
+displaces the command from command position is missed (env-prefixed
+`FOO=1 git push`, `sudo`/`xargs`/`timeout`, the dashed `git-push`), and
+in-process network is invisible (bun/node `fetch`, including the bun-invoked
+telegram bridge send path).
+
+**Delivery:** shipped via the **himmel-ops plugin `hooks.json`** (same
+exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as `block-docker-privesc`); live
+only after `/himmel-update` (marketplace re-sync) + a fresh session, AND the
+checkout workers branch from having pulled the merge. Spec:
+`scripts/hooks/test-block-glm-external-writes.sh`.
+
 ### `block-backend-tier.sh` — service-agnostic backend-routing guard (HIMMEL-400)
 
 Fires on `mcp__plugin_atlassian_atlassian__*` tool calls (and any other
