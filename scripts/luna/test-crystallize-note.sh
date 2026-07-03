@@ -70,6 +70,17 @@ EOF
 
 identity_lines() { grep -E '^(date|session_id|repo|branch|worktree|source):' "$1"; }
 
+# Flip a crystallized:false note to crystallized:true with an OLD timestamp, in
+# place (portable — no sed -i), so --refresh cases have an already-synthesized
+# note to re-consolidate. Mirrors the backfill suite's helper of the same shape.
+mark_crystallized() { # <note>
+    awk '
+        /^crystallized: false$/ { print "crystallized: true"; next }
+        /^crystallized_at:$/ { print "crystallized_at: 2026-01-01T00:00:00Z"; next }
+        { print }
+    ' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+
 # --- Case 1: success — sections filled, crystallized true, identity preserved --
 SB="$(mktemp -d)"
 NOTE="$SB/note.md"; TR="$SB/t.jsonl"
@@ -252,11 +263,7 @@ rm -rf "$SB"
 SB="$(mktemp -d)"
 NOTE="$SB/note.md"; TR="$SB/t.jsonl"
 write_note "$NOTE"; printf '{}\n' > "$TR"
-awk '
-    /^crystallized: false$/ { print "crystallized: true"; next }
-    /^crystallized_at:$/ { print "crystallized_at: 2026-01-01T00:00:00Z"; next }
-    { print }
-' "$NOTE" > "$NOTE.tmp" && mv "$NOTE.tmp" "$NOTE"
+mark_crystallized "$NOTE"
 env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success CRYSTALLIZE_REFRESH=1 \
     CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T09:00:00Z" \
     bash "$CRYS" "$NOTE" "$TR"
@@ -269,11 +276,7 @@ rm -rf "$SB"
 SB="$(mktemp -d)"
 NOTE="$SB/note.md"; TR="$SB/t.jsonl"
 write_note "$NOTE"; printf '{}\n' > "$TR"
-awk '
-    /^crystallized: false$/ { print "crystallized: true"; next }
-    /^crystallized_at:$/ { print "crystallized_at: 2026-01-01T00:00:00Z"; next }
-    { print }
-' "$NOTE" > "$NOTE.tmp" && mv "$NOTE.tmp" "$NOTE"
+mark_crystallized "$NOTE"
 SHA_BEFORE="$( { sha256sum "$NOTE" 2>/dev/null || shasum -a 256 "$NOTE"; } | awk '{print $1}')"
 env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=noop CRYSTALLIZE_REFRESH=1 \
     CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T09:00:00Z" \
@@ -291,11 +294,7 @@ rm -rf "$SB"
 SB="$(mktemp -d)"
 NOTE="$SB/note.md"; TR="$SB/t.jsonl"
 write_note "$NOTE"; printf '{}\n' > "$TR"
-awk '
-    /^crystallized: false$/ { print "crystallized: true"; next }
-    /^crystallized_at:$/ { print "crystallized_at: 2026-01-01T00:00:00Z"; next }
-    { print }
-' "$NOTE" > "$NOTE.tmp" && mv "$NOTE.tmp" "$NOTE"
+mark_crystallized "$NOTE"
 SHA_BEFORE="$( { sha256sum "$NOTE" 2>/dev/null || shasum -a 256 "$NOTE"; } | awk '{print $1}')"
 env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=corrupt CRYSTALLIZE_REFRESH=1 \
     CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T09:00:00Z" \
@@ -305,6 +304,34 @@ if [ "$SHA_BEFORE" = "$SHA_AFTER" ]; then pass "refresh(corrupt): note restored 
 if grep -q '^crystallized_at: 2026-01-01T00:00:00Z$' "$NOTE"; then pass "refresh(corrupt): crystallized_at NOT re-stamped"; else fail "refresh(corrupt): crystallized_at wrongly re-stamped"; fi
 if grep -q '^crystallized: true$' "$NOTE"; then pass "refresh(corrupt): crystallized still true after rollback"; else fail "refresh(corrupt): crystallized flag lost in rollback"; fi
 if [ -z "$(find "$SB" -name '*.snap.*' 2>/dev/null)" ]; then pass "refresh(corrupt): no snapshot temp left behind"; else fail "refresh(corrupt): snapshot temp leaked"; fi
+rm -rf "$SB"
+
+# --- Case R7: 3rd positional rules arg ALONE (env unset) reaches the prompt -----
+# R3 proves env beats positional; this proves the positional fallback works on its
+# own when CRYSTALLIZE_RULES_FILE is unset.
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"; RULES="$SB/pos-only-rules.txt"; ARGVD="$SB/argv.txt"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+printf 'POSITIONAL_ONLY_RULES_MARKER\n' > "$RULES"
+env -u CRYSTALLIZE_RULES_FILE CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ARGV_DUMP="$ARGVD" \
+    bash "$CRYS" "$NOTE" "$TR" "$RULES"
+if grep -qF 'POSITIONAL_ONLY_RULES_MARKER' "$ARGVD" 2>/dev/null; then pass "rules(positional): 3rd positional rules arg reaches the prompt"; else fail "rules(positional): positional rules not in prompt"; fi
+if grep -qF 'begin operator rules' "$ARGVD" 2>/dev/null; then pass "rules(positional): delimited operator-rules block present"; else fail "rules(positional): no operator-rules delimiter"; fi
+rm -rf "$SB"
+
+# --- Case R8: existing but EMPTY rules file — no rules block, run still proceeds -
+# The empty-content guard ([ -n "$_rules_content" ]) must skip the block for a
+# zero-byte rules file while the crystallize run itself proceeds normally.
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"; RULES="$SB/empty-rules.txt"; ARGVD="$SB/argv.txt"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+: > "$RULES"
+env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ARGV_DUMP="$ARGVD" \
+    CRYSTALLIZE_RULES_FILE="$RULES" bash "$CRYS" "$NOTE" "$TR"
+if ! grep -qF 'begin operator rules' "$ARGVD" 2>/dev/null; then pass "rules(empty): no operator-rules block for a zero-byte rules file"; else fail "rules(empty): rules block wrongly present for empty file"; fi
+if grep -q '^crystallized: true$' "$NOTE"; then pass "rules(empty): run still proceeds normally"; else fail "rules(empty): run did not proceed"; fi
 rm -rf "$SB"
 
 # --- Case 9: real-claude smoke (OPT-IN: CRYSTALLIZE_REAL_CLAUDE=1) --------------

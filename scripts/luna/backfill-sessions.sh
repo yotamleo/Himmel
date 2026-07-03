@@ -140,7 +140,9 @@ while [ $# -gt 0 ]; do
         --refresh)
             REFRESH=true; shift ;;
         --rules)
-            shift; RULES_FILE="$1"; shift ;;
+            shift
+            case "${1:-}" in "") printf 'backfill: --rules needs a value\n' >&2; exit 1 ;; *) RULES_FILE="$1" ;; esac
+            shift ;;
         --limit)
             shift
             case "$1" in [0-9]*) RECRYS_LIMIT="$1" ;; *) printf 'backfill: --limit needs a number\n' >&2; exit 1 ;; esac
@@ -888,6 +890,10 @@ _recrystallize_one() { # <note>
         h_before="$(_sha256 "$note" | awk '{print $1}')"
         CRYSTALLIZE_REFRESH=1 bash "$SCRIPT_DIR/crystallize-note.sh" "$note" "$jl" || true
         h_after="$(_sha256 "$note" | awk '{print $1}')"
+        # Benign race: a concurrent live-hook crystallization of the SAME note
+        # could flip the hash between these two reads and get counted as a refresh
+        # here. Acceptable for a batch op — worst case a +1 miscount in the summary,
+        # never data loss (the crystallizer is idempotent + snapshot-restoring).
         if [ -n "$h_before" ] && [ -n "$h_after" ] && [ "$h_before" != "$h_after" ]; then
             CNT_RECRYS=$((CNT_RECRYS + 1))
             printf 'recrystallize: refreshed %s (%d)\n' "$(basename "$note")" "$CNT_RECRYS" >&2

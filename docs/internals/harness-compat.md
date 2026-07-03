@@ -495,7 +495,7 @@ differences (GPT-5 prompting guide + the `everything-codex` migration):
 
 The same per-model adaptation applies to the CR critic panel (HIMMEL-473):
 GPT/codex critics get contradiction-resolution + spec tags; open models
-(qwen/kimi) need stronger JSON-obedience scaffolding; Claude adjudicators get
+(qwen) need stronger JSON-obedience scaffolding; Claude adjudicators get
 XML/`IMPORTANT`. When reviewing prompt behavior, use the status ledgers too:
 `CR_USAGE_LOG=1` records estimated prompt/response usage, and
 `scripts/cr/cr-scores.sh` summarizes availability, agreement, drop advice, and

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # scripts/cr/critic-panel.sh — run the free-cloud critic panel over a diff (HIMMEL-415).
-# Reads a unified diff on stdin, runs each tier=free registry critic via
-# critic-first-pass.sh, merges findings (global renumber, per-model slug IDs).
+# Reads a unified diff on stdin, runs each registry critic in the CRITIC_PANEL_TIERS
+# set (default free) via critic-first-pass.sh, merges findings (global renumber, per-model slug IDs).
 # Stdout = merged findings block. Stderr = panel-availability lines.
 # Exit 0 = >=1 responded; 1 = all failed (caller -> claude-only). Bash 3.2-safe.
 # Env: CRITIC_PANEL_TIERS — comma-separated tier names to include (default: free).
-#      In /pr-check, this is set to $CR_PROFILE (the opt-in profile; claude-only when unset).
+#      In /pr-check, this is set to $CR_PROFILE (the opt-in profile; unset/empty runs the
+#      default free panel, claude-only happens only at CR_PROFILE=none).
 #      CRITIC_TIMEOUT_SECS — per-member wall-clock timeout in seconds (default 150;
 #          bounds qwen3coder's ~2min typical latency; raise it if slow runs get killed).
 #          Requires GNU coreutils 'timeout'; gracefully degrades without it.
