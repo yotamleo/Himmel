@@ -1,4 +1,6 @@
 import { spawn } from "bun";
+import { buildGlmEnv, GLM_MODEL_ALIAS } from "./glm-env";
+import { fileURLToPath } from "node:url";
 
 // Bounded-run spawn helper. Runs an INTERACTIVE `claude "<prompt>"` with stdin
 // closed (EOF) so the session does one turn then exits cleanly — empirically
@@ -23,12 +25,37 @@ function resolveModel(): string {
 }
 // permissionMode (HIMMEL-578): when set, injected as `--permission-mode <mode>`
 // BEFORE the prompt.
-export function buildRunArgs(prompt: string, permissionMode?: PermissionMode) {
-  const model = resolveModel();
+// modelOverride (HIMMEL-654 GLM lane): GLM runs pin their alias explicitly and
+// MUST NOT consult TELEGRAM_CLAUDE_MODEL — a poller-pinned raw Anthropic model
+// id must never leak to the Z.ai endpoint (spec D3).
+export function buildRunArgs(prompt: string, permissionMode?: PermissionMode, modelOverride?: string) {
+  const model = modelOverride ?? resolveModel();
   const cmd = permissionMode
     ? ["claude", "--model", model, "--permission-mode", permissionMode, prompt]
     : ["claude", "--model", model, prompt];
   return { cmd, stdin: "ignore" as const };
+}
+
+// fileURLToPath is the cross-platform form — new URL(...).pathname yields a
+// broken leading-slash path on Windows (/C:/Users/...). Exported for the test.
+export const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+
+// glmChildEnv (HIMMEL-654): the GLM lane's child env — the current process env
+// with the GLM block (buildGlmEnv) merged over it, and TELEGRAM_OWN_POLLER
+// stripped so the spawned session never owns the poller.
+export function glmChildEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, ...buildGlmEnv(REPO_ROOT) };
+  delete env.TELEGRAM_OWN_POLLER;
+  return env;
+}
+
+// env selection per lane — exported so the lane wiring itself is unit-tested
+// (not only the glmChildEnv helper).
+export function sessionEnv(lane?: "glm"): Record<string, string | undefined> {
+  if (lane === "glm") return glmChildEnv();
+  const e: Record<string, string | undefined> = { ...process.env };
+  delete e.TELEGRAM_OWN_POLLER;
+  return e;
 }
 
 // The bounded-run PROMPT. Tells the spawned claude session what it is, where to
@@ -99,8 +126,15 @@ export function killTree(pid: number, kill: (sig?: number | NodeJS.Signals) => v
   try { kill("SIGKILL"); } catch {}
 }
 
-export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode): Promise<{ code: number; capped: boolean; blocked: boolean; pid: number; tail?: string }> {
-  const env = { ...process.env }; delete (env as any).TELEGRAM_OWN_POLLER;
+// Lane → model pin: the GLM lane pins its alias (→ glm-5.2 via
+// ANTHROPIC_DEFAULT_OPUS_MODEL) and MUST NOT inherit TELEGRAM_CLAUDE_MODEL; any
+// other lane leaves the model to resolveModel. Extracted so the seam is unit-tested.
+export function laneModel(lane?: "glm"): string | undefined {
+  return lane === "glm" ? GLM_MODEL_ALIAS : undefined;
+}
+
+export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm"): Promise<{ code: number; capped: boolean; blocked: boolean; pid: number; tail?: string }> {
+  const env = sessionEnv(lane);
   // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
   // and runs with stdin closed (EOF) so it CANNOT answer a permission prompt. Any
@@ -113,7 +147,7 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   // else the FILE-and-commit flow deadlocks on un-answerable prompts. bypass does
   // NOT loosen containment: the VAULT's PreToolUse hooks (e.g. block-cloud-egress)
   // still fire and HARD-block web/cloud/push. Non-vault sessions keep the default.
-  const { cmd } = buildRunArgs(prompt, permissionMode);
+  const { cmd } = buildRunArgs(prompt, permissionMode, laneModel(lane));
   const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
   const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000);

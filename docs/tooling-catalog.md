@@ -421,6 +421,49 @@ omitted-key and unknown-key red paths).
 
 ---
 
+## spawn-glm (`scripts/telegram/spawn-glm.ts`, HIMMEL-654)
+
+**What:** Poller-free CLI that spawns an unattended GLM-lane Claude worker for
+the offload loop (spawn → inspect → validate → push-by-validator). It creates a
+fresh git worktree + `glm/<slug>` branch, resolves the GLM env block
+(`glm-env.ts` — `ZAI_API_KEY` from shell env or the himmel repo `.env`, launcher
+-parity `ANTHROPIC_*` vars), runs the D2 egress guard (`glm-guard.ts`), composes
+the worker prompt with minted `outbox.jsonl` / `context.md` paths, and drives
+the run through the `runSession(…, lane:"glm")` seam in `run.ts`. GLM runs pin
+`--model opus` (→ `glm-5.2`) and ignore `TELEGRAM_CLAUDE_MODEL`. Sessions live
+under `<BRIDGE_ROOT>/glm-sessions/` (default `~/.claude/handover/bridge/`) —
+**outside** the poller's `sessions/` tree, so nothing here is double-spawned or
+Telegram-flushed. Full loop, permission guidance, and honest enforcement
+inventory in [`docs/glm-offload.md`](glm-offload.md).
+
+```
+bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode <mode>]
+```
+
+Prints exactly three inspect-contract lines on exit: `session-dir:`,
+`transcript-dir:` (`~/.claude/projects/<escaped-worktree-cwd>/`), `exit:`.
+Exit codes: **2** usage error / plan refusal (non-himmel cwd, settings
+conflict, missing ZAI key); **3** guard refusal (PHI marker, phi-root, denylist,
+unreadable guard config); **1** operational failure; else the worker's exit code.
+
+**Status:** offload-spike artifact. The default-path push block
+(`extensions.worktreeConfig` + `remote.origin.pushurl=DISABLED-glm-quarantine`)
+is a **tripwire, not a wall** — a `bypassPermissions` worker inherits operator
+git credentials via the shared `~/.claude`; the load-bearing control is the CR
+gate (no GLM branch merges except by the validating session). D2 guards are
+dormant-by-construction in v1 (himmel-worktree cwd scope). Uses GLM flat-rate
+Coding-Plan quota, sanctioned by the operator directive — the per-token block
+gates the WS2 router only, not this direct-CLI lane.
+
+**Acceptance:** bun unit suite in the telegram bridge (guard red paths, env
+builder block + missing-key throw + quote-strip, `runSession` lane env merge
+with argv shape unchanged, GLM model pin ignoring `TELEGRAM_CLAUDE_MODEL`,
+settings-conflict preflight, worktree pushurl poison, prompt composition
+embedding the minted session paths); the live GLM-lane acceptance + offload-loop
+legs are recorded in [`docs/glm-offload.md`](glm-offload.md).
+
+---
+
 ## Superpowers (plugin: `superpowers@claude-plugins-official`)
 
 **What:** Workflow orchestration skills. Invoked via `/skill` tool.
