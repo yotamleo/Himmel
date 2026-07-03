@@ -207,4 +207,45 @@ PATH="$NONODE_PATH" "$BASH_ABS" "$LINT" "$WORK/compliant.json" >"$OUT" 2>"$NODE_
 if [ "$nrc" -ne 4 ]; then echo "FAIL: node-missing case wrong exit ($nrc, want 4)"; cat "$NODE_ERR"; FAILS=$((FAILS+1)); else echo "ok: node-missing exits 4"; fi
 { grep -qF "omniroute-config-lint: node is required" "$NODE_ERR" && echo "ok: node-missing message on stderr"; } || { echo "FAIL: node-missing message not on stderr"; cat "$NODE_ERR"; FAILS=$((FAILS+1)); }
 
+# --- T21 (CR F6, #836): a DUPLICATE JSON key makes the config ambiguous. Both
+# engines (node JSON.parse, PS ConvertFrom-Json) silently keep the LAST value, so a
+# duplicate-key config could lint differently per platform if an engine ever kept
+# FIRST. The lint now rejects duplicate keys explicitly (pre-parse scan) on BOTH
+# twins, so the outcome is deterministic and cross-platform identical. This case
+# injects a duplicate autoRoutingEnabled whose LAST value is `false` (compliant) —
+# WITHOUT detection the lint would PASS (exit 0), so the exit-1 + dup message here
+# PROVES detection fired, not coincidental keep-last catching a non-compliant last
+# value. The .ps1 twin asserts the IDENTICAL outcome + message (parity). ---
+DUP_JSON="$WORK/dupkey.json"
+BASE="$BASE_JSON" node -e 'const fs=require("fs"); const d=process.env.BASE.replace("{\"autoRoutingEnabled\":false,", "{\"autoRoutingEnabled\":true,\"autoRoutingEnabled\":false,"); fs.writeFileSync(process.argv[1], d);' "$DUP_JSON"
+t "duplicate-key config rejected (exit 1, both twins)" 1 "$DUP_JSON"
+have 'FAIL: duplicate JSON key "autoRoutingEnabled"'
+
+# --- T22 (CR F6, #836 — CR round 2): NESTED duplicate key. The engine keys this
+# lint exists to catch live in nested objects (rtkConfig.enabled etc.), and the
+# scanner's per-object stack is what distinguishes a real nested dup from the
+# many legitimate same-name "enabled" keys across DIFFERENT objects (which T1's
+# compliant PASS already guards). A dup INSIDE one nested object must flag —
+# this catches any future "flatten/scan-root-only" regression that T21's
+# top-level case would miss. LAST value compliant (false) for the same
+# detection-proof reasoning as T21. The .ps1 twin asserts the IDENTICAL
+# outcome + message (parity). ---
+NESTED_DUP_JSON="$WORK/nesteddupkey.json"
+BASE="$BASE_JSON" node -e 'const fs=require("fs"); const d=process.env.BASE.replace("\"rtkConfig\":{\"enabled\":false}", "\"rtkConfig\":{\"enabled\":true,\"enabled\":false}"); if (d===process.env.BASE) { console.error("T22 fixture injection did not match BASE"); process.exit(1); } fs.writeFileSync(process.argv[1], d);' "$NESTED_DUP_JSON"
+t "nested duplicate-key config rejected (exit 1, both twins)" 1 "$NESTED_DUP_JSON"
+have 'FAIL: duplicate JSON key "enabled"'
+
+# --- T23 (CR F6, #836 — CR round 2): CASE-VARIANT sibling keys — a DOCUMENTED
+# ENGINE DIVERGENCE, deliberately pinned per twin (not parity). JSON keys are
+# case-sensitive: node's JSON.parse accepts {"enabled":…,"Enabled":…} as two
+# distinct keys → the scan (case-sensitive) sees no dup → this twin PASSes exit 0.
+# PowerShell's ConvertFrom-Json REJECTS keys differing only in case ("keys with
+# different casing") BEFORE the scan runs → the .ps1 twin exits 2 (invalid JSON,
+# fail-closed — the safe direction). The exact-dup parity guarantee (T21/T22) is
+# scoped to exact-case duplicates; this case pins each twin's actual behavior so
+# neither drifts silently. ---
+CASE_JSON="$WORK/casevariantkey.json"
+BASE="$BASE_JSON" node -e 'const fs=require("fs"); const d=process.env.BASE.replace("\"rtkConfig\":{\"enabled\":false}", "\"rtkConfig\":{\"enabled\":false,\"Enabled\":false}"); if (d===process.env.BASE) { console.error("T23 fixture injection did not match BASE"); process.exit(1); } fs.writeFileSync(process.argv[1], d);' "$CASE_JSON"
+t "case-variant sibling keys accepted by node, no dup flag (exit 0; .ps1 twin exits 2 — documented divergence)" 0 "$CASE_JSON"
+
 echo; [ "$FAILS" -eq 0 ] && echo "ALL PASS" || { echo "$FAILS failure(s)"; exit 1; }

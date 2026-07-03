@@ -42,6 +42,60 @@ if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
   process.exit(2);
 }
 
+// Pre-parse duplicate-key scan (CR F6, #836). JSON.parse collapses duplicate keys
+// to the LAST value SILENTLY (and PS ConvertFrom-Json does the same) — so a config
+// with a duplicate key is ambiguous: the "real" value is engine-defined, not
+// author-defined. For a positive-assertion lint that must PROVABLY catch enabled
+// engines, trusting last-wins is a hole (one day both engines could keep FIRST and
+// pass a config that still contains an enabled=true). Scan the raw text for a key
+// that appears twice within the SAME object and FAIL closed on any, before the
+// (now-ambiguous) engine-key assertions run. Operates on already-validated JSON, so
+// braces/quotes are balanced and string values' internal {/}/:/, can't trip it.
+// SCOPE (CR round 2): the cross-platform parity guarantee covers EXACT-case
+// duplicates (T21/T22). Case-VARIANT sibling keys are an engine divergence pinned
+// by T23: this twin accepts them (distinct keys, exit 0); ConvertFrom-Json rejects
+// them pre-scan (.ps1 exits 2, fail-closed). Keys compare as RAW escaped text —
+// a unicode-escaped key (backslash-u0061) and its literal twin ("a") read as
+// different keys (shared symmetric blind spot, adversarial-only input).
+(function scanDupKeys(raw) {
+  var i = 0, n = raw.length;
+  var stack = [];                         // per-object key-sets; top = innermost object
+  var dups = [];
+  function readStr() {                    // assumes raw[i] == '"'; returns key, advances past close quote
+    i++;                                  // opening quote
+    var s = "";
+    while (i < n) {
+      var c = raw.charAt(i);
+      if (c === "\\") { s += raw.charAt(i + 1); i += 2; continue; }
+      if (c === "\"") { i++; return s; }
+      s += c; i++;
+    }
+    return s;                             // unterminated (valid JSON can't reach here)
+  }
+  while (i < n) {
+    var ch = raw.charAt(i);
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") { i++; continue; }
+    if (ch === "{") { stack.push(Object.create(null)); i++; continue; }
+    if (ch === "}") { if (stack.length) stack.pop(); i++; continue; }
+    if (ch === "[" || ch === "]" || ch === ":" || ch === ",") { i++; continue; }
+    if (ch === "\"") {
+      var key = readStr();
+      var j = i;                           // peek next non-ws to tell key from string value
+      while (j < n) { var cj = raw.charAt(j); if (cj !== " " && cj !== "\t" && cj !== "\r" && cj !== "\n") break; j++; }
+      if (j < n && raw.charAt(j) === ":") {
+        var top = stack.length ? stack[stack.length - 1] : null;
+        if (top) { if (top[key]) dups.push(key); else top[key] = 1; }
+      }
+      continue;
+    }
+    i++;                                  // number/true/false/null chars — none are structural
+  }
+  if (dups.length) {
+    for (var d = 0; d < dups.length; d++) process.stderr.write("FAIL: duplicate JSON key \"" + dups[d] + "\"\n");
+    process.exit(1);
+  }
+})(raw);
+
 var fails = [];
 var asserted = 0;
 function fail(m) { fails.push("FAIL: " + m); }

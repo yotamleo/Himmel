@@ -78,6 +78,79 @@ function Assert-Off([string]$path, $leaf) {
   if (-not (($v -is [string]) -and ($v -eq 'off'))) { Add-Fail "$path expected off, got $(Get-Show $v)" }
 }
 
+function Find-DuplicateKeys {
+  # Pre-parse duplicate-key scan (CR F6, #836). ConvertFrom-Json collapses duplicate
+  # keys to the LAST value silently (same as node JSON.parse), so a duplicate-key
+  # config is ambiguous: the "real" value is engine-defined, not author-defined. For a
+  # positive-assertion lint that must PROVABLY catch enabled engines, trusting
+  # last-wins is a hole (one day both engines could keep FIRST and pass a config that
+  # still contains an enabled=true). Scan the raw text for a key that appears twice
+  # within the SAME object and FAIL closed on any, before the (now-ambiguous)
+  # engine-key assertions run. Operates on already-validated JSON, so braces/quotes
+  # are balanced and string values' internal {/}/:/, can't trip it. Twin of the
+  # bash/node scan in scripts/omniroute-config-lint.sh — same message lines + exit 1
+  # so both platforms produce the SAME outcome (parity) for EXACT-case duplicates
+  # (T21/T22 scope). Case-VARIANT sibling keys never reach this scan: ConvertFrom-
+  # Json rejects them ("keys with different casing") → exit 2 fail-closed, while the
+  # node twin accepts them (distinct keys, exit 0) — an engine divergence pinned by
+  # T23. Keys compare as RAW escaped text — a unicode-escaped key
+  # (backslash-u0061) and its literal twin ("a") read as different keys
+  # (shared symmetric blind spot, adversarial-only input).
+  param([string]$Raw)
+  $dups = [System.Collections.Generic.List[string]]::new()
+  # Ordinal (case-SENSITIVE) key-sets: JSON keys are case-sensitive and the node
+  # twin's Object.create(null) compares case-sensitively — a default @{} hashtable
+  # is case-INSENSITIVE and would flag {"enabled":…,"Enabled":…} as a duplicate on
+  # Windows only, breaking the cross-platform-identical outcome this scan exists
+  # to guarantee (CR round-2 finding).
+  $stack = [System.Collections.Generic.Stack[System.Collections.Generic.HashSet[string]]]::new()   # per-object key-sets; top = innermost object
+  $chars = $Raw.ToCharArray()
+  $i = 0; $n = $chars.Length
+  while ($i -lt $n) {
+    $ch = $chars[$i]
+    if ($ch -eq ' ' -or $ch -eq "`t" -or $ch -eq "`r" -or $ch -eq "`n") { $i++; continue }
+    if ($ch -eq '{') { $stack.Push([System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)); $i++; continue }
+    if ($ch -eq '}') { if ($stack.Count -gt 0) { [void]$stack.Pop() }; $i++; continue }
+    if ($ch -eq '[' -or $ch -eq ']' -or $ch -eq ':' -or $ch -eq ',') { $i++; continue }
+    if ($ch -eq '"') {
+      $i++   # opening quote; readStr returns the key, advancing past the close quote
+      $sb = [System.Text.StringBuilder]::new()
+      while ($i -lt $n) {
+        $c = $chars[$i]
+        if ($c -eq '\') { [void]$sb.Append($chars[$i + 1]); $i += 2; continue }
+        if ($c -eq '"') { $i++; break }
+        [void]$sb.Append($c); $i++
+      }
+      $key = $sb.ToString()
+      $j = $i   # peek next non-ws to tell a key from a string value
+      while ($j -lt $n) {
+        $cj = $chars[$j]
+        if ($cj -ne ' ' -and $cj -ne "`t" -and $cj -ne "`r" -and $cj -ne "`n") { break }
+        $j++
+      }
+      if ($j -lt $n -and $chars[$j] -eq ':') {
+        if ($stack.Count -gt 0) {
+          $top = $stack.Peek()
+          if (-not $top.Add($key)) { $dups.Add($key) }   # HashSet.Add: $false = already present
+        }
+      }
+      continue
+    }
+    $i++   # number/true/false/null chars — none are structural
+  }
+  return ,$dups
+}
+
+# CR F6 (#836): reject a duplicate-key config as ambiguous BEFORE the engine-key
+# assertions run (see Find-DuplicateKeys). Runs after all helpers are defined and
+# after the root-object check; short-circuits with exit 1 + a per-dup FAIL line on
+# stderr — same lines + exit as the bash twin (parity).
+$dupKeys = Find-DuplicateKeys -Raw $raw
+if ($dupKeys.Count -gt 0) {
+  foreach ($k in $dupKeys) { [Console]::Error.WriteLine("FAIL: duplicate JSON key `"$k`"") }
+  exit 1
+}
+
 $compLeaf = Get-Leaf $doc 'compression'
 if (-not $compLeaf.present) {
   Add-Fail 'compression object is missing (expected present with every engine disabled)'

@@ -407,7 +407,9 @@ never pass as "nothing enabled found"), any entry is enabled, any unknown
 key appears inside `compression` (a renamed engine can't sneak in;
 `optimization` = SQLite tuning, excluded), or the free-lane switch
 `autoRoutingEnabled` is not explicitly `false`. Exit codes: 0 PASS / 1
-findings / 2 usage-or-unparseable.
+findings / 2 usage / unreadable / unparseable input (mirrors the script
+header; covers wrong arg count, an unreadable file, invalid JSON, and a
+non-object JSON root).
 
 **Status:** the router deploy itself (HIMMEL-666 Task 2) is operator-gated
 (per-token lane decision) — these artifacts are built-and-tested ahead of it;

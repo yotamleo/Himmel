@@ -8,7 +8,9 @@
   3 = egress refusal, 4 = failed seed). A guard config (phi-roots / egress-denylist)
   that exists but is not a readable regular file also fails CLOSED with the bash-parity
   message ("guard config <path> exists but is not a readable file — failing closed.")
-  and exit 3. Spec: himmel/specs/design/ws1-claude-glm-wrapper.md
+  and exit 3. Specs: WS1 wrapper himmel/specs/design/ws1-claude-glm-wrapper.md (the
+  wrapper this edits); WS2 routed design himmel/specs/design/ws2-router-omniroute-pilot.md
+  + plan himmel/specs/plan/ws2-router-omniroute-pilot.md (routed-specific rationale).
 
   Flags LEAD, then everything else passes to `claude` verbatim - mirrors the
   bash flags-lead rule. This is deliberately a PLAIN script with NO declared
@@ -187,22 +189,28 @@ function Copy-SeedConfig {
       exit 4
     }
   }
-  foreach ($f in 'CLAUDE.md', 'RTK.md') {
-    $p = Join-Path $src $f
-    if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ConfigDir $f) -Force }
+  # Parity with the bash twin's seed_fail=4 — any seed failure must exit 4, not raw 1 (CR F9, #830).
+  try {
+    foreach ($f in 'CLAUDE.md', 'RTK.md') {
+      $p = Join-Path $src $f
+      if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ConfigDir $f) -Force }
+    }
+    foreach ($d in 'commands', 'skills', 'hooks', 'agents') {
+      $p = Join-Path $src $d
+      if (Test-Path -LiteralPath $p -PathType Container) { Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force }
+    }
+    foreach ($p in 'installed_plugins.json', 'known_marketplaces.json') {
+      $sp = Join-Path $src (Join-Path 'plugins' $p)
+      if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination (Join-Path $ConfigDir (Join-Path 'plugins' $p)) -Force }
+    }
+    $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
+    if (Test-Path -LiteralPath $mp -PathType Container) { Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force }
+    # sentinel LAST: only a fully-populated seed reads as "seeded"
+    New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
+  } catch {
+    [Console]::Error.WriteLine("claude-routed: FAILED to seed config dir ($($_.Exception.Message)). Refusing to launch with a half-seeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-routed).")
+    exit 4
   }
-  foreach ($d in 'commands', 'skills', 'hooks', 'agents') {
-    $p = Join-Path $src $d
-    if (Test-Path -LiteralPath $p -PathType Container) { Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force }
-  }
-  foreach ($p in 'installed_plugins.json', 'known_marketplaces.json') {
-    $sp = Join-Path $src (Join-Path 'plugins' $p)
-    if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination (Join-Path $ConfigDir (Join-Path 'plugins' $p)) -Force }
-  }
-  $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
-  if (Test-Path -LiteralPath $mp -PathType Container) { Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force }
-  # sentinel LAST: only a fully-populated seed reads as "seeded"
-  New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
 }
 
 if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed) {

@@ -3,7 +3,10 @@
 # HIMMEL-654 WS2 (child HIMMEL-666). bash 3.2-safe. Copy-and-edit of scripts/claude-glm
 # (WS1 extensibility seam): ONLY the backend block differs — loopback router base URL
 # + an OmniRoute-issued client key. Everything else (guard, config-dir seeding, arg
-# handling, exit codes) is behaviour-identical. Spec: himmel/specs/design/ws1-claude-glm-wrapper.md
+# handling, exit codes) is behaviour-identical. Specs: WS1 wrapper
+# himmel/specs/design/ws1-claude-glm-wrapper.md (the wrapper this edits); WS2 routed
+# design himmel/specs/design/ws2-router-omniroute-pilot.md + plan
+# himmel/specs/plan/ws2-router-omniroute-pilot.md (routed-specific rationale).
 # shellcheck disable=SC1091  # load-dotenv.sh path issue
 set -u
 
