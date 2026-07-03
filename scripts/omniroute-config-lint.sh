@@ -14,7 +14,9 @@
 # prompt optimization) and is ignored.
 #
 # Usage: omniroute-config-lint.sh <config.json>
-# Exit:  0 = PASS, 1 = one or more FAILs, 2 = usage / unreadable / unparseable input.
+# Exit:  0 = PASS, 1 = one or more FAILs, 2 = usage / unreadable / unparseable input,
+#         4 = node runtime missing (JSON parsing is delegated to node; matches the
+#         claude-routed twins' node-missing=4 convention).
 #
 # JSON parsing is delegated to node (a himmel dependency — same precedent as
 # scripts/claude-glm sanitize_settings). bash 3.2-safe.
@@ -137,6 +139,9 @@ if (!has(doc, "compression")) {
   assertFalse("compression.cache.semanticCacheEnabled", leaf(cache, "semanticCacheEnabled"));
   assertFalse("compression.cache.promptCacheEnabled", leaf(cache, "promptCacheEnabled"));
 
+  // KEEP IN SYNC with the twin allowlist in scripts/omniroute-config-lint.ps1
+  // ($known) — the recognized-key set must match, or one twin flags a key the
+  // other silently accepts (a renamed/new engine sneaking past only one twin).
   var known = { enabled: 1, defaultMode: 1, autoTriggerMode: 1, rtkConfig: 1, cavemanConfig: 1, cavemanOutputMode: 1, ultra: 1, contextEditing: 1, languageConfig: 1, mcpDescriptionCompressionEnabled: 1, mcpAccessibilityConfig: 1, engines: 1, aggressive: 1, stackedPipeline: 1, cache: 1, optimization: 1 };
   var ck = Object.keys(comp);
   for (var k = 0; k < ck.length; k++) {
@@ -152,7 +157,10 @@ if (!has(doc, "autoRoutingEnabled")) {
 }
 
 if (fails.length) {
-  for (var f = 0; f < fails.length; f++) process.stdout.write(fails[f] + "\n");
+  // FAIL diagnostics go to stderr; the PASS confirmation stays on stdout so a
+  // passing lint emits exactly one stdout line (testable / pipeable), while a
+  // failing one writes nothing to stdout. Exit code is unchanged (1).
+  for (var f = 0; f < fails.length; f++) process.stderr.write(fails[f] + "\n");
   process.exit(1);
 }
 process.stdout.write("PASS: omniroute compression stack disabled (" + asserted + " keys asserted)\n");
@@ -160,4 +168,11 @@ process.exit(0);
 NODE
 )
 
+# Preflight: JSON parsing is delegated to node, so a missing node would otherwise
+# surface as a generic "node: command not found" (exit 127). Catch it up front with
+# a clear message + exit 4, matching the claude-routed twins' node-missing=4 contract.
+if ! command -v node >/dev/null 2>&1; then
+  echo "omniroute-config-lint: node is required (JSON parsing is delegated to node) but was not found on PATH." >&2
+  exit 4
+fi
 exec node -e "$LINT_JS" "$1"

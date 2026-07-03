@@ -18,6 +18,9 @@
 
   Usage: omniroute-config-lint.ps1 <config.json>
   Exit:  0 = PASS, 1 = one or more FAILs, 2 = usage / unreadable / unparseable input.
+  (The bash twin additionally exits 4 if its node runtime is absent — it delegates
+  JSON parsing to node; PS parses natively via ConvertFrom-Json and has no node
+  dependency, so it cannot hit that path.)
 
   JSON parsing uses ConvertFrom-Json natively (twin uses node); presence is probed
   via PSObject.Properties so an OMITTED key is distinguished from a disabled one.
@@ -162,6 +165,9 @@ else {
   Assert-False 'compression.cache.semanticCacheEnabled' (Get-Leaf $cache 'semanticCacheEnabled')
   Assert-False 'compression.cache.promptCacheEnabled' (Get-Leaf $cache 'promptCacheEnabled')
 
+  # KEEP IN SYNC with the twin allowlist in scripts/omniroute-config-lint.sh
+  # (var known) — the recognized-key set must match, or one twin flags a key the
+  # other silently accepts (a renamed/new engine sneaking past only one twin).
   $known = @('enabled', 'defaultMode', 'autoTriggerMode', 'rtkConfig', 'cavemanConfig', 'cavemanOutputMode', 'ultra', 'contextEditing', 'languageConfig', 'mcpDescriptionCompressionEnabled', 'mcpAccessibilityConfig', 'engines', 'aggressive', 'stackedPipeline', 'cache', 'optimization')
   foreach ($pr in $comp.PSObject.Properties) {
     if ($known -notcontains $pr.Name) {
@@ -180,7 +186,10 @@ elseif (-not (($ar.value -is [bool]) -and ($ar.value -eq $false))) {
 }
 
 if ($script:fails.Count -gt 0) {
-  foreach ($f in $script:fails) { Write-Output $f }
+  # FAIL diagnostics go to stderr; the PASS confirmation stays on stdout so a
+  # passing lint emits exactly one stdout line (testable / pipeable), while a
+  # failing one writes nothing to stdout. Exit code is unchanged (1).
+  foreach ($f in $script:fails) { [Console]::Error.WriteLine($f) }
   exit 1
 }
 Write-Output "PASS: omniroute compression stack disabled ($($script:asserted) keys asserted)"

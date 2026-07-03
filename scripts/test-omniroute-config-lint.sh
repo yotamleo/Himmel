@@ -92,6 +92,13 @@ mkcfg "$WORK/stack.json" 'c.compression.stackedPipeline=[{name:"x"}];'
 t "non-empty stackedPipeline fails" 1 "$WORK/stack.json"
 have "FAIL: compression.stackedPipeline expected an empty array, got 1 entry"
 
+# --- T9b: stackedPipeline with TWO entries -> FAIL using the PLURAL "entries"
+# branch (the length>1 arm of the entry/ies ternary; T9 only covers the 1-entry
+# "entry" arm). CR F1: this branch was untested on both twins. ---
+mkcfg "$WORK/stack2.json" 'c.compression.stackedPipeline=[{name:"x"},{name:"y"}];'
+t "two-entry stackedPipeline fails (plural)" 1 "$WORK/stack2.json"
+have "FAIL: compression.stackedPipeline expected an empty array, got 2 entries"
+
 # --- T10: wrong string value on defaultMode -> FAIL ---
 mkcfg "$WORK/mode.json" 'c.compression.defaultMode="aggressive";'
 t "wrong defaultMode fails" 1 "$WORK/mode.json"
@@ -119,6 +126,37 @@ t "reports all failures" 1 "$WORK/multi.json"
 have "FAIL: compression.ultra.enabled expected false, got true"
 have "FAIL: autoRoutingEnabled expected false, got <absent>"
 
+# --- T13b..T13f: defensive structural FAIL branches (CR F2). Each exercises a
+# guard the happy path never hits, so a future fail-open simplification is caught.
+# These mirror the .ps1 twin case-for-case (keep both twins' matrices in sync). ---
+# engines MISSING -> the structural guard fires (not the per-entry loop)
+mkcfg "$WORK/noeng.json" 'delete c.compression.engines;'
+t "engines missing fails" 1 "$WORK/noeng.json"
+have "FAIL: compression.engines missing (expected an object with every entry disabled)"
+
+# engines present but NOT an object -> the guard before the per-entry loop
+mkcfg "$WORK/engnonobj.json" 'c.compression.engines=true;'
+t "engines non-object fails" 1 "$WORK/engnonobj.json"
+have "FAIL: compression.engines expected an object, got true"
+
+# aggressive.toolStrategies MISSING -> the summarizer assert still passes; only
+# the toolStrategies structural guard fires
+mkcfg "$WORK/nots.json" 'delete c.compression.aggressive.toolStrategies;'
+t "toolStrategies missing fails" 1 "$WORK/nots.json"
+have "FAIL: compression.aggressive.toolStrategies missing (expected an object with every entry disabled)"
+
+# aggressive.toolStrategies entry that is a STRING (not bool, not object) -> the
+# `else` disabled-expected branch (T11/T11b cover only the object + bare-bool arms)
+mkcfg "$WORK/tsstr.json" 'c.compression.aggressive.toolStrategies={weird:"somestring"};'
+t "toolStrategies string entry fails" 1 "$WORK/tsstr.json"
+have "FAIL: compression.aggressive.toolStrategies.weird expected disabled, got somestring"
+
+# stackedPipeline MISSING -> the absent-key structural arm (T9/T9b cover
+# present-but-non-empty)
+mkcfg "$WORK/nosp.json" 'delete c.compression.stackedPipeline;'
+t "stackedPipeline missing fails" 1 "$WORK/nosp.json"
+have "FAIL: compression.stackedPipeline missing (expected an empty array)"
+
 # --- T14: missing/unreadable file -> exit 2 ---
 t "missing file exits 2" 2 "$WORK/does-not-exist.json"
 
@@ -137,5 +175,36 @@ bash "$LINT" >"$OUT" 2>&1; got=$?
 # --- T18: usage (two args) -> exit 2 ---
 bash "$LINT" a b >"$OUT" 2>&1; got=$?
 [ "$got" -eq 2 ] && echo "ok: two-args usage exits 2" || { echo "FAIL: two-args usage (exit $got, want 2)"; cat "$OUT"; FAILS=$((FAILS+1)); }
+
+# --- T19: FAIL diagnostics route to STDERR (not stdout); PASS stays on stdout.
+# CR F5: locks the routing contract so a future regression that re-merges FAIL to
+# stdout is caught. (The cases above capture 2>&1, so they pass either way.) ---
+mkcfg "$WORK/rfail.json" 'c.compression.ultra.enabled=true;'
+ROUT_OUT="$WORK/rout-stdout.txt"; ROUT_ERR="$WORK/rout-stderr.txt"
+bash "$LINT" "$WORK/rfail.json" >"$ROUT_OUT" 2>"$ROUT_ERR"; grc=$?
+if [ "$grc" -ne 1 ]; then echo "FAIL: routing case wrong exit ($grc, want 1)"; FAILS=$((FAILS+1)); else echo "ok: routing case exit 1"; fi
+{ grep -qF "FAIL: compression.ultra.enabled expected false, got true" "$ROUT_ERR" && echo "ok: FAIL line on stderr"; } || { echo "FAIL: FAIL line not on stderr"; FAILS=$((FAILS+1)); }
+if grep -qF "FAIL:" "$ROUT_OUT"; then echo "FAIL: FAIL line leaked to stdout"; FAILS=$((FAILS+1)); else echo "ok: no FAIL line on stdout"; fi
+# PASS on stdout, nothing on stderr
+bash "$LINT" "$WORK/compliant.json" >"$ROUT_OUT" 2>"$ROUT_ERR"; prc=$?
+if [ "$prc" -ne 0 ]; then echo "FAIL: compliant routing case wrong exit ($prc, want 0)"; FAILS=$((FAILS+1)); else echo "ok: compliant routing exit 0"; fi
+{ grep -qF "$PASS_LINE" "$ROUT_OUT" && echo "ok: PASS on stdout"; } || { echo "FAIL: PASS not on stdout"; FAILS=$((FAILS+1)); }
+if [ -s "$ROUT_ERR" ]; then echo "FAIL: PASS case wrote to stderr"; cat "$ROUT_ERR"; FAILS=$((FAILS+1)); else echo "ok: PASS case stderr empty"; fi
+
+# --- T20: node runtime ABSENT from PATH -> exit 4 with a clear stderr message
+# (CR F3 red-path). JSON parsing is delegated to node, so a missing node must fail
+# closed on the node-missing=4 contract (matching the claude-routed twins), not a
+# generic "node: command not found" (127). Uses the proven empty-PATH pattern from
+# scripts/hooks/test-block-glm-external-writes.sh run_case_no_jq: absolute bash +
+# an empty PATH dir so `command -v node` fails. (Isolating a coreutils-only PATH is
+# itself PATH-fragile on Windows/msys — cat needs its colocated DLLs — but the exit-4
+# preflight fires before the LINT_JS heredoc's cat output matters, so the benign
+# "cat: command not found" noise is ignored; we assert only the node-missing line.) ---
+BASH_ABS="$(command -v bash)"
+NONODE_PATH="$WORK/nonode-path"; mkdir -p "$NONODE_PATH"
+NODE_ERR="$WORK/nonode-stderr.txt"
+PATH="$NONODE_PATH" "$BASH_ABS" "$LINT" "$WORK/compliant.json" >"$OUT" 2>"$NODE_ERR"; nrc=$?
+if [ "$nrc" -ne 4 ]; then echo "FAIL: node-missing case wrong exit ($nrc, want 4)"; cat "$NODE_ERR"; FAILS=$((FAILS+1)); else echo "ok: node-missing exits 4"; fi
+{ grep -qF "omniroute-config-lint: node is required" "$NODE_ERR" && echo "ok: node-missing message on stderr"; } || { echo "FAIL: node-missing message not on stderr"; cat "$NODE_ERR"; FAILS=$((FAILS+1)); }
 
 echo; [ "$FAILS" -eq 0 ] && echo "ALL PASS" || { echo "$FAILS failure(s)"; exit 1; }
