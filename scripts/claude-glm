@@ -97,6 +97,7 @@ if [ "$deny_rc" -eq 0 ]; then
 fi
 
 sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_* (node: himmel dep)
+  # keep in sync with claude-glm.ps1 $SanitizerJs (byte-identical JS)
   node -e '
 const fs=require("fs");
 const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
@@ -127,13 +128,16 @@ seed_config_dir() {
   for f in CLAUDE.md RTK.md; do
     [ -f "$SRC/$f" ] && { cp "$SRC/$f" "$CONFIG_DIR/$f" || seed_fail "copy $f"; }
   done
+  # Clean re-mirror: rm the destination subtree BEFORE copying so a --reseed
+  # drops files deleted from the source and BSD cp -R does not nest a second
+  # copy inside the existing dir (commands/commands). No-op on the first seed.
   for d in commands skills hooks agents; do
-    [ -d "$SRC/$d" ] && { cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"; }
+    [ -d "$SRC/$d" ] && { rm -rf "${CONFIG_DIR:?}/$d" || seed_fail "clear $d before reseed"; cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"; }
   done
   for p in installed_plugins.json known_marketplaces.json; do
     [ -f "$SRC/plugins/$p" ] && { cp "$SRC/plugins/$p" "$CONFIG_DIR/plugins/$p" || seed_fail "copy plugins/$p"; }
   done
-  [ -d "$SRC/plugins/marketplaces" ] && { cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
+  [ -d "$SRC/plugins/marketplaces" ] && { rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear plugins/marketplaces before reseed"; cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
   : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
 }
 
@@ -148,6 +152,8 @@ case "$HOUR_UTC" in
   06|07|08|09) echo "claude-glm: inside GLM peak window (14:00-18:00 UTC+8); off-peak resumes 10:00 UTC. Advisory only." >&2 ;;
   *)           echo "claude-glm: outside GLM peak window (14:00-18:00 UTC+8). Advisory only." >&2 ;;
 esac
+
+command -v claude >/dev/null 2>&1 || { echo "claude-glm: 'claude' not found on PATH" >&2; exit 5; }
 
 exec env \
   ANTHROPIC_BASE_URL="$GLM_BASE_URL" \

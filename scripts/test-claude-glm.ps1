@@ -13,6 +13,10 @@ $Launcher  = Join-Path $ScriptDir 'claude-glm.ps1'
 # Directory holding pwsh itself — a PATH that keeps pwsh (needed to spawn the
 # launcher) but drops node lets T17 simulate "node absent entirely".
 $PwshDir   = Split-Path -Parent (Get-Command pwsh -ErrorAction Stop).Source
+# Directory holding node — a PATH of node + pwsh (but neither the sandbox bin's
+# mock claude nor the host PATH) lets the no-claude test resolve node for seeding
+# while leaving `claude` unresolvable.
+$NodeDir   = Split-Path -Parent (Get-Command node -ErrorAction Stop).Source
 
 $script:fails = 0
 function Pass($m) { Write-Host "  ok: $m" }
@@ -61,7 +65,7 @@ exit /b 0
 # Run the launcher in a child pwsh under the prepared sandbox; returns exit code.
 # Output (stdout+stderr) is captured to $OutTxt.
 function Invoke-Launcher {
-  param([string[]]$LArgs = @(), [switch]$NoNode)
+  param([string[]]$LArgs = @(), [switch]$NoNode, [switch]$NoClaude)
   if ($script:KEY) { $env:ZAI_API_KEY = $script:KEY } else { Remove-Item Env:ZAI_API_KEY -ErrorAction SilentlyContinue }
   $env:USERPROFILE            = $FAKEHOME
   $env:CLAUDE_GLM_DOTENV_ROOT = $WORK
@@ -71,6 +75,11 @@ function Invoke-Launcher {
     # PATH with pwsh (to spawn the launcher) but WITHOUT the real node dir, so the
     # launcher's `& node` throws CommandNotFoundException — simulates node absent.
     $env:PATH = $BIN + [IO.Path]::PathSeparator + $PwshDir
+  } elseif ($NoClaude) {
+    # node present (seeding needs it) + pwsh, but neither the sandbox bin's mock
+    # claude nor the host PATH — so `claude` is unresolvable and the pre-launch
+    # guard fires (exit 5). $BIN is omitted so its claude.cmd cannot resolve.
+    $env:PATH = $NodeDir + [IO.Path]::PathSeparator + $PwshDir
   } else {
     $env:PATH = $BIN + [IO.Path]::PathSeparator + $OrigEnv['PATH']
   }
@@ -245,15 +254,59 @@ try {
   if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite missing node' } else { Pass 'claude not launched when node missing' }
   if (FileHas $OutTxt 'FAILED to sanitize settings.json') { Pass 'node-missing emits the failed-seed message' } else { Fail 'node-missing did not emit the failed-seed message' }
 
-  # --- T18 (guard I7): phi-roots that is a DIRECTORY (not a readable regular file)
-  # fails CLOSED with exit 3, never silently allows egress, never launches claude.
-  # Proves the PS guard maps the not-a-leaf case to the bash-parity "failing closed."
-  # message + exit 3 (not a raw exit-1 terminating exception from Get-Content). ---
+  # --- T18 (guard I7): a guard config that is a DIRECTORY (not a readable file)
+  # fails CLOSED with exit 3 + the bash-parity message, never silently allows
+  # egress, never launches claude — instead of letting Get-Content throw a
+  # terminating error (raw exit 1 + stack trace). Twin of bash T17. ---
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
   New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.config\claude-glm\phi-roots') | Out-Null
   Assert-Exit (Invoke-Launcher) 3 'phi-roots as directory fails closed'
+  if (FileHas $OutTxt 'exists but is not a readable file') { Pass 'directory guard emits fail-closed message' } else { Fail 'no fail-closed message for directory guard' }
   if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite unreadable phi-roots' } else { Pass 'claude not launched on unreadable phi-roots' }
-  if (FileHas $OutTxt 'failing closed') { Pass 'phi-roots dir emits the failing-closed message' } else { Fail 'no failing-closed message on phi-roots dir' }
+
+  # --- T19: a quoted .env value has its surrounding quotes stripped before it
+  # reaches the child (Get-DotenvKey quote-strip). Twin of bash T18. ---
+  New-Sandbox; $script:KEY = ''
+  'ZAI_API_KEY="quoted-val-789"' | Set-Content -LiteralPath (Join-Path $WORK '.env')  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher) 0 'quoted .env key launches'
+  if (FileHas $ChildEnv 'ANTHROPIC_AUTH_TOKEN=quoted-val-789') { Pass 'surrounding quotes stripped from key' } else { Fail 'surrounding quotes not stripped from key' }  # gitleaks:allow
+
+  # --- T20: 'claude' absent from PATH -> exit 5 with a clear message, before the
+  # launch. PATH carries node (seeding needs it) + pwsh but no claude anywhere.
+  # If a host claude resolves inside that restricted PATH (e.g. an npm-global
+  # claude.cmd living in the node dir), the guard cannot fire there: SKIP. ---
+  $restricted = $NodeDir + [IO.Path]::PathSeparator + $PwshDir
+  $prevPath = $env:PATH
+  $env:PATH = $restricted
+  $claudeInRestricted = Get-Command claude -ErrorAction SilentlyContinue
+  $env:PATH = $prevPath
+  if ($claudeInRestricted) {
+    Write-Host '  skip: T20 - host claude resolvable inside the restricted PATH'
+  } else {
+    New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+    Assert-Exit (Invoke-Launcher -NoClaude) 5 'missing claude exits 5'
+    if (FileHas $OutTxt "claude-glm: 'claude' not found on PATH") { Pass 'missing-claude message emitted' } else { Fail 'no missing-claude message' }
+  }
+
+  # --- T21: -Reseed re-mirrors seeded subtrees (twin of bash T22/T23) — a stale
+  # file planted in the dest is dropped, no nested copy appears, kept files
+  # survive; covers BOTH the commands loop and the separate plugins/marketplaces
+  # statement in Copy-SeedConfig. ---
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\commands') | Out-Null
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\commands\keep.md') -Value 'a'
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\plugins\marketplaces') | Out-Null
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\plugins\marketplaces\keep.json') -Value 'a'
+  Assert-Exit (Invoke-Launcher) 0 'seed before re-mirror'
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-glm\commands\stale.md') -Value 'stale'
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-glm\plugins\marketplaces\stale.json') -Value 'stale'
+  Assert-Exit (Invoke-Launcher -LArgs @('-Reseed')) 0 'reseed re-mirrors subtrees'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\commands\stale.md')) { Fail 'stale commands file survived reseed' } else { Pass 'stale commands file dropped on reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\commands\commands')) { Fail 'nested commands\commands after reseed' } else { Pass 'no nested commands dir after reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\commands\keep.md')) { Pass 'kept commands file survived reseed' } else { Fail 'kept commands file lost after reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\plugins\marketplaces\stale.json')) { Fail 'stale marketplaces file survived reseed' } else { Pass 'stale marketplaces file dropped on reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\plugins\marketplaces\marketplaces')) { Fail 'nested marketplaces dir after reseed' } else { Pass 'no nested marketplaces dir after reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\plugins\marketplaces\keep.json')) { Pass 'kept marketplaces file survived reseed' } else { Fail 'kept marketplaces file lost after reseed' }
 
   Write-Host ''
   if ($script:fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$($script:fails) failure(s)" -ForegroundColor Red; exit 1 }

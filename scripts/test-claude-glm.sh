@@ -6,6 +6,13 @@ FAILS=0
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER="$HERE/claude-glm"
 
+# Each setup() mktemp -d's three dirs; accumulate them and rm -rf once at EXIT so
+# repeated runs don't leak sandboxes. The `-eq 0 ||` short-circuits the array
+# expansion while it is still empty, which is bash-3.2 set -u safe.
+SANDBOXES=()
+cleanup() { [ "${#SANDBOXES[@]}" -eq 0 ] || rm -rf "${SANDBOXES[@]}"; }
+trap cleanup EXIT
+
 t() { # t <name> <expected-exit> — runs launcher in the prepared sandbox
   local name="$1" want="$2"; shift 2
   ( cd "$WORK" && HOME="$FAKEHOME" PATH="$BIN:$PATH" ZAI_API_KEY="${KEY-}" \
@@ -21,6 +28,7 @@ t() { # t <name> <expected-exit> — runs launcher in the prepared sandbox
 
 setup() { # fresh sandbox: fake HOME with minimal ~/.claude, mock claude in BIN
   FAKEHOME="$(mktemp -d)"; WORK="$(mktemp -d)"; BIN="$(mktemp -d)"
+  SANDBOXES+=("$FAKEHOME" "$WORK" "$BIN")
   mkdir -p "$FAKEHOME/.claude"
   printf '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","HIMMEL_INITIATIVE":"1"}}' \
     > "$FAKEHOME/.claude/settings.json"
@@ -152,14 +160,14 @@ grep -qF -- "--reseed" "$WORK/claude-argv.txt" && { echo "FAIL: --reseed leaked 
 setup; KEY="zai-test-123"
 t "exit code propagates from claude" 7 --mock-exit-7
 
-# --- T15 (C1): phi-roots file WITHOUT a trailing newline still blocks the final
+# --- T15: phi-roots file WITHOUT a trailing newline still blocks the final
 # line (read || [ -n "$root" ] guard) — otherwise the PHI tier fails open.
 setup; KEY="zai-test-123"
 mkdir -p "$FAKEHOME/.config/claude-glm"
 printf '%s' "$WORK" > "$FAKEHOME/.config/claude-glm/phi-roots"   # NO trailing newline
 t "phi-root no-trailing-newline still refuses" 3
 
-# --- T16 (C2): seeding is transactional — a sanitize failure exits 4, launches
+# --- T16: seeding is transactional — a sanitize failure exits 4, launches
 # nothing, writes no sentinel; the NEXT launch (node restored) self-heals.
 setup; KEY="zai-test-123"
 cat > "$BIN/node" <<'NODESHIM'
@@ -175,13 +183,13 @@ t "second launch self-heals after node restored" 0
 [ -f "$FAKEHOME/.claude-glm/settings.json" ] || { echo "FAIL: settings.json not seeded on self-heal"; FAILS=$((FAILS+1)); }
 [ -f "$FAKEHOME/.claude-glm/.seeded" ] || { echo "FAIL: sentinel not written on self-heal"; FAILS=$((FAILS+1)); }
 
-# --- T17 (guard I7): phi-roots that is a DIRECTORY (not a readable file) fails
+# --- T17: phi-roots that is a DIRECTORY (not a readable file) fails
 # CLOSED with exit 3, never silently allows egress.
 setup; KEY="zai-test-123"
 mkdir -p "$FAKEHOME/.config/claude-glm/phi-roots"
 t "phi-roots as directory fails closed" 3
 
-# --- T18 (I8): a quoted .env value has its surrounding quotes stripped in the
+# --- T18: a quoted .env value has its surrounding quotes stripped in the
 # launcher before reaching the child (bash otherwise sends literal quotes).
 setup; KEY=""
 printf 'ZAI_API_KEY="quoted-val-789"\n' > "$WORK/.env"  # gitleaks:allow
@@ -215,5 +223,52 @@ setup; KEY="zai-test-123"
 mkdir -p "$FAKEHOME/.config/claude-glm"
 printf '/some/unrelated/root\r\n\r\n' > "$FAKEHOME/.config/claude-glm/egress-denylist"
 t "blank CRLF guard line does not over-refuse clean cwd" 0
+
+# --- T21: 'claude' absent from PATH -> exit 5 with a clear message, before exec.
+# Drop the mock claude and restrict PATH to the sandbox bin + coreutils + node
+# (the launcher still needs node to seed and date for the annotation) so no real
+# claude on the host PATH is reachable and the pre-exec check fires hermetically.
+# The restricted PATH keeps /usr/bin (coreutils) + NODE_DIR — if a host claude
+# lives in either, the guard cannot be exercised there: SKIP instead of flaking.
+setup; KEY="zai-test-123"
+rm -f "$BIN/claude"
+NODE_DIR="$(dirname "$(command -v node)")"
+if PATH="$BIN:/usr/bin:$NODE_DIR" command -v claude >/dev/null 2>&1; then
+  echo "skip: T21 — host claude resolvable inside the restricted PATH"
+else
+  ( cd "$WORK" && HOME="$FAKEHOME" PATH="$BIN:/usr/bin:$NODE_DIR" ZAI_API_KEY="$KEY" \
+      CLAUDE_GLM_DOTENV_ROOT="$WORK" bash "$LAUNCHER" >"$WORK/out.txt" 2>&1 )
+  noclaude_rc=$?
+  [ "$noclaude_rc" -eq 5 ] && echo "ok: missing claude exits 5" \
+    || { echo "FAIL: missing claude (exit $noclaude_rc, want 5)"; cat "$WORK/out.txt"; FAILS=$((FAILS+1)); }
+  grep -qF "claude-glm: 'claude' not found on PATH" "$WORK/out.txt" \
+    || { echo "FAIL: missing 'claude not found' message"; FAILS=$((FAILS+1)); }
+fi
+
+# --- T22: --reseed re-mirrors seeded subtrees — a file left stale in the dest is
+# dropped, and cp -R does not nest a second copy (commands/commands on BSD cp).
+setup; KEY="zai-test-123"
+mkdir -p "$FAKEHOME/.claude/commands"
+printf 'a' > "$FAKEHOME/.claude/commands/keep.md"
+t "seed before re-mirror" 0
+[ -f "$FAKEHOME/.claude-glm/commands/keep.md" ] || { echo "FAIL: commands not seeded"; FAILS=$((FAILS+1)); }
+printf 'stale' > "$FAKEHOME/.claude-glm/commands/stale.md"   # never in source
+t "reseed re-mirrors subtree" 0 --reseed
+[ ! -f "$FAKEHOME/.claude-glm/commands/stale.md" ] || { echo "FAIL: stale file survived reseed"; FAILS=$((FAILS+1)); }
+[ ! -d "$FAKEHOME/.claude-glm/commands/commands" ] || { echo "FAIL: nested commands/commands after reseed"; FAILS=$((FAILS+1)); }
+[ -f "$FAKEHOME/.claude-glm/commands/keep.md" ] || { echo "FAIL: kept file lost after reseed"; FAILS=$((FAILS+1)); }
+
+# --- T23: --reseed re-mirrors plugins/marketplaces too — a SEPARATE statement
+# from the commands/skills/hooks/agents loop, so T22 does not cover it.
+setup; KEY="zai-test-123"
+mkdir -p "$FAKEHOME/.claude/plugins/marketplaces"
+printf 'a' > "$FAKEHOME/.claude/plugins/marketplaces/keep.json"
+t "seed marketplaces before re-mirror" 0
+[ -f "$FAKEHOME/.claude-glm/plugins/marketplaces/keep.json" ] || { echo "FAIL: marketplaces not seeded"; FAILS=$((FAILS+1)); }
+printf 'stale' > "$FAKEHOME/.claude-glm/plugins/marketplaces/stale.json"   # never in source
+t "reseed re-mirrors marketplaces" 0 --reseed
+[ ! -f "$FAKEHOME/.claude-glm/plugins/marketplaces/stale.json" ] || { echo "FAIL: stale marketplaces file survived reseed"; FAILS=$((FAILS+1)); }
+[ ! -d "$FAKEHOME/.claude-glm/plugins/marketplaces/marketplaces" ] || { echo "FAIL: nested marketplaces/marketplaces after reseed"; FAILS=$((FAILS+1)); }
+[ -f "$FAKEHOME/.claude-glm/plugins/marketplaces/keep.json" ] || { echo "FAIL: kept marketplaces file lost after reseed"; FAILS=$((FAILS+1)); }
 
 echo; [ "$FAILS" -eq 0 ] && echo "ALL PASS" || { echo "$FAILS failure(s)"; exit 1; }
