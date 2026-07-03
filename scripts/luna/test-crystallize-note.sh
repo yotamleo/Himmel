@@ -206,6 +206,107 @@ if grep -q '^crystallized: false$' "$NOTE"; then pass "edit-confirmed: noop leav
 if grep -q '^crystallized_at:$' "$NOTE"; then pass "edit-confirmed: noop leaves crystallized_at empty"; else fail "edit-confirmed: noop wrongly stamped crystallized_at"; fi
 rm -rf "$SB"
 
+# --- Case R1: rules injection — rules file content reaches the claude prompt ---
+# The stub records the spawn's argv (incl. the prompt) to CRYSTALLIZE_ARGV_DUMP;
+# the prompt is one argv entry, so the rules content appears verbatim there.
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"; RULES="$SB/rules.txt"; ARGVD="$SB/argv.txt"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+printf 'PREFER_ACTIVE_VOICE_MARKER\n' > "$RULES"
+env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ARGV_DUMP="$ARGVD" \
+    CRYSTALLIZE_RULES_FILE="$RULES" bash "$CRYS" "$NOTE" "$TR"
+if grep -qF 'PREFER_ACTIVE_VOICE_MARKER' "$ARGVD" 2>/dev/null; then pass "rules: rules content reaches the claude prompt"; else fail "rules: rules content not in prompt"; fi
+if grep -qF 'begin operator rules' "$ARGVD" 2>/dev/null; then pass "rules: delimited operator-rules block present"; else fail "rules: no operator-rules delimiter"; fi
+rm -rf "$SB"
+
+# --- Case R2: missing/unreadable rules file — run proceeds, no rules block ------
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"; ARGVD="$SB/argv.txt"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ARGV_DUMP="$ARGVD" \
+    CRYSTALLIZE_RULES_FILE="$SB/does-not-exist.txt" bash "$CRYS" "$NOTE" "$TR"
+if grep -q '^crystallized: true$' "$NOTE"; then pass "rules(missing): run still proceeds (fail-open)"; else fail "rules(missing): run did not proceed"; fi
+if ! grep -qF 'begin operator rules' "$ARGVD" 2>/dev/null; then pass "rules(missing): no rules block in prompt"; else fail "rules(missing): rules block wrongly present"; fi
+rm -rf "$SB"
+
+# --- Case R3: env CRYSTALLIZE_RULES_FILE beats the 3rd positional arg -----------
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"; ARGVD="$SB/argv.txt"
+RULES_ENV="$SB/env-rules.txt"; RULES_POS="$SB/pos-rules.txt"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+printf 'ENV_RULES_MARKER\n' > "$RULES_ENV"
+printf 'POSITIONAL_RULES_MARKER\n' > "$RULES_POS"
+env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ARGV_DUMP="$ARGVD" \
+    CRYSTALLIZE_RULES_FILE="$RULES_ENV" bash "$CRYS" "$NOTE" "$TR" "$RULES_POS"
+if grep -qF 'ENV_RULES_MARKER' "$ARGVD" 2>/dev/null; then pass "rules(precedence): env CRYSTALLIZE_RULES_FILE used"; else fail "rules(precedence): env rules not used"; fi
+if ! grep -qF 'POSITIONAL_RULES_MARKER' "$ARGVD" 2>/dev/null; then pass "rules(precedence): positional arg ignored when env set"; else fail "rules(precedence): positional wrongly used over env"; fi
+rm -rf "$SB"
+
+# --- Case R4: refresh bypasses crystallized:true and re-stamps on a real change -
+# An already-crystallized note (crystallized:true + an OLD crystallized_at) would
+# early-exit without refresh; with CRYSTALLIZE_REFRESH=1 + a real body change
+# (stub rewrites Summary) it must stay true and re-stamp crystallized_at.
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+awk '
+    /^crystallized: false$/ { print "crystallized: true"; next }
+    /^crystallized_at:$/ { print "crystallized_at: 2026-01-01T00:00:00Z"; next }
+    { print }
+' "$NOTE" > "$NOTE.tmp" && mv "$NOTE.tmp" "$NOTE"
+env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success CRYSTALLIZE_REFRESH=1 \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T09:00:00Z" \
+    bash "$CRYS" "$NOTE" "$TR"
+if grep -q '^crystallized: true$' "$NOTE"; then pass "refresh: crystallized stays true"; else fail "refresh: crystallized flag lost"; fi
+if grep -q '_Crystallized by stub' "$NOTE"; then pass "refresh: Summary re-consolidated (bypassed early-exit)"; else fail "refresh: Summary not updated (early-exit not bypassed?)"; fi
+if grep -q '^crystallized_at: 2026-06-30T09:00:00Z$' "$NOTE"; then pass "refresh: crystallized_at re-stamped on a real change"; else fail "refresh: crystallized_at not re-stamped"; fi
+rm -rf "$SB"
+
+# --- Case R5: no-op refresh leaves the note byte-identical, no re-stamp ---------
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+awk '
+    /^crystallized: false$/ { print "crystallized: true"; next }
+    /^crystallized_at:$/ { print "crystallized_at: 2026-01-01T00:00:00Z"; next }
+    { print }
+' "$NOTE" > "$NOTE.tmp" && mv "$NOTE.tmp" "$NOTE"
+SHA_BEFORE="$( { sha256sum "$NOTE" 2>/dev/null || shasum -a 256 "$NOTE"; } | awk '{print $1}')"
+env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=noop CRYSTALLIZE_REFRESH=1 \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T09:00:00Z" \
+    bash "$CRYS" "$NOTE" "$TR"
+SHA_AFTER="$( { sha256sum "$NOTE" 2>/dev/null || shasum -a 256 "$NOTE"; } | awk '{print $1}')"
+if [ "$SHA_BEFORE" = "$SHA_AFTER" ]; then pass "refresh(noop): note byte-identical"; else fail "refresh(noop): note modified on no-op refresh"; fi
+if grep -q '^crystallized_at: 2026-01-01T00:00:00Z$' "$NOTE"; then pass "refresh(noop): crystallized_at NOT re-stamped"; else fail "refresh(noop): crystallized_at wrongly changed"; fi
+rm -rf "$SB"
+
+# --- Case R6: corrupting refresh — result rolled back, nothing re-stamped -------
+# A half-applied edit (quota kill / permission-EOF: the `corrupt` stub truncates
+# the note, losing frontmatter + sections) changes the hash, but the refresh
+# validator must REJECT it: restore the pre-run snapshot (byte-identical note),
+# keep the OLD crystallized_at, and leave no snapshot temp file behind.
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+awk '
+    /^crystallized: false$/ { print "crystallized: true"; next }
+    /^crystallized_at:$/ { print "crystallized_at: 2026-01-01T00:00:00Z"; next }
+    { print }
+' "$NOTE" > "$NOTE.tmp" && mv "$NOTE.tmp" "$NOTE"
+SHA_BEFORE="$( { sha256sum "$NOTE" 2>/dev/null || shasum -a 256 "$NOTE"; } | awk '{print $1}')"
+env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=corrupt CRYSTALLIZE_REFRESH=1 \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_NOW="2026-06-30T09:00:00Z" \
+    bash "$CRYS" "$NOTE" "$TR"
+SHA_AFTER="$( { sha256sum "$NOTE" 2>/dev/null || shasum -a 256 "$NOTE"; } | awk '{print $1}')"
+if [ "$SHA_BEFORE" = "$SHA_AFTER" ]; then pass "refresh(corrupt): note restored byte-identical"; else fail "refresh(corrupt): corrupted result was ACCEPTED (prior synthesis lost)"; fi
+if grep -q '^crystallized_at: 2026-01-01T00:00:00Z$' "$NOTE"; then pass "refresh(corrupt): crystallized_at NOT re-stamped"; else fail "refresh(corrupt): crystallized_at wrongly re-stamped"; fi
+if grep -q '^crystallized: true$' "$NOTE"; then pass "refresh(corrupt): crystallized still true after rollback"; else fail "refresh(corrupt): crystallized flag lost in rollback"; fi
+if [ -z "$(find "$SB" -name '*.snap.*' 2>/dev/null)" ]; then pass "refresh(corrupt): no snapshot temp left behind"; else fail "refresh(corrupt): snapshot temp leaked"; fi
+rm -rf "$SB"
+
 # --- Case 9: real-claude smoke (OPT-IN: CRYSTALLIZE_REAL_CLAUDE=1) --------------
 # The whole point of HIMMEL-590 is that the STUB hides the real-claude no-op.
 # This case runs the genuine `claude` across the himmel-cwd -> vault-note boundary

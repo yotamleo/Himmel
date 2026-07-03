@@ -12,6 +12,9 @@
 #   fail    — exit 7 without writing (simulates a failed/non-zero claude run).
 #   noop    — exit 0 without writing (simulates claude doing nothing).
 #   slow    — sleep 1s, THEN behave as success (detach-survival timing contract).
+#   corrupt — overwrite the note with a truncated fragment (frontmatter + most
+#             sections gone), simulating a half-applied edit from a killed run
+#             (refresh loss-proofing contract, HIMMEL-663).
 #
 # Always touches $CRYSTALLIZE_MARKER (if set) on invocation so a test can observe
 # whether the spawn happened. Asserts CLAUDE_END_SESSION_WIKI=0 is exported by
@@ -51,6 +54,7 @@ if [ -n "${CRYSTALLIZE_ENV_DUMP:-}" ]; then
     {
         printf 'CLAUDE_END_SESSION_WIKI=%s\n' "${CLAUDE_END_SESSION_WIKI:-<unset>}"
         printf 'HIMMEL_WHERE_ARE_WE=%s\n' "${HIMMEL_WHERE_ARE_WE:-<unset>}"
+        printf 'CRYSTALLIZE_RULES_FILE=%s\n' "${CRYSTALLIZE_RULES_FILE:-<unset>}"
     } > "$CRYSTALLIZE_ENV_DUMP" 2>/dev/null
 fi
 
@@ -61,6 +65,13 @@ esac
 
 NOTE="${CRYSTALLIZE_NOTE:-}"
 [ -n "$NOTE" ] && [ -r "$NOTE" ] || exit 0
+
+# `corrupt` simulates a half-applied edit (quota kill mid-write): the note is
+# left as a truncated fragment — no frontmatter, only one section header.
+if [ "$MODE" = "corrupt" ]; then
+    printf '%s\n' '## Summary' '' 'half-written fragment' > "$NOTE"
+    exit 0
+fi
 
 tmp="$(mktemp 2>/dev/null || printf '%s' "${NOTE}.stub.tmp")"
 

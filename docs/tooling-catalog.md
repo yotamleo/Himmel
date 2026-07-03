@@ -67,6 +67,12 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 > Fail-open when gh is absent; exit 2 on drift (cadence-armable). Run it on
 > demand or arm it like `pipeline-cadence`.
 
+> **Boundary ownership:** which optimizer owns which token boundary (rtk vs
+> caveman vs MCP-output vs cache vs routing) is governed by
+> [`docs/token-economy.md`](token-economy.md) (HIMMEL-654 WS6) — one
+> optimizer per boundary; adoption changes gate on a measured real-session
+> delta.
+
 ### caveman (`JuliusBrussee/caveman`)
 
 **What:** Terse response mode. Strips filler language (articles, pleasantries, hedging) from Claude's output. Three levels: lite / full / ultra.
@@ -299,6 +305,82 @@ Displays: model, context %, git branch, rate-limit bars (current/weekly/extra), 
 
 ---
 
+## claude-glm (`scripts/claude-glm`, `.ps1` twin, HIMMEL-665)
+
+**What:** Thin launcher that runs Claude Code against the Z.ai GLM
+Anthropic-compatible endpoint instead of the Anthropic API — a flat-rate
+**overflow lane** for when the Anthropic usage cap is hit. This buys *overflow
+capacity on a flat subscription*, **not** per-token savings: the GLM lane is not
+metered per token, so the framing is "keep working past the cap", never
+"cheaper tokens".
+
+**Env contract (7 vars, set for the child `claude` only):**
+
+| Var | Value |
+|---|---|
+| `ANTHROPIC_BASE_URL` | `https://api.z.ai/api/anthropic` |
+| `ANTHROPIC_AUTH_TOKEN` | `$ZAI_API_KEY` |
+| `ANTHROPIC_MODEL` | `glm-5.2` |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `glm-4.7` |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | `glm-5.2` |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | `glm-5.2` |
+| `CLAUDE_CONFIG_DIR` | `$HOME/.claude-glm` |
+
+**Key resolution:** shell env `ZAI_API_KEY` first, else the himmel repo `.env`
+(bash via `load-dotenv.sh --root <himmel>`, PS via an inline reader) — pinned to
+the *launcher's* repo, not the cwd, so a session running in the luna vault still
+finds the key. Missing key → **exit 2**. Never read from `settings.json`.
+
+**Isolated config dir (`$HOME/.claude-glm`):** seeded from `~/.claude` on first
+launch (or `--reseed`/`-Reseed`) by an allowlist copy — `settings.json`
+(sanitized via node: the `model` key + every `env.ANTHROPIC_*` stripped so they
+don't fight the launcher's env), `CLAUDE.md`, `RTK.md`,
+`commands`/`skills`/`hooks`/`agents`, and the plugin registry
+(`installed_plugins.json`, `known_marketplaces.json`, `marketplaces/`). **Never
+copied:** `.credentials.json`, history. Plugin caches resolve through the
+absolute `installPaths` in the seeded registry — no install step.
+**Seeding is transactional:** a `.seeded` sentinel is written *last*, so any
+copy/sanitize failure (e.g. `node` missing/broken) aborts with **exit 4** — a
+loud refusal that launches nothing and writes no sentinel, and the next launch
+re-seeds (self-heal) rather than running against a half-populated, unsanitized
+dir. A failed `--reseed`/`-Reseed` first clears the stale sentinel, so it can't
+mask the failure and leave the next plain launch on the stale tree.
+
+**Tiered egress guard (gates the LAUNCH cwd only):**
+- **PHI tier** — a `.salus` marker file in cwd, or cwd under any `phi-roots`
+  line → **REFUSED, exit 3, no override.** PHI never goes to a cloud GLM backend.
+- **Denylist tier** — cwd under any `egress-denylist` line → refused (exit 3)
+  **unless** `--force`/`-Force`, which proceeds after a stderr warning that
+  content WILL be sent to Z.ai.
+- Config at `~/.config/claude-glm/{phi-roots,egress-denylist}`, one path per
+  line (trailing CR + trailing slash tolerated; blank lines skipped — a
+  block-everything lone `/` root is not supported). A guard config that *exists
+  but is not a readable regular file* (e.g. a directory) never silently allows
+  egress: bash refuses with **exit 3**; the PS twin fails closed via a
+  terminating error (exit 1).
+- **Limitation — launch-scope only:** the guard checks the cwd *at launch*. A
+  session that later `cd`s into a PHI-marked or denylisted directory is **not**
+  re-checked. Launch from the right place.
+
+**Flags must LEAD:** launcher flags (`--reseed`/`--force`, `-Reseed`/`-Force`)
+must come **before** any `claude` args; the first non-flag argument stops flag
+parsing and everything from there passes to `claude` verbatim. (The PS twin is
+deliberately a plain script with no `param()` block, so real claude flags like
+`-p`/`-d`/`-v` aren't hijacked by PowerShell's automatic parameter binding.)
+
+**Off-peak annotation:** an advisory stderr line notes whether you're inside the
+GLM peak window (14:00–18:00 UTC+8); advisory only, changes no behavior.
+
+**Setup:** `ZAI_API_KEY` sourcing + the `.salus` PHI marker are covered in
+[`docs/setup/new-machine.md`](setup/new-machine.md) §1 and §4d.
+
+**Acceptance:** the hermetic launcher tests in
+`scripts/test-claude-glm.{sh,ps1}` cover the key gate, the seeder, and the
+PHI/egress guards against a mock `claude`; only the live-backend acceptance leg
+is manual — the **HIMMEL-665 Task 8 checklist**.
+
+---
+
 ## Superpowers (plugin: `superpowers@claude-plugins-official`)
 
 **What:** Workflow orchestration skills. Invoked via `/skill` tool.
@@ -462,7 +544,7 @@ Shell scripts that implement `/pr-check` sub-steps. Called by the `/pr-check` co
 
 - `scripts/cr/file-deferred-issues.sh` — reads `/pr-review-toolkit:review-pr` output, dedupes low-severity findings by content hash, and files them as GitHub issues tagged `cr-deferred`. Called by `/pr-check` step 7. Idempotent; `--dry-run` mode for inspection.
 - `scripts/cr/critic-first-pass.sh` — generic model-parametrized CR reviewer (HIMMEL-415, supersedes retired `gemini-first-pass.sh`): diff on stdin → findings with stable `[<slug>-N]` IDs; routes through `scripts/hermes/invoke.sh`; `--model`/`--slug` flags select the model. Tests: `scripts/cr/test-critic-first-pass.sh` (deterministic, PATH-stubbed fake hermes).
-- `scripts/cr/critic-panel.sh` + `scripts/cr/critics.json` — 3-model NIM critic panel (gptoss+kimi=`free` tier, qwen3coder=`thorough` tier; defined in `critics.json`). `/pr-check` **auto-runs the fast-free panel (gptoss+kimi, ~3min) by default**. `CR_PROFILE=none` = instant claude-only (skip panel). `CR_PROFILE=thorough` = adds qwen-480B (all 3 critics, ~5min+). Any other value passes through as `CRITIC_PANEL_TIERS`. Tier filter passed via `CRITIC_PANEL_TIERS` env var. Retired the gemini-only CR lane (HIMMEL-412/415). Per-member hang protection via `CRITIC_TIMEOUT_SECS` (default 150 s, requires `timeout`).
+- `scripts/cr/critic-panel.sh` + `scripts/cr/critics.json` — NIM critic panel (qwen3coder=`free` anchor since the 2026-07-03 drop of gptoss+kimi — HIMMEL-667 operator decision, 12%/13% ledger agreed-rate; defined in `critics.json`). `/pr-check` **auto-runs the free panel (qwen3coder, ~2min — bounded by the 150 s per-member timeout) by default**. `CR_PROFILE=none` = instant claude-only (skip panel). `CR_PROFILE=thorough` = adds the `thorough` tier (currently EMPTY — kept for future heavier critics). Any other value passes through as `CRITIC_PANEL_TIERS`. Tier filter passed via `CRITIC_PANEL_TIERS` env var. Retired the gemini-only CR lane (HIMMEL-412/415). Per-member hang protection via `CRITIC_TIMEOUT_SECS` (default 150 s, requires `timeout`).
 - `scripts/cr/ledger-append.sh` — appends `finding` / `avail` / `usage` records to the CR ledger (`cr-critic-scores.jsonl`); called by `/pr-check` adjudication step. The `usage` kind (HIMMEL-485) records a chars/4 **estimated** token count for a critic (hermes does not expose real usage through the one-shot chokepoint); written best-effort by `critic-first-pass.sh` when `CR_USAGE_LOG=1`.
 - `scripts/cr/cr-scores.sh` — generates a per-critic correctness scorecard from the ledger; surfaced via `/cr-scores`. Adds an estimated-token Usage section (per-model + cumulative) when the ledger holds `usage` records.
 

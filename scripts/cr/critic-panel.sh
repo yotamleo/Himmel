@@ -7,7 +7,7 @@
 # Env: CRITIC_PANEL_TIERS — comma-separated tier names to include (default: free).
 #      In /pr-check, this is set to $CR_PROFILE (the opt-in profile; claude-only when unset).
 #      CRITIC_TIMEOUT_SECS — per-member wall-clock timeout in seconds (default 150;
-#          comfortably above fast critics' ~90s observed latency but bounds a true hang).
+#          bounds qwen3coder's ~2min typical latency; raise it if slow runs get killed).
 #          Requires GNU coreutils 'timeout'; gracefully degrades without it.
 #      CRITIC_PARALLEL — set to 1 to run critics concurrently (default 0 = sequential).
 #          Output is byte-identical to sequential: results merged in registry order.
@@ -20,8 +20,8 @@ CFP="${CRITIC_FIRST_PASS:-$SCRIPT_DIR/critic-first-pass.sh}"
 REG="${CRITICS_JSON:-$SCRIPT_DIR/critics.json}"
 TIER_FILTER="${CRITIC_PANEL_TIERS:-free}"
 
-ANCHOR_SLUG="gptoss"
-ANCHOR_MODEL="openai/gpt-oss-120b"
+ANCHOR_SLUG="qwen3coder"
+ANCHOR_MODEL="qwen/qwen3-coder-480b-a35b-instruct"
 
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
 CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-150}"

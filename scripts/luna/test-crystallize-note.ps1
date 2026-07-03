@@ -60,6 +60,18 @@ _None._
 }
 function Identity([string]$p) { (Get-Content -LiteralPath $p | Where-Object { $_ -match '^(date|session_id|repo|branch|worktree|source):' }) -join "`n" }
 function Run-Crys([string]$note, [string]$tr) { & $PWSH -NoProfile -File $CRYS $note $tr | Out-Null }
+function Run-Crys3([string]$note, [string]$tr, [string]$rules) { & $PWSH -NoProfile -File $CRYS $note $tr $rules | Out-Null }
+# Flip a crystallized:false note to crystallized:true with an OLD timestamp, in
+# place, so --refresh cases have an already-synthesized note to re-consolidate.
+function Mark-Crystallized([string]$p) {
+    $out = foreach ($l in (Get-Content -LiteralPath $p)) {
+        if ($l -eq 'crystallized: false') { 'crystallized: true' }
+        elseif ($l -eq 'crystallized_at:') { 'crystallized_at: 2026-01-01T00:00:00Z' }
+        else { $l }
+    }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($p, (($out -join "`n") + "`n"), $enc)
+}
 
 # --- Case 1: success — sections filled, crystallized true, identity preserved --
 $SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
@@ -175,6 +187,112 @@ $env:CRYSTALLIZE_CLAUDE_BIN = $STUB; $env:STUB_MODE = 'noop'; $env:CRYSTALLIZE_P
 Run-Crys $note $tr
 $nc = Get-Content -LiteralPath $note -Raw
 if ($nc -match '(?m)^crystallized: false$') { Pass 'edit-confirmed: noop leaves crystallized: false' } else { Fail 'edit-confirmed: noop wrongly flagged crystallized' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
+# --- Case 8: rules injection — rules file content reaches the claude prompt -----
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'
+$rules = Join-Path $SB 'rules.txt'; $argvd = Join-Path $SB 'argv.txt'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'
+Set-Content -LiteralPath $rules -Value 'PREFER_ACTIVE_VOICE_MARKER'
+$env:CRYSTALLIZE_CLAUDE_BIN = $STUB; $env:STUB_MODE = 'success'
+$env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids'); $env:CRYSTALLIZE_ARGV_DUMP = $argvd
+$env:CRYSTALLIZE_RULES_FILE = $rules
+Run-Crys $note $tr
+Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_RULES_FILE -ErrorAction SilentlyContinue
+$avRaw = Get-Content -LiteralPath $argvd -Raw
+if ($avRaw -match 'PREFER_ACTIVE_VOICE_MARKER') { Pass 'rules: rules content reaches the claude prompt' } else { Fail 'rules: rules content not in prompt' }
+if ($avRaw -match 'begin operator rules') { Pass 'rules: delimited operator-rules block present' } else { Fail 'rules: no operator-rules delimiter' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
+# --- Case 9: missing/unreadable rules file — run proceeds, no rules block -------
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'; $argvd = Join-Path $SB 'argv.txt'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'
+$env:STUB_MODE = 'success'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_ARGV_DUMP = $argvd; $env:CRYSTALLIZE_RULES_FILE = (Join-Path $SB 'does-not-exist.txt')
+Run-Crys $note $tr
+Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_RULES_FILE -ErrorAction SilentlyContinue
+$nc = Get-Content -LiteralPath $note -Raw
+if ($nc -match '(?m)^crystallized: true$') { Pass 'rules(missing): run still proceeds (fail-open)' } else { Fail 'rules(missing): run did not proceed' }
+$avRaw = Get-Content -LiteralPath $argvd -Raw
+if ($avRaw -notmatch 'begin operator rules') { Pass 'rules(missing): no rules block in prompt' } else { Fail 'rules(missing): rules block wrongly present' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
+# --- Case 10: env CRYSTALLIZE_RULES_FILE beats the 3rd positional arg -----------
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'; $argvd = Join-Path $SB 'argv.txt'
+$rulesEnv = Join-Path $SB 'env-rules.txt'; $rulesPos = Join-Path $SB 'pos-rules.txt'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'
+Set-Content -LiteralPath $rulesEnv -Value 'ENV_RULES_MARKER'
+Set-Content -LiteralPath $rulesPos -Value 'POSITIONAL_RULES_MARKER'
+$env:STUB_MODE = 'success'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_ARGV_DUMP = $argvd; $env:CRYSTALLIZE_RULES_FILE = $rulesEnv
+Run-Crys3 $note $tr $rulesPos
+Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_RULES_FILE -ErrorAction SilentlyContinue
+$avRaw = Get-Content -LiteralPath $argvd -Raw
+if ($avRaw -match 'ENV_RULES_MARKER') { Pass 'rules(precedence): env CRYSTALLIZE_RULES_FILE used' } else { Fail 'rules(precedence): env rules not used' }
+if ($avRaw -notmatch 'POSITIONAL_RULES_MARKER') { Pass 'rules(precedence): positional arg ignored when env set' } else { Fail 'rules(precedence): positional wrongly used over env' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
+# --- Case 11: refresh bypasses crystallized:true and re-stamps on a real change -
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'; Mark-Crystallized $note
+$env:STUB_MODE = 'success'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_REFRESH = '1'; $env:CRYSTALLIZE_NOW = '2026-06-30T09:00:00Z'
+Run-Crys $note $tr
+Remove-Item Env:\CRYSTALLIZE_REFRESH -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_NOW -ErrorAction SilentlyContinue
+$nc = Get-Content -LiteralPath $note -Raw
+if ($nc -match '(?m)^crystallized: true$') { Pass 'refresh: crystallized stays true' } else { Fail 'refresh: crystallized flag lost' }
+if ($nc -match 'Crystallized by stub') { Pass 'refresh: Summary re-consolidated (bypassed early-exit)' } else { Fail 'refresh: Summary not updated' }
+if ($nc -match '(?m)^crystallized_at: 2026-06-30T09:00:00Z$') { Pass 'refresh: crystallized_at re-stamped on a real change' } else { Fail 'refresh: crystallized_at not re-stamped' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
+# --- Case 12: no-op refresh leaves the note byte-identical, no re-stamp ---------
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'; Mark-Crystallized $note
+$h0 = (Get-FileHash -LiteralPath $note).Hash
+$env:STUB_MODE = 'noop'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_REFRESH = '1'; $env:CRYSTALLIZE_NOW = '2026-06-30T09:00:00Z'
+Run-Crys $note $tr
+Remove-Item Env:\CRYSTALLIZE_REFRESH -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_NOW -ErrorAction SilentlyContinue
+if ((Get-FileHash -LiteralPath $note).Hash -eq $h0) { Pass 'refresh(noop): note byte-identical' } else { Fail 'refresh(noop): note modified on no-op refresh' }
+$nc = Get-Content -LiteralPath $note -Raw
+if ($nc -match '(?m)^crystallized_at: 2026-01-01T00:00:00Z$') { Pass 'refresh(noop): crystallized_at NOT re-stamped' } else { Fail 'refresh(noop): crystallized_at wrongly changed' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
+# --- Case 13: corrupting refresh — result rolled back, nothing re-stamped -------
+# A half-applied edit (the `corrupt` stub truncates the note, losing frontmatter
+# + sections) changes the hash, but the refresh validator must REJECT it:
+# restore the snapshot (byte-identical note), keep the OLD crystallized_at, and
+# leave no snapshot temp behind.
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'; Mark-Crystallized $note
+$h0 = (Get-FileHash -LiteralPath $note).Hash
+$env:STUB_MODE = 'corrupt'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_REFRESH = '1'; $env:CRYSTALLIZE_NOW = '2026-06-30T09:00:00Z'
+Run-Crys $note $tr
+Remove-Item Env:\CRYSTALLIZE_REFRESH -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_NOW -ErrorAction SilentlyContinue
+if ((Get-FileHash -LiteralPath $note).Hash -eq $h0) { Pass 'refresh(corrupt): note restored byte-identical' } else { Fail 'refresh(corrupt): corrupted result was ACCEPTED (prior synthesis lost)' }
+$nc = Get-Content -LiteralPath $note -Raw
+if ($nc -match '(?m)^crystallized_at: 2026-01-01T00:00:00Z$') { Pass 'refresh(corrupt): crystallized_at NOT re-stamped' } else { Fail 'refresh(corrupt): crystallized_at wrongly re-stamped' }
+if ($nc -match '(?m)^crystallized: true$') { Pass 'refresh(corrupt): crystallized still true after rollback' } else { Fail 'refresh(corrupt): crystallized flag lost in rollback' }
+if (-not (Get-ChildItem -Path $SB -Filter '*.snap.*' -ErrorAction SilentlyContinue)) { Pass 'refresh(corrupt): no snapshot temp left behind' } else { Fail 'refresh(corrupt): snapshot temp leaked' }
 Remove-Item -LiteralPath $SB -Recurse -Force
 
 if ($script:fails -eq 0) { 'ALL PASS'; exit 0 } else { "$($script:fails) FAILED"; exit 1 }

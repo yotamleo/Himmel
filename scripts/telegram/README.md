@@ -231,6 +231,14 @@ For long notes (>90s of audio), medium on CPU can approach the 120s
 (Windows only). On macOS/Linux set `WHISPER_CLI` to the binary path
 (e.g. `/usr/local/bin/whisper-cli`).
 
+**Claude model pin (HIMMEL-671):** every bounded run spawns
+`claude --model <m> …` with an explicit model — it never inherits the
+operator's default model (which may be Fable, whose time-limited quota is
+reserved for interactive work). `TELEGRAM_CLAUDE_MODEL` (poller env)
+overrides the model; blank/unset falls back to the baked-in default
+(`opus`). Channel-mode (`claude --channels`, operator-launched in a
+terminal) inherits that terminal's model and is intentionally NOT pinned.
+
 **Restart required:** all env vars above are read at poller start, not
 per-message. After changing any of them, restart the bridge:
 `pwsh -File scripts/telegram/restart-bridge.ps1`
