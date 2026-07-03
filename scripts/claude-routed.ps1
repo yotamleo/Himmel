@@ -1,12 +1,14 @@
 #Requires -Version 7
 <#
-  claude-glm.ps1 - thin launcher: Claude Code on the Z.ai GLM flat-rate lane.
-  HIMMEL-654 WS1 (child HIMMEL-665). PowerShell twin of scripts/claude-glm
-  (bash). Behaviour-parallel: same 7-var env contract; same exit codes on the
-  enumerated paths (2 = missing key, 3 = egress refusal, 4 = failed seed). A guard
-  config (phi-roots / egress-denylist) that exists but is not a readable regular file
-  also fails CLOSED with the bash-parity message ("guard config <path> exists but is
-  not a readable file — failing closed.") and exit 3. Spec: himmel/specs/design/ws1-claude-glm-wrapper.md
+  claude-routed.ps1 - thin launcher: Claude Code on the LOCAL loopback OmniRoute
+  router. HIMMEL-654 WS2 (child HIMMEL-666). PowerShell twin of scripts/claude-routed
+  (bash), itself a copy-and-edit of claude-glm where ONLY the backend block differs
+  (loopback router base URL + an OmniRoute-issued client key). Behaviour-parallel:
+  same 7-var env contract; same exit codes on the enumerated paths (2 = missing key,
+  3 = egress refusal, 4 = failed seed). A guard config (phi-roots / egress-denylist)
+  that exists but is not a readable regular file also fails CLOSED with the bash-parity
+  message ("guard config <path> exists but is not a readable file — failing closed.")
+  and exit 3. Spec: himmel/specs/design/ws1-claude-glm-wrapper.md
 
   Flags LEAD, then everything else passes to `claude` verbatim - mirrors the
   bash flags-lead rule. This is deliberately a PLAIN script with NO declared
@@ -22,19 +24,28 @@
 
 $ErrorActionPreference = 'Stop'
 
-$GlmBaseUrl = 'https://api.z.ai/api/anthropic'
-$GlmModel   = 'glm-5.2'
-$GlmHaiku   = 'glm-4.7'
+# --- backend block (DIFFERS from claude-glm; this is the whole variant) --------
+# Host is FIXED to loopback (127.0.0.1) — the spec mandates loopback-only, so it is
+# NOT configurable. Only the PORT is an env seam (OMNIROUTE_PORT); the operator-gated
+# router deploy (Task 2) records the real chosen port. 20128 is the source-read
+# documented default. The Z.ai key must NEVER appear here — the router terminates the
+# provider keys itself, so this launcher carries only the OmniRoute CLIENT key.
+$Port          = if ($env:OMNIROUTE_PORT) { $env:OMNIROUTE_PORT } else { '20128' }
+$RoutedBaseUrl = "http://127.0.0.1:$Port"
+# Tier aliases are the SAME GLM values as claude-glm: the pilot lane is GLM-only
+# intra-provider tiering and the router config defines these aliases.
+$RoutedModel   = 'glm-5.2'
+$RoutedHaiku   = 'glm-4.7'
 
 # HOME equivalent: bash uses $HOME; here $env:USERPROFILE so hermetic tests can
 # override the home root per-invocation (PowerShell's $HOME is fixed at startup).
 $HomeDir   = $env:USERPROFILE
-$ConfigDir = Join-Path $HomeDir '.claude-glm'
+$ConfigDir = Join-Path $HomeDir '.claude-routed'   # per-lane isolation
 
 # --- key resolution: process env first, else the launcher-repo .env ----------
-# CLAUDE_GLM_DOTENV_ROOT (test hook) pins the .env root; production falls back to
+# CLAUDE_ROUTED_DOTENV_ROOT (test hook) pins the .env root; production falls back to
 # the launcher's parent dir (the himmel checkout), NOT the CWD repo - the
-# motivating workload runs with cwd in the luna vault, whose .env has no ZAI key.
+# motivating workload runs with cwd in the luna vault, whose .env has no OmniRoute key.
 function Get-DotenvKey {
   param([string]$Root, [string]$Name)
   $envfile = Join-Path $Root '.env'
@@ -55,14 +66,14 @@ function Get-DotenvKey {
   return $null
 }
 
-$key = $env:ZAI_API_KEY
+$key = $env:OMNIROUTE_API_KEY
 if ([string]::IsNullOrEmpty($key)) {
-  $root = if ($env:CLAUDE_GLM_DOTENV_ROOT) { $env:CLAUDE_GLM_DOTENV_ROOT } else { Split-Path -Parent $PSScriptRoot }
-  $key = Get-DotenvKey -Root $root -Name 'ZAI_API_KEY'
+  $root = if ($env:CLAUDE_ROUTED_DOTENV_ROOT) { $env:CLAUDE_ROUTED_DOTENV_ROOT } else { Split-Path -Parent $PSScriptRoot }
+  $key = Get-DotenvKey -Root $root -Name 'OMNIROUTE_API_KEY'
 }
 
 if ([string]::IsNullOrEmpty($key)) {
-  [Console]::Error.WriteLine('claude-glm: ZAI_API_KEY is not set. Export it or add it to the repo .env (never settings.json).')
+  [Console]::Error.WriteLine('claude-routed: OMNIROUTE_API_KEY is not set. Export it or add it to the repo .env (never settings.json).')
   exit 2
 }
 
@@ -79,6 +90,10 @@ foreach ($a in $args) {
 }
 
 # --- tiered egress guard -----------------------------------------------------
+# Guard config dir is DELIBERATELY SHARED with claude-glm (~/.config/claude-glm),
+# NOT a per-lane ~/.config/claude-routed: one guard source of truth means a PHI/
+# egress rule written once governs every launcher variant. The routed lane is still
+# GLM behind the router, so the exact same denylist/phi-roots policy applies.
 $Cfg = Join-Path $HomeDir (Join-Path '.config' 'claude-glm')
 
 function Test-PathUnderAny {
@@ -114,22 +129,22 @@ function Assert-GuardReadable {
     try { [void](Get-Content -LiteralPath $ListFile -TotalCount 1 -ErrorAction Stop); return }
     catch { }
   }
-  [Console]::Error.WriteLine("claude-glm: guard config $ListFile exists but is not a readable file — failing closed.")
+  [Console]::Error.WriteLine("claude-routed: guard config $ListFile exists but is not a readable file — failing closed.")
   exit 3
 }
 
 $cwd = (Get-Location).ProviderPath
 Assert-GuardReadable (Join-Path $Cfg 'phi-roots')
 if ((Test-Path -LiteralPath (Join-Path $cwd '.salus')) -or (Test-PathUnderAny -Target $cwd -ListFile (Join-Path $Cfg 'phi-roots'))) {
-  [Console]::Error.WriteLine('claude-glm: REFUSED - this workspace is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to a cloud GLM backend.')
+  [Console]::Error.WriteLine('claude-routed: REFUSED - this workspace is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to the routed GLM backend.')
   exit 3
 }
 Assert-GuardReadable (Join-Path $Cfg 'egress-denylist')
 if (Test-PathUnderAny -Target $cwd -ListFile (Join-Path $Cfg 'egress-denylist')) {
   if ($Force) {
-    [Console]::Error.WriteLine('claude-glm: WARNING - denylisted workspace, proceeding under --force. Content WILL be sent to Z.ai.')
+    [Console]::Error.WriteLine('claude-routed: WARNING - denylisted workspace, proceeding under --force. Content WILL be sent through the local OmniRoute router.')
   } else {
-    [Console]::Error.WriteLine("claude-glm: REFUSED - workspace is on the egress denylist ($Cfg\egress-denylist). Re-run with --force to override.")
+    [Console]::Error.WriteLine("claude-routed: REFUSED - workspace is on the egress denylist ($Cfg\egress-denylist). Re-run with --force to override.")
     exit 3
   }
 }
@@ -168,7 +183,7 @@ function Copy-SeedConfig {
       $sanitized = $false
     }
     if (-not $sanitized) {
-      [Console]::Error.WriteLine('claude-glm: FAILED to sanitize settings.json (node missing/broken?). Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-glm).')
+      [Console]::Error.WriteLine('claude-routed: FAILED to sanitize settings.json (node missing/broken?). Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-routed).')
       exit 4
     }
   }
@@ -196,21 +211,22 @@ if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed
 
 # --- off-peak annotation -----------------------------------------------------
 # Peak window 14:00-18:00 UTC+8 == 06:00-10:00 UTC (unverified for the
-# Anthropic-compatible endpoint - advisory only, spec Launch step 4).
+# Anthropic-compatible endpoint - advisory only, spec Launch step 4). The routed
+# lane is GLM behind the router, so the GLM peak-window advisory still applies.
 $hourUtc = [DateTime]::UtcNow.Hour
 if ($hourUtc -ge 6 -and $hourUtc -le 9) {
-  [Console]::Error.WriteLine('claude-glm: inside GLM peak window (14:00-18:00 UTC+8); off-peak resumes 10:00 UTC. Advisory only.')
+  [Console]::Error.WriteLine('claude-routed: inside GLM peak window (14:00-18:00 UTC+8); off-peak resumes 10:00 UTC. Advisory only.')
 } else {
-  [Console]::Error.WriteLine('claude-glm: outside GLM peak window (14:00-18:00 UTC+8). Advisory only.')
+  [Console]::Error.WriteLine('claude-routed: outside GLM peak window (14:00-18:00 UTC+8). Advisory only.')
 }
 
 # --- launch: env contract mirrors the bash `exec env … claude "$@"` -----------
-$env:ANTHROPIC_BASE_URL           = $GlmBaseUrl
+$env:ANTHROPIC_BASE_URL           = $RoutedBaseUrl
 $env:ANTHROPIC_AUTH_TOKEN         = $key
-$env:ANTHROPIC_MODEL              = $GlmModel
-$env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $GlmHaiku
-$env:ANTHROPIC_DEFAULT_SONNET_MODEL = $GlmModel
-$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $GlmModel
+$env:ANTHROPIC_MODEL              = $RoutedModel
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $RoutedHaiku
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL = $RoutedModel
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $RoutedModel
 $env:CLAUDE_CONFIG_DIR            = $ConfigDir
 
 & claude @ClaudeArgs

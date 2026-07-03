@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# claude-routed — thin launcher: Claude Code on the LOCAL loopback OmniRoute router.
+# HIMMEL-654 WS2 (child HIMMEL-666). bash 3.2-safe. Copy-and-edit of scripts/claude-glm
+# (WS1 extensibility seam): ONLY the backend block differs — loopback router base URL
+# + an OmniRoute-issued client key. Everything else (guard, config-dir seeding, arg
+# handling, exit codes) is behaviour-identical. Spec: himmel/specs/design/ws1-claude-glm-wrapper.md
+# shellcheck disable=SC1091  # load-dotenv.sh path issue
+set -u
+
+# --- backend block (DIFFERS from claude-glm; this is the whole variant) --------
+# Host is FIXED to loopback (127.0.0.1) — the spec mandates loopback-only, so it is
+# NOT configurable. Only the PORT is an env seam (OMNIROUTE_PORT); the operator-gated
+# router deploy (Task 2) records the real chosen port. 20128 is the source-read
+# documented default. The Z.ai key must NEVER appear here — the router terminates the
+# provider keys itself, so this launcher carries only the OmniRoute CLIENT key.
+ROUTED_BASE_URL="http://127.0.0.1:${OMNIROUTE_PORT:-20128}"
+# Tier aliases are the SAME GLM values as claude-glm: the pilot lane is GLM-only
+# intra-provider tiering and the router config defines these aliases.
+ROUTED_MODEL="glm-5.2"
+ROUTED_HAIKU="glm-4.7"
+CONFIG_DIR="${HOME}/.claude-routed"   # per-lane isolation (own seeded config dir)
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/load-dotenv.sh
+# Sourcing only DEFINES load_dotenv(); it must be CALLED with the key name.
+# --root pins the .env to the LAUNCHER's repo (himmel), not the CWD repo —
+# the motivating workload runs with cwd in the luna vault, whose .env has no
+# OmniRoute key; CWD-resolution would exit 2 despite himmel/.env holding the key.
+# CLAUDE_ROUTED_DOTENV_ROOT (test hook) overrides that root so hermetic tests
+# never read the real himmel .env — same production code path either way.
+if [ -z "${OMNIROUTE_API_KEY-}" ] && [ -f "$HERE/lib/load-dotenv.sh" ]; then
+  . "$HERE/lib/load-dotenv.sh"
+  load_dotenv --root "${CLAUDE_ROUTED_DOTENV_ROOT:-$HERE/..}" OMNIROUTE_API_KEY
+  # load_dotenv leaves surrounding quotes literal (the shared lib does not strip
+  # them); drop ONE matching surrounding quote pair so a `.env` value written as
+  # OMNIROUTE_API_KEY="…" doesn't send the quotes to the API. bash 3.2-safe.
+  case "${OMNIROUTE_API_KEY-}" in
+    \"*\") OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY#\"}"; OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY%\"}" ;;
+    \'*\') OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY#\'}"; OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY%\'}" ;;
+  esac
+fi
+
+if [ -z "${OMNIROUTE_API_KEY-}" ]; then
+  msg="claude-routed: OMNIROUTE_API_KEY is not set. Export it or add it to the repo .env (never settings.json)."
+  [ -f "$HERE/lib/load-dotenv.sh" ] || msg="$msg (note: lib/load-dotenv.sh not found next to the launcher — .env was never read; run scripts/claude-routed from the himmel checkout rather than a copied/symlinked binary)"
+  echo "$msg" >&2
+  exit 2
+fi
+
+RESEED=0
+FORCE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reseed) RESEED=1; shift ;;
+    --force)  FORCE=1;  shift ;;
+    *) break ;;
+  esac
+done
+
+# Guard config dir is DELIBERATELY SHARED with claude-glm (~/.config/claude-glm),
+# NOT a per-lane ~/.config/claude-routed: one guard source of truth means a PHI/
+# egress rule written once governs every launcher variant. The routed lane is still
+# GLM behind the router, so the exact same denylist/phi-roots policy applies.
+CFG="${HOME}/.config/claude-glm"
+
+path_under_any() { # $1 path, $2 listfile
+  # returns: 0 = $1 is under a listed root; 1 = no restriction (absent list, or
+  # present but no line matches); 2 = list exists but is not a readable regular
+  # file (caller MUST fail closed — an unreadable guard config must never silently
+  # allow egress).
+  [ -e "$2" ] || return 1
+  { [ -f "$2" ] && [ -r "$2" ]; } || return 2
+  # `|| [ -n "$root" ]` keeps the last line when the file lacks a trailing newline
+  # (POSIX read returns nonzero on an unterminated final line) — same idiom as
+  # lib/load-dotenv.sh; without it a PHI root on the final line fails open.
+  while IFS= read -r root || [ -n "$root" ]; do
+    root="${root%$'\r'}"                   # strip trailing CR (CRLF config lines)
+    root="${root%/}"                       # strip trailing slash
+    # emptiness check AFTER normalization (matches the PS twin): a CR-only line
+    # strips to "" and must be skipped, otherwise an empty root would form the
+    # pattern "/*" and match every absolute path. NOTE: a deliberate lone "/"
+    # root is likewise skipped — a block-everything root is not supported (also
+    # twin-consistent with PS).
+    [ -n "$root" ] || continue
+    case "$1/" in "$root"/*) return 0 ;; esac
+  done < "$2"
+  return 1
+}
+
+CWD="$(pwd)"
+path_under_any "$CWD" "$CFG/phi-roots"; phi_rc=$?
+if [ "$phi_rc" -eq 2 ]; then
+  echo "claude-routed: guard config $CFG/phi-roots exists but is not a readable file — failing closed." >&2
+  exit 3
+fi
+if [ -f "$CWD/.salus" ] || [ "$phi_rc" -eq 0 ]; then
+  echo "claude-routed: REFUSED - this workspace is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to the routed GLM backend." >&2
+  exit 3
+fi
+path_under_any "$CWD" "$CFG/egress-denylist"; deny_rc=$?
+if [ "$deny_rc" -eq 2 ]; then
+  echo "claude-routed: guard config $CFG/egress-denylist exists but is not a readable file — failing closed." >&2
+  exit 3
+fi
+if [ "$deny_rc" -eq 0 ]; then
+  if [ "$FORCE" -eq 1 ]; then
+    echo "claude-routed: WARNING - denylisted workspace, proceeding under --force. Content WILL be sent through the local OmniRoute router." >&2
+  else
+    echo "claude-routed: REFUSED - workspace is on the egress denylist ($CFG/egress-denylist). Re-run with --force to override." >&2
+    exit 3
+  fi
+fi
+
+sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_* (node: himmel dep)
+  node -e '
+const fs=require("fs");
+const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+delete j.model;
+if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) delete j.env[k];
+fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
+' "$1" "$2"
+}
+
+seed_fail() { # $1 = failing-operation detail — abort seeding, never mark it seeded
+  echo "claude-routed: FAILED to $1. Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-routed)." >&2
+  exit 4
+}
+
+seed_config_dir() {
+  # Transactional: the .seeded sentinel is removed FIRST and (re)written LAST, so
+  # ANY failure — first seed OR --reseed — leaves no sentinel and the next launch
+  # re-seeds. Without the up-front delete a failed --reseed would exit 4 yet leave
+  # a stale sentinel behind, and the next plain launch would proceed with the
+  # half-populated tree.
+  rm -f "$CONFIG_DIR/.seeded"
+  SRC="${HOME}/.claude"
+  mkdir -p "$CONFIG_DIR/plugins" || seed_fail "create $CONFIG_DIR/plugins"
+  if [ -f "$SRC/settings.json" ]; then
+    sanitize_settings "$SRC/settings.json" "$CONFIG_DIR/settings.json" \
+      || seed_fail "sanitize settings.json (node missing/broken?)"
+  fi
+  for f in CLAUDE.md RTK.md; do
+    [ -f "$SRC/$f" ] && { cp "$SRC/$f" "$CONFIG_DIR/$f" || seed_fail "copy $f"; }
+  done
+  for d in commands skills hooks agents; do
+    [ -d "$SRC/$d" ] && { cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"; }
+  done
+  for p in installed_plugins.json known_marketplaces.json; do
+    [ -f "$SRC/plugins/$p" ] && { cp "$SRC/plugins/$p" "$CONFIG_DIR/plugins/$p" || seed_fail "copy plugins/$p"; }
+  done
+  [ -d "$SRC/plugins/marketplaces" ] && { cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
+  : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
+}
+
+if [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ]; then
+  seed_config_dir
+fi
+
+# Peak window 14:00-18:00 UTC+8 == 06:00-10:00 UTC (unverified for the
+# Anthropic-compatible endpoint - advisory only, spec Launch step 4). The routed
+# lane is GLM behind the router, so the GLM peak-window advisory still applies.
+HOUR_UTC=$(date -u +%H)
+case "$HOUR_UTC" in
+  06|07|08|09) echo "claude-routed: inside GLM peak window (14:00-18:00 UTC+8); off-peak resumes 10:00 UTC. Advisory only." >&2 ;;
+  *)           echo "claude-routed: outside GLM peak window (14:00-18:00 UTC+8). Advisory only." >&2 ;;
+esac
+
+exec env \
+  ANTHROPIC_BASE_URL="$ROUTED_BASE_URL" \
+  ANTHROPIC_AUTH_TOKEN="$OMNIROUTE_API_KEY" \
+  ANTHROPIC_MODEL="$ROUTED_MODEL" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="$ROUTED_HAIKU" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="$ROUTED_MODEL" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="$ROUTED_MODEL" \
+  CLAUDE_CONFIG_DIR="$CONFIG_DIR" \
+  claude "$@"
