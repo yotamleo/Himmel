@@ -116,6 +116,13 @@ try {
   Assert-Exit (Invoke-Lint @($f)) 1 'non-empty stackedPipeline fails'
   Have 'FAIL: compression.stackedPipeline expected an empty array, got 1 entry'
 
+  # --- T9b: stackedPipeline with TWO entries -> FAIL using the PLURAL "entries"
+  # branch (the length>1 arm of the entry/ies ternary; T9 only covers the 1-entry
+  # "entry" arm). CR F1: this branch was untested on both twins. ---
+  $f = Join-Path $TMP 'stack2.json'; New-Config $f { param($c) $c.compression.stackedPipeline = @([ordered]@{ name = 'x' }, [ordered]@{ name = 'y' }) }
+  Assert-Exit (Invoke-Lint @($f)) 1 'two-entry stackedPipeline fails (plural)'
+  Have 'FAIL: compression.stackedPipeline expected an empty array, got 2 entries'
+
   # --- T10: wrong string value on defaultMode -> FAIL ---
   $f = Join-Path $TMP 'mode.json'; New-Config $f { param($c) $c.compression.defaultMode = 'aggressive' }
   Assert-Exit (Invoke-Lint @($f)) 1 'wrong defaultMode fails'
@@ -143,6 +150,34 @@ try {
   Have 'FAIL: compression.ultra.enabled expected false, got true'
   Have 'FAIL: autoRoutingEnabled expected false, got <absent>'
 
+  # --- T13b..T13f: defensive structural FAIL branches (CR F2). Each exercises a
+  # guard the happy path never hits, so a future fail-open simplification is caught.
+  # These mirror the bash twin case-for-case (keep both twins' matrices in sync). ---
+  # engines MISSING
+  $f = Join-Path $TMP 'noeng.json'; New-Config $f { param($c) $c.compression.Remove('engines') }
+  Assert-Exit (Invoke-Lint @($f)) 1 'engines missing fails'
+  Have 'FAIL: compression.engines missing (expected an object with every entry disabled)'
+
+  # engines present but NOT an object
+  $f = Join-Path $TMP 'engnonobj.json'; New-Config $f { param($c) $c.compression.engines = $true }
+  Assert-Exit (Invoke-Lint @($f)) 1 'engines non-object fails'
+  Have 'FAIL: compression.engines expected an object, got true'
+
+  # aggressive.toolStrategies MISSING
+  $f = Join-Path $TMP 'nots.json'; New-Config $f { param($c) $c.compression.aggressive.Remove('toolStrategies') }
+  Assert-Exit (Invoke-Lint @($f)) 1 'toolStrategies missing fails'
+  Have 'FAIL: compression.aggressive.toolStrategies missing (expected an object with every entry disabled)'
+
+  # aggressive.toolStrategies entry that is a STRING (not bool, not object) -> else branch
+  $f = Join-Path $TMP 'tsstr.json'; New-Config $f { param($c) $c.compression.aggressive.toolStrategies = [ordered]@{ weird = 'somestring' } }
+  Assert-Exit (Invoke-Lint @($f)) 1 'toolStrategies string entry fails'
+  Have 'FAIL: compression.aggressive.toolStrategies.weird expected disabled, got somestring'
+
+  # stackedPipeline MISSING
+  $f = Join-Path $TMP 'nosp.json'; New-Config $f { param($c) $c.compression.Remove('stackedPipeline') }
+  Assert-Exit (Invoke-Lint @($f)) 1 'stackedPipeline missing fails'
+  Have 'FAIL: compression.stackedPipeline missing (expected an empty array)'
+
   # --- T14: missing/unreadable file -> exit 2 ---
   Assert-Exit (Invoke-Lint @((Join-Path $TMP 'does-not-exist.json'))) 2 'missing file exits 2'
 
@@ -159,6 +194,23 @@ try {
 
   # --- T18: usage (two args) -> exit 2 ---
   Assert-Exit (Invoke-Lint @('a', 'b')) 2 'two-args usage exits 2'
+
+  # --- T19: FAIL diagnostics route to STDERR (not stdout); PASS stays on stdout.
+  # CR F5: locks the routing contract so a future regression that re-merges FAIL to
+  # stdout is caught. (The cases above capture 2>&1, so they pass either way.) ---
+  $rf = Join-Path $TMP 'rfail.json'; New-Config $rf { param($c) $c.compression.ultra.enabled = $true }
+  $RoutOut = Join-Path $TMP 'rout-stdout.txt'; $RoutErr = Join-Path $TMP 'rout-stderr.txt'
+  & pwsh -NoProfile -File $Lint $rf 2>$RoutErr | Out-File -LiteralPath $RoutOut -Encoding utf8
+  if ($LASTEXITCODE -eq 1) { Pass 'routing case exit 1' } else { Fail "routing case exit $LASTEXITCODE, want 1" }
+  if (FileHas $RoutErr 'FAIL: compression.ultra.enabled expected false, got true') { Pass 'FAIL on stderr' } else { Fail 'FAIL not on stderr' }
+  if (FileHas $RoutOut 'FAIL:') { Fail 'FAIL leaked to stdout' } else { Pass 'no FAIL on stdout' }
+  # PASS on stdout, nothing on stderr
+  $cf = Join-Path $TMP 'rcompliant.json'; New-Config $cf $null
+  & pwsh -NoProfile -File $Lint $cf 2>$RoutErr | Out-File -LiteralPath $RoutOut -Encoding utf8
+  if ($LASTEXITCODE -eq 0) { Pass 'compliant routing exit 0' } else { Fail "compliant routing exit $LASTEXITCODE, want 0" }
+  if (FileHas $RoutOut $PassLine) { Pass 'PASS on stdout' } else { Fail 'PASS not on stdout' }
+  $errRaw = if (Test-Path -LiteralPath $RoutErr) { (Get-Content -LiteralPath $RoutErr -Raw) } else { '' }
+  if ([string]::IsNullOrWhiteSpace($errRaw)) { Pass 'PASS case stderr empty' } else { Fail 'PASS case wrote to stderr' }
 
   Write-Host ''
   if ($script:fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$($script:fails) failure(s)" -ForegroundColor Red; exit 1 }
