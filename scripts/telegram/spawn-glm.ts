@@ -28,7 +28,7 @@ export function composeWorkerPrompt(task: string, sessionDir: string, branch: st
   return [
     `You are an unattended GLM-lane worker session (himmel offload spike).`,
     `Work ONLY inside your current directory (a dedicated git worktree). Commit your work on the branch ${branch} which is already checked out.`,
-    `HARD RULES: never push, never open a PR, never write to Jira or any external tracker — a validating session reviews your branch and owns all external writes.`,
+    `HARD RULES: never push, never open a PR — a validating session reviews your branch and owns the git/PR surface. Jira updates (status, comments, followup tickets) ARE allowed via node scripts/jira/dist/index.js (audited + recoverable).`,
     `Report progress by APPENDING one JSON line {"text":"<note>"} per update to ${outbox}. That is the only channel to the operator.`,
     `THE TASK: ${task}`,
     `As your FINAL action, append a one-line summary of what you did to ${context}, then stop.`,

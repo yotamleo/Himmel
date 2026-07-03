@@ -50,6 +50,9 @@ grafts the GLM lane onto that path via a standalone CLI
 1. **Spawn** — from the main session (or any shell), run the CLI (below). It
    creates a fresh git worktree + `glm/<slug>` branch, guard-checks the
    worktree cwd, and starts an unattended GLM-lane worker on your task.
+   Before relying on the deny-hook, confirm it is LIVE: `bash
+   scripts/himmel-update.sh --plugins-check` reports the installed plugin has
+   the entry, AND the parent checkout has pulled the merge (see Hardening).
 2. **Inspect** — via files, no interaction with the worker. While running:
    `meta.json` status + the worker-appended `outbox.jsonl` / `context.md`.
    After exit: those plus `run.log` (stdout/stderr tail, post-exit only —
@@ -124,7 +127,7 @@ know these paths, they are minted at spawn time:
 ```
 You are an unattended GLM-lane worker session (himmel offload spike).
 Work ONLY inside your current directory (a dedicated git worktree). Commit your work on the branch <branch> which is already checked out.
-HARD RULES: never push, never open a PR, never write to Jira or any external tracker — a validating session reviews your branch and owns all external writes.
+HARD RULES: never push, never open a PR — a validating session reviews your branch and owns the git/PR surface. Jira updates (status, comments, followup tickets) ARE allowed via node scripts/jira/dist/index.js (audited + recoverable).
 Report progress by APPENDING one JSON line {"text":"<note>"} per update to <sessionDir>/outbox.jsonl. That is the only channel to the operator.
 THE TASK: <task>
 As your FINAL action, append a one-line summary of what you did to <sessionDir>/context.md, then stop.
@@ -162,8 +165,9 @@ with it the normal `gh pr create` path — fails loudly. This blocks
 - A `bypassPermissions` worker could push via an explicit URL or unset the
   config, and it inherits the operator's git credentials via the shared
   `~/.claude`.
-- Jira and other external writes are **prompt-forbidden only** (the worker
-  contract above), not mechanically blocked.
+- Other external writes are **prompt-forbidden only** (the worker contract
+  above), not mechanically blocked. (Jira is now operator-*allowed* on-lane —
+  audited + recoverable; see the Hardening section.)
 
 **The load-bearing control is the CR gate.** No GLM-produced branch is
 pushed or merged except by the validating session after the CR loop. The
@@ -181,6 +185,102 @@ himmel tree itself is listed in `~/.config/claude-glm/{phi-roots,egress-denylist
 They ship now (fail-closed, no `--force` on this path) because the vault
 follow-up is the next step and investigation blocker (b) mandates them on any
 env-only spawn path — do not weight them as a live v1 safety control.
+
+## Hardening: the deny-hook (HIMMEL-654 harden-first, HIMMEL-675)
+
+`scripts/hooks/block-glm-external-writes.sh` adds a deterministic in-session
+layer — the classifier substitute the GLM lane otherwise lacks (third-party
+lanes have no auto-mode classifier, and `bypassPermissions` removes the prompt
+layer). It fires on `Bash|PowerShell|mcp__.*`, detects the lane by
+`ANTHROPIC_BASE_URL` containing `api.z.ai`, and on-lane hard-blocks `git push`,
+remote-URL rewrites, the entire `gh` CLI, network CLIs
+(`curl`/`wget`/`Invoke-WebRequest`/`Invoke-RestMethod`, plus the `iwr`/`irm`
+aliases), and all `mcp__*` tools EXCEPT the qmd KB carve-out.
+Off-lane sessions exit immediately.
+
+**Allowed on-lane (operator policy 2026-07-03 — audited-action carve-out):**
+the **Jira CLI** (`node scripts/jira/dist/index.js …` or bare `jira`) — writes
+are audited in Jira history and recoverable, so GLM workers may update status,
+add comments, and file followup tickets; and **qmd KB reads**
+(`mcp__plugin_qmd_qmd__*`). Atlassian MCP stays blocked (Jira routing is
+CLI-first — `block-backend-tier` enforces that in every session), and the
+obsidian-vault MCP stays blocked (vault offload is the v2 follow-up).
+
+**The guard stack is now three layers:**
+
+1. **deny-hook** (this hook) — deterministic, in-session, blocks the write
+   shapes above before they run.
+2. **poisoned pushurl tripwire** — the worktree-scoped invalid `pushurl` that
+   fails a default-path `git push`.
+3. **parent-session CR gate** — no GLM branch is pushed/merged except by the
+   validating session after the CR loop.
+
+The deny-hook is an accidental-shape guard (like `block-read-secrets`), NOT a
+containment wall. **Layers 2 and 3 (tripwire + CR gate) remain the load-bearing
+backstops**; the hook is the added deterministic in-session layer, not a
+replacement for them.
+
+**When the hook is actually LIVE — BOTH conditions must hold** (merging the PR
+is not enough):
+
+1. The **installed** plugin has the new entry — that happens only after
+   `/himmel-update` (marketplace re-sync). Verify with
+   `bash scripts/himmel-update.sh --plugins-check`.
+2. The checkout that `spawn-glm` runs from contains the merged script — workers
+   `git worktree add` from the **parent checkout's HEAD** (not "main"), so the
+   operator's checkout must have pulled the merge.
+
+Until BOTH hold, the lane is unhardened and the low-blast-radius "chores only"
+restriction stays.
+
+**Interactive `claude-glm` caveat:** the hook covers `claude-glm` sessions only
+when the cwd is a himmel checkout AND its separate seeded `CLAUDE_CONFIG_DIR`
+(`~/.claude-glm`) has been re-seeded post-merge (`claude-glm --reseed` —
+`/himmel-update` does not refresh it). With a vault cwd the `[ -f ]` plugin
+wrapper no-ops. spawn-glm workers (himmel worktrees, shared `~/.claude`) are the
+covered target.
+
+**Bypass:** `GLM_EXTERNAL_WRITES_OK=1` set in the shell that spawns the worker
+(session-sticky; a per-call prefix does not reach the hook).
+
+**Known limitations** (tripwire + CR-gate backstopped): a wrapper that displaces
+the command from command position is missed — env-prefixed `FOO=1 git push`,
+`sudo`/`xargs`/`timeout` wrappers, the dashed `git-push` form, and the
+`=`-joined global-flag form `git --git-dir=/x push`; malformed or empty tool
+JSON is allowed through (parity with sibling hooks — Claude Code emits valid
+JSON); and in-process network is invisible to a command-text hook — bun/node
+`fetch`, INCLUDING `bun`-invoking the Telegram bridge send path
+(`scripts/telegram/telegram-api.ts` sendMessage, a real external write).
+
+## Peak-hours & quota windows (lane scheduling, HIMMEL-654 decision #4)
+
+Time-aware routing facts for the three worker lanes, researched 2026-07-03
+(vault-first + official docs; verify the time-boxed items before relying on
+them past their dates).
+
+| Lane | Quota model | Window / reset | Peak / degraded hours | Best offload hours | Confidence |
+|---|---|---|---|---|---|
+| **GLM** (z.ai Coding Plan) | Prompts per **5-hour rolling cycle** (Pro ≈ 400/5h; Lite ≈ 80; Max ≈ 1600) — NOT a daily bank. Advanced models burn quota by a **time-of-day multiplier**. | 5h cycle starts at first prompt. | **14:00–18:00 UTC+8** (= 08:00–12:00 Berlin summer) → **3× quota burn**. Documented effect is COST, not latency. | Outside the peak window; under the off-peak **1× promo (through Sept 2026, then 2×)** it is the cheapest bulk lane in the fleet. | Multiplier: official. Latency-at-peak: unconfirmed. |
+| **Claude** (Anthropic Max) | **5-hour rolling window + weekly (`seven_day`) cap**, usage-metered; Opus drains faster. | 5h window from first message; weekly is the harder ceiling. Live counters: `api.anthropic.com/api/oauth/usage` (cached `/tmp/claude/statusline-usage-cache.json`). | **No clock-based peak** — degradation is depletion-based. | Route by counter (`five_hour`/`seven_day` utilization), not clock; arm-resume handles reset boundaries. | High (official mechanics). |
+| **Codex** (OpenAI) | Two windows: primary **300 min** + secondary **10080 min (weekly)** — the weekly is the real cap. Separate OpenAI bank (independent of Claude quota). | Rolling windows that fully reset. Local pull: grep `~/.codex/logs_2.sqlite*` for `"secondary"`/`used_percent` (freshest in `-wal`). | **No published clock peak**; OpenAI throttles dynamically under aggregate load. | Route by the weekly `used_percent` counter; primary overflow lane when Claude's weekly cap is spent. | Windows: high. Reset anchor detail: community-sourced. |
+
+Routing rules:
+
+1. **GLM bulk/mechanical chores → off-peak** (avoid 14:00–18:00 UTC+8). The
+   3× peak multiplier drains the 5h cycle ~1.5× faster than off-peak 2× — and
+   the promo makes off-peak 1×, so schedule big fanout jobs there.
+2. **GLM peak is a cost penalty, not a wall** — small urgent GLM jobs are fine
+   at peak; only defer bulk work.
+3. **Claude and Codex have no clock to schedule against** — treat
+   "peak/degraded" as "depletion counter is high" and route by the live
+   counters above.
+4. **Overflow order when Claude's weekly cap is spent:** Codex first for
+   judgment-capable work (independent bank); GLM off-peak for bulk/mechanical
+   (capacity lane, not a behavioral equal — keep judgment-heavy work off GLM).
+5. **All three 5h windows anchor at first prompt** — start a bulk GLM run
+   early enough to finish before the peak window opens, or after it closes.
+6. **The GLM peak is z.ai-fixed at UTC+8** — it does not track local DST;
+   re-derive the local mapping at DST switches.
 
 ## Acceptance runs (2026-07-03, session 9 — both PASS)
 
