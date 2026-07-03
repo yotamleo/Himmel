@@ -1460,7 +1460,7 @@ assert_contains "refresh(corrupt): counted skipped, not refreshed" "crystallized
 if [ "$SHA28" = "$(_file_sha256 "$NOTE28")" ]; then pass "refresh(corrupt): note restored byte-identical (prior synthesis kept)"; else fail "refresh(corrupt): corrupted result persisted" "$out28"; fi
 
 # ============================================================================
-# Case 23: already-in-vault dedup (HIMMEL-662) — a session captured live by
+# Case 29: already-in-vault dedup (HIMMEL-662) — a session captured live by
 #          end-session-wiki.sh already sits in the vault under a DIFFERENT
 #          filename shape (end-time + repo-branch slug, source: live) and is
 #          invisible to the (backfill-only) ledger. Plain backfill must scan the
@@ -1468,140 +1468,140 @@ if [ "$SHA28" = "$(_file_sha256 "$NOTE28")" ]; then pass "refresh(corrupt): note
 #          write a duplicate — while a genuinely-missing session still imports.
 # ============================================================================
 echo ""
-echo "Case 23: already-in-vault dedup (live note invisible to ledger)"
+echo "Case 29: already-in-vault dedup (live note invisible to ledger)"
 
-SB="$TMP_ROOT/case23"
-VAULT23="$SB/vault"
-REPO23="$SB/repo"
-PROJ_ROOT23="$SB/projects"
-STATE23="$SB/state.json"
-mkdir -p "$VAULT23" "$REPO23" "$PROJ_ROOT23"
-setup_projects_dir "$PROJ_ROOT23" "$REPO23" "$VAULT23"   # writes test-session-normal-001.jsonl
+SB="$TMP_ROOT/case29"
+VAULT29="$SB/vault"
+REPO29="$SB/repo"
+PROJ_ROOT29="$SB/projects"
+STATE29="$SB/state.json"
+mkdir -p "$VAULT29" "$REPO29" "$PROJ_ROOT29"
+setup_projects_dir "$PROJ_ROOT29" "$REPO29" "$VAULT29"   # writes test-session-normal-001.jsonl
 
 # Live-captured note already in the vault: end-time + repo-branch filename shape
 # (NOT backfill's start-time + repo-only slug), source: live, and a session_id
 # that matches the transcript basename. Backfill must recognize it via the vault
 # scan even though the ledger is blind to live notes.
-LIVE23="$VAULT23/sessions/2026/06/2026-06-20-1830-repo-feat-branch.md"
-write_content_note "$LIVE23" "test-session-normal-001"
+LIVE29="$VAULT29/sessions/2026/06/2026-06-20-1830-repo-feat-branch.md"
+write_content_note "$LIVE29" "test-session-normal-001"
 
 # A genuinely-missing session (no live note in the vault) must still import.
-_p23="$REPO23"
+_p29="$REPO29"
 if command -v cygpath >/dev/null 2>&1; then
-    _p23="$(cygpath -w "$_p23" 2>/dev/null || printf '%s' "$_p23")"
+    _p29="$(cygpath -w "$_p29" 2>/dev/null || printf '%s' "$_p29")"
 fi
-SLUG23="$(printf '%s' "$_p23" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
-_cwd_escaped23="$(printf '%s' "$REPO23" | sed 's|\\|\\\\|g; s|/|\\/|g')"
-sed "s|__CWD_PLACEHOLDER__|$_cwd_escaped23|g; s|test-session-normal-001|test-session-normal-777|g" \
-    "$FIXTURE_DIR/fixture-normal.jsonl" > "$PROJ_ROOT23/$SLUG23/test-session-normal-777.jsonl"
+SLUG29="$(printf '%s' "$_p29" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
+_cwd_escaped29="$(printf '%s' "$REPO29" | sed 's|\\|\\\\|g; s|/|\\/|g')"
+sed "s|__CWD_PLACEHOLDER__|$_cwd_escaped29|g; s|test-session-normal-001|test-session-normal-777|g" \
+    "$FIXTURE_DIR/fixture-normal.jsonl" > "$PROJ_ROOT29/$SLUG29/test-session-normal-777.jsonl"
 
-out23=$(bash "$BACKFILL" \
-    --projects-dir "$PROJ_ROOT23" \
-    --project "$REPO23" \
-    --state-file "$STATE23" \
+out29=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT29" \
+    --project "$REPO29" \
+    --state-file "$STATE29" \
     --vault-registry /dev/null \
     2>&1)
 
-assert_contains "in-vault: live-captured session skipped (already-in-vault=1)" "already-in-vault=1" "$out23"
-assert_contains "in-vault: genuinely-missing session still imported (new=1)" "new=1" "$out23"
+assert_contains "in-vault: live-captured session skipped (already-in-vault=1)" "already-in-vault=1" "$out29"
+assert_contains "in-vault: genuinely-missing session still imported (new=1)" "new=1" "$out29"
 
 # Vault holds exactly 2 notes: the pre-existing live note + the one new import
 # (no duplicate for the already-in-vault session).
-NOTE23_COUNT="$(find "$VAULT23/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
-if [ "$NOTE23_COUNT" -eq 2 ]; then
+NOTE29_COUNT="$(find "$VAULT29/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE29_COUNT" -eq 2 ]; then
     pass "in-vault: no duplicate written (live note + one import = 2 notes)"
 else
-    fail "in-vault: note count wrong (expected 2, got $NOTE23_COUNT)" "$out23"
+    fail "in-vault: note count wrong (expected 2, got $NOTE29_COUNT)" "$out29"
 fi
 
 # Ledger gained the in-vault session (self-healing) AND the imported one.
-if grep -q "test-session-normal-001" "$STATE23" 2>/dev/null; then
+if grep -q "test-session-normal-001" "$STATE29" 2>/dev/null; then
     pass "in-vault: already-in-vault session ledgered (self-healing)"
 else
-    fail "in-vault: already-in-vault session not added to ledger" "$out23"
+    fail "in-vault: already-in-vault session not added to ledger" "$out29"
 fi
-if grep -q "test-session-normal-777" "$STATE23" 2>/dev/null; then
+if grep -q "test-session-normal-777" "$STATE29" 2>/dev/null; then
     pass "in-vault: imported session ledgered"
 else
-    fail "in-vault: imported session not in ledger" "$out23"
+    fail "in-vault: imported session not in ledger" "$out29"
 fi
 
 # Second run against the same populated vault + ledger: both sessions now take
 # the cheap ledger path (already-in-ledger=2) and the scan path reports nothing
 # (already-in-vault=0) — the consequence of the self-healing _ledger_add above.
-out23b=$(bash "$BACKFILL" \
-    --projects-dir "$PROJ_ROOT23" \
-    --project "$REPO23" \
-    --state-file "$STATE23" \
+out29b=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT29" \
+    --project "$REPO29" \
+    --state-file "$STATE29" \
     --vault-registry /dev/null \
     2>&1)
-assert_contains "in-vault(2nd run): both sessions on the cheap ledger path" "already-in-ledger=2" "$out23b"
-assert_contains "in-vault(2nd run): scan path idle (already-in-vault=0)" "already-in-vault=0" "$out23b"
-assert_contains "in-vault(2nd run): nothing re-imported (new=0)" "new=0" "$out23b"
+assert_contains "in-vault(2nd run): both sessions on the cheap ledger path" "already-in-ledger=2" "$out29b"
+assert_contains "in-vault(2nd run): scan path idle (already-in-vault=0)" "already-in-vault=0" "$out29b"
+assert_contains "in-vault(2nd run): nothing re-imported (new=0)" "new=0" "$out29b"
 
 # ============================================================================
-# Case 24: --dry-run counts already-in-vault but does NOT write the ledger
+# Case 30: --dry-run counts already-in-vault but does NOT write the ledger
 #          (HIMMEL-662 — the scan is read-only so it runs in dry-run, but
 #          _ledger_add stays dry-run-guarded).
 # ============================================================================
 echo ""
-echo "Case 24: already-in-vault under --dry-run counts but does not ledger"
+echo "Case 30: already-in-vault under --dry-run counts but does not ledger"
 
-SB="$TMP_ROOT/case24"
-VAULT24="$SB/vault"
-REPO24="$SB/repo"
-PROJ_ROOT24="$SB/projects"
-STATE24="$SB/state.json"
-mkdir -p "$VAULT24" "$REPO24" "$PROJ_ROOT24"
-setup_projects_dir "$PROJ_ROOT24" "$REPO24" "$VAULT24"
+SB="$TMP_ROOT/case30"
+VAULT30="$SB/vault"
+REPO30="$SB/repo"
+PROJ_ROOT30="$SB/projects"
+STATE30="$SB/state.json"
+mkdir -p "$VAULT30" "$REPO30" "$PROJ_ROOT30"
+setup_projects_dir "$PROJ_ROOT30" "$REPO30" "$VAULT30"
 
-LIVE24="$VAULT24/sessions/2026/06/2026-06-20-1830-repo-feat-branch.md"
-write_content_note "$LIVE24" "test-session-normal-001"
+LIVE30="$VAULT30/sessions/2026/06/2026-06-20-1830-repo-feat-branch.md"
+write_content_note "$LIVE30" "test-session-normal-001"
 
-out24=$(bash "$BACKFILL" \
-    --projects-dir "$PROJ_ROOT24" \
-    --project "$REPO24" \
-    --state-file "$STATE24" \
+out30=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT30" \
+    --project "$REPO30" \
+    --state-file "$STATE30" \
     --vault-registry /dev/null \
     --dry-run \
     2>&1)
-assert_contains "in-vault(dry): already-in-vault counted" "already-in-vault=1" "$out24"
-if [ ! -f "$STATE24" ] || ! grep -q "test-session-normal-001" "$STATE24" 2>/dev/null; then
+assert_contains "in-vault(dry): already-in-vault counted" "already-in-vault=1" "$out30"
+if [ ! -f "$STATE30" ] || ! grep -q "test-session-normal-001" "$STATE30" 2>/dev/null; then
     pass "in-vault(dry): ledger NOT written under --dry-run"
 else
-    fail "in-vault(dry): --dry-run wrote to the ledger" "$out24"
+    fail "in-vault(dry): --dry-run wrote to the ledger" "$out30"
 fi
 
 # ============================================================================
-# Case 25: broken-scan advisory (HIMMEL-662 CR round) — a vault whose sessions/
+# Case 31: broken-scan advisory (HIMMEL-662 CR round) — a vault whose sessions/
 #          tree holds .md notes but yields ZERO session_id frontmatter means the
 #          dedup is inactive; the scan must say so on stderr instead of silently
 #          degrading to duplicate-possible behavior. A genuinely-new session
 #          must still import (empty set never false-skips).
 # ============================================================================
 echo ""
-echo "Case 25: empty scan of a non-empty vault warns (dedup inactive)"
+echo "Case 31: empty scan of a non-empty vault warns (dedup inactive)"
 
-SB="$TMP_ROOT/case25"
-VAULT25="$SB/vault"
-REPO25="$SB/repo"
-PROJ_ROOT25="$SB/projects"
-STATE25="$SB/state.json"
-mkdir -p "$VAULT25/sessions/2026/06" "$REPO25" "$PROJ_ROOT25"
-setup_projects_dir "$PROJ_ROOT25" "$REPO25" "$VAULT25"
+SB="$TMP_ROOT/case31"
+VAULT31="$SB/vault"
+REPO31="$SB/repo"
+PROJ_ROOT31="$SB/projects"
+STATE31="$SB/state.json"
+mkdir -p "$VAULT31/sessions/2026/06" "$REPO31" "$PROJ_ROOT31"
+setup_projects_dir "$PROJ_ROOT31" "$REPO31" "$VAULT31"
 
 # A note WITHOUT any session_id frontmatter (hand-authored / foreign shape).
 printf -- '---\ntitle: stray note\n---\n\nNo session_id here.\n' \
-    > "$VAULT25/sessions/2026/06/2026-06-01-0900-stray.md"
+    > "$VAULT31/sessions/2026/06/2026-06-01-0900-stray.md"
 
-out25=$(bash "$BACKFILL" \
-    --projects-dir "$PROJ_ROOT25" \
-    --project "$REPO25" \
-    --state-file "$STATE25" \
+out31=$(bash "$BACKFILL" \
+    --projects-dir "$PROJ_ROOT31" \
+    --project "$REPO31" \
+    --state-file "$STATE31" \
     --vault-registry /dev/null \
     2>&1)
-assert_contains "broken-scan: stderr advisory emitted" "already-in-vault dedup inactive" "$out25"
-assert_contains "broken-scan: new session still imports (no false-skip)" "new=1" "$out25"
+assert_contains "broken-scan: stderr advisory emitted" "already-in-vault dedup inactive" "$out31"
+assert_contains "broken-scan: new session still imports (no false-skip)" "new=1" "$out31"
 
 # ============================================================================
 # Summary
