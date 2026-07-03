@@ -309,6 +309,32 @@ try {
     if ($argvDump -match 'HOOK_RULES_MARKER') { Pass 'rules(hook): rules content reached the claude prompt across the spawn boundary' } else { Fail 'rules(hook): rules content missing from the spawned prompt' }
     Remove-Item -LiteralPath $rulesCfg -Force -ErrorAction SilentlyContinue
 
+    # Case 12 (HIMMEL-672): crystallize_model precedence — config supplies the
+    # DEFAULT model; a CRYSTALLIZE_MODEL already set in the launching shell wins
+    # (per-session operator switch). Twin of the .sh suite's Case 13.
+    $modelCfg = Join-Path $huskProj '.claude\end-session-wiki.json'
+    Set-Content -LiteralPath $modelCfg -Value '{"enabled":true,"crystallize_model":"cfg-pin-model"}'
+    # 12a — env unset -> the config model reaches claude's argv.
+    $argvdM = Join-Path $huskProj 'argv-model.txt'
+    $env:STUB_MODE = 'success'; $env:CRYSTALLIZE_ARGV_DUMP = $argvdM
+    Remove-Item Env:\CRYSTALLIZE_MODEL -ErrorAction SilentlyContinue
+    Invoke-HookCustom -Transcript $toolTs -VaultPath $huskVault -ProjPath $huskProj
+    $w = 0; while (-not (Test-Path $argvdM) -and $w -lt 60) { Start-Sleep -Milliseconds 100; $w++ }
+    $argvLinesM = @(Get-Content -LiteralPath $argvdM -ErrorAction SilentlyContinue)
+    if ($argvLinesM -contains 'arg=cfg-pin-model') { Pass 'model(hook): config crystallize_model reaches claude argv when env is unset' } else { Fail 'model(hook): config crystallize_model did NOT reach claude argv' }
+    Remove-Item -LiteralPath $argvdM -Force -ErrorAction SilentlyContinue
+    # 12b — env set in the launching shell -> env wins over the config model.
+    $env:CRYSTALLIZE_MODEL = 'env-switch-model'
+    Invoke-HookCustom -Transcript $toolTs -VaultPath $huskVault -ProjPath $huskProj
+    $w = 0; while (-not (Test-Path $argvdM) -and $w -lt 60) { Start-Sleep -Milliseconds 100; $w++ }
+    $env:STUB_MODE = 'noop'
+    Remove-Item Env:\CRYSTALLIZE_MODEL -ErrorAction SilentlyContinue
+    Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
+    $argvLinesM = @(Get-Content -LiteralPath $argvdM -ErrorAction SilentlyContinue)
+    if ($argvLinesM -contains 'arg=env-switch-model') { Pass 'model(hook): launching-shell CRYSTALLIZE_MODEL wins over config' } else { Fail 'model(hook): env CRYSTALLIZE_MODEL did not override the config model' }
+    if ($argvLinesM -contains 'arg=cfg-pin-model') { Fail 'model(hook): config model leaked into argv despite env override' } else { Pass 'model(hook): config model correctly absent when env override is set' }
+    Remove-Item -LiteralPath $modelCfg -Force -ErrorAction SilentlyContinue
+
     Remove-Item -LiteralPath $huskVault -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $huskProj  -Recurse -Force -ErrorAction SilentlyContinue
 

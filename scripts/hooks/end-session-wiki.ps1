@@ -504,7 +504,9 @@ $rawSection
         try { Write-NoteToFile -Path $absPath -Content $markdown } catch { return }
         $crys = Join-Path $PSScriptRoot '..\luna\crystallize-note.ps1'
         if (-not (Test-Path $crys)) { return }
-        if ($cfgCrystallizeModel) { $env:CRYSTALLIZE_MODEL = $cfgCrystallizeModel }
+        # Config supplies the DEFAULT model; CRYSTALLIZE_MODEL already set in the
+        # launching shell wins (per-session operator switch, HIMMEL-672).
+        if ($cfgCrystallizeModel -and -not $env:CRYSTALLIZE_MODEL) { $env:CRYSTALLIZE_MODEL = $cfgCrystallizeModel }
         if ($cfgCrystallizeRules) {
             $rulesExpanded = $cfgCrystallizeRules
             # ~/ expansion via USERPROFILE — same convention as the vault_path

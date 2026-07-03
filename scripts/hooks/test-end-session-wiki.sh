@@ -402,6 +402,49 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 13: crystallize_model precedence (HIMMEL-672) ------------------------
+# Config supplies the DEFAULT model; a CRYSTALLIZE_MODEL already set in the
+# launching shell must WIN over the config (per-session operator switch).
+# 13a — config only (env unset) -> the config model reaches claude's argv.
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude"
+printf '%s\n' '{"enabled":true,"crystallize_model":"cfg-pin-model"}' > "$SB/proj/.claude/end-session-wiki.json"
+ARGVD13="$SB/argv.txt"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env -u CRYSTALLIZE_MODEL OSTYPE="linux-gnu" OS="" \
+    LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    STUB_MODE="success" CRYSTALLIZE_ARGV_DUMP="$ARGVD13" \
+    CRYSTALLIZE_PID_DIR="$SB/pids" bash "$HOOK"
+i=0; while [ ! -s "$ARGVD13" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+if grep -qxF 'arg=cfg-pin-model' "$ARGVD13" 2>/dev/null; then
+    pass "model(hook): config crystallize_model reaches claude argv when env is unset"
+else
+    fail "model(hook): config crystallize_model did NOT reach claude argv"
+fi
+rm -rf "$SB"
+# 13b — env set in the launching shell -> env wins over the config model.
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude"
+printf '%s\n' '{"enabled":true,"crystallize_model":"cfg-pin-model"}' > "$SB/proj/.claude/end-session-wiki.json"
+ARGVD13="$SB/argv.txt"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env CRYSTALLIZE_MODEL="env-switch-model" OSTYPE="linux-gnu" OS="" \
+    LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    STUB_MODE="success" CRYSTALLIZE_ARGV_DUMP="$ARGVD13" \
+    CRYSTALLIZE_PID_DIR="$SB/pids" bash "$HOOK"
+i=0; while [ ! -s "$ARGVD13" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+if grep -qxF 'arg=env-switch-model' "$ARGVD13" 2>/dev/null; then
+    pass "model(hook): launching-shell CRYSTALLIZE_MODEL wins over config"
+else
+    fail "model(hook): env CRYSTALLIZE_MODEL did not override the config model"
+fi
+if grep -qxF 'arg=cfg-pin-model' "$ARGVD13" 2>/dev/null; then
+    fail "model(hook): config model leaked into argv despite env override"
+else
+    pass "model(hook): config model correctly absent when env override is set"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0
