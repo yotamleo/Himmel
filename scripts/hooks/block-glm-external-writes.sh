@@ -20,7 +20,9 @@
 #   - ALL mcp__* tools EXCEPT the qmd KB carve-out (v1 chores are repo-local;
 #     blanket beats a verb list; qmd KB reads are operator-allowed, see below)
 #   - git push; git remote set-url; git config …url (tripwire un-poisoning)
-#   - the ENTIRE gh CLI (PR/issue/api writes are parent-session actions)
+#   - the gh CLI EXCEPT the carve-out below — pr create/merge/edit/review/
+#     comment/ready, api, repo, release, gist, … stay blocked (parent-session
+#     actions)
 #   - network CLIs: curl/wget/Invoke-WebRequest/Invoke-RestMethod/iwr/irm
 #     (write-flag parsing is fragile post-lowercasing; chores are repo-local;
 #     bun/npm installs remain allowed — dependency fetch, not external write)
@@ -31,6 +33,10 @@
 #     file followup tickets. Atlassian MCP stays blocked (mcp__* below) — Jira
 #     routing is CLI-first (block-backend-tier enforces that in every session).
 #   - the qmd KB (mcp__plugin_qmd_qmd__* tools): read-only knowledge-base access.
+#   - gh issue <anything> (full issue surface — reads AND writes; cr-deferred
+#     followups are gh issues, audited in GitHub + recoverable), plus read-only
+#     PR/CI context: `gh pr view|diff|checks|status|list`, `gh run
+#     view|list|watch`. Every other gh use stays blocked (counting arm below).
 #
 # Known limitations (accidental-shape guard, like block-read-secrets):
 #   - any wrapper displacing the command from command position is missed:
@@ -40,6 +46,18 @@
 #     fetch, including bun-invoking the telegram bridge send path
 #   - malformed/empty tool JSON -> allow (parity with sibling hooks; Claude
 #     Code emits valid JSON)
+#   - the gh carve-out counts command-position gh occurrences (total vs
+#     allowed) and shares the wrapper gap above — a wrapper-displaced gh is
+#     invisible to BOTH counts, so it is neither blocked nor credited as allowed
+#   Accepted OVER-blocks (fail-closed direction, all test-pinned):
+#   - newlines flatten to ';', so quoted prose whose LINE starts with a
+#     blocked verb ("…\ngit push later") blocks; mid-line prose stays allowed
+#   - an allowed `gh issue …` whose quoted body contains `;`/`|` followed by
+#     another gh token ("--body 'step 1; gh pr merge later'") blocks (the
+#     body token inflates the total count)
+#   - global flags BEFORE a gh subcommand displace it from the allow anchor:
+#     `gh -R o/r issue list` blocks; write flags AFTER the subcommand
+#     (`gh issue list -R o/r`) — allowed
 #   All backstopped by the poisoned pushurl tripwire + the parent CR gate —
 #   those two remain the load-bearing controls; this hook is the in-session
 #   deterministic layer.
@@ -95,15 +113,31 @@ esac
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
 [ -z "$cmd" ] && exit 0
 
-# Lower-case + flatten newlines (same rationale as block-rogue-claude-schedule:
-# line-oriented grep + multi-line commands otherwise let ^ match any line).
-cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' '  ')
+# Lower-case + flatten newlines TO ';' — a newline separates commands exactly
+# like ';' does, so flattening to spaces (the sibling hooks' shape) UNDER-blocks:
+# a two-line "gh pr view 1\ngh pr merge 1" would read as one command and the
+# merge would slip through as an "argument". Flattening to ';' keeps command
+# boundaries visible to the (^|[;&|(]) anchor. Cost (accepted, fail-closed): a
+# quoted commit-message LINE that STARTS with a blocked verb ("…\ngit push
+# later") now over-blocks — pinned by test; mid-line prose stays allowed.
+cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;')
 
 # Command-position matcher: start-of-command or right after ; & | ( —
 # deliberately NOT space/quote, so prose inside a commit message ("… git push
 # …") does not false-block. Env-prefixed `FOO=1 git push` is therefore missed:
 # accepted limitation, tripwire-backstopped (see header).
 at_cmd() { printf '%s' "$cmd_lc" | grep -qE "(^|[;&|(])[[:space:]]*($1)"; }
+
+# Occurrence counter (same command-position wrapper as at_cmd). grep -c counts
+# LINES, and cmd_lc is flattened to one line, so -c undercounts a compound with
+# two command-position matches — count PER-MATCH via grep -oE | wc -l instead.
+# grep exits 1 on zero matches; `|| true` keeps that from tripping errexit
+# inside the assignment's command substitution. $(( )) strips wc's whitespace.
+count_cmd() {
+    local n
+    n=$(printf '%s' "$cmd_lc" | grep -oE "(^|[;&|(])[[:space:]]*($1)" | wc -l) || true
+    printf '%s' "$((n))"
+}
 
 # git push — subcommand position; tolerate intervening short/long flags with
 # one optional argument each (git -C <path> push, git -c k=v push).
@@ -119,8 +153,16 @@ fi
 if at_cmd 'git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url' || at_cmd 'git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[a-z-]+)*[[:space:]]+[^[:space:];&|]*url'; then
     deny "rewriting git remote/push URLs is blocked on the GLM lane (the pushurl tripwire stays poisoned)."
 fi
-if at_cmd 'gh([[:space:]]|$)'; then
-    deny "the gh CLI is blocked on the GLM lane (PR/issue/API actions belong to the parent session)."
+# gh carve-out (operator policy 2026-07-03, HIMMEL-675): allow `gh issue`
+# (full surface — cr-deferred followups are gh issues, audited + recoverable)
+# and read-only PR/CI context (`gh pr view|diff|checks|status|list`, `gh run
+# view|list|watch`); deny every other gh. Count command-position gh occurrences
+# vs allowed ones — a compound smuggling a denied gh past an allowed one
+# (`gh pr view 1 && gh pr merge 1`) has total > allowed → deny.
+gh_total=$(count_cmd 'gh([[:space:]]|$)')
+gh_allowed=$(count_cmd 'gh[[:space:]]+(issue([[:space:]]|$)|pr[[:space:]]+(view|diff|checks|status|list)([[:space:]]|$)|run[[:space:]]+(view|list|watch)([[:space:]]|$))')
+if [ "$gh_total" -gt "$gh_allowed" ]; then
+    deny "gh is limited on the GLM lane: issue ops + pr/run reads; PR mutations belong to the parent session."
 fi
 if at_cmd '(curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)([[:space:]]|$)'; then
     deny "network CLIs are blocked on the GLM lane (chores are repo-local)."

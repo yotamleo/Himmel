@@ -310,7 +310,9 @@ env check — near-zero overhead, before the jq check.
 
 On-lane it hard-blocks: `git push`, remote-URL rewrites (`git remote set-url`,
 `git config …url` — keeps the poisoned-pushurl tripwire un-poisonable), the
-entire `gh` CLI (PR/issue/API writes are parent-session actions), network CLIs
+`gh` CLI EXCEPT the issue-ops + pr/run-reads carve-out below (`gh pr
+create/merge/edit/review/comment/ready`, `gh api`, `gh repo`, … stay blocked —
+parent-session actions), network CLIs
 (`curl`/`wget`/`Invoke-WebRequest`/`Invoke-RestMethod`/`iwr`/`irm`), and all
 `mcp__*` tools except the qmd carve-out below (v1 chores are repo-local; a
 blanket deny beats a write-verb list). `git commit`/`add`/`status`/`diff` and
@@ -319,9 +321,16 @@ blanket deny beats a write-verb list). `git commit`/`add`/`status`/`diff` and
 **Allowed on-lane (operator policy 2026-07-03 — audited-action carve-out):** the
 **Jira CLI** (`scripts/jira/` path or a bare `jira`) — writes are audited in
 Jira history and recoverable, so GLM workers may update status/comments and file
-followup tickets; and **qmd KB reads** (`mcp__plugin_qmd_qmd__*`, allowed before
-the blanket `mcp__*` deny). Atlassian MCP stays blocked — Jira routing is
-CLI-first (`block-backend-tier` enforces that in every session).
+followup tickets; **qmd KB reads** (`mcp__plugin_qmd_qmd__*`, allowed before
+the blanket `mcp__*` deny); and (HIMMEL-675) **`gh issue <anything>`** (full
+issue surface, reads AND writes — cr-deferred followups are gh issues, audited +
+recoverable) plus read-only **PR/CI context** (`gh pr view|diff|checks|status|
+list`, `gh run view|list|watch`). The gh carve-out counts command-position gh
+occurrences vs allowed ones, so a compound smuggling a denied gh past an allowed
+one (`gh pr view 1 && gh pr merge 1`) still denies (total > allowed) — it shares
+the command-position wrapper gap with the other arms. Atlassian MCP stays
+blocked — Jira routing is CLI-first (`block-backend-tier` enforces that in every
+session).
 
 **Fail-CLOSED:** missing `jq` on the GLM lane blocks (parity with
 `block-rogue-claude-schedule`). Command-position matching (start, or after
