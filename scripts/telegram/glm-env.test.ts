@@ -79,3 +79,37 @@ test("formatConflict renders the file:key strings the print/refusal sites emit",
   expect(formatConflict({ file: "/a", kind: "env", key: "ANTHROPIC_MODEL" })).toBe("/a: env.ANTHROPIC_MODEL");
   expect(formatConflict({ file: "/a", kind: "unparseable" })).toBe("/a: unparseable");
 });
+
+// --- .env precedence when sources COEXIST (CR finding F3). Existing tests prove
+// each source in isolation; these pin the ordering readZaiKey promises:
+// process.env > repo(worktree) .env > main-checkout .env.
+
+test("precedence: process.env beats repo .env when both present", () => {
+  process.env.ZAI_API_KEY = "from-process-env";
+  writeFileSync(join(root, ".env"), "ZAI_API_KEY=from-repo-env\n"); // gitleaks:allow
+  expect(buildGlmEnv(root).ANTHROPIC_AUTH_TOKEN).toBe("from-process-env");
+});
+
+test("precedence: worktree .env beats main-checkout .env fallback when both present", () => {
+  const repo = mkdtempSync(join(tmpdir(), "glmmain2-"));
+  const sh = (args: string[], cwd: string) => {
+    const r = Bun.spawnSync(args, { cwd, stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`${args.join(" ")} failed: ${r.stderr.toString()}`);
+  };
+  try {
+    sh(["git", "init"], repo);
+    sh(["git", "config", "user.email", "t@t.t"], repo);
+    sh(["git", "config", "user.name", "t"], repo);
+    writeFileSync(join(repo, ".env"), "ZAI_API_KEY=from-main-checkout\n"); // gitleaks:allow
+    writeFileSync(join(repo, "f.txt"), "x");
+    sh(["git", "add", "f.txt"], repo); // .env stays out of the commit (mirrors gitignore)
+    sh(["git", "commit", "-m", "init"], repo);
+    const wt = join(repo, "wt");
+    sh(["git", "worktree", "add", wt], repo);
+    // worktree's OWN .env present → must win over the main-checkout fallback
+    writeFileSync(join(wt, ".env"), "ZAI_API_KEY=from-worktree\n"); // gitleaks:allow
+    expect(buildGlmEnv(wt).ANTHROPIC_AUTH_TOKEN).toBe("from-worktree");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

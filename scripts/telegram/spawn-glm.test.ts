@@ -193,3 +193,51 @@ test("executeRun: a capped result writes status:capped (F4 wiring)", async () =>
     expect(meta.pid).toBe(99);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// --- poisonPushUrl scope (CR finding F1: tripwire must be worktree-scoped, not
+// repo-global). The poison sets remote.origin.pushurl via `--worktree`, which
+// only lands in the worktree's private config when extensions.worktreeConfig is
+// on. This pins that scope: a SIBLING worktree (shares the repo's origin config)
+// and the repo-global config itself must both stay clean.
+
+test("pushurl poison is worktree-scoped, not repo-global (sibling worktree still pushes; repo-global pushurl unset)", () => {
+  const repo = mkdtempSync(join(tmpdir(), "glmgit-"));
+  const run = (args: string[], cwd: string) => Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  run(["init", "-b", "main"], repo);
+  run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"], repo);
+  run(["remote", "add", "origin", repo], repo); // self-remote: a real push would land in-repo
+  const wtPoison = join(repo, "wtp");
+  const wtSibling = join(repo, "wts");
+  run(["worktree", "add", wtPoison, "-b", "glm/p"], repo);
+  run(["worktree", "add", wtSibling, "-b", "glm/s"], repo);
+  poisonPushUrl(repo, wtPoison);
+  // anchor: the poisoned worktree's push fails on the POISON
+  const pushPoison = run(["push", "origin", "HEAD"], wtPoison);
+  expect(pushPoison.exitCode).not.toBe(0);
+  expect(pushPoison.stderr.toString()).toContain("DISABLED-glm-quarantine");
+  // sibling worktree shares the repo's origin url (its own worktree config is
+  // empty) → its push is UNAFFECTED. If the poison had leaked repo-global, this
+  // sibling push --dry-run would hit DISABLED-glm-quarantine and fail.
+  const drySibling = run(["push", "--dry-run", "origin", "HEAD"], wtSibling);
+  expect(drySibling.exitCode).toBe(0);
+  // direct repo-global proof: remote.origin.pushurl was never written to the
+  // shared .git/config (git config --get exits 1 when the key is unset).
+  const cfgGlobal = run(["config", "--get", "remote.origin.pushurl"], repo);
+  expect(cfgGlobal.exitCode).not.toBe(0);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// --- planSpawn refusal when ONE settings file mixes model + env.ANTHROPIC_*
+// (CR finding F4: the combination is untested — assert the env conflict still
+// refuses and is not masked by the co-located model downgrade).
+
+test("planSpawn refuses when ONE settings file mixes model + env.ANTHROPIC_* (env conflict not masked by co-located model)", () => {
+  const r = planSpawn("/repo", undefined, okDeps({ settingsConflicts: () => [
+    { file: "/home/t/.claude/settings.json", kind: "model" },
+    { file: "/home/t/.claude/settings.json", kind: "env", key: "ANTHROPIC_MODEL" },
+  ] }));
+  expect(r.ok).toBe(false);
+  expect((r as any).reason).toContain("settings conflicts");
+  // the env refusal is surfaced (not swallowed by the model→warning downgrade)
+  expect((r as any).reason).toContain("/home/t/.claude/settings.json: env.ANTHROPIC_MODEL");
+});
