@@ -105,9 +105,14 @@ your file tools, then stop.
 
     # Operator rules/context injection: append a readable rules file's content as
     # a clearly delimited block. Unreadable / missing / empty -> append nothing.
+    # Trim whitespace before the emptiness check to ensure parity with bash
+    # (bash `$(cat)` strips trailing newline, but PS Get-Content -Raw keeps it;
+    # both must skip on whitespace-only files).
     if ($rulesFile -and (Test-Path -LiteralPath $rulesFile)) {
         $rulesContent = (Get-Content -LiteralPath $rulesFile -Raw)
-        if ($rulesContent) {
+        # Null-safe whitespace check: Get-Content -Raw returns $null on a
+        # zero-byte file, so .Trim() would throw and abort the run.
+        if (-not [string]::IsNullOrWhiteSpace($rulesContent)) {
             $prompt = $prompt + @"
 
 Additionally apply these operator rules when synthesizing:

@@ -323,15 +323,37 @@ $note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'
 $rules = Join-Path $SB 'empty-rules.txt'; $argvd = Join-Path $SB 'argv.txt'
 Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'
 [System.IO.File]::WriteAllText($rules, '')
-$env:STUB_MODE = 'success'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_CLAUDE_BIN = $STUB; $env:STUB_MODE = 'success'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
 $env:CRYSTALLIZE_ARGV_DUMP = $argvd; $env:CRYSTALLIZE_RULES_FILE = $rules
 Run-Crys $note $tr
 Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
 Remove-Item Env:\CRYSTALLIZE_RULES_FILE -ErrorAction SilentlyContinue
 $nc = Get-Content -LiteralPath $note -Raw
+if ($nc -match '(?m)^crystallized: true$') { Pass 'rules(empty): run still proceeds normally with zero-byte rules file' } else { Fail 'rules(empty): run did not proceed' }
 $avRaw = Get-Content -LiteralPath $argvd -Raw
-if ($avRaw -notmatch 'begin operator rules') { Pass 'rules(empty): no operator-rules block for a zero-byte rules file' } else { Fail 'rules(empty): rules block wrongly present for empty file' }
-if ($nc -match '(?m)^crystallized: true$') { Pass 'rules(empty): run still proceeds normally' } else { Fail 'rules(empty): run did not proceed' }
+if ($avRaw -notmatch 'begin operator rules') { Pass 'rules(empty): no operator-rules block for a zero-byte rules file' } else { Fail 'rules(empty): rules block wrongly present for zero-byte file' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
+# --- Case 16: whitespace-only rules file — parity test (bash vs ps1 divergence) --
+# HIMMEL-841: bash `$(cat file)` strips trailing newline; PS `Get-Content -Raw`
+# keeps it. A file with ONLY a newline must NOT append a rules block in BOTH.
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'
+$rules = Join-Path $SB 'ws-only-rules.txt'; $argvd = Join-Path $SB 'argv.txt'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'
+[System.IO.File]::WriteAllText($rules, "`n")
+$env:CRYSTALLIZE_CLAUDE_BIN = $STUB; $env:STUB_MODE = 'success'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_ARGV_DUMP = $argvd; $env:CRYSTALLIZE_RULES_FILE = $rules
+Run-Crys $note $tr
+Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_RULES_FILE -ErrorAction SilentlyContinue
+$nc = Get-Content -LiteralPath $note -Raw
+if ($nc -match '(?m)^crystallized: true$') { Pass 'rules(ws-only): run still proceeds normally with whitespace-only rules file' } else { Fail 'rules(ws-only): run did not proceed' }
+# The load-bearing parity assertion (HIMMEL-841): the block must be ABSENT —
+# without it this case stays green even if the trim guard is reverted.
+$avRaw = Get-Content -LiteralPath $argvd -Raw
+if ($avRaw -notmatch 'begin operator rules') { Pass 'rules(ws-only): no operator-rules block for whitespace-only file (parity with bash)' } else { Fail 'rules(ws-only): rules block wrongly present for whitespace-only file' }
 Remove-Item -LiteralPath $SB -Recurse -Force
 
 if ($script:fails -eq 0) { 'ALL PASS'; exit 0 } else { "$($script:fails) FAILED"; exit 1 }

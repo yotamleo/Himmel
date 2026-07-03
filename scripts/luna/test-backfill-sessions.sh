@@ -1635,6 +1635,14 @@ out32b=$(bash "$BACKFILL" --reheal --rules 2>&1) || rc32b=$?
 if [ "$rc32b" -eq 1 ]; then pass "rules(guard): trailing --rules exits 1"; else fail "rules(guard): wrong exit $rc32b (want 1)" "$out32b"; fi
 assert_contains "rules(guard): explicit needs-a-value message" "--rules needs a value" "$out32b"
 
+# Trailing --limit with no value (HIMMEL-842): the guard must fail fast with a
+# clean message, not a raw set -u "$1: unbound variable" abort. Uses the same
+# safe expansion shape (${1:-}) as the --rules arm.
+rc32c=0
+out32c=$(bash "$BACKFILL" --recrystallize --limit 2>&1) || rc32c=$?
+if [ "$rc32c" -eq 1 ]; then pass "limit(guard): trailing --limit exits 1"; else fail "limit(guard): wrong exit $rc32c (want 1)" "$out32c"; fi
+assert_contains "limit(guard): explicit needs-a-number message" "--limit needs a number" "$out32c"
+
 # ============================================================================
 # Case 33: multi-vault --all already-in-vault dedup (#790) — two repos route to
 #          two DIFFERENT vaults (mirror Case 17), each vault already holds a live
