@@ -10,10 +10,24 @@ import { spawn } from "bun";
 // string) makes a typo a compile error instead of a malformed `--permission-mode`
 // flag that only fails inside the spawned, stdin-closed claude run.
 export type PermissionMode = "bypassPermissions";
+// Model pin (HIMMEL-671): without an explicit --model, every bounded run
+// inherits the operator's default model — currently Fable, whose quota is
+// time-limited and reserved for the main thread (see the subagent policy).
+// Opus over sonnet: bridge runs do real work (Jira writes, arming, vault
+// filing) that warrants the reasoning tier, and the operator's standing
+// guidance is opus/haiku for dispatches. Override via TELEGRAM_CLAUDE_MODEL
+// (poller env; restart to apply); blank/whitespace falls back to the default.
+export const DEFAULT_MODEL = "opus";
+function resolveModel(): string {
+  return process.env.TELEGRAM_CLAUDE_MODEL?.trim() || DEFAULT_MODEL;
+}
 // permissionMode (HIMMEL-578): when set, injected as `--permission-mode <mode>`
 // BEFORE the prompt.
 export function buildRunArgs(prompt: string, permissionMode?: PermissionMode) {
-  const cmd = permissionMode ? ["claude", "--permission-mode", permissionMode, prompt] : ["claude", prompt];
+  const model = resolveModel();
+  const cmd = permissionMode
+    ? ["claude", "--model", model, "--permission-mode", permissionMode, prompt]
+    : ["claude", "--model", model, prompt];
   return { cmd, stdin: "ignore" as const };
 }
 

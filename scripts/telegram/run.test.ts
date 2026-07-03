@@ -1,6 +1,11 @@
-import { expect, test } from "bun:test";
-import { buildRunArgs, detectCap, detectContentFilter, buildPrompt, killTree } from "./run";
+import { beforeEach, expect, test } from "bun:test";
+import { buildRunArgs, DEFAULT_MODEL, detectCap, detectContentFilter, buildPrompt, killTree } from "./run";
 import { spawn } from "bun";
+
+// HIMMEL-671: buildRunArgs resolves the model from process.env — reset the
+// override before EVERY test so neither ambient operator env nor test order
+// can skew the argv assertions (centralized per CR round-2).
+beforeEach(() => { delete process.env.TELEGRAM_CLAUDE_MODEL; });
 
 test("killTree takes down a live child process (HIMMEL-246 orphan guard)", async () => {
   // a child that would sleep ~100s; killTree must end it promptly
@@ -60,14 +65,74 @@ test("buildPrompt tells the run to Read a document_path attachment (HIMMEL-321)"
   expect(p).toContain("Read");
 });
 test("buildPrompt with a vault adds a file-into-vault clause (HIMMEL-321)", () => {
-  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r" }, "/luna-medic");
-  expect(p).toContain("/luna-medic");
+  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r" }, "/medic-vault");
+  expect(p).toContain("/medic-vault");
   expect(p).toContain("document_path");
   expect(p).toContain("_CLAUDE.md");
 });
 test("buildPrompt without a vault adds no file-into-vault clause (HIMMEL-321)", () => {
   const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r" });
   expect(p).not.toContain("into the Obsidian vault");   // matches the real clause text
+});
+// --- HIMMEL-578: per-chat vault cwd + scoped bypass + image filing ---
+test("buildRunArgs injects --permission-mode before the prompt when set; omits it otherwise", () => {
+  const a = buildRunArgs("do it", "bypassPermissions");
+  expect(a.cmd).toEqual(["claude", "--model", DEFAULT_MODEL, "--permission-mode", "bypassPermissions", "do it"]);
+  const b = buildRunArgs("do it");
+  expect(b.cmd).toEqual(["claude", "--model", DEFAULT_MODEL, "do it"]); // no --permission-mode when unset (still model-pinned)
+});
+// --- HIMMEL-671: bounded runs must pin an explicit --model (never inherit the
+// user default, which is currently Fable) ---
+test("buildRunArgs pins --model with the baked-in default in BOTH spawn branches (HIMMEL-671)", () => {
+  const withMode = buildRunArgs("go", "bypassPermissions").cmd;
+  const without = buildRunArgs("go").cmd;
+  for (const cmd of [withMode, without]) {
+    const i = cmd.indexOf("--model");
+    expect(i).toBeGreaterThan(-1);
+    expect(cmd[i + 1]).toBe(DEFAULT_MODEL);
+    expect(cmd.indexOf("--model")).toBeLessThan(cmd.indexOf("go")); // flag precedes the prompt
+  }
+});
+test("buildRunArgs honours the TELEGRAM_CLAUDE_MODEL env override in BOTH branches, trimmed (HIMMEL-671)", () => {
+  process.env.TELEGRAM_CLAUDE_MODEL = " sonnet ";   // padded: pins the trim contract too
+  try {
+    for (const cmd of [buildRunArgs("go", "bypassPermissions").cmd, buildRunArgs("go").cmd]) {
+      expect(cmd).toContain("--model");
+      expect(cmd[cmd.indexOf("--model") + 1]).toBe("sonnet");
+    }
+  } finally {
+    delete process.env.TELEGRAM_CLAUDE_MODEL;
+  }
+});
+test("buildRunArgs falls back to the default when TELEGRAM_CLAUDE_MODEL is blank (HIMMEL-671)", () => {
+  process.env.TELEGRAM_CLAUDE_MODEL = "   ";
+  try {
+    const cmd = buildRunArgs("go").cmd;
+    expect(cmd[cmd.indexOf("--model") + 1]).toBe(DEFAULT_MODEL);
+  } finally {
+    delete process.env.TELEGRAM_CLAUDE_MODEL;
+  }
+});
+test("the baked-in default model is non-Fable (HIMMEL-671 — the whole point)", () => {
+  expect(DEFAULT_MODEL.toLowerCase()).not.toContain("fable");
+  expect(DEFAULT_MODEL.length).toBeGreaterThan(0);
+});
+test("buildPrompt reports the SPAWN cwd (sessionCwd) but keeps the Jira path on repoCwd (cwd) — HIMMEL-578 decoupling", () => {
+  const p = buildPrompt("__chat__", { inbox:"i", outbox:"o", context:"c", cwd:"/himmel", sessionCwd:"/vault" });
+  expect(p).toContain("running in /vault");               // session runs in the vault cwd
+  expect(p).toContain("/himmel/scripts/jira/dist/index.js"); // jira path stays anchored on repoCwd
+  expect(p).not.toContain("/vault/scripts/jira");         // never the vault for jira
+});
+test("buildPrompt falls back to cwd for 'running in' when sessionCwd is absent (back-compat)", () => {
+  const p = buildPrompt("__chat__", { inbox:"i", outbox:"o", context:"c", cwd:"/repo" });
+  expect(p).toContain("running in /repo");
+});
+test("buildPrompt vault clause files an image_path (not just document_path) and prefers a vault medic skill (HIMMEL-578)", () => {
+  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r", sessionCwd:"/medic-vault" }, "/medic-vault");
+  expect(p).toContain("image_path");
+  expect(p).toMatch(/FILE that attachment/i);             // images are FILED, not just read
+  expect(p).toMatch(/medic.*skill/i);                     // prefer the vault-local medic skill
+  expect(p).toContain("/medic-vault");
 });
 test("buildPrompt sanctions non-destructive Jira ticket ops (HIMMEL-424 followup — lifts the classifier veto)", () => {
   const p = buildPrompt("__chat__", { inbox:"i", outbox:"o", context:"c", cwd:"/repo" });
