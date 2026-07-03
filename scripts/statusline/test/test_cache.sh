@@ -77,12 +77,33 @@ assert_eq "sonnet read_savings_rate"   "$read_savings_rate"   "0.00000270"
 assert_eq "sonnet write_overhead_rate" "$write_overhead_rate" "0.00000300"
 
 get_model_savings_rate "claude-opus-4-7"
-assert_eq "opus read_savings_rate"     "$read_savings_rate"   "0.00001350"
-assert_eq "opus write_overhead_rate"   "$write_overhead_rate" "0.00001500"
+assert_eq "opus read_savings_rate"     "$read_savings_rate"   "0.00000450"
+assert_eq "opus write_overhead_rate"   "$write_overhead_rate" "0.00000500"
 
 get_model_savings_rate "claude-haiku-4-5"
-assert_eq "haiku read_savings_rate"    "$read_savings_rate"   "0.00000072"
-assert_eq "haiku write_overhead_rate"  "$write_overhead_rate" "0.00000080"
+assert_eq "haiku read_savings_rate"    "$read_savings_rate"   "0.00000090"
+assert_eq "haiku write_overhead_rate"  "$write_overhead_rate" "0.00000100"
+
+# Fable red-path: must NOT fall through to the sonnet default (0.00000270).
+# (10 - 1) / 1e6 = 0.00000900 read; (20 - 10) / 1e6 = 0.00001000 write.
+get_model_savings_rate "claude-fable-5"
+assert_eq "fable read_savings_rate"    "$read_savings_rate"   "0.00000900"
+assert_eq "fable write_overhead_rate"  "$write_overhead_rate" "0.00001000"
+
+# Mythos shares fable's rates; assert the branch is not a silent fallthrough.
+get_model_savings_rate "claude-mythos-5"
+assert_eq "mythos read_savings_rate"   "$read_savings_rate"   "0.00000900"
+assert_eq "mythos write_overhead_rate" "$write_overhead_rate" "0.00001000"
+
+# glm-* / gpt-5*: cache_write == input, so write_overhead must be exactly 0
+# (z.ai free-write / no-write-premium boundary). Guard the zero-diff case.
+get_model_savings_rate "glm-4.6"
+assert_eq "glm read_savings_rate"      "$read_savings_rate"   "0.00000114"
+assert_eq "glm write_overhead_rate"    "$write_overhead_rate" "0.00000000"
+
+get_model_savings_rate "gpt-5.5"
+assert_eq "gpt5 read_savings_rate"     "$read_savings_rate"   "0.00000450"
+assert_eq "gpt5 write_overhead_rate"   "$write_overhead_rate" "0.00000000"
 
 get_model_savings_rate "unknown-model"
 assert_eq "fallback read_savings_rate" "$read_savings_rate"   "0.00000270"

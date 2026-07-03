@@ -6,15 +6,18 @@ external repo or hand-editing global `~/.claude/settings.json`.
 
 - **Source fork:** `yotamleo/claude-statusline` (origin)
 - **Upstream:** `nilbuild/claude-statusline` (`Kamran Ahmed`, MIT — see `LICENSE`)
-- **Vendored at commit:** `dd68f9b` (`fix(cache): incremental all-sessions scan + hide stale cache tier`)
+- **Vendored at commit:** `9423572` (`test(cache): assert mythos/glm/gpt-5 write_overhead=0 boundary`)
 - **himmel cache-metrics patch:** `docs/patches/2026-05-16-cache-statusline.md`
 
 > **Local divergence pending re-vendor (HIMMEL-617):** `bin/statusline.sh` here
-> carries the `HIMMEL_STATUSLINE_PERIOD` bottom-row period knob (week/month/all),
-> which is **not yet in the fork**. This vendored copy is the deployed artifact,
-> so the feature ships; but it MUST be mirrored to `yotamleo/claude-statusline`
-> and the "Vendored at commit" SHA above bumped to the resulting fork commit on
-> the next fork push. (The local-hash drift guard is a separate follow-up.)
+> still carries the `HIMMEL_STATUSLINE_PERIOD` bottom-row period knob
+> (week/month/all), which is **not yet in the fork** — the fork push
+> (through `9423572`) mirrored only the `get_model_savings_rate` per-model
+> pricing fix + its test coverage (HIMMEL-679).
+> This vendored copy is the deployed artifact, so both features ship; the period
+> knob MUST still be mirrored to `yotamleo/claude-statusline` and the "Vendored
+> at commit" SHA above bumped on the next fork push. (The local-hash drift guard
+> is a separate follow-up.)
 
 ## What's here
 
