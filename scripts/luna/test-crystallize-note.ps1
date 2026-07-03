@@ -295,4 +295,43 @@ if ($nc -match '(?m)^crystallized: true$') { Pass 'refresh(corrupt): crystallize
 if (-not (Get-ChildItem -Path $SB -Filter '*.snap.*' -ErrorAction SilentlyContinue)) { Pass 'refresh(corrupt): no snapshot temp left behind' } else { Fail 'refresh(corrupt): snapshot temp leaked' }
 Remove-Item -LiteralPath $SB -Recurse -Force
 
+# --- Case 14: 3rd positional rules arg ALONE (env unset) reaches the prompt ------
+# Case 10 proves env beats positional; this proves the positional fallback works on
+# its own when CRYSTALLIZE_RULES_FILE is unset.
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'
+$rules = Join-Path $SB 'pos-only-rules.txt'; $argvd = Join-Path $SB 'argv.txt'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'
+Set-Content -LiteralPath $rules -Value 'POSITIONAL_ONLY_RULES_MARKER'
+Remove-Item Env:\CRYSTALLIZE_RULES_FILE -ErrorAction SilentlyContinue
+$env:STUB_MODE = 'success'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_ARGV_DUMP = $argvd
+Run-Crys3 $note $tr $rules
+Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
+$avRaw = Get-Content -LiteralPath $argvd -Raw
+if ($avRaw -match 'POSITIONAL_ONLY_RULES_MARKER') { Pass 'rules(positional): 3rd positional rules arg reaches the prompt' } else { Fail 'rules(positional): positional rules not in prompt' }
+if ($avRaw -match 'begin operator rules') { Pass 'rules(positional): delimited operator-rules block present' } else { Fail 'rules(positional): no operator-rules delimiter' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
+# --- Case 15: existing but EMPTY rules file — no rules block, run still proceeds -
+# The empty-content guard (if ($rulesContent)) must skip the block for a zero-byte
+# rules file while the crystallize run itself proceeds normally.
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'
+$rules = Join-Path $SB 'empty-rules.txt'; $argvd = Join-Path $SB 'argv.txt'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'
+[System.IO.File]::WriteAllText($rules, '')
+$env:STUB_MODE = 'success'; $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$env:CRYSTALLIZE_ARGV_DUMP = $argvd; $env:CRYSTALLIZE_RULES_FILE = $rules
+Run-Crys $note $tr
+Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_RULES_FILE -ErrorAction SilentlyContinue
+$nc = Get-Content -LiteralPath $note -Raw
+$avRaw = Get-Content -LiteralPath $argvd -Raw
+if ($avRaw -notmatch 'begin operator rules') { Pass 'rules(empty): no operator-rules block for a zero-byte rules file' } else { Fail 'rules(empty): rules block wrongly present for empty file' }
+if ($nc -match '(?m)^crystallized: true$') { Pass 'rules(empty): run still proceeds normally' } else { Fail 'rules(empty): run did not proceed' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
 if ($script:fails -eq 0) { 'ALL PASS'; exit 0 } else { "$($script:fails) FAILED"; exit 1 }

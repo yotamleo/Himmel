@@ -69,6 +69,34 @@ index 0000000..1111111 100644
 +bar
 +baz'
 
+# Test R: registry-sync — the REAL critics.json must keep the panel invariants:
+# a non-empty free tier (counting only rows the panel would accept: slug+model+
+# tier, mirroring its row filter) and the anchor slug pinned to the anchor model.
+# The anchor constants are sourced FROM critic-panel.sh, so this is a live
+# cross-check of critics.json against the panel's fallback, not a third copy.
+ANCHOR_SLUG="$(sed -n 's/^ANCHOR_SLUG="\(.*\)"$/\1/p' "$PANEL")"
+ANCHOR_MODEL="$(sed -n 's/^ANCHOR_MODEL="\(.*\)"$/\1/p' "$PANEL")"
+check "R: ANCHOR_SLUG extracted from critic-panel.sh" "$([ -n "$ANCHOR_SLUG" ] && echo yes)" "yes"
+check "R: ANCHOR_MODEL extracted from critic-panel.sh" "$([ -n "$ANCHOR_MODEL" ] && echo yes)" "yes"
+reg_free="$(python3 - "$HERE/critics.json" <<'PYEOF'
+import sys, json
+d = json.load(open(sys.argv[1]))
+ok = any(e.get("slug") and e.get("model") and e.get("tier") == "free"
+         for e in d.get("panel", []))
+print("yes" if ok else "no")
+PYEOF
+)"
+check "R: registry has >=1 valid free-tier critic" "$reg_free" "yes"
+reg_anchor="$(python3 - "$HERE/critics.json" "$ANCHOR_SLUG" <<'PYEOF'
+import sys, json
+d = json.load(open(sys.argv[1]))
+for e in d.get("panel", []):
+    if e.get("slug") == sys.argv[2]:
+        print(e.get("tier", "") + " " + e.get("model", "")); break
+PYEOF
+)"
+check "R: anchor slug $ANCHOR_SLUG is free-tier + pinned to the panel's ANCHOR_MODEL" "$reg_anchor" "free $ANCHOR_MODEL"
+
 # Test A: merge + global renumber
 out_a="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
 check "A: qwen3coder-1 present" "$(printf '%s\n' "$out_a" | grep -cF '[qwen3coder-1]:')" "1"
@@ -99,6 +127,8 @@ out_e="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/does-not-exist.json" CRITIC_FI
 check "E: warning on missing registry" "$(printf '%s\n' "$stderr_e" | grep -cF 'anchor-only')" "1"
 check "E: anchor used (1/1)" "$(printf '%s\n' "$out_e" | grep -cF '(1/1 critics responded)')" "1"
 check_contains "E: qwen3coder finding present" "$out_e" "[qwen3coder-"
+# deliberately tied to the stub's qwen-branch text — proves the anchor MODEL ran
+check_contains "E: qwen anchor branch ran" "$out_e" "null dereference in handler"
 
 printf '{}' > "$tmp/critics-empty.json"
 stderr_e2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-empty.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
@@ -130,6 +160,8 @@ stderr_i2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-bad.json" CRITIC_F
 out_i2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-bad.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
 check "I2: malformed JSON -> anchor warning" "$(printf '%s\n' "$stderr_i2" | grep -cF 'anchor-only')" "1"
 check_contains "I2: malformed JSON -> anchor finding present" "$out_i2" "[qwen3coder-"
+# deliberately tied to the stub's qwen-branch text — proves the anchor MODEL ran
+check_contains "I2: qwen anchor branch ran" "$out_i2" "null dereference in handler"
 
 # Test J: per-member timeout — hung member bounded and dropped
 STUB_HANG="$tmp/stub-hang.sh"

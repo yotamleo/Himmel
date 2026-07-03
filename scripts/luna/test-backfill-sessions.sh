@@ -1604,6 +1604,124 @@ assert_contains "broken-scan: stderr advisory emitted" "already-in-vault dedup i
 assert_contains "broken-scan: new session still imports (no false-skip)" "new=1" "$out31"
 
 # ============================================================================
+# Case 32: --reheal --rules plumbs the rules file through to the crystallizer
+#          (#800). The reheal loop shares the same exported CRYSTALLIZE_RULES_FILE
+#          as --recrystallize (Case 27) but heals a husk instead — assert the
+#          rules-file marker lands in the crystallizer's dumped argv.
+# ============================================================================
+echo ""
+echo "Case 32: --reheal --rules reaches the crystallizer prompt"
+
+SB="$TMP_ROOT/case32"
+VAULT32="$SB/vault"; PROJ_ROOT32="$SB/projects"; STATE32="$SB/state.json"
+NOTE32="$VAULT32/sessions/2026/06/2026-06-20-0000-testrepo.md"
+RULES32="$SB/rules.txt"; ARGVD32="$SB/argv.txt"
+mkdir -p "$VAULT32" "$PROJ_ROOT32"
+write_husk_note "$NOTE32" "reheal-rules-001"
+seed_named_transcript "$PROJ_ROOT32" "reheal-rules-001" "$TRANSCRIPT_FIXTURES/normal.jsonl"
+printf 'REHEAL_RULES_MARKER\n' > "$RULES32"
+
+out32=$(env CRYSTALLIZE_CLAUDE_BIN="$CLAUDE_STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ARGV_DUMP="$ARGVD32" \
+    bash "$BACKFILL" --reheal --rules "$RULES32" \
+    --projects-dir "$PROJ_ROOT32" --luna-vault-path "$VAULT32" \
+    --state-file "$STATE32" --vault-registry /dev/null 2>&1)
+if grep -qF 'REHEAL_RULES_MARKER' "$ARGVD32" 2>/dev/null; then pass "rules(reheal): --rules content reaches the crystallizer prompt"; else fail "rules(reheal): rules content not in prompt" "$out32"; fi
+
+# Trailing --rules with no value: the guard must fail fast with a clean message,
+# not a raw set -u "$1: unbound variable" abort.
+rc32b=0
+out32b=$(bash "$BACKFILL" --reheal --rules 2>&1) || rc32b=$?
+if [ "$rc32b" -eq 1 ]; then pass "rules(guard): trailing --rules exits 1"; else fail "rules(guard): wrong exit $rc32b (want 1)" "$out32b"; fi
+assert_contains "rules(guard): explicit needs-a-value message" "--rules needs a value" "$out32b"
+
+# ============================================================================
+# Case 33: multi-vault --all already-in-vault dedup (#790) — two repos route to
+#          two DIFFERENT vaults (mirror Case 17), each vault already holds a live
+#          note for its repo's session. One --all pass must dedup BOTH via the
+#          per-vault session_id set (already-in-vault=2) and import nothing; each
+#          vault keeps exactly its one pre-existing note — no duplicate, no
+#          cross-vault bleed.
+# ============================================================================
+echo ""
+echo "Case 33: multi-vault --all already-in-vault dedup (per-vault set keying)"
+
+SB="$TMP_ROOT/case33"
+VAULT33A="$SB/vaultA"; VAULT33B="$SB/vaultB"
+REPO33A="$SB/repo-alpha"; REPO33B="$SB/repo-beta"
+PROJ_ROOT33="$SB/projects"; STATE33="$SB/state.json"
+mkdir -p "$VAULT33A" "$VAULT33B" "$REPO33A" "$REPO33B" "$PROJ_ROOT33"
+setup_projects_dir "$PROJ_ROOT33" "$REPO33A" "$VAULT33A"
+setup_projects_dir "$PROJ_ROOT33" "$REPO33B" "$VAULT33B"
+
+# Seed each vault with a live-captured note whose session_id matches that repo's
+# transcript basename (setup_projects_dir names it test-session-normal-001), so
+# backfill's per-vault scan recognizes it and skips a duplicate import — keyed by
+# the resolved vault, so vaultA's note never dedups vaultB's session or vice-versa.
+LIVE33A="$VAULT33A/sessions/2026/06/2026-06-20-1830-alpha-feat-branch.md"
+LIVE33B="$VAULT33B/sessions/2026/06/2026-06-20-1830-beta-feat-branch.md"
+write_content_note "$LIVE33A" "test-session-normal-001"
+write_content_note "$LIVE33B" "test-session-normal-001"
+
+out33=$(bash "$BACKFILL" \
+    --all \
+    --projects-dir "$PROJ_ROOT33" \
+    --state-file "$STATE33" \
+    --vault-registry /dev/null \
+    2>&1)
+
+assert_contains "multi-vault-dedup: both live sessions skipped (already-in-vault=2)" "already-in-vault=2" "$out33"
+assert_contains "multi-vault-dedup: nothing re-imported (new=0)" "new=0" "$out33"
+
+CNT33A="$(find "$VAULT33A/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+CNT33B="$(find "$VAULT33B/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$CNT33A" = "1" ] && [ "$CNT33B" = "1" ]; then
+    pass "multi-vault-dedup: each vault keeps exactly its one pre-existing note (no duplicate)"
+else
+    fail "multi-vault-dedup: wrong note counts (vaultA=$CNT33A vaultB=$CNT33B, expected 1/1)" "$out33"
+fi
+
+# ============================================================================
+# Case 34: cross-vault bleed discriminator — both repos share the SAME session
+#          id (setup_projects_dir hardcodes test-session-normal-001) but ONLY
+#          vault A is pre-seeded with it. Per-vault set keying must import repo
+#          B's session into vault B (already-in-vault=1, new=1); a buggy GLOBAL
+#          set would see the id from vault A's scan and skip both (already=2,
+#          new=0). Case 33 alone cannot tell those apart — this one can.
+# ============================================================================
+echo ""
+echo "Case 34: cross-vault bleed discriminator (only vault A pre-seeded)"
+
+SB="$TMP_ROOT/case34"
+VAULT34A="$SB/vaultA"; VAULT34B="$SB/vaultB"
+REPO34A="$SB/repo-alpha"; REPO34B="$SB/repo-beta"
+PROJ_ROOT34="$SB/projects"; STATE34="$SB/state.json"
+mkdir -p "$VAULT34A" "$VAULT34B" "$REPO34A" "$REPO34B" "$PROJ_ROOT34"
+setup_projects_dir "$PROJ_ROOT34" "$REPO34A" "$VAULT34A"
+setup_projects_dir "$PROJ_ROOT34" "$REPO34B" "$VAULT34B"
+
+LIVE34A="$VAULT34A/sessions/2026/06/2026-06-20-1830-alpha-feat-branch.md"
+write_content_note "$LIVE34A" "test-session-normal-001"
+
+out34=$(bash "$BACKFILL" \
+    --all \
+    --projects-dir "$PROJ_ROOT34" \
+    --state-file "$STATE34" \
+    --vault-registry /dev/null \
+    2>&1)
+
+assert_contains "bleed-discriminator: only vault A's session skipped (already-in-vault=1)" "already-in-vault=1" "$out34"
+assert_contains "bleed-discriminator: repo B's same-id session imports into vault B (new=1)" "new=1" "$out34"
+
+CNT34A="$(find "$VAULT34A/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+CNT34B="$(find "$VAULT34B/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$CNT34A" = "1" ] && [ "$CNT34B" = "1" ]; then
+    pass "bleed-discriminator: vault A untouched, vault B gained exactly the import (no cross-vault bleed)"
+else
+    fail "bleed-discriminator: wrong note counts (vaultA=$CNT34A vaultB=$CNT34B, expected 1/1)" "$out34"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""

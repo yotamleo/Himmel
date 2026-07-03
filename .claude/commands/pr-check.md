@@ -61,7 +61,7 @@ Steps:
    `/pr-check` runs the free cross-model panel (qwen3coder-480B, ~2min — bounded by the 150 s per-member `CRITIC_TIMEOUT_SECS`) by **default**. gptoss + kimi were DROPPED 2026-07-03 (operator decision, HIMMEL-667: 12% / 13% ledger agreed-rate — noise; qwen3coder is the free anchor). Control via `CR_PROFILE`:
    - `CR_PROFILE` unset/empty → **DEFAULT**: run panel with `CRITIC_PANEL_TIERS=free` (qwen3coder). Print note: "Default free cross-model CR (qwen3coder, ~2min; set CR_PROFILE=none for instant claude-only)."
    - `CR_PROFILE=none` → **claude-only** (skip panel entirely); print a one-line note and skip.
-   - `CR_PROFILE=thorough` → run panel with `CRITIC_PANEL_TIERS="free,thorough"` (the `thorough` tier is EMPTY since the 2026-07-03 drop, so this currently equals the default; the branch is kept so heavier critics can slot back in).
+   - `CR_PROFILE=thorough` → run panel with `CRITIC_PANEL_TIERS="free,thorough"` (equals the default while critics.json defines no thorough-tier rows; the branch is kept so heavier critics can slot back in).
    - `CR_PROFILE=paid` → run the **paid escalation** critic (codex / `gpt-5.5` via hermes `openai-codex` OAuth, HIMMEL-417) — for high-stakes PRs or when the free panel disagrees. Consumes your OpenAI usage bank. Combine with the free panel via `CR_PROFILE=free,paid`.
    - any other value → pass through as `CRITIC_PANEL_TIERS` (advanced/custom tier filter, e.g. `free,paid`).
 
