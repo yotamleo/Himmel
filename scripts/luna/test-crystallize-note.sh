@@ -334,6 +334,21 @@ if ! grep -qF 'begin operator rules' "$ARGVD" 2>/dev/null; then pass "rules(empt
 if grep -q '^crystallized: true$' "$NOTE"; then pass "rules(empty): run still proceeds normally"; else fail "rules(empty): run did not proceed"; fi
 rm -rf "$SB"
 
+# --- Case R9: whitespace-only rules file — parity test (bash vs ps1 divergence) --
+# HIMMEL-841: bash `$(cat file)` strips trailing newline; PS `Get-Content -Raw`
+# keeps it. A file with ONLY a newline must NOT append a rules block in BOTH.
+# This tests the trimmed check for parity.
+SB="$(mktemp -d)"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"; RULES="$SB/ws-only-rules.txt"; ARGVD="$SB/argv.txt"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+printf '\n' > "$RULES"
+env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success \
+    CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ARGV_DUMP="$ARGVD" \
+    CRYSTALLIZE_RULES_FILE="$RULES" bash "$CRYS" "$NOTE" "$TR"
+if ! grep -qF 'begin operator rules' "$ARGVD" 2>/dev/null; then pass "rules(ws-only): no operator-rules block for whitespace-only file (parity with ps1)"; else fail "rules(ws-only): rules block wrongly present for whitespace-only file"; fi
+if grep -q '^crystallized: true$' "$NOTE"; then pass "rules(ws-only): run still proceeds normally"; else fail "rules(ws-only): run did not proceed"; fi
+rm -rf "$SB"
+
 # --- Case 9: real-claude smoke (OPT-IN: CRYSTALLIZE_REAL_CLAUDE=1) --------------
 # The whole point of HIMMEL-590 is that the STUB hides the real-claude no-op.
 # This case runs the genuine `claude` across the himmel-cwd -> vault-note boundary

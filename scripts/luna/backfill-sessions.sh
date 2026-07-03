@@ -145,7 +145,7 @@ while [ $# -gt 0 ]; do
             shift ;;
         --limit)
             shift
-            case "$1" in [0-9]*) RECRYS_LIMIT="$1" ;; *) printf 'backfill: --limit needs a number\n' >&2; exit 1 ;; esac
+            case "${1:-}" in [0-9]*) RECRYS_LIMIT="$1" ;; *) printf 'backfill: --limit needs a number\n' >&2; exit 1 ;; esac
             shift ;;
         --state-file)
             shift; STATE_FILE="$1"; shift ;;
