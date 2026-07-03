@@ -1,6 +1,9 @@
 import { beforeEach, expect, test } from "bun:test";
-import { buildRunArgs, DEFAULT_MODEL, detectCap, detectContentFilter, buildPrompt, killTree } from "./run";
+import { buildRunArgs, DEFAULT_MODEL, detectCap, detectContentFilter, buildPrompt, killTree, REPO_ROOT, glmChildEnv, sessionEnv, laneModel } from "./run";
+import { GLM_MODEL_ALIAS } from "./glm-env";
 import { spawn } from "bun";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 // HIMMEL-671: buildRunArgs resolves the model from process.env — reset the
 // override before EVERY test so neither ambient operator env nor test order
@@ -146,4 +149,49 @@ test("buildPrompt sanctions non-destructive Jira ticket ops (HIMMEL-424 followup
   expect(p).toMatch(/NOT delete/i);                       // no deletion
   expect(p).toMatch(/do NOT use [`']?move/i);             // no move (closes the source ticket)
   expect(p).toContain("project-create");                  // admin op named in the exclusion
+});
+// --- HIMMEL-654: GLM lane seam — modelOverride pin + per-lane child env ---
+test("buildRunArgs modelOverride wins and ignores TELEGRAM_CLAUDE_MODEL", () => {
+  process.env.TELEGRAM_CLAUDE_MODEL = "claude-raw-anthropic-id";
+  const { cmd } = buildRunArgs("hi", undefined, "opus");
+  expect(cmd).toEqual(["claude", "--model", "opus", "hi"]);
+});
+
+test("buildRunArgs without override keeps resolveModel behavior", () => {
+  process.env.TELEGRAM_CLAUDE_MODEL = "sonnet";
+  expect(buildRunArgs("hi").cmd).toEqual(["claude", "--model", "sonnet", "hi"]);
+});
+
+test("glmChildEnv merges GLM block and strips TELEGRAM_OWN_POLLER", () => {
+  process.env.ZAI_API_KEY = "k-merge";
+  process.env.TELEGRAM_OWN_POLLER = "1";
+  try {
+    const env = glmChildEnv();
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://api.z.ai/api/anthropic");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("k-merge");
+    expect("TELEGRAM_OWN_POLLER" in env).toBe(false);
+  } finally {
+    delete process.env.ZAI_API_KEY;
+    delete process.env.TELEGRAM_OWN_POLLER;
+  }
+});
+
+test("REPO_ROOT resolves to the himmel checkout root (Windows-safe)", () => {
+  // exercises the fileURLToPath derivation the ZAI-key .env fallback depends on
+  expect(existsSync(join(REPO_ROOT, "scripts", "telegram", "run.ts"))).toBe(true);
+});
+
+test("laneModel pins the GLM alias for the glm lane and nothing otherwise (HIMMEL-654)", () => {
+  expect(laneModel("glm")).toBe(GLM_MODEL_ALIAS); // import the constant, don't hardcode "opus"
+  expect(laneModel(undefined)).toBeUndefined();
+});
+
+test("sessionEnv routes glm lane through glmChildEnv", () => {
+  process.env.ZAI_API_KEY = "k-lane";
+  delete process.env.ANTHROPIC_BASE_URL; // hermetic: guard against ambient value
+  try {
+    expect(sessionEnv("glm").ANTHROPIC_BASE_URL).toBe("https://api.z.ai/api/anthropic");
+    expect(sessionEnv(undefined).ANTHROPIC_BASE_URL).toBeUndefined();
+    expect("TELEGRAM_OWN_POLLER" in sessionEnv(undefined)).toBe(false);
+  } finally { delete process.env.ZAI_API_KEY; }
 });
