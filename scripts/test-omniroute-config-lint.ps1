@@ -212,6 +212,54 @@ try {
   $errRaw = if (Test-Path -LiteralPath $RoutErr) { (Get-Content -LiteralPath $RoutErr -Raw) } else { '' }
   if ([string]::IsNullOrWhiteSpace($errRaw)) { Pass 'PASS case stderr empty' } else { Fail 'PASS case wrote to stderr' }
 
+  # --- T21 (CR F6, #836): a DUPLICATE JSON key makes the config ambiguous. Both
+  # engines (PS ConvertFrom-Json, node JSON.parse) silently keep the LAST value, so a
+  # duplicate-key config could lint differently per platform if an engine ever kept
+  # FIRST. The lint now rejects duplicate keys explicitly (pre-parse scan) on BOTH
+  # twins, so the outcome is deterministic and cross-platform identical. This case
+  # injects a duplicate autoRoutingEnabled whose LAST value is `false` (compliant) —
+  # WITHOUT detection the lint would PASS (exit 0), so the exit-1 + dup message here
+  # PROVES detection fired, not coincidental keep-last catching a non-compliant last
+  # value. The .sh twin asserts the IDENTICAL outcome + message (parity). ---
+  $f = Join-Path $TMP 'dupkey.json'
+  $baseRaw = '{"autoRoutingEnabled":false,"compression":{"enabled":false,"defaultMode":"off","autoTriggerMode":"off","rtkConfig":{"enabled":false},"cavemanConfig":{"enabled":false},"cavemanOutputMode":{"enabled":false},"ultra":{"enabled":false},"contextEditing":{"enabled":false},"languageConfig":{"enabled":false},"mcpDescriptionCompressionEnabled":false,"mcpAccessibilityConfig":{"enabled":false},"engines":{},"aggressive":{"summarizerEnabled":false,"toolStrategies":{}},"stackedPipeline":[],"cache":{"semanticCacheEnabled":false,"promptCacheEnabled":false}}}'
+  $dupRaw = $baseRaw -replace [regex]::Escape('{"autoRoutingEnabled":false,'), '{"autoRoutingEnabled":true,"autoRoutingEnabled":false,'
+  $dupRaw | Set-Content -LiteralPath $f -NoNewline
+  Assert-Exit (Invoke-Lint @($f)) 1 'duplicate-key config rejected (exit 1, both twins)'
+  Have 'FAIL: duplicate JSON key "autoRoutingEnabled"'
+
+  # --- T22 (CR F6, #836 — CR round 2): NESTED duplicate key. The engine keys this
+  # lint exists to catch live in nested objects (rtkConfig.enabled etc.), and the
+  # scanner's per-object stack is what distinguishes a real nested dup from the
+  # many legitimate same-name "enabled" keys across DIFFERENT objects (the
+  # compliant PASS case already guards that direction). A dup INSIDE one nested
+  # object must flag — catches any future "flatten/scan-root-only" regression the
+  # top-level T21 case would miss. LAST value compliant (false) for the same
+  # detection-proof reasoning as T21. The .sh twin asserts the IDENTICAL
+  # outcome + message (parity). ---
+  $f2 = Join-Path $TMP 'nesteddupkey.json'
+  $nestedRaw = $baseRaw -replace [regex]::Escape('"rtkConfig":{"enabled":false}'), '"rtkConfig":{"enabled":true,"enabled":false}'
+  if ($nestedRaw -eq $baseRaw) { Fail 'T22 fixture injection did not match BASE' }
+  $nestedRaw | Set-Content -LiteralPath $f2 -NoNewline
+  Assert-Exit (Invoke-Lint @($f2)) 1 'nested duplicate-key config rejected (exit 1, both twins)'
+  Have 'FAIL: duplicate JSON key "enabled"'
+
+  # --- T23 (CR F6, #836 — CR round 2): CASE-VARIANT sibling keys — a DOCUMENTED
+  # ENGINE DIVERGENCE, deliberately pinned per twin (not parity). ConvertFrom-Json
+  # REJECTS keys differing only in case ("keys with different casing") BEFORE the
+  # dup scan runs → this twin exits 2 (invalid JSON, fail-closed — the safe
+  # direction). node's JSON.parse accepts them as two distinct keys → the .sh twin
+  # PASSes exit 0. The exact-dup parity guarantee (T21/T22) is scoped to exact-case
+  # duplicates; this case pins each twin's actual behavior so neither drifts
+  # silently. (The scanner's Ordinal HashSet keeps its own comparison
+  # case-sensitive like node's, should the parse gate ever start admitting
+  # case-variant keys, e.g. -AsHashtable.) ---
+  $f3 = Join-Path $TMP 'casevariantkey.json'
+  $caseRaw = $baseRaw -replace [regex]::Escape('"rtkConfig":{"enabled":false}'), '"rtkConfig":{"enabled":false,"Enabled":false}'
+  if ($caseRaw -eq $baseRaw) { Fail 'T23 fixture injection did not match BASE' }
+  $caseRaw | Set-Content -LiteralPath $f3 -NoNewline
+  Assert-Exit (Invoke-Lint @($f3)) 2 'case-variant sibling keys rejected by ConvertFrom-Json (exit 2; .sh twin exits 0 — documented divergence)'
+
   Write-Host ''
   if ($script:fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$($script:fails) failure(s)" -ForegroundColor Red; exit 1 }
 }
