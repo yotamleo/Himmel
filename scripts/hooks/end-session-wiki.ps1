@@ -98,6 +98,7 @@ try {
     $cfgMinDur  = 60
     $cfgCrystallize = $true
     $cfgCrystallizeModel = ''
+    $cfgCrystallizeRules = ''
     # vault_path / vault are read by Resolve-VaultRoot (scripts/lib/vault-resolve.ps1),
     # not here, so this parse stays focused on the gate fields.
     if (Test-Path $configPath) {
@@ -109,6 +110,7 @@ try {
             if ($cfg.PSObject.Properties['min_duration_seconds']) { $cfgMinDur = [int]$cfg.min_duration_seconds }
             if ($cfg.PSObject.Properties['crystallize']) { $cfgCrystallize = [bool]$cfg.crystallize }
             if ($cfg.PSObject.Properties['crystallize_model']) { $cfgCrystallizeModel = [string]$cfg.crystallize_model }
+            if ($cfg.PSObject.Properties['crystallize_rules']) { $cfgCrystallizeRules = [string]$cfg.crystallize_rules }
         } catch {
             Write-HookLog "config parse failed (using defaults): $($_.Exception.Message)"
         }
@@ -503,6 +505,18 @@ $rawSection
         $crys = Join-Path $PSScriptRoot '..\luna\crystallize-note.ps1'
         if (-not (Test-Path $crys)) { return }
         if ($cfgCrystallizeModel) { $env:CRYSTALLIZE_MODEL = $cfgCrystallizeModel }
+        if ($cfgCrystallizeRules) {
+            $rulesExpanded = $cfgCrystallizeRules
+            # ~/ expansion via USERPROFILE — same convention as the vault_path
+            # expansion above (and overridable in tests, unlike $HOME).
+            if ($rulesExpanded -match '^~[\\/](.*)$') { $rulesExpanded = Join-Path $env:USERPROFILE $Matches[1] }
+            # Fail-open but not invisible: the crystallizer silently skips an
+            # unreadable rules file, so surface the misconfiguration here.
+            if (-not (Test-Path -LiteralPath $rulesExpanded)) {
+                Write-HookLog "crystallize_rules not readable (rules will NOT apply): $rulesExpanded"
+            }
+            $env:CRYSTALLIZE_RULES_FILE = $rulesExpanded
+        }
         try {
             Start-Process -FilePath (Get-Command pwsh).Source `
                 -ArgumentList @('-NoProfile', '-File', $crys, $absPath, $transcriptPath) `

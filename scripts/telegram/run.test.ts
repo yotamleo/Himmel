@@ -1,6 +1,11 @@
-import { expect, test } from "bun:test";
-import { buildRunArgs, detectCap, detectContentFilter, buildPrompt, killTree } from "./run";
+import { beforeEach, expect, test } from "bun:test";
+import { buildRunArgs, DEFAULT_MODEL, detectCap, detectContentFilter, buildPrompt, killTree } from "./run";
 import { spawn } from "bun";
+
+// HIMMEL-671: buildRunArgs resolves the model from process.env — reset the
+// override before EVERY test so neither ambient operator env nor test order
+// can skew the argv assertions (centralized per CR round-2).
+beforeEach(() => { delete process.env.TELEGRAM_CLAUDE_MODEL; });
 
 test("killTree takes down a live child process (HIMMEL-246 orphan guard)", async () => {
   // a child that would sleep ~100s; killTree must end it promptly
@@ -68,6 +73,42 @@ test("buildPrompt with a vault adds a file-into-vault clause (HIMMEL-321)", () =
 test("buildPrompt without a vault adds no file-into-vault clause (HIMMEL-321)", () => {
   const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r" });
   expect(p).not.toContain("into the Obsidian vault");   // matches the real clause text
+});
+// --- HIMMEL-671: bounded runs must pin an explicit --model (never inherit the
+// user default, which is currently Fable) ---
+test("buildRunArgs pins --model with the baked-in default in BOTH spawn branches (HIMMEL-671)", () => {
+  const withMode = buildRunArgs("go", "bypassPermissions").cmd;
+  const without = buildRunArgs("go").cmd;
+  for (const cmd of [withMode, without]) {
+    const i = cmd.indexOf("--model");
+    expect(i).toBeGreaterThan(-1);
+    expect(cmd[i + 1]).toBe(DEFAULT_MODEL);
+    expect(cmd.indexOf("--model")).toBeLessThan(cmd.indexOf("go")); // flag precedes the prompt
+  }
+});
+test("buildRunArgs honours the TELEGRAM_CLAUDE_MODEL env override in BOTH branches, trimmed (HIMMEL-671)", () => {
+  process.env.TELEGRAM_CLAUDE_MODEL = " sonnet ";   // padded: pins the trim contract too
+  try {
+    for (const cmd of [buildRunArgs("go", "bypassPermissions").cmd, buildRunArgs("go").cmd]) {
+      expect(cmd).toContain("--model");
+      expect(cmd[cmd.indexOf("--model") + 1]).toBe("sonnet");
+    }
+  } finally {
+    delete process.env.TELEGRAM_CLAUDE_MODEL;
+  }
+});
+test("buildRunArgs falls back to the default when TELEGRAM_CLAUDE_MODEL is blank (HIMMEL-671)", () => {
+  process.env.TELEGRAM_CLAUDE_MODEL = "   ";
+  try {
+    const cmd = buildRunArgs("go").cmd;
+    expect(cmd[cmd.indexOf("--model") + 1]).toBe(DEFAULT_MODEL);
+  } finally {
+    delete process.env.TELEGRAM_CLAUDE_MODEL;
+  }
+});
+test("the baked-in default model is non-Fable (HIMMEL-671 — the whole point)", () => {
+  expect(DEFAULT_MODEL.toLowerCase()).not.toContain("fable");
+  expect(DEFAULT_MODEL.length).toBeGreaterThan(0);
 });
 test("buildPrompt sanctions non-destructive Jira ticket ops (HIMMEL-424 followup — lifts the classifier veto)", () => {
   const p = buildPrompt("__chat__", { inbox:"i", outbox:"o", context:"c", cwd:"/repo" });

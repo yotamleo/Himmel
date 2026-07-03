@@ -21,6 +21,11 @@ set -uo pipefail
 
 NOTE_PATH="${1:-}"
 TRANSCRIPT_PATH="${2:-}"
+# Optional operator rules/context file: 3rd positional arg, overridden by env
+# CRYSTALLIZE_RULES_FILE (env wins — same precedence as CRYSTALLIZE_MODEL). When
+# set and readable its content is appended to the crystallizer prompt; an
+# unreadable / missing file appends nothing (fail-open, matches the contract).
+RULES_FILE="${CRYSTALLIZE_RULES_FILE:-${3:-}}"
 [ -n "$NOTE_PATH" ] || exit 0
 
 # Recursion guards: the throwaway claude session we spawn must not itself re-fire
@@ -55,13 +60,16 @@ done
 [ "$live" -ge "$MAX" ] && exit 0
 MY_PID="$PID_DIR/$$.pid"
 printf '%s' "$$" > "$MY_PID" 2>/dev/null || true
-# SETTINGS_TMP is the per-run `claude --settings` fragment (set below); cleaned up
-# here so it never leaks even on early exit.
+# SETTINGS_TMP is the per-run `claude --settings` fragment (set below); SNAP_TMP
+# is the refresh-mode pre-run snapshot; both cleaned up here so they never leak
+# even on early exit.
 SETTINGS_TMP=""
+SNAP_TMP=""
 # shellcheck disable=SC2317,SC2329  # invoked via trap
 _cleanup() {
     rm -f "$MY_PID" 2>/dev/null || true
     if [ -n "$SETTINGS_TMP" ]; then rm -f "$SETTINGS_TMP" 2>/dev/null || true; fi
+    if [ -n "$SNAP_TMP" ]; then rm -f "$SNAP_TMP" 2>/dev/null || true; fi
 }
 trap _cleanup EXIT
 
@@ -74,8 +82,38 @@ while [ ! -r "$NOTE_PATH" ] && [ "$i" -lt 3 ]; do
 done
 [ -r "$NOTE_PATH" ] || exit 0
 
-# Already crystallized -> nothing to do.
-grep -q '^crystallized: true$' "$NOTE_PATH" 2>/dev/null && exit 0
+# Already crystallized -> nothing to do, UNLESS refresh (re-consolidation) mode
+# (CRYSTALLIZE_REFRESH=1) deliberately re-runs an already-synthesized note.
+if [ "${CRYSTALLIZE_REFRESH:-}" != "1" ]; then
+    grep -q '^crystallized: true$' "$NOTE_PATH" 2>/dev/null && exit 0
+else
+    # Loss-proofing (refresh only): a refresh rewrites PREVIOUSLY-GOOD synthesis,
+    # so a partial/failed claude edit (quota kill, permission-EOF) must never be
+    # accepted as a "refresh". Snapshot the note pre-run; the result is validated
+    # structurally below and restored from this snapshot if it fails. Can't
+    # snapshot -> can't roll back -> don't run (fail-open, note untouched).
+    SNAP_TMP="${NOTE_PATH}.snap.$$"
+    if ! cp "$NOTE_PATH" "$SNAP_TMP" 2>/dev/null; then
+        SNAP_TMP=""
+        exit 0
+    fi
+fi
+
+# Structural validity of a refreshed note: frontmatter intact (first line is
+# `---` and a second `---` delimiter exists), all four body section headers
+# present, and the Raw Conversation callout the renderer emits
+# (scripts/lib/session-note.sh) still there. Refresh-mode only.
+# shellcheck disable=SC2317,SC2329  # invoked only on the refresh path
+_refresh_valid() { # <note>
+    [ "$(head -n 1 "$1" 2>/dev/null)" = "---" ] || return 1
+    [ "$(grep -c '^---$' "$1" 2>/dev/null)" -ge 2 ] || return 1
+    grep -q '^## Summary$' "$1" 2>/dev/null || return 1
+    grep -q '^## Decisions$' "$1" 2>/dev/null || return 1
+    grep -q '^## Files Touched$' "$1" 2>/dev/null || return 1
+    grep -q '^## Follow-ups$' "$1" 2>/dev/null || return 1
+    grep -qF '> [!note]- Raw conversation' "$1" 2>/dev/null || return 1
+    return 0
+}
 
 # The note lives in the luna vault, OUTSIDE the himmel repo. The original
 # crystallizer ran `claude` in HIMMEL_ROOT, but `--permission-mode acceptEdits`
@@ -95,7 +133,23 @@ grep -q '^crystallized: true$' "$NOTE_PATH" 2>/dev/null && exit 0
 # the `crystallized` flag is owned DETERMINISTICALLY by this script, set only
 # when the note body actually changed (T1d) — so a no-op never falsely flags and
 # a real synthesis always does, regardless of what the model touched.
-PROMPT="You are crystallizing a Claude Code session note for an Obsidian vault.
+if [ "${CRYSTALLIZE_REFRESH:-}" = "1" ]; then
+    # Refresh (re-consolidation): the note was already synthesized. CONSOLIDATE —
+    # update/extend the four sections, preserving prior synthesis still correct.
+    PROMPT="You are re-consolidating an already-synthesized Claude Code session note for an Obsidian vault.
+Read the session transcript at: ${TRANSCRIPT_PATH}
+Read the note at: ${NOTE_PATH}
+This note was already synthesized. Re-read the transcript and the existing sections;
+UPDATE/EXTEND the four sections below, preserving prior synthesis content that is
+still correct — do not discard it:
+- ## Summary       (3-6 lines: what was done and the outcome)
+- ## Decisions     (bullet list of decisions made, or _None._)
+- ## Files Touched (keep the existing list; do not invent files)
+- ## Follow-ups    (bullet list of open items, or _None._)
+Do NOT touch the frontmatter or the Raw Conversation callout. Make the edit with
+your file tools, then stop."
+else
+    PROMPT="You are crystallizing a Claude Code session note for an Obsidian vault.
 Read the session transcript at: ${TRANSCRIPT_PATH}
 Read the note at: ${NOTE_PATH}
 Rewrite ONLY these sections of that note, in place, distilling the session:
@@ -105,6 +159,22 @@ Rewrite ONLY these sections of that note, in place, distilling the session:
 - ## Follow-ups    (bullet list of open items, or _None._)
 Do NOT touch the frontmatter or the Raw Conversation callout. Make the edit with
 your file tools, then stop."
+fi
+
+# Operator rules/context injection: when a readable rules file was supplied,
+# append its content as a clearly delimited block. Unreadable / missing / empty
+# -> append nothing (fail-open).
+if [ -n "$RULES_FILE" ] && [ -r "$RULES_FILE" ]; then
+    _rules_content="$(cat "$RULES_FILE" 2>/dev/null)"
+    if [ -n "$_rules_content" ]; then
+        PROMPT="$PROMPT
+
+Additionally apply these operator rules when synthesizing:
+--- begin operator rules ---
+${_rules_content}
+--- end operator rules ---"
+    fi
+fi
 
 HIMMEL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
 AUTO_APPROVE_HOOK="$HIMMEL_ROOT/scripts/hooks/auto-approve-safe-bash.sh"
@@ -156,17 +226,29 @@ HASH_AFTER="$(_hash "$NOTE_PATH")"
 # Both hashes must be measurable (errs toward leaving the flag false when a hash
 # can't be taken — never fabricates a crystallized:true) — matches the .ps1 twin.
 if [ -n "$HASH_BEFORE" ] && [ -n "$HASH_AFTER" ] && [ "$HASH_BEFORE" != "$HASH_AFTER" ]; then
-    NOW="${CRYSTALLIZE_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-    STAMP_TMP="${NOTE_PATH}.stamp.$$"
-    if awk -v now="$NOW" '
-        /^---$/ { fmc++; print; next }
-        fmc==1 && /^crystallized: / { print "crystallized: true"; next }
-        fmc==1 && /^crystallized_at:/ { print "crystallized_at: " now; next }
-        { print }
-    ' "$NOTE_PATH" > "$STAMP_TMP" 2>/dev/null; then
-        mv -f "$STAMP_TMP" "$NOTE_PATH" 2>/dev/null || rm -f "$STAMP_TMP" 2>/dev/null || true
+    # Refresh loss-proofing: a changed-but-structurally-broken result (truncated
+    # note, lost frontmatter/sections — the shape of a half-applied edit) is
+    # ROLLED BACK to the pre-run snapshot and NOT re-stamped. The note ends
+    # byte-identical to before, so a hash-based caller naturally counts a skip.
+    # Non-refresh runs are untouched by this branch (no snapshot exists).
+    if [ "${CRYSTALLIZE_REFRESH:-}" = "1" ] && ! _refresh_valid "$NOTE_PATH"; then
+        if [ -n "$SNAP_TMP" ] && [ -r "$SNAP_TMP" ]; then
+            mv -f "$SNAP_TMP" "$NOTE_PATH" 2>/dev/null || true
+            SNAP_TMP=""
+        fi
     else
-        rm -f "$STAMP_TMP" 2>/dev/null || true
+        NOW="${CRYSTALLIZE_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+        STAMP_TMP="${NOTE_PATH}.stamp.$$"
+        if awk -v now="$NOW" '
+            /^---$/ { fmc++; print; next }
+            fmc==1 && /^crystallized: / { print "crystallized: true"; next }
+            fmc==1 && /^crystallized_at:/ { print "crystallized_at: " now; next }
+            { print }
+        ' "$NOTE_PATH" > "$STAMP_TMP" 2>/dev/null; then
+            mv -f "$STAMP_TMP" "$NOTE_PATH" 2>/dev/null || rm -f "$STAMP_TMP" 2>/dev/null || true
+        else
+            rm -f "$STAMP_TMP" 2>/dev/null || true
+        fi
     fi
 fi
 

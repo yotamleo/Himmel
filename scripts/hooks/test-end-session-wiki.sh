@@ -351,6 +351,57 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 11: unreadable crystallize_rules logs a warning (HIMMEL-663) --------
+# Fail-open but not invisible: the spawn still happens, but the hook logs the
+# expanded path so the operator can see the misconfiguration.
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude" "$SB/home"
+printf '%s\n' '{"enabled":true,"crystallize_rules":"~/missing-rules.md"}' > "$SB/proj/.claude/end-session-wiki.json"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+    LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    STUB_MODE="noop" CRYSTALLIZE_PID_DIR="$SB/pids" bash "$HOOK"
+LOG11="$SB/proj/.claude/end-session-wiki.log"
+if grep -q 'crystallize_rules not readable' "$LOG11" 2>/dev/null; then
+    pass "rules(hook): unreadable crystallize_rules logged"
+else
+    fail "rules(hook): unreadable crystallize_rules NOT logged"
+fi
+if grep -qF "$SB/home/missing-rules.md" "$LOG11" 2>/dev/null; then
+    pass "rules(hook): log carries the tilde-EXPANDED path"
+else
+    fail "rules(hook): log missing the expanded path"
+fi
+rm -rf "$SB"
+
+# --- Case 12: crystallize_rules plumbs through to the spawned crystallizer -----
+# Proves the whole chain: jq field-6 parse -> ~/ expansion -> export -> across
+# the detach boundary -> the crystallizer reads the file and injects its content
+# into the claude prompt (argv). Same stubbing pattern as Case 8.
+SB="$(make_sandbox)"
+mkdir -p "$SB/proj/.claude" "$SB/home"
+printf 'HOOK_RULES_MARKER\n' > "$SB/home/rules-marker.md"
+printf '%s\n' '{"enabled":true,"crystallize_rules":"~/rules-marker.md"}' > "$SB/proj/.claude/end-session-wiki.json"
+ENVD12="$SB/envdump.txt"; ARGVD12="$SB/argv.txt"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+    LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    STUB_MODE="success" CRYSTALLIZE_ENV_DUMP="$ENVD12" CRYSTALLIZE_ARGV_DUMP="$ARGVD12" \
+    CRYSTALLIZE_PID_DIR="$SB/pids" bash "$HOOK"
+# Poll up to ~3s for the detached crystallizer to dump its env (like Case 8).
+i=0; while [ ! -s "$ENVD12" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+if grep -qF "CRYSTALLIZE_RULES_FILE=$SB/home/rules-marker.md" "$ENVD12" 2>/dev/null; then
+    pass "rules(hook): stub saw CRYSTALLIZE_RULES_FILE at the expanded absolute path"
+else
+    fail "rules(hook): CRYSTALLIZE_RULES_FILE did not reach the spawned crystallizer expanded"
+fi
+if grep -qF 'HOOK_RULES_MARKER' "$ARGVD12" 2>/dev/null; then
+    pass "rules(hook): rules content reached the claude prompt across the detach boundary"
+else
+    fail "rules(hook): rules content missing from the spawned prompt"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

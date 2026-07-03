@@ -280,6 +280,35 @@ try {
     }
     if ($f2Sum2 -match '^Wired the webhook retry path') { Pass 'F2(ps): leading uppercase/trailing-ws ack dropped (twin parity)' } else { Fail 'F2(ps): bare-ack branch did not drop the ack line' }
 
+    # Case 10 (HIMMEL-663): unreadable crystallize_rules logs a warning with the
+    # tilde-EXPANDED path (fail-open but not invisible).
+    $rulesCfg = Join-Path $huskProj '.claude\end-session-wiki.json'
+    Set-Content -LiteralPath $rulesCfg -Value '{"enabled":true,"crystallize_rules":"~/missing-rules.md"}'
+    Invoke-HookCustom -Transcript $toolTs -VaultPath $huskVault -ProjPath $huskProj
+    $rulesLog = Get-Content -LiteralPath (Join-Path $huskProj '.claude\end-session-wiki.log') -Raw -ErrorAction SilentlyContinue
+    if ($rulesLog -match 'crystallize_rules not readable') { Pass 'rules(hook): unreadable crystallize_rules logged' } else { Fail 'rules(hook): unreadable crystallize_rules NOT logged' }
+    $expandedMissing = Join-Path (Join-Path $SB 'home') 'missing-rules.md'
+    if ($rulesLog -and $rulesLog.Contains($expandedMissing)) { Pass 'rules(hook): log carries the tilde-EXPANDED path' } else { Fail 'rules(hook): log missing the expanded path' }
+
+    # Case 11 (HIMMEL-663): crystallize_rules plumbs through to the spawned
+    # crystallizer — config parse -> ~/ expansion -> export -> across the
+    # Start-Process boundary -> rules content lands in the claude prompt (argv).
+    $rulesFile = Join-Path (Join-Path $SB 'home') 'rules-marker.md'
+    Set-Content -LiteralPath $rulesFile -Value 'HOOK_RULES_MARKER'
+    Set-Content -LiteralPath $rulesCfg -Value '{"enabled":true,"crystallize_rules":"~/rules-marker.md"}'
+    $envd = Join-Path $huskProj 'envdump.txt'; $argvd = Join-Path $huskProj 'argv.txt'
+    $env:STUB_MODE = 'success'; $env:CRYSTALLIZE_ENV_DUMP = $envd; $env:CRYSTALLIZE_ARGV_DUMP = $argvd
+    Invoke-HookCustom -Transcript $toolTs -VaultPath $huskVault -ProjPath $huskProj
+    $w = 0; while (-not (Test-Path $envd) -and $w -lt 60) { Start-Sleep -Milliseconds 100; $w++ }
+    $env:STUB_MODE = 'noop'
+    Remove-Item Env:\CRYSTALLIZE_ENV_DUMP -ErrorAction SilentlyContinue
+    Remove-Item Env:\CRYSTALLIZE_ARGV_DUMP -ErrorAction SilentlyContinue
+    $envDump = Get-Content -LiteralPath $envd -Raw -ErrorAction SilentlyContinue
+    if ($envDump -and $envDump.Contains("CRYSTALLIZE_RULES_FILE=$rulesFile")) { Pass 'rules(hook): stub saw CRYSTALLIZE_RULES_FILE at the expanded absolute path' } else { Fail 'rules(hook): CRYSTALLIZE_RULES_FILE did not reach the spawned crystallizer expanded' }
+    $argvDump = Get-Content -LiteralPath $argvd -Raw -ErrorAction SilentlyContinue
+    if ($argvDump -match 'HOOK_RULES_MARKER') { Pass 'rules(hook): rules content reached the claude prompt across the spawn boundary' } else { Fail 'rules(hook): rules content missing from the spawned prompt' }
+    Remove-Item -LiteralPath $rulesCfg -Force -ErrorAction SilentlyContinue
+
     Remove-Item -LiteralPath $huskVault -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $huskProj  -Recurse -Force -ErrorAction SilentlyContinue
 

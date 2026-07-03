@@ -44,6 +44,19 @@
 #                          can size batches. Remaining notes recover on a later run.
 #                          RUN --recrystallize --dry-run FIRST to see the scale —
 #                          it is one real `claude` run per note.
+#   --refresh              (with --recrystallize ONLY; errors otherwise) Re-
+#                          consolidate ALREADY-crystallized notes: bypass the
+#                          crystallized:true skip and re-run the crystallizer in
+#                          CONSOLIDATE mode (preserves prior synthesis, updates/
+#                          extends the four sections). Success is counted by a
+#                          note-content change (the flag is already true).
+#                          --dry-run reports refresh-eligible notes (any note with
+#                          a content-bearing transcript, crystallized or not).
+#
+# Rules injection (HIMMEL-663):
+#   --rules <file>         Operator rules/context file appended to the crystallizer
+#                          prompt (applies to --reheal + --recrystallize). Validated
+#                          readable; exported as CRYSTALLIZE_RULES_FILE.
 #
 # bash 3.2-safe; shellcheck-clean; cross-platform (Windows Git Bash / macOS / Linux).
 
@@ -72,6 +85,8 @@ EXCLUDE_GLOB=""
 REHEAL=false
 RECRYSTALLIZE=false
 RECRYS_LIMIT=0
+REFRESH=false
+RULES_FILE=""
 
 # Progress cadence (HIMMEL-627): print a periodic scan heartbeat to stderr every
 # N notes during the reheal/recrystallize loop so a long run on a large vault
@@ -122,6 +137,10 @@ while [ $# -gt 0 ]; do
             REHEAL=true; shift ;;
         --recrystallize)
             RECRYSTALLIZE=true; shift ;;
+        --refresh)
+            REFRESH=true; shift ;;
+        --rules)
+            shift; RULES_FILE="$1"; shift ;;
         --limit)
             shift
             case "$1" in [0-9]*) RECRYS_LIMIT="$1" ;; *) printf 'backfill: --limit needs a number\n' >&2; exit 1 ;; esac
@@ -145,13 +164,35 @@ done
 
 [ -n "$PROJECTS_DIR_OVERRIDE" ] && PROJECTS_DIR="$PROJECTS_DIR_OVERRIDE"
 
+# --refresh is a recrystallize-only modifier (re-consolidate already-crystallized
+# notes); it is meaningless without --recrystallize.
+if [ "$REFRESH" = "true" ] && [ "$RECRYSTALLIZE" != "true" ]; then
+    printf 'backfill: --refresh requires --recrystallize\n' >&2
+    exit 1
+fi
+
+# --rules <file>: operator rules/context appended to the crystallizer prompt.
+# Validated readable; exported so the crystallize-note.sh calls in the reheal /
+# recrystallize loops pick it up (env wins over any positional arg).
+if [ -n "$RULES_FILE" ]; then
+    [ -r "$RULES_FILE" ] || { printf 'backfill: --rules file not readable: %s\n' "$RULES_FILE" >&2; exit 1; }
+    export CRYSTALLIZE_RULES_FILE="$RULES_FILE"
+fi
+
 # ---------------------------------------------------------------------------
 # Temp files (cleaned up on exit)
 # ---------------------------------------------------------------------------
 TMP_JSONL_LIST="$(mktemp 2>/dev/null)" || TMP_JSONL_LIST="/tmp/backfill-jl-$$"
-TMP_SEEN="$(mktemp 2>/dev/null)"       || TMP_SEEN="/tmp/backfill-seen-$$"
+# Per-vault session_id set cache (HIMMEL-662): one file per resolved vault_hash,
+# holding the session_id of every note already in that vault's sessions/ tree.
+TMP_VAULTSETS_DIR="$(mktemp -d 2>/dev/null)" || TMP_VAULTSETS_DIR="/tmp/backfill-vsets-$$"
+# The literal fallback path must actually EXIST (mktemp -d creates its dir; the
+# fallback string does not) — otherwise every set-file write fails silently and
+# the dedup no-ops for the whole run (CR round, HIMMEL-662).
+[ -d "$TMP_VAULTSETS_DIR" ] || mkdir -p "$TMP_VAULTSETS_DIR" 2>/dev/null || true
 _cleanup() {
-    rm -f "$TMP_JSONL_LIST" "$TMP_SEEN" 2>/dev/null || true
+    rm -f "$TMP_JSONL_LIST" 2>/dev/null || true
+    rm -rf "$TMP_VAULTSETS_DIR" 2>/dev/null || true
 }
 trap _cleanup EXIT
 
@@ -289,6 +330,57 @@ _ledger_add() {
 }
 
 # ---------------------------------------------------------------------------
+# Vault session_id set (HIMMEL-662) — dedup against live-captured notes.
+# The ledger only tracks sessions backfill itself imported; a note written live
+# by end-session-wiki.sh is invisible to it, and the filename-collision check in
+# _process_one almost never fires because the live hook names notes by session-
+# END time + repo-branch slug while backfill uses transcript-START time + repo-
+# only slug. So we scan the resolved vault's existing notes' `session_id:`
+# frontmatter into a per-vault set and skip a session already captured live.
+# Lazily built (only when a session first reaches the check for that vault) and
+# cached per run — existence of the set file == "already scanned".
+# ---------------------------------------------------------------------------
+_vault_set_file() { # <vault_hash>
+    printf '%s/%s' "$TMP_VAULTSETS_DIR" "$1"
+}
+
+_vault_set_build() { # <vault_root> <vault_hash>
+    local vault_root="$1" vhash="$2" setf
+    setf="$(_vault_set_file "$vhash")"
+    [ -e "$setf" ] && return 0   # already scanned this vault this run
+    : > "$setf"
+    local sessions_dir="$vault_root/sessions"
+    [ -d "$sessions_dir" ] || return 0   # nothing to scan
+    # session_id lines only appear in frontmatter in practice; bound the match to
+    # lines starting exactly "session_id: " and strip that prefix. Portable
+    # find -exec grep {} + (no GNU-only flags). Format contract: the single
+    # emitter of this line is render_session_note (scripts/lib/session-note.sh),
+    # column-0 `session_id: <id>` — the same shape the filename-collision check
+    # in _process_one greps. If the note template ever changes that line, update
+    # both call sites together.
+    { find "$sessions_dir" -type f -name '*.md' \
+        -exec grep -h '^session_id: ' {} + ; } 2>/dev/null \
+        | sed 's/^session_id: //' > "$setf"
+    # Broken-scan visibility (CR round, HIMMEL-662): an EMPTY set for a vault
+    # that visibly holds notes means the dedup is inactive for this vault
+    # (failed/partial scan, or frontmatter drift) and duplicates are possible
+    # again — say so instead of silently degrading. stderr advisory only.
+    if [ ! -s "$setf" ] \
+        && [ -n "$(find "$sessions_dir" -type f -name '*.md' 2>/dev/null | head -n 1)" ]; then
+        printf 'backfill: warning: no session_id frontmatter found under %s — already-in-vault dedup inactive for this vault (duplicates possible)\n' \
+            "$sessions_dir" >&2
+    fi
+    return 0
+}
+
+_vault_set_has() { # <vault_hash> <session_id>
+    local setf
+    setf="$(_vault_set_file "$1")"
+    [ -f "$setf" ] || return 1
+    grep -qxF "$2" "$setf" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # Slugify for filenames (bash 3.2-safe via awk)
 # ---------------------------------------------------------------------------
 _slugify() {
@@ -343,6 +435,7 @@ _should_include_repo() {
 # ---------------------------------------------------------------------------
 CNT_NEW=0
 CNT_LEDGER=0
+CNT_INVAULT=0
 CNT_OPTOUT=0
 CNT_ORPHANED=0
 CNT_UNDERMIN=0
@@ -441,6 +534,22 @@ _process_one() {
         return 0
     fi
 
+    # Already-in-vault (HIMMEL-662): a session captured live by end-session-wiki.sh
+    # is absent from the (backfill-only) ledger, so it slips past the check above.
+    # Scan the vault's existing notes once (lazy, cached per vault) and skip a
+    # session already present. Self-healing: ledger the hit so a later run skips it
+    # via the cheap ledger check without re-hitting the scan path (NOT under
+    # --dry-run — _ledger_add is dry-run-guarded, but the read-only scan still runs
+    # so --dry-run counts already-in-vault correctly).
+    local vhash
+    vhash="$(_vault_hash "$vault_root")"
+    _vault_set_build "$vault_root" "$vhash"
+    if _vault_set_has "$vhash" "$session_id"; then
+        CNT_INVAULT=$((CNT_INVAULT + 1))
+        _ledger_add "$vault_root" "$session_id"
+        return 0
+    fi
+
     # Min-duration
     local min_dur
     min_dur="$(_get_min_duration "${repo_config:-}")"
@@ -448,16 +557,6 @@ _process_one() {
     if [ -n "$first_ts" ] && [ "$DURATION_SECONDS" -lt "$min_dur" ] 2>/dev/null; then
         CNT_UNDERMIN=$((CNT_UNDERMIN + 1))
         return 0
-    fi
-
-    # First-run warning (once per vault per invocation; skip under --dry-run)
-    local vhash
-    vhash="$(_vault_hash "$vault_root")"
-    if [ "$DRY_RUN" != "true" ] && ! grep -qF "$vhash" "$TMP_SEEN" 2>/dev/null; then
-        printf '%s\n' "$vhash" >> "$TMP_SEEN"
-        printf '\nWARNING: backfilling into vault: %s\n' "$vault_root"
-        printf 'Live-captured sessions may produce duplicate notes for sessions already in the vault.\n'
-        printf 'Review sessions/<YEAR>/<MONTH>/ after backfilling.\n\n'
     fi
 
     # Count new
@@ -744,8 +843,9 @@ _reheal_one() { # <note>
 # ===========================================================================
 _recrystallize_one() { # <note>
     local note="$1"
-    # Already crystallized -> nothing to do (idempotent).
-    if grep -q '^crystallized: true$' "$note" 2>/dev/null; then
+    # Already crystallized -> nothing to do (idempotent), UNLESS --refresh
+    # re-consolidates already-crystallized notes too.
+    if [ "$REFRESH" != "true" ] && grep -q '^crystallized: true$' "$note" 2>/dev/null; then
         CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))
         return 0
     fi
@@ -779,16 +879,33 @@ _recrystallize_one() { # <note>
         return 0
     fi
     # Synchronous (not detached): batch op, one note at a time; crystallize-note.sh
-    # is idempotent + fail-open. Count crystallized only when the flag actually flips.
-    bash "$SCRIPT_DIR/crystallize-note.sh" "$note" "$jl" || true
-    if grep -q '^crystallized: true$' "$note" 2>/dev/null; then
-        CNT_RECRYS=$((CNT_RECRYS + 1))
-        # Per-note line (HIMMEL-627): on a real run, show each crystallization as
-        # it lands so --limit chunk progress is visible note-by-note. stderr only;
-        # the machine-parseable summary stays on stdout.
-        printf 'recrystallize: crystallized %s (%d)\n' "$(basename "$note")" "$CNT_RECRYS" >&2
+    # is idempotent + fail-open.
+    if [ "$REFRESH" = "true" ]; then
+        # Refresh re-runs an already-crystallized note, so the "did the flag flip"
+        # test can't detect success (it was already true). Count a real run by a
+        # note-content-hash change instead (same portable _sha256 helper).
+        local h_before h_after
+        h_before="$(_sha256 "$note" | awk '{print $1}')"
+        CRYSTALLIZE_REFRESH=1 bash "$SCRIPT_DIR/crystallize-note.sh" "$note" "$jl" || true
+        h_after="$(_sha256 "$note" | awk '{print $1}')"
+        if [ -n "$h_before" ] && [ -n "$h_after" ] && [ "$h_before" != "$h_after" ]; then
+            CNT_RECRYS=$((CNT_RECRYS + 1))
+            printf 'recrystallize: refreshed %s (%d)\n' "$(basename "$note")" "$CNT_RECRYS" >&2
+        else
+            CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))   # no-op/cap/error — left for a later run
+        fi
     else
-        CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))   # cap/race/error — left for a later run
+        # Count crystallized only when the flag actually flips (false -> true).
+        bash "$SCRIPT_DIR/crystallize-note.sh" "$note" "$jl" || true
+        if grep -q '^crystallized: true$' "$note" 2>/dev/null; then
+            CNT_RECRYS=$((CNT_RECRYS + 1))
+            # Per-note line (HIMMEL-627): on a real run, show each crystallization as
+            # it lands so --limit chunk progress is visible note-by-note. stderr only;
+            # the machine-parseable summary stays on stdout.
+            printf 'recrystallize: crystallized %s (%d)\n' "$(basename "$note")" "$CNT_RECRYS" >&2
+        else
+            CNT_RECRYS_SKIP=$((CNT_RECRYS_SKIP + 1))   # cap/race/error — left for a later run
+        fi
     fi
 }
 
@@ -853,6 +970,7 @@ _run_reheal() {
     if [ "$mode" = "recrystallize" ]; then
         printf 'recrystallize: crystallized=%d skipped=%d' "$CNT_RECRYS" "$CNT_RECRYS_SKIP"
         [ "$RECRYS_LIMIT" -gt 0 ] && printf ' (--limit %d)' "$RECRYS_LIMIT"
+        [ "$REFRESH" = "true" ] && printf ' (--refresh)'
         printf '\n'
     else
         printf 'reheal: healed=%d inert=%d non-husk-skip=%d\n' \
@@ -878,8 +996,8 @@ done < "$TMP_JSONL_LIST"
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-printf 'backfill: new=%d already-in-ledger=%d opt-out-skip=%d orphaned-skip=%d under-min=%d husk-skip=%d\n' \
-    "$CNT_NEW" "$CNT_LEDGER" "$CNT_OPTOUT" "$CNT_ORPHANED" "$CNT_UNDERMIN" "$CNT_HUSK"
+printf 'backfill: new=%d already-in-ledger=%d already-in-vault=%d opt-out-skip=%d orphaned-skip=%d under-min=%d husk-skip=%d\n' \
+    "$CNT_NEW" "$CNT_LEDGER" "$CNT_INVAULT" "$CNT_OPTOUT" "$CNT_ORPHANED" "$CNT_UNDERMIN" "$CNT_HUSK"
 
 # Crystallization nudge (HIMMEL-590 F3 / HIMMEL-620): plain backfill writes
 # MECHANICAL notes (crystallized: false) — only the live end-session hook and the
