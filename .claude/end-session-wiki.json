@@ -1,5 +1,6 @@
 {
   "enabled": true,
   "dry_run": false,
-  "min_duration_seconds": 60
+  "min_duration_seconds": 60,
+  "crystallize_model": "claude-opus-4-8"
 }

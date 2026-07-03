@@ -88,7 +88,11 @@ spawn_crystallizer() {
     local crys
     crys="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../luna/crystallize-note.sh"
     [ -r "$crys" ] || return 0
-    [ -n "${CFG_CRYSTALLIZE_MODEL:-}" ] && export CRYSTALLIZE_MODEL="$CFG_CRYSTALLIZE_MODEL"
+    # Config supplies the DEFAULT model; CRYSTALLIZE_MODEL already set in the
+    # launching shell wins (per-session operator switch, HIMMEL-672).
+    if [ -z "${CRYSTALLIZE_MODEL:-}" ] && [ -n "${CFG_CRYSTALLIZE_MODEL:-}" ]; then
+        export CRYSTALLIZE_MODEL="$CFG_CRYSTALLIZE_MODEL"
+    fi
     if [ -n "${CFG_CRYSTALLIZE_RULES:-}" ]; then
         local rules_expanded="$CFG_CRYSTALLIZE_RULES"
         # shellcheck disable=SC2088  # ~/ expansion handled explicitly below
