@@ -381,6 +381,46 @@ is manual — the **HIMMEL-665 Task 8 checklist**.
 
 ---
 
+## claude-routed + omniroute-config-lint (`scripts/claude-routed`, `scripts/omniroute-config-lint`, `.ps1` twins, HIMMEL-666)
+
+**What:** the WS2 OmniRoute-pilot wiring pair. `claude-routed` is a
+copy-and-edit variant of `claude-glm` (the WS1 extensibility seam): identical
+PHI/egress guard, config-dir seeding, flag handling and exit codes — only the
+backend block differs. It points Claude Code at the LOCAL loopback OmniRoute
+router (`ANTHROPIC_BASE_URL=http://127.0.0.1:$OMNIROUTE_PORT`, default port
+`20128`; host fixed — the router is loopback-only by charter), authenticates
+with a router-issued client key `OMNIROUTE_API_KEY` (shell env first, else the
+himmel repo `.env`; the Z.ai key never appears in this launcher), keeps the
+GLM tier-alias mapping (`glm-5.2`/`glm-4.7`), and seeds its own isolated
+`$HOME/.claude-routed`. Guard config is **deliberately shared** with
+claude-glm at `~/.config/claude-glm/{phi-roots,egress-denylist}` — one guard
+source of truth across launcher lanes. A bare `ANTHROPIC_BASE_URL` export is
+not acceptable wiring; the launcher IS the wiring.
+
+`omniroute-config-lint` is WS2 guardrail 1 (WS6 dedup invariant — one
+optimizer per boundary): a **positive assertion** over the authoritative
+engine-key set from the HIMMEL-666 Task-1 source-read (OmniRoute pin
+`b729a8f`, v3.8.43). It reads an exported pilot-config JSON (`compression`
+object + top-level `autoRoutingEnabled`) and FAILs loudly, one line per
+offending key, when any expected key is missing (default-ON engines must
+never pass as "nothing enabled found"), any entry is enabled, any unknown
+key appears inside `compression` (a renamed engine can't sneak in;
+`optimization` = SQLite tuning, excluded), or the free-lane switch
+`autoRoutingEnabled` is not explicitly `false`. Exit codes: 0 PASS / 1
+findings / 2 usage-or-unparseable.
+
+**Status:** the router deploy itself (HIMMEL-666 Task 2) is operator-gated
+(per-token lane decision) — these artifacts are built-and-tested ahead of it;
+the lint has NOT yet approved a real deployed config (plan Task 3 Step 4
+pending deploy).
+
+**Acceptance:** hermetic twin suites `scripts/test-claude-routed.{sh,ps1}`
+(mock `claude`; guard red paths incl. `.salus` refusal surviving the variant)
+and `scripts/test-omniroute-config-lint.{sh,ps1}` (fixture matrix incl. the
+omitted-key and unknown-key red paths).
+
+---
+
 ## Superpowers (plugin: `superpowers@claude-plugins-official`)
 
 **What:** Workflow orchestration skills. Invoked via `/skill` tool.
