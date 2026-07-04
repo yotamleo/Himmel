@@ -30,15 +30,20 @@ Stop. Only `lane = full` or empty proceeds.
 ## 3. Run the panel over the diff
 
     db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
+    # HIMMEL-558: load CR_PROFILE from the primary checkout's .env and export it.
+    # Do NOT hand-compute a tier: critic-panel.sh resolves tiers from CR_PROFILE
+    # itself (authoritative), so the paid critic can't be scoped out by hand.
+    . scripts/lib/load-dotenv.sh; load_dotenv CR_PROFILE || true
+    export CR_PROFILE
     diff_rc=0; diff_out=$(git diff "$db...HEAD") || diff_rc=$?
     if [ "$diff_rc" -ne 0 ] || [ -z "$diff_out" ]; then
         echo "diff unavailable/empty — marker retained"; exit 0
     fi
     panel_rc=0
-    panel_out=$(printf '%s\n' "$diff_out" | CRITIC_PANEL_TIERS="${CR_PROFILE:-free}" bash scripts/cr/critic-panel.sh) || panel_rc=$?
+    panel_out=$(printf '%s\n' "$diff_out" | bash scripts/cr/critic-panel.sh) || panel_rc=$?
 
-`CR_PROFILE` (if the operator set it) passes through as `CRITIC_PANEL_TIERS`;
-default is the free fast panel.
+`CR_PROFILE` (loaded from `.env`) is authoritative — the panel derives its tiers
+from it; unset ⇒ the free fast panel.
 
 ## 4. Gate decision
 

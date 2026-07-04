@@ -3,6 +3,12 @@
 # Bash 3.2 safe.
 set -uo pipefail
 
+# Hermetic: the panel now reads CR_PROFILE (HIMMEL-558) — and has always read
+# CRITIC_PANEL_TIERS — from the environment. Clear any ambient values so the
+# default-behaviour tests are not perturbed by the operator's shell (.env often
+# exports CR_PROFILE=free,paid). Each CR_PROFILE test below sets it explicitly.
+unset CR_PROFILE CRITIC_PANEL_TIERS 2>/dev/null || true
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PANEL="$HERE/critic-panel.sh"
 tmp="$(mktemp -d)"
@@ -293,6 +299,61 @@ else
     echo "ok - K2: SKIP (no timeout binary)"
     echo "ok - K2: SKIP (no timeout binary)"
 fi
+
+# Tests L: CR_PROFILE tier resolution (HIMMEL-558).
+# Fixture with a paid + a free critic, BOTH answered by the stub (qwen, gptoss),
+# so tier SELECTION is what's under test (unlike critics-paid.json where the paid
+# row is kimi, which the stub always fails).
+CRP_JSON="$tmp/critics-crprofile.json"
+printf '%s' '{"panel":[
+  {"slug":"qwen3coder","model":"qwen/qwen3-coder-480b-a35b-instruct","provider":"test","tier":"paid"},
+  {"slug":"gptoss","model":"openai/gpt-oss-120b","provider":"test","tier":"free"}
+]}' > "$CRP_JSON"
+
+# L1: CR_PROFILE=paid → only the paid row (qwen) is selected; free (gptoss) is not.
+out_l1="$(printf '%s' "$DIFF"    | CR_PROFILE=paid CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
+stderr_l1="$(printf '%s' "$DIFF" | CR_PROFILE=paid CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
+check_contains "L1: tiers resolved from CR_PROFILE" "$stderr_l1" "tiers=paid (from CR_PROFILE=paid)"
+check "L1: paid-only -> 1/1 responded" "$(printf '%s\n' "$out_l1" | grep -cF '(1/1 critics responded)')" "1"
+check "L1: free row gptoss NOT selected" "$(printf '%s\n' "$stderr_l1" | grep -cF 'gptoss')" "0"
+# The paid row's slug/model equals the panel anchor, so a regressed paid-selection
+# would fall back to anchor-only (also qwen, also 1/1). Assert no anchor fallback
+# so the 1/1 above can only mean genuine paid selection, not the fallback.
+check "L1: no anchor fallback (real paid selection, not fallback)" "$(printf '%s\n' "$stderr_l1" | grep -cF 'anchor-only')" "0"
+
+# L2: CR_PROFILE=free,paid → both rows selected.
+out_l2="$(printf '%s' "$DIFF" | CR_PROFILE="free,paid" CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
+check "L2: free,paid -> 2/2 responded" "$(printf '%s\n' "$out_l2" | grep -cF '(2/2 critics responded)')" "1"
+
+# L3 (KEY structural test): CR_PROFILE WINS over a hand-set CRITIC_PANEL_TIERS.
+# A run that hardcoded CRITIC_PANEL_TIERS=free must NOT scope out the paid critic
+# when CR_PROFILE=free,paid — this is the exact drift HIMMEL-558 closes.
+out_l3="$(printf '%s' "$DIFF" | CRITIC_PANEL_TIERS=free CR_PROFILE="free,paid" CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
+check "L3: CR_PROFILE wins over CRITIC_PANEL_TIERS=free -> 2/2 (not free-only 1/1)" "$(printf '%s\n' "$out_l3" | grep -cF '(2/2 critics responded)')" "1"
+
+# L4: CR_PROFILE=thorough → tiers=free,thorough (only the free row matches here).
+out_l4="$(printf '%s' "$DIFF"    | CR_PROFILE=thorough CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
+stderr_l4="$(printf '%s' "$DIFF" | CR_PROFILE=thorough CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
+check_contains "L4: thorough maps to free,thorough" "$stderr_l4" "tiers=free,thorough (from CR_PROFILE=thorough)"
+check "L4: thorough selects only the free row -> 1/1" "$(printf '%s\n' "$out_l4" | grep -cF '(1/1 critics responded)')" "1"
+check "L4: no anchor fallback" "$(printf '%s\n' "$stderr_l4" | grep -cF 'anchor-only')" "0"
+
+# L5: CR_PROFILE unset → the CRITIC_PANEL_TIERS override still governs (back-compat).
+out_l5="$(printf '%s' "$DIFF"    | CRITIC_PANEL_TIERS=free CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
+stderr_l5="$(printf '%s' "$DIFF" | CRITIC_PANEL_TIERS=free CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
+check "L5: unset CR_PROFILE + CRITIC_PANEL_TIERS=free -> free-only 1/1" "$(printf '%s\n' "$out_l5" | grep -cF '(1/1 critics responded)')" "1"
+check "L5: no CR_PROFILE resolution line when unset" "$(printf '%s\n' "$stderr_l5" | grep -cF 'from CR_PROFILE')" "0"
+
+# L6: CR_PROFILE=none exercises the load-bearing `!= "none"` guard branch. The
+# runbook skips the panel on none, but if none ever reaches the panel it must
+# fall through to the CRITIC_PANEL_TIERS/default path (a VISIBLE free run), never
+# an anchor-only run. Dropping the guard would send none into case *) -> tier
+# "none" -> zero rows -> anchor-only; this test locks that contract.
+out_l6="$(printf '%s' "$DIFF"    | CR_PROFILE=none CRITIC_PANEL_TIERS=free CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
+stderr_l6="$(printf '%s' "$DIFF" | CR_PROFILE=none CRITIC_PANEL_TIERS=free CRITICS_JSON="$CRP_JSON" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
+check "L6: none falls through to free panel -> 1/1" "$(printf '%s\n' "$out_l6" | grep -cF '(1/1 critics responded)')" "1"
+check "L6: none does NOT resolve via CR_PROFILE path" "$(printf '%s\n' "$stderr_l6" | grep -cF 'from CR_PROFILE')" "0"
+check "L6: none does NOT trigger anchor-only fallback" "$(printf '%s\n' "$stderr_l6" | grep -cF 'anchor-only')" "0"
 
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
