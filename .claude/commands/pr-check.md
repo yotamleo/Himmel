@@ -58,7 +58,7 @@ Steps:
 
    **Step 3.0 — critic panel first-pass (decimal substep, runs BEFORE any Agent dispatch):**
 
-   `/pr-check` runs the free cross-model panel (qwen3coder-480B, ~2min — bounded by the 150 s per-member `CRITIC_TIMEOUT_SECS`) by **default**. gptoss + kimi were DROPPED 2026-07-03 (operator decision, HIMMEL-667: 12% / 13% ledger agreed-rate — noise; qwen3coder is the free anchor). Control via `CR_PROFILE`.
+   `/pr-check` runs the free cross-model panel (qwen3coder-480B, ~2min — bounded by the 240 s per-member `CRITIC_TIMEOUT_SECS`) by **default**. gptoss + kimi were DROPPED 2026-07-03 (operator decision, HIMMEL-667: 12% / 13% ledger agreed-rate — noise; qwen3coder is the free anchor). Control via `CR_PROFILE`.
 
    **Structural note (HIMMEL-558): do NOT hand-compute a tier filter.** `CR_PROFILE` is loaded from the primary checkout's `.env` and exported; `critic-panel.sh` resolves its tiers **from `CR_PROFILE` itself** and treats it as authoritative (it wins over any `CRITIC_PANEL_TIERS`). This closes a drift where a run scoped the panel to free-only (silently dropping the paid codex critic) by hardcoding `CRITIC_PANEL_TIERS=free`. Your only job here is to load+export `CR_PROFILE` and honor the `none` skip; the panel does the rest. Semantics the panel implements:
    - `CR_PROFILE` unset/empty → **DEFAULT**: free panel (qwen3coder). Print note: "Default free cross-model CR (qwen3coder, ~2min; set CR_PROFILE=none for instant claude-only)."
@@ -67,7 +67,7 @@ Steps:
    - `CR_PROFILE=paid` → the **paid escalation** critic (codex / `gpt-5.5` via hermes `openai-codex` OAuth, HIMMEL-417) — for high-stakes PRs or when the free panel disagrees. Consumes your OpenAI usage bank. Combine with the free panel via `CR_PROFILE=free,paid`.
    - any other value → passed through as the tier filter verbatim (advanced/custom, e.g. `free,paid`).
 
-   Per-member hang protection: `CRITIC_TIMEOUT_SECS` (default 150 s). `CR_PROFILE=none` skips the panel entirely.
+   Per-member hang protection: `CRITIC_TIMEOUT_SECS` (default 240 s, HIMMEL-558 — raised from 150 s after codex + qwen3coder were seen clipping at 150 s). `CR_PROFILE=none` skips the panel entirely.
 
    ```bash
    # Resolve the protected default (main OR master, HIMMEL-297) for the diff base.

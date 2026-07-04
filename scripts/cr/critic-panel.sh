@@ -15,8 +15,11 @@
 #      CRITIC_PANEL_TIERS — comma-separated tier names to include (default: free).
 #      The low-level override, honored ONLY when CR_PROFILE is unset (direct/
 #      advanced use + tests). CR_PROFILE wins when both are set.
-#      CRITIC_TIMEOUT_SECS — per-member wall-clock timeout in seconds (default 150;
-#          bounds qwen3coder's ~2min typical latency; raise it if slow runs get killed).
+#      CRITIC_TIMEOUT_SECS — per-member wall-clock timeout in seconds (default 240;
+#          HIMMEL-558: raised from 150 after both the paid codex critic AND the free
+#          qwen3coder anchor were observed timing out at exactly 150s and contributing
+#          nothing — 150 clipped their occasional slow reasoning. 240 gives headroom
+#          while still bounding a genuinely hung provider. Lower it for a faster gate.
 #          Requires GNU coreutils 'timeout'; gracefully degrades without it.
 #      CRITIC_PARALLEL — set to 1 to run critics concurrently (default 0 = sequential).
 #          Output is byte-identical to sequential: results merged in registry order.
@@ -49,12 +52,12 @@ ANCHOR_SLUG="qwen3coder"
 ANCHOR_MODEL="qwen/qwen3-coder-480b-a35b-instruct"
 
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
-CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-150}"
+CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-240}"
 if expr "$CRITIC_TIMEOUT_SECS" : '^[0-9][0-9]*$' > /dev/null 2>&1 && [ "$CRITIC_TIMEOUT_SECS" -gt 0 ]; then
     : # valid
 else
-    echo "critic-panel.sh: CRITIC_TIMEOUT_SECS=$CRITIC_TIMEOUT_SECS invalid, using 150" >&2
-    CRITIC_TIMEOUT_SECS="150"
+    echo "critic-panel.sh: CRITIC_TIMEOUT_SECS=$CRITIC_TIMEOUT_SECS invalid, using 240" >&2
+    CRITIC_TIMEOUT_SECS="240"
 fi
 
 # Validate CRITIC_PARALLEL
