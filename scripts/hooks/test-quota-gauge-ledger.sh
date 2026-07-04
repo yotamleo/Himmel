@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Smoke test for scripts/lib/headroom-ledger.sh (WS9/HIMMEL-654).
+# Smoke test for scripts/lib/quota-gauge-ledger.sh (WS9/HIMMEL-654).
 #
 # Appends two rows via the bash twin, asserts exactly 2 whole
-# JSON-parseable lines; the path resolver honors HIMMEL_HEADROOM_LEDGER;
+# JSON-parseable lines; the path resolver honors HIMMEL_QUOTA_GAUGE_LEDGER;
 # the --emit CLI matches the canonical TS serialization (the authoritative
 # bash half of the byte-identical contract, T22). No real $HOME writes.
 set -u -o pipefail
 
-LIB="$(cd "$(dirname "$0")" && pwd)/../lib/headroom-ledger.sh"
+LIB="$(cd "$(dirname "$0")" && pwd)/../lib/quota-gauge-ledger.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -21,16 +21,16 @@ assert_eq() {
     if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected '$2', got '$3')"; fi
 }
 
-LEDGER="$TMP/headroom.jsonl"
-export HIMMEL_HEADROOM_LEDGER="$LEDGER"
-# shellcheck source=../lib/headroom-ledger.sh
+LEDGER="$TMP/quota-gauge.jsonl"
+export HIMMEL_QUOTA_GAUGE_LEDGER="$LEDGER"
+# shellcheck source=../lib/quota-gauge-ledger.sh
 # shellcheck disable=SC1091
 . "$LIB"
 
-headroom_append "$(headroom_row glm monitor-endpoint 62 5h 2026-07-04T14:00:00Z "live reading")"
-headroom_append "$(headroom_row claude arm-threshold 93 5h "" "cap approached")"
+quota_gauge_append "$(quota_gauge_row glm monitor-endpoint 62 5h 2026-07-04T14:00:00Z "live reading")"
+quota_gauge_append "$(quota_gauge_row claude arm-threshold 93 5h "" "cap approached")"
 
-if [ -f "$LEDGER" ]; then ok "ledger created at HIMMEL_HEADROOM_LEDGER"; else bad "ledger missing"; fi
+if [ -f "$LEDGER" ]; then ok "ledger created at HIMMEL_QUOTA_GAUGE_LEDGER"; else bad "ledger missing"; fi
 
 total=$(wc -l < "$LEDGER" | tr -d ' ')
 assert_eq "exactly 2 lines" "2" "$total"
@@ -49,7 +49,7 @@ print(n)' < "$LEDGER" 2>/dev/null) || { bad "python3 parse failed"; echo "FAIL";
 assert_eq "both lines JSON-parseable, v=1, full schema" "2" "$parse"
 
 # Path resolver honors the override.
-assert_eq "resolver honors HIMMEL_HEADROOM_LEDGER" "$LEDGER" "$(headroom_ledger_path)"
+assert_eq "resolver honors HIMMEL_QUOTA_GAUGE_LEDGER" "$LEDGER" "$(quota_gauge_ledger_path)"
 
 # --emit prints one canonical row WITHOUT appending (byte-identical T22).
 emit=$(bash "$LIB" --emit claude arm-threshold 93 5h 2026-07-04T14:00:00Z "cap approached" 2026-07-04T12:00:00Z)

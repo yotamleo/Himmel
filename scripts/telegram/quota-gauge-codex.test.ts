@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseCodexUsage, buildCodexRow, codexProbeAppend } from "./headroom-codex";
-import type { HeadroomRecord } from "./headroom";
+import { parseCodexUsage, buildCodexRow, codexProbeAppend } from "./quota-gauge-codex";
+import type { QuotaGaugeRecord } from "./quota-gauge";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const NOW_MS = Date.parse("2026-07-04T12:00:00Z");
 
 test("T4 parseCodexUsage extracts the SECONDARY weekly used%; buildCodexRow -> codex weekly row", () => {
-  const blob = readFileSync(join(REPO_ROOT, "tests", "fixtures", "headroom", "codex-logs.sqlite-blob.txt"), "utf8");
+  const blob = readFileSync(join(REPO_ROOT, "tests", "fixtures", "quota-gauge", "codex-logs.sqlite-blob.txt"), "utf8");
   const parsed = parseCodexUsage(blob);
   expect(parsed).not.toBeNull();
   expect(parsed?.usedPct).toBe(47.3); // secondary, NOT the primary 12.5
@@ -21,7 +21,7 @@ test("T4 parseCodexUsage extracts the SECONDARY weekly used%; buildCodexRow -> c
 });
 
 test("T5 missing/empty blob -> ONE invisible row + ONE stderr line per probe, never throws", () => {
-  const rows: HeadroomRecord[] = [];
+  const rows: QuotaGaugeRecord[] = [];
   let stderrCount = 0;
   const origErr = console.error;
   console.error = () => { stderrCount++; };

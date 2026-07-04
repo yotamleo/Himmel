@@ -472,10 +472,24 @@ fi
 format_tokens() {
     local n="${1:-0}"
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    if   [ "$n" -ge 1000000 ]; then awk -v n="$n" 'BEGIN{printf "%.1fM", n/1000000}'
-    elif [ "$n" -ge 1000 ];    then awk -v n="$n" 'BEGIN{printf "%.0fk", n/1000}'
+    if   [ "$n" -ge 1000000000 ]; then awk -v n="$n" 'BEGIN{printf "%.1fB", n/1000000000}'
+    elif [ "$n" -ge 1000000 ];    then awk -v n="$n" 'BEGIN{printf "%.1fM", n/1000000}'
+    elif [ "$n" -ge 1000 ];       then awk -v n="$n" 'BEGIN{printf "%.0fk", n/1000}'
     else printf "%s" "$n"
     fi
+}
+# Humanize a positive USD amount for readability: K/M/B once it reaches $1000,
+# else the caller's raw %.4f (so sub-$1000 displays — and the byte-exact golden
+# fixture — are unchanged). Returns the number WITHOUT a leading $ (the caller
+# adds it). Callers pass an already-absolute value; sign is handled separately.
+format_usd() {
+    local n="${1:-0}"
+    awk -v n="$n" 'BEGIN{
+        if      (n >= 1000000000) printf "%.1fB", n/1000000000;
+        else if (n >= 1000000)    printf "%.1fM", n/1000000;
+        else if (n >= 1000)       printf "%.1fK", n/1000;
+        else                      printf "%.4f", n;
+    }'
 }
 # Sets read_savings_rate and write_overhead_rate (USD per token, float)
 get_model_savings_rate() {
@@ -690,8 +704,44 @@ rebuild_all_sessions_index() {
 
     # Files to recompute: those modified since the last index write (so the
     # active session and any new files), or everything on a cold first run.
+    #
+    # PLUS a bounded backfill of transcripts ABSENT from the carried-forward
+    # index (HIMMEL-698). A file that predates the index's first write and was
+    # never itself the freshly-written active transcript is never `-newer`, so
+    # without this it is never recomputed and — because it never entered
+    # $oldidx either — is permanently dropped from the aggregate: the reduce
+    # below skips any path that is neither in $rc nor $oldidx. On a large
+    # history whose cold full-scan never completed, the "all" row then reflects
+    # only the handful of files that happened to be the active transcript at a
+    # render (observed: 6 of 1812 files → a stuck, implausibly-low total).
+    # The backfill is BOUNDED per rebuild (default 400, override
+    # HIMMEL_STATUSLINE_BACKFILL_MAX) so a single refresh can't exceed the
+    # stale-lock reaper window on a huge back-catalogue; the index grows
+    # monotonically (a backfilled file's mtime predates the new index write, so
+    # it is carried forward, not re-scanned), so the aggregate heals over
+    # successive renders. Cold start (no index) is unchanged — it already scans
+    # every file — so this only affects the incremental path.
     if [ -f "$index_file" ]; then
         recompute_paths=$(find "$proj_root" -mindepth 2 -maxdepth 2 -name '*.jsonl' -newer "$index_file" 2>/dev/null)
+        local backfill_max="${HIMMEL_STATUSLINE_BACKFILL_MAX:-400}"
+        case "$backfill_max" in ''|*[!0-9]*) backfill_max=400 ;; esac
+        if [ "$backfill_max" -gt 0 ]; then
+            local tmp_known missing
+            tmp_known=$(mktemp 2>/dev/null) || tmp_known=""
+            if [ -n "$tmp_known" ]; then
+                # Known = paths already in the index. Any all_paths entry not in
+                # it is a never-scanned historical file → backfill up to N.
+                printf '%s\n' "$old_index" | jq -r 'keys[]?' 2>/dev/null \
+                    | LC_ALL=C sort -u > "$tmp_known"
+                missing=$(printf '%s\n' "$all_paths" | grep -v '^$' | LC_ALL=C sort -u \
+                    | LC_ALL=C comm -23 - "$tmp_known" | head -n "$backfill_max")
+                rm -f "$tmp_known" 2>/dev/null
+                if [ -n "$missing" ]; then
+                    recompute_paths=$(printf '%s\n%s' "$recompute_paths" "$missing" \
+                        | grep -v '^$' | LC_ALL=C sort -u)
+                fi
+            fi
+        fi
     else
         recompute_paths="$all_paths"
     fi
@@ -895,7 +945,7 @@ build_cache_lines() {
     net_usd=$(awk -v r="$sess_reads" -v w="$sess_writes" \
               -v rs="$read_savings_rate" -v wo="$write_overhead_rate" \
               'BEGIN{printf "%.4f", r*rs - w*wo}')
-    net_abs=$(awk -v n="$net_usd" 'BEGIN{if(n<0)n=-n; printf "%.4f",n}')
+    net_abs=$(format_usd "$(awk -v n="$net_usd" 'BEGIN{if(n<0)n=-n; printf "%.4f",n}')")
     if awk -v n="$net_usd" 'BEGIN{exit !(n >= 0)}'; then
         net_sign="+"; net_color="$green"
     else
@@ -905,7 +955,7 @@ build_cache_lines() {
     local cost_part=""
     if [ -n "$session_cost" ] && [ "$session_cost" != "null" ] && \
        awk -v c="$session_cost" 'BEGIN{exit !(c+0 > 0)}'; then
-        cost_part="  ${dim}cost${reset} ${white}$(printf '$%.4f' "$session_cost")${reset}"
+        cost_part="  ${dim}cost${reset} ${white}\$$(format_usd "$session_cost")${reset}"
     fi
 
     local sess_line="${white}session${reset}  "
@@ -929,7 +979,7 @@ build_cache_lines() {
     all_net=$(awk -v r="$all_reads" -v w="$all_writes" \
               -v rs="$read_savings_rate" -v wo="$write_overhead_rate" \
               'BEGIN{printf "%.4f", r*rs - w*wo}')
-    all_abs=$(awk -v n="$all_net" 'BEGIN{if(n<0)n=-n; printf "%.4f",n}')
+    all_abs=$(format_usd "$(awk -v n="$all_net" 'BEGIN{if(n<0)n=-n; printf "%.4f",n}')")
     if awk -v n="$all_net" 'BEGIN{exit !(n >= 0)}'; then
         all_sign="+"; all_color="$green"
     else

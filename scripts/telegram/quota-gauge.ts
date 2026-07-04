@@ -1,5 +1,5 @@
-// scripts/telegram/headroom.ts
-// WS9 (HIMMEL-654) cross-lane headroom ledger — append helper + reader
+// scripts/telegram/quota-gauge.ts
+// WS9 (HIMMEL-654) cross-lane quota-gauge ledger — append helper + reader
 // (Task 2 adds the reader; this file ships the path resolver, the record
 // schema, and the append helper).
 //
@@ -8,9 +8,9 @@
 // module NEVER routes/arms/spawns/blocks (AC10). The ledger rests on atomic
 // single-line O_APPEND (AC0 — Windows Git Bash atomicity gate PASSED 5/5).
 //
-// Byte-identical twin of scripts/lib/headroom-ledger.sh (the bash append
+// Byte-identical twin of scripts/lib/quota-gauge-ledger.sh (the bash append
 // helper used by the in-hook Claude writer, Task 3): both emit the canonical
-// record line in the exact HEADROOM_FIELDS order (AC12/T22).
+// record line in the exact QUOTA_GAUGE_FIELDS order (AC12/T22).
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -23,11 +23,11 @@ export type Lane = "glm" | "codex" | "claude";
 // observation-only: no per-row TTL, no token-cost counter, no
 // parallel-writer column (the atomic single-line append is the integrity
 // guarantee, not a lock) (AC23/T23).
-export const HEADROOM_FIELDS = [
+export const QUOTA_GAUGE_FIELDS = [
   "v", "ts", "lane", "source", "used_pct", "window", "reset_at", "tier", "glm_peak", "note",
 ] as const;
 
-export type HeadroomRecord = {
+export type QuotaGaugeRecord = {
   v: 1;
   ts: string;             // ISO-UTC (e.g. 2026-07-04T12:00:00Z)
   lane: Lane;
@@ -40,17 +40,17 @@ export type HeadroomRecord = {
   note: string | null;
 };
 
-// Ledger path resolver. $HIMMEL_HEADROOM_LEDGER if set, else
-// <HOME>/.himmel/headroom.jsonl. PURE — no fs mutation; the dir is created
-// on append (appendHeadroom), not on resolve. `env` is injectable for tests.
+// Ledger path resolver. $HIMMEL_QUOTA_GAUGE_LEDGER if set, else
+// <HOME>/.himmel/quota-gauge.jsonl. PURE — no fs mutation; the dir is created
+// on append (appendQuotaGauge), not on resolve. `env` is injectable for tests.
 export function ledgerPath(env: Record<string, string | undefined> = process.env): string {
-  const override = env.HIMMEL_HEADROOM_LEDGER;
+  const override = env.HIMMEL_QUOTA_GAUGE_LEDGER;
   if (override && override.trim()) return override;
   const home = env.HOME ?? homedir();
-  return join(home, ".himmel", "headroom.jsonl");
+  return join(home, ".himmel", "quota-gauge.jsonl");
 }
 
-// Minimal JSON string escape — matches the bash twin's _hdr_json_str.
+// Minimal JSON string escape — matches the bash twin's _qg_json_str.
 function jsonStr(s: string): string {
   return '"' + s
     .replace(/\\/g, "\\\\")
@@ -67,10 +67,10 @@ function jsonVal(v: number | string | boolean | null | undefined): string {
   return jsonStr(v);
 }
 
-// Canonical serialization — HEADROOM_FIELDS order, byte-identical with the
-// bash twin's headroom_row. Exported so the byte-identical test (T22) can
+// Canonical serialization — QUOTA_GAUGE_FIELDS order, byte-identical with the
+// bash twin's quota_gauge_row. Exported so the byte-identical test (T22) can
 // compare against bash --emit directly.
-export function serializeHeadroom(row: HeadroomRecord): string {
+export function serializeQuotaGauge(row: QuotaGaugeRecord): string {
   const vals = [
     jsonVal(row.v),
     jsonStr(row.ts),
@@ -83,18 +83,18 @@ export function serializeHeadroom(row: HeadroomRecord): string {
     jsonVal(row.glm_peak),
     jsonVal(row.note),
   ];
-  const pairs = HEADROOM_FIELDS.map((k, i) => `"${k}":${vals[i]}`);
+  const pairs = QUOTA_GAUGE_FIELDS.map((k, i) => `"${k}":${vals[i]}`);
   return "{" + pairs.join(",") + "}";
 }
 
 // Append one canonical line to the ledger (atomic single-line O_APPEND).
 // Creates the parent dir on append. `path` override is for tests; real
 // callers resolve via ledgerPath().
-export function appendHeadroom(row: HeadroomRecord, path?: string): void {
+export function appendQuotaGauge(row: QuotaGaugeRecord, path?: string): void {
   const p = path ?? ledgerPath();
   const dir = dirname(p);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  appendFileSync(p, serializeHeadroom(row) + "\n", "utf8");
+  appendFileSync(p, serializeQuotaGauge(row) + "\n", "utf8");
 }
 
 // ── Task 2: the single reader (D10) ─────────────────────────────────────────
@@ -105,16 +105,16 @@ export function appendHeadroom(row: HeadroomRecord, path?: string): void {
 // 0 it is never fresh unless a trip fired at `nowMs`, so it reads UNKNOWN
 // between trips (dim-lane honesty, never a fabricated number).
 export const LANE_BUDGET_S: Record<Lane, number> = { glm: 120, codex: 3600, claude: 0 };
-export const HEADROOM_LOOKBACK_N = 500;
+export const QUOTA_GAUGE_LOOKBACK_N = 500;
 const LANES: Lane[] = ["glm", "codex", "claude"];
 
 // `known` iff the latest row for the lane is VISIBLE (used_pct !== null) AND
 // fresh; otherwise `unknown` (no row / invisible / stale). `row` still carries
 // the last-known reading even when unknown-because-stale, so a consumer can
 // show it as "last seen" — `fresh`/`status` gate whether to TRUST it.
-export type LaneStatus = { lane: Lane; row: HeadroomRecord | null; fresh: boolean; status: "known" | "unknown" };
+export type LaneStatus = { lane: Lane; row: QuotaGaugeRecord | null; fresh: boolean; status: "known" | "unknown" };
 
-function laneVerdict(lane: Lane, row: HeadroomRecord, nowMs: number): LaneStatus {
+function laneVerdict(lane: Lane, row: QuotaGaugeRecord, nowMs: number): LaneStatus {
   // Invisible (null used_pct) → unknown regardless of age (F10): an invisible
   // latest reading is NOT overridden by an earlier real one.
   if (row.used_pct === null || row.used_pct === undefined) return { lane, row, fresh: false, status: "unknown" };
@@ -128,10 +128,10 @@ function laneVerdict(lane: Lane, row: HeadroomRecord, nowMs: number): LaneStatus
 // null row — never a fabricated 0/100. The bounded look-back keeps an absent
 // lane from forcing a full-file walk and stops a GLM burst from evicting a
 // still-fresh row of another lane (both lanes are found before the bound bites).
-export function headroomRead(p: { path?: string; nowMs?: number; lookbackN?: number } = {}): Record<Lane, LaneStatus> {
+export function quotaGaugeRead(p: { path?: string; nowMs?: number; lookbackN?: number } = {}): Record<Lane, LaneStatus> {
   const path = p.path ?? ledgerPath();
   const nowMs = p.nowMs ?? Date.now();
-  const lookbackN = p.lookbackN ?? HEADROOM_LOOKBACK_N;
+  const lookbackN = p.lookbackN ?? QUOTA_GAUGE_LOOKBACK_N;
   const result: Record<Lane, LaneStatus> = {
     glm: { lane: "glm", row: null, fresh: false, status: "unknown" },
     codex: { lane: "codex", row: null, fresh: false, status: "unknown" },
@@ -147,8 +147,8 @@ export function headroomRead(p: { path?: string; nowMs?: number; lookbackN?: num
     const line = lines[i];
     if (line.trim() === "") continue;              // trailing newline / blank — not a row
     visited++;
-    let row: HeadroomRecord;
-    try { row = JSON.parse(line) as HeadroomRecord; } catch { continue; }  // truncated/garbled last line skipped (T15)
+    let row: QuotaGaugeRecord;
+    try { row = JSON.parse(line) as QuotaGaugeRecord; } catch { continue; }  // truncated/garbled last line skipped (T15)
     const lane = (row as { lane?: unknown }).lane;
     if (lane !== "glm" && lane !== "codex" && lane !== "claude") continue;
     if (found.has(lane)) continue;                 // an older row for a lane already resolved by its newest
@@ -177,7 +177,7 @@ export function isGlmPeak(nowMs: number): boolean {
 // Map the GLM monitor-endpoint reading to a canonical row. `null` (usage
 // invisible) is visible-not-silent: an `invisible`-source row with null fields,
 // NEVER a fabricated number (HIMMEL-275). `glm_peak` is stamped in both cases.
-export function buildGlmRow(reading: { percentage: number; nextResetTime: number; level?: string } | null, nowMs: number): HeadroomRecord {
+export function buildGlmRow(reading: { percentage: number; nextResetTime: number; level?: string } | null, nowMs: number): QuotaGaugeRecord {
   const peak = isGlmPeak(nowMs);
   if (reading === null) {
     return { v: 1, ts: new Date(nowMs).toISOString(), lane: "glm", source: "invisible", used_pct: null, window: null, reset_at: null, tier: null, glm_peak: peak, note: "usage invisible (monitor endpoint unavailable)" };

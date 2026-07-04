@@ -70,6 +70,22 @@ assert_eq "format 1000000" "$(format_tokens 1000000)" "1.0M"
 assert_eq "format 1234567" "$(format_tokens 1234567)" "1.2M"
 assert_eq "format empty"   "$(format_tokens '')"      "0"
 assert_eq "format bad"     "$(format_tokens abc)"     "0"
+# B (billions) tier (HIMMEL-704) + the just-under-1B boundary staying M.
+assert_eq "format 999999999"  "$(format_tokens 999999999)"  "1000.0M"
+assert_eq "format 1000000000" "$(format_tokens 1000000000)" "1.0B"
+assert_eq "format 2500000000" "$(format_tokens 2500000000)" "2.5B"
+
+# ── format_usd tests (HIMMEL-704) ──────────────────────────
+# Below $1000 keeps the raw %.4f (so the byte-exact golden fixture and small
+# net/cost displays are unchanged); >= $1000 scales to K/M/B.
+assert_eq "usd 0"       "$(format_usd 0)"        "0.0000"
+assert_eq "usd 0.0876"  "$(format_usd 0.0876)"   "0.0876"
+assert_eq "usd 69.465"  "$(format_usd 69.4650)"  "69.4650"
+assert_eq "usd 999"     "$(format_usd 999)"      "999.0000"
+assert_eq "usd 1000"    "$(format_usd 1000)"     "1.0K"
+assert_eq "usd 1500"    "$(format_usd 1500)"     "1.5K"
+assert_eq "usd 1234567" "$(format_usd 1234567)"  "1.2M"
+assert_eq "usd 2.5e9"   "$(format_usd 2500000000)" "2.5B"
 
 # ── get_model_savings_rate tests ───────────────────────────
 get_model_savings_rate "claude-sonnet-4-6"
@@ -274,6 +290,68 @@ assert_eq "deleted file removed from reads" "$(jq -r '.reads' "$RB_CACHE" 2>/dev
 assert_eq "deleted index has 2 files" "$(jq -r 'length' "$RB_INDEX" 2>/dev/null)" "2"
 
 rm -rf "$TMPDIR_RB"
+
+# ── rebuild_all_sessions_index: backfill history predating the index (HIMMEL-698) ─
+# Regression: recompute candidates were ONLY files `-newer` than the index, so a
+# transcript that predates the index's first write and was never the active
+# (freshly-written) transcript was never recomputed and never entered the
+# carried-forward index — permanently dropped from the aggregate. Result: the
+# "all" total reflected only the few files touched since the index appeared
+# (observed 6 of 1812 → a stuck, implausibly-low number). The fix backfills
+# files absent from the index (bounded per rebuild). Here we seed an index that
+# postdates an OLD transcript (mtime set into the past) and prove the next
+# rebuild pulls that old file into the totals.
+TMPDIR_BF=$(mktemp -d)
+BF_PROJ="$TMPDIR_BF/.claude/projects"
+mkdir -p "$BF_PROJ/proj-old" "$BF_PROJ/proj-active"
+BF_CACHE="$TMPDIR_BF/cache.json"
+BF_INDEX="$TMPDIR_BF/index.json"
+
+# An OLD historical transcript (never seen by the index) with known tokens.
+cat > "$BF_PROJ/proj-old/hist.jsonl" <<'EOF'
+{"type":"assistant","message":{"usage":{"input_tokens":11,"cache_creation_input_tokens":1111,"cache_read_input_tokens":9999}}}
+EOF
+touch -d "@$(( $(date +%s) - 86400 ))" "$BF_PROJ/proj-old/hist.jsonl" 2>/dev/null \
+    || touch -t "$(date -r "$(( $(date +%s) - 86400 ))" +%Y%m%d%H%M.%S 2>/dev/null)" "$BF_PROJ/proj-old/hist.jsonl" 2>/dev/null
+
+# Seed an index that ONLY knows the active file, and whose mtime is NEWER than
+# the old transcript — so `-newer` alone would never surface hist.jsonl. This
+# is exactly the stuck state the bug leaves behind.
+cat > "$BF_PROJ/proj-active/cur.jsonl" <<'EOF'
+{"type":"assistant","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":500,"cache_read_input_tokens":700}}}
+EOF
+echo '{"'"$BF_PROJ"'/proj-active/cur.jsonl":{"reads":700,"writes":500,"inputs":5}}' > "$BF_INDEX"
+echo '{"reads":700,"writes":500,"inputs":5}' > "$BF_CACHE"
+# Index mtime = now (well after the old file's mtime).
+touch "$BF_INDEX"
+
+rebuild_all_sessions_index "$BF_PROJ" "$BF_CACHE" "$BF_INDEX" || true
+# Old file's 9999 reads must now be folded in (700 active + 9999 historical).
+assert_eq "backfill: historical reads folded into total"  "$(jq -r '.reads'  "$BF_CACHE" 2>/dev/null)" "10699"
+assert_eq "backfill: historical writes folded into total" "$(jq -r '.writes' "$BF_CACHE" 2>/dev/null)" "1611"
+assert_eq "backfill: index now has both files"            "$(jq -r 'length'  "$BF_INDEX" 2>/dev/null)" "2"
+
+# Bound honoured: HIMMEL_STATUSLINE_BACKFILL_MAX=0 disables backfill (old file
+# stays excluded), proving the knob gates the new behaviour.
+TMPDIR_BF0=$(mktemp -d)
+BF0_PROJ="$TMPDIR_BF0/.claude/projects"
+mkdir -p "$BF0_PROJ/proj-old" "$BF0_PROJ/proj-active"
+cat > "$BF0_PROJ/proj-old/hist.jsonl" <<'EOF'
+{"type":"assistant","message":{"usage":{"input_tokens":11,"cache_creation_input_tokens":1111,"cache_read_input_tokens":9999}}}
+EOF
+touch -d "@$(( $(date +%s) - 86400 ))" "$BF0_PROJ/proj-old/hist.jsonl" 2>/dev/null \
+    || touch -t "$(date -r "$(( $(date +%s) - 86400 ))" +%Y%m%d%H%M.%S 2>/dev/null)" "$BF0_PROJ/proj-old/hist.jsonl" 2>/dev/null
+cat > "$BF0_PROJ/proj-active/cur.jsonl" <<'EOF'
+{"type":"assistant","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":500,"cache_read_input_tokens":700}}}
+EOF
+echo '{"'"$BF0_PROJ"'/proj-active/cur.jsonl":{"reads":700,"writes":500,"inputs":5}}' > "$TMPDIR_BF0/index.json"
+echo '{"reads":700,"writes":500,"inputs":5}' > "$TMPDIR_BF0/cache.json"
+touch "$TMPDIR_BF0/index.json"
+HIMMEL_STATUSLINE_BACKFILL_MAX=0 rebuild_all_sessions_index "$BF0_PROJ" "$TMPDIR_BF0/cache.json" "$TMPDIR_BF0/index.json" || true
+assert_eq "backfill disabled (MAX=0): historical file stays excluded" "$(jq -r '.reads' "$TMPDIR_BF0/cache.json" 2>/dev/null)" "700"
+rm -rf "$TMPDIR_BF0"
+
+rm -rf "$TMPDIR_BF"
 
 # ── build_cache_lines: hide expired tier when the other is live ──
 TMPDIR_T1=$(mktemp -d)

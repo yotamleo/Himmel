@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { runSession, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow } from "./run";
 import { checkGlmGuards } from "./glm-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, type SettingsConflict, type GlmUsage } from "./glm-env";
-import { appendHeadroom, buildGlmRow } from "./headroom";
+import { appendQuotaGauge, buildGlmRow } from "./quota-gauge";
 import { parseGrantFlag, composeGrantLine, nextGrantId, authorityGate, classifyShape, composeEscalationForRefusedGrant, carryGrants, seedCarriedGrants, type GrantSpec } from "./grants";
 
 export function glmSessionRoot(): string {
@@ -131,7 +131,7 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
 // end-to-end against a temp dir, not just by inspection. FAIL-OPEN: a missing OR
 // UNREADABLE grants.jsonl (EACCES/EISDIR/TOCTOU) → no carry (F4 reset), NEVER
 // throws — carry is best-effort side work that must not abort the dispatch it
-// exists to perform (mirrors the buildGlmEnv / headroom guards).
+// exists to perform (mirrors the buildGlmEnv / quota-gauge guards).
 export function applyCarryFrom(carryFrom: string, autonomous: boolean, existing: string[], now: Date): { grantLines: string[]; escalationLines: string[]; summary: string } {
   const src = join(carryFrom, "grants.jsonl");
   if (!existsSync(src)) return { grantLines: [], escalationLines: [], summary: `--carry-from ${carryFrom} has no grants.jsonl — no grants carried (F4 reset).` };
@@ -179,7 +179,7 @@ export async function executeRun(deps: {
           return { code: res.code };
         }
         const usage = await g.fetchUsage();
-        appendHeadroom(buildGlmRow(usage, Date.now())); // WS9 (HIMMEL-654): observe the cap-time GLM reading (null -> invisible row); passive, no new fetch
+        appendQuotaGauge(buildGlmRow(usage, Date.now())); // WS9 (HIMMEL-654): observe the cap-time GLM reading (null -> invisible row); passive, no new fetch
         // HIMMEL-275 spirit at cap time too: a null re-query is visible, not a
         // silent fall-through to the floor (preflight has its own line).
         if (usage === null) console.error("spawn-glm: usage invisible at cap time (monitor endpoint unavailable) — resume slot falls back to error-body/cycle-floor");
@@ -231,7 +231,7 @@ async function main(): Promise<void> {
   // unguarded ledger-write throw would propagate to main().catch and ABORT the
   // dispatch; the passive layer must never block a dispatch (mirrors the
   // cap-time site's try/catch and the bash twin's `|| true`).
-  try { appendHeadroom(buildGlmRow(preflightUsage, Date.now())); } catch (e) { console.error(`spawn-glm: headroom preflight append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
+  try { appendQuotaGauge(buildGlmRow(preflightUsage, Date.now())); } catch (e) { console.error(`spawn-glm: quota-gauge preflight append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
   const warn = formatUsageWarn(preflightUsage, parseWarnPct(process.env.GLM_USAGE_WARN_PCT));
   if (warn) console.error(warn);
 
