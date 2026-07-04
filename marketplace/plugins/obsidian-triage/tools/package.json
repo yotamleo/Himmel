@@ -15,7 +15,10 @@
     "crawl:x": "bun playwright-crawl-x.mjs",
     "crawl:youtube": "bun playwright-crawl-youtube.mjs",
     "enrich:x": "bun fxtwitter-enrich.mjs",
-    "dedup": "bun dedup-sweep.mjs"
+    "dedup": "bun dedup-sweep.mjs",
+    "score:gather": "bun follow-list-score.mjs gather",
+    "score:assemble": "bun follow-list-score.mjs assemble",
+    "score:judge-prep": "bun follow-list-score.mjs judge-prep"
   },
   "dependencies": {
     "playwright": "1.61.1",

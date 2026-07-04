@@ -1,0 +1,5 @@
+{
+  "spike_result": "A",
+  "endpoint": "https://api.fxtwitter.com/<handle>",
+  "fields": ["followers", "description", "joined"]
+}
