@@ -30,7 +30,7 @@ mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
 # ── Progress ────────────────────────────────────────────────────────────────
-TOTAL_STEPS=20
+TOTAL_STEPS=21
 STEP=0
 FAILURES=()
 
@@ -124,7 +124,7 @@ rtk --version
 
 step "Clone himmel + run repo setup"
 mkdir -p "$(dirname "$HIMMEL_PATH")"
-git clone https://github.com/yotamleo/Himmel.git "$HIMMEL_PATH"
+git clone https://github.com/yotamleo/himmel.git "$HIMMEL_PATH"
 cd "$HIMMEL_PATH"
 
 # HIMMEL-105: gate the clone for core.hooksPath misconfiguration BEFORE
@@ -471,7 +471,7 @@ step "Register auto-arm-on-cap PreToolUse hook (HIMMEL-220)"
 {
   # User-level registration so EVERY repo's sessions get cap protection
   # (the himmel checkout carries its own project-level wiring in
-  # .claude/settings.json; this covers luna / yotam_docs / etc).
+  # .claude/settings.json; this covers luna / the state repo / etc).
   # The hook resolves its lib + arm-resume relative to its own location,
   # so an absolute himmel path works from any cwd.
   SETTINGS="$CLAUDE_DIR/settings.json"
@@ -508,6 +508,30 @@ step "Register auto-arm-on-cap PreToolUse hook (HIMMEL-220)"
     fi
   fi
 } || fail_nonfatal "register auto-arm hook"
+
+step "Install + enable the at/atd scheduler backend (auto-arm resume, HIMMEL-594)"
+{
+  # arm-resume.sh uses `at -t` on Linux for the cap-resume relaunch; without a
+  # running atd the job silently never fires. crontab is only a fallback used
+  # when `at` is absent. Idempotent: apt install + systemctl enable --now.
+  read -r -p "Install 'at' and enable atd (needed for auto-arm resume)? [Y]es/[n]o [default: Y]: " AT_CHOICE
+  AT_CHOICE="${AT_CHOICE:-Y}"
+  if [[ "$AT_CHOICE" =~ ^[Nn] ]]; then
+    echo "  Skipped — auto-arm resume will be unavailable until 'at'+atd are present."
+  elif sudo apt install -y at && sudo systemctl enable --now atd; then
+    # Report (sourced only for the status line — the enable already ran above).
+    # shellcheck source=scripts/lib/scheduler-backend.sh
+    # shellcheck disable=SC1091
+    if . "$HIMMEL_PATH/scripts/lib/scheduler-backend.sh" 2>/dev/null; then
+      echo "  scheduler backend status: $(scheduler_backend_status)"
+    fi
+  else
+    # A masked apt/systemctl failure here is the exact "armed resume silently
+    # never fires" mode this step prevents — propagate to fail_nonfatal so the
+    # end-of-run summary records it (mirrors the sibling step's `else false`).
+    false
+  fi
+} || fail_nonfatal "install at/atd scheduler backend"
 
 step "Swap rtk hook for rtk-hook-guard wrapper (HIMMEL-241)"
 {

@@ -17,8 +17,8 @@ grafts the GLM lane onto that path via a standalone CLI
   the key from `process.env.ZAI_API_KEY` first, else the himmel repo `.env`
   (with one surrounding-quote pair stripped, parity with `claude-glm`). Missing
   key → the env builder throws; spawn refuses (no silent Anthropic fallback).
-- **Launcher-parity env block.** `buildGlmEnv` emits exactly the block the WS1
-  launcher exports:
+- **Launcher-parity env block.** `buildGlmEnv` emits the block the WS1
+  launcher exports (plus the context-diet keys below):
 
   | Var | Value |
   |---|---|
@@ -35,6 +35,19 @@ grafts the GLM lane onto that path via a standalone CLI
   block, spawn preflights the user layer (`~/.claude/settings.json`) and the
   checkout layers (`.claude/settings.json`, `.claude/settings.local.json`) and
   **refuses** on any `env.ANTHROPIC_*` or `model` key.
+- **Worker context diet (HIMMEL-654).** `buildGlmEnv` additionally
+  force-disables the env-gated session-shaping injections —
+  `HIMMEL_INITIATIVE`, `HIMMEL_INITIATIVE_OVERNIGHT`, `HIMMEL_OVERNIGHT`,
+  `HIMMEL_WHERE_ARE_WE`, `HIMMEL_DOC_FRESHNESS` all `0`,
+  `UPDATE_CHECK_DISABLE=1`. Two prompt-too-long deaths showed the injected
+  session-start blocks cost context the GLM lane cannot spare, and none is
+  meaningful to an unattended worker. The injector hooks read process-env-first
+  (the three with a repo-`.env` fallback use non-clobbering `load_dotenv`, so
+  the falsy value survives; `check-update-available` reads process env with no
+  `.env` fallback), so the falsy values beat an operator-exported gate.
+  PreToolUse guard hooks are unaffected — none of them read these
+  session-shaping keys; the interactive `claude-glm` launchers deliberately do
+  NOT mirror this.
 - **The GLM model pin ignores `TELEGRAM_CLAUDE_MODEL`.** GLM runs always pass
   `--model opus`, which maps through `ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2` —
   a poller-pinned raw Anthropic model id must never leak to the Z.ai endpoint.
@@ -154,6 +167,122 @@ As your FINAL action, append a one-line summary of what you did to <sessionDir>/
 > deadlocks on its first commit. Recorded in the acceptance section below once
 > observed.
 
+## Batch fan-out: N independent fixes → N GLM workers (HIMMEL-558)
+
+The single-worker loop above is the primitive; this is the orchestration pattern
+for a **multi-fix batch** — several independent, mechanical-to-moderate fixes
+that would otherwise run serially on the main (Fable/Claude) thread. Fan them to
+the flat-rate GLM lane and keep the main thread on the judgment + git surface
+only. (This is distinct from `/overnight-shift`, which fans **Anthropic**
+subagents and burns Anthropic quota — this lane is flat-rate GLM.)
+
+**When it applies.** The batch's items must be *independent* (no item needs
+another's result) and *mechanical-to-moderate* (a GLM worker can complete each
+without cross-item judgment). A tightly-coupled set, or one that needs live
+end-to-end verification the main thread must watch (e.g. an A/B against a paid
+model), stays on the main thread — split the batch: fan the independent
+mechanical items, keep the coupled/verify-heavy ones inline. (Worked
+counter-example: HIMMEL-558's three CR fixes looked like a fan-out batch, but
+1.1 needed a live codex A/B and 1.2's understanding fed 1.1 — a legitimate
+inline exception. The mechanical tail, e.g. the doc-only 1.3, was fan-able.)
+
+**The division of labour (single-writer at the git surface):**
+
+- **GLM workers** (many, parallel) — one `spawn-glm` per fix, each on its own
+  `glm/<slug>` worktree+branch. They edit + commit + (optionally) update Jira.
+  They **never** push, PR, or merge (the worker prompt contract + tripwire).
+- **Main thread** (one writer) — owns everything the workers are fenced from:
+  1. **CR** — run the critic panel + reviewers over each worker's `glm/<slug>`
+     diff (the parent CR gate is the load-bearing control; §Honest enforcement).
+     Fix findings inline or bounce the item back with a follow-up spawn.
+  2. **Ship rails** — attestation trailers in the first commit, the pre-push
+     CR-marker, `gh pr create` only after a clean `/pr-check`. Workers produce
+     branches; the main thread turns each into a shipped PR.
+  3. **Fork-mirror** — `scripts/propagate-public.sh prep` per merged fix (code
+     only; private paths auto-excluded).
+  4. **Ledger recalc** — the CR ledger append (`ledger-append.sh`; the
+     `cr-scores.sh` scorecard only *reads* it) runs on the main thread
+     (single-writer), guarded by the auto-mode classifier. Never fan a ledger
+     write into a worker.
+
+**Fan-out sketch** (one worker per independent fix; inspect by files, gate on
+the main thread):
+
+```bash
+# main thread: fan the independent items
+for slug in fixA fixB fixC; do
+  bun scripts/telegram/spawn-glm.ts "$(cat prompts/$slug.md)" \
+      --name "$slug" --permission-mode bypassPermissions &
+done
+wait   # each prints its 3-line inspect contract (session-dir / transcript-dir / exit)
+
+# then, per worker branch, SERIALLY on the main thread (single-writer git surface):
+#   1. inspect meta.json + outbox.jsonl + run.log
+#   2. review glm/<slug> diff through the CR loop  → fix findings
+#   3. attestation-commit → push → /pr-check → gh pr create → merge
+#   4. propagate-public prep → operator/validator ships
+#   5. CR ledger append (ledger-append.sh, main thread only; cr-scores.sh reads)
+```
+
+**Concurrency bound.** Keep the parallel worker count modest — every worker
+shares the operator's `~/.claude` and one GLM 5h cycle (§Cap guard); the
+preflight usage warn is per-spawn, so a large fan-out can drain the cycle
+mid-batch. Prefer off-peak (§Peak-hours) for big batches. The main-thread CR +
+ship steps are serial regardless (single-writer), so the worker count is bounded
+by GLM quota + review throughput, not by parallel git.
+
+**Merge-quarantine still holds.** No GLM branch merges except via the main
+thread's CR gate; the batch pattern does not relax that — it just parallelizes
+the *authoring*, not the *shipping*.
+
+## Cap guard (HIMMEL-654)
+
+z.ai bills the GLM lane on a **5-hour usage cycle**: once the cycle's token
+quota is spent the endpoint returns HTTP 429 (`Usage limit reached for the past
+5 hours`), and every subsequent call 429s until the cycle resets (~5h out).
+spawn-glm detects that, labels the run honestly in `meta.json`, and — by
+default — arms a resume at the reset so the work continues without an operator
+nudge.
+
+**`meta.json` terminal states.** A run settles to exactly one of `done`,
+`failed`, `capped`, `blocked`, `timeout` (set by `finalMeta`; precedence
+`capped > blocked > timeout > (code===0 ? done : failed)`). A capped run also
+carries `timed_out`, and the cap guard adds three fields:
+
+- `cap_window` — `5h` | `long` | `generic` (how `detectGlmCap` classified the tail).
+- `resume_at` — ISO timestamp the cap reset was armed at (absent on long-window caps).
+- `cap_source` — `monitor-endpoint` | `error-body` | `cycle-floor` (which
+  `computeResumeAt` source supplied `resume_at`), or `no-arm-long-window`.
+
+**5h/generic arm vs long-window no-arm.** A `5h` or `generic` cap arms a
+resume at the cycle reset. A `long` cap (7-day / weekly / balance / plan-expired)
+is labeled but **not** auto-armed — `arm-resume.sh` takes a local `HH:MM` and
+resolves only the *next* future occurrence within ~24h, so a reset days or
+weeks out can't be expressed by the armer; those need manual recovery after the
+documented reset. `computeResumeAt` clamps candidates to `[now+2min, now+24h]`
+and falls through monitor → error-body → cycle-floor.
+
+**Flags.** `--arm-on-cap` (default) / `--no-arm-on-cap` controls whether a 5h/
+generic cap arms the resume. With `--no-arm-on-cap`, `resume_at` is still
+written to `meta.json` (a breadcrumb for manual recovery); only the armer is
+skipped.
+
+**Preflight usage warn.** Before spawning, spawn-glm reads the cycle usage from
+the (reverse-engineered) monitor endpoint and warns if it is at/above
+`GLM_USAGE_WARN_PCT` (default `80`): `WARNING — GLM 5h cycle NN% used … resets
+HH:MM local`. It is **warn-only** — a heuristic-threshold refusal would strand
+work on a miscount. If the endpoint is unreachable / the schema has drifted /
+the key is blank, the warn is the visible-invisible line `usage invisible
+(monitor endpoint unavailable)` (HIMMEL-275: invisible usage must be
+visible-invisible, never silently absent). `fetchGlmUsage` returns `null` on
+any failure and never throws.
+
+**Premise captures.** The endpoint shapes (error envelope, the CLI tail, the
+monitor schema) were verified live and promoted to
+[`tests/fixtures/glm-cap/README.md`](../tests/fixtures/glm-cap/README.md) — the
+verdicts there ground the sentinel substrings and the `percentage`-is-used
+polarity.
+
 ## Honest enforcement inventory
 
 **A tripwire, not a wall.** In the worker's worktree, spawn-glm enables
@@ -269,6 +398,56 @@ JSON is allowed through (parity with sibling hooks — Claude Code emits valid
 JSON); and in-process network is invisible to a command-text hook — bun/node
 `fetch`, INCLUDING `bun`-invoking the Telegram bridge send path
 (`scripts/telegram/telegram-api.ts` sendMessage, a real external write).
+
+## Escalation channel (HIMMEL-654)
+
+A blocked GLM worker can record a capability request and **degrade gracefully**
+instead of retrying into the deny wall; a parent/operator grants a specific,
+TTL- and use-bounded command shape; the deny-hook honors that grant on that arm
+only. All state is a per-session append-only ledger
+`${GLM_SESSION_DIR}/grants.jsonl` (exported into the worker child env by
+`spawn-glm`), with three line types:
+
+- **`grant`** — `{type,grant_id,arm,pattern,shape,expires_at,max_uses,granted_by,ts}`.
+  `arm ∈ {git-push, git-url, gh, network}`; `pattern` is an anchored ERE the hook
+  folds into that arm's allowed count; `shape` (`read`/`write`) is classified from
+  the capability.
+- **`consumption`** — `{type,grant_id,ts}`, APPENDED by the hook once per honored
+  use. The hook never rewrites an existing line; a grant is exhausted when its
+  consumption count reaches `max_uses`.
+- **`escalation`** — `{type,capability,arm,reason,step,ts}`, appended by the
+  worker (to its `outbox.jsonl`) when a step is hard-blocked: it records the
+  request, SKIPS the step, continues the rest of the task, and notes the skip in
+  its final summary (the record-and-degrade contract, taught in the worker
+  preamble).
+
+**Pre-seed (`spawn-glm`):** `--grant '<arm>|<pattern>|<ttl_mins?>|<max_uses?>'`
+(repeatable; `ttl` default 60, `uses` default 1) writes grant lines before the
+worker starts. `--autonomous` (also implied by `HIMMEL_OVERNIGHT`) applies a
+read-only authority gate: a **write**-shaped grant is refused and recorded as a
+pending `escalation` (operator adjudication required) rather than granted; a
+**read**-shaped grant is written.
+
+**Adjudicate (`adjudicate.ts`, lean-invoke):**
+`adjudicate list` surfaces unresolved escalations across all sessions;
+`adjudicate grant <sessionDir> --arm <a> --pattern <re> [--ttl m] [--uses n] [--autonomous]`
+appends a grant (same authority gate); `adjudicate refuse <sessionDir> <index>`
+appends a `refusal` that clears an escalation from `list`. Single-writer: the
+parent/operator is the sole adjudicator per session; workers only append
+escalation lines.
+
+**Hook mechanics + honest bound.** The deny-hook consults grants only when an
+arm exceeds its builtin allowance (a builtin-allowed command takes a fast path
+and never reads the ledger). A valid grant's pattern is folded into that ONE
+arm's allowed count as a **single alternation** (never a sum — an
+overlap-with-a-sibling grant cannot credit a different command), gated by a
+strict validity check (arm enum, per-arm deny-shape anchor, no unbounded
+`.*`/`.+` prefix) and bounded by TTL (ISO lexicographic expiry) and remaining
+uses. Everything is **fail-closed**: an unset/absent ledger, or any malformed /
+mis-anchored / expired / exhausted grant line, leaves the arm denying. Like the
+deny-hook itself, this is an **accidental-shape guard for a same-user worker**,
+not a containment wall — the load-bearing controls remain the poisoned-pushurl
+tripwire and the parent CR gate.
 
 ## Peak-hours & quota windows (lane scheduling, HIMMEL-654 decision #4)
 

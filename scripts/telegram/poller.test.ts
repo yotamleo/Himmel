@@ -885,9 +885,9 @@ test("makeRunFn resolves the chat's vault and threads it into the run prompt (HI
   await appendLine(join(sessionDir(r, "group_-50"), "inbox.jsonl"), JSON.stringify({ text: "file this", document_path: "/att/x.pdf", document_name: "x.pdf" }));
   let captured = "";
   const runImpl = async (prompt: string) => { captured = prompt; return { code: 0, capped: false, pid: 1 }; };
-  const vaultFor = (chatId: number) => chatId === -50 ? "/vaults/medic" : null;
+  const vaultFor = (chatId: number) => chatId === -50 ? "/salus" : null;
   await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, vaultFor)("group_-50");
-  expect(captured).toContain("/vaults/medic");
+  expect(captured).toContain("/salus");
   expect(captured).toContain("document_path");
 });
 

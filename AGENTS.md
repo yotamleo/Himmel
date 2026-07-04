@@ -127,34 +127,47 @@ operators (it never reads the allow-list; hangs in headless/auto). Prefer
 what `auto-approve-safe-bash` does/doesn't cover: `himmel-ops:stuck-playbook`
 skill / [`docs/internals/stuck-playbook.md`](docs/internals/stuck-playbook.md).
 
-### Subagent policy (HIMMEL-166)
-<!-- FABLE-WINDOW: Fable-5-tuned delegation block (HIMMEL-281; re-applied 2026-07-02 per HIMMEL-300 after Fable access returned).
-     On loss of Fable access, revert to the Opus-4.8 original preserved verbatim in HIMMEL-282.
-     Markers are documentary; the text between them is live prose — revert = REPLACE it. -->
-Frame-shaping rule (HIMMEL-177). **Default to delegating during
-execution:** hand any self-contained subtask to a subagent and keep
-working while it runs; intervene only if one goes off track or is
-missing context. Tier by job: **Haiku** = bulk mechanical work;
-**Sonnet** = most implementation, research, synthesis; **Opus** =
-reasoning-heavy subagent phases (deep review, plan drafts, tradeoff
-analysis); the **main thread** orchestrates and owns final
-judgment + synthesis across everything it spawned. **Every dispatch
-names an explicit model** — an unnamed dispatch inherits the main
-loop and burns the time-limited top-tier quota on work a cheaper
-tier handles.
+### Subagent policy — delegation & escalation (HIMMEL-166/688)
+<!-- FABLE-WINDOW: HIMMEL-688 hybrid — Opus 4.8 default parent, Fable-5 escalation-only.
+     On loss of Fable access, drop the top-model table row, the escalation paragraph,
+     AND the Fable effort-calibration + Sonnet-comparison lines; the dispatch-naming
+     paragraph SURVIVES a revert (Opus original in HIMMEL-282).
+     Markers documentary; text between them is live prose — revert = REPLACE it. -->
+**The higher your tier, the more you delegate.** Push the work down;
+keep your own context for judgment. Hand any self-contained subtask to
+a subagent and keep working while it runs. Brief every child: the
+context, the why, what done looks like — it starts blank and inherits
+nothing. Route by lane — the fleet is wider than Claude, but paid/
+optional lanes (codex, GLM, gemini) exist only where the operator
+configured them; skip absent lanes:
+
+| Lane | Best for | Effort / notes |
+|---|---|---|
+| Haiku | bulk mechanical (never delegates further) | low |
+| Sonnet 5 | scoped research | medium — good, but compare first: another tier at adjusted effort often beats its token cost, by task length |
+| Opus 4.8 | multi-step reasoning; **default parent/orchestrator** | xhigh |
+| top model | judgment, taste — the ~10% hardest calls; escalation target | medium; xhigh for the hardest only — skip `high` |
+| GLM lane (`scripts/telegram/spawn-glm.ts`) | offloaded well-scoped implementation chunks | small context — chunk big plans |
+| hermes free critics (qwen3coder) | cross-model CR panel (`/pr-check`) | — |
+| codex (paid, via hermes) | CR escalation, second opinions (`CR_PROFILE=paid`) | consumes OpenAI bank |
+| gemini (`gemini-subagent`) | 1M-context bulk reads, parallel triage | — |
+
+**Escalation over top-down:** the parent doesn't have to be the top
+model — the Opus parent spawns a top-model child for the one hard call;
+the child answers and returns. Top-model-as-parent only by operator
+choice (it then still delegates by default and owns final synthesis).
+Work above your tier? Return it — don't burn tokens on it.
+
+**Every dispatch names an explicit model** — an unnamed dispatch
+inherits the parent loop and burns the scarcer, weekly-capped parent
+quota on work a cheaper tier handles.
 Raise *effort* before raising model tier — on Claude, Fable-5 `low` ≈ prior-gen
 `xhigh`, and the same shift applies down-tier.
-Invariants (not model-tuned; survive the HIMMEL-282 revert): spawn-depth
-limit **2** (nesting is now platform-supported to ~depth 5, staged and
-surface-dependent — we keep 2 on cost: measured nested-vs-flat overhead
-1.63-1.84×, coordination layers ate 32-71% of budget); **Haiku does NOT
-spawn** further subagents;
-single-writer —
-many readers, ONE writer, never fan parallel writes at one shared
-artifact (`/overnight-shift` per-ticket branches are independent
-products, a valid exception; parent/operator does merge + synthesis).
-Structural enforcement deferred per HIMMEL-195 (harness doesn't expose
-spawn-depth/model).
+Invariants (not model-tuned): spawn-depth limit **2** (kept on
+measured nesting-overhead cost); **Haiku does NOT spawn**;
+single-writer — many readers, ONE writer, never fan parallel writes
+at one shared artifact (`/overnight-shift` per-ticket branches are
+independent products; parent/operator does merge + synthesis).
 <!-- /FABLE-WINDOW -->
 
 ### Operator conventions (calibrated through repeated sessions)

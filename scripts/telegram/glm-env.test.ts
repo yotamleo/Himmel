@@ -1,9 +1,9 @@
 // scripts/telegram/glm-env.test.ts
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildGlmEnv, findSettingsConflicts, formatConflict, GLM_MODEL_ALIAS } from "./glm-env";
+import { buildGlmEnv, findSettingsConflicts, formatConflict, GLM_MODEL_ALIAS, pickFiveHourLimit, fetchGlmUsage } from "./glm-env";
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "glmenv-")); delete process.env.ZAI_API_KEY; });
@@ -80,6 +80,25 @@ test("formatConflict renders the file:key strings the print/refusal sites emit",
   expect(formatConflict({ file: "/a", kind: "unparseable" })).toBe("/a: unparseable");
 });
 
+// --- Worker context diet (HIMMEL-654): the GLM env block force-disables the
+// env-gated session-shaping injections (initiative, where-are-we, doc-freshness,
+// update-check). Two prompt-too-long deaths showed every injected block costs
+// context the GLM lane cannot spare, and none of them is meaningful to an
+// unattended worker. The falsy values beat an operator-exported gate because
+// they merge over process.env in glmChildEnv (see the override-seam test in
+// run.test.ts).
+
+test("context diet: GLM env block force-disables the env-gated session injections", () => {
+  process.env.ZAI_API_KEY = "k-123";
+  const e = buildGlmEnv(root);
+  expect(e.HIMMEL_INITIATIVE).toBe("0");
+  expect(e.HIMMEL_INITIATIVE_OVERNIGHT).toBe("0");
+  expect(e.HIMMEL_OVERNIGHT).toBe("0");
+  expect(e.HIMMEL_WHERE_ARE_WE).toBe("0");
+  expect(e.HIMMEL_DOC_FRESHNESS).toBe("0");
+  expect(e.UPDATE_CHECK_DISABLE).toBe("1");
+});
+
 // --- .env precedence when sources COEXIST (CR finding F3). Existing tests prove
 // each source in isolation; these pin the ordering readZaiKey promises:
 // process.env > repo(worktree) .env > main-checkout .env.
@@ -112,4 +131,47 @@ test("precedence: worktree .env beats main-checkout .env fallback when both pres
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+const NOW = 1783100000000;
+const OK = { code: 200, data: { level: "pro", limits: [
+  { type: "TOKENS_LIMIT", unit: 3, percentage: 84, nextResetTime: NOW + 2 * 3600_000 },
+  { type: "TOKENS_LIMIT", unit: 5, percentage: 12, nextResetTime: NOW + 6 * 86400_000 },
+] } };
+
+test("pickFiveHourLimit picks the SMALLEST <=5h future entry", () => {
+  expect(pickFiveHourLimit(OK, NOW)).toEqual({ percentage: 84, nextResetTime: NOW + 2 * 3600_000, level: "pro" });
+  // two entries both <=5h out: the smallest future reset wins (0c ambiguity guard —
+  // a shorter sub-window entry sorting first must not shadow the true 5h window,
+  // and among <=5h candidates the nearest reset is the conservative arm slot)
+  const TWO = { code: 200, data: { limits: [
+    { type: "TOKENS_LIMIT", percentage: 40, nextResetTime: NOW + 4 * 3600_000 },
+    { type: "TOKENS_LIMIT", percentage: 84, nextResetTime: NOW + 2 * 3600_000 },
+  ] } };
+  // strict shape: no data.level in TWO -> the level key is OMITTED entirely
+  expect(pickFiveHourLimit(TWO, NOW)).toEqual({ percentage: 84, nextResetTime: NOW + 2 * 3600_000 });
+  expect(pickFiveHourLimit({ code: 200, data: { limits: [{ type: "TOKENS_LIMIT", percentage: 5, nextResetTime: NOW - 1 }] } }, NOW)).toBeNull(); // past reset = drift
+  expect(pickFiveHourLimit({ nonsense: true }, NOW)).toBeNull();
+  expect(pickFiveHourLimit(null, NOW)).toBeNull();
+});
+
+test("pickFiveHourLimit parses the Task-0c live capture", () => {
+  // real captured schema (redacted); capture-time NOW_0C is recorded in the fixture README
+  const cap = JSON.parse(readFileSync("tests/fixtures/glm-cap/monitor-0c.json", "utf8"));
+  const NOW_0C = Number(readFileSync("tests/fixtures/glm-cap/monitor-0c.captured-at", "utf8").trim());
+  const got = pickFiveHourLimit(cap, NOW_0C);
+  expect(got).not.toBeNull();
+  expect(got!.percentage).toBeGreaterThanOrEqual(0);
+  expect(got!.percentage).toBeLessThanOrEqual(100);
+});
+
+test("fetchGlmUsage: null on blank key, non-200, network throw, drift; value on 200", async () => {
+  expect(await fetchGlmUsage(undefined)).toBeNull();
+  expect(await fetchGlmUsage("", (() => { throw new Error("must not be called"); }) as any)).toBeNull();
+  expect(await fetchGlmUsage("k", (async () => new Response("nope", { status: 503 })) as any)).toBeNull();
+  expect(await fetchGlmUsage("k", (async () => { throw new Error("ECONNREFUSED"); }) as any)).toBeNull();
+  // clock INJECTED (3rd param) — pinning to the fixture's NOW keeps this
+  // green on any wall-clock date (the OK resets are relative to NOW)
+  const got = await fetchGlmUsage("k", (async () => Response.json(OK)) as any, NOW);
+  expect(got?.percentage).toBe(84);
 });

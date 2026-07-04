@@ -6,18 +6,14 @@ external repo or hand-editing global `~/.claude/settings.json`.
 
 - **Source fork:** `yotamleo/claude-statusline` (origin)
 - **Upstream:** `nilbuild/claude-statusline` (`Kamran Ahmed`, MIT — see `LICENSE`)
-- **Vendored at commit:** `9423572` (`test(cache): assert mythos/glm/gpt-5 write_overhead=0 boundary`)
+- **Vendored at commit:** `3f64887` (`feat: mirror himmel-vendored statusline (jq degrade guard + period knob)`)
 - **himmel cache-metrics patch:** `docs/patches/2026-05-16-cache-statusline.md`
 
-> **Local divergence pending re-vendor (HIMMEL-617):** `bin/statusline.sh` here
-> still carries the `HIMMEL_STATUSLINE_PERIOD` bottom-row period knob
-> (week/month/all), which is **not yet in the fork** — the fork push
-> (through `9423572`) mirrored only the `get_model_savings_rate` per-model
-> pricing fix + its test coverage (HIMMEL-679).
-> This vendored copy is the deployed artifact, so both features ship; the period
-> knob MUST still be mirrored to `yotamleo/claude-statusline` and the "Vendored
-> at commit" SHA above bumped on the next fork push. (The local-hash drift guard
-> is a separate follow-up.)
+> Fork in sync as of `3f64887` (2026-07-04): the `HIMMEL_STATUSLINE_PERIOD`
+> period knob (HIMMEL-617) and the fail-visible jq degrade guard (HIMMEL-612)
+> were mirrored to `yotamleo/claude-statusline` with their `test_cache.sh`
+> coverage, closing the divergence previously noted here. (The local-hash
+> drift guard is a separate follow-up.)
 
 ## What's here
 

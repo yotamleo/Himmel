@@ -39,7 +39,7 @@ function mainCheckoutRoot(repoRoot: string): string | undefined {
   } catch { return undefined; }
 }
 
-function readZaiKey(repoRoot: string): { key?: string; tried: string[] } {
+export function readZaiKey(repoRoot: string): { key?: string; tried: string[] } {
   if (process.env.ZAI_API_KEY?.trim()) return { key: process.env.ZAI_API_KEY.trim(), tried: [] };
   const tried: string[] = [];
   const primary = join(repoRoot, ".env");
@@ -66,6 +66,29 @@ export function buildGlmEnv(repoRoot: string): Record<string, string> {
     ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.7",
     ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.2",
     ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.2",
+    // Worker context diet (HIMMEL-654): force-disable the env-gated
+    // session-shaping injections. Two prompt-too-long deaths showed every
+    // injected block costs context the GLM lane cannot spare, and none is
+    // meaningful to an unattended worker. These keys merge over process.env in
+    // glmChildEnv (run.ts), and the injector hooks read process-env-first, so a
+    // falsy value here beats an operator-exported gate (the three that also
+    // read a repo .env via load_dotenv keep it — non-clobber — so the falsy
+    // value survives; check-update-available reads process env directly with no
+    // .env fallback). A DELETED key would NOT work — load_dotenv refills unset
+    // vars. PreToolUse guard hooks are unaffected — none of them read these
+    // session-shaping keys (they have their own bypass vars, out of scope
+    // here). The settings preflight (findSettingsConflicts) intentionally does
+    // NOT flag a settings `env.HIMMEL_*` key — its charter is ANTHROPIC_* keys
+    // that would fight the z.ai endpoint; a settings-level diet override is a
+    // deliberate accepted gap (the operator opted in by editing settings).
+    // Interactive claude-glm{,.ps1} launchers deliberately NOT mirrored: an
+    // operator at the keyboard may want these injections; workers never do.
+    HIMMEL_INITIATIVE: "0",
+    HIMMEL_INITIATIVE_OVERNIGHT: "0",
+    HIMMEL_OVERNIGHT: "0",
+    HIMMEL_WHERE_ARE_WE: "0",
+    HIMMEL_DOC_FRESHNESS: "0",
+    UPDATE_CHECK_DISABLE: "1",
   };
 }
 
@@ -95,4 +118,50 @@ export function findSettingsConflicts(files: string[]): SettingsConflict[] {
 // print (warnings) and refusal-reason sites emit.
 export function formatConflict(c: SettingsConflict): string {
   return c.kind === "env" ? `${c.file}: env.${c.key}` : `${c.file}: ${c.kind}`;
+}
+
+// ── GLM cap guard (HIMMEL-654): monitor-endpoint client ─────────────────────
+// Reverse-engineered endpoint (3 independent community tools; schema verified
+// live in Task 0c — tests/fixtures/glm-cap/monitor-0c.json). percentage = USED.
+// Contract: null on ANY failure (blank key, network, non-200, schema drift) —
+// never a throw; callers print the "usage invisible" line on null (HIMMEL-275:
+// invisible usage must be visible-invisible, not silently absent).
+export type GlmUsage = { percentage: number; nextResetTime: number; level?: string };
+const MONITOR_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
+const FIVE_H_MS = 5 * 3600_000;
+
+// 5h-window selection rule (spec (b) 1.1): among limits[] entries with a
+// FUTURE nextResetTime, the one <=5h out is the 5-hour window; none = drift.
+export function pickFiveHourLimit(json: unknown, nowMs: number): GlmUsage | null {
+  const data = (json as any)?.data;
+  const limits = Array.isArray(data?.limits) ? data.limits : [];
+  let best: GlmUsage | null = null;
+  for (const l of limits) {
+    const pct = Number(l?.percentage), reset = Number(l?.nextResetTime);
+    if (!Number.isFinite(pct) || !Number.isFinite(reset)) continue;
+    if (reset > nowMs && reset <= nowMs + FIVE_H_MS && (best === null || reset < best.nextResetTime)) {
+      // smallest future reset among <=5h candidates (0c ambiguity guard): a
+      // shorter sub-window entry must not shadow the true window by array
+      // order, and the nearest reset is the conservative arm slot.
+      best = { percentage: pct, nextResetTime: reset, ...(typeof data?.level === "string" ? { level: data.level } : {}) };
+    }
+  }
+  return best;
+}
+
+export async function fetchGlmUsage(key: string | undefined, fetchImpl: typeof fetch = fetch, nowMs: number = Date.now()): Promise<GlmUsage | null> {
+  if (!key?.trim()) return null;
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 5000);
+    let r: Response;
+    try { r = await fetchImpl(MONITOR_URL, { headers: { Authorization: `Bearer ${key}` }, signal: ctl.signal }); }
+    finally { clearTimeout(t); }
+    if (!r.ok) return null;
+    return pickFiveHourLimit(await r.json(), nowMs);
+    // broad catch is INTENTIONAL (null-on-any-failure contract): the external
+    // failures (fetch/abort/json) are the target; pickFiveHourLimit is
+    // asserted-total in tests, so a throw from it reaching here would be a
+    // regression those tests catch — not a silent class we accept.
+  } catch { return null; }
 }

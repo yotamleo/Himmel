@@ -1,0 +1,5 @@
+redacted extract of ~/.codex/logs_2.sqlite* rate-limit blob (WS9 fixture, HIMMEL-654).
+The Codex CLI persists usage as a JSON blob carrying a `rate_limits` object with a
+`primary` (300-min) and a `secondary` (10080-min / weekly) window; the weekly
+`used_percent` is the real cap signal. Only the shape matters for parseCodexUsage.
+{"session":"redacted","rate_limits":{"primary":{"used_percent":12.5,"window_minutes":300,"resets_in_seconds":8400},"secondary":{"used_percent":47.3,"window_minutes":10080,"resets_in_seconds":512000}},"other":"redacted"}

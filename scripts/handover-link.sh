@@ -16,7 +16,7 @@
 # Future verbs (not in scope for this PR — separate ticket):
 #   migrate <dest>   — move handovers/<owner>/ to <dest> + persist
 #                      HANDOVER_DIR.
-#   init <path>      — bootstrap a fresh yotam_docs-style external repo.
+#   init <path>      — bootstrap a fresh external state repo.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

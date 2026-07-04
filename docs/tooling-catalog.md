@@ -435,15 +435,24 @@ the run through the `runSession(…, lane:"glm")` seam in `run.ts`. GLM runs pin
 `--model opus` (→ `glm-5.2`) and ignore `TELEGRAM_CLAUDE_MODEL`. Sessions live
 under `<BRIDGE_ROOT>/glm-sessions/` (default `~/.claude/handover/bridge/`) —
 **outside** the poller's `sessions/` tree, so nothing here is double-spawned or
-Telegram-flushed. Full loop, permission guidance, and honest enforcement
+Telegram-flushed. A blocked worker can record a capability request and degrade
+gracefully via the **escalation channel** — `spawn-glm --grant`/`--autonomous`
+pre-seed, an `adjudicate list|grant|refuse` CLI, and a per-session append-only
+`grants.jsonl` the deny-hook honors on one arm (TTL/use-bounded, fail-closed).
+Full loop, permission guidance, escalation channel, and honest enforcement
 inventory in [`docs/glm-offload.md`](glm-offload.md).
 
 ```
-bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode <mode>]
+bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode <mode>] [--arm-on-cap | --no-arm-on-cap]
 ```
 
 Prints exactly three inspect-contract lines on exit: `session-dir:`,
 `transcript-dir:` (`~/.claude/projects/<escaped-worktree-cwd>/`), `exit:`.
+**Cap guard (HIMMEL-654):** detects the z.ai 5-hour usage cap (429), labels the
+run `capped` in `meta.json` (`cap_window`/`resume_at`/`cap_source`), and by
+default (`--arm-on-cap`) arms a resume at the cycle reset; `--no-arm-on-cap`
+writes `resume_at` without arming. Preflight warns at `GLM_USAGE_WARN_PCT`
+(default `80`). Detail: [`docs/glm-offload.md`](glm-offload.md#cap-guard-himmel-654).
 Exit codes: **2** usage error / plan refusal (non-himmel cwd, settings
 conflict, missing ZAI key); **3** guard refusal (PHI marker, phi-root, denylist,
 unreadable guard config); **1** operational failure; else the worker's exit code.

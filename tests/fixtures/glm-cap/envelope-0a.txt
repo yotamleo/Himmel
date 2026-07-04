@@ -1,0 +1,2 @@
+HTTP 400
+{"type":"error","error":{"type":"invalid_request_error","code":"1211","message":"[1211][Unknown Model, please check the model code.][2026070404111045c290595821410d]"},"request_id":"2026070404111045c290595821410d"}

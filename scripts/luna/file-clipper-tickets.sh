@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-shot batch-create of 18 LUNA tickets for the clipper pipeline plan.
-# Source: yotam_docs/handovers/yotam/cross/clipper-pipeline-plan-2026-05-26.md.
+# Source: <state-repo>/handovers/<USER_SLUG>/cross/clipper-pipeline-plan-2026-05-26.md.
 #
 # PROVENANCE RECORD — DO NOT RE-RUN.
 # This script ALREADY ran on 2026-05-26 and created the LUNA-3 clipper-pipeline
@@ -240,7 +240,7 @@ Append-only log of operator-accepted/rejected synth proposals. Powers LUNA-17 sy
 
 Detection: file-watcher OR polled scan of Clippings/_synthesis/ — page moved to _done/ → decision: accepted; deleted → decision: rejected.
 
-Storage per OQ-9. Default proposed: out-of-vault under yotam_docs/state/luna/decisions.jsonl. Alt: in-vault Clippings/_post-analyze/decisions.jsonl.
+Storage per OQ-9. Default proposed: out-of-vault under <state-repo>/state/luna/decisions.jsonl. Alt: in-vault Clippings/_post-analyze/decisions.jsonl.
 
 DoD + success: moving a synth page writes a decision line within 1s.
 

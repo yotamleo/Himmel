@@ -101,7 +101,30 @@ export function buildPrompt(session: string, p: BusPaths, vault?: string | null)
 
 // Cap / rate-limit detection default = output sentinel (per spec).
 const CAP_SENTINELS = [/usage limit reached/i, /Claude usage limit/i, /try again later/i];
-export function detectCap(output: string): boolean { return CAP_SENTINELS.some(r => r.test(output)); }
+// GLM lane (HIMMEL-654 cap guard): z.ai official 429 message substrings
+// (docs.z.ai/api-reference/api-code; fixtures promoted from the Task-0 live
+// capture). Exact substrings only — the tail carries task text/diffs/issue
+// numbers like #1316, so no bare code-number matching. `try again later` is
+// DROPPED on-lane: z.ai 1305 is documented-transient and would otherwise arm
+// a resume up to 5h out for a seconds-transient condition.
+export type GlmCapWindow = "5h" | "long";
+const GLM_LONG = [/usage limit reached for the past 7 days/i, /weekly\/monthly limit exhausted/i, /insufficient balance or no resource package/i, /glm coding plan package has expired/i];
+export function detectGlmCap(output: string): { window: GlmCapWindow } | null {
+  if (GLM_LONG.some(r => r.test(output))) return { window: "long" };
+  if (/usage limit reached for the past 5 hours/i.test(output)) return { window: "5h" };
+  // 1308 shape: the reset phrase alone is NOT enough (spec defines the PAIR) —
+  // co-require the usage-limit prefix so an unrelated "reset at" line can't
+  // classify as a cap. 1318-1321 verbatim strings are undocumented; per the
+  // research they are "past 5 hours / past 7 days" variants, so the two
+  // substring rules above are expected to catch them — Task 0/criterion 7
+  // live captures are the guard if they don't.
+  if (/usage limit reached for/i.test(output) && /your limit will reset at/i.test(output)) return { window: "5h" };
+  return null;
+}
+export function detectCap(output: string, lane?: "glm"): boolean {
+  if (lane === "glm") return detectGlmCap(output) !== null || /usage limit reached/i.test(output) || /Claude usage limit/i.test(output);
+  return CAP_SENTINELS.some(r => r.test(output));
+}
 
 // Content-filter detection (HIMMEL-313). A run that exits non-zero
 // because Anthropic's API blocked the model's OUTPUT under the content-filtering
@@ -133,7 +156,7 @@ export function laneModel(lane?: "glm"): string | undefined {
   return lane === "glm" ? GLM_MODEL_ALIAS : undefined;
 }
 
-export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm"): Promise<{ code: number; capped: boolean; blocked: boolean; pid: number; tail?: string }> {
+export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm"): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
   const env = sessionEnv(lane);
   // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
@@ -164,5 +187,5 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   }
   const tail = (out + err).slice(-65536);
   // tail returned for run.log persistence (HIMMEL-262)
-  return { code: timedOut ? -1 : code, capped: detectCap(tail), blocked: detectContentFilter(tail), pid, tail };
+  return { code: timedOut ? -1 : code, capped: detectCap(tail, lane), blocked: detectContentFilter(tail), timedOut, pid, tail };
 }
