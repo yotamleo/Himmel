@@ -247,12 +247,49 @@ fi
 pf="$(mktemp "${TMPDIR:-/tmp}/cfp-prompt.XXXXXX")"
 printf '%s' "$role_prompt" > "$pf"
 
+# The paid codex critic reviews as a SENIOR reviewer (HIMMEL-558). Route the
+# gpt/codex-family one-shot through the himmel_agent profile (its main-tier SOUL)
+# instead of the hermes user-DEFAULT profile, whose SOUL is the low-risk JUNIOR
+# persona — that framing produced shallow reviews from a strong model.
+#
+# WHY ONLY the gpt family by default: himmel_agent is PROVIDER-BOUND to Codex
+# (ChatGPT/OpenAI). Passing a non-OpenAI model (e.g. the free qwen3coder anchor,
+# an NVIDIA NIM model) to it returns HTTP 400 "model not supported when using
+# Codex". So the free/open critics stay on the hermes default profile (which
+# routes each model to its own provider) — their senior framing comes from the
+# role_prompt above, and empirically they already review well. A dedicated
+# NVIDIA-provider senior critic profile is HIMMEL-559 (per-model SOUL/prompt).
+#
+# Override: CR_CRITIC_PROFILE, when SET, applies to EVERY family (the operator
+# then owns provider-compat); `none`/empty forces the hermes default profile.
+# invoke.sh is fail-open: a missing profile warns and falls back to the default.
+if [ -n "${CR_CRITIC_PROFILE+x}" ]; then
+    _crit_profile="$CR_CRITIC_PROFILE"        # explicit override (any family)
+elif [ "$family" = "gpt" ]; then
+    _crit_profile="himmel_agent"              # senior, codex-family only (default)
+else
+    _crit_profile=""                          # qwen/open + claude → default profile
+fi
+
+# Invoke hermes with the profile passed as ONE QUOTED argument — never a
+# word-split flag string — so a CR_CRITIC_PROFILE value containing whitespace or
+# option-looking tokens (e.g. "x --toolsets terminal") cannot inject extra
+# invoke.sh flags. `none`/empty → omit --profile (hermes default profile). An
+# array would hit the bash-3.2 `set -u` empty-array expansion bug, so branch instead.
+_cfp_invoke() {
+    if [ -n "$_crit_profile" ] && [ "$_crit_profile" != "none" ]; then
+        bash "$INVOKE" --model "$model" --profile "$_crit_profile" --prompt-file "$pf"
+    else
+        bash "$INVOKE" --model "$model" --prompt-file "$pf"
+    fi
+}
+
 _attempt=0
 raw=""
 rc=1
 while [ "$_attempt" -lt 3 ]; do
     _attempt=$((_attempt + 1))
-    raw="$(bash "$INVOKE" --model "$model" --prompt-file "$pf")"
+    raw="$(_cfp_invoke)"
     rc=$?
     _trimmed="$(printf '%s' "$raw" | tr -d '[:space:]')"
     if [ "$rc" -eq 0 ] && [ -n "$_trimmed" ]; then

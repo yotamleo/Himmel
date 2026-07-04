@@ -29,6 +29,7 @@ cat > "$stub" <<'EOF'
 {
   echo "argv:$*"
   echo "model:${HERMES_ONESHOT_MODEL:-}"
+  echo "profile:${HERMES_ONESHOT_PROFILE:-}"
   echo "toolsets:${HERMES_ONESHOT_TOOLSETS:-}"
   echo "promptfile:${HERMES_PROMPT_FILE:-}"
   if [ -n "${HERMES_PROMPT_FILE:-}" ]; then
@@ -90,6 +91,28 @@ export STUB_CAPTURE="$stub_dir/cap6"
 STUB_RC=7 bash "$INVOKE" "x" >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 7 ] || fail "rc propagation: expected 7, got $rc"
+echo "  ok" >&2
+
+# 7a. --profile forwarded when the profile directory exists (HIMMEL-558).
+echo "test: --profile forwarded when profile exists" >&2
+export STUB_CAPTURE="$stub_dir/cap7a"
+mkdir -p "$stub_dir/profiles/himmel_agent"
+HERMES_HOME="$stub_dir" bash "$INVOKE" --profile himmel_agent "x" >/dev/null 2>&1 \
+    || fail "profile-exists: non-zero exit"
+grep -q "^profile:himmel_agent$" "$STUB_CAPTURE" \
+    || fail "profile-exists: HERMES_ONESHOT_PROFILE not set to himmel_agent"
+echo "  ok" >&2
+
+# 7b. --profile with a MISSING profile → warn + fall back to default (empty).
+echo "test: --profile missing profile warns + falls back" >&2
+export STUB_CAPTURE="$stub_dir/cap7b"
+prof_err="$stub_dir/cap7b.err"
+HERMES_HOME="$stub_dir" bash "$INVOKE" --profile no_such_profile "x" >/dev/null 2>"$prof_err" \
+    || fail "profile-missing: non-zero exit (must fail-open, not error)"
+grep -q "^profile:$" "$STUB_CAPTURE" \
+    || fail "profile-missing: expected empty profile env (fallback to default)"
+grep -q "not found" "$prof_err" \
+    || fail "profile-missing: expected 'not found' warning on stderr"
 echo "  ok" >&2
 
 # 7. Optional live smoke (one NIM free-tier call) — opt-in only.
