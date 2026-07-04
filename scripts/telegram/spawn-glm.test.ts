@@ -329,10 +329,10 @@ let sd: string, mp: string, wt: string;
 const rm = { status: "running", pid: 0, started_at: "2026-07-03T18:00:00.000Z", lane: "glm", task_name: "job" };
 beforeEach(() => {
   sd = mkdtempSync(join(tmpdir(), "capguard-")); mp = join(sd, "meta.json"); wt = sd;
-  // WS9 (HIMMEL-654): the cap-time path now appendHeadroom()s a GLM row; redirect
+  // WS9 (HIMMEL-654): the cap-time path now appendQuotaGauge()s a GLM row; redirect
   // the ledger into the scratch dir so the suite never touches the real
-  // ~/.himmel/headroom.jsonl (hermetic).
-  process.env.HIMMEL_HEADROOM_LEDGER = join(sd, "headroom.jsonl");
+  // ~/.himmel/quota-gauge.jsonl (hermetic).
+  process.env.HIMMEL_QUOTA_GAUGE_LEDGER = join(sd, "quota-gauge.jsonl");
 });
 // a stub runSession resolving a capped result with the given tail
 const cappedRun = (tail: string) => async () => ({ code: 1, capped: true, blocked: false, timedOut: false, pid: 7, tail });
@@ -449,13 +449,13 @@ test("a THROWING arm preserves capped meta + exit code (Bun.spawnSync throw clas
 // WS9 Task 6: the GLM writer is wired at cap-guard's two existing fetchGlmUsage
 // call-sites — no new fetch, no new poll (AC1-wiring / AC9). Source-pinned so a
 // future refactor that drops a call-site fails loudly.
-test("WS9 Task 6: both fetchGlmUsage call-sites appendHeadroom(buildGlmRow(...)) (wiring pin)", () => {
+test("WS9 Task 6: both fetchGlmUsage call-sites appendQuotaGauge(buildGlmRow(...)) (wiring pin)", () => {
   const src = readFileSync(join(import.meta.dir, "spawn-glm.ts"), "utf8");
   // cap-time site: append immediately after the existing re-query
-  expect(/const usage = await g\.fetchUsage\(\);\s*\n\s*appendHeadroom\(buildGlmRow\(usage,/.test(src)).toBe(true);
+  expect(/const usage = await g\.fetchUsage\(\);\s*\n\s*appendQuotaGauge\(buildGlmRow\(usage,/.test(src)).toBe(true);
   // preflight site: append on the reading formatUsageWarn already consumes,
   // GUARDED (runs before the worktree exists -> a throw must not abort dispatch)
-  expect(/try\s*\{\s*appendHeadroom\(buildGlmRow\(preflightUsage,/.test(src)).toBe(true);
+  expect(/try\s*\{\s*appendQuotaGauge\(buildGlmRow\(preflightUsage,/.test(src)).toBe(true);
   // still exactly the two pre-existing fetchGlmUsage uses (fn call + closure) — no NEW poll added
   expect((src.match(/fetchGlmUsage\(/g) ?? []).length).toBe(2);
 });

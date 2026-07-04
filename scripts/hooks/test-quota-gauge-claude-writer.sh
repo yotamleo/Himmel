@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke tests for the WS9/HIMMEL-654 Task 3 Claude in-hook headroom writer
+# Smoke tests for the WS9/HIMMEL-654 Task 3 Claude in-hook quota-gauge writer
 # grafted into scripts/hooks/auto-arm-on-cap.sh.
 #
 # The writer is a best-effort, FAIL-OPEN observation: at a fresh-cache
@@ -9,7 +9,7 @@
 # A ledger-append failure MUST NOT touch the watchdog's exit path.
 #
 # Reuses the auto-arm smoke scaffolding (arm stub via AUTO_ARM_BIN, cache via
-# AUTO_ARM_CACHE) and adds a HIMMEL_HEADROOM_LEDGER tmp ledger. Never touches
+# AUTO_ARM_CACHE) and adds a HIMMEL_QUOTA_GAUGE_LEDGER tmp ledger. Never touches
 # the real scheduler, the real cache, or the real ledger.
 set -u -o pipefail
 
@@ -91,7 +91,7 @@ STDERR_LOG="$TMP/stderr.log"
 
 run_hook() {
     # $1=state dir $2=cache path $3=ledger path ; extra env via prefix vars
-    AUTO_ARM_STATE_DIR="$1" AUTO_ARM_CACHE="$2" HIMMEL_HEADROOM_LEDGER="$3" \
+    AUTO_ARM_STATE_DIR="$1" AUTO_ARM_CACHE="$2" HIMMEL_QUOTA_GAUGE_LEDGER="$3" \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
     HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
     bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
@@ -138,7 +138,7 @@ if touch -d '@1' "$TMP/probe-touch" 2>/dev/null; then
     C="$TMP/c8.json"; write_cache "$C" 30 14
     touch -d '@1' "$C"
     L="$TMP/ledger8.jsonl"
-    AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" HIMMEL_HEADROOM_LEDGER="$L" \
+    AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" HIMMEL_QUOTA_GAUGE_LEDGER="$L" \
         AUTO_ARM_STALE_MIN_CHECKS=1 AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
         HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
         bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
@@ -166,8 +166,8 @@ assert_lines "still exactly one arm-threshold row (no per-check spam)" 1 "$L"
 
 echo "Test T-lib: missing ledger lib — the command -v guard holds, hook still exits at its baseline (no crash, no row)"
 # Isolate a hook copy whose sibling lib dir carries py-armor.sh (so the watchdog
-# still works) but NOT headroom-ledger.sh, and point CLAUDE_PROJECT_DIR nowhere,
-# so headroom_append is never defined. Exercises fail-open branch (a): a missing
+# still works) but NOT quota-gauge-ledger.sh, and point CLAUDE_PROJECT_DIR nowhere,
+# so quota_gauge_append is never defined. Exercises fail-open branch (a): a missing
 # lib must not break the watchdog (distinct from T24's append-failure branch (b)).
 LIBLESS="$TMP/libless"; mkdir -p "$LIBLESS/hooks" "$LIBLESS/lib"
 cp "$HOOK" "$LIBLESS/hooks/"
@@ -175,7 +175,7 @@ cp "$(dirname "$HOOK")/../lib/py-armor.sh" "$LIBLESS/lib/"
 S="$TMP/slib"; mkdir -p "$S"
 C="$TMP/clib.json"; write_cache "$C" 95 14 "2026-06-10T13:30:00+00:00"
 L="$TMP/ledgerlib.jsonl"
-AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" HIMMEL_HEADROOM_LEDGER="$L" \
+AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" HIMMEL_QUOTA_GAUGE_LEDGER="$L" \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
     HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="$TMP/no-such-projdir" \
     bash "$LIBLESS/hooks/auto-arm-on-cap.sh" </dev/null >/dev/null 2>"$STDERR_LOG"
@@ -195,8 +195,8 @@ echo "Test T24: fail-open — an UNWRITABLE ledger must not change the hook's ex
 # WS9 blocks from the patched hook (no permanent kill-switch knob is added).
 BASELINE="$TMP/auto-arm-baseline.sh"
 awk '
-  /# >>> WS9-HEADROOM/ { skip=1 }
-  /# <<< WS9-HEADROOM/ { skip=0; next }
+  /# >>> WS9-QUOTA-GAUGE/ { skip=1 }
+  /# <<< WS9-QUOTA-GAUGE/ { skip=0; next }
   !skip { print }
 ' "$HOOK" > "$BASELINE"
 chmod +x "$BASELINE"
@@ -207,11 +207,11 @@ else
     echo "  FAIL  baseline strip looks wrong (baseline=$(grep -c '' "$BASELINE") hook=$(grep -c '' "$HOOK"))"; fail=$((fail+1))
 fi
 # The WS9 wrapper name is unambiguous — a pre-existing header comment mentions
-# the word "headroom" generically, so match the added helper, not the noun.
-if ! grep -q 'headroom_note_claude\|WS9-HEADROOM' "$BASELINE"; then
-    echo "  PASS  baseline contains no WS9 headroom code"; pass=$((pass+1))
+# the word "quota-gauge" generically, so match the added helper, not the noun.
+if ! grep -q 'quota_gauge_note_claude\|WS9-QUOTA-GAUGE' "$BASELINE"; then
+    echo "  PASS  baseline contains no WS9 quota-gauge code"; pass=$((pass+1))
 else
-    echo "  FAIL  baseline still references WS9 headroom code"; fail=$((fail+1))
+    echo "  FAIL  baseline still references WS9 quota-gauge code"; fail=$((fail+1))
 fi
 
 run_with_hook() {  # $1=hook script $2=state dir $3=cache $4=ledger  -> echoes rc
@@ -219,14 +219,14 @@ run_with_hook() {  # $1=hook script $2=state dir $3=cache $4=ledger  -> echoes r
     # CLAUDE_PROJECT_DIR=repo root: the in-tree HOOK resolves libs via its own
     # dir; the out-of-tree stripped BASELINE resolves them via this fallback.
     # Both compared under identical env so any rc delta is the WS9 patch alone.
-    AUTO_ARM_STATE_DIR="$sd" AUTO_ARM_CACHE="$ca" HIMMEL_HEADROOM_LEDGER="$ld" \
+    AUTO_ARM_STATE_DIR="$sd" AUTO_ARM_CACHE="$ca" HIMMEL_QUOTA_GAUGE_LEDGER="$ld" \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
     HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="$PROJ_ROOT" \
     bash "$hk" </dev/null >/dev/null 2>/dev/null
     echo $?
 }
 
-# Unwritable ledger: point HIMMEL_HEADROOM_LEDGER at a DIRECTORY so the
+# Unwritable ledger: point HIMMEL_QUOTA_GAUGE_LEDGER at a DIRECTORY so the
 # append's `printf >> "$path"` fails.
 UNWRIT="$TMP/unwritable-ledger-dir"; mkdir -p "$UNWRIT"
 

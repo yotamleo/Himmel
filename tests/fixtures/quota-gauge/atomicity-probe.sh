@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# tests/fixtures/headroom/atomicity-probe.sh
+# tests/fixtures/quota-gauge/atomicity-probe.sh
 # WS9 (HIMMEL-654) — BLOCKING atomicity gate (AC0/T0).
 #
-# The entire single-file headroom ledger design (D2 primary) rests on
+# The entire single-file quota-gauge ledger design (D2 primary) rests on
 # atomic single-line O_APPEND. POSIX guarantees a single write < PIPE_BUF
 # (4096) is atomic; Windows Git Bash is UNVERIFIED and is the platform
 # the GLM worker fleet runs on. This probe drives W concurrent writers,

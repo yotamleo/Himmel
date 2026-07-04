@@ -15,9 +15,9 @@ function code(path: string): string {
 // spawn-glm.ts append have their own scoped checks; spawn-glm.ts sits in a host
 // that pre-exists an arm call, so a whole-file grep there would false-fail — it
 // is asserted at its added-line scope in spawn-glm's own test.)
-test("AC10 passivity: headroom.ts + headroom-codex.ts reach no arm/dispatch/spawn symbol", () => {
+test("AC10 passivity: quota-gauge.ts + quota-gauge-codex.ts reach no arm/dispatch/spawn symbol", () => {
   const FORBIDDEN = /arm-resume|runSession|spawn-glm|schtasks|\brouter\b|\bdispatch\b/;
-  for (const f of ["headroom.ts", "headroom-codex.ts"]) {
+  for (const f of ["quota-gauge.ts", "quota-gauge-codex.ts"]) {
     expect(FORBIDDEN.test(code(join(REPO_ROOT, "scripts", "telegram", f)))).toBe(false);
   }
 });
@@ -36,8 +36,8 @@ test("AC10 passivity: WS9's auto-arm-on-cap.sh added lines reach no arm/spawn/sc
   const ws9: string[] = [];
   let inBlock = false;
   for (const line of hookSrc.split("\n")) {
-    if (/# >>> WS9-HEADROOM/.test(line)) { inBlock = true; continue; }
-    if (/# <<< WS9-HEADROOM/.test(line)) { inBlock = false; continue; }
+    if (/# >>> WS9-QUOTA-GAUGE/.test(line)) { inBlock = true; continue; }
+    if (/# <<< WS9-QUOTA-GAUGE/.test(line)) { inBlock = false; continue; }
     if (inBlock) ws9.push(line.replace(/#.*/, "")); // strip shell comments
   }
   expect(ws9.length).toBeGreaterThan(0); // the blocks exist (patch landed)
@@ -49,16 +49,16 @@ test("AC10 passivity: WS9's auto-arm-on-cap.sh added lines reach no arm/spawn/sc
 // AC9 no new always-on surface: WS9 registers no hook, adds no poller loop, and
 // ships no standalone lean-invoke Codex command (F5).
 test("AC9 no new always-on surface (no hook registration / poller / standalone codex command)", () => {
-  for (const f of ["headroom.ts", "headroom-codex.ts"]) {
+  for (const f of ["quota-gauge.ts", "quota-gauge-codex.ts"]) {
     expect(/while\s*\(\s*true\s*\)|setInterval/.test(code(join(REPO_ROOT, "scripts", "telegram", f)))).toBe(false);
   }
-  // no headroom hook wired into settings
+  // no quota-gauge hook wired into settings
   const settings = join(REPO_ROOT, ".claude", "settings.json");
-  if (existsSync(settings)) expect(/headroom/i.test(readFileSync(settings, "utf8"))).toBe(false);
-  // no standalone codex-usage / headroom command file
+  if (existsSync(settings)) expect(/quota-gauge/i.test(readFileSync(settings, "utf8"))).toBe(false);
+  // no standalone codex-usage / quota-gauge command file
   const cmds = join(REPO_ROOT, ".claude", "commands");
   if (existsSync(cmds)) {
     const names = readdirSync(cmds).join(" ");
-    expect(/codex.*usage|headroom/i.test(names)).toBe(false);
+    expect(/codex.*usage|quota-gauge/i.test(names)).toBe(false);
   }
 });
