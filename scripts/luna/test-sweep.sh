@@ -13,7 +13,7 @@
 #
 # Manual smoke commands:
 #   bash scripts/luna/sweep-himmel.sh --days 3 \
-#       --yotam-docs $HOME/Documents/github/yotam_docs    # dry-run
+#       --state-repo "$(dirname "$HANDOVER_DIR")"    # dry-run
 #   bash scripts/luna/sweep-himmel.sh --days 3 --pr        # opens PR in luna-brain
 
 set -euo pipefail
@@ -98,8 +98,8 @@ assert_exit "--out missing arg exits 1" 1 "$SWEEP" --out
 assert_stderr_contains "--out missing arg message" "requires" "$SWEEP" --out
 
 echo ""
-echo "Case 6: --yotam-docs requires a path"
-assert_exit "--yotam-docs missing arg exits 1" 1 "$SWEEP" --yotam-docs
+echo "Case 6: --state-repo requires a path"
+assert_exit "--state-repo missing arg exits 1" 1 "$SWEEP" --state-repo
 
 echo ""
 echo "Case 7: --days and --since are mutually exclusive"

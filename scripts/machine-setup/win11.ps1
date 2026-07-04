@@ -130,7 +130,7 @@ rtk --version
 Write-Step "Clone himmel + run repo setup"
 $HimmelParent = Split-Path $HimmelPath -Parent
 New-Item -ItemType Directory -Force $HimmelParent | Out-Null
-git clone https://github.com/yotamleo/Himmel.git $HimmelPath
+git clone https://github.com/yotamleo/himmel.git $HimmelPath
 Push-Location $HimmelPath
 
 # HIMMEL-105: gate the clone for core.hooksPath misconfiguration BEFORE
@@ -501,7 +501,7 @@ Write-Step "Register auto-arm-on-cap PreToolUse hook (HIMMEL-220)"
 Invoke-NonFatal "register auto-arm hook" {
     # User-level registration so EVERY repo's sessions get cap protection
     # (the himmel checkout carries its own project-level wiring in
-    # .claude/settings.json; this covers luna / yotam_docs / etc).
+    # .claude/settings.json; this covers luna / the state repo / etc).
     # The hook resolves its lib + arm-resume relative to its own location,
     # so an absolute himmel path works from any cwd. Runs via Git Bash.
     $SettingsFile = "$ClaudeDir\settings.json"

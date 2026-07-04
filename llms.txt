@@ -10,12 +10,12 @@ himmel is a harness *for* [Claude Code](https://claude.com/claude-code) — inst
 
 1. **Add himmel to an existing repo** (most common) — the portable core: hooks + guardrails + worktree workflow + marketplace plugins/skills.
    ```bash
-   git clone https://github.com/yotamleo/Himmel
+   git clone https://github.com/yotamleo/himmel
    bash himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
    # Windows:  pwsh himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
    ```
    Full adopter guide + à-la-carte parts: [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md).
-2. **Run / develop himmel standalone** — `git clone https://github.com/yotamleo/Himmel && cd himmel && bash scripts/setup.sh` (Windows: `powershell -File scripts\setup.ps1`). Verifies tools, installs the git hooks, builds the Jira CLI, registers the qmd index, writes a ready `.env` (add `--fill-env` for guided per-variable prompts with inline help). Walkthrough: [docs/setup/new-machine.md](docs/setup/new-machine.md#4-himmel-repo).
+2. **Run / develop himmel standalone** — `git clone https://github.com/yotamleo/himmel && cd himmel && bash scripts/setup.sh` (Windows: `powershell -File scripts\setup.ps1`). Verifies tools, installs the git hooks, builds the Jira CLI, registers the qmd index, writes a ready `.env` (add `--fill-env` for guided per-variable prompts with inline help). Walkthrough: [docs/setup/new-machine.md](docs/setup/new-machine.md#4-himmel-repo).
 3. **Diagnose an install that already exists** — run the `himmel-ops:himmel-doctor` skill (`/himmel-doctor`): a read-only, severity-grouped health report for the field problems that bite himmel installs (SessionStart `node: command not found`, a shadowed claude-obsidian plugin, a dirty single-writer luna vault, a repo missing from the handover registry, PATH-fragile MCP servers, un-pruned merged-PR worktrees). `--fix` heals the node wiring; everything else points you at the right command.
 
 Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/himmel-update` — `git pull` + marketplace re-sync; `autoUpdate` does NOT deliver himmel), upgrade a luna vault with `/luna-upgrade`, and offboard with `scripts/uninstall.sh`. All three: [docs/setup/updating.md](docs/setup/updating.md).
@@ -46,7 +46,6 @@ Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/him
 - [docs/hermes-runbook.md](docs/hermes-runbook.md): hermes ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)) in three tiers — a **CR-critic** lane wired into `/pr-check` and a free-inference **junior** lane (both working), plus an **alpha** `himmel_agent` main tier. Includes the new-user install + configure how-to. Config lives OUTSIDE the repo (`$HERMES_HOME` / `$HERMES_PY`; default `%LOCALAPPDATA%\hermes`), so it is part of himmel even when absent from a checkout; refreshed by `/himmel-update`.
 - [docs/luna/end-session-wiki.md](docs/luna/end-session-wiki.md): **luna session capture** — each Claude session is auto-captured into the companion luna vault as a structured note at session end: a *mechanical* note first, then a best-effort **detached LLM crystallizer** upgrades it into a real synthesis (`crystallized: true`). Import historical sessions with `/luna-backfill`; recover/upgrade older notes with `--reheal` (husk notes) or `--recrystallize` (content-bearing-but-uncrystallized notes, `--limit`-chunked).
 - [docs/tooling-catalog.md](docs/tooling-catalog.md): every tool/script/plugin in active use.
-- [docs/internals/harness-compat.md](docs/internals/harness-compat.md): running himmel under Codex / other harnesses — the compatibility matrix + per-feature port/guard/accept decisions (HIMMEL-470).
 
 ## Setup
 

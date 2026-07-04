@@ -363,7 +363,7 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
 // tail: last chunk of the run's stdout+stderr (HIMMEL-262) — persisted to run.log
 // blocked: the run failed because the API blocked the model's OUTPUT under the
 // content-filtering policy (deterministic — retrying replays the same block).
-export type RunResult = { code: number; capped: boolean; blocked?: boolean; pid: number; tail?: string };
+export type RunResult = { code: number; capped: boolean; blocked?: boolean; timedOut?: boolean; pid: number; tail?: string };
 export type Runner = () => Promise<RunResult>;
 export type NowFn = () => string;   // ISO timestamp (injected for tests / resume-slot in prod)
 

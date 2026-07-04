@@ -1,0 +1,20 @@
+# himmel leak denylist — TEMPLATE (this file contains NO real values).
+#
+# propagate-public.sh refuses to propagate any delta whose added lines contain
+# one of these literals (exact-substring match). Use it for operator-personal
+# values that have no safe regex: bot usernames, basic-group/channel/user ids,
+# real names, personal paths, etc. The telegram bot-token regex is built in and
+# needs no entry here.
+#
+# SETUP (one-time, per machine):
+#   cp scripts/leak-denylist.example.txt ~/.claude/himmel-leak-denylist.txt
+#   # then edit ~/.claude/himmel-leak-denylist.txt and add your real values.
+# The live file lives OUTSIDE the repo so the denylist itself never leaks.
+# Override the path with HIMMEL_LEAK_DENYLIST.
+#
+# Format: one literal per line. Blank lines and '#' comments are ignored.
+#
+# Examples (replace with your own; do NOT commit real values to this template):
+#   my_bot_username
+#   -1009998887776
+#   1002003004

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # sweep-himmel.sh — LUNA-5 Wedge A.
 #
-# Walks recent himmel merged PRs + yotam_docs handover commits in a time
+# Walks recent himmel merged PRs + handover-state-repo commits in a time
 # window and emits a single PARA-compliant Obsidian markdown file listing
 # them as "candidate" entries. Default mode is --dry-run (prints to stdout).
 # With --pr, clones the luna-brain repo, writes the candidate file into
 # 00-Inbox/, pushes a branch, and opens a PR.
 #
-# Why this exists: the operator runs a himmel monorepo + a yotam_docs
-# handover repo. Architectural decisions, plugin additions, and learnings
+# Why this exists: the operator runs a himmel monorepo + a separate
+# handover state repo. Architectural decisions, plugin additions, and learnings
 # accumulate in PR bodies and handover notes. Periodically, those should
 # graduate into the luna second-brain so future-Claude can surface them
 # during retrieval. This script does the periodic walk; promotion to
@@ -26,6 +26,14 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Pull HANDOVER_DIR from the primary checkout's .env (if not already in the
+# env) so the handover-state-repo path can be derived without hardcoding it.
+# shellcheck source=../lib/load-dotenv.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/load-dotenv.sh"
+load_dotenv HANDOVER_DIR
 
 # Default values
 DAYS=7
@@ -35,20 +43,24 @@ SINCE_EXPLICIT=0
 MODE="dry-run"   # dry-run (default) | pr | out
 OUT_PATH=""
 HIMMEL_REPO_FULL="yotamleo/himmel"
-LUNA_BRAIN_REPO_FULL="yotamleo/luna-brain"
-YOTAM_DOCS_PATH="${YOTAM_DOCS_PATH:-$HOME/Documents/github/yotam_docs}"
+LUNA_BRAIN_REPO_FULL="yotamleo/Himmel/tree/main/templates/luna-second-brain"
+# Handover state repo checkout (for the handover-commit walk). Override with
+# --state-repo or $STATE_REPO_PATH; otherwise derived from the parent of
+# $HANDOVER_DIR (the repo that hosts handovers/). If neither resolves, the
+# handover walk is skipped (see the .git check below).
+STATE_REPO_PATH="${STATE_REPO_PATH:-${HANDOVER_DIR:+$(dirname "$HANDOVER_DIR")}}"
 
 # Distinct exit codes
 EXIT_NO_CHANGES=3
 
 usage() {
     cat <<EOF
-$SCRIPT_NAME — sweep recent himmel + yotam_docs activity into a luna candidate file.
+$SCRIPT_NAME — sweep recent himmel + handover-repo activity into a luna candidate file.
 
 USAGE:
     $SCRIPT_NAME [--days N | --since YYYY-MM-DD]
                  [--dry-run | --pr | --out PATH]
-                 [--yotam-docs PATH] [-h|--help]
+                 [--state-repo PATH] [-h|--help]
 
 OPTIONS:
     --days N          Look back N days (default: 7). Mutually exclusive with --since.
@@ -56,8 +68,8 @@ OPTIONS:
     --dry-run         Print candidate markdown to stdout (DEFAULT).
     --out PATH        Write candidate markdown to PATH.
     --pr              Clone luna-brain, write to 00-Inbox/, push, open PR.
-    --yotam-docs PATH Override path to yotam_docs checkout
-                      (default: \$YOTAM_DOCS_PATH or ~/Documents/github/yotam_docs).
+    --state-repo PATH Override path to the handover state repo checkout
+                      (default: \$STATE_REPO_PATH, else the parent of \$HANDOVER_DIR).
     -h, --help        Show this help.
 
 EXAMPLES:
@@ -66,10 +78,10 @@ EXAMPLES:
     $SCRIPT_NAME --since 2026-05-01 --pr          # since May 1, open PR in luna-brain
 
 REQUIREMENTS:
-    - gh (authenticated for yotamleo/himmel + yotamleo/luna-brain)
+    - gh (authenticated for yotamleo/himmel + yotamleo/Himmel/tree/main/templates/luna-second-brain)
     - jq
     - git
-    - A local clone of yotam_docs (for handover commit walk)
+    - A local clone of the handover state repo (for the handover commit walk)
 EOF
 }
 
@@ -116,9 +128,9 @@ while [[ $# -gt 0 ]]; do
             OUT_PATH="$2"
             shift 2
             ;;
-        --yotam-docs)
-            [[ -n "${2:-}" ]] || die "--yotam-docs requires a PATH argument"
-            YOTAM_DOCS_PATH="$2"
+        --state-repo)
+            [[ -n "${2:-}" ]] || die "--state-repo requires a PATH argument"
+            STATE_REPO_PATH="$2"
             shift 2
             ;;
         -h|--help)
@@ -180,8 +192,8 @@ log "found $PR_COUNT merged PRs in window"
 
 HANDOVER_COMMITS=""
 HANDOVER_COUNT=0
-if [[ -d "$YOTAM_DOCS_PATH/.git" ]]; then
-    log "walking yotam_docs handover commits in $YOTAM_DOCS_PATH since $SINCE …"
+if [[ -n "$STATE_REPO_PATH" && -d "$STATE_REPO_PATH/.git" ]]; then
+    log "walking handover commits in $STATE_REPO_PATH since $SINCE …"
     # Format: SHA<US>ISO_DATE<US>SUBJECT (US = ASCII 0x1f unit separator,
     # not TAB — git subjects can contain literal TABs and would silently
     # corrupt the per-commit split. Unit separator is reserved for this.)
@@ -190,10 +202,13 @@ if [[ -d "$YOTAM_DOCS_PATH/.git" ]]; then
     # gh's UTC interpretation of the PR `merged:>=DATE` qualifier above.
     # Without this, `git log --since="YYYY-MM-DD"` resolves to LOCAL midnight,
     # which silently shifts the handover window by up to ±24h vs the PR window.
-    if HANDOVER_COMMITS=$(git -C "$YOTAM_DOCS_PATH" log \
+    # Walk the whole handovers/ tree (not a hardcoded per-user bucket): the
+    # state repo is single-operator, so handovers/ ⊇ any user bucket, and this
+    # keeps an operator slug out of the pathspec.
+    if HANDOVER_COMMITS=$(git -C "$STATE_REPO_PATH" log \
         --since="${SINCE} 00:00:00 +0000" \
         --pretty=format:$'%H\x1f%ai\x1f%s' \
-        -- handovers/yotam/ 2>&1); then
+        -- handovers/ 2>&1); then
         if [[ -z "$HANDOVER_COMMITS" ]]; then
             HANDOVER_COUNT=0
         else
@@ -204,10 +219,10 @@ if [[ -d "$YOTAM_DOCS_PATH/.git" ]]; then
         git_log_err="$HANDOVER_COMMITS"
         HANDOVER_COMMITS=""
         HANDOVER_COUNT=0
-        log "WARN: git log on $YOTAM_DOCS_PATH failed (continuing with 0 handover commits): $git_log_err"
+        log "WARN: git log on $STATE_REPO_PATH failed (continuing with 0 handover commits): $git_log_err"
     fi
 else
-    log "WARN: yotam_docs not found at $YOTAM_DOCS_PATH — skipping handover walk"
+    log "WARN: handover state repo not found at '$STATE_REPO_PATH' — skipping handover walk"
 fi
 
 # ---- emit candidate markdown ----------------------------------------
@@ -227,7 +242,7 @@ source: scripts/luna/sweep-himmel.sh window $SINCE..$TODAY
 
 # Himmel sweep — $SINCE to $TODAY
 
-> For future Claude: aggregated activity from the yotamleo/himmel monorepo and yotamleo/yotam_docs handover repo over this window. Use this to find recent architectural decisions, plugin additions, ticket closures, or handover-noted patterns without re-walking PR history. Promote individual items into 10-Projects/, 30-Resources/, or 60-Maps/ if they earn a permanent home.
+> For future Claude: aggregated activity from the yotamleo/himmel monorepo and the handover state repo over this window. Use this to find recent architectural decisions, plugin additions, ticket closures, or handover-noted patterns without re-walking PR history. Promote individual items into 10-Projects/, 30-Resources/, or 60-Maps/ if they earn a permanent home.
 
 ## Summary
 - Merged PRs (himmel): **$PR_COUNT**
@@ -380,7 +395,7 @@ case "$MODE" in
             --head "$BRANCH" \
             --title "sweep(himmel): $SINCE to $TODAY ($PR_COUNT PRs, $HANDOVER_COUNT handover commits)" \
             --body "$(cat <<PRBODY
-Auto-generated sweep of recent himmel + yotam_docs activity. Lands in \`00-Inbox/\` for triage per the LUNA \_CLAUDE.md weekly-process rule.
+Auto-generated sweep of recent himmel + handover-repo activity. Lands in \`00-Inbox/\` for triage per the LUNA \_CLAUDE.md weekly-process rule.
 
 - Window: $SINCE to $TODAY (UTC)
 - Merged PRs walked: $PR_COUNT

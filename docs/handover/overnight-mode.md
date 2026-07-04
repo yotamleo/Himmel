@@ -124,7 +124,7 @@ overnight run, just read the file directly; it's plain markdown.
 - **Subagent dispatches:** ~50-60 per overnight run. Per phase 3, impl is ~3 subagents per task (implementer + 2 reviewers); a 16-task plan = ~48 just for impl. Add ~6-12 for phase 5 heavy CR over 1-2 rounds, plus fix-batch dispatches (5-10).
 - **Wall time:** ~3-4 hours.
 - **Inference cost:** ~$10-20 on Sonnet. Bump to Opus for the planning / final-review phases if extra rigor is wanted; Sonnet is enough for impl + per-task reviews.
-- **Effort tiering (Fable-5, HIMMEL-281):** on Fable 5, `low` effort ≈ `xhigh` on prior models — this strengthens the HIMMEL-166 don't-escalate rule. For mechanical subagent work, raise effort before raising the model tier; reach for Opus-class only with a concrete reason. Default effort `high`; `max` is a re-verification tax (2-3× time for the same answer, community-measured) — reserve it for capability-critical single calls, not pipeline phases.
+- **Effort tiering (Fable-5, HIMMEL-281):** on Fable 5, `low` effort ≈ `xhigh` on prior models — this strengthens the raise-effort-before-tier rule of the Subagent delegation & escalation policy (HIMMEL-166/688, root `CLAUDE.md`). For mechanical subagent work, raise effort before raising the model tier; reach for Opus-class only with a concrete reason. Default effort `high`; `max` is a re-verification tax (2-3× time for the same answer, community-measured) — reserve it for capability-critical single calls, not pipeline phases.
 
 These are estimates from HIMMEL-97. The operator decides when to stop — no auto-pause guardrails.
 

@@ -106,6 +106,29 @@ warn() { echo "auto-arm-on-cap: $*" >&2; }
 hook_dir=$(cd "$(dirname "$0")" && pwd)
 project_dir="${CLAUDE_PROJECT_DIR:-}"
 
+# >>> WS9-HEADROOM (HIMMEL-654): best-effort cross-lane headroom observation.
+# Source the ledger lib best-effort — a missing lib must NOT break this
+# watchdog (fail-open, per scripts/hooks/CLAUDE.md). Adds no hook, no poll.
+# INVARIANT the fail-open guarantee rests on: the sourced lib runs in THIS
+# shell, so it must never `exit` or mutate `set -e`/`-u`/pipefail — `|| true`
+# catches a return status, not an `exit` or an option leak. Both libs are pure
+# function definitions today (their sole `exit` is _hdr_is_main-gated).
+_hdr_lib="$hook_dir/../lib/headroom-ledger.sh"
+[ -f "$_hdr_lib" ] || _hdr_lib="$project_dir/scripts/lib/headroom-ledger.sh"
+# shellcheck source=../lib/headroom-ledger.sh
+# shellcheck disable=SC1090,SC1091
+. "$_hdr_lib" 2>/dev/null || true
+# FAIL-OPEN wrapper: a failure here must NEVER touch this watchdog's exit
+# path or the $? the exit path sees. Guards on the helper being present,
+# swallows every error, always returns 0.
+#   $1=source $2=used_pct(''=null) $3=window(''=null) $4=reset_at(''=null) $5=note
+headroom_note_claude() {
+    command -v headroom_append >/dev/null 2>&1 || return 0
+    headroom_append "$(headroom_row claude "$@")" 2>/dev/null || true
+    return 0
+}
+# <<< WS9-HEADROOM
+
 # python3 hang armor (HIMMEL-249) — extracted from this hook's original
 # inline _py() into scripts/lib/py-armor.sh so the handover scripts share
 # it. Provides py_armor (timeout -k-wrapped python3; caller keeps the
@@ -321,6 +344,11 @@ if [ "$cache_age" -gt "$MAX_CACHE_AGE" ]; then
         stale_count="$STALE_MIN_CHECKS"
     fi
     [ "$stale_count" -lt "$STALE_MIN_CHECKS" ] && exit 0
+
+    # >>> WS9-HEADROOM (HIMMEL-654): usage confirmed INVISIBLE (wedged cache).
+    # Record the dim-lane observation (best-effort) before the safety arm.
+    headroom_note_claude "invisible" "" "" "" "statusline usage cache wedged (HIMMEL-275)"
+    # <<< WS9-HEADROOM
 
     # ─── escalate: SAFETY ARM off the stale data ────────────────────────
     command -v python3 >/dev/null 2>&1 || { warn "MALFUNCTION: python3 missing — stale-cache safety arm impossible"; exit 1; }
@@ -599,6 +627,25 @@ read_session_id
 fired_key=$(printf '%s-%s-%s' "$window" "$window_key" "$sid" | tr -c 'A-Za-z0-9._-' '-')
 fired_marker="$STATE_DIR/auto-arm-fired-$fired_key"
 [ -f "$fired_marker" ] && exit 0
+
+# >>> WS9-HEADROOM (HIMMEL-654): observe the tripping window ONCE per trip
+# event (best-effort). Placed AFTER the one-shot fired-marker guard so a
+# session pinned above threshold appends ONE row per cap window per session,
+# not one per throttled check — dim-lane honesty, symmetric with the invisible
+# path (which sits after its own dedup guard). Map the window key to the ledger
+# vocabulary; carry reset_at ONLY when it is a real instant (the hook's
+# "unknown"/bucket<N> token maps to null, never copied verbatim).
+case "$window" in
+    five_hour) _hdr_window="5h" ;;
+    seven_day) _hdr_window="weekly" ;;
+    *)         _hdr_window="" ;;
+esac
+case "$resets_display" in
+    unknown|bucket*) _hdr_reset="" ;;
+    *)               _hdr_reset="$resets_display" ;;
+esac
+headroom_note_claude "arm-threshold" "$util" "$_hdr_window" "$_hdr_reset" "auto-arm threshold trip"
+# <<< WS9-HEADROOM
 
 # Consecutive-arm-failure counter is per cap window (shared across
 # sessions — the scheduler is the shared resource that's failing).

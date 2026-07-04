@@ -1,8 +1,8 @@
 import { beforeEach, expect, test } from "bun:test";
-import { buildRunArgs, DEFAULT_MODEL, detectCap, detectContentFilter, buildPrompt, killTree, REPO_ROOT, glmChildEnv, sessionEnv, laneModel } from "./run";
+import { buildRunArgs, DEFAULT_MODEL, detectCap, detectContentFilter, detectGlmCap, buildPrompt, killTree, REPO_ROOT, glmChildEnv, sessionEnv, laneModel } from "./run";
 import { GLM_MODEL_ALIAS } from "./glm-env";
 import { spawn } from "bun";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // HIMMEL-671: buildRunArgs resolves the model from process.env — reset the
@@ -176,6 +176,23 @@ test("glmChildEnv merges GLM block and strips TELEGRAM_OWN_POLLER", () => {
   }
 });
 
+// Context diet (HIMMEL-654) is only useful if the diet values OVERRIDE an
+// operator-exported gate in the child env — the whole point is that a worker
+// launched from a shell with HIMMEL_INITIATIVE=1 still gets the injection off.
+// This pins the spread ORDER at the glmChildEnv seam: flip it to
+// {...buildGlmEnv(), ...process.env} and buildGlmEnv's own unit test still
+// passes while the diet is silently defeated — this test is what catches that.
+test("glmChildEnv: diet values override an operator-exported gate", () => {
+  process.env.ZAI_API_KEY = "k-diet";
+  process.env.HIMMEL_INITIATIVE = "1";
+  try {
+    expect(glmChildEnv().HIMMEL_INITIATIVE).toBe("0");
+  } finally {
+    delete process.env.ZAI_API_KEY;
+    delete process.env.HIMMEL_INITIATIVE;
+  }
+});
+
 test("REPO_ROOT resolves to the himmel checkout root (Windows-safe)", () => {
   // exercises the fileURLToPath derivation the ZAI-key .env fallback depends on
   expect(existsSync(join(REPO_ROOT, "scripts", "telegram", "run.ts"))).toBe(true);
@@ -194,4 +211,41 @@ test("sessionEnv routes glm lane through glmChildEnv", () => {
     expect(sessionEnv(undefined).ANTHROPIC_BASE_URL).toBeUndefined();
     expect("TELEGRAM_OWN_POLLER" in sessionEnv(undefined)).toBe(false);
   } finally { delete process.env.ZAI_API_KEY; }
+});
+
+const T5H = "API Error: 429 {\"error\":{\"code\":1316,\"message\":\"Usage limit reached for the past 5 hours. Insufficient balance for extra usage\"}}";
+const T7D = "429 {\"error\":{\"code\":1317,\"message\":\"Usage limit reached for the past 7 days. Insufficient balance for extra usage\"}}";
+const TRESET = "429 Usage limit reached for 100 prompts. Your limit will reset at 1783118400000";
+const TWEEKLY = "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10T00:00:00Z";
+const TBAL = "429 Insufficient balance or no resource package. Please recharge.";
+const TEXP = "429 Your GLM Coding Plan package has expired and is temporarily unavailable";
+const T1305 = "429 The service may be temporarily overloaded, please try again later";
+const BENIGN = "fix the quota logic in #1316; see docs/tooling-catalog.md limit section";
+
+test("detectGlmCap classifies 5h vs long windows", () => {
+  expect(detectGlmCap(T5H)).toEqual({ window: "5h" });
+  expect(detectGlmCap(TRESET)).toEqual({ window: "5h" });
+  expect(detectGlmCap(T7D)).toEqual({ window: "long" });
+  expect(detectGlmCap(TWEEKLY)).toEqual({ window: "long" });
+  expect(detectGlmCap(TBAL)).toEqual({ window: "long" });
+  expect(detectGlmCap(TEXP)).toEqual({ window: "long" });
+  expect(detectGlmCap(T1305)).toBeNull();
+  expect(detectGlmCap(BENIGN)).toBeNull();
+  // TIE: matches a long sentinel AND the 5h pair rule — long must win, else a
+  // 7-day cap is mislabeled 5h and armed for a resume that instantly re-caps
+  // (CR round: the ordering was claimed in code but untested).
+  expect(detectGlmCap("Usage limit reached for the past 7 days. Your limit will reset at 1783118400000")).toEqual({ window: "long" });
+});
+
+test("detectGlmCap fires on the Task-0 captured CLI tail", () => {
+  const tail = readFileSync("tests/fixtures/glm-cap/cli-tail-0b.txt", "utf8");
+  expect(detectGlmCap(tail)).toEqual({ window: "5h" });
+});
+
+test("detectCap lane semantics", () => {
+  expect(detectCap(T5H, "glm")).toBe(true);           // GLM sentinel
+  expect(detectCap(T1305, "glm")).toBe(false);        // transient 1305: try-again-later DROPPED on-lane
+  expect(detectCap(T1305)).toBe(true);                // off-lane base set unchanged
+  expect(detectCap("Claude usage limit reached", "glm")).toBe(true); // base usage-limit kept on-lane
+  expect(detectCap(BENIGN, "glm")).toBe(false);
 });

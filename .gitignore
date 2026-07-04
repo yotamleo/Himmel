@@ -28,7 +28,12 @@ Thumbs.db
 # the hooks write these into himmel handovers/ as untracked clutter on main.
 # (Followup: redirect the hook write path to HANDOVER_DIR — see HIMMEL ticket.)
 handovers/auto-arm-status-*.md
-# Cross-project handover content moved to yotam_docs in HIMMEL-13 —
+# Overnight-mode reports/recovery artifacts — auto-generated session state
+# (morning-report.sh et al.) that belongs in the state repo, not the himmel
+# handovers/ stub. Archived copies live in <state-repo> handovers/yotamleo/himmel/.
+handovers/overnight-report-*.md
+handovers/overnight-recovery-*.md
+# Cross-project handover content moved to <state-repo> in HIMMEL-13 —
 # prevent accidental re-tracking if the operator's local copy still
 # exists or gets re-created here by an out-of-date tool.
 /handovers/luna/
