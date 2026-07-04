@@ -58,18 +58,28 @@ Steps:
 
    **Step 3.0 — critic panel first-pass (decimal substep, runs BEFORE any Agent dispatch):**
 
-   `/pr-check` runs the free cross-model panel (qwen3coder-480B, ~2min — bounded by the 150 s per-member `CRITIC_TIMEOUT_SECS`) by **default**. gptoss + kimi were DROPPED 2026-07-03 (operator decision, HIMMEL-667: 12% / 13% ledger agreed-rate — noise; qwen3coder is the free anchor). Control via `CR_PROFILE`:
-   - `CR_PROFILE` unset/empty → **DEFAULT**: run panel with `CRITIC_PANEL_TIERS=free` (qwen3coder). Print note: "Default free cross-model CR (qwen3coder, ~2min; set CR_PROFILE=none for instant claude-only)."
-   - `CR_PROFILE=none` → **claude-only** (skip panel entirely); print a one-line note and skip.
-   - `CR_PROFILE=thorough` → run panel with `CRITIC_PANEL_TIERS="free,thorough"` (equals the default while critics.json defines no thorough-tier rows; the branch is kept so heavier critics can slot back in).
-   - `CR_PROFILE=paid` → run the **paid escalation** critic (codex / `gpt-5.5` via hermes `openai-codex` OAuth, HIMMEL-417) — for high-stakes PRs or when the free panel disagrees. Consumes your OpenAI usage bank. Combine with the free panel via `CR_PROFILE=free,paid`.
-   - any other value → pass through as `CRITIC_PANEL_TIERS` (advanced/custom tier filter, e.g. `free,paid`).
+   `/pr-check` runs the free cross-model panel (qwen3coder-480B, ~2min — bounded by the 150 s per-member `CRITIC_TIMEOUT_SECS`) by **default**. gptoss + kimi were DROPPED 2026-07-03 (operator decision, HIMMEL-667: 12% / 13% ledger agreed-rate — noise; qwen3coder is the free anchor). Control via `CR_PROFILE`.
+
+   **Structural note (HIMMEL-558): do NOT hand-compute a tier filter.** `CR_PROFILE` is loaded from the primary checkout's `.env` and exported; `critic-panel.sh` resolves its tiers **from `CR_PROFILE` itself** and treats it as authoritative (it wins over any `CRITIC_PANEL_TIERS`). This closes a drift where a run scoped the panel to free-only (silently dropping the paid codex critic) by hardcoding `CRITIC_PANEL_TIERS=free`. Your only job here is to load+export `CR_PROFILE` and honor the `none` skip; the panel does the rest. Semantics the panel implements:
+   - `CR_PROFILE` unset/empty → **DEFAULT**: free panel (qwen3coder). Print note: "Default free cross-model CR (qwen3coder, ~2min; set CR_PROFILE=none for instant claude-only)."
+   - `CR_PROFILE=none` → **claude-only** (skip panel entirely, in THIS runbook); print a one-line note and skip.
+   - `CR_PROFILE=thorough` → panel tiers `free,thorough` (equals the default while critics.json defines no thorough-tier rows; the branch is kept so heavier critics can slot back in).
+   - `CR_PROFILE=paid` → the **paid escalation** critic (codex / `gpt-5.5` via hermes `openai-codex` OAuth, HIMMEL-417) — for high-stakes PRs or when the free panel disagrees. Consumes your OpenAI usage bank. Combine with the free panel via `CR_PROFILE=free,paid`.
+   - any other value → passed through as the tier filter verbatim (advanced/custom, e.g. `free,paid`).
 
    Per-member hang protection: `CRITIC_TIMEOUT_SECS` (default 150 s). `CR_PROFILE=none` skips the panel entirely.
 
    ```bash
    # Resolve the protected default (main OR master, HIMMEL-297) for the diff base.
    db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
+   # HIMMEL-558: load CR_PROFILE from the PRIMARY checkout's .env (process env
+   # wins) so /pr-check honours it DETERMINISTICALLY — even from a worktree,
+   # where the gitignored .env is not present (load_dotenv resolves the primary
+   # checkout via git-common-dir). We do NOT hand-compute a tier filter: the
+   # panel derives its tiers from CR_PROFILE itself and treats it as authoritative
+   # (closes the free-only drift). Just export CR_PROFILE and honour the none skip.
+   . scripts/lib/load-dotenv.sh; load_dotenv CR_PROFILE || true
+   export CR_PROFILE
    diff_rc=0
    diff_out=$(git diff "$db...HEAD") || diff_rc=$?
    panel_avail_lines=""   # will hold "panel-availability: <slug> ok" or "panel-availability: <slug> unavailable (rc=N)" stderr lines
@@ -83,20 +93,14 @@ Steps:
    elif [ -z "$diff_out" ]; then
        echo "empty diff — critic panel skipped"
    else
-       # Determine tier filter: unset/empty=free, thorough=free+thorough, other=passthrough.
-       if [ -z "${CR_PROFILE:-}" ]; then
-           panel_tiers="free"
-           echo "Default free cross-model CR (qwen3coder, ~2min; set CR_PROFILE=none for instant claude-only)."
-       elif [ "$CR_PROFILE" = "thorough" ]; then
-           panel_tiers="free,thorough"
-       else
-           panel_tiers="$CR_PROFILE"
-       fi
+       [ -z "${CR_PROFILE:-}" ] && echo "Default free cross-model CR (qwen3coder, ~2min; set CR_PROFILE=none for instant claude-only)."
        panel_tmp=$(mktemp -t cr-panel-avail.XXXXXX)
        # CR_USAGE_LOG=1 (HIMMEL-485): each critic logs a chars/4 ESTIMATED `usage`
        # ledger record (hermes does not expose real usage via the one-shot
        # chokepoint). Best-effort; surfaced per-model + cumulative by cr-scores.sh.
-       panel_findings=$(printf '%s' "$diff_out" | CR_USAGE_LOG=1 CRITIC_PANEL_TIERS="$panel_tiers" bash scripts/cr/critic-panel.sh 2>"$panel_tmp")
+       # No CRITIC_PANEL_TIERS here (HIMMEL-558): the panel resolves tiers from the
+       # exported CR_PROFILE — passing a hand-scoped tier is what drifted to free-only.
+       panel_findings=$(printf '%s' "$diff_out" | CR_USAGE_LOG=1 bash scripts/cr/critic-panel.sh 2>"$panel_tmp")
        panel_rc=$?
        panel_avail_lines=$(cat "$panel_tmp"); rm -f "$panel_tmp"
        if [ "$panel_rc" -ne 0 ]; then

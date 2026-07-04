@@ -4,9 +4,17 @@
 # set (default free) via critic-first-pass.sh, merges findings (global renumber, per-model slug IDs).
 # Stdout = merged findings block. Stderr = panel-availability lines.
 # Exit 0 = >=1 responded; 1 = all failed (caller -> claude-only). Bash 3.2-safe.
-# Env: CRITIC_PANEL_TIERS — comma-separated tier names to include (default: free).
-#      In /pr-check, this is set to $CR_PROFILE (the opt-in profile; unset/empty runs the
-#      default free panel, claude-only happens only at CR_PROFILE=none).
+# Env: CR_PROFILE — the operator's opt-in critic profile (from repo-root .env,
+#      exported by /pr-check). AUTHORITATIVE when set (HIMMEL-558): the panel
+#      derives its tier filter from it directly, so an agent running /pr-check
+#      can no longer scope the panel to free-only by hand-setting a tier. Mapping:
+#      `thorough`→`free,thorough`; any other value (`paid`, `free,paid`, `free`)
+#      passes through verbatim. `none` (claude-only) is handled UPSTREAM by the
+#      /pr-check runbook, which skips the panel entirely — if it ever reaches here
+#      it falls through to the CRITIC_PANEL_TIERS/default path (visible free run).
+#      CRITIC_PANEL_TIERS — comma-separated tier names to include (default: free).
+#      The low-level override, honored ONLY when CR_PROFILE is unset (direct/
+#      advanced use + tests). CR_PROFILE wins when both are set.
 #      CRITIC_TIMEOUT_SECS — per-member wall-clock timeout in seconds (default 150;
 #          bounds qwen3coder's ~2min typical latency; raise it if slow runs get killed).
 #          Requires GNU coreutils 'timeout'; gracefully degrades without it.
@@ -19,7 +27,23 @@ export LC_ALL
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFP="${CRITIC_FIRST_PASS:-$SCRIPT_DIR/critic-first-pass.sh}"
 REG="${CRITICS_JSON:-$SCRIPT_DIR/critics.json}"
-TIER_FILTER="${CRITIC_PANEL_TIERS:-free}"
+
+# Effective tier resolution (HIMMEL-558). CR_PROFILE is AUTHORITATIVE when set —
+# it is the operator's opt-in profile (loaded from .env, exported by /pr-check).
+# This closes the drift where an agent hand-executing the /pr-check runbook
+# scoped the panel to free-only (dropping the paid codex critic) by hardcoding
+# CRITIC_PANEL_TIERS. The runbook no longer computes a tier; the panel does,
+# straight from CR_PROFILE, so free-only scoping is no longer reachable by hand.
+# `none` is handled upstream (runbook skips the panel) → falls to the else path.
+if [ -n "${CR_PROFILE:-}" ] && [ "${CR_PROFILE}" != "none" ]; then
+    case "$CR_PROFILE" in
+        thorough) TIER_FILTER="free,thorough" ;;
+        *)        TIER_FILTER="$CR_PROFILE" ;;
+    esac
+    echo "critic-panel.sh: tiers=$TIER_FILTER (from CR_PROFILE=$CR_PROFILE)" >&2
+else
+    TIER_FILTER="${CRITIC_PANEL_TIERS:-free}"
+fi
 
 ANCHOR_SLUG="qwen3coder"
 ANCHOR_MODEL="qwen/qwen3-coder-480b-a35b-instruct"
