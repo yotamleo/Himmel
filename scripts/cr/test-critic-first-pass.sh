@@ -180,4 +180,57 @@ out_on="$(printf '%s' "$DIFF" | CR_USAGE_LOG=1 CR_LEDGER="$tmp/u3.jsonl" HERMES_
 out_off="$(printf '%s' "$DIFF" | CR_LEDGER="$tmp/u4.jsonl" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug s 2>/dev/null)"
 check "stdout identical with/without usage logging" "$out_on" "$out_off"
 
+# --- HIMMEL-558: CR critics route through the senior himmel_agent profile ------
+# A recording shim writes HERMES_ONESHOT_PROFILE (what invoke.sh resolved) to a
+# capture file, then prints a contract-shaped review so the pass succeeds.
+prof_cap="$tmp/prof_capture"
+tool_cap="$tmp/tool_capture"
+cat > "$tmp/stub_prof.py" <<'PY'
+print("## Critical Issues (0 found)")
+print("## Important Issues (0 found)")
+print("## Suggestions (0 found)")
+PY
+cat > "$tmp/py_prof.sh" <<SHEOF
+#!/usr/bin/env bash
+printf '%s' "\${HERMES_ONESHOT_PROFILE:-}"  > "$prof_cap"
+printf '%s' "\${HERMES_ONESHOT_TOOLSETS:-}" > "$tool_cap"
+exec python3 "$tmp/stub_prof.py"
+SHEOF
+chmod +x "$tmp/py_prof.sh"
+mkdir -p "$tmp/hh/profiles/himmel_agent"   # so invoke.sh's existence guard passes
+
+# gpt/codex family, default (CR_CRITIC_PROFILE unset) → senior himmel_agent.
+printf '%s' "$DIFF" | HERMES_HOME="$tmp/hh" HERMES_PY="$tmp/py_prof.sh" bash "$CFP" --model gpt-5.5 --slug codex >/dev/null 2>&1
+check "gpt-family critic defaults to himmel_agent (senior)" "$(cat "$prof_cap" 2>/dev/null)" "himmel_agent"
+
+# open family (qwen), default → hermes default profile (himmel_agent is Codex-
+# provider-bound and would 400 on an NVIDIA model). Empty profile.
+printf '%s' "$DIFF" | HERMES_HOME="$tmp/hh" HERMES_PY="$tmp/py_prof.sh" bash "$CFP" --model qwen/qwen3-coder-480b --slug qwen3coder >/dev/null 2>&1
+check "open-family critic stays on default profile (provider-safe)" "$(cat "$prof_cap" 2>/dev/null)" ""
+
+# gpt-family + CR_CRITIC_PROFILE=none → forced hermes default (no -p).
+printf '%s' "$DIFF" | CR_CRITIC_PROFILE=none HERMES_HOME="$tmp/hh" HERMES_PY="$tmp/py_prof.sh" bash "$CFP" --model gpt-5.5 --slug codex >/dev/null 2>&1
+check "CR_CRITIC_PROFILE=none forces default profile (empty)" "$(cat "$prof_cap" 2>/dev/null)" ""
+
+# gpt-family + CR_CRITIC_PROFILE="" (explicitly empty, SET) → forced default. This
+# is the regression-prone branch: the gate uses ${CR_CRITIC_PROFILE+x} (set-test),
+# so an empty explicit value must WIN over the gpt-family himmel_agent default. A
+# refactor to `:-`/`-n` would silently defeat this operator escape hatch.
+printf '%s' "$DIFF" | CR_CRITIC_PROFILE="" HERMES_HOME="$tmp/hh" HERMES_PY="$tmp/py_prof.sh" bash "$CFP" --model gpt-5.5 --slug codex >/dev/null 2>&1
+check "empty CR_CRITIC_PROFILE forces default on gpt family" "$(cat "$prof_cap" 2>/dev/null)" ""
+
+# claude family, default → default profile (provider-safe, shares the else arm).
+printf '%s' "$DIFF" | HERMES_HOME="$tmp/hh" HERMES_PY="$tmp/py_prof.sh" bash "$CFP" --model claude-opus-4-8 --slug claude >/dev/null 2>&1
+check "claude-family critic stays on default profile" "$(cat "$prof_cap" 2>/dev/null)" ""
+
+# Explicit CR_CRITIC_PROFILE overrides the family gate (applies to open family too).
+printf '%s' "$DIFF" | CR_CRITIC_PROFILE=himmel_agent HERMES_HOME="$tmp/hh" HERMES_PY="$tmp/py_prof.sh" bash "$CFP" --model qwen/qwen3-coder-480b --slug qwen3coder >/dev/null 2>&1
+check "explicit CR_CRITIC_PROFILE overrides family gate" "$(cat "$prof_cap" 2>/dev/null)" "himmel_agent"
+
+# Anti-injection (CR finding codex-4): a CR_CRITIC_PROFILE with an embedded flag
+# must be passed to invoke.sh as ONE argument, never word-split — so it can NOT
+# inject a second flag like --toolsets. Toolsets must stay the invoke.sh default.
+printf '%s' "$DIFF" | CR_CRITIC_PROFILE="himmel_agent --toolsets terminal" HERMES_HOME="$tmp/hh" HERMES_PY="$tmp/py_prof.sh" bash "$CFP" --model gpt-5.5 --slug codex >/dev/null 2>&1
+check "injecting profile value cannot leak --toolsets to invoke" "$(cat "$tool_cap" 2>/dev/null)" "todo"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

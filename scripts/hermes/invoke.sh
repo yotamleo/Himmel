@@ -41,12 +41,17 @@ set -uo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-Usage: invoke.sh [--model <name>] [--toolsets <list>] [--prompt-file <path>]
-                 [--log <path>] [<prompt>|-]
+Usage: invoke.sh [--model <name>] [--profile <name>] [--toolsets <list>]
+                 [--prompt-file <path>] [--log <path>] [<prompt>|-]
 
   <prompt>           Prompt text. If `-` or omitted (and no --prompt-file),
                      read from stdin.
   --model <name>     Model override (hermes -m). Default: hermes config default.
+  --profile <name>   Run under this hermes profile (hermes -p), i.e. its SOUL +
+                     config (e.g. himmel_agent = senior main-tier reviewer). Fail-
+                     open: if the profile does not exist, warn and use the default
+                     profile rather than error (hermes itself exits 1 on a missing
+                     profile, which must never break a CR one-shot).
   --toolsets <list>  Comma-separated hermes toolsets. Default: todo (minimal,
                      harmless — hermes one-shot auto-approves tool calls).
   --prompt-file <p>  Read the prompt from this file (large packs / diffs).
@@ -60,6 +65,7 @@ EOF
 }
 
 model=""
+profile=""
 toolsets="todo"
 prompt_file=""
 log=""
@@ -71,6 +77,9 @@ while [ $# -gt 0 ]; do
         --model)
             [ $# -ge 2 ] || { echo "invoke.sh: --model requires a value" >&2; exit 2; }
             model="$2"; shift 2 ;;
+        --profile)
+            [ $# -ge 2 ] || { echo "invoke.sh: --profile requires a value" >&2; exit 2; }
+            profile="$2"; shift 2 ;;
         --toolsets)
             [ $# -ge 2 ] || { echo "invoke.sh: --toolsets requires a value" >&2; exit 2; }
             toolsets="$2"; shift 2 ;;
@@ -97,7 +106,7 @@ done
 
 # Resolve the prompt source: --prompt-file wins, else positional, else stdin.
 tmp_prompt=""
-# shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via the EXIT trap (SC2329 = the renamed "function never invoked" check)
 cleanup() { [ -n "$tmp_prompt" ] && rm -f "$tmp_prompt"; }
 trap cleanup EXIT
 
@@ -137,15 +146,37 @@ if command -v cygpath >/dev/null 2>&1; then
     pf_native="$(cygpath -w "$prompt_file")"
 fi
 
+# Profile selection (HIMMEL-558): pass `-p <profile>` so the one-shot runs under
+# that profile's SOUL + config (e.g. himmel_agent = the senior main-tier reviewer
+# persona, NOT the user-default junior SOUL). FAIL-OPEN guard: hermes exits 1 on a
+# missing profile, which would break a CR one-shot — so only forward -p when the
+# profile directory exists; otherwise warn and let hermes use its default profile.
+# `default` is always valid (it is the hermes root itself, no profiles/ subdir).
+profile_arg=""
+if [ -n "$profile" ]; then
+    _hh="${HERMES_HOME:-}"
+    if [ -z "$_hh" ]; then
+        if [ -n "${LOCALAPPDATA:-}" ]; then _hh="$LOCALAPPDATA/hermes"; else _hh="$HOME/.local/share/hermes"; fi
+    fi
+    if [ "$profile" = "default" ] || [ -d "$_hh/profiles/$profile" ]; then
+        profile_arg="$profile"
+    else
+        echo "invoke.sh: hermes profile '$profile' not found under $_hh/profiles — using default profile" >&2
+    fi
+fi
+
 run_hermes() {
-    HERMES_PROMPT_FILE="$pf_native" HERMES_ONESHOT_MODEL="$model" HERMES_ONESHOT_TOOLSETS="$toolsets" \
+    HERMES_PROMPT_FILE="$pf_native" HERMES_ONESHOT_MODEL="$model" HERMES_ONESHOT_PROFILE="$profile_arg" HERMES_ONESHOT_TOOLSETS="$toolsets" \
     "$py" -c '
 import os, sys, io
 with io.open(os.environ["HERMES_PROMPT_FILE"], encoding="utf-8") as fh:
     prompt = fh.read()
 argv = ["hermes", "--cli"]
 model = os.environ.get("HERMES_ONESHOT_MODEL", "")
+profile = os.environ.get("HERMES_ONESHOT_PROFILE", "")
 toolsets = os.environ.get("HERMES_ONESHOT_TOOLSETS", "")
+if profile:
+    argv += ["-p", profile]
 if model:
     argv += ["-m", model]
 if toolsets:
