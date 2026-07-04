@@ -38,6 +38,12 @@ Batch tooling for the obsidian-triage plugin. Several flavors:
 - **Dedup sweep** (`dedup-sweep.mjs`) — LUNA-37. URL-canonical +
   content-hash dupe detection across a luna-style vault. Mutates
   frontmatter only (G-3 body-identity). See "Dedup sweep" section below.
+- **Follow-list scorer** (`follow-list-score.mjs`) — HIMMEL-660. Three-stage
+  evidence-first scorer for the X/Twitter follow list
+  (`ai-x-follow-list.md`): a pure-code `gather` stage collects verifiable
+  evidence per handle, a manual Claude judge pass scores it against a
+  pinned charter, and a pure-code `assemble` stage deterministically tiers
+  + writes the list. See "Follow-list scorer" section below.
 
 Shared URL canonicalisation lives in `lib/url-canonical.mjs` — single
 source of truth consumed by `dedup-sweep.mjs`. Mirrors the per-domain
@@ -497,6 +503,135 @@ and reverts on failure; dedups cross-repo via the `seen_in:` block; and enforces
 a resolve()-based vault-containment check (rejects `..` traversal in
 --components-dir; does not resolve symlinks). Idempotent.
 
+## Follow-list scorer (HIMMEL-660)
+
+Evidence-first scoring pipeline for the X/Twitter follow list
+(`<vault>/30-Resources/ai-x-follow-list.md`). Three stages — two pure-code,
+one a manual Claude judge pass in between — so the only non-deterministic
+step in the whole pipeline is bounded to scoring, never to
+evidence-gathering or tiering math.
+
+### Stage 1 — `gather` (pure code)
+
+For each roster handle (resolved from the current `ai-x-follow-list.md`
+plus X clips in the vault, `lib/follow-roster.mjs`), fetches/derives
+evidence and writes one dossier JSON to
+`<vault>/30-Resources/.follow-scores/<handle>.json`: corpus evidence from
+vault clips, an account fetch (see "Account-level fetch" below), extracted
++ verified claims (bio/tweet assertions checked against GitHub repos,
+course URLs, etc.), and an injection screen (see "Injection screen"
+below). A handle with an existing (fresh) dossier on disk is skipped
+unless `--refetch`.
+
+```bash
+cd marketplace/plugins/obsidian-triage/tools
+bun install   # one-time
+bun follow-list-score.mjs gather --vault ~/Documents/luna --dry-run
+# Inspect the roster it would gather. When happy, drop --dry-run:
+bun follow-list-score.mjs gather --vault ~/Documents/luna
+# Force a re-fetch of handles that already have a dossier:
+bun follow-list-score.mjs gather --vault ~/Documents/luna --refetch
+```
+
+### Stage 2 — judge pass (manual, NEVER headless)
+
+```bash
+bun follow-list-score.mjs judge-prep --vault ~/Documents/luna
+```
+
+`judge-prep` trims every dossier via `trimForJudge` (redacts
+injection-suspect accounts, caps sample tweets to 5) and writes the queue
+to `<vault>/30-Resources/.follow-scores/_judge-queue.jsonl` — one
+`{handle, charter_ref, trimmed_dossier}` line per handle. `charter_ref`
+pins the judge charter's path + sha256 so a scoring run is reproducible
+against the exact charter text it used.
+
+A judge — an **interactive Claude session, or a dispatched subagent, never
+a headless invocation** (no `-p`/`--print`/`--bg` flag — himmel's
+invocation-billing rule, `no-headless-claude` pre-commit gate) — reads
+`follow-judge-charter.md`
+(five 0-5 dimensions: `factual_reliability`, `resources`, `reach`,
+`focus_fit`, `substance`; the crypto-neutrality rule that scores
+crypto-tagged content on exactly the same axes as anything else; the
+grounding rule that weights `verified` claims over `unverified`/
+`contradicted` ones) against each queued dossier, and writes
+`<vault>/30-Resources/.follow-scores/<handle>.judgment.json` per handle in
+the exact output schema the charter specifies (`handle`, `scores`,
+`confidence`, `rationale`, `grounding_notes` — no `tier`; tier is derived
+deterministically in Stage 3, never assigned by the judge).
+
+### Stage 3 — `assemble` (pure code)
+
+```bash
+bun follow-list-score.mjs assemble --vault ~/Documents/luna
+```
+
+Reads every `<handle>.judgment.json`, computes `composite` (weighted blend
+of the five dimensions) → `adjusted` (scaled by confidence: high=1.0,
+med=0.85, low=0.70) → `tier` (1/2/3/`exclude` via fixed thresholds —
+`lib/follow-score.mjs` is the single source of truth for this math),
+applies `follow-overrides.json` (below), and writes:
+
+- `<vault>/30-Resources/ai-x-follow-list.md` — regenerates ONLY the
+  `## Tier N` / `## Excluded` sections; frontmatter and any footer (e.g.
+  an operator "why this list exists" blockquote) stay byte-identical.
+- `<vault>/30-Resources/ai-x-follow-scores.md` — a full scorecard:
+  subscores, confidence, composite/adjusted, verified-vs-other evidence
+  counts, and a `low_sample: true` flag when the dossier's
+  `roster.clip_count` is 0.
+
+### Account-level fetch (`follow-account-source.json`)
+
+`follow-account-source.json` encodes the Task 0 spike decision
+(`spike_result: "A"`) — the account-level fetch source is the fxtwitter
+user endpoint (`https://api.fxtwitter.com/<handle>`, fields
+`followers`/`description`/`joined`), read at runtime by `gather`. If
+`spike_result` were ever `"B"` (no confirmed account-level source),
+`fetchAccount` degrades to a corpus-only shape (`followers`/`following`/
+`bio`/`created_at` all `null`) and the `reach` judge dimension would have
+to be scored from corpus evidence (tweet cadence, sample-tweet content)
+alone rather than actual follower counts. This is a **spike-gated**
+caveat: reach-scoring quality tracks whichever account source is
+currently wired, not a fixed guarantee.
+
+### Overrides (`follow-overrides.json`)
+
+```json
+{
+  "whitelist": ["examplehandle"],
+  "exclude": []
+}
+```
+
+Applied in `assemble` after tiering: `exclude` force-removes a handle
+regardless of computed score; `whitelist` guarantees presence — if the
+computed tier is `exclude`, the handle is placed at Tier 3 (lowest
+visible tier, never promoted higher) with an override note recorded in
+both output files. Edit this file directly; there is no CLI flag for it.
+
+### Injection screen (HIMMEL-256)
+
+`gather` screens every untrusted text field a dossier carries
+(`account.bio`, `repos.sample_descriptions[]`,
+`corpus.sample_tweets[].text`) via the same
+`harvest-clip-body-batch.py --scan-only` screener the fxtwitter enricher
+uses, setting `dossier.injection_suspect`. **Fail-closed**: if the
+scanner can't run at all, the dossier is flagged suspect rather than
+trusted (`screen_status: screen_error`). `judge-prep`'s `trimForJudge`
+never lets an injection-suspect account's raw bio/repo descriptions reach
+the judge prompt — they're replaced with `[withheld: injection-suspect]`
+— regardless of what the judge charter says; the redaction happens before
+the charter is ever consulted.
+
+### Hermetic test fixtures
+
+`gather`'s external dependencies (`gh`, the fxtwitter account fetch, the
+injection screener) are swappable via env vars for hermetic testing —
+mirrors `fxtwitter-enrich.mjs`'s `FXT_FIXTURE` pattern: `FOLLOW_GH_FIXTURE`,
+`FOLLOW_ACCOUNT_FIXTURE`, `FOLLOW_SCAN_FIXTURE` (each a file path or
+inline JSON, keyed by call args / fetch URL). Unset in normal operator
+use — real `gh`/fetch/screener run.
+
 ## Tests
 
 Smoke tests live one level up:
@@ -505,6 +640,7 @@ Smoke tests live one level up:
 bash ../tests/test-playwright-crawl.sh
 bash ../tests/test-dedup-sweep.sh   # LUNA-37
 bash ../tests/test-component-scan.sh   # LUNA-57
+for t in ../tests/test-follow-*.sh; do bash "$t" || exit 1; done   # HIMMEL-660
 ```
 
 Verifies: scripts pass `node --check`, package.json declares the right
@@ -520,3 +656,15 @@ componentKey / selectComponentPaths), the `Components/` upsert (create,
 cross-repo seen_in dedup, idempotent re-runs, cross-repo risk escalation, and
 revert-on-malformed-frontmatter), and the realpath-under-vault path-safety
 invariant.
+
+The `test-follow-*.sh` suite (HIMMEL-660) covers the follow-list scorer
+end-to-end: `test-follow-roster.sh` (handle normalization + roster
+resolution), `test-follow-dossier.sh` (dossier schema + corpus evidence
+build), `test-follow-verify.sh` (claim extraction + gh-api resource
+verification), `test-follow-screen.sh` (injection screen + judge-view
+redaction), `test-follow-list-score-gather.sh` (the `gather` CLI, hermetic
+via `FOLLOW_GH_FIXTURE`/`FOLLOW_ACCOUNT_FIXTURE`/`FOLLOW_SCAN_FIXTURE`),
+`test-follow-judge-prep.sh` (the `judge-prep` queue + charter pinning),
+`test-follow-score.sh` (composite/adjusted/tier math + overrides +
+render determinism), and `test-follow-list-score-assemble.sh` (the
+`assemble` CLI end-to-end).

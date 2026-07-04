@@ -202,6 +202,13 @@ Tracked in the operator's private handover repo (LUNA-3 next-session notes). Cal
 - **Phase 4 Related Notes proximity is grep-based.** Falls back to a comment when `claude-obsidian:wiki-query` skill is unavailable OR vault has >1000 notes. Quality depends on vault link-graph density.
 - **Concurrency with Obsidian's auto-save.** Documented at top of `/triage-clips` runbook. There is no cross-platform IPC to detect Obsidian holding a file open — the contract is "don't run while editing Clippings/ or today's daily note in Obsidian." The Phase 7 stale-read guard catches the race after the fact, but the work in Phases 2-6 is wasted if it fires.
 
+## Follow-list scorer
+
+`tools/follow-list-score.mjs` (HIMMEL-660) — evidence-first `gather` →
+manual Claude judge pass → `assemble` pipeline that scores/tiers the X/Twitter
+follow list. See `tools/README.md` ("Follow-list scorer" section) for the
+full runbook.
+
 ## Cross-refs
 
 - Sibling ticket (install pipeline): [LUNA-2](https://yotamleo.atlassian.net/browse/LUNA-2) — done
