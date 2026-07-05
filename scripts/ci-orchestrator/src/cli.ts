@@ -30,6 +30,14 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     }
     case "tick":
     case "daemon":
+      // WIRING NOTE (HIMMEL-714): when the production tick is assembled here, the
+      // reporter (makeReporter, reporter.ts) MUST be constructed ONCE and reused
+      // across passes — its backoff/dead-letter state is in-memory in the reporter
+      // closure, so a per-tick reporter silently resets the counters and defeats
+      // both. For `daemon`, build the reporter OUTSIDE the tickFn passed to
+      // runDaemon. The tick returns TickReport.deadLettered (required verdicts the
+      // reporter gave up on) — surface it (log/alert), don't discard it, or a
+      // wedged required check is invisible.
       io.err(
         `ci-orchestrator ${cmd}: requires production lane + discovery wiring ` +
           `(HIMMEL_CI_* env + registered adapters). See docs/internals/ci-orchestrator.md. ` +

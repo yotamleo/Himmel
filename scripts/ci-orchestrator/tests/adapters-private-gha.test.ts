@@ -57,6 +57,25 @@ describe("private-gha-hosted (dispatched, sparing)", () => {
     expect(r.runId).toBe("555");
   });
 
+  test("scopes the observe-run query to the job's workflow file (no sibling mis-attribution, HIMMEL-714)", async () => {
+    const listCalls: string[][] = [];
+    const exec: ExecFn = async (_file, args) => {
+      if (args.includes("list")) {
+        listCalls.push(args);
+        return { stdout: "777\n", stderr: "", code: 0 };
+      }
+      throw new Error("workflow_dispatch must not be called when a run is observed");
+    };
+    const a = makePrivateGhaHostedAdapter({ exec, repo: "o/r", workflowFile: "ci.yml" });
+    const r = await a.dispatch(job());
+    expect(r.runId).toBe("777");
+    // the run-list query is scoped server-side to the workflow FILE, not just the SHA
+    const args = listCalls[0];
+    const wIdx = args.indexOf("--workflow");
+    expect(wIdx).toBeGreaterThanOrEqual(0);
+    expect(args[wIdx + 1]).toBe("ci.yml");
+  });
+
   test("no native run → issues a workflow_dispatch (win/mac pre-merge path)", async () => {
     const calls: string[][] = [];
     const exec: ExecFn = async (_file, args) => {

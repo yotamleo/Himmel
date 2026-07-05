@@ -29,12 +29,23 @@ export function makePrivateGhaHostedAdapter(opts: PrivateGhaHostedOptions): Lane
       return { up: code === 0, inFlight: 0, cap };
     },
     async dispatch(job: JobAttrs): Promise<{ runId: string }> {
-      // 1. Observe an existing native run for this head SHA + job, if any.
+      // 1. Observe an existing native run for this head SHA + THIS workflow, if
+      //    any. Scoping to the workflow (HIMMEL-714) matters: a repo with >1
+      //    workflow can have several runs at the same head SHA, and observing the
+      //    wrong one attributes a sibling workflow's conclusion to this job. We
+      //    scope server-side with `--workflow <file>` rather than a jq
+      //    `.workflowName==<job.workflow>` filter because job.workflow is the
+      //    workflow FILE basename (e.g. "ci") while the JSON `workflowName` is the
+      //    display name (e.g. "CI") — they don't match, so a jq name filter would
+      //    drop every run and break the observe path. `--workflow` accepts the
+      //    file name and filters to exactly this adapter's workflow.
       const existing = await opts.exec("gh", [
         "run",
         "list",
         "--repo",
         opts.repo,
+        "--workflow",
+        workflow,
         "--json",
         "databaseId,headSha,workflowName,status",
         "--jq",
