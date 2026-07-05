@@ -21,6 +21,10 @@ exactly what the senior tier (Claude / himmel) also enforces:
                     Routine git, gh, mv, cp, and non-recursive rm are ALLOWED
                     (outward-facing ones are governed by SOUL.md "confirm
                     first", not a hard block).
+  WRITE-FENCE     — external-write shapes (git push, remote-URL rewrite, gh
+                    PR-mutations, network CLIs) are refused unless the active
+                    engine is an affirmed TRUSTED main tier — fail-closed on an
+                    untrusted (z.ai/GLM) or unknown engine (HIMMEL-695).
 
 Paths are resolved from the environment so this ships to any machine:
 HERMES_HOME (else %LOCALAPPDATA%\\hermes, else ~/.local/share/hermes) and
@@ -252,6 +256,90 @@ def terminal_phi_egress_reason(cmd_norm: str):
     return None
 
 
+# --- Engine-specific external-write fence (HIMMEL-695, write-fence half) ------
+# The egress half (above) stops PHI from being READ / searched / written on this
+# cloud profile. THIS half stops an UNTRUSTED engine from pushing work OUT — git
+# push, remote-URL rewrite, gh PR-mutations, network CLIs — the exact shapes
+# scripts/hooks/block-glm-external-writes.sh fences on the Claude-Code GLM lane
+# (KEEP IN SYNC). It matters here because hermes does NOT load himmel's Claude
+# Code PreToolUse hooks, so parity_guard is the SOLE external-write fence for
+# EVERY engine the himmel_agent profile is pointed at (openai/codex OR z.ai/GLM).
+#
+# Engine signal — FAIL-CLOSED. External writes are permitted ONLY when the run
+# is affirmatively a trusted main-tier engine:
+#   * ANTHROPIC_BASE_URL contains api.z.ai      -> UNTRUSTED (the s29 lead; the
+#     signal block-glm-external-writes.sh itself keys on). ALWAYS refused.
+#   * HERMES_ENGINE names a z.ai / glm / zhipu model -> UNTRUSTED. ALWAYS refused.
+#   * HERMES_EXTERNAL_WRITES_OK=1               -> the operator / gateway affirms
+#     a trusted main-tier (codex/openai) engine for this session -> PERMITTED.
+#   * anything else (no recognised signal)      -> FAIL-CLOSED -> refused.
+# Why default-DENY (not the sibling's allow-off-lane): hermes exposes NO reliable
+# positive "this is codex" signal — it selects providers via its own config.yaml
+# chain, not ANTHROPIC_BASE_URL — so an unknown engine is genuine ambiguity, and
+# sensitive-never-cloud is a LOCKED invariant, so ambiguity refuses. The operator
+# opts a trusted run in with ONE session-sticky env var (parity with the sibling's
+# GLM_EXTERNAL_WRITES_OK bypass, opposite sense). A positive UNTRUSTED signal wins
+# over the opt-in. PHI writes stay refused regardless of this gate (egress half,
+# unconditional). Command-text scanning is best-effort: a write verb displaced from
+# command position (env-prefix "FOO=1 git push", bash -c / sudo / xargs wrappers,
+# hyphenated aliases, scp/ssh/rsync/nc) is MISSED (under-block), matching the sibling
+# guard's documented limits. Accepted because the default is fail-closed deny and the
+# unconditional PHI read-fence — not this scan — is the load-bearing egress control.
+_ENGINE_UNTRUSTED = re.compile(r"z\.ai|glm|zhipu")
+
+# Command position: string start or right after a separator (; & | ( newline).
+# Deliberately NOT a space/quote, so a blocked verb quoted inside a commit message
+# ("… git push later") does not false-block — parity with the sibling hook.
+_CMDPOS = r"(?:^|[;&|(\n])\s*"
+EXT_GIT_PUSH = re.compile(_CMDPOS + r"git(?:\s+-\S+(?:\s+\S+)?)*\s+push(?:\s|$)")
+EXT_GIT_URL = re.compile(
+    _CMDPOS + r"git(?:\s+-\S+(?:\s+\S+)?)*\s+"
+    r"(?:remote\s+set-url|config(?:\s+-\S+)*\s+\S*url)")
+EXT_GH_ANY = re.compile(_CMDPOS + r"gh(?:\s|$)")
+# Audited-lane carve-out (block-glm-external-writes.sh policy, 2026-07-03): gh
+# issue (reads AND writes — cr-deferred followups are audited gh issues) + the
+# read-only pr/run context verbs stay allowed; every other gh use (pr create/
+# merge/edit/review, api, repo, release, gist) is an external write and refuses.
+EXT_GH_ALLOW = re.compile(
+    _CMDPOS + r"gh\s+(?:issue(?:\s|$)"
+    r"|pr\s+(?:view|diff|checks|status|list)(?:\s|$)"
+    r"|run\s+(?:view|list|watch)(?:\s|$))")
+EXT_NET = re.compile(
+    _CMDPOS + r"(?:curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)(?:\s|$)")
+
+
+def _external_writes_allowed() -> bool:
+    """Trusted main-tier engine? Fail-closed — only an affirmative trusted signal
+    returns True; a positive z.ai/GLM signal returns False even with the opt-in."""
+    if "api.z.ai" in os.environ.get("ANTHROPIC_BASE_URL", "").lower():
+        return False
+    if _ENGINE_UNTRUSTED.search(os.environ.get("HERMES_ENGINE", "").lower()):
+        return False
+    if os.environ.get("HERMES_EXTERNAL_WRITES_OK") == "1":
+        return True
+    return False  # unknown / absent engine signal -> fail-closed (refuse)
+
+
+def terminal_external_write_reason(cmd_norm: str):
+    """Return a block reason if `cmd_norm` (already norm()-ed) is an external-write
+    shape (git push / remote-URL rewrite / gh PR-mutation / network CLI), else
+    None. The caller gates this on an untrusted / unknown engine."""
+    if EXT_GIT_PUSH.search(cmd_norm):
+        return ("git push is refused on an untrusted/unknown engine — commit "
+                "locally; the trusted main tier / operator pushes (HIMMEL-695).")
+    if EXT_GIT_URL.search(cmd_norm):
+        return ("Rewriting a git remote / push URL is refused on an untrusted/"
+                "unknown engine (HIMMEL-695).")
+    if len(EXT_GH_ANY.findall(cmd_norm)) > len(EXT_GH_ALLOW.findall(cmd_norm)):
+        return ("gh is limited on an untrusted/unknown engine: issue ops + "
+                "pr/run reads only; PR mutations belong to the trusted main "
+                "tier (HIMMEL-695).")
+    if EXT_NET.search(cmd_norm):
+        return ("Network CLIs are refused on an untrusted/unknown engine — "
+                "chores are repo-local (HIMMEL-695).")
+    return None
+
+
 def main() -> None:
     payload = json.load(sys.stdin)
     tool = payload.get("tool_name", "")
@@ -292,6 +380,13 @@ def main() -> None:
         reason = terminal_phi_egress_reason(cmd)
         if reason:
             block(reason)
+        # Engine-specific external-write fence: block push / remote-URL / gh
+        # PR-mutation / network CLIs unless the engine is an affirmed trusted
+        # main tier (fail-closed on an unknown engine).
+        if not _external_writes_allowed():
+            reason = terminal_external_write_reason(cmd)
+            if reason:
+                block(reason)
         allow()
 
     allow()

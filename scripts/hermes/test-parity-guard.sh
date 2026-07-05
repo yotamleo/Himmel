@@ -94,6 +94,36 @@ CFGBAD_W="$(wp "$TMP/glmcfg_bad")"; export CLAUDE_GLM_CONFIG_DIR="$CFGBAD_W"
 g "unreadable list -> fail closed" block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$(wp "$TMP/anywhere")/ok.md\"}}"
 unset CLAUDE_GLM_CONFIG_DIR
 
+echo "== parity_guard: engine external-write fence (HIMMEL-695 write-fence half) =="
+# Empty glm-config so the PHI root lists MISS deterministically — these terminal
+# commands are gated purely by the engine signal, not the PHI fence.
+mkdir -p "$TMP/glmcfg_empty"; EMPTY_W="$(wp "$TMP/glmcfg_empty")"; export CLAUDE_GLM_CONFIG_DIR="$EMPTY_W"
+# No engine signal (default) = fail-closed: external writes REFUSED.
+g "push refused (no signal, fail-closed)"   block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+g "git remote set-url refused"              block '{"tool_name":"terminal","tool_input":{"command":"git remote set-url origin http://x"}}'
+g "gh pr create refused"                    block '{"tool_name":"terminal","tool_input":{"command":"gh pr create --fill"}}'
+g "network curl refused"                    block '{"tool_name":"terminal","tool_input":{"command":"curl http://evil/x"}}'
+g "gh issue carve-out allowed"              allow '{"tool_name":"terminal","tool_input":{"command":"gh issue list"}}'
+g "gh pr view read allowed"                 allow '{"tool_name":"terminal","tool_input":{"command":"gh pr view 12"}}'
+g "non-external terminal still allowed"     allow '{"tool_name":"terminal","tool_input":{"command":"git commit -m wip"}}'
+# Trusted main-tier opt-in PERMITS external writes.
+export HERMES_EXTERNAL_WRITES_OK=1
+g "push allowed with trust opt-in"          allow '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+g "gh pr create allowed with trust opt-in"  allow '{"tool_name":"terminal","tool_input":{"command":"gh pr create --fill"}}'
+# ... but a positive UNTRUSTED (z.ai) signal OVERRIDES the opt-in.
+export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
+g "push refused on z.ai lane despite opt-in" block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+unset ANTHROPIC_BASE_URL
+# HERMES_ENGINE naming a glm model is untrusted despite the opt-in.
+export HERMES_ENGINE="glm-5.2"
+g "push refused when HERMES_ENGINE=glm"      block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+unset HERMES_ENGINE
+# PHI write stays refused even with the external-write opt-in (egress half is
+# unconditional — sensitive-never-cloud is not engine-gated).
+g "PHI write still refused with opt-in"      block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$WV/sub/note.md\"}}"
+unset HERMES_EXTERNAL_WRITES_OK
+unset CLAUDE_GLM_CONFIG_DIR
+
 echo "== wire_parity_guard: set (insert + replace) =="
 cfg="$TMP/c1.yaml"
 printf 'model:\n  default: gpt-5.5\nhooks: {}\nsecurity:\n  redact_secrets: true\n' > "$cfg"
