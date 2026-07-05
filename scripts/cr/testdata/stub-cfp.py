@@ -15,7 +15,12 @@ while i < len(args):
 
 sys.stdin.read()
 
-if model == "qwen/qwen3-coder-480b-a35b-instruct":
+# The anchor critic's stand-in. Two accepted model ids: the old string is still
+# used by the fixture registries in test-critic-panel.sh (arbitrary critic id
+# for the merge/renumber/tier tests); the new string is the current ANCHOR_MODEL
+# that the anchor-fallback tests (E, I2) feed through this stub to prove the
+# anchor MODEL ran. Keep both so a future ANCHOR_MODEL bump only touches this line.
+if model in ("qwen/qwen3-coder-480b-a35b-instruct", "qwen/qwen3.6-35b-a3b"):
     print("# qwen3coder First-Pass Review")
     print("")
     print("## Critical Issues (1 found)")

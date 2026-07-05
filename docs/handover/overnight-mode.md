@@ -44,6 +44,13 @@ relaunches, whose prompt loads a next-session file carrying this block —
 and manual "overnight mode" invocations) carries these two standing
 instructions, verbatim from the [official Fable-5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5):
 
+**Caveman has no model-tier exemption (HIMMEL-699):** if the caveman plugin
+is ever toggled on (it defaults `off`), its hooks apply uniformly — an
+`arm-resume.sh` relaunch has no `CAVEMAN_DEFAULT_MODE` override, so a
+Fable-5 overnight session would get compressed like any other model. See
+[`docs/token-economy.md`](../token-economy.md) before enabling caveman
+globally or repo-locally.
+
 > When you have enough information to act, act. Do not re-derive facts
 > already established in the conversation, re-litigate a decision the
 > user has already made, or narrate options you will not pursue in
