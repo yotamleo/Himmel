@@ -1,0 +1,3 @@
+# Generated per-machine profiles carry real absolute paths + env (incl. secrets).
+# Never commit them — regenerate with: node scripts/mcp/build-mcp-profiles.mjs
+local.*.json

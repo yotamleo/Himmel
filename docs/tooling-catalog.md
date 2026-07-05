@@ -522,6 +522,35 @@ Specs saved to: `docs/superpowers/specs/YYYY-MM-DD-feature.md`
 
 ---
 
+## MCP fleet — tiered lean profiles (`scripts/mcp/build-mcp-profiles.mjs`, HIMMEL-719)
+
+**What:** Every session spawns the full MCP fleet at startup (per-session, not
+shared) — ~6 node procs/session that multiply across concurrent sessions. Lazy
+per-server spawn is unsupported upstream. The verified lever: `claude
+--strict-mcp-config --mcp-config <file>` loads **only** the servers named in
+`<file>`, ignoring `~/.claude.json` and enabled plugins.
+
+**Generator:** `node scripts/mcp/build-mcp-profiles.mjs` reads the machine's live
+`~/.claude.json` and emits `.claude/mcp-profiles/local.<name>.json` (gitignored —
+they carry absolute paths + secrets). Committed = the generator, the
+`profiles.json` manifest, and `.claude/mcp-profiles/README.md`. `--list` prints the
+profile→server map.
+
+**Fleet-map / tier admission** — every MCP admission names its tier:
+
+| Tier | Meaning | Members |
+|---|---|---|
+| T0 always-on | single pinned binary, used most sessions | tokensave |
+| T1 shared HTTP | remote/daemon singleton, 0–1 local procs total | context7 (remote), atlassian, huggingface, vercel |
+| T2 profile-scoped | in a `--mcp-config` profile, launched per lane | playwright, chrome-devtools, obsidian-vault, onepassword |
+| T3 env-gated | default-OFF `mcp-gate.sh`, activated by launch env var (HIMMEL-591) | telegram-himmel, luna-correlate |
+| TX CLI-first | no server; a CLI + skill (enforced by `block-backend-tier`) | jira (over atlassian), gh (over github), firecrawl |
+
+Launch recipes, lane→profile mapping, and the operator-review-gated default-fleet
+trim: `.claude/mcp-profiles/README.md`.
+
+---
+
 ## jq
 
 **What:** JSON processor. Used in `statusline.sh` for parsing session JSON and transcript JSONL files.
