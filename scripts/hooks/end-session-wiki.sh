@@ -42,6 +42,10 @@ LOG_DIR="${PROJECT_DIR}/.claude"
 LOG_PATH="${LOG_DIR}/end-session-wiki.log"
 LOG_OLD_PATH="${LOG_DIR}/end-session-wiki.log.old"
 CONFIG_PATH="${LOG_DIR}/end-session-wiki.json"
+# Persisted degradation marker (HIMMEL-711): present ⟺ the LAST REST-attempted
+# session note failed to reach the live vault and went to disk only. A
+# SessionStart / where-are-we surface can pick this up; cleared on a healthy PUT.
+DEGRADED_MARKER_PATH="${LOG_DIR}/end-session-wiki.degraded"
 
 log_msg() {
     local msg="$1"
@@ -60,6 +64,37 @@ log_msg() {
         stamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
         printf '[%s] %s\n' "$stamp" "$msg" >> "$LOG_PATH" 2>/dev/null
     } 2>/dev/null
+    return 0
+}
+
+# flag_degraded_fallback <http_code> <rel_path> <target> <outcome> — LOUD signal
+# that the REST PUT failed (Obsidian unreachable, or every candidate key rejected
+# on a 401). Silent degradation is exactly what hid HIMMEL-711, so beyond the log
+# line we (1) persist a one-line marker at a known path a SessionStart /
+# where-are-we surface can pick up and (2) print a stderr banner. <outcome> is
+# `disk` (the note DID reach local disk — degraded but recoverable) or `lost` (the
+# on-disk fallback ALSO failed — the note was written NOWHERE); the wording MUST
+# distinguish them so the loudest surface never understates total data loss. No
+# apiKey value is ever included. NOTE: backfill — re-pushing the disk-written note
+# through the REST API on the next healthy connect — is a deliberate follow-up,
+# NOT implemented here (tracked on HIMMEL-711).
+flag_degraded_fallback() {
+    local code="$1" rel="$2" target="$3" outcome="${4:-disk}" stamp line b2
+    stamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo '?')"
+    if [ "$outcome" = "lost" ]; then
+        line="[${stamp}] end-session-wiki DATA LOST: REST PUT (HTTP ${code}) AND the on-disk fallback BOTH failed — ${rel} (target ${target}) was written NOWHERE. See ${LOG_PATH}."
+        b2="!! Session note ${rel} was saved NOWHERE — REST PUT (HTTP ${code}) AND the on-disk fallback FAILED. The note is LOST. See ${LOG_PATH}."
+    else
+        line="[${stamp}] end-session-wiki DEGRADED: note went to DISK ONLY (HTTP ${code}) — REST API unreachable or all vault keys rejected. ${rel} in ${target} did NOT reach the live vault."
+        b2="!! Session note saved to DISK ONLY: ${rel} (in ${target}) — it did NOT sync through the live vault."
+    fi
+    {
+        mkdir -p "$LOG_DIR" 2>/dev/null
+        printf '%s\n' "$line" > "$DEGRADED_MARKER_PATH" 2>/dev/null
+    } 2>/dev/null
+    printf '!! end-session-wiki: Obsidian REST API unreachable / all vault keys rejected (HTTP %s).\n' "$code" >&2
+    printf '%s\n' "$b2" >&2
+    printf '!! Marker: %s\n' "$DEGRADED_MARKER_PATH" >&2
     return 0
 }
 
@@ -412,6 +447,67 @@ fi
 
 # ---------- 7. Token discovery + PUT ----------------------------------------
 
+# _esw_read_apikey <data.json> — echo its .apiKey ('' on any miss). The value is
+# a secret: it is never logged/printed anywhere except the Authorization header.
+_esw_read_apikey() {
+    [ -r "$1" ] || { printf ''; return 0; }
+    jq -r '.apiKey // empty' "$1" 2>/dev/null || true
+}
+
+# _esw_sib_add <key> — append to SIBLING_KEYS if non-empty, not the primary, and
+# not already present (dedup). Uses globals SIBLING_KEYS + ESW_PRIMARY_KEY.
+SIBLING_KEYS=()
+ESW_PRIMARY_KEY=""
+_esw_sib_add() {
+    local k="$1" e
+    [ -n "$k" ] || return 0
+    [ "$k" = "$ESW_PRIMARY_KEY" ] && return 0
+    if [ "${#SIBLING_KEYS[@]}" -gt 0 ]; then
+        for e in "${SIBLING_KEYS[@]}"; do [ "$e" = "$k" ] && return 0; done
+    fi
+    SIBLING_KEYS+=("$k")
+}
+
+# _esw_collect_sibling_keys <primary_key> — populate SIBLING_KEYS with the API
+# keys of the operator's OTHER vaults (registry ~/.claude/luna-vaults.json values
+# + <Documents>/<name> convention), de-duplicated and excluding the primary.
+# Called lazily (only after a real 401), so the normal + API-down paths never
+# touch sibling vault files.
+_esw_collect_sibling_keys() {
+    SIBLING_KEYS=()
+    ESW_PRIMARY_KEY="$1"
+    local vals vp base up d
+    # Registry-listed vaults (string values only).
+    if [ -r "${HOME}/.claude/luna-vaults.json" ]; then
+        # `|| true`: keep a jq failure (missing binary / malformed registry)
+        # non-fatal and consistent with every other jq read here — it falls
+        # through to the convention scan + disk fallback, never aborts recovery.
+        vals="$(jq -r '(.vaults // {}) | to_entries[] | .value | select(type == "string")' "${HOME}/.claude/luna-vaults.json" 2>/dev/null || true)"
+        if [ -n "$vals" ]; then
+            while IFS= read -r vp; do
+                [ -n "$vp" ] || continue
+                # SC2088: the "~/" here is a literal case-glob pattern (registry
+                # home-shorthand), expanded manually on the RHS — not a command tilde.
+                # shellcheck disable=SC2088
+                case "$vp" in "~/"*) vp="$HOME/${vp#\~/}" ;; esac
+                _esw_sib_add "$(_esw_read_apikey "${vp}/.obsidian/plugins/obsidian-local-rest-api/data.json")"
+            done <<< "$vals"
+        fi
+    fi
+    # Convention vaults under <Documents> (mirrors the resolver's ~/Documents/<name>).
+    base="${HOME}/Documents"
+    if [ ! -d "$base" ] && [ -n "${USERPROFILE:-}" ] && command -v cygpath >/dev/null 2>&1; then
+        up="$(cygpath -u "$USERPROFILE" 2>/dev/null)"
+        [ -n "$up" ] && [ -d "$up/Documents" ] && base="$up/Documents"
+    fi
+    if [ -d "$base" ]; then
+        for d in "$base"/*/; do
+            [ -d "$d" ] || continue
+            _esw_sib_add "$(_esw_read_apikey "${d}.obsidian/plugins/obsidian-local-rest-api/data.json")"
+        done
+    fi
+}
+
 API_KEY="${OBSIDIAN_API_KEY:-}"
 if [ -z "$API_KEY" ]; then
     PLUGIN_DATA="${VAULT_ROOT}/.obsidian/plugins/obsidian-local-rest-api/data.json"
@@ -446,15 +542,40 @@ for seg in "${SEGMENTS[@]}"; do
 done
 ENDPOINT="${BASE_URL}/vault/${ENCODED_REL}"
 
-# -k: self-signed cert on loopback is acceptable here (security note: 127.0.0.1
-# only; any local process can already read the vault directly).
+# _esw_put_note <key> — PUT the note with the given bearer key; echoes the HTTP
+# status code (000 on connection failure). -k: self-signed cert on loopback is
+# acceptable (127.0.0.1 only; any local process can already read the vault).
+_esw_put_note() {
+    curl -sk -o /dev/null -w '%{http_code}' \
+        -X PUT \
+        -H "Authorization: Bearer $1" \
+        -H "Content-Type: text/markdown" \
+        --data-binary "$MARKDOWN" \
+        "$ENDPOINT" 2>/dev/null || echo "000"
+}
+
 START_MS="$(date +%s%3N 2>/dev/null || echo 0)"
-HTTP_CODE="$(curl -sk -o /dev/null -w '%{http_code}' \
-    -X PUT \
-    -H "Authorization: Bearer ${API_KEY}" \
-    -H "Content-Type: text/markdown" \
-    --data-binary "$MARKDOWN" \
-    "$ENDPOINT" 2>/dev/null || echo "000")"
+HTTP_CODE="$(_esw_put_note "$API_KEY")"
+
+# Multi-vault auth recovery (HIMMEL-711): a 401 means the target key is rejected
+# because a DIFFERENT vault currently owns the Local REST API port (only one
+# Obsidian binds 27124 at a time). Retry with the operator's OTHER vault keys;
+# the vault whose server is bound accepts its own key. First non-401 success wins.
+if [ "$HTTP_CODE" = "401" ]; then
+    _esw_collect_sibling_keys "$API_KEY"
+    if [ "${#SIBLING_KEYS[@]}" -gt 0 ]; then
+        SIB_IDX=0
+        for _sk in "${SIBLING_KEYS[@]}"; do
+            SIB_IDX=$((SIB_IDX + 1))
+            HTTP_CODE="$(_esw_put_note "$_sk")"
+            case "$HTTP_CODE" in
+                200|201|204) log_msg "PUT recovered with a sibling vault key (candidate ${SIB_IDX}/${#SIBLING_KEYS[@]})"; break ;;
+                401) continue ;;
+                *) break ;;
+            esac
+        done
+    fi
+fi
 END_MS="$(date +%s%3N 2>/dev/null || echo 0)"
 # `%3N` (nanoseconds) is a GNU extension. On macOS/BSD date it is NOT an error
 # (exit 0, so the `|| echo 0` guard never fires) — it yields a non-numeric
@@ -469,17 +590,22 @@ case "${START_MS}:${END_MS}" in
 esac
 
 if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "204" ]; then
-    # REST PUT failed (e.g. Obsidian not running) — fall back to on-disk write.
+    # REST PUT failed — Obsidian not running, or every candidate vault key was
+    # rejected (401). Fall back to a direct on-disk write.
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "PUT $ENDPOINT returned HTTP $HTTP_CODE; wrote (local fs fallback) ${REL_PATH}"
+        flag_degraded_fallback "$HTTP_CODE" "$REL_PATH" "$VAULT_ROOT" disk
         spawn_crystallizer
     else
         log_msg "ERROR: PUT $ENDPOINT HTTP $HTTP_CODE and local fs fallback failed: $ABS_PATH"
+        flag_degraded_fallback "$HTTP_CODE" "$REL_PATH" "$VAULT_ROOT" lost
     fi
     HOOK_OK=1
     exit 0
 fi
 
+# Healthy REST push — clear any stale degradation marker from a prior session.
+rm -f "$DEGRADED_MARKER_PATH" 2>/dev/null || true
 log_msg "wrote ${REL_PATH} (${ELAPSED}ms)"
 spawn_crystallizer
 HOOK_OK=1

@@ -31,6 +31,25 @@ for pkg in "${pkgs[@]}"; do
         continue
     fi
 
+    # Zero-prod-dep carve-out (mirrors the bun skip above): a package that npm
+    # installs NO production packages for has no registry-signed tarballs to
+    # verify — `npm audit signatures --omit=dev` on it is a no-op, and
+    # `npm ci --omit=dev` legitimately materializes no node_modules — so skip
+    # rather than block on the empty dir (HIMMEL-502: lets a zero-prod-dep
+    # scripts/ package, e.g. a pure vitest/tsc suite, use the npm CI matrix
+    # without tripping this gate). Count EVERY field npm installs under
+    # --omit=dev — dependencies + optional + peer (npm 7+) + bundled — not just
+    # `dependencies`: an optional/peer-only package DOES have signable tarballs,
+    # so skipping on empty `dependencies` alone would silently disable the gate
+    # for it. Read via node (already required for npm); fs.readFileSync so a
+    # "type":"module" package.json still parses under the default CommonJS -e
+    # context. A node crash → exit≠0 → NOT skipped → falls through to the real
+    # block (fail-safe).
+    if (cd "$dir" && node -e 'const p=JSON.parse(require("fs").readFileSync("package.json","utf8"));const n=Object.keys(p.dependencies||{}).length+Object.keys(p.optionalDependencies||{}).length+Object.keys(p.peerDependencies||{}).length+Object.keys(p.bundleDependencies||p.bundledDependencies||{}).length;process.exit(n?1:0)') 2>/dev/null; then
+        echo "→ npm audit signatures: skipping $dir — no production/optional/peer dependencies (nothing to verify)"
+        continue
+    fi
+
     # Block-by-default: missing node_modules means the registry-signed manifest
     # was never materialized locally, so we cannot verify anything. Letting
     # the push through would silently disable the gate.

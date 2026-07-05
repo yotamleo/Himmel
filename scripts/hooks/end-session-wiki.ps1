@@ -42,6 +42,10 @@ $logDir     = Join-Path $projectDir '.claude'
 $logPath    = Join-Path $logDir 'end-session-wiki.log'
 $logOldPath = Join-Path $logDir 'end-session-wiki.log.old'
 $configPath = Join-Path $logDir 'end-session-wiki.json'
+# Persisted degradation marker (HIMMEL-711): present <=> the LAST REST-attempted
+# session note failed to reach the live vault and went to disk only. A
+# SessionStart / where-are-we surface can pick this up; cleared on a healthy PUT.
+$degradedMarkerPath = Join-Path $logDir 'end-session-wiki.degraded'
 
 function Write-HookLog {
     param([string]$Message)
@@ -61,6 +65,36 @@ function Write-HookLog {
     } catch {
         # Last-resort: swallow. Hook must never block.
     }
+}
+
+# Set-DegradedFallbackFlag <http_code> <rel_path> <target> <outcome> — LOUD signal
+# that the REST PUT failed (Obsidian unreachable, or every candidate key rejected
+# on a 401). Silent degradation is exactly what hid HIMMEL-711, so beyond the log
+# line we (1) persist a one-line marker at a known path a SessionStart /
+# where-are-we surface can pick up and (2) print a stderr banner. -Outcome is
+# 'disk' (the note DID reach local disk — degraded but recoverable) or 'lost' (the
+# on-disk fallback ALSO failed — the note was written NOWHERE); the wording MUST
+# distinguish them so the loudest surface never understates total data loss. No
+# apiKey value is ever included. NOTE: backfill — re-pushing the disk-written note
+# through the REST API on the next healthy connect — is a deliberate follow-up,
+# NOT implemented here (tracked on HIMMEL-711).
+function Set-DegradedFallbackFlag {
+    param([string]$Code, [string]$RelPath, [string]$Target, [string]$Outcome = 'disk')
+    $stamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+    if ($Outcome -eq 'lost') {
+        $line = "[$stamp] end-session-wiki DATA LOST: REST PUT (HTTP $Code) AND the on-disk fallback BOTH failed — $RelPath (target $Target) was written NOWHERE. See $logPath."
+        $b2   = "!! Session note $RelPath was saved NOWHERE — REST PUT (HTTP $Code) AND the on-disk fallback FAILED. The note is LOST. See $logPath."
+    } else {
+        $line = "[$stamp] end-session-wiki DEGRADED: note went to DISK ONLY (HTTP $Code) — REST API unreachable or all vault keys rejected. $RelPath in $Target did NOT reach the live vault."
+        $b2   = "!! Session note saved to DISK ONLY: $RelPath (in $Target) — it did NOT sync through the live vault."
+    }
+    try {
+        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+        Set-Content -LiteralPath $degradedMarkerPath -Value $line
+    } catch { }
+    [Console]::Error.WriteLine("!! end-session-wiki: Obsidian REST API unreachable / all vault keys rejected (HTTP $Code).")
+    [Console]::Error.WriteLine($b2)
+    [Console]::Error.WriteLine("!! Marker: $degradedMarkerPath")
 }
 
 function Write-NoteToFile {
@@ -528,6 +562,94 @@ $rawSection
 
     # ---------- 7. Discover Obsidian Local REST API key + PUT --------------------
 
+    # Get-ApiKeyFromData — read .apiKey from a plugin data.json ('' on any miss).
+    # The value is a secret: never logged/printed anywhere except the header.
+    function Get-ApiKeyFromData {
+        param([string]$DataPath)
+        if (-not (Test-Path -LiteralPath $DataPath)) { return '' }
+        try {
+            $d = Remove-Bom (Get-Content -LiteralPath $DataPath -Raw) | ConvertFrom-Json -ErrorAction Stop
+            if ($d -and $d.PSObject.Properties['apiKey']) { return [string]$d.apiKey }
+        } catch { }
+        return ''
+    }
+
+    # Get-SiblingVaultKeys — the API keys of the operator's OTHER vaults (registry
+    # ~/.claude/luna-vaults.json values + <Documents>\<name> convention), unique
+    # and excluding the primary. Called lazily (only after a real 401), so the
+    # normal + API-down paths never touch sibling vault files.
+    function Get-SiblingVaultKeys {
+        param([string]$PrimaryKey)
+        # Gather candidate plugin data.json paths (registry values + convention).
+        $paths = New-Object System.Collections.Generic.List[string]
+        $reg = Join-Path $env:USERPROFILE '.claude\luna-vaults.json'
+        if (Test-Path -LiteralPath $reg) {
+            try {
+                $r = Remove-Bom (Get-Content -LiteralPath $reg -Raw) | ConvertFrom-Json -ErrorAction Stop
+                if ($r -and $r.PSObject.Properties['vaults'] -and $r.vaults) {
+                    foreach ($p in $r.vaults.PSObject.Properties) {
+                        $vp = $p.Value
+                        if ($vp -is [string] -and $vp) {
+                            if ($vp -match '^~[\\/](.*)$') { $vp = Join-Path $env:USERPROFILE $matches[1] }
+                            [void]$paths.Add((Join-Path $vp '.obsidian\plugins\obsidian-local-rest-api\data.json'))
+                        }
+                    }
+                }
+            } catch { }
+        }
+        $docs = Join-Path $env:USERPROFILE 'Documents'
+        if (Test-Path -LiteralPath $docs) {
+            foreach ($dir in (Get-ChildItem -LiteralPath $docs -Directory -ErrorAction SilentlyContinue)) {
+                [void]$paths.Add((Join-Path $dir.FullName '.obsidian\plugins\obsidian-local-rest-api\data.json'))
+            }
+        }
+        # Resolve to unique keys, excluding the primary. Keys are never logged.
+        $keys = New-Object System.Collections.Generic.List[string]
+        foreach ($dp in $paths) {
+            $k = Get-ApiKeyFromData $dp
+            if ($k -and $k -ne $PrimaryKey -and -not $keys.Contains($k)) { [void]$keys.Add($k) }
+        }
+        return ,$keys
+    }
+
+    # Invoke-VaultPut <uri> <key> <body> — PUT the note; returns the HTTP status as
+    # an int (200/201/204 success, the status code on an HTTP error, 0 on a
+    # transport failure). The ESW_PUT_CMD seam lets the test suite stand in for
+    # the network (echoes a status code) without a live Obsidian server.
+    function Invoke-VaultPut {
+        param([string]$Uri, [string]$Key, [string]$Body)
+        # Reset the last-transport-error each call; the status-0 (no HTTP response)
+        # path records the cause here so the caller can log it — restores the
+        # diagnostic the pre-diff PS twin carried (connection-refused vs cert vs
+        # timeout), which "HTTP 0" alone hides.
+        $script:eswLastPutError = ''
+        if ($env:ESW_PUT_CMD) {
+            $out = & (Get-Command pwsh).Source -NoProfile -File $env:ESW_PUT_CMD $Key $Uri 2>$null
+            $n = 0
+            if ([int]::TryParse((@($out) | Select-Object -First 1), [ref]$n)) { return $n }
+            return 0
+        }
+        $headers = @{ 'Authorization' = "Bearer $Key"; 'Content-Type' = 'text/markdown' }
+        $a = @{ Uri = $Uri; Method = 'Put'; Headers = $headers; Body = $Body }
+        # Self-signed cert on loopback (127.0.0.1) — skip cert validation.
+        if ((Get-Command Invoke-RestMethod).Parameters.ContainsKey('SkipCertificateCheck')) {
+            $a['SkipCertificateCheck'] = $true
+        } else {
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        }
+        try {
+            Invoke-RestMethod @a | Out-Null
+            return 200
+        } catch {
+            if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) {
+                try { return [int]$_.Exception.Response.StatusCode } catch { }
+            }
+            $script:eswLastPutError = $_.Exception.Message
+            return 0
+        }
+    }
+
     # Token discovery priority:
     #   1. $env:OBSIDIAN_API_KEY (matches mcp-obsidian convention)
     #   2. <vault>/.obsidian/plugins/obsidian-local-rest-api/data.json -> .apiKey
@@ -536,12 +658,8 @@ $rawSection
     if (-not $apiKey) {
         $pluginData = Join-Path $vaultRoot '.obsidian\plugins\obsidian-local-rest-api\data.json'
         if (Test-Path $pluginData) {
-            try {
-                $cfgPlugin = Get-Content -LiteralPath $pluginData -Raw | ConvertFrom-Json
-                if ($cfgPlugin.PSObject.Properties['apiKey']) { $apiKey = $cfgPlugin.apiKey }
-            } catch {
-                Write-HookLog "WARN: failed to parse $pluginData : $($_.Exception.Message)"
-            }
+            $apiKey = Get-ApiKeyFromData $pluginData
+            if (-not $apiKey) { Write-HookLog "WARN: no readable apiKey in $pluginData" }
         }
     }
     if (-not $apiKey) {
@@ -563,47 +681,52 @@ $rawSection
     $encodedRel = ($relPath -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '/'
     $endpoint = "$baseUrl/vault/$encodedRel"
 
-    $headers = @{
-        'Authorization' = "Bearer $apiKey"
-        'Content-Type'  = 'text/markdown'
-    }
-
-    # The Local REST API plugin uses a self-signed cert by default — skip cert
-    # validation. Security note: this is loopback only (127.0.0.1) so MITM risk is
-    # limited to local-user processes (which already have full FS access anyway).
-    $irmArgs = @{
-        Uri     = $endpoint
-        Method  = 'Put'
-        Headers = $headers
-        Body    = $markdown
-    }
-    if ((Get-Command Invoke-RestMethod).Parameters.ContainsKey('SkipCertificateCheck')) {
-        $irmArgs['SkipCertificateCheck'] = $true
-    } else {
-        # PowerShell 5.1 fallback: globally bypass cert validation for this process
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-    }
-
     $startTime = Get-Date
-    try {
-        Invoke-RestMethod @irmArgs | Out-Null
-    } catch {
-        # REST PUT failed (e.g. Obsidian not running) — fall back to on-disk write.
-        Write-HookLog "WARN: PUT $endpoint failed ($($_.Exception.Message)); falling back to local fs"
-        try {
-            Write-NoteToFile -Path $absPath -Content $markdown
-            Write-HookLog "wrote (local fs fallback) $relPath"
-            Invoke-Crystallizer
-        } catch {
-            Write-HookLog "ERROR: local fs fallback write failed ($absPath): $($_.Exception.Message)"
+    $putStatus = Invoke-VaultPut -Uri $endpoint -Key $apiKey -Body $markdown
+
+    # Multi-vault auth recovery (HIMMEL-711): a 401 means the target key is
+    # rejected because a DIFFERENT vault currently owns the Local REST API port
+    # (only one Obsidian binds 27124 at a time). Retry with the operator's OTHER
+    # vault keys; the vault whose server is bound accepts its own key. First
+    # non-401 success wins.
+    if ($putStatus -eq 401) {
+        $siblings = Get-SiblingVaultKeys -PrimaryKey $apiKey
+        $idx = 0
+        foreach ($sk in $siblings) {
+            $idx++
+            $putStatus = Invoke-VaultPut -Uri $endpoint -Key $sk -Body $markdown
+            if ($putStatus -eq 200 -or $putStatus -eq 201 -or $putStatus -eq 204) {
+                Write-HookLog "PUT recovered with a sibling vault key (candidate $idx/$($siblings.Count))"
+                break
+            }
+            if ($putStatus -eq 401) { continue }
+            break
         }
-        exit 0
     }
     $elapsed = ((Get-Date) - $startTime).TotalMilliseconds
 
-    Write-HookLog "wrote $relPath (${elapsed}ms)"
-    Invoke-Crystallizer
+    if ($putStatus -eq 200 -or $putStatus -eq 201 -or $putStatus -eq 204) {
+        # Healthy REST push — clear any stale degradation marker from a prior session.
+        Remove-Item -LiteralPath $degradedMarkerPath -Force -ErrorAction SilentlyContinue
+        Write-HookLog "wrote $relPath (${elapsed}ms)"
+        Invoke-Crystallizer
+        exit 0
+    }
+
+    # REST PUT failed — Obsidian not running, or every candidate vault key was
+    # rejected (401). Fall back to a direct on-disk write.
+    $putErrSuffix = if ($putStatus -eq 0 -and $script:eswLastPutError) { ": $($script:eswLastPutError)" } else { '' }
+    Write-HookLog "WARN: PUT $endpoint failed (HTTP $putStatus)$putErrSuffix; falling back to local fs"
+    $diskOk = $false
+    try {
+        Write-NoteToFile -Path $absPath -Content $markdown
+        Write-HookLog "wrote (local fs fallback) $relPath"
+        $diskOk = $true
+        Invoke-Crystallizer
+    } catch {
+        Write-HookLog "ERROR: local fs fallback write failed ($absPath): $($_.Exception.Message)"
+    }
+    Set-DegradedFallbackFlag -Code "$putStatus" -RelPath $relPath -Target $vaultRoot -Outcome $(if ($diskOk) { 'disk' } else { 'lost' })
     exit 0
 
 } catch {

@@ -30,6 +30,29 @@ TELEGRAM_OWN_POLLER=1 claude "<prompt>" --channels plugin:telegram-himmel@himmel
 Disable upstream `telegram@claude-plugins-official` while this fork is
 enabled, or upstream's ungated poller re-introduces the steal.
 
+## Opt-in MCP launch (HIMMEL-591)
+
+Claude Code eagerly spawns every enabled plugin's MCP server at session start
+(no native lazy spawn), so this bun server used to load in **every** session —
+even the majority that never send a Telegram message. `.mcp.json` now routes
+through `mcp-gate.sh`, which is **default-OFF**: a session that opts out holds
+no bun process for this server.
+
+A session opts **in** when either env var is set in the launching shell:
+- `TELEGRAM_OWN_POLLER=1` — the owner launch above already sets this, so it is
+  unchanged (owner sessions still get the server + the poller).
+- `HIMMEL_MCP_TELEGRAM=1` — for a **send-only** session that wants the outbound
+  tools (`reply`, `react`, …) without owning the poll slot.
+
+Set the opt-in var **per launch**, not exported globally — a shell that exports
+it process-wide re-enables the server in every child session and undoes the
+memory saving.
+
+This gates only the plugin's per-session MCP server. The always-on standalone
+bun bridge (`scripts/telegram/`) and its per-chat vault-cwd routing are a
+separate process and are unaffected. A gated-off server shows as not-connected
+in `/mcp` — expected.
+
 ## Upstream-watch protocol
 
 Pinned to upstream **v0.0.6**. On an upstream bump:

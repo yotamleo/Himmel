@@ -1290,7 +1290,12 @@ out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover 
 rc=$?
 assert_rc "N7 quoted+CRLF ticket: arm exits 0" 0 "$rc"
 assert_contains "N7 quoted+CRLF ticket: resolves into the name" "HIMMEL-Resume-HIMMEL-540-" "$out"
-assert_not_contains "N7 no stray quote/CR welded into the name" 'HIMMEL-540"' "$out"
+# The needle targets the task-NAME context (Resume-HIMMEL-540") — a bare
+# 'HIMMEL-540"' now legitimately appears as the closing quote of the HIMMEL-702
+# `-n "HIMMEL-540"` session-title arg on the Windows .bat launch line, so a
+# whole-output match would false-fail. A leaked YAML quote would weld INTO the
+# task name (HIMMEL-Resume-HIMMEL-540"…), which this still catches.
+assert_not_contains "N7 no stray quote/CR welded into the task name" 'Resume-HIMMEL-540"' "$out"
 
 # N8: malformed multi-dash ticket: value is REJECTED by _validate_key (anchored
 # ^<KEY>-<NUM>$) — falls back to the path-only name, no junk segment.
@@ -1300,6 +1305,63 @@ rc=$?
 assert_rc "N8 malformed multi-dash ticket: arm exits 0" 0 "$rc"
 assert_not_contains "N8 malformed key is not welded into the name" "HIMMEL-Resume-ABC-123" "$out"
 assert_contains "N8 falls back to the HIMMEL-Resume- path-only prefix" "HIMMEL-Resume-" "$out"
+
+# ---------------------------------------------------------------------------
+# S1-S3 (HIMMEL-702): the relaunch bakes `claude -n "<TICKET> <name>"` so an
+# armed session is self-titled (scannable /resume name + terminal tab). The
+# name is the canonical retitle form (HIMMEL-432): the inferred ticket plus the
+# worktree-slug name-half. Platform-branched like T32 — the dry-run prints the
+# Windows .bat launch line on MSYS, the crontab/at line elsewhere; -n is quoted
+# for CMD on Windows and printf %q-escaped (space -> '\ ') for /bin/sh.
+# ---------------------------------------------------------------------------
+
+# S1: worktree arm -> ticket (src-2, uppercased) + name-half from the slug.
+HO=$(make_handover "")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/himmel-702-demo --dry-run 2>&1)
+rc=$?
+assert_rc "S1 worktree arm exits 0" 0 "$rc"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S1 win .bat bakes -n <ticket> <name>" '-n "HIMMEL-702 demo"' "$out" ;;
+    *)
+        assert_contains "S1 cron/at bakes -n <ticket> <name>" '-n HIMMEL-702\ demo' "$out" ;;
+esac
+
+# S2: nothing inferable (ticketless H1, no worktree) -> NO -n (fail-open; let
+# claude auto-title rather than forcing a meaningless name).
+HO=$(make_handover_titled "Test handover")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "S2 ticketless arm exits 0" 0 "$rc"
+assert_not_contains "S2 no -n flag when nothing is inferable" " -n " "$out"
+
+# S3: ticket but no name-half (frontmatter ticket, no worktree slug) -> -n with
+# the bare ticket key.
+HO=$(make_handover_titled "Test handover" "HIMMEL-702")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "S3 ticket-only arm exits 0" 0 "$rc"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S3 win .bat bakes -n <ticket>" '-n "HIMMEL-702"' "$out" ;;
+    *)
+        assert_contains "S3 cron/at bakes -n <ticket>" '-n HIMMEL-702 ' "$out" ;;
+esac
+
+# S5 (HIMMEL-702): name-half but NO inferable ticket (worktree slug carries no
+# `<key>-<N>` token, e.g. feat/cleanup) -> -n with the bare slug name. Exercises
+# the else branch of _infer_session_name (_out="$_name"); a branch slug is a
+# meaningful title, so this is NOT the fail-open empty case (contrast S2).
+HO=$(make_handover "")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/cleanup --dry-run 2>&1)
+rc=$?
+assert_rc "S5 name-only (ticketless slug) arm exits 0" 0 "$rc"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S5 win .bat bakes -n <name>" '-n "cleanup"' "$out" ;;
+    *)
+        assert_contains "S5 cron/at bakes -n <name>" '-n cleanup ' "$out" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # macOS backend: crontab for schedule + dedup + --force (HIMMEL-594)
@@ -1329,6 +1391,15 @@ out="$(mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$MAC_HO" --dry-run 
 assert_rc "macOS schedule dry-run" 0 "$rc"
 assert_contains "macOS uses crontab entry" "crontab entry" "$out"
 assert_not_contains "macOS avoids at -t" "at -t" "$out"
+
+# S4 (HIMMEL-702): the crontab/POSIX launch line also bakes -n, printf %q-escaped
+# so the space in "<TICKET> <name>" survives the /bin/sh re-parse at fire time.
+# Exercised on ANY host via mac_env's forced OSTYPE=darwin -> _crontab_schedule,
+# so the POSIX injection is covered even when the suite runs on Windows.
+S4_HO="$(make_handover "$WORK_REPO")"
+out="$(mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$S4_HO" --worktree feat/himmel-702-demo --dry-run 2>&1)"; rc=$?
+assert_rc "S4 macOS/cron worktree arm exits 0" 0 "$rc"
+assert_contains "S4 crontab entry bakes -n <ticket> <name> (%q-escaped)" '-n HIMMEL-702\ demo' "$out"
 
 # (b) real arm then a 2nd arm is deduped (proves list_existing reads crontab)
 mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$MAC_HO" >/dev/null 2>&1

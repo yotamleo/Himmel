@@ -1,0 +1,9 @@
+{
+  "ci:secret-scan": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false },
+  "ci:commit-lint": { "fidelity": "needs-shim", "os": ["linux"], "heavy": false, "shim": "act lacks the pull_request base.sha context; supply the range base via an -e event.json / ACT_* env so check-commit-range.sh has a base to walk." },
+  "ci:lint": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false },
+  "ci:node-suites": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false },
+  "ci:bun-suites": { "fidelity": "needs-shim", "os": ["linux"], "heavy": true, "shim": "oven-sh/setup-bun needs bun present in the act container image; provision bun (custom image or a pre-step) or the job errors on setup-bun." },
+  "ci:security-scan": { "fidelity": "needs-shim", "os": ["linux"], "heavy": true, "shim": "needs bun (setup-bun) AND network egress for the pinned gitleaks download; provision bun + allow the gitleaks release fetch in the act image." },
+  "ci:shell-unit": { "fidelity": "act-faithful", "os": ["linux", "windows", "macos"], "heavy": true, "shim": "only the linux leg is act-eligible; the windows/macos legs are gha-only (act is Linux/Docker-only) and route to native GHA." }
+}

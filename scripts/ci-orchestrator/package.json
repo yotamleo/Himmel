@@ -1,0 +1,19 @@
+{
+  "name": "ci-orchestrator",
+  "version": "0.1.0",
+  "description": "Queue + routing layer over himmel's scarce CI compute (HIMMEL-502). P2 pure core.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

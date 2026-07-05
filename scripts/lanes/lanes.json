@@ -1,0 +1,17 @@
+{
+  "$schema-note": "HIMMEL-689 — delegation-lane registry. Consumed by scripts/lanes/resolve.mjs. Inventory here; invariant policy stays in CLAUDE.md.",
+  "lanes": [
+    { "id": "haiku",  "label": "Haiku",   "class": "claude-tier", "bestFor": "bulk mechanical (never delegates further)", "effort": "low",    "probe": { "kind": "always" } },
+    { "id": "sonnet", "label": "Sonnet 5","class": "claude-tier", "bestFor": "scoped research",                             "effort": "medium", "probe": { "kind": "always" } },
+    { "id": "opus",   "label": "Opus 4.8","class": "claude-tier", "bestFor": "multi-step reasoning; default parent/orchestrator", "effort": "xhigh", "probe": { "kind": "always" } },
+    { "id": "fable",  "label": "Fable 5", "class": "claude-tier", "bestFor": "judgment, taste — the ~10% hardest calls; escalation target", "effort": "medium", "probe": { "kind": "always" } },
+    { "id": "glm",    "label": "GLM lane (scripts/telegram/spawn-glm.ts)", "class": "impl", "bestFor": "offloaded well-scoped implementation chunks", "effort": "small context — chunk big plans",
+      "probe": { "kind": "env", "name": "ZAI_API_KEY" } },
+    { "id": "hermes-critics", "label": "hermes free critics (qwen3coder)", "class": "critic", "bestFor": "cross-model CR panel (/pr-check)", "effort": "—",
+      "probe": { "kind": "installed", "tool": "hermes" } },
+    { "id": "codex",  "label": "codex (paid, via hermes)", "class": "critic", "bestFor": "CR escalation, second opinions (CR_PROFILE=paid)", "effort": "consumes OpenAI bank",
+      "probe": { "kind": "crprofile", "token": "paid" } },
+    { "id": "gemini", "label": "gemini (gemini-subagent)", "class": "bulk", "bestFor": "1M-context bulk reads, parallel triage", "effort": "—",
+      "probe": { "kind": "path", "cli": "gemini" } }
+  ]
+}

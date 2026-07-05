@@ -14,6 +14,12 @@ external repo or hand-editing global `~/.claude/settings.json`.
 > were mirrored to `yotamleo/claude-statusline` with their `test_cache.sh`
 > coverage, closing the divergence previously noted here. (The local-hash
 > drift guard is a separate follow-up.)
+>
+> **Pending mirror (HIMMEL-690):** the rate-limit bank labels here were
+> renamed `current`→`5h bank`, `weekly`→`7d bank`, and a `ctx` prefix added
+> to the ✍️ context-window figure (killing the "97%" bank/context confusion).
+> Push these `bin/statusline.sh` label edits back to
+> `yotamleo/claude-statusline` to re-close the divergence.
 
 ## What's here
 

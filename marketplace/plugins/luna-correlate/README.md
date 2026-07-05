@@ -8,6 +8,16 @@ operator's date×place stays local and meets the factor cache only inside the of
 proximity index. Outputs are **candidate signals only — never a diagnosis, never
 causation**.
 
+## Opt-in MCP launch (HIMMEL-591)
+
+Claude Code eagerly spawns every enabled plugin's MCP server at session start
+(no native lazy spawn), so this bun server used to load in **every** session —
+even though most never run a correlation. `.mcp.json` now routes through
+`mcp-gate.sh`, which is **default-OFF**: launch with `HIMMEL_MCP_LUNA_CORRELATE=1`
+in the shell to get the tools; otherwise no bun process is held (the server shows
+as not-connected in `/mcp` — expected). Set the var **per launch**, not exported
+globally — a global export re-enables the server in every child session.
+
 ## MCP tools
 
 The plugin ships a bun + TypeScript stdio MCP server (`server.ts`) wrapping the M0

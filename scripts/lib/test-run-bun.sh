@@ -69,16 +69,26 @@ done
 echo "== both wrappers are byte-identical (no drift) =="
 if cmp -s "$W1" "$W2"; then pass "luna-correlate/run-bun.sh == telegram-himmel/run-bun.sh"; else fail "wrappers diverged"; fi
 
-echo "== each .mcp.json routes through its wrapper (no bare bun) =="
+echo "== each .mcp.json routes through the gate then the wrapper (no bare bun) =="
 for p in luna-correlate telegram-himmel; do
     mcp="$REPO_ROOT/marketplace/plugins/$p/.mcp.json"
     cmd="$(jq -r '(.mcpServers // {}) | to_entries[0].value.command' "$mcp" 2>/dev/null)"
     a0="$(jq -r '(.mcpServers // {}) | to_entries[0].value.args[0]' "$mcp" 2>/dev/null)"
+    # args[1] is the gate-var list — a per-plugin copy/paste typo here (e.g. luna
+    # left on the telegram var) would make the documented opt-in var silently never
+    # start the server, so pin it to the exact string each README documents.
+    a1="$(jq -r '(.mcpServers // {}) | to_entries[0].value.args[1]' "$mcp" 2>/dev/null)"
+    case "$p" in
+        luna-correlate)  want_gv="HIMMEL_MCP_LUNA_CORRELATE" ;;
+        telegram-himmel) want_gv="HIMMEL_MCP_TELEGRAM TELEGRAM_OWN_POLLER" ;;
+    esac
+    # run-bun.sh must still appear later in the arg vector (gate exec's it when opted in).
+    has_run="$(jq -r '(.mcpServers // {}) | to_entries[0].value.args | any(. == "${CLAUDE_PLUGIN_ROOT}/run-bun.sh")' "$mcp" 2>/dev/null)"
     # shellcheck disable=SC2016  # literal ${CLAUDE_PLUGIN_ROOT} must NOT expand here
-    if [ "$cmd" = "bash" ] && [ "$a0" = '${CLAUDE_PLUGIN_ROOT}/run-bun.sh' ]; then
-        pass "$p .mcp.json wired through run-bun.sh"
+    if [ "$cmd" = "bash" ] && [ "$a0" = '${CLAUDE_PLUGIN_ROOT}/mcp-gate.sh' ] && [ "$a1" = "$want_gv" ] && [ "$has_run" = "true" ]; then
+        pass "$p .mcp.json wired: gate($a1) -> run-bun.sh"
     else
-        fail "$p .mcp.json command='$cmd' args[0]='$a0' (want bash + \${CLAUDE_PLUGIN_ROOT}/run-bun.sh)"
+        fail "$p .mcp.json command='$cmd' args[0]='$a0' args[1]='$a1' (want '$want_gv') has_run='$has_run'"
     fi
 done
 

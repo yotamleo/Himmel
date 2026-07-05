@@ -284,6 +284,12 @@ case "$RESUME_TIME" in
             echo "ERR arm-resume: --time must be HH:MM (24h), 'smart', or 'auto', got: $RESUME_TIME" >&2
             exit 1
         fi
+        # HIMMEL-708: emit the epoch AND the three schedule fields the derive
+        # block below would otherwise compute in a SECOND python round-trip.
+        # For the common explicit-HH:MM path this collapses two py_armor calls
+        # (each ~4 helper spawns: 2 mktemp + interpreter + 2 rm) into one.
+        # `cand` is already local (astimezone), so its strftime fields equal
+        # what fromtimestamp(epoch).astimezone() yields in the derive block.
         py_armor_capture -c '
 import sys
 from datetime import datetime, timedelta
@@ -292,12 +298,13 @@ now = datetime.now().astimezone()
 cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
 if cand <= now:          # time already passed today -> tomorrow
     cand += timedelta(days=1)
-print(int(cand.timestamp()))
+print(int(cand.timestamp()), cand.strftime("%H:%M"), cand.strftime("%m/%d/%Y"), cand.strftime("%Y%m%d%H%M"))
 ' "$RESUME_TIME" || {
             echo "ERR arm-resume: could not resolve --time $RESUME_TIME to an epoch (python3 failed/timed out)" >&2
             exit 2
         }
-        TARGET_EPOCH="$PY_ARMOR_OUT"
+        read -r TARGET_EPOCH RESUME_TIME START_DATE AT_STAMP <<<"$PY_ARMOR_OUT"
+        _SCHED_FIELDS_DERIVED=1
         ;;
 esac
 
@@ -315,16 +322,20 @@ esac
 #                today/tomorrow heuristic that broke for resets >24h out).
 # Capture FIRST (explicit || handler — a $(...) failure inside a heredoc
 # body would not abort), then validate non-empty before arming.
-py_armor_capture -c '
+# HIMMEL-708: the explicit-HH:MM branch already derived these fields in its
+# single python pass (_SCHED_FIELDS_DERIVED); only the smart/auto paths (which
+# get TARGET_EPOCH from a subprocess) still need this second derivation.
+if [ -z "${_SCHED_FIELDS_DERIVED:-}" ]; then
+    py_armor_capture -c '
 import sys, datetime
 dt = datetime.datetime.fromtimestamp(int(sys.argv[1])).astimezone()
 print(dt.strftime("%H:%M"), dt.strftime("%m/%d/%Y"), dt.strftime("%Y%m%d%H%M"))
 ' "$TARGET_EPOCH" || {
-    echo "ERR arm-resume: could not derive schedule fields from epoch $TARGET_EPOCH" >&2
-    exit 2
-}
-_sched_fields="$PY_ARMOR_OUT"
-read -r RESUME_TIME START_DATE AT_STAMP <<<"$_sched_fields"
+        echo "ERR arm-resume: could not derive schedule fields from epoch $TARGET_EPOCH" >&2
+        exit 2
+    }
+    read -r RESUME_TIME START_DATE AT_STAMP <<<"$PY_ARMOR_OUT"
+fi
 if [ -z "$RESUME_TIME" ] || [ -z "$START_DATE" ] || [ -z "$AT_STAMP" ]; then
     echo "ERR arm-resume: derived schedule fields empty (epoch=$TARGET_EPOCH) — refusing to arm" >&2
     exit 2
@@ -541,6 +552,37 @@ _infer_ticket() {
     _validate_key "$_raw"
 }
 
+# _infer_session_name <ticket> — the `claude -n` value for the armed relaunch:
+# the canonical retitle form "<TICKET> <name>" (HIMMEL-432), so the resumed
+# session is scannable in the /resume picker and on the terminal tab (HIMMEL-702,
+# the only native both-surface mechanism — an agent cannot self-rename mid-run).
+# <ticket> is the already-inferred key (may be empty); the name-half is the
+# worktree slug (type/<key>-<slug>) minus the leading ticket token. Any part may
+# be empty; an all-empty result tells the caller to omit -n (fail-open — let
+# claude auto-title rather than force a meaningless name). The result is
+# sanitized to [A-Za-z0-9._ -]: the ticket key and the type/slug branch
+# (validated above) are already within that class, so the Windows .bat launch
+# line can inject it quoted WITHOUT ^-escaping and stay injection-proof even if a
+# future name source is added. errexit-safe: the grep is `|| true`-guarded and
+# the final tr returns rc 0.
+_infer_session_name() {
+    local _tkt="$1" _name="" _slug _tok _out
+    if [ -n "$WORKTREE_BRANCH" ]; then
+        _slug="${WORKTREE_BRANCH#*/}"                     # feat/himmel-702-x -> himmel-702-x
+        _tok=$(printf '%s\n' "$_slug" | grep -oiE '^[A-Za-z][A-Za-z0-9]*-[0-9]+' | head -1) || true
+        if [ -n "$_tok" ]; then
+            _name="${_slug#"$_tok"}"; _name="${_name#-}"  # strip leading <ticket>- token
+        else
+            _name="$_slug"
+        fi
+    fi
+    if [ -n "$_tkt" ] && [ -n "$_name" ]; then _out="$_tkt $_name"
+    elif [ -n "$_tkt" ]; then _out="$_tkt"
+    else _out="$_name"
+    fi
+    printf '%s' "$_out" | tr -cd 'A-Za-z0-9._ -'
+}
+
 RESUME_PROMPT="load $HANDOVER_PATH overnight mode"
 
 # Compute working directory for the relaunched claude process. Without
@@ -687,6 +729,10 @@ if [ -n "$_ho_ticket" ]; then
 else
     TASK_NAME="HIMMEL-Resume-${_path_suffix}"
 fi
+# The armed relaunch's `claude -n` session title (HIMMEL-702) — computed here so
+# the same resolved $WORKTREE_BRANCH + inferred ticket feed both the scheduler
+# row name and the session/tab title.
+SESSION_NAME=$(_infer_session_name "$_ho_ticket")
 unset _ho_ticket _path_suffix
 
 # Pre-trust the resolved cwd (HIMMEL-386) so the fired relaunch doesn't stall
@@ -726,47 +772,65 @@ _crontab_list() {
     fi
 }
 
+# HIMMEL-708 spawn-tax reduction: memoize the Windows scheduler listing.
+# `schtasks /query` is ~1.2s per spawn and was re-run up to 4× per arm — once
+# for the dedup read, twice for the soft-slot-cap count (list_existing all +
+# task), and once for the collision check — each also re-running its own CSV
+# parse on top of the spawn. Populate it ONCE here so the
+# $()-wrapped list_existing / list_collision_candidates readers inherit the
+# result from the parent shell (a subshell that populated it could not persist
+# it up). Sets, for the caller to read directly:
+#   _SCHTASKS_CSV    raw `/query /fo CSV /nh` stdout — the collision check needs
+#                    the Next-Run-Time column, so it reads this.
+#   _SCHTASKS_RC     the query's exit code (collision skips on rc!=0, matching
+#                    its prior behavior).
+#   _SCHTASKS_NAMES  sorted-unique HIMMEL-Resume-* task names — dedup/soft-cap.
+# Fail-CLOSED on a genuine schtasks error (same policy list_existing had: an
+# error keyword in stderr → ERR + exit 2), so a silent empty result can never
+# be mistaken for "no jobs" and produce a duplicate arm.
+# MSYS_NO_PATHCONV=1 is per-call (HIMMEL-125): without it gitbash mangles each
+# /flag into a Windows-rooted path and schtasks rejects the call; scoping it to
+# this one command keeps it off the later git -C in RESUME_CWD resolution.
+_SCHTASKS_CACHE_DONE=""
+_SCHTASKS_CSV=""
+_SCHTASKS_RC=0
+_SCHTASKS_NAMES=""
+_ensure_schtasks_cache() {
+    [ -n "$_SCHTASKS_CACHE_DONE" ] && return 0
+    local err_file
+    err_file=$(mktemp -t arm-resume.err.XXXXXX)
+    _SCHTASKS_CSV=$(MSYS_NO_PATHCONV=1 schtasks /query /fo CSV /nh 2>"$err_file")
+    _SCHTASKS_RC=$?
+    if [ "$_SCHTASKS_RC" -ne 0 ]; then
+        # schtasks returns rc=1 when there are NO scheduled tasks at all
+        # (empty scheduler) — treat as empty. Any error keyword in stderr = fail.
+        if grep -qiE 'access|denied|cannot|fail' "$err_file" 2>/dev/null; then
+            echo "ERR arm-resume: schtasks /query failed (rc=$_SCHTASKS_RC):" >&2
+            cat "$err_file" >&2
+            rm -f "$err_file"
+            exit 2
+        fi
+    fi
+    rm -f "$err_file"
+    # CSV TaskName column is path-prefixed (`\HIMMEL-Resume-...`); strip the
+    # leading `\` and quotes.
+    # shellcheck disable=SC1003  # `"\\'` strips both quote and literal backslash from schtasks's path-prefixed task names
+    _SCHTASKS_NAMES=$(printf '%s\n' "$_SCHTASKS_CSV" \
+        | grep -o '"\\\?HIMMEL-Resume-[^"]*"' 2>/dev/null \
+        | tr -d '"\\' \
+        | sort -u || true)
+    _SCHTASKS_CACHE_DONE=1
+}
+
 list_existing() {
     local scope="${1:-all}"
     case "$PLATFORM" in
         windows)
-            # schtasks /query: stderr captured separately. CSV output's
-            # TaskName column is path-prefixed (`\HIMMEL-Resume-...`);
-            # strip the leading `\` and quotes.
-            #
-            # MSYS_NO_PATHCONV=1 is per-call (HIMMEL-125): without it,
-            # gitbash mangles each /flag arg into a Windows-rooted path
-            # like "C:/Program Files/Git/query" before schtasks sees
-            # it, and schtasks rejects the call. Setting the var only
-            # for this single command keeps it isolated from later
-            # subshells (the git -C used by RESUME_CWD resolution
-            # breaks if MSYS_NO_PATHCONV is set process-wide).
-            local err_file out rc
-            err_file=$(mktemp -t arm-resume.err.XXXXXX)
-            out=$(MSYS_NO_PATHCONV=1 schtasks /query /fo CSV /nh 2>"$err_file")
-            rc=$?
-            if [ "$rc" -ne 0 ]; then
-                # schtasks returns rc=1 when there are NO scheduled
-                # tasks at all (empty scheduler) — treat as empty.
-                # Any other rc OR any error keyword in stderr = fail.
-                if grep -qiE 'access|denied|cannot|fail' "$err_file" 2>/dev/null; then
-                    echo "ERR arm-resume: schtasks /query failed (rc=$rc):" >&2
-                    cat "$err_file" >&2
-                    rm -f "$err_file"
-                    exit 2
-                fi
-            fi
-            rm -f "$err_file"
-            local names
-            # shellcheck disable=SC1003  # `"\\'` strips both quote and literal backslash from schtasks's path-prefixed task names
-            names=$(printf '%s\n' "$out" \
-                | grep -o '"\\\?HIMMEL-Resume-[^"]*"' 2>/dev/null \
-                | tr -d '"\\' \
-                | sort -u || true)
+            _ensure_schtasks_cache
             if [ "$scope" = task ]; then
-                printf '%s\n' "$names" | grep -Fx "$TASK_NAME" || true
+                printf '%s\n' "$_SCHTASKS_NAMES" | grep -Fx "$TASK_NAME" || true
             else
-                printf '%s\n' "$names"
+                printf '%s\n' "$_SCHTASKS_NAMES"
             fi
             ;;
         linux)
@@ -904,23 +968,22 @@ list_collision_candidates() {
     fi
     case "$PLATFORM" in
         windows)
-            local err_file out rc
-            err_file=$(mktemp -t arm-resume.coll.err.XXXXXX)
-            # MSYS_NO_PATHCONV=1: see HIMMEL-125 note in list_existing.
-            out=$(MSYS_NO_PATHCONV=1 schtasks /query /fo CSV /nh 2>"$err_file")
-            rc=$?
+            # HIMMEL-708: reuse the memoized `schtasks /query` from
+            # _ensure_schtasks_cache instead of a 2nd (identical) spawn. This
+            # tightens ONE narrow case in the safe direction: a GENUINE schtasks
+            # error now fail-closes (exit 2) at the earlier dedup read rather
+            # than only WARN-skipping the collision check here — and the dedup
+            # read already fail-closed on that same error before this branch was
+            # reachable. What still reaches here is the benign rc!=0 "no tasks"
+            # case, which WARNs and skips the collision check exactly as before.
+            _ensure_schtasks_cache
+            local out rc
+            out="$_SCHTASKS_CSV"
+            rc="$_SCHTASKS_RC"
             if [ "$rc" -ne 0 ]; then
-                if grep -qiE 'access|denied|cannot|fail' "$err_file" 2>/dev/null; then
-                    echo "WARN arm-resume: schtasks /query for collision check failed (rc=$rc) — skipping collision check" >&2
-                    rm -f "$err_file"
-                    return 0
-                else
-                    echo "WARN arm-resume: schtasks /query returned rc=$rc (unrecognised error) — skipping collision check" >&2
-                    rm -f "$err_file"
-                    return 0
-                fi
+                echo "WARN arm-resume: schtasks /query returned rc=$rc — skipping collision check" >&2
+                return 0
             fi
-            rm -f "$err_file"
             # Parse all HIMMEL-* tasks from CSV, excluding our own Resume slot.
             # CSV format (from /fo CSV /nh): "TaskName","Next Run Time","Status"
             # TaskName is path-prefixed: "\HIMMEL-Pipeline-Harvest"
@@ -1125,6 +1188,14 @@ check_collision() {
 # auto-arm watchdogs rely on — defer to whatever is already queued).
 DEDUP_SCOPE=task
 [ "$DEDUP_ANY" -eq 1 ] && DEDUP_SCOPE=all
+# HIMMEL-708: warm the Windows scheduler-listing cache in THIS (parent) shell so
+# the $()-wrapped list_existing / list_collision_candidates readers below inherit
+# it — a subshell populating it could not persist the globals up. Fail-closed
+# (exit 2 on a genuine schtasks error) happens here, at the first read, exactly
+# as before. Windows-only: POSIX still lists per-call (atq/crontab, cheap).
+if [ "$PLATFORM" = windows ]; then
+    _ensure_schtasks_cache
+fi
 existing=$(list_existing "$DEDUP_SCOPE")
 if [ -n "$existing" ]; then
     if [ "$FORCE" -eq 1 ]; then
@@ -1240,12 +1311,15 @@ _crontab_schedule() {
     # /bin/sh -c can't re-interpret $/backticks/etc in a handover
     # path.
     local hh="${RESUME_TIME%:*}" mm="${RESUME_TIME#*:}"
-    local q_prompt q_cwd q_channels=""
+    local q_prompt q_cwd q_channels="" q_name=""
     q_prompt=$(printf '%q' "$RESUME_PROMPT")
     q_cwd=$(printf '%q' "$RESUME_CWD")
     [ -n "$CHANNELS" ] && q_channels="--channels $(printf '%q' "$CHANNELS") "
+    # -n <session name> (HIMMEL-702): %q-quote so a space in "<TICKET> <name>"
+    # stays ONE arg through the /bin/sh re-parse at fire time. Empty -> omit.
+    [ -n "$SESSION_NAME" ] && q_name="-n $(printf '%q' "$SESSION_NAME") "
     local self_clean="crontab -l 2>/dev/null | grep -vE '# ${TASK_NAME}\$' | crontab -;"
-    local entry="$mm $hh * * * $self_clean cd $q_cwd && claude $q_prompt $q_channels # $TASK_NAME"
+    local entry="$mm $hh * * * $self_clean cd $q_cwd && claude ${q_name}$q_prompt $q_channels # $TASK_NAME"
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY arm-resume: would add crontab entry:"
         echo "    $entry"
@@ -1281,19 +1355,11 @@ schedule_arm() {
             # of $TEMP-resolved.
             local bat_path
             bat_path=$(mktemp -t himmel-resume.XXXXXX.bat)
-            # bash mktemp on gitbash returns POSIX path; schtasks
-            # wants a Windows path. cygpath converts; fall back to
-            # raw if cygpath absent (Linux running this would fail at
-            # the platform check above, so cygpath should exist here).
-            local bat_path_win
-            if command -v cygpath >/dev/null 2>&1; then
-                if ! bat_path_win=$(cygpath -w "$bat_path" 2>&1); then
-                    echo "ERR arm-resume: cygpath -w failed: $bat_path_win" >&2
-                    rm -f "$bat_path"
-                    exit 4
-                fi
-            else
-                echo "ERR arm-resume: cygpath not on PATH; cannot convert .bat path for schtasks" >&2
+            # bash mktemp on gitbash returns POSIX path; schtasks wants a
+            # Windows path. cygpath converts. cygpath must exist here (Linux
+            # would already have failed the platform check above).
+            if ! command -v cygpath >/dev/null 2>&1; then
+                echo "ERR arm-resume: cygpath not on PATH; cannot convert paths for schtasks" >&2
                 echo "    Install Git for Windows (which ships cygpath)." >&2
                 rm -f "$bat_path"
                 exit 2
@@ -1301,22 +1367,35 @@ schedule_arm() {
             # Resolve claude.cmd to an absolute path so the .bat doesn't
             # depend on PATH being set in whatever cmd shell schtasks
             # spawns (SYSTEM context lacks npm-installed shims by default).
-            local claude_cmd_posix claude_cmd_win
-            if claude_cmd_posix=$(command -v claude 2>/dev/null); then
-                if ! claude_cmd_win=$(cygpath -w "$claude_cmd_posix" 2>&1); then
-                    echo "ERR arm-resume: cygpath -w failed for claude path: $claude_cmd_win" >&2
-                    rm -f "$bat_path"
-                    exit 4
-                fi
-            else
+            local claude_cmd_posix
+            if ! claude_cmd_posix=$(command -v claude 2>/dev/null); then
                 echo "ERR arm-resume: 'claude' not on PATH at arm time" >&2
                 rm -f "$bat_path"
                 exit 2
             fi
-            # Resolve repo root to a Windows path for the cd line.
-            local resume_cwd_win
-            if ! resume_cwd_win=$(cygpath -w "$RESUME_CWD" 2>&1); then
-                echo "ERR arm-resume: cygpath -w failed for resume cwd: $resume_cwd_win" >&2
+            # HIMMEL-708: convert all three paths (.bat, claude, cwd) in ONE
+            # cygpath spawn instead of three — cygpath emits one Windows path
+            # per input line, in argument order. Windows paths contain no
+            # newlines, so split the result with pure-bash parameter expansion
+            # (no extra sed/head spawns).
+            local bat_path_win claude_cmd_win resume_cwd_win _cyg_out _cyg_rest
+            if ! _cyg_out=$(cygpath -w "$bat_path" "$claude_cmd_posix" "$RESUME_CWD" 2>&1); then
+                echo "ERR arm-resume: cygpath -w failed converting one of [bat=$bat_path claude=$claude_cmd_posix cwd=$RESUME_CWD]: $_cyg_out" >&2
+                rm -f "$bat_path"
+                exit 4
+            fi
+            bat_path_win="${_cyg_out%%$'\n'*}"
+            _cyg_rest="${_cyg_out#*$'\n'}"
+            claude_cmd_win="${_cyg_rest%%$'\n'*}"
+            resume_cwd_win="${_cyg_rest#*$'\n'}"
+            # Belt-and-suspenders (HIMMEL-708 CR): a well-behaved cygpath emits
+            # exactly three non-empty lines on rc 0, so the split above is sound.
+            # Guard anyway against a build that exits 0 with fewer lines —
+            # otherwise resume_cwd_win would silently inherit claude_cmd_win (the
+            # `#*\n` no-ops when no newline remains) and mis-target the .bat cd.
+            # Mirrors the non-empty check the python-derived schedule fields get.
+            if [ -z "$bat_path_win" ] || [ -z "$claude_cmd_win" ] || [ -z "$resume_cwd_win" ]; then
+                echo "ERR arm-resume: cygpath -w produced incomplete output (bat/claude/cwd): $_cyg_out" >&2
                 rm -f "$bat_path"
                 exit 4
             fi
@@ -1356,6 +1435,12 @@ schedule_arm() {
                 cs="${cs//|/^|}"
                 ch=" --channels \"$cs\""
             fi
+            # -n <session name> (HIMMEL-702). SESSION_NAME is sanitized to
+            # [A-Za-z0-9._ -] (see _infer_session_name) so it carries no CMD
+            # metacharacter and needs no ^-escaping here; quote it so the space
+            # in "<TICKET> <name>" stays a single argv entry. Empty -> omit.
+            local nm=""
+            [ -n "$SESSION_NAME" ] && nm=" -n \"$SESSION_NAME\""
             # Self-clean FIRST: a /sc ONCE task lingers in Task Scheduler
             # after it fires (Ready/completed), accumulating stale jobs and
             # blocking a future same-handover arm without --force. So the
@@ -1376,7 +1461,7 @@ schedule_arm() {
             {
                 printf 'schtasks /delete /tn "%s" /f >nul 2>&1\r\n' "$TASK_NAME"
                 printf 'cd /d "%s" || exit /b 1\r\n' "$c"
-                printf '"%s" "%s"%s\r\n' "$claude_cmd_win" "$p" "$ch"
+                printf '"%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
             } > "$bat_path"
 
             if [ "$DRY_RUN" -eq 1 ]; then
@@ -1416,18 +1501,21 @@ schedule_arm() {
                 # spaces, etc., so a handover path containing $(rm -rf
                 # /) survives both the heredoc write AND the /bin/sh
                 # re-parse at fire time as a literal string.
-                local q_prompt q_cwd q_channels=""
+                local q_prompt q_cwd q_channels="" q_name=""
                 q_prompt=$(printf '%q' "$RESUME_PROMPT")
                 q_cwd=$(printf '%q' "$RESUME_CWD")
                 # %q shell-quotes the channels spec so /bin/sh can't
                 # re-interpret it at fire time; trailing space separates
                 # it from the prompt arg (empty when no --channels).
                 [ -n "$CHANNELS" ] && q_channels="--channels $(printf '%q' "$CHANNELS") "
+                # -n <session name> (HIMMEL-702): %q so "<TICKET> <name>"
+                # stays one arg after the /bin/sh re-parse. Empty -> omit.
+                [ -n "$SESSION_NAME" ] && q_name="-n $(printf '%q' "$SESSION_NAME") "
                 if [ "$DRY_RUN" -eq 1 ]; then
                     echo "DRY arm-resume: would at -t $AT_STAMP <<'CMD'"
                     echo "    # $TASK_NAME"
                     echo "    cd $q_cwd || exit 1"
-                    echo "    claude $q_prompt $q_channels"
+                    echo "    claude ${q_name}$q_prompt $q_channels"
                     echo "    CMD"
                     return 0
                 fi
@@ -1440,7 +1528,7 @@ schedule_arm() {
                 if ! at -t "$AT_STAMP" 2>"$err_file" <<CMD
 # $TASK_NAME
 cd $q_cwd || exit 1
-claude $q_prompt $q_channels
+claude ${q_name}$q_prompt $q_channels
 CMD
                 then
                     echo "ERR arm-resume: at -t $AT_STAMP failed:" >&2

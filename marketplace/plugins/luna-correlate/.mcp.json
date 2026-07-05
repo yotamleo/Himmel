@@ -2,7 +2,7 @@
   "mcpServers": {
     "luna-correlate": {
       "command": "bash",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/run-bun.sh", "run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp-gate.sh", "HIMMEL_MCP_LUNA_CORRELATE", "bash", "${CLAUDE_PLUGIN_ROOT}/run-bun.sh", "run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
     }
   }
 }
