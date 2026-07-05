@@ -8,6 +8,14 @@ set -u -o pipefail
 HOOK="$(cd "$(dirname "$0")" && pwd)/auto-arm-on-cap.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# Isolate the quota-gauge ledger so threshold-trip tests never pollute the
+# operator's real ~/.himmel/quota-gauge.jsonl (HIMMEL-687).
+export HIMMEL_QUOTA_GAUGE_LEDGER="$TMP/quota-gauge.jsonl"
+
+# Leak guard (HIMMEL-687): the real default ledger must be byte-identical
+# after the suite -- proves the override above actually isolates writes.
+REAL_LEDGER="${HOME:-}/.himmel/quota-gauge.jsonl"
+if [ -f "$REAL_LEDGER" ]; then REAL_LEDGER_BEFORE="$(wc -c < "$REAL_LEDGER" | tr -d ' ')"; else REAL_LEDGER_BEFORE="ABSENT"; fi
 
 pass=0
 fail=0
@@ -811,6 +819,32 @@ run_hook "$S" "$C"
 assert_rc "real over-100 overage still trips (exits 2)" 2 $?
 assert_file "arm called on a 150% overage" present "$ARM_LOG"
 rm -f "$ARM_LOG"
+
+# --- HIMMEL-687: leak guard -- real ledger untouched by the suite -----------
+echo "Test 40: quota-gauge ledger isolation -- real ~/.himmel/quota-gauge.jsonl untouched"
+if [ -f "$REAL_LEDGER" ]; then REAL_LEDGER_AFTER="$(wc -c < "$REAL_LEDGER" | tr -d ' ')"; else REAL_LEDGER_AFTER="ABSENT"; fi
+if [ "$REAL_LEDGER_BEFORE" = "$REAL_LEDGER_AFTER" ]; then
+    echo "  PASS  real quota-gauge ledger untouched (no leak): $REAL_LEDGER_BEFORE"
+    pass=$((pass+1))
+else
+    echo "  FAIL  real quota-gauge ledger LEAKED (before=$REAL_LEDGER_BEFORE after=$REAL_LEDGER_AFTER)"
+    fail=$((fail+1))
+fi
+
+# --- HIMMEL-687: positive-write guard -- keeps Test 40 non-vacuous ----------
+# quota_gauge_note_claude is fail-open/silent (auto-arm-on-cap.sh header): if the
+# whole write path ever dies (sourcing fails, append silently errors) NO ledger
+# is written -- neither real nor isolated -- and Test 40 would pass vacuously.
+# Assert the isolated ledger actually accumulated writes so a dead write path
+# fails loudly instead of masquerading as "no leak".
+echo "Test 41: isolated ledger received writes -- leak-guard was actually exercised"
+if [ -s "$HIMMEL_QUOTA_GAUGE_LEDGER" ]; then
+    echo "  PASS  isolated ledger got writes: $(wc -c < "$HIMMEL_QUOTA_GAUGE_LEDGER" | tr -d ' ') bytes"
+    pass=$((pass+1))
+else
+    echo "  FAIL  isolated ledger EMPTY -- write path never exercised (Test 40 vacuous)"
+    fail=$((fail+1))
+fi
 
 echo
 echo "Results: $pass passed, $fail failed"

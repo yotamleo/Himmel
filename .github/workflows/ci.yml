@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        pkg: [jira, bitbucket, himmel-run]
+        pkg: [jira, bitbucket, himmel-run, ci-orchestrator]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -81,6 +81,18 @@ jobs:
         working-directory: scripts/${{ matrix.pkg }}
       - run: npm test
         working-directory: scripts/${{ matrix.pkg }}
+
+  lanes-suite:
+    # HIMMEL-689: scripts/lanes is a zero-dependency ESM test package — no
+    # package.json (a committed one under scripts/ trips the npm-audit gates for a
+    # package with nothing to install). Run its node:test suites directly.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: node --test "scripts/lanes/tests/**/*.test.mjs"
 
   bun-suites:
     runs-on: ubuntu-latest

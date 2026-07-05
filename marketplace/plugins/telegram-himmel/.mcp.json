@@ -2,7 +2,7 @@
   "mcpServers": {
     "telegram": {
       "command": "bash",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/run-bun.sh", "run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp-gate.sh", "HIMMEL_MCP_TELEGRAM TELEGRAM_OWN_POLLER", "bash", "${CLAUDE_PLUGIN_ROOT}/run-bun.sh", "run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
     }
   }
 }

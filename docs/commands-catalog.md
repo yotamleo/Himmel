@@ -122,6 +122,7 @@ slash alias exists).
 | Command | What it does |
 |---|---|
 | /quiet-run | Run a noisy command quietly — one OK/ERR line + log path |
+| /lanes | Print the delegation/critic/bulk lanes actually available on THIS machine (HIMMEL-689 — availability-aware, derived from scripts/lanes/lanes.json + machine state; the invariant delegation policy stays in CLAUDE.md). |
 | /himmel-doctor (himmel-ops) | Diagnose common harness health problems (node/caveman SessionStart wiring, shadowed claude-obsidian, dirty single-writer luna vault, bitbucket-vs-gh, handover-registry gaps, PATH-fragile bare-interpreter MCP servers); severity-grouped report; `--fix` heals the node wiring; `--file-issue` files ONE consolidated public GitHub issue. |
 | /himmel-update | Update this himmel checkout (harness) — git pull + marketplace re-sync. autoUpdate does NOT deliver himmel updates. |
 | /himmel-update-all | Update BOTH the himmel harness (/himmel-update) and the luna vault (/luna-upgrade) in one shot; `--check` dry-runs both. |

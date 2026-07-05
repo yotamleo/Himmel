@@ -445,6 +445,102 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 14: a 401 from the target key retries with a sibling vault's key -----
+# (HIMMEL-711) Multi-vault: when a DIFFERENT vault owns port 27124, the target
+# key gets 401. The hook must discover the operator's other vault keys and retry;
+# the sibling whose server is bound accepts its own key. `curl` is PATH-shimmed to
+# emit 200 ONLY for the OK key (else 401) — no real network, no real Obsidian.
+# HOME is sandboxed so only the two fake vaults are discovered.
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/Documents/vaultA/.obsidian/plugins/obsidian-local-rest-api" \
+         "$SB/home/Documents/vaultB/.obsidian/plugins/obsidian-local-rest-api"
+printf '{"apiKey":"primary-key-A"}\n' > "$SB/home/Documents/vaultA/.obsidian/plugins/obsidian-local-rest-api/data.json"
+printf '{"apiKey":"sibling-key-B"}\n' > "$SB/home/Documents/vaultB/.obsidian/plugins/obsidian-local-rest-api/data.json"
+SHIMDIR="$SB/bin"; mkdir -p "$SHIMDIR"
+cat > "$SHIMDIR/curl" <<'EOF'
+#!/usr/bin/env bash
+key=""; prev=""
+for a in "$@"; do
+    if [ "$prev" = "-H" ]; then
+        case "$a" in "Authorization: Bearer "*) key="${a#Authorization: Bearer }" ;; esac
+    fi
+    prev="$a"
+done
+if [ "$key" = "$ESW_STUB_OK_KEY" ]; then printf '200'; else printf '401'; fi
+EOF
+chmod +x "$SHIMDIR/curl"
+# Seed a STALE degradation marker: a healthy recovery PUT must clear it (the
+# self-healing half of the loud flag — an unbroken clear prevents a permanent
+# false "DEGRADED" banner after a single bad session).
+MARKER14="$SB/proj/.claude/end-session-wiki.degraded"
+mkdir -p "$SB/proj/.claude"; printf 'stale DEGRADED marker from a prior session\n' > "$MARKER14"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+RC="$(printf '%s' "$payload" | env -u USERPROFILE OSTYPE="linux-gnu" OS="" PATH="$SHIMDIR:$PATH" \
+        HOME="$SB/home" LUNA_VAULT_PATH="$SB/home/Documents/vaultA" OBSIDIAN_API_KEY="" \
+        ESW_STUB_OK_KEY="sibling-key-B" STUB_MODE="noop" CRYSTALLIZE_PID_DIR="$SB/pids" \
+        CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"; echo $?)"
+LOG14="$SB/proj/.claude/end-session-wiki.log"
+if [ "$RC" = "0" ]; then pass "401-retry: hook exits 0"; else fail "401-retry: exit was $RC, expected 0"; fi
+if grep -q 'recovered with a sibling vault key' "$LOG14" 2>/dev/null; then
+    pass "401-retry: recovered via a sibling vault key"
+else
+    fail "401-retry: did not recover via a sibling key"
+fi
+if grep -q 'wrote sessions/' "$LOG14" 2>/dev/null && ! grep -q 'local fs fallback' "$LOG14" 2>/dev/null; then
+    pass "401-retry: took the REST success path (no disk fallback)"
+else
+    fail "401-retry: fell back to disk instead of recovering"
+fi
+if [ ! -f "$MARKER14" ]; then
+    pass "401-retry: healthy recovery PUT cleared the stale degradation marker"
+else
+    fail "401-retry: stale degradation marker survived a healthy recovery PUT"
+fi
+# Redaction (hard requirement): no apiKey value may reach the log.
+if grep -q 'sibling-key-B\|primary-key-A' "$LOG14" 2>/dev/null; then
+    fail "401-retry: an apiKey value leaked into the log"
+else
+    pass "401-retry: no apiKey value in the log (redaction holds)"
+fi
+rm -rf "$SB"
+
+# --- Case 14b: every candidate vault key 401s -> on-disk fallback preserved ----
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/Documents/vaultA/.obsidian/plugins/obsidian-local-rest-api"
+printf '{"apiKey":"primary-key-A"}\n' > "$SB/home/Documents/vaultA/.obsidian/plugins/obsidian-local-rest-api/data.json"
+SHIMDIR="$SB/bin"; mkdir -p "$SHIMDIR"
+cat > "$SHIMDIR/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '401'
+EOF
+chmod +x "$SHIMDIR/curl"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"t","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" | env -u USERPROFILE OSTYPE="linux-gnu" OS="" PATH="$SHIMDIR:$PATH" \
+    HOME="$SB/home" LUNA_VAULT_PATH="$SB/home/Documents/vaultA" OBSIDIAN_API_KEY="" \
+    STUB_MODE="noop" CRYSTALLIZE_PID_DIR="$SB/pids" CLAUDE_PROJECT_DIR="$SB/proj" bash "$HOOK"
+LOG14B="$SB/proj/.claude/end-session-wiki.log"
+NOTE="$(find "$SB/home/Documents/vaultA/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if grep -q 'local fs fallback' "$LOG14B" 2>/dev/null && [ -n "$NOTE" ]; then
+    pass "401-retry: all keys 401 -> on-disk fallback preserved"
+else
+    fail "401-retry: all-keys-401 did not fall back to disk"
+fi
+# The loud degradation flag (HIMMEL-711): a persisted marker must be written so a
+# SessionStart / where-are-we surface can pick up the silent-disk fallback.
+MARKER14B="$SB/proj/.claude/end-session-wiki.degraded"
+if [ -f "$MARKER14B" ] && grep -q 'DEGRADED' "$MARKER14B" 2>/dev/null; then
+    pass "401-retry: degradation marker persisted on disk-only fallback"
+else
+    fail "401-retry: no degradation marker written on disk-only fallback"
+fi
+# Redaction (hard requirement): no apiKey value in the log OR the marker.
+if grep -q 'primary-key-A' "$LOG14B" "$MARKER14B" 2>/dev/null; then
+    fail "401-retry: an apiKey value leaked into the log/marker on fallback"
+else
+    pass "401-retry: no apiKey value in the log or marker (redaction holds)"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

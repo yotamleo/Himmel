@@ -338,6 +338,72 @@ try {
     Remove-Item -LiteralPath $huskVault -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $huskProj  -Recurse -Force -ErrorAction SilentlyContinue
 
+    # ---- 401 multi-vault retry cases (HIMMEL-711) ----------------------------
+    # A 401 from the target vault's key must trigger discovery of the operator's
+    # OTHER vault keys and a retry. The network is stubbed via ESW_PUT_CMD (no
+    # real Invoke-RestMethod / no real Obsidian); USERPROFILE is sandboxed so
+    # only the two fake vaults are discovered.
+    $mvHome = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-mv-" + [guid]::NewGuid().ToString('N'))
+    $mvProj = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-mvp-" + [guid]::NewGuid().ToString('N'))
+    $vaultA = Join-Path $mvHome 'Documents\vaultA'
+    $vaultB = Join-Path $mvHome 'Documents\vaultB'
+    New-Item -ItemType Directory -Path (Join-Path $vaultA '.obsidian\plugins\obsidian-local-rest-api') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $vaultB '.obsidian\plugins\obsidian-local-rest-api') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $mvProj '.claude') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $vaultA '.obsidian\plugins\obsidian-local-rest-api\data.json') -Value '{"apiKey":"primary-key-A"}'
+    Set-Content -LiteralPath (Join-Path $vaultB '.obsidian\plugins\obsidian-local-rest-api\data.json') -Value '{"apiKey":"sibling-key-B"}'
+    # PUT stub: args = <key> <uri>; echoes 200 only for the OK key, else 401.
+    $putStub = Join-Path $mvProj 'put-stub.ps1'
+    Set-Content -LiteralPath $putStub -Value 'param([string]$Key,[string]$Uri); if ($Key -eq $env:ESW_STUB_OK_KEY) { "200" } else { "401" }'
+    $mvTs = Join-Path $mvProj 'transcript.jsonl'
+    Set-Content -LiteralPath $mvTs -Value '{"timestamp":"2026-06-17T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"l1\nl2"}]}}'
+    $mvLog = Join-Path $mvProj '.claude\end-session-wiki.log'
+
+    function Invoke-HookMV {
+        param([string]$OkKey)
+        $pl = @{ transcript_path = $mvTs; cwd = $mvProj; session_id = 't'; reason = 'other' } | ConvertTo-Json -Compress
+        $env:USERPROFILE = $mvHome
+        $env:CLAUDE_PROJECT_DIR = $mvProj
+        $env:OBSIDIAN_API_KEY = ''
+        $env:LUNA_VAULT_PATH = $vaultA
+        $env:ESW_PUT_CMD = $putStub
+        $env:ESW_STUB_OK_KEY = $OkKey
+        $pl | pwsh -NoProfile -File $HOOK | Out-Null
+        Remove-Item Env:\ESW_PUT_CMD -ErrorAction SilentlyContinue
+        Remove-Item Env:\ESW_STUB_OK_KEY -ErrorAction SilentlyContinue
+    }
+
+    # Case 13: a sibling vault's key recovers the 401.
+    Remove-Item -LiteralPath $mvLog -ErrorAction SilentlyContinue
+    # Seed a STALE degradation marker: a healthy recovery PUT must clear it (the
+    # self-healing half of the loud flag — prevents a permanent false banner).
+    $marker13 = Join-Path $mvProj '.claude\end-session-wiki.degraded'
+    Set-Content -LiteralPath $marker13 -Value 'stale DEGRADED marker from a prior session'
+    Invoke-HookMV -OkKey 'sibling-key-B'
+    $log13 = Get-Content -LiteralPath $mvLog -Raw -ErrorAction SilentlyContinue
+    if ($log13 -match 'recovered with a sibling vault key') { Pass '401-retry(ps): recovered via a sibling vault key' } else { Fail '401-retry(ps): did not recover via a sibling key' }
+    if (($log13 -match '(?m) wrote sessions/') -and ($log13 -notmatch 'local fs fallback')) { Pass '401-retry(ps): took the REST success path (no disk fallback)' } else { Fail '401-retry(ps): fell back to disk instead of recovering' }
+    if (-not (Test-Path -LiteralPath $marker13)) { Pass '401-retry(ps): healthy recovery PUT cleared the stale degradation marker' } else { Fail '401-retry(ps): stale degradation marker survived a healthy recovery PUT' }
+    if ($log13 -match 'sibling-key-B|primary-key-A') { Fail '401-retry(ps): an apiKey value leaked into the log' } else { Pass '401-retry(ps): no apiKey value in the log (redaction holds)' }
+
+    # Case 14: no vault key accepted (all 401) -> on-disk fallback preserved.
+    Remove-Item -LiteralPath $mvLog -ErrorAction SilentlyContinue
+    Get-ChildItem -Path (Join-Path $vaultA 'sessions') -Recurse -Filter *.md -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Invoke-HookMV -OkKey 'no-such-key'
+    $log14 = Get-Content -LiteralPath $mvLog -Raw -ErrorAction SilentlyContinue
+    $mvNote = Get-ChildItem -Path (Join-Path $vaultA 'sessions') -Recurse -Filter *.md -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (($log14 -match 'local fs fallback') -and $mvNote) { Pass '401-retry(ps): all keys 401 -> on-disk fallback preserved' } else { Fail '401-retry(ps): all-keys-401 did not fall back to disk' }
+    # The loud degradation flag (HIMMEL-711): a persisted marker must be written so
+    # a SessionStart / where-are-we surface can pick up the silent-disk fallback.
+    $marker14 = Join-Path $mvProj '.claude\end-session-wiki.degraded'
+    if ((Test-Path -LiteralPath $marker14) -and ((Get-Content -LiteralPath $marker14 -Raw) -match 'DEGRADED')) { Pass '401-retry(ps): degradation marker persisted on disk-only fallback' } else { Fail '401-retry(ps): no degradation marker written on disk-only fallback' }
+    # Redaction (hard requirement): no apiKey value in the log OR the marker.
+    $blob14 = "$log14`n$(Get-Content -LiteralPath $marker14 -Raw -ErrorAction SilentlyContinue)"
+    if ($blob14 -match 'primary-key-A') { Fail '401-retry(ps): an apiKey value leaked into the log/marker on fallback' } else { Pass '401-retry(ps): no apiKey value in the log or marker (redaction holds)' }
+
+    Remove-Item -LiteralPath $mvHome -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $mvProj -Recurse -Force -ErrorAction SilentlyContinue
+
     $script:reached = $true
 }
 catch {

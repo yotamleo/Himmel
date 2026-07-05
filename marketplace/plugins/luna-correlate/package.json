@@ -5,7 +5,7 @@
   "bin": "./server.ts",
   "scripts": {
     "test": "bun test",
-    "start": "bun install --no-summary && bun server.ts"
+    "start": "(test -d node_modules || bun install --no-summary) && bun server.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

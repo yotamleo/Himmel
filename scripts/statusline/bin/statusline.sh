@@ -236,7 +236,7 @@ fi
 
 line1="${blue}${model_name}${reset}"
 line1+="${sep}"
-line1+="✍️ ${pct_color}${pct_used}%${reset}"
+line1+="✍️ ctx ${pct_color}${pct_used}%${reset}"
 line1+="${sep}"
 line1+="${skip_perms}${cyan}${dirname}${reset}"
 if [ -n "$git_branch" ]; then
@@ -437,7 +437,7 @@ if [ -n "$five_hour_pct" ]; then
     five_hour_pct_color=$(color_for_pct "$five_hour_pct")
     five_hour_pct_fmt=$(printf "%3d" "$five_hour_pct")
 
-    rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset}"
+    rate_lines+="${white}5h bank${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset}"
     [ -n "$five_hour_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
 fi
 
@@ -448,7 +448,7 @@ if [ -n "$seven_day_pct" ]; then
     seven_day_pct_fmt=$(printf "%3d" "$seven_day_pct")
 
     [ -n "$rate_lines" ] && rate_lines+="\n"
-    rate_lines+="${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset}"
+    rate_lines+="${white}7d bank${reset} ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset}"
     [ -n "$seven_day_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
 fi
 

@@ -137,9 +137,8 @@ skill / [`docs/internals/stuck-playbook.md`](docs/internals/stuck-playbook.md).
 keep your own context for judgment. Hand any self-contained subtask to
 a subagent and keep working while it runs. Brief every child: the
 context, the why, what done looks like — it starts blank and inherits
-nothing. Route by lane — the fleet is wider than Claude, but paid/
-optional lanes (codex, GLM, gemini) exist only where the operator
-configured them; skip absent lanes:
+nothing. Route by lane. The Claude tiers are always present; their
+*semantics* (what each tier is for) are invariant:
 
 | Lane | Best for | Effort / notes |
 |---|---|---|
@@ -147,10 +146,13 @@ configured them; skip absent lanes:
 | Sonnet 5 | scoped research | medium — good, but compare first: another tier at adjusted effort often beats its token cost, by task length |
 | Opus 4.8 | multi-step reasoning; **default parent/orchestrator** | xhigh |
 | top model | judgment, taste — the ~10% hardest calls; escalation target | medium; xhigh for the hardest only — skip `high` |
-| GLM lane (`scripts/telegram/spawn-glm.ts`) | offloaded well-scoped implementation chunks | small context — chunk big plans |
-| hermes free critics (qwen3coder) | cross-model CR panel (`/pr-check`) | — |
-| codex (paid, via hermes) | CR escalation, second opinions (`CR_PROFILE=paid`) | consumes OpenAI bank |
-| gemini (`gemini-subagent`) | 1M-context bulk reads, parallel triage | — |
+
+Beyond the Claude tiers the fleet includes machine-specific impl/critic/
+bulk lanes (paid/optional — they exist only where the operator configured
+them). Query the live set with **`/lanes`** (derived from
+`scripts/lanes/lanes.json` + machine state, HIMMEL-689) — never route to a
+lane `/lanes` doesn't list. The tier semantics above are invariant; the
+inventory is data.
 
 **Escalation over top-down:** the parent doesn't have to be the top
 model — the Opus parent spawns a top-model child for the one hard call;

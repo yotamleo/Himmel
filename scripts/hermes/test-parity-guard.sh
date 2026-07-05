@@ -61,6 +61,39 @@ g "schtasks"       block '{"tool_name":"terminal","tool_input":{"command":"schta
 echo "== parity_guard: fail-closed on malformed payload =="
 g "malformed json" block 'NOT JSON'
 
+echo "== parity_guard: PHI / data-egress fence (HIMMEL-695) =="
+# Fixtures in Windows-resolvable form so the native python (Git Bash) stats the
+# real temp tree — same cygpath handling as HERMES_HOME above.
+wp() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+mkdir -p "$TMP/vault/sub" "$TMP/phi/case" "$TMP/repo" "$TMP/denyroot/pt"
+: > "$TMP/vault/.salus"                     # PHI vault marker
+CFG="$TMP/glmcfg"; mkdir -p "$CFG"
+printf '%s\n' "$(wp "$TMP/phi")" > "$CFG/phi-roots"            # registered PHI root
+printf '%s\n' "$(wp "$TMP/denyroot")" > "$CFG/egress-denylist" # registered egress root
+CFG_W="$(wp "$CFG")"; export CLAUDE_GLM_CONFIG_DIR="$CFG_W"
+WV="$(wp "$TMP/vault")"
+g ".salus write refused (ancestor walk)" block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$WV/sub/note.md\"}}"
+g ".salus read refused"        block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$WV/patient.md\"}}"
+g ".salus search refused"      block "{\"tool_name\":\"search_files\",\"tool_input\":{\"path\":\"$WV\"}}"
+g "phi-roots descendant refused" block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$(wp "$TMP/phi/case")/pt.md\"}}"
+g "non-PHI write still allowed" allow "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$(wp "$TMP/repo")/foo.sh\"}}"
+g "terminal .salus ref refused" block '{"tool_name":"terminal","tool_input":{"command":"cat /data/.salus/pt.md"}}'
+g "egress-denylist descendant refused" block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$(wp "$TMP/denyroot/pt")/x.md\"}}"
+g "delete under .salus refused" block "{\"tool_name\":\"delete_file\",\"tool_input\":{\"path\":\"$WV/old.md\"}}"
+PHI_W="$(wp "$TMP/phi")"
+g "terminal phi-root ref refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"grep x $PHI_W/case/pt.md\"}}"
+# symlink/junction INTO a .salus vault must not bypass the ancestor walk (realpath).
+if ln -s "$TMP/vault/sub" "$TMP/lnk" 2>/dev/null && [ -L "$TMP/lnk" ]; then
+  g "symlink into .salus refused" block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$(wp "$TMP/lnk")/pt.md\"}}"
+else
+  echo "  skip: symlink into .salus (no real symlink support here)"
+fi
+# Unreadable list (phi-roots is a DIRECTORY) -> fail closed for any path.
+mkdir -p "$TMP/glmcfg_bad/phi-roots"
+CFGBAD_W="$(wp "$TMP/glmcfg_bad")"; export CLAUDE_GLM_CONFIG_DIR="$CFGBAD_W"
+g "unreadable list -> fail closed" block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$(wp "$TMP/anywhere")/ok.md\"}}"
+unset CLAUDE_GLM_CONFIG_DIR
+
 echo "== wire_parity_guard: set (insert + replace) =="
 cfg="$TMP/c1.yaml"
 printf 'model:\n  default: gpt-5.5\nhooks: {}\nsecurity:\n  redact_secrets: true\n' > "$cfg"
