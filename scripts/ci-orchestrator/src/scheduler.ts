@@ -43,6 +43,7 @@ export type TickReport = {
   deferred: string[];
   verdicts: { jobId: string; conclusion: string }[];
   posted: string[];
+  deadLettered: string[]; // required verdicts the reporter gave up on (permanent error / attempt cap) — surfaced, not silently retried forever (HIMMEL-714)
 };
 
 export type SchedulerDeps = {
@@ -88,7 +89,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickReport> {
   const daemon = deps.daemonId ?? "vm";
   const ttl = deps.leaseTtlMs ?? 15 * 60_000;
   const byName = new Map<LaneName, LaneAdapter>(deps.adapters.map((a) => [a.name, a]));
-  const report: TickReport = { submitted: [], reused: [], dispatched: [], deferred: [], verdicts: [], posted: [] };
+  const report: TickReport = { submitted: [], reused: [], dispatched: [], deferred: [], verdicts: [], posted: [], deadLettered: [] };
 
   // 1. Discover + plan submission (doc-only skip + dedup). Only genuinely new
   //    jobs are submitted (a job already in the ledger is not re-submitted).
@@ -184,7 +185,11 @@ export async function tick(deps: SchedulerDeps): Promise<TickReport> {
   }
 
   // 6. Drain any still-unposted backlog (prior ticks where GitHub was down).
-  await deps.reporter.retryUnposted(readState(env, path), deps.gh);
+  //    Dead-lettered required verdicts (permanent error / attempt cap) are
+  //    surfaced in the report so a wedged required check is visible rather than
+  //    retried forever (HIMMEL-714).
+  const drain = await deps.reporter.retryUnposted(readState(env, path), deps.gh);
+  report.deadLettered = drain.deadLettered;
 
   return report;
 }

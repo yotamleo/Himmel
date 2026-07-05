@@ -51,7 +51,7 @@ function spyReporter(): Reporter & {
 } {
   return {
     postVerdict: vi.fn(async () => ({ posted: true })),
-    retryUnposted: vi.fn(async () => ({ posted: [] })),
+    retryUnposted: vi.fn(async () => ({ posted: [], deadLettered: [] })),
   };
 }
 
