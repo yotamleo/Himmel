@@ -49,7 +49,7 @@ else
 fi
 
 ANCHOR_SLUG="qwen3coder"
-ANCHOR_MODEL="qwen/qwen3-coder-480b-a35b-instruct"
+ANCHOR_MODEL="qwen/qwen3.6-35b-a3b"
 
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
 CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-240}"
