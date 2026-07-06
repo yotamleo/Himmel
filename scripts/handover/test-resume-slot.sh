@@ -203,6 +203,27 @@ assert_rc "T15 null both-windows util exits 2" 2 "$rc"
 assert_contains "T15 surfaces null-utilization reason" "utilization is null" "$err"
 
 # ---------------------------------------------------------------------------
+# T16: EPOCH resets_at (HIMMEL-732 schema drift, missed here until HIMMEL-738)
+#      — exhausted window with a raw epoch string like "1783760400" must pick
+#      that reset, not die "resets_at missing/unparseable" (the live failure
+#      that tore auto-arm-on-cap at seven_day=95%).
+# ---------------------------------------------------------------------------
+SEVEN_EPOCH=$((NOW + 200000))
+mk_cache "$TMP/epoch.json" 10.0 "$((NOW + 9000))" 95.0 "$SEVEN_EPOCH"
+out=$(bash "$SLOT" --cache "$TMP/epoch.json" --max-age 0 --emit all 2>&1); rc=$?
+assert_rc "T16 epoch resets_at exits 0" 0 "$rc"
+assert_contains "T16 waits for seven-day reset" "wait for seven-day reset" "$out"
+ep=$(printf '%s' "$out" | cut -f1)
+match=$(python3 -c 'import sys; print(1 if abs(int(sys.argv[1])-int(sys.argv[2]))<=1 else 0)' "$ep" "$SEVEN_EPOCH")
+assert_true "T16 epoch == seven_day epoch reset" "$match"
+# ...and a numeric (unquoted JSON number) resets_at is accepted too.
+printf '{"five_hour":{"utilization":10.0,"resets_at":%s},"seven_day":{"utilization":95.0,"resets_at":%s}}' \
+    "$((NOW + 9000))" "$SEVEN_EPOCH" > "$TMP/epochnum.json"
+out=$(bash "$SLOT" --cache "$TMP/epochnum.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T16b numeric resets_at exits 0" 0 "$rc"
+assert_contains "T16b waits for seven-day reset" "wait for seven-day reset" "$out"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 if [ "$FAILED" -gt 0 ]; then echo "---"; echo "FAIL $FAILED case(s)"; exit 1; fi
