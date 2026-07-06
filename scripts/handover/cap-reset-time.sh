@@ -125,9 +125,15 @@ if [ -z "$resets_at_iso" ] || [ "$resets_at_iso" = "null" ]; then
 fi
 
 # resets_at is ISO 8601 UTC like "2026-05-25T11:40:01.173252+00:00".
-# Convert to epoch via armored python3 (portable across gitbash/linux/macos
-# without GNU date -d, which BSD date lacks; capture goes through a file,
-# not $(), per the HIMMEL-249 armor).
+# Schema drift (HIMMEL-732, observed 2026-07-06): newer statusline builds
+# write resets_at as a RAW EPOCH STRING like "1783760400" for both the
+# five_hour and seven_day windows. Detect that form first and use it
+# directly; otherwise convert ISO -> epoch via armored python3 (portable
+# across gitbash/linux/macos without GNU date -d, which BSD date lacks;
+# capture goes through a file, not $(), per the HIMMEL-249 armor).
+if [[ "$resets_at_iso" =~ ^[0-9]+$ ]]; then
+    resets_at_epoch="$resets_at_iso"
+else
 py_armor_capture -c '
 import sys
 from datetime import datetime, timezone
@@ -148,6 +154,7 @@ print(int(dt.timestamp()))
     exit 3
 }
 resets_at_epoch="$PY_ARMOR_OUT"
+fi
 
 case "$OUTPUT" in
     raw)
