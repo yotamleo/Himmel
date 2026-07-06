@@ -105,6 +105,41 @@ assert_rc "T11 --help rc=0" 0 "$?"
 bash "$CAP" --cache "$FIXTURE" --max-age 0 --window five_hour >/dev/null 2>&1
 assert_rc "T12 underscore window form rc=0" 0 "$?"
 
+# T14-T18: schema drift (HIMMEL-732) — resets_at as a RAW EPOCH STRING.
+# Newer statusline builds write "1783760400" instead of ISO 8601, for both
+# windows. Default HH:MM, --epoch, and --raw must all resolve it; the ISO
+# cases above (T1-T4) stay green for backward compat with older builds.
+EPOCH_FIXTURE="$TMP/cache-epoch.json"
+cat > "$EPOCH_FIXTURE" <<'EOF'
+{"five_hour":{"utilization":42.0,"resets_at":"1783760400"},"seven_day":{"utilization":93.0,"resets_at":"1783760400"},"seven_day_oauth_apps":null}
+EOF
+
+# T14: epoch-form five-hour default (HH:MM)
+out=$(bash "$CAP" --cache "$EPOCH_FIXTURE" --max-age 0 2>&1)
+rc=$?
+assert_rc "T14 epoch five-hour rc=0" 0 "$rc"
+assert_match "T14 epoch five-hour HH:MM shape" '^[0-2][0-9]:[0-5][0-9]$' "$out"
+
+# T15: epoch-form five-hour --epoch prints the epoch verbatim
+out=$(bash "$CAP" --cache "$EPOCH_FIXTURE" --max-age 0 --epoch 2>&1)
+assert_rc "T15 epoch five-hour --epoch rc=0" 0 "$?"
+assert_match "T15 epoch five-hour --epoch value" '^1783760400$' "$out"
+
+# T16: epoch-form five-hour --raw prints the value verbatim
+out=$(bash "$CAP" --cache "$EPOCH_FIXTURE" --max-age 0 --raw 2>&1)
+assert_rc "T16 epoch five-hour --raw rc=0" 0 "$?"
+assert_match "T16 epoch five-hour --raw value" '^1783760400$' "$out"
+
+# T17: epoch-form seven-day default (HH:MM)
+out=$(bash "$CAP" --cache "$EPOCH_FIXTURE" --max-age 0 --window seven-day 2>&1)
+assert_rc "T17 epoch seven-day rc=0" 0 "$?"
+assert_match "T17 epoch seven-day HH:MM shape" '^[0-2][0-9]:[0-5][0-9]$' "$out"
+
+# T18: epoch-form seven-day --epoch prints the epoch verbatim
+out=$(bash "$CAP" --cache "$EPOCH_FIXTURE" --max-age 0 --window seven-day --epoch 2>&1)
+assert_rc "T18 epoch seven-day --epoch rc=0" 0 "$?"
+assert_match "T18 epoch seven-day --epoch value" '^1783760400$' "$out"
+
 # T13: wedged python3 stub (HIMMEL-249) — epoch conversion must fail
 #      BOUNDED with the script's own ERR + rc=3, never hang.
 if timeout --version 2>/dev/null | grep -qi coreutils; then
@@ -126,6 +161,25 @@ EOF
         echo "PASS T13 bounded (${elapsed}s)"
     else
         echo "FAIL T13 bounded — took ${elapsed}s"
+        FAILED=$((FAILED + 1))
+    fi
+
+    # T19: epoch-form (HIMMEL-732) must NOT call python3 at all — the epoch
+    #      is used directly, so a wedged Store stub cannot block it. This is
+    #      the exact wedge class that broke ISO parsing and tore the
+    #      auto-arm safety net; epoch input + --epoch + --max-age 0 takes
+    #      the no-python path (no freshness stat, no HH:MM format call).
+    start=$(date +%s)
+    out=$(PATH="$TMP/wedged-bin:$PATH" PY_ARMOR_TIMEOUT=1 PY_ARMOR_KILL_AFTER=1 \
+        bash "$CAP" --cache "$EPOCH_FIXTURE" --max-age 0 --epoch 2>&1)
+    rc=$?
+    elapsed=$(( $(date +%s) - start ))
+    assert_rc "T19 epoch survives wedged stub rc=0" 0 "$rc"
+    assert_match "T19 epoch value despite wedged stub" '^1783760400$' "$out"
+    if [ "$elapsed" -lt 15 ]; then
+        echo "PASS T19 bounded (${elapsed}s)"
+    else
+        echo "FAIL T19 bounded — took ${elapsed}s"
         FAILED=$((FAILED + 1))
     fi
 else
