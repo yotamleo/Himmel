@@ -68,8 +68,8 @@ test("buildPrompt tells the run to Read a document_path attachment (HIMMEL-321)"
   expect(p).toContain("Read");
 });
 test("buildPrompt with a vault adds a file-into-vault clause (HIMMEL-321)", () => {
-  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r" }, "/medic-vault");
-  expect(p).toContain("/medic-vault");
+  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r" }, "/salus");
+  expect(p).toContain("/salus");
   expect(p).toContain("document_path");
   expect(p).toContain("_CLAUDE.md");
 });
@@ -131,11 +131,11 @@ test("buildPrompt falls back to cwd for 'running in' when sessionCwd is absent (
   expect(p).toContain("running in /repo");
 });
 test("buildPrompt vault clause files an image_path (not just document_path) and prefers a vault medic skill (HIMMEL-578)", () => {
-  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r", sessionCwd:"/medic-vault" }, "/medic-vault");
+  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r", sessionCwd:"/salus" }, "/salus");
   expect(p).toContain("image_path");
   expect(p).toMatch(/FILE that attachment/i);             // images are FILED, not just read
   expect(p).toMatch(/medic.*skill/i);                     // prefer the vault-local medic skill
-  expect(p).toContain("/medic-vault");
+  expect(p).toContain("/salus");
 });
 test("buildPrompt sanctions non-destructive Jira ticket ops (HIMMEL-424 followup — lifts the classifier veto)", () => {
   const p = buildPrompt("__chat__", { inbox:"i", outbox:"o", context:"c", cwd:"/repo" });

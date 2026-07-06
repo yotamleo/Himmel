@@ -7,7 +7,7 @@ them distinct:
 
 1. **Source-repo bucket** — *which directory* an item lives in under
    `<state-root>` (`himmel/`, `luna/`, `luna_brain/`, `cross/`, and any
-   `source_buckets_extra` like `luna-medic/`). HIMMEL-129 layer; governed by
+   `source_buckets_extra` like `salus/`). HIMMEL-129 layer; governed by
    SKILL.md "Bucket Resolution" + the `source_buckets_extra` field (HIMMEL-307).
    **This file does NOT govern that axis.**
 2. **Time-horizon bucket** — the frontmatter `bucket:` value

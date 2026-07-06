@@ -27,7 +27,7 @@ EOF
 }
 note "2026/05/2026-05-10-1200-himmel-private-main.md" session himmel-private 2026-05-10T12:00:00Z
 note "2026/06/2026-06-02-0900-himmel-private-main.md" session himmel-private 2026-06-02T09:00:00Z
-note "2026/06/2026-06-03-1000-luna-medic-master.md"   session luna-medic     2026-06-03T10:00:00Z
+note "2026/06/2026-06-03-1000-salus-master.md"   session salus     2026-06-03T10:00:00Z
 # A non-session note + an index-style note that MUST be ignored:
 note "2026/06/some-concept.md" note himmel-private 2026-06-04T10:00:00Z
 printf -- '---\ntype: backfill-index\n---\n' > "$VAULT/sessions/_backfill-old.md"
@@ -57,13 +57,13 @@ IDX="$VAULT/sessions/_index.md"
 [ -f "$IDX" ] && pass "_index.md created" || fail "_index.md not created"
 
 # All three session notes linked; the non-session + index notes not linked.
-for b in 2026-05-10-1200-himmel-private-main 2026-06-02-0900-himmel-private-main 2026-06-03-1000-luna-medic-master; do
+for b in 2026-05-10-1200-himmel-private-main 2026-06-02-0900-himmel-private-main 2026-06-03-1000-salus-master; do
     grep -q "\[\[$b\]\]" "$IDX" && pass "indexed $b" || fail "missing $b in index"
 done
 grep -q '\[\[some-concept\]\]' "$IDX" && fail "non-session note wrongly indexed" || pass "non-session note skipped"
 grep -q '\[\[_backfill-old\]\]' "$IDX" && fail "index-note wrongly indexed" || pass "index note skipped"
 
-# Count == 5 session notes (3 himmel-private/luna-medic + ext-repo + decoy-body).
+# Count == 5 session notes (3 himmel-private/salus + ext-repo + decoy-body).
 grep -q '^count: 5' "$IDX" && pass "count is 5" || fail "count wrong ($(grep '^count:' "$IDX"))"
 
 # Newest month first (2026-06 section appears before 2026-05).
@@ -83,7 +83,7 @@ grep -q 'Repo hubs:.*\[\[himmel-private\]\]' "$IDX" && pass "index links repo hu
 grep -q '\[\[2026-06-05-1100-ext-repo-main\]\]' "$IDX" && pass "ext-repo note indexed despite no hub" || fail "ext-repo note dropped"
 
 # Missing hub auto-created; existing hub NOT clobbered.
-[ -f "$VAULT/sessions/luna-medic.md" ] && pass "luna-medic hub created" || fail "luna-medic hub missing"
+[ -f "$VAULT/sessions/salus.md" ] && pass "salus hub created" || fail "salus hub missing"
 grep -q 'CURATED PROSE KEEP ME' "$VAULT/sessions/himmel-private.md" && pass "existing hub not clobbered" || fail "existing hub was clobbered"
 # No duplicate hub when a note named <repo>.md already exists elsewhere.
 [ -f "$VAULT/sessions/ext-repo.md" ] && fail "duplicate hub created despite vault-wide ext-repo.md" || pass "no dup hub when <repo>.md exists elsewhere"

@@ -144,7 +144,7 @@ export function resolveSignalsDir(dir?: string): string {
   if (dir) return dir;
   const env = process.env.LUNA_SIGNALS_DIR;
   if (env) return env;
-  throw new Error("signals dir unset — pass outDir or set LUNA_SIGNALS_DIR (e.g. luna-medic 60-Signals/)");
+  throw new Error("signals dir unset — pass outDir or set LUNA_SIGNALS_DIR (e.g. salus 60-Signals/)");
 }
 
 async function buildSeriesSpecs(names: string[], dir?: string): Promise<SeriesSpec[]> {

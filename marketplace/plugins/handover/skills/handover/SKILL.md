@@ -31,14 +31,14 @@ Some registered repos — the **state-root host** an operator chose at `/handove
   luna/{epics,standalones}/
   luna_brain/{epics,standalones}/
   cross/{epics,standalones}/      # cross-repo work; no Jira prefix
-  <extra>/{epics,standalones}/    # e.g. luna-medic/ — extra source bucket (HIMMEL-307); explicit-only, no Jira-prefix route
+  <extra>/{epics,standalones}/    # e.g. salus/ — extra source bucket (HIMMEL-307); explicit-only, no Jira-prefix route
 ```
 
 A bucket layer is active when **any recognized source bucket** dir exists directly under `<state-root>`. The **recognized source-bucket set** is the four built-ins `himmel/`, `luna/`, `luna_brain/`, `cross/` **plus** any names listed in the state-root host repo's `source_buckets_extra` registry field (HIMMEL-307). When `source_buckets_extra` is absent or empty, the recognized set is exactly the four built-ins, so behaviour is byte-identical to the pre-HIMMEL-307 4-set. Wherever this skill says "active bucket" / "every `<state-root>/<bucket>/`" (ID derivation, `update-status`, roadmap, `handover-resume`, the No-ID picker), `<bucket>` ranges over the **recognized** set — extra buckets are walked automatically. In an active layer, every read/write resolves `<bucket>` first:
 
 1. **Ticket-prefix rule (primary).** If the item carries a Jira key, map prefix → bucket via the registry's `bucket_name` field (HIMMEL-147). Default mappings carry over from HIMMEL-129: `HIMMEL-*` → `himmel/`, `LUNA-*` → `luna/`, `LUNA-BRAIN-*` → `luna_brain/`. No-prefix or unmapped prefix → `cross/`. Operators with forked repos override per-entry by setting `bucket_name` in registry.json. The prefix rule only ever resolves to one of the **four built-in** buckets — it never auto-routes to an extra bucket (see rule 3).
 2. **No Jira key (offline-fallback `#N`).** Use the source-repo registry `bucket_name` (HIMMEL-147; defaults to slugified `basename(path)`) where the slash command was invoked. If the source repo is the state-root host itself (no obvious bucket), prompt via `AskUserQuestion` listing the active buckets — which includes any recognized extra buckets.
-3. **Extra source buckets are explicit-only (HIMMEL-307).** Names in `source_buckets_extra` get **no** Jira-prefix auto-route — an item lands in one only by an explicit operator choice: the source-bucket step in `new-epic`/`new-standalone` (offered only when extra buckets exist), or an explicit `/handover bucket <id> <extra>` move. Rationale: an extra bucket like `luna-medic` carries `LUNA-*` tickets that would otherwise collide with `luna/` under the prefix rule, so it must never silently capture prefix-routed work. Once an item lives in an extra bucket, all scans/regens walk it like any built-in bucket (see the recognized-set note above).
+3. **Extra source buckets are explicit-only (HIMMEL-307).** Names in `source_buckets_extra` get **no** Jira-prefix auto-route — an item lands in one only by an explicit operator choice: the source-bucket step in `new-epic`/`new-standalone` (offered only when extra buckets exist), or an explicit `/handover bucket <id> <extra>` move. Rationale: an extra bucket like `salus` carries `LUNA-*` tickets that would otherwise collide with `luna/` under the prefix rule, so it must never silently capture prefix-routed work. Once an item lives in an extra bucket, all scans/regens walk it like any built-in bucket (see the recognized-set note above).
 4. **Inactive bucket layer.** When no recognized source-bucket dir exists under `<state-root>`, the resolver walks the flat layout (`<state-root>/{epics,standalones}/`) directly — backwards compatible with pre-HIMMEL-129 state roots.
 
 Top-level files (`status.md`, `roadmap.md`, `backlog.md`, `tech-debt.md`, `counter.md`, `sync.log`, `next-session-resume.md`, `luna-wave-resume.md`, `overnight-summary-*.md`, `_templates/`) remain at `<state-root>/` root regardless of bucket layer. They're cross-bucket index files.
@@ -655,7 +655,7 @@ Rules:
       cross/                             ← cross-repo work; no Jira prefix
         epics/...
         standalones/...
-      <extra>/                           ← e.g. luna-medic/ — source_buckets_extra (HIMMEL-307); explicit-only, no Jira-prefix route
+      <extra>/                           ← e.g. salus/ — source_buckets_extra (HIMMEL-307); explicit-only, no Jira-prefix route
         epics/...
         standalones/...
 ```

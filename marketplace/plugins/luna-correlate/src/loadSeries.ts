@@ -5,7 +5,7 @@ import type { SeriesPoint } from "./correlate";
 /**
  * Resolve the directory holding the (offline, local) health/status series CSVs.
  * Explicit `dir` wins; otherwise the LUNA_SERIES_DIR env var (set to the
- * luna-medic vitals dir, e.g. 50-Vitals/). No network, no PHI leaves the box.
+ * salus vitals dir, e.g. 50-Vitals/). No network, no PHI leaves the box.
  */
 export function resolveSeriesDir(dir?: string): string {
   if (dir) return dir;

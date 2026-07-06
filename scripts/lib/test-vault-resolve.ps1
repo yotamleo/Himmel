@@ -58,9 +58,9 @@ try {
     }
 
     # ---- registry lookup ----
-    Set-Content -LiteralPath (Join-Path $SB 'reg.json') -Value '{"vaults":{"luna-medic":"~/Documents/luna-medic"}}' -NoNewline
-    MkCfg '{"vault":"luna-medic"}'
-    Check 'registry hit (literal ~/)' '~/Documents/luna-medic' (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath (Join-Path $SB 'reg.json'))
+    Set-Content -LiteralPath (Join-Path $SB 'reg.json') -Value '{"vaults":{"salus":"~/Documents/salus"}}' -NoNewline
+    MkCfg '{"vault":"salus"}'
+    Check 'registry hit (literal ~/)' '~/Documents/salus' (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath (Join-Path $SB 'reg.json'))
 
     Set-Content -LiteralPath (Join-Path $SB 'reg2.json') -Value '{"vaults":{"x":"~/../../etc"}}' -NoNewline
     MkCfg '{"vault":"x"}'
@@ -92,7 +92,7 @@ try {
 
     # malformed config that DECLARES a vault -> fail-closed skip (NOT default)
     $env:LUNA_VAULT_PATH = 'C:\should_not_be_used'
-    Set-Content -LiteralPath $cfg -Value '{"vault":"luna-medic" BROKEN' -NoNewline
+    Set-Content -LiteralPath $cfg -Value '{"vault":"salus" BROKEN' -NoNewline
     Check 'malformed config -> skip (not default)' '' (Resolve-VaultRoot -ConfigPath $cfg -RegistryPath $noreg)
     $env:LUNA_VAULT_PATH = ''
 

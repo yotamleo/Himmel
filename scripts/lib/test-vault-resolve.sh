@@ -84,9 +84,9 @@ for bad in "" "." ".." "../x" "a/b" "-x" "~x" "a b" 'a$b' "a;b" "a..b"; do
 done
 
 # ---- registry lookup (Task 3) ----
-printf '{"vaults":{"luna-medic":"~/Documents/luna-medic"}}\n' >"$SB/reg.json"
-mkcfg '{"vault":"luna-medic"}'
-check "registry hit (literal ~/)" "$T/Documents/luna-medic" \
+printf '{"vaults":{"salus":"~/Documents/salus"}}\n' >"$SB/reg.json"
+mkcfg '{"vault":"salus"}'
+check "registry hit (literal ~/)" "$T/Documents/salus" \
   "$(resolve_vault_root "$SB/cfg.json" "$SB/reg.json")"
 
 printf '{"vaults":{"x":"~/../../etc"}}\n' >"$SB/reg2.json"
@@ -123,7 +123,7 @@ check "registry missing key -> convention" "$SB/home/Documents/medic" \
   "$(HOME="$SB/home" LUNA_VAULT_PATH='' resolve_vault_root "$SB/cfg.json" "$SB/reg3.json")"
 
 # malformed config that DECLARES a vault -> fail-closed skip (NOT default)
-printf '%s\n' '{"vault":"luna-medic" BROKEN' >"$SB/cfg.json"
+printf '%s\n' '{"vault":"salus" BROKEN' >"$SB/cfg.json"
 check "malformed config -> skip (not default)" "" \
   "$(LUNA_VAULT_PATH=/tmp/should_not_be_used resolve_vault_root "$SB/cfg.json" "$NOREG")"
 

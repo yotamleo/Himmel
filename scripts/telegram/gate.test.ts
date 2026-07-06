@@ -69,9 +69,9 @@ test("isGroupAllowed: empty/missing per-group allowFrom admits any member; requi
 // (no vault configured → the run just surfaces the document, files nothing).
 
 test("vaultForChat: a group's own vault wins", () => {
-  const access = { defaultVault: "/luna", groups: { "-1001234567890": { vault: "/luna-medic" } } };
-  expect(vaultForChat(access, -1001234567890)).toBe("/luna-medic");
-  expect(vaultForChat(access, "-1001234567890")).toBe("/luna-medic");
+  const access = { defaultVault: "/luna", groups: { "-1001234567890": { vault: "/salus" } } };
+  expect(vaultForChat(access, -1001234567890)).toBe("/salus");
+  expect(vaultForChat(access, "-1001234567890")).toBe("/salus");
 });
 
 test("vaultForChat: a group without its own vault falls back to defaultVault", () => {
