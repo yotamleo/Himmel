@@ -57,17 +57,39 @@ Dispatch a fresh subagent (Agent tool) against the written spec file. Loop
 fix → re-critic until it returns clean, **cap 2 rounds** (then advance with
 any residual findings noted).
 
-CHARTER — paste into the subagent prompt verbatim:
+CHARTER — the single source is **`panel-charter.md`** in this skill dir; paste
+its contents into the subagent prompt verbatim. Do NOT inline a second copy here
+— the file is the one source, shared with the panel lane below (two prose-synced
+copies is the instructional-not-structural drift HIMMEL-195 warns against).
 
-> Red-team this design spec. You are adversarial: find problems, do not
-> rubber-stamp. Check ONLY these dimensions and return findings as a list
-> (or "SPEC CLEAN" if none):
-> 1. Hidden/unstated assumptions.
-> 2. Scope creep — features not justified by the stated goal (YAGNI).
-> 3. Feasibility gaps — does the proposed approach actually work?
-> 4. Internal contradictions between sections.
-> 5. Missing or untestable success criteria.
-> For each finding: the section + the problem + a concrete fix.
+**⚑ fork-1 ADVISORY cross-model panel lane (HIMMEL-414 WS4).** After the Claude
+critic round, run the free-cloud critic panel over the SAME spec as an advisory
+second opinion — it catches the same-family popularity trap (Claude reviewing
+Claude). The Claude critic stays the GATE; the panel only feeds its next round.
+Resolve paths from the himmel checkout (minerva runs inside it):
+
+```bash
+REPO="$(git rev-parse --show-toplevel)"; CR="$REPO/scripts/cr"
+CHARTER="$REPO/marketplace/plugins/himmel-ops/skills/minerva/panel-charter.md"
+# 1. Enumerate the free critic rows:
+node -e 'JSON.parse(require("fs").readFileSync(process.argv[1])).panel.filter(r=>r.tier==="free").forEach(r=>console.log(r.slug+"\t"+r.model))' "$CR/critics.json"
+# 2. Per row, critique the spec artifact (dead row exits non-zero → FAIL OPEN, note + continue):
+#    bash "$CR/artifact-critic.sh" --artifact <spec-file> --charter "$CHARTER" --model <model> --slug <slug>
+```
+
+Then the Claude critic ADJUDICATES each panel finding, one line per finding:
+`VERDICT [<slug>-N] = agreed|disproved|conflict|unaddressed`. Agreed findings
+join the fix list for the next round. Append EVERY verdict + one availability
+record per row to the correctness ledger, segmented as spec-artifact records:
+
+```bash
+bash "$CR/ledger-append.sh" finding --head <spec-id> --model <slug> --id <slug>-N --verdict <verdict> --artifact spec
+bash "$CR/ledger-append.sh" avail   --head <spec-id> --model <slug> --status ok|unavailable         --artifact spec
+```
+
+`cr-scores.sh --artifact spec` then reports panel accuracy on spec artifacts,
+separate from CR-diff records. Panel failure of ANY row = fail-open (note +
+continue); the Claude critic remains the gate.
 
 After the loop: if `interactive`, present the hardened spec for approve/redirect;
 if `autonomous`, proceed.
@@ -82,16 +104,16 @@ implementation plan.
 Dispatch a fresh subagent (Agent tool) against the written plan file. Loop
 fix → re-critic until clean, **cap 2 rounds**.
 
-CHARTER — paste into the subagent prompt verbatim:
+CHARTER — the single source is **`plan-charter.md`** in this skill dir; paste its
+contents into the subagent prompt verbatim (no inline second copy — same
+HIMMEL-195 rule as Stage 2).
 
-> Red-team this implementation plan. You are adversarial. Check ONLY these
-> dimensions and return findings as a list (or "PLAN CLEAN" if none):
-> 1. Unordered or missing dependencies between tasks/steps.
-> 2. Untestable / unverifiable steps (no clear done-check).
-> 3. Missing verification at the end of a task.
-> 4. Over-decomposition (busywork) or under-decomposition (a step too big to verify).
-> 5. Assumptions embedded in steps that were not present in the spec.
-> For each finding: the task/step + the problem + a concrete fix.
+**⚑ fork-1 ADVISORY panel lane** — mirror Stage 2's lane on the PLAN artifact:
+same free-row enumeration + fail-open + Claude-adjudicates-and-gates, but with
+`--artifact <plan-file> --charter "$REPO/marketplace/plugins/himmel-ops/skills/minerva/plan-charter.md"`
+and the ledger records segmented as `--artifact plan`
+(`cr-scores.sh --artifact plan` reports them). The Claude plan-critic remains the
+gate; the panel is advisory.
 
 After the loop: if `interactive`, present the hardened plan for approve/redirect;
 if `autonomous`, proceed.

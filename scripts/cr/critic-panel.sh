@@ -30,6 +30,7 @@ export LC_ALL
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFP="${CRITIC_FIRST_PASS:-$SCRIPT_DIR/critic-first-pass.sh}"
 REG="${CRITICS_JSON:-$SCRIPT_DIR/critics.json}"
+INVOKE="${CRITIC_INVOKE:-$SCRIPT_DIR/../hermes/invoke.sh}"
 
 # Effective tier resolution (HIMMEL-558). CR_PROFILE is AUTHORITATIVE when set —
 # it is the operator's opt-in profile (loaded from .env, exported by /pr-check).
@@ -49,7 +50,7 @@ else
 fi
 
 ANCHOR_SLUG="qwen3coder"
-ANCHOR_MODEL="qwen/qwen3.6-35b-a3b"
+ANCHOR_MODEL="qwen3-coder-plus"
 
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
 CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-240}"
@@ -73,10 +74,79 @@ if [ -z "$_TIMEOUT_BIN" ]; then
     echo "critic-panel.sh: 'timeout' not found — per-member hang protection disabled" >&2
 fi
 
+CHECK_MODE="0"
+CHECK_ALL_TIERS="0"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --check)
+            CHECK_MODE="1"
+            shift
+            ;;
+        --all-tiers)
+            CHECK_ALL_TIERS="1"
+            shift
+            ;;
+        *)
+            echo "critic-panel.sh: unknown option $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ "$CHECK_MODE" = "1" ]; then
+    # Parse registry for a health probe: emit "slug<TAB>model<TAB>tier" for every row.
+    # Falls back to anchor on missing/invalid/empty registry.
+    check_rows="$(REG="$REG" node -e '
+  const fs = require("fs");
+  const reg = process.env.REG;
+  try {
+    const j = JSON.parse(fs.readFileSync(reg, "utf8"));
+    const p = (j.panel || []).filter(r => r.slug && r.model);
+    if (!p.length) throw new Error("no rows");
+    process.stdout.write(p.map(r => r.slug + "\t" + r.model + "\t" + (r.tier || "")).join("\n"));
+  } catch (e) {
+    process.exit(7);
+  }
+' 2>/dev/null)" || check_rows=""
+
+    if [ -z "${check_rows:-}" ]; then
+        echo "critic-panel.sh: registry $REG missing/invalid/empty — anchor-only ($ANCHOR_SLUG)" >&2
+        check_rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	free"
+    fi
+
+    check_prompt="$(mktemp -t critic-panel-check.XXXXXX)"
+    trap 'rm -f "$check_prompt"' EXIT
+    printf '%s' 'Reply with exactly: ok' > "$check_prompt"
+
+    check_failed="0"
+    while IFS="	" read -r slug model tier; do
+        [ -n "$slug" ] || continue
+        if [ "$tier" = "paid" ] && [ "$CHECK_ALL_TIERS" != "1" ]; then
+            echo "row $slug: skipped (paid)"
+            continue
+        fi
+        "$INVOKE" --model "$model" --prompt-file "$check_prompt" >/dev/null 2>&1
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "row $slug: ok"
+        else
+            echo "row $slug: dead (rc=$rc)"
+            check_failed="1"
+        fi
+    done << CHECKROWSEOF
+$check_rows
+CHECKROWSEOF
+
+    rm -f "$check_prompt"
+    trap - EXIT
+    [ "$check_failed" -eq 0 ] || exit 1
+    exit 0
+fi
+
 # Read diff from stdin and store it
 diff_in="$(cat)"
 
-# Parse registry: emit "slug<TAB>model" lines for matching tiers.
+# Parse registry: emit "slug<TAB>model<TAB>perspective" lines for matching tiers.
 # Falls back to anchor on missing/invalid/empty registry.
 rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
   const fs = require("fs");
@@ -86,7 +156,7 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
     const j = JSON.parse(fs.readFileSync(reg, "utf8"));
     const p = (j.panel || []).filter(r => r.slug && r.model && tiers.includes(r.tier));
     if (!p.length) throw new Error("no rows");
-    process.stdout.write(p.map(r => r.slug + "\t" + r.model).join("\n"));
+    process.stdout.write(p.map(r => r.slug + "\t" + r.model + "\t" + (r.perspective || "")).join("\n"));
   } catch (e) {
     process.exit(7);
   }
@@ -222,17 +292,27 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
     # Use a temp file per member so process_member can read from a path
     _seq_out="$(mktemp -t critic-panel-seq.XXXXXX)"
 
-    while IFS="	" read -r slug model; do
+    while IFS="	" read -r slug model perspective; do
         [ -n "$slug" ] || continue
         total=$((total + 1))
 
         # Run this member (with per-member timeout if available)
-        if [ -n "$_TIMEOUT_BIN" ]; then
-            "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>/dev/null
-            rc=$?
+        if [ -n "$perspective" ]; then
+            if [ -n "$_TIMEOUT_BIN" ]; then
+                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>/dev/null
+                rc=$?
+            else
+                bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>/dev/null
+                rc=$?
+            fi
         else
-            bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>/dev/null
-            rc=$?
+            if [ -n "$_TIMEOUT_BIN" ]; then
+                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>/dev/null
+                rc=$?
+            else
+                bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>/dev/null
+                rc=$?
+            fi
         fi
 
         process_member "$slug" "$_seq_out" "$rc" ""
@@ -249,19 +329,29 @@ else
 
     # Launch each member indexed by position i (i=0,1,2,...)
     i=0
-    while IFS="	" read -r slug model; do
+    while IFS="	" read -r slug model perspective; do
         [ -n "$slug" ] || continue
         total=$((total + 1))
         # Write slug and model so the result loop can recover them
         printf '%s' "$slug"  > "$outdir/$i.slug"
         printf '%s' "$model" > "$outdir/$i.model"
         (
-            if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
-                echo $? > "$outdir/$i.rc"
+            if [ -n "$perspective" ]; then
+                if [ -n "$_TIMEOUT_BIN" ]; then
+                    "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    echo $? > "$outdir/$i.rc"
+                else
+                    bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    echo $? > "$outdir/$i.rc"
+                fi
             else
-                bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
-                echo $? > "$outdir/$i.rc"
+                if [ -n "$_TIMEOUT_BIN" ]; then
+                    "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    echo $? > "$outdir/$i.rc"
+                else
+                    bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    echo $? > "$outdir/$i.rc"
+                fi
             fi
         ) &
         i=$((i + 1))

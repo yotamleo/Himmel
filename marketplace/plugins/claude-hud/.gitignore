@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+# dist/ is gitignored but exists on main - CI builds and commits it after each merge.
+# See .github/workflows/build-dist.yml
+dist/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.fifo
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment/secrets (safety)
+.env
+.env.*
+.claude/settings.json
+.claude/*.local.json
+*.pem
+*.key
+secrets/
+credentials/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temp files
+tmp/
+temp/
+*.tmp
+
+# Lock files (keep package-lock.json for npm)
+yarn.lock
+bun.lock
+
+# --- himmel-owned block (HIMMEL-718 vendoring) ---
+# himmel vendors this tree at a pinned upstream commit INCLUDING the
+# committed dist/ runtime (see VENDORED.md). Upstream's `dist/` ignore
+# above would make `git add` silently skip it; re-include it here.
+# This edit makes .gitignore himmel-owned → excluded from the drift hash.
+!dist/
+!dist/**

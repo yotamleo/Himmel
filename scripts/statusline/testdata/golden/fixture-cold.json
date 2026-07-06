@@ -1,0 +1,19 @@
+{
+  "model": {
+    "display_name": "Claude Haiku",
+    "id": "claude-haiku-4-5-20260301"
+  },
+  "transcript_path": "scripts/statusline/testdata/golden/transcript-cold.jsonl",
+  "context_window": {
+    "context_window_size": 200000,
+    "current_usage": {
+      "input_tokens": 950,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  },
+  "cwd": "/home/user/himmel/.claude/worktrees/feat+HIMMEL-718-hud-config-parity",
+  "session": {
+    "start_time": "2026-07-06T03:40:00Z"
+  }
+}

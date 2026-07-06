@@ -232,6 +232,27 @@ To **update** an existing checkout later, run `/himmel-update` (or `bash scripts
 `git pull` is what delivers himmel updates — marketplace `autoUpdate` does not.
 See [`updating.md`](updating.md).
 
+#### Guardrail mode — global vs project (HIMMEL-709)
+
+The three generic guardrails (`auto-approve-safe-bash`, `block-edit-on-main`,
+`block-read-secrets`) can live at the **user** scope (protects every repo you
+work in) or the **project** scope only. himmel ships them project-level, so if
+you also wire them at the user scope they would fire twice inside himmel — a
+doubled bash spawn per tool call. `setup-hooks.sh --guardrail-mode` manages the
+himmel-owned user-level block so exactly one layer is active:
+
+```bash
+# global (default): protect all your repos; inside himmel the user-level copies
+# run through guardrail-skip-in-himmel.js (one cheap node spawn, no double bash).
+bash scripts/setup-hooks.sh --guardrail-mode global        # add --yes to skip the prompt
+# project: drop the user-level block (himmel-only protection; single native spawn).
+bash scripts/setup-hooks.sh --guardrail-mode project
+```
+
+Windows/PowerShell twin: `pwsh scripts/setup-hooks.ps1 -GuardrailMode global`.
+A bare `bash scripts/setup-hooks.sh` installs the git hooks and only *prints* the
+current mode. `/himmel-update` reports if a global block's baked node path drifts.
+
 After setup, fill in your `.env` values — see the per-variable walkthrough in
 [§1 Required `.env` values](#required-env-values-per-variable-walkthrough), or
 re-run setup with `--fill-env` to be prompted with inline help for each field:

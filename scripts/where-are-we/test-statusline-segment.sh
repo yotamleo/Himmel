@@ -204,23 +204,24 @@ else
     pass "hanging node bound -> SKIPPED (no timeout/gtimeout on this host)"
 fi
 
-# --- Case 16: default ASYNC refresh spawn (no REFRESH_SYNC, no lock) ---------
-sentinel="$TMP/sentinel-async"
-asyncstub="$TMP/async-stub.sh"
-printf '%s\n' '#!/usr/bin/env bash' "touch \"$sentinel\"" > "$asyncstub"; chmod +x "$asyncstub"
-ROLLDIR_ASYNC="$TMP/roll-async"; mkdir -p "$ROLLDIR_ASYNC"
-HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_ASYNC" \
-    HIMMEL_WHERE_ARE_WE_ROLLUP_CMD="bash $asyncstub" \
+# --- Case 16: default path is CACHE-ONLY — NO refresh spawn (HIMMEL-718 3.2) --
+# The detached in-render refresh (the orphaned-bash leak class) is GONE: the
+# render path never refreshes. The periodic hook
+# (scripts/hooks/refresh-statusline-caches-periodic.sh) owns the refresh now.
+# Only REFRESH_SYNC (Case 13b) still refreshes, and only in the foreground.
+sentinel="$TMP/sentinel-nospawn"
+nospawnstub="$TMP/nospawn-stub.sh"
+printf '%s\n' '#!/usr/bin/env bash' "touch \"$sentinel\"" > "$nospawnstub"; chmod +x "$nospawnstub"
+ROLLDIR_NOSPAWN="$TMP/roll-nospawn"; mkdir -p "$ROLLDIR_NOSPAWN"   # cold cache
+HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_NOSPAWN" \
+    HIMMEL_WHERE_ARE_WE_ROLLUP_CMD="bash $nospawnstub" \
     bash "$SUT" --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl" </dev/null >/dev/null 2>&1
-ok=0
-for _ in 1 2 3 4 5 6; do
-    if [ -e "$sentinel" ]; then ok=1; break; fi
-    sleep 0.5
-done
-if [ "$ok" = 1 ]; then
-    pass "default async path -> refresh spawned in background"
+# Give any (wrongly) backgrounded refresh a moment to fire before asserting absence.
+for _ in 1 2 3 4; do [ -e "$sentinel" ] && break; sleep 0.5; done
+if [ ! -e "$sentinel" ]; then
+    pass "default path -> cache-only, refresh NOT spawned (leak class removed)"
 else
-    fail "async spawn -> sentinel never appeared"
+    fail "default path -> refresh wrongly spawned (leak reintroduced)"
 fi
 
 # --- Case 17: stdin .cwd + git branch detection (production input route) -----

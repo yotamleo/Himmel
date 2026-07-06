@@ -32,6 +32,22 @@ read-ratio trends **materially below that baseline sustained over ≥3 days**
 Responder action = file a context-hygiene investigation ticket
 (HIMMEL-480-shaped). Until then this boundary is explicitly unmonitored.
 
+### Downgrade-safety (WS4)
+
+Cheap-lane bulk work (the HIMMEL-506 downgraded task classes — clip-filling,
+mechanical sweeps) is validated by **SAMPLING, not 100% review**: reviewing
+every output of a cheap batch erases the savings that justified the downgrade.
+The downgrade-safety loop is: cheap lane executes → a sampled subset is
+validated → a sampled failure **escalates the whole batch to the frontier
+lane**. So every downgraded task class MUST name its sampling rule — the
+**rate**, the **judge**, and the **escalation trigger** — or it is not
+eligible for the cheap lane (proposed as a HIMMEL-506 acceptance criterion).
+Split of ownership: **WS4 owns the validation MECHANICS** (the critic panel,
+diversity, the correctness ledger — HIMMEL-414); **WS7 owns gate PLACEMENT**
+(where the sampling gate sits in a workflow, PASS/FAIL, human checkpoints).
+WS4 ships the pattern + the criterion, not a sampling harness — there is no
+live bulk lane to sample until WS1 ships and HIMMEL-506 defines the classes.
+
 ## Invariants (normative)
 
 1. **One optimizer owns each boundary.** Two tools on one boundary = pick

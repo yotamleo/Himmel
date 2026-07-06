@@ -201,6 +201,30 @@ report_cadence_stale() {
     echo "        bash scripts/luna/pipeline-cadence.sh arm --force"
 }
 
+# ─── guardrail-mode block drift check (HIMMEL-709) ───────────────────────────
+# The himmel-owned user-level guardrail block (guardrail-skip-in-himmel.js) is a
+# himmel-managed artifact; the wrapper body auto-updates via this pull, but the
+# baked node/bash/wrapper paths in ~/.claude/settings.json do NOT. If the block
+# is in global mode but its baked node path no longer resolves (e.g. a
+# version-manager node upgrade), the guardrails silently stop firing outside
+# himmel. This surfaces that. ADVISORY — never mutates settings, never fails the
+# update. CLAUDE_USER_SETTINGS overridable for tests.
+report_guardrail_block() {
+    local block="$ROOT/scripts/hooks/guardrail-block.mjs" status
+    echo ""
+    echo "==> guardrail-mode block"
+    if ! command -v node >/dev/null 2>&1; then echo "    skip: node not on PATH."; return 0; fi
+    if [ ! -f "$block" ]; then echo "    skip: guardrail-block.mjs not found."; return 0; fi
+    status=$(node "$block" status 2>/dev/null || echo "unknown")
+    echo "    $status"
+    case "$status" in
+        *guardrail-mode=global*node-resolves=no*)
+            echo "    ⚠ global mode but the baked node path no longer resolves — re-sync:"
+            echo "        bash scripts/setup-hooks.sh --guardrail-mode global --yes" ;;
+    esac
+    return 0
+}
+
 # Test seam: source with HIMMEL_UPDATE_LIB=1 to load the functions above without
 # running any update mode (lets test-himmel-update-hermes.sh call update_hermes
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
@@ -242,6 +266,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     report_plugin_gap
     update_hermes check
     report_cadence_stale
+    report_guardrail_block
     exit 0
 fi
 
@@ -281,6 +306,10 @@ report_plugin_gap
 # 5. Nudge if an armed pipeline-cadence is firing pre-change (stale) runners
 #    that this pull's code won't regenerate on its own (HIMMEL-588). Advisory.
 report_cadence_stale
+
+# 6. Check the himmel-owned guardrail-mode block for baked-path drift (HIMMEL-709).
+#    Advisory; never mutates ~/.claude/settings.json.
+report_guardrail_block
 
 cat <<'EOF'
 

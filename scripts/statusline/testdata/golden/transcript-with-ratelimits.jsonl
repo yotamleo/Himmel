@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-07-06T00:44:30Z","message":{"role":"user","content":[{"type":"text","text":"Capture the statusline fixture with rate limits."}]}}
+{"type":"assistant","timestamp":"2026-07-06T00:45:10Z","message":{"usage":{"input_tokens":18200,"cache_creation_input_tokens":6400,"cache_read_input_tokens":71500,"cache_creation":{"ephemeral_1h_input_tokens":6400}}}}

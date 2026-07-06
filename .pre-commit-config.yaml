@@ -2,12 +2,13 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
-      # Vendored Obsidian plugin bundles (minified js/css) are kept byte-for-byte
-      # verbatim from upstream for license fidelity — don't reformat them.
+      # Vendored Obsidian plugin bundles (minified js/css) and the vendored
+      # claude-hud tree (HIMMEL-718, pinned byte-for-byte — drift guard hashes
+      # it against the upstream pin) are kept verbatim — don't reformat them.
       - id: trailing-whitespace
-        exclude: '^templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$'
+        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/)'
       - id: end-of-file-fixer
-        exclude: '^templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$'
+        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/)'
       - id: check-yaml
       - id: check-json
 
@@ -68,6 +69,14 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
+
+      - id: hud-drift
+        name: vendored claude-hud drift guard (himmel-dev only, HIMMEL-718)
+        language: system
+        entry: bash scripts/statusline/check-hud-drift.sh
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
 
       - id: merged-branch-check
         name: Merged branch check

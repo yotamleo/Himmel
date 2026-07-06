@@ -1,0 +1,32 @@
+{
+  "model": {
+    "display_name": "Claude Sonnet 4.5",
+    "id": "claude-sonnet-4-5-20250929"
+  },
+  "transcript_path": "scripts/statusline/testdata/golden/transcript-warm.jsonl",
+  "cost": {
+    "total_cost_usd": 0.9146
+  },
+  "context_window": {
+    "context_window_size": 200000,
+    "current_usage": {
+      "input_tokens": 38400,
+      "cache_creation_input_tokens": 21800,
+      "cache_read_input_tokens": 126000
+    }
+  },
+  "cwd": "/home/user/himmel/.claude/worktrees/feat+HIMMEL-718-hud-config-parity",
+  "session": {
+    "start_time": "2026-07-06T00:00:00Z"
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 58,
+      "resets_at": 1783350000
+    },
+    "seven_day": {
+      "used_percentage": 39,
+      "resets_at": 1784073600
+    }
+  }
+}
