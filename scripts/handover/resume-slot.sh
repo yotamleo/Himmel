@@ -17,6 +17,8 @@
 #   claude session is live. Schema:
 #     { "five_hour": { "utilization": <float %>, "resets_at": "<ISO8601 UTC>" },
 #       "seven_day": { "utilization": <float %>, "resets_at": "<ISO8601 UTC>" } }
+#   Schema drift (HIMMEL-732/738): newer statusline builds write resets_at as
+#   a RAW EPOCH STRING like "1783760400" — both forms are accepted.
 #
 # Usage:
 #   bash scripts/handover/resume-slot.sh                 # prints HH:MM 24h local
@@ -158,6 +160,14 @@ def reset_epoch(window):
     iso = (data.get(window) or {}).get("resets_at")
     if not iso:
         return None
+    # Schema drift (HIMMEL-732, missed here until HIMMEL-738): newer
+    # statusline builds write resets_at as a raw epoch — a bare digit string
+    # like "1783760400" (or a JSON number). Mirror cap-reset-time.sh: detect
+    # that form first, before the ISO 8601 path.
+    if isinstance(iso, (int, float)):
+        return float(iso)
+    if str(iso).isdigit():
+        return float(iso)
     try:
         dt = datetime.fromisoformat(iso)
     except ValueError:
