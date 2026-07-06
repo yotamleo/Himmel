@@ -162,6 +162,12 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 
 **What:** Skills for working with Obsidian vaults — reading notes, searching, creating entries.
 
+### openai-codex (codex plugin)
+
+**What:** The OpenAI codex companion plugin — the codex CLI runtime, the `codex:codex-rescue` / `codex:setup` skills, and the `codex-companion.mjs` script under `$HOME/.claude/plugins/cache/openai-codex/codex/<version>/` (the version segment drifts on plugin update — glob-resolve it, never hardcode).
+
+**ADOPTED (HIMMEL-694):** the companion's `adversarial-review` mode is integrated into `/pr-check` step 3.1 as an ADDITIONAL pre-merge cross-model pass of the paid/pair tier — **availability-gated** (it consumes the operator's OpenAI usage bank, so absence of codex ⇒ silently skipped with a one-line note, never an error; also skipped under `CR_PROFILE=none`). Its `[codex-adv-N]` findings are blocking candidates merged into the same adjudication flow as the free critic panel (VERDICT lines + step-4.5 ledger `--model codex-adv`). Runbook: `.claude/commands/pr-check.md` step 3.1.
+
 ### himmel (local directory marketplace)
 
 **Source:** `<himmel-path>/marketplace/` (typically `C:\Users\<user>\Documents\github\himmel\marketplace\`)
