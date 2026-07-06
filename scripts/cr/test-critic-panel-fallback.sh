@@ -104,6 +104,11 @@ if [ "\$model" = "$PRI" ]; then
         accessdenied-paired)
             printf 'AccessDenied due to quota limits reached for this model\\n' >&2
             exit 1 ;;
+        alloctier)
+            # Only the documented code — deliberately NO "quota…exhaust"
+            # wording, so this case fails without the HIMMEL-736 branch.
+            printf 'Error: 403 AllocationQuota.FreeTierOnly: the platform automatically stopped the service for this model\\n' >&2
+            exit 1 ;;
         timeout)
             exit 124 ;;
     esac
@@ -232,6 +237,20 @@ check_contains "6: paired AccessDenied+quota -> WARN + fallback" "$stderr6" \
     "WARN critic-panel: qwen3coder quota-exhausted - fell back to $FB (openrouter)"
 check "6: fallback invoked exactly once on paired AccessDenied" \
     "$(grep -cF -- "$FB" "$tmp/cap6")" "1"
+
+# ===========================================================================
+# Case 7: Alibaba Stop-on-Exhaust 403 AllocationQuota.FreeTierOnly
+# (HIMMEL-736) — the documented free-tier-exhaustion code. Matches NO prior
+# branch (no "exceeded"/"exhaust" adjacency the old signature required in the
+# same clause, no AccessDenied) — must be recognised as exhaustion and fall
+# back ONCE to OpenRouter.
+# ===========================================================================
+run_case alloctier "$JSON" "$tmp/out7" "$tmp/err7" "$tmp/cap7"
+stderr7="$(cat "$tmp/err7")"
+check_contains "7: AllocationQuota.FreeTierOnly -> WARN + fallback" "$stderr7" \
+    "WARN critic-panel: qwen3coder quota-exhausted - fell back to $FB (openrouter)"
+check "7: fallback invoked exactly once on FreeTierOnly" \
+    "$(grep -cF -- "$FB" "$tmp/cap7")" "1"
 
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
