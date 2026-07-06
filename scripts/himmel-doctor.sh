@@ -414,6 +414,46 @@ check_c10() {
     printf '%s\n' "$out" | grep '^DRIFT-BUCKET ' | head -5 | sed 's/^DRIFT-BUCKET /       · /'
 }
 
+# --- C11: glm-launcher config-seed drift (read-only advisory) -------------------
+# The glm-LAUNCHER lane seeds ~/.claude-glm from ~/.claude once, then re-seeds
+# only on --reseed/missing .seeded, so a reused config dir lags the source.
+# Runs scripts/claude-glm-seed-check.sh --check (read-only; NEVER mutates) when
+# ~/.claude-glm exists and points to --reseed on drift. The glm-SPAWN lane has
+# no seeded dir, so the check is skipped there (no ~/.claude-glm -> OK skip).
+# NON-fatal (never FAIL): a stale launcher config is a nudge, not a breakage,
+# matching the read-only stance of C7/C8/C9/C10. No --fix here. HIMMEL-654 WS5.
+check_c11() {
+    # The launcher hardcodes ~/.claude-glm (NOT CLAUDE_DIR-derived), so this does
+    # too -- diverging when an operator relocates .claude via CLAUDE_DIR would
+    # check the wrong dir.
+    local glm_cfg="${HOME}/.claude-glm"
+    if [ ! -d "$glm_cfg" ]; then
+        emit OK C11-glm-seed "skipped (no ~/.claude-glm -- glm-launcher lane not in use)"
+        return
+    fi
+    local out rc
+    out="$(bash "$REPO_ROOT/scripts/claude-glm-seed-check.sh" --check 2>&1)"
+    rc=$?
+    case "$rc" in
+        0) emit OK C11-glm-seed "glm-launcher seeded set in sync (~/.claude-glm matches ~/.claude)" ;;
+        1)
+            emit WARN C11-glm-seed \
+                "glm-launcher config-seed drift -- ~/.claude-glm lags ~/.claude (reused config dir)" \
+                "claude-glm --reseed"
+            # Surface the per-file drift list (up to 8), like C10's example breakdown.
+            printf '%s\n' "$out" | grep '^  · ' | sed 's/^  /       /' | head -8
+            ;;
+        2)
+            emit INFO C11-glm-seed \
+                "glm-launcher config dir present but unseeded (no .seeded sentinel)" \
+                "run 'claude-glm' to seed on first launch"
+            ;;
+        *)
+            emit WARN C11-glm-seed "claude-glm-seed-check exited rc=$rc (unexpected)" "inspect scripts/claude-glm-seed-check.sh"
+            ;;
+    esac
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -464,6 +504,7 @@ check_c7
 check_c8
 check_c9
 check_c10
+check_c11
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
