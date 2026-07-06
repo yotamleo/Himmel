@@ -1,13 +1,13 @@
 ---
 name: luna-vitals-extract
-description: Use when backfilling luna-medic health series for one vault time-bucket (HIMMEL-355). Extracts (date, metric, value) tuples for the tracked vitals from the bucket's notes — deterministic structured entries via the luna-vitals CLI, plus an LLM pass over prose/timeline — and writes ONE per-bucket review artifact for operator review. One bucket per armed slot (single-writer). Never writes 50-Vitals/ directly.
+description: Use when backfilling salus health series for one vault time-bucket (HIMMEL-355). Extracts (date, metric, value) tuples for the tracked vitals from the bucket's notes — deterministic structured entries via the luna-vitals CLI, plus an LLM pass over prose/timeline — and writes ONE per-bucket review artifact for operator review. One bucket per armed slot (single-writer). Never writes 50-Vitals/ directly.
 ---
 
 Extract health-series rows for ONE time-bucket into a review artifact. Inputs: a date range
 `<START>..<END>` and the artifact output path `<ARTIFACT>`. Tracked metrics: migraine, skin_flare,
 sleep_hours, hrv_ms, rhr_bpm.
 
-1. **Locate** health-relevant notes in the bucket: use qmd over collection `luna-medic` (and 20-Timeline/,
+1. **Locate** health-relevant notes in the bucket: use qmd over collection `salus` (and 20-Timeline/,
    daily notes) filtered to the date range. Collect the file paths.
 2. **Deterministic pass:** for each structured file, run
    `bun run <repo>/scripts/luna-vitals/cli.ts parse <file> --note-date <date-if-daily> --out <tmp/det-N.json>`.

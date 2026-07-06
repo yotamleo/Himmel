@@ -280,7 +280,7 @@ v2 adds four optional fields to each repo entry. All have safe defaults; absence
       },
 
       // HIMMEL-307 — host-repo-only addition (set on the state-root host, e.g. <state-repo>):
-      "source_buckets_extra": ["luna-medic"] // optional; extra source-bucket names beyond the 4 built-ins. Absent/empty ⇒ 4-set.
+      "source_buckets_extra": ["salus"] // optional; extra source-bucket names beyond the 4 built-ins. Absent/empty ⇒ 4-set.
     }
   }
 }

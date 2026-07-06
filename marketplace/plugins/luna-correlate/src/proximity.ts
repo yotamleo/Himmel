@@ -2,7 +2,7 @@ import type { FactorCache, CachedCell } from "./fetchFactors";
 import type { FactorPoint } from "./correlate";
 
 // Offline proximity index (M2). The operator's date×place (derived from Google
-// Timeline, lives in luna-medic) is local-only and NEVER egressed. This is the
+// Timeline, lives in salus) is local-only and NEVER egressed. This is the
 // single place it meets the public factor cache: each location-day resolves to
 // the nearest cached grid cell and reads that cell's daily factor value. No
 // network, no PHI leaves the box — mirrors loadSeries.ts's offline-only posture.
