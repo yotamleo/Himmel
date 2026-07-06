@@ -61,6 +61,10 @@
 #                           that trigger a WARN (default 5). An exact-minute
 #                           match always refuses (rc=6) unless --force.
 #   ARM_COLLISION_WINDOW    Test seam: overrides COLLISION_WINDOW_MINUTES.
+#   ARM_NAME_TEMPLATE       Naming template for the derived session identity
+#                           (HIMMEL-716): placeholders {ticket} {slug}
+#                           {session}. Unset = the built-in ticket-first
+#                           composition. See _compose_arm_name.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -162,6 +166,16 @@ Env:
                           fire time that trigger a near-collision WARN (default
                           5). An exact-minute overlap always refuses (rc=6)
                           unless --force. Set ARM_COLLISION_WINDOW in tests.
+  ARM_NAME_TEMPLATE       Template for the derived session identity
+                          (HIMMEL-716). Placeholders: {ticket} (inferred key),
+                          {slug} (worktree/handover name-half), {session}
+                          (chain position, renders sN or empty). One template
+                          drives BOTH the `claude -n` title and the scheduler
+                          row's identity segment (each still sanitized for its
+                          surface). Unset = the built-in ticket-first
+                          composition; e.g. '{slug}' for slug-only names. A
+                          template that renders empty falls back to the plain
+                          HIMMEL-Resume-<path> name with no -n.
 EOF
 }
 
@@ -518,11 +532,17 @@ _validate_key() {
 #   1. ticket: front-matter key (consume-if-present; forward-compat).
 #   2. worktree branch type/<ticket>-slug ($WORKTREE_BRANCH; lowercase->uppercase).
 #   3. first H1 (`# `) line's first canonical [A-Z][A-Z0-9]+-[0-9]+ key.
+#   4. (HIMMEL-716) CHAIN FILES ONLY (basename next-session-N.md): the leading
+#      canonical key of the parent dir. The handover skill's chain layout names
+#      the epic dir <TICKET>-<slug>, so a chained handover whose file carries
+#      no key still resolves its chain identity. Scoped to chain files so an
+#      ordinary handover sitting in an odd-named dir (e.g. session-2/) cannot
+#      have a junk key welded in.
 # Each `grep` is `|| true`-guarded — grep exits 1 on no-match and `set -o
-# pipefail` would otherwise abort the assignment. The last command (`_validate_key`
-# of src-3) returns rc 0, so the function is safe to call from an errexit context.
+# pipefail` would otherwise abort the assignment. The last command (src-4's
+# `if`, rc 0 whether or not it fires) keeps the function errexit-safe.
 _infer_ticket() {
-    local _ho="$1" _raw _key
+    local _ho="$1" _raw _key _stem
     # src-1: ticket: frontmatter (same awk/sed/rtrim/unquote idiom as resume_cwd:).
     # `|| true` keeps the assignment errexit-safe even if head closes the pipe
     # early (SIGPIPE), matching the explicit guards on src-2/src-3 below.
@@ -549,24 +569,89 @@ _infer_ticket() {
     # stray ticket *mention* in the body can't be welded into the scheduler name.
     _raw=$(sed -n '/^# /{p;q}' "$_ho")
     _raw=$(printf '%s\n' "$_raw" | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' | head -1) || true
-    _validate_key "$_raw"
+    _key=$(_validate_key "$_raw")
+    if [ -n "$_key" ]; then printf '%s' "$_key"; return 0; fi
+    # src-4: chain files only (see header). Backslashes normalized first so a
+    # Windows-style path still splits on its components.
+    _stem=$(basename "${_ho//\\//}"); _stem="${_stem%.md}"
+    if printf '%s' "$_stem" | grep -qE '^next-session-[0-9]+$'; then
+        _raw=$(basename "$(dirname "${_ho//\\//}")" \
+            | grep -oiE '^[A-Za-z][A-Za-z0-9]*-[0-9]+') || true
+        _validate_key "$_raw"
+    fi
 }
 
-# _infer_session_name <ticket> — the `claude -n` value for the armed relaunch:
-# the canonical retitle form "<TICKET> <name>" (HIMMEL-432), so the resumed
-# session is scannable in the /resume picker and on the terminal tab (HIMMEL-702,
-# the only native both-surface mechanism — an agent cannot self-rename mid-run).
-# <ticket> is the already-inferred key (may be empty); the name-half is the
-# worktree slug (type/<key>-<slug>) minus the leading ticket token. Any part may
-# be empty; an all-empty result tells the caller to omit -n (fail-open — let
-# claude auto-title rather than force a meaningless name). The result is
-# sanitized to [A-Za-z0-9._ -]: the ticket key and the type/slug branch
-# (validated above) are already within that class, so the Windows .bat launch
-# line can inject it quoted WITHOUT ^-escaping and stay injection-proof even if a
-# future name source is added. errexit-safe: the grep is `|| true`-guarded and
-# the final tr returns rc 0.
-_infer_session_name() {
-    local _tkt="$1" _name="" _slug _tok _out
+# _infer_session_number <handover_path> - chain position N for a CHAINED
+# handover (HIMMEL-716): the handover skill's auto-continuing chains write
+# next-session-<N>.md files, so a stem that is (or ends in) next-session-<N>
+# IS the chain sequence number. Echoes N or empty. Filename-only by design -
+# a body mention of "next-session-9" can never leak into the name (the same
+# scan discipline as _infer_ticket's H1-only rule). errexit-safe: the grep
+# pipeline is || true-guarded and is the function's last command.
+_infer_session_number() {
+    local _stem
+    _stem=$(basename "${1//\\//}"); _stem="${_stem%.md}"
+    printf '%s\n' "$_stem" | grep -oE '(^|-)next-session-[0-9]+$' | grep -oE '[0-9]+$' || true
+}
+
+# _infer_slug <handover_path> - human slug from the handover NAME (HIMMEL-716),
+# the no-ticket-system identity source (OSS adopters without Jira). The file
+# stem, minus .md and minus a trailing next-session-<N> chain tail (carried
+# separately as the session number); when nothing is left (a bare
+# next-session-N.md chain file) fall back to the parent dir's basename (the
+# <TICKET>-<slug> epic dir) unless that is a generic bucket (handovers / .),
+# which would name every slot alike. Sanitized to [A-Za-z0-9._-]: a strict
+# subset of the session-title class, and the task-name weld re-sanitizes for
+# its own surface. errexit-safe: sed and tr always rc 0; the case has a no-op
+# default arm.
+_infer_slug() {
+    local _p="${1//\\//}" _stem _parent
+    _stem=$(basename "$_p"); _stem="${_stem%.md}"
+    _stem=$(printf '%s\n' "$_stem" | sed -E 's/(^|-)next-session-[0-9]+$//')
+    if [ -z "$_stem" ]; then
+        _parent=$(basename "$(dirname "$_p")")
+        case "$_parent" in
+            handovers|.|/) : ;;
+            *) _stem="$_parent" ;;
+        esac
+    fi
+    printf '%s' "$_stem" | tr -cd 'A-Za-z0-9._-'
+}
+
+# _compose_arm_name <ticket> <handover_path> <title|task> - ONE composer for
+# BOTH derived names (HIMMEL-716; subsumes HIMMEL-702's _infer_session_name so
+# the `claude -n` title and the scheduler-row segment can never drift apart):
+#   title -> the `claude -n` value, canonical retitle form "<TICKET> <name>"
+#            (HIMMEL-432, space-joined), sanitized to [A-Za-z0-9._ -] so the
+#            Windows .bat launch line can inject it quoted WITHOUT ^-escaping
+#            (HIMMEL-702) and printf %q keeps it one arg for cron/at. Empty
+#            tells the caller to omit -n (fail-open - let claude auto-title
+#            rather than force a meaningless name).
+#   task  -> the identity segment welded into TASK_NAME (dash-joined; space
+#            and dot become dashes), sanitized to [:alnum:]_- so the crontab
+#            self-clean ERE and the CMD launch lines stay injection-proof.
+# Identity grammar (default): <ticket> + <name-half> + <s<N> chain position>.
+# The name-half, by priority:
+#   1. the worktree slug minus its leading ticket token (the HIMMEL-702
+#      source, unchanged);
+#   2. a ticket-KEYED handover slug - the file/dir is named <ticket>-<slug>,
+#      so the slug is that ticket's own name-half;
+#   3. ticketless only: the raw handover slug (the no-Jira adopter fallback).
+# An UNKEYED slug never rides along with a ticket: the ticket alone is
+# already meaningful, welding an unrelated filename in adds noise, and this
+# keeps plain ticketed arms byte-identical to the pre-716 names (existing
+# armed slots still dedup across the upgrade).
+# ARM_NAME_TEMPLATE (HIMMEL-716; arming config, same surface as
+# ARM_MAX_SLOTS): operator override with placeholders {ticket} {slug}
+# {session} ({session} renders s<N> or empty; {slug} prefers the worktree
+# half, else the keyed-stripped or raw handover slug). One template drives
+# BOTH surfaces; the per-surface sanitize still applies afterwards, so even a
+# hostile template value cannot inject into the .bat/cron launch lines.
+# errexit-safe: greps || true-guarded, case arms rc 0, and each branch of the
+# final if ends in a sed that returns rc 0.
+_compose_arm_name() {
+    local _tkt="$1" _ho="$2" _surface="$3"
+    local _name="" _slug _tok _sess _hslug _up _out
     if [ -n "$WORKTREE_BRANCH" ]; then
         _slug="${WORKTREE_BRANCH#*/}"                     # feat/himmel-702-x -> himmel-702-x
         _tok=$(printf '%s\n' "$_slug" | grep -oiE '^[A-Za-z][A-Za-z0-9]*-[0-9]+' | head -1) || true
@@ -576,11 +661,42 @@ _infer_session_name() {
             _name="$_slug"
         fi
     fi
-    if [ -n "$_tkt" ] && [ -n "$_name" ]; then _out="$_tkt $_name"
-    elif [ -n "$_tkt" ]; then _out="$_tkt"
-    else _out="$_name"
+    _sess=$(_infer_session_number "$_ho")
+    [ -n "$_sess" ] && _sess="s$_sess"
+    _hslug=$(_infer_slug "$_ho")
+    if [ -z "$_name" ]; then
+        if [ -n "$_tkt" ]; then
+            # keyed check is case-insensitive (real stems are usually lowercase).
+            _up=$(printf '%s' "$_hslug" | tr '[:lower:]' '[:upper:]')
+            case "$_up" in
+                "$_tkt"-?*) _name="${_hslug:$(( ${#_tkt} + 1 ))}" ;;
+            esac
+        else
+            _name="$_hslug"
+        fi
     fi
-    printf '%s' "$_out" | tr -cd 'A-Za-z0-9._ -'
+    if [ -n "${ARM_NAME_TEMPLATE:-}" ]; then
+        _out="$ARM_NAME_TEMPLATE"
+        _out="${_out//\{ticket\}/$_tkt}"
+        _out="${_out//\{slug\}/${_name:-$_hslug}}"
+        _out="${_out//\{session\}/$_sess}"
+    elif [ "$_surface" = "title" ]; then
+        _out="$_tkt $_name $_sess"
+    else
+        _out="$_tkt-$_name-$_sess"
+    fi
+    # Per-surface finish: sanitize to the surface's class, squeeze separator
+    # runs left by empty components, trim stray leading/trailing separators.
+    # tr set args keep '-' LAST: a leading '-' in the set reads as an option
+    # to GNU tr ("unknown option") and the failed pipeline would abort the
+    # errexit caller.
+    if [ "$_surface" = "title" ]; then
+        printf '%s' "$_out" | tr -cd 'A-Za-z0-9._ -' | tr -s '. _-' \
+            | sed -E 's/^[-. _]+//; s/[-. _]+$//'
+    else
+        printf '%s' "$_out" | tr ' .' '-' | tr -cd '[:alnum:]_-' | tr -s '_-' \
+            | sed -E 's/^[-_]+//; s/[-_]+$//'
+    fi
 }
 
 RESUME_PROMPT="load $HANDOVER_PATH overnight mode"
@@ -713,27 +829,32 @@ else
     unset _fm_cwd _fm_cwd_found
 fi
 
-# Task name — ticket-aware (HIMMEL-540). Inject the inferred ticket ID so
-# scheduler rows (schtasks /query, atq) are scannable + attributable. The
-# HIMMEL-Resume- prefix AND the per-handover-unique <path-suffix> are preserved,
-# so every dedup/collision/marker site that reads $TASK_NAME is unaffected — only
-# the value gains a leading <TICKET>- segment. Built HERE (not at parse time) so
-# $WORKTREE_BRANCH (resolved above) is available to _infer_ticket. The path-suffix
-# matches the schedule-resume.sh:88 convention so broad cross-route dedup (the
-# HIMMEL-Resume- prefix grep) still matches between routes.
+# Task name — ticket-aware (HIMMEL-540), extended with the full derived
+# identity (HIMMEL-716): <TICKET>-<name-half>-<sN> so scheduler rows
+# (schtasks /query, atq) are scannable AND chain-attributable, e.g.
+# HIMMEL-Resume-HIMMEL-654-ws7-gates-s32-<path-suffix>. The HIMMEL-Resume-
+# prefix AND the per-handover-unique <path-suffix> are preserved, so every
+# dedup/collision/marker site that reads $TASK_NAME is unaffected - the value
+# only gains a middle identity segment, recomputed deterministically from the
+# same handover so a re-arm still exact-matches its own slot. Built HERE (not
+# at parse time) so $WORKTREE_BRANCH (resolved above) is available to the
+# inference helpers. The path-suffix matches the schedule-resume.sh:88
+# convention so broad cross-route dedup (the HIMMEL-Resume- prefix grep)
+# still matches between routes.
 _ho_ticket=$(_infer_ticket "$HANDOVER_PATH")
 # shellcheck disable=SC1003  # `\\` in single quotes is two backslashes which tr collapses to one literal `\` — intentional
 _path_suffix=$(printf '%s' "$HANDOVER_PATH" | tr '/\\' '__' | tr -cd '[:alnum:]_-')
-if [ -n "$_ho_ticket" ]; then
-    TASK_NAME="HIMMEL-Resume-${_ho_ticket}-${_path_suffix}"
+_name_seg=$(_compose_arm_name "$_ho_ticket" "$HANDOVER_PATH" task)
+if [ -n "$_name_seg" ]; then
+    TASK_NAME="HIMMEL-Resume-${_name_seg}-${_path_suffix}"
 else
     TASK_NAME="HIMMEL-Resume-${_path_suffix}"
 fi
-# The armed relaunch's `claude -n` session title (HIMMEL-702) — computed here so
-# the same resolved $WORKTREE_BRANCH + inferred ticket feed both the scheduler
-# row name and the session/tab title.
-SESSION_NAME=$(_infer_session_name "$_ho_ticket")
-unset _ho_ticket _path_suffix
+# The armed relaunch's `claude -n` session title (HIMMEL-702/716) - the same
+# composer renders both surfaces from one identity, so the scheduler row name
+# and the session/tab title can never disagree.
+SESSION_NAME=$(_compose_arm_name "$_ho_ticket" "$HANDOVER_PATH" title)
+unset _ho_ticket _path_suffix _name_seg
 
 # Pre-trust the resolved cwd (HIMMEL-386) so the fired relaunch doesn't stall
 # on Claude Code's interactive workspace-trust prompt ("Is this a project you
@@ -1436,7 +1557,7 @@ schedule_arm() {
                 ch=" --channels \"$cs\""
             fi
             # -n <session name> (HIMMEL-702). SESSION_NAME is sanitized to
-            # [A-Za-z0-9._ -] (see _infer_session_name) so it carries no CMD
+            # [A-Za-z0-9._ -] (see _compose_arm_name) so it carries no CMD
             # metacharacter and needs no ^-escaping here; quote it so the space
             # in "<TICKET> <name>" stays a single argv entry. Empty -> omit.
             local nm=""

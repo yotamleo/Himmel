@@ -23,6 +23,10 @@ export SKILL_TELEMETRY_DIR="$TMP/telemetry-default"
 # Unset the kill switch so T21/T23 (which assert a record IS written) are
 # not spuriously broken by an operator shell that exports it (HIMMEL-384).
 unset SKILL_TELEMETRY_DISABLE 2>/dev/null || true
+# Naming-template shield (HIMMEL-716): an operator shell exporting a custom
+# ARM_NAME_TEMPLATE would skew every derived-name assertion below (N/S cases);
+# S8/S9 set it per-call.
+unset ARM_NAME_TEMPLATE 2>/dev/null || true
 # Global workspace-trust shield (HIMMEL-386): arm-resume now pre-trusts the
 # resolved cwd in ~/.claude.json. The non-dry-run arm cases below (T14-T20
 # bridge/channel checks, dedup-any) would otherwise write the operator's real
@@ -1212,8 +1216,9 @@ assert_contains "T37 --dedup-any emits WARN for exact collision" "WARN arm-resum
 # N1-N6: ticket-in-name + ticket-aware dedup/collision (HIMMEL-540)
 #
 # The scheduler task name now carries the inferred ticket ID:
-#   HIMMEL-Resume-<TICKET>-<path-suffix>   (ticket inferable)
-#   HIMMEL-Resume-<path-suffix>            (no ticket — unchanged form)
+#   HIMMEL-Resume-<TICKET>-<path-suffix>     (ticket inferable)
+#   HIMMEL-Resume-[<slug>-]<path-suffix>     (no ticket; HIMMEL-716 also welds
+#                                            the handover slug when derivable)
 # Every dry-run name check runs with PATH="$SCHED_STUB_T17:$PATH" so
 # list_existing hits the empty stub, not the real scheduler (a live armed job
 # would otherwise spuriously rc 3). The asserted substring HIMMEL-Resume-HIMMEL-540-
@@ -1327,13 +1332,22 @@ case "$(uname -s)" in
         assert_contains "S1 cron/at bakes -n <ticket> <name>" '-n HIMMEL-702\ demo' "$out" ;;
 esac
 
-# S2: nothing inferable (ticketless H1, no worktree) -> NO -n (fail-open; let
-# claude auto-title rather than forcing a meaningless name).
+# S2 (semantics extended by HIMMEL-716): ticketless handover, no worktree ->
+# the handover-slug fallback names the session from the file stem (the
+# no-Jira adopter path). Pre-716 this case was fail-open (no -n); the truly
+# nothing-derivable fail-open now lives in S9 (empty template render).
 HO=$(make_handover_titled "Test handover")
+S2_STEM=$(basename "$HO" .md)
 out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "S2 ticketless arm exits 0" 0 "$rc"
-assert_not_contains "S2 no -n flag when nothing is inferable" " -n " "$out"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S2 win .bat bakes -n <handover slug>" "-n \"$S2_STEM\"" "$out" ;;
+    *)
+        assert_contains "S2 cron/at bakes -n <handover slug>" "-n $S2_STEM " "$out" ;;
+esac
+assert_contains "S2 slug also welds into the task name" "HIMMEL-Resume-$S2_STEM-" "$out"
 
 # S3: ticket but no name-half (frontmatter ticket, no worktree slug) -> -n with
 # the bare ticket key.
@@ -1350,7 +1364,7 @@ esac
 
 # S5 (HIMMEL-702): name-half but NO inferable ticket (worktree slug carries no
 # `<key>-<N>` token, e.g. feat/cleanup) -> -n with the bare slug name. Exercises
-# the else branch of _infer_session_name (_out="$_name"); a branch slug is a
+# the token-less worktree-slug branch of _compose_arm_name; a branch slug is a
 # meaningful title, so this is NOT the fail-open empty case (contrast S2).
 HO=$(make_handover "")
 out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/cleanup --dry-run 2>&1)
@@ -1361,6 +1375,169 @@ case "$(uname -s)" in
         assert_contains "S5 win .bat bakes -n <name>" '-n "cleanup"' "$out" ;;
     *)
         assert_contains "S5 cron/at bakes -n <name>" '-n cleanup ' "$out" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# N9-N10 / S6-S10 (HIMMEL-716): derived naming - chain position, slug
+# fallback, ARM_NAME_TEMPLATE. Chained fixtures are next-session-<N>.md files
+# inside a <TICKET>-<slug>/ epic dir (the handover skill's chain layout),
+# which the existing helpers don't produce - make_handover_chained supplies
+# them. Same stub/dry-run discipline as N1-N8 / S1-S5.
+# ---------------------------------------------------------------------------
+# Helper: a CHAINED handover. $1 = epic dir name, $2 = session number,
+# $3 = optional ticket: frontmatter value (empty = key-less chain file).
+make_handover_chained() {
+    local dir="$HANDOVER_DIR/$1" path
+    mkdir -p "$dir"
+    path="$dir/next-session-$2.md"
+    {
+        printf -- '---\n'
+        printf 'session_kind: test\n'
+        [ -n "${3:-}" ] && printf 'ticket: %s\n' "$3"
+        printf -- '---\n'
+        printf '# Chained test handover\n'
+    } > "$path"
+    printf '%s' "$path"
+}
+
+# N9/S6: chained ticketed (frontmatter ticket) -> the identity carries the
+# epic slug AND the chain position on BOTH surfaces: the scheduler row gets
+# ...HIMMEL-654-ws7-gates-s32... and the -n title "HIMMEL-654 ws7-gates s32".
+HO=$(make_handover_chained "HIMMEL-654-ws7-gates" 32 "HIMMEL-654")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "N9 chained ticketed arm exits 0" 0 "$rc"
+assert_contains "N9 task name carries epic slug + chain position" "HIMMEL-Resume-HIMMEL-654-ws7-gates-s32-" "$out"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S6 win .bat bakes -n <ticket> <slug> s<N>" '-n "HIMMEL-654 ws7-gates s32"' "$out" ;;
+    *)
+        assert_contains "S6 cron/at bakes -n <ticket> <slug> s<N>" '-n HIMMEL-654\ ws7-gates\ s32' "$out" ;;
+esac
+
+# N10: chained with NO key in frontmatter/H1 -> _infer_ticket src-4 takes the
+# epic dir's leading key, so the chain identity survives a key-less chain file.
+HO=$(make_handover_chained "HIMMEL-654-ws7-gates" 7 "")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "N10 chained key-less arm exits 0" 0 "$rc"
+assert_contains "N10 epic-dir key + slug + chain position welded" "HIMMEL-Resume-HIMMEL-654-ws7-gates-s7-" "$out"
+
+# S7: no-ticket slug fallback (OSS adopter, no Jira at all) - a meaningfully
+# named flat handover names the session and the scheduler row from its stem.
+HO_S7="$HANDOVER_DIR/nightly-refactor-notes.md"
+printf -- '---\nsession_kind: test\n---\n# Adopter handover, no ticket\n' > "$HO_S7"
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_S7" --dry-run 2>&1)
+rc=$?
+assert_rc "S7 no-ticket slug arm exits 0" 0 "$rc"
+assert_contains "S7 task name carries the slug" "HIMMEL-Resume-nightly-refactor-notes-" "$out"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S7 win .bat bakes -n <slug>" '-n "nightly-refactor-notes"' "$out" ;;
+    *)
+        assert_contains "S7 cron/at bakes -n <slug>" '-n nightly-refactor-notes ' "$out" ;;
+esac
+
+# S8: ARM_NAME_TEMPLATE override (slug-only) - the ticket IS inferable but the
+# operator's template drops it from BOTH surfaces; the ticket-KEYED file stem
+# renders as the bare name-half (leading <ticket>- token stripped).
+HO_S8="$HANDOVER_DIR/HIMMEL-716-arm-naming.md"
+printf -- '---\nsession_kind: test\nticket: HIMMEL-716\n---\n# Template case\n' > "$HO_S8"
+out=$(ARM_NAME_TEMPLATE='{slug}' PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_S8" --dry-run 2>&1)
+rc=$?
+assert_rc "S8 template arm exits 0" 0 "$rc"
+assert_contains "S8 slug-only template drives the task name" "HIMMEL-Resume-arm-naming-" "$out"
+assert_not_contains "S8 template drops the ticket segment" "HIMMEL-Resume-HIMMEL-716-" "$out"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S8 win .bat bakes the template title" '-n "arm-naming"' "$out" ;;
+    *)
+        assert_contains "S8 cron/at bakes the template title" '-n arm-naming ' "$out" ;;
+esac
+
+# S9: template renders EMPTY ({session} on a non-chained handover) -> fail-open:
+# no -n (claude auto-titles) and the task name falls back to the plain
+# path-only form. This is the fail-open contract S2 used to pin pre-716.
+HO=$(make_handover_titled "Test handover")
+out=$(ARM_NAME_TEMPLATE='{session}' PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "S9 empty-render template arm exits 0" 0 "$rc"
+assert_not_contains "S9 no -n when the template renders empty" " -n " "$out"
+# The task-name half of fail-open: an empty render must fall back to the plain
+# path-only name, NOT leave a stray-separator segment (HIMMEL-Resume--<suffix>).
+assert_not_contains "S9 empty template yields path-only task name" "HIMMEL-Resume--" "$out"
+
+# S10: bare chain file in a GENERIC bucket (handovers/ itself, no epic dir,
+# no ticket) -> the generic parent must NOT become the slug (it would name
+# every slot alike); the chain position alone remains as the identity.
+HO_S10="$HANDOVER_DIR/next-session-3.md"
+printf -- '---\nsession_kind: test\n---\n# Bare chain file\n' > "$HO_S10"
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_S10" --dry-run 2>&1)
+rc=$?
+assert_rc "S10 generic-bucket chain arm exits 0" 0 "$rc"
+assert_not_contains "S10 generic parent dir is not welded as slug" "HIMMEL-Resume-handovers-" "$out"
+assert_contains "S10 chain position alone is the identity" "HIMMEL-Resume-s3-" "$out"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S10 win .bat bakes -n s<N>" '-n "s3"' "$out" ;;
+    *)
+        assert_contains "S10 cron/at bakes -n s<N>" '-n s3 ' "$out" ;;
+esac
+
+# S11/N11 (HIMMEL-716 CR gap 1): worktree name-half AND chain session number
+# COMBINED - the one branch where `_name` is worktree-derived (priority 1) AND
+# `_sess` is non-empty. All other S/N cases exercise only ONE of the two. The
+# worktree slug (feat/himmel-654-demo -> name-half "demo") WINS over the epic-dir
+# slug ("x"), so the identity is HIMMEL-654 + demo + s5, NOT ...ws7-gates...
+HO=$(make_handover_chained "HIMMEL-654-x" 5 "HIMMEL-654")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --worktree feat/himmel-654-demo --dry-run 2>&1)
+rc=$?
+assert_rc "N11 worktree+chain arm exits 0" 0 "$rc"
+assert_contains "N11 task name carries worktree name-half + chain position" "HIMMEL-Resume-HIMMEL-654-demo-s5-" "$out"
+assert_not_contains "N11 epic-dir slug is NOT used (worktree half wins)" "HIMMEL-Resume-HIMMEL-654-x-" "$out"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S11 win .bat bakes -n <ticket> <wt-name> s<N>" '-n "HIMMEL-654 demo s5"' "$out" ;;
+    *)
+        assert_contains "S11 cron/at bakes -n <ticket> <wt-name> s<N>" '-n HIMMEL-654\ demo\ s5' "$out" ;;
+esac
+
+# N12 (HIMMEL-716 CR gap 2): backslash-path normalization in ALL THREE new
+# helpers (${_ho//\\//} at arm-resume.sh ~576/593/608). This is Windows-primary
+# code, so a Windows-style backslash --handover path must still split into
+# basename + parent dir correctly. Ticketless on purpose: _infer_ticket src-4
+# (epic-dir key via a backslash-normalized dirname), _infer_session_number, AND
+# _infer_slug are ALL exercised, so a full HIMMEL-654-ws7-gates-s9 identity
+# derived from a backslash path proves every helper normalized. Windows-only: on
+# MSYS `cygpath -w` yields the backslash form and `[ -f ]` still resolves it.
+# Skips cleanly elsewhere (no backslash paths off Windows).
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        HO=$(make_handover_chained "HIMMEL-654-ws7-gates" 9 "")
+        HO_BS=$(cygpath -w "$HO")
+        out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_BS" --dry-run 2>&1)
+        rc=$?
+        assert_rc "N12 backslash --handover path arm exits 0" 0 "$rc"
+        assert_contains "N12 full chain identity derived after backslash normalization" "HIMMEL-Resume-HIMMEL-654-ws7-gates-s9-" "$out"
+        ;;
+    *)
+        echo "PASS N12 backslash-path normalization (skipped off Windows)" ;;
+esac
+
+# S12/N13 (HIMMEL-716 CR gap 4): non-empty MIXED template on an actually-chained
+# ticketed file - {session} renders sN (non-empty) and the task-surface sanitizer
+# folds the '-' literal. ARM_NAME_TEMPLATE='{ticket}-{session}' -> HIMMEL-654-s5
+# on BOTH surfaces.
+HO=$(make_handover_chained "HIMMEL-654-x" 5 "HIMMEL-654")
+out=$(ARM_NAME_TEMPLATE='{ticket}-{session}' PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "N13 mixed-template chained arm exits 0" 0 "$rc"
+assert_contains "N13 template renders ticket+session into the task name" "HIMMEL-Resume-HIMMEL-654-s5-" "$out"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        assert_contains "S12 win .bat bakes the mixed template title" '-n "HIMMEL-654-s5"' "$out" ;;
+    *)
+        assert_contains "S12 cron/at bakes the mixed template title" '-n HIMMEL-654-s5 ' "$out" ;;
 esac
 
 # ---------------------------------------------------------------------------
