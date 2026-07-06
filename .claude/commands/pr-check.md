@@ -231,7 +231,10 @@ Steps:
    `panel-availability: <slug> unavailable (rc=N)` for drops), call.
    Parsing: the slug is the 2nd whitespace-delimited token and the status is
    the 3rd token (`ok` or `unavailable`) — ignore any trailing ` (rc=N)`.
-   Pass `--status` as exactly `ok` or `unavailable`.
+   Normalize `fallback(<model>)` (HIMMEL-729 quota-exhaustion fallback — the
+   critic DID respond, via its fallback model) → `ok`; a `fallback-failed`
+   line accompanies an `unavailable` line for the same slug — record only the
+   `unavailable`. Pass `--status` as exactly `ok` or `unavailable`.
    ```bash
    bash scripts/cr/ledger-append.sh avail \
        --branch "$branch" --head "$head" \

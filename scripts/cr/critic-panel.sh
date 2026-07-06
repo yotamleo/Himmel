@@ -156,7 +156,10 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
     const j = JSON.parse(fs.readFileSync(reg, "utf8"));
     const p = (j.panel || []).filter(r => r.slug && r.model && tiers.includes(r.tier));
     if (!p.length) throw new Error("no rows");
-    process.stdout.write(p.map(r => r.slug + "\t" + r.model + "\t" + (r.perspective || "")).join("\n"));
+    // "-" placeholder for empty middle fields: tab is IFS WHITESPACE in the
+    // bash readers, so consecutive tabs collapse and a non-empty 4th field
+    // would shift LEFT into the perspective slot (HIMMEL-729 field-shift bug).
+    process.stdout.write(p.map(r => r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + (r.fallback_model || "-")).join("\n"));
   } catch (e) {
     process.exit(7);
   }
@@ -170,8 +173,9 @@ fi
 # Write diff to a temp file so each member can read it via stdin redirect
 tmp="$(mktemp -t critic-panel.XXXXXX)"
 _seq_out=""
+_seq_err=""
 outdir=""
-trap 'rm -f "$tmp"; [ -n "$_seq_out" ] && rm -f "$_seq_out"; [ -n "$outdir" ] && rm -rf "$outdir"' EXIT
+trap 'rm -f "$tmp"; [ -n "$_seq_out" ] && rm -f "$_seq_out"; [ -n "${_seq_err:-}" ] && rm -f "$_seq_err"; [ -n "$outdir" ] && rm -rf "$outdir"' EXIT
 printf '%s' "$diff_in" > "$tmp"
 
 # Run each panel member; collect per-member output and renumber globally.
@@ -186,6 +190,62 @@ agg_imp=""
 agg_sug=""
 
 # ---------------------------------------------------------------------------
+# _is_quota_exhaustion <out_file> <err_file> (HIMMEL-729)
+# Return 0 (true) if the member's captured stdout OR stderr matches a
+# quota-exhaustion signature. Used to decide whether to fall a failed member
+# back to its OpenRouter fallback_model. A plain timeout (rc 124/137) never
+# reaches here: process_member short-circuits timeouts BEFORE this check, so a
+# timeout is never mistaken for exhaustion.
+# ---------------------------------------------------------------------------
+_is_quota_exhaustion() {
+    _qe_sig='exceeded.*quota|quota.*exhaust|AccessDenied|Arrearage|Throttling\.User|allocated quota'
+    if [ -n "$1" ] && [ -f "$1" ] && grep -qiE "$_qe_sig" "$1"; then
+        return 0
+    fi
+    if [ -n "${2:-}" ] && [ -f "$2" ] && grep -qiE "$_qe_sig" "$2"; then
+        return 0
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# _run_cfp_member <model> <slug> <perspective> <out_file> <err_file> (HIMMEL-729)
+# Re-run a member through the SAME invocation path the primary run uses
+# (critic-first-pass.sh, optional timeout wrap, optional --perspective-file),
+# with the model swapped to the fallback. Writes stdout -> out_file, stderr ->
+# err_file, and sets the global _rm_rc to the member exit code. Called only from
+# process_member's quota-exhaustion fallback branch (EXACTLY ONCE per member).
+# ---------------------------------------------------------------------------
+_run_cfp_member() {
+    _rm_model="$1"; _rm_slug="$2"; _rm_persp="${3:-}"; _rm_out="$4"; _rm_err="${5:-/dev/null}"
+    if [ -n "$_rm_persp" ]; then
+        if [ -n "$_TIMEOUT_BIN" ]; then
+            "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" \
+                --model "$_rm_model" --slug "$_rm_slug" \
+                --perspective-file "$SCRIPT_DIR/$_rm_persp" \
+                < "$tmp" > "$_rm_out" 2>"$_rm_err"
+            _rm_rc=$?
+        else
+            bash "$CFP" --model "$_rm_model" --slug "$_rm_slug" \
+                --perspective-file "$SCRIPT_DIR/$_rm_persp" \
+                < "$tmp" > "$_rm_out" 2>"$_rm_err"
+            _rm_rc=$?
+        fi
+    else
+        if [ -n "$_TIMEOUT_BIN" ]; then
+            "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" \
+                --model "$_rm_model" --slug "$_rm_slug" \
+                < "$tmp" > "$_rm_out" 2>"$_rm_err"
+            _rm_rc=$?
+        else
+            bash "$CFP" --model "$_rm_model" --slug "$_rm_slug" \
+                < "$tmp" > "$_rm_out" 2>"$_rm_err"
+            _rm_rc=$?
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # process_member: shared per-member logic called from both sequential and
 # parallel result loops. Runs in the MAIN shell so it can update global_id,
 # responded, agg_crit, agg_imp, agg_sug directly.
@@ -194,22 +254,52 @@ agg_sug=""
 # $2 = path to member stdout file
 # $3 = rc value (integer string)
 # $4 = path to member stderr file (optional; pass "" to skip)
+# $5 = fallback_model for this slug (optional; "" = no quota-exhaustion fallback)
+# $6 = perspective for this slug (optional; "" = no --perspective-file), threaded
+#      into the fallback re-run so it uses the SAME invocation path as the primary
 # ---------------------------------------------------------------------------
 process_member() {
     _pm_slug="$1"
     _pm_out_file="$2"
     _pm_rc="$3"
     _pm_err_file="${4:-}"
+    _pm_fallback="${5:-}"
+    _pm_perspective="${6:-}"
+    _pm_avail="panel-availability: $_pm_slug ok"
+    _fb_out=""
+    _fb_err=""
 
     if [ "$_pm_rc" -eq 124 ] || [ "$_pm_rc" -eq 137 ]; then
         echo "panel-availability: $_pm_slug unavailable (timeout ${CRITIC_TIMEOUT_SECS}s)" >&2
         return
     fi
     if [ "$_pm_rc" -ne 0 ]; then
-        echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
-        return
+        # Quota-exhaustion fallback (HIMMEL-729): if the slug has a fallback_model
+        # AND the member output/stderr matches an exhaustion signature, re-run the
+        # member ONCE through the same critic-first-pass path with the fallback
+        # model. A plain non-exhaustion failure (or a timeout, handled above) gets
+        # the original unavailable line and NO retry.
+        if [ -n "$_pm_fallback" ] && _is_quota_exhaustion "$_pm_out_file" "$_pm_err_file"; then
+            _fb_out="$(mktemp -t critic-panel-fb.XXXXXX)"
+            _fb_err="$(mktemp -t critic-panel-fb-err.XXXXXX)"
+            _run_cfp_member "$_pm_fallback" "$_pm_slug" "$_pm_perspective" "$_fb_out" "$_fb_err"
+            _fb_rc=$_rm_rc
+            if [ "$_fb_rc" -eq 0 ]; then
+                echo "WARN critic-panel: $_pm_slug quota-exhausted - fell back to $_pm_fallback (openrouter)" >&2
+                _pm_avail="panel-availability: $_pm_slug fallback($_pm_fallback)"
+                _pm_out_file="$_fb_out"
+            else
+                echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
+                echo "panel-availability: $_pm_slug fallback-failed (rc=$_fb_rc)" >&2
+                rm -f "$_fb_out" "$_fb_err"
+                return
+            fi
+        else
+            echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
+            return
+        fi
     fi
-    echo "panel-availability: $_pm_slug ok" >&2
+    echo "$_pm_avail" >&2
     responded=$((responded + 1))
 
     # Parse the member output sections and renumber bullets globally.
@@ -227,6 +317,9 @@ process_member() {
     # We parse with awk, passing the current global_id base,
     # and collect section bullets. Output format: "S<TAB>bullet" where S=1,2,3
     _pm_member_out="$(cat "$_pm_out_file")"
+    # Fallback re-run temp files (HIMMEL-729): content now captured -> free them.
+    # _fb_out/_fb_err stay "" on the primary-success path (no fallback ran).
+    [ -n "$_fb_out" ] && rm -f "$_fb_out" "$_fb_err"
     member_parsed="$(printf '%s\n' "$_pm_member_out" | awk -v base="$global_id" -v slug="$_pm_slug" '
         BEGIN { sec = 0; max_id = base }
         /^## Critical Issues \([0-9]+ found\)/ { sec = 1; next }
@@ -289,33 +382,40 @@ process_member() {
 # Sequential path (CRITIC_PARALLEL=0, default)
 # ---------------------------------------------------------------------------
 if [ "$CRITIC_PARALLEL" = "0" ]; then
-    # Use a temp file per member so process_member can read from a path
+    # Use a temp file per member so process_member can read from a path.
+    # _seq_err captures each member's stderr so the quota-exhaustion signature
+    # (HIMMEL-729) can be detected in sequential mode too (previously discarded).
     _seq_out="$(mktemp -t critic-panel-seq.XXXXXX)"
+    _seq_err="$(mktemp -t critic-panel-seq-err.XXXXXX)"
 
-    while IFS="	" read -r slug model perspective; do
+    while IFS="	" read -r slug model perspective fallback_model; do
         [ -n "$slug" ] || continue
+        # Map the "-" empty-field placeholder back to "" (see the registry
+        # emission above — plain empty fields collapse under tab-IFS).
+        [ "$perspective" = "-" ] && perspective=""
+        [ "$fallback_model" = "-" ] && fallback_model=""
         total=$((total + 1))
 
         # Run this member (with per-member timeout if available)
         if [ -n "$perspective" ]; then
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>/dev/null
+                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
-                bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>/dev/null
+                bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             fi
         else
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>/dev/null
+                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
-                bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>/dev/null
+                bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             fi
         fi
 
-        process_member "$slug" "$_seq_out" "$rc" ""
+        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_model" "$perspective"
 
     done << ROWSEOF
 $rows
@@ -329,12 +429,20 @@ else
 
     # Launch each member indexed by position i (i=0,1,2,...)
     i=0
-    while IFS="	" read -r slug model perspective; do
+    while IFS="	" read -r slug model perspective fallback_model; do
         [ -n "$slug" ] || continue
+        # Map the "-" empty-field placeholder back to "" (see the registry
+        # emission above — plain empty fields collapse under tab-IFS).
+        [ "$perspective" = "-" ] && perspective=""
+        [ "$fallback_model" = "-" ] && fallback_model=""
         total=$((total + 1))
         # Write slug and model so the result loop can recover them
         printf '%s' "$slug"  > "$outdir/$i.slug"
         printf '%s' "$model" > "$outdir/$i.model"
+        # Per-row perspective + fallback_model so the result loop can replay them
+        # into process_member (HIMMEL-729 quota-exhaustion fallback).
+        printf '%s' "$perspective"    > "$outdir/$i.persp"
+        printf '%s' "$fallback_model" > "$outdir/$i.fb"
         (
             if [ -n "$perspective" ]; then
                 if [ -n "$_TIMEOUT_BIN" ]; then
@@ -368,12 +476,16 @@ ROWSEOF
         read -r slug < "$outdir/$i.slug" || true
         rc_val=1
         read -r rc_val < "$outdir/$i.rc" || true
+        persp_val=""
+        read -r persp_val < "$outdir/$i.persp" 2>/dev/null || true
+        fb_val=""
+        read -r fb_val < "$outdir/$i.fb" 2>/dev/null || true
         # Note: if .rc is absent (subshell received a signal during the .out write,
         # e.g. outer timeout SIGKILLs mid-run before the echo $? line runs),
         # rc_val stays at its initialized 1 → process_member treats the member as
         # unavailable (safe). The benign case (rc=0, .out empty) is also handled:
         # process_member sees zero findings and counts the member as responded.
-        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err"
+        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err" "$fb_val" "$persp_val"
         i=$((i + 1))
     done
 fi
