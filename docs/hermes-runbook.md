@@ -248,6 +248,92 @@ in list order on 429-after-retries / 5xx-after-retries / immediate
 401/403/404; fallback is per-turn — the primary is retried on each new
 user message.
 
+## Alibaba (Model Studio) free lane — activation + wiring (2026-07-06)
+
+A free **parallel** implementation/critic lane on Alibaba Cloud Model Studio
+(international, Singapore `ap-southeast-1`) running qwen models over the
+OpenAI-compatible endpoint. Codex stays hermes's **main/default** provider —
+this lane never replaces it; it adds free capacity alongside. The free tier
+is a PAYG 90-day trial with **per-model** free quotas (not every model gets
+1M tokens), so enable **stop-on-exhaust** when you activate.
+
+### Activation (console-side, one-time)
+
+A `403 AccessDenied.Unpurchased` from the API means **the Model Studio
+service has not been activated** — not an identity, key, URL, or region
+problem. Fix it in the Singapore-pinned console
+(`https://modelstudio.console.alibabacloud.com/ap-southeast-1`):
+
+1. Accept the service agreement — this auto-activates the service **and**
+   grants the 90-day free quota (Singapore only).
+2. Batch-enable the models you alias below.
+3. Set **stop-on-exhaust** on each.
+
+After that, the **same key + URL** that returned 403 returns HTTP 200.
+
+### Provider (hermes built-in)
+
+hermes ships an `alibaba-coding-plan` provider — no new provider code needed.
+Key env vars (read in order): `ALIBABA_CODING_PLAN_API_KEY`, then
+`DASHSCOPE_API_KEY`; base override: `ALIBABA_CODING_PLAN_BASE_URL` (set in
+`%LOCALAPPDATA%/hermes/.env`).
+
+> **Workspace-endpoint caveat.** The provider's built-in default base
+> `https://coding-intl.dashscope.aliyuncs.com/v1` does **not** work with a
+> workspace MaaS key (401). Only the **workspace** endpoint works, and it
+> **must** include the `/compatible-mode/v1` path:
+> `https://ws-<your-workspace-id>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`.
+> The China-region `dashscope.aliyuncs.com` endpoint 401s on an international
+> key.
+
+### Routing (`model_aliases` is the lever)
+
+hermes's `-z` one-shot path **auto-detects** the provider from `-m` and
+**overrides** the config default; a bare model name like `qwen3-coder-plus`
+is **not** auto-detected and would fall through to the default (codex) and
+fail. There is **no** provider-qualified `-m` syntax. `model_aliases:` in
+`%LOCALAPPDATA%/hermes/config.yaml` is checked **first**, before auto-detect
+— so wire aliases as a **top-level** block (do **not** touch
+`model.default` / `model.provider`):
+
+```yaml
+model_aliases:
+  qwen3-coder-plus:
+    model: qwen3-coder-plus
+    provider: alibaba-coding-plan
+    base_url: https://ws-<your-workspace-id>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+```
+
+Add one alias per tier you want reachable. Claude-tier parity map:
+
+| Claude tier | qwen model |
+|-------------|------------|
+| haiku | `qwen-flash` |
+| sonnet | `qwen-plus` |
+| opus | `qwen3-max` / `qwen3.7-max` |
+| thinking / fable | `qwq-plus` / `qwen3-235b-a22b-thinking` |
+| CR critic | `qwen3-coder-plus` |
+
+### Validate THROUGH hermes
+
+Don't just probe the raw endpoint — run a one-shot through hermes so the
+alias + provider resolution is exercised end to end:
+
+```bash
+bash scripts/hermes/invoke.sh --model qwen3-coder-plus "say PONG"
+```
+
+Expect `PONG`. If it errors on codex, the alias didn't take — check the block
+is top-level and the key is in `.env`. Do **not** use the `-p` profile route:
+one-shot auto-detect on `-m` re-overrides a profile's provider.
+
+### Consumers
+
+The CR panel's free critic is anchored to `qwen3-coder-plus` via this lane
+(HIMMEL-725). Free-quota exhaustion is why a quota guard is tracked
+separately — it needs a dynamic API pull (console screenshots are not
+automatable).
+
 ## Verify after a rebuild (zero inference cost)
 
 ```
