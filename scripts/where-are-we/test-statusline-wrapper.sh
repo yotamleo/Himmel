@@ -129,6 +129,34 @@ else
     pass "hanging segment bound -> SKIPPED (no timeout/gtimeout on this host)"
 fi
 
+# --- Case 8: hanging BASE bounded by BASE_TIMEOUT -> cut off, segment still ---
+# renders, wrapper does NOT hang forever (HIMMEL-717: the base was previously
+# unbounded, orphaning the wrapper on a hung network read). Correctness assertion
+# (LATE_BASE never appears) is load-independent; the timing bound is generous so
+# the test is not flaky on a loaded MSYS host.
+BASE_HANG="$TMP/base-hang.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'sleep 60; printf LATE_BASE' > "$BASE_HANG"; chmod +x "$BASE_HANG"
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+    start="$(date +%s)"
+    got="$(HIMMEL_WHERE_ARE_WE=1 HIMMEL_STATUSLINE_BASE_TIMEOUT=2 \
+           HIMMEL_STATUSLINE_BASE="$BASE_HANG" HIMMEL_STATUSLINE_SEGMENT="$SEG_OK" \
+           bash "$SUT" <<<"$INPUT" 2>/dev/null)"
+    elapsed="$(( $(date +%s) - start ))"
+    # Base killed before it prints LATE_BASE -> empty base, only the segment line
+    # survives (leading separator, since base contributed nothing).
+    case "$got" in
+        *LATE_BASE*) fail "hanging base -> base NOT cut off (got '$got')" ;;
+        *WAW_LINE)   if [ "$elapsed" -lt 40 ]; then
+                         pass "hanging base -> cut off, segment renders, bounded (${elapsed}s)"
+                     else
+                         fail "hanging base -> unbounded (${elapsed}s)"
+                     fi ;;
+        *)           fail "hanging base -> unexpected got='$got' (${elapsed}s)" ;;
+    esac
+else
+    pass "hanging base bound -> SKIPPED (no timeout/gtimeout on this host)"
+fi
+
 echo "---"
 echo "wrapper: $PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]
