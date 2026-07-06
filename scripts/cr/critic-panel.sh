@@ -206,7 +206,10 @@ _is_quota_exhaustion() {
     # NOTE: plain .* is correct here — grep matches line-by-line, so .* can
     # never cross a newline; [^\n] in POSIX ERE would wrongly mean "any char
     # except backslash or the letter n" (codex CR round 2).
-    _qe_sig='exceeded.*quota|quota.*exhaust|Arrearage|Throttling\.User|allocated quota|AccessDenied.*(quota|exhaust|arrear)|(quota|exhaust|arrear).*AccessDenied'
+    # AllocationQuota.FreeTierOnly (HIMMEL-736): Alibaba Stop-on-Exhaust's
+    # documented free-tier-exhaustion 403 code — the dotted literal, kept
+    # tight so bare "AllocationQuota" elsewhere can't false-positive.
+    _qe_sig='exceeded.*quota|quota.*exhaust|Arrearage|Throttling\.User|allocated quota|AllocationQuota\.FreeTierOnly|AccessDenied.*(quota|exhaust|arrear)|(quota|exhaust|arrear).*AccessDenied'
     if [ -n "$1" ] && [ -f "$1" ] && grep -qiE "$_qe_sig" "$1"; then
         return 0
     fi
