@@ -121,6 +121,45 @@ Steps:
    forwarded to agents — append them directly to the aggregate
    `## Suggestions` section in step 3's output (step 7 files them).
 
+   **Step 3.1 — codex adversarial-review pass (decimal substep, runs AFTER the critic panel, still before any Agent dispatch; HIMMEL-694).** An ADDITIONAL pre-merge cross-model pass of the paid/pair tier: the codex companion's `adversarial-review` mode. It is **availability-gated** — it consumes the operator's OpenAI usage bank, so it runs ONLY when codex is configured and silently skips (one-line note, never an error) otherwise, mirroring how the paid codex critic is gated in `critics.json` / the `CR_PROFILE=paid` lane. Like the panel, this pass is **fail-open**: absence, timeout, or error degrades to claude-only and never blocks the gate.
+
+   Gate, checked FIRST:
+   - `CR_PROFILE=none` → skip (none = instant claude-only; the codex adversarial pass is ALSO skipped under none).
+   - codex companion absent → print one line `codex adversarial pass skipped (codex not configured)` and continue. Do NOT hardcode the version segment in the path (brittle — `1.0.5` drifts on plugin update); the fence below glob-resolves the installed copy (`ls` sorts lexically, so `tail -1` is "highest lexical", not strictly highest semver — revisit only if a `1.0.10`-vs-`1.0.5` ordering bite appears).
+
+   The pass (~3min typical), timeboxed at `CRITIC_TIMEOUT_SECS*2` (≈480s — twice the per-member panel budget; the adversarial run is a single heavier call). Each bash fence in this runbook is independent, so re-resolve `$db` + `CR_PROFILE`:
+   ```bash
+   db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
+   . scripts/lib/load-dotenv.sh; load_dotenv CR_PROFILE || true
+   export CR_PROFILE
+   codex_findings=""; codex_rc=0
+   companion=$(ls -d "$HOME/.claude/plugins/cache/openai-codex/codex/"*/scripts/codex-companion.mjs 2>/dev/null | tail -1)
+   if [ "${CR_PROFILE:-}" = "none" ]; then
+       : # claude-only — codex adversarial pass also skipped under none.
+   elif [ -z "$companion" ]; then
+       echo "codex adversarial pass skipped (codex not configured)"
+   else
+       codex_to=$(( ${CRITIC_TIMEOUT_SECS:-240} * 2 ))
+       if command -v timeout >/dev/null 2>&1; then
+           codex_findings=$(timeout -k 5 "$codex_to" node "$companion" adversarial-review --wait --base "$db" 2>/dev/null) || codex_rc=$?
+       else
+           codex_findings=$(node "$companion" adversarial-review --wait --base "$db" 2>/dev/null) || codex_rc=$?
+       fi
+       case "$codex_rc" in
+           0) ;;  # success — findings (if any) captured
+           124|137) echo "codex adversarial pass timed out — continuing without it"; codex_findings="" ;;
+           *) echo "codex adversarial pass failed (rc=$codex_rc) — continuing without it" >&2; codex_findings="" ;;
+       esac
+   fi
+   # Surface findings (if any) so they flow into the step-3 adjudication prepend.
+   [ -n "$codex_findings" ] && printf '%s\n' "$codex_findings"
+   ```
+   (`timeout` absent degrades to unbounded — same graceful-degrade convention as `critic-panel.sh`; the run still fails open on any non-zero / empty result. `--base "$db"` is the runbook's default-branch var from step 3.0.)
+
+   **Findings merge (HIMMEL-694):** the pass's Critical/Important findings are BLOCKING CANDIDATES exactly like panel `[<slug>-N]` findings, tagged `[codex-adv-N]`. Merge them into the SAME adjudication flow:
+   - Forwarded to each agent under the cross-model adjudication directive below alongside the panel findings (slug `codex-adv`); the mandatory `code-reviewer` adjudicator renders a `VERDICT [codex-adv-N] = …` on each (the generic `[<slug>-N]` machinery in step 4 and the adjudicator note below treat `codex-adv` as the slug, so codex findings are never orphaned).
+   - Recorded by step 4.5 with `--model codex-adv` (the ledger dedups findings on `(head, finding_id)`, so the `[codex-adv-N]` id is the dedup key).
+
    Replace the previous `/pr-review-toolkit:review-pr` slash-command invocation with explicit per-agent dispatches. All dispatches use the upstream `pr-review-toolkit:*` agent types — the himmel fork's `pr-review-toolkit-himmel:code-reviewer` is NOT registered as an Agent-tool type (verified HIMMEL-283; dispatching it errors `Agent type ... not found`). The HIMMEL-178 verify-before-critical rule is carried by prepending the directive below to EVERY agent prompt, code-reviewer included.
 
    Do NOT spawn `claude --print` as a subprocess (HIMMEL-128 billing — interactive only).
@@ -144,8 +183,10 @@ Steps:
 
    > **Hard rule (HIMMEL-178 verify-before-critical):** before reporting any Critical finding, grep the actual diff (or read the file at the cited line) for the cited line / token / pattern. If the cited content does NOT appear verbatim, downgrade to Minor or drop entirely. Note any downgrade with reason `verify-before-critical: cited content not in diff`. Hallucinated Critical findings derail overnight-mode fix batches (~6 reviewers/PR × 50-60 dispatches/session) and burn tokens. This rule applies ONLY to Critical (91-100) findings — Important (80-89) and below tolerate inference.
 
-   When the critic panel first-pass produced findings, ALSO prepend this directive
-   plus the panel Critical/Important findings to each agent prompt:
+   When the critic panel first-pass (step 3.0) and/or the codex adversarial pass
+   (step 3.1) produced findings, ALSO prepend this directive plus those
+   Critical/Important findings (`[<slug>-N]` panel and `[codex-adv-N]` codex) to
+   each agent prompt:
 
    > **Cross-model adjudication (HIMMEL-270, HIMMEL-415):** the critic panel
    > findings below are blocking candidates, each tagged `[<slug>-N]`. For
@@ -162,10 +203,10 @@ Steps:
 
    The `code-reviewer` dispatch's prompt additionally gets:
    **"You are the mandatory adjudicator: render a `VERDICT [<slug>-N] = …`
-   line on EVERY `[<slug>-N]` Critical/Important finding from the panel,
+   line on EVERY `[<slug>-N]` / `[codex-adv-N]` Critical/Important finding from the panel / codex adversarial pass,
    whether or not it looks relevant to your role — read the cited file if
    it is outside the diff context you were given."** (Closes the
-   orphaned-finding hole — every panel finding gets at least one verdict.)
+   orphaned-finding hole — every panel / codex-adv finding gets at least one verdict.)
 
    Aggregate the per-agent results into the structured output format below (for downstream parsing by step 4):
 
@@ -212,11 +253,12 @@ Steps:
    the aggregate with at least one `VERDICT [<slug>-N] = …` line (the
    mandatory `code-reviewer` adjudicator ensures this).
 
-4.5. **Ledger append (runs after verdict extraction, before the step 5/6 gate decision; no-op when `panel_findings` is empty, i.e. claude-only path).** Single-writer: only this orchestrator step writes the ledger.
+4.5. **Ledger append (runs after verdict extraction, before the step 5/6 gate decision; no-op when neither `panel_findings` nor the step-3.1 `codex_findings` has content, i.e. claude-only path).** Single-writer: only this orchestrator step writes the ledger.
 
-   For each `[<slug>-N]` finding emitted by the panel (Critical, Important, or
-   Suggestion), extract its severity (`crit`, `imp`, or `sug`), file, line, and
-   the resolved verdict (`agreed|disproved|conflict|unaddressed`), then call:
+   For each `[<slug>-N]` finding emitted by the panel, or `[codex-adv-N]`
+   finding emitted by the step-3.1 codex adversarial pass (Critical, Important,
+   or Suggestion), extract its severity (`crit`, `imp`, or `sug`), file, line,
+   and the resolved verdict (`agreed|disproved|conflict|unaddressed`), then call:
    ```bash
    bash scripts/cr/ledger-append.sh finding \
        --branch "$branch" --head "$head" \
@@ -225,6 +267,7 @@ Steps:
        --file <file> --line <line> \
        --verdict <agreed|disproved|conflict|unaddressed>
    ```
+   `[codex-adv-N]` findings use the same call with `--model codex-adv` (and their `[codex-adv-N]` id); the ledger dedups findings on `(head, finding_id)`, so the id is the key.
 
    For each `panel-availability:` line captured in `$panel_avail_lines` from
    step 3.0 (format: `panel-availability: <slug> ok` for responders, or
