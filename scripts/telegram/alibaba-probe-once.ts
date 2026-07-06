@@ -50,13 +50,19 @@ export function basicAuthHeader(accessKey: string, accessSecret: string): string
   return "Basic " + Buffer.from(`${accessKey}:${accessSecret}`).toString("base64");
 }
 
-// Append the instant-query expression to the configured Prometheus URL. Adds
-// `?query=model_usage` (or `&query=model_usage` when the URL already carries a
-// query string). Pure.
+// Build the instant-query URL from the configured Prometheus URL. The
+// operator-stored ALIBABA_QUOTA_PROM_URL is the workspace BASE URL; the
+// instant-query endpoint lives at <base>/api/v1/query (verified live
+// 2026-07-06 with the scoped key: base + "?query=" -> HTTP 404, base +
+// "/api/v1/query?query=" -> HTTP 200 status=success). Accept either form:
+// append the path segment only when it is not already present. Pure.
 export function buildPromQueryUrl(promUrl: string): string {
-  const base = promUrl.trim();
-  const sep = base.includes("?") ? "&" : "?";
-  return `${base}${sep}query=model_usage`;
+  const trimmed = promUrl.trim();
+  const qIdx = trimmed.indexOf("?");
+  let path = (qIdx === -1 ? trimmed : trimmed.slice(0, qIdx)).replace(/\/+$/, "");
+  const params = qIdx === -1 ? "" : trimmed.slice(qIdx + 1);
+  if (!/\/api\/v1\/query$/.test(path)) path = `${path}/api/v1/query`;
+  return params ? `${path}?${params}&query=model_usage` : `${path}?query=model_usage`;
 }
 
 // One fetch outcome. `ok` carries the raw body (string or parsed object —
