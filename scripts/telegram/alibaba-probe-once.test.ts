@@ -66,6 +66,12 @@ test("buildPromQueryUrl: appends ?query=model_usage; uses & when a query string 
   expect(buildPromQueryUrl("https://prom.example/api/v1/query?timeout=30s")).toBe("https://prom.example/api/v1/query?timeout=30s&query=model_usage");
 });
 
+test("buildPromQueryUrl: appends /api/v1/query to a workspace BASE url (the stored ALIBABA_QUOTA_PROM_URL form; live-verified 2026-07-06)", () => {
+  expect(buildPromQueryUrl("https://prom.example/workspaces/ws-123")).toBe("https://prom.example/workspaces/ws-123/api/v1/query?query=model_usage");
+  expect(buildPromQueryUrl("https://prom.example/workspaces/ws-123/")).toBe("https://prom.example/workspaces/ws-123/api/v1/query?query=model_usage");
+  expect(buildPromQueryUrl("https://prom.example/workspaces/ws-123?timeout=30s")).toBe("https://prom.example/workspaces/ws-123/api/v1/query?timeout=30s&query=model_usage");
+});
+
 test("parseDotenv: reads KEY=VAL; strips one surrounding quote pair; skips blanks/comments", () => {
   // parseDotenv reads a real file path; write a tiny fixture to a temp file.
   const tmp = `${import.meta.dir}/.alibaba-probe-fixture.env`;
