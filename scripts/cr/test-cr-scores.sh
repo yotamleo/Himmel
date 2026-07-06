@@ -143,5 +143,35 @@ partial_out="$(CR_LEDGER="$L3" bash "$CS" 2>&1)"
 not_contains "partial usage record produces no NaN" "$partial_out" "NaN"
 contains "partial usage record cumulative is 0" "$partial_out" "cumulative: est_total=0 over 1"
 
+# ── WS4 (HIMMEL-414): artifact/perspective segmenting reader ─────────────────
+# Perspective filter: a dedicated single-model ledger so percentages are unambiguous.
+L4="$tmp/persp-scores.jsonl"
+{
+  echo '{"kind":"finding","ts":"2026-02-01T00:00:00Z","branch":"b","head":"MH1","model":"mix","finding_id":"x-1","severity":"major","file":"f","line":1,"verdict":"agreed","artifact":"diff","perspective":"off"}'
+  echo '{"kind":"finding","ts":"2026-02-01T00:00:01Z","branch":"b","head":"MH2","model":"mix","finding_id":"x-2","severity":"major","file":"f","line":2,"verdict":"agreed","artifact":"diff","perspective":"off"}'
+  echo '{"kind":"finding","ts":"2026-02-01T00:00:02Z","branch":"b","head":"MH3","model":"mix","finding_id":"x-3","severity":"major","file":"f","line":3,"verdict":"agreed","artifact":"diff","perspective":"on"}'
+  echo '{"kind":"finding","ts":"2026-02-01T00:00:03Z","branch":"b","head":"MH4","model":"mix","finding_id":"x-4","severity":"major","file":"f","line":4,"verdict":"disproved","artifact":"diff","perspective":"on"}'
+} >> "$L4"
+mix_all="$(CR_LEDGER="$L4" bash "$CS" 2>&1)"
+contains "mix unfiltered agreed 75" "$mix_all" "75%"
+mix_on="$(CR_LEDGER="$L4" bash "$CS" --perspective on 2>&1)"
+contains "mix perspective-on agreed 50" "$mix_on" "50%"
+not_contains "mix perspective-on excludes off records (no 75)" "$mix_on" "75%"
+mix_off="$(CR_LEDGER="$L4" bash "$CS" --perspective off 2>&1)"
+contains "mix perspective-off agreed 100" "$mix_off" "100%"
+# Artifact filter: mixed artifact records, single model.
+L5="$tmp/artifact-scores.jsonl"
+{
+  echo '{"kind":"finding","ts":"2026-02-01T00:00:00Z","branch":"b","head":"AH1","model":"amix","finding_id":"y-1","severity":"major","file":"f","line":1,"verdict":"agreed","artifact":"diff","perspective":"off"}'
+  echo '{"kind":"finding","ts":"2026-02-01T00:00:01Z","branch":"b","head":"AH2","model":"amix","finding_id":"y-2","severity":"major","file":"f","line":2,"verdict":"agreed","artifact":"spec","perspective":"off"}'
+  echo '{"kind":"finding","ts":"2026-02-01T00:00:02Z","branch":"b","head":"AH3","model":"amix","finding_id":"y-3","severity":"major","file":"f","line":3,"verdict":"disproved","artifact":"spec","perspective":"off"}'
+} >> "$L5"
+spec_out="$(CR_LEDGER="$L5" bash "$CS" --artifact spec 2>&1)"
+contains "artifact-spec agreed 50" "$spec_out" "50%"
+# Legacy records (no perspective field) coerce to off: --perspective off shows them, on hides them.
+off_legacy="$(CR_LEDGER="$L" bash "$CS" --perspective off 2>&1)"
+contains "legacy records coerce to perspective off (alpha 67 present)" "$off_legacy" "67"
+on_legacy="$(CR_LEDGER="$L" bash "$CS" --perspective on 2>&1)"
+not_contains "legacy records absent from perspective on (no 67)" "$on_legacy" "67"
 # ── Final ──────────────────────────────────────────────────────────────────
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

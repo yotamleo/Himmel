@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-07-06T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"Warm statusline session."}]}}
+{"type":"assistant","timestamp":"2026-07-06T00:01:15Z","message":{"usage":{"input_tokens":38400,"cache_creation_input_tokens":21800,"cache_read_input_tokens":126000,"cache_creation":{"ephemeral_5m_input_tokens":6800,"ephemeral_1h_input_tokens":15000}}}}

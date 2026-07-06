@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-07-06T00:09:30Z","message":{"role":"user","content":[{"type":"text","text":"Capture the statusline fixture with extra usage."}]}}
+{"type":"assistant","timestamp":"2026-07-06T00:10:20Z","message":{"usage":{"input_tokens":21800,"cache_creation_input_tokens":12400,"cache_read_input_tokens":105000,"cache_creation":{"ephemeral_5m_input_tokens":4200,"ephemeral_1h_input_tokens":8200}}}}

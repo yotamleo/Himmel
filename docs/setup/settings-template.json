@@ -36,6 +36,12 @@
             "type": "command",
             "command": "bash \"<himmel-path>/scripts/hooks/check-update-available.sh\"",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash \"<himmel-path>/scripts/hooks/refresh-statusline-caches-periodic.sh\"",
+            "timeout": 10,
+            "statusMessage": "Warming statusline caches..."
           }
         ]
       }

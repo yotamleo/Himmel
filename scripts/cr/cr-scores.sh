@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/cr/cr-scores.sh — per-critic agreed/availability scorecard (HIMMEL-415)
-# Usage: cr-scores.sh [--window N]
+# Usage: cr-scores.sh [--window N] [--artifact kind] [--perspective on|off]
 # Reads CR_LEDGER (default: $(git rev-parse --git-common-dir)/cr-critic-scores.jsonl)
 # and prints a per-model table plus drop advice.
 set -uo pipefail
@@ -9,10 +9,14 @@ set -uo pipefail
 CR_SCORES_DROP_BELOW="${CR_SCORES_DROP_BELOW:-40}"
 CR_SCORES_MIN_N="${CR_SCORES_MIN_N:-10}"
 WINDOW=20
+FILTER_ARTIFACT=""
+FILTER_PERSPECTIVE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --window) [ $# -ge 2 ] || { echo "cr-scores.sh: --window requires an argument" >&2; exit 2; }; WINDOW="$2"; shift 2;;
+    --artifact) [ $# -ge 2 ] || { echo "cr-scores.sh: --artifact requires an argument" >&2; exit 2; }; FILTER_ARTIFACT="$2"; shift 2;;
+    --perspective) [ $# -ge 2 ] || { echo "cr-scores.sh: --perspective requires an argument" >&2; exit 2; }; FILTER_PERSPECTIVE="$2"; shift 2;;
     *) echo "cr-scores.sh: unknown option $1" >&2; exit 2;;
   esac
 done
@@ -24,12 +28,14 @@ if [ ! -f "$ledger" ] || [ ! -s "$ledger" ]; then
   exit 0
 fi
 
-DROP_BELOW="$CR_SCORES_DROP_BELOW" MIN_N="$CR_SCORES_MIN_N" WINDOW="$WINDOW" LEDGER="$ledger" node -e '
+DROP_BELOW="$CR_SCORES_DROP_BELOW" MIN_N="$CR_SCORES_MIN_N" WINDOW="$WINDOW" LEDGER="$ledger" FILTER_ARTIFACT="$FILTER_ARTIFACT" FILTER_PERSPECTIVE="$FILTER_PERSPECTIVE" node -e '
 const fs = require("fs");
 const DROP_BELOW = Number(process.env.DROP_BELOW);
 const MIN_N      = Number(process.env.MIN_N);
 const WINDOW_N   = Number(process.env.WINDOW);
 const ledger     = process.env.LEDGER;
+const filterArtifact    = process.env.FILTER_ARTIFACT || "";
+const filterPerspective = process.env.FILTER_PERSPECTIVE || "";
 
 const lines = fs.readFileSync(ledger, "utf8").split("\n").filter(Boolean);
 if (!lines.length) { console.log("no critic scores recorded yet"); process.exit(0); }
@@ -38,10 +44,15 @@ const records = [];
 for (const l of lines) {
   try { records.push(JSON.parse(l)); } catch (_) { /* skip malformed */ }
 }
+const filteredRecords = records.filter(r => {
+  if (filterArtifact && (r.artifact || "diff") !== filterArtifact) return false;
+  if (filterPerspective && (r.perspective || "off") !== filterPerspective) return false;
+  return true;
+});
 
 // Collect all distinct heads sorted by earliest ts, to compute last-N window.
 const headTs = {};
-for (const r of records) {
+for (const r of filteredRecords) {
   if (!r.head) continue;
   if (!headTs[r.head] || r.ts < headTs[r.head]) headTs[r.head] = r.ts;
 }
@@ -57,7 +68,7 @@ const all = {}, win = {};
 // so the finding/avail tables are untouched when no usage records exist.
 const usage = {};
 function emptyUsage() { return { est_prompt:0, est_completion:0, est_total:0, n:0 }; }
-for (const r of records) {
+for (const r of filteredRecords) {
   if (!r.model) continue;
   const inWin = windowHeads.has(r.head);
   // Only finding/avail kinds seed the score tables. A model that appears ONLY in

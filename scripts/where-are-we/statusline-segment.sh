@@ -144,8 +144,15 @@ if [ -f "$cache" ]; then
     fi
 fi
 
-# Stale/cold → fire a refresh, but only if no refresh is already in flight
-# (pre-spawn lock check keeps the common case from forking).
+# Stale/cold → the epic-rollup refresh is OWNED by the periodic hook
+# (scripts/hooks/refresh-statusline-caches-periodic.sh), NOT the render path
+# (HIMMEL-718 Task 3.2). The old detached `( … & )` refresh here was part of the
+# orphaned-bash leak class this migration eliminates, so it is GONE: the render
+# path is now cache-only. The hook keeps the rollup warm (SessionStart +
+# periodic) for BOTH the still-live bash bar and the hud composer; a stale cache
+# fails open (last-known epic d/t, or omitted). The synchronous seam below stays
+# ONLY for explicit callers/tests (HIMMEL_WHERE_ARE_WE_REFRESH_SYNC) — it never
+# forks, so the static-no-spawn gate holds.
 need_refresh=0
 if [ ! -f "$cache" ]; then
     need_refresh=1
@@ -155,16 +162,12 @@ else
     case "$ttl" in ''|*[!0-9]*) ttl=900 ;; esac
     if [ "$(( now - cmt ))" -gt "$ttl" ]; then need_refresh=1; fi
 fi
-if [ "$need_refresh" -eq 1 ] && [ ! -d "$cache.lock" ]; then
+if [ "$need_refresh" -eq 1 ] && [ -n "${HIMMEL_WHERE_ARE_WE_REFRESH_SYNC:-}" ] \
+   && [ ! -d "$cache.lock" ]; then
     mkdir -p "$cachedir" 2>/dev/null || true
     rollup_cmd="${HIMMEL_WHERE_ARE_WE_ROLLUP_CMD:-bash $SD/statusline-rollup.sh}"
-    if [ -n "${HIMMEL_WHERE_ARE_WE_REFRESH_SYNC:-}" ]; then
-        # shellcheck disable=SC2086  # rollup_cmd is the intentional "bash <path>" seam word-split
-        $rollup_cmd --key "$key" --out "$cache" >/dev/null 2>&1 || true
-    else
-        # shellcheck disable=SC2086
-        ( $rollup_cmd --key "$key" --out "$cache" >/dev/null 2>&1 & ) || true
-    fi
+    # shellcheck disable=SC2086  # rollup_cmd is the intentional "bash <path>" seam word-split
+    $rollup_cmd --key "$key" --out "$cache" >/dev/null 2>&1 || true
 fi
 
 # --- Compose ----------------------------------------------------------------

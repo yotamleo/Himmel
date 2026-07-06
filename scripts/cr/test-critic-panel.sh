@@ -26,7 +26,7 @@ check() {
 }
 
 check_contains() {
-    if printf '%s' "$2" | grep -qF "$3"; then
+    if printf '%s' "$2" | grep -qF -- "$3"; then
         echo "ok - $1"
     else
         echo "FAIL - $1: expected to contain [$3]"
@@ -355,6 +355,100 @@ check "L6: none falls through to free panel -> 1/1" "$(printf '%s\n' "$out_l6" |
 check "L6: none does NOT resolve via CR_PROFILE path" "$(printf '%s\n' "$stderr_l6" | grep -cF 'from CR_PROFILE')" "0"
 check "L6: none does NOT trigger anchor-only fallback" "$(printf '%s\n' "$stderr_l6" | grep -cF 'anchor-only')" "0"
 
+# ── WS4 (HIMMEL-414): --check registry health probe ─────────────────────────
+# Stub the CRITIC_INVOKE seam: ok for every model except one containing "deadmodel".
+CHK_INVOKE="$tmp/chk-invoke.sh"
+cat > "$CHK_INVOKE" <<'EOS'
+#!/usr/bin/env bash
+m=""
+while [ $# -gt 0 ]; do case "$1" in --model) m="$2"; shift 2;; --prompt-file) shift 2;; *) shift;; esac; done
+case "$m" in
+  *deadmodel*) exit 1;;
+  *) printf 'ok\n'; exit 0;;
+esac
+EOS
+chmod +x "$CHK_INVOKE"
+
+# Registry: two free (one ok, one dead) + one paid.
+CHK_JSON="$tmp/critics-check.json"
+printf '%s' '{"panel":[
+  {"slug":"okrow","model":"vendor/okmodel","provider":"test","tier":"free"},
+  {"slug":"deadrow","model":"vendor/deadmodel","provider":"test","tier":"free"},
+  {"slug":"paidrow","model":"vendor/paidmodel","provider":"test","tier":"paid"}
+]}' > "$CHK_JSON"
+
+# M1: --check does not hang with no diff on stdin (times out => FAIL).
+chk_out="$(CRITICS_JSON="$CHK_JSON" CRITIC_INVOKE="$CHK_INVOKE" timeout 15 bash "$PANEL" --check </dev/null 2>&1)"; chk_rc=$?
+check "M1: --check terminates (not 124 timeout)" "$([ "$chk_rc" != "124" ] && echo ok)" "ok"
+# M2: ok row reported ok.
+check_contains "M2: okrow ok" "$chk_out" "row okrow: ok"
+# M3: dead row reported dead with rc.
+check_contains "M3: deadrow dead" "$chk_out" "row deadrow: dead (rc=1)"
+# M4: paid row skipped by default (no --all-tiers).
+check_contains "M4: paidrow skipped (paid)" "$chk_out" "row paidrow: skipped (paid)"
+# M5: any dead row => exit 1.
+check "M5: dead row -> exit 1" "$chk_rc" "1"
+
+# M6: all-ok registry => exit 0.
+OK_JSON="$tmp/critics-check-ok.json"
+printf '%s' '{"panel":[{"slug":"okrow","model":"vendor/okmodel","provider":"test","tier":"free"}]}' > "$OK_JSON"
+CRITICS_JSON="$OK_JSON" CRITIC_INVOKE="$CHK_INVOKE" timeout 15 bash "$PANEL" --check </dev/null >/dev/null 2>&1
+check "M6: all-ok -> exit 0" "$?" "0"
+
+# M7: --all-tiers probes the paid row too (paid model is ok here => still exit 0, and reported ok not skipped).
+ALLTIER_OUT="$(CRITICS_JSON="$CHK_JSON" CRITIC_INVOKE="$CHK_INVOKE" timeout 15 bash "$PANEL" --check --all-tiers </dev/null 2>&1)"
+check_contains "M7: --all-tiers probes paid row" "$ALLTIER_OUT" "row paidrow: ok"
+
+# M8 (code-reviewer CR): unknown flag errors (exit 2), consistent with siblings.
+CRITICS_JSON="$CHK_JSON" bash "$PANEL" --bogus </dev/null >/dev/null 2>&1
+check "M8: unknown flag -> exit 2" "$?" "2"
+
+# P4 (code-reviewer CR): the PARALLEL path threads --perspective-file too (P1-P3
+# cover only the sequential loop; the parallel loop duplicates the wiring).
+if command -v timeout > /dev/null 2>&1; then
+    CAP_P="$tmp/persp-argv-par"; PSTUB_P="$tmp/pstub-par.sh"
+    cat > "$PSTUB_P" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$CAP_P"
+echo "# s First-Pass Review"; echo ""; echo "## Critical Issues (0 found)"; echo ""; echo "## Important Issues (0 found)"; echo ""; echo "## Suggestions (0 found)"
+EOS
+    chmod +x "$PSTUB_P"
+    PJSON="$tmp/critics-persp.json"
+    printf '%s' '{"panel":[{"slug":"skept","model":"vendor/m","provider":"test","tier":"free","perspective":"perspectives/skeptic.md"}]}' > "$PJSON"
+    printf '%s' "$DIFF" | CRITICS_JSON="$PJSON" CRITIC_FIRST_PASS="$PSTUB_P" CRITIC_PARALLEL=1 timeout 20 bash "$PANEL" >/dev/null 2>&1
+    check_contains "P4: parallel path threads --perspective-file" "$(cat "$CAP_P" 2>/dev/null)" "--perspective-file"
+else
+    echo "ok - P4: SKIP (no timeout binary)"
+fi
+# Tests P: perspective rows are threaded to critic-first-pass without changing
+# the merged stdout contract.
+CAPTURE_STUB="$tmp/capture-cfp.sh"
+CAPTURE_FILE="$tmp/capture-args.txt"
+cat > "$CAPTURE_STUB" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$CAPTURE_FILE"
+cat >/dev/null
+printf '%s\n' '## Critical Issues (1 found)'
+printf '%s\n' '- [x-1]: y [foo.sh:2]'
+printf '%s\n' '## Important Issues (0 found)'
+printf '%s\n' '## Suggestions (0 found)'
+EOS
+chmod +x "$CAPTURE_STUB"
+
+PERSPECTIVE_JSON="$tmp/critics-perspective.json"
+printf '%s' '{"panel":[{"slug":"skeptic","model":"fake/perspective","provider":"test","tier":"free","perspective":"perspectives/skeptic.md"}]}' > "$PERSPECTIVE_JSON"
+PLAIN_JSON="$tmp/critics-plain.json"
+printf '%s' '{"panel":[{"slug":"plain","model":"fake/plain","provider":"test","tier":"free"}]}' > "$PLAIN_JSON"
+
+: > "$CAPTURE_FILE"
+out_p1="$(printf '%s' "$DIFF" | CRITICS_JSON="$PERSPECTIVE_JSON" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" 2>/dev/null)"
+check "P1: perspective flag passed to first-pass" "$(grep -c -- '--perspective-file' "$CAPTURE_FILE")" "1"
+check "P1: perspective path passed to first-pass" "$(grep -c 'perspectives/skeptic.md' "$CAPTURE_FILE")" "1"
+check "P3: merged stdout keeps pr-check bullet contract" "$(printf '%s\n' "$out_p1" | grep -Eq '^- \[[a-z0-9]+-[0-9]+\]: .*\[[^]]+:[0-9]+\]$' && echo yes || echo no)" "yes"
+
+: > "$CAPTURE_FILE"
+printf '%s' "$DIFF" | CRITICS_JSON="$PLAIN_JSON" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" >/dev/null 2>&1
+check "P2: row without perspective omits flag" "$(grep -c -- '--perspective-file' "$CAPTURE_FILE")" "0"
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

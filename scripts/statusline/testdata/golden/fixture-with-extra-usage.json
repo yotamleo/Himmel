@@ -1,0 +1,32 @@
+{
+  "model": {
+    "display_name": "Claude Opus 4.8",
+    "id": "claude-opus-4-8-20260701"
+  },
+  "transcript_path": "scripts/statusline/testdata/golden/transcript-with-extra-usage.jsonl",
+  "cost": {
+    "total_cost_usd": 1.3842
+  },
+  "context_window": {
+    "context_window_size": 200000,
+    "current_usage": {
+      "input_tokens": 21800,
+      "cache_creation_input_tokens": 12400,
+      "cache_read_input_tokens": 105000
+    }
+  },
+  "cwd": "/home/user/himmel/.claude/worktrees/feat+HIMMEL-718-hud-config-parity",
+  "session": {
+    "start_time": "2026-07-06T00:10:00Z"
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 74,
+      "resets_at": 1783346400
+    },
+    "seven_day": {
+      "used_percentage": 81,
+      "resets_at": 1783987200
+    }
+  }
+}

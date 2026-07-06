@@ -11,6 +11,15 @@ their source is the plugin's `commands/<name>.md`, not `.claude/commands/`,
 and their rows are paraphrased one-liners rather than verbatim frontmatter
 (the plugin descriptions are multi-sentence).
 
+> **Not listed: `marketplace/plugins/claude-hud/commands/`** (HIMMEL-718).
+> claude-hud is vendored as the statusline **renderer only** — wired as
+> `node …/claude-hud/dist/index.js`, never installed as a plugin (not
+> registered in himmel's top-level registry
+> `marketplace/.claude-plugin/marketplace.json`; the vendored tree's own
+> `.claude-plugin/*` files are inert upstream artifacts), so its upstream
+> `/claude-hud:setup` / `/claude-hud:configure` commands are not invokable here. See
+> [marketplace/plugins/claude-hud/VENDORED.md](../marketplace/plugins/claude-hud/VENDORED.md).
+
 > **Keep this current.** When a ticket adds, renames, or removes a command
 > under `.claude/commands/`, update the matching row here in the same PR.
 > The snippet below emits one verbatim row per command (alphabetical) —

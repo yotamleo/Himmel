@@ -233,4 +233,102 @@ check "explicit CR_CRITIC_PROFILE overrides family gate" "$(cat "$prof_cap" 2>/d
 printf '%s' "$DIFF" | CR_CRITIC_PROFILE="himmel_agent --toolsets terminal" HERMES_HOME="$tmp/hh" HERMES_PY="$tmp/py_prof.sh" bash "$CFP" --model gpt-5.5 --slug codex >/dev/null 2>&1
 check "injecting profile value cannot leak --toolsets to invoke" "$(cat "$tool_cap" 2>/dev/null)" "todo"
 
+# ── WS4 (HIMMEL-414): artifact mode + charter seam ──────────────────────────
+ART="$tmp/spec.md"
+cat > "$ART" <<'MD'
+# Design Alpha
+## Motivation
+Some motivating text.
+## Goals
+The goals section.
+MD
+CHARTER="$tmp/charter.md"
+printf '%s\n' 'You are a rigorous SPEC critic. Hunt for ambiguity and missing acceptance criteria.' > "$CHARTER"
+
+# (a) non-diff text WITHOUT --artifact-mode → exit 2 (diff-shape guard intact)
+printf 'just some markdown\n' | bash "$CFP" --model x/y --slug s >/dev/null 2>&1
+check "a: non-diff without artifact-mode -> exit 2" "$?" "2"
+
+# Stub model output: 2 critical (one good heading, one bad heading), 1 important (line-style cite).
+cat > "$tmp/stub_art.py" <<'PY'
+print("## Critical Issues (2 found)")
+print("- [CRITIC-1]: unclear scope [spec.md#Goals]")
+print("- [CRITIC-2]: bogus [spec.md#No Such Heading]")
+print("## Important Issues (1 found)")
+print("- [CRITIC-3]: line style [spec.md:42]")
+print("## Suggestions (0 found)")
+PY
+cat > "$tmp/py_art.sh" <<PYX
+#!/usr/bin/env bash
+exec python3 "$tmp/stub_art.py"
+PYX
+chmod +x "$tmp/py_art.sh"
+
+art_out="$(HERMES_PY="$tmp/py_art.sh" bash "$CFP" --artifact-mode --charter-file "$CHARTER" --model x/y --slug s < "$ART" 2>/dev/null)"
+# (b) findings emitted under heading contract
+check "b: artifact-mode emits Critical heading" "$(printf '%s\n' "$art_out" | grep -c '^## Critical Issues')" "1"
+# (d) real-heading citation survives
+check "d: real-heading finding kept" "$(printf '%s\n' "$art_out" | grep -cF '[spec.md#Goals]')" "1"
+# (c) bad-heading citation dropped + Critical recomputed to 1
+check "c: bad-heading dropped -> Critical (1 found)" "$(printf '%s\n' "$art_out" | grep -c '^## Critical Issues (1 found)')" "1"
+# (d2) line-style [file:42] citation dropped in artifact mode -> Important (0 found)
+check "d2: line-style cite dropped -> Important (0 found)" "$(printf '%s\n' "$art_out" | grep -c '^## Important Issues (0 found)')" "1"
+
+# (d2b/e) --print-prompt in artifact mode: charter text present, hardcoded role absent,
+# heading-citation instruction present, diff-line-citation instruction absent.
+pp_art="$(bash "$CFP" --artifact-mode --charter-file "$CHARTER" --model x/y --slug s --print-prompt < "$ART" 2>/dev/null)"
+check "e: charter text in prompt"        "$(printf '%s\n' "$pp_art" | grep -c 'rigorous SPEC critic')" "1"
+check "e: hardcoded reviewer role absent" "$(printf '%s\n' "$pp_art" | grep -c 'first-pass code reviewer')" "0"
+check "d2: prompt instructs heading citation" "$(printf '%s\n' "$pp_art" | grep -qF '[<file>#<heading>]' && echo yes || echo no)" "yes"
+check "d2: prompt drops diff-line citation clause" "$(printf '%s\n' "$pp_art" | grep -c 'new-file line numbers')" "0"
+# codex-1 (CR panel): artifact mode must NOT reuse the diff prompt-injection rule
+# (which flags embedded instruction-like text as a Critical finding) — a spec that
+# DISCUSSES injection would get false-positive Criticals. And it fences as artifact.
+check "artifact-mode softens the injection rule (no false-positive Critical)" "$(printf '%s\n' "$pp_art" | grep -qF 'normal artifact content, NOT a finding' && echo yes || echo no)" "yes"
+check "artifact-mode drops the diff injection-Critical clause" "$(printf '%s\n' "$pp_art" | grep -c 'itself a Critical finding')" "0"
+# code-reviewer (CR panel): a heading containing '#' must be extracted intact
+# (split on the FIRST '#', not the last) — else a validly-cited finding drops.
+ART2="$tmp/spec2.md"
+cat > "$ART2" <<'MD'
+# Design
+## Issue #42 handling
+Body.
+MD
+cat > "$tmp/stub_hash.py" <<'PY'
+print("## Critical Issues (1 found)")
+print("- [CRITIC-1]: unhandled path [spec2.md#Issue #42 handling]")
+print("## Important Issues (0 found)")
+print("## Suggestions (0 found)")
+PY
+cat > "$tmp/py_hash.sh" <<PYX
+#!/usr/bin/env bash
+exec python3 "$tmp/stub_hash.py"
+PYX
+chmod +x "$tmp/py_hash.sh"
+hash_out="$(HERMES_PY="$tmp/py_hash.sh" bash "$CFP" --artifact-mode --charter-file "$CHARTER" --model x/y --slug s < "$ART2" 2>/dev/null)"
+check "heading containing '#' kept (first-# split)" "$(printf '%s\n' "$hash_out" | grep -c '^## Critical Issues (1 found)')" "1"
+
+# missing charter file -> exit 2
+printf 'x\n' | bash "$CFP" --artifact-mode --charter-file "$tmp/nope.md" --model x/y --slug s >/dev/null 2>&1
+check "missing charter file -> exit 2" "$?" "2"
+# --perspective-file appends an optional analytical lens after the shared rules.
+PERSPECTIVE="$tmp/perspective.md"
+printf '%s\n' 'PERSPECTIVE_SENTINEL: hunt for shared-state breakage.' > "$PERSPECTIVE"
+pp_persp="$(printf '%s' "$DIFF" | bash "$CFP" --model x/y --slug s --perspective-file "$PERSPECTIVE" --print-prompt 2>/dev/null)"
+check "perspective text appears when enabled" "$(printf '%s\n' "$pp_persp" | grep -qF 'PERSPECTIVE_SENTINEL' && echo yes || echo no)" "yes"
+
+pp_persp_off="$(printf '%s' "$DIFF" | CRITIC_PERSPECTIVES=0 bash "$CFP" --model x/y --slug s --perspective-file "$PERSPECTIVE" --print-prompt 2>/dev/null)"
+check "CRITIC_PERSPECTIVES=0 suppresses perspective text" "$(printf '%s\n' "$pp_persp_off" | grep -qF 'PERSPECTIVE_SENTINEL' && echo yes || echo no)" "no"
+
+rules_line="$(printf '%s\n' "$pp_persp" | grep -nF 'Do NOT call any tools.' | head -1 | cut -d: -f1)"
+persp_line="$(printf '%s\n' "$pp_persp" | grep -nF 'PERSPECTIVE_SENTINEL' | head -1 | cut -d: -f1)"
+if [ -n "$rules_line" ] && [ -n "$persp_line" ] && [ "$rules_line" -lt "$persp_line" ]; then
+    echo "ok - perspective text appears after rules block"
+else
+    echo "FAIL - perspective text appears after rules block: rules_line=$rules_line persp_line=$persp_line"
+    fails=$((fails + 1))
+fi
+
+printf '%s' "$DIFF" | bash "$CFP" --model x/y --slug s --perspective-file "$PERSPECTIVE" --charter-file "$CHARTER" --print-prompt >/dev/null 2>&1
+check "perspective plus charter is usage error rc2" "$?" "2"
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

@@ -39,6 +39,38 @@ check "non-numeric prompt-chars -> est_prompt_tokens 0" "$(L="$L" node -e 'const
 CR_LEDGER="$L" bash "$LA" usage --branch b --head H4 --model codex --prompt-chars 0 --response-chars 0
 check "zero-char usage -> est_total 0, estimated" "$(L="$L" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="usage"&&r.head==="H4");console.log(o.est_total_tokens+","+o.estimated)')" "0,true"
 
+# ── WS4 (HIMMEL-414): artifact/perspective segmentation ─────────────────────
+# The dedup key gains artifact+perspective so a second arm (same head, same
+# finding_id, perspectives flipped) is NOT silently dropped.
+LP="$tmp/persp.jsonl"
+# (a) same (head,finding_id) in two perspective arms → BOTH lines (round-2 red path)
+CR_LEDGER="$LP" bash "$LA" finding --branch b --head HP --model m --id p-1 --severity major --file f --line 1 --verdict agreed --perspective off
+CR_LEDGER="$LP" bash "$LA" finding --branch b --head HP --model m --id p-1 --severity major --file f --line 1 --verdict agreed --perspective on
+check "perspective off+on both recorded (no silent drop)" "$(grep -c '"kind":"finding"' "$LP")" "2"
+# (b) same head+id+artifact+perspective twice → ONE line (dedup still works)
+CR_LEDGER="$LP" bash "$LA" finding --branch b --head HP --model m --id p-1 --severity major --file f --line 1 --verdict agreed --perspective on
+check "same head+id+artifact+perspective dedups" "$(grep -c '"kind":"finding"' "$LP")" "2"
+# avail: same head+model across two perspective arms → BOTH (one avail per row per arm)
+CR_LEDGER="$LP" bash "$LA" avail --branch b --head HP --model m --status ok --perspective off
+CR_LEDGER="$LP" bash "$LA" avail --branch b --head HP --model m --status ok --perspective on
+check "avail two perspective arms both recorded" "$(grep -c '"kind":"avail"' "$LP")" "2"
+CR_LEDGER="$LP" bash "$LA" avail --branch b --head HP --model m --status ok --perspective on
+check "avail same head+model+perspective dedups" "$(grep -c '"kind":"avail"' "$LP")" "2"
+# artifact segmentation: same head+id, artifact diff then spec → BOTH lines
+LArt="$tmp/artifact.jsonl"
+CR_LEDGER="$LArt" bash "$LA" finding --branch b --head HA --model m --id a-1 --severity major --file f --line 1 --verdict agreed --artifact diff
+CR_LEDGER="$LArt" bash "$LA" finding --branch b --head HA --model m --id a-1 --severity major --file f --line 1 --verdict agreed --artifact spec
+check "artifact diff+spec both recorded (no silent drop)" "$(grep -c '"kind":"finding"' "$LArt")" "2"
+# (c) record without new flags carries artifact:diff, perspective:off defaults
+LD="$tmp/default.jsonl"
+CR_LEDGER="$LD" bash "$LA" finding --branch b --head HD --model m --id d-1 --severity minor --file f --line 2 --verdict agreed
+check "default artifact=diff" "$(L="$LD" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="finding");console.log(o.artifact)')" "diff"
+check "default perspective=off" "$(L="$LD" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="finding");console.log(o.perspective)')" "off"
+# invalid enum values rejected (exit 2)
+CR_LEDGER="$LD" bash "$LA" finding --branch b --head HD --model m --id d-2 --severity minor --file f --line 2 --verdict agreed --artifact bogus >/dev/null 2>&1
+check "invalid --artifact rejected" "$?" "2"
+CR_LEDGER="$LD" bash "$LA" finding --branch b --head HD --model m --id d-3 --severity minor --file f --line 2 --verdict agreed --perspective maybe >/dev/null 2>&1
+check "invalid --perspective rejected" "$?" "2"
 # unknown kind still rejected
 CR_LEDGER="$L" bash "$LA" bogus --branch b --head H1 --model m >/dev/null 2>&1
 check "unknown kind rejected" "$?" "2"
