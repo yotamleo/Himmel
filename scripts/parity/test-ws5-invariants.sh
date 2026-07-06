@@ -52,8 +52,20 @@ done
 cd "$REPO" || { echo "FAIL: cannot cd to repo root $REPO" >&2; exit 1; }
 
 if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
-    echo "FAIL: diff base ref does not resolve: $BASE" >&2
-    exit 1
+    # CI checkouts (shallow / single-ref) may lack origin/main -- fall back to
+    # a local main; with NO resolvable base there is no diff to scope the
+    # invariants over, so SKIP (exit 0), matching the harness skip convention.
+    # An EXPLICIT --base that does not resolve still FAILS (caller error).
+    if [ "$BASE" = "origin/main" ] && git rev-parse --verify --quiet main >/dev/null; then
+        echo "note: origin/main does not resolve; falling back to local main"
+        BASE=main
+    elif [ "$BASE" = "origin/main" ]; then
+        echo "SKIP: no resolvable diff base (origin/main and main both absent -- shallow CI checkout?); nothing to scope"
+        exit 0
+    else
+        echo "FAIL: diff base ref does not resolve: $BASE" >&2
+        exit 1
+    fi
 fi
 
 FAIL=0
