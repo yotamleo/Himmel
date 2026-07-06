@@ -18,6 +18,16 @@ H="$TMP/hermes"
 if command -v cygpath >/dev/null 2>&1; then H="$(cygpath -m "$TMP/hermes")"; fi
 export HERMES_HOME="$H"   # guard lower-cases internally via norm()
 
+# Resolve a temp path to the SAME (Windows) form the native python sees, so a
+# path fixture matches what the guard stats. No-op off Windows. Defined early —
+# used by both the edit-on-main and the PHI fixture blocks below.
+wp() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+
+# Point the merged-PR guard's gh at a non-existent binary so no test makes a
+# real network call (fail-open); the merged-PR cases below drive verdicts via
+# the PARITY_GUARD_GH_RESULT test seam instead.
+export GH_CMD="$TMP/no-such-gh-binary"
+
 fails=0
 # expect = "block" | "allow"
 g() {  # g "<label>" "<expect>" '<json payload>'
@@ -58,13 +68,66 @@ g "rm -rf"         block '{"tool_name":"terminal","tool_input":{"command":"rm -r
 g "plain rm"       allow '{"tool_name":"terminal","tool_input":{"command":"rm tmp.txt"}}'
 g "schtasks"       block '{"tool_name":"terminal","tool_input":{"command":"schtasks /delete /tn X"}}'
 
+echo "== parity_guard: block-edit-on-main parity (HIMMEL-731) =="
+# Fake git repos in Windows-resolvable form (same cygpath handling as HERMES_HOME)
+# so the native python (Git Bash) stats the real temp tree.
+mkdir -p "$TMP/mainrepo/.git" "$TMP/mainrepo/src" \
+         "$TMP/featrepo/.git" "$TMP/featrepo/src" \
+         "$TMP/mastrepo/.git"
+printf 'ref: refs/heads/main\n'   > "$TMP/mainrepo/.git/HEAD"
+printf 'ref: refs/heads/feat/x\n' > "$TMP/featrepo/.git/HEAD"
+printf 'ref: refs/heads/master\n' > "$TMP/mastrepo/.git/HEAD"
+MR="$(wp "$TMP/mainrepo")"; FR="$(wp "$TMP/featrepo")"; MASTR="$(wp "$TMP/mastrepo")"
+g "write into repo on main refused"    block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$MR/src/foo.sh\"}}"
+g "delete in repo on main refused"     block "{\"tool_name\":\"delete_file\",\"tool_input\":{\"path\":\"$MR/src/old.sh\"}}"
+g "write on worker branch allowed"     allow "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$FR/src/foo.sh\"}}"
+g "git commit on master refused"       block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m wip\",\"cwd\":\"$MASTR\"}}"
+g "git commit on worker branch allowed" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m wip\",\"cwd\":\"$FR\"}}"
+# .single-writer marker at the repo root opts the on-main repo out.
+: > "$TMP/mainrepo/.single-writer"
+g "write on main with .single-writer allowed" allow "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$MR/src/foo.sh\"}}"
+
+echo "== parity_guard: block-merged-pr-commit parity (HIMMEL-731) =="
+# Worker branch fixture; the merged-PR verdict is injected via the
+# PARITY_GUARD_GH_RESULT test seam (hermetic — no real gh call).
+mkdir -p "$TMP/shiprepo/.git"
+printf 'ref: refs/heads/feat/shipped\n' > "$TMP/shiprepo/.git/HEAD"
+SR="$(wp "$TMP/shiprepo")"
+export PARITY_GUARD_GH_RESULT=1
+g "git commit on merged-PR branch refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m x\",\"cwd\":\"$SR\"}}"
+export PARITY_GUARD_GH_RESULT=0
+g "git commit on branch with no/open PR allowed" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m x\",\"cwd\":\"$SR\"}}"
+export PARITY_GUARD_GH_RESULT=__ERR__
+g "merged-PR guard fails open on gh error" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m x\",\"cwd\":\"$SR\"}}"
+unset PARITY_GUARD_GH_RESULT
+# gh unavailable (GH_CMD -> non-existent) also fails open.
+g "merged-PR guard fails open when gh absent" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m x\",\"cwd\":\"$SR\"}}"
+
+echo "== parity_guard: block-docker-privesc parity (HIMMEL-731) =="
+g "docker --privileged refused"    block '{"tool_name":"terminal","tool_input":{"command":"docker run --rm --privileged ubuntu bash"}}'
+g "docker root bind-mount refused" block '{"tool_name":"terminal","tool_input":{"command":"docker run -v /:/host ubuntu"}}'
+g "docker /etc mount refused"      block '{"tool_name":"terminal","tool_input":{"command":"docker run -v /etc:/host:rw ubuntu install"}}'
+g "docker socket mount refused"    block '{"tool_name":"terminal","tool_input":{"command":"docker run -v /var/run/docker.sock:/s img"}}'
+g "docker --pid=host refused"      block '{"tool_name":"terminal","tool_input":{"command":"docker run --pid=host img"}}'
+g "docker cap-add SYS_ADMIN refused" block '{"tool_name":"terminal","tool_input":{"command":"docker run --cap-add SYS_ADMIN img"}}'
+g "docker --user root refused"     block '{"tool_name":"terminal","tool_input":{"command":"docker run --user 0 -v /:/h img"}}'
+g "podman --privileged refused"    block '{"tool_name":"terminal","tool_input":{"command":"podman run --privileged img"}}'
+g "docker ps allowed"              allow '{"tool_name":"terminal","tool_input":{"command":"docker ps"}}'
+g "docker project-local mount allowed" allow '{"tool_name":"terminal","tool_input":{"command":"docker run -v ./src:/app node build"}}'
+
+echo "== parity_guard: block-backend-tier / MCP fence parity (HIMMEL-731) =="
+g "mcp github tool refused"    block '{"tool_name":"mcp__plugin_github_github__create_pull_request","tool_input":{}}'
+g "mcp vercel tool refused"    block '{"tool_name":"mcp__plugin_vercel_vercel__deploy_to_vercel","tool_input":{}}'
+g "mcp bare tool refused"      block '{"tool_name":"mcp__whatever__do","tool_input":{}}'
+g "mcp qmd KB carve-out allowed"    allow '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{}}'
+g "mcp qmd KB get carve-out allowed" allow '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{}}'
+
 echo "== parity_guard: fail-closed on malformed payload =="
 g "malformed json" block 'NOT JSON'
 
 echo "== parity_guard: PHI / data-egress fence (HIMMEL-695) =="
 # Fixtures in Windows-resolvable form so the native python (Git Bash) stats the
-# real temp tree — same cygpath handling as HERMES_HOME above.
-wp() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+# real temp tree — same cygpath handling as HERMES_HOME above (wp() defined near top).
 mkdir -p "$TMP/vault/sub" "$TMP/phi/case" "$TMP/repo" "$TMP/denyroot/pt"
 : > "$TMP/vault/.salus"                     # PHI vault marker
 CFG="$TMP/glmcfg"; mkdir -p "$CFG"
@@ -128,9 +191,9 @@ echo "== wire_parity_guard: set (insert + replace) =="
 cfg="$TMP/c1.yaml"
 printf 'model:\n  default: gpt-5.5\nhooks: {}\nsecurity:\n  redact_secrets: true\n' > "$cfg"
 "$PY" "$WIRE" set "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
-if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" && grep -q "redact_secrets" "$cfg"; then
-  echo "  ok: set inserted hook, preserved other keys"; else
-  echo "  FAIL: set did not wire correctly" >&2; fails=$((fails + 1)); fi
+if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" && grep -q "redact_secrets" "$cfg" && grep -q "mcp__" "$cfg"; then
+  echo "  ok: set inserted hook (matcher covers mcp__), preserved other keys"; else
+  echo "  FAIL: set did not wire correctly (mcp__ in matcher?)" >&2; fails=$((fails + 1)); fi
 # replace an existing luna_vault_guard block; the top-level key AFTER the hooks
 # block (here `trailing:`) MUST survive — guards against truncation.
 printf 'hooks:\n  pre_tool_call:\n  - matcher: x\n    command: luna_vault_guard.py\n    timeout: 10\ntrailing: keep-me\n' > "$cfg"
