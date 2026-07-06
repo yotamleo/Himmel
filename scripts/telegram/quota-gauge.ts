@@ -15,7 +15,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
-export type Lane = "glm" | "codex" | "claude";
+export type Lane = "glm" | "codex" | "claude" | "alibaba";
 
 // Canonical record schema — keys in this EXACT order (the byte-identical
 // contract with the bash twin). ALL keys always present; null where
@@ -104,9 +104,9 @@ export function appendQuotaGauge(row: QuotaGaugeRecord, path?: string): void {
 // "dimly observed" lane — a threshold trip writes the ACTUAL %, but with budget
 // 0 it is never fresh unless a trip fired at `nowMs`, so it reads UNKNOWN
 // between trips (dim-lane honesty, never a fabricated number).
-export const LANE_BUDGET_S: Record<Lane, number> = { glm: 120, codex: 3600, claude: 0 };
+export const LANE_BUDGET_S: Record<Lane, number> = { glm: 120, codex: 3600, claude: 0, alibaba: 3600 };
 export const QUOTA_GAUGE_LOOKBACK_N = 500;
-const LANES: Lane[] = ["glm", "codex", "claude"];
+const LANES: Lane[] = ["glm", "codex", "claude", "alibaba"];
 
 // `known` iff the latest row for the lane is VISIBLE (used_pct !== null) AND
 // fresh; otherwise `unknown` (no row / invisible / stale). `row` still carries
@@ -136,6 +136,7 @@ export function quotaGaugeRead(p: { path?: string; nowMs?: number; lookbackN?: n
     glm: { lane: "glm", row: null, fresh: false, status: "unknown" },
     codex: { lane: "codex", row: null, fresh: false, status: "unknown" },
     claude: { lane: "claude", row: null, fresh: false, status: "unknown" },
+    alibaba: { lane: "alibaba", row: null, fresh: false, status: "unknown" },
   };
   if (!existsSync(path)) return result;
 
@@ -150,7 +151,7 @@ export function quotaGaugeRead(p: { path?: string; nowMs?: number; lookbackN?: n
     let row: QuotaGaugeRecord;
     try { row = JSON.parse(line) as QuotaGaugeRecord; } catch { continue; }  // truncated/garbled last line skipped (T15)
     const lane = (row as { lane?: unknown }).lane;
-    if (lane !== "glm" && lane !== "codex" && lane !== "claude") continue;
+    if (lane !== "glm" && lane !== "codex" && lane !== "claude" && lane !== "alibaba") continue;
     if (found.has(lane)) continue;                 // an older row for a lane already resolved by its newest
     found.add(lane);
     result[lane] = laneVerdict(lane, row, nowMs);

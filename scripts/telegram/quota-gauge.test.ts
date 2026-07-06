@@ -245,6 +245,32 @@ test("T26 absent lane beyond lookbackN -> unknown, scan bounded at N", () => {
   expect(r.glm.status).toBe("known");     // glm found at row 1, before the bound bites
 });
 
+// ── HIMMEL-729: alibaba lane in the reader (budget 3600s, like codex) ─────────
+test("T13b absent alibaba lane -> row null, status unknown (no fabricated row)", () => {
+  const p = writeLedger([serializeQuotaGauge(rec({ lane: "glm", used_pct: 62, ts: ago(10) }))]);
+  const r = quotaGaugeRead({ path: p, nowMs: NOW_MS });
+  expect(r.alibaba.row).toBeNull();
+  expect(r.alibaba.status).toBe("unknown");
+  expect(r.alibaba.fresh).toBe(false);
+});
+
+test("T10b fresh alibaba row (age 30s < 3600 budget) -> fresh:true status:known", () => {
+  const p = writeLedger([serializeQuotaGauge(rec({ lane: "alibaba", source: "alibaba-prometheus", used_pct: 12, tier: "qwen3-coder-plus", ts: ago(30) }))]);
+  const r = quotaGaugeRead({ path: p, nowMs: NOW_MS });
+  expect(r.alibaba.fresh).toBe(true);
+  expect(r.alibaba.status).toBe("known");
+  expect(r.alibaba.row?.used_pct).toBe(12);
+  expect(r.alibaba.row?.tier).toBe("qwen3-coder-plus");
+});
+
+test("T11b stale alibaba row (age 4000s > 3600 budget) -> fresh:false status:unknown", () => {
+  const p = writeLedger([serializeQuotaGauge(rec({ lane: "alibaba", used_pct: 12, ts: ago(4000) }))]);
+  const r = quotaGaugeRead({ path: p, nowMs: NOW_MS });
+  expect(r.alibaba.fresh).toBe(false);
+  expect(r.alibaba.status).toBe("unknown");
+  expect(r.alibaba.row?.used_pct).toBe(12); // last-known still carried even when stale
+});
+
 test("T21/AC11 exactly one quotaGaugeRead impl; no second-language reader twin", () => {
   const src = readFileSync(join(REPO_ROOT, "scripts", "telegram", "quota-gauge.ts"), "utf8");
   expect((src.match(/export function quotaGaugeRead/g) ?? []).length).toBe(1);
