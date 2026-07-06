@@ -47,8 +47,9 @@
 #         block while arm-resume's HIMMEL-Resume-* dedup keeps the
 #         scheduler at one job.
 #   4. arm-resume rc=3 (a HIMMEL-Resume-* job already exists) counts as
-#      success — the goal (a queued resume) is already met. Any other
-#      arm failure surfaces (exit 1 — non-blocking, stderr shown) and
+#      success — the goal (a queued resume) is already met; the hook notes
+#      that and allows the tool call. Any other arm failure surfaces
+#      (exit 1 — non-blocking, stderr shown) and
 #      retries next interval; after $AUTO_ARM_MAX_ARM_FAILURES
 #      consecutive failures it escalates to the one-shot exit-2 block
 #      anyway, telling the model the safety net is torn and to arm
@@ -66,10 +67,12 @@
 # Output / exit semantics (NON-STANDARD for this directory — this is a
 # WATCHDOG, not a guard; see scripts/hooks/CLAUDE.md "fail-closed"
 # convention, which this hook deliberately inverts):
-#   - exit 0 → allow; quiet. Absence-of-signal paths ONLY (disabled,
+#   - exit 0 → allow. Quiet for absence-of-signal paths (disabled,
 #              throttled, no/unreadable cache, stale cache below the
 #              escalation bound, below threshold, already fired this
 #              window / already escalated this wedge by THIS session).
+#              Non-Claude lane pass-through and arm-resume dedup emit a
+#              one-line stderr note.
 #   - exit 1 → allow; stderr surfaces to the user. Watchdog-MALFUNCTION
 #              paths (cannot write state, python3 missing/crashed,
 #              snapshot unwritable everywhere, arm-resume missing or
@@ -79,8 +82,8 @@
 #              marker, so "already escalated" may be suppressing a
 #              sibling's wind-down notice — that skip stays visible.
 #   - exit 2 → block this one tool call; stderr fed to the model
-#              (resume armed / already armed / arm UNFIXABLE — write a
-#              handover now). One-shot per session, keyed by cap window
+#              (resume armed / arm UNFIXABLE — write a handover now).
+#              One-shot per session, keyed by cap window
 #              (threshold trip) or wedge mtime (stale escalation).
 #
 # Env knobs (all optional):
@@ -103,6 +106,28 @@ warn() { echo "auto-arm-on-cap: $*" >&2; }
 
 [ "${AUTO_ARM_DISABLE:-0}" = "1" ] && exit 0
 
+non_claude_lane=""
+case "${ANTHROPIC_BASE_URL:-}" in
+    *api.z.ai*) non_claude_lane="ANTHROPIC_BASE_URL=api.z.ai" ;;
+esac
+if [ -z "$non_claude_lane" ] && [ -n "${HERMES_ENGINE:-}" ]; then
+    non_claude_lane="HERMES_ENGINE set"
+fi
+if [ -z "$non_claude_lane" ] && [ -n "${CODEX_ADAPTER:-}" ]; then
+    non_claude_lane="CODEX_ADAPTER set"
+fi
+# NOTE: CODEX_COMPANION_SESSION_ID is deliberately NOT a lane signal — the
+# codex-companion PLUGIN exports it into every Claude session where it is
+# installed (observed live in a plain Fable session), so keying on it would
+# silently disable this watchdog machine-wide. CODEX_THREAD_ID is only set
+# inside a real codex runtime.
+if [ -z "$non_claude_lane" ] && [ -n "${CODEX_THREAD_ID:-}" ]; then
+    non_claude_lane="CODEX_THREAD_ID set"
+fi
+if [ -n "$non_claude_lane" ]; then
+    warn "non-Claude lane detected ($non_claude_lane); passing through"
+    exit 0
+fi
 hook_dir=$(cd "$(dirname "$0")" && pwd)
 project_dir="${CLAUDE_PROJECT_DIR:-}"
 
@@ -491,22 +516,19 @@ PY
     arm_rc=$?
     set -e
     case "$arm_rc" in
-        0|3)
-            # 0 = armed; 3 = a HIMMEL-Resume job already exists — goal
-            # met either way (same dedup contract as the threshold trip).
+        0)
             armed_word="SAFETY RESUME ARMED at ${slot_hhmm}"
-            [ "$arm_rc" = "3" ] && armed_word="a resume is ALREADY armed (dedup)"
             if ! : > "$stale_marker" 2>/dev/null; then
                 # One-shot marker unpersistable (e.g. STATE_DIR went
                 # read-only — in which case the throttle marker and the
                 # counter are failing right alongside it, so EVERY tool
                 # call lands here). An exit-2 block now would repeat on
                 # every call while claiming "this block fires once" —
-                # actively false. The arm itself succeeded/deduped, so
-                # degrade to a loud non-blocking warn (exit 1): visible
-                # every check, but never a block loop. The counter is
-                # left in place on purpose — the next check re-warns
-                # instead of going quiet.
+                # actively false. The arm itself succeeded, so degrade
+                # to a loud non-blocking warn (exit 1): visible every
+                # check, but never a block loop. The counter is left in
+                # place on purpose — the next check re-warns instead of
+                # going quiet.
                 warn "STATUSLINE WEDGED and ${armed_word} (${slot_source}), but the one-shot marker $stale_marker is UNWRITABLE — cannot persist block-dedup state, so the exit-2 block is downgraded to this repeating warning. Snapshot: $snapshot. Write a full handover NOW and wind down."
                 exit 1
             fi
@@ -521,6 +543,15 @@ PY
                 echo "near the cap. This block fires once per session; your next tool call will proceed."
             } >&2
             exit 2
+            ;;
+        3)
+            if ! : > "$stale_marker" 2>/dev/null; then
+                warn "STATUSLINE WEDGED and a resume is ALREADY armed (dedup), but the one-shot marker $stale_marker is UNWRITABLE. Snapshot: $snapshot."
+                exit 1
+            fi
+            rm -f "$stale_count_file" 2>/dev/null || true
+            warn "STATUSLINE WEDGED and a resume is ALREADY armed (dedup); allowing tool call. Snapshot: $snapshot."
+            exit 0
             ;;
         *)
             # Surfaced, non-blocking; the counter stays >= STALE_MIN_CHECKS
@@ -770,21 +801,23 @@ arm_rc=$?
 set -e
 
 case "$arm_rc" in
-    0|3)
-        # 0 = armed; 3 = a HIMMEL-Resume job already exists — goal met
-        # either way (dedup with operator/supervisor arms is by design).
+    0)
         touch "$fired_marker" 2>/dev/null || true
         rm -f "$failcount_file" 2>/dev/null || true
-        armed_word="RESUME ARMED (--time smart)"
-        [ "$arm_rc" = "3" ] && armed_word="a resume is ALREADY armed (dedup)"
         {
-            echo "auto-arm-on-cap: usage ${util}% >= ${THRESHOLD}% on ${window} — ${armed_word}."
+            echo "auto-arm-on-cap: usage ${util}% >= ${THRESHOLD}% on ${window} — RESUME ARMED (--time smart)."
             echo "Status snapshot: $snapshot"
             echo "ACTION REQUIRED: write a full handover NOW (it will be picked up on resume),"
             echo "finish or park the in-flight step, then wind down. This block fires once;"
             echo "your next tool call will proceed."
         } >&2
         exit 2
+        ;;
+    3)
+        touch "$fired_marker" 2>/dev/null || true
+        rm -f "$failcount_file" 2>/dev/null || true
+        warn "usage ${util}% >= ${THRESHOLD}% on ${window} — a resume is ALREADY armed (dedup); allowing tool call. Status snapshot: $snapshot"
+        exit 0
         ;;
     *)
         # Arm failed. Surface it (exit 1 — non-blocking but visible),

@@ -167,6 +167,12 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 **What:** The OpenAI codex companion plugin — the codex CLI runtime, the `codex:codex-rescue` / `codex:setup` skills, and the `codex-companion.mjs` script under `$HOME/.claude/plugins/cache/openai-codex/codex/<version>/` (the version segment drifts on plugin update — glob-resolve it, never hardcode).
 
 **ADOPTED (HIMMEL-694):** the companion's `adversarial-review` mode is integrated into `/pr-check` step 3.1 as an ADDITIONAL pre-merge cross-model pass of the paid/pair tier — **availability-gated** (it consumes the operator's OpenAI usage bank, so absence of codex ⇒ silently skipped with a one-line note, never an error; also skipped under `CR_PROFILE=none`). Its `[codex-adv-N]` findings are blocking candidates merged into the same adjudication flow as the free critic panel (VERDICT lines + step-4.5 ledger `--model codex-adv`). Runbook: `.claude/commands/pr-check.md` step 3.1.
+**Windows ACL hardening (HIMMEL-733):** aged Codex worktrees can lose inherited
+sandbox ACEs on child directories. Before an unattended Codex dispatch into an
+existing worktree, run `pwsh -NoProfile -File scripts\codex\normalize-worktree-acl.ps1 <worktree>`
+(or the `scripts/codex/normalize-worktree-acl.sh` wrapper from Git Bash). The
+helper refuses paths outside `.claude/worktrees/<name>` and resets only each
+top-level child directory, never the worktree root.
 
 ### himmel (local directory marketplace)
 

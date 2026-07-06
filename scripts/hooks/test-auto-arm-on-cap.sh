@@ -8,6 +8,11 @@ set -u -o pipefail
 HOOK="$(cd "$(dirname "$0")" && pwd)/auto-arm-on-cap.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# Hermetic lane env (HIMMEL-733): the hook now passes through on non-Claude
+# lane signals. Strip any such signal inherited from the RUNNING session
+# (e.g. a z.ai shell or a codex runtime) so baseline tests exercise the
+# Claude-lane paths; Test 1b re-sets them explicitly per case.
+unset ANTHROPIC_BASE_URL HERMES_ENGINE CODEX_ADAPTER CODEX_THREAD_ID
 # Isolate the quota-gauge ledger so threshold-trip tests never pollute the
 # operator's real ~/.himmel/quota-gauge.jsonl (HIMMEL-687).
 export HIMMEL_QUOTA_GAUGE_LEDGER="$TMP/quota-gauge.jsonl"
@@ -101,6 +106,26 @@ AUTO_ARM_DISABLE=1 AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" \
     bash "$HOOK" </dev/null >/dev/null 2>&1
 assert_rc "disabled hook exits 0" 0 $?
 assert_file "disabled hook touches no throttle marker" absent "$S/auto-arm-last-check"
+
+echo "Test 1b: non-Claude lanes pass through before cache/throttle/arm work"
+for spec in \
+    "z.ai env:ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" \
+    "hermes env:HERMES_ENGINE=codex" \
+    "codex adapter:CODEX_ADAPTER=1"
+do
+    desc=$(printf '%s' "$spec" | cut -d: -f1)
+    assignment=$(printf '%s' "$spec" | cut -d: -f2-)
+    S="$TMP/s1b-$(printf '%s' "$desc" | tr ' .' '--')"; mkdir -p "$S"
+    C="$TMP/c1b-$(printf '%s' "$desc" | tr ' .' '--').json"; write_cache "$C" 99 99
+    rm -f "$ARM_LOG" "$STDERR_LOG"
+    env "$assignment" AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" \
+        AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" HANDOVER_DIR="$HANDOVER_TEST_DIR" \
+        CLAUDE_PROJECT_DIR="" bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+    assert_rc "$desc pass-through exits 0" 0 $?
+    assert_file "$desc pass-through does not touch throttle marker" absent "$S/auto-arm-last-check"
+    assert_file "$desc pass-through does not arm" absent "$ARM_LOG"
+    assert_grep "$desc pass-through emits lane note" "non-Claude lane" "$STDERR_LOG"
+done
 
 echo "Test 2: below threshold — no arm, throttle marker touched"
 S="$TMP/s2"; mkdir -p "$S"
@@ -245,7 +270,7 @@ AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" ARM_STUB_RC=3 \
     HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
     bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
-assert_rc "already-armed run exits 2 (still tells the model)" 2 $?
+assert_rc "already-armed run exits 0 (armed, no block)" 0 $?
 assert_grep "dedup message says ALREADY armed" "ALREADY armed" "$STDERR_LOG"
 fired=$(count_glob "$S" 'auto-arm-fired-*')
 if [ "$fired" = "1" ]; then
@@ -456,7 +481,7 @@ AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" ARM_STUB_RC=3 \
     HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
     bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
-assert_rc "already-armed safety escalation exits 2" 2 $?
+assert_rc "already-armed safety escalation exits 0 (armed, no block)" 0 $?
 assert_grep "dedup message says ALREADY armed" "ALREADY armed" "$STDERR_LOG"
 stale_markers=$(count_glob "$S" 'auto-arm-stale-escalated-*')
 if [ "$stale_markers" = "1" ]; then
@@ -527,10 +552,12 @@ rm -f "$S/auto-arm-last-check"
 run_hook_sid "$S" "$C" "session-alpha-0001"
 assert_rc "session A re-check — one-shot held (exit 0)" 0 $?
 rm -f "$S/auto-arm-last-check" "$ARM_LOG"
-# Session B under the same frozen mtime: must get its OWN block; the arm
-# itself dedups at the scheduler (rc=3 = already armed counts as success).
+# Session B under the same frozen mtime: the arm dedups at the scheduler
+# (rc=3 = already armed). HIMMEL-733: dedup counts as ARMED — B is notified
+# on stderr but NOT blocked (the safety net already exists).
 run_hook_sid "$S" "$C" "session-beta-0002" 3
-assert_rc "session B under the same wedge blocks too (exit 2)" 2 $?
+assert_rc "session B under the same wedge allowed (dedup = armed, exit 0)" 0 $?
+assert_grep "session B dedup note says ALREADY armed" "ALREADY armed" "$STDERR_LOG"
 assert_grep "session B told a resume is ALREADY armed (scheduler dedup)" "ALREADY armed" "$STDERR_LOG"
 stale_markers=$(count_glob "$S" 'auto-arm-stale-escalated-*')
 if [ "$stale_markers" = "2" ]; then
