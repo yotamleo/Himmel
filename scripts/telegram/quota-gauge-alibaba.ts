@@ -40,6 +40,71 @@ export function alibabaEnv(env: Record<string, string | undefined> = process.env
   };
 }
 
+// ── HIMMEL-729 wiring chunk A: free-tier grants resolution ───────────────────
+// Every TOKEN-quota model on the account carries exactly this free-tier grant.
+// Source: operator-verified from the live Model Studio console, 2026-07-06,
+// cross-checked with https://www.alibabacloud.com/help/en/model-studio/new-free-quota
+// — ~89 token models (~70M total pool): qwen* families PLUS glm-5.1/glm-5.2,
+// deepseek-v3.2/v4-*, kimi-k2.7-code, qwq/qvq. Most grants expire 2026-10-03;
+// qwen-plus and qwen-turbo expire 2026-08-04. Quota is SHARED between the account
+// and its RAM users; Singapore region; Stop-on-Exhaust is enabled (hard stop, no
+// overage). Applied ONLY as a default to a reported token model with no operator
+// override — never to wan* (unit-quota video models). Never fabricated: a grant
+// figure is emitted only for a model that is either defaulted or overridden.
+export const DEFAULT_FREE_TIER_GRANT_TOKENS = 1_000_000;
+
+// wan* (e.g. wan2.2-t2v) are UNIT-quota video models: their grant is measured in
+// calls (~50), not tokens, so the token default never applies. used_pct for one
+// stays null unless an operator override supplies a token figure for it.
+export function isUnitQuotaModel(model: string): boolean {
+  return /^wan/i.test(model);
+}
+
+// Read the operator override `ALIBABA_QUOTA_GRANTS` (JSON `{"<model>": <tokens>}`).
+// Malformed JSON (or a non-object body) -> ONE stderr warning + empty map (fall
+// back to defaults). Absent/blank -> empty map. A non-positive / non-finite
+// value for a key is dropped. Returns the override map ONLY; the per-model
+// default is applied in resolveGrants. Injectable env (alibabaEnv-style).
+export function parseGrantsOverride(env: Record<string, string | undefined> = process.env): AlibabaGrants {
+  const raw = env.ALIBABA_QUOTA_GRANTS;
+  if (!raw || !raw.trim()) return {};
+  let obj: unknown;
+  try { obj = JSON.parse(raw); } catch {
+    console.error("quota-gauge-alibaba: ALIBABA_QUOTA_GRANTS is not valid JSON — ignoring override, using defaults");
+    return {};
+  }
+  if (typeof obj !== "object" || obj === null || Array.isArray(obj)) {
+    console.error("quota-gauge-alibaba: ALIBABA_QUOTA_GRANTS is not a JSON object — ignoring override, using defaults");
+    return {};
+  }
+  const out: AlibabaGrants = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) out[k] = n;   // override REPLACES the default per model key
+  }
+  return out;
+}
+
+// Resolve the per-model grant map for the models the probe actually reported. An
+// operator override REPLACES the default for that model key; otherwise every
+// non-wan* token model gets DEFAULT_FREE_TIER_GRANT_TOKENS; wan* models get no
+// entry (used_pct stays null unless overridden). `usage` null (probe unreadable)
+// -> only overrides are knowable, so the default is NOT applied blindly. Pure +
+// injectable; the runner calls this AFTER parseModelUsage so the default lands on
+// reported models only, and buildAlibabaRows (unchanged) receives a fully
+// resolved map — keeping its never-fabricate rule intact for any model neither
+// defaulted nor overridden.
+export function resolveGrants(usage: ModelUsage[] | null, env: Record<string, string | undefined> = process.env): AlibabaGrants {
+  const grants: AlibabaGrants = { ...parseGrantsOverride(env) };
+  if (usage === null) return grants;
+  for (const { model } of usage) {
+    if (model in grants) continue;          // override wins (already a positive finite number)
+    if (isUnitQuotaModel(model)) continue;  // wan*: unit-quota, no token default
+    grants[model] = DEFAULT_FREE_TIER_GRANT_TOKENS;
+  }
+  return grants;
+}
+
 // Parse a Prometheus HTTP API instant-query response into per-model consumed
 // totals. Accepts either a raw JSON string (parsed here) or an already-parsed
 // object (so the deferred wiring may use resp.text() OR resp.json()). Keeps

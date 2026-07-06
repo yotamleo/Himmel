@@ -188,10 +188,31 @@ main()
 '
 }
 
+# HIMMEL-729 wiring chunk B — best-effort Alibaba quota-gauge probe piggybacked
+# on a qwen* dispatch. Fire-and-forget: backgrounded, all output to /dev/null,
+# NEVER blocks or fails the dispatch (it cannot reach the dispatch rc). The
+# runner self-throttles (60s freshness marker) and skips silently when the
+# Alibaba env vars are unset. Invoke-only — no always-on surface. The shell edit
+# stays minimal; the logic lives in the TS runner (scripts/telegram/alibaba-probe-once.ts).
+alibaba_quota_piggyback() {
+    [ -n "$model" ] || return 0
+    case "$model" in
+        [Qq][Ww][Ee][Nn]*) : ;;  # qwen* (qwen-plus, qwen3-coder-plus, …) — case-insensitive
+        *) return 0 ;;
+    esac
+    command -v bun >/dev/null 2>&1 || return 0
+    local runner="$SCRIPT_DIR/../telegram/alibaba-probe-once.ts"
+    [ -f "$runner" ] || return 0
+    ( bun "$runner" >/dev/null 2>&1 || true ) &   # detached; never affects the dispatch
+    disown 2>/dev/null || true
+}
+
 if [ -n "$log" ]; then
     run_hermes 2>&1 | tee "$log"
-    exit "${PIPESTATUS[0]}"
+    rc="${PIPESTATUS[0]}"
 else
     run_hermes
-    exit $?
+    rc=$?
 fi
+alibaba_quota_piggyback   # best-effort, fire-and-forget, never touches rc
+exit "$rc"

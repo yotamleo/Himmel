@@ -10,6 +10,10 @@ import {
   parseModelUsage,
   buildAlibabaRows,
   alibabaProbeAppend,
+  DEFAULT_FREE_TIER_GRANT_TOKENS,
+  isUnitQuotaModel,
+  parseGrantsOverride,
+  resolveGrants,
 } from "./quota-gauge-alibaba";
 import type { QuotaGaugeRecord } from "./quota-gauge";
 
@@ -169,4 +173,89 @@ test("latent empty usage[] -> ONE invisible row, never a silent zero-row append"
   expect(rows.length).toBe(1);
   expect(rows[0].source).toBe("invisible");
   expect(rows[0].used_pct).toBeNull();
+});
+
+// ── HIMMEL-729 wiring chunk A: free-tier grants resolution ───────────────────
+test("DEFAULT_FREE_TIER_GRANT_TOKENS is the documented 1,000,000", () => {
+  expect(DEFAULT_FREE_TIER_GRANT_TOKENS).toBe(1_000_000);
+});
+
+test("isUnitQuotaModel: wan* only (case-insensitive); qwen/glm/deepseek are not", () => {
+  expect(isUnitQuotaModel("wan2.2-t2v")).toBe(true);
+  expect(isUnitQuotaModel("WAN2.2-i2v")).toBe(true);
+  expect(isUnitQuotaModel("qwen-plus")).toBe(false);
+  expect(isUnitQuotaModel("qwen3-coder-plus")).toBe(false);
+  expect(isUnitQuotaModel("glm-5.2")).toBe(false);
+  expect(isUnitQuotaModel("deepseek-v3.2")).toBe(false);
+  expect(isUnitQuotaModel("kimi-k2.7-code")).toBe(false);
+});
+
+test("parseGrantsOverride: absent/blank -> {} (defaults apply later)", () => {
+  expect(parseGrantsOverride({})).toEqual({});
+  expect(parseGrantsOverride({ ALIBABA_QUOTA_GRANTS: "   " })).toEqual({});
+});
+
+test("parseGrantsOverride: valid object -> map; non-positive/non-finite values dropped", () => {
+  expect(parseGrantsOverride({ ALIBABA_QUOTA_GRANTS: '{"qwen-plus": 500000}' })).toEqual({ "qwen-plus": 500000 });
+  const mixed = parseGrantsOverride({ ALIBABA_QUOTA_GRANTS: '{"a": 100, "b": 0, "c": -5, "d": "x", "e": 200}' });
+  expect(mixed).toEqual({ a: 100, e: 200 });   // b/c non-positive, d non-numeric -> dropped
+});
+
+test("parseGrantsOverride: malformed JSON -> warn to stderr + {} (fall back to defaults)", () => {
+  let stderrCount = 0;
+  const origErr = console.error;
+  console.error = () => { stderrCount++; };
+  try {
+    expect(parseGrantsOverride({ ALIBABA_QUOTA_GRANTS: "not json{" })).toEqual({});
+    expect(parseGrantsOverride({ ALIBABA_QUOTA_GRANTS: "[1,2,3]" })).toEqual({});      // non-object body
+    expect(parseGrantsOverride({ ALIBABA_QUOTA_GRANTS: '"a string"' })).toEqual({});   // non-object body
+    expect(parseGrantsOverride({ ALIBABA_QUOTA_GRANTS: "42" })).toEqual({});            // non-object body
+  } finally { console.error = origErr; }
+  expect(stderrCount).toBe(4);   // one warning per malformed/non-object parse
+});
+
+test("resolveGrants: missing ALIBABA_QUOTA_GRANTS -> blanket 1M default on every reported token model", () => {
+  const usage = parseModelUsage(REAL_PROM)!;   // qwen3-coder-plus + qwen-plus
+  const grants = resolveGrants(usage, {});
+  expect(grants).toEqual({ "qwen3-coder-plus": 1_000_000, "qwen-plus": 1_000_000 });
+});
+
+test("resolveGrants: override REPLACES the default per model key (others still default)", () => {
+  const usage = parseModelUsage(REAL_PROM)!;
+  const grants = resolveGrants(usage, { ALIBABA_QUOTA_GRANTS: '{"qwen-plus": 500000}' });
+  expect(grants).toEqual({ "qwen-plus": 500000, "qwen3-coder-plus": 1_000_000 });
+});
+
+test("resolveGrants: wan* model gets NO token default (used_pct stays null downstream)", () => {
+  const usage = [{ model: "wan2.2-t2v", totalTokens: 30 }, { model: "qwen-plus", totalTokens: 250000 }];
+  const grants = resolveGrants(usage, {});
+  expect(grants).toEqual({ "qwen-plus": 1_000_000 });   // wan2.2-t2v absent — never fabricated
+  const rows = buildAlibabaRows(usage, grants, NOW_MS);
+  const wan = rows.find((r) => r.tier === "wan2.2-t2v")!;
+  expect(wan.used_pct).toBeNull();
+  expect(wan.note).toBe("consumed=30 (no grant configured - used_pct unknowable)");
+});
+
+test("resolveGrants: an override ON a wan* model applies (operator supplies the token figure)", () => {
+  const usage = [{ model: "wan2.2-t2v", totalTokens: 100000 }];
+  const grants = resolveGrants(usage, { ALIBABA_QUOTA_GRANTS: '{"wan2.2-t2v": 1000000}' });
+  expect(grants).toEqual({ "wan2.2-t2v": 1_000_000 });
+  const rows = buildAlibabaRows(usage, grants, NOW_MS);
+  expect(rows[0].used_pct).toBe(10);
+});
+
+test("resolveGrants: usage null (probe unreadable) -> only overrides knowable, no blind default", () => {
+  const grants = resolveGrants(null, { ALIBABA_QUOTA_GRANTS: '{"qwen-plus": 500000}' });
+  expect(grants).toEqual({ "qwen-plus": 500000 });   // no fabricated defaults without a reported model
+});
+
+test("resolveGrants + buildAlibabaRows: default makes a previously-unknowable model derivable", () => {
+  // Same input as the shipped "missing grant -> null" test, but grants now resolved
+  // with the free-tier default: qwen3-coder-plus is NO LONGER unknowable.
+  const usage = parseModelUsage(REAL_PROM)!;
+  const grants = resolveGrants(usage, {});   // defaults only
+  const rows = buildAlibabaRows(usage, grants, NOW_MS);
+  const coder = rows.find((r) => r.tier === "qwen3-coder-plus")!;
+  expect(coder.used_pct).toBe(60);                       // round(100*600000/1_000_000)
+  expect(coder.note).toBe("consumed=600000/1000000");
 });
