@@ -18,8 +18,11 @@ Idempotent. Exit 0 on success/skip, non-zero only on bad input.
 
 import sys
 
+# `mcp__.*` extends the matcher to every MCP tool so parity_guard's MCP fence
+# (block-backend-tier / block-glm-external-writes parity, HIMMEL-731) actually
+# fires — without it, MCP tool calls never invoke the guard.
 MATCHER = ("write_file|patch|read_file|search_files|terminal|"
-           "delete_file|remove_file|move_file|rename_file")
+           "delete_file|remove_file|move_file|rename_file|mcp__.*")
 
 
 def canonical_block(interp: str, guard: str) -> str:

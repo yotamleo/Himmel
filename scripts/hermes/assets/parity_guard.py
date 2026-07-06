@@ -35,6 +35,8 @@ HERMES_HOME (else %LOCALAPPDATA%\\hermes, else ~/.local/share/hermes) and
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 
@@ -104,6 +106,32 @@ TERMINAL_DESTRUCTIVE = re.compile(
     r"|\bcurl[^|;&]*\|\s*(ba)?sh|\bwget[^|;&]*\|\s*(ba)?sh"
 )
 
+# Container privesc shapes (block-docker-privesc parity, HIMMEL-731). Membership
+# in the docker group is root-equivalent, so a docker/podman run|exec|create that
+# grants root-equivalent host access bypasses the write / secret fences. Regex
+# port of the shapes in scripts/hooks/block-docker-privesc.sh (semantics over
+# parity-of-implementation — the CC hook's full ro/rw + allowlist parser is not
+# replicated): --privileged, --pid host, --volumes-from, a root-equivalent
+# --cap-add, the docker socket, a root --user, and a bind mount of a
+# secret-bearing host root (/ , /etc , /root). `cmd` is norm()-ed (lower-cased,
+# forward-slashed), so cap names + paths are already folded. Accepted limits
+# (fail-safe / over-block direction): system-integrity dirs (/usr /var …) and
+# the ro/rw distinction are not modelled — the clearly-catastrophic shapes above
+# are what this catches; a determined attacker with wrapper displacement is out
+# of scope (parity with the CC hook's documented limits).
+DOCKER_PRIVESC = re.compile(
+    r"\b(?:docker|podman)\b[^\n]*?(?:"
+    r"--privileged"
+    r"|--pid(?:=|\s+)host\b"
+    r"|--volumes-from\b"
+    r"|--cap-add(?:=|\s+)(?:cap_)?(?:sys_admin|sys_ptrace|dac_override|dac_read_search|all)\b"
+    r"|(?:/var/run/)?docker\.sock\b"
+    r"|(?:--user(?:=|\s+)|-u(?:=|\s+)?)(?:0|root)\b"
+    r"|(?:-v|--volume)(?:=|\s+)[\"']?/(?:etc\b|root\b|:)"
+    r"|--mount(?:=|\s+)\S*\bsource=/(?:etc\b|root\b|:|,)"
+    r")"
+)
+
 
 def block(reason: str) -> None:
     print(json.dumps({"decision": "block", "reason": reason}))
@@ -133,6 +161,161 @@ def check_write_path(path: str) -> None:
               "main tier may not rewrite its own config or identity.")
     if _under(path, CLAUDE_HOME):
         block("Writes into Claude Code's home are forbidden.")
+
+
+# --- Main-branch edit/commit lock (block-edit-on-main parity, HIMMEL-731) -----
+# himmel does NOT load its Claude Code PreToolUse hooks under hermes, so the
+# branch-awareness of scripts/hooks/block-edit-on-main.sh has to live here.
+# Semantics (semantics over parity-of-implementation): refuse a write/patch/
+# delete into a git repo whose checked-out branch is the DEFAULT branch
+# (main/master), and refuse a terminal `git commit` in such a repo. CARVE-OUT
+# (operator requirement): a worker committing on its OWN `type/slug` worker
+# branch is NOT an on-main edit — the guard fires ONLY when the checked-out
+# branch IS the default branch, never on a feature branch. Opt-out: a
+# `.single-writer` marker at the repo root (mirrors the CC hook). Branch is read
+# cheaply from `.git/HEAD` (no git invocation), following the worktree/submodule
+# `.git` FILE `gitdir:` indirection. Fail-OPEN on an undeterminable branch
+# (detached HEAD / corrupt ref) so a mid-rebase state does not block every write
+# — the default-branch check specifically targets main/master, and a detached
+# HEAD is neither.
+DEFAULT_BRANCHES = ("main", "master")
+
+# git commit at command position (start / after a separator), flag-tolerant, with
+# `commit` as the verb (so `commit-graph` / `commit-tree` do NOT match).
+_GIT_COMMIT = re.compile(
+    r"(?:^|[;&|(\n])\s*git(?:\s+-\S+(?:\s+\S+)?)*\s+commit(?:\s|$)", re.IGNORECASE)
+# `git -C <dir>` change-dir (case-SENSITIVE: -C is chdir, -c is config).
+_GIT_C_DIR = re.compile(r"(?:^|[;&|(\n])\s*git\s+-C\s+(\S+)")
+
+
+def _git_dir_for(start: str):
+    """Walk up `start`'s real ancestors for a `.git`; return (repo_root, git_path)
+    or (None, None). `.git` is a DIRECTORY in a normal checkout, a FILE in a
+    linked worktree / submodule."""
+    d = os.path.realpath(os.path.expanduser(start.strip().strip('"').strip("'")))
+    prev = None
+    while d and d != prev:
+        g = os.path.join(d, ".git")
+        if os.path.exists(g):
+            return d, g
+        prev, d = d, os.path.dirname(d)
+    return None, None
+
+
+def _current_branch(git_path: str):
+    """Checked-out branch from `.git/HEAD`, following the worktree/submodule
+    `.git` FILE `gitdir:` indirection. None on a detached HEAD or unreadable ref."""
+    head_dir = git_path
+    if os.path.isfile(git_path):
+        try:
+            with open(git_path, "r", encoding="utf-8") as fh:
+                content = fh.read().strip()
+        except OSError:
+            return None
+        if not content.startswith("gitdir:"):
+            return None
+        head_dir = content[len("gitdir:"):].strip()
+        if not os.path.isabs(head_dir):
+            head_dir = os.path.normpath(
+                os.path.join(os.path.dirname(git_path), head_dir))
+    try:
+        with open(os.path.join(head_dir, "HEAD"), "r", encoding="utf-8") as fh:
+            head = fh.read().strip()
+    except OSError:
+        return None
+    if head.startswith("ref:"):
+        ref = head[4:].strip()
+        pfx = "refs/heads/"
+        return ref[len(pfx):] if ref.startswith(pfx) else ref
+    return None  # detached HEAD (raw sha) -> undeterminable branch
+
+
+def _edit_on_main_reason(start: str):
+    """Block reason if `start` (a file or dir path) is inside a git repo on the
+    default branch, else None. Honors a repo-root `.single-writer` opt-out."""
+    repo_root, git_path = _git_dir_for(start)
+    if not repo_root:
+        return None  # not in any git repo -> allow
+    if os.path.exists(os.path.join(repo_root, ".single-writer")):
+        return None  # documented single-writer opt-out
+    branch = _current_branch(git_path)
+    if branch and branch.lower() in DEFAULT_BRANCHES:
+        return (f"Refusing the write/commit — the target repo's checked-out "
+                f"branch is the default branch ({branch}). Feature work belongs "
+                "on a type/slug worker branch or an isolated worktree; touch "
+                "'.single-writer' at the repo root to opt out "
+                "(block-edit-on-main parity).")
+    return None
+
+
+def _commit_dir(raw_cmd: str, base_cwd: str) -> str:
+    """Dir a terminal `git commit` runs in: a literal `git -C <dir>` if present
+    (resolved against base_cwd), else base_cwd."""
+    m = _GIT_C_DIR.search(raw_cmd)
+    if m:
+        d = m.group(1).strip().strip('"').strip("'")
+        return d if os.path.isabs(d) else os.path.join(base_cwd, d)
+    return base_cwd
+
+
+# --- Merged-PR commit lock (block-merged-pr-commit parity, HIMMEL-731) --------
+# HYGIENE guard (NOT a security boundary), so it FAILS-OPEN everywhere except a
+# positively confirmed merged-PR branch — mirrors scripts/hooks/block-merged-pr-
+# commit.sh. Before allowing a terminal `git commit`, if gh is available, query
+# the branch's merged-PR count; refuse on >0. CARVE-OUT: a fresh worker branch
+# with no PR (count 0) is NOT a merged-PR branch -> ALLOW. gh absent / errored /
+# non-numeric -> ALLOW with a stderr note (fail-open). GH_CMD overrides the gh
+# binary (mirrors branch-shipped.sh's seam). PARITY_GUARD_GH_RESULT is a
+# test-only override (mirrors block-edit-on-main.sh's CANON_FORCE) that injects
+# the raw count so the suite stays hermetic + cross-platform: a digit = that
+# count, '__ERR__' = simulate a gh failure (fail-open).
+
+
+def _merged_pr_count(branch: str, repo_root: str):
+    """Merged-PR count for `branch`, or None when undeterminable (caller fails
+    open). Test seam PARITY_GUARD_GH_RESULT short-circuits the gh call."""
+    forced = os.environ.get("PARITY_GUARD_GH_RESULT")
+    if forced is not None:
+        forced = forced.strip()
+        if forced == "__ERR__":
+            return None
+        return int(forced) if forced.isdigit() else None
+    gh = os.environ.get("GH_CMD") or shutil.which("gh")
+    if not gh:
+        return None
+    try:
+        r = subprocess.run(
+            [gh, "pr", "list", "--head", branch, "--state", "merged",
+             "--json", "number", "--jq", "length"],
+            cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    out = (r.stdout or b"").decode("utf-8", "replace").strip()
+    return int(out) if out.isdigit() else None
+
+
+def _merged_pr_reason(start: str):
+    """Block reason if a terminal `git commit` in `start`'s repo lands on a
+    branch whose PR is already MERGED, else None (fail-open hygiene guard)."""
+    repo_root, git_path = _git_dir_for(start)
+    if not repo_root:
+        return None
+    branch = _current_branch(git_path)
+    if not branch or branch == "HEAD" or branch.lower() in DEFAULT_BRANCHES:
+        return None  # default / detached branch -> not a merged feature branch
+    count = _merged_pr_count(branch, repo_root)
+    if count is None:
+        sys.stderr.write("parity_guard: merged-PR commit guard skipped "
+                         "(gh unavailable/errored) — fail-open.\n")
+        return None
+    if count > 0:
+        return (f"Refusing to commit — branch '{branch}' already has a MERGED "
+                "PR; committing onto a shipped branch accumulates unreachable "
+                "work. Start a fresh worktree (block-merged-pr-commit parity).")
+    return None
 
 
 # --- PHI / data-egress fence (HIMMEL-695, F-B5) ------------------------------
@@ -345,6 +528,21 @@ def main() -> None:
     tool = payload.get("tool_name", "")
     args = payload.get("tool_input") or payload.get("args") or {}
 
+    # MCP fence (block-backend-tier / block-glm-external-writes parity, HIMMEL-
+    # 731). himmel's CC PreToolUse hooks do NOT load under hermes, so an MCP tool
+    # call would reach the engine UNFENCED — a real external-write surface on the
+    # default lane. Blanket-deny every mcp__* tool EXCEPT the read-only qmd
+    # knowledge-base carve-out (mirrors block-glm-external-writes.sh). This fires
+    # unconditionally on this cloud profile (both engines); the matcher extension
+    # in wire_parity_guard.py is what makes the guard see mcp__* tools at all.
+    if tool.startswith("mcp__"):
+        if tool.startswith("mcp__plugin_qmd_qmd__"):
+            allow()
+        block(f"MCP tool '{tool}' is refused under hermes — the MCP/backend "
+              "surface is an unfenced external-write path on this cloud "
+              "profile; only the qmd knowledge-base carve-out is allowed "
+              "(block-backend-tier / MCP-fence parity).")
+
     if tool in WRITE_TOOLS or tool in DELETE_TOOLS:
         # Check EVERY non-content string arg as a candidate path, regardless of
         # key name — a path under a non-standard key must not slip the fence.
@@ -352,6 +550,9 @@ def main() -> None:
             if isinstance(v, str) and k not in CONTENT_KEYS:
                 check_write_path(norm(v))
                 reason = phi_egress_reason(v)  # raw v — real path for fs checks
+                if reason:
+                    block(reason)
+                reason = _edit_on_main_reason(v)  # raw v — real path for branch
                 if reason:
                     block(reason)
         allow()
@@ -368,8 +569,8 @@ def main() -> None:
         allow()
 
     if tool == "terminal":
-        cmd = norm(str(args.get("command") or args.get("cmd")
-                       or json.dumps(args)))
+        raw_cmd = str(args.get("command") or args.get("cmd") or "")
+        cmd = norm(raw_cmd or json.dumps(args))
         if TERMINAL_FORBIDDEN_PATHS.search(cmd):
             block("Shell access to secret paths, the guard hook, or Claude "
                   "Code's home is forbidden — use the file tools for those.")
@@ -377,9 +578,30 @@ def main() -> None:
             block("Catastrophic command class refused (recursive deletion, "
                   "disk/scheduler/process/registry mutation, force-push, "
                   "remote-exec). Ask the operator if genuinely needed.")
+        if DOCKER_PRIVESC.search(cmd):
+            block("Container privesc shape refused (docker/podman --privileged, "
+                  "host-root bind mount, docker.sock, --pid=host, root-"
+                  "equivalent --cap-add, --volumes-from, or root --user) — "
+                  "docker-group access is root-equivalent and bypasses the "
+                  "write/secret fences. Ask the operator if genuinely needed "
+                  "(block-docker-privesc parity).")
         reason = terminal_phi_egress_reason(cmd)
         if reason:
             block(reason)
+        # Main-branch commit lock (block-edit-on-main parity): a `git commit`
+        # in a repo checked out on the default branch is refused; a worker's own
+        # type/slug branch commits freely.
+        if _GIT_COMMIT.search(raw_cmd):
+            base_cwd = str(payload.get("cwd") or args.get("cwd") or os.getcwd())
+            commit_dir = _commit_dir(raw_cmd, base_cwd)
+            reason = _edit_on_main_reason(commit_dir)
+            if reason:
+                block(reason)
+            # Merged-PR commit lock (block-merged-pr-commit parity): refuse a
+            # commit onto a branch whose PR is already MERGED (fail-open).
+            reason = _merged_pr_reason(commit_dir)
+            if reason:
+                block(reason)
         # Engine-specific external-write fence: block push / remote-URL / gh
         # PR-mutation / network CLIs unless the engine is an affirmed trusted
         # main tier (fail-closed on an unknown engine).
