@@ -476,6 +476,30 @@ legs are recorded in [`docs/glm-offload.md`](glm-offload.md).
 
 ---
 
+## glm-subagent (`marketplace/plugins/himmel-ops/agents/glm-subagent.md`, HIMMEL-726)
+
+**What:** Thin Agent-tool dispatcher (Bash only) that delegates a well-scoped
+implementation chunk to the GLM lane INLINE from a live Claude Code session, via
+the `spawn-glm` chokepoint — so the parent session stays live while the GLM
+worker runs in an isolated worktree on its own `glm/<slug>` branch. Returns a
+compact summary to the main context (final meta status, worker branch, `git diff
+main --stat`, `outbox.jsonl` tail, `run.log` tail on failure); does NOT copy the
+worker's files back or merge — the parent owns review + merge. Parity with
+`codex:codex-rescue` and `gemini-subagent` (thin dispatcher, never writes files
+itself). NOT for tasks that need the result files in the current session.
+
+```
+Task tool -> glm-subagent -> bun scripts/telegram/spawn-glm.ts "<task>" --cwd <himmel> --name <slug> [--timeout-mins <n>]
+```
+
+Dispatched DETACHED + polled (reading `meta.json` `status`) when `--timeout-mins`
+exceeds the Bash tool's 10-minute single-call cap. Registered as the
+`glm-subagent` lane in `scripts/lanes/lanes.json` (same `ZAI_API_KEY` probe as the
+`glm` lane). Reuses spawn-glm's worktree isolation + guard chain verbatim (no new
+fence surface). Red-path test: `scripts/hooks/test-glm-subagent-path.sh`.
+
+---
+
 ## Superpowers (plugin: `superpowers@claude-plugins-official`)
 
 **What:** Workflow orchestration skills. Invoked via `/skill` tool.
