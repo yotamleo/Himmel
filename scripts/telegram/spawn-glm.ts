@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { runSession, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow } from "./run";
 import { checkGlmGuards } from "./glm-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, type SettingsConflict, type GlmUsage } from "./glm-env";
-import { appendQuotaGauge, buildGlmRow } from "./quota-gauge";
+import { appendQuotaGauge, buildGlmRow, isGlmPeak } from "./quota-gauge";
 import { parseGrantFlag, composeGrantLine, nextGrantId, authorityGate, classifyShape, composeEscalationForRefusedGrant, carryGrants, seedCarriedGrants, type GrantSpec } from "./grants";
 
 export function glmSessionRoot(): string {
@@ -176,6 +176,15 @@ export async function executeRun(deps: {
         if (cap_window === "long") {
           writeFileSync(deps.metaPath, JSON.stringify({ ...base, cap_source: "no-arm-long-window" }, null, 2));
           console.error("spawn-glm: long-window GLM cap — NOT auto-armed; recover manually after the documented reset");
+          // HIMMEL-690 chunk B: observe the long-window cap passively (NO new fetch
+          // — glm_peak stamped from `now`) so a long-window GLM cap shows up in
+          // the ledger instead of vanishing at this early return. window:"long"
+          // mirrors GlmCapWindow — the detector cannot distinguish weekly from
+          // monthly/balance/expired here, so a specific sub-window would be
+          // fabricated precision (CR [codex-1]). Own try/catch: a ledger failure
+          // must NEVER change meta/exit behavior (mirrors the preflight append's
+          // guard); meta above is the base layer, already written.
+          try { appendQuotaGauge({ v: 1, ts: now.toISOString(), lane: "glm", source: "cap-long", used_pct: null, window: "long", reset_at: null, tier: null, glm_peak: isGlmPeak(now.getTime()), note: "long-window GLM cap - not auto-armed" }); } catch (e) { console.error(`spawn-glm: quota-gauge cap-long append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
           return { code: res.code };
         }
         const usage = await g.fetchUsage();

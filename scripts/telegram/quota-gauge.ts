@@ -33,7 +33,7 @@ export type QuotaGaugeRecord = {
   lane: Lane;
   source: string;
   used_pct: number | null;
-  window: string | null;   // "5h" | "weekly" | null
+  window: string | null;   // "5h" | "weekly" | "long" (coarse long-window cap, sub-window unknown) | null
   reset_at: string | null; // ISO instant, or null when the host shows "unknown"
   tier: string | null;
   glm_peak: boolean | null;

@@ -363,19 +363,59 @@ if [ "$cache_age" -gt "$MAX_CACHE_AGE" ]; then
     # never $() — see the threshold check below for the orphan-pipe hang.
     stale_slot_out="$STATE_DIR/auto-arm-stale-slot"
     set +e
-    py_armor - "$CACHE_PATH" <<'PY' >"$stale_slot_out" 2>/dev/null
+    py_armor - "$CACHE_PATH" "$THRESHOLD" <<'PY' >"$stale_slot_out" 2>/dev/null
 import json, sys, datetime
 now = datetime.datetime.now().astimezone()
 target = now + datetime.timedelta(hours=5)
 source = "now+5h fallback (cached resets_at past/absent)"
 try:
+    threshold = float(sys.argv[2])
+    lo = now + datetime.timedelta(seconds=120)
+    hi = now + datetime.timedelta(hours=24)
     with open(sys.argv[1]) as f:
         data = json.load(f)
-    raw = (data.get("five_hour") or {}).get("resets_at") if isinstance(data, dict) else None
-    if raw:
-        dt = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone()
-        if now + datetime.timedelta(seconds=120) < dt <= now + datetime.timedelta(hours=24):
-            target, source = dt, "stale cache resets_at " + str(raw)
+    if isinstance(data, dict):
+        # HIMMEL-690: pick the BINDING bank, not a hardcoded five_hour. A
+        # candidate is a window whose utilization is a number >= threshold
+        # AND whose resets_at parses AND lands in (now+120s, now+24h].
+        # Among candidates the LATEST reset wins (the bank that stays
+        # exhausted the longest). No candidate -> today's behavior below.
+        candidates = []
+        for w in ("five_hour", "seven_day"):
+            o = data.get(w)
+            if not isinstance(o, dict):
+                continue
+            try:
+                u = float(o.get("utilization"))
+            except (TypeError, ValueError):
+                continue
+            if not (0.0 <= u <= 1000.0):
+                # HIMMEL-625 sanity ceiling, mirrored from the fresh-cache
+                # threshold check: a leaked-timestamp utilization (~1.78e9)
+                # must not elect a bank and drag the safety arm up to 24h out.
+                continue
+            if u < threshold:
+                continue
+            raw = o.get("resets_at")
+            if not raw:
+                continue
+            try:
+                dt = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone()
+            except Exception:
+                continue
+            if lo < dt <= hi:
+                candidates.append((dt, w, raw))
+        if candidates:
+            dt, w, raw = max(candidates, key=lambda c: c[0])
+            target, source = dt, "stale cache " + w + " resets_at " + str(raw)
+        else:
+            # EXACTLY today's behavior: the stale cache's five_hour
+            # resets_at when in (now+120s, now+24h], else now+5h fallback.
+            raw = (data.get("five_hour") or {}).get("resets_at")
+            if raw:
+                dt = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone()
+                if lo < dt <= hi:
+                    target, source = dt, "stale cache resets_at " + str(raw)
 except Exception:
     pass
 print(target.strftime("%H:%M") + "\t" + source)

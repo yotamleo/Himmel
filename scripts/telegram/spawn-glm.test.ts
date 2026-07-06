@@ -366,7 +366,7 @@ test("generic cap arms like 5h with cap_window generic", async () => {
   expect(calls.length).toBe(1);
 });
 
-test("long-window cap: labeled, NO resume_at, NO arm", async () => {
+test("long-window cap: labeled, NO resume_at, NO arm, ONE cap-long ledger row", async () => {
   const calls: any[] = [];
   await executeRun({ runSession: cappedRun(TLONG) as any, prompt: "p", worktree: wt, sessionDir: sd, metaPath: mp, runningMeta: rm, capGuard: guardDeps({ arm: () => { calls.push(1); return 0; } }) });
   const meta = JSON.parse(readFileSync(mp, "utf8"));
@@ -375,6 +375,18 @@ test("long-window cap: labeled, NO resume_at, NO arm", async () => {
   expect(meta.cap_source).toBe("no-arm-long-window");
   expect(meta.resume_at).toBeUndefined();
   expect(calls.length).toBe(0);
+  // HIMMEL-690 chunk B: a long-window (weekly/monthly/balance/expired) cap
+  // writes exactly ONE passive ledger row (source cap-long, window "long" —
+  // the detector cannot distinguish weekly from monthly, so a specific
+  // sub-window would be fabricated precision, CR [codex-1]); no new fetch,
+  // glm_peak stamped from now. Ledger isolated to the scratch dir by
+  // beforeEach (HIMMEL_QUOTA_GAUGE_LEDGER) — the real ~/.himmel file is never touched.
+  const rows = readFileSync(process.env.HIMMEL_QUOTA_GAUGE_LEDGER!, "utf8").split("\n").filter(Boolean);
+  expect(rows.length).toBe(1);
+  const row = JSON.parse(rows[0]);
+  expect(row.lane).toBe("glm");
+  expect(row.source).toBe("cap-long");
+  expect(row.window).toBe("long");
 });
 
 test("arm rc=3 is success; rc=4 warns but exit code unchanged", async () => {

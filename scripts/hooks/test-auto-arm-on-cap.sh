@@ -646,6 +646,122 @@ else
     fail=$((fail+1))
 fi
 
+# --- HIMMEL-690: stale-cache safety arm picks the binding bank -------------
+# The stale slot must consider BOTH windows and target the binding (exhausted)
+# bank's reset, not a hardcoded five_hour. A candidate is a window whose
+# utilization >= threshold AND whose resets_at lands in (now+120s, now+24h].
+
+echo "Test 42: stale cache -- seven_day util high + reset in range, five_hour low -> arm targets seven_day reset"
+S="$TMP/s42"; mkdir -p "$S"
+rm -f "$ARM_LOG"
+seven_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
+seven_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$seven_iso")
+C="$TMP/c42.json"
+printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":95,"resets_at":"%s"}}' "$seven_iso" > "$C"
+touch -d '@1' "$C"
+AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
+    AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+assert_rc "seven_day-binding stale escalation exits 2" 2 $?
+assert_grep "arm targets the seven_day reset slot" "--time $seven_hhmm" "$ARM_LOG"
+assert_grep "WARN names the seven_day resets_at source" "stale cache seven_day resets_at" "$STDERR_LOG"
+
+echo "Test 43: both banks >= threshold + resets in range -> the LATER reset wins (time-based, not name-based)"
+S="$TMP/s43"; mkdir -p "$S"
+rm -f "$ARM_LOG"
+# five_hour reset is the LATER one here -> it must win, proving the pick is by
+# latest reset, not by window iteration order.
+five_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
+seven_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
+five_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$five_iso")
+C="$TMP/c43.json"
+printf '{"five_hour":{"utilization":95,"resets_at":"%s"},"seven_day":{"utilization":95,"resets_at":"%s"}}' "$five_iso" "$seven_iso" > "$C"
+touch -d '@1' "$C"
+AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
+    AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+assert_rc "both-binding stale escalation exits 2" 2 $?
+assert_grep "arm targets the LATER (five_hour) reset slot" "--time $five_hhmm" "$ARM_LOG"
+assert_grep "WARN names the five_hour resets_at source (later wins)" "stale cache five_hour resets_at" "$STDERR_LOG"
+
+echo "Test 44: seven_day util high but reset >24h out, five_hour low -> today's fallback (now+5h)"
+S="$TMP/s44"; mkdir -p "$S"
+rm -f "$ARM_LOG"
+far_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
+far_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$far_iso")
+C="$TMP/c44.json"
+printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":95,"resets_at":"%s"}}' "$far_iso" > "$C"
+touch -d '@1' "$C"
+AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
+    AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+assert_rc "seven_day-reset-out-of-range stale escalation exits 2" 2 $?
+assert_grep "slot source is the now+5h fallback (no valid candidate)" "fallback" "$STDERR_LOG"
+if grep -q -- "--time $far_hhmm" "$ARM_LOG"; then
+    echo "  FAIL  arm targeted the >24h seven_day reset (candidate filter broken)"
+    fail=$((fail+1))
+else
+    echo "  PASS  arm did not target the out-of-range seven_day reset"
+    pass=$((pass+1))
+fi
+
+echo "Test 45: corrupt seven_day utilization (leaked timestamp, HIMMEL-625) -> not a candidate; falls back"
+S="$TMP/s45"; mkdir -p "$S"
+rm -f "$ARM_LOG"
+# seven_day utilization is a leaked epoch (~1.78e9): >= threshold numerically
+# but garbage. Without the sanity ceiling the corrupt bank would be elected
+# (its reset is in range, 2h out) and the safety arm dragged to it; with the
+# ceiling there is NO candidate and the slot is the now+5h fallback.
+seven_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
+seven_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$seven_iso")
+C="$TMP/c45.json"
+printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":1782696700,"resets_at":"%s"}}' "$seven_iso" > "$C"
+touch -d '@1' "$C"
+AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
+    AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+assert_rc "corrupt-utilization stale escalation exits 2" 2 $?
+assert_grep "slot source is the now+5h fallback (corrupt bank rejected)" "fallback" "$STDERR_LOG"
+if grep -q -- "--time $seven_hhmm" "$ARM_LOG"; then
+    echo "  FAIL  arm targeted the corrupt seven_day bank's reset (sanity ceiling missing)"
+    fail=$((fail+1))
+else
+    echo "  PASS  arm did not target the corrupt seven_day bank's reset"
+    pass=$((pass+1))
+fi
+
+echo "Test 46: five_hour binding, seven_day LOW util with a LATER in-range reset -> arm stays at five_hour (AC: a 5h trip never arms at the weekly reset)"
+S="$TMP/s46"; mkdir -p "$S"
+rm -f "$ARM_LOG"
+# Mirror of Test 42 with utils swapped: seven_day is below threshold so it must
+# be filtered out EVEN THOUGH its reset is later and in range — pins the
+# threshold-filter-before-reset-pick order (the exact bug class HIMMEL-690 fixes).
+five_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
+seven_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
+five_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$five_iso")
+seven_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$seven_iso")
+C="$TMP/c46.json"
+printf '{"five_hour":{"utilization":95,"resets_at":"%s"},"seven_day":{"utilization":10,"resets_at":"%s"}}' "$five_iso" "$seven_iso" > "$C"
+touch -d '@1' "$C"
+AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
+    AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+assert_rc "five_hour-binding stale escalation exits 2" 2 $?
+assert_grep "arm targets the five_hour reset slot" "--time $five_hhmm" "$ARM_LOG"
+assert_grep "WARN names the five_hour resets_at source" "stale cache five_hour resets_at" "$STDERR_LOG"
+if grep -q -- "--time $seven_hhmm" "$ARM_LOG"; then
+    echo "  FAIL  arm was pulled to the low-util seven_day reset (threshold filter broken)"
+    fail=$((fail+1))
+else
+    echo "  PASS  arm was not pulled to the low-util seven_day reset"
+    pass=$((pass+1))
+fi
+
 else
     echo "  SKIP  Tests 17-27 (touch -d unsupported on this platform)"
 fi

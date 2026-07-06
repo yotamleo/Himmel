@@ -17,13 +17,16 @@ test('GLM lane appears with ZAI_API_KEY set', () => {
   assert.ok(resolveLanes(REG, ctx({ env: { ZAI_API_KEY: 'k' } })).some((l) => l.id === 'glm'));
   assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === 'glm'));
 });
+test('glm-subagent lane (inline Agent-tool dispatch) keys off ZAI_API_KEY too', () => {
+  assert.ok(resolveLanes(REG, ctx({ env: { ZAI_API_KEY: 'k' } })).some((l) => l.id === 'glm-subagent'));
+  assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === 'glm-subagent'));
+});
 test('codex lane keys off CR_PROFILE=paid', () => {
   assert.ok(resolveLanes(REG, ctx({ env: { CR_PROFILE: 'free,paid' } })).some((l) => l.id === 'codex'));
   assert.ok(!resolveLanes(REG, ctx({ env: { CR_PROFILE: 'free' } })).some((l) => l.id === 'codex'));
 });
-test('gemini lane keys off the CLI on PATH', () => {
-  assert.ok(resolveLanes(REG, ctx({ paths: ['gemini'] })).some((l) => l.id === 'gemini'));
-  assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === 'gemini'));
+test('gemini lane is DE-LISTED (deprecated + out of budget, 2026-07-06) — never resolves even with the CLI on PATH', () => {
+  assert.ok(!resolveLanes(REG, ctx({ paths: ['gemini'] })).some((l) => l.id === 'gemini'));
 });
 test('hermes-critics lane keys off the resolved install', () => {
   assert.ok(resolveLanes(REG, ctx({ installed: { hermes: true } })).some((l) => l.id === 'hermes-critics'));
