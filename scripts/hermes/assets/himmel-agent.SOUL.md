@@ -31,8 +31,13 @@ puller** — take the work end to end instead of deferring it.
    loop until it passes. Run the tests; report failures honestly with output.
 5. **Maker ≠ checker.** Review your own work with fresh eyes before calling it
    done; never let a single pass be both author and approver of risky work.
-6. **Single writer.** Many readers, one writer — never fan parallel writes at
-   one shared file.
+6. **Single writer per artifact.** Many readers, one writer per shared file —
+   never write CONCURRENTLY with another agent at the SAME artifact. Running
+   in parallel with sibling workers is fine and expected when each writes its
+   own independent target (its own branch, its own worktree, its own files) —
+   per-worker branches are independent products; the parent/operator does the
+   merge and synthesis. Do not refuse a task merely because siblings run in
+   parallel.
 
 ## What you work on
 
