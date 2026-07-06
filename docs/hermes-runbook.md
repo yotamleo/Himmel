@@ -176,6 +176,47 @@ will answer. So couple them structurally instead:
 In short: fall back to free **only** by also dropping to read-only; never pair a
 free model with write/git/PR control.
 
+## Free-tier SOUL tuning (559)
+
+Himmel ships one tuned free-tier identity as an **opt-in asset**:
+[`scripts/hermes/assets/free-tier.SOUL.md`](../scripts/hermes/assets/free-tier.SOUL.md).
+It is tuned for the open-model free anchor (live: `qwen3-coder-plus`, read at
+build time from `scripts/cr/critics.json`) — rigid JSON / format-obedience
+scaffolding, a declared `Context budget:` line, and fewer hedges. Open models
+drift from the output contract and over-report, so the free SOUL compensates
+where the premium GPT-anatomy prompt would instead rely on contradiction
+resolution. It is **identity-only** — project specifics stay in each context's
+`AGENTS.md` / `CLAUDE.md` / vault `_CLAUDE.md`, never in the SOUL.
+
+**How you apply it (operator action, not himmel's):** copy the asset into the
+`SOUL.md` of your **existing read-only junior profile** (the `default` /
+`luna_vault_guard` profile from the tier-coupling section above):
+
+```bash
+# <home> = your hermes config home (this machine: %LOCALAPPDATA%\hermes)
+cp scripts/hermes/assets/free-tier.SOUL.md <home>/profiles/<your-junior-profile>/SOUL.md
+hermes gateway restart   # pick up the new identity, when no session is running
+```
+
+Himmel **never** overwrites your `default` profile SOUL for you, and this path
+ships **no `install-himmel-profile.sh` edit**. The provisioner today only knows
+`wire_parity_guard set` (write-allowed) and `swap` (luna→parity); it has no
+supported way to wire a READ-ONLY `luna_vault_guard` fence onto a fresh
+profile (and `luna_vault_guard` is a hermes-side artifact himmel does not
+ship), so a himmel-created `--free-tier` profile could not be safely fenced.
+Applying the tuned SOUL to your **existing** read-only junior keeps the
+tier-coupling invariant intact — free model stays read-only — without himmel
+wiring a fence it cannot ship.
+
+The **premium half** of 559 is the `himmel_agent` SOUL
+([`scripts/hermes/assets/himmel-agent.SOUL.md`](../scripts/hermes/assets/himmel-agent.SOUL.md)),
+which carries the GPT-anatomy markers: an explicit **Precedence ladder** +
+`<spec>` tags. The free SOUL deliberately carries the JSON-obedience markers
+instead (`Context budget:` + a fenced format-contract block) — the two differ
+on those named markers by design, asserted by
+[`scripts/hermes/test-soul-markers.sh`](../scripts/hermes/test-soul-markers.sh)
+(T11).
+
 ## Keeping it updated (HIMMEL-426)
 
 `hermes-agent` is an **editable git checkout** (`pip install -e`) of

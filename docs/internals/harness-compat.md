@@ -11,6 +11,8 @@ to **other coding harnesses** — Codex first — so an operator can decide what
 > verification) lives in [`docs/setup/codex.md`](../setup/codex.md). This doc is
 > the *why*; that one is the *how*.
 
+> **Per-lane parity?** The living lane-parity index (invariant guard set + lane x dimension table, the successor to this doc's Codex-centric frame) is in [`lane-parity.md`](lane-parity.md).
+
 > **Status:** the **Codex** column is triple-validated (openai/codex source +
 > context7 `/openai/codex` v0.75.0 + official docs, 2026-06-21, HIMMEL-427). The
 > **Cursor / Copilot / Gemini** columns were audited 2026-06-21 (HIMMEL-472,
