@@ -281,6 +281,10 @@ Steps:
        # Critical/Important panel findings → "<finding-id>\t<severity>\t<symptom>" (one per line, REAL tabs).
        # (write each [<slug>-N] Critical/Important finding from the step-3 aggregate here)
        # panel-availability lines → "<slug>\tok|unavailable" (strip any trailing " (rc=N)").
+       # Same normalization as step 4.5 (HIMMEL-729): fallback(<model>) → ok (the
+       # critic responded via its fallback — a vanished finding may resolve);
+       # a fallback-failed line accompanies an unavailable line for the same
+       # slug — write only the unavailable.
        # (write each $panel_avail_lines entry here)
        bash scripts/handover/append-cr-bugs.sh --bugs "$item_dir/bugs.md" --findings "$cr_find" --avail "$cr_avail"
        rm -f "$cr_find" "$cr_avail"

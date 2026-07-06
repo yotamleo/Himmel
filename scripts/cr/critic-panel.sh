@@ -198,7 +198,15 @@ agg_sug=""
 # timeout is never mistaken for exhaustion.
 # ---------------------------------------------------------------------------
 _is_quota_exhaustion() {
-    _qe_sig='exceeded.*quota|quota.*exhaust|AccessDenied|Arrearage|Throttling\.User|allocated quota'
+    # Bare AccessDenied is NOT exhaustion (codex adversarial CR on HIMMEL-729):
+    # e.g. Alibaba's AccessDenied.Unpurchased means "service not activated" and
+    # a plain AccessDenied is an auth/permission failure — falling back on those
+    # would mask a dead primary lane as a healthy critic. AccessDenied counts
+    # only when PAIRED with an exhaustion/quota/arrearage phrase.
+    # NOTE: plain .* is correct here — grep matches line-by-line, so .* can
+    # never cross a newline; [^\n] in POSIX ERE would wrongly mean "any char
+    # except backslash or the letter n" (codex CR round 2).
+    _qe_sig='exceeded.*quota|quota.*exhaust|Arrearage|Throttling\.User|allocated quota|AccessDenied.*(quota|exhaust|arrear)|(quota|exhaust|arrear).*AccessDenied'
     if [ -n "$1" ] && [ -f "$1" ] && grep -qiE "$_qe_sig" "$1"; then
         return 0
     fi

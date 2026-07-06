@@ -98,6 +98,12 @@ if [ "\$model" = "$PRI" ]; then
         generic)
             printf 'connection refused\\n' >&2
             exit 1 ;;
+        accessdenied)
+            printf 'AccessDenied.Unpurchased: the Model Studio service has not been activated\\n' >&2
+            exit 1 ;;
+        accessdenied-paired)
+            printf 'AccessDenied due to quota limits reached for this model\\n' >&2
+            exit 1 ;;
         timeout)
             exit 124 ;;
     esac
@@ -197,6 +203,35 @@ check_contains "4: no-fallback row -> plain unavailable on exhaustion" "$stderr4
 check_not_contains "4: NO WARN line" "$stderr4" "WARN critic-panel"
 check "4: fallback model NEVER invoked when row has no fallback_model" \
     "$(grep -cF -- "$FB" "$tmp/cap4")" "0"
+
+# ===========================================================================
+# Case 5: GENERIC AccessDenied (auth/permission, e.g. Alibaba
+# AccessDenied.Unpurchased = service not activated) -> NO fallback (codex
+# adversarial CR on HIMMEL-729): falling back would mask a dead primary lane
+# as a healthy critic. AccessDenied counts only when PAIRED with an
+# exhaustion/quota/arrearage phrase.
+# ===========================================================================
+run_case accessdenied "$JSON" "$tmp/out5" "$tmp/err5" "$tmp/cap5"
+stderr5="$(cat "$tmp/err5")"
+check_contains "5: generic AccessDenied -> plain unavailable" "$stderr5" \
+    "panel-availability: qwen3coder unavailable (rc=1)"
+check_not_contains "5: NO WARN line" "$stderr5" "WARN critic-panel"
+check_not_contains "5: NO fallback token" "$stderr5" "fallback("
+check "5: fallback model NEVER invoked on bare AccessDenied" \
+    "$(grep -cF -- "$FB" "$tmp/cap5")" "0"
+
+# ===========================================================================
+# Case 6: AccessDenied PAIRED with a quota phrase -> fallback DOES fire
+# (positive coverage for the paired-AccessDenied signature branches; the
+# message matches only the AccessDenied.*(quota|...) pair, none of the
+# standalone phrases).
+# ===========================================================================
+run_case accessdenied-paired "$JSON" "$tmp/out6" "$tmp/err6" "$tmp/cap6"
+stderr6="$(cat "$tmp/err6")"
+check_contains "6: paired AccessDenied+quota -> WARN + fallback" "$stderr6" \
+    "WARN critic-panel: qwen3coder quota-exhausted - fell back to $FB (openrouter)"
+check "6: fallback invoked exactly once on paired AccessDenied" \
+    "$(grep -cF -- "$FB" "$tmp/cap6")" "1"
 
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
