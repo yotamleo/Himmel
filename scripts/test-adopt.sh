@@ -47,7 +47,21 @@ fi
 exit 0
 STUB
 chmod +x "$work/bin/claude"
-export PATH="$work/bin:$PATH"
+
+# Hermeticity (HIMMEL-752 CR): scrub every dir carrying a real `qmd` OR `bun`
+# from the suite-wide PATH. With bun absent, wire_qmd_core takes its documented
+# clean-skip branch, so NO test can fire a real fix-qmd-stub (~/.claude
+# mutation), a real `qmd pull` (~2.1 GB), or a real collection registration on
+# a dev box that has the toolchain installed. Tests 10/11 re-add their own
+# stubbed bun on top of this scrubbed base to exercise the qmd path.
+qmd_free_path=""
+_save_ifs="$IFS"; IFS=':'
+for _d in $PATH; do
+  { [ -x "$_d/qmd" ] || [ -x "$_d/bun" ]; } && continue
+  qmd_free_path="${qmd_free_path:+$qmd_free_path:}$_d"
+done
+IFS="$_save_ifs"
+export PATH="$work/bin:$qmd_free_path"
 
 # ── 5. invalid args (run first — validated before any tool preflight) ────────
 set +e
@@ -62,8 +76,11 @@ set -e
 echo "ok: invalid --profile / --scope rejected (exit 2)"
 
 # ── 1. core/project ──────────────────────────────────────────────────────────
+# Fake HOME on every non-user-scope run too (belt-and-braces with the PATH
+# scrub): nothing in the suite may read or write the real ~/.claude.
+base_home="$work/home-base"; mkdir -p "$base_home"
 proj="$work/proj"; mkdir -p "$proj"
-bash "$adopt" --profile core --scope project --target "$proj" >/dev/null
+HOME="$base_home" bash "$adopt" --profile core --scope project --target "$proj" >/dev/null
 for f in scripts/hooks/block-edit-on-main.sh scripts/guardrails/lib.sh scripts/worktree.sh; do
   [ -f "$proj/$f" ] || fail "core/project did not copy $f"
 done
@@ -76,14 +93,14 @@ echo "ok: core/project copies portable files + wires 3 \$CLAUDE_PROJECT_DIR hook
 
 # idempotency
 cp "$s" "$work/before.json"
-bash "$adopt" --profile core --scope project --target "$proj" >/dev/null
+HOME="$base_home" bash "$adopt" --profile core --scope project --target "$proj" >/dev/null
 diff -q "$work/before.json" "$s" >/dev/null || fail "core/project not idempotent"
 echo "ok: core/project idempotent on re-run"
 
 # ── 2. merge preserves existing settings ─────────────────────────────────────
 proj2="$work/proj2"; mkdir -p "$proj2/.claude"
 printf '%s' '{"permissions":{"allow":["Bash(ls)"]},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash /pre/existing.sh"}]}]}}' > "$proj2/.claude/settings.json"
-bash "$adopt" --profile core --scope project --target "$proj2" >/dev/null
+HOME="$base_home" bash "$adopt" --profile core --scope project --target "$proj2" >/dev/null
 [ "$(jq -r '.permissions.allow[0]' "$proj2/.claude/settings.json")" = "Bash(ls)" ] || fail "merge dropped existing permissions"
 [ "$(jq '.hooks.PreToolUse | length' "$proj2/.claude/settings.json")" = "4" ] || fail "merge expected 4 PreToolUse hooks (1 existing + 3)"
 echo "ok: merge preserves existing keys + hooks"
@@ -106,7 +123,7 @@ echo "ok: core/user wires ~/.claude to himmel abs path, copies no scripts"
 
 # ── 4. luna scaffold ─────────────────────────────────────────────────────────
 vault="$work/vault"
-bash "$adopt" --profile luna --target "$vault" >/dev/null
+HOME="$base_home" bash "$adopt" --profile luna --target "$vault" >/dev/null
 [ -f "$vault/README.md" ] || fail "luna profile did not scaffold the vault (README.md missing)"
 # F1 (HIMMEL-458): project scope wires LUNA_VAULT_PATH into $TARGET/.claude.
 lv=$(jq -r '.env.LUNA_VAULT_PATH' "$vault/.claude/settings.json" 2>/dev/null)
@@ -115,7 +132,7 @@ echo "ok: luna scaffolds the vault + persists LUNA_VAULT_PATH (project scope)"
 
 # ── 6. all — core→--target, vault→--luna-target (no leak) ────────────────────
 allrepo="$work/allrepo"; allvault="$work/allvault"; mkdir -p "$allrepo"
-bash "$adopt" --profile all --scope project --target "$allrepo" --luna-target "$allvault" >/dev/null
+HOME="$base_home" bash "$adopt" --profile all --scope project --target "$allrepo" --luna-target "$allvault" >/dev/null
 [ -f "$allrepo/scripts/worktree.sh" ] || fail "all: core did not land in --target"
 [ -f "$allvault/README.md" ] || fail "all: vault did not land in --luna-target"
 [ ! -f "$allrepo/README.md" ] || fail "all: vault scaffold leaked into the core --target"
@@ -195,5 +212,51 @@ jq -e '.hooks.PreToolUse[].hooks[].command | select(test("rtk-hook-guard"))' "$s
 [ "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("auto-approve-safe-bash"))] | length' "$s9b")" = "1" ] \
   || fail "hookpath(nested): expected exactly one auto-approve after re-wire"
 echo "ok: co-located non-himmel hook survives re-wire (hook-object granularity)"
+
+# ── 10. HIMMEL-752 qmd wiring: --dry-run emits the qmd step DRY lines ───────
+# Force has_qmd=false deterministically: fake HOME (no ~/.bun/.../qmd.js) on the
+# suite-wide qmd/bun-scrubbed PATH (computed at the top), so wire_qmd_core
+# reaches its install/register steps even on a dev box that has a real qmd
+# installed. bun is stubbed (exit 0) so require_tools leaves BUN_AVAILABLE at
+# its default (1). --dry-run is side-effect-free (the wire helpers honor the
+# dry flag).
+qbin="$work/qbin"; mkdir -p "$qbin"
+cat > "$qbin/bun" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$qbin/bun"
+qhome="$work/qhome"; mkdir -p "$qhome"
+set +e
+out=$(PATH="$qbin:$work/bin:$qmd_free_path" HOME="$qhome" bash "$adopt" \
+      --profile all --scope user --target "$work/ign-q" --luna-target "$work/qvault" --dry-run 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "dry-run adopt exited rc=$rc (expected 0)"
+printf '%s' "$out" | grep -q 'DRY:.*fix-qmd-stub'    || fail "dry-run missing fix-qmd-stub DRY line"
+printf '%s' "$out" | grep -q 'DRY: qmd_install'      || fail "dry-run missing qmd_install DRY line"
+printf '%s' "$out" | grep -q 'DRY: qmd pull'         || fail "dry-run missing qmd pull DRY line"
+printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* himmel$' || fail "dry-run missing himmel register DRY line"
+printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* luna$'   || fail "dry-run missing luna register DRY line"
+echo "ok: dry-run emits all qmd step DRY lines (core G1/G3/G4 + luna G5)"
+
+# ── 11. HIMMEL-752 qmd WARN-not-fail: a failing qmd install never aborts adopt
+# bun present (stubbed to exit 1) + has_qmd=false (scrubbed PATH, fake HOME) ->
+# qmd_install is invoked and fails -> wire_qmd_core WARNs, but adopt still exits
+# 0 (qmd is best-effort). Fake HOME keeps settings writes isolated.
+fbin="$work/fbin"; mkdir -p "$fbin"
+cat > "$fbin/bun" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$fbin/bun"
+fhome="$work/fhome"; mkdir -p "$fhome"
+set +e
+out=$(PATH="$fbin:$work/bin:$qmd_free_path" HOME="$fhome" bash "$adopt" \
+      --profile core --scope user --target "$work/ign-f" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "adopt must exit 0 when qmd install fails (WARN-not-fail), got rc=$rc"
+printf '%s' "$out" | grep -q 'Installing qmd via bun' || fail "qmd_install not invoked (call order)"
+printf '%s' "$out" | grep -Eq 'WARNING.*qmd install failed' || fail "missing qmd install WARNING (WARN-not-fail)"
+echo "ok: qmd install failure WARNs and adopt continues (WARN-not-fail, rc=0)"
 
 echo "PASS"

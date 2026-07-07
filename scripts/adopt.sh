@@ -44,6 +44,13 @@ HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/wire-pretooluse-hooks.sh"
 
+# qmd resolver + install/register helpers (HIMMEL-752 qmd wiring). Provides
+# has_qmd / qmd_cmd / qmd_install / qmd_register_collection, consumed by
+# wire_qmd_core() and do_luna().
+# shellcheck source=scripts/lib/qmd-bin.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/qmd-bin.sh"
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 PROFILE="core"
 SCOPE="project"
@@ -105,6 +112,14 @@ require_tools() {
     CLAUDE_AVAILABLE=0
     echo "WARN: 'claude' not found — installing the harness-agnostic core only;" >&2
     echo "      skipping the Claude plugin-install step (Codex-only adopter is fine)." >&2
+  fi
+  # `bun` is SOFT (HIMMEL-752 G2): qmd search is the only do_core step that
+  # needs it, and the harness-agnostic core + git gates run without it. Warn with the
+  # install hint; wire_qmd_core consults BUN_AVAILABLE and skips qmd cleanly.
+  if ! command -v bun >/dev/null 2>&1; then
+    BUN_AVAILABLE=0
+    echo "WARN: 'bun' not found — qmd search will be skipped;" >&2
+    echo "      install: https://bun.sh (runs handover armed-resume, qmd search, the Telegram bridge, obsidian-triage tools)" >&2
   fi
 }
 
@@ -204,6 +219,54 @@ fill_env_core() {
   fi
 }
 
+# wire_qmd_core — wire the qmd search stack end-to-end (HIMMEL-752 G1/G3/G4):
+# fix the broken plugin-cache stub, install the qmd CLI if missing (qmd_install
+# verifies the binary and heals a missing better-sqlite3 native build), pull the
+# embedding/rerank models, and register the himmel clone as a collection.
+# Best-effort throughout: every failure WARNs and returns 0 so a missing or
+# broken qmd never aborts an adopt. Called from do_core() after install_plugins
+# (the qmd Claude plugin lands there; this makes the qmd CLI + models work).
+# Honors --dry-run (DRY: lines) and the BUN_AVAILABLE soft-check flag.
+wire_qmd_core() {
+  if [[ "${BUN_AVAILABLE:-1}" -eq 0 ]]; then
+    echo "──── Skipping qmd wiring (bun not found) ────"
+    echo "  Install bun to enable qmd search: https://bun.sh"
+    return 0
+  fi
+  echo "──── Wiring qmd search ────"
+  # G1: neutralize the broken qmd plugin-cache stub so plain `qmd` works inside
+  # Claude's Bash tool too (HIMMEL-163). WARN-not-fail.
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: bash $HIMMEL_ROOT/scripts/lib/fix-qmd-stub.sh"
+  else
+    bash "$HIMMEL_ROOT/scripts/lib/fix-qmd-stub.sh" \
+      || echo "  WARNING: fix-qmd-stub failed — continuing." >&2
+  fi
+  # Install the qmd CLI if missing. qmd_install verifies + heals (HIMMEL-752 G3).
+  if [[ $DRY_RUN -eq 1 ]]; then
+    has_qmd || echo "DRY: qmd_install"
+  elif ! has_qmd; then
+    qmd_install || echo "  WARNING: qmd install failed — continuing without qmd." >&2
+  fi
+  # G4: pull the embedding/rerank models. Size caveat FIRST so the operator can
+  # Ctrl-C before the ~2.1 GB download, then best-effort pull (never abort adopt).
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: qmd pull (downloads ~2.1 GB of embedding/rerank models)"
+  elif has_qmd; then
+    echo "  Pulling qmd models (downloads ~2.1 GB of embedding/rerank models)..."
+    if ! qmd_cmd pull; then
+      echo "  WARNING: qmd pull failed — semantic search needs the models." >&2
+      echo "  Pull manually: qmd pull" >&2
+    fi
+  fi
+  # Register the himmel clone itself as a collection.
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: qmd_register_collection $HIMMEL_ROOT himmel"
+  elif has_qmd; then
+    qmd_register_collection "$HIMMEL_ROOT" himmel || true
+  fi
+}
+
 do_core() {
   require_tools
   if [[ "$SCOPE" == "project" ]]; then
@@ -221,6 +284,7 @@ do_core() {
     echo "  worktree commands run from the himmel clone: bash $HIMMEL_ROOT/scripts/worktree.sh feat/slug"
   fi
   install_plugins
+  wire_qmd_core
   wire_statusline_core
   wire_himmel_repo_core
   [[ $FILL_ENV -eq 1 ]] && fill_env_core
@@ -239,6 +303,19 @@ do_luna() {
   # Persist the vault path UNCONDITIONALLY — a re-run over an existing scaffold
   # (skipped copy above) must still wire a previously-unwired install (HIMMEL-458).
   wire_luna_vault_path "$dest"
+  # G5 (HIMMEL-752): register the scaffolded vault as a qmd collection so it is
+  # queryable immediately. Skip + note when qmd/bun unavailable; WARN-not-fail.
+  # For --profile all, do_core (→ wire_qmd_core) has already installed qmd; for
+  # --profile luna alone it may be absent, in which case has_qmd skips cleanly.
+  if [[ "${BUN_AVAILABLE:-1}" -eq 0 ]]; then
+    echo "  qmd: skipping luna collection registration (bun not found)"
+  elif [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: qmd_register_collection $dest luna"
+  elif has_qmd; then
+    qmd_register_collection "$dest" luna || true
+  else
+    echo "  qmd: skipping luna collection registration (qmd not installed)"
+  fi
   echo "  next: cd \"$dest\" && bash scripts/setup.sh   (idempotent; prints the plugin-install commands)"
 }
 

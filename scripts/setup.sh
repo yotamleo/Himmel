@@ -263,30 +263,11 @@ echo "[4/10] Registering qmd collection 'himmel'..."
 # absent, already patched, or upstream has shipped a fixed stub.
 bash "$REPO_ROOT/scripts/lib/fix-qmd-stub.sh" || echo "  WARNING: fix-qmd-stub failed — continuing." >&2
 if has_qmd; then
-  # Capture rc from `list` separately. Piping through grep would mask
-  # a `list` failure (DB corruption, schema mismatch) as "no match".
-  _qmd_list_out=$(qmd_cmd collection list 2>&1)
-  _qmd_list_rc=$?
-  if [ "$_qmd_list_rc" -ne 0 ]; then
-    echo "  WARNING: qmd collection list failed (rc=$_qmd_list_rc) — skipping registration." >&2
-    # shellcheck disable=SC2001
-    # Per-line indent — parameter expansion doesn't replicate sed's per-line anchor cleanly.
-    echo "$_qmd_list_out" | sed 's/^/    /' >&2
-  elif echo "$_qmd_list_out" | grep -q '^himmel\b'; then
-    echo "  Collection 'himmel' already registered — skipping."
-  else
-    # Capture rc *before* the `if`: `if ! cmd; then $?` evaluates to 0
-    # (the negated-test exit), not cmd's actual rc.
-    qmd_cmd collection add "$REPO_ROOT" --name himmel
-    _qmd_add_rc=$?
-    if [ "$_qmd_add_rc" -ne 0 ]; then
-      echo "  WARNING: qmd collection add failed (rc=$_qmd_add_rc) — continuing." >&2
-      if [ "$_qmd_add_rc" -eq 127 ]; then
-        echo "  (rc=127 means scripts/lib/qmd-bin.sh resolver could not find qmd — install: $(qmd_install_hint))" >&2
-      fi
-    fi
-  fi
-  unset _qmd_list_out _qmd_list_rc _qmd_add_rc
+  # qmd_register_collection: idempotent + WARN-not-fail with the same
+  # messages/semantics the inline logic had (HIMMEL-752). `|| true` keeps
+  # this script's `set -e` from aborting on a best-effort qmd failure
+  # (a list/add error already WARNed inside the helper).
+  qmd_register_collection "$REPO_ROOT" himmel || true
 else
   echo "  qmd not available — skipping. Install: $(qmd_install_hint)"
 fi

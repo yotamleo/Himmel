@@ -100,6 +100,20 @@ reason to use `/xml` at all is that `schtasks /create` has no flag for
 `StartWhenAvailable` (run a missed scheduled start when next available) — the only
 CLI route to that setting is `/create /xml`.
 
+## macOS: qmd's `ggml_metal_library_init_from_source` error is benign noise
+
+On macOS (Apple Silicon), every `qmd embed` / `qmd vsearch` prints
+`[node-llama-cpp] ggml_metal_library_init_from_source: error compiling source`
+even though GPU embedding **succeeds** (verified on an M5: 423 chunks / 144
+docs embedded in 28s right after that line). It reads like a hard failure to
+a fresh adopter; it is not — treat it as benign unless the embed itself
+errors or hangs. For genuine Metal problems, the underlying
+node-llama-cpp/ggml backend exposes a `GGML_METAL_NO_RESIDENCY` residency
+knob (per the issue-#276 report; macOS-native layer). Reported on the
+fresh-machine adopt run in public issue #276 (G6, HIMMEL-752); the message
+is emitted by qmd's upstream node-llama-cpp, so himmel documents it rather
+than suppressing stderr (a blanket filter would hide real errors).
+
 ## Anthropic output content-filter trips on policy text and minified blobs
 
 The 400 "Output blocked by content filtering policy" error scans the model's

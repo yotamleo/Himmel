@@ -239,8 +239,9 @@ step "Install qmd CLI + register himmel/luna collections"
 {
   # Project rule: qmd installs via bun, not npm. The qmd Claude plugin ships
   # a path stub that breaks plain `qmd` on Windows; scripts/lib/qmd-bin.sh
-  # picks the working invoker. --ignore-scripts skips the better-sqlite3
-  # native build (prebuilt binary works).
+  # picks the working invoker. qmd_install runs the full install + verifies
+  # the binary + heals a missing native build (HIMMEL-752: --ignore-scripts
+  # crashed qmd on platforms without a better-sqlite3 prebuilt binary).
   # shellcheck source=../lib/qmd-bin.sh
   # shellcheck disable=SC1091
   . "$HIMMEL_PATH/scripts/lib/qmd-bin.sh"
@@ -259,11 +260,13 @@ step "Install qmd CLI + register himmel/luna collections"
 
   if ! has_qmd; then
     if command -v bun >/dev/null 2>&1; then
+      # qmd_install runs the canonical hint (no --ignore-scripts), verifies
+      # the binary, and heals a missing better-sqlite3 native build (HIMMEL-752).
       # Capture rc *before* the `if`: `if ! cmd; then $?` is 0, not cmd's rc.
-      bun add -g @tobilu/qmd@latest --ignore-scripts
-      _bun_rc=$?
-      if [ "$_bun_rc" -ne 0 ]; then
-        echo "  ERROR: bun add -g @tobilu/qmd failed (rc=$_bun_rc)." >&2
+      qmd_install
+      _qmd_install_rc=$?
+      if [ "$_qmd_install_rc" -ne 0 ]; then
+        echo "  ERROR: qmd install failed (rc=$_qmd_install_rc)." >&2
         echo "  Check network / registry; skipping collection registration." >&2
         _qmd_step_ok=0
       fi
@@ -317,7 +320,7 @@ step "Install qmd CLI + register himmel/luna collections"
   # Compute final rc. The bare test is the group's last command, so its
   # rc determines whether `|| fail_nonfatal` fires.
   _qmd_step_final=$_qmd_step_ok
-  unset _qmd_list_out _qmd_list_rc _bun_rc _qmd_version_rc _qmd_add_rc _qmd_step_ok
+  unset _qmd_list_out _qmd_list_rc _qmd_install_rc _qmd_version_rc _qmd_add_rc _qmd_step_ok
   [ "$_qmd_step_final" -eq 1 ]
 } || fail_nonfatal "qmd setup"
 

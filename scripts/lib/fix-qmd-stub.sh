@@ -161,7 +161,7 @@ if [ "$BUN_QMD_NO_BUN" -eq 1 ]; then
 else
   echo "qmd: not found (plugin dist missing; no bun global install; nothing else on PATH)." >&2
 fi
-echo "Install: bun add -g @tobilu/qmd@latest --ignore-scripts" >&2
+echo "Install: bun add -g @tobilu/qmd@latest" >&2
 exit 127
 STUB
   then

@@ -224,7 +224,10 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 # Honors $env:BUN_INSTALL for relocated bun roots, matching the bash lib.
 $QmdBunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
 $QmdBunJs = Join-Path $QmdBunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
-$QmdInstallHint = 'bun add -g @tobilu/qmd@latest --ignore-scripts'
+# HIMMEL-752 G3: NO --ignore-scripts. It blocked better-sqlite3's native
+# build (prebuild-install || node-gyp rebuild --release), crashing qmd on
+# machines with no prebuilt binary (fresh macOS arm64 / new node major).
+$QmdInstallHint = 'bun add -g @tobilu/qmd@latest'
 
 function Invoke-Qmd {
     param([Parameter(ValueFromRemainingArguments=$true)] [string[]] $QmdArgs)

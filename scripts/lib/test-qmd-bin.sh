@@ -109,8 +109,10 @@ rc=0
 HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_cmd --version' >/dev/null 2>&1 || rc=$?
 assert "wrapped command rc=42 propagates" test "$rc" -eq 42
 
-echo "[test-qmd-bin] qmd_install_hint contains --ignore-scripts"
-assert "hint preserves --ignore-scripts flag" grep -q -- '--ignore-scripts' <<<"$(qmd_install_hint)"
+echo "[test-qmd-bin] qmd_install_hint drops --ignore-scripts (HIMMEL-752 G3)"
+# shellcheck disable=SC2016
+# Single quotes intentional - $1 expands inside the spawned bash -c subshell.
+assert "hint does NOT contain --ignore-scripts" bash -c '! grep -q -- "--ignore-scripts" <<<"$1"' _ "$(qmd_install_hint)"
 
 echo "[test-qmd-bin] has_qmd is presence-only (does not invoke binary)"
 # Make the bun-js path point at a broken/empty script that would error on run.
@@ -120,11 +122,128 @@ rc=0
 HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/broken-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; has_qmd' || rc=$?
 assert "has_qmd=true even when bun-js is broken (presence only)" test "$rc" -eq 0
 
+echo "[test-qmd-bin] qmd_install() happy / heal / honest-fail (HIMMEL-752 G3)"
+# Hermetic stub env: a fake `bun` (tells 'add' apart from a qmd run by $1),
+# a fake `npm` (drops a heal marker), a fake qmd.js so qmd_cmd resolves via bun,
+# and a better-sqlite3 dir for the heal path. Lives under $tmpdir so the EXIT
+# trap cleans it. Stubs read behavior from env vars so one env covers all paths.
+id2="$tmpdir/install"
+mkdir -p "$id2/bin" "$id2/.bun/install/global/node_modules/@tobilu/qmd/dist/cli" \
+         "$id2/.bun/install/global/node_modules/better-sqlite3"
+: > "$id2/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+cat > "$id2/bin/bun" <<'STUB'
+#!/usr/bin/env bash
+# 'bun add ...' = install; anything else = a qmd run dispatch (bun <qmd.js> ...).
+if [ "$1" = "add" ]; then exit "${STUB_BUN_ADD_RC:-0}"; fi
+if [ -f "${HEAL_MARKER:-}" ]; then exit 0; fi
+exit "${STUB_BUN_VER_RC:-0}"
+STUB
+chmod +x "$id2/bin/bun"
+cat > "$id2/bin/npm" <<'STUB'
+#!/usr/bin/env bash
+# Simulate the native build: STUB_NPM_RC=1 = build fails (no heal marker);
+# default = success (drop the heal marker).
+if [ "${STUB_NPM_RC:-0}" -ne 0 ]; then exit "${STUB_NPM_RC}"; fi
+: > "${HEAL_MARKER:?}"
+exit 0
+STUB
+chmod +x "$id2/bin/npm"
+heal_marker="$id2/.healed"
+qmd_install_rc() {
+  HOME="$id2" BUN_INSTALL="$id2/.bun" HEAL_MARKER="$heal_marker" \
+    PATH="$id2/bin:$PATH" \
+    STUB_BUN_ADD_RC="${STUB_BUN_ADD_RC:-0}" STUB_BUN_VER_RC="${STUB_BUN_VER_RC:-0}" \
+    STUB_NPM_RC="${STUB_NPM_RC:-0}" \
+    bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install >/dev/null 2>&1; echo $?'
+}
+# happy: install ok + verify ok -> rc 0.
+STUB_BUN_ADD_RC=0; STUB_BUN_VER_RC=0; rm -f "$heal_marker"
+assert "qmd_install happy path returns 0" test "$(qmd_install_rc)" -eq 0
+# honest-fail: bun add fails -> rc nonzero, verify never reached.
+STUB_BUN_ADD_RC=1; STUB_BUN_VER_RC=0; rm -f "$heal_marker"
+assert "qmd_install honest-fail returns nonzero" test "$(qmd_install_rc)" -ne 0
+# heal: install ok, verify fails, npm rebuild heals, re-verify ok -> rc 0.
+STUB_BUN_ADD_RC=0; STUB_BUN_VER_RC=1; STUB_NPM_RC=0; rm -f "$heal_marker"
+assert "qmd_install heal path returns 0" test "$(qmd_install_rc)" -eq 0
+assert "qmd_install heal path ran npm rebuild" test -f "$heal_marker"
+# heal-FAIL: install ok, verify fails, npm rebuild FAILS -> honest rc nonzero
+# (the core HIMMEL-752 honest-rc contract: 0 only when qmd verifiably works).
+STUB_BUN_ADD_RC=0; STUB_BUN_VER_RC=1; STUB_NPM_RC=1; rm -f "$heal_marker"
+assert "qmd_install heal-fail returns nonzero (honest rc)" test "$(qmd_install_rc)" -ne 0
+assert "qmd_install heal-fail left no heal marker" test ! -f "$heal_marker"
+STUB_NPM_RC=0
+
+echo "[test-qmd-bin] qmd_register_collection() add / idempotent-skip / warn (HIMMEL-752)"
+# Hermetic stub env: a fake `qmd` on PATH (no bun-qmd.js, no bun -> qmd_cmd
+# falls to the PATH qmd). Stubs read behavior from env vars.
+id3="$tmpdir/register"
+mkdir -p "$id3/bin"
+add_log="$id3/add-calls"
+cat > "$id3/bin/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "collection" ] && [ "$2" = "list" ]; then
+  [ -n "${STUB_LIST_FAIL:-}" ] && { echo "boom" >&2; exit 2; }
+  printf '%s\n' "${STUB_LIST:-}"
+  exit 0
+fi
+if [ "$1" = "collection" ] && [ "$2" = "add" ]; then
+  printf 'collection %s\n' "$*" >> "${ADD_LOG:?}"
+  exit "${STUB_ADD_RC:-0}"
+fi
+exit 0
+STUB
+chmod +x "$id3/bin/qmd"
+reg_rc() { # $1 = path, $2 = name; echoes the register rc on stdout.
+  HOME="$id3" ADD_LOG="$add_log" PATH="$id3/bin:$PATH" \
+    STUB_LIST="${STUB_LIST:-}" STUB_LIST_FAIL="${STUB_LIST_FAIL:-}" \
+    STUB_ADD_RC="${STUB_ADD_RC:-0}" \
+    bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_register_collection "'"$1"'" "'"$2"'"' >/dev/null 2>&1; echo $?
+}
+reg_err() { # like reg_rc but echoes the captured STDERR (for message asserts).
+  # shellcheck disable=SC2069
+  # 2>&1 >/dev/null is deliberate: stderr goes to the CAPTURED stdout while the
+  # original stdout is discarded (we assert on the WARNING text, stderr-only).
+  HOME="$id3" ADD_LOG="$add_log" PATH="$id3/bin:$PATH" \
+    STUB_LIST="${STUB_LIST:-}" STUB_LIST_FAIL="${STUB_LIST_FAIL:-}" \
+    STUB_ADD_RC="${STUB_ADD_RC:-0}" \
+    bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_register_collection "'"$1"'" "'"$2"'"' 2>&1 >/dev/null || true
+}
+# add: list empty, name absent -> add called, rc 0.
+STUB_LIST=""; STUB_LIST_FAIL=""; : > "$add_log"
+assert "register add path returns 0" test "$(reg_rc /repo himmel)" -eq 0
+assert "register add path called qmd collection add" grep -q 'collection add' "$add_log"
+# idempotent skip: list contains himmel -> skip, add NOT called, rc 0.
+STUB_LIST="himmel"; STUB_LIST_FAIL=""; : > "$add_log"
+assert "register idempotent-skip returns 0" test "$(reg_rc /repo himmel)" -eq 0
+assert "register idempotent-skip did NOT call add" test ! -s "$add_log"
+# warn on list failure -> rc nonzero, add NOT called.
+STUB_LIST="x"; STUB_LIST_FAIL=1; : > "$add_log"
+assert "register warn-on-list-fail returns nonzero" test "$(reg_rc /repo himmel)" -ne 0
+assert "register warn-on-list-fail did NOT call add" test ! -s "$add_log"
+# idempotency must not false-match a prefix-only name (luna vs lunabot).
+STUB_LIST="lunabot"; STUB_LIST_FAIL=""; : > "$add_log"
+assert "register no prefix false-match (luna vs lunabot)" test "$(reg_rc /vault luna)" -eq 0
+assert "register luna added despite lunabot in list" grep -q 'collection add' "$add_log"
+# add-FAILURE: list ok, add exits nonzero -> WARN + honest rc passthrough.
+STUB_LIST=""; STUB_LIST_FAIL=""; STUB_ADD_RC=3; : > "$add_log"
+assert "register add-failure returns the add rc" test "$(reg_rc /repo himmel)" -eq 3
+err_out=$(reg_err /repo himmel)
+assert "register add-failure WARNs" grep -q 'WARNING: qmd collection add' <<<"$err_out"
+# add rc=127 (resolver could not find qmd) -> the install-hint diagnostic fires.
+STUB_LIST=""; STUB_LIST_FAIL=""; STUB_ADD_RC=127; : > "$add_log"
+assert "register add-127 returns 127" test "$(reg_rc /repo himmel)" -eq 127
+err_out=$(reg_err /repo himmel)
+assert "register add-127 prints the resolver install hint" grep -q 'rc=127 means' <<<"$err_out"
+STUB_ADD_RC=0
+
 echo "[test-qmd-bin] consumer integration — scripts/setup.sh uses helpers"
 # Guard against accidental reintroduction of plain `qmd` in consumers.
 repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
 assert "setup.sh sources qmd-bin.sh" grep -q 'lib/qmd-bin.sh' "$repo_root/scripts/setup.sh"
-assert "setup.sh calls qmd_cmd" grep -q 'qmd_cmd ' "$repo_root/scripts/setup.sh"
+# setup.sh [4/10] was refactored to call qmd_register_collection (HIMMEL-752),
+# which wraps qmd_cmd - either helper counts as "uses the resolver, not bare qmd".
+assert "setup.sh calls a qmd-bin.sh helper (qmd_cmd/qmd_register_collection)" \
+  grep -qE 'qmd_cmd |qmd_register_collection ' "$repo_root/scripts/setup.sh"
 assert "ubuntu.sh sources qmd-bin.sh" grep -q 'lib/qmd-bin.sh' "$repo_root/scripts/machine-setup/ubuntu.sh"
 assert "ubuntu.sh calls qmd_cmd" grep -q 'qmd_cmd ' "$repo_root/scripts/machine-setup/ubuntu.sh"
 
