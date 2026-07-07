@@ -185,6 +185,58 @@ update_hermes() {
     return 0
 }
 
+# ─── codex plugin re-sync + hooks.json sanitize (HIMMEL-742 / 605) ───────────
+# The codex-CLI side is provisioned by scripts/codex/install-himmel-codex.sh,
+# whose phase 3 strips the top-level `description` key from external-plugin
+# hooks.json (codex's strict parser rejects it and silently unloads those hooks,
+# sanitize-plugin-hooks.sh). That runs at FIRST install only — a later codex
+# plugin re-sync/update re-adds `description`, so the hooks silently unload again
+# with nothing to re-clean them. This step re-runs the installer on /himmel-update
+# so the codex side re-syncs + re-sanitizes alongside the Claude marketplace
+# re-sync. install-himmel-codex.sh is non-destructive + idempotent (re-runs are
+# no-ops) and chains sanitize as its phase 3, so it is the right re-run entry
+# point. Operator-personal + à-la-carte: skips cleanly when codex is absent or
+# was never provisioned, and is always best-effort (never fails the himmel
+# update). CODEX_BIN (codex CLI) / CODEX_HOME (default ~/.codex) override, mirror
+# install-himmel-codex.sh + sanitize-plugin-hooks.sh.
+update_codex() {
+    local mode="$1"   # check | apply
+    echo ""
+    echo "==> codex plugin re-sync + hooks.json sanitize (HIMMEL-742)"
+    # codex CLI present? CODEX_BIN override mirrors install-himmel-codex.sh's
+    # resolve_codex (explicit-but-unusable -> skip, no silent PATH fallback).
+    if [ -n "${CODEX_BIN:-}" ]; then
+        if [ ! -x "$CODEX_BIN" ]; then
+            echo "    skip: CODEX_BIN set but not executable ($CODEX_BIN)."
+            return 0
+        fi
+    elif ! command -v codex >/dev/null 2>&1; then
+        echo "    skip: codex CLI not on PATH — codex side not provisioned."
+        return 0
+    fi
+    # Provisioned? The plugin cache dir exists once install-himmel-codex.sh has
+    # run at least once — its absence means the codex side was never set up.
+    local cache="${CODEX_HOME:-$HOME/.codex}/plugins/cache"
+    if [ ! -d "$cache" ]; then
+        echo "    skip: no codex plugin cache ($cache) — run scripts/codex/install-himmel-codex.sh first."
+        return 0
+    fi
+    local installer="$ROOT/scripts/codex/install-himmel-codex.sh"
+    if [ ! -f "$installer" ]; then
+        echo "    skip: install-himmel-codex.sh not found ($installer)."
+        return 0
+    fi
+    if [ "$mode" = "check" ]; then
+        echo "    codex provisioned — /himmel-update (no --check) will re-sync plugins + re-sanitize hooks.json."
+        return 0
+    fi
+    # apply: idempotent re-provision; chains sanitize-plugin-hooks as its phase 3.
+    if ! bash "$installer"; then
+        echo "    warn: codex re-provision/sanitize failed (non-fatal) — run bash scripts/codex/install-himmel-codex.sh yourself." >&2
+    fi
+    return 0
+}
+
 # ─── stale pipeline-cadence runner nudge (HIMMEL-588) ────────────────────────
 # The pipeline-cadence runners (.bat/.sh) are GENERATED at arm time and NOT
 # regenerated on a code pull — so a `git pull` that changes the runner format
@@ -322,6 +374,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     fi
     report_plugin_gap
     update_hermes check
+    update_codex check
     report_cadence_stale
     report_guardrail_block
     exit 0
@@ -351,25 +404,32 @@ else
     echo "update: claude CLI not on PATH — skipping marketplace re-sync." >&2
 fi
 
-# 3. Update the hermes junior tier (separate editable git checkout outside this
+# 3. Re-sync + re-sanitize the codex-CLI plugin side (HIMMEL-742/605) — a codex
+#    plugin re-sync re-adds the top-level `description` key that codex's strict
+#    parser rejects, silently unloading those hooks; install-himmel-codex.sh
+#    re-syncs and re-strips it (its phase 3). Best-effort; skips cleanly when
+#    codex is absent or was never provisioned.
+update_codex apply
+
+# 4. Update the hermes junior tier (separate editable git checkout outside this
 #    repo — see update_hermes). Best-effort; skips cleanly when hermes is absent.
 update_hermes apply
 
-# 4. Re-wire existing himmel statusLine installs to the hud renderer. Fresh
+# 5. Re-wire existing himmel statusLine installs to the hud renderer. Fresh
 #    installs already get hud via setup/adopt; update previously had the rollout
 #    gap for users still wired to the bash bar. Advisory; never fails the update.
 rewire_statusline
 
-# 5. Report any himmel-marketplace plugins not installed from @himmel — the
+# 6. Report any himmel-marketplace plugins not installed from @himmel — the
 #    marketplace re-sync above can't surface these (it only touches plugins that
 #    are already installed). Advisory; never fails the update.
 report_plugin_gap
 
-# 6. Nudge if an armed pipeline-cadence is firing pre-change (stale) runners
+# 7. Nudge if an armed pipeline-cadence is firing pre-change (stale) runners
 #    that this pull's code won't regenerate on its own (HIMMEL-588). Advisory.
 report_cadence_stale
 
-# 7. Check the himmel-owned guardrail-mode block for baked-path drift (HIMMEL-709).
+# 8. Check the himmel-owned guardrail-mode block for baked-path drift (HIMMEL-709).
 #    Advisory; never mutates ~/.claude/settings.json.
 report_guardrail_block
 
