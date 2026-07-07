@@ -230,7 +230,10 @@ report_guardrail_block() {
 # Existing installs wired to the bash bar need one best-effort re-wire after the
 # repo update. Fresh installs already get the hud renderer from setup/adopt.
 rewire_statusline() {
-    local settings="${CLAUDE_USER_SETTINGS:-$HOME/.claude/settings.json}"
+    # Resolve the user settings.json: explicit test override wins, else honor a
+    # relocated CLAUDE_CONFIG_DIR, else the ~/.claude default. Without the
+    # CLAUDE_CONFIG_DIR fallback a relocated config would be silently skipped.
+    local settings="${CLAUDE_USER_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}"
     local match_re='marketplace/plugins/claude-hud/dist/index[.]js|scripts/(statusline/bin/statusline|where-are-we/statusline)[.]sh'
     local cur lib="$ROOT/scripts/lib/wire-statusline.sh"
 

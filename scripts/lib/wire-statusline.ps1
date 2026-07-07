@@ -97,6 +97,17 @@ function Set-HimmelStatusLine {
         $hudTmp = "$hudPath.tmp"
         # UTF-8 without BOM; single trailing LF (matches the bash twin's printf).
         [System.IO.File]::WriteAllText($hudTmp, $hudCfg.TrimEnd("`n") + "`n")
+        # Validate the substituted config is still JSON before publishing it — a
+        # JSON-breaking himmel path would otherwise yield a config.json the
+        # renderer fails on silently at render time. jq is optional here (matches
+        # the ConvertTo-Json fallback above); skip the check when it is absent.
+        if (Get-Command jq -ErrorAction SilentlyContinue) {
+            & jq -e . $hudTmp *> $null
+            if ($LASTEXITCODE -ne 0) {
+                Remove-Item -LiteralPath $hudTmp -Force
+                throw "wire-statusline: substituted hud config is not valid JSON — refusing to write"
+            }
+        }
         Move-Item -Path $hudTmp -Destination $hudPath -Force
     }
     Write-Host "  wired statusLine → $SettingsPath"
