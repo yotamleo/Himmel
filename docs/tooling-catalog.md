@@ -307,7 +307,7 @@ idempotent `scripts/lib/register-auto-arm-hook.sh`. Tests:
 ## claude-statusline (vendored, HIMMEL-331)
 
 **Vendored in himmel:** `scripts/statusline/` (`bin/statusline.sh`, `test/`, `LICENSE`, `README.md`, provenance in `VENDORED.md`).
-**Config:** `~/.claude/settings.json` → `statusLine.command` (machine-setup points it at the himmel wrapper `<himmel-path>/scripts/where-are-we/statusline.sh`, which composes this vendored `bin/statusline.sh` + a where-are-we line — active handover + epic progression, HIMMEL-538; the segment is default-ON since HIMMEL-556 — opt out with an explicit falsy `HIMMEL_WHERE_ARE_WE` (`0|false|off|no`); no external clone).
+**Config:** `~/.claude/settings.json` → `statusLine.command` now points at the hud node renderer (`node "<himmel-path>/marketplace/plugins/claude-hud/dist/index.js"`, wired by `scripts/lib/wire-statusline.sh`; env gate `CLAUDE_HUD_ALLOW_EXTRA_CMD=1`; hud config dropped at `~/.claude/plugins/claude-hud/config.json`). The bash wrapper `<himmel-path>/scripts/where-are-we/statusline.sh` is retained as the rollback fallback that `scripts/lib/unwire-statusline.sh` can repoint to; it composes this vendored `bin/statusline.sh` + a where-are-we line — active handover + epic progression, HIMMEL-538; the segment is default-ON since HIMMEL-556 — opt out with an explicit falsy `HIMMEL_WHERE_ARE_WE` (`0|false|off|no`); no external clone.
 **What:** Bash script receiving Claude Code session JSON via stdin, outputs formatted status bar.
 
 Displays: model, context %, git branch, rate-limit bars (current/weekly/extra), cache TTL countdown, per-session and all-sessions cache read/write/hit/savings.

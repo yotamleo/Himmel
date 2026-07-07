@@ -48,9 +48,12 @@ check "abs path used"        "$(jq -r '[.hooks.PreToolUse[].hooks[].command | se
 # SC1: pre-existing non-himmel entries preserved.
 check "rtk guard preserved"  "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("rtk-hook-guard"))] | length' "$s")" "1"
 check "SessionStart sibling preserved" "$(jq -r '[.hooks.SessionStart[].hooks[].command | select(test("check-update-available"))] | length' "$s")" "1"
-# SC1: statusline + HIMMEL_REPO set.
+# SC1: statusline + HIMMEL_REPO set. The hud extra-cmd gate (wired by
+# wire_statusline) coexists with env.HIMMEL_REPO (wired by wire_himmel_repo),
+# proving the two env merges are non-destructive across the [9/10] sequence.
 check "statusLine set"  "$(jq -r '.statusLine.type' "$s")" "command"
 check "HIMMEL_REPO set" "$(jq -r '.env.HIMMEL_REPO' "$s")" "C:/Users/op/himmel"
+check "extra-cmd gate set" "$(jq -r '.env.CLAUDE_HUD_ALLOW_EXTRA_CMD' "$s")" "1"
 
 # SC8: re-run with a CHANGED clone path → exactly one of each (basename dedup).
 wire_all "$s" "C:/Users/op/himmel-moved"

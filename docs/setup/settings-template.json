@@ -67,7 +67,10 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash \"<himmel-path>/scripts/where-are-we/statusline.sh\""
+    "command": "node \"<himmel-path>/marketplace/plugins/claude-hud/dist/index.js\""
+  },
+  "env": {
+    "CLAUDE_HUD_ALLOW_EXTRA_CMD": "1"
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,

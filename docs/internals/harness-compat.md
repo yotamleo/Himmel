@@ -338,7 +338,7 @@ and hook wiring live here, not in `.claude/`.
 
 ### 7. Status context — statusLine is Claude-only (HIMMEL-554)
 
-Claude's `statusLine.command` is wired through `scripts/where-are-we/statusline.sh`;
+Claude's `statusLine.command` is wired to the hud node renderer `marketplace/plugins/claude-hud/dist/index.js` (HIMMEL-718), with the bash bar `scripts/where-are-we/statusline.sh` retained as the rollback fallback;
 Codex has no equivalent visual statusline surface. The Codex port should inject
 the same advisory context through a Codex-native context path (likely
 SessionStart/UserPromptSubmit additional context), not by porting the rendered

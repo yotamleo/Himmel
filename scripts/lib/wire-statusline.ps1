@@ -6,10 +6,13 @@
 # Dot-source to get Set-HimmelStatusLine, or invoke directly:
 #   pwsh -File wire-statusline.ps1 -SettingsPath <path> -HimmelPath <path>
 #
-# Sets .statusLine = { type: "command",
-#   command: 'bash "<himmel>/scripts/where-are-we/statusline.sh"' }
-# (the himmel wrapper composes the VENDORED scripts/statusline/bin/statusline.sh
-#  with the where-are-we segment — active handover + epic progression; HIMMEL-538)
+# Does THREE things (HIMMEL-718 Task 4.1 — the wiring switch to the forked
+# claude-hud renderer; the vendored bash bar is RETAINED as fallback):
+#   1. .statusLine = { type: "command",
+#        command: 'node "<himmel>/marketplace/plugins/claude-hud/dist/index.js"' }
+#   2. .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"  (merged, other env keys preserved)
+#   3. Drops the hud config (himmel-config.json with <himmel-path> substituted)
+#      to <settings-dir>/plugins/claude-hud/config.json.
 # Idempotent, atomic (temp + move), non-destructive (other keys preserved;
 # file + parent dir created if absent). Normalizes JSON through `jq --indent 2`
 # when jq is on PATH (matches win11.ps1's Write-SettingsJson), else falls back
@@ -27,9 +30,12 @@ function Set-HimmelStatusLine {
         [Parameter(Mandatory = $true)] [string]$HimmelPath
     )
 
-    # Forward-slash the himmel path so the `bash "..."` command is valid.
+    # Forward-slash the himmel path so the `node "..."` command is valid.
     $himmelFwd = $HimmelPath.Replace('\', '/')
-    $cmd = "bash `"$himmelFwd/scripts/where-are-we/statusline.sh`""
+    $cmd = "node `"$himmelFwd/marketplace/plugins/claude-hud/dist/index.js`""
+
+    $settingsDir = Split-Path $SettingsPath -Parent
+    if (-not $settingsDir) { $settingsDir = '.' }
 
     if (Test-Path $SettingsPath) {
         $raw = Get-Content $SettingsPath -Raw
@@ -49,18 +55,26 @@ function Set-HimmelStatusLine {
             }
         }
     } else {
-        # Split-Path returns '' for a bare filename with no directory — guard so
-        # New-Item is not handed an empty path.
-        $dir = Split-Path $SettingsPath
-        if ($dir) { New-Item -ItemType Directory -Force $dir | Out-Null }
+        New-Item -ItemType Directory -Force $settingsDir | Out-Null
         $cfg = [pscustomobject]@{}
     }
 
+    # (1) statusLine → hud renderer.
     $statusLine = [pscustomobject]@{ type = 'command'; command = $cmd }
     if ($cfg.PSObject.Properties['statusLine']) {
         $cfg.statusLine = $statusLine
     } else {
         $cfg | Add-Member -NotePropertyName statusLine -NotePropertyValue $statusLine -Force
+    }
+
+    # (2) Merge the extra-cmd gate into .env, preserving every other env key.
+    if (-not $cfg.PSObject.Properties['env']) {
+        $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if ($cfg.env.PSObject.Properties['CLAUDE_HUD_ALLOW_EXTRA_CMD']) {
+        $cfg.env.CLAUDE_HUD_ALLOW_EXTRA_CMD = '1'
+    } else {
+        $cfg.env | Add-Member -NotePropertyName CLAUDE_HUD_ALLOW_EXTRA_CMD -NotePropertyValue '1' -Force
     }
 
     $json = $cfg | ConvertTo-Json -Depth 20
@@ -70,6 +84,21 @@ function Set-HimmelStatusLine {
     }
     Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
     Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
+
+    # (3) Drop the hud config next to settings.json, substituting this clone's
+    # path for the <himmel-path> placeholder. Guarded on the source existing so
+    # tests wiring against a synthetic himmel path stay a pure statusLine/env op.
+    $hudSrc = "$himmelFwd/marketplace/plugins/claude-hud/config/himmel-config.json"
+    if (Test-Path $hudSrc) {
+        $hudDir = Join-Path $settingsDir 'plugins/claude-hud'
+        New-Item -ItemType Directory -Force $hudDir | Out-Null
+        $hudCfg = (Get-Content $hudSrc -Raw).Replace('<himmel-path>', $himmelFwd).Replace("`r`n", "`n")
+        $hudPath = Join-Path $hudDir 'config.json'
+        $hudTmp = "$hudPath.tmp"
+        # UTF-8 without BOM; single trailing LF (matches the bash twin's printf).
+        [System.IO.File]::WriteAllText($hudTmp, $hudCfg.TrimEnd("`n") + "`n")
+        Move-Item -Path $hudTmp -Destination $hudPath -Force
+    }
     Write-Host "  wired statusLine → $SettingsPath"
 }
 

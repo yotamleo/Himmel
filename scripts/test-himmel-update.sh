@@ -38,6 +38,14 @@ assert_contains() {
         assert_fail "$desc — expected pattern '$pattern', got: $actual"
     fi
 }
+assert_eq() {
+    local desc="$1" expected="$2" actual="$3"
+    if [ "$expected" = "$actual" ]; then
+        assert_pass "$desc"
+    else
+        assert_fail "$desc — expected '$expected', got '$actual'"
+    fi
+}
 
 _repo_counter=0
 
@@ -91,6 +99,7 @@ make_repo_behind() {
     mkdir -p "$clone/scripts/guardrails" "$clone/scripts/lib"
     cp "$src_scripts/guardrails/lib.sh"      "$clone/scripts/guardrails/lib.sh"
     cp "$src_scripts/lib/cadence-format.sh"  "$clone/scripts/lib/cadence-format.sh"
+    cp "$src_scripts/lib/resolve-hermes-py.sh" "$clone/scripts/lib/resolve-hermes-py.sh"
     CHECKOUT_DIR="$clone"
 }
 
@@ -140,6 +149,111 @@ out=$(HIMMEL_MARKETPLACE_JSON="$PFIX/marketplace.json" \
       HIMMEL_INSTALLED_PLUGINS_JSON="$PFIX/installed-all.json" \
       bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --plugins-check 2>&1) || true
 assert_contains "all-installed: clean message" "all 3 @himmel plugins installed" "$out"
+
+# ─── rewire_statusline ───────────────────────────────────────────────────────
+echo "Test 5: rewire_statusline → migrates only existing himmel statusLine wiring"
+REAL_ROOT="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+REAL_ROOT_FWD="${REAL_ROOT//\\//}"
+EXPECTED_HUD_CMD="node \"$REAL_ROOT_FWD/marketplace/plugins/claude-hud/dist/index.js\""
+
+run_rewire_statusline() {
+    local p="$1"
+    (
+        set -euo pipefail
+        # shellcheck disable=SC1090
+        HIMMEL_UPDATE_LIB=1 . "$SCRIPT"
+        CLAUDE_USER_SETTINGS="$p" rewire_statusline
+    )
+}
+
+# Case a: old bash bar wiring is migrated to the hud renderer, preserving env
+# siblings and top-level settings.
+printf '%s' '{"statusLine":{"type":"command","command":"bash \"C:/old/himmel/scripts/where-are-we/statusline.sh\""},"env":{"KEEP":"1"},"theme":"dark"}' > "$TMP/sl-old.json"
+if run_rewire_statusline "$TMP/sl-old.json" >/dev/null 2>&1; then
+    assert_pass "rewire old bash bar: rc 0"
+else
+    assert_fail "rewire old bash bar: rc non-zero"
+fi
+assert_eq "rewire old bash bar: hud command" "$EXPECTED_HUD_CMD" "$(jq -r '.statusLine.command' "$TMP/sl-old.json")"
+assert_eq "rewire old bash bar: hud env gate" "1" "$(jq -r '.env.CLAUDE_HUD_ALLOW_EXTRA_CMD' "$TMP/sl-old.json")"
+assert_eq "rewire old bash bar: preserves env sibling" "1" "$(jq -r '.env.KEEP' "$TMP/sl-old.json")"
+assert_eq "rewire old bash bar: preserves theme" "dark" "$(jq -r '.theme' "$TMP/sl-old.json")"
+
+# Case a2: the OLD VENDORED path (pre-HIMMEL-538 installs) also migrates.
+printf '%s' '{"statusLine":{"type":"command","command":"bash \"C:/old/himmel/scripts/statusline/bin/statusline.sh\""}}' > "$TMP/sl-vendored.json"
+if run_rewire_statusline "$TMP/sl-vendored.json" >/dev/null 2>&1; then
+    assert_pass "rewire old vendored bar: rc 0"
+else
+    assert_fail "rewire old vendored bar: rc non-zero"
+fi
+assert_eq "rewire old vendored bar: hud command" "$EXPECTED_HUD_CMD" "$(jq -r '.statusLine.command' "$TMP/sl-vendored.json")"
+
+# Case b: custom statusLine is byte-unchanged.
+printf '%s' '{"statusLine":{"type":"command","command":"bash /opt/mine.sh"}}' > "$TMP/sl-custom.json"
+cp "$TMP/sl-custom.json" "$TMP/sl-custom.before"
+if run_rewire_statusline "$TMP/sl-custom.json" >/dev/null 2>&1; then
+    assert_pass "rewire custom statusLine: rc 0"
+else
+    assert_fail "rewire custom statusLine: rc non-zero"
+fi
+if cmp -s "$TMP/sl-custom.before" "$TMP/sl-custom.json"; then
+    assert_pass "rewire custom statusLine: unchanged"
+else
+    assert_fail "rewire custom statusLine: changed unexpectedly"
+fi
+
+# Case c: no statusLine key is unchanged.
+printf '%s' '{"theme":"dark"}' > "$TMP/sl-none.json"
+cp "$TMP/sl-none.json" "$TMP/sl-none.before"
+if run_rewire_statusline "$TMP/sl-none.json" >/dev/null 2>&1; then
+    assert_pass "rewire no statusLine: rc 0"
+else
+    assert_fail "rewire no statusLine: rc non-zero"
+fi
+if cmp -s "$TMP/sl-none.before" "$TMP/sl-none.json"; then
+    assert_pass "rewire no statusLine: unchanged"
+else
+    assert_fail "rewire no statusLine: changed unexpectedly"
+fi
+
+# Case d: absent settings path is a no-create no-op.
+if run_rewire_statusline "$TMP/sl-missing.json" >/dev/null 2>&1; then
+    assert_pass "rewire absent settings: rc 0"
+else
+    assert_fail "rewire absent settings: rc non-zero"
+fi
+if [ ! -e "$TMP/sl-missing.json" ]; then
+    assert_pass "rewire absent settings: file not created"
+else
+    assert_fail "rewire absent settings: file created unexpectedly"
+fi
+
+# Case e: invalid JSON is unchanged and non-fatal.
+printf '%s' '{"statusLine":' > "$TMP/sl-invalid.json"
+cp "$TMP/sl-invalid.json" "$TMP/sl-invalid.before"
+if run_rewire_statusline "$TMP/sl-invalid.json" >/dev/null 2>&1; then
+    assert_pass "rewire invalid JSON: rc 0"
+else
+    assert_fail "rewire invalid JSON: rc non-zero"
+fi
+if cmp -s "$TMP/sl-invalid.before" "$TMP/sl-invalid.json"; then
+    assert_pass "rewire invalid JSON: unchanged"
+else
+    assert_fail "rewire invalid JSON: changed unexpectedly"
+fi
+
+# Case f: idempotent — a second run leaves the migrated file identical.
+cp "$TMP/sl-old.json" "$TMP/sl-old.once"
+if run_rewire_statusline "$TMP/sl-old.json" >/dev/null 2>&1; then
+    assert_pass "rewire idempotent second run: rc 0"
+else
+    assert_fail "rewire idempotent second run: rc non-zero"
+fi
+if cmp -s "$TMP/sl-old.once" "$TMP/sl-old.json"; then
+    assert_pass "rewire idempotent second run: unchanged"
+else
+    assert_fail "rewire idempotent second run: changed unexpectedly"
+fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo

@@ -225,6 +225,60 @@ report_guardrail_block() {
     return 0
 }
 
+
+# ─── statusLine hud migration (HIMMEL-718) ──────────────────────────────────
+# Existing installs wired to the bash bar need one best-effort re-wire after the
+# repo update. Fresh installs already get the hud renderer from setup/adopt.
+rewire_statusline() {
+    local settings="${CLAUDE_USER_SETTINGS:-$HOME/.claude/settings.json}"
+    local match_re='marketplace/plugins/claude-hud/dist/index[.]js|scripts/(statusline/bin/statusline|where-are-we/statusline)[.]sh'
+    local cur lib="$ROOT/scripts/lib/wire-statusline.sh"
+
+    echo ""
+    echo "==> statusLine re-wire (hud migration, HIMMEL-718)"
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "    skip: jq not on PATH (cannot inspect statusLine)."
+        return 0
+    fi
+    if [ ! -f "$settings" ]; then
+        echo "    skip: settings file not found ($settings)."
+        return 0
+    fi
+    if ! jq -e . "$settings" >/dev/null 2>&1; then
+        echo "    skip: settings file is not valid JSON ($settings)."
+        return 0
+    fi
+
+    cur=$(jq -r '.statusLine.command? // ""' "$settings" 2>/dev/null || printf '')
+    # A user who never wired or deliberately unwired must not be re-wired by an
+    # update; only an EXISTING himmel wiring migrates.
+    if ! printf '%s' "$cur" | grep -Eq "$match_re"; then
+        echo "    skip: statusLine not himmel-wired — leaving it alone."
+        return 0
+    fi
+    if [ ! -f "$lib" ]; then
+        echo "    skip: wire-statusline.sh not found ($lib)."
+        return 0
+    fi
+    # The hud renderer is `node …/dist/index.js` — migrating a WORKING bash bar
+    # on a node-less machine would trade it for a silently broken statusLine.
+    # Skip (keeping the bash bar, the stated fallback) instead.
+    if ! command -v node >/dev/null 2>&1; then
+        echo "    skip: node not on PATH — leaving the bash statusLine bar in place."
+        return 0
+    fi
+
+    # shellcheck source=lib/wire-statusline.sh
+    # shellcheck disable=SC1090,SC1091
+    if ! . "$lib"; then
+        echo "    warn: could not load wire-statusline.sh (non-fatal)." >&2
+        return 0
+    fi
+    if ! wire_statusline "$settings" "$ROOT"; then
+        echo "    warn: statusLine re-wire failed (non-fatal) — run bash scripts/lib/wire-statusline.sh manually if needed." >&2
+    fi
+    return 0
+}
 # Test seam: source with HIMMEL_UPDATE_LIB=1 to load the functions above without
 # running any update mode (lets test-himmel-update-hermes.sh call update_hermes
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
@@ -298,16 +352,21 @@ fi
 #    repo — see update_hermes). Best-effort; skips cleanly when hermes is absent.
 update_hermes apply
 
-# 4. Report any himmel-marketplace plugins not installed from @himmel — the
+# 4. Re-wire existing himmel statusLine installs to the hud renderer. Fresh
+#    installs already get hud via setup/adopt; update previously had the rollout
+#    gap for users still wired to the bash bar. Advisory; never fails the update.
+rewire_statusline
+
+# 5. Report any himmel-marketplace plugins not installed from @himmel — the
 #    marketplace re-sync above can't surface these (it only touches plugins that
 #    are already installed). Advisory; never fails the update.
 report_plugin_gap
 
-# 5. Nudge if an armed pipeline-cadence is firing pre-change (stale) runners
+# 6. Nudge if an armed pipeline-cadence is firing pre-change (stale) runners
 #    that this pull's code won't regenerate on its own (HIMMEL-588). Advisory.
 report_cadence_stale
 
-# 6. Check the himmel-owned guardrail-mode block for baked-path drift (HIMMEL-709).
+# 7. Check the himmel-owned guardrail-mode block for baked-path drift (HIMMEL-709).
 #    Advisory; never mutates ~/.claude/settings.json.
 report_guardrail_block
 
