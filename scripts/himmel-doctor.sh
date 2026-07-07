@@ -454,6 +454,35 @@ check_c11() {
     esac
 }
 
+# --- C12: codex startup health (read-only advisory, HIMMEL-747) -----------------
+# Surfaces a DEGRADED codex CLI startup (skills silently truncated / lifecycle
+# hooks silently ignored / oversized _where-are-we injection) so a codex
+# delegation lane that LOOKS healthy but starts degraded becomes visible. Runs
+# scripts/codex/startup-health.sh, which reads only the most-recent codex session
+# logs under CODEX_HOME. Skips cleanly when codex is absent (detector rc=2).
+# NON-fatal (WARN at most, never FAIL): a broken detector must never fail doctor.
+check_c12() {
+    local detector="$REPO_ROOT/scripts/codex/startup-health.sh"
+    if [ ! -f "$detector" ]; then
+        emit OK C12-codex "codex startup-health detector not present (skipped)"
+        return
+    fi
+    local out rc
+    out="$(bash "$detector" 2>/dev/null)"; rc=$?
+    case "$rc" in
+        0) emit OK C12-codex "codex startup healthy (no skill-truncation / hook-failure / oversized where-are-we in the last session)" ;;
+        2) emit OK C12-codex "no codex logs under CODEX_HOME (codex lane not in use here — skipped)" ;;
+        1)
+            local n; n="$(printf '%s\n' "$out" | grep -c '^WARN ')"
+            emit WARN C12-codex \
+                "codex started DEGRADED -- $n startup finding(s) in the most recent session (a routed codex lane looks healthy but is not)" \
+                "restart codex after fixing (skills: scripts/codex/sanitize-plugin-hooks.sh; hooks: check .codex/hooks.json shape). Detail: scripts/codex/startup-health.sh"
+            printf '%s\n' "$out" | sed 's/^WARN /       · /'
+            ;;
+        *) emit WARN C12-codex "codex startup-health detector exited rc=$rc (unexpected)" "inspect scripts/codex/startup-health.sh" ;;
+    esac
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -505,6 +534,7 @@ check_c8
 check_c9
 check_c10
 check_c11
+check_c12
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

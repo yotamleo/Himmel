@@ -90,12 +90,50 @@ function renderText(lanes) {
     '\n\nNote: codex(paid) reflects CR_PROFILE=paid (opt-in preference, not a funded-bank guarantee).\n';
 }
 
+// HIMMEL-747 — turn the codex startup-health detector's exit code + WARN lines
+// into a /lanes annotation. PURE (unit-tested): only rc=1 (findings) annotates;
+// rc=0 (healthy), rc=2 (no codex), or a spawn failure (rc<0) render nothing, so
+// a degraded codex delegation lane stops looking healthy without ever breaking
+// the lane listing.
+export function formatCodexHealth(rc, stdout) {
+  if (rc !== 1) return '';
+  const lines = String(stdout).split(/\r?\n/).filter((l) => l.startsWith('WARN '));
+  if (lines.length === 0) return '';
+  return `\ncodex lane health: DEGRADED — ${lines.length} startup finding(s) (a routed codex lane looks healthy but is not; run scripts/codex/startup-health.sh):\n` +
+    lines.map((l) => '  - ' + l.replace(/^WARN /, '')).join('\n') + '\n';
+}
+
+// Impure companion (real machine, untested by design, mirrors buildCtx). Spawns
+// the bash detector non-fatally: findings make execFileSync throw with e.status=1
+// and the WARN lines on e.stdout; a missing bash / missing script returns rc<0
+// so formatCodexHealth renders nothing. Git-Bash is resolved explicitly on
+// Windows (a bare `bash` is the WSL stub) — matching scripts/hooks tests.
+function runCodexHealth(repoRoot, env) {
+  const script = join(repoRoot, 'scripts', 'codex', 'startup-health.sh');
+  if (!existsSync(script)) return { rc: -1, out: '' };
+  let bash = '/bin/bash';
+  if (process.platform === 'win32') {
+    const cands = [env.GUARDRAIL_BASH, 'C:/Program Files/Git/bin/bash.exe', 'C:/Program Files/Git/usr/bin/bash.exe'].filter(Boolean);
+    bash = cands.find((b) => existsSync(b)) || 'bash';
+  }
+  try {
+    const out = execFileSync(bash, [script], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 20000 });
+    return { rc: 0, out };
+  } catch (e) {
+    if (e && typeof e.status === 'number') return { rc: e.status, out: e.stdout ? String(e.stdout) : '' };
+    return { rc: -1, out: '' };
+  }
+}
+
 // --- CLI (no --check here; the drift guard is Task 6's check.mjs + bash hook) ---
 const mode = process.argv[2];
 if (process.argv[1]?.endsWith('resolve.mjs')) {
   const registry = loadRegistry();
   const lanes = resolveLanes(registry, buildCtx(REPO_ROOT, process.env));
   if (mode === '--json') process.stdout.write(JSON.stringify(lanes, null, 2) + '\n');
-  else                   process.stdout.write(renderText(lanes));
+  else {
+    const { rc, out } = runCodexHealth(REPO_ROOT, process.env);
+    process.stdout.write(renderText(lanes) + formatCodexHealth(rc, out));
+  }
   process.exit(0);
 }
