@@ -96,7 +96,7 @@ confirmed HIMMEL-695 landed it (see the conformance notes below).
 | main-claude | auto-mode classifier |
 | glm-spawn | `tested:scripts/hooks/test-block-glm-external-writes.sh` |
 | glm-launcher | `tested:scripts/hooks/test-block-glm-external-writes.sh` |
-| codex-direct | adapter path -- `.codex/hooks.json` reaches the native block-* hooks |
+| codex-direct | `tested:scripts/hooks/test-block-terminal-write-fence.sh` -- the terminal write/push/network fence (codex-lane classifier substitute, HIMMEL-745), e2e-proved through the adapter (`scripts/hooks/test-codex-adapter-e2e.sh`). The Edit/Write patch path is fenced by `block-edit-on-main.sh` via the adapter. |
 | hermes-main (DEFAULT; engines codex-5.5 + GLM) | `parity_guard` push/PR fence -- `tested:scripts/hermes/test-parity-guard.sh` (HIMMEL-695 write-fence; the CC hook does NOT fire under hermes, parity_guard is the sole fence). The four OTHER deny-guards were ported into parity_guard by Task 6 / HIMMEL-731 (all now `present`). |
 | hermes-junior | n/a -- read-only tier (`luna_vault_guard`) |
 | gemini / copilot / cursor | `deferred` |
@@ -191,12 +191,12 @@ deny-guards plus the write-fence are now PRESENT under hermes.
 | deny-guard | glm-spawn | glm-launcher | codex-direct | hermes-main (codex-5.5 + GLM) | hermes-junior |
 |---|---|---|---|---|---|
 | block-edit-on-main | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-codex-run-hook.sh` `tested:scripts/hooks/test-block-edit-on-main.sh` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
-| block-read-secrets | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-codex-run-hook.sh` `tested:scripts/hooks/test-block-read-secrets.sh` `GAP` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
+| block-read-secrets | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-codex-run-hook.sh` `tested:scripts/hooks/test-block-read-secrets.sh` `tested:scripts/hooks/test-codex-adapter-e2e.sh` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
 | block-backend-tier | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-codex-run-hook.sh` `tested:scripts/hooks/test-block-backend-tier.sh` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
 | block-docker-privesc | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-codex-run-hook.sh` `tested:scripts/hooks/test-block-docker-privesc.sh` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
 | block-rogue-claude-schedule | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-codex-run-hook.sh` `tested:scripts/hooks/test-block-rogue-claude-schedule.sh` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
 | block-merged-pr-commit | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-codex-run-hook.sh` `tested:scripts/hooks/test-block-merged-pr-commit.sh` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
-| write-authority / external-write-fence (cross-lane dimension, NOT a CC PreToolUse hook) | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `GAP` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
+| write-authority / external-write-fence (cross-lane dimension, NOT a CC PreToolUse hook) | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-glm-external-writes.sh` | `tested:scripts/hooks/test-block-terminal-write-fence.sh` `tested:scripts/hooks/test-codex-adapter-e2e.sh` | `tested:scripts/hermes/test-parity-guard.sh` | `GAP` |
 
 <!-- END guard-lane-conformance -->
 
@@ -214,11 +214,24 @@ Notes on the cells:
   `tested:scripts/hooks/test-codex-run-hook.sh` (the `.codex/hooks.json`
   adapter's exit-2 to `deny` translation, HIMMEL-427) PLUS the NATIVE
   `tested:scripts/hooks/test-block-<guard>.sh` the adapter reaches (all six
-  native fixtures exist). The `block-read-secrets` cell additionally carries
-  `GAP`: a true codex through-adapter END-TO-END secret-read fixture is wanted
-  and does not exist, so T6 is proven by the PAIR, not by a (non-existent)
-  codex-specific fixture. The write-authority cell is `GAP` for the same
-  reason -- there is no codex through-adapter external-write e2e proof.
+  native fixtures exist). HIMMEL-745 closed the two remaining codex-direct
+  GAPs with a through-adapter END-TO-END fixture,
+  `scripts/hooks/test-codex-adapter-e2e.sh`: it drives
+  `.codex/codex-hook-adapter.sh` against the REAL guardrails
+  (`CLAUDE_PROJECT_DIR` = the checkout) and asserts the JSON `deny` lands for a
+  secret-read (through `block-read-secrets.sh`) AND an external-write (through
+  the new `block-terminal-write-fence.sh`), so the `block-read-secrets` cell no
+  longer carries a `GAP`. The write-authority cell is now `tested` too: a live
+  probe on this ticket came back SPLIT -- `.codex/hooks.json` wired
+  `block-edit-on-main.sh` only on the Edit|Write matcher, so the PATCH path was
+  denied but the TERMINAL path (a pwsh/bash command that writes a file, pushes,
+  or hits the network) succeeded, and codex has NO auto-mode classifier to
+  catch it (HIMMEL-748 deterministic-guards-only). `block-terminal-write-fence.sh`
+  is the codex-lane classifier substitute for that terminal surface
+  (external-write class fail-closed behind `CODEX_EXTERNAL_WRITES_OK`; a
+  write-on-main class honouring `.single-writer`), unit-tested by
+  `scripts/hooks/test-block-terminal-write-fence.sh` and e2e-proved through the
+  adapter. The codex-direct column is now `tested`-green.
 - **hermes-main (DEFAULT; both engines codex-5.5 + GLM).** himmel's CC
   PreToolUse hooks do NOT load under hermes, so `parity_guard.py` is the sole
   fence; both engines are exercised by
