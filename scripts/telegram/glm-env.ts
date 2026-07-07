@@ -17,7 +17,7 @@ function parseZaiKeyFromEnv(envFile: string): string | undefined {
     const m = raw.match(/^\s*(?:export\s+)?ZAI_API_KEY\s*=\s*(.*)\s*$/);
     if (!m) continue;
     let v = m[1].trim();
-    // one matching surrounding quote pair stripped — parity with claude-glm:26-29
+    // one matching surrounding quote pair stripped — parity with claude-glm's "surrounding-quote-strip" case block (named anchor, not line numbers)
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
     return v || undefined;
   }
