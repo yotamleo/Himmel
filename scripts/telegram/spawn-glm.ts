@@ -4,12 +4,12 @@
 // paths), run.log persistence from the returned tail, meta.json transitions.
 // Sessions live under <BRIDGE_ROOT>/glm-sessions/ — the live poller scans ONLY
 // <root>/sessions/, so nothing here can be double-spawned or Telegram-flushed.
-import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { runSession, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow } from "./run";
 import { checkGlmGuards } from "./glm-guard";
-import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, type SettingsConflict, type GlmUsage } from "./glm-env";
+import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, glmContextPreset, type SettingsConflict, type GlmUsage } from "./glm-env";
 import { appendQuotaGauge, buildGlmRow, isGlmPeak } from "./quota-gauge";
 import { parseGrantFlag, composeGrantLine, nextGrantId, authorityGate, classifyShape, composeEscalationForRefusedGrant, carryGrants, seedCarriedGrants, type GrantSpec } from "./grants";
 
@@ -36,6 +36,61 @@ export function composeWorkerPrompt(task: string, sessionDir: string, branch: st
     `If a step is hard-blocked by the GLM-lane guard, do NOT retry or give up: APPEND one escalation line {"type":"escalation","capability":"<the command>","arm":"<git-push|git-url|gh|network>","reason":"<why>","step":"<which step>","ts":"<ISO>"} to ${outbox}, SKIP that step, continue the rest of the task, and note the skipped step in your final ${context} summary.`,
     `As your FINAL action, append a one-line summary of what you did to ${context}, then stop.`,
   ].join("\n");
+}
+
+// Pointer-prompt dispatch (HIMMEL-740, the handover-load pattern): the SUBMITTED
+// CLI prompt is a SHORT pointer to a brief file, not the whole brief inlined.
+// Inlining a ~70-line brief into the prompt — on top of the himmel session
+// context (CLAUDE.md + memory + skills) — overflowed the model window, so the
+// worker died at SUBMIT with "prompt is too long" before doing any work. The
+// full brief (composeWorkerPrompt output) is written to <sessionDir>/brief.md
+// (under the glm-sessions root, OUTSIDE the repo worktree so the worker cannot
+// commit it) and the worker reads it as its complete task.
+export function composePointerPrompt(briefPath: string): string {
+  return [
+    `You are an unattended GLM-lane worker session (himmel offload spike).`,
+    `Read the file at ${briefPath} — it is your COMPLETE task brief — and execute it exactly, treating its instructions as if they were this prompt.`,
+  ].join("\n");
+}
+
+// Session-bootstrap overhead estimate for the skills/system listing (HIMMEL-740):
+// a coarse constant (~60k tokens) added to the measured bootstrap files. Named +
+// commented because it is an ESTIMATE, not a per-run measurement — the skills and
+// system-prompt listing that loads under every session is not cheaply sizable here.
+export const SKILLS_SYSTEM_OVERHEAD_CHARS = 240_000; // ~60k tokens (chars/4); estimate, not measured
+
+// Overhead measurement (HIMMEL-740): sum the byte sizes of the session-bootstrap
+// files the worker will load BEFORE its own prompt — the project CLAUDE.md, the
+// user CLAUDE.md, and the always-loaded project memory index — plus the
+// skills/system constant. `home` is injected (not homedir()) so the measurement
+// is hermetic under test. The memory path mirrors transcriptDirFor's escaping
+// (~/.claude/projects/<escaped-cwd>/) with a `memory/` subdir. FAIL-OPEN: an
+// unreadable/missing file counts 0 and NEVER throws — this feeds a best-effort
+// preflight, not a gate a stat hiccup should abort a dispatch on.
+export function measureOverheadChars(cwd: string, home: string): number {
+  const memory = join(home, ".claude", "projects", resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-"), "memory", "MEMORY.md");
+  const files = [join(cwd, "CLAUDE.md"), join(home, ".claude", "CLAUDE.md"), memory];
+  let total = SKILLS_SYSTEM_OVERHEAD_CHARS;
+  for (const f of files) {
+    try { total += statSync(f).size; } catch { /* fail-open: missing/unreadable file counts 0 */ }
+  }
+  return total;
+}
+
+// Per-model window preflight (HIMMEL-740, the structural fix for the inlined-brief
+// "prompt is too long" deaths). Token estimate = ceil(chars/4) (the rough English
+// ratio — deliberately coarse; a precise tokenizer would be fabricated precision
+// for a guard whose job is catching the ORDER-of-magnitude overflow). Refuse when
+// brief+overhead exceeds 90% of the window, leaving headroom for the model's own
+// reply; the reason names the numbers (est tokens vs window) + the remedy.
+const WINDOW_SAFETY = 0.9;
+export function preflightWindowCheck(p: { briefChars: number; overheadChars: number; windowTokens: number }): { ok: true } | { ok: false; reason: string } {
+  const estTokens = Math.ceil((p.briefChars + p.overheadChars) / 4);
+  const budget = Math.floor(p.windowTokens * WINDOW_SAFETY);
+  if (estTokens > budget) {
+    return { ok: false, reason: `spawn-glm: brief too large for the GLM window — est ${estTokens} tokens (brief ${p.briefChars} + overhead ${p.overheadChars} chars / 4) exceeds 90% of the ${p.windowTokens}-token window (budget ${budget}). Chunk the brief into smaller dispatches, or use --context big for the 1M window.` };
+  }
+  return { ok: true };
 }
 
 // Default-path push tripwire (spec D4 — honest scope: blocks accidental/default
@@ -147,6 +202,14 @@ export function applyCarryFrom(carryFrom: string, autonomous: boolean, existing:
   }
 }
 
+// HIMMEL-740: the submit-reject that killed inlined-brief workers. Distinct from
+// a usage cap — this is a DETERMINISTIC per-turn rejection (the request itself is
+// too large), NOT a quota reset to arm against. Matched so a bare `failed` run
+// carries an honest failure_class instead of vanishing as an unexplained failure.
+export function detectPromptTooLong(tail: string): boolean {
+  return /prompt is too long/i.test(tail);
+}
+
 // The run-and-record step, extracted so the meta-transition contract is
 // testable with an injected runSession. meta.json ALWAYS leaves "running": the
 // success path writes finalMeta (done/failed/capped/blocked), and a thrown
@@ -161,7 +224,16 @@ export async function executeRun(deps: {
   try {
     const res = await deps.runSession(deps.prompt, deps.worktree, deps.permMode, "glm");
     if (res.tail !== undefined) appendFileSync(join(deps.sessionDir, "run.log"), res.tail);
-    writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...finalMeta(res.code, res.pid, res.capped, res.blocked, res.timedOut) }, null, 2));
+    const fm = finalMeta(res.code, res.pid, res.capped, res.blocked, res.timedOut);
+    writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm }, null, 2));
+    // HIMMEL-740: an honest failure_class for the submit-reject. ONLY on a bare
+    // `failed` (a capped/blocked/timeout run is a distinct terminal state, handled
+    // below/elsewhere) whose tail carries the reject. Base status stays "failed" —
+    // no new status union member, downstream consumers switch on the existing set.
+    if (fm.status === "failed" && detectPromptTooLong(res.tail ?? "")) {
+      writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm, failure_class: "prompt-too-long" }, null, 2));
+      console.error("spawn-glm: run FAILED — classified prompt-too-long (the model rejected the request as too large). run.log holds the raw API error tail. NOTE: a quota-side reject can masquerade as this — cross-check the preflight usage line above.");
+    }
     if (deps.capGuard && res.capped) {
       // Cap-guard post-processing is BEST-EFFORT armor around an already-honest
       // terminal state: the capped meta above is the base layer. A throw below
@@ -251,6 +323,20 @@ async function main(): Promise<void> {
   const warn = formatUsageWarn(preflightUsage, parseWarnPct(process.env.GLM_USAGE_WARN_PCT));
   if (warn) console.error(warn);
 
+  // Per-model window preflight (HIMMEL-740): refuse a brief that cannot fit the
+  // resolved GLM window BEFORE any side effect (before the worktree exists), so a
+  // refusal leaves NO orphan worktree/branch/meta. sessionDir is computed here
+  // (no mkdir yet — the real mkdir stays below) because composeWorkerPrompt needs
+  // it to mint the outbox/context paths; the same sessionDir feeds both the brief
+  // composition and the later mkdir. Window derives from the same context
+  // resolution main() already applied (context ?? "big"), via glmContextPreset.
+  const sessionDir = join(glmSessionRoot(), `glm-${plan.slug}-${Date.now()}`);
+  const briefText = composeWorkerPrompt(task, sessionDir, plan.branch);
+  const { window: windowTokens } = glmContextPreset(context ?? "big");
+  const overheadChars = measureOverheadChars(absCwd, homedir());
+  const pre = preflightWindowCheck({ briefChars: briefText.length, overheadChars, windowTokens });
+  if (!pre.ok) { console.error(pre.reason); process.exit(2); }
+
   const g = (args: string[]) => { const r = Bun.spawnSync(["git", "-C", absCwd, ...args], { stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.toString()}`); };
   g(["worktree", "add", plan.worktree, "-b", plan.branch]);
   poisonPushUrl(absCwd, plan.worktree);
@@ -258,7 +344,6 @@ async function main(): Promise<void> {
   const guard = checkGlmGuards(plan.worktree);
   if (!guard.ok) { console.error(guard.reason); process.exit(3); }
 
-  const sessionDir = join(glmSessionRoot(), `glm-${plan.slug}-${Date.now()}`);
   mkdirSync(sessionDir, { recursive: true });
   // GLM_SESSION_DIR (spec D5): the deny hook (running inside the worker child)
   // reads ${GLM_SESSION_DIR}/grants.jsonl. sessionEnv('glm') spreads process.env
@@ -299,7 +384,13 @@ async function main(): Promise<void> {
   const runningMeta = { status: "running", pid: 0, started_at, lane: "glm", task_name: plan.slug };
   writeFileSync(metaPath, JSON.stringify(runningMeta, null, 2));
 
-  const prompt = composeWorkerPrompt(task, sessionDir, plan.branch);
+  // HIMMEL-740: write the composed brief to <sessionDir>/brief.md and submit a
+  // SHORT pointer prompt (not the inlined brief) — the fix for the submit-reject
+  // deaths. brief.md lives under glm-sessions/ (outside the repo worktree), the
+  // proven-accessible path the worker already reads/writes outbox+context in.
+  const briefPath = join(sessionDir, "brief.md");
+  writeFileSync(briefPath, briefText);
+  const prompt = composePointerPrompt(briefPath);
   if (timeoutMins !== undefined) process.env.RUN_TIMEOUT_MS = String(timeoutMins * 60 * 1000);
 
   const capGuard: CapGuardDeps = {

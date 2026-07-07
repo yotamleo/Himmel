@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildGlmEnv, findSettingsConflicts, formatConflict, GLM_MODEL_ALIAS, pickFiveHourLimit, fetchGlmUsage } from "./glm-env";
+import { buildGlmEnv, findSettingsConflicts, formatConflict, GLM_MODEL_ALIAS, pickFiveHourLimit, fetchGlmUsage, glmContextPreset } from "./glm-env";
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "glmenv-")); delete process.env.ZAI_API_KEY; });
@@ -20,6 +20,13 @@ test("env block from process.env key", () => {
   expect(e.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("glm-5.2[1m]");
   expect(e.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("1000000");
   expect(Object.keys(e)).not.toContain("CLAUDE_CONFIG_DIR");
+});
+
+test("glmContextPreset exposes the per-context model+window as a NUMBER (HIMMEL-740)", () => {
+  // window as a NUMBER: spawn-glm's window preflight reads this; buildGlmEnv
+  // stringifies it into CLAUDE_CODE_AUTO_COMPACT_WINDOW (asserted string above).
+  expect(glmContextPreset("big")).toEqual({ model: "glm-5.2[1m]", window: 1000000 });
+  expect(glmContextPreset("small")).toEqual({ model: "glm-5.2", window: 200000 });
 });
 
 test("buildGlmEnv context=small → glm-5.2 + 200000 window (HIMMEL-718)", () => {

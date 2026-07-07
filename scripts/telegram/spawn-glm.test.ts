@@ -1,10 +1,15 @@
 // scripts/telegram/spawn-glm.test.ts
 import { expect, test, beforeEach } from "bun:test";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import {
   composeWorkerPrompt,
+  composePointerPrompt,
+  measureOverheadChars,
+  SKILLS_SYSTEM_OVERHEAD_CHARS,
+  preflightWindowCheck,
+  detectPromptTooLong,
   transcriptDirFor,
   glmSessionRoot,
   poisonPushUrl,
@@ -39,6 +44,82 @@ test("worker prompt embeds minted session paths + contract", () => {
   expect(p).toMatch(/never push/i);
   expect(p).toMatch(/never open a PR/i);
   expect(p).toContain("Summarize X");
+});
+
+// --- HIMMEL-740: pointer-prompt dispatch + window preflight ---
+
+test("composePointerPrompt is SHORT and points at the brief file, not the inlined brief (HIMMEL-740)", () => {
+  const p = composePointerPrompt("/sess/glm-a-1/brief.md");
+  expect(p).toContain("/sess/glm-a-1/brief.md");
+  expect(p).toMatch(/GLM-lane worker/i);
+  expect(p).toMatch(/execute/i);
+  expect(p.split("\n").length).toBeLessThanOrEqual(3);   // 2-3 lines max
+  // materially shorter than the full brief it replaces (that's the whole point)
+  expect(p.length).toBeLessThan(composeWorkerPrompt("do the thing", "/sess/glm-a-1", "glm/a").length);
+});
+
+test("preflightWindowCheck: under budget passes, boundary passes, one char over refuses (HIMMEL-740)", () => {
+  // small window: 200000 tokens → 90% budget = floor(180000) tokens = 720000 chars
+  expect(preflightWindowCheck({ briefChars: 1000, overheadChars: 1000, windowTokens: 1_000_000 }).ok).toBe(true);
+  // exactly at budget: est ceil(720000/4)=180000 == budget 180000 → refuse only when est > budget
+  expect(preflightWindowCheck({ briefChars: 720_000, overheadChars: 0, windowTokens: 200_000 }).ok).toBe(true);
+  // one token over the boundary → refuse, reason names the numbers + the remedy
+  const over = preflightWindowCheck({ briefChars: 720_000, overheadChars: 4, windowTokens: 200_000 });
+  expect(over.ok).toBe(false);
+  if (!over.ok) {
+    expect(over.reason).toMatch(/too large/i);
+    expect(over.reason).toContain("180001");        // est tokens
+    expect(over.reason).toContain("200000");        // the window
+    expect(over.reason).toMatch(/chunk|--context big/i);   // the remedy
+  }
+});
+
+test("measureOverheadChars: fail-open on missing bootstrap files → just the constant (HIMMEL-740)", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ovh-cwd-"));
+  const home = mkdtempSync(join(tmpdir(), "ovh-home-"));   // empty: no CLAUDE.md, no memory index
+  try {
+    expect(measureOverheadChars(cwd, home)).toBe(SKILLS_SYSTEM_OVERHEAD_CHARS);
+  } finally { rmSync(cwd, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); }
+});
+
+test("measureOverheadChars: sums the bootstrap files it can see on top of the constant (HIMMEL-740)", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ovh-cwd-"));
+  const home = mkdtempSync(join(tmpdir(), "ovh-home-"));
+  try {
+    writeFileSync(join(cwd, "CLAUDE.md"), "A".repeat(100));
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "CLAUDE.md"), "B".repeat(50));
+    // project memory index at ~/.claude/projects/<escaped-cwd>/memory/MEMORY.md
+    const memDir = join(home, ".claude", "projects", resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-"), "memory");
+    mkdirSync(memDir, { recursive: true });
+    writeFileSync(join(memDir, "MEMORY.md"), "C".repeat(25));
+    expect(measureOverheadChars(cwd, home)).toBe(SKILLS_SYSTEM_OVERHEAD_CHARS + 175);
+  } finally { rmSync(cwd, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); }
+});
+
+test("detectPromptTooLong matches the submit-reject (case-insensitive), not other errors (HIMMEL-740)", () => {
+  expect(detectPromptTooLong("API Error: Prompt is too long")).toBe(true);
+  expect(detectPromptTooLong("prompt is too long: 250000 tokens > 200000 maximum")).toBe(true);
+  expect(detectPromptTooLong("usage limit reached")).toBe(false);
+  expect(detectPromptTooLong("")).toBe(false);
+});
+
+test("main() writes the composeWorkerPrompt brief to brief.md and submits a POINTER prompt (wiring pin, HIMMEL-740)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  // the FULL brief = composeWorkerPrompt output, written to brief.md
+  expect(/const briefText = composeWorkerPrompt\(/.test(src)).toBe(true);
+  expect(/writeFileSync\(briefPath, briefText\)/.test(src)).toBe(true);
+  // the SUBMITTED prompt is the pointer, NOT the inlined brief
+  expect(/const prompt = composePointerPrompt\(briefPath\)/.test(src)).toBe(true);
+});
+
+test("window preflight runs BEFORE git worktree add — a refusal leaves no orphan (wiring pin, HIMMEL-740)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  const preIdx = src.indexOf("preflightWindowCheck({");
+  const wtIdx = src.indexOf('"worktree", "add"');
+  expect(preIdx).toBeGreaterThan(-1);
+  expect(wtIdx).toBeGreaterThan(-1);
+  expect(preIdx).toBeLessThan(wtIdx);
 });
 
 test("transcript dir derives from escaped cwd, not slug", () => {
@@ -211,6 +292,31 @@ test("executeRun: a capped result writes status:capped (F4 wiring)", async () =>
     const meta = JSON.parse(readFileSync(metaPath, "utf8"));
     expect(meta.status).toBe("capped");
     expect(meta.pid).toBe(99);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun: a failed run whose tail says 'prompt is too long' gets failure_class:prompt-too-long (HIMMEL-740)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    const ptl = (async () => ({ code: 1, capped: false, blocked: false, timedOut: false, pid: 5, tail: "API Error: prompt is too long: 250000 tokens > 200000 maximum" })) as any;
+    const { code } = await executeRun({ runSession: ptl, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta });
+    expect(code).toBe(1);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("failed");                    // base status unchanged (no new union member)
+    expect(meta.failure_class).toBe("prompt-too-long");
+    // the raw tail is preserved for cross-checking a quota-side masquerade
+    expect(readFileSync(join(dir, "run.log"), "utf8")).toContain("prompt is too long");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun: a plain failed run (no prompt-too-long tail) has NO failure_class (HIMMEL-740)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    const fail = (async () => ({ code: 1, capped: false, blocked: false, timedOut: false, pid: 5, tail: "some other error" })) as any;
+    await executeRun({ runSession: fail, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta });
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("failed");
+    expect(meta.failure_class).toBeUndefined();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
