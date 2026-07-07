@@ -24,10 +24,11 @@ grafts the GLM lane onto that path via a standalone CLI
   |---|---|
   | `ANTHROPIC_BASE_URL` | `https://api.z.ai/api/anthropic` |
   | `ANTHROPIC_AUTH_TOKEN` | `<ZAI_API_KEY>` |
-  | `ANTHROPIC_MODEL` | `glm-5.2` |
+  | `ANTHROPIC_MODEL` | `glm-5.2[1m]` |
   | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `glm-4.7` |
-  | `ANTHROPIC_DEFAULT_SONNET_MODEL` | `glm-5.2` |
-  | `ANTHROPIC_DEFAULT_OPUS_MODEL` | `glm-5.2` |
+  | `ANTHROPIC_DEFAULT_SONNET_MODEL` | `glm-5.2[1m]` |
+  | `ANTHROPIC_DEFAULT_OPUS_MODEL` | `glm-5.2[1m]` |
+  | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `1000000` |
 
   Divergence from the launcher: `CLAUDE_CONFIG_DIR` is **not** set — the worker
   keeps the operator's `~/.claude` so himmel hooks (`auto-approve-safe-bash`,
@@ -49,8 +50,19 @@ grafts the GLM lane onto that path via a standalone CLI
   session-shaping keys; the interactive `claude-glm` launchers deliberately do
   NOT mirror this.
 - **The GLM model pin ignores `TELEGRAM_CLAUDE_MODEL`.** GLM runs always pass
-  `--model opus`, which maps through `ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2` —
+  `--model opus`, which maps through `ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]` —
   a poller-pinned raw Anthropic model id must never leak to the Z.ai endpoint.
+- **1M context + configurable window (HIMMEL-718).** The lane defaults to the
+  `[1m]` 1M-context GLM variant and sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000`
+  so Claude Code stops auto-compacting/rejecting at the ~200k default (the
+  documented "prompt too long" deaths). `spawn-glm --context big|small` (default
+  `big`) picks the preset per dispatch: big = `glm-5.2[1m]` + 1M; small = `glm-5.2`
+  + 200k. The interactive `claude-glm{,.ps1}` / `claude-routed{,.ps1}` launchers
+  expose the same pair as raw env knobs (`GLM_MODEL` / `GLM_CONTEXT_WINDOW`,
+  `ROUTED_MODEL` / `ROUTED_CONTEXT_WINDOW`) — override both together; HAIKU stays
+  `glm-4.7` (1M is main-only). The routed pilot is GLM-only loopback so `[1m]`
+  passes through; if a future deployment routes to a non-GLM backend, override
+  both knobs to match that backend's real window.
 - **The "per-token blocked" decision applies to the ROUTER only, not this lane.**
   That decision gates the WS2 OmniRoute router (a proxy may not terminate the
   Coding-Plan key per Z.ai ToS). Direct claude-CLI use of the Coding-Plan key —
@@ -82,7 +94,7 @@ grafts the GLM lane onto that path via a standalone CLI
 ## CLI synopsis + three-line output contract
 
 ```
-bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode <mode>]
+bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode <mode>] [--context big|small]
 ```
 
 - `--cwd <dir>` — worktree parent; **must be a himmel checkout** (v1 scope:

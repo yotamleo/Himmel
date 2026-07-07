@@ -26,8 +26,12 @@
 $ErrorActionPreference = 'Stop'
 
 $GlmBaseUrl = 'https://api.z.ai/api/anthropic'
-$GlmModel   = 'glm-5.2'
-$GlmHaiku   = 'glm-4.7'
+# [1m] = Z.ai 1M-context variant; $GlmContextWindow feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW
+# (env block below) so Claude Code stops auto-compacting at ~200k. Both overridable per
+# task (small: $env:GLM_MODEL='glm-5.2' + $env:GLM_CONTEXT_WINDOW='200000'). HAIKU stays 4.7.
+$GlmModel         = if ($env:GLM_MODEL) { $env:GLM_MODEL } else { 'glm-5.2[1m]' }
+$GlmHaiku         = 'glm-4.7'
+$GlmContextWindow = if ($env:GLM_CONTEXT_WINDOW) { $env:GLM_CONTEXT_WINDOW } else { '1000000' }
 
 # HOME equivalent: bash uses $HOME; here $env:USERPROFILE so hermetic tests can
 # override the home root per-invocation (PowerShell's $HOME is fixed at startup).
@@ -203,6 +207,23 @@ function Copy-SeedConfig {
     if (Test-Path -LiteralPath $mdst) { Remove-Item -LiteralPath $mdst -Recurse -Force }
     Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force
   }
+  # claude-hud DISPLAY config — seed the single config.json only; the cache dirs
+  # under plugins/claude-hud/ are runtime state, never seeded. Source-absent → skip.
+  # try/catch → exit 4 on failure: parity with the bash twin's seed_fail and the
+  # routed PS twin's function-level wrap (the header contract is "4 = failed seed";
+  # without this a Copy-Item failure under ErrorActionPreference=Stop surfaces as a
+  # raw exit 1). The .seeded sentinel is still written LAST, so any throw here
+  # aborts with no sentinel and the next launch re-seeds.
+  $hudCfg = Join-Path $src (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
+  try {
+    if (Test-Path -LiteralPath $hudCfg) {
+      New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir (Join-Path 'plugins' 'claude-hud')) | Out-Null
+      Copy-Item -LiteralPath $hudCfg -Destination (Join-Path $ConfigDir (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))) -Force
+    }
+  } catch {
+    [Console]::Error.WriteLine("claude-glm: FAILED to seed claude-hud config ($($_.Exception.Message)). Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-glm).")
+    exit 4
+  }
   # sentinel LAST: only a fully-populated seed reads as "seeded"
   New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
 }
@@ -228,6 +249,7 @@ $env:ANTHROPIC_MODEL              = $GlmModel
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $GlmHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $GlmModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $GlmModel
+$env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $GlmContextWindow
 $env:CLAUDE_CONFIG_DIR            = $ConfigDir
 
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {

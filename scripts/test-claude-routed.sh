@@ -29,6 +29,8 @@ setup() { # fresh sandbox: fake HOME with minimal ~/.claude, mock claude in BIN
   printf '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","HIMMEL_INITIATIVE":"1"}}' \
     > "$FAKEHOME/.claude/settings.json"
   printf 'secret' > "$FAKEHOME/.claude/.credentials.json"
+  mkdir -p "$FAKEHOME/.claude/plugins/claude-hud"
+  printf '{"hud":true}\n' > "$FAKEHOME/.claude/plugins/claude-hud/config.json"
   cat > "$BIN/claude" <<'MOCK'
 #!/usr/bin/env bash
 # Launch dumps env AND records the full passthrough argv to a separate sink (T13
@@ -51,7 +53,7 @@ setup; KEY=""
 t "missing key exits 2" 2
 [ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: claude launched without key"; FAILS=$((FAILS+1)); }
 
-# --- T2: key set -> exit 0 and all seven env vars reach the child.
+# --- T2: key set -> exit 0 and all eight env vars reach the child.
 # Backend block differs from claude-glm: loopback router base URL (default port
 # 20128) + auth from OMNIROUTE_API_KEY + config dir ~/.claude-routed. Tier aliases
 # stay the GLM values (the router config defines these aliases).
@@ -60,10 +62,11 @@ t "launch with key" 0
 for pair in \
   "ANTHROPIC_BASE_URL=http://127.0.0.1:20128" \
   "ANTHROPIC_AUTH_TOKEN=omni-test-123" \
-  "ANTHROPIC_MODEL=glm-5.2" \
+  "ANTHROPIC_MODEL=glm-5.2[1m]" \
   "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.7" \
-  "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2" \
-  "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2" \
+  "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2[1m]" \
+  "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]" \
+  "CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000" \
   "CLAUDE_CONFIG_DIR=$FAKEHOME/.claude-routed"; do
   grep -qF "$pair" "$WORK/child-env.txt" || { echo "FAIL: child env missing $pair"; FAILS=$((FAILS+1)); }
 done
@@ -93,6 +96,7 @@ mkdir -p "$FAKEHOME/.claude/commands" "$FAKEHOME/.claude/plugins/marketplaces"
 printf 'x' > "$FAKEHOME/.claude/CLAUDE.md"
 printf '{}' > "$FAKEHOME/.claude/plugins/installed_plugins.json"
 t "seed on first launch" 0
+[ -f "$FAKEHOME/.claude-routed/plugins/claude-hud/config.json" ] || { echo "FAIL: claude-hud config not seeded"; FAILS=$((FAILS+1)); }
 [ -f "$FAKEHOME/.claude-routed/CLAUDE.md" ] || { echo "FAIL: CLAUDE.md not seeded"; FAILS=$((FAILS+1)); }
 [ -f "$FAKEHOME/.claude-routed/plugins/installed_plugins.json" ] || { echo "FAIL: plugin registry not seeded"; FAILS=$((FAILS+1)); }
 [ ! -f "$FAKEHOME/.claude-routed/.credentials.json" ] || { echo "FAIL: credentials copied"; FAILS=$((FAILS+1)); }

@@ -43,6 +43,8 @@ function New-Sandbox {
   '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","HIMMEL_INITIATIVE":"1"}}' |
     Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json') -NoNewline
   'secret' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\.credentials.json') -NoNewline
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\plugins\claude-hud') | Out-Null
+  '{"hud":true}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\plugins\claude-hud\config.json') -NoNewline
   # Mock claude: a launch invocation dumps env AND records its full passthrough
   # argv to a SEPARATE sink (T13 asserts the claude short flags arrived verbatim).
   # A magic --mock-exit-7 arg makes the mock exit 7 so T14 can prove the launcher
@@ -97,7 +99,7 @@ try {
   Assert-Exit (Invoke-Launcher) 2 'missing key exits 2'
   if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched without key' } else { Pass 'claude not launched without key' }
 
-  # --- T2: key set -> exit 0 and all seven env vars reach the child.
+  # --- T2: key set -> exit 0 and all eight env vars reach the child.
   # Backend block differs from claude-glm: loopback router base URL (default port
   # 20128) + auth from OMNIROUTE_API_KEY + config dir ~/.claude-routed. Tier aliases
   # stay the GLM values (the router config defines these aliases). ---
@@ -106,10 +108,11 @@ try {
   foreach ($pair in @(
       'ANTHROPIC_BASE_URL=http://127.0.0.1:20128',
       'ANTHROPIC_AUTH_TOKEN=omni-test-123',
-      'ANTHROPIC_MODEL=glm-5.2',
+      'ANTHROPIC_MODEL=glm-5.2[1m]',
       'ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.7',
-      'ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2',
-      'ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2[1m]',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]',
+      'CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000',
       ('CLAUDE_CONFIG_DIR=' + (Join-Path $FAKEHOME '.claude-routed')))) {
     if (FileHas $ChildEnv $pair) { Pass "child env has $pair" } else { Fail "child env missing $pair" }
   }
@@ -138,6 +141,7 @@ try {
   'x'  | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\CLAUDE.md') -NoNewline
   '{}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\plugins\installed_plugins.json') -NoNewline
   Assert-Exit (Invoke-Launcher) 0 'seed on first launch'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\claude-hud\config.json')) { Pass 'claude-hud config seeded' } else { Fail 'claude-hud config not seeded' }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\CLAUDE.md')) { Pass 'CLAUDE.md seeded' } else { Fail 'CLAUDE.md not seeded' }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\installed_plugins.json')) { Pass 'plugin registry seeded' } else { Fail 'plugin registry not seeded' }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.credentials.json')) { Fail 'credentials copied' } else { Pass 'credentials not copied' }

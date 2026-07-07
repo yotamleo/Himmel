@@ -55,7 +55,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 
 # The EXACT seeded set the launcher's Copy-SeedConfig mirrors. Keep in sync with
 # scripts/claude-glm + scripts/claude-glm.ps1. settings.json is NOT here.
-$SeedFiles = 'CLAUDE.md', 'RTK.md', 'plugins/installed_plugins.json', 'plugins/known_marketplaces.json'
+$SeedFiles = 'CLAUDE.md', 'RTK.md', 'plugins/installed_plugins.json', 'plugins/known_marketplaces.json', 'plugins/claude-hud/config.json'
 $SeedDirs  = 'commands', 'skills', 'hooks', 'agents', 'plugins/marketplaces'
 
 # Unseeded = the launcher would re-seed on next run: dir absent OR no .seeded

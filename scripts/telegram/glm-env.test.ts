@@ -14,11 +14,29 @@ test("env block from process.env key", () => {
   const e = buildGlmEnv(root);
   expect(e.ANTHROPIC_BASE_URL).toBe("https://api.z.ai/api/anthropic");
   expect(e.ANTHROPIC_AUTH_TOKEN).toBe("k-123");
-  expect(e.ANTHROPIC_MODEL).toBe("glm-5.2");
+  expect(e.ANTHROPIC_MODEL).toBe("glm-5.2[1m]");
   expect(e.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("glm-4.7");
+  expect(e.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.2[1m]");
+  expect(e.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("glm-5.2[1m]");
+  expect(e.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("1000000");
+  expect(Object.keys(e)).not.toContain("CLAUDE_CONFIG_DIR");
+});
+
+test("buildGlmEnv context=small → glm-5.2 + 200000 window (HIMMEL-718)", () => {
+  process.env.ZAI_API_KEY = "k-123";
+  const e = buildGlmEnv(root, "small");
+  expect(e.ANTHROPIC_MODEL).toBe("glm-5.2");
   expect(e.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.2");
   expect(e.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("glm-5.2");
-  expect(Object.keys(e)).not.toContain("CLAUDE_CONFIG_DIR");
+  expect(e.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("glm-4.7");
+  expect(e.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("200000");
+});
+
+test("buildGlmEnv context=big (explicit) → glm-5.2[1m] + 1000000 window (HIMMEL-718)", () => {
+  process.env.ZAI_API_KEY = "k-123";
+  const e = buildGlmEnv(root, "big");
+  expect(e.ANTHROPIC_MODEL).toBe("glm-5.2[1m]");
+  expect(e.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("1000000");
 });
 
 test("key from repo .env, surrounding quotes stripped", () => {
