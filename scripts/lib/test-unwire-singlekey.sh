@@ -25,11 +25,32 @@ s="$td/sl1b.json"
 printf '%s' '{"statusLine":{"type":"command","command":"bash \"C:/h/scripts/where-are-we/statusline.sh\""},"env":{"X":"1"}}' > "$s"
 bash "$sl" "$s" >/dev/null
 check "wrapper statusLine removed" "$(jq -r 'has("statusLine")' "$s")" "false"
-# 2. a NON-himmel custom statusLine is left untouched.
+# 1c. removes the NEW hud renderer command too (marketplace/.../claude-hud/dist/index.js;
+#     HIMMEL-718) -- single-arg = REMOVE, so uninstall clears a hud-wired statusLine.
+s="$td/sl1c.json"
+printf '%s' '{"statusLine":{"type":"command","command":"node \"C:/h/marketplace/plugins/claude-hud/dist/index.js\""},"env":{"CLAUDE_HUD_ALLOW_EXTRA_CMD":"1"}}' > "$s"
+bash "$sl" "$s" >/dev/null
+check "hud statusLine removed" "$(jq -r 'has("statusLine")' "$s")" "false"
+# 1d. WITH a himmel path -> REPOINT to the bash-bar fallback (HIMMEL-718 migration
+#     rollback); the extra-cmd gate is deliberately left in place.
+s="$td/sl1d.json"
+printf '%s' '{"statusLine":{"type":"command","command":"node \"C:/h/marketplace/plugins/claude-hud/dist/index.js\""},"env":{"CLAUDE_HUD_ALLOW_EXTRA_CMD":"1"}}' > "$s"
+bash "$sl" "$s" "C:/h" >/dev/null
+check "repointed to bash bar" "$(jq -r '.statusLine.command' "$s")" 'bash "C:/h/scripts/where-are-we/statusline.sh"'
+check "repoint keeps type"    "$(jq -r '.statusLine.type' "$s")" "command"
+check "repoint keeps gate"    "$(jq -r '.env.CLAUDE_HUD_ALLOW_EXTRA_CMD' "$s")" "1"
+# 1e. backslash himmel path normalized on repoint.
+s="$td/sl1e.json"
+printf '%s' '{"statusLine":{"type":"command","command":"node \"C:/h/marketplace/plugins/claude-hud/dist/index.js\""}}' > "$s"
+bash "$sl" "$s" 'C:\h' >/dev/null
+check "repoint backslash normalized" "$(jq -r '.statusLine.command' "$s")" 'bash "C:/h/scripts/where-are-we/statusline.sh"'
+# 2. a NON-himmel custom statusLine is left untouched (both remove and repoint modes).
 s="$td/sl2.json"
 printf '%s' '{"statusLine":{"type":"command","command":"bash /opt/my-own-statusline.sh"}}' > "$s"
 bash "$sl" "$s" >/dev/null
 check "custom statusLine preserved" "$(jq -r '.statusLine.command' "$s")" "bash /opt/my-own-statusline.sh"
+bash "$sl" "$s" "C:/h" >/dev/null
+check "custom statusLine preserved (repoint mode)" "$(jq -r '.statusLine.command' "$s")" "bash /opt/my-own-statusline.sh"
 
 # ── unwire-himmel-repo ──────────────────────────────────────────────────────
 # 3. removes HIMMEL_REPO, preserves sibling env keys.

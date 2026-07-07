@@ -26,11 +26,27 @@ Remove-Statusline -SettingsPath $s | Out-Null
 Check 'statusLine removed'      (JqVal $s 'has("statusLine")') 'false'
 Check 'statusLine sibling kept' (JqVal $s '.env.X') '1'
 
-# 2. non-himmel statusLine left untouched.
+# 1c. removes the NEW hud renderer command too (HIMMEL-718) -- single-arg = REMOVE.
+$s = Join-Path $td 'sl1c.json'
+'{"statusLine":{"type":"command","command":"node \"C:/h/marketplace/plugins/claude-hud/dist/index.js\""},"env":{"CLAUDE_HUD_ALLOW_EXTRA_CMD":"1"}}' | Set-Content $s -Encoding utf8
+Remove-Statusline -SettingsPath $s | Out-Null
+Check 'hud statusLine removed' (JqVal $s 'has("statusLine")') 'false'
+
+# 1d. WITH -HimmelPath -> REPOINT to the bash-bar fallback (HIMMEL-718 rollback);
+#     the extra-cmd gate is left in place.
+$s = Join-Path $td 'sl1d.json'
+'{"statusLine":{"type":"command","command":"node \"C:/h/marketplace/plugins/claude-hud/dist/index.js\""},"env":{"CLAUDE_HUD_ALLOW_EXTRA_CMD":"1"}}' | Set-Content $s -Encoding utf8
+Remove-Statusline -SettingsPath $s -HimmelPath 'C:/h' | Out-Null
+Check 'repointed to bash bar' (JqVal $s '.statusLine.command') 'bash "C:/h/scripts/where-are-we/statusline.sh"'
+Check 'repoint keeps gate'    (JqVal $s '.env.CLAUDE_HUD_ALLOW_EXTRA_CMD') '1'
+
+# 2. non-himmel statusLine left untouched (both remove and repoint modes).
 $s = Join-Path $td 'sl2.json'
 '{"statusLine":{"type":"command","command":"bash /opt/my-own-statusline.sh"}}' | Set-Content $s -Encoding utf8
 Remove-Statusline -SettingsPath $s | Out-Null
 Check 'custom statusLine preserved' (JqVal $s '.statusLine.command') 'bash /opt/my-own-statusline.sh'
+Remove-Statusline -SettingsPath $s -HimmelPath 'C:/h' | Out-Null
+Check 'custom statusLine preserved (repoint mode)' (JqVal $s '.statusLine.command') 'bash /opt/my-own-statusline.sh'
 
 # 3. himmel-repo: removes key, preserves siblings.
 $s = Join-Path $td 'hr1.json'
