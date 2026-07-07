@@ -149,3 +149,34 @@ with separate filesystem/process/session artifacts and separate guard wiring.
   Telegram bounded-run launcher because that is the concrete external Claude
   worker path read for this task. If there is another non-Telegram Claude worker
   dispatcher, add it as a separate row with its own artifact and authority proof.
+
+## Approval-window / permission contract (HIMMEL-748 — ratified 2026-07-07)
+
+Operator-ratified decision: **no hermes-native auto-classifier.** Only Claude
+Code carries a native semantic classifier; the fleet does not re-implement a
+weaker copy. The lane contract is deterministic-guard + escalation + post-hoc
+validation:
+
+1. **hermes (native subagent AND one-shot):** `parity_guard.py`
+   (`pre_tool_call`, deny-JSON, fail-closed) is the ONLY decision layer;
+   `approvals.mode` never substitutes for it. A parity_guard denial is final
+   for the worker — the worker escalates via its report channel and continues.
+   `delegation.subagent_auto_approve` stays `false`.
+2. **hermes-spawned Claude Code / GLM workers:** the worker inherits the
+   CLAUDE-side decision stack (hooks + settings allow-list + classifier where
+   the lane has one). hermes MUST NOT proxy or re-answer the worker's
+   permission prompts. Bounded workers run stdin-closed: an un-allowlisted
+   prompt is a deterministic denial, surfaced as an outbox escalation line
+   (`{"type":"escalation",...}`, the HIMMEL-314/682 grants contract), never a
+   stall.
+3. **Approval-window UX term:** a hermes approval window for a SPAWN shows the
+   lane, branch, and toolset/grant list — the policy surface — not raw command
+   text. Approving a spawn approves its declared grant envelope, nothing more.
+4. **Post-hoc validation stays load-bearing:** the parent session reviews the
+   branch diff + outbox/artifacts before any push/PR (single-writer ship flow).
+
+Evidence note (codex-direct, HIMMEL-745 probe 2026-07-07): the deterministic
+hook path denied a patch-tool write on a main checkout, while a terminal-path
+write (`pwsh Set-Content`) went through — the fix for such gaps is structural
+(extend the hook matcher to the terminal tool), not a classifier copy, which
+is exactly the posture this contract locks in.
