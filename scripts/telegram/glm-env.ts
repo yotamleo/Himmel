@@ -56,20 +56,26 @@ export function readZaiKey(repoRoot: string): { key?: string; tried: string[] } 
   return { tried };
 }
 
+// Context presets (HIMMEL-718): the per-context model + window. big = the [1m]
+// 1M-context variant + a 1M auto-compact window; small = glm-5.2 + 200k.
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW stops Claude Code auto-compacting at ~200k —
+// the documented "prompt too long" deaths on this lane. Exported (window as a
+// NUMBER) so spawn-glm's window preflight (HIMMEL-740) reads the SAME source of
+// truth buildGlmEnv stringifies into the env var — no second copy of the numbers.
+export function glmContextPreset(ctx: "big" | "small"): { model: string; window: number } {
+  return ctx === "small" ? { model: "glm-5.2", window: 200000 } : { model: "glm-5.2[1m]", window: 1000000 };
+}
+
 export function buildGlmEnv(repoRoot: string, context?: "big" | "small"): Record<string, string> {
   const { key, tried } = readZaiKey(repoRoot);
   if (!key) throw new Error(`glm-env: ZAI_API_KEY not set and not found in any of: ${tried.join(", ")}`);
-  // Context presets (HIMMEL-718): spawn-glm --context big|small sets GLM_CONTEXT,
-  // which the runSession env path reads (an explicit `context` arg beats the env, so
-  // direct callers + tests are deterministic). big = the [1m] 1M-context variant + a
-  // 1M auto-compact window; small = glm-5.2 + 200k. CLAUDE_CODE_AUTO_COMPACT_WINDOW
-  // stops Claude Code auto-compacting at ~200k — the documented "prompt too long"
-  // deaths on this lane. HAIKU stays glm-4.7 (1M is main-only). Mirrors the
+  // spawn-glm --context big|small sets GLM_CONTEXT, which the runSession env path
+  // reads (an explicit `context` arg beats the env, so direct callers + tests are
+  // deterministic). HAIKU stays glm-4.7 (1M is main-only). Mirrors the
   // claude-glm{,.ps1} GLM_MODEL/GLM_CONTEXT_WINDOW knobs (those are the raw
   // operator-facing knobs on the interactive launchers; this is the orchestrator preset).
-  const presets = { big: { model: "glm-5.2[1m]", window: "1000000" }, small: { model: "glm-5.2", window: "200000" } } as const;
   const ctx = context ?? (process.env.GLM_CONTEXT === "small" ? "small" : "big");
-  const { model, window } = presets[ctx];
+  const { model, window } = glmContextPreset(ctx);
   return {
     ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic",
     ANTHROPIC_AUTH_TOKEN: key,
@@ -77,7 +83,7 @@ export function buildGlmEnv(repoRoot: string, context?: "big" | "small"): Record
     ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.7",
     ANTHROPIC_DEFAULT_SONNET_MODEL: model,
     ANTHROPIC_DEFAULT_OPUS_MODEL: model,
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW: window,
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window),
     // Worker context diet (HIMMEL-654): force-disable the env-gated
     // session-shaping injections. Two prompt-too-long deaths showed every
     // injected block costs context the GLM lane cannot spare, and none is
