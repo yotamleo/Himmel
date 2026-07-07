@@ -55,6 +55,10 @@ $HimmelRoot  = (Resolve-Path (Join-Path $ScriptDir '..')).Path
 # unambiguous and strict-mode-safe.
 $script:ClaudeAvailable = $true
 
+# Same pattern for `bun` (HIMMEL-752 G2): Require-Tools flips this to $false when
+# `bun` is absent; Wire-QmdCore consults it to skip qmd cleanly.
+$script:BunAvailable = $true
+
 # Shared wire helpers (PreToolUse trio + SessionStart) -- one implementation for
 # adopt.ps1 and setup.ps1 (HIMMEL install/uninstall symmetry).
 . (Join-Path $ScriptDir 'lib/wire-pretooluse-hooks.ps1')
@@ -89,6 +93,13 @@ function Require-Tools {
     if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
         $script:ClaudeAvailable = $false
         Write-Warning "'claude' not found — installing the harness-agnostic core only; skipping the Claude plugin-install step (Codex-only adopter is fine)."
+    }
+    # `bun` is SOFT (HIMMEL-752 G2): only the qmd wiring needs it; the
+    # harness-agnostic core + git gates run without it. Warn with the install
+    # hint; Wire-QmdCore consults $script:BunAvailable and skips qmd cleanly.
+    if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        $script:BunAvailable = $false
+        Write-Warning "'bun' not found — qmd search will be skipped; install: https://bun.sh (runs handover armed-resume, qmd search, the Telegram bridge, obsidian-triage tools)"
     }
 }
 
@@ -209,6 +220,176 @@ function FillEnv-Core {
     }
 }
 
+# --- qmd resolver + helpers (HIMMEL-752; mirror of scripts/lib/qmd-bin.sh) ---
+# pwsh cannot source bash, so the resolver + install/register/pull logic is
+# duplicated inline (parity with setup.ps1's qmd block). UPDATE qmd-bin.sh +
+# setup.ps1 + adopt.ps1 together; scripts/lib/test-qmd-bin.sh is the canonical
+# behavior spec. Honors $env:BUN_INSTALL for relocated bun roots.
+$QmdBunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
+$QmdBunJs = Join-Path $QmdBunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
+# G3 (HIMMEL-752): NO --ignore-scripts - it blocked better-sqlite3's native
+# build (prebuild-install || node-gyp rebuild --release) and crashed qmd on
+# platforms with no prebuilt binary (fresh macOS arm64 / new node major).
+$QmdInstallHint = 'bun add -g @tobilu/qmd@latest'
+
+function Invoke-Qmd {
+    param([Parameter(ValueFromRemainingArguments=$true)] [string[]] $QmdArgs)
+    if ((Test-Path $script:QmdBunJs) -and (Get-Command bun -ErrorAction SilentlyContinue)) {
+        & bun $script:QmdBunJs @QmdArgs
+    } elseif (Get-Command qmd -ErrorAction SilentlyContinue) {
+        & qmd @QmdArgs
+    } else {
+        $global:LASTEXITCODE = 127
+    }
+}
+
+function Test-Qmd {
+    if ((Test-Path $script:QmdBunJs) -and (Get-Command bun -ErrorAction SilentlyContinue)) {
+        return $true
+    }
+    return [bool](Get-Command qmd -ErrorAction SilentlyContinue)
+}
+
+# Mirror of qmd_install(): run the hint, verify --version, heal a missing
+# better-sqlite3 native build, return an honest int rc. All native output is
+# redirected away so the return value stays a clean int (Write-Host writes to
+# the host stream, not the pipeline).
+function Install-Qmd {
+    Write-Host "Installing qmd via bun..."
+    Invoke-Expression $script:QmdInstallHint *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  bun add failed (exit $LASTEXITCODE) - qmd not installed." -ForegroundColor Yellow
+        return $LASTEXITCODE
+    }
+    # Verify the binary runs - a broken better-sqlite3 native build dies here
+    # even though the package is present.
+    Invoke-Qmd --version *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  qmd installed and verified."
+        return 0
+    }
+    # Heal: rebuild better-sqlite3 in place, then re-verify (HIMMEL-752).
+    $bsqlite = Join-Path $script:QmdBunRoot 'install\global\node_modules\better-sqlite3'
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        # A missing npm would raise a terminating CommandNotFoundException under
+        # EAP='Stop' and abort adopt - check first, WARN, honest rc (CR fix).
+        Write-Host "  WARNING: npm not found - cannot rebuild better-sqlite3." -ForegroundColor Yellow
+        return 1
+    }
+    if (Test-Path $bsqlite) {
+        Write-Host "  qmd present but --version failed - rebuilding better-sqlite3 native module..."
+        Push-Location $bsqlite
+        try { npm run build-release *> $null } finally { Pop-Location }
+        if ($LASTEXITCODE -eq 0) {
+            Invoke-Qmd --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  qmd verified after native rebuild."
+                return 0
+            }
+            Write-Host "  WARNING: native rebuild ran but qmd --version still fails (exit $LASTEXITCODE)." -ForegroundColor Yellow
+        } else {
+            Write-Host "  WARNING: better-sqlite3 native build failed (need a compiler toolchain?)." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  WARNING: better-sqlite3 not found at $bsqlite - cannot heal." -ForegroundColor Yellow
+    }
+    return 1
+}
+
+# Mirror of qmd_register_collection(): idempotent + WARN-not-fail, returns an
+# honest int rc (0 on a clean add or an already-registered skip).
+function Register-QmdCollection([string]$Path, [string]$Name) {
+    $listOut = Invoke-Qmd collection list 2>&1
+    $listRc = $LASTEXITCODE
+    if ($listRc -ne 0) {
+        Write-Host "  WARNING: qmd collection list failed (rc=$listRc) - skipping '$Name' registration." -ForegroundColor Yellow
+        $listOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+        return $listRc
+    }
+    if ($listOut -match "^$Name\b") {
+        Write-Host "  Collection '$Name' already registered - skipping."
+        return 0
+    }
+    Invoke-Qmd collection add $Path --name $Name | Out-Null
+    $addRc = $LASTEXITCODE
+    if ($addRc -ne 0) {
+        Write-Host "  WARNING: qmd collection add '$Name' failed (rc=$addRc) - continuing." -ForegroundColor Yellow
+        if ($addRc -eq 127) {
+            Write-Host "  (rc=127 means the resolver could not find qmd - install: $script:QmdInstallHint)" -ForegroundColor Yellow
+        }
+        return $addRc
+    }
+    return 0
+}
+
+# Mirror of wire_qmd_core(): fix the broken plugin stub, install the qmd CLI if
+# missing, pull the embedding/rerank models, and register the himmel clone.
+# Best-effort throughout; never throws (qmd is optional - a failure WARNs).
+function Wire-QmdCore {
+    if ($script:BunAvailable -eq $false) {
+        Write-Host "---- Skipping qmd wiring (bun not found) ----"
+        Write-Host "  Install bun to enable qmd search: https://bun.sh"
+        return
+    }
+    Write-Host "---- Wiring qmd search ----"
+    # WARN-not-fail structural guarantee (CR fix): on PS configs where
+    # $PSNativeCommandUseErrorActionPreference=$true (documented 7.4+ default),
+    # a nonzero native exit under EAP='Stop' throws BEFORE the $LASTEXITCODE
+    # warn-checks below can run - a broken qmd/bun would then abort adopt.
+    # Disable that coupling for the qmd block only; restore in finally.
+    $savedNativeEAP = $null
+    if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+        $savedNativeEAP = $PSNativeCommandUseErrorActionPreference
+    }
+    $global:PSNativeCommandUseErrorActionPreference = $false
+    try {
+    Wire-QmdCoreInner
+    } finally {
+        if ($null -ne $savedNativeEAP) { $global:PSNativeCommandUseErrorActionPreference = $savedNativeEAP }
+    }
+}
+
+function Wire-QmdCoreInner {
+    # G1: neutralize the broken plugin-cache stub. WARN-not-fail.
+    if ($DryRun) {
+        Write-Host "DRY: bash $HimmelRoot/scripts/lib/fix-qmd-stub.sh"
+    } else {
+        $savedEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & bash "$HimmelRoot/scripts/lib/fix-qmd-stub.sh"
+            if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: fix-qmd-stub failed (rc=$LASTEXITCODE) - continuing." -ForegroundColor Yellow }
+        } finally {
+            $ErrorActionPreference = $savedEAP
+        }
+    }
+    # Install the qmd CLI if missing. Install-Qmd verifies + heals (HIMMEL-752 G3).
+    if ($DryRun) {
+        if (-not (Test-Qmd)) { Write-Host "DRY: Install-Qmd" }
+    } elseif (-not (Test-Qmd)) {
+        $installRc = Install-Qmd
+        if ($installRc -ne 0) { Write-Host "  WARNING: qmd install failed (rc=$installRc) - continuing without qmd." -ForegroundColor Yellow }
+    }
+    # G4: pull models (~2.1 GB). Size caveat FIRST so the operator can Ctrl-C
+    # before the download, then best-effort pull.
+    if ($DryRun) {
+        Write-Host "DRY: qmd pull (downloads ~2.1 GB of embedding/rerank models)"
+    } elseif (Test-Qmd) {
+        Write-Host "  Pulling qmd models (downloads ~2.1 GB of embedding/rerank models)..."
+        Invoke-Qmd pull
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  WARNING: qmd pull failed - semantic search needs the models." -ForegroundColor Yellow
+            Write-Host "  Pull manually: qmd pull" -ForegroundColor Yellow
+        }
+    }
+    # Register the himmel clone.
+    if ($DryRun) {
+        Write-Host "DRY: Register-QmdCollection $HimmelRoot himmel"
+    } elseif (Test-Qmd) {
+        Register-QmdCollection $HimmelRoot himmel | Out-Null
+    }
+}
+
 function Do-Core {
     Require-Tools
     if ($Scope -eq 'project') {
@@ -225,6 +406,7 @@ function Do-Core {
         Write-Host "  worktree commands run from the himmel clone: bash $HimmelRoot/scripts/worktree.sh feat/slug"
     }
     Install-Plugins
+    Wire-QmdCore
     Wire-StatuslineCore
     Wire-HimmelRepoCore
     if ($FillEnv) { FillEnv-Core }
@@ -245,6 +427,29 @@ function Do-Luna([string]$Dest) {
     # Persist the vault path UNCONDITIONALLY — a re-run over an existing scaffold
     # must still wire a previously-unwired install (HIMMEL-458).
     Wire-LunaVaultPath $Dest
+    # G5 (HIMMEL-752): register the scaffolded vault as a qmd collection so it
+    # is queryable immediately. Skip + note when qmd/bun unavailable; WARN-not-fail.
+    # For -Profile all, Do-Core (-> Wire-QmdCore) has already installed qmd; for
+    # -Profile luna alone it may be absent, in which case Test-Qmd skips cleanly.
+    if ($script:BunAvailable -eq $false) {
+        Write-Host "  qmd: skipping luna collection registration (bun not found)"
+    } elseif ($DryRun) {
+        Write-Host "DRY: Register-QmdCollection $Dest luna"
+    } elseif (Test-Qmd) {
+        # Same native-EAP decoupling as Wire-QmdCore (WARN-not-fail, CR fix).
+        $savedNativeEAP = $null
+        if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+            $savedNativeEAP = $PSNativeCommandUseErrorActionPreference
+        }
+        $global:PSNativeCommandUseErrorActionPreference = $false
+        try {
+            Register-QmdCollection $Dest luna | Out-Null
+        } finally {
+            if ($null -ne $savedNativeEAP) { $global:PSNativeCommandUseErrorActionPreference = $savedNativeEAP }
+        }
+    } else {
+        Write-Host "  qmd: skipping luna collection registration (qmd not installed)"
+    }
     Write-Host "  next: cd `"$Dest`"; bash scripts/setup.sh   (idempotent; prints the plugin-install commands)"
 }
 
