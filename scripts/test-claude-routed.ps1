@@ -257,6 +257,22 @@ try {
   if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite missing node' } else { Pass 'claude not launched when node missing' }
   if (FileHas $OutTxt 'FAILED to sanitize settings.json') { Pass 'node-missing emits the failed-seed message' } else { Fail 'node-missing did not emit the failed-seed message' }
 
+  # --- T17b: a Copy-Item failure inside the allowlisted seed copy block maps to
+  # exit 4 (the "failed seed" contract), never a raw exit 1, and never launches
+  # claude. Fixture: the child launcher cannot read an exclusively locked source. ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  $lockedSeed = Join-Path $FAKEHOME '.claude\CLAUDE.md'
+  'locked' | Set-Content -LiteralPath $lockedSeed -NoNewline
+  $lock = [System.IO.File]::Open($lockedSeed, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+  try {
+    Assert-Exit (Invoke-Launcher) 4 'seed Copy-Item failure exits 4'
+  } finally {
+    $lock.Dispose()
+  }
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite seed Copy-Item failure' } else { Pass 'claude not launched on seed Copy-Item failure' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')) { Fail 'sentinel written despite seed Copy-Item failure' } else { Pass 'no sentinel on seed Copy-Item failure' }
+  if (FileHas $OutTxt 'FAILED to seed config dir') { Pass 'copy failure emits the failed-seed message' } else { Fail 'copy failure did not emit the failed-seed message' }
+
   # --- T18 (guard I7): phi-roots that is a DIRECTORY (not a readable regular file)
   # fails CLOSED with exit 3, never silently allows egress, never launches claude.
   # PS twin of bash T17 — proves the PS guard maps the not-a-leaf case to the

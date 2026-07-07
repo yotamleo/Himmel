@@ -445,6 +445,22 @@ else
 fi
 rm -rf "$t"
 
+echo "== C13: himmel-ops hooks.json target missing -> WARN C13-plugin-hooks =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/plugin-hooks"; write_settings "$t/claude" "$WRAPPER"
+cat > "$t/plugin-hooks/hooks.json" <<'EOF'
+{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/no-such-hook.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'" } ] } ] } } }
+EOF
+out="$(DOCTOR_HIMMEL_OPS_HOOKS_JSON="$t/plugin-hooks/hooks.json" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN C13-plugin-hooks' && printf '%s' "$out" | grep -q 'scripts/hooks/no-such-hook.sh'; then pass "C13 -> WARN (missing hook target)"; else fail "C13 -> $(printf '%s' "$out" | grep C13)"; fi
+rm -rf "$t"
+
+echo "== C13: shipped himmel-ops hooks.json targets exist -> OK C13-plugin-hooks =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C13-plugin-hooks'; then pass "C13 -> OK (shipped hook targets exist)"; else fail "C13 -> $(printf '%s' "$out" | grep C13)"; fi
+rm -rf "$t"
+
 rm -rf "$FAKEROOT"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi
