@@ -143,11 +143,12 @@ main tier **without touching your existing setup**:
   what Claude/himmel themselves enforce.
 
 ```
-# provision (or refresh) the himmel_agent profile — additive, idempotent:
+# provision (or refresh) the himmel_agent profile AND wire parity_guard into
+# EVERY hermes profile by default (universal guard, HIMMEL-744) — additive,
+# idempotent, non-clobbering (swaps a luna_vault_guard, or ADDS the guard where
+# a profile has none, preserving any other hooks it carries):
 bash scripts/hermes/install-himmel-profile.sh
-# also point selected/all OTHER profiles at parity_guard (swap-only,
-# non-destructive — a profile with no luna_vault_guard hook is left untouched):
-bash scripts/hermes/install-himmel-profile.sh --parity-guard=all
+# narrow the universal pass to named profiles only:
 bash scripts/hermes/install-himmel-profile.sh --parity-guard=default,research
 ```
 
@@ -199,11 +200,12 @@ hermes gateway restart   # pick up the new identity, when no session is running
 ```
 
 Himmel **never** overwrites your `default` profile SOUL for you, and this path
-ships **no `install-himmel-profile.sh` edit**. The provisioner today only knows
-`wire_parity_guard set` (write-allowed) and `swap` (luna→parity); it has no
-supported way to wire a READ-ONLY `luna_vault_guard` fence onto a fresh
-profile (and `luna_vault_guard` is a hermes-side artifact himmel does not
-ship), so a himmel-created `--free-tier` profile could not be safely fenced.
+ships **no `install-himmel-profile.sh` edit**. The provisioner knows
+`wire_parity_guard set` / `ensure` / `swap` — all of which wire the
+write-allowed `parity_guard`; it has no supported way to wire a READ-ONLY
+`luna_vault_guard` fence onto a fresh profile (and `luna_vault_guard` is a
+hermes-side artifact himmel does not ship), so a himmel-created `--free-tier`
+profile could not be safely fenced.
 Applying the tuned SOUL to your **existing** read-only junior keeps the
 tier-coupling invariant intact — free model stays read-only — without himmel
 wiring a fence it cannot ship.
