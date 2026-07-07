@@ -122,6 +122,17 @@ test("window preflight runs BEFORE git worktree add — a refusal leaves no orph
   expect(preIdx).toBeLessThan(wtIdx);
 });
 
+test("GLM guard check runs BEFORE git worktree add — a refusal leaves no orphan (wiring pin, #848)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  const guardIdx = src.indexOf("checkGlmGuards(");
+  const wtIdx = src.indexOf('"worktree", "add"');
+  const poisonIdx = src.indexOf("poisonPushUrl(absCwd");
+  expect(guardIdx).toBeGreaterThan(-1);
+  expect(wtIdx).toBeGreaterThan(-1);
+  expect(guardIdx).toBeLessThan(wtIdx);
+  expect(guardIdx).toBeLessThan(poisonIdx);
+});
+
 test("transcript dir derives from escaped cwd, not slug", () => {
   const d = transcriptDirFor("C:\\Users\\alice\\Documents\\github\\himmel\\.claude\\worktrees\\glm+a");
   expect(d).toBe(join(homedir(), ".claude", "projects",
@@ -317,6 +328,21 @@ test("executeRun: a plain failed run (no prompt-too-long tail) has NO failure_cl
     const meta = JSON.parse(readFileSync(metaPath, "utf8"));
     expect(meta.status).toBe("failed");
     expect(meta.failure_class).toBeUndefined();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun: a run.log append failure does NOT flip a successful run to failed (#849)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    // Force the cosmetic run.log append to throw (EISDIR) by making run.log a
+    // directory. The append is isolated from the terminal-state write, so a
+    // successful run (code 0) must stay "done", not throw into the outer catch.
+    mkdirSync(join(dir, "run.log"));
+    const ok = (async () => ({ code: 0, capped: false, blocked: false, timedOut: false, pid: 5, tail: "done tail" })) as any;
+    const { code } = await executeRun({ runSession: ok, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta });
+    expect(code).toBe(0);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("done");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

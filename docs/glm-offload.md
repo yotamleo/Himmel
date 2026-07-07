@@ -382,6 +382,14 @@ below (`gh pr create/merge/edit/review/comment/ready`, `gh api`, `gh repo`,
 aliases), and all `mcp__*` tools EXCEPT the qmd KB carve-out.
 Off-lane sessions exit immediately.
 
+**Why blanket-block the network CLIs** (mirror of the deny-hook header): a
+read-vs-write split would mean parsing each CLI's write flags (`curl -X POST`,
+`wget --post-data`, `iwr -Method`), and that flag parsing is fragile once the
+command is lowercased and reshaped by the hook — so a verb-list deny is the
+fail-closed choice, not a flag-position heuristic. v1 GLM chores are repo-local
+anyway, which is why `bun`/`npm` dependency fetch stays allowed (it is
+dependency fetch, not an external write).
+
 **Allowed on-lane (operator policy 2026-07-03 — audited-action carve-out):**
 the **Jira CLI** (`node scripts/jira/dist/index.js …` or bare `jira`) — writes
 are audited in Jira history and recoverable, so GLM workers may update status,

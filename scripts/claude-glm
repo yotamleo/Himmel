@@ -28,6 +28,8 @@ if [ -z "${ZAI_API_KEY-}" ] && [ -f "$HERE/lib/load-dotenv.sh" ]; then
   # load_dotenv leaves surrounding quotes literal (the shared lib does not strip
   # them); drop ONE matching surrounding quote pair so a `.env` value written as
   # ZAI_API_KEY="…" doesn't send the quotes to the API. bash 3.2-safe.
+  # Anchor name: "surrounding-quote-strip" - referenced by name (not line
+  # numbers) from scripts/telegram/glm-env.ts's twin strip.
   case "${ZAI_API_KEY-}" in
     \"*\") ZAI_API_KEY="${ZAI_API_KEY#\"}"; ZAI_API_KEY="${ZAI_API_KEY%\"}" ;;
     \'*\') ZAI_API_KEY="${ZAI_API_KEY#\'}"; ZAI_API_KEY="${ZAI_API_KEY%\'}" ;;

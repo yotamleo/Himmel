@@ -223,7 +223,14 @@ export async function executeRun(deps: {
 }): Promise<{ code: number }> {
   try {
     const res = await deps.runSession(deps.prompt, deps.worktree, deps.permMode, "glm");
-    if (res.tail !== undefined) appendFileSync(join(deps.sessionDir, "run.log"), res.tail);
+    // run.log append is COSMETIC persistence (the debug tail). Isolate it (#849):
+    // an I/O failure here (EACCES/EISDIR/ENOSPC) must NOT throw into the outer
+    // catch — that writes status:failed + rethrows, flipping a successful run to
+    // failed. The final-meta write below is the load-bearing terminal-state record.
+    if (res.tail !== undefined) {
+      try { appendFileSync(join(deps.sessionDir, "run.log"), res.tail); }
+      catch (e) { console.error(`spawn-glm: run.log append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
+    }
     const fm = finalMeta(res.code, res.pid, res.capped, res.blocked, res.timedOut);
     writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm }, null, 2));
     // HIMMEL-740: an honest failure_class for the submit-reject. ONLY on a bare
@@ -337,12 +344,16 @@ async function main(): Promise<void> {
   const pre = preflightWindowCheck({ briefChars: briefText.length, overheadChars, windowTokens });
   if (!pre.ok) { console.error(pre.reason); process.exit(2); }
 
+  // GLM guard (spec D2) BEFORE any worktree/branch mutation (#848): a refusal
+  // must leave NO orphan worktree/branch/poisoned-pushurl behind. The
+  // path-under-list checks resolve plan.worktree as a string, so a PHI- or
+  // egress-denied dispatch path refuses here, pre-creation.
+  const guard = checkGlmGuards(plan.worktree);
+  if (!guard.ok) { console.error(guard.reason); process.exit(3); }
+
   const g = (args: string[]) => { const r = Bun.spawnSync(["git", "-C", absCwd, ...args], { stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.toString()}`); };
   g(["worktree", "add", plan.worktree, "-b", plan.branch]);
   poisonPushUrl(absCwd, plan.worktree);
-
-  const guard = checkGlmGuards(plan.worktree);
-  if (!guard.ok) { console.error(guard.reason); process.exit(3); }
 
   mkdirSync(sessionDir, { recursive: true });
   // GLM_SESSION_DIR (spec D5): the deny hook (running inside the worker child)

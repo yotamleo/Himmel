@@ -95,3 +95,28 @@ test("guard config read THROW fails closed (catch branch — e.g. permission-den
     mock.restore();
   }
 });
+
+test(".salus stat THROW fails closed, not open (#850 — e.g. permission-denied)", () => {
+  // Do NOT create .salus: the mock makes statSync throw EACCES (not ENOENT) for
+  // it. existsSync-based code returns false → passes (fail-OPEN); the statSync
+  // fix distinguishes non-ENOENT errors and fails CLOSED, matching the list checks.
+  const salus = join(work, ".salus");
+  mock.module("node:fs", () => ({
+    ...realFsSnapshot,
+    statSync: (p: any, ...rest: any[]) => {
+      if (typeof p === "string" && p === salus) {
+        const err: NodeJS.ErrnoException = new Error("EACCES: permission denied");
+        err.code = "EACCES";
+        throw err;
+      }
+      return realFsSnapshot.statSync(p, ...rest);
+    },
+  }));
+  try {
+    const r = checkGlmGuards(work, cfg);
+    expect(r.ok).toBe(false);
+    expect((r as any).reason).toMatch(/failing closed/);
+  } finally {
+    mock.restore();
+  }
+});
