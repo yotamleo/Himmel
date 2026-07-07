@@ -54,6 +54,14 @@
             "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-doc-freshness.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-worktree-nudge.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
+          }
+        ]
       }
     ],
     "SessionEnd": [
