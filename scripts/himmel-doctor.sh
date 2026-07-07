@@ -483,6 +483,45 @@ check_c12() {
     esac
 }
 
+# --- C13: himmel-ops plugin hooks resolve in this checkout ----------------------
+# The plugin-delivered hooks.json deliberately guards project-local hooks with
+# `[ -f "$h" ] && exec ...` so external/adopter repos fail open.  That also makes
+# a missing/moved himmel hook script silent in a himmel checkout.  Doctor surfaces
+# that drift without changing hook runtime semantics.
+check_c13() {
+    local hooks_files=() hooks_json f
+    if [ -n "${DOCTOR_HIMMEL_OPS_HOOKS_JSON:-}" ]; then
+        hooks_files=("$DOCTOR_HIMMEL_OPS_HOOKS_JSON")
+    else
+        for f in "$REPO_ROOT/marketplace/plugins/himmel-ops/hooks/hooks.json" \
+                 "$CLAUDE_DIR_R"/plugins/cache/himmel/himmel-ops/*/hooks/hooks.json \
+                 "$CLAUDE_DIR_R"/plugins/repos/*/himmel-ops/hooks/hooks.json; do
+            [ -f "$f" ] && hooks_files+=("$f")
+        done
+    fi
+    if [ "${#hooks_files[@]}" -eq 0 ]; then
+        emit INFO C13-plugin-hooks "himmel-ops hooks.json not found (skipped)" "run /himmel-update or verify the himmel-ops plugin install"
+        return
+    fi
+    local missing="" cmd rel target
+    for hooks_json in "${hooks_files[@]}"; do
+        while IFS= read -r cmd; do
+            [ -n "$cmd" ] || continue
+            rel="$(printf '%s\n' "$cmd" | sed -n 's#.*CLAUDE_PROJECT_DIR/\([^"]*\)".*#\1#p')"
+            [ -n "$rel" ] || continue
+            target="$REPO_ROOT/$rel"
+            [ -f "$target" ] || missing="$missing $rel"
+        done <<EOF_CMDS
+$(jq -r '(.hooks // {}) | to_entries[] | .value[]? | .hooks[]? | .command // empty | select(contains("CLAUDE_PROJECT_DIR/"))' "$hooks_json" 2>/dev/null)
+EOF_CMDS
+    done
+    if [ -n "$missing" ]; then
+        emit WARN C13-plugin-hooks "himmel-ops hooks.json references missing checkout hook(s):$missing - guarded [ -f ] wrappers will silently no-op" "run /himmel-update or restore the missing script(s), then re-run"
+    else
+        emit OK C13-plugin-hooks "himmel-ops plugin hooks resolve in this checkout"
+    fi
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -535,6 +574,7 @@ check_c9
 check_c10
 check_c11
 check_c12
+check_c13
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
