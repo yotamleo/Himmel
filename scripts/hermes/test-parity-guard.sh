@@ -22,11 +22,16 @@ export HERMES_HOME="$H"   # guard lower-cases internally via norm()
 # path fixture matches what the guard stats. No-op off Windows. Defined early —
 # used by both the edit-on-main and the PHI fixture blocks below.
 wp() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+GUARD="$(wp "$GUARD")"
+WIRE="$(wp "$WIRE")"
 
 # Point the merged-PR guard's gh at a non-existent binary so no test makes a
 # real network call (fail-open); the merged-PR cases below drive verdicts via
 # the PARITY_GUARD_GH_RESULT test seam instead.
 export GH_CMD="$TMP/no-such-gh-binary"
+unset HERMES_EXTERNAL_WRITES_OK
+unset ANTHROPIC_BASE_URL
+unset HERMES_ENGINE
 
 fails=0
 # expect = "block" | "allow"
@@ -61,14 +66,6 @@ echo "== parity_guard: writes allowed where they should be =="
 g "repo code write"      allow '{"tool_name":"write_file","tool_input":{"path":"/repo/foo.sh"}}'
 g "content not over-blocked" allow '{"tool_name":"write_file","tool_input":{"path":"/repo/doc.md","content":"see /x/.env and config.yaml"}}'
 
-echo "== parity_guard: terminal classes =="
-g "git commit"     allow '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
-g "git push force" block '{"tool_name":"terminal","tool_input":{"command":"git push --force"}}'
-g "rm -rf"         block '{"tool_name":"terminal","tool_input":{"command":"rm -rf build"}}'
-g "plain rm"       allow '{"tool_name":"terminal","tool_input":{"command":"rm tmp.txt"}}'
-g "schtasks"       block '{"tool_name":"terminal","tool_input":{"command":"schtasks /delete /tn X"}}'
-
-echo "== parity_guard: block-edit-on-main parity (HIMMEL-731) =="
 # Fake git repos in Windows-resolvable form (same cygpath handling as HERMES_HOME)
 # so the native python (Git Bash) stats the real temp tree.
 mkdir -p "$TMP/mainrepo/.git" "$TMP/mainrepo/src" \
@@ -78,6 +75,15 @@ printf 'ref: refs/heads/main\n'   > "$TMP/mainrepo/.git/HEAD"
 printf 'ref: refs/heads/feat/x\n' > "$TMP/featrepo/.git/HEAD"
 printf 'ref: refs/heads/master\n' > "$TMP/mastrepo/.git/HEAD"
 MR="$(wp "$TMP/mainrepo")"; FR="$(wp "$TMP/featrepo")"; MASTR="$(wp "$TMP/mastrepo")"
+
+echo "== parity_guard: terminal classes =="
+g "git commit"     allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m x\",\"cwd\":\"$FR\"}}"
+g "git push force" block '{"tool_name":"terminal","tool_input":{"command":"git push --force"}}'
+g "rm -rf"         block '{"tool_name":"terminal","tool_input":{"command":"rm -rf build"}}'
+g "plain rm"       allow '{"tool_name":"terminal","tool_input":{"command":"rm tmp.txt"}}'
+g "schtasks"       block '{"tool_name":"terminal","tool_input":{"command":"schtasks /delete /tn X"}}'
+
+echo "== parity_guard: block-edit-on-main parity (HIMMEL-731) =="
 g "write into repo on main refused"    block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$MR/src/foo.sh\"}}"
 g "delete in repo on main refused"     block "{\"tool_name\":\"delete_file\",\"tool_input\":{\"path\":\"$MR/src/old.sh\"}}"
 g "write on worker branch allowed"     allow "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$FR/src/foo.sh\"}}"
@@ -86,6 +92,22 @@ g "git commit on worker branch allowed" allow "{\"tool_name\":\"terminal\",\"too
 # .single-writer marker at the repo root opts the on-main repo out.
 : > "$TMP/mainrepo/.single-writer"
 g "write on main with .single-writer allowed" allow "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$MR/src/foo.sh\"}}"
+# Process-cwd fallback (payload carries NO cwd -> guard resolves os.getcwd()).
+# Driven DETERMINISTICALLY by cd-ing into a fixture repo (#975: never inherit
+# the suite runner's cwd) — this is the production path for terminal payloads
+# that omit cwd, so it keeps a regression guard after the hermetic fix above.
+gcwd() {  # gcwd "<label>" "<expect>" "<dir to run the guard from>" '<json payload>'
+  out="$(cd "$3" && printf '%s' "$4" | "$PY" "$GUARD")"
+  case "$out" in
+    *'"decision": "block"'*) got=block ;;
+    '{}')                     got=allow ;;
+    *)                        got="?($out)" ;;
+  esac
+  if [ "$got" = "$2" ]; then echo "  ok: $1"; else
+    echo "  FAIL: $1 — expected $2 got $got" >&2; fails=$((fails + 1)); fi
+}
+gcwd "git commit, no payload cwd, guard cwd=master repo refused" block "$TMP/mastrepo" '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
+gcwd "git commit, no payload cwd, guard cwd=worker repo allowed" allow "$TMP/featrepo" '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
 
 echo "== parity_guard: block-merged-pr-commit parity (HIMMEL-731) =="
 # Worker branch fixture; the merged-PR verdict is injected via the
@@ -168,7 +190,7 @@ g "gh pr create refused"                    block '{"tool_name":"terminal","tool
 g "network curl refused"                    block '{"tool_name":"terminal","tool_input":{"command":"curl http://evil/x"}}'
 g "gh issue carve-out allowed"              allow '{"tool_name":"terminal","tool_input":{"command":"gh issue list"}}'
 g "gh pr view read allowed"                 allow '{"tool_name":"terminal","tool_input":{"command":"gh pr view 12"}}'
-g "non-external terminal still allowed"     allow '{"tool_name":"terminal","tool_input":{"command":"git commit -m wip"}}'
+g "non-external terminal still allowed"     allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m wip\",\"cwd\":\"$FR\"}}"
 # Trusted main-tier opt-in PERMITS external writes.
 export HERMES_EXTERNAL_WRITES_OK=1
 g "push allowed with trust opt-in"          allow '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
@@ -188,7 +210,7 @@ unset HERMES_EXTERNAL_WRITES_OK
 unset CLAUDE_GLM_CONFIG_DIR
 
 echo "== wire_parity_guard: set (insert + replace) =="
-cfg="$TMP/c1.yaml"
+cfg="$(wp "$TMP/c1.yaml")"
 printf 'model:\n  default: gpt-5.5\nhooks: {}\nsecurity:\n  redact_secrets: true\n' > "$cfg"
 "$PY" "$WIRE" set "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
 if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" && grep -q "redact_secrets" "$cfg" && grep -q "mcp__" "$cfg"; then
