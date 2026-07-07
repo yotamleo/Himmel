@@ -91,6 +91,47 @@ grafts the GLM lane onto that path via a standalone CLI
    session. GLM output is merge-quarantined until the WS4/WS7 gates cover the
    lane; the interim bound is human/Fable CR review of every GLM diff.
 
+## Claude-down ship flow (HIMMEL-750)
+
+When the Claude quota bank is maxed there is no validating session to run step
+3/4 above. The claude-down ship lane keeps the branch moving to PR-ready WITHOUT
+Claude, while leaving the worker fully quarantined and merge operator-only. Two
+scripts:
+
+1. **`scripts/cr/pr-check-external.sh --branch glm/<slug> --session-dir <dir>`**
+   — the review half. Runs the critic panel (`critic-panel.sh`) over
+   `origin/<base>...<branch>` with NO Claude session, so the hermes/codex critics
+   carry code review as parallel paid lanes. It forces `CR_PROFILE=free,paid`
+   (unless the caller already selected a profile containing `paid`; `CR_PROFILE=none`
+   is refused) so the paid codex critic runs as a real reviewer. The gate is
+   fail-CLOSED: a non-zero panel exit, an unparseable Critical/Important count,
+   an ABSENT paid codex critic, or any Critical/Important finding all FAIL —
+   with no Claude backstop a lone flaky free critic must not clear the gate. On a
+   clean panel it records `external_cr_verdict: pass (sha=<reviewed-sha>; critics=<n>)`
+   into the session `meta.json` (a DISTINCT key from `d1_verdict`, which stays the
+   Claude-validating-session lane's key) and prints a one-line PR-body snippet. It
+   does NOT touch the CR marker — the marker clear is bound to the pushed SHA in
+   step 2.
+2. **`scripts/glm/ship-branch.sh glm/<slug> --session-dir <dir>`** — the push
+   half, run FROM the trusted main checkout (it refuses to run from a
+   `.claude/worktrees/` path). It fails closed unless: the branch is `glm/*`, an
+   `origin` remote exists, `external_cr_verdict` starts `pass`, and the reviewed
+   SHA in that verdict equals the current branch tip (closing the TOCTOU where
+   commits are added after the panel). Then it runs `git push -u origin <branch>`
+   — the normal pre-push gates (attestation trailers, gitleaks) run here in a
+   trusted context because the pusher legitimately owns them; NO `--no-verify`.
+   After a successful push it clears the CR marker only if the marker's SHA
+   equals the pushed SHA. It NEVER opens a PR and NEVER merges — it prints the
+   exact `gh pr create` command for the operator.
+
+The worker gains no push authority at any point: `poisonPushUrl`, the worker
+no-push prompt, and the external-writes deny hook are UNCHANGED. A prior
+adversarial design review REJECTED a "let the worker push" model (a
+worker-writable unauthenticated grant ledger under `bypassPermissions`; an
+unanchored push grant that could smuggle a refspec to `main`; the worker forging
+attestation trailers). Moving the push to the trusted main checkout, gated on
+`external_cr_verdict:pass` + reviewed-SHA==tip, is the adopted design.
+
 ## CLI synopsis + three-line output contract
 
 ```
