@@ -124,7 +124,9 @@ if [ -f "$MANIFEST" ]; then
     printf '%s' "$computed" > "$tmp_new"
     echo "   offending paths (vs VENDORED.manifest):" >&2
     # sed (not awk field-print) so paths containing spaces survive intact.
-    diff "$MANIFEST" "$tmp_new" | sed -n -E 's/^< [0-9a-f]{40}  /     pinned   /p; s/^> [0-9a-f]{40}  /     on-disk  /p' | LC_ALL=C sort -u -k2 >&2 || true
+    # Hash width 40 (SHA-1) or 64 (SHA-256 object repos) — mirrors the .ps1
+    # twin's hash-length-agnostic split so both list offending paths either way.
+    diff "$MANIFEST" "$tmp_new" | sed -n -E 's/^< [0-9a-f]{40,64}  /     pinned   /p; s/^> [0-9a-f]{40,64}  /     on-disk  /p' | LC_ALL=C sort -u -k2 >&2 || true
     rm -f "$tmp_new"
 else
     echo "   (VENDORED.manifest missing — cannot list offending paths)" >&2

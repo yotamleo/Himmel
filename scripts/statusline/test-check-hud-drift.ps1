@@ -171,6 +171,15 @@ if ((Invoke-Guard -RepoDir $r) -eq 2 -and (Invoke-Guard -RepoDir $r -ScriptArgs 
     Pass 'vendored_tree_hash line absent -> verify rc=2, -Write rc=2 (no silent no-op)'
 } else { Fail 'vendored_tree_hash line absent -> verify rc=2, -Write rc=2 (no silent no-op)' }
 
+# All-owned tree (no upstream-derived files) -> rc=2 (fail-closed). Exercises
+# the PS-specific $relList.Count -eq 0 guard, unexercised on the Windows path.
+$r = New-TestRepo
+& git -C $r rm -q -f "$HUD_REL/dist/index.js" "$HUD_REL/dist/my file.js" "$HUD_REL/README.md" `
+    "$HUD_REL/Zebra.js" "$HUD_REL/apple.js" "$HUD_REL/config.js" "$HUD_REL/VENDORED.mdx" 2>$null
+& git -C $r commit -qm strip 2>$null
+if ((Invoke-Guard -RepoDir $r) -eq 2) { Pass 'all-owned tree (no upstream-derived files) -> rc=2 (fail-closed)' }
+else { Fail 'all-owned tree (no upstream-derived files) -> rc=2 (fail-closed)' }
+
 # -Write refuses on missing tracked file -> rc=1 + MISSING path
 $r = New-PinnedRepo
 Remove-Item -LiteralPath (Join-Path $r "$HUD_REL/README.md") -Force

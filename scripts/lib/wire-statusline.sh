@@ -16,8 +16,10 @@
 #   3. Drops the hud config: reads
 #      marketplace/plugins/claude-hud/config/himmel-config.json from the himmel
 #      clone, substitutes every <himmel-path> with this clone's path, and writes
-#      it to <settings-dir>/plugins/claude-hud/config.json (the config-path
-#      ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json).
+#      it to <settings-dir>/plugins/claude-hud/config.json — the config path is
+#      derived RELATIVE to the settings file's own directory (normally
+#      ${CLAUDE_CONFIG_DIR:-~/.claude}, but whatever dir the caller's settings
+#      path lives in).
 #
 # Idempotent (re-running yields the same result), atomic (temp file + mv), and
 # non-destructive (all other keys / all other env keys preserved; file + parent
@@ -70,6 +72,14 @@ wire_statusline() {
     hud_cfg="${hud_cfg//<himmel-path>/$himmel_fwd}"
     printf '%s\n' "$hud_cfg" > "$hud_dir/config.json.tmp" \
       || { rm -f "$hud_dir/config.json.tmp"; return 1; }
+    # Validate the substituted config is still JSON before publishing it — a
+    # JSON-breaking himmel path (e.g. an embedded quote) would otherwise yield a
+    # config.json the renderer fails on silently at render time.
+    if ! jq -e . "$hud_dir/config.json.tmp" >/dev/null 2>&1; then
+      rm -f "$hud_dir/config.json.tmp"
+      echo "wire-statusline: substituted hud config is not valid JSON — refusing to write" >&2
+      return 1
+    fi
     mv "$hud_dir/config.json.tmp" "$hud_dir/config.json" || return 1
   fi
   echo "  wired statusLine → $settings"

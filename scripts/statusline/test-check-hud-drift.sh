@@ -58,12 +58,19 @@ setup_pinned_repo() {
 expect_rc() { local want=$1; shift; local rc=0; "$@" >/dev/null 2>&1 || rc=$?; [ "$rc" -eq "$want" ]; }
 
 _failures=0
+_skips=0
 
+# A test body may `exit 77` to declare itself SKIPPED (e.g. a cross-twin case on
+# a pwsh-less runner). A distinct skip tally keeps an unchecked contract visible
+# instead of silently counting as PASS.
 run_test() {
   local name="$1" body="$2"
   local rc=0
   ( eval "$body" ) 2>/dev/null || rc=$?
-  if [ "$rc" -eq 0 ]; then
+  if [ "$rc" -eq 77 ]; then
+    printf '  SKIP  %s\n' "$name"
+    _skips=$((_skips + 1))
+  elif [ "$rc" -eq 0 ]; then
     printf '  PASS  %s\n' "$name"
   else
     printf '  FAIL  %s (subshell rc=%s)\n' "$name" "$rc"
@@ -212,7 +219,7 @@ run_test "autocrlf stability: CRLF worktree and LF worktree record the SAME pin"
 '
 
 run_test "cross-twin parity: .sh --write verifies clean under .ps1 and vice versa" '
-  command -v pwsh >/dev/null 2>&1 || { echo "  SKIP (pwsh not available)"; exit 0; };
+  command -v pwsh >/dev/null 2>&1 || exit 77;   # 77 => SKIP tally, not a silent PASS
   PS1_SCRIPT="$STATUSLINE/check-hud-drift.ps1";
   setup_pinned_repo; cd "$R";
   ( pwsh -NoProfile -NonInteractive -File "$PS1_SCRIPT" ) >/dev/null 2>&1 || exit 1;
@@ -222,7 +229,11 @@ run_test "cross-twin parity: .sh --write verifies clean under .ps1 and vice vers
 '
 
 if [ "$_failures" -eq 0 ]; then
-  echo "OK: all cases passed"
+  if [ "$_skips" -gt 0 ]; then
+    echo "OK: all cases passed ($_skips skipped)"
+  else
+    echo "OK: all cases passed"
+  fi
   exit 0
 else
   echo "FAIL: $_failures case(s) failed"
