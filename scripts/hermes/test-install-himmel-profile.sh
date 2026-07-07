@@ -102,11 +102,34 @@ run --parity-guard=default >/dev/null
 assert_contains "$HOME_DIR/config.yaml" "parity_guard.py" "default swapped to parity_guard"
 assert_absent   "$HOME_DIR/config.yaml" "luna_vault_guard.py" "default no longer references luna_vault_guard"
 
-echo "== scenario E: --parity-guard on a guard-less profile leaves it untouched =="
+echo "== scenario E: --parity-guard on a guard-less profile now ADDS the guard (HIMMEL-744) =="
 mkdir -p "$HOME_DIR/profiles/research"
 printf 'model:\n  default: gpt-5.5\nhooks: {}\n' > "$HOME_DIR/profiles/research/config.yaml"
 run --parity-guard=research >/dev/null
-assert_absent "$HOME_DIR/profiles/research/config.yaml" "parity_guard.py" "guard-less profile not force-wired (non-destructive)"
+assert_contains "$HOME_DIR/profiles/research/config.yaml" "parity_guard.py" "guard-less named profile now guarded (ensure adds)"
+
+echo "== scenario F: default (no flag) wires parity_guard into ALL profiles (universal) =="
+rm -rf "$HOME_DIR/profiles"; mkdir -p "$HOME_DIR/profiles"
+seed_default empty
+# a guard-less profile carrying an UNRELATED hook that must survive
+mkdir -p "$HOME_DIR/profiles/research"
+printf 'model:\n  default: gpt-5.5\nhooks:\n  post_tool_call:\n  - command: /x/logger.py\n    timeout: 5\n' > "$HOME_DIR/profiles/research/config.yaml"
+# a profile still on the legacy luna_vault_guard
+mkdir -p "$HOME_DIR/profiles/legacy"
+printf 'hooks:\n  pre_tool_call:\n  - command: /x/agent-hooks/luna_vault_guard.py\n    timeout: 10\n' > "$HOME_DIR/profiles/legacy/config.yaml"
+run >/dev/null
+# himmel_agent still owns its whole hooks block (set-mode canonical, mcp__ matcher)
+assert_contains "$HOME_DIR/profiles/himmel_agent/config.yaml" "parity_guard.py" "himmel_agent wired (set)"
+assert_contains "$HOME_DIR/profiles/himmel_agent/config.yaml" "mcp__" "himmel_agent canonical matcher (set-mode)"
+# default profile guarded by default
+assert_contains "$HOME_DIR/config.yaml" "parity_guard.py" "default profile guarded (universal)"
+# guard-less profile now guarded, unrelated hook preserved
+assert_contains "$HOME_DIR/profiles/research/config.yaml" "parity_guard.py" "guard-less profile now guarded (universal)"
+assert_contains "$HOME_DIR/profiles/research/config.yaml" "post_tool_call" "unrelated hook preserved"
+assert_contains "$HOME_DIR/profiles/research/config.yaml" "logger.py" "unrelated hook command preserved"
+# legacy luna_vault_guard swapped in place
+assert_contains "$HOME_DIR/profiles/legacy/config.yaml" "parity_guard.py" "legacy profile swapped to parity"
+assert_absent   "$HOME_DIR/profiles/legacy/config.yaml" "luna_vault_guard.py" "legacy luna_vault_guard removed"
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED" >&2; exit 1; fi

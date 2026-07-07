@@ -1,16 +1,18 @@
 <#
 .SYNOPSIS
-  Provision the ADDITIVE `himmel_agent` hermes profile (HIMMEL-557) — himmel's
-  main-tier orchestrator (Codex / GPT-5.5) with the parity_guard.
+  Provision the ADDITIVE `himmel_agent` hermes profile (HIMMEL-557, HIMMEL-744)
+  — himmel's main-tier orchestrator (Codex / GPT-5.5) — then wire parity_guard
+  into EVERY hermes profile (universal guard).
 
 .DESCRIPTION
-  NON-DESTRUCTIVE: never overwrites your `default` or any other existing
-  profile's SOUL.md or hooks. himmel does not own your hermes identity — it
-  only adds this one named profile. Safe to re-run (idempotent).
+  himmel owns only himmel_agent's SOUL/identity; SOUL stays per-role. The guard
+  does NOT: it is universal (HIMMEL-744). Non-clobbering — an existing
+  luna_vault_guard is swapped, a profile with no guard has parity_guard ADDED
+  (other unrelated hooks preserved). Safe to re-run (idempotent).
 
-  -ParityGuard all | <csv>   ALSO points the named (or all other) profiles at
-  parity_guard, but only by swapping an existing luna_vault_guard hook; a
-  profile with no such hook is left untouched (never clobbered).
+  -ParityGuard <csv>   By default the universal pass covers the `default`
+  profile and all others. -ParityGuard narrows that pass to the named profiles
+  only (all is the explicit form of the default).
 
   Env overrides: HERMES_HOME, HERMES_BIN, HERMES_PY.
 #>
@@ -90,31 +92,33 @@ Write-Host "installed   : $HaSoul"
 # 4. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
 & $Py $Wire set $HaConfig $GuardDest $Py
 
-# 5. optional: apply parity_guard to other profiles (swap-only, non-destructive)
-if ($ParityGuard) {
-  $targets = @()
-  if ($ParityGuard -eq "all") {
-    $targets += (Join-Path $HomeDir "config.yaml")   # default
-    $pdir = Join-Path $HomeDir "profiles"
-    if (Test-Path $pdir) {
-      foreach ($d in Get-ChildItem $pdir -Directory) {
-        if ($d.Name -eq $Profile_) { continue }
-        $c = Join-Path $d.FullName "config.yaml"
-        if (Test-Path $c) { $targets += $c }
-      }
-    }
-  } else {
-    foreach ($name in ($ParityGuard -split ",")) {
-      $name = $name.Trim()
-      if (-not $name) { continue }
-      if ($name -eq "default") { $targets += (Join-Path $HomeDir "config.yaml") }
-      else { $targets += (Join-Path $HomeDir "profiles/$name/config.yaml") }
+# 5. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.
+#    Default (no flag) = the `default` profile + all others. -ParityGuard <csv>
+#    narrows to named profiles; all is the explicit form of the default. ensure
+#    is non-clobbering: swaps a luna_vault_guard, adds the guard where none
+#    exists, no-ops if already on parity_guard.
+$targets = @()
+if ((-not $ParityGuard) -or ($ParityGuard -eq "all")) {
+  $targets += (Join-Path $HomeDir "config.yaml")   # default
+  $pdir = Join-Path $HomeDir "profiles"
+  if (Test-Path $pdir) {
+    foreach ($d in Get-ChildItem $pdir -Directory) {
+      if ($d.Name -eq $Profile_) { continue }
+      $c = Join-Path $d.FullName "config.yaml"
+      if (Test-Path $c) { $targets += $c }
     }
   }
-  foreach ($cfg in $targets) {
-    if (Test-Path $cfg) { & $Py $Wire swap $cfg }
-    else { Write-Warning "config not found: $cfg" }
+} else {
+  foreach ($name in ($ParityGuard -split ",")) {
+    $name = $name.Trim()
+    if (-not $name) { continue }
+    if ($name -eq "default") { $targets += (Join-Path $HomeDir "config.yaml") }
+    else { $targets += (Join-Path $HomeDir "profiles/$name/config.yaml") }
   }
+}
+foreach ($cfg in $targets) {
+  if (Test-Path $cfg) { & $Py $Wire ensure $cfg $GuardDest $Py }
+  else { Write-Warning "config not found: $cfg" }
 }
 
 Write-Host "OK: himmel_agent provisioned. Reach it with:  hermes profile use $Profile_"

@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# install-himmel-profile.sh (HIMMEL-557)
+# install-himmel-profile.sh (HIMMEL-557, HIMMEL-744)
 #
 # Provision the ADDITIVE `himmel_agent` hermes profile — himmel's main-tier
-# orchestrator (Codex / GPT-5.5) with the parity_guard. This is NON-DESTRUCTIVE:
-# it never overwrites your `default` or any other existing profile's SOUL.md or
-# hooks. himmel does not own your hermes identity — it only adds this one named
-# profile. Run on demand; safe to re-run (idempotent).
+# orchestrator (Codex / GPT-5.5) — then wire the parity_guard into EVERY hermes
+# profile (universal guard, HIMMEL-744). himmel owns only himmel_agent's
+# SOUL/identity; SOUL stays per-role. The guard does NOT: it is universal.
+# Non-clobbering — an existing luna_vault_guard is swapped, a profile with no
+# guard has parity_guard ADDED (other unrelated hooks preserved). Idempotent.
 #
-#   install-himmel-profile.sh                  # create/update himmel_agent only
-#   install-himmel-profile.sh --parity-guard=all
-#   install-himmel-profile.sh --parity-guard=default,research
+#   install-himmel-profile.sh                  # himmel_agent + universal guard (default)
+#   install-himmel-profile.sh --parity-guard=default,research   # narrow to named profiles
 #
-# --parity-guard=all|<csv> ALSO points the named (or all other) profiles at
-# parity_guard — but only by swapping an existing luna_vault_guard hook; a
-# profile with no such hook is left untouched (never clobbered).
+# By default the universal pass covers the `default` profile and all others.
+# --parity-guard=<csv> narrows that pass to the named profiles only
+# (=all is the explicit form of the default).
 #
 # Env overrides: HERMES_HOME (install root), HERMES_BIN (hermes CLI),
 # HERMES_PY (python interpreter for the hook + wiring).
@@ -104,38 +104,40 @@ echo "installed   : $HA_SOUL"
 # 4. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
 "$PYBIN" "$WIRE" set "$HA_CONFIG" "$GUARD_DEST" "$PYBIN"
 
-# 5. optional: apply parity_guard to other profiles (swap-only, non-destructive)
-if [ -n "$PARITY_TARGETS" ]; then
-  targets=""
-  if [ "$PARITY_TARGETS" = "all" ]; then
-    targets="$HOME_DIR/config.yaml"   # the `default` profile
-    if [ -d "$HOME_DIR/profiles" ]; then
-      for d in "$HOME_DIR"/profiles/*/; do
-        name="$(basename "$d")"
-        [ "$name" = "$PROFILE" ] && continue
-        [ -f "$d/config.yaml" ] && targets="$targets $d/config.yaml"
-      done
-    fi
-  else
-    # comma-separated profile names
-    IFS=','; for name in $PARITY_TARGETS; do unset IFS
-      name="$(echo "$name" | tr -d '[:space:]')"
-      [ -z "$name" ] && continue
-      if [ "$name" = "default" ]; then
-        targets="$targets $HOME_DIR/config.yaml"
-      else
-        targets="$targets $HOME_DIR/profiles/$name/config.yaml"
-      fi
-    done; unset IFS
+# 5. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.
+#    Default (no flag) = the `default` profile + all others. --parity-guard=<csv>
+#    narrows to named profiles; =all is the explicit form of the default. ensure
+#    is non-clobbering: swaps a luna_vault_guard, adds the guard where none
+#    exists, no-ops if already on parity_guard.
+targets=""
+if [ -z "$PARITY_TARGETS" ] || [ "$PARITY_TARGETS" = "all" ]; then
+  targets="$HOME_DIR/config.yaml"   # the `default` profile
+  if [ -d "$HOME_DIR/profiles" ]; then
+    for d in "$HOME_DIR"/profiles/*/; do
+      name="$(basename "$d")"
+      [ "$name" = "$PROFILE" ] && continue
+      [ -f "$d/config.yaml" ] && targets="$targets $d/config.yaml"
+    done
   fi
-  for cfg in $targets; do
-    if [ -f "$cfg" ]; then
-      "$PYBIN" "$WIRE" swap "$cfg"
+else
+  # comma-separated profile names (narrowing override)
+  IFS=','; for name in $PARITY_TARGETS; do unset IFS
+    name="$(echo "$name" | tr -d '[:space:]')"
+    [ -z "$name" ] && continue
+    if [ "$name" = "default" ]; then
+      targets="$targets $HOME_DIR/config.yaml"
     else
-      echo "SKIP: config not found: $cfg" >&2
+      targets="$targets $HOME_DIR/profiles/$name/config.yaml"
     fi
-  done
+  done; unset IFS
 fi
+for cfg in $targets; do
+  if [ -f "$cfg" ]; then
+    "$PYBIN" "$WIRE" ensure "$cfg" "$GUARD_DEST" "$PYBIN"
+  else
+    echo "SKIP: config not found: $cfg" >&2
+  fi
+done
 
 echo "OK: himmel_agent provisioned. Reach it with:  hermes profile use $PROFILE"
 echo "    Restart the gateway and approve the hook once: hermes gateway restart"

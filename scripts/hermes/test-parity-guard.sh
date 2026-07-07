@@ -215,5 +215,35 @@ if [ "$(cat "$cfg")" = "$before" ]; then
   echo "  ok: swap left guard-less config untouched"; else
   echo "  FAIL: swap modified a guard-less config" >&2; fails=$((fails + 1)); fi
 
+echo "== wire_parity_guard: ensure (universal guard, HIMMEL-744) =="
+# branch 1: already on parity_guard -> idempotent no-op
+printf 'hooks:\n  pre_tool_call:\n  - command: /x/agent-hooks/parity_guard.py\n' > "$cfg"
+before="$(cat "$cfg")"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if [ "$(cat "$cfg")" = "$before" ]; then
+  echo "  ok: ensure no-op on an already-parity config"; else
+  echo "  FAIL: ensure modified an already-parity config" >&2; fails=$((fails + 1)); fi
+# branch 2: carries luna_vault_guard -> swapped
+printf 'hooks:\n  pre_tool_call:\n  - command: /x/agent-hooks/luna_vault_guard.py\n' > "$cfg"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if grep -q "parity_guard.py" "$cfg" && ! grep -q "luna_vault_guard" "$cfg"; then
+  echo "  ok: ensure swapped luna_vault_guard -> parity_guard"; else
+  echo "  FAIL: ensure did not swap luna_vault_guard" >&2; fails=$((fails + 1)); fi
+# branch 3: no guard hook, but an UNRELATED hook present -> parity_guard ADDED,
+# the unrelated hook + surrounding keys preserved (non-clobbering).
+printf 'model:\n  default: gpt-5.5\nhooks:\n  post_tool_call:\n  - command: /x/other_hook.py\n    timeout: 5\nsecurity:\n  redact_secrets: true\n' > "$cfg"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" \
+   && grep -q "post_tool_call" "$cfg" && grep -q "other_hook.py" "$cfg" \
+   && grep -q "redact_secrets" "$cfg" && grep -q "mcp__" "$cfg"; then
+  echo "  ok: ensure added parity_guard, preserved unrelated hook + keys"; else
+  echo "  FAIL: ensure add clobbered other hooks/keys (mcp__ matcher?)" >&2; fails=$((fails + 1)); fi
+# branch 3b: fully guard-less (hooks: {}) -> parity_guard added, keys preserved
+printf 'model:\n  default: gpt-5.5\nhooks: {}\nsecurity:\n  redact_secrets: true\n' > "$cfg"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" && grep -q "redact_secrets" "$cfg"; then
+  echo "  ok: ensure wired an empty hooks:{} config"; else
+  echo "  FAIL: ensure did not wire hooks:{} config" >&2; fails=$((fails + 1)); fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED" >&2; exit 1; fi
