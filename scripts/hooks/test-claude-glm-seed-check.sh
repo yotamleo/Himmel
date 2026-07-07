@@ -47,7 +47,7 @@ assert_contains() {  # <label> <haystack> <needle>
 # check must IGNORE, so a clean CFG that lacks them still reads as in-sync.
 build_src() {  # $1 = SRC dir
     local s="$1"
-    mkdir -p "$s"/{commands,skills,hooks,agents,plugins/marketplaces/m1,projects,todos}
+    mkdir -p "$s"/{commands,skills,hooks,agents,plugins/marketplaces/m1,plugins/claude-hud,projects,todos}
     printf 'src CLAUDE\n'         > "$s/CLAUDE.md"
     printf 'src RTK\n'            > "$s/RTK.md"
     printf 'cmd one\n'            > "$s/commands/c1.md"
@@ -57,6 +57,7 @@ build_src() {  # $1 = SRC dir
     printf '{"installed":true}\n' > "$s/plugins/installed_plugins.json"
     printf '{"mk":true}\n'        > "$s/plugins/known_marketplaces.json"
     printf '{"mp":1}\n'           > "$s/plugins/marketplaces/m1/manifest.json"
+    printf '{"hud":true}\n'       > "$s/plugins/claude-hud/config.json"
     # Non-seeded: present in SOURCE, absent in CFG, must NOT register as drift.
     printf '{"model":"glm-5.2","env":{"ANTHROPIC_API_KEY":"sekret"}}\n' > "$s/settings.json"
     printf 'junk projects\n'      > "$s/projects/p.json"
@@ -82,6 +83,8 @@ seed_cfg() {
     cp "$s/plugins/installed_plugins.json"  "$c/plugins/installed_plugins.json"
     cp "$s/plugins/known_marketplaces.json" "$c/plugins/known_marketplaces.json"
     cp -R "$s/plugins/marketplaces"         "$c/plugins/marketplaces"
+    mkdir -p "$c/plugins/claude-hud"
+    cp "$s/plugins/claude-hud/config.json"  "$c/plugins/claude-hud/config.json"
     : > "$c/.seeded"
 }
 

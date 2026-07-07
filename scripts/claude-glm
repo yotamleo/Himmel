@@ -5,8 +5,13 @@
 set -u
 
 GLM_BASE_URL="https://api.z.ai/api/anthropic"
-GLM_MODEL="glm-5.2"
+# [1m] = Z.ai 1M-context variant; GLM_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW
+# (exec block below) so Claude Code stops auto-compacting at the ~200k default — the
+# documented "prompt too long" deaths. Both overridable per task (small:
+# GLM_MODEL=glm-5.2 + GLM_CONTEXT_WINDOW=200000). HAIKU stays 4.7 (1M is main-only).
+GLM_MODEL="${GLM_MODEL:-glm-5.2[1m]}"
 GLM_HAIKU="glm-4.7"
+GLM_CONTEXT_WINDOW="${GLM_CONTEXT_WINDOW:-1000000}"
 CONFIG_DIR="${HOME}/.claude-glm"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -138,6 +143,13 @@ seed_config_dir() {
     [ -f "$SRC/plugins/$p" ] && { cp "$SRC/plugins/$p" "$CONFIG_DIR/plugins/$p" || seed_fail "copy plugins/$p"; }
   done
   [ -d "$SRC/plugins/marketplaces" ] && { rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear plugins/marketplaces before reseed"; cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
+  # claude-hud DISPLAY config — seed the single config.json only; the three cache
+  # dirs under plugins/claude-hud/ (config-cache/context-cache/transcript-cache) are
+  # runtime state, never seeded. Source-absent → skip (mirrors the [ -f ] guards above).
+  if [ -f "$SRC/plugins/claude-hud/config.json" ]; then
+    mkdir -p "$CONFIG_DIR/plugins/claude-hud" || seed_fail "create $CONFIG_DIR/plugins/claude-hud"
+    cp "$SRC/plugins/claude-hud/config.json" "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "copy plugins/claude-hud/config.json"
+  fi
   : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
 }
 
@@ -162,5 +174,6 @@ exec env \
   ANTHROPIC_DEFAULT_HAIKU_MODEL="$GLM_HAIKU" \
   ANTHROPIC_DEFAULT_SONNET_MODEL="$GLM_MODEL" \
   ANTHROPIC_DEFAULT_OPUS_MODEL="$GLM_MODEL" \
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW="$GLM_CONTEXT_WINDOW" \
   CLAUDE_CONFIG_DIR="$CONFIG_DIR" \
   claude "$@"

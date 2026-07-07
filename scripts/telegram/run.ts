@@ -149,7 +149,7 @@ export function killTree(pid: number, kill: (sig?: number | NodeJS.Signals) => v
   try { kill("SIGKILL"); } catch {}
 }
 
-// Lane → model pin: the GLM lane pins its alias (→ glm-5.2 via
+// Lane → model pin: the GLM lane pins its alias (→ glm-5.2[1m] via
 // ANTHROPIC_DEFAULT_OPUS_MODEL) and MUST NOT inherit TELEGRAM_CLAUDE_MODEL; any
 // other lane leaves the model to resolveModel. Extracted so the seam is unit-tested.
 export function laneModel(lane?: "glm"): string | undefined {

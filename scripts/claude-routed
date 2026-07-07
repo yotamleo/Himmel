@@ -19,8 +19,13 @@ set -u
 ROUTED_BASE_URL="http://127.0.0.1:${OMNIROUTE_PORT:-20128}"
 # Tier aliases are the SAME GLM values as claude-glm: the pilot lane is GLM-only
 # intra-provider tiering and the router config defines these aliases.
-ROUTED_MODEL="glm-5.2"
+# [1m] = Z.ai 1M-context variant (the routed pilot is GLM-only loopback, so [1m]
+# passes through); ROUTED_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (exec
+# block below). Both overridable per task. HAIKU stays 4.7. If a future deployment
+# routes to a non-GLM backend (codex ~277k, etc.), override both to match its window.
+ROUTED_MODEL="${ROUTED_MODEL:-glm-5.2[1m]}"
 ROUTED_HAIKU="glm-4.7"
+ROUTED_CONTEXT_WINDOW="${ROUTED_CONTEXT_WINDOW:-1000000}"
 CONFIG_DIR="${HOME}/.claude-routed"   # per-lane isolation (own seeded config dir)
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -152,6 +157,13 @@ seed_config_dir() {
     [ -f "$SRC/plugins/$p" ] && { cp "$SRC/plugins/$p" "$CONFIG_DIR/plugins/$p" || seed_fail "copy plugins/$p"; }
   done
   [ -d "$SRC/plugins/marketplaces" ] && { cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
+  # claude-hud DISPLAY config — seed the single config.json only; the three cache
+  # dirs under plugins/claude-hud/ (config-cache/context-cache/transcript-cache) are
+  # runtime state, never seeded. Source-absent → skip (mirrors the [ -f ] guards above).
+  if [ -f "$SRC/plugins/claude-hud/config.json" ]; then
+    mkdir -p "$CONFIG_DIR/plugins/claude-hud" || seed_fail "create $CONFIG_DIR/plugins/claude-hud"
+    cp "$SRC/plugins/claude-hud/config.json" "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "copy plugins/claude-hud/config.json"
+  fi
   : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
 }
 
@@ -175,5 +187,6 @@ exec env \
   ANTHROPIC_DEFAULT_HAIKU_MODEL="$ROUTED_HAIKU" \
   ANTHROPIC_DEFAULT_SONNET_MODEL="$ROUTED_MODEL" \
   ANTHROPIC_DEFAULT_OPUS_MODEL="$ROUTED_MODEL" \
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW="$ROUTED_CONTEXT_WINDOW" \
   CLAUDE_CONFIG_DIR="$CONFIG_DIR" \
   claude "$@"

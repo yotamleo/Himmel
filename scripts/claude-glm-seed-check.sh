@@ -40,7 +40,7 @@ done
 
 # The EXACT seeded set the launcher's seed_config_dir() mirrors. Keep in sync
 # with scripts/claude-glm + scripts/claude-glm.ps1. settings.json is NOT here.
-SEED_FILES="CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json"
+SEED_FILES="CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json"
 SEED_DIRS="commands skills hooks agents plugins/marketplaces"
 
 # Unseeded = the launcher would re-seed on next run: dir absent OR no .seeded

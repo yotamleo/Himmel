@@ -36,8 +36,13 @@ $Port          = if ($env:OMNIROUTE_PORT) { $env:OMNIROUTE_PORT } else { '20128'
 $RoutedBaseUrl = "http://127.0.0.1:$Port"
 # Tier aliases are the SAME GLM values as claude-glm: the pilot lane is GLM-only
 # intra-provider tiering and the router config defines these aliases.
-$RoutedModel   = 'glm-5.2'
-$RoutedHaiku   = 'glm-4.7'
+# [1m] = Z.ai 1M-context variant (routed pilot is GLM-only loopback, so [1m] passes
+# through); $RoutedContextWindow feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (env block
+# below). Both overridable per task. HAIKU stays 4.7. If a future deployment routes to
+# a non-GLM backend (codex ~277k, etc.), override both to match its window.
+$RoutedModel        = if ($env:ROUTED_MODEL) { $env:ROUTED_MODEL } else { 'glm-5.2[1m]' }
+$RoutedHaiku        = 'glm-4.7'
+$RoutedContextWindow = if ($env:ROUTED_CONTEXT_WINDOW) { $env:ROUTED_CONTEXT_WINDOW } else { '1000000' }
 
 # HOME equivalent: bash uses $HOME; here $env:USERPROFILE so hermetic tests can
 # override the home root per-invocation (PowerShell's $HOME is fixed at startup).
@@ -205,6 +210,13 @@ function Copy-SeedConfig {
     }
     $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
     if (Test-Path -LiteralPath $mp -PathType Container) { Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force }
+    # claude-hud DISPLAY config — seed the single config.json only; the cache dirs
+    # under plugins/claude-hud/ are runtime state, never seeded. Source-absent → skip.
+    $hudCfg = Join-Path $src (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
+    if (Test-Path -LiteralPath $hudCfg) {
+      New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir (Join-Path 'plugins' 'claude-hud')) | Out-Null
+      Copy-Item -LiteralPath $hudCfg -Destination (Join-Path $ConfigDir (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))) -Force
+    }
     # sentinel LAST: only a fully-populated seed reads as "seeded"
     New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
   } catch {
@@ -235,6 +247,7 @@ $env:ANTHROPIC_MODEL              = $RoutedModel
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $RoutedHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $RoutedModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $RoutedModel
+$env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $RoutedContextWindow
 $env:CLAUDE_CONFIG_DIR            = $ConfigDir
 
 & claude @ClaudeArgs

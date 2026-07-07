@@ -86,7 +86,7 @@ function isHimmelCheckout(d: string): boolean {
   return existsSync(join(d, "scripts", "claude-glm"));
 }
 
-export type ParsedArgs = { task?: string; cwd: string; name?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string };
+export type ParsedArgs = { task?: string; cwd: string; name?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small" };
 // Pure + validated: a value-taking flag with no value, or a non-positive /
 // non-finite --timeout-mins, is a USAGE REFUSAL (main → exit 2) — NOT a silent
 // NaN that setTimeout(NaN)≈0 turns into an instant kill, and NOT a bare
@@ -101,6 +101,7 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
   const grants: GrantSpec[] = [];
   let autonomous = false;
   let carryFrom: string | undefined;
+  let context: "big" | "small" | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
@@ -118,9 +119,10 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
     else if (a === "--grant") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--grant requires a value" }; const p = parseGrantFlag(v); if (!p.ok) return { ok: false, error: `--grant ${p.error}` }; grants.push(p.spec); }
     else if (a === "--autonomous") autonomous = true;
     else if (a === "--carry-from") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--carry-from requires a value" }; carryFrom = v; }
+    else if (a === "--context") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--context requires a value" }; if (v !== "big" && v !== "small") return { ok: false, error: `--context must be big or small (got "${v}")` }; context = v; }
     else if (task === undefined) task = a;
   }
-  return { ok: true, args: { task, cwd, name, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom } };
+  return { ok: true, args: { task, cwd, name, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context } };
 }
 
 // HIMMEL-682 (Task L1): read a capped session's grants.jsonl and compute the
@@ -219,11 +221,16 @@ export async function executeRun(deps: {
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
-  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode bypassPermissions]";
+  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--context big|small]";
   if (!parsed.ok) { console.error(`spawn-glm: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom } = parsed.args;
+  const { task, cwd, name, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
   const absCwd = resolve(cwd);
+  // HIMMEL-718: thread --context big|small into buildGlmEnv via GLM_CONTEXT (read by
+  // the runSession env path + the preflight buildGlmEnv below). `?? "big"` makes the
+  // default explicit so an ambient GLM_CONTEXT in the parent shell can't silently flip
+  // an omitted --context (the doc/test intent is "--context absent => big").
+  process.env.GLM_CONTEXT = context ?? "big";
 
   const plan = planSpawn(absCwd, name, { isHimmelCheckout, settingsConflicts: findSettingsConflicts, home: homedir() });
   if (!plan.ok) { console.error(plan.reason); process.exit(2); }

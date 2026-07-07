@@ -511,6 +511,19 @@ test("parseArgs --carry-from (HIMMEL-682): value captured, required", () => {
   expect(parseArgs(["job", "--carry-from"]).ok).toBe(false);   // --carry-from requires a value
 });
 
+test("parseArgs --context big|small (HIMMEL-718): value captured, validated, default undefined", () => {
+  expect((parseArgs(["t", "--context", "big"]) as any).args.context).toBe("big");
+  expect((parseArgs(["t", "--context", "small"]) as any).args.context).toBe("small");
+  // parseArgs leaves context unset when omitted; main() applies the big default.
+  expect((parseArgs(["t"]) as any).args.context).toBeUndefined();
+  const invalid = parseArgs(["t", "--context", "huge"]);
+  expect(invalid.ok).toBe(false);
+  expect((invalid as any).error).toMatch(/--context must be big or small/);
+  const trailing = parseArgs(["t", "--context"]);
+  expect(trailing.ok).toBe(false);
+  expect((trailing as any).error).toMatch(/--context requires a value/);
+});
+
 // applyCarryFrom (HIMMEL-682) — exercises the autonomousEff→gate SECURITY wiring
 // end-to-end against a real temp dir (pr-test-analyzer I1), not just inspection.
 const GH_READ_P = "gh[[:space:]]+api[[:space:]]+repos/o/r([[:space:]]|$)";
