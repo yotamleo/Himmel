@@ -1641,6 +1641,437 @@ assert "natsort mixed carousel gains ### Transcript" ok "$a"
 grep -qF "2 slides + 1 transcript" "$tmp/natsort.out" && a=ok || a=no
 assert "natsort outcome line: 2 slides + 1 transcript" ok "$a"
 
+# --- Test 36: soundless-video screenshot fallback (HIMMEL-786) ---------------
+# A GIF-like carousel video has NO audio stream: WAV extraction fails, the
+# audio probe (-map 0:a:0) confirms no audio, so the tool extracts a frame
+# (-frames:v 1) and routes it through render_slides as a screenshot slide in
+# carousel order. The clip is ENRICHED (not partial) with 3 slides.
+echo "Test 36: soundless video -> screenshot slide (HIMMEL-786)"
+# Unique per-file content (Test-35 pattern) so slide PROVENANCE + ORDER are
+# pinned: a rebuild off-by-one that swaps the screenshot's carousel slot
+# would fail these greps, not pass vacuously.
+cat > "$tmp/bin/gallery-dl" <<'STUB'
+#!/usr/bin/env bash
+dest=""
+while [ $# -gt 0 ]; do case "$1" in -D) shift; dest="$1" ;; esac; shift; done
+[ -n "$dest" ] || { echo "gallery-dl-stub: no -D specified" >&2; exit 1; }
+mkdir -p "$dest"
+echo "SLIDEONE" > "$dest/1.jpg"
+echo "VIDEODATA" > "$dest/2.mp4"
+echo "SLIDETHREE" > "$dest/3.jpg"
+exit 0
+STUB
+chmod +x "$tmp/bin/gallery-dl"
+cat > "$tmp/bin/gallery-dl.bat" <<'STUB'
+@echo off
+setlocal enabledelayedexpansion
+set dest=
+for %%i in (%*) do (
+    if "!prev_flag!"=="-D" set dest=%%i
+    set prev_flag=%%i
+)
+if "!dest!"=="" ( echo gallery-dl-stub: no -D specified 1>&2 & exit /b 1 )
+if not exist "!dest!" mkdir "!dest!"
+(echo SLIDEONE) > "!dest!\1.jpg"
+(echo VIDEODATA) > "!dest!\2.mp4"
+(echo SLIDETHREE) > "!dest!\3.jpg"
+exit /b 0
+STUB
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+# HIMMEL-786 stub: -vn (WAV extract) fails like a soundless video; the audio
+# probe (-map 0:a:0) exits 1 (no audio stream); frame-extract/recompress copy
+# the -i source to the last arg.
+case " $* " in
+  *" -vn "*) echo "Output file does not contain any stream" >&2; exit 1 ;;
+  *" 0:a:0 "*) echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Output file does not contain any stream 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk36
+if "%~1"=="" goto done36
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk36
+:done36
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VSL="$tmp/vault-soundless"
+make_ig_vault "$VSL" SLNT036
+run_tool "$VSL" >"$tmp/soundless.out" 2>"$tmp/soundless.err"
+assert "soundless run exit 0" 0 "$?"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VSL/Clippings/clip.md")"
+assert "soundless: 3 slide embeds (2 images + 1 screenshot)" 3 "$n"
+for k in 01 02 03; do
+  [ -f "$VSL/Clippings/_media/clip/slide-$k.jpg" ] && a=ok || a=no
+  assert "soundless: slide-$k.jpg in vault _media/" ok "$a"
+done
+# Provenance/order: the screenshot sits at its TRUE carousel slot (2), the
+# images keep theirs (1, 3).
+grep -qF 'SLIDEONE' "$VSL/Clippings/_media/clip/slide-01.jpg" && a=ok || a=no
+assert "soundless: slide-01 is 1.jpg content (carousel order)" ok "$a"
+grep -qF 'VIDEODATA' "$VSL/Clippings/_media/clip/slide-02.jpg" && a=ok || a=no
+assert "soundless: slide-02 is the video frame (carousel slot 2)" ok "$a"
+grep -qF 'SLIDETHREE' "$VSL/Clippings/_media/clip/slide-03.jpg" && a=ok || a=no
+assert "soundless: slide-03 is 3.jpg content (carousel order)" ok "$a"
+grep -qF '**Slide 2 (video):**' "$VSL/Clippings/clip.md" && a=present || a=absent
+assert "soundless: no video transcript label" absent "$a"
+grep -q '^media_enrichment_status: ok$' "$VSL/Clippings/clip.md" && a=ok || a=no
+assert "soundless: media_enrichment_status ok (NOT partial)" ok "$a"
+grep -qF "3 slides + 0 transcript" "$tmp/soundless.out" && a=ok || a=no
+assert "soundless: outcome line 3 slides + 0 transcript" ok "$a"
+vid="$(find "$VSL" \( -name '*.mp4' -o -name '*.wav' \) 2>/dev/null)"
+[ -z "$vid" ] && a=ok || a=no
+assert "soundless: no video/wav under the vault" ok "$a"
+
+# --- Test 37: audio-bearing WAV failure keeps partial semantics (HIMMEL-786) -
+# The video HAS an audio stream (probe exits 0) but WAV extraction failed ->
+# a genuine transcription failure: NO screenshot fallback, clip stays partial.
+echo "Test 37: audio-bearing wav failure stays partial (HIMMEL-786)"
+emit_gallery_dl 1.jpg 2.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+# HIMMEL-786 stub: -vn fails, but the audio probe SUCCEEDS (audio exists).
+case " $* " in
+  *" -vn "*) echo "Conversion failed!" >&2; exit 1 ;;
+  *" 0:a:0 "*) exit 0 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Conversion failed! 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 exit /b 0
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk37
+if "%~1"=="" goto done37
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk37
+:done37
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VAP="$tmp/vault-audio-partial"
+make_ig_vault "$VAP" AUDP037
+run_tool "$VAP" >"$tmp/audiopart.out" 2>"$tmp/audiopart.err"
+assert "audio-partial run exit 0" 0 "$?"
+grep -q '^media_enrichment_status: partial$' "$VAP/Clippings/clip.md" && a=ok || a=no
+assert "audio-partial: media_enrichment_status partial (no fallback)" ok "$a"
+grep -qF "1/1 slides, 0/1 transcripts" "$tmp/audiopart.out" && a=ok || a=no
+assert "audio-partial: outcome line 1/1 slides, 0/1 transcripts" ok "$a"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VAP/Clippings/clip.md")"
+assert "audio-partial: only 1 slide embed (no screenshot)" 1 "$n"
+
+# --- Test 38: inconclusive audio probe keeps partial semantics (HIMMEL-786,
+#     codex-adv hardening). The WAV extract fails AND the probe fails for a
+#     NON-no-audio reason (corrupt media, decode error). Only a conclusive
+#     "matches no streams" proves soundless; anything else must NOT screenshot-
+#     fallback (a real transcript could be silently lost) -> stays partial.
+echo "Test 38: inconclusive audio probe stays partial (HIMMEL-786)"
+emit_gallery_dl 1.jpg 2.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+# HIMMEL-786 stub: -vn fails; the probe fails with a GENERIC error (no
+# "matches no streams" proof) - decode error / corrupt media.
+case " $* " in
+  *" -vn "*) echo "Conversion failed!" >&2; exit 1 ;;
+  *" 0:a:0 "*) echo "Error while decoding stream" >&2; exit 1 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Conversion failed! 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo Error while decoding stream 1>&2 & exit /b 1 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk38
+if "%~1"=="" goto done38
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk38
+:done38
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VIP="$tmp/vault-inconclusive"
+make_ig_vault "$VIP" INCP038
+run_tool "$VIP" >"$tmp/inconc.out" 2>"$tmp/inconc.err"
+assert "inconclusive run exit 0" 0 "$?"
+grep -q '^media_enrichment_status: partial$' "$VIP/Clippings/clip.md" && a=ok || a=no
+assert "inconclusive: media_enrichment_status partial (no fallback)" ok "$a"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VIP/Clippings/clip.md")"
+assert "inconclusive: only 1 slide embed (no screenshot)" 1 "$n"
+# The probe's own inconclusive failure must be TRACED (silent-failure CR):
+# the file convention is _emit_stderr_tail on every failed ffmpeg call.
+grep -q 'ffmpeg(probe)' "$tmp/inconc.err" && a=ok || a=no
+assert "inconclusive: probe failure traced on stderr (ffmpeg(probe))" ok "$a"
+
+# --- Test 39: soundless-only single-video reel -> 1 screenshot slide ---------
+# The primary real-world shape: a bare GIF-like reel, NO accompanying images
+# (images starts [] and is entirely rebuilt by the fallback).
+echo "Test 39: soundless-only reel -> 1 screenshot slide (HIMMEL-786)"
+emit_gallery_dl video.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" -vn "*) echo "Output file does not contain any stream" >&2; exit 1 ;;
+  *" 0:a:0 "*) echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Output file does not contain any stream 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk39
+if "%~1"=="" goto done39
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk39
+:done39
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VOR="$tmp/vault-only-reel"
+make_ig_vault "$VOR" ONLY039
+run_tool "$VOR" >"$tmp/onlyreel.out" 2>"$tmp/onlyreel.err"
+assert "soundless-only reel run exit 0" 0 "$?"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VOR/Clippings/clip.md")"
+assert "soundless-only reel: exactly 1 screenshot slide embed" 1 "$n"
+grep -q '^media_enrichment_status: ok$' "$VOR/Clippings/clip.md" && a=ok || a=no
+assert "soundless-only reel: enriched ok (not partial/failed)" ok "$a"
+grep -qF "1 slides + 0 transcript" "$tmp/onlyreel.out" && a=ok || a=no
+assert "soundless-only reel: outcome line 1 slides + 0 transcript" ok "$a"
+
+# --- Test 40: frame extraction fails AFTER a conclusive no-audio probe -------
+# The other half of soundless_video_frame's branches: probe proves soundless
+# but -frames:v fails -> NO screenshot, clip stays partial (traced, not silent).
+echo "Test 40: frame-extract failure after conclusive probe -> partial (HIMMEL-786)"
+emit_gallery_dl 1.jpg 2.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" -vn "*) echo "Output file does not contain any stream" >&2; exit 1 ;;
+  *" 0:a:0 "*) echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+  *" -frames:v "*) echo "Error extracting frame" >&2; exit 1 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Output file does not contain any stream 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+echo %*| findstr /C:"-frames:v" >nul
+if not errorlevel 1 ( echo Error extracting frame 1>&2 & exit /b 1 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk40
+if "%~1"=="" goto done40
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk40
+:done40
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VFF="$tmp/vault-frame-fail"
+make_ig_vault "$VFF" FRMF040
+run_tool "$VFF" >"$tmp/framefail.out" 2>"$tmp/framefail.err"
+assert "frame-fail run exit 0" 0 "$?"
+grep -q '^media_enrichment_status: partial$' "$VFF/Clippings/clip.md" && a=ok || a=no
+assert "frame-fail: stays partial (no silent screenshot)" ok "$a"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VFF/Clippings/clip.md")"
+assert "frame-fail: only 1 slide embed" 1 "$n"
+grep -q 'ffmpeg(frame)' "$tmp/framefail.err" && a=ok || a=no
+assert "frame-fail: extraction failure traced (ffmpeg(frame))" ok "$a"
+
+# --- Test 41: two failed videos, mixed probe outcomes, one carousel ----------
+# 2.mp4 soundless (-> screenshot slide), 3.mp4 audio-bearing (-> stays failed
+# transcript): per-item bookkeeping must not cross-contaminate.
+echo "Test 41: mixed soundless + audio-bearing videos in one carousel (HIMMEL-786)"
+emit_gallery_dl 1.jpg 2.mp4 3.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "$args" in
+  *" -vn "*) echo "Conversion failed!" >&2; exit 1 ;;
+esac
+case "$args" in
+  *" 0:a:0 "*)
+    case "$args" in
+      *2.mp4*) echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+      *) exit 0 ;;
+    esac ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Conversion failed! 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if errorlevel 1 goto copy41
+echo %*| findstr /C:"2.mp4" >nul
+if not errorlevel 1 ( echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+exit /b 0
+:copy41
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk41
+if "%~1"=="" goto done41
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk41
+:done41
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VMX="$tmp/vault-mixed-probe"
+make_ig_vault "$VMX" MXPR041
+run_tool "$VMX" >"$tmp/mixedprobe.out" 2>"$tmp/mixedprobe.err"
+assert "mixed-probe run exit 0" 0 "$?"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VMX/Clippings/clip.md")"
+assert "mixed-probe: 2 slide embeds (image + screenshot of 2.mp4)" 2 "$n"
+grep -q '^media_enrichment_status: partial$' "$VMX/Clippings/clip.md" && a=ok || a=no
+assert "mixed-probe: partial (3.mp4 transcript genuinely lost)" ok "$a"
+grep -qF "2/2 slides, 0/1 transcripts" "$tmp/mixedprobe.out" && a=ok || a=no
+assert "mixed-probe: outcome line 2/2 slides, 0/1 transcripts" ok "$a"
+
+# --- Test 42: frame-extract TIMEOUT after a conclusive probe -> traced +
+#     partial (codex-adv round 3). IG_MEDIA_FFMPEG_TIMEOUT=1 seams the 300s
+#     constant; the stub hangs only on the -frames:v call (exec sleep - the
+#     Git-Bash grandchild-reaping trap).
+echo "Test 42: frame-extract timeout traced, stays partial (HIMMEL-786)"
+emit_gallery_dl 1.jpg 2.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" -vn "*) echo "Output file does not contain any stream" >&2; exit 1 ;;
+  *" 0:a:0 "*) echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+  *" -frames:v "*) exec sleep 5 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Output file does not contain any stream 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+echo %*| findstr /C:"-frames:v" >nul
+if not errorlevel 1 ( ping -n 6 127.0.0.1 >nul & exit /b 0 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk42
+if "%~1"=="" goto done42
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk42
+:done42
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VFT="$tmp/vault-frame-timeout"
+make_ig_vault "$VFT" FRTO042
+IG_MEDIA_FFMPEG_TIMEOUT=1 run_tool "$VFT" >"$tmp/frametimeout.out" 2>"$tmp/frametimeout.err"
+assert "frame-timeout run exit 0" 0 "$?"
+grep -q '^media_enrichment_status: partial$' "$VFT/Clippings/clip.md" && a=ok || a=no
+assert "frame-timeout: stays partial" ok "$a"
+grep -q 'ffmpeg(frame): timed out' "$tmp/frametimeout.err" && a=ok || a=no
+assert "frame-timeout: timeout traced (ffmpeg(frame))" ok "$a"
+
 echo ""
 echo "ig-media-enrich tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
