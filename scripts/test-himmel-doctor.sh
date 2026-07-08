@@ -11,6 +11,10 @@ DOC="$REPO_ROOT/scripts/himmel-doctor.sh"
 # real vault (HOME is redirected per-case, but C3 probes $LUNA_VAULT_PATH first).
 export LUNA_VAULT_PATH=""
 
+# Hermeticity: C14 reads OLLAMA_NO_CLOUD from the live env — never let an
+# inherited value from the launching shell leak into the default test runs.
+unset OLLAMA_NO_CLOUD
+
 failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
@@ -459,6 +463,39 @@ echo "== C13: shipped himmel-ops hooks.json targets exist -> OK C13-plugin-hooks
 t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if printf '%s' "$out" | grep -q 'OK   C13-plugin-hooks'; then pass "C13 -> OK (shipped hook targets exist)"; else fail "C13 -> $(printf '%s' "$out" | grep C13)"; fi
+rm -rf "$t"
+
+# ── C14: ollama zero-egress defense-in-depth pin (OLLAMA_NO_CLOUD) ────────────
+FAKEOLLAMA="$FAKEROOT/ollamabin"; mkdir -p "$FAKEOLLAMA"
+printf '#!/bin/sh\necho ollama version fake\n' > "$FAKEOLLAMA/ollama"; chmod +x "$FAKEOLLAMA/ollama"
+
+# Scope DOCTOR_WORKTREE_ROOT at a plain (non-git) empty dir so C7's `git
+# worktree list` finds nothing and short-circuits to OK immediately, instead
+# of scanning this checkout's real worktrees/branches — a real worktree
+# branch forces a live gh/forge call that can hang well past its own timeout
+# on some hosts (HIMMEL-784 investigation; filed separately), unrelated to
+# C14 itself.
+C14_WT_ROOT="$FAKEROOT/c14-empty"; mkdir -p "$C14_WT_ROOT"
+
+echo "== C14: ollama not on PATH -> OK C14-ollama-no-cloud (skipped) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(PATH="$TOOLS_PATH" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C14-ollama-no-cloud' && printf '%s' "$out" | grep -q 'not on PATH'; then pass "C14 -> OK (ollama absent, skipped)"; else fail "C14 absent -> $(printf '%s' "$out" | grep C14)"; fi
+rm -rf "$t"
+
+echo "== C14: ollama present, OLLAMA_NO_CLOUD unset -> WARN C14-ollama-no-cloud =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(PATH="$FAKEOLLAMA:$TOOLS_PATH" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" env -u OLLAMA_NO_CLOUD bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN C14-ollama-no-cloud' && printf '%s' "$out" | grep -q 'pin unset'; then pass "C14 -> WARN (ollama present, pin unset)"; else fail "C14 unset -> $(printf '%s' "$out" | grep C14)"; fi
+rm -rf "$t"
+
+echo "== C14: ollama present, OLLAMA_NO_CLOUD=1 -> OK C14-ollama-no-cloud =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(PATH="$FAKEOLLAMA:$TOOLS_PATH" OLLAMA_NO_CLOUD=1 DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C14-ollama-no-cloud' && printf '%s' "$out" | grep -q 'pin is set'; then pass "C14 -> OK (pin set)"; else fail "C14 set -> $(printf '%s' "$out" | grep C14)"; fi
 rm -rf "$t"
 
 rm -rf "$FAKEROOT"

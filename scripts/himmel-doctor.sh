@@ -522,6 +522,27 @@ EOF_CMDS
     fi
 }
 
+# --- C14: ollama zero-egress defense-in-depth pin (OLLAMA_NO_CLOUD) -------------
+# ADVISORY only. The PRIMARY zero-egress guarantee for the ollama-local lane is
+# structural and holds regardless of this var: bare model names never reach
+# cloud, cloud is opt-in only via the -cloud suffix. OLLAMA_NO_CLOUD=1 is an
+# additional belt-and-suspenders pin applied at machine-setup (see
+# docs/setup/new-machine.md) — never a hard fail, and skipped where ollama
+# isn't installed.
+check_c14() {
+    if ! command -v ollama >/dev/null 2>&1; then
+        emit OK C14-ollama-no-cloud "ollama CLI not on PATH (ollama-local lane not in use here — skipped)"
+        return
+    fi
+    if [ -n "${OLLAMA_NO_CLOUD:-}" ]; then
+        emit OK C14-ollama-no-cloud "OLLAMA_NO_CLOUD=$OLLAMA_NO_CLOUD (zero-egress defense-in-depth pin is set)"
+    else
+        emit WARN C14-ollama-no-cloud \
+            "zero-egress defense-in-depth pin unset -- the primary guarantee (bare model names, cloud opt-in only via -cloud suffix) still holds, but the belt-and-suspenders OLLAMA_NO_CLOUD pin is off" \
+            "set per docs/setup/new-machine.md #1 Required environment (setx on Windows, launchctl/shell-profile on macOS, systemd drop-in/shell-profile on Linux)"
+    fi
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -575,6 +596,7 @@ check_c10
 check_c11
 check_c12
 check_c13
+check_c14
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
