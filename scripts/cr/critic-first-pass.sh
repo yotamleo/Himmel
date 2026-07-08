@@ -512,6 +512,12 @@ if [ "$rc" -ne 0 ]; then
     if [ -n "$log" ]; then
         printf '%s\n' "$raw" > "$log"
         echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. Raw output: $log" >&2
+        # HIMMEL-737: surface a bounded head of the raw reply on stderr too -
+        # provider failures (e.g. an HTTP 403 quota message) arrive as the
+        # "review" body, and the panel's quota-exhaustion fallback matches its
+        # signature against THIS stderr; a path-only line kept the fallback
+        # chain permanently dark (live-debugged: qwen3coder 403 never fell back).
+        printf 'critic-first-pass.sh: raw head: %.300s\n' "$raw" >&2
     else
         echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
         printf '%s\n' "$raw" >&2

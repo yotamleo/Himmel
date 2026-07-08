@@ -77,6 +77,20 @@ PY
 out3="$(printf '%s' "$DIFF" | HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug s 2>/dev/null)"
 check "hallucinated cite dropped" "$(printf '%s' "$out3" | grep -c '^## Critical Issues (0 found)')" "1"
 
+# --- HIMMEL-737: provider-failure body surfaces on stderr (raw head) ---
+# A quota 403 arrives as the "review" BODY (rc 0, non-empty, malformed). The
+# fail path must exit 1 AND print a bounded raw head to stderr - the panel's
+# quota-exhaustion fallback matches its signature against THIS stderr; a
+# path-only line kept the fallback chain permanently dark in production.
+cat > "$tmp/stub.py" <<'PY'
+print("HTTP 403: The free quota has been exhausted")
+PY
+err403="$tmp/err403"
+printf '%s' "$DIFF" | HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug s >/dev/null 2>"$err403"
+check "quota-shaped garbage exits 1" "$?" "1"
+check "raw head on stderr carries the quota text" \
+    "$(grep -c 'critic-first-pass.sh: raw head: HTTP 403: The free quota has been exhausted' "$err403")" "1"
+
 # --- test: retry recovers on first-attempt empty response ---
 # Counter file: bash shim increments it, decides which stub.py to exec.
 counter_file="$tmp/retry_counter"
