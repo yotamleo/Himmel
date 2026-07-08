@@ -119,6 +119,8 @@ crystallized_at:
 
 After the frontmatter, every session note has exactly these six h2 sections, in this order: `## Summary`, `## Decisions`, `## Files Touched`, `## Commands`, `## Follow-ups`, `## Raw Conversation`. (The for-future-Claude preamble in 3.1 sits above the first h2 and is not itself an h2.) Empty sections are written with a single-line `_None._` placeholder rather than omitted, so the shape is predictable for future-Claude.
 
+An optional seventh section, `## Lessons` (§3.6a), may appear between `## Follow-ups` and `## Raw Conversation` — it is **crystallizer-only** (HIMMEL-767): the mechanical render never emits it, and it is present only when the LLM synthesis pass identified a genuine reusable lesson.
+
 ### 3.1 For-future-Claude preamble (above first h2)
 
 A 2-3 sentence summary written immediately after the frontmatter, before the first `## Summary` heading. Required by Luna AI-First Vault Rule §0 ("Every note begins with a 2-3 sentence summary so Claude can decide relevance in 10 seconds"). Distinct from `## Summary` below — this is the elevator pitch; `## Summary` is the detail.
@@ -188,6 +190,37 @@ Bullet list of TODOs surfaced during the session — explicit deferrals, "next s
 **Confidence markers** (per Luna `_CLAUDE.md` §0.7): optional here — most follow-ups are explicit deferrals (effectively `(stated)`). Mark speculative or "may need to" items with `(speculation)` so future-Claude knows they are not commitments.
 
 If none: `_None._`.
+
+### 3.6a `## Lessons` (optional, crystallizer-only, HIMMEL-767)
+
+Present only when the LLM crystallization pass (see
+[`end-session-wiki.md` → Crystallization](./end-session-wiki.md#crystallization-llm-upgrade))
+judged the session surfaced a genuine reusable lesson — a gotcha, decision, or
+fact worth remembering beyond this session, not routine status. The
+mechanical render never emits this section; a note that stays
+`crystallized: false` never has one either.
+
+Body: a fenced ` ```jsonl ` code block, one JSON object per line, each
+matching the lesson-record schema in
+[`docs/internals/lesson-provenance.md`](../internals/lesson-provenance.md):
+`source.type: session`, `source.ref` = this note's own vault-relative path +
+`#Lessons`, `captured_by: end-session-wiki`.
+
+````markdown
+## Lessons
+
+```jsonl
+{"id":"2026-07-08-example-widget-api-429","claim":"Widget API returns 429 under concurrent writes; serialize calls.","source":{"type":"session","ref":"sessions/2026/07/2026-07-08-1432-himmel-feat-foo.md#Lessons"},"captured_at":"2026-07-08T14:32:00Z","captured_by":"end-session-wiki","confidence":"high","scope":["harness"],"status":"active"}
+```
+````
+
+Fail-open: a malformed line here must never block session capture — the
+crystallizer's existing best-effort semantics cover it (see
+[Crystallization](./end-session-wiki.md#crystallization-llm-upgrade)). A
+record's actual validity is checked later, out of band, by
+`node scripts/lessons/validate-lesson.mjs --capture` (lean-invoke, not at
+capture time; `--capture` because these are capture-path records — any
+`audit` block fails).
 
 ### 3.7 `## Raw Conversation`
 

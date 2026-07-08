@@ -229,6 +229,10 @@ env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success \
     CRYSTALLIZE_RULES_FILE="$RULES" bash "$CRYS" "$NOTE" "$TR"
 if grep -qF 'PREFER_ACTIVE_VOICE_MARKER' "$ARGVD" 2>/dev/null; then pass "rules: rules content reaches the claude prompt"; else fail "rules: rules content not in prompt"; fi
 if grep -qF 'begin operator rules' "$ARGVD" 2>/dev/null; then pass "rules: delimited operator-rules block present"; else fail "rules: no operator-rules delimiter"; fi
+# Lesson-provenance prompt pin (HIMMEL-767): a heredoc-escaping break must not
+# silently drop the ## Lessons instruction block from the spawned prompt.
+if grep -qF '## Lessons' "$ARGVD" 2>/dev/null; then pass "lessons: ## Lessons instruction present in prompt"; else fail "lessons: ## Lessons instruction missing from prompt"; fi
+if grep -qF 'validate-lesson.mjs --capture' "$ARGVD" 2>/dev/null; then pass "lessons: validate-lesson.mjs --capture pointer present in prompt"; else fail "lessons: validator pointer missing from prompt"; fi
 rm -rf "$SB"
 
 # --- Case R2: missing/unreadable rules file — run proceeds, no rules block ------
