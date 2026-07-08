@@ -298,6 +298,77 @@ live only after `/himmel-update` (marketplace re-sync) + a fresh session.
 Paired artifacts: `scripts/lib/branch-shipped.sh` (predicate),
 `scripts/hooks/test-block-merged-pr-commit.sh` (smoke suite).
 
+### `block-lesson-enforcement-writes.sh` — lesson-loop write-fence (HIMMEL-767)
+
+Fires on `Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell`, but only when
+`HIMMEL_LESSON_LOOP=1` is set — the self-evolving lessons→tickets/draft-PR
+loop is PROPOSE-ONLY, and this hook is the delivery surface that
+structurally denies it enforcement-path writes: the agent file-tool surface
+(`Edit`/`Write`/`MultiEdit`/`NotebookEdit` `file_path`/`notebook_path`,
+exhaustive — the exact path is always in hand) plus the Bash/PowerShell
+`command` surface, which as of **round 4 (HIMMEL-767) inverted from a
+deny-list of write-shaped verbs to an allow-list of proven readers** —
+rounds 1–3b kept enumerating one more write shape per adversarial-CR round
+(glued redirects, attached `-t`, PowerShell aliases) with no sign of
+convergence, so round 4 flips the default: a closed set of command-position
+verbs PROVEN read-only (`cat`/`grep`/`ls`/`diff`/`wc`/`sed` without `-i`/
+`find` without `-delete`/`-exec`/git read-verbs/script-executing
+interpreters/PowerShell readers like `Get-Content`/`Select-String`/...) is
+exempt from operand checking; every OTHER verb — `ln`, `truncate`, `mkdir`,
+any PowerShell writer or its built-in alias, or a tool this fence has never
+heard of — has every operand scanned as a write-target candidate, so new
+write shapes no longer need individual enumeration. Two mechanisms sit
+outside the verb check: redirect targets (`>`/`>>`/glued forms/`dd`'s
+`of=`) always deny regardless of verb, and the git hook-routing shape-deny
+(`core.hooksPath`/`include.path`/`includeif.*`, any of `git config`/`git
+config --unset`/`git -c key=...`, each token stripped of one layer of
+quoting before matching) runs unconditionally per clause. One deliberate
+behavior change: the old `cp`-source read carve-out is gone — `cp` is not
+proven read-only, so its source operand is a candidate too now (use
+`cat`/`grep` to inspect an enforcement file instead of `cp`-ing it out).
+**Round 5 (HIMMEL-767) closed four finite gaps in the round-4 model:**
+(1) the interpreters are no longer unconditionally exempt — an inline-eval
+flag (node/bun/deno `-e`/`--eval`, python `-c`, bash/sh `-c`, pwsh
+`-Command`/`-c`/`-EncodedCommand`) makes the interpreter NOT exempt, and
+the clause's raw text is scanned for an enforcement-path signal instead
+(`python -c "open('scripts/hooks/x.sh','w')"` now denies; `python -c
+"print(1)"` still allows; executing a script FILE — `bash
+scripts/hooks/test-x.sh` — is still exempt); (2) the git hook-routing
+shape-deny now resolves its git-clause head through the same
+wrapper-skipping walk the general classifier uses, closing `command git -c
+core.hooksPath=X commit`/`env git config --add include.path X`/`sudo
+git ...`/`timeout N git ...`; (3) the standalone fd-prefixed redirect form
+(`N>`/`N>>`) now accepts any number of digits, not just one; (4) the
+leading `VAR=val` assignment skip accepts any letter-case, not just
+lowercase. Full model + per-entry rationale:
+[`docs/internals/lesson-provenance.md`](lesson-provenance.md#write-fence-deliverable-3).
+Bare relative operands remain candidates regardless of `is_path_like`
+(round 2, unchanged), anchored to the payload cwd. Every other session
+exits before any parse — zero always-on cost (HIMMEL-177).
+
+**Fail-CLOSED once active (deliberately, not the NARROW fallback some
+sibling fences use):** with `HIMMEL_LESSON_LOOP=1` set, a missing `jq`,
+malformed stdin JSON, or a missing fence sibling
+(`scripts/guardrails/lesson-write-fence.sh`) all DENY — a fully-automated
+loop worker has no human to mis-serve by refusing. Delegates to
+`scripts/guardrails/lesson-write-fence.sh`, which classifies against the
+deny-list policy `scripts/guardrails/enforcement-paths.json`; both the
+posture and the deny-list classes are documented in
+[`docs/internals/lesson-provenance.md`](lesson-provenance.md#write-fence-deliverable-3).
+
+**Delivery:** shipped via the **himmel-ops plugin `hooks.json`** (same
+exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as `block-docker-privesc`);
+live only after `/himmel-update` (marketplace re-sync) + a fresh session.
+The plugin command itself fails CLOSED (exit 2) if the project hook script
+is missing while `HIMMEL_LESSON_LOOP=1` (a stale checkout mid-loop), and
+stays a no-op otherwise — round-3 CR fix, HIMMEL-767. The codex-lane
+delivery (`.codex/hooks.json` → `run-hook.cmd` → `codex-hook-adapter.sh`)
+already failed closed on a missing guardrail script before this fix (its
+own precondition check), so it needed no change.
+
+Paired artifacts: `scripts/guardrails/test-lesson-write-fence.sh` (111
+checks), `scripts/hooks/test-block-lesson-enforcement-writes.sh` (9 checks).
+
 ### `block-glm-external-writes.sh` — GLM-lane external-write deny (HIMMEL-654)
 
 Fires on `Bash|PowerShell|mcp__.*`. The deterministic classifier substitute for

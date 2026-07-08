@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "jira": "HIMMEL-767",
+  "updated": "2026-07-08",
+  "doc": "docs/internals/lesson-provenance.md",
+  "semantics": {
+    "evaluation": "a candidate path is DENIED iff it matches ANY entry. Pure deny-list: no allow entries; a non-matching path is out of this fence's charter (worktree containment is the dispatcher's job, not this fence's).",
+    "match_kinds": {
+      "prefix": "matched against the REPO-RELATIVE normalized path (candidate resolved to its git toplevel; entry `value` ending in / matches the dir and everything under it; otherwise exact file match). A candidate outside any git repo cannot match prefix entries.",
+      "basename": "matched against the final path component, case-insensitive, at ANY depth in ANY tree (repo or not) — covers CLAUDE.md/AGENTS.md/hooks.json/parity_guard wherever they live, including the hermes checkout"
+    },
+    "consumer": "scripts/guardrails/lesson-write-fence.sh (hook mode via scripts/hooks/block-lesson-enforcement-writes.sh when HIMMEL_LESSON_LOOP=1; check mode for the propose-loop dispatcher)"
+  },
+  "entries": [
+    { "match": "prefix", "value": "scripts/guardrails/", "class": "guardrails",
+      "why": "guard predicates + egress matrix + THIS policy file — a lesson must not weaken the fences that would catch it" },
+    { "match": "prefix", "value": "scripts/hooks/", "class": "hooks",
+      "why": "PreToolUse/SessionStart/Stop enforcement + their tests" },
+    { "match": "prefix", "value": "scripts/lessons/", "class": "self-gate",
+      "why": "the provenance validator + >=90% precision sample-audit gate — the loop must not edit its own admission gate" },
+    { "match": "prefix", "value": ".claude/settings.json", "class": "settings",
+      "why": "permission allow-rules + hook wiring (self-modification is operator-only)" },
+    { "match": "prefix", "value": ".claude/settings.local.json", "class": "settings",
+      "why": "same as settings.json" },
+    { "match": "prefix", "value": ".pre-commit-config.yaml", "class": "pre-commit",
+      "why": "pre-commit/commit-msg/pre-push gate source of truth" },
+    { "match": "prefix", "value": ".gitleaks.toml", "class": "pre-commit",
+      "why": "secret-scan rule source the gitleaks gate consumes — relaxing it lets a secret past the gate" },
+    { "match": "prefix", "value": ".codex/", "class": "hooks",
+      "why": "codex-lane hook wiring + the exit-2→deny-JSON adapter chokepoint (codex-hook-adapter.sh / run-hook.cmd) — rewiring it neutralizes every codex-lane guard" },
+    { "match": "prefix", "value": "scripts/backends.json", "class": "routing",
+      "why": "block-backend-tier registry — guard-consumed policy" },
+    { "match": "basename", "value": "hooks.json", "class": "hooks",
+      "why": "plugin-delivered + .codex adapter hook wiring, any tree" },
+    { "match": "basename", "value": "parity_guard.py", "class": "parity-guard",
+      "why": "hermes file-tool fence (lives in the hermes checkout — basename match reaches it)" },
+    { "match": "basename", "value": "glm-guard.ts", "class": "parity-guard",
+      "why": "shared guard primitive (hermes)" },
+    { "match": "basename", "value": "CLAUDE.md", "class": "claude-md",
+      "why": "frame-shaping rules, root + every subtree" },
+    { "match": "basename", "value": "AGENTS.md", "class": "claude-md",
+      "why": "generated mirror of CLAUDE.md consumed by Codex/hermes workers" }
+  ]
+}
