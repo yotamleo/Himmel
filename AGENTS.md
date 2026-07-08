@@ -231,6 +231,27 @@ existing `docs/specs/` files migrate per-ticket.
 first for recent vault context (~500-word Tier-2 hot cache) before crawling luna
 `index.md`.
 
+### graphify — retrieval routing (HIMMEL-621)
+graphify is the knowledge-graph CLI over vaults/docs (entity/relation
+extraction + graph queries). One flow, three organs: **qmd finds content,
+graphify explains structure, tokensave serves symbol-level code ops.**
+Route by question shape:
+- Content lookup ("where is X discussed") → **qmd**, first hop.
+- Structure/neighborhood ("what clusters around X", "what does this epic
+  touch") → `graphify query` / `graphify explain`; whole-architecture
+  review → `GRAPH_REPORT.md` / `graphify wiki`.
+- Symbol-level code ops → **tokensave**; graphify = architecture/community
+  views + all non-code. (headroom, if ever adopted post-H4 gate
+  (HIMMEL-622), = context-window management only — not retrieval.)
+- Cross-file "how is A related to B" → `graphify query` each + join
+  in-head, or qmd. **Never `graphify path`** — node IDs are file-scoped
+  (same entity in two files = two disconnected nodes), so cross-file path
+  traversal is structurally broken.
+Graph refresh is lean-invoke (`graphify <corpus-copy> --update`), never a
+hook. Extraction backends are governed by the egress matrix
+(`scripts/guardrails/egress-matrix.json` — HIMMEL-766, lands via PR #985);
+extraction runs on scratchpad copies, never live vaults.
+
 ## WORKFLOWS
 
 ### Worktree commands (one orchestrator, `scripts/clean-garden.sh`)
