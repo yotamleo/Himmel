@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, spyOn } from 'bun:test';
 import { join } from 'path';
 import { aggregateRows, deriveRestingHeartRate, deriveSleep } from './derive';
 import { extractRows } from './shape';
@@ -262,31 +262,33 @@ describe('deriveRestingHeartRate', () => {
 // ── deriveSleep ───────────────────────────────────────────────────────────────
 
 describe('deriveSleep', () => {
-  test('2026-06-28: main session 8h31m (sleep_hours=8.5); nap excluded from main value', async () => {
+  test('2026-06-28: main session 8h31m (sleep_in_bed_hours=8.5); nap excluded from main value', async () => {
     // Fixture: session 1 (01:24Z–09:55Z = 511 min = main) + session 2 nap (14:00Z–14:40Z = 40 min).
     // Both end on 2026-06-28 local (UTC+2). Main = session 1 (511 > 40).
     const fixture = await loadFixture('sleep');
     const rows = deriveSleep(fixture);
 
-    const hoursRow = rows.find((r) => r.metric === 'sleep_hours' && r.date === '2026-06-28');
-    expect(hoursRow).toBeDefined();
+    const inBedRow = rows.find(
+      (r) => r.metric === 'sleep_in_bed_hours' && r.date === '2026-06-28',
+    );
+    expect(inBedRow).toBeDefined();
     // 511 min / 60 = 8.5167 → 8.5 (NOT 8.5 + 0.7 from nap)
-    expect(hoursRow!.value).toBe(8.5);
+    expect(inBedRow!.value).toBe(8.5);
   });
 
-  test('2026-06-28: sleep_asleep_hours < sleep_hours (main session has AWAKE segment)', async () => {
+  test('2026-06-28: sleep_hours (asleep) < sleep_in_bed_hours (main session has AWAKE segment)', async () => {
     // Main session (01:24Z–09:55Z) starts with 20 min AWAKE stage.
     // Non-AWAKE stages sum: 86+55+50+95+45+55+105 = 491 min = 8.183→ 8.2 h
     const fixture = await loadFixture('sleep');
     const rows = deriveSleep(fixture);
 
-    const hoursRow = rows.find((r) => r.metric === 'sleep_hours' && r.date === '2026-06-28')!;
-    const asleepRow = rows.find(
-      (r) => r.metric === 'sleep_asleep_hours' && r.date === '2026-06-28',
-    );
+    const inBedRow = rows.find(
+      (r) => r.metric === 'sleep_in_bed_hours' && r.date === '2026-06-28',
+    )!;
+    const asleepRow = rows.find((r) => r.metric === 'sleep_hours' && r.date === '2026-06-28');
     expect(asleepRow).toBeDefined();
     expect(asleepRow!.value).toBe(8.2);
-    expect(asleepRow!.value).toBeLessThan(hoursRow.value);
+    expect(asleepRow!.value).toBeLessThan(inBedRow.value);
   });
 
   test('midnight-cross session → date = 2026-06-27 (local end date, not start date)', async () => {
@@ -295,9 +297,11 @@ describe('deriveSleep', () => {
     const fixture = await loadFixture('sleep');
     const rows = deriveSleep(fixture);
 
-    const hoursRow = rows.find((r) => r.metric === 'sleep_hours' && r.date === '2026-06-27');
-    expect(hoursRow).toBeDefined();
-    expect(hoursRow!.value).toBe(7.0);
+    const inBedRow = rows.find(
+      (r) => r.metric === 'sleep_in_bed_hours' && r.date === '2026-06-27',
+    );
+    expect(inBedRow).toBeDefined();
+    expect(inBedRow!.value).toBe(7.0);
     // Start date (2026-06-26) must NOT appear in output.
     expect(rows.some((r) => r.date === '2026-06-26')).toBe(false);
   });
@@ -306,15 +310,203 @@ describe('deriveSleep', () => {
     const fixture = await loadFixture('sleep');
     const rows = deriveSleep(fixture);
 
-    // fixture has sessions on 2026-06-27 and 2026-06-28 → 4 rows total (2 per date)
+    // fixture has sessions on 2026-06-27 and 2026-06-28, both stage-backed → 4 rows total (2 per date)
     expect(rows.length).toBe(4);
     for (const row of rows) {
-      expect(row.metric).toMatch(/^sleep_(hours|asleep_hours)$/);
+      expect(row.metric).toMatch(/^sleep_(hours|in_bed_hours)$/);
       expect(row.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(typeof row.value).toBe('number');
       expect(Number.isFinite(row.value)).toBe(true);
       expect(row.source).toMatch(/^google-health:sleep:/);
     }
+  });
+
+  test('classic session (no stages) → sleep_in_bed_hours only, no sleep_hours row', () => {
+    // Fitbit classic-era sync: interval present, stages array absent/empty.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'IOS' },
+          sleep: {
+            interval: {
+              startTime: '2018-03-01T23:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2018-03-02T07:00:00Z',
+              endUtcOffset: '0s',
+            },
+          },
+        },
+      ],
+    };
+    const rows = deriveSleep(fixture);
+
+    expect(rows.length).toBe(1);
+    expect(rows[0].metric).toBe('sleep_in_bed_hours');
+    expect(rows[0].value).toBe(8.0);
+    expect(rows.some((r) => r.metric === 'sleep_hours')).toBe(false);
+  });
+
+  test('stages session → emits both sleep_hours (asleep) and sleep_in_bed_hours (span)', () => {
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: [
+              {
+                startTime: '2026-01-01T22:00:00Z',
+                endTime: '2026-01-01T22:30:00Z',
+                type: 'AWAKE',
+              },
+              {
+                startTime: '2026-01-01T22:30:00Z',
+                endTime: '2026-01-02T06:00:00Z',
+                type: 'LIGHT',
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const rows = deriveSleep(fixture);
+
+    expect(rows.length).toBe(2);
+    const inBedRow = rows.find((r) => r.metric === 'sleep_in_bed_hours')!;
+    const asleepRow = rows.find((r) => r.metric === 'sleep_hours')!;
+    expect(inBedRow.value).toBe(8.0); // full 22:00–06:00 span
+    expect(asleepRow.value).toBe(7.5); // AWAKE 30min excluded
+  });
+
+  test('all-AWAKE stages session → sleep_in_bed_hours only, no sleep_hours row (asleep sum is 0)', () => {
+    // Stages array is PRESENT (unlike the classic-session case above) but every
+    // stage is AWAKE, so the non-AWAKE sum is 0 — distinguishes "stages absent"
+    // from "stages present but zero asleep".
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: [
+              {
+                startTime: '2026-01-01T22:00:00Z',
+                endTime: '2026-01-02T06:00:00Z',
+                type: 'AWAKE',
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const rows = deriveSleep(fixture);
+
+    expect(rows.length).toBe(1);
+    expect(rows[0].metric).toBe('sleep_in_bed_hours');
+    expect(rows[0].value).toBe(8.0);
+    expect(rows.some((r) => r.metric === 'sleep_hours')).toBe(false);
+  });
+
+  test('malformed non-AWAKE stage timestamps → degraded: sleep_in_bed_hours only, no sleep_hours row', () => {
+    // One valid 4h LIGHT stage + one DEEP stage with unparseable timestamps. The
+    // malformed non-AWAKE stage marks the session's stage data DEGRADED: even though
+    // the valid LIGHT stage would sum to 4h, sleep_hours is omitted entirely (it would
+    // under-count sleep). sleep_in_bed_hours (session span) is unaffected; a stderr
+    // warning is printed.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: [
+              {
+                startTime: '2026-01-01T22:00:00Z',
+                endTime: '2026-01-02T02:00:00Z',
+                type: 'LIGHT',
+              },
+              {
+                startTime: 'not-a-timestamp',
+                endTime: 'also-garbage',
+                type: 'DEEP',
+              },
+            ],
+          },
+        },
+      ],
+    };
+    // The stderr warning is part of the degraded contract (it is the only
+    // operator-visible signal today — see SCHEMA.md / HIMMEL-794). Assert while
+    // the spy is live — mockRestore() clears the recorded calls.
+    const errSpy = spyOn(console, 'error');
+    try {
+      const rows = deriveSleep(fixture);
+
+      expect(rows.length).toBe(1);
+      expect(rows[0].metric).toBe('sleep_in_bed_hours');
+      expect(rows[0].value).toBe(8.0);
+      expect(rows.some((r) => r.metric === 'sleep_hours')).toBe(false);
+      expect(errSpy).toHaveBeenCalledWith(
+        '[google-health] sleep 2026-01-02: malformed stage timestamps - sleep_hours omitted (degraded stage data)',
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test('malformed AWAKE stage timestamps do NOT degrade (AWAKE never enters the sum) → both rows', () => {
+    // A valid non-AWAKE (LIGHT) stage plus a garbage-timestamp AWAKE stage: the AWAKE
+    // stage is skipped before its timestamps are parsed, so the malformed AWAKE
+    // timestamps do not trigger the degraded path and both rows are emitted.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: [
+              {
+                startTime: 'garbage',
+                endTime: 'garbage',
+                type: 'AWAKE',
+              },
+              {
+                startTime: '2026-01-01T22:00:00Z',
+                endTime: '2026-01-02T06:00:00Z',
+                type: 'LIGHT',
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const rows = deriveSleep(fixture);
+
+    expect(rows.length).toBe(2);
+    const inBedRow = rows.find((r) => r.metric === 'sleep_in_bed_hours')!;
+    const asleepRow = rows.find((r) => r.metric === 'sleep_hours')!;
+    expect(inBedRow.value).toBe(8.0);
+    expect(asleepRow.value).toBe(8.0); // full 8h LIGHT span, garbage AWAKE ignored
   });
 
   test('empty dataPoints → []', () => {

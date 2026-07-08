@@ -58,6 +58,18 @@ test("an empty artifact (rows: []) writes nothing and returns []", async () => {
   expect(res).toEqual([]);
 });
 
+test("preserves existing sleep_hours row when a stage-less date emits no sleep_hours (HIMMEL-785)", async () => {
+  const dir = tmp();
+  await Bun.write(join(dir, "sleep_hours.csv"), "date,value\n2024-06-14,7.5\n");
+  const a: ReviewArtifact = {
+    bucket: "x", conflicts: [],
+    rows: [{ metric: "sleep_in_bed_hours", date: "2024-06-14", value: 8.0, source: "s" }],
+  };
+  await writeSeries(a, dir);
+  expect(await Bun.file(join(dir, "sleep_hours.csv")).text()).toBe("date,value\n2024-06-14,7.5\n");
+  expect(await Bun.file(join(dir, "sleep_in_bed_hours.csv")).text()).toBe("date,value\n2024-06-14,8\n");
+});
+
 test("skips malformed rows in an existing CSV (no NaN / misaligned values seeded)", async () => {
   const dir = tmp();
   // bad rows: missing value, extra column, non-numeric value — none must survive

@@ -3,6 +3,9 @@ import { mergeRows } from "./src/merge";
 import { writeSeries } from "./src/writeSeries";
 import { readArtifact, writeArtifact, type ExtractedRow, type ReviewArtifact } from "./src/types";
 
+// Scopes the parse/self-report default metric set only — NOT an allowlist.
+// Derived connector metrics (e.g. sleep_in_bed_hours) land via writeSeries
+// regardless of what's listed here.
 const DEFAULT_METRICS = ["migraine", "skin_flare", "sleep_hours", "hrv_ms", "rhr_bpm"];
 
 function flag(args: string[], name: string): string | undefined {

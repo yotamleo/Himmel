@@ -214,7 +214,7 @@ HR-zone config, nutrition-log multi-nutrient arrays) are excluded from the serie
 | **Activity** | `steps`, `distance_km`, `active_energy_kcal`, `active_minutes` | Sub-daily intervals, summed per day |
 | | `active_zone_minutes`, `sedentary_minutes`, `altitude_gain_km` | Sub-daily intervals, summed per day |
 | | `swim_strokes`, `exercise_minutes` | Rare / device-dependent |
-| **Sleep** | `sleep_hours` (time in bed), `sleep_asleep_hours` (non-AWAKE stages) | Longest session per date |
+| **Sleep** | `sleep_hours` (non-AWAKE stages, hours asleep), `sleep_in_bed_hours` (time in bed) | Longest session per date; `sleep_hours` emitted only when asleep hours round to > 0 (see [connectors/SCHEMA.md](../../scripts/luna-vitals/connectors/SCHEMA.md) for the authoritative emission semantics) |
 | **Nutrition** | `hydration_ml` | Log entries, summed per day |
 | **Scaffolded (gated)** | `calories_in_hr_zone_kcal`, `floors`, `total_calories_kcal` | Skipped at runtime; dailyRollUp shape unverified |
 

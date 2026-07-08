@@ -207,9 +207,9 @@ describe('extractRows — R4 deferred (returns [])', () => {
     expect(extractRows(findByMetric('sleep_hours'), fixture)).toEqual([]);
   });
 
-  test('sleep_asleep_hours mapping → [] (stage summation handled in R4)', async () => {
+  test('sleep_in_bed_hours mapping → [] (main-session selection handled in R4)', async () => {
     const fixture = await loadFixture('sleep');
-    expect(extractRows(findByMetric('sleep_asleep_hours'), fixture)).toEqual([]);
+    expect(extractRows(findByMetric('sleep_in_bed_hours'), fixture)).toEqual([]);
   });
 
   test('dailyRollUp method mapping (floors) → []', () => {

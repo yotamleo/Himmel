@@ -64,13 +64,13 @@ describe('MAPPINGS table', () => {
     expect(entry?.dataTypeId).toBe('heart-rate');
   });
 
-  test('includes sleep_hours and sleep_asleep_hours (both from sleep dataTypeId)', () => {
+  test('includes sleep_hours and sleep_in_bed_hours (both from sleep dataTypeId)', () => {
     const sleepHours = MAPPINGS.find(m => m.metric === 'sleep_hours');
-    const sleepAsleep = MAPPINGS.find(m => m.metric === 'sleep_asleep_hours');
+    const sleepInBed = MAPPINGS.find(m => m.metric === 'sleep_in_bed_hours');
     expect(sleepHours).toBeDefined();
-    expect(sleepAsleep).toBeDefined();
+    expect(sleepInBed).toBeDefined();
     expect(sleepHours?.dataTypeId).toBe('sleep');
-    expect(sleepAsleep?.dataTypeId).toBe('sleep');
+    expect(sleepInBed?.dataTypeId).toBe('sleep');
   });
 
   test('list-method entries with a matching fixture file have that file accessible', () => {

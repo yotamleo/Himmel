@@ -99,7 +99,7 @@ export async function pull(opts: {
       // derive: 5th-percentile per day → rhr_bpm
       allRows.push(...deriveRestingHeartRate(response));
     } else if (dataTypeId === 'sleep') {
-      // derive: longest session per date → sleep_hours + sleep_asleep_hours
+      // derive: longest session per date → sleep_hours + sleep_in_bed_hours
       allRows.push(...deriveSleep(response));
     } else {
       // Standard path: for each mapping on this dataTypeId, extract + aggregate.

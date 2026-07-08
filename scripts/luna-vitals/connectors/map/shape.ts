@@ -126,7 +126,7 @@ function extractValue(mapping: Mapping, fieldObj: unknown): number | undefined {
  *
  * Mappings R3 cannot resolve per-point (handled in R4):
  *   - aggregate === 'derive'   → rhr_bpm (5th-percentile of raw HR samples)
- *   - dataTypeId === 'sleep'   → sleep_hours / sleep_asleep_hours (main-session selection)
+ *   - dataTypeId === 'sleep'   → sleep_hours / sleep_in_bed_hours (main-session selection)
  *   - method === 'dailyRollUp' → rollup shape TBD; requires a different fetch method
  */
 export function extractRows(

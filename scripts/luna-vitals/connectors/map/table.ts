@@ -222,7 +222,7 @@ export const MAPPINGS: Mapping[] = [
     aggregate: 'sum',
     note: 'Dot path into nested amountConsumed object.',
   },
-  // sleep → two entries (in-bed duration + asleep duration)
+  // sleep → two entries (asleep duration + in-bed duration)
   {
     dataTypeId: 'sleep',
     metric: 'sleep_hours',
@@ -230,16 +230,16 @@ export const MAPPINGS: Mapping[] = [
     valuePath: '',
     unit: 'hours',
     aggregate: 'duration',
-    note: 'Total time-in-bed: main-session (longest) interval (end − start) per local date. Two entries for sleep dataTypeId; see also sleep_asleep_hours.',
+    note: 'Total asleep time: sum of non-AWAKE stage durations in the main sleep session. Only emitted when > 0 (stage-less sessions have no asleep figure). Two entries for sleep dataTypeId; see also sleep_in_bed_hours.',
   },
   {
     dataTypeId: 'sleep',
-    metric: 'sleep_asleep_hours',
+    metric: 'sleep_in_bed_hours',
     category: 'interval',
     valuePath: '',
     unit: 'hours',
     aggregate: 'duration',
-    note: 'Total asleep time: sum of non-AWAKE stage durations in the main sleep session. Second entry for sleep dataTypeId.',
+    note: 'Total time-in-bed: main-session (longest) interval (end − start) per local date. Always emitted for a valid session. Second entry for sleep dataTypeId.',
   },
 
   // ── Rollup-only (dailyRollUp method; shape TBD) ──────────────────────────────

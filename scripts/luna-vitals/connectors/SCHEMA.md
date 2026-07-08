@@ -35,7 +35,31 @@ Three categories by date source; values often JSON **strings** → coerce.
 | swim-lengths-data | swimLengthsData | strokeCount (STRING) | strokes | sum | rare |
 | exercise | exercise | (interval end−start as minutes) | min | sum | also has exerciseType, metricsSummary; emit exercise_minutes |
 | hydration-log | hydrationLog | amountConsumed.milliliters | ml | sum | |
-| sleep | sleep | (interval; stages[]) | hours | main session | emit sleep_hours (in-bed) + sleep_asleep_hours (Σ non-AWAKE) |
+| sleep | sleep | (interval; stages[]) | hours | main session | emit sleep_hours (Σ non-AWAKE, only if the rounded value is >0) + sleep_in_bed_hours (in-bed) |
+
+### Migration note (HIMMEL-785)
+Prior to HIMMEL-785 the connector emitted `sleep_hours` = time-in-bed (what is now
+`sleep_in_bed_hours`). `writeSeries` only overlays emitted rows onto the existing
+on-disk CSV, so `sleep_hours.csv` values written by pre-HIMMEL-785 artifacts are
+**not** auto-reconciled — any vault that ever landed old connector artifacts verbatim
+must one-time repair that series (the operator vault was repaired in salus commit `a1c9456`).
+
+### Degraded stage data (HIMMEL-793)
+If any non-AWAKE stage in the main sleep session has an unparseable start/end timestamp
+(`Date.parse` → NaN), the session's stage data is treated as DEGRADED for that date:
+`sleep_hours` is omitted entirely (the remaining valid stages would under-count sleep),
+`sleep_in_bed_hours` is still emitted (derived from the session interval, not the stages),
+and a `[google-health]` stderr warning is printed. Invalid AWAKE stages never enter the
+asleep sum, so they do not trigger the degraded path.
+
+Known limitations (tracked in HIMMEL-794): the warning is **stderr-only** — the review
+artifact carries no warnings field, so a degraded date looks identical to a genuinely
+stage-less classic session in the artifact JSON, and `writeSeries` leaves any previously
+written `sleep_hours` value for that date untouched (metrics absent from artifact rows
+are never rewritten). Adjacent silent skips predating HIMMEL-793: a session with no
+`civilEndTime` and no `endUtcOffset`, or an unparseable session interval, is dropped
+entirely without a warning; a non-array `stages` field is coerced to `[]` (treated as
+classic stage-less).
 
 ## Derived
 - `rhr_bpm` ← heart-rate raw samples: per civil day, take a low estimator

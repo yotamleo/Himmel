@@ -91,9 +91,9 @@ describe('pull', () => {
 
     // heart-rate → 5th-percentile derivation → rhr_bpm
     expect(metrics.has('rhr_bpm')).toBe(true);
-    // sleep → both time-in-bed and asleep duration
+    // sleep → both asleep duration and time-in-bed
     expect(metrics.has('sleep_hours')).toBe(true);
-    expect(metrics.has('sleep_asleep_hours')).toBe(true);
+    expect(metrics.has('sleep_in_bed_hours')).toBe(true);
     // daily-oxygen-saturation → daily_spo2_pct
     expect(metrics.has('daily_spo2_pct')).toBe(true);
     // steps fixture
