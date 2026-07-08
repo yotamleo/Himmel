@@ -342,7 +342,9 @@ metered per token, so the framing is "keep working past the cap", never
 **Key resolution:** shell env `ZAI_API_KEY` first, else the himmel repo `.env`
 (bash via `load-dotenv.sh --root <himmel>`, PS via an inline reader) — pinned to
 the *launcher's* repo, not the cwd, so a session running in the luna vault still
-finds the key. Missing key → **exit 2**. Never read from `settings.json`.
+finds the key. Missing key → **exit 2**. The launcher cannot distinguish shell
+env from `settings.json`-injected env — don't put the key in `settings.json`
+(that hands it to every session); use per-launch shell env or the repo `.env`.
 
 **Isolated config dir (`$HOME/.claude-glm`):** seeded from `~/.claude` on first
 launch (or `--reseed`/`-Reseed`) by an allowlist copy — `settings.json`
