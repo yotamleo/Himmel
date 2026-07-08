@@ -8,7 +8,9 @@ verify precision before any lesson feeds automation.
 
 This doc defines the schema and what the validator
 (`scripts/lessons/validate-lesson.mjs`) rejects. The sample-audit gate
-(deliverable 2) and the write-fence (deliverable 3) are separate, later PRs.
+(deliverable 2, `scripts/lessons/sample-audit.mjs` —
+[`docs/internals/lesson-audit.md`](lesson-audit.md)) and the write-fence
+(deliverable 3) are separate, later PRs.
 
 ## Two serializations, same fields
 
@@ -60,7 +62,7 @@ lesson:
 | `status` | yes | `active` \| `superseded` \| `invalidated` \| `unverified` (writer default: `unverified` for `low`/`medium` confidence, `active` for `high`) |
 | `supersedes` | no | Prior lesson `id` this replaces; the writer flips that record's `status` to `superseded` + sets its `superseded_by` |
 | `superseded_by` | no | Reverse link, set on the superseded record |
-| `audit` | no | Written **only** by the deliverable-2 sample-audit: `{audited_at, verdict: confirmed\|refuted\|stale, auditor}`. The capture path never writes this block |
+| `audit` | no | Written **only** by the deliverable-2 sample-audit (`scripts/lessons/sample-audit.mjs` — [`docs/internals/lesson-audit.md`](lesson-audit.md)): `{audited_at, verdict: confirmed\|refuted\|stale, auditor}`. The capture path never writes this block |
 
 ## Binding rules
 
