@@ -125,7 +125,7 @@ Steps:
 
    Gate, checked FIRST:
    - `CR_PROFILE=none` → skip (none = instant claude-only; the codex adversarial pass is ALSO skipped under none).
-   - codex companion absent → print one line `codex adversarial pass skipped (codex not configured)` and continue. Do NOT hardcode the version segment in the path (brittle — `1.0.5` drifts on plugin update); the fence below glob-resolves the installed copy (`ls` sorts lexically, so `tail -1` is "highest lexical", not strictly highest semver — revisit only if a `1.0.10`-vs-`1.0.5` ordering bite appears).
+   - codex companion absent → print one line `codex adversarial pass skipped (codex not configured)` and continue. Do NOT hardcode the version segment in the path (brittle — `1.0.5` drifts on plugin update); the fence below resolves the installed copy with a **bash glob loop, never `ls`** (HIMMEL-741c: Git Bash `ls` appends a classify `*` to executables, corrupting the captured path into `…codex-companion.mjs*` → `MODULE_NOT_FOUND` → silent rc=1). Glob order is lexical, so the last match is "highest lexical", not strictly highest semver — revisit only if a `1.0.10`-vs-`1.0.5` ordering bite appears. On Windows the MSYS `/c/…` form must also be converted to a native path before it reaches `node` (which reads `/c/…` as `C:\c\…`) — hence the `cygpath -m` step.
 
    The pass (~3min typical), timeboxed at `CRITIC_TIMEOUT_SECS*2` (≈480s — twice the per-member panel budget; the adversarial run is a single heavier call). Each bash fence in this runbook is independent, so re-resolve `$db` + `CR_PROFILE`:
    ```bash
@@ -133,7 +133,17 @@ Steps:
    . scripts/lib/load-dotenv.sh; load_dotenv CR_PROFILE || true
    export CR_PROFILE
    codex_findings=""; codex_rc=0
-   companion=$(ls -d "$HOME/.claude/plugins/cache/openai-codex/codex/"*/scripts/codex-companion.mjs 2>/dev/null | tail -1)
+   # Resolve via bash glob, NOT `ls` (HIMMEL-741c: Git Bash `ls` classify suffix
+   # `*` on executables corrupts the path). Last glob match = highest lexical.
+   companion=""
+   for _c in "$HOME/.claude/plugins/cache/openai-codex/codex/"*/scripts/codex-companion.mjs; do
+       [ -f "$_c" ] && companion="$_c"
+   done
+   # Windows node mangles an MSYS /c/... path into C:\c\... — hand it a native
+   # (mixed-form) path when cygpath exists; POSIX systems pass through unchanged.
+   if [ -n "$companion" ] && command -v cygpath >/dev/null 2>&1; then
+       companion=$(cygpath -m "$companion")
+   fi
    if [ "${CR_PROFILE:-}" = "none" ]; then
        : # claude-only — codex adversarial pass also skipped under none.
    elif [ -z "$companion" ]; then
