@@ -36,6 +36,15 @@
             "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/block-glm-external-writes.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
           }
         ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/block-graphify-egress.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
+          }
+        ]
       }
     ],
     "SessionStart": [

@@ -37,7 +37,7 @@ The matrix defines *policy*; membership resolution stays with the guards.
 
 | Surface | What it reads |
 |---|---|
-| `graphify-fence.sh` (HIMMEL-621/622 Phase G-F, to be built) | maps graphify `--backend` → provider, target path → corpus, purpose = `extraction` |
+| `scripts/guardrails/graphify-fence.sh` (HIMMEL-621 Phase G-F) | maps graphify `--backend` → provider, target path → corpus, purpose = `extraction`; verdict via `scripts/guardrails/egress-matrix-eval.mjs` (the reference semantics as a CLI); wired as the narrow `block-graphify-egress` PreToolUse hook |
 | `parity_guard.py` PHI/egress fence (HIMMEL-695) | the `salus` row (hard deny) — already enforced; the matrix documents the policy it implements |
 | `glm-guard.ts` | same `salus`/denylist row |
 | HIMMEL-765 embedding/rerank pilot client | the `alibaba` × `embedding`/`rerank`/`vision-embedding` cells (all five currently `pending-operator` = deny) |
