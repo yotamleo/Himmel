@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "jira": "HIMMEL-766",
+  "updated": "2026-07-08",
+  "doc": "docs/internals/egress-matrix.md",
+  "semantics": {
+    "evaluation": "first-match-wins over `rules`, then `default`. '*' matches any value.",
+    "verdicts": {
+      "allow": "permitted, no ledger requirement",
+      "allow+log": "permitted; the executing tool MUST append a ledger line (JSONL: ts, corpus, provider, purpose, path, tool)",
+      "conditional": "permitted ONLY when the rule's `condition` holds; otherwise treat as deny",
+      "pending-operator": "evaluates as DENY. A named operator decision is required to flip this cell; flipping it is a one-line PR on this file",
+      "deny": "refused; enforcing guards fail closed"
+    },
+    "note": "embedding, rerank, and vision-embedding send FULL content (text or images) to the provider — they are content egress, not metadata egress."
+  },
+  "corpora": {
+    "salus": "any path under a `.salus`-marked root, or under a root listed in ~/.config/claude-glm/phi-roots or ~/.config/claude-glm/egress-denylist (the shared glm-guard.ts / parity_guard.py primitives)",
+    "luna-personal": "the luna vault root EXCLUDING Clippings/ (journals, maps, sessions, notes)",
+    "luna-clippings": "<luna-root>/Clippings/ (clipped public web content)",
+    "handover-state": "the handover state repo root (HANDOVER_DIR; work artifacts, specs, session notes)",
+    "himmel-code": "himmel checkout(s), worktrees, and the public mirror (code + docs; public-propagated)"
+  },
+  "providers": {
+    "local-ollama": { "region": "local", "note": "zero egress; includes qmd local GGUF embeddings" },
+    "anthropic": { "region": "US", "note": "the operating harness itself (Claude sessions natively read the vaults); recording status quo, not a widening" },
+    "openai-codex": { "region": "US", "note": "codex via hermes, paid usage bank" },
+    "deepseek": { "region": "CN", "note": "operator-accepted 2026-07-05 for luna extraction (speed override)" },
+    "zai-glm": { "region": "CN", "note": "GLM Coding Plan impl lanes" },
+    "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "qwen text lanes + free-quota modality bank (HIMMEL-729/765)" },
+    "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" }
+  },
+  "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding"],
+  "rules": [
+    {
+      "corpus": "salus", "provider": "local-ollama", "purpose": "*",
+      "verdict": "conditional",
+      "condition": "per-run explicit opt-in flag (621/622 spec §4.1: even local salus extraction needs a per-run opt-in)",
+      "why": "PHI stays on-machine; opt-in prevents accidental bulk runs"
+    },
+    {
+      "corpus": "salus", "provider": "*", "purpose": "*",
+      "verdict": "deny", "hard": true,
+      "why": "PHI never leaves the machine. No override exists; no operator decision can be recorded here that flips this row"
+    },
+    {
+      "corpus": "*", "provider": "google-gemini", "purpose": "*",
+      "verdict": "deny", "hard": true,
+      "why": "gemini de-listed; GEMINI/GOOGLE keys stay unset (621/622 P.7)"
+    },
+    {
+      "corpus": "himmel-code", "provider": "*", "purpose": "*",
+      "verdict": "allow",
+      "why": "public-propagated code/docs; impl lanes (codex/GLM/alibaba) are ratified consumers. Caveat rides the lane guards: debrand content-not-name; secrets are excluded by block-read-secrets, not by this matrix"
+    },
+    {
+      "corpus": "handover-state", "provider": "local-ollama", "purpose": "*",
+      "verdict": "allow", "why": "zero egress"
+    },
+    {
+      "corpus": "handover-state", "provider": "anthropic", "purpose": "*",
+      "verdict": "allow", "why": "operating substrate (sessions read/write handovers natively)"
+    },
+    {
+      "corpus": "handover-state", "provider": "openai-codex", "purpose": "inference",
+      "verdict": "conditional",
+      "condition": "brief-scoped: task briefs/excerpts through the guarded dispatch chokepoints only — never bulk corpus runs",
+      "why": "worker briefs necessarily carry handover-derived context; the chokepoint audit is the ledger"
+    },
+    {
+      "corpus": "handover-state", "provider": "zai-glm", "purpose": "inference",
+      "verdict": "conditional",
+      "condition": "brief-scoped: task briefs/excerpts through the guarded dispatch chokepoints only — never bulk corpus runs",
+      "why": "same as openai-codex row"
+    },
+    {
+      "corpus": "handover-state", "provider": "alibaba", "purpose": "inference",
+      "verdict": "conditional",
+      "condition": "brief-scoped: task briefs/excerpts through the guarded dispatch chokepoints only — never bulk corpus runs",
+      "why": "same as openai-codex row"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "local-ollama", "purpose": "*",
+      "verdict": "allow", "why": "zero egress"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "anthropic", "purpose": "*",
+      "verdict": "allow", "why": "operating substrate"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "deepseek", "purpose": "extraction",
+      "verdict": "allow+log",
+      "why": "subsumed by the operator DeepSeek override (2026-07-05) which covers the more-sensitive luna-personal corpus"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "zai-glm", "purpose": "extraction",
+      "verdict": "conditional",
+      "condition": "only if the 621/622 G2.3 local-quality ladder forces it AND the operator provisions ZAI_API_KEY for it (spec §4.2 exception; never mid-run)",
+      "why": "pre-existing narrow exception for clipped public content"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "alibaba", "purpose": "embedding",
+      "verdict": "pending-operator",
+      "decision_needed": "HIMMEL-765 pilot: ratify Alibaba embedding egress for Clippings (recommended FIRST pilot corpus — clipped public web content, lowest sensitivity)",
+      "why": "filed as valuable (765) but the egress widening was never explicitly ratified; default deny until flipped"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "alibaba", "purpose": "rerank",
+      "verdict": "pending-operator",
+      "decision_needed": "same HIMMEL-765 decision as the embedding cell",
+      "why": "rerank sends query + candidate documents — same content egress class"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "alibaba", "purpose": "vision-embedding",
+      "verdict": "pending-operator",
+      "decision_needed": "same HIMMEL-765 decision (tongyi-embedding-vision; vault image search)",
+      "why": "images from clips are content egress too"
+    },
+    {
+      "corpus": "luna-personal", "provider": "local-ollama", "purpose": "*",
+      "verdict": "allow", "why": "zero egress; the salus-grade fallback backend"
+    },
+    {
+      "corpus": "luna-personal", "provider": "anthropic", "purpose": "*",
+      "verdict": "allow", "why": "operating substrate (Claude sessions read the vault natively every day)"
+    },
+    {
+      "corpus": "luna-personal", "provider": "deepseek", "purpose": "extraction",
+      "verdict": "allow+log",
+      "why": "operator override 2026-07-05 (speed): luna non-Clippings graphify extraction on DeepSeek, single model, ledgered per run"
+    },
+    {
+      "corpus": "luna-personal", "provider": "alibaba", "purpose": "embedding",
+      "verdict": "pending-operator",
+      "decision_needed": "HIMMEL-765: ratify Alibaba embedding egress for PERSONAL luna content (journals/notes/sessions). This is THE contradiction cell from the Fable 2026-07-08 review — the 621/622 fence as specced denies it; 765 as filed needs it",
+      "why": "personal-content egress to a new provider is an operator call, not an agent default; deny until ratified"
+    },
+    {
+      "corpus": "luna-personal", "provider": "alibaba", "purpose": "rerank",
+      "verdict": "pending-operator",
+      "decision_needed": "same HIMMEL-765 decision as the embedding cell",
+      "why": "same content egress class"
+    }
+  ],
+  "default": "deny"
+}
