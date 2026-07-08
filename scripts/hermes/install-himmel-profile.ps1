@@ -77,12 +77,17 @@ Copy-Item $GuardAsset $GuardDest -Force
 Write-Host "installed   : $GuardDest"
 
 # 2. create himmel_agent if missing (clone default for working keys/config)
+# probe, not a mutation: a nonzero exit here (e.g. no profiles yet) is
+# indistinguishable from "list succeeded but himmel_agent isn't in it" for
+# our purposes, so $LASTEXITCODE is intentionally not checked - the
+# post-create Test-Path below is the real assertion.
 $existing = (& $Hermes profile list 2>$null | Out-String)
 if ($existing -match "(^|\W)$Profile_(\W|$)") {
   Write-Host "profile     : $Profile_ exists — refreshing assets (non-destructive)"
 } else {
   Write-Host "profile     : creating $Profile_ (clone of default)"
   & $Hermes profile create $Profile_ --clone-from default --description "himmel's main-tier orchestrator (Codex/GPT-5.5): code, repos, PRs, research, vault, writing. parity_guard (secret + catastrophic-shell fences kept). The main puller when Claude is scarce." | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "hermes profile create failed (exit $LASTEXITCODE) creating $Profile_" }
 }
 if (-not (Test-Path $HaDir)) { throw "$Profile_ profile dir missing after create" }
 
@@ -101,6 +106,7 @@ if ($LASTEXITCODE -ne 0) { throw "sync_model_aliases.py failed (exit $LASTEXITCO
 
 # 5. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
 & $Py $Wire set $HaConfig $GuardDest $Py
+if ($LASTEXITCODE -ne 0) { throw "wire_parity_guard.py set failed (exit $LASTEXITCODE) wiring $HaConfig" }
 
 # 6. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.
 #    Default (no flag) = the `default` profile + all others. -ParityGuard <csv>
@@ -127,7 +133,10 @@ if ((-not $ParityGuard) -or ($ParityGuard -eq "all")) {
   }
 }
 foreach ($cfg in $targets) {
-  if (Test-Path $cfg) { & $Py $Wire ensure $cfg $GuardDest $Py }
+  if (Test-Path $cfg) {
+    & $Py $Wire ensure $cfg $GuardDest $Py
+    if ($LASTEXITCODE -ne 0) { throw "wire_parity_guard.py ensure failed (exit $LASTEXITCODE) wiring $cfg" }
+  }
   else { Write-Warning "config not found: $cfg" }
 }
 
