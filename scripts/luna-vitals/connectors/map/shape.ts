@@ -73,6 +73,18 @@ function extractDate(mapping: Mapping, fieldObj: unknown): string | undefined {
   return computeLocalDate(interval.endTime as string, interval.endUtcOffset as string);
 }
 
+/**
+ * Extract the civil date (YYYY-MM-DD) of ONE raw dataPoint, or undefined if
+ * the point lacks the expected shape. Used by the fetch layer's early-stop
+ * pagination guard (which needs point dates before extractRows runs).
+ */
+export function pointDate(mapping: Mapping, dp: unknown): string | undefined {
+  const point = dp as Record<string, unknown>;
+  const fieldKey = getFieldKey(point);
+  if (!fieldKey) return undefined;
+  return extractDate(mapping, point[fieldKey]);
+}
+
 /** Traverse a dot-path into an object (e.g. "amountConsumed.milliliters"). */
 function getByPath(obj: unknown, path: string): unknown {
   return path.split('.').reduce<unknown>((cur, key) => (cur as any)?.[key], obj);

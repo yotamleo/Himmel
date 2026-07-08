@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { MAPPINGS } from './map/table';
-import { extractRows } from './map/shape';
+import { extractRows, pointDate } from './map/shape';
 import { aggregateRows, deriveRestingHeartRate, deriveSleep } from './map/derive';
 import {
   getAccessToken,
@@ -67,11 +67,23 @@ export async function pull(opts: {
     );
   }
 
-  // 3. Fetch each dataType once.
+  // 3. Fetch each dataType once. earlyStop bounds the paging to the window
+  // (the API returns newest-first; without this, every pull pages the ENTIRE
+  // per-type history and raw sample feeds blow the page cap).
   const fetched = new Map<string, unknown[]>();
   for (const dataTypeId of uniqueDataTypeIds) {
+    const mapping = MAPPINGS.find(
+      (m) => m.dataTypeId === dataTypeId && m.method !== 'dailyRollUp',
+    );
     const points = await fetchDataPoints(
-      { dataTypeId, accessToken, baseUrl: opts.baseUrl },
+      {
+        dataTypeId,
+        accessToken,
+        baseUrl: opts.baseUrl,
+        earlyStop: mapping
+          ? { windowFrom: opts.from, pointDate: (p: unknown) => pointDate(mapping, p) }
+          : undefined,
+      },
       fetchFn,
     );
     fetched.set(dataTypeId, points);
