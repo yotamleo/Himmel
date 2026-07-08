@@ -28,6 +28,10 @@ test('codex lane keys off CR_PROFILE=paid', () => {
 test('gemini lane is DE-LISTED (deprecated + out of budget, 2026-07-06) — never resolves even with the CLI on PATH', () => {
   assert.ok(!resolveLanes(REG, ctx({ paths: ['gemini'] })).some((l) => l.id === 'gemini'));
 });
+test('codex-exec lane keys off the codex CLI on PATH (HIMMEL-781)', () => {
+  assert.ok(resolveLanes(REG, ctx({ paths: ['codex'] })).some((l) => l.id === 'codex-exec'));
+  assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === 'codex-exec'));
+});
 test('hermes-critics lane keys off the resolved install', () => {
   assert.ok(resolveLanes(REG, ctx({ installed: { hermes: true } })).some((l) => l.id === 'hermes-critics'));
   assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === 'hermes-critics'));

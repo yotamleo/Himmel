@@ -68,6 +68,41 @@ bash scripts/codex/sanitize-plugin-hooks.sh --dry-run    # report, change nothin
 pwsh -NoProfile -File scripts\codex\sanitize-plugin-hooks.ps1 -DryRun
 ```
 
+## Dispatching codex impl workers (lane chokepoint, HIMMEL-741/781)
+
+The `codex-exec` impl lane (`scripts/lanes/lanes.json`) dispatches codex CLI
+sandbox workers into git worktrees **only through the chokepoint wrapper**
+(structural > instructional — the rules live in code, not prose):
+
+```sh
+bash scripts/codex/dispatch-codex-exec.sh --worktree <worktree-path> [codex exec args...]
+```
+
+The wrapper enforces the three invariants from the HIMMEL-741 diagnosis:
+
+1. **ACL preflight, fail-closed.** It runs
+   `normalize-worktree-acl.sh <worktree>` before the codex CLI is invoked
+   (after the argument checks) and aborts the dispatch if
+   that fails. Aged worktrees under `.claude\worktrees\` develop
+   subdirectories that missed the sandbox SID inheritance; the sandbox then
+   fails with access denials that look like a broken `codex exec`. The
+   preflight is a no-op on non-Windows platforms.
+2. **Model pinned to `gpt-5.5`.** Codex-variant model names (e.g.
+   `gpt-5.5-codex`) return HTTP 400 under ChatGPT-plan auth; the plain name
+   routes correctly. A caller-named `--model` overrides the pin with a WARN.
+3. **`--background` refused.** Companion background jobs die silently
+   (upstream bug); use the default wait behavior and pair long runs with
+   `scripts/codex/companion-liveness.sh`.
+4. **Workspace-redirect and sandbox-widening flags refused.** `-C`/`--cd`,
+   `--add-dir`, `-s`/`--sandbox danger-full-access`, the approval-bypass
+   flags, and the config/profile overrides (`-c`/`--config`,
+   `-p`/`--profile` — either can rewrite `sandbox_permissions`) would point
+   codex at a directory the ACL preflight never touched or drop the sandbox
+   entirely — the wrapper rejects them all.
+
+Tests: `scripts/codex/test-dispatch-codex-exec.sh` (hermetic; stubs the codex
+CLI via `CODEX_BIN` and the preflight via `CODEX_ACL_NORMALIZE`).
+
 ## Skill loading caveat
 
 Enabling `himmel-ops` makes its **hooks** fire under Codex (e.g.
