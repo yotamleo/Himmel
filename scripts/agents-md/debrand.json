@@ -35,9 +35,9 @@
     "note": "HIMMEL-559: the effort calibration is a Claude-family fact (false for GPT) — attribute it instead of asserting it about the reading model. Embedded newline matches CLAUDE.md's wrap, same caveat as above."
   },
   {
-    "from": "| Fable 5 | judgment, taste — the ~10% hardest calls; escalation target |",
-    "to": "| top model | judgment, taste — the ~10% hardest calls; escalation target |",
-    "note": "HIMMEL-688 lane table row — neutral tier language for non-Claude drivers; table rows never wrap so the full-cell match is stable."
+    "from": "| Fable 5 | judgment, taste — hardest calls; escalation target |",
+    "to": "| top model | judgment, taste — hardest calls; escalation target |",
+    "note": "HIMMEL-688 lane table row — neutral tier language for non-Claude drivers; table rows never wrap so the full-cell match is stable. Re-matched after the 2026-07-08 effort-calibration rewording dropped 'the ~10%' (HIMMEL-806)."
   },
   {
     "from": "spawns a Fable child",
@@ -48,5 +48,15 @@
     "from": "Fable-as-parent",
     "to": "Top-model-as-parent",
     "note": "HIMMEL-688 escalation prose — same neutralization."
+  },
+  {
+    "from": "compare per task vs Fable-low",
+    "to": "compare per task vs top-model-low",
+    "note": "HIMMEL-806: Sonnet-row pricing comparison added 2026-07-08 — neutral tier language; full-phrase so it never matches the attributed calibration line."
+  },
+  {
+    "from": "Fable stays CONSERVED (limited release)",
+    "to": "The top model stays CONSERVED (limited release)",
+    "note": "HIMMEL-806: conservation note added 2026-07-08 — sentence-initial, single line, so the full-phrase match is stable."
   }
 ]
