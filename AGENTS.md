@@ -164,9 +164,9 @@ Work above your tier? Return it — don't burn tokens on it.
 inherits the parent loop and burns the scarcer, weekly-capped parent
 quota on work a cheaper tier handles.
 Raise *effort* before raising model tier — on Claude, Fable-5 `low` ≈ prior-gen
-`xhigh`, and the same shift applies down-tier. Effort — and temperature,
-where the lane exposes it (hermes per-model params) — are PER-DISPATCH
-levers: use the full scale per item, don't flatten to one default.
+`xhigh`, and the same shift applies down-tier. Effort is a PER-DISPATCH
+lever: use the full scale per item, don't flatten to one default.
+(Temperature is Claude-API-only — DEFERRED for now; rides HIMMEL-774.)
 Fable stays CONSERVED (limited release) — the spread optimizes
 Sonnet/Opus/impl lanes. Full per-lane calibration (web pricing +
 benchmark index analysis) = HIMMEL-774, later phase.
