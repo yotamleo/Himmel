@@ -379,6 +379,173 @@ run_fence allow no "$HIMMEL" "redirect: standalone > target skipped -> allow" \
 run_fence deny no "$HIMMEL" "redirect: 2>/dev/null on salus target still denies" \
     "graphify update $SALUS/notes/patient.md --backend glm 2>/dev/null"
 
+echo "== HIMMEL-778: MSYS drive-path normalization =="
+
+# (M1) MSYS-form path under the himmel root -> himmel-code allow. PURE LEXICAL
+# (drive-lettered root + /c/... candidate) so it genuinely exercises the
+# translation on ANY OS - no real /c dir needed.
+run_fence allow no "$HIMMEL" "MSYS /c/... under himmel root -> himmel-code allow" \
+    "graphify update /c/fake/himmel/doc.md --backend deepseek" GRAPHIFY_HIMMEL_ROOT="C:/fake/himmel"
+
+# (M2) MSYS-form path under the luna root -> luna-personal (allow+log + ledger).
+run_fence allow yes "$HIMMEL" "MSYS /c/... under luna root -> luna-personal allow+ledger" \
+    "graphify update /c/fake/luna/journal.md --backend deepseek" LUNA_VAULT_PATH="C:/fake/luna"
+
+# (M3) THE --version regression: no path arg -> cwd fallback. The himmel root is
+# supplied drive-lettered (as git prints it); the fence must still classify the
+# cwd as himmel-code. drive_form() below yields a genuine drive-lettered/MSYS
+# mismatch on Windows Git Bash (where $PWD is /c/...) and degrades to a plain
+# match under a POSIX /tmp fixture root (still green).
+drive_form() {  # /c/Users/x -> C:/Users/x ; POSIX /tmp/x unchanged
+    local L
+    case "$1" in
+        /[A-Za-z]/*) L=$(printf '%s' "$1" | cut -c2 | tr '[:lower:]' '[:upper:]'); printf '%s:/%s' "$L" "${1#/?/}" ;;
+        /[A-Za-z])   L=$(printf '%s' "$1" | cut -c2 | tr '[:lower:]' '[:upper:]'); printf '%s:/' "$L" ;;
+        *)           printf '%s' "$1" ;;
+    esac
+}
+ROOT_DRIVE=$( cd "$HIMMEL" && drive_form "$PWD" )
+run_fence allow no "$HIMMEL/scripts" "MSYS --version cwd-in-himmel (drive-lettered root) -> allow" \
+    "graphify --version" GRAPHIFY_HIMMEL_ROOT="$ROOT_DRIVE"
+
+echo "== HIMMEL-778: .graphify-corpus staged-copy declaration =="
+
+STAGED="$WS/staged";        mkdir -p "$STAGED";        : > "$STAGED/copy.md";  printf 'luna-personal\n' > "$STAGED/.graphify-corpus"
+STAGED_SALUS="$WS/stgsalus"; mkdir -p "$STAGED_SALUS"; : > "$STAGED_SALUS/copy.md"; printf 'salus\n'        > "$STAGED_SALUS/.graphify-corpus"
+STAGED_BAD="$WS/stgbad";     mkdir -p "$STAGED_BAD";   : > "$STAGED_BAD/copy.md";   printf 'banana\n'       > "$STAGED_BAD/.graphify-corpus"
+STAGED_NONE="$WS/stgnone";   mkdir -p "$STAGED_NONE";  : > "$STAGED_NONE/copy.md"
+STAGED_HIM="$WS/stghim";     mkdir -p "$STAGED_HIM";   : > "$STAGED_HIM/copy.md";   printf 'himmel-code\n'  > "$STAGED_HIM/.graphify-corpus"
+
+# (S1) staged copy declares luna-personal + deepseek -> allow+log + ledger
+run_fence allow yes "$HIMMEL" "staged marker luna-personal + deepseek -> allow+ledger" \
+    "graphify update $STAGED/copy.md --backend deepseek"
+
+# (S2) staged copy declares salus + deepseek -> hard salus deny
+run_fence deny no "$HIMMEL" "staged marker salus + deepseek -> deny (hard salus row)" \
+    "graphify update $STAGED_SALUS/copy.md --backend deepseek"
+
+# (S3) staged marker with invalid content -> deny
+run_fence deny no "$HIMMEL" "staged marker invalid content -> deny" \
+    "graphify update $STAGED_BAD/copy.md --backend deepseek"
+
+# (S4) staged dir with NO marker -> deny (existing unclassifiable behavior held)
+run_fence deny no "$HIMMEL" "staged dir no marker -> deny (unclassifiable)" \
+    "graphify update $STAGED_NONE/copy.md --backend deepseek"
+
+# (S5) marker INSIDE the real luna root claiming himmel-code -> luna-personal wins
+# (real root beats the marker; classification NOT relaxed; no declared field).
+rm -f "$LEDGER"
+printf 'himmel-code\n' > "$LUNA/.graphify-corpus"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md --backend deepseek" ) >/dev/null 2>&1; rc_s5=$?
+rm -f "$LUNA/.graphify-corpus"
+if [ "$rc_s5" -eq 0 ] && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null && ! grep -q '"declared":true' "$LEDGER" 2>/dev/null; then
+    pass "marker in REAL luna claiming himmel-code -> luna-personal (real root wins)"
+else
+    fail "marker-in-real-luna: rc=$rc_s5 ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# (S6) declared himmel-code marker + ollama (matrix verdict is PLAIN allow) ->
+# ledger line IS written and carries "declared":true (audit cannot be dodged).
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $STAGED_HIM/copy.md --backend ollama" ) >/dev/null 2>&1; rc_s6=$?
+if [ "$rc_s6" -eq 0 ] && grep -q '"declared":true' "$LEDGER" 2>/dev/null && grep -q '"corpus":"himmel-code"' "$LEDGER" 2>/dev/null; then
+    pass "declared himmel-code marker + ollama (plain allow) -> ledger w/ declared:true"
+else
+    fail "declared-audit: rc=$rc_s6 ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# (S7) marker file present but UNREADABLE -> deny (fail-closed). Skip gracefully
+# where chmod cannot drop read (admin on Windows, root on Linux).
+STAGED_UR="$WS/stgunread"; mkdir -p "$STAGED_UR"; : > "$STAGED_UR/copy.md"; printf 'luna-personal\n' > "$STAGED_UR/.graphify-corpus"
+chmod 000 "$STAGED_UR/.graphify-corpus" 2>/dev/null || true
+if [ -r "$STAGED_UR/.graphify-corpus" ]; then
+    printf '  SKIP  unreadable .graphify-corpus marker (chmod could not drop read perm here)\n'
+else
+    run_fence deny no "$HIMMEL" "unreadable .graphify-corpus marker -> deny (fail-closed)" \
+        "graphify update $STAGED_UR/copy.md --backend deepseek"
+fi
+chmod 644 "$STAGED_UR/.graphify-corpus" 2>/dev/null || true
+
+# (S8) marker WITHOUT a trailing newline is still valid (CR codex-1: `read`
+# exits non-zero on EOF-without-newline but populates the variable; the old
+# `|| line=""` cleared it -> false deny on a `printf 'x' >` marker).
+STAGED_NONL="$WS/stgnonl"; mkdir -p "$STAGED_NONL"; : > "$STAGED_NONL/copy.md"; printf 'luna-personal' > "$STAGED_NONL/.graphify-corpus"
+run_fence allow yes "$HIMMEL" "staged marker with NO trailing newline -> still classifies (allow+ledger)" \
+    "graphify update $STAGED_NONL/copy.md --backend deepseek"
+
+# (S10) UNCONFIGURED luna root -> the marker is INERT (silent-failure CR round:
+# without a visible luna root the real-root-beats-marker precedence cannot be
+# enforced, so a valid marker must NOT classify; pre-marker deny behavior).
+run_fence deny no "$HIMMEL" "no luna root configured -> valid marker is inert (deny)" \
+    "graphify update $STAGED/copy.md --backend deepseek" LUNA_VAULT_PATH=
+
+# (S6b) declared marker + PLAIN-allow cell (himmel-code x ollama) + UNWRITABLE
+# ledger -> DENY (pr-test-analyzer: the always-ledger audit on a plain allow is
+# its own branch in apply_verdict; dropping its `|| deny` must not pass green).
+run_fence deny no "$HIMMEL" "declared + plain allow + unwritable ledger -> deny (audit required)" \
+    "graphify update $STAGED_HIM/copy.md --backend ollama" GRAPHIFY_LEDGER="$WS/ledblocker/led.jsonl"
+
+# (S9) filesystem walks use the ORIGINAL path form: an MSYS-form (/c/...)
+# target must still find its .graphify-corpus marker (the stat-walk runs on
+# the untranslated path; only root COMPARISON uses the drive-translated form).
+# Windows-only shape - needs cygpath to produce a real MSYS form of $STAGED.
+if command -v cygpath >/dev/null 2>&1; then
+    # cygpath -u round-trips mounted paths (/tmp stays /tmp), so build the raw
+    # /x/... form by hand from the drive-lettered mixed form: C:/foo -> /c/foo.
+    STAGED_MIXED="$(cygpath -m "$STAGED" 2>/dev/null || true)"
+    case "$STAGED_MIXED" in
+        [A-Za-z]:/*)
+            _drv="$(printf '%s' "${STAGED_MIXED%%:*}" | tr '[:upper:]' '[:lower:]')"
+            STAGED_MSYS="/${_drv}${STAGED_MIXED#?:}"
+            run_fence allow yes "$HIMMEL" "MSYS-form staged path still finds its marker (walk on original form)" \
+                "graphify update $STAGED_MSYS/copy.md --backend deepseek"
+            ;;
+        *) printf '  SKIP  MSYS-form marker walk (no drive-lettered form here)\n' ;;
+    esac
+else
+    printf '  SKIP  MSYS-form marker walk (no cygpath on this platform)\n'
+fi
+
+echo "== HIMMEL-778 CR: declared bit is INVOCATION-WIDE (ordering cannot suppress audit) =="
+
+# (D1) real himmel-code path FIRST, then a staged himmel-code-declared path
+# (same rank 1): the marker token loses the strictly-greater rank comparison,
+# but the ledger line with declared:true MUST still be written (the
+# ordering-bypass case the CR found).
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify merge-graphs $HIMMEL/scripts/thing.sh $STAGED_HIM/copy.md --backend ollama" ) >/dev/null 2>&1; rc_d1=$?
+if [ "$rc_d1" -eq 0 ] && grep -q '"declared":true' "$LEDGER" 2>/dev/null; then
+    pass "real himmel FIRST + staged himmel marker -> allow + declared ledger (order bypass closed)"
+else
+    fail "ordering-bypass D1: rc=$rc_d1 ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# (D2) same two paths in REVERSE order -> same outcome (order-independence).
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify merge-graphs $STAGED_HIM/copy.md $HIMMEL/scripts/thing.sh --backend ollama" ) >/dev/null 2>&1; rc_d2=$?
+if [ "$rc_d2" -eq 0 ] && grep -q '"declared":true' "$LEDGER" 2>/dev/null; then
+    pass "staged himmel marker FIRST + real himmel -> allow + declared ledger (order-independent)"
+else
+    fail "ordering-bypass D2: rc=$rc_d2 ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# (D3) staged luna-personal-declared path + real himmel-code path in ONE
+# invocation -> most-restrictive still wins (luna-personal x deepseek ->
+# allow+log) AND declared:true is present.
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify merge-graphs $HIMMEL/scripts/thing.sh $STAGED/copy.md --backend deepseek" ) >/dev/null 2>&1; rc_d3=$?
+if [ "$rc_d3" -eq 0 ] && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null \
+    && grep -q '"verdict":"allow+log"' "$LEDGER" 2>/dev/null && grep -q '"declared":true' "$LEDGER" 2>/dev/null; then
+    pass "staged luna-personal + real himmel -> most-restrictive wins + declared ledger"
+else
+    fail "mixed-corpus D3: rc=$rc_d3 ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

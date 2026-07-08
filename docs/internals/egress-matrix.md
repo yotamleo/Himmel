@@ -33,6 +33,32 @@ already use: `.salus` root markers and the
 plus vault/state roots from env or config — never hardcoded absolute paths.
 The matrix defines *policy*; membership resolution stays with the guards.
 
+## Staged-copy corpus declaration (`.graphify-corpus`, HIMMEL-778)
+
+The 621/622 plan runs extraction on scratchpad **copies** of corpus content,
+never live vaults — but a copy classifies as nothing, so an undeclared copy is
+denied unconditionally. A `.graphify-corpus` marker file at or above the target
+declares the copy's **origin** corpus: its first line, trimmed, must be one of
+`salus` · `luna-personal` · `luna-clippings` · `handover-state` · `himmel-code`
+(anything else, or an unreadable marker, is a fail-closed **deny**). Precedence
+is strict: `.salus`/PHI roots and the real luna/handover/himmel roots BOTH beat
+the marker (a marker inside a real vault can never relax classification); the
+marker is consulted **only** for otherwise-unclassifiable paths. Because a copy
+is origin-blind, mis-declaration is possible and accepted — the load-bearing PHI
+guard stays `parity_guard` / the file-tool fence, not this command-text guard.
+As a backstop, any marker-derived invocation **always** appends a ledger line
+on every allow-family verdict (`allow` / `allow+log` / `conditional` — a deny
+already blocks the egress), carrying `"declared":true`, even on a plain `allow`
+cell, so a mis-declared marker cannot also dodge the audit trail. The marker is
+consulted **only when a luna root is configured** (`LUNA_VAULT` /
+`LUNA_VAULT_PATH` non-empty): the real-root-beats-marker guarantee depends on
+the fence seeing the real roots, so with no luna root the marker is inert and
+staged copies stay unclassifiable → deny. `graphify-fence.sh` also normalizes
+MSYS-form paths (`/c/…` → `c:/…`) for its **lexical** root comparisons (the
+filesystem marker walks use the original path form) so Windows Git-Bash
+candidates and the Bash tool's always-MSYS `$PWD` match the drive-lettered
+corpus roots.
+
 ## Consumers
 
 | Surface | What it reads |
