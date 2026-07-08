@@ -14,6 +14,16 @@
     { "id": "codex",  "label": "codex (paid, via hermes)", "class": "critic", "bestFor": "CR escalation, second opinions (CR_PROFILE=paid)", "effort": "consumes OpenAI bank",
       "probe": { "kind": "crprofile", "token": "paid" } },
     { "id": "copilot-cli", "label": "GitHub Copilot CLI (free tier)", "class": "bulk", "bestFor": "free chores / second opinions — 2,000 completions/mo bank; AUTO model only (Haiku 4.5 / GPT-5 mini class, NO per-dispatch model selection); operator ran /allow-all; worker-spawn-matrix row UNVERIFIED (guard coverage + skills-load pending eval)", "effort": "small tasks only — model tier is mini-class",
-      "probe": { "kind": "installed", "tool": "copilot" } }
+      "probe": { "kind": "installed", "tool": "copilot" } },
+    { "id": "hermes-oneshot", "label": "hermes one-shot (scripts/hermes/dispatch-trusted.sh)", "class": "impl", "bestFor": "trusted-engine impl/build dispatch — multi-provider chokepoint (default gpt-5.5 codex; --model selects e.g. qwen3-coder-plus); parity_guard fences writes; LIVE-PROVEN spawn path (worker-spawn matrix)", "effort": "no internal timeout — caller wraps; toolsets opt-in via --toolsets",
+      "probe": { "kind": "installed", "tool": "hermes" } },
+    { "id": "antigravity-cli", "label": "Antigravity CLI (Google AI Plus)", "class": "bulk", "bestFor": "free-bank chores/second opinions — Gemini flash/pro + Opus/Sonnet/gpt-oss model groups; ~weekly quota + 5h rate banks; EGRESS: gemini-family cells are matrix-DENIED for vault corpora (himmel-code only); parity/guards UNVERIFIED pending eval", "effort": "simple tasks; probe binary name to VERIFY at eval",
+      "probe": { "kind": "installed", "tool": "antigravity" } },
+    { "id": "ollama-local", "label": "ollama (local models)", "class": "bulk", "bestFor": "zero-egress local inference (qwen2.5-coder:7b pulled) — the ONLY salus-eligible backend (per-run opt-in) and the graphify zero-egress fallback; slow, small tasks", "effort": "free, local wall-clock",
+      "probe": { "kind": "installed", "tool": "ollama" } },
+    { "id": "openrouter-free", "label": "OpenRouter free models", "class": "bulk", "bestFor": "free-tier model pool — probe web for current uptime/availability before routing; simple tasks only; rate-limited; parity/guards UNVERIFIED pending eval", "effort": "availability varies by model/day",
+      "probe": { "kind": "env", "name": "OPENROUTER_API_KEY" } },
+    { "id": "ollama-cloud", "label": "Ollama Cloud (free tier, ollama.com)", "class": "bulk", "bestFor": "hosted open models on the free bank (hourly/daily caps) — NOT the local lane: content EGRESSES to ollama.com, an UNDECLARED provider in the egress matrix -> vault corpora default-DENY (himmel-code only) until the operator declares a cell; parity/guards UNVERIFIED pending eval", "effort": "simple tasks; free-bank caps",
+      "probe": { "kind": "installed", "tool": "ollama" } }
   ]
 }
