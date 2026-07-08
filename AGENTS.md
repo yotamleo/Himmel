@@ -145,7 +145,7 @@ nothing. Route by lane. The Claude tiers are always present; their
 | Haiku | bulk mechanical (never delegates further) | low |
 | Sonnet 5 | scoped research | medium — good, but compare first: another tier at adjusted effort often beats its token cost, by task length |
 | Opus 4.8 | multi-step reasoning; **default parent/orchestrator** | xhigh |
-| top model | judgment, taste — the ~10% hardest calls; escalation target | medium; xhigh for the hardest only — skip `high` |
+| Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; **high for substantial judgment work — not just the hardest**; xhigh for the hardest |
 
 Beyond the Claude tiers the fleet includes machine-specific impl/critic/
 bulk lanes (paid/optional — they exist only where the operator configured
@@ -164,7 +164,9 @@ Work above your tier? Return it — don't burn tokens on it.
 inherits the parent loop and burns the scarcer, weekly-capped parent
 quota on work a cheaper tier handles.
 Raise *effort* before raising model tier — on Claude, Fable-5 `low` ≈ prior-gen
-`xhigh`, and the same shift applies down-tier.
+`xhigh`, and the same shift applies down-tier. Effort — and temperature,
+where the lane exposes it (hermes per-model params) — are PER-DISPATCH
+levers: use the full scale per item, don't flatten to one default.
 Invariants (not model-tuned): spawn-depth limit **2** (kept on
 measured nesting-overhead cost); **Haiku does NOT spawn**;
 single-writer — many readers, ONE writer, never fan parallel writes
