@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>himmel fleet-control</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6edf3; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0 2rem; }
+    th, td { border-bottom: 1px solid #30363d; padding: .5rem; text-align: left; vertical-align: top; }
+    code { color: #9cdcfe; }
+    .muted { color: #8b949e; }
+    button[disabled] { opacity: .45; }
+    #stale-banner { display: none; margin: 1rem 0; padding: .5rem .75rem; border-radius: 4px; background: #4d1f00; color: #ffd7a8; }
+  </style>
+</head>
+<body>
+  <h1>Fleet Control</h1>
+  <div id="stale-banner"></div>
+  <p class="muted">Read-only Phase 1 pane. Dispatch and adjudication controls remain disabled until Phase 2.</p>
+  <section><h2>Fleet</h2><table id="fleet-table"><tbody></tbody></table></section>
+  <section><h2>Escalations</h2><div id="escalation-parse-errors"></div><table id="escalations-table"><tbody></tbody></table></section>
+  <section><h2>Gauges</h2><pre id="gauges">loading...</pre></section>
+  <script src="/app.js"></script>
+</body>
+</html>
