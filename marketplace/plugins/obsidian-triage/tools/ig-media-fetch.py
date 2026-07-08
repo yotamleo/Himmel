@@ -51,7 +51,7 @@ SLIDE_CAP = 20
 LONG_EDGE_MAX = 1600
 DEFAULT_WHISPER_MODEL = "base"
 DOWNLOAD_TIMEOUT = 180
-FFMPEG_TIMEOUT = 300
+FFMPEG_TIMEOUT = int(os.environ.get("IG_MEDIA_FFMPEG_TIMEOUT", "300"))
 WHISPER_TIMEOUT = 1800
 
 IG_URL_RE = re.compile(
@@ -372,6 +372,59 @@ def whisper_transcribe(wav: Path, model: str):
         _emit_stderr_tail("whisper", p.stderr)
         return None
     return p.stdout.strip() or None
+
+
+def _has_audio_stream(video: Path) -> bool:
+    """True if the video carries an audio stream (probe: decode one audio
+    frame via -map 0:a:0 -f null). Returns False ONLY on conclusive proof -
+    ffmpeg reporting the 0:a:0 map "matches no streams". Every other failure
+    (no ffmpeg, timeout, decode error, corrupt media) reports True so the
+    caller keeps the conservative failed/partial path instead of silently
+    replacing a lost transcript with a screenshot (codex-adv HIMMEL-786)."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return True
+    cmd = [ffmpeg, "-i", str(video), "-map", "0:a:0", "-frames:a", "1",
+           "-f", "null", "-"]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=FFMPEG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"ffmpeg(probe): timed out after {FFMPEG_TIMEOUT}s",
+              file=sys.stderr)
+        return True
+    if p.returncode == 0:
+        return True
+    if "matches no streams" in (p.stderr or ""):
+        return False
+    _emit_stderr_tail("ffmpeg(probe)", p.stderr)   # inconclusive - trace it
+    return True
+
+
+def soundless_video_frame(video: Path):
+    """Screenshot fallback for a soundless GIF-like video (HIMMEL-786):
+    extract the first frame NEXT TO the video in the download cache (never
+    the vault; render_slides copies it in) and return the frame Path.
+    Returns None when the video has an audio stream (genuine transcription
+    failure - caller keeps partial semantics) or the extraction fails."""
+    if _has_audio_stream(video):
+        return None
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    frame = video.with_suffix(".frame.jpg")
+    cmd = [ffmpeg, "-y", "-i", str(video), "-frames:v", "1", str(frame)]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=FFMPEG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"ffmpeg(frame): timed out after {FFMPEG_TIMEOUT}s",
+              file=sys.stderr)
+        return None
+    if p.returncode != 0:
+        _emit_stderr_tail("ffmpeg(frame)", p.stderr)
+        return None
+    return frame if frame.is_file() else None
 
 
 def transcribe_videos(videos, model):
@@ -697,6 +750,26 @@ def enrich_batch(args, selected, matched_total, remaining):
             transcripts, videos_failed = (
                 transcribe_videos(videos, args.whisper_model) if videos
                 else ([], []))
+            # Soundless-video screenshot fallback (HIMMEL-786): a failed video
+            # with NO audio stream (GIF-like screen capture) becomes a slide
+            # screenshot in carousel order instead of a failed transcript.
+            if videos_failed:
+                vmap = dict(videos)
+                screenshots = {}
+                still_failed = []
+                for idx in videos_failed:
+                    frame = soundless_video_frame(vmap[idx])
+                    if frame is None:
+                        still_failed.append(idx)
+                    else:
+                        screenshots[idx] = frame
+                videos_failed = still_failed
+                if screenshots:
+                    expected_videos -= len(screenshots)
+                    images = [screenshots.get(i, f)
+                              for i, f in enumerate(files, start=1)
+                              if i in screenshots
+                              or f.suffix.lower() in IMAGE_EXTS]
             slug = clip_slug(p)
             expected_images = len(images[:SLIDE_CAP])
             media_dir = _media_dir(args.vault, slug)
