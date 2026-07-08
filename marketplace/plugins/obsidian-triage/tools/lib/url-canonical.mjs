@@ -57,6 +57,15 @@ const GITHUB_HOSTS = new Set([
   "www.github.com",
 ]);
 
+const REDDIT_HOSTS = new Set([
+  "reddit.com",
+  "www.reddit.com",
+  "old.reddit.com",
+  "new.reddit.com",
+  "np.reddit.com",
+  "m.reddit.com",
+]);
+
 /**
  * Strip surrounding quotes (single or double) from a frontmatter value.
  * Many clips have `source: "https://..."` with quoted strings; some don't.
@@ -121,6 +130,20 @@ export function canonicalize(rawUrl) {
       return `https://github.com/${kept.join("/")}`.replace(/\/$/, "");
     }
     return `https://github.com${u.pathname.replace(/\/$/, "") || "/"}`;
+  }
+
+  // reddit — host -> www.reddit.com, drop query/fragment, strip trailing slash,
+  // lowercase the /r/<subreddit> segment. Full URLs only: redd.it short links
+  // are NOT expanded here (that needs a network redirect — reddit-enrich.mjs
+  // resolves them first, then feeds the resolved full URL back through here).
+  if (REDDIT_HOSTS.has(host)) {
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length >= 2 && parts[0].toLowerCase() === "r") {
+      parts[0] = "r";
+      parts[1] = parts[1].toLowerCase();
+    }
+    const path = parts.length ? "/" + parts.join("/") : "";
+    return `https://www.reddit.com${path}`.replace(/\/$/, "");
   }
 
   // medium.com — drop ?source=

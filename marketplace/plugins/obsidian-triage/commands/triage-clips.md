@@ -220,6 +220,18 @@ The flag (and its `harvest_flag_detail:` sibling) is never written or cleared by
 
 When `DRY_RUN=1`, skip all moves and writes for this phase. The clip emits a `⊘` skip line (`⊘ <clip> — skipped (phase-8-move): dry-run — would move → _evidence/<basename>.md, {L} links would be rewritten`), so it counts toward `M skipped` (NOT `N processed`) in the final `N processed, M skipped` summary — consistent with the glyph→count mapping in the Logging contract (every `⊘` line increments `M`). No clip is reported as `processed` under `--dry-run`, since nothing is written.
 
+0. **`ig_media_pending` hold (HIMMEL-770).** If the clip's frontmatter contains
+   `ig_media_pending: true` (set by the /harvest-clips instagram routing row), SKIP
+   Phase 8 entirely for this clip — it stays in the Clippings/ inbox until
+   /ig-media-enrich completes it and clears the flag. Phases 1-7 still ran (the
+   clip IS triaged: summary, tags, `processed: true`); only the evidence move is
+   held. Emit the per-clip success line with the move segment replaced:
+   `✓ <clip-filename.md> — {summary-len}c summary, {N} tags, {M} related, {K} actions → daily, promotion → <folder> → stays in inbox (ig_media_pending), 0 links rewritten`.
+   Count it as processed (`N`), not skipped. Do NOT set `evidence_kind:`. The clip
+   is excluded from future triage scans by `processed: true`, and the media rung's
+   completion (clearing `ig_media_pending`) leaves it for the migrate-clip-lifecycle
+   backfill or a manual re-triage to park later.
+
 1. **Set `evidence_kind:` in frontmatter.** Infer the value by running:
    ```bash
    node "<plugin>/tools/lib/evidence-kind.mjs" --type "<type>" --url "<harvest_url_canonical or source>" --tags "<comma,joined,tags>"

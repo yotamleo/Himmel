@@ -10,7 +10,7 @@
 
 /** Recognised clip types this entry point can emit. */
 export const CLIP_TYPES = Object.freeze([
-  "research", "tweet", "youtube", "reddit", "article", "note",
+  "research", "tweet", "youtube", "reddit", "instagram", "article", "note",
 ]);
 
 /**
@@ -47,12 +47,13 @@ export function firstUrl(text) {
 export function classifyMessage({ text }) {
   const url = firstUrl(text);
   if (!url) return { type: "note", source: null };
-  let host;
+  let u;
   try {
-    host = new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+    u = new URL(url);
   } catch {
     return { type: "note", source: null };
   }
+  const host = u.hostname.replace(/^www\./i, "").toLowerCase();
   if (host === "github.com") return { type: "research", source: url };
   if (host === "x.com" || host === "twitter.com" || host === "mobile.twitter.com") {
     return { type: "tweet", source: url };
@@ -60,7 +61,10 @@ export function classifyMessage({ text }) {
   if (host === "youtube.com" || host === "m.youtube.com" || host === "youtu.be") {
     return { type: "youtube", source: url };
   }
-  if (host === "reddit.com" || host.endsWith(".reddit.com")) {
+  if (host === "instagram.com" && /^\/(p|reel|reels|tv)\//.test(u.pathname)) {
+    return { type: "instagram", source: url };
+  }
+  if (host === "reddit.com" || host.endsWith(".reddit.com") || host === "redd.it") {
     return { type: "reddit", source: url };
   }
   return { type: "article", source: url };

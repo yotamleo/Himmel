@@ -68,6 +68,10 @@ assert "twitter → tweet"    tweet    "$(T='https://twitter.com/u/status/1' lib
 assert "youtube → youtube"  youtube  "$(T='https://www.youtube.com/watch?v=x' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
 assert "youtu.be → youtube" youtube  "$(T='https://youtu.be/x' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
 assert "reddit → reddit"    reddit   "$(T='https://www.reddit.com/r/x/comments/1' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
+assert "redd.it → reddit"   reddit   "$(T='https://redd.it/abc123' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
+assert "ig reel → instagram" instagram "$(T='https://www.instagram.com/reel/Cxyz/' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
+assert "ig post → instagram"  instagram "$(T='https://instagram.com/p/Cabc/' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
+assert "ig profile → article (non-goal)" article "$(T='https://www.instagram.com/someuser/' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
 assert "other url → article" article "$(T='https://example.com/post' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
 assert "no url → note"      note     "$(T='just a thought' libcall "console.log(lib.classifyMessage({text:process.env.T}).type)")"
 assert "no-url source null" null     "$(T='just a thought' libcall "console.log(JSON.stringify(lib.classifyMessage({text:process.env.T}).source))")"
@@ -111,6 +115,14 @@ echo "$CLIP" | grep -q '^telegram_msg_id: "77"$'      && a=ok || a=no; assert "b
 echo "$CLIP" | grep -q '^telegram_sender: "alice"$'   && a=ok || a=no; assert "buildClip sender provenance" ok "$a"
 echo "$CLIP" | grep -q '^clipped_via: telegram$'      && a=ok || a=no; assert "buildClip clipped_via" ok "$a"
 echo "$CLIP" | grep -q '^source: https://example.com/p$' && a=ok || a=no; assert "buildClip source line" ok "$a"
+# HIMMEL-769: an instagram URL must build a COMPLETE clip (not just classify) —
+# guards the frozen CLIP_TYPES regression (buildClip throws on unknown type).
+IGCLIP="$(T='https://www.instagram.com/reel/Cxyz/' libcall "
+const {type,source}=lib.classifyMessage({text:process.env.T});
+process.stdout.write(lib.buildClip({sender:'a',ts:'',msgId:'55',text:process.env.T,type,source,today:'2026-07-08'}));
+")"
+echo "$IGCLIP" | grep -q '^type: instagram$' && a=ok || a=no; assert "buildClip instagram type line" ok "$a"
+echo "$IGCLIP" | grep -q '^source: https://www.instagram.com/reel/Cxyz/$' && a=ok || a=no; assert "buildClip instagram source line" ok "$a"
 echo "$CLIP" | grep -q '^## Source$'                  && a=ok || a=no; assert "buildClip Source section" ok "$a"
 if echo "$CLIP" | grep -q '^harvested_at:'; then a=present; else a=absent; fi
 assert "buildClip has NO harvested_at (unharvested)" absent "$a"

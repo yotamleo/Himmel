@@ -75,6 +75,7 @@ check("eligible: plain article URL", mod.firecrawl_eligible("https://example.com
 check("ineligible: x.com", not mod.firecrawl_eligible("https://x.com/a/status/1"))
 check("ineligible: github.com", not mod.firecrawl_eligible("https://github.com/o/r"))
 check("ineligible: youtube", not mod.firecrawl_eligible("https://youtube.com/watch?v=x"))
+check("ineligible: instagram", not mod.firecrawl_eligible("https://www.instagram.com/reel/Abc123/"))
 check("ineligible: non-http scheme", not mod.firecrawl_eligible("ftp://example.com/x"))
 # G-1 privacy gate — never ship internal/private URLs to a 3rd-party scraper.
 check("ineligible: localhost", not mod.firecrawl_eligible("http://localhost/x"))

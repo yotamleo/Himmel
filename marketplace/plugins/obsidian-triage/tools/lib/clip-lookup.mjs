@@ -92,7 +92,7 @@ export function findHarvestedClipForUrl(vaultRootOrOpts, url) {
       return {
         path,
         status: fm.harvest_status || "unharvested",
-        enriched: !isThinClipBody(body, fm.type),
+        enriched: !isThinClipBody(body, fm.type, fm.source),
       };
     }
   }
@@ -112,8 +112,14 @@ const PLACEHOLDER_LINE = (l) => {
 // article/research content sections (tweet delegates to isThinTweetBody)
 const ARTICLE_SECTIONS = ["## Highlights", "## Summary", "## Key Points", "## Core Argument", "## Key Evidence"];
 
-export function isThinClipBody(body, type) {
+export function isThinClipBody(body, type, source) {
   if (!body) return true;
+  // Source-host override (host beats type) — spec §7 (HIMMEL-769). A legacy
+  // type:article reddit clip must still route to the reddit predicate.
+  if (isRedditHost(source)) return isThinRedditBody(body);
+  // instagram media rung (HIMMEL-770): host beats type — an IG clip routes to
+  // the IG predicate regardless of type: (browser-clipped IG clips are type:article).
+  if (isInstagramHost(source)) return isThinInstagramBody(body);
   // tweet branch: reuse the canonical predicate (spec Item C)
   if (type === "tweet") return isThinTweetBody(body);
   // article/other: drop the ## Source footer, scan known content sections
@@ -129,4 +135,70 @@ export function isThinClipBody(body, type) {
     }
   }
   return true; // no content section had real text → thin
+}
+
+/**
+ * Reddit source-host test (HIMMEL-769). reddit.com / *.reddit.com / redd.it.
+ */
+export function isRedditHost(sourceUrl) {
+  if (!sourceUrl) return false;
+  try {
+    const h = new URL(String(sourceUrl).replace(/^["']|["']$/g, "").trim())
+      .hostname.toLowerCase().replace(/^www\./, "");
+    return h === "reddit.com" || h.endsWith(".reddit.com") || h === "redd.it";
+  } catch { return false; }
+}
+
+/**
+ * Reddit thinness (HIMMEL-769). A reddit clip is thin when its body (below the
+ * H1, above the `## Source` footer) has NO meaningful content line — a bare
+ * Telegram URL stub. A browser-Web-Clipper thread OR an enriched
+ * `## Crawled content` section (real post text / comments) is rich → skipped.
+ * Meaningful = a line that is not blank, a heading, an HTML comment, an image,
+ * a template italic, a bare URL, a bare markdown-link line, or a placeholder.
+ */
+export function isThinRedditBody(body) {
+  if (!body) return true;
+  const srcIdx = body.lastIndexOf("\n## Source");
+  const main = srcIdx >= 0 ? body.slice(0, srcIdx) : body;
+  for (const raw of main.split(/\r?\n/)) {
+    const l = raw.trim();
+    if (!l) continue;
+    if (/^#{1,6}\s/.test(l)) continue;                       // heading
+    if (/^<!--/.test(l)) continue;                           // html comment / marker
+    if (/^!\[/.test(l)) continue;                            // image
+    if (/^\*\(.*\)\*$/.test(l)) continue;                    // template italic
+    if (/^https?:\/\/\S+$/.test(l)) continue;                // bare URL
+    if (/^\[[^\]]*\]\(https?:\/\/\S+\)$/.test(l)) continue;  // bare markdown link
+    if (PLACEHOLDER_LINE(l)) continue;                       // empty bullet / [[]]
+    return false;                                            // real content
+  }
+  return true;
+}
+
+/**
+ * Instagram source-host test (HIMMEL-770). instagram.com / *.instagram.com
+ * (www./m. aliases). Mirrors isRedditHost.
+ */
+export function isInstagramHost(sourceUrl) {
+  if (!sourceUrl) return false;
+  try {
+    const h = new URL(String(sourceUrl).replace(/^["']|["']$/g, "").trim())
+      .hostname.toLowerCase().replace(/^www\./, "");
+    return h === "instagram.com" || h.endsWith(".instagram.com");
+  } catch { return false; }
+}
+
+// instagram media rung (HIMMEL-770): thin iff ## Crawled content has neither
+// a ### Transcript nor a ### Slides subsection (caption-only bodies are thin).
+export function isThinInstagramBody(body) {
+  if (!body) return true;
+  const m = body.match(/^## Crawled content\b/m);
+  if (!m) return true;
+  let section = body.slice(m.index);
+  const nxt = section.slice(1).match(/^## (?!Crawled content)/m);
+  if (nxt) section = section.slice(0, nxt.index + 1);
+  const hasTranscript = /^### Transcript\b/m.test(section);
+  const hasSlides = /^### Slides\b/m.test(section);
+  return !(hasTranscript || hasSlides);
 }
