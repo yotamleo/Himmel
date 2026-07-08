@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { join } from 'path';
-import { extractRows } from './shape';
+import { extractRows, pointDate } from './shape';
 import { MAPPINGS } from './table';
 
 const FIXTURES_DIR = join(import.meta.dir, '../__fixtures__');
@@ -216,5 +216,34 @@ describe('extractRows — R4 deferred (returns [])', () => {
     const floorsMapping = findByTypeId('floors');
     // dataPoints content is irrelevant — short-circuits on method check.
     expect(extractRows(floorsMapping, { dataPoints: [{}] })).toEqual([]);
+  });
+});
+
+// ── pointDate (single-point civil date; used by fetch early-stop) ─────────────
+
+describe('pointDate', () => {
+  test('daily category: dailyRestingHeartRate.date → "2024-09-16"', async () => {
+    const fixture = await loadFixture('daily-resting-heart-rate');
+    const mapping = findByTypeId('daily-resting-heart-rate');
+    expect(pointDate(mapping, fixture.dataPoints![0])).toBe('2024-09-16');
+  });
+
+  test('sample category: weight.sampleTime.civilTime.date → "2026-06-21"', async () => {
+    const fixture = await loadFixture('weight');
+    const mapping = findByTypeId('weight');
+    expect(pointDate(mapping, fixture.dataPoints![0])).toBe('2026-06-21');
+  });
+
+  test('interval category: steps endTime + endUtcOffset → "2026-06-28"', async () => {
+    const fixture = await loadFixture('steps');
+    const mapping = findByTypeId('steps');
+    // No civilEndTime on the fixture — falls back to endTime "2026-06-28T09:00:00Z"
+    // + "7200s" → local 11:00 → 2026-06-28.
+    expect(pointDate(mapping, fixture.dataPoints![0])).toBe('2026-06-28');
+  });
+
+  test('malformed point (no field object) → undefined', () => {
+    // {} has no metric-object key → getFieldKey returns undefined → pointDate undefined.
+    expect(pointDate(findByTypeId('weight'), {})).toBeUndefined();
   });
 });

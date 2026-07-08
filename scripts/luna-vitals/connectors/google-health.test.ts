@@ -182,6 +182,78 @@ describe('pull', () => {
     await expect(writeArtifact(tmpPath, artifact)).resolves.toBeUndefined();
   });
 
+  test('earlyStop wiring: heart-rate pages bounded to 2 fetches (arm + confirm)', async () => {
+    // A heart-rate endpoint that would page FOREVER without early-stop: every
+    // response carries a nextPageToken and serves 2 descending, pre-window
+    // sample points (all dates in May 2026, before the pull's from=2026-06-01).
+    // If windowFrom + pointDate did NOT thread through pull() to the fetch layer,
+    // this would page until the cap and throw. With early-stop it stops after the
+    // arming page + the confirming page = exactly 2 calls.
+    const state = { heartRateCalls: 0 };
+
+    // pageNum (1-based) → 2 descending heart-rate points, each page older than the last.
+    // Page 1: 2026-05-28, 2026-05-27; page 2: 2026-05-26, 2026-05-25; … — all
+    // below the slacked stop threshold (from=2026-06-01 minus 2-day slack = 05-30),
+    // so page 1 arms and page 2 confirms.
+    function heartRatePage(pageNum: number): unknown[] {
+      const baseMs = Date.UTC(2026, 4, 28); // 2026-05-28
+      const idx0 = (pageNum - 1) * 2;
+      return [0, 1].map((k) => {
+        const d = new Date(baseMs - (idx0 + k) * 86_400_000);
+        const y = d.getUTCFullYear();
+        const m = d.getUTCMonth() + 1;
+        const day = d.getUTCDate();
+        return {
+          dataSource: { recordingMethod: 'UNKNOWN', platform: 'HEALTH_CONNECT' },
+          heartRate: {
+            sampleTime: {
+              physicalTime: `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}T12:00:00Z`,
+              utcOffset: '0s',
+              civilTime: { date: { year: y, month: m, day }, time: { hours: 12, minutes: 0 } },
+            },
+            beatsPerMinute: String(60 + k),
+            metadata: {},
+          },
+        };
+      });
+    }
+
+    const earlyStopFetch = async (url: string, _init?: RequestInit): Promise<FakeResponse> => {
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ access_token: 't', token_type: 'Bearer' }),
+        };
+      }
+      const match = url.match(/\/dataTypes\/([^/?]+)\/dataPoints/);
+      if (match && match[1] === 'heart-rate') {
+        state.heartRateCalls++;
+        const page = state.heartRateCalls;
+        // nextPageToken on EVERY response → infinite without early-stop.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ dataPoints: heartRatePage(page), nextPageToken: `p${page + 1}` }),
+        };
+      }
+      // Every other dataType: single empty page (no token → stops immediately).
+      return { ok: true, status: 200, json: async () => ({ dataPoints: [] }) };
+    };
+
+    const artifact = await pull({
+      from: '2026-06-01',
+      to: '2026-06-30',
+      cfg: FAKE_CFG,
+      fetchImpl: earlyStopFetch as unknown as typeof fetch,
+    });
+
+    // (a) completes — did not throw the page-cap error.
+    expect(artifact.bucket).toBe('2026-06-01..2026-06-30');
+    // (b) bounded: arming page + confirming page = exactly 2 heart-rate fetches.
+    expect(state.heartRateCalls).toBe(2);
+  });
+
   test('reconsent: invalid_grant token response rejects with ReconsentNeededError (exitCode 75)', async () => {
     const fetchImpl = asFetch(
       makeFakeFetch({ ok: false, status: 400, body: { error: 'invalid_grant' } }),
