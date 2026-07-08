@@ -146,6 +146,60 @@ fi
 # Read diff from stdin and store it
 diff_in="$(cat)"
 
+# Triviality gate (HIMMEL-737): a diff classified 'trivial' skips the PAID tier
+# to save codex spend. Only fires when 'paid' is in the effective tier filter
+# (the common free-only path never sources the gate). --check mode exits above,
+# so it never reaches here. The gate honors CR_TRIVIALITY_OVERRIDE itself
+# (full -> nontrivial), so no override handling is duplicated here.
+case ",$TIER_FILTER," in
+    *,paid,*)
+        # triviality-gate.sh's CLI body is BASH_SOURCE-guarded, so sourcing only
+        # defines functions. Its top-level 'set -euo pipefail' leaks errexit into
+        # this script, which deliberately runs WITHOUT -e (it captures member rc
+        # by hand) -- undo just the -e immediately after sourcing.
+        _tg_verdict="nontrivial"; _tg_reason="gate-unavailable"
+        if [ -r "$SCRIPT_DIR/triviality-gate.sh" ]; then
+            # shellcheck source=scripts/cr/triviality-gate.sh
+            # shellcheck disable=SC1091
+            . "$SCRIPT_DIR/triviality-gate.sh"
+            set +e
+            _tg_result="$(classify_triviality "$diff_in")"
+            _tg_rc=$?
+            if [ "$_tg_rc" -eq 0 ] && [ -n "$_tg_result" ]; then
+                _tg_verdict="${_tg_result%%$'\t'*}"
+                _tg_reason="${_tg_result#*$'\t'}"
+            else
+                # Fail-safe: a broken gate must never narrow the panel silently
+                # - keep the requested tiers and say so (CR round).
+                echo "critic-panel.sh: triviality gate failed (rc=$_tg_rc) - paid tier kept" >&2
+            fi
+        else
+            echo "critic-panel.sh: triviality-gate.sh not readable at $SCRIPT_DIR - gate skipped, paid tier kept" >&2
+        fi
+        if [ "$_tg_verdict" = "trivial" ]; then
+            # Strip 'paid' from the effective tier filter (the node parse below
+            # filters by TIER_FILTER, so dropping it here drops the paid rows).
+            _new_filter=""
+            _tg_ifs="$IFS"; IFS=','
+            for _t in $TIER_FILTER; do
+                [ "$_t" = "paid" ] && continue
+                if [ -n "$_new_filter" ]; then _new_filter="$_new_filter,$_t"; else _new_filter="$_t"; fi
+            done
+            IFS="$_tg_ifs"
+            if [ -z "$_new_filter" ]; then
+                # Paid was the ONLY requested tier (CR round Critical): do NOT
+                # silently substitute the registry default 'free' - honor the
+                # operator's profile and degrade to claude-only (rc=1 is the
+                # caller's documented all-critics-failed fail-open path).
+                echo "critic-panel.sh: triviality-gate verdict=trivial ($_tg_reason) stripped the ONLY requested tier (paid) - skipping panel, claude-only (CR_TRIVIALITY_OVERRIDE=full to force)" >&2
+                exit 1
+            fi
+            TIER_FILTER="$_new_filter"
+            echo "critic-panel.sh: triviality-gate verdict=trivial ($_tg_reason) - paid tier skipped (CR_TRIVIALITY_OVERRIDE=full to force)" >&2
+        fi
+        ;;
+esac
+
 # Parse registry: emit "slug<TAB>model<TAB>perspective" lines for matching tiers.
 # Falls back to anchor on missing/invalid/empty registry.
 rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
@@ -159,7 +213,16 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
     // "-" placeholder for empty middle fields: tab is IFS WHITESPACE in the
     // bash readers, so consecutive tabs collapse and a non-empty 4th field
     // would shift LEFT into the perspective slot (HIMMEL-729 field-shift bug).
-    process.stdout.write(p.map(r => r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + (r.fallback_model || "-")).join("\n"));
+    // Field 4 = the fallback CHAIN (HIMMEL-737): the ordered "fallback_models"
+    // array, comma-joined; a legacy "fallback_model" string is a 1-element chain
+    // for back-compat; "-" when empty. Model names never contain a comma or tab.
+    process.stdout.write(p.map(r => {
+      let chain = Array.isArray(r.fallback_models) ? r.fallback_models
+                : (r.fallback_model ? [r.fallback_model] : []);
+      chain = chain.filter(m => typeof m === "string" && m.length);
+      const fb = chain.length ? chain.join(",") : "-";
+      return r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + fb;
+    }).join("\n"));
   } catch (e) {
     process.exit(7);
   }
@@ -224,8 +287,9 @@ _is_quota_exhaustion() {
 # Re-run a member through the SAME invocation path the primary run uses
 # (critic-first-pass.sh, optional timeout wrap, optional --perspective-file),
 # with the model swapped to the fallback. Writes stdout -> out_file, stderr ->
-# err_file, and sets the global _rm_rc to the member exit code. Called only from
-# process_member's quota-exhaustion fallback branch (EXACTLY ONCE per member).
+# err_file, and sets the global _rm_rc to the member exit code. Called from
+# process_member's quota-exhaustion fallback branch, once PER CHAIN MEMBER
+# (HIMMEL-737: the chain is iterated in order, each model attempted at most once).
 # ---------------------------------------------------------------------------
 _run_cfp_member() {
     _rm_model="$1"; _rm_slug="$2"; _rm_persp="${3:-}"; _rm_out="$4"; _rm_err="${5:-/dev/null}"
@@ -265,7 +329,8 @@ _run_cfp_member() {
 # $2 = path to member stdout file
 # $3 = rc value (integer string)
 # $4 = path to member stderr file (optional; pass "" to skip)
-# $5 = fallback_model for this slug (optional; "" = no quota-exhaustion fallback)
+# $5 = fallback CHAIN for this slug (HIMMEL-737): comma-separated, ordered models
+#      ("" = no quota-exhaustion fallback). Iterated in order, each at most once.
 # $6 = perspective for this slug (optional; "" = no --perspective-file), threaded
 #      into the fallback re-run so it uses the SAME invocation path as the primary
 # ---------------------------------------------------------------------------
@@ -285,24 +350,42 @@ process_member() {
         return
     fi
     if [ "$_pm_rc" -ne 0 ]; then
-        # Quota-exhaustion fallback (HIMMEL-729): if the slug has a fallback_model
-        # AND the member output/stderr matches an exhaustion signature, re-run the
-        # member ONCE through the same critic-first-pass path with the fallback
-        # model. A plain non-exhaustion failure (or a timeout, handled above) gets
-        # the original unavailable line and NO retry.
+        # Quota-exhaustion fallback CHAIN (HIMMEL-729/737): if the slug has a
+        # fallback chain AND the member output/stderr matches an exhaustion
+        # signature, re-run the member through the same critic-first-pass path
+        # with each fallback model IN ORDER, each attempted AT MOST ONCE. First
+        # success wins; a failed attempt logs fallback-failed and advances; all
+        # exhausted -> member unavailable. A plain non-exhaustion failure (or a
+        # timeout, handled above) gets the original unavailable line and NO retry.
         if [ -n "$_pm_fallback" ] && _is_quota_exhaustion "$_pm_out_file" "$_pm_err_file"; then
-            _fb_out="$(mktemp -t critic-panel-fb.XXXXXX)"
-            _fb_err="$(mktemp -t critic-panel-fb-err.XXXXXX)"
-            _run_cfp_member "$_pm_fallback" "$_pm_slug" "$_pm_perspective" "$_fb_out" "$_fb_err"
-            _fb_rc=$_rm_rc
-            if [ "$_fb_rc" -eq 0 ]; then
-                echo "WARN critic-panel: $_pm_slug quota-exhausted - fell back to $_pm_fallback (openrouter)" >&2
-                _pm_avail="panel-availability: $_pm_slug fallback($_pm_fallback)"
-                _pm_out_file="$_fb_out"
-            else
-                echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
-                echo "panel-availability: $_pm_slug fallback-failed (rc=$_fb_rc)" >&2
+            _fb_success=0
+            # Iterate the comma-separated chain in order. IFS=',' splits it at the
+            # for-header; the body uses only quoted expansions, so ',' is harmless
+            # there. Restored after the loop.
+            _fb_old_ifs="$IFS"; IFS=','
+            for _fb_model in $_pm_fallback; do
+                [ -n "$_fb_model" ] || continue
+                _fb_out="$(mktemp -t critic-panel-fb.XXXXXX)"
+                _fb_err="$(mktemp -t critic-panel-fb-err.XXXXXX)"
+                _run_cfp_member "$_fb_model" "$_pm_slug" "$_pm_perspective" "$_fb_out" "$_fb_err"
+                _fb_rc=$_rm_rc
+                if [ "$_fb_rc" -eq 0 ]; then
+                    echo "WARN critic-panel: $_pm_slug quota-exhausted - fell back to $_fb_model" >&2
+                    _pm_avail="panel-availability: $_pm_slug fallback($_fb_model)"
+                    _pm_out_file="$_fb_out"
+                    _fb_success=1
+                    break
+                fi
+                # Surface a bounded head of the failed attempt's stderr before
+                # deleting it (CR round: a bare rc collapses rate-limit vs auth
+                # vs outage into the same line).
+                _fb_snip="$(head -c 200 "$_fb_err" 2>/dev/null | tr '\n' ' ')"
+                echo "panel-availability: $_pm_slug fallback-failed($_fb_model) (rc=$_fb_rc)${_fb_snip:+: $_fb_snip}" >&2
                 rm -f "$_fb_out" "$_fb_err"
+            done
+            IFS="$_fb_old_ifs"
+            if [ "$_fb_success" -ne 1 ]; then
+                echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
                 return
             fi
         else
@@ -399,12 +482,12 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
     _seq_out="$(mktemp -t critic-panel-seq.XXXXXX)"
     _seq_err="$(mktemp -t critic-panel-seq-err.XXXXXX)"
 
-    while IFS="	" read -r slug model perspective fallback_model; do
+    while IFS="	" read -r slug model perspective fallback_chain; do
         [ -n "$slug" ] || continue
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
         [ "$perspective" = "-" ] && perspective=""
-        [ "$fallback_model" = "-" ] && fallback_model=""
+        [ "$fallback_chain" = "-" ] && fallback_chain=""
         total=$((total + 1))
 
         # Run this member (with per-member timeout if available)
@@ -426,7 +509,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
             fi
         fi
 
-        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_model" "$perspective"
+        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_chain" "$perspective"
 
     done << ROWSEOF
 $rows
@@ -440,20 +523,20 @@ else
 
     # Launch each member indexed by position i (i=0,1,2,...)
     i=0
-    while IFS="	" read -r slug model perspective fallback_model; do
+    while IFS="	" read -r slug model perspective fallback_chain; do
         [ -n "$slug" ] || continue
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
         [ "$perspective" = "-" ] && perspective=""
-        [ "$fallback_model" = "-" ] && fallback_model=""
+        [ "$fallback_chain" = "-" ] && fallback_chain=""
         total=$((total + 1))
         # Write slug and model so the result loop can recover them
         printf '%s' "$slug"  > "$outdir/$i.slug"
         printf '%s' "$model" > "$outdir/$i.model"
-        # Per-row perspective + fallback_model so the result loop can replay them
-        # into process_member (HIMMEL-729 quota-exhaustion fallback).
+        # Per-row perspective + fallback chain so the result loop can replay them
+        # into process_member (HIMMEL-729/737 quota-exhaustion fallback chain).
         printf '%s' "$perspective"    > "$outdir/$i.persp"
-        printf '%s' "$fallback_model" > "$outdir/$i.fb"
+        printf '%s' "$fallback_chain" > "$outdir/$i.fb"
         (
             if [ -n "$perspective" ]; then
                 if [ -n "$_TIMEOUT_BIN" ]; then
