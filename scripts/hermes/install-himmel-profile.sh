@@ -35,8 +35,9 @@ ASSETS="$SCRIPT_DIR/assets"
 SOUL_ASSET="$ASSETS/himmel-agent.SOUL.md"
 GUARD_ASSET="$ASSETS/parity_guard.py"
 WIRE="$ASSETS/wire_parity_guard.py"
+SYNC="$ASSETS/sync_model_aliases.py"
 
-for f in "$SOUL_ASSET" "$GUARD_ASSET" "$WIRE"; do
+for f in "$SOUL_ASSET" "$GUARD_ASSET" "$WIRE" "$SYNC"; do
   [ -f "$f" ] || { echo "ERR: missing asset: $f" >&2; exit 1; }
 done
 
@@ -101,10 +102,16 @@ fi
 cp "$SOUL_ASSET" "$HA_SOUL"
 echo "installed   : $HA_SOUL"
 
-# 4. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
+# 4. sync the root config's model_aliases block onto himmel_agent (HIMMEL-737):
+#    the one-shot dispatch path loads the PROFILE config, not the root config,
+#    so a profile cloned before the aliases existed never picks them up on
+#    its own - keep it synced on every create/refresh.
+"$PYBIN" "$SYNC" "$HOME_DIR/config.yaml" "$HA_CONFIG"
+
+# 5. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
 "$PYBIN" "$WIRE" set "$HA_CONFIG" "$GUARD_DEST" "$PYBIN"
 
-# 5. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.
+# 6. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.
 #    Default (no flag) = the `default` profile + all others. --parity-guard=<csv>
 #    narrows to named profiles; =all is the explicit form of the default. ensure
 #    is non-clobbering: swaps a luna_vault_guard, adds the guard where none

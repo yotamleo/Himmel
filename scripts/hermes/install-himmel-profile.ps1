@@ -25,8 +25,9 @@ $AssetDir = Join-Path $PSScriptRoot "assets"
 $SoulAsset = Join-Path $AssetDir "himmel-agent.SOUL.md"
 $GuardAsset = Join-Path $AssetDir "parity_guard.py"
 $Wire = Join-Path $AssetDir "wire_parity_guard.py"
+$Sync = Join-Path $AssetDir "sync_model_aliases.py"
 
-foreach ($f in @($SoulAsset, $GuardAsset, $Wire)) {
+foreach ($f in @($SoulAsset, $GuardAsset, $Wire, $Sync)) {
   if (-not (Test-Path $f)) { throw "missing asset: $f" }
 }
 
@@ -89,10 +90,19 @@ if (-not (Test-Path $HaDir)) { throw "$Profile_ profile dir missing after create
 Copy-Item $SoulAsset $HaSoul -Force
 Write-Host "installed   : $HaSoul"
 
-# 4. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
+# 4. sync the root config's model_aliases block onto himmel_agent (HIMMEL-737):
+#    the one-shot dispatch path loads the PROFILE config, not the root config,
+#    so a profile cloned before the aliases existed never picks them up on
+#    its own - keep it synced on every create/refresh.
+& $Py $Sync (Join-Path $HomeDir "config.yaml") $HaConfig
+# $ErrorActionPreference=Stop does NOT trap native exit codes - check
+# explicitly so a failed sync cannot end in "OK: provisioned" (CR finding).
+if ($LASTEXITCODE -ne 0) { throw "sync_model_aliases.py failed (exit $LASTEXITCODE) syncing model_aliases into $HaConfig" }
+
+# 5. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
 & $Py $Wire set $HaConfig $GuardDest $Py
 
-# 5. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.
+# 6. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.
 #    Default (no flag) = the `default` profile + all others. -ParityGuard <csv>
 #    narrows to named profiles; all is the explicit form of the default. ensure
 #    is non-clobbering: swaps a luna_vault_guard, adds the guard where none
