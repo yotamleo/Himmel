@@ -105,8 +105,8 @@ nothing. Route by lane. The Claude tiers are always present; their
 | Lane | Best for | Effort / notes |
 |---|---|---|
 | Haiku | bulk mechanical (never delegates further) | low |
-| Sonnet 5 | scoped research | medium — good, but compare first: another tier at adjusted effort often beats its token cost, by task length |
-| Opus 4.8 | multi-step reasoning; **default parent/orchestrator** | xhigh |
+| Sonnet 5 | scoped research; **implementor candidate** (operator 2026-07-08: token-normalized pricing makes it competitive for well-specified impl — compare per task vs Fable-low) | medium default; scale up by task length |
+| Opus 4.8 | multi-step reasoning; **default parent/orchestrator** | xhigh default for orchestration; scale DOWN (high/medium) for lighter parenting or scoped impl |
 | Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; **high for substantial judgment work — not just the hardest**; xhigh for the hardest |
 
 Beyond the Claude tiers the fleet includes machine-specific impl/critic/
@@ -129,6 +129,9 @@ Raise *effort* before raising model tier — Fable-5 `low` ≈ prior-gen
 `xhigh`, and the same shift applies down-tier. Effort — and temperature,
 where the lane exposes it (hermes per-model params) — are PER-DISPATCH
 levers: use the full scale per item, don't flatten to one default.
+Fable stays CONSERVED (limited release) — the spread optimizes
+Sonnet/Opus/impl lanes. Full per-lane calibration (web pricing +
+benchmark index analysis) = HIMMEL-774, later phase.
 Invariants (not model-tuned): spawn-depth limit **2** (kept on
 measured nesting-overhead cost); **Haiku does NOT spawn**;
 single-writer — many readers, ONE writer, never fan parallel writes
