@@ -23,7 +23,7 @@
       "probe": { "kind": "installed", "tool": "ollama" } },
     { "id": "openrouter-free", "label": "OpenRouter free models", "class": "bulk", "bestFor": "free-tier model pool — probe web for current uptime/availability before routing; simple tasks only; rate-limited; parity/guards UNVERIFIED pending eval", "effort": "availability varies by model/day",
       "probe": { "kind": "env", "name": "OPENROUTER_API_KEY" } },
-    { "id": "ollama-cloud", "label": "Ollama Cloud (free tier, ollama.com)", "class": "bulk", "bestFor": "hosted open models on the free bank (hourly/daily caps) — NOT the local lane: content EGRESSES to ollama.com, an UNDECLARED provider in the egress matrix -> vault corpora default-DENY (himmel-code only) until the operator declares a cell; parity/guards UNVERIFIED pending eval", "effort": "simple tasks; free-bank caps",
+    { "id": "ollama-cloud", "label": "Ollama Cloud (free tier, ollama.com)", "class": "bulk", "bestFor": "hosted open models on the free bank (verified 2026-07-08: 5h session limits + weekly limits, 1 concurrent cloud model, larger models Pro-only) — NOT the local lane: content EGRESSES to ollama.com, an UNDECLARED provider in the egress matrix -> vault corpora default-DENY (himmel-code only) until the operator declares a cell; parity/guards UNVERIFIED pending eval", "effort": "simple tasks; free-bank caps",
       "probe": { "kind": "installed", "tool": "ollama" } }
   ]
 }
