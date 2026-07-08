@@ -12,6 +12,8 @@
     { "id": "hermes-critics", "label": "hermes free critics (qwen3coder)", "class": "critic", "bestFor": "cross-model CR panel (/pr-check)", "effort": "—",
       "probe": { "kind": "installed", "tool": "hermes" } },
     { "id": "codex",  "label": "codex (paid, via hermes)", "class": "critic", "bestFor": "CR escalation, second opinions (CR_PROFILE=paid)", "effort": "consumes OpenAI bank",
-      "probe": { "kind": "crprofile", "token": "paid" } }
+      "probe": { "kind": "crprofile", "token": "paid" } },
+    { "id": "copilot-cli", "label": "GitHub Copilot CLI (free tier)", "class": "bulk", "bestFor": "free chores / second opinions — 2,000 completions/mo bank; AUTO model only (Haiku 4.5 / GPT-5 mini class, NO per-dispatch model selection); operator ran /allow-all; worker-spawn-matrix row UNVERIFIED (guard coverage + skills-load pending eval)", "effort": "small tasks only — model tier is mini-class",
+      "probe": { "kind": "installed", "tool": "copilot" } }
   ]
 }
