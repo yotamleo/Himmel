@@ -104,8 +104,15 @@ documented at the top of [`.env.example`](../../.env.example):
   environment, not the file. Export these in the shell that launches `claude`,
   or set them in `~/.claude/settings.json` `"env": {}`. A value sitting only in
   `.env` is not seen — **except** the ones bridged from `.env` by
-  `scripts/lib/load-dotenv.sh` (`HANDOVER_DIR`, `USER_SLUG`, and the
-  `HIMMEL_INITIATIVE*` set), noted below.
+  `scripts/lib/load-dotenv.sh` (`HANDOVER_DIR`, `USER_SLUG`, `CR_PROFILE`, the
+  `HIMMEL_INITIATIVE*` set, `HIMMEL_WHERE_ARE_WE` + `_STALE_HOURS` — but NOT
+  the statusline-only `_ROLLUP_TTL` / `_SEG_TIMEOUT` knobs, which are live-env
+  only — `HIMMEL_DOC_FRESHNESS` and the nudge flags; the full bridged list
+  lives in the `.env.example` header), noted
+  below. A third class, **SESSION-ONLY** (guardrail bypasses like
+  `EDIT_ON_MAIN_OK`, per-launch opt-ins like `TELEGRAM_OWN_POLLER`), is never
+  read from `.env` at all — set in the launching shell; inventoried in
+  `.env.example`'s SESSION-ONLY section.
 
 **TOOL-LOADED** (a value in `.env` is enough):
 
@@ -117,7 +124,7 @@ documented at the top of [`.env.example`](../../.env.example):
 | `JIRA_API_TOKEN` | Jira / Confluence CLI auth token. | id.atlassian.com/manage-profile/security/api-tokens |
 | `JIRA_PROJECT_KEY` | Default project for `jira` ops. | Your Jira project key (e.g. `ACME`). |
 | `JIRA_CLOUD_ID` | Atlassian tenant cloud id (REST / MCP). | Atlassian admin console, or the `getAccessibleAtlassianResources` API. |
-| `ZAI_API_KEY` | Z.ai GLM key for the `claude-glm` overflow launcher (see [tooling-catalog](../tooling-catalog.md#claude-glm-scriptsclaude-glm-ps1-twin-himmel-665)). The launcher takes the shell env value first, else reads it from `.env`; **never** from `settings.json`. | z.ai account → API keys. Optional — only if you use `claude-glm`. |
+| `ZAI_API_KEY` | Z.ai GLM key for the `claude-glm` overflow launcher (see [tooling-catalog](../tooling-catalog.md#claude-glm-scriptsclaude-glm-ps1-twin-himmel-665)). The launcher takes the live process env first, else reads it from `.env`. It cannot distinguish shell env from `settings.json`-injected env — **don't put this key in `settings.json`** (that hands it to every session); use per-launch shell env or `.env`. | z.ai account → API keys. Optional — only if you use `claude-glm`. |
 
 **PROCESS-ENV** (export, or set in `settings.json` `"env"` — a value only in
 `.env` is not read unless it's a bridged exception):
@@ -132,9 +139,12 @@ documented at the top of [`.env.example`](../../.env.example):
 | `XAI_API_KEY` | xAI Grok — `/x-read`, `/x-pulse`, `/youtube`. | xAI API console. Optional. |
 | `GEMINI_API_KEY` | Gemini — `scripts/gemini/invoke.sh`. | Google AI Studio API key. Optional. |
 
-For the full inventory — optional Bitbucket, Confluence, VM, and hermes keys —
-read the annotated [`.env.example`](../../.env.example); it is the single source
-of truth and every entry there carries its own inline guidance.
+For the full inventory — optional Bitbucket, Confluence, VM, and hermes keys,
+the CR / `pr-check` critic profile (`CR_PROFILE`), handover/overnight tuning,
+Telegram bridge flags, and the SESSION-ONLY guardrail-bypass list — read the
+annotated [`.env.example`](../../.env.example); it is the single source of
+truth (the complete operator flag map, HIMMEL-787) and every entry there
+carries its own inline guidance.
 
 ---
 
