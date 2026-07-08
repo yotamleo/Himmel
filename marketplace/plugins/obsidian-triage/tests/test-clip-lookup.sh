@@ -182,4 +182,44 @@ tgurl="$(node -e 'console.log(require("url").pathToFileURL(process.argv[1]).href
 # IMPORTANT: alreadyFiledByUrl's FIRST arg is the Clippings dir, not the vault root.
 TGTOOL="$tgurl" CLIPDIR="$tmp/vault/Clippings" node "$tmp/t6.mjs" || { echo "equivalence test FAILED"; exit 1; }
 
+# --- Task 3x (HIMMEL-769): reddit thinness predicate + source-host override ---
+cat > "$tmp/t7.mjs" <<'JS'
+const { isThinClipBody, isThinRedditBody, isRedditHost } = await import(process.env.LIB);
+const NL = "\n";
+// bare telegram reddit stub (title + Source only) → THIN
+const stub = NL + "# reddit from reddit.com/r/x/comments/1" + NL + NL + "## Source" + NL + "[u](https://www.reddit.com/r/x/comments/1)";
+if (isThinRedditBody(stub) !== true) { console.error("FAIL: reddit stub not thin"); process.exit(1); }
+// enriched reddit clip (## Crawled content with real prose) → RICH
+const rich = NL + "## Crawled content" + NL + "### A title" + NL + "The full post body has real content here." + NL + "## Source" + NL + "[u](https://www.reddit.com/r/x/comments/1)";
+if (isThinRedditBody(rich) !== false) { console.error("FAIL: enriched reddit flagged thin"); process.exit(1); }
+// host override: a legacy type:article reddit clip still routes to reddit predicate
+if (isThinClipBody(stub, "article", "https://www.reddit.com/r/x/comments/1") !== true) { console.error("FAIL: host override (article+reddit) not thin"); process.exit(1); }
+if (isThinClipBody(rich, "article", "https://redd.it/1") !== false) { console.error("FAIL: host override (redd.it) not rich"); process.exit(1); }
+// isRedditHost coverage
+if (!isRedditHost("https://old.reddit.com/r/x/comments/1")) { console.error("FAIL: old.reddit host"); process.exit(1); }
+if (!isRedditHost("https://redd.it/abc")) { console.error("FAIL: redd.it host"); process.exit(1); }
+if (isRedditHost("https://example.com/reddit.com")) { console.error("FAIL: false-positive host"); process.exit(1); }
+if (isRedditHost("https://evil-reddit.com/x")) { console.error("FAIL: false-positive evil-reddit host"); process.exit(1); }
+// backward compat: 2-arg call still works (no source → type dispatch)
+if (isThinClipBody(NL + "## Summary" + NL + "Real summary text here.", "research") !== false) { console.error("FAIL: 2-arg article dispatch"); process.exit(1); }
+console.log("OK reddit predicate + host override");
+JS
+LIB="$LIBURL" node "$tmp/t7.mjs" || { echo "reddit predicate test FAILED"; exit 1; }
+
+# is-thin-cli honors the source-host override (type=article but reddit source → thin)
+cat > "$tmp/vault/Clippings/reddit-stub.md" <<'EOF'
+---
+title: "reddit from reddit.com"
+source: "https://www.reddit.com/r/x/comments/1/title"
+type: article
+---
+# reddit stub
+
+## Source
+[link](https://www.reddit.com/r/x/comments/1/title)
+EOF
+tcli="$here/../tools/is-thin-cli.mjs"
+[ "$(node "$tcli" "$tmp/vault/Clippings/reddit-stub.md")" = "thin" ] || { echo "FAIL: is-thin-cli reddit-source override not thin"; exit 1; }
+echo "OK is-thin-cli reddit override"
+
 echo "ALL PASS"

@@ -100,6 +100,7 @@ the github-repo ingest skill these dispatch to.
 | Command | What it does |
 |---|---|
 | /harvest-clips | Stage 1 — autonomous HARVEST pass: mark unharvested clips (`harvested_at:`), dispatch github URLs to `luna-ingest`, clip-body for the rest. Idempotent. |
+| /ig-media-enrich | IG media rung (after ig-embed): download reel/carousel media via gallery-dl (burner cookies), local faster-whisper transcript for reels, copy carousel slides into Clippings/_media/ + agent-read slide digest via the mechanical --apply-digest applier. Lean-invoke. HIMMEL-770. |
 | /triage-clips | Stage 2 — autonomous triage: summarize, infer tags, suggest Related Notes, extract action items → daily note, annotate promotion candidate, mark `processed: true`. Idempotent. |
 | /synthesize-clips | Stage 3 — cross-clip synthesis: find recurring patterns across processed clips, write proposal pages to `Clippings/_synthesis/` (proposals only, never restructures). |
 | /archive-clips | Stage 4 (LUNA-55) — graduate fully-chained clips (harvested ∧ processed ∧ in-synthesis) to `Clippings/_done/<YYYY-MM>/`, rewrite inbound links (literal, boundary-safe), dedup by canonical URL, (re)generate `Clippings/_deferred.md`. |

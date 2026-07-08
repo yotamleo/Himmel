@@ -245,6 +245,40 @@ echo "Test 13: sibling remains visible in scans (not accidentally excluded)"
 if printf '%s\n' "$triage_scan" | grep -qF "/$SIB.md"; then f=visible; else f=missing; fi
 assert "prefix-sibling still visible in triage scan" "visible" "$f"
 
+# HIMMEL-770: ig_media_pending step-0 hold -- a two-clip behavioral mirror of the
+# runbook contract. Both clips are Phase-7-complete (processed: true) and would
+# otherwise be moved to _evidence/; they run through the SAME move logic as the
+# main sim above, gated by the runbook's Phase-8 step-0 eligibility filter:
+#   0. If frontmatter has `ig_media_pending: true`, SKIP the move (stays in
+#      Clippings/ until /ig-media-enrich clears the flag).
+# Non-vacuous: BOTH clips are actually run through the move; the step-0 filter is
+# what keeps the pending one in the inbox while the plain one lands in _evidence/.
+PLAIN='plain-processed-clip'
+PEND='pending-ig-clip'
+printf -- '---\ntype: article\nprocessed: true\ntriaged_at: 2026-07-08\n---\nplain body\n' \
+    > "$tmp/Clippings/$PLAIN.md"
+printf -- '---\ntype: article\nprocessed: true\ntriaged_at: 2026-07-08\nig_media_pending: true\n---\npending body\n' \
+    > "$tmp/Clippings/$PEND.md"
+
+# Run each through the move sim with the step-0 filter.
+for base in "$PLAIN" "$PEND"; do
+    src="$tmp/Clippings/$base.md"
+    # Step 0: the eligibility check the runbook specifies -- held clips are
+    # skipped BEFORE the move; every other Phase-7-complete clip moves.
+    if grep -qE '^ig_media_pending:[[:space:]]*true' "$src"; then
+        continue
+    fi
+    mv "$src" "$tmp/Clippings/_evidence/$base.md"
+done
+
+echo "Test 14: step-0 filter -- plain processed clip lands in _evidence/"
+moved_plain=$([ -f "$tmp/Clippings/_evidence/$PLAIN.md" ] && [ ! -f "$tmp/Clippings/$PLAIN.md" ] && echo yes || echo no)
+assert "plain processed clip moved to _evidence/ (not held)" "yes" "$moved_plain"
+
+echo "Test 15: step-0 filter -- ig_media_pending clip stays in Clippings/ (held)"
+held_pend=$([ -f "$tmp/Clippings/$PEND.md" ] && [ ! -f "$tmp/Clippings/_evidence/$PEND.md" ] && echo yes || echo no)
+assert "ig_media_pending clip stays in inbox (Phase-8 step-0 hold)" "yes" "$held_pend"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -gt 0 ] && exit 1 || exit 0

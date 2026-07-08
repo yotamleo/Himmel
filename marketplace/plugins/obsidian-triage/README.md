@@ -14,7 +14,81 @@ Autonomous triage + synthesis for Obsidian Web Clipper output.
 
 Together: harvest → **enrich** (X body-fill via `tools/fxtwitter-enrich.mjs` — see `tools/README.md`) → tag → link → action-item → promote-suggest → mark processed → synthesize patterns → graduate to `_done/` → over time, propose structure → roadmap. `Clippings/` acts as an inbox that drains as clips complete the chain. The vault learns from accumulated clips.
 
-The **enrich** stage runs `fxtwitter-enrich.mjs` (X) and `ig-embed-enrich.mjs` (Instagram) between harvest and triage. For X it fills a thin telegram bare-URL stub's `## The Idea` from the tweet text and de-anonymizes `author`/`title` (the `x.com/i/status/<id>` forwards), so triage tags a rich body on its first pass. The same enrich also fires **inline** at `telegram-clip` filing time (best-effort) so group links are usually born rich. Authenticated long tail (protected tweets, login-walled IG) defers to the `playwright-crawl-*` rung.
+The **enrich** stage runs `fxtwitter-enrich.mjs` (X), `ig-embed-enrich.mjs` (Instagram) and `reddit-enrich.mjs` (Reddit — cookie-authenticated `.json`, burner-account cookies at `~/.luna/cookies/reddit.txt`) between harvest and triage. For X it fills a thin telegram bare-URL stub's `## The Idea` from the tweet text and de-anonymizes `author`/`title` (the `x.com/i/status/<id>` forwards), so triage tags a rich body on its first pass. The same enrich also fires **inline** at `telegram-clip` filing time (best-effort) so group links are usually born rich. Authenticated long tail (protected tweets, login-walled IG) defers to the `playwright-crawl-*` rung. Reddit's anonymous `.json` is 403-blocked (verified 2026-07-08); the rung uses exported burner cookies. If cookies prove brittle, the escalation path is a free official OAuth script app (100 QPM, app registration) — documented here, not built; `--firecrawl-thin` treating reddit as article-like is the noisy, credit-metered last resort.
+
+### Instagram media rung: `/ig-media-enrich` (HIMMEL-770)
+
+The heavyweight escalation rung AFTER `ig-embed-enrich.mjs`. When the caption
+rung failed OR left a thin IG body (no `### Transcript` / `### Slides`), the
+harvest layer marks the clip `ig_media_pending: true` and **holds it in the
+inbox** (triage Phase-8 step-0 and the migrate engine both skip a pending clip);
+nothing else drains it. The download rung is **lean-invoke** (`/ig-media-enrich`,
+run manually or by the harvest cadence - never auto-fired from `/harvest-clips`,
+because the download + local-whisper path is expensive and needs burner cookies).
+`tools/ig-media-fetch.py` downloads the reel/carousel media via `gallery-dl`
+(burner-account cookies at `~/.luna/cookies/instagram.txt`, contents never
+printed), transcribes reels locally (`ffmpeg` -> mono-16k WAV -> faster-whisper),
+and recompresses carousel slides into `Clippings/_media/<slug>/slide-NN.jpg`
+embedded under `### Slides`. An agent then reads the slide images and the
+mechanical `--apply-digest` applier writes the `### Slide digest` (scoped-G-3 +
+revert). Distinct **marker namespace**: `media_enriched_at` /
+`media_enrichment_status` / `media_last_error` - it never touches ig-embed's
+`enriched_at` / `enrichment_status`. **Videos never enter the vault** - only the
+transcript TEXT is written; the downloaded reel / mixed-carousel video stays in
+the `~/.luna/ig-media/` cache. The tool **clears `ig_media_pending` on a verified
+enrichment success**, releasing the held clip back into the pipeline. A
+**retryable** failure (login wall, download/no-media error) keeps the flag so the
+clip is retried; a **permanent** failure (`removed` / 404 - the media is gone)
+also releases the clip so it parks as caption-only evidence rather than stranding
+in the inbox forever. A **partial** enrichment (some slides/videos survived,
+others dropped in recompress/transcode) writes what succeeded but is marked
+`media_enrichment_status: partial` with a `partial_media:` last-error and
+withholds `media_enriched_at`, so the clip stays selectable and is retried -
+partial media loss is never stamped a full success. Command runbook:
+`commands/ig-media-enrich.md`.
+
+#### One-time setup (burner account + cookies + whisper model)
+
+The download rung needs a logged-in Instagram session and two local binaries.
+Do this ONCE per machine before the first `/ig-media-enrich` run.
+
+1. **Create burner Facebook + Instagram accounts.** Instagram gates reel /
+   carousel media behind a login; use a throwaway account you are willing to
+   have rate-limited or challenged, never your personal login. (An Instagram
+   account is created through Facebook; make both.)
+2. **Export the `instagram.com` cookies.** Log the burner account into
+   `instagram.com` in a browser, then use the **Cookie-Editor** extension to
+   **Export -> Netscape** format and save the file to
+   `~/.luna/cookies/instagram.txt`. Lock it down: `chmod 600
+   ~/.luna/cookies/instagram.txt`. The tool reads this file but **never prints
+   its contents**; do not paste or echo the cookie text anywhere.
+3. **Install `gallery-dl` + `ffmpeg`** (the same line the preflight prints when
+   they are missing):
+
+   ```
+   winget install yt-dlp.gallery-dl ; winget install Gyan.FFmpeg
+   # or: uv tool install gallery-dl   (ffmpeg still needed separately)
+   ```
+
+4. **Pre-download the whisper model** so reel transcription runs fully offline
+   (first use otherwise blocks on a ~140MB one-time fetch):
+
+   ```
+   uv run --python 3.12 --with faster-whisper python -c "from faster_whisper import WhisperModel; WhisperModel('base')"
+   ```
+
+5. **Run the one-shot historical backfill.** `--include-evidence` extends the
+   scan into `Clippings/_evidence/` (still skipping `_evidence/_rejected/`) so
+   already-parked IG clips get enriched too:
+
+   ```
+   PYTHONUTF8=1 uv run --python 3.12 python marketplace/plugins/obsidian-triage/tools/ig-media-fetch.py <vault> --include-evidence --limit 0
+   ```
+
+   `--limit 0` lifts the default 10-clip cap so the one-shot backfill drains
+   every parked clip in a single pass (steady-state runs keep the cap because
+   IG rate-limits aggressively). Steady-state runs (no flag) never touch
+   `_evidence/`; use the flag only for the one-time backfill.
 
 **Inbox-internal names** (never source clips; excluded from harvest/triage/archive scans): `_synthesis/` (synthesize output), `_done/` (archive of graduated clips), `_deferred.md` (archive backlog log), `_evidence/` (reviewed-evidence pool — see below; `/synthesize-clips` intentionally keeps visibility into it).
 

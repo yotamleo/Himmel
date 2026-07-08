@@ -76,10 +76,16 @@ FIRECRAWL_DEFAULT_BUDGET = 20  # max scrape calls per run (~1 credit each)
 #   github.com → luna-ingest gh-api (the github-ingest path; never reaches
 #       the clip-body path here anyway, but listed for defence-in-depth)
 #   youtube → playwright-crawl-youtube (transcript path)
+#   reddit family -> reddit-enrich owns reddit (HIMMEL-769); firecrawl can't
+#       auth reddit (anonymous .json is 403-blocked; burner cookies required)
+#   instagram → ig-media-fetch owns it (HIMMEL-770 media rung; firecrawl
+#       can't pass the IG login wall or extract media anyway)
 FIRECRAWL_SKIP_HOSTS = {
     "x.com", "twitter.com", "mobile.twitter.com", "www.twitter.com", "www.x.com",
     "github.com", "www.github.com",
     "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be",
+    "reddit.com", "www.reddit.com", "old.reddit.com", "new.reddit.com", "np.reddit.com", "m.reddit.com", "redd.it",
+    "instagram.com", "www.instagram.com", "m.instagram.com",
 }
 
 # Thin-body heuristic (harvest-clips.md Phase 4): a clip-body clip is NOT
@@ -208,6 +214,19 @@ def canonicalize(url: str):
             new_path = "/" + "/".join([owner, repo] + rest)
             return urlunparse(("https", "github.com", new_path.rstrip("/"), "", "", ""))
         return url
+
+    # reddit — host -> www.reddit.com, drop query/fragment, strip trailing slash,
+    # lowercase the /r/<subreddit> segment. redd.it short links are left
+    # untouched (a network HEAD redirect is needed — the reddit-enrich rung
+    # resolves them first, then feeds the resolved full URL back through here).
+    # Mirrors lib/url-canonical.mjs REDDIT_HOSTS exactly.
+    if host in {"reddit.com", "www.reddit.com", "old.reddit.com", "new.reddit.com", "np.reddit.com", "m.reddit.com"}:
+        parts = [seg for seg in path.split("/") if seg]
+        if len(parts) >= 2 and parts[0].lower() == "r":
+            parts[0] = "r"
+            parts[1] = parts[1].lower()
+        new_path = ("/" + "/".join(parts)) if parts else ""
+        return urlunparse(("https", "www.reddit.com", new_path.rstrip("/"), "", "", ""))
 
     # medium.com — drop ?source=
     if host.endswith("medium.com"):
@@ -390,19 +409,34 @@ def insert_fm_lines(fm_raw: str, new_lines: list) -> str:
 def insert_markers(fm_raw: str, markers: dict) -> str:
     """Insert the harvest_* markers — the four core keys, plus the optional
     `harvest_flag` + `harvest_flag_detail` pair when the injection screen
-    hit — after the last existing top-level key. Markers are inserted as
-    zero-indent YAML keys, preserving existing content."""
-    marker_lines = [
-        f"harvested_at: {markers['harvested_at']}",
-        f"harvest_skill: {markers['harvest_skill']}",
-        f'harvest_url_canonical: "{markers["harvest_url_canonical"]}"',
-        f"harvest_status: {markers['harvest_status']}",
+    hit. A key already present in the frontmatter is REPLACED in place (the
+    runbook's "replace in place, do NOT duplicate" contract — the reddit-enrich
+    rung and luna-ingest both write harvest_url_canonical, so a re-harvest must
+    not emit a duplicate YAML key); any key not yet present is appended after
+    the last existing top-level key. New keys are zero-indent YAML."""
+    pairs = [
+        ("harvested_at", f"harvested_at: {markers['harvested_at']}"),
+        ("harvest_skill", f"harvest_skill: {markers['harvest_skill']}"),
+        ("harvest_url_canonical", f'harvest_url_canonical: "{markers["harvest_url_canonical"]}"'),
+        ("harvest_status", f"harvest_status: {markers['harvest_status']}"),
     ]
     if "harvest_flag" in markers:
-        marker_lines.append(f"harvest_flag: {markers['harvest_flag']}")
+        pairs.append(("harvest_flag", f"harvest_flag: {markers['harvest_flag']}"))
     if "harvest_flag_detail" in markers:
-        marker_lines.append(f"harvest_flag_detail: {markers['harvest_flag_detail']}")
-    return insert_fm_lines(fm_raw, marker_lines)
+        pairs.append(("harvest_flag_detail", f"harvest_flag_detail: {markers['harvest_flag_detail']}"))
+    lines = fm_raw.split("\n")
+    seen = set()
+    for i, line in enumerate(lines):
+        for key, new_line in pairs:
+            if re.match(rf"^{re.escape(key)}:", line):
+                lines[i] = new_line
+                seen.add(key)
+                break
+    remaining = [new_line for key, new_line in pairs if key not in seen]
+    fm_replaced = "\n".join(lines)
+    if not remaining:
+        return fm_replaced
+    return insert_fm_lines(fm_replaced, remaining)
 
 
 def persist_flag_only(path: Path, text: str, fm_raw: str, body: str, hits: list) -> bool:

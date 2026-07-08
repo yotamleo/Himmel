@@ -181,7 +181,12 @@ function isEligibleClip(vault, abs) {
   const b = frontmatterBounds(lines);
   if (!b) return false;
   const processed = fmScalar(lines, b.close, "processed").toLowerCase();
-  return processed === "true";
+  if (processed !== "true") return false;
+  // HIMMEL-770: a clip still awaiting the IG media rung must NOT drain into
+  // _evidence/ — hold it in the inbox until /ig-media-enrich clears the flag.
+  const igPending = fmScalar(lines, b.close, "ig_media_pending").toLowerCase();
+  if (igPending === "true") return false;
+  return true;
 }
 
 // Clip identifier relative to Clippings/, without `.md` (the wikilink `<OLD>`).
