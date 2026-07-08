@@ -14,18 +14,18 @@
     { "id": "codex",  "label": "codex (paid, via hermes)", "class": "critic", "bestFor": "CR escalation, second opinions (CR_PROFILE=paid)", "effort": "consumes OpenAI bank",
       "probe": { "kind": "crprofile", "token": "paid" } },
     { "id": "copilot-cli", "label": "GitHub Copilot CLI (free tier)", "class": "bulk", "bestFor": "free chores / second opinions — 2,000 completions/mo bank; AUTO model only (Haiku 4.5 / GPT-5 mini class, NO per-dispatch model selection); operator ran /allow-all; worker-spawn-matrix row UNVERIFIED (guard coverage + skills-load pending eval)", "effort": "small tasks only — model tier is mini-class",
-      "probe": { "kind": "installed", "tool": "copilot" } },
+      "probe": { "kind": "path", "cli": "copilot" } },
     { "id": "hermes-oneshot", "label": "hermes one-shot (scripts/hermes/dispatch-trusted.sh)", "class": "impl", "bestFor": "trusted-engine impl/build dispatch — multi-provider chokepoint (default gpt-5.5 codex; --model selects e.g. qwen3-coder-plus); parity_guard fences writes; LIVE-PROVEN spawn path (worker-spawn matrix)", "effort": "no internal timeout — caller wraps; toolsets opt-in via --toolsets",
       "probe": { "kind": "installed", "tool": "hermes" } },
     { "id": "codex-exec", "label": "codex CLI sandbox (scripts/codex/dispatch-codex-exec.sh)", "class": "impl", "bestFor": "offloaded impl in a git worktree via the codex CLI sandbox - dispatch ONLY via bash scripts/codex/dispatch-codex-exec.sh --worktree <wt> <args> (the chokepoint ENFORCES the HIMMEL-741 invariants: ACL preflight fail-closed, gpt-5.5 pin - codex-variant names 400 on ChatGPT auth, --background refused - upstream silent death; pair long runs with scripts/codex/companion-liveness.sh)", "effort": "well-scoped chunks; job registry is per-workspace",
       "probe": { "kind": "path", "cli": "codex" } },
     { "id": "antigravity-cli", "label": "Antigravity CLI (Google AI Plus)", "class": "bulk", "bestFor": "free-bank chores/second opinions — roster per 2026-07-08 research: Gemini 3.5 Flash / 3.1 Pro + Claude Sonnet/Opus 4.6 + GPT-OSS 120B (AI-Plus subset + quota shape TO VERIFY at eval, HIMMEL-772); headless agy -p; EGRESS: gemini-family cells are matrix-DENIED for vault corpora (himmel-code only); parity/guards UNVERIFIED — permission flags only, NO hook surface (wrapper-level guards required)", "effort": "simple tasks; --output-format drift seen on Windows builds",
-      "probe": { "kind": "installed", "tool": "agy" } },
+      "probe": { "kind": "path", "cli": "agy" } },
     { "id": "ollama-local", "label": "ollama (local models)", "class": "bulk", "bestFor": "zero-egress local inference (qwen2.5-coder:7b pulled) — the ONLY salus-eligible backend (per-run opt-in) and the graphify zero-egress fallback; zero-egress PIN: OLLAMA_NO_CLOUD=1 (boot-verifiable) + bare model names (cloud is opt-in via the -cloud suffix); slow, small tasks", "effort": "free, local wall-clock",
-      "probe": { "kind": "installed", "tool": "ollama" } },
+      "probe": { "kind": "path", "cli": "ollama" } },
     { "id": "openrouter-free", "label": "OpenRouter free models", "class": "bulk", "bestFor": "free-tier model pool — probe web for current uptime/availability before routing; simple tasks only; rate-limited; parity/guards UNVERIFIED pending eval", "effort": "availability varies by model/day",
       "probe": { "kind": "env", "name": "OPENROUTER_API_KEY" } },
     { "id": "ollama-cloud", "label": "Ollama Cloud (free tier, ollama.com)", "class": "bulk", "bestFor": "hosted open models on the free bank (verified 2026-07-08: 5h session limits + weekly limits, 1 concurrent cloud model, larger models Pro-only) — NOT the local lane: content EGRESSES to ollama.com, an UNDECLARED provider in the egress matrix -> vault corpora default-DENY (himmel-code only) until the operator declares a cell; parity/guards UNVERIFIED pending eval", "effort": "simple tasks; free-bank caps",
-      "probe": { "kind": "installed", "tool": "ollama" } }
+      "probe": { "kind": "path", "cli": "ollama" } }
   ]
 }

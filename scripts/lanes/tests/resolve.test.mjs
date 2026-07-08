@@ -1,10 +1,11 @@
 // scripts/lanes/tests/resolve.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { resolveLanes, formatCodexHealth } from '../resolve.mjs';
+import { resolveLanes, formatCodexHealth, buildCtx } from '../resolve.mjs';
 
 const REG = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'lanes.json'), 'utf8'));
 const ctx = (o = {}) => ({ env: o.env ?? {}, pathHas: (c) => (o.paths ?? []).includes(c), installed: o.installed ?? {} });
@@ -35,6 +36,38 @@ test('codex-exec lane keys off the codex CLI on PATH (HIMMEL-781)', () => {
 test('hermes-critics lane keys off the resolved install', () => {
   assert.ok(resolveLanes(REG, ctx({ installed: { hermes: true } })).some((l) => l.id === 'hermes-critics'));
   assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === 'hermes-critics'));
+});
+// HIMMEL-780 — these four rows used probe kind "installed" with tools buildCtx
+// never populates, so they could NEVER resolve; they key off PATH now.
+test('free-bank CLI lanes (copilot/agy/ollama) resolve via PATH (HIMMEL-780)', () => {
+  const onPath = resolveLanes(REG, ctx({ paths: ['copilot', 'agy', 'ollama'] })).map((l) => l.id);
+  for (const id of ['copilot-cli', 'antigravity-cli', 'ollama-local', 'ollama-cloud']) {
+    assert.ok(onPath.includes(id), `${id} should resolve with its CLI on PATH`);
+    assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === id), `${id} should not resolve on a bare machine`);
+  }
+});
+test('buildCtx pathHas does real PATH/PATHEXT lookup (HIMMEL-780 follow-through)', () => {
+  const bin = mkdtempSync(join(tmpdir(), 'lanes-bin-'));
+  writeFileSync(join(bin, 'copilot.cmd'), '@echo off\n');
+  writeFileSync(join(bin, 'agy'), '#!/bin/sh\n');
+  const repo = mkdtempSync(join(tmpdir(), 'lanes-repo-'));
+  const { pathHas } = buildCtx(repo, { PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD' });
+  if (process.platform === 'win32') {
+    assert.equal(pathHas('copilot'), true, 'PATHEXT .cmd shim should resolve on Windows');
+    assert.equal(pathHas('agy'), false, 'bare extensionless file is not executable on Windows');
+  } else {
+    assert.equal(pathHas('agy'), true, 'bare name should resolve on POSIX');
+    assert.equal(pathHas('copilot'), false, 'POSIX matches the bare name only, not .cmd');
+  }
+  assert.equal(pathHas('missing-cli'), false);
+});
+test('every "installed" probe names a tool buildCtx actually populates (HIMMEL-780 lockstep guard)', () => {
+  const populated = Object.keys(buildCtx(mkdtempSync(join(tmpdir(), 'lanes-ctx-')), {}).installed);
+  for (const l of REG.lanes) {
+    if (l.probe?.kind !== 'installed') continue;
+    assert.ok(populated.includes(l.probe.tool),
+      `${l.id}: probe tool "${l.probe.tool}" is not populated by buildCtx (${populated.join(', ')}) — it can never resolve; use kind "path" or extend buildCtx`);
+  }
 });
 test('registry is valid JSON with the required per-lane keys', () => {
   for (const l of REG.lanes) for (const k of ['id', 'label', 'class', 'probe']) assert.ok(k in l, `${l.id ?? '?'} missing ${k}`);
