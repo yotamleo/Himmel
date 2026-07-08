@@ -77,6 +77,35 @@
 # outright as not statically fenceable), a backslash-escaped `\graphify`, and a
 # position-0 path-like token (classified, not swallowed as the subcommand).
 #
+# NOW HANDLED (HIMMEL-778):
+#   - MSYS drive-path normalization: `_normalize` translates a leading MSYS-form
+#     `/c/...` (or bare `/c`) into drive-lettered `c:/...` so an MSYS candidate
+#     and the Bash tool's always-MSYS $PWD match the drive-lettered corpus roots
+#     (git prints `C:/...`). Before this, even `graphify --version` in the himmel
+#     checkout was denied via the unclassifiable-cwd fallback.
+#   - Staged-copy corpus declaration: a `.graphify-corpus` marker file at or above
+#     an otherwise-unclassifiable target path declares the ORIGIN corpus of the
+#     staged scratchpad COPIES the 621/622 plan runs extraction on (a copy
+#     classifies as nothing without it). First line trimmed = one of
+#     salus|luna-personal|luna-clippings|handover-state|himmel-code; anything else
+#     (empty, unknown) or an unreadable marker DENIES. Precedence: (1) `.salus`/PHI
+#     roots beat it, (2) the real luna/handover/himmel roots beat it (a marker
+#     inside a real vault can NOT relax classification), (3) it is consulted ONLY
+#     for otherwise-unclassifiable paths, (4) no marker -> the pre-existing
+#     unclassifiable DENY. An invocation in which ANY classified token was
+#     marker-derived (invocation-wide, not only the rank-winning token, so
+#     argument ordering cannot suppress the audit) ALWAYS appends a ledger line
+#     on every ALLOW-family verdict (allow / allow+log / conditional - a deny
+#     already blocks the egress), even on a plain `allow` cell, so a
+#     mis-declared marker cannot also dodge the audit trail. The marker is
+#     consulted ONLY when a luna root is configured (LUNA_VAULT/LUNA_VAULT_PATH
+#     non-empty): precedence rule (2) depends on the fence SEEING the real
+#     roots, so an unconfigured luna root makes the marker INERT
+#     (unclassifiable -> deny, the pre-marker behavior). Residual: a
+#     configured-luna machine with an UNCONFIGURED handover root could still
+#     have handover content relabeled by a planted marker - accepted (work
+#     artifacts, lower sensitivity than vault content; always-ledgered).
+#
 # Accepted static-analysis limitations (the load-bearing PHI guard is the
 # file-tool fence parity_guard, not this command-text guard):
 #   (a) quoted-separator mis-split - a path with embedded spaces, or a quoted
@@ -96,6 +125,20 @@
 #       parsed with POSIX word-splitting; a PowerShell-only quoting/escaping
 #       form can mis-parse. Mis-parses land safe-direction (a mis-split path-like
 #       token is unclassifiable -> DENY, not a silent allow).
+#   (d) MSYS translation is unconditional (no OS sniff) and applies to the
+#       LEXICAL comparison form only: on Linux a genuine `/x/...` single-letter
+#       -rooted path translates to `x:/...` on BOTH sides of a root comparison
+#       (candidate and configured root normalize identically), so root matching
+#       still works; a translated candidate against a non-single-letter POSIX
+#       root simply fails to match -> DENY. Filesystem stat-walks (.salus /
+#       .graphify-corpus markers) deliberately use the ORIGINAL untranslated
+#       path (see classify()), so a PHI marker on a real POSIX `/x/...` root is
+#       still found.
+#   (e) `.graphify-corpus` is origin-BLIND: a scratchpad copy carries no proof of
+#       where it came from, so a marker mis-declaration is possible and accepted.
+#       The load-bearing PHI guard is parity_guard / the file-tool fence, not this
+#       command-text guard; the always-on ledger line (`"declared":true`) keeps a
+#       mis-declaration auditable even when the matrix verdict is a plain allow.
 set -uo pipefail
 set -f  # no pathname expansion when we word-split the command / a path
 
@@ -189,6 +232,17 @@ _abs() {
 _normalize() {
     local p="$1"
     p="${p//\\//}"   # backslashes -> forward slashes (Windows paths)
+    # MSYS drive-path form -> drive-lettered form: `/c/Users` -> `c:/Users`,
+    # bare `/c` -> `c:/`. Corpus roots resolve drive-lettered (git prints
+    # `C:/...`) and the Bash tool's $PWD is always MSYS-form on Windows, so an
+    # untranslated MSYS candidate never matches a root. Unconditional (no OS
+    # sniff): on Linux a genuine `/x/...` path is translated then simply fails
+    # to match POSIX roots -> deny, the same fail-closed outcome as today
+    # (accepted limitation, see header). bash 3.2-safe substring ops.
+    case "$p" in
+        /[A-Za-z]/*) p="${p:1:1}:/${p:3}" ;;
+        /[A-Za-z])   p="${p:1:1}:/" ;;
+    esac
     local prefix=""
     case "$p" in
         [A-Za-z]:/*) prefix="${p%%:*}:"; p="${p#[A-Za-z]:}" ;;
@@ -232,6 +286,46 @@ _salus_marked() {
     return 1
 }
 
+# _graphify_corpus_marker <abs-path> -> ancestor-walk (exactly like _salus_marked:
+# from the path, or its parent dir if not a directory, up to filesystem root)
+# for a `.graphify-corpus` marker that declares the ORIGIN corpus of a staged
+# scratchpad copy (621/622 mandates extraction runs on copies, never live
+# vaults; a copy classifies as nothing without this). First marker found wins.
+# Echoes ONE of:
+#   ""                                      no marker found
+#   "declared<TAB><corpus>"                 first line is a valid corpus name
+#   "__marker_unreadable__<TAB><markerpath>" marker exists but is not a readable regular file
+#   "__marker_bad__<TAB><markerpath><TAB><content>" empty / unknown first line
+_graphify_corpus_marker() {
+    local d="$1" prev="" mk line
+    [ -d "$d" ] || d="${d%/*}"
+    while [ -n "$d" ] && [ "$d" != "$prev" ]; do
+        mk="$d/.graphify-corpus"
+        if [ -e "$mk" ]; then
+            if ! { [ -f "$mk" ] && [ -r "$mk" ]; }; then
+                printf '__marker_unreadable__\t%s' "$mk"; return
+            fi
+            # `read` exits non-zero on a final line lacking a trailing newline
+            # but still populates the variable - do NOT clear it on failure (a
+            # `printf 'luna-personal' >` marker is valid). Pre-clear instead.
+            line=""
+            IFS= read -r line < "$mk" || :
+            line="${line%$'\r'}"
+            line="${line#"${line%%[![:space:]]*}"}"   # trim leading whitespace
+            line="${line%"${line##*[![:space:]]}"}"   # trim trailing whitespace
+            case "$line" in
+                salus|luna-personal|luna-clippings|handover-state|himmel-code)
+                    printf 'declared\t%s' "$line" ;;
+                *)  printf '__marker_bad__\t%s\t%s' "$mk" "$line" ;;
+            esac
+            return
+        fi
+        prev="$d"
+        d="${d%/*}"
+    done
+    return 0
+}
+
 # _under_any_list <abs-path> <listfile> -> echoes hit | miss | unreadable.
 _under_any_list() {
     local p="$1" listfile="$2" root
@@ -248,9 +342,17 @@ _under_any_list() {
 
 # classify <target-path> -> echoes corpus, "__unreadable__", or "" (unclassifiable).
 classify() {
-    local ap name rc
-    ap="$(_normalize "$(_abs "$1")")"
-    if _salus_marked "$ap"; then echo salus; return; fi
+    local apfs ap name rc mk
+    # Two forms of the same path: apfs = the ORIGINAL absolute form, used for
+    # every FILESYSTEM check (.salus / .graphify-corpus ancestor stat-walks -
+    # on a POSIX box a real `/c/...` path only exists in this form; the
+    # drive-translated `c:/...` string would stat nothing and silently skip a
+    # PHI marker). ap = the lexically normalized form, used for STRING root
+    # comparison only (_under_root/_under_any_list normalize both sides, so
+    # the comparison stays consistent).
+    apfs="$(_abs "$1")"
+    ap="$(_normalize "$apfs")"
+    if _salus_marked "$apfs"; then echo salus; return; fi
     for name in phi-roots egress-denylist; do
         rc="$(_under_any_list "$ap" "$PHI_CONFIG_DIR/$name")"
         if [ "$rc" = unreadable ]; then echo "__unreadable__"; return; fi
@@ -266,6 +368,27 @@ classify() {
     fi
     if [ -n "$HANDOVER_ROOT" ] && _under_root "$ap" "$HANDOVER_ROOT"; then echo handover-state; return; fi
     if [ -n "$HIMMEL_ROOT" ] && _under_root "$ap" "$HIMMEL_ROOT"; then echo himmel-code; return; fi
+    # LAST RESORT ONLY (precedence: .salus/PHI beat everything above; the real
+    # luna/handover/himmel roots beat this - a marker inside a CONFIGURED vault
+    # can NOT relax classification). Consult a `.graphify-corpus` staging marker
+    # so a scratchpad COPY can declare its origin corpus. Marker-derived hits
+    # carry an `@declared` suffix (callers strip it, but always ledger the
+    # invocation).
+    # GATED on a configured luna root (silent-failure CR round): the real-root-
+    # beats-marker guarantee for the most sensitive non-PHI corpus depends on
+    # LUNA_VAULT/LUNA_VAULT_PATH being set - with it EMPTY the luna branch above
+    # is skipped and a marker planted inside the (invisible) vault could relax
+    # luna content to an allow corpus. No luna root -> the marker is INERT and
+    # the path stays unclassifiable -> deny (exact pre-marker behavior).
+    # (.salus/PHI-root protection above is env-independent and unaffected.)
+    if [ -n "$LUNA_ROOT" ]; then
+        mk="$(_graphify_corpus_marker "$apfs")"
+        case "$mk" in
+            declared$'\t'*)          echo "${mk#declared$'\t'}@declared"; return ;;
+            __marker_unreadable__*)  echo "$mk"; return ;;
+            __marker_bad__*)         echo "$mk"; return ;;
+        esac
+    fi
     echo ""
 }
 
@@ -347,24 +470,33 @@ _json_escape() {
     printf '%s' "$s"
 }
 
-# ledger_append <path> <corpus> <backend> <provider> <verdict> -> 0 on a durable
-# write, 1 on any failure (unwritable dir / file). Callers DENY on failure: an
-# allow+log verdict without its ledger line is not allowed.
+# ledger_append <path> <corpus> <backend> <provider> <verdict> [declared] -> 0 on
+# a durable write, 1 on any failure (unwritable dir / file). Callers DENY on
+# failure: an allow+log verdict without its ledger line is not allowed. When the
+# optional 6th arg is "1" (ANY token in the invocation classified via a
+# `.graphify-corpus` marker - invocation-wide, not just the winning token) an
+# extra `"declared":true` field is emitted so a mis-declared marker cannot dodge
+# audit.
 ledger_append() {
-    local dir ts ep
+    local dir ts ep decl=""
+    [ "${6:-}" = 1 ] && decl=',"declared":true'
     dir="$(dirname "$LEDGER")"
     mkdir -p "$dir" || return 1
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%s)"
     ep="$(_json_escape "$1")"
-    printf '{"ts":"%s","path":"%s","corpus":"%s","backend":"%s","provider":"%s","verdict":"%s","tool":"graphify"}\n' \
-        "$ts" "$ep" "$2" "$3" "$4" "$5" >> "$LEDGER" || return 1
+    printf '{"ts":"%s","path":"%s","corpus":"%s","backend":"%s","provider":"%s","verdict":"%s","tool":"graphify"%s}\n' \
+        "$ts" "$ep" "$2" "$3" "$4" "$5" "$decl" >> "$LEDGER" || return 1
     return 0
 }
 
-# apply_verdict <corpus> <target> <backend-raw> -> return 0 (allow, ledger
-# written where required) or DENY (exit 2).
+# apply_verdict <corpus> <target> <backend-raw> [declared] -> return 0 (allow,
+# ledger written where required) or DENY (exit 2). When <declared> is 1 ANY
+# classified token in the invocation came from a `.graphify-corpus` marker
+# (invocation-wide - not only the rank-winning token, so argument ordering
+# cannot suppress the audit): ALWAYS ledger the run, even on a plain `allow`
+# cell (a mis-declared marker must not also dodge audit).
 apply_verdict() {
-    local corpus="$1" target="$2" backend_raw="$3"
+    local corpus="$1" target="$2" backend_raw="$3" declared="${4:-0}"
     local backend_effective provider verdict everr eout emsg optvar optval
 
     if [ -z "$backend_raw" ]; then
@@ -397,10 +529,14 @@ apply_verdict() {
 
     case "$verdict" in
         allow)
+            if [ "$declared" = 1 ]; then
+                ledger_append "$target" "$corpus" "$backend_effective" "$provider" "allow" 1 \
+                    || deny "declared-corpus audit requires the ledger line (ledger unwritable): $corpus x $provider"
+            fi
             return 0
             ;;
         allow+log)
-            ledger_append "$target" "$corpus" "$backend_effective" "$provider" "allow+log" \
+            ledger_append "$target" "$corpus" "$backend_effective" "$provider" "allow+log" "$declared" \
                 || deny "allow+log requires the ledger line (ledger unwritable): $corpus x $provider"
             return 0
             ;;
@@ -411,8 +547,8 @@ apply_verdict() {
                 *) deny "$corpus x $provider x extraction is conditional with no known opt-in (fail-closed)" ;;
             esac
             if [ "$optval" = "1" ]; then
-                ledger_append "$target" "$corpus" "$backend_effective" "$provider" "conditional" \
-                    || deny "allow+log requires the ledger line (ledger unwritable): $corpus x $provider"
+                ledger_append "$target" "$corpus" "$backend_effective" "$provider" "conditional" "$declared" \
+                    || deny "conditional requires the ledger line (ledger unwritable): $corpus x $provider"
                 return 0
             fi
             deny "$corpus x $provider x extraction requires opt-in $optvar=1 (matrix conditional cell)"
@@ -423,13 +559,29 @@ apply_verdict() {
     esac
 }
 
+# _deny_on_classify_sentinel <classify-output> - DENY (exit 2) for any fail-closed
+# sentinel classify can echo. MUST be called from the main shell body, never in a
+# $(...) subshell (deny's exit would only leave the subshell otherwise).
+_deny_on_classify_sentinel() {
+    local rest mkpath mkcontent
+    case "$1" in
+        __unreadable__)
+            deny "a PHI root list under $PHI_CONFIG_DIR exists but is not readable (fail-closed)" ;;
+        __marker_unreadable__$'\t'*)
+            deny ".graphify-corpus marker ${1#__marker_unreadable__$'\t'} exists but is not a readable regular file (fail-closed)" ;;
+        __marker_bad__$'\t'*)
+            rest="${1#__marker_bad__$'\t'}"; mkpath="${rest%%$'\t'*}"; mkcontent="${rest#*$'\t'}"
+            deny ".graphify-corpus marker $mkpath declares an invalid corpus: '$mkcontent' (must be salus|luna-personal|luna-clippings|handover-state|himmel-code)" ;;
+    esac
+}
+
 # evaluate_invocation <arg-tokens...> - args are the tokens AFTER the graphify
 # command word. Skips the subcommand, classifies path-like tokens
 # (most-restrictive-wins), applies the CWD fallback, then applies the verdict.
 evaluate_invocation() {
     local have_sub=0 subcmd="" want_backend=0 backend=""
-    local unclassifiable=0 best_rank=-1 best_corpus="" best_target=""
-    local tok st c r skip_redir_target=0
+    local unclassifiable=0 best_rank=-1 best_corpus="" best_target="" any_declared=0
+    local tok st c r declared skip_redir_target=0
 
     for tok in "$@"; do
         if [ "$skip_redir_target" = 1 ]; then skip_redir_target=0; continue; fi
@@ -468,9 +620,12 @@ evaluate_invocation() {
         [ -n "$st" ] || continue
         is_path_like "$st" || continue          # non-path arg (node name, question, model)
         c="$(classify "$st")"
-        if [ "$c" = "__unreadable__" ]; then
-            deny "a PHI root list under $PHI_CONFIG_DIR exists but is not readable (fail-closed)"
-        fi
+        _deny_on_classify_sentinel "$c"
+        # The declared bit is INVOCATION-WIDE: ANY marker-derived token forces
+        # the always-ledger audit, regardless of whether it wins the rank
+        # comparison (else a real-root token of equal/higher rank listed first
+        # would suppress the ledger line - argument ordering must not dodge audit).
+        case "$c" in *@declared) c="${c%@declared}"; any_declared=1 ;; esac
         if [ -n "$c" ]; then
             r="$(_rank "$c")"
             if [ "$r" -gt "$best_rank" ]; then
@@ -488,17 +643,17 @@ evaluate_invocation() {
     fi
 
     if [ -n "$best_corpus" ]; then
-        apply_verdict "$best_corpus" "$best_target" "$backend"
+        apply_verdict "$best_corpus" "$best_target" "$backend" "$any_declared"
         return
     fi
 
     # No classified path-like token -> the corpus is the one around the CWD.
     c="$(classify "$PWD")"
-    if [ "$c" = "__unreadable__" ]; then
-        deny "a PHI root list under $PHI_CONFIG_DIR exists but is not readable (fail-closed)"
-    fi
+    _deny_on_classify_sentinel "$c"
+    declared=0
+    case "$c" in *@declared) c="${c%@declared}"; declared=1 ;; esac
     [ -n "$c" ] || deny "unclassifiable cwd for graphify '$subcmd' (no classifiable path arg): $PWD"
-    apply_verdict "$c" "$PWD" "$backend"
+    apply_verdict "$c" "$PWD" "$backend" "$declared"
 }
 
 # classify_clause <clause-tokens...> - resolve the command-position token of one
