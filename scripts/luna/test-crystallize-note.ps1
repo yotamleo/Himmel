@@ -205,6 +205,10 @@ Remove-Item Env:\CRYSTALLIZE_RULES_FILE -ErrorAction SilentlyContinue
 $avRaw = Get-Content -LiteralPath $argvd -Raw
 if ($avRaw -match 'PREFER_ACTIVE_VOICE_MARKER') { Pass 'rules: rules content reaches the claude prompt' } else { Fail 'rules: rules content not in prompt' }
 if ($avRaw -match 'begin operator rules') { Pass 'rules: delimited operator-rules block present' } else { Fail 'rules: no operator-rules delimiter' }
+# Lesson-provenance prompt pin (HIMMEL-767): a here-string-escaping break must
+# not silently drop the ## Lessons instruction block from the spawned prompt.
+if ($avRaw.Contains('## Lessons')) { Pass 'lessons: ## Lessons instruction present in prompt' } else { Fail 'lessons: ## Lessons instruction missing from prompt' }
+if ($avRaw.Contains('validate-lesson.mjs --capture')) { Pass 'lessons: validate-lesson.mjs --capture pointer present in prompt' } else { Fail 'lessons: validator pointer missing from prompt' }
 Remove-Item -LiteralPath $SB -Recurse -Force
 
 # --- Case 9: missing/unreadable rules file — run proceeds, no rules block -------

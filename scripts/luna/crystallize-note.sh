@@ -147,7 +147,20 @@ still correct — do not discard it:
 - ## Files Touched (keep the existing list; do not invent files)
 - ## Follow-ups    (bullet list of open items, or _None._)
 Do NOT touch the frontmatter or the Raw Conversation callout. Make the edit with
-your file tools, then stop."
+your file tools, then stop.
+
+Optionally, ALSO append one more section after ## Follow-ups if the session
+surfaced a genuine reusable lesson (a gotcha, decision, or fact worth
+remembering beyond this session — skip the section entirely if there is no
+genuine lesson):
+- ## Lessons — a fenced code block labeled jsonl, one JSON object per line:
+  {\"id\": \"YYYY-MM-DD-<kebab-slug>\", \"claim\": \"<the lesson, 1-3 lines, self-contained>\", \"source\": {\"type\": \"session\", \"ref\": \"<this note's vault-relative path>#Lessons\"}, \"captured_at\": \"<UTC ISO-8601 now>\", \"captured_by\": \"end-session-wiki\", \"confidence\": \"<see below>\", \"scope\": [\"<see below>\"], \"status\": \"<see below>\"}
+  confidence is exactly one of: high (observed directly), medium (inferred from one occurrence), low (speculative).
+  status is: active when confidence is high, unverified otherwise.
+  scope is a list of one or more of ONLY these tags: guardrails, cr, lanes, jira, handover, telegram, vault, env-windows, env-macos, billing, harness.
+This section is best-effort: a malformed line must never stop you from
+finishing the required sections above. It is checked later by a lean-invoke
+validation pass (scripts/lessons/validate-lesson.mjs --capture), not at capture time."
 else
     PROMPT="You are crystallizing a Claude Code session note for an Obsidian vault.
 Read the session transcript at: ${TRANSCRIPT_PATH}
@@ -158,7 +171,20 @@ Rewrite ONLY these sections of that note, in place, distilling the session:
 - ## Files Touched (keep the existing list; do not invent files)
 - ## Follow-ups    (bullet list of open items, or _None._)
 Do NOT touch the frontmatter or the Raw Conversation callout. Make the edit with
-your file tools, then stop."
+your file tools, then stop.
+
+Optionally, ALSO append one more section after ## Follow-ups if the session
+surfaced a genuine reusable lesson (a gotcha, decision, or fact worth
+remembering beyond this session — skip the section entirely if there is no
+genuine lesson):
+- ## Lessons — a fenced code block labeled jsonl, one JSON object per line:
+  {\"id\": \"YYYY-MM-DD-<kebab-slug>\", \"claim\": \"<the lesson, 1-3 lines, self-contained>\", \"source\": {\"type\": \"session\", \"ref\": \"<this note's vault-relative path>#Lessons\"}, \"captured_at\": \"<UTC ISO-8601 now>\", \"captured_by\": \"end-session-wiki\", \"confidence\": \"<see below>\", \"scope\": [\"<see below>\"], \"status\": \"<see below>\"}
+  confidence is exactly one of: high (observed directly), medium (inferred from one occurrence), low (speculative).
+  status is: active when confidence is high, unverified otherwise.
+  scope is a list of one or more of ONLY these tags: guardrails, cr, lanes, jira, handover, telegram, vault, env-windows, env-macos, billing, harness.
+This section is best-effort: a malformed line must never stop you from
+finishing the required sections above. It is checked later by a lean-invoke
+validation pass (scripts/lessons/validate-lesson.mjs --capture), not at capture time."
 fi
 
 # Operator rules/context injection: when a readable rules file was supplied,
