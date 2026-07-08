@@ -8,7 +8,11 @@
  * AND whose body is thin (isThinRedditBody), fetch <canonical>.json?raw_json=1
  * with the exported burner-account Cookie header + a browser UA, validate the
  * two-element listing shape, and add a "## Crawled content" section (post title
- * + selftext + top-15 comments by score) before "## Source".
+ * + selftext + the FULL comment tree in thread order, depth-indented) before
+ * "## Source". "more" comment stubs are expanded via /api/morechildren
+ * (HIMMEL-789 -- sources usually live deep in the threads), bounded by
+ * MAX_MORE_BATCHES; anything left unexpanded is stated honestly in the section
+ * ("N more comments not captured"), never silently dropped.
  *
  * Empirically (2026-07-08) anonymous reddit .json is 403-blocked; cookies from
  * ~/.luna/cookies/reddit.txt (Netscape format, exported by the operator) carry
@@ -25,10 +29,11 @@
  * auth_expired (retryable); 429 -> rate_limited (retryable); 404 or removed/
  * deleted post -> removed (permanent, enriched_at set).
  *
- * Usage:  node reddit-enrich.mjs --vault <path> [--limit N] [--dry-run]
+ * Usage:  node reddit-enrich.mjs --vault <path> [--limit N] [--dry-run] [--include-evidence]
  * Exit:   0 run done | 1 bad usage | 2 cookie file absent.
  *
- * Test seams (env): REDDIT_FIXTURE (JSON {status,body}), REDDIT_HEAD_LOCATION
+ * Test seams (env): REDDIT_FIXTURE (JSON {status,body}), REDDIT_MORE_FIXTURE
+ * (JSON {status,body} for /api/morechildren), REDDIT_HEAD_LOCATION
  * (short-circuit redd.it HEAD), REDDIT_HEAD_MAP (JSON url->{status,location}
  * driving the REAL redirect loop, so the in-loop cookie-scoping guard is
  * exercised) + REDDIT_HEAD_CAPTURE (append per-hop {url,cookie} records),
@@ -48,8 +53,11 @@ import { isThinRedditBody, isRedditHost } from "./lib/clip-lookup.mjs";
 const TODAY = new Date().toISOString().slice(0, 10);
 const RATE_LIMIT_MS = 2000;
 const FETCH_TIMEOUT_MS = 15000;
-const MAX_COMMENTS = 15;
-const SECTION_CAP_BYTES = 30000;
+const MAX_TOTAL_COMMENTS = 400;      // whole-tree honesty cap (HIMMEL-789)
+const MORE_BATCH = 100;              // /api/morechildren accepts <=100 ids/call
+const MAX_MORE_BATCHES = 3;          // bounded expansion: <=300 extra comments
+const INDENT_DEPTH_MAX = 6;          // deeper replies render at this indent
+const SECTION_CAP_BYTES = 120000;
 const MAX_REDIRECT_HOPS = 3;
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -70,7 +78,7 @@ const FM_KEYS = [
 
 function usage(code = 1) {
   const out = code === 0 ? console.log : console.error;
-  out("Usage: reddit-enrich.mjs --vault <path> [--limit N] [--dry-run]");
+  out("Usage: reddit-enrich.mjs --vault <path> [--limit N] [--dry-run] [--include-evidence]");
   out("");
   out("Enrich thin reddit clips via <canonical>.json + burner-account cookies.");
   out(`Cookie file: ${COOKIE_FILE} (Netscape format; see plugin README).`);
@@ -78,12 +86,13 @@ function usage(code = 1) {
 }
 
 function parseArgs(argv) {
-  const out = { vault: null, limit: 0, dryRun: false };
+  const out = { vault: null, limit: 0, dryRun: false, includeEvidence: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--vault") out.vault = argv[++i];
     else if (a === "--limit") out.limit = parseInt(argv[++i] || "0", 10) || 0;
     else if (a === "--dry-run") out.dryRun = true;
+    else if (a === "--include-evidence") out.includeEvidence = true;
     else if (a === "-h" || a === "--help") usage(0);
     else { console.error(`unknown arg: ${a}`); usage(1); }
   }
@@ -94,18 +103,21 @@ function parseArgs(argv) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
-/** Glob Clippings/*.md + one-level subfolders, excluding pipeline-internal dirs. */
-function findClips(vault) {
+/** Glob Clippings/*.md + one-level subfolders, excluding pipeline-internal dirs.
+ * includeEvidence lifts the _evidence/ exclusion (HIMMEL-789 backfill reach). */
+function findClips(vault, includeEvidence = false) {
   const root = join(vault, "Clippings");
   if (!existsSync(root)) {
     console.error(`reddit-enrich: no Clippings/ dir at ${root}`);
     return [];
   }
+  const exclude = new Set(EXCLUDE_DIRS);
+  if (includeEvidence) exclude.delete("_evidence");
   const out = [];
   for (const e of readdirSync(root, { withFileTypes: true })) {
     if (e.isFile() && e.name.endsWith(".md") && e.name !== "_deferred.md") {
       out.push(join(root, e.name));
-    } else if (e.isDirectory() && !EXCLUDE_DIRS.has(e.name)) {
+    } else if (e.isDirectory() && !exclude.has(e.name)) {
       const sub = join(root, e.name);
       try {
         for (const s of readdirSync(sub, { withFileTypes: true })) {
@@ -308,6 +320,7 @@ function classifyResponse({ status, body }) {
 function extractPost(listing) {
   const d = listing[0].data.children[0].data;
   return {
+    name: String(d.name || (d.id ? `t3_${d.id}` : "")),
     title: String(d.title || "(untitled)").replace(/\s+/g, " ").trim(),
     selftext: String(d.selftext || ""),
     author: String(d.author || "[unknown]"),
@@ -317,30 +330,214 @@ function extractPost(listing) {
   };
 }
 
-function extractComments(listing) {
-  const kids = listing[1]?.data?.children;
-  const rows = [];
-  if (!Array.isArray(kids)) return rows;
-  for (const c of kids) {
-    if (!c || c.kind !== "t1" || !c.data) continue;
-    const d = c.data;
-    if (d.stickied) continue;
-    const bodyTxt = String(d.body || "");
-    if (DELETED.has(bodyTxt.trim())) continue;
-    if (DELETED.has(String(d.author || "").trim())) continue;
-    rows.push({
-      author: String(d.author || "[unknown]"),
-      score: Number.isFinite(d.score) ? d.score : 0,
-      body: bodyTxt,
-    });
-  }
-  rows.sort((a, b) => b.score - a.score);
-  return rows.slice(0, MAX_COMMENTS);
+/** Map one t1 node to a comment row, or null if filtered (stickied/deleted). */
+function commentRow(d, depth) {
+  if (d.stickied) return null;
+  const bodyTxt = String(d.body || "");
+  if (DELETED.has(bodyTxt.trim())) return null;
+  if (DELETED.has(String(d.author || "").trim())) return null;
+  return {
+    author: String(d.author || "[unknown]"),
+    score: Number.isFinite(d.score) ? d.score : 0,
+    body: bodyTxt,
+    depth,
+  };
 }
 
-/** Render the "## Crawled content" markdown, capped at SECTION_CAP_BYTES. */
-function renderRedditSection(post, comments) {
-  const lines = [
+/**
+ * FULL comment tree in thread order (HIMMEL-789): recursive walk of the
+ * listing's t1 nodes and their data.replies, no score re-sort, no top-N cap.
+ * "more" stubs collect their child ids into moreIds for /api/morechildren
+ * expansion. depthMap (t1 fullname -> depth) lets the flat morechildren
+ * response re-attach each expanded comment at its true depth. A deleted
+ * comment is skipped but its live replies are still walked.
+ */
+function extractCommentTree(listing) {
+  const comments = [];
+  const moreIds = [];
+  const depthMap = new Map();
+  const rowByName = new Map();   // t1 fullname -> row (for positional insert)
+  let omitted = 0;
+  const walk = (children, depth) => {
+    if (!Array.isArray(children)) return;
+    for (const c of children) {
+      if (c?.kind === "more" && c.data) {
+        const ids = Array.isArray(c.data.children) ? c.data.children : [];
+        if (ids.length) {
+          moreIds.push(...ids);
+        } else {
+          // "continue this thread" stub: count>0, children:[] - no ids to
+          // expand, but the cut chain MUST reach the disclosure (silent-
+          // failure CR): never vanish behind an ok stamp.
+          omitted += Math.max(1, Number(c.data.count) || 0);
+        }
+        continue;
+      }
+      if (!c || c.kind !== "t1" || !c.data) continue;
+      const d = c.data;
+      if (d.name) depthMap.set(String(d.name), depth);
+      const kids = d.replies?.data?.children;
+      let row = commentRow(d, depth);
+      // A filtered parent (deleted/stickied) with live replies OR a more-stub
+      // still needs a visible anchor, or its (expanded) replies would render
+      // nested under the PREVIOUS visible comment - misattributing who they
+      // answer (codex-adv r5+r6).
+      if (!row && Array.isArray(kids) &&
+          kids.some((k) => k?.kind === "t1" || k?.kind === "more")) {
+        row = { author: "[omitted]", score: 0, body: "(comment removed or omitted)", depth };
+      }
+      if (row) {
+        comments.push(row);
+        if (d.name) rowByName.set(String(d.name), row);
+      }
+      walk(kids, depth + 1);
+    }
+  };
+  walk(listing[1]?.data?.children, 0);
+  return { comments, moreIds, depthMap, rowByName, omitted };
+}
+
+/** Fetch one /api/morechildren batch. Returns { status, body }. Seamed by
+ * REDDIT_MORE_FIXTURE (same envelope contract as REDDIT_FIXTURE). */
+async function fetchMoreChildrenBatch(linkName, ids, cookieHeader) {
+  if (process.env.REDDIT_MORE_FIXTURE) {
+    const env = JSON.parse(readFileSync(process.env.REDDIT_MORE_FIXTURE, "utf-8"));
+    const body = typeof env.body === "string" ? env.body : JSON.stringify(env.body ?? "");
+    return { status: env.status ?? 200, body };
+  }
+  const url = "https://www.reddit.com/api/morechildren.json?api_type=json" +
+    `&raw_json=1&link_id=${encodeURIComponent(linkName)}` +
+    `&children=${encodeURIComponent(ids.join(","))}`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": BROWSER_UA, Accept: "application/json", Cookie: cookieHeader },
+      redirect: "follow",
+      signal: ctrl.signal,
+    });
+    return { status: r.status, body: await r.text() };
+  } catch (e) {
+    return { status: 0, body: "", error: `fetch_err: ${(e.message || String(e)).slice(0, 60)}` };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * Expand "more" stubs via /api/morechildren, bounded by MAX_MORE_BATCHES x
+ * MORE_BATCH ids, inserting each expanded comment at its parent's tree
+ * position in tree.comments (after the parent's current subtree) so thread
+ * order holds (codex-1). Two distinct incompleteness classes (codex-adv):
+ * - bounded skip (MAX_MORE_BATCHES / no linkName) -> deliberate, counted in
+ *   `omitted`, the enrich proceeds with the honesty line;
+ * - transient batch failure (non-200 / bad shape / fetch error) -> `failed`
+ *   is set and the CALLER must persist a RETRYABLE marker, never a permanent
+ *   ok -- otherwise a 429 would freeze an incomplete thread forever.
+ * Returns { omitted, failed }.
+ */
+async function fetchMoreComments(linkName, moreIds, cookieHeader, tree, opts = {}) {
+  let omitted = 0;
+  let failed = false;
+  let failReason = "";
+  const insertRow = (row, name, parentName) => {
+    const pRow = tree.rowByName.get(parentName);
+    if (!pRow) {
+      // t3 parent -> genuine top-level continuation. An UNKNOWN t1 parent
+      // (itself unexpanded/filtered without an anchor) must not append a
+      // nested row that visually attaches to the preceding comment: give it
+      // its own [omitted] anchor at the parent's depth first (codex-adv r6).
+      if (row.depth > 0) {
+        const anchor = { author: "[omitted]", score: 0,
+          body: "(comment removed or omitted)", depth: row.depth - 1 };
+        tree.comments.push(anchor);
+        if (parentName) tree.rowByName.set(parentName, anchor);
+      }
+      tree.comments.push(row);
+    } else {
+      let j = tree.comments.indexOf(pRow) + 1;
+      while (j < tree.comments.length && tree.comments[j].depth > pRow.depth) j++;
+      tree.comments.splice(j, 0, row);    // after the parent's subtree
+    }
+    if (name) tree.rowByName.set(name, row);
+  };
+  const batches = [];
+  for (let i = 0; i < moreIds.length; i += MORE_BATCH) batches.push(moreIds.slice(i, i + MORE_BATCH));
+  for (let b = 0; b < batches.length; b++) {
+    if (b >= MAX_MORE_BATCHES || !linkName) {
+      omitted += batches.slice(b).reduce((n, x) => n + x.length, 0);
+      break;
+    }
+    if (!opts.skipRateLimit) await sleep(RATE_LIMIT_MS);
+    const resp = await fetchMoreChildrenBatch(linkName, batches[b], cookieHeader);
+    let things;
+    try { things = JSON.parse(resp.body)?.json?.data?.things; } catch { things = null; }
+    if (resp.status !== 200 || !Array.isArray(things)) {
+      failed = true;
+      failReason = resp.error ||
+        (resp.status !== 200 ? `http_${resp.status}` : "bad_shape");
+      break;
+    }
+    // Explicit t3/known/orphan depth resolution: a reply to the POST is a
+    // genuine top-level; a reply whose t1 parent is unknown is an ORPHAN and
+    // must anchor at depth 1 under an [omitted] placeholder - never render
+    // flush-left impersonating a top-level comment (silent-failure CR).
+    const processThing = (d, parent) => {
+      let depth;
+      if (parent.startsWith("t3_")) depth = 0;
+      else if (tree.depthMap.has(parent)) depth = tree.depthMap.get(parent) + 1;
+      else depth = 1;
+      if (d.name) tree.depthMap.set(String(d.name), depth);
+      const row = commentRow(d, depth);
+      if (row) insertRow(row, d.name ? String(d.name) : "", parent);
+    };
+    // The API gives no within-batch ordering guarantee: process things
+    // topologically (parents first) so a child arriving before its batch-mate
+    // parent still attaches at true depth; leftovers are genuine orphans.
+    const pending = [];
+    for (const th of things) {
+      if (th?.kind === "more" && th.data) {
+        // Nested "more" stub in the expansion payload: bounded design,
+        // disclosed (codex-adv r3); empty children = continue-this-thread.
+        const ids = Array.isArray(th.data.children) ? th.data.children : [];
+        omitted += ids.length || Math.max(1, Number(th.data.count) || 0);
+        continue;
+      }
+      if (!th || th.kind !== "t1" || !th.data) continue;
+      pending.push(th.data);
+    }
+    let progress = true;
+    while (pending.length && progress) {
+      progress = false;
+      for (let i = 0; i < pending.length; ) {
+        const d = pending[i];
+        const parent = String(d.parent_id || "");
+        if (parent.startsWith("t3_") || tree.depthMap.has(parent)) {
+          processThing(d, parent);
+          pending.splice(i, 1);
+          progress = true;
+        } else {
+          i++;
+        }
+      }
+    }
+    for (const d of pending) processThing(d, String(d.parent_id || ""));
+  }
+  return { omitted, failed, failReason };
+}
+
+/**
+ * Render the "## Crawled content" markdown with per-comment byte accounting
+ * (codex-adv r3): comments append whole, one at a time, while the budget
+ * (SECTION_CAP_BYTES minus reserved disclosure room) allows; every comment
+ * that does not fit is COUNTED into the omission disclosure instead of being
+ * blindly truncated away after it was reported captured. Disclosures append
+ * after the cap so they always survive. Returns { section, rendered, omitted }.
+ */
+function renderRedditSection(post, comments, omitted = 0) {
+  const RESERVE = 200;   // room the disclosure lines are guaranteed to have
+  const budget = SECTION_CAP_BYTES - RESERVE;
+  const head = [
     "## Crawled content",
     `<!-- enriched ${TODAY} via reddit-json -->`,
     "",
@@ -350,20 +547,34 @@ function renderRedditSection(post, comments) {
     "",
   ];
   const self = post.selftext.trim();
-  lines.push(self || "_(link post - no selftext)_", "");
+  head.push(self || "_(link post - no selftext)_", "");
+  let out = head.join("\n").replace(/\n+$/, "");
+  let truncated = false;
+  if (Buffer.byteLength(out, "utf-8") > budget) {
+    out = Buffer.from(out, "utf-8").subarray(0, budget).toString("utf-8")
+      .replace(/\n+$/, "");
+    truncated = true;
+    omitted += comments.length;   // no room for ANY comment - all disclosed
+    comments = [];
+  }
+  let rendered = 0;
   if (comments.length) {
-    lines.push("### Top comments", "");
+    out += "\n\n### Comments\n";
     for (const c of comments) {
       const oneLine = c.body.replace(/\s*\n\s*/g, " ").trim();
-      lines.push(`- **u/${c.author}** (${c.score}): ${oneLine}`);
+      const indent = "  ".repeat(Math.min(c.depth || 0, INDENT_DEPTH_MAX));
+      const line = `\n${indent}- **u/${c.author}** (${c.score}): ${oneLine}`;
+      if (Buffer.byteLength(out, "utf-8") + Buffer.byteLength(line, "utf-8") > budget) {
+        omitted += comments.length - rendered;   // whole-comment accounting
+        break;
+      }
+      out += line;
+      rendered++;
     }
   }
-  let out = lines.join("\n").replace(/\n+$/, "");
-  if (Buffer.byteLength(out, "utf-8") > SECTION_CAP_BYTES) {
-    out = Buffer.from(out, "utf-8").subarray(0, SECTION_CAP_BYTES).toString("utf-8")
-      .replace(/\n+$/, "") + "\n\n...truncated";
-  }
-  return out;
+  if (truncated) out += "\n\n...truncated";
+  if (omitted > 0) out += `\n\n_(${omitted} more comments not captured)_`;
+  return { section: out, rendered, omitted };
 }
 
 // -------------------------------------------------------------------------
@@ -475,12 +686,34 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
   }
 
   const post = extractPost(verdict.listing);
-  const comments = extractComments(verdict.listing);
-  const section = renderRedditSection(post, comments);
+  const tree = extractCommentTree(verdict.listing);
+  let omitted = tree.omitted;
+  if (tree.moreIds.length) {
+    const more = await fetchMoreComments(post.name, tree.moreIds, cookieHeader, tree, opts);
+    if (more.failed) {
+      // Transient morechildren failure: RETRYABLE, never a permanent ok --
+      // a 429/500 must not freeze an incomplete thread (codex-adv).
+      return writeEnrichment({
+        clipPath, rel, text, baselineSha, fmRaw, body,
+        markers: { ...base, enrichment_status: "failed", last_error: "more_fetch" },
+        section: null, statusGlyph: "~",
+        statusMsg: `partial (more_fetch: ${more.failReason}; retried next run)`,
+      });
+    }
+    omitted += more.omitted;
+  }
+  let comments = tree.comments;
+  if (comments.length > MAX_TOTAL_COMMENTS) {
+    omitted += comments.length - MAX_TOTAL_COMMENTS;
+    comments = comments.slice(0, MAX_TOTAL_COMMENTS);
+  }
+  const r = renderRedditSection(post, comments, omitted);
   const markers = { ...base, enriched_at: TODAY, enrichment_status: "ok", last_error: null };
   const res = await writeEnrichment({
-    clipPath, rel, text, baselineSha, fmRaw, body, markers, section,
-    statusGlyph: "v", statusMsg: `enriched (r/${post.subreddit}, ${comments.length} comments)`,
+    clipPath, rel, text, baselineSha, fmRaw, body, markers, section: r.section,
+    statusGlyph: "v",
+    statusMsg: `enriched (r/${post.subreddit}, ${r.rendered} comments` +
+      (r.omitted ? `, ${r.omitted} omitted` : "") + ")",
   });
 
   // Injection re-screen on a verified write (the selftext/comments are
@@ -571,7 +804,7 @@ async function main() {
   catch (e) { console.error(`reddit-enrich: cookie parse failed: ${e.message}`); process.exit(2); }
   const cookieHeader = cookieHeaderFor(jar, "www.reddit.com", Math.floor(Date.now() / 1000));
 
-  const clips = findClips(args.vault);
+  const clips = findClips(args.vault, args.includeEvidence);
   if (clips.length === 0) { console.log("reddit-enrich: 0 clips found."); process.exit(0); }
 
   let ok = 0, partial = 0, failed = 0, skipped = 0, processed = 0;
