@@ -10,6 +10,10 @@ node_modules/
 /.claude/settings.local.json
 # tokensave MCP code-graph state (local SQLite DB, session-generated — never commit).
 /.tokensave/
+# graphify knowledge-graph artifacts (HIMMEL-621): extraction output + the
+# vendored skill copy are install-local, never committed.
+graphify-out/
+/.claude/skills/graphify/
 # Generated/junk artifacts that must never be committed (HIMMEL-371).
 # NOT package-lock.json globally — 6 legit npm packages track theirs. The
 # wrong-PM lockfile case (a package-lock.json inside a bun package, left by the
