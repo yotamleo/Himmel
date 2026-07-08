@@ -139,6 +139,22 @@ documented at the top of [`.env.example`](../../.env.example):
 | `XAI_API_KEY` | xAI Grok — `/x-read`, `/x-pulse`, `/youtube`. | xAI API console. Optional. |
 | `GEMINI_API_KEY` | Gemini — `scripts/gemini/invoke.sh`. | Google AI Studio API key. Optional. |
 
+### OLLAMA_NO_CLOUD (optional — ollama zero-egress defense-in-depth pin)
+
+Not a himmel `.env` variable — the `ollama` binary itself reads it, so it must
+be set at OS/user scope (not just exported in the shell that launches
+`claude`) to reach a background `ollama` service. The primary zero-egress
+guarantee for the `ollama-local` lane (see `/lanes`) is structural and holds
+without this: bare model names never reach cloud, cloud is opt-in only via
+the `-cloud` suffix. `OLLAMA_NO_CLOUD=1` is an additional belt-and-suspenders
+pin, checked (advisory, never a hard fail) by `/himmel-doctor`.
+
+| OS | Set command |
+|---|---|
+| Windows | `setx OLLAMA_NO_CLOUD 1` (new shells only — restart your terminal/Claude Code session after) |
+| macOS | `launchctl setenv OLLAMA_NO_CLOUD 1` (current login session) — also add `export OLLAMA_NO_CLOUD=1` to your shell profile so it survives reboots |
+| Linux | Add `export OLLAMA_NO_CLOUD=1` to your shell profile, or if `ollama` runs as a systemd user service, a drop-in: `systemctl --user edit ollama.service` → `Environment=OLLAMA_NO_CLOUD=1` |
+
 For the full inventory — optional Bitbucket, Confluence, VM, and hermes keys,
 the CR / `pr-check` critic profile (`CR_PROFILE`), handover/overnight tuning,
 Telegram bridge flags, and the SESSION-ONLY guardrail-bypass list — read the
