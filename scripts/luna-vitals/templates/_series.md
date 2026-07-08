@@ -4,8 +4,8 @@
 |---|---|---|---|
 | migraine | 0–3 | headache/migraine severity that day | self-report (vault backfill HIMMEL-355) |
 | skin_flare | 0–3 | atopic-dermatitis flare severity | self-report |
-| sleep_hours | hours | sleep duration | device export / self-report |
-| sleep_asleep_hours | hours | total asleep time within main sleep session | device export (Google Health API, HIMMEL-609) |
+| sleep_hours | hours | hours asleep (sum of non-AWAKE stages within main sleep session) | device export / self-report |
+| sleep_in_bed_hours | hours | total time-in-bed within main sleep session | device export (Google Health API, HIMMEL-609) |
 | hrv_ms | ms | heart-rate variability | device export |
 | daily_hrv_ms | ms | historical daily HRV RMSSD aggregate (Fitbit daily aggregate; live data uses hrv_ms) | device export (Google Health API, HIMMEL-609) |
 | rhr_bpm | bpm | resting heart rate | device export |

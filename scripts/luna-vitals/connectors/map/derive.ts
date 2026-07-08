@@ -3,7 +3,7 @@
  *
  * aggregateRows: collapse multi-point same-day ExtractedRows into one row/date.
  * deriveRestingHeartRate: compute rhr_bpm from raw heart-rate samples (5th pctile/day).
- * deriveSleep: extract sleep_hours + sleep_asleep_hours from sleep dataPoints.
+ * deriveSleep: extract sleep_hours + sleep_in_bed_hours from sleep dataPoints.
  */
 import type { Mapping } from './table';
 import { type ExtractedRow, validateRow } from '../../src/types';
@@ -223,7 +223,7 @@ type SleepSession = {
 };
 
 /**
- * Derive sleep_hours and sleep_asleep_hours from sleep dataPoints.
+ * Derive sleep_hours and sleep_in_bed_hours from sleep dataPoints.
  *
  * Session date: local calendar date of the interval's END.
  *   Prefer interval.civilEndTime.date; fall back to endTime + endUtcOffset.
@@ -235,12 +235,24 @@ type SleepSession = {
  *   the main-session values — they represent separate rest periods and stacking
  *   them would overstate a single night's time-in-bed.
  *
- * Emits TWO rows per date:
- *   sleep_hours       — main session (end − start) in hours, 1 decimal (time in bed).
- *   sleep_asleep_hours — sum of non-AWAKE stage durations in the main session, 1 decimal.
+ * Emits UP TO TWO rows per date:
+ *   sleep_hours        — sum of non-AWAKE stage durations in the main session, 1 decimal
+ *                         (hours actually asleep). Emitted ONLY when > 0 AND the session's
+ *                         stage data is not degraded (see below) — a stage-less session
+ *                         (classic-era Fitbit sync, no stage breakdown) has no asleep figure
+ *                         to report, so no row is emitted rather than a misleading 0.
+ *   sleep_in_bed_hours — main session (end − start) in hours, 1 decimal (time in bed).
+ *                         Always emitted for a valid session.
+ *
+ *   DEGRADED stage data: if ANY non-AWAKE stage in the main session has an unparseable
+ *   start/end timestamp (Date.parse → NaN), the session is treated as DEGRADED for that
+ *   date — sleep_hours is omitted regardless of what the remaining valid stages sum to
+ *   (they would under-count sleep), while sleep_in_bed_hours is still emitted (derived
+ *   from the session interval, not the stages) and a stderr warning is printed. Invalid
+ *   AWAKE stages never enter the sum, so they do NOT trigger the degraded path.
  *
  * Source: 'google-health:sleep:<platform>'.
- * Both rows pass validateRow before being returned.
+ * Each emitted row passes validateRow before being returned.
  */
 export function deriveSleep(response: { dataPoints?: unknown[] }): ExtractedRow[] {
   const sessions: SleepSession[] = [];
@@ -292,33 +304,52 @@ export function deriveSleep(response: { dataPoints?: unknown[] }): ExtractedRow[
   for (const [date, main] of byDate) {
     const source = `google-health:sleep:${main.platform}`;
 
-    // sleep_hours: total time-in-bed, 1 decimal.
-    const sleepHours = Math.round((main.durationMs / 3_600_000) * 10) / 10;
+    // sleep_in_bed_hours: total time-in-bed, 1 decimal.
+    const inBedHours = Math.round((main.durationMs / 3_600_000) * 10) / 10;
 
-    // sleep_asleep_hours: sum non-AWAKE stage durations, 1 decimal.
+    // sleep_hours: sum non-AWAKE stage durations, 1 decimal (hours actually asleep).
+    // A non-AWAKE stage with an unparseable start/end timestamp marks the session's
+    // stage data as DEGRADED — the remaining valid stages would under-count sleep, so
+    // sleep_hours is omitted below (sleep_in_bed_hours is derived from the session
+    // interval and is unaffected). Invalid AWAKE stages never enter the sum, so they
+    // do not trigger the degraded path.
     let asleepMs = 0;
+    let degraded = false;
     for (const stage of main.stages) {
       if (stage.type === 'AWAKE') continue;
       const sMs = Date.parse(stage.startTime);
       const eMs = Date.parse(stage.endTime);
       if (Number.isFinite(sMs) && Number.isFinite(eMs)) {
         asleepMs += eMs - sMs;
+      } else {
+        degraded = true;
       }
     }
-    const sleepAsleepHours = Math.round((asleepMs / 3_600_000) * 10) / 10;
+    const sleepHours = Math.round((asleepMs / 3_600_000) * 10) / 10;
 
-    const rowHours: ExtractedRow = { metric: 'sleep_hours', date, value: sleepHours, source };
-    const rowAsleep: ExtractedRow = {
-      metric: 'sleep_asleep_hours',
+    const rowInBed: ExtractedRow = {
+      metric: 'sleep_in_bed_hours',
       date,
-      value: sleepAsleepHours,
+      value: inBedHours,
       source,
     };
+    validateRow(rowInBed);
+    rows.push(rowInBed);
 
-    validateRow(rowHours);
-    validateRow(rowAsleep);
-
-    rows.push(rowHours, rowAsleep);
+    if (degraded) {
+      // Malformed non-AWAKE stage timestamps: the remaining valid stages would
+      // under-count sleep, so omit the sleep_hours row rather than emit a misleading
+      // figure. sleep_in_bed_hours above is unaffected (derived from the interval).
+      console.error(
+        `[google-health] sleep ${date}: malformed stage timestamps - sleep_hours omitted (degraded stage data)`,
+      );
+    } else if (sleepHours > 0) {
+      // Stage-less sessions (classic-era Fitbit) yield sleepHours === 0 — skip rather
+      // than emit a misleading 0-hours-asleep row.
+      const rowAsleep: ExtractedRow = { metric: 'sleep_hours', date, value: sleepHours, source };
+      validateRow(rowAsleep);
+      rows.push(rowAsleep);
+    }
   }
 
   return rows;

@@ -10,7 +10,7 @@ does nothing without `GOOGLE_HEALTH_*` set in `.env` and a cadence armed.
 ## Layout
 - `map/table.ts` — `MAPPINGS`: which API dataType → which series (the source of truth for coverage).
 - `map/shape.ts` — per-dataPoint extraction (daily / sample / interval date + value, unit/string coercion).
-- `map/derive.ts` — day aggregation + derived `rhr_bpm` (raw-HR percentile) + `sleep_hours`/`sleep_asleep_hours`.
+- `map/derive.ts` — day aggregation + derived `rhr_bpm` (raw-HR percentile) + `sleep_hours`/`sleep_in_bed_hours`.
 - `auth/oauth.ts` — refresh→access token, `auth-url`/`exchange`, `RECONSENT_EXIT=75`.
 - `fetch/dataType.ts` — paged list (+ gated `dailyRollUp`) + client-side date filter.
 - `google-health.ts` — CLI: `pull` / `auth-url` / `auth-exchange`.
