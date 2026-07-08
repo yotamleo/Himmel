@@ -251,6 +251,15 @@ BACKSLASH_TARGET="$REPO/scripts/hooks/y.sh"
 BACKSLASH_TARGET="${BACKSLASH_TARGET//\//\\}"
 run_hook deny "11: backslash form -> deny" "$(write_json "$BACKSLASH_TARGET" "$REPO")" 1
 
+# Drive-RELATIVE Windows form (codex-adv HIMMEL-808): C:scripts\hooks\y.sh
+# with repo cwd means <repo>/scripts/hooks/y.sh on Windows — must deny on
+# every host (the old [A-Za-z]:* arm classified it absolute and _normalize
+# mangled it into a synthetic non-repo path -> allow).
+run_hook deny "11: drive-relative backslash form -> deny" \
+    "$(write_json 'C:scripts\hooks\y.sh' "$REPO")" 1
+run_hook deny "11: drive-relative slash form -> deny" \
+    "$(write_json 'C:scripts/hooks/y.sh' "$REPO")" 1
+
 run_hook deny "11: mixed case final component -> deny" \
     "$(write_json "$REPO/scripts/guardrails/X.SH" "$REPO")" 1
 

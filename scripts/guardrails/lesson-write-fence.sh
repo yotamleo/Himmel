@@ -347,15 +347,30 @@ _strip_wrap() {
 _abs() {
     local p; p="$(_strip_wrap "$1")"
     local base="${2:-$PWD}"
+    # Backslashes -> forward slashes BEFORE the absolute/relative split
+    # (HIMMEL-808): on POSIX a backslash-form target ('\tmp\x' or 'C:\x')
+    # matches neither /* nor [A-Za-z]:* below, gets anchored to cwd, and
+    # normalizes to a non-enforcement path -> allow. Windows-payload parity
+    # on every host; fail-closed for the rare POSIX filename containing a
+    # literal backslash (_normalize already collapses them the same way).
+    p="${p//\\//}"
     # shellcheck disable=SC2088 # the "~/" is a literal case-pattern, not an expansion
     case "$p" in
         "~")   p="$HOME" ;;
         "~/"*) p="$HOME/${p#\~/}" ;;
     esac
     case "$p" in
-        /*)         : ;;             # POSIX absolute
-        [A-Za-z]:*) : ;;             # Windows drive-absolute (C:/...)
-        *)          p="$base/$p" ;;  # relative -> anchor to base
+        /*)          : ;;             # POSIX absolute
+        [A-Za-z]:/*) : ;;             # Windows drive-ROOTED absolute (C:/...)
+        [A-Za-z]:*)  p="$base/${p#?:}" ;;
+                     # Windows drive-RELATIVE (C:foo = foo relative to the
+                     # cwd on drive C). Codex-adv HIMMEL-808: the old
+                     # [A-Za-z]:* arm classified this absolute, and
+                     # _normalize mangled it into a synthetic non-repo path
+                     # -> allow. Anchor to the payload cwd instead — exact
+                     # when cwd is on that drive (the attack shape), and a
+                     # fail-closed lexical approximation otherwise.
+        *)           p="$base/$p" ;;  # relative -> anchor to base
     esac
     printf '%s' "$p"
 }
