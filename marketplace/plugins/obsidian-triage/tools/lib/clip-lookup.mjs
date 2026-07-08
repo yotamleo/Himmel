@@ -157,14 +157,37 @@ export function isRedditHost(sourceUrl) {
  * Meaningful = a line that is not blank, a heading, an HTML comment, an image,
  * a template italic, a bare URL, a bare markdown-link line, or a placeholder.
  */
+// HARVEST-GENERATED summary sections (LUNA-2 reddit clip template + triage
+// writer). Content under these is DERIVED commentary - never the captured
+// thread - so it must not mask thinness (HIMMEL-789: triaged _evidence clips
+// carried a "What This Thread Is About" summary while the actual post +
+// comments were never captured). USER-authored template sections (My
+// Takeaway, Highlighted Comments, Action Items, Related Notes) are NOT here
+// (codex-adv r4): real prose in them counts as rich; their empty-template
+// placeholders/comments/bare-links are already skipped by the line filters.
+const REDDIT_TEMPLATE_SECTIONS = new Set([
+  "what this thread is about",
+  "best insights from the thread",
+  // Usually inert: triage appends "## Promotion candidate" AFTER "## Source",
+  // which the slice below already excludes. Kept as defense for clips where
+  // it was written earlier in the body.
+  "promotion candidate",
+]);
+
 export function isThinRedditBody(body) {
   if (!body) return true;
   const srcIdx = body.lastIndexOf("\n## Source");
   const main = srcIdx >= 0 ? body.slice(0, srcIdx) : body;
+  let inTemplateSection = false;
   for (const raw of main.split(/\r?\n/)) {
     const l = raw.trim();
     if (!l) continue;
-    if (/^#{1,6}\s/.test(l)) continue;                       // heading
+    const h = l.match(/^#{1,6}\s+(.*)$/);
+    if (h) {                                                 // heading
+      inTemplateSection = REDDIT_TEMPLATE_SECTIONS.has(h[1].trim().toLowerCase());
+      continue;
+    }
+    if (inTemplateSection) continue;                         // pipeline-owned section
     if (/^<!--/.test(l)) continue;                           // html comment / marker
     if (/^!\[/.test(l)) continue;                            // image
     if (/^\*\(.*\)\*$/.test(l)) continue;                    // template italic

@@ -66,11 +66,12 @@ grep -q 'r/MachineLearning' "$CF" && a=ok || a=no; assert "subreddit rendered" o
 grep -q 'enrichment_status: ok' "$CF" && a=ok || a=no; assert "enrichment_status ok" ok "$a"
 grep -qE '^enriched_at: "?[0-9]{4}-[0-9]{2}-[0-9]{2}"?$' "$CF" && a=ok || a=no; assert "enriched_at stamped" ok "$a"
 grep -q 'enrichment_source: reddit-json' "$CF" && a=ok || a=no; assert "enrichment_source marker" ok "$a"
-# comment sort: carol (80) must appear before bob (50)
-carol_line="$(grep -n 'higher score comment' "$CF" | cut -d: -f1)"
+# comment order: FULL-THREAD tree order (HIMMEL-789) - bob precedes carol
+# exactly as the listing returns them (reddit "best" order), no score re-sort.
 bob_line="$(grep -n 'lower score comment' "$CF" | cut -d: -f1)"
-[ -n "$carol_line" ] && [ -n "$bob_line" ] && [ "$carol_line" -lt "$bob_line" ] && a=ok || a=no
-assert "comments sorted by score desc" ok "$a"
+carol_line="$(grep -n 'higher score comment' "$CF" | cut -d: -f1)"
+[ -n "$bob_line" ] && [ -n "$carol_line" ] && [ "$bob_line" -lt "$carol_line" ] && a=ok || a=no
+assert "comments in thread order (no score re-sort)" ok "$a"
 grep -q '\[deleted\]' "$CF" && a=present || a=absent; assert "deleted comment excluded" absent "$a"
 grep -q 'mod sticky' "$CF" && a=present || a=absent; assert "stickied comment excluded" absent "$a"
 # G-3: original ## Source survives verbatim
@@ -246,8 +247,8 @@ adone="$(sha256sum "$V13/Clippings/_done/old.md" | cut -d' ' -f1)"
 grep -q '## Crawled content' "$V13/Clippings/x.md" && a=present || a=absent; assert "non-reddit clip untouched" absent "$a"
 assert "_done/ clip excluded from scan" "$bdone" "$adone"
 
-# -- Test 14: comment cap (MAX_COMMENTS=15) -----------------------------------
-echo "Test 14: comment cap"
+# -- Test 14: full thread - NO top-15 cap (HIMMEL-789) ------------------------
+echo "Test 14: full thread (no top-level cap)"
 V14="$tmp/v14"; mkclip "$V14" "c.md" "https://www.reddit.com/r/x/comments/14/cap"
 OUT="$tmp/cap.json" node --input-type=module -e '
 import { writeFileSync } from "node:fs";
@@ -261,16 +262,16 @@ writeFileSync(process.env.OUT, JSON.stringify(fx));
 '
 REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/cap.json" node "$SCRIPT" --vault "$V14" >/dev/null 2>&1
 ncom="$(grep -c '^- \*\*u/' "$V14/Clippings/c.md")"
-assert "exactly 15 comments rendered (cap)" 15 "$ncom"
-grep -q 'comment number 16' "$V14/Clippings/c.md" && a=present || a=absent; assert "16th-ranked comment excluded" absent "$a"
-grep -q 'comment number 15' "$V14/Clippings/c.md" && a=ok || a=no; assert "15th-ranked comment included" ok "$a"
+assert "all 20 top-level comments rendered (no cap)" 20 "$ncom"
+grep -q 'comment number 16' "$V14/Clippings/c.md" && a=ok || a=no; assert "16th comment included (cap removed)" ok "$a"
+grep -q 'comment number 20' "$V14/Clippings/c.md" && a=ok || a=no; assert "20th comment included" ok "$a"
 
 # -- Test 15: 30KB section cap -> truncation marker ----------------------------
 echo "Test 15: truncation marker"
 V15="$tmp/v15"; mkclip "$V15" "c.md" "https://www.reddit.com/r/x/comments/15/big"
 OUT="$tmp/big.json" node --input-type=module -e '
 import { writeFileSync } from "node:fs";
-const big = "word ".repeat(12000); // ~60KB selftext, well past the 30KB cap
+const big = "word ".repeat(30000); // ~150KB selftext, well past the 120KB cap (HIMMEL-789)
 const fx = { status: 200, body: [
   { kind: "Listing", data: { children: [{ kind: "t3", data: { title: "big post", selftext: big, author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
   { kind: "Listing", data: { children: [] } },
@@ -327,6 +328,480 @@ grep -q 'last_error: redd_resolve' "$CF18" && a=ok || a=no; assert "resolve fail
 grep -q 'enrichment_status: failed' "$CF18" && a=ok || a=no; assert "resolve failure -> status failed" ok "$a"
 grep -qE '^enriched_at:' "$CF18" && a=present || a=absent; assert "resolve failure -> enriched_at UNSET (retryable)" absent "$a"
 grep -q '## Crawled content' "$CF18" && a=present || a=absent; assert "resolve failure -> no crawled section" absent "$a"
+
+# -- Test 19: nested reply tree rendered with depth indentation (HIMMEL-789) --
+echo "Test 19: nested reply tree"
+V19="$tmp/v19"; mkclip "$V19" "c.md" "https://www.reddit.com/r/x/comments/19/tree"
+cat > "$tmp/tree.json" <<'EOF'
+{"status":200,"body":[
+ {"kind":"Listing","data":{"children":[{"kind":"t3","data":{"name":"t3_19x","title":"tree test","selftext":"post body","author":"a","subreddit":"x","score":1,"created_utc":1720000000}}]}},
+ {"kind":"Listing","data":{"children":[
+   {"kind":"t1","data":{"name":"t1_top1","body":"top level comment","author":"bob","score":50,"stickied":false,
+     "replies":{"kind":"Listing","data":{"children":[
+       {"kind":"t1","data":{"name":"t1_mid1","body":"nested reply with the actual source link https://example.com/source","author":"carol","score":30,"stickied":false,
+         "replies":{"kind":"Listing","data":{"children":[
+           {"kind":"t1","data":{"name":"t1_deep1","body":"deep reply","author":"dave","score":10,"stickied":false,"replies":""}}
+         ]}}}}
+     ]}}}},
+   {"kind":"t1","data":{"name":"t1_top2","body":"second top level","author":"erin","score":5,"stickied":false,"replies":""}}
+ ]}}
+]}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/tree.json" node "$SCRIPT" --vault "$V19" >"$tmp/t19.out" 2>&1
+CF19="$V19/Clippings/c.md"
+grep -q '^### Comments$' "$CF19" && a=ok || a=no; assert "### Comments heading (renamed from Top comments)" ok "$a"
+grep -q '^- \*\*u/bob\*\*' "$CF19" && a=ok || a=no; assert "top-level comment at depth 0 (no indent)" ok "$a"
+grep -q '^  - \*\*u/carol\*\*' "$CF19" && a=ok || a=no; assert "reply indented one level (2 spaces)" ok "$a"
+grep -q '^    - \*\*u/dave\*\*' "$CF19" && a=ok || a=no; assert "reply-to-reply indented two levels" ok "$a"
+grep -q '^- \*\*u/erin\*\*' "$CF19" && a=ok || a=no; assert "second top-level back at depth 0" ok "$a"
+grep -qF 'https://example.com/source' "$CF19" && a=ok || a=no; assert "source link in nested reply captured" ok "$a"
+grep -q 'enrichment_status: ok' "$CF19" && a=ok || a=no; assert "tree clip enriched ok" ok "$a"
+
+# -- Test 20: "more" stub expansion via /api/morechildren (HIMMEL-789) --------
+echo "Test 20: morechildren expansion + failure honesty"
+V20="$tmp/v20"; mkclip "$V20" "c.md" "https://www.reddit.com/r/x/comments/20/more"
+cat > "$tmp/more-listing.json" <<'EOF'
+{"status":200,"body":[
+ {"kind":"Listing","data":{"children":[{"kind":"t3","data":{"name":"t3_20x","title":"more test","selftext":"post body","author":"a","subreddit":"x","score":1,"created_utc":1720000000}}]}},
+ {"kind":"Listing","data":{"children":[
+   {"kind":"t1","data":{"name":"t1_top1","body":"visible comment","author":"bob","score":50,"stickied":false,"replies":""}},
+   {"kind":"more","data":{"children":["aaa1","aaa2"]}}
+ ]}}
+]}
+EOF
+cat > "$tmp/more-expand.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_aaa1","parent_id":"t3_20x","body":"expanded top-level comment","author":"frank","score":3,"stickied":false}},
+  {"kind":"t1","data":{"name":"t1_aaa2","parent_id":"t1_top1","body":"expanded nested reply","author":"grace","score":2,"stickied":false}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/more-listing.json" \
+  REDDIT_MORE_FIXTURE="$tmp/more-expand.json" node "$SCRIPT" --vault "$V20" >"$tmp/t20.out" 2>&1
+CF20="$V20/Clippings/c.md"
+grep -q '^- \*\*u/frank\*\*.*expanded top-level comment' "$CF20" && a=ok || a=no
+assert "morechildren t3-parent comment at depth 0" ok "$a"
+grep -q '^  - \*\*u/grace\*\*.*expanded nested reply' "$CF20" && a=ok || a=no
+assert "morechildren t1-parent comment indented under its parent" ok "$a"
+# tree POSITION (codex-1): grace attaches under her parent bob, BEFORE frank
+# (a bottom-append would render her after frank, away from her parent).
+bobl="$(grep -n 'u/bob' "$CF20" | cut -d: -f1)"
+gracel="$(grep -n 'u/grace' "$CF20" | cut -d: -f1)"
+frankl="$(grep -n 'u/frank' "$CF20" | cut -d: -f1)"
+[ -n "$bobl" ] && [ -n "$gracel" ] && [ -n "$frankl" ] && [ "$bobl" -lt "$gracel" ] && [ "$gracel" -lt "$frankl" ] && a=ok || a=no
+assert "expanded reply inserted at parent's tree position (bob < grace < frank)" ok "$a"
+grep -q 'enrichment_status: ok' "$CF20" && a=ok || a=no; assert "more-expanded clip enriched ok" ok "$a"
+grep -q 'not captured' "$CF20" && a=present || a=absent; assert "no omission line when fully expanded" absent "$a"
+# (b) morechildren fetch FAILS transiently -> RETRYABLE, never stamped ok
+# (codex-adv: a 429/500 must not permanently freeze an incomplete thread).
+V20b="$tmp/v20b"; mkclip "$V20b" "c.md" "https://www.reddit.com/r/x/comments/20/more"
+printf '{"status":500,"body":""}' > "$tmp/more-fail.json"
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/more-listing.json" \
+  REDDIT_MORE_FIXTURE="$tmp/more-fail.json" node "$SCRIPT" --vault "$V20b" >"$tmp/t20b.out" 2>&1
+CF20b="$V20b/Clippings/c.md"
+grep -q 'last_error: more_fetch' "$CF20b" && a=ok || a=no; assert "more-fetch failure -> last_error more_fetch" ok "$a"
+grep -q 'enrichment_status: failed' "$CF20b" && a=ok || a=no; assert "more-fetch failure -> status failed (not ok)" ok "$a"
+grep -qE '^enriched_at:' "$CF20b" && a=present || a=absent; assert "more-fetch failure -> enriched_at UNSET (retryable)" absent "$a"
+grep -q '## Crawled content' "$CF20b" && a=present || a=absent; assert "more-fetch failure -> no crawled section" absent "$a"
+# retry eligibility: same clip, working expansion fixture -> enriches fully
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/more-listing.json" \
+  REDDIT_MORE_FIXTURE="$tmp/more-expand.json" node "$SCRIPT" --vault "$V20b" >"$tmp/t20c.out" 2>&1
+grep -q 'enrichment_status: ok' "$CF20b" && a=ok || a=no; assert "re-run after transient failure enriches ok" ok "$a"
+grep -q 'expanded nested reply' "$CF20b" && a=ok || a=no; assert "re-run captures the previously-missing comments" ok "$a"
+
+# -- Test 21: --include-evidence reaches _evidence/ clips (HIMMEL-789) --------
+echo "Test 21: --include-evidence"
+V21="$tmp/v21"; mkdir -p "$V21/Clippings/_evidence"
+cat > "$V21/Clippings/_evidence/parked.md" <<'EOF'
+---
+source: "https://www.reddit.com/r/x/comments/21/parked"
+type: reddit
+---
+# parked clip
+
+## Source
+[l](https://www.reddit.com/r/x/comments/21/parked)
+EOF
+bparked="$(sha256sum "$V21/Clippings/_evidence/parked.md" | cut -d' ' -f1)"
+# without the flag: _evidence stays excluded (existing contract)
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/rich.json" node "$SCRIPT" --vault "$V21" >/dev/null 2>&1
+aparked="$(sha256sum "$V21/Clippings/_evidence/parked.md" | cut -d' ' -f1)"
+assert "without flag: _evidence clip untouched" "$bparked" "$aparked"
+# with the flag: selected + enriched
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/rich.json" node "$SCRIPT" --vault "$V21" --include-evidence >"$tmp/t21.out" 2>&1
+grep -q '## Crawled content' "$V21/Clippings/_evidence/parked.md" && a=ok || a=no
+assert "with flag: _evidence clip enriched" ok "$a"
+grep -q 'enrichment_status: ok' "$V21/Clippings/_evidence/parked.md" && a=ok || a=no
+assert "with flag: markers written" ok "$a"
+
+# -- Test 22: triage-machinery sections don't mask thinness (HIMMEL-789) ------
+# Real _evidence/ shape: the triage pass adds "## Promotion candidate" prose +
+# empty template sections to a clip whose THREAD content was never captured.
+# That pipeline-owned metadata must not count as "rich" - the clip is thin.
+echo "Test 22: triage sections excluded from thinness"
+V22="$tmp/v22"; mkdir -p "$V22/Clippings/_evidence"
+cat > "$V22/Clippings/_evidence/triaged.md" <<'EOF'
+---
+source: "https://www.reddit.com/r/x/comments/22/triaged"
+type: reddit
+processed: true
+---
+# triaged clip
+
+## What This Thread Is About
+An r/x post where the author announces a tool. Summary paragraph written by
+the harvest/triage pass - derived commentary, NOT captured thread content.
+
+## Best Insights from the Thread
+-
+-
+
+## Highlighted Comments
+
+
+## My Takeaway
+
+## Action Items
+- [ ]
+
+## Related Notes
+<!-- triage: vault too large for full link-graph scan -->
+
+## Source
+[View thread](https://www.reddit.com/r/x/comments/22/triaged)
+
+## Promotion candidate
+<!-- triage 2026-06-24 -->
+- **Suggested target:** `30-Resources/`
+- **Rationale:** Reddit thread announcing a tool - relevant prior art.
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/rich.json" node "$SCRIPT" --vault "$V22" --include-evidence >"$tmp/t22.out" 2>&1
+CF22="$V22/Clippings/_evidence/triaged.md"
+grep -q '## Crawled content' "$CF22" && a=ok || a=no
+assert "triage-sectioned clip recognized thin + enriched" ok "$a"
+grep -q 'enrichment_status: ok' "$CF22" && a=ok || a=no
+assert "triage-sectioned clip markers written" ok "$a"
+# shellcheck disable=SC2016  # literal backtick string is the grep -F needle
+grep -qF '**Suggested target:** `30-Resources/`' "$CF22" && a=ok || a=no
+assert "promotion-candidate section preserved verbatim (G-3)" ok "$a"
+# counter-case: REAL captured content outside pipeline sections stays rich
+V22b="$tmp/v22b"; mkdir -p "$V22b/Clippings"
+cat > "$V22b/Clippings/real.md" <<'EOF'
+---
+source: "https://www.reddit.com/r/x/comments/22/real"
+type: reddit
+---
+# real clip
+
+Actual captured thread text from the web clipper sits here.
+
+## Source
+[l](https://www.reddit.com/r/x/comments/22/real)
+EOF
+b22="$(sha256sum "$V22b/Clippings/real.md" | cut -d' ' -f1)"
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/rich.json" node "$SCRIPT" --vault "$V22b" >/dev/null 2>&1
+a22="$(sha256sum "$V22b/Clippings/real.md" | cut -d' ' -f1)"
+assert "clip with real captured prose still rich (untouched)" "$b22" "$a22"
+# counter-case 2 (codex-adv r4): USER-authored notes under a template heading
+# (My Takeaway) are real content -> rich. Only HARVEST-generated summary
+# sections (What This Thread Is About / Best Insights / Promotion candidate)
+# are excluded from the thinness scan.
+V22c="$tmp/v22c"; mkdir -p "$V22c/Clippings"
+cat > "$V22c/Clippings/notes.md" <<'EOF'
+---
+source: "https://www.reddit.com/r/x/comments/22/notes"
+type: reddit
+---
+# notes clip
+
+## My Takeaway
+Real notes I wrote after reading the thread - user content, not template.
+
+## Source
+[l](https://www.reddit.com/r/x/comments/22/notes)
+EOF
+b22c="$(sha256sum "$V22c/Clippings/notes.md" | cut -d' ' -f1)"
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/rich.json" node "$SCRIPT" --vault "$V22c" >/dev/null 2>&1
+a22c="$(sha256sum "$V22c/Clippings/notes.md" | cut -d' ' -f1)"
+assert "user-authored My Takeaway prose counts rich (untouched)" "$b22c" "$a22c"
+
+# -- Test 23: MAX_TOTAL_COMMENTS bound -> honest omission line (HIMMEL-789) ---
+echo "Test 23: total-comment bound + omission honesty"
+V23="$tmp/v23"; mkclip "$V23" "c.md" "https://www.reddit.com/r/x/comments/23/bound"
+OUT="$tmp/bound.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const comments = [];
+for (let i = 1; i <= 450; i++) comments.push({ kind: "t1", data: { name: "t1_b" + i, body: "bound comment " + i, author: "u" + i, score: 1, stickied: false, replies: "" } });
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_23x", title: "bound test", selftext: "body", author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: comments } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/bound.json" node "$SCRIPT" --vault "$V23" >/dev/null 2>&1
+CF23="$V23/Clippings/c.md"
+n23="$(grep -c '^- \*\*u/' "$CF23")"
+assert "exactly 400 comments rendered (MAX_TOTAL_COMMENTS)" 400 "$n23"
+grep -qF '(50 more comments not captured)' "$CF23" && a=ok || a=no
+assert "omission line states the 50 dropped by the bound" ok "$a"
+grep -q 'enrichment_status: ok' "$CF23" && a=ok || a=no; assert "bounded clip enriched ok (deliberate cap)" ok "$a"
+
+# -- Test 24: byte-cap truncation must NOT swallow the omission disclosure ----
+# (codex-adv: disclosures are appended AFTER the cap so they always survive.)
+echo "Test 24: truncation preserves omission disclosure"
+V24="$tmp/v24"; mkclip "$V24" "c.md" "https://www.reddit.com/r/x/comments/24/bigbound"
+OUT="$tmp/bigbound.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const big = "word ".repeat(30000); // ~150KB selftext, past the 120KB cap
+const comments = [];
+for (let i = 1; i <= 450; i++) comments.push({ kind: "t1", data: { name: "t1_c" + i, body: "late comment " + i, author: "u" + i, score: 1, stickied: false, replies: "" } });
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_24x", title: "big bound", selftext: big, author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: comments } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/bigbound.json" node "$SCRIPT" --vault "$V24" >/dev/null 2>&1
+CF24="$V24/Clippings/c.md"
+grep -q 'truncated' "$CF24" && a=ok || a=no; assert "truncation marker present" ok "$a"
+# The 150KB selftext eats the whole budget: all 400 selected comments are
+# cap-omitted + 50 bound-omitted = 450 disclosed (render-with-accounting).
+grep -qF '(450 more comments not captured)' "$CF24" && a=ok || a=no
+assert "omission disclosure survives the cap AND counts cap-dropped comments" ok "$a"
+grep -q 'enrichment_status: ok' "$CF24" && a=ok || a=no; assert "truncated+bounded clip still ok" ok "$a"
+
+# -- Test 25: comment-level cap accounting (codex-adv r3) ----------------------
+# When the cap lands MID-comment-list, rendered + disclosed-omitted must equal
+# the selected total - no comment silently vanishes between count and write.
+echo "Test 25: byte-cap comment accounting"
+V25="$tmp/v25"; mkclip "$V25" "c.md" "https://www.reddit.com/r/x/comments/25/acct"
+OUT="$tmp/acct.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const self = "word ".repeat(22000); // ~110KB: leaves room for only SOME comments
+const comments = [];
+for (let i = 1; i <= 30; i++) comments.push({ kind: "t1", data: { name: "t1_a" + i, body: ("acct comment " + i + " ").repeat(40), author: "u" + i, score: 1, stickied: false, replies: "" } });
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_25x", title: "acct test", selftext: self, author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: comments } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/acct.json" node "$SCRIPT" --vault "$V25" >/dev/null 2>&1
+CF25="$V25/Clippings/c.md"
+rendered25="$(grep -c '^- \*\*u/' "$CF25")"
+omit25="$(grep -oE '\(([0-9]+) more comments not captured\)' "$CF25" | grep -oE '[0-9]+' | head -1)"
+[ -z "$omit25" ] && omit25=0
+total25=$((rendered25 + omit25))
+assert "rendered + disclosed-omitted == 30 selected" 30 "$total25"
+[ "$rendered25" -gt 0 ] && a=ok || a=no; assert "some comments rendered before the cap" ok "$a"
+[ "$omit25" -gt 0 ] && a=ok || a=no; assert "cap-dropped comments disclosed (not silent)" ok "$a"
+# no half-cut comment: every rendered comment line ends with a word char/paren
+grep -q 'enrichment_status: ok' "$CF25" && a=ok || a=no; assert "acct clip enriched ok" ok "$a"
+
+# -- Test 26: nested "more" stubs inside a morechildren response --------------
+# (codex-adv r3): a kind:"more" thing in the expansion payload must be counted
+# as omitted - never silently dropped before an enriched_at write.
+echo "Test 26: nested more-stub in expansion counted as omitted"
+V26="$tmp/v26"; mkclip "$V26" "c.md" "https://www.reddit.com/r/x/comments/20/more"
+cat > "$tmp/more-nested.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_aaa1","parent_id":"t3_20x","body":"expanded ok","author":"frank","score":3,"stickied":false}},
+  {"kind":"more","data":{"children":["zzz1","zzz2","zzz3"]}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/more-listing.json" \
+  REDDIT_MORE_FIXTURE="$tmp/more-nested.json" node "$SCRIPT" --vault "$V26" >"$tmp/t26.out" 2>&1
+CF26="$V26/Clippings/c.md"
+grep -q 'expanded ok' "$CF26" && a=ok || a=no; assert "t1 things from expansion still captured" ok "$a"
+grep -qF '(3 more comments not captured)' "$CF26" && a=ok || a=no
+assert "nested more-stub children disclosed as omitted" ok "$a"
+grep -q 'enrichment_status: ok' "$CF26" && a=ok || a=no; assert "nested-more clip enriched ok" ok "$a"
+
+# -- Test 27: live replies under a filtered parent keep a placeholder anchor --
+# (codex-adv r5): a deleted top-level comment with live replies must render an
+# explicit [omitted] anchor so its replies don't visually re-attach to the
+# preceding visible comment.
+echo "Test 27: filtered-parent placeholder anchor"
+V27="$tmp/v27"; mkclip "$V27" "c.md" "https://www.reddit.com/r/x/comments/27/anchor"
+cat > "$tmp/anchor.json" <<'EOF'
+{"status":200,"body":[
+ {"kind":"Listing","data":{"children":[{"kind":"t3","data":{"name":"t3_27x","title":"anchor test","selftext":"post body","author":"a","subreddit":"x","score":1,"created_utc":1720000000}}]}},
+ {"kind":"Listing","data":{"children":[
+   {"kind":"t1","data":{"name":"t1_vis1","body":"visible first comment","author":"alice","score":9,"stickied":false,"replies":""}},
+   {"kind":"t1","data":{"name":"t1_del1","body":"[deleted]","author":"[deleted]","score":0,"stickied":false,
+     "replies":{"kind":"Listing","data":{"children":[
+       {"kind":"t1","data":{"name":"t1_liv1","body":"live reply to the deleted comment","author":"bob","score":4,"stickied":false,"replies":""}}
+     ]}}}}
+ ]}}
+]}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/anchor.json" node "$SCRIPT" --vault "$V27" >"$tmp/t27.out" 2>&1
+CF27="$V27/Clippings/c.md"
+grep -q '^- \*\*u/\[omitted\]\*\*' "$CF27" && a=ok || a=no
+assert "filtered parent renders an [omitted] placeholder at depth 0" ok "$a"
+grep -q '^  - \*\*u/bob\*\*.*live reply' "$CF27" && a=ok || a=no
+assert "live reply indented under the placeholder" ok "$a"
+alicel="$(grep -n 'u/alice' "$CF27" | cut -d: -f1)"
+oml="$(grep -n 'u/\[omitted\]' "$CF27" | cut -d: -f1)"
+bobl="$(grep -n 'u/bob' "$CF27" | cut -d: -f1)"
+[ -n "$alicel" ] && [ -n "$oml" ] && [ -n "$bobl" ] && [ "$alicel" -lt "$oml" ] && [ "$oml" -lt "$bobl" ] && a=ok || a=no
+assert "anchor order: alice < [omitted] < bob (reply not under alice)" ok "$a"
+grep -q 'enrichment_status: ok' "$CF27" && a=ok || a=no; assert "anchor clip enriched ok" ok "$a"
+
+# -- Test 28: filtered parent whose ONLY child is a more-stub (codex-adv r6) --
+# The [omitted] anchor must exist even when the filtered parent's replies are
+# just a "more" stub, so the EXPANDED reply inserts under the right anchor
+# instead of appending misattached at the end.
+echo "Test 28: more-stub-only filtered parent anchors expanded reply"
+V28="$tmp/v28"; mkclip "$V28" "c.md" "https://www.reddit.com/r/x/comments/28/moreanchor"
+cat > "$tmp/moreanchor.json" <<'EOF'
+{"status":200,"body":[
+ {"kind":"Listing","data":{"children":[{"kind":"t3","data":{"name":"t3_28x","title":"more anchor","selftext":"post body","author":"a","subreddit":"x","score":1,"created_utc":1720000000}}]}},
+ {"kind":"Listing","data":{"children":[
+   {"kind":"t1","data":{"name":"t1_vis1","body":"visible first comment","author":"alice","score":9,"stickied":false,"replies":""}},
+   {"kind":"t1","data":{"name":"t1_del2","body":"[deleted]","author":"[deleted]","score":0,"stickied":false,
+     "replies":{"kind":"Listing","data":{"children":[
+       {"kind":"more","data":{"children":["bbb1"]}}
+     ]}}}}
+ ]}}
+]}
+EOF
+cat > "$tmp/moreanchor-expand.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_bbb1","parent_id":"t1_del2","body":"expanded reply under omitted parent","author":"heidi","score":2,"stickied":false}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/moreanchor.json" \
+  REDDIT_MORE_FIXTURE="$tmp/moreanchor-expand.json" node "$SCRIPT" --vault "$V28" >"$tmp/t28.out" 2>&1
+CF28="$V28/Clippings/c.md"
+grep -q '^- \*\*u/\[omitted\]\*\*' "$CF28" && a=ok || a=no
+assert "more-stub-only filtered parent renders [omitted] anchor" ok "$a"
+grep -q '^  - \*\*u/heidi\*\*.*expanded reply under omitted parent' "$CF28" && a=ok || a=no
+assert "expanded reply indented under the anchor" ok "$a"
+alicel="$(grep -n 'u/alice' "$CF28" | cut -d: -f1)"
+oml="$(grep -n 'u/\[omitted\]' "$CF28" | cut -d: -f1)"
+heidil="$(grep -n 'u/heidi' "$CF28" | cut -d: -f1)"
+[ -n "$alicel" ] && [ -n "$oml" ] && [ -n "$heidil" ] && [ "$alicel" -lt "$oml" ] && [ "$oml" -lt "$heidil" ] && a=ok || a=no
+assert "anchor order: alice < [omitted] < heidi" ok "$a"
+grep -q 'enrichment_status: ok' "$CF28" && a=ok || a=no; assert "more-anchor clip enriched ok" ok "$a"
+
+# -- Test 29: "continue this thread" stub (more with EMPTY children) ----------
+# (silent-failure CR): reddit represents a chain deeper than its render limit
+# as kind:"more" with count:N, children:[] - no ids to expand. That cut MUST
+# reach the omission disclosure, never vanish behind an ok stamp.
+echo "Test 29: empty-children continue-this-thread stub disclosed"
+V29="$tmp/v29"; mkclip "$V29" "c.md" "https://www.reddit.com/r/x/comments/29/deep"
+cat > "$tmp/deep.json" <<'EOF'
+{"status":200,"body":[
+ {"kind":"Listing","data":{"children":[{"kind":"t3","data":{"name":"t3_29x","title":"deep chain","selftext":"post body","author":"a","subreddit":"x","score":1,"created_utc":1720000000}}]}},
+ {"kind":"Listing","data":{"children":[
+   {"kind":"t1","data":{"name":"t1_vis1","body":"visible comment","author":"alice","score":9,"stickied":false,
+     "replies":{"kind":"Listing","data":{"children":[
+       {"kind":"more","data":{"count":4,"children":[]}}
+     ]}}}}
+ ]}}
+]}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/deep.json" node "$SCRIPT" --vault "$V29" >"$tmp/t29.out" 2>&1
+CF29="$V29/Clippings/c.md"
+grep -qF '(4 more comments not captured)' "$CF29" && a=ok || a=no
+assert "continue-this-thread count disclosed as omitted" ok "$a"
+grep -q 'enrichment_status: ok' "$CF29" && a=ok || a=no; assert "deep-chain clip enriched ok" ok "$a"
+# nested variant: an empty-children more INSIDE an expansion payload
+V29b="$tmp/v29b"; mkclip "$V29b" "c.md" "https://www.reddit.com/r/x/comments/20/more"
+cat > "$tmp/more-deep.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_aaa1","parent_id":"t3_20x","body":"expanded ok","author":"frank","score":3,"stickied":false}},
+  {"kind":"more","data":{"count":2,"children":[]}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/more-listing.json" \
+  REDDIT_MORE_FIXTURE="$tmp/more-deep.json" node "$SCRIPT" --vault "$V29b" >/dev/null 2>&1
+grep -qF '(2 more comments not captured)' "$V29b/Clippings/c.md" && a=ok || a=no
+assert "empty-children stub in expansion payload disclosed" ok "$a"
+
+# -- Test 30: scrambled batch order (child before parent) ----------------------
+# (silent-failure CR): /api/morechildren gives no ordering guarantee; a child
+# arriving before its own batch-mate parent must still attach at true depth.
+echo "Test 30: expansion batch child-before-parent ordering"
+V30="$tmp/v30"; mkclip "$V30" "c.md" "https://www.reddit.com/r/x/comments/30/scramble"
+cat > "$tmp/scramble.json" <<'EOF'
+{"status":200,"body":[
+ {"kind":"Listing","data":{"children":[{"kind":"t3","data":{"name":"t3_30x","title":"scramble","selftext":"post body","author":"a","subreddit":"x","score":1,"created_utc":1720000000}}]}},
+ {"kind":"Listing","data":{"children":[
+   {"kind":"more","data":{"children":["ccc1","ccc2"]}}
+ ]}}
+]}
+EOF
+cat > "$tmp/scramble-expand.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_ccc2","parent_id":"t1_ccc1","body":"child arriving first","author":"ivan","score":1,"stickied":false}},
+  {"kind":"t1","data":{"name":"t1_ccc1","parent_id":"t3_30x","body":"parent arriving second","author":"judy","score":5,"stickied":false}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/scramble.json" \
+  REDDIT_MORE_FIXTURE="$tmp/scramble-expand.json" node "$SCRIPT" --vault "$V30" >"$tmp/t30.out" 2>&1
+CF30="$V30/Clippings/c.md"
+grep -q '^- \*\*u/judy\*\*.*parent arriving second' "$CF30" && a=ok || a=no
+assert "batch-mate parent at depth 0" ok "$a"
+grep -q '^  - \*\*u/ivan\*\*.*child arriving first' "$CF30" && a=ok || a=no
+assert "out-of-order child still indented under its parent" ok "$a"
+judyl="$(grep -n 'u/judy' "$CF30" | cut -d: -f1)"
+ivanl="$(grep -n 'u/ivan' "$CF30" | cut -d: -f1)"
+[ -n "$judyl" ] && [ -n "$ivanl" ] && [ "$judyl" -lt "$ivanl" ] && a=ok || a=no
+assert "child renders after its parent (judy < ivan)" ok "$a"
+grep -q 'u/\[omitted\]' "$CF30" && a=present || a=absent
+assert "no spurious [omitted] anchor for a batch-mate parent" absent "$a"
+
+# -- Test 31: orphan expansion reply (parent NEVER resolved) -------------------
+# (test-analyzer Critical): a reply whose t1 parent never appears in any batch
+# must NOT render flush-left as a fake top-level comment - it gets an
+# [omitted] anchor + indentation, distinguishable from a real t3_ reply.
+echo "Test 31: orphan expansion reply anchored, not top-level"
+V31="$tmp/v31"; mkclip "$V31" "c.md" "https://www.reddit.com/r/x/comments/30/scramble"
+cat > "$tmp/orphan-expand.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_orph1","parent_id":"t1_never_seen","body":"orphaned reply","author":"mallory","score":1,"stickied":false}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/scramble.json" \
+  REDDIT_MORE_FIXTURE="$tmp/orphan-expand.json" node "$SCRIPT" --vault "$V31" >"$tmp/t31.out" 2>&1
+CF31="$V31/Clippings/c.md"
+grep -q '^- \*\*u/mallory\*\*' "$CF31" && a=present || a=absent
+assert "orphan NOT rendered flush-left as top-level" absent "$a"
+grep -q '^  - \*\*u/mallory\*\*.*orphaned reply' "$CF31" && a=ok || a=no
+assert "orphan indented under an anchor" ok "$a"
+grep -q '^- \*\*u/\[omitted\]\*\*' "$CF31" && a=ok || a=no
+assert "orphan gets an [omitted] anchor at depth 0" ok "$a"
+
+# -- Test 32: MAX_MORE_BATCHES bounded skip (multi-batch pagination) ----------
+# (test-analyzer): 350 ids -> batches of 100,100,100,50; only 3 fetched, the
+# 4th (50 ids) is a deliberate bounded skip that must land in the disclosure.
+echo "Test 32: multi-batch bound skips are disclosed"
+V32="$tmp/v32"; mkclip "$V32" "c.md" "https://www.reddit.com/r/x/comments/32/bigmore"
+OUT="$tmp/bigmore.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const ids = []; for (let i = 1; i <= 350; i++) ids.push("m" + i);
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_32x", title: "big more", selftext: "post body", author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: [
+    { kind: "t1", data: { name: "t1_top1", body: "visible comment", author: "bob", score: 5, stickied: false, replies: "" } },
+    { kind: "more", data: { children: ids } },
+  ] } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+cat > "$tmp/bigmore-expand.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_x1","parent_id":"t3_32x","body":"batch comment one","author":"kim","score":1,"stickied":false}},
+  {"kind":"t1","data":{"name":"t1_x2","parent_id":"t3_32x","body":"batch comment two","author":"lee","score":1,"stickied":false}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/bigmore.json" \
+  REDDIT_MORE_FIXTURE="$tmp/bigmore-expand.json" node "$SCRIPT" --vault "$V32" >"$tmp/t32.out" 2>&1
+CF32="$V32/Clippings/c.md"
+grep -qF '(50 more comments not captured)' "$CF32" && a=ok || a=no
+assert "4th batch (50 ids) past MAX_MORE_BATCHES disclosed as omitted" ok "$a"
+grep -q 'enrichment_status: ok' "$CF32" && a=ok || a=no; assert "bounded multi-batch clip enriched ok" ok "$a"
 
 echo ""
 echo "reddit-enrich tests: $pass passed, $fail failed"
