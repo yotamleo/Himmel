@@ -10,8 +10,12 @@ no new deps). Loopback-only. Reads SSH creds from the PRIMARY checkout's .env
 parent of `git rev-parse --git-common-dir`, matching scripts/lib/load-dotenv.sh).
 
 CLI: python scripts/lib/vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|
-                                      baseline NAME|clone [REF]|provision|e2e>
+                                      baseline NAME|clone [REF]|provision|e2e|
+                                      push FILE [DEST]|
+                                      trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]>
 """
+import hashlib
+import io
 import json
 import os
 import re
@@ -19,6 +23,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -348,6 +353,177 @@ class VM:
         outer = f"timeout --signal=KILL {timeout} bash -lc {shlex.quote(inner)}"
         return self.run(outer)
 
+    @staticmethod
+    def _safe_guest_path(p, what):
+        """Charset-validate a guest path interpolated into a shell command.
+
+        Guest paths must stay unquoted so the guest shell expands `~`
+        (drive_claude's documented constraint), so injection is prevented by
+        VALIDATION instead — same pattern as clone_himmel's ref check.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9._/~-]+", str(p)):
+            raise VMError(
+                f"{what} {p!r}: guest-path characters only "
+                "([A-Za-z0-9._/~-]; no spaces or shell metacharacters)")
+        return str(p)
+
+    def push_file(self, local, remote, data=None, skip_if_exists=False):
+        """Copy ONE local file (or `data` bytes) to the guest via SFTP,
+        atomically: upload to a hidden temp name in the destination dir, then
+        posix_rename() into place (mkdir -p the parent first).
+
+        Refuses `.env*` basenames — the same secrets rule sync_repo enforces
+        with tar excludes (VM creds + the GitHub PAT must never land on the
+        guest). `remote` may use `~` — the parent dir is resolved to an
+        absolute guest path first (SFTP does not expand `~`).
+
+        `data`, if given, uploads exactly those bytes instead of re-reading
+        `local` from disk — closes a TOCTOU window for callers (trigger_claude)
+        that already computed a content digest from bytes read once: without
+        this, an edit to `local` between the digest read and this call would
+        upload bytes that no longer match the digest `remote` was tagged with.
+        `local` is still used for the `.env*` basename guard and (when `data`
+        is None) the existence check.
+
+        `skip_if_exists=True` (trigger_claude's digest-addressed inbox paths
+        only — a plain `push` overwrites unconditionally) skips the upload
+        entirely when `remote` already exists on the guest: the path already
+        encodes the content digest, so same path implies same content, and
+        skipping removes the rewrite window a same-digest retry would
+        otherwise open on a file an already-armed job may be reading.
+
+        Returns the absolute remote path.
+        """
+        lp = Path(local)
+        if data is None and not lp.is_file():
+            raise VMError(f"push_file: local file not found: {local}")
+        if lp.name.startswith(".env"):
+            raise VMError("push_file: refusing to push a .env* file to the guest")
+        self._safe_guest_path(remote, "push_file: remote")
+        remote_dir, _, remote_name = str(remote).rpartition("/")
+        if not remote_dir:
+            remote_dir = "~"
+        if not remote_name:
+            remote_name = lp.name
+        try:
+            rc, out = self.run(f"mkdir -p {remote_dir} && cd {remote_dir} && pwd")
+        except Exception as e:
+            raise VMError(f"push_file: mkdir -p {remote_dir} failed on {self.name}: {e}") from e
+        if rc != 0:
+            raise VMError(
+                f"push_file: mkdir -p {remote_dir} failed on {self.name} "
+                f"(rc {rc}): {out.strip()[-200:]}")
+        absdir = out.strip().splitlines()[-1].strip()
+        absremote = f"{absdir}/{remote_name}"
+        if skip_if_exists:
+            try:
+                exists_rc, _ = self.run(f"test -f {absremote}")
+            except Exception as e:
+                raise VMError(
+                    f"push_file: existence check for {absremote} failed on {self.name}: {e}") from e
+            if exists_rc == 0:
+                return absremote
+        if data is None:
+            data = lp.read_bytes()
+        tmp_remote = f"{absdir}/.{remote_name}.tmp-{uuid.uuid4().hex[:8]}"
+        sftp = self.ssh().open_sftp()
+        try:
+            try:
+                sftp.putfo(io.BytesIO(data), tmp_remote)
+            except Exception as e:
+                raise VMError(f"push_file: upload to {self.name} failed ({tmp_remote}): {e}") from e
+            try:
+                sftp.posix_rename(tmp_remote, absremote)
+            except Exception as e:
+                raise VMError(f"push_file: rename to {absremote} failed on {self.name}: {e}") from e
+        finally:
+            sftp.close()
+        return absremote
+
+    def trigger_claude(self, handover, cwd=None,
+                       when=None, timeout=600, inbox="~/handover-inbox"):
+        """Fire a claude session ON the guest from a HOST handover file
+        (HIMMEL-835 — the host->VM session-trigger seam).
+
+        Delivers the handover via push_file, then either:
+        - when=None: drives an immediate bounded session (drive_claude, which
+          keeps the positional-prompt billing guard) whose prompt tells claude
+          to load the delivered handover; returns its (rc, out) verbatim
+          (rc 124 = guest timeout kill, caller decides).
+        - when=<time>: arms the GUEST's own scheduler through the guest
+          checkout's arm-resume.sh (Linux at/atd backend — never a hand-rolled
+          scheduler, HIMMEL-647). Raises VMError if arming fails; returns
+          (0, out) on success.
+
+        cwd=None (sentinel, codex-adv CR): the caller did NOT ask for a
+        specific resume cwd. Locating arm-resume.sh (which checkout to `cd`
+        into to find the script) is a separate concern from resume ROUTING —
+        so a default checkout is still used to find the script, but --cwd is
+        NOT passed to arm-resume.sh, letting its own priority run as designed
+        (1. --cwd, 2. resume_cwd: frontmatter, 3. auto-detect). Passing --cwd
+        unconditionally would hard-fail a resume_worktree: handover (--cwd and
+        --worktree are mutually exclusive in arm-resume.sh) and silently
+        override resume_cwd: frontmatter on every other one. Only an
+        EXPLICITLY passed cwd is forwarded as --cwd.
+
+        The guest session runs on the guest's own claude login (its own quota)
+        and commits with the guest's own credentials. Single-writer stays with
+        the caller: do not trigger a ticket another writer owns.
+        """
+        locate_cwd = cwd if cwd is not None else "~/Documents/github/himmel-private"
+        self._safe_guest_path(locate_cwd, "trigger_claude: cwd")
+        src = Path(handover).resolve()
+        # Path(...).resolve() does not require existence — check explicitly so
+        # a missing handover raises a clean VMError here instead of a raw
+        # FileNotFoundError from the read_bytes() below (which would also make
+        # push_file's own is_file() check unreachable).
+        if not src.is_file():
+            raise VMError(f"trigger: handover file not found: {handover}")
+        data = src.read_bytes()
+        # Immutable, collision-resistant inbox name (codex-adv CR rounds 1+2):
+        # handovers are commonly named next-session-N.md across buckets, so a
+        # flat basename lets a later trigger overwrite an earlier delivery; and
+        # a path-only tag still lets a RETRY of the same source mutate the file
+        # an already-armed job points at, before arm-resume's dedup rejects the
+        # re-arm. Tagging with source path + CONTENT digest makes the delivered
+        # file immutable by construction: same content -> byte-identical
+        # overwrite (harmless idempotent retry); edited content -> a NEW guest
+        # path, so a queued job's file is never mutated.
+        tag = hashlib.sha1(str(src).encode()).hexdigest()[:8]
+        digest = hashlib.sha1(data).hexdigest()[:8]
+        # data=data (not re-read from disk) closes the digest/upload TOCTOU: an
+        # edit to `handover` between the read above and the upload must not
+        # desync the uploaded bytes from the digest tag. skip_if_exists=True:
+        # the digest-addressed path already encodes content, so an existing
+        # final path is skipped rather than rewritten (an armed job may be
+        # reading it).
+        guest_handover = self.push_file(
+            handover, f"{inbox}/{tag}-{digest}-{src.name}",
+            data=data, skip_if_exists=True)
+        if when is None:
+            prompt = (f"Resume from handover: load {guest_handover} and "
+                      f"execute its cold-start instructions.")
+            return self.drive_claude(prompt, cwd=locate_cwd, timeout=timeout)
+        # No --force: arm-resume's own dedup/collision checks must stay live so
+        # a re-trigger cannot silently replace another pending scheduled job
+        # (its dedup keys on the handover path, which the hash tag makes
+        # per-source; a genuine re-arm of the SAME source is the one case its
+        # same-handover dedup rejects — that refusal surfaces as a loud
+        # VMError below, operator decides).
+        arm = (f"cd {locate_cwd} && bash scripts/handover/arm-resume.sh"
+               f" --time {shlex.quote(when)}"
+               f" --handover {shlex.quote(guest_handover)}")
+        if cwd is not None:
+            arm += f" --cwd {cwd}"
+        try:
+            rc, out = self.run(f"bash -lc {shlex.quote(arm)}", timeout=120)
+        except Exception as e:
+            raise VMError(f"arm-resume on {self.name} failed: {e}") from e
+        if rc != 0:
+            raise VMError(
+                f"arm-resume on {self.name} failed (rc {rc}): {out.strip()[-300:]}")
+        return rc, out
+
     def run_e2e(self):
         if self.os != "ubuntu":
             raise NotImplementedError(
@@ -375,7 +551,33 @@ class VM:
 
 
 _USAGE = ("usage: vmsdk.py <vm> "
-          "<up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e>")
+          "<up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e|"
+          "push FILE [DEST]|"
+          "trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]>")
+
+
+def _parse_trigger_args(rest):
+    """Parse `trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]`.
+
+    Returns (handover, kwargs) or raises ValueError on a malformed flag.
+    """
+    handover, opts, kw = rest[0], rest[1:], {}
+    i = 0
+    while i < len(opts):
+        flag = opts[i]
+        if i + 1 >= len(opts):
+            raise ValueError(f"missing value for {flag}")
+        val = opts[i + 1]
+        if flag == "--at":
+            kw["when"] = val
+        elif flag == "--cwd":
+            kw["cwd"] = val
+        elif flag == "--timeout":
+            kw["timeout"] = int(val)
+        else:
+            raise ValueError(f"unknown flag {flag}")
+        i += 2
+    return handover, kw
 
 
 def main(argv):
@@ -406,6 +608,19 @@ def main(argv):
             vm.provision()
         elif cmd == "e2e":
             return vm.run_e2e()
+        elif cmd == "push" and rest:
+            dest = rest[1] if len(rest) > 1 else f"~/handover-inbox/{Path(rest[0]).name}"
+            print(vm.push_file(rest[0], dest))
+        elif cmd == "trigger" and rest:
+            try:
+                handover, kw = _parse_trigger_args(rest)
+            except ValueError as e:
+                print(f"trigger: {e}", file=sys.stderr)
+                print(_USAGE, file=sys.stderr)
+                return 2
+            rc, out = vm.trigger_claude(handover, **kw)
+            print(out)
+            return rc
         else:
             print(_USAGE, file=sys.stderr)
             return 2
@@ -413,6 +628,9 @@ def main(argv):
         print(e, file=sys.stderr)
         return 4
     except VMError as e:               # operational failure of any verb
+        print(e, file=sys.stderr)
+        return 1
+    except EnvironmentError as e:      # guest-env failure (claude/cwd missing)
         print(e, file=sys.stderr)
         return 1
     return 0
