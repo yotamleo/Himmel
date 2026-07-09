@@ -67,5 +67,17 @@ case "$out" in
   *) ok "benign command -> no permissionDecision (passthrough allow)";;
 esac
 
+echo "== (c) destructive command through block-destructive-commands.sh =="
+out="$(run block-destructive-commands.sh '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}')"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "adapter exits 0 for destructive deny"; else bad "adapter exits 0 for destructive deny (got $rc)"; fi
+case "$out" in
+  *'"permissionDecision":"deny"'*) ok "rm -rf -> JSON deny";;
+  *) bad "rm -rf -> JSON deny ($out)";;
+esac
+case "$out" in
+  *"block-destructive-commands"*) ok "rm -rf -> reason names destructive guard";;
+  *) bad "rm -rf -> reason names destructive guard ($out)";;
+esac
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

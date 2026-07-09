@@ -24,6 +24,7 @@
       {
         "matcher": "Bash|PowerShell",
         "hooks": [
+          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-destructive-commands.sh" },
           { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-docker-privesc.sh" },
           { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-merged-pr-commit.sh" },
           { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-terminal-write-fence.sh" },
