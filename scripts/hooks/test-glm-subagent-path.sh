@@ -65,7 +65,11 @@ if grep -qxF 'name: glm-subagent' "$REPO_ROOT/$AGENT"; then assert "(a) agent na
 # checkGlmGuards is CALLED before executeRun is CALLED. Pull the call-site line
 # numbers via parameter expansion (no head|cut pipe under pipefail -> no SIGPIPE
 # on the grep-early-exit path).
-guard_match=$(grep -m1 -n 'checkGlmGuards(plan' "$REPO_ROOT/$SPAWN_GLM" 2>/dev/null || true)
+# Match the assignment call-site shape ('= checkGlmGuards(') rather than a
+# specific argument: HIMMEL-800's runSharedDispatch refactor renamed the arg
+# (plan.worktree -> worktree) and the old 'checkGlmGuards(plan' pin broke on
+# public CI while the guard-before-run invariant itself still held.
+guard_match=$(grep -m1 -n '= checkGlmGuards(' "$REPO_ROOT/$SPAWN_GLM" 2>/dev/null || true)
 run_match=$(grep -m1 -n 'await executeRun(' "$REPO_ROOT/$SPAWN_GLM" 2>/dev/null || true)
 guard_line=${guard_match%%:*}
 run_line=${run_match%%:*}
