@@ -327,6 +327,9 @@ rc=0; out=$(run_cron arm --vault "$VAULT" --synth-time 25:00 2>&1) || rc=$?
 assert_rc "cron bad --synth-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_cron arm --vault "$VAULT" --health-day 31 2>&1) || rc=$?
 assert_rc "cron bad --health-day (31) -> rc 1" 1 "$rc"
+rc=0; out=$(run_cron arm --vault "$VAULT" --ig-limit abc 2>&1) || rc=$?
+assert_rc "cron bad --ig-limit (abc) -> rc 1" 1 "$rc"
+assert_contains "cron bad --ig-limit message names flag" "--ig-limit must be a non-negative integer" "$out"
 
 # Test C2: arm --dry-run touches nothing --------------------------------------
 
@@ -390,6 +393,11 @@ assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himme
 assert_contains "harvest runner cds into vault" "cd $VAULT || exit 1" "$harvest_sh"
 assert_contains "harvest runner runs /harvest-clips" "/harvest-clips" "$harvest_sh"
 assert_contains "harvest runner chains /triage-clips" "/triage-clips" "$harvest_sh"
+# The sh runner embeds the prompt via printf %q, which backslash-escapes
+# spaces - strip the escapes before multi-word prompt assertions (HIMMEL-798).
+harvest_sh_plain=${harvest_sh//\\/}
+assert_contains "harvest runner chains /ig-media-enrich default limit" "/ig-media-enrich --limit 10" "$harvest_sh_plain"
+assert_contains "harvest runner fail-opens ig-media-enrich" "must not abort" "$harvest_sh_plain"
 assert_contains "harvest runner bounded run"         "< /dev/null"    "$harvest_sh"
 assert_contains "synth runner cds into vault" "cd $VAULT || exit 1" "$synth_sh"
 assert_contains "synth runner runs /synthesize-clips" "/synthesize-clips" "$synth_sh"
@@ -458,6 +466,7 @@ out=$(run_cron status)
 assert_contains "cron harvest armed"    "ARMED      HIMMEL-Pipeline-Harvest"    "$out"
 assert_contains "cron synthesize armed" "ARMED      HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "cron health armed"     "ARMED      HIMMEL-Pipeline-Health"     "$out"
+assert_contains "cron status daily row mentions ig-media-enrich" "/ig-media-enrich" "$out"
 assert_contains "cron status surfaces run log state" "run log" "$out"
 
 # Test C5b: status_log rotated-log message (#299) ------------------------------
@@ -496,9 +505,12 @@ fi
 
 echo "TEST: cron re-arm --force applies flag overrides"
 out=$(run_cron arm --vault "$VAULT" --force \
-    --harvest-time 01:15 --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
+    --harvest-time 01:15 --ig-limit 25 --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
+harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
 assert_contains "cron daily harvest override"                  "15 01 * * *" "$tab"
+# %q-escaped prompt: strip backslashes for the multi-word assert (HIMMEL-798).
+assert_contains "cron --ig-limit override reaches harvest runner" "/ig-media-enrich --limit 25" "${harvest_sh//\\/}"
 assert_contains "cron weekly override (lowercase day upcased)" "30 02 * * 1" "$tab"
 assert_contains "cron monthly override"                        "00 05 15 * *" "$tab"
 assert_contains "unrelated entry survives --force re-arm" "keep-me" "$tab"
@@ -955,6 +967,9 @@ rc=0; out=$(run_pc arm --vault "$VAULT" --synth-day FUNDAY 2>&1) || rc=$?
 assert_rc "bad --synth-day -> rc 1" 1 "$rc"
 rc=0; out=$(run_pc arm --vault "$VAULT" --health-day 31 2>&1) || rc=$?
 assert_rc "bad --health-day (31) -> rc 1" 1 "$rc"
+rc=0; out=$(run_pc arm --vault "$VAULT" --ig-limit -3 2>&1) || rc=$?
+assert_rc "bad --ig-limit (-3) -> rc 1" 1 "$rc"
+assert_contains "bad --ig-limit message names flag" "--ig-limit must be a non-negative integer" "$out"
 rc=0; out=$(run_pc arm --vault "$TMP_ROOT/does-not-exist" 2>&1) || rc=$?
 assert_rc "missing vault dir -> rc 1" 1 "$rc"
 
@@ -1024,6 +1039,8 @@ assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel
 assert_contains "harvest bat cds into vault" 'cd /d "' "$harvest_bat"
 assert_contains "harvest bat runs /harvest-clips" "/harvest-clips" "$harvest_bat"
 assert_contains "harvest bat chains /triage-clips" "/triage-clips" "$harvest_bat"
+assert_contains "harvest bat chains /ig-media-enrich default limit" "/ig-media-enrich --limit 10" "$harvest_bat"
+assert_contains "harvest bat fail-opens ig-media-enrich" "must not abort" "$harvest_bat"
 assert_contains "harvest bat bounded run"          "< NUL"         "$harvest_bat"
 assert_contains "harvest bat appends run log" 'pipeline-harvest.log" 2>&1' "$harvest_bat"
 assert_contains "harvest bat rotates the log before firing" 'move /y' "$harvest_bat"
@@ -1090,6 +1107,7 @@ out=$(run_pc status)
 assert_contains "harvest armed"    "ARMED      HIMMEL-Pipeline-Harvest"    "$out"
 assert_contains "synthesize armed" "ARMED      HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "health armed"     "ARMED      HIMMEL-Pipeline-Health"     "$out"
+assert_contains "status daily row mentions ig-media-enrich" "/ig-media-enrich" "$out"
 assert_contains "status surfaces run log state" "run log" "$out"
 
 # Test 7b: status surfaces the rotated .log.prev evidence ---------------------
@@ -1124,11 +1142,13 @@ fi
 
 echo "TEST: re-arm --force applies flag overrides"
 out=$(run_pc arm --vault "$VAULT" --force \
-    --harvest-time 01:15 --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
+    --harvest-time 01:15 --ig-limit 0 --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
 harvest_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Harvest" 2>/dev/null || echo MISSING)
 synth_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Synthesize" 2>/dev/null || echo MISSING)
 health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Health" 2>/dev/null || echo MISSING)
+harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
 assert_contains "daily override (XML time)"               "T01:15:00"   "$harvest_args"
+assert_contains "--ig-limit 0 reaches harvest bat"         "/ig-media-enrich --limit 0" "$harvest_bat"
 assert_contains "weekly override (lowercase day upcased)" "<Monday />"  "$synth_args"
 assert_contains "weekly override (XML time)"              "T02:30:00"   "$synth_args"
 assert_contains "monthly override (XML day)"              "<Day>15</Day>" "$health_args"

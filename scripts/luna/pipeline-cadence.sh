@@ -11,17 +11,19 @@
 # recurring jobs with the OS scheduler, following the
 # scripts/handover/arm-resume.sh precedent (HIMMEL-122):
 #
-#   HIMMEL-Pipeline-Harvest     daily   (default 02:00)            HIMMEL-357
-#       claude "/harvest-clips … then /triage-clips …" < NUL
+#   HIMMEL-Pipeline-Harvest     daily   (default 02:00)            HIMMEL-357/798
+#       claude "/harvest-clips ... then /triage-clips ... then /ig-media-enrich ..." < NUL
 #   HIMMEL-Pipeline-Synthesize  weekly  (default Sun 03:00)
 #       claude "/synthesize-clips … then /archive-clips …" < NUL
 #   HIMMEL-Pipeline-Health      monthly (default 1st 04:00)
 #       claude "/obsidian-health …" < NUL
 #
 # Defaults are the operator decision pinned on HIMMEL-255 (2026-06-10),
-# plus the daily harvest+triage leg added on HIMMEL-357 (2026-06-17):
-# harvest+triage daily at 02:00 (cheap, idempotent, keeps the Clippings/
-# inbox flowing); synthesize weekly Sunday 03:00 with /archive-clips
+# plus the daily harvest+triage leg added on HIMMEL-357 (2026-06-17)
+# and the bounded ig-media-enrich chain link added on HIMMEL-798:
+# harvest+triage+ig-media-enrich daily at 02:00 (cheap, idempotent,
+# keeps the Clippings/ inbox flowing and drains pending Instagram media
+# across nights); synthesize weekly Sunday 03:00 with /archive-clips
 # chained after in the SAME session (synthesis needs a batch to find
 # cross-clip themes, so it runs weekly not daily; archive only graduates
 # clips synthesis has wikilinked, so it follows synth); health monthly
@@ -48,8 +50,9 @@
 #
 # Usage:
 #   bash scripts/luna/pipeline-cadence.sh arm [--harvest-time HH:MM]
-#       [--synth-day DAY] [--synth-time HH:MM] [--health-day N]
-#       [--health-time HH:MM] [--vault PATH] [--force] [--dry-run]
+#       [--ig-limit N] [--synth-day DAY] [--synth-time HH:MM]
+#       [--health-day N] [--health-time HH:MM] [--vault PATH]
+#       [--force] [--dry-run]
 #   bash scripts/luna/pipeline-cadence.sh status
 #   bash scripts/luna/pipeline-cadence.sh disarm
 #
@@ -119,6 +122,7 @@ SETTINGS_FRAGMENT="$BAT_DIR/cadence-settings.json"
 # Operator-decision defaults (HIMMEL-255 pinned comment, 2026-06-10;
 # harvest leg added on HIMMEL-357, 2026-06-17).
 HARVEST_TIME="02:00"
+IG_LIMIT="10"
 SYNTH_DAY="SUN"
 SYNTH_TIME="03:00"
 HEALTH_DAY="1"
@@ -143,7 +147,8 @@ DRY_RUN=0
 
 # Prompts are ASCII-only on purpose: the .bat is parsed by cmd.exe under
 # the OEM codepage, where UTF-8 punctuation mojibakes into the prompt.
-HARVEST_PROMPT="Run /harvest-clips to completion, then run /triage-clips. This is the scheduled daily pipeline cadence run (HIMMEL-357) - fully autonomous, no user prompts; report results and exit."
+DAILY_CHAIN="/harvest-clips + /triage-clips + /ig-media-enrich"
+HARVEST_PROMPT=""
 SYNTH_PROMPT="Run /synthesize-clips to completion, then run /archive-clips. This is the scheduled weekly pipeline cadence run (HIMMEL-255) - fully autonomous, no user prompts; report results and exit."
 HEALTH_PROMPT="Run /obsidian-health to completion. This is the scheduled monthly pipeline cadence run (HIMMEL-255) - fully autonomous, no user prompts; report results and exit."
 
@@ -152,8 +157,9 @@ usage() {
 Usage: pipeline-cadence.sh <arm|status|disarm> [flags]
 
 Arm the OS scheduler with the recurring clip-pipeline cadence
-(HIMMEL-255/357): daily /harvest-clips (+ /triage-clips chained after in
-the same session), weekly /synthesize-clips (+ /archive-clips chained
+(HIMMEL-255/357/798): daily /harvest-clips (+ /triage-clips and
+/ig-media-enrich chained after in the same session), weekly
+/synthesize-clips (+ /archive-clips chained
 after) and monthly /obsidian-health, run against the luna vault as
 interactive bounded claude sessions.
 
@@ -165,7 +171,10 @@ Subcommands:
   disarm   Remove all tasks (idempotent; rc=0 if nothing was armed).
 
 Flags (arm only, except --dry-run):
-  --harvest-time <HH:MM> Daily harvest+triage time, 24h local (default 02:00)
+  --harvest-time <HH:MM> Daily harvest+triage+ig-media-enrich time,
+                         24h local (default 02:00)
+  --ig-limit <N>         Daily /ig-media-enrich --limit N (default 10;
+                         0 = unlimited)
   --synth-day <DAY>      Weekly synthesize day: MON..SUN   (default SUN)
   --synth-time <HH:MM>   Weekly synthesize time, 24h local (default 03:00)
   --health-day <N>       Monthly health day-of-month, 1-28 (default 1;
@@ -202,6 +211,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --harvest-time)   HARVEST_TIME="${2:-}"; shift 2 ;;
         --harvest-time=*) HARVEST_TIME="${1#--harvest-time=}"; shift ;;
+        --ig-limit)      IG_LIMIT="${2:-}"; shift 2 ;;
+        --ig-limit=*)    IG_LIMIT="${1#--ig-limit=}"; shift ;;
         --synth-day)     SYNTH_DAY="${2:-}"; shift 2 ;;
         --synth-day=*)   SYNTH_DAY="${1#--synth-day=}"; shift ;;
         --synth-time)    SYNTH_TIME="${2:-}"; shift 2 ;;
@@ -222,6 +233,8 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+HARVEST_PROMPT="Run /harvest-clips to completion, then run /triage-clips, then run /ig-media-enrich --limit $IG_LIMIT. The /ig-media-enrich step uses --limit $IG_LIMIT; 0 means unlimited, otherwise one night's batch is bounded and the ig_media_pending backlog drains across nights. If /ig-media-enrich fails due to missing ffmpeg/whisper, expired IG cookies, or media download errors, report the failure but it must not abort or fail the harvest+triage leg; finish the session normally. This is the scheduled daily pipeline cadence run (HIMMEL-357/HIMMEL-798) - fully autonomous, no user prompts; report results and exit."
 
 # Platform detect (same matrix as arm-resume.sh).
 case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
@@ -371,6 +384,12 @@ query_one() {
 }
 
 # rc 0 = query trusted (armed or not-armed), rc 2 = query errored.
+task_summary() {
+    case "$1" in
+        "$TASK_HARVEST") printf ' -> %s' "$DAILY_CHAIN" ;;
+    esac
+}
+
 status_one() {
     local name="$1" next qrc=0
     query_one "$name" || qrc=$?
@@ -380,9 +399,9 @@ status_one() {
             # operator env); fall back to plain ARMED when absent.
             next=$(printf '%s\n' "$QUERY_OUT" | grep -i 'Next Run Time' | head -1 \
                 | sed 's/^[^:]*:[[:space:]]*//' || true)
-            echo "ARMED      $name${next:+ (next run: $next)}"
+            echo "ARMED      $name${next:+ (next run: $next)}$(task_summary "$name")"
             ;;
-        1)  echo "not armed  $name" ;;
+        1)  echo "not armed  $name$(task_summary "$name")" ;;
         *)
             echo "QUERY ERR  $name (see stderr above)"
             return 2
@@ -658,6 +677,10 @@ validate_arm_inputs() {
         echo "ERR pipeline-cadence: --synth-time must be HH:MM (24h), got: $SYNTH_TIME" >&2
         exit 1
     fi
+    if ! [[ "$IG_LIMIT" =~ ^[0-9]+$ ]]; then
+        echo "ERR pipeline-cadence: --ig-limit must be a non-negative integer, got: $IG_LIMIT" >&2
+        exit 1
+    fi
     # 1-28 only: schtasks MONTHLY /d 29-31 skips months lacking that day
     # (and cron's day-of-month field has the same problem).
     if ! [[ "$HEALTH_DAY" =~ ^([1-9]|1[0-9]|2[0-8])$ ]]; then
@@ -866,8 +889,8 @@ cmd_arm() {
     cat <<EOF
 
 ================================================================
-  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-357)
-  $TASK_HARVEST     daily   $HARVEST_TIME       -> /harvest-clips + /triage-clips
+  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-357 / HIMMEL-798)
+  $TASK_HARVEST     daily   $HARVEST_TIME       -> $DAILY_CHAIN
   $TASK_SYNTH  weekly  $SYNTH_DAY $SYNTH_TIME  -> /synthesize-clips + /archive-clips
   $TASK_HEALTH      monthly day $HEALTH_DAY $HEALTH_TIME -> /obsidian-health
   Vault: $vault_win
@@ -1021,9 +1044,9 @@ cron_status() {
         entry=$(printf '%s\n' "$CRON_TAB" | grep -F "# $name" | head -1 || true)
         if [ -n "$entry" ]; then
             sched=$(printf '%s' "$entry" | awk '{print $1, $2, $3, $4, $5}')
-            echo "ARMED      $name (cron: $sched)"
+            echo "ARMED      $name (cron: $sched)$(task_summary "$name")"
         else
-            echo "not armed  $name"
+            echo "not armed  $name$(task_summary "$name")"
         fi
         status_log "$log"
     done
@@ -1210,8 +1233,8 @@ cron_arm() {
     cat <<EOF
 
 ================================================================
-  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-265 cron / HIMMEL-357)
-  $TASK_HARVEST     daily   $HARVEST_TIME       -> /harvest-clips + /triage-clips
+  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-265 cron / HIMMEL-357 / HIMMEL-798)
+  $TASK_HARVEST     daily   $HARVEST_TIME       -> $DAILY_CHAIN
   $TASK_SYNTH  weekly  $SYNTH_DAY $SYNTH_TIME  -> /synthesize-clips + /archive-clips
   $TASK_HEALTH      monthly day $HEALTH_DAY $HEALTH_TIME -> /obsidian-health
   Vault: $VAULT

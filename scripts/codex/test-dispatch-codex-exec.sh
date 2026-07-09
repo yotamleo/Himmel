@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISPATCH="$SCRIPT_DIR/dispatch-codex-exec.sh"
+LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
 
 fails=0
 pass() { echo "  ok: $1"; }
@@ -47,7 +48,7 @@ echo 0 > "$TMP/norm.rc"
 
 run_dispatch() {  # run_dispatch <args...> ; sets $RC and $OUT
   set +e
-  OUT="$(CODEX_BIN="$CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" \
+  OUT="$(CODEX_BIN="$CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
       bash "$DISPATCH" "$@" 2>&1)"
   RC=$?
   set -e
@@ -251,6 +252,92 @@ RC=$?
 set -e
 assert_rc 1 "vanished worktree exits 1" "vanish rc=$RC out=$OUT"
 case "$OUT" in *"worktree vanished before dispatch"*) pass "vanish failure is named";; *) fail "vanish out: $OUT";; esac
+
+# --- 14: --shared-branch mode (HIMMEL-800) ------------------------------------
+# Real git repo + real worktree under .claude/worktrees (so the containment
+# check passes) and the REAL shared-branch-lock.sh (not a stub) - this
+# section tests the integration between dispatch-codex-exec.sh and the
+# frozen lock primitive, not the primitive's own internals (that is
+# scripts/lib/test-shared-branch-lock.sh's job).
+SB_REPO="$TMP/sb-repo"
+mkdir -p "$SB_REPO"
+git -C "$SB_REPO" init -q
+git -C "$SB_REPO" config user.email "test@example.com"
+git -C "$SB_REPO" config user.name "Test User"
+: > "$SB_REPO/README.md"
+git -C "$SB_REPO" add README.md
+git -C "$SB_REPO" commit -q -m init
+SB_WT="$TMP/.claude/worktrees/sb-wt"
+git -C "$SB_REPO" worktree add -q "$SB_WT" -b "feat/shared" >/dev/null 2>&1
+
+# 14a: happy path - matching branch, clean tree -> codex runs, lock released after.
+: > "$LOG"; echo 0 > "$TMP/norm.rc"
+run_dispatch --worktree "$SB_WT" --shared-branch "feat/shared" do-it
+assert_rc 0 "shared-branch happy path exits 0" "sb-happy rc=$RC out=$OUT"
+if grep -q codex "$LOG" 2>/dev/null; then pass "codex invoked in shared-branch happy path"; else fail "codex not invoked in shared-branch happy path: $OUT"; fi
+sb_status="$(bash "$LOCK_LIB" status "$SB_WT" "feat/shared" 2>&1)" || true
+case "$sb_status" in
+  free) pass "shared-branch lock released after happy path" ;;
+  *) fail "shared-branch lock not released after happy path: $sb_status" ;;
+esac
+
+# 14b: branch mismatch -> exit 2, codex not invoked.
+: > "$LOG"
+run_dispatch --worktree "$SB_WT" --shared-branch "feat/other" do-it
+assert_rc 2 "shared-branch mismatch refused" "sb-mismatch rc=$RC out=$OUT"
+case "$OUT" in *"does not match"*) pass "mismatch refusal names both branches";; *) fail "sb-mismatch out: $OUT";; esac
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite branch mismatch"; else pass "codex not invoked on branch mismatch"; fi
+
+# 14c: main refused -> exit 2, codex not invoked (checked before branch match).
+: > "$LOG"
+run_dispatch --worktree "$SB_WT" --shared-branch main do-it
+assert_rc 2 "shared-branch main refused" "sb-main rc=$RC out=$OUT"
+case "$OUT" in *"refuses trunk branch"*) pass "main refusal names the trunk rule";; *) fail "sb-main out: $OUT";; esac
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite main refusal"; else pass "codex not invoked on main refusal"; fi
+
+# 14d: dirty tree -> exit 2, codex not invoked.
+: > "$LOG"
+echo "dirty" > "$SB_WT/dirty-file.txt"
+run_dispatch --worktree "$SB_WT" --shared-branch "feat/shared" do-it
+assert_rc 2 "shared-branch dirty tree refused" "sb-dirty rc=$RC out=$OUT"
+case "$OUT" in *"uncommitted changes"*) pass "dirty-tree refusal names the rule";; *) fail "sb-dirty out: $OUT";; esac
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite dirty tree"; else pass "codex not invoked on dirty tree"; fi
+rm -f "$SB_WT/dirty-file.txt"
+
+# 14e: lock already held -> exit 4, codex not invoked, pre-existing lock intact.
+: > "$LOG"
+bash "$LOCK_LIB" acquire "$SB_WT" "feat/shared" "external-holder" >/dev/null 2>&1
+run_dispatch --worktree "$SB_WT" --shared-branch "feat/shared" do-it
+assert_rc 4 "shared-branch lock-held refused with exit 4" "sb-lock-held rc=$RC out=$OUT"
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite lock held"; else pass "codex not invoked when lock held"; fi
+sb_status="$(bash "$LOCK_LIB" status "$SB_WT" "feat/shared" 2>&1)" || true
+case "$sb_status" in
+  *"external-holder"*) pass "pre-existing lock not clobbered by dispatch's own trap" ;;
+  *) fail "pre-existing lock was clobbered: $sb_status" ;;
+esac
+bash "$LOCK_LIB" release "$SB_WT" "feat/shared" >/dev/null 2>&1
+
+# 14f: codex nonzero exit propagates AND the lock is released (trap fires).
+: > "$LOG"
+cat > "$CODEX_STUB" <<EOF
+#!/usr/bin/env bash
+echo "codex" >> "$LOG"
+exit 7
+EOF
+run_dispatch --worktree "$SB_WT" --shared-branch "feat/shared" do-it
+assert_rc 7 "shared-branch codex nonzero exit propagates" "sb-codex-rc7 rc=$RC out=$OUT"
+sb_status="$(bash "$LOCK_LIB" status "$SB_WT" "feat/shared" 2>&1)" || true
+case "$sb_status" in
+  free) pass "shared-branch lock released after codex nonzero exit" ;;
+  *) fail "shared-branch lock not released after nonzero exit: $sb_status" ;;
+esac
+cat > "$CODEX_STUB" <<EOF
+#!/usr/bin/env bash
+echo "codex" >> "$LOG"
+printf '%s\n' "\$*" > "$TMP/codex.args"
+pwd > "$TMP/codex.cwd"
+exit 0
+EOF
 
 echo
 if [ "$fails" -ne 0 ]; then
