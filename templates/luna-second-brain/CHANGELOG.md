@@ -8,6 +8,20 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.2] — 2026-07-09
+
+### Fixed
+- **pre-commit auto-fixers no longer rewrite machine-generated `.manifest.json`**
+  (HIMMEL-834). The ingest pipeline (single writer) emits the manifest without
+  a trailing newline; `end-of-file-fixer` rewriting it at commit time fought
+  the generator and — with unstaged changes present (e.g. another session's
+  `.obsidian` state) — entered pre-commit's stash-rollback path, which can
+  crash mid-apply and **silently drop the unstaged changes** (observed: lost
+  Obsidian plugin updates, recovered from the retained
+  `~/.cache/pre-commit/patch<id>` file). Both fixers now carry
+  `exclude: '^\.manifest\.json$'`; `check-json` still validates the file.
+  Vaults without a manifest (non-medical profiles) are unaffected.
+
 ## [0.2.1] — 2026-06-29
 
 ### Fixed
