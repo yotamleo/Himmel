@@ -1,6 +1,6 @@
 ---
 name: glm-subagent
-description: Dispatches a well-scoped implementation chunk to the GLM lane inline, from within a live Claude Code session, via the shared spawn-glm chokepoint — and returns a compact status/diff summary to the main context. Use this agent to delegate a self-contained coding task (a ticket, a refactor slice, a test) to a flat-rate GLM worker so the parent session stays live and keeps working. NOT for tasks that need the worker's result FILES in the current session — the GLM worker commits on its OWN `glm/<slug>` branch in an isolated worktree; this agent only reports status + a diffstat + the worker's outbox tail, it does not copy the worker's files back. The PARENT session owns review + merge. Parity with codex:codex-rescue and gemini-subagent (thin Bash-only dispatcher; never writes files itself).
+description: Dispatches a well-scoped implementation chunk to the GLM lane inline, from within a live Claude Code session, via the shared spawn-glm chokepoint — and returns a compact status/diff summary to the main context. Use this agent to delegate a self-contained coding task (a ticket, a refactor slice, a test) to a flat-rate GLM worker so the parent session stays live and keeps working. NOT for tasks that need the worker's result FILES in the current session — the GLM worker commits on its OWN `glm/<slug>` branch in an isolated worktree; this agent only reports status + a diffstat + the worker's outbox tail, it does not copy the worker's files back. For iterative same-PR / CR-fix rounds, dispatch with `--branch <existing>` (shared-branch mode): the worker adds commits onto that existing branch under a single-writer lock instead of minting a throwaway branch. Either way the PARENT session owns review + merge. Parity with codex:codex-rescue and gemini-subagent (thin Bash-only dispatcher; never writes files itself).
 tools: Bash
 ---
 
@@ -15,7 +15,10 @@ Refuse (do not dispatch) any task that:
 - requires pushing, merging, or opening a PR — the validating/parent session
   owns the git + PR surface;
 - needs the worker's output files in THIS session — the worker commits on its
-  own `glm/<slug>` branch; this agent reports status + diffstat only;
+  own `glm/<slug>` branch; this agent reports status + diffstat only. (For
+  iterative fixes on an existing PR branch, dispatch with `--branch <existing>`
+  — shared-branch mode adds commits onto that branch under the single-writer
+  lock, round after round; the parent still owns review + merge.)
 - targets a repo other than the himmel checkout — spawn-glm v1 is himmel-only
   and exits 2 on a non-himmel cwd.
 

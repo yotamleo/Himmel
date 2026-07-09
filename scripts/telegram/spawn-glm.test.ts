@@ -14,6 +14,10 @@ import {
   glmSessionRoot,
   poisonPushUrl,
   planSpawn,
+  planSharedSpawn,
+  gitBranchExists,
+  gitIsDirty,
+  runSharedDispatch,
   finalMeta,
   parseArgs,
   executeRun,
@@ -44,6 +48,27 @@ test("worker prompt embeds minted session paths + contract", () => {
   expect(p).toMatch(/never push/i);
   expect(p).toMatch(/never open a PR/i);
   expect(p).toContain("Summarize X");
+});
+
+test("composeWorkerPrompt shared mode (HIMMEL-800): teaches the no-rebase/no-new-branch/add-commits-only contract + names the branch", () => {
+  const p = composeWorkerPrompt("fix the CR findings", "/tmp/gs/glm-a-1", "feat/live-pr", { shared: true });
+  expect(p).toContain("feat/live-pr");
+  expect(p).toMatch(/SHARED PR branch/i);
+  expect(p).toMatch(/do NOT create a new branch/i);
+  expect(p).toMatch(/do NOT reset\/rebase\/amend\/force-anything/i);
+  expect(p).toMatch(/ADD new commits on top only/i);
+  expect(p).toMatch(/lock serializes writers/i);
+  // still carries the shared everything-else contract (task, escalation, no-push)
+  expect(p).toContain("fix the CR findings");
+  expect(p).toMatch(/never push/i);
+});
+
+test("composeWorkerPrompt default (no opts / shared:false) is UNCHANGED from the own-branch text", () => {
+  const bare = composeWorkerPrompt("do X", "/tmp/gs/glm-a-1", "glm/a");
+  const explicitFalse = composeWorkerPrompt("do X", "/tmp/gs/glm-a-1", "glm/a", { shared: false });
+  expect(bare).toBe(explicitFalse);
+  expect(bare).toContain("which is already checked out");
+  expect(bare).not.toMatch(/SHARED PR branch/i);
 });
 
 // --- HIMMEL-740: pointer-prompt dispatch + window preflight ---
@@ -133,6 +158,57 @@ test("GLM guard check runs BEFORE git worktree add — a refusal leaves no orpha
   expect(guardIdx).toBeLessThan(poisonIdx);
 });
 
+// --- HIMMEL-800: shared-branch mode wiring pins (main() source-text checks,
+// mirroring the HIMMEL-740/#848 wiring-pin style above — these assert ORDER
+// and PRESENCE of the shared-mode lock/mutation wiring that a pure unit test
+// can't reach without spinning up real git + the lock script).
+
+test("main() writes shared_branch into runningMeta only in shared mode (wiring pin, I8 typed construction)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  expect(/const runningMeta = sharedMode \? \{ \.\.\.baseMeta, shared_branch: branch \} : baseMeta;/.test(src)).toBe(true);
+});
+
+test("shared-branch lock is acquired BEFORE any worktree mutation, and main() guards before dispatching (wiring pin)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  // acquire → worktree add → poison ordering inside runSharedDispatch
+  const acquireIdx = src.indexOf('"acquire", p.repoDir, p.branch, "glm"');
+  const addIdx = src.indexOf("if (p.needsWorktreeAdd) p.gitAdd()");
+  const poisonIdx = src.indexOf("poisonPushUrl(p.repoDir, p.worktree)");
+  expect(acquireIdx).toBeGreaterThan(-1);
+  expect(addIdx).toBeGreaterThan(-1);
+  expect(poisonIdx).toBeGreaterThan(-1);
+  expect(acquireIdx).toBeLessThan(addIdx);      // lock before worktree add
+  expect(acquireIdx).toBeLessThan(poisonIdx);   // lock before poison
+  // main() runs the GLM guard before it dispatches into the shared lifecycle
+  const guardIdx = src.indexOf("checkGlmGuards(worktree)");
+  const callIdx = src.indexOf("runSharedDispatch({");
+  expect(guardIdx).toBeGreaterThan(-1);
+  expect(callIdx).toBeGreaterThan(-1);
+  expect(guardIdx).toBeLessThan(callIdx);
+});
+
+test("runSharedDispatch releases the shared-branch lock via a finally (wiring pin — every exit path after acquire)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  expect(/finally\s*\{[\s\S]*?"release", p\.repoDir, p\.branch/.test(src)).toBe(true);
+});
+
+test("main() exits 4 on a lock-acquire failure, distinct from the existing 1/2/3 codes (wiring pin)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  // runSharedDispatch reports the acquire failure; main() maps it to exit 4.
+  expect(src.includes("if (acquire.exitCode !== 0) return { ok: false")).toBe(true);
+  expect(/if \(!shared\.ok\) \{ console\.error\(shared\.reason\); process\.exit\(4\); \}/.test(src)).toBe(true);
+});
+
+test("own-branch (flag-less) path is untouched — mints its own branch with -b, no shared lock (regression pin)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  const ownAddIdx = src.indexOf('g(["worktree", "add", worktree, "-b", branch])');
+  const dispatchIdx = src.indexOf("runSharedDispatch({");
+  expect(ownAddIdx).toBeGreaterThan(-1);      // own-branch still mints via -b
+  expect(dispatchIdx).toBeGreaterThan(-1);    // shared path is separate
+  // own-branch poison stays the direct call (not routed through runSharedDispatch)
+  expect(src.includes("poisonPushUrl(absCwd, worktree)")).toBe(true);
+});
+
 test("transcript dir derives from escaped cwd, not slug", () => {
   const d = transcriptDirFor("C:\\Users\\alice\\Documents\\github\\himmel\\.claude\\worktrees\\glm+a");
   expect(d).toBe(join(homedir(), ".claude", "projects",
@@ -163,6 +239,145 @@ test("pushurl poison makes bare git push fail in the worktree", () => {
   // and the failure is the POISON, not some other breakage
   expect(push.stderr.toString()).toContain("DISABLED-glm-quarantine");
   rmSync(repo, { recursive: true, force: true });
+});
+
+// --- runSharedDispatch (HIMMEL-800 I6/I7): pushurl capture/restore + lock
+// lifecycle, exercised against a REAL temp git repo + worktree + the REAL lock
+// script (mirrors the codex suite's section-14 pattern). ---
+
+function makeSharedRepo() {
+  const repo = mkdtempSync(join(tmpdir(), "glmshared-"));
+  const run = (args: string[], cwd: string) => Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  run(["init", "-b", "main"], repo);
+  run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"], repo);
+  run(["remote", "add", "origin", repo], repo); // self-remote so a real push would resolve
+  const wt = join(repo, ".claude", "worktrees", "glm+feat-live-pr");
+  run(["worktree", "add", "-b", "feat/live-pr", wt], repo);
+  return { repo, wt, run };
+}
+const LOCK_SCRIPT = resolve("scripts/lib/shared-branch-lock.sh");
+const lockStatus = (repo: string, branch: string) =>
+  Bun.spawnSync(["bash", LOCK_SCRIPT, "status", repo, branch], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
+
+test("runSharedDispatch (I6a): a pre-existing worktree pushurl is restored to its exact value after a successful run, lock freed", async () => {
+  const { repo, wt, run } = makeSharedRepo();
+  try {
+    run(["config", "extensions.worktreeConfig", "true"], repo);
+    run(["config", "--worktree", "remote.origin.pushurl", "git@example.com:orig/repo.git"], wt);
+    const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => 0 });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.code).toBe(0);
+    expect(run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt).stdout.toString().trim()).toBe("git@example.com:orig/repo.git");
+    expect(lockStatus(repo, "feat/live-pr")).toBe("free");
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("runSharedDispatch (I6b): no prior pushurl → pushurl is UNSET after run (not left poisoned)", async () => {
+  const { repo, wt, run } = makeSharedRepo();
+  try {
+    const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => 0 });
+    expect(res.ok).toBe(true);
+    const got = run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt);
+    expect(got.exitCode).not.toBe(0);   // key absent (unset)
+    expect(got.stdout.toString()).not.toContain("DISABLED-glm-quarantine");
+    expect(lockStatus(repo, "feat/live-pr")).toBe("free");
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("runSharedDispatch (I6c): runBody throwing still restores pushurl AND releases the lock", async () => {
+  const { repo, wt, run } = makeSharedRepo();
+  try {
+    run(["config", "extensions.worktreeConfig", "true"], repo);
+    run(["config", "--worktree", "remote.origin.pushurl", "git@example.com:orig/repo.git"], wt);
+    await expect(runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => { throw new Error("boom"); } }))
+      .rejects.toThrow("boom");
+    expect(run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt).stdout.toString().trim()).toBe("git@example.com:orig/repo.git"); // restored despite throw
+    expect(lockStatus(repo, "feat/live-pr")).toBe("free");                                                                                     // released despite throw
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("runSharedDispatch (I2/I6d): a prior pushurl equal to the poison sentinel is treated as absent → UNSET, not re-poisoned", async () => {
+  const { repo, wt, run } = makeSharedRepo();
+  try {
+    // simulate a prior crashed shared-mode run: pushurl left as the sentinel
+    run(["config", "extensions.worktreeConfig", "true"], repo);
+    run(["config", "--worktree", "remote.origin.pushurl", "DISABLED-glm-quarantine"], wt);
+    const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => 0 });
+    expect(res.ok).toBe(true);
+    const got = run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt);
+    expect(got.exitCode).not.toBe(0);   // unset, NOT restored to the sentinel
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("runSharedDispatch (I7): a held lock refuses (ok:false), body never runs, pre-existing owner.json intact", async () => {
+  const { repo, wt } = makeSharedRepo();
+  try {
+    const acq = Bun.spawnSync(["bash", LOCK_SCRIPT, "acquire", repo, "feat/live-pr", "external-holder"], { stdout: "pipe", stderr: "pipe" });
+    expect(acq.exitCode).toBe(0);
+    let ran = false;
+    const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => { ran = true; return 0; } });
+    expect(res.ok).toBe(false);
+    expect(ran).toBe(false);                                       // body never ran (mirror codex 14e)
+    expect(lockStatus(repo, "feat/live-pr")).toContain("external-holder"); // pre-existing lock not clobbered
+    Bun.spawnSync(["bash", LOCK_SCRIPT, "release", repo, "feat/live-pr"], { stdout: "pipe", stderr: "pipe" });
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("runSharedDispatch (I7): needsWorktreeAdd:true invokes gitAdd exactly once inside the lock", async () => {
+  const { repo, wt } = makeSharedRepo();
+  try {
+    let adds = 0;
+    const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: true, lockScript: LOCK_SCRIPT, gitAdd: () => { adds++; }, runBody: async () => 0 });
+    expect(res.ok).toBe(true);
+    expect(adds).toBe(1);
+    expect(lockStatus(repo, "feat/live-pr")).toBe("free");
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+// --- gitIsDirty / gitBranchExists (CR round 2 F1): the REAL git-probe
+// implementations that feed planSharedSpawn's injected deps — previously only
+// the injected planSharedSpawn STUB (sharedOkDeps' isDirty/branchExists) was
+// exercised; these hit the real Bun.spawnSync-backed functions, including the
+// FAIL-CLOSED (C3) throw path, against real git state (mirrors the
+// makeSharedRepo real-temp-repo pattern used by the I6/I7 suite above).
+
+test("gitIsDirty (F1): a real clean temp repo -> false; with an uncommitted file -> true", () => {
+  const repo = mkdtempSync(join(tmpdir(), "gitdirty-"));
+  const run = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+  try {
+    run(["init", "-b", "main"]);
+    run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"]);
+    expect(gitIsDirty(repo)).toBe(false);
+    writeFileSync(join(repo, "untracked.txt"), "x");
+    expect(gitIsDirty(repo)).toBe(true);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("gitIsDirty (F1, C3 fail-closed): a non-git dir THROWS with the worktree-state message, never reads as clean", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gitdirty-nogit-"));
+  try {
+    expect(() => gitIsDirty(dir)).toThrow(/cannot determine worktree state/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("gitIsDirty (F1, C3 fail-closed): a dir with a bogus .git FILE (corrupt gitdir pointer) THROWS, not a false clean", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gitdirty-bogus-"));
+  try {
+    writeFileSync(join(dir, ".git"), "not a real gitdir pointer\n");
+    expect(() => gitIsDirty(dir)).toThrow(/cannot determine worktree state/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("gitBranchExists (F1): real repo — existing branch true, missing branch false", () => {
+  const repo = mkdtempSync(join(tmpdir(), "branchexists-"));
+  const run = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+  try {
+    run(["init", "-b", "main"]);
+    run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"]);
+    run(["branch", "feat/x"]);
+    expect(gitBranchExists(repo, "feat/x")).toBe(true);
+    expect(gitBranchExists(repo, "feat/does-not-exist")).toBe(false);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 
 // --- planSpawn / finalMeta (pure decision logic) ---
@@ -218,6 +433,103 @@ test("planSpawn sanitizes slug punctuation", () => {
   const ok = r as Extract<typeof r, { ok: true }>;
   expect(ok.slug).toBe("my-task-foo-bar");
   expect(ok.branch).toBe("glm/my-task-foo-bar");
+});
+
+// --- planSharedSpawn (HIMMEL-800: shared-branch mode) ---
+
+const sharedOkDeps = (overrides: Partial<Parameters<typeof planSharedSpawn>[2]> = {}) => ({
+  isHimmelCheckout: () => true,
+  settingsConflicts: () => [] as SettingsConflict[],
+  home: "/home/t",
+  branchExists: () => true,
+  worktreeOf: () => null,
+  isDirty: () => false,
+  ...overrides,
+});
+
+test("planSharedSpawn refuses a non-himmel cwd (same as planSpawn)", () => {
+  const r = planSharedSpawn("/some/dir", "feat/x", sharedOkDeps({ isHimmelCheckout: () => false }));
+  expect(r.ok).toBe(false);
+  expect((r as any).reason).toContain("not a himmel checkout");
+});
+
+test("planSharedSpawn refuses on a settings conflict (non-model), downgrades model to a warning", () => {
+  const refused = planSharedSpawn("/repo", "feat/x", sharedOkDeps({ settingsConflicts: () => [{ file: "/home/t/.claude/settings.json", kind: "env", key: "ANTHROPIC_MODEL" }] }));
+  expect(refused.ok).toBe(false);
+  expect((refused as any).reason).toContain("settings conflicts");
+
+  const warned = planSharedSpawn("/repo", "feat/x", sharedOkDeps({ settingsConflicts: () => [{ file: "/home/t/.claude/settings.json", kind: "model" }] }));
+  expect(warned.ok).toBe(true);
+  const ok = warned as Extract<typeof warned, { ok: true }>;
+  expect(ok.warnings).toEqual([{ file: "/home/t/.claude/settings.json", kind: "model" }]);
+});
+
+test("planSharedSpawn (b) refuses a branch that does not exist, naming it — never silently mints", () => {
+  const r = planSharedSpawn("/repo", "feat/typo-branch", sharedOkDeps({ branchExists: () => false }));
+  expect(r.ok).toBe(false);
+  expect((r as any).reason).toContain("--branch feat/typo-branch");
+  expect((r as any).reason).toMatch(/does not exist/);
+});
+
+test("planSharedSpawn (c) refuses main/master — never point a worker at the trunk", () => {
+  expect((planSharedSpawn("/repo", "main", sharedOkDeps()) as any).ok).toBe(false);
+  expect((planSharedSpawn("/repo", "master", sharedOkDeps()) as any).ok).toBe(false);
+  expect((planSharedSpawn("/repo", "master", sharedOkDeps()) as any).reason).toMatch(/trunk/);
+});
+
+test("planSharedSpawn (d) refuses when the branch is checked out in the PRIMARY checkout", () => {
+  const r = planSharedSpawn("/repo", "feat/live-pr", sharedOkDeps({ worktreeOf: () => ({ path: "/repo", isPrimary: true }) }));
+  expect(r.ok).toBe(false);
+  expect((r as any).reason).toContain("primary checkout");
+  expect((r as any).reason).toContain("/repo");
+});
+
+test("planSharedSpawn (d) refuses a non-primary worktree OUTSIDE .claude/worktrees/ (I11: reuse is lane-scoped)", () => {
+  const r = planSharedSpawn("/repo", "feat/live-pr", sharedOkDeps({ worktreeOf: () => ({ path: "/some/external/checkout", isPrimary: false }) }));
+  expect(r.ok).toBe(false);
+  expect((r as any).reason).toMatch(/outside \.claude\/worktrees|lane-managed/);
+  expect((r as any).reason).toContain("/some/external/checkout");
+});
+
+test("planSharedSpawn (d) reuses an existing non-primary worktree — needsWorktreeAdd:false", () => {
+  const r = planSharedSpawn("/repo", "feat/live-pr", sharedOkDeps({ worktreeOf: () => ({ path: "/repo/.claude/worktrees/feat+live-pr", isPrimary: false }) }));
+  expect(r.ok).toBe(true);
+  const ok = r as Extract<typeof r, { ok: true }>;
+  expect(ok.needsWorktreeAdd).toBe(false);
+  expect(ok.worktree).toBe("/repo/.claude/worktrees/feat+live-pr");
+  expect(ok.branch).toBe("feat/live-pr");
+});
+
+test("planSharedSpawn (d) mints a fresh glm+<slug> worktree path when the branch is not checked out anywhere — needsWorktreeAdd:true", () => {
+  const r = planSharedSpawn("/repo", "feat/live-pr", sharedOkDeps({ worktreeOf: () => null }));
+  expect(r.ok).toBe(true);
+  const ok = r as Extract<typeof r, { ok: true }>;
+  expect(ok.needsWorktreeAdd).toBe(true);
+  expect(ok.worktree).toBe(join("/repo", ".claude", "worktrees", "glm+feat-live-pr"));
+});
+
+test("planSharedSpawn (e) refuses a REUSED worktree with uncommitted changes — clean-start requirement", () => {
+  const r = planSharedSpawn("/repo", "feat/live-pr", sharedOkDeps({
+    worktreeOf: () => ({ path: "/repo/.claude/worktrees/feat+live-pr", isPrimary: false }),
+    isDirty: () => true,
+  }));
+  expect(r.ok).toBe(false);
+  expect((r as any).reason).toMatch(/uncommitted changes/);
+  expect((r as any).reason).toContain("feat/live-pr");
+});
+
+test("planSharedSpawn does NOT check isDirty when minting a fresh worktree (needsWorktreeAdd:true path)", () => {
+  let dirtyCalled = false;
+  const r = planSharedSpawn("/repo", "feat/live-pr", sharedOkDeps({ worktreeOf: () => null, isDirty: () => { dirtyCalled = true; return true; } }));
+  expect(r.ok).toBe(true);
+  expect(dirtyCalled).toBe(false);
+});
+
+test("planSharedSpawn (f) sanitizes slug from the branch name", () => {
+  const r = planSharedSpawn("/repo", "feat/HIMMEL-800_shared branch", sharedOkDeps());
+  expect(r.ok).toBe(true);
+  const ok = r as Extract<typeof r, { ok: true }>;
+  expect(ok.slug).toBe("feat-HIMMEL-800-shared-branch");
 });
 
 test("finalMeta maps exit codes to status", () => {
@@ -455,6 +767,14 @@ test("composeRespawnHandover emits --carry-from <capped sessionDir> (HIMMEL-682)
   expect(s).toMatch(/-r\d+/);                                 // -rN name preserved
 });
 
+test("composeRespawnHandover shared mode (HIMMEL-800): re-dispatch command carries --branch, not --name -rN", () => {
+  const s = composeRespawnHandover({ task: "t", cwd: "C:/repo", slug: "feat-live-pr", sessionDir: "C:/sess/glm-feat-live-pr-123", branch: "feat/live-pr", resumeAtIso: "2026-07-04T02:10:00.000Z", shared: true });
+  expect(s).toContain("--branch feat/live-pr");
+  expect(s).not.toMatch(/--name /);
+  expect(s).toMatch(/shared worktree/i);
+  expect(s).toContain("--carry-from C:/sess/glm-feat-live-pr-123");
+});
+
 // --- cap-guard orchestration (Task 6) ---
 // fresh per test (beforeEach): a scratch session dir + meta path
 let sd: string, mp: string, wt: string;
@@ -487,6 +807,15 @@ test("5h cap: meta fields + arm invoked with snapshot", async () => {
   expect(calls.length).toBe(1);
   expect(calls[0][1]).toContain("respawn-handover.md");
   expect(existsSync(join(sd, "respawn-handover.md"))).toBe(true);
+});
+
+test("F2 (CR round 2): a capped SHARED run's respawn-handover.md carries --branch <branch>, not --name <slug>-rN (capGuard.shared threading end-to-end)", async () => {
+  const calls: any[] = [];
+  await executeRun({ runSession: cappedRun(T5H) as any, prompt: "p", worktree: wt, sessionDir: sd, metaPath: mp, runningMeta: rm, capGuard: guardDeps({ shared: true, branch: "feat/live-pr", arm: (h, p2) => { calls.push([h, p2]); return 0; } }) });
+  expect(calls.length).toBe(1);
+  const snap = readFileSync(join(sd, "respawn-handover.md"), "utf8");
+  expect(snap).toContain("--branch feat/live-pr");
+  expect(snap).not.toMatch(/--name /);
 });
 
 test("generic cap arms like 5h with cap_window generic", async () => {
@@ -641,6 +970,24 @@ test("parseArgs --carry-from (HIMMEL-682): value captured, required", () => {
   expect(ok.ok).toBe(true); if (ok.ok) expect(ok.args.carryFrom).toBe("/s/dir");
   expect((parseArgs(["job"]) as any).args.carryFrom).toBeUndefined();
   expect(parseArgs(["job", "--carry-from"]).ok).toBe(false);   // --carry-from requires a value
+});
+
+test("parseArgs --branch (HIMMEL-800): value captured, missing value refuses, mutually exclusive with --name", () => {
+  const ok = parseArgs(["job", "--branch", "feat/live-pr"]);
+  expect(ok.ok).toBe(true);
+  if (ok.ok) expect(ok.args.branch).toBe("feat/live-pr");
+  expect((parseArgs(["job"]) as any).args.branch).toBeUndefined();
+
+  const trailing = parseArgs(["job", "--branch"]);
+  expect(trailing.ok).toBe(false);
+  expect((trailing as any).error).toMatch(/--branch requires a value/);
+
+  const both = parseArgs(["job", "--branch", "feat/x", "--name", "t1"]);
+  expect(both.ok).toBe(false);
+  expect((both as any).error).toMatch(/--branch and --name are mutually exclusive/);
+  // order-independent
+  const bothReversed = parseArgs(["job", "--name", "t1", "--branch", "feat/x"]);
+  expect(bothReversed.ok).toBe(false);
 });
 
 test("parseArgs --context big|small (HIMMEL-718): value captured, validated, default undefined", () => {

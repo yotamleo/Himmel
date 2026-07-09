@@ -133,6 +133,8 @@ assert(evaluate("himmel-code", "brand-new-provider", "inference").effective === 
 // 6. Ratified allows stay allowed (regression guard both directions)
 assert(evaluate("luna-personal", "deepseek", "extraction").effective === "allow",
   "luna-personal x deepseek x extraction is the ratified operator override (allow+log)");
+assert(evaluate("handover-state", "deepseek", "extraction").effective === "allow",
+  "handover-state x deepseek x extraction is the ratified operator override (HIMMEL-343, allow+log)");
 assert(evaluate("himmel-code", "openai-codex", "inference").effective === "allow",
   "himmel-code x codex impl lane must stay allowed");
 assert(evaluate("luna-personal", "zai-glm", "inference").effective === "deny",

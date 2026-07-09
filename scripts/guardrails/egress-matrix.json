@@ -62,6 +62,11 @@
       "verdict": "allow", "why": "operating substrate (sessions read/write handovers natively)"
     },
     {
+      "corpus": "handover-state", "provider": "deepseek", "purpose": "extraction",
+      "verdict": "allow+log",
+      "why": "operator ratification 2026-07-09 (jarvis s19→s20 handover authorization: graphify the handover state repo + luna as ONE vault; extends the 2026-07-05 DeepSeek luna override to the handover-state slice, HIMMEL-343), ledgered per run"
+    },
+    {
       "corpus": "handover-state", "provider": "openai-codex", "purpose": "inference",
       "verdict": "conditional",
       "condition": "brief-scoped: task briefs/excerpts through the guarded dispatch chokepoints only — never bulk corpus runs",

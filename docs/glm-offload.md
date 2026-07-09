@@ -135,14 +135,19 @@ attestation trailers). Moving the push to the trusted main checkout, gated on
 ## CLI synopsis + three-line output contract
 
 ```
-bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode <mode>] [--context big|small]
+bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode <mode>] [--context big|small]
 ```
 
 - `--cwd <dir>` — worktree parent; **must be a himmel checkout** (v1 scope:
   himmel repo only; a non-himmel cwd exits 2). Defaults to the process cwd.
 - `--name <slug>` — session slug; sanitized to `[a-zA-Z0-9-]`. Drives the
   branch (`glm/<slug>`), the worktree (`<cwd>/.claude/worktrees/glm+<slug>`),
-  and the session dir name. Defaults to `t<timestamp>`.
+  and the session dir name. Defaults to `t<timestamp>`. Mutually exclusive
+  with `--branch` (see below).
+- `--branch <existing-branch>` — **shared-branch mode (HIMMEL-800)**: commit
+  onto this caller-named, already-existing branch instead of minting
+  `glm/<slug>` fresh. Mutually exclusive with `--name`. See
+  §Shared-branch mode.
 - `--timeout-mins <n>` — overrides the inherited 30-min run timeout.
 - `--permission-mode <mode>` — passed through to the worker (see below).
 
@@ -173,10 +178,12 @@ field used to prove the run hit the `glm-*` backend.
 non-positive/non-numeric `--timeout-mins` or a value-taking flag with no value)
 or a plan refusal (non-himmel cwd, a settings conflict, **or a missing ZAI key**
 caught by the pre-side-effect preflight); `3` = a D2 guard refusal (PHI marker,
-phi-root, denylist, or unreadable guard config); `1` = an operational failure
-surfaced by `main()`'s catch (e.g. `git worktree add` failed) — one
-`spawn-glm: <message>` line, no stack. Otherwise the CLI exits with the worker's
-own exit code.
+phi-root, denylist, or unreadable guard config); `4` = (shared-branch mode
+only, HIMMEL-800) the shared-branch lock is already held by another
+writer, or the lock helper failed to derive a git common dir — see
+§Shared-branch mode below; `1` = an operational failure surfaced by
+`main()`'s catch (e.g. `git worktree add` failed) — one `spawn-glm: <message>`
+line, no stack. Otherwise the CLI exits with the worker's own exit code.
 
 The ZAI key is **preflighted before any side effect** (before `git worktree
 add`): a missing key is a clean exit-2 refusal, never a failure *after* the
@@ -198,6 +205,119 @@ Report progress by APPENDING one JSON line {"text":"<note>"} per update to <sess
 THE TASK: <task>
 As your FINAL action, append a one-line summary of what you did to <sessionDir>/context.md, then stop.
 ```
+
+## Shared-branch mode (HIMMEL-800)
+
+The default lane (above) mints a fresh `glm/<slug>` worktree+branch every
+dispatch — right for a batch of independent, one-shot deliverables. Shared
+mode (`--branch <existing-branch>`) is the opposite shape: it commits onto
+one **caller-named, already-existing** branch, serialized by a lock so only
+one writer touches it at a time. Own-branch stays the default; shared mode is
+opt-in.
+
+**When to use which:**
+
+- **Own-branch (default, no `--branch`)** — independent deliverables, each
+  its own PR: a batch fan-out (§Batch fan-out below), a standalone fix, any
+  task where the worker's branch is disposable until reviewed and merged.
+- **Shared-branch (`--branch <b>`)** — iterative CR-fix rounds on a **live PR
+  branch**: the reviewer leaves findings, a GLM worker fixes them in place on
+  the SAME branch, round after round, without minting a new branch (and a new
+  PR) per round.
+
+**The single-writer lock.** Shared mode serializes writers through
+`scripts/lib/shared-branch-lock.sh` (the frozen primitive both lane
+implementations call), enforcing the single-writer invariant (CLAUDE.md
+Subagent policy: many readers, ONE writer, never fan parallel writes at one
+shared branch). The lock is a directory (atomic `mkdir`, no TOCTOU) at
+`<git-common-dir>/himmel-shared-branch/<slug>.lock`, where `<slug>` is the
+branch name with every non-`[a-zA-Z0-9-]` character replaced by `-`. The git
+**common** dir is shared by every worktree of the repo, so a worktree path
+and the primary checkout resolve to the same lock — that is what makes it
+effective across `git worktree add` clones. `spawn-glm` acquires the lock
+AFTER the D2 guard check and BEFORE any worktree mutation, and releases it in
+a `finally` on every exit path — including a thrown/rethrown `executeRun`
+(a run that failed still frees the branch for the next writer). If the lock
+is already held, `spawn-glm` refuses fast: it prints the holder info (pid,
+lane, branch, acquired-at) from the helper's stderr and **exits 4** — it does
+NOT wait or retry — or a derivation/filesystem error from the lock helper
+(see the Exit codes list above).
+
+**Stale-lock recovery.** The lock does not auto-steal — there is deliberately
+no liveness probe (Windows-native PIDs under MSYS bash don't map onto the
+POSIX pid space `kill -0` expects, so a false "the holder is dead" would be a
+single-writer violation, worse than a false "still held"). If a dispatcher
+crashed or was killed mid-run and left the lock held, clear it manually:
+
+```
+bash scripts/lib/shared-branch-lock.sh release <repo-or-worktree-dir> <branch>
+```
+
+(`release` is idempotent — rc 0 whether or not a lock was present.) Check
+status first with `bash scripts/lib/shared-branch-lock.sh status <dir>
+<branch>` if unsure whether it's actually stale.
+
+**Worktree resolution, not always-fresh.** Unlike own-branch mode, shared
+mode never mints a branch — `--branch <b>` must already exist (`planSharedSpawn`
+refuses a typo loudly rather than silently minting one), and it refuses `main`/
+`master` (never dispatch a worker at the trunk) and refuses a branch checked
+out in the **primary checkout** (never dispatch a worker into the checkout the
+operator/parent is using). If the branch already has its own worktree
+elsewhere (the common case for round 2+ of the same CR-fix loop), spawn-glm
+reuses it in place — no new `git worktree add`. If not, it mints one fresh
+under `.claude/worktrees/glm+<slug>`, same as own-branch mode.
+
+**Clean-worktree requirement.** A REUSED worktree must be clean
+(`git status --porcelain` empty) before a shared-mode dispatch — a handoff
+mid-edit is not a state a worker should silently inherit; `spawn-glm` refuses
+and tells the caller to commit or stash first. (A freshly-minted worktree has
+no prior state to check.)
+
+**The parent must not edit the branch while a worker runs.** The lock only
+serializes `spawn-glm` dispatches against each other — it does not stop the
+operator or the parent Claude session from independently committing to the
+same branch in a DIFFERENT checkout while a shared-mode worker is running.
+Don't: if you dispatch a shared-mode worker onto a live PR branch, leave that
+branch alone (no commits, no rebase, no force-push) from any other session
+until the worker's run completes and you've reviewed its diff.
+
+**Worker prompt contract (shared mode).** `composeWorkerPrompt(..., { shared:
+true })` swaps the branch-instruction line for one that names the branch as a
+SHARED PR branch with EXISTING history: do NOT create a new branch, do NOT
+reset/rebase/amend/force-anything, ADD new commits on top only, and note that
+a lock — not sole ownership — governs write access. Everything else in the
+worker contract (no push, no PR, the escalation channel, the outbox/context
+reporting paths) is unchanged from own-branch mode.
+
+**Push-tripwire scope.** The poisoned-pushurl tripwire (§Honest enforcement
+below) still applies per-dispatch, but shared mode must not leave a REUSED
+worktree poisoned forever (that worktree outlives any one dispatch — the next
+round needs a real `pushurl`, and so does the operator's own later push after
+review). `spawn-glm` captures any pre-existing per-worktree `pushurl` before
+poisoning it, then — in the SAME `finally` that releases the lock — restores
+exactly what was there (or unsets it, if there was none). A crash between
+acquire and that restore fails **closed** (push stays blocked, lock stays
+held) — the accepted tradeoff, recoverable via the manual `release` above.
+
+After such a crash the reused worktree's `pushurl` may still be the poison
+sentinel (`DISABLED-glm-quarantine`). Inspect and clear it by hand if you want
+to push from that worktree before the next dispatch:
+
+```
+git -C <reused-worktree> config --worktree --get remote.origin.pushurl   # shows DISABLED-glm-quarantine if still poisoned
+git -C <reused-worktree> config --worktree --unset remote.origin.pushurl  # clear it
+```
+
+You usually don't need to: the next shared-mode reuse **self-heals** it —
+`spawn-glm` now treats a captured poison sentinel as "no prior pushurl" and
+UNSETS it in the restore step (rather than restoring the poison forever), so a
+worktree left poisoned by a crashed run comes back clean on its next dispatch.
+
+**Respawn on cap.** A capped shared-mode run's respawn handover
+(`composeRespawnHandover(..., { shared: true })`) re-dispatches with
+`--branch <b>` (the same branch, unchanged) rather than a fresh `--name
+<slug>-rN` — shared mode keeps writing onto the one branch across retries,
+it never mints an `-rN` branch.
 
 ## Permission guidance
 

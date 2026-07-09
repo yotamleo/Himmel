@@ -103,6 +103,35 @@ The wrapper enforces the three invariants from the HIMMEL-741 diagnosis:
 Tests: `scripts/codex/test-dispatch-codex-exec.sh` (hermetic; stubs the codex
 CLI via `CODEX_BIN` and the preflight via `CODEX_ACL_NORMALIZE`).
 
+### `--shared-branch` (opt-in, HIMMEL-800)
+
+```sh
+bash scripts/codex/dispatch-codex-exec.sh --worktree <worktree-path> --shared-branch <branch> [codex exec args...]
+```
+
+The default posture stays own-worktree/own-throwaway-branch (no lock, no
+flag needed). `--shared-branch <branch>` opts a single dispatch into writing
+onto an *existing*, caller-named branch instead: the caller states intent,
+the wrapper verifies it against reality before touching codex at all - it
+refuses `<branch>` being `main`/`master` outright (checked first), refuses if
+the worktree isn't actually checked out on `<branch>`, and refuses a dirty
+tree (shared handoff starts from committed state).
+
+Once the gate and the ACL preflight both pass, the wrapper acquires the
+repo-wide single-writer lock (`scripts/lib/shared-branch-lock.sh`) for
+`<branch>` before running codex, and releases it on every CATCHABLE exit path
+(success, codex failure, or a crash mid-run) so exactly one worker writes
+the shared branch at a time — a SIGKILL/hard-kill of the dispatcher is NOT
+catchable and can still leak the lock; recover it with the manual release
+command below. **Exit 4** means the lock was not acquired - either it is
+already held by another writer (recovery: the manual release below), or the
+lock helper hit a derivation/filesystem error (see its stderr; release won't
+help in that case):
+
+```sh
+bash scripts/lib/shared-branch-lock.sh release <worktree-or-repo-dir> <branch>
+```
+
 ## Skill loading caveat
 
 Enabling `himmel-ops` makes its **hooks** fire under Codex (e.g.

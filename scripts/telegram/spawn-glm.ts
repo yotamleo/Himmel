@@ -24,12 +24,19 @@ export function transcriptDirFor(cwd: string): string {
   return join(homedir(), ".claude", "projects", resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-"));
 }
 
-export function composeWorkerPrompt(task: string, sessionDir: string, branch: string): string {
+// opts.shared (HIMMEL-800): the shared-branch-mode variant of the branch
+// instruction line — the branch is an EXISTING PR branch with history, not a
+// fresh throwaway one, so the worker must be told explicitly not to touch its
+// history and that a lock — not sole ownership — governs its write access.
+export function composeWorkerPrompt(task: string, sessionDir: string, branch: string, opts?: { shared?: boolean }): string {
   const outbox = join(sessionDir, "outbox.jsonl");
   const context = join(sessionDir, "context.md");
+  const branchLine = opts?.shared
+    ? `Work ONLY inside your current directory (a dedicated git worktree). The branch ${branch} is a SHARED PR branch with EXISTING history, already checked out — do NOT create a new branch, do NOT reset/rebase/amend/force-anything; ADD new commits on top only. A lock serializes writers, so no other worker touches this branch while you run.`
+    : `Work ONLY inside your current directory (a dedicated git worktree). Commit your work on the branch ${branch} which is already checked out.`;
   return [
     `You are an unattended GLM-lane worker session (himmel offload spike).`,
-    `Work ONLY inside your current directory (a dedicated git worktree). Commit your work on the branch ${branch} which is already checked out.`,
+    branchLine,
     `HARD RULES: never push, never open a PR — a validating session reviews your branch and owns the git/PR surface. Jira updates (status, comments, followup tickets) ARE allowed via node scripts/jira/dist/index.js (audited + recoverable).`,
     `Report progress by APPENDING one JSON line {"text":"<note>"} per update to ${outbox}. That is the only channel to the operator.`,
     `THE TASK: ${task}`,
@@ -96,10 +103,15 @@ export function preflightWindowCheck(p: { briefChars: number; overheadChars: num
 // Default-path push tripwire (spec D4 — honest scope: blocks accidental/default
 // pushes only; the load-bearing control is the CR gate). extensions.worktreeConfig
 // is a REPO-GLOBAL toggle (documented, left permanent).
+// CR round 2 F4: the poison string is compared against elsewhere
+// (runSharedDispatch's prior-pushurl capture) — one definition so the two
+// sites cannot drift apart.
+const POISON_SENTINEL = "DISABLED-glm-quarantine" as const;
+
 export function poisonPushUrl(repoRoot: string, worktree: string): void {
   const g = (args: string[], cwd: string) => { const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.toString()}`); };
   g(["config", "extensions.worktreeConfig", "true"], repoRoot);
-  g(["config", "--worktree", "remote.origin.pushurl", "DISABLED-glm-quarantine"], worktree);
+  g(["config", "--worktree", "remote.origin.pushurl", POISON_SENTINEL], worktree);
 }
 
 export type SpawnPlan = { ok: true; slug: string; worktree: string; branch: string; warnings: SettingsConflict[] } | { ok: false; reason: string };
@@ -128,6 +140,73 @@ export function planSpawn(
   return { ok: true, slug, worktree: join(cwd, ".claude", "worktrees", `glm+${slug}`), branch: `glm/${slug}`, warnings };
 }
 
+export type SharedSpawnPlan = { ok: true; slug: string; worktree: string; branch: string; warnings: SettingsConflict[]; needsWorktreeAdd: boolean } | { ok: false; reason: string };
+// HIMMEL-800: pure decision logic for shared-branch mode — deps injected so
+// every refusal branch is testable, parallel to planSpawn. Distinct from
+// planSpawn in two structural ways: (1) it NEVER mints a branch — the branch
+// must already exist, a typo must refuse loudly rather than silently minting
+// one; (2) the worktree is resolved from git's OWN worktree list rather than
+// always minting .claude/worktrees/glm+<slug> — the branch may already be
+// checked out somewhere (iterative CR-fix rounds reuse the SAME worktree
+// across dispatches), and the primary checkout is a hard refusal (never
+// dispatch a worker into the checkout the operator/parent is using).
+export function planSharedSpawn(
+  cwd: string, branch: string,
+  deps: {
+    isHimmelCheckout: (d: string) => boolean;
+    settingsConflicts: (files: string[]) => SettingsConflict[];
+    home: string;
+    branchExists: (branch: string) => boolean;
+    worktreeOf: (branch: string) => { path: string; isPrimary: boolean } | null;
+    isDirty: (path: string) => boolean;
+  },
+): SharedSpawnPlan {
+  if (!deps.isHimmelCheckout(cwd)) return { ok: false, reason: `spawn-glm: ${cwd} is not a himmel checkout (v1 scope: himmel repo only)` };
+  const conflicts = deps.settingsConflicts([
+    join(deps.home, ".claude", "settings.json"),
+    join(cwd, ".claude", "settings.json"),
+    join(cwd, ".claude", "settings.local.json"),
+  ]);
+  const warnings = conflicts.filter((c) => c.kind === "model");
+  const refusals = conflicts.filter((c) => c.kind !== "model");
+  if (refusals.length) return { ok: false, reason: `spawn-glm: settings conflicts (remove these keys first): ${refusals.map(formatConflict).join("; ")}` };
+
+  // (b) a typo must not silently mint a branch — refuse, name the branch.
+  if (!deps.branchExists(branch)) return { ok: false, reason: `spawn-glm: --branch ${branch} does not exist — shared mode never mints a branch (check for a typo)` };
+  // (c) never point a worker at the trunk.
+  if (branch === "main" || branch === "master") return { ok: false, reason: `spawn-glm: --branch ${branch} refused — shared mode never dispatches a worker at the trunk branch` };
+
+  // (d) reuse the branch's existing worktree if it has one (never the primary
+  // checkout); else mint a fresh worktree under .claude/worktrees.
+  const found = deps.worktreeOf(branch);
+  let worktree: string;
+  let needsWorktreeAdd: boolean;
+  if (found) {
+    if (found.isPrimary) return { ok: false, reason: `spawn-glm: --branch ${branch} is checked out in the primary checkout (${found.path}) — refusing to dispatch a worker into the primary checkout` };
+    // Plan rule 4 / codex-lane parity (I11): reuse is scoped to worktrees under
+    // .claude/worktrees/ — the codex lane enforces exactly that containment.
+    // A branch checked out in some arbitrary external worktree is refused; the
+    // lane dispatches only into its own managed worktree tree.
+    if (!found.path.replace(/\\/g, "/").includes("/.claude/worktrees/")) {
+      return { ok: false, reason: `spawn-glm: --branch ${branch} is checked out in ${found.path}, outside .claude/worktrees/ — shared mode reuses only lane-managed worktrees, refusing to dispatch a worker there` };
+    }
+    worktree = found.path;
+    needsWorktreeAdd = false;
+  } else {
+    const slug0 = branch.replace(/[^a-zA-Z0-9-]/g, "-");
+    worktree = join(cwd, ".claude", "worktrees", `glm+${slug0}`);
+    needsWorktreeAdd = true;
+  }
+
+  // (e) a REUSED worktree must start clean — a shared handoff mid-edit is not
+  // a state a worker should silently inherit.
+  if (!needsWorktreeAdd && deps.isDirty(worktree)) return { ok: false, reason: `spawn-glm: worktree for --branch ${branch} (${worktree}) has uncommitted changes — commit or stash before a shared-mode handoff` };
+
+  // (f) slug mirrors planSpawn's sanitization, used only for session-dir naming.
+  const slug = branch.replace(/[^a-zA-Z0-9-]/g, "-");
+  return { ok: true, slug, worktree, branch, warnings, needsWorktreeAdd };
+}
+
 // A capped/blocked/timed-out run must NEVER surface as `done` or a bare
 // `failed`: each is a distinct terminal state the caller inspects. Precedence:
 // capped (there is a reset to arm at — the actionable fact) > blocked > timeout.
@@ -141,7 +220,44 @@ function isHimmelCheckout(d: string): boolean {
   return existsSync(join(d, "scripts", "claude-glm"));
 }
 
-export type ParsedArgs = { task?: string; cwd: string; name?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small" };
+// ── HIMMEL-800: real git probes for planSharedSpawn's injected deps ─────────
+export function gitBranchExists(cwd: string, branch: string): boolean {
+  const r = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { stdout: "pipe", stderr: "pipe" });
+  return r.exitCode === 0;
+}
+
+// `git worktree list --porcelain` emits one stanza per worktree (blank-line
+// separated); the FIRST stanza is always the primary checkout (git's own
+// listing order) — that is what lets planSharedSpawn refuse dispatching a
+// worker into it.
+function gitWorktreeOf(cwd: string, branch: string): { path: string; isPrimary: boolean } | null {
+  const r = Bun.spawnSync(["git", "-C", cwd, "worktree", "list", "--porcelain"], { stdout: "pipe", stderr: "pipe" });
+  if (r.exitCode !== 0) return null;
+  const wantRef = `refs/heads/${branch}`;
+  let currentPath: string | null = null;
+  let firstPath: string | null = null;
+  for (const line of r.stdout.toString().split("\n")) {
+    if (line.startsWith("worktree ")) {
+      currentPath = line.slice("worktree ".length).trim();
+      if (firstPath === null) firstPath = currentPath;
+    } else if (line.startsWith("branch ") && currentPath && line.slice("branch ".length).trim() === wantRef) {
+      return { path: currentPath, isPrimary: currentPath === firstPath };
+    }
+  }
+  return null;
+}
+
+export function gitIsDirty(worktreePath: string): boolean {
+  const r = Bun.spawnSync(["git", "-C", worktreePath, "status", "--porcelain"], { stdout: "pipe", stderr: "pipe" });
+  // FAIL-CLOSED (C3): a failed `git status` (corrupt/stale worktree) must NOT
+  // read as clean and slip past the reused-worktree-must-be-clean gate — throw
+  // so the dispatch refuses cleanly (mirrors gitBranchExists/gitWorktreeOf's
+  // exitCode checks). A thrown planSharedSpawn dep surfaces at main().catch.
+  if (r.exitCode !== 0) throw new Error(`cannot determine worktree state for ${worktreePath}: git status failed: ${r.stderr.toString().trim()}`);
+  return r.stdout.toString().trim().length > 0;
+}
+
+export type ParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small" };
 // Pure + validated: a value-taking flag with no value, or a non-positive /
 // non-finite --timeout-mins, is a USAGE REFUSAL (main → exit 2) — NOT a silent
 // NaN that setTimeout(NaN)≈0 turns into an instant kill, and NOT a bare
@@ -150,6 +266,7 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
   let task: string | undefined;
   let cwd = process.cwd();
   let name: string | undefined;
+  let branch: string | undefined;
   let timeoutMins: number | undefined;
   let permMode: PermissionMode | undefined;
   let armOnCap = true;
@@ -161,6 +278,9 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
     const a = argv[i];
     if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
     else if (a === "--name") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--name requires a value" }; name = v; }
+    // HIMMEL-800: --branch selects shared-branch mode (commit onto an existing
+    // caller-named branch under a lock, instead of minting glm/<slug> fresh).
+    else if (a === "--branch") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--branch requires a value" }; branch = v; }
     else if (a === "--timeout-mins") {
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--timeout-mins requires a value" };
@@ -177,7 +297,11 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
     else if (a === "--context") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--context requires a value" }; if (v !== "big" && v !== "small") return { ok: false, error: `--context must be big or small (got "${v}")` }; context = v; }
     else if (task === undefined) task = a;
   }
-  return { ok: true, args: { task, cwd, name, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context } };
+  // HIMMEL-800: --branch and --name are mutually exclusive — shared mode
+  // derives its slug from the branch name, so a co-supplied --name would be
+  // silently ignored (or ambiguous about which name wins). Refuse instead.
+  if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
+  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context } };
 }
 
 // HIMMEL-682 (Task L1): read a capped session's grants.jsonl and compute the
@@ -277,7 +401,7 @@ export async function executeRun(deps: {
         writeFileSync(deps.metaPath, JSON.stringify({ ...base, resume_at: resumeAt.toISOString(), cap_source: capSource }, null, 2)); // meta FIRST (base layer)
         if (g.armOnCap) {
           const snap = join(deps.sessionDir, "respawn-handover.md");
-          writeFileSync(snap, composeRespawnHandover({ task: g.task, cwd: g.cwd, slug: g.slug, timeoutMins: g.timeoutMins, permMode: g.permMode, sessionDir: deps.sessionDir, branch: g.branch, resumeAtIso: resumeAt.toISOString() }));
+          writeFileSync(snap, composeRespawnHandover({ task: g.task, cwd: g.cwd, slug: g.slug, timeoutMins: g.timeoutMins, permMode: g.permMode, sessionDir: deps.sessionDir, branch: g.branch, resumeAtIso: resumeAt.toISOString(), shared: g.shared }));
           const rc = g.arm(toArmHHMM(resumeAt), snap);
           // rc=3 honesty (CR round): --dedup-any defers to ANY queued resume job,
           // possibly an UNRELATED handover — this task's respawn handover is then
@@ -298,11 +422,92 @@ export async function executeRun(deps: {
   }
 }
 
+// HIMMEL-800: the shared-branch acquire/poison/run/restore/release lifecycle,
+// extracted from main() so it is executable-testable against a real temp git
+// repo + the real lock script (spawn-glm.test.ts I6/I7) rather than only
+// source-text wiring-pinned. Dependency-injected: `gitAdd` performs the
+// existing-branch (NO -b) worktree add main() supplies, `runBody` is the
+// mkdir-sessionDir-through-executeRun block main() builds. Returns ok:false on
+// a failed lock acquire (main maps it to exit 4). The pushurl restore + lock
+// release run in a finally on every CATCHABLE exit path (including a thrown
+// runBody, which still propagates after cleanup); a SIGKILL/hard-kill is not
+// catchable, so a leaked lock is recovered manually via `shared-branch-lock.sh
+// release` (docs/glm-offload.md).
+export async function runSharedDispatch(p: {
+  repoDir: string; worktree: string; branch: string; needsWorktreeAdd: boolean;
+  lockScript: string; gitAdd: () => void; runBody: () => Promise<number>;
+}): Promise<{ ok: true; code: number } | { ok: false; reason: string }> {
+  const acquire = Bun.spawnSync(["bash", p.lockScript, "acquire", p.repoDir, p.branch, "glm"], { stdout: "pipe", stderr: "pipe" });
+  if (acquire.exitCode !== 0) return { ok: false, reason: acquire.stderr.toString().trim() || `spawn-glm: shared-branch-lock acquire failed (rc=${acquire.exitCode})` };
+  let priorPushUrl: string | undefined;
+  // CR round 2 F5: only true once poisonPushUrl has actually completed — gates
+  // the finally's restore step so a throw BEFORE poisoning (gitAdd, or the
+  // priorPushUrl read itself) never triggers a restore attempt (or its
+  // "may stay push-poisoned" warning) against a worktree that was never
+  // touched. Distinct from priorPushUrl: that can legitimately stay
+  // `undefined` (no prior url) while poisoned is still true.
+  let poisoned = false;
+  try {
+    if (p.needsWorktreeAdd) p.gitAdd(); // NO -b: an existing branch, never minted here
+    // Capture any pre-existing per-worktree pushurl immediately before
+    // poisoning so the finally can restore exactly what was there. Crash-
+    // recovery constraint (I2): a prior shared-mode run that crashed between
+    // poison and restore leaves the poison sentinel as the pushurl — treat
+    // that as "no prior pushurl" so the finally UNSETS it rather than
+    // restoring the poison forever. F9 narrow edge: on a repo whose
+    // extensions.worktreeConfig was never enabled, `--worktree --get` can
+    // fall back to reading the repo-level pushurl; the later restore
+    // re-scopes it per-worktree via `--worktree` — accepted (first-ever
+    // dispatch + a pre-existing repo-level pushurl only).
+    const priorRes = Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "--get", "remote.origin.pushurl"], { stdout: "pipe", stderr: "pipe" });
+    if (priorRes.exitCode === 0) {
+      const got = priorRes.stdout.toString().trim();
+      if (got !== POISON_SENTINEL) priorPushUrl = got;
+    }
+    poisonPushUrl(p.repoDir, p.worktree);
+    poisoned = true;
+    const code = await p.runBody();
+    return { ok: true, code };
+  } finally {
+    // Restore/unset the pushurl, THEN release the lock — the release sits in
+    // its own inner finally so a throw from the pushurl step cannot skip it (a
+    // poisoned worktree is bad; a leaked lock blocks the next writer, worse).
+    // F6: each cleanup step gets its OWN try/catch — a THROWING Bun.spawnSync
+    // (unspawnable git/bash binary, not just a nonzero exit) must degrade to a
+    // logged warning and never replace/out-rank a substantive error already
+    // propagating from runBody/gitAdd/poisonPushUrl above.
+    try {
+      // F5: skip the restore attempt AND its warning entirely when poisoning
+      // never happened — nothing to restore, and warning would be misleading.
+      if (poisoned) {
+        const restore = priorPushUrl !== undefined
+          ? Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "remote.origin.pushurl", priorPushUrl], { stdout: "pipe", stderr: "pipe" })
+          : Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "--unset", "remote.origin.pushurl"], { stdout: "pipe", stderr: "pipe" });
+        // `--unset` exits 5 when the key is already absent — benign in the
+        // no-prior-pushurl case (nothing to clear). Any OTHER nonzero is loud so
+        // a worktree left push-poisoned leaves a trail.
+        if (restore.exitCode !== 0 && !(priorPushUrl === undefined && restore.exitCode === 5)) {
+          console.error(`spawn-glm: WARNING - pushurl restore failed (rc=${restore.exitCode}); ${p.worktree} may stay push-poisoned: ${restore.stderr.toString().trim()}`);
+        }
+      }
+    } catch (e) {
+      console.error(`spawn-glm: WARNING - pushurl restore threw (${String((e as any)?.message ?? e)}); ${p.worktree} may stay push-poisoned`);
+    } finally {
+      try {
+        const rel = Bun.spawnSync(["bash", p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
+        if (rel.exitCode !== 0) console.error(`spawn-glm: WARNING - shared-branch-lock release failed (rc=${rel.exitCode}); the lock for ${p.branch} may stay held: ${rel.stderr.toString().trim()}`);
+      } catch (e) {
+        console.error(`spawn-glm: WARNING - shared-branch-lock release threw (${String((e as any)?.message ?? e)}); the lock for ${p.branch} may stay held`);
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
-  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--context big|small]";
+  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--context big|small]";
   if (!parsed.ok) { console.error(`spawn-glm: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context } = parsed.args;
+  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
   const absCwd = resolve(cwd);
   // HIMMEL-718: thread --context big|small into buildGlmEnv via GLM_CONTEXT (read by
@@ -311,9 +516,32 @@ async function main(): Promise<void> {
   // an omitted --context (the doc/test intent is "--context absent => big").
   process.env.GLM_CONTEXT = context ?? "big";
 
-  const plan = planSpawn(absCwd, name, { isHimmelCheckout, settingsConflicts: findSettingsConflicts, home: homedir() });
-  if (!plan.ok) { console.error(plan.reason); process.exit(2); }
-  for (const w of plan.warnings) console.error(`spawn-glm: WARNING — settings model key present (${formatConflict(w)}); explicit --model flag takes precedence, verify via the transcript model id.`);
+  // HIMMEL-800: shared-branch mode (--branch) commits onto a caller-named
+  // EXISTING branch under a lock, instead of always minting glm/<slug> fresh.
+  // Both modes converge on the same {slug, worktree, branch, warnings} shape
+  // below; needsWorktreeAdd is always true for own-branch mode (a fresh
+  // worktree+branch is minted every dispatch) — only shared mode may reuse.
+  const sharedMode = branchArg !== undefined;
+  let slug: string, worktree: string, branch: string, warnings: SettingsConflict[], needsWorktreeAdd: boolean;
+  // Narrow on the literal `branchArg !== undefined` (I9) so TS proves branchArg
+  // is a string here — no non-null assertion. sharedMode stays for the other
+  // shared-vs-own reads below (it is exactly this predicate).
+  if (branchArg !== undefined) {
+    const plan = planSharedSpawn(absCwd, branchArg, {
+      isHimmelCheckout, settingsConflicts: findSettingsConflicts, home: homedir(),
+      branchExists: (b) => gitBranchExists(absCwd, b),
+      worktreeOf: (b) => gitWorktreeOf(absCwd, b),
+      isDirty: (p) => gitIsDirty(p),
+    });
+    if (!plan.ok) { console.error(plan.reason); process.exit(2); }
+    ({ slug, worktree, branch, warnings, needsWorktreeAdd } = plan);
+  } else {
+    const plan = planSpawn(absCwd, name, { isHimmelCheckout, settingsConflicts: findSettingsConflicts, home: homedir() });
+    if (!plan.ok) { console.error(plan.reason); process.exit(2); }
+    ({ slug, worktree, branch, warnings } = plan);
+    needsWorktreeAdd = true;
+  }
+  for (const w of warnings) console.error(`spawn-glm: WARNING — settings model key present (${formatConflict(w)}); explicit --model flag takes precedence, verify via the transcript model id.`);
 
   // Preflight the ZAI key BEFORE any side effect (before worktree add): a
   // missing key must be a clean refusal (exit 2), not a failure AFTER the
@@ -337,8 +565,8 @@ async function main(): Promise<void> {
   // it to mint the outbox/context paths; the same sessionDir feeds both the brief
   // composition and the later mkdir. Window derives from the same context
   // resolution main() already applied (context ?? "big"), via glmContextPreset.
-  const sessionDir = join(glmSessionRoot(), `glm-${plan.slug}-${Date.now()}`);
-  const briefText = composeWorkerPrompt(task, sessionDir, plan.branch);
+  const sessionDir = join(glmSessionRoot(), `glm-${slug}-${Date.now()}`);
+  const briefText = composeWorkerPrompt(task, sessionDir, branch, { shared: sharedMode });
   const { window: windowTokens } = glmContextPreset(context ?? "big");
   const overheadChars = measureOverheadChars(absCwd, homedir());
   const pre = preflightWindowCheck({ briefChars: briefText.length, overheadChars, windowTokens });
@@ -346,75 +574,103 @@ async function main(): Promise<void> {
 
   // GLM guard (spec D2) BEFORE any worktree/branch mutation (#848): a refusal
   // must leave NO orphan worktree/branch/poisoned-pushurl behind. The
-  // path-under-list checks resolve plan.worktree as a string, so a PHI- or
+  // path-under-list checks resolve worktree as a string, so a PHI- or
   // egress-denied dispatch path refuses here, pre-creation.
-  const guard = checkGlmGuards(plan.worktree);
+  const guard = checkGlmGuards(worktree);
   if (!guard.ok) { console.error(guard.reason); process.exit(3); }
 
   const g = (args: string[]) => { const r = Bun.spawnSync(["git", "-C", absCwd, ...args], { stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.toString()}`); };
-  g(["worktree", "add", plan.worktree, "-b", plan.branch]);
-  poisonPushUrl(absCwd, plan.worktree);
 
-  mkdirSync(sessionDir, { recursive: true });
-  // GLM_SESSION_DIR (spec D5): the deny hook (running inside the worker child)
-  // reads ${GLM_SESSION_DIR}/grants.jsonl. sessionEnv('glm') spreads process.env
-  // into the child, so setting it here propagates; unset => hook skips grants.
-  process.env.GLM_SESSION_DIR = sessionDir;
-  // Pre-seed operator/parent grants into the session ledger (escalation channel,
-  // spec D8): classify each grant's shape and, under autonomous authority, refuse
-  // a write-shaped grant — recording a pending operator escalation instead of a
-  // grant. accumulated feeds nextGrantId so repeated --grant flags get distinct
-  // ids (g1, g2, …) rather than all colliding on g1 against the empty file.
-  const autonomousEff = autonomous || !!process.env.HIMMEL_OVERNIGHT;
-  const grantsPath = join(sessionDir, "grants.jsonl");
-  const seedOutbox = join(sessionDir, "outbox.jsonl");
-  const accumulated: string[] = [];
-  // HIMMEL-682 (Task L1): carry the capped session's still-valid grants forward
-  // (absolute expires_at + remaining budget) BEFORE the --grant loop, so
-  // nextGrantId continues past the carried ids. Shape-split (reads seed, autonomous
-  // writes re-escalate), fail-open, and observability all live in applyCarryFrom.
-  if (carryFrom) {
-    const { grantLines, escalationLines, summary } = applyCarryFrom(carryFrom, autonomousEff, accumulated, new Date());
-    for (const line of grantLines) { appendFileSync(grantsPath, line + "\n"); accumulated.push(line); }
-    for (const esc of escalationLines) appendFileSync(seedOutbox, esc + "\n");
-    console.error(`spawn-glm: ${summary}`);
-  }
-  for (const spec of grants) {
-    const shape = classifyShape(spec.arm, spec.pattern);
-    if (authorityGate(shape, autonomousEff).action === "grant") {
-      const line = composeGrantLine(spec, { capability: spec.pattern, grantId: nextGrantId(accumulated), grantedBy: "parent:spawn-glm", now: new Date() });
-      appendFileSync(grantsPath, line + "\n");
-      accumulated.push(line);
-    } else {
-      appendFileSync(seedOutbox, composeEscalationForRefusedGrant({ capability: spec.pattern, arm: spec.arm, reason: "autonomous refuses write grant — operator adjudication required", step: "pre-seed", now: new Date() }) + "\n");
-      console.error(`spawn-glm: --grant ${spec.arm} is write-shaped and refused under autonomous authority; recorded a pending operator escalation.`);
+  // The run body (mkdir sessionDir through executeRun) is IDENTICAL between
+  // own-branch and shared modes; only the surrounding worktree
+  // creation/mutation + lock ownership differ, below.
+  const runBody = async (): Promise<number> => {
+    mkdirSync(sessionDir, { recursive: true });
+    // GLM_SESSION_DIR (spec D5): the deny hook (running inside the worker child)
+    // reads ${GLM_SESSION_DIR}/grants.jsonl. sessionEnv('glm') spreads process.env
+    // into the child, so setting it here propagates; unset => hook skips grants.
+    process.env.GLM_SESSION_DIR = sessionDir;
+    // Pre-seed operator/parent grants into the session ledger (escalation channel,
+    // spec D8): classify each grant's shape and, under autonomous authority, refuse
+    // a write-shaped grant — recording a pending operator escalation instead of a
+    // grant. accumulated feeds nextGrantId so repeated --grant flags get distinct
+    // ids (g1, g2, …) rather than all colliding on g1 against the empty file.
+    const autonomousEff = autonomous || !!process.env.HIMMEL_OVERNIGHT;
+    const grantsPath = join(sessionDir, "grants.jsonl");
+    const seedOutbox = join(sessionDir, "outbox.jsonl");
+    const accumulated: string[] = [];
+    // HIMMEL-682 (Task L1): carry the capped session's still-valid grants forward
+    // (absolute expires_at + remaining budget) BEFORE the --grant loop, so
+    // nextGrantId continues past the carried ids. Shape-split (reads seed, autonomous
+    // writes re-escalate), fail-open, and observability all live in applyCarryFrom.
+    if (carryFrom) {
+      const { grantLines, escalationLines, summary } = applyCarryFrom(carryFrom, autonomousEff, accumulated, new Date());
+      for (const line of grantLines) { appendFileSync(grantsPath, line + "\n"); accumulated.push(line); }
+      for (const esc of escalationLines) appendFileSync(seedOutbox, esc + "\n");
+      console.error(`spawn-glm: ${summary}`);
     }
-  }
-  const metaPath = join(sessionDir, "meta.json");
-  const started_at = new Date().toISOString();
-  const runningMeta = { status: "running", pid: 0, started_at, lane: "glm", task_name: plan.slug };
-  writeFileSync(metaPath, JSON.stringify(runningMeta, null, 2));
+    for (const spec of grants) {
+      const shape = classifyShape(spec.arm, spec.pattern);
+      if (authorityGate(shape, autonomousEff).action === "grant") {
+        const line = composeGrantLine(spec, { capability: spec.pattern, grantId: nextGrantId(accumulated), grantedBy: "parent:spawn-glm", now: new Date() });
+        appendFileSync(grantsPath, line + "\n");
+        accumulated.push(line);
+      } else {
+        appendFileSync(seedOutbox, composeEscalationForRefusedGrant({ capability: spec.pattern, arm: spec.arm, reason: "autonomous refuses write grant — operator adjudication required", step: "pre-seed", now: new Date() }) + "\n");
+        console.error(`spawn-glm: --grant ${spec.arm} is write-shaped and refused under autonomous authority; recorded a pending operator escalation.`);
+      }
+    }
+    const metaPath = join(sessionDir, "meta.json");
+    const started_at = new Date().toISOString();
+    const baseMeta = { status: "running", pid: 0, started_at, lane: "glm", task_name: slug };
+    // HIMMEL-800: shared_branch marks a shared-mode run in meta.json so a
+    // reader can tell it apart from an own-branch run at a glance. Typed
+    // construction (I8): a ternary builds the object with-or-without the field,
+    // no Record<string, unknown> widening + conditional mutation.
+    const runningMeta = sharedMode ? { ...baseMeta, shared_branch: branch } : baseMeta;
+    writeFileSync(metaPath, JSON.stringify(runningMeta, null, 2));
 
-  // HIMMEL-740: write the composed brief to <sessionDir>/brief.md and submit a
-  // SHORT pointer prompt (not the inlined brief) — the fix for the submit-reject
-  // deaths. brief.md lives under glm-sessions/ (outside the repo worktree), the
-  // proven-accessible path the worker already reads/writes outbox+context in.
-  const briefPath = join(sessionDir, "brief.md");
-  writeFileSync(briefPath, briefText);
-  const prompt = composePointerPrompt(briefPath);
-  if (timeoutMins !== undefined) process.env.RUN_TIMEOUT_MS = String(timeoutMins * 60 * 1000);
+    // HIMMEL-740: write the composed brief to <sessionDir>/brief.md and submit a
+    // SHORT pointer prompt (not the inlined brief) — the fix for the submit-reject
+    // deaths. brief.md lives under glm-sessions/ (outside the repo worktree), the
+    // proven-accessible path the worker already reads/writes outbox+context in.
+    const briefPath = join(sessionDir, "brief.md");
+    writeFileSync(briefPath, briefText);
+    const prompt = composePointerPrompt(briefPath);
+    if (timeoutMins !== undefined) process.env.RUN_TIMEOUT_MS = String(timeoutMins * 60 * 1000);
 
-  const capGuard: CapGuardDeps = {
-    startedAt: new Date(started_at),
-    task, cwd: absCwd, slug: plan.slug, branch: plan.branch, timeoutMins, permMode,
-    armOnCap,
-    fetchUsage: () => fetchGlmUsage(readZaiKey(REPO_ROOT).key),
-    arm: (hhmm, snap) => Bun.spawnSync(buildArmArgv(REPO_ROOT, hhmm, snap), { stdout: "inherit", stderr: "inherit" }).exitCode ?? 1,
+    const capGuard: CapGuardDeps = {
+      startedAt: new Date(started_at),
+      task, cwd: absCwd, slug, branch, timeoutMins, permMode,
+      armOnCap, shared: sharedMode,
+      fetchUsage: () => fetchGlmUsage(readZaiKey(REPO_ROOT).key),
+      arm: (hhmm, snap) => Bun.spawnSync(buildArmArgv(REPO_ROOT, hhmm, snap), { stdout: "inherit", stderr: "inherit" }).exitCode ?? 1,
+    };
+    const { code } = await executeRun({ runSession, prompt, worktree, permMode, sessionDir, metaPath, runningMeta, capGuard });
+    return code;
   };
-  const { code } = await executeRun({ runSession, prompt, worktree: plan.worktree, permMode, sessionDir, metaPath, runningMeta, capGuard });
+
+  let code: number;
+  if (!sharedMode) {
+    g(["worktree", "add", worktree, "-b", branch]);
+    poisonPushUrl(absCwd, worktree);
+    code = await runBody();
+  } else {
+    // HIMMEL-800: serialize writers on the shared branch (single-writer
+    // invariant, CLAUDE.md Subagent policy). runSharedDispatch acquires the
+    // lock AFTER guards pass (a refusal above must leave no lock held), BEFORE
+    // any worktree mutation, and releases it in a finally on every catchable
+    // exit path. rc 11 = already held / any other nonzero = usage/derivation
+    // error; both surface as ok:false here and map to exit 4 (a new code,
+    // distinct from the existing 1 operational / 2 refusal / 3 D2-guard).
+    const lockScript = join(REPO_ROOT, "scripts", "lib", "shared-branch-lock.sh");
+    const shared = await runSharedDispatch({ repoDir: absCwd, worktree, branch, needsWorktreeAdd, lockScript, gitAdd: () => g(["worktree", "add", worktree, branch]), runBody });
+    if (!shared.ok) { console.error(shared.reason); process.exit(4); }
+    code = shared.code;
+  }
 
   console.log(`session-dir: ${sessionDir}`);
-  console.log(`transcript-dir: ${transcriptDirFor(plan.worktree)}`);
+  console.log(`transcript-dir: ${transcriptDirFor(worktree)}`);
   console.log(`exit: ${code}`);
   process.exit(code);
 }
@@ -461,9 +717,12 @@ export function nextRetrySlug(slug: string): string {
 
 // Self-contained cold-start respawn handover (spec (b) 3): the armed session
 // may be a fresh cold start — everything needed to re-dispatch is inline.
-export function composeRespawnHandover(p: { task: string; cwd: string; slug: string; timeoutMins?: number; permMode?: string; sessionDir: string; branch: string; resumeAtIso: string }): string {
+export function composeRespawnHandover(p: { task: string; cwd: string; slug: string; timeoutMins?: number; permMode?: string; sessionDir: string; branch: string; resumeAtIso: string; shared?: boolean }): string {
   const respawnName = nextRetrySlug(p.slug);
-  const flags = [`--cwd ${p.cwd}`, `--name ${respawnName}`, p.timeoutMins !== undefined ? `--timeout-mins ${p.timeoutMins}` : "", p.permMode ? `--permission-mode ${p.permMode}` : "", `--carry-from ${p.sessionDir}`].filter(Boolean).join(" ");
+  // HIMMEL-800: a shared-mode respawn carries --branch (the caller-named
+  // branch, unchanged across retries) instead of --name <slug>-rN — shared
+  // mode never mints -rN branches, it keeps writing onto the same one.
+  const flags = [`--cwd ${p.cwd}`, p.shared ? `--branch ${p.branch}` : `--name ${respawnName}`, p.timeoutMins !== undefined ? `--timeout-mins ${p.timeoutMins}` : "", p.permMode ? `--permission-mode ${p.permMode}` : "", `--carry-from ${p.sessionDir}`].filter(Boolean).join(" ");
   return [
     "---",
     "type: handover",
@@ -479,7 +738,7 @@ export function composeRespawnHandover(p: { task: string; cwd: string; slug: str
     "## Before spending quota",
     "",
     `1. Check whether this work was already validated/merged meanwhile (branch ${p.branch}, capped session dir ${p.sessionDir}) — if merged, just clean up; do NOT re-dispatch.`,
-    `2. Inspect the capped worktree for ${p.branch}: if it holds unpushed commits, re-dispatch with a "continue from the existing branch state on ${p.branch}" preamble; else re-dispatch fresh.`,
+    `2. Inspect the ${p.shared ? "shared" : "capped"} worktree for ${p.branch}: if it holds unpushed commits, re-dispatch with a "continue from the existing branch state on ${p.branch}" preamble; else re-dispatch fresh.`,
     "",
     "## Re-dispatch command",
     "",
@@ -495,6 +754,9 @@ export type CapGuardDeps = {
   task: string; cwd: string; slug: string; branch: string;
   timeoutMins?: number; permMode?: string;
   armOnCap: boolean;
+  // HIMMEL-800: threads shared-branch mode into the respawn handover so a
+  // capped shared-mode run re-dispatches with --branch, not a fresh -rN --name.
+  shared?: boolean;
   fetchUsage: () => Promise<GlmUsage | null>;
   arm: (hhmm: string, handoverPath: string) => number;   // rc of arm-resume.sh
   now?: () => Date;
