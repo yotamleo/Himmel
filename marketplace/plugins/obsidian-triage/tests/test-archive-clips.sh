@@ -213,6 +213,37 @@ assert "B: step-3 grep sees only the clip itself (1 file)" "1" "$hits_b"
 graduate "$tmp4/Clippings/$NEW4.md"
 assert "B: zero stale OLD links (self-ref-only graduates cleanly)" "0" "$(verify_clean)"
 
+echo "Test 14: FUNCTIONAL — _deferred Enricher gaps section counts hosts and omits empty"
+# Mirrors Phase 5's intended harvest_enricher_gap roll-up: count distinct
+# frontmatter values across clips, sort by count desc, and omit the section
+# entirely when no clips carry the key.
+tmp5="$(mktemp -d)"; trap 'rm -rf "$tmp" "$tmp2" "$tmp3" "$tmp4" "$tmp5"' EXIT
+mkdir -p "$tmp5/Clippings"
+make_gap_clip() {  # $1=file, $2=host
+  printf -- '---\ntype: article\nharvest_enricher_gap: %s\n---\nbody\n' "$2" > "$tmp5/Clippings/$1.md"
+}
+make_gap_clip a tiktok.com
+make_gap_clip b tiktok.com
+make_gap_clip c linkedin.com
+gap_section="$(
+  grep -rhoE '^harvest_enricher_gap:[[:space:]]*\S.*' "$tmp5/Clippings" 2>/dev/null \
+    | sed -E 's/^harvest_enricher_gap:[[:space:]]*//; s/^"//; s/"$//' \
+    | sort | uniq -c | sort -rn \
+    | awk 'BEGIN{print "## Enricher gaps"} {print "- " $2 " — " $1 " clips"}'
+)"
+first_gap="$(printf '%s\n' "$gap_section" | sed -n '2p')"
+second_gap="$(printf '%s\n' "$gap_section" | sed -n '3p')"
+assert "Enricher gaps section header rendered" "## Enricher gaps" "$(printf '%s\n' "$gap_section" | sed -n '1p')"
+assert "Enricher gaps sorted by count desc: tiktok first" "- tiktok.com — 2 clips" "$first_gap"
+assert "Enricher gaps includes linkedin count" "- linkedin.com — 1 clips" "$second_gap"
+empty_section="$(
+  mkdir -p "$tmp5/empty/Clippings"
+  grep -rhoE '^harvest_enricher_gap:[[:space:]]*\S.*' "$tmp5/empty/Clippings" 2>/dev/null \
+    | sed -E 's/^harvest_enricher_gap:[[:space:]]*//; s/^"//; s/"$//' \
+    | sort | uniq -c | sort -rn \
+    | awk 'NF{if(!seen){print "## Enricher gaps"; seen=1} print "- " $2 " — " $1 " clips"}'
+)"
+assert "Enricher gaps section omitted when empty" "" "$empty_section"
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -gt 0 ] && exit 1 || exit 0

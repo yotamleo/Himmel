@@ -88,6 +88,20 @@ FIRECRAWL_SKIP_HOSTS = {
     "instagram.com", "www.instagram.com", "m.instagram.com",
 }
 
+# Curated platform hosts that need dedicated enrichers when clipper output is
+# thin. Generic article hosts intentionally stay plain thin-body partials.
+ENRICHER_GAP_HOSTS = {
+    "tiktok.com",
+    "linkedin.com",
+    "bsky.app",
+    "threads.net",
+    "facebook.com",
+    "pinterest.com",
+    "twitch.tv",
+    "spotify.com",
+    "mastodon.social",
+}
+
 # Thin-body heuristic (harvest-clips.md Phase 4): a clip-body clip is NOT
 # thin if it carries one of these section headings with real content.
 _RICH_SECTION_HEADINGS = ("## highlights", "## the idea", "## summary", "## key points")
@@ -245,6 +259,34 @@ def is_github_url(url: str) -> bool:
     except Exception:
         return False
     return host in {"github.com", "www.github.com"}
+
+
+def _normalized_host(url: str) -> str:
+    try:
+        host = (urlparse(url.strip().strip('"')).hostname or "").lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def enricher_gap_host(canonical: str) -> str | None:
+    """Return the harvest_enricher_gap host for thin known-platform clips.
+
+    Dedicated enricher routes are excluded; generic article hosts are not
+    classified. Matching is suffix-aware so a platform's share-link subdomain
+    (open.spotify.com, clips.twitch.tv, m.facebook.com, …) folds to its base
+    domain — that base is the roll-up key (one enricher per platform, not per
+    subdomain). Substack-hosted publications keep their exact subdomain.
+    """
+    host = _normalized_host(canonical)
+    if not host or host in FIRECRAWL_SKIP_HOSTS:
+        return None
+    if host.endswith(".substack.com"):
+        return host
+    for base in ENRICHER_GAP_HOSTS:
+        if host == base or host.endswith("." + base):
+            return base
+    return None
 
 
 def is_thin_body(body: str) -> bool:
@@ -439,6 +481,57 @@ def insert_markers(fm_raw: str, markers: dict) -> str:
     return insert_fm_lines(fm_replaced, remaining)
 
 
+def insert_frontmatter_pairs(fm_raw: str, pairs: list[tuple[str, str]], preserve_existing: set[str] | None = None) -> str:
+    """Replace/add YAML frontmatter pairs while optionally preserving keys.
+
+    Used for frontmatter-only marks that do not carry the full harvest marker
+    set. New keys are appended with the same zero-indent style as harvest_*.
+    """
+    preserve_existing = preserve_existing or set()
+    lines = fm_raw.split("\n")
+    seen = set()
+    filtered_pairs = list(pairs)
+    for i, line in enumerate(lines):
+        for key, new_line in filtered_pairs:
+            if re.match(rf"^{re.escape(key)}:", line):
+                seen.add(key)
+                if key not in preserve_existing:
+                    lines[i] = new_line
+                break
+    remaining = [new_line for key, new_line in filtered_pairs if key not in seen]
+    fm_replaced = "\n".join(lines)
+    if not remaining:
+        return fm_replaced
+    return insert_fm_lines(fm_replaced, remaining)
+
+
+def persist_thin_partial(path: Path, text: str, fm: dict, fm_raw: str, body: str, gap_host: str | None, hits: list) -> bool:
+    """Write only frontmatter marks for a default thin-body partial.
+
+    Body bytes must remain identical or the original file is restored. Existing
+    harvest_enricher_gap and harvest_flag keys are preserved for idempotence and
+    to avoid clobbering injection semantics.
+    """
+    pairs = [("harvest_status", "harvest_status: partial")]
+    preserve = {"harvest_enricher_gap"}
+    if "harvest_flag" not in fm:
+        if hits:
+            pairs.append(("harvest_flag", "harvest_flag: injection-suspect"))
+            pairs.append(("harvest_flag_detail", f"harvest_flag_detail: {','.join(hits)}"))
+        else:
+            pairs.append(("harvest_flag", "harvest_flag: thin-body"))
+    elif hits and "harvest_flag_detail" not in fm and fm.get("harvest_flag") == "injection-suspect":
+        pairs.append(("harvest_flag_detail", f"harvest_flag_detail: {','.join(hits)}"))
+    if gap_host and "harvest_enricher_gap" not in fm:
+        pairs.append(("harvest_enricher_gap", f"harvest_enricher_gap: {gap_host}"))
+    new_fm = insert_frontmatter_pairs(fm_raw, pairs, preserve_existing=preserve)
+    path.write_text(f"---\n{new_fm}\n---\n{body}", encoding="utf-8", newline="\n")
+    _dfm, _draw, disk_body, disk_ok = parse_frontmatter(path.read_text(encoding="utf-8"))
+    if not disk_ok or disk_body != body:
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return False
+    return True
+
 def persist_flag_only(path: Path, text: str, fm_raw: str, body: str, hits: list) -> bool:
     """Write ONLY the harvest_flag + harvest_flag_detail keys into the
     frontmatter (no harvest markers). G-3: re-read from disk, verify the
@@ -587,6 +680,15 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
             return ("x", f"failed (frontmatter-yaml-write, credit spent): {e}; reverted", merged_hits)
         fc_suffix = f" [injection-suspect: {', '.join(merged_hits)}]" if merged_hits else ""
         return ("v", f"harvested via firecrawl, {len(md.encode('utf-8'))}b fetched (thin-body escalation), harvest_status=ok{fc_suffix}", merged_hits)
+
+    if is_thin_body(body):
+        gap_host = enricher_gap_host(canonical)
+        gap_suffix = f"; harvest_enricher_gap={gap_host}" if gap_host else ""
+        if dry_run:
+            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix} [dry-run]{flag_suffix}", injection_hits)
+        if persist_thin_partial(path, text, fm, fm_raw, body, gap_host, injection_hits):
+            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{flag_suffix}", injection_hits)
+        return ("x", f"failed (G-3): thin-body frontmatter mark altered body; reverted{flag_suffix}", injection_hits)
 
     # clip-body path
     markers = {
