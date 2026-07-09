@@ -474,21 +474,21 @@ _ENGINE_UNTRUSTED = re.compile(r"z\.ai|glm|zhipu")
 # Deliberately NOT a space/quote, so a blocked verb quoted inside a commit message
 # ("… git push later") does not false-block — parity with the sibling hook.
 _CMDPOS = r"(?:^|[;&|(\n])\s*"
-EXT_GIT_PUSH = re.compile(_CMDPOS + r"git(?:\s+-\S+(?:\s+\S+)?)*\s+push(?:\s|$)")
+EXT_GIT_PUSH = re.compile(_CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+push(?:\s|$)")
 EXT_GIT_URL = re.compile(
-    _CMDPOS + r"git(?:\s+-\S+(?:\s+\S+)?)*\s+"
-    r"(?:remote\s+set-url|config(?:\s+-\S+)*\s+\S*url)")
-EXT_GH_ANY = re.compile(_CMDPOS + r"gh(?:\s|$)")
+    _CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+"
+    r"(?:remote\s+set-url|config(?:\s+-\S+(?:\s+\S+)?)*\s+\S*url\s+\S+)")
+EXT_GH_ANY = re.compile(_CMDPOS + r"gh(?:\.exe)?(?:\s|$)")
 # Audited-lane carve-out (block-glm-external-writes.sh policy, 2026-07-03): gh
 # issue (reads AND writes — cr-deferred followups are audited gh issues) + the
 # read-only pr/run context verbs stay allowed; every other gh use (pr create/
 # merge/edit/review, api, repo, release, gist) is an external write and refuses.
 EXT_GH_ALLOW = re.compile(
-    _CMDPOS + r"gh\s+(?:issue(?:\s|$)"
+    _CMDPOS + r"gh(?:\.exe)?\s+(?:issue(?:\s|$)"
     r"|pr\s+(?:view|diff|checks|status|list)(?:\s|$)"
     r"|run\s+(?:view|list|watch)(?:\s|$))")
 EXT_NET = re.compile(
-    _CMDPOS + r"(?:curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)(?:\s|$)")
+    _CMDPOS + r"(?:curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)(?:\.exe)?(?:\s|$)")
 
 
 def _external_writes_allowed() -> bool:

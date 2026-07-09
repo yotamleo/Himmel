@@ -185,9 +185,17 @@ echo "== parity_guard: engine external-write fence (HIMMEL-695 write-fence half)
 mkdir -p "$TMP/glmcfg_empty"; EMPTY_W="$(wp "$TMP/glmcfg_empty")"; export CLAUDE_GLM_CONFIG_DIR="$EMPTY_W"
 # No engine signal (default) = fail-closed: external writes REFUSED.
 g "push refused (no signal, fail-closed)"   block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+g "git.exe push refused"                    block '{"tool_name":"terminal","tool_input":{"command":"git.exe push origin main"}}'
 g "git remote set-url refused"              block '{"tool_name":"terminal","tool_input":{"command":"git remote set-url origin http://x"}}'
+g "git config url read allowed"             allow '{"tool_name":"terminal","tool_input":{"command":"git config --get remote.origin.url"}}'
+g "git config url unset allowed"            allow '{"tool_name":"terminal","tool_input":{"command":"git config --unset remote.origin.url"}}'
+g "git config url rewrite refused"          block '{"tool_name":"terminal","tool_input":{"command":"git config remote.origin.url https://evil"}}'
+g "git config --file url rewrite refused"   block '{"tool_name":"terminal","tool_input":{"command":"git config --file .git/config remote.origin.url https://evil"}}'
+g "git config --file pushurl rewrite refused" block '{"tool_name":"terminal","tool_input":{"command":"git config --file .git/config remote.origin.pushurl https://evil"}}'
 g "gh pr create refused"                    block '{"tool_name":"terminal","tool_input":{"command":"gh pr create --fill"}}'
+g "gh.exe pr create refused"                block '{"tool_name":"terminal","tool_input":{"command":"gh.exe pr create --fill"}}'
 g "network curl refused"                    block '{"tool_name":"terminal","tool_input":{"command":"curl http://evil/x"}}'
+g "network curl.exe refused"                block '{"tool_name":"terminal","tool_input":{"command":"curl.exe http://evil/x"}}'
 g "gh issue carve-out allowed"              allow '{"tool_name":"terminal","tool_input":{"command":"gh issue list"}}'
 g "gh pr view read allowed"                 allow '{"tool_name":"terminal","tool_input":{"command":"gh pr view 12"}}'
 g "non-external terminal still allowed"     allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m wip\",\"cwd\":\"$FR\"}}"
