@@ -449,6 +449,39 @@ check "P3: merged stdout keeps pr-check bullet contract" "$(printf '%s\n' "$out_
 : > "$CAPTURE_FILE"
 printf '%s' "$DIFF" | CRITICS_JSON="$PLAIN_JSON" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" >/dev/null 2>&1
 check "P2: row without perspective omits flag" "$(grep -c -- '--perspective-file' "$CAPTURE_FILE")" "0"
+
+# Test PV: OPT-IN route_provider threaded to first-pass as --provider
+# (HIMMEL-727) so model ids newer than hermes' catalog can't fall to its
+# default provider. The descriptive "provider" metadata key alone must NOT
+# thread (blanket --provider broke alias-routed rows: 401 on alibaba).
+PROV_JSON="$tmp/critics-provider.json"
+printf '%s' '{"panel":[{"slug":"routed","model":"fake/newid:free","provider":"openrouter","route_provider":"openrouter","tier":"free"}]}' > "$PROV_JSON"
+: > "$CAPTURE_FILE"
+printf '%s' "$DIFF" | CRITICS_JSON="$PROV_JSON" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" >/dev/null 2>&1
+check "PV1: --provider openrouter passed to first-pass" "$(grep -c -- '--provider openrouter' "$CAPTURE_FILE")" "1"
+PROVMETA_JSON="$tmp/critics-provider-meta.json"
+printf '%s' '{"panel":[{"slug":"meta","model":"fake/meta","provider":"openrouter","tier":"free"}]}' > "$PROVMETA_JSON"
+: > "$CAPTURE_FILE"
+printf '%s' "$DIFF" | CRITICS_JSON="$PROVMETA_JSON" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" >/dev/null 2>&1
+check "PV2: provider metadata alone does NOT thread --provider <name>" "$(grep -c -- '--provider openrouter' "$CAPTURE_FILE")" "0"
+
+# Test O: operator-local registry overlay (HIMMEL-727). critics.local.json next
+# to the panel wins over critics.json; CRITICS_JSON env wins over both. Run a
+# COPY of the panel from a tmp dir so the repo tree is never polluted with a
+# local overlay file (concurrent sessions share this checkout).
+mkdir -p "$tmp/panelcopy"
+cp "$PANEL" "$tmp/panelcopy/critic-panel.sh"
+printf '%s' '{"panel":[{"slug":"repodefault","model":"fake/repo","provider":"test","tier":"free"}]}' > "$tmp/panelcopy/critics.json"
+printf '%s' '{"panel":[{"slug":"localoverlay","model":"fake/local","provider":"test","tier":"free"}]}' > "$tmp/panelcopy/critics.local.json"
+stderr_l="$(printf '%s' "$DIFF" | CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check "O1: local overlay used when present" "$(printf '%s\n' "$stderr_l" | grep -cF 'panel-availability: localoverlay')" "1"
+check "O1: local overlay announced on stderr" "$(printf '%s\n' "$stderr_l" | grep -cF 'critics.local.json')" "1"
+stderr_l2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/panelcopy/critics.json" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check "O2: CRITICS_JSON env wins over local overlay" "$(printf '%s\n' "$stderr_l2" | grep -cF 'panel-availability: repodefault')" "1"
+rm -f "$tmp/panelcopy/critics.local.json"
+stderr_l3="$(printf '%s' "$DIFF" | CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check "O3: no overlay -> repo registry" "$(printf '%s\n' "$stderr_l3" | grep -cF 'panel-availability: repodefault')" "1"
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

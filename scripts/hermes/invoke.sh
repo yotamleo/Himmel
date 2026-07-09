@@ -47,6 +47,11 @@ Usage: invoke.sh [--model <name>] [--profile <name>] [--toolsets <list>]
   <prompt>           Prompt text. If `-` or omitted (and no --prompt-file),
                      read from stdin.
   --model <name>     Model override (hermes -m). Default: hermes config default.
+  --provider <name>  Provider override (hermes --provider). Needed when the
+                     model id is newer than hermes' internal catalog — without
+                     it hermes silently routes unknown ids to its DEFAULT
+                     provider (observed: an OpenRouter :free id landing on
+                     codex, HIMMEL-727). Omit to keep hermes' own routing.
   --profile <name>   Run under this hermes profile (hermes -p), i.e. its SOUL +
                      config (e.g. himmel_agent = senior main-tier reviewer). Fail-
                      open: if the profile does not exist, warn and use the default
@@ -65,6 +70,7 @@ EOF
 }
 
 model=""
+provider=""
 profile=""
 toolsets="todo"
 prompt_file=""
@@ -77,6 +83,9 @@ while [ $# -gt 0 ]; do
         --model)
             [ $# -ge 2 ] || { echo "invoke.sh: --model requires a value" >&2; exit 2; }
             model="$2"; shift 2 ;;
+        --provider)
+            [ $# -ge 2 ] || { echo "invoke.sh: --provider requires a value" >&2; exit 2; }
+            provider="$2"; shift 2 ;;
         --profile)
             [ $# -ge 2 ] || { echo "invoke.sh: --profile requires a value" >&2; exit 2; }
             profile="$2"; shift 2 ;;
@@ -166,19 +175,22 @@ if [ -n "$profile" ]; then
 fi
 
 run_hermes() {
-    HERMES_PROMPT_FILE="$pf_native" HERMES_ONESHOT_MODEL="$model" HERMES_ONESHOT_PROFILE="$profile_arg" HERMES_ONESHOT_TOOLSETS="$toolsets" \
+    HERMES_PROMPT_FILE="$pf_native" HERMES_ONESHOT_MODEL="$model" HERMES_ONESHOT_PROVIDER="$provider" HERMES_ONESHOT_PROFILE="$profile_arg" HERMES_ONESHOT_TOOLSETS="$toolsets" \
     "$py" -c '
 import os, sys, io
 with io.open(os.environ["HERMES_PROMPT_FILE"], encoding="utf-8") as fh:
     prompt = fh.read()
 argv = ["hermes", "--cli"]
 model = os.environ.get("HERMES_ONESHOT_MODEL", "")
+provider = os.environ.get("HERMES_ONESHOT_PROVIDER", "")
 profile = os.environ.get("HERMES_ONESHOT_PROFILE", "")
 toolsets = os.environ.get("HERMES_ONESHOT_TOOLSETS", "")
 if profile:
     argv += ["-p", profile]
 if model:
     argv += ["-m", model]
+if provider:
+    argv += ["--provider", provider]
 if toolsets:
     argv += ["-t", toolsets]
 argv += ["-z", prompt]
