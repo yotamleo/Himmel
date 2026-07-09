@@ -89,6 +89,85 @@ Check 'codex.exe is a supervisor'  (Test-FleetSupervisor -Proc (Rec 1 0 'codex.e
 Check 'broker.mjs is a supervisor' (Test-FleetSupervisor -Proc (Rec 1 0 'node.exe' $BROKER))
 Check 'playwright node NOT a supervisor' (-not (Test-FleetSupervisor -Proc (Rec 1 0 'node.exe' '"node" @playwright/mcp/cli.js')))
 
+# --- HIMMEL-840: Get-DescendantPids (codex-exec CLI sandbox fleet) -----------
+# The codex-exec CLI sandbox spawns npx/node MCP servers under a cmd.exe
+# wrapper with NO codex path marker of their own once codex.exe is gone -
+# structurally invisible to Test-CodexOwned/Get-OrphanFleet above. The ONLY
+# way to identify them is the descendant-of-a-registered-root-pid walk this
+# primitive performs (dispatch-codex-exec.sh registers the codex child's pid
+# right after launch and calls this on its own EXIT).
+Write-Host "Test 6: codex-exec CLI sandbox fleet (dead registered root) reaped via descendant walk; a live-claude MCP fleet (same table, same process shapes) is spared"
+$sandboxProcs = @(
+  # dead codex-exec CLI root (pid 500) - ALREADY GONE from the table (simulates
+  # 'codex_pid dead': dispatch-codex-exec.sh's own child already exited).
+  (Rec 501 500 'cmd.exe'  'cmd.exe /c npx @upstash/context7-mcp')          # direct child of dead root -> descendant
+  (Rec 502 501 'node.exe' 'node C:\...\npx-cli.js @upstash/context7-mcp')  # grandchild, no codex marker -> descendant
+  (Rec 503 502 'node.exe' 'node mcp-server.js')                            # great-grandchild -> descendant
+
+  # live-claude session's OWN MCP servers - siblings under a DIFFERENT, LIVE
+  # parent (pid 700), same process shapes (cmd.exe/npx, node) as the sandbox
+  # fleet above. They must be spared because they are not descendants of 500,
+  # not because they look different.
+  (Rec 700 1   'node.exe' 'node claude cli')                               # live claude parent
+  (Rec 701 700 'node.exe' 'node qmd-mcp-server.js')                        # live sibling MCP
+  (Rec 702 700 'cmd.exe'  'cmd.exe /c npx @some/other-mcp')                # live sibling MCP, same shape as 501
+)
+$descPids = @(Get-DescendantPids -Procs $sandboxProcs -RootPid 500)
+$gotDescPids = @($descPids | Sort-Object)
+Check 'sandbox fleet {501,502,503} found via descendant walk' (($gotDescPids -join ',') -eq '501,502,503') "got=$($gotDescPids -join ',')"
+Check 'live-claude MCP 701 spared (not a descendant of 500)' (-not ($gotDescPids -contains 701))
+Check 'live-claude MCP 702 spared (same process shape as 501, still not a descendant)' (-not ($gotDescPids -contains 702))
+Check 'dead root pid 500 itself is not returned (only its descendants)' (-not ($gotDescPids -contains 500))
+
+Write-Host "Test 7: StartedAt >= CreationDate pid-reuse guard"
+$now = Get-Date
+$reused = @(
+  (Rec 511 510 'cmd.exe' 'cmd.exe /c npx old-unrelated-mcp')  # created well before our job started
+)
+$reused[0] | Add-Member -NotePropertyName CreationDate -NotePropertyValue ($now.AddMinutes(-60)) -Force
+$jobStartedEpoch = [long][DateTimeOffset]::new($now.ToUniversalTime()).ToUnixTimeSeconds()
+$descGuarded = @(Get-DescendantPids -Procs $reused -RootPid 510 -StartedAtEpoch $jobStartedEpoch)
+Check 'guard excludes a descendant that predates StartedAt (pid-reuse)' ($descGuarded.Count -eq 0) "got count=$($descGuarded.Count)"
+$descUnguarded = @(Get-DescendantPids -Procs $reused -RootPid 510)
+Check 'without StartedAt the same descendant IS found' ($descUnguarded.Count -eq 1 -and $descUnguarded[0] -eq 511)
+
+Write-Host "Test 8: empty/absent-root inputs do not throw"
+$emptyDesc = @(Get-DescendantPids -Procs @() -RootPid 999)
+Check 'empty proc table -> 0 descendants' ($emptyDesc.Count -eq 0)
+$noChildren = @(Get-DescendantPids -Procs $sandboxProcs -RootPid 999999)
+Check 'root pid with no children in the table -> 0 descendants' ($noChildren.Count -eq 0)
+
+Write-Host "Test 9: malformed argv - missing value for -RootPid/-StartedAt fails fast (no hang)"
+# The .sh twin's option-parsing loop had a `shift 2` no-op bug (HIMMEL-840
+# Fix 2) that spun forever on a missing value; PowerShell's own typed-param
+# binding already fails fast on this, but the coverage closes the parity gap
+# on both twins. Invokes the real script as a genuine subprocess (never the
+# dot-sourced -AsLibrary functions) so a regression would show up as an
+# actual hang, not just an in-process exception. Stdin is redirected from an
+# empty file so a would-be interactive prompt gets immediate EOF instead of
+# blocking.
+function Test-FailsFast([string[]]$ExtraArgs, [string]$Name) {
+  $inFile = [System.IO.Path]::GetTempFileName()
+  $outFile = [System.IO.Path]::GetTempFileName()
+  $errFile = [System.IO.Path]::GetTempFileName()
+  try {
+    $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Helper) + $ExtraArgs
+    $proc = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $psArgs `
+      -NoNewWindow -PassThru -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    $finished = $proc.WaitForExit(10000)
+    if (-not $finished) {
+      try { $proc.Kill() } catch {}
+      Fail $Name 'timed out after 10s (hang)'
+    } else {
+      Check $Name ($proc.ExitCode -ne 0) "exit=$($proc.ExitCode)"
+    }
+  } finally {
+    Remove-Item -Path $inFile, $outFile, $errFile -Force -ErrorAction SilentlyContinue
+  }
+}
+Test-FailsFast @('-RootPid') 'missing -RootPid value fails fast (no hang)'
+Test-FailsFast @('-RootPid', '123', '-StartedAt') 'missing -StartedAt value fails fast (no hang)'
+
 Write-Host "Results: $Pass passed, $Fail failed"
 if ($Fail -ne 0) { exit 1 }
 exit 0

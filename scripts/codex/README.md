@@ -132,6 +132,55 @@ help in that case):
 bash scripts/lib/shared-branch-lock.sh release <worktree-or-repo-dir> <branch>
 ```
 
+### Job registry + MCP-fleet reap (HIMMEL-840)
+
+The codex-exec **CLI sandbox** (this dispatcher) leaks its own MCP-server
+fleet - plain `npx <mcp-server>` under `cmd.exe` wrappers - that
+`reap-mcp-fleet.ps1`'s HIMMEL-741 fingerprint cannot see: those processes
+carry no codex path marker of their own once the `codex.exe` supervisor is
+gone, so they are structurally invisible to that app-server-only
+fingerprint. The dispatcher closes the gap itself instead of relying on a
+periodic sweep:
+
+1. It never `exec`s codex (in either the default or `--shared-branch` path)
+   - it runs codex as a **child**, so its pid is known immediately. Backgrounding
+   a child in a non-interactive script redirects its stdin to `/dev/null` by
+   default, so the child is launched with an explicit `<&0` to inherit the
+   dispatcher's own stdin (a caller that pipes context to `codex exec` would
+   otherwise silently see it dropped).
+2. Right after the child starts, it writes a **job registry** entry under
+   `CODEX_JOBS_DIR` (default `$HOME/.himmel/state/codex-exec-jobs/`), one
+   file per job (`<epoch>-<codexpid>.json`: `codex_pid`, `dispatch_pid`,
+   `worktree`, `started_at`).
+3. On EXIT (composed with the shared-branch lock-release trap), it calls
+   `reap-mcp-fleet.sh --root-pid <codex-child-pid> --started-at <epoch> --kill`
+   to terminate any still-live descendants of that pid - the leftover MCP
+   fleet, if any - then removes the registry entry.
+
+If the dispatcher itself is killed before its own EXIT trap can run (e.g.
+SIGKILL), the registry entry survives as evidence of the leak.
+`reap-mcp-fleet.{sh,ps1}`'s default (no-args) **report mode** additionally
+scans `CODEX_JOBS_DIR` for entries whose `codex_pid` is dead and reports
+their remaining descendants (`-Kill`/`--kill` reaps them and removes the
+entry); it also prints a summary line (jobs live/dead, dead-job fleet count,
+app-server orphan count, and an observability-only count of MCP-shaped
+processes with a dead direct parent that carry no lineage evidence at all -
+counted, never reaped). `-RootPid`/`--root-pid` is a general primitive (not
+codex-exec-specific): report/reap every live descendant of one given
+(possibly dead) root pid, with a `CreationDate`/start-time pid-reuse guard.
+On Windows the `.sh` forwards to the `.ps1` (`Get-CimInstance Win32_Process`
+is the authoritative source there); on mac/Linux the `.sh` walks `ps -eo
+pid,ppid[,etimes]` directly - real logic, not a thin shim, since the
+dispatcher's own EXIT trap needs this primitive on every platform it runs on.
+
+Tests: `scripts/codex/test-reap-mcp-fleet.{sh,ps1}` (pure descendant-walk
+fixtures, incl. a codex-exec sandbox fleet alongside a live-claude MCP fleet
+in the same table to assert the latter is spared); `test-dispatch-codex-exec.sh`
+asserts the registry file appears during the run and is gone after, and that
+the reap primitive is invoked with the codex **child's** pid (env overrides
+`CODEX_JOBS_DIR` / `CODEX_REAP_HELPER` inject a tmpdir and a stub - no real
+process table or `$HOME` state is touched).
+
 ## Skill loading caveat
 
 Enabling `himmel-ops` makes its **hooks** fire under Codex (e.g.
