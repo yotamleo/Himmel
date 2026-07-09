@@ -664,6 +664,38 @@ on demand; nothing here runs automatically.
 
 ---
 
+## Graphify map cadence (`scripts/graphify/`, HIMMEL-825/826)
+
+Keeps the graphify knowledge-graph maps fresh and publishes a compact, tracked
+view into the vault — the bridge between the derived graph and the KB.
+
+- `scripts/graphify/publish-graph-map.mjs` — curator. Parses a
+  `graphify-out/GRAPH_REPORT.md` and emits a small `type: moc` note (Summary,
+  God Nodes, Surprising Connections, top-N largest communities + provenance
+  frontmatter). The raw report is 3k+ lines / 150KB+ (one heading per community,
+  1500+ of them) — too big to track; this extracts just the navigational value
+  (~100 lines / ~10KB) so the MOC is git-diffable and qmd-useful. Pure core
+  (`parseReport`/`renderMoc`) unit-tested by `test-publish-graph-map.mjs`.
+- `scripts/graphify/refresh-graph-map.sh` — schedulable orchestrator. Per corpus:
+  copies the vault's markdown to a scratchpad carrying a `.graphify-corpus`
+  marker (fence-safe — extraction NEVER touches a live vault), runs
+  `graphify --update` (incremental — only changed files re-extract) + `cluster-only`,
+  promotes the refreshed `graph.json` + `GRAPH_REPORT.md` into the corpus's
+  repo-local `graphify-out/` (the "latest in repo" substrate), then publishes the
+  curated MOC to the vault's `60-Maps/`. `--no-update` republishes from an
+  existing report without re-extracting. DeepSeek peak-window advisory (never
+  hard-refuses). Hermetic test: `test-refresh-graph-map.sh` (stubs graphify).
+- **Cost + cadence:** a full ecosystem sync is ~$2 (measured 2026-07-09);
+  `--update` is a fraction of that, so a **daily** off-peak run is affordable.
+  Schedule per corpus (example, Git Bash on Windows via schtasks or cron):
+  `bash scripts/graphify/refresh-graph-map.sh --name luna --corpus-root <vault> --maps-dir <vault>/60-Maps --title "Graphify Luna Vault Map" --slug graphify-luna-map --corpus-tag luna`.
+  Model: the derived graph.json + full report stay repo-local (gitignored,
+  regenerable); only the curated MOC is committed to the vault, so each refresh
+  shows the map's drift as a small git diff. Consolidation into the unified
+  `pipeline-cadence` runner is the open follow-up (HIMMEL-825).
+
+---
+
 ## Multi-vault upgrade engine (`scripts/luna-upgrade-all.sh`)
 
 Multi-vault luna template upgrade sweep (HIMMEL-462). The MULTI-vault layer

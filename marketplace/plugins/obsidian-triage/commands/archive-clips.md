@@ -182,6 +182,13 @@ Overwrite `<vault>/Clippings/_deferred.md` (single living page; it is excluded f
 - **Tail-skipped refs:** grep `30-Resources/Tech/*.md` for `Tail-skipped: [1-9]` audit-log rows; list `<repo-slug> — <N> refs beyond --limit`.
 - **Safety-flagged:** clips/Tech notes with non-blank `safety_flag:` and their resolution (refused vs operator-allowed).
 - **Duplicates:** the dedup-skips recorded in Phase 3.
+- **Enricher gaps (HIMMEL-799):** thin clips whose host has no dedicated enricher, flagged `harvest_enricher_gap: <host>` by `/harvest-clips` Phase 4. Roll them up by host (count desc) so the set of enrichers still to build is visible. Exact rendering (matches the harvest tool's `harvest_enricher_gap:` writes; omit the section entirely when zero):
+  ```bash
+  grep -rhoE '^harvest_enricher_gap:[[:space:]]*\S.*' "<vault>/Clippings" 2>/dev/null \
+    | sed -E 's/^harvest_enricher_gap:[[:space:]]*//; s/^"//; s/"$//' \
+    | sort | uniq -c | sort -rn \
+    | awk 'NF{if(!seen){print "## Enricher gaps"; seen=1} print "- " $2 " — " $1 " clips"}'
+  ```
 
 Structure:
 ```markdown
@@ -206,8 +213,11 @@ generated_by: /archive-clips
 
 ## Duplicates (declined graduation — operator review)
 - [[Clippings/<dup>]] — canonical URL matches [[Clippings/_done/<…>]]
+
+## Enricher gaps
+- <host> — <N> clips
 ```
-Empty sections read `_(none)_`. Do NOT invent entries — only what the records contain.
+Empty sections read `_(none)_`, EXCEPT `## Enricher gaps`, which is omitted entirely when no clip carries `harvest_enricher_gap:` (per the awk guard above). Do NOT invent entries — only what the records contain.
 
 ### Phase 6 — State file + tracking
 
