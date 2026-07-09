@@ -181,8 +181,9 @@ free model with write/git/PR control.
 
 Himmel ships one tuned free-tier identity as an **opt-in asset**:
 [`scripts/hermes/assets/free-tier.SOUL.md`](../scripts/hermes/assets/free-tier.SOUL.md).
-It is tuned for the open-model free anchor (live: `qwen3-coder-plus`, read at
-build time from `scripts/cr/critics.json`) — rigid JSON / format-obedience
+It is tuned for the open-model free anchor (read live from
+`scripts/cr/critics.json` — the anchor model drifts as free quotas
+exhaust; do not hardcode it here) — rigid JSON / format-obedience
 scaffolding, a declared `Context budget:` line, and fewer hedges. Open models
 drift from the output contract and over-report, so the free SOUL compensates
 where the premium GPT-anatomy prompt would instead rely on contradiction
@@ -355,7 +356,7 @@ Add one alias per tier you want reachable. Claude-tier parity map:
 | sonnet | `qwen-plus` |
 | opus | `qwen3-max` / `qwen3.7-max` |
 | thinking / fable | `qwq-plus` / `qwen3-235b-a22b-thinking` |
-| CR critic | `qwen3-coder-plus` |
+| CR critic | anchor row in `scripts/cr/critics.json` (2026-07-09: `qwen3.7-max`; `qwen3-coder-plus`/`qwen-plus` exhausted) |
 
 ### Validate THROUGH hermes
 
@@ -372,8 +373,10 @@ one-shot auto-detect on `-m` re-overrides a profile's provider.
 
 ### Consumers
 
-The CR panel's free critic is anchored to `qwen3-coder-plus` via this lane
-(HIMMEL-725). Free-quota exhaustion is why a quota guard is tracked
+The CR panel's free critic is anchored via this lane to the model in
+`scripts/cr/critics.json`'s anchor row (HIMMEL-725 introduced the lane;
+HIMMEL-838 swapped the anchor to `qwen3.7-max` after the 2026-07-09
+exhaustion). Free-quota exhaustion is why a quota guard is tracked
 separately — it needs a dynamic API pull (console screenshots are not
 automatable).
 
