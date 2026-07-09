@@ -374,4 +374,86 @@ rm -f "$FAKEHOME/.claude/CLAUDE.md"   # SOURCE deleted
 t "deleted source CLAUDE.md triggers a mirror reseed" 0
 [ ! -f "$FAKEHOME/.claude-routed/CLAUDE.md" ] || { echo "FAIL: stale CLAUDE.md survived source deletion"; FAILS=$((FAILS+1)); }
 
+# --- T27 (HIMMEL-830): a FRESH held seed lock makes a launch that needs seeding
+# time out with exit 4, a message naming the lock path, and the held lock LEFT
+# intact (we must not delete a fresh holder's lock on timeout). Lock is a SIBLING
+# of the config dir. TIMEOUT=1 keeps the deterministic wait ~1s.
+setup; KEY="omni-test-123"
+mkdir -p "$FAKEHOME/.claude-routed.seed-lock"        # fresh-mtime held lock, held by nobody
+export CLAUDE_LANE_SEED_LOCK_TIMEOUT=1
+t "held fresh seed lock times out (exit 4)" 4
+unset CLAUDE_LANE_SEED_LOCK_TIMEOUT
+grep -qF ".claude-routed.seed-lock" "$WORK/out.txt" || { echo "FAIL: timeout message does not name the lock path"; FAILS=$((FAILS+1)); }
+[ -d "$FAKEHOME/.claude-routed.seed-lock" ] || { echo "FAIL: fresh held lock removed on timeout"; FAILS=$((FAILS+1)); }
+
+# --- T28 (HIMMEL-830): a STALE held lock (mtime far in the past) is stolen, the
+# seed proceeds, the launch exits 0, and the lock is released (no residue).
+setup; KEY="omni-test-123"
+mkdir -p "$FAKEHOME/.claude-routed.seed-lock"
+touch -t 202001010000 "$FAKEHOME/.claude-routed.seed-lock"   # older than the 120s default stale window
+t "stale seed lock is stolen and seed proceeds" 0
+[ -f "$FAKEHOME/.claude-routed/.seeded" ] || { echo "FAIL: seed did not complete after stealing stale lock"; FAILS=$((FAILS+1)); }
+[ ! -d "$FAKEHOME/.claude-routed.seed-lock" ] || { echo "FAIL: stale lock not released after seed"; FAILS=$((FAILS+1)); }
+
+# --- T29 (HIMMEL-830): the double-checked recheck UNDER the lock skips a redundant
+# reseed when a concurrent winner already seeded while we waited. Deterministic by
+# construction (no timing reliance): a background holder writes the sentinel THEN
+# releases the lock, so by the moment our launcher can acquire, the recheck condition
+# is already FALSE. A dest-only canary that a reseed's rm -rf would drop must SURVIVE.
+setup; KEY="omni-test-123"
+mkdir -p "$FAKEHOME/.claude/commands"
+printf 'real' > "$FAKEHOME/.claude/commands/real.md"
+t "seed before recheck-skip simulation" 0
+printf 'canary' > "$FAKEHOME/.claude-routed/commands/canary.md"   # dest-only; a reseed would drop it
+rm -f "$FAKEHOME/.claude-routed/.seeded"                          # make the OUTER pre-check fire (sentinel missing)
+find "$FAKEHOME/.claude" -exec touch -t 202001010000 {} + 2>/dev/null   # age ALL sources so a fresh sentinel reads not-stale
+mkdir -p "$FAKEHOME/.claude-routed.seed-lock"                     # a "winner" is holding the lock
+( sleep 1; : > "$FAKEHOME/.claude-routed/.seeded"; rmdir "$FAKEHOME/.claude-routed.seed-lock" ) &   # winner finishes its seed then releases
+winpid=$!
+t "recheck under lock skips redundant reseed" 0
+wait "$winpid" 2>/dev/null
+[ -f "$FAKEHOME/.claude-routed/commands/canary.md" ] || { echo "FAIL: recheck did not skip -- canary dropped by a redundant reseed"; FAILS=$((FAILS+1)); }
+[ ! -d "$FAKEHOME/.claude-routed.seed-lock" ] || { echo "FAIL: lock residue after recheck-skip launch"; FAILS=$((FAILS+1)); }
+
+# --- T30 (HIMMEL-830, best-effort concurrency smoke): two simultaneous first-launch
+# seeders of the same lane both exit 0, leave a consistent config (sentinel present),
+# and leave no lock residue. The lock serializes them; the loser's recheck skips.
+setup; KEY="omni-test-123"
+( cd "$WORK" && HOME="$FAKEHOME" PATH="$BIN:$PATH" OMNIROUTE_API_KEY="$KEY" \
+    CLAUDE_ROUTED_DOTENV_ROOT="$WORK" OMNIROUTE_PORT="${PORT-}" \
+    bash "$LAUNCHER" >"$WORK/out-a.txt" 2>&1 ) &
+cpid=$!
+( cd "$WORK" && HOME="$FAKEHOME" PATH="$BIN:$PATH" OMNIROUTE_API_KEY="$KEY" \
+    CLAUDE_ROUTED_DOTENV_ROOT="$WORK" OMNIROUTE_PORT="${PORT-}" \
+    bash "$LAUNCHER" >"$WORK/out-b.txt" 2>&1 )
+brc=$?
+wait "$cpid"; arc=$?
+[ "$arc" -eq 0 ] || { echo "FAIL: concurrent launch A exit $arc"; cat "$WORK/out-a.txt"; FAILS=$((FAILS+1)); }
+[ "$brc" -eq 0 ] || { echo "FAIL: concurrent launch B exit $brc"; cat "$WORK/out-b.txt"; FAILS=$((FAILS+1)); }
+[ -f "$FAKEHOME/.claude-routed/.seeded" ] || { echo "FAIL: concurrent seed left no sentinel"; FAILS=$((FAILS+1)); }
+[ ! -d "$FAKEHOME/.claude-routed.seed-lock" ] || { echo "FAIL: concurrent launch left lock residue"; FAILS=$((FAILS+1)); }
+
+# --- T31 (HIMMEL-830 CR r1): a lock that cannot be released (a file appeared inside
+# it while the seeder held it) is NON-FATAL -- the launch still exits 0 and a WARNING
+# names the lock; the non-empty lock is LEFT for the stale steal to self-heal (its
+# contents are evidence, never vaporized). Honest construction: a slow node shim (the
+# sanitize step) keeps the seeder holding the lock ~1s while a background subshell
+# plants an intruder file the moment the lock dir appears.
+setup; KEY="omni-test-123"
+cat > "$BIN/node" <<'NODESHIM'
+#!/usr/bin/env bash
+# slow "sanitize": argv is -e <script> <src> <dest>; plain copy is fine here (this
+# test asserts lock-release behaviour, not sanitization).
+sleep 1
+cp "$3" "$4"
+NODESHIM
+chmod +x "$BIN/node"
+( while [ ! -d "$FAKEHOME/.claude-routed.seed-lock" ]; do sleep 0.05; done
+  touch "$FAKEHOME/.claude-routed.seed-lock/intruder" ) &
+plpid=$!
+t "release failure is non-fatal (exit 0)" 0
+wait "$plpid" 2>/dev/null
+grep -q "WARNING - failed to release seed lock" "$WORK/out.txt" || { echo "FAIL: no release-failure warning emitted"; FAILS=$((FAILS+1)); }
+[ -d "$FAKEHOME/.claude-routed.seed-lock" ] || { echo "FAIL: non-empty lock unexpectedly removed on release"; FAILS=$((FAILS+1)); }
+
 echo; [ "$FAILS" -eq 0 ] && echo "ALL PASS" || { echo "$FAILS failure(s)"; exit 1; }
