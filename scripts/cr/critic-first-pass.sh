@@ -39,6 +39,7 @@ EOF
 }
 
 model=""
+provider=""
 slug=""
 pf=""
 artifact_mode=0
@@ -53,6 +54,9 @@ while [ $# -gt 0 ]; do
         --model)
             [ $# -ge 2 ] || { echo "critic-first-pass.sh: --model requires a value" >&2; exit 2; }
             model="$2"; shift 2 ;;
+        --provider)
+            [ $# -ge 2 ] || { echo "critic-first-pass.sh: --provider requires a value" >&2; exit 2; }
+            provider="$2"; shift 2 ;;
         --slug)
             [ $# -ge 2 ] || { echo "critic-first-pass.sh: --slug requires a value" >&2; exit 2; }
             slug="$2"; shift 2 ;;
@@ -356,10 +360,21 @@ fi
 # invoke.sh flags. `none`/empty → omit --profile (hermes default profile). An
 # array would hit the bash-3.2 `set -u` empty-array expansion bug, so branch instead.
 _cfp_invoke() {
+    # --provider threads the registry row's provider to hermes (HIMMEL-727) so
+    # model ids newer than hermes' catalog can't silently fall to its default
+    # provider. Branching (not arrays) for the same bash-3.2 reason as --profile.
     if [ -n "$_crit_profile" ] && [ "$_crit_profile" != "none" ]; then
-        bash "$INVOKE" --model "$model" --profile "$_crit_profile" --prompt-file "$pf"
+        if [ -n "$provider" ]; then
+            bash "$INVOKE" --model "$model" --provider "$provider" --profile "$_crit_profile" --prompt-file "$pf"
+        else
+            bash "$INVOKE" --model "$model" --profile "$_crit_profile" --prompt-file "$pf"
+        fi
     else
-        bash "$INVOKE" --model "$model" --prompt-file "$pf"
+        if [ -n "$provider" ]; then
+            bash "$INVOKE" --model "$model" --provider "$provider" --prompt-file "$pf"
+        else
+            bash "$INVOKE" --model "$model" --prompt-file "$pf"
+        fi
     fi
 }
 
