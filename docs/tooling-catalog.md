@@ -637,7 +637,7 @@ Shell scripts that run as pre-commit / pre-push gates (wired in `.pre-commit-con
 
 ## Luna Scripts (`scripts/luna/`)
 
-Shell scripts for luna vault maintenance and session import. Operator-invoked
+Scripts for luna vault maintenance and session import. Operator-invoked
 on demand; nothing here runs automatically.
 
 - `scripts/luna/backfill-sessions.sh` — Render historical Claude session
@@ -661,6 +661,7 @@ on demand; nothing here runs automatically.
   `backfill-sessions.sh --reheal`/`--recrystallize`. Fail-open (no `claude` / over the concurrency
   cap → leaves the mechanical note untouched). Detail:
   `docs/luna/end-session-wiki.md` → Crystallization.
+- `scripts/luna/fold-chat-history.py` — Fold an exported provider chat history (ChatGPT now; Gemini rides HIMMEL-391) into the luna vault as `chats/gpt/` notes (provider id maps to a vault subdir, e.g. `chatgpt` → `gpt`) + gitignored assets; create-only idempotent, `--dry-run` first (HIMMEL-832).
 
 ---
 
