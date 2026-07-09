@@ -83,7 +83,11 @@ if ($mkPresent) {
   Write-Host "UNCHANGED   : marketplace '$Marketplace' already registered"
 } else {
   if ($DryRun) { Write-Host "WOULD ADD   : marketplace '$Marketplace' -> $MarketPath" }
-  else { & $Codex plugin marketplace add $MarketPath | Out-Null; Write-Host "CHANGED     : registered marketplace '$Marketplace' -> $MarketPath" }
+  else {
+    & $Codex plugin marketplace add $MarketPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "plugin marketplace add failed (exit $LASTEXITCODE) for $MarketPath" }
+    Write-Host "CHANGED     : registered marketplace '$Marketplace' -> $MarketPath"
+  }
   $changed++
 }
 
@@ -103,7 +107,11 @@ foreach ($p in $PluginSet) {
     Write-Host "UNCHANGED   : $sel (installed, enabled)"
   } else {
     if ($DryRun) { Write-Host "WOULD ADD   : $sel" }
-    else { & $Codex plugin add $sel | Out-Null; Write-Host "CHANGED     : enabled $sel" }
+    else {
+      & $Codex plugin add $sel | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "plugin add failed (exit $LASTEXITCODE) for $sel" }
+      Write-Host "CHANGED     : enabled $sel"
+    }
     $changed++
   }
 }
@@ -118,6 +126,7 @@ Write-Host "--- 3. sanitize external-plugin hooks.json (codex strict-parser work
 $sanitizer = Join-Path $PSScriptRoot "sanitize-plugin-hooks.ps1"
 try {
   if ($DryRun) { & $sanitizer -DryRun } else { & $sanitizer }
+  if ($LASTEXITCODE -ne 0) { throw "sanitize step failed (exit $LASTEXITCODE)" }
 } catch {
   Write-Warning "sanitize step failed (non-fatal): $($_.Exception.Message)"
 }

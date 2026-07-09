@@ -25,12 +25,35 @@ function Write-Step($msg) {
     Write-Host "══════════════════════════════════════════════"
 }
 
+# Invoke-NonFatal: runs $block, logging + recording (never throwing out of this
+# function) on failure. LASTEXITCODE caveat: only the LAST native call inside
+# $block is checked automatically here — native commands don't raise PS
+# exceptions, so if $block runs MULTIPLE native calls, an earlier failure is
+# masked when a later native call in the same block resets $LASTEXITCODE to 0
+# on success. Blocks with more than one native call MUST add an explicit
+# `if ($LASTEXITCODE -ne 0) { throw ... }` check after EACH native call inside
+# the block (see the "Luna vault setup" / "obsidian-second-brain" blocks below
+# for the pattern) — do not rely on this function's own trailing check for them.
 function Invoke-NonFatal([string]$label, [scriptblock]$block) {
-    try { & $block }
+    try {
+        $global:LASTEXITCODE = 0
+        & $block
+        if ($LASTEXITCODE -ne 0) { throw "$label failed (exit $LASTEXITCODE)" }
+    }
     catch {
         Write-Host "  WARNING: $label failed — continuing"
         $Script:Failures += "Step $($Script:Step): $label"
     }
+}
+
+# Invoke-Fatal: runs $block and throws (aborting the script, $ErrorActionPreference
+# = 'Stop') if the LAST native call inside it left a nonzero $LASTEXITCODE. Same
+# one-check-per-block caveat as Invoke-NonFatal above — wrap ONE native call per
+# invocation (as done throughout the fatal steps below) to get a check per call.
+function Invoke-Fatal([string]$label, [scriptblock]$block) {
+    $global:LASTEXITCODE = 0
+    & $block
+    if ($LASTEXITCODE -ne 0) { throw "$label failed (exit $LASTEXITCODE)" }
 }
 
 function Write-SettingsJson([string]$Path, $Settings) {
@@ -52,18 +75,18 @@ function Write-SettingsJson([string]$Path, $Settings) {
 
 # ── Fatal steps (1–6) ───────────────────────────────────────────────────────
 Write-Step "Update package manager"
-winget upgrade --all --silent --accept-source-agreements --accept-package-agreements
+Invoke-Fatal "winget upgrade --all" { winget upgrade --all --silent --accept-source-agreements --accept-package-agreements }
 
 Write-Step "Install core tools: git, Node LTS, Python, jq, shellcheck, gitleaks"
 # shellcheck + gitleaks are referenced directly by .pre-commit-config.yaml hooks;
 # pre-commit downloads its own binaries inside the hook framework, but local
 # direct invocation (manual lint runs, smoke tests) needs them on PATH.
-winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements
-winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --accept-package-agreements
-winget install --id Python.Python.3 -e --silent --accept-source-agreements --accept-package-agreements
-winget install --id jqlang.jq -e --silent --accept-source-agreements --accept-package-agreements
-winget install --id koalaman.shellcheck -e --silent --accept-source-agreements --accept-package-agreements
-winget install --id Gitleaks.Gitleaks -e --silent --accept-source-agreements --accept-package-agreements
+Invoke-Fatal "winget install Git.Git" { winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements }
+Invoke-Fatal "winget install OpenJS.NodeJS.LTS" { winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --accept-package-agreements }
+Invoke-Fatal "winget install Python.Python.3" { winget install --id Python.Python.3 -e --silent --accept-source-agreements --accept-package-agreements }
+Invoke-Fatal "winget install jqlang.jq" { winget install --id jqlang.jq -e --silent --accept-source-agreements --accept-package-agreements }
+Invoke-Fatal "winget install koalaman.shellcheck" { winget install --id koalaman.shellcheck -e --silent --accept-source-agreements --accept-package-agreements }
+Invoke-Fatal "winget install Gitleaks.Gitleaks" { winget install --id Gitleaks.Gitleaks -e --silent --accept-source-agreements --accept-package-agreements }
 
 # Refresh PATH for current session after winget installs
 $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
@@ -71,7 +94,7 @@ $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";
 
 Write-Step "Install nvm-windows + Node from .nvmrc"
 if (-not (Get-Command nvm.exe -ErrorAction SilentlyContinue)) {
-    winget install --id CoreyButler.NVMforWindows -e --silent --accept-package-agreements --accept-source-agreements
+    Invoke-Fatal "winget install CoreyButler.NVMforWindows" { winget install --id CoreyButler.NVMforWindows -e --silent --accept-package-agreements --accept-source-agreements }
     # winget updates the registry PATH but the current process needs a refresh
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -83,8 +106,8 @@ if (-not (Get-Command nvm.exe -ErrorAction SilentlyContinue)) {
     }
 }
 $NodeVersion = (Get-Content (Join-Path $RepoRoot '.nvmrc')).Trim()
-nvm install $NodeVersion
-nvm use $NodeVersion
+Invoke-Fatal "nvm install $NodeVersion" { nvm install $NodeVersion }
+Invoke-Fatal "nvm use $NodeVersion" { nvm use $NodeVersion }
 $Actual = (node --version) -replace '^v(\d+).*', '$1'
 $Expect = $NodeVersion -replace '^v?(\d+).*', '$1'
 if ($Actual -ne $Expect) {
@@ -98,12 +121,12 @@ irm https://astral.sh/uv/install.ps1 | iex
 # Refresh PATH so uv is available
 $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
             [System.Environment]::GetEnvironmentVariable("PATH", "User")
-uv --version
+Invoke-Fatal "uv --version" { uv --version }
 
 Write-Step "Install Claude Code CLI (native installer — no npm dependency)"
 Invoke-RestMethod "https://claude.ai/install.ps1" | Invoke-Expression
 $env:Path = "$env:LOCALAPPDATA\Programs\ClaudeCode;$env:Path"
-claude --version
+Invoke-Fatal "claude --version" { claude --version }
 
 Write-Step "Install RTK"
 $RtkTag = (Invoke-RestMethod "https://api.github.com/repos/rtk-ai/rtk/releases/latest").tag_name
@@ -124,13 +147,13 @@ if ($PathParts -notcontains $RtkInstallDir) {
 }
 $env:PATH = "$env:PATH;$RtkInstallDir"
 
-rtk init -g
-rtk --version
+Invoke-Fatal "rtk init -g" { rtk init -g }
+Invoke-Fatal "rtk --version" { rtk --version }
 
 Write-Step "Clone himmel + run repo setup"
 $HimmelParent = Split-Path $HimmelPath -Parent
 New-Item -ItemType Directory -Force $HimmelParent | Out-Null
-git clone https://github.com/yotamleo/himmel.git $HimmelPath
+Invoke-Fatal "git clone himmel" { git clone https://github.com/yotamleo/himmel.git $HimmelPath }
 Push-Location $HimmelPath
 
 # HIMMEL-105: gate the clone for core.hooksPath misconfiguration BEFORE
@@ -142,17 +165,17 @@ if ($LASTEXITCODE -ne 0) {
     throw "check-hookspath.ps1 failed (exit $LASTEXITCODE) — refusing to run setup.ps1 on a misconfigured clone."
 }
 
-.\scripts\setup.ps1
+Invoke-Fatal "scripts/setup.ps1" { .\scripts\setup.ps1 }
 Pop-Location
 
 Write-Step "Build scripts/jira/dist + scripts/himmel-run/dist"
 Push-Location (Join-Path $HimmelPath 'scripts/jira')
-npm ci
-npm run build
+Invoke-Fatal "npm ci (scripts/jira)" { npm ci }
+Invoke-Fatal "npm run build (scripts/jira)" { npm run build }
 Pop-Location
 Push-Location (Join-Path $HimmelPath 'scripts/himmel-run')
-npm ci
-npm run build
+Invoke-Fatal "npm ci (scripts/himmel-run)" { npm ci }
+Invoke-Fatal "npm run build (scripts/himmel-run)" { npm run build }
 Pop-Location
 
 Write-Step "Add himmel-run to user PATH"
@@ -181,10 +204,12 @@ Invoke-NonFatal "obsidian-second-brain plugin" {
     New-Item -ItemType Directory -Force $PluginsDir | Out-Null
     git clone https://github.com/eugeniughelbur/obsidian-second-brain.git `
         "$PluginsDir\obsidian-second-brain"
+    if ($LASTEXITCODE -ne 0) { throw "git clone obsidian-second-brain failed (exit $LASTEXITCODE)" }
     $GitBash = "C:\Program Files\Git\bin\bash.exe"
     Push-Location "$PluginsDir\obsidian-second-brain"
     try {
         & $GitBash -c "./install.sh"
+        if ($LASTEXITCODE -ne 0) { throw "install.sh failed (exit $LASTEXITCODE)" }
     } finally {
         Pop-Location
     }
@@ -264,13 +289,17 @@ Invoke-NonFatal "Luna vault setup" {
         Write-Host '  luna vault already present - skipping clone'
     } else {
         git clone $LunaRemote $LunaVaultPath
+        if ($LASTEXITCODE -ne 0) { throw "git clone luna vault failed (exit $LASTEXITCODE)" }
     }
 
     Push-Location $LunaVaultPath
     try {
         uv tool install pre-commit
+        if ($LASTEXITCODE -ne 0) { throw "uv tool install pre-commit failed (exit $LASTEXITCODE)" }
         pre-commit install
+        if ($LASTEXITCODE -ne 0) { throw "pre-commit install failed (exit $LASTEXITCODE)" }
         pre-commit install --hook-type pre-push
+        if ($LASTEXITCODE -ne 0) { throw "pre-commit install --hook-type pre-push failed (exit $LASTEXITCODE)" }
     } finally {
         Pop-Location
     }
