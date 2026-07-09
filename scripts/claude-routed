@@ -151,10 +151,24 @@ seed_config_dir() {
     # steering the lane — same rationale as the subtree re-mirror below.
     rm -f "$CONFIG_DIR/settings.json" || seed_fail "remove stale settings.json"
   fi
+  # Leaf files mirror deletion too (HIMMEL-828/819): CLAUDE.md literally steers the lane,
+  # so a deleted source must not leave a stale copy behind — same rationale as settings.
   for f in CLAUDE.md RTK.md; do
-    [ -f "$SRC/$f" ] && { cp "$SRC/$f" "$CONFIG_DIR/$f" || seed_fail "copy $f"; }
+    if [ -f "$SRC/$f" ]; then
+      cp "$SRC/$f" "$CONFIG_DIR/$f" || seed_fail "copy $f"
+    else
+      rm -f "$CONFIG_DIR/$f" || seed_fail "remove stale $f"
+    fi
   done
+  # Clean re-mirror + deletion mirror (HIMMEL-828/819, parity with the claude-glm twin):
+  # rm the destination subtree FIRST — drops files deleted from the source, avoids BSD
+  # cp -R nesting (commands/commands), AND mirrors a whole-subtree deletion so a removed
+  # command/hook does not linger steering the routed lane ("a deleted source must not
+  # leave a stale copy steering the lane") — then copy only when the source still exists.
+  # No-op on the first seed; rm -rf on an absent dest is a safe no-op. Symmetric with the
+  # settings/manifest mirror.
   for d in commands skills hooks agents; do
+    rm -rf "${CONFIG_DIR:?}/$d" || seed_fail "clear stale $d"
     [ -d "$SRC/$d" ] && { cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"; }
   done
   for p in installed_plugins.json known_marketplaces.json; do
@@ -164,13 +178,16 @@ seed_config_dir() {
       rm -f "$CONFIG_DIR/plugins/$p" || seed_fail "remove stale plugins/$p"
     fi
   done
+  rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear stale plugins/marketplaces"
   [ -d "$SRC/plugins/marketplaces" ] && { cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
   # claude-hud DISPLAY config — seed the single config.json only; the three cache
   # dirs under plugins/claude-hud/ (config-cache/context-cache/transcript-cache) are
-  # runtime state, never seeded. Source-absent → skip (mirrors the [ -f ] guards above).
+  # runtime state, never seeded. Source-absent → mirror the deletion (HIMMEL-828/819).
   if [ -f "$SRC/plugins/claude-hud/config.json" ]; then
     mkdir -p "$CONFIG_DIR/plugins/claude-hud" || seed_fail "create $CONFIG_DIR/plugins/claude-hud"
     cp "$SRC/plugins/claude-hud/config.json" "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "copy plugins/claude-hud/config.json"
+  else
+    rm -f "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
   fi
   : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
 }
@@ -178,18 +195,34 @@ seed_config_dir() {
 # Staleness-aware reseed (HIMMEL-819): a once-only seed strands lane workers on
 # whatever plugin/settings profile existed at first launch — the operator's lean
 # enabledPlugins profile never reaches the lane, so every worker pays duplicated
-# plugin context + duplicate MCP invocations. Track the three config sources that
-# change out-of-band (newer than the sentinel, OR deleted while a lane copy
-# remains); commands/skills/hooks/agents drift still needs --reseed.
+# plugin context + duplicate MCP invocations. Track every allowlisted leaf source
+# (settings, CLAUDE.md, RTK.md, the two plugin manifests, claude-hud config — newer
+# than the sentinel OR deleted while a lane copy remains) AND the copied subtrees
+# (HIMMEL-828 Part B — a half-seeded/externally-removed subtree, a top-level
+# command/skill add/remove, or a deleted source, self-heals on plain launch); a deep
+# in-file subtree edit still needs --reseed (directory mtime granularity).
 # Opt-out: CLAUDE_LANE_AUTO_RESEED=0 restores the once-only seed (first seed +
 # explicit --reseed only) — the escape hatch if auto-reseed ever blocks a
 # launch in your setup (e.g. seed re-runs surfacing a broken node).
 config_seed_stale() { # rc=0 when any tracked source is newer than the sentinel, or gone but still mirrored
   [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
-  for s in settings.json plugins/installed_plugins.json plugins/known_marketplaces.json; do
+  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json; do
     if [ -f "${HOME}/.claude/$s" ]; then
       if [ "${HOME}/.claude/$s" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
     elif [ -f "$CONFIG_DIR/$s" ]; then
+      return 0  # source deleted but lane copy remains — reseed mirrors the removal
+    fi
+  done
+  # HIMMEL-828 Part B — also track the copied subtrees, fully symmetric with the
+  # settings/manifest loop above. Per subtree: SOURCE present but DEST missing = a
+  # half-seed → reseed; SOURCE newer than the sentinel = top-level drift → reseed;
+  # SOURCE absent but DEST present = a deleted source whose lane copy lingers → reseed
+  # (the seeder mirrors the deletion, so this fires once then clears — no churn).
+  for d in commands skills hooks agents plugins/marketplaces; do
+    if [ -d "${HOME}/.claude/$d" ]; then
+      [ -d "$CONFIG_DIR/$d" ] || return 0
+      if [ "${HOME}/.claude/$d" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
+    elif [ -d "$CONFIG_DIR/$d" ]; then
       return 0  # source deleted but lane copy remains — reseed mirrors the removal
     fi
   done

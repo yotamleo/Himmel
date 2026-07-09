@@ -178,18 +178,22 @@ function Copy-SeedConfig {
   # must NOT be swallowed (HIMMEL-820 CR: codex-adv [high] + silent-failure-hunter
   # convergence). A blanket -ErrorAction SilentlyContinue hid a locked/ACL-denied
   # .seeded: the reseed then threw later and exited 4, but the OLD sentinel survived
-  # next to a half-seeded tree, and a plain relaunch (whose staleness check tracks
-  # only settings + plugin manifests, not the copied subtrees) read it as "seeded"
-  # and launched on the corrupt tree. Guard the missing-file case (Test-Path — first
-  # seed has no sentinel) and exit 4 on a genuine removal failure, BEFORE any copy.
+  # next to a half-seeded tree, and a plain relaunch read it as "seeded" and launched
+  # on the corrupt tree.
+  # HIMMEL-828 Part A — race-free, mirroring bash `rm -f`: do NOT Test-Path-then-Remove
+  # (a concurrent reseed sharing this config dir can delete the sentinel in that window,
+  # so Remove-Item throws ItemNotFound even though sentinel-ABSENT is the desired end
+  # state → a spurious exit 4). Attempt the removal unconditionally and treat a
+  # missing-file (ItemNotFoundException) as success (goal reached); only a genuine
+  # lock/ACL failure (the file is still there) exits 4.
   $sentinel = Join-Path $ConfigDir '.seeded'
-  if (Test-Path -LiteralPath $sentinel) {
-    try {
-      Remove-Item -LiteralPath $sentinel -Force -ErrorAction Stop
-    } catch {
-      [Console]::Error.WriteLine("claude-routed: FAILED to clear stale .seeded sentinel ($($_.Exception.Message)). Refusing to reseed while a stale sentinel remains. Fix the cause and re-run (or rm -rf ~/.claude-routed).")
-      exit 4
-    }
+  try {
+    Remove-Item -LiteralPath $sentinel -Force -ErrorAction Stop
+  } catch [System.Management.Automation.ItemNotFoundException] {
+    # already absent (first seed, or a concurrent reseed beat us to it) — goal reached.
+  } catch {
+    [Console]::Error.WriteLine("claude-routed: FAILED to clear stale .seeded sentinel ($($_.Exception.Message)). Refusing to reseed while a stale sentinel remains. Fix the cause and re-run (or rm -rf ~/.claude-routed).")
+    exit 4
   }
   New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir 'plugins') | Out-Null
   $settings = Join-Path $src 'settings.json'
@@ -219,11 +223,24 @@ function Copy-SeedConfig {
       $dst = Join-Path $ConfigDir 'settings.json'
       if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
     }
+    # Leaf files mirror deletion too (HIMMEL-828/819): CLAUDE.md literally steers the
+    # lane, so a deleted source must not leave a stale copy behind — same as settings.
     foreach ($f in 'CLAUDE.md', 'RTK.md') {
       $p = Join-Path $src $f
-      if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ConfigDir $f) -Force }
+      $dp = Join-Path $ConfigDir $f
+      if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $dp -Force }
+      elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
     }
+    # Clean re-mirror + deletion mirror (HIMMEL-828/819, parity with the claude-glm twin):
+    # remove the destination subtree FIRST — this both drops files deleted from the source
+    # AND mirrors a whole-subtree deletion (a removed command/hook/skill must not linger
+    # steering the routed lane: "a deleted source must not leave a stale copy steering the
+    # lane") — then copy only when the source still exists. No-op on the first seed. A REAL
+    # removal failure (locked file, ACL denial) terminates under Stop and is caught below —
+    # same "no sentinel on any failure". Symmetric with the settings/manifest mirror.
     foreach ($d in 'commands', 'skills', 'hooks', 'agents') {
+      $dst = Join-Path $ConfigDir $d
+      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
       $p = Join-Path $src $d
       if (Test-Path -LiteralPath $p -PathType Container) { Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force }
     }
@@ -233,14 +250,20 @@ function Copy-SeedConfig {
       if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination $dp -Force }
       elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
     }
+    $mdst = Join-Path $ConfigDir (Join-Path 'plugins' 'marketplaces')
+    if (Test-Path -LiteralPath $mdst) { Remove-Item -LiteralPath $mdst -Recurse -Force }
     $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
     if (Test-Path -LiteralPath $mp -PathType Container) { Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force }
     # claude-hud DISPLAY config — seed the single config.json only; the cache dirs
-    # under plugins/claude-hud/ are runtime state, never seeded. Source-absent → skip.
+    # under plugins/claude-hud/ are runtime state, never seeded. Source-absent → mirror
+    # the deletion (HIMMEL-828/819).
     $hudCfg = Join-Path $src (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
+    $hudDst = Join-Path $ConfigDir (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
     if (Test-Path -LiteralPath $hudCfg) {
       New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir (Join-Path 'plugins' 'claude-hud')) | Out-Null
-      Copy-Item -LiteralPath $hudCfg -Destination (Join-Path $ConfigDir (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))) -Force
+      Copy-Item -LiteralPath $hudCfg -Destination $hudDst -Force
+    } elseif (Test-Path -LiteralPath $hudDst) {
+      Remove-Item -LiteralPath $hudDst -Force
     }
     # sentinel LAST: only a fully-populated seed reads as "seeded"
     New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
@@ -253,9 +276,12 @@ function Copy-SeedConfig {
 # Staleness-aware reseed (HIMMEL-819): a once-only seed strands lane workers on
 # whatever plugin/settings profile existed at first launch — the operator's lean
 # enabledPlugins profile never reaches the lane, so every worker pays duplicated
-# plugin context + duplicate MCP invocations. Track the three config sources that
-# change out-of-band (newer than the sentinel, OR deleted while a lane copy
-# remains); commands/skills/hooks/agents drift still needs -Reseed.
+# plugin context + duplicate MCP invocations. Track every allowlisted leaf source
+# (settings, CLAUDE.md, RTK.md, the two plugin manifests, claude-hud config — newer
+# than the sentinel OR deleted while a lane copy remains) AND the copied subtrees
+# (HIMMEL-828 Part B — a half-seeded/externally-removed subtree, a command/skill
+# added/removed at the top level, or a deleted source, self-heals on plain launch); a
+# deep in-file edit inside a subtree still needs -Reseed (directory mtime granularity).
 # Opt-out: CLAUDE_LANE_AUTO_RESEED=0 restores the once-only seed (first seed +
 # explicit -Reseed only) — the escape hatch if auto-reseed ever blocks a
 # launch in your setup (e.g. seed re-runs surfacing a broken node).
@@ -270,12 +296,28 @@ function Test-ConfigSeedStale {
     if (-not (Test-Path -LiteralPath $sentinel)) { return $false }
     $sentinelTime = (Get-Item -LiteralPath $sentinel).LastWriteTimeUtc
     $src = Join-Path $HomeDir '.claude'
-    foreach ($rel in @('settings.json', (Join-Path 'plugins' 'installed_plugins.json'), (Join-Path 'plugins' 'known_marketplaces.json'))) {
+    foreach ($rel in @('settings.json', 'CLAUDE.md', 'RTK.md', (Join-Path 'plugins' 'installed_plugins.json'), (Join-Path 'plugins' 'known_marketplaces.json'), (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json')))) {
       $s = Join-Path $src $rel
       $d = Join-Path $ConfigDir $rel
       if (Test-Path -LiteralPath $s) {
         if ((Get-Item -LiteralPath $s).LastWriteTimeUtc -gt $sentinelTime) { return $true }
       } elseif (Test-Path -LiteralPath $d) {
+        return $true  # source deleted but lane copy remains — reseed mirrors the removal
+      }
+    }
+    # HIMMEL-828 Part B — also track the copied subtrees, fully symmetric with the
+    # settings/manifest loop above, so a half-seeded OR a source-deleted subtree
+    # self-heals on a plain launch. Per subtree: SOURCE present but DEST missing = a
+    # half-seed → reseed; SOURCE newer than the sentinel = top-level drift → reseed;
+    # SOURCE absent but DEST present = a deleted source whose lane copy lingers → reseed
+    # (the seeder mirrors the deletion, so this fires once then clears — no churn).
+    foreach ($rel in @('commands', 'skills', 'hooks', 'agents', (Join-Path 'plugins' 'marketplaces'))) {
+      $s = Join-Path $src $rel
+      $d = Join-Path $ConfigDir $rel
+      if (Test-Path -LiteralPath $s -PathType Container) {
+        if (-not (Test-Path -LiteralPath $d -PathType Container)) { return $true }
+        if ((Get-Item -LiteralPath $s).LastWriteTimeUtc -gt $sentinelTime) { return $true }
+      } elseif (Test-Path -LiteralPath $d -PathType Container) {
         return $true  # source deleted but lane copy remains — reseed mirrors the removal
       }
     }

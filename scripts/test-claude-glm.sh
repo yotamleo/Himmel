@@ -120,9 +120,11 @@ t "stale seed auto-refreshes" 0
 grep -q "lean-profile-v2" "$FAKEHOME/.claude-glm/settings.json" || { echo "FAIL: stale seed not refreshed on plain launch"; FAILS=$((FAILS+1)); }
 
 # --- T7c: fresh sentinel -> plain launch does NOT reseed (no churn) — sources
-# older than the sentinel leave the config dir untouched.
+# older than the sentinel leave the config dir untouched. (HIMMEL-828 Part B: the
+# subtree sources are aged too, so the widened check keeps its no-churn guarantee.)
 printf '{"local":"tamper-survives"}' > "$FAKEHOME/.claude-glm/settings.json"
-touch -t 202001010000 "$FAKEHOME/.claude/settings.json" "$FAKEHOME/.claude/plugins/installed_plugins.json" 2>/dev/null
+touch -t 202001010000 "$FAKEHOME/.claude/settings.json" "$FAKEHOME/.claude/plugins/installed_plugins.json" \
+  "$FAKEHOME/.claude/commands" "$FAKEHOME/.claude/plugins/marketplaces" 2>/dev/null
 touch "$FAKEHOME/.claude-glm/.seeded"
 t "fresh sentinel skips reseed" 0
 grep -q "tamper-survives" "$FAKEHOME/.claude-glm/settings.json" || { echo "FAIL: fresh sentinel still reseeded"; FAILS=$((FAILS+1)); }
@@ -326,5 +328,66 @@ t "reseed re-mirrors marketplaces" 0 --reseed
 [ ! -f "$FAKEHOME/.claude-glm/plugins/marketplaces/stale.json" ] || { echo "FAIL: stale marketplaces file survived reseed"; FAILS=$((FAILS+1)); }
 [ ! -d "$FAKEHOME/.claude-glm/plugins/marketplaces/marketplaces" ] || { echo "FAIL: nested marketplaces/marketplaces after reseed"; FAILS=$((FAILS+1)); }
 [ -f "$FAKEHOME/.claude-glm/plugins/marketplaces/keep.json" ] || { echo "FAIL: kept marketplaces file lost after reseed"; FAILS=$((FAILS+1)); }
+
+# --- T24 (HIMMEL-828 Part B): a half-seeded tree self-heals on a plain launch — the
+# sentinel is present but a copied subtree is missing (interrupted reseed / external
+# removal), which the pre-828 settings+manifest check missed. Fixture: seed with a
+# commands subtree, delete the DEST subtree while leaving a FRESH sentinel + old
+# sources; a plain launch detects the source-present/dest-missing mismatch and reseeds.
+# FAILS on pre-828 code (fresh sentinel + old tracked files => not stale => no reseed).
+setup; KEY="zai-test-123"
+mkdir -p "$FAKEHOME/.claude/commands"
+printf 'a' > "$FAKEHOME/.claude/commands/keep.md"
+t "seed before half-seed simulation" 0
+rm -rf "$FAKEHOME/.claude-glm/commands"   # dest subtree vanishes
+touch -t 202001010000 "$FAKEHOME/.claude/settings.json" "$FAKEHOME/.claude/commands" 2>/dev/null
+touch "$FAKEHOME/.claude-glm/.seeded"     # fresh sentinel
+t "half-seeded tree triggers reseed on plain launch" 0
+[ -f "$FAKEHOME/.claude-glm/commands/keep.md" ] || { echo "FAIL: missing subtree NOT restored (half-seed not detected)"; FAILS=$((FAILS+1)); }
+
+# --- T25 (HIMMEL-828 Part B): a top-level add inside a source subtree (source dir
+# mtime newer than the sentinel) auto-reseeds without --reseed — pre-828 this drift
+# needed an explicit --reseed. Fixture: seed, age settings so only the subtree can be
+# the trigger, set a fresh-ish sentinel, add a new command (bumping the source commands
+# dir mtime past the sentinel), confirm a plain launch mirrors it into the lane copy.
+setup; KEY="zai-test-123"
+mkdir -p "$FAKEHOME/.claude/commands"
+printf 'a' > "$FAKEHOME/.claude/commands/one.md"
+t "seed before subtree drift" 0
+touch -t 202001010000 "$FAKEHOME/.claude/settings.json" 2>/dev/null
+touch -t 202006010000 "$FAKEHOME/.claude-glm/.seeded"
+printf 'b' > "$FAKEHOME/.claude/commands/two.md"   # new source command bumps the commands dir mtime to now
+t "source subtree drift auto-reseeds on plain launch" 0
+[ -f "$FAKEHOME/.claude-glm/commands/two.md" ] || { echo "FAIL: new source command NOT mirrored (subtree drift not detected)"; FAILS=$((FAILS+1)); }
+
+# --- T26 (HIMMEL-828/819, codex-adv [high]): DELETION MIRRORING — a deleted SOURCE
+# subtree is removed from the lane on a plain launch (a removed command/hook must not
+# linger steering the cloud lane), symmetric with settings/manifest deletion mirroring,
+# AND it does NOT churn forever (the seeder clears the dest, so the predicate stops
+# firing). Fixture: seed with a commands subtree, delete the SOURCE; launch 2 mirrors
+# the removal; launch 3 is stable (a lane tamper survives = no reseed).
+setup; KEY="zai-test-123"
+mkdir -p "$FAKEHOME/.claude/commands"
+printf 'a' > "$FAKEHOME/.claude/commands/keep.md"
+t "seed before source-subtree deletion" 0
+rm -rf "$FAKEHOME/.claude/commands"   # SOURCE subtree deleted
+t "source-deleted subtree triggers a mirror reseed" 0
+[ ! -d "$FAKEHOME/.claude-glm/commands" ] || { echo "FAIL: stale lane subtree survived source deletion"; FAILS=$((FAILS+1)); }
+printf '{"local":"tamper-stable"}' > "$FAKEHOME/.claude-glm/settings.json"
+touch -t 202001010000 "$FAKEHOME/.claude/settings.json" 2>/dev/null
+touch "$FAKEHOME/.claude-glm/.seeded"
+t "no further churn after deletion mirrored" 0
+grep -q "tamper-stable" "$FAKEHOME/.claude-glm/settings.json" || { echo "FAIL: churns after deletion mirrored (tamper lost)"; FAILS=$((FAILS+1)); }
+
+# --- T27 (HIMMEL-828/819, codex-adv [high]): LEAF-FILE deletion mirroring — a deleted
+# source CLAUDE.md (which literally steers the lane) is removed from the lane on a plain
+# launch, not just subtrees/manifests. Every allowlisted leaf now mirrors deletion.
+setup; KEY="zai-test-123"
+printf 'steer' > "$FAKEHOME/.claude/CLAUDE.md"
+t "seed before CLAUDE.md deletion" 0
+[ -f "$FAKEHOME/.claude-glm/CLAUDE.md" ] || { echo "FAIL: CLAUDE.md not seeded"; FAILS=$((FAILS+1)); }
+rm -f "$FAKEHOME/.claude/CLAUDE.md"   # SOURCE deleted
+t "deleted source CLAUDE.md triggers a mirror reseed" 0
+[ ! -f "$FAKEHOME/.claude-glm/CLAUDE.md" ] || { echo "FAIL: stale CLAUDE.md survived source deletion"; FAILS=$((FAILS+1)); }
 
 echo; [ "$FAILS" -eq 0 ] && echo "ALL PASS" || { echo "$FAILS failure(s)"; exit 1; }
