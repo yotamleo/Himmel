@@ -691,8 +691,20 @@ view into the vault — the bridge between the derived graph and the KB.
   `bash scripts/graphify/refresh-graph-map.sh --name luna --corpus-root <vault> --maps-dir <vault>/60-Maps --title "Graphify Luna Vault Map" --slug graphify-luna-map --corpus-tag luna`.
   Model: the derived graph.json + full report stay repo-local (gitignored,
   regenerable); only the curated MOC is committed to the vault, so each refresh
-  shows the map's drift as a small git diff. Consolidation into the unified
-  `pipeline-cadence` runner is the open follow-up (HIMMEL-825).
+  shows the map's drift as a small git diff.
+- `scripts/luna/graphmap-cadence.sh` — the scheduler that arms this refresh
+  (HIMMEL-829, follow-up to HIMMEL-825). A SEPARATE OS-scheduler sibling of
+  `pipeline-cadence.sh` (deliberately not a pipeline-cadence leg — that runner's
+  invariant is "every task = a claude session", and a graph refresh is a
+  deterministic script, no claude). `arm`/`status`/`disarm` register two daily
+  tasks — `HIMMEL-GraphMap-Luna` (default 13:00 local) and `HIMMEL-GraphMap-Himmel`
+  (13:20, staggered) — each firing `refresh-graph-map.sh` for its corpus off-peak
+  (13:00–13:20 local lands off-peak-UTC across common EU/US zones; DeepSeek peak =
+  UTC 1-4 + 6-10 = 2x). schtasks (Windows, StartWhenAvailable XML) / crontab
+  (POSIX); dedup-guarded; hermetic test `test-graphmap-cadence.sh`. Arming is an
+  operator flip (daily DeepSeek spend), not auto-armed:
+  `bash scripts/luna/graphmap-cadence.sh arm` (`--luna-time` / `--himmel-time` /
+  `--vault` / `--force` / `--dry-run`).
 
 ---
 
