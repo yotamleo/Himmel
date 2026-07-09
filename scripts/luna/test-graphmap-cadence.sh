@@ -62,10 +62,19 @@ if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); 
 
 # Shared fixtures ------------------------------------------------------------
 
+# The interpreter that runs the script under test. Resolved BEFORE the fake
+# bash below shadows PATH: `env PATH=... bash` would exec the FAKE via the NEW
+# PATH, and on Linux the fake's own `#!/usr/bin/env bash` shebang re-resolves
+# to itself -> infinite exec loop -> the whole suite hangs to the CI timeout
+# (broke public CI on ubuntu; Git Bash dodges it only because the mixed-form
+# C:/ PATH entry loses the lookup there).
+REAL_BASH="$(command -v bash)"
+
 # Fake bash on PATH (arm resolves it via `command -v bash`). A no-op stub is
-# enough — the tests assert runner TEXT, they never fire the runner.
+# enough — the tests assert runner TEXT, they never fire the runner. Shebang
+# is /bin/sh (absolute) so the stub can never shebang-recurse into itself.
 mkdir -p "$TMP_ROOT/bin"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP_ROOT/bin/bash"
+printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/bin/bash"
 chmod +x "$TMP_ROOT/bin/bash"
 
 # Hermeticity: point HOME/USERPROFILE at the temp dir so a stray BAT_DIR default
@@ -118,9 +127,13 @@ mkdir -p "$CSTATE"
 # Fake crontab: persists the installed tab at $CSTATE/crontab. Mimics real
 # crontab signatures: -l with no tab prints "no crontab for <user>" + rc=1;
 # `crontab -` installs from stdin. Failure seam: $CSTATE/fail-write.
+# Shebang MUST be /bin/sh (absolute, POSIX body): `#!/usr/bin/env bash` would
+# resolve the no-op fake `bash` stub via the prepended PATH on Linux, turning
+# every crontab call into a silent no-op (rc=0, nothing read or written) — 35
+# green-on-Windows assertions failed exactly this way on ubuntu CI.
 FAKE_CRONTAB="$TMP_ROOT/crontab-fake.sh"
 cat >"$FAKE_CRONTAB" <<FAKE
-#!/usr/bin/env bash
+#!/bin/sh
 CSTATE="$CSTATE"
 FAKE
 cat >>"$FAKE_CRONTAB" <<'FAKE'
@@ -156,7 +169,7 @@ CRON_DIR="$TMP_ROOT/cron-runners"
 
 run_cron() {
     env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-        GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$TMP_ROOT/bin:$PATH" bash "$SCRIPT" "$@"
+        GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
 
 # Test C1: status with no crontab installed ----------------------------------
@@ -429,7 +442,7 @@ EVIL_VAULT="$TMP_ROOT/va&ult \$X y"
 EVIL_DIR="$TMP_ROOT/cr%on rnr"
 mkdir -p "$EVIL_VAULT"
 out=$(env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$PATH" bash "$SCRIPT" arm --vault "$EVIL_VAULT")
+    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" arm --vault "$EVIL_VAULT")
 luna_sh=$(cat "$EVIL_DIR/graphmap-luna.sh" 2>/dev/null || echo MISSING)
 assert_contains "ampersand %q-escaped in runner" 'va\&ult' "$luna_sh"
 # shellcheck disable=SC2016  # literal \$X needle — asserting the %q escape itself
@@ -438,7 +451,7 @@ tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 assert_contains "percent cron-escaped in entry (\\%)" 'cr\%on' "$tab"
 assert_contains "space %q-escaped in entry" 'cr\%on\ rnr' "$tab"
 env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$PATH" bash "$SCRIPT" disarm >/dev/null
+    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" disarm >/dev/null
 
 # Test C13: unknown platform exits 2 ----------------------------------------------
 
@@ -467,9 +480,12 @@ mkdir -p "$STATE/tasks"
 
 # Fake schtasks: persists tasks as files under $STATE/tasks/<name> (content =
 # the created XML, for assertions). Mirrors test-pipeline-cadence's fake.
+# Shebang is the pre-resolved REAL bash (the body needs bash arrays) — an
+# env-bash shebang would resolve the no-op fake `bash` stub via the prepended
+# PATH (see the crontab fake above for the failure mode this caused).
 FAKE_SCHTASKS="$TMP_ROOT/schtasks-fake.sh"
 cat >"$FAKE_SCHTASKS" <<FAKE
-#!/usr/bin/env bash
+#!$REAL_BASH
 STATE="$STATE"
 FAKE
 cat >>"$FAKE_SCHTASKS" <<'FAKE'
@@ -531,7 +547,7 @@ BAT_DIR="$TMP_ROOT/bats"
 
 run_gc() {
     PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
-        PATH="$TMP_ROOT/bin:$PATH" bash "$SCRIPT" "$@"
+        PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
 
 # Test 1: usage errors ------------------------------------------------------
