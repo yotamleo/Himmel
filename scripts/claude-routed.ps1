@@ -174,7 +174,23 @@ function Copy-SeedConfig {
   # Without the up-front delete a failed -Reseed would exit 4 yet leave a stale
   # sentinel, and the next plain launch would proceed with the half-populated tree.
   $src = Join-Path $HomeDir '.claude'
-  Remove-Item -LiteralPath (Join-Path $ConfigDir '.seeded') -Force -ErrorAction SilentlyContinue
+  # The up-front delete is part of that exit-4 contract, so a REAL removal failure
+  # must NOT be swallowed (HIMMEL-820 CR: codex-adv [high] + silent-failure-hunter
+  # convergence). A blanket -ErrorAction SilentlyContinue hid a locked/ACL-denied
+  # .seeded: the reseed then threw later and exited 4, but the OLD sentinel survived
+  # next to a half-seeded tree, and a plain relaunch (whose staleness check tracks
+  # only settings + plugin manifests, not the copied subtrees) read it as "seeded"
+  # and launched on the corrupt tree. Guard the missing-file case (Test-Path — first
+  # seed has no sentinel) and exit 4 on a genuine removal failure, BEFORE any copy.
+  $sentinel = Join-Path $ConfigDir '.seeded'
+  if (Test-Path -LiteralPath $sentinel) {
+    try {
+      Remove-Item -LiteralPath $sentinel -Force -ErrorAction Stop
+    } catch {
+      [Console]::Error.WriteLine("claude-routed: FAILED to clear stale .seeded sentinel ($($_.Exception.Message)). Refusing to reseed while a stale sentinel remains. Fix the cause and re-run (or rm -rf ~/.claude-routed).")
+      exit 4
+    }
+  }
   New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir 'plugins') | Out-Null
   $settings = Join-Path $src 'settings.json'
   if (Test-Path -LiteralPath $settings) {

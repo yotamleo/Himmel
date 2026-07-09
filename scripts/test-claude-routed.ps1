@@ -323,6 +323,26 @@ try {
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')) { Fail 'sentinel written despite seed Copy-Item failure' } else { Pass 'no sentinel on seed Copy-Item failure' }
   if (FileHas $OutTxt 'FAILED to seed config dir') { Pass 'copy failure emits the failed-seed message' } else { Fail 'copy failure did not emit the failed-seed message' }
 
+  # --- T17c (HIMMEL-827, parity with glm T17c from HIMMEL-820 CR: codex-adv [high]
+  # + silent-failure-hunter): a stale .seeded that cannot be removed on reseed exits
+  # 4 with the clear-sentinel message BEFORE any copy work, and the sentinel is left
+  # intact (never silently swallowed) — so the seeder never proceeds leaving the old
+  # sentinel next to a half-seeded tree. Fixture: seed once, then exclusively lock
+  # the sentinel. ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher) 0 'seed before sentinel-lock'   # writes .seeded
+  Remove-Item -LiteralPath $ChildEnv -Force -ErrorAction SilentlyContinue  # so the non-launch assert below is meaningful
+  $sentinel = Join-Path $FAKEHOME '.claude-routed\.seeded'
+  $slock = [System.IO.File]::Open($sentinel, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+  try {
+    Assert-Exit (Invoke-Launcher -LArgs @('-Reseed')) 4 'unremovable stale sentinel exits 4 on reseed'
+  } finally {
+    $slock.Dispose()
+  }
+  if (FileHas $OutTxt 'FAILED to clear stale .seeded sentinel') { Pass 'stale-sentinel failure emits the clear-sentinel message' } else { Fail 'no clear-sentinel message on unremovable stale sentinel' }
+  if (Test-Path -LiteralPath $sentinel) { Pass 'stale sentinel left intact (not silently removed)' } else { Fail 'stale sentinel vanished despite lock' }
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite unremovable stale sentinel' } else { Pass 'claude not launched on unremovable stale sentinel' }
+
   # --- T18 (guard I7): phi-roots that is a DIRECTORY (not a readable regular file)
   # fails CLOSED with exit 3, never silently allows egress, never launches claude.
   # PS twin of bash T17 — proves the PS guard maps the not-a-leaf case to the
