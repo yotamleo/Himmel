@@ -43,6 +43,12 @@ trap 'rm -rf "$TMPII"' EXIT
 mkdir -p "$TMPII/noenv"
 export HIMMEL_REPO="$TMPII/noenv"
 
+# Isolate the HIMMEL-813 dedup markers (${TMPDIR:-/tmp}/himmel-inject-initiative-*)
+# inside this test's own scratch dir so runs never collide with a real session's
+# markers (or each other, across re-runs) and get swept by the trap above.
+export TMPDIR="$TMPII/markers"
+mkdir -p "$TMPDIR"
+
 assert_pass() {
     pass=$((pass + 1))
     echo "  PASS: $1"
@@ -332,6 +338,79 @@ assert_has "preamble present in overnight profile" "seed your native tasklist" "
 
 # OFF-guard: tests 1/4/7/25 already assert empty stdout when unset/falsy, which
 # is the structural proof the preamble cannot leak outside the active block.
+
+# ---------- HIMMEL-813: per-session-start dedup (double-fire fix) -----------
+# The hook is wired at BOTH user scope and project scope, so a single
+# SessionStart event fires it twice within seconds. Dedup is keyed on
+# session_id with a freshness window (NOT once-per-session-id-ever), because a
+# resume/clear later in the SAME session_id must still re-inject (compaction
+# may have dropped the directive by then).
+
+# ---------- 29. Second invocation within the window, same session_id -> silent
+echo "Test 29: same session_id within the freshness window -> second call silent"
+sid29="sid-dedup-$$-a"
+out1=$(printf '{"session_id":"%s"}' "$sid29" | HIMMEL_INITIATIVE=1 bash "$hook")
+assert_has "first call injects" "HIMMEL_INITIATIVE is active" "$out1"
+out2=$(printf '{"session_id":"%s"}' "$sid29" | HIMMEL_INITIATIVE=1 bash "$hook")
+if [ -z "$out2" ]; then
+    assert_pass "second call within window stays silent"
+else
+    assert_fail "second call should be silent, got: $out2"
+fi
+printf '{"session_id":"%s"}' "$sid29" | HIMMEL_INITIATIVE=1 bash "$hook" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    assert_pass "second call still exits 0"
+else
+    assert_fail "second call should exit 0, got rc=$rc"
+fi
+
+# ---------- 30. A different session_id injects independently -----------------
+echo "Test 30: a different session_id injects independently"
+sid30="sid-dedup-$$-b"
+out=$(printf '{"session_id":"%s"}' "$sid30" | HIMMEL_INITIATIVE=1 bash "$hook")
+assert_has "different session_id injects" "HIMMEL_INITIATIVE is active" "$out"
+
+# ---------- 31. Stale marker (backdated timestamp) re-injects ----------------
+echo "Test 31: a stale marker (backdated past the window) re-injects"
+sid31="sid-dedup-$$-c"
+marker_dir="$TMPDIR/himmel-inject-initiative-${sid31}"
+mkdir -p "$marker_dir"
+printf '%s\n' "$(($(date +%s) - 3600))" >"$marker_dir/ts"
+out=$(printf '{"session_id":"%s"}' "$sid31" | HIMMEL_INITIATIVE=1 bash "$hook")
+assert_has "stale marker re-injects" "HIMMEL_INITIATIVE is active" "$out"
+
+# ---------- 32. Missing session_id skips dedup entirely (fail-open) ---------
+echo "Test 32: missing session_id injects on every call (fail-open)"
+out1=$(printf '{}' | HIMMEL_INITIATIVE=1 bash "$hook")
+out2=$(printf '{}' | HIMMEL_INITIATIVE=1 bash "$hook")
+assert_has "first call (no session_id) injects"  "HIMMEL_INITIATIVE is active" "$out1"
+assert_has "second call (no session_id) injects" "HIMMEL_INITIATIVE is active" "$out2"
+
+# ---------- 33. Orphaned marker (dir exists, ts missing) still injects -------
+# CR round 1: a marker dir whose ts file is gone (winner killed pre-write, or
+# a temp-cleaner swept the file but not the dir) must NOT permanently silence
+# the directive for that session_id. After a one-shot retry the hook fails
+# OPEN: refreshes the stamp and injects.
+echo "Test 33: orphaned marker (no ts file) fails open and injects"
+sid33="sid-dedup-$$-d"
+marker_dir="$TMPDIR/himmel-inject-initiative-${sid33}"
+mkdir -p "$marker_dir"
+rm -f "$marker_dir/ts"
+out=$(printf '{"session_id":"%s"}' "$sid33" | HIMMEL_INITIATIVE=1 bash "$hook")
+assert_has "orphaned marker injects (fail-open)" "HIMMEL_INITIATIVE is active" "$out"
+if [ -s "$marker_dir/ts" ]; then
+    assert_pass "orphaned marker got a refreshed ts stamp"
+else
+    assert_fail "orphaned marker ts file was not refreshed"
+fi
+# ...and the refreshed stamp makes the NEXT call a normal fresh duplicate.
+out=$(printf '{"session_id":"%s"}' "$sid33" | HIMMEL_INITIATIVE=1 bash "$hook")
+if [ -z "$out" ]; then
+    assert_pass "call after the refresh dedups normally"
+else
+    assert_fail "call after the refresh should be silent, got: $out"
+fi
 
 echo
 echo "RESULTS: $pass passed, $fail failed"

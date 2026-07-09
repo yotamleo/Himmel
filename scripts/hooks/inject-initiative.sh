@@ -33,9 +33,26 @@
 # protection still applies; the exfil classifier still blocks public push).
 #
 # Hook contract (SessionStart):
-#   - Reads the SessionStart JSON payload from stdin (we don't consume fields).
+#   - Reads the SessionStart JSON payload from stdin. Only session_id is
+#     consumed (per-session-start dedup below, HIMMEL-813); no other field
+#     is read.
 #   - Exit 0 with stdout → stdout is injected as additional context.
 #   - Non-zero exit → would surface an error; we never block, only ever exit 0.
+#
+# Double-fire dedup (HIMMEL-813): this script is wired at BOTH user scope
+# (~/.claude/settings.json) and project scope (.claude/settings.json), so a
+# single SessionStart event fires it twice within seconds, doubling the
+# directive. Dedup is keyed on session_id with a ~60s FRESHNESS WINDOW, not a
+# once-per-session-id-ever marker: a resume/clear later in the SAME
+# session_id fires SessionStart again, and compaction may have dropped the
+# directive from context by then, so that later fire must still re-inject. A
+# marker younger than the window means "this is the duplicate of the two
+# near-simultaneous registrations for the same session-start event" (stay
+# silent); a marker older than the window means "this is a later, distinct
+# session-start event" (refresh + re-inject). See the marker/mkdir block
+# below for the atomicity + timestamp-freshness mechanics. Missing or
+# unparseable session_id skips dedup entirely and always injects (fail-open
+# — this hook must never suppress its own output on its own bugs).
 #
 # Wiring (in .claude/settings.json):
 #   {
@@ -54,11 +71,13 @@ set -euo pipefail
 trap 'exit 0' ERR
 
 # Drain stdin so the hook contract doesn't break the runtime if it pipes a
-# payload. We don't currently need the JSON body.
+# payload. Captured (not merely discarded) so session_id can be pulled out
+# below for the per-session-start dedup marker (HIMMEL-813).
+_ii_payload=""
 if [ -t 0 ]; then
     :
 else
-    cat >/dev/null 2>&1 || true
+    _ii_payload=$(cat 2>/dev/null) || true
 fi
 
 # --- Source the himmel clone's .env for the initiative vars (R1, HIMMEL-460) -
@@ -91,6 +110,77 @@ fi
 active=$(resolve_legs "${HIMMEL_INITIATIVE:-}" "${HIMMEL_INITIATIVE_OVERNIGHT:-}" "${HIMMEL_OVERNIGHT:-}")
 # Off when nothing resolved (unset / falsy / all-unknown subset).
 [ -n "$active" ] || exit 0
+
+# --- Per-session-start dedup (HIMMEL-813) -----------------------------------
+# Only reached once we know we're about to inject (the OFF path above already
+# exited silently, so there is nothing to dedup there). Extraction mirrors
+# the jq-first / grep -oP-fallback convention used elsewhere in this dir
+# (scripts/hooks/block-cheap-lane-pr-without-verdict.sh's extract_command).
+_ii_extract_session_id() {
+    local input="$1"
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.session_id // empty' <<<"$input" 2>/dev/null
+        return
+    fi
+    echo "$input" | grep -oP '"session_id"\s*:\s*"(\\.|[^"\\])*"' \
+        | head -1 \
+        | sed -E 's/^"session_id"\s*:\s*"(.*)"$/\1/' \
+        | sed 's/\\"/"/g'
+}
+
+_ii_sid=$(_ii_extract_session_id "$_ii_payload" || true)
+# Sanitize to a safe path component (session_id is normally a UUID; belt for
+# any stray path-hostile characters reaching the marker directory name).
+_ii_sid_safe=$(printf '%s' "$_ii_sid" | tr -c 'A-Za-z0-9._-' '-')
+
+if [ -n "$_ii_sid_safe" ]; then
+    _ii_window=60
+    _ii_now=$(date +%s)
+    _ii_marker_dir="${TMPDIR:-/tmp}/himmel-inject-initiative-${_ii_sid_safe}"
+    _ii_ts_file="$_ii_marker_dir/ts"
+
+    if mkdir "$_ii_marker_dir" 2>/dev/null; then
+        # Won the mkdir race: first of the (likely two) near-simultaneous
+        # firings for this session-start event. Stamp and proceed to inject.
+        printf '%s\n' "$_ii_now" >"$_ii_ts_file" 2>/dev/null || true
+    else
+        # Lost the mkdir race (or this is a later, distinct fire): read the
+        # existing timestamp numerically — never stat -c/-f (GNU/BSD differ).
+        _ii_ts=$(head -1 "$_ii_ts_file" 2>/dev/null || true)
+        case "$_ii_ts" in
+            ''|*[!0-9]*)
+                # Timestamp missing or unparseable. Two different causes:
+                # (1) this read raced the winner's write - resolves in <1s;
+                # (2) an orphaned/corrupted marker (winner killed pre-write,
+                #     temp-cleaner swept the file but not the dir). Case (2)
+                #     must NOT go silent - it would suppress the directive
+                #     for this session_id forever. Retry once, then fail OPEN.
+                sleep 1
+                _ii_ts=$(head -1 "$_ii_ts_file" 2>/dev/null || true)
+                ;;
+        esac
+        case "$_ii_ts" in
+            ''|*[!0-9]*)
+                # Still unreadable after the retry: orphaned/corrupted marker.
+                # Fail OPEN - refresh the stamp and fall through to inject.
+                # Worst case is one extra inject, which this dedup exists to
+                # reduce, never to buy permanent silence on our own bugs.
+                printf '%s\n' "$_ii_now" >"$_ii_ts_file" 2>/dev/null || true
+                ;;
+            *)
+                _ii_age=$(( _ii_now - _ii_ts ))
+                if [ "$_ii_age" -ge 0 ] && [ "$_ii_age" -lt "$_ii_window" ]; then
+                    exit 0  # duplicate fire of the same session-start event — silent
+                fi
+                # Stale marker: a later, distinct session-start event
+                # (resume/clear) for the same session_id. Refresh the stamp
+                # and fall through to re-inject — compaction may have dropped
+                # the directive since.
+                printf '%s\n' "$_ii_now" >"$_ii_ts_file" 2>/dev/null || true
+                ;;
+        esac
+    fi
+fi
 
 # Profile-dependent labels (which var the operator set; shown in the directive).
 if _il_truthy "${HIMMEL_OVERNIGHT:-}"; then
