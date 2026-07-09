@@ -356,7 +356,7 @@ Add one alias per tier you want reachable. Claude-tier parity map:
 | sonnet | `qwen-plus` |
 | opus | `qwen3-max` / `qwen3.7-max` |
 | thinking / fable | `qwq-plus` / `qwen3-235b-a22b-thinking` |
-| CR critic | anchor row in `scripts/cr/critics.json` (2026-07-09: `qwen3.7-max`; `qwen3-coder-plus`/`qwen-plus` exhausted) |
+| CR critic | anchor row in `scripts/cr/critics.json` (per-account quota state — e.g. exhausted models swapped out — lives in the gitignored `scripts/cr/critics.local.json` overlay, HIMMEL-727) |
 
 ### Validate THROUGH hermes
 
@@ -374,9 +374,12 @@ one-shot auto-detect on `-m` re-overrides a profile's provider.
 ### Consumers
 
 The CR panel's free critic is anchored via this lane to the model in
-`scripts/cr/critics.json`'s anchor row (HIMMEL-725 introduced the lane;
-HIMMEL-838 swapped the anchor to `qwen3.7-max` after the 2026-07-09
-exhaustion). Free-quota exhaustion is why a quota guard is tracked
+the registry's anchor row (HIMMEL-725 introduced the lane). The shipped
+`scripts/cr/critics.json` carries UNIVERSAL defaults; when YOUR account's
+free quotas exhaust, record the swap in the gitignored
+`scripts/cr/critics.local.json` overlay (auto-picked-up, HIMMEL-727) —
+do not edit the shipped registry for account state (HIMMEL-838 did, reverted).
+Free-quota exhaustion is why a quota guard is tracked
 separately — it needs a dynamic API pull (console screenshots are not
 automatable).
 

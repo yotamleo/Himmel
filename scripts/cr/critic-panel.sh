@@ -29,7 +29,18 @@ export LC_ALL
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFP="${CRITIC_FIRST_PASS:-$SCRIPT_DIR/critic-first-pass.sh}"
-REG="${CRITICS_JSON:-$SCRIPT_DIR/critics.json}"
+# Registry resolution (HIMMEL-727 operator-vs-universal split): CRITICS_JSON env
+# (tests/CI) > critics.local.json (gitignored per-operator overlay — carries
+# ACCOUNT state like exhausted free quotas / upgraded models, so the shipped
+# registry stays adopter-neutral) > critics.json (universal defaults).
+if [ -n "${CRITICS_JSON:-}" ]; then
+    REG="$CRITICS_JSON"
+elif [ -f "$SCRIPT_DIR/critics.local.json" ]; then
+    REG="$SCRIPT_DIR/critics.local.json"
+    echo "critic-panel.sh: using operator-local registry critics.local.json" >&2
+else
+    REG="$SCRIPT_DIR/critics.json"
+fi
 INVOKE="${CRITIC_INVOKE:-$SCRIPT_DIR/../hermes/invoke.sh}"
 
 # Effective tier resolution (HIMMEL-558). CR_PROFILE is AUTHORITATIVE when set —
@@ -50,7 +61,7 @@ else
 fi
 
 ANCHOR_SLUG="qwen3coder"
-ANCHOR_MODEL="qwen3.7-max"
+ANCHOR_MODEL="qwen3-coder-plus"
 
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
 CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-240}"
@@ -103,7 +114,7 @@ if [ "$CHECK_MODE" = "1" ]; then
     const j = JSON.parse(fs.readFileSync(reg, "utf8"));
     const p = (j.panel || []).filter(r => r.slug && r.model);
     if (!p.length) throw new Error("no rows");
-    process.stdout.write(p.map(r => r.slug + "\t" + r.model + "\t" + (r.tier || "")).join("\n"));
+    process.stdout.write(p.map(r => r.slug + "\t" + r.model + "\t" + (r.tier || "") + "\t" + (r.route_provider || "-")).join("\n"));
   } catch (e) {
     process.exit(7);
   }
@@ -111,7 +122,7 @@ if [ "$CHECK_MODE" = "1" ]; then
 
     if [ -z "${check_rows:-}" ]; then
         echo "critic-panel.sh: registry $REG missing/invalid/empty — anchor-only ($ANCHOR_SLUG)" >&2
-        check_rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	free"
+        check_rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	free	-"
     fi
 
     check_prompt="$(mktemp -t critic-panel-check.XXXXXX)"
@@ -119,13 +130,14 @@ if [ "$CHECK_MODE" = "1" ]; then
     printf '%s' 'Reply with exactly: ok' > "$check_prompt"
 
     check_failed="0"
-    while IFS="	" read -r slug model tier; do
+    while IFS="	" read -r slug model tier row_provider; do
         [ -n "$slug" ] || continue
+        [ "$row_provider" = "-" ] && row_provider=""
         if [ "$tier" = "paid" ] && [ "$CHECK_ALL_TIERS" != "1" ]; then
             echo "row $slug: skipped (paid)"
             continue
         fi
-        "$INVOKE" --model "$model" --prompt-file "$check_prompt" >/dev/null 2>&1
+        "$INVOKE" --model "$model" --provider "$row_provider" --prompt-file "$check_prompt" >/dev/null 2>&1
         rc=$?
         if [ "$rc" -eq 0 ]; then
             echo "row $slug: ok"
@@ -216,12 +228,20 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
     // Field 4 = the fallback CHAIN (HIMMEL-737): the ordered "fallback_models"
     // array, comma-joined; a legacy "fallback_model" string is a 1-element chain
     // for back-compat; "-" when empty. Model names never contain a comma or tab.
+    // Field 5 = ROUTE_PROVIDER (HIMMEL-727): OPT-IN per row. When set, threaded
+    // to hermes as an explicit --provider so a model id newer than the hermes
+    // internal catalog cannot fall to its default provider. Deliberately a
+    // SEPARATE key from the descriptive "provider" metadata: blanket-threading
+    // provider broke alias-routed rows (explicit --provider bypasses the hermes
+    // alias base_url -> 401 on the alibaba lane). Primary dispatch only —
+    // fallback-chain members stay name-routed (hermes aliases, possibly
+    // cross-provider).
     process.stdout.write(p.map(r => {
       let chain = Array.isArray(r.fallback_models) ? r.fallback_models
                 : (r.fallback_model ? [r.fallback_model] : []);
       chain = chain.filter(m => typeof m === "string" && m.length);
       const fb = chain.length ? chain.join(",") : "-";
-      return r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + fb;
+      return r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + fb + "\t" + (r.route_provider || "-");
     }).join("\n"));
   } catch (e) {
     process.exit(7);
@@ -482,29 +502,31 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
     _seq_out="$(mktemp -t critic-panel-seq.XXXXXX)"
     _seq_err="$(mktemp -t critic-panel-seq-err.XXXXXX)"
 
-    while IFS="	" read -r slug model perspective fallback_chain; do
+    while IFS="	" read -r slug model perspective fallback_chain row_provider; do
         [ -n "$slug" ] || continue
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
         [ "$perspective" = "-" ] && perspective=""
         [ "$fallback_chain" = "-" ] && fallback_chain=""
+        [ "$row_provider" = "-" ] && row_provider=""
         total=$((total + 1))
 
-        # Run this member (with per-member timeout if available)
+        # Run this member (with per-member timeout if available). --provider ""
+        # is a no-op in critic-first-pass.sh, so it is passed unconditionally.
         if [ -n "$perspective" ]; then
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
-                bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             fi
         else
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
-                bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             fi
         fi
@@ -523,12 +545,13 @@ else
 
     # Launch each member indexed by position i (i=0,1,2,...)
     i=0
-    while IFS="	" read -r slug model perspective fallback_chain; do
+    while IFS="	" read -r slug model perspective fallback_chain row_provider; do
         [ -n "$slug" ] || continue
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
         [ "$perspective" = "-" ] && perspective=""
         [ "$fallback_chain" = "-" ] && fallback_chain=""
+        [ "$row_provider" = "-" ] && row_provider=""
         total=$((total + 1))
         # Write slug and model so the result loop can recover them
         printf '%s' "$slug"  > "$outdir/$i.slug"
@@ -540,18 +563,18 @@ else
         (
             if [ -n "$perspective" ]; then
                 if [ -n "$_TIMEOUT_BIN" ]; then
-                    "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 else
-                    bash "$CFP" --model "$model" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 fi
             else
                 if [ -n "$_TIMEOUT_BIN" ]; then
-                    "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 else
-                    bash "$CFP" --model "$model" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 fi
             fi
