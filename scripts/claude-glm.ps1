@@ -159,7 +159,23 @@ function Copy-SeedConfig {
   # Without the up-front delete a failed -Reseed would exit 4 yet leave a stale
   # sentinel, and the next plain launch would proceed with the half-populated tree.
   $src = Join-Path $HomeDir '.claude'
-  Remove-Item -LiteralPath (Join-Path $ConfigDir '.seeded') -Force -ErrorAction SilentlyContinue
+  # The up-front delete is part of that exit-4 contract, so a REAL removal failure
+  # must NOT be swallowed (HIMMEL-820 CR: codex-adv [high] + silent-failure-hunter
+  # convergence). A blanket -ErrorAction SilentlyContinue hid a locked/ACL-denied
+  # .seeded: the reseed then threw later and exited 4, but the OLD sentinel survived
+  # next to a half-seeded tree, and a plain relaunch (whose staleness check tracks
+  # only settings + plugin manifests, not the copied subtrees) read it as "seeded"
+  # and launched on the corrupt tree. Guard the missing-file case (Test-Path — first
+  # seed has no sentinel) and exit 4 on a genuine removal failure, BEFORE any copy.
+  $sentinel = Join-Path $ConfigDir '.seeded'
+  if (Test-Path -LiteralPath $sentinel) {
+    try {
+      Remove-Item -LiteralPath $sentinel -Force -ErrorAction Stop
+    } catch {
+      [Console]::Error.WriteLine("claude-glm: FAILED to clear stale .seeded sentinel ($($_.Exception.Message)). Refusing to reseed while a stale sentinel remains. Fix the cause and re-run (or rm -rf ~/.claude-glm).")
+      exit 4
+    }
+  }
   New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir 'plugins') | Out-Null
   $settings = Join-Path $src 'settings.json'
   if (Test-Path -LiteralPath $settings) {
@@ -178,61 +194,66 @@ function Copy-SeedConfig {
       [Console]::Error.WriteLine('claude-glm: FAILED to sanitize settings.json (node missing/broken?). Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-glm).')
       exit 4
     }
-  } else {
-    # True mirror (HIMMEL-819): a deleted source must not leave a stale copy
-    # steering the lane — same rationale as the subtree re-mirror below.
-    $dst = Join-Path $ConfigDir 'settings.json'
-    if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
   }
-  foreach ($f in 'CLAUDE.md', 'RTK.md') {
-    $p = Join-Path $src $f
-    if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ConfigDir $f) -Force }
-  }
-  # Clean re-mirror: remove the destination subtree BEFORE copying so a -Reseed
-  # drops files deleted from the source instead of leaving them stale. No-op on
-  # the first seed. (Parity with the bash twin's rm -rf-then-copy.) The remove
-  # is guarded by Test-Path instead of -ErrorAction SilentlyContinue so a REAL
-  # removal failure (locked file, ACL denial) terminates under Stop and never
-  # reaches the sentinel write — same "no sentinel on any failure" contract.
-  foreach ($d in 'commands', 'skills', 'hooks', 'agents') {
-    $p = Join-Path $src $d
-    if (Test-Path -LiteralPath $p -PathType Container) {
-      $dst = Join-Path $ConfigDir $d
-      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
-      Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force
-    }
-  }
-  foreach ($p in 'installed_plugins.json', 'known_marketplaces.json') {
-    $sp = Join-Path $src (Join-Path 'plugins' $p)
-    $dp = Join-Path $ConfigDir (Join-Path 'plugins' $p)
-    if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination $dp -Force }
-    elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
-  }
-  $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
-  if (Test-Path -LiteralPath $mp -PathType Container) {
-    $mdst = Join-Path $ConfigDir (Join-Path 'plugins' 'marketplaces')
-    if (Test-Path -LiteralPath $mdst) { Remove-Item -LiteralPath $mdst -Recurse -Force }
-    Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force
-  }
-  # claude-hud DISPLAY config — seed the single config.json only; the cache dirs
-  # under plugins/claude-hud/ are runtime state, never seeded. Source-absent → skip.
-  # try/catch → exit 4 on failure: parity with the bash twin's seed_fail and the
-  # routed PS twin's function-level wrap (the header contract is "4 = failed seed";
-  # without this a Copy-Item failure under ErrorActionPreference=Stop surfaces as a
-  # raw exit 1). The .seeded sentinel is still written LAST, so any throw here
-  # aborts with no sentinel and the next launch re-seeds.
-  $hudCfg = Join-Path $src (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
+  # Function-level seed wrap (HIMMEL-820, parity with routed's CR-F9 #830): the
+  # remaining seed body — settings-absent mirror, CLAUDE.md/RTK.md copy, the
+  # commands/skills/hooks/agents + marketplaces re-mirror, plugin-manifest
+  # copy/delete, and the claude-hud config — all run under
+  # ErrorActionPreference=Stop, so a Copy-Item/Remove-Item failure (locked file,
+  # ACL denial) must map to the "4 = failed seed" contract, NOT surface as a raw
+  # exit 1. #1044 left these blocks outside any try/catch (only claude-hud was
+  # wrapped); this extends the wrap to the whole body, matching the routed twin.
+  # The .seeded sentinel is written LAST inside this try, so any throw aborts with
+  # no sentinel and the next launch re-seeds.
   try {
+    if (-not (Test-Path -LiteralPath $settings)) {
+      # True mirror (HIMMEL-819): a deleted source must not leave a stale copy
+      # steering the lane — same rationale as the subtree re-mirror below.
+      $dst = Join-Path $ConfigDir 'settings.json'
+      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
+    }
+    foreach ($f in 'CLAUDE.md', 'RTK.md') {
+      $p = Join-Path $src $f
+      if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ConfigDir $f) -Force }
+    }
+    # Clean re-mirror: remove the destination subtree BEFORE copying so a -Reseed
+    # drops files deleted from the source instead of leaving them stale. No-op on
+    # the first seed. (Parity with the bash twin's rm -rf-then-copy.) A REAL removal
+    # failure (locked file, ACL denial) terminates under Stop and is caught below —
+    # same "no sentinel on any failure" contract.
+    foreach ($d in 'commands', 'skills', 'hooks', 'agents') {
+      $p = Join-Path $src $d
+      if (Test-Path -LiteralPath $p -PathType Container) {
+        $dst = Join-Path $ConfigDir $d
+        if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
+        Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force
+      }
+    }
+    foreach ($p in 'installed_plugins.json', 'known_marketplaces.json') {
+      $sp = Join-Path $src (Join-Path 'plugins' $p)
+      $dp = Join-Path $ConfigDir (Join-Path 'plugins' $p)
+      if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination $dp -Force }
+      elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
+    }
+    $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
+    if (Test-Path -LiteralPath $mp -PathType Container) {
+      $mdst = Join-Path $ConfigDir (Join-Path 'plugins' 'marketplaces')
+      if (Test-Path -LiteralPath $mdst) { Remove-Item -LiteralPath $mdst -Recurse -Force }
+      Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force
+    }
+    # claude-hud DISPLAY config — seed the single config.json only; the cache dirs
+    # under plugins/claude-hud/ are runtime state, never seeded. Source-absent → skip.
+    $hudCfg = Join-Path $src (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
     if (Test-Path -LiteralPath $hudCfg) {
       New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir (Join-Path 'plugins' 'claude-hud')) | Out-Null
       Copy-Item -LiteralPath $hudCfg -Destination (Join-Path $ConfigDir (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))) -Force
     }
+    # sentinel LAST: only a fully-populated seed reads as "seeded"
+    New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
   } catch {
-    [Console]::Error.WriteLine("claude-glm: FAILED to seed claude-hud config ($($_.Exception.Message)). Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-glm).")
+    [Console]::Error.WriteLine("claude-glm: FAILED to seed config dir ($($_.Exception.Message)). Refusing to launch with a half-seeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-glm).")
     exit 4
   }
-  # sentinel LAST: only a fully-populated seed reads as "seeded"
-  New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
 }
 
 # Staleness-aware reseed (HIMMEL-819): a once-only seed strands lane workers on
