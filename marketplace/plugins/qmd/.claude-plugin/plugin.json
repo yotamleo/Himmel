@@ -1,0 +1,17 @@
+{
+  "name": "qmd",
+  "version": "0.1.0",
+  "description": "[yotamleo fork of tobi/qmd] Local markdown search plugin re-pointed at a SHARED HTTP MCP daemon (http://localhost:8181/mcp) instead of a per-session stdio server, so every Claude session addresses ONE qmd index runtime instead of loading its own copy (HIMMEL-592). Skill name (qmd:qmd) and MCP tool prefix (mcp__plugin_qmd_qmd__*) are unchanged from upstream. See marketplace/plugins/qmd/README.md for the fork delta.",
+  "author": {
+    "name": "tobi (upstream) / yotamleo (fork)"
+  },
+  "repository": "https://github.com/tobi/qmd",
+  "license": "MIT",
+  "keywords": [
+    "markdown",
+    "search",
+    "qmd",
+    "mcp",
+    "http-singleton"
+  ]
+}

@@ -89,6 +89,31 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 **MCP server:** `plugin:qmd:qmd` — exposes `query`, `get`, `multi_get`, `status` tools.
 **Usage:** Searching local knowledge base, notes, docs.
 
+**Shared HTTP singleton (HIMMEL-592):** himmel vendors `qmd@himmel`
+(`marketplace/plugins/qmd/`, a thin fork of upstream `qmd@qmd`) whose only
+delta is that the `qmd` MCP server is declared as an HTTP endpoint
+(`{"type":"http","url":"http://localhost:8181/mcp"}`) instead of a per-session
+stdio process. All Claude sessions address **one** `qmd mcp --http --daemon` on
+`localhost:8181`, so the read-only index runtime is loaded once, not N times.
+The skill (`qmd:qmd`) and tool prefix (`mcp__plugin_qmd_qmd__*`) keep the same
+name/prefix as upstream (one `allowed-tools` line added — see the plugin
+README's fork-delta section).
+- **Daemon lifecycle:** the plugin ships its own SessionStart hook
+  (`marketplace/plugins/qmd/hooks/hooks.json` invoking
+  `${CLAUDE_PLUGIN_ROOT}/scripts/ensure-qmd-daemon.sh`), so it runs from ANY
+  session in ANY repo where the plugin is enabled — not just himmel checkouts.
+  It probes the endpoint and starts the daemon if it is dead (idempotent; the
+  start is bounded by `timeout(1)` so a hung start cannot stall SessionStart;
+  a non-qmd listener on 8181 fails loudly as a port collision instead of
+  counting as alive). A manual operator twin for PowerShell lives at
+  `scripts/qmd/ensure-qmd-daemon.ps1`. Stop the daemon with `qmd mcp stop`.
+- **Freshness:** the index is sqlite+WAL, read per query, so docs added by the
+  existing `qmd update` cadence are served by the running daemon immediately —
+  no daemon restart or watch mechanism, cadence unchanged.
+- **Blast radius:** a shared-daemon crash affects every session's qmd. Accepted
+  for a read-only index — a connect failure surfaces loudly in `/mcp`, never as
+  a silent empty index.
+
 ### claude-obsidian (plugin)
 
 **What:** Obsidian vault companion skills — setup, scaffolding, wiki management, ingestion, search.
@@ -637,7 +662,7 @@ Shell scripts that run as pre-commit / pre-push gates (wired in `.pre-commit-con
 
 ## Luna Scripts (`scripts/luna/`)
 
-Shell scripts for luna vault maintenance and session import. Operator-invoked
+Scripts for luna vault maintenance and session import. Operator-invoked
 on demand; nothing here runs automatically.
 
 - `scripts/luna/backfill-sessions.sh` — Render historical Claude session
@@ -661,6 +686,7 @@ on demand; nothing here runs automatically.
   `backfill-sessions.sh --reheal`/`--recrystallize`. Fail-open (no `claude` / over the concurrency
   cap → leaves the mechanical note untouched). Detail:
   `docs/luna/end-session-wiki.md` → Crystallization.
+- `scripts/luna/fold-chat-history.py` — Fold an exported provider chat history (ChatGPT now; Gemini rides HIMMEL-391) into the luna vault as `chats/gpt/` notes (provider id maps to a vault subdir, e.g. `chatgpt` → `gpt`) + gitignored assets; create-only idempotent, `--dry-run` first (HIMMEL-832).
 
 ---
 

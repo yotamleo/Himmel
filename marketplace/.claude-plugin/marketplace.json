@@ -61,6 +61,22 @@
       "license": "Apache-2.0"
     },
     {
+      "name": "qmd",
+      "source": "./plugins/qmd",
+      "description": "[yotamleo fork of tobi/qmd] Local markdown search plugin re-pointed at a SHARED HTTP MCP daemon (http://localhost:8181/mcp) instead of a per-session stdio server, so every Claude session addresses ONE qmd index runtime (HIMMEL-592). Skill name (qmd:qmd) and MCP tool prefix (mcp__plugin_qmd_qmd__*) unchanged from upstream. Daemon brought up lazily by the plugin's own SessionStart hook (${CLAUDE_PLUGIN_ROOT}/scripts/ensure-qmd-daemon.sh) so it works from any session/repo with the plugin enabled. See marketplace/plugins/qmd/README.md.",
+      "author": {
+        "name": "tobi (upstream) / yotamleo (fork)"
+      },
+      "license": "MIT",
+      "keywords": [
+        "markdown",
+        "search",
+        "qmd",
+        "mcp",
+        "http-singleton"
+      ]
+    },
+    {
       "name": "obsidian-triage",
       "source": "./plugins/obsidian-triage",
       "description": "Autonomous triage + cross-clip synthesis for Obsidian Web Clipper output. /triage-clips summarizes each clip, infers tags from the existing vault tag set, suggests Related Notes via link-graph proximity, extracts Action Items to today's daily note, annotates a Promotion candidate, marks processed:true (idempotent). /synthesize-clips finds recurring patterns across processed clips and writes vault-restructuring proposals.",
