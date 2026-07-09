@@ -41,22 +41,31 @@ If `$1` (the `handover-dir` argument) was provided, treat it as the operator's
 explicit Mode-B path and skip the prompt. Otherwise ask via `AskUserQuestion`:
 
 > **Where should handover state live?**
-> - **Inline (this repo)** — state under `<repo-root>/handovers/`. Simplest; no
->   `.env` change. Best for a single-repo setup. (Mode A)
+> - **Inside your vault (Recommended)** — a `handovers/` folder in your
+>   luna-style Obsidian vault. State joins the knowledge base (wikilinkable,
+>   searchable, graphify-able) and rides the vault's own git. (Mode B)
 > - **External state repo** — a separate directory (typically a dedicated repo)
 >   so handover commits never land on your feature branches. You'll enter the
 >   path. (Mode B)
+> - **Inline (this repo)** — state under `<repo-root>/handovers/`. Simplest; no
+>   `.env` change. Best for a single-repo setup. (Mode A)
 
-For the **External** choice, get the absolute path (the user types it via the
-"Other" option or a follow-up). Expect a path ending in `/handovers` inside a
-git repo, e.g. `/c/Users/<you>/Documents/github/<your-state-repo>/handovers`.
+Pick ONE location — duplicated mode (state in both a vault and a state repo) is
+unsupported; the resolver reads a single `HANDOVER_DIR` root.
+
+For the **vault** or **external** choice, get the absolute path (the user types
+it via the "Other" option or a follow-up). Expect a path ending in `/handovers`
+inside a git repo — e.g. `/c/Users/<you>/Documents/<your-vault>/handovers`
+(vault) or `/c/Users/<you>/Documents/github/<your-state-repo>/handovers`
+(state repo).
 
 ### 4. Persist the choice
 
 - **Inline (Mode A):** nothing to write — `HANDOVER_DIR` stays unset and the
   resolver (`scripts/lib/handover-path.sh`) defaults to `<repo-root>/handovers`.
   Continue to step 5 with `<state-root-host>` = `<repo-root>`.
-- **External (Mode B):** if the chosen directory does not exist yet, ask whether
+- **Vault or external (Mode B — both persist identically):** if the chosen
+  directory does not exist yet, ask whether
   to create it (`mkdir -p`) — do not write a `HANDOVER_DIR` that points at a
   missing path. Then run the idempotent writer (this never echoes secret values,
   so it passes the secrets guard):
@@ -89,8 +98,9 @@ specs in the skill's `references/init-register.md`.
 
 ### 6. Confirm
 
-Print a one-line summary: the mode (inline/external), the resolved `<state-root>`,
-and the registered repo name. Suggest the next step: `/handover new-epic <name>`.
+Print a one-line summary: the mode (inline / vault / external), the resolved
+`<state-root>`, and the registered repo name. Suggest the next step:
+`/handover new-epic <name>`.
 
 ### Notes
 

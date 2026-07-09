@@ -196,6 +196,13 @@ function Copy-SeedConfig {
   }
   # Parity with the bash twin's seed_fail=4 — any seed failure must exit 4, not raw 1 (CR F9, #830).
   try {
+    if (-not (Test-Path -LiteralPath $settings)) {
+      # True mirror (HIMMEL-819): a deleted source must not leave a stale copy
+      # steering the lane — same rationale as the subtree re-mirror below.
+      # Inside the CR-F9 try so a removal failure exits 4, not raw 1.
+      $dst = Join-Path $ConfigDir 'settings.json'
+      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
+    }
     foreach ($f in 'CLAUDE.md', 'RTK.md') {
       $p = Join-Path $src $f
       if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ConfigDir $f) -Force }
@@ -206,7 +213,9 @@ function Copy-SeedConfig {
     }
     foreach ($p in 'installed_plugins.json', 'known_marketplaces.json') {
       $sp = Join-Path $src (Join-Path 'plugins' $p)
-      if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination (Join-Path $ConfigDir (Join-Path 'plugins' $p)) -Force }
+      $dp = Join-Path $ConfigDir (Join-Path 'plugins' $p)
+      if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination $dp -Force }
+      elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
     }
     $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
     if (Test-Path -LiteralPath $mp -PathType Container) { Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force }
@@ -225,7 +234,42 @@ function Copy-SeedConfig {
   }
 }
 
-if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed) {
+# Staleness-aware reseed (HIMMEL-819): a once-only seed strands lane workers on
+# whatever plugin/settings profile existed at first launch — the operator's lean
+# enabledPlugins profile never reaches the lane, so every worker pays duplicated
+# plugin context + duplicate MCP invocations. Track the three config sources that
+# change out-of-band (newer than the sentinel, OR deleted while a lane copy
+# remains); commands/skills/hooks/agents drift still needs -Reseed.
+# Opt-out: CLAUDE_LANE_AUTO_RESEED=0 restores the once-only seed (first seed +
+# explicit -Reseed only) — the escape hatch if auto-reseed ever blocks a
+# launch in your setup (e.g. seed re-runs surfacing a broken node).
+function Test-ConfigSeedStale {
+  if ($env:CLAUDE_LANE_AUTO_RESEED -eq '0') { return $false }
+  # try/catch: the predicate must never block a launch. A TOCTOU race (file
+  # deleted between Test-Path and Get-Item under ErrorActionPreference=Stop)
+  # reads as not-stale — worst case a slightly stale config, never an abort.
+  # (The bash twin's [ -f ] && [ -nt ] is race-safe by construction.)
+  try {
+    $sentinel = Join-Path $ConfigDir '.seeded'
+    if (-not (Test-Path -LiteralPath $sentinel)) { return $false }
+    $sentinelTime = (Get-Item -LiteralPath $sentinel).LastWriteTimeUtc
+    $src = Join-Path $HomeDir '.claude'
+    foreach ($rel in @('settings.json', (Join-Path 'plugins' 'installed_plugins.json'), (Join-Path 'plugins' 'known_marketplaces.json'))) {
+      $s = Join-Path $src $rel
+      $d = Join-Path $ConfigDir $rel
+      if (Test-Path -LiteralPath $s) {
+        if ((Get-Item -LiteralPath $s).LastWriteTimeUtc -gt $sentinelTime) { return $true }
+      } elseif (Test-Path -LiteralPath $d) {
+        return $true  # source deleted but lane copy remains — reseed mirrors the removal
+      }
+    }
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
   Copy-SeedConfig
 }
 
