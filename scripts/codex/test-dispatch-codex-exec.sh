@@ -23,6 +23,8 @@ trap 'rm -rf "$TMP"' EXIT
 WT="$TMP/.claude/worktrees/wt"
 mkdir -p "$WT"
 LOG="$TMP/calls.log"
+JOBS_DIR="$TMP/jobs-dir"
+mkdir -p "$JOBS_DIR"
 
 # codex stub: records invocation order, argv, and cwd; exits 0.
 CODEX_STUB="$TMP/codex-stub"
@@ -46,9 +48,23 @@ EOF
 chmod +x "$NORM_STUB"
 echo 0 > "$TMP/norm.rc"
 
+# reap-mcp-fleet stub (HIMMEL-840): records invocation + argv, exits 0 - no
+# real process table or pwsh is touched. Injected into every run_dispatch
+# call below so a codex stub that actually runs (rc-0 or nonzero-rc paths)
+# never shells out to the real reap-mcp-fleet.sh/.ps1.
+REAP_STUB="$TMP/reap-stub.sh"
+cat > "$REAP_STUB" <<EOF
+#!/usr/bin/env bash
+echo "reap" >> "$LOG"
+printf '%s\n' "\$*" > "$TMP/reap.args"
+exit 0
+EOF
+chmod +x "$REAP_STUB"
+
 run_dispatch() {  # run_dispatch <args...> ; sets $RC and $OUT
   set +e
   OUT="$(CODEX_BIN="$CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+      CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
       bash "$DISPATCH" "$@" 2>&1)"
   RC=$?
   set -e
@@ -338,6 +354,48 @@ printf '%s\n' "\$*" > "$TMP/codex.args"
 pwd > "$TMP/codex.cwd"
 exit 0
 EOF
+
+# --- 15: job registry (HIMMEL-840) - created during the run, removed after; --
+# the composed EXIT trap invokes the reap primitive with the codex CHILD's
+# own pid (never the dispatcher's own $$); rc propagation unchanged with the
+# new always-a-child flow. A dedicated slow stub records its own pid and
+# snapshots $CODEX_JOBS_DIR mid-run (the parent's registry write is racing
+# the child's start, so the child sleeps briefly first).
+: > "$LOG"; echo 0 > "$TMP/norm.rc"
+rm -f "$TMP/jobs-during.txt" "$TMP/codex.pid" "$TMP/reap.args"
+SLOW_CODEX_STUB="$TMP/codex-slow-stub"
+cat > "$SLOW_CODEX_STUB" <<EOF
+#!/usr/bin/env bash
+echo "codex" >> "$LOG"
+echo \$\$ > "$TMP/codex.pid"
+sleep 0.3
+ls "\$CODEX_JOBS_DIR" 2>/dev/null > "$TMP/jobs-during.txt"
+exit 0
+EOF
+chmod +x "$SLOW_CODEX_STUB"
+set +e
+OUT="$(CODEX_BIN="$SLOW_CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+    CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+    bash "$DISPATCH" --worktree "$WT" do-it 2>&1)"
+RC=$?
+set -e
+assert_rc 0 "registry-test dispatch exits 0" "registry rc=$RC out=$OUT"
+case "$(cat "$TMP/jobs-during.txt" 2>/dev/null)" in
+  *.json) pass "job registry file present during the run" ;;
+  *) fail "job registry file missing during run: $(cat "$TMP/jobs-during.txt" 2>/dev/null)" ;;
+esac
+if [ -z "$(ls -A "$JOBS_DIR" 2>/dev/null)" ]; then
+  pass "job registry file removed after the run (EXIT trap cleanup)"
+else
+  fail "job registry file(s) left behind: $(ls "$JOBS_DIR")"
+fi
+CODEX_CHILD_PID_SEEN="$(cat "$TMP/codex.pid" 2>/dev/null)"
+case "$(cat "$TMP/reap.args" 2>/dev/null)" in
+  "--root-pid $CODEX_CHILD_PID_SEEN --started-at "*" --kill")
+    pass "reap primitive invoked with the codex child's own pid" ;;
+  *)
+    fail "reap.args: $(cat "$TMP/reap.args" 2>/dev/null) (expected root-pid=$CODEX_CHILD_PID_SEEN)" ;;
+esac
 
 echo
 if [ "$fails" -ne 0 ]; then

@@ -28,6 +28,17 @@
 #      lock helper's own release verb (see scripts/codex/README.md).
 #      Default posture (no --shared-branch) is unchanged: own worktree, own
 #      throwaway branch, no lock.
+#   6. Job registry + descendant reap (HIMMEL-840): the codex-exec CLI sandbox
+#      leaks its own MCP-server fleet (npx/node children under cmd.exe
+#      wrappers) that the HIMMEL-741 app-server fingerprint cannot see (no
+#      codex path marker survives on those processes once codex.exe is gone).
+#      This wrapper now ALWAYS runs codex as a child (never exec's it, in
+#      either path - exec would drop the trap below), records the child pid
+#      under CODEX_JOBS_DIR right after it starts, and on EXIT reaps the
+#      child's still-live descendants via reap-mcp-fleet.{sh,ps1} before
+#      removing the registry entry. A stale registry entry (dispatcher killed
+#      before its own EXIT trap ran) is still visible to reap-mcp-fleet's
+#      registry-driven maintenance mode.
 #
 # Usage:
 #   dispatch-codex-exec.sh --worktree <path> [--shared-branch <branch>] [codex exec args...]
@@ -36,6 +47,9 @@
 #   CODEX_BIN            Override the codex CLI (tests inject a stub).
 #   CODEX_ACL_NORMALIZE  Override the preflight script path (tests).
 #   SBL_HELPER           Override the shared-branch-lock.sh path (tests).
+#   CODEX_JOBS_DIR        Override the job registry dir (tests; default
+#                         $HOME/.himmel/state/codex-exec-jobs).
+#   CODEX_REAP_HELPER     Override the reap-mcp-fleet.sh path (tests).
 #
 # Bash 3.2 safe (macOS / Git Bash on Windows).
 set -uo pipefail
@@ -44,13 +58,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NORMALIZE="${CODEX_ACL_NORMALIZE:-$SCRIPT_DIR/normalize-worktree-acl.sh}"
 CODEX="${CODEX_BIN:-codex}"
 LOCK_HELPER="${SBL_HELPER:-$SCRIPT_DIR/../lib/shared-branch-lock.sh}"
+JOBS_DIR="${CODEX_JOBS_DIR:-$HOME/.himmel/state/codex-exec-jobs}"
+REAP_HELPER="${CODEX_REAP_HELPER:-$SCRIPT_DIR/reap-mcp-fleet.sh}"
 
 usage() {
     echo "usage: dispatch-codex-exec.sh --worktree <path> [--shared-branch <branch>] [codex exec args...]" >&2
     exit 2
 }
 
+# codex-adv-style minimal JSON string escaping (backslash, quote) - mirrors
+# shared-branch-lock.sh's _sbl_json_escape. Worktree paths on Windows carry
+# backslashes that must not break the registry file's JSON.
+_json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Invariant 6 state, initialized up front (set -u safe) and read by the
+# single composed EXIT trap below regardless of which early-exit path fires.
+# WORKTREE/SHARED_BRANCH are declared here too (ahead of their normal parsing
+# spot below) so the trap never trips set -u on an early usage() exit.
 WORKTREE=""
+SHARED_BRANCH=""
+LOCK_ACQUIRED=""
+CODEX_CHILD_PID=""
+JOB_FILE=""
+STARTED_AT=""
+
+# Single composed EXIT trap (HIMMEL-800 lock-release + HIMMEL-840 fleet-reap).
+# Registered once, up front, so every early-exit path (usage errors, deny-
+# listed flags, preflight failure) also runs it - each branch below is a
+# no-op until its guard var is actually set, so nothing fires for a dispatch
+# that never reached codex.
+# shellcheck disable=SC2329,SC2317 # invoked indirectly via `trap ... EXIT`
+_dispatch_cleanup() {
+    if [ -n "$SHARED_BRANCH" ] && [ -n "$LOCK_ACQUIRED" ]; then
+        bash "$LOCK_HELPER" release "$WORKTREE" "$SHARED_BRANCH"
+    fi
+    if [ -n "$CODEX_CHILD_PID" ]; then
+        bash "$REAP_HELPER" --root-pid "$CODEX_CHILD_PID" --started-at "$STARTED_AT" --kill || true
+        [ -n "$JOB_FILE" ] && rm -f "$JOB_FILE" 2>/dev/null
+    fi
+}
+trap _dispatch_cleanup EXIT
+
 if [ "${1:-}" = "--worktree" ]; then
     [ -n "${2:-}" ] || usage
     WORKTREE="$2"
@@ -59,7 +109,6 @@ fi
 [ -n "$WORKTREE" ] || usage
 [ -d "$WORKTREE" ] || { echo "dispatch-codex-exec.sh: worktree not found: $WORKTREE" >&2; exit 2; }
 
-SHARED_BRANCH=""
 if [ "${1:-}" = "--shared-branch" ]; then
     [ -n "${2:-}" ] || usage
     SHARED_BRANCH="$2"
@@ -163,10 +212,11 @@ if ! bash "$NORMALIZE" "$WORKTREE"; then
 fi
 
 # Invariant 5 (HIMMEL-800): acquire the single-writer lock now that the gate
-# and the ACL preflight both passed. The EXIT trap releases on every CATCHABLE
-# exit from here on (codex CLI missing, worktree vanishing, codex nonzero exit)
-# - a leaked lock is worse than a redundant release call. A SIGKILL/hard-kill
-# is NOT catchable, so a crash there can still leak the lock; recover it
+# and the ACL preflight both passed. The composed EXIT trap (registered up
+# front) releases on every CATCHABLE exit from here on (codex CLI missing,
+# worktree vanishing, codex nonzero exit) once LOCK_ACQUIRED is set - a
+# leaked lock is worse than a redundant release call. A SIGKILL/hard-kill is
+# NOT catchable, so a crash there can still leak the lock; recover it
 # manually with the helper's release verb (see scripts/codex/README.md).
 if [ -n "$SHARED_BRANCH" ]; then
     bash "$LOCK_HELPER" acquire "$WORKTREE" "$SHARED_BRANCH" codex-exec
@@ -183,8 +233,11 @@ if [ -n "$SHARED_BRANCH" ]; then
         fi
         exit 4
     fi
-    # shellcheck disable=SC2064  # intentional early expansion: capture WORKTREE/SHARED_BRANCH now, not at trap-fire time
-    trap "bash \"$LOCK_HELPER\" release \"$WORKTREE\" \"$SHARED_BRANCH\"" EXIT
+    # Do NOT register a new trap here - the composed _dispatch_cleanup trap is
+    # already active (registered up front); setting LOCK_ACQUIRED is enough
+    # to arm its lock-release branch. This also keeps a lock held by another
+    # writer (the rc-4 path above) untouched by our own trap.
+    LOCK_ACQUIRED=1
 fi
 
 # The codex CLI must resolve before the tail exec (a bare bash "not found"
@@ -214,16 +267,31 @@ fi
 if [ "$have_sandbox" -eq 0 ]; then
     pin_args="$pin_args --sandbox workspace-write"
 fi
-# Invariant 5 (HIMMEL-800): the shared-branch path must NOT exec codex -
-# exec replaces this process image, which would drop the EXIT trap above and
-# leak the lock. Run codex as a child, capture its rc, exit with that rc (the
-# trap fires on this exit and releases the lock). The flag-less path keeps
-# the original exec tail byte-identical.
-if [ -n "$SHARED_BRANCH" ]; then
-    # shellcheck disable=SC2086  # pin_args is a fixed, space-safe flag list built above
-    "$CODEX" exec $pin_args "$@"
-    CODEX_RC=$?
-    exit "$CODEX_RC"
-fi
+# Invariants 5+6 (HIMMEL-800/840): NEVER exec codex in either path - exec
+# replaces this process image, which would drop the composed EXIT trap above
+# (losing both the shared-branch lock release and the fleet reap). Run codex
+# as a background child so its pid is known immediately, register the job
+# registry entry, then wait for it and propagate its exit code.
+# <&0 (CR fix): backgrounding a child in a non-interactive script redirects
+# its stdin to /dev/null by default - a silent regression vs the old `exec`
+# tail for any caller that PIPES context to codex exec. Explicitly wire the
+# caller's own stdin through to the backgrounded child.
+STARTED_AT="$(date +%s)"
 # shellcheck disable=SC2086  # pin_args is a fixed, space-safe flag list built above
-exec "$CODEX" exec $pin_args "$@"
+"$CODEX" exec $pin_args "$@" <&0 &
+CODEX_CHILD_PID=$!
+
+# Job registry (HIMMEL-840): one file per job so a leaked fleet (dispatcher
+# killed before its own EXIT trap ran) is still visible to reap-mcp-fleet's
+# registry-driven maintenance mode. Best-effort: a write failure here does
+# not abort the dispatch - the at-source reap below still works off
+# CODEX_CHILD_PID/STARTED_AT regardless of whether the registry file exists.
+mkdir -p "$JOBS_DIR" 2>/dev/null
+JOB_FILE="$JOBS_DIR/${STARTED_AT}-${CODEX_CHILD_PID}.json"
+printf '{"codex_pid":%s,"dispatch_pid":%s,"worktree":"%s","started_at":%s}\n' \
+    "$CODEX_CHILD_PID" "$$" "$(_json_escape "$WORKTREE")" "$STARTED_AT" \
+    > "$JOB_FILE" 2>/dev/null
+
+wait "$CODEX_CHILD_PID"
+CODEX_RC=$?
+exit "$CODEX_RC"
