@@ -176,8 +176,11 @@ try {
   if (FileHas (Join-Path $FAKEHOME '.claude-routed\settings.json') 'lean-profile-v2') { Pass 'stale seed refreshed on plain launch' } else { Fail 'stale seed not refreshed on plain launch' }
 
   # --- T7c: fresh sentinel -> plain launch does NOT reseed (no churn) ---
+  # (HIMMEL-828 Part B: the subtree sources are set old here too, so the widened
+  # staleness check keeps its no-churn guarantee when nothing has drifted.)
   '{"local":"tamper-survives"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-routed\settings.json') -NoNewline
-  foreach ($srcRel in @('.claude\settings.json', '.claude\plugins\installed_plugins.json', '.claude\plugins\known_marketplaces.json')) {
+  foreach ($srcRel in @('.claude\settings.json', '.claude\plugins\installed_plugins.json', '.claude\plugins\known_marketplaces.json',
+                        '.claude\commands', '.claude\skills', '.claude\hooks', '.claude\agents', '.claude\plugins\marketplaces')) {
     $p = Join-Path $FAKEHOME $srcRel
     if (Test-Path -LiteralPath $p) { (Get-Item -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
   }
@@ -352,6 +355,111 @@ try {
   Assert-Exit (Invoke-Launcher) 3 'phi-roots as directory fails closed'
   if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite unreadable phi-roots' } else { Pass 'claude not launched on unreadable phi-roots' }
   if (FileHas $OutTxt 'failing closed') { Pass 'phi-roots dir emits the failing-closed message' } else { Fail 'no failing-closed message on phi-roots dir' }
+
+  # --- T19 (HIMMEL-828 Part A): the up-front sentinel removal is race-free like bash
+  # `rm -f` — a reseed whose sentinel is ABSENT at removal time (a concurrent reseed
+  # sharing the config dir removed it in the window the old Test-Path-then-Remove left
+  # open) must NOT spuriously exit 4. Deterministic stand-in for that race: seed once,
+  # delete the sentinel out from under the seeder, then -Reseed; Remove-Item hits
+  # ItemNotFound, which the typed catch treats as goal-reached, so the reseed completes
+  # (exit 0) and rewrites the sentinel. Guards a regression that drops/narrows the typed
+  # catch so ItemNotFound falls through to the general catch -> exit 4. Twin: T17c pins
+  # the opposite (a REAL lock failure still exits 4). ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher) 0 'seed before absent-sentinel reseed'   # writes .seeded
+  Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded') -Force  # vanish, as a concurrent reseed would
+  Assert-Exit (Invoke-Launcher -LArgs @('-Reseed')) 0 'reseed with an absent sentinel does not spuriously exit 4'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')) { Pass 'sentinel rewritten after absent-sentinel reseed' } else { Fail 'sentinel not rewritten after absent-sentinel reseed' }
+
+  # --- T20 (HIMMEL-828 Part B): a half-seeded tree self-heals on a plain launch — the
+  # sentinel is present but a copied subtree is missing (an interrupted reseed or an
+  # external removal), which the pre-828 settings+manifest staleness check missed.
+  # Fixture: seed a sandbox with a commands subtree, delete the DEST subtree while
+  # leaving a FRESH sentinel + old sources; a plain launch must detect the source-
+  # present/dest-missing mismatch and reseed, restoring the subtree. FAILS on pre-828
+  # code (fresh sentinel + old tracked files => not stale => no reseed). ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\commands') | Out-Null
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\commands\keep.md') -Value 'a'
+  Assert-Exit (Invoke-Launcher) 0 'seed before half-seed simulation'
+  Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands') -Recurse -Force  # dest subtree vanishes
+  foreach ($srcRel in @('.claude\settings.json', '.claude\plugins\installed_plugins.json', '.claude\plugins\known_marketplaces.json', '.claude\commands')) {
+    $p = Join-Path $FAKEHOME $srcRel
+    if (Test-Path -LiteralPath $p) { (Get-Item -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
+  }
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
+  Assert-Exit (Invoke-Launcher) 0 'half-seeded tree triggers reseed on plain launch'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands\keep.md')) { Pass 'missing subtree restored by self-heal reseed' } else { Fail 'missing subtree NOT restored (half-seed not detected)' }
+
+  # --- T21 (HIMMEL-828 Part B): a top-level add inside a source subtree (source dir
+  # mtime newer than the sentinel) auto-reseeds without -Reseed — pre-828 this drift
+  # needed an explicit -Reseed. Fixture: seed, set a fresh-ish sentinel + OLD settings/
+  # manifests (so only the subtree can be the trigger), add a new command to the source
+  # (bumping its dir mtime past the sentinel), confirm a plain launch mirrors it. ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\commands') | Out-Null
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\commands\one.md') -Value 'a'
+  Assert-Exit (Invoke-Launcher) 0 'seed before subtree drift'
+  foreach ($srcRel in @('.claude\settings.json', '.claude\plugins\installed_plugins.json', '.claude\plugins\known_marketplaces.json')) {
+    $p = Join-Path $FAKEHOME $srcRel
+    if (Test-Path -LiteralPath $p) { (Get-Item -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
+  }
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-06-01'
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\commands\two.md') -Value 'b'  # new source command
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude\commands')).LastWriteTimeUtc = [datetime]::UtcNow
+  Assert-Exit (Invoke-Launcher) 0 'source subtree drift auto-reseeds on plain launch'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands\two.md')) { Pass 'new source command mirrored by subtree-drift reseed' } else { Fail 'new source command NOT mirrored (subtree drift not detected)' }
+
+  # --- T22 (HIMMEL-828, codex-adv [high]): reseed CLEAN re-mirrors seeded subtrees —
+  # a file left stale in the dest (deleted from the source) is DROPPED, no nested copy
+  # appears, kept files survive. Twin of glm T21; covers the routed clean-remirror fix
+  # (routed previously merged into the existing dest and left source-deleted files
+  # active). Exercises both the commands loop and the separate plugins/marketplaces
+  # statement in Copy-SeedConfig. ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\commands') | Out-Null
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\commands\keep.md') -Value 'a'
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\plugins\marketplaces') | Out-Null
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\plugins\marketplaces\keep.json') -Value 'a'
+  Assert-Exit (Invoke-Launcher) 0 'seed before re-mirror'
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands\stale.md') -Value 'stale'
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\marketplaces\stale.json') -Value 'stale'
+  Assert-Exit (Invoke-Launcher -LArgs @('-Reseed')) 0 'reseed re-mirrors subtrees'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands\stale.md')) { Fail 'stale commands file survived reseed' } else { Pass 'stale commands file dropped on reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands\commands')) { Fail 'nested commands\commands after reseed' } else { Pass 'no nested commands dir after reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands\keep.md')) { Pass 'kept commands file survived reseed' } else { Fail 'kept commands file lost after reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\marketplaces\stale.json')) { Fail 'stale marketplaces file survived reseed' } else { Pass 'stale marketplaces file dropped on reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\marketplaces\marketplaces')) { Fail 'nested marketplaces dir after reseed' } else { Pass 'no nested marketplaces dir after reseed' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\marketplaces\keep.json')) { Pass 'kept marketplaces file survived reseed' } else { Fail 'kept marketplaces file lost after reseed' }
+
+  # --- T23 (HIMMEL-828/819, codex-adv [high]): DELETION MIRRORING — a deleted SOURCE
+  # subtree is removed from the lane on a plain launch (a removed command/hook must not
+  # linger steering the routed lane), symmetric with settings/manifest deletion mirroring,
+  # AND it does NOT churn forever. Twin of glm T25. Fixture: seed with a commands subtree,
+  # delete the SOURCE; launch 2 mirrors the removal; launch 3 is stable (tamper survives). ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\commands') | Out-Null
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\commands\keep.md') -Value 'a'
+  Assert-Exit (Invoke-Launcher) 0 'seed before source-subtree deletion'
+  Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude\commands') -Recurse -Force  # SOURCE subtree deleted
+  Assert-Exit (Invoke-Launcher) 0 'source-deleted subtree triggers a mirror reseed'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands')) { Fail 'stale lane subtree survived source deletion' } else { Pass 'stale lane subtree removed (deletion mirrored)' }
+  '{"local":"tamper-stable"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-routed\settings.json') -NoNewline
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
+  Assert-Exit (Invoke-Launcher) 0 'no further churn after deletion mirrored'
+  if (FileHas (Join-Path $FAKEHOME '.claude-routed\settings.json') 'tamper-stable') { Pass 'stable after mirror (no churn)' } else { Fail 'churns after deletion mirrored' }
+
+  # --- T24 (HIMMEL-828/819, codex-adv [high]): LEAF-FILE deletion mirroring — a deleted
+  # source CLAUDE.md (which literally steers the lane) is removed from the lane on a plain
+  # launch, not just subtrees/manifests. Twin of glm T26. ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  'steer' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\CLAUDE.md') -NoNewline
+  Assert-Exit (Invoke-Launcher) 0 'seed before CLAUDE.md deletion'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\CLAUDE.md')) { Pass 'CLAUDE.md seeded' } else { Fail 'CLAUDE.md not seeded' }
+  Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude\CLAUDE.md') -Force  # SOURCE deleted
+  Assert-Exit (Invoke-Launcher) 0 'deleted source CLAUDE.md triggers a mirror reseed'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\CLAUDE.md')) { Fail 'stale CLAUDE.md survived source deletion' } else { Pass 'stale CLAUDE.md removed (leaf deletion mirrored)' }
 
   Write-Host ''
   if ($script:fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$($script:fails) failure(s)" -ForegroundColor Red; exit 1 }
