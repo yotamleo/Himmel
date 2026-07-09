@@ -327,8 +327,96 @@ function Test-ConfigSeedStale {
   }
 }
 
+# --- config-dir seed concurrency lock (HIMMEL-830) ---------------------------
+# Serialize concurrent same-lane reseeds so two launches of THIS lane cannot
+# interleave Copy-SeedConfig's remove/copy sequence into a torn config dir (the
+# .seeded sentinel guards FAILED seeds, not CONCURRENT ones). The lock is a
+# DIRECTORY sibling of $ConfigDir (NOT under it, so the seeder's own recursive
+# removes can never delete it); New-Item -ItemType Directory is atomic and throws
+# if it already exists. The dir is kept EMPTY so the release remove is atomic and
+# steal-safe. Env names + defaults + rc=4 mirror the bash twin exactly.
+$Lock            = "$ConfigDir.seed-lock"
+$SeedLockTimeout = if ($env:CLAUDE_LANE_SEED_LOCK_TIMEOUT) { [int]$env:CLAUDE_LANE_SEED_LOCK_TIMEOUT } else { 60 }   # seconds to wait
+$SeedLockStale   = if ($env:CLAUDE_LANE_SEED_LOCK_STALE) { [int]$env:CLAUDE_LANE_SEED_LOCK_STALE } else { 120 }     # seconds before a held lock is presumed abandoned
+
+function Test-SeedLockStale {
+  # $true when $Lock exists and its mtime is older than $SeedLockStale seconds.
+  if (-not (Test-Path -LiteralPath $Lock -PathType Container)) { return $false }
+  try {
+    $age = ([DateTime]::UtcNow - (Get-Item -LiteralPath $Lock).LastWriteTimeUtc).TotalSeconds
+    return ($age -ge $SeedLockStale)
+  } catch { return $false }
+}
+
+function Invoke-SeedWithLock {
+  # Acquire (New-Item dir), poll on contention, steal a stale holder, or time out (exit 4).
+  $ticks = 0
+  $maxTicks = $SeedLockTimeout * 2   # two 500ms polls per second
+  $lastAcquireErr = ''
+  while ($true) {
+    try {
+      New-Item -ItemType Directory -Path $Lock -ErrorAction Stop | Out-Null
+      break   # acquired
+    } catch {
+      $lastAcquireErr = $_.Exception.Message
+      # SINGLE-WINNER stale steal via atomic same-dir rename: only ONE waiter's
+      # Rename-Item succeeds (the path is gone for every loser, whose rename simply
+      # throws), and the winner's FRESH replacement lock can never be renamed away
+      # by a queued loser (a fresh lock is never stale). A plain remove steal is a
+      # TOCTOU double-acquire: two waiters both judge the dead lock stale, one
+      # removes+re-acquires, the other's queued remove then deletes the winner's
+      # fresh EMPTY lock, both seed concurrently -- the torn config this lock
+      # exists to prevent. The renamed dir is removed best-effort with the
+      # empty-only [IO.Directory]::Delete (rmdir parity; no -Recurse vaporizing);
+      # if it was non-empty (invariant violation) the orphan is harmless -- it is
+      # not the lock path. Accepted residual: a LIVE seeder holding the lock past
+      # $SeedLockStale gets stolen -- but seeds are sub-second copies, so a hold
+      # that long means a dead/hung holder in practice.
+      if (Test-SeedLockStale) {
+        try {
+          Rename-Item -LiteralPath $Lock -NewName ((Split-Path -Leaf $Lock) + ".stale.$PID") -ErrorAction Stop
+          try { [System.IO.Directory]::Delete("$Lock.stale.$PID") } catch { }   # orphaned .stale dir is harmless (not the lock path)
+          continue
+        } catch {
+          # not the steal winner -- fall through to poll
+        }
+      }
+      if ($ticks -ge $maxTicks) {
+        [Console]::Error.WriteLine("claude-routed: timed out after ${SeedLockTimeout}s waiting for the config-dir seed lock ($Lock). If no other claude-routed launch of this lane is seeding, remove that dir, or tune CLAUDE_LANE_SEED_LOCK_TIMEOUT / CLAUDE_LANE_SEED_LOCK_STALE; last acquire error: $lastAcquireErr")
+        exit 4
+      }
+      Start-Sleep -Milliseconds 500
+      $ticks++
+    }
+  }
+  # Release in finally so a seed failure (Copy-SeedConfig's exit 4) still frees the
+  # lock -- PowerShell runs finally blocks even when a called function calls exit.
+  # Accepted residual: an untrapped Ctrl+C / process kill while holding leaks the
+  # lock until the stale steal (~$SeedLockStale s) -- deliberate; adding signal
+  # handling would change the launcher's existing semantics.
+  try {
+    # Double-checked recheck UNDER the lock: the OUTER if was a cheap pre-check that
+    # raced other launches; a concurrent winner may have just seeded while we waited,
+    # so re-evaluate and skip a redundant reseed. -Reseed forces a reseed regardless
+    # (explicit operator intent), but still under the lock.
+    # Residual (accepted): a READER launch that judged the sentinel fresh a moment
+    # before the winner removed it can still launch claude against a mid-seed dir --
+    # the window shrinks from the full seed duration to one stat. Full reader-writer
+    # exclusion would need an atomic dir swap Windows cannot give; out of scope.
+    if ($Reseed -or (-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or (Test-ConfigSeedStale)) {
+      Copy-SeedConfig
+    }
+  } finally {
+    # Empty-only release ([IO.Directory]::Delete = rmdir parity, never -Recurse:
+    # recursing would silently vaporize evidence of an invariant violation). A
+    # failure warns (worth surfacing) but stays NON-FATAL: the seed itself succeeded.
+    try { [System.IO.Directory]::Delete($Lock) }
+    catch { [Console]::Error.WriteLine("claude-routed: WARNING - failed to release seed lock $Lock (not empty or busy); it self-heals via stale steal after ${SeedLockStale}s but concurrent launches wait/time out until then.") }
+  }
+}
+
 if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
-  Copy-SeedConfig
+  Invoke-SeedWithLock
 }
 
 # --- off-peak annotation -----------------------------------------------------

@@ -461,6 +461,56 @@ try {
   Assert-Exit (Invoke-Launcher) 0 'deleted source CLAUDE.md triggers a mirror reseed'
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\CLAUDE.md')) { Fail 'stale CLAUDE.md survived source deletion' } else { Pass 'stale CLAUDE.md removed (leaf deletion mirrored)' }
 
+  # --- T25 (HIMMEL-830): a FRESH held seed lock makes a launch that needs seeding
+  # time out with exit 4, a message naming the lock path, and the held lock LEFT
+  # intact (we must not delete a fresh holder's lock on timeout). Lock is a SIBLING
+  # of the config dir. TIMEOUT=1 keeps the deterministic wait ~1s. ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude-routed.seed-lock') | Out-Null
+  $env:CLAUDE_LANE_SEED_LOCK_TIMEOUT = '1'
+  Assert-Exit (Invoke-Launcher) 4 'held fresh seed lock times out (exit 4)'
+  Remove-Item Env:CLAUDE_LANE_SEED_LOCK_TIMEOUT
+  if (FileHas $OutTxt '.claude-routed.seed-lock') { Pass 'timeout message names the lock path' } else { Fail 'timeout message does not name the lock path' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed.seed-lock')) { Pass 'fresh held lock left intact on timeout' } else { Fail 'fresh held lock removed on timeout' }
+
+  # --- T26 (HIMMEL-830): a STALE held lock (mtime far in the past) is stolen, the
+  # seed proceeds, the launch exits 0, and the lock is released (no residue). ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  $lockDir = Join-Path $FAKEHOME '.claude-routed.seed-lock'
+  New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
+  (Get-Item -LiteralPath $lockDir).LastWriteTimeUtc = [datetime]'2020-01-01'   # older than the 120s default stale window
+  Assert-Exit (Invoke-Launcher) 0 'stale seed lock is stolen and seed proceeds'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')) { Pass 'seed completed after stealing stale lock' } else { Fail 'seed did not complete after stealing stale lock' }
+  if (Test-Path -LiteralPath $lockDir) { Fail 'stale lock not released after seed' } else { Pass 'stale lock released after seed' }
+
+  # --- T27 (HIMMEL-830, best-effort concurrency smoke): two simultaneous first-launch
+  # seeders of the same lane both exit 0, leave a consistent config (sentinel present),
+  # and leave no lock residue. The lock serializes them; the loser's recheck skips. This
+  # also exercises the double-checked recheck path (the second acquirer finds a fresh
+  # sentinel and skips). NOTE (deviation): the dedicated canary recheck-skip test lives
+  # in the two bash suites only; here the concurrency smoke covers the recheck path. ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  $env:OMNIROUTE_API_KEY         = $script:KEY
+  $env:USERPROFILE               = $FAKEHOME
+  $env:CLAUDE_ROUTED_DOTENV_ROOT = $WORK
+  $env:MOCK_ENV_OUT              = $ChildEnv
+  $env:MOCK_ARGV_OUT             = $ArgvOut
+  Remove-Item Env:OMNIROUTE_PORT -ErrorAction SilentlyContinue
+  $env:PATH = $BIN + [IO.Path]::PathSeparator + $OrigEnv['PATH']
+  $pa = Start-Process pwsh -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
+  $pb = Start-Process pwsh -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
+  $pa.WaitForExit(); $pb.WaitForExit()
+  if ($pa.ExitCode -eq 0 -and $pb.ExitCode -eq 0) { Pass 'both concurrent launches exit 0' } else { Fail "concurrent launches exit A=$($pa.ExitCode) B=$($pb.ExitCode)" }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')) { Pass 'concurrent seed left a sentinel' } else { Fail 'concurrent seed left no sentinel' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed.seed-lock')) { Fail 'concurrent launch left lock residue' } else { Pass 'no lock residue after concurrent launches' }
+
+  # DEVIATION (HIMMEL-830 CR r1): the bash suites' release-failure test (intruder file
+  # planted inside the held lock -> non-fatal WARNING, lock left intact) is bash-only.
+  # The honest construction needs a slow-but-SUCCEEDING node shim, and a node.cmd batch
+  # shim cannot receive the launcher's multi-line `-e <script>` argument (cmd mangles
+  # embedded newlines); the .ps1-shim precedence workaround is fragile. The release
+  # code path itself is shared and covered by the bash twins.
+
   Write-Host ''
   if ($script:fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$($script:fails) failure(s)" -ForegroundColor Red; exit 1 }
 }
