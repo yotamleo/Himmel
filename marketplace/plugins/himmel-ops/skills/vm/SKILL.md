@@ -1,6 +1,6 @@
 ---
 name: vm
-description: Use when bringing up, stopping, snapshotting, provisioning, or running e2e probes against the himmel test VMs (ubuntu_new / win11_base_himmel). Trigger on "start/stop/snapshot a VM", "run the VM e2e", "provision the VM", or "/vm". Front door to the central VM-control SDK (scripts/lib/vmsdk.py, HIMMEL-491/493).
+description: Use when bringing up, stopping, snapshotting, provisioning, running e2e probes against, or triggering/arming a claude session ON the himmel test VMs (ubuntu_new / win11_base_himmel). Trigger on "start/stop/snapshot a VM", "run the VM e2e", "provision the VM", "trigger/arm a session on the VM", or "/vm". Front door to the central VM-control SDK (scripts/lib/vmsdk.py, HIMMEL-491/493/835).
 ---
 
 # vm — VM lifecycle + e2e runbook (HIMMEL-491/493)
@@ -37,7 +37,7 @@ python scripts/lib/vmsdk.py <vm> <verb>
 Full usage line from the script:
 
 ```
-usage: vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e>
+usage: vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e|push FILE [DEST]|trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]>
 ```
 
 | Verb | What it does |
@@ -50,6 +50,8 @@ usage: vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|baseline NAME|clone [RE
 | `clone [REF]` | Shallow-clone the private himmel repo onto the guest (`REF` defaults to `main`) |
 | `provision` | Run the per-OS provisioner (`ubuntu-vm-setup.py` or `windows-vm-setup.py`) |
 | `e2e` | Run the install/uninstall symmetry e2e against an Ubuntu VM (delegates to `scripts/test-install-symmetry-vm.sh`) |
+| `push FILE [DEST]` | Copy one host file to the guest via SFTP (`DEST` defaults to `~/handover-inbox/<name>`; `.env*` files refused) |
+| `trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]` | Fire a claude session ON the guest from a host handover file (HIMMEL-835): pushes the handover, then either drives an immediate bounded session (default) or, with `--at`, arms the guest's own `arm-resume.sh` (at/atd backend). `--cwd` defaults to `~/Documents/github/himmel-private` (the ubuntu_new layout, verified 2026-07-09). Single-writer: do not trigger a ticket another writer owns |
 
 **All invocations must be from the primary checkout** (not a worktree) — the
 SDK resolves `.env` via `git rev-parse --git-common-dir`; worktrees lack `.env`.

