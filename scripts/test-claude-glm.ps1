@@ -308,6 +308,44 @@ try {
   if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite missing node' } else { Pass 'claude not launched when node missing' }
   if (FileHas $OutTxt 'FAILED to sanitize settings.json') { Pass 'node-missing emits the failed-seed message' } else { Fail 'node-missing did not emit the failed-seed message' }
 
+  # --- T17b (HIMMEL-820): a Copy-Item failure inside the allowlisted seed copy
+  # block maps to exit 4 (the "failed seed" contract), never a raw exit 1, and
+  # never launches claude. Twin of routed's T17b — the CLAUDE.md copy runs in the
+  # remaining seed body that #1044 left OUTSIDE any try/catch; this pins the
+  # function-level wrap. Fixture: the child launcher cannot read an exclusively
+  # locked source. ---
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  $lockedSeed = Join-Path $FAKEHOME '.claude\CLAUDE.md'
+  'locked' | Set-Content -LiteralPath $lockedSeed -NoNewline
+  $lock = [System.IO.File]::Open($lockedSeed, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+  try {
+    Assert-Exit (Invoke-Launcher) 4 'seed Copy-Item failure exits 4'
+  } finally {
+    $lock.Dispose()
+  }
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite seed Copy-Item failure' } else { Pass 'claude not launched on seed Copy-Item failure' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\.seeded')) { Fail 'sentinel written despite seed Copy-Item failure' } else { Pass 'no sentinel on seed Copy-Item failure' }
+  if (FileHas $OutTxt 'FAILED to seed config dir') { Pass 'copy failure emits the failed-seed message' } else { Fail 'copy failure did not emit the failed-seed message' }
+
+  # --- T17c (HIMMEL-820 CR: codex-adv [high] + silent-failure-hunter): a stale
+  # .seeded that cannot be removed on reseed exits 4 with the clear-sentinel
+  # message BEFORE any copy work, and the sentinel is left intact (never silently
+  # swallowed) — so the seeder never proceeds leaving the old sentinel next to a
+  # half-seeded tree. Fixture: seed once, then exclusively lock the sentinel. ---
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher) 0 'seed before sentinel-lock'   # writes .seeded
+  Remove-Item -LiteralPath $ChildEnv -Force -ErrorAction SilentlyContinue  # so the non-launch assert below is meaningful
+  $sentinel = Join-Path $FAKEHOME '.claude-glm\.seeded'
+  $slock = [System.IO.File]::Open($sentinel, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+  try {
+    Assert-Exit (Invoke-Launcher -LArgs @('-Reseed')) 4 'unremovable stale sentinel exits 4 on reseed'
+  } finally {
+    $slock.Dispose()
+  }
+  if (FileHas $OutTxt 'FAILED to clear stale .seeded sentinel') { Pass 'stale-sentinel failure emits the clear-sentinel message' } else { Fail 'no clear-sentinel message on unremovable stale sentinel' }
+  if (Test-Path -LiteralPath $sentinel) { Pass 'stale sentinel left intact (not silently removed)' } else { Fail 'stale sentinel vanished despite lock' }
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite unremovable stale sentinel' } else { Pass 'claude not launched on unremovable stale sentinel' }
+
   # --- T18 (guard I7): a guard config that is a DIRECTORY (not a readable file)
   # fails CLOSED with exit 3 + the bash-parity message, never silently allows
   # egress, never launches claude — instead of letting Get-Content throw a
