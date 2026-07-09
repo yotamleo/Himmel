@@ -424,6 +424,14 @@ ROOT_DRIVE=$( cd "$HIMMEL" && drive_form "$PWD" )
 run_fence allow no "$HIMMEL/scripts" "MSYS --version cwd-in-himmel (drive-lettered root) -> allow" \
     "graphify --version" GRAPHIFY_HIMMEL_ROOT="$ROOT_DRIVE"
 
+BACKSLASH_SALUS="$SALUS/notes/patient.md"
+BACKSLASH_SALUS="${BACKSLASH_SALUS//\//\\}"
+run_fence deny no "$HIMMEL" "backslash-form absolute salus path -> deny" \
+    "graphify update $BACKSLASH_SALUS --backend deepseek"
+
+run_fence allow no "$HIMMEL" "drive-relative C:scripts/thing.sh anchors to cwd -> allow" \
+    "graphify update C:scripts/thing.sh --backend deepseek"
+
 echo "== HIMMEL-778: .graphify-corpus staged-copy declaration =="
 
 STAGED="$WS/staged";        mkdir -p "$STAGED";        : > "$STAGED/copy.md";  printf 'luna-personal\n' > "$STAGED/.graphify-corpus"
