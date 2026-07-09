@@ -195,8 +195,11 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "[2/10] Installing git hooks (pre-commit, pre-push, commit-msg)..."
 python -m pre_commit install
+if ($LASTEXITCODE -ne 0) { throw "pre_commit install failed (exit $LASTEXITCODE)" }
 python -m pre_commit install --hook-type pre-push
+if ($LASTEXITCODE -ne 0) { throw "pre_commit install --hook-type pre-push failed (exit $LASTEXITCODE)" }
 python -m pre_commit install --hook-type commit-msg
+if ($LASTEXITCODE -ne 0) { throw "pre_commit install --hook-type commit-msg failed (exit $LASTEXITCODE)" }
 
 Write-Host "[3/10] Installing Jira CLI..."
 if (Get-Command node -ErrorAction SilentlyContinue) {
@@ -206,8 +209,11 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
     } else {
         Push-Location "$RepoRoot\scripts\jira"
         npm install --silent
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed (exit $LASTEXITCODE) in scripts\jira" }
         npm run build --silent
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed (exit $LASTEXITCODE) in scripts\jira" }
         npm link
+        if ($LASTEXITCODE -ne 0) { throw "npm link failed (exit $LASTEXITCODE) in scripts\jira" }
         Pop-Location
         Write-Host "  jira CLI installed. Run: jira --help"
     }
@@ -572,6 +578,7 @@ if ($installCs) {
             # Step 8: version probe.
             try {
                 & (Join-Path $binDir "cs.exe") version | ForEach-Object { Write-Host "  $_" }
+                if ($LASTEXITCODE -ne 0) { throw "cs.exe version failed (exit $LASTEXITCODE)" }
             } catch {
                 Write-Host "  Step 8 (cs.exe version probe) failed." -ForegroundColor Yellow
                 throw

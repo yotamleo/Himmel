@@ -35,14 +35,22 @@ if ($a[0] -eq "plugin" -and $a[1] -eq "marketplace" -and $a[2] -eq "list") {
   if (Test-Path $mf) { Get-Content $mf | ForEach-Object { if ($_) { "{0}  /fake/{1}" -f $_, $_ } } }
   exit 0
 }
-if ($a[0] -eq "plugin" -and $a[1] -eq "marketplace" -and $a[2] -eq "add") { Log "marketplace add $($a[3])"; exit 0 }
+if ($a[0] -eq "plugin" -and $a[1] -eq "marketplace" -and $a[2] -eq "add") {
+  Log "marketplace add $($a[3])"
+  if ($env:CODEX_STUB_FAIL_MARKETPLACE_ADD -eq "1") { exit 11 }
+  exit 0
+}
 if ($a[0] -eq "plugin" -and $a[1] -eq "list") {
   "PLUGIN                                   STATUS              VERSION  PATH"
   $pf = Join-Path $S "plugins.txt"
   if (Test-Path $pf) { Get-Content $pf | ForEach-Object { if ($_) { $p = $_ -split "`t"; "{0}  {1}  local  /fake/{2}" -f $p[0], $p[1], $p[0] } } }
   exit 0
 }
-if ($a[0] -eq "plugin" -and $a[1] -eq "add")    { Log "plugin add $($a[2])"; exit 0 }
+if ($a[0] -eq "plugin" -and $a[1] -eq "add")    {
+  Log "plugin add $($a[2])"
+  if ($env:CODEX_STUB_FAIL_PLUGIN_ADD -eq "1") { exit 13 }
+  exit 0
+}
 if ($a[0] -eq "plugin" -and $a[1] -eq "remove") { Log "plugin remove $($a[2])"; exit 0 }
 exit 0
 '@
@@ -167,6 +175,21 @@ exit 0
   Set-Content (Join-Path $S "marketplaces.txt") "himmel-extra"
   Invoke-Installer $S @("-Plugins","himmel-ops") | Out-Null
   Assert-LogHas (Join-Path $S "calls.log") "marketplace add" "registers 'himmel' when only 'himmel-extra' present (no substring false-match)"
+  Write-Host "== scenario K: marketplace add fails (mutation) -> exits non-zero, names the step + exit code =="
+  $S = New-State "K"
+  Set-Content (Join-Path $S "marketplaces.txt") "openai-bundled"
+  $env:CODEX_STUB_FAIL_MARKETPLACE_ADD = "1"
+  try { $r = Invoke-Installer $S @("-Plugins","himmel-ops") } finally { Remove-Item Env:CODEX_STUB_FAIL_MARKETPLACE_ADD -ErrorAction SilentlyContinue }
+  if ($r.Code -ne 0) { Pass "failed marketplace add exits non-zero" } else { Fail "failed marketplace add should exit non-zero" }
+  if ($r.Out -match "plugin marketplace add failed" -and $r.Out -match "exit 11") { Pass "error names marketplace-add step + exit code" } else { Fail "error message missing marketplace-add step/exit-code detail (got: $($r.Out))" }
+
+  Write-Host "== scenario L: plugin add fails (mutation) -> exits non-zero, names the step + exit code =="
+  $S = New-State "L"
+  Set-Content (Join-Path $S "marketplaces.txt") "himmel"
+  $env:CODEX_STUB_FAIL_PLUGIN_ADD = "1"
+  try { $r = Invoke-Installer $S @("-Plugins","himmel-ops") } finally { Remove-Item Env:CODEX_STUB_FAIL_PLUGIN_ADD -ErrorAction SilentlyContinue }
+  if ($r.Code -ne 0) { Pass "failed plugin add exits non-zero" } else { Fail "failed plugin add should exit non-zero" }
+  if ($r.Out -match "plugin add failed" -and $r.Out -match "exit 13") { Pass "error names plugin-add step + exit code" } else { Fail "error message missing plugin-add step/exit-code detail (got: $($r.Out))" }
 
   Write-Host ""
   if ($script:fails -eq 0) { Write-Host "ALL PASS" } else { Write-Host "$($script:fails) FAILED" -ForegroundColor Red; exit 1 }

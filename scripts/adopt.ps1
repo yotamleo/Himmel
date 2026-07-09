@@ -128,10 +128,15 @@ function Install-Plugins {
         # project scope writes to the CWD's .claude/settings.json — run from
         # $Target so plugins land in the adopted repo, not the himmel clone.
         Push-Location $Target
-        try { & pwsh -NoProfile -File $ip @pluginArgs } finally { Pop-Location }
+        try {
+            & pwsh -NoProfile -File $ip @pluginArgs
+            $pluginRc = $LASTEXITCODE
+        } finally { Pop-Location }
     } else {
         & pwsh -NoProfile -File $ip @pluginArgs
+        $pluginRc = $LASTEXITCODE
     }
+    if ($pluginRc -ne 0) { throw "install-plugins failed (exit $pluginRc)" }
 }
 
 # statusLine — part of the core harness (HIMMEL-359). Wired into the
