@@ -165,10 +165,20 @@ shell scripts use when they only know about one root:
   Post-HIMMEL-124 this resolves to a near-empty `himmel/handovers/`
   (just the README stub). Useful only for himmel-scoped legacy code.
 - **Mode B — external**: `HANDOVER_DIR` set → that path. **Recommended
-  default** post-HIMMEL-124:
+  default** post-HIMMEL-343: a `handovers/` folder **inside your
+  luna-style vault** — state becomes part of the knowledge base
+  (wikilinkable, qmd-indexed, graphify-able) with no extra repo to sync:
+  ```bash
+  export HANDOVER_DIR="$HOME/Documents/<your-vault>/handovers"
+  ```
+  A dedicated external state repo remains fully supported (the resolver
+  is root-agnostic):
   ```bash
   export HANDOVER_DIR="$HOME/Documents/github/<state-repo>/handovers"
   ```
+  **Pick ONE root.** Running both (state duplicated across a vault and a
+  state repo) is unsupported — two writable roots drift and the resolver
+  reads only `HANDOVER_DIR`.
 
 Consumed by `scripts/handover/auto-commit.sh`,
 `scripts/handover/arm-resume.sh`, `setup.sh`'s step 6, and

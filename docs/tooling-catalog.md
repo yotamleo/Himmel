@@ -347,7 +347,16 @@ env from `settings.json`-injected env — don't put the key in `settings.json`
 (that hands it to every session); use per-launch shell env or the repo `.env`.
 
 **Isolated config dir (`$HOME/.claude-glm`):** seeded from `~/.claude` on first
-launch (or `--reseed`/`-Reseed`) by an allowlist copy — `settings.json`
+launch (or `--reseed`/`-Reseed`), and **auto-refreshed** (HIMMEL-819) on any
+plain launch when `~/.claude/settings.json`, `plugins/installed_plugins.json`,
+or `plugins/known_marketplaces.json` is newer than the `.seeded` sentinel — or
+deleted while a lane copy remains (true mirror for those three files) — so
+plugin-profile changes (e.g. disabling plugins to slim worker context) reach
+lane workers without a manual `--reseed`. `commands`/`skills`/`hooks`/`agents`
+drift still needs an explicit `--reseed`. **Optional:** set
+`CLAUDE_LANE_AUTO_RESEED=0` in the launching shell to restore the once-only
+seed if auto-reseed ever blocks a launch in your setup (e.g. a settings change
+re-running the seed against a broken `node`). The seed is an allowlist copy — `settings.json`
 (sanitized via node: the `model` key + every `env.ANTHROPIC_*` stripped so they
 don't fight the launcher's env), `CLAUDE.md`, `RTK.md`,
 `commands`/`skills`/`hooks`/`agents`, and the plugin registry

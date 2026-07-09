@@ -58,5 +58,6 @@ Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/him
 
 ## Optional
 
+- [docs/glm-offload.md](docs/glm-offload.md) + [docs/tooling-catalog.md](docs/tooling-catalog.md#claude-glm-scriptsclaude-glm-ps1-twin-himmel-665): the optional `claude-glm`/`claude-routed` flat-rate offload lanes. Their isolated config dirs auto-refresh from `~/.claude` when your settings/plugin profile changes (HIMMEL-819); set `CLAUDE_LANE_AUTO_RESEED=0` to opt out — the lanes and the auto-reseed are both optional and nothing blocks a plain `claude` setup without them.
 - [docs/tool-adoption/rubric.md](docs/tool-adoption/rubric.md): the decision method every community-tool evaluation runs through (goal/KPI, trust tiers, ADOPT/PILOT/REJECT).
 - [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md): dependency-license attribution (audited clean, fully permissive; MIT root license).

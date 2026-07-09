@@ -357,6 +357,22 @@ else
     fail "ledger content conditional: got $(cat "$LEDGER" 2>/dev/null)"
 fi
 
+# nested handover root (HIMMEL-817, post-HIMMEL-343 fold): HANDOVER_DIR INSIDE
+# the vault -> the path classifies as the VAULT corpus (luna-personal, rank 4),
+# NOT handover-state (rank 2) — vault roots are checked first, so a fold-style
+# setup tightens classification and the handover-state row keeps serving only
+# Mode-B external state repos. deepseek extraction verdict stays allow+log.
+mkdir -p "$LUNA/handovers/op"
+: > "$LUNA/handovers/op/next-session-1.md"
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV HANDOVER_DIR="$LUNA/handovers" "$BASH_BIN" "$FENCE" "graphify update $LUNA/handovers/op/next-session-1.md --backend deepseek" ) >/dev/null 2>&1
+if grep -q '"verdict":"allow+log"' "$LEDGER" 2>/dev/null && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null; then
+    pass "nested HANDOVER_DIR inside vault classifies as luna-personal (allow+log)"
+else
+    fail "nested handover root: got $(cat "$LEDGER" 2>/dev/null)"
+fi
+
 echo "== egress-matrix-eval.mjs unit =="
 
 # pending-operator cell -> verdict deny

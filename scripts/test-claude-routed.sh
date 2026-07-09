@@ -119,6 +119,58 @@ t "reseed" 0 --reseed
 grep -q updated "$FAKEHOME/.claude-routed/CLAUDE.md" || { echo "FAIL: reseed did not refresh"; FAILS=$((FAILS+1)); }
 [ ! -f "$FAKEHOME/.claude-routed/history.jsonl" ] || { echo "FAIL: denied file seeded"; FAILS=$((FAILS+1)); }
 
+# --- T7b: stale seed auto-refreshes on plain launch (HIMMEL-819) — source
+# settings.json newer than the sentinel triggers a reseed without --reseed.
+touch -t 202001010000 "$FAKEHOME/.claude-routed/.seeded"
+printf '{"env":{"HIMMEL_INITIATIVE":"1"},"marker":"lean-profile-v2"}' > "$FAKEHOME/.claude/settings.json"
+t "stale seed auto-refreshes" 0
+grep -q "lean-profile-v2" "$FAKEHOME/.claude-routed/settings.json" || { echo "FAIL: stale seed not refreshed on plain launch"; FAILS=$((FAILS+1)); }
+
+# --- T7c: fresh sentinel -> plain launch does NOT reseed (no churn) — sources
+# older than the sentinel leave the config dir untouched.
+printf '{"local":"tamper-survives"}' > "$FAKEHOME/.claude-routed/settings.json"
+touch -t 202001010000 "$FAKEHOME/.claude/settings.json" "$FAKEHOME/.claude/plugins/installed_plugins.json" 2>/dev/null
+touch "$FAKEHOME/.claude-routed/.seeded"
+t "fresh sentinel skips reseed" 0
+grep -q "tamper-survives" "$FAKEHOME/.claude-routed/settings.json" || { echo "FAIL: fresh sentinel still reseeded"; FAILS=$((FAILS+1)); }
+
+# --- T7d: deleted source triggers reseed and the lane copy is removed (true
+# mirror — a stale settings copy must not keep steering the lane).
+rm -f "$FAKEHOME/.claude/settings.json"
+t "deleted source triggers reseed" 0
+[ ! -f "$FAKEHOME/.claude-routed/settings.json" ] || { echo "FAIL: stale settings copy survived source deletion"; FAILS=$((FAILS+1)); }
+
+# --- T7e: CLAUDE_LANE_AUTO_RESEED=0 opt-out — stale state is left alone on
+# plain launch (only first seed / --reseed run the seed).
+printf '{"env":{"HIMMEL_INITIATIVE":"1"},"marker":"optout-should-not-land"}' > "$FAKEHOME/.claude/settings.json"
+touch -t 202001010000 "$FAKEHOME/.claude-routed/.seeded"
+export CLAUDE_LANE_AUTO_RESEED=0
+t "opt-out skips auto-reseed" 0
+unset CLAUDE_LANE_AUTO_RESEED
+[ ! -f "$FAKEHOME/.claude-routed/settings.json" ] || { echo "FAIL: opt-out still auto-reseeded"; FAILS=$((FAILS+1)); }
+# restore a sane settings source + fresh sentinel for the tests below
+printf '{"env":{"HIMMEL_INITIATIVE":"1"}}' > "$FAKEHOME/.claude/settings.json"
+t "restore reseed" 0 --reseed
+
+# --- T7f: plugin-manifest sources participate in staleness AND deletion
+# mirroring (2nd/3rd tracked file — not just settings.json).
+printf '{"m":1}' > "$FAKEHOME/.claude/plugins/installed_plugins.json"
+printf '{"k":1}' > "$FAKEHOME/.claude/plugins/known_marketplaces.json"
+t "manifest newer triggers reseed" 0
+[ -f "$FAKEHOME/.claude-routed/plugins/installed_plugins.json" ] || { echo "FAIL: installed_plugins not reseeded on manifest change"; FAILS=$((FAILS+1)); }
+[ -f "$FAKEHOME/.claude-routed/plugins/known_marketplaces.json" ] || { echo "FAIL: known_marketplaces not reseeded on manifest change"; FAILS=$((FAILS+1)); }
+rm -f "$FAKEHOME/.claude/plugins/known_marketplaces.json"
+t "deleted manifest mirrors removal" 0
+[ ! -f "$FAKEHOME/.claude-routed/plugins/known_marketplaces.json" ] || { echo "FAIL: stale known_marketplaces copy survived source deletion"; FAILS=$((FAILS+1)); }
+
+# --- T7g: explicit --reseed still seeds while the opt-out is set (the escape
+# hatch does not disable the manual path).
+printf '{"local":"tamper2"}' > "$FAKEHOME/.claude-routed/settings.json"
+export CLAUDE_LANE_AUTO_RESEED=0
+t "explicit reseed wins over opt-out" 0 --reseed
+unset CLAUDE_LANE_AUTO_RESEED
+grep -q "tamper2" "$FAKEHOME/.claude-routed/settings.json" && { echo "FAIL: --reseed under opt-out did not reseed"; FAILS=$((FAILS+1)); }
+
 # --- T8: .salus marker -> refuse exit 3, --force does NOT override (guard survives
 # the variant — the mandated red path)
 setup; KEY="omni-test-123"; touch "$WORK/.salus"

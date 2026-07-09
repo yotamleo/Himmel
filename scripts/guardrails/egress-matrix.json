@@ -18,7 +18,7 @@
     "salus": "any path under a `.salus`-marked root, or under a root listed in ~/.config/claude-glm/phi-roots or ~/.config/claude-glm/egress-denylist (the shared glm-guard.ts / parity_guard.py primitives)",
     "luna-personal": "the luna vault root EXCLUDING Clippings/ (journals, maps, sessions, notes)",
     "luna-clippings": "<luna-root>/Clippings/ (clipped public web content)",
-    "handover-state": "the handover state repo root (HANDOVER_DIR; work artifacts, specs, session notes)",
+    "handover-state": "the handover state repo root (HANDOVER_DIR; work artifacts, specs, session notes). Kept for Mode-B EXTERNAL state repos after the HIMMEL-343 fold: a HANDOVER_DIR nested INSIDE a vault classifies as that vault's corpus instead (fence precedence checks vault roots first — more restrictive; pinned by test, HIMMEL-817)",
     "himmel-code": "himmel checkout(s), worktrees, and the public mirror (code + docs; public-propagated)"
   },
   "providers": {

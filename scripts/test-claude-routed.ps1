@@ -168,6 +168,56 @@ try {
   if (FileHas (Join-Path $FAKEHOME '.claude-routed\CLAUDE.md') 'updated') { Pass 'reseed refreshed CLAUDE.md' } else { Fail 'reseed did not refresh' }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\history.jsonl')) { Fail 'denied file seeded' } else { Pass 'denied file not seeded' }
 
+  # --- T7b: stale seed auto-refreshes on plain launch (HIMMEL-819) — source
+  # settings.json newer than the sentinel triggers a reseed without -Reseed. ---
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  '{"env":{"HIMMEL_INITIATIVE":"1"},"marker":"lean-profile-v2"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json') -NoNewline
+  Assert-Exit (Invoke-Launcher) 0 'stale seed auto-refreshes'
+  if (FileHas (Join-Path $FAKEHOME '.claude-routed\settings.json') 'lean-profile-v2') { Pass 'stale seed refreshed on plain launch' } else { Fail 'stale seed not refreshed on plain launch' }
+
+  # --- T7c: fresh sentinel -> plain launch does NOT reseed (no churn) ---
+  '{"local":"tamper-survives"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-routed\settings.json') -NoNewline
+  foreach ($srcRel in @('.claude\settings.json', '.claude\plugins\installed_plugins.json', '.claude\plugins\known_marketplaces.json')) {
+    $p = Join-Path $FAKEHOME $srcRel
+    if (Test-Path -LiteralPath $p) { (Get-Item -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
+  }
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
+  Assert-Exit (Invoke-Launcher) 0 'fresh sentinel skips reseed'
+  if (FileHas (Join-Path $FAKEHOME '.claude-routed\settings.json') 'tamper-survives') { Pass 'fresh sentinel skipped reseed' } else { Fail 'fresh sentinel still reseeded' }
+
+  # --- T7d: deleted source triggers reseed and the lane copy is removed (true mirror) ---
+  Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json') -Force
+  Assert-Exit (Invoke-Launcher) 0 'deleted source triggers reseed'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\settings.json')) { Fail 'stale settings copy survived source deletion' } else { Pass 'stale settings copy removed on source deletion' }
+
+  # --- T7e: CLAUDE_LANE_AUTO_RESEED=0 opt-out — stale state left alone on plain launch ---
+  '{"env":{"HIMMEL_INITIATIVE":"1"},"marker":"optout-should-not-land"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json') -NoNewline
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  $env:CLAUDE_LANE_AUTO_RESEED = '0'
+  Assert-Exit (Invoke-Launcher) 0 'opt-out skips auto-reseed'
+  Remove-Item Env:CLAUDE_LANE_AUTO_RESEED
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\settings.json')) { Fail 'opt-out still auto-reseeded' } else { Pass 'opt-out skipped auto-reseed' }
+  # restore a sane seeded state for the tests below
+  Assert-Exit (Invoke-Launcher -LArgs @('-Reseed')) 0 'restore reseed'
+
+  # --- T7f: plugin-manifest sources participate in staleness AND deletion mirroring ---
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\plugins') | Out-Null
+  '{"m":1}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\plugins\installed_plugins.json') -NoNewline
+  '{"k":1}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\plugins\known_marketplaces.json') -NoNewline
+  Assert-Exit (Invoke-Launcher) 0 'manifest newer triggers reseed'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\installed_plugins.json')) { Pass 'installed_plugins reseeded on manifest change' } else { Fail 'installed_plugins not reseeded on manifest change' }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\known_marketplaces.json')) { Pass 'known_marketplaces reseeded on manifest change' } else { Fail 'known_marketplaces not reseeded on manifest change' }
+  Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude\plugins\known_marketplaces.json') -Force
+  Assert-Exit (Invoke-Launcher) 0 'deleted manifest mirrors removal'
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\plugins\known_marketplaces.json')) { Fail 'stale known_marketplaces copy survived source deletion' } else { Pass 'known_marketplaces copy removed on source deletion' }
+
+  # --- T7g: explicit -Reseed still seeds while the opt-out is set ---
+  '{"local":"tamper2"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-routed\settings.json') -NoNewline
+  $env:CLAUDE_LANE_AUTO_RESEED = '0'
+  Assert-Exit (Invoke-Launcher -LArgs @('-Reseed')) 0 'explicit reseed wins over opt-out'
+  Remove-Item Env:CLAUDE_LANE_AUTO_RESEED
+  if (FileHas (Join-Path $FAKEHOME '.claude-routed\settings.json') 'tamper2') { Fail '-Reseed under opt-out did not reseed' } else { Pass '-Reseed wins over opt-out' }
+
   # --- T8: .salus marker -> refuse exit 3, -Force does NOT override (guard survives
   # the variant — the mandated red path) ---
   New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
