@@ -87,7 +87,13 @@
 #      (HIMMEL-856). Override with QUEUE_LOCK_TAKEOVER=1.
 #   8  refused — this handover already has a PENDING arm recorded on
 #      ANOTHER host in the cross-machine arms registry (HIMMEL-856; the
-#      win2+main double-arm shape). Override with ARM_DUP_OK=1.
+#      win2+main double-arm shape). Override with ARM_DUP_OK=1. A record
+#      stops being PENDING (and stops causing this refusal) once the arm it
+#      names actually fires and the relaunched session acquires its queue
+#      lock — queue-lock.sh CONSUMES (drops) it at that point (HIMMEL-882);
+#      this script also prunes ITS OWN host's prior records for the same
+#      handover on every re-arm, so neither a fired arm nor a superseded
+#      re-arm blocks a later cross-host arm forever.
 set -euo pipefail
 
 RESUME_TIME=""
@@ -1443,29 +1449,209 @@ fi
 # _arm_registry_foreign_hits <registry-file> <handover-path> <this-host> --
 # print a "; "-joined summary of every registry line recording an arm for
 # <handover-path> on a host OTHER than <this-host> (empty = none). Always
-# rc 0 (errexit-safe: greps are || true-guarded, the loop ends in a case).
+# rc 0 (errexit-safe: the loop ends in string ops, nothing unguarded).
+# HIMMEL-882: a consumed arm no longer has a record at all (queue-lock.sh's
+# acquire DROPS this host's record(s) at session start -- retention, round
+# 3), and any legacy '"fired":"true"'-marked line from the earlier marking
+# revision is skipped here (and GC'd by the next locked rewrite) -- this is
+# what lets a re-arm from another host stop hard-refusing (rc=8) once the
+# original arm has actually fired, instead of forever.
 _arm_registry_foreign_hits() {
     local _reg="$1" _ho="$2" _this_host="$3"
-    local _needle _hits="" _line _rhost _rfire _rtask
-    _needle="\"handover\":\"$(printf '%s' "$_ho" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')\""
+    local _needle _this_esc _hits="" _line _rhost _rfire _rtask
+    # Both needles are JSON-escaped with the shared writer-side escape so an
+    # escaped stored value (e.g. a backslash Windows path, doubled on write)
+    # compares equal (round-2 -- raw-vs-escaped never matches).
+    _hp_json_escape "$_ho"
+    _needle="\"handover\":\"$_HP_ESC\""
+    _hp_json_escape "$_this_host"; _this_esc="$_HP_ESC"
     [ -f "$_reg" ] || { printf '%s' ""; return 0; }
-    while IFS= read -r _line; do
+    # `|| [ -n "$_line" ]`: read returns 1 at EOF-without-newline while
+    # still filling the variable -- without the guard a final record
+    # lacking a trailing newline would be invisible to this scan.
+    # Field extraction is the shared pure-bash _hp_json_field (round-3:
+    # zero forks per line; the grep|head|sed pipelines this replaces cost
+    # ~185-200ms/LINE on Windows/Git-Bash).
+    while IFS= read -r _line || [ -n "$_line" ]; do
         [ -z "$_line" ] && continue
         case "$_line" in
             *"$_needle"*) ;;
             *) continue ;;
         esac
-        # `|| true` on each: grep -o exits 1 on no-match, and under
-        # `set -o pipefail` that would otherwise abort the whole arm on a
-        # registry line missing one of these fields.
-        _rhost=$(printf '%s' "$_line" | grep -o '"host":"[^"]*"' | head -1 | sed -e 's/^"host":"//' -e 's/"$//') || true
+        case "$_line" in
+            *'"fired":"true"'*) continue ;;
+        esac
+        _hp_json_field "$_line" host; _rhost="$_HP_FIELD"
         [ -z "$_rhost" ] && continue
-        [ "$_rhost" = "$_this_host" ] && continue
-        _rfire=$(printf '%s' "$_line" | grep -o '"fire-at":"[^"]*"' | head -1 | sed -e 's/^"fire-at":"//' -e 's/"$//') || true
-        _rtask=$(printf '%s' "$_line" | grep -o '"task-name":"[^"]*"' | head -1 | sed -e 's/^"task-name":"//' -e 's/"$//') || true
+        [ "$_rhost" = "$_this_esc" ] && continue
+        _hp_json_field "$_line" fire-at;   _rfire="$_HP_FIELD"
+        _hp_json_field "$_line" task-name; _rtask="$_HP_FIELD"
         _hits="${_hits:+$_hits; }host=$_rhost fire-at=$_rfire task=$_rtask"
     done < "$_reg"
     printf '%s' "$_hits"
+}
+
+# _arm_registry_mutex_acquire <registry-file> -- HIMMEL-882 CR round-2/3:
+# acquire the short-lived mkdir-CAS mutex (<registry>.lock, a DIRECTORY)
+# that serializes every arms.jsonl read-filter-rewrite writer. MUST stay
+# path- and protocol-identical to queue-lock.sh's _ql_arms_mutex_acquire --
+# the consume there and the prune-and-append here race each other on the
+# same file (one registry per handover ROOT, so an arm on handover A and a
+# session start on handover B are concurrent writers; last mv would win and
+# drop the other's update). On success the lock dir carries an `owner`
+# token file and $_ARM_REGISTRY_MUTEX_TOKEN names it -- release/mv are
+# compare-then-act against that token (round-3: a holder reclaimed after
+# the 60s staleness expiry must not blind-rmdir the reclaimer's lock or mv
+# a stale snapshot over its rewrite). Bounded: nominal ~4s of 0.1s retries
+# (platform-dependent -- measured ~2x that, ~8.7s, on Windows/Git-Bash from
+# per-iteration mkdir+sleep overhead), then rc 1 -- the caller keeps the
+# fail-open contract (WARN + skip, never fail the arm). A mutex stranded by
+# a crashed writer is cleared when its dir mtime is >=60s old, re-probed
+# every 10th iteration across the retry budget (round-4: NOT every
+# iteration -- py_armor_mtime forks python and Windows python startup is
+# ~100-300ms; probing every 10th yields ~4 probes across the ~40-iteration
+# budget, bounding the extra forks while still catching a lock that crosses
+# the 60s threshold mid-wait -- a lock that was, say, 56s old when this
+# contender started is not yet stale at _tries==0 but would previously
+# never be re-checked, burning the whole retry budget instead of
+# reclaiming it; a failed probe never clears). errexit-safe: every probe is
+# guarded, the loop exits only via return.
+_ARM_REGISTRY_MUTEX_TOKEN=""
+_arm_registry_mutex_acquire() {
+    local _reg="$1" _lockd _tries=0 _m _now _tok
+    _lockd="$_reg.lock"
+    while :; do
+        if mkdir "$_lockd" 2>/dev/null; then
+            # Brand the lock (see queue-lock.sh's twin for the rationale).
+            _tok="pid$$-r$RANDOM"
+            if ! printf '%s' "$_tok" > "$_lockd/owner" 2>/dev/null; then
+                rm -f "$_lockd/owner" 2>/dev/null
+                rmdir "$_lockd" 2>/dev/null
+                return 1
+            fi
+            _ARM_REGISTRY_MUTEX_TOKEN="$_tok"
+            return 0
+        fi
+        if [ $(( _tries % 10 )) -eq 0 ]; then
+            _m=$(py_armor_mtime "$_lockd") || _m=""
+            _now=$(date -u +%s 2>/dev/null) || _now=""
+            if [ -n "$_m" ] && [ -n "$_now" ] && [ $(( _now - _m )) -ge 60 ]; then
+                rm -rf "$_lockd" 2>/dev/null
+            fi
+        fi
+        _tries=$((_tries + 1))
+        if [ "$_tries" -ge 40 ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
+# _arm_registry_mutex_release <registry-file> <token> -- compare-then-delete
+# (round-3, twin of queue-lock.sh's _ql_arms_mutex_release): release the
+# arms mutex ONLY if its owner token is still ours. A mismatch means the
+# lock was reclaimed from under us mid-rewrite -- WARN loudly and leave the
+# reclaimer's lock alone (rc 1); the caller has already skipped its stale
+# mv on the same comparison. Residual (accepted): a reclaim landing between
+# the token read and the rmdir can still lose its lock -- a microsecond
+# window vs the whole-rewrite window this closes.
+_arm_registry_mutex_release() {
+    local _reg="$1" _tok="$2" _cur=""
+    _cur=$(cat "$_reg.lock/owner" 2>/dev/null) || _cur=""
+    if [ "$_cur" != "$_tok" ]; then
+        echo "WARN arm-resume: the arms-registry mutex ($_reg.lock) was reclaimed by another writer mid-rewrite (owner token mismatch: now '${_cur:-none}') -- leaving their lock in place; this rewrite was discarded" >&2
+        return 1
+    fi
+    rm -f "$_reg.lock/owner" 2>/dev/null
+    rmdir "$_reg.lock" 2>/dev/null
+    return 0
+}
+
+# _arm_registry_replace_and_append <registry-file> <host> <handover-path>
+# <new-record-line> -- HIMMEL-882: drop any existing line whose host AND
+# handover match (this host's own prior record(s) for this same handover),
+# GC any legacy '"fired":"true"'-marked line in passing (retention, round
+# 3 -- fired records are inert; both rewriters drop them so the registry
+# stays O(active arms)), then append <new-record-line>. Without the prune,
+# a re-arm or --force replace of the SAME handover on the SAME host left
+# the superseded line sitting in arms.jsonl forever: harmless to THIS host
+# (the dedup check above only looks at foreign hosts) but a permanent rc=8
+# trap for the NEXT host that tries to arm this handover. CRASH-atomic:
+# filtered+new content goes to a same-dir temp file, then mv into place --
+# a mid-write crash never leaves a torn arms.jsonl. Temp+mv alone does NOT
+# cover a CONCURRENT rewriter, so the whole read-filter-rewrite runs under
+# the OWNER-TOKENED _arm_registry_mutex_acquire mkdir-CAS mutex shared with
+# queue-lock.sh's consume, and the mv happens only while the owner token
+# still names us. Needles are escaped with the shared _hp_json_escape
+# (round-2 -- the stored values are JSON-escaped; raw-vs-escaped never
+# matches). rc 1 on mutex timeout, mid-rewrite theft, or any write failure
+# (caller WARNs and moves on); rc 0 on success. Single unlock point:
+# failures only set _rc and fall through to the token-checked release
+# (which WARNs about a theft). round-4 (sfh-2): on a write failure (not a
+# mutex timeout/theft) $_ARM_REGISTRY_REPLACE_ERR carries the first line of
+# the OS error (disk full / permission denied / RO-fs / AV lock, ...) so
+# the caller's WARN can name it instead of reading identically to a mutex
+# timeout; empty on success or on a mutex-timeout/theft failure.
+_ARM_REGISTRY_REPLACE_ERR=""
+_arm_registry_replace_and_append() {
+    local _reg="$1" _host="$2" _ho="$3" _new="$4"
+    local _tmp="$_reg.tmp.$$" _tok _cur _line _l_host _l_ho _host_esc _ho_esc _rc=0 _werr=""
+    _ARM_REGISTRY_REPLACE_ERR=""
+    if ! _arm_registry_mutex_acquire "$_reg"; then
+        echo "WARN arm-resume: could not lock the arms registry ($_reg.lock) -- skipping the registry rewrite for this arm (a mutex stuck from a crashed writer self-expires after 60s)" >&2
+        return 1
+    fi
+    _tok="$_ARM_REGISTRY_MUTEX_TOKEN"
+    _hp_json_escape "$_host"; _host_esc="$_HP_ESC"
+    _hp_json_escape "$_ho";   _ho_esc="$_HP_ESC"
+    # round-4 (sfh-2): capture stderr instead of discarding it -- see
+    # queue-lock.sh's twin for the rationale (2>/dev/null made a real write
+    # failure read identically to a mutex timeout/theft).
+    if _werr=$( { : > "$_tmp"; } 2>&1 ); then
+        if [ -f "$_reg" ]; then
+            # `|| [ -n "$_line" ]`: read returns 1 at EOF-without-newline
+            # while still filling the variable -- without the guard the
+            # rewrite silently DELETES a final record lacking a trailing
+            # newline (round-2 Critical). Blank lines are dropped on
+            # rewrite. ZERO forks per line (round-3 Critical):
+            # _hp_json_field returns via $_HP_FIELD, no $().
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                [ -z "$_line" ] && continue
+                case "$_line" in
+                    *'"fired":"true"'*) continue ;;   # GC legacy fired-marked line
+                esac
+                _hp_json_field "$_line" host;     _l_host="$_HP_FIELD"
+                _hp_json_field "$_line" handover; _l_ho="$_HP_FIELD"
+                if [ "$_l_host" = "$_host_esc" ] && [ "$_l_ho" = "$_ho_esc" ]; then
+                    continue   # superseded by $_new -- drop
+                fi
+                printf '%s\n' "$_line" >> "$_tmp" || { _rc=1; break; }
+            done < "$_reg"
+        fi
+        if [ "$_rc" -eq 0 ]; then
+            printf '%s\n' "$_new" >> "$_tmp" || _rc=1
+        fi
+        if [ "$_rc" -eq 0 ]; then
+            # OWNER-TOKEN verify (round-3): mv only while the mutex still
+            # names us -- see queue-lock.sh's twin for the rationale. The
+            # cat->mv window below is residual (accepted), same class as
+            # _arm_registry_mutex_release's token-read->rmdir gap.
+            _cur=$(cat "$_reg.lock/owner" 2>/dev/null) || _cur=""
+            if [ "$_cur" = "$_tok" ]; then
+                _werr=$(mv -f "$_tmp" "$_reg" 2>&1) || _rc=1
+            else
+                _rc=1   # reclaimed mid-rewrite: snapshot stale, skip the mv
+            fi
+        fi
+    else
+        _rc=1
+    fi
+    if [ "$_rc" -ne 0 ]; then
+        rm -f "$_tmp" 2>/dev/null
+        [ -n "$_werr" ] && _ARM_REGISTRY_REPLACE_ERR="${_werr%%$'\n'*}"
+    fi
+    _arm_registry_mutex_release "$_reg" "$_tok" || true
+    return "$_rc"
 }
 
 # _arm_hostname -- this machine's identity for registry records/compares.
@@ -1832,17 +2018,34 @@ telemetry_emit handover-arm-resume armed "time=$RESUME_TIME" "force=$FORCE"
 # HIMMEL-856: record this arm in the cross-machine arms registry, same
 # dry-run gate as telemetry above. Best-effort -- a registry write failure
 # must never fail an arm that already succeeded (fail-open, loud trail).
+# HIMMEL-882: prune this SAME host's prior record(s) for this SAME handover
+# before appending the fresh one (see _arm_registry_replace_and_append) --
+# closes the re-arm/--force accumulation gap that would otherwise block a
+# later cross-host arm forever, on top of the consume queue-lock.sh does at
+# session start (see its own HIMMEL-882 comment).
 if [ -n "${HIMMEL_856_HR_ROOT:-}" ]; then
     _arm_host=$(_arm_hostname)
-    mkdir -p "$HIMMEL_856_HR_ROOT/.locks" 2>/dev/null
-    if ! printf '{"host":"%s","handover":"%s","fire-at":"%s","task-name":"%s"}\n' \
-        "$(printf '%s' "$_arm_host" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
-        "$(printf '%s' "$HANDOVER_PATH" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
-        "$(printf '%s' "$AT_STAMP" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
-        "$(printf '%s' "$TASK_NAME" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
-        >> "$HIMMEL_856_HR_ROOT/.locks/arms.jsonl" 2>/dev/null; then
-        echo "WARN arm-resume: failed to append the arms.jsonl registry record (the arm itself still succeeded)" >&2
+    # `|| true`: an unwritable .locks (e.g. a FILE squatting on the dir
+    # path) must not errexit-abort a script whose arm ALREADY succeeded --
+    # the failure surfaces as the replace-and-append WARN below instead.
+    mkdir -p "$HIMMEL_856_HR_ROOT/.locks" 2>/dev/null || true
+    # Values are escaped with the shared _hp_json_escape (round-3) -- the
+    # SAME transform every reader's needle uses, so escaped-vs-escaped
+    # comparisons hold by construction.
+    _hp_json_escape "$_arm_host";     _arm_rec_host="$_HP_ESC"
+    _hp_json_escape "$HANDOVER_PATH"; _arm_rec_ho="$_HP_ESC"
+    _hp_json_escape "$AT_STAMP";      _arm_rec_fire="$_HP_ESC"
+    _hp_json_escape "$TASK_NAME";     _arm_rec_task="$_HP_ESC"
+    _arm_new_record=$(printf '{"host":"%s","handover":"%s","fire-at":"%s","task-name":"%s"}' \
+        "$_arm_rec_host" "$_arm_rec_ho" "$_arm_rec_fire" "$_arm_rec_task")
+    unset _arm_rec_host _arm_rec_ho _arm_rec_fire _arm_rec_task
+    if ! _arm_registry_replace_and_append "$HIMMEL_856_HR_ROOT/.locks/arms.jsonl" "$_arm_host" "$HANDOVER_PATH" "$_arm_new_record"; then
+        # round-4 (sfh-2): fold the first line of the captured write error
+        # (if any -- empty on a mutex timeout/theft) so this WARN reads
+        # differently from those cases.
+        echo "WARN arm-resume: failed to append the arms.jsonl registry record (the arm itself still succeeded)${_ARM_REGISTRY_REPLACE_ERR:+ (write error: $_ARM_REGISTRY_REPLACE_ERR)}" >&2
     fi
+    unset _arm_new_record
     # Post-append re-read (HIMMEL-856 CR, codex-1 -- see the LAYERED
     # DEFENSE comment at the pre-arm check): the check-then-append pair
     # above cannot be atomic across machines, so AFTER recording our own
