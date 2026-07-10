@@ -4,10 +4,17 @@ VM SDK (HIMMEL-491) — an easy-to-use class over scripts/lib/vbox.py for drivin
 the cross-OS test VMs: power, snapshots (so we don't re-provision), shallow
 clone, and provision + e2e delegation.
 
+Also covers physical SSH "stations" (HIMMEL-870, registry `kind: "station"`) —
+reached via an SSH alias + key auth resolved through ~/.ssh/config instead of
+loopback port-forward + password env. Stations share the SSH-generic surface
+(run/ssh/trigger_claude/sync_repo/drive_claude) but have no VirtualBox
+lifecycle; up/down/snapshot/provision/e2e raise StationLifecycleError.
+
 Stdlib + paramiko + python-dotenv (already deps of the *-vm-setup.py scripts;
-no new deps). Loopback-only. Reads SSH creds from the PRIMARY checkout's .env
-(the gitignored .env is NOT copied into worktrees, so it is resolved via the
-parent of `git rev-parse --git-common-dir`, matching scripts/lib/load-dotenv.sh).
+no new deps). Loopback-only for VM entries. Reads SSH creds from the PRIMARY
+checkout's .env (the gitignored .env is NOT copied into worktrees, so it is
+resolved via the parent of `git rev-parse --git-common-dir`, matching
+scripts/lib/load-dotenv.sh).
 
 CLI: python scripts/lib/vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|
                                       baseline NAME|clone [REF]|provision|e2e|
@@ -42,6 +49,18 @@ class VMError(RuntimeError):
     pass
 
 
+class StationLifecycleError(VMError):
+    """A VM-lifecycle/provisioning op was invoked on a station entry.
+
+    Stations (HIMMEL-870) are physical SSH hosts — they have no VirtualBox
+    power/snapshot/provision surface, only the SSH-generic exec/trigger surface.
+    Subclasses VMError so the CLI's ``except VMError`` handler still reports it
+    cleanly instead of dumping a traceback. The message names the entry as a
+    station and the op as VM-only.
+    """
+    pass
+
+
 def _env_path():
     """Path to the PRIMARY checkout's .env (not the worktree's — it has none)."""
     here = Path(__file__).resolve().parent
@@ -71,6 +90,23 @@ def _load_registry(path=None):
     return json.loads(p.read_text())
 
 
+def _read_ssh_config_text():
+    """Return ``~/.ssh/config`` text, or '' if absent/unreadable.
+
+    paramiko does NOT consult ssh_config on connect (the OS ``ssh`` binary
+    does), so a station's registry ``host`` is an alias whose real
+    HostName/Port/User/IdentityFile live in the operator's ssh_config. This is
+    the single read seam — mocked in tests so station ssh() never touches the
+    real operator config (hermetic).
+    """
+    cfg_path = os.path.expanduser("~/.ssh/config")
+    try:
+        with open(cfg_path) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def _repo_root():
     return _env_path().parent
 
@@ -83,12 +119,28 @@ class VM:
         spec = reg[name]
         self.name = name
         self.os = spec["os"]
-        self.port = spec["ssh_port"]
-        self.host = HOST
-        _load_dotenv_into_env()
-        self.user = self._req_env(spec["user_env"])
-        self.password = self._req_env(spec["pass_env"])
+        self.kind = spec.get("kind", "vm")   # "vm" (default, back-compat) | "station"
+        self.auth = spec.get("auth", "key" if self.kind == "station" else "password")
         self._client = None
+        if self.kind == "station":
+            # Physical SSH host (HIMMEL-870): reached by alias + key auth via
+            # ~/.ssh/config. No VirtualBox lifecycle, no loopback port-forward,
+            # no password env. host/port/identity are resolved at connect time.
+            if "host" not in spec:
+                raise VMError(f"station {name!r} requires a 'host' (SSH alias)")
+            self.host = spec["host"]
+            self.port = None
+            self.user = spec.get("user")   # ssh_config may also supply it
+            self.password = None
+            repo_path = spec.get("repo_path")
+            self.repo_path = os.path.expanduser(repo_path) if repo_path else None
+        else:
+            self.port = spec["ssh_port"]
+            self.host = HOST
+            _load_dotenv_into_env()
+            self.user = self._req_env(spec["user_env"])
+            self.password = self._req_env(spec["pass_env"])
+            self.repo_path = None
 
     @staticmethod
     def _req_env(key):
@@ -97,12 +149,21 @@ class VM:
             raise VMError(f"required env key {key!r} not set (check primary .env)")
         return val
 
+    def _require_vm(self, op):
+        """Guard a VirtualBox/VM-lifecycle op: stations have no such surface."""
+        if self.kind == "station":
+            raise StationLifecycleError(
+                f"{self.name!r} is a station (physical SSH host), not a "
+                f"VirtualBox guest — {op!r} is a VM-only operation")
+
     # --- lifecycle ---
     def up(self):
+        self._require_vm("up")
         vbox.ensure_running(self.name)
         return vbox.wait_for_ssh(self.host, self.port)
 
     def ensure_up(self):
+        self._require_vm("ensure_up")
         try:
             with socket.create_connection((self.host, self.port), timeout=3):
                 return None
@@ -110,6 +171,7 @@ class VM:
             return self.up()
 
     def down(self, graceful=True):
+        self._require_vm("down")
         vbox.power_off(self.name, graceful=graceful)
         self._invalidate()
 
@@ -128,6 +190,31 @@ class VM:
         import paramiko
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        if self.kind == "station":
+            # Key-auth via the SSH alias: paramiko does not read ssh_config on
+            # connect, so the alias's real HostName/Port/User/IdentityFile are
+            # resolved here (the single ssh_config read seam, HIMMEL-870).
+            cfg = paramiko.SSHConfig()
+            cfg.parse(io.StringIO(_read_ssh_config_text()))
+            resolved = cfg.lookup(self.host)
+            hostname = resolved.get("hostname", self.host)
+            port = int(resolved.get("port", 22))
+            user = resolved.get("user") or self.user
+            if not user:
+                raise VMError(
+                    f"station {self.name!r} (alias {self.host!r}) has no SSH user "
+                    f"— set 'user' in the vms.json registry entry or 'User' in the "
+                    f"~/.ssh/config Host block for {self.host!r}")
+            identityfiles = resolved.get("identityfile")
+            key_filename = os.path.expanduser(identityfiles[0]) if identityfiles else None
+            try:
+                client.connect(hostname=hostname, port=port, username=user,
+                               key_filename=key_filename, timeout=10)
+            except Exception as e:
+                raise VMError(
+                    f"ssh to station {self.name} (alias {self.host!r}) failed: {e}") from e
+            self._client = client
+            return client
         try:
             client.connect(hostname=self.host, port=self.port,
                            username=self.user, password=self.password, timeout=10)
@@ -170,16 +257,20 @@ class VM:
 
     # --- snapshots ---
     def snapshots(self):
+        self._require_vm("snapshots")
         return vbox.list_snapshots(self.name)
 
     def snapshot(self, name):
+        self._require_vm("snapshot")
         vbox.take_snapshot(self.name, name)
 
     def restore(self, name):
+        self._require_vm("restore")
         vbox.restore_snapshot(self.name, name)
         self._invalidate()
 
     def baseline(self, snap="clean"):
+        self._require_vm("baseline")
         if snap in self.snapshots():
             self.restore(snap)
             self.up()
@@ -231,6 +322,7 @@ class VM:
 
     # --- per-OS handlers (delegation) ---
     def provision(self):
+        self._require_vm("provision")
         root = _repo_root()
         env = {**os.environ, "PYTHONUTF8": "1"}
         if self.os == "ubuntu":
@@ -253,14 +345,25 @@ class VM:
         under Git Bash to avoid WSL bash and Windows-path mangling.
         """
         bash = GIT_BASH if sys.platform == "win32" else "bash"
-        key = os.path.expanduser("~/.ssh/id_ed25519").replace("\\", "/")
         local_fwd = str(local_root).replace("\\", "/")
         exclude_flags = " ".join(f"--exclude={e}" for e in excludes)
+        if self.kind == "station":
+            # Alias-only: hostname/port/identity come from ~/.ssh/config, same
+            # as ssh()'s resolution (HIMMEL-870) — no password, no -p/-i. When
+            # the registry supplies a user, pin it explicitly so this path
+            # can't silently auth as a different user than ssh()'s resolved
+            # user (registry user vs. ssh_config User could otherwise diverge).
+            target = f"{self.user}@{self.host}" if self.user else self.host
+            ssh_target = (f"-o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+                          f"{target}")
+        else:
+            key = os.path.expanduser("~/.ssh/id_ed25519").replace("\\", "/")
+            ssh_target = (f"-p {self.port} -i {key} "
+                          f"-o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+                          f"{self.user}@127.0.0.1")
         pipe = (
             f"tar czf - {exclude_flags} -C {local_fwd} . "
-            f"| ssh -p {self.port} -i {key} "
-            f"-o BatchMode=yes -o StrictHostKeyChecking=accept-new "
-            f"{self.user}@127.0.0.1 "
+            f"| ssh {ssh_target} "
             f"'mkdir -p {dest} && tar xzf - -C {dest}'"
         )
         argv = [bash, "-c", pipe]
@@ -525,6 +628,7 @@ class VM:
         return rc, out
 
     def run_e2e(self):
+        self._require_vm("e2e")
         if self.os != "ubuntu":
             raise NotImplementedError(
                 "run_e2e is Ubuntu-only today; no host-driven Windows e2e exists "
