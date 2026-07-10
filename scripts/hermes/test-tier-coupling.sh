@@ -2,14 +2,14 @@
 # test-tier-coupling.sh -- the REFINED tier-coupling assertion (WS5 Task 3,
 # HIMMEL-654 / T9). Config-fixture only: NO live gateway, NO real config, NO
 # model call. Encodes D3b: full control (write / git / PR) is paired ONLY with a
-# TRUSTED main-tier engine (codex-5.5 or GLM-5.2-workhorse); the untrusted free
+# TRUSTED main-tier engine (codex-5.5 or GLM-5.2 1M workhorse); the untrusted free
 # tier (qwen3-coder-plus / nemotron) is NEVER a write-capable fallback under the
 # default profile.
 #
 # The rule (runbook "Tier coupling -- capability follows the model"):
 #   * full control    = a profile wired with `parity_guard` (the write/git/PR
 #                       main-tier guard), NOT the read-only `luna_vault_guard`.
-#   * trusted engine  = codex / gpt-5.5 / glm-5.2 (the affirmed write engines).
+#   * trusted engine  = codex / gpt-5.5 / glm-5.2[1m] (the affirmed write engines).
 #   * safe pairing    = full control REQUIRES every model in its chain (the
 #                       `model.default` AND every `fallback_providers` model) to
 #                       be trusted. A free / untrusted / unknown model anywhere
@@ -27,12 +27,14 @@
 set -uo pipefail
 
 # --- the tier-coupling rule ---------------------------------------------------
-# Trusted write engines (D3b: codex-5.5 / GLM-5.2-workhorse; gpt-5.5 is the
+# Trusted write engines (D3b: codex-5.5 / GLM-5.2 1M workhorse; gpt-5.5 is the
 # codex provider's model id per the runbook). EXACT allowlist anchored on the
 # whole slug (optional provider prefix) — a substring match would let an
-# unaffirmed variant (e.g. a hypothetical glm-5.2-air free tier) ride a trusted
-# token into full control. Variants NOT listed stay UNTRUSTED (fail-closed).
-TRUSTED_RE='^([a-z0-9._-]+/)?(codex|codex-5\.5|gpt-5\.5|gpt-5\.5-codex|glm-5\.2)$'
+# unaffirmed variant (e.g. bare glm-5.2 or a hypothetical glm-5.2-air free tier)
+# ride a trusted token into full control. Variants NOT listed stay UNTRUSTED
+# (fail-closed). Z.ai's Claude Code docs require the explicit `[1m]` suffix for
+# the largest context window, so bare `glm-5.2` is NOT the affirmed write lane.
+TRUSTED_RE='^([a-z0-9._-]+/)?(codex|codex-5\.5|gpt-5\.5|gpt-5\.5-codex|glm-5\.2\[1m\])$'
 
 is_trusted_model() {
     # arg 1 = model slug (already lower-cased). return 0 if a trusted write engine.
@@ -148,9 +150,9 @@ echo "== tier-coupling: trusted engine + full control =="
 # codex-5.5 with no free fallback -- the canonical safe main-tier pairing.
 expect_safe  "codex-5.5 + full control, no fallback" \
     "$(fixture safe_codex parity codex-5.5 '')"
-# GLM-5.2-workhorse (D3b blessed for write), no fallback.
-expect_safe  "glm-5.2 + full control, no fallback" \
-    "$(fixture safe_glm parity glm-5.2 '')"
+# GLM-5.2 1M workhorse (D3b blessed for write), no fallback.
+expect_safe  "glm-5.2[1m] + full control, no fallback" \
+    "$(fixture safe_glm parity 'glm-5.2[1m]' '')"
 # trusted default AND a trusted fallback (codex) -- all-trusted chain is safe.
 expect_safe  "gpt-5.5 + full control, codex fallback (all trusted)" \
     "$(fixture safe_gptfb parity gpt-5.5 codex-5.5)"
@@ -169,6 +171,10 @@ expect_unsafe "codex-5.5 default + nemotron free fallback (write-capable)" \
 # unknown / unrecognized engine on a full-control profile -- fail-closed.
 expect_unsafe "unknown engine + full control (fail-closed)" \
     "$(fixture bad_unknown parity some-mystery-model '')"
+# bare GLM-5.2 is capped below the desired Z.ai long-context lane unless the
+# explicit [1m] suffix is present -- must FAIL.
+expect_unsafe "bare glm-5.2 (missing [1m]) + full control" \
+    "$(fixture bad_bare_glm parity glm-5.2 '')"
 # unaffirmed VARIANT of a trusted slug (substring trap): glm-5.2-air carries the
 # trusted "glm-5.2" token but is NOT on the affirmed allowlist -- must FAIL.
 expect_unsafe "glm-5.2-air variant (unaffirmed) + full control" \
