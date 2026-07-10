@@ -97,6 +97,15 @@ for (const r of pendingRules) {
     `pending cell ${r.corpus} x ${r.provider} x ${r.purpose} must evaluate deny via its own pending-operator rule (shadowed by an earlier rule?), got ${effective}/${rule?.verdict}`);
 }
 
+// 5e. HIMMEL-833: the enrichment cell must exist and may only ever be
+//     pending-operator (pre-ratification) or allow+log (post) — never a
+//     plain allow: the ledger obligation survives ratification.
+const enrichmentRule = m.rules.find(r =>
+  r.corpus === "luna-personal" && r.provider === "deepseek" && r.purpose === "enrichment");
+assert(enrichmentRule, "missing luna-personal x deepseek x enrichment rule (HIMMEL-833)");
+assert(["pending-operator", "allow+log"].includes(enrichmentRule.verdict),
+  `enrichment cell must be pending-operator or allow+log, got ${enrichmentRule.verdict}`);
+
 // 5b. Fail-closed for UNDECLARED inputs — the exact shape a resolver bug
 //     produces (a path that fails to classify into a known corpus)
 assert(evaluate("mystery-corpus", "mystery-provider", "mystery-purpose").effective === "deny",

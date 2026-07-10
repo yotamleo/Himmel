@@ -30,7 +30,7 @@
     "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "qwen text lanes + free-quota modality bank (HIMMEL-729/765)" },
     "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" }
   },
-  "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding"],
+  "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding", "enrichment"],
   "rules": [
     {
       "corpus": "salus", "provider": "local-ollama", "purpose": "*",
@@ -133,6 +133,11 @@
       "corpus": "luna-personal", "provider": "deepseek", "purpose": "extraction",
       "verdict": "allow+log",
       "why": "operator override 2026-07-05 (speed): luna non-Clippings graphify extraction on DeepSeek, single model, ledgered per run"
+    },
+    {
+      "corpus": "luna-personal", "provider": "deepseek", "purpose": "enrichment",
+      "verdict": "allow+log",
+      "why": "operator ratification 2026-07-10 (HIMMEL-833): chat-note enrichment — full note bodies of luna/chats/* to DeepSeek, plus the vault-wide top-200 tag vocabulary (tag names only) sent with each request as the allowed-tags list; exposure-identical in kind to the 2026-07-05 extraction override; ledgered per run incl. vocab_tags (log obligation survives ratification, never plain allow)"
     },
     {
       "corpus": "luna-personal", "provider": "alibaba", "purpose": "embedding",
