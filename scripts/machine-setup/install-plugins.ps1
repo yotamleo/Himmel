@@ -1,8 +1,9 @@
-# install-plugins.ps1 — install all Claude Code plugins listed in
-# docs/setup/settings-template.json. PowerShell counterpart of
+# install-plugins.ps1 — install all true-flagged Claude Code plugins listed
+# in docs/setup/settings-template.json. PowerShell counterpart of
 # install-plugins.sh.
 #
-# Reads `enabledPlugins` and `extraKnownMarketplaces` from the template,
+# Reads `enabledPlugins` (installing only entries flagged `true` —
+# HIMMEL-816) and `extraKnownMarketplaces` from the template,
 # registers each marketplace via `claude plugin marketplace add`, sets
 # `autoUpdate: true` on every template-flagged marketplace already registered in
 # the scope's settings.json (the CLI has no auto-update flag, so this is patched
@@ -136,7 +137,11 @@ foreach ($name in $autoNames) {
 
 # ── Install plugins ─────────────────────────────────────────────────────────
 Write-Host "──── Installing plugins ($Scope scope) ────"
-$specs = @($cfg.enabledPlugins.PSObject.Properties.Name)
+# Only install template entries flagged true — a false-flagged entry (the
+# HIMMEL-816 lean profile) must NOT be installed, or the lean template
+# silently re-creates the pre-lean maximal set on every fresh machine
+# (HIMMEL-816 follow-up gap).
+$specs = @($cfg.enabledPlugins.PSObject.Properties | Where-Object { $_.Value -eq $true } | ForEach-Object { $_.Name })
 foreach ($spec in $specs) {
     Write-Host "  install: $spec"
     Invoke-Step @('claude', 'plugin', 'install', $spec, '--scope', $Scope)

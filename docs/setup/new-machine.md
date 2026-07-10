@@ -513,6 +513,38 @@ Plugins live at `~/.claude/plugins/`. Different install methods per plugin — r
 | `obsidian` (Steph Ango's skills) | himmel marketplace (sources `kepano/obsidian-skills`, SHA-pinned) | `/plugin install` after adding himmel marketplace | `obsidian-markdown`, `obsidian-bases`, `json-canvas`, `obsidian-cli`, `defuddle`. `obsidian-triage` can use `obsidian-markdown` for proper OFM when editing clipped notes (recommended, not required — fallback documented in the command body) |
 | `claude-obsidian` | himmel marketplace (sources `yotamleo/claude-obsidian` vendor fork of `AgriciDaniel/claude-obsidian`, SHA-pinned) | `/plugin install` after adding himmel marketplace | Wiki query, save, ingest, lint, autoresearch. Companion to `obsidian-triage` — `wiki-query` optionally powers richer Related Notes inference |
 
+### Lean profile — disabled by default, enable on need (HIMMEL-816)
+
+`docs/setup/settings-template.json` ships **lean**: 12 `@claude-plugins-official`
+plugins, `obsidian@obsidian-skills`, and `caveman@caveman` (HIMMEL-701) are
+`false` in `enabledPlugins` — every adopter and every re-provisioned operator
+machine gets the minimal set by default instead of re-creating the maximal
+31-plugin install every time. Turn any of these back on with one command
+(`--scope user` shown; swap for `project`/`local` per [Scope](#scope-user-vs-project) above):
+
+| Plugin | Enable command | Note |
+|---|---|---|
+| `github@claude-plugins-official` | `claude plugin install github@claude-plugins-official --scope user` | gh CLI over MCP is the standing project rule — enable only for a one-off need |
+| `feature-dev@claude-plugins-official` | `claude plugin install feature-dev@claude-plugins-official --scope user` | |
+| `plugin-dev@claude-plugins-official` | `claude plugin install plugin-dev@claude-plugins-official --scope user` | |
+| `code-review@claude-plugins-official` | `claude plugin install code-review@claude-plugins-official --scope user` | himmel ships its own `pr-review-toolkit(-himmel)` critics — enable this only to also run the upstream flow |
+| `ralph-loop@claude-plugins-official` | `claude plugin install ralph-loop@claude-plugins-official --scope user` | |
+| `pyright-lsp@claude-plugins-official` | `claude plugin install pyright-lsp@claude-plugins-official --scope user` | **operator convention:** don't flip this on at user scope — dispatch a subagent with the plugin enabled for the one python task instead |
+| `agent-sdk-dev@claude-plugins-official` | `claude plugin install agent-sdk-dev@claude-plugins-official --scope user` | |
+| `claude-code-setup@claude-plugins-official` | `claude plugin install claude-code-setup@claude-plugins-official --scope user` | |
+| `code-simplifier@claude-plugins-official` | `claude plugin install code-simplifier@claude-plugins-official --scope user` | |
+| `commit-commands@claude-plugins-official` | `claude plugin install commit-commands@claude-plugins-official --scope user` | |
+| `playground@claude-plugins-official` | `claude plugin install playground@claude-plugins-official --scope user` | |
+| `skill-creator@claude-plugins-official` | `claude plugin install skill-creator@claude-plugins-official --scope user` | |
+| `obsidian@obsidian-skills` | `claude plugin marketplace add kepano/obsidian-skills` then `claude plugin install obsidian@obsidian-skills --scope user` | `obsidian-triage` falls back to plain markdown when this isn't enabled (documented in the command body) — enable if you need proper OFM parity |
+| `caveman@caveman` | `claude plugin marketplace add JuliusBrussee/caveman` then `claude plugin install caveman@caveman --scope user` | Caveman compression mode + cavecrew subagents (HIMMEL-701) |
+
+> **Note (HIMMEL-816):** `scripts/machine-setup/install-plugins.sh` /
+> `install-plugins.ps1` only call `claude plugin install` for `enabledPlugins`
+> entries flagged `true` — a fresh adopt/re-provision now gets the lean set
+> above, not the pre-lean 31-plugin default. Use the per-plugin commands above
+> to opt any of them back in.
+
 ### Install sequence
 
 ```bash

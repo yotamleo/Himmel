@@ -11,6 +11,9 @@
 #      bash twin's grep -F)
 #   4. `claude plugin list` fails     → fail closed (exit 1), surfaces the error
 #   5. --dry-run                      → exit 0, verify skipped
+#   6. false-flagged entry            → NOT installed / not in the verify set
+#      (HIMMEL-816 follow-up: install-plugins.ps1 must honor enabledPlugins'
+#      boolean value, not install every key regardless)
 #
 # Keep in lockstep with test-install-plugins-verify.sh when changing either.
 #
@@ -128,6 +131,26 @@ try {
     $out = Invoke-Install @('-DryRun')
     Assert-Rc 'dry-run exits 0' 0 $script:Rc
     Assert-Has 'dry-run skips verify' 'verify skipped' $out
+
+    # 6. false-flagged entry (HIMMEL-816 follow-up) → not installed, not in the
+    # verify set. Stub only reports the true-flagged plugin present (as a real
+    # install run would leave it).
+    $TemplateLean = Join-Path $Tmp 'settings-template-lean.json'
+    @'
+{
+  "enabledPlugins": { "enabled@mp": true, "disabled@mp": false },
+  "extraKnownMarketplaces": {}
+}
+'@ | Set-Content -Path $TemplateLean
+
+    Set-Stub @('enabled@mp')
+    $out = (& $Pwsh -NoProfile -File $Cli -Template $TemplateLean -Scope user 2>&1 | Out-String)
+    $script:Rc = $LASTEXITCODE
+    Assert-Rc 'lean template exits 0' 0 $script:Rc
+    Assert-Has 'lean template installs the true-flagged plugin' 'install: enabled@mp' $out
+    Assert-Has 'lean template verify summary counts only the true entry' 'All 1 enabled plugins present' $out
+    Assert-Lacks 'false-flagged plugin not installed' 'install: disabled@mp' $out
+    Assert-Lacks 'false-flagged plugin absent from verify output' 'disabled@mp --' $out
 } finally {
     $env:PATH = $SavedPath
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
