@@ -5,7 +5,9 @@ Hermetic tests mock `vbox` and the SSH client, so they run on any box. The
 `TestLiveUbuntu` class is guarded by a reachability probe and is skipped (not
 failed) when ubuntu_new is not up on 127.0.0.1:2222.
 """
+import json
 import os
+import shutil
 import socket
 import sys
 import unittest
@@ -1066,6 +1068,235 @@ class TestTriggerCLI(unittest.TestCase):
             rc = vmsdk.main(["ubuntu_new", "push", "h.md"])
         self.assertEqual(rc, 0)
         p.assert_called_once_with("h.md", "~/handover-inbox/h.md")
+
+
+class TestStation(unittest.TestCase):
+    """Physical SSH station entries (HIMMEL-870) — kind: "station", key auth
+    via an SSH alias resolved through ~/.ssh/config. All station fixtures use
+    a temp registry (registry_path=) so they never depend on the real
+    scripts/lib/vms.json win2 entry (hermetic, no network)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def _write_registry(self, reg):
+        p = Path(self.tmp) / "vms.json"
+        p.write_text(json.dumps(reg))
+        return str(p)
+
+    def _vm(self, **overrides):
+        spec = {"os": "windows", "kind": "station", "host": "teststation",
+                "auth": "key", "user": "testuser",
+                "repo_path": "~/repo/himmel"}
+        spec.update(overrides)
+        reg_path = self._write_registry({"teststation": spec})
+        return vmsdk.VM("teststation", registry_path=reg_path)
+
+    # --- construction ---
+    def test_station_resolves_fields_no_env_needed(self):
+        # Clear every env var EXCEPT the HOME var expanduser() itself relies
+        # on — the point of this test is that a station needs no VM creds
+        # (ubuntu_vm_user etc.), not that expanduser() stops working.
+        home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+        keep = {home_key: os.environ[home_key]} if home_key in os.environ else {}
+        with mock.patch.dict(os.environ, keep, clear=True):
+            vm = self._vm()
+        self.assertEqual(vm.kind, "station")
+        self.assertEqual(vm.auth, "key")
+        self.assertEqual(vm.host, "teststation")
+        self.assertIsNone(vm.port)
+        self.assertIsNone(vm.password)
+        self.assertEqual(vm.user, "testuser")
+        # repo_path is expanduser'd at construction so a tilde form (the
+        # portable shape a registry entry should use) resolves usably.
+        self.assertEqual(vm.repo_path, os.path.expanduser("~/repo/himmel"))
+
+    def test_station_missing_host_raises(self):
+        reg_path = self._write_registry({"nohostbox": {"os": "windows", "kind": "station"}})
+        with self.assertRaises(vmsdk.VMError) as cm:
+            vmsdk.VM("nohostbox", registry_path=reg_path)
+        self.assertIn("host", str(cm.exception))
+
+    def test_vm_entry_back_compat_unchanged(self):
+        """Existing (non-station) registry entries behave exactly as before:
+        kind defaults to "vm", auth defaults to "password", loopback host/port,
+        password-env auth — VM back-compat is the explicit requirement here."""
+        with mock.patch.dict(os.environ,
+                             {"ubuntu_vm_user": "osboxes", "ubuntu_vm_pass": "pw"}, clear=False):
+            with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+                vm = vmsdk.VM("ubuntu_new")
+        self.assertEqual(vm.kind, "vm")
+        self.assertEqual(vm.auth, "password")
+        self.assertEqual(vm.host, "127.0.0.1")
+        self.assertEqual(vm.port, 2222)
+        self.assertEqual(vm.user, "osboxes")
+        self.assertEqual(vm.password, "pw")
+        self.assertIsNone(vm.repo_path)
+
+    # --- ssh() alias resolution / key auth ---
+    def test_ssh_resolves_alias_via_ssh_config_key_auth(self):
+        vm = self._vm()
+        ssh_config_text = (
+            "Host teststation\n"
+            "  HostName 10.0.0.5\n"
+            "  Port 2200\n"
+            "  User testuser\n"
+            "  IdentityFile ~/.ssh/id_ed25519_win2\n"
+        )
+        calls = []
+
+        class _FakeSSH:
+            def set_missing_host_key_policy(self, policy):
+                pass
+            def connect(self, **kw):
+                calls.append(kw)
+            def close(self):
+                pass
+
+        import paramiko
+        with mock.patch.object(vmsdk, "_read_ssh_config_text", return_value=ssh_config_text), \
+             mock.patch.object(paramiko, "SSHClient", return_value=_FakeSSH()):
+            client = vm.ssh()
+        self.assertIsInstance(client, _FakeSSH)
+        self.assertEqual(len(calls), 1)
+        kw = calls[0]
+        self.assertEqual(kw["hostname"], "10.0.0.5")
+        self.assertEqual(kw["port"], 2200)
+        self.assertEqual(kw["username"], "testuser")
+        self.assertIn("id_ed25519_win2", kw["key_filename"])
+        self.assertNotIn("password", kw)
+
+    def test_ssh_falls_back_to_alias_and_registry_user_without_ssh_config(self):
+        """No matching Host block -> resolve to the bare alias / registry user."""
+        vm = self._vm()
+
+        class _FakeSSH:
+            kw = None
+            def set_missing_host_key_policy(self, policy):
+                pass
+            def connect(self, **kw):
+                self.kw = kw
+            def close(self):
+                pass
+
+        fake = _FakeSSH()
+        import paramiko
+        with mock.patch.object(vmsdk, "_read_ssh_config_text", return_value=""), \
+             mock.patch.object(paramiko, "SSHClient", return_value=fake):
+            vm.ssh()
+        self.assertEqual(fake.kw["hostname"], "teststation")
+        self.assertEqual(fake.kw["username"], "testuser")   # registry user, no ssh_config override
+        self.assertEqual(fake.kw["port"], 22)
+        self.assertNotIn("password", fake.kw)
+
+    def test_ssh_no_user_anywhere_raises_clear_vmerror(self):
+        """No registry user AND no ssh_config User for the alias -> a clear
+        VMError naming the entry + both places a user can be set, instead of
+        paramiko.connect(username=None) failing cryptically (HIMMEL-870 CR round-1)."""
+        vm = self._vm(user=None)
+
+        class _FakeSSH:
+            def set_missing_host_key_policy(self, policy):
+                pass
+            def connect(self, **kw):
+                raise AssertionError("connect() must not be reached when user is unresolved")
+            def close(self):
+                pass
+
+        import paramiko
+        with mock.patch.object(vmsdk, "_read_ssh_config_text", return_value=""), \
+             mock.patch.object(paramiko, "SSHClient", return_value=_FakeSSH()):
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.ssh()
+        msg = str(cm.exception)
+        self.assertIn("teststation", msg)
+        self.assertIn("vms.json", msg)
+        self.assertIn("~/.ssh/config", msg)
+
+    # --- run() command construction: alias-reached, no password env ---
+    def test_run_uses_station_ssh_no_password(self):
+        vm = self._vm()
+        fake = _FakeClient(rc=0, out="hi\n", err="")
+        with mock.patch.object(vm, "ssh", return_value=fake):
+            rc, out = vm.run("echo hi")
+        self.assertEqual(rc, 0)
+        self.assertIn("hi", out)
+        self.assertIsNone(vm.password)   # never set for a station
+
+    # --- sync_repo: alias branch, no port/-i/loopback ---
+    def test_sync_repo_station_uses_alias_no_port_no_key_flag(self):
+        vm = self._vm()
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(returncode=0, stderr="")
+        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run):
+            vm.sync_repo(r"C:\Users\x\himmel")
+        pipe = " ".join(str(a) for a in calls[0])
+        self.assertIn("teststation", pipe)
+        self.assertNotIn("ssh -p", pipe)     # no port flag on the ssh invocation
+        self.assertNotIn("-i ", pipe)        # no explicit identity flag
+        self.assertNotIn("@127.0.0.1", pipe)
+        self.assertIn("BatchMode=yes", pipe)
+
+    def test_sync_repo_station_pins_registry_user_at_alias(self):
+        """Registry user must be pinned as user@alias, so sync_repo can't drift
+        from ssh()'s resolved user when the registry user differs from
+        ssh_config's User for the same Host (HIMMEL-870 CR round-1)."""
+        vm = self._vm(user="testuser")
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(returncode=0, stderr="")
+        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run):
+            vm.sync_repo(r"C:\Users\x\himmel")
+        pipe = " ".join(str(a) for a in calls[0])
+        self.assertIn("testuser@teststation", pipe)
+
+    def test_sync_repo_station_bare_alias_when_no_registry_user(self):
+        """No registry user -> bare alias, unchanged from the pre-fix shape
+        (ssh_config's own User, if any, still applies via the alias)."""
+        vm = self._vm(user=None)
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(returncode=0, stderr="")
+        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run):
+            vm.sync_repo(r"C:\Users\x\himmel")
+        pipe = " ".join(str(a) for a in calls[0])
+        self.assertNotIn("@teststation", pipe)
+        self.assertIn("teststation", pipe)
+
+    # --- lifecycle ops are VM-only: stations raise the typed error ---
+    def test_lifecycle_ops_raise_station_lifecycle_error(self):
+        vm = self._vm()
+        ops = [
+            ("up", lambda: vm.up()),
+            ("down", lambda: vm.down()),
+            ("ensure_up", lambda: vm.ensure_up()),
+            ("snapshots", lambda: vm.snapshots()),
+            ("snapshot", lambda: vm.snapshot("clean")),
+            ("restore", lambda: vm.restore("clean")),
+            ("baseline", lambda: vm.baseline("clean")),
+            ("provision", lambda: vm.provision()),
+            ("e2e", lambda: vm.run_e2e()),
+        ]
+        for name, call in ops:
+            with self.subTest(op=name):
+                with self.assertRaises(vmsdk.StationLifecycleError) as cm:
+                    call()
+                self.assertIn("teststation", str(cm.exception))
+                self.assertIsInstance(cm.exception, vmsdk.VMError)
+
+    def test_cli_lifecycle_on_station_exits_1_not_traceback(self):
+        reg_path = self._write_registry({"teststation": {
+            "os": "windows", "kind": "station", "host": "teststation",
+            "auth": "key", "user": "testuser"}})
+        with mock.patch.object(vmsdk, "_REGISTRY", Path(reg_path)):
+            rc = vmsdk.main(["teststation", "up"])
+        self.assertEqual(rc, 1)
 
 
 def _ubuntu_up():
