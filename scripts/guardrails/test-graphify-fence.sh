@@ -60,6 +60,7 @@ LEDGER="$HOME/.claude/graphify-egress.jsonl"
 
 # env vars scrubbed on every fence call so the outer shell cannot leak state in.
 CLEAN_ENV="-u GRAPHIFY_SALUS_LOCAL_OK -u GRAPHIFY_CLIPPINGS_GLM_OK -u GRAPHIFY_LEDGER \
+-u GRAPHIFY_TOOL_CWD -u GRAPHIFY_DECLARED_BACKEND \
 -u OPENAI_BASE_URL -u DEEPSEEK_BASE_URL -u LUNA_VAULT -u OLLAMA_HOST \
 -u DEEPSEEK_API_KEY -u ZAI_API_KEY -u DASHSCOPE_API_KEY -u OPENAI_API_KEY \
 -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u XAI_API_KEY \
@@ -309,30 +310,36 @@ run_fence deny no "$LUNA" "query cwd-luna glm -> deny" \
 echo "== hook-level: parse + delegation + malformed-json fallback =="
 
 # non-graphify Bash command -> hook exits 0 instantly
-out=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hello world"}}' | "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hello world"}}' | env $CLEAN_ENV HOME="$HOME" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "hook: non-graphify -> exit 0"; else fail "hook: non-graphify expected rc=0 got rc=$rc out=$out"; fi
 
 # non-Bash tool -> hook exits 0
-out=$(printf '%s' '{"tool_name":"Read","tool_input":{"file_path":"/x"}}' | "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' '{"tool_name":"Read","tool_input":{"file_path":"/x"}}' | env $CLEAN_ENV HOME="$HOME" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "hook: non-Bash tool -> exit 0"; else fail "hook: non-Bash expected rc=0 got rc=$rc out=$out"; fi
 
 # graphify salus deny delegated through the hook -> rc 2
 rm -f "$LEDGER"
 payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
-out=$(printf '%s' "$payload" | env HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qi "DENY"; then pass "hook: graphify salus -> delegated deny rc=2"; else fail "hook: expected rc=2 + DENY got rc=$rc out=$out"; fi
 
 # graphify allow (himmel) delegated through the hook -> rc 0
 payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update %s --backend deepseek"}}' "$HIMMEL/scripts/thing.sh")
-out=$(printf '%s' "$payload" | env HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "hook: graphify himmel -> delegated allow rc=0"; else fail "hook: expected rc=0 got rc=$rc out=$out"; fi
 
 # (16) malformed hook JSON that mentions a graphify command + jq present -> deny
-out=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"graphify update /x --backend glm"' | env HOME="$HOME" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"graphify update /x --backend glm"' | env $CLEAN_ENV HOME="$HOME" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
 if [ "$rc" -eq 2 ]; then pass "hook: malformed JSON + graphify -> deny rc=2"; else fail "hook: malformed JSON expected rc=2 got rc=$rc out=$out"; fi
 
 # malformed hook JSON WITHOUT graphify -> allow (never block unrelated on bad payload)
-out=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hi"' | env HOME="$HOME" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hi"' | env $CLEAN_ENV HOME="$HOME" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "hook: malformed JSON no-graphify -> allow rc=0"; else fail "hook: malformed no-graphify expected rc=0 got rc=$rc out=$out"; fi
 
 echo "== ledger line CONTENT (verdict + corpus fields) =="
@@ -569,6 +576,168 @@ if [ "$rc_d3" -eq 0 ] && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/nul
 else
     fail "mixed-corpus D3: rc=$rc_d3 ledger=$(cat "$LEDGER" 2>/dev/null)"
 fi
+
+echo "== HIMMEL-779 gap 1: bare-word target resolved against tool-call cwd =="
+
+# (B1) POSITION-0 BARE-WORD swallowed as a subcommand (HIMMEL-779): a bare
+# (no slash/drive/extension) dir name that EXISTS under the tool-call cwd is a
+# target, not a subcommand word. Nest a .salus-marked PHI dir inside the safe
+# himmel corpus; the bare name must classify salus -> deny, not be eaten as a
+# subcommand so the safe cwd fallback allows (the fail-open).
+mkdir -p "$HIMMEL/nestedphi"; : > "$HIMMEL/nestedphi/.salus"
+run_fence deny no "$HIMMEL" "position-0 bare-word PHI dir -> classify (not subcmd)" \
+    "graphify nestedphi --backend deepseek"
+
+# (B2) bare-word target at a later position alongside a safe path: the bare
+# PHI dir name used to be skipped as a "non-path arg" so the co-present safe
+# path won the rank -> allow; it must now resolve under cwd -> salus -> deny.
+run_fence deny no "$WS" "bare-word PHI + safe path -> most-restrictive deny" \
+    "graphify merge-graphs salusvault $HIMMEL/scripts/thing.sh --backend deepseek"
+
+# (B3) NEGATIVE: a position-0 bare word that does NOT exist under cwd is still
+# the subcommand (update), so the real subcommand grammar keeps working.
+run_fence allow no "$HIMMEL/scripts" "bare word not on disk -> still subcommand (update)" \
+    "graphify update --force"
+
+echo "== HIMMEL-779 gap 2: relative path resolves against tool-call cwd =="
+
+# (C1) Hook-cwd mismatch fail-open (HIMMEL-779): the fence's own $PWD is the
+# SAFE himmel corpus, but the tool-call cwd (GRAPHIFY_TOOL_CWD, what the hook
+# payload carries in .tool_input.cwd) is the luna vault. A relative path must
+# resolve against the TOOL-CALL cwd -> luna-personal -> deny, not against the
+# fence $PWD -> himmel -> allow (the fail-open).
+run_fence deny no "$HIMMEL" "relative path resolves vs tool-call cwd (luna) -> deny" \
+    "graphify update journal-2026.md --backend glm" GRAPHIFY_TOOL_CWD="$LUNA"
+
+# (C2) same shape but tool-call cwd is the SAFE himmel corpus -> allow (the
+# declared cwd genuinely points at an allow corpus; not a blanket allow).
+run_fence allow no "$HIMMEL" "relative path resolves vs tool-call cwd (himmel) -> allow" \
+    "graphify update scripts/thing.sh --backend deepseek" GRAPHIFY_TOOL_CWD="$HIMMEL"
+
+# (C-hook) the hook threads .tool_input.cwd -> GRAPHIFY_TOOL_CWD: a relative
+# path into the luna corpus (payload cwd=$LUNA) denies even though the hook
+# process runs from the safe himmel corpus (the production shape: the hook's
+# own $PWD is the project root, not the command's cwd).
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update journal-2026.md --backend glm","cwd":"%s"}}' "$LUNA")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | ( cd "$HIMMEL" && env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1 )); rc=$?
+if [ "$rc" -eq 2 ]; then pass "hook: threads .tool_input.cwd -> relative luna path denies"; else fail "hook cwd-thread: expected rc=2 got rc=$rc out=$out"; fi
+
+echo "== HIMMEL-779 gap 3: update-subcommand backend declaration + order-insensitive parse =="
+
+# (D1) graphify `update` takes NO --backend on its CLI (re-extraction is
+# LLM-free), yet the fence demands a declared provider for a non-himmel
+# corpus. A declared backend via env (GRAPHIFY_DECLARED_BACKEND) must satisfy
+# the requirement AND still flow through the egress matrix -> luna-personal x
+# deepseek -> allow+ledger (HIMMEL-779 gap 3a).
+run_fence allow yes "$HIMMEL" "declared backend (deepseek) on update luna -> allow+ledger" \
+    "graphify update $LUNA/journal-2026.md" GRAPHIFY_DECLARED_BACKEND=deepseek
+
+# (D2) declared backend still routed through the matrix: a deny-provider (glm)
+# declared via env on luna-personal -> deny (declaration is not a bypass).
+run_fence deny no "$HIMMEL" "declared backend (glm) on luna -> deny (matrix still applies)" \
+    "graphify update $LUNA/journal-2026.md" GRAPHIFY_DECLARED_BACKEND=glm
+
+# (D3) multi-distinct-backend last-wins order sensitivity (HIMMEL-779 gap 3b):
+# a BLOCKED backend (gemini) placed BEFORE an allowed one (deepseek) used to
+# let the allowed one win (last-wins) -> allow; distinct conflicting backends
+# must now DENY regardless of order so a blocked backend cannot be hidden.
+run_fence deny no "$HIMMEL" "conflicting backends (gemini then deepseek) -> deny" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend gemini --backend deepseek"
+
+# (D4) reverse order is also a conflict -> deny (order-INsensitive).
+run_fence deny no "$HIMMEL" "conflicting backends (deepseek then gemini) -> deny" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend deepseek --backend gemini"
+
+# (D5) the SAME backend repeated is NOT a conflict -> allow (no over-deny).
+run_fence allow no "$HIMMEL" "same backend repeated -> not a conflict -> allow" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend deepseek --backend deepseek"
+
+echo "== HIMMEL-779 CR round-1: GRAPHIFY_DECLARED_BACKEND scoping (FIX 1) =="
+
+# (F1a) non-update subcommand + declared backend + no --backend on a luna path
+# -> deny (GRAPHIFY_DECLARED_BACKEND is scoped to the LLM-free `update`
+# subcommand only; a provider-using subcommand still hits the no-backend deny).
+run_fence deny no "$HIMMEL" "declared backend on non-update subcommand -> deny (scope)" \
+    "graphify cluster $LUNA/journal-2026.md" GRAPHIFY_DECLARED_BACKEND=deepseek
+
+# (F1b) himmel-code corpus, no flag, declared backend set to a HARD-DENY
+# provider (gemini) -> still evaluated as the local-ollama default -> allow,
+# no ledger. If the declared value leaked through it would hit the gemini
+# hard-deny row instead.
+run_fence allow no "$HIMMEL" "declared backend ignored for himmel-code no-flag -> ollama default allow" \
+    "graphify update $HIMMEL/scripts/thing.sh" GRAPHIFY_DECLARED_BACKEND=gemini
+
+# (F1c) explicit --backend wins over a safe declared backend (precedence
+# pinned): --backend glm denies even though GRAPHIFY_DECLARED_BACKEND=ollama
+# (a safe value) is also set - the declared var is consulted ONLY when
+# --backend is absent.
+run_fence deny no "$HIMMEL" "explicit --backend glm wins over safe declared ollama -> deny" \
+    "graphify update $LUNA/journal-2026.md --backend glm" GRAPHIFY_DECLARED_BACKEND=ollama
+
+echo "== HIMMEL-779 CR round-1: in-command cd drift (FIX 2) =="
+
+# (F2a) cd into an unsafe corpus, then a RELATIVE graphify target: the
+# recorded tool-call cwd is the SAFE himmel corpus (what the hook payload
+# captured before the shell ran `cd`), so the old parser resolved the
+# relative target against it and allowed (himmel-code x zai-glm is an allow
+# cell) - the fence cannot see the `cd`. CD_SEEN must deny instead.
+run_fence deny no "$HIMMEL" "in-command cd then relative graphify target -> deny" \
+    "cd $LUNA && graphify update journal-2026.md --backend glm" GRAPHIFY_TOOL_CWD="$HIMMEL"
+
+# (F2b) same in-command cd, but the graphify target is ABSOLUTE -> unaffected
+# by the cd-drift guard, normal matrix result (luna-personal x deepseek ->
+# allow+ledger).
+run_fence allow yes "$HIMMEL" "in-command cd then ABSOLUTE graphify target -> unaffected (allow+ledger)" \
+    "cd $LUNA && graphify update $LUNA/journal-2026.md --backend deepseek" GRAPHIFY_TOOL_CWD="$HIMMEL"
+
+# (F2c) no-cwd hook payload regression pin: WITHOUT any .tool_input.cwd field,
+# a relative safe path still resolves against the hook process's own $PWD (the
+# documented fallback) and allows - this must keep working (no cd involved).
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update scripts/thing.sh --backend deepseek"}}')
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ]; then pass "hook: no-cwd payload + relative safe path -> allow (fallback pin)"; else fail "hook no-cwd fallback: expected rc=0 got rc=$rc out=$out"; fi
+
+# (F2c2, CR round-2) inherited-env regression: a no-cwd payload must DROP any
+# GRAPHIFY_TOOL_CWD already present in the hook's own environment (e.g. leaked
+# from the launching shell) rather than anchor to it - the hook must unset it
+# and fall back to its own $PWD. GRAPHIFY_TOOL_CWD is set here to the UNSAFE
+# luna corpus AFTER CLEAN_ENV so it survives the scrub. No --backend flag on
+# the command (the no-backend policy denies every non-himmel corpus, see the
+# "no-backend luna" case above): if the hook failed to drop the leaked var,
+# the relative target would resolve under luna and DENY (rc=2) instead of the
+# correct himmel-corpus ALLOW (rc=0, local-ollama default).
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update scripts/thing.sh"}}')
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" GRAPHIFY_TOOL_CWD="$LUNA" "$BASH_BIN" "$HOOK" 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ]; then pass "hook: no-cwd payload drops inherited GRAPHIFY_TOOL_CWD -> allow (not luna-anchored)"; else fail "hook inherited-cwd drop: expected rc=0 got rc=$rc out=$out"; fi
+
+# (F2d) hook-level allow mirror of the C2 cwd-thread test: payload cwd =
+# himmel (safe), relative path -> rc=0.
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update scripts/thing.sh --backend deepseek","cwd":"%s"}}' "$HIMMEL")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | ( cd "$HIMMEL" && env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1 )); rc=$?
+if [ "$rc" -eq 0 ]; then pass "hook: threads .tool_input.cwd=himmel -> relative himmel path allows"; else fail "hook cwd-thread allow mirror: expected rc=0 got rc=$rc out=$out"; fi
+
+echo "== HIMMEL-779 CR round-1: bare-word over/under-restriction guards =="
+
+# (F4g) bare word that EXISTS and is SAFE (a real subdir under the himmel
+# corpus) -> himmel-code allow. Guards against over-restricting every bare
+# word to deny once it resolves to a real path.
+run_fence allow no "$HIMMEL" "bare-word existing SAFE subdir -> himmel-code allow (no over-restriction)" \
+    "graphify scripts --backend deepseek"
+
+# (F4h) bare-word PHI dir resolved via GRAPHIFY_TOOL_CWD, not the fence's own
+# $PWD (gap1 x gap2 interaction): _exists_under_cwd and classify() both stat
+# TOOL_CWD. Fence process cwd is $WS (no nestedphi there); TOOL_CWD points at
+# $HIMMEL, whose nestedphi/ is .salus-marked (fixture from gap-1 above).
+run_fence deny no "$WS" "bare-word PHI dir resolves via TOOL_CWD not fence \$PWD -> deny" \
+    "graphify nestedphi --backend deepseek" GRAPHIFY_TOOL_CWD="$HIMMEL"
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"

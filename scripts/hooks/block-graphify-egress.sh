@@ -54,8 +54,24 @@ case " $cmd " in
     *) exit 0 ;;
 esac
 
+# Tool-call cwd (HIMMEL-779): the command's cwd (.tool_input.cwd) is where the
+# agent will actually run it; this hook process's own $PWD is the project root
+# and can differ. Thread it to the fence (GRAPHIFY_TOOL_CWD) so relative and
+# bare-word targets resolve against the REAL command cwd, not the hook's - a
+# relative path into a protected corpus would otherwise resolve under the
+# project root and miss (fail-open). Absent on payloads that carry no cwd.
+tool_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FENCE="$SCRIPT_DIR/../guardrails/graphify-fence.sh"
 [ -f "$FENCE" ] || exit 0   # fence not installed -> do not block
 
+if [ -n "$tool_cwd" ]; then
+    export GRAPHIFY_TOOL_CWD="$tool_cwd"
+else
+    # No-cwd payload: drop any GRAPHIFY_TOOL_CWD inherited from the launching
+    # shell's environment, so the fence falls back to its own $PWD (documented
+    # behavior) instead of anchoring to a stale leaked value.
+    unset GRAPHIFY_TOOL_CWD
+fi
 exec bash "$FENCE" "$cmd"
