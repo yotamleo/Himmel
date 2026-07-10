@@ -171,10 +171,17 @@ type DataPoint = Record<string, unknown>;
 export function deriveRestingHeartRate(response: { dataPoints?: unknown[] }): ExtractedRow[] {
   const byDate = new Map<string, { bpms: number[]; platform: string }>();
 
-  for (const dp of response.dataPoints ?? []) {
+  for (const [i, dp] of (response.dataPoints ?? []).entries()) {
     const point = dp as DataPoint;
     const fieldKey = Object.keys(point).find((k) => k !== 'name' && k !== 'dataSource');
-    if (!fieldKey) continue;
+    if (!fieldKey) {
+      // A malformed point with no typed payload field is dropped — but not
+      // silently (HIMMEL-801): emit the [google-health] stderr signal that the
+      // rest of this connector uses. deriveRestingHeartRate returns a bare
+      // ExtractedRow[] with no warnings channel, so stderr is the signal here.
+      console.error(`[google-health] heart-rate dataPoint ${i}: no typed payload field - skipped`);
+      continue;
+    }
     const fo = point[fieldKey] as any;
 
     const civilDate = fo?.sampleTime?.civilTime?.date as
@@ -273,7 +280,7 @@ export type SleepWarning = { date?: string; text: string };
  *   ALSO printed to stderr as `[google-health] <text>` — the stderr behavior
  *   predates HIMMEL-794 and is unchanged; the returned copy is additive so `pull`
  *   can record it durably on the review artifact (window-scoped there, see
- *   google-health.ts). Five warning-producing paths, all with row emission
+ *   google-health.ts). Six warning-producing paths, all with row emission
  *   unchanged: (1) a session dropped because its interval is missing
  *   startTime/endTime entirely (`sleep dataPoint <i> (<date>): missing interval …`,
  *   dated when an end date is still derivable from civilEndTime or
@@ -290,9 +297,11 @@ export type SleepWarning = { date?: string; text: string };
  *   Paths 1-3 (session-scoped) embed the dataPoint index in the text so distinct
  *   events never share a text — the merge CLI dedups warnings by exact text, so
  *   identical text must mean the same event (over-reporting across re-pulls with
- *   different windows is the accepted safe direction). A dataPoint with no typed
- *   payload field at all (the fieldKey lookup fails) is still skipped WITHOUT a
- *   warning — deliberate scope-out, tracked in HIMMEL-801.
+ *   different windows is the accepted safe direction). (6) a dataPoint with no
+ *   typed payload field at all (the fieldKey lookup fails) is skipped WITH an
+ *   undated, index-embedded warning (`sleep dataPoint <i>: no typed payload
+ *   field - skipped`) — HIMMEL-801; the sibling deriveRestingHeartRate emits the
+ *   same drop as a stderr-only [google-health] line (it has no warnings channel).
  *
  * Source: 'google-health:sleep:<platform>'.
  * Each emitted row passes validateRow before being returned.
@@ -317,7 +326,14 @@ export function deriveSleep(response: { dataPoints?: unknown[] }): { rows: Extra
   for (const [i, dp] of (response.dataPoints ?? []).entries()) {
     const point = dp as DataPoint;
     const fieldKey = Object.keys(point).find((k) => k !== 'name' && k !== 'dataSource');
-    if (!fieldKey) continue;
+    if (!fieldKey) {
+      // A malformed point with no typed sleep payload is dropped through the
+      // same warn() channel as the other parse-loop drops (HIMMEL-801): a
+      // durable, undated SleepWarning (index-embedded so distinct drops never
+      // dedup-collide) plus the stderr line. No date is derivable here.
+      warn(`sleep dataPoint ${i}: no typed payload field - skipped`);
+      continue;
+    }
     const fo = point[fieldKey] as any;
     const interval = fo?.interval;
 
