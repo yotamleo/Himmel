@@ -742,16 +742,22 @@ rm -f "$ARMS_REGISTRY"
 # whole ~40-iteration retry budget without reclaiming a lock that crossed
 # the 60s threshold mid-wait (an immediate follow-up call reclaimed it
 # instantly). The fix re-probes every 10th iteration. Backdate a HELD
-# (never-renewed) lock dir's mtime to a fixed ~56s-old absolute epoch stamp
+# (never-renewed) lock dir's mtime to a fixed ~58s-old absolute epoch stamp
 # -- `touch -d "@<epoch>"`, NOT `touch -t`, which parses local wall-clock
 # and would silently apply the host's UTC offset -- and assert the acquire
 # reclaims it (rc=0) within its bounded retry budget rather than timing out
-# (rc=1).
+# (rc=1). The 58s margin is deliberate: it must stay <60s so the PRE-FIX
+# single tries==0 probe misses it (the regression this guards), yet be high
+# enough that a periodic re-probe crosses 60s within the loop's ~4s sleep
+# floor (40 x 0.1s) on FAST platforms too. At 56s the crossing landed AFTER
+# the last re-probe (try 30, ~3s -> 59s) on fast Linux -- only slow Windows
+# (~8.7s loop) caught it, so CI flaked; at 58s, try 20/30 (>=2s/3s elapsed)
+# reach >=60s on every platform.
 HO31="$HANDOVER_DIR/HIMMEL-856-test/next-session-31.md"
 : > "$HO31"
 mkdir -p "$ARMS_REGISTRY.lock"
 printf '%s' "stale-holder-tok" > "$ARMS_REGISTRY.lock/owner"
-t31_epoch=$(( $(date -u +%s) - 56 ))
+t31_epoch=$(( $(date -u +%s) - 58 ))
 touch -d "@$t31_epoch" "$ARMS_REGISTRY.lock"
 t31_out=$(bash -c '
     . "$1"
@@ -760,9 +766,9 @@ t31_out=$(bash -c '
     echo "TOK=$_QL_ARMS_MUTEX_TOKEN"
 ' _ "$LIB" "$ARMS_REGISTRY" 2>&1)
 if printf '%s' "$t31_out" | grep -q '^RC=0$' && printf '%s' "$t31_out" | grep -q '^TOK=pid'; then
-    pass "T31: a ~56s-stale mutex is reclaimed via periodic re-probe within the retry budget"
+    pass "T31: a ~58s-stale mutex is reclaimed via periodic re-probe within the retry budget"
 else
-    fail "T31: ~56s-stale mutex was not reclaimed within budget (out=$t31_out)"
+    fail "T31: ~58s-stale mutex was not reclaimed within budget (out=$t31_out)"
 fi
 rm -f "$ARMS_REGISTRY.lock/owner" 2>/dev/null; rmdir "$ARMS_REGISTRY.lock" 2>/dev/null
 rm -f "$ARMS_REGISTRY"
