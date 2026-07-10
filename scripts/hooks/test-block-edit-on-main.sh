@@ -476,6 +476,21 @@ assert_rc "T37 untracked .ENV on main blocks (case-insensitive carve-out)" 2 \
 assert_rc "T37b untracked ID_RSA on main blocks (case-insensitive carve-out)" 2 \
     "$(rc_of "$SANDBOX/casesecretrepo/ID_RSA")"
 
+# T37c/T37d: trailing-space / trailing-dot secret basenames (".env ", ".env.")
+# on main -> BLOCKED (HIMMEL-879 Windows normalization: Win32 CreateFile /
+# Node fs strip trailing spaces/dots, so ".env " opens the same file as .env).
+# Layer-agnostic like T37: which layer denies depends on the host filesystem
+# (a case/normalization-insensitive check-ignore may fold the name onto the
+# '.env' ignore line and only the stripped is_secret_basename carve-out
+# denies; elsewhere the untracked-not-ignored fall-through denies) — assert
+# only the outward rc=2. No fixture file is created: the hook never requires
+# the edit target to exist (Write targets are pre-creation), and NTFS itself
+# refuses trailing-space/dot names.
+assert_rc "T37c untracked '.env ' (trailing space) on main blocks (HIMMEL-879)" 2 \
+    "$(rc_of "$SANDBOX/casesecretrepo/.env ")"
+assert_rc "T37d untracked '.env.' (trailing dot) on main blocks (HIMMEL-879)" 2 \
+    "$(rc_of "$SANDBOX/casesecretrepo/.env.")"
+
 # Clean up the worktree registration before removing the sandbox (avoids a
 # dangling `git worktree` admin record under SANDBOX/wtrepo).
 git -C "$SANDBOX/wtrepo" worktree remove --force "$SANDBOX/wtrepo/.claude/worktrees/feat+x" 2>/dev/null || true

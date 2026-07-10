@@ -145,9 +145,109 @@ assert_rc "Bash bash -c 'sed -i s/a/b/ .env'" 0 "$(run_case "$(j_bash "bash -c '
 # boundary tracking stops the recursed-arg scan at the body's closing quote.
 assert_rc "Bash bash -c 'cat config.json' .env" 0 "$(run_case "$(j_bash "bash -c 'cat config.json' .env")")"
 
+# --- HIMMEL-879: case-varied secret basenames must still block ---
+# Windows/macOS filesystems are case-insensitive; is_secret_path/
+# is_secret_basename must fold case BEFORE matching so a case-varied read
+# (.ENV, ID_RSA, SECRETS.YAML, a mixed-case .pem) doesn't bypass the guard.
+assert_rc "Bash cat .ENV (uppercase)"          2 "$(run_case "$(j_bash 'cat .ENV')")"
+assert_rc "Bash cat ID_RSA (uppercase)"        2 "$(run_case "$(j_bash 'cat ~/.ssh/ID_RSA')")"
+assert_rc "Bash cat SECRETS.YAML (uppercase)"  2 "$(run_case "$(j_bash 'cat SECRETS.YAML')")"
+assert_rc "Bash cat KEY.PEM (uppercase ext)"   2 "$(run_case "$(j_bash 'cat KEY.PEM')")"
+assert_rc "Read .ENV (uppercase)"              2 "$(run_case "$(j_read '/home/user/.ENV')")"
+assert_rc "Grep path=ID_ED25519 (uppercase)"   2 "$(run_case "$(j_grep 'ID_ED25519')")"
+assert_rc "PowerShell Get-Content .ENV"        2 "$(run_case "$(j_pwsh 'Get-Content .ENV')")"
+# Template carve-out is also case-folded: an uppercase committed placeholder
+# still reads as allowed, not as a secret.
+assert_rc "Bash cat .ENV.EXAMPLE (uppercase)"  0 "$(run_case "$(j_bash 'cat .ENV.EXAMPLE')")"
+
+# --- HIMMEL-879: trailing-space/dot normalization bypass (Windows) ---
+# Win32 CreateFile / Node fs strip trailing spaces and dots from path
+# components, so "/repo/.env " opens the SAME file as /repo/.env — the
+# predicate must mirror that or the literal match lets it through.
+assert_rc "Read .env<space> (trailing space)"  2 "$(run_case "$(j_read '/repo/.env ')")"
+assert_rc "Grep path=.env. (trailing dot)"     2 "$(run_case "$(j_grep '/repo/.env.')")"
+
+# Quote + uppercase through the real Bash clause tokenizer: the quote strip
+# and the case fold must compose (`'.ENV'` -> `.ENV` -> `.env`).
+assert_rc "Bash cat '.ENV' (quoted uppercase)" 2 "$(run_case "$(j_bash "cat '.ENV'")")"
+
+# --- HIMMEL-879: native Windows backslash paths ---
+# Read/Grep/PowerShell tool inputs carry backslash paths on Windows; the
+# predicate must treat `\` as a path separator too, or `C:\repo\.ENV`
+# lowercases to one giant non-matching "basename" and slips through.
+assert_rc "Read C:\\repo\\.ENV (backslash path)" 2 \
+    "$(run_case "$(j_read 'C:\repo\.ENV')")"
+assert_rc "PowerShell Get-Content C:\\repo\\.ENV" 2 \
+    "$(run_case "$(j_pwsh 'Get-Content C:\repo\.ENV')")"
+
+# --- Missing guardrails/lib.sh fails CLOSED (mirrors test-block-edit-on-main
+# T19). An unguarded source under set -e exits rc=1, which PreToolUse does NOT
+# block on — fail OPEN. The guard must fail CLOSED (rc=2 + recognisable
+# message), even on a payload it would otherwise block anyway.
+GUARDRAILLESS=$(mktemp -d)
+mkdir -p "$GUARDRAILLESS/hooks"
+cp "$HOOK" "$GUARDRAILLESS/hooks/"
+err=$(printf '%s' "$(j_bash 'cat .env')" | bash "$GUARDRAILLESS/hooks/block-read-secrets.sh" 2>&1 >/dev/null); rc=$?
+assert_rc "Missing guardrails lib fails closed" 2 "$rc"
+case "$err" in
+    *"cannot source guardrails/lib.sh"*) echo "PASS missing-lib refusal message" ;;
+    *) echo "FAIL missing-lib refusal message — got: $err"; FAILED=$((FAILED + 1)) ;;
+esac
+rm -rf "$GUARDRAILLESS" 2>/dev/null || true
+
 # --- BYPASS case (expect rc=0 with READ_SECRETS_OK=1) ---
 assert_rc "Bypass cat .env"                0 "$(run_case "$(j_bash 'cat .env')" "READ_SECRETS_OK=1")"
 assert_rc "Bypass Read .env"               0 "$(run_case "$(j_read '/proj/.env')" "READ_SECRETS_OK=1")"
+
+# --- Direct tests of the shared predicate (scripts/guardrails/lib.sh) ---
+# Exercises is_secret_basename in isolation, independent of either hook's
+# tool-dispatch/tokenizer plumbing above.
+LIB_DIR="$(cd "$(dirname "$0")/../guardrails" && pwd)"
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+. "$LIB_DIR/lib.sh"
+
+assert_predicate() {
+    local label="$1" expected="$2" arg="$3"
+    local actual=0
+    is_secret_basename "$arg" || actual=$?
+    if [ "$actual" = "$expected" ]; then
+        echo "PASS $label (rc=$actual)"
+    else
+        echo "FAIL $label — expected rc=$expected, got rc=$actual"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+assert_predicate "is_secret_basename .env"                    0 ".env"
+assert_predicate "is_secret_basename .ENV (uppercase)"        0 ".ENV"
+assert_predicate "is_secret_basename /abs/path/.env"          0 "/abs/path/.env"
+assert_predicate "is_secret_basename id_rsa"                  0 "id_rsa"
+assert_predicate "is_secret_basename ID_RSA (uppercase)"      0 "ID_RSA"
+assert_predicate "is_secret_basename SECRETS.YAML (uppercase)" 0 "SECRETS.YAML"
+assert_predicate "is_secret_basename secrets.yml"              0 "secrets.yml"
+assert_predicate "is_secret_basename KEY.PEM (uppercase ext)" 0 "KEY.PEM"
+assert_predicate "is_secret_basename foo.p12"                 0 "foo.p12"
+assert_predicate "is_secret_basename quoted '.env'"            0 "'.env'"
+assert_predicate "is_secret_basename .env.example (template)" 1 ".env.example"
+assert_predicate "is_secret_basename .ENV.EXAMPLE (uppercase template)" 1 ".ENV.EXAMPLE"
+assert_predicate "is_secret_basename README.md (non-secret)"  1 "README.md"
+assert_predicate "is_secret_basename src/README.md"           1 "src/README.md"
+# Trailing-space/dot normalization (Windows strips them; the predicate must too).
+assert_predicate "is_secret_basename '.env ' (trailing space)"     0 ".env "
+assert_predicate "is_secret_basename '.env  ' (two trailing spaces)" 0 ".env  "
+assert_predicate "is_secret_basename '.ENV ' (uppercase + space)"  0 ".ENV "
+assert_predicate "is_secret_basename '.env.' (trailing dot)"       0 ".env."
+assert_predicate "is_secret_basename '.env. ' (dot + space)"       0 ".env. "
+# After stripping, a trailing-space template equals the carve-out — stays
+# ALLOWED, consistent with what the OS actually opens (.env.example).
+assert_predicate "is_secret_basename '.env.example ' (template + space)" 1 ".env.example "
+# Native Windows backslash paths (backslash is a path separator there).
+assert_predicate "is_secret_basename 'C:\\repo\\.ENV' (backslash + case)"  0 'C:\repo\.ENV'
+assert_predicate "is_secret_basename 'C:\\Users\\x\\.ssh\\ID_RSA'"          0 'C:\Users\x\.ssh\ID_RSA'
+assert_predicate "is_secret_basename '\\\\server\\share\\.env' (UNC)"       0 '\\server\share\.env'
+assert_predicate "is_secret_basename 'C:\\repo\\.env ' (backslash + space)" 0 'C:\repo\.env '
+assert_predicate "is_secret_basename 'C:\\repo\\.env.example' (template)"   1 'C:\repo\.env.example'
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # scripts/guardrails/lib.sh - shared git-state predicates.
 #
-# Sourced by:
+# Sourced by (non-exhaustive - grep for `guardrails/lib.sh` for the full
+# consumer set):
 #   - scripts/hooks/check-worktree-isolation.sh
 #   - scripts/hooks/check-pr-lane-isolation.sh
 #   - scripts/hooks/check-merged-branch.sh
 #   - scripts/hooks/check-push-target.sh
 #   - scripts/hooks/block-edit-on-main.sh
+#   - scripts/hooks/block-read-secrets.sh
 #   - scripts/guardrails/guard-gh.sh
 #
 # Contract: each predicate returns one of:
@@ -284,4 +286,66 @@ warn_doc_guard_off() {
         echo "⚠ doc-guard is OFF: this looks like a himmel-source checkout but .himmel-dev is missing. Run 'touch .himmel-dev' (see docs/contributing.md) to enable the catalog-sync gate." >&2
     fi
     return 0
+}
+
+# is_secret_basename PATH_OR_TOKEN
+# True iff PATH_OR_TOKEN's basename matches a secret-file pattern (.env,
+# .envrc, id_rsa, id_ed25519, credentials.json, secrets.y[a]ml, *.pem, *.key,
+# *.p12, *.pfx). Basename match only (path-prefix agnostic); globs, no regex.
+# Non-secret env TEMPLATES (.env.example, .env.sample, .env.template,
+# .env.dist — committed, scrubbed placeholders) are carved out BEFORE the
+# .env.* arm (first-match-wins) so reading them is allowed.
+#
+# BOTH separators are treated as basename boundaries: `/` and `\` -
+# backslash is a path separator on Windows, and tool inputs (Read/Grep
+# file_path, PowerShell commands) carry native backslash paths there, so
+# stripping only `/` would let `C:\repo\.ENV` through as one giant
+# non-matching "basename" (HIMMEL-879). On POSIX a literal backslash in a
+# filename over-matches toward blocking - fail-closed, acceptable.
+#
+# The basename is lowercased BEFORE matching (tr, bash-3.2-safe - no
+# ${var,,}): git ls-files/check-ignore fold case on Windows/macOS
+# (core.ignorecase=true), so a mixed-case name (.ENV, ID_RSA) would
+# otherwise dodge these lowercase case-arms while the filesystem still
+# treats it as the same file (HIMMEL-879). Case arms below stay lowercase.
+#
+# Trailing SPACES and DOTS are then stripped (same normalization-divergence
+# class): Win32 CreateFile / Node fs strip trailing spaces and dots from
+# path components, so ".env " / ".env." open the SAME file as .env - the
+# predicate mirrors that OS normalization or the literal-string match lets
+# them through. This also normalizes ".env.example " onto the template
+# carve-out (allowed), consistent with what the OS actually opens.
+#
+# A single leading/trailing quote char (' or ") is stripped first - a caller
+# that tokenizes raw shell command text (block-read-secrets.sh) may hand in
+# a token still carrying a quote glued on by its quote-naive splitter (e.g.
+# `'.env'` from `cat '.env'`); a clean path (block-edit-on-main.sh, jq-
+# extracted) passes through the strip unchanged.
+#
+# Shared by block-read-secrets.sh and block-edit-on-main.sh - this predicate
+# is the single source of truth for the secret-basename pattern list; do NOT
+# fork a second copy. Deterministic - always returns 0 or 1, never 2 (rc=2 is
+# reserved for "predicate cannot be evaluated", which never applies here).
+is_secret_basename() {
+    local p="${1#\"}"; p="${p#\'}"
+    p="${p%\"}"; p="${p%\'}"
+    local base="${p##*/}"
+    base="${base##*\\}"
+    base=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
+    # Strip ALL trailing spaces/dots (Windows path-component normalization,
+    # see header). bash-3.2-safe loop; terminates on empty string.
+    while :; do
+        case "$base" in
+            *" "|*.) base="${base%?}" ;;
+            *)       break ;;
+        esac
+    done
+    case "$base" in
+        .env.example|.env.sample|.env.template|.env.dist) return 1 ;;
+        .env|.env.*|.envrc|id_rsa|id_ed25519|credentials.json|secrets.yaml|secrets.yml)
+            return 0 ;;
+        *.pem|*.key|*.p12|*.pfx)
+            return 0 ;;
+    esac
+    return 1
 }
