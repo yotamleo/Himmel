@@ -27,13 +27,15 @@ assert() {
   fi
 }
 
-echo "[test-qmd-bin] qmd_install_hint emits bun command"
+echo "[test-qmd-bin] qmd_install_hint emits the fork clone+build+link recipe (HIMMEL-877)"
 hint="$(qmd_install_hint)"
-assert "hint mentions bun add" grep -q '^bun add ' <<<"$hint"
-assert "hint mentions @tobilu/qmd" grep -q '@tobilu/qmd' <<<"$hint"
+assert "hint mentions git clone" grep -q '^git clone ' <<<"$hint"
+assert "hint mentions the himmel fork repo" grep -q 'yotamleo/qmd' <<<"$hint"
+assert "hint mentions the himmel-main branch" grep -q 'himmel-main' <<<"$hint"
+assert "hint mentions bun install/build" grep -q 'bun install && bun run build' <<<"$hint"
 # shellcheck disable=SC2016
 # Single quotes intentional — $1 expands inside the spawned bash -c subshell.
-assert "hint does NOT mention npm" bash -c '! grep -q "npm install" <<<"$1"' _ "$hint"
+assert "hint does NOT mention upstream bun add -g" bash -c '! grep -q "bun add -g" <<<"$1"' _ "$hint"
 
 echo "[test-qmd-bin] qmd_cmd resolver — prefer bun"
 tmpdir="$(mktemp -d)"
@@ -109,10 +111,11 @@ rc=0
 HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_cmd --version' >/dev/null 2>&1 || rc=$?
 assert "wrapped command rc=42 propagates" test "$rc" -eq 42
 
-echo "[test-qmd-bin] qmd_install_hint drops --ignore-scripts (HIMMEL-752 G3)"
-# shellcheck disable=SC2016
-# Single quotes intentional - $1 expands inside the spawned bash -c subshell.
-assert "hint does NOT contain --ignore-scripts" bash -c '! grep -q -- "--ignore-scripts" <<<"$1"' _ "$(qmd_install_hint)"
+echo "[test-qmd-bin] QMD_FORK_REPO / QMD_FORK_BRANCH / QMD_FORK_DIR overrides (HIMMEL-877)"
+override_hint="$(QMD_FORK_REPO=https://example.test/mirror/qmd.git QMD_FORK_BRANCH=my-branch QMD_FORK_DIR=/custom/fork/dir qmd_install_hint)"
+assert "hint honors QMD_FORK_REPO override" grep -q 'example.test/mirror/qmd.git' <<<"$override_hint"
+assert "hint honors QMD_FORK_BRANCH override" grep -q 'my-branch' <<<"$override_hint"
+assert "hint honors QMD_FORK_DIR override" grep -q '/custom/fork/dir' <<<"$override_hint"
 
 echo "[test-qmd-bin] has_qmd is presence-only (does not invoke binary)"
 # Make the bun-js path point at a broken/empty script that would error on run.
@@ -122,56 +125,252 @@ rc=0
 HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/broken-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; has_qmd' || rc=$?
 assert "has_qmd=true even when bun-js is broken (presence only)" test "$rc" -eq 0
 
-echo "[test-qmd-bin] qmd_install() happy / heal / honest-fail (HIMMEL-752 G3)"
-# Hermetic stub env: a fake `bun` (tells 'add' apart from a qmd run by $1),
-# a fake `npm` (drops a heal marker), a fake qmd.js so qmd_cmd resolves via bun,
-# and a better-sqlite3 dir for the heal path. Lives under $tmpdir so the EXIT
-# trap cleans it. Stubs read behavior from env vars so one env covers all paths.
+echo "[test-qmd-bin] qmd_install() fork clone+build+link recipe (HIMMEL-877)"
+# Hermetic stub env: a fake `git` (clone creates a .git marker + package.json;
+# fetch/checkout/reset are individually controllable) and a fake `bun`
+# (install/run-build individually controllable; any other invocation is the
+# qmd_cmd dispatch `bun <qmd.js> --version`, which prints a fake version).
+# Both stubs append every call to a log file so tests can assert on call
+# counts (e.g. the idempotent-skip case must invoke NEITHER). Lives under
+# $tmpdir so the EXIT trap cleans it up.
 id2="$tmpdir/install"
-mkdir -p "$id2/bin" "$id2/.bun/install/global/node_modules/@tobilu/qmd/dist/cli" \
-         "$id2/.bun/install/global/node_modules/better-sqlite3"
-: > "$id2/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+mkdir -p "$id2/bin"
+cat > "$id2/bin/git" <<'STUB'
+#!/usr/bin/env bash
+# The owned-dir guard probes run as `git -C <dir> remote|status ...` --
+# strip the -C pair so the verb lands in $1 for the case dispatch.
+if [ "$1" = "-C" ]; then shift 2; fi
+echo "GIT $*" >> "${GIT_LOG:?}"
+case "$1" in
+  clone)
+    [ "${STUB_GIT_CLONE_RC:-0}" -eq 0 ] || exit "$STUB_GIT_CLONE_RC"
+    target="${!#}"
+    mkdir -p "$target/.git"
+    echo '{}' > "$target/package.json"
+    exit 0
+    ;;
+  fetch|checkout|reset) exit "${STUB_GIT_FETCH_RC:-0}" ;;
+  remote)
+    # `remote get-url origin` ownership probe: default answers the default
+    # fork repo URL so owned-clone scenarios pass the guard.
+    printf '%s\n' "${STUB_GIT_ORIGIN_URL:-https://github.com/yotamleo/qmd.git}"
+    exit 0
+    ;;
+  status)
+    # `status --porcelain` dirty probe: empty default = clean worktree.
+    printf '%s' "${STUB_GIT_DIRTY:-}"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$id2/bin/git"
 cat > "$id2/bin/bun" <<'STUB'
 #!/usr/bin/env bash
-# 'bun add ...' = install; anything else = a qmd run dispatch (bun <qmd.js> ...).
-if [ "$1" = "add" ]; then exit "${STUB_BUN_ADD_RC:-0}"; fi
-if [ -f "${HEAL_MARKER:-}" ]; then exit 0; fi
-exit "${STUB_BUN_VER_RC:-0}"
+echo "BUN $*" >> "${BUN_LOG:?}"
+case "$1" in
+  install) exit "${STUB_BUN_INSTALL_RC:-0}" ;;
+  run)
+    [ "$2" = "build" ] || exit 0
+    [ "${STUB_BUN_BUILD_RC:-0}" -eq 0 ] || exit "$STUB_BUN_BUILD_RC"
+    mkdir -p dist/cli
+    : > dist/cli/qmd.js
+    exit 0
+    ;;
+  *)
+    [ "${STUB_BUN_VERSION_RC:-0}" -eq 0 ] && printf 'qmd %s\n' "${STUB_QMD_VERSION:-2.6.10}"
+    exit "${STUB_BUN_VERSION_RC:-0}"
+    ;;
+esac
 STUB
 chmod +x "$id2/bin/bun"
-cat > "$id2/bin/npm" <<'STUB'
-#!/usr/bin/env bash
-# Simulate the native build: STUB_NPM_RC=1 = build fails (no heal marker);
-# default = success (drop the heal marker).
-if [ "${STUB_NPM_RC:-0}" -ne 0 ]; then exit "${STUB_NPM_RC}"; fi
-: > "${HEAL_MARKER:?}"
-exit 0
-STUB
-chmod +x "$id2/bin/npm"
-heal_marker="$id2/.healed"
-qmd_install_rc() {
-  HOME="$id2" BUN_INSTALL="$id2/.bun" HEAL_MARKER="$heal_marker" \
-    PATH="$id2/bin:$PATH" \
-    STUB_BUN_ADD_RC="${STUB_BUN_ADD_RC:-0}" STUB_BUN_VER_RC="${STUB_BUN_VER_RC:-0}" \
-    STUB_NPM_RC="${STUB_NPM_RC:-0}" \
-    bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install >/dev/null 2>&1; echo $?'
+
+git_log="$id2/git-calls"
+bun_log="$id2/bun-calls"
+qmd_install_env() { # $1 = HOME dir, remaining = the command to run under it
+  local home="$1"; shift
+  : > "$git_log"; : > "$bun_log"
+  HOME="$home" GIT_LOG="$git_log" BUN_LOG="$bun_log" PATH="$id2/bin:$PATH" \
+    STUB_GIT_CLONE_RC="${STUB_GIT_CLONE_RC:-0}" STUB_GIT_FETCH_RC="${STUB_GIT_FETCH_RC:-0}" \
+    STUB_GIT_ORIGIN_URL="${STUB_GIT_ORIGIN_URL:-}" STUB_GIT_DIRTY="${STUB_GIT_DIRTY:-}" \
+    STUB_BUN_INSTALL_RC="${STUB_BUN_INSTALL_RC:-0}" STUB_BUN_BUILD_RC="${STUB_BUN_BUILD_RC:-0}" \
+    STUB_BUN_VERSION_RC="${STUB_BUN_VERSION_RC:-0}" STUB_QMD_VERSION="${STUB_QMD_VERSION:-2.6.10}" \
+    "$@"
 }
-# happy: install ok + verify ok -> rc 0.
-STUB_BUN_ADD_RC=0; STUB_BUN_VER_RC=0; rm -f "$heal_marker"
-assert "qmd_install happy path returns 0" test "$(qmd_install_rc)" -eq 0
-# honest-fail: bun add fails -> rc nonzero, verify never reached.
-STUB_BUN_ADD_RC=1; STUB_BUN_VER_RC=0; rm -f "$heal_marker"
-assert "qmd_install honest-fail returns nonzero" test "$(qmd_install_rc)" -ne 0
-# heal: install ok, verify fails, npm rebuild heals, re-verify ok -> rc 0.
-STUB_BUN_ADD_RC=0; STUB_BUN_VER_RC=1; STUB_NPM_RC=0; rm -f "$heal_marker"
-assert "qmd_install heal path returns 0" test "$(qmd_install_rc)" -eq 0
-assert "qmd_install heal path ran npm rebuild" test -f "$heal_marker"
-# heal-FAIL: install ok, verify fails, npm rebuild FAILS -> honest rc nonzero
-# (the core HIMMEL-752 honest-rc contract: 0 only when qmd verifiably works).
-STUB_BUN_ADD_RC=0; STUB_BUN_VER_RC=1; STUB_NPM_RC=1; rm -f "$heal_marker"
-assert "qmd_install heal-fail returns nonzero (honest rc)" test "$(qmd_install_rc)" -ne 0
-assert "qmd_install heal-fail left no heal marker" test ! -f "$heal_marker"
-STUB_NPM_RC=0
+
+# -- fresh install: clone + build + link, rc 0 --------------------------------
+fresh_home="$id2/fresh"; mkdir -p "$fresh_home"
+STUB_GIT_CLONE_RC=0 STUB_GIT_FETCH_RC=0 STUB_BUN_INSTALL_RC=0 STUB_BUN_BUILD_RC=0 STUB_BUN_VERSION_RC=0
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "fresh install: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "fresh install: cloned the fork" grep -q 'GIT clone' "$git_log"
+assert "fresh install: built with bun" grep -q 'BUN run build' "$bun_log"
+assert "fresh install: linked at the bun-global @tobilu/qmd path" \
+  test -e "$fresh_home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+
+# -- idempotent re-run: already fork-served + version ok -> skip, clone/build
+#    never re-run (the version CHECK itself legitimately invokes bun once). --
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "idempotent re-run: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "idempotent re-run: no git call" test ! -s "$git_log"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "idempotent re-run: did not re-run bun install" bash -c '! grep -q "BUN install" "$1"' _ "$bun_log"
+# shellcheck disable=SC2016
+assert "idempotent re-run: did not re-run bun build" bash -c '! grep -q "BUN run build" "$1"' _ "$bun_log"
+
+# -- qmd_fork_served / `fork-served` CLI verb (the caller-side install gate,
+#    HIMMEL-877 CR codex-adv-1) ------------------------------------------------
+assert "fork-served CLI verb: rc 0 when the fork is served" \
+  qmd_install_env "$fresh_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served
+noserve_home="$id2/noserve"
+mkdir -p "$noserve_home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli"
+: > "$noserve_home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+rc=0
+qmd_install_env "$noserve_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served >/dev/null 2>&1 || rc=$?
+assert "fork-served CLI verb: nonzero on an upstream REAL-dir install (qmd present)" test "$rc" -ne 0
+
+# Absolute path to bash (not a bare `bash` PATH lookup): the no-git/no-bun
+# isolation cases below need a PATH that carries ONLY the surviving stub (no
+# fallback to the outer $PATH, or the real git/bun on this dev box would leak
+# in and mask the scenario) -- but a bare `bash -c` would then fail to find
+# bash ITSELF via that same restricted PATH. Resolve it once, outside the
+# restriction.
+bash_bin="$(command -v bash)"
+
+# -- no git on PATH: WARN + rc nonzero, bun never invoked (PATH carries ONLY
+#    the bun stub) -------------------------------------------------------------
+nogit_home="$id2/nogit"; mkdir -p "$nogit_home" "$id2/bin-bun-only"
+cp "$id2/bin/bun" "$id2/bin-bun-only/bun"
+: > "$git_log"; : > "$bun_log"
+out=$(HOME="$nogit_home" GIT_LOG="$git_log" BUN_LOG="$bun_log" \
+      PATH="$id2/bin-bun-only" "$bash_bin" -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "no-git: rc nonzero" grep -qv '^RC=0$' <<<"$out"
+assert "no-git: WARNs" grep -qi 'git not found' <<<"$out"
+assert "no-git: bun never invoked" test ! -s "$bun_log"
+
+# -- no bun on PATH (git present): WARN + rc nonzero (PATH carries ONLY the
+#    git stub) -----------------------------------------------------------------
+nobun_home="$id2/nobun"; mkdir -p "$nobun_home" "$id2/bin-git-only"
+cp "$id2/bin/git" "$id2/bin-git-only/git"
+: > "$git_log"; : > "$bun_log"
+out=$(HOME="$nobun_home" GIT_LOG="$git_log" BUN_LOG="$bun_log" PATH="$id2/bin-git-only" \
+      "$bash_bin" -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "no-bun: rc nonzero" grep -qv '^RC=0$' <<<"$out"
+assert "no-bun: WARNs" grep -qi 'bun not found' <<<"$out"
+
+# -- clone/fetch failure on an EXISTING clone: WARN + continues (build still
+#    runs against the existing, un-updated clone contents). Pre-seed the
+#    clone dir directly (NOT via a first qmd_install call) so the global path
+#    is NOT yet linked -- otherwise the idempotent-skip check above would
+#    short-circuit this run before it ever reaches the fetch/checkout step.
+stale_home="$id2/stalefetch"
+mkdir -p "$stale_home/.himmel/qmd-fork/.git"
+echo '{}' > "$stale_home/.himmel/qmd-fork/package.json"
+STUB_GIT_CLONE_RC=0 STUB_GIT_FETCH_RC=1 STUB_BUN_INSTALL_RC=0 STUB_BUN_BUILD_RC=0 STUB_BUN_VERSION_RC=0
+out=$(qmd_install_env "$stale_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_FETCH_RC=0
+assert "fetch-fail: attempted the update (fetch) on the existing clone" grep -q 'GIT fetch' "$git_log"
+assert "fetch-fail: WARNs and continues" grep -qi 'fetch/checkout failed' <<<"$out"
+assert "fetch-fail: still builds + verifies (rc 0)" grep -q '^RC=0$' <<<"$out"
+
+# -- owned-dir guard (HIMMEL-877 CR codex-adv-2): never hard-reset a repo
+#    the installer does not own -------------------------------------------------
+# unrelated origin at QMD_FORK_DIR -> refused untouched, rc nonzero, no fetch.
+unrel_home="$id2/unrelorigin"
+mkdir -p "$unrel_home/.himmel/qmd-fork/.git"
+echo "precious local work" > "$unrel_home/.himmel/qmd-fork/work.txt"
+STUB_GIT_ORIGIN_URL="https://github.com/someone/unrelated.git"
+out=$(qmd_install_env "$unrel_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "unrelated-origin: rc nonzero" grep -qv '^RC=0$' <<<"$out"
+assert "unrelated-origin: refuses with the origin mismatch WARNING" grep -qi 'refusing to touch' <<<"$out"
+# shellcheck disable=SC2016
+assert "unrelated-origin: never fetch/checkout/reset" bash -c '! grep -qE "GIT (fetch|checkout|reset)" "$1"' _ "$git_log"
+assert "unrelated-origin: dir contents untouched" grep -q 'precious local work' "$unrel_home/.himmel/qmd-fork/work.txt"
+
+# dirty owned clone -> refused untouched, rc nonzero.
+dirty_home="$id2/dirtyclone"
+mkdir -p "$dirty_home/.himmel/qmd-fork/.git"
+echo "uncommitted edit" > "$dirty_home/.himmel/qmd-fork/wip.txt"
+STUB_GIT_DIRTY=" M wip.txt"
+out=$(qmd_install_env "$dirty_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "dirty-clone: rc nonzero" grep -qv '^RC=0$' <<<"$out"
+assert "dirty-clone: refuses with the uncommitted-changes WARNING" grep -qi 'uncommitted changes' <<<"$out"
+# shellcheck disable=SC2016
+assert "dirty-clone: never fetch/checkout/reset" bash -c '! grep -qE "GIT (fetch|checkout|reset)" "$1"' _ "$git_log"
+assert "dirty-clone: dir contents untouched" grep -q 'uncommitted edit' "$dirty_home/.himmel/qmd-fork/wip.txt"
+
+# QMD_FORK_FORCE=1 on the same dirty clone -> proceeds (fetch runs, rc 0).
+out=$(qmd_install_env "$dirty_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; QMD_FORK_FORCE=1 qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_DIRTY=""
+assert "dirty+FORCE: proceeds to fetch" grep -q 'GIT fetch' "$git_log"
+assert "dirty+FORCE: rc 0" grep -q '^RC=0$' <<<"$out"
+
+# -- build failure: WARN + manual command, rc nonzero --------------------------
+buildfail_home="$id2/buildfail"; mkdir -p "$buildfail_home"
+STUB_GIT_CLONE_RC=0 STUB_GIT_FETCH_RC=0 STUB_BUN_INSTALL_RC=0 STUB_BUN_BUILD_RC=1
+out=$(qmd_install_env "$buildfail_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_BUN_BUILD_RC=0
+assert "build-fail: rc nonzero" grep -qv '^RC=0$' <<<"$out"
+assert "build-fail: WARNs with the manual command" grep -qi 'build failed' <<<"$out"
+
+# -- existing REAL directory at the global path: moved aside (never deleted),
+#    named deterministically -------------------------------------------------
+realdir_home="$id2/realdir"
+mkdir -p "$realdir_home/.bun/install/global/node_modules/@tobilu/qmd"
+echo "upstream content" > "$realdir_home/.bun/install/global/node_modules/@tobilu/qmd/marker.txt"
+STUB_GIT_CLONE_RC=0 STUB_GIT_FETCH_RC=0 STUB_BUN_INSTALL_RC=0 STUB_BUN_BUILD_RC=0 STUB_BUN_VERSION_RC=0
+out=$(qmd_install_env "$realdir_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+backup="$realdir_home/.bun/install/global/node_modules/@tobilu/qmd.pre-fork-backup"
+assert "real-dir: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "real-dir: moved aside to the deterministic backup name" test -d "$backup"
+assert "real-dir: backup content preserved" grep -q 'upstream content' "$backup/marker.txt"
+assert "real-dir: global path now links to the fork" \
+  test -e "$realdir_home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+
+# -- existing STALE LINK (pointing elsewhere): removed + replaced, the old
+#    target's contents survive (link-only removal, never recursive). Reuse
+#    the module's OWN _qmd_link (junction on Windows / symlink on POSIX) to
+#    create the fixture, so the test stays correct on either platform without
+#    reimplementing the OS branch. -------------------------------------------
+stalelink_home="$id2/stalelink"
+mkdir -p "$stalelink_home/.bun/install/global/node_modules/@tobilu" "$stalelink_home/elsewhere"
+echo "elsewhere content" > "$stalelink_home/elsewhere/marker.txt"
+bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_link "$1" "$2"' _ \
+  "$stalelink_home/elsewhere" "$stalelink_home/.bun/install/global/node_modules/@tobilu/qmd"
+STUB_GIT_CLONE_RC=0 STUB_GIT_FETCH_RC=0 STUB_BUN_INSTALL_RC=0 STUB_BUN_BUILD_RC=0 STUB_BUN_VERSION_RC=0
+out=$(qmd_install_env "$stalelink_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "stale-link: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "stale-link: replaced with a link to the fork" \
+  test -e "$stalelink_home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+assert "stale-link: old target's contents untouched" grep -q 'elsewhere content' "$stalelink_home/elsewhere/marker.txt"
+
+# -- link failure AFTER a real-dir backup: the backup is RESTORED to the
+#    global path (CR rollback: the old install must keep resolving; the
+#    locked-path failure this recipe exists for must not strand it) -----------
+rollback_home="$id2/rollback"
+mkdir -p "$rollback_home/.bun/install/global/node_modules/@tobilu/qmd"
+echo "upstream content" > "$rollback_home/.bun/install/global/node_modules/@tobilu/qmd/marker.txt"
+STUB_GIT_CLONE_RC=0 STUB_GIT_FETCH_RC=0 STUB_BUN_INSTALL_RC=0 STUB_BUN_BUILD_RC=0 STUB_BUN_VERSION_RC=0
+out=$(qmd_install_env "$rollback_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"
+  _qmd_link() { _QMD_LINK_ERR="stub link failure"; return 1; }
+  qmd_install; echo "RC=$?"' 2>&1)
+assert "link-fail rollback: rc nonzero" grep -qv '^RC=0$' <<<"$out"
+assert "link-fail rollback: ERROR carries the captured link diagnostics" grep -q 'stub link failure' <<<"$out"
+assert "link-fail rollback: announces the restore" grep -qi 'Restored the previous directory' <<<"$out"
+assert "link-fail rollback: original dir is BACK at the global path" \
+  grep -q 'upstream content' "$rollback_home/.bun/install/global/node_modules/@tobilu/qmd/marker.txt"
+assert "link-fail rollback: no stranded backup left behind" \
+  test ! -e "$rollback_home/.bun/install/global/node_modules/@tobilu/qmd.pre-fork-backup"
+
+# -- successful migration prints the backup location (operator affordance) ----
+note_home="$id2/backupnote"
+mkdir -p "$note_home/.bun/install/global/node_modules/@tobilu/qmd"
+echo "upstream content" > "$note_home/.bun/install/global/node_modules/@tobilu/qmd/marker.txt"
+out=$(qmd_install_env "$note_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "backup-note: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "backup-note: names the preserved backup dir" grep -q 'preserved at' <<<"$out"
 
 echo "[test-qmd-bin] qmd_register_collection() add / idempotent-skip / warn (HIMMEL-752)"
 # Hermetic stub env: a fake `qmd` on PATH (no bun-qmd.js, no bun -> qmd_cmd

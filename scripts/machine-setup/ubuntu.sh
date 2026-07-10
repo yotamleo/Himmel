@@ -237,11 +237,12 @@ step "Clone Luna vault + install pre-commit hooks"
 
 step "Install qmd CLI + register himmel/luna collections"
 {
-  # Project rule: qmd installs via bun, not npm. The qmd Claude plugin ships
+  # Project rule: qmd installs from the himmel qmd fork, built with bun,
+  # never upstream npm/bun-add (HIMMEL-877). The qmd Claude plugin ships
   # a path stub that breaks plain `qmd` on Windows; scripts/lib/qmd-bin.sh
-  # picks the working invoker. qmd_install runs the full install + verifies
-  # the binary + heals a missing native build (HIMMEL-752: --ignore-scripts
-  # crashed qmd on platforms without a better-sqlite3 prebuilt binary).
+  # picks the working invoker. qmd_install clones yotamleo/qmd#himmel-main,
+  # builds it (bun install && bun run build), symlinks it onto the
+  # bun-global @tobilu/qmd path, and verifies the binary.
   # shellcheck source=../lib/qmd-bin.sh
   # shellcheck disable=SC1091
   . "$HIMMEL_PATH/scripts/lib/qmd-bin.sh"
@@ -258,10 +259,13 @@ step "Install qmd CLI + register himmel/luna collections"
   # `[ "$_qmd_step_ok" -eq 1 ]` so failure cascades to fail_nonfatal.
   _qmd_step_ok=1
 
-  if ! has_qmd; then
+  # Gate on fork-served, NOT presence (has_qmd): a machine carrying the old
+  # upstream bun-global install is qmd-present but must still MIGRATE to the
+  # fork (HIMMEL-877 CR codex-adv-1).
+  if ! qmd_fork_served; then
     if command -v bun >/dev/null 2>&1; then
-      # qmd_install runs the canonical hint (no --ignore-scripts), verifies
-      # the binary, and heals a missing better-sqlite3 native build (HIMMEL-752).
+      # qmd_install clones the himmel qmd fork, builds it with bun, and
+      # junctions/symlinks it onto the bun-global @tobilu/qmd path (HIMMEL-877).
       # Capture rc *before* the `if`: `if ! cmd; then $?` is 0, not cmd's rc.
       qmd_install
       _qmd_install_rc=$?

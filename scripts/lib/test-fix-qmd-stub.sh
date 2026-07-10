@@ -397,7 +397,7 @@ echo "[test-fix-qmd-stub] patched stub — nothing available => rc=127 + hint"
 rc=0
 errout="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$verdir/bin:/usr/bin:/bin" "$verdir/bin/qmd" --version 2>&1 >/dev/null)" || rc=$?
 assert "rc=127 when no qmd available" test "$rc" -eq 127
-assert "error mentions bun install hint" grep -q 'bun add -g @tobilu/qmd' <<<"$errout"
+assert "error mentions the qmd-bin.sh install hint" grep -q 'qmd-bin.sh install' <<<"$errout"
 
 echo "[test-fix-qmd-stub] consumer integration — setup scripts invoke the fixer"
 repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"

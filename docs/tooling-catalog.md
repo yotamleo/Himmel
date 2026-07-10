@@ -89,6 +89,16 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 **MCP server:** `plugin:qmd:qmd` — exposes `query`, `get`, `multi_get`, `status` tools.
 **Usage:** Searching local knowledge base, notes, docs.
 
+**CLI install (HIMMEL-877):** the standalone `qmd` CLI installs from the
+**himmel qmd fork** (`yotamleo/qmd#himmel-main`) via `scripts/lib/qmd-bin.sh`'s
+`qmd_install` (clone → `bun install && bun run build` → junction/symlink onto
+the bun-global `@tobilu/qmd` path) — never upstream `bun add -g @tobilu/qmd`,
+which EPERM-wedges on this project's machines and bun blocks its postinstall
+script. `adopt.sh`/`setup.sh` (bash) and `adopt.ps1`/`setup.ps1` (pwsh, which
+delegates via `bash scripts/lib/qmd-bin.sh install` rather than duplicating
+the recipe) both call this. Idempotent; overridable via `QMD_FORK_REPO` /
+`QMD_FORK_BRANCH` / `QMD_FORK_DIR`.
+
 **Shared HTTP singleton (HIMMEL-592):** himmel vendors `qmd@himmel`
 (`marketplace/plugins/qmd/`, a thin fork of upstream `qmd@qmd`) whose only
 delta is that the `qmd` MCP server is declared as an HTTP endpoint
@@ -358,10 +368,10 @@ metered per token, so the framing is "keep working past the cap", never
 |---|---|
 | `ANTHROPIC_BASE_URL` | `https://api.z.ai/api/anthropic` |
 | `ANTHROPIC_AUTH_TOKEN` | `$ZAI_API_KEY` |
-| `ANTHROPIC_MODEL` | `glm-5.2` |
+| `ANTHROPIC_MODEL` | `glm-5.2[1m]` |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `glm-4.7` |
-| `ANTHROPIC_DEFAULT_SONNET_MODEL` | `glm-5.2` |
-| `ANTHROPIC_DEFAULT_OPUS_MODEL` | `glm-5.2` |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | `glm-5.2[1m]` |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | `glm-5.2[1m]` |
 | `CLAUDE_CONFIG_DIR` | `$HOME/.claude-glm` |
 
 **Key resolution:** shell env `ZAI_API_KEY` first, else the himmel repo `.env`
@@ -440,7 +450,7 @@ router (`ANTHROPIC_BASE_URL=http://127.0.0.1:$OMNIROUTE_PORT`, default port
 `20128`; host fixed — the router is loopback-only by charter), authenticates
 with a router-issued client key `OMNIROUTE_API_KEY` (shell env first, else the
 himmel repo `.env`; the Z.ai key never appears in this launcher), keeps the
-GLM tier-alias mapping (`glm-5.2`/`glm-4.7`), and seeds its own isolated
+GLM tier-alias mapping (`glm-5.2[1m]`/`glm-4.7`), and seeds its own isolated
 `$HOME/.claude-routed`. Guard config is **deliberately shared** with
 claude-glm at `~/.config/claude-glm/{phi-roots,egress-denylist}` — one guard
 source of truth across launcher lanes. A bare `ANTHROPIC_BASE_URL` export is
@@ -481,7 +491,7 @@ fresh git worktree + `glm/<slug>` branch, resolves the GLM env block
 -parity `ANTHROPIC_*` vars), runs the D2 egress guard (`glm-guard.ts`), composes
 the worker prompt with minted `outbox.jsonl` / `context.md` paths, and drives
 the run through the `runSession(…, lane:"glm")` seam in `run.ts`. GLM runs pin
-`--model opus` (→ `glm-5.2`) and ignore `TELEGRAM_CLAUDE_MODEL`. Sessions live
+`--model opus` (→ `glm-5.2[1m]`) and ignore `TELEGRAM_CLAUDE_MODEL`. Sessions live
 under `<BRIDGE_ROOT>/glm-sessions/` (default `~/.claude/handover/bridge/`) —
 **outside** the poller's `sessions/` tree, so nothing here is double-spawned or
 Telegram-flushed. A blocked worker can record a capability request and degrade

@@ -54,7 +54,11 @@ silent empty index).
 
 ## Upstream watch
 
-The standalone `qmd` CLI (bun: `bun add -g @tobilu/qmd`) still updates
-independently; this fork only pins the plugin **manifest + skill**, which is
-low-churn. Re-sync `skills/qmd/` from `tobi/qmd` if the upstream search skill
-changes materially.
+The standalone `qmd` CLI now installs from himmel's own fork
+(`yotamleo/qmd#himmel-main`, cloned + built with bun, then junctioned/
+symlinked onto the bun-global `@tobilu/qmd` path — `scripts/lib/qmd-bin.sh`,
+HIMMEL-877), not `bun add -g @tobilu/qmd` upstream (that command EPERM-wedges
+on this project's machines and bun blocks its postinstall script). This
+plugin's **manifest + skill** stay pinned separately and are low-churn.
+Re-sync `skills/qmd/` from `tobi/qmd` if the upstream search skill changes
+materially; re-sync the CLI fork per `docs/setup/new-machine.md`.
