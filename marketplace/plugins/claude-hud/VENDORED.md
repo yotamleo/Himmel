@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        b83b44593af24de1db6183788a51d08715501c02  # v0.3.0
 pinned_upstream_tree: 01ab034ddfef4d21233c91c73218b36d4a064fe7  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   f2faaac5857e7a714df71a284b4239a32af91d3cd41a2b5308440e5c5ecdbf23  # sha256 over VENDORED.manifest
+vendored_tree_hash:   21e9235ac182334234cd6ece0dd6c657fa9700a637338fb917b20ffc6d27f7ba  # sha256 over VENDORED.manifest
 vendored_at:          2026-07-06
 ```
 
@@ -68,3 +68,16 @@ protected: editing it without bumping the pin trips the guard.
   `src/render/index.ts`; tests in `tests/custom-line-cmd.test.js`. himmel's own
   render logic (the where-are-we composer) stays in himmel `scripts/`, **not** in
   this fork — this fork carries only the generic capability.
+
+- **Landed (HIMMEL-865, 2026-07-10):** carried two upstream open PRs verbatim
+  ahead of merge — jarrodwatts/claude-hud#650 (display correctness: effort
+  suffix on the model instead of the routed provider; `showDuration`/
+  `showConfigCounts` become explicit opt-in `=== true`; unique debug
+  namespaces for `config-reader`/`session-line`) and #646 (transcript
+  assistant-usage dedup by global `message.id` Set instead of the
+  adjacent-tuple heuristic — catches non-consecutive dual-logged usage
+  entries). Files: `src/config-reader.ts`, `src/render/lines/environment.ts`,
+  `src/render/lines/project.ts`, `src/render/model-display.ts`,
+  `src/render/session-line.ts`, `src/transcript.ts`, `tests/core.test.js`
+  (+ rebuilt `dist/`). Drop these hunks on the next upstream pin bump if the
+  PRs have merged.

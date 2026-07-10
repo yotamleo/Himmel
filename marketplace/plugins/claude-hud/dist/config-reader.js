@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 import { createDebug } from './debug.js';
 import { getClaudeConfigDir, getClaudeConfigJsonPath, getHudPluginDir } from './claude-config-dir.js';
-const debug = createDebug('config');
+const debug = createDebug('config-reader');
 function getMcpServerNames(filePath) {
     if (!fs.existsSync(filePath))
         return new Set();

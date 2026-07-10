@@ -14,6 +14,6 @@ export function formatModelDisplay(model, ctx) {
         const core = `${model}${effortSuffix}`;
         return providerLabel ? `${providerLabel} | ${core}` : core;
     }
-    return autoProvider ? `${model} | ${autoProvider}${effortSuffix}` : `${model}${effortSuffix}`;
+    return autoProvider ? `${model}${effortSuffix} | ${autoProvider}` : `${model}${effortSuffix}`;
 }
 //# sourceMappingURL=model-display.js.map

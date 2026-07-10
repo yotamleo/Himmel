@@ -120,7 +120,7 @@ export function renderProjectLine(ctx) {
     if (ctx.extraLabel) {
         parts.push(label(ctx.extraLabel, colors));
     }
-    if (display?.showDuration !== false && ctx.sessionDuration) {
+    if (display?.showDuration === true && ctx.sessionDuration) {
         parts.push(label(`⏱️  ${ctx.sessionDuration}`, colors));
     }
     const costEstimate = renderCostEstimate(ctx);
