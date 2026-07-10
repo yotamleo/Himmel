@@ -274,4 +274,223 @@ describe('pull', () => {
     expect(err.message.toLowerCase()).toContain('re-consent');
     expect(err.message).not.toContain('fake-rtoken');
   });
+
+  test('degraded sleep date → artifact carries the warning in warnings[]', async () => {
+    // A sleep payload whose main session has a malformed non-AWAKE stage → degraded.
+    // pull must surface the deriveSleep warning durably on the returned artifact
+    // (HIMMEL-794); row emission is unchanged (sleep_in_bed_hours only).
+    const degradedSleep = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: [
+              { startTime: '2026-01-01T22:00:00Z', endTime: '2026-01-02T02:00:00Z', type: 'LIGHT' },
+              { startTime: 'not-a-timestamp', endTime: 'also-garbage', type: 'DEEP' },
+            ],
+          },
+        },
+      ],
+    };
+
+    const degradedFetch = async (url: string, _init?: RequestInit): Promise<FakeResponse> => {
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return { ok: true, status: 200, json: async () => ({ access_token: 't', token_type: 'Bearer' }) };
+      }
+      const match = url.match(/\/dataTypes\/([^/?]+)\/dataPoints/);
+      if (match && match[1] === 'sleep') {
+        return { ok: true, status: 200, json: async () => degradedSleep };
+      }
+      return { ok: true, status: 200, json: async () => ({ dataPoints: [] }) };
+    };
+
+    const artifact = await pull({
+      from: '2024-01-01',
+      to: '2026-12-31',
+      cfg: FAKE_CFG,
+      fetchImpl: degradedFetch as unknown as typeof fetch,
+    });
+
+    expect(artifact.warnings).toContain(
+      'sleep 2026-01-02: malformed stage timestamps - sleep_hours omitted (degraded stage data)',
+    );
+    const inBedRow = artifact.rows.find(
+      (r) => r.metric === 'sleep_in_bed_hours' && r.date === '2026-01-02',
+    );
+    expect(inBedRow).toBeDefined();
+    expect(inBedRow!.value).toBe(8.0);
+    expect(artifact.rows.some((r) => r.metric === 'sleep_hours')).toBe(false);
+  });
+
+  test('clean pull → warnings key is ABSENT (undefined, not [])', async () => {
+    // The fixtures are clean (no degraded/dropped/non-array sleep) → pull omits the
+    // warnings key entirely, so a clean artifact is byte-identical to pre-HIMMEL-794.
+    const artifact = await pull({
+      from: '2024-01-01',
+      to: '2026-12-31',
+      cfg: FAKE_CFG,
+      fetchImpl: asFetch(makeFakeFetch()),
+    });
+    expect(artifact.warnings).toBeUndefined();
+  });
+
+  /** Builds a fake fetchImpl that serves `sleepFixture` for the sleep dataType and empty pages otherwise. */
+  function sleepOnlyFetch(sleepFixture: { dataPoints: unknown[] }) {
+    return async (url: string, _init?: RequestInit): Promise<FakeResponse> => {
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return { ok: true, status: 200, json: async () => ({ access_token: 't', token_type: 'Bearer' }) };
+      }
+      const match = url.match(/\/dataTypes\/([^/?]+)\/dataPoints/);
+      if (match && match[1] === 'sleep') {
+        return { ok: true, status: 200, json: async () => sleepFixture };
+      }
+      return { ok: true, status: 200, json: async () => ({ dataPoints: [] }) };
+    };
+  }
+
+  test('degraded sleep date OUTSIDE the pull window → artifact has NO warnings key (HIMMEL-794 Fix A)', async () => {
+    // Same degraded session as above (date 2026-01-02), but the pull window
+    // (2024-01-01..2025-01-01) does not cover it — the dated warning must be
+    // window-dropped exactly like its row is (rows are already filtered by window).
+    const degradedSleep = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: [
+              { startTime: '2026-01-01T22:00:00Z', endTime: '2026-01-02T02:00:00Z', type: 'LIGHT' },
+              { startTime: 'not-a-timestamp', endTime: 'also-garbage', type: 'DEEP' },
+            ],
+          },
+        },
+      ],
+    };
+
+    const artifact = await pull({
+      from: '2024-01-01',
+      to: '2025-01-01',
+      cfg: FAKE_CFG,
+      fetchImpl: sleepOnlyFetch(degradedSleep) as unknown as typeof fetch,
+    });
+
+    expect(artifact.warnings).toBeUndefined();
+    expect(artifact.rows.some((r) => r.date === '2026-01-02')).toBe(false);
+  });
+
+  test('no-date-derivable dropped session → warning is kept regardless of window (undateable = conservative keep)', async () => {
+    // A session with no civilEndTime and no endUtcOffset has no derivable date, so
+    // the warning's `date` is undefined — it must be kept no matter what the pull
+    // window is (HIMMEL-794 Fix A: `!w.date` always keeps).
+    const droppedSleep = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              endTime: '2026-01-02T06:00:00Z',
+            },
+          },
+        },
+      ],
+    };
+
+    const artifact = await pull({
+      from: '2020-01-01',
+      to: '2020-01-02',
+      cfg: FAKE_CFG,
+      fetchImpl: sleepOnlyFetch(droppedSleep) as unknown as typeof fetch,
+    });
+
+    expect(artifact.warnings).toContain(
+      'sleep dataPoint 0 ending 2026-01-02T06:00:00Z: no civilEndTime and no endUtcOffset - session dropped',
+    );
+  });
+
+  test('missing-startTime session with civilEndTime OUTSIDE the pull window → artifact has NO warnings key (CR round 2)', async () => {
+    // The missing-interval warning is DATED when an end date is derivable
+    // (civilEndTime here), so it must be window-scoped like any other dated
+    // warning — an out-of-window malformed session must not pollute this artifact.
+    const missingStartSleep = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              endTime: '2026-01-02T06:00:00Z',
+              civilEndTime: { date: { year: 2026, month: 1, day: 2 } },
+            },
+          },
+        },
+      ],
+    };
+
+    const artifact = await pull({
+      from: '2024-01-01',
+      to: '2025-01-01',
+      cfg: FAKE_CFG,
+      fetchImpl: sleepOnlyFetch(missingStartSleep) as unknown as typeof fetch,
+    });
+
+    expect(artifact.warnings).toBeUndefined();
+  });
+
+  test('one pull producing two distinct warnings (dropped session + degraded date) → both present, in order', async () => {
+    // First data point: dropped (no civilEndTime/endUtcOffset, no date). Second:
+    // a valid, in-window main session degraded by a malformed non-AWAKE stage.
+    // Parse-loop warnings (the drop) precede per-date warnings (the degradation) —
+    // the two-phase order documented on deriveSleep.
+    const twoWarningsSleep = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-05-01T22:00:00Z',
+              endTime: '2026-05-02T06:00:00Z',
+            },
+          },
+        },
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: [
+              { startTime: '2026-01-01T22:00:00Z', endTime: '2026-01-02T02:00:00Z', type: 'LIGHT' },
+              { startTime: 'not-a-timestamp', endTime: 'also-garbage', type: 'DEEP' },
+            ],
+          },
+        },
+      ],
+    };
+
+    const artifact = await pull({
+      from: '2024-01-01',
+      to: '2026-12-31',
+      cfg: FAKE_CFG,
+      fetchImpl: sleepOnlyFetch(twoWarningsSleep) as unknown as typeof fetch,
+    });
+
+    expect(artifact.warnings).toEqual([
+      'sleep dataPoint 0 ending 2026-05-02T06:00:00Z: no civilEndTime and no endUtcOffset - session dropped',
+      'sleep 2026-01-02: malformed stage timestamps - sleep_hours omitted (degraded stage data)',
+    ]);
+  });
 });

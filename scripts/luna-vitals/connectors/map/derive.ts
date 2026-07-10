@@ -6,7 +6,7 @@
  * deriveSleep: extract sleep_hours + sleep_in_bed_hours from sleep dataPoints.
  */
 import type { Mapping } from './table';
-import { type ExtractedRow, validateRow } from '../../src/types';
+import { type ExtractedRow, validateRow, isValidISODate } from '../../src/types';
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
@@ -220,7 +220,18 @@ type SleepSession = {
   durationMs: number;
   stages: SleepStage[];
   platform: string;
+  // True when this session's raw `stages` field was present but non-array (malformed).
+  // The warning for this is deferred to the per-date main-session-selection loop
+  // below (Fix B / HIMMEL-794 codex-adv-2): a malformed NAP alongside a clean main
+  // session must not warn, since the emitted sleep_hours row never came from it.
+  stagesMalformed: boolean;
 };
+
+// Internal warning shape carrying the date a warning pertains to, when one is
+// known. `date` is undefined when no local calendar date could be derived at all
+// (the pull-side window filter always keeps an undateable warning — see
+// google-health.ts). Exported so google-health.ts can type its collected warnings.
+export type SleepWarning = { date?: string; text: string };
 
 /**
  * Derive sleep_hours and sleep_in_bed_hours from sleep dataPoints.
@@ -251,43 +262,137 @@ type SleepSession = {
  *   from the session interval, not the stages) and a stderr warning is printed. Invalid
  *   AWAKE stages never enter the sum, so they do NOT trigger the degraded path.
  *
+ * Returns { rows, warnings }: `rows` are the emitted ExtractedRows; `warnings` is a
+ *   SleepWarning[] (`{ date?: string; text: string }`, possibly empty) of
+ *   degradation/drop signals — `date` is the warning's local calendar date when one
+ *   is derivable, undefined otherwise. Order is deterministic for identical input,
+ *   but is NOT a single global encounter order across warning types: it is two-phase
+ *   — parse-loop warnings (dropped sessions; the missing-interval path) come first
+ *   in data-point order, then per-date warnings (degraded stage data; non-array
+ *   stages on the MAIN session) in per-date main-session order. Each warning is
+ *   ALSO printed to stderr as `[google-health] <text>` — the stderr behavior
+ *   predates HIMMEL-794 and is unchanged; the returned copy is additive so `pull`
+ *   can record it durably on the review artifact (window-scoped there, see
+ *   google-health.ts). Five warning-producing paths, all with row emission
+ *   unchanged: (1) a session dropped because its interval is missing
+ *   startTime/endTime entirely (`sleep dataPoint <i> (<date>): missing interval …`,
+ *   dated when an end date is still derivable from civilEndTime or
+ *   endTime + endUtcOffset, `sleep dataPoint <i>: missing interval …` otherwise);
+ *   (2) a session dropped because neither civilEndTime nor endUtcOffset is present
+ *   (no date derivable — `sleep dataPoint <i> ending <endTime>: no civilEndTime …`);
+ *   (3) a session dropped because its interval start/end is unparseable
+ *   (`sleep dataPoint <i> (<date>): unparseable interval …`, undated when a garbage
+ *   endTime makes the date underivable); (4) a degraded main session (see above);
+ *   (5) a non-array `stages` field on the MAIN session for a date, coerced to
+ *   stage-less (an absent `stages` field is the normal classic case and does NOT
+ *   warn; a malformed shorter/nap session that loses main-session selection does
+ *   NOT warn either — it contributes no rows, see Fix B / HIMMEL-794 codex-adv-2).
+ *   Paths 1-3 (session-scoped) embed the dataPoint index in the text so distinct
+ *   events never share a text — the merge CLI dedups warnings by exact text, so
+ *   identical text must mean the same event (over-reporting across re-pulls with
+ *   different windows is the accepted safe direction). A dataPoint with no typed
+ *   payload field at all (the fieldKey lookup fails) is still skipped WITHOUT a
+ *   warning — deliberate scope-out, tracked in HIMMEL-801.
+ *
  * Source: 'google-health:sleep:<platform>'.
  * Each emitted row passes validateRow before being returned.
  */
-export function deriveSleep(response: { dataPoints?: unknown[] }): ExtractedRow[] {
+export function deriveSleep(response: { dataPoints?: unknown[] }): { rows: ExtractedRow[]; warnings: SleepWarning[] } {
   const sessions: SleepSession[] = [];
+  const warnings: SleepWarning[] = [];
+  // Each warning is recorded in `warnings` (durable, returned to the caller) AND
+  // printed to stderr with the [google-health] prefix (the pre-HIMMEL-794 operator
+  // signal, kept byte-identical). The stderr line is `[google-health] ` + text —
+  // `date` is carried only in the returned copy, never in the stderr line.
+  const warn = (text: string, date?: string): void => {
+    warnings.push({ date, text });
+    console.error(`[google-health] ${text}`);
+  };
 
-  for (const dp of response.dataPoints ?? []) {
+  // Parse-loop (session-scoped) warning texts embed the dataPoint index so two
+  // DISTINCT dropped sessions can never share a text — the merge CLI dedups
+  // warnings by exact text, so identical text must mean the same event. (Across
+  // re-pulls with different windows the same session may carry a different index;
+  // over-reporting there is the accepted safe direction.)
+  for (const [i, dp] of (response.dataPoints ?? []).entries()) {
     const point = dp as DataPoint;
     const fieldKey = Object.keys(point).find((k) => k !== 'name' && k !== 'dataSource');
     if (!fieldKey) continue;
     const fo = point[fieldKey] as any;
     const interval = fo?.interval;
-    if (!interval?.startTime || !interval?.endTime) continue;
 
-    // Local end date.
+    // Local end date — derived BEFORE the missing-startTime/endTime guard below, so
+    // that guard's warning can carry a date when one IS derivable (e.g. startTime
+    // missing but civilEndTime present). An undated warning survives EVERY pull
+    // window (conservative keep), so dating it whenever possible keeps an
+    // out-of-window malformed session from polluting unrelated artifacts.
     let date: string | undefined;
     const civil = interval?.civilEndTime?.date as
       | { year: number; month: number; day: number }
       | undefined;
     if (civil) {
       date = toISODate(civil.year, civil.month, civil.day);
-    } else if (interval.endUtcOffset) {
+    } else if (interval?.endTime && interval?.endUtcOffset) {
       date = computeLocalDate(interval.endTime as string, interval.endUtcOffset as string);
-    } else {
+      // A present-but-garbage endTime yields a "NaN-NaN-NaN" date here — treat it
+      // as underivable so no warning ever embeds a garbage date (the unparseable
+      // guard below then uses its undated variant).
+      if (!isValidISODate(date)) date = undefined;
+    }
+
+    if (!interval?.startTime || !interval?.endTime) {
+      // A missing interval entirely, or an interval missing startTime/endTime — no
+      // duration computable, so drop the session (no row) and warn (the fifth
+      // silent-drop path of this class; HIMMEL-794 Fix D), dated when derivable.
+      warn(
+        date !== undefined
+          ? `sleep dataPoint ${i} (${date}): missing interval startTime/endTime - session dropped`
+          : `sleep dataPoint ${i}: missing interval startTime/endTime - session dropped`,
+        date,
+      );
       continue;
     }
 
     const startMs = Date.parse(interval.startTime as string);
     const endMs = Date.parse(interval.endTime as string);
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      // Unparseable interval — cannot compute a duration, so drop the session.
+      // Checked before the no-date guard below: a garbage endTime alongside a
+      // present endUtcOffset lands here (undated via the NaN-date guard above),
+      // not in the no-civilEndTime/no-endUtcOffset text, which would be wrong.
+      warn(
+        date !== undefined
+          ? `sleep dataPoint ${i} (${date}): unparseable interval start/end - session dropped`
+          : `sleep dataPoint ${i}: unparseable interval start/end - session dropped`,
+        date,
+      );
+      continue;
+    }
+
+    if (date === undefined) {
+      // No way to derive a local end date (endTime parsed fine above, so this
+      // genuinely means neither civilEndTime nor endUtcOffset was present) — drop
+      // the session (no row), but record it so the loss is visible on the review
+      // artifact, not just stderr.
+      warn(`sleep dataPoint ${i} ending ${interval.endTime}: no civilEndTime and no endUtcOffset - session dropped`);
+      continue;
+    }
 
     const platform =
       ((point.dataSource as any)?.platform as string | undefined) ?? 'unknown';
 
-    const stages: SleepStage[] = Array.isArray(fo?.stages) ? fo.stages : [];
+    const rawStages = fo?.stages;
+    // A present-but-non-array `stages` is malformed — coerce to stage-less ([]
+    // below: sleep_in_bed_hours still emits, sleep_hours naturally does not).
+    // Recorded as stagesMalformed rather than warned here: the warning fires only
+    // for the MAIN session for this date, decided after main-session selection
+    // below (Fix B / HIMMEL-794 codex-adv-2) — a malformed shorter/nap session
+    // that loses selection contributes no rows, so nothing needs correcting. An
+    // absent `stages` field is the normal classic stage-less case: no warning.
+    const stagesMalformed = rawStages !== undefined && !Array.isArray(rawStages);
+    const stages: SleepStage[] = Array.isArray(rawStages) ? rawStages : [];
 
-    sessions.push({ date, durationMs: endMs - startMs, stages, platform });
+    sessions.push({ date, durationMs: endMs - startMs, stages, platform, stagesMalformed });
   }
 
   // Pick the main (longest) session per date.
@@ -336,13 +441,16 @@ export function deriveSleep(response: { dataPoints?: unknown[] }): ExtractedRow[
     validateRow(rowInBed);
     rows.push(rowInBed);
 
-    if (degraded) {
+    if (main.stagesMalformed) {
+      // Non-array `stages` field on the MAIN session for this date (Fix B /
+      // HIMMEL-794 codex-adv-2) — main.stages is [] so `degraded`/`sleepHours` above
+      // are trivially false/0; warn here instead, scoped to the winning session.
+      warn(`sleep ${date}: non-array "stages" field - treated as stage-less (sleep_hours unavailable)`, date);
+    } else if (degraded) {
       // Malformed non-AWAKE stage timestamps: the remaining valid stages would
       // under-count sleep, so omit the sleep_hours row rather than emit a misleading
       // figure. sleep_in_bed_hours above is unaffected (derived from the interval).
-      console.error(
-        `[google-health] sleep ${date}: malformed stage timestamps - sleep_hours omitted (degraded stage data)`,
-      );
+      warn(`sleep ${date}: malformed stage timestamps - sleep_hours omitted (degraded stage data)`, date);
     } else if (sleepHours > 0) {
       // Stage-less sessions (classic-era Fitbit) yield sleepHours === 0 — skip rather
       // than emit a misleading 0-hours-asleep row.
@@ -352,5 +460,5 @@ export function deriveSleep(response: { dataPoints?: unknown[] }): ExtractedRow[
     }
   }
 
-  return rows;
+  return { rows, warnings };
 }

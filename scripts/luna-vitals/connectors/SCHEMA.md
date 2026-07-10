@@ -52,14 +52,55 @@ If any non-AWAKE stage in the main sleep session has an unparseable start/end ti
 and a `[google-health]` stderr warning is printed. Invalid AWAKE stages never enter the
 asleep sum, so they do not trigger the degraded path.
 
-Known limitations (tracked in HIMMEL-794): the warning is **stderr-only** — the review
-artifact carries no warnings field, so a degraded date looks identical to a genuinely
-stage-less classic session in the artifact JSON, and `writeSeries` leaves any previously
-written `sleep_hours` value for that date untouched (metrics absent from artifact rows
-are never rewritten). Adjacent silent skips predating HIMMEL-793: a session with no
-`civilEndTime` and no `endUtcOffset`, or an unparseable session interval, is dropped
-entirely without a warning; a non-array `stages` field is coerced to `[]` (treated as
-classic stage-less).
+### Durable warnings field (HIMMEL-794)
+The degraded warning above is now ALSO recorded durably in the review artifact's optional
+`warnings: string[]` field — absent from the JSON when there are no warnings, written by
+`pull` and preserved through `merge` (deduped across inputs). A clean pull keeps producing
+a byte-identical artifact to pre-HIMMEL-794; a pull whose sleep payload triggers a
+degraded date carries `warnings: ["sleep <date>: malformed stage timestamps - sleep_hours
+omitted (degraded stage data)"]`. The stderr line is unchanged — the artifact copy is
+additive. A dated warning is recorded on the artifact only when its date falls inside the
+pull's `[from, to]` window (matching the rows filter); a warning with no derivable date is
+always recorded regardless of window.
+
+Four adjacent paths that previously skipped silently now each produce a warning too
+(stderr + artifact); row-emission behavior is unchanged for all four. The three
+session-scoped warnings embed the dataPoint index (`sleep dataPoint <i> …`) so two
+distinct dropped sessions never share a text — `merge` dedups warnings by exact text,
+so identical text must mean the same event:
+- A session whose interval is missing `startTime`/`endTime` entirely is still dropped:
+  `sleep dataPoint <i> (<date>): missing interval startTime/endTime - session dropped` when
+  an end date is still derivable (from `civilEndTime` or `endTime` + `endUtcOffset`),
+  undated (`sleep dataPoint <i>: missing interval startTime/endTime - session dropped`)
+  otherwise.
+- A session with no `civilEndTime` and no `endUtcOffset` (no date derivable) is still
+  dropped: `sleep dataPoint <i> ending <endTime>: no civilEndTime and no endUtcOffset - session dropped`.
+- An unparseable session interval (`startMs`/`endMs` not finite) is still dropped:
+  `sleep dataPoint <i> (<date>): unparseable interval start/end - session dropped` (undated
+  `sleep dataPoint <i>: unparseable interval start/end - session dropped` when a garbage
+  `endTime` makes the date underivable).
+- A non-array `stages` field is still coerced to `[]` (stage-less: `sleep_in_bed_hours`
+  emits, `sleep_hours` does not): `sleep <date>: non-array "stages" field - treated as
+  stage-less (sleep_hours unavailable)`. The warning refers to the MAIN session for the
+  date — a malformed shorter/nap session does not warn, since it never contributes rows.
+  An absent `stages` field is the normal classic stage-less case and produces NO warning.
+
+`write` surfaces any artifact `warnings` on stderr as `[luna-vitals] artifact warning:
+<text>` before writing series — advisory only, does not block the write. Warnings are
+not persisted past the artifact (writeSeries ignores them).
+
+### Known limitations
+`writeSeries` only overlays emitted rows onto the existing on-disk CSV — metrics absent
+from artifact rows are never rewritten, so a degraded date's previously written
+`sleep_hours` value is left untouched (the operator must repair that series manually).
+Intentional; noted under HIMMEL-794.
+
+A merged artifact's warnings record DERIVATION-TIME loss, not final-artifact state — a
+warned (metric, date) gap may have been filled by the other merge pool, so a warning does
+not guarantee the merged rows lack that date.
+
+A sleep dataPoint with no recognizable typed payload field at all is dropped WITHOUT a
+warning (deliberate scope-out — HIMMEL-801).
 
 ## Derived
 - `rhr_bpm` ← heart-rate raw samples: per civil day, take a low estimator

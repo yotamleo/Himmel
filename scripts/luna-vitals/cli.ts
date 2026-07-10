@@ -38,6 +38,9 @@ async function main(): Promise<void> {
     const det: ExtractedRow[] = [];
     const llm: ExtractedRow[] = [];
     const buckets: string[] = [];
+    // Collect warnings from input artifacts in input order; merged onto the output
+    // artifact (deduped) when non-empty. A clean merge stays byte-identical to pre-794.
+    const collectedWarnings: string[] = [];
     const valueFlags = new Set(["out", "metrics", "note-date", "dir"]);
     let pool: ExtractedRow[] = llm; // bare positional inputs default to the LLM pool
     for (let i = 0; i < rest.length; i++) {
@@ -49,22 +52,38 @@ async function main(): Promise<void> {
         const art = await readArtifact(a);
         pool.push(...art.rows);
         buckets.push(art.bucket);
+        collectedWarnings.push(...(art.warnings ?? []));
       } else if (!a.endsWith(".json")) {
         // A bare positional that is not a .json artifact is not an input — warn
         // (naming it) instead of silently dropping it, so a typo'd path is visible.
         console.error(`[luna-vitals] warning: ignoring positional argument that is not a .json artifact: ${a}`);
       }
     }
-    if (!det.length && !llm.length) { console.error("usage: merge [--det <det.json>...] [--llm <llm.json>...] --out <merged.json> (no input artifacts found)"); process.exit(1); }
+    // Fail fast unless the inputs carry at least one row OR one warning: a valid
+    // degraded pull can produce a rows-empty artifact whose warnings still must
+    // merge through (HIMMEL-794), but rows-empty AND warnings-empty inputs
+    // (including zero artifact files) are a total extraction failure — error out.
+    if (!det.length && !llm.length && !collectedWarnings.length) { console.error("usage: merge [--det <det.json>...] [--llm <llm.json>...] --out <merged.json> (no input artifacts found)"); process.exit(1); }
     const uniq = [...new Set(buckets)];
     const bucket = uniq.length === 1 ? uniq[0] : `merged(${uniq.join(",")})`;
-    await writeArtifact(out, mergeRows({ deterministic: det, llm, bucket }));
+    const merged = mergeRows({ deterministic: det, llm, bucket });
+    if (collectedWarnings.length) {
+      // Dedupe exact-duplicate warnings across inputs (mirrors the buckets uniq
+      // behavior) — the same degraded date re-appearing in two artifacts warns once.
+      merged.warnings = [...new Set(collectedWarnings)];
+    }
+    await writeArtifact(out, merged);
     console.error(`[luna-vitals] merged ${det.length} deterministic + ${llm.length} llm rows -> ${out}`);
   } else if (cmd === "write") {
     const file = rest[0];
     const dir = flag(rest, "dir");
     if (!file || !dir) { console.error("usage: write <artifact.json> --dir <50-Vitals>"); process.exit(1); }
-    const res = await writeSeries(await readArtifact(file), dir);
+    const artifact = await readArtifact(file);
+    // Surface artifact warnings on stderr — advisory only, never blocks: unlike
+    // unresolved conflicts, degraded data was already handled at derive time by row
+    // omission. Not persisted past the artifact.
+    for (const w of artifact.warnings ?? []) console.error(`[luna-vitals] artifact warning: ${w}`);
+    const res = await writeSeries(artifact, dir);
     for (const r of res) console.error(`[luna-vitals] ${r.metric}: ${r.n} rows -> ${r.path}`);
   } else {
     console.error(`unknown command: ${cmd ?? "(none)"} — use parse|merge|write`);

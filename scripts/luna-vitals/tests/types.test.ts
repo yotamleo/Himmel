@@ -80,3 +80,58 @@ test("readArtifact rejects a conflict missing the chosen field", async () => {
   await Bun.write(p, JSON.stringify({ bucket: "x", rows: [], conflicts: [{ metric: "migraine", date: "2024-06-14", values: [{ value: 2, source: "a" }, { value: 3, source: "b" }] }] }));
   await expect(readArtifact(p)).rejects.toThrow(/chosen/);
 });
+
+test("writeArtifact/readArtifact round-trips an artifact that carries warnings", async () => {
+  const a: ReviewArtifact = {
+    bucket: "x",
+    rows: [{ metric: "sleep_in_bed_hours", date: "2026-01-02", value: 8.0, source: "google-health:sleep:HEALTH_CONNECT" }],
+    conflicts: [],
+    warnings: ["sleep 2026-01-02: malformed stage timestamps - sleep_hours omitted (degraded stage data)"],
+  };
+  const p = join(tmpdir(), "luna-vitals-warnings-roundtrip.json");
+  await writeArtifact(p, a);
+  expect(await readArtifact(p)).toEqual(a);
+});
+
+test("readArtifact accepts an artifact with NO warnings field (pre-HIMMEL-794 artifact)", async () => {
+  const p = join(tmpdir(), "luna-vitals-no-warnings-field.json");
+  await Bun.write(p, JSON.stringify({ bucket: "x", conflicts: [], rows: [] }));
+  const a = await readArtifact(p);
+  expect(a.warnings).toBeUndefined();
+});
+
+test("readArtifact rejects a non-array warnings field", async () => {
+  const p = join(tmpdir(), "luna-vitals-warnings-nonarray.json");
+  await Bun.write(p, JSON.stringify({ bucket: "x", conflicts: [], rows: [], warnings: "x" }));
+  await expect(readArtifact(p)).rejects.toThrow(/malformed artifact at.*"warnings"/);
+});
+
+test("readArtifact rejects a warnings entry that is not a non-empty string", async () => {
+  const p = join(tmpdir(), "luna-vitals-warnings-nonstring.json");
+  await Bun.write(p, JSON.stringify({ bucket: "x", conflicts: [], rows: [], warnings: [1] }));
+  await expect(readArtifact(p)).rejects.toThrow(/malformed artifact at.*"warnings"/);
+});
+
+test("writeArtifact rejects a non-array warnings field", async () => {
+  const a = { bucket: "x", conflicts: [], rows: [], warnings: "x" } as unknown as ReviewArtifact;
+  await expect(writeArtifact(join(tmpdir(), "luna-vitals-warnings-write-reject.json"), a)).rejects.toThrow(/"warnings"/);
+});
+
+test("readArtifact rejects a warnings entry that is an empty string", async () => {
+  // The `!w` branch of warningsError (as opposed to the `typeof w !== "string"` branch)
+  // — untested before, so a regression dropping it would still pass every other test.
+  const p = join(tmpdir(), "luna-vitals-warnings-emptystring.json");
+  await Bun.write(p, JSON.stringify({ bucket: "x", conflicts: [], rows: [], warnings: [""] }));
+  await expect(readArtifact(p)).rejects.toThrow(/malformed artifact at.*"warnings"/);
+});
+
+test("readArtifact rejects a present-but-empty warnings array (never [])", async () => {
+  const p = join(tmpdir(), "luna-vitals-warnings-empty-array.json");
+  await Bun.write(p, JSON.stringify({ bucket: "x", conflicts: [], rows: [], warnings: [] }));
+  await expect(readArtifact(p)).rejects.toThrow(/absent when empty/);
+});
+
+test("writeArtifact rejects a present-but-empty warnings array (never [])", async () => {
+  const a = { bucket: "x", conflicts: [], rows: [], warnings: [] } as unknown as ReviewArtifact;
+  await expect(writeArtifact(join(tmpdir(), "luna-vitals-warnings-write-empty-reject.json"), a)).rejects.toThrow(/absent when empty/);
+});

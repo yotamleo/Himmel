@@ -10,7 +10,12 @@ export type Conflict = {
   values: Candidate[];
   chosen: Candidate;
 };
-export type ReviewArtifact = { bucket: string; rows: ExtractedRow[]; conflicts: Conflict[] };
+// Optional operator-facing degradation/degradation-adjacent signals (HIMMEL-794).
+// Absent on a clean pull (byte-identical artifacts to pre-794); present only when
+// deriveSleep recorded a warning (degraded stage data, dropped session, non-array
+// stages). Preserved (and deduped across inputs) by the `merge` CLI command in
+// cli.ts — mergeRows itself never touches warnings. writeSeries ignores it.
+export type ReviewArtifact = { bucket: string; rows: ExtractedRow[]; conflicts: Conflict[]; warnings?: string[] };
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -53,9 +58,31 @@ export function validateConflict(c: Conflict): void {
   }
 }
 
+/**
+ * Validate an optional `warnings` field on a ReviewArtifact: when present it must
+ * be a non-empty array of non-empty strings — the documented contract is "absent
+ * when empty, never []", so a present-but-empty array is rejected too. Returns an
+ * error message when the value is malformed, or undefined when valid — absent
+ * (undefined) counts as valid, so artifacts written before HIMMEL-794 (no warnings
+ * field) keep loading unchanged. Shared by writeArtifact (outgoing) and
+ * readArtifact (incoming, which prefixes the path), so both gates reject a
+ * malformed warnings shape identically.
+ */
+function warningsError(warnings: unknown): string | undefined {
+  if (warnings === undefined) return undefined;
+  if (!Array.isArray(warnings)) return `artifact "warnings" must be an array of non-empty strings: ${JSON.stringify(warnings)}`;
+  if (warnings.length === 0) return `artifact "warnings" must be absent when empty (never [])`;
+  for (const w of warnings) {
+    if (typeof w !== "string" || !w) return `artifact "warnings" must be an array of non-empty strings: ${JSON.stringify(warnings)}`;
+  }
+  return undefined;
+}
+
 export async function writeArtifact(path: string, a: ReviewArtifact): Promise<void> {
   a.rows.forEach(validateRow);
   a.conflicts.forEach(validateConflict);
+  const werr = warningsError(a.warnings);
+  if (werr) throw new Error(werr);
   await Bun.write(path, JSON.stringify(a, null, 2));
 }
 
@@ -72,5 +99,7 @@ export async function readArtifact(path: string): Promise<ReviewArtifact> {
   if (!Array.isArray(a.rows) || !Array.isArray(a.conflicts)) throw new Error(`malformed artifact at ${path}: "rows" and "conflicts" must be arrays`);
   a.rows.forEach(validateRow);
   a.conflicts.forEach(validateConflict);
+  const werr = warningsError(a.warnings);
+  if (werr) throw new Error(`malformed artifact at ${path}: ${werr}`);
   return a;
 }
