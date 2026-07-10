@@ -266,7 +266,7 @@ describe('deriveSleep', () => {
     // Fixture: session 1 (01:24Z–09:55Z = 511 min = main) + session 2 nap (14:00Z–14:40Z = 40 min).
     // Both end on 2026-06-28 local (UTC+2). Main = session 1 (511 > 40).
     const fixture = await loadFixture('sleep');
-    const rows = deriveSleep(fixture);
+    const { rows } = deriveSleep(fixture);
 
     const inBedRow = rows.find(
       (r) => r.metric === 'sleep_in_bed_hours' && r.date === '2026-06-28',
@@ -280,7 +280,7 @@ describe('deriveSleep', () => {
     // Main session (01:24Z–09:55Z) starts with 20 min AWAKE stage.
     // Non-AWAKE stages sum: 86+55+50+95+45+55+105 = 491 min = 8.183→ 8.2 h
     const fixture = await loadFixture('sleep');
-    const rows = deriveSleep(fixture);
+    const { rows } = deriveSleep(fixture);
 
     const inBedRow = rows.find(
       (r) => r.metric === 'sleep_in_bed_hours' && r.date === '2026-06-28',
@@ -295,7 +295,7 @@ describe('deriveSleep', () => {
     // Session 3: 2026-06-26T22:30Z – 2026-06-27T05:30Z, endUtcOffset "7200s"
     // Local end: 05:30Z + 2h = 07:30 → date 2026-06-27. Duration = 7h exactly.
     const fixture = await loadFixture('sleep');
-    const rows = deriveSleep(fixture);
+    const { rows } = deriveSleep(fixture);
 
     const inBedRow = rows.find(
       (r) => r.metric === 'sleep_in_bed_hours' && r.date === '2026-06-27',
@@ -308,7 +308,7 @@ describe('deriveSleep', () => {
 
   test('all emitted rows have correct metric, valid date, finite value, typed source', async () => {
     const fixture = await loadFixture('sleep');
-    const rows = deriveSleep(fixture);
+    const { rows } = deriveSleep(fixture);
 
     // fixture has sessions on 2026-06-27 and 2026-06-28, both stage-backed → 4 rows total (2 per date)
     expect(rows.length).toBe(4);
@@ -321,8 +321,9 @@ describe('deriveSleep', () => {
     }
   });
 
-  test('classic session (no stages) → sleep_in_bed_hours only, no sleep_hours row', () => {
-    // Fitbit classic-era sync: interval present, stages array absent/empty.
+  test('classic session (no stages) → sleep_in_bed_hours only, no sleep_hours row, no warning', () => {
+    // Fitbit classic-era sync: interval present, stages array absent/empty. An absent
+    // stages field is the normal stage-less case — NO warning (HIMMEL-794).
     const fixture = {
       dataPoints: [
         {
@@ -338,15 +339,16 @@ describe('deriveSleep', () => {
         },
       ],
     };
-    const rows = deriveSleep(fixture);
+    const { rows, warnings } = deriveSleep(fixture);
 
     expect(rows.length).toBe(1);
     expect(rows[0].metric).toBe('sleep_in_bed_hours');
     expect(rows[0].value).toBe(8.0);
     expect(rows.some((r) => r.metric === 'sleep_hours')).toBe(false);
+    expect(warnings).toEqual([]);
   });
 
-  test('stages session → emits both sleep_hours (asleep) and sleep_in_bed_hours (span)', () => {
+  test('stages session → emits both sleep_hours (asleep) and sleep_in_bed_hours (span); clean → warnings []', () => {
     const fixture = {
       dataPoints: [
         {
@@ -374,13 +376,14 @@ describe('deriveSleep', () => {
         },
       ],
     };
-    const rows = deriveSleep(fixture);
+    const { rows, warnings } = deriveSleep(fixture);
 
     expect(rows.length).toBe(2);
     const inBedRow = rows.find((r) => r.metric === 'sleep_in_bed_hours')!;
     const asleepRow = rows.find((r) => r.metric === 'sleep_hours')!;
     expect(inBedRow.value).toBe(8.0); // full 22:00–06:00 span
     expect(asleepRow.value).toBe(7.5); // AWAKE 30min excluded
+    expect(warnings).toEqual([]);
   });
 
   test('all-AWAKE stages session → sleep_in_bed_hours only, no sleep_hours row (asleep sum is 0)', () => {
@@ -409,7 +412,7 @@ describe('deriveSleep', () => {
         },
       ],
     };
-    const rows = deriveSleep(fixture);
+    const { rows } = deriveSleep(fixture);
 
     expect(rows.length).toBe(1);
     expect(rows[0].metric).toBe('sleep_in_bed_hours');
@@ -450,20 +453,20 @@ describe('deriveSleep', () => {
         },
       ],
     };
-    // The stderr warning is part of the degraded contract (it is the only
-    // operator-visible signal today — see SCHEMA.md / HIMMEL-794). Assert while
-    // the spy is live — mockRestore() clears the recorded calls.
+    // The degraded warning goes BOTH to stderr (the pre-HIMMEL-793 operator signal)
+    // and, since HIMMEL-794, into the returned warnings[] (the durable artifact copy).
+    // Assert both while the spy is live — mockRestore() clears the recorded calls.
+    const degradedText = 'sleep 2026-01-02: malformed stage timestamps - sleep_hours omitted (degraded stage data)';
     const errSpy = spyOn(console, 'error');
     try {
-      const rows = deriveSleep(fixture);
+      const { rows, warnings } = deriveSleep(fixture);
 
       expect(rows.length).toBe(1);
       expect(rows[0].metric).toBe('sleep_in_bed_hours');
       expect(rows[0].value).toBe(8.0);
       expect(rows.some((r) => r.metric === 'sleep_hours')).toBe(false);
-      expect(errSpy).toHaveBeenCalledWith(
-        '[google-health] sleep 2026-01-02: malformed stage timestamps - sleep_hours omitted (degraded stage data)',
-      );
+      expect(warnings.map((w) => w.text)).toContain(degradedText);
+      expect(errSpy).toHaveBeenCalledWith(`[google-health] ${degradedText}`);
     } finally {
       errSpy.mockRestore();
     }
@@ -500,7 +503,7 @@ describe('deriveSleep', () => {
         },
       ],
     };
-    const rows = deriveSleep(fixture);
+    const { rows } = deriveSleep(fixture);
 
     expect(rows.length).toBe(2);
     const inBedRow = rows.find((r) => r.metric === 'sleep_in_bed_hours')!;
@@ -509,8 +512,243 @@ describe('deriveSleep', () => {
     expect(asleepRow.value).toBe(8.0); // full 8h LIGHT span, garbage AWAKE ignored
   });
 
-  test('empty dataPoints → []', () => {
-    expect(deriveSleep({ dataPoints: [] })).toEqual([]);
-    expect(deriveSleep({})).toEqual([]);
+  test('dataPoint whose interval lacks endTime → dropped, no rows, exact warning (HIMMEL-794 Fix D)', () => {
+    // interval.startTime present but endTime absent — and no civilEndTime or
+    // endUtcOffset either, so no end date is derivable and the warning is UNDATED.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+            },
+          },
+        },
+      ],
+    };
+    const { rows, warnings } = deriveSleep(fixture);
+
+    expect(rows).toEqual([]);
+    expect(warnings).toContainEqual({
+      date: undefined,
+      text: 'sleep dataPoint 0: missing interval startTime/endTime - session dropped',
+    });
+  });
+
+  test('REGRESSION: TWO sessions both missing intervals → two DISTINCT warnings (indices differ) (CR round 4)', () => {
+    // The undated missing-interval text used to be a static string, so N dropped
+    // sessions collapsed to 1 after merge's Set dedup. The embedded dataPoint index
+    // keeps genuinely-distinct events textually distinct.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: { interval: { startTime: '2026-01-01T22:00:00Z' } },
+        },
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: { interval: { startTime: '2026-01-03T22:00:00Z' } },
+        },
+      ],
+    };
+    const { rows, warnings } = deriveSleep(fixture);
+
+    expect(rows).toEqual([]);
+    expect(warnings.map((w) => w.text)).toEqual([
+      'sleep dataPoint 0: missing interval startTime/endTime - session dropped',
+      'sleep dataPoint 1: missing interval startTime/endTime - session dropped',
+    ]);
+    // The two texts must be distinct — flat Set dedup must not collapse them.
+    expect(new Set(warnings.map((w) => w.text)).size).toBe(2);
+  });
+
+  test('garbage endTime alongside endUtcOffset → UNDATED unparseable warning, no NaN embedded (CR round 4)', () => {
+    // computeLocalDate on a garbage endTime yields "NaN-NaN-NaN" — the NaN-date
+    // guard resets it to undefined, so the unparseable warning uses its undated
+    // variant instead of embedding a garbage date.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              endTime: 'garbage-end',
+              endUtcOffset: '7200s',
+            },
+          },
+        },
+      ],
+    };
+    const { rows, warnings } = deriveSleep(fixture);
+
+    expect(rows).toEqual([]);
+    expect(warnings).toContainEqual({
+      date: undefined,
+      text: 'sleep dataPoint 0: unparseable interval start/end - session dropped',
+    });
+    expect(warnings.some((w) => w.text.includes('NaN'))).toBe(false);
+  });
+
+  test('dataPoint missing startTime but WITH civilEndTime → dropped, warning carries the date (CR round 2)', () => {
+    // startTime absent but the end date IS derivable (civilEndTime present) — the
+    // missing-interval warning must be dated so the pull-side window filter can
+    // scope it (an undated warning would survive EVERY pull window).
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              endTime: '2026-01-02T06:00:00Z',
+              civilEndTime: { date: { year: 2026, month: 1, day: 2 } },
+            },
+          },
+        },
+      ],
+    };
+    const { rows, warnings } = deriveSleep(fixture);
+
+    expect(rows).toEqual([]);
+    expect(warnings).toContainEqual({
+      date: '2026-01-02',
+      text: 'sleep dataPoint 0 (2026-01-02): missing interval startTime/endTime - session dropped',
+    });
+  });
+
+  test('session with no civilEndTime and no endUtcOffset → dropped, no rows, exact warning', () => {
+    // An interval with startTime + endTime but neither civilEndTime nor endUtcOffset:
+    // no local end date can be derived, so the session is dropped. HIMMEL-794: the
+    // drop is now warned (stderr + artifact) instead of silent; row emission unchanged.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              endTime: '2026-01-02T06:00:00Z',
+            },
+          },
+        },
+      ],
+    };
+    const { rows, warnings } = deriveSleep(fixture);
+
+    expect(rows).toEqual([]);
+    // No date derivable at all for this path — `date` is undefined (HIMMEL-794 Fix A).
+    expect(warnings).toContainEqual({
+      date: undefined,
+      text: 'sleep dataPoint 0 ending 2026-01-02T06:00:00Z: no civilEndTime and no endUtcOffset - session dropped',
+    });
+  });
+
+  test('session with unparseable interval start/end → dropped, no rows, exact warning', () => {
+    // civilEndTime is present so a date IS derivable, but the interval start/end are
+    // unparseable (Date.parse → NaN) → no duration → session dropped. HIMMEL-794: warned.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: 'garbage',
+              endTime: 'also-garbage',
+              civilEndTime: { date: { year: 2026, month: 1, day: 2 } },
+            },
+          },
+        },
+      ],
+    };
+    const { rows, warnings } = deriveSleep(fixture);
+
+    expect(rows).toEqual([]);
+    // civilEndTime made a date derivable, so the warning carries it (HIMMEL-794 Fix A).
+    expect(warnings).toContainEqual({
+      date: '2026-01-02',
+      text: 'sleep dataPoint 0 (2026-01-02): unparseable interval start/end - session dropped',
+    });
+  });
+
+  test('non-array "stages" field → sleep_in_bed_hours only, no sleep_hours, exact warning', () => {
+    // stages is a STRING (present but non-array): coerced to [] (stage-less —
+    // sleep_in_bed_hours emits from the interval, sleep_hours does not) and warned.
+    // Contrast the classic case above, where an ABSENT stages field warns nothing.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: 'not-an-array',
+          },
+        },
+      ],
+    };
+    const { rows, warnings } = deriveSleep(fixture);
+
+    expect(rows.length).toBe(1);
+    expect(rows[0].metric).toBe('sleep_in_bed_hours');
+    expect(rows[0].value).toBe(8.0);
+    expect(rows.some((r) => r.metric === 'sleep_hours')).toBe(false);
+    // Single session IS the main session, so it still warns, now carrying its date.
+    expect(warnings).toContainEqual({
+      date: '2026-01-02',
+      text: 'sleep 2026-01-02: non-array "stages" field - treated as stage-less (sleep_hours unavailable)',
+    });
+  });
+
+  test('REGRESSION: malformed non-array stages on a shorter NAP session does not warn (main session wins) — HIMMEL-794 Fix B / codex-adv-2', () => {
+    // A clean, longer main session (valid stages) plus a shorter same-date nap
+    // session whose `stages` field is malformed. Only the MAIN session may warn —
+    // a malformed nap that never contributes rows must not produce a warning that
+    // contradicts the sleep_hours row emitted from the clean main session.
+    const fixture = {
+      dataPoints: [
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-01T22:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T06:00:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: [
+              { startTime: '2026-01-01T22:00:00Z', endTime: '2026-01-02T06:00:00Z', type: 'LIGHT' },
+            ],
+          },
+        },
+        {
+          dataSource: { platform: 'HEALTH_CONNECT' },
+          sleep: {
+            interval: {
+              startTime: '2026-01-02T14:00:00Z',
+              startUtcOffset: '0s',
+              endTime: '2026-01-02T14:40:00Z',
+              endUtcOffset: '0s',
+            },
+            stages: 'not-an-array',
+          },
+        },
+      ],
+    };
+    const { rows, warnings } = deriveSleep(fixture);
+
+    const asleepRow = rows.find((r) => r.metric === 'sleep_hours' && r.date === '2026-01-02');
+    expect(asleepRow).toBeDefined();
+    expect(asleepRow!.value).toBe(8.0); // main session's full 8h LIGHT span
+    expect(warnings.some((w) => w.text.includes('non-array "stages"'))).toBe(false);
+  });
+
+  test('empty dataPoints → { rows: [], warnings: [] }', () => {
+    expect(deriveSleep({ dataPoints: [] })).toEqual({ rows: [], warnings: [] });
+    expect(deriveSleep({})).toEqual({ rows: [], warnings: [] });
   });
 });

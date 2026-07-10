@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { MAPPINGS } from './map/table';
 import { extractRows, pointDate } from './map/shape';
-import { aggregateRows, deriveRestingHeartRate, deriveSleep } from './map/derive';
+import { aggregateRows, deriveRestingHeartRate, deriveSleep, type SleepWarning } from './map/derive';
 import {
   getAccessToken,
   buildAuthUrl,
@@ -15,7 +15,7 @@ import {
   RECONSENT_EXIT,
 } from './auth/oauth';
 import { fetchDataPoints, filterByDateWindow } from './fetch/dataType';
-import { type ExtractedRow, type ReviewArtifact, writeArtifact } from '../src/types';
+import { type ExtractedRow, type ReviewArtifact, writeArtifact, isValidISODate } from '../src/types';
 
 // ── internal fetch type ───────────────────────────────────────────────────────
 
@@ -91,6 +91,11 @@ export async function pull(opts: {
 
   // 4. Produce rows from each fetched response.
   const allRows: ExtractedRow[] = [];
+  // Sleep-derivation warnings (degraded stage data, dropped sessions, non-array
+  // stages) collected from deriveSleep as { date?, text } — window-filtered below
+  // against opts.from/to, then recorded durably (texts only) on the artifact when
+  // non-empty. deriveSleep already printed each to stderr; pull does not re-print.
+  const artifactWarnings: SleepWarning[] = [];
 
   for (const [dataTypeId, points] of fetched) {
     const response = { dataPoints: points };
@@ -100,7 +105,9 @@ export async function pull(opts: {
       allRows.push(...deriveRestingHeartRate(response));
     } else if (dataTypeId === 'sleep') {
       // derive: longest session per date → sleep_hours + sleep_in_bed_hours
-      allRows.push(...deriveSleep(response));
+      const { rows, warnings } = deriveSleep(response);
+      allRows.push(...rows);
+      artifactWarnings.push(...warnings);
     } else {
       // Standard path: for each mapping on this dataTypeId, extract + aggregate.
       const mappings = MAPPINGS.filter(
@@ -121,7 +128,24 @@ export async function pull(opts: {
     return 0;
   });
 
-  return { bucket: `${opts.from}..${opts.to}`, rows: sorted, conflicts: [] };
+  // Keep a warning only when it belongs to this pull's window (matching the rows
+  // filter above): no date (`!w.date`), or an undateable/garbage date
+  // (`!isValidISODate(w.date)` — an undateable data-loss warning is kept
+  // conservatively rather than window-dropped; defensive only now — deriveSleep
+  // guarantees valid-or-undefined dates), or a real date inside
+  // [opts.from, opts.to] (string compare is correct for ISO dates).
+  const keptWarnings = artifactWarnings.filter(
+    (w) => !w.date || !isValidISODate(w.date) || (opts.from <= w.date && w.date <= opts.to),
+  );
+
+  // warnings only when non-empty — a clean pull produces a byte-identical artifact
+  // to pre-HIMMEL-794 (no warnings key in the JSON).
+  return {
+    bucket: `${opts.from}..${opts.to}`,
+    rows: sorted,
+    conflicts: [],
+    ...(keptWarnings.length ? { warnings: keptWarnings.map((w) => w.text) } : {}),
+  };
 }
 
 // ── .env helpers ──────────────────────────────────────────────────────────────
