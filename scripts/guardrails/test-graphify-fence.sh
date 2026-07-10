@@ -739,6 +739,257 @@ run_fence allow no "$HIMMEL" "bare-word existing SAFE subdir -> himmel-code allo
 run_fence deny no "$WS" "bare-word PHI dir resolves via TOOL_CWD not fence \$PWD -> deny" \
     "graphify nestedphi --backend deepseek" GRAPHIFY_TOOL_CWD="$HIMMEL"
 
+echo "== HIMMEL-881: .graphify-backend file-declared backend (update subcommand) =="
+
+STAGED_BE="$WS/stgbackend"; mkdir -p "$STAGED_BE"; : > "$STAGED_BE/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE/.graphify-corpus"
+printf 'deepseek\n' > "$STAGED_BE/.graphify-backend"
+
+STAGED_BE2="$WS/stgbackend2"; mkdir -p "$STAGED_BE2"; : > "$STAGED_BE2/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE2/.graphify-corpus"
+printf 'glm\n' > "$STAGED_BE2/.graphify-backend"
+
+STAGED_BE_EMPTY="$WS/stgbeempty"; mkdir -p "$STAGED_BE_EMPTY"; : > "$STAGED_BE_EMPTY/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE_EMPTY/.graphify-corpus"
+: > "$STAGED_BE_EMPTY/.graphify-backend"
+
+STAGED_BE_MULTI="$WS/stgbemulti"; mkdir -p "$STAGED_BE_MULTI"; : > "$STAGED_BE_MULTI/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE_MULTI/.graphify-corpus"
+printf 'deepseek\nextra-line\n' > "$STAGED_BE_MULTI/.graphify-backend"
+
+STAGED_BE_BADCHARS="$WS/stgbebadchars"; mkdir -p "$STAGED_BE_BADCHARS"; : > "$STAGED_BE_BADCHARS/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE_BADCHARS/.graphify-corpus"
+printf 'deep seek\n' > "$STAGED_BE_BADCHARS/.graphify-backend"
+
+STAGED_BE_WRONGDIR="$WS/stgbewrong"; mkdir -p "$STAGED_BE_WRONGDIR/sub"; : > "$STAGED_BE_WRONGDIR/sub/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE_WRONGDIR/sub/.graphify-corpus"
+printf 'deepseek\n' > "$STAGED_BE_WRONGDIR/.graphify-backend"   # WRONG dir: parent, not sub/ (the marker dir)
+
+# (BE1) file-declared backend (deepseek) satisfies `update` on a non-himmel
+# corpus with no --backend and no env var -> allow+ledger (luna-personal x
+# deepseek is an allow+log matrix cell).
+run_fence allow yes "$HIMMEL" "file-declared backend satisfies update on non-himmel corpus -> allow+ledger" \
+    "graphify update $STAGED_BE/copy.md"
+
+# (BE2) sanity: the SAME file alone (glm, a deny provider on luna-personal)
+# denies - proves the file genuinely flows through the matrix, not a bypass.
+run_fence deny no "$HIMMEL" "file-declared glm alone denies (matrix still applies)" \
+    "graphify update $STAGED_BE2/copy.md"
+
+# (BE3) env wins over file: file declares glm (denies on its own, see BE2),
+# env declares deepseek (allows) -> allow, proving env precedence over file.
+run_fence allow yes "$HIMMEL" "env backend wins over conflicting file backend -> allow (env precedence)" \
+    "graphify update $STAGED_BE2/copy.md" GRAPHIFY_DECLARED_BACKEND=deepseek
+
+# (BE4) empty .graphify-backend file -> deny (fail-closed).
+run_fence deny no "$HIMMEL" "empty .graphify-backend file -> deny (fail-closed)" \
+    "graphify update $STAGED_BE_EMPTY/copy.md"
+
+# (BE5) multiline .graphify-backend file -> deny (fail-closed).
+run_fence deny no "$HIMMEL" "multiline .graphify-backend file -> deny (fail-closed)" \
+    "graphify update $STAGED_BE_MULTI/copy.md"
+
+# (BE6) backend name with invalid characters -> deny (fail-closed).
+run_fence deny no "$HIMMEL" "backend name with invalid characters -> deny (fail-closed)" \
+    "graphify update $STAGED_BE_BADCHARS/copy.md"
+
+# (BE7) .graphify-backend in the WRONG directory (the parent of the
+# .graphify-corpus marker's own directory, not the marker's directory itself)
+# does not count - treated as absent, falls to the existing no-backend deny.
+run_fence deny no "$HIMMEL" ".graphify-backend in parent dir (not the marker dir) does not count -> deny" \
+    "graphify update $STAGED_BE_WRONGDIR/sub/copy.md"
+
+# (BE8) LLM-free scoping mirrors the env var (F1a above): a non-update
+# subcommand with a file-declared backend still hits the no-backend deny.
+run_fence deny no "$HIMMEL" "file-declared backend on non-update subcommand -> deny (scope)" \
+    "graphify cluster $STAGED_BE/copy.md"
+
+# (BE9) himmel-code marker + co-located .graphify-backend file: the no-flag
+# local-ollama default stands unconditionally for himmel-code (mirrors F1b for
+# the env var) - a hard-deny-provider file must NOT leak through. Ledger IS
+# expected: STAGED_HIM's corpus is marker-declared, and a marker-declared
+# corpus always ledgers even on a plain `allow` cell (see the existing S6
+# "declared himmel-code marker + ollama" case above) - unrelated to the
+# backend file, which this case proves was ignored (no gemini hard-deny hit).
+printf 'gemini\n' > "$STAGED_HIM/.graphify-backend"
+run_fence allow yes "$HIMMEL" "himmel-code marker + .graphify-backend file ignored for no-flag default -> ollama allow" \
+    "graphify update $STAGED_HIM/copy.md"
+
+echo "== HIMMEL-881 codex-adv-1: all marker dirs must agree (order cannot mask a declaration) =="
+
+# STAGED_BE declares deepseek, STAGED_BE2 declares glm, STAGED has NO
+# .graphify-backend (all three are luna-personal-marked, same corpus rank) -
+# before the fix, only the FIRST target's marker dir was consulted, so
+# argument ordering picked which declaration counted (fail-open).
+
+STAGED_BE3="$WS/stgbackend3"; mkdir -p "$STAGED_BE3"; : > "$STAGED_BE3/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE3/.graphify-corpus"
+printf 'deepseek\n' > "$STAGED_BE3/.graphify-backend"
+
+# (MA1a/MA1b) two same-corpus dirs with CONFLICTING declarations (deepseek vs
+# glm) -> deny in BOTH argument orders (glm can no longer hide behind a
+# deepseek dir listed first, and vice versa).
+run_fence deny no "$HIMMEL" "conflicting file backends deepseek-dir first -> deny" \
+    "graphify update $STAGED_BE/copy.md $STAGED_BE2/copy.md"
+run_fence deny no "$HIMMEL" "conflicting file backends glm-dir first -> deny" \
+    "graphify update $STAGED_BE2/copy.md $STAGED_BE/copy.md"
+
+# (MA2a/MA2b) deepseek dir + dir with NO .graphify-backend -> deny in BOTH
+# orders (a declared dir must not vouch for an undeclared co-listed dir).
+run_fence deny no "$HIMMEL" "declared dir + missing-file dir (declared first) -> deny" \
+    "graphify update $STAGED_BE/copy.md $STAGED/copy.md"
+run_fence deny no "$HIMMEL" "declared dir + missing-file dir (missing first) -> deny" \
+    "graphify update $STAGED/copy.md $STAGED_BE/copy.md"
+
+# (MA3) two dirs that AGREE (deepseek + deepseek) -> allow+ledger (agreement
+# is not over-denied; both orders).
+run_fence allow yes "$HIMMEL" "two agreeing file backends -> allow+ledger" \
+    "graphify update $STAGED_BE/copy.md $STAGED_BE3/copy.md"
+run_fence allow yes "$HIMMEL" "two agreeing file backends (reverse order) -> allow+ledger" \
+    "graphify update $STAGED_BE3/copy.md $STAGED_BE/copy.md"
+# the MA3 ledger line (left by the run_fence call above) must attribute the
+# backend to the file declaration path.
+if grep -q '"declared_backend_source":"file"' "$LEDGER" 2>/dev/null; then
+    pass "MA3 ledger attributes backend to declared_backend_source=file"
+else
+    fail "MA3 ledger source: got $(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# (MA4) multiple target files under ONE staged dir -> a single (dedup'd)
+# marker dir -> allow+ledger (the today-path is unchanged).
+: > "$STAGED_BE/copy2.md"
+run_fence allow yes "$HIMMEL" "two targets under one marker dir -> single dedup'd dir, allow+ledger" \
+    "graphify update $STAGED_BE/copy.md $STAGED_BE/copy2.md"
+
+echo "== HIMMEL-881 codex-adv-2: file declaration is STAGED-ONLY (real-root target disables it) =="
+
+# (SO1a/SO1b) staged luna copy (valid agreeing deepseek file) + a REAL luna
+# vault path in ONE update, no --backend / no env: before the fix the staged
+# copy's declaration satisfied the no-backend policy FOR THE REAL PATH (the
+# winning corpus is the real path's) - it must now deny in BOTH orders.
+run_fence deny no "$HIMMEL" "staged copy + REAL luna path (staged first) -> deny (staged-only)" \
+    "graphify update $STAGED_BE/copy.md $LUNA/journal-2026.md"
+run_fence deny no "$HIMMEL" "REAL luna path + staged copy (real first) -> deny (staged-only)" \
+    "graphify update $LUNA/journal-2026.md $STAGED_BE/copy.md"
+
+# (SO2) ALL-staged mixed corpora: staged-himmel + staged-luna, both dirs with
+# agreeing deepseek files -> most-restrictive luna-personal x deepseek ->
+# allow+ledger (the staged-only rule must not over-deny fully-staged runs).
+STAGED_HIM2="$WS/stghim2"; mkdir -p "$STAGED_HIM2"; : > "$STAGED_HIM2/copy.md"
+printf 'himmel-code\n' > "$STAGED_HIM2/.graphify-corpus"
+printf 'deepseek\n' > "$STAGED_HIM2/.graphify-backend"
+run_fence allow yes "$HIMMEL" "all-staged mixed corpora w/ agreeing files -> allow+ledger" \
+    "graphify update $STAGED_HIM2/copy.md $STAGED_BE/copy.md"
+# the SO2 ledger line (left by the run_fence call above) must attribute the
+# backend to the file declaration path.
+if grep -q '"declared_backend_source":"file"' "$LEDGER" 2>/dev/null; then
+    pass "SO2 ledger attributes backend to declared_backend_source=file"
+else
+    fail "SO2 ledger source: got $(cat "$LEDGER" 2>/dev/null)"
+fi
+
+echo "== HIMMEL-881 final CR: unreadable file / cwd-fallback / env-over-mixed / case pins =="
+
+# (FC1) unreadable .graphify-backend -> deny (fail-closed sentinel). Mirrors
+# the S7 unreadable-corpus-marker test; skip gracefully where chmod cannot
+# drop read (admin on Windows, root on Linux).
+STAGED_BE_UR="$WS/stgbeunread"; mkdir -p "$STAGED_BE_UR"; : > "$STAGED_BE_UR/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE_UR/.graphify-corpus"
+printf 'deepseek\n' > "$STAGED_BE_UR/.graphify-backend"
+chmod 000 "$STAGED_BE_UR/.graphify-backend" 2>/dev/null || true
+if [ -r "$STAGED_BE_UR/.graphify-backend" ]; then
+    printf '  SKIP  unreadable .graphify-backend marker (chmod could not drop read perm here)\n'
+else
+    run_fence deny no "$HIMMEL" "unreadable .graphify-backend -> deny (fail-closed)" \
+        "graphify update $STAGED_BE_UR/copy.md"
+fi
+chmod 644 "$STAGED_BE_UR/.graphify-backend" 2>/dev/null || true
+
+# (FC2) cwd-fallback call site: cwd IS the staged dir (marker + backend file
+# co-located), `graphify update` with NO path arg -> the fallback
+# classification is marker-declared, its marker dir is threaded as a 1-entry
+# list, any_real_root=0 -> file declaration satisfies the no-backend policy ->
+# luna-personal x deepseek allow+log, ledger carries source=file.
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$STAGED_BE" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update --force" ) >/dev/null 2>&1; rc_fc2=$?
+if [ "$rc_fc2" -eq 0 ] && grep -q '"declared_backend_source":"file"' "$LEDGER" 2>/dev/null \
+    && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null; then
+    pass "cwd-fallback in staged dir -> file declaration honored (allow + source=file)"
+else
+    fail "cwd-fallback file declaration: rc=$rc_fc2 ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# (FC3) env + MIXED staged/real invocation: GRAPHIFY_DECLARED_BACKEND=deepseek
+# with a staged dir whose glm file would deny alone (BE2) plus a REAL luna
+# path. DELIBERATE design: env is the operator/launching-shell trust boundary
+# and overrides the staged-only file gate (the file list is never consulted
+# when env is set) -> env wins, luna-personal x deepseek allow+log, ledger
+# records source=env.
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=deepseek "$BASH_BIN" "$FENCE" "graphify update $STAGED_BE2/copy.md $LUNA/journal-2026.md" ) >/dev/null 2>&1; rc_fc3=$?
+if [ "$rc_fc3" -eq 0 ] && grep -q '"declared_backend_source":"env"' "$LEDGER" 2>/dev/null; then
+    pass "env declaration wins over mixed staged/real (staged-only gate is file-path-only)"
+else
+    fail "env-over-mixed: rc=$rc_fc3 ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# (FC4) fix-1 behavior pin: env-declared run on a REAL root hitting a PLAIN
+# `allow` matrix cell (luna-personal x local-ollama) must ALSO leave a ledger
+# line with source=env and NO declared:true (previously the allow branch only
+# ledgered marker-declared runs - the env-declared line never existed).
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=ollama "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md" ) >/dev/null 2>&1; rc_fc4=$?
+if [ "$rc_fc4" -eq 0 ] && grep -q '"verdict":"allow"' "$LEDGER" 2>/dev/null \
+    && grep -q '"declared_backend_source":"env"' "$LEDGER" 2>/dev/null \
+    && ! grep -q '"declared":true' "$LEDGER" 2>/dev/null; then
+    pass "env-declared + plain allow cell on real root -> ledgered w/ source=env (fix-1)"
+else
+    fail "plain-allow env ledger pin: rc=$rc_fc4 ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# (FC5) case-insensitive agreement: 'Deepseek' vs 'deepseek' across two dirs
+# is NOT a conflict (mirrors _record_backend's lower-cased comparison).
+STAGED_BE_CASE="$WS/stgbecase"; mkdir -p "$STAGED_BE_CASE"; : > "$STAGED_BE_CASE/copy.md"
+printf 'luna-personal\n' > "$STAGED_BE_CASE/.graphify-corpus"
+printf 'Deepseek\n' > "$STAGED_BE_CASE/.graphify-backend"
+run_fence allow yes "$HIMMEL" "case-differing agreeing file backends -> not a conflict -> allow" \
+    "graphify update $STAGED_BE/copy.md $STAGED_BE_CASE/copy.md"
+
+echo "== HIMMEL-881: ledger records declared_backend_source (env vs file) =="
+
+# file-declared backend -> ledger carries declared_backend_source:"file"
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $STAGED_BE/copy.md" ) >/dev/null 2>&1
+if grep -q '"declared_backend_source":"file"' "$LEDGER" 2>/dev/null; then
+    pass "ledger content: declared_backend_source=file for file-declared backend"
+else
+    fail "ledger content declared_backend_source=file: got $(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# env-declared backend -> ledger carries declared_backend_source:"env"
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=deepseek "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md" ) >/dev/null 2>&1
+if grep -q '"declared_backend_source":"env"' "$LEDGER" 2>/dev/null; then
+    pass "ledger content: declared_backend_source=env for env-declared backend"
+else
+    fail "ledger content declared_backend_source=env: got $(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# real --backend flag (no declaration involved) -> no declared_backend_source field
+rm -f "$LEDGER"
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md --backend deepseek" ) >/dev/null 2>&1
+if ! grep -q 'declared_backend_source' "$LEDGER" 2>/dev/null; then
+    pass "ledger content: no declared_backend_source field for an explicit --backend flag"
+else
+    fail "ledger content unexpected declared_backend_source: got $(cat "$LEDGER" 2>/dev/null)"
+fi
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

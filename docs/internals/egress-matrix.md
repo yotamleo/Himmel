@@ -59,6 +59,42 @@ filesystem marker walks use the original path form) so Windows Git-Bash
 candidates and the Bash tool's always-MSYS `$PWD` match the drive-lettered
 corpus roots.
 
+### `.graphify-backend` file-declared backend (HIMMEL-881)
+
+`graphify update` (and other LLM-free subcommands) take no `--backend` on the
+CLI, so a non-himmel corpus needs a declared provider from elsewhere to
+satisfy the fence's no-backend policy. `GRAPHIFY_DECLARED_BACKEND` (HIMMEL-779)
+covers this, but it is launching-shell-only by design — a per-call `VAR=x`
+prefix or an in-session `export` never reaches the PreToolUse hook process —
+so an in-session or headless `graphify update` run could never satisfy it
+without a session restart. A `.graphify-backend` file in the **exact same
+directory** as the `.graphify-corpus` marker (not any other ancestor
+directory) is a second, per-run way to supply the same declaration:
+single-line, trimmed, non-empty, safe-charset (`[A-Za-z0-9._-]+`) backend
+name; empty, multiline, unreadable, or invalid content is a fail-closed
+**deny**, same as an invalid `.graphify-corpus` marker. Precedence:
+`GRAPHIFY_DECLARED_BACKEND` wins when set; the file is consulted only when the
+env var is unset. Scoped identically to the env var (LLM-free subcommand +
+non-himmel corpus only). The file's value flows through the same matrix eval
+as a real `--backend` token — not a bypass — and any declared-backend
+substitution (env or file) **always** leaves a ledger line on every
+allow-family verdict — even a plain `allow` matrix cell on a real
+(non-marker) root — carrying a `declared_backend_source` field (`"env"` or
+`"file"`) so audits can tell the two paths apart and no declaration-reached
+run goes unrecorded. **All-dirs-must-agree:**
+when one invocation carries multiple marker-derived targets, every
+`.graphify-corpus` marker directory is consulted (not only the
+rank-winning target's — equal-rank argument ordering must not pick which
+declaration gets read): each dir must carry a valid `.graphify-backend` and
+all files must declare the same value; a missing, unreadable, or invalid
+file in any dir, or two differing values, is a fail-closed **deny**
+regardless of argument order. **Staged-only:** file declarations are honored
+only when *every* classified target in the invocation is a marker-declared
+staged copy — any target that classifies via a real configured root disables
+the file path outright (a staged copy's declaration must not vouch for a
+real vault path listed beside it); mixed staged+real invocations need
+`--backend` or the launching-shell env var.
+
 ## Consumers
 
 | Surface | What it reads |

@@ -88,7 +88,11 @@
 #                            Like GRAPHIFY_SALUS_LOCAL_OK/GRAPHIFY_CLIPPINGS_GLM_OK
 #                            above, this is a launching-shell-only trust boundary:
 #                            set it in the shell that launches the agent, not
-#                            per-call.
+#                            per-call. HIMMEL-881: a `.graphify-backend` file
+#                            alongside the `.graphify-corpus` marker is a second,
+#                            in-session way to satisfy the same declaration (see
+#                            the HIMMEL-881 NOW HANDLED note below) - this env var
+#                            still wins when BOTH are present.
 #
 # Exit codes: 0 = allow (ledger written where the matched cell requires it);
 # 2 = deny (stderr carries the reason).
@@ -167,6 +171,37 @@
 #     resolving against a cwd the fence can no longer vouch for. An absolute
 #     target is cwd-independent and still classifies normally.
 #
+# NOW HANDLED (HIMMEL-881):
+#   - `.graphify-backend` file-declared backend: GRAPHIFY_DECLARED_BACKEND is a
+#     launching-shell-only env var (a per-call VAR=x prefix or an in-session
+#     export never reaches the PreToolUse hook process), so an in-session/
+#     headless `graphify update` on a non-himmel corpus could never satisfy the
+#     no-backend policy without a session restart. A `.graphify-backend` file
+#     sitting in the EXACT SAME directory as the `.graphify-corpus` marker that
+#     declared the corpus (not any other ancestor directory - see
+#     _graphify_backend_marker) is a second way to supply the same declaration:
+#     single-line, trimmed, non-empty, safe-charset (`[A-Za-z0-9._-]+`) backend
+#     name; empty, multiline, unreadable, or invalid-charset content DENIES
+#     (fail-closed), same as an invalid `.graphify-corpus` marker. Precedence:
+#     GRAPHIFY_DECLARED_BACKEND wins if set; the file is consulted only when the
+#     env var is unset. Scoped identically to the env var (LLM-free subcommand +
+#     non-himmel corpus only - see _llm_free_subcmd). The file's value flows
+#     through the SAME matrix eval as a real --backend token (not a bypass), and
+#     every ledger line the declaration touches records a `declared_backend_source`
+#     field (`"env"` or `"file"`) so audits can distinguish the two paths.
+#     ALL-DIRS-MUST-AGREE (codex-adv-1): when MULTIPLE marker-derived targets
+#     appear in one invocation, EVERY marker directory is consulted (not only
+#     the rank winner's - equal-rank argument ordering must not pick which
+#     `.graphify-backend` gets read): every dir must carry a valid file AND
+#     all files must declare the SAME value; any missing/unreadable/invalid
+#     file, or two differing values, DENIES regardless of argument order.
+#     STAGED-ONLY (codex-adv-2): file declarations are honored ONLY when EVERY
+#     classified target in the invocation is a marker-declared staged copy -
+#     any target classified via a REAL configured root disables the file path
+#     entirely (a staged copy's declaration must not vouch for a real vault
+#     path listed beside it); mixed staged+real invocations need --backend or
+#     the launching-shell env var.
+#
 # Accepted static-analysis limitations (the load-bearing PHI guard is the
 # file-tool fence parity_guard, not this command-text guard):
 #   (a) quoted-separator mis-split - a path with embedded spaces, or a quoted
@@ -208,6 +243,28 @@
 #       trade-off: a false deny (an absolute-safe cd the agent could have
 #       resolved) costs a retry; silently trusting a guessed post-cd cwd would
 #       be fail-open.
+#   (g) backend DECLARATIONS are assertions, not runtime bindings (HIMMEL-881
+#       codex-adv round-3, adjudicated accepted-by-design): for no-backend
+#       LLM-free subcommands the fence cannot see which cloud key graphify's
+#       auto-detection will actually pick, so BOTH declaration paths - the
+#       operator-set GRAPHIFY_DECLARED_BACKEND env var AND the agent-writable
+#       `.graphify-backend` file - feed the matrix an unverified claim. The
+#       file path widens WHO can assert (agent vs launching shell) but not
+#       WHAT is verified; compensating controls: staged-only + all-dirs-must-
+#       agree + safe-charset validation, and the ledger records
+#       `declared_backend_source` ("env"/"file") so a misattributed run stays
+#       auditable. The true fix is upstream: `graphify update --backend` (the
+#       G-U issue), at which point the explicit-flag path replaces both
+#       declaration substitutes. Relatedly, _graphify_backend_marker's
+#       [ -f ]/[ -r ]/cat sequence follows symlinks and has a TOCTOU window -
+#       accepted-by-design: the marker dir is agent-controlled staging anyway
+#       (a symlink/race asserts nothing the agent couldn't assert by writing
+#       the file directly); same pre-existing pattern as _graphify_corpus_marker.
+#   (h) a marker directory whose NAME contains an embedded newline corrupts the
+#       newline-joined marker-dir list invariant, but degrades to a FALSE DENY
+#       (the fragments resolve to no valid `.graphify-backend` -> deny), never a
+#       bypass; the command-token path already denies earlier at tokenization -
+#       only the cwd-fallback can carry such a name in.
 set -uo pipefail
 set -f  # no pathname expansion when we word-split the command / a path
 
@@ -434,7 +491,11 @@ _salus_marked() {
 # vaults; a copy classifies as nothing without this). First marker found wins.
 # Echoes ONE of:
 #   ""                                      no marker found
-#   "declared<TAB><corpus>"                 first line is a valid corpus name
+#   "declared<TAB><corpus><TAB><dir>"       first line is a valid corpus name;
+#                                            <dir> is the marker's own directory
+#                                            (HIMMEL-881: so a caller can look for
+#                                            a co-located `.graphify-backend` file
+#                                            in the SAME dir, not any ancestor)
 #   "__marker_unreadable__<TAB><markerpath>" marker exists but is not a readable regular file
 #   "__marker_bad__<TAB><markerpath><TAB><content>" empty / unknown first line
 _graphify_corpus_marker() {
@@ -456,7 +517,7 @@ _graphify_corpus_marker() {
             line="${line%"${line##*[![:space:]]}"}"   # trim trailing whitespace
             case "$line" in
                 salus|luna-personal|luna-clippings|handover-state|himmel-code)
-                    printf 'declared\t%s' "$line" ;;
+                    printf 'declared\t%s\t%s' "$line" "$d" ;;
                 *)  printf '__marker_bad__\t%s\t%s' "$mk" "$line" ;;
             esac
             return
@@ -465,6 +526,45 @@ _graphify_corpus_marker() {
         d="${d%/*}"
     done
     return 0
+}
+
+# _graphify_backend_marker <dir> -> checks EXACTLY <dir> (NO ancestor walk - a
+# `.graphify-backend` file elsewhere in the tree does not count, only the SAME
+# directory as the `.graphify-corpus` marker that declared the corpus, see the
+# HIMMEL-881 header note) for a file declaring a backend name that satisfies the
+# GRAPHIFY_DECLARED_BACKEND substitution in apply_verdict when the env var is
+# unset. Same fail-closed contract as `.graphify-corpus`: single-line, trimmed,
+# non-empty, safe-charset content only. Echoes ONE of:
+#   ""                                        no `.graphify-backend` in <dir>
+#   "declared<TAB><backend>"                  single-line, non-empty, safe backend name
+#   "__backend_unreadable__<TAB><path>"       exists but not a readable regular file
+#   "__backend_bad__<TAB><path><TAB><reason>" empty / multiline / invalid-charset content
+_graphify_backend_marker() {
+    local d="$1" mk content trimmed
+    mk="$d/.graphify-backend"
+    [ -e "$mk" ] || { printf ''; return; }
+    if ! { [ -f "$mk" ] && [ -r "$mk" ]; }; then
+        printf '__backend_unreadable__\t%s' "$mk"; return
+    fi
+    # Command substitution strips ALL trailing newlines, so a multiline check on
+    # the result only needs to look for an EMBEDDED newline (a trailing-newline-
+    # only file, the common `printf 'x\n' >` shape, still reduces to one line).
+    content="$(cat "$mk" 2>/dev/null)"
+    content="${content%$'\r'}"
+    case "$content" in
+        *$'\n'*)
+            printf '__backend_bad__\t%s\t%s' "$mk" "multiline content"; return ;;
+    esac
+    trimmed="${content#"${content%%[![:space:]]*}"}"   # trim leading whitespace
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"   # trim trailing whitespace
+    if [ -z "$trimmed" ]; then
+        printf '__backend_bad__\t%s\t%s' "$mk" "empty"; return
+    fi
+    case "$trimmed" in
+        *[!A-Za-z0-9._-]*)
+            printf '__backend_bad__\t%s\t%s' "$mk" "invalid characters"; return ;;
+    esac
+    printf 'declared\t%s' "$trimmed"
 }
 
 # _under_any_list <abs-path> <listfile> -> echoes hit | miss | unreadable.
@@ -483,7 +583,7 @@ _under_any_list() {
 
 # classify <target-path> -> echoes corpus, "__unreadable__", or "" (unclassifiable).
 classify() {
-    local apfs ap name rc mk
+    local apfs ap name rc mk rest mcorpus mdir
     # Two forms of the same path: apfs = the ORIGINAL absolute form, used for
     # every FILESYSTEM check (.salus / .graphify-corpus ancestor stat-walks -
     # on a POSIX box a real `/c/...` path only exists in this form; the
@@ -513,8 +613,10 @@ classify() {
     # luna/handover/himmel roots beat this - a marker inside a CONFIGURED vault
     # can NOT relax classification). Consult a `.graphify-corpus` staging marker
     # so a scratchpad COPY can declare its origin corpus. Marker-derived hits
-    # carry an `@declared` suffix (callers strip it, but always ledger the
-    # invocation).
+    # carry an `@declared` suffix plus a tab-separated marker directory
+    # (callers strip the suffix, but always ledger the invocation; HIMMEL-881:
+    # the directory lets apply_verdict look for a co-located `.graphify-backend`
+    # file in that SAME directory, not any other ancestor).
     # GATED on a configured luna root (silent-failure CR round): the real-root-
     # beats-marker guarantee for the most sensitive non-PHI corpus depends on
     # LUNA_VAULT/LUNA_VAULT_PATH being set - with it EMPTY the luna branch above
@@ -525,7 +627,12 @@ classify() {
     if [ -n "$LUNA_ROOT" ]; then
         mk="$(_graphify_corpus_marker "$apfs")"
         case "$mk" in
-            declared$'\t'*)          echo "${mk#declared$'\t'}@declared"; return ;;
+            declared$'\t'*)
+                rest="${mk#declared$'\t'}"
+                mcorpus="${rest%%$'\t'*}"
+                mdir="${rest#*$'\t'}"
+                printf '%s@declared\t%s' "$mcorpus" "$mdir"
+                return ;;
             __marker_unreadable__*)  echo "$mk"; return ;;
             __marker_bad__*)         echo "$mk"; return ;;
         esac
@@ -611,22 +718,28 @@ _json_escape() {
     printf '%s' "$s"
 }
 
-# ledger_append <path> <corpus> <backend> <provider> <verdict> [declared] -> 0 on
-# a durable write, 1 on any failure (unwritable dir / file). Callers DENY on
-# failure: an allow+log verdict without its ledger line is not allowed. When the
-# optional 6th arg is "1" (ANY token in the invocation classified via a
-# `.graphify-corpus` marker - invocation-wide, not just the winning token) an
-# extra `"declared":true` field is emitted so a mis-declared marker cannot dodge
-# audit.
+# ledger_append <path> <corpus> <backend> <provider> <verdict> [declared]
+#   [backend_source] -> 0 on a durable write, 1 on any failure (unwritable dir /
+# file). Callers DENY on failure: an allow+log verdict without its ledger line
+# is not allowed. When the optional 6th arg is "1" (ANY token in the invocation
+# classified via a `.graphify-corpus` marker - invocation-wide, not just the
+# winning token) an extra `"declared":true` field is emitted so a mis-declared
+# marker cannot dodge audit. When the optional 7th arg is non-empty ("env" or
+# "file", HIMMEL-881: which path supplied a backend for the no-backend
+# GRAPHIFY_DECLARED_BACKEND substitution) an extra `"declared_backend_source"`
+# field is emitted so audits can distinguish env-declared vs file-declared runs;
+# apply_verdict's allow branch calls this for EVERY declaration-reached run
+# (declared corpus OR declared backend), even on a plain `allow` cell.
 ledger_append() {
-    local dir ts ep decl=""
+    local dir ts ep decl="" bsrc=""
     [ "${6:-}" = 1 ] && decl=',"declared":true'
+    [ -n "${7:-}" ] && bsrc=",\"declared_backend_source\":\"$(_json_escape "${7}")\""
     dir="$(dirname "$LEDGER")"
     mkdir -p "$dir" || return 1
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%s)"
     ep="$(_json_escape "$1")"
-    printf '{"ts":"%s","path":"%s","corpus":"%s","backend":"%s","provider":"%s","verdict":"%s","tool":"graphify"%s}\n' \
-        "$ts" "$ep" "$2" "$3" "$4" "$5" "$decl" >> "$LEDGER" || return 1
+    printf '{"ts":"%s","path":"%s","corpus":"%s","backend":"%s","provider":"%s","verdict":"%s","tool":"graphify"%s%s}\n' \
+        "$ts" "$ep" "$2" "$3" "$4" "$5" "$decl" "$bsrc" >> "$LEDGER" || return 1
     return 0
 }
 
@@ -641,40 +754,113 @@ _llm_free_subcmd() {
     esac
 }
 
-# apply_verdict <corpus> <target> <backend-raw> [declared] [subcmd] -> return 0
-# (allow, ledger written where required) or DENY (exit 2). When <declared> is 1
-# ANY classified token in the invocation came from a `.graphify-corpus` marker
-# (invocation-wide - not only the rank-winning token, so argument ordering
-# cannot suppress the audit): ALWAYS ledger the run, even on a plain `allow`
-# cell (a mis-declared marker must not also dodge audit). <subcmd> (HIMMEL-779
-# CR round-1) is the recorded graphify subcommand token, used to scope
-# GRAPHIFY_DECLARED_BACKEND to the LLM-free set - empty when the invocation had
-# no genuine subcommand word (a position-0 path-like token).
+# apply_verdict <corpus> <target> <backend-raw> [declared] [subcmd] [marker_dir]
+#   [any_real_root]
+# -> return 0 (allow, ledger written where required) or DENY (exit 2). When
+# <declared> is 1 ANY classified token in the invocation came from a
+# `.graphify-corpus` marker (invocation-wide - not only the rank-winning
+# token, so argument ordering cannot suppress the audit): ALWAYS ledger the
+# run, even on a plain `allow` cell (a mis-declared marker must not also dodge
+# audit). The same always-ledger applies to ANY declared-backend substitution
+# (env or file): a run whose backend came from a declaration rather than an
+# explicit --backend leaves a ledger line on every allow-family verdict, even
+# a plain `allow` cell on a real (non-marker) root, so limitation (g)'s audit
+# guarantee holds for both declaration paths. <subcmd> (HIMMEL-779 CR round-1) is the recorded graphify subcommand
+# token, used to scope GRAPHIFY_DECLARED_BACKEND (and, HIMMEL-881, the
+# `.graphify-backend` file) to the LLM-free set - empty when the invocation had
+# no genuine subcommand word (a position-0 path-like token). <marker_dir>
+# (HIMMEL-881) is a NEWLINE-SEPARATED dedup'd list of the directory of EVERY
+# `.graphify-corpus` marker that classified a token in the invocation (the
+# cwd-fallback path passes its single dir as a 1-entry list) - the ONLY
+# directories apply_verdict will check for co-located `.graphify-backend`
+# files (never any other ancestor). ALL listed dirs must carry a valid file
+# and agree on one value (codex-adv-1: equal-rank argument ordering must not
+# pick which declaration gets read - fail closed on any missing/invalid/
+# conflicting entry). <any_real_root> (codex-adv-2) is 1 when ANY classified
+# token in the invocation resolved via a REAL configured root rather than a
+# `.graphify-corpus` marker: file declarations are then disabled outright
+# (STAGED-ONLY - a staged copy's declaration must not vouch for a real vault
+# path listed beside it). Defaults to 1 (fail-closed) when omitted.
 apply_verdict() {
-    local corpus="$1" target="$2" backend_raw="$3" declared="${4:-0}" subcmd="${5:-}"
+    local corpus="$1" target="$2" backend_raw="$3" declared="${4:-0}" subcmd="${5:-}" marker_dir="${6:-}" any_real_root="${7:-1}"
     local backend_effective provider verdict everr eout emsg optvar optval
+    local declared_backend_source="" no_backend_msg bm rest bpath breason
+    local agreed agreed_dir mdir_i val
 
-    if [ -z "$backend_raw" ]; then
+    if [ -z "$backend_raw" ] && [ "$corpus" != "himmel-code" ]; then
         # graphify's `update` (and other LLM-free subcommands, see
         # _llm_free_subcmd) take NO --backend on the CLI (re-extraction is
         # local), yet this fence needs a declared provider to apply the matrix
-        # for any non-himmel corpus. Accept a declared backend via env
-        # (HIMMEL-779) ONLY when BOTH (a) the subcommand is LLM-free and (b)
-        # the corpus is non-himmel - for himmel-code with no flag the
-        # local-ollama default stands unconditionally below; a declared value
-        # must NOT override it (HIMMEL-779 CR round-1: it previously did,
-        # since this check ran for ANY subcommand/corpus whenever the env var
-        # was set). A provider-using (non-LLM-free) subcommand with no
-        # --backend still hits the deny below even when the env var is set -
-        # declaration cannot substitute for a real --backend on a subcommand
-        # whose CLI actually accepts one. The declared value flows through the
-        # SAME matrix eval + provider map as a real --backend token either way
-        # (it is NOT a bypass).
-        if [ "$corpus" != "himmel-code" ] && _llm_free_subcmd "$subcmd" && [ -n "${GRAPHIFY_DECLARED_BACKEND:-}" ]; then
-            backend_raw="$GRAPHIFY_DECLARED_BACKEND"
-        elif [ "$corpus" != "himmel-code" ]; then
-            deny "pass --backend explicitly or set GRAPHIFY_DECLARED_BACKEND on an LLM-free subcommand (GRAPHIFY_DECLARED_BACKEND only applies to LLM-free subcommands (update)) (graphify auto-detects cloud keys; the fence cannot see which) [corpus=$corpus subcommand=${subcmd:-<none>}]"
+        # for any non-himmel corpus. Accept a declared backend ONLY when the
+        # subcommand is LLM-free - for himmel-code with no flag the
+        # local-ollama default stands unconditionally (this whole block is
+        # skipped, see the outer `&&`); a declared value must NOT override it
+        # (HIMMEL-779 CR round-1). A provider-using (non-LLM-free) subcommand
+        # with no --backend still hits the deny below even when a declaration
+        # is available - declaration cannot substitute for a real --backend on
+        # a subcommand whose CLI actually accepts one. Either declared value
+        # flows through the SAME matrix eval + provider map as a real
+        # --backend token (it is NOT a bypass). Two declaration paths, in
+        # precedence order (HIMMEL-881 adds the second):
+        #   1. GRAPHIFY_DECLARED_BACKEND env var (launching-shell-only; a
+        #      per-call VAR=x prefix or in-session export never reaches this
+        #      hook process).
+        #   2. `.graphify-backend` files in the EXACT SAME directories as the
+        #      `.graphify-corpus` markers that classified tokens in this
+        #      invocation (marker_dir, a newline-separated dedup'd list) - a
+        #      per-run, in-session-settable alternative for headless/in-
+        #      session `graphify update` runs that cannot restart the session
+        #      to set the env var. Consulted ONLY when the env var is unset.
+        #      ALL-DIRS-MUST-AGREE (codex-adv-1): EVERY listed dir must carry
+        #      a valid file and all files must declare the SAME value - a
+        #      missing/unreadable/invalid file in ANY dir, or two differing
+        #      values, DENIES regardless of argument order (a safe copy's
+        #      declaration must not vouch for a co-listed copy that lacks or
+        #      contradicts its own).
+        no_backend_msg="pass --backend explicitly, set GRAPHIFY_DECLARED_BACKEND in the launching shell, or add a .graphify-backend file next to the .graphify-corpus marker (GRAPHIFY_DECLARED_BACKEND / .graphify-backend only apply to LLM-free subcommands (update)) (graphify auto-detects cloud keys; the fence cannot see which) [corpus=$corpus subcommand=${subcmd:-<none>}]"
+        if _llm_free_subcmd "$subcmd"; then
+            if [ -n "${GRAPHIFY_DECLARED_BACKEND:-}" ]; then
+                backend_raw="$GRAPHIFY_DECLARED_BACKEND"
+                declared_backend_source="env"
+            elif [ -n "$marker_dir" ]; then
+                # STAGED-ONLY (codex-adv-2): a file declaration is honored
+                # ONLY when EVERY classified target is a marker-declared
+                # staged copy. Any real-root target in the same invocation
+                # disables the file path outright - deny before reading any
+                # file (the staged copy's declaration must not vouch for the
+                # real path; the winning corpus here may well BE the real
+                # path's).
+                if [ "$any_real_root" = 1 ]; then
+                    deny "$no_backend_msg (.graphify-backend file declarations apply only when EVERY classified target is a marker-declared staged copy - this invocation mixes staged and real-root targets; use --backend or set GRAPHIFY_DECLARED_BACKEND in the launching shell)"
+                fi
+                agreed=""; agreed_dir=""
+                while IFS= read -r mdir_i; do
+                    [ -n "$mdir_i" ] || continue
+                    bm="$(_graphify_backend_marker "$mdir_i")"
+                    case "$bm" in
+                        declared$'\t'*)
+                            val="${bm#declared$'\t'}"
+                            if [ -n "$agreed" ] && [ "$(_lc "$val")" != "$(_lc "$agreed")" ]; then
+                                deny "conflicting .graphify-backend declarations across staged corpus markers ($agreed_dir=$agreed $mdir_i=$val); all marker dirs must agree (fail-closed)"
+                            fi
+                            if [ -z "$agreed" ]; then agreed="$val"; agreed_dir="$mdir_i"; fi
+                            ;;
+                        __backend_unreadable__$'\t'*)
+                            deny ".graphify-backend marker ${bm#__backend_unreadable__$'\t'} exists but is not a readable regular file (fail-closed)" ;;
+                        __backend_bad__$'\t'*)
+                            rest="${bm#__backend_bad__$'\t'}"; bpath="${rest%%$'\t'*}"; breason="${rest#*$'\t'}"
+                            deny ".graphify-backend marker $bpath declares an invalid backend ($breason); must be a single-line, non-empty backend name (fail-closed)" ;;
+                        '')
+                            deny "no .graphify-backend file in staged corpus marker dir $mdir_i (every marker dir in the invocation needs one); $no_backend_msg" ;;
+                    esac
+                done <<< "$marker_dir"
+                if [ -n "$agreed" ]; then
+                    backend_raw="$agreed"
+                    declared_backend_source="file"
+                fi
+            fi
         fi
+        [ -n "$backend_raw" ] || deny "$no_backend_msg"
     fi
     if [ -z "$backend_raw" ]; then
         backend_effective="ollama"      # himmel-code, no flag, no declaration -> local default
@@ -703,14 +889,21 @@ apply_verdict() {
 
     case "$verdict" in
         allow)
-            if [ "$declared" = 1 ]; then
-                ledger_append "$target" "$corpus" "$backend_effective" "$provider" "allow" 1 \
-                    || deny "declared-corpus audit requires the ledger line (ledger unwritable): $corpus x $provider"
+            # Always ledger a run reached via ANY declaration, even on a plain
+            # `allow` cell: a marker-declared corpus (declared=1) OR a
+            # declared-backend substitution (declared_backend_source non-empty
+            # - env or file; HIMMEL-881 final CR: an env-declared run on a
+            # real root previously left NO ledger line here, contradicting
+            # limitation (g)'s audit guarantee). Same principle as the
+            # declared-marker always-ledger; a failed write DENIES.
+            if [ "$declared" = 1 ] || [ -n "$declared_backend_source" ]; then
+                ledger_append "$target" "$corpus" "$backend_effective" "$provider" "allow" "$declared" "$declared_backend_source" \
+                    || deny "declared-corpus/declared-backend audit requires the ledger line (ledger unwritable): $corpus x $provider"
             fi
             return 0
             ;;
         allow+log)
-            ledger_append "$target" "$corpus" "$backend_effective" "$provider" "allow+log" "$declared" \
+            ledger_append "$target" "$corpus" "$backend_effective" "$provider" "allow+log" "$declared" "$declared_backend_source" \
                 || deny "allow+log requires the ledger line (ledger unwritable): $corpus x $provider"
             return 0
             ;;
@@ -721,7 +914,7 @@ apply_verdict() {
                 *) deny "$corpus x $provider x extraction is conditional with no known opt-in (fail-closed)" ;;
             esac
             if [ "$optval" = "1" ]; then
-                ledger_append "$target" "$corpus" "$backend_effective" "$provider" "conditional" "$declared" \
+                ledger_append "$target" "$corpus" "$backend_effective" "$provider" "conditional" "$declared" "$declared_backend_source" \
                     || deny "conditional requires the ledger line (ledger unwritable): $corpus x $provider"
                 return 0
             fi
@@ -754,8 +947,8 @@ _deny_on_classify_sentinel() {
 # (most-restrictive-wins), applies the CWD fallback, then applies the verdict.
 evaluate_invocation() {
     local have_sub=0 subcmd="" want_backend=0 backend="" backend_norm="" backend_set=0 backend_conflict=0
-    local unclassifiable=0 best_rank=-1 best_corpus="" best_target="" any_declared=0
-    local tok st c r declared skip_redir_target=0
+    local unclassifiable=0 best_rank=-1 best_corpus="" best_target="" any_declared=0 marker_dirs="" any_real_root=0
+    local tok st c r declared marker_dir tok_marker_dir skip_redir_target=0
 
     for tok in "$@"; do
         if [ "$skip_redir_target" = 1 ]; then skip_redir_target=0; continue; fi
@@ -817,7 +1010,31 @@ evaluate_invocation() {
         # the always-ledger audit, regardless of whether it wins the rank
         # comparison (else a real-root token of equal/higher rank listed first
         # would suppress the ledger line - argument ordering must not dodge audit).
-        case "$c" in *@declared) c="${c%@declared}"; any_declared=1 ;; esac
+        tok_marker_dir=""
+        case "$c" in
+            *@declared$'\t'*)
+                tok_marker_dir="${c#*@declared$'\t'}"
+                c="${c%%@declared*}"
+                any_declared=1
+                ;;
+        esac
+        # Collect the marker dir of EVERY @declared token (codex-adv-1) - not
+        # only the rank winner's, since equal-rank argument ordering must not
+        # pick which `.graphify-backend` file apply_verdict reads. Dedup'd,
+        # newline-separated (bash 3.2-safe containment check).
+        if [ -n "$tok_marker_dir" ]; then
+            case "$'\n'$marker_dirs$'\n'" in
+                *$'\n'"$tok_marker_dir"$'\n'*) : ;;
+                *) marker_dirs="${marker_dirs:+$marker_dirs$'\n'}$tok_marker_dir" ;;
+            esac
+        elif [ -n "$c" ]; then
+            # A token classified via a REAL configured root (no @declared
+            # suffix). STAGED-ONLY (codex-adv-2): its presence disables the
+            # `.graphify-backend` file path in apply_verdict entirely - a
+            # staged copy's file declaration must not vouch for a real vault
+            # path listed beside it.
+            any_real_root=1
+        fi
         if [ -n "$c" ]; then
             r="$(_rank "$c")"
             if [ "$r" -gt "$best_rank" ]; then
@@ -843,7 +1060,7 @@ evaluate_invocation() {
     fi
 
     if [ -n "$best_corpus" ]; then
-        apply_verdict "$best_corpus" "$best_target" "$backend" "$any_declared" "$subcmd"
+        apply_verdict "$best_corpus" "$best_target" "$backend" "$any_declared" "$subcmd" "$marker_dirs" "$any_real_root"
         return
     fi
 
@@ -861,9 +1078,20 @@ evaluate_invocation() {
     c="$(classify "$TOOL_CWD")"
     _deny_on_classify_sentinel "$c"
     declared=0
-    case "$c" in *@declared) c="${c%@declared}"; declared=1 ;; esac
+    marker_dir=""
+    case "$c" in
+        *@declared$'\t'*)
+            marker_dir="${c#*@declared$'\t'}"
+            c="${c%%@declared*}"
+            declared=1
+            ;;
+    esac
     [ -n "$c" ] || deny "unclassifiable cwd for graphify '$subcmd' (no classifiable path arg): $TOOL_CWD"
-    apply_verdict "$c" "$TOOL_CWD" "$backend" "$declared" "$subcmd"
+    # STAGED-ONLY consistency (codex-adv-2): the single cwd classification is
+    # either marker-declared (any_real_root=0) or real-root (=1; the file
+    # branch is unreachable then anyway since marker_dir is empty).
+    if [ "$declared" = 1 ]; then any_real_root=0; else any_real_root=1; fi
+    apply_verdict "$c" "$TOOL_CWD" "$backend" "$declared" "$subcmd" "$marker_dir" "$any_real_root"
 }
 
 # classify_clause <clause-tokens...> - resolve the command-position token of one
