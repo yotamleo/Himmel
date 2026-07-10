@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        b83b44593af24de1db6183788a51d08715501c02  # v0.3.0
 pinned_upstream_tree: 01ab034ddfef4d21233c91c73218b36d4a064fe7  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   21e9235ac182334234cd6ece0dd6c657fa9700a637338fb917b20ffc6d27f7ba  # sha256 over VENDORED.manifest
+vendored_tree_hash:   c28202262c9f8129486300020b5f2a42d8361f31e8c61dda628c7f7c03b50cce  # sha256 over VENDORED.manifest
 vendored_at:          2026-07-06
 ```
 
@@ -81,3 +81,14 @@ protected: editing it without bumping the pin trips the guard.
   `src/render/session-line.ts`, `src/transcript.ts`, `tests/core.test.js`
   (+ rebuilt `dist/`). Drop these hunks on the next upstream pin bump if the
   PRs have merged.
+
+- **Landed (HIMMEL-865 CR-round salvage, 2026-07-11):** himmel-authored
+  hardening from the win2 offload CR round (salvaged from
+  `fix/himmel-865-claude-hud-upstream-adopt` @ `878d5ae`): a clarifying
+  comment in `src/transcript.ts` documenting the id-less dedup fallback
+  (entries without a `message.id` are not deduplicated — accumulated as-is)
+  plus three covering tests — no-id duplicate accumulation
+  (`tests/core.test.js`) and `showDuration`/`showConfigCounts`
+  unset-means-off opt-in defaults (`tests/render.test.js`) (+ rebuilt
+  `dist/`). himmel-authored (not upstream-carried); keep across pin bumps
+  until upstream grows equivalent coverage.

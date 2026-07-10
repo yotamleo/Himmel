@@ -663,6 +663,33 @@ test('parseTranscript deduplicates non-consecutive duplicate assistant usage by 
   });
 });
 
+test('parseTranscript counts duplicate assistant usage lacking message.id every time (no-id fallback)', async () => {
+  const usageEntry = {
+    type: 'assistant',
+    message: {
+      usage: {
+        input_tokens: 100,
+        output_tokens: 25,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 5,
+      },
+    },
+  };
+
+  const result = await parseTempTranscript('session-tokens-no-id-duplicate.jsonl', [
+    usageEntry,
+    usageEntry,
+  ]);
+
+  // Intentional upstream behavior: no message.id = no dedup — both counted.
+  assert.deepEqual(result.sessionTokens, {
+    inputTokens: 200,
+    outputTokens: 50,
+    cacheCreationTokens: 20,
+    cacheReadTokens: 10,
+  });
+});
+
 test('parseTranscript records the most recent compact_boundary and postTokens', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'claude-hud-'));
   const filePath = path.join(dir, 'compact-boundary.jsonl');

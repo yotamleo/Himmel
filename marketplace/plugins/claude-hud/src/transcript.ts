@@ -380,7 +380,8 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
         // Accumulate token usage from assistant messages.
         // Claude Code can write the same API response to the transcript 2-3 times
         // (dual-logging). Deduplicate by message.id — the API-response-level unique
-        // identifier that is stable across repeated transcript writes.
+        // identifier that is stable across repeated transcript writes. Entries
+        // without a message.id are not deduplicated (accumulated as-is).
         if (entry.type === 'assistant' && entry.message?.usage) {
           const msgId = entry.message.id;
           if (!msgId || !seenMessageIds.has(msgId)) {

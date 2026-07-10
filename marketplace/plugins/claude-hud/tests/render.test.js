@@ -902,6 +902,23 @@ test('renderProjectLine translates native cost label when Chinese is enabled', (
   }
 });
 
+test('renderProjectLine omits duration when showDuration is unset (opt-in default)', () => {
+  const ctx = baseContext();
+  ctx.stdin.cwd = '/tmp/my-project';
+  delete ctx.config.display.showDuration;
+  ctx.sessionDuration = '12m 34s';
+  const line = renderProjectLine(ctx);
+  assert.ok(!line?.includes('12m 34s'), 'should not include session duration when unset');
+});
+
+test('renderEnvironmentLine omits config counts when showConfigCounts is unset (opt-in default)', () => {
+  const ctx = baseContext();
+  ctx.claudeMdCount = 2;
+  delete ctx.config.display.showConfigCounts;
+  const line = renderEnvironmentLine(ctx);
+  assert.ok(!line?.includes('2 CLAUDE.md'), 'should not include config counts when unset');
+});
+
 test('renderProjectLine omits duration when showDuration is false', () => {
   const ctx = baseContext();
   ctx.stdin.cwd = '/tmp/my-project';

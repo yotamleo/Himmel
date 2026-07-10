@@ -209,9 +209,9 @@ f985580ee15bf4ba52580f1a453701a34cd74bf7  dist/stdin.d.ts
 ec0ff0e1fc4585cbd361713e56d6969de34991dc  dist/stdin.js
 15377e9cb1dd91f1abe169d1d7368c40757a8762  dist/stdin.js.map
 7e342402ab6dc9d97ed24358f826fa9c1a2c72d4  dist/transcript.d.ts
-e0c9d2bbf4f141d1d6f8fd60a9dcaac6c75e1454  dist/transcript.d.ts.map
-4d05552c53c54ede8d0396064ca8633006a6c14d  dist/transcript.js
-06cb563c8cce197a590c83f9c6bc15ae5fe58054  dist/transcript.js.map
+5aedf36d11cfafbc48ca812295c8ad17343ad060  dist/transcript.d.ts.map
+e4c375741b0a8ddc608d3a5ab7efa05387697b5a  dist/transcript.js
+841d28b51777c55e7d1b41d6bfcdd7ea9320b9ad  dist/transcript.js.map
 5fffc249cd59649696c39b0dd954ae8a30a96920  dist/types.d.ts
 8c2e5b1eb60adeebae4c674c6f740720487ff8f3  dist/types.d.ts.map
 6f773f93644037feed40245614526b6d6900c98e  dist/types.js
@@ -290,7 +290,7 @@ e4bbaf38e505b04c04104f2a14ba6ece60654c1c  src/render/lines/usage.ts
 f1fe6080fbad5fe3bf3aac39493793b5bc00216d  src/render/width.ts
 2e563b1f77d671393d133524c0033ac00da10659  src/speed-tracker.ts
 ac85205773f029a2546740b08c008bd40437d933  src/stdin.ts
-ecf84a490a732c61fafadaeb737ff85c8c332180  src/transcript.ts
+dcca1079b7ae2e93e9b4b3966d18d91bd99345cf  src/transcript.ts
 f6223dce376b2befbb92055055f75f59d47e55a5  src/types.ts
 70e138749326988c54eadad1b94e22fe7d38105f  src/utils/format.ts
 8d19df0886da8c11df226607ddcee3883503b756  src/utils/hyperlinks.ts
@@ -300,7 +300,7 @@ fb328e27ce52c8594aab90fdfab4808c6f64e302  src/utils/truncate.ts
 cf7a1214b92903a056a21e8fb1eadbc9bdf6aae4  src/version.ts
 2f9d624e70f10b5738e3da1dc17580795948ee8a  tests/config.test.js
 9258e1ec365f2aa55e55f18f793e444595886085  tests/context-cache.test.js
-8618b426a783d0c22c11a8fbaf626ef0ec98ee75  tests/core.test.js
+e1e888bd4613328ac1e8ddb69dea6632b193afc5  tests/core.test.js
 f0eec23f96544ecfc2132a65e2df252dd7c2c766  tests/cost-coverage.test.js
 57e563f59d5d435d4bd00e239b45f219c054627f  tests/custom-line-cmd.test.js
 19d27cd4496a7dbefd02f1196bc185ea71080ba7  tests/effort.test.js
@@ -321,7 +321,7 @@ ab26537247898f87b94e131ed066318854221bf6  tests/index.test.js
 d0efca32629ec29d4f5e93e8dc09eb25e0191eef  tests/memory.test.js
 c6d9612d1301a107e28e9dbb4db72892509659d4  tests/prompt-cache.test.js
 c7e876839ccbf54ffb1c9ff8d009670da73c9e0b  tests/render-width.test.js
-654f9631771f2a4c16c0a225ac72fa0b8ea56817  tests/render.test.js
+369ec576ec335a0ccbddb0f8551ead5de9496750  tests/render.test.js
 a5bd0be09f1a1934fe877292ba4cad3237d18b30  tests/session-time.test.js
 bdeef1c7b4cba03349b629c6898e89fea6bbc080  tests/session-tokens-coverage.test.js
 c6d6f93dc31411b9116f204af9080d4edc9c569e  tests/speed-tracker.test.js
