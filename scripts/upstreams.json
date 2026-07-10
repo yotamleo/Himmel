@@ -1,0 +1,52 @@
+{
+  "_comment": "Fleet-wide registry of carried upstreams for scripts/check-plugin-drift.sh (HIMMEL-869). Covers the upstreams NOT already reached by the two existing checks (marketplace.json pinned remotes incl. the claude-obsidian fork override in plugin-upstreams.json; vendored forks with a marketplace/plugins/<p>/UPSTREAM_PIN). Each entry names a TRUE upstream and how to detect that it has advanced past what himmel carries, so the goal state 'always sync + additive' (fork deltas stay strictly additive on a current upstream base) is observable. Two detection kinds, each a discriminated union on `kind`: (1) commit_head — compare a local commit to the tracked repo's default-branch HEAD. `mode: pin` takes the commit from `pinned_commit` (full or short SHA; short is resolved via gh). `mode: checkout` takes it from a local git checkout at `checkout_path` ($VAR/${VAR} expanded cross-platform by the script's python emitter; absent checkout -> UNCHECKED, never drift). Use `pin` for vendored copies (the dir is NOT a git checkout of upstream — claude-hud, claude-statusline) and `checkout` for editable/installed git checkouts (hermes-agent). (2) tag_release — compare a local version to the tracked repo's latest STABLE version tag (highest semver via sort -V, prereleases excluded — same discipline as the claude-obsidian fork override). `mode: base` takes the version from `synced_base` (a recorded literal). `mode: probe` runs `version_command` (simple space-separated tokens) and extracts the version via `version_regex` (a pattern matching the bare version, e.g. `[0-9]+\\\\.[0-9]+\\\\.[0-9]+[0-9A-Za-z.-]*`; no capture group — grep -oE prints the whole match). Use `probe` for installed binaries/CLIs whose version is only knowable by running them (rtk, twitter-cli). `tier` is informational only (A=proactive-adopt, B=reactive-adopt per the HIMMEL-850 audit) and appears in the guard's output so a reader can tell expected-churn (Tier B usually reads BEHIND by design) from a genuine stale pin. Installed marketplaces (caveman, obsidian-skills, openai-codex, claude-video, claude-plugins-official, ...) are NOT listed here: they are discovered dynamically from ~/.claude/plugins/known_marketplaces.json (DRIFT_KNOWN_MARKETPLACES override) so the guard auto-covers any future marketplace install, each checked as a commit_head/checkout against its source repo. The additive-only-delta audit for the true forks (claude-obsidian, telegram-himmel, pr-review-toolkit-himmel, qmd) is a documented MANUAL step — see the script header.",
+  "entries": [
+    {
+      "name": "claude-hud",
+      "kind": "commit_head",
+      "mode": "pin",
+      "tracked_repo": "jarrodwatts/claude-hud",
+      "pinned_commit": "b83b44593af24de1db6183788a51d08715501c02",
+      "tier": "A",
+      "note": "Vendored at marketplace/plugins/claude-hud (VENDORED.md); pin = upstream v0.3.0. The local vendored-tree drift (our own edits) is separately guarded by scripts/statusline/check-hud-drift.sh (himmel-dev pre-commit); this entry guards UPSTREAM advance. Not in marketplace.json by design — it is the statusline renderer (wired via node), not a marketplace plugin."
+    },
+    {
+      "name": "claude-statusline",
+      "kind": "commit_head",
+      "mode": "pin",
+      "tracked_repo": "nilbuild/claude-statusline",
+      "pinned_commit": "3f64887",
+      "tier": "A",
+      "note": "Vendored at scripts/statusline/ (VENDORED.md), synced via the yotamleo/claude-statusline fork. tracked_repo is the TRUE upstream (nilbuild), not the fork — pointing this at the fork would let nilbuild advance while the fork sat stale and still read CURRENT, exactly the false-negative class this guard exists to close. BEHIND here means nilbuild has moved past our pinned_commit: pull nilbuild into the fork, re-vendor, then bump pinned_commit here. Short SHA resolved via gh."
+    },
+    {
+      "name": "hermes-agent",
+      "kind": "commit_head",
+      "mode": "checkout",
+      "tracked_repo": "NousResearch/hermes-agent",
+      "checkout_path": "${LOCALAPPDATA}/hermes/hermes-agent",
+      "tier": "B",
+      "note": "Editable pip checkout (the multi-provider gateway). Tier B / high-churn (18k+ open PRs): reads BEHIND by design; that IS the signal — consult the HIMMEL-850 steal-list when a real bug hits. UNCHECKED if the checkout is absent on this machine (CI / fresh clone)."
+    },
+    {
+      "name": "rtk",
+      "kind": "tag_release",
+      "mode": "probe",
+      "tracked_repo": "rtk-ai/rtk",
+      "version_command": "rtk --version",
+      "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z.-]*",
+      "tier": "B",
+      "note": "Installed binary at ~/.local/bin/rtk. Tier B (reactive); known git-diff rewrite bug HIMMEL-270 is NOT directly fixed upstream. UNCHECKED if rtk absent / --version yields no parseable version."
+    },
+    {
+      "name": "twitter-cli",
+      "kind": "tag_release",
+      "mode": "probe",
+      "tracked_repo": "public-clis/twitter-cli",
+      "version_command": "twitter --version",
+      "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z.-]*",
+      "tier": "A",
+      "note": "Installed CLI at ~/.local/bin/twitter (consumed by the telegram clipper). Tier A (proactive). UNCHECKED if twitter absent / --version yields no parseable version."
+    }
+  ]
+}

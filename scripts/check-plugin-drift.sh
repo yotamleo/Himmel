@@ -22,6 +22,42 @@
 #      generic fields `upstream_repo` / `upstream_path` / `upstream_sha256`. Drift
 #      = the recorded sha256 != the sha256 of that upstream file fetched now.
 #      (telegram-himmel, pr-review-toolkit-himmel.)
+#   3. Carried upstreams (HIMMEL-869) — the rest of the fleet that the two
+#      classes above don't reach. A data-driven registry
+#      (scripts/upstreams.json, DRIFT_REGISTRY-overridable) enumerates each with a
+#      detection `kind`:
+#        a. commit_head — compare a local commit to the tracked repo's default
+#           HEAD. mode `pin` takes the commit from `pinned_commit` (full or short
+#           SHA; short is resolved via gh) — for vendored copies that are NOT a
+#           git checkout of upstream (claude-hud, claude-statusline). mode
+#           `checkout` takes it from a local git checkout at `checkout_path`
+#           (env-expanded cross-platform) — for editable/installed checkouts
+#           (hermes-agent). Drift = the tracked repo advanced past our commit.
+#        b. tag_release — compare a local version to the tracked repo's latest
+#           STABLE version tag (highest semver via sort -V, prereleases excluded —
+#           same discipline as the claude-obsidian fork override). mode `base`
+#           takes the version from `synced_base`; mode `probe` runs
+#           `version_command` and extracts the version via `version_regex` — for
+#           installed binaries/CLIs (rtk, twitter-cli).
+#      Installed marketplaces (caveman, obsidian-skills, openai-codex,
+#      claude-video, claude-plugins-official, …) are NOT listed in the registry:
+#      they are discovered dynamically from ~/.claude/plugins/known_marketplaces.json
+#      (DRIFT_KNOWN_MARKETPLACES-overridable) so the guard auto-covers any future
+#      marketplace install, each checked as commit_head/checkout vs its source repo.
+#      `tier` (A=proactive / B=reactive, from the HIMMEL-850 audit) is printed in
+#      the verdict so a reader can tell expected churn (Tier B usually reads BEHIND
+#      by design) from a genuinely stale pin. An absent checkout / uninstalled
+#      tool / unreachable upstream is UNCHECKED, never drift.
+#
+# Additive-only-delta audit (true forks: claude-obsidian, telegram-himmel,
+# pr-review-toolkit-himmel, qmd) is a MANUAL step — verifying that each fork's
+# diff vs its synced base is the expected whitelisted delta and nothing else is a
+# per-fork judgment this script does not automate (the deltas differ per fork and
+# are reviewed in their own tickets). One-liner per fork, runnable when gh is up:
+#   claude-obsidian:    gh api 'repos/AgriciDaniel/claude-obsidian/compare/v1.9.2...yotamleo:claude-obsidian:v1.9.2-himmel.1'
+#   telegram-himmel:    diff the fork's server.ts vs the UPSTREAM_PIN sha256 base
+#   pr-review-tk-himmel: diff the fork's agents/code-reviewer.md vs the UPSTREAM_PIN base
+#   qmd:                gh api 'repos/tobi/qmd/compare/<base>...yotamleo:qmd:<fork-head>'  (base = last synced tag)
 #
 # Exit codes (a cadence keys its alert on these):
 #   0  every plugin verified CURRENT, OR gh is absent/unauthenticated (fail-open
@@ -208,6 +244,288 @@ for pin in "$ROOT"/marketplace/plugins/*/UPSTREAM_PIN; do
     drift=1
   fi
 done
+
+echo ""
+echo "== carried upstreams (registry + installed marketplaces; HIMMEL-869) =="
+# scripts/upstreams.json enumerates the fleet the two classes above don't reach
+# (claude-hud, claude-statusline, hermes-agent, rtk, twitter-cli); installed
+# marketplaces are discovered from known_marketplaces.json. Both paths are
+# env-overridable so the test harness can point at fixtures / a stubbed gh.
+REGISTRY="${DRIFT_REGISTRY:-$ROOT/scripts/upstreams.json}"
+KNOWN_MKTS="${DRIFT_KNOWN_MARKETPLACES:-$HOME/.claude/plugins/known_marketplaces.json}"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "  ? python3 not available — cannot parse the upstream registry / known marketplaces; carried-upstreams class UNCHECKED."
+  incomplete=1
+else
+  # Emit one line per carried upstream: name<US>kind<US>repo<US>mode<US>v1<US>v2<US>tier,
+  # <US> = ASCII unit separator (\x1f), NOT `|` — a probe entry's version_regex
+  # can itself contain `|` (regex alternation), which would silently misalign a
+  # pipe-delimited protocol. v1/v2 are kind/mode-specific (see header). A
+  # malformed JSON file raises -> the pipeline exits non-zero -> class UNCHECKED;
+  # a missing/empty file emits nothing (clean).
+  reg_out="$(python3 - "$REGISTRY" "$KNOWN_MKTS" <<'PY' 2>/dev/null | tr -d '\r'
+import json, os, re, sys
+reg_path, mkt_path = sys.argv[1], sys.argv[2]
+
+def expand(p):
+    # Cross-platform env expansion ($VAR / ${VAR} / %VAR%) so the same registry
+    # entry resolves on Git Bash python AND Windows python, then forward-slash
+    # the result so `git -C <path>` is portable.
+    if not p:
+        return p
+    def rep(m):
+        return os.environ.get(m.group(1) or m.group(2), '')
+    p = re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)', rep, p)
+    p = re.sub(r'%([A-Za-z_][A-Za-z0-9_]*)%', lambda m: os.environ.get(m.group(1), ''), p)
+    return os.path.expanduser(p).replace('\\', '/')
+
+def line(name, kind, repo, mode, v1, v2, tier):
+    # \x1f (ASCII unit separator), not '|': version_regex (v2, probe mode) can
+    # legitimately contain '|' for regex alternation, which would misalign a
+    # pipe-delimited record.
+    print('\x1f'.join([name, kind, repo, mode, v1 or '', v2 or '', tier or '']))
+
+if os.path.exists(reg_path) and os.path.getsize(reg_path) > 0:
+    d = json.load(open(reg_path))   # malformed -> raises -> class UNCHECKED
+    for e in d.get('entries', []):
+        kind = e.get('kind', '')
+        mode = e.get('mode', '')
+        repo = e.get('tracked_repo', '')
+        tier = e.get('tier', '')
+        if kind == 'commit_head' and mode == 'pin':
+            line(e['name'], 'commit_head', repo, 'pin', e.get('pinned_commit', ''), '', tier)
+        elif kind == 'commit_head' and mode == 'checkout':
+            line(e['name'], 'commit_head', repo, 'checkout', expand(e.get('checkout_path', '')), '', tier)
+        elif kind == 'tag_release' and mode == 'base':
+            line(e['name'], 'tag_release', repo, 'base', e.get('synced_base', ''), '', tier)
+        elif kind == 'tag_release' and mode == 'probe':
+            line(e['name'], 'tag_release', repo, 'probe', e.get('version_command', ''), e.get('version_regex', ''), tier)
+        else:
+            # Unrecognized kind/mode: pass it through verbatim so the bash
+            # dispatch reports the REAL kind/mode (e.g. a known kind with a bad
+            # mode reads as "commit_head mode '<mode>' unknown", not a generic
+            # "unknown kind"). Empty kind -> 'unknown' for a stable message.
+            line(e.get('name', '?'), kind or 'unknown', repo, mode, '', '', tier)
+
+if os.path.exists(mkt_path) and os.path.getsize(mkt_path) > 0:
+    km = json.load(open(mkt_path))   # malformed -> raises -> class UNCHECKED
+    for mname, info in km.items():
+        src = info.get('source', {}) or {}
+        if src.get('source') == 'github' and src.get('repo'):
+            tier = 'mkt-auto' if info.get('autoUpdate') else 'mkt-manual'
+            loc = info.get('installLocation', '')
+            if not loc:
+                # Older/foreign known_marketplaces.json shape without
+                # installLocation: an empty path would otherwise flow into the
+                # checkout-missing branch below and print as "checkout not
+                # present on this machine ()" — reads like a real absent
+                # checkout instead of a shape gap. Flag it explicitly instead.
+                line('mkt:' + mname, 'commit_head', src['repo'], 'no-install-location', '', '', tier)
+            else:
+                line('mkt:' + mname, 'commit_head', src['repo'], 'checkout',
+                     expand(loc), '', tier)
+PY
+)"
+  reg_rc=$?
+  if [ "$reg_rc" -ne 0 ]; then
+    echo "  ? upstreams.json / known_marketplaces.json parse failed (python3 error) — carried-upstreams class UNCHECKED."
+    incomplete=1
+  else
+    while IFS=$'\x1f' read -r name kind repo mode v1 v2 tier; do
+      [ -n "$name" ] || continue
+      tier_note=""
+      if [ -n "$tier" ]; then tier_note="  [$tier]"; fi
+      case "$kind" in
+        commit_head)
+          # Resolve the LOCAL commit: a pinned SHA, or the HEAD of a checkout.
+          if [ "$mode" = "pin" ]; then
+            local_ref="$v1"
+            if [ -z "$local_ref" ]; then
+              echo "  $name: ? entry missing pinned_commit — UNCHECKED (fix scripts/upstreams.json)"
+              incomplete=1; continue
+            fi
+          elif [ "$mode" = "checkout" ]; then
+            path="$v1"
+            if [ -z "$path" ] || [ ! -d "$path" ]; then
+              echo "  $name: ? checkout not present on this machine ($path) — UNCHECKED"
+              incomplete=1; continue
+            fi
+            if ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+              echo "  $name: ? checkout is not a git repo ($path) — UNCHECKED"
+              incomplete=1; continue
+            fi
+            local_ref="$(git -C "$path" rev-parse HEAD 2>/dev/null)"
+            if [ -z "$local_ref" ]; then
+              echo "  $name: ? could not read HEAD of checkout ($path) — UNCHECKED"
+              incomplete=1; continue
+            fi
+          elif [ "$mode" = "no-install-location" ]; then
+            # Older/foreign known_marketplaces.json entry shape: github-sourced
+            # but no installLocation field to check out. Skip with a named,
+            # explicit UNCHECKED note — never let an empty path fall through to
+            # the checkout branch above (that would print "()" and read like a
+            # real absent checkout instead of a metadata-shape gap).
+            echo "  $name: ? marketplace entry lacks installLocation (older/foreign metadata shape) — UNCHECKED${tier_note}"
+            incomplete=1; continue
+          else
+            echo "  $name: ? commit_head mode '$mode' unknown — UNCHECKED (fix scripts/upstreams.json)"
+            incomplete=1; continue
+          fi
+          # Normalize the local ref to a full 40-hex SHA (short SHA -> gh resolves).
+          if printf '%s' "$local_ref" | grep -qE '^[0-9a-f]{40}$'; then
+            local_sha="$local_ref"
+          else
+            local_sha="$(gh api "repos/$repo/commits/$local_ref" --jq '.sha' 2>/dev/null)"; api_rc=$?
+            if [ "$api_rc" -ne 0 ] || ! printf '%s' "$local_sha" | grep -qE '^[0-9a-f]{40}$'; then
+              echo "  $name: ? cannot resolve local ref '$local_ref' on $repo — UNCHECKED"
+              incomplete=1; continue
+            fi
+          fi
+          head="$(gh api "repos/$repo/commits/HEAD" --jq '.sha' 2>/dev/null)"; api_rc=$?
+          if [ "$api_rc" -ne 0 ] || ! printf '%s' "$head" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "  $name: ? upstream unreachable ($repo) — UNCHECKED"
+            incomplete=1; continue
+          fi
+          if [ "$local_sha" = "$head" ]; then
+            echo "  $name: CURRENT  ($repo @ ${local_sha:0:7})${tier_note}"
+          else
+            delta="$(gh api "repos/$repo/compare/$local_sha...$head" --jq '.ahead_by' 2>/dev/null)"
+            echo "  $name: BEHIND   ($repo upstream is ${delta:-?} commit(s) ahead — ${local_sha:0:7} -> ${head:0:7})${tier_note}"
+            drift=1
+          fi
+          ;;
+        tag_release)
+          # Resolve the LOCAL version: a recorded synced_base, or a probed one.
+          if [ "$mode" = "base" ]; then
+            local_ver="$v1"
+            if [ -z "$local_ver" ]; then
+              echo "  $name: ? entry missing synced_base — UNCHECKED (fix scripts/upstreams.json)"
+              incomplete=1; continue
+            fi
+          elif [ "$mode" = "probe" ]; then
+            cmd_str="$v1"; rx="$v2"
+            if [ -z "$cmd_str" ] || [ -z "$rx" ]; then
+              echo "  $name: ? probe entry missing version_command/version_regex — UNCHECKED (fix scripts/upstreams.json)"
+              incomplete=1; continue
+            fi
+            # version_command is simple space-separated tokens; split into an array.
+            read -r -a cmd_arr <<< "$cmd_str"
+            if ! command -v "${cmd_arr[0]}" >/dev/null 2>&1; then
+              echo "  $name: ? tool '${cmd_arr[0]}' not installed — UNCHECKED${tier_note}"
+              incomplete=1; continue
+            fi
+            # A --version that exits non-zero after printing the version (e.g.
+            # twitter-cli) is fine: we extract the version from combined output.
+            if command -v timeout >/dev/null 2>&1; then
+              probe_out="$(timeout 10 "${cmd_arr[@]}" 2>&1)"; probe_rc=$?
+              # rc=124 is `timeout`'s own kill signal; 137 (128+9) shows up if
+              # the probe was SIGKILLed some other way. Either means the probe
+              # never finished — route to UNCHECKED, never parse the partial
+              # output (a probe that prints a version line and THEN hangs
+              # would otherwise parse as CURRENT/BEHIND on truncated output).
+              if [ "$probe_rc" -eq 124 ] || [ "$probe_rc" -eq 137 ]; then
+                echo "  $name: ? probe timed out (10s) — UNCHECKED${tier_note}"
+                incomplete=1; continue
+              fi
+            else
+              # No `timeout` on PATH (uncommon but not guaranteed — a stripped
+              # PATH, an odd distro): fall back to a portable bash-native
+              # watchdog so a hanging probe can never wedge the whole run.
+              # Plain background job + sleep-then-kill — no `wait -n` (absent
+              # on bash 3.2 / older Git-Bash), so this stays portable.
+              echo "  $name: note — 'timeout' unavailable, using bash-native watchdog fallback (10s budget)${tier_note}"
+              probe_tmp="$(mktemp)"
+              # Best-effort GROUP cleanup: with `setsid` the probe becomes its
+              # own process-group leader, so `kill -9 -- -$probe_pid` (negative
+              # pid = the whole group) also reaps any children it spawned.
+              # Without setsid (not every box has coreutils/util-linux) we fall
+              # back to killing the direct pid plus any direct children found
+              # via `ps -ef` ppid matching — NOT full-group semantics
+              # (grandchildren can survive), but probes here are short-lived
+              # `--version`-style calls, so the residual leak is small. Real
+              # process-group semantics need the `timeout` path above (coreutils).
+              if command -v setsid >/dev/null 2>&1; then
+                setsid "${cmd_arr[@]}" >"$probe_tmp" 2>&1 &
+                probe_pid=$!
+                probe_grouped=1
+              else
+                "${cmd_arr[@]}" >"$probe_tmp" 2>&1 &
+                probe_pid=$!
+                probe_grouped=0
+              fi
+              (
+                sleep 10
+                if [ "$probe_grouped" -eq 1 ]; then
+                  kill -9 -- -"$probe_pid" 2>/dev/null
+                else
+                  kill -9 "$probe_pid" 2>/dev/null
+                  if command -v ps >/dev/null 2>&1; then
+                    ps -ef 2>/dev/null | awk -v ppid="$probe_pid" '$3==ppid{print $2}' \
+                      | while IFS= read -r cpid; do kill -9 "$cpid" 2>/dev/null; done
+                  fi
+                fi
+              ) &
+              watchdog_pid=$!
+              wait "$probe_pid" 2>/dev/null
+              probe_status=$?
+              # Probe finished (or was killed) — the watchdog's sleep is no
+              # longer needed either way; reap it so it doesn't linger. Cleanup
+              # above is best-effort only — it must never change probe_status
+              # or the UNCHECKED verdict path below.
+              kill "$watchdog_pid" 2>/dev/null
+              wait "$watchdog_pid" 2>/dev/null
+              if [ "$probe_status" -ge 128 ]; then
+                rm -f "$probe_tmp"
+                echo "  $name: ? probe timed out (10s watchdog) — UNCHECKED${tier_note}"
+                incomplete=1; continue
+              fi
+              probe_out="$(cat "$probe_tmp" 2>/dev/null)"
+              rm -f "$probe_tmp"
+            fi
+            local_ver="$(printf '%s' "$probe_out" | grep -oE "$rx" | head -1)"
+            if [ -z "$local_ver" ]; then
+              echo "  $name: ? could not parse version from '${cmd_arr[0]}' output — UNCHECKED${tier_note}"
+              incomplete=1; continue
+            fi
+          else
+            echo "  $name: ? tag_release mode '$mode' unknown — UNCHECKED (fix scripts/upstreams.json)"
+            incomplete=1; continue
+          fi
+          tags_raw="$(gh api "repos/$repo/tags?per_page=100" --jq '.[].name' 2>/dev/null)"; api_rc=$?
+          if [ "$api_rc" -ne 0 ] || [ -z "$tags_raw" ]; then
+            echo "  $name: ? true upstream unreachable ($repo tags) — UNCHECKED"
+            incomplete=1; continue
+          fi
+          latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)"
+          if [ -z "$latest" ]; then
+            echo "  $name: ? no stable version tags found on $repo — UNCHECKED"
+            incomplete=1; continue
+          fi
+          # Normalize leading 'v' on both sides before comparing.
+          norm_local="${local_ver#v}"
+          norm_latest="${latest#v}"
+          if [ "$norm_local" = "$norm_latest" ]; then
+            echo "  $name: CURRENT  (installed $norm_local = $repo latest tag)${tier_note}"
+          else
+            hi="$(printf '%s\n%s\n' "$norm_local" "$norm_latest" | sort -V | tail -1)"
+            if [ "$hi" = "$norm_local" ]; then
+              # Installed is newer than the latest STABLE tag (e.g. a prerelease or
+              # locally-built version): not behind upstream's stable line.
+              echo "  $name: CURRENT  (installed $norm_local >= $repo latest stable $norm_latest)${tier_note}"
+            else
+              echo "  $name: BEHIND   ($repo latest tag $latest; installed $local_ver — upgrade)${tier_note}"
+              drift=1
+            fi
+          fi
+          ;;
+        *)
+          echo "  $name: ? unknown kind '$kind' (mode '$mode') — UNCHECKED (fix scripts/upstreams.json)"
+          incomplete=1
+          ;;
+      esac
+    done <<< "$reg_out"
+  fi
+fi
 
 echo ""
 if [ "$drift" -ne 0 ]; then
