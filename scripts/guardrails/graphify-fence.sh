@@ -67,6 +67,28 @@
 #   HANDOVER_DIR           - handover state root (via handover-path.sh)
 #   GRAPHIFY_HIMMEL_ROOT   - himmel checkout root (default: git toplevel here)
 #   GRAPHIFY_LEDGER        - ledger path (default ~/.claude/graphify-egress.jsonl)
+#   GRAPHIFY_TOOL_CWD      - the cwd the command will run in (threaded from the
+#                            hook payload's .tool_input.cwd; default $PWD).
+#                            HIMMEL-779: relative + bare-word targets resolve
+#                            against THIS, not the hook process's $PWD.
+#   GRAPHIFY_DECLARED_BACKEND - a backend declared out-of-band when the CLI form
+#                            carries no --backend (graphify `update` is LLM-free
+#                            and takes none). HIMMEL-779: satisfies the no-backend
+#                            demand for a non-himmel corpus AND still flows through
+#                            the egress matrix (not a bypass). SCOPED (HIMMEL-779 CR
+#                            round-1): honored ONLY when (a) the subcommand is one
+#                            of the LLM-free set (today: exactly `update`, see
+#                            _llm_free_subcmd) AND (b) the corpus is non-himmel -
+#                            for himmel-code with no flag the local-ollama default
+#                            stands unconditionally; a declared value can NOT
+#                            override it. A provider-using (non-LLM-free) subcommand
+#                            with no --backend still hits the existing no-backend
+#                            deny even when this is set - it is not a substitute for
+#                            a real --backend on a subcommand whose CLI accepts one.
+#                            Like GRAPHIFY_SALUS_LOCAL_OK/GRAPHIFY_CLIPPINGS_GLM_OK
+#                            above, this is a launching-shell-only trust boundary:
+#                            set it in the shell that launches the agent, not
+#                            per-call.
 #
 # Exit codes: 0 = allow (ledger written where the matched cell requires it);
 # 2 = deny (stderr carries the reason).
@@ -106,6 +128,45 @@
 #     have handover content relabeled by a planted marker - accepted (work
 #     artifacts, lower sensitivity than vault content; always-ledgered).
 #
+# NOW HANDLED (HIMMEL-779):
+#   - Bare-word target swallowed: a bare (no slash/drive/extension) token that
+#     EXISTS under the tool-call cwd is a TARGET, classified against the corpus
+#     roots - not swallowed as a subcommand word (position 0) nor skipped as a
+#     non-path arg (later positions). Before, a bare PHI dir name alongside a
+#     safe path (or inside a safe cwd) let the safe path/cwd win -> fail-open.
+#   - Hook-cwd relative-path mismatch: the fence resolves relative paths against
+#     the TOOL-CALL cwd (GRAPHIFY_TOOL_CWD, threaded from the hook payload's
+#     .tool_input.cwd), not its own $PWD. Under hook invocation the fence $PWD is
+#     the project root, which is not necessarily the command's cwd - a relative
+#     path into a protected corpus otherwise resolved under the project root and
+#     missed (fail-open). The block-graphify-egress hook threads .tool_input.cwd.
+#   - update-subcommand / --backend: graphify `update` (and other LLM-free
+#     subcommands) take NO --backend on the CLI, so a non-himmel corpus could
+#     never satisfy the no-backend demand. A declared backend via env
+#     (GRAPHIFY_DECLARED_BACKEND) now satisfies it and still flows through the
+#     egress matrix (not a bypass). SCOPED (CR round-1): honored only when the
+#     subcommand is in the LLM-free set (_llm_free_subcmd; today: exactly
+#     `update`) AND the corpus is non-himmel - it previously applied to ANY
+#     subcommand/corpus whenever the env var was set, which let a declared
+#     backend override the himmel-code local-ollama default and let a
+#     provider-using subcommand skip the missing-flag deny. Now a
+#     provider-using subcommand with no --backend still denies even with the
+#     env var set, and himmel-code with no flag always defaults to ollama
+#     regardless of the declaration.
+#   - Order-insensitive backend parse: two DISTINCT --backend values in one
+#     invocation DENY (was last-wins), so a blocked backend placed before an
+#     allowed one can no longer be hidden. The same value repeated is not a
+#     conflict. Values are compared lower-cased + quote-stripped.
+#   - In-command cd drift: the clause splitter evaluates clauses
+#     independently, so a `cd <dir> && graphify update rel.md` clause pair let
+#     `cd` land as a silent no-op - the relative target resolved against the
+#     stale TOOL_CWD instead of the shell's real (post-cd) cwd (fail-open).
+#     CD_SEEN now tracks whether any PRIOR clause's command-position token was
+#     cd/pushd/popd; once set, a graphify clause with a relative or bare-word
+#     target (or no path arg at all, the TOOL_CWD fallback) DENIES instead of
+#     resolving against a cwd the fence can no longer vouch for. An absolute
+#     target is cwd-independent and still classifies normally.
+#
 # Accepted static-analysis limitations (the load-bearing PHI guard is the
 # file-tool fence parity_guard, not this command-text guard):
 #   (a) quoted-separator mis-split - a path with embedded spaces, or a quoted
@@ -139,6 +200,14 @@
 #       The load-bearing PHI guard is parity_guard / the file-tool fence, not this
 #       command-text guard; the always-on ledger line (`"declared":true`) keeps a
 #       mis-declaration auditable even when the matrix verdict is a plain allow.
+#   (f) in-command cd is DETECTED, not TRACKED: the fence notices a prior
+#       cd/pushd/popd clause and denies a relative/bare-word graphify target
+#       after it, but it does NOT parse the `cd` argument to compute the
+#       actual resulting cwd (that would require modelling arbitrary shell
+#       expansion of the cd target). Deny-relative is the deliberate
+#       trade-off: a false deny (an absolute-safe cd the agent could have
+#       resolved) costs a retry; silently trusting a guessed post-cd cwd would
+#       be fail-open.
 set -uo pipefail
 set -f  # no pathname expansion when we word-split the command / a path
 
@@ -175,6 +244,17 @@ fi
 
 HIMMEL_ROOT="${GRAPHIFY_HIMMEL_ROOT:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)}"
 
+# TOOL_CWD: the cwd the graphify COMMAND will actually run in. Under hook
+# invocation the fence process's own $PWD is the project root, which is NOT
+# necessarily the command's cwd (the agent may have cd'd). The hook threads
+# the payload's .tool_input.cwd here as GRAPHIFY_TOOL_CWD so relative targets
+# and bare-word targets resolve against the REAL command cwd, not the hook
+# process cwd (HIMMEL-779: a relative path into a protected corpus otherwise
+# resolves under the project root and misses -> fail-open). Defaults to $PWD
+# for direct/check-mode invocation (and an empty GRAPHIFY_TOOL_CWD falls back
+# to $PWD via the :- expansion, so a no-cwd payload stays correct).
+TOOL_CWD="${GRAPHIFY_TOOL_CWD:-$PWD}"
+
 # Extraction-shaped subcommands (defense-in-depth commentary, NOT the gate as of
 # HIMMEL-621): update label cluster-only add merge-graphs merge-driver path.
 # ANY subcommand carrying an unclassifiable path-like token now DENIES.
@@ -198,6 +278,22 @@ _strip_wrap() {
     printf '%s' "$p"
 }
 
+# _record_backend <raw-value> -> stash the backend for verdict eval and flag
+# conflicting distinct values (HIMMEL-779). Reads/writes the caller's
+# backend/backend_norm/backend_set/backend_conflict locals (bash dynamic scope,
+# so this must be called from evaluate_invocation). Values are compared
+# lower-cased + quote-stripped, so `--backend GLM` and `--backend glm` are NOT a
+# conflict; two different values ARE (a blocked backend must stay blocked in
+# every flag order, instead of the old last-wins). The raw value is preserved
+# in `backend` for the verdict path (which lower-cases it again itself).
+_record_backend() {
+    local nv; nv="$(_lc "$(_strip_wrap "$1")")"
+    if [ "$backend_set" = 1 ] && [ "$backend_norm" != "$nv" ]; then
+        backend_conflict=1
+    fi
+    backend="$1"; backend_norm="$nv"; backend_set=1
+}
+
 # _strip_cmd <token> -> aggressive strip for COMMAND-POSITION identification:
 # remove every quote / backtick / `$` / `(` / `)` / backslash so a wrapped,
 # command-substituted, or backslash-escaped binary (`"graphify`, `\graphify`,
@@ -210,7 +306,7 @@ _strip_cmd() {
     printf '%s' "$t"
 }
 
-# _abs <path> -> absolute path (expanduser + anchor a relative path to PWD).
+# _abs <path> -> absolute path (expanduser + anchor a relative path to TOOL_CWD).
 _abs() {
     local p; p="$(_strip_wrap "$1")"
     # Backslashes -> forward slashes BEFORE the absolute/relative split
@@ -228,17 +324,47 @@ _abs() {
     case "$p" in
         /*)          : ;;             # POSIX absolute
         [A-Za-z]:/*) : ;;             # Windows drive-ROOTED absolute (C:/...)
-        [A-Za-z]:*)  p="$PWD/${p#?:}" ;;
+        [A-Za-z]:*)  p="$TOOL_CWD/${p#?:}" ;;
                      # Windows drive-RELATIVE (C:foo = foo relative to the
                      # cwd on drive C). HIMMEL-808: the old [A-Za-z]:* arm
                      # classified this absolute, and _normalize mangled it
                      # into a synthetic non-corpus path. Anchor to the
                      # current cwd instead - exact when cwd is on that drive
                      # (the attack shape), and a fail-closed lexical
-                     # approximation otherwise.
-        *)           p="$PWD/$p" ;;   # relative -> anchor to cwd
+                     # approximation otherwise. HIMMEL-779: anchor to the
+                     # TOOL-CALL cwd (GRAPHIFY_TOOL_CWD), not the hook $PWD.
+        *)           p="$TOOL_CWD/$p" ;;   # relative -> anchor to tool-call cwd
     esac
     printf '%s' "$p"
+}
+
+# _is_abs_target <stripped-token> -> 0 if the token is POSIX-absolute or
+# Windows drive-rooted absolute (cwd-independent); 1 for anything else
+# (relative, bare, drive-relative, ~-relative). Used by the in-command-cd
+# drift guard (HIMMEL-779 FIX 2, see CD_SEEN): once a prior clause in the same
+# invocation ran cd/pushd/popd, the fence cannot know the shell's real cwd, so
+# only an absolute target is safe to classify - anything else is denied.
+_is_abs_target() {
+    local p="${1//\\//}"
+    case "$p" in
+        /*)          return 0 ;;
+        [A-Za-z]:/*) return 0 ;;
+        *)           return 1 ;;
+    esac
+}
+
+# _exists_under_cwd <bare-token> -> 0 if <tool-call-cwd>/<token> exists on disk.
+# A bare-word (no slash/drive/extension) target the agent dropped without a ./
+# prefix (HIMMEL-779): used to keep it from being swallowed as a subcommand word
+# at position 0, or skipped as a non-path arg at a later position. Only ever
+# called for tokens is_path_like already rejected (no slash), so the append is a
+# clean single segment. Resolves against the TOOL-CALL cwd, not the hook $PWD.
+# Note: a token that happens to share a name with a real graphify subcommand
+# (e.g. `update`) but ALSO exists on disk under the cwd is still treated as a
+# target, not swallowed as the subcommand word - safe direction (over-classifies
+# toward fencing, never under-classifies toward a silent bypass).
+_exists_under_cwd() {
+    [ -e "$TOOL_CWD/$1" ]
 }
 
 # _normalize <abs-path> -> lexically normalized, forward-slashed (collapse
@@ -504,21 +630,54 @@ ledger_append() {
     return 0
 }
 
-# apply_verdict <corpus> <target> <backend-raw> [declared] -> return 0 (allow,
-# ledger written where required) or DENY (exit 2). When <declared> is 1 ANY
-# classified token in the invocation came from a `.graphify-corpus` marker
+# _llm_free_subcmd <subcommand> -> 0 if the subcommand is LLM-free (does local,
+# non-provider work; today: exactly `update`). GRAPHIFY_DECLARED_BACKEND
+# (HIMMEL-779) is honored ONLY for one of these - a case pattern, not a fixed
+# string, so a future LLM-free subcommand extends by adding one arm here.
+_llm_free_subcmd() {
+    case "$1" in
+        update) return 0 ;;
+        *)      return 1 ;;
+    esac
+}
+
+# apply_verdict <corpus> <target> <backend-raw> [declared] [subcmd] -> return 0
+# (allow, ledger written where required) or DENY (exit 2). When <declared> is 1
+# ANY classified token in the invocation came from a `.graphify-corpus` marker
 # (invocation-wide - not only the rank-winning token, so argument ordering
 # cannot suppress the audit): ALWAYS ledger the run, even on a plain `allow`
-# cell (a mis-declared marker must not also dodge audit).
+# cell (a mis-declared marker must not also dodge audit). <subcmd> (HIMMEL-779
+# CR round-1) is the recorded graphify subcommand token, used to scope
+# GRAPHIFY_DECLARED_BACKEND to the LLM-free set - empty when the invocation had
+# no genuine subcommand word (a position-0 path-like token).
 apply_verdict() {
-    local corpus="$1" target="$2" backend_raw="$3" declared="${4:-0}"
+    local corpus="$1" target="$2" backend_raw="$3" declared="${4:-0}" subcmd="${5:-}"
     local backend_effective provider verdict everr eout emsg optvar optval
 
     if [ -z "$backend_raw" ]; then
-        if [ "$corpus" != "himmel-code" ]; then
-            deny "pass --backend explicitly (graphify auto-detects cloud keys; the fence cannot see which) [corpus=$corpus]"
+        # graphify's `update` (and other LLM-free subcommands, see
+        # _llm_free_subcmd) take NO --backend on the CLI (re-extraction is
+        # local), yet this fence needs a declared provider to apply the matrix
+        # for any non-himmel corpus. Accept a declared backend via env
+        # (HIMMEL-779) ONLY when BOTH (a) the subcommand is LLM-free and (b)
+        # the corpus is non-himmel - for himmel-code with no flag the
+        # local-ollama default stands unconditionally below; a declared value
+        # must NOT override it (HIMMEL-779 CR round-1: it previously did,
+        # since this check ran for ANY subcommand/corpus whenever the env var
+        # was set). A provider-using (non-LLM-free) subcommand with no
+        # --backend still hits the deny below even when the env var is set -
+        # declaration cannot substitute for a real --backend on a subcommand
+        # whose CLI actually accepts one. The declared value flows through the
+        # SAME matrix eval + provider map as a real --backend token either way
+        # (it is NOT a bypass).
+        if [ "$corpus" != "himmel-code" ] && _llm_free_subcmd "$subcmd" && [ -n "${GRAPHIFY_DECLARED_BACKEND:-}" ]; then
+            backend_raw="$GRAPHIFY_DECLARED_BACKEND"
+        elif [ "$corpus" != "himmel-code" ]; then
+            deny "pass --backend explicitly or set GRAPHIFY_DECLARED_BACKEND on an LLM-free subcommand (GRAPHIFY_DECLARED_BACKEND only applies to LLM-free subcommands (update)) (graphify auto-detects cloud keys; the fence cannot see which) [corpus=$corpus subcommand=${subcmd:-<none>}]"
         fi
-        backend_effective="ollama"
+    fi
+    if [ -z "$backend_raw" ]; then
+        backend_effective="ollama"      # himmel-code, no flag, no declaration -> local default
     else
         backend_effective="$(_lc "$(_strip_wrap "$backend_raw")")"
     fi
@@ -594,7 +753,7 @@ _deny_on_classify_sentinel() {
 # command word. Skips the subcommand, classifies path-like tokens
 # (most-restrictive-wins), applies the CWD fallback, then applies the verdict.
 evaluate_invocation() {
-    local have_sub=0 subcmd="" want_backend=0 backend=""
+    local have_sub=0 subcmd="" want_backend=0 backend="" backend_norm="" backend_set=0 backend_conflict=0
     local unclassifiable=0 best_rank=-1 best_corpus="" best_target="" any_declared=0
     local tok st c r declared skip_redir_target=0
 
@@ -612,10 +771,10 @@ evaluate_invocation() {
                 # ('&>' can't occur: '&' is a clause splitter.)
                 continue ;;
         esac
-        if [ "$want_backend" = 1 ]; then backend="$tok"; want_backend=0; continue; fi
+        if [ "$want_backend" = 1 ]; then _record_backend "$tok"; want_backend=0; continue; fi
         case "$tok" in
             --backend)   want_backend=1; continue ;;
-            --backend=*) backend="${tok#--backend=}"; continue ;;
+            --backend=*) _record_backend "${tok#--backend=}"; continue ;;
         esac
         case "$tok" in
             -*) continue ;;                    # other flag
@@ -626,14 +785,32 @@ evaluate_invocation() {
             # path-like it is a target, NOT a subcommand word - classify it
             # (fall through) instead of swallowing it. Otherwise it is the
             # subcommand token: record + skip (never classified).
-            if ! is_path_like "$st"; then
+            # HIMMEL-779: a BARE word (no slash/drive/extension) that EXISTS
+            # under the tool-call cwd is likewise a target the agent dropped
+            # without a ./ prefix, not a subcommand word - classify it so a
+            # bare PHI dir name cannot be swallowed and let the cwd fallback
+            # or a co-present safe path win (fail-open).
+            if ! is_path_like "$st" && ! _exists_under_cwd "$st"; then
                 subcmd="$(_lc "$st")"; have_sub=1; continue
             fi
             have_sub=1
         fi
         st="$(_strip_wrap "$tok")"
         [ -n "$st" ] || continue
-        is_path_like "$st" || continue          # non-path arg (node name, question, model)
+        # A path-like token, OR a bare word that exists under the tool-call
+        # cwd, is a target (HIMMEL-779: bare-word targets were previously
+        # skipped as "non-path args", so a bare PHI dir name alongside a safe
+        # path let the safe path win the rank). is_path_like is checked first
+        # so _exists_under_cwd only ever stats a clean single bare segment.
+        is_path_like "$st" || _exists_under_cwd "$st" || continue
+        # FIX 2 (HIMMEL-779 CR round-1): a PRIOR clause in this invocation ran
+        # cd/pushd/popd (CD_SEEN, set below the clause loop) - a relative or
+        # bare-word target can no longer be trusted to resolve against
+        # TOOL_CWD (the shell may have moved). Deny rather than guess; an
+        # absolute target is cwd-independent and still classifies normally.
+        if [ "$CD_SEEN" = 1 ] && ! _is_abs_target "$st"; then
+            deny "relative graphify target after an in-command cd - the fence cannot track the shell's cwd; use absolute paths ($st)"
+        fi
         c="$(classify "$st")"
         _deny_on_classify_sentinel "$c"
         # The declared bit is INVOCATION-WIDE: ANY marker-derived token forces
@@ -657,18 +834,36 @@ evaluate_invocation() {
         deny "unclassifiable path in graphify '$subcmd' invocation (fail-closed): $CMD"
     fi
 
+    # HIMMEL-779: order-insensitive backend parse. Two DISTINCT backend values
+    # in one invocation DENY (instead of last-wins) so a blocked backend placed
+    # before an allowed one cannot be hidden. The same value repeated is not a
+    # conflict. Checked after the unclassifiable deny; either way it fails closed.
+    if [ "$backend_conflict" = 1 ]; then
+        deny "conflicting --backend values in one graphify invocation (a blocked backend must stay blocked in every flag order): $CMD"
+    fi
+
     if [ -n "$best_corpus" ]; then
-        apply_verdict "$best_corpus" "$best_target" "$backend" "$any_declared"
+        apply_verdict "$best_corpus" "$best_target" "$backend" "$any_declared" "$subcmd"
         return
     fi
 
-    # No classified path-like token -> the corpus is the one around the CWD.
-    c="$(classify "$PWD")"
+    # No classified path-like token -> the corpus is the one around the CWD
+    # (the TOOL-CALL cwd; HIMMEL-779). FIX 2 (HIMMEL-779 CR round-1): if a
+    # PRIOR clause in this invocation changed directory (cd/pushd/popd, see
+    # CD_SEEN below the clause loop), the tool-call cwd captured before the
+    # whole command ran no longer reflects where THIS clause actually
+    # executes - falling back to it here would silently trust a stale cwd.
+    # Deny instead of guessing (fail-closed; cd is not tracked, see header
+    # limitation (f)).
+    if [ "$CD_SEEN" = 1 ]; then
+        deny "relative graphify target after an in-command cd - the fence cannot track the shell's cwd; use absolute paths (no path arg, cwd fallback)"
+    fi
+    c="$(classify "$TOOL_CWD")"
     _deny_on_classify_sentinel "$c"
     declared=0
     case "$c" in *@declared) c="${c%@declared}"; declared=1 ;; esac
-    [ -n "$c" ] || deny "unclassifiable cwd for graphify '$subcmd' (no classifiable path arg): $PWD"
-    apply_verdict "$c" "$PWD" "$backend" "$declared"
+    [ -n "$c" ] || deny "unclassifiable cwd for graphify '$subcmd' (no classifiable path arg): $TOOL_CWD"
+    apply_verdict "$c" "$TOOL_CWD" "$backend" "$declared" "$subcmd"
 }
 
 # classify_clause <clause-tokens...> - resolve the command-position token of one
@@ -840,12 +1035,27 @@ tmp="${tmp//;/$'\n'}"
 tmp="${tmp//|/$'\n'}"
 tmp="${tmp//&/$'\n'}"
 
+# CD_SEEN (HIMMEL-779 CR round-1, FIX 2): 1 once a PRIOR clause's
+# command-position token was a cwd-changing builtin (cd/pushd/popd). The while
+# loop below is NOT subshelled (here-string redirection, not a pipe), so this
+# mutation is visible to every later iteration in this same process - a
+# graphify clause evaluated after that point cannot trust TOOL_CWD or a
+# relative target (see the CD_SEEN checks in evaluate_invocation).
+CD_SEEN=0
+
 while IFS= read -r clause || [ -n "$clause" ]; do
     [ -n "$clause" ] || continue
     # shellcheck disable=SC2086 # intentional word split for tokenisation
     set -- $clause
     [ "$#" -gt 0 ] || continue
     classify_clause "$@"
+    # Same _strip_cmd normalization as the graphify command-position match
+    # (quotes/backticks/$/(/)/backslash stripped), checked on the clause's own
+    # first token - a cd/pushd/popd here means every LATER clause runs in an
+    # untracked cwd.
+    case "$(_strip_cmd "$1")" in
+        cd|pushd|popd) CD_SEEN=1 ;;
+    esac
 done <<< "$tmp"
 
 exit 0
