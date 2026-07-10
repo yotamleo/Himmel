@@ -82,6 +82,12 @@
 #   6  time collision — the requested time exactly matches another HIMMEL-*
 #      scheduled task (HIMMEL-407). Pass --force to override, or choose a
 #      different time (suggest_free_slot prints nearby free options).
+#   7  refused — the handover's queue lock (scripts/handover/queue-lock.sh)
+#      is currently FRESH: a session is LIVE on this queue right now
+#      (HIMMEL-856). Override with QUEUE_LOCK_TAKEOVER=1.
+#   8  refused — this handover already has a PENDING arm recorded on
+#      ANOTHER host in the cross-machine arms registry (HIMMEL-856; the
+#      win2+main double-arm shape). Override with ARM_DUP_OK=1.
 set -euo pipefail
 
 RESUME_TIME=""
@@ -226,6 +232,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/telemetry.sh" 2>/dev/null || true
 command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
+
+# handover_root (HIMMEL-856): resolves the single handover root (Mode A
+# inline vs Mode B external HANDOVER_DIR) so the queue-lock + arms-registry
+# checks below read/write the SAME root every other scripts/handover/*.sh
+# script uses -- never a hardcoded ./handovers/ (scripts/handover/CLAUDE.md
+# hard rule). Same caller-side fail-open contract as telemetry.sh above
+# (HIMMEL-236 T24): an absent/broken lib must never break arming -- a
+# missing handover_root just means the queue-lock/arms-registry checks
+# below WARN and skip (see their own guard), same as the existing dedup/
+# collision checks proceed unaffected.
+# shellcheck source=../lib/handover-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null || true
+command -v handover_root >/dev/null 2>&1 || handover_root() { return 2; }
 
 # Canonicalise a path, tolerating non-existent ones: GNU realpath -m, else
 # armored python3 pathlib, else the input unchanged (best effort — matches
@@ -1394,6 +1414,131 @@ if [ "$DEDUP_ANY" -eq 0 ]; then
     fi
 fi
 
+# HIMMEL-856: queue-lock FRESH-holder refusal + cross-machine arms-registry
+# dedup -- the two double-fire vectors from the 2026-07-10 00:51 incident
+# that the existing same-machine dedup above cannot see: (a) a LIVE session
+# is actively working this queue right now (scripts/handover/queue-lock.sh),
+# and (b) this SAME handover already has a PENDING arm recorded on ANOTHER
+# host (schtasks/cron are per-machine, so win2 arming a handover was
+# invisible to main arming the same handover until this registry). Both
+# checks are skipped -- WARN, never fail-closed -- when the handover root
+# can't be resolved (HANDOVER_DIR unset and no inline handovers/ dir yet):
+# this mechanism is additive infrastructure and must never brick every arm.
+#
+# LAYERED DEFENSE -- why check-then-append is acceptable here (HIMMEL-856
+# CR, codex-1): the registry is a git-synced FILE shared across machines,
+# so the pre-arm check and the append below cannot be made atomic across
+# hosts -- two hosts arming in the same sync window can both pass the
+# check. That is BY DESIGN: the registry is the ADVISORY EARLY-WARNING
+# layer (catch the double-arm before either session fires); the queue lock
+# taken at session start (overnight step 0 / queue-lock.sh acquire) is the
+# ENFORCING layer -- a double-arm that slips through the registry still
+# serializes there, with exactly one winner. The cheap mitigation for the
+# window is the post-append re-read at the bottom of this script: after
+# recording our own arm we re-scan the registry and, if another host's arm
+# for the same handover became visible, print a LOUD operator warning
+# naming the hosts (no non-zero exit -- the arm already happened; the
+# warning is the value). Do not re-raise this as a race bug.
+
+# _arm_registry_foreign_hits <registry-file> <handover-path> <this-host> --
+# print a "; "-joined summary of every registry line recording an arm for
+# <handover-path> on a host OTHER than <this-host> (empty = none). Always
+# rc 0 (errexit-safe: greps are || true-guarded, the loop ends in a case).
+_arm_registry_foreign_hits() {
+    local _reg="$1" _ho="$2" _this_host="$3"
+    local _needle _hits="" _line _rhost _rfire _rtask
+    _needle="\"handover\":\"$(printf '%s' "$_ho" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')\""
+    [ -f "$_reg" ] || { printf '%s' ""; return 0; }
+    while IFS= read -r _line; do
+        [ -z "$_line" ] && continue
+        case "$_line" in
+            *"$_needle"*) ;;
+            *) continue ;;
+        esac
+        # `|| true` on each: grep -o exits 1 on no-match, and under
+        # `set -o pipefail` that would otherwise abort the whole arm on a
+        # registry line missing one of these fields.
+        _rhost=$(printf '%s' "$_line" | grep -o '"host":"[^"]*"' | head -1 | sed -e 's/^"host":"//' -e 's/"$//') || true
+        [ -z "$_rhost" ] && continue
+        [ "$_rhost" = "$_this_host" ] && continue
+        _rfire=$(printf '%s' "$_line" | grep -o '"fire-at":"[^"]*"' | head -1 | sed -e 's/^"fire-at":"//' -e 's/"$//') || true
+        _rtask=$(printf '%s' "$_line" | grep -o '"task-name":"[^"]*"' | head -1 | sed -e 's/^"task-name":"//' -e 's/"$//') || true
+        _hits="${_hits:+$_hits; }host=$_rhost fire-at=$_rfire task=$_rtask"
+    done < "$_reg"
+    printf '%s' "$_hits"
+}
+
+# _arm_hostname -- this machine's identity for registry records/compares.
+_arm_hostname() {
+    local _h=""
+    _h=$(hostname 2>/dev/null) || _h=""
+    [ -z "$_h" ] && _h="${COMPUTERNAME:-${HOSTNAME:-unknown-host}}"
+    printf '%s' "$_h"
+}
+
+HIMMEL_856_HR_ROOT=""
+HIMMEL_856_HR_ROOT=$(handover_root 2>/dev/null) || HIMMEL_856_HR_ROOT=""
+if [ -z "$HIMMEL_856_HR_ROOT" ]; then
+    echo "WARN arm-resume: could not resolve the handover root -- skipping queue-lock + arms-registry checks (HIMMEL-856)" >&2
+else
+    QUEUE_LOCK_SH="$SCRIPT_DIR/queue-lock.sh"
+    if [ -f "$QUEUE_LOCK_SH" ]; then
+        # `|| _ql_status_rc=$?` (not a bare assignment) -- under `set -e`,
+        # `var=$(cmd)` where cmd exits non-zero (rc=11/12 = held here, a
+        # normal outcome, not a script error) would otherwise abort the
+        # whole arm right here instead of reaching the rc-7 refusal below.
+        _ql_status_rc=0
+        _ql_status_out=$(bash "$QUEUE_LOCK_SH" status "$HANDOVER_PATH" 2>&1) || _ql_status_rc=$?
+        if [ "$_ql_status_rc" -eq 11 ]; then
+            if [ "${QUEUE_LOCK_TAKEOVER:-}" = "1" ]; then
+                {
+                    echo "WARN arm-resume: queue lock is FRESH for this handover -- arming anyway (QUEUE_LOCK_TAKEOVER=1):"
+                    printf '%s\n' "$_ql_status_out" | sed 's/^/    /'
+                } >&2
+            else
+                {
+                    echo "ERR arm-resume: refusing to arm -- a session is LIVE on this handover's queue right now:"
+                    printf '%s\n' "$_ql_status_out" | sed 's/^/    /'
+                    echo "Two live sessions on the same queue is exactly the 2026-07-10 00:51 double-fire (HIMMEL-856)."
+                    echo "Override with QUEUE_LOCK_TAKEOVER=1 if you are certain the holder is gone/stale."
+                } >&2
+                exit 7
+            fi
+        elif [ "$_ql_status_rc" -ne 0 ] && [ "$_ql_status_rc" -ne 12 ]; then
+            # rc 0 = free, 12 = held-but-STALE (arming over a stale lock is
+            # fine -- the session-start acquire supersedes it). Anything
+            # else means the status check itself broke -- say so instead of
+            # silently proceeding as if the queue were verified free.
+            echo "WARN arm-resume: queue-lock status failed (rc=$_ql_status_rc) -- proceeding WITHOUT the queue-lock check:" >&2
+            printf '%s\n' "$_ql_status_out" | sed 's/^/    /' >&2
+        fi
+        unset _ql_status_out _ql_status_rc
+    else
+        # Missing script is a skipped check, not a silent pass -- same WARN
+        # contract as the unresolvable-handover-root branch above.
+        echo "WARN arm-resume: queue-lock.sh not found at '$QUEUE_LOCK_SH' -- skipping the queue-lock check (HIMMEL-856)" >&2
+    fi
+
+    HIMMEL_856_ARMS_REGISTRY="$HIMMEL_856_HR_ROOT/.locks/arms.jsonl"
+    if [ -f "$HIMMEL_856_ARMS_REGISTRY" ]; then
+        _arm_dup_hits=$(_arm_registry_foreign_hits "$HIMMEL_856_ARMS_REGISTRY" "$HANDOVER_PATH" "$(_arm_hostname)")
+        if [ -n "$_arm_dup_hits" ]; then
+            if [ "${ARM_DUP_OK:-}" = "1" ]; then
+                echo "WARN arm-resume: this handover already has a PENDING arm on another host ($_arm_dup_hits) -- arming anyway (ARM_DUP_OK=1)" >&2
+            else
+                {
+                    echo "ERR arm-resume: refusing to arm -- this handover already has a PENDING arm recorded on another host:"
+                    echo "    $_arm_dup_hits"
+                    echo "This is the win2+main-both-arming shape from the 2026-07-10 00:51 incident (HIMMEL-856)."
+                    echo "Override with ARM_DUP_OK=1 if you are certain the other host's arm is stale/cancelled."
+                } >&2
+                exit 8
+            fi
+        fi
+        unset _arm_dup_hits
+    fi
+fi
+
 # HIMMEL-407: time-collision check — runs AFTER the same-handover dedup block
 # and BEFORE schedule_arm. Runs even under --dry-run (it mutates nothing).
 # On exact-minute collision: rc=6 (HARD-REFUSE) unless --force or --dedup-any.
@@ -1683,6 +1828,46 @@ fi
 # measure-during protocol wants — one append, after the dry-run gate so
 # --dry-run keeps its "touch nothing" contract.
 telemetry_emit handover-arm-resume armed "time=$RESUME_TIME" "force=$FORCE"
+
+# HIMMEL-856: record this arm in the cross-machine arms registry, same
+# dry-run gate as telemetry above. Best-effort -- a registry write failure
+# must never fail an arm that already succeeded (fail-open, loud trail).
+if [ -n "${HIMMEL_856_HR_ROOT:-}" ]; then
+    _arm_host=$(_arm_hostname)
+    mkdir -p "$HIMMEL_856_HR_ROOT/.locks" 2>/dev/null
+    if ! printf '{"host":"%s","handover":"%s","fire-at":"%s","task-name":"%s"}\n' \
+        "$(printf '%s' "$_arm_host" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
+        "$(printf '%s' "$HANDOVER_PATH" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
+        "$(printf '%s' "$AT_STAMP" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
+        "$(printf '%s' "$TASK_NAME" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
+        >> "$HIMMEL_856_HR_ROOT/.locks/arms.jsonl" 2>/dev/null; then
+        echo "WARN arm-resume: failed to append the arms.jsonl registry record (the arm itself still succeeded)" >&2
+    fi
+    # Post-append re-read (HIMMEL-856 CR, codex-1 -- see the LAYERED
+    # DEFENSE comment at the pre-arm check): the check-then-append pair
+    # above cannot be atomic across machines, so AFTER recording our own
+    # arm, re-scan the registry. If another host's arm for this same
+    # handover is now visible (it landed in the check->append window, or
+    # was let through with ARM_DUP_OK=1), tell the operator LOUDLY which
+    # hosts double-armed. No non-zero exit -- the arm already happened;
+    # the queue lock at session start is the layer that serializes the
+    # actual double-fire.
+    _arm_post_hits=$(_arm_registry_foreign_hits "$HIMMEL_856_HR_ROOT/.locks/arms.jsonl" "$HANDOVER_PATH" "$_arm_host")
+    if [ -n "$_arm_post_hits" ]; then
+        {
+            echo "=================================================================="
+            echo "  WARN arm-resume: DOUBLE-ARM DETECTED (HIMMEL-856)"
+            echo "  This handover now has PENDING arms on MULTIPLE hosts:"
+            echo "      this host:  $_arm_host"
+            echo "      also armed: $_arm_post_hits"
+            echo "  Cancel one of them (schtasks /delete on the losing host, or"
+            echo "  its cron/at equivalent) -- otherwise both will fire and"
+            echo "  serialize only at the queue lock, wasting a session slot."
+            echo "=================================================================="
+        } >&2
+    fi
+    unset _arm_host _arm_post_hits
+fi
 
 cat <<EOF
 
