@@ -4,7 +4,7 @@ export function renderEnvironmentLine(ctx) {
     const display = ctx.config?.display;
     const totalCounts = ctx.claudeMdCount + ctx.rulesCount + ctx.mcpCount + ctx.hooksCount;
     const threshold = display?.environmentThreshold ?? 0;
-    const showCounts = display?.showConfigCounts !== false;
+    const showCounts = display?.showConfigCounts === true;
     const showOutputStyle = display?.showOutputStyle === true;
     const parts = [];
     if (showCounts && totalCounts >= threshold && totalCounts > 0) {
