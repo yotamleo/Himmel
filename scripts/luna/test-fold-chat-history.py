@@ -164,6 +164,102 @@ class TestParseChatgpt(unittest.TestCase):
             self.assertEqual([c.id for c in convs], ["c1", "c2"])
 
 
+def gemini_chat(title="Test chat", updated_at="2026-06-20T17:48:45.000Z",
+                 turns=(("user", "hi"), ("assistant", "hello"))):
+    """Build a raw Gemini AI-Toolbox chat dict (one file under conversations/)."""
+    raw = {
+        "exported_at": "2026-07-10T17:31:44.585Z",
+        "conversation": [{"role": r, "content": c} for r, c in turns],
+        "exported_by": {"name": "AI Toolbox"},
+    }
+    if title is not None:
+        raw["title"] = title
+    if updated_at is not None:
+        raw["updated_at"] = updated_at
+    return raw
+
+
+class TestParseGemini(unittest.TestCase):
+    def _write(self, ed, name, raw):
+        convdir = ed / "conversations"
+        convdir.mkdir(exist_ok=True)
+        (convdir / name).write_text(json.dumps(raw), encoding="utf-8")
+
+    def test_two_turn_fixture(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td)
+            self._write(ed, "chat1.json", gemini_chat())
+            convs = fch.parse_gemini(ed)
+            self.assertEqual(len(convs), 1)
+            conv = convs[0]
+            self.assertEqual(conv.title, "Test chat")
+            self.assertEqual([t.role for t in conv.turns], ["user", "assistant"])
+            self.assertEqual(conv.turns[0].segments, [("text", "hi")])
+            self.assertEqual(conv.turns[1].segments, [("text", "hello")])
+            self.assertTrue(conv.id.startswith("synthetic-"))
+            self.assertEqual(conv.model, "gemini")
+            self.assertEqual(conv.created, datetime.fromisoformat(
+                "2026-06-20T17:48:45.000+00:00"))
+            self.assertEqual(conv.updated, conv.created)
+
+    def test_synthetic_id_stable_across_reexport(self):
+        # A re-export changes volatile fields (exported_at) but not the chat;
+        # the synthetic id must stay identical so a re-fold dedups instead of
+        # duplicating (HIMMEL-885 codex-adv).
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td)
+            first = gemini_chat()
+            second = gemini_chat()
+            second["exported_at"] = "2027-01-01T00:00:00.000Z"
+            self.assertNotEqual(first["exported_at"], second["exported_at"])
+            self._write(ed, "first.json", first)
+            id1 = fch.parse_gemini(ed)[0].id
+            with tempfile.TemporaryDirectory() as td2:
+                ed2 = Path(td2)
+                self._write(ed2, "second.json", second)
+                id2 = fch.parse_gemini(ed2)[0].id
+            self.assertEqual(id1, id2)
+
+    def test_reads_all_files_sorted(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td)
+            self._write(ed, "b.json", gemini_chat(title="B"))
+            self._write(ed, "a.json", gemini_chat(title="A"))
+            convs = fch.parse_gemini(ed)
+            self.assertEqual([c.title for c in convs], ["A", "B"])
+
+    def test_empty_conversation_array_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td)
+            self._write(ed, "empty.json", gemini_chat(turns=()))
+            self.assertEqual(fch.parse_gemini(ed), [])
+
+    def test_non_render_role_and_blank_content_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td)
+            self._write(ed, "sys.json", gemini_chat(
+                turns=(("system", "sys prompt"), ("user", ""))))
+            self.assertEqual(fch.parse_gemini(ed), [])
+
+    def test_missing_updated_at_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td)
+            self._write(ed, "nodate.json", gemini_chat(updated_at=None))
+            self.assertEqual(fch.parse_gemini(ed), [])
+
+    def test_invalid_updated_at_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td)
+            self._write(ed, "baddate.json", gemini_chat(updated_at="not-a-date"))
+            self.assertEqual(fch.parse_gemini(ed), [])
+
+    def test_missing_title_defaults_untitled(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td)
+            self._write(ed, "notitle.json", gemini_chat(title=None))
+            self.assertEqual(fch.parse_gemini(ed)[0].title, "untitled")
+
+
 class TestMultimodalSegments(unittest.TestCase):
     def test_image_pointer_both_schemes(self):
         raw = chain({"role": "user", "ctype": "multimodal_text", "parts": [
@@ -275,6 +371,35 @@ class TestSlugAndRender(unittest.TestCase):
         self.assertIn("[image: file_gone — not in export archive]", text)
         self.assertIn("[audio: not in export archive]", text)
         self.assertNotIn("file_gone.dat", text)
+
+    def test_render_note_gemini_frontmatter(self):
+        conv = fch.Conversation(
+            id="synthetic-abc123def456",
+            title="Gemini chat",
+            created=datetime(2026, 6, 20, 17, 48, 45),
+            updated=datetime(2026, 6, 20, 17, 48, 45),
+            model="gemini",
+            turns=[fch.Turn("user", [("text", "hi")]),
+                   fch.Turn("assistant", [("text", "hello")])],
+        )
+        text = fch.render_note(conv, "chats/gemini/_assets", {}, provider="gemini")
+        self.assertIn("source: gemini", text)
+        self.assertIn("tags: [chat-import, gemini]", text)
+        self.assertIn("model: gemini", text)
+        self.assertIn("messages: 2", text)
+        self.assertIn("enriched: false", text)
+        self.assertIn("conversation_id: synthetic-abc123def456", text)
+        self.assertIn("# Gemini chat", text)
+        self.assertIn("## 🧑 User\n\nhi", text)
+        self.assertIn("## 🤖 Assistant\n\nhello", text)
+
+    def test_render_note_default_provider_is_chatgpt(self):
+        # existing 2-arg call sites (no provider kwarg) must stay byte-identical
+        conv = fch.parse_conversation(chain(u("hi"), a("hello"), conv_id="cid-2",
+                                            title="X", create_time=1755500000.0))
+        text_default = fch.render_note(conv, "chats/gpt/_assets", {})
+        text_explicit = fch.render_note(conv, "chats/gpt/_assets", {}, provider="chatgpt")
+        self.assertEqual(text_default, text_explicit)
 
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
@@ -641,6 +766,62 @@ class TestFold(unittest.TestCase):
                 self.assertIsInstance(line, str)
 
 
+class TestFoldGemini(unittest.TestCase):
+    def _make_export(self, td, chats=None):
+        ed = Path(td) / "export"
+        convdir = ed / "conversations"
+        convdir.mkdir(parents=True)
+        if chats is None:
+            chats = [
+                ("real-chat.json", gemini_chat(title="Real chat")),
+                ("empty-chat.json", gemini_chat(title="Empty", turns=())),
+            ]
+        for name, raw in chats:
+            (convdir / name).write_text(json.dumps(raw), encoding="utf-8")
+        return ed
+
+    def test_fold_end_to_end_writes_gemini_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = self._make_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            report = fch.fold("gemini", ed, vault, dry_run=False)
+            self.assertEqual(report.notes_created, 1)
+            self.assertEqual(report.convs_skipped_empty, 1)
+            gemini_dir = vault / "chats" / "gemini"
+            notes = list(gemini_dir.rglob("*.md"))
+            self.assertEqual(len(notes), 1)
+            created = datetime.fromisoformat("2026-06-20T17:48:45.000+00:00")
+            self.assertTrue((gemini_dir / f"{created:%Y-%m}").is_dir())
+            text = notes[0].read_text(encoding="utf-8")
+            self.assertIn("source: gemini", text)
+            self.assertIn("tags: [chat-import, gemini]", text)
+            self.assertIn("model: gemini", text)
+            self.assertIn("conversation_id: synthetic-", text)
+
+    def test_fold_dry_run_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = self._make_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            report = fch.fold("gemini", ed, vault, dry_run=True)
+            self.assertEqual(report.notes_created, 1)
+            self.assertEqual(list(vault.iterdir()), [])
+
+    def test_fold_idempotent_rerun(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = self._make_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            report1 = fch.fold("gemini", ed, vault, dry_run=False)
+            self.assertEqual(report1.notes_created, 1)
+            report2 = fch.fold("gemini", ed, vault, dry_run=False)
+            self.assertEqual(report2.notes_created, 0)
+            self.assertEqual(report2.notes_skipped_existing, 1)
+            notes = list((vault / "chats" / "gemini").rglob("*.md"))
+            self.assertEqual(len(notes), 1)
+
+
 class TestCli(unittest.TestCase):
     def test_main_dry_run_prints_report(self):
         with tempfile.TemporaryDirectory() as td:
@@ -662,7 +843,7 @@ class TestCli(unittest.TestCase):
 
     def test_main_rejects_unknown_provider(self):
         with self.assertRaises(SystemExit):
-            fch.main(["--provider", "gemini", "--export", "x", "--vault", "y"])
+            fch.main(["--provider", "bogus", "--export", "x", "--vault", "y"])
 
     def test_main_rejects_missing_export_dir(self):
         with tempfile.TemporaryDirectory() as td:

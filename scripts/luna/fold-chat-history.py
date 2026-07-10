@@ -23,7 +23,10 @@ if hasattr(sys.stdout, "reconfigure"):  # Windows cp1252 trap
     sys.stderr.reconfigure(encoding="utf-8")
 
 # provider-id -> vault subdir under chats/ (spec: stated once)
-PROVIDER_DIRS = {"chatgpt": "gpt"}
+PROVIDER_DIRS = {"chatgpt": "gpt", "gemini": "gemini"}
+
+# provider-id -> (source: value, tags: gpt-style second tag) for render_note
+_SOURCE_TAGS = {"chatgpt": ("chatgpt", "gpt"), "gemini": ("gemini", "gemini")}
 
 RENDER_ROLES = ("user", "assistant")
 SKIP_CONTENT_TYPES = ("thoughts", "reasoning_recap")
@@ -150,6 +153,57 @@ def parse_chatgpt(export_dir):
     return conversations
 
 
+def parse_gemini(export_dir):
+    """All renderable Conversations from conversations/*.json (sorted).
+
+    AI Toolbox export: one chat object per file, no natural id/create_time/
+    model — id is synthetic (full-record hash), created/updated both come
+    from updated_at, model is the constant "gemini".
+    """
+    export_dir = Path(export_dir)
+    conversations = []
+    for jf in sorted(export_dir.glob("conversations/*.json")):
+        raw = json.loads(jf.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            continue
+        updated_at = raw.get("updated_at")
+        if not isinstance(updated_at, str) or not updated_at:
+            continue
+        try:
+            created = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        turns = []
+        for item in raw.get("conversation") or []:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            content = item.get("content")
+            if role in RENDER_ROLES and isinstance(content, str) and content.strip():
+                turns.append(Turn(role, [("text", content.strip())]))
+        if not turns:
+            continue
+        # Hash only the STABLE identifying fields, not the whole record: the
+        # export carries volatile per-export fields (exported_at) that would
+        # otherwise change the id on every re-export and defeat idempotent
+        # dedup, duplicating notes when the full history is re-exported later.
+        seed = json.dumps(
+            {"title": raw.get("title"),
+             "updated_at": updated_at,
+             "conversation": raw.get("conversation")},
+            sort_keys=True, ensure_ascii=False)
+        cid = "synthetic-" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+        conversations.append(Conversation(
+            id=cid,
+            title=(raw.get("title") or "").strip() or "untitled",
+            created=created,
+            updated=created,
+            model="gemini",
+            turns=turns,
+        ))
+    return conversations
+
+
 # Windows-unsafe + Obsidian-link-breaking chars, stripped from slugs
 _SLUG_STRIP = re.compile(r'[<>:"/\\|?*#^\[\]]')
 _ROLE_HEADINGS = {"user": "## 🧑 User", "assistant": "## 🤖 Assistant"}
@@ -194,11 +248,12 @@ def _render_segment(segment, assets_dir_rel, available):
     return "[audio: not in export archive]"
 
 
-def render_note(conv, assets_dir_rel, available):
+def render_note(conv, assets_dir_rel, available, provider="chatgpt"):
+    source, tag = _SOURCE_TAGS[provider]
     lines = [
         "---",
         "type: chat-import",
-        "source: chatgpt",
+        f"source: {source}",
         f"conversation_id: {conv.id}",
         f"created: {conv.created:%Y-%m-%d}",
     ]
@@ -208,7 +263,7 @@ def render_note(conv, assets_dir_rel, available):
         lines.append(f"model: {conv.model}")
     lines += [
         f"messages: {len(conv.turns)}",
-        "tags: [chat-import, gpt]",
+        f"tags: [chat-import, {tag}]",
         "enriched: false",
         "---",
         "",
@@ -399,14 +454,18 @@ def fold(provider, export_dir, vault_dir, dry_run):
     assets_dir = provider_dir / "_assets"
     assets_dir_rel = f"chats/{PROVIDER_DIRS[provider]}/_assets"
 
-    all_raw_count = 0
-    conversations = []
-    for jf in sorted(export_dir.glob("conversations-*.json")):
-        for raw in json.loads(jf.read_text(encoding="utf-8")):
-            all_raw_count += 1
-            conv = parse_conversation(raw)
-            if conv:
-                conversations.append(conv)
+    if provider == "gemini":
+        all_raw_count = len(list(export_dir.glob("conversations/*.json")))
+        conversations = parse_gemini(export_dir)
+    else:
+        all_raw_count = 0
+        conversations = []
+        for jf in sorted(export_dir.glob("conversations-*.json")):
+            for raw in json.loads(jf.read_text(encoding="utf-8")):
+                all_raw_count += 1
+                conv = parse_conversation(raw)
+                if conv:
+                    conversations.append(conv)
 
     report = Report(dry_run=dry_run)
     report.convs_skipped_empty = all_raw_count - len(conversations)
@@ -441,7 +500,8 @@ def fold(provider, export_dir, vault_dir, dry_run):
         if not dry_run:
             month_dir.mkdir(parents=True, exist_ok=True)
             (month_dir / name).write_text(
-                render_note(conv, assets_dir_rel, available), encoding="utf-8")
+                render_note(conv, assets_dir_rel, available, provider=provider),
+                encoding="utf-8")
         report.notes_created += 1
 
     try:
