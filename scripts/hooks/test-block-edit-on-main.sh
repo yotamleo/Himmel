@@ -354,6 +354,128 @@ assert_rc "T26 EDIT_ON_MAIN_OK=1 + marker present allows (env bypass wins)" 0 \
 assert_rc "T27 EDIT_ON_MAIN_OK=1 allows feature branch in primary (HIMMEL-507)" 0 \
     "$(rc_of "$SANDBOX/featrepo/foo.js" EDIT_ON_MAIN_OK=1)"
 
+# --- HIMMEL-876: untracked+gitignored exemption cases ---
+
+# T28: TRACKED file on main -> BLOCK, even when it also matches a .gitignore
+# pattern (force-added). Proves `ls-files --error-unmatch` (tracked) wins over
+# `check-ignore` — a tracked file is never exempted, since it CAN be committed.
+mkrepo "$SANDBOX/trackedrepo" main
+printf '*.local.json\n' > "$SANDBOX/trackedrepo/.gitignore"
+printf '{}\n' > "$SANDBOX/trackedrepo/tracked.local.json"
+git -C "$SANDBOX/trackedrepo" add -f .gitignore tracked.local.json
+git -C "$SANDBOX/trackedrepo" -c user.email=t@t -c user.name=t commit -q -m init
+assert_rc "T28 tracked file (even if gitignore-matching) on main blocks" 2 \
+    "$(rc_of "$SANDBOX/trackedrepo/tracked.local.json")"
+
+# T29: UNTRACKED + gitignored file on main -> ALLOW (the false-positive fix —
+# mirrors the real HIMMEL-876 case, scripts/cr/critics.local.json).
+mkrepo "$SANDBOX/ignoredrepo" main
+printf '*.local.json\n' > "$SANDBOX/ignoredrepo/.gitignore"
+git -C "$SANDBOX/ignoredrepo" add .gitignore
+git -C "$SANDBOX/ignoredrepo" -c user.email=t@t -c user.name=t commit -q -m init
+printf '{}\n' > "$SANDBOX/ignoredrepo/critics.local.json"
+assert_rc "T29 untracked+gitignored file on main allows (HIMMEL-876)" 0 \
+    "$(rc_of "$SANDBOX/ignoredrepo/critics.local.json")"
+
+# T30: UNTRACKED but NOT gitignored file on main (repo HAS a .gitignore, just
+# one that doesn't match this file) -> BLOCK. Could still be `git add`ed.
+printf '{}\n' > "$SANDBOX/ignoredrepo/plain.js"
+assert_rc "T30 untracked-but-not-ignored file on main blocks (HIMMEL-876)" 2 \
+    "$(rc_of "$SANDBOX/ignoredrepo/plain.js")"
+
+# T31: untracked+gitignored file on a FEATURE branch in the PRIMARY checkout
+# (block_reason=primary-feature) -> ALLOW. Proves the exemption covers both
+# block paths (mirrors T25's coverage of the .single-writer opt-out).
+mkrepo "$SANDBOX/ignoredfeatrepo" feat/x
+printf '*.local.json\n' > "$SANDBOX/ignoredfeatrepo/.gitignore"
+git -C "$SANDBOX/ignoredfeatrepo" add .gitignore
+git -C "$SANDBOX/ignoredfeatrepo" -c user.email=t@t -c user.name=t commit -q -m init
+printf '{}\n' > "$SANDBOX/ignoredfeatrepo/critics.local.json"
+assert_rc "T31 untracked+gitignored file on feature-branch primary allows (HIMMEL-876)" 0 \
+    "$(rc_of "$SANDBOX/ignoredfeatrepo/critics.local.json")"
+
+# T32: a git failure DURING the ls-files/check-ignore check (a stub `git` on
+# PATH that fails just those two subcommands, real git otherwise) -> fail
+# CLOSED (BLOCK). Uses ignoredrepo (has a real .gitignore match) to prove the
+# would-be-exempted case still blocks when the check itself errors.
+GITSTUB_BIN=$(mktemp -d)
+REAL_GIT=$(command -v git)
+cat > "$GITSTUB_BIN/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+    case "\$a" in
+        ls-files|check-ignore) exit 129 ;;
+    esac
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$GITSTUB_BIN/git"
+assert_rc "T32 git failure during untracked/ignore check fails closed (HIMMEL-876)" 2 \
+    "$(rc_of "$SANDBOX/ignoredrepo/critics.local.json" PATH="$GITSTUB_BIN:$PATH")"
+rm -rf "$GITSTUB_BIN" 2>/dev/null || true
+
+# T33/T34: secret-class carve-out (HIMMEL-876 CR). An untracked+gitignored
+# file whose basename is in the block-read-secrets.sh secret set (.env,
+# id_ed25519, ...) NEVER takes the exemption — it stays BLOCKED on main,
+# preserving the incidental protection of the real .env in the primary
+# checkout from unattended clobbering.
+mkrepo "$SANDBOX/secretrepo" main
+printf '.env\nid_ed25519\n' > "$SANDBOX/secretrepo/.gitignore"
+git -C "$SANDBOX/secretrepo" add .gitignore
+git -C "$SANDBOX/secretrepo" -c user.email=t@t -c user.name=t commit -q -m init
+printf 'KEY=x\n' > "$SANDBOX/secretrepo/.env"
+printf 'key\n' > "$SANDBOX/secretrepo/id_ed25519"
+assert_rc "T33 untracked+gitignored .env on main still blocks (secret carve-out)" 2 \
+    "$(rc_of "$SANDBOX/secretrepo/.env")"
+assert_rc "T34 untracked+gitignored id_ed25519 on main still blocks (secret carve-out)" 2 \
+    "$(rc_of "$SANDBOX/secretrepo/id_ed25519")"
+
+# T35: the non-secret allow case (T29's critics.local.json shape) still
+# ALLOWS after the carve-out — the exemption itself is unchanged for the
+# operator-local-state class it was built for. Also locks the lowercase
+# fold in is_secret_basename: an already-lowercase non-secret basename
+# must be unaffected by the case-insensitivity fix.
+assert_rc "T35 untracked+gitignored critics.local.json still allows after carve-out" 0 \
+    "$(rc_of "$SANDBOX/ignoredrepo/critics.local.json")"
+
+# T36: stub ONLY check-ignore to fail (rc=128) while ls-files stays REAL and
+# returns rc=1 (untracked) -> must still BLOCK. Locks the &&-short-circuit
+# fail-closed guarantee: T32 fails ls-files first, so the check-ignore leg
+# of the conjunction was never actually reached by a test until now.
+CIONLY_BIN=$(mktemp -d)
+REAL_GIT=$(command -v git)
+cat > "$CIONLY_BIN/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+    case "\$a" in
+        check-ignore) exit 128 ;;
+    esac
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$CIONLY_BIN/git"
+assert_rc "T36 check-ignore failure alone fails closed (ls-files real, HIMMEL-876)" 2 \
+    "$(rc_of "$SANDBOX/ignoredrepo/critics.local.json" PATH="$CIONLY_BIN:$PATH")"
+rm -rf "$CIONLY_BIN" 2>/dev/null || true
+
+# T37: mixed-case secret basenames (.ENV, ID_RSA) untracked, with a lowercase
+# gitignore, on main -> BLOCKED. On a case-INsensitive host (Windows/macOS,
+# core.ignorecase=true) check-ignore folds .ENV onto the '.env' ignore line,
+# so only the lowercased is_secret_basename carve-out denies; on a
+# case-SENSITIVE host (Linux CI) .ENV is simply not ignored and the
+# untracked-not-ignored fall-through denies. Either layer -> rc=2; the
+# assertion is deliberately layer-agnostic.
+mkrepo "$SANDBOX/casesecretrepo" main
+printf '.env\nid_rsa\n' > "$SANDBOX/casesecretrepo/.gitignore"
+git -C "$SANDBOX/casesecretrepo" add .gitignore
+git -C "$SANDBOX/casesecretrepo" -c user.email=t@t -c user.name=t commit -q -m init
+printf 'KEY=x\n' > "$SANDBOX/casesecretrepo/.ENV"
+printf 'key\n' > "$SANDBOX/casesecretrepo/ID_RSA"
+assert_rc "T37 untracked .ENV on main blocks (case-insensitive carve-out)" 2 \
+    "$(rc_of "$SANDBOX/casesecretrepo/.ENV")"
+assert_rc "T37b untracked ID_RSA on main blocks (case-insensitive carve-out)" 2 \
+    "$(rc_of "$SANDBOX/casesecretrepo/ID_RSA")"
+
 # Clean up the worktree registration before removing the sandbox (avoids a
 # dangling `git worktree` admin record under SANDBOX/wtrepo).
 git -C "$SANDBOX/wtrepo" worktree remove --force "$SANDBOX/wtrepo/.claude/worktrees/feat+x" 2>/dev/null || true
