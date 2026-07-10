@@ -102,3 +102,60 @@ handover_mode() {
         echo "A"
     fi
 }
+
+# --- flat-JSON helpers for the handover lock/registry files (HIMMEL-882) ---
+# Shared by scripts/handover/queue-lock.sh and scripts/handover/arm-resume.sh
+# (both already source this lib) for owner.json and the cross-machine arms
+# registry (.locks/arms.jsonl). PURE BASH, ZERO FORKS by design: results are
+# returned in globals (_HP_ESC / _HP_FIELD), not on stdout, so hot rewrite
+# loops can call them per line without a command substitution -- the CR
+# round-3 Critical measured the previous printf|grep|head|sed pipelines at
+# ~185-200ms/LINE on Windows/Git-Bash (8+ forks each), which let a ~300-line
+# registry rewrite outlive the arms-mutex's own 60s staleness expiry.
+
+# _hp_json_escape <value> -- JSON-escape a string value into $_HP_ESC
+# (backslashes doubled, double quotes escaped). The inverse pairing of
+# _hp_json_field below: what one writes, the other reads back verbatim.
+_HP_ESC=""
+_hp_json_escape() {
+    _HP_ESC="${1//\\/\\\\}"
+    _HP_ESC="${_HP_ESC//\"/\\\"}"
+}
+
+# _hp_json_field <json-string> <key> -- extract the string value of a flat
+# "key":"value" field into $_HP_FIELD (empty on miss/malformed). The value
+# is returned in its RAW (still-escaped) form, so comparisons stay
+# escaped-vs-escaped against _hp_json_escape output. Escape-AWARE: the
+# value ends at the first UNESCAPED closing quote -- an escaped quote is
+# recognized by trailing-backslash parity (odd run of backslashes before
+# the quote = the quote is escaped and part of the value), so values
+# containing \" and backslash runs extract correctly on every platform
+# (macOS/Linux paths may legally contain double quotes). First occurrence
+# of the key wins, matching the grep|head -1 extractors this replaces.
+_HP_FIELD=""
+_hp_json_field() {
+    local _hp_rest _hp_chunk _hp_bs
+    _HP_FIELD=""
+    case "$1" in
+        *"\"$2\":\""*) ;;
+        *) return 0 ;;
+    esac
+    _hp_rest="${1#*"\"$2\":\""}"
+    while :; do
+        _hp_chunk="${_hp_rest%%\"*}"
+        if [ "$_hp_chunk" = "$_hp_rest" ]; then
+            # no closing quote at all -- malformed field, report a miss
+            _HP_FIELD=""
+            return 0
+        fi
+        _HP_FIELD="$_HP_FIELD$_hp_chunk"
+        _hp_rest="${_hp_rest#*\"}"
+        # trailing-backslash run of the chunk; ## leaves the chunk intact
+        # when it is ALL backslashes (no non-backslash to anchor on).
+        _hp_bs="${_hp_chunk##*[!\\]}"
+        if [ $(( ${#_hp_bs} % 2 )) -eq 0 ]; then
+            return 0   # even parity: the quote was unescaped -- value ends
+        fi
+        _HP_FIELD="$_HP_FIELD\""   # odd parity: escaped quote, keep scanning
+    done
+}

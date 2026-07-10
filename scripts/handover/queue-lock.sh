@@ -63,6 +63,27 @@
 # the previous and new holder, so the next reader sees the trail. `status`
 # warns when a FRESH lock's heartbeat age exceeds half the TTL (aging).
 #
+# ARMS REGISTRY LIFECYCLE (HIMMEL-882): arm-resume.sh (HIMMEL-856) records a
+# PENDING record in <handover-root>/.locks/arms.jsonl every time it arms a
+# relaunch, and refuses (rc=8) to re-arm a handover that already has a
+# PENDING record on another host. Nothing previously retired a record when
+# its arm fired, so that refusal was permanent -- ARM_DUP_OK=1 was needed on
+# every re-arm forever, even long after the original arm had fired and its
+# session finished. A successful `acquire` -- the session actually starting
+# on this handover's queue -- is proof this host's PENDING arm(s) for it
+# have fired, so `acquire` CONSUMES them (drops the record(s); see
+# _ql_arms_registry_retire_fired -- CR round-3 retention: fired records are
+# inert, so the registry stays O(active arms) instead of growing forever).
+# This closes the gap on the reading side; arm-resume.sh separately prunes
+# its OWN host's stale records at re-schedule time (its own HIMMEL-882
+# comment) so a superseded arm that never fires doesn't linger either.
+# Registry rewrites here and in arm-resume.sh are serialized by a
+# short-lived OWNER-TOKENED mkdir-CAS mutex at <registry>.lock (rounds 2/3)
+# -- the read-filter-rewrite pair is a lost-update race between concurrent
+# writers that the original append-only `>>` never had, and the owner token
+# stops a holder that outlived the mutex expiry from clobbering its
+# reclaimer.
+#
 # EXIT CODES:
 #   acquire:   0  lock acquired (fresh dir, stale takeover, or forced
 #                 takeover -- stderr says which); the last stdout line is
@@ -151,16 +172,25 @@ _ql_hostname() {
 
 _ql_default_session() { printf '%s-pid%s' "$(_ql_hostname)" "$$"; }
 
+# JSON escape/extract now delegate to the shared pure-bash helpers in
+# scripts/lib/handover-path.sh (_hp_json_escape / _hp_json_field, HIMMEL-882
+# CR round-3): zero forks per call site that uses them directly, and the
+# extractor is escape-AWARE (scans to the first UNESCAPED closing quote by
+# trailing-backslash parity), so values containing \" and backslash runs --
+# legal in macOS/Linux paths -- extract correctly. These $()-style wrappers
+# keep the existing one-shot call sites unchanged; HOT loops call the _hp_*
+# helpers directly (no substitution fork).
 _ql_json_escape() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+    _hp_json_escape "$1"
+    printf '%s' "$_HP_ESC"
 }
 
 # _ql_json_field <file> <key> -- extract a flat string field's value.
-# The lock JSON is always single-line, flat, all-string values, so a
-# simple grep -o is sufficient (no jq dependency).
 _ql_json_field() {
-    grep -o "\"$2\":\"[^\"]*\"" "$1" 2>/dev/null | head -1 \
-        | sed -e "s/^\"$2\":\"//" -e 's/"$//'
+    local _raw=""
+    _raw=$(cat "$1" 2>/dev/null) || _raw=""
+    _hp_json_field "$_raw" "$2"
+    printf '%s' "$_HP_FIELD"
 }
 
 # _ql_json_field_str <json-string> <key> -- same extraction from an
@@ -169,8 +199,8 @@ _ql_json_field() {
 # operate on the same generation -- N separate file reads could straddle
 # a concurrent owner.json rewrite.
 _ql_json_field_str() {
-    printf '%s' "$1" | grep -o "\"$2\":\"[^\"]*\"" 2>/dev/null | head -1 \
-        | sed -e "s/^\"$2\":\"//" -e 's/"$//'
+    _hp_json_field "$1" "$2"
+    printf '%s' "$_HP_FIELD"
 }
 
 # _ql_slug <handover-path> -- normalize a handover path to a filesystem-
@@ -191,6 +221,11 @@ _ql_slug() {
         esac
     fi
     p=$(printf '%s' "$p" | sed 's#/#__#g')
+    # NOTE: this final fold also collapses every OTHER non [A-Za-z0-9_-]
+    # separator (space, dot, colon, ...) to "-", so e.g. "foo bar" and
+    # "foo-bar" slug identically -- same theoretical-only caveat as the "/"
+    # fold above; the repo handover naming convention never produces two
+    # distinct paths differing only in which separator they use.
     printf '%s' "$p" | tr -c 'A-Za-z0-9_-' '-'
 }
 
@@ -229,6 +264,198 @@ _ql_lockdir() {
     printf '%s/.locks/queue/%s.lock' "$root" "$slug"
 }
 
+# _ql_arms_registry_retire_fired <handover-path> -- HIMMEL-882 registry
+# lifecycle: on a SUCCESSFUL acquire, CONSUME (drop) every still-pending
+# <handover-root>/.locks/arms.jsonl record for THIS host + this handover.
+# arms.jsonl (scripts/handover/arm-resume.sh, HIMMEL-856) is append-only
+# and nothing previously retired a record when its arm fired -- so a re-arm
+# of the SAME handover from ANOTHER host kept matching the stale record and
+# hard-refusing rc=8 forever (ARM_DUP_OK=1 required on every re-arm). An
+# armed session that reaches the point of acquiring its queue lock has, by
+# definition, fired, so this is the natural place to retire its record(s).
+# RETENTION SHAPE (CR round-3): a fired record is inert coordination state
+# (the foreign-hits scan skips it; takeovers.log + session notes are the
+# audit trail), so instead of marking records "fired" and carrying them
+# forever -- which made the registry O(all arms ever) and a long rewrite a
+# mutex-expiry hazard -- consumed records are DROPPED, and any legacy
+# '"fired":"true"'-marked line (written by the earlier marking revision) is
+# garbage-collected in passing. Both rewriters GC this way, so the file
+# stays O(active arms). Matches by host+handover only (not task-name/
+# fire-at) so it also clears earlier SAME-host records left by a re-arm/
+# --force replace that never itself fired (arm-resume.sh additionally
+# prunes those at re-schedule time -- see its own HIMMEL-882 comment).
+#
+# Best-effort and fail-open: a missing/unresolvable registry, a mutex
+# timeout, a mid-rewrite mutex theft, or a write failure just leaves the
+# record(s) unconsumed (WARN on stderr) -- same contract as the rest of the
+# arms-registry integration (a registry hiccup must never fail an acquire
+# that otherwise succeeded). CRASH-atomic: filtered content is written to a
+# same-dir temp file, then mv'd into place (matches _ql_write_owner's
+# owner.json pattern) so a mid-write crash never leaves a torn arms.jsonl
+# -- but temp+mv alone does NOT protect against a CONCURRENT rewriter, so
+# the whole read-filter-rewrite runs under the OWNER-TOKENED
+# _ql_arms_mutex_acquire mkdir-CAS mutex shared with arm-resume.sh's
+# _arm_registry_replace_and_append, and the mv happens only while the
+# owner token still names us (round-3: a holder that outlives the mutex's
+# 60s staleness expiry gets reclaimed; its snapshot is then stale and its
+# blind mv/rmdir would corrupt the reclaimer's generation).
+_ql_arms_registry_retire_fired() {
+    local ho="$1" root reg host tmp tok cur line l_host l_ho host_esc ho_esc changed=0 failed=0 stolen=0 wfail_err=""
+    # handover_root failure here would require an external race (the root
+    # deleted out from under us mid-acquire): _ql_lockdir already resolved
+    # this same root moments earlier via handover_root_ensure, so this is
+    # structurally can't-happen on this call path -- silent return is
+    # intentional, not an oversight (unlike every other failure branch
+    # below, which WARNs).
+    root=$(handover_root 2>/dev/null) || return 0
+    [ -n "$root" ] || return 0
+    reg="$root/.locks/arms.jsonl"
+    [ -f "$reg" ] || return 0
+    if ! _ql_arms_mutex_acquire "$reg"; then
+        echo "WARN queue-lock: could not lock the arms registry ($reg.lock) -- skipping the consume; this host's arm record stays PENDING (a later acquire or same-host re-arm clears it; a mutex stuck from a crashed writer self-expires after 60s)" >&2
+        return 0
+    fi
+    tok="$_QL_ARMS_MUTEX_TOKEN"
+    # Compare ESCAPED-vs-ESCAPED (round-2): the registry stores JSON-escaped
+    # values, so the needles get the same transform before comparing.
+    host=$(_ql_hostname)
+    _hp_json_escape "$host"; host_esc="$_HP_ESC"
+    _hp_json_escape "$ho";   ho_esc="$_HP_ESC"
+    tmp="$reg.tmp.$$"
+    # round-4 (sfh-2): capture stderr instead of discarding it, so a real
+    # write failure (disk full / permission denied / RO-fs / AV lock) folds
+    # its first line into the WARN below and reads differently from a
+    # mutex timeout or theft -- 2>/dev/null made all of these look like the
+    # same generic "could not rewrite" message.
+    if wfail_err=$( { : > "$tmp"; } 2>&1 ); then
+        # `|| [ -n "$line" ]` (round-2 Critical): read returns 1 at
+        # EOF-without-newline while still filling $line -- without the guard
+        # the rewrite silently DELETES a final record lacking a trailing
+        # newline. Blank lines are dropped on rewrite (aligned with
+        # _arm_registry_replace_and_append). ZERO forks per line (round-3
+        # Critical): _hp_json_field returns via $_HP_FIELD, no $().
+        while IFS= read -r line || [ -n "$line" ]; do
+            [ -z "$line" ] && continue
+            case "$line" in
+                *'"fired":"true"'*) changed=1; continue ;;   # GC legacy fired-marked line
+            esac
+            _hp_json_field "$line" host;     l_host="$_HP_FIELD"
+            _hp_json_field "$line" handover; l_ho="$_HP_FIELD"
+            if [ "$l_host" = "$host_esc" ] && [ "$l_ho" = "$ho_esc" ]; then
+                changed=1
+                continue   # consumed: this acquire IS the arm's session start
+            fi
+            printf '%s\n' "$line" >> "$tmp" || failed=1
+            [ "$failed" -eq 1 ] && break
+        done < "$reg"
+    else
+        failed=1
+    fi
+    if [ "$failed" -eq 0 ] && [ "$changed" -eq 1 ]; then
+        # OWNER-TOKEN verify (round-3): mv only while the mutex still names
+        # us. If it was reclaimed mid-rewrite our snapshot is stale -- skip
+        # the mv (the release below WARNs about the theft). The cat->mv
+        # window is microseconds vs the whole-rewrite window it replaces --
+        # residual (accepted), same class as the release function's
+        # token-read->rmdir gap documented below.
+        cur=$(cat "$reg.lock/owner" 2>/dev/null) || cur=""
+        if [ "$cur" = "$tok" ]; then
+            if wfail_err=$(mv -f "$tmp" "$reg" 2>&1); then
+                echo "queue-lock: consumed this host's pending arms-registry record(s) for this handover (arm fired)" >&2
+            else
+                failed=1
+            fi
+        else
+            stolen=1
+        fi
+    fi
+    if [ "$failed" -eq 1 ]; then
+        echo "WARN queue-lock: could not rewrite the arms registry ($reg) -- consume skipped; this host's arm record stays PENDING (the lock acquire itself is unaffected)${wfail_err:+ (write error: ${wfail_err%%$'\n'*})}" >&2
+    fi
+    if [ "$failed" -eq 1 ] || [ "$stolen" -eq 1 ] || [ "$changed" -eq 0 ]; then
+        rm -f "$tmp" 2>/dev/null
+    fi
+    _ql_arms_mutex_release "$reg" "$tok" || true
+    return 0
+}
+
+# _ql_arms_mutex_acquire <registry-file> -- HIMMEL-882 CR round-2/3: acquire
+# the short-lived mkdir-CAS mutex (<registry>.lock, a DIRECTORY -- the same
+# atomic primitive as the queue lock and the takeover claim above) that
+# serializes every arms.jsonl read-filter-rewrite writer (this script's
+# consume + arm-resume.sh's prune-and-append; the path AND the owner-token
+# protocol must stay identical in both). On success the lock dir carries an
+# `owner` token file and $_QL_ARMS_MUTEX_TOKEN names it -- release/mv are
+# compare-then-act against that token (round-3: a holder reclaimed after
+# the 60s staleness expiry must not blind-rmdir the reclaimer's lock or mv
+# a stale snapshot over its rewrite). Bounded: nominal ~4s of 0.1s retries
+# (platform-dependent -- measured ~2x that, ~8.7s, on Windows/Git-Bash from
+# per-iteration mkdir+sleep overhead), then rc 1 -- callers keep the
+# fail-open contract (WARN + skip the registry op, never fail the
+# acquire/arm). A mutex stranded by a crashed writer is cleared when its
+# dir mtime is >=60s old, re-probed every 10th iteration across the retry
+# budget (round-4: NOT every iteration -- py_armor_mtime forks python and
+# Windows python startup is ~100-300ms; probing every 10th yields ~4 probes
+# across the ~40-iteration budget, bounding the extra forks while still
+# catching a lock that crosses the 60s threshold mid-wait -- a lock that
+# was, say, 56s old when this contender started is not yet stale at
+# tries==0 but would previously never be re-checked, burning the whole
+# retry budget instead of reclaiming it; a failed probe never clears).
+_QL_ARMS_MUTEX_TOKEN=""
+_ql_arms_mutex_acquire() {
+    local reg="$1" lockd tries=0 m now tok
+    lockd="$reg.lock"
+    while :; do
+        if mkdir "$lockd" 2>/dev/null; then
+            # Brand the lock. pid alone is unique among LIVE processes;
+            # $RANDOM guards the recycled-pid edge. A failed brand write is
+            # a failed acquire (fail-open) -- an unbranded lock would make
+            # every release read as a theft.
+            tok="pid$$-r$RANDOM"
+            if ! printf '%s' "$tok" > "$lockd/owner" 2>/dev/null; then
+                rm -f "$lockd/owner" 2>/dev/null
+                rmdir "$lockd" 2>/dev/null
+                return 1
+            fi
+            _QL_ARMS_MUTEX_TOKEN="$tok"
+            return 0
+        fi
+        if [ $(( tries % 10 )) -eq 0 ]; then
+            m=$(py_armor_mtime "$lockd") || m=""
+            now=$(_ql_now_epoch)
+            if [ -n "$m" ] && [ -n "$now" ] && [ $(( now - m )) -ge 60 ]; then
+                rm -rf "$lockd" 2>/dev/null
+            fi
+        fi
+        tries=$((tries + 1))
+        if [ "$tries" -ge 40 ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
+# _ql_arms_mutex_release <registry-file> <token> -- compare-then-delete
+# (round-3): release the arms mutex ONLY if its owner token is still ours.
+# A mismatch means the lock was reclaimed from under us (we outlived the
+# 60s staleness expiry mid-rewrite) -- WARN loudly and leave the
+# reclaimer's lock alone (rc 1); the caller has already skipped its stale
+# mv on the same comparison. Residual (accepted): a reclaim landing between
+# the token read and the rmdir can still lose its lock -- a microsecond
+# window vs the whole-rewrite window this closes, same accepted-residual
+# class as the takeover claim's rm->mkdir gap above.
+_ql_arms_mutex_release() {
+    local reg="$1" tok="$2" cur=""
+    cur=$(cat "$reg.lock/owner" 2>/dev/null) || cur=""
+    if [ "$cur" != "$tok" ]; then
+        echo "WARN queue-lock: the arms-registry mutex ($reg.lock) was reclaimed by another writer mid-rewrite (owner token mismatch: now '${cur:-none}') -- leaving their lock in place; this rewrite was discarded" >&2
+        return 1
+    fi
+    rm -f "$reg.lock/owner" 2>/dev/null
+    rmdir "$reg.lock" 2>/dev/null
+    return 0
+}
+
 queue_lock_acquire() {
     local ho="${1:-}" session="${2:-}"
     if [ -z "$ho" ]; then
@@ -261,6 +488,7 @@ queue_lock_acquire() {
             return 1
         fi
         echo "queue-lock: acquired (session=$session host=$host)"
+        _ql_arms_registry_retire_fired "$ho"
         echo "release-token: $session"
         return 0
     fi
@@ -397,6 +625,7 @@ queue_lock_acquire() {
             rmdir "$claim" 2>/dev/null
             echo "queue-lock: took over ($reason) -- previous holder: session=$o_session host=$o_host" >&2
             echo "queue-lock: acquired (session=$session host=$host)"
+            _ql_arms_registry_retire_fired "$ho"
             echo "release-token: $session"
             return 0
         fi

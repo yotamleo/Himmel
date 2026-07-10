@@ -111,6 +111,49 @@ got=$(handover_root)
 expected=$(cd "$TMP/external" && pwd)
 assert_eq "T6 trailing slash normalised" "$expected" "$got"
 
+# T7: _hp_json_field / _hp_json_escape unit cases (HIMMEL-882 CR round-4
+# test-2). Direct coverage of the flat-JSON parser/escaper shared by
+# queue-lock.sh and arm-resume.sh (previously only exercised indirectly
+# through their acquire/rewrite flows).
+
+# T7a: a value ending in a backslash immediately before the field's closing
+# quote (the parity boundary) -- the raw value's trailing backslash doubles
+# under _hp_json_escape, so the closing quote must read as UNESCAPED (an
+# EVEN trailing-backslash count) and correctly terminate the value there.
+raw7a=$'abc\\'
+_hp_json_escape "$raw7a"; esc7a="$_HP_ESC"
+line7a="{\"key\":\"$esc7a\",\"next\":\"ok\"}"
+_hp_json_field "$line7a" key
+assert_eq "T7a trailing-backslash value extracts in full (escaped form)" "$esc7a" "$_HP_FIELD"
+_hp_json_field "$line7a" next
+assert_eq "T7a boundary correctly found -- next field still parses" "ok" "$_HP_FIELD"
+
+# T7b: a raw value with a literal backslash immediately adjacent to a
+# literal double-quote -- escaping produces an ODD trailing-backslash run
+# before an ESCAPED quote (the quote is part of the value, not the
+# terminator), so the scan must keep going past it instead of truncating.
+raw7b='x\"y'
+_hp_json_escape "$raw7b"; esc7b="$_HP_ESC"
+line7b="{\"key\":\"$esc7b\"}"
+_hp_json_field "$line7b" key
+assert_eq "T7b backslash-adjacent-to-quote value round-trips" "$esc7b" "$_HP_FIELD"
+
+# T7c: an empty value ("key":"") extracts as the empty string, not a miss,
+# and the scan still finds the next field's boundary correctly.
+line7c='{"key":"","next":"ok"}'
+_hp_json_field "$line7c" key
+assert_eq "T7c empty value extracts as empty string" "" "$_HP_FIELD"
+_hp_json_field "$line7c" next
+assert_eq "T7c boundary correctly found after an empty value" "ok" "$_HP_FIELD"
+
+# T7d: a key entirely absent from the line -- the return-on-miss branch
+# reports the miss via $_HP_FIELD="" rather than leaving a stale value from
+# a prior call.
+_HP_FIELD="stale-from-a-prior-call"
+line7d='{"other":"value"}'
+_hp_json_field "$line7d" key
+assert_eq "T7d absent key resets _HP_FIELD to empty (miss branch)" "" "$_HP_FIELD"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
