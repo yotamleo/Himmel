@@ -230,35 +230,14 @@ else
     block_reason="main"
 fi
 
-# Secret-file class (HIMMEL-876 CR carve-out). MIRRORS is_secret_path() in
-# block-read-secrets.sh — that hook is the source of truth for this pattern
-# set; KEEP THE TWO LISTS IN SYNC when either changes. A secret file (.env,
-# keys, credentials) is typically gitignored precisely BECAUSE it is
-# sensitive machine-local state — exempting it below would let an unattended
-# Write clobber the REAL .env in the primary checkout, a trust-boundary
-# regression the pre-exemption hook incidentally prevented. Basename match,
-# path-prefix agnostic, globs only. The basename is lowercased BEFORE the
-# match (tr, bash-3.2-safe — no ${var,,}): git ls-files/check-ignore fold
-# case on Windows/macOS (core.ignorecase=true), so `.ENV` would otherwise
-# slip past these lowercase arms yet still read as ignored (matching .env)
-# and take the exemption — clobbering the real .env on a case-insensitive
-# filesystem. Case arms stay lowercase.
-is_secret_basename() {
-    local base="${1##*/}"
-    base=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
-    case "$base" in
-        # Non-secret env TEMPLATES (committed placeholders) — carved out
-        # BEFORE the .env.* secret arm, first-match-wins (same order as
-        # block-read-secrets.sh).
-        .env.example|.env.sample|.env.template|.env.dist) return 1 ;;
-        .env|.env.*|.envrc|id_rsa|id_ed25519|credentials.json|secrets.yaml|secrets.yml)
-            return 0 ;;
-        *.pem|*.key|*.p12|*.pfx)
-            return 0 ;;
-    esac
-    return 1
-}
-
+# Secret-file class (HIMMEL-876 CR carve-out). A secret file (.env, keys,
+# credentials) is typically gitignored precisely BECAUSE it is sensitive
+# machine-local state — exempting it below would let an unattended Write
+# clobber the REAL .env in the primary checkout, a trust-boundary regression
+# the pre-exemption hook incidentally prevented. `is_secret_basename` (shared
+# with block-read-secrets.sh, HIMMEL-879 — see scripts/guardrails/lib.sh for
+# the pattern list + case-fold rationale) is sourced above.
+#
 # Untracked + gitignored exemption (HIMMEL-876): the guard's purpose is
 # protecting TRACKED code from an on-main/primary-feature commit — a file
 # that is both untracked AND gitignored (e.g. the HIMMEL-727 operator-local

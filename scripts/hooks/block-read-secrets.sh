@@ -70,6 +70,10 @@
 #     territory; the gate targets the common accidental shapes.
 #   * `cat <<< .env` here-string normalises to `cat < < < .env` and trips the
 #     `<`-redirect path though it reads no file.
+#   * NTFS alternate data streams: `.env:stream` is not matched (low risk —
+#     POSIX toolchains don't address ADS via the colon syntax).
+#   * 8.3 short names: `ENV~1` is not matched (short-name generation is off
+#     by default on modern NTFS volumes).
 #
 # Hook input arrives on stdin as JSON. Exit codes:
 #   0 — allow (default)
@@ -80,6 +84,14 @@
 # re-enable. Or comment the hook in .claude/settings.json.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+    echo "block-read-secrets: cannot source guardrails/lib.sh — refusing to evaluate" >&2
+    exit 2
+fi
+
 if ! command -v jq >/dev/null 2>&1; then
     echo "block-read-secrets: jq not on PATH — refusing to evaluate; install jq or comment the hook in .claude/settings.json" >&2
     exit 2
@@ -88,25 +100,12 @@ fi
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
+# is_secret_path: this hook's name for the shared is_secret_basename predicate
+# (scripts/guardrails/lib.sh, HIMMEL-879 — pattern list + case-fold rationale
+# live there; also shared with block-edit-on-main.sh). Kept as a thin wrapper
+# so the many call sites below don't need to change name.
 is_secret_path() {
-    # Match against basename (path-prefix agnostic). Globs only; no regex.
-    local p="${1#\"}"; p="${p#\'}"
-    p="${p%\"}"; p="${p%\'}"
-    local base="${p##*/}"
-    case "$base" in
-        # Non-secret env TEMPLATES — committed placeholder files whose whole
-        # purpose is to be shareable (the himmel one is verified scrubbed,
-        # HIMMEL-286). Reading these is safe; carve them out BEFORE the .env.*
-        # secret arm (first-match-wins) so the bridge/operator can `cat .env.example`
-        # without the guard mis-firing. Real value files (.env, .env.local,
-        # .env.production, …) are NOT listed here and stay blocked.
-        .env.example|.env.sample|.env.template|.env.dist) return 1 ;;
-        .env|.env.*|.envrc|id_rsa|id_ed25519|credentials.json|secrets.yaml|secrets.yml)
-            return 0 ;;
-        *.pem|*.key|*.p12|*.pfx)
-            return 0 ;;
-    esac
-    return 1
+    is_secret_basename "$@"
 }
 
 is_reader_cmd() {
