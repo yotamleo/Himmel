@@ -56,6 +56,7 @@ Complete checklist for getting a new machine to full working state.
 | `schtasks` | Built-in. Used by `scripts/handover/arm-resume.sh` for cron-armed Claude relaunches. **Always invoke under `MSYS_NO_PATHCONV=1`** (per HIMMEL-125) to prevent Git Bash from mangling `/flag` args into Windows paths. |
 | `MSYS_NO_PATHCONV` awareness | Documented in CLAUDE.md handover section. |
 | WSL or PowerShell-only is **NOT sufficient** — most operator-facing tooling needs bash. WSL works but adds an indirection layer; native Git Bash is the tested path. |
+| WSL2 / Docker resource caps | If WSL or Docker Desktop is installed, cap them before multi-agent runs. Start with `%UserProfile%\.wslconfig` `memory=16GB`, `processors=8`, `swap=4GB` on a 48 GB / 32-logical-core class host, then tune after measuring. Docker gets separate Desktop/per-container caps. See [environment gotchas](../internals/environment-gotchas.md#windows-wsl--docker-resource-budget). |
 
 ### Scripts requiring bash 4+
 
@@ -245,7 +246,7 @@ result to exactly one guard entry. Safe to run multiple times.
 ## 4. himmel Repo
 
 ```bash
-git clone https://github.com/yotamleo/Himmel.git
+git clone https://github.com/yotamleo/himmel.git
 cd himmel
 bash scripts/setup.sh
 ```
@@ -256,6 +257,18 @@ the **UNIVERSAL hooks** into `~/.claude/settings.json` (user scope — see §4b)
 A missing required tool (git/jq/python3) is auto-fetched via the platform
 package manager when possible, else setup fails loud with the manual command
 (HIMMEL-460).
+
+> **Build artifacts are gitignored — build them after cloning (HIMMEL-842).**
+> `scripts/jira/dist/index.js` and `scripts/bitbucket/dist/index.js` are TypeScript
+> build outputs, NOT tracked. A fresh clone has no `dist/`, so a direct
+> `node scripts/jira/dist/index.js list` dies with `MODULE_NOT_FOUND`. `bash scripts/setup.sh`
+> builds them (step `[3/10]`, Jira + Bitbucket CLIs). If you skip setup, build by hand:
+> ```bash
+> cd scripts/jira && npm install && npm run build && cd ../..   # or: bun install && bun run build
+> node scripts/jira/dist/index.js list                          # verify
+> # same shape for the Bitbucket CLI: cd scripts/bitbucket && npm install && npm run build
+> ```
+> (Needs Node 18+ with npm, OR bun — see [§1](#1-required-environment-himmel-123).)
 
 To **update** an existing checkout later, run `/himmel-update` (or `bash scripts/himmel-update.sh`):
 `git pull` is what delivers himmel updates — marketplace `autoUpdate` does not.
@@ -390,6 +403,48 @@ For **whole-subtree** coverage (any launch cwd under the root refused), also
 list the absolute PHI roots one-per-line in `~/.config/claude-glm/phi-roots` —
 same PHI-tier refusal, but subtree-wide.
 
+### 4e. qmd search bootstrap (optional — HIMMEL-842)
+
+> **Skip** if you don't use qmd semantic search over the himmel docs + luna vault. Optional; the harness runs without it.
+
+qmd is a local markdown search engine (BM25 + vector + rerank). himmel's fork
+runs it as a **shared HTTP daemon** (`localhost:8181`, HIMMEL-592) auto-brought-up
+by the `qmd` plugin's SessionStart hook, so every session shares one read-only
+index. The standalone CLI is installed via **bun** (project rule: bun, never npm).
+`bash scripts/setup.sh` step `[4/10]` + `adopt.sh`'s `wire_qmd_core` already
+register the `himmel` collection and best-effort `qmd pull`; this section is the
+**manual bootstrap** if you skipped those or want the luna vault indexed too.
+
+```bash
+# 1. Install the qmd CLI (bun global). bun itself: see §1 foundational table.
+bun add -g @tobilu/qmd@latest
+
+# 2. Pull the embedding + rerank models. WARNING: ~2.1 GB download — Ctrl-C-safe
+#    (re-run resumes); run once. Semantic search needs these.
+qmd pull
+
+# 3. Register collections (idempotent; skip ones you don't have).
+qmd collection add /path/to/himmel          --name himmel
+qmd collection add ~/Documents/luna         --name luna     # your luna vault
+
+# 4. Index + embed. `qmd update` ingests new/changed docs (fast); `qmd embed`
+#    builds the vector embeddings — CPU-intensive on a big vault (the luna vault
+#    can take tens of minutes on first embed; subsequent runs are incremental).
+qmd update
+qmd embed
+
+# Verify
+qmd collection list
+qmd status                    # collections + doc counts (index registered)
+```
+
+Notes:
+- The qmd Claude plugin ships a path stub in `~/.claude/plugins/cache/qmd/qmd/<v>/bin/qmd`
+  that references an unbuilt `dist/`; `scripts/lib/fix-qmd-stub.sh` (run by setup +
+  adopt) rewrites it to locate the bun-global install so plain `qmd` works everywhere.
+- Stop the shared daemon: `qmd mcp stop`. The index is sqlite+WAL read per query, so
+  docs added by `qmd update` are live immediately — no daemon restart needed.
+
 ---
 
 ## 5. Luna Vault
@@ -466,7 +521,7 @@ git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/plug
 
 # 2. himmel marketplace (carries handover + obsidian-triage + claude-obsidian)
 # inside Claude Code:
-#   /plugin marketplace add yotamleo/Himmel
+#   /plugin marketplace add yotamleo/himmel
 #   /plugin install handover
 #
 #   # Optional — Web Clipper triage stack (skip if §5a was skipped)
@@ -499,7 +554,7 @@ The setup scripts let you pick: `scripts/machine-setup/install-plugins.{sh,ps1}`
 // <repo>/.claude/settings.json
 {
   "extraKnownMarketplaces": {
-    "himmel": { "source": { "source": "github", "repo": "yotamleo/Himmel" } }
+    "himmel": { "source": { "source": "github", "repo": "yotamleo/himmel" } }
   },
   "enabledPlugins": {
     "obsidian-triage@himmel": true
@@ -517,7 +572,7 @@ choosing the scope per command — copy-paste instead:
 
 ```bash
 # Register the marketplace (once; the GitHub slug is case-insensitive)
-claude plugin marketplace add yotamleo/Himmel
+claude plugin marketplace add yotamleo/himmel
 
 # Install plugins — --scope user (default, every project) or
 # --scope project (this repo's .claude/settings.json, shared on clone)
@@ -535,8 +590,8 @@ Or install the entire manifest (the himmel plugins plus the official ones it
 builds on) in one shot from a clone, at a chosen scope:
 
 ```bash
-git clone https://github.com/yotamleo/Himmel
-bash Himmel/scripts/machine-setup/install-plugins.sh --scope project
+git clone https://github.com/yotamleo/himmel
+bash himmel/scripts/machine-setup/install-plugins.sh --scope project
 ```
 
 The plugins carry their own slash commands + skills — that's all you need to use

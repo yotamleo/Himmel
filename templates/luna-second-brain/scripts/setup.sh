@@ -86,6 +86,20 @@ if [ "${#_missing[@]}" -gt 0 ]; then
   exit 1
 fi
 echo "  All foundational tools present."
+
+# HIMMEL-842 gap 1: pre-commit (installed at [3/6]) needs uv OR pipx on a PEP 668
+# distro (Ubuntu 24.04+ / most 2025+ distros block raw system pip). Fail UPFRONT
+# here with the install command instead of hard-stopping mid-run at [3/6]. A
+# pre-commit already on PATH needs neither, so this mirrors [3/6]'s exact failure
+# condition (pre-commit absent AND uv absent AND pipx absent).
+if ! command -v pre-commit >/dev/null 2>&1 \
+  && ! command -v uv >/dev/null 2>&1 \
+  && ! command -v pipx >/dev/null 2>&1; then
+  echo "ERROR: need uv or pipx to install pre-commit (PEP 668 blocks raw pip on most 2025+ distros)." >&2
+  echo "  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  exit 1
+fi
+echo "  uv/pipx available for pre-commit install."
 echo ""
 
 # --- [2/6] USER_SLUG resolution ---
