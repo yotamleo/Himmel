@@ -790,6 +790,26 @@ Shell scripts that implement `/pr-check` sub-steps. Called by the `/pr-check` co
 - `scripts/cr/cr-scores.sh` — generates a per-critic correctness scorecard from the ledger; surfaced via `/cr-scores`. Adds an estimated-token Usage section (per-model + cumulative) when the ledger holds `usage` records.
 - `scripts/cr/pr-check-external.sh` — **Claude-free CR runner** (HIMMEL-750): reviews a branch with NO Claude session so review still runs when the Claude quota bank is maxed. `--branch <b> [--session-dir <dir>] [--base <ref>]`; fetches, diffs `origin/<base>...<branch>`, pipes to `critic-panel.sh` with `CR_PROFILE=free,paid` forced (so the paid codex critic reviews; `CR_PROFILE=none` refused). Fail-CLOSED gate: panel non-zero exit, unparseable Critical/Important counts, an ABSENT codex critic, or any Critical/Important finding all FAIL. On clean it writes `external_cr_verdict: pass (sha=…; critics=…)` into the spawn-glm session `meta.json` (distinct from `d1_verdict`) and prints a PR-body snippet; does NOT touch the CR marker. Test: `scripts/cr/test-pr-check-external.sh` (hermetic; fake git repo + stubbed panel via `CRITIC_PANEL_CMD`). See [`docs/glm-offload.md`](glm-offload.md) "Claude-down ship flow".
 
+## OpenRouter free-tier watcher (`scripts/openrouter/free-watch.sh`, HIMMEL-846)
+
+Lean-invoke (no hook/daemon) watcher for free-model CHURN on OpenRouter —
+the risk under the free-only policy (the $20 top-up is NEVER spent; it only
+unlocks the 1000 free-req/day tier; panels pin `:free` ids exclusively).
+Fetches the public catalog (no auth), keeps the `:free` subset, snapshots to
+`~/.himmel/openrouter-free-catalog.json`, diffs vs the last run
+(new/delisted free models), checks every OpenRouter model pinned in the CR
+registry (overlay `critics.local.json` > shipped `critics.json`) for
+delisting / deranked endpoints (any `status < 0`; all-deranked and
+partial-derank are distinct flags) / uptime drops
+(`uptime_last_30m < OPENROUTER_UPTIME_MIN`, default 90, validated numeric
+at startup), and prints
+`SUGGEST` lines for better code-capable `:free` candidates (bigger context
+than the pinned max). Suggestions only — never edits any registry file.
+Flags for hermetic testing: `--catalog-file`, `--endpoints-dir`,
+`--state-dir`, `--registry`, `--no-probe`. Test:
+`scripts/openrouter/test-free-watch.sh`. Pattern-parity with
+`alibaba-probe-once` (HIMMEL-729); relates HIMMEL-737 rotation.
+
 ## GLM ship lane (`scripts/glm/`, HIMMEL-750)
 
 - `scripts/glm/ship-branch.sh` — pushes a reviewed `glm/*` branch FROM the trusted main checkout (the GLM worker stays fully quarantined — `poisonPushUrl` + the no-push prompt + the deny hook are unchanged). `ship-branch.sh <branch> [--session-dir <dir>] [--allow-any-branch]`; refuses to run from a `.claude/worktrees/` path, requires an `origin` remote, and is authorized only by `external_cr_verdict:pass` (written by `pr-check-external.sh`) whose reviewed SHA must equal the current branch tip (closes the post-panel-commit TOCTOU). Runs `git push -u origin <branch>` with the real pre-push gates (NO `--no-verify`), then clears the CR marker only when its SHA matches the pushed SHA. Never opens a PR, never merges — prints the exact `gh pr create` for the operator. Test: `scripts/glm/test-ship-branch.sh` (hermetic; temp bare-repo origin). See [`docs/glm-offload.md`](glm-offload.md) "Claude-down ship flow".
