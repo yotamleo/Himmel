@@ -52,7 +52,7 @@
   {
     "from": "compare per task vs Fable-low",
     "to": "compare per task vs top-model-low",
-    "note": "HIMMEL-806: Sonnet-row pricing comparison added 2026-07-08 — neutral tier language; full-phrase so it never matches the attributed calibration line."
+    "note": "HIMMEL-806: Sonnet-row pricing comparison added 2026-07-08 — neutral tier language; full-phrase so it never matches the attributed calibration line. DORMANT since 2026-07-10 (HIMMEL-774 row replaced the comparison clause); retained for the test fixture."
   },
   {
     "from": "Fable stays CONSERVED (limited release)",
