@@ -208,7 +208,8 @@ for pin in "$ROOT"/marketplace/plugins/*/UPSTREAM_PIN; do
   upath="$(sed -n 's/^upstream_path=//p' "$pin" | head -1)"
   usha="$(sed -n 's/^upstream_sha256=//p' "$pin" | head -1)"
   if [ -z "$urepo" ] || [ -z "$upath" ] || [ -z "$usha" ]; then
-    echo "  $plug: UPSTREAM_PIN lacks upstream_repo/upstream_path/upstream_sha256 — skipping"
+    echo "  $plug: ? UPSTREAM_PIN lacks upstream_repo/upstream_path/upstream_sha256 -- UNCHECKED"
+    incomplete=1
     continue
   fi
   # Capture the raw upstream content FIRST and guard it: an empty/failed fetch
@@ -234,8 +235,20 @@ for pin in "$ROOT"/marketplace/plugins/*/UPSTREAM_PIN; do
     incomplete=1
     continue
   fi
-  got="$(sha256sum "$tmp" | awk '{print $1}')"
+  if command -v sha256sum >/dev/null 2>&1; then
+    hash_out="$(sha256sum "$tmp" 2>/dev/null)"; hash_rc=$?
+  elif command -v shasum >/dev/null 2>&1; then
+    hash_out="$(shasum -a 256 "$tmp" 2>/dev/null)"; hash_rc=$?
+  else
+    hash_out=""; hash_rc=127
+  fi
   rm -f "$tmp"
+  got="$(printf '%s\n' "$hash_out" | awk '{print $1}')"
+  if [ "$hash_rc" -ne 0 ] || [ -z "$got" ]; then
+    echo "  $plug: ? could not compute sha256 (sha256sum/shasum unavailable or failed) ($urepo:$upath) -- UNCHECKED"
+    incomplete=1
+    continue
+  fi
   if [ "$got" = "$usha" ]; then
     echo "  $plug: CURRENT  (upstream $upath unchanged)"
   else

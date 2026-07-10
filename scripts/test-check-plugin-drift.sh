@@ -124,6 +124,112 @@ else
   bad "fail-open broken: rc=$fo_rc out=$fo_out"
 fi
 
+# 5b. Malformed vendored-fork UPSTREAM_PIN: a fork pin missing the generic
+#     fields must mark the run incomplete, never skip into a false all-current.
+W5B="$(mktemp -d)"; mkdir -p "$W5B/bin" "$W5B/scripts" "$W5B/marketplace/plugins/bad-pin"
+cp "$SCRIPT" "$W5B/scripts/check-plugin-drift.sh"
+cat >"$W5B/marketplace/plugins/bad-pin/UPSTREAM_PIN" <<'PIN'
+upstream_repo=
+PIN
+cat >"$W5B/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+exit 0
+GH
+chmod +x "$W5B/bin/gh"
+printf '{"plugins":[]}' >"$W5B/empty_mjson.json"
+printf '{}' >"$W5B/empty_ups.json"
+badpin_out="$(PATH="$W5B/bin:$PATH" DRIFT_MJSON="$W5B/empty_mjson.json" DRIFT_UPSTREAMS="$W5B/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5B/scripts/check-plugin-drift.sh" 2>&1)"; badpin_rc=$?
+rm -rf "$W5B"
+if printf '%s' "$badpin_out" | grep 'bad-pin' | grep -q 'UNCHECKED'; then ok "malformed UPSTREAM_PIN -> named UNCHECKED"; else bad "malformed UPSTREAM_PIN not UNCHECKED; $(printf '%s' "$badpin_out" | grep bad-pin)"; fi
+if [ "$badpin_rc" -eq 3 ]; then ok "malformed UPSTREAM_PIN run exits 3 (incomplete, not false all-current)"; else bad "malformed UPSTREAM_PIN rc=$badpin_rc; expected 3"; fi
+
+# 5c. Vendored-fork hashing on systems without sha256sum (stock macOS):
+#     fall back to shasum -a 256. Hash-tool failure must not read as DRIFT.
+W5C="$(mktemp -d)"; mkdir -p "$W5C/bin" "$W5C/nosha" "$W5C/scripts" "$W5C/marketplace/plugins/hash-pin"
+cp "$SCRIPT" "$W5C/scripts/check-plugin-drift.sh"
+for f in /usr/bin/*; do
+  b="$(basename "$f")"
+  case "$b" in
+    sha256sum|sha256sum.exe|shasum|shasum.exe) continue ;;
+  esac
+  ln -s "$f" "$W5C/nosha/$b" 2>/dev/null
+done
+for tool in awk base64 basename bash dirname grep head mktemp python3 rm sed tr; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  if [ -n "$tool_path" ]; then ln -s "$tool_path" "$W5C/nosha/$tool" 2>/dev/null; fi
+done
+# Fixture content is base64('hello\n') (the gh stub below); the pin carries the
+# REAL sha256 of those bytes so the decode->tmpfile->hash->parse data path is
+# genuinely exercised (a canned stub hash would pass without hashing anything).
+HELLO_SHA=5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
+cat >"$W5C/marketplace/plugins/hash-pin/UPSTREAM_PIN" <<PIN
+upstream_repo=owner/hash-pin
+upstream_path=file.txt
+upstream_sha256=$HELLO_SHA
+PIN
+cat >"$W5C/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+case "$*" in
+  *"repos/owner/hash-pin/contents/file.txt"*) printf '%s\n' 'aGVsbG8K'; exit 0 ;;
+esac
+exit 0
+GH
+# Real-computing shasum stub: hashes its FILE argument (same output shape as
+# `shasum -a 256`), so a wrong tmpfile/decode would fail the CURRENT assertion.
+cat >"$W5C/bin/shasum" <<'SHASUM'
+#!/usr/bin/env bash
+if [ "$1" = "-a" ] && [ "$2" = "256" ]; then
+  exec python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest() + "  " + sys.argv[1])' "$3"
+fi
+exit 1
+SHASUM
+chmod +x "$W5C/bin/gh" "$W5C/bin/shasum"
+printf '{"plugins":[]}' >"$W5C/empty_mjson.json"
+printf '{}' >"$W5C/empty_ups.json"
+if PATH="$W5C/bin:$W5C/nosha" command -v sha256sum >/dev/null 2>&1; then
+  bad "sha256sum-mask setup failed - sha256sum still resolvable"
+else
+  ok "sha256sum-mask: sha256sum unresolvable"
+fi
+hash_out="$(PATH="$W5C/bin:$W5C/nosha" DRIFT_MJSON="$W5C/empty_mjson.json" DRIFT_UPSTREAMS="$W5C/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5C/scripts/check-plugin-drift.sh" 2>&1)"; hash_rc=$?
+if printf '%s' "$hash_out" | grep -q '^  hash-pin: CURRENT'; then ok "sha256sum absent -> shasum fallback verifies vendored fork CURRENT"; else bad "sha256sum fallback did not verify CURRENT; $(printf '%s' "$hash_out" | grep hash-pin)"; fi
+if printf '%s' "$hash_out" | grep 'hash-pin' | grep -q 'DRIFT'; then bad "sha256sum absent was reported as DRIFT"; else ok "sha256sum absent never reported as DRIFT"; fi
+if [ "$hash_rc" -eq 0 ]; then ok "sha256sum fallback-only run exits 0"; else bad "sha256sum fallback run rc=$hash_rc; expected 0"; fi
+
+# 5c-neg. Same sandbox, mismatched pin sha -> the shasum fallback path must
+#         report DRIFT (rc=2). Covers the vendored-fork DRIFT verdict, and the
+#         'now <computed>' prefix proves the stub hashed the real bytes.
+cat >"$W5C/marketplace/plugins/hash-pin/UPSTREAM_PIN" <<'PIN'
+upstream_repo=owner/hash-pin
+upstream_path=file.txt
+upstream_sha256=0000000000000000000000000000000000000000000000000000000000000000
+PIN
+drift_out="$(PATH="$W5C/bin:$W5C/nosha" DRIFT_MJSON="$W5C/empty_mjson.json" DRIFT_UPSTREAMS="$W5C/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5C/scripts/check-plugin-drift.sh" 2>&1)"; drift_rc=$?
+if printf '%s' "$drift_out" | grep '^  hash-pin: DRIFT' | grep -q "now ${HELLO_SHA:0:12}"; then ok "mismatched pin sha -> DRIFT via shasum fallback (computed hash in message)"; else bad "mismatched pin sha not reported as DRIFT with computed hash; $(printf '%s' "$drift_out" | grep hash-pin)"; fi
+if [ "$drift_rc" -eq 2 ]; then ok "shasum-fallback DRIFT run exits 2"; else bad "shasum-fallback DRIFT run rc=$drift_rc; expected 2"; fi
+
+# 5d. BOTH hash tools absent -> the tool-failure branch: named UNCHECKED
+#     (never DRIFT), run incomplete (rc=3). Reuses the W5C sandbox with a bin
+#     dir that has the gh stub but NO shasum.
+mkdir -p "$W5C/nohash"
+ln -s "$W5C/bin/gh" "$W5C/nohash/gh" 2>/dev/null || cp "$W5C/bin/gh" "$W5C/nohash/gh"
+cat >"$W5C/marketplace/plugins/hash-pin/UPSTREAM_PIN" <<PIN
+upstream_repo=owner/hash-pin
+upstream_path=file.txt
+upstream_sha256=$HELLO_SHA
+PIN
+if PATH="$W5C/nohash:$W5C/nosha" command -v shasum >/dev/null 2>&1; then
+  bad "both-tools-mask setup failed - shasum still resolvable"
+else
+  ok "both-tools-mask: shasum unresolvable"
+fi
+notool_out="$(PATH="$W5C/nohash:$W5C/nosha" DRIFT_MJSON="$W5C/empty_mjson.json" DRIFT_UPSTREAMS="$W5C/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5C/scripts/check-plugin-drift.sh" 2>&1)"; notool_rc=$?
+rm -rf "$W5C"
+if printf '%s' "$notool_out" | grep 'hash-pin' | grep 'could not compute sha256' | grep -q 'UNCHECKED'; then ok "both hash tools absent -> named UNCHECKED (could not compute sha256)"; else bad "both-tools-absent not UNCHECKED; $(printf '%s' "$notool_out" | grep hash-pin)"; fi
+if printf '%s' "$notool_out" | grep 'hash-pin' | grep -q 'DRIFT'; then bad "both hash tools absent was reported as DRIFT"; else ok "both hash tools absent never reported as DRIFT"; fi
+if [ "$notool_rc" -eq 3 ]; then ok "both-tools-absent run exits 3 (incomplete, not false all-current)"; else bad "both-tools-absent run rc=$notool_rc; expected 3"; fi
 # 6. Override-branch UNCHECKED paths via fixtures (DRIFT_MJSON/DRIFT_UPSTREAMS).
 #    Both checks fire BEFORE any gh call, but the script's top-level fail-open gate
 #    means the pin loop only runs when gh is present — so gate this on the real run
