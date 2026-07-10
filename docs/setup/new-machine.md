@@ -77,7 +77,7 @@ Every other script is bash 3.2-compatible.
 
 These tools show up in only one script — easy to drop if not on PATH (the affected feature degrades):
 
-- `cygpath` (Windows-only path translation) → `scripts/handover/arm-resume.sh` only.
+- `cygpath` (Windows-only path translation) → `scripts/handover/arm-resume.sh` and `scripts/lib/qmd-bin.sh` (junction creation, HIMMEL-877); falls back to the unconverted path when absent.
 - `shellcheck`, `gitleaks` → `scripts/machine-setup/ubuntu.sh` bootstrap only; pre-commit framework re-fetches them per-hook so they don't need to be on PATH for normal use.
 - `pipx` → fallback in `setup.sh` + `ubuntu.sh` only (uv is primary).
 - `qmd` → `setup.sh` step 4 only (collection register); optional if you don't use qmd search.
@@ -410,14 +410,23 @@ same PHI-tier refusal, but subtree-wide.
 qmd is a local markdown search engine (BM25 + vector + rerank). himmel's fork
 runs it as a **shared HTTP daemon** (`localhost:8181`, HIMMEL-592) auto-brought-up
 by the `qmd` plugin's SessionStart hook, so every session shares one read-only
-index. The standalone CLI is installed via **bun** (project rule: bun, never npm).
-`bash scripts/setup.sh` step `[4/10]` + `adopt.sh`'s `wire_qmd_core` already
-register the `himmel` collection and best-effort `qmd pull`; this section is the
-**manual bootstrap** if you skipped those or want the luna vault indexed too.
+index. The standalone CLI installs from the **himmel qmd fork**
+(`yotamleo/qmd#himmel-main`) — never upstream `bun add -g @tobilu/qmd`, which
+EPERM-wedges on this project's machines (zombie `qmd mcp` stdio processes hold
+locks) and bun blocks its postinstall script (HIMMEL-877). `bun` itself is
+still required to build the clone (project rule: bun, never npm — see §1
+foundational table). `bash scripts/setup.sh` step `[4/10]` + `adopt.sh`'s
+`wire_qmd_core` already run this install, register the `himmel` collection,
+and best-effort `qmd pull`; this section is the **manual bootstrap** if you
+skipped those or want the luna vault indexed too.
 
 ```bash
-# 1. Install the qmd CLI (bun global). bun itself: see §1 foundational table.
-bun add -g @tobilu/qmd@latest
+# 1. Install the qmd CLI: clone the fork, build it with bun, then junction
+#    (Windows) / symlink (POSIX) it onto the bun-global @tobilu/qmd path —
+#    scripts/lib/qmd-bin.sh is the single chokepoint (also used by adopt.sh/
+#    setup.sh); repo/branch/clone-dir are overridable via QMD_FORK_REPO /
+#    QMD_FORK_BRANCH / QMD_FORK_DIR. Idempotent — re-run to update.
+bash scripts/lib/qmd-bin.sh install
 
 # 2. Pull the embedding + rerank models. WARNING: ~2.1 GB download — Ctrl-C-safe
 #    (re-run resumes); run once. Semantic search needs these.

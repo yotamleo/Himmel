@@ -70,7 +70,7 @@ if ($state -eq 'foreign') {
 # dead - start the daemon
 $qmd = Resolve-QmdBin
 if (-not $qmd) {
-    Write-Error "ensure-qmd-daemon: qmd is not on PATH and no fallback at $HOME\.bun\bin\qmd.exe. Install it: bun add -g @tobilu/qmd"
+    Write-Error "ensure-qmd-daemon: qmd is not on PATH and no fallback at $HOME\.bun\bin\qmd.exe. Install it: bash <himmel-repo>/scripts/lib/qmd-bin.sh install (HIMMEL-877)"
     exit 1
 }
 

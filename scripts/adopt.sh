@@ -45,8 +45,8 @@ HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 . "$SCRIPT_DIR/lib/wire-pretooluse-hooks.sh"
 
 # qmd resolver + install/register helpers (HIMMEL-752 qmd wiring). Provides
-# has_qmd / qmd_cmd / qmd_install / qmd_register_collection, consumed by
-# wire_qmd_core() and do_luna().
+# has_qmd / qmd_cmd / qmd_install / qmd_fork_served / qmd_register_collection,
+# consumed by wire_qmd_core() and do_luna().
 # shellcheck source=scripts/lib/qmd-bin.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/qmd-bin.sh"
@@ -248,8 +248,9 @@ fill_env_core() {
 
 # wire_qmd_core — wire the qmd search stack end-to-end (HIMMEL-752 G1/G3/G4):
 # fix the broken plugin-cache stub, install the qmd CLI if missing (qmd_install
-# verifies the binary and heals a missing better-sqlite3 native build), pull the
-# embedding/rerank models, and register the himmel clone as a collection.
+# clones the himmel qmd fork, builds it with bun, and junctions/symlinks it
+# onto the bun-global @tobilu/qmd path -- HIMMEL-877), pull the embedding/rerank
+# models, and register the himmel clone as a collection.
 # Best-effort throughout: every failure WARNs and returns 0 so a missing or
 # broken qmd never aborts an adopt. Called from do_core() after install_plugins
 # (the qmd Claude plugin lands there; this makes the qmd CLI + models work).
@@ -269,10 +270,15 @@ wire_qmd_core() {
     bash "$HIMMEL_ROOT/scripts/lib/fix-qmd-stub.sh" \
       || echo "  WARNING: fix-qmd-stub failed — continuing." >&2
   fi
-  # Install the qmd CLI if missing. qmd_install verifies + heals (HIMMEL-752 G3).
+  # Install the qmd CLI unless the FORK is already the served install
+  # (clone the fork + build + link -- HIMMEL-877). The gate is
+  # qmd_fork_served, NOT has_qmd: a machine carrying the old upstream
+  # bun-global install is qmd-present but must still MIGRATE to the fork
+  # (CR codex-adv-1); qmd_install itself re-checks as the second line of
+  # defense and backs the upstream directory up before linking.
   if [[ $DRY_RUN -eq 1 ]]; then
-    has_qmd || echo "DRY: qmd_install"
-  elif ! has_qmd; then
+    qmd_fork_served || echo "DRY: qmd_install"
+  elif ! qmd_fork_served; then
     qmd_install || echo "  WARNING: qmd install failed — continuing without qmd." >&2
   fi
   # G4: pull the embedding/rerank models. Size caveat FIRST so the operator can

@@ -17,70 +17,342 @@
 # source this lib; this resolver stays as the consumer-side path until
 # the upstream plugin fix is pulled.
 #
-# Project rule: qmd is installed via bun, never npm. Bash callers get
-# the install hint via qmd_install_hint() (single source of truth for
-# bash); qmd_install() runs that hint, verifies the binary actually
-# works, and heals a missing better-sqlite3 native build (HIMMEL-752:
-# the old --ignore-scripts hint blocked better-sqlite3's native build
-# and crashed qmd on platforms without a prebuilt binary, so the hint
-# no longer carries it). qmd_register_collection() is the shared
-# idempotent collection-registration helper used by setup.sh + adopt.sh.
-# The pwsh mirrors in scripts/setup.ps1 + scripts/adopt.ps1, and the
-# bash stub-error hint line in scripts/lib/fix-qmd-stub.sh, hardcode
-# the same string and must be updated in lockstep.
+# HIMMEL-877: qmd installs from the himmel FORK (yotamleo/qmd, default
+# branch himmel-main), never upstream `bun add -g @tobilu/qmd` -- that
+# command EPERM-wedges on this project's machines (zombie `qmd mcp` stdio
+# node processes hold locks) and bun blocks the postinstall script. The
+# proven recipe (done by hand on the primary machine, now automated here):
+# clone the fork to a stable dir, `bun install && bun run build` in the
+# clone, then a directory junction (Windows) / symlink (POSIX) at
+# ~/.bun/install/global/node_modules/@tobilu/qmd pointing at the clone --
+# bun's stock global shims then transparently serve the fork from the
+# same path every other consumer (qmd_cmd, has_qmd, the fix-qmd-stub
+# patched stub) already resolves. qmd_install() is idempotent: it detects
+# an already-fork-served install (global path already links to the fork
+# clone AND `qmd --version` reports >= QMD_FORK_MIN_VERSION) and skips.
+# Fork repo/branch/clone-dir are overridable via QMD_FORK_REPO /
+# QMD_FORK_BRANCH / QMD_FORK_DIR for testing or a private mirror.
+# qmd_register_collection() is the shared idempotent collection-
+# registration helper used by setup.sh + adopt.sh. Executed directly
+# (not sourced), this file also answers `install` on argv (see the CLI
+# entry at the bottom) so the pwsh mirrors (scripts/setup.ps1,
+# scripts/adopt.ps1) can delegate to this ONE implementation instead of
+# duplicating the clone/build/link recipe natively.
 
+# Fork config -- overridable per call (env var set before sourcing/calling).
+_qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/yotamleo/qmd.git}"; }
+_qmd_fork_branch() { printf '%s\n' "${QMD_FORK_BRANCH:-himmel-main}"; }
+_qmd_fork_dir() { printf '%s\n' "${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"; }
+_qmd_fork_min_version() { printf '%s\n' "${QMD_FORK_MIN_VERSION:-2.6.3}"; }
+
+# Prints the manual recipe (clone + build + link). Best-effort documentation
+# text embedded in WARN messages -- NOT eval'd (HIMMEL-877 dropped the old
+# single-command `bun add -g @tobilu/qmd@latest` eval path; qmd_install()
+# below runs the multi-step recipe directly).
 qmd_install_hint() {
-  echo 'bun add -g @tobilu/qmd@latest'
+  local fork_dir branch global_dir
+  fork_dir="$(_qmd_fork_dir)"
+  branch="$(_qmd_fork_branch)"
+  global_dir="$(_qmd_global_dir)"
+  printf '%s\n' \
+    "git clone -b $branch $(_qmd_fork_repo) $fork_dir" \
+    "(cd $fork_dir && bun install && bun run build)" \
+    "link $fork_dir over $global_dir (Windows: mklink /J; POSIX: ln -s) -- or re-run qmd_install"
 }
 
-# Install qmd via the canonical hint, then verify the binary actually
-# runs. Returns an honest rc: 0 ONLY when `qmd_cmd --version` succeeds.
-# HIMMEL-752: the old `--ignore-scripts` hint blocked better-sqlite3's
-# native build (its install script is `prebuild-install || node-gyp
-# rebuild --release`), so on machines with no prebuilt binary (fresh
-# macOS arm64 / new node major) every qmd command died with "Could not
-# locate the bindings file". The hint now runs the full install; if the
-# postinstall was skipped (bun does this for untrusted packages) or a
-# prebuild is missing, fall back to a node-gyp build-release inside the
-# better-sqlite3 dir, then re-verify. WARN-not-fail by contract: the
-# rc is honest, callers (adopt.sh, ubuntu.sh) decide whether
-# a qmd failure aborts. Every external command is under an `if` guard so
-# a caller's `set -e` cannot abort mid-install before the rc is returned.
-qmd_install() {
-  local bun_root _bsqlite
-  echo "Installing qmd via bun..."
-  # Run the canonical hint command (single source of truth; a trusted
-  # hardcoded literal, so eval is safe here - never feed it untrusted input).
-  if ! eval "$(qmd_install_hint)"; then
-    echo "  bun add failed - qmd not installed." >&2
-    return 1
+# True on Git Bash / MSYS / Cygwin.
+_qmd_is_windows() {
+  case "$(uname -s 2>/dev/null || echo)" in
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Windows-native absolute path for a POSIX path, for native tools (mklink,
+# fsutil) invoked via cmd. Falls back to the input unchanged when cygpath is
+# unavailable.
+_qmd_win_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w -- "$1" 2>/dev/null || printf '%s\n' "$1"
+  else
+    printf '%s\n' "$1"
   fi
-  # Verify the binary actually runs. has_qmd is presence-only by design,
-  # so probe --version directly: a broken better-sqlite3 native build
-  # (missing bindings file) dies here even though the package is present.
-  if qmd_cmd --version >/dev/null 2>&1; then
-    echo "  qmd installed and verified."
+}
+
+# Canonical form of an EXISTING directory, comparable across a Windows
+# junction traversal: `cd + pwd -P` resolves the reparse point, but MSYS can
+# print the result through a different mount-table alias than a direct `cd`
+# to the same real location (e.g. .../AppData/Local/Temp/... resolving as
+# /tmp/... through a junction but /c/Users/.../Temp/... directly) -- the two
+# forms are NOT string-equal even though they name the same directory.
+# cygpath -w normalizes both back to one Windows path, which is alias-free.
+# POSIX has no such aliasing, so plain `pwd -P` is enough there.
+_qmd_canonical_dir() {
+  local real
+  real="$(cd -- "$1" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$real" ] || return 1
+  if _qmd_is_windows; then
+    _qmd_win_path "$real"
+  else
+    printf '%s\n' "$real"
+  fi
+}
+
+# True if the bun-global @tobilu/qmd path already resolves to the fork clone
+# dir (both must exist). The core of qmd_install()'s idempotency check.
+_qmd_global_points_to_fork() {
+  local global_dir fork_dir g f
+  global_dir="$(_qmd_global_dir)"
+  fork_dir="$(_qmd_fork_dir)"
+  [ -d "$global_dir" ] || return 1
+  [ -d "$fork_dir" ] || return 1
+  g="$(_qmd_canonical_dir "$global_dir")" || return 1
+  f="$(_qmd_canonical_dir "$fork_dir")" || return 1
+  [ -n "$g" ] && [ "$g" = "$f" ]
+}
+
+# $1 >= $2 for dotted version strings (e.g. "2.6.3" >= "2.6.3"). $1 may carry
+# a prefix/suffix (e.g. "qmd 2.6.10 (himmel-main)") -- the first x.y.z run is
+# extracted. bash-3.2-safe (no arrays, no [[ =~ ]] version-compare builtin).
+_qmd_version_ge() {
+  local actual min a1 a2 a3 m1 m2 m3 _save_ifs
+  actual="$(printf '%s' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+  [ -n "$actual" ] || return 1
+  min="$2"
+  _save_ifs="$IFS"
+  IFS=.
+  # shellcheck disable=SC2086
+  # Unquoted on purpose: IFS=. splits the dotted version into 3 fields.
+  set -- $actual
+  a1="$1"; a2="$2"; a3="$3"
+  # shellcheck disable=SC2086
+  set -- $min
+  m1="$1"; m2="$2"; m3="$3"
+  IFS="$_save_ifs"
+  [ "$a1" -gt "$m1" ] 2>/dev/null && return 0
+  [ "$a1" -lt "$m1" ] 2>/dev/null && return 1
+  [ "$a2" -gt "$m2" ] 2>/dev/null && return 0
+  [ "$a2" -lt "$m2" ] 2>/dev/null && return 1
+  [ "$a3" -ge "$m3" ] 2>/dev/null
+}
+
+# True if $1 is a symlink (POSIX) or a Windows directory junction / reparse
+# point. Read-only probe -- never mutates.
+_qmd_is_link() {
+  [ -L "$1" ] && return 0
+  if _qmd_is_windows && [ -d "$1" ]; then
+    MSYS_NO_PATHCONV=1 fsutil reparsepoint query "$(_qmd_win_path "$1")" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+# Remove a CONFIRMED link, never the directory it points at: Windows'
+# native rmdir on a junction deletes only the reparse point (verified --
+# the target's contents survive); `rm -f` on a POSIX symlink is likewise
+# link-only. Never call this on a real (non-link) directory. On failure the
+# tool's output is captured in _QMD_LINK_ERR for the caller's ERROR message
+# (CR: >/dev/null swallowed the actionable rmdir/mklink diagnostics).
+_qmd_remove_link() {
+  if _qmd_is_windows; then
+    _QMD_LINK_ERR=$(MSYS_NO_PATHCONV=1 cmd /c rmdir "$(_qmd_win_path "$1")" 2>&1)
+  else
+    _QMD_LINK_ERR=$(rm -f -- "$1" 2>&1)
+  fi
+}
+
+# Create a directory junction ($2 -> $1 on Windows) or a symlink (POSIX).
+# $1 = target (the fork clone), $2 = link path (the bun-global @tobilu/qmd
+# dir). On failure the tool's output is captured in _QMD_LINK_ERR.
+_qmd_link() {
+  if _qmd_is_windows; then
+    _QMD_LINK_ERR=$(MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(_qmd_win_path "$2")" "$(_qmd_win_path "$1")" 2>&1)
+  else
+    _QMD_LINK_ERR=$(ln -s -- "$1" "$2" 2>&1)
+  fi
+}
+
+# Deterministic backup name for an existing REAL directory at $1: never a
+# timestamp (non-reproducible, hard to assert on in tests) -- a fixed
+# `.pre-fork-backup` suffix, numbered on collision from a prior aborted run.
+_qmd_backup_name() {
+  local base="$1.pre-fork-backup" n
+  if [ ! -e "$base" ]; then
+    printf '%s\n' "$base"
     return 0
   fi
-  # Heal: bun may skip the postinstall for untrusted packages, and the
-  # better-sqlite3 prebuild may be missing on a new platform. Build the
-  # native module in place, then re-verify (HIMMEL-752).
-  bun_root="${BUN_INSTALL:-$HOME/.bun}"
-  _bsqlite="$bun_root/install/global/node_modules/better-sqlite3"
-  if [ -d "$_bsqlite" ]; then
-    echo "  qmd present but --version failed - rebuilding better-sqlite3 native module..."
-    if (cd "$_bsqlite" && npm run build-release) >/dev/null 2>&1; then
-      if qmd_cmd --version >/dev/null 2>&1; then
-        echo "  qmd verified after native rebuild."
-        return 0
+  n=1
+  while [ -e "$base.$n" ]; do
+    n=$((n + 1))
+  done
+  printf '%s\n' "$base.$n"
+}
+
+# Point the bun-global @tobilu/qmd path at the fork clone. Idempotent
+# (no-ops if already correct). A stale link (wrong target) is removed
+# outright (link-only, safe); a REAL pre-existing directory is moved aside
+# under a deterministic backup name first -- it is NEVER deleted, and on a
+# link failure it is RESTORED (CR rollback: the failure mode this recipe
+# exists for -- a locked path held by zombie `qmd mcp` processes -- must
+# not leave the global path ABSENT with the old install stranded in the
+# backup dir).
+_qmd_ensure_global_link() {
+  local fork_dir global_dir global_parent backup=""
+  fork_dir="$(_qmd_fork_dir)"
+  global_dir="$(_qmd_global_dir)"
+  global_parent="$(dirname -- "$global_dir")"
+
+  if _qmd_global_points_to_fork; then
+    return 0
+  fi
+
+  # Surface a parent-dir mkdir failure as the root cause instead of the
+  # generic link error it would otherwise cascade into (CR).
+  if ! mkdir -p -- "$global_parent" 2>/dev/null; then
+    echo "  ERROR: could not create $global_parent (permissions?) - cannot link the fork." >&2
+    return 1
+  fi
+
+  if [ -e "$global_dir" ] || [ -L "$global_dir" ]; then
+    if _qmd_is_link "$global_dir"; then
+      echo "  Removing stale link at $global_dir..."
+      if ! _qmd_remove_link "$global_dir"; then
+        echo "  ERROR: could not remove stale link at $global_dir${_QMD_LINK_ERR:+: $_QMD_LINK_ERR}" >&2
+        return 1
       fi
-      echo "  WARNING: native rebuild ran but qmd --version still fails." >&2
     else
-      echo "  WARNING: better-sqlite3 native build failed (need a compiler toolchain?)." >&2
+      backup="$(_qmd_backup_name "$global_dir")"
+      echo "  Existing real directory at $global_dir - moving aside to $backup" >&2
+      if ! mv -- "$global_dir" "$backup"; then
+        echo "  ERROR: could not move aside existing $global_dir" >&2
+        return 1
+      fi
+    fi
+  fi
+
+  if ! _qmd_link "$fork_dir" "$global_dir"; then
+    echo "  ERROR: failed to link $global_dir -> $fork_dir${_QMD_LINK_ERR:+: $_QMD_LINK_ERR}" >&2
+    # Rollback: put the moved-aside directory back so the machine is no
+    # worse off than before this attempt (the old install keeps resolving).
+    if [ -n "$backup" ]; then
+      if mv -- "$backup" "$global_dir"; then
+        echo "  Restored the previous directory at $global_dir (no change applied)." >&2
+      else
+        echo "  ERROR: restore ALSO failed - your previous install is stranded at:" >&2
+        echo "         $backup" >&2
+        echo "         move it back by hand to: $global_dir" >&2
+      fi
+    fi
+    return 1
+  fi
+  if [ -n "$backup" ]; then
+    echo "  Note: previous @tobilu/qmd install preserved at $backup - remove it once the fork install is confirmed."
+  fi
+  return 0
+}
+
+# True when the fork is already the SERVED install: the bun-global
+# @tobilu/qmd path resolves to the fork clone AND the version probe reports
+# >= QMD_FORK_MIN_VERSION. This is the caller-side install gate (HIMMEL-877
+# CR codex-adv-1): callers must gate qmd_install on THIS, never on presence
+# (has_qmd) -- a machine carrying the old upstream bun-global install (the
+# exact population this change migrates) is qmd-PRESENT but not fork-served,
+# and a presence gate would skip the migration entirely. Also exposed as the
+# `fork-served` CLI verb so the pwsh mirrors share the same predicate.
+qmd_fork_served() {
+  local ver
+  _qmd_global_points_to_fork || return 1
+  ver="$(qmd_cmd --version 2>/dev/null)" || return 1
+  _qmd_version_ge "$ver" "$(_qmd_fork_min_version)"
+}
+
+# Install/update the qmd fork and serve it from the bun-global @tobilu/qmd
+# path (HIMMEL-877). Returns an honest rc: 0 ONLY when `qmd_cmd --version`
+# verifiably succeeds afterward. WARN-not-fail by contract -- callers
+# (adopt.sh/adopt.ps1, setup.sh/setup.ps1, ubuntu.sh) decide whether a qmd
+# failure aborts. Every external command is under an `if`/`&&` guard so a
+# caller's `set -e` cannot abort mid-install before the rc is returned.
+#
+# Idempotent: skips cleanly when qmd_fork_served (global path already links
+# to the fork clone AND the version probe passes); still falls through to
+# update+rebuild+re-link on a stale/older clone.
+qmd_install() {
+  local fork_dir branch repo global_dir origin_url
+
+  fork_dir="$(_qmd_fork_dir)"
+  branch="$(_qmd_fork_branch)"
+  repo="$(_qmd_fork_repo)"
+  global_dir="$(_qmd_global_dir)"
+
+  if qmd_fork_served; then
+    echo "  qmd fork already installed and served ($(qmd_cmd --version 2>/dev/null)) - skipping."
+    return 0
+  fi
+
+  echo "Installing qmd fork ($repo#$branch)..."
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "  git not found - cannot clone the qmd fork." >&2
+    return 1
+  fi
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "  bun not found - cannot build the qmd fork." >&2
+    return 1
+  fi
+
+  if [ -d "$fork_dir/.git" ]; then
+    # HIMMEL-877 CR codex-adv-2: never hard-reset a repo the installer does
+    # not own. QMD_FORK_DIR is operator-overridable -- pointed at an
+    # unrelated working repo, the fetch/checkout/reset below would DESTROY
+    # its local changes. Refuse (WARN + nonzero, dir untouched) unless the
+    # clone's origin matches QMD_FORK_REPO; refuse a dirty worktree too,
+    # overridable only via QMD_FORK_FORCE=1.
+    origin_url="$(git -C "$fork_dir" remote get-url origin 2>/dev/null)"
+    if [ "$origin_url" != "$repo" ]; then
+      echo "  WARNING: $fork_dir exists but its origin ('$origin_url') is not $repo - refusing to touch it." >&2
+      echo "  Point QMD_FORK_DIR at a dedicated location, or fix the clone's origin remote." >&2
+      return 1
+    fi
+    if [ -n "$(git -C "$fork_dir" status --porcelain 2>/dev/null)" ] && [ "${QMD_FORK_FORCE:-0}" != "1" ]; then
+      echo "  WARNING: $fork_dir has uncommitted changes - refusing to hard-reset it." >&2
+      echo "  Commit/stash them, or re-run with QMD_FORK_FORCE=1 to discard them." >&2
+      return 1
+    fi
+    echo "  qmd fork clone exists at $fork_dir - updating $branch..."
+    if ! ( cd "$fork_dir" \
+           && git fetch origin "$branch" \
+           && git checkout "$branch" \
+           && git reset --hard "origin/$branch" ); then
+      echo "  WARNING: qmd fork fetch/checkout failed - building the existing clone contents as-is." >&2
     fi
   else
-    echo "  WARNING: better-sqlite3 not found at $_bsqlite - cannot heal." >&2
+    if ! mkdir -p -- "$(dirname -- "$fork_dir")"; then
+      echo "  ERROR: could not create $(dirname -- "$fork_dir")" >&2
+      return 1
+    fi
+    if ! git clone --depth 1 --branch "$branch" --single-branch "$repo" "$fork_dir"; then
+      echo "  qmd fork clone failed." >&2
+      return 1
+    fi
   fi
+
+  echo "  Building qmd fork (bun install && bun run build)..."
+  if ! ( cd "$fork_dir" && bun install && bun run build ); then
+    echo "  WARNING: qmd fork build failed - continuing without qmd." >&2
+    echo "  Manual: (cd $fork_dir && bun install && bun run build)" >&2
+    return 1
+  fi
+
+  if ! _qmd_ensure_global_link; then
+    echo "  WARNING: qmd fork built but could not be linked at $global_dir." >&2
+    return 1
+  fi
+
+  if qmd_cmd --version >/dev/null 2>&1; then
+    echo "  qmd fork installed and verified ($(qmd_cmd --version 2>/dev/null))."
+    return 0
+  fi
+  echo "  WARNING: qmd fork installed but --version still fails." >&2
   return 1
 }
 
@@ -125,6 +397,14 @@ _qmd_bun_js() {
   echo "$bun_root/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
 }
 
+# Resolve the bun-global @tobilu/qmd package DIRECTORY (parent of dist/cli/
+# qmd.js above) -- this is the path qmd_install() junctions/symlinks onto
+# the fork clone so bun's stock global shims serve it.
+_qmd_global_dir() {
+  local bun_root="${BUN_INSTALL:-$HOME/.bun}"
+  echo "$bun_root/install/global/node_modules/@tobilu/qmd"
+}
+
 qmd_cmd() {
   local bun_qmd
   bun_qmd="$(_qmd_bun_js)"
@@ -148,3 +428,18 @@ has_qmd() {
   fi
   command -v qmd >/dev/null 2>&1
 }
+
+# CLI entry -- only when EXECUTED (not sourced). Lets the pwsh mirrors
+# (scripts/setup.ps1, scripts/adopt.ps1) delegate to this ONE
+# implementation (`bash scripts/lib/qmd-bin.sh install`) instead of
+# duplicating the fork clone/build/link recipe natively (HIMMEL-877).
+if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
+  case "${1:-}" in
+    install) qmd_install ;;
+    # fork-served: rc 0 iff the fork is already the served install (the
+    # caller-side install gate -- see qmd_fork_served above). Lets the pwsh
+    # mirrors share the bash predicate instead of duplicating it.
+    fork-served) qmd_fork_served ;;
+    *) echo "Usage: bash scripts/lib/qmd-bin.sh install|fork-served" >&2; exit 2 ;;
+  esac
+fi

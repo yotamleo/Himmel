@@ -101,7 +101,7 @@ fi
 # ---- Dead: start the daemon ------------------------------------------------
 if ! QMD_BIN="$(resolve_qmd)"; then
   echo "ensure-qmd-daemon: ERROR - qmd is not installed / not on PATH." >&2
-  echo "  Install it: bun add -g @tobilu/qmd@latest" >&2
+  echo "  Install it: bash <himmel-repo>/scripts/lib/qmd-bin.sh install (HIMMEL-877)" >&2
   exit 1
 fi
 

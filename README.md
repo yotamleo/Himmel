@@ -107,9 +107,10 @@ without any of it.
   `/archive-clips`. Turns a clip inbox into a self-maintaining knowledge base.
 - **[qmd](https://www.npmjs.com/package/@tobilu/qmd)** — a fast local search
   engine (BM25 + vector) over your markdown, exposed to Claude as an MCP server
-  (`qmd@qmd`); the standalone CLI installs via `bun add -g @tobilu/qmd`. This is
-  the retrieval layer over the substrate; it indexes the files, it does not
-  replace them (see above).
+  (`qmd@qmd`); the standalone CLI installs from himmel's qmd fork via
+  `bash scripts/lib/qmd-bin.sh install` (run automatically by setup/adopt).
+  This is the retrieval layer over the substrate; it indexes the files, it
+  does not replace them (see above).
 - **[claude-obsidian](https://github.com/yotamleo/claude-obsidian)** — a SHA-pinned
   fork of [AgriciDaniel/claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian);
   skills for operating an Obsidian wiki vault: ingest, query, save, and **vault

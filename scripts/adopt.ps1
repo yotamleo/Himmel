@@ -247,16 +247,20 @@ function FillEnv-Core {
 }
 
 # --- qmd resolver + helpers (HIMMEL-752; mirror of scripts/lib/qmd-bin.sh) ---
-# pwsh cannot source bash, so the resolver + install/register/pull logic is
-# duplicated inline (parity with setup.ps1's qmd block). UPDATE qmd-bin.sh +
-# setup.ps1 + adopt.ps1 together; scripts/lib/test-qmd-bin.sh is the canonical
-# behavior spec. Honors $env:BUN_INSTALL for relocated bun roots.
+# pwsh cannot source bash, so the RESOLVER (Invoke-Qmd/Test-Qmd) + REGISTER
+# logic is duplicated inline (parity with setup.ps1's qmd block) -- UPDATE
+# qmd-bin.sh + setup.ps1 + adopt.ps1 together; scripts/lib/test-qmd-bin.sh is
+# the canonical behavior spec. The INSTALL step (Install-Qmd below) is NOT
+# duplicated: it delegates to `bash scripts/lib/qmd-bin.sh install` (HIMMEL-877)
+# so the clone/build/junction recipe has exactly one implementation. Honors
+# $env:BUN_INSTALL for relocated bun roots.
 $QmdBunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
 $QmdBunJs = Join-Path $QmdBunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
-# G3 (HIMMEL-752): NO --ignore-scripts - it blocked better-sqlite3's native
-# build (prebuild-install || node-gyp rebuild --release) and crashed qmd on
-# platforms with no prebuilt binary (fresh macOS arm64 / new node major).
-$QmdInstallHint = 'bun add -g @tobilu/qmd@latest'
+# HIMMEL-877: qmd installs from the himmel qmd fork (yotamleo/qmd#himmel-main
+# via scripts/lib/qmd-bin.sh), never upstream `bun add -g @tobilu/qmd` --
+# that command EPERM-wedges on this project's machines and bun blocks its
+# postinstall script.
+$QmdInstallHint = "bash `"$HimmelRoot/scripts/lib/qmd-bin.sh`" install"
 
 function Invoke-Qmd {
     param([Parameter(ValueFromRemainingArguments=$true)] [string[]] $QmdArgs)
@@ -276,50 +280,45 @@ function Test-Qmd {
     return [bool](Get-Command qmd -ErrorAction SilentlyContinue)
 }
 
-# Mirror of qmd_install(): run the hint, verify --version, heal a missing
-# better-sqlite3 native build, return an honest int rc. All native output is
-# redirected away so the return value stays a clean int (Write-Host writes to
-# the host stream, not the pipeline).
+# Resolve GIT Bash explicitly for the qmd-bin.sh delegation -- same pattern
+# as FillEnv-Core below: a bare `bash` often resolves to the System32 (or
+# WindowsApps) WSL stub, which cannot run Git-Bash scripts against C:/...
+# paths. Require-Tools does NOT verify bash. Returns $null when no usable
+# Git Bash exists; callers WARN + skip, never invoke the WSL stub.
+function Resolve-QmdGitBash {
+    $gitBash = "C:\Program Files\Git\bin\bash.exe"
+    if (Test-Path $gitBash) { return $gitBash }
+    $bc = Get-Command bash -ErrorAction SilentlyContinue
+    if ($bc -and $bc.Source -notmatch 'System32|WindowsApps') { return $bc.Source }
+    return $null
+}
+
+# Delegates to the ONE clone/build/junction implementation (HIMMEL-877):
+# `bash scripts/lib/qmd-bin.sh install` (git-clone the himmel qmd fork, `bun
+# install && bun run build`, then junction/symlink it onto the bun-global
+# @tobilu/qmd path -- idempotent, WARN-not-fail). Returns an honest int rc.
 function Install-Qmd {
-    Write-Host "Installing qmd via bun..."
-    Invoke-Expression $script:QmdInstallHint *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  bun add failed (exit $LASTEXITCODE) - qmd not installed." -ForegroundColor Yellow
-        return $LASTEXITCODE
-    }
-    # Verify the binary runs - a broken better-sqlite3 native build dies here
-    # even though the package is present.
-    Invoke-Qmd --version *> $null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  qmd installed and verified."
-        return 0
-    }
-    # Heal: rebuild better-sqlite3 in place, then re-verify (HIMMEL-752).
-    $bsqlite = Join-Path $script:QmdBunRoot 'install\global\node_modules\better-sqlite3'
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        # A missing npm would raise a terminating CommandNotFoundException under
-        # EAP='Stop' and abort adopt - check first, WARN, honest rc (CR fix).
-        Write-Host "  WARNING: npm not found - cannot rebuild better-sqlite3." -ForegroundColor Yellow
+    Write-Host "Installing qmd fork via bash scripts/lib/qmd-bin.sh..."
+    $gitBash = Resolve-QmdGitBash
+    if (-not $gitBash) {
+        Write-Host "  WARNING: Git Bash not found - cannot run the qmd fork installer." -ForegroundColor Yellow
+        Write-Host "  Manual: install Git for Windows, then run: bash `"$HimmelRoot/scripts/lib/qmd-bin.sh`" install" -ForegroundColor Yellow
         return 1
     }
-    if (Test-Path $bsqlite) {
-        Write-Host "  qmd present but --version failed - rebuilding better-sqlite3 native module..."
-        Push-Location $bsqlite
-        try { npm run build-release *> $null } finally { Pop-Location }
-        if ($LASTEXITCODE -eq 0) {
-            Invoke-Qmd --version *> $null
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "  qmd verified after native rebuild."
-                return 0
-            }
-            Write-Host "  WARNING: native rebuild ran but qmd --version still fails (exit $LASTEXITCODE)." -ForegroundColor Yellow
-        } else {
-            Write-Host "  WARNING: better-sqlite3 native build failed (need a compiler toolchain?)." -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "  WARNING: better-sqlite3 not found at $bsqlite - cannot heal." -ForegroundColor Yellow
-    }
-    return 1
+    & $gitBash "$HimmelRoot/scripts/lib/qmd-bin.sh" install
+    return $LASTEXITCODE
+}
+
+# Mirror of qmd_fork_served() via the shared bash CLI verb (HIMMEL-877 CR
+# codex-adv-1): the install gate is "fork already served", NOT presence
+# (Test-Qmd) -- a machine carrying the old upstream bun-global install is
+# qmd-present but must still MIGRATE to the fork. Returns $false when no
+# usable Git Bash exists so the install path (which re-checks) is attempted.
+function Test-QmdForkServed {
+    $gitBash = Resolve-QmdGitBash
+    if (-not $gitBash) { return $false }
+    & $gitBash "$HimmelRoot/scripts/lib/qmd-bin.sh" fork-served *> $null
+    return ($LASTEXITCODE -eq 0)
 }
 
 # Mirror of qmd_register_collection(): idempotent + WARN-not-fail, returns an
@@ -389,12 +388,24 @@ function Wire-QmdCoreInner {
             $ErrorActionPreference = $savedEAP
         }
     }
-    # Install the qmd CLI if missing. Install-Qmd verifies + heals (HIMMEL-752 G3).
+    # Install the qmd CLI unless the FORK is already the served install
+    # (HIMMEL-877 CR codex-adv-1): gate on Test-QmdForkServed, NOT presence
+    # (Test-Qmd) - a machine carrying the old upstream bun-global install is
+    # qmd-present but must still MIGRATE to the fork. Install-Qmd re-checks
+    # internally as the second line of defense.
     if ($DryRun) {
-        if (-not (Test-Qmd)) { Write-Host "DRY: Install-Qmd" }
-    } elseif (-not (Test-Qmd)) {
+        if (-not (Test-QmdForkServed)) { Write-Host "DRY: Install-Qmd" }
+    } elseif (-not (Test-QmdForkServed)) {
         $installRc = Install-Qmd
-        if ($installRc -ne 0) { Write-Host "  WARNING: qmd install failed (rc=$installRc) - continuing without qmd." -ForegroundColor Yellow }
+        if ($installRc -ne 0) {
+            Write-Host "  WARNING: qmd install failed (rc=$installRc) - continuing without qmd." -ForegroundColor Yellow
+        } elseif (-not (Test-Qmd)) {
+            # CR silent-divergence guard: the bash installer reported success
+            # but this pwsh session cannot resolve the install - name both
+            # facts + where to look instead of continuing silently.
+            Write-Host "  WARNING: qmd install reported success but qmd is still not resolvable from PowerShell." -ForegroundColor Yellow
+            Write-Host "  Inspect: $script:QmdBunJs (expected bun-global install path)." -ForegroundColor Yellow
+        }
     }
     # G4: pull models (~2.1 GB). Size caveat FIRST so the operator can Ctrl-C
     # before the download, then best-effort pull.

@@ -366,25 +366,78 @@ printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* luna$'   || fail "
 printf '%s' "$out" | grep -q 'DRY:.*(cd scripts/jira && bun install && bun run build)' || fail "dry-run missing build_jira_cli DRY line"
 echo "ok: dry-run emits all qmd step DRY lines (core G1/G3/G4 + luna G5) + build_jira_cli"
 
-# ── 11. HIMMEL-752 qmd WARN-not-fail: a failing qmd install never aborts adopt
-# bun present (stubbed to exit 1) + has_qmd=false (scrubbed PATH, fake HOME) ->
-# qmd_install is invoked and fails -> wire_qmd_core WARNs, but adopt still exits
-# 0 (qmd is best-effort). Fake HOME keeps settings writes isolated.
+# ── 11. HIMMEL-877 qmd WARN-not-fail: a failing qmd install never aborts adopt
+# bun present (stubbed) + a `git` stub that fails on `clone` + has_qmd=false
+# (scrubbed PATH, fake HOME) -> qmd_install is invoked, the fork clone fails,
+# and wire_qmd_core WARNs, but adopt still exits 0 (qmd is best-effort). The
+# git stub keeps this hermetic — no real network clone of the fork repo. Fake
+# HOME keeps settings writes isolated.
 fbin="$work/fbin"; mkdir -p "$fbin"
 cat > "$fbin/bun" <<'STUB'
 #!/usr/bin/env bash
-exit 1
+exit 0
 STUB
 chmod +x "$fbin/bun"
+cat > "$fbin/git" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "clone" ] && exit 1
+exit 0
+STUB
+chmod +x "$fbin/git"
 fhome="$work/fhome"; mkdir -p "$fhome"
 set +e
 out=$(PATH="$fbin:$work/bin:$qmd_free_path" HOME="$fhome" bash "$adopt" \
       --profile core --scope user --target "$work/ign-f" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "adopt must exit 0 when qmd install fails (WARN-not-fail), got rc=$rc"
-printf '%s' "$out" | grep -q 'Installing qmd via bun' || fail "qmd_install not invoked (call order)"
+printf '%s' "$out" | grep -q 'Installing qmd fork' || fail "qmd_install not invoked (call order)"
 printf '%s' "$out" | grep -Eq 'WARNING.*qmd install failed' || fail "missing qmd install WARNING (WARN-not-fail)"
 echo "ok: qmd install failure WARNs and adopt continues (WARN-not-fail, rc=0)"
+
+# ── 11b. HIMMEL-877 CR codex-adv-1: an existing UPSTREAM install MIGRATES ────
+# A real @tobilu/qmd directory at the bun-global path + a working stubbed bun
+# make has_qmd TRUE -- the exact population the fork change repairs. The
+# install gate is qmd_fork_served (not presence), so adopt must still run
+# qmd_install: back the upstream dir up and link the fork over the global
+# path -- never skip and report success on the EPERM-prone upstream install.
+# Stubs keep it hermetic: git clone fabricates the fork clone locally, bun
+# fabricates the build output; no network, fake HOME.
+mbin="$work/mbin"; mkdir -p "$mbin"
+cat > "$mbin/bun" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  install) exit 0 ;;
+  run) [ "$2" = "build" ] && { mkdir -p dist/cli; : > dist/cli/qmd.js; }; exit 0 ;;
+  *) echo "qmd 2.6.10"; exit 0 ;;
+esac
+STUB
+chmod +x "$mbin/bun"
+cat > "$mbin/git" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "-C" ]; then shift 2; fi
+case "$1" in
+  clone) target="${!#}"; mkdir -p "$target/.git"; exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$mbin/git"
+mhome="$work/mhome"
+mkdir -p "$mhome/.bun/install/global/node_modules/@tobilu/qmd/dist/cli"
+: > "$mhome/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"  # upstream: has_qmd=TRUE
+set +e
+out=$(PATH="$mbin:$work/bin:$qmd_free_path" HOME="$mhome" bash "$adopt" \
+      --profile core --scope user --target "$work/ign-m" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "migration adopt exited rc=$rc (expected 0)"
+printf '%s' "$out" | grep -q 'Installing qmd fork' \
+  || fail "upstream-present install did not trigger the fork install (presence-gate regression)"
+printf '%s' "$out" | grep -q 'moving aside' || fail "upstream dir was not moved aside"
+[ -d "$mhome/.bun/install/global/node_modules/@tobilu/qmd.pre-fork-backup" ] \
+  || fail "upstream backup dir missing after migration"
+[ -e "$mhome/.himmel/qmd-fork/dist/cli/qmd.js" ] || fail "fork clone was not built"
+[ -e "$mhome/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js" ] \
+  || fail "global path does not serve the fork after migration"
+echo "ok: existing upstream install migrates to the fork (backup + link, not skipped)"
 
 # ── 12. HIMMEL-842 gap 2: node-without-npm + no JS package manager -> HARD fail ──
 # Stub node on PATH but provide NO npm; bun is already absent suite-wide, so the

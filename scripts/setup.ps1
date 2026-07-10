@@ -223,17 +223,21 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 }
 
 # --- qmd collection ---
-# Mirror of scripts/lib/qmd-bin.sh (bash) — pwsh cannot source bash, so
-# resolver logic is duplicated. UPDATE BOTH when changing resolution
-# rules; scripts/lib/test-qmd-bin.sh is the canonical behavior spec.
+# Mirror of scripts/lib/qmd-bin.sh (bash) — pwsh cannot source bash, so the
+# resolver (Invoke-Qmd/Test-Qmd) logic is duplicated. This block only
+# REGISTERS an already-installed qmd (matches bash setup.sh step [4/10] --
+# neither side auto-installs here; that's adopt.sh's/adopt.ps1's job). UPDATE
+# BOTH when changing resolution rules; scripts/lib/test-qmd-bin.sh is the
+# canonical behavior spec.
 #
 # Honors $env:BUN_INSTALL for relocated bun roots, matching the bash lib.
 $QmdBunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
 $QmdBunJs = Join-Path $QmdBunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
-# HIMMEL-752 G3: NO --ignore-scripts. It blocked better-sqlite3's native
-# build (prebuild-install || node-gyp rebuild --release), crashing qmd on
-# machines with no prebuilt binary (fresh macOS arm64 / new node major).
-$QmdInstallHint = 'bun add -g @tobilu/qmd@latest'
+# HIMMEL-877: qmd installs from the himmel qmd fork (yotamleo/qmd#himmel-main),
+# never upstream `bun add -g @tobilu/qmd` (EPERM-wedges on this project's
+# machines; bun blocks its postinstall script). scripts/lib/qmd-bin.sh is the
+# single chokepoint for the clone+build+link recipe.
+$QmdInstallHint = "bash `"$RepoRoot/scripts/lib/qmd-bin.sh`" install"
 
 function Invoke-Qmd {
     param([Parameter(ValueFromRemainingArguments=$true)] [string[]] $QmdArgs)
