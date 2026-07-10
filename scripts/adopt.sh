@@ -51,6 +51,14 @@ HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/qmd-bin.sh"
 
+# Adopter preflight checks (HIMMEL-842). Provides the shared WARN-not-fail
+# checks (uv/pipx, npm-less-node, jira-dist) consumed by require_tools() below.
+# The standalone scripts/preflight-adopter.sh runner sources the same lib, so the
+# two entry points report identically and can't drift (operator answer Q4).
+# shellcheck source=scripts/lib/preflight-adopter.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/preflight-adopter.sh"
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 PROFILE="core"
 SCOPE="project"
@@ -120,6 +128,25 @@ require_tools() {
     BUN_AVAILABLE=0
     echo "WARN: 'bun' not found — qmd search will be skipped;" >&2
     echo "      install: https://bun.sh (runs handover armed-resume, qmd search, the Telegram bridge, obsidian-triage tools)" >&2
+  fi
+  # HIMMEL-842 adopter preflight: the shared advisory checks (uv/pipx,
+  # npm-less-node, jira-dist) live in scripts/lib/preflight-adopter.sh and are
+  # also run by the standalone scripts/preflight-adopter.sh runner. Each returns
+  # 1 (after WARNing) when its gap is present; the `||` capture keeps a non-zero
+  # return from aborting under set -e. The npm-less-node case escalates to a
+  # HARD fail below when there is no JS package manager at all (npm AND bun both
+  # absent): adopt is about to build dist/ artifacts (build_jira_cli) and cannot
+  # proceed without one. When bun is present it covers every himmel JS build, so
+  # the shared WARN stays advisory and adopt proceeds.
+  local npm_gap=0
+  preflight_check_uv_pipx       || true
+  preflight_check_npm_invocable || npm_gap=1
+  preflight_check_jira_dist     || true
+  if [[ "$npm_gap" -eq 1 && "${BUN_AVAILABLE:-1}" -eq 0 ]]; then
+    echo "ERROR: 'node' found but 'npm' is missing (Ubuntu's nodejs ships without npm) and 'bun' is absent — no JS package manager." >&2
+    echo "  Install bun (works for all himmel builds): https://bun.sh" >&2
+    echo "  OR Node + npm via NodeSource: https://github.com/nodesource/distributions" >&2
+    exit 1
   fi
 }
 
@@ -267,6 +294,60 @@ wire_qmd_core() {
   fi
 }
 
+# build_jira_cli — build scripts/jira/dist/index.js (HIMMEL-842 gap 3). dist/ is
+# a gitignored build artifact, so a fresh clone bootstrapped via adopt.sh hits
+# MODULE_NOT_FOUND without this (CLAUDE.md's "worktrees lack dist/" warning is
+# scoped too narrowly — a fresh PRIMARY clone via adopt.sh hits the identical
+# failure). Ports scripts/setup.sh step [3/10]'s build block, gated on
+# npm-or-bun presence (bun covers the Ubuntu node-without-npm case), and
+# WARN-not-fail: a build failure warns with the manual command and returns 0 —
+# matches wire_qmd_core's contract so a broken build never aborts an adopt.
+# Unlike setup.sh, NO `npm link`: adopted repos invoke the clone's dist/index.js
+# directly (`node $HIMMEL_ROOT/scripts/jira/dist/index.js`), so a global symlink
+# isn't needed. Honors --dry-run.
+build_jira_cli() {
+  local jira_dir="$HIMMEL_ROOT/scripts/jira"
+  # fix-batch F3: skip only when BOTH halves are present — a stale dist/
+  # without node_modules/ (gitignored, so a dist/ leftover from a prior build
+  # can outlive a node_modules/ wipe) previously passed as "already built"
+  # then failed at runtime. Mirrors setup.sh's invariant (checks both).
+  if [[ -d "$jira_dir/node_modules" && -f "$jira_dir/dist/index.js" ]]; then
+    echo "  jira CLI dist already built — skipping"
+    return 0
+  fi
+  local pm=""
+  if command -v npm >/dev/null 2>&1; then
+    pm=npm
+  elif command -v bun >/dev/null 2>&1; then
+    pm=bun
+  fi
+  if [[ -z "$pm" ]]; then
+    echo "  jira CLI: skipping build (no npm or bun — install one to build dist/)." >&2
+    echo "  Manual: (cd scripts/jira && npm install && npm run build)" >&2
+    return 0
+  fi
+  echo "──── Building jira CLI (scripts/jira/dist) ────"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: (cd scripts/jira && $pm install && $pm run build)"
+    return 0
+  fi
+  # npm takes --silent (matches setup.sh step [3/10]); bun has no --silent flag,
+  # so branch the invocation rather than pass an unknown flag.
+  local ok=1
+  if [[ "$pm" == "npm" ]]; then
+    ( cd "$jira_dir" && npm install --silent && npm run build --silent ) || ok=0
+  else
+    ( cd "$jira_dir" && bun install && bun run build ) || ok=0
+  fi
+  if [[ $ok -eq 1 ]]; then
+    echo "  jira CLI built. Invoke: node $HIMMEL_ROOT/scripts/jira/dist/index.js --help"
+  else
+    echo "  WARNING: jira CLI build failed — continuing (the preflight flagged this too)." >&2
+    echo "  Manual: (cd scripts/jira && $pm install && $pm run build)" >&2
+    # WARN-not-fail: return 0 so a broken build never aborts adopt.
+  fi
+}
+
 do_core() {
   require_tools
   if [[ "$SCOPE" == "project" ]]; then
@@ -284,6 +365,7 @@ do_core() {
     echo "  worktree commands run from the himmel clone: bash $HIMMEL_ROOT/scripts/worktree.sh feat/slug"
   fi
   install_plugins
+  build_jira_cli
   wire_qmd_core
   wire_statusline_core
   wire_himmel_repo_core

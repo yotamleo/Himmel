@@ -33,7 +33,34 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 norm() { jq -rn --arg v "$1" '$v'; }
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+
+# HIMMEL-842 CR round-2 (F1): scripts/jira/dist + scripts/jira/node_modules are
+# gitignored build artifacts that MAY already exist in this checkout (a primary
+# checkout that has run adopt.sh/setup.sh before). build_jira_cli's "already
+# built" skip fires the instant either is present, which would make scenarios
+# 14-19 below assert on the WRONG branch. Move any existing dist/node_modules
+# aside for the whole suite and restore unconditionally on exit — mirrors the
+# real_jira_dist/dist_backup + trap cleanup EXIT pattern in
+# scripts/test-preflight-adopter.sh.
+real_jira_dist="$repo_root/scripts/jira/dist"
+real_jira_node_modules="$repo_root/scripts/jira/node_modules"
+dist_backup=""
+node_modules_backup=""
+if [ -e "$real_jira_dist" ]; then
+  dist_backup="$work/dist-backup"
+  mv "$real_jira_dist" "$dist_backup"
+fi
+if [ -e "$real_jira_node_modules" ]; then
+  node_modules_backup="$work/node_modules-backup"
+  mv "$real_jira_node_modules" "$node_modules_backup"
+fi
+cleanup() {
+  rm -rf "$real_jira_dist" "$real_jira_node_modules"
+  if [ -n "$dist_backup" ]; then mv "$dist_backup" "$real_jira_dist"; fi
+  if [ -n "$node_modules_backup" ]; then mv "$node_modules_backup" "$real_jira_node_modules"; fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
 
 # Stub claude so adopt's install-plugins step is a no-op. `plugin list` must echo
 # the enabled plugin specs so install-plugins.sh's presence-verify (HIMMEL-361)
@@ -54,10 +81,17 @@ chmod +x "$work/bin/claude"
 # mutation), a real `qmd pull` (~2.1 GB), or a real collection registration on
 # a dev box that has the toolchain installed. Tests 10/11 re-add their own
 # stubbed bun on top of this scrubbed base to exercise the qmd path.
+#
+# HIMMEL-842: ALSO scrub `npm` dirs (node + npm share a bin dir, so this drops
+# real node too). With npm AND bun both absent suite-wide, build_jira_cli takes
+# its "no npm or bun — skipping build" branch, so NO test fires a real
+# `npm install` in scripts/jira (network + repo mutation). Tests 14/15 re-add a
+# stubbed npm on top of this scrubbed base to exercise the build path; 12/13
+# re-add a stubbed node (and 13 a stubbed bun) for the npm-less-node preflight.
 qmd_free_path=""
 _save_ifs="$IFS"; IFS=':'
 for _d in $PATH; do
-  { [ -x "$_d/qmd" ] || [ -x "$_d/bun" ]; } && continue
+  { [ -x "$_d/qmd" ] || [ -x "$_d/bun" ] || [ -x "$_d/npm" ]; } && continue
   qmd_free_path="${qmd_free_path:+$qmd_free_path:}$_d"
 done
 IFS="$_save_ifs"
@@ -237,7 +271,10 @@ printf '%s' "$out" | grep -q 'DRY: qmd_install'      || fail "dry-run missing qm
 printf '%s' "$out" | grep -q 'DRY: qmd pull'         || fail "dry-run missing qmd pull DRY line"
 printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* himmel$' || fail "dry-run missing himmel register DRY line"
 printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* luna$'   || fail "dry-run missing luna register DRY line"
-echo "ok: dry-run emits all qmd step DRY lines (core G1/G3/G4 + luna G5)"
+# HIMMEL-842 gap 3: build_jira_cli runs after install_plugins; with npm scrubbed
+# suite-wide and bun stubbed present, it picks bun and emits its DRY build line.
+printf '%s' "$out" | grep -q 'DRY:.*(cd scripts/jira && bun install && bun run build)' || fail "dry-run missing build_jira_cli DRY line"
+echo "ok: dry-run emits all qmd step DRY lines (core G1/G3/G4 + luna G5) + build_jira_cli"
 
 # ── 11. HIMMEL-752 qmd WARN-not-fail: a failing qmd install never aborts adopt
 # bun present (stubbed to exit 1) + has_qmd=false (scrubbed PATH, fake HOME) ->
@@ -258,5 +295,170 @@ set -e
 printf '%s' "$out" | grep -q 'Installing qmd via bun' || fail "qmd_install not invoked (call order)"
 printf '%s' "$out" | grep -Eq 'WARNING.*qmd install failed' || fail "missing qmd install WARNING (WARN-not-fail)"
 echo "ok: qmd install failure WARNs and adopt continues (WARN-not-fail, rc=0)"
+
+# ── 12. HIMMEL-842 gap 2: node-without-npm + no JS package manager -> HARD fail ──
+# Stub node on PATH but provide NO npm; bun is already absent suite-wide, so the
+# node-without-npm check finds no JS package manager and adopt must exit non-zero
+# with the bun.sh + NodeSource install hints. npm dirs are scrubbed from the
+# suite-wide bun/qmd-scrubbed PATH (node + npm usually share a bin dir, so dropping
+# the npm dir also drops real node — the stub node re-adds node deterministically).
+nbin="$work/nbin"; mkdir -p "$nbin"
+cat > "$nbin/node" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$nbin/node"
+npm_free_path=""
+_save_ifs="$IFS"; IFS=':'
+for _d in $qmd_free_path; do
+  [ -x "$_d/npm" ] && continue
+  npm_free_path="${npm_free_path:+$npm_free_path:}$_d"
+done
+IFS="$_save_ifs"
+ntarget="$work/ntarget"; nhome="$work/nhome"; mkdir -p "$ntarget" "$nhome"
+set +e
+out=$(PATH="$nbin:$work/bin:$npm_free_path" HOME="$nhome" bash "$adopt" \
+      --profile core --scope project --target "$ntarget" 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "node-without-npm + no bun should exit non-zero (got $rc)"
+printf '%s' "$out" | grep -q 'npm' || fail "node-without-npm msg missing 'npm'"
+printf '%s' "$out" | grep -q 'bun.sh' || fail "node-without-npm msg missing bun.sh hint"
+printf '%s' "$out" | grep -qi 'nodesource' || fail "node-without-npm msg missing nodesource hint"
+echo "ok: node-without-npm + no JS package manager -> hard fail (rc=$rc) + install hints"
+
+# ── 13. HIMMEL-842 gap 2: node-without-npm WITH bun -> soft warn, adopt proceeds ─
+# bun covers every himmel JS build, so node-without-npm is only a SOFT warn when
+# bun is present (no hard fail). --dry-run keeps the run side-effect-free.
+nbin2="$work/nbin2"; mkdir -p "$nbin2"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$nbin2/node"; chmod +x "$nbin2/node"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$nbin2/bun";  chmod +x "$nbin2/bun"
+ntarget2="$work/ntarget2"; nhome2="$work/nhome2"; mkdir -p "$ntarget2" "$nhome2"
+set +e
+out=$(PATH="$nbin2:$work/bin:$npm_free_path" HOME="$nhome2" bash "$adopt" \
+      --profile core --scope project --target "$ntarget2" --dry-run 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "node-without-npm + bun should proceed (got $rc)"
+printf '%s' "$out" | grep -q 'npm' || fail "node-without-npm+bun missing soft warn"
+if printf '%s' "$out" | grep -q 'no JS package manager'; then
+  fail "node-without-npm+bun must NOT hard-fail (saw hard-fail message)"
+fi
+echo "ok: node-without-npm + bun present -> soft warn, adopt proceeds (rc=0)"
+
+# ── 14. HIMMEL-842 gap 3: build_jira_cli success path (stub npm exit 0) ───────
+# npm scrubbed suite-wide; re-add a stub npm (exit 0) so build_jira_cli picks npm,
+# the (cd scripts/jira && npm install && npm run build) subshell "succeeds", and
+# adopt reports the build + continues. dist/index.js is not actually created by
+# the stub — the assertion is on the reported outcome, not the artifact.
+bjbin="$work/bjbin"; mkdir -p "$bjbin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$bjbin/npm"; chmod +x "$bjbin/npm"
+bjhome="$work/bjhome"; mkdir -p "$bjhome"
+set +e
+out=$(PATH="$bjbin:$work/bin:$qmd_free_path" HOME="$bjhome" bash "$adopt" \
+      --profile core --scope user --target "$work/ign-bj" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "build_jira_cli success path: adopt should exit 0 (got $rc)"
+printf '%s' "$out" | grep -q 'Building jira CLI' || fail "build_jira_cli: missing 'Building jira CLI' header"
+printf '%s' "$out" | grep -q 'jira CLI built'    || fail "build_jira_cli: missing success message"
+if printf '%s' "$out" | grep -q 'jira CLI build failed'; then
+  fail "build_jira_cli: success path must not print a build-failed warning"
+fi
+echo "ok: build_jira_cli success path (stub npm) reports built, adopt exits 0"
+
+# ── 15. HIMMEL-842 gap 3: build_jira_cli WARN-not-fail (stub npm exit 1) ──────
+# A failing build must WARN with the manual command and return 0 — matches
+# wire_qmd_core's contract; a broken jira build never aborts adopt.
+bfbin="$work/bfbin"; mkdir -p "$bfbin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$bfbin/npm"; chmod +x "$bfbin/npm"
+bfhome="$work/bfhome"; mkdir -p "$bfhome"
+set +e
+out=$(PATH="$bfbin:$work/bin:$qmd_free_path" HOME="$bfhome" bash "$adopt" \
+      --profile core --scope user --target "$work/ign-bf" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "build_jira_cli WARN-not-fail: adopt must exit 0 on a build failure (got $rc)"
+printf '%s' "$out" | grep -Eq 'WARNING.*jira CLI build failed' || fail "build_jira_cli: missing build-failed WARNING"
+printf '%s' "$out" | grep -q 'npm install && npm run build'     || fail "build_jira_cli: missing manual command in WARNING"
+echo "ok: build_jira_cli failure WARNs with manual command, adopt continues (rc=0)"
+
+# ── 16. HIMMEL-842 gap 3: build_jira_cli skip when no JS package manager ──────
+# npm AND bun both absent (the scrubbed suite base) -> build_jira_cli skips with
+# the manual command and never attempts a build. A real run, not --dry-run, so
+# the skip branch (not the DRY branch) is exercised.
+skhome="$work/skhome"; mkdir -p "$skhome"
+set +e
+out=$(PATH="$work/bin:$qmd_free_path" HOME="$skhome" bash "$adopt" \
+      --profile core --scope user --target "$work/ign-sk" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "build_jira_cli skip path: adopt should exit 0 (got $rc)"
+printf '%s' "$out" | grep -q 'jira CLI: skipping build (no npm or bun' || fail "build_jira_cli: missing no-pm skip note"
+if printf '%s' "$out" | grep -q 'Building jira CLI'; then
+  fail "build_jira_cli: no-pm path must NOT attempt a build (saw build header)"
+fi
+echo "ok: build_jira_cli skips (no npm/bun) with manual command, no build attempted"
+
+# ── 17. HIMMEL-842 gap 3: build_jira_cli idempotent when dist AND node_modules
+# already built (F3: the skip now requires BOTH halves present) ─────────────
+# The suite-wide move-aside at the top guarantees scripts/jira/dist and
+# scripts/jira/node_modules are both absent entering this scenario; create
+# both so build_jira_cli's "already built" branch fires. Removed right after
+# (dist/ and node_modules/ are gitignored, so this never pollutes git); the
+# suite-wide trap restores the real ones unconditionally regardless.
+mkdir -p "$real_jira_dist"; : > "$real_jira_dist/index.js"
+mkdir -p "$real_jira_node_modules"
+bjhome2="$work/bjhome2"; mkdir -p "$bjhome2"
+set +e
+out=$(PATH="$bjbin:$work/bin:$qmd_free_path" HOME="$bjhome2" bash "$adopt" \
+      --profile core --scope user --target "$work/ign-bj2" 2>&1); rc=$?
+set -e
+rm -rf "$real_jira_dist" "$real_jira_node_modules"
+[ "$rc" -eq 0 ] || fail "build_jira_cli idempotent path: adopt should exit 0 (got $rc)"
+printf '%s' "$out" | grep -q 'jira CLI dist already built' || fail "build_jira_cli: missing 'already built' skip"
+if printf '%s' "$out" | grep -q 'Building jira CLI'; then
+  fail "build_jira_cli: already-built path must NOT attempt a build"
+fi
+echo "ok: build_jira_cli idempotent when dist/index.js + node_modules already present (skips build)"
+
+# ── 18. HIMMEL-842 gap 3 (F3): dist present but node_modules ABSENT -> build
+# must NOT skip ────────────────────────────────────────────────────────────
+# A stale dist/ without node_modules/ previously passed as "already built"
+# then failed at runtime — F3's fix requires BOTH halves present to skip.
+mkdir -p "$real_jira_dist"; : > "$real_jira_dist/index.js"
+# node_modules stays absent (suite-wide baseline).
+bjhome3="$work/bjhome3"; mkdir -p "$bjhome3"
+set +e
+out=$(PATH="$bjbin:$work/bin:$qmd_free_path" HOME="$bjhome3" bash "$adopt" \
+      --profile core --scope user --target "$work/ign-bj3" 2>&1); rc=$?
+set -e
+rm -rf "$real_jira_dist"
+[ "$rc" -eq 0 ] || fail "dist-present/node_modules-absent: adopt should exit 0 (got $rc)"
+printf '%s' "$out" | grep -q 'Building jira CLI' || fail "dist-present/node_modules-absent: build_jira_cli should NOT skip (missing build header)"
+if printf '%s' "$out" | grep -q 'jira CLI dist already built'; then
+  fail "dist-present/node_modules-absent: must NOT take the already-built skip branch"
+fi
+echo "ok: build_jira_cli builds when dist present but node_modules absent (F3 invariant)"
+
+# ── 19. HIMMEL-842 gap 3 (F5): build_jira_cli bun branch, REAL invocation ────
+# npm absent (suite-wide scrub), bun stubbed; assert the bun install/build
+# lines actually ran (success path is enough per F5) — the bun branch was
+# previously only exercised via --dry-run (scenario 10).
+bubin="$work/bubin"; mkdir -p "$bubin"
+cat > "$bubin/bun" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  install) echo "BUN_INSTALL_STUB_RAN" ;;
+  run) [ "$2" = "build" ] && echo "BUN_BUILD_STUB_RAN" ;;
+esac
+exit 0
+STUB
+chmod +x "$bubin/bun"
+buhome="$work/buhome"; mkdir -p "$buhome"
+set +e
+out=$(PATH="$bubin:$work/bin:$qmd_free_path" HOME="$buhome" bash "$adopt" \
+      --profile core --scope user --target "$work/ign-bu" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "build_jira_cli bun real-invocation: adopt should exit 0 (got $rc)"
+printf '%s' "$out" | grep -q 'BUN_INSTALL_STUB_RAN' || fail "build_jira_cli bun real-invocation: bun install did not run"
+printf '%s' "$out" | grep -q 'BUN_BUILD_STUB_RAN'   || fail "build_jira_cli bun real-invocation: bun run build did not run"
+printf '%s' "$out" | grep -q 'jira CLI built' || fail "build_jira_cli bun real-invocation: missing success message"
+echo "ok: build_jira_cli bun branch real-invocation runs install + build (F5)"
 
 echo "PASS"

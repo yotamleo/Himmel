@@ -63,6 +63,12 @@ $script:BunAvailable = $true
 # adopt.ps1 and setup.ps1 (HIMMEL install/uninstall symmetry).
 . (Join-Path $ScriptDir 'lib/wire-pretooluse-hooks.ps1')
 
+# Adopter preflight checks (HIMMEL-842). Provides the shared WARN-not-fail
+# checks (uv/pipx, npm-less-node, jira-dist) consumed by Require-Tools below.
+# The standalone scripts/preflight-adopter.ps1 runner dot-sources the same lib,
+# so the two entry points report identically and can't drift (operator answer Q4).
+. (Join-Path $ScriptDir 'lib/preflight-adopter.ps1')
+
 if (-not $Target)     { $Target     = (Get-Location).Path }
 if (-not $LunaTarget) { $LunaTarget = Join-Path $HOME 'Documents\luna' }
 
@@ -100,6 +106,21 @@ function Require-Tools {
     if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
         $script:BunAvailable = $false
         Write-Warning "'bun' not found — qmd search will be skipped; install: https://bun.sh (runs handover armed-resume, qmd search, the Telegram bridge, obsidian-triage tools)"
+    }
+    # HIMMEL-842 adopter preflight: the shared advisory checks (uv/pipx,
+    # npm-less-node, jira-dist) live in scripts/lib/preflight-adopter.ps1 and are
+    # also run by the standalone scripts/preflight-adopter.ps1 runner. Each
+    # returns $false (after Write-Warning) when its gap is present. The
+    # npm-less-node case escalates to a HARD fail below when there is no JS
+    # package manager at all (npm AND bun both absent): adopt is about to build
+    # dist/ artifacts (Build-JiraCli) and cannot proceed without one. When bun is
+    # present it covers every himmel JS build, so the shared warning stays
+    # advisory and adopt proceeds.
+    $npmGap = -not (Test-PreflightNpmInvocable)
+    Test-PreflightUvPipx | Out-Null
+    Test-PreflightJiraDist | Out-Null
+    if ($npmGap -and ($script:BunAvailable -eq $false)) {
+        Write-Error "'node' found but 'npm' is missing (Ubuntu's nodejs ships without npm) and 'bun' is absent -- no JS package manager. Install bun (works for all himmel builds): https://bun.sh OR Node + npm via NodeSource: https://github.com/nodesource/distributions"
     }
 }
 
@@ -395,6 +416,73 @@ function Wire-QmdCoreInner {
     }
 }
 
+# Build-JiraCli -- build scripts/jira/dist/index.js (HIMMEL-842 gap 3). dist/ is
+# a gitignored build artifact, so a fresh clone bootstrapped via adopt.ps1 hits
+# MODULE_NOT_FOUND without this (CLAUDE.md's "worktrees lack dist/" warning is
+# scoped too narrowly -- a fresh PRIMARY clone via adopt.ps1 hits the identical
+# failure). Ports scripts/setup.sh step [3/10]'s build block, gated on
+# npm-or-bun presence (bun covers the Ubuntu node-without-npm case), and
+# WARN-not-fail: a build failure warns with the manual command and returns --
+# matches Wire-QmdCore's contract so a broken build never aborts an adopt.
+# Unlike setup.sh, NO `npm link`: adopted repos invoke the clone's dist/index.js
+# directly (`node $HimmelRoot\scripts\jira\dist\index.js`), so a global symlink
+# isn't needed. Honors -DryRun.
+function Build-JiraCli {
+    $jiraDir = Join-Path $HimmelRoot 'scripts\jira'
+    # fix-batch F3: skip only when BOTH halves are present — a stale dist/
+    # without node_modules/ (gitignored, so a dist/ leftover from a prior
+    # build can outlive a node_modules/ wipe) previously passed as "already
+    # built" then failed at runtime. Mirrors setup.ps1's invariant (checks both).
+    if ((Test-Path (Join-Path $jiraDir 'node_modules')) -and (Test-Path (Join-Path $jiraDir 'dist\index.js'))) {
+        Write-Host "  jira CLI dist already built — skipping"
+        return
+    }
+    $pm = $null
+    if (Get-Command npm -ErrorAction SilentlyContinue) { $pm = 'npm' }
+    elseif (Get-Command bun -ErrorAction SilentlyContinue) { $pm = 'bun' }
+    if (-not $pm) {
+        Write-Host "  jira CLI: skipping build (no npm or bun — install one to build dist/)." -ForegroundColor Yellow
+        Write-Host "  Manual: (cd scripts/jira && npm install && npm run build)" -ForegroundColor Yellow
+        return
+    }
+    Write-Host "──── Building jira CLI (scripts/jira/dist) ────"
+    if ($DryRun) { Write-Host "DRY: (cd scripts/jira && $pm install && $pm run build)"; return }
+    # WARN-not-fail under EAP='Stop' + PSNativeCommandUseErrorActionPreference:
+    # decouple native exit from EAP so a build failure WARNs instead of throwing
+    # (mirrors Wire-QmdCore's native-EAP guard). npm takes --silent (matches
+    # setup.sh); bun has no --silent flag, so the invocation branches on $pm.
+    $savedNativeEAP = $null
+    if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+        $savedNativeEAP = $PSNativeCommandUseErrorActionPreference
+    }
+    $global:PSNativeCommandUseErrorActionPreference = $false
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $buildRc = 0
+    try {
+        Push-Location $jiraDir
+        if ($pm -eq 'npm') {
+            & npm install --silent
+            $rc1 = $LASTEXITCODE
+            if ($rc1 -eq 0) { & npm run build --silent; $buildRc = $LASTEXITCODE } else { $buildRc = $rc1 }
+        } else {
+            & bun install
+            $rc1 = $LASTEXITCODE
+            if ($rc1 -eq 0) { & bun run build; $buildRc = $LASTEXITCODE } else { $buildRc = $rc1 }
+        }
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = $savedEAP
+        if ($null -ne $savedNativeEAP) { $global:PSNativeCommandUseErrorActionPreference = $savedNativeEAP }
+    }
+    if ($buildRc -eq 0) {
+        Write-Host "  jira CLI built. Invoke: node $HimmelRoot\scripts\jira\dist\index.js --help"
+    } else {
+        Write-Host "  WARNING: jira CLI build failed (exit $buildRc) — continuing (the preflight flagged this too)." -ForegroundColor Yellow
+        Write-Host "  Manual: (cd scripts/jira && $pm install && $pm run build)" -ForegroundColor Yellow
+    }
+}
+
 function Do-Core {
     Require-Tools
     if ($Scope -eq 'project') {
@@ -411,6 +499,7 @@ function Do-Core {
         Write-Host "  worktree commands run from the himmel clone: bash $HimmelRoot/scripts/worktree.sh feat/slug"
     }
     Install-Plugins
+    Build-JiraCli
     Wire-QmdCore
     Wire-StatuslineCore
     Wire-HimmelRepoCore
