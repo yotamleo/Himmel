@@ -11,8 +11,29 @@ Do **not** use overnight mode when:
 - The work touches multiple independent subsystems (split into separate tickets first).
 - Destructive ops outside the worktree are required.
 
-## The 11 phases
+## The 11 phases (+ step 0: queue lock)
 
+0. **Queue lock (HIMMEL-856)** — before Phase 1, run
+   `bash scripts/handover/queue-lock.sh acquire <handover-path>`. rc=0
+   (fresh acquire or an automatic stale takeover) proceeds straight to
+   Phase 1 — **capture the `release-token: <token>` line the acquire
+   prints and keep the token for Phase 11**: `release` (and `heartbeat`)
+   refuse without it, so a late or wrong-session release can never rm a
+   live lock. **rc=2** means the queue is owned by a LIVE session elsewhere
+   right now (the exact 2026-07-10 00:51 double-fire shape) — do NOT
+   proceed on this queue: load the coordination file, pick a different
+   queue, or stop with a clear message to the operator. Do not set
+   `QUEUE_LOCK_TAKEOVER=1` to push past a FRESH lock unless you have
+   independently confirmed the other holder is gone (the operator said so,
+   or the machine it names is verifiably offline) — a live double-acquire
+   is the failure this step exists to prevent. Release the lock at wrap
+   (Phase 11, with the captured token) or via `/stop`; an un-released lock
+   is covered by the TTL (default **6 h** — sized to cover the 3-4 h
+   overnight budget; `QUEUE_LOCK_TTL_SECONDS` tunes it, and wiring periodic
+   `queue-lock.sh heartbeat <handover-path> <token>` refreshes into long
+   sessions is the future lever for tightening it back down — TTL sizing
+   is an open operator question on the HIMMEL-856 design) so a crashed
+   session never strands the queue.
 1. **Plan** — `superpowers:writing-plans` on the active brief; commit to `<plans-root>/YYYY-MM-DD-<slug>.md` where `<plans-root>` resolves as:
    - `$HANDOVER_DIR/plans/` when `HANDOVER_DIR` is set (Mode B — plans live with handover state in `<state-repo>/handovers/plans/`).
    - `<repo>/docs/superpowers/plans/` otherwise (Mode A default — backwards-compat;
@@ -34,7 +55,7 @@ Do **not** use overnight mode when:
    Then the push passes the `platforms-tested` / HIMMEL-176 gates first-try with no amend. **Do NOT commit first, hit the gate, then `git commit --amend` to add the trailer** — the auto-mode classifier flags that reactive amend as security-gate circumvention and HARD-blocks it (uncleable, even with operator approval).
 9. **Merge** — `gh pr merge --squash` once CR is clean. **Default to a PLAIN squash merge — do NOT add `--admin`** (HIMMEL-224). `--admin` exists to bypass *branch protection*; this repo has none (the protection API returns 403 on a free private repo, and `reviewDecision` is empty), so `--admin` bypasses nothing useful yet it trips the auto-mode classifier's "bypassing the approval gate = destructive op outside the worktree" HARD-veto (see § Block-only criteria) — which is exactly what stalled the HIMMEL-221 run. Only reach for `--admin` if the repo *actually* has branch protection that blocks the plain merge, and then only with `GH_ADMIN_MERGE_OK=1` set in the launching shell (the `scripts/handover/pr-merge.sh` helper encodes this plain-first/admin-fallback logic). **If the merge is blocked for any reason, load the `himmel-ops:stuck-playbook` skill** (§ "a PR merge was blocked"), then — rather than guessing or routing around the block — record the merge as a one-action operator step in the Phase 11 handover. Retrying a blocked merge via a different command path is flagged as evasion and hardens the block.
 10. **Jira** — invoke the CLI as `node scripts/jira/dist/index.js transition <KEY> "<state>"` (NOT the global `jira` shim — it points at an unrelated, often-broken `jira-cli` package). This runs autonomously **provided the specific standing allow-rule `Bash(node scripts/jira/dist/index.js:*)` is present** — a generic `Bash(node *)` is NOT enough to authorize an external write (see § Auto-mode classifier). If the rule is missing, a transition is classifier-blocked; do NOT retry via a different path (evasion) — record it as an operator action in Phase 11 and have the operator add the rule once (it then works for all future runs).
-11. **Handover** — write `next-session-<N+1>.md` (or whichever increment) in the right dir, file followup tickets for non-blocking findings, record any classifier-blocked Jira transitions as explicit operator actions, update `status.md` + `roadmap.md`, commit + push (trailers in the first commit per Phase 8).
+11. **Handover** — write `next-session-<N+1>.md` (or whichever increment) in the right dir, file followup tickets for non-blocking findings, record any classifier-blocked Jira transitions as explicit operator actions, update `status.md` + `roadmap.md`, commit + push (trailers in the first commit per Phase 8). **Release the step-0 queue lock** (`bash scripts/handover/queue-lock.sh release <handover-path> <release-token>` — the token captured from the step-0 acquire output; if it was lost, `QUEUE_LOCK_FORCE_RELEASE=1 bash scripts/handover/queue-lock.sh release <handover-path>` force-releases loudly and logs the override) as part of this phase — the TTL is a safety net for a crashed session, not a substitute for releasing on a clean wrap.
 
 ## Fable-5 launch preamble (HIMMEL-281)
 
