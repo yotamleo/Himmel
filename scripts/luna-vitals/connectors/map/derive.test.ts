@@ -257,11 +257,51 @@ describe('deriveRestingHeartRate', () => {
     expect(rows.some((r) => r.date === '2026-06-27')).toBe(true);
     expect(rows.some((r) => r.date === '2026-06-28')).toBe(true);
   });
+
+  test('dataPoint with no typed payload field → skipped WITH a stderr warning (HIMMEL-801)', () => {
+    // A malformed point carrying only name/dataSource (no beatsPerMinute payload
+    // field) is dropped — but no longer silently: a [google-health] stderr line fires.
+    const errSpy = spyOn(console, 'error');
+    try {
+      const rows = deriveRestingHeartRate({
+        dataPoints: [{ name: 'heartRate', dataSource: { platform: 'HEALTH_CONNECT' } }],
+      });
+      expect(rows).toEqual([]);
+      expect(errSpy).toHaveBeenCalledWith(
+        '[google-health] heart-rate dataPoint 0: no typed payload field - skipped',
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
 });
 
 // ── deriveSleep ───────────────────────────────────────────────────────────────
 
 describe('deriveSleep', () => {
+  test('dataPoint with no typed payload field → skipped WITH a warning (returned + stderr) (HIMMEL-801)', () => {
+    // A malformed point with only name/dataSource (no typed sleep payload) is
+    // dropped — now through the same warn() channel as the other parse-loop drops:
+    // a durable, undated SleepWarning (index-embedded so it never dedup-collides)
+    // plus the [google-health] stderr line.
+    const errSpy = spyOn(console, 'error');
+    try {
+      const { rows, warnings } = deriveSleep({
+        dataPoints: [{ name: 'sleep', dataSource: { platform: 'HEALTH_CONNECT' } }],
+      });
+      expect(rows).toEqual([]);
+      expect(warnings).toContainEqual({
+        date: undefined,
+        text: 'sleep dataPoint 0: no typed payload field - skipped',
+      });
+      expect(errSpy).toHaveBeenCalledWith(
+        '[google-health] sleep dataPoint 0: no typed payload field - skipped',
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   test('2026-06-28: main session 8h31m (sleep_in_bed_hours=8.5); nap excluded from main value', async () => {
     // Fixture: session 1 (01:24Z–09:55Z = 511 min = main) + session 2 nap (14:00Z–14:40Z = 40 min).
     // Both end on 2026-06-28 local (UTC+2). Main = session 1 (511 > 40).
