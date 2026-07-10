@@ -550,11 +550,17 @@ itself). NOT for tasks that need the result files in the current session.
 Task tool -> glm-subagent -> bun scripts/telegram/spawn-glm.ts "<task>" --cwd <himmel> --name <slug> [--timeout-mins <n>]
 ```
 
-Dispatched DETACHED + polled (reading `meta.json` `status`) when `--timeout-mins`
-exceeds the Bash tool's 10-minute single-call cap. Registered as the
-`glm-subagent` lane in `scripts/lanes/lanes.json` (same `ZAI_API_KEY` probe as the
-`glm` lane). Reuses spawn-glm's worktree isolation + guard chain verbatim (no new
-fence surface). Red-path test: `scripts/hooks/test-glm-subagent-path.sh`.
+Dispatched DETACHED + awaited via `scripts/lanes/await-glm-worker.sh` (HIMMEL-883)
+when `--timeout-mins` exceeds the Bash tool's 10-minute single-call cap: the
+canonical bounded watchdog polls the session's `meta.json` in FOREGROUND windows
+(`--slug <slug> --max-mins 8`, rc 0 terminal / 3 still-running-re-invoke / 2 no
+session) and the dispatcher must reach a terminal result inside its own turn —
+never end the turn promising a background monitor will report later (the
+monitor-orphan trap: a silently-dead monitor stranded the parent session ~4h,
+2026-07-10). Tests: `scripts/lanes/tests/test-await-glm-worker.sh`. Registered as
+the `glm-subagent` lane in `scripts/lanes/lanes.json` (same `ZAI_API_KEY` probe as
+the `glm` lane). Reuses spawn-glm's worktree isolation + guard chain verbatim (no
+new fence surface). Red-path test: `scripts/hooks/test-glm-subagent-path.sh`.
 
 ---
 
@@ -697,6 +703,13 @@ on demand; nothing here runs automatically.
   cap → leaves the mechanical note untouched). Detail:
   `docs/luna/end-session-wiki.md` → Crystallization.
 - `scripts/luna/fold-chat-history.py` — Fold an exported provider chat history (ChatGPT now; Gemini rides HIMMEL-391) into the luna vault as `chats/gpt/` notes (provider id maps to a vault subdir, e.g. `chatgpt` → `gpt`) + gitignored assets; create-only idempotent, `--dry-run` first (HIMMEL-832).
+- `scripts/luna/enrich-chat-notes.py` — **Chat-note enrichment pass** (HIMMEL-833).
+  DeepSeek summary + vocab-constrained tags + locally-computed Related Notes for
+  `enriched: false` chat-import notes under `<vault>/chats/`; flips each note to
+  `enriched: true` (incremental, interruptible; rewrites existing notes in
+  place — sibling of the create-only `fold-chat-history.py`). Egress-matrix-gated under purpose `enrichment`
+  (pending-operator until HIMMEL-833 ratification), ledgered per run
+  (`GRAPHIFY_LEDGER`), DeepSeek off-peak advisory. `--dry-run` first.
 
 ---
 

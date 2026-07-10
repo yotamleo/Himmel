@@ -23,6 +23,12 @@ Alibaba for embeddings).
 - **Load-bearing nuance:** embedding, rerank, and vision-embedding send FULL
   content (text or images) to the provider. An "embedding lane" is content
   egress, not metadata egress, and is gated accordingly.
+- **enrichment (HIMMEL-833)** is content egress like extraction — full note
+  bodies leave the machine, plus the vault-wide top-200 tag vocabulary (tag
+  names only, derived from all vault markdown) sent with each request as the
+  allowed-tags list; its `luna-personal × deepseek` cell was **ratified
+  2026-07-10** (operator, HIMMEL-833): `allow+log` (the ledger obligation
+  survives ratification — never plain `allow`).
 
 ## Corpus resolution (shared primitives, not new ones)
 

@@ -58,18 +58,27 @@ bun "$CLAUDE_PROJECT_DIR/scripts/telegram/spawn-glm.ts" "<task prompt>" \
   > "${TMPDIR:-/tmp}/glm-dispatch-<slug>.log" 2>&1 &
 ```
 
-Then poll with repeated SHORT Bash calls (each well under the cap) — read the
-session `status` roughly every 60s until it leaves `"running"`. The session
-dir is the newest match under
-`~/.claude/handover/bridge/glm-sessions/glm-<slug>-*`:
+Then await with the canonical watchdog (HIMMEL-883) — repeated FOREGROUND
+Bash calls, each bounded under the Bash-tool cap:
 
 ```
-d=$(ls -dt "$HOME/.claude/handover/bridge/glm-sessions/glm-<slug>-"* 2>/dev/null | head -1)
-status=$(grep -o '"status"[^,]*' "$d/meta.json" 2>/dev/null)
+bash "$CLAUDE_PROJECT_DIR/scripts/lanes/await-glm-worker.sh" --slug <slug> --max-mins 8
 ```
 
-Stop polling once `status` is one of `done`, `failed`, `capped`, `blocked`,
-`timeout`.
+Exit codes: `0` = worker reached a terminal status (`done` / `failed` /
+`capped` / `blocked` / `timeout`; meta.json + outbox tail are printed for
+you) · `3` = still running when the window closed, re-invoke the same
+command to keep waiting · `2` = no session found (report that as a
+dispatch failure).
+
+**HARD RULE (HIMMEL-883 — the monitor-orphan trap):** you MUST reach a
+terminal await result (rc 0 or 2) INSIDE this turn, looping on rc 3, and
+your FINAL message must carry the worker's final state. NEVER end your
+turn saying a background monitor / poll loop "will re-invoke me" or "will
+report later" — that monitor can die silently and the parent session
+strands for hours (observed 2026-07-10). If your overall task budget runs
+out while the worker is still running, say exactly that, with the session
+dir path, so the parent can take over the await.
 
 ## What to return
 
