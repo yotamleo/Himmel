@@ -4,6 +4,8 @@ Complete checklist for getting a new machine to full working state.
 
 **Adopting himmel on your own repo** (not developing himmel itself)? See [docs/setup/use-on-your-project.md](./use-on-your-project.md) instead — it covers the portable-core flow and tells you which sections here apply to you.
 
+**Setting up a clean Windows machine remotely (over SSH), including the delegation-lane fleet (hermes/codex/…)?** Follow [windows-clean-machine.md](./windows-clean-machine.md) — the ordered walkthrough through this doc plus the remote-drive pattern, lane installs, and always-on hardening (HIMMEL-852).
+
 ---
 
 ## 1. Required environment (HIMMEL-123)
