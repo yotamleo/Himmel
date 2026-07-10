@@ -7,6 +7,9 @@
 #   1. every template plugin present → exit 0 + "All N enabled plugins present"
 #   2. one template plugin absent    → exit 1, naming the absent plugin
 #   3. --dry-run                     → exit 0, verify skipped
+#   4. false-flagged entry           → NOT installed / not in the verify set
+#      (HIMMEL-816 follow-up: install-plugins.sh must honor enabledPlugins'
+#      boolean value, not install every key regardless)
 #
 # install-plugins.ps1 carries the SAME verify logic as a PowerShell twin — it is
 # covered by its own twin test-install-plugins-verify.ps1 (HIMMEL-364); keep
@@ -98,6 +101,34 @@ out=$(PATH="$STUB_DIR:$PATH" STUB_LIST_FAIL=1 \
       bash "$script" --template "$TEMPLATE" 2>&1); rc=$?
 assert_rc "list-failure fails closed (exit 1)" 1 "$rc"
 assert_has "list-failure surfaces claude stderr" "stub: list boom" "$out"
+
+# 5. false-flagged entry (HIMMEL-816 follow-up) → not installed, not in the
+# verify set. Template has one true plugin and one false plugin; stub only
+# reports the true one present (as a real install run would leave it).
+TEMPLATE_LEAN="$TMP/settings-template-lean.json"
+cat > "$TEMPLATE_LEAN" <<'JSON'
+{
+  "enabledPlugins": {
+    "enabled@mp": true,
+    "disabled@mp": false
+  },
+  "extraKnownMarketplaces": {}
+}
+JSON
+
+out=$(PATH="$STUB_DIR:$PATH" STUB_PRESENT="enabled@mp" \
+      bash "$script" --template "$TEMPLATE_LEAN" 2>&1); rc=$?
+assert_rc "lean template exits 0" 0 "$rc"
+assert_has "lean template installs the true-flagged plugin" "install: enabled@mp" "$out"
+assert_has "lean template verify summary counts only the true entry" "All 1 enabled plugins present" "$out"
+case "$out" in
+    *"install: disabled@mp"*) echo "FAIL false-flagged plugin was installed"; FAILED=$((FAILED + 1)) ;;
+    *) echo "PASS false-flagged plugin not installed" ;;
+esac
+case "$out" in
+    *"disabled@mp —"*) echo "FAIL false-flagged plugin appeared in verify failure output"; FAILED=$((FAILED + 1)) ;;
+    *) echo "PASS false-flagged plugin absent from verify output" ;;
+esac
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

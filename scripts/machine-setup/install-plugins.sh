@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# install-plugins — install all Claude Code plugins listed in
+# install-plugins — install all true-flagged Claude Code plugins listed in
 # docs/setup/settings-template.json.
 #
-# Reads `enabledPlugins` (plugin@marketplace keys) and
-# `extraKnownMarketplaces` from the template, registers each marketplace
+# Reads `enabledPlugins` (plugin@marketplace keys, installing only entries
+# flagged `true` — HIMMEL-816) and `extraKnownMarketplaces` from the
+# template, registers each marketplace
 # via `claude plugin marketplace add`, sets `autoUpdate: true` on every
 # template-flagged marketplace already registered in the scope's settings.json
 # (the CLI has no auto-update flag, so this is patched straight into that file —
@@ -176,7 +177,11 @@ done <<< "$AUTO_NAMES"
 echo "──── Installing plugins ($SCOPE scope) ────"
 # tr -d '\r': jq emits CRLF on Windows; a trailing \r would corrupt both the
 # install spec and the later presence comparison (INSTALLED_SPECS is \r-free).
-SPECS=$(echo "$EXPANDED" | jq -r '.enabledPlugins | keys[]' | tr -d '\r')
+# select(.value == true): only install template entries flagged true — a
+# false-flagged entry (the HIMMEL-816 lean profile) must NOT be installed,
+# or the lean template silently re-creates the pre-lean maximal set on every
+# fresh machine (HIMMEL-816 follow-up gap).
+SPECS=$(echo "$EXPANDED" | jq -r '.enabledPlugins | to_entries[] | select(.value == true) | .key' | tr -d '\r')
 while IFS= read -r SPEC; do
   [[ -z "$SPEC" ]] && continue
   echo "  install: $SPEC"
