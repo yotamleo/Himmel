@@ -92,7 +92,8 @@ skill / [`docs/internals/stuck-playbook.md`](docs/internals/stuck-playbook.md).
 ### Subagent policy — delegation & escalation (HIMMEL-166/688)
 <!-- FABLE-WINDOW: HIMMEL-688 hybrid — Opus 4.8 default parent, Fable-5 escalation-only.
      On loss of Fable access, drop the top-model table row, the escalation paragraph,
-     AND the Fable effort-calibration + Sonnet-comparison lines; the dispatch-naming
+     AND the Fable effort-calibration lines (the former Sonnet-comparison clause was
+     superseded by the HIMMEL-774 calibration row, 2026-07-10); the dispatch-naming
      paragraph SURVIVES a revert (Opus original in HIMMEL-282).
      Markers documentary; text between them is live prose — revert = REPLACE it. -->
 **The higher your tier, the more you delegate.** Push the work down;
@@ -105,7 +106,7 @@ nothing. Route by lane. The Claude tiers are always present; their
 | Lane | Best for | Effort / notes |
 |---|---|---|
 | Haiku | bulk mechanical (never delegates further) | low |
-| Sonnet 5 | scoped research; **implementor candidate** (operator 2026-07-08: token-normalized pricing makes it competitive for well-specified impl — compare per task vs Fable-low) | medium default; scale up by task length |
+| Sonnet 5 | scoped research; **default implementor for well-specified impl briefs (intro $2/$10 through 2026-08-31 — recalibrate Sep: HIMMEL-774)** | medium default; high for multi-file/long briefs — raise effort before Opus |
 | Opus 4.8 | multi-step reasoning; **default parent/orchestrator** | xhigh default for orchestration; scale DOWN (high/medium) for lighter parenting or scoped impl |
 | Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; **high for substantial judgment work — not just the hardest**; xhigh for the hardest |
 
