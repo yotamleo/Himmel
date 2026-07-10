@@ -28,6 +28,13 @@
 # The check is anchored to repo_real (the EDITED FILE's repo root), so a
 # marker in a parent repo cannot leak the opt-out onto a nested repo.
 #
+# Exemption: a file that is BOTH untracked AND gitignored is allowed,
+# regardless of branch — it cannot land in an on-main commit, so the block
+# would be a false positive (HIMMEL-876, e.g. the operator-local
+# scripts/cr/critics.local.json overlay). EXCEPT the secret-file class
+# (.env, keys, credentials — mirrored from block-read-secrets.sh): those
+# are gitignored BECAUSE they are sensitive, and stay denied.
+#
 # Hook input arrives on stdin as JSON. Exit codes:
 #   0 — allow (default for any non-blocking path)
 #   2 — block; stderr is shown to Claude and the user
@@ -221,6 +228,59 @@ elif [ "$branch_rc" -ne 0 ]; then
     exit 2
 else
     block_reason="main"
+fi
+
+# Secret-file class (HIMMEL-876 CR carve-out). MIRRORS is_secret_path() in
+# block-read-secrets.sh — that hook is the source of truth for this pattern
+# set; KEEP THE TWO LISTS IN SYNC when either changes. A secret file (.env,
+# keys, credentials) is typically gitignored precisely BECAUSE it is
+# sensitive machine-local state — exempting it below would let an unattended
+# Write clobber the REAL .env in the primary checkout, a trust-boundary
+# regression the pre-exemption hook incidentally prevented. Basename match,
+# path-prefix agnostic, globs only. The basename is lowercased BEFORE the
+# match (tr, bash-3.2-safe — no ${var,,}): git ls-files/check-ignore fold
+# case on Windows/macOS (core.ignorecase=true), so `.ENV` would otherwise
+# slip past these lowercase arms yet still read as ignored (matching .env)
+# and take the exemption — clobbering the real .env on a case-insensitive
+# filesystem. Case arms stay lowercase.
+is_secret_basename() {
+    local base="${1##*/}"
+    base=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
+    case "$base" in
+        # Non-secret env TEMPLATES (committed placeholders) — carved out
+        # BEFORE the .env.* secret arm, first-match-wins (same order as
+        # block-read-secrets.sh).
+        .env.example|.env.sample|.env.template|.env.dist) return 1 ;;
+        .env|.env.*|.envrc|id_rsa|id_ed25519|credentials.json|secrets.yaml|secrets.yml)
+            return 0 ;;
+        *.pem|*.key|*.p12|*.pfx)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# Untracked + gitignored exemption (HIMMEL-876): the guard's purpose is
+# protecting TRACKED code from an on-main/primary-feature commit — a file
+# that is both untracked AND gitignored (e.g. the HIMMEL-727 operator-local
+# scripts/cr/critics.local.json overlay) can never end up in such a commit,
+# so blocking it is a false positive. Only exempt when BOTH hold: an
+# untracked-but-NOT-ignored file could still be `git add`ed and committed,
+# so that stays blocked. `ls-files --error-unmatch` rc=1 means untracked;
+# any other rc (0=tracked, >1=git error) skips the exemption and falls
+# through to the existing block below — fail CLOSED on any git-command
+# surprise, never allow on error. Short-circuited: this only runs once we
+# already know the edit would otherwise be denied.
+#
+# Secret-class carve-out: a file in the secret-file class above NEVER takes
+# this exemption, even when untracked+gitignored — it falls through to the
+# existing deny, preserving the incidental protection of the real .env /
+# keys in the primary checkout from unattended clobbering.
+if ! is_secret_basename "$file_real"; then
+    ls_rc=0
+    git -C "$repo_real" ls-files --error-unmatch -- "$file_real" >/dev/null 2>&1 || ls_rc=$?
+    if [ "$ls_rc" -eq 1 ] && git -C "$repo_real" check-ignore -q -- "$file_real" >/dev/null 2>&1; then
+        exit 0
+    fi
 fi
 
 # Both block reasons are "feature work in the PRIMARY checkout" (on main, or on

@@ -71,3 +71,5 @@ logs/gemini/
 .himmel-dev
 # per-operator CR registry overlay (account quota state) — never commit (HIMMEL-727)
 scripts/cr/critics.local.json
+# machine-local grok tool-schema cache dir — never commit (HIMMEL-876)
+/mcps/
