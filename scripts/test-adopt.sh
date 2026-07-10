@@ -75,28 +75,9 @@ exit 0
 STUB
 chmod +x "$work/bin/claude"
 
-link_hermetic_tool() {
-  local _tool="$1" _dest="${2:-$work/bin}" _src
-  _src=$(command -v "$_tool" 2>/dev/null) || fail "required test tool not found before PATH scrub: $_tool"
-  case "$_src" in
-    "$_dest/"*) return 0 ;;
-  esac
-  if ! ln -s "$_src" "$_dest/$_tool" 2>/dev/null; then
-    # bash can't get a self-referential wrapper (the wrapper below execs via
-    # #!/usr/bin/env bash, which needs a real bash on PATH). On symlink-
-    # restricted shells, copy the binary instead of hard-failing the suite.
-    if [ "$_tool" = "bash" ]; then
-      cp "$_src" "$_dest/bash" || fail "could not copy bash into hermetic stub dir"
-      chmod +x "$_dest/bash"
-      return 0
-    fi
-    {
-      printf '%s\n' '#!/usr/bin/env bash'
-      printf 'exec "%s" "$@"\n' "$_src"
-    } > "$_dest/$_tool"
-    chmod +x "$_dest/$_tool"
-  fi
-}
+# shellcheck source=lib/hermetic-path.sh
+# shellcheck disable=SC1091
+. "$repo_root/scripts/lib/hermetic-path.sh"
 
 for _tool in bash git jq python3 grep sed cat cp mv rm mkdir chmod diff wc tr head tail basename dirname mktemp sort cut; do
   link_hermetic_tool "$_tool"
@@ -123,16 +104,6 @@ PATH="$ut/stub:$PATH" link_hermetic_tool bash "$ut/bin"
 [ "$("$ut/bin/bash" -c 'echo ok')" = "ok" ] || fail "link_hermetic_tool self-test: bash copy-fallback produced a non-working bash"
 echo "ok: link_hermetic_tool wrapper-fallback (jq) + bash copy-fallback verified under forced ln failure"
 
-path_dir_has_scrubbed_tool() {
-  local _dir="$1" _tool
-  for _tool in qmd bun npm node uv pipx; do
-    [ -x "$_dir/$_tool" ] && return 0
-    [ -x "$_dir/$_tool.exe" ] && return 0
-    [ -x "$_dir/$_tool.cmd" ] && return 0
-  done
-  return 1
-}
-
 # Hermeticity (HIMMEL-752 CR): scrub every dir carrying a real qmd, bun, npm,
 # node, uv, or pipx from the suite-wide PATH. With bun absent, wire_qmd_core
 # takes its documented clean-skip branch, so NO test can fire a real
@@ -148,20 +119,10 @@ path_dir_has_scrubbed_tool() {
 # stubbed npm on top of this scrubbed base to exercise the build path; 12/13
 # re-add a stubbed node (and 13 a stubbed bun) for the npm-less-node preflight.
 #
-# Factored out so the exact scrub logic can also run over a synthetic PATH
-# (self-test below) without touching the suite's real PATH.
-scrub_path() {
-  local _in="$1" _out="" _d _save_ifs2
-  _save_ifs2="$IFS"; IFS=':'
-  for _d in $_in; do
-    path_dir_has_scrubbed_tool "$_d" && continue
-    _out="${_out:+$_out:}$_d"
-  done
-  IFS="$_save_ifs2"
-  printf '%s' "$_out"
-}
-
-qmd_free_path=$(scrub_path "$PATH")
+# Factored out (scripts/lib/hermetic-path.sh) so the exact scrub logic can
+# also run over a synthetic PATH (self-test below) without touching the
+# suite's real PATH.
+qmd_free_path=$(scrub_path "$PATH" qmd bun npm node uv pipx)
 export PATH="$work/bin:$qmd_free_path"
 PATH="$work/bin" command -v bash >/dev/null 2>&1 \
   || fail "hermetic stub dir must provide bash even if every scrubbed dir is removed"
@@ -179,7 +140,7 @@ done
 coloc="$work/coloc"; mkdir -p "$coloc"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$coloc/npm"; chmod +x "$coloc/npm"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$coloc/sed"; chmod +x "$coloc/sed"
-synthetic_scrubbed=$(scrub_path "$coloc:$work/bin")
+synthetic_scrubbed=$(scrub_path "$coloc:$work/bin" qmd bun npm node uv pipx)
 case ":$synthetic_scrubbed:" in
   *":$coloc:"*) fail "self-test: co-located dir with npm+sed was not scrubbed" ;;
 esac

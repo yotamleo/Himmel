@@ -61,23 +61,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# shellcheck source=lib/hermetic-path.sh
+# shellcheck disable=SC1091
+. "$repo_root/scripts/lib/hermetic-path.sh"
+
 # Hermeticity: scrub every dir carrying a real uv/pipx/node/npm/bun off PATH so
 # no scenario below can observe (or be confused by) the real dev machine's
 # toolchain. Scenarios re-add their own stubs on top of this scrubbed base.
-scrub_path=""
-_save_ifs="$IFS"; IFS=':'
-for _d in $PATH; do
-  { [ -x "$_d/uv" ] || [ -x "$_d/pipx" ] || [ -x "$_d/node" ] || [ -x "$_d/npm" ] || [ -x "$_d/bun" ]; } && continue
-  scrub_path="${scrub_path:+$scrub_path:}$_d"
+#
+# HIMMEL-880: on stock Ubuntu npm lives in /usr/bin alongside bash itself, so
+# the scrub below drops bash wholesale and every `PATH="$tool_free_path" bash
+# ...` invocation below fails to resolve bash before running a single line of
+# the target script (the identical bug HIMMEL-874 fixed in test-adopt.sh).
+# Pre-link bash + the tools preflight-adopter.sh needs into a hermetic stub
+# dir BEFORE scrubbing, then prepend that stub dir on every invocation below.
+mkdir -p "$work/bin"
+for _tool in bash dirname sed; do
+  link_hermetic_tool "$_tool"
 done
-IFS="$_save_ifs"
+tool_free_path=$(scrub_path "$PATH" uv pipx node npm bun)
+PATH="$work/bin" command -v bash >/dev/null 2>&1 \
+  || fail "hermetic stub dir must provide bash even if every scrubbed dir is removed"
 
 # ── 1. standalone, fully clean env -> "0 warnings", exit 0 ───────────────────
 c1bin="$work/c1bin"; mkdir -p "$c1bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$c1bin/uv"; chmod +x "$c1bin/uv"
 mkdir -p "$real_jira_dist"; : > "$real_jira_dist/index.js"
 mkdir -p "$real_jira_node_modules"
-out=$(PATH="$c1bin:$scrub_path" bash "$preflight" 2>&1); rc=$?
+out=$(PATH="$c1bin:$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "clean env: expected exit 0, got $rc"
 printf '%s' "$out" | grep -q '0 warnings' || fail "clean env: missing '0 warnings' summary (got: $out)"
@@ -89,7 +100,7 @@ c2bin="$work/c2bin"; mkdir -p "$c2bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$c2bin/pipx"; chmod +x "$c2bin/pipx"
 mkdir -p "$real_jira_dist"; : > "$real_jira_dist/index.js"
 mkdir -p "$real_jira_node_modules"
-out=$(PATH="$c2bin:$scrub_path" bash "$preflight" 2>&1); rc=$?
+out=$(PATH="$c2bin:$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "pipx-only: expected exit 0, got $rc"
 printf '%s' "$out" | grep -q '0 warnings' || fail "pipx-only: missing '0 warnings' summary (got: $out)"
@@ -99,7 +110,7 @@ echo "ok: pipx present (uv absent) reports 0 warnings, exit 0"
 # ── 3. uv+pipx both absent -> WARN, exit 0 (non-strict default) ──────────────
 mkdir -p "$real_jira_dist"; : > "$real_jira_dist/index.js"
 mkdir -p "$real_jira_node_modules"
-out=$(PATH="$scrub_path" bash "$preflight" 2>&1); rc=$?
+out=$(PATH="$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "uv/pipx gap: non-strict should exit 0, got $rc"
 printf '%s' "$out" | grep -q "neither 'uv' nor 'pipx' found" || fail "uv/pipx gap: missing WARN text (got: $out)"
@@ -112,7 +123,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$c4bin/uv";   chmod +x "$c4bin/uv"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$c4bin/node"; chmod +x "$c4bin/node"
 mkdir -p "$real_jira_dist"; : > "$real_jira_dist/index.js"
 mkdir -p "$real_jira_node_modules"
-out=$(PATH="$c4bin:$scrub_path" bash "$preflight" 2>&1); rc=$?
+out=$(PATH="$c4bin:$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "node-without-npm: non-strict should exit 0, got $rc"
 printf '%s' "$out" | grep -q "'node' found but 'npm' is missing" || fail "node-without-npm: missing WARN text (got: $out)"
@@ -122,7 +133,7 @@ echo "ok: node-without-npm WARNs and exits 0 (non-strict)"
 c5bin="$work/c5bin"; mkdir -p "$c5bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$c5bin/uv"; chmod +x "$c5bin/uv"
 # real_jira_dist / real_jira_node_modules stay absent (moved-aside baseline).
-out=$(PATH="$c5bin:$scrub_path" bash "$preflight" 2>&1); rc=$?
+out=$(PATH="$c5bin:$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 [ "$rc" -eq 0 ] || fail "jira-dist gap: non-strict should exit 0, got $rc"
 printf '%s' "$out" | grep -q 'scripts/jira/dist/index.js not built' || fail "jira-dist gap: missing WARN text (got: $out)"
 echo "ok: jira dist+node_modules absent WARNs and exits 0 (non-strict)"
@@ -132,7 +143,7 @@ echo "ok: jira dist+node_modules absent WARNs and exits 0 (non-strict)"
 c6bin="$work/c6bin"; mkdir -p "$c6bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$c6bin/uv"; chmod +x "$c6bin/uv"
 set +e
-out=$(PATH="$c6bin:$scrub_path" bash "$preflight" --strict 2>&1); rc=$?
+out=$(PATH="$c6bin:$work/bin:$tool_free_path" bash "$preflight" --strict 2>&1); rc=$?
 set -e
 [ "$rc" -eq 1 ] || fail "--strict with a WARN present should exit 1, got $rc"
 printf '%s' "$out" | grep -q 'Re-run with --strict' || true  # informational only when warns==0; not asserted here
@@ -143,7 +154,7 @@ c7bin="$work/c7bin"; mkdir -p "$c7bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$c7bin/uv"; chmod +x "$c7bin/uv"
 mkdir -p "$real_jira_dist"; : > "$real_jira_dist/index.js"
 mkdir -p "$real_jira_node_modules"
-out=$(PATH="$c7bin:$scrub_path" bash "$preflight" --strict 2>&1); rc=$?
+out=$(PATH="$c7bin:$work/bin:$tool_free_path" bash "$preflight" --strict 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "--strict with a clean env should exit 0, got $rc"
 printf '%s' "$out" | grep -q '0 warnings' || fail "--strict clean env: missing '0 warnings' summary (got: $out)"
