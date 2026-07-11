@@ -1,6 +1,6 @@
 ---
 name: memory-compound
-description: Use when the per-project auto-memory store (`~/.claude/projects/<project-slug>/memory/`: the always-loaded `MEMORY.md` index + one topic file per fact) is approaching or over its load budget (~24.4KB) — the harness emits a size-limit warning at session load when over budget (e.g. "MEMORY.md is NN KB (limit 24.4KB)"), content past the limit is silently dropped = partial recall. Losslessly compounds the DURABLE gotchas out of the auto-memory into qmd-searchable luna / himmel reference notes (read-many → write-once → qmd gate → slim index → delete sources), so the always-loaded index stays lean. Lean-invoke, operator-run on demand — NOT an always-on hook (HIMMEL-569).
+description: Use when the per-project auto-memory store (`~/.claude/projects/<project-slug>/memory/`: the always-loaded `MEMORY.md` index + one topic file per fact) is approaching or over its load budget (~24.4KB) — the harness emits a size-limit warning at session load when over budget (e.g. "MEMORY.md is NN KB (limit 24.4KB)"), content past the limit is silently dropped = partial recall. Losslessly compounds the DURABLE gotchas out of the auto-memory into qmd-searchable luna / himmel reference notes (read-many → propagation review → write-once → qmd gate → slim index → delete sources), so the always-loaded index stays lean and adopter-generic learnings land in himmel docs (memory + vault never propagate to other users). Lean-invoke, operator-run on demand — NOT an always-on hook (HIMMEL-569).
 ---
 
 # memory-compound — distil auto-memory into searchable substrate (HIMMEL-569)
@@ -36,6 +36,15 @@ These are non-negotiable. The pass is zero-loss **only** if you keep this order.
 5. **Status is disposable, not durable.** PR numbers, "merged", ticket state,
    dates → drop them (already recoverable from Jira, git history, and the
    `sessions/` captures). Only the reusable gotcha / decision compounds.
+6. **Run in a DEDICATED session.** `MEMORY.md` loads into every session, so a
+   mid-task trim invalidates the prompt caches of every concurrent/armed
+   session, and a hurried inline trim loses recall hooks. When the size
+   warning fires mid-task: note it, finish the task, run `/memory-compound`
+   in its own session. (Adding a genuinely NEW entry mid-task stays fine.)
+7. **Memory does not propagate — adopter-generic learnings MUST land in
+   himmel docs.** Auto-memory and the luna vault are operator-side only; a
+   generic gotcha compounded only into luna is invisible to every other
+   himmel user. The propagation review in step 3 is a gate, not a suggestion.
 
 ## Resolve the memory dir (step 0)
 
@@ -62,6 +71,19 @@ wc -c "$MEMDIR/MEMORY.md"
 ls -1 "$MEMDIR"/*.md | wc -l
 ```
 
+Also inventory, in the same pass:
+
+- **Stale backups** — `ls -1 "$MEMDIR"/*.bak 2>/dev/null`. A `MEMORY.md.bak`
+  left by a PRIOR completed pass is delete-eligible once the current index
+  loads cleanly. If a `.bak` diverges from everything mined (entries today's
+  index and topic files no longer carry), diff it and recover the missing
+  durable items through the same pipeline before deleting it.
+- **Orphaned sibling stores** — `ls -d ~/.claude/projects/*/memory/`. Stores
+  under project slugs whose root was renamed or deprecated (a renamed vault
+  dir, a deprecated state repo) never load in any session; their durable
+  facts are stranded. Mine them through this same pass (or fold the few live
+  facts into the current store), then delete the orphaned store.
+
 ## Runbook
 
 ### 1. Inventory
@@ -76,29 +98,51 @@ Dispatch one **read-only** reader subagent per theme group. Each reads its
 topic files and returns, per file, a structured verdict:
 
 - **durable gotcha / decision** — the reusable learning, distilled to 1–3
-  lines, plus the theme it belongs to and any `[[wikilinks]]` it already
-  carries. (Compoundable.)
+  lines, plus the theme it belongs to, any `[[wikilinks]]` it already
+  carries, and its **propagation class** — operator-specific vs
+  adopter-generic (the step-3 review makes the final call). (Compoundable.)
 - **pure status** — ephemeral (PR/ticket/date/"merged"). (Droppable, no
   synthesis.)
 - **mixed** — durable core + status chrome; return only the durable core.
 
 Readers do not write anything. The parent owns synthesis across all of them.
 
-### 3. Land (single-writer synthesis)
+### 3. Propagation review + Land (single-writer synthesis)
 You (the one writer) append each durable learning to the matching reference
 note, **deduping against existing curated content** — extend or sharpen an
-existing line rather than appending a near-duplicate:
+existing line rather than appending a near-duplicate.
 
-- **Operator-specific / vault-shaped** → the luna vault under
-  `30-Resources/Tech/` (or the theme note already used by the memory index's
-  luna pointers — many entries already name a `[[luna note]]`). Grouped by
-  theme: environment traps, harness gotchas, operator conventions, …. Resolve
-  the luna vault from `$LUNA_VAULT_PATH` (configured via `/end-session-wiki-setup`),
-  falling back to the operator's known luna path; **confirm the directory exists
-  before writing** and never hardcode a home dir — a wrong/unset path would
-  scatter the synthesized notes outside the vault and silently fail the qmd gate.
-- **Adopter-generic** (true for anyone running himmel, no personal state) →
-  himmel `docs/internals/` (e.g. `environment-gotchas.md`, `enforcement.md`).
+**The propagation review is mandatory, per item, BEFORE writing.** Auto-memory
+and the luna vault never reach another himmel user; anything true for other
+users must land in the repo or it is lost to them. Defaulting everything to
+luna is the documented failure mode — the 2026-07-11 pass did exactly that and
+needed a follow-up PR (HIMMEL-900). Classify each durable item:
+
+- **Operator-specific / vault-shaped** (this operator's machines, lane
+  inventory, personal vaults, quota habits, personal workflow) → the luna
+  vault under `30-Resources/Tech/` (or the theme note already used by the
+  memory index's luna pointers — many entries already name a `[[luna note]]`).
+  Resolve the luna vault from `$LUNA_VAULT_PATH` (configured via
+  `/end-session-wiki-setup`), falling back to the operator's known luna path;
+  **confirm the directory exists before writing** and never hardcode a home
+  dir — a wrong/unset path would scatter the synthesized notes outside the
+  vault and silently fail the qmd gate.
+- **Adopter-generic** (true for anyone running himmel — OS/shell/tool traps,
+  git behaviours, Claude Code quirks, dev-workflow conventions worth
+  standardizing) → **himmel docs, via the normal worktree → PR flow** (himmel
+  is PR-gated; the vault is not). Route by content: environment/OS/tool traps
+  → `docs/internals/environment-gotchas.md`; operator working-habits →
+  `docs/operator-conventions.md`; other-harness compat →
+  `docs/internals/harness-compat.md`; hook/gate lore →
+  `docs/internals/enforcement.md`. Batch all of the pass's doc landings into
+  ONE docs PR at the end. A luna copy is optional; the himmel doc is the
+  system of record for these.
+- **Rule / restriction candidates.** An adopter-generic item that is
+  frame-shaping or safety-critical deserves more than a doc: run it through
+  the HIMMEL-177 layer test (default-hook / default-rule / lean-invoke /
+  defer) and FILE A TICKET for the promotion (CLAUDE.md line, PreToolUse
+  hook, pre-commit gate) — doc it now, ticket the escalation. (HIMMEL-195:
+  prose that already drifted escalates to structural, not to more prose.)
 
 Match each note's existing voice and structure. One writer, many readers.
 
@@ -118,6 +162,12 @@ phrase unique to the moved content and confirm it returns the new note. Use the
 qmd MCP `query` tool, or `qmd_cmd query`. A learning that does not surface is
 **not** compounded — fix the note (or its frontmatter) and re-index before
 proceeding. No findability → no deletion.
+
+**Adopter-generic caveat:** the `himmel` collection indexes the PRIMARY
+checkout, not worktrees — a doc landed on a PR branch is not qmd-findable
+until the PR merges. For those items the gate splits: verify the content sits
+in the pushed PR now, and delete the source topic file only AFTER the docs PR
+merges and a re-index finds the learning in the `himmel` collection.
 
 ### 5. Slim `MEMORY.md`
 Back it up first (a single `.bak`, removed in step 6 once the next session loads
@@ -167,7 +217,10 @@ that entry to a bare `- <hook> → luna [[note]]` pointer (drop the dead
 `[…](file.md)` link), then re-run the scan. No clean scan → the pass is not done.
 
 Leave any file you could not confidently compound (ambiguous, still-active
-project state) in place — partial progress is fine and safe. Keep
+project state) in place — partial progress is fine and safe. Adopter-generic
+items whose docs PR has not merged yet also stay (topic file or collapsed
+pointer line) until the post-merge `himmel`-collection re-index finds them
+(step 4 caveat). Keep
 `MEMORY.md.bak` until the operator confirms the next session loads cleanly under
 budget, then it can be removed.
 

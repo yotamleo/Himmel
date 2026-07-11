@@ -158,8 +158,11 @@ inventory is data.
 **Escalation over top-down:** the parent doesn't have to be the top
 model — the Opus parent spawns a top-model child for the one hard call;
 the child answers and returns. Top-model-as-parent only by operator
-choice (it then still delegates by default and owns final synthesis).
-Work above your tier? Return it — don't burn tokens on it.
+choice — it then delegates EVERY implementation chunk to a cheaper
+lane and owns planning/judgment/final synthesis; inline impl on a
+top-tier parent is the anti-pattern (sole exception: a CR-fix faster
+to apply than to re-brief). Work above your tier? Return it — don't
+burn tokens on it.
 
 **Every dispatch names an explicit model** — an unnamed dispatch
 inherits the parent loop and burns the scarcer, weekly-capped parent
@@ -336,7 +339,7 @@ environment (HIMMEL-123):
 - [`docs/internals/enforcement.md`](docs/internals/enforcement.md) — pre-commit + all hooks + guardrails + billing detail.
 - [`docs/internals/handover-system.md`](docs/internals/handover-system.md) — full handover system + user-slug resolution.
 - [`docs/internals/jira-plugin.md`](docs/internals/jira-plugin.md) — Jira plugin↔MCP op mapping.
-- [`docs/operator-conventions.md`](docs/operator-conventions.md) — durable operator working-habits (jira CLI invocation, CR/merge habits, clips-are-pointers) consolidated from per-user auto-memory (HIMMEL-179 sharp #5).
+- [`docs/operator-conventions.md`](docs/operator-conventions.md) — durable operator working-habits (jira CLI invocation, CR/merge habits, upstream-contribution gating, arming/chaining, clips-are-pointers) consolidated from per-user auto-memory (HIMMEL-179 sharp #5).
 - [`docs/internals/stuck-playbook.md`](docs/internals/stuck-playbook.md) — guardrail-recovery escape-hatches (surfaced load-on-trigger by the `himmel-ops:stuck-playbook` skill on a denial/friction symptom).
 - [`docs/tool-adoption/rubric.md`](docs/tool-adoption/rubric.md) — the decision method every community-tool eval runs through (goal/KPI, trust-posture tiers, ADOPT/PILOT/REJECT, measurement protocol).
 - [`docs/tooling-catalog.md`](docs/tooling-catalog.md) — all tools/scripts/plugins in active use.
