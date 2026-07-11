@@ -2020,9 +2020,10 @@ grep -qF "2/2 slides, 0/1 transcripts" "$tmp/mixedprobe.out" && a=ok || a=no
 assert "mixed-probe: outcome line 2/2 slides, 0/1 transcripts" ok "$a"
 
 # --- Test 42: frame-extract TIMEOUT after a conclusive probe -> traced +
-#     partial (codex-adv round 3). IG_MEDIA_FFMPEG_TIMEOUT=1 seams the 300s
-#     constant; the stub hangs only on the -frames:v call (exec sleep - the
-#     Git-Bash grandchild-reaping trap).
+#     partial (codex-adv round 3). IG_MEDIA_FRAME_TIMEOUT=1 seams ONLY the
+#     frame-extract timeout (HIMMEL-805 split it from the global FFMPEG_TIMEOUT
+#     that also guards the probe/wav/recompress); the stub hangs only on the
+#     -frames:v call (exec sleep - the Git-Bash grandchild-reaping trap).
 echo "Test 42: frame-extract timeout traced, stays partial (HIMMEL-786)"
 emit_gallery_dl 1.jpg 2.mp4
 cat > "$tmp/bin/ffmpeg" <<'STUB'
@@ -2065,12 +2066,105 @@ exit /b 0
 STUB
 VFT="$tmp/vault-frame-timeout"
 make_ig_vault "$VFT" FRTO042
-IG_MEDIA_FFMPEG_TIMEOUT=1 run_tool "$VFT" >"$tmp/frametimeout.out" 2>"$tmp/frametimeout.err"
+IG_MEDIA_FRAME_TIMEOUT=1 run_tool "$VFT" >"$tmp/frametimeout.out" 2>"$tmp/frametimeout.err"
 assert "frame-timeout run exit 0" 0 "$?"
 grep -q '^media_enrichment_status: partial$' "$VFT/Clippings/clip.md" && a=ok || a=no
 assert "frame-timeout: stays partial" ok "$a"
 grep -q 'ffmpeg(frame): timed out' "$tmp/frametimeout.err" && a=ok || a=no
 assert "frame-timeout: timeout traced (ffmpeg(frame))" ok "$a"
+
+# --- Test 42b: frame-extract TIMEOUT wrong-site race (HIMMEL-805 RED repro) ---
+# Test 42 seams the GLOBAL FFMPEG_TIMEOUT down to 1s to trace the frame-extract
+# timeout, but that seam ALSO guards the audio probe / wav-extract / slide-
+# recompress. Under load the FAST probe can exceed 1s -> TimeoutExpired fires at
+# the WRONG site: the probe times out -> _has_audio_stream returns True ->
+# soundless_video_frame returns None WITHOUT ever invoking the frame branch ->
+# the asserted "ffmpeg(frame): timed out" trace never appears (flake).
+# This case makes the race DETERMINISTIC with current code: the probe branch
+# (0:a:0) sleeps ~2s before answering "matches no streams"; the frame branch
+# (-frames:v) hangs (exec sleep 5). Under IG_MEDIA_FFMPEG_TIMEOUT=1 (RED) the
+# slow probe exceeds the 1s GLOBAL seam -> probe wrong-site timeout -> no frame
+# trace. After the HIMMEL-805 seam-split + retarget to IG_MEDIA_FRAME_TIMEOUT=1
+# (Step 3), the probe runs under the 300s default (completes -> soundless) and
+# ONLY the frame branch hangs under its 1s seam -> frame timeout traced.
+# Note: the probe sleeps THEN answers (the GREEN path needs the "matches no
+# streams" answer so frame extraction proceeds), so it uses `sleep 2` (not exec
+# sleep) while the hanging frame branch keeps `exec sleep 5` for the Git-Bash
+# grandchild-reaping trap; the .bat twin uses single-process `ping` for both.
+# The RED (GLOBAL-seam) leg described above was verified against pre-fix code
+# and is intentionally NOT executed by the suite - only the GREEN (split-seam)
+# leg runs here; on pre-fix code it still fails (the env var is ignored, no
+# frame timeout fires), which is the regression pin.
+echo "Test 42b: frame-timeout wrong-site race (slow probe) (HIMMEL-805)"
+emit_gallery_dl 1.jpg 2.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+# HIMMEL-805 stub: slow probe (sleeps ~2s then answers "matches no streams") +
+# hanging frame (exec sleep 5). Under the 1s GLOBAL seam the slow probe times
+# out first (wrong site); under the split 1s FRAME seam only the frame hangs.
+case " $* " in
+  *" -vn "*) echo "Output file does not contain any stream" >&2; exit 1 ;;
+  *" 0:a:0 "*) sleep 2; echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+  *" -frames:v "*) exec sleep 5 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Output file does not contain any stream 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( ping -n 3 127.0.0.1 >nul & echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+echo %*| findstr /C:"-frames:v" >nul
+if not errorlevel 1 ( ping -n 6 127.0.0.1 >nul & exit /b 0 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk42b
+if "%~1"=="" goto done42b
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk42b
+:done42b
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VFTR="$tmp/vault-frame-timeout-race"
+make_ig_vault "$VFTR" FRTR042
+IG_MEDIA_FRAME_TIMEOUT=1 run_tool "$VFTR" >"$tmp/framettrace.out" 2>"$tmp/framettrace.err"
+assert "frame-timeout-race run exit 0" 0 "$?"
+grep -q '^media_enrichment_status: partial$' "$VFTR/Clippings/clip.md" && a=ok || a=no
+assert "frame-timeout-race: stays partial" ok "$a"
+grep -q 'ffmpeg(frame): timed out' "$tmp/framettrace.err" && a=ok || a=no
+assert "frame-timeout-race: frame timeout traced at the right site (HIMMEL-805)" ok "$a"
+
+# --- Test 42c: FRAME_TIMEOUT seam-inheritance contract (HIMMEL-805) ----------
+# Unit-level (no ffmpeg run): FRAME_TIMEOUT must inherit IG_MEDIA_FFMPEG_TIMEOUT
+# when IG_MEDIA_FRAME_TIMEOUT is unset (an operator lowering the GLOBAL knob
+# still bounds the frame extract), and an explicit frame seam must win when both
+# are set. Import-by-path is safe: the tool is __main__-guarded, top level is
+# constants/defs only. The uv stub strips through the `python` token as usual.
+echo "Test 42c: FRAME_TIMEOUT inherits the global seam / explicit wins (HIMMEL-805)"
+seam_py='import sys, importlib.util
+spec = importlib.util.spec_from_file_location("igmf", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.FRAME_TIMEOUT, mod.FFMPEG_TIMEOUT)'
+# env -u shields the unset-premise from an operator's outer shell (a globally
+# exported IG_MEDIA_FRAME_TIMEOUT would otherwise false-red this case).
+seam_out=$(env -u IG_MEDIA_FRAME_TIMEOUT IG_MEDIA_FFMPEG_TIMEOUT=7 PYTHONUTF8=1 uv run --python 3.12 python -c "$seam_py" "$TOOL")
+assert "seam-inherit: FRAME_TIMEOUT follows IG_MEDIA_FFMPEG_TIMEOUT when FRAME unset" "7 7" "$seam_out"
+seam_out=$(IG_MEDIA_FFMPEG_TIMEOUT=1 IG_MEDIA_FRAME_TIMEOUT=9 PYTHONUTF8=1 uv run --python 3.12 python -c "$seam_py" "$TOOL")
+assert "seam-inherit: explicit IG_MEDIA_FRAME_TIMEOUT wins over the global" "9 1" "$seam_out"
 
 echo ""
 echo "ig-media-enrich tests: $pass passed, $fail failed"

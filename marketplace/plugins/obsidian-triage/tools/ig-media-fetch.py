@@ -52,6 +52,16 @@ LONG_EDGE_MAX = 1600
 DEFAULT_WHISPER_MODEL = "base"
 DOWNLOAD_TIMEOUT = 180
 FFMPEG_TIMEOUT = int(os.environ.get("IG_MEDIA_FFMPEG_TIMEOUT", "300"))
+# HIMMEL-805: separate seam for the soundless-video frame-extract subprocess.
+# FFMPEG_TIMEOUT is GLOBAL - it also guards extract_wav, the audio probe, and
+# recompress_slide - so cranking it down (e.g. IG_MEDIA_FFMPEG_TIMEOUT=1 in Test
+# 42) to trace the frame-extract timeout races the faster probe/wav/recompress
+# calls under load and TimeoutExpired fires at the WRONG site (the probe times
+# out -> _has_audio_stream returns True -> the frame branch never runs -> the
+# frame-timeout trace never appears). FRAME_TIMEOUT defaults to FFMPEG_TIMEOUT
+# (behavior unchanged when unset) and seams ONLY soundless_video_frame's
+# frame-extract subprocess below; every other call site keeps FFMPEG_TIMEOUT.
+FRAME_TIMEOUT = int(os.environ.get("IG_MEDIA_FRAME_TIMEOUT", str(FFMPEG_TIMEOUT)))
 WHISPER_TIMEOUT = 1800
 
 IG_URL_RE = re.compile(
@@ -416,9 +426,9 @@ def soundless_video_frame(video: Path):
     cmd = [ffmpeg, "-y", "-i", str(video), "-frames:v", "1", str(frame)]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=FFMPEG_TIMEOUT)
+                           timeout=FRAME_TIMEOUT)
     except subprocess.TimeoutExpired:
-        print(f"ffmpeg(frame): timed out after {FFMPEG_TIMEOUT}s",
+        print(f"ffmpeg(frame): timed out after {FRAME_TIMEOUT}s",
               file=sys.stderr)
         return None
     if p.returncode != 0:
