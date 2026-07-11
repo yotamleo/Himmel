@@ -75,7 +75,7 @@ sandbox workers into git worktrees **only through the chokepoint wrapper**
 (structural > instructional — the rules live in code, not prose):
 
 ```sh
-bash scripts/codex/dispatch-codex-exec.sh --worktree <worktree-path> [codex exec args...]
+bash scripts/codex/dispatch-codex-exec.sh --worktree <worktree-path> [--reasoning-effort <none|low|medium|high|xhigh|max>] [codex exec args...]
 ```
 
 The wrapper enforces the three invariants from the HIMMEL-741 diagnosis:
@@ -99,6 +99,15 @@ The wrapper enforces the three invariants from the HIMMEL-741 diagnosis:
    `-p`/`--profile` — either can rewrite `sandbox_permissions`) would point
    codex at a directory the ACL preflight never touched or drop the sandbox
    entirely — the wrapper rejects them all.
+5. **`--reasoning-effort <value>` passthrough (opt-in, HIMMEL-905).** The
+   codex CLI has no native flag for this; pass
+   `--reasoning-effort <none|low|medium|high|xhigh|max>` (or
+   `--reasoning-effort=<value>`) and the wrapper validates the enum, strips
+   the raw flag from the passthrough, and translates it into a trusted
+   `-c model_reasoning_effort="<value>"` override (the caller's own raw
+   `-c`/`--config` stays refused per invariant 4 above). Does **not** change
+   the `gpt-5.5` model pin — GPT-5.6 availability is not yet verified
+   in-repo.
 
 Tests: `scripts/codex/test-dispatch-codex-exec.sh` (hermetic; stubs the codex
 CLI via `CODEX_BIN` and the preflight via `CODEX_ACL_NORMALIZE`).

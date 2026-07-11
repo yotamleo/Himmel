@@ -39,9 +39,20 @@
 #      removing the registry entry. A stale registry entry (dispatcher killed
 #      before its own EXIT trap ran) is still visible to reap-mcp-fleet's
 #      registry-driven maintenance mode.
+#   7. Reasoning-effort passthrough (HIMMEL-905), opt-in: the caller may pass
+#      --reasoning-effort <value> or --reasoning-effort=<value> with value in
+#      none|low|medium|high|xhigh|max. The codex CLI has no native flag for
+#      this - the wrapper validates the enum, strips the raw flag from the
+#      passthrough, and translates it into a trusted `-c
+#      model_reasoning_effort="<value>"` override appended to pin_args (the
+#      caller-supplied `-c`/`--config` flag itself stays refused above; only
+#      this wrapper-computed override is emitted). Does NOT change the
+#      model pin below - GPT-5.6 availability is not verified in-repo, so
+#      gpt-5.5 stays pinned; this flag only lets a gpt-5.5 (or a caller-named
+#      model) run at a non-default reasoning effort.
 #
 # Usage:
-#   dispatch-codex-exec.sh --worktree <path> [--shared-branch <branch>] [codex exec args...]
+#   dispatch-codex-exec.sh --worktree <path> [--shared-branch <branch>] [--reasoning-effort <none|low|medium|high|xhigh|max>] [codex exec args...]
 #
 # Environment:
 #   CODEX_BIN            Override the codex CLI (tests inject a stub).
@@ -171,7 +182,9 @@ done
 # entirely, defeating the lane guard this wrapper exists to enforce.
 have_model=0
 have_sandbox=0
+reasoning_effort=""
 prev=""
+NEW_ARGS=()
 for a in "$@"; do
     case "$prev" in
         --sandbox|-s)
@@ -179,14 +192,34 @@ for a in "$@"; do
                 danger-full-access) echo "dispatch-codex-exec.sh: '$prev danger-full-access' refused - the lane guard requires a sandboxed run" >&2; exit 2 ;;
             esac
             ;;
+        --reasoning-effort)
+            case "$a" in
+                none|low|medium|high|xhigh|max) reasoning_effort="$a" ;;
+                *) echo "dispatch-codex-exec.sh: --reasoning-effort value '$a' not in none|low|medium|high|xhigh|max" >&2; exit 2 ;;
+            esac
+            prev="$a"
+            continue
+            ;;
     esac
     # ALLOW-LIST (codex-adv final round): deny-listing clap's option surface
     # is unwinnable (attached short forms, --enable/--disable feature flags
     # that rewrite config, future flags). Specific deny cases stay for their
     # actionable messages; EVERYTHING ELSE dash-prefixed is refused by the
     # catch-all. Allowed: --model/-m (all forms), --sandbox/-s with a
-    # non-danger value (all forms), --json, and positional prompt words.
+    # non-danger value (all forms), --reasoning-effort (HIMMEL-905, stripped
+    # from the passthrough - see Invariant 7 above), --json, and positional
+    # prompt words.
     case "$a" in
+        --reasoning-effort) prev="$a"; continue ;;
+        --reasoning-effort=*)
+            rev_val="${a#--reasoning-effort=}"
+            case "$rev_val" in
+                none|low|medium|high|xhigh|max) reasoning_effort="$rev_val" ;;
+                *) echo "dispatch-codex-exec.sh: --reasoning-effort value '$rev_val' not in none|low|medium|high|xhigh|max" >&2; exit 2 ;;
+            esac
+            prev="$a"
+            continue
+            ;;
         --background|--background=*) echo "dispatch-codex-exec.sh: --background refused (upstream silent-death, HIMMEL-741) - use the default wait behavior + companion-liveness.sh" >&2; exit 2 ;;
         -C*|--cd|--cd=*) echo "dispatch-codex-exec.sh: workspace-redirect flag '$a' refused - the wrapper owns the worktree (pass it via --worktree)" >&2; exit 2 ;;
         --add-dir|--add-dir=*) echo "dispatch-codex-exec.sh: --add-dir refused - the ACL preflight covers only the dispatched worktree" >&2; exit 2 ;;
@@ -200,10 +233,28 @@ for a in "$@"; do
         --model|--model=*|-m|-m?*) have_model=1 ;;
         --sandbox|--sandbox=*|-s|-s=*|-s?*) have_sandbox=1 ;;
         --json) ;;  # structured output - inert
-        -*) echo "dispatch-codex-exec.sh: flag '$a' is not in the lane allow-list (--model/-m, --sandbox/-s safe values, --json) - refused" >&2; exit 2 ;;
+        -*) echo "dispatch-codex-exec.sh: flag '$a' is not in the lane allow-list (--model/-m, --sandbox/-s safe values, --reasoning-effort, --json) - refused" >&2; exit 2 ;;
     esac
+    NEW_ARGS+=("$a")
     prev="$a"
 done
+# Trailing bare --reasoning-effort (nothing follows): the main switch strips
+# the token before the value-validation branch ever runs, so without this
+# guard the flag vanishes silently and the run proceeds at default effort.
+if [ "$prev" = "--reasoning-effort" ]; then
+    echo "dispatch-codex-exec.sh: --reasoning-effort requires a value (none|low|medium|high|xhigh|max)" >&2
+    exit 2
+fi
+# Rebuild the positional args with --reasoning-effort/its value stripped
+# (codex has no native flag for it - Invariant 7 translates it to -c below).
+# The count guard avoids "${NEW_ARGS[@]}" on a zero-element array, which
+# is an unbound-variable error under `set -u` on pre-4.4 bash (macOS ships
+# 3.2 - this script is Bash 3.2 safe).
+if [ "${#NEW_ARGS[@]}" -gt 0 ]; then
+    set -- "${NEW_ARGS[@]}"
+else
+    set --
+fi
 
 # Invariant 1: ACL preflight, fail-closed.
 if ! bash "$NORMALIZE" "$WORKTREE"; then
@@ -267,6 +318,15 @@ fi
 if [ "$have_sandbox" -eq 0 ]; then
     pin_args="$pin_args --sandbox workspace-write"
 fi
+# Invariant 7 (HIMMEL-905): translate the validated --reasoning-effort enum
+# into a trusted -c override (codex has no native flag for this). The value
+# is quoted (a real TOML string) so it survives pin_args' later unquoted
+# word-splitting as ONE argv token; the enum has no embedded whitespace so
+# splitting on the surrounding space is safe.
+if [ -n "$reasoning_effort" ]; then
+    # shellcheck disable=SC2089  # the embedded quotes are intentional TOML string syntax for the -c override; see SC2090 note below where pin_args is expanded
+    pin_args="$pin_args -c model_reasoning_effort=\"$reasoning_effort\""
+fi
 # Invariants 5+6 (HIMMEL-800/840): NEVER exec codex in either path - exec
 # replaces this process image, which would drop the composed EXIT trap above
 # (losing both the shared-branch lock release and the fleet reap). Run codex
@@ -277,7 +337,7 @@ fi
 # tail for any caller that PIPES context to codex exec. Explicitly wire the
 # caller's own stdin through to the backgrounded child.
 STARTED_AT="$(date +%s)"
-# shellcheck disable=SC2086  # pin_args is a fixed, space-safe flag list built above
+# shellcheck disable=SC2086,SC2090  # pin_args is a fixed, space-safe flag list built above; embedded quotes (HIMMEL-905 -c override) are intentional, single argv tokens once split
 "$CODEX" exec $pin_args "$@" <&0 &
 CODEX_CHILD_PID=$!
 
