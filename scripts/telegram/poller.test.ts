@@ -6,9 +6,11 @@ import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDi
 import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { isAllowed, vaultForChat } from "./gate";
+import type { TriageVerdict } from "./triage";
 
 const root = () => mkdtempSync(join(tmpdir(), "poller-"));
 const allowAll = () => true;
+const spawnHighTriage = async (): Promise<TriageVerdict> => "spawn-high";
 
 // --- retry cap + run.log (HIMMEL-262/263) ---
 
@@ -425,10 +427,120 @@ test("chat routes to __chat__ session", async () => {
 
 test("group chat routes to its own group_<chat_id> session with meta.chat_id = the group", async () => {
   const r = root(); const ran: string[] = [];
-  await handleInbound(r, { from:1, chat_id:-1009999999, text:"hello group" }, async (s:string)=>{ran.push(s);});
+  await handleInbound(r, { from:1, chat_id:-1009999999, text:"hello group" }, async (s:string)=>{ran.push(s);}, undefined, spawnHighTriage);
   expect(ran).toEqual(["group_-1009999999"]);
   const m = await readMeta(r, "group_-1009999999");
   expect(m?.chat_id).toBe(-1009999999);
+});
+
+test("group chat ignores cheap-triaged chatter without spawning", async () => {
+  const r = root(); const ran: string[] = []; const triaged: string[] = [];
+  await handleInbound(r, { from:1, chat_id:-50, text:"lol nice" },
+    async (s:string) => { ran.push(s); },
+    undefined,
+    async (text): Promise<TriageVerdict> => { triaged.push(text); return "ignore"; });
+
+  expect(triaged).toEqual(["lol nice"]);
+  expect(ran).toEqual([]);
+  // Gate runs BEFORE the enqueue (HIMMEL-721 CR): on `ignore` the session is
+  // never materialized and nothing is written to the inbox. readMeta null ⇒ the
+  // session dir was never created; the inbox read throwing ⇒ never enqueued.
+  expect(await readMeta(r, "group_-50")).toBeNull();
+  let inboxPresent = true;
+  try { await readFile(join(sessionDir(r, "group_-50"), "inbox.jsonl"), "utf8"); } catch { inboxPresent = false; }
+  expect(inboxPresent).toBe(false);
+});
+
+// HIMMEL-721 CR regression: an ignored group message must NOT be resurrected by
+// the main loop's unconditional deliverAllPending (mirrors poller.ts ~905). The
+// gate drops it before enqueue, so there is no inbox content and no session to
+// deliver — zero runs across the sweep.
+test("ignore verdict: deliverAllPending fires zero runs and finds no pending inbox", async () => {
+  const r = root(); const ran: string[] = [];
+  const ignoreTriage = async (): Promise<TriageVerdict> => "ignore";
+  await handleInbound(r, { from:1, chat_id:-50, text:"lol nice" },
+    async (s:string) => { ran.push(s); }, undefined, ignoreTriage);
+  await deliverAllPending(r, async (s:string) => { ran.push(s); }, new Date(), () => sessionsList(r));
+
+  expect(ran).toEqual([]);
+  expect(await readMeta(r, "group_-50")).toBeNull();
+});
+
+test("ack verdict: deliverAllPending fires zero runs and finds no pending inbox", async () => {
+  const r = root(); const ran: string[] = [];
+  const ackTriage = async (): Promise<TriageVerdict> => "ack";
+  await handleInbound(r, { from:1, chat_id:-50, text:"ok thanks" },
+    async (s:string) => { ran.push(s); }, undefined, ackTriage);
+  await deliverAllPending(r, async (s:string) => { ran.push(s); }, new Date(), () => sessionsList(r));
+
+  expect(ran).toEqual([]);
+  expect(await readMeta(r, "group_-50")).toBeNull();
+});
+
+// HIMMEL-721: an ignored message is dropped even when the session is mid-run —
+// the gate returns before appendLine, so a running session's inbox never grows
+// with triaged-away chatter.
+test("ignore verdict while session is running: chatter is not appended to the inbox", async () => {
+  const r = root();
+  await ensureSession(r, "group_-50");
+  await writeMeta(r, "group_-50", { ...freshMeta(-50), status: "running" });
+  await appendLine(join(sessionDir(r, "group_-50"), "inbox.jsonl"), JSON.stringify({ text: "real work" }));
+  const ignoreTriage = async (): Promise<TriageVerdict> => "ignore";
+
+  await handleInbound(r, { from:1, chat_id:-50, text:"more chatter" },
+    async () => { throw new Error("run must not fire for ignored chatter"); }, undefined, ignoreTriage);
+
+  // only the pre-existing line remains; the chatter was never enqueued
+  expect((await peekPending(r, "group_-50")).count).toBe(1);
+  expect((await readMeta(r, "group_-50"))?.status).toBe("running");
+});
+
+test("group chat spawn-low triage passes haiku as the run model override", async () => {
+  const r = root(); const ran: any[] = [];
+  await handleInbound(r, { from:1, chat_id:-50, text:"can you summarize this?" },
+    async (session:string, modelOverride?: string) => { ran.push({ session, modelOverride }); },
+    undefined,
+    async (): Promise<TriageVerdict> => "spawn-low");
+
+  expect(ran).toEqual([{ session: "group_-50", modelOverride: "haiku" }]);
+});
+
+test("DM chat bypasses cheap triage", async () => {
+  const r = root(); const ran: string[] = []; let triaged = false;
+  await handleInbound(r, { from:1, chat_id:7, text:"hello" },
+    async (s:string) => { ran.push(s); },
+    undefined,
+    async (): Promise<TriageVerdict> => { triaged = true; return "ignore"; });
+
+  expect(triaged).toBe(false);
+  expect(ran).toEqual(["__chat__"]);
+});
+
+test("control routes bypass cheap triage", async () => {
+  const r = root(); let ran = false; let triaged = false;
+  await handleInbound(r, { from:1, chat_id:-50, text:"status" },
+    async () => { ran = true; },
+    undefined,
+    async (): Promise<TriageVerdict> => { triaged = true; return "ignore"; });
+
+  expect(triaged).toBe(false);
+  expect(ran).toBe(false);
+});
+
+test("TELEGRAM_TRIAGE=off disables cheap triage for group chat", async () => {
+  const r = root(); const ran: string[] = []; let triaged = false;
+  process.env.TELEGRAM_TRIAGE = "off";
+  try {
+    await handleInbound(r, { from:1, chat_id:-50, text:"group chatter" },
+      async (s:string) => { ran.push(s); },
+      undefined,
+      async (): Promise<TriageVerdict> => { triaged = true; return "ignore"; });
+  } finally {
+    delete process.env.TELEGRAM_TRIAGE;
+  }
+
+  expect(triaged).toBe(false);
+  expect(ran).toEqual(["group_-50"]);
 });
 
 test("ticket session chat_id is pinned by its creator; a group followup does not re-route it", async () => {
@@ -445,7 +557,7 @@ test("group and DM chat sessions stay separate; group reply flushes to the group
   const r = root();
   const fakeRun = async (_s:string)=>{};
   await handleInbound(r, { from:1, chat_id:7, text:"dm" }, fakeRun);
-  await handleInbound(r, { from:1, chat_id:-50, text:"group" }, fakeRun);
+  await handleInbound(r, { from:1, chat_id:-50, text:"group" }, fakeRun, undefined, spawnHighTriage);
   expect((await readMeta(r, "__chat__"))?.chat_id).toBe(7);          // DM unchanged
   expect((await readMeta(r, "group_-50"))?.chat_id).toBe(-50);
   await appendLine(join(sessionDir(r,"group_-50"),"outbox.jsonl"), JSON.stringify({ text:"reply" }));
@@ -838,7 +950,7 @@ test("ingest with no fetchDoc wired: document forwarded text-only (no crash)", a
 
 test("handleInbound forwards document_path + document_name into the session inbox line", async () => {
   const r = root();
-  await handleInbound(r, { from: 1, chat_id: -50, text: "file this", ts: 5, document_path: "/tmp/att/42.pdf", document_name: "results.pdf" }, async () => {});
+  await handleInbound(r, { from: 1, chat_id: -50, text: "file this", ts: 5, document_path: "/tmp/att/42.pdf", document_name: "results.pdf" }, async () => {}, undefined, spawnHighTriage);
   const lines = await readNewLines(join(sessionDir(r, "group_-50"), "inbox.jsonl"), join(sessionDir(r, "group_-50"), "inbox.jsonl.cursor.test"));
   expect(lines.length).toBe(1);
   expect(lines[0].document_path).toBe("/tmp/att/42.pdf");
@@ -1327,7 +1439,7 @@ test("handleInbound: a NON-operator /arm in a shared group falls through to chat
   const r = root(); const fired: any[] = []; const ran: string[] = [];
   // a different member (from=9) of the same group; isOperator(9)=false → powerless chat
   await handleInbound(r, { from:9, chat_id:-50, text:"/arm HIMMEL-1", forwarded:false, caption:false },
-    async (s:string) => { ran.push(s); }, autoGate(["arm-resume"], fired, (from) => from === 5));
+    async (s:string) => { ran.push(s); }, autoGate(["arm-resume"], fired, (from) => from === 5), spawnHighTriage);
   expect(fired.length).toBe(0);
   expect(ran).toEqual(["group_-50"]);   // ordinary chat
 });

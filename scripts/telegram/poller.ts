@@ -7,6 +7,7 @@ import { dispatchAutoAction, parseEnabledOps, KNOWN_OPS, appendAuditLine, type R
 import { getUpdates, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { isAllowed, isGroupAllowed, loadAccess, vaultForChat, type Access } from "./gate";
 import { runSession, buildPrompt, type BusPaths, type PermissionMode } from "./run";
+import { classifyForSpawn, type TriageVerdict, type TriageModelOverride } from "./triage";
 import { transcribe } from "./transcribe";
 
 // Retry backoff for a capped session (ms). On a cap, settle retry_at = now + RETRY_MS
@@ -259,7 +260,8 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
 }
 
 export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; forwarded?: boolean; caption?: boolean; image_path?: string; document_path?: string; document_name?: string };
-export type RunFn = (session: string) => Promise<void>;
+export type RunFn = (session: string, modelOverride?: TriageModelOverride) => Promise<void>;
+export type TriageFn = (text: string, sessionLabel?: string) => Promise<TriageVerdict>;
 
 // Auto-command gate (HIMMEL-424 B2). `fire` is FIRE-AND-FORGET so a slow arm never
 // blocks the ingest loop; `enabledOps` is parsed from TELEGRAM_AUTO_ACTIONS (empty by
@@ -275,7 +277,7 @@ export type AutoGate = { enabledOps: Set<string>; authorize: (from: number, chat
 
 // Single-threaded dispatch: the poller calls handleInbound serially, so the
 // "status === running" in-flight check needs no atomic CAS.
-export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn, auto?: AutoGate): Promise<void> {
+export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn, auto?: AutoGate, triage: TriageFn = (text, sessionLabel) => classifyForSpawn(text, { sessionLabel })): Promise<void> {
   const route = classify(msg.text);
   // control verbs act directly; minimal handling for v2.2 (status/sessions/stop)
   if (route.kind === "control") {
@@ -303,6 +305,35 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn,
   const chatSession = msg.chat_id < 0 ? `group_${msg.chat_id}` : "__chat__";
   // A non-eligible auto-command (group / caption / disabled-op) routes as chat.
   const session = (route.kind === "chat" || route.kind === "auto") ? chatSession : route.ticket;
+  // CHEAP TRIAGE GATE (HIMMEL-721) — runs BEFORE the message is enqueued. The
+  // session id is a pure derivation (above), so the gate needs no session I/O.
+  // On ignore/ack the message is DROPPED PERMANENTLY: nothing is written to
+  // inbox.jsonl, the consumed cursor never moves, and a later deliverAllPending
+  // has nothing to resurrect — triage is truthful rather than a no-op (the prior
+  // order appended the line first, so the main loop's unconditional
+  // deliverAllPending re-spawned the "ignored" chatter in the same poll tick).
+  // Deliberate tradeoff: chatter triaged away is dropped, not delayed; a crash
+  // mid-triage loses only that one piece of chatter, and the classifier is
+  // fail-open (any error → spawn-high) so a real failure still enqueues + spawns.
+  let modelOverride: TriageModelOverride | undefined;
+  if (msg.chat_id < 0 && (route.kind === "chat" || route.kind === "auto") && process.env.TELEGRAM_TRIAGE !== "off") {
+    const verdict = await triage(msg.text, session);
+    switch (verdict) {
+      case "ignore":
+      case "ack":
+        console.error(`[poller] triage ${verdict}: dropped (never enqueued) for ${session}`);
+        return;
+      case "spawn-low":
+        modelOverride = "haiku";
+        break;
+      case "spawn-high":
+        break;
+      // exhaustive (mirrors noticeText): a future 5th verdict is a compile error,
+      // not a silent fall-through that spawns untriaged.
+      default:
+        return ((_: never) => { throw new Error(`unhandled triage verdict: ${String(_)}`); })(verdict);
+    }
+  }
   const { created } = await ensureSession(root, session);
   let meta = await readMeta(root, session);
   if (created || !meta) {
@@ -316,7 +347,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn,
   }
   const line = route.kind === "followup" ? route.text : msg.text;
   await appendLine(join(sessionDir(root, session), "inbox.jsonl"), JSON.stringify({ text: line, from: msg.from, ts: msg.ts ?? 0, ...(msg.image_path ? { image_path: msg.image_path } : {}), ...(msg.document_path ? { document_path: msg.document_path, document_name: msg.document_name } : {}) }));
-  if (meta.status === "idle" || meta.status === "done") await run(session);
+  if (meta.status === "idle" || meta.status === "done") await run(session, modelOverride);
 }
 
 // Map the auto-action.sh exit code to an audit result label.
@@ -579,7 +610,7 @@ const MAX_RETRIES = Number(process.env.TELEGRAM_MAX_RETRIES ?? 3);
 // are filed into, from its meta.chat_id (gate.vaultForChat over loaded access).
 // Optional — when absent or it returns null, the prompt carries no file-into-vault clause.
 export type VaultForFn = (chatId: number) => string | null;
-export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn): RunFn {
+export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn): RunFn {
   const retryAt = () => new Date(Date.now() + RETRY_MS).toISOString();
   const noticed = new Set<string>();
   const safeNotify = async (session: string, retryAtIso: string, kind: NotifyKind) => {
@@ -587,7 +618,7 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
     try { await notify(session, retryAtIso, kind); }
     catch (e) { console.error("[poller] " + kind + " notify failed for " + session + ": " + e); }
   };
-  const runOnce = async (session: string): Promise<void> => {
+  const runOnce = async (session: string, modelOverride?: TriageModelOverride): Promise<void> => {
     const sd = sessionDir(root, session);
     const parked = await readMeta(root, session);
     if (parked?.status === "failed") return;                    // retry cap exhausted — wait for a new message
@@ -610,7 +641,7 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
     const sessionCwd = vault ?? repoCwd;
     const permissionMode = vault ? "bypassPermissions" : undefined;
     const paths: BusPaths = { inbox: join(sd, "inbox.pending.jsonl"), outbox: join(sd, "outbox.jsonl"), context: join(sd, "context.md"), cwd: repoCwd, sessionCwd };
-    const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, vault), sessionCwd, permissionMode), deadlineMs), undefined, retryAt);
+    const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, vault), sessionCwd, permissionMode, undefined, modelOverride), deadlineMs), undefined, retryAt);
     // run.log (HIMMEL-262): persist the run's output tail — before this, a dead
     // run's stdout/stderr vanished and failures were undebuggable
     const logHead = `[${new Date().toISOString()}] session=${session} code=${res.code} capped=${res.capped} blocked=${res.blocked ?? false} pid=${res.pid}\n`;
