@@ -122,6 +122,12 @@ echo "ok: link_hermetic_tool wrapper-fallback (jq) + bash copy-fallback verified
 # Factored out (scripts/lib/hermetic-path.sh) so the exact scrub logic can
 # also run over a synthetic PATH (self-test below) without touching the
 # suite's real PATH.
+#
+# The himmelctl wizard + shim suites appended at the bottom (HIMMEL-887 T10)
+# need a REAL node — they shell out to bin.js — so they cannot run under the
+# scrubbed PATH below. Capture the pre-scrub environment PATH here and pass it
+# to each of those suites explicitly.
+saved_path="$PATH"
 qmd_free_path=$(scrub_path "$PATH" qmd bun npm node uv pipx)
 export PATH="$work/bin:$qmd_free_path"
 PATH="$work/bin" command -v bash >/dev/null 2>&1 \
@@ -587,5 +593,61 @@ printf '%s' "$out" | grep -q 'BUN_INSTALL_STUB_RAN' || fail "build_jira_cli bun 
 printf '%s' "$out" | grep -q 'BUN_BUILD_STUB_RAN'   || fail "build_jira_cli bun real-invocation: bun run build did not run"
 printf '%s' "$out" | grep -q 'jira CLI built' || fail "build_jira_cli bun real-invocation: missing success message"
 echo "ok: build_jira_cli bun branch real-invocation runs install + build (F5)"
+
+# ── 20. HIMMEL-887 T10: himmelctl wizard + machine-setup shim suites ──────────
+# A plain `bash scripts/test-adopt.sh` run also exercises the himmelctl install
+# wizard + the T7/T8 bootstrap/deprecation-shim suites, so a regression in any
+# of them fails THIS harness, not just the CI shell-test sweep. Each suite runs
+# as a self-contained `bash <script>` subprocess (own `set -e` + trap + temp
+# dir), isolating it from this script's hermetic PATH scrub. That scrub dropped
+# node/npm/bun suite-wide for the adopt.sh scenarios above; the wizard suites
+# shell out to bin.js and need a REAL node, so each is invoked with `saved_path`
+# (the pre-scrub environment PATH captured above). The .ps1 shim suite is
+# skipped — not failed — when pwsh is absent, mirroring the availability guard
+# in scripts/himmelctl/test/test-wizard-bootstrap.sh.
+#
+# run_wizard_suite <relpath-under-scripts/> <label> — run one suite under the
+# real PATH; tail its log + fail on non-zero (cleans up via this script's trap).
+run_wizard_suite() {
+  local _rel="$1" _label="$2" _path
+  _path="$repo_root/scripts/$_rel"
+  [ -f "$_path" ] || fail "wizard suite not found: $_path"
+  set +e
+  PATH="$saved_path" bash "$_path" >"$work/wizard-suite.log" 2>&1
+  local _rc=$?
+  set -e
+  if [ "$_rc" -ne 0 ]; then
+    tail -20 "$work/wizard-suite.log" >&2
+    fail "wizard suite failed (rc=$_rc): $_label"
+  fi
+  echo "ok: wizard suite green: $_label"
+}
+
+run_wizard_suite himmelctl/test/test-wizard-preflight.sh       "test-wizard-preflight"
+run_wizard_suite himmelctl/test/test-wizard-questions.sh       "test-wizard-questions"
+run_wizard_suite himmelctl/test/test-wizard-derive.sh          "test-wizard-derive"
+run_wizard_suite himmelctl/test/test-wizard-uninstall.sh       "test-wizard-uninstall"
+run_wizard_suite himmelctl/test/test-wizard-noinstall-guard.sh "test-wizard-noinstall-guard"
+run_wizard_suite himmelctl/test/test-wizard-bootstrap.sh       "test-wizard-bootstrap"
+run_wizard_suite machine-setup/test-ubuntu-shim.sh             "test-ubuntu-shim"
+
+# The win11 shim suite is a .ps1 (static source-parse of win11.ps1, HIMMEL-887
+# T8) — needs pwsh. Skip (not fail) when pwsh is absent, same guard as the
+# bootstrap.ps1 cases in test-wizard-bootstrap.sh.
+_win11_shim="$repo_root/scripts/machine-setup/test-win11-shim.ps1"
+[ -f "$_win11_shim" ] || fail "wizard suite not found: $_win11_shim"
+if command -v pwsh >/dev/null 2>&1; then
+  set +e
+  PATH="$saved_path" pwsh -NoProfile -File "$_win11_shim" >"$work/wizard-suite.log" 2>&1
+  _win11_rc=$?
+  set -e
+  if [ "$_win11_rc" -ne 0 ]; then
+    tail -20 "$work/wizard-suite.log" >&2
+    fail "wizard suite failed (rc=$_win11_rc): test-win11-shim.ps1"
+  fi
+  echo "ok: wizard suite green: test-win11-shim.ps1"
+else
+  echo "ok: wizard suite skipped (pwsh not found): test-win11-shim.ps1"
+fi
 
 echo "PASS"

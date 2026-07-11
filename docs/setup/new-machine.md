@@ -248,15 +248,62 @@ result to exactly one guard entry. Safe to run multiple times.
 ```bash
 git clone https://github.com/yotamleo/himmel.git
 cd himmel
-bash scripts/setup.sh
+node scripts/himmelctl/bin.js install
 ```
 
-`scripts/setup.sh` handles: pre-commit install, Jira CLI build, `.env` from
+**`himmelctl` (HIMMEL-887) is the install wizard and the primary install path.**
+It runs the preflight + required-tools gate, then walks you through a few
+questions and derives + runs the right underlying command. A missing required
+tool (git/jq/python3, or a JS package manager) is auto-fetched via the platform
+package manager when possible, else the wizard fails loud and points you at
+the required-environment table (HIMMEL-460).
+
+| Question | Choices | Notes |
+|---|---|---|
+| role | `adopter` \| `contributor` | Default: `contributor` only when origin ends in `himmel` AND the repo root carries a `.himmel-dev` marker (a contributor dev checkout); every other case — including a fresh official clone — defaults to `adopter`. |
+| scope | `project` \| `user` | Adopter only (contributor is always `user`). |
+| vault | `none` \| `default-template` \| `existing` | `default-template` scaffolds a luna vault from template; `existing` wires a STAMPED luna vault (non-luna→luna conversion deferred — HIMMEL-862). |
+| handover | `inline` \| `external` | `external` persists `HANDOVER_DIR` to an external state repo. |
+| pluginSet | `lean` \| `full` | `lean` is the default (HIMMEL-816); `full` runs the documented per-plugin enable step (§6). |
+
+Flags: `--dry-run` prints the derived plan without executing; `--from-profile
+<path>` replays a saved answer profile non-interactively (the wizard caches your
+answers, so the same install replays verbatim); `--advanced` is reserved. To
+offboard later: `node scripts/himmelctl/bin.js uninstall` — a thin wrapper over
+`scripts/uninstall.sh` / `uninstall.ps1` (§8.7).
+
+**Node-less (clean) machine?** `himmelctl install` itself needs node. Run the
+bootstrap shim first — it installs node (+ bun on macOS via brew; apt has no
+bun package, so Linux gets node + npm and bun stays an optional post-bootstrap
+step) via the platform package manager (brew/apt/winget) then hands off to
+`himmelctl install` (himmelctl's own preflight covers every other tool):
+
+```bash
+bash scripts/himmelctl/bootstrap.sh --dry-run    # Linux/macOS: preview the plan
+bash scripts/himmelctl/bootstrap.sh              # then run for real
+# Windows (PowerShell — the built-in powershell works on a clean machine; pwsh needs its own
+# install. -ExecutionPolicy Bypass because a clean machine's default policy is Restricted):
+powershell -ExecutionPolicy Bypass -File scripts/himmelctl/bootstrap.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File scripts/himmelctl/bootstrap.ps1
+```
+
+> **Deprecated setup shims — `scripts/machine-setup/win11.ps1` / `ubuntu.sh`
+> (HIMMEL-887).** These full-machine provisioning scripts are **soft-deprecated**
+> as an install entry point. They still provision the complete toolchain (git /
+> python / jq / shellcheck / gitleaks, nvm+node, uv, the Claude CLI, rtk — zero
+> capability loss, locked O4) but no longer do himmel/luna *wiring* themselves;
+> they print a deprecation notice and delegate the wiring to
+> `himmelctl bootstrap` → `himmelctl install`. Prefer `himmelctl install` (above)
+> on a machine that already has node, or the bootstrap shim on one that doesn't.
+> The hard-remove of this now-deprecated shim script itself (once its
+> toolchain-provisioning role is also absorbed) is deferred to HIMMEL-755.
+
+What the wizard runs under the hood depends on role: a **contributor** install
+runs `scripts/setup.sh` (pre-commit install, Jira CLI build, `.env` from
 `.env.example`, plugin install, and wiring the statusline + `env.HIMMEL_REPO` +
-the **UNIVERSAL hooks** into `~/.claude/settings.json` (user scope — see §4b).
-A missing required tool (git/jq/python3) is auto-fetched via the platform
-package manager when possible, else setup fails loud with the manual command
-(HIMMEL-460).
+the **UNIVERSAL hooks** into `~/.claude/settings.json`, user scope — see §4b);
+an **adopter** install runs `scripts/adopt.sh` (the portable-core flow — see
+[docs/setup/use-on-your-project.md](./use-on-your-project.md)).
 
 > **Build artifacts are gitignored — build them after cloning (HIMMEL-842).**
 > `scripts/jira/dist/index.js` and `scripts/bitbucket/dist/index.js` are TypeScript
@@ -758,8 +805,11 @@ run standalone. It:
 ## 8.7. Uninstall / offboard (HIMMEL-227)
 
 `scripts/uninstall.{sh,ps1}` is the symmetric teardown of setup +
-install-plugins. **Destructive and fail-closed**: interactive runs prompt;
-non-interactive runs abort without `--yes`/`-Yes`. Preview first:
+install-plugins. Run it through the wizard — `node scripts/himmelctl/bin.js
+uninstall` — which adds its own one confirm then execs the script below with
+`--yes`/`-Yes` (see §4); or invoke the script directly. **Destructive and
+fail-closed**: interactive runs prompt; non-interactive runs abort without
+`--yes`/`-Yes`. Preview first:
 
 ```bash
 bash scripts/uninstall.sh --dry-run
