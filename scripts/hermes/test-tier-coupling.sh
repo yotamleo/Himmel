@@ -145,6 +145,37 @@ expect_unsafe() {
         fails=$((fails + 1))
     fi
 }
+# expect_unsafe_named <label> <fixture-path> <model>: expect_unsafe PLUS a
+# reason pin -- stderr must name <model> as the untrusted one, so an UNSAFE
+# from a different cause (e.g. the fail-closed empty-chain path) cannot
+# masquerade as the trust-classification verdict (HIMMEL-916 CR, coderabbit).
+# The pin is an EXACT match against the comma-separated unsafe-model list
+# (not a substring grep), so a pinned model that is a prefix of another
+# entry (deepseek-chat vs deepseek-chat-v2) can never false-pass.
+expect_unsafe_named() {
+    local label="$1" cfg="$2" model="$3" why rc hit="" list entry old_ifs
+    why="$(tier_check "$cfg" 2>&1 >/dev/null)"; rc=$?
+    case "$why" in
+        *"untrusted/free model(s): "*)
+            list="${why##*untrusted/free model(s): }"
+            old_ifs="$IFS"; IFS=','
+            for entry in $list; do
+                entry="${entry# }"
+                [ "$entry" = "$model" ] && hit=1
+            done
+            IFS="$old_ifs"
+            ;;
+    esac
+    if [ "$rc" -ne 0 ] && [ -n "$hit" ]; then
+        echo "  ok: $label -- correctly UNSAFE: $why"
+    elif [ "$rc" -ne 0 ]; then
+        echo "  FAIL: $label -- UNSAFE for the wrong reason (expected untrusted $model): $why" >&2
+        fails=$((fails + 1))
+    else
+        echo "  FAIL: $label -- expected UNSAFE, got SAFE" >&2
+        fails=$((fails + 1))
+    fi
+}
 
 echo "== tier-coupling: trusted engine + full control =="
 # codex-5.5 with no free fallback -- the canonical safe main-tier pairing.
@@ -164,6 +195,13 @@ expect_unsafe "nemotron (free) + full control" \
 # qwen3-coder-plus (free) as the DEFAULT on a full-control profile -- must FAIL.
 expect_unsafe "qwen3-coder-plus (free) + full control" \
     "$(fixture bad_qwen parity qwen3-coder-plus '')"
+# deepseek-chat (CN provider, GLM trust tier) on a full-control profile --
+# must FAIL, and specifically as an UNTRUSTED-MODEL verdict (reason-pinned).
+expect_unsafe_named "deepseek-chat (untrusted CN tier) + full control" \
+    "$(fixture bad_deepseek parity deepseek-chat '')" deepseek-chat
+# deepseek-reasoner -- the lane row's second advertised model, equally untrusted.
+expect_unsafe_named "deepseek-reasoner (untrusted CN tier) + full control" \
+    "$(fixture bad_deepseek_r parity deepseek-reasoner '')" deepseek-reasoner
 # trusted default BUT a free model in fallback_providers -- a free tier must
 # never be a WRITE-CAPABLE fallback, so this must FAIL too (D3b).
 expect_unsafe "codex-5.5 default + nemotron free fallback (write-capable)" \
@@ -194,6 +232,8 @@ expect_safe  "nemotron (free) + read-only junior" \
     "$(fixture ok_ro_nemotron luna nvidia/nemotron-3-ultra-550b-a55b '')"
 expect_safe  "qwen3-coder-plus (free) + read-only junior" \
     "$(fixture ok_ro_qwen luna qwen3-coder-plus '')"
+expect_safe  "deepseek-chat + read-only junior" \
+    "$(fixture ok_ro_deepseek luna deepseek-chat '')"
 
 echo ""
 if [ "$fails" -eq 0 ]; then
