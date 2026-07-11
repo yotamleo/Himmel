@@ -29,6 +29,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/graphify-bin.sh
+# shellcheck disable=SC1091  # sourced file not in input on test-only commits
 . "$SCRIPT_DIR/graphify-bin.sh"
 # shellcheck source=scripts/lib/hermetic-path.sh
 # shellcheck disable=SC1091
@@ -142,7 +143,7 @@ assert "missing: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "missing: exactly one uv tool install call" test "$(grep -c 'UV tool install' "$fresh_log")" -eq 1
 assert "missing: graphify shim landed on PATH" test -x "$fresh_bin/graphify"
 assert "missing: has_graphify true post-install" \
-  bash -c 'PATH="'"$fresh_path"'" HOME="'"$fresh_home"'" . "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
+  env PATH="$fresh_path" HOME="$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
 
 out2=$(HOME="$fresh_home" PATH="$fresh_path" UV_TOOL_DIR="$fresh_tools" UV_LIST_FILE="$fresh_list" \
        UV_BIN_DIR="$fresh_bin" UV_LOG="$fresh_log" \
@@ -214,7 +215,7 @@ assert "foreign(PATH): reports source=foreign" grep -q 'source=foreign' <<<"$out
 # Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
 assert "foreign(PATH): no install call" bash -c '! grep -q "tool install" "$1"' _ "$funpath_log"
 assert "foreign(PATH): has_graphify true (adopted binary resolvable)" \
-  bash -c 'PATH="'"$funpath_path"'" HOME="'"$funpath_home"'" . "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
+  env PATH="$funpath_path" HOME="$funpath_home" bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
 
 echo "[test-graphify-bin] graphify_source direct receipt match -> himmel-fork"
 fork_home="$tmpdir/forkdirect"; mkdir -p "$fork_home"
