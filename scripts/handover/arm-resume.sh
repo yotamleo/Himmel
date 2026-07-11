@@ -253,6 +253,18 @@ command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null || true
 command -v handover_root >/dev/null 2>&1 || handover_root() { return 2; }
 
+# HIMMEL_HEADROOM_PROXY flag parser (HIMMEL-901): same fail-open contract as
+# the two libs above — an absent/broken lib just means the .env fallback
+# never activates (the process-env check right below still works either
+# way), never a broken arm. CR round: the failure WARNs once here at source
+# time (not inside the stub, which would repeat) — an operator relying on
+# the .env flag deserves to know the fallback is disabled.
+# shellcheck source=../lib/headroom-proxy.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/headroom-proxy.sh" 2>/dev/null \
+    || echo "WARN arm-resume: headroom-proxy lib failed to load -- .env HIMMEL_HEADROOM_PROXY fallback disabled (process env still honored)" >&2
+command -v _headroom_proxy_env_file_active >/dev/null 2>&1 || _headroom_proxy_env_file_active() { return 1; }
+
 # Canonicalise a path, tolerating non-existent ones: GNU realpath -m, else
 # armored python3 pathlib, else the input unchanged (best effort — matches
 # the prior inline fallback chains).
@@ -266,6 +278,23 @@ _arm_realpath() {
     fi
     [ -n "$_p" ] || _p="$1"
     printf '%s\n' "$_p"
+}
+
+# _cmd_metachar_escape <value> — echo <value> with the same CMD-metachar
+# escaping schedule_arm's Windows .bat generator applies inline to the cd
+# path / prompt / --channels spec below (HIMMEL-901: reused for the headroom
+# proxy binary path so a fourth copy of the same six-substitution block
+# isn't pasted in). % & ^ < > | can inject commands at .bat fire time.
+_cmd_metachar_escape() {
+    local v="$1"
+    v="${v//\"/\\\"}"
+    v="${v//%/%%}"
+    v="${v//^/^^}"
+    v="${v//&/^&}"
+    v="${v//</^<}"
+    v="${v//>/^>}"
+    v="${v//|/^|}"
+    printf '%s' "$v"
 }
 
 # Resolve the requested slot to an absolute epoch (TARGET_EPOCH). Three forms:
@@ -397,6 +426,60 @@ case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
         exit 2
         ;;
 esac
+
+# HIMMEL_HEADROOM_PROXY (HIMMEL-901): route the armed relaunch through the
+# local headroom Anthropic-API proxy (127.0.0.1:8787) when the operator has
+# opted in. Resolved ONCE here, at arm time, and baked into whichever
+# launcher schedule_arm emits below — the fired relaunch never re-reads this
+# flag. Only the exact value "1" activates: the process env at arm time wins
+# outright (HIMMEL_HEADROOM_PROXY set-but-not-"1" is INACTIVE, same as
+# unset); only when the process env carries no signal at all does the
+# himmel repo-root .env get consulted as a fallback. When inactive
+# (the default), every launcher below stays BYTE-IDENTICAL to pre-901
+# output — this block is the only thing that can turn it on.
+# Known minimal-slice limitation (CR round): the .env fallback resolves
+# against the checkout THIS script physically lives in (SCRIPT_DIR/../..),
+# so arming from a worktree does not see the primary checkout's untracked
+# .env — the process env is the worktree-safe path.
+HEADROOM_PROXY_ACTIVE=0
+if [ -n "${HIMMEL_HEADROOM_PROXY+x}" ]; then
+    [ "$HIMMEL_HEADROOM_PROXY" = "1" ] && HEADROOM_PROXY_ACTIVE=1
+elif _headroom_proxy_env_file_active "$(cd "$SCRIPT_DIR/../.." && pwd)"; then
+    HEADROOM_PROXY_ACTIVE=1
+fi
+# Port fixed at 8787 for this slice — no port config (HIMMEL-901 minimal
+# slice; a variable only to avoid repeating the literal across 3 platform
+# launchers). HEADROOM_BIN: operator override wins; else the platform
+# default venv layout. Only resolved when the flag is active, so an
+# inactive arm never even looks at $HOME/.headroom-venv.
+HEADROOM_PROXY_PORT=8787
+# CR round (HIMMEL-901): resolve curl ONCE at arm time and bake the ABSOLUTE
+# path into the launcher — scheduler contexts fire with a minimal PATH (the
+# same reason claude/cygpath are resolved at arm time above), so a bare
+# `curl` in the launcher could miss at fire time, fail both livez checks,
+# and silently send the launch bare even with a healthy proxy. No curl at
+# arm time -> one honest WARN and a plain pre-901 launcher (deactivate)
+# rather than baking a known-broken check.
+HEADROOM_CURL=""
+if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+    if ! HEADROOM_CURL=$(command -v curl 2>/dev/null) || [ -z "$HEADROOM_CURL" ]; then
+        echo "WARN arm-resume: curl not on PATH -- the armed launch will fail-open to bare (proxy livez unverifiable)" >&2
+        HEADROOM_PROXY_ACTIVE=0
+    fi
+fi
+if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ] && [ -z "${HEADROOM_BIN:-}" ]; then
+    if [ "$PLATFORM" = windows ]; then
+        HEADROOM_BIN="$HOME/.headroom-venv/Scripts/headroom.exe"
+    else
+        HEADROOM_BIN="$HOME/.headroom-venv/bin/headroom"
+    fi
+fi
+# Non-blocking existence probe (CR round): a missing/non-executable headroom
+# binary still arms — fail-open is the design — but the operator hears about
+# it NOW instead of discovering a silently-bare session after the fire.
+if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+    [ -x "$HEADROOM_BIN" ] || echo "WARN arm-resume: HEADROOM_BIN '$HEADROOM_BIN' not found/executable -- fire-time start will fail-open to bare" >&2
+fi
 
 # Tool detection per platform.
 case "$PLATFORM" in
@@ -1771,7 +1854,28 @@ _crontab_schedule() {
     # stays ONE arg through the /bin/sh re-parse at fire time. Empty -> omit.
     [ -n "$SESSION_NAME" ] && q_name="-n $(printf '%q' "$SESSION_NAME") "
     local self_clean="crontab -l 2>/dev/null | grep -vE '# ${TASK_NAME}\$' | crontab -;"
-    local entry="$mm $hh * * * $self_clean cd $q_cwd && claude ${q_name}$q_prompt $q_channels # $TASK_NAME"
+    # HIMMEL_HEADROOM_PROXY (HIMMEL-901): a crontab entry is ONE line, so the
+    # livez-check-then-launch logic (same shape as the `at` branch's
+    # $launch_lines) has to be a single ';'-joined compound wrapped in its
+    # own `{ ; }` group — `cd ... && { ...; }` keeps `cd` a hard gate (plain
+    # `&&`/`||` chaining without the group would let a failed cd fall
+    # through into starting the proxy, since `&&`/`||` are left-associative
+    # at equal precedence). Inactive -> $tail is byte-identical to the
+    # pre-901 line (zero behavior change).
+    # CR round: absolute curl path ($q_curl) + one mode-marker echo per
+    # branch (HIMMEL-897 trail). The marker uses `echo "\$(date) ..."`, NOT
+    # printf: cron treats an unescaped % in the command as end-of-command +
+    # stdin, so a printf format string would truncate the entry. `\$(date)`
+    # lands literally and evaluates at fire time.
+    local tail="claude ${q_name}$q_prompt $q_channels"
+    if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+        local q_hb q_log q_curl
+        q_hb=$(printf '%q' "$HEADROOM_BIN")
+        q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
+        q_curl=$(printf '%q' "$HEADROOM_CURL")
+        tail="{ $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 claude ${q_name}$q_prompt $q_channels; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; claude ${q_name}$q_prompt $q_channels; fi; }"
+    fi
+    local entry="$mm $hh * * * $self_clean cd $q_cwd && $tail # $TASK_NAME"
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY arm-resume: would add crontab entry:"
         echo "    $entry"
@@ -1893,6 +1997,35 @@ schedule_arm() {
             # in "<TICKET> <name>" stays a single argv entry. Empty -> omit.
             local nm=""
             [ -n "$SESSION_NAME" ] && nm=" -n \"$SESSION_NAME\""
+            # HIMMEL_HEADROOM_PROXY (HIMMEL-901): a SEPARATE cygpath call
+            # (not folded into the batched bat/claude/cwd conversion above)
+            # so the existing HIMMEL-708 3-path split logic stays untouched
+            # when the flag is off — this only spawns when the flag is on.
+            # CR round: curl gets the same treatment as HEADROOM_BIN (one
+            # cygpath spawn for both) so the livez checks below carry an
+            # ABSOLUTE curl path — see the HEADROOM_CURL resolution comment.
+            local hb="" cu=""
+            if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+                local _hp_cyg_out _hp_cyg_rest headroom_bin_win curl_bin_win
+                if ! _hp_cyg_out=$(cygpath -w "$HEADROOM_BIN" "$HEADROOM_CURL" 2>&1); then
+                    echo "ERR arm-resume: cygpath -w failed converting [headroom=$HEADROOM_BIN curl=$HEADROOM_CURL]: $_hp_cyg_out" >&2
+                    rm -f "$bat_path"
+                    exit 4
+                fi
+                headroom_bin_win="${_hp_cyg_out%%$'\n'*}"
+                _hp_cyg_rest="${_hp_cyg_out#*$'\n'}"
+                curl_bin_win="${_hp_cyg_rest%%$'\n'*}"
+                # Same incomplete-output guard as the batched 3-path split
+                # above (HIMMEL-708 CR): a cygpath that exits 0 with fewer
+                # lines must not leave curl_bin_win aliasing headroom_bin_win.
+                if [ -z "$headroom_bin_win" ] || [ -z "$curl_bin_win" ] || [ "$_hp_cyg_out" = "$_hp_cyg_rest" ]; then
+                    echo "ERR arm-resume: cygpath -w produced incomplete output (headroom/curl): $_hp_cyg_out" >&2
+                    rm -f "$bat_path"
+                    exit 4
+                fi
+                hb=$(_cmd_metachar_escape "$headroom_bin_win")
+                cu=$(_cmd_metachar_escape "$curl_bin_win")
+            fi
             # Self-clean FIRST: a /sc ONCE task lingers in Task Scheduler
             # after it fires (Ready/completed), accumulating stale jobs and
             # blocking a future same-handover arm without --force. So the
@@ -1910,10 +2043,49 @@ schedule_arm() {
             # Prompt MUST come before --channels: --channels is variadic
             # (consumes following args), so a trailing positional prompt
             # gets parsed as a bogus channel entry ("must be tagged" → exit 1).
+            # HIMMEL_HEADROOM_PROXY (HIMMEL-901): when active, gate the
+            # claude launch on a livez check, starting the proxy DETACHED
+            # if it's down and giving it ~3s before rechecking. Fail-open:
+            # if it's STILL down after the retry, fall through to a bare
+            # launch (a broken proxy must never block the relaunch) — the
+            # log at %USERPROFILE%\.headroom-proxy.log is the only trail.
+            # `start "" /b cmd /c "..."` (not `start "" /b <exe> ... >>log`,
+            # which does not reliably redirect the child) is the verified
+            # detached-with-redirection form. `if errorlevel 1` reads the
+            # LAST command's exit code, so the second `if errorlevel 1`
+            # below correctly reflects either the original livez check (skip
+            # branch never ran) or the retry livez check (skip branch ran) —
+            # no delayed-expansion (!VAR!) needed anywhere. %USERPROFILE% is
+            # a literal CMD env-var reference (NOT run through the %->%%
+            # escaping below, which is for literal-data percents only).
+            # CR round: each branch appends ONE mode-marker line to the
+            # proxy log before launching (proxied vs bare-fallback) — the
+            # HIMMEL-897 measurement trail; without it a fired launch is
+            # indistinguishable after the fact. %DATE%/%TIME% expand when
+            # CMD parses the if-block, close enough to launch time.
+            # TASK_NAME is sanitized to [:alnum:]_- (no CMD metachars).
             {
                 printf 'schtasks /delete /tn "%s" /f >nul 2>&1\r\n' "$TASK_NAME"
                 printf 'cd /d "%s" || exit /b 1\r\n' "$c"
-                printf '"%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
+                if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+                    printf '"%s" -s -m 5 http://127.0.0.1:%s/livez >nul 2>&1\r\n' "$cu" "$HEADROOM_PROXY_PORT"
+                    printf 'if errorlevel 1 (\r\n'
+                    printf '    start "" /b cmd /c ""%s" proxy --port %s >> "%%USERPROFILE%%\\.headroom-proxy.log" 2>&1"\r\n' "$hb" "$HEADROOM_PROXY_PORT"
+                    printf '    ping -n 4 127.0.0.1 >nul\r\n'
+                    printf '    "%s" -s -m 5 http://127.0.0.1:%s/livez >nul 2>&1\r\n' "$cu" "$HEADROOM_PROXY_PORT"
+                    printf ')\r\n'
+                    printf 'if errorlevel 1 (\r\n'
+                    printf '    echo %%DATE%% %%TIME%% arm=%s mode=bare-fallback>> "%%USERPROFILE%%\\.headroom-proxy.log"\r\n' "$TASK_NAME"
+                    printf '    "%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
+                    printf ') else (\r\n'
+                    printf '    echo %%DATE%% %%TIME%% arm=%s mode=proxied>> "%%USERPROFILE%%\\.headroom-proxy.log"\r\n' "$TASK_NAME"
+                    printf '    set "ANTHROPIC_BASE_URL=http://127.0.0.1:%s"\r\n' "$HEADROOM_PROXY_PORT"
+                    printf '    set "HEADROOM_OFFLINE=1"\r\n'
+                    printf '    "%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
+                    printf ')\r\n'
+                else
+                    printf '"%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
+                fi
             } > "$bat_path"
 
             if [ "$DRY_RUN" -eq 1 ]; then
@@ -1963,11 +2135,36 @@ schedule_arm() {
                 # -n <session name> (HIMMEL-702): %q so "<TICKET> <name>"
                 # stays one arg after the /bin/sh re-parse. Empty -> omit.
                 [ -n "$SESSION_NAME" ] && q_name="-n $(printf '%q' "$SESSION_NAME") "
+                # HIMMEL_HEADROOM_PROXY (HIMMEL-901): $launch_lines is the
+                # plain 'claude ...' line unless the flag is active, in
+                # which case it becomes a livez-check-then-launch block
+                # (same shape as _crontab_schedule's $tail above) — built
+                # ONCE so the dry-run echo and the real heredoc can't drift
+                # apart. Inactive -> byte-identical to the pre-901 line.
+                # CR round: absolute curl path ($q_curl — see HEADROOM_CURL)
+                # + one mode-marker echo per branch (HIMMEL-897 trail).
+                # `\$(date)` is escaped so it lands LITERALLY in the job
+                # body and evaluates at FIRE time, not arm time.
+                local launch_lines="claude ${q_name}$q_prompt $q_channels"
+                if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+                    local q_hb q_log q_curl
+                    q_hb=$(printf '%q' "$HEADROOM_BIN")
+                    q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
+                    q_curl=$(printf '%q' "$HEADROOM_CURL")
+                    launch_lines="$q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }
+if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then
+    echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log
+    ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 claude ${q_name}$q_prompt $q_channels
+else
+    echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log
+    claude ${q_name}$q_prompt $q_channels
+fi"
+                fi
                 if [ "$DRY_RUN" -eq 1 ]; then
                     echo "DRY arm-resume: would at -t $AT_STAMP <<'CMD'"
                     echo "    # $TASK_NAME"
                     echo "    cd $q_cwd || exit 1"
-                    echo "    claude ${q_name}$q_prompt $q_channels"
+                    printf '%s\n' "$launch_lines" | sed 's/^/    /'
                     echo "    CMD"
                     return 0
                 fi
@@ -1980,7 +2177,7 @@ schedule_arm() {
                 if ! at -t "$AT_STAMP" 2>"$err_file" <<CMD
 # $TASK_NAME
 cd $q_cwd || exit 1
-claude ${q_name}$q_prompt $q_channels
+$launch_lines
 CMD
                 then
                     echo "ERR arm-resume: at -t $AT_STAMP failed:" >&2
