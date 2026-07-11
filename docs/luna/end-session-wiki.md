@@ -59,7 +59,7 @@ flowchart TD
 - **Lane 1 (session capture)** routes per session to its configured vault
   (multi-vault under `--all`; no configured/real vault → skip — HIMMEL-590 F7).
   **There is no nightly pass over `sessions/`.**
-- **Lane 2 (clip pipeline)** is the `pipeline-cadence` nightly/weekly/monthly and
+- **Lane 2 (clip pipeline)** is the `pipeline-cadence` daily + weekly and
   operates on `Clippings/` **only** — it does **not** touch `sessions/`.
 - **Lane 3 (memory-compound)** compounds the agent's `project_*` memories into the
   luna substrate (HIMMEL-564) — separate again, not session notes.
