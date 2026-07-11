@@ -511,7 +511,13 @@ def terminal_phi_egress_reason(cmd_norm: str):
 # is affirmatively a trusted main-tier engine:
 #   * ANTHROPIC_BASE_URL contains api.z.ai      -> UNTRUSTED (the s29 lead; the
 #     signal block-glm-external-writes.sh itself keys on). ALWAYS refused.
-#   * HERMES_ENGINE names a z.ai / glm / zhipu model -> UNTRUSTED. ALWAYS refused.
+#   * HERMES_ENGINE / HERMES_ONESHOT_MODEL / HERMES_ONESHOT_PROVIDER names a
+#     z.ai / glm / zhipu / deepseek model -> UNTRUSTED. ALWAYS refused. The
+#     ONESHOT signals matter because invoke.sh exports the resolved --model /
+#     --provider through them (HERMES_ENGINE is a launcher/operator signal the
+#     one-shot dispatch path never sets) — without scanning them,
+#     `dispatch-trusted.sh --model deepseek-chat` would ride the wrapper's
+#     external-writes opt-in with an untrusted engine (HIMMEL-916 CR finding).
 #   * HERMES_EXTERNAL_WRITES_OK=1               -> the operator / gateway affirms
 #     a trusted main-tier (codex/openai) engine for this session -> PERMITTED.
 #   * anything else (no recognised signal)      -> FAIL-CLOSED -> refused.
@@ -527,7 +533,7 @@ def terminal_phi_egress_reason(cmd_norm: str):
 # hyphenated aliases, scp/ssh/rsync/nc) is MISSED (under-block), matching the sibling
 # guard's documented limits. Accepted because the default is fail-closed deny and the
 # unconditional PHI read-fence — not this scan — is the load-bearing egress control.
-_ENGINE_UNTRUSTED = re.compile(r"z\.ai|glm|zhipu")
+_ENGINE_UNTRUSTED = re.compile(r"z\.ai|glm|zhipu|deepseek")
 
 # _CMDPOS (command-position anchor) is defined above TERMINAL_DESTRUCTIVE —
 # shared by both use sites.
@@ -550,11 +556,14 @@ EXT_NET = re.compile(
 
 def _external_writes_allowed() -> bool:
     """Trusted main-tier engine? Fail-closed — only an affirmative trusted signal
-    returns True; a positive z.ai/GLM signal returns False even with the opt-in."""
+    returns True; a positive untrusted signal (z.ai / glm / zhipu / deepseek, on
+    any of HERMES_ENGINE / HERMES_ONESHOT_MODEL / HERMES_ONESHOT_PROVIDER)
+    returns False even with the opt-in."""
     if "api.z.ai" in os.environ.get("ANTHROPIC_BASE_URL", "").lower():
         return False
-    if _ENGINE_UNTRUSTED.search(os.environ.get("HERMES_ENGINE", "").lower()):
-        return False
+    for sig in ("HERMES_ENGINE", "HERMES_ONESHOT_MODEL", "HERMES_ONESHOT_PROVIDER"):
+        if _ENGINE_UNTRUSTED.search(os.environ.get(sig, "").lower()):
+            return False
     if os.environ.get("HERMES_EXTERNAL_WRITES_OK") == "1":
         return True
     return False  # unknown / absent engine signal -> fail-closed (refuse)
