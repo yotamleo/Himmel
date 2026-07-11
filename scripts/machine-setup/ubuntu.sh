@@ -240,7 +240,8 @@ step "Install qmd CLI + register himmel/luna collections"
   # Project rule: qmd installs from the himmel qmd fork, built with bun,
   # never upstream npm/bun-add (HIMMEL-877). The qmd Claude plugin ships
   # a path stub that breaks plain `qmd` on Windows; scripts/lib/qmd-bin.sh
-  # picks the working invoker. qmd_install clones yotamleo/qmd#himmel-main,
+  # picks the working invoker. qmd_install clones yotamleo/qmd pinned to an
+  # immutable commit SHA rather than a mutable branch (HIMMEL-911),
   # builds it (bun install && bun run build), symlinks it onto the
   # bun-global @tobilu/qmd path, and verifies the binary.
   # shellcheck source=../lib/qmd-bin.sh

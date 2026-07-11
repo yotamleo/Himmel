@@ -411,7 +411,8 @@ qmd is a local markdown search engine (BM25 + vector + rerank). himmel's fork
 runs it as a **shared HTTP daemon** (`localhost:8181`, HIMMEL-592) auto-brought-up
 by the `qmd` plugin's SessionStart hook, so every session shares one read-only
 index. The standalone CLI installs from the **himmel qmd fork**
-(`yotamleo/qmd#himmel-main`) — never upstream `bun add -g @tobilu/qmd`, which
+(`yotamleo/qmd`), pinned to an immutable commit SHA rather than a mutable
+branch (HIMMEL-911) — never upstream `bun add -g @tobilu/qmd`, which
 EPERM-wedges on this project's machines (zombie `qmd mcp` stdio processes hold
 locks) and bun blocks its postinstall script (HIMMEL-877). `bun` itself is
 still required to build the clone (project rule: bun, never npm — see §1
@@ -424,8 +425,8 @@ skipped those or want the luna vault indexed too.
 # 1. Install the qmd CLI: clone the fork, build it with bun, then junction
 #    (Windows) / symlink (POSIX) it onto the bun-global @tobilu/qmd path —
 #    scripts/lib/qmd-bin.sh is the single chokepoint (also used by adopt.sh/
-#    setup.sh); repo/branch/clone-dir are overridable via QMD_FORK_REPO /
-#    QMD_FORK_BRANCH / QMD_FORK_DIR. Idempotent — re-run to update.
+#    setup.sh); repo/ref/clone-dir are overridable via QMD_FORK_REPO /
+#    QMD_FORK_REF / QMD_FORK_DIR. Idempotent — re-run to update.
 bash scripts/lib/qmd-bin.sh install
 
 # 2. Pull the embedding + rerank models. WARNING: ~2.1 GB download — Ctrl-C-safe

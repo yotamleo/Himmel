@@ -31,11 +31,26 @@ echo "[test-qmd-bin] qmd_install_hint emits the fork clone+build+link recipe (HI
 hint="$(qmd_install_hint)"
 assert "hint mentions git clone" grep -q '^git clone ' <<<"$hint"
 assert "hint mentions the himmel fork repo" grep -q 'yotamleo/qmd' <<<"$hint"
-assert "hint mentions the himmel-main branch" grep -q 'himmel-main' <<<"$hint"
+assert "hint pins a full commit SHA (HIMMEL-911), not a movable ref" grep -qE 'fetch origin [0-9a-f]{40} ' <<<"$hint"
+# shellcheck disable=SC2016
+# Single quotes intentional — $1 expands inside the spawned bash -c subshell.
+assert "hint does NOT install from the mutable himmel-main branch" \
+  bash -c '! grep -q "himmel-main" <<<"$1"' _ "$hint"
 assert "hint mentions bun install/build" grep -q 'bun install && bun run build' <<<"$hint"
 # shellcheck disable=SC2016
 # Single quotes intentional — $1 expands inside the spawned bash -c subshell.
 assert "hint does NOT mention upstream bun add -g" bash -c '! grep -q "bun add -g" <<<"$1"' _ "$hint"
+
+echo "[test-qmd-bin] pin policy (HIMMEL-911): the configured ref IS a full 40-hex commit SHA"
+# Tags/branches are force-movable; only a commit SHA is content-addressed.
+# This pins the POLICY so a future 'bump the pin' change that swaps in a tag
+# or branch name fails here. (Run with the env override cleared -- the test
+# targets the committed default.)
+default_ref="$(env -u QMD_FORK_REF bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_fork_ref')"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "default QMD_FORK_REF is a full 40-hex SHA" \
+  bash -c 'printf "%s" "$1" | grep -qE "^[0-9a-f]{40}$"' _ "$default_ref"
 
 echo "[test-qmd-bin] qmd_cmd resolver — prefer bun"
 tmpdir="$(mktemp -d)"
@@ -111,10 +126,10 @@ rc=0
 HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_cmd --version' >/dev/null 2>&1 || rc=$?
 assert "wrapped command rc=42 propagates" test "$rc" -eq 42
 
-echo "[test-qmd-bin] QMD_FORK_REPO / QMD_FORK_BRANCH / QMD_FORK_DIR overrides (HIMMEL-877)"
-override_hint="$(QMD_FORK_REPO=https://example.test/mirror/qmd.git QMD_FORK_BRANCH=my-branch QMD_FORK_DIR=/custom/fork/dir qmd_install_hint)"
+echo "[test-qmd-bin] QMD_FORK_REPO / QMD_FORK_REF / QMD_FORK_DIR overrides (HIMMEL-877/HIMMEL-911)"
+override_hint="$(QMD_FORK_REPO=https://example.test/mirror/qmd.git QMD_FORK_REF=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef QMD_FORK_DIR=/custom/fork/dir qmd_install_hint)"
 assert "hint honors QMD_FORK_REPO override" grep -q 'example.test/mirror/qmd.git' <<<"$override_hint"
-assert "hint honors QMD_FORK_BRANCH override" grep -q 'my-branch' <<<"$override_hint"
+assert "hint honors QMD_FORK_REF override" grep -q 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' <<<"$override_hint"
 assert "hint honors QMD_FORK_DIR override" grep -q '/custom/fork/dir' <<<"$override_hint"
 
 echo "[test-qmd-bin] has_qmd is presence-only (does not invoke binary)"
@@ -125,8 +140,9 @@ rc=0
 HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/broken-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; has_qmd' || rc=$?
 assert "has_qmd=true even when bun-js is broken (presence only)" test "$rc" -eq 0
 
-echo "[test-qmd-bin] qmd_install() fork clone+build+link recipe (HIMMEL-877)"
-# Hermetic stub env: a fake `git` (clone creates a .git marker + package.json;
+echo "[test-qmd-bin] qmd_install() fork clone+build+link recipe (HIMMEL-877/HIMMEL-911)"
+# Hermetic stub env: a fake `git` (init creates a .git marker + package.json,
+# matching what a real `git init` + first fetch/checkout leaves behind;
 # fetch/checkout/reset are individually controllable) and a fake `bun`
 # (install/run-build individually controllable; any other invocation is the
 # qmd_cmd dispatch `bun <qmd.js> --version`, which prints a fake version).
@@ -142,18 +158,44 @@ cat > "$id2/bin/git" <<'STUB'
 if [ "$1" = "-C" ]; then shift 2; fi
 echo "GIT $*" >> "${GIT_LOG:?}"
 case "$1" in
-  clone)
+  init)
+    # `git init <fork_dir>` (HIMMEL-911: a SHA can't be `git clone --branch`ed,
+    # so the fresh-install path is init + fetch-by-sha + checkout).
     [ "${STUB_GIT_CLONE_RC:-0}" -eq 0 ] || exit "$STUB_GIT_CLONE_RC"
-    target="${!#}"
+    target="$2"
     mkdir -p "$target/.git"
     echo '{}' > "$target/package.json"
     exit 0
     ;;
-  fetch|checkout|reset) exit "${STUB_GIT_FETCH_RC:-0}" ;;
   remote)
+    if [ "$2" = "add" ]; then
+      # `remote add origin <url>` -- nothing to simulate, just succeed.
+      exit 0
+    fi
     # `remote get-url origin` ownership probe: default answers the default
     # fork repo URL so owned-clone scenarios pass the guard.
     printf '%s\n' "${STUB_GIT_ORIGIN_URL:-https://github.com/yotamleo/qmd.git}"
+    exit 0
+    ;;
+  fetch|reset) exit "${STUB_GIT_FETCH_RC:-0}" ;;
+  checkout)
+    # A successful checkout moves HEAD to the requested commit -- mirror it
+    # into the head-state file (when the scenario tracks one) so rev-parse
+    # answers realistically after a re-pin (HIMMEL-911).
+    if [ "${STUB_GIT_FETCH_RC:-0}" -eq 0 ] && [ -n "${STUB_GIT_HEAD_FILE:-}" ]; then
+      printf '%s\n' "$2" > "$STUB_GIT_HEAD_FILE"
+    fi
+    exit "${STUB_GIT_FETCH_RC:-0}"
+    ;;
+  rev-parse)
+    # HEAD probe (qmd_fork_served pin gate + qmd_install post-checkout
+    # verify, HIMMEL-911): the head-state file when tracked, else the
+    # STUB_GIT_HEAD env (qmd_install_env defaults it to the pinned ref).
+    if [ -n "${STUB_GIT_HEAD_FILE:-}" ] && [ -f "$STUB_GIT_HEAD_FILE" ]; then
+      cat "$STUB_GIT_HEAD_FILE"
+    else
+      printf '%s\n' "${STUB_GIT_HEAD:-}"
+    fi
     exit 0
     ;;
   status)
@@ -193,6 +235,7 @@ qmd_install_env() { # $1 = HOME dir, remaining = the command to run under it
   HOME="$home" GIT_LOG="$git_log" BUN_LOG="$bun_log" PATH="$id2/bin:$PATH" \
     STUB_GIT_CLONE_RC="${STUB_GIT_CLONE_RC:-0}" STUB_GIT_FETCH_RC="${STUB_GIT_FETCH_RC:-0}" \
     STUB_GIT_ORIGIN_URL="${STUB_GIT_ORIGIN_URL:-}" STUB_GIT_DIRTY="${STUB_GIT_DIRTY:-}" \
+    STUB_GIT_HEAD="${STUB_GIT_HEAD:-$default_ref}" STUB_GIT_HEAD_FILE="${STUB_GIT_HEAD_FILE:-}" \
     STUB_BUN_INSTALL_RC="${STUB_BUN_INSTALL_RC:-0}" STUB_BUN_BUILD_RC="${STUB_BUN_BUILD_RC:-0}" \
     STUB_BUN_VERSION_RC="${STUB_BUN_VERSION_RC:-0}" STUB_QMD_VERSION="${STUB_QMD_VERSION:-2.6.10}" \
     "$@"
@@ -203,16 +246,29 @@ fresh_home="$id2/fresh"; mkdir -p "$fresh_home"
 STUB_GIT_CLONE_RC=0 STUB_GIT_FETCH_RC=0 STUB_BUN_INSTALL_RC=0 STUB_BUN_BUILD_RC=0 STUB_BUN_VERSION_RC=0
 out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
 assert "fresh install: rc 0" grep -q '^RC=0$' <<<"$out"
-assert "fresh install: cloned the fork" grep -q 'GIT clone' "$git_log"
+assert "fresh install: initialized the fork clone" grep -q 'GIT init' "$git_log"
+assert "fresh install: added the fork as origin" grep -q 'GIT remote add origin' "$git_log"
+assert "fresh install: fetched the pinned SHA" grep -qE 'GIT fetch --depth 1 origin [0-9a-f]{40}' "$git_log"
+assert "fresh install: checked out the pinned SHA" grep -qE 'GIT checkout [0-9a-f]{40}' "$git_log"
 assert "fresh install: built with bun" grep -q 'BUN run build' "$bun_log"
 assert "fresh install: linked at the bun-global @tobilu/qmd path" \
   test -e "$fresh_home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "fresh install: no git call references the mutable himmel-main branch" \
+  bash -c '! grep -q "himmel-main" "$1"' _ "$git_log"
 
-# -- idempotent re-run: already fork-served + version ok -> skip, clone/build
-#    never re-run (the version CHECK itself legitimately invokes bun once). --
+# -- idempotent re-run: already fork-served (link + pinned HEAD + version ok)
+#    -> skip, clone/build never re-run (the pin gate legitimately runs ONE
+#    read-only `git rev-parse HEAD`, and the version CHECK invokes bun once).
 out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
 assert "idempotent re-run: rc 0" grep -q '^RC=0$' <<<"$out"
-assert "idempotent re-run: no git call" test ! -s "$git_log"
+assert "idempotent re-run: pin gate probed HEAD (read-only rev-parse, HIMMEL-911)" \
+  grep -q 'GIT rev-parse HEAD' "$git_log"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "idempotent re-run: no mutating git call (fetch/checkout/reset/init)" \
+  bash -c '! grep -qE "GIT (fetch|checkout|reset|init|clone|remote add)" "$1"' _ "$git_log"
 # shellcheck disable=SC2016
 # Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
 assert "idempotent re-run: did not re-run bun install" bash -c '! grep -q "BUN install" "$1"' _ "$bun_log"
@@ -229,6 +285,76 @@ mkdir -p "$noserve_home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli"
 rc=0
 qmd_install_env "$noserve_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served >/dev/null 2>&1 || rc=$?
 assert "fork-served CLI verb: nonzero on an upstream REAL-dir install (qmd present)" test "$rc" -ne 0
+
+# -- pin-drift (HIMMEL-911 CR r1 codex-adv-1): a linked, version-compatible
+#    clone checked out at a DIFFERENT commit must NOT count as served -- that
+#    is exactly the pre-pin population (built from the mutable himmel-main
+#    head) this change migrates. qmd_install must fall through to the update
+#    path and re-pin, never skip. ----------------------------------------------
+drift_head="$id2/drift-head"
+printf '%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > "$drift_head"
+STUB_GIT_HEAD_FILE="$drift_head"
+rc=0
+qmd_install_env "$fresh_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served >/dev/null 2>&1 || rc=$?
+assert "pin-drift: fork-served nonzero on a drifted HEAD" test "$rc" -ne 0
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "pin-drift: qmd_install did NOT skip (update-path fetch ran)" grep -q 'GIT fetch' "$git_log"
+assert "pin-drift: re-pinned successfully (rc 0)" grep -q '^RC=0$' <<<"$out"
+assert "pin-drift: clone HEAD is the pinned SHA afterward" grep -q "$default_ref" "$drift_head"
+
+# -- pinned-update failure on a SERVED-but-drifted install: FAIL CLOSED
+#    (HIMMEL-911 CR r1 codex-adv-2). The old fallback (WARN + build the clone
+#    contents as-is) silently served an UNPINNED commit while reporting
+#    success. Now: honest nonzero, ERROR names the pinned SHA, and the
+#    previously served installation is left untouched (no rebuild, no
+#    re-link, clone HEAD not half-updated). ------------------------------------
+printf '%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > "$drift_head"
+STUB_GIT_FETCH_RC=1
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_FETCH_RC=0
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "served-drift update-fail: rc nonzero (fail closed)" \
+  bash -c '! grep -q "^RC=0$" <<<"$1"' _ "$out"
+assert "served-drift update-fail: ERROR names the pinned SHA" \
+  grep -q "pinned commit $default_ref" <<<"$out"
+assert "served-drift update-fail: no rebuild (bun never invoked)" test ! -s "$bun_log"
+assert "served-drift update-fail: served link left untouched" \
+  test -e "$fresh_home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+assert "served-drift update-fail: clone HEAD untouched (still drifted)" \
+  grep -q 'deadbeef' "$drift_head"
+
+# -- build failure DURING a drifted upgrade must not mint a served pin
+#    (HIMMEL-911 CR r3 codex-adv): checkout moves HEAD to the pin BEFORE bun
+#    runs, so a build failure leaves HEAD==pin while the OLD dist (built from
+#    the mutable commit) keeps serving. Without the build-success stamp a
+#    RETRY would see HEAD==pin + version>=min -> served -> skip silently
+#    forever, reporting a valid pinned install over stale artifacts. ------------
+printf '%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > "$drift_head"
+STUB_BUN_BUILD_RC=1
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_BUN_BUILD_RC=0
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "drift+build-fail: rc nonzero" bash -c '! grep -q "^RC=0$" <<<"$1"' _ "$out"
+assert "drift+build-fail: HEAD did move to the pin (the trap precondition)" \
+  grep -q "$default_ref" "$drift_head"
+# RETRY with bun healthy again: must NOT skip -- the stamp is missing, so
+# fork_served stays false despite HEAD==pin; it must rebuild and succeed.
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "drift+build-fail retry: did NOT skip (update path ran)" grep -q 'GIT fetch' "$git_log"
+assert "drift+build-fail retry: rebuilt" grep -q 'BUN run build' "$bun_log"
+assert "drift+build-fail retry: rc 0" grep -q '^RC=0$' <<<"$out"
+STUB_GIT_HEAD_FILE=""
+
+# -- legacy migration (HIMMEL-911 CR r3): a pre-stamp machine (linked, pinned
+#    HEAD, version ok -- but no .himmel-build-ok stamp) intentionally reads
+#    as NOT-served, so it converges onto a stamped pinned build on its next
+#    install pass. Desired migration behavior, not a bug.
+rm -f "$fresh_home/.himmel/qmd-fork/.himmel-build-ok"
+rc=0
+qmd_install_env "$fresh_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served >/dev/null 2>&1 || rc=$?
+assert "legacy no-stamp install: fork-served nonzero (converges onto the stamped pin)" test "$rc" -ne 0
 
 # Absolute path to bash (not a bare `bash` PATH lookup): the no-git/no-bun
 # isolation cases below need a PATH that carries ONLY the surviving stub (no
@@ -259,11 +385,12 @@ out=$(HOME="$nobun_home" GIT_LOG="$git_log" BUN_LOG="$bun_log" PATH="$id2/bin-gi
 assert "no-bun: rc nonzero" grep -qv '^RC=0$' <<<"$out"
 assert "no-bun: WARNs" grep -qi 'bun not found' <<<"$out"
 
-# -- clone/fetch failure on an EXISTING clone: WARN + continues (build still
-#    runs against the existing, un-updated clone contents). Pre-seed the
-#    clone dir directly (NOT via a first qmd_install call) so the global path
-#    is NOT yet linked -- otherwise the idempotent-skip check above would
-#    short-circuit this run before it ever reaches the fetch/checkout step.
+# -- pinned-update failure on an EXISTING unlinked clone: FAIL CLOSED
+#    (HIMMEL-911 CR r1 codex-adv-2) -- never build/link contents that could
+#    not be brought to the pinned SHA. Pre-seed the clone dir directly (NOT
+#    via a first qmd_install call) so the global path is NOT yet linked --
+#    otherwise the idempotent-skip check above would short-circuit this run
+#    before it ever reaches the fetch/checkout step.
 stale_home="$id2/stalefetch"
 mkdir -p "$stale_home/.himmel/qmd-fork/.git"
 echo '{}' > "$stale_home/.himmel/qmd-fork/package.json"
@@ -271,8 +398,21 @@ STUB_GIT_CLONE_RC=0 STUB_GIT_FETCH_RC=1 STUB_BUN_INSTALL_RC=0 STUB_BUN_BUILD_RC=
 out=$(qmd_install_env "$stale_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
 STUB_GIT_FETCH_RC=0
 assert "fetch-fail: attempted the update (fetch) on the existing clone" grep -q 'GIT fetch' "$git_log"
-assert "fetch-fail: WARNs and continues" grep -qi 'fetch/checkout failed' <<<"$out"
-assert "fetch-fail: still builds + verifies (rc 0)" grep -q '^RC=0$' <<<"$out"
+assert "fetch-fail: fetched the pinned SHA, not a branch name" grep -qE 'GIT fetch origin [0-9a-f]{40}' "$git_log"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "fetch-fail: fails closed (rc nonzero, no as-is fallback build)" \
+  bash -c '! grep -q "^RC=0$" <<<"$1"' _ "$out"
+assert "fetch-fail: ERROR names the pinned SHA" grep -q "pinned commit $default_ref" <<<"$out"
+# shellcheck disable=SC2016
+assert "fetch-fail: did NOT build the unpinned clone" \
+  bash -c '! grep -qE "BUN (install|run build)" "$1"' _ "$bun_log"
+assert "fetch-fail: did NOT link the global path" \
+  test ! -e "$stale_home/.bun/install/global/node_modules/@tobilu/qmd"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "update path: no git call references the mutable himmel-main branch" \
+  bash -c '! grep -q "himmel-main" "$1"' _ "$git_log"
 
 # -- owned-dir guard (HIMMEL-877 CR codex-adv-2): never hard-reset a repo
 #    the installer does not own -------------------------------------------------
@@ -306,6 +446,41 @@ out=$(qmd_install_env "$dirty_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; QMD
 STUB_GIT_DIRTY=""
 assert "dirty+FORCE: proceeds to fetch" grep -q 'GIT fetch' "$git_log"
 assert "dirty+FORCE: rc 0" grep -q '^RC=0$' <<<"$out"
+
+# -- populated NON-git dir at QMD_FORK_DIR (HIMMEL-911 CR r2 codex-adv):
+#    refused untouched. QMD_FORK_DIR is operator-overridable, so a populated
+#    non-git dir here is USER DATA that predates the installer -- an
+#    init-in-place followed by the clone-failure `rm -rf` cleanup would
+#    destroy it. Even under a forced fetch failure nothing may be created,
+#    fetched, or deleted. --------------------------------------------------------
+nongit_home="$id2/nongitdir"
+mkdir -p "$nongit_home/.himmel/qmd-fork"
+echo "predates the installer" > "$nongit_home/.himmel/qmd-fork/user-data.txt"
+STUB_GIT_FETCH_RC=1
+out=$(qmd_install_env "$nongit_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_FETCH_RC=0
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "non-git dir: rc nonzero" bash -c '! grep -q "^RC=0$" <<<"$1"' _ "$out"
+assert "non-git dir: refuses with the not-a-git-clone WARNING" grep -qi 'not a git clone' <<<"$out"
+assert "non-git dir: no git call at all (never init'ed in place)" test ! -s "$git_log"
+assert "non-git dir: pre-existing contents byte-untouched" \
+  grep -q 'predates the installer' "$nongit_home/.himmel/qmd-fork/user-data.txt"
+assert "non-git dir: no .git dir injected" test ! -e "$nongit_home/.himmel/qmd-fork/.git"
+
+# -- fresh-create failure cleanup stays scoped to the dir THIS invocation
+#    created (the non-git refusal above must not break it): NO pre-existing
+#    fork_dir + a fetch failure -> the newly init'ed dir is removed again,
+#    rc nonzero. ----------------------------------------------------------------
+freshfail_home="$id2/freshfail"; mkdir -p "$freshfail_home"
+STUB_GIT_FETCH_RC=1
+out=$(qmd_install_env "$freshfail_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_FETCH_RC=0
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "fresh-create fail: rc nonzero" bash -c '! grep -q "^RC=0$" <<<"$1"' _ "$out"
+assert "fresh-create fail: cleaned up ONLY its own newly created dir" \
+  test ! -e "$freshfail_home/.himmel/qmd-fork"
 
 # -- build failure: WARN + manual command, rc nonzero --------------------------
 buildfail_home="$id2/buildfail"; mkdir -p "$buildfail_home"
