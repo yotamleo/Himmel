@@ -127,10 +127,17 @@ different source. **Periodically distil the auto-memory into the vault:**
    reusable gotcha or decision — as distinct from ephemeral status (PR numbers,
    "merged", ticket state, dates). Status is already recoverable from your issue
    tracker, git history, and the session captures in `sessions/`.
-2. **Land** that learning in a vault reference note under `30-Resources/Tech/`
-   (grouped by theme — environment traps, harness gotchas, operator
-   conventions, …) so it becomes [qmd](../tooling-catalog.md)-searchable
-   substrate rather than always-loaded weight.
+2. **Land** that learning where it propagates. First classify it (the
+   propagation review — memory and the vault are operator-side only, no other
+   user ever sees them): an **operator-specific** learning goes to a vault
+   reference note under `30-Resources/Tech/` (grouped by theme — environment
+   traps, harness gotchas, operator conventions, …) so it becomes
+   [qmd](../tooling-catalog.md)-searchable substrate rather than always-loaded
+   weight; an **adopter-generic** learning (true for anyone running himmel)
+   goes to himmel docs via the normal PR flow (e.g.
+   [`docs/internals/environment-gotchas.md`](../internals/environment-gotchas.md),
+   [`docs/operator-conventions.md`](../operator-conventions.md)) — the full
+   routing table lives in the `himmel-ops:memory-compound` skill.
 3. **Slim** the `MEMORY.md` index: drop the now-compounded entry, or collapse it
    to a one-line pointer (`… → vault [[note-name]]`). Keep every topic file until
    you have re-indexed and confirmed the moved content is findable, then delete it.

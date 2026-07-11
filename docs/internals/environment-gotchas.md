@@ -32,6 +32,52 @@ fallback path. Operator hand-off commands that call bash on Windows must use the
 full Git Bash path `& "C:\Program Files\Git\bin\bash.exe" …`. (This is the same
 stub Codex's hook wrapper has to skip — see `harness-compat.md`.)
 
+## Windows WSL / Docker resource budget
+
+WSL2 and Docker Desktop share the Windows host's CPU, memory, disk IO, and page
+cache. They are isolation boundaries, not extra machines. On a multi-agent run,
+an unbounded WSL distro plus unbounded Docker containers can starve the host,
+Claude/Hermes, editors, browsers, and VirtualBox/e2e VMs.
+
+Operational default for himmel on Windows:
+
+1. **Use Git Bash for the control plane.** Run himmel scripts, Jira, handover,
+   PR/check orchestration, and Hermes/Claude launchers from native Git Bash unless
+   the task specifically needs Linux kernel semantics or a container.
+2. **Cap WSL globally.** Put a conservative `%UserProfile%\.wslconfig` in place
+   before using WSL for agents:
+
+   ```ini
+   [wsl2]
+   memory=16GB
+   processors=8
+   swap=4GB
+   localhostForwarding=true
+   ```
+
+   Tune the numbers to the host, but keep real Windows headroom. On a 48 GB / 32
+   logical-core workstation, start around 16 GB and 8 processors for WSL; raise
+   only after measuring. Apply changes with `wsl --shutdown`.
+3. **Cap Docker separately.** Docker Desktop can run through WSL2 and still needs
+   its own budget. Prefer Docker Desktop resource limits when available, and add
+   per-container caps for agent/build jobs: `--cpus`, `--memory`, Compose
+   `deploy.resources`/service limits where supported. Do not run unbounded
+   `docker compose up` stacks while also fanning out agents.
+4. **One heavy substrate at a time.** For parallel agents, pick the substrate:
+   native Git Bash worktrees OR WSL shells OR Docker containers. Mixing all three
+   is allowed only with explicit caps and a lower fan-out.
+5. **Reserve non-negotiable lanes first.** VirtualBox/e2e VMs, the Windows host,
+   the editor/browser, and MCP servers get headroom before agent workers. This is
+   the same reservation model as the machine-aware concurrency ADR.
+6. **Make profile selection explicit.** Hermes invocations launched from this repo
+   should pass the intended profile (`--profile himmel_agent` on the operator's
+   current machine; adopters use their own profile) so a WSL shell, Docker shell,
+   or native Git Bash shell cannot silently select a different default profile.
+
+Rule of thumb: if CPU stays above ~85%, free RAM drops below ~8 GB, or the host UI
+starts lagging, stop spawning and shrink the substrate cap before retrying. Do not
+solve host pressure by adding more agents.
+
 ## Windows: `python3` / `python` may be the WindowsApps Store stub
 
 On a box with no classic CPython install, `python3` and `python` resolve to the
@@ -188,3 +234,95 @@ Edit tools or run the pipeline inside a script file); and verify any file produc
 by a top-level pipeline before trusting it. The benign `[rtk] /!\ No hook installed`
 banner under himmel's guard wrapper is covered in
 [`enforcement.md`](enforcement.md).
+
+## Windows: `schtasks /create /sd` parses the date in the MACHINE's regional format
+
+The same arm command lands months away on a machine with different locale
+settings — a same-day `/sd` date written as MM/DD parses as DD/MM on a
+DD/MM-locale machine (observed: a 03:20 same-day task landing three months
+out; the task sits `State=Ready`, `LastRun=never`, result `267011` /
+`SCHED_S_TASK_HAS_NOT_RUN` — a silent no-launch). After ANY scheduled-task
+creation on a machine not yet proven, verify
+`(Get-ScheduledTaskInfo <name>).NextRunTime` is the intended datetime — never
+trust the creation SUCCESS message. The locale-proof route is a `/create /xml`
+task definition (see the UTF-16-prolog section above) instead of `/sd`
+strings; HIMMEL-870 tracks moving `arm-resume.sh` onto it.
+
+## MSYS `/tmp` is the Windows user temp dir — temp cleaners delete it under you
+
+In Git Bash, `/tmp` maps to `%LOCALAPPDATA%\Temp`, which Windows Storage Sense
+(and other temp cleaners) prune on their own schedule. Anything long-lived
+placed there — a git worktree, a patch you plan to apply later — can vanish
+mid-flow, leaving `git -C` failing "No such file or directory" plus a dangling
+worktree record. Keep work products in the session scratchpad or a home-dir
+path, finish flows that stage in `/tmp` in the same sitting, and remember
+PowerShell cannot see MSYS paths — `cygpath -m` first. (`git worktree prune`
+cleans up the dangling record afterwards.)
+
+## A pruned git worktree directory silently falls through to the PRIMARY repo
+
+When a worktree's admin data is pruned (the `.git` link file and
+`.git/worktrees/<name>` removed) but the directory itself survives with files,
+any `git -C <dir>` / `cd <dir> && git …` walks UP, finds the primary repo's
+`.git`, and runs against the PRIMARY repo — with no error. Red flags:
+`status --short` paths prefixed `../../`, the primary's commits in `log`,
+`stash push` reporting "No local changes", `merge --ff-only` reporting
+"Already up to date". Detect with `git rev-parse --show-toplevel` (must equal
+the worktree dir). Habit: before multi-step git surgery in a worktree, capture
+`git diff --cached > <scratchpad>/patch` first — if a concurrent prune hits,
+the patch is the only thing that survives. (HIMMEL-849 tracks a prune guard.)
+
+## MSYS mangles `git show "rev:.dotfile"` — read dotfiles by blob SHA
+
+Paths starting with `.` in a `rev:path` spec get MSYS path-mangled and the
+command SILENTLY returns empty — a grep pipeline over it false-negatives.
+Read the blob directly instead: `git ls-tree <rev> -- <path>` →
+`git cat-file -p <sha>`; for drift detection compare `ls-tree` blob SHAs.
+`MSYS_NO_PATHCONV=1` is unreliable inside `<(…)` substitutions.
+
+## Git-Bash `timeout` does not reap grandchildren holding a `$()` pipe
+
+Under Git Bash, `timeout` kills its direct child, but a grandchild (a `sleep`,
+a `curl`) inheriting the command-substitution pipe keeps `$(…)` blocked past
+the timeout — the caller hangs and the process leaks. In test stubs, `exec`
+the long-running command (`exec sleep 30`) so the timeout target IS the
+process holding the pipe; in scripts, avoid `$(timeout … cmd-that-spawns)`
+shapes.
+
+## `sed '/<!--/,/-->/d'` swallows the file body on single-line comments
+
+A one-line `<!-- … -->` opens the range but sed only tests the closing
+address on LATER lines, so the range runs to the next `-->` or EOF — deleting
+real content and making downstream guards vacuously pass. Strip inline spans
+first (`sed 's/<!--.*-->//g'`), then range-delete; pair any such guard with a
+red-path test plus a non-vacuousness assertion.
+
+## pre-commit shellcheck crashes when a finding must print a non-ASCII line
+
+Under a non-UTF-8 locale, shellcheck exits 2 with `commitBuffer: invalid
+argument` whenever it must PRINT a line containing an em-dash/emoji as part of
+any finding — even info-level. Keep lines that carry non-ASCII characters
+finding-free (no backticks-in-quotes etc.), or add a targeted
+`# shellcheck disable=SCxxxx`. Local verify with `shellcheck -f gcc <file>`
+(one-line output format dodges the crash).
+
+## Claude Code: a background Bash task snapshots the FOREGROUND cwd at launch
+
+`run_in_background` Bash commands inherit the foreground shell's cwd as of
+launch time. In a multi-worktree session the foreground cwd drifts with every
+`cd <worktree> && git …`, so a background job touching more than one repo must
+`cd` explicitly before EVERY step — never rely on the launch cwd. Sanity-check
+that any background review/analysis output cites paths from the intended diff
+before acting on it; a silent wrong-branch review is the failure mode.
+
+## Windows: the 1Password SSH agent breaks unattended runs
+
+With 1Password's SSH agent enabled, it hijacks the `\\.\pipe\openssh-ssh-agent`
+named pipe and pops a GUI authorization prompt on every signature — fatal to
+any unattended/scheduled session that shells out over SSH. Fix: 1Password →
+Settings → Developer → untick "Use the SSH agent" (the setting is
+integrity-signed; GUI-only), then re-enable the stock agent elevated:
+`Set-Service ssh-agent -StartupType Automatic; Start-Service ssh-agent`.
+Only native Windows `ssh.exe` hits the pipe — paramiko-based tooling and git
+SSH signing via `ssh-keygen.exe` are agent-free. Verify with the native
+`ssh-add -l`, not the MSYS one.

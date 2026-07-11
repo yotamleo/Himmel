@@ -43,10 +43,11 @@ Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/him
 - [docs/internals/jira-plugin.md](docs/internals/jira-plugin.md): the local Jira CLI (`scripts/jira/`) — preferred over the Atlassian MCP server — and the op↔MCP mapping.
 - [plugins/himmel-gh/README.md](plugins/himmel-gh/README.md): forge-agnostic git ops — the worktree→PR→merge loop, PR review threads, and luna-ingest route to `gh` on GitHub or the himmel Bitbucket CLI ([scripts/bitbucket/README.md](scripts/bitbucket/README.md)) on Bitbucket Cloud, chosen per-repo from `origin`.
 - [marketplace/plugins/claude-hud/VENDORED.md](marketplace/plugins/claude-hud/VENDORED.md): the vendored claude-hud statusline renderer (HIMMEL-718) — pinned upstream copy run as `node …/dist/index.js` (NOT an installable plugin here); pin record + drift-guard scope + fork-delta plan.
-- [docs/operator-conventions.md](docs/operator-conventions.md): durable operator working-habits (Jira CLI invocation, CR/merge habits).
+- [docs/operator-conventions.md](docs/operator-conventions.md): durable operator working-habits (Jira CLI invocation, CR/merge habits, upstream-contribution gating, arming/chaining).
 - [docs/hermes-runbook.md](docs/hermes-runbook.md): hermes ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)) in three tiers — a **CR-critic** lane wired into `/pr-check` and a free-inference **junior** lane (both working), plus an **alpha** `himmel_agent` main tier. Includes the new-user install + configure how-to. Config lives OUTSIDE the repo (`$HERMES_HOME` / `$HERMES_PY`; default `%LOCALAPPDATA%\hermes`), so it is part of himmel even when absent from a checkout; refreshed by `/himmel-update`.
 - [docs/luna/end-session-wiki.md](docs/luna/end-session-wiki.md): **luna session capture** — each Claude session is auto-captured into the companion luna vault as a structured note at session end: a *mechanical* note first, then a best-effort **detached LLM crystallizer** upgrades it into a real synthesis (`crystallized: true`). Import historical sessions with `/luna-backfill`; recover/upgrade older notes with `--reheal` (husk notes) or `--recrystallize` (content-bearing-but-uncrystallized notes, `--limit`-chunked).
 - [docs/tooling-catalog.md](docs/tooling-catalog.md): every tool/script/plugin in active use.
+- [docs/internals/harness-compat.md](docs/internals/harness-compat.md): running himmel under Codex / other harnesses — the compatibility matrix + per-feature port/guard/accept decisions (HIMMEL-470).
 
 ## Setup
 
@@ -54,7 +55,7 @@ Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/him
 - [.env.example](.env.example): the complete operator flag/configuration map (HIMMEL-787) — every flag grouped by how it reaches code: TOOL-LOADED (`.env` is enough: Jira/Bitbucket/Confluence CLI keys, offload-lane launcher keys), PROCESS-ENV (export or `settings.json` `"env"`; load-dotenv-bridged exceptions incl. `CR_PROFILE`, the initiative set, `HIMMEL_WHERE_ARE_WE`+`_STALE_HOURS`, doc-freshness and the nudge flags), SESSION-ONLY (guardrail bypasses + per-launch opt-ins, launching-shell only), and EXTERNAL-TOOLS (keys living in the tool's own `.env`).
 - [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md): adopting the portable core (hooks + worktree workflow) in another repo.
 - [docs/setup/updating.md](docs/setup/updating.md): the update/upgrade lifecycle — `/himmel-update` (harness git pull + marketplace re-sync, incl. the hermes editable-checkout refresh), `/luna-upgrade` (vault template), why a plain `git pull` is required, and the symmetric `scripts/uninstall.sh` offboarding.
-- [docs/internals/environment-gotchas.md](docs/internals/environment-gotchas.md): Windows / Git-Bash / Bash-tool / content-filter environment traps you may hit on a fresh machine (generic, adopter-facing).
+- [docs/internals/environment-gotchas.md](docs/internals/environment-gotchas.md): Windows / Git-Bash / git-worktree / scheduler / Bash-tool / content-filter environment traps you may hit on a fresh machine (generic, adopter-facing).
 
 ## Optional
 
