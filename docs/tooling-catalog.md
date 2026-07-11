@@ -89,15 +89,18 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 **MCP server:** `plugin:qmd:qmd` — exposes `query`, `get`, `multi_get`, `status` tools.
 **Usage:** Searching local knowledge base, notes, docs.
 
-**CLI install (HIMMEL-877):** the standalone `qmd` CLI installs from the
-**himmel qmd fork** (`yotamleo/qmd#himmel-main`) via `scripts/lib/qmd-bin.sh`'s
-`qmd_install` (clone → `bun install && bun run build` → junction/symlink onto
-the bun-global `@tobilu/qmd` path) — never upstream `bun add -g @tobilu/qmd`,
+**CLI install (HIMMEL-877, pinned HIMMEL-911):** the standalone `qmd` CLI
+installs from the **himmel qmd fork** (`yotamleo/qmd`), pinned to an
+immutable commit SHA (`1032a648447a54eb73df138a3861dd7a9a64c595`, tag
+`v2.6.3-himmel.1` as the human-readable alias) rather than a mutable
+branch, via `scripts/lib/qmd-bin.sh`'s `qmd_install` (clone → fetch/checkout
+the pinned SHA → `bun install && bun run build` → junction/symlink onto the
+bun-global `@tobilu/qmd` path) — never upstream `bun add -g @tobilu/qmd`,
 which EPERM-wedges on this project's machines and bun blocks its postinstall
 script. `adopt.sh`/`setup.sh` (bash) and `adopt.ps1`/`setup.ps1` (pwsh, which
 delegates via `bash scripts/lib/qmd-bin.sh install` rather than duplicating
 the recipe) both call this. Idempotent; overridable via `QMD_FORK_REPO` /
-`QMD_FORK_BRANCH` / `QMD_FORK_DIR`.
+`QMD_FORK_REF` / `QMD_FORK_DIR`.
 
 **Shared HTTP singleton (HIMMEL-592):** himmel vendors `qmd@himmel`
 (`marketplace/plugins/qmd/`, a thin fork of upstream `qmd@qmd`) whose only

@@ -17,21 +17,31 @@
 # source this lib; this resolver stays as the consumer-side path until
 # the upstream plugin fix is pulled.
 #
-# HIMMEL-877: qmd installs from the himmel FORK (yotamleo/qmd, default
-# branch himmel-main), never upstream `bun add -g @tobilu/qmd` -- that
-# command EPERM-wedges on this project's machines (zombie `qmd mcp` stdio
-# node processes hold locks) and bun blocks the postinstall script. The
-# proven recipe (done by hand on the primary machine, now automated here):
-# clone the fork to a stable dir, `bun install && bun run build` in the
-# clone, then a directory junction (Windows) / symlink (POSIX) at
-# ~/.bun/install/global/node_modules/@tobilu/qmd pointing at the clone --
-# bun's stock global shims then transparently serve the fork from the
-# same path every other consumer (qmd_cmd, has_qmd, the fix-qmd-stub
-# patched stub) already resolves. qmd_install() is idempotent: it detects
-# an already-fork-served install (global path already links to the fork
-# clone AND `qmd --version` reports >= QMD_FORK_MIN_VERSION) and skips.
-# Fork repo/branch/clone-dir are overridable via QMD_FORK_REPO /
-# QMD_FORK_BRANCH / QMD_FORK_DIR for testing or a private mirror.
+# HIMMEL-877: qmd installs from the himmel FORK (yotamleo/qmd), never
+# upstream `bun add -g @tobilu/qmd` -- that command EPERM-wedges on this
+# project's machines (zombie `qmd mcp` stdio node processes hold locks) and
+# bun blocks the postinstall script. The proven recipe (done by hand on the
+# primary machine, now automated here): clone the fork to a stable dir,
+# `bun install && bun run build` in the clone, then a directory junction
+# (Windows) / symlink (POSIX) at ~/.bun/install/global/node_modules/@tobilu/qmd
+# pointing at the clone -- bun's stock global shims then transparently serve
+# the fork from the same path every other consumer (qmd_cmd, has_qmd, the
+# fix-qmd-stub patched stub) already resolves. qmd_install() is idempotent:
+# it detects an already-fork-served install (global path already links to
+# the fork clone AND the clone's HEAD is the pinned commit AND `qmd
+# --version` reports >= QMD_FORK_MIN_VERSION) and skips.
+#
+# PIN (HIMMEL-911): the install ref is a FULL COMMIT SHA on the fork --
+# not the himmel-main branch. himmel-main is a MUTABLE tracking branch
+# (where upstream merges land); a force-push there would silently change
+# what every future `qmd-bin.sh install` runs, with no reviewed repo change
+# -- a supply-chain trust boundary on new-machine bootstrap (mirrors the
+# HIMMEL-891 graphify precedent, scripts/lib/graphify-bin.sh). The commit
+# SHA is the only content-addressed, unmovable ref. The fork tag
+# v2.6.3-himmel.1 points at this same commit as human-readable release
+# provenance; a pin bump is a reviewed change to this file. Fork
+# repo/ref/clone-dir are overridable via QMD_FORK_REPO / QMD_FORK_REF /
+# QMD_FORK_DIR for testing or a private mirror.
 # qmd_register_collection() is the shared idempotent collection-
 # registration helper used by setup.sh + adopt.sh. Executed directly
 # (not sourced), this file also answers `install` on argv (see the CLI
@@ -41,22 +51,29 @@
 
 # Fork config -- overridable per call (env var set before sourcing/calling).
 _qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/yotamleo/qmd.git}"; }
-_qmd_fork_branch() { printf '%s\n' "${QMD_FORK_BRANCH:-himmel-main}"; }
+# = v2.6.3-himmel.1
+_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-1032a648447a54eb73df138a3861dd7a9a64c595}"; }
 _qmd_fork_dir() { printf '%s\n' "${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"; }
 _qmd_fork_min_version() { printf '%s\n' "${QMD_FORK_MIN_VERSION:-2.6.3}"; }
+# Build-success stamp INSIDE the clone (HIMMEL-911 CR r3): one file, no
+# schema -- its content is the exact pinned SHA the artifacts were BUILT
+# from. Written only after build + link + version verification all succeed;
+# cleared at the start of any update attempt. HEAD alone cannot distinguish
+# "checked out the pin" from "successfully BUILT the pin".
+_qmd_build_stamp() { printf '%s\n' "$(_qmd_fork_dir)/.himmel-build-ok"; }
 
 # Prints the manual recipe (clone + build + link). Best-effort documentation
 # text embedded in WARN messages -- NOT eval'd (HIMMEL-877 dropped the old
 # single-command `bun add -g @tobilu/qmd@latest` eval path; qmd_install()
 # below runs the multi-step recipe directly).
 qmd_install_hint() {
-  local fork_dir branch global_dir
+  local fork_dir ref global_dir
   fork_dir="$(_qmd_fork_dir)"
-  branch="$(_qmd_fork_branch)"
+  ref="$(_qmd_fork_ref)"
   global_dir="$(_qmd_global_dir)"
   printf '%s\n' \
-    "git clone -b $branch $(_qmd_fork_repo) $fork_dir" \
-    "(cd $fork_dir && bun install && bun run build)" \
+    "git clone $(_qmd_fork_repo) $fork_dir" \
+    "(cd $fork_dir && git fetch origin $ref && git checkout $ref && bun install && bun run build)" \
     "link $fork_dir over $global_dir (Windows: mklink /J; POSIX: ln -s) -- or re-run qmd_install"
 }
 
@@ -252,16 +269,36 @@ _qmd_ensure_global_link() {
 }
 
 # True when the fork is already the SERVED install: the bun-global
-# @tobilu/qmd path resolves to the fork clone AND the version probe reports
-# >= QMD_FORK_MIN_VERSION. This is the caller-side install gate (HIMMEL-877
-# CR codex-adv-1): callers must gate qmd_install on THIS, never on presence
-# (has_qmd) -- a machine carrying the old upstream bun-global install (the
-# exact population this change migrates) is qmd-PRESENT but not fork-served,
-# and a presence gate would skip the migration entirely. Also exposed as the
-# `fork-served` CLI verb so the pwsh mirrors share the same predicate.
+# @tobilu/qmd path resolves to the fork clone AND the clone's HEAD is the
+# pinned commit AND the build-success stamp records that exact pin AND the
+# version probe reports >= QMD_FORK_MIN_VERSION. This
+# is the caller-side install gate (HIMMEL-877 CR codex-adv-1): callers must
+# gate qmd_install on THIS, never on presence (has_qmd) -- a machine carrying
+# the old upstream bun-global install (the exact population this change
+# migrates) is qmd-PRESENT but not fork-served, and a presence gate would
+# skip the migration entirely. Also exposed as the `fork-served` CLI verb so
+# the pwsh mirrors share the same predicate.
 qmd_fork_served() {
-  local ver
+  local ver head stamp
   _qmd_global_points_to_fork || return 1
+  # HIMMEL-911 CR r1 codex-adv-1: link-target + version alone would bless an
+  # existing clean install built from the mutable himmel-main branch head --
+  # exactly the population the pin migrates -- and qmd_install would skip it
+  # forever. The clone's resolved HEAD must BE the pinned commit. Guarded:
+  # any git failure = not-served. Cheap + local-only (rev-parse of HEAD
+  # never touches the network).
+  head="$(git -C "$(_qmd_fork_dir)" rev-parse HEAD 2>/dev/null)" || return 1
+  [ "$head" = "$(_qmd_fork_ref)" ] || return 1
+  # HIMMEL-911 CR r3 codex-adv: HEAD==pin is necessary but NOT sufficient --
+  # a drifted upgrade moves HEAD to the pin BEFORE bun runs, so a build
+  # failure would leave HEAD==pin while the OLD dist (built from the mutable
+  # commit) keeps serving, and every retry would skip here forever. The
+  # served artifacts must carry the build-success stamp for this exact pin.
+  # Legacy installs without the stamp (pre-stamp machines) intentionally
+  # read as not-served so they converge onto a stamped pinned build on the
+  # next install pass.
+  stamp="$(cat "$(_qmd_build_stamp)" 2>/dev/null)" || return 1
+  [ "$stamp" = "$(_qmd_fork_ref)" ] || return 1
   ver="$(qmd_cmd --version 2>/dev/null)" || return 1
   _qmd_version_ge "$ver" "$(_qmd_fork_min_version)"
 }
@@ -274,13 +311,15 @@ qmd_fork_served() {
 # caller's `set -e` cannot abort mid-install before the rc is returned.
 #
 # Idempotent: skips cleanly when qmd_fork_served (global path already links
-# to the fork clone AND the version probe passes); still falls through to
-# update+rebuild+re-link on a stale/older clone.
+# to the fork clone AND the clone's HEAD is the pinned commit AND the
+# build-success stamp records that pin AND the version probe passes); still
+# falls through to update+rebuild+re-link on a stale/older/pin-drifted or
+# unstamped (failed/interrupted prior build) clone.
 qmd_install() {
-  local fork_dir branch repo global_dir origin_url
+  local fork_dir ref repo global_dir origin_url
 
   fork_dir="$(_qmd_fork_dir)"
-  branch="$(_qmd_fork_branch)"
+  ref="$(_qmd_fork_ref)"
   repo="$(_qmd_fork_repo)"
   global_dir="$(_qmd_global_dir)"
 
@@ -289,7 +328,7 @@ qmd_install() {
     return 0
   fi
 
-  echo "Installing qmd fork ($repo#$branch)..."
+  echo "Installing qmd fork ($repo@$ref)..."
 
   if ! command -v git >/dev/null 2>&1; then
     echo "  git not found - cannot clone the qmd fork." >&2
@@ -313,27 +352,71 @@ qmd_install() {
       echo "  Point QMD_FORK_DIR at a dedicated location, or fix the clone's origin remote." >&2
       return 1
     fi
+    # HIMMEL-911 CR r3: clear the build-success stamp FIRST (ownership is
+    # established by the origin check above) -- from here until the
+    # post-verification stamp write this machine is NOT fork-served, so an
+    # interrupted or failed upgrade can never be mistaken for served on a
+    # retry. Also keeps our own untracked stamp file from tripping the
+    # dirty-worktree probe below.
+    rm -f -- "$(_qmd_build_stamp)"
     if [ -n "$(git -C "$fork_dir" status --porcelain 2>/dev/null)" ] && [ "${QMD_FORK_FORCE:-0}" != "1" ]; then
       echo "  WARNING: $fork_dir has uncommitted changes - refusing to hard-reset it." >&2
       echo "  Commit/stash them, or re-run with QMD_FORK_FORCE=1 to discard them." >&2
       return 1
     fi
-    echo "  qmd fork clone exists at $fork_dir - updating $branch..."
+    echo "  qmd fork clone exists at $fork_dir - updating to $ref..."
+    # HIMMEL-911 CR r1 codex-adv-2: FAIL CLOSED. The old fallback (WARN +
+    # build the clone contents as-is) silently served an UNPINNED commit
+    # while reporting success -- the exact outcome the pin exists to prevent.
+    # An already-served install stays untouched (nothing rebuilt/re-linked);
+    # WARN-not-fail remains the CALLER's contract: qmd_install returns an
+    # honest nonzero and the caller decides whether that aborts.
     if ! ( cd "$fork_dir" \
-           && git fetch origin "$branch" \
-           && git checkout "$branch" \
-           && git reset --hard "origin/$branch" ); then
-      echo "  WARNING: qmd fork fetch/checkout failed - building the existing clone contents as-is." >&2
+           && git fetch origin "$ref" \
+           && git checkout "$ref" \
+           && git reset --hard "$ref" ); then
+      echo "  ERROR: could not update the qmd fork clone to pinned commit $ref - refusing to build/serve unpinned contents." >&2
+      return 1
     fi
   else
+    # HIMMEL-911 CR r2 codex-adv: never adopt an existing NON-git path.
+    # QMD_FORK_DIR is operator-overridable, so a populated non-git directory
+    # here is USER DATA that predates the installer -- `git init`ing it in
+    # place and then `rm -rf`ing it on a clone failure would destroy it (the
+    # origin-mismatch refusal above only protects dirs that already ARE git
+    # repos). Refuse untouched; only a path THIS invocation creates is ever
+    # cleaned up on failure.
+    if [ -e "$fork_dir" ]; then
+      echo "  WARNING: $fork_dir exists but is not a git clone - refusing to touch it." >&2
+      echo "  Point QMD_FORK_DIR at a dedicated location, or remove the directory yourself." >&2
+      return 1
+    fi
     if ! mkdir -p -- "$(dirname -- "$fork_dir")"; then
       echo "  ERROR: could not create $(dirname -- "$fork_dir")" >&2
       return 1
     fi
-    if ! git clone --depth 1 --branch "$branch" --single-branch "$repo" "$fork_dir"; then
+    # A commit SHA cannot be passed to `git clone --branch` -- GitHub allows
+    # fetching a reachable SHA directly, so init + fetch-by-sha + checkout is
+    # the pinned-ref equivalent of a shallow branch clone (HIMMEL-911).
+    if ! git init "$fork_dir" >/dev/null \
+         || ! git -C "$fork_dir" remote add origin "$repo" \
+         || ! git -C "$fork_dir" fetch --depth 1 origin "$ref" \
+         || ! git -C "$fork_dir" checkout "$ref"; then
       echo "  qmd fork clone failed." >&2
+      # Safe by construction: the refusal above guarantees $fork_dir did not
+      # exist before this invocation created it (never delete what we did
+      # not create -- HIMMEL-911 CR r2).
+      rm -rf -- "$fork_dir"
       return 1
     fi
+  fi
+
+  # Belt-and-braces (HIMMEL-911 CR r1 codex-adv-2): whichever path ran above,
+  # the clone must actually BE at the pinned commit before anything is built
+  # or served -- guards a partial checkout that still returned 0.
+  if [ "$(git -C "$fork_dir" rev-parse HEAD 2>/dev/null)" != "$ref" ]; then
+    echo "  ERROR: $fork_dir HEAD is not the pinned commit $ref - refusing to build/serve it." >&2
+    return 1
   fi
 
   echo "  Building qmd fork (bun install && bun run build)..."
@@ -349,6 +432,14 @@ qmd_install() {
   fi
 
   if qmd_cmd --version >/dev/null 2>&1; then
+    # HIMMEL-911 CR r3: stamp build success only NOW -- build + link +
+    # version verification all passed, so the served artifacts really were
+    # built from the pinned commit. An unwritable stamp keeps the install
+    # honestly not-served (nonzero) instead of silently unstamped.
+    if ! printf '%s\n' "$ref" > "$(_qmd_build_stamp)" 2>/dev/null; then
+      echo "  WARNING: qmd fork verified but the build stamp could not be written." >&2
+      return 1
+    fi
     echo "  qmd fork installed and verified ($(qmd_cmd --version 2>/dev/null))."
     return 0
   fi

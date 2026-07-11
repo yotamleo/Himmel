@@ -262,8 +262,9 @@ function FillEnv-Core {
 # $env:BUN_INSTALL for relocated bun roots.
 $QmdBunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
 $QmdBunJs = Join-Path $QmdBunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
-# HIMMEL-877: qmd installs from the himmel qmd fork (yotamleo/qmd#himmel-main
-# via scripts/lib/qmd-bin.sh), never upstream `bun add -g @tobilu/qmd` --
+# HIMMEL-877: qmd installs from the himmel qmd fork (yotamleo/qmd, pinned to
+# an immutable commit SHA rather than a mutable branch — HIMMEL-911 — via
+# scripts/lib/qmd-bin.sh), never upstream `bun add -g @tobilu/qmd` --
 # that command EPERM-wedges on this project's machines and bun blocks its
 # postinstall script.
 $QmdInstallHint = "bash `"$HimmelRoot/scripts/lib/qmd-bin.sh`" install"

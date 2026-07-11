@@ -55,8 +55,9 @@ silent empty index).
 ## Upstream watch
 
 The standalone `qmd` CLI now installs from himmel's own fork
-(`yotamleo/qmd#himmel-main`, cloned + built with bun, then junctioned/
-symlinked onto the bun-global `@tobilu/qmd` path — `scripts/lib/qmd-bin.sh`,
+(`yotamleo/qmd`, pinned to an immutable commit SHA rather than a mutable
+branch — HIMMEL-911 — cloned + built with bun, then junctioned/symlinked
+onto the bun-global `@tobilu/qmd` path — `scripts/lib/qmd-bin.sh`,
 HIMMEL-877), not `bun add -g @tobilu/qmd` upstream (that command EPERM-wedges
 on this project's machines and bun blocks its postinstall script). This
 plugin's **manifest + skill** stay pinned separately and are low-churn.
