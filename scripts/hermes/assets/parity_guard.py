@@ -90,20 +90,79 @@ TERMINAL_FORBIDDEN_PATHS = re.compile(
     + r"|\.env\b|/\.ssh/|\.git-credentials|hosts\.yml|\.pem\b|\.key\b"
 )
 
+# Command position: string start or right after a separator (; & | ( newline).
+# Deliberately NOT a plain space/quote, so a blocked verb quoted inside a
+# commit message ("… git push later") does not false-block. Used by the EXT_*
+# external-write fence further below (moved up here so the destructive variant
+# can build on it).
+_CMDPOS = r"(?:^|[;&|(\n])\s*"
+
+# Destructive-only command-position anchor (O1 + CR round 1, HIMMEL-851).
+# _CMDPOS PLUS, for the TERMINAL_DESTRUCTIVE bare-command-name atoms only
+# (format, schtasks, taskkill, shutdown, icacls, …): a backtick separator
+# (command substitution is command position) and a BOUNDED tolerance for
+# common launcher prefixes — env-var assignments (x=1 cmd), sudo, env,
+# cmd /c, powershell/pwsh -c/-command — plus one optional quote before the
+# atom (a quoted word in command position still executes) and (CR r2) a
+# bounded EXECUTABLE-PATH prefix — optional Windows drive + path segments
+# ending in "/" — so `/sbin/shutdown`, `./shutdown`, and
+# `c:/windows/system32/shutdown.exe` (quoted or not; norm() folds "\" to "/")
+# are refused like the bare name. The path prefix sits AFTER the command-
+# position anchor, so mid-argument words (`git log --pretty=format:%H`,
+# `grep -rn format src/`, `echo shutdown`, a commit message mentioning
+# "reboot") stay allowed, and the atoms' trailing boundary keeps
+# `format-table`-style basenames allowed. The exe-path prefix also applies
+# before each WRAPPER token (CR r4), so `/usr/bin/env shutdown` /
+# `/usr/bin/sudo shutdown` / `c:/windows/system32/cmd.exe /c shutdown` are
+# refused like the bare-wrapper forms. sudo/env tolerate their own flag runs
+# (CR r6: `sudo -n`, `env -i`), each flag may optionally consume one following
+# non-dash value token (CR r7: `sudo -u root`, `env -u PATH` — generic, no
+# per-option table; over-consumes at worst one benign token → over-block in
+# exotic cases, never a bypass), and env also tolerates assignment arguments
+# (`env -i foo=bar shutdown`). Mirrors the .sh CMDPOS idiom (HIMMEL-754) + its
+# CR-r1..r7 extensions. Deliberately NOT a general shell parser — the RESIDUAL
+# documented gap is QUOTED-PAYLOAD wrappers (`bash -c "shutdown …"`, `sh -c`,
+# xargs / nohup chains), which stays out of scope per the ticket's
+# no-general-parser rule. This bounded grammar is intentionally NOT an arms
+# race: further wrapper permutations belong to the HIMMEL-912 shared-tokenizer
+# follow-up, and the .sh CC-hook + auto-mode classifier remain the outer
+# defense layers. NOT used by the EXT_* fence — its narrower anchor and
+# documented limits are intentional.
+# Bounded executable-path prefix: optional quote + optional drive letter +
+# one slash-terminated segment run. "/" only — norm() folds "\" to "/".
+_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:[^\s|;&`\"']*/)?"
+# Quote-aware assignment (CR r5): FOO='a b' / FOO="a b" / FOO=bare. Shared by
+# the env-prefix assignment tolerance and the leading env-assignment prefix so
+# a quoted value's space does not drop the verb out of command position.
+_ASSIGN = r"[a-z0-9_]+=(?:'[^']*'|\"[^\"]*\"|[^\s|;&]*)"
+_CMDPOS_DESTRUCTIVE = (
+    r"(?:^|[;&|(`\n])\s*"
+    + r"(?:(?:" + _ASSIGN
+    + r"|" + _EXE_PREFIX + r"(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*"   # sudo + flags, each with an optional value token (CR r6/r7)
+    + r"|env(?:\s+(?:-\S+(?:\s+[^-\s]\S*)?|" + _ASSIGN + r"))*"      # env + flags(+value)/assignments (CR r6/r7)
+    + r"|cmd(?:\.exe)?(?:\s+/\w+(?::\w+)?)*\s+/c"        # cmd accepts /d /s /e:on … before /c (CR r3)
+    + r"|(?:powershell|pwsh)(?:\.exe)?(?:\s+-\S+)*\s+-c\w*"
+    + r"))\s+)*"
+    + _EXE_PREFIX
+)
+
 # Catastrophic / shared-machine / irreversible classes only.
 # Routine git, gh, mv, cp, and non-recursive rm are intentionally NOT here.
 TERMINAL_DESTRUCTIVE = re.compile(
-    r"\brm\b[^|;&\n]*\s-\w*r"                 # recursive rm (rm -r / -rf / -Rf)
-    r"|\brm\b[^|;&\n]*--recursive"
-    r"|\b(del|erase|rd|rmdir)\b[^|;&\n]*/s"   # recursive Windows delete
-    r"|\bformat\b|\bmkfs|\bdiskpart\b|\bcipher\s+/w|\bbcdedit\b"
-    r"|\bschtasks\b"                          # protects scheduled jobs
-    r"|\btaskkill\b|\bstop-process\b|\bpskill\b|\bkill\s+-9"
-    r"|\bshutdown\b|\breboot\b|\blogoff\b"
-    r"|\breg\s+(add|delete)\b|\bicacls\b|\btakeown\b"
-    r"|\bgit\s+push\b[^|;&\n]*(--force|--force-with-lease|\s-f\b)"
-    r"|\bgit\s+(reset\s+--hard|clean\s+-\w*f|filter-branch)\b"
-    r"|\bcurl[^|;&]*\|\s*(ba)?sh|\bwget[^|;&]*\|\s*(ba)?sh"
+    r"\brm\b[^|;&\n]*(?:\s|\$\{ifs\})[\"']?-\w*r"   # recursive rm (rm -r/-rf/-Rf); tolerates a quoted flag + ${IFS} separator (HIMMEL-851 U2/U3)
+    + r"|\brm\b[^|;&\n]*--recursive"
+    + r"|\b(del|erase|rd|rmdir)\b[^|;&\n]*/s(?:[^A-Za-z0-9_.-]|$)"  # recursive Windows delete; /s bound to the switch, not a path prefix like /scripts (HIMMEL-851 U1)
+    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:(?:format|diskpart|bcdedit)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)|mkfs)"
+    + r"|\bcipher\s+/w"
+    + r"|" + _CMDPOS_DESTRUCTIVE + r"schtasks(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"    # protects scheduled jobs
+    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:taskkill|stop-process|pskill)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r"|\bkill\s+-9"
+    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:shutdown|reboot|logoff)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r"|\breg\s+(add|delete)\b"
+    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:icacls|takeown)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r"|\bgit\s+push\b[^|;&\n]*(--force|--force-with-lease|\s-f\b)"
+    + r"|\bgit\s+(reset\s+--hard|clean\s+-\w*f|filter-branch)\b"
+    + r"|\bcurl[^|;&]*\|\s*(ba)?sh|\bwget[^|;&]*\|\s*(ba)?sh"
 )
 
 # Container privesc shapes (block-docker-privesc parity, HIMMEL-731). Membership
@@ -470,10 +529,8 @@ def terminal_phi_egress_reason(cmd_norm: str):
 # unconditional PHI read-fence — not this scan — is the load-bearing egress control.
 _ENGINE_UNTRUSTED = re.compile(r"z\.ai|glm|zhipu")
 
-# Command position: string start or right after a separator (; & | ( newline).
-# Deliberately NOT a space/quote, so a blocked verb quoted inside a commit message
-# ("… git push later") does not false-block — parity with the sibling hook.
-_CMDPOS = r"(?:^|[;&|(\n])\s*"
+# _CMDPOS (command-position anchor) is defined above TERMINAL_DESTRUCTIVE —
+# shared by both use sites.
 EXT_GIT_PUSH = re.compile(_CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+push(?:\s|$)")
 EXT_GIT_URL = re.compile(
     _CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+"

@@ -60,17 +60,56 @@ deny() {
 # that parity_guard names tolerates an optional .exe suffix for the Windows lane.
 # Bare-name atoms (format/schtasks/taskkill/shutdown/icacls classes) anchor to
 # COMMAND POSITION - start of command or right after a separator, tolerating
-# whitespace and env-var assignment prefixes - so the bare word inside an
-# argument (git log --pretty=format:, grep -rn format src/) does not match.
-# Mirrors parity_guard.py's _CMDPOS idiom for the external-write fence.
-CMDPOS='(^|[|;&(`])[[:space:]]*([[:alnum:]_]+=[^[:space:]|;&]*[[:space:]]+)*'
-if contains '(^|[^[:alnum:]_.-])rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?[[:space:]]-[[:alnum:]_]*r'; then
+# whitespace, env-var assignment prefixes, and (HIMMEL-851 CR r1) a BOUNDED set
+# of launcher wrappers - sudo, env, cmd [/switches] /c, powershell/pwsh
+# [-flags] -c/-command - plus
+# one optional quote before the atom (a quoted word in command position still
+# executes) and (CR r2) a bounded EXECUTABLE-PATH prefix - optional Windows
+# drive + path segments ending in "/" or "\" - so /sbin/<name>, ./<name>, and
+# drive-qualified <name>.exe forms (quoted or not) are refused like the bare
+# name. The exe-path prefix also applies before each WRAPPER token (CR r4),
+# so /usr/bin/env <name>, /usr/bin/sudo <name>, and a path-qualified
+# cmd.exe /c are refused like the bare-wrapper forms. sudo/env tolerate their
+# own flag runs (CR r6: sudo -n, env -i), each flag may optionally consume one
+# following non-dash value token (CR r7: sudo -u root, env -u PATH - generic,
+# no per-option table; over-consumes at worst one benign token, never a
+# bypass), and env also tolerates assignment arguments (env -i foo=bar
+# shutdown). The bare word inside an argument
+# (git log --pretty=format:, grep -rn format src/, echo shutdown) still does
+# not match, and the atoms' trailing boundary keeps format-table-style
+# basenames allowed. Deliberately NOT a general shell parser - the RESIDUAL
+# documented gap is QUOTED-PAYLOAD wrappers (bash -c "<verb> ...", sh -c,
+# xargs / nohup chains), out of scope per the ticket's no-general-parser rule.
+# This bounded grammar is intentionally NOT an arms race: further wrapper
+# permutations belong to the HIMMEL-912 shared-tokenizer follow-up, and this
+# CC-hook + the auto-mode classifier remain the outer defense layers. Mirrors
+# parity_guard.py's _CMDPOS_DESTRUCTIVE (shared contract).
+# Assignment VALUE is quote-aware (CR r5): FOO='a b' / FOO="a b" would
+# otherwise break prefix consumption at the space and drop the verb out of
+# command position. Factored into ASSIGN so the env-prefix (CR r6) reuses it.
+EXEPFX='["'\'']?([a-z]:)?([^[:space:]|;&`"'\'']*[/\\])?'
+ASSIGN='[[:alnum:]_]+=('\''[^'\'']*'\''|"[^"]*"|[^[:space:]|;&]*)'
+CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
+# Separator before the flag tolerates a real space OR a lowercased ${IFS}
+# token (a common word-split bypass), and the flag itself tolerates one
+# leading quote char - both `-rf` and `"-rf"`/`'-rf'` trip it (HIMMEL-851 U2/U3).
+if contains '(^|[^[:alnum:]_.-])rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})['\''"]?-[[:alnum:]_]*r'; then
     deny "recursive rm"
 fi
 if contains '(^|[^[:alnum:]_.-])rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*--recursive([^[:alnum:]_-]|$)'; then
     deny "recursive rm"
 fi
-if contains '(^|[^[:alnum:]_.-])(del|erase|rd|rmdir)(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*/s'; then
+# Backslash-newline continuation: newlines are already folded to ';' above, so
+# `rm \<newline>-rf` becomes `rm \;-rf` here - the literal backslash before the
+# folded separator is the tell (HIMMEL-851 U3). `;+` (not a single `;`): on
+# Windows, jq's text-mode stdout turns the JSON-decoded `\n` into `\r\n`, so
+# ONE real newline folds to TWO semicolons here - tolerate either.
+if contains '(^|[^[:alnum:]_.-])rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'; then
+    deny "recursive rm (line continuation)"
+fi
+# /s is bound to the switch (space/another switch/end), not a path prefix -
+# `rd /scripts` must not false-trip on the "/s" substring (HIMMEL-851 U1).
+if contains '(^|[^[:alnum:]_.-])(del|erase|rd|rmdir)(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*/s([^[:alnum:]_.-]|$)'; then
     deny "recursive Windows delete"
 fi
 # mkfs keeps no trailing boundary (parity: \bmkfs) so mkfs.ext4 still matches.
