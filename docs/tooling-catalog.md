@@ -211,6 +211,10 @@ existing worktree, run `pwsh -NoProfile -File scripts\codex\normalize-worktree-a
 (or the `scripts/codex/normalize-worktree-acl.sh` wrapper from Git Bash). The
 helper refuses paths outside `.claude/worktrees/<name>` and resets only each
 top-level child directory, never the worktree root.
+**GPT-5.6 reasoning-effort knob (HIMMEL-905):** `scripts/codex/dispatch-codex-exec.sh`
+accepts an optional `--reasoning-effort <none|low|medium|high|xhigh|max>` passthrough
+(translated internally to `-c model_reasoning_effort=<value>`); the wrapper's own
+model pin stays `gpt-5.5` pending in-repo verification of GPT-5.6 availability.
 
 ### himmel (local directory marketplace)
 

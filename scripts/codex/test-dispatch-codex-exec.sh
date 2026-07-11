@@ -3,7 +3,8 @@
 # No real codex install: CODEX_BIN + CODEX_ACL_NORMALIZE inject stubs that
 # record their argv/cwd/order. Asserts the lane invariants: ACL preflight
 # before codex + fail-closed, gpt-5.5 pin (unless caller-named), the
-# --background refusal, and the workspace-redirect/sandbox-widening deny-list.
+# --background refusal, the workspace-redirect/sandbox-widening deny-list,
+# and the --reasoning-effort passthrough (HIMMEL-905).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -396,6 +397,81 @@ case "$(cat "$TMP/reap.args" 2>/dev/null)" in
   *)
     fail "reap.args: $(cat "$TMP/reap.args" 2>/dev/null) (expected root-pid=$CODEX_CHILD_PID_SEEN)" ;;
 esac
+
+# --- 16: --reasoning-effort passthrough (HIMMEL-905) --------------------------
+# 16a: two-word form, valid value -> translated to -c model_reasoning_effort="<v>"
+#      and stripped from the codex passthrough.
+: > "$LOG"; echo 0 > "$TMP/norm.rc"
+run_dispatch --worktree "$WT" --reasoning-effort high do-it
+assert_rc 0 "--reasoning-effort two-word form exits 0" "reff-two rc=$RC out=$OUT"
+case "$(cat "$TMP/codex.args")" in
+  'exec --model gpt-5.5 --sandbox workspace-write -c model_reasoning_effort="high" do-it') pass "--reasoning-effort translated to -c override, stripped from passthrough" ;;
+  *) fail "reff-two codex args: $(cat "$TMP/codex.args")" ;;
+esac
+
+# 16b: --reasoning-effort=<value> equals form, valid value.
+: > "$LOG"
+run_dispatch --worktree "$WT" --reasoning-effort=xhigh do-it
+assert_rc 0 "--reasoning-effort= equals form exits 0" "reff-eq rc=$RC out=$OUT"
+case "$(cat "$TMP/codex.args")" in
+  'exec --model gpt-5.5 --sandbox workspace-write -c model_reasoning_effort="xhigh" do-it') pass "--reasoning-effort= translated to -c override" ;;
+  *) fail "reff-eq codex args: $(cat "$TMP/codex.args")" ;;
+esac
+
+# 16c: every valid enum value accepted (none/low/medium/high/xhigh/max).
+for v in none low medium high xhigh max; do
+  : > "$LOG"
+  run_dispatch --worktree "$WT" --reasoning-effort "$v" do-it
+  assert_rc 0 "--reasoning-effort $v accepted" "reff-enum $v rc=$RC out=$OUT"
+done
+
+# 16d: invalid value refused (exit 2), codex never invoked.
+: > "$LOG"
+run_dispatch --worktree "$WT" --reasoning-effort bogus do-it
+assert_rc 2 "--reasoning-effort invalid value refused" "reff-bad rc=$RC out=$OUT"
+case "$OUT" in *"not in none|low|medium|high|xhigh|max"*) pass "invalid --reasoning-effort names the allowed enum";; *) fail "reff-bad out: $OUT";; esac
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite invalid --reasoning-effort"; else pass "codex not invoked on invalid --reasoning-effort"; fi
+
+# 16e: invalid value via equals form also refused.
+: > "$LOG"
+run_dispatch --worktree "$WT" --reasoning-effort=bogus do-it
+assert_rc 2 "--reasoning-effort=bogus refused" "reff-eq-bad rc=$RC out=$OUT"
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite --reasoning-effort=bogus"; else pass "codex not invoked on --reasoning-effort=bogus"; fi
+
+# 16f: no --reasoning-effort passed -> no -c override injected (default unchanged).
+: > "$LOG"
+run_dispatch --worktree "$WT" do-it
+case "$(cat "$TMP/codex.args")" in
+  "exec --model gpt-5.5 --sandbox workspace-write do-it") pass "no --reasoning-effort -> no -c override injected" ;;
+  *) fail "no-reff codex args: $(cat "$TMP/codex.args")" ;;
+esac
+
+# 16g: raw -c/--config still refused for callers even alongside a valid
+# --reasoning-effort (the wrapper's own -c injection is internal, not a
+# caller-facing allow).
+: > "$LOG"
+run_dispatch --worktree "$WT" --reasoning-effort high -c foo=bar do-it
+assert_rc 2 "raw -c still refused even alongside --reasoning-effort" "reff-plus-c rc=$RC out=$OUT"
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite raw -c alongside --reasoning-effort"; else pass "codex not invoked on raw -c alongside --reasoning-effort"; fi
+
+# 16h: --reasoning-effort as the ONLY arg (no prompt word) - exercises the
+# zero-element NEW_ARGS guard (set -u safe empty-array rebuild on pre-4.4 bash).
+: > "$LOG"; echo 0 > "$TMP/norm.rc"
+run_dispatch --worktree "$WT" --reasoning-effort medium
+assert_rc 0 "--reasoning-effort as sole arg exits 0 (empty positional rebuild)" "reff-only rc=$RC out=$OUT"
+case "$(cat "$TMP/codex.args")" in
+  'exec --model gpt-5.5 --sandbox workspace-write -c model_reasoning_effort="medium"') pass "empty-args rebuild after stripping the only two tokens" ;;
+  *) fail "reff-only codex args: $(cat "$TMP/codex.args")" ;;
+esac
+
+# 16i: --reasoning-effort as the very LAST token with NO value - must be
+# refused (rc=2), not silently stripped into a default-effort run (the
+# value-validation branch only fires on the NEXT loop iteration, which never
+# comes for a trailing flag - post-loop guard covers it).
+: > "$LOG"
+run_dispatch --worktree "$WT" do-it --reasoning-effort
+assert_rc 2 "trailing --reasoning-effort with no value refused" "trailing-reff rc=$RC out=$OUT"
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite trailing bare --reasoning-effort"; else pass "codex not invoked on trailing bare --reasoning-effort"; fi
 
 echo
 if [ "$fails" -ne 0 ]; then
