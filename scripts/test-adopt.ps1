@@ -347,6 +347,48 @@ exit /b 0
   if ($outJ -match "jira CLI built") { Pass "Build-JiraCli reports built" } else { Fail "missing success message (got: $outJ)" }
 
   Write-Host ""
+  Write-Host "== scenario K: Install-Graphify failure is WARN-not-fail under native-EAP coupling (HIMMEL-891 CR-r2) =="
+  # -WithGraphify with uv AND graphify scrubbed off PATH -> the bash installer
+  # (scripts/lib/graphify-bin.sh, run via the machine's real Git Bash when
+  # present, else the Git-Bash-not-found branch) exits nonzero either way.
+  # The child run is launched through a wrapper that FORCES the fatal-warn
+  # coupling ($ErrorActionPreference='Stop' +
+  # $PSNativeCommandUseErrorActionPreference=$true) -- without
+  # Wire-GraphifyCore's saved/restored-preferences guard, the installer's
+  # nonzero exit becomes a terminating error and the whole adopt aborts;
+  # with the guard, adopt WARNs and completes rc 0.
+  $StubDirK = Join-Path $TMP "binK"
+  $TargetK  = Join-Path $TMP "targetK"
+  New-Item -ItemType Directory -Force -Path $StubDirK,$TargetK | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $TargetK '.claude') | Out-Null
+  Set-Content -Path (Join-Path $TargetK '.claude\settings.json') -Value '{}'
+  foreach ($name in @("git","python3")) {
+    Set-Content -Path (Join-Path $StubDirK "$name.cmd") -Encoding ASCII -Value "@echo off`r`nexit /b 0`r`n"
+  }
+  Set-Content -Path (Join-Path $StubDirK "jq.cmd")   -Encoding ASCII -Value "@echo off`r`necho {}`r`nexit /b 0`r`n"
+  Set-Content -Path (Join-Path $StubDirK "pwsh.cmd") -Encoding ASCII -Value "@echo off`r`nexit /b 0`r`n"
+
+  $WrapperK = Join-Path $TMP "runK.ps1"
+  Set-Content -Path $WrapperK -Value @"
+`$ErrorActionPreference = 'Stop'
+`$PSNativeCommandUseErrorActionPreference = `$true
+& "$Installer" -Profile core -Scope project -Target "$TargetK" -WithGraphify
+exit 0
+"@
+
+  $env:Path = "$StubDirK;$env:SystemRoot\System32;$env:SystemRoot"
+  try {
+    $outK = & $realPwsh -NoProfile -NonInteractive -File $WrapperK 2>&1 | Out-String
+    $codeK = $LASTEXITCODE
+  } finally {
+    $env:Path = $oldPath
+  }
+
+  if ($codeK -eq 0) { Pass "graphify installer failure does not abort adopt (rc=0 under native-EAP coupling)" } else { Fail "graphify installer failure aborted adopt (rc=$codeK; guard regression). Output: $outK" }
+  if ($outK -match [regex]::Escape("Wiring graphify (opt-in")) { Pass "graphify wiring banner printed (-WithGraphify honored)" } else { Fail "missing graphify wiring banner (got: $outK)" }
+  if ($outK -match "WARNING.*graphify install failed") { Pass "installer failure surfaced as the WARN-and-continue message" } else { Fail "missing graphify install-failed WARNING (got: $outK)" }
+
+  Write-Host ""
   if ($script:fails -eq 0) { Write-Host "ALL PASS" } else { Write-Host "$($script:fails) FAILED" -ForegroundColor Red; exit 1 }
 } finally {
   Remove-Item -Recurse -Force $RealJiraDist -ErrorAction SilentlyContinue

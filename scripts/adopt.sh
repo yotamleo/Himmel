@@ -31,6 +31,11 @@
 #   --dry-run           Print actions instead of doing them.
 #   --fill-env          Interactively fill the himmel clone's .env (creates it
 #                       from .env.example if absent). Enter to skip a var.
+#   --with-graphify     Opt in to installing the graphify knowledge-graph CLI
+#                       (himmel fork) during a `core`/`all` adopt. Off by
+#                       default — the adoption verdict stays open (HIMMEL-621);
+#                       this flag only installs the CLI (never over an
+#                       existing foreign install — see scripts/lib/graphify-bin.sh).
 #
 # Idempotent: re-running adds nothing already present.
 set -euo pipefail
@@ -51,6 +56,14 @@ HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/qmd-bin.sh"
 
+# graphify resolver (HIMMEL-891). Provides has_graphify / graphify_install /
+# graphify_source / graphify_install_hint, consumed by wire_graphify_core()
+# (opt-in via --with-graphify — unlike qmd, graphify is NOT wired by default;
+# the adoption verdict stays open, HIMMEL-621).
+# shellcheck source=scripts/lib/graphify-bin.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/graphify-bin.sh"
+
 # Adopter preflight checks (HIMMEL-842). Provides the shared WARN-not-fail
 # checks (uv/pipx, npm-less-node, jira-dist) consumed by require_tools() below.
 # The standalone scripts/preflight-adopter.sh runner sources the same lib, so the
@@ -67,17 +80,19 @@ LUNA_TARGET=""
 LUNA_TARGET_SET=0
 DRY_RUN=0
 FILL_ENV=0
+WITH_GRAPHIFY=0
 
 # ── Parse args ───────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --profile)      PROFILE="$2"; shift 2 ;;
-    --scope)        SCOPE="$2"; shift 2 ;;
-    --target)       TARGET="$2"; shift 2 ;;
-    --luna-target)  LUNA_TARGET="$2"; LUNA_TARGET_SET=1; shift 2 ;;
-    --dry-run)      DRY_RUN=1; shift ;;
-    --fill-env)     FILL_ENV=1; shift ;;
-    -h|--help)      sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
+    --profile)        PROFILE="$2"; shift 2 ;;
+    --scope)          SCOPE="$2"; shift 2 ;;
+    --target)         TARGET="$2"; shift 2 ;;
+    --luna-target)    LUNA_TARGET="$2"; LUNA_TARGET_SET=1; shift 2 ;;
+    --dry-run)        DRY_RUN=1; shift ;;
+    --fill-env)       FILL_ENV=1; shift ;;
+    --with-graphify)  WITH_GRAPHIFY=1; shift ;;
+    -h|--help)        sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
     *) echo "ERROR: unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -300,6 +315,21 @@ wire_qmd_core() {
   fi
 }
 
+# wire_graphify_core — opt-in install of the graphify knowledge-graph CLI
+# (HIMMEL-891). Unlike wire_qmd_core, this is NOT called unconditionally —
+# do_core() below only calls it when --with-graphify was passed. Detects +
+# adopts a foreign or already-himmel-fork install (graphify_install's own
+# contract); never installs over an existing install. WARN-not-fail: a
+# missing uv or a network hiccup must not abort adopt. Honors --dry-run.
+wire_graphify_core() {
+  echo "──── Wiring graphify (opt-in, --with-graphify) ────"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: graphify_install"
+    return 0
+  fi
+  graphify_install || echo "  WARNING: graphify install failed — continuing without graphify." >&2
+}
+
 # build_jira_cli — build scripts/jira/dist/index.js (HIMMEL-842 gap 3). dist/ is
 # a gitignored build artifact, so a fresh clone bootstrapped via adopt.sh hits
 # MODULE_NOT_FOUND without this (CLAUDE.md's "worktrees lack dist/" warning is
@@ -373,6 +403,7 @@ do_core() {
   install_plugins
   build_jira_cli
   wire_qmd_core
+  [[ $WITH_GRAPHIFY -eq 1 ]] && wire_graphify_core
   wire_statusline_core
   wire_himmel_repo_core
   [[ $FILL_ENV -eq 1 ]] && fill_env_core

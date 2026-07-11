@@ -25,6 +25,11 @@
 #   -DryRun           Print actions instead of doing them.
 #   -FillEnv          Interactively fill the himmel clone's .env (creates it from
 #                     .env.example if absent). Needs Git Bash. Enter to skip a var.
+#   -WithGraphify     Opt in to installing the graphify knowledge-graph CLI
+#                     (himmel fork) during a `core`/`all` adopt. Off by
+#                     default -- the adoption verdict stays open (HIMMEL-621);
+#                     this switch only installs the CLI (never over an
+#                     existing foreign install -- see scripts/lib/graphify-bin.sh).
 #
 # Idempotent: re-running adds nothing already present.
 
@@ -37,7 +42,8 @@ param(
     [string]$Target,
     [string]$LunaTarget,
     [switch]$DryRun,
-    [switch]$FillEnv
+    [switch]$FillEnv,
+    [switch]$WithGraphify
 )
 
 $ErrorActionPreference = 'Stop'
@@ -427,6 +433,65 @@ function Wire-QmdCoreInner {
     }
 }
 
+# Delegates to the ONE detect/install implementation (HIMMEL-891):
+# `bash scripts/lib/graphify-bin.sh install` (uv-tool-installs graphify from
+# the himmel fork, UNLESS an existing install -- himmel-fork or foreign -- is
+# already present, in which case it is adopted as-is). Reuses
+# Resolve-QmdGitBash (generic bash resolution, not qmd-specific despite the
+# name). Returns an honest int rc.
+function Install-Graphify {
+    Write-Host "Installing graphify via bash scripts/lib/graphify-bin.sh..."
+    $gitBash = Resolve-QmdGitBash
+    if (-not $gitBash) {
+        Write-Host "  WARNING: Git Bash not found - cannot run the graphify installer." -ForegroundColor Yellow
+        Write-Host "  Manual: install Git for Windows, then run: bash `"$HimmelRoot/scripts/lib/graphify-bin.sh`" install" -ForegroundColor Yellow
+        return 1
+    }
+    # Route the bash script's stdout through Write-Host (host stream, not the
+    # pipeline) instead of letting it fall straight into the function's own
+    # output -- otherwise `$installRc = Install-Graphify` captures an ARRAY
+    # (every emitted line + the trailing int), and `-ne 0` on that array is
+    # true whenever ANY element is nonzero-ish -- a false-positive WARNING on
+    # every successful install that prints output (which is all of them).
+    & $gitBash "$HimmelRoot/scripts/lib/graphify-bin.sh" install | ForEach-Object { Write-Host $_ }
+    return $LASTEXITCODE
+}
+
+# Wire-GraphifyCore -- opt-in install of the graphify knowledge-graph CLI
+# (HIMMEL-891). Unlike Wire-QmdCore, this is NOT called unconditionally --
+# Do-Core below only calls it when -WithGraphify was passed. WARN-not-fail:
+# a missing Git Bash/uv or a network hiccup must not abort adopt. Honors
+# -DryRun.
+function Wire-GraphifyCore {
+    Write-Host "---- Wiring graphify (opt-in, -WithGraphify) ----"
+    if ($DryRun) {
+        Write-Host "DRY: Install-Graphify"
+        return
+    }
+    # WARN-not-fail structural guarantee (CR-r2): under this script's
+    # EAP='Stop', a $PSNativeCommandUseErrorActionPreference=$true config
+    # turns the bash installer's nonzero exit into a TERMINATING error
+    # before Install-Graphify can return $LASTEXITCODE -- aborting the whole
+    # adopt on an optional step. Decouple both for this block only; restore
+    # in finally (same guard as Wire-QmdCore / Build-JiraCli).
+    $savedNativeEAP = $null
+    if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+        $savedNativeEAP = $PSNativeCommandUseErrorActionPreference
+    }
+    $global:PSNativeCommandUseErrorActionPreference = $false
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $installRc = Install-Graphify
+        if ($installRc -ne 0) {
+            Write-Host "  WARNING: graphify install failed (rc=$installRc) - continuing without graphify." -ForegroundColor Yellow
+        }
+    } finally {
+        $ErrorActionPreference = $savedEAP
+        if ($null -ne $savedNativeEAP) { $global:PSNativeCommandUseErrorActionPreference = $savedNativeEAP }
+    }
+}
+
 # Build-JiraCli -- build scripts/jira/dist/index.js (HIMMEL-842 gap 3). dist/ is
 # a gitignored build artifact, so a fresh clone bootstrapped via adopt.ps1 hits
 # MODULE_NOT_FOUND without this (CLAUDE.md's "worktrees lack dist/" warning is
@@ -512,6 +577,7 @@ function Do-Core {
     Install-Plugins
     Build-JiraCli
     Wire-QmdCore
+    if ($WithGraphify) { Wire-GraphifyCore }
     Wire-StatuslineCore
     Wire-HimmelRepoCore
     if ($FillEnv) { FillEnv-Core }

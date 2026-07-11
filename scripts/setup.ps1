@@ -1,12 +1,16 @@
 # New-machine setup for the himmel repo.
-# Run once after cloning: .\scripts\setup.ps1 [-WithCs] [-WithJira]
+# Run once after cloning: .\scripts\setup.ps1 [-WithCs] [-WithJira] [-WithGraphify]
 #
-# -WithCs   : install claude-squad (cs) at the end of setup. Without the
-#             switch, interactive shells prompt; non-interactive shells skip.
-#             See docs/setup/claude-squad.md.
-# -WithJira : require Jira configuration — abort if JIRA_PROJECT_KEY is
-#             unset. Without the switch the check downgrades to a skip
-#             notice (HIMMEL-285).
+# -WithCs        : install claude-squad (cs) at the end of setup. Without the
+#                  switch, interactive shells prompt; non-interactive shells skip.
+#                  See docs/setup/claude-squad.md.
+# -WithJira      : require Jira configuration — abort if JIRA_PROJECT_KEY is
+#                  unset. Without the switch the check downgrades to a skip
+#                  notice (HIMMEL-285).
+# -WithGraphify  : install the graphify knowledge-graph CLI (himmel fork) at
+#                  the end of setup. Without the switch, interactive shells
+#                  prompt; non-interactive shells skip. Adoption verdict is
+#                  still open (HIMMEL-621) — this only installs the CLI.
 # -FillEnv  : after creating .env, interactively prompt for each must-set value
 #             (Enter to skip). Non-interactive shells no-op. Shells out to the
 #             bash fill-env.sh (Git Bash verified in [0/10]). (HIMMEL-453)
@@ -15,6 +19,7 @@
 param(
     [switch]$WithCs,
     [switch]$WithJira,
+    [switch]$WithGraphify,
     [switch]$FillEnv
 )
 
@@ -602,6 +607,56 @@ if ($installCs) {
 } else {
     if (-not $WithCs -and [Environment]::UserInteractive) {
         Write-Host "  Skipped. See docs\setup\claude-squad.md to install later."
+    }
+}
+Write-Host ""
+
+# --- graphify (knowledge-graph CLI) -- OPTIONAL (HIMMEL-891) ---
+# Opt-in only. Triggered by -WithGraphify OR interactive prompt (default N).
+# Non-interactive shells without the switch skip silently -- mirrors the cs
+# opt-in above. Adoption verdict stays open (HIMMEL-621); this only installs
+# the CLI (delegates to the ONE bash implementation, scripts/lib/graphify-bin.sh
+# -- Git Bash is a verified [0/10] prereq, so it is always present here).
+#
+# Failure here is non-fatal: graphify is optional. WARN and continue.
+Write-Host "OPTIONAL: graphify (knowledge-graph CLI)..."
+$installGraphify = $false
+if ($WithGraphify) {
+    $installGraphify = $true
+} elseif ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+    $resp = Read-Host "  Install graphify (knowledge-graph CLI) now? [y/N]"
+    if ($resp -match '^[yY]') { $installGraphify = $true }
+} else {
+    Write-Host "  Skipped (non-interactive, no -WithGraphify switch)."
+}
+
+if ($installGraphify) {
+    # WARN-not-fail structural guarantee (CR): this script runs under
+    # $ErrorActionPreference='Stop' + a trap; on PS configs where
+    # $PSNativeCommandUseErrorActionPreference=$true a nonzero bash exit
+    # becomes TERMINATING before the $LASTEXITCODE warn-check below can run,
+    # aborting the whole setup on an optional step. Decouple both for this
+    # block only; restore in finally (mirrors adopt.ps1's Wire-QmdCore guard).
+    $savedNativeEAP = $null
+    if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+        $savedNativeEAP = $PSNativeCommandUseErrorActionPreference
+    }
+    $global:PSNativeCommandUseErrorActionPreference = $false
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & bash "$RepoRoot/scripts/lib/graphify-bin.sh" install
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  WARNING: graphify install failed (rc=$LASTEXITCODE); setup continues." -ForegroundColor Yellow
+            Write-Host "  Retry manually: bash `"$RepoRoot/scripts/lib/graphify-bin.sh`" install" -ForegroundColor Yellow
+        }
+    } finally {
+        $ErrorActionPreference = $savedEAP
+        if ($null -ne $savedNativeEAP) { $global:PSNativeCommandUseErrorActionPreference = $savedNativeEAP }
+    }
+} else {
+    if (-not $WithGraphify -and [Environment]::UserInteractive) {
+        Write-Host "  Skipped. Install later: bash `"$RepoRoot/scripts/lib/graphify-bin.sh`" install"
     }
 }
 Write-Host ""
