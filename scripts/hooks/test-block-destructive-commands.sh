@@ -61,6 +61,43 @@ assert_rc "mkfs.ext4 /dev/sda"         2 "$(run_case "$(j_bash 'mkfs.ext4 /dev/s
 assert_rc "FOO=1 shutdown -r"          2 "$(run_case "$(j_bash 'FOO=1 shutdown -r')")"
 # shellcheck disable=SC2016  # literal backtick payload is the point of this case
 assert_rc "backtick format subst"      2 "$(run_case "$(j_bash 'echo `format c:`')")"
+assert_rc "rm quoted -rf flag"          2 "$(run_case "$(j_bash 'rm "-rf" file')")"
+# shellcheck disable=SC2016  # literal ${IFS} payload is the point of this case
+assert_rc 'rm ${IFS}-separated -rf'     2 "$(run_case "$(j_bash 'rm${IFS}-rf${IFS}x')")"
+# Backslash-newline continuation (HIMMEL-851 U3): real multi-line single-quoted
+# string so the literal backslash + newline reach the hook exactly as a shell
+# line-continuation would produce them.
+cont_cmd='rm \
+-rf x'
+assert_rc "rm backslash-continuation -rf" 2 "$(run_case "$(j_bash "$cont_cmd")")"
+# CR r1 (HIMMEL-851): bounded launcher-wrapper tolerance in command position.
+assert_rc "sudo shutdown"               2 "$(run_case "$(j_bash 'sudo shutdown -h now')")"
+assert_rc "x=1 shutdown"                2 "$(run_case "$(j_bash 'x=1 shutdown -h now')")"
+# CR r5 (HIMMEL-851): assignment VALUE is quote-aware.
+assert_rc "single-quoted assign shutdown" 2 "$(run_case "$(j_bash "foo='a b' shutdown -h now")")"
+assert_rc "double-quoted assign schtasks" 2 "$(run_case "$(j_bash 'foo="a b" schtasks /delete /f')")"
+assert_rc "cmd /c shutdown"             2 "$(run_case "$(j_bash 'cmd /c shutdown /s /t 0')")"
+assert_rc "cmd /d /c shutdown"          2 "$(run_case "$(j_bash 'cmd /d /c shutdown /s /t 0')")"
+assert_rc "cmd.exe /d /s /c shutdown"   2 "$(run_case "$(j_bash 'cmd.exe /d /s /c shutdown /s /t 0')")"
+assert_rc "powershell -command stop-process" 2 "$(run_case "$(j_bash 'powershell -command stop-process -name foo')")"
+# CR r2 (HIMMEL-851): path-qualified destructive executables.
+assert_rc "/sbin/shutdown"              2 "$(run_case "$(j_bash '/sbin/shutdown -h now')")"
+assert_rc "./shutdown relative"         2 "$(run_case "$(j_bash './shutdown -h now')")"
+assert_rc "drive-path shutdown.exe"     2 "$(run_case "$(j_bash 'c:/windows/system32/shutdown.exe /s /t 0')")"
+assert_rc "quoted drive-path shutdown"  2 "$(run_case "$(j_bash '"C:/Windows/System32/shutdown.exe" /s /t 0')")"
+assert_rc "backslash drive-path shutdown" 2 "$(run_case "$(j_bash 'C:\Windows\System32\shutdown.exe /s /t 0')")"
+# CR r4 (HIMMEL-851): path-qualified launcher wrappers.
+assert_rc "/usr/bin/env shutdown"       2 "$(run_case "$(j_bash '/usr/bin/env shutdown -h now')")"
+assert_rc "/usr/bin/sudo shutdown"      2 "$(run_case "$(j_bash '/usr/bin/sudo shutdown -h now')")"
+assert_rc "path-qualified cmd.exe /c shutdown" 2 "$(run_case "$(j_bash 'c:/windows/system32/cmd.exe /c shutdown /s /t 0')")"
+# CR r6 (HIMMEL-851): sudo/env tolerate their own flag runs (+ env assignments).
+assert_rc "sudo -n shutdown"            2 "$(run_case "$(j_bash 'sudo -n shutdown -h now')")"
+assert_rc "env -i shutdown"             2 "$(run_case "$(j_bash 'env -i shutdown -h now')")"
+assert_rc "env -i foo=bar shutdown"     2 "$(run_case "$(j_bash 'env -i foo=bar shutdown -h now')")"
+# CR r7 (HIMMEL-851): wrapper flags may each consume one following value token.
+assert_rc "sudo -u root shutdown"       2 "$(run_case "$(j_bash 'sudo -u root shutdown -h now')")"
+assert_rc "env -u path shutdown"        2 "$(run_case "$(j_bash 'env -u path shutdown -h now')")"
+assert_rc "sudo -u root -g wheel taskkill" 2 "$(run_case "$(j_bash 'sudo -u root -g wheel taskkill /f')")"
 
 # --- ALLOW cases (expect rc=0) ---
 assert_rc "rmtemp.sh -r foo"           0 "$(run_case "$(j_bash 'rmtemp.sh -r foo')")"
@@ -78,6 +115,16 @@ assert_rc "git log quoted format"      0 "$(run_case "$(j_bash 'git log --pretty
 assert_rc "grep -rn format src/"       0 "$(run_case "$(j_bash 'grep -rn format src/')")"
 assert_rc "rg format scripts/"         0 "$(run_case "$(j_bash 'rg "format" scripts/')")"
 assert_rc "commit msg mentions reboot" 0 "$(run_case "$(j_bash 'git commit -m "fix reboot loop"')")"
+assert_rc "rd /scripts (path, not switch)" 0 "$(run_case "$(j_bash 'rd /scripts foo')")"
+assert_rc "echo shutdown mid-argument"  0 "$(run_case "$(j_bash 'echo shutdown')")"
+assert_rc "format-data path basename"   0 "$(run_case "$(j_bash 'x; foo/format-data bar')")"
+assert_rc "/usr/bin/env python3 benign" 0 "$(run_case "$(j_bash '/usr/bin/env python3 build.py')")"
+assert_rc "echo'd quoted assign+verb"   0 "$(run_case "$(j_bash "echo \"FOO='a b' shutdown\"")")"
+assert_rc "sudo -n apt benign"          0 "$(run_case "$(j_bash 'sudo -n apt update')")"
+assert_rc "env -i printenv benign"      0 "$(run_case "$(j_bash 'env -i printenv')")"
+assert_rc "sudo -u root ls benign"      0 "$(run_case "$(j_bash 'sudo -u root ls')")"
+assert_rc "sudo -u root apt benign"     0 "$(run_case "$(j_bash 'sudo -u root apt update')")"
+assert_rc "env -u path printenv benign" 0 "$(run_case "$(j_bash 'env -u path printenv')")"
 assert_rc "non-terminal tool"          0 "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"README.md"}}')"
 assert_rc "empty payload"              0 "$(run_case '{}')"
 

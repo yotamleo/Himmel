@@ -83,6 +83,124 @@ g "rm -rf"         block '{"tool_name":"terminal","tool_input":{"command":"rm -r
 g "plain rm"       allow '{"tool_name":"terminal","tool_input":{"command":"rm tmp.txt"}}'
 g "schtasks"       block '{"tool_name":"terminal","tool_input":{"command":"schtasks /delete /tn X"}}'
 
+echo "== parity_guard: destructive-floor spec fixes (HIMMEL-851) =="
+# U1: /s is bound to the switch, not a path prefix — `rd /scripts` is not a
+# recursive-delete switch, it's an argument that merely starts with "/s".
+g "rd /scripts (path, not switch)" allow '{"tool_name":"terminal","tool_input":{"command":"rd /scripts foo"}}'
+# U2: a quoted -rf flag must not defeat the recursive-rm pattern.
+g "rm quoted -rf flag" block '{"tool_name":"terminal","tool_input":{"command":"rm \"-rf\" file"}}'
+# U3: ${IFS} (a common word-split bypass) is whitespace-equivalent here.
+# shellcheck disable=SC2016  # label is a literal string, not meant to expand
+g 'rm ${IFS}-separated -rf' block '{"tool_name":"terminal","tool_input":{"command":"rm${IFS}-rf${IFS}x"}}'
+# U3: backslash-newline continuation. Built via python (not hand-escaped bash)
+# so the embedded backslash + real newline reach the guard exactly as a shell
+# line-continuation would produce them, with correct JSON encoding guaranteed.
+CONT_JSON="$("$PY" -c "
+import json, sys
+cmd = 'rm ' + chr(92) + chr(10) + '-rf x'
+print(json.dumps({'tool_name': 'terminal', 'tool_input': {'command': cmd}}))
+")"
+g "rm backslash-continuation -rf" block "$CONT_JSON"
+# O1: bare command-name atoms (format/schtasks/taskkill/shutdown/icacls
+# classes) must only fire in command position, not embedded mid-argument.
+g "git log --pretty=format: allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git log --pretty=format:%H -n 5"}}'
+g "grep -rn format src/ allowed"     allow '{"tool_name":"terminal","tool_input":{"command":"grep -rn format src/"}}'
+g "echo shutdown mid-argument allowed" allow '{"tool_name":"terminal","tool_input":{"command":"echo shutdown"}}'
+# CR r1 (HIMMEL-851): bounded launcher-wrapper tolerance in command position -
+# wrapped destructive verbs must still be refused, mirroring the .sh CMDPOS.
+g "sudo shutdown refused"            block '{"tool_name":"terminal","tool_input":{"command":"sudo shutdown -h now"}}'
+g "env-assign prefix shutdown refused" block '{"tool_name":"terminal","tool_input":{"command":"x=1 shutdown -h now"}}'
+g "cmd /c shutdown refused"          block '{"tool_name":"terminal","tool_input":{"command":"cmd /c shutdown /s /t 0"}}'
+# CR r3 (HIMMEL-851): cmd accepts switches (/d /s /e:on …) before /c.
+g "cmd /d /c shutdown refused"       block '{"tool_name":"terminal","tool_input":{"command":"cmd /d /c shutdown /s /t 0"}}'
+g "cmd.exe /d /s /c shutdown refused" block '{"tool_name":"terminal","tool_input":{"command":"cmd.exe /d /s /c shutdown /s /t 0"}}'
+g "powershell -command stop-process refused" block '{"tool_name":"terminal","tool_input":{"command":"powershell -command stop-process -name foo"}}'
+BACKTICK_JSON="$("$PY" -c "
+import json
+cmd = 'echo ' + chr(96) + 'format c:' + chr(96)
+print(json.dumps({'tool_name': 'terminal', 'tool_input': {'command': cmd}}))
+")"
+g "backtick-wrapped format refused"  block "$BACKTICK_JSON"
+# CR r2 (HIMMEL-851): path-qualified destructive executables - a bounded
+# exe-path prefix (optional drive + /-terminated segments) after the anchor,
+# mirroring the .sh CMDPOS. The atoms' trailing boundary keeps format-* names
+# allowed; mid-argument words stay allowed (not at command position).
+g "/sbin/shutdown refused"           block '{"tool_name":"terminal","tool_input":{"command":"/sbin/shutdown -h now"}}'
+g "./shutdown relative refused"      block '{"tool_name":"terminal","tool_input":{"command":"./shutdown -h now"}}'
+g "drive-path shutdown.exe refused"  block '{"tool_name":"terminal","tool_input":{"command":"c:/windows/system32/shutdown.exe /s /t 0"}}'
+QUOTEDPATH_JSON="$("$PY" -c "
+import json
+q = chr(34)
+cmd = 'x; ' + q + 'c:/windows/system32/shutdown.exe' + q + ' /s'
+print(json.dumps({'tool_name': 'terminal', 'tool_input': {'command': cmd}}))
+")"
+g "quoted drive-path shutdown refused" block "$QUOTEDPATH_JSON"
+BSLASHPATH_JSON="$("$PY" -c "
+import json
+b = chr(92)
+cmd = 'c:' + b + 'windows' + b + 'system32' + b + 'shutdown.exe /s /t 0'
+print(json.dumps({'tool_name': 'terminal', 'tool_input': {'command': cmd}}))
+")"
+g "backslash drive-path shutdown refused" block "$BSLASHPATH_JSON"
+g "format-data path basename allowed" allow '{"tool_name":"terminal","tool_input":{"command":"x; foo/format-data bar"}}'
+# CR r4 (HIMMEL-851): path-qualified launcher wrappers - the exe-path prefix
+# also applies before each wrapper token, mirroring the .sh CMDPOS. Residual
+# documented gap (both impls): quoted-payload wrappers (bash -c "...", sh -c,
+# xargs / nohup chains) - out of scope per the no-general-parser rule.
+g "/usr/bin/env shutdown refused"    block '{"tool_name":"terminal","tool_input":{"command":"/usr/bin/env shutdown -h now"}}'
+g "/usr/bin/sudo shutdown refused"   block '{"tool_name":"terminal","tool_input":{"command":"/usr/bin/sudo shutdown -h now"}}'
+g "path-qualified cmd.exe /c shutdown refused" block '{"tool_name":"terminal","tool_input":{"command":"c:/windows/system32/cmd.exe /c shutdown /s /t 0"}}'
+g "/usr/bin/env python3 benign allowed" allow '{"tool_name":"terminal","tool_input":{"command":"/usr/bin/env python3 build.py"}}'
+# CR r5 (HIMMEL-851): assignment VALUE is quote-aware - FOO='a b' <verb> must
+# not drop the verb out of command position. Built via python so the embedded
+# quotes reach the guard with correct JSON encoding.
+SQASSIGN_JSON="$("$PY" -c "
+import json
+q = chr(39)
+cmd = 'foo=' + q + 'a b' + q + ' shutdown -h now'
+print(json.dumps({'tool_name': 'terminal', 'tool_input': {'command': cmd}}))
+")"
+g "single-quoted assign shutdown refused" block "$SQASSIGN_JSON"
+DQASSIGN_JSON="$("$PY" -c "
+import json
+q = chr(34)
+cmd = 'foo=' + q + 'a b' + q + ' schtasks /delete /f'
+print(json.dumps({'tool_name': 'terminal', 'tool_input': {'command': cmd}}))
+")"
+g "double-quoted assign schtasks refused" block "$DQASSIGN_JSON"
+ECHOASSIGN_JSON="$("$PY" -c "
+import json
+sq, dq = chr(39), chr(34)
+cmd = 'echo ' + dq + 'FOO=' + sq + 'a b' + sq + ' shutdown' + dq
+print(json.dumps({'tool_name': 'terminal', 'tool_input': {'command': cmd}}))
+")"
+g "echo'd quoted assign+verb allowed" allow "$ECHOASSIGN_JSON"
+# CR r6 (HIMMEL-851): sudo/env tolerate flag runs (env also assignment args),
+# mirroring the .sh CMDPOS. Bounded grammar - further wrapper permutations
+# are HIMMEL-912 (shared tokenizer); this + the CC-hook + the auto-mode
+# classifier remain the outer defense layers.
+g "sudo -n shutdown refused"         block '{"tool_name":"terminal","tool_input":{"command":"sudo -n shutdown -h now"}}'
+g "env -i shutdown refused"          block '{"tool_name":"terminal","tool_input":{"command":"env -i shutdown -h now"}}'
+g "env -i foo=bar shutdown refused"  block '{"tool_name":"terminal","tool_input":{"command":"env -i foo=bar shutdown -h now"}}'
+g "sudo -n apt benign allowed"       allow '{"tool_name":"terminal","tool_input":{"command":"sudo -n apt update"}}'
+g "env -i printenv benign allowed"   allow '{"tool_name":"terminal","tool_input":{"command":"env -i printenv"}}'
+# CR r7 (HIMMEL-851): wrapper flags may each consume one following value token
+# (generic, no per-option table; over-consumes at worst one benign token,
+# never a bypass), mirroring the .sh CMDPOS.
+g "sudo -u root shutdown refused"    block '{"tool_name":"terminal","tool_input":{"command":"sudo -u root shutdown -h now"}}'
+g "env -u path shutdown refused"     block '{"tool_name":"terminal","tool_input":{"command":"env -u path shutdown -h now"}}'
+g "sudo -u root -g wheel taskkill refused" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u root -g wheel taskkill /f"}}'
+g "sudo -u root ls benign allowed"   allow '{"tool_name":"terminal","tool_input":{"command":"sudo -u root ls"}}'
+g "sudo -u root apt benign allowed"  allow '{"tool_name":"terminal","tool_input":{"command":"sudo -u root apt update"}}'
+g "env -u path printenv benign allowed" allow '{"tool_name":"terminal","tool_input":{"command":"env -u path printenv"}}'
+REBOOT_JSON="$("$PY" -c "
+import json
+q = chr(34)
+cmd = 'git commit -m ' + q + 'fix reboot loop' + q
+print(json.dumps({'tool_name': 'terminal', 'tool_input': {'command': cmd, 'cwd': '$FR'}}))
+")"
+g "commit msg mentions reboot allowed" allow "$REBOOT_JSON"
+
 echo "== parity_guard: block-edit-on-main parity (HIMMEL-731) =="
 g "write into repo on main refused"    block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$MR/src/foo.sh\"}}"
 g "delete in repo on main refused"     block "{\"tool_name\":\"delete_file\",\"tool_input\":{\"path\":\"$MR/src/old.sh\"}}"
