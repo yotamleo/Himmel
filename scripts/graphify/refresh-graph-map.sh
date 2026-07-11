@@ -22,6 +22,11 @@
 #       [--corpus-tag luna] [--scratch <dir>] [--no-update]
 #
 # Exit: 0 ok; 1 usage/IO; 2 fence/graphify failure.
+#
+# Freshness guard: this script REBUILDS the graph. To CHECK whether an existing
+# graphify-out/ is still fresh (and not orphaned from its corpus) before querying
+# it, run check-graph-freshness.sh --out <graphify-out> [--max-age-days N]
+# (companion script, same dir). HIMMEL-621/824/825 family.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
