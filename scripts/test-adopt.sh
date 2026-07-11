@@ -406,7 +406,16 @@ cat > "$mbin/git" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = "-C" ]; then shift 2; fi
 case "$1" in
-  clone) target="${!#}"; mkdir -p "$target/.git"; exit 0 ;;
+  # HIMMEL-911 replaced `git clone` with init+fetch-by-sha+checkout, so the
+  # stub must materialize the dir on `init` (clone kept for back-compat) and
+  # answer the belt-and-braces `rev-parse HEAD` with the pinned fork SHA --
+  # otherwise install refuses before the migration ("moving aside") branch
+  # this case exercises ever runs (HIMMEL-934).
+  clone|init) target="${!#}"; mkdir -p "$target/.git"; exit 0 ;;
+  # Only the exact `rev-parse HEAD` query the pin check performs gets the
+  # SHA; other rev-parse forms keep the silent-success default (coderabbit
+  # finding, HIMMEL-934 CR round).
+  rev-parse) [ "${2:-}" = "HEAD" ] && echo "1032a648447a54eb73df138a3861dd7a9a64c595"; exit 0 ;;
   *) exit 0 ;;
 esac
 STUB

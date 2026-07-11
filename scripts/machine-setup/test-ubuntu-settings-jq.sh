@@ -53,8 +53,14 @@ assert_fail() {
     echo "  FAIL: $1"
 }
 
-# ---------- mirrored filters + drift guards ----------
-# Each constant below MUST byte-match its counterpart in ubuntu.sh.
+# ---------- fixture transforms + delegation guards ----------
+# HIMMEL-887 removed ubuntu.sh's settings.json patching entirely (it now
+# delegates himmel/luna wiring to `himmelctl bootstrap`). The jq transforms
+# below are therefore no longer mirrored FROM ubuntu.sh — they are retained
+# as the fixture logic Tests 1-4 exercise directly, AND as negative
+# re-introduction sentinels: ubuntu.sh must NOT grow this settings-patch jq
+# back. (No counterpart exists in scripts/himmelctl/ either; the patching was
+# dropped, not relocated.)
 BARE_RTK_RE='^[[:space:]]*rtk[[:space:]]+hook[[:space:]]+claude([[:space:]]|$)'
 # shellcheck disable=SC2016  # single quotes intentional: $re/$cmd are jq variables, not shell
 SWAP_FILTER='(.hooks.PreToolUse[]?.hooks[]? | select((.command // "") | test($re))).command = $cmd'
@@ -64,14 +70,28 @@ GUARD_PRESENT_FILTER='.hooks.PreToolUse // [] | map(.hooks // [] | map(.command)
 # shellcheck disable=SC2016  # single quotes intentional: $hp is a jq variable
 WALK_LINE='| walk(if type == "string" then gsub("<himmel-path>"; $hp) else . end)'
 
-echo "Drift guards: mirrored filters still match ubuntu.sh"
+echo "Delegation guards (HIMMEL-887): ubuntu.sh dropped the settings-patch jq"
 for needle in "$BARE_RTK_RE" "$SWAP_FILTER" "$COUNT_FILTER" "$GUARD_PRESENT_FILTER" "$WALK_LINE"; do
     if grep -qF -- "$needle" "$ubuntu_sh"; then
-        assert_pass "ubuntu.sh still contains: ${needle:0:60}..."
+        assert_fail "ubuntu.sh re-introduced removed settings-patch jq: $needle"
     else
-        assert_fail "ubuntu.sh drifted from mirrored filter: $needle"
+        assert_pass "ubuntu.sh does NOT contain removed settings-patch material: ${needle:0:60}..."
     fi
 done
+if grep -q 'delegating to himmelctl bootstrap' "$ubuntu_sh"; then
+    assert_pass "ubuntu.sh prints the himmelctl bootstrap delegation NOTICE (HIMMEL-887)"
+else
+    assert_fail "ubuntu.sh missing the himmelctl bootstrap delegation NOTICE (HIMMEL-887)"
+fi
+# The NOTICE alone is not the contract: assert the executable delegation
+# statement too, so removing the exec while keeping the NOTICE fails
+# (codex-adv finding, HIMMEL-934 CR round).
+# shellcheck disable=SC2016  # single quotes intentional: $HIMMEL_PATH is ubuntu.sh's variable
+if grep -qF -- 'exec bash "$HIMMEL_PATH/scripts/himmelctl/bootstrap.sh"' "$ubuntu_sh"; then
+    assert_pass "ubuntu.sh execs himmelctl bootstrap.sh (delegation is real, HIMMEL-887)"
+else
+    assert_fail "ubuntu.sh does not exec himmelctl bootstrap.sh (NOTICE without delegation)"
+fi
 
 # ---------- 1+2+3. Swap filter: guard + bare coexist ----------
 echo "Test 1: bare entry next to an existing guard entry is swapped"
@@ -150,9 +170,10 @@ for cmd_should_skip in 'bash "/opt/himmel/scripts/hooks/rtk-hook-guard.sh"' 'rtk
 done
 
 # ---------- 4. Template patch resolves <himmel-path> ----------
-# Mirror of the PATCH filter in ubuntu.sh step "Patch ~/.claude/settings.json"
-# (drift-guarded above via WALK_LINE; the surrounding additions are exercised
-# by the SessionEnd/SessionStart asserts below).
+# WALK_LINE is the historic <himmel-path> patch transform (HIMMEL-887 removed
+# it from ubuntu.sh; kept here as fixture logic + a re-introduction sentinel
+# in the delegation block above). The surrounding additions are exercised by
+# the SessionEnd/SessionStart asserts below.
 echo "Test 4: patch filter against the real template leaves no <himmel-path>"
 HP='/opt/himmel'
 patched=$(jq \

@@ -12,6 +12,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/qmd-bin.sh
+# shellcheck disable=SC1091  # sourced file not in input on test-only commits
 . "$SCRIPT_DIR/qmd-bin.sh"
 
 pass=0
@@ -618,8 +619,23 @@ assert "setup.sh sources qmd-bin.sh" grep -q 'lib/qmd-bin.sh' "$repo_root/script
 # which wraps qmd_cmd - either helper counts as "uses the resolver, not bare qmd".
 assert "setup.sh calls a qmd-bin.sh helper (qmd_cmd/qmd_register_collection)" \
   grep -qE 'qmd_cmd |qmd_register_collection ' "$repo_root/scripts/setup.sh"
-assert "ubuntu.sh sources qmd-bin.sh" grep -q 'lib/qmd-bin.sh' "$repo_root/scripts/machine-setup/ubuntu.sh"
-assert "ubuntu.sh calls qmd_cmd" grep -q 'qmd_cmd ' "$repo_root/scripts/machine-setup/ubuntu.sh"
+# HIMMEL-887: ubuntu.sh no longer sources lib/qmd-bin.sh or calls qmd_cmd
+# directly -- himmel/luna wiring delegates to `himmelctl bootstrap` (the NOTICE
+# at ubuntu.sh). Assert the delegation instead of the removed direct wiring.
+# shellcheck disable=SC2016
+assert "ubuntu.sh does NOT reference lib/qmd-bin.sh (wiring delegated, HIMMEL-887)" \
+  bash -c '! grep -qF -- "lib/qmd-bin.sh" "$1"' _ "$repo_root/scripts/machine-setup/ubuntu.sh"
+# shellcheck disable=SC2016
+assert "ubuntu.sh does NOT call qmd_cmd (wiring delegated, HIMMEL-887)" \
+  bash -c '! grep -qF -- "qmd_cmd " "$1"' _ "$repo_root/scripts/machine-setup/ubuntu.sh"
+# The NOTICE alone is not the contract: assert the executable delegation
+# statement too, so removing the exec while keeping the NOTICE fails
+# (codex-adv finding, HIMMEL-934 CR round).
+# shellcheck disable=SC2016
+assert "ubuntu.sh execs himmelctl bootstrap.sh (delegation is real, HIMMEL-887)" \
+  grep -qF -- 'exec bash "$HIMMEL_PATH/scripts/himmelctl/bootstrap.sh"' "$repo_root/scripts/machine-setup/ubuntu.sh"
+assert "ubuntu.sh prints the himmelctl bootstrap delegation NOTICE (HIMMEL-887)" \
+  grep -q 'delegating to himmelctl bootstrap' "$repo_root/scripts/machine-setup/ubuntu.sh"
 
 echo "[test-qmd-bin] has_qmd matches binary presence in this env"
 if has_qmd; then
