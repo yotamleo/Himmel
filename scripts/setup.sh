@@ -20,27 +20,33 @@ SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # no flag uses them yet, but reserve the pattern.
 WITH_CS=0
 WITH_JIRA=0
+WITH_GRAPHIFY=0
 FILL_ENV=0
 setup_extra_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-cs) WITH_CS=1 ;;
     --with-jira) WITH_JIRA=1 ;;
+    --with-graphify) WITH_GRAPHIFY=1 ;;
     --fill-env) FILL_ENV=1 ;;
     --help|-h)
       cat <<'USAGE'
-Usage: bash scripts/setup.sh [--with-cs] [--with-jira] [--fill-env]
+Usage: bash scripts/setup.sh [--with-cs] [--with-jira] [--with-graphify] [--fill-env]
 
 Optional flags:
-  --with-cs    Install claude-squad (cs) at the end of setup.
-               Without the flag, interactive shells prompt; non-interactive
-               shells skip. See docs/setup/claude-squad.md.
-  --with-jira  Require Jira configuration: abort setup if JIRA_PROJECT_KEY
-               is unset. Without the flag the check downgrades to a skip
-               notice and Jira-dependent next-steps are omitted.
-  --fill-env   After creating .env, interactively prompt for each must-set
-               value (Enter to skip / keep current). Non-interactive shells
-               no-op. Without the flag, .env keeps the .env.example placeholders.
+  --with-cs        Install claude-squad (cs) at the end of setup.
+                   Without the flag, interactive shells prompt; non-interactive
+                   shells skip. See docs/setup/claude-squad.md.
+  --with-jira      Require Jira configuration: abort setup if JIRA_PROJECT_KEY
+                   is unset. Without the flag the check downgrades to a skip
+                   notice and Jira-dependent next-steps are omitted.
+  --with-graphify  Install the graphify knowledge-graph CLI (himmel fork) at
+                   the end of setup. Without the flag, interactive shells
+                   prompt; non-interactive shells skip. Adoption verdict is
+                   still open (HIMMEL-621) — this only installs the CLI.
+  --fill-env       After creating .env, interactively prompt for each must-set
+                   value (Enter to skip / keep current). Non-interactive shells
+                   no-op. Without the flag, .env keeps the .env.example placeholders.
 USAGE
       exit 0
       ;;
@@ -141,6 +147,12 @@ cd "$REPO_ROOT"
 # shellcheck source=lib/qmd-bin.sh
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/qmd-bin.sh"
+# graphify resolver (HIMMEL-891). Provides has_graphify / graphify_install /
+# graphify_source / graphify_install_hint, consumed by the OPTIONAL graphify
+# step below.
+# shellcheck source=lib/graphify-bin.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/graphify-bin.sh"
 
 # --- Claude Code CLI (the runtime himmel harnesses) — soft check ---
 # Not a hard requirement of setup itself (the steps below configure the repo and
@@ -405,6 +417,38 @@ if [ "$_install_cs" = "1" ]; then
 else
   if [ "$WITH_CS" != "1" ] && { [ -t 0 ] && [ -t 1 ]; }; then
     echo "  Skipped. See docs/setup/claude-squad.md to install later."
+  fi
+fi
+echo ""
+
+# --- graphify (knowledge-graph CLI) — OPTIONAL (HIMMEL-891) ---
+# Opt-in only. Triggered by --with-graphify OR interactive prompt (default N).
+# Non-interactive shells without the flag skip silently — mirrors the cs
+# opt-in above. Adoption verdict stays open (HIMMEL-621); this only installs
+# the CLI (himmel fork, never over an existing foreign install — see
+# scripts/lib/graphify-bin.sh).
+#
+# Failure here is non-fatal: graphify is optional, so a missing uv or a
+# network hiccup shouldn't abort the rest of setup. We WARN and continue.
+echo "OPTIONAL: graphify (knowledge-graph CLI)..."
+_install_graphify=0
+if [ "$WITH_GRAPHIFY" = "1" ]; then
+  _install_graphify=1
+elif [ -t 0 ] && [ -t 1 ]; then
+  printf "  Install graphify (knowledge-graph CLI) now? [y/N] "
+  read -r _ans
+  case "$_ans" in
+    [yY]|[yY][eE][sS]) _install_graphify=1 ;;
+  esac
+else
+  echo "  Skipped (non-interactive, no --with-graphify flag)."
+fi
+
+if [ "$_install_graphify" = "1" ]; then
+  graphify_install || echo "  WARNING: graphify install failed; setup continues." >&2
+else
+  if [ "$WITH_GRAPHIFY" != "1" ] && { [ -t 0 ] && [ -t 1 ]; }; then
+    echo "  Skipped. Install later: $(graphify_install_hint)"
   fi
 fi
 echo ""

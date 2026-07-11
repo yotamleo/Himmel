@@ -312,9 +312,11 @@ exit 0
 STUB
 chmod +x "$qbin/bun"
 qhome="$work/qhome"; mkdir -p "$qhome"
+# --with-graphify rides this dry-run (HIMMEL-891 CR-5b): opted-in + --dry-run
+# must emit the graphify DRY line (and nothing real — dry-run never installs).
 set +e
 out=$(PATH="$qbin:$work/bin:$qmd_free_path" HOME="$qhome" bash "$adopt" \
-      --profile all --scope user --target "$work/ign-q" --luna-target "$work/qvault" --dry-run 2>&1); rc=$?
+      --profile all --scope user --target "$work/ign-q" --luna-target "$work/qvault" --with-graphify --dry-run 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "dry-run adopt exited rc=$rc (expected 0)"
 printf '%s' "$out" | grep -q 'DRY:.*fix-qmd-stub'    || fail "dry-run missing fix-qmd-stub DRY line"
@@ -322,10 +324,12 @@ printf '%s' "$out" | grep -q 'DRY: qmd_install'      || fail "dry-run missing qm
 printf '%s' "$out" | grep -q 'DRY: qmd pull'         || fail "dry-run missing qmd pull DRY line"
 printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* himmel$' || fail "dry-run missing himmel register DRY line"
 printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* luna$'   || fail "dry-run missing luna register DRY line"
+printf '%s' "$out" | grep -q 'Wiring graphify (opt-in' || fail "dry-run --with-graphify missing the graphify wiring banner"
+printf '%s' "$out" | grep -q 'DRY: graphify_install'   || fail "dry-run --with-graphify missing graphify_install DRY line"
 # HIMMEL-842 gap 3: build_jira_cli runs after install_plugins; with npm scrubbed
 # suite-wide and bun stubbed present, it picks bun and emits its DRY build line.
 printf '%s' "$out" | grep -q 'DRY:.*(cd scripts/jira && bun install && bun run build)' || fail "dry-run missing build_jira_cli DRY line"
-echo "ok: dry-run emits all qmd step DRY lines (core G1/G3/G4 + luna G5) + build_jira_cli"
+echo "ok: dry-run emits all qmd step DRY lines (core G1/G3/G4 + luna G5) + build_jira_cli + graphify opt-in DRY"
 
 # ── 11. HIMMEL-877 qmd WARN-not-fail: a failing qmd install never aborts adopt
 # bun present (stubbed) + a `git` stub that fails on `clone` + has_qmd=false
@@ -345,6 +349,17 @@ cat > "$fbin/git" <<'STUB'
 exit 0
 STUB
 chmod +x "$fbin/git"
+# Argv-logging uv stub (HIMMEL-891 CR-5a): this run passes NO --with-graphify,
+# so graphify must stay completely un-wired — the stub's log proves no
+# `uv tool install` ever fires on a default core adopt (the HIMMEL-621
+# open-verdict contract: opt-in only, never default).
+cat > "$fbin/uv" <<STUB
+#!/usr/bin/env bash
+echo "UV \$*" >> "$work/uv-calls-11"
+exit 0
+STUB
+chmod +x "$fbin/uv"
+: > "$work/uv-calls-11"
 fhome="$work/fhome"; mkdir -p "$fhome"
 set +e
 out=$(PATH="$fbin:$work/bin:$qmd_free_path" HOME="$fhome" bash "$adopt" \
@@ -354,6 +369,14 @@ set -e
 printf '%s' "$out" | grep -q 'Installing qmd fork' || fail "qmd_install not invoked (call order)"
 printf '%s' "$out" | grep -Eq 'WARNING.*qmd install failed' || fail "missing qmd install WARNING (WARN-not-fail)"
 echo "ok: qmd install failure WARNs and adopt continues (WARN-not-fail, rc=0)"
+# HIMMEL-891 CR-5a: graphify default-OFF, behaviorally asserted on the run above.
+if printf '%s' "$out" | grep -q 'Wiring graphify'; then
+  fail "default core adopt (no --with-graphify) ran the graphify wiring (opt-in regression)"
+fi
+if grep -q 'tool install' "$work/uv-calls-11"; then
+  fail "default core adopt (no --with-graphify) invoked uv tool install (opt-in regression)"
+fi
+echo "ok: graphify stays un-wired on a default core adopt (opt-in only, zero uv installs)"
 
 # ── 11b. HIMMEL-877 CR codex-adv-1: an existing UPSTREAM install MIGRATES ────
 # A real @tobilu/qmd directory at the bun-global path + a working stubbed bun
