@@ -29,57 +29,33 @@ into a repo you already have, in one command. The full adopter guide is
 > hacking on the harness — is a different path. It's not covered here; see
 > [setup/new-machine.md](setup/new-machine.md#4-himmel-repo).
 
-**Prerequisites** (the adopt script checks them and fails fast with hints):
-`git`, `bash` 3.2+ (**Git Bash** on Windows), `jq`, `python3`, and the
+**Prerequisites** (the wizard checks them and fails fast with hints):
+`git`, `bash` 3.2+ (**Git Bash** on Windows), `node` (node-less machine? the
+bootstrap step below installs it), `jq`, `python3`, and the
 [Claude Code](https://claude.com/claude-code) CLI on your `PATH`. `gh` is
 optional — only the worktree-prune step uses it.
 
-Clone once, then run the one-shot adopt for the profile you want:
+Clone once, then run the install wizard:
 
 ```bash
 git clone https://github.com/yotamleo/himmel
+node himmel/scripts/himmelctl/bin.js install
 ```
 
-**`core`** — the harness (hooks + guardrails + worktree commands + marketplace
-plugins/skills) wired into your repo. *Most people start here.*
+Node-less machine? `bash himmel/scripts/himmelctl/bootstrap.sh` first
+(Windows: `pwsh -ExecutionPolicy Bypass -File himmel\scripts\himmelctl\bootstrap.ps1`),
+then re-run `install`. The wizard asks a few questions (role, scope, vault,
+handover, plugins) and derives the `adopt.sh`/`adopt.ps1` invocation under the
+hood — for example, the most common outcome, `--profile core` at project scope:
 
 ```bash
 bash himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
-# Windows:  pwsh himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
+# Windows:  pwsh -ExecutionPolicy Bypass -File himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
 ```
 
-**`luna`** — the luna second-brain vault scaffold only (no harness). `--target`
-is the vault directory.
-
-```bash
-bash himmel/scripts/adopt.sh --profile luna --target ~/Documents/luna
-# Windows:  pwsh himmel\scripts\adopt.ps1 -Profile luna -Target $HOME\Documents\luna
-```
-
-**`all`** — `core` + `luna`. The harness lands in `--target`; the vault in
-`--luna-target` (default `~/Documents/luna`).
-
-```bash
-bash himmel/scripts/adopt.sh --profile all --scope project --target /path/to/your/repo --luna-target ~/Documents/luna
-# Windows:  pwsh himmel\scripts\adopt.ps1 -Profile all -Scope project -Target C:\path\to\repo -LunaTarget $HOME\Documents\luna
-```
-
-**User scope** — enable himmel for *you* in every project on this machine
-(wires `~/.claude/settings.json` to reference this clone; nothing is copied
-per-repo). Copy-paste:
-
-```bash
-# core only:
-bash himmel/scripts/adopt.sh --profile core --scope user
-# core + luna vault (vault defaults to ~/Documents/luna):
-bash himmel/scripts/adopt.sh --profile all --scope user --luna-target ~/Documents/luna
-# Windows:  pwsh himmel\scripts\adopt.ps1 -Profile all -Scope user -LunaTarget $HOME\Documents\luna
-```
-
-`--scope project` wires it into your repo (commit the result and anyone who
-clones it gets it); `--scope user` enables it for you in every project on this
-machine. Remove/move and the à-la-carte parts are in
-[use-on-your-project.md](setup/use-on-your-project.md).
+Invoke `adopt.sh`/`adopt.ps1` directly for the manual or CI path. Full
+profile/scope matrix (`luna`, `all`, user scope) and the à-la-carte parts:
+[docs/setup/use-on-your-project.md](setup/use-on-your-project.md).
 
 When the Claude Code plugins (handover, triage, obsidian, …) get
 installed you choose where they're recorded: **user scope** (`~/.claude`, every
@@ -251,7 +227,7 @@ guard is yours to lift:
 | Adopt the core in another repo | [setup/use-on-your-project.md](setup/use-on-your-project.md) |
 | Full machine setup + gotchas | [setup/new-machine.md](setup/new-machine.md) |
 | Update the harness + upgrade the vault | [setup/updating.md](setup/updating.md) |
-| Uninstall / offboard himmel | [`scripts/uninstall.sh`](../scripts/uninstall.sh) (see [updating.md](setup/updating.md#uninstalling--offboarding)) |
+| Uninstall / offboard himmel | `node himmel/scripts/himmelctl/bin.js uninstall` (run beside your himmel clone, same as install; execs [`scripts/uninstall.sh`](../scripts/uninstall.sh); see [updating.md](setup/updating.md#uninstalling--offboarding)) |
 
 Working as an LLM in this repo? Start from [`llms.txt`](../llms.txt) — the
 machine-readable map.

@@ -107,15 +107,24 @@ Plain `git pull` works too if you don't need the marketplace re-sync.
 
 ## Uninstalling / offboarding
 
-The inverse of setup is [`scripts/uninstall.sh`](../../scripts/uninstall.sh)
-(`scripts\uninstall.ps1` on Windows) — a symmetric six-step teardown of what
-`setup.sh`/`adopt` onboard: stops the Telegram bridge, removes its pairing +
-bridge state, deletes the `HIMMEL-Resume-*` scheduled jobs, uninstalls the
-Claude plugins + marketplaces, uninstalls the repo's git hooks, and unwires the
-user-scope `~/.claude/settings.json` keys himmel added. It is destructive and
-fail-closed (a non-interactive run aborts without `--yes`); preview any run with
-`--dry-run`, and skip individual steps with `--skip-plugins` / `--skip-hooks` /
-`--skip-tasks` / `--skip-settings`.
+The inverse of install is the wizard's `uninstall` subcommand:
+
+```bash
+node scripts/himmelctl/bin.js uninstall --dry-run    # preview; nothing is executed
+node scripts/himmelctl/bin.js uninstall              # actually offboard
+```
+
+Under the hood it derives + confirms, then execs
+[`scripts/uninstall.sh`](../../scripts/uninstall.sh) (`scripts\uninstall.ps1`
+on Windows) — a symmetric six-step teardown of what `setup.sh`/`adopt` onboard:
+stops the Telegram bridge, removes its pairing + bridge state, deletes the
+`HIMMEL-Resume-*` scheduled jobs, uninstalls the Claude plugins + marketplaces,
+uninstalls the repo's git hooks, and unwires the user-scope
+`~/.claude/settings.json` keys himmel added. It is destructive and fail-closed
+(a non-interactive run aborts without `--yes`). Invoke `uninstall.sh` directly
+for the manual or CI path — preview any run with `--dry-run`, and skip
+individual steps with `--skip-plugins` / `--skip-hooks` / `--skip-tasks` /
+`--skip-settings`:
 
 ```bash
 bash scripts/uninstall.sh --dry-run    # preview; nothing is executed
