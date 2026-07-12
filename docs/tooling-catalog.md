@@ -775,6 +775,14 @@ view into the vault — the bridge between the derived graph and the KB.
 
 ---
 
+## Codex Cleanup Cadence (`scripts/cleanup/`, HIMMEL-892)
+
+Windows-only scheduled cleanup for orphaned codex processes and stale MCP fleet.
+
+- `scripts/cleanup/codex-sweep-cadence.sh` — Scheduler that arms a daily Windows scheduled task (`HIMMEL-CodexOrphanSweep`, default 09:00 local) firing a persistent `.bat` runner with exit-code stamping. The runner fires `scripts/cleanup/sweep-codex-orphans.ps1 -Kill` (codex orphan-process reaper) then `scripts/codex/reap-mcp-fleet.ps1 -Kill` (MCP fleet killer). `arm`/`status`/`disarm` subcommands with `--time HH:MM` (arm-only, 24h HH:MM), `--force` (replace existing), `--dry-run` (preview). Dedup-guarded; hermetic test `test-codex-sweep-cadence.sh`. Arming is operator-invoked (daily Windows task maintenance); lean-invoke: `bash scripts/cleanup/codex-sweep-cadence.sh arm`.
+
+---
+
 ## Multi-vault upgrade engine (`scripts/luna-upgrade-all.sh`)
 
 Multi-vault luna template upgrade sweep (HIMMEL-462). The MULTI-vault layer
