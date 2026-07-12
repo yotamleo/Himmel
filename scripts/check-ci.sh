@@ -44,6 +44,12 @@
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
 #                            tests set 0; non-numeric falls back to default)
 #   CHECK_CI_SETTLE        — default for --settle (flag wins)
+#
+# Un-maskable verdict (HIMMEL-974): every exit path additionally prints
+# "check-ci: verdict exit=N" to STDOUT via an EXIT trap installed after arg
+# parsing (--help / usage errors stay clean). A caller that pipes the run
+# (`check-ci.sh | tail`) gets the PIPE's exit code, not this script's — the
+# verdict line keeps the real status readable in any captured output.
 set -uo pipefail
 
 usage() {
@@ -90,6 +96,12 @@ esac
 case "$SETTLE" in
     ''|*[!0-9]*) echo "check-ci: --settle must be a non-negative integer, got '$SETTLE'" >&2; exit 2 ;;
 esac
+
+# Un-maskable verdict line (HIMMEL-974) — installed only now, after arg
+# parsing, so --help and usage errors above stay clean. Prints on EVERY later
+# exit path: a piped caller's pipeline exit code is the LAST command's, not
+# this script's, so the numeric verdict must survive in the output text.
+trap 'echo "check-ci: verdict exit=$?"' EXIT
 
 if ! command -v gh >/dev/null 2>&1; then
     echo "check-ci: gh CLI not found on PATH" >&2

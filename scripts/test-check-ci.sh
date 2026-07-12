@@ -12,7 +12,10 @@
 #       0 unresolved threads                 → rc 0
 #   3.  checks registered, watch red         → rc 1, FAILED + fast-red hint
 #   4.  checks never register, --grace 0     → rc 2, "no checks registered"
-#   5.  unknown option                       → rc 2, usage
+#   5.  unknown option                       → rc 2, usage, no verdict line
+#   5b. --help                               → rc 0, usage, no verdict line
+#   (1/2/3/11 additionally assert exactly one exact-match
+#   "check-ci: verdict exit=N" line — HIMMEL-974)
 #   6.  --grace non-numeric                  → rc 2
 #   7.  two positional selectors             → rc 2
 #   8.  selector is passed through to gh as an exact token
@@ -203,6 +206,26 @@ run() {
 assert_rc()      { if [ "$RC" -eq "$1" ]; then pass "$2"; else fail "$2" "rc=$RC want $1"; fi; }
 assert_out_has() { if printf '%s' "$OUT" | grep -iF -- "$1" >/dev/null; then pass "$2"; else fail "$2" "stdout missing: $1"; fi; }
 assert_err_has() { if printf '%s' "$ERR" | grep -iF -- "$1" >/dev/null; then pass "$2"; else fail "$2" "stderr missing: $1"; fi; }
+# Exactly ONE verdict line, exact-match to the expected code (HIMMEL-974) —
+# a substring check would pass on a double-fired trap or a wrong-code line.
+assert_verdict() {
+    local n
+    n=$(printf '%s\n' "$OUT" | grep -c -x "check-ci: verdict exit=$1")
+    local total
+    total=$(printf '%s\n' "$OUT" | grep -c "check-ci: verdict exit=")
+    if [ "$n" -eq 1 ] && [ "$total" -eq 1 ]; then
+        pass "$2"
+    else
+        fail "$2" "want exactly 1 'verdict exit=$1' line, got $n (total verdict lines: $total)"
+    fi
+}
+assert_no_verdict() {
+    if printf '%s' "$OUT$ERR" | grep -F "verdict exit=" >/dev/null; then
+        fail "$1" "verdict line leaked into a pre-trap exit"
+    else
+        pass "$1"
+    fi
+}
 
 echo "test-check-ci.sh"
 
@@ -210,27 +233,37 @@ echo "test-check-ci.sh"
 run no-pr
 assert_rc 2 "1 no PR rc 2"
 assert_err_has "no pull requests found" "1 no PR gh error surfaced"
+assert_verdict 2 "1 un-maskable verdict line (HIMMEL-974)"
 
 # 2 — registers after two probes, watch green, threads resolved
 run register-then-green
 assert_rc 0 "2 register-then-green rc 0"
 assert_out_has "all checks green + all review threads resolved" "2 green verdict on stdout"
+assert_verdict 0 "2 un-maskable verdict line (HIMMEL-974)"
 
 # 3 — red (fast) → rc 1 + billing-block hint
 run red
 assert_rc 1 "3 red rc 1"
 assert_err_has "checks FAILED" "3 FAILED on stderr"
 assert_err_has "billing" "3 fast-red hint present"
+assert_verdict 1 "3 un-maskable verdict line (HIMMEL-974)"
 
 # 4 — never registers, grace 0
 run never-register --grace 0
 assert_rc 2 "4 never-register rc 2"
 assert_err_has "no checks registered within 0s" "4 grace-timeout message"
 
-# 5 — unknown option
+# 5 — unknown option (pre-trap usage error: NO verdict line)
 run red --bogus
 assert_rc 2 "5 unknown option rc 2"
 assert_err_has "usage" "5 usage on stderr"
+assert_no_verdict "5 no verdict line on usage errors"
+
+# 5b — --help exits 0 pre-trap: usage only, NO verdict line
+run red --help
+assert_rc 0 "5b --help rc 0"
+assert_err_has "usage" "5b usage on stderr"
+assert_no_verdict "5b no verdict line on --help"
 
 # 6 — non-numeric grace
 run red --grace soon
@@ -273,6 +306,7 @@ THREADS_OVERRIDE=2
 run register-then-green
 assert_rc 3 "11 unresolved threads rc 3"
 assert_err_has "2 unresolved review thread(s)" "11 unresolved-thread message"
+assert_verdict 3 "11 un-maskable verdict line (HIMMEL-974)"
 
 # 12 — thread query failure → rc 2 (gate cannot be evaluated, fail-closed)
 THREADS_OVERRIDE=fail
@@ -388,5 +422,5 @@ assert_err_has "no check is in the fail bucket" "26 structured-confirm message"
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 26 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 26"; exit 1; fi
+if [ "$COUNT" -ne 27 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 27"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
