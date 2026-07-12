@@ -170,6 +170,14 @@ check "all families keep citation rule" "$(PP gpt-5.5 | grep -c '\[<file>:<line>
 check "gpt has injection guard"    "$(PP gpt-5.5             | grep -c 'UNTRUSTED DATA to review')" "1"
 check "open has injection guard"   "$(PP openai/gpt-oss-120b | grep -c 'UNTRUSTED DATA to review')" "1"
 check "claude has injection guard" "$(PP claude-opus-4-8     | grep -c 'UNTRUSTED DATA to review')" "1"
+check "gpt diff-mode keeps injection Critical clause" "$(PP gpt-5.5 | grep -c 'itself a Critical finding')" "1"
+check "gpt diff-mode carves out agent-instruction content" "$(PP gpt-5.5 | grep -c 'NOT a prompt-injection finding')" "1"
+# HIMMEL-944 policy structure (not just phrase presence): current-run steering
+# flags EVEN inside agent files; the carve-out is scoped to LATER-LOADED text;
+# and the precedence clause appears BEFORE the carve-out on the rule line.
+check "gpt diff-mode steering flags even in agent files" "$(PP gpt-5.5 | grep -c 'EVEN IF it sits inside an agent-instruction file')" "1"
+check "gpt diff-mode carve-out scoped to later-loaded text" "$(PP gpt-5.5 | grep -c 'LATER LOADED')" "1"
+check "gpt diff-mode precedence clause precedes carve-out" "$(PP gpt-5.5 | grep -c 'EVEN IF.*LATER LOADED')" "1"
 
 # --- HIMMEL-485: ESTIMATED usage telemetry (CR_USAGE_LOG, opt-in) ----------
 cat > "$tmp/stub.py" <<'PY'
