@@ -278,7 +278,7 @@ echo "ok: caseG(sh) a genuinely failed apt/brew install -> 'node install failed'
 # test host; apt-get is scrubbed so run_install hits the no-apt-get guard.
 stubH="$work/shH"; mkdir -p "$stubH"
 build_sudo_stub "$stubH" 0
-cH=$(build_path "$stubH" -- node apt-get)
+cH=$(build_path "$stubH" dirname bash -- node apt-get)
 cat > "$stubH/uname" <<STUB
 #!/usr/bin/env bash
 [ "\$1" = "-s" ] && { echo "Linux"; exit 0; }
