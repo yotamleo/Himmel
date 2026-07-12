@@ -47,6 +47,7 @@ if [ -f branch-marker.txt ]; then echo "saw-branch-marker"; fi
 if git rev-parse --verify -q main >/dev/null; then echo "saw-base-branch"; fi
 if [ -f untracked-secret.txt ]; then echo "LEAKED-untracked-file"; fi
 echo "FAKE FINDINGS"
+[ -n "${STUB_SLEEP_SECS:-}" ] && exec sleep "$STUB_SLEEP_SECS"
 exit "${STUB_RC:-0}"
 STUBEOF
 chmod +x "$stubs/coderabbit"
@@ -103,15 +104,21 @@ case "$(cat "$tmp/t3.err")" in
     *) bad "T3: unavailable line missing" ;;
 esac
 
-# --- T4: timeout rc (124) -> rc=1, timeout-flavored unavailable line ---------
-(cd "$repo" && CODERABBIT_BIN="$stubs/coderabbit" STUB_RC=124 \
+# --- T4: real timeout kill -> rc=1, timeout-flavored unavailable line --------
+started="$(date +%s)"
+(cd "$repo" && CODERABBIT_BIN="$stubs/coderabbit" STUB_SLEEP_SECS=10 \
+    CODERABBIT_TIMEOUT_SECS=2 \
     bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t4.err")
 rc=$?
+elapsed=$(( $(date +%s) - started ))
 [ "$rc" -eq 1 ] && ok "T4 rc=1 on timeout" || bad "T4: rc=$rc (want 1)"
 case "$(cat "$tmp/t4.err")" in
     *"panel-availability: coderabbit unavailable (timeout"*) ok "T4 timeout line" ;;
     *) bad "T4: timeout line missing (got: $(cat "$tmp/t4.err"))" ;;
 esac
+[ "$elapsed" -ge 2 ] && [ "$elapsed" -lt 10 ] \
+    && ok "T4 real timeout killed stub after ${elapsed}s" \
+    || bad "T4: elapsed=${elapsed}s (want >=2 and <10)"
 
 # --- T5: usage guards --------------------------------------------------------
 (cd "$repo" && CODERABBIT_BIN="$stubs/coderabbit" \
