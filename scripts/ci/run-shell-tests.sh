@@ -197,9 +197,18 @@ while IFS= read -r suite; do
     failed_suites="${failed_suites}  ${suite} (rc=${rc})
 "
     printf '[FAIL] %s (rc=%s, %ss)\n' "$suite" "$rc" "$dur"
-    echo '----- last 20 lines -----'
-    tail -20 "$log" | sed 's/^/    /'
+    echo '----- last 100 lines -----'
+    tail -n 100 "$log" | sed 's/^/    /'
     echo '--------------------------'
+    # Preserve the FULL failed-suite log when FAIL_LOG_DIR is set (CI uploads
+    # it as an artifact — HIMMEL-963: tail-only + rm made the failing
+    # assertion unrecoverable from Actions logs). Injective escape (_ -> _u,
+    # / -> _s) so distinct relpaths like a/b and a_b can't collide.
+    if [ -n "${FAIL_LOG_DIR:-}" ]; then
+      mkdir -p "$FAIL_LOG_DIR"
+      safe_relpath=$(printf '%s' "$relpath" | sed 's/_/_u/g; s#/#_s#g')
+      cp "$log" "$FAIL_LOG_DIR/$safe_relpath.log"
+    fi
   fi
   rm -f "$log"
 done < "$suites_file"
