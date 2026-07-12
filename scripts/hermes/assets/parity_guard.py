@@ -516,7 +516,7 @@ def terminal_phi_egress_reason(cmd_norm: str):
 #     ONESHOT signals matter because invoke.sh exports the resolved --model /
 #     --provider through them (HERMES_ENGINE is a launcher/operator signal the
 #     one-shot dispatch path never sets) — without scanning them,
-#     `dispatch-trusted.sh --model deepseek-chat` would ride the wrapper's
+#     `dispatch-trusted.sh --model deepseek-v4-flash` would ride the wrapper's
 #     external-writes opt-in with an untrusted engine (HIMMEL-916 CR finding).
 #   * HERMES_EXTERNAL_WRITES_OK=1               -> the operator / gateway affirms
 #     a trusted main-tier (codex/openai) engine for this session -> PERMITTED.

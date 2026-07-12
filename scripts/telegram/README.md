@@ -180,7 +180,7 @@ Environment:
 
 - `TELEGRAM_TRIAGE=off` disables group triage. Default is on. The match is an
   exact, lowercase `off` — any other value leaves triage enabled.
-- `TELEGRAM_TRIAGE_MODEL` selects the Hermes model. Default: `deepseek-chat`.
+- `TELEGRAM_TRIAGE_MODEL` selects the Hermes model. Default: `deepseek-v4-flash` (thinking mode by default; legacy `deepseek-chat` was non-thinking).
 - `TELEGRAM_TRIAGE_PROVIDER` selects the Hermes provider. Default: `deepseek`.
 - `TELEGRAM_TRIAGE_TIMEOUT_MS` is the classifier deadline in milliseconds.
   Default: `20000` (20s). A non-numeric or non-positive value falls back to the

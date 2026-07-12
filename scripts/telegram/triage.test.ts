@@ -28,7 +28,7 @@ test("classifyForSpawn shells through the cheap classifier and parses its verdic
 
   expect(verdict).toBe("spawn-low");
   expect(calls).toHaveLength(1);
-  expect(calls[0].args).toEqual(["bash", join(REPO_ROOT, "scripts", "hermes", "invoke.sh"), "--model", "deepseek-chat", "--provider", "deepseek"]);
+  expect(calls[0].args).toEqual(["bash", join(REPO_ROOT, "scripts", "hermes", "invoke.sh"), "--model", "deepseek-v4-flash", "--provider", "deepseek"]);
   expect(calls[0].input).toContain("ship this?");
   expect(calls[0].input).not.toContain("chat_id");
 });
