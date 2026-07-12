@@ -108,6 +108,15 @@ credential helper without it.
 
 ## Phase 3 — himmel + machine setup
 
+> **Just installing himmel for adopter use, not the full dev + lane-fleet
+> setup below?** Clone first, then use the wizard instead:
+> `git clone https://github.com/yotamleo/himmel && cd himmel`, then
+> `powershell -ExecutionPolicy Bypass -File scripts\himmelctl\bootstrap.ps1`
+> (winget-installs node if missing, then hands off to `himmelctl install`).
+> The rest of this phase runs `win11.ps1`, the machine-provisioner script this
+> remote clean-machine walkthrough uses for the full toolchain + lane-fleet +
+> luna setup — it remains in place, not superseded by the wizard.
+
 1. **Clone the DEV repo, not the public mirror.** If your himmel development
    happens in a private repo with a public propagation mirror, `git clone` of
    the public name gives you a stale, differently-numbered history. Check the

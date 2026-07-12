@@ -137,13 +137,14 @@ shell-and-package install (Linux / macOS / Windows Git Bash).
 ```bash
 git clone https://github.com/yotamleo/Himmel
 cd himmel
-
-# Linux / macOS / Git Bash
-bash scripts/setup.sh
-
-# Windows PowerShell
-powershell -File scripts\setup.ps1
+node scripts/himmelctl/bin.js install
 ```
+
+Node-less machine? Bootstrap first: `bash scripts/himmelctl/bootstrap.sh`
+(Windows: `powershell -ExecutionPolicy Bypass -File scripts\himmelctl\bootstrap.ps1`), then re-run
+`install`. Under the hood the wizard runs `scripts/setup.sh` /
+`scripts\setup.ps1` for this standalone path — invoke those directly for the
+manual or CI path.
 
 Minimum environment (set in the shell that launches Claude or your daily
 work shell):
@@ -228,10 +229,13 @@ per-platform shell setup — lives at
 [`docs/setup/new-machine.md`](docs/setup/new-machine.md).
 
 Adopting himmel in your own repo (or user scope) is one command —
+`node scripts/himmelctl/bin.js install` walks you through it
+interactively. Under the hood it runs
 `bash scripts/adopt.sh --profile core --scope project --target /path/to/repo`
-brings the harness (hooks + guardrails + worktree commands + marketplace
-plugins/skills) over in one shot. Profiles, scopes, the Windows `adopt.ps1`
-twin, and the à-la-carte parts:
+(brings the harness — hooks + guardrails + worktree commands + marketplace
+plugins/skills — over in one shot); invoke that directly for the manual or
+CI path. Full profile/scope matrix, the Windows `adopt.ps1` twin, and the
+à-la-carte parts:
 [`docs/setup/use-on-your-project.md`](docs/setup/use-on-your-project.md).
 
 Claude Code global config (`~/.claude/`) setup: see

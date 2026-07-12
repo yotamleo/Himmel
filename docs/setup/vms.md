@@ -2,6 +2,8 @@
 
 Local VMs for testing and automation. Credentials stored in `.env` — see `.env.example` for variable names.
 
+Adopters install himmel via the `himmelctl` wizard (`node scripts/himmelctl/bin.js install`); the VM docs below keep referencing the underlying scripts directly, since VM provisioning is a different (test-harness) path.
+
 To provision a fresh Ubuntu VM run: `python scripts/machine-setup/ubuntu-vm-setup.py`
 
 ## Dependency split — test-harness vs user-runtime (HIMMEL-469)
