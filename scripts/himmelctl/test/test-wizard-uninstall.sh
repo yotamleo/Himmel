@@ -124,8 +124,8 @@ out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=0 \
 set -e
 [ "$rc" -eq 0 ] || fail "caseB: dry-run should exit 0 (got rc=$rc): $out"
 if is_win32; then
-  printf '%s' "$out" | grep -qE 'derived:.*powershell -File .*uninstall\.ps1 -Yes$' \
-    || fail "caseB(win32): expected 'powershell -File ...uninstall.ps1 -Yes' (got: $out)"
+  printf '%s' "$out" | grep -qE 'derived:.*powershell -ExecutionPolicy Bypass -File .*uninstall\.ps1 -Yes$' \
+    || fail "caseB(win32): expected 'powershell -ExecutionPolicy Bypass -File ...uninstall.ps1 -Yes' (got: $out)"
 else
   printf '%s' "$out" | grep -qE 'derived:.*bash .*uninstall\.sh --yes$' \
     || fail "caseB(posix): expected 'bash .../uninstall.sh --yes' (got: $out)"

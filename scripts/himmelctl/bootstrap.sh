@@ -45,7 +45,19 @@ install_plan() {
 run_install() {
   case "$(uname -s)" in
     Darwin) brew install node bun ;;
-    *)      sudo apt-get install -y nodejs npm ;;
+    *)
+      # Non-Darwin assumes apt (the only posix plan this shim carries). Do NOT
+      # add distro-specific package managers (yum/dnf/pacman/zypper) — fail
+      # closed with a manual-install pointer naming the detected platform so a
+      # non-apt host never silently mis-runs `sudo apt-get` (HIMMEL-935 / CR #1126).
+      if ! command -v apt-get >/dev/null 2>&1; then
+        echo "bootstrap: no apt-get on this host ($(uname -s) $(uname -r)) -- install Node.js >=18 manually (see https://nodejs.org), put it on PATH, then re-run bootstrap" >&2
+        return 1
+      fi
+      # Refresh the package index first: a fresh host's lists are often
+      # empty/stale and the install fails outright (CodeRabbit r2, #1140).
+      sudo apt-get update && sudo apt-get install -y nodejs npm
+      ;;
   esac
 }
 

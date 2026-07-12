@@ -136,4 +136,4 @@ step "Delegate himmel/luna wiring to himmelctl bootstrap (HIMMEL-887)"
 # himmel clone deterministically.
 echo "NOTICE: himmel/luna wiring in this script is soft-deprecated (HIMMEL-887) -- delegating to himmelctl bootstrap. Hard-remove deferred to HIMMEL-755."
 cd "$HIMMEL_PATH"
-exec bash "$HIMMEL_PATH/scripts/himmelctl/bootstrap.sh"
+HIMMELCTL_REPO_ROOT="$HIMMEL_PATH" exec bash "$HIMMEL_PATH/scripts/himmelctl/bootstrap.sh"

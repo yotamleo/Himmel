@@ -616,7 +616,7 @@ function deriveCommand(answers) {
   const scriptsDir = path.join(repoRoot(), 'scripts');
   if (answers.role === 'contributor') {
     if (process.platform === 'win32') {
-      return { argv: ['powershell', '-File', path.join(scriptsDir, 'setup.ps1')] };
+      return { argv: ['powershell', '-ExecutionPolicy', 'Bypass', '-File', path.join(scriptsDir, 'setup.ps1')] };
     }
     return { argv: ['bash', path.join(scriptsDir, 'setup.sh')] };
   }
@@ -981,7 +981,7 @@ async function cmdInstall(args) {
 function deriveUninstallCommand() {
   const scriptsDir = path.join(repoRoot(), 'scripts');
   if (process.platform === 'win32') {
-    return { argv: ['powershell', '-File', path.join(scriptsDir, 'uninstall.ps1'), '-Yes'] };
+    return { argv: ['powershell', '-ExecutionPolicy', 'Bypass', '-File', path.join(scriptsDir, 'uninstall.ps1'), '-Yes'] };
   }
   return { argv: ['bash', path.join(scriptsDir, 'uninstall.sh'), '--yes'] };
 }
