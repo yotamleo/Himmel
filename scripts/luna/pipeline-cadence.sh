@@ -588,10 +588,8 @@ emit_bat() {
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$vault_win_esc" "$log_win_esc"
-    # HIMMEL-918: lift claude's 600s background-task wait ceiling — triage
-    # dispatches clip batches as bg tasks and the default ceiling silently
-    # truncated nightly runs mid-batch.
-    printf 'set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0\r\n'
+    # HIMMEL-951: no bg-wait ceiling override here — CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
+    # only affects --print mode, and cadence runners are interactive-shaped (HIMMEL-128).
     printf '"%s" --model "%s" --settings "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win" "$model_esc" "$settings_esc" "$prompt_esc" "$log_win_esc"
 }
 
@@ -1143,8 +1141,9 @@ emit_runner() {
     printf '{\n'
     printf '    echo "[fired $(date '\''+%%Y-%%m-%%d %%H:%%M:%%S'\'')]"\n'
     printf '    cd %s || exit 1\n' "$q_vault"
-    # HIMMEL-918: lift claude's 600s background-task wait ceiling (see emit_bat).
-    printf '    _rc=0; CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 %s --model %s --settings %s %s < /dev/null || _rc=$?\n' "$q_claude" "$q_model" "$q_settings" "$q_prompt"
+    # HIMMEL-951: no bg-wait ceiling override here — CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
+    # only affects --print mode, and cadence runners are interactive-shaped (HIMMEL-128).
+    printf '    _rc=0; %s --model %s --settings %s %s < /dev/null || _rc=$?\n' "$q_claude" "$q_model" "$q_settings" "$q_prompt"
     printf '    echo "[exit rc=$_rc]"\n'
     printf '} >> "$log" 2>&1\n'
 }

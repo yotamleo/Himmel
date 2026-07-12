@@ -81,7 +81,7 @@ scoped grant instead of deadlocking or running under blanket bypass.
 session's `outbox.jsonl`. The parent/operator is the single adjudicator per
 session and responds via a lean CLI:
 
-```
+```sh
 bun scripts/telegram/adjudicate.ts list                    # surface pending escalations
 bun scripts/telegram/adjudicate.ts grant  <sessionDir> --arm <arm> --pattern <re> [--ttl m] [--uses n]
 bun scripts/telegram/adjudicate.ts refuse <sessionDir> <index>
@@ -112,7 +112,9 @@ vendored `scripts/statusline/` bar with a where-are-we ledger line). See
 **[../scripts/statusline/README.md](../scripts/statusline/README.md)** for the
 vendored bar's options and
 **[../scripts/statusline/VENDORED.md](../scripts/statusline/VENDORED.md)**
-for the fork-sync provenance.
+for the fork-sync provenance. If the configured statusline command path is
+removed or absent, the statusline silently disappears instead of reporting an
+error.
 
 ## Clipper pipeline
 
@@ -122,7 +124,7 @@ triaged, synthesized, filed knowledge — the capture arm of the luna second-bra
 
 **The stages** (each an idempotent `obsidian-triage` skill, safe to re-run):
 
-1. **`/harvest-clips`** — marks each clip harvest-ready; github URLs are
+1. **`/harvest-clips`** — marks each clip harvest-ready; GitHub URLs are
    dispatched to repo synthesis.
 2. **`/triage-clips`** — summarizes, infers tags against the vault tag set,
    suggests related notes, extracts action items to the daily note.
