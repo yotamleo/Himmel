@@ -383,7 +383,11 @@ Write-Host ("[sweep-codex-orphans] flat PID list ({0}): {1}" -f $flatPids.Count,
 # Blind-client gate (silent-failure CR): a client whose CommandLine WMI hides
 # from us may be holding a pipe we cannot see, so every ORPHAN verdict above is
 # suspect. Warn always; refuse -Kill (report stays useful, nothing is stopped).
-$blindClients = @(Get-BlindClientPids -Procs $records)
+# NB: NO @() wrap on the call (HIMMEL-930) - Get-BlindClientPids returns via
+# unary comma so the array survives raw assignment (wrapping it in @() would
+# re-box an EMPTY result into a 1-element wrapper, permanently tripping this
+# gate: Count=1 even with zero blind clients).
+$blindClients = Get-BlindClientPids -Procs $records
 if ($blindClients.Count -gt 0) {
   Write-Warning ("[sweep-codex-orphans] client pid(s) {0} have no visible CommandLine (elevation/session gap) - the client-liveness signal is unreliable; orphan classifications above may be WRONG." -f ($blindClients -join ', '))
 }
