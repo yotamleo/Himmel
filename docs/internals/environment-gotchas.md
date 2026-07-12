@@ -248,12 +248,14 @@ the session to a fallback model — and the fallback map picks the **bare** mode
 id, never the `[1m]` long-context variant. A session running a `[1m]` model
 drops to the fallback's plain 200k window; a context already past 200k then
 overflows the new window → `<synthetic>` API errors → an unattended/armed
-session stalls mid-queue, with no recovery path if auto-compact is off.
+session stalls mid-queue, with no unattended automatic recovery path if
+auto-compact is off.
 
 Mitigations:
 
 - **Keep `autoCompactEnabled: true`** for any session leg that runs a `[1m]`
-  model unattended — auto-compact is the only recovery path after the drop.
+  model unattended — auto-compact is the only automatic recovery path after
+  the drop.
 - **Delegate drop-risk reads to a subagent.** Content that routinely trips
   safeguards — CI/build failure logs (`gh run view --log-failed`),
   security-scan output, flagged or adversarial code — should be read by a
