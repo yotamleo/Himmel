@@ -23,10 +23,10 @@
 # that budget. Note: a malformed QMD_MCP_URL override looks identical to
 # daemon-dead (curl stderr is discarded by design).
 #
-# qmd resolution is inlined (bun global bin FIRST, then PATH; .exe variant
-# on Windows) - self-contained mirror of the essentials of
-# himmel's scripts/lib/qmd-bin.sh, which this plugin copy cannot source
-# because the plugin must work outside a himmel checkout.
+# qmd resolution is inlined (bun + the bun-global qmd.js FIRST, then the bun
+# bin shim, then PATH; .exe variant on Windows) - self-contained mirror of the
+# essentials of himmel's scripts/lib/qmd-bin.sh, which this plugin copy cannot
+# source because the plugin must work outside a himmel checkout.
 # bash 3.2-safe, shellcheck clean, ASCII-only.
 #
 # Test seams (used only by scripts/qmd/test-ensure-qmd-daemon.sh in the
@@ -65,22 +65,45 @@ is_qmd_shaped() {
   printf '%s' "$1" | grep -Eq '"serverInfo"[[:space:]]*:[[:space:]]*\{[^}]*"name"[[:space:]]*:[[:space:]]*"qmd"'
 }
 
-# Resolve the qmd binary: bun global bin FIRST ($HOME/.bun/bin/qmd, .exe
-# variant on Windows), then PATH. Bun-first matches scripts/lib/qmd-bin.sh
-# (himmel repo): a broken Windows qmd stub can shadow PATH (HIMMEL-163), so
-# the known-good bun install wins when present. Provenance: minimal inline
-# mirror of qmd-bin.sh - see header.
+# Resolve how to invoke qmd. Sets QMD_BIN (argv0) and QMD_BIN_ARG1 (optional
+# first arg). Preference order (HIMMEL-928):
+#   1. bun + the bun-global @tobilu/qmd dist/cli/qmd.js -> `bun <qmd.js>`
+#   2. bun global bin shim ($HOME/.bun/bin/qmd, .exe variant on Windows)
+#   3. PATH
+# bun-js FIRST is load-bearing, not just parity with qmd_cmd in himmel's
+# scripts/lib/qmd-bin.sh: the bin shim honors the CLI's node shebang and runs
+# qmd under NODE, and the --daemon child is spawned via process.execPath - so
+# a shim-started daemon runs under whatever node is installed. Under bun qmd
+# uses bun:sqlite; under node it needs the better-sqlite3 native binding,
+# which bun's install blocks by default and which breaks again on every node
+# ABI bump (reproduced live: absent binding + node 26 killed the daemon at
+# startup - HIMMEL-928). `bun <qmd.js>` makes process.execPath = bun and the
+# daemon child inherits it. Bun-before-PATH:
+# a broken Windows qmd stub can shadow PATH (HIMMEL-163), so the known-good
+# bun install wins when present. Provenance: minimal inline mirror of
+# qmd-bin.sh - see header.
 resolve_qmd() {
-  if [ -x "$HOME/.bun/bin/qmd" ]; then
-    echo "$HOME/.bun/bin/qmd"
+  # One bun root for BOTH the js and the shim fallbacks: a relocated
+  # BUN_INSTALL must not resolve the js from one root and the shim from
+  # $HOME/.bun (CodeRabbit, PR #1134).
+  bun_root="${BUN_INSTALL:-$HOME/.bun}"
+  bun_js="$bun_root/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+  if [ -f "$bun_js" ] && command -v bun >/dev/null 2>&1; then
+    QMD_BIN="bun"
+    QMD_BIN_ARG1="$bun_js"
     return 0
   fi
-  if [ -f "$HOME/.bun/bin/qmd.exe" ]; then
-    echo "$HOME/.bun/bin/qmd.exe"
+  QMD_BIN_ARG1=""
+  if [ -x "$bun_root/bin/qmd" ]; then
+    QMD_BIN="$bun_root/bin/qmd"
+    return 0
+  fi
+  if [ -f "$bun_root/bin/qmd.exe" ]; then
+    QMD_BIN="$bun_root/bin/qmd.exe"
     return 0
   fi
   if command -v qmd >/dev/null 2>&1; then
-    echo "qmd"
+    QMD_BIN="qmd"
     return 0
   fi
   return 1
@@ -99,7 +122,7 @@ if [ -n "$body" ]; then
 fi
 
 # ---- Dead: start the daemon ------------------------------------------------
-if ! QMD_BIN="$(resolve_qmd)"; then
+if ! resolve_qmd; then
   echo "ensure-qmd-daemon: ERROR - qmd is not installed / not on PATH." >&2
   echo "  Install it: bash <himmel-repo>/scripts/lib/qmd-bin.sh install (HIMMEL-877)" >&2
   exit 1
@@ -109,11 +132,13 @@ fi
 # "Already running (PID N)" and exits 0. Bound the start with timeout(1)
 # so a hung qmd/bun start cannot stall SessionStart; when timeout(1) is
 # absent (rare platform), degrade to an unbounded start.
+# ${QMD_BIN_ARG1:+"$QMD_BIN_ARG1"} expands to the quoted qmd.js path on the
+# bun-js resolution and to NOTHING (no empty argv slot) otherwise.
 start_rc=0
 if command -v timeout >/dev/null 2>&1; then
-  start_out="$(timeout -k 5 "$QMD_START_TIMEOUT" "$QMD_BIN" mcp --http --daemon 2>&1)" || start_rc=$?
+  start_out="$(timeout -k 5 "$QMD_START_TIMEOUT" "$QMD_BIN" ${QMD_BIN_ARG1:+"$QMD_BIN_ARG1"} mcp --http --daemon 2>&1)" || start_rc=$?
 else
-  start_out="$("$QMD_BIN" mcp --http --daemon 2>&1)" || start_rc=$?
+  start_out="$("$QMD_BIN" ${QMD_BIN_ARG1:+"$QMD_BIN_ARG1"} mcp --http --daemon 2>&1)" || start_rc=$?
 fi
 if [ "$start_rc" -eq 124 ] || [ "$start_rc" -eq 137 ]; then
   echo "ensure-qmd-daemon: ERROR - 'qmd mcp --http --daemon' timed out after ${QMD_START_TIMEOUT}s (killed)." >&2
@@ -137,5 +162,13 @@ done
 echo "ensure-qmd-daemon: ERROR - started 'qmd mcp --http --daemon' but nothing came alive on $QMD_MCP_URL." >&2
 echo "  qmd output was:" >&2
 printf '%s\n' "$start_out" | sed 's/^/    /' >&2
+if [ -z "${QMD_BIN_ARG1:-}" ]; then
+  # Non-bun-js resolution: the daemon was started via '$QMD_BIN' - a
+  # node-shebang shim/PATH path, the exact fragile leg HIMMEL-928 fixed.
+  # Most likely cause: the node-side better-sqlite3 binding is missing.
+  echo "  (daemon was started via '$QMD_BIN', not 'bun <qmd.js>' - if node's" >&2
+  echo "  better-sqlite3 binding is missing, fix with:" >&2
+  echo "  bash <himmel-repo>/scripts/lib/qmd-bin.sh install)" >&2
+fi
 echo "  Check the daemon log: ~/.cache/qmd/mcp.log" >&2
 exit 1

@@ -212,7 +212,17 @@ cat > "$id2/bin/bun" <<'STUB'
 #!/usr/bin/env bash
 echo "BUN $*" >> "${BUN_LOG:?}"
 case "$1" in
-  install) exit "${STUB_BUN_INSTALL_RC:-0}" ;;
+  install)
+    [ "${STUB_BUN_INSTALL_RC:-0}" -eq 0 ] || exit "$STUB_BUN_INSTALL_RC"
+    # Mirror what a real `bun install` materializes for the HIMMEL-928
+    # binding step: the better-sqlite3 + prebuild-install package dirs --
+    # but NOT the compiled binding (bun blocks that postinstall; the
+    # binding only appears via the node-run prebuild fetch, stubbed in
+    # $id2/bin/node).
+    mkdir -p node_modules/better-sqlite3 node_modules/prebuild-install
+    : > node_modules/prebuild-install/bin.js
+    exit 0
+    ;;
   run)
     [ "$2" = "build" ] || exit 0
     [ "${STUB_BUN_BUILD_RC:-0}" -eq 0 ] || exit "$STUB_BUN_BUILD_RC"
@@ -227,18 +237,50 @@ case "$1" in
 esac
 STUB
 chmod +x "$id2/bin/bun"
+# Fake node for the HIMMEL-928 better-sqlite3 binding step. Two verbs:
+#   node <...>/prebuild-install/bin.js   -> the prebuild fetch: create the
+#     binding file in cwd (qmd_install runs it from node_modules/
+#     better-sqlite3), controllable via STUB_NODE_FETCH_RC.
+#   node <...>/.himmel-binding-probe.cjs -> the load-probe: print the
+#     success marker iff the binding file exists next to the probe (i.e.
+#     the fetch really ran) AND STUB_NODE_PROBE_RC does not force a
+#     wrong-ABI/corrupt simulation.
+cat > "$id2/bin/node" <<'STUB'
+#!/usr/bin/env bash
+echo "NODE $*" >> "${NODE_LOG:?}"
+case "$1" in
+  */prebuild-install/bin.js)
+    [ "${STUB_NODE_FETCH_RC:-0}" -eq 0 ] || exit "$STUB_NODE_FETCH_RC"
+    mkdir -p build/Release
+    : > build/Release/better_sqlite3.node
+    exit 0
+    ;;
+  *.himmel-binding-probe.cjs)
+    [ "${STUB_NODE_PROBE_RC:-0}" -eq 0 ] || exit "$STUB_NODE_PROBE_RC"
+    if [ -f "$(dirname "$1")/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ]; then
+      echo "qmd-binding-ok"
+      exit 0
+    fi
+    exit 1
+    ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$id2/bin/node"
 
 git_log="$id2/git-calls"
 bun_log="$id2/bun-calls"
+node_log="$id2/node-calls"
 qmd_install_env() { # $1 = HOME dir, remaining = the command to run under it
   local home="$1"; shift
-  : > "$git_log"; : > "$bun_log"
-  HOME="$home" GIT_LOG="$git_log" BUN_LOG="$bun_log" PATH="$id2/bin:$PATH" \
+  : > "$git_log"; : > "$bun_log"; : > "$node_log"
+  HOME="$home" GIT_LOG="$git_log" BUN_LOG="$bun_log" NODE_LOG="$node_log" PATH="$id2/bin:$PATH" \
     STUB_GIT_CLONE_RC="${STUB_GIT_CLONE_RC:-0}" STUB_GIT_FETCH_RC="${STUB_GIT_FETCH_RC:-0}" \
     STUB_GIT_ORIGIN_URL="${STUB_GIT_ORIGIN_URL:-}" STUB_GIT_DIRTY="${STUB_GIT_DIRTY:-}" \
     STUB_GIT_HEAD="${STUB_GIT_HEAD:-$default_ref}" STUB_GIT_HEAD_FILE="${STUB_GIT_HEAD_FILE:-}" \
     STUB_BUN_INSTALL_RC="${STUB_BUN_INSTALL_RC:-0}" STUB_BUN_BUILD_RC="${STUB_BUN_BUILD_RC:-0}" \
     STUB_BUN_VERSION_RC="${STUB_BUN_VERSION_RC:-0}" STUB_QMD_VERSION="${STUB_QMD_VERSION:-2.6.10}" \
+    STUB_NODE_FETCH_RC="${STUB_NODE_FETCH_RC:-0}" STUB_NODE_PROBE_RC="${STUB_NODE_PROBE_RC:-0}" \
     "$@"
 }
 
@@ -547,6 +589,43 @@ echo "upstream content" > "$note_home/.bun/install/global/node_modules/@tobilu/q
 out=$(qmd_install_env "$note_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
 assert "backup-note: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "backup-note: names the preserved backup dir" grep -q 'preserved at' <<<"$out"
+
+echo "[test-qmd-bin] better-sqlite3 node-binding gate (HIMMEL-928 / CR codex-adv)"
+# The binding is node-only (bun takes the bun:sqlite branch), bun install
+# never produces it, and existence alone must never bless it -- the gate
+# load-probes and the installer repairs. Uses the $id2/bin/node stub.
+binding="$fresh_home/.himmel/qmd-fork/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+assert "binding gate: fresh install fetched the binding via node prebuild-install" test -f "$binding"
+# present-but-unloadable (wrong-ABI/corrupt simulation): probe forced to fail
+# -> fork-served must read NOT served despite the file existing.
+rc=0
+STUB_NODE_PROBE_RC=1 qmd_install_env "$fresh_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served >/dev/null 2>&1 || rc=$?
+assert "binding gate: present-but-unloadable binding = not served" test "$rc" -ne 0
+# missing binding -> not served.
+rm -f "$binding"
+rc=0
+qmd_install_env "$fresh_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served >/dev/null 2>&1 || rc=$?
+assert "binding gate: missing binding = not served" test "$rc" -ne 0
+# repair: qmd_install re-fetches under node and converges back to served.
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "binding repair: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "binding repair: prebuild fetch ran under node" grep -q 'prebuild-install/bin.js' "$node_log"
+assert "binding repair: binding restored" test -f "$binding"
+rc=0
+qmd_install_env "$fresh_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served >/dev/null 2>&1 || rc=$?
+assert "binding repair: fork-served again afterward" test "$rc" -eq 0
+# fetch failure -> fail closed with the not-loadable WARNING.
+rm -f "$binding"
+STUB_NODE_FETCH_RC=1
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_NODE_FETCH_RC=0
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "binding fetch-fail: rc nonzero (fail closed)" bash -c '! grep -q "^RC=0$" <<<"$1"' _ "$out"
+assert "binding fetch-fail: WARNs not-loadable with the manual command" grep -qi 'not loadable under node' <<<"$out"
+# leave fresh_home converged for any later assertions.
+out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "binding gate: fresh_home re-converged" grep -q '^RC=0$' <<<"$out"
 
 echo "[test-qmd-bin] qmd_register_collection() add / idempotent-skip / warn (HIMMEL-752)"
 # Hermetic stub env: a fake `qmd` on PATH (no bun-qmd.js, no bun -> qmd_cmd

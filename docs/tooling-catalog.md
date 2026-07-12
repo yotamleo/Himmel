@@ -120,6 +120,17 @@ README's fork-delta section).
   a non-qmd listener on 8181 fails loudly as a port collision instead of
   counting as alive). A manual operator twin for PowerShell lives at
   `scripts/qmd/ensure-qmd-daemon.ps1`. Stop the daemon with `qmd mcp stop`.
+  Both resolve qmd as `bun <bun-global dist/cli/qmd.js>` first (HIMMEL-928):
+  the bun bin shim honors the CLI's node shebang and hands the daemon to
+  node, where qmd needs the better-sqlite3 native binding (bun-side qmd uses
+  `bun:sqlite`) — a binding bun's install blocks by default and that breaks
+  again on every node ABI bump.
+- **Boot survival (Windows, lean-invoke):**
+  `scripts/qmd/register-qmd-daemon-logon.ps1` registers a per-user ONLOGON
+  scheduled task (`qmd-mcp-daemon`) running the ensure twin, so the daemon is
+  back up after a reboot without waiting for the first Claude session
+  (HIMMEL-928). One-shot per machine; remove with
+  `Unregister-ScheduledTask -TaskName 'qmd-mcp-daemon' -Confirm:$false`.
 - **Freshness:** the index is sqlite+WAL, read per query, so docs added by the
   existing `qmd update` cadence are served by the running daemon immediately —
   no daemon restart or watch mechanism, cadence unchanged.
