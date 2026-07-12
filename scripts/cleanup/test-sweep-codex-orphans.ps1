@@ -226,6 +226,29 @@ Check 'blind clients = {900,902}'      (($blind -join ',') -eq '900,902') "got=$
 $noBlind = Get-BlindClientPids -Procs @( (Rec 901 1 'claude.exe' (ClientRef 'tok9')) )
 Check 'all-visible -> empty'           ($noBlind.Count -eq 0) "got count=$($noBlind.Count)"
 
+# --- Test 6d: caller-path @() wrap regression (HIMMEL-930) -------------------
+# Get-BlindClientPids is array-guaranteed by its own unary-comma return (Test
+# 6c). That guarantee is worthless if the CALLER re-wraps the result in @():
+# @() re-boxes an EMPTY inner array into a ONE-element wrapper, so the
+# production caller's `$blindClients.Count` read 1 even with zero blind
+# clients - the elevation/session-gap warning ALWAYS fired and -Kill ALWAYS
+# refused (exit 1) on every machine, regardless of actual visibility. The
+# harness has no Get-CimInstance mock to drive the production path end-to-end,
+# so this pins the exact expression shape at both the source-text level (the
+# caller line must not be @()-wrapped) and the behavioral level (unwrapped ==
+# correct, @()-wrapped == the bug), so a regression back to @() is caught
+# either way.
+Write-Host "Test 6d: caller-path @() wrap regression (HIMMEL-930)"
+$noBlindProcs = @( (Rec 901 1 'claude.exe' (ClientRef 'tok9')) )
+$callerUnwrapped = Get-BlindClientPids -Procs $noBlindProcs
+Check 'unwrapped caller expression: zero blind clients -> Count 0' ($callerUnwrapped.Count -eq 0) "got count=$($callerUnwrapped.Count)"
+$callerOldWrap = @(Get-BlindClientPids -Procs $noBlindProcs)
+Check 'OLD @()-wrapped expression on empty result -> Count 1 (documents the bug)' ($callerOldWrap.Count -eq 1) "got count=$($callerOldWrap.Count)"
+$callerSrc = Get-Content -LiteralPath $Helper -Raw
+Check 'production source: blindClients assignment is NOT @()-wrapped' `
+  ($callerSrc -match '\$blindClients\s*=\s*Get-BlindClientPids' -and $callerSrc -notmatch '\$blindClients\s*=\s*@\(\s*Get-BlindClientPids') `
+  'caller line regressed to the @() wrap'
+
 # --- Test 7: malformed argv fails fast (no hang, no production execution) ----
 # PowerShell's parameter binder rejects unknown params / stray positionals
 # BEFORE the script body runs, so these never reach Get-CimInstance or any kill
