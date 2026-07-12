@@ -239,6 +239,30 @@ Workarounds:
 - It's intermittent (a per-turn classifier threshold) — in an interactive
   terminal a blocked turn is usually transient and re-sending succeeds.
 
+## Claude Code: the safeguards refusal-fallback swaps to the bare fallback model — dropping the `[1m]` suffix
+
+Distinct from the output content-filter above: when a safeguards refusal fires
+(`model_refusal_fallback` in the transcript, e.g. an `apiRefusalCategory` of
+`cyber` false-positiving on routine agent-harness code), Claude Code switches
+the session to a fallback model — and the fallback map picks the **bare** model
+id, never the `[1m]` long-context variant. A session running a `[1m]` model
+drops to the fallback's plain 200k window; a context already past 200k then
+overflows the new window → `<synthetic>` API errors → an unattended/armed
+session stalls mid-queue, with no recovery path if auto-compact is off.
+
+Mitigations:
+
+- **Keep `autoCompactEnabled: true`** for any session leg that runs a `[1m]`
+  model unattended — auto-compact is the only recovery path after the drop.
+- **Delegate drop-risk reads to a subagent.** Content that routinely trips
+  safeguards — CI/build failure logs (`gh run view --log-failed`),
+  security-scan output, flagged or adversarial code — should be read by a
+  subagent whose distilled summary the parent consumes. A model drop then
+  costs a disposable child, never the parent loop's accumulated context.
+- After any unattended-session stall, grep the transcript for
+  `model_refusal_fallback` before blaming the arm environment — refusal flags
+  on routine harness code are typically false positives.
+
 ## Windows: pre-commit auto-fixers crash on non-ASCII filenames (and mangle the file first)
 
 The pre-commit-hooks `trailing-whitespace` and `end-of-file-fixer` fixers print
