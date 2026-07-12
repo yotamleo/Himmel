@@ -1,7 +1,10 @@
 {
   "_compliance": "panel/router lanes must terminate per-token keys only; the Z.ai Coding-Plan subscription (and any subscription lane) is launcher-only (ToS restricts it to officially supported tools) — never behind a panel or router.",
   "panel": [
-    { "slug": "qwenor",     "model": "qwen/qwen3-next-80b-a3b-instruct:free", "provider": "openrouter", "route_provider": "openrouter", "tier": "free" },
+    { "slug": "qwenor",     "model": "qwen/qwen3-next-80b-a3b-instruct:free", "provider": "openrouter", "route_provider": "openrouter", "tier": "free",
+      "fallback_models": ["qwen/qwen3-coder:free", "openai/gpt-oss-120b:free", "openai/gpt-oss-20b:free"],
+      "fallback_trigger": "any",
+      "fallback_provider": "openrouter" },
     { "slug": "codex",      "model": "gpt-5.5",                             "provider": "openai-codex", "tier": "paid" }
   ]
 }

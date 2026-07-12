@@ -445,6 +445,167 @@ check_contains "11: fallback finding lands in merged stdout" "$out11" \
 check_contains "11: responded 1/1 through the real cfp path" "$out11" "(1/1 critics responded)"
 check "11: exactly 2 invoke calls (primary + one fallback)" "$(cat "$INT_CNT")" "2"
 
+# ===========================================================================
+# HIMMEL-953: fallback_trigger="any" widens the retry condition to ANY
+# non-zero rc (incl. timeout), not just a quota-exhaustion signature match —
+# opt-in per row (e.g. the qwenor seat, whose whole chain is same-tier
+# OpenRouter free candidates: a plain rate-limit on one candidate is reason
+# enough to try the next). Reuses $STUB (already supports FB_STUB_MODE
+# generic/timeout for the primary model).
+# ===========================================================================
+JSON_ANY="$tmp/critics-any.json"
+printf '{"panel":[{"slug":"qwen3coder","model":"%s","provider":"alibaba-coding-plan","tier":"free","fallback_model":"%s","fallback_provider":"openrouter","fallback_trigger":"any"}]}' \
+    "$PRI" "$FB" > "$JSON_ANY"
+
+# --- Case 12: generic non-exhaustion failure (rc=1) -> trigger=any DOES fall back. ---
+run_case generic "$JSON_ANY" "$tmp/out12" "$tmp/err12" "$tmp/cap12"
+stderr12="$(cat "$tmp/err12")"; out12="$(cat "$tmp/out12")"
+fb_calls12=$(grep -cF -- "$FB" "$tmp/cap12")
+check_contains "12: generic rc=1 + trigger=any -> WARN with honest (rc=1) wording" "$stderr12" \
+    "WARN critic-panel: qwen3coder failed (rc=1) - fell back to $FB"
+check_not_contains "12: WARN does NOT claim quota-exhausted for a generic failure" "$stderr12" \
+    "quota-exhausted"
+check_contains "12: panel-availability fallback(<model>) token" "$stderr12" \
+    "panel-availability: qwen3coder fallback($FB)"
+check "12: fallback invoked exactly once" "$fb_calls12" "1"
+check_contains "12: responded 1/1" "$out12" "(1/1 critics responded)"
+
+# --- Case 13: timeout (rc=124) -> trigger=any DOES fall back (unlike Case 3). ---
+run_case timeout "$JSON_ANY" "$tmp/out13" "$tmp/err13" "$tmp/cap13"
+stderr13="$(cat "$tmp/err13")"; out13="$(cat "$tmp/out13")"
+fb_calls13=$(grep -cF -- "$FB" "$tmp/cap13")
+check_contains "13: timeout + trigger=any -> falls back" "$stderr13" \
+    "panel-availability: qwen3coder fallback($FB)"
+check "13: fallback invoked exactly once on a timed-out primary" "$fb_calls13" "1"
+check_contains "13: responded 1/1" "$out13" "(1/1 critics responded)"
+
+# --- Case 14: trigger=any + fallback ALSO fails -> unavailable, rc=1 wording
+# preserved for a generic primary failure (not "timeout"). ---
+run_case generic "$JSON_ANY" "$tmp/out14" "$tmp/err14" "$tmp/cap14" 1
+stderr14="$(cat "$tmp/err14")"
+check_contains "14: exhausted generic+any -> plain unavailable (rc=1)" "$stderr14" \
+    "panel-availability: qwen3coder unavailable (rc=1)"
+check "14: fallback attempted exactly once" "$(grep -cF -- "$FB" "$tmp/cap14")" "1"
+
+# --- Case 15: trigger=any + TIMEOUT + fallback ALSO fails -> unavailable
+# keeps the "(timeout Ns)" wording (not "(rc=124)"), since the primary truly
+# timed out. ---
+run_case timeout "$JSON_ANY" "$tmp/out15" "$tmp/err15" "$tmp/cap15" 1
+stderr15="$(cat "$tmp/err15")"
+check_contains "15: exhausted timeout+any -> unavailable keeps timeout wording" "$stderr15" \
+    "panel-availability: qwen3coder unavailable (timeout"
+check "15: fallback attempted exactly once on exhausted timeout+any" "$(grep -cF -- "$FB" "$tmp/cap15")" "1"
+
+# --- Case 16 (codex-adv, HIMMEL-953): a chain of HUNG candidates shares ONE
+# seat budget — total fallback wall-clock is bounded by CRITIC_TIMEOUT_SECS
+# and candidates past the budget are SKIPPED, not each handed a fresh full
+# member timeout (4x240s stacking risk in sequential mode). ---
+if command -v timeout >/dev/null 2>&1; then
+    FB2="openai/gpt-oss-20b:free"
+    JSON_BUDGET="$tmp/critics-budget.json"
+    printf '{"panel":[{"slug":"qwen3coder","model":"%s","provider":"alibaba-coding-plan","tier":"free","fallback_models":["%s","%s"],"fallback_trigger":"any"}]}' \
+        "$PRI" "$FB" "$FB2" > "$JSON_BUDGET"
+    STUB_BUDGET="$tmp/stub-budget.sh"
+    cat > "$STUB_BUDGET" <<STUBEOF
+#!/usr/bin/env bash
+# primary fails fast; every fallback hangs. exec sleep: Git-Bash timeout
+# does not reap grandchildren, exec keeps the sleep AS the timed process.
+model=""
+while [ \$# -gt 0 ]; do [ "\$1" = "--model" ] && model="\$2"; shift; done
+cat >/dev/null
+printf '%s\n' "\$model" >> "$tmp/cap16"
+[ "\$model" = "$PRI" ] && exit 1
+exec sleep 999
+STUBEOF
+    chmod +x "$STUB_BUDGET"
+    : > "$tmp/cap16"
+    _t16_start=$SECONDS
+    printf '%s' "$DIFF" | CRITICS_JSON="$JSON_BUDGET" CRITIC_FIRST_PASS="$STUB_BUDGET" \
+        CRITIC_TIMEOUT_SECS=2 bash "$PANEL" >"$tmp/out16" 2>"$tmp/err16"
+    _t16_elapsed=$((SECONDS - _t16_start))
+    stderr16="$(cat "$tmp/err16")"
+    check_contains "16: budget-exhausted line after a hung candidate" "$stderr16" \
+        "fallback-chain budget exhausted"
+    check "16: candidate past the budget skipped (never invoked)" "$(grep -cF -- "$FB2" "$tmp/cap16")" "0"
+    check "16: seat wall-clock bounded (no stacked full timeouts)" "$([ "$_t16_elapsed" -le 8 ] && echo yes)" "yes"
+    check_contains "16: member ends unavailable" "$stderr16" \
+        "panel-availability: qwen3coder unavailable"
+else
+    echo "ok - 16: skipped (no timeout binary)"
+fi
+
+# --- Case 17 (codex-adv, HIMMEL-953): fallback attempts PRESERVE the row's
+# route_provider — an all-OpenRouter chain must not fall back name-routed
+# (":free" ids are unresolvable without --provider openrouter). ---
+JSON_RP="$tmp/critics-rp.json"
+printf '{"panel":[{"slug":"qwenor","model":"%s","provider":"openrouter","route_provider":"openrouter","tier":"free","fallback_models":["%s"],"fallback_trigger":"any","fallback_provider":"openrouter"}]}' \
+    "$PRI" "$FB" > "$JSON_RP"
+STUB_RP="$tmp/stub-rp.sh"
+cat > "$STUB_RP" <<STUBEOF
+#!/usr/bin/env bash
+model=""; provider=""
+while [ \$# -gt 0 ]; do
+    [ "\$1" = "--model" ] && model="\$2"
+    [ "\$1" = "--provider" ] && provider="\$2"
+    shift
+done
+cat >/dev/null
+printf '%s provider=%s\n' "\$model" "\$provider" >> "$tmp/cap17"
+if [ "\$model" = "$PRI" ]; then exit 1; fi
+printf '%s\n' "# qwenor First-Pass Review" "" "## Critical Issues (0 found)" "" "## Important Issues (0 found)" "" "## Suggestions (0 found)"
+STUBEOF
+chmod +x "$STUB_RP"
+: > "$tmp/cap17"
+printf '%s' "$DIFF" | CRITICS_JSON="$JSON_RP" CRITIC_FIRST_PASS="$STUB_RP" \
+    bash "$PANEL" >"$tmp/out17" 2>"$tmp/err17"
+check "17: fallback invocation carries the row's route_provider" \
+    "$(grep -cF -- "$FB provider=openrouter" "$tmp/cap17")" "1"
+check_contains "17: fallback succeeded through the routed provider" "$(cat "$tmp/err17")" \
+    "panel-availability: qwenor fallback($FB)"
+
+# --- Case 18 (codex-adv, HIMMEL-953): PARALLEL mode — each member's fallback
+# must use ITS OWN row's route_provider, not the residual provider of the
+# last-parsed registry row. ---
+JSON_2P="$tmp/critics-2p.json"
+printf '{"panel":[{"slug":"qwenor","model":"%s","provider":"openrouter","route_provider":"openrouter","tier":"free","fallback_models":["%s"],"fallback_trigger":"any","fallback_provider":"openrouter"},{"slug":"other","model":"m2-ok","provider":"alibaba-coding-plan","route_provider":"alibaba-coding-plan","tier":"free","fallback_provider":"alibaba-coding-plan"}]}' \
+    "$PRI" "$FB" > "$JSON_2P"
+STUB_2P="$tmp/stub-2p.sh"
+cat > "$STUB_2P" <<STUBEOF
+#!/usr/bin/env bash
+model=""; provider=""
+while [ \$# -gt 0 ]; do
+    [ "\$1" = "--model" ] && model="\$2"
+    [ "\$1" = "--provider" ] && provider="\$2"
+    shift
+done
+cat >/dev/null
+printf '%s provider=%s\n' "\$model" "\$provider" >> "$tmp/cap18"
+if [ "\$model" = "$PRI" ]; then exit 1; fi
+printf '%s\n' "# stub First-Pass Review" "" "## Critical Issues (0 found)" "" "## Important Issues (0 found)" "" "## Suggestions (0 found)"
+STUBEOF
+chmod +x "$STUB_2P"
+: > "$tmp/cap18"
+printf '%s' "$DIFF" | CRITICS_JSON="$JSON_2P" CRITIC_FIRST_PASS="$STUB_2P" \
+    CRITIC_PARALLEL=1 bash "$PANEL" >"$tmp/out18" 2>"$tmp/err18"
+check "18: parallel fallback keeps its OWN row's provider" \
+    "$(grep -cF -- "$FB provider=openrouter" "$tmp/cap18")" "1"
+check "18: parallel fallback never rides the residual row's provider" \
+    "$(grep -cF -- "$FB provider=alibaba-coding-plan" "$tmp/cap18")" "0"
+check_contains "18: both members responded" "$(cat "$tmp/out18")" "(2/2 critics responded)"
+
+# --- Case 19 (codex-adv, HIMMEL-953): WITHOUT fallback_provider the chain
+# stays NAME-ROUTED (empty --provider) — the HIMMEL-729 cross-provider
+# contract must survive the opt-in. ---
+JSON_NR="$tmp/critics-nr.json"
+printf '{"panel":[{"slug":"qwenor","model":"%s","provider":"openrouter","route_provider":"openrouter","tier":"free","fallback_models":["%s"],"fallback_trigger":"any"}]}'     "$PRI" "$FB" > "$JSON_NR"
+STUB_NR="$tmp/stub-nr.sh"
+sed "s|cap17|cap19|" "$STUB_RP" > "$STUB_NR"
+chmod +x "$STUB_NR"
+: > "$tmp/cap19"
+printf '%s' "$DIFF" | CRITICS_JSON="$JSON_NR" CRITIC_FIRST_PASS="$STUB_NR"     bash "$PANEL" >"$tmp/out19" 2>"$tmp/err19"
+check "19: name-routed fallback keeps an EMPTY provider (no row inheritance)"     "$(grep -cF -- "$FB provider=openrouter" "$tmp/cap19")" "0"
+check "19: name-routed fallback WAS attempted"     "$(grep -cF -- "$FB provider=" "$tmp/cap19")" "1"
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else
