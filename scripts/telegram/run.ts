@@ -156,7 +156,7 @@ export function laneModel(lane?: "glm"): string | undefined {
   return lane === "glm" ? GLM_MODEL_ALIAS : undefined;
 }
 
-export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm"): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
+export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
   const env = sessionEnv(lane);
   // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
@@ -170,7 +170,7 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   // else the FILE-and-commit flow deadlocks on un-answerable prompts. bypass does
   // NOT loosen containment: the VAULT's PreToolUse hooks (e.g. block-cloud-egress)
   // still fire and HARD-block web/cloud/push. Non-vault sessions keep the default.
-  const { cmd } = buildRunArgs(prompt, permissionMode, laneModel(lane));
+  const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane));
   const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
   const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000);
