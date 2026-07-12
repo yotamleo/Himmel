@@ -63,6 +63,15 @@
             "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/block-lesson-enforcement-writes.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; elif [ \"${HIMMEL_LESSON_LOOP:-0}\" = \"1\" ]; then echo \"block-lesson-enforcement-writes: hook script missing while HIMMEL_LESSON_LOOP=1 (stale checkout?) - failing closed\" >&2; exit 2; fi'"
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-implementor-dispatch.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
+          }
+        ]
       }
     ],
     "SessionStart": [

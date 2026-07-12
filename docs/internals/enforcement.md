@@ -108,14 +108,19 @@ the env var.
 
 Seven hooks wired in `.claude/settings.json` fire BEFORE Claude executes
 tool calls. Six BLOCK risky operations; one (`auto-approve-safe-bash`)
-GRANTS permission for safe ones so they don't hang. An eighth, ninth, and
-tenth block hook — `block-docker-privesc.sh` (HIMMEL-441),
-`block-merged-pr-commit.sh` (HIMMEL-512), and `block-unresolved-cr-merge.sh`
-(HIMMEL-936) — are shipped via the **himmel-ops plugin `hooks.json`** rather
-than `.claude/settings.json` (so they can be agent-installed without a
-settings self-mod veto — same delivery path as `inject-minerva-critic.sh`);
-all three are live only after `/himmel-update` (marketplace re-sync) + a
-fresh session.
+GRANTS permission for safe ones so they don't hang. An eighth, ninth, tenth,
+and eleventh hook — `block-docker-privesc.sh` (HIMMEL-441),
+`block-merged-pr-commit.sh` (HIMMEL-512), `block-unresolved-cr-merge.sh`
+(HIMMEL-936), and `guard-implementor-dispatch.sh` (HIMMEL-920) — are shipped
+via the **himmel-ops plugin `hooks.json`** rather than `.claude/settings.json`
+(so they can be agent-installed without a settings self-mod veto — same
+delivery path as `inject-minerva-critic.sh`); all four are live only after
+`/himmel-update` (marketplace re-sync) + a fresh session.
+`block-docker-privesc.sh` and `block-merged-pr-commit.sh` fail CLOSED
+(security boundaries); `block-unresolved-cr-merge.sh` blocks when it can
+evaluate but fails OPEN on every API/dependency error (HIMMEL-936 design);
+`guard-implementor-dispatch.sh` is a COST guard and fails OPEN (see its own
+section below).
 
 **Bypass convention (applies to the four DENY hooks):** session-sticky
 env vars must be set in the shell that LAUNCHED Claude Code
@@ -406,6 +411,70 @@ own precondition check), so it needed no change.
 
 Paired artifacts: `scripts/guardrails/test-lesson-write-fence.sh` (111
 checks), `scripts/hooks/test-block-lesson-enforcement-writes.sh` (9 checks).
+
+### `guard-implementor-dispatch.sh` — bank-aware implementor-dispatch cost guard (HIMMEL-920)
+
+Fires on `Agent`. Structural enforcement of the HIMMEL-195 second-drift rule:
+s40 burned 86% of a 5-hour bank routing four CR-fix rounds to a Sonnet
+subagent while the GLM lane sat available (CLAUDE.md subagent policy: "every
+dispatch names an explicit model... route by lane") — prose didn't stop the
+drift twice.
+
+**THIS IS A COST GUARD, NOT A SECURITY GUARD — it fails OPEN on every
+infrastructure, cache, or unknown-input error** (missing jq, malformed JSON,
+missing/stale/corrupt usage cache), the opposite of the fail-CLOSED block-*
+siblings above; the fail-open precedent is the auto-arm watchdog family, not
+`block-edit-on-main.sh`. When its inputs ARE readable and the policy
+thresholds are met it does deny: an eligible dispatch at HARD utilization
+exits 2.
+
+**Decision shape:** a dispatch is only DENY-eligible when BOTH
+`subagent_type` is in the allow-list {`general-purpose`, `claude`,
+`feature-dev:code-architect`} AND `model` is in {`sonnet`, `opus`, `fable`}
+— a deny-list would false-block future reviewer agent types, so an
+absent/empty `model` is capped to WARN, never DENY (it inherits the parent
+loop, which is costly, but can't be confirmed as this-shape-costly).
+`model == haiku` always allows regardless of shape. Beyond the allow-list
+check, the dispatch `prompt` must also match a narrow impl-shaped ERE
+(`implement|apply the fix|write the code|make it pass|fix the
+(bug|finding|test)` — de-greeded: `patch` (a substring of "dispatch"), bare
+`commit`, and bare `refactor` were all dropped as high-false-positive)
+before the bank check runs at all.
+
+**Bank check:** reads `.five_hour.utilization` from the claude-statusline
+usage cache (`IMPL_GUARD_CACHE_PATH`, default
+`/tmp/claude/statusline-usage-cache.json`); the numeric handling never runs
+bash `[ -ge ]` against a float (the HIMMEL-392 no-stderr hook death) — jq
+validates the value and awk performs the threshold compares. A null /
+non-numeric / out-of-`[0,100]` value (the documented leaked-epoch
+corruption, see `auto-arm-on-cap.sh`) is treated as UNKNOWN, not clamped.
+Missing cache, unstatable, stale (mtime older than
+`IMPL_GUARD_CACHE_MAX_AGE_SECS`, default 300s), an expired `resets_at`
+window, or UNKNOWN → allow + a stderr WARN, never a block; a HARD deny
+additionally requires a provably-live `resets_at` window (else it downgrades
+to the advisory).
+
+**Policy:** util `>= IMPL_GUARD_HARD` (default 80) AND DENY-eligible → exit
+2, naming the utilization, the dispatch shape, and a cheaper-lane redirect
+(`himmel-ops:glm-subagent` shared-branch mode, `codex:codex-rescue`,
+`/lanes`). util `>= IMPL_GUARD_WARN` (default 65) → allow, but via the
+`hookSpecificOutput` `permissionDecision:"allow"` JSON idiom
+(`auto-approve-safe-bash.sh:432` precedent) so the advisory actually reaches
+the model — an exit-0 stderr line is invisible to the model in PreToolUse.
+Below WARN → allow silently.
+
+**Bypass:** `IMPL_GUARD_OK=1` (explicit session override) or
+`IMPL_GUARD_DISABLE=1` (kill switch), both set in the LAUNCHING shell and
+session-sticky (same convention as the other block-* hooks — a per-call env
+prefix does not reach the hook process).
+
+**Delivery:** shipped via the **himmel-ops plugin `hooks.json`** (matcher
+`Agent`, same exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as
+`block-docker-privesc`); live only after `/himmel-update` (marketplace
+re-sync) + a fresh session.
+
+Spec: `scripts/hooks/test-guard-implementor-dispatch.sh` (13 test cases, 27
+assertions).
 
 ### `block-glm-external-writes.sh` — GLM-lane external-write deny (HIMMEL-654)
 
