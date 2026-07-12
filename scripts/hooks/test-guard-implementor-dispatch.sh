@@ -135,12 +135,28 @@ RC7B=$(run_hook t7b "$(payload_full general-purpose sonnet 'implement the fix')"
 assert_rc "T7b IMPL_GUARD_DISABLE bypass rc" 0 "$RC7B"
 assert_empty "T7b IMPL_GUARD_DISABLE bypass stdout" "$(cat "$TMP/out-t7b")"
 
-# T8: Absent model + impl prompt, util=85 → allow + advisory (WARN-tier, NOT deny).
+# T8: Absent model + impl prompt, util=85 → deny per HIMMEL-972.
 CACHE8="$TMP/cache8.json"; mkcache "$CACHE8" 85
 RC8=$(run_hook t8 "$(payload_no_model general-purpose 'implement the fix')" \
     IMPL_GUARD_CACHE_PATH="$CACHE8")
-assert_rc "T8 absent-model rc" 0 "$RC8"
-assert_contains "T8 absent-model advisory JSON" "permissionDecisionReason" "$(cat "$TMP/out-t8")"
+assert_rc "T8 absent-model rc" 2 "$RC8"
+assert_contains "T8 absent-model deny stderr" "glm-subagent" "$(cat "$TMP/err-t8")"
+
+# T8b: Absent model + impl prompt, util=70 → allow + advisory (WARN tier).
+CACHE8B="$TMP/cache8b.json"; mkcache "$CACHE8B" 70
+RC8B=$(run_hook t8b "$(payload_no_model general-purpose 'implement the fix')" \
+    IMPL_GUARD_CACHE_PATH="$CACHE8B")
+assert_rc "T8b absent-model WARN rc" 0 "$RC8B"
+assert_contains "T8b absent-model allow decision" '"permissionDecision":"allow"' "$(cat "$TMP/out-t8b")"
+assert_contains "T8b absent-model advisory JSON" "permissionDecisionReason" "$(cat "$TMP/out-t8b")"
+
+# T8c: Absent model + non-allow-listed subagent, util=85 → WARN, never deny.
+CACHE8C="$TMP/cache8c.json"; mkcache "$CACHE8C" 85
+RC8C=$(run_hook t8c "$(payload_no_model caveman:cavecrew-builder 'implement the fix')" \
+    IMPL_GUARD_CACHE_PATH="$CACHE8C")
+assert_rc "T8c absent-model non-allow-listed rc" 0 "$RC8C"
+assert_contains "T8c absent-model allow decision" '"permissionDecision":"allow"' "$(cat "$TMP/out-t8c")"
+assert_contains "T8c absent-model advisory JSON" "permissionDecisionReason" "$(cat "$TMP/out-t8c")"
 
 # T9: Haiku impl dispatch, util=85 → allow, silent.
 CACHE9="$TMP/cache9.json"; mkcache "$CACHE9" 85

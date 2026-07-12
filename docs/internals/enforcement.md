@@ -430,10 +430,9 @@ exits 2.
 
 **Decision shape:** a dispatch is only DENY-eligible when BOTH
 `subagent_type` is in the allow-list {`general-purpose`, `claude`,
-`feature-dev:code-architect`} AND `model` is in {`sonnet`, `opus`, `fable`}
-— a deny-list would false-block future reviewer agent types, so an
-absent/empty `model` is capped to WARN, never DENY (it inherits the parent
-loop, which is costly, but can't be confirmed as this-shape-costly).
+`feature-dev:code-architect`} AND `model` is in {`sonnet`, `opus`, `fable`,
+absent/empty}. An absent/empty `model` is DENY-eligible per the HIMMEL-972
+operator ruling: an unnamed dispatch inherits the parent loop.
 `model == haiku` always allows regardless of shape. Beyond the allow-list
 check, the dispatch `prompt` must also match a narrow impl-shaped ERE
 (`implement|apply the fix|write the code|make it pass|fix the
@@ -473,7 +472,7 @@ prefix does not reach the hook process).
 `block-docker-privesc`); live only after `/himmel-update` (marketplace
 re-sync) + a fresh session.
 
-Spec: `scripts/hooks/test-guard-implementor-dispatch.sh` (13 test cases, 27
+Spec: `scripts/hooks/test-guard-implementor-dispatch.sh` (22 test cases, 40
 assertions).
 
 ### `block-glm-external-writes.sh` — GLM-lane external-write deny (HIMMEL-654)
