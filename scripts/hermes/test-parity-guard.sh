@@ -332,7 +332,7 @@ unset HERMES_ENGINE
 # The ONESHOT signals (what invoke.sh actually exports for --model/--provider)
 # naming an untrusted engine are refused despite the opt-in — the real
 # dispatch-trusted.sh path never sets HERMES_ENGINE (HIMMEL-916 CR finding).
-export HERMES_ONESHOT_MODEL="deepseek-chat"
+export HERMES_ONESHOT_MODEL="deepseek-v4-flash"
 g "push refused when ONESHOT_MODEL=deepseek" block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
 g "gh pr create refused on deepseek oneshot" block '{"tool_name":"terminal","tool_input":{"command":"gh pr create --fill"}}'
 unset HERMES_ONESHOT_MODEL
@@ -342,16 +342,23 @@ unset HERMES_ONESHOT_PROVIDER
 # Mixed-case signal still caught — the guard lowercases before matching; a
 # refactor dropping .lower() must fail here (caller-controlled case, invoke.sh
 # forwards whatever the caller passed).
-export HERMES_ONESHOT_MODEL="DeepSeek-Chat"
-g "push refused on mixed-case DeepSeek-Chat"  block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+export HERMES_ONESHOT_MODEL="DeepSeek-V4-Flash"
+g "push refused on mixed-case DeepSeek-V4-Flash"  block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
 unset HERMES_ONESHOT_MODEL
-# deepseek-reasoner is the lane row's second advertised model — pin it too.
+# deepseek-v4-pro is the lane row's second advertised model — pin it too.
+export HERMES_ONESHOT_MODEL="deepseek-v4-pro"
+g "push refused when ONESHOT_MODEL=deepseek-v4-pro" block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+unset HERMES_ONESHOT_MODEL
+# Legacy names stay guarded through the 2026-07-24 retirement overlap.
+export HERMES_ONESHOT_MODEL="deepseek-chat"
+g "push refused on legacy deepseek-chat during overlap" block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+unset HERMES_ONESHOT_MODEL
 export HERMES_ONESHOT_MODEL="deepseek-reasoner"
-g "push refused when ONESHOT_MODEL=deepseek-reasoner" block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
+g "push refused on legacy deepseek-reasoner during overlap" block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
 unset HERMES_ONESHOT_MODEL
 # ANY single untrusted signal wins even when another signal is trusted —
 # catches a future break/early-return regression inside the signal loop.
-export HERMES_ENGINE="codex-5.5" HERMES_ONESHOT_MODEL="deepseek-chat"
+export HERMES_ENGINE="codex-5.5" HERMES_ONESHOT_MODEL="deepseek-v4-flash"
 g "untrusted oneshot beats trusted engine"    block '{"tool_name":"terminal","tool_input":{"command":"git push origin main"}}'
 unset HERMES_ENGINE HERMES_ONESHOT_MODEL
 export HERMES_ONESHOT_MODEL="glm-4.7"
