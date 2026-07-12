@@ -139,7 +139,25 @@ cat > "$SCHED_STUB_T17/at" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$SCHED_STUB_T17/schtasks" "$SCHED_STUB_T17/atq" "$SCHED_STUB_T17/at"
+# HIMMEL-938: schtasks /create above is a stateless "always succeeds" fake —
+# it never actually registers anything with the real OS scheduler. On an
+# ACTUAL Windows box (this suite runs on Windows dev machines, not just
+# Linux CI), arm-resume's post-arm verify would otherwise fall through to
+# the REAL powershell, query the REAL (nonexistent, since /create was
+# faked) task, and correctly-but-spuriously refuse (rc=2) every non-dry-run
+# arm through this stub. Stubbing powershell to echo "right now" keeps the
+# fake create/verify pair internally consistent — the tests below that use
+# this stub for a REAL (non-dry-run) arm care about dedup/worktree/naming
+# behavior, not the verify feature itself.
+cat > "$SCHED_STUB_T17/powershell" <<'EOF'
+#!/usr/bin/env bash
+# Probe "unavailable" -> arm-resume's verify fail-opens (WARN, arm stands).
+# Faking a NextRunTime here would need the requested TARGET_EPOCH, which the
+# stub can't know; the fail-open path is the honest fake for tests that
+# exercise dedup/worktree/naming, not the verify feature itself.
+exit 1
+EOF
+chmod +x "$SCHED_STUB_T17/schtasks" "$SCHED_STUB_T17/atq" "$SCHED_STUB_T17/at" "$SCHED_STUB_T17/powershell"
 
 # ---------------------------------------------------------------------------
 # T1: --cwd <dir> overrides everything, even when resume_cwd is set
@@ -613,7 +631,16 @@ cat > "$ARMED_STUB/claude" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$ARMED_STUB/schtasks" "$ARMED_STUB/atq" "$ARMED_STUB/at" "$ARMED_STUB/claude"
+# HIMMEL-938: see the matching comment on SCHED_STUB_T17 above — /create is a
+# stateless fake, so on a real Windows box the post-arm verify needs its own
+# fake to stay internally consistent (else a real powershell query for a
+# task that was never really created would correctly refuse the arm).
+cat > "$ARMED_STUB/powershell" <<'EOF'
+#!/usr/bin/env bash
+# Probe "unavailable" -> verify fail-opens (see SCHED_STUB_T17 note).
+exit 1
+EOF
+chmod +x "$ARMED_STUB/schtasks" "$ARMED_STUB/atq" "$ARMED_STUB/at" "$ARMED_STUB/claude" "$ARMED_STUB/powershell"
 
 TELEMETRY_T23="$TMP/telemetry-t23"
 HO=$(make_handover "$WORK_REPO")
@@ -792,7 +819,17 @@ EOF
 #!/usr/bin/env bash
 exit 0
 EOF
-    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude"
+    # HIMMEL-938: same reasoning as the SCHED_STUB_T17/ARMED_STUB comments
+    # above — the stateful schtasks stub's /create records a task name but
+    # never talks to the real scheduler, so a real Windows box's post-arm
+    # verify needs its own fake or every T25+ non-dry-run arm through this
+    # stub would be spuriously refused.
+    cat > "$dir/powershell" <<'EOF'
+#!/usr/bin/env bash
+# Probe "unavailable" -> verify fail-opens (see SCHED_STUB_T17 note).
+exit 1
+EOF
+    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude" "$dir/powershell"
 }
 
 # Count armed slots in the platform's state location.
@@ -1602,6 +1639,453 @@ mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$MAC_HO" --force >/dev/nul
 n="$(grep -c 'HIMMEL-Resume-' "$CRON_STORE" 2>/dev/null)" || n=0
 if [ "$n" -eq 2 ]; then echo "PASS macOS --force on A leaves sibling B (2 slots)"; else echo "FAIL macOS sibling preserve entries=$n"; FAILED=$((FAILED+1)); fi
 if [ -n "$b_line" ] && grep -qF "$b_line" "$CRON_STORE" 2>/dev/null; then echo "PASS macOS sibling B line survived --force on A"; else echo "FAIL macOS sibling B line wiped"; FAILED=$((FAILED+1)); fi
+
+# ---------------------------------------------------------------------------
+# V1-V5 (HIMMEL-938): Windows /sd locale-aware render + post-arm NextRunTime
+# verify. arm-resume selects PLATFORM from OSTYPE (falling back to uname -s),
+# so — exactly like mac_env above forces OSTYPE=darwin23 to exercise the
+# macOS/crontab branch from any host — win_env forces OSTYPE=msys to exercise
+# the Windows/schtasks branch here, even when this suite runs on ubuntu CI.
+# WINBIN carries the two stubs every case below needs no matter which
+# schtasks/reg/powershell stub it's paired with: `claude` (schedule_arm
+# resolves it via `command -v claude` before writing the .bat, even under
+# --dry-run) and `cygpath` (converts the .bat/claude/cwd paths for the
+# schtasks /tr line; a real Linux box has neither, so both must exist for
+# the Windows branch to get past its own tool-missing guards).
+# ---------------------------------------------------------------------------
+WINBIN="$TMP/win-stub-bin"
+mkdir -p "$WINBIN"
+cat > "$WINBIN/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$WINBIN/cygpath" <<'EOF'
+#!/usr/bin/env bash
+# Minimal stub: echo each non-flag (path) argument on its own line,
+# unchanged. schedule_arm only needs 3 non-empty lines back in argument
+# order -- these tests never inspect the ACTUAL Windows-path form.
+for a in "$@"; do
+    case "$a" in
+        -*) ;;
+        *) printf '%s\n' "$a" ;;
+    esac
+done
+EOF
+chmod +x "$WINBIN/claude" "$WINBIN/cygpath"
+win_env() { local _dir="$1"; shift; env PATH="$_dir:$WINBIN:$PATH" OSTYPE="msys" "$@"; }
+
+# V1: DD/MM locale render. `reg` reports a dd/MM/yyyy short-date pattern;
+# --dry-run so no real scheduler is touched. The expected /sd is computed
+# independently here (mirroring arm-resume's own HH:MM -> today/tomorrow
+# rule), so the assertion is an exact full-string match that's correct
+# regardless of what day the suite happens to run on (no reliance on
+# today's day-of-month differing from today's month).
+V1BIN="$TMP/v1-stub-bin"; mkdir -p "$V1BIN"
+cat > "$V1BIN/reg" <<'EOF'
+#!/usr/bin/env bash
+echo "HKEY_CURRENT_USER\\Control Panel\\International"
+echo "    sShortDate    REG_SZ    dd/MM/yyyy"
+exit 0
+EOF
+chmod +x "$V1BIN/reg"
+V1_HO="$(make_handover "$WORK_REPO")"
+V1_EXPECT=$(python3 -c '
+import datetime, sys
+hh, mm = (int(x) for x in sys.argv[1].split(":"))
+now = datetime.datetime.now().astimezone()
+cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(cand.strftime("%d/%m/%Y"))
+' "$FUTURE_TIME")
+out=$(win_env "$V1BIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$V1_HO" --dry-run 2>&1)
+rc=$?
+assert_rc "V1 dd/MM/yyyy locale dry-run exits 0" 0 "$rc"
+assert_contains "V1 /sd rendered day-first per machine locale" "/sd $V1_EXPECT " "$out"
+
+# V2: registry read fails -> falls back to the pre-HIMMEL-938 MM/dd/yyyy
+# (byte-identical to the old hardcoded behavior). `reg` here mimics a
+# missing/inaccessible key: nonzero exit, nothing useful on stdout.
+V2BIN="$TMP/v2-stub-bin"; mkdir -p "$V2BIN"
+cat > "$V2BIN/reg" <<'EOF'
+#!/usr/bin/env bash
+echo "ERROR: The system was unable to find the specified registry key." >&2
+exit 1
+EOF
+chmod +x "$V2BIN/reg"
+V2_HO="$(make_handover "$WORK_REPO")"
+V2_EXPECT=$(python3 -c '
+import datetime, sys
+hh, mm = (int(x) for x in sys.argv[1].split(":"))
+now = datetime.datetime.now().astimezone()
+cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(cand.strftime("%m/%d/%Y"))
+' "$FUTURE_TIME")
+out=$(win_env "$V2BIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$V2_HO" --dry-run 2>&1)
+rc=$?
+assert_rc "V2 reg-failure dry-run still exits 0" 0 "$rc"
+assert_contains "V2 /sd falls back to MM/dd/yyyy" "/sd $V2_EXPECT " "$out"
+
+# V2b (coderabbit-4): a month-NAME pattern (dd-MMM-yy) cannot be rendered
+# numerically -- the render must refuse and fall back to MM/dd/yyyy (and
+# mark the locale path degraded; the fallback value is what the dry-run
+# print shows).
+V2B_BIN="$TMP/v2b-stub-bin"; mkdir -p "$V2B_BIN"
+cat > "$V2B_BIN/reg" <<'EOF'
+#!/usr/bin/env bash
+echo "HKEY_CURRENT_USER\\Control Panel\\International"
+echo "    sShortDate    REG_SZ    dd-MMM-yy"
+exit 0
+EOF
+chmod +x "$V2B_BIN/reg"
+V2B_HO="$(make_handover "$WORK_REPO")"
+out=$(win_env "$V2B_BIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$V2B_HO" --dry-run 2>&1)
+rc=$?
+assert_rc "V2b month-name pattern dry-run still exits 0" 0 "$rc"
+assert_contains "V2b /sd falls back to MM/dd/yyyy on MMM pattern" "/sd $V2_EXPECT " "$out"
+
+# V3-V5 share a stateless create-ok schtasks stub (with a logged /delete) and
+# an empty-scheduler /query — these are REAL (non-dry-run) arms so the
+# post-arm verify block actually runs. `reg` is intentionally ABSENT from
+# these stub dirs (same as a bare Linux box): the locale render falls back
+# to MM/dd/yyyy, which is irrelevant to what V3-V5 exercise.
+make_verify_stub() {
+    local dir="$1" ps_body="$2"
+    mkdir -p "$dir"
+    cat > "$dir/schtasks" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+    /query)  exit 0 ;;
+    /create) exit 0 ;;
+    /delete) printf '%s\n' "\$*" >> "$dir/delete.log"; exit 0 ;;
+    *)       exit 0 ;;
+esac
+EOF
+    cat > "$dir/powershell" <<EOF
+#!/usr/bin/env bash
+$ps_body
+EOF
+    chmod +x "$dir/schtasks" "$dir/powershell"
+}
+
+# V3: registered NextRunTime is ~180 days from now -> the exact HIMMEL-938
+# months-out class. The powershell stub can't see arm-resume's TARGET_EPOCH,
+# so it computes "now (at verify time) + 180 days" itself -- verify runs
+# moments after arm-resume derived TARGET_EPOCH from the same wall clock, so
+# the two land on the same calendar day and the ~180d gap is unambiguous
+# (far past the 24h OK/ERR threshold either way).
+V3="$TMP/v3-stub-bin"
+make_verify_stub "$V3" 'python3 -c "import time; print(int(time.time()) + 180*86400)"'
+V3_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" win_env "$V3" bash "$ARM" --time "$FUTURE_TIME" --handover "$V3_HO" 2>&1)
+rc=$?
+assert_rc "V3 months-out verify refuses (rc=2)" 2 "$rc"
+assert_contains "V3 ERR mentions NextRunTime" "NextRunTime" "$out"
+if [ -s "$V3/delete.log" ]; then
+    echo "PASS V3 bad task was deleted (schtasks /delete hit)"
+else
+    echo "FAIL V3 expected schtasks /delete to be called"
+    FAILED=$((FAILED + 1))
+fi
+
+# V4: registered NextRunTime matches the requested time exactly -> verify
+# passes, arm stands (rc=0). The stub can't independently derive
+# TARGET_EPOCH either, so the test computes it FIRST (mirroring arm-resume's
+# own HH:MM -> epoch rule) and threads it straight into the stub script --
+# simulating a scheduler that registered exactly what was asked.
+V4_EPOCH=$(python3 -c '
+import datetime, sys
+hh, mm = (int(x) for x in sys.argv[1].split(":"))
+now = datetime.datetime.now().astimezone()
+cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(int(cand.timestamp()))
+' "$FUTURE_TIME")
+V4="$TMP/v4-stub-bin"
+make_verify_stub "$V4" "echo $V4_EPOCH"
+V4_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" win_env "$V4" bash "$ARM" --time "$FUTURE_TIME" --handover "$V4_HO" 2>&1)
+rc=$?
+assert_rc "V4 exact NextRunTime match arms cleanly (rc=0)" 0 "$rc"
+assert_contains "V4 arm banner printed" "RESUME ARMED" "$out"
+if [ -s "$V4/delete.log" ]; then
+    echo "FAIL V4 verify pass must NOT delete the task"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS V4 verify pass leaves the task in place"
+fi
+
+# V4b (codex-adv-5 boundary): registered NextRunTime is 121s past the
+# request -- just beyond scheduler resolution -> refuse (rc=2) + delete. A
+# healthy arm lands on the exact requested minute, so 121s is already a
+# real mistime (the old 24h tolerance let an exactly-one-day-late
+# registration pass with only a WARN).
+V4B="$TMP/v4b-stub-bin"
+make_verify_stub "$V4B" "echo $((V4_EPOCH + 121))"
+V4B_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" win_env "$V4B" bash "$ARM" --time "$FUTURE_TIME" --handover "$V4B_HO" 2>&1)
+rc=$?
+assert_rc "V4b 121s NextRunTime mismatch refuses (rc=2)" 2 "$rc"
+assert_contains "V4b ERR names the 120s tolerance" "120s tolerance" "$out"
+if [ -s "$V4B/delete.log" ]; then
+    echo "PASS V4b mistimed task was deleted (schtasks /delete hit)"
+else
+    echo "FAIL V4b expected schtasks /delete to be called"
+    FAILED=$((FAILED + 1))
+fi
+
+# V5: the verify PROBE itself fails (powershell exits nonzero, no output)
+# while locale detection WORKS -> fail-OPEN: a WARN, but the arm still
+# stands (rc=0). Distinguishes the infra-failure path (V5) from the
+# bad-answer path (V3): only a CONFIRMED bad answer deletes the task. The
+# reg stub matters (codex-adv-8): with locale detection ALSO down this
+# would be the V8 dual-failure refuse, and on Linux CI there is no real
+# reg to fall back on.
+V5="$TMP/v5-stub-bin"
+make_verify_stub "$V5" 'echo "stub: powershell unavailable" >&2; exit 1'
+cat > "$V5/reg" <<'EOF'
+#!/usr/bin/env bash
+echo "HKEY_CURRENT_USER\\Control Panel\\International"
+echo "    sShortDate    REG_SZ    M/d/yyyy"
+exit 0
+EOF
+chmod +x "$V5/reg"
+V5_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" win_env "$V5" bash "$ARM" --time "$FUTURE_TIME" --handover "$V5_HO" 2>&1)
+rc=$?
+assert_rc "V5 verify-infra-failure still arms (rc=0)" 0 "$rc"
+assert_contains "V5 WARN surfaced for the failed probe" "WARN arm-resume: post-arm NextRunTime verify could not run" "$out"
+if [ -s "$V5/delete.log" ]; then
+    echo "FAIL V5 infra failure must NOT delete the task"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS V5 infra failure leaves the task in place"
+fi
+
+# V6: NEXTRUN-NONE with a target that PASSED during the create->verify
+# window -> the race guard (codex-adv-1/-2): the .bat self-deletes its task
+# registration on fire, so a task missing AFTER its target time legitimately
+# fired -- the arm is CONSUMED (WARN + rc=0, no delete). The powershell stub
+# simulates the slow probe by sleeping until the target has passed before
+# answering NEXTRUN-NONE. Target = next whole minute (lead 1-60s); if that
+# crosses midnight the HH:MM -> today/tomorrow rule inflates the lead to
+# ~24h -- skip rather than flake (this suite runs overnight).
+V6_PROBE=$(python3 -c '
+import datetime
+now = datetime.datetime.now().astimezone()
+cand = (now + datetime.timedelta(seconds=60)).replace(second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(cand.strftime("%H:%M"), int((cand - now).total_seconds()))
+')
+NEAR_TIME=${V6_PROBE% *}
+NEAR_LEAD=${V6_PROBE#* }
+if [ "$NEAR_LEAD" -gt 60 ] || [ "$NEAR_LEAD" -lt 10 ]; then
+    # >60 = midnight edge; <10 = arm-resume's own pre-create work could
+    # overshoot the target before /create, flipping the case into
+    # create-after-target (V6c territory) and flaking (coderabbit-5).
+    echo "SKIP V6 consumed-arm race guard (lead ${NEAR_LEAD}s outside the 10-60s reliable window)"
+else
+    V6="$TMP/v6-stub-bin"
+    # Sleep past the target (lead + small margin), then report the task gone
+    # -- simulating a probe that ran after the task fired and self-deleted.
+    make_verify_stub "$V6" "sleep $((NEAR_LEAD + 3))
+echo NEXTRUN-NONE"
+    V6_HO="$(make_handover "$WORK_REPO")"
+    out=$(TMPDIR="$TMP" win_env "$V6" bash "$ARM" --time "$NEAR_TIME" --handover "$V6_HO" 2>&1)
+    rc=$?
+    assert_rc "V6 NEXTRUN-NONE after target passed = consumed (rc=0)" 0 "$rc"
+    assert_contains "V6 WARN says consumed, not failed" "treating the arm as consumed" "$out"
+    if [ -s "$V6/delete.log" ]; then
+        echo "FAIL V6 consumed arm must NOT trigger a delete"
+        FAILED=$((FAILED + 1))
+    else
+        echo "PASS V6 consumed arm leaves scheduler state alone"
+    fi
+fi
+
+# V6b (codex-adv-2 negative): NEXTRUN-NONE while the target is STILL FUTURE
+# (~2min lead) -> a scheduler never fires early, so the task cannot have
+# been consumed; this is a bad registration (e.g. a past-date /sd misparse
+# also registers with no NextRunTime) -> loud refuse (rc=2) + delete.
+V6B_PROBE=$(python3 -c '
+import datetime
+now = datetime.datetime.now().astimezone()
+cand = (now + datetime.timedelta(seconds=150)).replace(second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(cand.strftime("%H:%M"), int((cand - now).total_seconds()))
+')
+V6B_TIME=${V6B_PROBE% *}
+V6B_LEAD=${V6B_PROBE#* }
+if [ "$V6B_LEAD" -lt 60 ] || [ "$V6B_LEAD" -gt 180 ]; then
+    echo "SKIP V6b future-target NEXTRUN-NONE (midnight edge: computed lead ${V6B_LEAD}s)"
+else
+    V6B="$TMP/v6b-stub-bin"
+    make_verify_stub "$V6B" 'echo NEXTRUN-NONE'
+    V6B_HO="$(make_handover "$WORK_REPO")"
+    out=$(TMPDIR="$TMP" win_env "$V6B" bash "$ARM" --time "$V6B_TIME" --handover "$V6B_HO" 2>&1)
+    rc=$?
+    assert_rc "V6b NEXTRUN-NONE with future target refuses (rc=2)" 2 "$rc"
+    assert_contains "V6b ERR says a still-future target cannot have fired" "cannot have fired" "$out"
+    if [ -s "$V6B/delete.log" ]; then
+        echo "PASS V6b bad task was deleted (schtasks /delete hit)"
+    else
+        echo "FAIL V6b expected schtasks /delete to be called"
+        FAILED=$((FAILED + 1))
+    fi
+fi
+
+# V6c (codex-adv-3): /create itself completed AFTER the target passed (slow
+# setup on a tight lead) -> the ONCE task registered already-expired and can
+# NEVER fire; NEXTRUN-NONE here must refuse (rc=2), never report consumed.
+# The schtasks stub sleeps past the target inside /create to simulate the
+# slow path; the probe answers NEXTRUN-NONE immediately.
+V6C_PROBE=$(python3 -c '
+import datetime
+now = datetime.datetime.now().astimezone()
+cand = (now + datetime.timedelta(seconds=60)).replace(second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(cand.strftime("%H:%M"), int((cand - now).total_seconds()))
+')
+V6C_TIME=${V6C_PROBE% *}
+V6C_LEAD=${V6C_PROBE#* }
+if [ "$V6C_LEAD" -gt 60 ]; then
+    echo "SKIP V6c create-after-target (midnight edge: computed lead ${V6C_LEAD}s)"
+else
+    V6C="$TMP/v6c-stub-bin"
+    mkdir -p "$V6C"
+    cat > "$V6C/schtasks" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+    /query)  exit 0 ;;
+    /create) sleep $((V6C_LEAD + 3)); exit 0 ;;
+    /delete) printf '%s\n' "\$*" >> "$V6C/delete.log"; exit 0 ;;
+    *)       exit 0 ;;
+esac
+EOF
+    cat > "$V6C/powershell" <<'EOF'
+#!/usr/bin/env bash
+echo NEXTRUN-NONE
+EOF
+    chmod +x "$V6C/schtasks" "$V6C/powershell"
+    V6C_HO="$(make_handover "$WORK_REPO")"
+    out=$(TMPDIR="$TMP" win_env "$V6C" bash "$ARM" --time "$V6C_TIME" --handover "$V6C_HO" 2>&1)
+    rc=$?
+    assert_rc "V6c create-after-target NEXTRUN-NONE refuses (rc=2)" 2 "$rc"
+    assert_contains "V6c ERR notes created-after-target never fires" "created after its target never fires" "$out"
+    if [ -s "$V6C/delete.log" ]; then
+        echo "PASS V6c dead task was deleted (schtasks /delete hit)"
+    else
+        echo "FAIL V6c expected schtasks /delete to be called"
+        FAILED=$((FAILED + 1))
+    fi
+fi
+
+# V7: NEXTRUN-NONE with a FAR target (lead > 180s) -> still the loud-refuse
+# path: a task that vanished long before its fire time was never registered
+# right (the original HIMMEL-938/HIMMEL-204 silent-misarm class). Skip in
+# the last ~10 minutes before midnight, where FUTURE_TIME (23:59) stops
+# being "far".
+V7_LEAD=$(python3 -c '
+import datetime
+now = datetime.datetime.now().astimezone()
+cand = now.replace(hour=23, minute=59, second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(int((cand - now).total_seconds()))
+')
+if [ "$V7_LEAD" -le 600 ]; then
+    echo "SKIP V7 far-target NEXTRUN-NONE (too close to midnight: lead ${V7_LEAD}s)"
+else
+    V7="$TMP/v7-stub-bin"
+    make_verify_stub "$V7" 'echo NEXTRUN-NONE'
+    V7_HO="$(make_handover "$WORK_REPO")"
+    out=$(TMPDIR="$TMP" win_env "$V7" bash "$ARM" --time "$FUTURE_TIME" --handover "$V7_HO" 2>&1)
+    rc=$?
+    assert_rc "V7 NEXTRUN-NONE far target refuses (rc=2)" 2 "$rc"
+    assert_contains "V7 ERR names the silent-misarm class" "silent-misarm" "$out"
+    if [ -s "$V7/delete.log" ]; then
+        echo "PASS V7 bad task was deleted (schtasks /delete hit)"
+    else
+        echo "FAIL V7 expected schtasks /delete to be called"
+        FAILED=$((FAILED + 1))
+    fi
+fi
+
+# V8 (codex-adv-8): BOTH safeguards down -- locale detection fails (reg
+# errors -> MM/dd/yyyy fallback) AND the verify probe fails -> on a
+# day-first machine this is the original silent-misarm class again, so the
+# arm must fail CLOSED: delete + rc=2, never a silent success.
+V8="$TMP/v8-stub-bin"
+make_verify_stub "$V8" 'echo "stub: powershell unavailable" >&2; exit 1'
+cat > "$V8/reg" <<'EOF'
+#!/usr/bin/env bash
+echo "stub: registry unavailable" >&2
+exit 1
+EOF
+chmod +x "$V8/reg"
+V8_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" win_env "$V8" bash "$ARM" --time "$FUTURE_TIME" --handover "$V8_HO" 2>&1)
+rc=$?
+assert_rc "V8 locale-fallback + probe-failure refuses (rc=2)" 2 "$rc"
+assert_contains "V8 ERR names both safeguards" "both safeguards unavailable" "$out"
+if [ -s "$V8/delete.log" ]; then
+    echo "PASS V8 dual-failure arm was deleted (schtasks /delete hit)"
+else
+    echo "FAIL V8 expected schtasks /delete to be called"
+    FAILED=$((FAILED + 1))
+fi
+
+# V8b (codex-adv-9): locale fallback + probe that SUCCEEDS (rc=0) but emits
+# garbage -- no usable confirmation either -> same dual-failure refuse.
+V8B="$TMP/v8b-stub-bin"
+make_verify_stub "$V8B" 'echo "PS banner noise: not a number"'
+cat > "$V8B/reg" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$V8B/reg"
+V8B_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" win_env "$V8B" bash "$ARM" --time "$FUTURE_TIME" --handover "$V8B_HO" 2>&1)
+rc=$?
+assert_rc "V8b locale-fallback + garbage probe output refuses (rc=2)" 2 "$rc"
+assert_contains "V8b ERR names the non-numeric dual failure" "non-numeric NextRunTime" "$out"
+if [ -s "$V8B/delete.log" ]; then
+    echo "PASS V8b dual-failure arm was deleted (schtasks /delete hit)"
+else
+    echo "FAIL V8b expected schtasks /delete to be called"
+    FAILED=$((FAILED + 1))
+fi
+
+# V9 (codex-adv-11): the verify rejects (months-out answer) but the cleanup
+# /delete FAILS -> the refusal must still exit 2 AND loudly surface that the
+# known-bad task is STILL SCHEDULED (not silently claim cleanup).
+V9="$TMP/v9-stub-bin"
+mkdir -p "$V9"
+cat > "$V9/schtasks" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+    /query)  exit 0 ;;
+    /create) exit 0 ;;
+    /delete) printf '%s\n' "\$*" >> "$V9/delete.log"; exit 1 ;;
+    *)       exit 0 ;;
+esac
+EOF
+cat > "$V9/powershell" <<'EOF'
+#!/usr/bin/env bash
+python3 -c "import time; print(int(time.time()) + 180*86400)"
+EOF
+chmod +x "$V9/schtasks" "$V9/powershell"
+V9_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" win_env "$V9" bash "$ARM" --time "$FUTURE_TIME" --handover "$V9_HO" 2>&1)
+rc=$?
+assert_rc "V9 rejection with failed delete still refuses (rc=2)" 2 "$rc"
+assert_contains "V9 residual-task risk surfaced loudly" "STILL SCHEDULED" "$out"
 
 # ---------------------------------------------------------------------------
 # Summary
