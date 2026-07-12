@@ -20,7 +20,7 @@ sys.stdin.read()
 # for the merge/renumber/tier tests); the new string is the current ANCHOR_MODEL
 # that the anchor-fallback tests (E, I2) feed through this stub to prove the
 # anchor MODEL ran. Keep both so a future ANCHOR_MODEL bump only touches this line.
-if model in ("qwen/qwen3-coder-480b-a35b-instruct", "qwen/qwen3.6-35b-a3b", "qwen3-coder-plus", "qwen3.7-max"):
+if model in ("qwen/qwen3-coder-480b-a35b-instruct", "qwen/qwen3.6-35b-a3b", "qwen3-coder-plus", "qwen3.7-max", "qwen/qwen3-next-80b-a3b-instruct:free"):
     print("# qwen3coder First-Pass Review")
     print("")
     print("## Critical Issues (1 found)")
