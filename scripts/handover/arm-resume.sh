@@ -382,11 +382,15 @@ esac
 #   START_DATE   MM/DD/YYYY   — schtasks /sd. FIXES the bug where /st with no
 #                /sd defaulted to TODAY, so a time already past today gave
 #                "Next Run Time: N/A" and never fired (HIMMEL-204). NOTE:
-#                schtasks /sd parses per the user's Windows short-date LOCALE;
-#                MM/DD/YYYY is correct for US-format machines (this repo's
-#                operator env). On a dd/MM/yyyy locale schtasks would reject or
-#                misread it — locale-adaptive /sd is a follow-up if this tool
-#                ever runs on a non-US Windows box.
+#                schtasks /sd parses per the user's Windows short-date LOCALE,
+#                so this MM/DD/YYYY value is only a DEFAULT — the Windows
+#                branch of schedule_arm re-renders it in the machine's own
+#                locale (via _win_short_date_pattern + a registry read) right
+#                before /create, and verifies the registered NextRunTime
+#                afterward (HIMMEL-938; a dd/MM/yyyy machine, e.g. win2,
+#                previously misread MM/DD/YYYY and armed months out with no
+#                error). Non-Windows platforms never read this field as a
+#                schtasks /sd — it stays MM/DD/YYYY here as a harmless default.
 #   AT_STAMP     YYYYMMDDhhmm — at -t, an exact datetime (replaces the
 #                today/tomorrow heuristic that broke for resets >24h out).
 # Capture FIRST (explicit || handler — a $(...) failure inside a heredoc
@@ -1900,6 +1904,116 @@ _crontab_schedule() {
     echo "    crontab -l | grep -v 'HIMMEL-Resume' | crontab -"
 }
 
+# _win_short_date_pattern (HIMMEL-938): read the machine's Windows short-date
+# format from the registry so schedule_arm's Windows branch can render
+# `schtasks /sd` in the LOCALE schtasks itself will parse it with — schtasks
+# reads /sd per-locale, and a hardcoded MM/dd/yyyy silently misreads as
+# day-first on a dd/MM/yyyy machine (win2, 4 recurrences), arming the task
+# months out with no error. MSYS_NO_PATHCONV=1 is the same idiom every other
+# schtasks/reg call in this file uses (HIMMEL-125) — without it gitbash
+# mangles the /v flag into a Windows-rooted path. ANY failure (missing reg,
+# unreadable key, empty/unparseable value) falls back to "MM/dd/yyyy" —
+# byte-identical to the pre-HIMMEL-938 hardcoded behavior. Returns 0 when
+# the pattern came from the registry, 1 when the fallback was used -- the
+# caller must know the difference: a fallback pattern on a day-first
+# machine re-opens the misarm class, so when the post-arm verify is ALSO
+# unavailable the arm must fail closed instead of standing unverified
+# (codex-adv-8). Either way a usable pattern is printed.
+_win_short_date_pattern() {
+    local _reg_out _pat
+    _reg_out=$(MSYS_NO_PATHCONV=1 reg query "HKCU\Control Panel\International" /v sShortDate 2>/dev/null) || {
+        printf '%s\n' "MM/dd/yyyy"
+        return 1
+    }
+    # Everything after the REG_SZ column, NOT $NF — some locales' sShortDate
+    # legitimately contains spaces (e.g. "yyyy. MM. dd."), and a last-field
+    # grab would truncate the pattern to its final token.
+    _pat=$(printf '%s\n' "$_reg_out" | sed -n 's/.*sShortDate[[:space:]]\{1,\}REG_SZ[[:space:]]\{1,\}//p' | head -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//')
+    if [ -z "$_pat" ]; then
+        printf '%s\n' "MM/dd/yyyy"
+        return 1
+    fi
+    printf '%s\n' "$_pat"
+}
+
+# _win_delete_bad_task <task-name> (HIMMEL-938, codex-adv-11): delete a task
+# the post-arm verify rejected, LOUDLY surfacing a failed delete -- a
+# known-mistimed task left scheduled would relaunch at the wrong moment
+# while the ERR above implied it was cleaned up. Callers exit 2 either way;
+# this only controls what the operator is told.
+_win_delete_bad_task() {
+    if MSYS_NO_PATHCONV=1 schtasks /delete /tn "$1" /f >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "ERR arm-resume: FAILED to delete the rejected task '$1' -- a known-mistimed task is STILL SCHEDULED. Remove it manually: schtasks /delete /tn \"$1\" /f" >&2
+    return 1
+}
+
+# _win_render_short_date <epoch> <pattern> (HIMMEL-938): render TARGET_EPOCH
+# as a schtasks-parseable date string in the given Windows short-date
+# pattern (e.g. "dd/MM/yyyy", "M/d/yyyy", "yyyy-MM-dd"). Scans the pattern
+# for runs of d/M/y: a `d`/`M` run always zero-pads to >=2 digits (even a
+# single-letter token like the real Windows en-US DEFAULT "M/d/yyyy" —
+# verified live on the operator's own box, which is NOT "MM/dd/yyyy" as
+# originally assumed). HIMMEL-938 is about the day/month ORDER a locale
+# implies, not digit width, and schtasks parses "7/2/2026" and "07/02/2026"
+# identically — so fixing width at >=2 keeps a same-order locale's /sd value
+# byte-identical to the pre-HIMMEL-938 hardcoded render (only a genuinely
+# reordered pattern, e.g. dd/MM/yyyy, changes the emitted string). A `y` run
+# of length <=2 renders a 2-digit year, longer renders 4-digit; a `d` run of
+# length >=3 is a day-NAME token (e.g. "dddd" in a locale whose short-date
+# pattern embeds a weekday) — schtasks /sd takes a numeric date only, so
+# that token is DROPPED along with one adjacent separator (preferring the
+# separator right after it, else the one already emitted before it) rather
+# than emitted literally. Any other character (separators: /, -, ., space,
+# comma) passes through unchanged. On render failure (bad pattern/args)
+# prints nothing — the caller falls back to the existing MM/dd/yyyy
+# START_DATE.
+_win_render_short_date() {
+    py_armor_capture -c '
+import sys, datetime, re
+epoch = int(sys.argv[1])
+pattern = sys.argv[2]
+# Month-NAME pictures (MMM/MMMM) and era pictures (g/gg) cannot be rendered
+# numerically -- a dd-MMM-yy locale expects a month NAME in /sd, so a
+# numeric render would misparse (coderabbit-4). Print nothing = render
+# failure; the caller falls back to MM/dd/yyyy AND marks the locale path
+# degraded, which the post-arm verify / dual-failure logic covers.
+if re.search(r"M{3,}|g", pattern):
+    sys.exit(0)
+dt = datetime.datetime.fromtimestamp(epoch).astimezone()
+out = []
+i, n = 0, len(pattern)
+while i < n:
+    c = pattern[i]
+    if c in "dMy":
+        j = i
+        while j < n and pattern[j] == c:
+            j += 1
+        run_len = j - i
+        if c == "d" and run_len >= 3:
+            # Day-name token -- drop it (numeric /sd only) plus one
+            # adjacent separator so the rendered string stays parseable.
+            if j < n and not pattern[j].isalpha():
+                j += 1
+            elif out and not out[-1].isalnum():
+                out.pop()
+        else:
+            if c == "y":
+                val = dt.year % 100 if run_len <= 2 else dt.year
+                width = 2 if run_len <= 2 else 4
+            else:
+                val = dt.day if c == "d" else dt.month
+                width = max(run_len, 2)
+            out.append(str(val).zfill(width))
+        i = j
+    else:
+        out.append(c)
+        i += 1
+print("".join(out))
+' "$1" "$2"
+}
+
 schedule_arm() {
     case "$PLATFORM" in
         windows)
@@ -2088,8 +2202,34 @@ schedule_arm() {
                 fi
             } > "$bat_path"
 
+            # HIMMEL-938 Part A: re-render START_DATE in the MACHINE's own
+            # Windows short-date locale right before it's used as /sd —
+            # schtasks parses /sd per-locale, so the MM/DD/YYYY default
+            # derived above is only correct on a US-format machine. Any
+            # render failure (empty PY_ARMOR_OUT) falls back to the
+            # original START_DATE, i.e. exactly the pre-HIMMEL-938 behavior.
+            # _locale_degraded=1 when the /sd value did NOT come from a
+            # successful registry-read + render (fallback used). On its own
+            # that only degrades locale-correctness -- but if the post-arm
+            # verify below is ALSO unavailable, BOTH safeguards are down and
+            # a day-first machine is back in the original misarm class, so
+            # that combination fails closed (codex-adv-8).
+            local _win_pat _win_sd _locale_degraded
+            _locale_degraded=0
+            if ! _win_pat=$(_win_short_date_pattern); then
+                _locale_degraded=1
+            fi
+            _win_sd=""
+            if _win_render_short_date "$TARGET_EPOCH" "$_win_pat"; then
+                _win_sd="$PY_ARMOR_OUT"
+            fi
+            if [ -z "$_win_sd" ]; then
+                _win_sd="$START_DATE"
+                _locale_degraded=1
+            fi
+
             if [ "$DRY_RUN" -eq 1 ]; then
-                echo "DRY arm-resume: would schtasks /create /tn $TASK_NAME /tr $bat_path_win /sc ONCE /st $RESUME_TIME /sd $START_DATE /f"
+                echo "DRY arm-resume: would schtasks /create /tn $TASK_NAME /tr $bat_path_win /sc ONCE /st $RESUME_TIME /sd $_win_sd /f"
                 echo "DRY arm-resume: .bat content:"
                 sed 's/^/    /' "$bat_path"
                 rm -f "$bat_path"
@@ -2099,13 +2239,152 @@ schedule_arm() {
             local err_file
             err_file=$(mktemp -t arm-resume.err.XXXXXX)
             # MSYS_NO_PATHCONV=1: see HIMMEL-125 note in list_existing.
-            if ! MSYS_NO_PATHCONV=1 schtasks /create /tn "$TASK_NAME" /tr "$bat_path_win" /sc ONCE /st "$RESUME_TIME" /sd "$START_DATE" /f 2>"$err_file"; then
+            if ! MSYS_NO_PATHCONV=1 schtasks /create /tn "$TASK_NAME" /tr "$bat_path_win" /sc ONCE /st "$RESUME_TIME" /sd "$_win_sd" /f 2>"$err_file"; then
                 echo "ERR arm-resume: schtasks /create failed:" >&2
                 cat "$err_file" >&2
                 rm -f "$err_file" "$bat_path"
                 exit 4
             fi
             rm -f "$err_file"
+            # Epoch at create-completion (codex-adv-3): if /create itself
+            # finished AFTER the target (slow setup on a tight lead), the
+            # ONCE task registers already-expired and can never fire -- a
+            # later NEXTRUN-NONE must then be a refused arm, never
+            # "consumed". Captured here, read in the verify branch below.
+            local _create_done_epoch
+            _create_done_epoch=$(date +%s)
+
+            # HIMMEL-938 Part B: post-arm NextRunTime verify. A successful
+            # schtasks /create rc=0 is not proof the task will fire at the
+            # intended moment -- a misregistered /sd (wrong locale, or any
+            # other silent misparse) still returns rc=0, and the task then
+            # just sits Ready and never fires (or fires months out — the
+            # exact HIMMEL-938 bug). Get-ScheduledTaskInfo's .NextRunTime is
+            # a real DateTime (locale-independent), unlike `schtasks /query`
+            # output, so it's the trustworthy cross-check. Fail-OPEN on the
+            # PROBE itself (missing/broken PowerShell must never block an
+            # otherwise-good arm -- WARN and let the arm stand); fail-CLOSED
+            # on a bad ANSWER (a confirmed months-out registration is worse
+            # than no arm at all -- delete the just-created task and refuse).
+            # Skipped entirely under --dry-run (the DRY branch above already
+            # returned).
+            local _verify_err _ps_out _ps_rc
+            _verify_err=$(mktemp -t arm-resume.verify-err.XXXXXX)
+            _ps_rc=0
+            # `|| _ps_rc=$?` (not a bare trailing `_ps_rc=$?`): under this
+            # file's `set -e`, a failing command substitution assigned
+            # straight to a variable aborts the script right there — same
+            # armor idiom py_armor_capture uses to stay errexit-safe.
+            # -ErrorAction Stop + try/catch (codex-adv-10): NEXTRUN-NONE must
+            # mean a SUCCESSFUL query that definitively found no next run --
+            # task-not-found maps to it via the locale-independent
+            # ObjectNotFound category; every OTHER query error (access
+            # denied, service failure, missing cmdlet) exits nonzero and
+            # takes the probe-failure path instead of masquerading as an
+            # authoritative answer.
+            _ps_out=$(powershell -NoProfile -NonInteractive -Command "
+                try {
+                    \$t = Get-ScheduledTaskInfo -TaskPath '\' -TaskName '$TASK_NAME' -ErrorAction Stop
+                    if (\$null -eq \$t.NextRunTime) { 'NEXTRUN-NONE' }
+                    else { [int64]([DateTimeOffset]\$t.NextRunTime.ToUniversalTime()).ToUnixTimeSeconds() }
+                } catch {
+                    # CommandNotFoundException (ScheduledTasks module absent)
+                    # ALSO carries the ObjectNotFound category -- it must
+                    # stay a probe failure, not a task-not-found answer
+                    # (coderabbit-1).
+                    if (\$_.Exception -is [System.Management.Automation.CommandNotFoundException]) { Write-Error \$_; exit 1 }
+                    elseif (\$_.CategoryInfo.Category -eq 'ObjectNotFound') { 'NEXTRUN-NONE' }
+                    else { Write-Error \$_; exit 1 }
+                }
+            " 2>"$_verify_err") || _ps_rc=$?
+            if [ "$_ps_rc" -ne 0 ] || [ -z "$_ps_out" ]; then
+                if [ "$_locale_degraded" -eq 1 ]; then
+                    # BOTH safeguards down: the /sd came from the US-format
+                    # fallback AND the verify can't check what actually
+                    # registered -- on a day-first machine this is exactly
+                    # the silent months-out misarm again. Loud no-arm wins.
+                    echo "ERR arm-resume: locale detection fell back to MM/dd/yyyy AND the post-arm verify could not run (rc=$_ps_rc) -- with both safeguards unavailable a mistimed arm would be silent. Deleting the task; fix 'reg'/'powershell' availability and re-arm." >&2
+                    sed 's/^/    /' "$_verify_err" >&2
+                    rm -f "$_verify_err"
+                    _win_delete_bad_task "$TASK_NAME" || true
+                    rm -f "$bat_path"
+                    exit 2
+                fi
+                echo "WARN arm-resume: post-arm NextRunTime verify could not run (rc=$_ps_rc) -- arm stands unverified:" >&2
+                sed 's/^/    /' "$_verify_err" >&2
+                rm -f "$_verify_err"
+            else
+                rm -f "$_verify_err"
+                _ps_out=$(printf '%s' "$_ps_out" | tr -d '\r\n ')
+                if [ "$_ps_out" = "NEXTRUN-NONE" ]; then
+                    # Create->verify race guard (codex-adv-1/-2): the emitted
+                    # .bat deletes its OWN task registration as its first
+                    # action, so a target whose time ARRIVED between /create
+                    # and this probe can legitimately be gone -- consumed,
+                    # not misarmed. A scheduler never fires EARLY, so a
+                    # missing task whose target is still in the future
+                    # cannot have fired -- that is a bad registration (e.g. a
+                    # past-date /sd misparse also registers with no
+                    # NextRunTime), and lead time alone must not excuse it.
+                    local _now_epoch _lead
+                    _now_epoch=$(date +%s)
+                    _lead=$((TARGET_EPOCH - _now_epoch))
+                    # Consumed iff created-before-target AND verified-after-
+                    # target -- a task created after its target registers
+                    # expired and never fires (codex-adv-3), and one whose
+                    # target is still future cannot have fired, even by a
+                    # second: the scheduler never fires early and every
+                    # epoch here reads the same local clock, so no skew
+                    # grace is warranted (codex-adv-2/-4). Everything else
+                    # refuses loudly.
+                    # Strict < : a create completing WITHIN the target second
+                    # is ambiguous (may have registered after the trigger
+                    # instant) -- ambiguity refuses (codex-adv-6).
+                    if [ "$_lead" -le 0 ] && [ "$_create_done_epoch" -lt "$TARGET_EPOCH" ]; then
+                        echo "WARN arm-resume: post-arm verify found no task '$TASK_NAME' and the target time has passed (lead=${_lead}s, created ${_create_done_epoch} <= target ${TARGET_EPOCH}) -- it fired and self-deleted during the create->verify window; treating the arm as consumed, not failed." >&2
+                    else
+                        echo "ERR arm-resume: post-arm verify found NO NextRunTime for '$TASK_NAME' (requested $RESUME_TIME on $_win_sd, epoch=$TARGET_EPOCH, lead=${_lead}s, create-done=$_create_done_epoch -- a still-future target cannot have fired, and a task created after its target never fires). Deleting the bad task -- this is the HIMMEL-938 silent-misarm class." >&2
+                        _win_delete_bad_task "$TASK_NAME" || true
+                        rm -f "$bat_path"
+                        exit 2
+                    fi
+                else
+                case "$_ps_out" in
+                    *[!0-9]*|'')
+                        if [ "$_locale_degraded" -eq 1 ]; then
+                            # Same dual-failure class as the dead-probe path
+                            # above: garbage output is no usable confirmation
+                            # either (codex-adv-9).
+                            echo "ERR arm-resume: locale detection fell back to MM/dd/yyyy AND the post-arm verify returned a non-numeric NextRunTime ('$_ps_out') -- with both safeguards unavailable a mistimed arm would be silent. Deleting the task; fix 'reg'/'powershell' availability and re-arm." >&2
+                            _win_delete_bad_task "$TASK_NAME" || true
+                            rm -f "$bat_path"
+                            exit 2
+                        fi
+                        echo "WARN arm-resume: post-arm verify returned a non-numeric NextRunTime ('$_ps_out') -- arm stands unverified" >&2
+                        ;;
+                    *)
+                        local _diff
+                        if [ "$_ps_out" -gt "$TARGET_EPOCH" ]; then
+                            _diff=$((_ps_out - TARGET_EPOCH))
+                        else
+                            _diff=$((TARGET_EPOCH - _ps_out))
+                        fi
+                        # A healthy arm registers NextRunTime on the exact
+                        # requested minute, so anything beyond scheduler
+                        # resolution (120s) is a real mistime -- a one-day-
+                        # late registration misses the resume window just as
+                        # surely as a months-out one (codex-adv-5; tightened
+                        # from the ticket's original 24h sketch).
+                        if [ "$_diff" -gt 120 ]; then
+                            echo "ERR arm-resume: post-arm verify mismatch for '$TASK_NAME' -- requested epoch=$TARGET_EPOCH ($RESUME_TIME on $_win_sd), registered NextRunTime epoch=$_ps_out (diff=${_diff}s > 120s tolerance). Deleting the bad task -- this is the HIMMEL-938 mistimed-arm class." >&2
+                            _win_delete_bad_task "$TASK_NAME" || true
+                            rm -f "$bat_path"
+                            exit 2
+                        fi
+                        ;;
+                esac
+                fi
+            fi
             ;;
         linux)
             if command -v at >/dev/null 2>&1; then

@@ -299,9 +299,17 @@ out; the task sits `State=Ready`, `LastRun=never`, result `267011` /
 `SCHED_S_TASK_HAS_NOT_RUN` — a silent no-launch). After ANY scheduled-task
 creation on a machine not yet proven, verify
 `(Get-ScheduledTaskInfo <name>).NextRunTime` is the intended datetime — never
-trust the creation SUCCESS message. The locale-proof route is a `/create /xml`
-task definition (see the UTF-16-prolog section above) instead of `/sd`
-strings; HIMMEL-870 tracks moving `arm-resume.sh` onto it.
+trust the creation SUCCESS message.
+
+`arm-resume.sh` is now structurally guarded against this (HIMMEL-938): its
+Windows path reads `HKCU\Control Panel\International\sShortDate` and renders
+`/sd` in the machine's own pattern (falling back to the old hardcoded
+`MM/dd/yyyy` on any registry-read failure), then runs the
+`Get-ScheduledTaskInfo` check above after every create — a mismatch beyond a
+120s tolerance (or a missing/null `NextRunTime`) deletes the just-created task and refuses
+(rc=2) instead of leaving a silent months-out arm. Any OTHER hand-rolled
+`schtasks /create /sd` call outside `arm-resume.sh` remains exposed to this
+trap (and remains forbidden — go through `arm-resume.sh`).
 
 ## MSYS `/tmp` is the Windows user temp dir — temp cleaners delete it under you
 
