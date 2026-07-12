@@ -82,8 +82,10 @@ index 0000000..1111111 100644
 # cross-check of critics.json against the panel's fallback, not a third copy.
 ANCHOR_SLUG="$(sed -n 's/^ANCHOR_SLUG="\(.*\)"$/\1/p' "$PANEL")"
 ANCHOR_MODEL="$(sed -n 's/^ANCHOR_MODEL="\(.*\)"$/\1/p' "$PANEL")"
+ANCHOR_PROVIDER="$(sed -n 's/^ANCHOR_PROVIDER="\(.*\)"$/\1/p' "$PANEL")"
 check "R: ANCHOR_SLUG extracted from critic-panel.sh" "$([ -n "$ANCHOR_SLUG" ] && echo yes)" "yes"
 check "R: ANCHOR_MODEL extracted from critic-panel.sh" "$([ -n "$ANCHOR_MODEL" ] && echo yes)" "yes"
+check "R: ANCHOR_PROVIDER extracted from critic-panel.sh" "$([ -n "$ANCHOR_PROVIDER" ] && echo yes)" "yes"
 reg_free="$(python3 - "$HERE/critics.json" <<'PYEOF'
 import sys, json
 d = json.load(open(sys.argv[1]))
@@ -98,10 +100,10 @@ import sys, json
 d = json.load(open(sys.argv[1]))
 for e in d.get("panel", []):
     if e.get("slug") == sys.argv[2]:
-        print(e.get("tier", "") + " " + e.get("model", "")); break
+        print(e.get("tier", "") + " " + e.get("model", "") + " " + e.get("route_provider", "")); break
 PYEOF
 )"
-check "R: anchor slug $ANCHOR_SLUG is free-tier + pinned to the panel's ANCHOR_MODEL" "$reg_anchor" "free $ANCHOR_MODEL"
+check "R: anchor slug $ANCHOR_SLUG is free-tier + pinned to the panel's ANCHOR_MODEL + ANCHOR_PROVIDER" "$reg_anchor" "free $ANCHOR_MODEL $ANCHOR_PROVIDER"
 
 # Test A: merge + global renumber
 out_a="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
@@ -132,7 +134,7 @@ stderr_e="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/does-not-exist.json" CRITIC
 out_e="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/does-not-exist.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
 check "E: warning on missing registry" "$(printf '%s\n' "$stderr_e" | grep -cF 'anchor-only')" "1"
 check "E: anchor used (1/1)" "$(printf '%s\n' "$out_e" | grep -cF '(1/1 critics responded)')" "1"
-check_contains "E: qwen3coder finding present" "$out_e" "[qwen3coder-"
+check_contains "E: anchor finding present" "$out_e" "[$ANCHOR_SLUG-"
 # deliberately tied to the stub's qwen-branch text — proves the anchor MODEL ran
 check_contains "E: qwen anchor branch ran" "$out_e" "null dereference in handler"
 
@@ -165,7 +167,7 @@ printf '{not json}' > "$tmp/critics-bad.json"
 stderr_i2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-bad.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
 out_i2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-bad.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
 check "I2: malformed JSON -> anchor warning" "$(printf '%s\n' "$stderr_i2" | grep -cF 'anchor-only')" "1"
-check_contains "I2: malformed JSON -> anchor finding present" "$out_i2" "[qwen3coder-"
+check_contains "I2: malformed JSON -> anchor finding present" "$out_i2" "[$ANCHOR_SLUG-"
 # deliberately tied to the stub's qwen-branch text — proves the anchor MODEL ran
 check_contains "I2: qwen anchor branch ran" "$out_i2" "null dereference in handler"
 
@@ -464,6 +466,12 @@ printf '%s' '{"panel":[{"slug":"meta","model":"fake/meta","provider":"openrouter
 : > "$CAPTURE_FILE"
 printf '%s' "$DIFF" | CRITICS_JSON="$PROVMETA_JSON" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" >/dev/null 2>&1
 check "PV2: provider metadata alone does NOT thread --provider <name>" "$(grep -c -- '--provider openrouter' "$CAPTURE_FILE")" "0"
+# PV3: the anchor-only fallback row (registry missing) must carry the anchor's
+# route_provider to the invocation seam — the anchor model is provider-pinned,
+# so a bare row would route it to the wrong backend exactly on the recovery path.
+: > "$CAPTURE_FILE"
+printf '%s' "$DIFF" | CRITICS_JSON="$tmp/does-not-exist.json" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" >/dev/null 2>&1
+check "PV3: anchor-only fallback threads --provider ANCHOR_PROVIDER" "$(grep -c -- "--provider $ANCHOR_PROVIDER" "$CAPTURE_FILE")" "1"
 
 # Test O: operator-local registry overlay (HIMMEL-727). critics.local.json next
 # to the panel wins over critics.json; CRITICS_JSON env wins over both. Run a
