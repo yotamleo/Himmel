@@ -78,6 +78,61 @@ Rule of thumb: if CPU stays above ~85%, free RAM drops below ~8 GB, or the host 
 starts lagging, stop spawning and shrink the substrate cap before retrying. Do not
 solve host pressure by adding more agents.
 
+## WSL: `wsl.exe` invoked from Git Bash mangles `/mnt` args
+
+Calling `wsl.exe` from a Git Bash session puts every argument through MSYS path
+conversion first: `/mnt/c/...` looks like a POSIX absolute path, so MSYS
+rewrites it to `C:\msys64\mnt\c\...`-style Windows paths before `wsl.exe` ever
+sees it — the command then fails inside the distro on a path that doesn't
+exist. Measured live during the HIMMEL-939 eval (win2, 2026-07-12).
+
+Prefix the call with `MSYS_NO_PATHCONV=1`:
+
+```bash
+MSYS_NO_PATHCONV=1 wsl.exe -e bash -c 'ls /mnt/c/Users'
+```
+
+For `/`-prefixed argument *fragments* that are not standalone paths (flags like
+`/tmp/x:/y` mappings, or args where only part is a path), `MSYS_NO_PATHCONV=1`
+alone may not cover it — add `MSYS2_ARG_CONV_EXCL='*'` to exclude everything
+from conversion. In-repo precedent: `scripts/cr/coderabbit-review.sh:151`
+(the CodeRabbit WSL lane, HIMMEL-926).
+
+## WSL: the /mnt/c performance cliff
+
+WSL processes operating on a Windows checkout through `/mnt/c` are not "a bit
+slower" — they are the **worst possible configuration**, slower than Git Bash
+itself. Measured on the himmel repo (win2, 2026-07-12, HIMMEL-939 eval):
+
+| operation | Git Bash (C:\ checkout) | WSL on `/mnt/c` | WSL on ext4 clone |
+|---|---|---|---|
+| `git status` | 89–142 ms | **4,290–18,839 ms** | 27 ms (warm) |
+| `grep -r` over `scripts/` | 397–480 ms | 4,438–4,472 ms | 24–26 ms |
+
+That is a 30–130× `git status` penalty vs Git Bash, and up to ~700× vs a
+WSL-native clone. The 9P filesystem bridge pays per-file round-trip costs that file-heavy
+tools (git, grep, build systems) multiply by thousands. The rule, from the
+Microsoft filesystem guidance and confirmed by these numbers: **work must live
+on the filesystem native to the executing side.** WSL work ⇒ ext4 clone
+(`~/...` inside the distro); never route file-heavy WSL commands at `/mnt/c`.
+Fork-heavy-but-file-light work (subshell/pipeline benchmarks) is fine either
+side — the cliff is filesystem IO, not process spawn.
+
+## WSL: himmel hooks fail closed when the distro lacks the toolchain
+
+himmel's Claude hooks parse their JSON stdin with `jq` and **fail closed** —
+a missing `jq` reads as "cannot verify, refuse". In a bare WSL Ubuntu (no
+toolchain provisioned), `block-destructive-commands.sh` refused in 240 ms
+during the HIMMEL-939 eval: fast, silent, and every guarded operation is
+blocked, which presents as "hooks are broken under WSL" when the actual
+problem is a missing binary.
+
+A WSL lane or WSL station therefore needs the toolchain **provisioned
+in-distro** (`jq`, `node`, `gh`, `bun`, … — `scripts/machine-setup/ubuntu.sh`
+is the base), not just bash. The Windows-side installs are invisible to the
+distro; Windows interop only exposes `.exe` binaries, and the hooks invoke
+plain `jq`/`node`.
+
 ## Windows: `python3` / `python` may be the WindowsApps Store stub
 
 On a box with no classic CPython install, `python3` and `python` resolve to the

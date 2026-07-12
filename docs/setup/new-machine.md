@@ -55,8 +55,34 @@ Complete checklist for getting a new machine to full working state.
 | Git Bash 2.40+ | https://git-scm.com — includes bash 4.4+, `realpath -m`, `mktemp`, `cygpath`. |
 | `schtasks` | Built-in. Used by `scripts/handover/arm-resume.sh` for cron-armed Claude relaunches. **Always invoke under `MSYS_NO_PATHCONV=1`** (per HIMMEL-125) to prevent Git Bash from mangling `/flag` args into Windows paths. |
 | `MSYS_NO_PATHCONV` awareness | Documented in CLAUDE.md handover section. |
-| WSL or PowerShell-only is **NOT sufficient** — most operator-facing tooling needs bash. WSL works but adds an indirection layer; native Git Bash is the tested path. |
+| PowerShell-only is **NOT sufficient** — most operator-facing tooling needs bash. WSL as a *shell swap* under Windows-native Claude Code is not possible either (see the WSL station profile subsection below); native Git Bash is the tested path. |
 | WSL2 / Docker resource caps | If WSL or Docker Desktop is installed, cap them before multi-agent runs. Start with `%UserProfile%\.wslconfig` `memory=16GB`, `processors=8`, `swap=4GB` on a 48 GB / 32-logical-core class host, then tune after measuring. Docker gets separate Desktop/per-container caps. See [environment gotchas](../internals/environment-gotchas.md#windows-wsl--docker-resource-budget). |
+
+#### WSL on Windows — two readings, only one of them real (HIMMEL-939)
+
+"Use WSL instead of Git Bash" means two very different setups. The HIMMEL-939
+ADR evaluated both (win2, 2026-07-12):
+
+- **Shell swap (impossible, not just unsupported).** Keeping Claude Code on
+  native Windows and pointing its shell at WSL bash does not work, structurally:
+  the Bash tool binds Git Bash only (`CLAUDE_CODE_GIT_BASH_PATH` accepts a Git
+  Bash, not WSL); Windows `git.exe` runs commit/push gates under its bundled
+  MSYS bash regardless of the session shell; and WSL git cannot read
+  Windows-created worktrees (the `.git` pointer file carries a `C:/` absolute
+  path). There is no setting that makes this configuration exist.
+- **WSL station profile (supported).** Claude Code installed *inside* a WSL
+  distro — repo clones on ext4 (never `/mnt/c`, see the
+  [/mnt/c performance cliff](../internals/environment-gotchas.md#wsl-the-mntc-performance-cliff)),
+  toolchain (node/jq/gh/bun/…) provisioned in-distro — is a supported,
+  documented Anthropic configuration. Effectively a Linux station that happens
+  to run on a Windows host; the Linux column of this doc applies. Windows-side
+  control-plane pieces (schtasks arming) remain reachable via interop
+  (`schtasks.exe` callable from WSL, ~70 ms overhead).
+
+**Git Bash remains the tested default** for Windows stations until the
+HIMMEL-955 WSL-station pilot reaches an ADOPT verdict. If you run WSL from Git
+Bash meanwhile, read the three measured WSL traps in
+[environment gotchas](../internals/environment-gotchas.md#wsl-wslexe-invoked-from-git-bash-mangles-mnt-args).
 
 ### Scripts requiring bash 4+
 
