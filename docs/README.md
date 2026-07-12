@@ -21,6 +21,7 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 
 - [commands-catalog.md](commands-catalog.md) — every project-local slash command.
 - [tooling-catalog.md](tooling-catalog.md) — every tool, script, and plugin in active use.
+- [jarvis-subsystems.md](jarvis-subsystems.md) — adopter usage map of the optional agentic-OS subsystems (GLM lane, quota-gauge, escalation channel, statusline, clipper pipeline).
 - [operator-conventions.md](operator-conventions.md) — durable operator working-habits.
 - [contributing.md](contributing.md) — the contribution workflow.
 
