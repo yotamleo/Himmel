@@ -166,6 +166,47 @@ allowlist edit.
 — plain message ingested, bounded run replied INTO the group, DM untouched;
 an allowlisted channel — first post surfaced its id via the gated-out log,
 allowlisted + restarted, posts then processed with replies into the channel.
+## Group triage (HIMMEL-721)
+
+Plain group/channel chat is fronted by a cheap classifier before the bridge
+spawns a bounded Claude run. DMs and explicit operator routes (`status`,
+`sessions`, `stop <ticket>`, `work on <ticket>`, ticket follow-ups, and enabled
+trusted auto-actions) bypass triage.
+
+The gate runs BEFORE the message is enqueued: the classifier sees the message
+text first, and only a spawn verdict writes anything to the session inbox.
+
+Environment:
+
+- `TELEGRAM_TRIAGE=off` disables group triage. Default is on. The match is an
+  exact, lowercase `off` — any other value leaves triage enabled.
+- `TELEGRAM_TRIAGE_MODEL` selects the Hermes model. Default: `deepseek-chat`.
+- `TELEGRAM_TRIAGE_PROVIDER` selects the Hermes provider. Default: `deepseek`.
+- `TELEGRAM_TRIAGE_TIMEOUT_MS` is the classifier deadline in milliseconds.
+  Default: `20000` (20s). A non-numeric or non-positive value falls back to the
+  default. On expiry the call fails open (see below).
+
+Verdicts:
+
+- `ignore` drops the message — it is never enqueued, so no bounded run spawns
+  and a later delivery sweep has nothing to resurrect. The skip is logged.
+- `ack` drops the message like `ignore` (no reusable reply path yet); the skip
+  is logged.
+- `spawn-low` enqueues the message and, when the session is idle/done at triage
+  time, spawns through the normal session path with model override `haiku`.
+- `spawn-high` enqueues the message and preserves the existing default
+  bounded-run model behavior.
+
+The classifier is fail-open: errors, timeouts, and unparseable output all become
+`spawn-high`, so a broken cheap lane does not drop actionable messages. The
+triage prompt includes the message text only, not sender/chat metadata or local
+paths.
+
+**Known limitation:** the `spawn-low` `haiku` override applies only to the
+direct spawn that fires when the session is idle/done at triage time. A message
+queued behind a busy (running) session is later delivered by the ordinary
+delivery sweep at the default model — the override is not persisted through the
+inbox queue. Deferred to a follow-up; not fixed here.
 
 **Consolidation pattern:** Telegram channels don't contain groups — to funnel
 many sources through one allowlisted chat, forward/post their content INTO a
