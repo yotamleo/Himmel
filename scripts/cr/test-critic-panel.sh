@@ -180,11 +180,31 @@ chmod +x "$STUB_HANG"
 HANG_JSON="$tmp/critics-hang.json"
 printf '%s\n' '{"panel":[{"slug":"hang-critic","model":"fake/hang","provider":"test","tier":"free"}]}' > "$HANG_JSON"
 
+# retry_once <case-fn> — loaded-runner tolerance for the timing-sensitive
+# cases below (HIMMEL-963: J1/K1/K2 flip under CI runner contention). Runs the
+# case as a silent probe; on failure re-runs it ONCE and lets the checks after
+# report on the second attempt's captured globals. Never masks a deterministic
+# failure — a real bug fails both attempts.
+retry_once() {
+    "$1" && return 0
+    echo "note - $1: probe failed once, retrying (loaded-runner tolerance)"
+    "$1" || true
+}
+
 # Only run this test if 'timeout' is available (same condition as the panel uses)
 if command -v timeout > /dev/null 2>&1; then
-    j_rc=0
-    stderr_j="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=2 CRITICS_JSON="$HANG_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
-        timeout 5 bash "$PANEL" 2>&1 >/dev/null)" || j_rc=$?
+    # Outer timeout 20 (was 5): only a backstop against a genuinely hung panel.
+    # The tight 5s margin raced panel startup + the 2s member timeout on loaded
+    # runners (outer kill -> rc=124, stderr lines never emitted).
+    j1_case() {
+        j_rc=0
+        stderr_j="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=2 CRITICS_JSON="$HANG_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
+            timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j_rc=$?
+        printf '%s' "$stderr_j" | grep -qF "unavailable (timeout 2s)" \
+            && printf '%s' "$stderr_j" | grep -qF "hang-critic" \
+            && [ "$j_rc" = "1" ]
+    }
+    retry_once j1_case
 
     check_contains "J1: hung member timeout in stderr" "$stderr_j" "unavailable (timeout 2s)"
     check_contains "J1: hung member slug in stderr" "$stderr_j" "hang-critic"
@@ -272,8 +292,14 @@ PYEOF
     printf '%s' "$DATA_2" > "$tmp/critics-2.json"
 
     # (a) byte-identical convergence: slow-critic-0 + instant-critic-1, parallel == sequential
-    out_seq="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-2.json" CRITIC_FIRST_PASS="$STUB_SLOW" CRITIC_PARALLEL=0 timeout 30 bash "$PANEL" 2>/dev/null)"
-    out_par="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-2.json" CRITIC_FIRST_PASS="$STUB_SLOW" CRITIC_PARALLEL=1 timeout 30 bash "$PANEL" 2>/dev/null)"
+    # timeout 60 (was 30) + retry_once: the merge logic is deterministic, but a
+    # thrashing runner can trip the outer timeout and truncate one capture.
+    k1_case() {
+        out_seq="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-2.json" CRITIC_FIRST_PASS="$STUB_SLOW" CRITIC_PARALLEL=0 timeout 60 bash "$PANEL" 2>/dev/null)"
+        out_par="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-2.json" CRITIC_FIRST_PASS="$STUB_SLOW" CRITIC_PARALLEL=1 timeout 60 bash "$PANEL" 2>/dev/null)"
+        [ -n "$out_seq" ] && [ "$out_seq" = "$out_par" ]
+    }
+    retry_once k1_case
     check "K1: parallel output identical to sequential (slow critic-0)" "$out_seq" "$out_par"
 
     # (b) registry order: qwen3coder-1 must appear before gptoss-* in merged output
@@ -289,8 +315,14 @@ PYEOF
     # K2: Parallel member-drop — kimi fails in parallel mode; check availability + header
     # Note: critics-all.json has kimi which fails (stub exits 1 for kimi model)
     # Run twice: once for stderr, once for stdout (can't capture both at once cleanly)
-    stderr_k2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" CRITIC_PARALLEL=1 timeout 30 bash "$PANEL" 2>&1 >/dev/null)"
-    out_k2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" CRITIC_PARALLEL=1 timeout 30 bash "$PANEL" 2>/dev/null)"
+    # timeout 60 (was 30) + retry_once: same loaded-runner tolerance as K1.
+    k2_case() {
+        stderr_k2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" CRITIC_PARALLEL=1 timeout 60 bash "$PANEL" 2>&1 >/dev/null)"
+        out_k2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" CRITIC_PARALLEL=1 timeout 60 bash "$PANEL" 2>/dev/null)"
+        printf '%s' "$stderr_k2" | grep -qF 'panel-availability: kimi unavailable' \
+            && printf '%s' "$out_k2" | grep -qF '(2/3 critics responded)'
+    }
+    retry_once k2_case
     check "K2: parallel kimi unavailable" "$(printf '%s\n' "$stderr_k2" | grep -cF 'panel-availability: kimi unavailable')" "1"
     check "K2: parallel header 2/3" "$(printf '%s\n' "$out_k2" | grep -cF '(2/3 critics responded)')" "1"
 

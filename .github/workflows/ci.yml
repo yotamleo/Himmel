@@ -206,4 +206,17 @@ jobs:
           sudo systemctl enable --now atd || sudo service atd start || true
       # Explicit `bash` prefix: on windows-latest the default run shell is pwsh,
       # but Git Bash is preinstalled + on PATH, so `bash …` runs under MSYS2.
+      # FAIL_LOG_DIR: full failed-suite logs land there and upload as an
+      # artifact below — the inline tail is bounded, so without this the
+      # failing assertion can be unrecoverable from Actions logs (HIMMEL-963).
       - run: bash scripts/ci/run-shell-tests.sh
+        env:
+          FAIL_LOG_DIR: failed-suite-logs
+      - name: Upload failed-suite logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-unit-failed-logs-${{ matrix.os }}
+          path: failed-suite-logs/
+          if-no-files-found: ignore
+          retention-days: 14
