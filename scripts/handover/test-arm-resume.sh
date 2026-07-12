@@ -1671,7 +1671,16 @@ for a in "$@"; do
     esac
 done
 EOF
-chmod +x "$WINBIN/claude" "$WINBIN/cygpath"
+# No-op schtasks stub: only satisfies arm-resume's `command -v schtasks`
+# preflight (~line 491) for the dry-run V1/V2/V2b cases below, which return
+# before any create call ever reaches schtasks. On a real Linux box (no
+# System32 schtasks) this preflight would otherwise kill those tests before
+# they reach the locale-render logic under test.
+cat > "$WINBIN/schtasks" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$WINBIN/claude" "$WINBIN/cygpath" "$WINBIN/schtasks"
 win_env() { local _dir="$1"; shift; env PATH="$_dir:$WINBIN:$PATH" OSTYPE="msys" "$@"; }
 
 # V1: DD/MM locale render. `reg` reports a dd/MM/yyyy short-date pattern;

@@ -55,8 +55,9 @@ Complete checklist for getting a new machine to full working state.
 | Git Bash 2.40+ | https://git-scm.com — includes bash 4.4+, `realpath -m`, `mktemp`, `cygpath`. |
 | `schtasks` | Built-in. Used by `scripts/handover/arm-resume.sh` for cron-armed Claude relaunches. **Always invoke under `MSYS_NO_PATHCONV=1`** (per HIMMEL-125) to prevent Git Bash from mangling `/flag` args into Windows paths. |
 | `MSYS_NO_PATHCONV` awareness | Documented in CLAUDE.md handover section. |
-| PowerShell-only is **NOT sufficient** — most operator-facing tooling needs bash. WSL as a *shell swap* under Windows-native Claude Code is not possible either (see the WSL station profile subsection below); native Git Bash is the tested path. |
 | WSL2 / Docker resource caps | If WSL or Docker Desktop is installed, cap them before multi-agent runs. Start with `%UserProfile%\.wslconfig` `memory=16GB`, `processors=8`, `swap=4GB` on a 48 GB / 32-logical-core class host, then tune after measuring. Docker gets separate Desktop/per-container caps. See [environment gotchas](../internals/environment-gotchas.md#windows-wsl--docker-resource-budget). |
+
+PowerShell-only is **NOT sufficient** — most operator-facing tooling needs bash. WSL as a *shell swap* under Windows-native Claude Code is not possible either (see the WSL station profile subsection below); native Git Bash is the tested path.
 
 #### WSL on Windows — two readings, only one of them real (HIMMEL-939)
 

@@ -58,5 +58,10 @@
     "from": "Fable stays CONSERVED (limited release)",
     "to": "The top model stays CONSERVED (limited release)",
     "note": "HIMMEL-806: conservation note added 2026-07-08 — sentence-initial, single line, so the full-phrase match is stable."
+  },
+  {
+    "from": "a Sonnet/Opus/Fable implementor-shaped Agent dispatch",
+    "to": "a Sonnet/Opus/top-model implementor-shaped Agent dispatch",
+    "note": "HIMMEL-920: guard-implementor-dispatch hook description in the ENFORCEMENT section — neutral tier language, same pattern as the Fable-5 lane-table row."
   }
 ]
