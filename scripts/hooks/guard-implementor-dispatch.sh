@@ -26,10 +26,11 @@
 #   5. DENY-tier eligibility is an ALLOW-LIST of known-expensive implementor
 #      shapes (critic Q2 — a deny-list would false-block future reviewer
 #      agent types): subagent_type in {general-purpose, claude,
-#      feature-dev:code-architect} AND model in {sonnet, opus, fable}.
-#      Anything else (incl. an absent/empty model — critic optional #2: it
-#      inherits the parent loop, costly but not confirmable as DENY-worthy)
-#      is capped at WARN-tier, never DENY.
+#      feature-dev:code-architect} AND model in {sonnet, opus, fable, absent/
+#      empty}. An absent/empty model IS DENY-eligible (HIMMEL-972 operator
+#      ruling 2026-07-12: an unnamed dispatch inherits the parent loop — the
+#      exact expensive shape this guard exists for; supersedes the original
+#      critic call).
 #   6. Impl-shaped prompt classifier (case-insensitive ERE, de-greeded per
 #      critic Q1 — dropped `patch` (substring of "dispatch"), bare `commit`,
 #      bare `refactor`: all high false-positive). No match → allow.
@@ -75,9 +76,14 @@
 #   incident class this guard exists for (s40 CR-fix rounds) uses the marker
 #   vocabulary. Same accepted-limitation family as the wrapper-displacement
 #   gaps documented in block-glm-external-writes.sh.
-# - ABSENT MODEL IS WARN-ONLY: an unnamed dispatch inherits the parent loop
-#   (expensive) but its cost cannot be CONFIRMED at hook time — plan-critic
-#   call: advisory, never a false block.
+# - ABSENT MODEL IS DENY-ELIGIBLE (HIMMEL-972): an unnamed dispatch inherits
+#   the parent loop, so it is treated as a known-expensive shape at the hard
+#   threshold. Originally WARN-only (plan-critic call); superseded by the
+#   2026-07-12 operator ruling on the HIMMEL-920 cross-model conflict.
+#   Residual edge (adjudicated, NOT a bug): a HAIKU parent's unnamed dispatch
+#   inherits cheap Haiku yet still denies — accepted because Haiku does not
+#   spawn (CLAUDE.md invariant), naming `haiku` explicitly hits the early
+#   always-allow, and IMPL_GUARD_OK=1 covers the exotic remainder.
 #
 # bash 3.2-compatible (no ${var,,}, no mapfile, no associative arrays).
 set -uo pipefail
@@ -115,7 +121,7 @@ case "$subagent_type" in
 esac
 model_in_set=0
 case "$model_lc" in
-    sonnet|opus|fable) model_in_set=1 ;;
+    sonnet|opus|fable|'') model_in_set=1 ;;
 esac
 eligible_deny=0
 [ "$subagent_in_set" = "1" ] && [ "$model_in_set" = "1" ] && eligible_deny=1
