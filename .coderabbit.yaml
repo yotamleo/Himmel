@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review settings (HIMMEL-926). Versioned here so the GitHub App
+# and the CLI lane (/pr-check step 3.2, scripts/cr/coderabbit-review.sh) share
+# one config; this file overrides the org dashboard for this repo.
+#
+# Decisions (rationale on HIMMEL-926):
+#   - profile chill: CodeRabbit is one finding source in a multi-critic panel;
+#     the trial question is uniques, not volume — assertive nitpicks add
+#     adjudication cost without answering it.
+#   - request_changes_workflow off: the merge gate is a clean /pr-check
+#     (CR-marker hook); a bot "request changes" state adds a second,
+#     unenforced gate on a repo merged via --admin.
+#   - Jira integration deliberately NOT connected: the jira CLI owns that loop.
+language: "en-US"
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/package-lock.json"
+  path_instructions:
+    - path: "scripts/**/*.sh"
+      instructions: >-
+        Shell must stay bash 3.2-compatible (macOS default): no associative
+        arrays, no mapfile, no ${var,,}. Scripts run cross-platform on Windows
+        Git Bash, macOS, and Linux — flag GNU-only flags and non-portable
+        constructs. Guardrail hooks are fail-closed by design; critic and
+        availability wrappers are fail-open — check the file header's exit
+        contract before flagging exit semantics as a bug.
+    - path: "**/*.ps1"
+      instructions: >-
+        Some PowerShell files are Windows twins of a same-named .sh script in
+        the same directory. Only when that same-named .sh counterpart exists,
+        flag behavioral drift between the pair rather than style differences;
+        standalone .ps1 files (no .sh twin) carry no parity requirement.
+chat:
+  auto_reply: true
