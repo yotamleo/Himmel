@@ -308,7 +308,7 @@ onto a merged-PR branch, HIMMEL-512, same plugin delivery; `block-unresolved-cr-
 blocks `gh pr merge` while CodeRabbit review threads are unresolved or its check-run
 is in-flight on the head SHA, fail-open on every API/dep error, bypass
 `CR_MERGE_GATE_OK=1` — HIMMEL-936, same plugin delivery; and `guard-implementor-dispatch` —
-bank-aware cost guard that blocks a Sonnet/Opus/Fable implementor-shaped Agent dispatch
+bank-aware cost guard that blocks a Sonnet/Opus/top-model implementor-shaped Agent dispatch
 when the 5-hour bank is at/above 80% (advisory-only at 65%), fail-open on every infra
 error, bypass `IMPL_GUARD_OK=1` — HIMMEL-920, same plugin delivery), **1 PostToolUse hook**
 (`auto-arm-on-subagent-cap` — detects cap in Agent tool results, HIMMEL-276),
