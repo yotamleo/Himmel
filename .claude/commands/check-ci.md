@@ -18,8 +18,14 @@ bash scripts/check-ci.sh $ARGUMENTS
 ```
 
 (Bash tool with `run_in_background: true`; the completion notification
-carries the exit code. With no argument it watches the PR for the current
-branch; pass a PR number, branch, or URL when watching from elsewhere.
+carries the exit code. Run the script BARE — never pipe it (`| tail`, `| grep`):
+a pipeline's exit code is the LAST command's, so a piped run reads as exit 0
+even when the gate blocked. As a backstop, every post-parse run also prints an
+un-maskable final `check-ci: verdict exit=N` line on stdout (HIMMEL-974;
+`--help` and usage-error exits stay clean) — trust that line over a
+pipeline's exit code. With no argument it watches the
+PR for the current branch; pass a PR number, branch, or URL when watching
+from elsewhere.
 `--settle <sec>` is the pause after the first green verdict before ONE
 re-watch — it catches check runs that register late, so the first green
 can't certify an incomplete check set (default 30, `--settle 0` disables,
