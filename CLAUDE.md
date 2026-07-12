@@ -257,7 +257,7 @@ Autonomous end-to-end execution of a well-scoped ticket: see
 
 ## ENFORCEMENT (runs automatically)
 
-himmel enforces structurally, not by prose: **9 PreToolUse hooks**
+himmel enforces structurally, not by prose: **10 PreToolUse hooks**
 (`auto-approve-safe-bash`, `block-edit-on-main`, `block-read-secrets`,
 `block-rogue-claude-schedule` — blocks raw scheduler-arms of claude that bypass
 arm-resume.sh (System32-cwd trap, HIMMEL-647),
@@ -266,7 +266,10 @@ arm-resume.sh (System32-cwd trap, HIMMEL-647),
 root-equivalent docker/podman mount+privilege guard, HIMMEL-441, shipped via the
 himmel-ops plugin `hooks.json` so it's live only after `/himmel-update` + a fresh
 session; likewise `block-merged-pr-commit` — hygiene guard that blocks committing
-onto a merged-PR branch, HIMMEL-512, same plugin delivery), **1 PostToolUse hook**
+onto a merged-PR branch, HIMMEL-512, same plugin delivery; and
+`block-unresolved-cr-merge` — blocks `gh pr merge` while CodeRabbit review threads
+are unresolved or its check-run is in-flight on the head SHA, fail-open on every
+API/dep error, bypass `CR_MERGE_GATE_OK=1` — HIMMEL-936, same plugin delivery), **1 PostToolUse hook**
 (`auto-arm-on-subagent-cap` — detects cap in Agent tool results, HIMMEL-276),
 **pre-commit/commit-msg/pre-push gates** (source of truth
 `.pre-commit-config.yaml`; pre-push incl. `check-platforms-tested`;

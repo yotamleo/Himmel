@@ -108,13 +108,14 @@ the env var.
 
 Seven hooks wired in `.claude/settings.json` fire BEFORE Claude executes
 tool calls. Six BLOCK risky operations; one (`auto-approve-safe-bash`)
-GRANTS permission for safe ones so they don't hang. An eighth and ninth
-block hook, `block-docker-privesc.sh` (HIMMEL-441) and
-`block-merged-pr-commit.sh` (HIMMEL-512), are shipped via the **himmel-ops
-plugin `hooks.json`** rather than `.claude/settings.json` (so they can be
-agent-installed without a settings self-mod veto — same delivery path as
-`inject-minerva-critic.sh`); both are live only after `/himmel-update`
-(marketplace re-sync) + a fresh session.
+GRANTS permission for safe ones so they don't hang. An eighth, ninth, and
+tenth block hook — `block-docker-privesc.sh` (HIMMEL-441),
+`block-merged-pr-commit.sh` (HIMMEL-512), and `block-unresolved-cr-merge.sh`
+(HIMMEL-936) — are shipped via the **himmel-ops plugin `hooks.json`** rather
+than `.claude/settings.json` (so they can be agent-installed without a
+settings self-mod veto — same delivery path as `inject-minerva-critic.sh`);
+all three are live only after `/himmel-update` (marketplace re-sync) + a
+fresh session.
 
 **Bypass convention (applies to the four DENY hooks):** session-sticky
 env vars must be set in the shell that LAUNCHED Claude Code
@@ -297,6 +298,43 @@ live only after `/himmel-update` (marketplace re-sync) + a fresh session.
 
 Paired artifacts: `scripts/lib/branch-shipped.sh` (predicate),
 `scripts/hooks/test-block-merged-pr-commit.sh` (smoke suite).
+
+### `block-unresolved-cr-merge.sh` — CodeRabbit merge-remark gate (HIMMEL-936)
+
+Fires on Bash/PowerShell. Blocks a `gh pr merge` while the target PR has
+unresolved CodeRabbit review threads OR a CodeRabbit check-run still queued
+or in-progress on the head SHA — structural enforcement of the operator's
+"never merge over unresolved CodeRabbit remarks" rule (HIMMEL-195:
+structural > instructional). The signal is `cr_merge_gate <pr-selector>
+[<owner/repo>]` from `scripts/lib/cr-merge-gate.sh`, which runs a GraphQL
+`reviewThreads` query (counts unresolved threads whose first-comment author
+matches `coderabbit`, covering both `coderabbitai` and `coderabbitai[bot]`
+login forms) and a `check-runs` query on the head SHA. The same predicate is
+called from `scripts/handover/pr-merge.sh` (GitHub forge only) before its
+mergeability poll, so machines without the plugin hook still get the gate on
+that path (a block there exits `pr-merge.sh` with code 5, distinct from a
+real `gh pr merge` failure's code 4).
+
+**Fail-OPEN posture:** deny ONLY on positive evidence. Every other path
+exits 0 — `gh`/`jq` missing, `gh pr view` failure, incomplete PR metadata,
+GraphQL/check-runs API error, jq parse failure, no `gh pr merge` at command
+position, unresolvable selector. Each fail-open path emits a
+``cr-merge-gate: degraded (<why>) - failing open`` note to stderr so the
+uncertainty is visible without blocking. A repo without the CodeRabbit app
+has no `coderabbitai` threads, so the gate is inert there.
+
+**Bypass:** `CR_MERGE_GATE_OK=1` set in the shell that LAUNCHED Claude
+(same session-sticky convention as the other block-* hooks). Setting
+`CR_PROFILE=none` (the per-user CR opt-out) skips the gate entirely.
+
+**Delivery:** shipped via the **himmel-ops plugin `hooks.json`** (same
+exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as `block-docker-privesc` /
+`block-merged-pr-commit`); live only after `/himmel-update` (marketplace
+re-sync) + a fresh session.
+
+Paired artifacts: `scripts/lib/cr-merge-gate.sh` (predicate),
+`scripts/lib/test-cr-merge-gate.sh` and
+`scripts/hooks/test-block-unresolved-cr-merge.sh` (smoke suites).
 
 ### `block-lesson-enforcement-writes.sh` — lesson-loop write-fence (HIMMEL-767)
 
