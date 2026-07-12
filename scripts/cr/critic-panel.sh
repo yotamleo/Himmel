@@ -241,12 +241,18 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
     // alias base_url -> 401 on the alibaba lane). Primary dispatch only —
     // fallback-chain members stay name-routed (hermes aliases, possibly
     // cross-provider).
+    // Field 6 = FALLBACK_TRIGGER (HIMMEL-953): OPT-IN per row. "any" widens
+    // the process_member retry condition to ANY non-zero rc/timeout instead
+    // of requiring a quota-exhaustion signature match — for a same-tier
+    // candidate chain (e.g. all OpenRouter free models) any failure on one
+    // candidate is reason enough to try the next. "-" (unset) keeps the
+    // HIMMEL-729 exhaustion-only default for every other row.
     process.stdout.write(p.map(r => {
       let chain = Array.isArray(r.fallback_models) ? r.fallback_models
                 : (r.fallback_model ? [r.fallback_model] : []);
       chain = chain.filter(m => typeof m === "string" && m.length);
       const fb = chain.length ? chain.join(",") : "-";
-      return r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + fb + "\t" + (r.route_provider || "-");
+      return r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + fb + "\t" + (r.route_provider || "-") + "\t" + (r.fallback_trigger || "-") + "\t" + (r.fallback_provider || "-");
     }).join("\n"));
   } catch (e) {
     process.exit(7);
@@ -255,7 +261,7 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
 
 if [ -z "${rows:-}" ]; then
     echo "critic-panel.sh: registry $REG missing/invalid/empty — anchor-only ($ANCHOR_SLUG)" >&2
-    rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	-	-	${ANCHOR_PROVIDER}"
+    rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	-	-	${ANCHOR_PROVIDER}	-	-"
 fi
 
 # Write diff to a temp file so each member can read it via stdin redirect
@@ -317,28 +323,32 @@ _is_quota_exhaustion() {
 # (HIMMEL-737: the chain is iterated in order, each model attempted at most once).
 # ---------------------------------------------------------------------------
 _run_cfp_member() {
-    _rm_model="$1"; _rm_slug="$2"; _rm_persp="${3:-}"; _rm_out="$4"; _rm_err="${5:-/dev/null}"
+    _rm_model="$1"; _rm_slug="$2"; _rm_persp="${3:-}"; _rm_out="$4"; _rm_err="${5:-/dev/null}"; _rm_provider="${6:-}"
+    # Per-attempt timeout override (HIMMEL-953 seat budget): the fallback loop
+    # passes the REMAINING seat budget so a chain of hung candidates cannot
+    # stack N full member timeouts. Unset -> the normal per-member timeout.
+    _rm_to="${_RM_TIMEOUT_SECS:-$CRITIC_TIMEOUT_SECS}"
     if [ -n "$_rm_persp" ]; then
         if [ -n "$_TIMEOUT_BIN" ]; then
-            "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" \
-                --model "$_rm_model" --slug "$_rm_slug" \
+            "$_TIMEOUT_BIN" -k 5 "$_rm_to" bash "$CFP" \
+                --model "$_rm_model" --provider "$_rm_provider" --slug "$_rm_slug" \
                 --perspective-file "$SCRIPT_DIR/$_rm_persp" \
                 < "$tmp" > "$_rm_out" 2>"$_rm_err"
             _rm_rc=$?
         else
-            bash "$CFP" --model "$_rm_model" --slug "$_rm_slug" \
+            bash "$CFP" --model "$_rm_model" --provider "$_rm_provider" --slug "$_rm_slug" \
                 --perspective-file "$SCRIPT_DIR/$_rm_persp" \
                 < "$tmp" > "$_rm_out" 2>"$_rm_err"
             _rm_rc=$?
         fi
     else
         if [ -n "$_TIMEOUT_BIN" ]; then
-            "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" \
-                --model "$_rm_model" --slug "$_rm_slug" \
+            "$_TIMEOUT_BIN" -k 5 "$_rm_to" bash "$CFP" \
+                --model "$_rm_model" --provider "$_rm_provider" --slug "$_rm_slug" \
                 < "$tmp" > "$_rm_out" 2>"$_rm_err"
             _rm_rc=$?
         else
-            bash "$CFP" --model "$_rm_model" --slug "$_rm_slug" \
+            bash "$CFP" --model "$_rm_model" --provider "$_rm_provider" --slug "$_rm_slug" \
                 < "$tmp" > "$_rm_out" 2>"$_rm_err"
             _rm_rc=$?
         fi
@@ -359,6 +369,14 @@ _run_cfp_member() {
 # $6 = perspective for this slug (optional; "" = no --perspective-file), threaded
 #      into the fallback re-run so it uses the SAME invocation path as the primary
 # $7 = primary model for this slug (used only for availability metadata)
+# $8 = fallback PROVIDER for this slug's chain (HIMMEL-953, opt-in): explicit
+#      --provider for every fallback attempt ("" = chain members stay
+#      name-routed — hermes aliases, possibly cross-provider — per HIMMEL-729).
+# $9 = fallback trigger mode for this slug (HIMMEL-953): "any" widens the
+#      retry condition below to ANY non-zero rc (incl. timeout) instead of
+#      requiring a quota-exhaustion signature match. Opt-in per row so the
+#      HIMMEL-729 "don't mask a dead primary lane" contract stays the DEFAULT
+#      for rows that don't set it ("" = exhaustion-signature-only, unchanged).
 # ---------------------------------------------------------------------------
 process_member() {
     _pm_slug="$1"
@@ -368,6 +386,11 @@ process_member() {
     _pm_fallback="${5:-}"
     _pm_perspective="${6:-}"
     _pm_model="${7:-}"
+    # $8 = fallback_provider (HIMMEL-953, OPT-IN): explicit provider for the
+    # fallback CHAIN. Unset -> chain members stay name-routed (hermes aliases,
+    # possibly cross-provider) per the HIMMEL-729 registry contract.
+    _pm_fb_provider="${8:-}"
+    _pm_trigger="${9:-}"
     if [ -n "$_pm_model" ]; then
         _pm_avail="panel-availability: $_pm_slug ok responding-model($_pm_model)"
     else
@@ -376,32 +399,73 @@ process_member() {
     _fb_out=""
     _fb_err=""
 
+    _pm_is_timeout=0
     if [ "$_pm_rc" -eq 124 ] || [ "$_pm_rc" -eq 137 ]; then
+        _pm_is_timeout=1
+    fi
+
+    # Decide up front whether this rc should attempt the fallback chain.
+    # Default (unset trigger): only a quota-exhaustion signature on a
+    # non-timeout failure retries — a bare timeout or a generic failure never
+    # did (HIMMEL-729/737, still the contract for any OTHER row). trigger=any
+    # (HIMMEL-953) widens this to ANY non-zero rc, timeout included — for a
+    # row whose whole chain is same-tier candidates (e.g. all OpenRouter free
+    # models), a plain rate-limit/outage on one candidate is exactly the
+    # signal to try the next, not evidence the lane itself is broken.
+    # Track WHY the chain fires separately from THAT it fires, so the WARN
+    # line below can keep saying "quota-exhausted" only when it is true
+    # (an "any"-triggered generic failure gets its own honest wording).
+    _pm_exhaustion_match=0
+    if [ -n "$_pm_fallback" ] && [ "$_pm_rc" -ne 0 ] && [ "$_pm_is_timeout" -eq 0 ] && _is_quota_exhaustion "$_pm_out_file" "$_pm_err_file"; then
+        _pm_exhaustion_match=1
+    fi
+    _pm_do_fallback=0
+    if [ -n "$_pm_fallback" ] && [ "$_pm_rc" -ne 0 ]; then
+        if [ "$_pm_exhaustion_match" -eq 1 ] || [ "$_pm_trigger" = "any" ]; then
+            _pm_do_fallback=1
+        fi
+    fi
+
+    if [ "$_pm_is_timeout" -eq 1 ] && [ "$_pm_do_fallback" -eq 0 ]; then
         echo "panel-availability: $_pm_slug unavailable (timeout ${CRITIC_TIMEOUT_SECS}s)" >&2
         return
     fi
     if [ "$_pm_rc" -ne 0 ]; then
-        # Quota-exhaustion fallback CHAIN (HIMMEL-729/737): if the slug has a
-        # fallback chain AND the member output/stderr matches an exhaustion
-        # signature, re-run the member through the same critic-first-pass path
-        # with each fallback model IN ORDER, each attempted AT MOST ONCE. First
-        # success wins; a failed attempt logs fallback-failed and advances; all
-        # exhausted -> member unavailable. A plain non-exhaustion failure (or a
-        # timeout, handled above) gets the original unavailable line and NO retry.
-        if [ -n "$_pm_fallback" ] && _is_quota_exhaustion "$_pm_out_file" "$_pm_err_file"; then
+        # Quota-exhaustion (or, with trigger=any, ANY-failure) fallback CHAIN
+        # (HIMMEL-729/737/953): re-run the member through the same
+        # critic-first-pass path with each fallback model IN ORDER, each
+        # attempted AT MOST ONCE. First success wins; a failed attempt logs
+        # fallback-failed and advances; all exhausted -> member unavailable.
+        if [ "$_pm_do_fallback" -eq 1 ]; then
             _fb_success=0
             # Iterate the comma-separated chain in order. IFS=',' splits it at the
             # for-header; the body uses only quoted expansions, so ',' is harmless
             # there. Restored after the loop.
             _fb_old_ifs="$IFS"; IFS=','
+            # Seat budget (HIMMEL-953, codex-adv): the WHOLE chain shares one
+            # extra member-timeout of wall-clock — N hung candidates must not
+            # stack N full timeouts (observed 240s hangs on free tiers would
+            # otherwise block a seat ~4x240s in sequential mode). Each attempt
+            # gets the REMAINING budget via the _run_cfp_member override.
+            _fb_deadline=$((SECONDS + CRITIC_TIMEOUT_SECS))
             for _fb_model in $_pm_fallback; do
                 [ -n "$_fb_model" ] || continue
+                _fb_remaining=$((_fb_deadline - SECONDS))
+                if [ "$_fb_remaining" -le 0 ]; then
+                    echo "panel-availability: $_pm_slug fallback-chain budget exhausted (${CRITIC_TIMEOUT_SECS}s) — remaining candidates skipped" >&2
+                    break
+                fi
+                _RM_TIMEOUT_SECS="$_fb_remaining"
                 _fb_out="$(mktemp -t critic-panel-fb.XXXXXX)"
                 _fb_err="$(mktemp -t critic-panel-fb-err.XXXXXX)"
-                _run_cfp_member "$_fb_model" "$_pm_slug" "$_pm_perspective" "$_fb_out" "$_fb_err"
+                _run_cfp_member "$_fb_model" "$_pm_slug" "$_pm_perspective" "$_fb_out" "$_fb_err" "$_pm_fb_provider"
                 _fb_rc=$_rm_rc
                 if [ "$_fb_rc" -eq 0 ]; then
-                    echo "WARN critic-panel: $_pm_slug quota-exhausted - fell back to $_fb_model" >&2
+                    if [ "$_pm_exhaustion_match" -eq 1 ]; then
+                        echo "WARN critic-panel: $_pm_slug quota-exhausted - fell back to $_fb_model" >&2
+                    else
+                        echo "WARN critic-panel: $_pm_slug failed (rc=$_pm_rc) - fell back to $_fb_model" >&2
+                    fi
                     _pm_avail="panel-availability: $_pm_slug fallback($_fb_model)"
                     _pm_out_file="$_fb_out"
                     _fb_success=1
@@ -415,8 +479,13 @@ process_member() {
                 rm -f "$_fb_out" "$_fb_err"
             done
             IFS="$_fb_old_ifs"
+            unset _RM_TIMEOUT_SECS
             if [ "$_fb_success" -ne 1 ]; then
-                echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
+                if [ "$_pm_is_timeout" -eq 1 ]; then
+                    echo "panel-availability: $_pm_slug unavailable (timeout ${CRITIC_TIMEOUT_SECS}s)" >&2
+                else
+                    echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
+                fi
                 return
             fi
         else
@@ -513,13 +582,15 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
     _seq_out="$(mktemp -t critic-panel-seq.XXXXXX)"
     _seq_err="$(mktemp -t critic-panel-seq-err.XXXXXX)"
 
-    while IFS="	" read -r slug model perspective fallback_chain row_provider; do
+    while IFS="	" read -r slug model perspective fallback_chain row_provider fallback_trigger fb_provider; do
         [ -n "$slug" ] || continue
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
         [ "$perspective" = "-" ] && perspective=""
         [ "$fallback_chain" = "-" ] && fallback_chain=""
         [ "$row_provider" = "-" ] && row_provider=""
+        [ "$fallback_trigger" = "-" ] && fallback_trigger=""
+        [ "$fb_provider" = "-" ] && fb_provider=""
         total=$((total + 1))
 
         # Run this member (with per-member timeout if available). --provider ""
@@ -542,7 +613,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
             fi
         fi
 
-        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_chain" "$perspective" "$model"
+        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_chain" "$perspective" "$model" "$fb_provider" "$fallback_trigger"
 
     done << ROWSEOF
 $rows
@@ -556,21 +627,26 @@ else
 
     # Launch each member indexed by position i (i=0,1,2,...)
     i=0
-    while IFS="	" read -r slug model perspective fallback_chain row_provider; do
+    while IFS="	" read -r slug model perspective fallback_chain row_provider fallback_trigger fb_provider; do
         [ -n "$slug" ] || continue
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
         [ "$perspective" = "-" ] && perspective=""
         [ "$fallback_chain" = "-" ] && fallback_chain=""
         [ "$row_provider" = "-" ] && row_provider=""
+        [ "$fallback_trigger" = "-" ] && fallback_trigger=""
+        [ "$fb_provider" = "-" ] && fb_provider=""
         total=$((total + 1))
         # Write slug and model so the result loop can recover them
         printf '%s' "$slug"  > "$outdir/$i.slug"
         printf '%s' "$model" > "$outdir/$i.model"
-        # Per-row perspective + fallback chain so the result loop can replay them
-        # into process_member (HIMMEL-729/737 quota-exhaustion fallback chain).
-        printf '%s' "$perspective"    > "$outdir/$i.persp"
-        printf '%s' "$fallback_chain" > "$outdir/$i.fb"
+        # Per-row perspective + fallback chain (+ trigger mode, HIMMEL-953) so
+        # the result loop can replay them into process_member (HIMMEL-729/737
+        # quota-exhaustion fallback chain).
+        printf '%s' "$perspective"     > "$outdir/$i.persp"
+        printf '%s' "$fallback_chain"  > "$outdir/$i.fb"
+        printf '%s' "$fallback_trigger" > "$outdir/$i.trigger"
+        printf '%s' "$fb_provider"      > "$outdir/$i.fbprov"
         (
             if [ -n "$perspective" ]; then
                 if [ -n "$_TIMEOUT_BIN" ]; then
@@ -608,6 +684,10 @@ ROWSEOF
         read -r persp_val < "$outdir/$i.persp" 2>/dev/null || true
         fb_val=""
         read -r fb_val < "$outdir/$i.fb" 2>/dev/null || true
+        trig_val=""
+        read -r trig_val < "$outdir/$i.trigger" 2>/dev/null || true
+        fbprov_val=""
+        read -r fbprov_val < "$outdir/$i.fbprov" 2>/dev/null || true
         # Note: if .rc is absent (subshell received a signal during the .out write,
         # e.g. outer timeout SIGKILLs mid-run before the echo $? line runs),
         # rc_val stays at its initialized 1 → process_member treats the member as
@@ -615,7 +695,7 @@ ROWSEOF
         # process_member sees zero findings and counts the member as responded.
         model_val=""
         read -r model_val < "$outdir/$i.model" 2>/dev/null || true
-        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err" "$fb_val" "$persp_val" "$model_val"
+        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err" "$fb_val" "$persp_val" "$model_val" "$fbprov_val" "$trig_val"
         i=$((i + 1))
     done
 fi
