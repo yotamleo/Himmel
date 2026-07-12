@@ -95,6 +95,15 @@ if [ "\$model" = "$PRI" ]; then
         exhaust)
             printf 'Alibaba: you have exceeded your allocated quota for qwen3-coder-plus\\n' >&2
             exit 1 ;;
+        ok)
+            printf '# %s First-Pass Review\\n' "\$slug"
+            printf '\\n'
+            printf '## Critical Issues (0 found)\\n'
+            printf '\\n'
+            printf '## Important Issues (0 found)\\n'
+            printf '\\n'
+            printf '## Suggestions (0 found)\\n'
+            exit 0 ;;
         generic)
             printf 'connection refused\\n' >&2
             exit 1 ;;
@@ -137,6 +146,16 @@ run_case() {
         FB_STUB_MODE="$_mode" FB_FALLBACK_FAIL="$_fbf" FB_CAPTURE="$_cap" \
         bash "$PANEL" >"$_outf" 2>"$_errf"
 }
+
+# ===========================================================================
+# Case 0: primary success reports the actual responding model in availability.
+# ===========================================================================
+run_case ok "$JSON" "$tmp/out0" "$tmp/err0" "$tmp/cap0"
+stderr0="$(cat "$tmp/err0")"
+check_contains "0: primary ok availability carries responding model" "$stderr0" \
+    "panel-availability: qwen3coder ok responding-model($PRI)"
+check "0: fallback model NEVER invoked on primary success" \
+    "$(grep -cF -- "$FB" "$tmp/cap0")" "0"
 
 # ===========================================================================
 # Case 1: quota-exhaustion on primary -> fall back ONCE to OpenRouter, succeed.
@@ -195,18 +214,18 @@ check "3: fallback model NEVER invoked on timeout" "$fb_calls3" "0"
 
 # ===========================================================================
 # Case 4: registry row WITHOUT fallback_model + exhaustion failure -> still no
-# fallback (the fallback_model column gates the retry; nothing else does).
-# Locks the contract that absence of fallback_model means plain unavailable even
+# fallback (an empty fallback_models array gates the retry; nothing else does).
+# Locks the contract that no configured fallback means plain unavailable even
 # under an exhaustion signature.
 # ===========================================================================
 JSON_NOFB="$tmp/critics-nofb.json"
-printf '{"panel":[{"slug":"qwen3coder","model":"%s","provider":"alibaba-coding-plan","tier":"free"}]}' "$PRI" > "$JSON_NOFB"
+printf '{"panel":[{"slug":"qwen3coder","model":"%s","provider":"alibaba-coding-plan","tier":"free","fallback_models":[]}]}' "$PRI" > "$JSON_NOFB"
 run_case exhaust "$JSON_NOFB" "$tmp/out4" "$tmp/err4" "$tmp/cap4"
 stderr4="$(cat "$tmp/err4")"
 check_contains "4: no-fallback row -> plain unavailable on exhaustion" "$stderr4" \
     "panel-availability: qwen3coder unavailable (rc=1)"
 check_not_contains "4: NO WARN line" "$stderr4" "WARN critic-panel"
-check "4: fallback model NEVER invoked when row has no fallback_model" \
+check "4: fallback model NEVER invoked when row has empty fallback_models" \
     "$(grep -cF -- "$FB" "$tmp/cap4")" "0"
 
 # ===========================================================================
