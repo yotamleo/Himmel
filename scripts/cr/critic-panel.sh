@@ -353,6 +353,7 @@ _run_cfp_member() {
 #      ("" = no quota-exhaustion fallback). Iterated in order, each at most once.
 # $6 = perspective for this slug (optional; "" = no --perspective-file), threaded
 #      into the fallback re-run so it uses the SAME invocation path as the primary
+# $7 = primary model for this slug (used only for availability metadata)
 # ---------------------------------------------------------------------------
 process_member() {
     _pm_slug="$1"
@@ -361,7 +362,12 @@ process_member() {
     _pm_err_file="${4:-}"
     _pm_fallback="${5:-}"
     _pm_perspective="${6:-}"
-    _pm_avail="panel-availability: $_pm_slug ok"
+    _pm_model="${7:-}"
+    if [ -n "$_pm_model" ]; then
+        _pm_avail="panel-availability: $_pm_slug ok responding-model($_pm_model)"
+    else
+        _pm_avail="panel-availability: $_pm_slug ok"
+    fi
     _fb_out=""
     _fb_err=""
 
@@ -531,7 +537,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
             fi
         fi
 
-        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_chain" "$perspective"
+        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_chain" "$perspective" "$model"
 
     done << ROWSEOF
 $rows
@@ -602,7 +608,9 @@ ROWSEOF
         # rc_val stays at its initialized 1 → process_member treats the member as
         # unavailable (safe). The benign case (rc=0, .out empty) is also handled:
         # process_member sees zero findings and counts the member as responded.
-        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err" "$fb_val" "$persp_val"
+        model_val=""
+        read -r model_val < "$outdir/$i.model" 2>/dev/null || true
+        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err" "$fb_val" "$persp_val" "$model_val"
         i=$((i + 1))
     done
 fi

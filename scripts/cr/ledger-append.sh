@@ -9,11 +9,12 @@ set -uo pipefail
 kind="${1:-}"; shift || true
 [ "$kind" = "finding" ] || [ "$kind" = "avail" ] || [ "$kind" = "usage" ] || { echo "ledger-append.sh: kind must be finding|avail|usage" >&2; exit 2; }
 
-branch="" head="" model="" id="" severity="" file="" line="" verdict="" status="" artifact="diff" perspective="off"
+branch="" head="" model="" responding_model="" id="" severity="" file="" line="" verdict="" status="" artifact="diff" perspective="off"
 prompt_chars="" response_chars=""
 while [ $# -gt 0 ]; do case "$1" in
   --branch) branch="$2"; shift 2;; --head) head="$2"; shift 2;;
-  --model) model="$2"; shift 2;; --id) id="$2"; shift 2;;
+  --model) model="$2"; shift 2;; --responding-model) responding_model="$2"; shift 2;;
+  --id) id="$2"; shift 2;;
   --severity) severity="$2"; shift 2;; --file) file="$2"; shift 2;;
   --line) line="$2"; shift 2;; --verdict) verdict="$2"; shift 2;;
   --status) status="$2"; shift 2;;
@@ -31,7 +32,7 @@ touch "$ledger" || { echo "ledger-append.sh: cannot write $ledger" >&2; exit 2; 
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # Build the record + a dedup grep key via node (safe JSON + escaping).
-KIND="$kind" BRANCH="$branch" HEAD_="$head" MODEL="$model" ID="$id" SEV="$severity" \
+KIND="$kind" BRANCH="$branch" HEAD_="$head" MODEL="$model" RESPONDING_MODEL="$responding_model" ID="$id" SEV="$severity" \
 FILE="$file" LINE="$line" VERDICT="$verdict" STATUS="$status" \
 PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$ledger" ARTIFACT="$artifact" PERSPECTIVE="$perspective" node -e '
   const fs=require("fs"), e=process.env;
@@ -40,6 +41,7 @@ PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$
   let rec, dup;
   if(e.KIND==="finding"){
     rec={kind:"finding",ts:e.TS,branch:e.BRANCH,head:e.HEAD_,model:e.MODEL,finding_id:e.ID,severity:e.SEV,file:e.FILE,line:Number(e.LINE)||e.LINE,verdict:e.VERDICT,artifact:e.ARTIFACT,perspective:e.PERSPECTIVE};
+    if(e.RESPONDING_MODEL) rec.responding_model=e.RESPONDING_MODEL;
     dup=existing.some(l=>{try{const o=JSON.parse(l);return o.kind==="finding"&&o.head===e.HEAD_&&o.finding_id===e.ID&&(o.artifact||"diff")===e.ARTIFACT&&(o.perspective||"off")===e.PERSPECTIVE;}catch{return false;}});
   } else if(e.KIND==="usage"){
     // chars/4 token estimate (hermes does not expose real usage via the one-shot
@@ -47,9 +49,11 @@ PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$
     const pc=Math.max(0, Number(e.PROMPT_CHARS)||0), rc=Math.max(0, Number(e.RESPONSE_CHARS)||0);
     const ept=Math.round(pc/4), ect=Math.round(rc/4);
     rec={kind:"usage",ts:e.TS,branch:e.BRANCH,head:e.HEAD_,model:e.MODEL,prompt_chars:pc,response_chars:rc,est_prompt_tokens:ept,est_completion_tokens:ect,est_total_tokens:ept+ect,estimated:true,artifact:e.ARTIFACT,perspective:e.PERSPECTIVE};
+    if(e.RESPONDING_MODEL) rec.responding_model=e.RESPONDING_MODEL;
     dup=existing.some(l=>{try{const o=JSON.parse(l);return o.kind==="usage"&&o.head===e.HEAD_&&o.model===e.MODEL&&(o.artifact||"diff")===e.ARTIFACT&&(o.perspective||"off")===e.PERSPECTIVE;}catch{return false;}});
   } else {
     rec={kind:"avail",ts:e.TS,branch:e.BRANCH,head:e.HEAD_,model:e.MODEL,status:e.STATUS,artifact:e.ARTIFACT,perspective:e.PERSPECTIVE};
+    if(e.RESPONDING_MODEL) rec.responding_model=e.RESPONDING_MODEL;
     dup=existing.some(l=>{try{const o=JSON.parse(l);return o.kind==="avail"&&o.head===e.HEAD_&&o.model===e.MODEL&&(o.artifact||"diff")===e.ARTIFACT&&(o.perspective||"off")===e.PERSPECTIVE;}catch{return false;}});
   }
   if(dup) process.exit(0);

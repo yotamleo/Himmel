@@ -12,9 +12,17 @@ check "finding dedup on (head,id)" "$(wc -l < "$L" | tr -d ' ')" "1"
 CR_LEDGER="$L" bash "$LA" finding --branch b --head H2 --model m --id m-1 --severity critical --file f --line 3 --verdict disproved
 check "new head -> new line" "$(wc -l < "$L" | tr -d ' ')" "2"
 
+CR_LEDGER="$L" bash "$LA" finding --branch b --head H5 --model qwen3coder --responding-model qwen-flash --id qwen3coder-1 --severity critical --file f --line 3 --verdict agreed
+check "finding stores responding_model separately from model key" "$(L="$L" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="H5");console.log(o.model+","+o.responding_model)')" "qwen3coder,qwen-flash"
+
 CR_LEDGER="$L" bash "$LA" avail --branch b --head H1 --model m --status ok
 CR_LEDGER="$L" bash "$LA" avail --branch b --head H1 --model m --status ok
 check "avail dedup on (head,model)" "$(grep -c '"kind":"avail"' "$L")" "1"
+
+CR_LEDGER="$L" bash "$LA" avail --branch b --head H5 --model qwen3coder --responding-model qwen-flash --status ok
+CR_LEDGER="$L" bash "$LA" avail --branch b --head H5 --model qwen3coder --responding-model qwen-plus --status ok
+check "avail responding_model does not change dedup key" "$(grep -c '"kind":"avail".*"head":"H5"' "$L")" "1"
+check "avail stores first responding_model" "$(L="$L" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="avail"&&r.head==="H5");console.log(o.model+","+o.responding_model)')" "qwen3coder,qwen-flash"
 
 # ── usage kind (HIMMEL-485): chars/4 token estimate, dedup on (head,model) ──
 CR_LEDGER="$L" bash "$LA" usage --branch b --head H1 --model codex --prompt-chars 4000 --response-chars 800
