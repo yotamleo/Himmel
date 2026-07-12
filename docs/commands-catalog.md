@@ -72,7 +72,7 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 | /context-hop | Mid-session jump to a fresh claude session when context window is approaching the soft budget. Sibling of /handover-arm-resume. HIMMEL-130. |
 | /retitle | Infer a himmel-canonical session name (TICKET-ID + meaningful name) from the current branch and print a ready-to-paste built-in /rename line. |
 | /overnight-shift | Auto-dispatch N tickets from Jira as parallel subagents — emits plan + confirms before fanout (HIMMEL-134). |
-| /pipeline-cadence | Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, weekly /synthesize-clips + /archive-clips, monthly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped. Dedup-guarded. HIMMEL-255/265/357. |
+| /pipeline-cadence | Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, daily /synthesize-clips + /archive-clips, weekly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped with per-leg --model pins. Dedup-guarded. HIMMEL-255/265/357/506. |
 | /end-session-wiki-setup | Configure which Obsidian vault the end-session-wiki hook captures sessions into — writes LUNA_VAULT_PATH (global) or .claude/end-session-wiki.json vault_path (this repo only). |
 | /stop | Graceful-halt marker for in-progress /overnight-shift sessions (HIMMEL-137). |
 

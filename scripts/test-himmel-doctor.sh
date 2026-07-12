@@ -356,7 +356,7 @@ rm -rf "$t"
 
 echo "== C8: current runner (stamped) -> OK C8-cadence =="
 t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/cadence"; write_settings "$t/claude" "$WRAPPER"
-printf '#!/bin/sh\n# himmel-cadence-runner-format: 1\necho current runner\n' > "$t/cadence/pipeline-harvest.sh"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: 2\necho current runner\n' > "$t/cadence/pipeline-harvest.sh"
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/cadence" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"

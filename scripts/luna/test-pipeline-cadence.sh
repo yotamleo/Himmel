@@ -4,11 +4,12 @@
 # HIMMEL-362 XML-based schtasks create carrying StartWhenAvailable).
 #
 # Three cadence tasks are armed: HIMMEL-Pipeline-Harvest (daily 02:00 ->
-# /harvest-clips + /triage-clips), HIMMEL-Pipeline-Synthesize (weekly Sun
-# 03:00 -> /synthesize-clips + /archive-clips), HIMMEL-Pipeline-Health
-# (monthly 1st 04:00 -> /obsidian-health). The harvest leg is exercised
-# alongside synth/health throughout the dry-run / arm / shape / status /
-# dedup / force / disarm / rollback tests below.
+# /harvest-clips + /triage-clips), HIMMEL-Pipeline-Synthesize (daily 03:00
+# -> /synthesize-clips + /archive-clips), HIMMEL-Pipeline-Health (weekly
+# Sun 04:00 -> /obsidian-health). Each leg launches with an explicit
+# --model pin (harvest/synth=sonnet, health=haiku — HIMMEL-506). The
+# harvest leg is exercised alongside synth/health throughout the dry-run
+# / arm / shape / status / dedup / force / disarm / rollback tests below.
 #
 # Strategy: replace the scheduler with a fake — schtasks via the
 # PIPELINE_SCHTASKS seam (records /create args + simulates /query and
@@ -330,14 +331,25 @@ assert_rc "cron bad --health-day (31) -> rc 1" 1 "$rc"
 rc=0; out=$(run_cron arm --vault "$VAULT" --ig-limit abc 2>&1) || rc=$?
 assert_rc "cron bad --ig-limit (abc) -> rc 1" 1 "$rc"
 assert_contains "cron bad --ig-limit message names flag" "--ig-limit must be a non-negative integer" "$out"
+# HIMMEL-506: --synth-day removed (synthesize is daily); --health-day is now
+# a weekday MON..SUN (a numeric 1-28 is the old monthly semantics, rejected
+# with a pointer); model pins must be non-empty.
+rc=0; out=$(run_cron arm --vault "$VAULT" --synth-day mon 2>&1) || rc=$?
+assert_rc "cron removed --synth-day -> rc 1 (HIMMEL-506)" 1 "$rc"
+assert_contains "cron --synth-day message points at daily" "daily now" "$out"
+rc=0; out=$(run_cron arm --vault "$VAULT" --health-day 15 2>&1) || rc=$?
+assert_rc "cron numeric --health-day (15) -> rc 1 (now weekday)" 1 "$rc"
+assert_contains "cron numeric --health-day message points at MON..SUN" "MON..SUN" "$out"
+rc=0; out=$(run_cron arm --vault "$VAULT" --health-model "" 2>&1) || rc=$?
+assert_rc "cron empty --health-model -> rc 1 (HIMMEL-506)" 1 "$rc"
 
 # Test C2: arm --dry-run touches nothing --------------------------------------
 
 echo "TEST: cron arm --dry-run prints plan, installs nothing"
 out=$(run_cron arm --vault "$VAULT" --dry-run)
 assert_contains "dry-run daily harvest entry" "00 02 * * *" "$out"
-assert_contains "dry-run weekly entry"  "00 03 * * 0" "$out"
-assert_contains "dry-run monthly entry" "00 04 1 * *" "$out"
+assert_contains "dry-run daily synth entry"   "00 03 * * *" "$out"
+assert_contains "dry-run weekly health entry" "00 04 * * 0" "$out"
 assert_contains "dry-run harvest marker" "# HIMMEL-Pipeline-Harvest" "$out"
 assert_contains "dry-run synth marker"  "# HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "dry-run shows bounded run" "< /dev/null" "$out"
@@ -366,8 +378,8 @@ if command -v node >/dev/null 2>&1; then
 fi
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 assert_contains "daily harvest entry 02:00"  "00 02 * * *" "$tab"
-assert_contains "weekly entry SUN 03:00"  "00 03 * * 0" "$tab"
-assert_contains "monthly entry 1st 04:00" "00 04 1 * *" "$tab"
+assert_contains "daily synth entry 03:00"    "00 03 * * *" "$tab"
+assert_contains "weekly health entry SUN 04:00" "00 04 * * 0" "$tab"
 assert_contains "harvest entry marker-tagged" "# HIMMEL-Pipeline-Harvest"     "$tab"
 assert_contains "synth entry marker-tagged"  "# HIMMEL-Pipeline-Synthesize" "$tab"
 assert_contains "health entry marker-tagged" "# HIMMEL-Pipeline-Health"     "$tab"
@@ -387,9 +399,9 @@ echo "TEST: runner .sh is bounded interactive claude (no headless flags)"
 harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
 synth_sh=$(cat "$CRON_DIR/pipeline-synthesize.sh" 2>/dev/null || echo MISSING)
 health_sh=$(cat "$CRON_DIR/pipeline-health.sh" 2>/dev/null || echo MISSING)
-assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 1" "$harvest_sh"
-assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 1" "$synth_sh"
-assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 1" "$health_sh"
+assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 2" "$harvest_sh"
+assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 2" "$synth_sh"
+assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 2" "$health_sh"
 assert_contains "harvest runner cds into vault" "cd $VAULT || exit 1" "$harvest_sh"
 assert_contains "harvest runner runs /harvest-clips" "/harvest-clips" "$harvest_sh"
 assert_contains "harvest runner chains /triage-clips" "/triage-clips" "$harvest_sh"
@@ -418,6 +430,19 @@ for what in harvest synth health; do
         pass "$what runner has no headless claude flags"
     fi
 done
+
+# Test C4c: per-leg --model pins (HIMMEL-506) — every runner carries an
+# explicit --model right after the binary so the cadence never inherits the
+# operator's saved default tier. Defaults: harvest/synth=sonnet, health=haiku.
+echo "TEST: cron runners carry the per-leg --model pin (HIMMEL-506)"
+assert_contains "harvest runner pins --model sonnet" "--model sonnet" "$harvest_sh"
+assert_contains "synth runner pins --model sonnet"   "--model sonnet" "$synth_sh"
+assert_contains "health runner pins --model haiku"    "--model haiku"  "$health_sh"
+
+echo "TEST: cron runners lift the 600s bg-wait ceiling (HIMMEL-918)"
+assert_contains "harvest runner lifts bg-wait ceiling" "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$harvest_sh"
+assert_contains "synth runner lifts bg-wait ceiling"   "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$synth_sh"
+assert_contains "health runner lifts bg-wait ceiling"  "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$health_sh"
 
 # Test C4b: --settings injection wires the auto-approve hook (HIMMEL-575) -------
 
@@ -468,6 +493,17 @@ assert_contains "cron synthesize armed" "ARMED      HIMMEL-Pipeline-Synthesize" 
 assert_contains "cron health armed"     "ARMED      HIMMEL-Pipeline-Health"     "$out"
 assert_contains "cron status daily row mentions ig-media-enrich" "/ig-media-enrich" "$out"
 assert_contains "cron status surfaces run log state" "run log" "$out"
+# HIMMEL-506: status parses the --model pin back out of each runner so an
+# armed-but-wrong-model cadence is visible. Scope each pin to its OWN status
+# line — harvest and synth are both [model: sonnet], so a whole-output check
+# would pass even if one leg's pin were wrong or missing.
+harvest_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Harvest')
+synth_line=$(printf '%s\n' "$out"   | grep 'HIMMEL-Pipeline-Synthesize')
+health_line=$(printf '%s\n' "$out"  | grep 'HIMMEL-Pipeline-Health')
+assert_contains "cron harvest status line armed"      "ARMED"           "$harvest_line"
+assert_contains "cron harvest status shows model pin" "[model: sonnet]" "$harvest_line"
+assert_contains "cron synth status shows model pin"   "[model: sonnet]" "$synth_line"
+assert_contains "cron health status shows model pin"  "[model: haiku]"  "$health_line"
 
 # Test C5b: status_log rotated-log message (#299) ------------------------------
 # When .log is absent but .log.prev is present (post-rotation window before
@@ -489,6 +525,27 @@ else
 fi
 rm -f "$CRON_DIR/pipeline-synthesize.log.prev"
 
+# Test C5c: a deleted runner file surfaces as [runner missing], NOT plain
+# ARMED (HIMMEL-506 CR fix). A scheduler entry whose generated runner file is
+# gone fires-and-fails every time — status must distinguish that from the
+# intentional pre-HIMMEL-506 no-pin case (which exists on disk and is silent).
+# model_suffix is shared by the cron + schtasks status paths, so this covers
+# the fix on EVERY platform (the schtasks 9d mirror is Windows-only).
+
+echo "TEST: cron armed task with runner file deleted shows [runner missing]"
+cp "$CRON_DIR/pipeline-synthesize.sh" "$CRON_DIR/pipeline-synthesize.sh.bak"
+rm -f "$CRON_DIR/pipeline-synthesize.sh"
+rc=0; out=$(run_cron status) || rc=$?
+assert_rc "cron runner-missing status does not error" 0 "$rc"
+synth_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Synthesize')
+assert_contains "cron synth runner-missing shows [runner missing]" "[runner missing]" "$synth_line"
+assert_not_contains "cron synth runner-missing has no [model:] suffix" "[model:" "$synth_line"
+# Other legs untouched — harvest still shows its pin, proving the pinned /
+# runner-missing states are distinguished in one status output.
+harvest_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Harvest')
+assert_contains "cron harvest still pinned while synth runner missing" "[model: sonnet]" "$harvest_line"
+mv "$CRON_DIR/pipeline-synthesize.sh.bak" "$CRON_DIR/pipeline-synthesize.sh"
+
 # Test C6: re-arm without --force -> dedup block -------------------------------
 
 echo "TEST: cron re-arm without --force blocked (rc 3)"
@@ -505,14 +562,15 @@ fi
 
 echo "TEST: cron re-arm --force applies flag overrides"
 out=$(run_cron arm --vault "$VAULT" --force \
-    --harvest-time 01:15 --ig-limit 25 --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
+    --harvest-time 01:15 --ig-limit 25 --synth-time 02:30 --health-day wed --health-time 05:00 --harvest-model opus 2>&1)
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
 assert_contains "cron daily harvest override"                  "15 01 * * *" "$tab"
 # %q-escaped prompt: strip backslashes for the multi-word assert (HIMMEL-798).
 assert_contains "cron --ig-limit override reaches harvest runner" "/ig-media-enrich --limit 25" "${harvest_sh//\\/}"
-assert_contains "cron weekly override (lowercase day upcased)" "30 02 * * 1" "$tab"
-assert_contains "cron monthly override"                        "00 05 15 * *" "$tab"
+assert_contains "cron --harvest-model override reaches runner (HIMMEL-506)" "--model opus" "${harvest_sh//\\/}"
+assert_contains "cron daily synth override (time only, daily)" "30 02 * * *" "$tab"
+assert_contains "cron weekly health override (WED upcased)"    "00 05 * * 3" "$tab"
 assert_contains "unrelated entry survives --force re-arm" "keep-me" "$tab"
 if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
     pass "still exactly three entries after --force re-arm"
@@ -767,9 +825,12 @@ log=$(cat "$FIRE_DIR/pipeline-synthesize.log" 2>/dev/null || echo MISSING)
 assert_contains "fire log captures claude output" "claude-stub-ran" "$log"
 assert_contains "fire log carries the [fired stamp" "[fired" "$log"
 recdata=$(cat "$REC" 2>/dev/null || echo MISSING)
-# HIMMEL-575: the runner now injects `--settings <fragment>` before the prompt,
-# so claude sees exactly three argv: --settings, the fragment path, the prompt.
-assert_contains "claude invoked with --settings injection" "argc=3" "$recdata"
+# HIMMEL-506/575: the runner injects `--model <pin>` then `--settings
+# <fragment>` before the prompt, so claude sees five argv: --model, the
+# pinned model, --settings, the fragment path, the prompt.
+assert_contains "claude invoked with --model + --settings injection" "argc=5" "$recdata"
+assert_contains "model flag passed to claude" "arg=--model" "$recdata"
+assert_contains "model value (sonnet) passed to claude" "arg=sonnet" "$recdata"
 assert_contains "settings flag passed to claude" "arg=--settings" "$recdata"
 assert_contains "settings fragment path passed to claude" "cadence-settings.json" "$recdata"
 assert_contains "chained prompt intact as a SINGLE argv" \
@@ -964,9 +1025,30 @@ assert_rc "bad --harvest-time (no leading zero) -> rc 1" 1 "$rc"
 rc=0; out=$(run_pc arm --vault "$VAULT" --synth-time 25:00 2>&1) || rc=$?
 assert_rc "bad --synth-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_pc arm --vault "$VAULT" --synth-day FUNDAY 2>&1) || rc=$?
-assert_rc "bad --synth-day -> rc 1" 1 "$rc"
+assert_rc "removed --synth-day -> rc 1 (HIMMEL-506)" 1 "$rc"
+assert_contains "--synth-day message points at daily" "daily now" "$out"
 rc=0; out=$(run_pc arm --vault "$VAULT" --health-day 31 2>&1) || rc=$?
 assert_rc "bad --health-day (31) -> rc 1" 1 "$rc"
+# HIMMEL-506: a numeric 1-28 was the OLD monthly semantics — now rejected
+# with a pointer to the new weekday meaning (MON..SUN).
+rc=0; out=$(run_pc arm --vault "$VAULT" --health-day 15 2>&1) || rc=$?
+assert_rc "numeric --health-day (15) -> rc 1 (now weekday)" 1 "$rc"
+assert_contains "numeric --health-day message points at MON..SUN" "MON..SUN" "$out"
+rc=0; out=$(run_pc arm --vault "$VAULT" --harvest-model "" 2>&1) || rc=$?
+assert_rc "empty --harvest-model -> rc 1 (HIMMEL-506)" 1 "$rc"
+assert_contains "empty --harvest-model message names the flag + grammar" "--harvest-model must match [A-Za-z0-9][A-Za-z0-9._:-]*" "$out"
+# HIMMEL-506 CR fix: a model value carrying " and & (CMD metacharacters)
+# must be REJECTED by the grammar gate before it can reach emit_bat's
+# raw "%s" interpolation. Names the offending flag + value.
+rc=0; out=$(run_pc arm --vault "$VAULT" --harvest-model 'a"&b' 2>&1) || rc=$?
+assert_rc "hostile --harvest-model (\" and &) -> rc 1 (HIMMEL-506)" 1 "$rc"
+assert_contains "hostile model message names the flag" "--harvest-model" "$out"
+assert_contains "hostile model message names the grammar" "[A-Za-z0-9][A-Za-z0-9._:-]*" "$out"
+assert_contains "hostile model message echoes the offending value" "a\"&b" "$out"
+# Whitespace-only slips the old [ -z ] check; the grammar rejects it.
+rc=0; out=$(run_pc arm --vault "$VAULT" --harvest-model " " 2>&1) || rc=$?
+assert_rc "whitespace-only --harvest-model -> rc 1 (HIMMEL-506)" 1 "$rc"
+assert_contains "whitespace model message names the flag" "--harvest-model" "$out"
 rc=0; out=$(run_pc arm --vault "$VAULT" --ig-limit -3 2>&1) || rc=$?
 assert_rc "bad --ig-limit (-3) -> rc 1" 1 "$rc"
 assert_contains "bad --ig-limit message names flag" "--ig-limit must be a non-negative integer" "$out"
@@ -986,13 +1068,13 @@ echo "TEST: arm --dry-run prints plan, registers nothing"
 out=$(run_pc arm --vault "$VAULT" --dry-run)
 # HIMMEL-362: create is now XML-based; dry-run previews the /xml create line
 # + the generated task XML (trigger + StartWhenAvailable).
-assert_contains "dry-run daily create"   "/tn HIMMEL-Pipeline-Harvest /xml" "$out"
-assert_contains "dry-run weekly create"  "/tn HIMMEL-Pipeline-Synthesize /xml" "$out"
-assert_contains "dry-run monthly create" "/tn HIMMEL-Pipeline-Health /xml" "$out"
+assert_contains "dry-run daily create"         "/tn HIMMEL-Pipeline-Harvest /xml" "$out"
+assert_contains "dry-run daily synth create"   "/tn HIMMEL-Pipeline-Synthesize /xml" "$out"
+assert_contains "dry-run weekly health create" "/tn HIMMEL-Pipeline-Health /xml" "$out"
 assert_contains "dry-run XML has StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAvailable>" "$out"
-assert_contains "dry-run XML daily schedule"   "<ScheduleByDay>"   "$out"
-assert_contains "dry-run XML weekly Sunday"    "<Sunday />"        "$out"
-assert_contains "dry-run XML monthly day 1"    "<Day>1</Day>"      "$out"
+assert_contains "dry-run XML daily schedule (harvest+synth)" "<ScheduleByDay>" "$out"
+assert_contains "dry-run XML weekly health Sunday"          "<Sunday />"      "$out"
+assert_not_contains "dry-run XML has no monthly schedule (HIMMEL-506)" "<Day>" "$out"
 assert_contains "dry-run shows bounded run" "< NUL" "$out"
 if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ]; then
     pass "dry-run registered no tasks"
@@ -1007,19 +1089,19 @@ fi
 
 # Test 5: arm registers both tasks with operator-decision defaults ----------
 
-echo "TEST: arm registers weekly SUN 03:00 + monthly 1st 04:00"
+echo "TEST: arm registers daily 02:00/03:00 + weekly SUN 04:00"
 out=$(run_pc arm --vault "$VAULT")
 assert_contains "arm banner" "PIPELINE CADENCE ARMED" "$out"
 harvest_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Harvest" 2>/dev/null || echo MISSING)
 synth_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Synthesize" 2>/dev/null || echo MISSING)
 health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Health" 2>/dev/null || echo MISSING)
 # HIMMEL-362: tasks are created from XML; the fake records the XML content.
-assert_contains "daily schedule (XML)"   "<ScheduleByDay>"  "$harvest_args"
-assert_contains "daily time (XML)"       "T02:00:00"        "$harvest_args"
-assert_contains "weekly schedule (XML)"  "<Sunday />"       "$synth_args"
-assert_contains "weekly time (XML)"      "T03:00:00"        "$synth_args"
-assert_contains "monthly schedule (XML)" "<Day>1</Day>"     "$health_args"
-assert_contains "monthly time (XML)"     "T04:00:00"        "$health_args"
+assert_contains "daily harvest schedule (XML)" "<ScheduleByDay>"  "$harvest_args"
+assert_contains "daily harvest time (XML)"     "T02:00:00"        "$harvest_args"
+assert_contains "daily synth schedule (XML)"   "<ScheduleByDay>"  "$synth_args"
+assert_contains "daily synth time (XML)"       "T03:00:00"        "$synth_args"
+assert_contains "weekly health schedule (XML)" "<Sunday />"       "$health_args"
+assert_contains "weekly health time (XML)"     "T04:00:00"        "$health_args"
 assert_contains "harvest XML StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAvailable>" "$harvest_args"
 assert_contains "synth XML StartWhenAvailable"   "<StartWhenAvailable>true</StartWhenAvailable>" "$synth_args"
 assert_contains "health XML StartWhenAvailable"  "<StartWhenAvailable>true</StartWhenAvailable>" "$health_args"
@@ -1033,9 +1115,9 @@ echo "TEST: .bat runners are bounded interactive claude (no headless flags)"
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
 synth_bat=$(cat "$BAT_DIR/pipeline-synthesize.bat" 2>/dev/null || echo MISSING)
 health_bat=$(cat "$BAT_DIR/pipeline-health.bat" 2>/dev/null || echo MISSING)
-assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 1" "$harvest_bat"
-assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 1" "$synth_bat"
-assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 1" "$health_bat"
+assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 2" "$harvest_bat"
+assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 2" "$synth_bat"
+assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 2" "$health_bat"
 assert_contains "harvest bat cds into vault" 'cd /d "' "$harvest_bat"
 assert_contains "harvest bat runs /harvest-clips" "/harvest-clips" "$harvest_bat"
 assert_contains "harvest bat chains /triage-clips" "/triage-clips" "$harvest_bat"
@@ -1068,6 +1150,18 @@ for what in harvest synth health; do
         pass "$what bat has no headless claude flags"
     fi
 done
+
+# Test 6c: per-leg --model pins in the .bat runners (HIMMEL-506) — every
+# runner carries `--model "<m>"` right after the binary.
+echo "TEST: .bat runners carry the per-leg --model pin (HIMMEL-506)"
+assert_contains "harvest bat pins --model sonnet" '--model "sonnet"' "$harvest_bat"
+assert_contains "synth bat pins --model sonnet"   '--model "sonnet"' "$synth_bat"
+assert_contains "health bat pins --model haiku"    '--model "haiku"'  "$health_bat"
+
+echo "TEST: .bat runners lift the 600s bg-wait ceiling (HIMMEL-918)"
+assert_contains "harvest bat lifts bg-wait ceiling" "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$harvest_bat"
+assert_contains "synth bat lifts bg-wait ceiling"   "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$synth_bat"
+assert_contains "health bat lifts bg-wait ceiling"  "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$health_bat"
 
 # Test 6b: --settings injection wires the auto-approve hook (HIMMEL-575) ------
 
@@ -1109,6 +1203,17 @@ assert_contains "synthesize armed" "ARMED      HIMMEL-Pipeline-Synthesize" "$out
 assert_contains "health armed"     "ARMED      HIMMEL-Pipeline-Health"     "$out"
 assert_contains "status daily row mentions ig-media-enrich" "/ig-media-enrich" "$out"
 assert_contains "status surfaces run log state" "run log" "$out"
+# HIMMEL-506: status parses the --model pin back out of each .bat runner.
+# Scope each pin to its OWN status line — harvest and synth are both
+# [model: sonnet], so a whole-output check would pass even if one leg's pin
+# were wrong or missing.
+harvest_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Harvest')
+synth_line=$(printf '%s\n' "$out"   | grep 'HIMMEL-Pipeline-Synthesize')
+health_line=$(printf '%s\n' "$out"  | grep 'HIMMEL-Pipeline-Health')
+assert_contains "harvest status line armed"      "ARMED"           "$harvest_line"
+assert_contains "harvest status shows model pin" "[model: sonnet]" "$harvest_line"
+assert_contains "synth status shows model pin"   "[model: sonnet]" "$synth_line"
+assert_contains "health status shows model pin"  "[model: haiku]"  "$health_line"
 
 # Test 7b: status surfaces the rotated .log.prev evidence ---------------------
 # Rotation keeps one prior run as .log.prev; right after a fire the
@@ -1142,22 +1247,61 @@ fi
 
 echo "TEST: re-arm --force applies flag overrides"
 out=$(run_pc arm --vault "$VAULT" --force \
-    --harvest-time 01:15 --ig-limit 0 --synth-day mon --synth-time 02:30 --health-day 15 --health-time 05:00 2>&1)
+    --harvest-time 01:15 --ig-limit 0 --synth-time 02:30 --health-day wed --health-time 05:00 --harvest-model opus 2>&1)
 harvest_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Harvest" 2>/dev/null || echo MISSING)
 synth_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Synthesize" 2>/dev/null || echo MISSING)
 health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Health" 2>/dev/null || echo MISSING)
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
-assert_contains "daily override (XML time)"               "T01:15:00"   "$harvest_args"
+assert_contains "daily harvest override (XML time)"       "T01:15:00"   "$harvest_args"
 assert_contains "--ig-limit 0 reaches harvest bat"         "/ig-media-enrich --limit 0" "$harvest_bat"
-assert_contains "weekly override (lowercase day upcased)" "<Monday />"  "$synth_args"
-assert_contains "weekly override (XML time)"              "T02:30:00"   "$synth_args"
-assert_contains "monthly override (XML day)"              "<Day>15</Day>" "$health_args"
-assert_contains "monthly override (XML time)"             "T05:00:00"   "$health_args"
+assert_contains "--harvest-model override reaches bat (HIMMEL-506)" '--model "opus"' "$harvest_bat"
+assert_contains "daily synth override (daily schedule)"   "<ScheduleByDay>" "$synth_args"
+assert_contains "daily synth override (XML time)"         "T02:30:00"   "$synth_args"
+assert_contains "weekly health override (WED upcased)"    "<Wednesday />" "$health_args"
+assert_contains "weekly health override (XML time)"       "T05:00:00"   "$health_args"
 if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
     pass "still exactly three tasks after --force re-arm"
 else
     fail "duplicate tasks after --force re-arm" "$(ls "$STATE/tasks")"
 fi
+
+# Test 9b: --force re-arm model pin round-trips through status (HIMMEL-506).
+# status parses the --model token back out of the .bat runner; after a
+# --force re-arm with --harvest-model opus, the harvest status line must
+# show [model: opus].
+echo "TEST: --force re-arm harvest model pin round-trips via status"
+out=$(run_pc status)
+harvest_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Harvest')
+assert_contains "status round-trips --force harvest model pin" "[model: opus]" "$harvest_line"
+
+# Test 9c: pre-HIMMEL-506 runner (no --model token) stays silent in status
+# (HIMMEL-506). A v1 runner never carried --model; status must NOT print a
+# [model: ...] suffix for it (no "model: unknown", no error). Emulate by
+# stripping the --model token the v1 emitter never wrote. disarm (Test 10)
+# removes the modified runner right after, so no cleanup needed here.
+echo "TEST: v1 runner without --model pin shows no model suffix in status"
+sed 's/ --model "[^"]*"//' "$BAT_DIR/pipeline-harvest.bat" > "$BAT_DIR/pipeline-harvest.bat.v1"
+mv "$BAT_DIR/pipeline-harvest.bat.v1" "$BAT_DIR/pipeline-harvest.bat"
+rc=0; out=$(run_pc status) || rc=$?
+assert_rc "v1 runner status does not error" 0 "$rc"
+harvest_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Harvest')
+assert_not_contains "v1 harvest runner has no [model:] suffix" "[model:" "$harvest_line"
+assert_not_contains "v1 runner status has no 'model: unknown'" "model: unknown" "$out"
+
+# Test 9d: a deleted runner file surfaces as [runner missing], NOT plain ARMED
+# (HIMMEL-506 CR fix). The schtasks mirror of cron C5c: a scheduler entry whose
+# .bat runner is gone fires-and-fails every time, so status must distinguish
+# it from the v1 no-pin runner above (9c, which exists on disk and is silent).
+# Backs up + restores the runner so Test 10's disarm state is unaffected.
+echo "TEST: armed task with .bat runner deleted shows [runner missing]"
+cp "$BAT_DIR/pipeline-synthesize.bat" "$BAT_DIR/pipeline-synthesize.bat.bak"
+rm -f "$BAT_DIR/pipeline-synthesize.bat"
+rc=0; out=$(run_pc status) || rc=$?
+assert_rc "runner-missing status does not error" 0 "$rc"
+synth_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Synthesize')
+assert_contains "synth runner-missing shows [runner missing]" "[runner missing]" "$synth_line"
+assert_not_contains "synth runner-missing has no [model:] suffix" "[model:" "$synth_line"
+mv "$BAT_DIR/pipeline-synthesize.bat.bak" "$BAT_DIR/pipeline-synthesize.bat"
 
 # Test 10: disarm + idempotent second disarm ---------------------------------
 

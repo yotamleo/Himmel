@@ -2,32 +2,37 @@
 # pipeline-cadence.sh — arm/status/disarm the recurring clip-pipeline
 # cadence (HIMMEL-255).
 #
-# The luna vault's runbooks table says /synthesize-clips = "weekly or
-# after a clip batch" and /obsidian-health = "monthly or after big
-# ingests" — but nothing was scheduled; every run was operator-
+# The luna vault's runbooks table gives only loose guidance
+# (/synthesize-clips = "after a clip batch", /obsidian-health = "after
+# big ingests") — but nothing was scheduled; every run was operator-
 # remembered. The pipeline is idempotent at every stage by design
 # (markers: harvested_at, processed, synthesis dedup window, _done/
 # move) — exactly the cron-safe shape. This script registers the three
 # recurring jobs with the OS scheduler, following the
 # scripts/handover/arm-resume.sh precedent (HIMMEL-122):
 #
-#   HIMMEL-Pipeline-Harvest     daily   (default 02:00)            HIMMEL-357/798
-#       claude "/harvest-clips ... then /triage-clips ... then /ig-media-enrich ..." < NUL
-#   HIMMEL-Pipeline-Synthesize  weekly  (default Sun 03:00)
-#       claude "/synthesize-clips … then /archive-clips …" < NUL
-#   HIMMEL-Pipeline-Health      monthly (default 1st 04:00)
-#       claude "/obsidian-health …" < NUL
+#   HIMMEL-Pipeline-Harvest     daily   (default 02:00, model: sonnet)  HIMMEL-357/798
+#       claude --model sonnet "/harvest-clips ... then /triage-clips ... then /ig-media-enrich ..." < NUL
+#   HIMMEL-Pipeline-Synthesize  daily   (default 03:00, model: sonnet)
+#       claude --model sonnet "/synthesize-clips … then /archive-clips …" < NUL
+#   HIMMEL-Pipeline-Health      weekly  (default Sun 04:00, model: haiku)
+#       claude --model haiku "/obsidian-health …" < NUL
 #
 # Defaults are the operator decision pinned on HIMMEL-255 (2026-06-10),
-# plus the daily harvest+triage leg added on HIMMEL-357 (2026-06-17)
-# and the bounded ig-media-enrich chain link added on HIMMEL-798:
+# plus the daily harvest+triage leg added on HIMMEL-357 (2026-06-17),
+# the bounded ig-media-enrich chain link added on HIMMEL-798, and the
+# per-leg model pins + frequency shift on HIMMEL-506 (2026-07-11):
 # harvest+triage+ig-media-enrich daily at 02:00 (cheap, idempotent,
 # keeps the Clippings/ inbox flowing and drains pending Instagram media
-# across nights); synthesize weekly Sunday 03:00 with /archive-clips
-# chained after in the SAME session (synthesis needs a batch to find
-# cross-clip themes, so it runs weekly not daily; archive only graduates
-# clips synthesis has wikilinked, so it follows synth); health monthly
-# on the 1st at 04:00; machine assumed awake. All overridable via flags.
+# across nights); synthesize+archive DAILY at 03:00 — synthesis is now
+# cheap enough to run nightly once pinned to a cheap model, so cross-clip
+# themes surface without a week's lag (archive only graduates clips
+# synthesis has wikilinked, so it follows synth in the SAME session);
+# health WEEKLY on Sunday at 04:00; machine assumed awake. Every leg
+# launches with an explicit --model pin (harvest/synth=sonnet,
+# health=haiku) so the cadence never inherits the operator's saved
+# default (the scarcest tier) — the cheap pins are what make the higher
+# frequencies affordable. All overridable via flags.
 #
 # The armed command is interactive-claude shaped — `claude "<prompt>"`
 # with stdin redirected from NUL (the bounded-run primitive: the session
@@ -50,9 +55,9 @@
 #
 # Usage:
 #   bash scripts/luna/pipeline-cadence.sh arm [--harvest-time HH:MM]
-#       [--ig-limit N] [--synth-day DAY] [--synth-time HH:MM]
-#       [--health-day N] [--health-time HH:MM] [--vault PATH]
-#       [--force] [--dry-run]
+#       [--ig-limit N] [--synth-time HH:MM] [--health-day DAY]
+#       [--health-time HH:MM] [--harvest-model M] [--synth-model M]
+#       [--health-model M] [--vault PATH] [--force] [--dry-run]
 #   bash scripts/luna/pipeline-cadence.sh status
 #   bash scripts/luna/pipeline-cadence.sh disarm
 #
@@ -120,13 +125,18 @@ SETTINGS_FRAGMENT="$BAT_DIR/cadence-settings.json"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/cadence-format.sh"
 
 # Operator-decision defaults (HIMMEL-255 pinned comment, 2026-06-10;
-# harvest leg added on HIMMEL-357, 2026-06-17).
+# harvest leg added on HIMMEL-357, 2026-06-17; model pins + frequency
+# shift on HIMMEL-506, 2026-07-11: synth weekly->daily, health
+# monthly->weekly, per-leg --model pins so the cadence never inherits
+# the operator's saved default tier).
 HARVEST_TIME="02:00"
 IG_LIMIT="10"
-SYNTH_DAY="SUN"
 SYNTH_TIME="03:00"
-HEALTH_DAY="1"
+HEALTH_DAY="SUN"
 HEALTH_TIME="04:00"
+HARVEST_MODEL="sonnet"
+SYNTH_MODEL="sonnet"
+HEALTH_MODEL="haiku"
 
 # Default vault resolution (cross-platform; HIMMEL-642). Honors
 # LUNA_VAULT_PATH first — the vault path adopt.sh persists into
@@ -149,8 +159,8 @@ DRY_RUN=0
 # the OEM codepage, where UTF-8 punctuation mojibakes into the prompt.
 DAILY_CHAIN="/harvest-clips + /triage-clips + /ig-media-enrich"
 HARVEST_PROMPT=""
-SYNTH_PROMPT="Run /synthesize-clips to completion, then run /archive-clips. This is the scheduled weekly pipeline cadence run (HIMMEL-255) - fully autonomous, no user prompts; report results and exit."
-HEALTH_PROMPT="Run /obsidian-health to completion. This is the scheduled monthly pipeline cadence run (HIMMEL-255) - fully autonomous, no user prompts; report results and exit."
+SYNTH_PROMPT="Run /synthesize-clips to completion, then run /archive-clips. This is the scheduled daily pipeline cadence run (HIMMEL-255) - fully autonomous, no user prompts; report results and exit."
+HEALTH_PROMPT="Run /obsidian-health to completion. This is the scheduled weekly pipeline cadence run (HIMMEL-255) - fully autonomous, no user prompts; report results and exit."
 
 usage() {
     cat <<'EOF'
@@ -158,16 +168,18 @@ Usage: pipeline-cadence.sh <arm|status|disarm> [flags]
 
 Arm the OS scheduler with the recurring clip-pipeline cadence
 (HIMMEL-255/357/798): daily /harvest-clips (+ /triage-clips and
-/ig-media-enrich chained after in the same session), weekly
-/synthesize-clips (+ /archive-clips chained
-after) and monthly /obsidian-health, run against the luna vault as
-interactive bounded claude sessions.
+/ig-media-enrich chained after in the same session), daily
+/synthesize-clips (+ /archive-clips chained after) and weekly
+/obsidian-health, run against the luna vault as interactive bounded
+claude sessions. Each leg launches with an explicit cheap --model pin
+(HIMMEL-506) so the cadence never inherits the operator's saved default.
 
 Subcommands:
   arm      Register all three recurring tasks. Dedup-guarded: refuses
            (rc=3) if any HIMMEL-Pipeline-* task already exists; --force
            replaces.
-  status   Show which cadence tasks are armed (+ next run time).
+  status   Show which cadence tasks are armed (+ next run time + the
+           pinned model parsed back out of each runner).
   disarm   Remove all tasks (idempotent; rc=0 if nothing was armed).
 
 Flags (arm only, except --dry-run):
@@ -175,12 +187,12 @@ Flags (arm only, except --dry-run):
                          24h local (default 02:00)
   --ig-limit <N>         Daily /ig-media-enrich --limit N (default 10;
                          0 = unlimited)
-  --synth-day <DAY>      Weekly synthesize day: MON..SUN   (default SUN)
-  --synth-time <HH:MM>   Weekly synthesize time, 24h local (default 03:00)
-  --health-day <N>       Monthly health day-of-month, 1-28 (default 1;
-                         max 28 — 29-31 rejected: schtasks MONTHLY skips
-                         months lacking that day)
-  --health-time <HH:MM>  Monthly health time, 24h local    (default 04:00)
+  --synth-time <HH:MM>   Daily synthesize time, 24h local (default 03:00)
+  --health-day <DAY>     Weekly health day: MON..SUN (default SUN)
+  --health-time <HH:MM>  Weekly health time, 24h local (default 04:00)
+  --harvest-model <m>    claude --model for the harvest leg (default sonnet)
+  --synth-model <m>      claude --model for the synthesize leg (default sonnet)
+  --health-model <m>     claude --model for the health leg (default haiku)
   --vault <PATH>         Luna vault root (default: $LUNA_VAULT_PATH if set,
                          else <user-profile>/Documents/luna — on Windows
                          Git-Bash the Windows profile, not the MSYS $HOME)
@@ -213,14 +225,21 @@ while [ $# -gt 0 ]; do
         --harvest-time=*) HARVEST_TIME="${1#--harvest-time=}"; shift ;;
         --ig-limit)      IG_LIMIT="${2:-}"; shift 2 ;;
         --ig-limit=*)    IG_LIMIT="${1#--ig-limit=}"; shift ;;
-        --synth-day)     SYNTH_DAY="${2:-}"; shift 2 ;;
-        --synth-day=*)   SYNTH_DAY="${1#--synth-day=}"; shift ;;
+        --synth-day|--synth-day=*)
+            echo "ERR pipeline-cadence: --synth-day is no longer supported — synthesize is daily now (HIMMEL-506); use --synth-time to set the time" >&2
+            exit 1 ;;
         --synth-time)    SYNTH_TIME="${2:-}"; shift 2 ;;
         --synth-time=*)  SYNTH_TIME="${1#--synth-time=}"; shift ;;
         --health-day)    HEALTH_DAY="${2:-}"; shift 2 ;;
         --health-day=*)  HEALTH_DAY="${1#--health-day=}"; shift ;;
         --health-time)   HEALTH_TIME="${2:-}"; shift 2 ;;
         --health-time=*) HEALTH_TIME="${1#--health-time=}"; shift ;;
+        --harvest-model)   HARVEST_MODEL="${2:-}"; shift 2 ;;
+        --harvest-model=*) HARVEST_MODEL="${1#--harvest-model=}"; shift ;;
+        --synth-model)   SYNTH_MODEL="${2:-}"; shift 2 ;;
+        --synth-model=*) SYNTH_MODEL="${1#--synth-model=}"; shift ;;
+        --health-model)  HEALTH_MODEL="${2:-}"; shift 2 ;;
+        --health-model=*) HEALTH_MODEL="${1#--health-model=}"; shift ;;
         --vault)         VAULT="${2:-}"; shift 2 ;;
         --vault=*)       VAULT="${1#--vault=}"; shift ;;
         --force)         FORCE=1; shift ;;
@@ -390,6 +409,52 @@ task_summary() {
     esac
 }
 
+# Map a cadence task name to its generated runner file path (.bat on
+# Windows, .sh on POSIX) so status can surface the pinned model (HIMMEL-506).
+# Returns the path on stdout; rc 1 on an unknown name.
+runner_for_name() {
+    local base ext
+    case "$1" in
+        "$TASK_HARVEST") base="pipeline-harvest" ;;
+        "$TASK_SYNTH")   base="pipeline-synthesize" ;;
+        "$TASK_HEALTH")  base="pipeline-health" ;;
+        *) return 1 ;;
+    esac
+    case "$PLATFORM" in
+        windows) ext="bat" ;;
+        *)       ext="sh" ;;
+    esac
+    printf '%s/%s.%s' "$BAT_DIR" "$base" "$ext"
+}
+
+# Read the --model pin back out of a generated runner (.bat or .sh) so
+# status can flag an armed-but-wrong-model cadence (HIMMEL-506). Both
+# emitters inject `--model <m>` right after the binary; this greps that
+# token. rc 1 when the runner is absent (not armed / dry-run), empty
+# stdout when armed without a stampable pin (pre-HIMMEL-506 runner).
+runner_model() {
+    local f="$1"
+    [ -f "$f" ] || return 1
+    grep -oE -- '--model[[:space:]]+[^[:space:]]+' "$f" 2>/dev/null \
+        | head -1 | sed 's/^--model[[:space:]]*//' | tr -d '"' || true
+}
+
+# Status suffix: " [model: <m>]" when the runner carries a --model pin;
+# " [runner missing]" when the scheduler entry is armed but its generated
+# runner file is gone (every fire fails — distinguished from the
+# intentional pre-HIMMEL-506 no-pin case, which exists on disk and stays
+# silent rather than print "model: unknown"); empty otherwise. Without this
+# guard a deleted runner read identically to a healthy v1 runner, so status
+# reported ARMED while every fire failed (HIMMEL-506 CR fix).
+model_suffix() {
+    local runner model
+    runner=$(runner_for_name "$1" 2>/dev/null) || return 0
+    [ -f "$runner" ] || { printf ' [runner missing]'; return 0; }
+    model=$(runner_model "$runner") || return 0
+    [ -n "$model" ] && printf ' [model: %s]' "$model"
+    return 0
+}
+
 status_one() {
     local name="$1" next qrc=0
     query_one "$name" || qrc=$?
@@ -399,7 +464,7 @@ status_one() {
             # operator env); fall back to plain ARMED when absent.
             next=$(printf '%s\n' "$QUERY_OUT" | grep -i 'Next Run Time' | head -1 \
                 | sed 's/^[^:]*:[[:space:]]*//' || true)
-            echo "ARMED      $name${next:+ (next run: $next)}$(task_summary "$name")"
+            echo "ARMED      $name${next:+ (next run: $next)}$(task_summary "$name")$(model_suffix "$name")"
             ;;
         1)  echo "not armed  $name$(task_summary "$name")" ;;
         *)
@@ -511,12 +576,23 @@ cmd_disarm() {
 # transient console (03:00 Sunday) whose output would otherwise vanish;
 # `status` surfaces the log.
 emit_bat() {
-    local vault_win_esc="$1" claude_win="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5"
+    local vault_win_esc="$1" claude_win="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5" model="$6"
+    # cmd_escape the per-leg model (HIMMEL-506 CR fix): every other value
+    # interpolated below is already escaped, but the model was a raw "%s" -
+    # a value carrying " % & ^ < > | would corrupt the .bat at fire time.
+    # validate_arm_inputs rejects metacharacters at the gate; escape here
+    # too (defense in depth - the gate also guards emit_runner's printf '%q').
+    local model_esc
+    model_esc=$(cmd_escape "$model")
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$vault_win_esc" "$log_win_esc"
-    printf '"%s" --settings "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win" "$settings_esc" "$prompt_esc" "$log_win_esc"
+    # HIMMEL-918: lift claude's 600s background-task wait ceiling — triage
+    # dispatches clip batches as bg tasks and the default ceiling silently
+    # truncated nightly runs mid-batch.
+    printf 'set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0\r\n'
+    printf '"%s" --model "%s" --settings "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win" "$model_esc" "$settings_esc" "$prompt_esc" "$log_win_esc"
 }
 
 # Emit the JSON settings fragment that wires the auto-approve-safe-bash hook by
@@ -575,16 +651,15 @@ dow_long() {
     esac
 }
 
-# Per-cadence <CalendarTrigger> schedule fragments. SYNTH_DAY / HEALTH_DAY
-# are already validated (MON..SUN / 1-28) by validate_arm_inputs.
+# Per-cadence <CalendarTrigger> schedule fragments. HEALTH_DAY is already
+# validated (MON..SUN) by validate_arm_inputs. Harvest and synthesize are
+# both daily (HIMMEL-506); health is weekly on HEALTH_DAY.
 schedule_daily_xml() {
     printf '      <ScheduleByDay>\n        <DaysInterval>1</DaysInterval>\n      </ScheduleByDay>'
 }
 schedule_weekly_xml() {
-    printf '      <ScheduleByWeek>\n        <DaysOfWeek>\n          <%s />\n        </DaysOfWeek>\n        <WeeksInterval>1</WeeksInterval>\n      </ScheduleByWeek>' "$(dow_long "$SYNTH_DAY")"
-}
-schedule_monthly_xml() {
-    printf '      <ScheduleByMonth>\n        <DaysOfMonth>\n          <Day>%s</Day>\n        </DaysOfMonth>\n        <Months>\n          <January /><February /><March /><April /><May /><June /><July /><August /><September /><October /><November /><December />\n        </Months>\n      </ScheduleByMonth>' "$HEALTH_DAY"
+    local day="$1"
+    printf '      <ScheduleByWeek>\n        <DaysOfWeek>\n          <%s />\n        </DaysOfWeek>\n        <WeeksInterval>1</WeeksInterval>\n      </ScheduleByWeek>' "$(dow_long "$day")"
 }
 
 # Emit one task XML: a CalendarTrigger at the given local time with the
@@ -657,20 +732,45 @@ schtasks_create_xml() {
     return "$rc"
 }
 
+# Validate a per-leg --*-model value (HIMMEL-506 CR fix). Defense in
+# depth: a conservative identifier grammar rejects empty/whitespace and
+# every shell/CMD metacharacter BEFORE the value is interpolated into a
+# runner, so a model like a"&b can't corrupt the .bat (which additionally
+# cmd_escapes it via emit_bat) or break the cron re-parse (emit_runner
+# pre-quotes with printf '%q'). Known aliases (sonnet|opus|haiku|fable)
+# and dotted full ids (containing '.' or a 'claude-' prefix) arm silently;
+# any other grammar-valid value earns a non-fatal WARNING so a future
+# model name never hard-breaks arming. POSIX-safe `case` (not [[ =~ ]]):
+# it matches the WHOLE string, so a trailing newline can't slip a second
+# line past an anchored regex the way `grep -E '^...$'` would.
+validate_model_name() {
+    local flag="$1" val="$2"
+    # Grammar: first char [A-Za-z0-9], rest [A-Za-z0-9._:-]*. Glob, not
+    # regex: `*[!class]` flags ANY disallowed char anywhere; `[._:-]*`
+    # catches a leading . _ : - (and "" catches empty). The '-' is last
+    # in each class so it is a literal, not a range endpoint.
+    case "$val" in
+        ""|*[!A-Za-z0-9._:-]*|[._:-]*)
+            echo "ERR pipeline-cadence: $flag must match [A-Za-z0-9][A-Za-z0-9._:-]* (empty, whitespace, and shell/CMD metacharacters are rejected), got: $val" >&2
+            return 1
+            ;;
+    esac
+    case "$val" in
+        sonnet|opus|haiku|fable) return 0 ;;
+        *.*|claude-*) return 0 ;;
+        *)
+            echo "WARN pipeline-cadence: $flag '$val' is not a known alias (sonnet|opus|haiku|fable) or dotted full id; arming anyway - verify the model name" >&2
+            return 0
+            ;;
+    esac
+}
+
 # Input validation shared by the schtasks and cron arm paths. Upcases
-# SYNTH_DAY in place.
+# HEALTH_DAY in place.
 validate_arm_inputs() {
     local day_ok=0 d
     if ! [[ "$HARVEST_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
         echo "ERR pipeline-cadence: --harvest-time must be HH:MM (24h), got: $HARVEST_TIME" >&2
-        exit 1
-    fi
-    SYNTH_DAY=$(printf '%s' "$SYNTH_DAY" | tr '[:lower:]' '[:upper:]')
-    for d in MON TUE WED THU FRI SAT SUN; do
-        [ "$SYNTH_DAY" = "$d" ] && day_ok=1
-    done
-    if [ "$day_ok" -ne 1 ]; then
-        echo "ERR pipeline-cadence: --synth-day must be MON..SUN, got: $SYNTH_DAY" >&2
         exit 1
     fi
     if ! [[ "$SYNTH_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
@@ -681,16 +781,33 @@ validate_arm_inputs() {
         echo "ERR pipeline-cadence: --ig-limit must be a non-negative integer, got: $IG_LIMIT" >&2
         exit 1
     fi
-    # 1-28 only: schtasks MONTHLY /d 29-31 skips months lacking that day
-    # (and cron's day-of-month field has the same problem).
-    if ! [[ "$HEALTH_DAY" =~ ^([1-9]|1[0-9]|2[0-8])$ ]]; then
-        echo "ERR pipeline-cadence: --health-day must be 1-28, got: $HEALTH_DAY" >&2
+    # Health is weekly now (HIMMEL-506): --health-day is a weekday
+    # MON..SUN, not a day-of-month. A numeric 1-28 is the old monthly
+    # semantics — reject it with a pointer to the new weekday meaning.
+    HEALTH_DAY=$(printf '%s' "$HEALTH_DAY" | tr '[:lower:]' '[:upper:]')
+    day_ok=0
+    for d in MON TUE WED THU FRI SAT SUN; do
+        [ "$HEALTH_DAY" = "$d" ] && day_ok=1
+    done
+    if [ "$day_ok" -ne 1 ]; then
+        echo "ERR pipeline-cadence: --health-day must be a weekday MON..SUN (health is weekly now — HIMMEL-506), got: $HEALTH_DAY" >&2
         exit 1
     fi
     if ! [[ "$HEALTH_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
         echo "ERR pipeline-cadence: --health-time must be HH:MM (24h), got: $HEALTH_TIME" >&2
         exit 1
     fi
+    # Per-leg model pins (HIMMEL-506): each --*-model must match a
+    # conservative identifier grammar ([A-Za-z0-9][A-Za-z0-9._:-]*) -
+    # this rejects empty/whitespace AND every shell/CMD metacharacter
+    # before the value reaches a runner. The .bat emitter additionally
+    # cmd_escapes the value (emit_bat) and the cron emitter pre-quotes it
+    # with printf '%q' (emit_runner) - defense in depth, never the sole
+    # guard. claude's own runtime error on a bad name is a last line, not
+    # the first.
+    validate_model_name "--harvest-model" "$HARVEST_MODEL" || exit 1
+    validate_model_name "--synth-model"  "$SYNTH_MODEL"  || exit 1
+    validate_model_name "--health-model" "$HEALTH_MODEL" || exit 1
     if [ ! -d "$VAULT" ]; then
         echo "ERR pipeline-cadence: --vault is not a directory: $VAULT" >&2
         exit 1
@@ -801,8 +918,8 @@ cmd_arm() {
     # once and reused by the dry-run preview and the real create below.
     local sched_harvest sched_synth sched_health
     sched_harvest=$(schedule_daily_xml)
-    sched_synth=$(schedule_weekly_xml)
-    sched_health=$(schedule_monthly_xml)
+    sched_synth=$(schedule_daily_xml)
+    sched_health=$(schedule_weekly_xml "$HEALTH_DAY")
 
     # The .bat runner is the task's Exec Command. cygpath -w is a pure
     # string transform (the .bat need not exist yet), so resolve the win
@@ -826,16 +943,16 @@ cmd_arm() {
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$hook_path_m" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_harvest:"
-        emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$HARVEST_MODEL" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_synth:"
-        emit_bat "$vault_esc" "$claude_win" "$synth_esc" "$log_synth_esc" "$settings_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$synth_esc" "$log_synth_esc" "$settings_esc" "$SYNTH_MODEL" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_health:"
-        emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" "$HEALTH_MODEL" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_HARVEST /xml <daily $HARVEST_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_harvest_win" "$HARVEST_TIME" "$sched_harvest" | sed 's/^/    /'
-        echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_SYNTH /xml <weekly $SYNTH_DAY $SYNTH_TIME, StartWhenAvailable=true> /f"
+        echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_SYNTH /xml <daily $SYNTH_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_synth_win" "$SYNTH_TIME" "$sched_synth" | sed 's/^/    /'
-        echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_HEALTH /xml <monthly day $HEALTH_DAY $HEALTH_TIME, StartWhenAvailable=true> /f"
+        echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_HEALTH /xml <weekly $HEALTH_DAY $HEALTH_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_health_win" "$HEALTH_TIME" "$sched_health" | sed 's/^/    /'
         echo "pipeline-cadence: dry-run complete (no changes made)"
         return 0
@@ -843,9 +960,9 @@ cmd_arm() {
 
     mkdir -p "$BAT_DIR"
     emit_settings_fragment "$hook_path_m" > "$SETTINGS_FRAGMENT"
-    emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" > "$bat_harvest"
-    emit_bat "$vault_esc" "$claude_win" "$synth_esc"  "$log_synth_esc"  "$settings_esc" > "$bat_synth"
-    emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" > "$bat_health"
+    emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$HARVEST_MODEL" > "$bat_harvest"
+    emit_bat "$vault_esc" "$claude_win" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$SYNTH_MODEL"   > "$bat_synth"
+    emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" "$HEALTH_MODEL"  > "$bat_health"
 
     local err_file
     err_file=$(mktemp -t pipeline-cadence.err.XXXXXX)
@@ -889,10 +1006,10 @@ cmd_arm() {
     cat <<EOF
 
 ================================================================
-  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-357 / HIMMEL-798)
-  $TASK_HARVEST     daily   $HARVEST_TIME       -> $DAILY_CHAIN
-  $TASK_SYNTH  weekly  $SYNTH_DAY $SYNTH_TIME  -> /synthesize-clips + /archive-clips
-  $TASK_HEALTH      monthly day $HEALTH_DAY $HEALTH_TIME -> /obsidian-health
+  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-357 / HIMMEL-506 / HIMMEL-798)
+  $TASK_HARVEST  daily   $HARVEST_TIME  [model: $HARVEST_MODEL]  -> $DAILY_CHAIN
+  $TASK_SYNTH    daily   $SYNTH_TIME    [model: $SYNTH_MODEL]    -> /synthesize-clips + /archive-clips
+  $TASK_HEALTH   weekly  $HEALTH_DAY $HEALTH_TIME [model: $HEALTH_MODEL] -> /obsidian-health
   Vault: $vault_win
   Runner .bats: $BAT_DIR
 
@@ -1005,7 +1122,7 @@ cron_existing() {
 # arrive pre-quoted with printf %q.
 # shellcheck disable=SC2016  # single-quoted $log/$(date)/_rc are emitted literally for the runner's own /bin/sh to expand at fire time
 emit_runner() {
-    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_node_dir="${7:-}"
+    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_node_dir="${7:-}" q_model="${8:-}"
     printf '#!/bin/sh\n'
     printf '# %s runner — generated by pipeline-cadence.sh arm (HIMMEL-265)\n' "$name"
     printf '# %s %s\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
@@ -1026,7 +1143,8 @@ emit_runner() {
     printf '{\n'
     printf '    echo "[fired $(date '\''+%%Y-%%m-%%d %%H:%%M:%%S'\'')]"\n'
     printf '    cd %s || exit 1\n' "$q_vault"
-    printf '    _rc=0; %s --settings %s %s < /dev/null || _rc=$?\n' "$q_claude" "$q_settings" "$q_prompt"
+    # HIMMEL-918: lift claude's 600s background-task wait ceiling (see emit_bat).
+    printf '    _rc=0; CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 %s --model %s --settings %s %s < /dev/null || _rc=$?\n' "$q_claude" "$q_model" "$q_settings" "$q_prompt"
     printf '    echo "[exit rc=$_rc]"\n'
     printf '} >> "$log" 2>&1\n'
 }
@@ -1044,7 +1162,7 @@ cron_status() {
         entry=$(printf '%s\n' "$CRON_TAB" | grep -F "# $name" | head -1 || true)
         if [ -n "$entry" ]; then
             sched=$(printf '%s' "$entry" | awk '{print $1, $2, $3, $4, $5}')
-            echo "ARMED      $name (cron: $sched)$(task_summary "$name")"
+            echo "ARMED      $name (cron: $sched)$(task_summary "$name")$(model_suffix "$name")"
         else
             echo "not armed  $name$(task_summary "$name")"
         fi
@@ -1144,7 +1262,7 @@ cron_arm() {
         fi
     fi
 
-    local q_vault q_claude q_node_dir q_harvest_prompt q_synth_prompt q_health_prompt q_log_harvest q_log_synth q_log_health
+    local q_vault q_claude q_node_dir q_harvest_prompt q_synth_prompt q_health_prompt q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
     q_vault=$(printf '%q' "$VAULT")
     q_claude=$(printf '%q' "$claude_bin")
     q_node_dir=$([ -n "$node_dir" ] && printf '%q' "$node_dir" || printf '')
@@ -1154,6 +1272,9 @@ cron_arm() {
     q_log_harvest=$(printf '%q' "$BAT_DIR/pipeline-harvest.log")
     q_log_synth=$(printf '%q' "$BAT_DIR/pipeline-synthesize.log")
     q_log_health=$(printf '%q' "$BAT_DIR/pipeline-health.log")
+    q_harvest_model=$(printf '%q' "$HARVEST_MODEL")
+    q_synth_model=$(printf '%q' "$SYNTH_MODEL")
+    q_health_model=$(printf '%q' "$HEALTH_MODEL")
     # Settings fragment (HIMMEL-575): the `claude --settings` target, shared by
     # all three runners. The hook path inside the fragment is the POSIX absolute
     # path (JSON-safe — no backslashes — and bash-readable).
@@ -1163,24 +1284,24 @@ cron_arm() {
         echo "WARN pipeline-cadence: auto-approve hook not readable at $AUTO_APPROVE_HOOK (cadence runs may stall on compound-bash prompts)" >&2
 
     local dow harvest_hh harvest_mm synth_hh synth_mm health_hh health_mm
-    dow=$(dow_num "$SYNTH_DAY")
+    dow=$(dow_num "$HEALTH_DAY")
     harvest_hh="${HARVEST_TIME%:*}"; harvest_mm="${HARVEST_TIME#*:}"
     synth_hh="${SYNTH_TIME%:*}"; synth_mm="${SYNTH_TIME#*:}"
     health_hh="${HEALTH_TIME%:*}"; health_mm="${HEALTH_TIME#*:}"
     local entry_harvest entry_synth entry_health
     entry_harvest="$harvest_mm $harvest_hh * * * $(cron_escape "$CRON_RUNNER_HARVEST") # $TASK_HARVEST"
-    entry_synth="$synth_mm $synth_hh * * $dow $(cron_escape "$CRON_RUNNER_SYNTH") # $TASK_SYNTH"
-    entry_health="$health_mm $health_hh $HEALTH_DAY * * $(cron_escape "$CRON_RUNNER_HEALTH") # $TASK_HEALTH"
+    entry_synth="$synth_mm $synth_hh * * * $(cron_escape "$CRON_RUNNER_SYNTH") # $TASK_SYNTH"
+    entry_health="$health_mm $health_hh * * $dow $(cron_escape "$CRON_RUNNER_HEALTH") # $TASK_HEALTH"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$AUTO_APPROVE_HOOK" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HARVEST:"
-        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" | sed 's/^/    /'
+        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" "$q_harvest_model" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_SYNTH:"
-        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_node_dir" | sed 's/^/    /'
+        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_node_dir" "$q_synth_model" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HEALTH:"
-        emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" | sed 's/^/    /'
+        emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" "$q_health_model" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would add crontab entries:"
         echo "    $entry_harvest"
         echo "    $entry_synth"
@@ -1203,9 +1324,9 @@ cron_arm() {
     local tmp_harvest="$CRON_RUNNER_HARVEST.tmp.$$" tmp_synth="$CRON_RUNNER_SYNTH.tmp.$$" tmp_health="$CRON_RUNNER_HEALTH.tmp.$$"
     local tmp_settings="$SETTINGS_FRAGMENT.tmp.$$"
     emit_settings_fragment "$AUTO_APPROVE_HOOK" > "$tmp_settings"
-    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" > "$tmp_harvest"
-    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_node_dir" > "$tmp_synth"
-    emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" > "$tmp_health"
+    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" "$q_harvest_model" > "$tmp_harvest"
+    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_node_dir" "$q_synth_model"   > "$tmp_synth"
+    emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" "$q_health_model"  > "$tmp_health"
     chmod +x "$tmp_harvest" "$tmp_synth" "$tmp_health"
 
     # Single atomic rewrite: everything that isn't ours, then all three
@@ -1233,10 +1354,10 @@ cron_arm() {
     cat <<EOF
 
 ================================================================
-  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-265 cron / HIMMEL-357 / HIMMEL-798)
-  $TASK_HARVEST     daily   $HARVEST_TIME       -> $DAILY_CHAIN
-  $TASK_SYNTH  weekly  $SYNTH_DAY $SYNTH_TIME  -> /synthesize-clips + /archive-clips
-  $TASK_HEALTH      monthly day $HEALTH_DAY $HEALTH_TIME -> /obsidian-health
+  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-265 cron / HIMMEL-357 / HIMMEL-506 / HIMMEL-798)
+  $TASK_HARVEST  daily   $HARVEST_TIME  [model: $HARVEST_MODEL]  -> $DAILY_CHAIN
+  $TASK_SYNTH    daily   $SYNTH_TIME    [model: $SYNTH_MODEL]    -> /synthesize-clips + /archive-clips
+  $TASK_HEALTH   weekly  $HEALTH_DAY $HEALTH_TIME [model: $HEALTH_MODEL] -> /obsidian-health
   Vault: $VAULT
   Runner .sh: $BAT_DIR
 

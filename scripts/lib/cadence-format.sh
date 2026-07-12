@@ -21,8 +21,13 @@
 # be re-armed (--force) to take effect. Runners armed before the stamp existed
 # carry no marker and read as version 0 (stale). New users (first arm after a
 # bump) get the current version automatically, so they never false-positive.
+#
+# v2 (HIMMEL-506): per-leg --model pins injected into every runner + the
+# synthesize/health frequency shift (weekly→daily, monthly→weekly). An armed
+# v1 cadence still fires, but on the OLD frequencies with NO model pin (so it
+# inherits the operator's saved default tier) — nudge `arm --force`.
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=1
+CADENCE_RUNNER_FORMAT_VERSION=2
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).

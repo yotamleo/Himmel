@@ -54,7 +54,7 @@ writes proposal pages to `Clippings/_synthesis/`. Proposals only — it never
 restructures the vault.
 
 - **Entry point:** `/synthesize-clips`
-- **Cadence:** weekly (after a batch of triage runs gives it enough to work with)
+- **Cadence:** daily (HIMMEL-506 — synthesis runs nightly once model-pinned)
 
 ### Stage 4 — Archive
 
@@ -71,9 +71,14 @@ cadence:
 
 | Frequency | Stages | Command |
 |-----------|--------|---------|
-| Daily | Harvest + Triage | `/harvest-clips` → `/triage-clips` |
-| Weekly | Synthesize + Archive | `/synthesize-clips` → `/archive-clips` |
-| Monthly | Vault health | `/obsidian-health` |
+| Daily (02:00) | Harvest + Triage | `/harvest-clips` → `/triage-clips` |
+| Daily (03:00) | Synthesize + Archive | `/synthesize-clips` → `/archive-clips` |
+| Weekly (Sun 04:00) | Vault health | `/obsidian-health` |
+
+Each leg launches with an explicit cheap `--model` pin
+(harvest/synth = `sonnet`, health = `haiku` — HIMMEL-506) so the cadence
+never inherits the operator's saved default tier; the cheap pins are what
+make the daily synthesize frequency affordable.
 
 Run `/pipeline-cadence status` to see current scheduler state, or
 `/pipeline-cadence arm` to set it up.
@@ -165,7 +170,7 @@ quietly compounds and one with silent gaps.
 | Tier | What it captures | Entry point |
 |------|------------------|-------------|
 | **Automatic** | Session **summary** (decisions/commands/follow-ups) on graceful `SessionEnd` — enabled by default (HIMMEL-469) | `end-session-wiki` hook — no action required |
-| **Semi-automatic** (scheduled) | Inbox clips → triaged + synthesized notes; periodic vault health | `/pipeline-cadence arm` schedules `/harvest-clips`→`/triage-clips` (daily), `/synthesize-clips`→`/archive-clips` (weekly), `/obsidian-health` (monthly). Generic `/schedule` + `/loop` drive any recurring pass. |
+| **Semi-automatic** (scheduled) | Inbox clips → triaged + synthesized notes; periodic vault health | `/pipeline-cadence arm` schedules `/harvest-clips`→`/triage-clips` (daily), `/synthesize-clips`→`/archive-clips` (daily), `/obsidian-health` (weekly) — each leg pinned to a cheap `--model` (HIMMEL-506). Generic `/schedule` + `/loop` drive any recurring pass. |
 | **Manual** (you invoke it) | The mid-session findings/sources the automatic path misses | see list below |
 
 **Manual capture — what you must invoke explicitly:**
