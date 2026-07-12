@@ -17,7 +17,7 @@
 #      advanced use + tests). CR_PROFILE wins when both are set.
 #      CRITIC_TIMEOUT_SECS — per-member wall-clock timeout in seconds (default 240;
 #          HIMMEL-558: raised from 150 after both the paid codex critic AND the free
-#          qwen3coder anchor were observed timing out at exactly 150s and contributing
+#          qwenor anchor were observed timing out at exactly 150s and contributing
 #          nothing — 150 clipped their occasional slow reasoning. 240 gives headroom
 #          while still bounding a genuinely hung provider. Lower it for a faster gate.
 #          Requires GNU coreutils 'timeout'; gracefully degrades without it.
@@ -60,8 +60,13 @@ else
     TIER_FILTER="${CRITIC_PANEL_TIERS:-free}"
 fi
 
-ANCHOR_SLUG="qwen3coder"
-ANCHOR_MODEL="qwen3-coder-plus"
+ANCHOR_SLUG="qwenor"
+ANCHOR_MODEL="qwen/qwen3-next-80b-a3b-instruct:free"
+# The anchor model is OpenRouter-only, so the fallback rows must carry its
+# route_provider (threaded to hermes as --provider) exactly like the registry
+# row does — otherwise the registry-missing recovery path could route the
+# anchor to the wrong backend.
+ANCHOR_PROVIDER="openrouter"
 
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
 CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-240}"
@@ -122,7 +127,7 @@ if [ "$CHECK_MODE" = "1" ]; then
 
     if [ -z "${check_rows:-}" ]; then
         echo "critic-panel.sh: registry $REG missing/invalid/empty — anchor-only ($ANCHOR_SLUG)" >&2
-        check_rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	free	-"
+        check_rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	free	${ANCHOR_PROVIDER}"
     fi
 
     check_prompt="$(mktemp -t critic-panel-check.XXXXXX)"
@@ -250,7 +255,7 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
 
 if [ -z "${rows:-}" ]; then
     echo "critic-panel.sh: registry $REG missing/invalid/empty — anchor-only ($ANCHOR_SLUG)" >&2
-    rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}"
+    rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	-	-	${ANCHOR_PROVIDER}"
 fi
 
 # Write diff to a temp file so each member can read it via stdin redirect
