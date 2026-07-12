@@ -17,12 +17,16 @@
 //   node scripts/himmelctl/bin.js --help
 //   node scripts/himmelctl/bin.js install [--dry-run] [--from-profile <path>] [--advanced]
 //   node scripts/himmelctl/bin.js uninstall [--dry-run]
+//   node scripts/himmelctl/bin.js status [--items <a,b>] [--json]
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
+const { cacheDir, profileForVault, which } = require('./lib/helpers.js');
+const stateLib = require('./lib/state.js');
+const probesLib = require('./lib/probes.js');
 
 // Tools every himmel adopter needs before any question makes sense — mirrors
 // adopt.sh require_tools (bash/git/jq/python3) PLUS at least one JS package
@@ -34,11 +38,16 @@ const USAGE = `usage: himmelctl <command> [options]
 commands:
   install                install himmel into this project or your user scope
   uninstall               offboard himmel from this machine (thin wrapper)
+  status                  read-only severity diff of installed vs desired items;
+                          run from the adopted project's root for project scope,
+                          or from the himmel checkout for user scope
 
 options:
   --from-profile <path>  install non-interactively from a saved profile cache
   --advanced             reserved: surface advanced options (parsed, not yet honored)
   --dry-run              print the derived install plan without executing
+  --items <a,b>          status: scope the run to these item ids (comma list)
+  --json                 status: emit stable machine-readable JSON instead of text
   -h, --help             show this help`;
 
 // Parse the CLI args into a plain object. Unknown args are a hard error (exit
@@ -51,6 +60,8 @@ function parseArgs(argv) {
     fromProfile: null, // reserved (T0: parse only)
     advanced: false,   // reserved (T0: parse only)
     dryRun: false,
+    items: null,       // status: --items comma list (null = no filter)
+    json: false,       // status: --json
   };
   const setSubcommand = (name) => {
     if (args.subcommand !== null) {
@@ -68,6 +79,25 @@ function parseArgs(argv) {
         break;
       case 'uninstall':
         setSubcommand('uninstall');
+        break;
+      case 'status':
+        setSubcommand('status');
+        break;
+      case '--items': {
+        const raw = argv[++i];
+        if (raw === undefined) {
+          console.error('himmelctl: --items requires a comma-separated id list');
+          process.exit(2);
+        }
+        args.items = raw.split(',').map((s) => s.trim()).filter(Boolean);
+        if (args.items.length === 0) {
+          console.error('himmelctl: --items requires at least one non-empty id');
+          process.exit(2);
+        }
+        break;
+      }
+      case '--json':
+        args.json = true;
         break;
       case '--from-profile':
         args.fromProfile = argv[++i];
@@ -105,23 +135,8 @@ function repoRoot() {
   return process.env.HIMMELCTL_REPO_ROOT || himmelRoot();
 }
 
-// Resolve <tool> on PATH like `command -v` would, checking the bare name plus
-// the Windows executable extensions so the same scan works on win32/posix.
-// Uses path.delimiter, which is the separator Node actually sees in
-// process.env.PATH (';' on win32, ':' on posix).
-function which(tool) {
-  const exts = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : [''];
-  const dirs = (process.env.PATH || '').split(path.delimiter);
-  for (const dir of dirs) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      try {
-        if (fs.existsSync(path.join(dir, tool + ext))) return path.join(dir, tool + ext);
-      } catch (_e) { /* unreadable dir — skip */ }
-    }
-  }
-  return null;
-}
+// which()/cacheDir()/profileForVault() live in lib/helpers.js (HIMMEL-756
+// T1.2a extraction) — required above.
 
 // Return the missing hard-gate tools: any of bash/git/jq/python3 absent, plus
 // 'npm' when neither npm nor bun is present (matches adopt.sh require_tools
@@ -449,10 +464,7 @@ function defaultAnswers() {
 // seam as HIMMELCTL_INTERACTIVE, and genuinely useful for CI (and essential
 // for hermetic tests: under Git Bash, HOME does NOT propagate into node.exe
 // children, so ~/.claude/himmel/ cannot be redirected via fake-HOME alone).
-
-function cacheDir() {
-  return process.env.HIMMELCTL_CACHE_DIR || path.join(os.homedir(), '.claude', 'himmel');
-}
+// (cacheDir() itself lives in lib/helpers.js — required above.)
 
 function cachePath() {
   return path.join(cacheDir(), 'install-profile.json');
@@ -544,10 +556,7 @@ function loadProfile(p) {
 //                      luna-upgrade-all.sh or wire-luna-vault.sh here).
 //   existing         → handled BEFORE this is reached (see the runPlan gate
 //                       below) — T5b, STAMPED-only (see isStampedLunaVault).
-function profileForVault(answers) {
-  const mode = answers.vault && answers.vault.mode;
-  return mode === 'default-template' ? 'all' : 'core';
-}
+// (profileForVault() itself lives in lib/helpers.js — required above.)
 
 // T5b: is <vaultPath> a STAMPED luna-second-brain vault? Reuses the EXACT
 // signal scripts/luna-upgrade-all.sh's classify_vault() treats as
@@ -1007,6 +1016,129 @@ async function cmdUninstall(args) {
   return runSpawn(cmd);
 }
 
+// ── status (HIMMEL-756 T1.5/T1.6) ────────────────────────────────────────
+//
+// A read-only severity diff: desired = the target's manifest-derived
+// `enabled` flags (lib/state.js), actual = a fresh probe run (lib/probes.js)
+// for every desired-enabled item. NEVER prompts (no readline anywhere in
+// this section) and NEVER mutates on its own — the ONLY sanctioned write is
+// deriving a target's FIRST entry when the install-profile cache exists but
+// state.json has no entry yet for this target (ensureTarget's own
+// documented derive-if-missing path); that derived entry is persisted here
+// via state.save() so it doesn't need re-deriving on every future run. An
+// already-present target entry is read as-is with zero writes.
+//
+// Target resolution mirrors adopt.sh / state.js's own targetKeyForScope
+// (not exported — replicated here as the same one-line formula its module
+// header documents): project scope keys off path.resolve(process.cwd()),
+// user scope is the literal "user" key. `status` must therefore be run from
+// the same location the corresponding `install` was run from — the
+// adopted project's root for project scope, or the himmel checkout for
+// user scope (review carry-forward #1).
+
+// The ONE place per-item probe ctx is constructed for `status`. Special
+// case (and the ONLY one): luna-vault-scaffold's ctx.targetPath is the
+// cached vault.path answer (expanded), not the scope's normal target root —
+// its probe descriptor is a {vaultPath} placeholder with no other source of
+// truth (review carry-forward #2).
+function ctxForItem(item, cachedAnswers, baseTargetPath, scope) {
+  const targetPath = item.id === 'luna-vault-scaffold'
+    ? expandHome(cachedAnswers.vault && cachedAnswers.vault.path)
+    : baseTargetPath;
+  return { repoRoot: repoRoot(), targetPath, scope, env: process.env };
+}
+
+function loadManifest() {
+  return JSON.parse(fs.readFileSync(path.join(repoRoot(), 'scripts', 'install', 'manifest.json'), 'utf8'));
+}
+
+async function cmdStatus(args) {
+  const manifest = loadManifest();
+
+  const profilePath = cachePath();
+  if (!fs.existsSync(profilePath)) {
+    console.error('himmelctl: no himmelctl install profile found — run himmelctl install first');
+    return 2;
+  }
+  const cachedAnswers = loadProfile(profilePath);
+
+  let items = manifest.items;
+  if (args.items) {
+    const known = new Set(manifest.items.map((i) => i.id));
+    for (const id of args.items) {
+      if (!known.has(id)) {
+        console.error(`himmelctl: unknown --items id: ${id}`);
+        return 2;
+      }
+    }
+    const wanted = new Set(args.items);
+    items = manifest.items.filter((i) => wanted.has(i.id));
+  }
+
+  const scope = cachedAnswers.scope;
+  const targetKey = scope === 'user' ? 'user' : path.resolve(process.cwd());
+  const baseTargetPath = scope === 'user' ? repoRoot() : path.resolve(process.cwd());
+
+  const state = stateLib.load();
+  const existedBefore = Boolean(state.targets[targetKey]);
+  const target = stateLib.ensureTarget(state, manifest, cachedAnswers);
+  if (!existedBefore) stateLib.save(state);
+
+  const results = [];
+  for (const item of items) {
+    const entry = target.items[item.id];
+    const desired = Boolean(entry && entry.enabled);
+    if (!desired) {
+      results.push({
+        id: item.id, kind: item.kind, desired: false, actual: null,
+        severity: 'n/a', detail: 'not enabled for this target (profile/scope)',
+      });
+      continue;
+    }
+    const ctx = ctxForItem(item, cachedAnswers, baseTargetPath, scope);
+    const probe = probesLib.runProbe(item, ctx);
+    let severity;
+    let detail = probe.detail;
+    if (probe.actual === 'present') {
+      severity = 'green';
+    } else if (probe.actual === 'degraded') {
+      severity = 'degraded';
+    } else {
+      severity = 'red';
+      // Review carry-forward #3: pre-commit-hooks reads absent for a
+      // generic adopter (targetPath-relative, adopt.sh never lays this
+      // file) — that is the intended "does THIS project carry the gate"
+      // semantic, not a broken install; say so plainly.
+      if (item.id === 'pre-commit-hooks') detail = 'no .pre-commit-config.yaml in this project';
+    }
+    results.push({ id: item.id, kind: item.kind, desired: true, actual: probe.actual, severity, detail });
+  }
+
+  results.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  const summary = { red: 0, degraded: 0, green: 0, na: 0 };
+  for (const r of results) {
+    if (r.severity === 'red') summary.red++;
+    else if (r.severity === 'degraded') summary.degraded++;
+    else if (r.severity === 'green') summary.green++;
+    else summary.na++;
+  }
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify({ schemaVersion: 1, target: targetKey, items: results, summary }) + '\n');
+    return 0;
+  }
+
+  const groupOrder = { red: 0, degraded: 1, green: 2, 'n/a': 3 };
+  const printed = results.slice().sort((a, b) => {
+    const byGroup = groupOrder[a.severity] - groupOrder[b.severity];
+    return byGroup !== 0 ? byGroup : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  });
+  for (const r of printed) console.log(`${r.severity}  ${r.id}  ${r.detail}`);
+  console.log(`${summary.red} red, ${summary.degraded} degraded, ${summary.green} green, ${summary.na} n/a`);
+  return 0;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   // --help / -h (anywhere) or no args → usage banner, exit 0.
@@ -1025,6 +1157,9 @@ async function main() {
   }
   if (args.subcommand === 'uninstall') {
     return await cmdUninstall(args);
+  }
+  if (args.subcommand === 'status') {
+    return await cmdStatus(args);
   }
   // parseArgs already rejected unknown subcommands, so this is unreachable.
   console.error(`himmelctl: unknown command: ${args.subcommand}`);

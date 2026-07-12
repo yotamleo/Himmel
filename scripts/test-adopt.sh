@@ -638,6 +638,11 @@ run_wizard_suite himmelctl/test/test-wizard-derive.sh          "test-wizard-deri
 run_wizard_suite himmelctl/test/test-wizard-uninstall.sh       "test-wizard-uninstall"
 run_wizard_suite himmelctl/test/test-wizard-noinstall-guard.sh "test-wizard-noinstall-guard"
 run_wizard_suite himmelctl/test/test-wizard-bootstrap.sh       "test-wizard-bootstrap"
+run_wizard_suite himmelctl/test/test-wizard-state.sh           "test-wizard-state"
+run_wizard_suite himmelctl/test/test-wizard-probes.sh          "test-wizard-probes"
+run_wizard_suite himmelctl/test/test-wizard-status-cmd.sh      "test-wizard-status-cmd"
+run_wizard_suite himmelctl/test/test-wizard-status-golden.sh   "test-wizard-status-golden"
+run_wizard_suite himmelctl/test/test-wizard-status-multitarget.sh "test-wizard-status-multitarget"
 run_wizard_suite machine-setup/test-ubuntu-shim.sh             "test-ubuntu-shim"
 
 # The win11 shim suite is a .ps1 (static source-parse of win11.ps1, HIMMEL-887
