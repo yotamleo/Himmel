@@ -35,17 +35,24 @@ Act on the exit code:
   `gh pr merge <N> --squash --admin --match-head-commit <sha>` — so a push
   landing after certification aborts the merge instead of shipping unchecked
   code (this repo has no branch protection by design; the red-merge gate is
-  the local pre-push hook). Auto/overnight mode: stop at PR-ready — merge
-  stays an operator action.
+  the local pre-push hook). `--match-head-commit` pins the certified commit
+  only — it is not a review-state gate; if meaningful time passed since exit
+  0, re-run /check-ci before merging (the block-unresolved-cr-merge hook,
+  HIMMEL-936, independently blocks `gh pr merge` while review threads are
+  unresolved). Auto/overnight mode: stop at PR-ready — merge stays an
+  operator action.
 - `1` — a check failed (fail-fast: returns on the first red). If it went red
   within seconds, suspect a GitHub Actions billing/permissions block rather
   than the code — check the run annotations first. Read bulky CI failure
   logs in a subagent, not the parent context.
 - `2` — cannot evaluate: no PR for this branch, checks never registered
   within the grace window (default 180s — pass `--grace <sec>` to widen),
-  gh errored on the probe, the thread-state query failed, the PR head moved
-  during the run (the green verdict is bound to the watched head SHA — a
-  concurrent push invalidates it), or usage error.
+  gh errored on the probe or during the watch (auth/network/cancellation —
+  never reported as a red check), the thread-state query failed or returned
+  a malformed page, the PR head moved during the run (the green verdict is
+  bound to the watched head SHA — a concurrent push invalidates it), or
+  usage error. Cannot-evaluate always blocks certification even if the
+  checks themselves look green — re-run.
 - `3` — checks green but the review state blocks the merge: unresolved
   review threads remain, or a review requests changes. Address each comment,
   resolve its thread (always resolve the thread when fixing a CR finding),

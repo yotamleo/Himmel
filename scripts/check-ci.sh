@@ -35,8 +35,8 @@
 #   0 — all checks green AND all review threads resolved (safe to merge)
 #   1 — at least one check failed (--fail-fast: returns on the first red)
 #   2 — cannot evaluate: usage error / no PR found / no checks registered
-#       within --grace / gh error on the probe / thread-state query failed /
-#       PR head moved during the run
+#       within --grace / gh error on the probe or the watch / thread-state
+#       query failed or returned a malformed page / PR head moved during the run
 #   3 — checks green but the review state blocks the merge: unresolved review
 #       threads remain, or a review requests changes — address, resolve, re-run
 #
@@ -113,6 +113,49 @@ red_exit() {
     exit 1
 }
 
+watch_round() {
+    # Runs one `gh pr checks --watch --fail-fast`. stdout stays connected to
+    # the terminal (it's the live progress display); stderr is captured to a
+    # temp file so a gh-level failure (auth error, cancellation, network) is
+    # distinguishable from a genuinely red check — same convention as the
+    # probe loop above: a red check's failure list prints to STDOUT with
+    # EMPTY stderr; a gh error writes to stderr. Nonzero rc + non-empty
+    # stderr → cannot evaluate (exit 2); nonzero rc + empty stderr → red_exit.
+    local err_file err
+    err_file=$(mktemp) || { echo "check-ci: mktemp failed — cannot evaluate the gate" >&2; exit 2; }
+    watch_start=$SECONDS
+    pr_checks --watch --fail-fast 2>"$err_file"
+    rc=$?
+    err=$(cat "$err_file" 2>/dev/null)
+    rm -f "$err_file"
+    if [ "$rc" -ne 0 ]; then
+        if [ -n "$err" ]; then
+            echo "check-ci: gh pr checks --watch failed — cannot evaluate the gate: $err" >&2
+            exit 2
+        fi
+        # gh's documented red-check exit code is 1; anything else with empty
+        # stderr (8 = pending after an interrupted watch, cancellation codes,
+        # timeouts) is NOT a confirmed red — fail closed as cannot-evaluate.
+        if [ "$rc" -ne 1 ]; then
+            echo "check-ci: gh pr checks --watch exited rc=$rc with no error output — cannot evaluate the gate; re-run" >&2
+            exit 2
+        fi
+        # rc 1 is ALSO gh's generic failure code — confirm the red structurally
+        # (at least one check in the "fail" bucket) before reporting exit 1.
+        failed=$(pr_checks --json bucket --jq '[.[] | select(.bucket == "fail")] | length' 2>/dev/null)
+        case "$failed" in
+            ''|*[!0-9]*)
+                echo "check-ci: watch reported failure but the structured confirm failed — cannot evaluate the gate; re-run" >&2
+                exit 2 ;;
+        esac
+        if [ "$failed" -eq 0 ]; then
+            echo "check-ci: watch exited rc=1 but no check is in the fail bucket — cannot evaluate the gate; re-run" >&2
+            exit 2
+        fi
+        red_exit "$rc" $((SECONDS - watch_start))
+    fi
+}
+
 if [ "$THREADS_ONLY" -eq 0 ]; then
     # Grace window: probe (non-watch) until the PR has registered checks. gh exit
     # codes on the probe: 0 = all pass, 8 = pending — both mean checks exist, so
@@ -152,19 +195,13 @@ if [ "$THREADS_ONLY" -eq 0 ]; then
     fi
 
     # Watch round 1: authoritative red/green for the checks registered so far.
-    watch_start=$SECONDS
-    pr_checks --watch --fail-fast
-    rc=$?
-    [ "$rc" -ne 0 ] && red_exit "$rc" $((SECONDS - watch_start))
+    watch_round
 
     # Settle round (codex-adv-1): give slow-registering check runs time to appear,
     # then watch again — round 2 waits for (or fails fast on) any late arrivals.
     if [ "$SETTLE" -gt 0 ]; then
         sleep "$SETTLE"
-        watch_start=$SECONDS
-        pr_checks --watch --fail-fast
-        rc=$?
-        [ "$rc" -ne 0 ] && red_exit "$rc" $((SECONDS - watch_start))
+        watch_round
     fi
 fi
 
@@ -205,9 +242,19 @@ repo=${repo_rest%%/*}
 # through the gate. Each page reports "<unresolved-count> <hasNextPage> <endCursor>".
 unresolved=0
 cursor=""
+pages=0
 while :; do
+    # Hard page cap: bounds EVERY malformed-pagination shape (incl. non-adjacent
+    # cursor cycles like A→B→A that a last-cursor comparison can't see) at
+    # 50 pages = 5000 threads — far beyond any real PR. Fail closed past it.
+    pages=$((pages + 1))
+    if [ "$pages" -gt 50 ]; then
+        echo "check-ci: ${ctx}the review-thread query did not terminate within 50 pages (cursor cycle?) — check threads manually on PR #$num" >&2
+        exit 2
+    fi
     # Positional args are free after option parsing — reuse them for the
     # conditional cursor without an unquoted expansion.
+    sent_cursor="$cursor"
     set -- -f o="$owner" -f r="$repo" -F n="$num"
     [ -n "$cursor" ] && set -- "$@" -f c="$cursor"
     # shellcheck disable=SC2016  # $o/$r/$n/$c are GraphQL variables — literal on purpose
@@ -224,6 +271,21 @@ while :; do
             echo "check-ci: ${ctx}the review-thread query failed — re-run, or check threads manually on PR #$num" >&2
             exit 2 ;;
     esac
+    case "$has_next" in
+        true|false) ;;
+        *)
+            echo "check-ci: ${ctx}the review-thread query returned a malformed page (hasNextPage='$has_next') — re-run, or check threads manually on PR #$num" >&2
+            exit 2 ;;
+    esac
+    if [ "$has_next" = "true" ] && { [ -z "$cursor" ] || [ "$cursor" = "null" ]; }; then
+        echo "check-ci: ${ctx}the review-thread query returned a malformed page (hasNextPage=true with no cursor) — re-run, or check threads manually on PR #$num" >&2
+        exit 2
+    fi
+    # A repeated cursor with hasNextPage=true would loop forever — fail closed.
+    if [ "$has_next" = "true" ] && [ "$cursor" = "$sent_cursor" ]; then
+        echo "check-ci: ${ctx}the review-thread query returned a malformed page (cursor did not advance) — re-run, or check threads manually on PR #$num" >&2
+        exit 2
+    fi
     unresolved=$((unresolved + page_count))
     [ "$has_next" = "true" ] || break
 done

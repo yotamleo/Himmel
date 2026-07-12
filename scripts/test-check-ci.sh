@@ -27,6 +27,13 @@
 #   17. probe gh error (auth/network)        → rc 2, never a fake red (codex round 3)
 #   18. PR head moves during the run         → rc 2 (verdict bound to head SHA)
 #   19. CHANGES_REQUESTED review             → rc 3 (codex round 4)
+#   20. gh error mid-watch (auth/network)    → rc 2, never a fake red (CR follow-up)
+#   21. malformed hasNextPage (not true/false) → rc 2 (CR follow-up)
+#   22. hasNextPage true with empty/null cursor → rc 2 (CR follow-up)
+#   23. cursor repeats with hasNextPage=true → rc 2 on query two, no infinite loop (CR follow-up)
+#   24. non-adjacent A→B→A cursor cycle      → rc 2 via the 50-page cap (codex follow-up)
+#   25. watch exits non-1 with empty stderr  → rc 2, only gh rc 1 is a red check (CR follow-up)
+#   26. watch rc 1 but zero checks in the fail bucket → rc 2 (structured red confirm, codex)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,6 +66,17 @@ echo "$*" >> "$GH_STUB_ARGS"
 cmd="${1:-}"
 if [ "$cmd" = "api" ]; then
     if [ "${GH_STUB_THREADS:-0}" = "fail" ]; then echo "graphql boom" >&2; exit 1; fi
+    if [ "${GH_STUB_THREADS:-0}" = "badnext" ]; then echo "0 banana cursor1"; exit 0; fi
+    if [ "${GH_STUB_THREADS:-0}" = "nullcursor" ]; then echo "0 true null"; exit 0; fi
+    if [ "${GH_STUB_THREADS:-0}" = "repeatcursor" ]; then echo "0 true cursor1"; exit 0; fi
+    if [ "${GH_STUB_THREADS:-0}" = "cyclecursor" ]; then
+        a=$(cat "$GH_STUB_API" 2>/dev/null)
+        a=${a:-0}
+        echo $((a+1)) > "$GH_STUB_API"
+        # alternate cursorA / cursorB forever: A→B→A cycle, hasNextPage always true
+        if [ $((a % 2)) -eq 0 ]; then echo "0 true cursorA"; else echo "0 true cursorB"; fi
+        exit 0
+    fi
     if [ "${GH_STUB_THREADS:-0}" = "paged" ]; then
         a=$(cat "$GH_STUB_API" 2>/dev/null)
         a=${a:-0}
@@ -98,6 +116,12 @@ fi
 # remaining: gh pr checks ...
 is_watch=0
 case " $* " in *" --watch "*) is_watch=1 ;; esac
+# structured red confirm (--json bucket): the script's --jq yields a bare count
+case " $* " in
+    *" --json "*)
+        if [ "$GH_STUB_MODE" = "red-liar" ]; then echo 0; else echo 1; fi
+        exit 0 ;;
+esac
 case "$GH_STUB_MODE" in
     no-pr)
         echo 'no pull requests found for branch "feat/x"' >&2; exit 1 ;;
@@ -126,6 +150,16 @@ case "$GH_STUB_MODE" in
         exit 8 ;;
     never-register)
         echo "no checks reported on the 'feat/x' branch" >&2; exit 1 ;;
+    watch-pending)
+        if [ "$is_watch" -eq 1 ]; then exit 8; fi
+        exit 8 ;;
+    red-liar)
+        # rc 1 with EMPTY stdout+stderr — gh's generic failure masquerading as red
+        if [ "$is_watch" -eq 1 ]; then exit 1; fi
+        exit 8 ;;
+    watch-error)
+        if [ "$is_watch" -eq 1 ]; then echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1; fi
+        exit 8 ;;
     *)
         echo "gh stub: unknown GH_STUB_MODE '$GH_STUB_MODE'" >&2; exit 99 ;;
 esac
@@ -302,7 +336,57 @@ run register-then-green
 assert_rc 3 "19 changes-requested rc 3"
 assert_err_has "requests changes" "19 changes-requested message"
 
+# 20 — gh error mid-watch (auth/network) → rc 2, never a fake red
+run watch-error
+assert_rc 2 "20 watch-error rc 2"
+assert_err_has "cannot evaluate the gate" "20 watch-error message"
+
+# 21 — malformed hasNextPage (neither true nor false) → rc 2, after exactly ONE query
+THREADS_OVERRIDE=badnext
+run register-then-green
+assert_rc 2 "21 malformed hasNextPage rc 2"
+assert_err_has "malformed page" "21 malformed hasNextPage message"
+api_calls=$(grep -c '^api graphql' "$STUBDIR/args.log")
+if [ "$api_calls" -eq 1 ]; then pass "21 exactly one thread query"; else fail "21 exactly one thread query" "api calls=$api_calls want 1"; fi
+
+# 22 — hasNextPage true with an empty/null cursor → rc 2 (must not loop or stop early)
+THREADS_OVERRIDE=nullcursor
+run register-then-green
+assert_rc 2 "22 hasNextPage true empty cursor rc 2"
+assert_err_has "malformed page" "22 hasNextPage true empty cursor message"
+api_calls=$(grep -c '^api graphql' "$STUBDIR/args.log")
+if [ "$api_calls" -eq 1 ]; then pass "22 exactly one thread query"; else fail "22 exactly one thread query" "api calls=$api_calls want 1"; fi
+
+# 23 — cursor repeats with hasNextPage=true → rc 2 after the SECOND query (no infinite loop)
+THREADS_OVERRIDE=repeatcursor
+run register-then-green
+assert_rc 2 "23 repeated cursor rc 2"
+assert_err_has "cursor did not advance" "23 repeated-cursor message"
+api_calls=$(grep -c '^api graphql' "$STUBDIR/args.log")
+if [ "$api_calls" -eq 2 ]; then pass "23 exactly two thread queries"; else fail "23 exactly two thread queries" "api calls=$api_calls want 2"; fi
+
+# 24 — non-adjacent cursor cycle (A→B→A, hasNextPage always true) → the page cap
+#      fails closed at 50 queries instead of looping forever
+THREADS_OVERRIDE=cyclecursor
+run register-then-green
+assert_rc 2 "24 cursor cycle rc 2"
+assert_err_has "did not terminate within 50 pages" "24 page-cap message"
+api_calls=$(grep -c '^api graphql' "$STUBDIR/args.log")
+if [ "$api_calls" -eq 50 ]; then pass "24 capped at 50 thread queries"; else fail "24 capped at 50 thread queries" "api calls=$api_calls want 50"; fi
+
+# 25 — watch exits non-1 with EMPTY stderr (e.g. rc 8 pending after an
+#      interrupted watch) → cannot evaluate, never a fake red
+run watch-pending
+assert_rc 2 "25 watch rc!=1 empty stderr rc 2"
+assert_err_has "with no error output" "25 non-red watch message"
+
+# 26 — watch exits rc 1 silently but NO check is in the fail bucket (gh's
+#      generic failure code masquerading as red) → cannot evaluate
+run red-liar
+assert_rc 2 "26 red-liar rc 2"
+assert_err_has "no check is in the fail bucket" "26 structured-confirm message"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 19 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 19"; exit 1; fi
+if [ "$COUNT" -ne 26 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 26"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
