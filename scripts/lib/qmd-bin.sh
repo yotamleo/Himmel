@@ -61,6 +61,51 @@ _qmd_fork_min_version() { printf '%s\n' "${QMD_FORK_MIN_VERSION:-2.6.3}"; }
 # cleared at the start of any update attempt. HEAD alone cannot distinguish
 # "checked out the pin" from "successfully BUILT the pin".
 _qmd_build_stamp() { printf '%s\n' "$(_qmd_fork_dir)/.himmel-build-ok"; }
+# better-sqlite3's native binding inside the fork clone (HIMMEL-928). Only
+# the NODE runtime consumes it: under bun qmd takes the bun:sqlite branch
+# (src/db.ts isBun; bun refuses to dlopen better-sqlite3 at all --
+# oven-sh/bun#4290). bun BLOCKS the package's postinstall (the fork lists it
+# only under pnpm's onlyBuiltDependencies; there is no bun trustedDependencies
+# key), so `bun install` alone leaves the binding absent -- every node-run
+# DB-opening qmd op (e.g. via the bun bin shim, which honors the node shebang)
+# then dies with "Could not locate the bindings file" while `qmd --version`
+# still passes (it never opens the DB). qmd_install fetches the prebuild
+# explicitly UNDER NODE (node's ABI is the one that matters); qmd_fork_served
+# treats a non-loadable binding as not-served so a broken install converges on
+# the next install pass.
+_qmd_sqlite_binding() { printf '%s\n' "$(_qmd_fork_dir)/node_modules/better-sqlite3/build/Release/better_sqlite3.node"; }
+
+# True when the node-side better-sqlite3 binding actually LOADS -- an
+# existence-only check would bless a wrong-ABI or corrupt artifact (file
+# present, `qmd --version` passes, every node-run DB open still dies at
+# dlopen; HIMMEL-928 CR codex-adv). The probe must be a FILE INSIDE THE
+# CLONE: node resolves a bare require() relative to the SCRIPT's location,
+# so a /tmp probe would hit a different copy (observed live: bun's global
+# install cache, at a different version). Asserts the success marker, not
+# just the exit code. Vacuously true when node is absent -- nothing on the
+# machine can exercise the node path then, and a machine that later gains
+# node converges on the next install pass. On failure the probe's full
+# output (the real dlopen/ABI error text) is kept in
+# _QMD_BINDING_PROBE_ERR for the caller's WARNING (CR: 2>/dev/null threw
+# away the one diagnostic that makes a native-module failure debuggable).
+_qmd_sqlite_binding_ok() {
+  local probe probe_out
+  _QMD_BINDING_PROBE_ERR=""
+  command -v node >/dev/null 2>&1 || return 0
+  if [ ! -f "$(_qmd_sqlite_binding)" ]; then
+    _QMD_BINDING_PROBE_ERR="binding file missing: $(_qmd_sqlite_binding)"
+    return 1
+  fi
+  probe="$(_qmd_fork_dir)/.himmel-binding-probe.cjs"
+  printf "new (require('better-sqlite3'))(':memory:');\nconsole.log('qmd-binding-ok');\n" > "$probe" 2>/dev/null || return 1
+  probe_out="$(node "$probe" 2>&1)"
+  rm -f -- "$probe"
+  if printf '%s\n' "$probe_out" | grep -q '^qmd-binding-ok$'; then
+    return 0
+  fi
+  _QMD_BINDING_PROBE_ERR="$probe_out"
+  return 1
+}
 
 # Prints the manual recipe (clone + build + link). Best-effort documentation
 # text embedded in WARN messages -- NOT eval'd (HIMMEL-877 dropped the old
@@ -299,6 +344,9 @@ qmd_fork_served() {
   # next install pass.
   stamp="$(cat "$(_qmd_build_stamp)" 2>/dev/null)" || return 1
   [ "$stamp" = "$(_qmd_fork_ref)" ] || return 1
+  # The version probe below does NOT open the DB, so it cannot see a missing
+  # or non-loadable better-sqlite3 binding (HIMMEL-928) -- load it for real.
+  _qmd_sqlite_binding_ok || return 1
   ver="$(qmd_cmd --version 2>/dev/null)" || return 1
   _qmd_version_ge "$ver" "$(_qmd_fork_min_version)"
 }
@@ -424,6 +472,32 @@ qmd_install() {
     echo "  WARNING: qmd fork build failed - continuing without qmd." >&2
     echo "  Manual: (cd $fork_dir && bun install && bun run build)" >&2
     return 1
+  fi
+
+  # Fetch better-sqlite3's native binding explicitly (HIMMEL-928): bun blocks
+  # the package's postinstall, so `bun install` above never produces it -- see
+  # _qmd_sqlite_binding. Fetch UNDER NODE: only the node runtime ever loads
+  # better-sqlite3 (bun takes the bun:sqlite branch and refuses the package
+  # outright, oven-sh/bun#4290), so the prebuild must match node's ABI. A
+  # wrong-ABI or corrupt artifact is removed first so the fetch replaces it
+  # (CR codex-adv: existence alone must never bless the binding). Skipped when
+  # node is absent -- nothing can exercise the node path then. `|| true`: the
+  # load-check is the real gate, and every external command here must stay
+  # set-e-safe for callers.
+  if command -v node >/dev/null 2>&1 && ! _qmd_sqlite_binding_ok; then
+    echo "  Fetching better-sqlite3 native binding for node (bun blocks its postinstall)..."
+    rm -f -- "$(_qmd_sqlite_binding)"
+    ( cd "$fork_dir/node_modules/better-sqlite3" && node ../prebuild-install/bin.js ) || true
+    if ! _qmd_sqlite_binding_ok; then
+      echo "  WARNING: better-sqlite3 native binding still not loadable under node - node-run qmd cannot open its index." >&2
+      if [ -n "${_QMD_BINDING_PROBE_ERR:-}" ]; then
+        # shellcheck disable=SC2001
+        # Per-line indent - parameter expansion doesn't replicate sed's per-line anchor cleanly.
+        printf '%s\n' "$_QMD_BINDING_PROBE_ERR" | sed 's/^/    /' >&2
+      fi
+      echo "  Manual: (cd $fork_dir/node_modules/better-sqlite3 && node ../prebuild-install/bin.js)" >&2
+      return 1
+    fi
   fi
 
   if ! _qmd_ensure_global_link; then

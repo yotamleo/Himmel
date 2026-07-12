@@ -14,7 +14,10 @@
 # (f) start "succeeds" but probe never comes alive -> wait loop exhausts,
 # nonzero + "nothing came alive" + mcp.log + start-output passthrough;
 # (g) timeout(1) absent -> degrade branch still starts the daemon and exits 0;
-# (h) bun-global bin is preferred over a PATH qmd (resolution order).
+# (h) bun-global bin is preferred over a PATH qmd (resolution order);
+# (i) bun + the bun-global dist/cli/qmd.js is preferred over the bun bin shim
+#     AND a PATH qmd (HIMMEL-928 - the daemon child must inherit bun, never a
+#     node-shebang shim's node execPath).
 set -u
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -226,5 +229,84 @@ grep -qx 'mcp --http --daemon' "$state/qmd-bun.log" || \
   fail "(h) bun-first: bun copy not called with 'mcp --http --daemon'"
 [ ! -f "$state/qmd-decoy.log" ] || fail "(h) bun-first: PATH decoy qmd was invoked"
 echo "ok (h): bun-global qmd preferred over the PATH decoy"
+
+# ---- (i) bun + global qmd.js preferred over the bun bin shim -----------------
+# HIMMEL-928: create the bun-global dist/cli/qmd.js and a mock `bun`; the (h)
+# bun-bin shim and the PATH decoy stay in place - the `bun <qmd.js>` invocation
+# must win them both, so the daemon child inherits bun's execPath (the bin
+# shim honors the CLI's node shebang and would hand the daemon to node, where
+# the bun-ABI better-sqlite3 prebuild refuses to load).
+mkdir -p "$home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli"
+touch "$home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+cat > "$bin/bun" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$QMD_MOCK_STATE/qmd-bunjs.log"
+case "$*" in
+  */dist/cli/qmd.js\ mcp\ --http\ --daemon) touch "$QMD_MOCK_STATE/alive" ;;
+esac
+exit 0
+EOF
+chmod +x "$bin/bun"
+rm -f "$state/alive" "$state/qmd-bun.log" "$state/qmd-decoy.log" "$state/qmd-bunjs.log"
+run_ensure sentinel "$bin:$decoy_bin:$safe"
+[ "$rc" -eq 0 ] || fail "(i) bun-js-first: expected rc 0, got $rc ($out)"
+[ -f "$state/qmd-bunjs.log" ] || fail "(i) bun-js-first: bun + qmd.js was not invoked"
+grep -q 'dist/cli/qmd.js mcp --http --daemon' "$state/qmd-bunjs.log" || \
+  fail "(i) bun-js-first: bun not called with '<qmd.js> mcp --http --daemon' (got: $(cat "$state/qmd-bunjs.log"))"
+[ ! -f "$state/qmd-bun.log" ] || fail "(i) bun-js-first: bun bin shim was invoked but the js path should win"
+[ ! -f "$state/qmd-decoy.log" ] || fail "(i) bun-js-first: PATH decoy qmd was invoked"
+echo "ok (i): bun + global qmd.js preferred over the bun bin shim and PATH"
+
+# ---- (i2) BUN_INSTALL override is honored for the bun-js resolution ----------
+# Parity with qmd-bin.sh's own BUN_INSTALL test: the two resolvers are
+# documented mirrors, so both must honor a relocated bun root. The DEFAULT
+# $HOME/.bun global qmd.js stays in place - the override must win over it.
+mkdir -p "$work/custom-bun/install/global/node_modules/@tobilu/qmd/dist/cli"
+touch "$work/custom-bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+rm -f "$state/alive" "$state/qmd-bunjs.log" "$state/qmd-bun.log" "$state/qmd-decoy.log"
+BUN_INSTALL="$work/custom-bun" run_ensure sentinel "$bin:$decoy_bin:$safe"
+[ "$rc" -eq 0 ] || fail "(i2) BUN_INSTALL: expected rc 0, got $rc ($out)"
+grep -q 'custom-bun' "$state/qmd-bunjs.log" || \
+  fail "(i2) BUN_INSTALL: override path not used (got: $(cat "$state/qmd-bunjs.log" 2>/dev/null))"
+echo "ok (i2): BUN_INSTALL override honored for the bun-js resolution"
+
+# ---- (i3) bun present but global qmd.js ABSENT -> falls back to bun bin shim -
+# Pins the [ -f qmd.js ] && command -v bun conjunction: bun alone must NOT
+# select the js invocation; the (h) bun-bin shim mock takes over instead.
+rm -f "$home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+rm -f "$state/alive" "$state/qmd-bunjs.log" "$state/qmd-bun.log" "$state/qmd-decoy.log"
+run_ensure sentinel "$bin:$decoy_bin:$safe"
+[ "$rc" -eq 0 ] || fail "(i3) js-absent fallback: expected rc 0, got $rc ($out)"
+[ ! -f "$state/qmd-bunjs.log" ] || fail "(i3) js-absent fallback: bun-js invoked despite missing qmd.js"
+[ -f "$state/qmd-bun.log" ] || fail "(i3) js-absent fallback: bun bin shim was not invoked"
+grep -qx 'mcp --http --daemon' "$state/qmd-bun.log" || \
+  fail "(i3) js-absent fallback: shim not called with 'mcp --http --daemon'"
+echo "ok (i3): bun present without global qmd.js falls back to the bun bin shim"
+
+# ---- (i4) BUN_INSTALL override + missing qmd.js -> shim under the SAME root -
+# CodeRabbit (PR #1134): (i2) covered override+js-present and (i3) covered
+# default-root+js-missing, but never the combination - which is exactly where
+# a $HOME-hardcoded shim fallback breaks under a relocated bun root. The shim
+# must resolve from $BUN_INSTALL/bin, not $HOME/.bun/bin.
+rm -f "$work/custom-bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+mkdir -p "$work/custom-bun/bin"
+cat > "$work/custom-bun/bin/qmd" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$QMD_MOCK_STATE/qmd-custom-shim.log"
+if [ "$*" = "mcp --http --daemon" ]; then
+  touch "$QMD_MOCK_STATE/alive"
+fi
+exit 0
+EOF
+chmod +x "$work/custom-bun/bin/qmd"
+rm -f "$state/alive" "$state/qmd-bunjs.log" "$state/qmd-bun.log" "$state/qmd-decoy.log" "$state/qmd-custom-shim.log"
+BUN_INSTALL="$work/custom-bun" run_ensure sentinel "$bin:$decoy_bin:$safe"
+[ "$rc" -eq 0 ] || fail "(i4) override+js-absent: expected rc 0, got $rc ($out)"
+[ ! -f "$state/qmd-bunjs.log" ] || fail "(i4) override+js-absent: bun-js invoked despite missing qmd.js"
+[ -f "$state/qmd-custom-shim.log" ] || fail "(i4) override+js-absent: BUN_INSTALL/bin shim was not used"
+grep -qx 'mcp --http --daemon' "$state/qmd-custom-shim.log" || \
+  fail "(i4) override+js-absent: custom shim not called with 'mcp --http --daemon'"
+[ ! -f "$state/qmd-bun.log" ] || fail "(i4) override+js-absent: default \$HOME shim used instead of the BUN_INSTALL root"
+echo "ok (i4): BUN_INSTALL override + missing qmd.js falls back to the override root's shim"
 
 echo "PASS: all ensure-qmd-daemon cases"

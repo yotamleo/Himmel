@@ -27,16 +27,34 @@ $ErrorActionPreference = 'Stop'
 
 $InitPayload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ensure-qmd-daemon","version":"1"}}}'
 
-function Resolve-QmdBin {
-    # Bun global bin FIRST, PATH second — parity with the plugin bash hook:
-    # a broken Windows qmd stub can shadow PATH (HIMMEL-163), so the
-    # known-good bun install wins when present.
-    $bunExe = Join-Path $HOME '.bun\bin\qmd.exe'
-    if (Test-Path $bunExe) { return $bunExe }
-    $bunShim = Join-Path $HOME '.bun\bin\qmd'
-    if (Test-Path $bunShim) { return $bunShim }
+function Resolve-QmdInvocation {
+    # Returns a string[] argv prefix, or $null when qmd is absent. Preference
+    # order — parity with the plugin bash hook (HIMMEL-928):
+    #   1. bun + the bun-global @tobilu/qmd dist/cli/qmd.js -> @('bun', <qmd.js>)
+    #   2. bun global bin shim ($HOME\.bun\bin\qmd.exe / qmd)
+    #   3. PATH
+    # bun-js FIRST is load-bearing: the bin shim honors the CLI's node shebang
+    # and runs qmd under NODE, and the --daemon child is spawned via
+    # process.execPath — so a shim-started daemon runs under whatever node is
+    # installed. Under bun qmd uses bun:sqlite; under node it needs the
+    # better-sqlite3 native binding, which bun's install blocks by default and
+    # which breaks again on every node ABI bump (reproduced live: absent
+    # binding + node 26 killed the daemon at startup — HIMMEL-928).
+    # Bun-before-PATH: a broken Windows qmd stub can shadow PATH
+    # (HIMMEL-163), so the known-good bun install wins when present.
+    $bunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
+    $bunJs = Join-Path $bunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
+    $bun = Get-Command bun -ErrorAction SilentlyContinue
+    if ($bun -and (Test-Path $bunJs)) { return @($bun.Source, $bunJs) }
+    # Same $bunRoot for the shim fallbacks: a relocated BUN_INSTALL must not
+    # resolve the js from one root and the shim from $HOME\.bun (CodeRabbit,
+    # PR #1134).
+    $bunExe = Join-Path $bunRoot 'bin\qmd.exe'
+    if (Test-Path $bunExe) { return @($bunExe) }
+    $bunShim = Join-Path $bunRoot 'bin\qmd'
+    if (Test-Path $bunShim) { return @($bunShim) }
     $cmd = Get-Command qmd -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    if ($cmd) { return @($cmd.Source) }
     return $null
 }
 
@@ -68,7 +86,7 @@ if ($state -eq 'foreign') {
 }
 
 # dead - start the daemon
-$qmd = Resolve-QmdBin
+$qmd = Resolve-QmdInvocation
 if (-not $qmd) {
     Write-Error "ensure-qmd-daemon: qmd is not on PATH and no fallback at $HOME\.bun\bin\qmd.exe. Install it: bash <himmel-repo>/scripts/lib/qmd-bin.sh install (HIMMEL-877)"
     exit 1
@@ -77,9 +95,13 @@ if (-not $qmd) {
 if ($PSCmdlet.ShouldProcess($Url, 'start qmd mcp --http --daemon')) {
     # Bounded start (parity with the bash twin's timeout(1) wrap): a hung
     # qmd/bun start must not stall the caller indefinitely.
-    $job = Start-Job -ScriptBlock { & $using:qmd mcp --http --daemon 2>&1 }
+    $startOut = @()
+    $job = Start-Job -ScriptBlock {
+        $argv = @($using:qmd) + @('mcp', '--http', '--daemon')
+        & $argv[0] @($argv | Select-Object -Skip 1) 2>&1
+    }
     if (Wait-Job $job -Timeout $QmdStartTimeout) {
-        $startOut = Receive-Job $job -ErrorAction SilentlyContinue
+        $startOut = @(Receive-Job $job -ErrorAction SilentlyContinue)
         if ($startOut) { Write-Verbose ($startOut -join [Environment]::NewLine) }
         Remove-Job $job -Force
     } else {
@@ -92,6 +114,9 @@ if ($PSCmdlet.ShouldProcess($Url, 'start qmd mcp --http --daemon')) {
         if ((Test-QmdAlive -ProbeUrl $Url) -eq 'alive') { exit 0 }
         Start-Sleep -Seconds 1
     }
-    Write-Error "ensure-qmd-daemon: started 'qmd mcp --http --daemon' but nothing came alive on $Url. Check the daemon log: $HOME\.cache\qmd\mcp.log"
+    # Include the captured start output (parity with the bash twin, which
+    # unconditionally dumps it on this exact failure path).
+    $startText = if ($startOut) { ($startOut | ForEach-Object { [string]$_ }) -join ' | ' } else { '<none>' }
+    Write-Error "ensure-qmd-daemon: started 'qmd mcp --http --daemon' but nothing came alive on $Url. qmd start output: $startText Check the daemon log: $HOME\.cache\qmd\mcp.log"
     exit 1
 }
