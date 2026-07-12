@@ -23,6 +23,7 @@
 #   2  required tool missing
 #   3  not on a handover/* branch (refuses)
 #   4  gh pr merge failed
+#   5  blocked by the CR merge gate (unresolved CodeRabbit remarks - HIMMEL-936)
 #
 # Environment overrides:
 #   FORGE / GH_CMD / BITBUCKET_CMD   Forge-seam overrides (HIMMEL-326). The PR
@@ -118,6 +119,24 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY pr-merge: would squash-merge PR #$pr_num on $forge (delete source branch)"
     exit 0
+fi
+
+# HIMMEL-936: CR merge gate on the same predicate as the PreToolUse hook, so
+# machines without the plugin hook still get the gate on this path. Placed
+# before the mergeability poll so a CR-blocked merge fails fast (exit 5)
+# instead of burning the 5x3s poll (plan-critic #7). GitHub-only: cr_merge_gate
+# resolves via gh; the bitbucket forge skips it.
+if [ "$forge" = "github" ]; then
+    # shellcheck disable=SC1091
+    if . "$SCRIPT_DIR/../lib/cr-merge-gate.sh" 2>/dev/null; then
+        _gate_reason=""
+        _gate_rc=0
+        _gate_reason=$(cr_merge_gate "$pr_num") || _gate_rc=$?
+        if [ "$_gate_rc" = "2" ]; then
+            echo "pr-merge: CR gate: $_gate_reason" >&2
+            exit 5
+        fi
+    fi
 fi
 
 # Bounded poll for mergeability to settle before merging (HIMMEL-179 sharp#1) —

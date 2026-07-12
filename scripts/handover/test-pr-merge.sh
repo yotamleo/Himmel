@@ -34,6 +34,7 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 # callers can assert on --admin presence/absence.
 LAST_GH_LOG=""
 LAST_OUT=""
+LAST_ERR=""
 run_case() {
     local branch="$1" expected="$2" name="$3"; shift 3
     # Drop a leading `--` separator if present.
@@ -57,6 +58,20 @@ case "$verb" in
         echo "42"
         ;;
     "pr view")
+        # HIMMEL-936 CR-gate metadata call is `gh pr view <sel> --json
+        # number,headRefOid,url`; the mergeability poll is `gh pr view <pr>
+        # --json mergeable`. Distinguish by the requested --json fields.
+        # STUB_CR_BLOCK=1 answers the metadata call with parseable JSON so
+        # cr_merge_gate proceeds to its graphql arm; otherwise echo non-JSON
+        # so the gate degrades + fails open (existing cases stay green).
+        if printf ' %s ' "$@" | grep -q 'headRefOid'; then
+            if [ "${STUB_CR_BLOCK:-0}" = "1" ]; then
+                echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}'
+            else
+                echo "${STUB_VIEW_MERGEABLE:-MERGEABLE}"
+            fi
+            exit 0
+        fi
         # Mergeability poll (HIMMEL-179). pr-merge calls:
         #   gh pr view <pr> --json mergeable --jq '.mergeable'
         if [ "${STUB_VIEW_FAIL:-0}" = "1" ]; then
@@ -91,6 +106,17 @@ case "$verb" in
         fi
         echo "merged"
         ;;
+    "api graphql")
+        # HIMMEL-936 CR-gate reviewThreads query: one unresolved coderabbitai
+        # thread (fixture copied from test-cr-merge-gate.sh).
+        echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}'
+        ;;
+    "api repos"*)
+        # HIMMEL-936 CR-gate check-runs query: completed CodeRabbit check-run.
+        # Not reached when the threads arm already blocks, but stubbed for
+        # completeness / the in-flight arm.
+        echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"}]}'
+        ;;
     *) ;;
 esac
 STUB
@@ -123,6 +149,7 @@ STUB
     cp "$tmp/err" "$keep/err" 2>/dev/null
     LAST_GH_LOG="$keep/gh.log"
     LAST_OUT="$keep/out"
+    LAST_ERR="$keep/err"
     if [ "$rc" -ne "$expected" ]; then
         fail "$name: expected exit $expected, got $rc (err: $(cat "$keep/err"))"
         rm -rf "$tmp"
@@ -146,6 +173,9 @@ assert_out_has() {
 }
 assert_out_lacks() {
     if grep -qF -- "$1" "$LAST_OUT"; then fail "$2 (out: $(cat "$LAST_OUT"))"; else pass; fi
+}
+assert_err_has() {
+    if grep -qF -- "$1" "$LAST_ERR"; then pass; else fail "$2 (err: $(cat "$LAST_ERR"))"; fi
 }
 
 echo "test-pr-merge.sh"
@@ -228,6 +258,19 @@ fi
 if STUB_VIEW_FAIL=1 \
     run_case "handover/x-slug" 0 "poll: gh pr view failure falls through to merge"; then
     assert_log_has "pr merge 42 --squash" "view failure still attempts merge"
+fi
+
+# --- HIMMEL-936: CR merge gate blocks before the poll (exit 5) ---
+# STUB_CR_BLOCK=1 arms the gate's pr-view metadata arm + the graphql arm so
+# cr_merge_gate positively confirms an unresolved coderabbitai thread. The
+# gate runs BEFORE the mergeability poll, so neither the poll's pr view nor
+# `gh pr merge` is reached. Existing cases above stay green by design: their
+# stub returns non-JSON for the gate's pr-view (headRefOid branch, STUB_CR_BLOCK
+# unset), so cr_merge_gate degrades and fails open (plan-critic #4).
+if STUB_CR_BLOCK=1 \
+    run_case "handover/x-slug" 5 "CR-gate block exits 5 before poll"; then
+    assert_log_lacks "pr merge" "CR-gate block does not attempt merge"
+    assert_err_has    "CR gate" "CR-gate block reports CR gate on stderr"
 fi
 
 # --- summary ---
