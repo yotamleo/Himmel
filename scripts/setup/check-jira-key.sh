@@ -8,7 +8,7 @@
 #   key set                   echo it + rc=0 (either mode)
 #
 # Extracted from setup.sh step 0.4 so the gating logic is hermetic-
-# testable (test-check-jira-key.sh; precedent: test-install-cs.sh).
+# testable (test-check-jira-key.sh).
 set -euo pipefail
 
 mode="${1:-optional}"

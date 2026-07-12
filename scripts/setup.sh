@@ -9,7 +9,7 @@ set -e
 # WARNING then continue to the success footer, fooling the operator.
 trap 'echo "setup interrupted by signal" >&2; exit 130' INT TERM
 
-# REPO_ROOT is resolved AFTER the [0/10] preflight (R6, HIMMEL-460): the
+# REPO_ROOT is resolved AFTER the [0/9] preflight (R6, HIMMEL-460): the
 # preflight may auto-install git, so `git rev-parse --show-toplevel` must not run
 # before it. Until then, resolve THIS script's own dir (no git needed) so the
 # preflight can source its sibling helper.
@@ -18,25 +18,20 @@ SETUP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # --- arg parse (HIMMEL-151) ---
 # Optional flags only. Unknown args land in setup_extra_args for now —
 # no flag uses them yet, but reserve the pattern.
-WITH_CS=0
 WITH_JIRA=0
 WITH_GRAPHIFY=0
 FILL_ENV=0
 setup_extra_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --with-cs) WITH_CS=1 ;;
     --with-jira) WITH_JIRA=1 ;;
     --with-graphify) WITH_GRAPHIFY=1 ;;
     --fill-env) FILL_ENV=1 ;;
     --help|-h)
       cat <<'USAGE'
-Usage: bash scripts/setup.sh [--with-cs] [--with-jira] [--with-graphify] [--fill-env]
+Usage: bash scripts/setup.sh [--with-jira] [--with-graphify] [--fill-env]
 
 Optional flags:
-  --with-cs        Install claude-squad (cs) at the end of setup.
-                   Without the flag, interactive shells prompt; non-interactive
-                   shells skip. See docs/setup/claude-squad.md.
   --with-jira      Require Jira configuration: abort setup if JIRA_PROJECT_KEY
                    is unset. Without the flag the check downgrades to a skip
                    notice and Jira-dependent next-steps are omitted.
@@ -71,7 +66,7 @@ echo ""
 # in docs/setup/new-machine.md but NOT failed-on here because the
 # scripts that use them already include fallbacks (python3 for
 # realpath; arm-resume picks the available scheduler).
-echo "[0/10] Verifying foundational tools on PATH..."
+echo "[0/9] Verifying foundational tools on PATH..."
 _missing=()
 for _tool in bash git node npm bun python3 jq gh mktemp; do
   if ! command -v "$_tool" >/dev/null 2>&1; then
@@ -183,7 +178,7 @@ echo ""
 # Hard-fail only with --with-jira; default is skip-with-notice so a
 # no-Jira adopter completes setup. Logic lives in the sub-script so it
 # is hermetic-testable (test-check-jira-key.sh).
-echo "[0.4/10] Verifying JIRA_PROJECT_KEY..."
+echo "[0.4/9] Verifying JIRA_PROJECT_KEY..."
 _jira_mode=optional
 if [ "$WITH_JIRA" = "1" ]; then _jira_mode=required; fi
 if ! bash "$REPO_ROOT/scripts/setup/check-jira-key.sh" "$_jira_mode"; then
@@ -197,7 +192,7 @@ echo ""
 # handover bucket layout, registry.json, and overnight artifacts line
 # up. Fail loud rather than letting downstream scripts pick the wrong
 # directory.
-echo "[0.5/10] Resolving USER_SLUG..."
+echo "[0.5/9] Resolving USER_SLUG..."
 # shellcheck source=lib/user-slug.sh
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/user-slug.sh"
@@ -212,7 +207,7 @@ echo ""
 # PEP 668 (externally-managed-environment, default on Ubuntu 24.04+ and most
 # 2025+ distros) blocks `pip install` system-wide. Install via uv first, fall
 # back to pipx — both manage isolated venvs, both put `pre-commit` on PATH.
-echo "[1/10] Installing pre-commit..."
+echo "[1/9] Installing pre-commit..."
 if command -v pre-commit &>/dev/null; then
   echo "  pre-commit already on PATH — skipping install"
 elif command -v uv &>/dev/null; then
@@ -225,12 +220,12 @@ else
   exit 1
 fi
 
-echo "[2/10] Installing git hooks (pre-commit, pre-push, commit-msg)..."
+echo "[2/9] Installing git hooks (pre-commit, pre-push, commit-msg)..."
 pre-commit install
 pre-commit install --hook-type pre-push
 pre-commit install --hook-type commit-msg
 
-echo "[3/10] Installing Jira + Bitbucket CLIs..."
+echo "[3/9] Installing Jira + Bitbucket CLIs..."
 if command -v node &>/dev/null; then
   if [ -d "$REPO_ROOT/scripts/jira/node_modules" ] && [ -f "$REPO_ROOT/scripts/jira/dist/index.js" ]; then
     echo "  jira CLI already built (node_modules + dist present) -- skipping install + build"
@@ -269,7 +264,7 @@ if command -v node &>/dev/null && [ -f "$REPO_ROOT/scripts/bitbucket/package.jso
 fi
 
 # --- qmd collection ---
-echo "[4/10] Registering qmd collection 'himmel'..."
+echo "[4/9] Registering qmd collection 'himmel'..."
 # Neutralize the broken qmd plugin-cache stub first so plain `qmd` works
 # inside Claude's Bash tool too (HIMMEL-163). No-op when the plugin is
 # absent, already patched, or upstream has shipped a fixed stub.
@@ -285,7 +280,7 @@ else
 fi
 
 # --- .env ---
-echo "[5/10] Checking .env..."
+echo "[5/9] Checking .env..."
 if [ ! -f ".env" ]; then
   if [ -f ".env.example" ]; then
     cp .env.example .env
@@ -315,7 +310,7 @@ fi
 # Use `doctor` (not `status`) so misconfig exits non-zero and we take
 # the WARNING branch — `status` always rc=0 even when HANDOVER_DIR is
 # unresolvable.
-echo "[6/10] Handover root check..."
+echo "[6/9] Handover root check..."
 if handover_output=$(bash "$REPO_ROOT/scripts/handover-link.sh" doctor 2>&1); then
   while IFS= read -r _line; do echo "  $_line"; done <<< "$handover_output"
 else
@@ -334,7 +329,7 @@ echo ""
 # access.json and NEVER starts the bridge (operator-managed — injection
 # surface + single-getUpdates-owner rule). Non-fatal: a fresh machine
 # legitimately has none of this configured yet.
-echo "[7/10] Telegram bridge onboarding..."
+echo "[7/9] Telegram bridge onboarding..."
 if ! bash "$REPO_ROOT/scripts/setup/onboard-telegram.sh"; then
   echo "  WARNING: onboard-telegram reported a problem; setup continues." >&2
 fi
@@ -347,7 +342,7 @@ echo ""
 # tooling. User scope (~/.claude, every project); setup.sh has no scope/profile
 # flag. Idempotent. Skipped with a notice when claude is not on PATH (the
 # soft-check at the top already warned).
-echo "[8/10] Installing Claude plugins (user scope)..."
+echo "[8/9] Installing Claude plugins (user scope)..."
 if command -v claude >/dev/null 2>&1; then
   if ! bash "$REPO_ROOT/scripts/machine-setup/install-plugins.sh" --scope user; then
     echo "  WARNING: install-plugins reported a problem; setup continues." >&2
@@ -362,7 +357,7 @@ echo ""
 # the shared helpers. Both write settings.json, need no claude binary, idempotent.
 # HIMMEL_REPO default-by-install: the installer knows the clone path, so the leg
 # resolver + minerva anchor get it without a manual export.
-echo "[9/10] Wiring statusline + HIMMEL_REPO + UNIVERSAL hooks (user scope)..."
+echo "[9/9] Wiring statusline + HIMMEL_REPO + UNIVERSAL hooks (user scope)..."
 _user_settings="$HOME/.claude/settings.json"
 if ! bash "$REPO_ROOT/scripts/lib/wire-statusline.sh" "$_user_settings" "$REPO_ROOT"; then
   echo "  WARNING: wire-statusline failed; setup continues." >&2
@@ -388,43 +383,10 @@ if ! bash "$REPO_ROOT/scripts/lib/detect-hook-dup.sh" "$_user_settings" "$REPO_R
 fi
 echo ""
 
-# --- claude-squad (cs) — OPTIONAL (HIMMEL-151) ---
-# Opt-in only. Triggered by --with-cs OR interactive prompt (default N).
-# Non-interactive shells without the flag skip silently — keeps unattended
-# setup runs unchanged for existing operators.
-#
-# Failure here is non-fatal: cs is optional, so a network hiccup or missing
-# brew/apt shouldn't abort the rest of setup. We WARN and continue.
-echo "[10/10] OPTIONAL: claude-squad (cs)..."
-_install_cs=0
-if [ "$WITH_CS" = "1" ]; then
-  _install_cs=1
-elif [ -t 0 ] && [ -t 1 ]; then
-  printf "  Install claude-squad (cs) now? [y/N] "
-  read -r _ans
-  case "$_ans" in
-    [yY]|[yY][eE][sS]) _install_cs=1 ;;
-  esac
-else
-  echo "  Skipped (non-interactive, no --with-cs flag)."
-fi
-
-if [ "$_install_cs" = "1" ]; then
-  if ! bash "$REPO_ROOT/scripts/setup/install-cs.sh"; then
-    echo "  WARNING: claude-squad install failed; setup continues." >&2
-    echo "  See docs/setup/claude-squad.md for manual install." >&2
-  fi
-else
-  if [ "$WITH_CS" != "1" ] && { [ -t 0 ] && [ -t 1 ]; }; then
-    echo "  Skipped. See docs/setup/claude-squad.md to install later."
-  fi
-fi
-echo ""
-
 # --- graphify (knowledge-graph CLI) — OPTIONAL (HIMMEL-891) ---
 # Opt-in only. Triggered by --with-graphify OR interactive prompt (default N).
-# Non-interactive shells without the flag skip silently — mirrors the cs
-# opt-in above. Adoption verdict stays open (HIMMEL-621); this only installs
+# Non-interactive shells without the flag skip silently. Adoption verdict
+# stays open (HIMMEL-621); this only installs
 # the CLI (himmel fork, never over an existing foreign install — see
 # scripts/lib/graphify-bin.sh).
 #

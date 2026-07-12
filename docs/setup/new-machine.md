@@ -771,15 +771,6 @@ Configure in Claude Code settings (`~/.claude/settings.json`):
 
 ---
 
-## 8.5. Optional integrations
-
-- **claude-squad (cs)** — multi-agent tmux orchestrator. Opt-in via
-  `bash scripts/setup.sh --with-cs` (macOS/Linux) or
-  `.\scripts\setup.ps1 -WithCs` (Windows). Full Windows + psmux fork-mirror
-  details in [`claude-squad.md`](claude-squad.md).
-
----
-
 ## 8.6. Telegram bridge onboarding (HIMMEL-227)
 
 > **Skip** if you don't use the Telegram bridge for sending messages to Claude. This is operator-specific infrastructure; it is not required for any core himmel workflow.
