@@ -36,7 +36,10 @@ if hasattr(sys.stdout, "reconfigure"):  # Windows cp1252 trap
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-MODEL = "deepseek-chat"
+# deepseek-v4-flash defaults to thinking mode; this direct OpenAI-compatible
+# request path has no verified local toggle, so enrichment accepts that behavior
+# delta from legacy deepseek-chat.
+MODEL = "deepseek-v4-flash"
 VOCAB_TOP = 200
 RELATED_MIN_SHARED = 2
 RELATED_MAX = 5

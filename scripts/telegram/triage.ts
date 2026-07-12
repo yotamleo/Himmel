@@ -78,7 +78,10 @@ function invokeWithTimeout(invokeP: Promise<string>, timeoutMs: number): Promise
 }
 
 export async function classifyForSpawn(text: string, deps: TriageDeps = {}): Promise<TriageVerdict> {
-  const model = process.env.TELEGRAM_TRIAGE_MODEL?.trim() || "deepseek-chat";
+  // deepseek-v4-flash defaults to thinking mode; the Hermes invoke chokepoint
+  // does not expose a thinking toggle, so this bulk classifier accepts that
+  // behavior delta from legacy deepseek-chat.
+  const model = process.env.TELEGRAM_TRIAGE_MODEL?.trim() || "deepseek-v4-flash";
   const provider = process.env.TELEGRAM_TRIAGE_PROVIDER?.trim() || "deepseek";
   // Absolute path: the poller's cwd is not guaranteed to be the repo root.
   const args = ["bash", join(REPO_ROOT, "scripts", "hermes", "invoke.sh"), "--model", model, "--provider", provider];
