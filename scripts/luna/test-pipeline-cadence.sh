@@ -439,10 +439,10 @@ assert_contains "harvest runner pins --model sonnet" "--model sonnet" "$harvest_
 assert_contains "synth runner pins --model sonnet"   "--model sonnet" "$synth_sh"
 assert_contains "health runner pins --model haiku"    "--model haiku"  "$health_sh"
 
-echo "TEST: cron runners lift the 600s bg-wait ceiling (HIMMEL-918)"
-assert_contains "harvest runner lifts bg-wait ceiling" "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$harvest_sh"
-assert_contains "synth runner lifts bg-wait ceiling"   "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$synth_sh"
-assert_contains "health runner lifts bg-wait ceiling"  "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$health_sh"
+echo "TEST: cron runners omit the print-only bg-wait ceiling override (HIMMEL-951)"
+assert_not_contains "harvest runner omits bg-wait ceiling override" "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS" "$harvest_sh"
+assert_not_contains "synth runner omits bg-wait ceiling override"   "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS" "$synth_sh"
+assert_not_contains "health runner omits bg-wait ceiling override"  "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS" "$health_sh"
 
 # Test C4b: --settings injection wires the auto-approve hook (HIMMEL-575) -------
 
@@ -1158,10 +1158,10 @@ assert_contains "harvest bat pins --model sonnet" '--model "sonnet"' "$harvest_b
 assert_contains "synth bat pins --model sonnet"   '--model "sonnet"' "$synth_bat"
 assert_contains "health bat pins --model haiku"    '--model "haiku"'  "$health_bat"
 
-echo "TEST: .bat runners lift the 600s bg-wait ceiling (HIMMEL-918)"
-assert_contains "harvest bat lifts bg-wait ceiling" "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$harvest_bat"
-assert_contains "synth bat lifts bg-wait ceiling"   "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$synth_bat"
-assert_contains "health bat lifts bg-wait ceiling"  "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" "$health_bat"
+echo "TEST: .bat runners omit the print-only bg-wait ceiling override (HIMMEL-951)"
+assert_not_contains "harvest bat omits bg-wait ceiling override" "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS" "$harvest_bat"
+assert_not_contains "synth bat omits bg-wait ceiling override"   "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS" "$synth_bat"
+assert_not_contains "health bat omits bg-wait ceiling override"  "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS" "$health_bat"
 
 # Test 6b: --settings injection wires the auto-approve hook (HIMMEL-575) ------
 
