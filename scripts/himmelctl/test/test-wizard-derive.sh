@@ -427,8 +427,8 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseE: dry-run should succeed (got rc=$rc): $out"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
-    printf '%s' "$out" | grep -qE 'derived:.*powershell -File .*setup\.ps1$' \
-      || fail "caseE(win32): expected 'powershell -File ...setup.ps1' (got: $out)"
+    printf '%s' "$out" | grep -qE 'derived:.*powershell -ExecutionPolicy Bypass -File .*setup\.ps1$' \
+      || fail "caseE(win32): expected 'powershell -ExecutionPolicy Bypass -File ...setup.ps1' (got: $out)"
     ;;
   *)
     printf '%s' "$out" | grep -qE 'derived:.*bash .*setup\.sh$' \

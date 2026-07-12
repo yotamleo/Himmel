@@ -47,8 +47,9 @@ Write-Output "bootstrap: hand-off after install: $handoffCmd"
 if ($DryRun) { exit 0 }
 
 winget install --id OpenJS.NodeJS.LTS -e
-if ($LASTEXITCODE -ne 0) {
-  Write-Warning "winget install --id OpenJS.NodeJS.LTS -e exited $LASTEXITCODE"
+$wingetExit = $LASTEXITCODE
+if ($wingetExit -ne 0) {
+  Write-Warning "winget install --id OpenJS.NodeJS.LTS -e exited $wingetExit"
 }
 # bun is optional (needed later for qmd/telegram features); winget has no
 # reliable bare-name match for it, so it is never part of the plan above.
@@ -60,7 +61,18 @@ if (Test-NodePresent) {
   exit $LASTEXITCODE
 }
 
-# PATH-refresh trap (Draft-A §6): the fresh install's PATH edit is invisible
-# to this process. Print the ONE re-run line rather than chaining blindly.
+# winget genuinely failed AND node is still absent: NOT the PATH-refresh trap
+# (HIMMEL-935 / CR #1126). Fail closed with the actual install failure instead
+# of the re-run line, which implies success and would loop forever re-running a
+# known-failing winget install. ($ErrorActionPreference='Stop' makes Write-Error
+# terminating, so this exits non-zero either way.)
+if ($wingetExit -ne 0) {
+  Write-Error "bootstrap: winget install failed (exit $wingetExit) and node is still not resolvable -- fix the winget failure above and re-run"
+  exit 1
+}
+
+# PATH-refresh trap (Draft-A §6): winget SUCCEEDED but the fresh install's PATH
+# edit is invisible to this process. Print the ONE re-run line rather than
+# chaining blindly.
 Write-Output "bootstrap: node installed but not resolvable in this shell -- open a new terminal and re-run: powershell -ExecutionPolicy Bypass -File `"$scriptDir\bootstrap.ps1`""
 exit 1

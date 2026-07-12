@@ -262,7 +262,7 @@ the required-environment table (HIMMEL-460).
 |---|---|---|
 | role | `adopter` \| `contributor` | Default: `contributor` only when origin ends in `himmel` AND the repo root carries a `.himmel-dev` marker (a contributor dev checkout); every other case — including a fresh official clone — defaults to `adopter`. |
 | scope | `project` \| `user` | Adopter only (contributor is always `user`). |
-| vault | `none` \| `default-template` \| `existing` | `default-template` scaffolds a luna vault from template; `existing` wires a STAMPED luna vault (non-luna→luna conversion deferred — HIMMEL-862). |
+| vault | `none` \| `default-template` \| `existing` | `none` scaffolds no vault; `default-template` scaffolds a luna vault from template; `existing` wires a STAMPED luna vault (non-luna→luna conversion deferred — HIMMEL-862). Skipping adopt.sh/setup.sh wiring entirely (no pre-commit hooks/guardrails/statusline/env.HIMMEL_REPO — operator wires manually) has no in-wizard option: don't run the wizard. |
 | handover | `inline` \| `external` | `external` persists `HANDOVER_DIR` to an external state repo. |
 | pluginSet | `lean` \| `full` | `lean` is the default (HIMMEL-816); `full` runs the documented per-plugin enable step (§6). |
 

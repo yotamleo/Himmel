@@ -158,5 +158,8 @@ Write-Step "Delegate himmel/luna wiring to himmelctl bootstrap (HIMMEL-887)"
 # inference targets the himmel clone deterministically.
 Write-Host "NOTICE: himmel/luna wiring in this script is soft-deprecated (HIMMEL-887) -- delegating to himmelctl bootstrap. Hard-remove deferred to HIMMEL-755."
 Set-Location $HimmelPath
+# Pin HIMMELCTL_REPO_ROOT to this clone so a stale inherited value can't
+# redirect the bootstrap hand-off at a different repo's bin.js (HIMMEL-935 / CR #1126).
+$env:HIMMELCTL_REPO_ROOT = $HimmelPath
 & (Join-Path $HimmelPath 'scripts\himmelctl\bootstrap.ps1')
 exit $LASTEXITCODE

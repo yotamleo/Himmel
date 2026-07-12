@@ -27,12 +27,13 @@
 #      `winget install node bun` resolves as a single bad query) — apt gets
 #      `nodejs npm` only, winget gets `--id OpenJS.NodeJS.LTS -e`; a
 #      bun-is-optional note is printed instead.
-#   G. CR r1 FIX 1/2: the platform installer itself EXITS NONZERO (a genuine
-#      apt/winget failure, not just a not-yet-refreshed-PATH) -> bootstrap.sh
-#      prints "node install failed" and aborts immediately (no re-run line);
-#      bootstrap.ps1 prints a Write-Warning with the exit code but still
-#      continues to the usual re-probe + re-run line (FIX 2's warn-not-abort
-#      semantics).
+#   G. CR r1 FIX 1/2 (HIMMEL-935 for ps1): the platform installer itself EXITS
+#      NONZERO (a genuine apt/winget failure, not just a not-yet-refreshed-PATH)
+#      -> bootstrap.sh prints "node install failed" and aborts immediately (no
+#      re-run line); bootstrap.ps1 prints a Write-Warning with the exit code,
+#      then fail-closes with a Write-Error instead of the re-run line (the old
+#      warn-not-abort implied success and looped forever re-running a known-
+#      failing winget install).
 #
 # pwsh availability is optional on posix CI hosts: the .ps1 cases are
 # skipped (not failed) when pwsh isn't found, mirroring the availability
@@ -128,6 +129,19 @@ STUB
   chmod +x "$_dir/sudo"
 }
 
+# build_aptget_stub <dir> — a no-op `apt-get` so bootstrap.sh's non-Darwin
+# `command -v apt-get` presence guard (HIMMEL-935) passes on hosts that lack
+# apt-get (macOS/MINGW), letting the sudo stub intercept `sudo apt-get install`
+# as before. It is never actually invoked — sudo receives apt-get as an arg.
+build_aptget_stub() {
+  local _dir="$1"
+  cat > "$_dir/apt-get" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$_dir/apt-get"
+}
+
 # ── bootstrap.sh — Case A: node present -> short-circuit, no installer ─────
 stubA="$work/shA"; mkdir -p "$stubA"
 cA=$(build_path "$stubA" uname node -- )
@@ -170,6 +184,7 @@ echo "ok: caseB(sh) --dry-run node-absent -> plan+hand-off printed, nothing muta
 # ── bootstrap.sh — Case C: node absent, install doesn't refresh PATH ───────
 stubC="$work/shC"; mkdir -p "$stubC"
 build_sudo_stub "$stubC" 0
+build_aptget_stub "$stubC"
 cC=$(build_path "$stubC" uname -- node)
 fixtureC="$work/shC-fixture"; build_bin_js_fixture "$fixtureC"
 set +e
@@ -189,6 +204,7 @@ echo "ok: caseC(sh) node absent, install doesn't refresh PATH -> single re-run l
 # ── bootstrap.sh — Case D (bonus): install DOES refresh PATH -> chains ─────
 stubD="$work/shD"; mkdir -p "$stubD"
 build_sudo_stub "$stubD" 1
+build_aptget_stub "$stubD"
 cD=$(build_path "$stubD" uname -- node)
 fixtureD="$work/shD-fixture"; build_bin_js_fixture "$fixtureD"
 set +e
@@ -230,6 +246,7 @@ echo "ok: caseF(sh) install plan no longer asks apt for a nonexistent bun packag
 
 # ── bootstrap.sh — Case G: FIX 1 -- a genuine install failure aborts loud ──
 stubG="$work/shG"; mkdir -p "$stubG"
+build_aptget_stub "$stubG"
 cat > "$stubG/sudo" <<STUB
 #!/usr/bin/env bash
 printf 'sudo: %s\n' "\$*" >> "$stubG/install-calls.log"
@@ -253,17 +270,56 @@ printf '%s' "$out" | grep -q 're-run' \
   && fail "caseG(sh): a genuine install failure must NOT chain to bin.js"
 echo "ok: caseG(sh) a genuinely failed apt/brew install -> 'node install failed' printed, aborts immediately, no chain"
 
+# ── bootstrap.sh — Case H: non-Darwin host WITHOUT apt-get fails closed ─────
+# HIMMEL-935 / CR #1126: the non-Darwin branch assumes apt. A host that is
+# neither Darwin nor apt-based must fail closed with a manual-install pointer
+# naming the detected platform, not silently mis-run `sudo apt-get`. A fake
+# `uname` (reporting Linux) forces the non-Darwin branch even on a Darwin/macOS
+# test host; apt-get is scrubbed so run_install hits the no-apt-get guard.
+stubH="$work/shH"; mkdir -p "$stubH"
+build_sudo_stub "$stubH" 0
+cH=$(build_path "$stubH" -- node apt-get)
+cat > "$stubH/uname" <<STUB
+#!/usr/bin/env bash
+[ "\$1" = "-s" ] && { echo "Linux"; exit 0; }
+[ "\$1" = "-r" ] && { echo "99.0-fake"; exit 0; }
+exec /usr/bin/uname "\$@"
+STUB
+chmod +x "$stubH/uname"
+fixtureH="$work/shH-fixture"; build_bin_js_fixture "$fixtureH"
+set +e
+out=$(PATH="$cH" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureH")" \
+      "$bash_bin" "$bootstrap_sh" 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "caseH(sh): a non-Darwin host without apt-get should fail closed (got rc=$rc): $out"
+printf '%s' "$out" | grep -qi 'install Node.js' \
+  || fail "caseH(sh): expected the 'install Node.js >=18 manually' pointer (got: $out)"
+printf '%s' "$out" | grep -qi 'Linux' \
+  || fail "caseH(sh): expected the detected platform named in the message (got: $out)"
+[ -f "$stubH/install-calls.log" ] \
+  && fail "caseH(sh): the installer (sudo apt-get) must NOT be invoked when apt-get is absent (got: $out)"
+echo "ok: caseH(sh) non-Darwin host without apt-get -> fail-closed manual-install pointer, no sudo apt-get"
+
 # ── bootstrap.ps1 cases (skipped if pwsh isn't on this host, or when the
 # host isn't Windows — the winget.cmd/node.exe stubs are Windows-only) ─────
+# Prefer Windows PowerShell 5.1 (powershell.exe, always present on stock
+# Windows) over pwsh (PowerShell 7, a separate install) so the .ps1 cases run
+# on a stock Windows host; fall back to pwsh (HIMMEL-935 / CR #1126). The
+# variable keeps the pwsh_bin name for minimal churn; it holds whichever
+# interpreter was chosen.
 pwsh_bin=""
-command -v pwsh >/dev/null 2>&1 && pwsh_bin=$(command -v pwsh)
+if command -v powershell >/dev/null 2>&1; then
+  pwsh_bin=$(command -v powershell)
+elif command -v pwsh >/dev/null 2>&1; then
+  pwsh_bin=$(command -v pwsh)
+fi
 win_host=0
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) win_host=1 ;;
 esac
 
 if [ -z "$pwsh_bin" ]; then
-  echo "skip: pwsh not found -- bootstrap.ps1 hermetic cases skipped"
+  echo "skip: no PowerShell interpreter (powershell/pwsh) found -- bootstrap.ps1 hermetic cases skipped"
 elif [ "$win_host" -ne 1 ]; then
   echo "skip: non-Windows host -- bootstrap.ps1 hermetic cases need Windows-only winget.cmd/node.exe stubs"
 else
@@ -348,7 +404,7 @@ STUB
     && fail "caseF(ps1): the winget plan/dry-run preview must NOT mention bun (got: $out)"
   echo "ok: caseF(ps1) winget plan targets --id OpenJS.NodeJS.LTS -e, no bare 'node bun' query"
 
-  # ── bootstrap.ps1 — Case G: FIX 2 -- winget nonzero exit warns, continues ─
+  # ── bootstrap.ps1 — Case G: FIX 2/HIMMEL-935 -- winget nonzero exit fail-closes ─
   stubG2="$work/psG"; mkdir -p "$stubG2"
   cat > "$stubG2/winget.cmd" <<'STUB'
 @echo off
@@ -366,11 +422,13 @@ STUB
     || fail "caseG(ps1): expected winget to have been invoked (out: $out)"
   printf '%s' "$out" | grep -qi 'exited 1' \
     || fail "caseG(ps1): expected the Write-Warning 'exited 1' message (got: $out)"
-  printf '%s' "$out" | grep -q 're-run' \
-    || fail "caseG(ps1): a winget failure should WARN then still continue to the re-run/PATH-refresh message (got: $out)"
+  printf '%s' "$out" | grep -qi 'winget install failed' \
+    || fail "caseG(ps1): expected the fail-closed 'winget install failed' message (HIMMEL-935) (got: $out)"
+  printf '%s' "$out" | grep -q 'open a new terminal' \
+    && fail "caseG(ps1): a genuine winget failure must NOT print the PATH-refresh re-run line (would loop forever) (got: $out)"
   [ -f "$fixtureG2/scripts/himmelctl/bin-js-calls.log" ] \
     && fail "caseG(ps1): must NOT chain to bin.js when node is still unresolvable after a failed winget"
-  echo "ok: caseG(ps1) a failed winget install -> Write-Warning with exit code, still continues to the re-run message (warn-not-abort)"
+  echo "ok: caseG(ps1) a failed winget install -> Write-Warning + fail-closed Write-Error, NO re-run/PATH-refresh loop (HIMMEL-935)"
 fi
 
 echo "PASS"

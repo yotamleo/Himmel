@@ -149,17 +149,56 @@ printf '%s' "$out" | grep -q 'preflight OK' \
 echo "ok: case3 interactive -> exactly 1 $pkgmgr call + recheck passes -> preflight OK"
 
 # ── Case 4: interactive, closed stdin at the install confirm -> no hang ────
+# CR r1 FIX 8 made the confirm EOF-safe so a closed stdin declines instead of
+# looping forever. This case REGRESSION-GUARDS that fix: if the EOF-safe helper
+# ever regresses, the wizard would hang on the confirm and wedge CI. So the
+# invocation runs under a bounded watchdog (mirroring scripts/check-plugin-dift.sh's
+# probe-timeout pattern): `timeout` when present, else a bash-native setsid
+# group-kill fallback. Git-Bash's `timeout` does not reap grandchildren; the
+# wizard spawns none at a closed-stdin confirm, but the setsid fallback
+# (process-group kill) is correct if it ever does. bash 3.2-safe (plain `wait`,
+# no `wait -n`). A hang fails this case instead of wedging CI.
 stub4="$work/case4"; mkdir -p "$stub4"
 c4path=$(build_path "$stub4" bash git python3 npm -- jq)
 h4="$work/h4"; mkdir -p "$h4"
+c4_budget=15
+c4_out="$work/case4.out"
 set +e
-out=$(PATH="$c4path" HOME="$h4" HIMMELCTL_INTERACTIVE=1 \
-      "$node_bin" "$wizard" install </dev/null 2>&1); rc=$?
+if command -v timeout >/dev/null 2>&1; then
+  timeout "$c4_budget" env PATH="$c4path" HOME="$h4" HIMMELCTL_INTERACTIVE=1 \
+    "$node_bin" "$wizard" install </dev/null >"$c4_out" 2>&1
+  rc=$?
+else
+  if command -v setsid >/dev/null 2>&1; then
+    setsid env PATH="$c4path" HOME="$h4" HIMMELCTL_INTERACTIVE=1 \
+      "$node_bin" "$wizard" install </dev/null >"$c4_out" 2>&1 &
+    c4_pid=$!; c4_grouped=1
+  else
+    env PATH="$c4path" HOME="$h4" HIMMELCTL_INTERACTIVE=1 \
+      "$node_bin" "$wizard" install </dev/null >"$c4_out" 2>&1 &
+    c4_pid=$!; c4_grouped=0
+  fi
+  ( sleep "$c4_budget"
+    if [ "$c4_grouped" -eq 1 ]; then kill -9 -- -"$c4_pid" 2>/dev/null
+    else kill -9 "$c4_pid" 2>/dev/null; fi
+  ) &
+  c4_wdog=$!
+  wait "$c4_pid" 2>/dev/null
+  rc=$?
+  kill "$c4_wdog" 2>/dev/null
+  wait "$c4_wdog" 2>/dev/null
+fi
 set -e
+# timeout(1) exits 124 on its own budget; a signal-killed child (the setsid
+# fallback) leaves rc>=128. Either means the confirm HANGS -> fail, not wedge CI.
+if [ "$rc" -eq 124 ] || [ "$rc" -ge 128 ]; then
+  fail "case4: closed-stdin confirm HANGS (regression of the EOF-safe helper) — watchdog killed it at ${c4_budget}s (rc=$rc, out: $(cat "$c4_out" 2>/dev/null))"
+fi
+out="$(cat "$c4_out" 2>/dev/null)"
 [ "$rc" -ne 0 ] || fail "case4: closed-stdin decline at the install confirm should exit non-zero (got rc=$rc): $out"
 printf '%s' "$out" | grep -q 'Install missing tools now' \
   || fail "case4: expected the install-confirm prompt to be shown (got: $out)"
-echo "ok: case4 interactive missing-tool, closed stdin at the confirm -> declines safely (no hang), exit non-zero"
+echo "ok: case4 interactive missing-tool, closed stdin at the confirm -> declines safely (no hang, ${c4_budget}s watchdog), exit non-zero"
 
 # ── Case 5: two subcommands -> hard error rc=2, nothing runs ───────────────
 stub5="$work/case5"; mkdir -p "$stub5"
