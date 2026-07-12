@@ -85,6 +85,28 @@ HIMMEL-955 WSL-station pilot reaches an ADOPT verdict. If you run WSL from Git
 Bash meanwhile, read the three measured WSL traps in
 [environment gotchas](../internals/environment-gotchas.md#wsl-wslexe-invoked-from-git-bash-mangles-mnt-args).
 
+#### WSL station — auxiliary post-install items (HIMMEL-977)
+
+Installing the CLI fleet in-distro (`claude`, `codex`, `hermes`, `copilot`,
+`grok`, `coderabbit`) leaves a set of one-time auxiliary steps that the plain
+installers do NOT cover. Calibrated on two stations, 2026-07-12:
+
+| Item | Step | Notes |
+|---|---|---|
+| hermes home | `export HERMES_HOME=$HOME/.hermes` for `scripts/hermes/invoke.sh` calls | Newer hermes installs use `~/.hermes`; the chokepoint's resolver does not probe it yet (fix tracked on HIMMEL-977). |
+| hermes profile | `bash scripts/hermes/install-himmel-profile.sh` (with `HERMES_HOME` set), then `hermes profile use himmel_agent` | Installs the senior-reviewer profile + parity_guard hook. |
+| hermes hooks | Approve the parity_guard hook once in a live hermes session | Hook approval is interactive; one-shots inherit it afterward. |
+| hermes channels | Keep chat channels (telegram etc.) `enabled: false` on stations | ONE poller per bot token, fleet-wide — the host's always-on bridge owns the channel. A station gateway that polls the same token 409-conflicts it. |
+| provider auth | Merge/verify the providers your lanes need in `~/.hermes/auth.json` (e.g. the `openai-codex` provider for gpt-5.x one-shots) | A fresh in-distro login may create fewer providers than your primary machine has. |
+| codex | `codex login` (ChatGPT OAuth), then `codex login status` | Sandbox-shell posture on Windows hosts: HIMMEL-975. |
+| copilot | First run is interactive: login + approve the repo as a trusted folder | Config files alone (`config.json`/`settings.json`) are not sufficient. |
+| grok | `grok login` (browser OAuth) per machine | A non-authed station hangs at "Waiting for authorization…" on one-shots. |
+| coderabbit | `curl -fsSL https://cli.coderabbit.ai/install.sh \| sh` + `coderabbit auth login` | Absent CLI = the CR lane fails open (review skipped, loudly). |
+| jq | `sudo apt install -y jq` (Debian/Ubuntu; use your distro's package manager elsewhere) | Required by most himmel hooks; not preinstalled on minimal distros. |
+| claude settings | Ensure in-distro `~/.claude/settings.json` hooks use in-distro paths | Copied Windows settings carry `C:\` hook paths that fail every SessionEnd (noise, not fatal). |
+| pre-commit hooks | `pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push` in each repo clone (or run `scripts/setup.sh`) | A bare `pre-commit install` leaves commit-msg + pre-push gates silently absent (HIMMEL-966). |
+| GLM wrapper | The `~/.claude-glm` config dir does not follow the fleet install — provision per machine if the GLM lane is used there | Provider API keys (GLM / DashScope / OpenRouter / NVIDIA) travel with the hermes `.env`; the wrapper dir does not. |
+
 ### Scripts requiring bash 4+
 
 These will error `mapfile: command not found` on macOS system bash (3.2). Either install `bash` 4+ via `brew install bash`, or convert the `mapfile` use to a `while IFS= read` loop (cheap port if needed):
