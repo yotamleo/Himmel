@@ -1,9 +1,6 @@
 # New-machine setup for the himmel repo.
-# Run once after cloning: .\scripts\setup.ps1 [-WithCs] [-WithJira] [-WithGraphify]
+# Run once after cloning: .\scripts\setup.ps1 [-WithJira] [-WithGraphify]
 #
-# -WithCs        : install claude-squad (cs) at the end of setup. Without the
-#                  switch, interactive shells prompt; non-interactive shells skip.
-#                  See docs/setup/claude-squad.md.
 # -WithJira      : require Jira configuration — abort if JIRA_PROJECT_KEY is
 #                  unset. Without the switch the check downgrades to a skip
 #                  notice (HIMMEL-285).
@@ -13,17 +10,16 @@
 #                  still open (HIMMEL-621) — this only installs the CLI.
 # -FillEnv  : after creating .env, interactively prompt for each must-set value
 #             (Enter to skip). Non-interactive shells no-op. Shells out to the
-#             bash fill-env.sh (Git Bash verified in [0/10]). (HIMMEL-453)
+#             bash fill-env.sh (Git Bash verified in [0/9]). (HIMMEL-453)
 
 [CmdletBinding()]
 param(
-    [switch]$WithCs,
     [switch]$WithJira,
     [switch]$WithGraphify,
     [switch]$FillEnv
 )
 
-# $RepoRoot is resolved AFTER the [0/10] preflight (R6, HIMMEL-460): the preflight
+# $RepoRoot is resolved AFTER the [0/9] preflight (R6, HIMMEL-460): the preflight
 # may auto-install git, so `git rev-parse` must not run before it.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -40,7 +36,7 @@ Write-Host ""
 # PS-friendly path (pre-commit + jira plugin); operator-facing tooling
 # expects Git Bash for the bash-driven scripts. We still verify the
 # foundational tools so the operator knows what's missing.
-Write-Host "[0/10] Verifying foundational tools on PATH..."
+Write-Host "[0/9] Verifying foundational tools on PATH..."
 $missing = @()
 $hints = @{
     'git'     = 'https://git-scm.com (includes Git Bash on Windows)'
@@ -171,7 +167,7 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
 
 # --- JIRA_PROJECT_KEY verify (HIMMEL-146; gated per HIMMEL-285) ---
 # Mirrors scripts/setup/check-jira-key.sh: hard-fail only with -WithJira.
-Write-Host "[0.4/10] Verifying JIRA_PROJECT_KEY..."
+Write-Host "[0.4/9] Verifying JIRA_PROJECT_KEY..."
 if ($env:JIRA_PROJECT_KEY) {
     Write-Host "  JIRA_PROJECT_KEY=$($env:JIRA_PROJECT_KEY)"
 } elseif ($WithJira) {
@@ -187,7 +183,7 @@ if ($env:JIRA_PROJECT_KEY) {
 Write-Host ""
 
 # --- Python / pre-commit ---
-Write-Host "[1/10] Installing pre-commit..."
+Write-Host "[1/9] Installing pre-commit..."
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Write-Error "python not found. Install Python 3.10+ first."
     exit 1
@@ -198,7 +194,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "[2/10] Installing git hooks (pre-commit, pre-push, commit-msg)..."
+Write-Host "[2/9] Installing git hooks (pre-commit, pre-push, commit-msg)..."
 python -m pre_commit install
 if ($LASTEXITCODE -ne 0) { throw "pre_commit install failed (exit $LASTEXITCODE)" }
 python -m pre_commit install --hook-type pre-push
@@ -206,7 +202,7 @@ if ($LASTEXITCODE -ne 0) { throw "pre_commit install --hook-type pre-push failed
 python -m pre_commit install --hook-type commit-msg
 if ($LASTEXITCODE -ne 0) { throw "pre_commit install --hook-type commit-msg failed (exit $LASTEXITCODE)" }
 
-Write-Host "[3/10] Installing Jira CLI..."
+Write-Host "[3/9] Installing Jira CLI..."
 if (Get-Command node -ErrorAction SilentlyContinue) {
     if ((Test-Path "$RepoRoot\scripts\jira\node_modules") -and (Test-Path "$RepoRoot\scripts\jira\dist\index.js")) {
         Write-Host "  jira CLI already built (node_modules + dist present) -- skipping install + build"
@@ -230,7 +226,7 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 # --- qmd collection ---
 # Mirror of scripts/lib/qmd-bin.sh (bash) — pwsh cannot source bash, so the
 # resolver (Invoke-Qmd/Test-Qmd) logic is duplicated. This block only
-# REGISTERS an already-installed qmd (matches bash setup.sh step [4/10] --
+# REGISTERS an already-installed qmd (matches bash setup.sh step [4/9] --
 # neither side auto-installs here; that's adopt.sh's/adopt.ps1's job). UPDATE
 # BOTH when changing resolution rules; scripts/lib/test-qmd-bin.sh is the
 # canonical behavior spec.
@@ -265,10 +261,10 @@ function Test-Qmd {
     return [bool](Get-Command qmd -ErrorAction SilentlyContinue)
 }
 
-Write-Host "[4/10] Registering qmd collection 'himmel'..."
+Write-Host "[4/9] Registering qmd collection 'himmel'..."
 # Neutralize the broken qmd plugin-cache stub first so plain `qmd` works
 # inside Claude's Bash tool too (HIMMEL-163). The fixer is bash; Git Bash is
-# a verified prereq ([0/10]) so it is always present here. Native exe non-zero
+# a verified prereq ([0/9]) so it is always present here. Native exe non-zero
 # exits do NOT throw in pwsh -- check $LASTEXITCODE explicitly.
 & bash "$RepoRoot/scripts/lib/fix-qmd-stub.sh"
 if ($LASTEXITCODE -ne 0) {
@@ -299,7 +295,7 @@ if (Test-Qmd) {
 }
 
 # --- .env ---
-Write-Host "[5/10] Checking .env..."
+Write-Host "[5/9] Checking .env..."
 if (-not (Test-Path ".env")) {
     if (Test-Path ".env.example") {
         Copy-Item ".env.example" ".env"
@@ -353,7 +349,7 @@ if ($FillEnv -and (Test-Path ".env")) {
 # common in CI / scripted contexts. The misconfig branch is the whole
 # point of step 6 -- if it can be silenced by a caller's preference,
 # the gate has no teeth.
-Write-Host "[6/10] Handover root check..."
+Write-Host "[6/9] Handover root check..."
 $GitBash = "C:\Program Files\Git\bin\bash.exe"
 if (-not (Test-Path $GitBash)) {
     $BashCmd = Get-Command bash -ErrorAction SilentlyContinue
@@ -403,7 +399,7 @@ Write-Host ""
 # access.json and NEVER starts the bridge (operator-managed -- injection
 # surface + single-getUpdates-owner rule). Non-fatal: a fresh machine
 # legitimately has none of this configured yet.
-Write-Host "[7/10] Telegram bridge onboarding..."
+Write-Host "[7/9] Telegram bridge onboarding..."
 $savedEAP = $ErrorActionPreference
 try {
     $ErrorActionPreference = 'Continue'
@@ -422,7 +418,7 @@ Write-Host ""
 # marketplace plugins (handover, triage, obsidian, …), not just the repo
 # tooling. User scope (~/.claude); setup.ps1 has no scope/profile flag.
 # Idempotent. Skipped with a notice when claude is not on PATH.
-Write-Host "[8/10] Installing Claude plugins (user scope)..."
+Write-Host "[8/9] Installing Claude plugins (user scope)..."
 if (Get-Command claude -ErrorAction SilentlyContinue) {
     $savedEAP = $ErrorActionPreference
     try {
@@ -443,7 +439,7 @@ Write-Host ""
 # --- statusline + HIMMEL_REPO (HIMMEL-359 / HIMMEL-453) ---
 # Wire the himmel statusline AND env.HIMMEL_REPO into ~/.claude/settings.json via
 # the shared helpers. Both write settings.json, need no claude binary, idempotent.
-Write-Host "[9/10] Wiring statusline + HIMMEL_REPO + UNIVERSAL hooks (user scope)..."
+Write-Host "[9/9] Wiring statusline + HIMMEL_REPO + UNIVERSAL hooks (user scope)..."
 $settingsJson = Join-Path $HOME ".claude\settings.json"
 $savedEAP = $ErrorActionPreference
 try {
@@ -471,153 +467,12 @@ try {
 }
 Write-Host ""
 
-# --- claude-squad (cs) -- OPTIONAL (HIMMEL-151) ---
-# Opt-in only. Triggered by -WithCs OR interactive prompt (default N).
-# Non-interactive shells without the switch skip silently.
-#
-# Failure here is non-fatal: cs is optional. WARN and continue.
-Write-Host "[10/10] OPTIONAL: claude-squad (cs)..."
-$installCs = $false
-if ($WithCs) {
-    $installCs = $true
-} elseif ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
-    $resp = Read-Host "  Install claude-squad (cs) now? [y/N]"
-    if ($resp -match '^[yY]') { $installCs = $true }
-} else {
-    Write-Host "  Skipped (non-interactive, no -WithCs switch)."
-}
-
-if ($installCs) {
-    # $tmp is created partway through (Step 3) and must be cleaned up in the
-    # finally regardless of where failure occurred. Initialize to $null so the
-    # finally guard is safe when winget/gh fails before $tmp is ever set.
-    $tmp = $null
-    try {
-        # Step 1: psmux (native Windows tmux clone). Idempotent winget call.
-        if (-not (Get-Command psmux -ErrorAction SilentlyContinue)) {
-            if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-                throw "winget not found. Install 'App Installer' from the Microsoft Store, or install psmux manually per docs\setup\claude-squad.md."
-            }
-            Write-Host "  Installing psmux via winget..."
-            winget install --id marlocarlo.psmux --silent --accept-source-agreements --accept-package-agreements
-            # winget returns non-zero for benign cases (already-installed,
-            # no-applicable-update). Re-check Get-Command after the call
-            # instead of trusting the exit code alone.
-            if (-not (Get-Command psmux -ErrorAction SilentlyContinue)) {
-                throw "winget install psmux failed (exit $LASTEXITCODE) and psmux still not on PATH."
-            }
-        } else {
-            Write-Host "  psmux already installed -- skipping."
-        }
-
-        # Step 2: cs.exe from upstream releases (maintainer-signed).
-        # Fork mirror exists for source audit but has no published releases yet.
-        if (Get-Command cs -ErrorAction SilentlyContinue) {
-            Write-Host "  cs already on PATH at $((Get-Command cs).Source) -- skipping."
-        } else {
-            # Capture stderr too so failure messages are visible in the catch.
-            # Redirecting to $null hides gh auth / rate-limit / network errors
-            # and forces the operator to re-run interactively to diagnose.
-            $ghOutput = gh api repos/smtg-ai/claude-squad/releases/latest --jq .tag_name 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "gh api failed (exit $LASTEXITCODE): $ghOutput. Try 'gh auth status' to verify auth."
-            }
-            $tag = ($ghOutput | Out-String).Trim()
-            if ([string]::IsNullOrWhiteSpace($tag)) {
-                throw "gh api returned empty tag for smtg-ai/claude-squad/releases/latest. Run 'gh api repos/smtg-ai/claude-squad/releases/latest' to debug."
-            }
-            $ver = $tag.TrimStart('v')
-            $asset = "claude-squad_${ver}_windows_amd64.zip"
-            $url = "https://github.com/smtg-ai/claude-squad/releases/download/v${ver}/${asset}"
-
-            # Step 3: download the asset. Wrapped so a network/404 failure
-            # names THIS step (not the generic last-exception message). $tmp is
-            # set here; the finally block owns its cleanup from now on.
-            $tmp = Join-Path $env:TEMP "cs-install-$(Get-Random)"
-            New-Item -ItemType Directory -Force $tmp | Out-Null
-            $zip = Join-Path $tmp "cs.zip"
-            Write-Host "  Downloading $asset ..."
-            try {
-                Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-            } catch {
-                Write-Host "  Step 3 (download) failed for $url." -ForegroundColor Yellow
-                throw
-            }
-
-            # Step 4: size sanity check. The asset is ~5MB; anything under
-            # 100KB is almost certainly an HTML error page (404 / rate-limit),
-            # not the binary. Catch it here with a clear message instead of
-            # letting Expand-Archive fail with a cryptic zip error.
-            $zipSize = (Get-Item $zip).Length
-            if ($zipSize -lt 100KB) {
-                throw "downloaded cs.zip is only $zipSize bytes (< 100KB) -- likely an HTML error page from $url, not the binary. Check the release exists and gh auth is valid."
-            }
-
-            # Step 5: extract.
-            try {
-                Expand-Archive -Force -Path $zip -DestinationPath $tmp
-            } catch {
-                Write-Host "  Step 5 (extract) failed for $zip." -ForegroundColor Yellow
-                throw
-            }
-
-            # Step 6: place cs.exe.
-            $binDir = Join-Path $HOME ".local\bin"
-            New-Item -ItemType Directory -Force $binDir | Out-Null
-            try {
-                Move-Item -Force (Join-Path $tmp "claude-squad.exe") (Join-Path $binDir "cs.exe")
-            } catch {
-                Write-Host "  Step 6 (place cs.exe) failed for $binDir." -ForegroundColor Yellow
-                throw
-            }
-
-            # Step 7: add to User PATH if not present. Git Bash inherits this so
-            # no .bashrc edit is needed.
-            try {
-                $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-                if ($userPath -notlike "*$binDir*") {
-                    [Environment]::SetEnvironmentVariable("Path", "$userPath;$binDir", "User")
-                    Write-Host "  Added $binDir to User PATH (new shells only)."
-                }
-            } catch {
-                Write-Host "  Step 7 (update User PATH) failed for $binDir." -ForegroundColor Yellow
-                throw
-            }
-            $env:Path = "$env:Path;$binDir"
-
-            # Step 8: version probe.
-            try {
-                & (Join-Path $binDir "cs.exe") version | ForEach-Object { Write-Host "  $_" }
-                if ($LASTEXITCODE -ne 0) { throw "cs.exe version failed (exit $LASTEXITCODE)" }
-            } catch {
-                Write-Host "  Step 8 (cs.exe version probe) failed." -ForegroundColor Yellow
-                throw
-            }
-        }
-    } catch {
-        Write-Host "  WARNING: claude-squad install failed: $_" -ForegroundColor Yellow
-        Write-Host "  $($_.ScriptStackTrace)" -ForegroundColor Yellow
-        Write-Host "  See docs\setup\claude-squad.md for manual install." -ForegroundColor Yellow
-    } finally {
-        # Always remove the temp dir, even on failure mid-download/extract.
-        # Guarded: $tmp is $null if we failed before it was set (winget/gh).
-        if ($tmp -and (Test-Path $tmp)) {
-            Remove-Item -Recurse -Force $tmp
-        }
-    }
-} else {
-    if (-not $WithCs -and [Environment]::UserInteractive) {
-        Write-Host "  Skipped. See docs\setup\claude-squad.md to install later."
-    }
-}
-Write-Host ""
-
 # --- graphify (knowledge-graph CLI) -- OPTIONAL (HIMMEL-891) ---
 # Opt-in only. Triggered by -WithGraphify OR interactive prompt (default N).
-# Non-interactive shells without the switch skip silently -- mirrors the cs
-# opt-in above. Adoption verdict stays open (HIMMEL-621); this only installs
+# Non-interactive shells without the switch skip silently. Adoption verdict
+# stays open (HIMMEL-621); this only installs
 # the CLI (delegates to the ONE bash implementation, scripts/lib/graphify-bin.sh
-# -- Git Bash is a verified [0/10] prereq, so it is always present here).
+# -- Git Bash is a verified [0/9] prereq, so it is always present here).
 #
 # Failure here is non-fatal: graphify is optional. WARN and continue.
 Write-Host "OPTIONAL: graphify (knowledge-graph CLI)..."

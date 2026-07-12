@@ -2,7 +2,7 @@
 # shellcheck disable=SC2015
 # test-setup-preflight.sh -- hermetic tests for the R6 preflight (HIMMEL-460):
 # ensure-tools.sh auto-install branches (SC7) + the setup.sh ordering invariant
-# (git rev-parse for REPO_ROOT must run AFTER the [0/10] preflight, since the
+# (git rev-parse for REPO_ROOT must run AFTER the [0/9] preflight, since the
 # preflight may auto-install git).
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -121,12 +121,12 @@ check "bun no-curl manual hint" "$(has 'needs curl' "$out")" "yes"
 check "setup.sh adds ~/.bun/bin to PATH" "$(has 'HOME/.bun/bin' "$(cat "$setup_sh")")" "yes"
 
 # ── SC7 ordering invariant: REPO_ROOT git rev-parse runs AFTER the preflight.
-# Line number of the [0/10] preflight banner vs the REPO_ROOT assignment.
-pf_line=$(grep -n '\[0/10\] Verifying foundational tools' "$setup_sh" | head -1 | cut -d: -f1)
+# Line number of the [0/9] preflight banner vs the REPO_ROOT assignment.
+pf_line=$(grep -n '\[0/9\] Verifying foundational tools' "$setup_sh" | head -1 | cut -d: -f1)
 # shellcheck disable=SC2016  # literal grep pattern -- no shell expansion wanted
 rr_line=$(grep -n 'REPO_ROOT="\$(git rev-parse --show-toplevel)"' "$setup_sh" | head -1 | cut -d: -f1)
 if [ -n "$pf_line" ] && [ -n "$rr_line" ] && [ "$rr_line" -gt "$pf_line" ]; then
-  echo "ok - SC7 REPO_ROOT git rev-parse is after the [0/10] preflight (line $rr_line > $pf_line)"
+  echo "ok - SC7 REPO_ROOT git rev-parse is after the [0/9] preflight (line $rr_line > $pf_line)"
 else
   echo "FAIL - SC7 ordering: pf=$pf_line rr=$rr_line"; fails=$((fails+1))
 fi
