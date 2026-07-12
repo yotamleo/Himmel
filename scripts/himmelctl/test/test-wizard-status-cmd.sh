@@ -69,7 +69,7 @@ JSON
 # snapshot_dir <dir> — sorted "relpath sha256" pairs, for a before/after
 # byte-identity check that doesn't depend on tar's metadata quirks.
 snapshot_dir() {
-  ( cd "$1" && find . -type f -print0 | sort -z | xargs -0 sha256sum )
+  ( cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done )
 }
 
 # ── shared fixture repo root (HIMMELCTL_REPO_ROOT) ──────────────────────────
