@@ -26,7 +26,7 @@
 #   default --branch = current branch; default --base = repo default branch.
 #
 # Env: CODERABBIT_TIMEOUT_SECS - wall-clock cap for the review call inside the
-#          clone (default 900; CodeRabbit reviews typically run minutes).
+#          clone; clone/fetch use one quarter (default 900).
 #      CODERABBIT_BIN - test seam: overrides the binary probed/invoked.
 #      CODERABBIT_WSL - test seam: overrides the wsl.exe launcher (also lets a
 #          POSIX test force the wsl lane).
@@ -108,34 +108,61 @@ esac
 LANE=""
 if command -v "$CR_BIN" >/dev/null 2>&1; then
     LANE="native"
-elif command -v "$WSL_BIN" >/dev/null 2>&1 && "$WSL_BIN" -e bash -lc "command -v $CR_BIN" >/dev/null 2>&1; then
-    LANE="wsl"
-    # WSL consumes Windows paths only after wslpath translation; hand it the
-    # mixed form (C:/...) which survives the command line unmangled.
-    if command -v cygpath >/dev/null 2>&1; then
-        SRC="$(cygpath -m "$SRC")"
+elif command -v "$WSL_BIN" >/dev/null 2>&1; then
+    probe_rc=0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 30 "$WSL_BIN" -e bash -lc "command -v $CR_BIN" >/dev/null 2>&1 || probe_rc=$?
+    else
+        "$WSL_BIN" -e bash -lc "command -v $CR_BIN" >/dev/null 2>&1 || probe_rc=$?
     fi
-else
+    if [ "$probe_rc" -eq 0 ]; then
+        LANE="wsl"
+        # WSL consumes Windows paths only after wslpath translation; hand it the
+        # mixed form (C:/...) which survives the command line unmangled.
+        if command -v cygpath >/dev/null 2>&1; then
+            SRC="$(cygpath -m "$SRC")"
+        fi
+    elif [ "$probe_rc" -eq 124 ] || [ "$probe_rc" -eq 137 ]; then
+        echo "panel-availability: coderabbit unavailable (WSL probe timeout 30s)" >&2
+        exit 1
+    fi
+fi
+if [ -z "$LANE" ]; then
     echo "coderabbit pass skipped (coderabbit CLI not found on PATH or in WSL)" >&2
     exit 3
 fi
 
 # Inner script, shared by both lanes. Runs under the TARGET bash (native or
 # WSL) with positional args: $1=src $2=branch $3=base $4=timeout-secs $5=bin.
-# A C:/ src is translated via wslpath (present only inside WSL). The review is
-# timeboxed when coreutils timeout exists; degrades to unbounded without it
+# A C:/ src is translated via wslpath (present only inside WSL). Clone, fetch,
+# and review are timeboxed when coreutils timeout exists; degrade without it
 # (same graceful-degrade convention as critic-panel.sh). --agent = the
 # agent-readable output mode the coderabbitai/skills code-review skill
 # prescribes (findings grouped Critical/Warning/Info).
 # shellcheck disable=SC2016  # single-quoted on purpose: expands in the TARGET shell
 INNER='set -u
 src="$1"; branch="$2"; base="$3"; to="$4"; bin="$5"
+op_to=$((to / 4))
+[ "$op_to" -gt 0 ] || op_to=1
+run_git_step() {
+    step="$1"; shift
+    step_rc=0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 "$op_to" "$@" || step_rc=$?
+    else
+        "$@" || step_rc=$?
+    fi
+    if [ "$step_rc" -eq 124 ] || [ "$step_rc" -eq 137 ]; then
+        echo "coderabbit-review: $step timed out after ${op_to}s" >&2
+    fi
+    return "$step_rc"
+}
 case "$src" in [A-Za-z]:/*) src="$(wslpath -a "$src")" ;; esac
 tmp="$(mktemp -d -t coderabbit-cr.XXXXXX)" || exit 1
 trap '\''rm -rf "$tmp"'\'' EXIT
-git clone --quiet --no-tags --single-branch --branch "$branch" "$src" "$tmp/repo" || exit 1
+run_git_step "git clone" git clone --quiet --no-tags --single-branch --branch "$branch" "$src" "$tmp/repo" || exit $?
 cd "$tmp/repo" || exit 1
-git fetch --quiet origin "+refs/heads/$base:refs/heads/$base" || exit 1
+run_git_step "git fetch" git fetch --quiet origin "+refs/heads/$base:refs/heads/$base" || exit $?
 if command -v timeout >/dev/null 2>&1; then
     timeout -k 5 "$to" "$bin" review --agent --type committed --base "$base"
 else
