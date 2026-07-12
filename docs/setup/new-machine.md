@@ -321,6 +321,28 @@ To **update** an existing checkout later, run `/himmel-update` (or `bash scripts
 `git pull` is what delivers himmel updates — marketplace `autoUpdate` does not.
 See [`updating.md`](updating.md).
 
+### `himmelctl status` — read-only install-state check (HIMMEL-756)
+
+```bash
+node scripts/himmelctl/bin.js status [--items a,b] [--json]
+```
+
+Diffs desired state (the manifest at `scripts/install/manifest.json`, crossed
+with your recorded install state) against actual state (live probes),
+severity-grouped (red/degraded/green/n/a). Read-only: never prompts;
+never mutates on repeat runs (the first check for a given target may
+persist one derived state entry — the sanctioned derive-write). `--items`
+scopes the run to a comma-list of item ids; `--json` emits stable
+machine-readable output instead of text.
+
+The scope comes from your last wizard run (the cached
+`~/.claude/himmel/install-profile.json`): under **project** scope the target
+is keyed by the directory you run it from — run it from the adopted
+project's root; under **user** scope the target is the single `user` entry
+regardless of cwd. (A per-run scope override lands with the Phase-2 verbs.)
+It's the shared pre-check/post-check/enable-time primitive later himmelctl
+verbs (install/uninstall/enable) build on.
+
 #### Guardrail mode — global vs project (HIMMEL-709)
 
 The three generic guardrails (`auto-approve-safe-bash`, `block-edit-on-main`,

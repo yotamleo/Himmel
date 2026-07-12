@@ -1,0 +1,238 @@
+{
+  "schemaVersion": 1,
+  "harness": "claude",
+  "items": [
+    {
+      "id": "pre-commit-hooks",
+      "kind": "hook",
+      "scopes": ["project"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": ".pre-commit-config.yaml" }
+    },
+    {
+      "id": "wiring-pretooluse",
+      "kind": "wiring",
+      "scopes": ["project"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "settings-hooks", "file": ".claude/settings.json", "key": "hooks.PreToolUse" }
+    },
+    {
+      "id": "wiring-statusline",
+      "kind": "wiring",
+      "scopes": ["project"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "statusLine.command" }
+    },
+    {
+      "id": "jira-cli-dist-build",
+      "kind": "dep",
+      "scopes": ["project"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "scripts/jira/dist/index.js" }
+    },
+    {
+      "id": "jira-env-keys",
+      "kind": "dep",
+      "scopes": ["project", "user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "settings-key", "file": ".env", "keys": ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY"] }
+    },
+    {
+      "id": "bitbucket-cli-build",
+      "kind": "dep",
+      "scopes": ["project"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "scripts/bitbucket/dist/index.js" }
+    },
+    {
+      "id": "qmd-binary",
+      "kind": "dep",
+      "scopes": ["project", "user"],
+      "profiles": ["luna", "all"],
+      "deps": [],
+      "probe": { "type": "cmd:has_qmd", "resolver": "scripts/lib/qmd-bin.sh" }
+    },
+    {
+      "id": "qmd-index",
+      "kind": "vault",
+      "scopes": ["project", "user"],
+      "profiles": ["luna", "all"],
+      "deps": ["qmd-binary"],
+      "probe": { "type": "qmd-index", "collections": ["himmel", "luna"] }
+    },
+    {
+      "id": "luna-vault-scaffold",
+      "kind": "vault",
+      "scopes": ["user"],
+      "profiles": ["luna", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "{vaultPath}/.vault-template.json" }
+    },
+    {
+      "id": "claude-plugins-pluginSet",
+      "kind": "plugin",
+      "scopes": ["project"],
+      "profiles": ["core", "luna", "all"],
+      "deps": [],
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins" }
+    },
+    {
+      "id": "handover-wiring",
+      "kind": "wiring",
+      "scopes": ["project", "user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "handover-dir", "resolver": "scripts/lib/handover-path.sh" }
+    },
+    {
+      "id": "scheduler-backend",
+      "kind": "scheduler",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "win32": "schtasks", "posix": "at" }
+    },
+    {
+      "id": "guardrail-scope",
+      "kind": "wiring",
+      "scopes": ["project"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "scripts/guardrails/lib.sh" }
+    },
+    {
+      "id": "hermes-lanes",
+      "kind": "lane",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "scripts/lanes/lanes.json" }
+    },
+    {
+      "id": "telegram-bridge",
+      "kind": "lane",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "scripts/telegram/telegram-api.ts" }
+    },
+    {
+      "id": "rtk",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "rtk" }
+    },
+    {
+      "id": "uv",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "uv" }
+    },
+    {
+      "id": "npm-less-node",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": ["node"],
+      "probe": { "type": "dep", "cmd": "npm" }
+    },
+    {
+      "id": "node",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "node" }
+    },
+    {
+      "id": "bun",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "bun" }
+    },
+    {
+      "id": "jq",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "jq" }
+    },
+    {
+      "id": "git",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "git" }
+    },
+    {
+      "id": "python3",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "python3" }
+    },
+    {
+      "id": "shellcheck",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "shellcheck" }
+    },
+    {
+      "id": "gitleaks",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "gitleaks" }
+    },
+    {
+      "id": "pre-commit",
+      "kind": "dep",
+      "scopes": ["project", "user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "pre-commit" }
+    },
+    {
+      "id": "gh",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "gh" }
+    },
+    {
+      "id": "graphify",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "luna", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "scripts/graphify/check-graph-freshness.sh" }
+    },
+    {
+      "id": "doc-guard-map",
+      "kind": "wiring",
+      "scopes": ["project"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "scripts/lib/doc-guard-map.sh" }
+    }
+  ]
+}

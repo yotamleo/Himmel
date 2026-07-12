@@ -520,6 +520,22 @@ has_qmd() {
   command -v qmd >/dev/null 2>&1
 }
 
+# True (rc 0) iff `qmd collection list` succeeds and lists at least one
+# collection (HIMMEL-756 T1.4: the himmelctl `qmd-index` probe's presence
+# signal). qmd's actual on-disk data/index directory layout is an internal
+# implementation detail with no stable path documented anywhere in this repo
+# to probe directly (unlike the fork clone dir / bun-global link dir above,
+# both of which ARE this resolver's own paths) — so this checks the
+# registered-collections signal through qmd itself instead of guessing a
+# filesystem location. Presence-only in the has_qmd sense: a real `qmd
+# collection list` invocation runs (unlike has_qmd, which never invokes the
+# binary), so a broken qmd surfaces here as absent rather than masked.
+has_index() {
+  local out
+  out=$(qmd_cmd collection list 2>/dev/null) || return 1
+  [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]
+}
+
 # CLI entry -- only when EXECUTED (not sourced). Lets the pwsh mirrors
 # (scripts/setup.ps1, scripts/adopt.ps1) delegate to this ONE
 # implementation (`bash scripts/lib/qmd-bin.sh install`) instead of
@@ -531,6 +547,10 @@ if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
     # caller-side install gate -- see qmd_fork_served above). Lets the pwsh
     # mirrors share the bash predicate instead of duplicating it.
     fork-served) qmd_fork_served ;;
-    *) echo "Usage: bash scripts/lib/qmd-bin.sh install|fork-served" >&2; exit 2 ;;
+    # has-index: rc 0 iff has_index (see above) -- lets probes.js (HIMMEL-756
+    # T1.4) and any other non-bash consumer share the same predicate via a
+    # single subprocess call instead of sourcing this file.
+    has-index) has_index ;;
+    *) echo "Usage: bash scripts/lib/qmd-bin.sh install|fork-served|has-index" >&2; exit 2 ;;
   esac
 fi
