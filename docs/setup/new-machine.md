@@ -842,6 +842,89 @@ For per-repo opt-out, env-var disable, dry-run mode, and full operational refere
 
 ## 8. MCP Servers
 
+### tokensave — recommended for every adopter (T0 always-on)
+
+tokensave is the code-graph MCP server the harness leans on for
+symbol-level code exploration — it is the **T0 always-on** tier in the
+MCP fleet map ([`docs/tooling-catalog.md`](../tooling-catalog.md)) and is
+included in **every** lean launch profile
+(`.claude/mcp-profiles/profiles.json`). Without it, profile launches and
+the CLAUDE.md retrieval routing (qmd → graphify → tokensave) silently
+degrade — the server just never comes up.
+
+Install the binary (pick one):
+
+```powershell
+# Windows
+scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket
+scoop install tokensave
+```
+
+```bash
+# macOS
+brew install aovestdipaperino/tap/tokensave
+# any platform (Rust)
+cargo install tokensave
+```
+
+(Prebuilt binaries for macOS/Linux/Windows are also on the
+[GitHub releases page](https://github.com/aovestdipaperino/tokensave/releases).)
+
+Register it with Claude Code (writes the MCP server entry into your
+global config):
+
+```bash
+tokensave install --agent claude
+```
+
+Then initialize the knowledge graph **per project** (opt-in by design —
+`sync` only updates projects already initialized):
+
+```bash
+cd /path/to/repo
+tokensave init     # first time — creates .tokensave/ with the graph DB
+tokensave sync     # afterwards — refresh the graph
+```
+
+Verify: run `tokensave doctor` (checks installation, configuration, and
+agent integration), then start a fresh Claude Code session in the repo and
+confirm the `tokensave` MCP server is connected (`claude mcp list`).
+
+### graphify — optional knowledge-graph CLI + MCP server (HIMMEL-621/891)
+
+graphify powers the structure/architecture leg of the retrieval routing
+(qmd finds content, **graphify explains structure**, tokensave serves
+code — `CLAUDE.md`). Opt-in — install via setup:
+
+```bash
+bash scripts/setup.sh --with-graphify
+```
+
+(Installs the himmel fork via `uv tool install` at a pinned commit SHA;
+an existing foreign graphify install is adopted as-is, never reinstalled —
+see `scripts/lib/graphify-bin.sh`.)
+
+The install exposes two binaries: `graphify` (the CLI) and `graphify-mcp`
+(the MCP server). Register the server with Claude Code — use the absolute
+path, not the bare name (`/himmel-doctor` flags PATH-fragile
+bare-interpreter MCP entries). `uv tool install` places entry points in
+the directory `uv tool dir --bin` reports (usually `~/.local/bin` on
+Linux/macOS; on Windows the executable is copied there as
+`graphify-mcp.exe`) — derive the path rather than hard-coding it:
+
+```bash
+claude mcp add --scope user graphify -- "$(uv tool dir --bin)/graphify-mcp"
+```
+
+(PowerShell:
+`claude mcp add --scope user graphify -- "$(uv tool dir --bin)\graphify-mcp.exe"`.)
+
+Graph refresh stays lean-invoke (`graphify <corpus-copy> --update`), never
+a hook; extraction backends are governed by the egress matrix — see the
+graphify section in `CLAUDE.md`.
+
+### Optional integrations
+
 > **Skip** if you don't use the Luna vault or Atlassian (Jira/Confluence). Both entries here are optional integrations.
 
 Configure in Claude Code settings (`~/.claude/settings.json`):
@@ -915,6 +998,14 @@ state outside the bridge root.
 - [ ] Worktree round-trip: `/worktree test/smoke` creates a worktree; `/clean` removes it after merging
 
 ### OPTIONAL — per integration
+
+**tokensave (recommended):**
+- [ ] `tokensave --version` works
+- [ ] `tokensave doctor` passes
+- [ ] `.tokensave/` exists in the repo (`tokensave init` ran) and a fresh session lists the `tokensave` MCP server as connected
+
+**graphify:**
+- [ ] `graphify --version` works and a fresh session lists the `graphify` MCP server as connected
 
 **Jira / HIMMEL project:**
 - [ ] `node scripts/jira/dist/index.js list` returns HIMMEL issues

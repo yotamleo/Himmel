@@ -27,6 +27,11 @@ gitignored** — they carry your `OBSIDIAN_API_KEY` and `C:\Users\…` paths, wh
 must never hit git. Only the generator + `profiles.json` manifest + this README
 are committed.
 
+Every profile includes **tokensave** (the T0 always-on server) — if the
+generator exits with `unresolved server "tokensave"`, it isn't registered on
+this machine yet. Install + register it first:
+[`docs/setup/new-machine.md` §8](../../docs/setup/new-machine.md#8-mcp-servers).
+
 ## Launch a lean session
 
 ```powershell
