@@ -22,9 +22,13 @@ case "$1 $2" in
   "api graphql")
     case "$GH_STUB_MODE" in
       api-error) exit 1 ;;
-      unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
-      other-author) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"someuser"}}]}}]}}}}}' ;;
-      *) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      # pageInfo mirrors the real API: the gate's query requests it, so GitHub
+      # always returns it (HIMMEL-994 — fixtures without it hit the 980-r3
+      # page-completeness BLOCK and mis-fail the allow cases).
+      unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      other-author) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"someuser"}}]}}]}}}}}' ;;
+      paged) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      *) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
     esac ;;
   "api repos/o/r/commits/abc123/check-runs"*)
     case "$GH_STUB_MODE" in
@@ -52,6 +56,9 @@ t() { # t <name> <expected-rc> — runs cr_merge_gate 42 o/r with current env
 GH_STUB_MODE=unresolved   t unresolved-cr-thread-blocks 2
 GH_STUB_MODE=clean        t resolved-threads-allow 0
 GH_STUB_MODE=other-author t other-author-unresolved-allows 0
+# zero unresolved on page one + hasNextPage:true = threads the single-page
+# query never counted -> BLOCK, not a pass (980-r3)
+GH_STUB_MODE=paged        t incomplete-page-blocks 2
 GH_STUB_MODE=inflight     t checkrun-in-flight-blocks 2
 # pr view itself fails -> rc=3 (selector unresolvable; still an allow, but
 # lets the hook retry with a better anchor - codex-1/codex-adv-1 CR round)
