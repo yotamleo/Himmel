@@ -1721,6 +1721,10 @@ assert_contains "T-wsl body has in-distro cd+claude" "cd '$WSL_CWD' && claude" "
 assert_not_contains "T-wsl no caret escapes inside CMD quotes" '^&' "$out"
 assert_contains "T-wsl prompt precedes channels" "'load $WSL_HO overnight mode' --channels 'plugin:test@local'" "$out"
 assert_not_contains "T-wsl body drops Windows cd" "cd /d" "$out"
+# Regression (s52/s53 live fire): the flow-run tmp path must carry a LITERAL
+# backslash-f — a mangled printf escape (\f form feed) makes an invalid
+# Windows filename and the capture silently no-ops on a real fire.
+assert_contains "T-wsl bat carries the flow-run tmp path verbatim" 'FLOW_RUN_TMP=%TEMP%\flow-run-' "$out"
 
 # Prompt escaping is driven by the handover path: bash-single-quote per
 # field, then %->%% for the .bat — & and ^ stay LITERAL inside the CMD
