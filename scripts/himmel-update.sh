@@ -237,20 +237,31 @@ update_codex() {
     return 0
 }
 
-# ─── stale pipeline-cadence runner nudge (HIMMEL-588) ────────────────────────
-# The pipeline-cadence runners (.bat/.sh) are GENERATED at arm time and NOT
-# regenerated on a code pull — so a `git pull` that changes the runner format
-# leaves an already-armed cadence firing the OLD format until a manual
-# `arm --force`. This surfaces that right after the pull. Advisory; never fails
-# the update. PIPELINE_BAT_DIR mirrors pipeline-cadence.sh's runner-home seam.
+# ─── stale cadence runner nudge (HIMMEL-588/HIMMEL-969) ──────────────────────
+# Cadence runners (.bat/.sh) are GENERATED at arm time and NOT regenerated on a
+# code pull — so a `git pull` that changes the runner format leaves an
+# already-armed cadence firing the OLD format until a manual `arm --force`.
+# This surfaces that right after the pull. Advisory; never fails the update.
+# *_BAT_DIR env seams mirror each emitter's runner home; defaults resolve via
+# cadence_user_home (emitter parity — USERPROFILE via cygpath before $HOME on
+# Windows Git-Bash, HIMMEL-645/969 — a bare $HOME would probe the MSYS dir).
 report_cadence_stale() {
-    local bat_dir="${PIPELINE_BAT_DIR:-$HOME/.claude/pipeline-cadence}" ver
-    ver="$(cadence_runner_stamp "$bat_dir")" || return 0
-    [ "$ver" -lt "$CADENCE_RUNNER_FORMAT_VERSION" ] || return 0
-    echo ""
-    echo "==> pipeline-cadence runners are STALE (format v$ver < v$CADENCE_RUNNER_FORMAT_VERSION)"
-    echo "    Armed before a runner-format change — re-arm to pick up the new format:"
-    echo "        bash scripts/luna/pipeline-cadence.sh arm --force"
+    local label bat_dir rearm ver uh
+    uh="$(cadence_user_home)"
+    while IFS='|' read -r label bat_dir rearm; do
+        [ -n "$label" ] || continue
+        ver="$(cadence_runner_stamp "$bat_dir")" || continue
+        [ "$ver" -lt "$CADENCE_RUNNER_FORMAT_VERSION" ] || continue
+        echo ""
+        echo "==> $label runners are STALE (format v$ver < v$CADENCE_RUNNER_FORMAT_VERSION)"
+        echo "    Armed before a runner-format change — re-arm to pick up the new format:"
+        echo "        $rearm"
+    done <<EOF
+pipeline-cadence|${PIPELINE_BAT_DIR:-$uh/.claude/pipeline-cadence}|bash scripts/luna/pipeline-cadence.sh arm --force
+codex-sweep-cadence|${SWEEP_BAT_DIR:-$uh/.claude/codex-sweep-cadence}|bash scripts/cleanup/codex-sweep-cadence.sh arm --force
+graphmap-cadence|${GRAPHMAP_BAT_DIR:-$uh/.claude/graphmap-cadence}|bash scripts/luna/graphmap-cadence.sh arm --force
+EOF
+    return 0
 }
 
 # ─── guardrail-mode block drift check (HIMMEL-709) ───────────────────────────
