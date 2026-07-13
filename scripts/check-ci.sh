@@ -44,6 +44,8 @@
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
 #                            tests set 0; non-numeric falls back to default)
 #   CHECK_CI_SETTLE        — default for --settle (flag wins)
+#   CR_ZOMBIE_CHECKRUN_MINS — minimum CodeRabbit in-progress age for the
+#                             success-status + clean-threads override (default 90)
 #
 # Un-maskable verdict (HIMMEL-974): every exit path additionally prints
 # "check-ci: verdict exit=N" to STDOUT via an EXIT trap installed after arg
@@ -114,6 +116,11 @@ pr_checks() {
 
 pr_view() {
     if [ -n "$selector" ]; then gh pr view "$selector" "$@"; else gh pr view "$@"; fi
+}
+
+started_epoch() {
+    date -u -d "$1" +%s 2>/dev/null && return 0
+    date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null
 }
 
 red_exit() {
@@ -206,15 +213,6 @@ if [ "$THREADS_ONLY" -eq 0 ]; then
         exit 2
     fi
 
-    # Watch round 1: authoritative red/green for the checks registered so far.
-    watch_round
-
-    # Settle round (codex-adv-1): give slow-registering check runs time to appear,
-    # then watch again — round 2 waits for (or fails fast on) any late arrivals.
-    if [ "$SETTLE" -gt 0 ]; then
-        sleep "$SETTLE"
-        watch_round
-    fi
 fi
 
 # Thread gate: checks green is not merge-safe while PR review comments sit
@@ -229,87 +227,180 @@ ctx="checks green but "
 # failed call can never silently read as "no decision".
 pr_json=$(pr_view --json url,reviewDecision --jq '"\(.url)|\(.reviewDecision)"' 2>/dev/null)
 pr_url=${pr_json%%|*}
-review_decision=${pr_json##*|}
 case "$pr_url" in
     https://github.com/*/pull/*) ;;
     *)
         echo "check-ci: ${ctx}cannot resolve the PR (gh pr view gave '${pr_url:-nothing}') — re-run, or verify with gh pr view" >&2
         exit 2 ;;
 esac
-
-# An explicit CHANGES_REQUESTED review is a merge blocker. Approval is NOT
-# required — single-operator repos carry no GitHub approval objects (the CR
-# flow is the approval gate); only the affirmative "do not merge" signal blocks.
-if [ "$review_decision" = "CHANGES_REQUESTED" ]; then
-    echo "check-ci: ${ctx}a review requests changes on this PR — address it (and resolve its threads), then re-run" >&2
-    exit 3
-fi
 num=${pr_url##*/}
 nwo=${pr_url#https://github.com/}
 owner=${nwo%%/*}
 repo_rest=${nwo#*/}
 repo=${repo_rest%%/*}
 
-# Paginate: first:100 alone would let unresolved threads beyond page one slip
-# through the gate. Each page reports "<unresolved-count> <hasNextPage> <endCursor>".
-unresolved=0
-cursor=""
-pages=0
-while :; do
-    # Hard page cap: bounds EVERY malformed-pagination shape (incl. non-adjacent
-    # cursor cycles like A→B→A that a last-cursor comparison can't see) at
-    # 50 pages = 5000 threads — far beyond any real PR. Fail closed past it.
-    pages=$((pages + 1))
-    if [ "$pages" -gt 50 ]; then
-        echo "check-ci: ${ctx}the review-thread query did not terminate within 50 pages (cursor cycle?) — check threads manually on PR #$num" >&2
-        exit 2
-    fi
-    # Positional args are free after option parsing — reuse them for the
-    # conditional cursor without an unquoted expansion.
-    sent_cursor="$cursor"
-    set -- -f o="$owner" -f r="$repo" -F n="$num"
-    [ -n "$cursor" ] && set -- "$@" -f c="$cursor"
-    # shellcheck disable=SC2016  # $o/$r/$n/$c are GraphQL variables — literal on purpose
-    page=$(gh api graphql \
-        -f query='query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}' \
-        "$@" \
-        --jq '.data.repository.pullRequest.reviewThreads | "\([.nodes[] | select(.isResolved | not)] | length) \(.pageInfo.hasNextPage) \(.pageInfo.endCursor)"' 2>/dev/null)
-    page_count=${page%% *}
-    rest=${page#* }
-    has_next=${rest%% *}
-    cursor=${rest#* }
-    case "$page_count" in
-        ''|*[!0-9]*)
-            echo "check-ci: ${ctx}the review-thread query failed — re-run, or check threads manually on PR #$num" >&2
-            exit 2 ;;
-    esac
-    case "$has_next" in
-        true|false) ;;
+# review_state_gate — the CHANGES_REQUESTED blocker + the paginated
+# unresolved-thread gate, as one re-runnable unit. It runs BEFORE the zombie
+# probe (fail-fast, and the override's zero-unresolved evidence) and AGAIN
+# after the final watch/settle on every success path (codex-adv 980-r2):
+# review state can change during a long watch WITHOUT moving the head SHA —
+# a pre-watch snapshot must never be what gets certified.
+review_state_gate() {
+    local decision unresolved cursor pages sent_cursor page page_count rest has_next
+    # Fresh reviewDecision each call (the module-top pr_json copy would be a
+    # stale snapshot by the post-watch call). An explicit CHANGES_REQUESTED
+    # review is a merge blocker. Approval is NOT required — single-operator
+    # repos carry no GitHub approval objects (the CR flow is the approval
+    # gate); only the affirmative "do not merge" signal blocks.
+    # Fail CLOSED on a failed/malformed refresh (coderabbit 980-r3): an empty
+    # snapshot would otherwise skip the CHANGES_REQUESTED check silently.
+    decision=$(pr_view --json url,reviewDecision --jq '"\(.url)|\(.reviewDecision)"' 2>/dev/null)
+    case "$decision" in
+        https://github.com/*/pull/*"|"*) decision=${decision##*|} ;;
         *)
-            echo "check-ci: ${ctx}the review-thread query returned a malformed page (hasNextPage='$has_next') — re-run, or check threads manually on PR #$num" >&2
+            echo "check-ci: ${ctx}could not refresh the PR review decision (gh pr view gave '${decision:-nothing}') — re-run" >&2
             exit 2 ;;
     esac
-    if [ "$has_next" = "true" ] && { [ -z "$cursor" ] || [ "$cursor" = "null" ]; }; then
-        echo "check-ci: ${ctx}the review-thread query returned a malformed page (hasNextPage=true with no cursor) — re-run, or check threads manually on PR #$num" >&2
-        exit 2
+    if [ "$decision" = "CHANGES_REQUESTED" ]; then
+        echo "check-ci: ${ctx}a review requests changes on this PR — address it (and resolve its threads), then re-run" >&2
+        exit 3
     fi
-    # A repeated cursor with hasNextPage=true would loop forever — fail closed.
-    if [ "$has_next" = "true" ] && [ "$cursor" = "$sent_cursor" ]; then
-        echo "check-ci: ${ctx}the review-thread query returned a malformed page (cursor did not advance) — re-run, or check threads manually on PR #$num" >&2
-        exit 2
+
+    # Paginate: first:100 alone would let unresolved threads beyond page one slip
+    # through the gate. Each page reports "<unresolved-count> <hasNextPage> <endCursor>".
+    unresolved=0
+    cursor=""
+    pages=0
+    while :; do
+        # Hard page cap: bounds EVERY malformed-pagination shape (incl. non-adjacent
+        # cursor cycles like A→B→A that a last-cursor comparison can't see) at
+        # 50 pages = 5000 threads — far beyond any real PR. Fail closed past it.
+        pages=$((pages + 1))
+        if [ "$pages" -gt 50 ]; then
+            echo "check-ci: ${ctx}the review-thread query did not terminate within 50 pages (cursor cycle?) — check threads manually on PR #$num" >&2
+            exit 2
+        fi
+        # Positional args are free after option parsing — reuse them for the
+        # conditional cursor without an unquoted expansion (function-local $@).
+        sent_cursor="$cursor"
+        set -- -f o="$owner" -f r="$repo" -F n="$num"
+        [ -n "$cursor" ] && set -- "$@" -f c="$cursor"
+        # shellcheck disable=SC2016  # $o/$r/$n/$c are GraphQL variables — literal on purpose
+        page=$(gh api graphql \
+            -f query='query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}' \
+            "$@" \
+            --jq '.data.repository.pullRequest.reviewThreads | "\([.nodes[] | select(.isResolved | not)] | length) \(.pageInfo.hasNextPage) \(.pageInfo.endCursor)"' 2>/dev/null)
+        page_count=${page%% *}
+        rest=${page#* }
+        has_next=${rest%% *}
+        cursor=${rest#* }
+        case "$page_count" in
+            ''|*[!0-9]*)
+                echo "check-ci: ${ctx}the review-thread query failed — re-run, or check threads manually on PR #$num" >&2
+                exit 2 ;;
+        esac
+        case "$has_next" in
+            true|false) ;;
+            *)
+                echo "check-ci: ${ctx}the review-thread query returned a malformed page (hasNextPage='$has_next') — re-run, or check threads manually on PR #$num" >&2
+                exit 2 ;;
+        esac
+        if [ "$has_next" = "true" ] && { [ -z "$cursor" ] || [ "$cursor" = "null" ]; }; then
+            echo "check-ci: ${ctx}the review-thread query returned a malformed page (hasNextPage=true with no cursor) — re-run, or check threads manually on PR #$num" >&2
+            exit 2
+        fi
+        # A repeated cursor with hasNextPage=true would loop forever — fail closed.
+        if [ "$has_next" = "true" ] && [ "$cursor" = "$sent_cursor" ]; then
+            echo "check-ci: ${ctx}the review-thread query returned a malformed page (cursor did not advance) — re-run, or check threads manually on PR #$num" >&2
+            exit 2
+        fi
+        unresolved=$((unresolved + page_count))
+        [ "$has_next" = "true" ] || break
+    done
+    if [ "$unresolved" -gt 0 ]; then
+        echo "check-ci: ${ctx}$unresolved unresolved review thread(s) on PR #$num — address each comment, resolve its thread, re-run" >&2
+        exit 3
     fi
-    unresolved=$((unresolved + page_count))
-    [ "$has_next" = "true" ] || break
-done
-if [ "$unresolved" -gt 0 ]; then
-    echo "check-ci: ${ctx}$unresolved unresolved review thread(s) on PR #$num — address each comment, resolve its thread, re-run" >&2
-    exit 3
+}
+
+review_state_gate
+
+zombie_override=0
+if [ "$THREADS_ONLY" -eq 0 ]; then
+    zombie_mins="${CR_ZOMBIE_CHECKRUN_MINS:-90}"
+    case "$zombie_mins" in ''|*[!0-9]*) zombie_mins=90 ;; esac
+    # 10# guard (coderabbit 980-r4): a leading-zero value ("090") passes
+    # the digit check but blows up base-8 arithmetic in $((… * 60)).
+    zombie_mins=$((10#$zombie_mins))
+    runs=$(gh api "repos/$owner/$repo/commits/$head0/check-runs?per_page=100" 2>/dev/null) || runs=""
+    pending_runs=$(printf '%s' "$runs" | jq -r \
+        '[.check_runs[]? | select(.name=="CodeRabbit") | select(.status!="completed")] | length' \
+        2>/dev/null || true)
+    started=$(printf '%s' "$runs" | jq -r \
+        '[.check_runs[]? | select(.name=="CodeRabbit") | select(.status=="in_progress") | .started_at // empty] | max // empty' \
+        2>/dev/null || true)
+    started_count=$(printf '%s' "$runs" | jq -r \
+        '[.check_runs[]? | select(.name=="CodeRabbit") | select(.status=="in_progress") | select(.started_at != null)] | length' \
+        2>/dev/null || true)
+    run_started=$(started_epoch "$started" 2>/dev/null || true)
+    now_epoch=$(date -u +%s 2>/dev/null || true)
+    if [ -n "$pending_runs" ] && [ "$started_count" = "$pending_runs" ] \
+        && [ "$pending_runs" -gt 0 ] 2>/dev/null \
+        && [ -n "$run_started" ] && [ -n "$now_epoch" ] \
+        && [ $((now_epoch - run_started)) -gt $((zombie_mins * 60)) ]; then
+        statuses=$(gh api "repos/$owner/$repo/commits/$head0/status" 2>/dev/null) || statuses=""
+        status_state=$(printf '%s' "$statuses" | jq -r \
+            '[.statuses[]? | select(.context=="CodeRabbit")][0].state // empty' \
+            2>/dev/null || true)
+        other_pending=$(pr_checks --json name,bucket --jq \
+            '[.[] | select(.name != "CodeRabbit") | select(.bucket != "pass" and .bucket != "skipping")] | length' \
+            2>/dev/null || true)
+        if [ "$status_state" = "success" ] && [ "$other_pending" = "0" ]; then
+            echo "zombie check-run override: CodeRabbit run in_progress since $started (>${zombie_mins}m) but commit status=success + 0 unresolved threads — treating as completed (HIMMEL-980)"
+            zombie_override=1
+        fi
+    fi
 fi
 
 if [ "$THREADS_ONLY" -eq 1 ]; then
     echo "check-ci: all review threads resolved (PR #$num)"
     exit 0
 fi
+
+# The override skips the hanging watch, but it must NOT skip the settle
+# protection (codex-adv-2): a non-CodeRabbit check registering right after the
+# other_pending snapshot would otherwise never be observed. Keep the settle
+# window and re-probe; any late arrival drops the override back to the watch
+# path (which waits for — or fails fast on — the newcomer).
+if [ "$zombie_override" -eq 1 ] && [ "$SETTLE" -gt 0 ]; then
+    sleep "$SETTLE"
+    late_pending=$(pr_checks --json name,bucket --jq \
+        '[.[] | select(.name != "CodeRabbit") | select(.bucket != "pass" and .bucket != "skipping")] | length' \
+        2>/dev/null || true)
+    if [ "$late_pending" != "0" ]; then
+        echo "zombie override dropped: ${late_pending:-?} non-CodeRabbit check(s) pending after the ${SETTLE}s settle window — falling back to the watch path"
+        zombie_override=0
+    fi
+fi
+
+if [ "$zombie_override" -eq 0 ]; then
+    # Watch round 1: authoritative red/green for the checks registered so far.
+    watch_round
+
+    # Settle round (codex-adv-1): give slow-registering check runs time to appear,
+    # then watch again — round 2 waits for (or fails fast on) any late arrivals.
+    if [ "$SETTLE" -gt 0 ]; then
+        sleep "$SETTLE"
+        watch_round
+    fi
+fi
+
+# Re-verify review state AFTER the watch/settle (codex-adv 980-r2): a review
+# can request changes or a new unresolved thread can land during a long watch
+# without moving the head SHA — certifying the pre-watch snapshot would let
+# merge-on-green proceed over fresh blocking feedback. Runs on the zombie
+# override path too (the settle window is short, but not zero).
+review_state_gate
 
 # Re-read the head: the green verdict only holds for the SHA we watched.
 head1=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)

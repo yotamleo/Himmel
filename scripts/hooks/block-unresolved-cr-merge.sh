@@ -2,7 +2,8 @@
 # PreToolUse hook: block-unresolved-cr-merge.sh
 #
 # Blocks `gh pr merge` while the PR has unresolved CodeRabbit review threads
-# or a CodeRabbit check-run still running on the head SHA (HIMMEL-936;
+# or a CodeRabbit check-run still running on the head SHA (HIMMEL-936), except
+# a proven old zombie backed by success status + zero unresolved threads (HIMMEL-980;
 # operator rule 2026-07-11: never merge over unresolved CodeRabbit remarks).
 # Sibling of check-cr-marker-on-pr-create.sh / block-merged-pr-commit.sh.
 #
