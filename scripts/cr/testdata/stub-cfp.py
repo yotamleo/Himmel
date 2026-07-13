@@ -38,8 +38,8 @@ if model in ("qwen/qwen3-coder-480b-a35b-instruct", "qwen/qwen3.6-35b-a3b", "qwe
     print("## Suggestions (1 found)")
     print("- [qwen3coder-3]: rename for clarity [foo.sh:7]")
     sys.exit(0)
-elif model == "qwen/qwen3-coder:free":
-    # Current ANCHOR_MODEL (qwenor seat, HIMMEL-953) — the anchor-fallback
+elif model == "poolside/laguna-xs-2.1:free":
+    # Current ANCHOR_MODEL (lagunaor seat, HIMMEL-987) — the anchor-fallback
     # tests (E, I2) feed this through the stub to prove the anchor MODEL ran.
     # Argument-sensitive (codex-adv, HIMMEL-953): the anchor-only row must
     # parse provider=openrouter and NO perspective file — a tab-IFS field
@@ -50,16 +50,16 @@ elif model == "qwen/qwen3-coder:free":
     if perspective_file:
         print("stub-cfp: anchor got unexpected --perspective-file:", perspective_file, file=sys.stderr)
         sys.exit(1)
-    print("# qwenor First-Pass Review")
+    print("# lagunaor First-Pass Review")
     print("")
     print("## Critical Issues (1 found)")
-    print("- [qwenor-1]: null dereference in handler [foo.sh:3]")
+    print("- [lagunaor-1]: null dereference in handler [foo.sh:3]")
     print("")
     print("## Important Issues (1 found)")
-    print("- [qwenor-2]: unused variable x [foo.sh:5]")
+    print("- [lagunaor-2]: unused variable x [foo.sh:5]")
     print("")
     print("## Suggestions (1 found)")
-    print("- [qwenor-3]: rename for clarity [foo.sh:7]")
+    print("- [lagunaor-3]: rename for clarity [foo.sh:7]")
     sys.exit(0)
 elif model == "openai/gpt-oss-120b":
     print("# gptoss First-Pass Review")
