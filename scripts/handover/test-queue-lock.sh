@@ -840,6 +840,85 @@ fi
 QUEUE_LOCK_FORCE_RELEASE=1 bash "$LIB" release "$HO29" >/dev/null 2>&1
 rm -f "$ARMS_REGISTRY"
 
+# --- T32: takeover-claim mkdir co-winner loses the owner-file arbiter -----
+# Simulate uutils returning rc=0 after another taker already created and
+# branded the same claim. The loser must not remove the winner's claim or
+# advance far enough to destroy the stale lock generation.
+HO32="$HANDOVER_DIR/HIMMEL-856-test/next-session-32.md"
+: > "$HO32"
+LOCKDIR32="$HANDOVER_DIR/.locks/queue/HIMMEL-856-test__next-session-32.lock"
+mkdir -p "$LOCKDIR32"
+printf '{"session":"dead-session","host":"old-host","handover":"%s","started":"2020-01-01T00:00:00Z","heartbeat":"2020-01-01T00:00:00Z"}\n' \
+    "$HO32" > "$LOCKDIR32/owner.json"
+t32_out=$(bash -c '
+    . "$1"
+    lockdir="$2"
+    claim="${lockdir}.claim"
+    mkdir() {
+        if [ "${1:-}" = "$claim" ]; then
+            command mkdir -p "$claim"
+            printf "%s" "winner-claim" > "$claim/owner"
+            return 0
+        fi
+        command mkdir "$@"
+    }
+    queue_lock_acquire "$3" "loser-claim" >/dev/null 2>&1
+    echo "RC=$?"
+    echo "CLAIM_OWNER=$(cat "$claim/owner" 2>/dev/null)"
+    echo "LOCK_OWNER=$(cat "$lockdir/owner.json" 2>/dev/null)"
+' _ "$LIB" "$LOCKDIR32" "$HO32" 2>&1)
+if printf '%s' "$t32_out" | grep -q '^RC=2$' \
+    && printf '%s' "$t32_out" | grep -q '^CLAIM_OWNER=winner-claim$' \
+    && printf '%s' "$t32_out" | grep -q 'LOCK_OWNER=.*"session":"dead-session"'; then
+    pass "T32: claim-arbiter loser leaves winner claim + stale generation intact"
+else
+    fail "T32: claim-arbiter loser damaged winner state (out=$t32_out)"
+fi
+rm -rf "$LOCKDIR32" "${LOCKDIR32}.claim"
+
+# --- T33: post-rm lockdir mkdir co-winner loses owner-file arbiter --------
+# The first lockdir mkdir sees the stale fixture. On the post-rm mkdir,
+# simulate a concurrent fresh winner plus uutils' false rc=0 for this loser.
+# The loser must preserve both the winner's arbiter and owner.json.
+HO33="$HANDOVER_DIR/HIMMEL-856-test/next-session-33.md"
+: > "$HO33"
+LOCKDIR33="$HANDOVER_DIR/.locks/queue/HIMMEL-856-test__next-session-33.lock"
+mkdir -p "$LOCKDIR33"
+printf '{"session":"dead-session","host":"old-host","handover":"%s","started":"2020-01-01T00:00:00Z","heartbeat":"2020-01-01T00:00:00Z"}\n' \
+    "$HO33" > "$LOCKDIR33/owner.json"
+t33_out=$(bash -c '
+    . "$1"
+    lockdir="$2"
+    ho="$3"
+    lockdir_mkdir_count=0
+    mkdir() {
+        if [ "${1:-}" = "$lockdir" ]; then
+            lockdir_mkdir_count=$((lockdir_mkdir_count + 1))
+            if [ "$lockdir_mkdir_count" -eq 2 ]; then
+                command mkdir -p "$lockdir"
+                printf "%s" "winner-reacquire" > "$lockdir/owner"
+                printf "{\"session\":\"winner-reacquire\",\"host\":\"winner-host\",\"handover\":\"%s\",\"started\":\"2026-01-01T00:00:00Z\",\"heartbeat\":\"2026-01-01T00:00:00Z\"}\n" "$ho" > "$lockdir/owner.json"
+                return 0
+            fi
+        fi
+        command mkdir "$@"
+    }
+    queue_lock_acquire "$ho" "loser-reacquire" >/dev/null 2>&1
+    echo "RC=$?"
+    echo "ARBITER=$(cat "$lockdir/owner" 2>/dev/null)"
+    echo "LOCK_OWNER=$(cat "$lockdir/owner.json" 2>/dev/null)"
+    [ -e "${lockdir}.claim" ] && echo "CLAIM_LEFT=yes" || echo "CLAIM_LEFT=no"
+' _ "$LIB" "$LOCKDIR33" "$HO33" 2>&1)
+if printf '%s' "$t33_out" | grep -q '^RC=2$' \
+    && printf '%s' "$t33_out" | grep -q '^ARBITER=winner-reacquire$' \
+    && printf '%s' "$t33_out" | grep -q 'LOCK_OWNER=.*"session":"winner-reacquire"' \
+    && printf '%s' "$t33_out" | grep -q '^CLAIM_LEFT=no$'; then
+    pass "T33: post-rm arbiter loser leaves winner lock intact + drops own claim"
+else
+    fail "T33: post-rm arbiter loser damaged winner state (out=$t33_out)"
+fi
+rm -rf "$LOCKDIR33" "${LOCKDIR33}.claim"
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]
