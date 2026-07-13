@@ -408,17 +408,29 @@ _ql_arms_mutex_acquire() {
     while :; do
         if mkdir "$lockd" 2>/dev/null; then
             # Brand the lock. pid alone is unique among LIVE processes;
-            # $RANDOM guards the recycled-pid edge. A failed brand write is
-            # a failed acquire (fail-open) -- an unbranded lock would make
-            # every release read as a theft.
+            # $RANDOM guards the recycled-pid edge.
+            #
+            # mkdir is NOT a reliable mutual-exclusion primitive on every
+            # platform: uutils coreutils 0.8.0 (the Rust coreutils shipped on
+            # some Windows/WSL apt boxes) resolves two CONCURRENT mkdir of the
+            # same path to BOTH rc=0 -- a non-atomic check-then-create that
+            # breaks the mkdir(2) EEXIST guarantee this lock relied on
+            # (HIMMEL-966; measured ~96% double-win on ext4, so two writers
+            # entered the arms-registry critical section at once and one
+            # consume was lost). So the OWNER create, not the mkdir, is the
+            # real arbiter: set -C (noclobber) makes it a single kernel
+            # open(O_CREAT|O_EXCL) -- performed by bash itself, no coreutils
+            # binary -- atomic on every POSIX fs. Exactly one co-winner of a
+            # double-won mkdir wins this create; the losers leave the winner's
+            # lock alone and fall through to the spin/reclaim path.
             tok="pid$$-r$RANDOM"
-            if ! printf '%s' "$tok" > "$lockd/owner" 2>/dev/null; then
-                rm -f "$lockd/owner" 2>/dev/null
-                rmdir "$lockd" 2>/dev/null
-                return 1
+            if ( set -C; printf '%s' "$tok" > "$lockd/owner" ) 2>/dev/null; then
+                _QL_ARMS_MUTEX_TOKEN="$tok"
+                return 0
             fi
-            _QL_ARMS_MUTEX_TOKEN="$tok"
-            return 0
+            # Lost the O_EXCL owner create to a co-winner that branded first
+            # -- it is the true holder; do NOT tear down its lock. Fall
+            # through and retry (spin, or reclaim if it later goes stale).
         fi
         if [ $(( tries % 10 )) -eq 0 ]; then
             m=$(py_armor_mtime "$lockd") || m=""
