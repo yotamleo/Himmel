@@ -164,7 +164,7 @@ echo "ok: caseA(sh) node present -> short-circuits straight to hand-off, install
 # ── bootstrap.sh — Case B: --dry-run, node absent -> plan+hand-off only ────
 stubB="$work/shB"; mkdir -p "$stubB"
 build_sudo_stub "$stubB" 0
-cB=$(build_path "$stubB" uname -- node)
+cB=$(build_path "$stubB" uname dirname bash ln cp -- node)
 fixtureB="$work/shB-fixture"; build_bin_js_fixture "$fixtureB"
 set +e
 out=$(PATH="$cB" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureB")" \
@@ -185,7 +185,7 @@ echo "ok: caseB(sh) --dry-run node-absent -> plan+hand-off printed, nothing muta
 stubC="$work/shC"; mkdir -p "$stubC"
 build_sudo_stub "$stubC" 0
 build_aptget_stub "$stubC"
-cC=$(build_path "$stubC" uname -- node)
+cC=$(build_path "$stubC" uname dirname bash ln cp -- node)
 fixtureC="$work/shC-fixture"; build_bin_js_fixture "$fixtureC"
 set +e
 out=$(PATH="$cC" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureC")" \
@@ -205,7 +205,7 @@ echo "ok: caseC(sh) node absent, install doesn't refresh PATH -> single re-run l
 stubD="$work/shD"; mkdir -p "$stubD"
 build_sudo_stub "$stubD" 1
 build_aptget_stub "$stubD"
-cD=$(build_path "$stubD" uname -- node)
+cD=$(build_path "$stubD" uname dirname bash ln cp -- node)
 fixtureD="$work/shD-fixture"; build_bin_js_fixture "$fixtureD"
 set +e
 out=$(PATH="$cD" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureD")" \
@@ -223,7 +223,7 @@ echo "ok: caseD(sh) node absent, install refreshes PATH -> chains to bin.js"
 # ── bootstrap.sh — Case F: FIX 1 -- apt plan no longer asks for bun ────────
 stubF="$work/shF"; mkdir -p "$stubF"
 build_sudo_stub "$stubF" 0
-cF=$(build_path "$stubF" uname -- node)
+cF=$(build_path "$stubF" uname dirname bash ln cp -- node)
 fixtureF="$work/shF-fixture"; build_bin_js_fixture "$fixtureF"
 set +e
 out=$(PATH="$cF" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureF")" \
@@ -253,7 +253,7 @@ printf 'sudo: %s\n' "\$*" >> "$stubG/install-calls.log"
 exit 1
 STUB
 chmod +x "$stubG/sudo"
-cG=$(build_path "$stubG" uname -- node)
+cG=$(build_path "$stubG" uname dirname bash ln cp -- node)
 fixtureG="$work/shG-fixture"; build_bin_js_fixture "$fixtureG"
 set +e
 out=$(PATH="$cG" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureG")" \

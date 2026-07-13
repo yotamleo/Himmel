@@ -259,9 +259,20 @@ run_fence deny no "$HIMMEL" "unwritable ledger allow+log -> deny, no partial lin
 out=$( cd "$HIMMEL" && env -u HOME -u CLAUDE_GLM_CONFIG_DIR "$BASH_BIN" "$FENCE" "graphify update $HIMMEL/scripts/thing.sh --backend deepseek" 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ]; then pass "trap: HOME unset -> rc 2"; else fail "trap: HOME unset expected rc=2 got rc=$rc out=$out"; fi
 
-# (8) node absent (PATH stripped to /usr/bin, which has coreutils but not node) -> rc 2
+# (8) node absent -> rc 2. PATH needs coreutils but NOT node; on apt-node
+# systems node lives IN /usr/bin (HIMMEL-966), so mirror it minus node.
+NONODE_BIN=/usr/bin
+if [ -x /usr/bin/node ] || [ -x /usr/bin/node.exe ]; then
+    NONODE_BIN="$WS/nonode-bin"
+    mkdir -p "$NONODE_BIN"
+    for _f in /usr/bin/*; do
+        _b="${_f##*/}"
+        case "$_b" in node|node.exe|nodejs) continue ;; esac
+        ln -s "$_f" "$NONODE_BIN/$_b" 2>/dev/null || true
+    done
+fi
 run_fence deny no "$HIMMEL" "node absent -> rc 2 (fail-closed)" \
-    "graphify update $HIMMEL/scripts/thing.sh --backend deepseek" PATH=/usr/bin
+    "graphify update $HIMMEL/scripts/thing.sh --backend deepseek" PATH="$NONODE_BIN"
 
 # (9) unreadable phi-roots (a directory sits at the phi-roots path) -> rc 2
 run_fence deny no "$HIMMEL" "unreadable phi-roots -> rc 2" \
