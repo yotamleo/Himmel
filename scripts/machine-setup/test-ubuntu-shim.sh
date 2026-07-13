@@ -86,10 +86,15 @@ cat > "$stub_bin/git" <<'EOF'
 if [ "$1" = "clone" ]; then
   target="$*"
   target="${target##* }"
-  mkdir -p "$target/scripts/hooks" "$target/scripts/himmelctl"
+  mkdir -p "$target/scripts/hooks" "$target/scripts/himmelctl" "$target/scripts/lib"
   cat > "$target/scripts/hooks/check-hookspath.sh" <<'INNER'
 #!/usr/bin/env bash
 echo "STUB:check-hookspath"
+exit 0
+INNER
+  cat > "$target/scripts/lib/reconcile-rtk-hook.sh" <<'INNER'
+#!/usr/bin/env bash
+echo "STUB:reconcile-rtk-hook $*"
 exit 0
 INNER
   cat > "$target/scripts/himmelctl/bootstrap.sh" <<'INNER'
@@ -98,7 +103,7 @@ echo "BOOTSTRAP:invoked $*"
 echo "BOOTSTRAP:pwd $PWD"
 exit 0
 INNER
-  chmod +x "$target/scripts/hooks/check-hookspath.sh" "$target/scripts/himmelctl/bootstrap.sh"
+  chmod +x "$target/scripts/hooks/check-hookspath.sh" "$target/scripts/lib/reconcile-rtk-hook.sh" "$target/scripts/himmelctl/bootstrap.sh"
 fi
 exit 0
 EOF
@@ -126,6 +131,7 @@ cat > "$stub_bin/rtk" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   --version) echo "rtk-stub 1.0.0"; exit 0 ;;
+  init) echo "STUB:rtk-init $*"; exit 0 ;;
   *) exit 0 ;;
 esac
 EOF
@@ -173,6 +179,30 @@ bootstrap_pwd=$(grep '^BOOTSTRAP:pwd ' "$log" | head -1 | sed 's/^BOOTSTRAP:pwd 
 [ "$bootstrap_pwd" = "$expected_pwd" ] \
   || fail "caseB: bootstrap must be invoked with cwd=\$HIMMEL_PATH ($expected_pwd), got: $bootstrap_pwd"
 echo "ok: caseB provisioning ($provision_line) < notice ($notice_line) < delegated bootstrap ($bootstrap_line), cwd=\$HIMMEL_PATH"
+
+# HIMMEL-985: the shim must reconcile the rtk hook (bare `rtk hook claude`
+# from `rtk init -g --auto-patch` → the rtk-hook-guard wrapper) AFTER the
+# clone (the helper lives in the repo) and BEFORE the delegated bootstrap,
+# passing the user settings.json and the himmel path. The pre-HIMMEL-887
+# monolith did this swap inline; the shim owns it again.
+reconcile_line=$(grep -n '^STUB:reconcile-rtk-hook' "$log" | head -1 | cut -d: -f1)
+[ -n "$reconcile_line" ] || { cat "$log" >&2; fail "caseB: no reconcile-rtk-hook invocation found (log above)"; }
+[ "$bootstrap_line" -gt "$reconcile_line" ] \
+  || fail "caseB: reconcile-rtk-hook (line $reconcile_line) must run before the delegated bootstrap (line $bootstrap_line)"
+# rtk init must be wired AFTER clone validation (adjacent to the reconcile) —
+# wiring before the clone could strand a raw unguarded hook on clone failure.
+rtk_init_line=$(grep -n -Fx 'STUB:rtk-init init -g --auto-patch' "$log" | head -1 | cut -d: -f1)
+hookspath_line=$(grep -n '^STUB:check-hookspath' "$log" | head -1 | cut -d: -f1)
+[ -n "$rtk_init_line" ] || { cat "$log" >&2; fail "caseB: no rtk init -g --auto-patch invocation found (log above)"; }
+[ -n "$hookspath_line" ] || { cat "$log" >&2; fail "caseB: no check-hookspath invocation found (log above)"; }
+[ "$rtk_init_line" -gt "$hookspath_line" ] \
+  || fail "caseB: rtk init (line $rtk_init_line) must run after clone validation (check-hookspath, line $hookspath_line)"
+[ "$reconcile_line" -gt "$rtk_init_line" ] \
+  || fail "caseB: reconcile (line $reconcile_line) must run after rtk init (line $rtk_init_line)"
+reconcile_args=$(grep '^STUB:reconcile-rtk-hook ' "$log" | head -1 | sed 's/^STUB:reconcile-rtk-hook //')
+[ "$reconcile_args" = "$tmp_home/.claude/settings.json $expected_pwd" ] \
+  || fail "caseB: reconcile-rtk-hook args must be '<settings.json> <himmel-path>', got: $reconcile_args"
+echo "ok: caseB reconcile-rtk-hook ($reconcile_line) < bootstrap ($bootstrap_line), args OK"
 
 # ── Case C: --luna-remote -> fail-closed BEFORE any provisioning ───────────
 # Reuses the Case B stub environment (same stub PATH + temp HOME) so a

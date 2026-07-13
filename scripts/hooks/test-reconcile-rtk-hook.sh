@@ -28,6 +28,10 @@
 #   12. No hooks.PreToolUse key → byte-for-byte unchanged (no spurious []).
 #   13. Two guards in the SAME hooks array → collapse (intra-array branch).
 #   14. Bare entry beside a non-rtk hook → matcher + sibling preserved.
+#   15. Stale-path guard + fresh bare → ONE guard at the CURRENT path.
+#   16. Custom command mentioning the guard path → never rewritten.
+#   17. Custom command BEFORE a real guard → custom kept verbatim, ONE guard.
+#   18. Custom command AFTER a real guard → custom kept verbatim, ONE guard.
 
 set -uo pipefail
 
@@ -252,6 +256,88 @@ if [ "$(guard_count "$f")" -eq 1 ] \
     assert_pass "matcher 'Bash' + sibling hook preserved, 1 guard"
 else
     assert_fail "matcher/sibling not preserved: $(jq -c . "$f")"
+fi
+
+# ---------- 15. Stale guard path + fresh bare → ONE guard at the CURRENT path ----------
+# HIMMEL-985: settings restored from another machine/username/checkout carry a
+# guard entry with an old absolute path. Dedup keeps the FIRST guard in
+# document order, so without the normalize stage the stale entry would win and
+# the freshly swapped one be dropped — setup would report success while the
+# hook points at a missing wrapper.
+echo "Test 15: stale-path guard + new bare entry normalize to the current guard path"
+f="$work/stale.json"
+jq -n '{hooks:{PreToolUse:[
+    {matcher:"Bash",hooks:[{type:"command",command:"bash \"/old/checkout/scripts/hooks/rtk-hook-guard.sh\""}]},
+    {matcher:"Bash",hooks:[{type:"command",command:"rtk hook claude"}]}
+]}}' > "$f"
+reconcile "$f"
+if [ "$(guard_count "$f")" -eq 1 ] && [ "$(bare_count "$f")" -eq 0 ] \
+   && jq -e --arg g "$GUARD" '[.hooks.PreToolUse[]?.hooks[]?.command] | any(. == $g)' "$f" >/dev/null \
+   && ! jq -e '[.hooks.PreToolUse[]?.hooks[]?.command] | any(contains("/old/checkout/"))' "$f" >/dev/null; then
+    assert_pass "1 guard at the current himmel path, stale path gone"
+else
+    assert_fail "stale guard survived or wrong path: $(jq -c . "$f")"
+fi
+
+# ---------- 16. Custom command MENTIONING the guard path is never rewritten ----------
+# The normalize stage is deliberately narrower than dedup: only a PLAIN
+# `bash "<path>/rtk-hook-guard.sh"` invocation is rewritten. An operator's
+# custom wrapper that merely mentions the guard path keeps its exact text
+# (non-destructive contract; CR round-5 finding).
+echo "Test 16: a custom wrapper mentioning rtk-hook-guard.sh keeps its exact command"
+f="$work/custom.json"
+custom='bash /x/wrap.sh --then "/opt/other/scripts/hooks/rtk-hook-guard.sh"'
+jq -n --arg c "$custom" '{hooks:{PreToolUse:[
+    {matcher:"Bash",hooks:[{type:"command",command:$c}]}
+]}}' > "$f"
+if ! reconcile "$f"; then
+    assert_fail "reconcile exited non-zero on the custom-wrapper fixture"
+elif jq -e --arg c "$custom" '[.hooks.PreToolUse[]?.hooks[]?.command] | any(. == $c)' "$f" >/dev/null; then
+    assert_pass "custom wrapper command preserved verbatim"
+else
+    assert_fail "custom wrapper was rewritten: $(jq -c . "$f")"
+fi
+
+# plain_guard_count <file>  — hook objects whose command IS the current guard
+# (exact match; narrower than guard_count's contains(), which also counts a
+# custom wrapper that mentions the guard path).
+plain_guard_count() {
+    jq --arg g "$GUARD" '[.hooks.PreToolUse[]?.hooks[]? | select((.command // "") == $g)] | length' "$1"
+}
+
+# ---------- 17. Custom wrapper BEFORE a real guard → both survive dedup ----------
+# Dedup must collapse only PLAIN guard invocations. A custom wrapper listed
+# first must not swallow the real guard (contains()-era dedup kept the first
+# guard-ish entry in document order, deleting whichever came second).
+echo "Test 17: custom wrapper before a real guard - custom kept verbatim, one plain guard"
+f="$work/custom-first.json"
+jq -n --arg c "$custom" --arg g "$GUARD" '{hooks:{PreToolUse:[
+    {matcher:"Bash",hooks:[{type:"command",command:$c}]},
+    {matcher:"Bash",hooks:[{type:"command",command:$g}]}
+]}}' > "$f"
+if ! reconcile "$f"; then
+    assert_fail "reconcile exited non-zero on the custom-before-guard fixture"
+elif [ "$(jq --arg c "$custom" '[.hooks.PreToolUse[]?.hooks[]?.command | select(. == $c)] | length' "$f")" -eq 1 ] \
+   && [ "$(plain_guard_count "$f")" -eq 1 ]; then
+    assert_pass "custom wrapper kept verbatim exactly once, exactly one plain guard remains"
+else
+    assert_fail "custom-before-guard mangled: $(jq -c . "$f")"
+fi
+
+# ---------- 18. Custom wrapper AFTER a real guard → both survive dedup ----------
+echo "Test 18: custom wrapper after a real guard - custom kept verbatim, one plain guard"
+f="$work/custom-second.json"
+jq -n --arg c "$custom" --arg g "$GUARD" '{hooks:{PreToolUse:[
+    {matcher:"Bash",hooks:[{type:"command",command:$g}]},
+    {matcher:"Bash",hooks:[{type:"command",command:$c}]}
+]}}' > "$f"
+if ! reconcile "$f"; then
+    assert_fail "reconcile exited non-zero on the custom-after-guard fixture"
+elif [ "$(jq --arg c "$custom" '[.hooks.PreToolUse[]?.hooks[]?.command | select(. == $c)] | length' "$f")" -eq 1 ] \
+   && [ "$(plain_guard_count "$f")" -eq 1 ]; then
+    assert_pass "custom wrapper kept verbatim exactly once, exactly one plain guard remains"
+else
+    assert_fail "custom-after-guard mangled: $(jq -c . "$f")"
 fi
 
 # ---------- summary ----------
