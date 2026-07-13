@@ -1716,7 +1716,10 @@ out=$(HIMMEL_HEADROOM_PROXY=0 ARM_BRIDGE_LIVE=0 WSL_STUB_MODE=ok \
     --wsl-distro ubuntu --channels 'plugin:test@local' --force --dry-run 2>&1)
 rc=$?
 assert_rc "T-wsl body exits 0" 0 "$rc"
-assert_contains "T-wsl body uses quoted distro + login shell" 'wsl.exe -d "ubuntu" -e bash -lc' "$out"
+assert_contains "T-wsl body uses unquoted distro + login shell" 'wsl.exe -d ubuntu -e bash -lc' "$out"
+# HIMMEL-998: a quoted -d value reaches wsl.exe verbatim from the .bat (cmd
+# does not strip it, wsl.exe does not either) -> WSL_E_DISTRO_NOT_FOUND.
+assert_not_contains "T-wsl body never quotes the -d value" 'wsl.exe -d "' "$out"
 assert_contains "T-wsl body has in-distro cd+claude" "cd '$WSL_CWD' && claude" "$out"
 assert_not_contains "T-wsl no caret escapes inside CMD quotes" '^&' "$out"
 assert_contains "T-wsl prompt precedes channels" "'load $WSL_HO overnight mode' --channels 'plugin:test@local'" "$out"
@@ -1809,7 +1812,7 @@ out=$(HIMMEL_HEADROOM_PROXY=1 WSL_STUB_MODE=ok \
 rc=$?
 assert_rc "T-wsl headroom combination exits 0" 0 "$rc"
 assert_contains "T-wsl headroom skip warns" "proxy gate skipped for a WSL-station arm" "$out"
-assert_contains "T-wsl headroom skip emits plain launch" 'wsl.exe -d "ubuntu" -e bash -lc' "$out"
+assert_contains "T-wsl headroom skip emits plain launch" 'wsl.exe -d ubuntu -e bash -lc' "$out"
 assert_not_contains "T-wsl headroom skip omits proxy gate" "livez" "$out"
 
 # V1: DD/MM locale render. `reg` reports a dd/MM/yyyy short-date pattern;

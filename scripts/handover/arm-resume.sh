@@ -2328,7 +2328,15 @@ schedule_arm() {
                 printf 'del /q "%%FLOW_RUN_TMP%%" >NUL 2>&1
 '
                 if [ -n "$WSL_DISTRO" ]; then
-                    printf 'wsl.exe -d "%s" -e bash -lc "%s"\r\n' "$WSL_DISTRO" "$wsl_launch"
+                    # -d value MUST be unquoted (HIMMEL-998): wsl.exe splits its
+                    # pre--e command line naively and does NOT strip CMD-level
+                    # double quotes, so -d "Ubuntu" resolves the five-char name
+                    # plus quotes -> WSL_E_DISTRO_NOT_FOUND (rc -1, live win2
+                    # fire). Interactive tests never caught it because bash/
+                    # PowerShell strip the quotes before wsl.exe sees them;
+                    # only the emitted .bat passes them through. Safe unquoted:
+                    # WSL_DISTRO is validated ^[A-Za-z0-9._-]+$ at parse time.
+                    printf 'wsl.exe -d %s -e bash -lc "%s"\r\n' "$WSL_DISTRO" "$wsl_launch"
                 else
                     printf 'cd /d "%s" || exit /b 1\r\n' "$c"
                     if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
