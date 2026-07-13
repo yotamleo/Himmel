@@ -8,6 +8,16 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] — 2026-07-13
+
+### Added
+- **CONTRA layer (LUNA-94):** `_Templates/Decision.md` scaffold template with `claim:`/
+  `assumption:` premise frontmatter (LUNA-95); `_CLAUDE.md` decision-note contract + the
+  Contradiction-Resolution Policy — reconcile runbooks are propose-only, conflict proposals land
+  in `00-Inbox/` with a conflict-note frontmatter contract (LUNA-98); `decision` and `conflict`
+  added to the note-type list. Pairs with the himmel obsidian-triage `/contra` skill (ghost-self +
+  bridge passes, LUNA-96/97).
+
 ## [0.2.2] — 2026-07-09
 
 ### Fixed

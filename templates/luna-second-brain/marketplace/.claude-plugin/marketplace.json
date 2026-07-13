@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "luna-brain — OSS Obsidian vault skeleton for Claude Code workflows. This marketplace ships NO plugins: Steph Ango's obsidian skill pack installs from its own upstream marketplace (obsidian@obsidian-skills) because kepano publishes no tags and a bare-SHA pin is not installable (HIMMEL-435/449); claude-obsidian ships via the himmel marketplace; pair with obsidian-second-brain (installed via its upstream install.sh) for PARA capture skills. metadata.version below is the template version read by scripts/upgrade.sh.",
-    "version": "0.2.2"
+    "version": "0.3.0"
   },
   "plugins": []
 }
