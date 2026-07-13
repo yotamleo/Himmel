@@ -468,6 +468,20 @@ _ql_arms_mutex_release() {
     return 0
 }
 
+# Drop a takeover claim only while its atomic owner brand still names us.
+# A taker that outlives the 120s claim TTL must not remove a reclaimer's
+# newly created generation.
+_ql_takeover_claim_release() {
+    local claim="$1" token="$2" current=""
+    current=$(cat "$claim/owner" 2>/dev/null) || current=""
+    if [ "$current" != "$token" ]; then
+        return 1
+    fi
+    rm -f "$claim/owner" 2>/dev/null
+    rmdir "$claim" 2>/dev/null
+    return 0
+}
+
 queue_lock_acquire() {
     local ho="${1:-}" session="${2:-}"
     if [ -z "$ho" ]; then
@@ -491,18 +505,34 @@ queue_lock_acquire() {
         echo "queue-lock: cannot create the lock parent dir '$(dirname "$lockdir")' (permissions? a file in the way?)" >&2
         return 1
     fi
+    # uutils mkdir can report success to concurrent creators of the same
+    # directory. The owner create is the real CAS: bash noclobber maps to
+    # open(O_CREAT|O_EXCL), so only its winner may brand owner.json.
     if mkdir "$lockdir" 2>/dev/null; then
-        if ! _ql_write_owner "$lockdir" "$session" "$host" "$ho" "$now" "$now"; then
-            # C3: never report acquired over a failed owner write -- the
-            # torn lock would parse as CORRUPT-held (fail-closed) forever.
-            rm -rf "$lockdir" 2>/dev/null
-            echo "queue-lock: acquire FAILED -- owner.json could not be written; the lock dir was removed, nothing is acquired" >&2
+        if ( set -C; printf '%s' "$session" > "$lockdir/owner" ) 2>/dev/null; then
+            if ! _ql_write_owner "$lockdir" "$session" "$host" "$ho" "$now" "$now"; then
+                # C3: never report acquired over a failed owner write -- the
+                # torn lock would parse as CORRUPT-held (fail-closed) forever.
+                rm -rf "$lockdir" 2>/dev/null
+                echo "queue-lock: acquire FAILED -- owner.json could not be written; the lock dir was removed, nothing is acquired" >&2
+                return 1
+            fi
+            echo "queue-lock: acquired (session=$session host=$host)"
+            _ql_arms_registry_retire_fired "$ho"
+            echo "release-token: $session"
+            return 0
+        elif [ ! -e "$lockdir/owner" ]; then
+            # Owner create failed with NO winner branded (ENOSPC/ACL/IO --
+            # not a lost race; codex-adv 981-r1): an unbranded dir would
+            # wedge every future taker on manual cleanup. rmdir (never
+            # rm -rf) is race-safe -- it only removes an EMPTY dir, so a
+            # racer branding between the check and here makes it a no-op.
+            rmdir "$lockdir" 2>/dev/null
+            echo "queue-lock: acquire FAILED -- the owner file could not be created (disk full? permissions?); the empty lock dir was removed, nothing is acquired" >&2
             return 1
         fi
-        echo "queue-lock: acquired (session=$session host=$host)"
-        _ql_arms_registry_retire_fired "$ho"
-        echo "release-token: $session"
-        return 0
+        # owner exists: a uutils co-winner branded first -- we LOST the
+        # arbiter; fall through to the loser/spin path below.
     fi
 
     # Lost the mkdir race, but the WINNER may not have finished writing
@@ -599,7 +629,12 @@ queue_lock_acquire() {
                 echo "WARN queue-lock: cannot age the takeover claim '$claim' (mtime probe failed) -- treating it as fresh. If it is stuck from a crashed taker, remove it manually: rm -rf '$claim'" >&2
             fi
         fi
-        if ! mkdir "$claim" 2>/dev/null; then
+        # mkdir success is provisional on uutils. Atomically brand the
+        # claim with bash noclobber; a co-winner leaves the true winner's
+        # directory/owner untouched and follows the normal held path.
+        local claim_token="pid$$-r$RANDOM"
+        if ! mkdir "$claim" 2>/dev/null \
+            || ! ( set -C; printf '%s' "$claim_token" > "$claim/owner" ) 2>/dev/null; then
             {
                 echo "queue-lock: held -- another taker holds the takeover claim for this queue right now ($claim)"
                 echo "Try again shortly, or check: queue-lock.sh status"
@@ -610,7 +645,7 @@ queue_lock_acquire() {
         local v_raw
         v_raw=$(cat "$lockdir/owner.json" 2>/dev/null) || v_raw=""
         if [ "$v_raw" != "$o_raw" ]; then
-            rmdir "$claim" 2>/dev/null
+            _ql_takeover_claim_release "$claim" "$claim_token" || true
             local n_session n_host
             n_session=$(_ql_json_field_str "$v_raw" session)
             n_host=$(_ql_json_field_str "$v_raw" host)
@@ -622,19 +657,36 @@ queue_lock_acquire() {
         fi
         # Step 3: destroy the verified-stale generation, fresh-acquire.
         rm -rf "$lockdir" 2>/dev/null
+        # Same owner-file arbiter as the fresh acquire above: a uutils
+        # mkdir co-winner must not overwrite or remove the true winner.
+        # And same write-failure contract (codex-adv 981-r1): a failed owner
+        # create with NO winner branded is an IO/permissions error, not a
+        # lost race -- rmdir the unbranded dir (race-safe: rmdir refuses a
+        # non-empty dir) instead of leaving a queue-wedging husk.
+        local takeover_owner_ok=0
         if mkdir "$lockdir" 2>/dev/null; then
+            if ( set -C; printf '%s' "$session" > "$lockdir/owner" ) 2>/dev/null; then
+                takeover_owner_ok=1
+            elif [ ! -e "$lockdir/owner" ]; then
+                rmdir "$lockdir" 2>/dev/null
+                _ql_takeover_claim_release "$claim" "$claim_token" || true
+                echo "queue-lock: takeover FAILED -- the owner file could not be created (disk full? permissions?); the empty lock dir was removed, nothing is acquired" >&2
+                return 1
+            fi
+        fi
+        if [ "$takeover_owner_ok" -eq 1 ]; then
             if ! _ql_write_owner "$lockdir" "$session" "$host" "$ho" "$now" "$now"; then
                 # C3: same contract as the fresh path -- never report a
                 # takeover over a failed owner write.
                 rm -rf "$lockdir" 2>/dev/null
-                rmdir "$claim" 2>/dev/null
+                _ql_takeover_claim_release "$claim" "$claim_token" || true
                 echo "queue-lock: takeover FAILED -- owner.json could not be written; the lock dir was removed, nothing is acquired" >&2
                 return 1
             fi
             printf '%s took over from session=%s host=%s started=%s heartbeat=%s reason=%s new_session=%s new_host=%s\n' \
                 "$now" "$o_session" "$o_host" "$o_started" "$o_heartbeat" "$reason" "$session" "$host" \
                 >> "$lockdir/takeovers.log"
-            rmdir "$claim" 2>/dev/null
+            _ql_takeover_claim_release "$claim" "$claim_token" || true
             echo "queue-lock: took over ($reason) -- previous holder: session=$o_session host=$o_host" >&2
             echo "queue-lock: acquired (session=$session host=$host)"
             _ql_arms_registry_retire_fired "$ho"
@@ -642,7 +694,7 @@ queue_lock_acquire() {
             return 0
         fi
         # Lost the rm->mkdir gap to a fresh acquirer -- it owns the lock.
-        rmdir "$claim" 2>/dev/null
+        _ql_takeover_claim_release "$claim" "$claim_token" || true
         local l_session="" l_host=""
         if [ -f "$lockdir/owner.json" ]; then
             l_session=$(_ql_json_field "$lockdir/owner.json" session)
