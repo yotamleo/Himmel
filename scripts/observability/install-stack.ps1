@@ -3,6 +3,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Progress rendering makes Invoke-WebRequest downloads crawl in remote/task
+# contexts (no console to render into); silence it for the whole install.
+$ProgressPreference = 'SilentlyContinue'
 
 function Write-Step {
   param([string]$Message)
