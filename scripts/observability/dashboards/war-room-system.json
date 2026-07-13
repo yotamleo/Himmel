@@ -248,11 +248,12 @@
       },
       "gridPos": { "h": 6, "w": 24, "x": 0, "y": 25 },
       "id": 20,
+      "description": "Real bank sources (HIMMEL-1000): claude = statusline usage cache (5h + weekly), codex = newest rollout rate_limits (weekly; used_percent emitted verbatim), glm = quota-gauge ledger (5h). One bar per lanes.json lane × governing window. Lanes without a machine-readable quota are omitted — /metrics carries an explicit omit comment per lane.",
       "options": { "displayMode": "gradient", "maxVizHeight": 300, "minVizHeight": 10, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": true, "valueMode": "color" },
       "targets": [
-        { "expr": "lane_quota_used_pct", "legendFormat": "{{lane}} {{posture}}", "refId": "A" }
+        { "expr": "lane_quota_used_pct", "legendFormat": "{{lane}} {{window}}", "refId": "A" }
       ],
-      "title": "Lane quota used",
+      "title": "Lane quota used (real banks)",
       "type": "bargauge"
     }
   ],
@@ -286,6 +287,6 @@
   "timezone": "",
   "title": "War room — system",
   "uid": "himmel-war-room-system",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

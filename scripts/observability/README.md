@@ -54,7 +54,12 @@ Shape:
     "himmel-pipeline-harvest"
   ],
   "vault_path": "C:/Users/you/Documents/luna",
-  "host_detectors_ttl_seconds": 60
+  "host_detectors_ttl_seconds": 60,
+  "quota_sources": {
+    "claude_cache_path": "/tmp/claude/statusline-usage-cache.json",
+    "codex_sessions_dir": "C:/Users/you/.codex/sessions",
+    "glm_ledger_path": "C:/Users/you/.himmel/quota-gauge.jsonl"
+  }
 }
 ```
 
@@ -70,16 +75,27 @@ Rules:
 - `vault_path` is optional. Without it, Luna backlog metrics are omitted.
 - `host_detectors_ttl_seconds` controls the Windows host detector cache. It
   defaults to 60 seconds.
+- `quota_sources` is optional; every key has a derived default (claude:
+  `$CLAUDE_USAGE_CACHE`, else `<tmp>/claude/statusline-usage-cache.json`;
+  codex: `~/.codex/sessions`; glm: the quota-gauge ledger path).
 
 ## Metrics
 
 Flow metrics are derived from `~/.himmel/flow-runs.jsonl` unless
 `HIMMEL_FLOW_RUNS_LEDGER` overrides the path.
 
-Quota metrics are re-exported through `scripts/telegram/quota-gauge.ts` from
-`~/.himmel/quota-gauge.jsonl` unless `HIMMEL_QUOTA_GAUGE_LEDGER` overrides the
-path. Lane budget metadata from `scripts/lanes/lanes.json` may appear as
-registry labels, such as `posture="conserve"`, when present.
+Lane quota gauges (`lane_quota_used_pct{lane,bank,window}`, HIMMEL-1000) read
+real bank sources via `scripts/observability/quota-sources.ts`: the claude
+bank from the statusline usage cache (5h + weekly windows), the codex bank
+from the newest `~/.codex/sessions` rollout `rate_limits` row (weekly;
+`used_percent` is emitted verbatim — live-verified USED semantics), and the
+glm bank from the quota-gauge ledger (`~/.himmel/quota-gauge.jsonl`, or
+`HIMMEL_QUOTA_GAUGE_LEDGER`). Each `scripts/lanes/lanes.json` lane that
+declares `quota.bank` emits one series per live window of its bank; every
+reading is gated on a live `resets_at`/`reset_at` (an expired window is
+omitted, never re-emitted). Lanes without a machine-readable quota source —
+and banks with no live reading — appear as explicit
+`# lane_quota_used_pct omitted: ...` comments instead of fabricated values.
 
 Scheduled task and Luna backlog walks are cached for 60s. The flow ledger fold
 runs on every scrape so in-flight age and stall inference are fresh.
