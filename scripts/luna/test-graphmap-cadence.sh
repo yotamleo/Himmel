@@ -240,8 +240,8 @@ himmel_sh=$(cat "$CRON_DIR/graphmap-himmel.sh" 2>/dev/null || echo MISSING)
 # strip the escapes before multi-word asserts.
 luna_sh_plain=${luna_sh//\\/}
 himmel_sh_plain=${himmel_sh//\\/}
-assert_contains "luna runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 2" "$luna_sh"
-assert_contains "himmel runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 2" "$himmel_sh"
+assert_contains "luna runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 3" "$luna_sh"
+assert_contains "himmel runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 3" "$himmel_sh"
 assert_contains "luna runner fires refresh-graph-map.sh"   "refresh-graph-map.sh" "$luna_sh_plain"
 assert_contains "luna runner names the luna corpus"        "--name luna"          "$luna_sh"
 assert_contains "luna runner sets the luna slug"           "--slug graphify-luna-map" "$luna_sh"
@@ -618,8 +618,8 @@ assert_contains "himmel Exec points at runner bat" "graphmap-himmel.bat" "$himme
 echo "TEST: .bat runners fire bash refresh-graph-map.sh with the right payload"
 luna_bat=$(cat "$BAT_DIR/graphmap-luna.bat" 2>/dev/null || echo MISSING)
 himmel_bat=$(cat "$BAT_DIR/graphmap-himmel.bat" 2>/dev/null || echo MISSING)
-assert_contains "luna bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 2" "$luna_bat"
-assert_contains "himmel bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 2" "$himmel_bat"
+assert_contains "luna bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 3" "$luna_bat"
+assert_contains "himmel bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 3" "$himmel_bat"
 assert_contains "luna bat cds into himmel root" 'cd /d "' "$luna_bat"
 assert_contains "luna bat fires refresh-graph-map.sh" "refresh-graph-map.sh" "$luna_bat"
 assert_contains "luna bat names the luna corpus"      "--name luna"          "$luna_bat"

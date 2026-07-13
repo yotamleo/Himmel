@@ -57,6 +57,24 @@ $artifactDir = [System.IO.Path]::GetFullPath($artifactDir)
 New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
 $artifact = Join-Path $artifactDir "gh-$resolvedTo.json"
 
+# -- flow-run ledger ----------------------------------------------------------
+
+$flowRunLedger = ([System.IO.Path]::GetFullPath((Join-Path $repoRoot 'scripts\lib\flow-run-ledger.sh'))) -replace '\\','/'
+$flowRunBash = $null
+try {
+    $flowRunBash = (Get-Command bash -ErrorAction Stop).Source
+} catch {
+    $flowRunBash = $null
+}
+$flowRunId = ''
+if ($flowRunBash) {
+    try {
+        $flowRunId = (& $flowRunBash $flowRunLedger --append-start 'luna-vitals-pull' '' $env:COMPUTERNAME '' '' '' '' $PID 2>$null | Select-Object -First 1)
+    } catch {
+        $flowRunId = ''
+    }
+}
+
 # -- run pull -----------------------------------------------------------------
 
 $pullRc = 0
@@ -74,6 +92,23 @@ if ($env:PULL_CMD) {
     $pullRc = $LASTEXITCODE
 }
 $ErrorActionPreference = 'Stop'
+
+$flowRunOutcome = 'complete'
+if ($flowRunBash) {
+    try {
+        $classified = (& $flowRunBash $flowRunLedger --classify "$pullRc" '' 2>$null | Select-Object -First 1)
+        if ($classified) { $flowRunOutcome = $classified }
+    } catch {
+        $flowRunOutcome = 'complete'
+    }
+    if ($flowRunId) {
+        try {
+            & $flowRunBash $flowRunLedger --append-end 'luna-vitals-pull' "$flowRunId" '' "$pullRc" "$flowRunOutcome" '' '' *> $null
+        } catch {
+            # Ledger writes are best-effort and must not change wrapper outcome.
+        }
+    }
+}
 
 # -- handle result ------------------------------------------------------------
 

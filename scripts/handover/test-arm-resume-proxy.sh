@@ -36,6 +36,7 @@ trap 'rm -rf "$TMP"' EXIT
 # no real telemetry/trust writes, no operator-shell env bleed.
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
+export HIMMEL_FLOW_RUNS_LEDGER="$TMP/flow-runs.jsonl"
 unset HIMMEL_HEADROOM_PROXY HEADROOM_BIN 2>/dev/null || true
 
 FAILED=0
@@ -426,10 +427,11 @@ assert_not_contains "T7c broken lib: truthy .env fallback disabled" "livez" "$ou
 # ---------------------------------------------------------------------------
 # T8 (CR round): cygpath failure on the headroom+curl conversion -> rc 4,
 #     ERR text, and no leftover temp .bat. The stub delegates the batched
-#     3-path call (-w + 3 args = $# 4) to the REAL cygpath and refuses the
-#     2-path headroom+curl call ($# 3), so the failure lands exactly on the
-#     new conversion. Windows-only: the .bat branch is the only cygpath
-#     consumer (POSIX launchers never call it).
+#     3-path call (-w + 3 args = $# 4) AND the single-path calls ($# 2:
+#     bash.exe -w, flow-run-ledger.sh -m — HIMMEL-921) to the REAL cygpath
+#     and refuses the 2-path headroom+curl call ($# 3), so the failure lands
+#     exactly on the headroom conversion. Windows-only: the .bat branch is
+#     the only cygpath consumer (POSIX launchers never call it).
 # ---------------------------------------------------------------------------
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
     msys*|cygwin*|win32*|MINGW*)
@@ -438,7 +440,7 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         mkdir -p "$CYGFAIL_STUB"
         {
             printf '#!/usr/bin/env bash\n'
-            printf 'if [ "$#" -eq 4 ]; then exec "%s" "$@"; fi\n' "$REAL_CYGPATH"
+            printf 'if [ "$#" -eq 4 ] || [ "$#" -eq 2 ]; then exec "%s" "$@"; fi\n' "$REAL_CYGPATH"
             printf 'echo "stub cygpath: refused" >&2\n'
             printf 'exit 1\n'
         } > "$CYGFAIL_STUB/cygpath"
