@@ -4,6 +4,16 @@
 # lifecycle rows and appends them to ~/.himmel/flow-runs.jsonl by default.
 # bash 3.2-safe (no associative arrays, no mapfile).
 
+# PATH self-heal: emitted .bat runners invoke this lib via the bare
+# usr\bin\bash.exe (the arm-time `command -v bash` resolution), which does
+# NOT bootstrap the MSYS PATH the way the bin\bash.exe wrapper does. On a
+# host whose WINDOWS PATH lacks Git's usr\bin (live win2 station fire, s53),
+# dirname/date/mkdir/mv are all missing and the append silently dies. The
+# in-process /usr/bin mount always exists for an MSYS bash, so heal from it.
+command -v dirname >/dev/null 2>&1 && command -v date >/dev/null 2>&1 \
+    && command -v mkdir >/dev/null 2>&1 && command -v mv >/dev/null 2>&1 \
+    || PATH="/usr/bin:/bin:$PATH"
+
 _fr_src="${BASH_SOURCE[0]:-$0}"
 _fr_self_dir=$(cd "$(dirname "$_fr_src")" 2>/dev/null && pwd) || _fr_self_dir="$(dirname "$_fr_src")"
 # shellcheck source=flow-run-ledger-path.sh
