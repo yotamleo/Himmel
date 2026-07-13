@@ -53,7 +53,8 @@ Shape:
   "expected_tasks": [
     "himmel-pipeline-harvest"
   ],
-  "vault_path": "C:/Users/you/Documents/luna"
+  "vault_path": "C:/Users/you/Documents/luna",
+  "host_detectors_ttl_seconds": 60
 }
 ```
 
@@ -67,6 +68,8 @@ Rules:
 - `expected_tasks` is Windows-only. Non-Windows platforms omit the scheduled
   task family and add a comment in `/metrics`.
 - `vault_path` is optional. Without it, Luna backlog metrics are omitted.
+- `host_detectors_ttl_seconds` controls the Windows host detector cache. It
+  defaults to 60 seconds.
 
 ## Metrics
 
@@ -80,6 +83,23 @@ registry labels, such as `posture="conserve"`, when present.
 
 Scheduled task and Luna backlog walks are cached for 60s. The flow ledger fold
 runs on every scrape so in-flight age and stall inference are fresh.
+
+Host detector metrics are collected by
+`scripts/observability/host-detectors.ps1`, which takes one `Win32_Process`
+snapshot and emits JSON for the exporter. The detector is report-only: it does
+not write state and does not control processes. On non-Windows hosts, or when
+PowerShell collection fails, these families are omitted and `/metrics` includes
+an explanatory `# agent_tree_*/orphan_* omitted: ...` comment.
+
+- `agent_tree_rss_bytes{class="..."}` - working-set bytes summed by process
+  tree class (`claude`, `codex-app-server`, `codex-exec`, `hermes-gateway`,
+  `telegram-bridge`, `mcp-standalone`, `other`).
+- `agent_tree_process_count{class="..."}` - process count for the same tree
+  classes.
+- `orphan_process_count{class="..."}` - report-only orphan-shaped process count
+  by detector class (`codex-fleet`, `codex-exec-registry`,
+  `hermes-gateway-orphan`, `codex-app-server-orphan`,
+  `mcp-dead-parent-unattributed`).
 
 ## Install on Windows
 
@@ -110,8 +130,6 @@ Import `dashboards/war-room-system.json` into Grafana and bind the
 
 ## Deliberately not here
 
-- RAM process trees, orphan attribution, and per-subtree memory panels:
-  HIMMEL-924.
 - Alert rules and Telegram alerting.
 - Loki or log ingestion.
 - Docker, brew, apt, or other Phase B packaging.
