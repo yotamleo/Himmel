@@ -56,6 +56,12 @@ artifact_dir="${LUNA_VITALS_ARTIFACT_DIR:-$SCRIPT_DIR/../.gh-vitals}"
 mkdir -p "$artifact_dir"
 artifact="$artifact_dir/gh-${TO}.json"
 
+# -- flow-run ledger ----------------------------------------------------------
+
+FLOW_RUN_LEDGER="$REPO_ROOT/scripts/lib/flow-run-ledger.sh"
+# host arg "" — the lib defaults it (hostname/uname fallback lives in ONE place)
+FLOW_RUN_ID=$(bash "$FLOW_RUN_LEDGER" --append-start luna-vitals-pull "" "" "" "" "" "" "$$" 2>/dev/null) || FLOW_RUN_ID=""
+
 # -- run pull -----------------------------------------------------------------
 
 # Disable errexit so we can capture the pull exit code explicitly.
@@ -72,6 +78,12 @@ else
 fi
 pull_rc=$?
 set -e
+
+FLOW_RUN_OUTCOME=$(bash "$FLOW_RUN_LEDGER" --classify "$pull_rc" "" 2>/dev/null) || FLOW_RUN_OUTCOME=complete
+[ -n "$FLOW_RUN_OUTCOME" ] || FLOW_RUN_OUTCOME=complete
+if [ -n "$FLOW_RUN_ID" ]; then
+    bash "$FLOW_RUN_LEDGER" --append-end luna-vitals-pull "$FLOW_RUN_ID" "" "$pull_rc" "$FLOW_RUN_OUTCOME" "" "" >/dev/null 2>&1 || true
+fi
 
 # -- handle result ------------------------------------------------------------
 

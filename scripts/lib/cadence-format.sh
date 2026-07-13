@@ -25,8 +25,9 @@
 # synthesize/health frequency shift (weekly→daily, monthly→weekly). An armed
 # v1 cadence still fires, but on the OLD frequencies with NO model pin (so it
 # inherits the operator's saved default tier) — nudge `arm --force`.
+# v3 (HIMMEL-921): flow-run ledger start/end rows around each fired runner.
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=2
+CADENCE_RUNNER_FORMAT_VERSION=3
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).

@@ -576,21 +576,43 @@ cmd_disarm() {
 # transient console (03:00 Sunday) whose output would otherwise vanish;
 # `status` surfaces the log.
 emit_bat() {
-    local vault_win_esc="$1" claude_win="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5" model="$6"
+    local vault_win_esc="$1" claude_win="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5" model="$6" flow="$7" task_name="$8" bash_win="$9" flow_lib_m="${10}"
     # cmd_escape the per-leg model (HIMMEL-506 CR fix): every other value
     # interpolated below is already escaped, but the model was a raw "%s" -
     # a value carrying " % & ^ < > | would corrupt the .bat at fire time.
     # validate_arm_inputs rejects metacharacters at the gate; escape here
     # too (defense in depth - the gate also guards emit_runner's printf '%q').
-    local model_esc
+    local model_esc flow_esc task_name_esc bash_win_esc flow_lib_m_esc
     model_esc=$(cmd_escape "$model")
+    flow_esc=$(cmd_escape "$flow")
+    task_name_esc=$(cmd_escape "$task_name")
+    bash_win_esc=$(cmd_escape "$bash_win")
+    flow_lib_m_esc=$(cmd_escape "$flow_lib_m")
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$vault_win_esc" "$log_win_esc"
+    # Capture the run_id via a temp file, NOT `for /f` — for /f re-parses its
+    # backquoted command through cmd /c, whose quote-stripping mangles a
+    # command that STARTS with a quoted path and carries more quoted args
+    # (live-fire verified s52: FLOW_RUN_ID came back empty). A plain quoted
+    # command line with a redirect parses fine.
+    printf 'set "FLOW_RUN_ID="\r\n'
+    printf 'set "FLOW_RUN_TMP=%%TEMP%%\\flow-run-%s.tmp"\r\n' "$task_name_esc"
+    printf '"%s" "%s" --append-start "%s" "" "%%COMPUTERNAME%%" "claude" "%s" "%s" "%s" "" > "%%FLOW_RUN_TMP%%" 2>NUL\r\n' "$bash_win_esc" "$flow_lib_m_esc" "$flow_esc" "$model_esc" "$task_name_esc" "$log_win_esc"
+    printf 'if exist "%%FLOW_RUN_TMP%%" set /p FLOW_RUN_ID=<"%%FLOW_RUN_TMP%%"\r\n'
+    printf 'del /q "%%FLOW_RUN_TMP%%" >NUL 2>&1\r\n'
     # HIMMEL-951: no bg-wait ceiling override here — CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
     # only affects --print mode, and cadence runners are interactive-shaped (HIMMEL-128).
     printf '"%s" --model "%s" --settings "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win" "$model_esc" "$settings_esc" "$prompt_esc" "$log_win_esc"
+    printf 'set "FLOW_RUN_RC=%%ERRORLEVEL%%"\r\n'
+    printf 'set "FLOW_RUN_OUTCOME=complete"\r\n'
+    printf '"%s" "%s" --classify "%%FLOW_RUN_RC%%" "%s" > "%%FLOW_RUN_TMP%%" 2>NUL\r\n' "$bash_win_esc" "$flow_lib_m_esc" "$log_win_esc"
+    printf 'if exist "%%FLOW_RUN_TMP%%" set /p FLOW_RUN_OUTCOME=<"%%FLOW_RUN_TMP%%"\r\n'
+    printf 'del /q "%%FLOW_RUN_TMP%%" >NUL 2>&1\r\n'
+    printf 'if "%%FLOW_RUN_OUTCOME%%"=="" set "FLOW_RUN_OUTCOME=complete"\r\n'
+    printf 'if not "%%FLOW_RUN_ID%%"=="" "%s" "%s" --append-end "%s" "%%FLOW_RUN_ID%%" "" "%%FLOW_RUN_RC%%" "%%FLOW_RUN_OUTCOME%%" "" "" > NUL 2>&1\r\n' "$bash_win_esc" "$flow_lib_m_esc" "$flow_esc"
+    printf 'exit /b %%FLOW_RUN_RC%%\r\n'
 }
 
 # Emit the JSON settings fragment that wires the auto-approve-safe-bash hook by
@@ -817,9 +839,13 @@ cmd_arm() {
 
     # Resolve claude to an absolute Windows path so the .bat doesn't
     # depend on PATH in whatever cmd shell schtasks spawns.
-    local claude_posix claude_win
+    local claude_posix claude_win bash_posix bash_win flow_lib_m
     if ! claude_posix=$(command -v claude 2>/dev/null); then
         echo "ERR pipeline-cadence: 'claude' not on PATH at arm time" >&2
+        exit 2
+    fi
+    if ! bash_posix=$(command -v bash 2>/dev/null); then
+        echo "ERR pipeline-cadence: 'bash' not on PATH at arm time" >&2
         exit 2
     fi
     command -v cygpath >/dev/null 2>&1 || {
@@ -828,6 +854,14 @@ cmd_arm() {
     }
     if ! claude_win=$(cygpath -w "$claude_posix" 2>&1); then
         echo "ERR pipeline-cadence: cygpath -w failed for claude path: $claude_win" >&2
+        exit 4
+    fi
+    if ! bash_win=$(cygpath -w "$bash_posix" 2>&1); then
+        echo "ERR pipeline-cadence: cygpath -w failed for bash path: $bash_win" >&2
+        exit 4
+    fi
+    if ! flow_lib_m=$(cygpath -m "$HIMMEL_ROOT/scripts/lib/flow-run-ledger.sh" 2>&1); then
+        echo "ERR pipeline-cadence: cygpath -m failed for flow-run-ledger.sh: $flow_lib_m" >&2
         exit 4
     fi
     local vault_win
@@ -941,11 +975,11 @@ cmd_arm() {
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$hook_path_m" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_harvest:"
-        emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$HARVEST_MODEL" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$HARVEST_MODEL" "pipeline-harvest" "$TASK_HARVEST" "$bash_win" "$flow_lib_m" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_synth:"
-        emit_bat "$vault_esc" "$claude_win" "$synth_esc" "$log_synth_esc" "$settings_esc" "$SYNTH_MODEL" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$synth_esc" "$log_synth_esc" "$settings_esc" "$SYNTH_MODEL" "pipeline-synthesize" "$TASK_SYNTH" "$bash_win" "$flow_lib_m" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_health:"
-        emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" "$HEALTH_MODEL" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" "$HEALTH_MODEL" "pipeline-health" "$TASK_HEALTH" "$bash_win" "$flow_lib_m" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_HARVEST /xml <daily $HARVEST_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_harvest_win" "$HARVEST_TIME" "$sched_harvest" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_SYNTH /xml <daily $SYNTH_TIME, StartWhenAvailable=true> /f"
@@ -958,9 +992,9 @@ cmd_arm() {
 
     mkdir -p "$BAT_DIR"
     emit_settings_fragment "$hook_path_m" > "$SETTINGS_FRAGMENT"
-    emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$HARVEST_MODEL" > "$bat_harvest"
-    emit_bat "$vault_esc" "$claude_win" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$SYNTH_MODEL"   > "$bat_synth"
-    emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" "$HEALTH_MODEL"  > "$bat_health"
+    emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$HARVEST_MODEL" "pipeline-harvest" "$TASK_HARVEST" "$bash_win" "$flow_lib_m" > "$bat_harvest"
+    emit_bat "$vault_esc" "$claude_win" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$SYNTH_MODEL"   "pipeline-synthesize" "$TASK_SYNTH" "$bash_win" "$flow_lib_m" > "$bat_synth"
+    emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" "$HEALTH_MODEL"  "pipeline-health" "$TASK_HEALTH" "$bash_win" "$flow_lib_m" > "$bat_health"
 
     local err_file
     err_file=$(mktemp -t pipeline-cadence.err.XXXXXX)
@@ -1120,7 +1154,10 @@ cron_existing() {
 # arrive pre-quoted with printf %q.
 # shellcheck disable=SC2016  # single-quoted $log/$(date)/_rc are emitted literally for the runner's own /bin/sh to expand at fire time
 emit_runner() {
-    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_node_dir="${7:-}" q_model="${8:-}"
+    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_node_dir="${7:-}" q_model="${8:-}" flow="${9:-}" q_flow_lib="${10:-}"
+    local q_task q_flow
+    q_task=$(printf '%q' "$name")
+    q_flow=$(printf '%q' "$flow")
     printf '#!/bin/sh\n'
     printf '# %s runner — generated by pipeline-cadence.sh arm (HIMMEL-265)\n' "$name"
     printf '# %s %s\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
@@ -1141,9 +1178,13 @@ emit_runner() {
     printf '{\n'
     printf '    echo "[fired $(date '\''+%%Y-%%m-%%d %%H:%%M:%%S'\'')]"\n'
     printf '    cd %s || exit 1\n' "$q_vault"
+    printf '    _flow_run_id=$(%s --append-start %s "" "" claude %s %s "$log" "$$" 2>/dev/null) || _flow_run_id=\n' "$q_flow_lib" "$q_flow" "$q_model" "$q_task"
     # HIMMEL-951: no bg-wait ceiling override here — CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
     # only affects --print mode, and cadence runners are interactive-shaped (HIMMEL-128).
     printf '    _rc=0; %s --model %s --settings %s %s < /dev/null || _rc=$?\n' "$q_claude" "$q_model" "$q_settings" "$q_prompt"
+    printf '    _flow_outcome=$(%s --classify "$_rc" "$log" 2>/dev/null) || _flow_outcome=complete\n' "$q_flow_lib"
+    printf '    test "$_flow_outcome" != "" || _flow_outcome=complete\n'
+    printf '    test "$_flow_run_id" != "" && %s --append-end %s "$_flow_run_id" "" "$_rc" "$_flow_outcome" "" "" >/dev/null 2>&1 || true\n' "$q_flow_lib" "$q_flow"
     printf '    echo "[exit rc=$_rc]"\n'
     printf '} >> "$log" 2>&1\n'
 }
@@ -1261,9 +1302,10 @@ cron_arm() {
         fi
     fi
 
-    local q_vault q_claude q_node_dir q_harvest_prompt q_synth_prompt q_health_prompt q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
+    local q_vault q_claude q_node_dir q_flow_lib q_harvest_prompt q_synth_prompt q_health_prompt q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
     q_vault=$(printf '%q' "$VAULT")
     q_claude=$(printf '%q' "$claude_bin")
+    q_flow_lib=$(printf '%q' "$HIMMEL_ROOT/scripts/lib/flow-run-ledger.sh")
     q_node_dir=$([ -n "$node_dir" ] && printf '%q' "$node_dir" || printf '')
     q_harvest_prompt=$(printf '%q' "$HARVEST_PROMPT")
     q_synth_prompt=$(printf '%q' "$SYNTH_PROMPT")
@@ -1296,11 +1338,11 @@ cron_arm() {
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$AUTO_APPROVE_HOOK" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HARVEST:"
-        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" "$q_harvest_model" | sed 's/^/    /'
+        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_SYNTH:"
-        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_node_dir" "$q_synth_model" | sed 's/^/    /'
+        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_node_dir" "$q_synth_model" "pipeline-synthesize" "$q_flow_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HEALTH:"
-        emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" "$q_health_model" | sed 's/^/    /'
+        emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" "$q_health_model" "pipeline-health" "$q_flow_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would add crontab entries:"
         echo "    $entry_harvest"
         echo "    $entry_synth"
@@ -1323,9 +1365,9 @@ cron_arm() {
     local tmp_harvest="$CRON_RUNNER_HARVEST.tmp.$$" tmp_synth="$CRON_RUNNER_SYNTH.tmp.$$" tmp_health="$CRON_RUNNER_HEALTH.tmp.$$"
     local tmp_settings="$SETTINGS_FRAGMENT.tmp.$$"
     emit_settings_fragment "$AUTO_APPROVE_HOOK" > "$tmp_settings"
-    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" "$q_harvest_model" > "$tmp_harvest"
-    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_node_dir" "$q_synth_model"   > "$tmp_synth"
-    emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" "$q_health_model"  > "$tmp_health"
+    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" > "$tmp_harvest"
+    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_node_dir" "$q_synth_model"   "pipeline-synthesize" "$q_flow_lib" > "$tmp_synth"
+    emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" "$q_health_model"  "pipeline-health" "$q_flow_lib" > "$tmp_health"
     chmod +x "$tmp_harvest" "$tmp_synth" "$tmp_health"
 
     # Single atomic rewrite: everything that isn't ours, then all three

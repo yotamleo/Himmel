@@ -1027,6 +1027,7 @@ fi
 # composer renders both surfaces from one identity, so the scheduler row name
 # and the session/tab title can never disagree.
 SESSION_NAME=$(_compose_arm_name "$_ho_ticket" "$HANDOVER_PATH" title)
+FLOW_RUN_NOTE=$(_infer_slug "$HANDOVER_PATH")
 unset _ho_ticket _path_suffix _name_seg
 
 # Pre-trust the resolved cwd (HIMMEL-386) so the fired relaunch doesn't stall
@@ -1942,6 +1943,11 @@ _crontab_schedule() {
         q_curl=$(printf '%q' "$HEADROOM_CURL")
         tail="{ $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 claude ${q_name}$q_prompt $q_channels; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; claude ${q_name}$q_prompt $q_channels; fi; }"
     fi
+    local q_flow_lib q_task q_note
+    q_flow_lib=$(printf '%q' "$SCRIPT_DIR/../lib/flow-run-ledger.sh")
+    q_task=$(printf '%q' "$TASK_NAME")
+    q_note=$(printf '%q' "$FLOW_RUN_NOTE")
+    tail="{ _flow_run_id=\$($q_flow_lib --append-start armed-resume \"\" \"\" claude \"\" $q_task \"\" \"\$\$\" 2>/dev/null) || _flow_run_id=; _flow_rc=0; $tail || _flow_rc=\$?; _flow_outcome=\$($q_flow_lib --classify \"\$_flow_rc\" \"\" 2>/dev/null) || _flow_outcome=complete; test \"\$_flow_outcome\" != \"\" || _flow_outcome=complete; test \"\$_flow_run_id\" != \"\" && $q_flow_lib --append-end armed-resume \"\$_flow_run_id\" \"\" \"\$_flow_rc\" \"\$_flow_outcome\" \"\" $q_note >/dev/null 2>&1 || true; exit \"\$_flow_rc\"; }"
     local entry="$mm $hh * * * $self_clean cd $q_cwd && $tail # $TASK_NAME"
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY arm-resume: would add crontab entry:"
@@ -2099,6 +2105,12 @@ schedule_arm() {
             fi
             local bat_path_win claude_cmd_win="" resume_cwd_win=""
             local claude_cmd_posix="" _cyg_out="" _cyg_rest=""
+            local bash_posix
+            if ! bash_posix=$(command -v bash 2>/dev/null); then
+                echo "ERR arm-resume: 'bash' not on PATH at arm time" >&2
+                rm -f "$bat_path"
+                exit 2
+            fi
             if [ -n "$WSL_DISTRO" ]; then
                 # WSL owns both the executable lookup and cwd. Only the .bat
                 # path crosses through cygpath; the in-distro values must not.
@@ -2175,6 +2187,18 @@ schedule_arm() {
                 esac
                 wsl_launch="${wsl_command//%/%%}"
             fi
+            local bash_win flow_lib_m
+            if ! bash_win=$(cygpath -w "$bash_posix" 2>&1); then
+                echo "ERR arm-resume: cygpath -w failed for bash path: $bash_win" >&2
+                rm -f "$bat_path"
+                exit 4
+            fi
+            if ! flow_lib_m=$(cygpath -m "$SCRIPT_DIR/../lib/flow-run-ledger.sh" 2>&1); then
+                echo "ERR arm-resume: cygpath -m failed for flow-run-ledger.sh: $flow_lib_m" >&2
+                rm -f "$bat_path"
+                exit 4
+            fi
+
             # .bat content: escape CMD metacharacters in BOTH the prompt
             # AND the cd path. % & ^ < > | can inject commands at fire
             # time if a directory or handover path contains them. (Windows
@@ -2182,7 +2206,7 @@ schedule_arm() {
             # legal in directory names — and the prompt arg can carry
             # arbitrary text.) Same escape both places; bash assoc-array
             # would be cleaner but not worth the dep for two values.
-            local p="$RESUME_PROMPT" c="$resume_cwd_win"
+            local p="$RESUME_PROMPT" c="$resume_cwd_win" bw="$bash_win" fl="$flow_lib_m" fr_note="$FLOW_RUN_NOTE"
             p="${p//\"/\\\"}"   # escape "
             p="${p//%/%%}"      # double % for CMD literal
             p="${p//^/^^}"
@@ -2197,6 +2221,9 @@ schedule_arm() {
             c="${c//</^<}"
             c="${c//>/^>}"
             c="${c//|/^|}"
+            bw=$(_cmd_metachar_escape "$bw")
+            fl=$(_cmd_metachar_escape "$fl")
+            fr_note=$(_cmd_metachar_escape "$fr_note")
             # Optional --channels passthrough. Same CMD-metachar escape as
             # the prompt — the spec is operator-supplied (could carry % & ^).
             local ch=""
@@ -2286,6 +2313,20 @@ schedule_arm() {
             # TASK_NAME is sanitized to [:alnum:]_- (no CMD metachars).
             {
                 printf 'schtasks /delete /tn "%s" /f >nul 2>&1\r\n' "$TASK_NAME"
+                # Capture the run_id via a temp file, NOT `for /f` — for /f
+                # re-parses its backquoted command through cmd /c, whose
+                # quote-stripping mangles a command that STARTS with a quoted
+                # path and carries more quoted args (live-fire verified s52).
+                printf 'set "FLOW_RUN_ID="
+'
+                printf 'set "FLOW_RUN_TMP=%%TEMP%%low-run-%s.tmp"
+' "$TASK_NAME"
+                printf '"%s" "%s" --append-start "armed-resume" "" "%%COMPUTERNAME%%" "claude" "" "%s" "" "" > "%%FLOW_RUN_TMP%%" 2>NUL
+' "$bw" "$fl" "$TASK_NAME"
+                printf 'if exist "%%FLOW_RUN_TMP%%" set /p FLOW_RUN_ID=<"%%FLOW_RUN_TMP%%"
+'
+                printf 'del /q "%%FLOW_RUN_TMP%%" >NUL 2>&1
+'
                 if [ -n "$WSL_DISTRO" ]; then
                     printf 'wsl.exe -d "%s" -e bash -lc "%s"\r\n' "$WSL_DISTRO" "$wsl_launch"
                 else
@@ -2310,6 +2351,14 @@ schedule_arm() {
                         printf '"%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
                     fi
                 fi
+                printf 'set "FLOW_RUN_RC=%%ERRORLEVEL%%"\r\n'
+                printf 'set "FLOW_RUN_OUTCOME=complete"\r\n'
+                printf '"%s" "%s" --classify "%%FLOW_RUN_RC%%" "" > "%%FLOW_RUN_TMP%%" 2>NUL\r\n' "$bw" "$fl"
+                printf 'if exist "%%FLOW_RUN_TMP%%" set /p FLOW_RUN_OUTCOME=<"%%FLOW_RUN_TMP%%"\r\n'
+                printf 'del /q "%%FLOW_RUN_TMP%%" >NUL 2>&1\r\n'
+                printf 'if "%%FLOW_RUN_OUTCOME%%"=="" set "FLOW_RUN_OUTCOME=complete"\r\n'
+                printf 'if not "%%FLOW_RUN_ID%%"=="" "%s" "%s" --append-end "armed-resume" "%%FLOW_RUN_ID%%" "" "%%FLOW_RUN_RC%%" "%%FLOW_RUN_OUTCOME%%" "" "%s" > NUL 2>&1\r\n' "$bw" "$fl" "$fr_note"
+                printf 'exit /b %%FLOW_RUN_RC%%\r\n'
             } > "$bat_path"
 
             # HIMMEL-938 Part A: re-render START_DATE in the MACHINE's own
@@ -2549,6 +2598,17 @@ else
     claude ${q_name}$q_prompt $q_channels
 fi"
                 fi
+                local q_flow_lib q_task q_note
+                q_flow_lib=$(printf '%q' "$SCRIPT_DIR/../lib/flow-run-ledger.sh")
+                q_task=$(printf '%q' "$TASK_NAME")
+                q_note=$(printf '%q' "$FLOW_RUN_NOTE")
+                launch_lines="_flow_run_id=\$($q_flow_lib --append-start armed-resume \"\" \"\" claude \"\" $q_task \"\" \"\$\$\" 2>/dev/null) || _flow_run_id=
+_flow_rc=0
+$launch_lines || _flow_rc=\$?
+_flow_outcome=\$($q_flow_lib --classify \"\$_flow_rc\" \"\" 2>/dev/null) || _flow_outcome=complete
+test \"\$_flow_outcome\" != \"\" || _flow_outcome=complete
+test \"\$_flow_run_id\" != \"\" && $q_flow_lib --append-end armed-resume \"\$_flow_run_id\" \"\" \"\$_flow_rc\" \"\$_flow_outcome\" \"\" $q_note >/dev/null 2>&1 || true
+exit \"\$_flow_rc\""
                 if [ "$DRY_RUN" -eq 1 ]; then
                     echo "DRY arm-resume: would at -t $AT_STAMP <<'CMD'"
                     echo "    # $TASK_NAME"

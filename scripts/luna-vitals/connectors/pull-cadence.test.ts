@@ -61,6 +61,7 @@ async function runWrapper(pullCmdSnippet: string): Promise<RunResult> {
       ...process.env,
       PULL_CMD: pullCmdSnippet,
       LUNA_VITALS_ARTIFACT_DIR: dir,
+      HIMMEL_FLOW_RUNS_LEDGER: join(dir, 'flow-runs.jsonl'),
       FROM: '2026-06-28',
       TO: '2026-06-29',
     },

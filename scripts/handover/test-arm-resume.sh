@@ -32,6 +32,7 @@ unset ARM_NAME_TEMPLATE 2>/dev/null || true
 # bridge/channel checks, dedup-any) would otherwise write the operator's real
 # config — redirect the pre-seed at a throwaway file for the whole suite.
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
+export HIMMEL_FLOW_RUNS_LEDGER="$TMP/flow-runs.jsonl"
 
 # ---------------------------------------------------------------------------
 # Helpers
