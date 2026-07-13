@@ -64,6 +64,8 @@ assert "hint pins a full commit SHA (CR-r3), not a movable ref" grep -qE '@[0-9a
 assert "hint does NOT install from the mutable himmel-main branch" \
   bash -c '! grep -q "@himmel-main" <<<"$1"' _ "$hint"
 assert "hint mentions the graphifyy package" grep -q 'graphifyy$' <<<"$hint"
+assert "hint carries --with mcp (HIMMEL-996: fork pyproject lacks the mcp dep)" \
+  grep -q -- '--with mcp' <<<"$hint"
 
 echo "[test-graphify-bin] pin policy (CR-r3): the configured ref IS a full 40-hex commit SHA"
 # Tags/branches are force-movable; only a commit SHA is content-addressed.
@@ -108,11 +110,17 @@ fi
 if [ "$1" = "tool" ] && [ "$2" = "install" ]; then
   [ "${STUB_UV_INSTALL_RC:-0}" -eq 0 ] || exit "${STUB_UV_INSTALL_RC}"
   mkdir -p "${UV_TOOL_DIR:?}/graphifyy"
-  # $3=--from $4=<git+url@ref> $5=graphifyy — matches graphify_install()'s
-  # exact argv shape. Write the receipt in uv's REAL serialization (git and
-  # rev as SEPARATE keys, no combined git+url@ref literal) so the provenance
-  # probes are exercised against what a real install leaves behind (CR-2).
-  src="${4#git+}"
+  # Scan argv for the --from value (HIMMEL-996 added `--with mcp` ahead of it,
+  # so positional $4 no longer holds the source). Write the receipt in uv's
+  # REAL serialization (git and rev as SEPARATE keys, no combined git+url@ref
+  # literal) so the provenance probes are exercised against what a real
+  # install leaves behind (CR-2).
+  src=""; prev=""
+  for a in "$@"; do
+    [ "$prev" = "--from" ] && src="$a"
+    prev="$a"
+  done
+  src="${src#git+}"
   printf 'requirements = [{ name = "graphifyy", git = "%s", rev = "%s" }]\n' \
     "${src%@*}" "${src##*@}" > "${UV_TOOL_DIR}/graphifyy/uv-receipt.toml"
   printf 'graphifyy v0.0.0-test\n' >> "${UV_LIST_FILE:?}"
@@ -141,6 +149,8 @@ out=$(HOME="$fresh_home" PATH="$fresh_path" UV_TOOL_DIR="$fresh_tools" UV_LIST_F
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_install; echo "RC=$?"' 2>&1)
 assert "missing: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "missing: exactly one uv tool install call" test "$(grep -c 'UV tool install' "$fresh_log")" -eq 1
+assert "missing: install argv carries --with mcp (HIMMEL-996)" \
+  grep -q 'UV tool install --with mcp --from' "$fresh_log"
 assert "missing: graphify shim landed on PATH" test -x "$fresh_bin/graphify"
 assert "missing: has_graphify true post-install" \
   env PATH="$fresh_path" HOME="$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
@@ -310,6 +320,40 @@ out=$(HOME="$nopath_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$nopath_t
 assert "unresolvable: install WAS attempted (one uv call)" test "$(grep -c 'UV tool install' "$nopath_log")" -eq 1
 assert "unresolvable: rc nonzero" grep -qv '^RC=0$' <<<"$out"
 assert "unresolvable: WARNs 'not resolvable on PATH'" grep -qi 'not resolvable on PATH' <<<"$out"
+
+echo "[test-graphify-bin] _graphify_mcp_import_ok probes the ENTRYPOINT's interpreter (HIMMEL-996)"
+# A console script's shebang python is the most-specific env (covers pip/
+# pipx foreign installs, not just the uv venv). Fake pythons: exit 0 = mcp
+# importable, exit 1 = the missing-dep defect. rc 2 = nothing resolvable.
+probe_dir="$tmpdir/mcp-probe"; mkdir -p "$probe_dir"
+cat > "$probe_dir/py-ok" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$probe_dir/py-fail" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$probe_dir/py-ok" "$probe_dir/py-fail"
+# HOME redirected: the venv-fallback probe path derives a default under
+# $HOME when uv is absent -- the real operator HOME must never leak in.
+probe_home="$tmpdir/probe-home"; mkdir -p "$probe_home"
+printf '#!%s/py-ok python\n' "$probe_dir" > "$probe_dir/graphify-mcp"
+chmod +x "$probe_dir/graphify-mcp"
+rc=0
+HOME="$probe_home" PATH="$probe_dir:$base_path" \
+  bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_mcp_import_ok' || rc=$?
+assert "probe rc 0 when the shebang python imports mcp" test "$rc" -eq 0
+printf '#!%s/py-fail python\n' "$probe_dir" > "$probe_dir/graphify-mcp"
+rc=0
+HOME="$probe_home" PATH="$probe_dir:$base_path" \
+  bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_mcp_import_ok' || rc=$?
+assert "probe rc 1 when the shebang python cannot import mcp" test "$rc" -eq 1
+rm -f "$probe_dir/graphify-mcp"
+rc=0
+HOME="$probe_home" PATH="$probe_dir:$base_path" \
+  bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_mcp_import_ok' || rc=$?
+assert "probe rc 2 (unvalidated) when no interpreter is resolvable" test "$rc" -eq 2
 
 echo "[test-graphify-bin] consumer wiring — setup.sh/adopt.sh source graphify-bin.sh (HIMMEL-891)"
 repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
