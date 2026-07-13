@@ -848,9 +848,11 @@ tokensave is the code-graph MCP server the harness leans on for
 symbol-level code exploration — it is the **T0 always-on** tier in the
 MCP fleet map ([`docs/tooling-catalog.md`](../tooling-catalog.md)) and is
 included in **every** lean launch profile
-(`.claude/mcp-profiles/profiles.json`). Without it, profile launches and
-the CLAUDE.md retrieval routing (qmd → graphify → tokensave) silently
-degrade — the server just never comes up.
+(`.claude/mcp-profiles/profiles.json`). Without it, profile generation
+fails loudly — the generator exits with `unresolved server "tokensave"`
+until the server is registered — and the CLAUDE.md retrieval routing
+(qmd → graphify → tokensave) silently degrades: the server just never
+comes up.
 
 Install the binary (pick one):
 
