@@ -921,6 +921,19 @@ claude mcp add --scope user graphify -- "$(uv tool dir --bin)/graphify-mcp"
 (PowerShell:
 `claude mcp add --scope user graphify -- "$(uv tool dir --bin)\graphify-mcp.exe"`.)
 
+Claude Code is the only agent graphify needs — the MCP registration above is
+the whole integration (no codex/other-CLI prerequisite).
+
+**Windows + WSL on one machine share ONE graph store.** Graph extraction is
+LLM-backed (real spend), so the WSL side must not regenerate what the Windows
+side already extracted. The store (`~/.graphify/` — plain JSON, no
+sqlite/WAL hazard) is shared automatically: `graphify_install` on WSL
+symlinks `~/.graphify` at the Windows user's store — only when that Windows
+store exists (manual: `bash scripts/lib/graphify-bin.sh share-store`). Both
+sides then read AND contribute to the same graphs. A WSL store that already
+has content is never replaced or auto-merged into the Windows one — how to
+merge pre-existing WSL data is your call.
+
 Graph refresh stays lean-invoke (`graphify <corpus-copy> --update`), never
 a hook; extraction backends are governed by the egress matrix — see the
 graphify section in `CLAUDE.md`.

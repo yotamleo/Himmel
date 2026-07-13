@@ -57,8 +57,13 @@ _graphify_bin_name() { printf '%s\n' "graphify"; }
 # Prints the manual install recipe (best-effort documentation text embedded
 # in WARN messages -- NOT eval'd elsewhere; graphify_install() below runs the
 # equivalent command directly).
+# `--with mcp` (HIMMEL-996): the fork's pyproject does not declare the `mcp`
+# python package as a dependency, but the graphify-mcp entrypoint imports it
+# at startup -- without this the CLI works and the MCP server crashes on
+# every fresh install (hit on all 3 stations in the HIMMEL-985 parity audit).
+# Drop the flag once the fork declares the dependency itself.
 graphify_install_hint() {
-  printf '%s\n' "uv tool install --from $(_graphify_pinned_source) $(_graphify_pypi_name)"
+  printf '%s\n' "uv tool install --with mcp --from $(_graphify_pinned_source) $(_graphify_pypi_name)"
 }
 
 # Presence check ONLY -- does not invoke the binary, so a real runtime error
@@ -145,6 +150,19 @@ graphify_install() {
         else
           echo "  graphify already installed (source=foreign) -- adopting the existing install, not installing over it."
         fi
+        # Adopt is non-invasive by contract -- WARN (never reinstall) when the
+        # adopted install carries the HIMMEL-996 missing-mcp-dep defect, and
+        # say so honestly when the layout cannot be validated at all.
+        case "$(_graphify_mcp_import_ok; echo $?)" in
+          1)
+            echo "  WARNING: the adopted graphify install cannot import the 'mcp' package -- graphify-mcp will crash at startup." >&2
+            echo "  Fix with: $(graphify_install_hint) (add --force to replace the existing install)" >&2
+            ;;
+          2)
+            echo "  NOTE: could not validate the adopted install's mcp import (unrecognized install layout) -- if graphify-mcp crashes at startup, reinstall: $(graphify_install_hint)"
+            ;;
+        esac
+        graphify_wsl_share_store
         return 0
       fi
       # CR-r2: install metadata exists but the binary does not resolve
@@ -164,18 +182,100 @@ graphify_install() {
     echo "  uv not found -- cannot install graphify." >&2
     return 1
   fi
-  if ! uv tool install --from "$(_graphify_pinned_source)" "$(_graphify_pypi_name)"; then
+  if ! uv tool install --with mcp --from "$(_graphify_pinned_source)" "$(_graphify_pypi_name)"; then
     echo "  ERROR: graphify install failed." >&2
     return 1
   fi
 
   if has_graphify; then
+    case "$(_graphify_mcp_import_ok; echo $?)" in
+      1)
+        echo "  WARNING: graphify installed but its MCP entrypoint cannot import the 'mcp' package." >&2
+        echo "  graphify-mcp will crash at startup -- reinstall manually: $(graphify_install_hint)" >&2
+        return 1
+        ;;
+      2)
+        echo "  NOTE: could not validate the mcp import (unrecognized install layout) -- if graphify-mcp crashes at startup, reinstall: $(graphify_install_hint)"
+        ;;
+    esac
     echo "  graphify installed and verified (source=himmel-fork)."
+    graphify_wsl_share_store
     return 0
   fi
   echo "  WARNING: graphify installed but '$(_graphify_bin_name)' is still not resolvable on PATH." >&2
   echo "  uv drops its shims in the uv tool bin dir -- check it is on PATH (uv tool update-shell)." >&2
   return 1
+}
+
+# Probes whether the environment behind the graphify-mcp ENTRYPOINT can
+# import the `mcp` package (its startup dependency -- HIMMEL-996).
+# Interpreter resolution, most-specific first (CR: a PATH-based foreign
+# install -- pip/pipx/brew -- must probe ITS interpreter, not the uv venv):
+#   1. the resolved graphify-mcp console script's shebang python (posix;
+#      Windows .exe launchers carry no readable shebang -- falls through);
+#   2. the uv tool venv's python (bin/ posix, Scripts/ windows layouts).
+# rc 0 = import OK; rc 1 = import FAILS (the known missing-dep defect);
+# rc 2 = no interpreter resolvable -- UNVALIDATED, callers must say so
+# rather than treat it as success.
+_graphify_mcp_import_ok() {
+  local py="" mcp_bin shebang tool_venv c
+  mcp_bin="$(command -v graphify-mcp 2>/dev/null)"
+  if [ -n "$mcp_bin" ] && [ -f "$mcp_bin" ]; then
+    shebang="$(head -1 "$mcp_bin" 2>/dev/null)"
+    case "$shebang" in
+      '#!'*python*)
+        py="${shebang#\#!}"
+        case "$py" in
+          */env\ *) py="$(command -v "${py##* }" 2>/dev/null)" ;;
+          *)        py="${py%% *}" ;;
+        esac
+        [ -n "$py" ] && [ -f "$py" ] || py=""
+        ;;
+    esac
+  fi
+  if [ -z "$py" ]; then
+    tool_venv="$(_graphify_uv_tool_dir)/$(_graphify_pypi_name)"
+    for c in "$tool_venv/bin/python" "$tool_venv/Scripts/python.exe"; do
+      [ -f "$c" ] && { py="$c"; break; }
+    done
+  fi
+  [ -n "$py" ] || return 2
+  "$py" -c 'import mcp' >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# On WSL, share the WINDOWS-side global graph store instead of regenerating:
+# graph extraction is LLM-backed (real spend), and the store is plain JSON
+# (~/.graphify/global-graph.json + manifest -- no sqlite/WAL hazard, so
+# sharing over /mnt/c is safe, unlike .tokensave). Symlinks ~/.graphify at
+# the Windows user's store when: running under WSL, the Windows store
+# exists, and ~/.graphify is absent or an empty directory. Never touches an
+# existing populated ~/.graphify (merge is the operator's call). Best-effort
+# by contract: always returns 0.
+graphify_wsl_share_store() {
+  grep -qi microsoft /proc/version 2>/dev/null || return 0
+  command -v wslpath >/dev/null 2>&1 || return 0
+  command -v cmd.exe >/dev/null 2>&1 || return 0
+  # Cheap check first -- skip the costly cmd.exe interop once already linked.
+  [ -L "$HOME/.graphify" ] && return 0
+  local win_home win_store
+  # cmd.exe interop warns (and can fail) from a linux-fs cwd -- run it from /mnt/c.
+  win_home="$(cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')"
+  [ -n "$win_home" ] || return 0
+  win_store="$(wslpath -u "$win_home" 2>/dev/null)/.graphify"
+  [ -d "$win_store" ] || return 0
+  if [ -e "$HOME/.graphify" ]; then
+    if [ -d "$HOME/.graphify" ] && [ -z "$(ls -A "$HOME/.graphify" 2>/dev/null)" ]; then
+      rmdir "$HOME/.graphify" 2>/dev/null || return 0
+    else
+      echo "  graphify store: ~/.graphify already has content -- NOT replacing it with the shared Windows store (merge manually if desired)."
+      return 0
+    fi
+  fi
+  if ln -s "$win_store" "$HOME/.graphify" 2>/dev/null; then
+    echo "  graphify store: linked ~/.graphify -> $win_store (shared Win+WSL store; both sides contribute, nothing regenerates)."
+  fi
+  return 0
 }
 
 # CLI entry -- only when EXECUTED (not sourced). Lets the pwsh mirrors
@@ -186,6 +286,7 @@ if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
   case "${1:-}" in
     install) graphify_install ;;
     source)  graphify_source ;;
-    *) echo "Usage: bash scripts/lib/graphify-bin.sh install|source" >&2; exit 2 ;;
+    share-store) graphify_wsl_share_store ;;
+    *) echo "Usage: bash scripts/lib/graphify-bin.sh install|source|share-store" >&2; exit 2 ;;
   esac
 fi
