@@ -98,6 +98,30 @@ Claude should **ask before saving**:
 
 ---
 
+## Contradiction-Resolution Policy (LUNA-98)
+
+Contradiction-resolution runbooks (`/obsidian-reconcile` or any successor) are **propose-only** in
+this vault — never auto-merge. Two notes that contradict each other are not necessarily wrong: they
+may cover different contexts, constraints, or phases, and an auto-merge destroys the reasoning that
+made each right at the time. A steelman is a suggestion, not a verdict.
+
+- **Clear winner found:** do NOT rewrite the outdated page. Write the proposed rewrite to
+  `00-Inbox/Conflict (proposed) — <topic>.md` (`status: proposed`) with both sides, the evidence,
+  and the full proposed text. The operator applies or rejects.
+- **Genuinely ambiguous:** write `00-Inbox/Conflict (open) — <topic>.md` (`status: open`)
+  documenting both sides (this replaces the upstream `wiki/decisions/` path, which does not exist
+  in this vault).
+- `00-Inbox/` is the operator-triage queue — conflict notes land where the operator already looks.
+- Conflict notes carry the vault's base frontmatter (`date:`, `type: conflict`, `tags:` incl.
+  `conflict`, `ai-first: true`) plus the `status: proposed` / `status: open` field above.
+- An explicit `--auto` argument restores upstream rewrite behavior; without it, propose-only.
+
+**Shared daily-note heading:** thinking-type passes (`/obsidian-challenge`, `/contra`) append to
+today's daily note under the exact H2 heading `## Thinking` — one heading, no per-command variants
+(prevents heading drift; spec D2.5).
+
+---
+
 ## Naming Conventions
 
 - Daily notes: `YYYY-MM-DD.md` in `50-Journal/Daily/`
@@ -121,7 +145,29 @@ ai-first: true
 ---
 ```
 
-Note types: `daily` | `weekly` | `project` | `area` | `resource` | `person` | `concept` | `book`
+Note types: `daily` | `weekly` | `project` | `area` | `resource` | `person` | `concept` | `book` | `decision` | `conflict`
+
+### Decision-shaped notes — premise frontmatter (LUNA-95)
+
+Standalone `type: decision` notes MUST carry, in addition to the base fields:
+
+```yaml
+claim: "<what the note asserts, one line>"
+assumption: "<what must be true for the claim to hold, one line>"
+```
+
+Both values MUST be quoted YAML strings (unquoted, a claim like `Adopt storage: use SQLite` breaks
+the frontmatter parse and a `#` preceded by a space silently truncates the value). Duplicate
+`claim:`/`assumption:` keys within one note are malformed — reject/repair the note before any
+contradiction pass consumes it (last-wins parsing would compare an unintended value).
+
+The body section `## The Critical Assumption` stays (nuance, confidence, recency); the frontmatter
+is the machine-tractable index that contradiction passes compare across notes. The producing layer
+is `[[_Templates/Decision]]` — instantiate the template, never freeform a decision note. External
+obsidian-second-brain commands do NOT emit these fields (their write steps are hardcoded); when a
+Claude session authors a decision note directly it applies this contract itself. If decision notes
+appear without the fields twice, escalate structurally per himmel HIMMEL-195 (fork the producing
+command into obsidian-triage).
 
 ---
 
@@ -133,6 +179,7 @@ Note types: `daily` | `weekly` | `project` | `area` | `resource` | `person` | `c
 | `[[_Templates/Weekly-Review]]` | Weekly reflection and planning |
 | `[[_Templates/Project]]` | New active project |
 | `[[_Templates/Resource]]` | Reference material, concepts, articles |
+| `[[_Templates/Decision]]` | Decision record with claim/assumption premise frontmatter |
 
 ---
 
