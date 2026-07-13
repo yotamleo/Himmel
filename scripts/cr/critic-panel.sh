@@ -60,8 +60,8 @@ else
     TIER_FILTER="${CRITIC_PANEL_TIERS:-free}"
 fi
 
-ANCHOR_SLUG="qwenor"
-ANCHOR_MODEL="qwen/qwen3-next-80b-a3b-instruct:free"
+ANCHOR_SLUG="lagunaor"
+ANCHOR_MODEL="poolside/laguna-xs-2.1:free"
 # The anchor model is OpenRouter-only, so the fallback rows must carry its
 # route_provider (threaded to hermes as --provider) exactly like the registry
 # row does — otherwise the registry-missing recovery path could route the
