@@ -15,9 +15,11 @@
 #   machine-setup. This helper is the on-demand reconcile for that case.
 #
 # CONTRACT: after this runs, the settings file holds EXACTLY ONE PreToolUse
-#   hook object pointing at rtk-hook-guard.sh. It is idempotent (a second run
-#   is a no-op) and duplicate-safe across every starting shape — fresh bare,
-#   guard+bare leftover, N bare, N guard.
+#   hook object with a PLAIN `bash "<path>/rtk-hook-guard.sh"` invocation. It
+#   is idempotent (a second run is a no-op) and duplicate-safe across every
+#   starting shape — fresh bare, guard+bare leftover, N bare, N guard. A
+#   custom operator command that merely MENTIONS the guard path is outside
+#   the managed set: never rewritten, never deduped, never dropped.
 #
 # SCOPE: operates on the ONE settings.json passed as $1. The rtk guard belongs
 #   at USER scope only (~/.claude/settings.json): `rtk init -g` is global and
@@ -38,6 +40,12 @@ set -uo pipefail
 # scripts/machine-setup/ubuntu.sh so the standalone path and the in-setup swap
 # agree on what counts as a raw rtk entry.
 BARE_RTK_RE='^[[:space:]]*rtk[[:space:]]+hook[[:space:]]+claude([[:space:]]|$)'
+
+# A PLAIN guard invocation (`bash "<any>/rtk-hook-guard.sh"`, anchored) — the
+# ONLY shape normalize rewrites AND dedup collapses. A custom operator command
+# that merely mentions the guard path matches neither (non-destructive
+# contract; CR round-5 + round-6 coderabbit findings).
+PLAIN_GUARD_RE='^bash "[^"]*/scripts/hooks/rtk-hook-guard[.]sh"$'
 
 reconcile_rtk_hook() {
   local settings="$1" himmel="$2"
@@ -63,23 +71,37 @@ reconcile_rtk_hook() {
   local before after
   before=$(jq -S . "$settings")
 
-  # Two-stage transform:
+  # Three-stage transform:
   #   1. SWAP — every bare `rtk hook claude` hook object's command becomes the
   #      guard command (mirrors ubuntu.sh's inline swap filter, line ~548).
-  #   2. DEDUP — keep only the FIRST guard hook object in document order; drop
-  #      every later guard hook object, then prune any group whose hooks array
-  #      went empty. Non-guard hooks and group fields (matcher, …) are untouched.
+  #   1.5 NORMALIZE — every PLAIN guard invocation (`bash "<any>/rtk-hook-
+  #      guard.sh"`, anchored shape-match) is rewritten to the freshly
+  #      computed guard path (HIMMEL-985: settings restored from another
+  #      machine/username/checkout carry a stale absolute guard path; dedup
+  #      keeps the FIRST guard in document order, so without this the stale
+  #      entry would win and the current one be dropped). Deliberately
+  #      NARROWER than dedup's contains() — a custom operator command that
+  #      merely mentions the guard path is never rewritten (non-destructive
+  #      contract; CR round-5 coderabbit finding).
+  #   2. DEDUP — keep only the FIRST plain guard hook object in document order;
+  #      drop every later plain guard hook object, then prune any group whose
+  #      hooks array went empty. Matches the SAME anchored shape as normalize —
+  #      a custom command that merely mentions the guard path is never dropped
+  #      (it used to be: a broader contains() match silently deleted an
+  #      operator's wrapper whenever a real guard coexisted). Non-guard hooks
+  #      and group fields (matcher, …) are untouched.
   # The DEDUP assignment is gated on `.hooks.PreToolUse` already existing so a
   # settings file that has no PreToolUse key is left byte-for-byte (no spurious
   # `PreToolUse: []` injected) — matching ubuntu.sh's "skip when absent" and the
   # non-destructive contract above.
-  after=$(jq --arg re "$BARE_RTK_RE" --arg guard "$guard" '
+  after=$(jq --arg re "$BARE_RTK_RE" --arg pg "$PLAIN_GUARD_RE" --arg guard "$guard" '
     (.hooks.PreToolUse[]?.hooks[]? | select((.command // "") | test($re))).command = $guard
+    | (.hooks.PreToolUse[]?.hooks[]? | select((.command // "") | test($pg))).command = $guard
     | if ((.hooks? // {}) | has("PreToolUse")) then
         .hooks.PreToolUse |= (
           reduce .[] as $g ({out: [], seen: false};
             ( reduce ($g.hooks // [])[] as $h ({hooks: [], seen: .seen};
-                if (($h.command // "") | contains("rtk-hook-guard.sh"))
+                if (($h.command // "") | test($pg))
                 then (if .seen then . else {hooks: (.hooks + [$h]), seen: true} end)
                 else {hooks: (.hooks + [$h]), seen: .seen}
                 end)

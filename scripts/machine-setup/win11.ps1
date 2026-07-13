@@ -117,7 +117,9 @@ if ($PathParts -notcontains $RtkInstallDir) {
 }
 $env:PATH = "$env:PATH;$RtkInstallDir"
 
-Invoke-Fatal "rtk init -g" { rtk init -g }
+# Hook wiring (`rtk init -g --auto-patch` + guard reconcile) happens after
+# the clone below — adjacent to the reconcile so a clone/hookspath failure
+# can never strand a raw unguarded hook (HIMMEL-985 codex-adv finding).
 Invoke-Fatal "rtk --version" { rtk --version }
 
 Write-Step "Clone himmel repo"
@@ -135,6 +137,58 @@ if ($LASTEXITCODE -ne 0) {
     throw "check-hookspath.ps1 failed (exit $LASTEXITCODE) — refusing to continue on a misconfigured clone."
 }
 Pop-Location
+
+# HIMMEL-985: wire the rtk hook AND immediately swap the bare `rtk hook
+# claude` entry for the himmel rtk-hook-guard wrapper + dedup (HIMMEL-241
+# compound-find fix). Runs after clone + hookspath validation so a failure
+# can never strand a raw unguarded hook — see the matching ubuntu.sh comment.
+# Resolve Git Bash BEFORE rtk init mutates settings.json: derive it from the
+# active git install (works for user-scoped/custom installs, not just
+# Program Files), falling back to PATH minus the System32 WSL bash stub.
+$GitBash = $null
+$GitCmd = Get-Command git -ErrorAction SilentlyContinue
+if ($GitCmd) {
+    # git.exe may resolve from <GitRoot>\cmd, <GitRoot>\bin, or
+    # <GitRoot>\mingw64\bin — walk upward until a level holds bash.
+    $GitDir = Split-Path $GitCmd.Source -Parent
+    for ($i = 0; $i -lt 4 -and -not $GitBash -and $GitDir; $i++) {
+        foreach ($Rel in "bin\bash.exe", "usr\bin\bash.exe") {
+            $BashCandidate = Join-Path $GitDir $Rel
+            if (Test-Path $BashCandidate) { $GitBash = $BashCandidate; break }
+        }
+        $GitDir = Split-Path $GitDir -Parent
+    }
+}
+if (-not $GitBash) {
+    $GitBash = (Get-Command bash.exe -All -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notmatch '(?i)\\(System32|Microsoft\\WindowsApps)\\' } |
+        Select-Object -First 1).Source
+}
+if (-not $GitBash) {
+    throw "Git Bash not found (checked the active git install and PATH) — refusing to wire the rtk hook without the reconcile step."
+}
+# Transactional: rtk init mutates settings.json before the reconcile can
+# guard it — on any failure in between, restore the pre-init settings so no
+# partial state leaves a raw unguarded hook behind (CR round-6 finding).
+$SettingsPath = Join-Path $env:USERPROFILE ".claude\settings.json"
+$SettingsExisted = Test-Path -LiteralPath $SettingsPath
+[byte[]]$SettingsBackup = @()
+if ($SettingsExisted) {
+    $SettingsBackup = [System.IO.File]::ReadAllBytes($SettingsPath)
+}
+try {
+    Invoke-Fatal "rtk init -g --auto-patch" { rtk init -g --auto-patch }
+    $HimmelPathFwd = $HimmelPath -replace '\\','/'
+    $SettingsFwd = $SettingsPath -replace '\\','/'
+    Invoke-Fatal "reconcile-rtk-hook.sh" { & $GitBash "$HimmelPathFwd/scripts/lib/reconcile-rtk-hook.sh" $SettingsFwd $HimmelPathFwd }
+} catch {
+    if ($SettingsExisted) {
+        [System.IO.File]::WriteAllBytes($SettingsPath, $SettingsBackup)
+    } else {
+        Remove-Item -LiteralPath $SettingsPath -Force -ErrorAction SilentlyContinue
+    }
+    throw
+}
 
 Write-Step "Delegate himmel/luna wiring to himmelctl bootstrap (HIMMEL-887)"
 # HIMMEL-887: this script is soft-deprecated for himmel/luna WIRING — the
