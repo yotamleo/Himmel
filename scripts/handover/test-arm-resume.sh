@@ -1685,6 +1685,128 @@ EOF
 chmod +x "$WINBIN/claude" "$WINBIN/cygpath" "$WINBIN/schtasks"
 win_env() { local _dir="$1"; shift; env PATH="$_dir:$WINBIN:$PATH" OSTYPE="msys" "$@"; }
 
+# ---------------------------------------------------------------------------
+# T-wsl: Windows-host schtasks backend that relaunches inside a WSL distro.
+# Forced through win_env on every host; wsl.exe distinguishes the two arm-time
+# login-shell preflights via WSL_STUB_MODE.
+# ---------------------------------------------------------------------------
+echo "--- T-wsl ---"
+WSLBIN="$TMP/wsl-stub-bin"
+mkdir -p "$WSLBIN"
+cat > "$WSLBIN/wsl.exe" <<'EOF'
+#!/usr/bin/env bash
+if [ "${MSYS_NO_PATHCONV:-}" != "1" ] || [ "${MSYS2_ARG_CONV_EXCL:-}" != "*" ]; then
+    exit 9
+fi
+if [ "${WSL_STUB_MODE:-ok}" = "cwd-fail" ]; then
+    case "$*" in *"test -d "*) exit 1 ;; esac
+fi
+if [ "${WSL_STUB_MODE:-ok}" = "claude-fail" ]; then
+    case "$*" in *"command -v claude"*) exit 1 ;; esac
+fi
+exit 0
+EOF
+chmod +x "$WSLBIN/wsl.exe"
+
+WSL_CWD="/home/u/repos/himmel"
+WSL_HO="$(make_handover "$WSL_CWD")"
+out=$(HIMMEL_HEADROOM_PROXY=0 ARM_BRIDGE_LIVE=0 WSL_STUB_MODE=ok \
+    win_env "$WSLBIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$WSL_HO" \
+    --wsl-distro ubuntu --channels 'plugin:test@local' --force --dry-run 2>&1)
+rc=$?
+assert_rc "T-wsl body exits 0" 0 "$rc"
+assert_contains "T-wsl body uses quoted distro + login shell" 'wsl.exe -d "ubuntu" -e bash -lc' "$out"
+assert_contains "T-wsl body has in-distro cd+claude" "cd '$WSL_CWD' && claude" "$out"
+assert_not_contains "T-wsl no caret escapes inside CMD quotes" '^&' "$out"
+assert_contains "T-wsl prompt precedes channels" "'load $WSL_HO overnight mode' --channels 'plugin:test@local'" "$out"
+assert_not_contains "T-wsl body drops Windows cd" "cd /d" "$out"
+
+# Prompt escaping is driven by the handover path: bash-single-quote per
+# field, then %->%% for the .bat — & and ^ stay LITERAL inside the CMD
+# quotes (caret-escaping there reaches bash verbatim and shatters the
+# command; verified against a live .bat fire).
+WSL_SPECIAL_HO="$HANDOVER_DIR/wsl-prompt-'-%-&.md"
+{
+    printf -- '---\n'
+    printf 'session_kind: test\n'
+    printf -- '---\n'
+    printf '# WSL escaping test\n'
+} > "$WSL_SPECIAL_HO"
+out=$(HIMMEL_HEADROOM_PROXY=0 WSL_STUB_MODE=ok \
+    win_env "$WSLBIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$WSL_SPECIAL_HO" \
+    --cwd "$WSL_CWD" --wsl-distro ubuntu --force --dry-run 2>&1)
+rc=$?
+assert_rc "T-wsl prompt metachar escaping exits 0" 0 "$rc"
+assert_contains "T-wsl prompt survives bash+CMD escaping" "wsl-prompt-'\\''-%%-&.md" "$out"
+
+# A double quote in the payload cannot be escaped inside the .bat line's CMD
+# quotes (CMD toggles on every unescaped quote) — the arm must REFUSE, never
+# emit an injectable line. NTFS forbids " in filenames, so the fixture runs
+# on POSIX hosts exercising the forced-Windows branch and follows the suite
+# SKIP style on native Windows.
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        echo 'SKIP T-wsl double-quote refusal fixture (NTFS forbids " in filenames)'
+        ;;
+    *)
+        WSL_DQUOTE_HO="$HANDOVER_DIR/wsl-prompt-\".md"
+        {
+            printf -- '---\n'
+            printf 'session_kind: test\n'
+            printf -- '---\n'
+            printf '# WSL double-quote refusal test\n'
+        } > "$WSL_DQUOTE_HO"
+        out=$(HIMMEL_HEADROOM_PROXY=0 WSL_STUB_MODE=ok \
+            win_env "$WSLBIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$WSL_DQUOTE_HO" \
+            --cwd "$WSL_CWD" --wsl-distro ubuntu --force --dry-run 2>&1)
+        rc=$?
+        assert_rc "T-wsl double-quote payload refused" 2 "$rc"
+        assert_contains "T-wsl double-quote refusal is clear" "cannot carry a double quote" "$out"
+        ;;
+esac
+
+out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$WSL_HO" \
+    --wsl-distro 'ubuntu; rm x' --dry-run 2>&1)
+rc=$?
+assert_rc "T-wsl bad distro rejected" 2 "$rc"
+assert_contains "T-wsl bad distro error is clear" "invalid --wsl-distro name" "$out"
+
+out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$WSL_HO" \
+    --wsl-distro "" --dry-run 2>&1)
+rc=$?
+assert_rc "T-wsl empty distro rejected" 2 "$rc"
+assert_contains "T-wsl empty distro error is clear" "requires a non-empty value" "$out"
+
+out=$(PATH="$SCHED_STUB_T17:$PATH" OSTYPE=linux-gnu bash "$ARM" \
+    --time "$FUTURE_TIME" --handover "$WSL_HO" --wsl-distro ubuntu --dry-run 2>&1)
+rc=$?
+assert_rc "T-wsl non-Windows platform rejected" 2 "$rc"
+assert_contains "T-wsl non-Windows error is clear" "--wsl-distro is a Windows-host flag" "$out"
+
+out=$(HIMMEL_HEADROOM_PROXY=0 WSL_STUB_MODE=cwd-fail \
+    win_env "$WSLBIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$WSL_HO" \
+    --cwd /missing/in/wsl --wsl-distro ubuntu --force --dry-run 2>&1)
+rc=$?
+assert_rc "T-wsl in-distro cwd failure exits 4" 4 "$rc"
+assert_contains "T-wsl cwd error names path" "/missing/in/wsl" "$out"
+assert_contains "T-wsl cwd error names distro" "distro 'ubuntu'" "$out"
+
+out=$(HIMMEL_HEADROOM_PROXY=0 WSL_STUB_MODE=claude-fail \
+    win_env "$WSLBIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$WSL_HO" \
+    --cwd "$WSL_CWD" --wsl-distro ubuntu --force --dry-run 2>&1)
+rc=$?
+assert_rc "T-wsl in-distro claude failure exits 2" 2 "$rc"
+assert_contains "T-wsl claude error names distro" "not on PATH at arm time (distro 'ubuntu')" "$out"
+
+out=$(HIMMEL_HEADROOM_PROXY=1 WSL_STUB_MODE=ok \
+    win_env "$WSLBIN" bash "$ARM" --time "$FUTURE_TIME" --handover "$WSL_HO" \
+    --cwd "$WSL_CWD" --wsl-distro ubuntu --force --dry-run 2>&1)
+rc=$?
+assert_rc "T-wsl headroom combination exits 0" 0 "$rc"
+assert_contains "T-wsl headroom skip warns" "proxy gate skipped for a WSL-station arm" "$out"
+assert_contains "T-wsl headroom skip emits plain launch" 'wsl.exe -d "ubuntu" -e bash -lc' "$out"
+assert_not_contains "T-wsl headroom skip omits proxy gate" "livez" "$out"
+
 # V1: DD/MM locale render. `reg` reports a dd/MM/yyyy short-date pattern;
 # --dry-run so no real scheduler is touched. The expected /sd is computed
 # independently here (mirroring arm-resume's own HH:MM -> today/tomorrow
