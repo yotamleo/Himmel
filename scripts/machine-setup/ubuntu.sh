@@ -96,7 +96,9 @@ RTK_DEB="rtk_amd64.deb"
 curl -fL "https://github.com/rtk-ai/rtk/releases/download/${RTK_TAG}/${RTK_DEB}" \
   -o "/tmp/${RTK_DEB}"
 sudo apt install -y "/tmp/${RTK_DEB}"
-rtk init -g
+# Hook wiring (`rtk init -g --auto-patch` + guard reconcile) happens in the
+# clone step below — adjacent to the reconcile so a clone/hookspath failure
+# can never strand a raw unguarded hook (HIMMEL-985 codex-adv finding).
 rtk --version
 
 step "Clone himmel repo"
@@ -111,6 +113,38 @@ cd "$HIMMEL_PATH"
 # gate (no-push-to-main, npm-audit, code-review-before-push, platforms-tested,
 # hookspath-misconfig itself) would be bypassed.
 bash scripts/hooks/check-hookspath.sh
+
+# HIMMEL-985: wire the rtk hook AND immediately swap the bare `rtk hook
+# claude` entry for the himmel rtk-hook-guard wrapper + dedup (HIMMEL-241
+# compound-find fix). Two deliberate properties:
+#   - `--auto-patch`: without it the settings.json hook-patch prompt defaults
+#     to N in non-interactive runs, leaving rtk installed but the rewrite hook
+#     unwired — the drift found on the win2 station.
+#   - Adjacency AFTER clone + hookspath validation: the pre-HIMMEL-887
+#     monolith did the swap inline and the delegated himmelctl flow lost it;
+#     wiring earlier (before the clone) could strand a RAW unguarded hook if
+#     clone/validation failed — raw rtk breaks compound find rewrites.
+# Transactional (mirrors win11.ps1): rtk init mutates settings.json before
+# the reconcile can guard it — on any failure in between, restore the
+# pre-init settings so no partial state leaves a raw unguarded hook behind.
+rtk_settings="$HOME/.claude/settings.json"
+rtk_settings_bak=""
+if [ -f "$rtk_settings" ]; then
+  rtk_settings_bak=$(mktemp)
+  cp "$rtk_settings" "$rtk_settings_bak"
+fi
+if ! { rtk init -g --auto-patch \
+       && bash "$HIMMEL_PATH/scripts/lib/reconcile-rtk-hook.sh" "$rtk_settings" "$HIMMEL_PATH"; }; then
+  if [ -n "$rtk_settings_bak" ]; then
+    cp "$rtk_settings_bak" "$rtk_settings"
+  else
+    rm -f "$rtk_settings"
+  fi
+  rm -f "$rtk_settings_bak"
+  echo "ERROR: rtk hook wiring failed — settings.json restored to its pre-init state" >&2
+  exit 1
+fi
+rm -f "$rtk_settings_bak"
 cd -
 
 step "Delegate himmel/luna wiring to himmelctl bootstrap (HIMMEL-887)"
