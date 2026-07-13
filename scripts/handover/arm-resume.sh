@@ -2319,7 +2319,7 @@ schedule_arm() {
                 # path and carries more quoted args (live-fire verified s52).
                 printf 'set "FLOW_RUN_ID="
 '
-                printf 'set "FLOW_RUN_TMP=%%TEMP%%low-run-%s.tmp"
+                printf 'set "FLOW_RUN_TMP=%%TEMP%%\\flow-run-%s.tmp"
 ' "$TASK_NAME"
                 printf '"%s" "%s" --append-start "armed-resume" "" "%%COMPUTERNAME%%" "claude" "" "%s" "" "" > "%%FLOW_RUN_TMP%%" 2>NUL
 ' "$bw" "$fl" "$TASK_NAME"
