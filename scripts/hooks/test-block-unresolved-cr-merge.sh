@@ -22,14 +22,24 @@ case "$1 $2" in
     echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}' ;;
   "api graphql")
     case "$GH_STUB_MODE" in
-      unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
-      other-author) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"someuser"}}]}}]}}}}}' ;;
-      *) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      unresolved|zombie-unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      other-author) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"someuser"}}]}}]}}}}}' ;;
+      zombie-paged) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      zombie-nopageinfo) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      *) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
     esac ;;
   "api repos/o/r/commits/abc123/check-runs"*)
     case "$GH_STUB_MODE" in
-      inflight) echo '{"check_runs":[{"name":"CodeRabbit","status":"in_progress","conclusion":null}]}' ;;
+      inflight|zombie|zombie-unresolved|zombie-no-status|zombie-status-error|zombie-paged|zombie-nopageinfo) echo '{"check_runs":[{"name":"CodeRabbit","status":"in_progress","started_at":"2000-01-01T00:00:00Z","conclusion":null}]}' ;;
+      young) echo "{\"check_runs\":[{\"name\":\"CodeRabbit\",\"status\":\"in_progress\",\"started_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"conclusion\":null}]}" ;;
       *)        echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"}]}' ;;
+    esac ;;
+  "api repos/o/r/commits/abc123/status")
+    case "$GH_STUB_MODE" in
+      zombie|zombie-unresolved|zombie-paged|zombie-nopageinfo) echo '{"statuses":[{"context":"CodeRabbit","state":"success"}]}' ;;
+      zombie-status-error) exit 1 ;;
+      zombie-no-status) echo '{"statuses":[]}' ;;
+      *) echo '{"statuses":[{"context":"CodeRabbit","state":"pending"}]}' ;;
     esac ;;
   *) echo '{}' ;;
 esac
@@ -58,6 +68,15 @@ GH_STUB_MODE=unresolved t merge-with-unresolved-blocks   2 Bash "gh pr merge 42 
 GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=error      t api-error-fails-open           0 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=inflight   t inflight-review-blocks         2 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=zombie     t zombie-review-allows           0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=young      t young-inflight-blocks          2 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=zombie-no-status t zombie-no-success-blocks 2 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=zombie-unresolved t zombie-unresolved-blocks 2 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=zombie-status-error t zombie-status-error-blocks 2 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=zombie-paged t zombie-paged-threads-blocks 2 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=zombie-nopageinfo t zombie-nopageinfo-blocks 2 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=other-author t other-author-thread-allows 0 Bash "gh pr merge 42 --squash"
+CR_ZOMBIE_CHECKRUN_MINS=090 GH_STUB_MODE=zombie t zombie-leading-zero-mins-allows 0 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=unresolved t non-merge-passthrough          0 Bash "gh pr view 42"
 GH_STUB_MODE=unresolved t string-literal-passthrough     0 Bash "echo \\\"gh pr merge 42\\\""
 GH_STUB_MODE=unresolved t powershell-payload-blocks      2 PowerShell "gh pr merge 42 --squash"
@@ -86,6 +105,7 @@ for pt in non-merge-passthrough string-literal-passthrough quoted-merge-text-pas
 done
 # block reason surfaces on stderr (hook contract: stderr shown to model+user)
 grep -qi "unresolved" "$TMP/err-merge-with-unresolved-blocks" || { echo "FAIL stderr reason missing"; fail=$((fail+1)); }
+grep -q "zombie check-run override:.*commit status=success + 0 unresolved threads.*HIMMEL-980" "$TMP/err-zombie-review-allows" || { echo "FAIL zombie override line missing"; fail=$((fail+1)); }
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -68,6 +68,25 @@ cat > "$STUBDIR/gh" <<'EOF'
 echo "$*" >> "$GH_STUB_ARGS"
 cmd="${1:-}"
 if [ "$cmd" = "api" ]; then
+    case "${2:-}" in
+        repos/octo/demo/commits/sha1/check-runs*)
+            case "$GH_STUB_MODE" in
+                zombie|zombie-no-status|zombie-status-error|zombie-late)
+                    echo '{"check_runs":[{"name":"CodeRabbit","status":"in_progress","started_at":"2000-01-01T00:00:00Z"}]}' ;;
+                zombie-young)
+                    echo "{\"check_runs\":[{\"name\":\"CodeRabbit\",\"status\":\"in_progress\",\"started_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}" ;;
+                *) echo '{"check_runs":[]}' ;;
+            esac
+            exit 0 ;;
+        repos/octo/demo/commits/sha1/status)
+            case "$GH_STUB_MODE" in
+                zombie|zombie-late) echo '{"statuses":[{"context":"CodeRabbit","state":"success"}]}' ;;
+                zombie-status-error) echo "status boom" >&2; exit 1 ;;
+                zombie-no-status) echo '{"statuses":[]}' ;;
+                *) echo '{"statuses":[{"context":"CodeRabbit","state":"pending"}]}' ;;
+            esac
+            exit 0 ;;
+    esac
     if [ "${GH_STUB_THREADS:-0}" = "fail" ]; then echo "graphql boom" >&2; exit 1; fi
     if [ "${GH_STUB_THREADS:-0}" = "badnext" ]; then echo "0 banana cursor1"; exit 0; fi
     if [ "${GH_STUB_THREADS:-0}" = "nullcursor" ]; then echo "0 true null"; exit 0; fi
@@ -78,6 +97,16 @@ if [ "$cmd" = "api" ]; then
         echo $((a+1)) > "$GH_STUB_API"
         # alternate cursorA / cursorB forever: A→B→A cycle, hasNextPage always true
         if [ $((a % 2)) -eq 0 ]; then echo "0 true cursorA"; else echo "0 true cursorB"; fi
+        exit 0
+    fi
+    if [ "${GH_STUB_THREADS:-0}" = "latethread" ]; then
+        # First thread query (pre-watch gate) is clean; every later query
+        # (the post-watch re-verification) reports one unresolved thread —
+        # a review comment that landed DURING the watch (codex-adv 980-r2).
+        a=$(cat "$GH_STUB_API" 2>/dev/null)
+        a=${a:-0}
+        echo $((a+1)) > "$GH_STUB_API"
+        if [ "$a" -eq 0 ]; then echo "0 false null"; else echo "1 false null"; fi
         exit 0
     fi
     if [ "${GH_STUB_THREADS:-0}" = "paged" ]; then
@@ -122,7 +151,17 @@ case " $* " in *" --watch "*) is_watch=1 ;; esac
 # structured red confirm (--json bucket): the script's --jq yields a bare count
 case " $* " in
     *" --json "*)
-        if [ "$GH_STUB_MODE" = "red-liar" ]; then echo 0; else echo 1; fi
+        case "$GH_STUB_MODE" in
+            zombie-late)
+                # First checks --json probe (zombie other_pending snapshot)
+                # sees 0; the settle re-probe (and later calls) see 1 late
+                # arrival. Count only `pr checks … --json` lines — pr_view's
+                # `--json headRefOid` calls land in the same args log.
+                njson=$(grep -c "^pr checks .*--json" "$GH_STUB_ARGS" 2>/dev/null); njson=${njson:-1}
+                if [ "$njson" -le 1 ]; then echo 0; else echo 1; fi ;;
+            red-liar|zombie|zombie-young|zombie-no-status|zombie-status-error) echo 0 ;;
+            *) echo 1 ;;
+        esac
         exit 0 ;;
 esac
 case "$GH_STUB_MODE" in
@@ -162,6 +201,13 @@ case "$GH_STUB_MODE" in
         exit 8 ;;
     watch-error)
         if [ "$is_watch" -eq 1 ]; then echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1; fi
+        exit 8 ;;
+    zombie|zombie-young|zombie-no-status|zombie-status-error)
+        if [ "$is_watch" -eq 1 ]; then echo "gh stub: zombie watch must not complete" >&2; exit 99; fi
+        exit 8 ;;
+    zombie-late)
+        # After the dropped override the watch path MUST run — and completes green.
+        if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
         exit 8 ;;
     *)
         echo "gh stub: unknown GH_STUB_MODE '$GH_STUB_MODE'" >&2; exit 99 ;;
@@ -420,7 +466,49 @@ run red-liar
 assert_rc 2 "26 red-liar rc 2"
 assert_err_has "no check is in the fail bucket" "26 structured-confirm message"
 
+# 27 — old in-progress CodeRabbit + successful same-head commit status + clean
+# threads overrides the zombie and never enters the hanging watch.
+run zombie
+assert_rc 0 "27 zombie override rc 0"
+assert_out_has "zombie check-run override:" "27 zombie override loud line"
+assert_out_has "commit status=success + 0 unresolved threads" "27 zombie evidence printed"
+
+# 28 — a young in-progress run remains blocking (the watch path cannot certify).
+run zombie-young
+assert_rc 2 "28 young in-progress still blocks"
+
+# 29 — old run without successful commit status remains blocking.
+run zombie-no-status
+assert_rc 2 "29 old run without success still blocks"
+
+# 30 — unresolved threads prevent override before the status probe.
+THREADS_OVERRIDE=1
+run zombie
+assert_rc 3 "30 old success with unresolved thread blocks"
+
+# 31 — status API errors are no-override and remain fail-closed.
+run zombie-status-error
+assert_rc 2 "31 status probe error still blocks"
+
+# 32 — a non-CodeRabbit check registering during the settle window drops the
+# override: the run falls back to the watch path (which completes green here)
+# instead of certifying on the stale snapshot (codex-adv-2).
+SETTLE_OVERRIDE=1
+run zombie-late
+assert_rc 0 "32 late-check settle re-probe rc 0 via watch path"
+assert_out_has "zombie check-run override:" "32 override initially taken"
+assert_out_has "zombie override dropped:" "32 override dropped on late arrival"
+grep -q -- "--watch" "$STUBDIR/args.log" || { echo "FAIL: 32 watch path never ran"; FAIL=$((FAIL+1)); }
+
+# 33 — an unresolved thread landing DURING the watch (head SHA unmoved) is
+# caught by the post-watch review-state re-verification, not certified from
+# the stale pre-watch snapshot (codex-adv 980-r2).
+THREADS_OVERRIDE=latethread
+run register-then-green
+assert_rc 3 "33 late thread post-watch blocks"
+assert_err_has "unresolved review thread" "33 late-thread reason printed"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 27 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 27"; exit 1; fi
+if [ "$COUNT" -ne 34 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 34"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
