@@ -45,32 +45,84 @@ git -C "$tmp/direct" remote add origin https://github.com/NousResearch/hermes-ag
 out=$(HERMES_HOME="$tmp/direct" update_hermes check 2>&1)
 check "direct checkout tolerated" "could not reach origin|hermes is current|update available" "$out"
 
-# ── report_cadence_stale() — stale pipeline-cadence runner nudge (HIMMEL-588) ──
-# Same lib seam; PIPELINE_BAT_DIR points at a fixture runner dir.
+# ── report_cadence_stale() — stale cadence runner nudge (HIMMEL-588/969) ─────
+# Same lib seams; *_BAT_DIR point at fixture runner dirs.
 
-# Case 5: no runners present → silent no-op (cadence not armed via this dir).
-out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" report_cadence_stale 2>&1)
+# Case 5: no runners present anywhere → silent no-op (cadences not armed).
+out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/sweep-empty" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
 if [ -z "$out" ]; then echo "ok: cadence absent → silent"; else echo "FAIL: cadence absent not silent"; printf '%s\n' "$out"; fail=1; fi
 
-# Case 6: runner with no format stamp (armed before HIMMEL-588) → STALE nudge.
+# Case 6: codex-sweep.bat stamped current → shared probe returns its version.
+mkdir -p "$tmp/cad-codex-current"
+printf 'rem himmel-cadence-runner-format: %s\r\n' "$CADENCE_RUNNER_FORMAT_VERSION" \
+  > "$tmp/cad-codex-current/codex-sweep.bat"
+ver=$(cadence_runner_stamp "$tmp/cad-codex-current")
+if [ "$ver" = "$CADENCE_RUNNER_FORMAT_VERSION" ]; then echo "ok: codex-sweep stamp probed"; else echo "FAIL: codex-sweep stamp probe got '$ver'"; fail=1; fi
+
+# Case 7: pipeline runner with no format stamp (armed before HIMMEL-588) →
+# STALE nudge with pipeline re-arm hint.
 mkdir -p "$tmp/cad-stale"
 printf '#!/bin/sh\necho old\n' > "$tmp/cad-stale/pipeline-harvest.sh"
-out=$(PIPELINE_BAT_DIR="$tmp/cad-stale" report_cadence_stale 2>&1)
-check "stale cadence nudged" "runners are STALE|arm --force" "$out"
+out=$(PIPELINE_BAT_DIR="$tmp/cad-stale" SWEEP_BAT_DIR="$tmp/sweep-empty" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+check "stale pipeline cadence nudged (message)" "pipeline-cadence runners are STALE" "$out"
+check "stale pipeline cadence nudged (rearm hint)" "bash scripts/luna/pipeline-cadence.sh arm --force" "$out"
 
-# Case 7: runner stamped at the current version → no nudge.
+# Case 8: codex-sweep.bat stamped stale → STALE nudge with codex re-arm hint.
+mkdir -p "$tmp/cad-codex-stale"
+printf 'rem himmel-cadence-runner-format: %s\r\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
+  > "$tmp/cad-codex-stale/codex-sweep.bat"
+out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/cad-codex-stale" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+check "stale codex-sweep cadence nudged (message)" "codex-sweep-cadence runners are STALE" "$out"
+check "stale codex-sweep cadence nudged (rearm hint)" "bash scripts/cleanup/codex-sweep-cadence.sh arm --force" "$out"
+
+# Case 9: graphmap runner stamped stale → STALE nudge with graphmap re-arm hint.
+mkdir -p "$tmp/cad-graphmap-stale"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho old\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
+  > "$tmp/cad-graphmap-stale/graphmap-himmel.sh"
+out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/sweep-empty" \
+  GRAPHMAP_BAT_DIR="$tmp/cad-graphmap-stale" report_cadence_stale 2>&1)
+check "stale graphmap cadence nudged (message)" "graphmap-cadence runners are STALE" "$out"
+check "stale graphmap cadence nudged (rearm hint)" "bash scripts/luna/graphmap-cadence.sh arm --force" "$out"
+
+# Case 10: pipeline-only runner stamped at the current version → no nudge and
+# empty codex/graphmap dirs do not false-positive.
 mkdir -p "$tmp/cad-current"
 printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho cur\n' "$CADENCE_RUNNER_FORMAT_VERSION" \
     > "$tmp/cad-current/pipeline-harvest.sh"
-out=$(PIPELINE_BAT_DIR="$tmp/cad-current" report_cadence_stale 2>&1)
+out=$(PIPELINE_BAT_DIR="$tmp/cad-current" SWEEP_BAT_DIR="$tmp/sweep-empty" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
 if [ -z "$out" ]; then echo "ok: current cadence → silent"; else echo "FAIL: current cadence wrongly nudged"; printf '%s\n' "$out"; fail=1; fi
 
-# Case 8: malformed marker (present but no version number) → safe fallback to
+# Case 11: malformed marker (present but no version number) → safe fallback to
 # version 0 → treated as stale (nudge), never a crash under set -e.
 mkdir -p "$tmp/cad-malformed"
 printf '#!/bin/sh\n# himmel-cadence-runner-format:\necho bad\n' > "$tmp/cad-malformed/pipeline-harvest.sh"
-out=$(PIPELINE_BAT_DIR="$tmp/cad-malformed" report_cadence_stale 2>&1)
-check "malformed stamp → stale fallback" "runners are STALE|arm --force" "$out"
+out=$(PIPELINE_BAT_DIR="$tmp/cad-malformed" SWEEP_BAT_DIR="$tmp/sweep-empty" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+check "malformed stamp → stale fallback (message)" "pipeline-cadence runners are STALE" "$out"
+check "malformed stamp → stale fallback (rearm hint)" "bash scripts/luna/pipeline-cadence.sh arm --force" "$out"
+
+# Case 12: MIXED runner versions in one dir → probe returns the MINIMUM (one
+# current runner must not mask a stale sibling — interrupted re-arm).
+mkdir -p "$tmp/cad-mixed"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho cur\n' "$CADENCE_RUNNER_FORMAT_VERSION" \
+  > "$tmp/cad-mixed/pipeline-harvest.sh"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho old\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
+  > "$tmp/cad-mixed/pipeline-health.sh"
+ver=$(cadence_runner_stamp "$tmp/cad-mixed")
+if [ "$ver" = "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" ]; then echo "ok: mixed versions → minimum wins"; else echo "FAIL: mixed-version probe got '$ver'"; fail=1; fi
+out=$(PIPELINE_BAT_DIR="$tmp/cad-mixed" SWEEP_BAT_DIR="$tmp/sweep-empty" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+check "mixed-version cadence nudged" "pipeline-cadence runners are STALE" "$out"
+
+# Case 13: cadence_user_home — with USERPROFILE unset it echoes $HOME verbatim
+# (the POSIX leg; the Windows USERPROFILE/cygpath leg is exercised by real
+# Git-Bash runs where the two homes coincide).
+uh=$(USERPROFILE='' HOME="$tmp/fake-home" cadence_user_home)
+if [ "$uh" = "$tmp/fake-home" ]; then echo "ok: cadence_user_home falls back to HOME"; else echo "FAIL: cadence_user_home got '$uh'"; fail=1; fi
 
 if [ "$fail" -eq 0 ]; then
   echo "PASS: himmel-update hermes smoke test"

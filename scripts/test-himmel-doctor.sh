@@ -6,6 +6,8 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 DOC="$REPO_ROOT/scripts/himmel-doctor.sh"
 [ -f "$DOC" ] || { echo "FAIL: $DOC not found"; exit 1; }
+CADENCE_VER="$(sed -n 's/^CADENCE_RUNNER_FORMAT_VERSION=//p' "$REPO_ROOT/scripts/lib/cadence-format.sh" | head -1)"
+STALE_CADENCE_VER=$((CADENCE_VER - 1))
 
 # Hermeticity: never let an inherited LUNA_VAULT_PATH point C3 at the operator's
 # real vault (HOME is redirected per-case, but C3 probes $LUNA_VAULT_PATH first).
@@ -14,6 +16,13 @@ export LUNA_VAULT_PATH=""
 # Hermeticity: C14 reads OLLAMA_NO_CLOUD from the live env — never let an
 # inherited value from the launching shell leak into the default test runs.
 unset OLLAMA_NO_CLOUD
+
+# Hermeticity (HIMMEL-969): C8's runner-home defaults resolve via
+# cadence_user_home (USERPROFILE via cygpath on Windows) — per-case HOME
+# redirection does NOT cover that, so pin all three seams to empty dirs
+# globally; C8 cases override them per-case.
+C8_EMPTY="$(mktemp -d)"
+export PIPELINE_BAT_DIR="$C8_EMPTY/pipeline" SWEEP_BAT_DIR="$C8_EMPTY/sweep" GRAPHMAP_BAT_DIR="$C8_EMPTY/graphmap"
 
 failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
@@ -350,32 +359,59 @@ if [ "$_static_fail" -eq 0 ]; then
     pass "C7 STATIC: no destructive verbs in check_c7 body"
 fi
 
-# ── C8: stale pipeline-cadence runner detection (HIMMEL-588) ──────────────────
+# ── C8: stale cadence runner detection (HIMMEL-588/HIMMEL-969) ───────────────
 echo "== C8: no armed cadence runners -> OK C8-cadence =="
 t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
-out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/cadence-empty" \
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" \
+    SWEEP_BAT_DIR="$t/sweep-empty" GRAPHMAP_BAT_DIR="$t/graphmap-empty" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C8-cadence'; then pass "C8 -> OK (no runners)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
+if printf '%s' "$out" | grep -q 'OK   C8-cadence: no armed cadence runners (skipped)'; then pass "C8 -> OK (no runners)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
 rm -rf "$t"
 
-echo "== C8: stale runner (no format stamp) -> WARN C8-cadence =="
-t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/cadence"; write_settings "$t/claude" "$WRAPPER"
-# A runner with NO format marker simulates a cadence armed before HIMMEL-588.
-printf '#!/bin/sh\necho old runner\n' > "$t/cadence/pipeline-harvest.sh"
-out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/cadence" \
+echo "== C8: stale codex-sweep runner -> WARN + codex re-arm hint =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/sweep"; write_settings "$t/claude" "$WRAPPER"
+printf 'rem himmel-cadence-runner-format: %s\r\n' "$STALE_CADENCE_VER" > "$t/sweep/codex-sweep.bat"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" \
+    SWEEP_BAT_DIR="$t/sweep" GRAPHMAP_BAT_DIR="$t/graphmap-empty" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C8-cadence'; then pass "C8 -> WARN (stale runner)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
+if printf '%s' "$out" | grep -q 'WARN C8-cadence: codex-sweep-cadence runners are stale' \
+    && printf '%s' "$out" | grep -q 'bash scripts/cleanup/codex-sweep-cadence.sh arm --force'; then
+    pass "C8 -> WARN (stale codex-sweep runner)"
+else
+    fail "C8 -> $(printf '%s' "$out" | grep C8)"
+fi
 rm -rf "$t"
 
-echo "== C8: current runner (stamped) -> OK C8-cadence =="
-t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/cadence"; write_settings "$t/claude" "$WRAPPER"
-printf '#!/bin/sh\n# himmel-cadence-runner-format: 2\necho current runner\n' > "$t/cadence/pipeline-harvest.sh"
-out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/cadence" \
+echo "== C8: stale graphmap runner -> WARN + graphmap re-arm hint =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/graphmap"; write_settings "$t/claude" "$WRAPPER"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho old graphmap\n' "$STALE_CADENCE_VER" > "$t/graphmap/graphmap-luna.sh"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" \
+    SWEEP_BAT_DIR="$t/sweep-empty" GRAPHMAP_BAT_DIR="$t/graphmap" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C8-cadence' && printf '%s' "$out" | grep -q 'current'; then pass "C8 -> OK (current runner)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
+if printf '%s' "$out" | grep -q 'WARN C8-cadence: graphmap-cadence runners are stale' \
+    && printf '%s' "$out" | grep -q 'bash scripts/luna/graphmap-cadence.sh arm --force'; then
+    pass "C8 -> WARN (stale graphmap runner)"
+else
+    fail "C8 -> $(printf '%s' "$out" | grep C8)"
+fi
+rm -rf "$t"
+
+echo "== C8: pipeline-only current runner -> OK, no false nudges =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/pipeline"; write_settings "$t/claude" "$WRAPPER"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho current runner\n' "$CADENCE_VER" > "$t/pipeline/pipeline-harvest.sh"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline" \
+    SWEEP_BAT_DIR="$t/sweep-empty" GRAPHMAP_BAT_DIR="$t/graphmap-empty" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'OK   C8-cadence: pipeline-cadence runners current' \
+    && ! printf '%s' "$out" | grep -q 'WARN C8-cadence'; then
+    pass "C8 -> OK (pipeline-only current runner)"
+else
+    fail "C8 -> $(printf '%s' "$out" | grep C8)"
+fi
 rm -rf "$t"
 
 echo "== C9 linux at+atd live -> OK =="

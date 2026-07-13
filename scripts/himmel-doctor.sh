@@ -314,30 +314,41 @@ EOF
     fi
 }
 
-# --- C8: stale pipeline-cadence runners (armed before a format change) ----------
-# The pipeline-cadence runners (.bat/.sh) are GENERATED at arm time and NOT
-# regenerated on a code change (HIMMEL-588), so a cadence armed before a
-# runner-format change (e.g. the HIMMEL-575 --settings auto-approve injection)
-# keeps firing the old format with no nudge. Read-only: compare the version
-# stamped into the runners against the current CADENCE_RUNNER_FORMAT_VERSION and
-# point a stale one at `arm --force`. No --fix — a re-arm touches the OS
-# scheduler, so this stays advisory (mirrors C7).
+# --- C8: stale cadence runners (armed before a format change) -----------------
+# The cadence runners (.bat/.sh) are GENERATED at arm time and NOT regenerated
+# on a code change (HIMMEL-588/HIMMEL-969), so a cadence armed before a
+# runner-format change keeps firing the old format with no nudge. Read-only:
+# compare the version stamped into the runners against the current
+# CADENCE_RUNNER_FORMAT_VERSION and point stale ones at `arm --force`. No --fix
+# — a re-arm touches the OS scheduler, so this stays advisory (mirrors C7).
 check_c8() {
-    # Default must match pipeline-cadence.sh's runner home EXACTLY — that is
-    # $HOME/.claude/pipeline-cadence (it keys off $HOME, NOT $CLAUDE_DIR), so use
-    # $HOME here too rather than $CLAUDE_DIR_R, which would diverge when an
-    # operator relocates .claude via CLAUDE_DIR. PIPELINE_BAT_DIR overrides both.
-    local bat_dir="${PIPELINE_BAT_DIR:-${HOME:-}/.claude/pipeline-cadence}" ver
-    if ! ver="$(cadence_runner_stamp "$bat_dir")"; then
-        emit OK C8-cadence "no armed pipeline-cadence runners (skipped)"
-        return
-    fi
-    if [ "$ver" -lt "$CADENCE_RUNNER_FORMAT_VERSION" ]; then
-        emit WARN C8-cadence \
-            "pipeline-cadence runners are stale (format v$ver < v$CADENCE_RUNNER_FORMAT_VERSION) — armed before a runner-format change, still firing the old format" \
-            "re-arm: bash scripts/luna/pipeline-cadence.sh arm --force"
-    else
-        emit OK C8-cadence "pipeline-cadence runners current (format v$ver)"
+    # Defaults must match each emitter's runner home EXACTLY — the emitters
+    # key off resolve_user_home (USERPROFILE via cygpath before $HOME on
+    # Windows Git-Bash, HIMMEL-645), NOT $CLAUDE_DIR, so probe via the lib's
+    # cadence_user_home rather than $HOME or $CLAUDE_DIR_R.
+    # PIPELINE_BAT_DIR/SWEEP_BAT_DIR/GRAPHMAP_BAT_DIR override those homes.
+    local label bat_dir rearm ver saw_any=0 uh
+    uh="$(cadence_user_home)"
+    while IFS='|' read -r label bat_dir rearm; do
+        [ -n "$label" ] || continue
+        if ! ver="$(cadence_runner_stamp "$bat_dir")"; then
+            continue
+        fi
+        saw_any=1
+        if [ "$ver" -lt "$CADENCE_RUNNER_FORMAT_VERSION" ]; then
+            emit WARN C8-cadence \
+                "$label runners are stale (format v$ver < v$CADENCE_RUNNER_FORMAT_VERSION) — armed before a runner-format change, still firing the old format" \
+                "re-arm: $rearm"
+        else
+            emit OK C8-cadence "$label runners current (format v$ver)"
+        fi
+    done <<EOF
+pipeline-cadence|${PIPELINE_BAT_DIR:-$uh/.claude/pipeline-cadence}|bash scripts/luna/pipeline-cadence.sh arm --force
+codex-sweep-cadence|${SWEEP_BAT_DIR:-$uh/.claude/codex-sweep-cadence}|bash scripts/cleanup/codex-sweep-cadence.sh arm --force
+graphmap-cadence|${GRAPHMAP_BAT_DIR:-$uh/.claude/graphmap-cadence}|bash scripts/luna/graphmap-cadence.sh arm --force
+EOF
+    if [ "$saw_any" -eq 0 ]; then
+        emit OK C8-cadence "no armed cadence runners (skipped)"
     fi
 }
 
