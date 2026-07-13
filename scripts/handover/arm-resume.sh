@@ -104,6 +104,7 @@ RESUME_CWD_OVERRIDE=""
 CHANNELS=""
 DEDUP_ANY=0
 WORKTREE_BRANCH=""
+WSL_DISTRO=""
 
 # Local HH:MM from an epoch (armored python3 — portable, no GNU `date -d`;
 # capture via file so a wedged Store stub can't hang the $() call sites).
@@ -111,7 +112,7 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--force] [--dedup-any] [--dry-run]
+Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--dedup-any] [--dry-run]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
@@ -161,6 +162,10 @@ Optional:
                      it and relaunch PLAIN (bridge reaches Telegram on its
                      own). Override only after `bun supervisor.ts --kill`
                      with ARM_CHANNELS_OK=1. Omit for a silent relaunch.
+  --wsl-distro <name>
+                     Windows-host only: arm through schtasks, but relaunch
+                     claude inside this WSL distro. --cwd / resume_cwd is
+                     interpreted as an in-distro path.
   --force            Replace the existing same-handover HIMMEL-Resume job;
                      also bypasses the time-collision check (HIMMEL-407).
   --dedup-any        Dedup against ANY HIMMEL-Resume job, not just this
@@ -206,6 +211,21 @@ while [ $# -gt 0 ]; do
         --worktree=*)  WORKTREE_BRANCH="${1#--worktree=}"; shift ;;
         --channels)    CHANNELS="${2:-}"; shift 2 ;;
         --channels=*)  CHANNELS="${1#--channels=}"; shift ;;
+        --wsl-distro)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "ERR arm-resume: --wsl-distro requires a non-empty value" >&2
+                exit 2
+            fi
+            WSL_DISTRO="$2"; shift 2
+            ;;
+        --wsl-distro=*)
+            WSL_DISTRO="${1#--wsl-distro=}"
+            if [ -z "$WSL_DISTRO" ]; then
+                echo "ERR arm-resume: --wsl-distro requires a non-empty value" >&2
+                exit 2
+            fi
+            shift
+            ;;
         --force)       FORCE=1; shift ;;
         --dedup-any)   DEDUP_ANY=1; shift ;;
         --dry-run)     DRY_RUN=1; shift ;;
@@ -213,6 +233,11 @@ while [ $# -gt 0 ]; do
         *)             echo "ERR arm-resume: unknown arg: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
+
+if [ -n "$WSL_DISTRO" ] && ! [[ "$WSL_DISTRO" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERR arm-resume: invalid --wsl-distro name: $WSL_DISTRO" >&2
+    exit 2
+fi
 
 if [ -z "$RESUME_TIME" ] || [ -z "$HANDOVER_PATH" ]; then
     echo "ERR arm-resume: --time and --handover are required" >&2
@@ -295,6 +320,14 @@ _cmd_metachar_escape() {
     v="${v//>/^>}"
     v="${v//|/^|}"
     printf '%s' "$v"
+}
+
+# _bash_single_quote <value> — quote one value for the in-distro bash -lc
+# command. The result is composed completely before CMD escaping is applied.
+_bash_single_quote() {
+    local v="$1"
+    v="${v//\'/\'\\\'\'}"
+    printf "'%s'" "$v"
 }
 
 # Resolve the requested slot to an absolute epoch (TARGET_EPOCH). Three forms:
@@ -431,6 +464,11 @@ case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
         ;;
 esac
 
+if [ -n "$WSL_DISTRO" ] && [ "$PLATFORM" != windows ]; then
+    echo "ERR arm-resume: --wsl-distro is a Windows-host flag" >&2
+    exit 2
+fi
+
 # HIMMEL_HEADROOM_PROXY (HIMMEL-901): route the armed relaunch through the
 # local headroom Anthropic-API proxy (127.0.0.1:8787) when the operator has
 # opted in. Resolved ONCE here, at arm time, and baked into whichever
@@ -450,6 +488,10 @@ if [ -n "${HIMMEL_HEADROOM_PROXY+x}" ]; then
     [ "$HIMMEL_HEADROOM_PROXY" = "1" ] && HEADROOM_PROXY_ACTIVE=1
 elif _headroom_proxy_env_file_active "$(cd "$SCRIPT_DIR/../.." && pwd)"; then
     HEADROOM_PROXY_ACTIVE=1
+fi
+if [ -n "$WSL_DISTRO" ] && [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+    echo "WARN arm-resume: headroom proxy gate skipped for a WSL-station arm (distro '$WSL_DISTRO')" >&2
+    HEADROOM_PROXY_ACTIVE=0
 fi
 # Port fixed at 8787 for this slice — no port config (HIMMEL-901 minimal
 # slice; a variable only to avoid repeating the literal across 3 platform
@@ -892,11 +934,14 @@ if [ -n "$WORKTREE_BRANCH" ]; then
     fi
     unset _wt_root _wt_path
 elif [ -n "$RESUME_CWD_OVERRIDE" ]; then
-    if [ ! -d "$RESUME_CWD_OVERRIDE" ]; then
+    if [ -n "$WSL_DISTRO" ]; then
+        RESUME_CWD="$RESUME_CWD_OVERRIDE"
+    elif [ ! -d "$RESUME_CWD_OVERRIDE" ]; then
         echo "ERR arm-resume: --cwd path does not exist: $RESUME_CWD_OVERRIDE" >&2
         exit 1
+    else
+        RESUME_CWD=$(_arm_realpath "$RESUME_CWD_OVERRIDE")
     fi
-    RESUME_CWD=$(_arm_realpath "$RESUME_CWD_OVERRIDE")
 else
     # Extract resume_cwd: from the first YAML frontmatter block only.
     # awk collects lines between the first two --- markers; sed picks
@@ -916,7 +961,9 @@ else
     [ -n "$_fm_cwd" ] && _fm_cwd_found=1
 
     if [ -n "$_fm_cwd" ]; then
-        if [ -d "$_fm_cwd" ]; then
+        if [ -n "$WSL_DISTRO" ]; then
+            RESUME_CWD="$_fm_cwd"
+        elif [ -d "$_fm_cwd" ]; then
             RESUME_CWD=$(_arm_realpath "$_fm_cwd")
         else
             echo "WARN arm-resume: handover resume_cwd: '$_fm_cwd' is not a directory — ignoring, falling back" >&2
@@ -940,6 +987,19 @@ else
         fi
     fi
     unset _fm_cwd _fm_cwd_found
+fi
+
+# WSL-station cwd values live inside the selected distro. The Windows host
+# must neither canonicalise nor probe them; use a login shell in-distro so
+# the validation sees the same environment as the fired relaunch.
+if [ -n "$WSL_DISTRO" ]; then
+    _wsl_cwd_test="test -d $(_bash_single_quote "$RESUME_CWD")"
+    if ! MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+        wsl.exe -d "$WSL_DISTRO" -e bash -lc "$_wsl_cwd_test"; then
+        echo "ERR arm-resume: in-distro cwd does not exist: '$RESUME_CWD' (distro '$WSL_DISTRO')" >&2
+        exit 4
+    fi
+    unset _wsl_cwd_test
 fi
 
 # Task name — ticket-aware (HIMMEL-540), extended with the full derived
@@ -2037,40 +2097,83 @@ schedule_arm() {
                 rm -f "$bat_path"
                 exit 2
             fi
-            # Resolve claude.cmd to an absolute path so the .bat doesn't
-            # depend on PATH being set in whatever cmd shell schtasks
-            # spawns (SYSTEM context lacks npm-installed shims by default).
-            local claude_cmd_posix
-            if ! claude_cmd_posix=$(command -v claude 2>/dev/null); then
-                echo "ERR arm-resume: 'claude' not on PATH at arm time" >&2
-                rm -f "$bat_path"
-                exit 2
+            local bat_path_win claude_cmd_win="" resume_cwd_win=""
+            local claude_cmd_posix="" _cyg_out="" _cyg_rest=""
+            if [ -n "$WSL_DISTRO" ]; then
+                # WSL owns both the executable lookup and cwd. Only the .bat
+                # path crosses through cygpath; the in-distro values must not.
+                if ! MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+                    wsl.exe -d "$WSL_DISTRO" -e bash -lc 'command -v claude' >/dev/null 2>&1; then
+                    echo "ERR arm-resume: 'claude' not on PATH at arm time (distro '$WSL_DISTRO')" >&2
+                    rm -f "$bat_path"
+                    exit 2
+                fi
+                if ! bat_path_win=$(cygpath -w "$bat_path" 2>&1) || [ -z "$bat_path_win" ]; then
+                    echo "ERR arm-resume: cygpath -w failed converting bat=$bat_path: $bat_path_win" >&2
+                    rm -f "$bat_path"
+                    exit 4
+                fi
+            else
+                # Resolve claude.cmd to an absolute path so the .bat doesn't
+                # depend on PATH being set in whatever cmd shell schtasks
+                # spawns (SYSTEM context lacks npm-installed shims by default).
+                if ! claude_cmd_posix=$(command -v claude 2>/dev/null); then
+                    echo "ERR arm-resume: 'claude' not on PATH at arm time" >&2
+                    rm -f "$bat_path"
+                    exit 2
+                fi
+                # HIMMEL-708: convert all three paths (.bat, claude, cwd) in ONE
+                # cygpath spawn instead of three — cygpath emits one Windows path
+                # per input line, in argument order. Windows paths contain no
+                # newlines, so split the result with pure-bash parameter expansion
+                # (no extra sed/head spawns).
+                if ! _cyg_out=$(cygpath -w "$bat_path" "$claude_cmd_posix" "$RESUME_CWD" 2>&1); then
+                    echo "ERR arm-resume: cygpath -w failed converting one of [bat=$bat_path claude=$claude_cmd_posix cwd=$RESUME_CWD]: $_cyg_out" >&2
+                    rm -f "$bat_path"
+                    exit 4
+                fi
+                bat_path_win="${_cyg_out%%$'\n'*}"
+                _cyg_rest="${_cyg_out#*$'\n'}"
+                claude_cmd_win="${_cyg_rest%%$'\n'*}"
+                resume_cwd_win="${_cyg_rest#*$'\n'}"
+                # Belt-and-suspenders (HIMMEL-708 CR): a well-behaved cygpath emits
+                # exactly three non-empty lines on rc 0, so the split above is sound.
+                # Guard anyway against a build that exits 0 with fewer lines —
+                # otherwise resume_cwd_win would silently inherit claude_cmd_win (the
+                # `#*\n` no-ops when no newline remains) and mis-target the .bat cd.
+                # Mirrors the non-empty check the python-derived schedule fields get.
+                if [ -z "$bat_path_win" ] || [ -z "$claude_cmd_win" ] || [ -z "$resume_cwd_win" ]; then
+                    echo "ERR arm-resume: cygpath -w produced incomplete output (bat/claude/cwd): $_cyg_out" >&2
+                    rm -f "$bat_path"
+                    exit 4
+                fi
             fi
-            # HIMMEL-708: convert all three paths (.bat, claude, cwd) in ONE
-            # cygpath spawn instead of three — cygpath emits one Windows path
-            # per input line, in argument order. Windows paths contain no
-            # newlines, so split the result with pure-bash parameter expansion
-            # (no extra sed/head spawns).
-            local bat_path_win claude_cmd_win resume_cwd_win _cyg_out _cyg_rest
-            if ! _cyg_out=$(cygpath -w "$bat_path" "$claude_cmd_posix" "$RESUME_CWD" 2>&1); then
-                echo "ERR arm-resume: cygpath -w failed converting one of [bat=$bat_path claude=$claude_cmd_posix cwd=$RESUME_CWD]: $_cyg_out" >&2
-                rm -f "$bat_path"
-                exit 4
-            fi
-            bat_path_win="${_cyg_out%%$'\n'*}"
-            _cyg_rest="${_cyg_out#*$'\n'}"
-            claude_cmd_win="${_cyg_rest%%$'\n'*}"
-            resume_cwd_win="${_cyg_rest#*$'\n'}"
-            # Belt-and-suspenders (HIMMEL-708 CR): a well-behaved cygpath emits
-            # exactly three non-empty lines on rc 0, so the split above is sound.
-            # Guard anyway against a build that exits 0 with fewer lines —
-            # otherwise resume_cwd_win would silently inherit claude_cmd_win (the
-            # `#*\n` no-ops when no newline remains) and mis-target the .bat cd.
-            # Mirrors the non-empty check the python-derived schedule fields get.
-            if [ -z "$bat_path_win" ] || [ -z "$claude_cmd_win" ] || [ -z "$resume_cwd_win" ]; then
-                echo "ERR arm-resume: cygpath -w produced incomplete output (bat/claude/cwd): $_cyg_out" >&2
-                rm -f "$bat_path"
-                exit 4
+            local wsl_launch=""
+            if [ -n "$WSL_DISTRO" ]; then
+                local q_cwd q_name="" q_prompt q_channels="" wsl_command
+                q_cwd=$(_bash_single_quote "$RESUME_CWD")
+                q_prompt=$(_bash_single_quote "$RESUME_PROMPT")
+                [ -n "$SESSION_NAME" ] && q_name=" -n $(_bash_single_quote "$SESSION_NAME")"
+                [ -n "$CHANNELS" ] && q_channels=" --channels $(_bash_single_quote "$CHANNELS")"
+                wsl_command="cd $q_cwd && claude$q_name $q_prompt$q_channels"
+                # The composed command sits INSIDE the .bat line's double
+                # quotes, where CMD treats ^ as a LITERAL character —
+                # caret-escaping here reaches bash verbatim and shatters the
+                # command (`cd` gets extra args, claude fires in the wrong
+                # cwd; verified against a live .bat). Inside CMD quotes only
+                # two characters stay active: % (batch expansion — double
+                # it) and " (closes the quote — no safe in-quote escape
+                # exists, CMD toggles on every unescaped quote regardless of
+                # backslashes). So: %->%% and REFUSE a payload carrying a
+                # double quote rather than emit an injectable line.
+                case "$wsl_command" in
+                    *'"'*)
+                        echo "ERR arm-resume: a WSL-station arm cannot carry a double quote in its prompt/name/channels (CMD quote nesting is not escapable)" >&2
+                        rm -f "$bat_path"
+                        exit 2
+                        ;;
+                esac
+                wsl_launch="${wsl_command//%/%%}"
             fi
             # .bat content: escape CMD metacharacters in BOTH the prompt
             # AND the cd path. % & ^ < > | can inject commands at fire
@@ -2122,7 +2225,7 @@ schedule_arm() {
             # cygpath spawn for both) so the livez checks below carry an
             # ABSOLUTE curl path — see the HEADROOM_CURL resolution comment.
             local hb="" cu=""
-            if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+            if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ] && [ -z "$WSL_DISTRO" ]; then
                 local _hp_cyg_out _hp_cyg_rest headroom_bin_win curl_bin_win
                 if ! _hp_cyg_out=$(cygpath -w "$HEADROOM_BIN" "$HEADROOM_CURL" 2>&1); then
                     echo "ERR arm-resume: cygpath -w failed converting [headroom=$HEADROOM_BIN curl=$HEADROOM_CURL]: $_hp_cyg_out" >&2
@@ -2183,25 +2286,29 @@ schedule_arm() {
             # TASK_NAME is sanitized to [:alnum:]_- (no CMD metachars).
             {
                 printf 'schtasks /delete /tn "%s" /f >nul 2>&1\r\n' "$TASK_NAME"
-                printf 'cd /d "%s" || exit /b 1\r\n' "$c"
-                if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
-                    printf '"%s" -s -m 5 http://127.0.0.1:%s/livez >nul 2>&1\r\n' "$cu" "$HEADROOM_PROXY_PORT"
-                    printf 'if errorlevel 1 (\r\n'
-                    printf '    start "" /b cmd /c ""%s" proxy --port %s >> "%%USERPROFILE%%\\.headroom-proxy.log" 2>&1"\r\n' "$hb" "$HEADROOM_PROXY_PORT"
-                    printf '    ping -n 4 127.0.0.1 >nul\r\n'
-                    printf '    "%s" -s -m 5 http://127.0.0.1:%s/livez >nul 2>&1\r\n' "$cu" "$HEADROOM_PROXY_PORT"
-                    printf ')\r\n'
-                    printf 'if errorlevel 1 (\r\n'
-                    printf '    echo %%DATE%% %%TIME%% arm=%s mode=bare-fallback>> "%%USERPROFILE%%\\.headroom-proxy.log"\r\n' "$TASK_NAME"
-                    printf '    "%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
-                    printf ') else (\r\n'
-                    printf '    echo %%DATE%% %%TIME%% arm=%s mode=proxied>> "%%USERPROFILE%%\\.headroom-proxy.log"\r\n' "$TASK_NAME"
-                    printf '    set "ANTHROPIC_BASE_URL=http://127.0.0.1:%s"\r\n' "$HEADROOM_PROXY_PORT"
-                    printf '    set "HEADROOM_OFFLINE=1"\r\n'
-                    printf '    "%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
-                    printf ')\r\n'
+                if [ -n "$WSL_DISTRO" ]; then
+                    printf 'wsl.exe -d "%s" -e bash -lc "%s"\r\n' "$WSL_DISTRO" "$wsl_launch"
                 else
-                    printf '"%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
+                    printf 'cd /d "%s" || exit /b 1\r\n' "$c"
+                    if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
+                        printf '"%s" -s -m 5 http://127.0.0.1:%s/livez >nul 2>&1\r\n' "$cu" "$HEADROOM_PROXY_PORT"
+                        printf 'if errorlevel 1 (\r\n'
+                        printf '    start "" /b cmd /c ""%s" proxy --port %s >> "%%USERPROFILE%%\\.headroom-proxy.log" 2>&1"\r\n' "$hb" "$HEADROOM_PROXY_PORT"
+                        printf '    ping -n 4 127.0.0.1 >nul\r\n'
+                        printf '    "%s" -s -m 5 http://127.0.0.1:%s/livez >nul 2>&1\r\n' "$cu" "$HEADROOM_PROXY_PORT"
+                        printf ')\r\n'
+                        printf 'if errorlevel 1 (\r\n'
+                        printf '    echo %%DATE%% %%TIME%% arm=%s mode=bare-fallback>> "%%USERPROFILE%%\\.headroom-proxy.log"\r\n' "$TASK_NAME"
+                        printf '    "%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
+                        printf ') else (\r\n'
+                        printf '    echo %%DATE%% %%TIME%% arm=%s mode=proxied>> "%%USERPROFILE%%\\.headroom-proxy.log"\r\n' "$TASK_NAME"
+                        printf '    set "ANTHROPIC_BASE_URL=http://127.0.0.1:%s"\r\n' "$HEADROOM_PROXY_PORT"
+                        printf '    set "HEADROOM_OFFLINE=1"\r\n'
+                        printf '    "%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
+                        printf ')\r\n'
+                    else
+                        printf '"%s"%s "%s"%s\r\n' "$claude_cmd_win" "$nm" "$p" "$ch"
+                    fi
                 fi
             } > "$bat_path"
 
