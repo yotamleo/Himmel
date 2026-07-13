@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderMetrics, createExporterCache } from "./flow-exporter";
+import { renderMetrics, createExporterCache, parseHostDetectorJson } from "./flow-exporter";
 import { serializeFlowRunEnd, serializeFlowRunStart, type FlowRunEnd, type FlowRunStart } from "../telegram/flow-run-ledger";
 import { serializeQuotaGauge, type QuotaGaugeRecord } from "../telegram/quota-gauge";
 
@@ -124,6 +124,7 @@ flow_run_items_processed_total{flow="pipeline-harvest"} 20
 flow_run_in_flight{flow="pipeline-harvest"} 1
 flow_run_in_flight{flow="pipeline-silent"} 0
 flow_run_in_flight{flow="pipeline-synthesize"} 0
+# agent_tree_*/orphan_* omitted: platform has no Windows process tree API
 # HELP flow_exporter_scrape_duration_seconds Wall-clock duration of this exporter scrape.
 # TYPE flow_exporter_scrape_duration_seconds gauge
 flow_exporter_scrape_duration_seconds 0
@@ -221,4 +222,100 @@ test("scheduled-task scrape is platform-gated and TTL-cached", async () => {
   const linux = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "linux", cache: createExporterCache() });
   expect(linux).toContain("# scheduled_task_* omitted: platform has no Windows Scheduled Tasks API");
   expect(linux).not.toContain("scheduled_task_exists");
+});
+
+test("host detector JSON parser normalizes detector output", () => {
+  const parsed = parseHostDetectorJson(JSON.stringify({
+    trees: [
+      { class: "claude", rss_bytes: 1234, process_count: 2 },
+      { class: "", rss_bytes: 999, process_count: 1 },
+      { class: "other", rss_bytes: -1, process_count: Number.NaN },
+    ],
+    orphans: [
+      { class: "codex-fleet", count: 3 },
+      { class: "ignored" },
+    ],
+  }));
+  expect(parsed.trees).toEqual([
+    { class: "claude", rss_bytes: 1234, process_count: 2 },
+    { class: "other", rss_bytes: 0, process_count: 0 },
+  ]);
+  expect(parsed.orphans).toEqual([
+    { class: "codex-fleet", count: 3 },
+    { class: "ignored", count: 0 },
+  ]);
+});
+
+test("host detector metrics render from fixture data", async () => {
+  const config = join(tmp, "observability.json");
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeFileSync(config, JSON.stringify({ host_detectors_ttl_seconds: 30 }));
+  writeLines(ledger, []);
+
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: config,
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    platform: "win32",
+    hostDetectorRunner: () => JSON.stringify({
+      trees: [
+        { class: "claude", rss_bytes: 2048, process_count: 2 },
+        { class: "other", rss_bytes: 512, process_count: 1 },
+      ],
+      orphans: [
+        { class: "codex-fleet", count: 1 },
+      ],
+    }),
+  });
+
+  expect(body).toContain('# HELP agent_tree_rss_bytes Working-set bytes summed by agent process tree class.');
+  expect(body).toContain('agent_tree_rss_bytes{class="claude"} 2048');
+  expect(body).toContain('agent_tree_process_count{class="other"} 1');
+  expect(body).toContain('orphan_process_count{class="codex-fleet"} 1');
+});
+
+test("host detector scrape is platform-gated and fail-soft on runner errors", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, []);
+  const base = { nowMs: NOW, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none") };
+
+  const linux = await renderMetrics({ ...base, platform: "linux", hostDetectorRunner: () => { throw new Error("should not run"); } });
+  expect(linux).toContain("# agent_tree_*/orphan_* omitted: platform has no Windows process tree API");
+  expect(linux).not.toContain("agent_tree_rss_bytes");
+
+  const failed = await renderMetrics({
+    ...base,
+    platform: "win32",
+    hostDetectorRunner: () => { throw new Error("powershell failed"); },
+  });
+  expect(failed).toContain("# agent_tree_*/orphan_* omitted: powershell failed");
+  expect(failed).not.toContain("orphan_process_count");
+});
+
+test("host detector scrape uses TTL cache and drops cache on refresh failure", async () => {
+  const config = join(tmp, "observability.json");
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeFileSync(config, JSON.stringify({ host_detectors_ttl_seconds: 2 }));
+  writeLines(ledger, []);
+  const cache = createExporterCache();
+  let calls = 0;
+  const runner = () => {
+    calls++;
+    if (calls === 2) throw new Error("expired refresh failed");
+    return {
+      trees: [{ class: "claude", rss_bytes: 1000, process_count: 1 }],
+      orphans: [{ class: "codex-fleet", count: 0 }],
+    };
+  };
+
+  const first = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "win32", hostDetectorRunner: runner, cache });
+  const second = await renderMetrics({ nowMs: NOW + 1000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "win32", hostDetectorRunner: runner, cache });
+  const third = await renderMetrics({ nowMs: NOW + 3000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "win32", hostDetectorRunner: runner, cache });
+
+  expect(calls).toBe(2);
+  expect(first).toContain('agent_tree_rss_bytes{class="claude"} 1000');
+  expect(second).toContain('agent_tree_process_count{class="claude"} 1');
+  expect(third).toContain("# agent_tree_*/orphan_* omitted: expired refresh failed");
+  expect(third).not.toContain("agent_tree_rss_bytes");
 });

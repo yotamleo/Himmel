@@ -10,6 +10,7 @@ const LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_STALL_DEADLINE_SECONDS = 6 * 60 * 60;
 const CACHE_TTL_MS = 60 * 1000;
 const SCHEDULER_QUERY_TIMEOUT_MS = 10 * 1000;
+const HOST_DETECTOR_TIMEOUT_MS = 10 * 1000;
 const DEFAULT_PORT = 9877;
 
 type FlowConfig = {
@@ -22,6 +23,7 @@ type ObservabilityConfig = {
   flows?: FlowConfig[];
   expected_tasks?: string[];
   vault_path?: string;
+  host_detectors_ttl_seconds?: number;
 };
 
 type ScheduledTaskSample = {
@@ -33,6 +35,24 @@ type ScheduledTaskSample = {
 
 type SchedulerRunner = (tasks: string[]) => ScheduledTaskSample[] | Promise<ScheduledTaskSample[]>;
 
+type HostTreeSample = {
+  class: string;
+  rss_bytes: number;
+  process_count: number;
+};
+
+type HostOrphanSample = {
+  class: string;
+  count: number;
+};
+
+type HostDetectorResult = {
+  trees: HostTreeSample[];
+  orphans: HostOrphanSample[];
+};
+
+type HostDetectorRunner = () => unknown | Promise<unknown>;
+
 type Cached<T> = {
   key: string;
   fetchedAtMs: number;
@@ -41,6 +61,7 @@ type Cached<T> = {
 
 export type ExporterCache = {
   scheduler?: Cached<{ samples: ScheduledTaskSample[]; comments: string[] }>;
+  hostDetectors?: Cached<HostDetectorResult>;
   luna?: Cached<{ samples: string[] }>;
 };
 
@@ -53,6 +74,7 @@ export type RenderMetricsOptions = {
   lanesPath?: string;
   platform?: NodeJS.Platform;
   schedulerRunner?: SchedulerRunner;
+  hostDetectorRunner?: HostDetectorRunner;
   cache?: ExporterCache;
 };
 
@@ -372,6 +394,114 @@ function buildScheduledTaskLines(samples: ScheduledTaskSample[], comments: strin
   return { lines, comments };
 }
 
+function hostDetectorTtlMs(config: ObservabilityConfig): number {
+  const seconds = config.host_detectors_ttl_seconds;
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : CACHE_TTL_MS;
+}
+
+function asNonNegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+export function parseHostDetectorJson(raw: unknown): HostDetectorResult {
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("host-detectors output is not an object");
+  }
+  const row = parsed as Record<string, unknown>;
+  const treesRaw = Array.isArray(row.trees) ? row.trees : [];
+  const orphansRaw = Array.isArray(row.orphans) ? row.orphans : [];
+  return {
+    trees: treesRaw.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const tree = item as Record<string, unknown>;
+      if (typeof tree.class !== "string" || !tree.class) return [];
+      return [{
+        class: tree.class,
+        rss_bytes: asNonNegativeNumber(tree.rss_bytes),
+        process_count: asNonNegativeNumber(tree.process_count),
+      }];
+    }),
+    orphans: orphansRaw.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const orphan = item as Record<string, unknown>;
+      if (typeof orphan.class !== "string" || !orphan.class) return [];
+      return [{
+        class: orphan.class,
+        count: asNonNegativeNumber(orphan.count),
+      }];
+    }),
+  };
+}
+
+async function runWindowsHostDetectors(): Promise<HostDetectorResult> {
+  const scriptPath = join(import.meta.dir, "host-detectors.ps1");
+  const proc = Bun.spawn(["powershell", "-NoProfile", "-File", scriptPath], { stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => {
+    try { proc.kill(); } catch { /* already gone */ }
+  }, HOST_DETECTOR_TIMEOUT_MS);
+  try {
+    // Drain both pipes CONCURRENTLY with exit: awaiting exited first can
+    // deadlock if the child fills a pipe buffer before exiting (codex-5).
+    const [exitCode, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    clearTimeout(timer);
+    if (exitCode !== 0) {
+      throw new Error(err.trim() || `host-detectors exited ${exitCode}`);
+    }
+    return parseHostDetectorJson(out);
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
+
+function hostDetectorOmitComment(reason: string): string {
+  return `# agent_tree_*/orphan_* omitted: ${reason.replace(/\s+/g, " ").trim() || "host-detectors query failed"}`;
+}
+
+async function hostDetectorMetrics(
+  config: ObservabilityConfig,
+  opts: Required<Pick<RenderMetricsOptions, "platform" | "nowMs" | "cache">> & { hostDetectorRunner?: HostDetectorRunner },
+): Promise<{ lines: string[]; comments: string[] }> {
+  if (opts.platform !== "win32") {
+    return { lines: [], comments: [hostDetectorOmitComment("platform has no Windows process tree API")] };
+  }
+
+  const key = "host-detectors";
+  const ttlMs = hostDetectorTtlMs(config);
+  if (opts.cache.hostDetectors && opts.cache.hostDetectors.key === key && opts.nowMs - opts.cache.hostDetectors.fetchedAtMs < ttlMs) {
+    return buildHostDetectorLines(opts.cache.hostDetectors.value);
+  }
+
+  const runner = opts.hostDetectorRunner ?? runWindowsHostDetectors;
+  try {
+    const result = parseHostDetectorJson(await runner());
+    opts.cache.hostDetectors = { key, fetchedAtMs: opts.nowMs, value: result };
+    return buildHostDetectorLines(result);
+  } catch (e) {
+    delete opts.cache.hostDetectors;
+    const message = e instanceof Error && e.message ? e.message : "host-detectors query failed";
+    return { lines: [], comments: [hostDetectorOmitComment(message)] };
+  }
+}
+
+function buildHostDetectorLines(result: HostDetectorResult): { lines: string[]; comments: string[] } {
+  const trees = [...result.trees].sort((a, b) => a.class.localeCompare(b.class));
+  const orphans = [...result.orphans].sort((a, b) => a.class.localeCompare(b.class));
+  const lines: string[] = [];
+  addFamily(lines, "agent_tree_rss_bytes", "Working-set bytes summed by agent process tree class.", "gauge",
+    trees.map((s) => sample("agent_tree_rss_bytes", { class: s.class }, s.rss_bytes)));
+  addFamily(lines, "agent_tree_process_count", "Process count summed by agent process tree class.", "gauge",
+    trees.map((s) => sample("agent_tree_process_count", { class: s.class }, s.process_count)));
+  addFamily(lines, "orphan_process_count", "Report-only orphan-shaped process count by detector class.", "gauge",
+    orphans.map((s) => sample("orphan_process_count", { class: s.class }, s.count)));
+  return { lines, comments: [] };
+}
+
 function frontmatter(text: string): string {
   if (!text.startsWith("---")) return "";
   const end = text.indexOf("\n---", 3);
@@ -507,6 +637,15 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   });
   lines.push(...scheduled.comments);
   lines.push(...scheduled.lines);
+
+  const host = await hostDetectorMetrics(cfg, {
+    platform: options.platform ?? process.platform,
+    nowMs,
+    cache,
+    hostDetectorRunner: options.hostDetectorRunner,
+  });
+  lines.push(...host.comments);
+  lines.push(...host.lines);
 
   lines.push(...lunaMetrics(cfg, nowMs, cache));
   lines.push(...quotaMetrics(quotaPath, lanesPath, nowMs));
