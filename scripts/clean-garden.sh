@@ -229,6 +229,36 @@ while IFS= read -r line; do
 done < <(git -C "$PRIMARY_WORKTREE" worktree list --porcelain)
 flush_record
 
+registered_worktree_path() {
+    local candidate="$1" candidate_norm wt wt_norm
+    candidate_norm=$(cd "$candidate" 2>/dev/null && pwd || echo "$candidate")
+    for wt in "${WT_PATHS[@]}"; do
+        wt_norm=$(cd "$wt" 2>/dev/null && pwd || echo "$wt")
+        if [ "$candidate_norm" = "$wt_norm" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+human_kib() {
+    awk -v kib="${1:-0}" 'BEGIN {
+        bytes = kib * 1024
+        split("B K M G T", unit)
+        value = bytes
+        idx = 1
+        while (value >= 1024 && idx < 5) {
+            value = value / 1024
+            idx++
+        }
+        if (idx == 1 || value >= 10) {
+            printf "%.0f%s", value, unit[idx]
+        } else {
+            printf "%.1f%s", value, unit[idx]
+        }
+    }'
+}
+
 PRUNED=0
 PARTIAL=0
 SKIPPED=0
@@ -335,6 +365,56 @@ if [ "$NO_PRUNE" -eq 0 ]; then
         fi
     done
     echo "clean-garden: prune summary — $PRUNED pruned, $PARTIAL partial, $SKIPPED skipped, $FAILED failed"
+
+    STRAY_HOME="$PRIMARY_WORKTREE/.claude/worktrees"
+    if [ -d "$STRAY_HOME" ]; then
+        STRAY_FOUND=0
+        STRAY_SWEPT=0
+        STRAY_FAILED=0
+        STRAY_RECLAIMED_KIB=0
+        while IFS= read -r stray_dir; do
+            [ -n "$stray_dir" ] || continue
+            stray_norm=$(cd "$stray_dir" 2>/dev/null && pwd || echo "$stray_dir")
+            if [ "$stray_norm" = "$PRIMARY_WORKTREE" ]; then
+                log "  stray-sweep skip primary-looking path: $stray_dir"
+                continue
+            fi
+            if registered_worktree_path "$stray_dir"; then
+                log "  stray-sweep keep registered worktree: $stray_dir"
+                continue
+            fi
+            # Fresh = ANY entry inside the husk modified in the last 24h, not
+            # just the top-level dir mtime (nested writes by an in-flight
+            # session don't touch the top dir's mtime).
+            if find "$stray_dir" -mmin -1440 -print 2>/dev/null | grep -q .; then
+                log "  stray-sweep skip fresh husk: $stray_dir"
+                continue
+            fi
+
+            STRAY_FOUND=$((STRAY_FOUND+1))
+            stray_kib=$(du -sk "$stray_dir" 2>/dev/null | awk '{ print $1 }') || stray_kib=0
+            stray_kib=${stray_kib:-0}
+
+            if [ "$DRY_RUN" -eq 1 ]; then
+                echo "DRY clean-garden: would sweep stray husk $stray_dir"
+                STRAY_SWEPT=$((STRAY_SWEPT+1))
+                STRAY_RECLAIMED_KIB=$((STRAY_RECLAIMED_KIB+stray_kib))
+                continue
+            fi
+            if rm -rf "$stray_dir" 2>/dev/null; then
+                log "  swept stray husk: $stray_dir"
+                STRAY_SWEPT=$((STRAY_SWEPT+1))
+                STRAY_RECLAIMED_KIB=$((STRAY_RECLAIMED_KIB+stray_kib))
+            else
+                echo "WARN clean-garden: failed to sweep stray husk $stray_dir" >&2
+                STRAY_FAILED=$((STRAY_FAILED+1))
+            fi
+        done < <(find "$STRAY_HOME" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+        if [ "$STRAY_FOUND" -gt 0 ]; then
+            STRAY_SIZE=$(human_kib "$STRAY_RECLAIMED_KIB")
+            echo "clean-garden: stray-sweep — $STRAY_SWEPT swept, $STRAY_FAILED failed ($STRAY_SIZE reclaimed)"
+        fi
+    fi
 
     # CR-pending marker sweep: remove stale markers for branches that no
     # longer exist locally AND have no open PR. Markers for branches that are
