@@ -629,6 +629,15 @@ Specs saved to: `docs/superpowers/specs/YYYY-MM-DD-feature.md`
 
 ---
 
+## tokensave (MCP server)
+
+**What:** Code-graph MCP server (single Rust binary) — indexes a repo into a symbol-level knowledge graph (per-project `.tokensave/` sqlite DB) and serves exploration + analysis tools over it. The harness's designated organ for symbol-level code ops in the retrieval routing (qmd finds content, graphify explains structure, **tokensave serves code** — CLAUDE.md, HIMMEL-621).
+**MCP tools:** `tokensave_context` (natural-language exploration — first call for any code question), `tokensave_search`, `tokensave_callers` / `tokensave_callees`, `tokensave_impact`, plus a wide discovery/analysis/edit surface.
+**Install + register:** binary via scoop (Windows) / brew (macOS) / `cargo install tokensave`, then `tokensave install --agent claude`; per-repo `tokensave init` once, `tokensave sync` to refresh. Full steps: [`docs/setup/new-machine.md` §8](setup/new-machine.md#8-mcp-servers).
+**Tier:** T0 always-on — the one server included in *every* lean profile (`.claude/mcp-profiles/profiles.json`).
+
+---
+
 ## MCP fleet — tiered lean profiles (`scripts/mcp/build-mcp-profiles.mjs`, HIMMEL-719)
 
 **What:** Every session spawns the full MCP fleet at startup (per-session, not
