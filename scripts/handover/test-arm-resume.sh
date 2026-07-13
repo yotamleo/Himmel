@@ -272,7 +272,8 @@ assert_not_contains "T7 no discoverability warning for CRLF handover" "no --cwd 
 # ---------------------------------------------------------------------------
 HO=$(make_handover "$WORK_REPO")
 PAST_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
-out=$(bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --force --dry-run 2>&1)
+# HIMMEL-966: host `at` must not be a dependency; pin the posix backend with the stub.
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T8 past --time exits 0 (force+dry)" 0 "$rc"
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
@@ -299,7 +300,8 @@ FIVE_RESET=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.
 SEVEN_RESET=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')
 printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":15.0,"resets_at":"%s"}}' \
     "$FIVE_RESET" "$SEVEN_RESET" > "$SLOT_CACHE"
-out=$(RESUME_SLOT_CACHE="$SLOT_CACHE" SLOT_MAX_AGE=0 bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
+# HIMMEL-966: host `at` must not be a dependency; pin the posix backend with the stub.
+out=$(RESUME_SLOT_CACHE="$SLOT_CACHE" SLOT_MAX_AGE=0 PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T9 --time smart exits 0 (force+dry)" 0 "$rc"
 assert_contains "T9 smart banner shows bank-free ASAP" "smart -> " "$out"

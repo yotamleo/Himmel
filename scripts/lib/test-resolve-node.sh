@@ -15,10 +15,28 @@ failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
 
-# A realistic "node not on PATH" still has coreutils (/usr/bin). Use the dir
-# that actually holds sort/ls so resolve_node's nvm/fnm pipeline works, while
-# node stays absent from it. (Setting PATH=/nonexistent would also strip sort.)
-UTILS_DIR="$(dirname "$(command -v sort)")"
+# A realistic "node not on PATH" still needs coreutils — but on apt-node
+# systems node LIVES in the coreutils dir (/usr/bin, HIMMEL-966), so use
+# a curated symlink dir carrying only the tools these cases need.
+UTILS_ROOT="$(mktemp -d)"
+trap 'rm -rf "$UTILS_ROOT"' EXIT
+UTILS_DIR="$UTILS_ROOT/utils"
+mkdir -p "$UTILS_DIR"
+for _t in sort tail; do
+    _p="$(command -v "$_t" 2>/dev/null)" && ln -s "$_p" "$UTILS_DIR/$_t" 2>/dev/null
+done
+# Windows Git Bash: a symlink/copy of an MSYS tool loses its msys-2.0.dll
+# neighborhood and won't run — probe, then fall back to the coreutils dir
+# (node is never colocated with coreutils on those hosts).
+if ! PATH="$UTILS_DIR" sort </dev/null >/dev/null 2>&1; then
+    UTILS_DIR="$(dirname "$(command -v sort)")"
+    # Self-diagnose the one bad combination (fallback dir DOES carry node —
+    # the HIMMEL-966 apt-node class): the PATH-cleared cases below will fail;
+    # say why up front instead of leaving a puzzling red run.
+    if [ -x "$UTILS_DIR/node" ] || [ -x "$UTILS_DIR/node.exe" ]; then
+        echo "WARN: curated utils dir unusable AND fallback $UTILS_DIR carries node — PATH-cleared cases will fail (HIMMEL-966)" >&2
+    fi
+fi
 
 # A fake node binary (executable, content irrelevant — resolve_node only checks -x).
 make_fake_node() {

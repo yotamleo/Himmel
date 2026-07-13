@@ -79,6 +79,14 @@ ADR evaluated both (win2, 2026-07-12):
   to run on a Windows host; the Linux column of this doc applies. Windows-side
   control-plane pieces (schtasks arming) remain reachable via interop
   (`schtasks.exe` callable from WSL, ~70 ms overhead).
+  **Provisioning gate hooks (HIMMEL-966):** in the in-distro himmel clone,
+  run `bash scripts/setup.sh` (it installs all three hook types), or if
+  installing manually, ALL THREE:
+  `pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push`.
+  A bare `pre-commit install` installs only the pre-commit hook type — the
+  commit-msg + pre-push gates (attestation trailers, CR-marker write,
+  conventional-commit lint) are then silently absent and the first push
+  goes out ungated (the HIMMEL-955 workday hit exactly this).
 
 **Git Bash remains the tested default** for Windows stations until the
 HIMMEL-955 WSL-station pilot reaches an ADOPT verdict. If you run WSL from Git
@@ -589,6 +597,7 @@ git clone <luna-remote> ~/Documents/luna
 cd ~/Documents/luna
 uv tool install pre-commit   # or: pipx install pre-commit
 pre-commit install
+pre-commit install --hook-type commit-msg
 pre-commit install --hook-type pre-push
 
 # Verify

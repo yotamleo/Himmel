@@ -45,6 +45,21 @@ for _tool in bash sh git jq sort tail sed cat date mktemp mkdir dirname uname wc
     _p="$(command -v "$_tool" 2>/dev/null)" && ln -sf "$_p" "$NOGH/$_tool" 2>/dev/null
 done
 
+# Curated PATH WITHOUT node (same trick as NOGH): on apt-node systems
+# node shares /usr/bin with the tools above, so TOOLS_PATH cannot
+# exclude it by dropping dirs (HIMMEL-966).
+NONODE="$FAKEROOT/nonode"; mkdir -p "$NONODE"
+for _t in bash sh git jq sort tail sed cat date mktemp mkdir dirname uname wc tr head cp rm mv chmod grep basename find ls; do
+    _p="$(command -v "$_t" 2>/dev/null)" && ln -s "$_p" "$NONODE/$_t" 2>/dev/null
+done
+# Windows Git Bash symlinks to .exe tools don't execute — fall back to
+# TOOLS_PATH there (node is never in the coreutils dirs on those hosts).
+if PATH="$NONODE" bash -c 'git --version >/dev/null 2>&1 && ! command -v node >/dev/null 2>&1' 2>/dev/null; then
+    NODELESS_PATH="$NONODE"
+else
+    NODELESS_PATH="$TOOLS_PATH"
+fi
+
 # $1=claude dir, $2=JSON-encoded caveman SessionStart command
 write_settings() {
     mkdir -p "$1"
@@ -108,7 +123,7 @@ rm -rf "$t"
 
 echo "== wrapper-form but NO node anywhere -> C1 FAIL (R4/P5) =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$WRAPPER"
-out="$(PATH="$TOOLS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+out="$(PATH="$NODELESS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
 if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'FAIL C1-node'; then pass "wrapper+no-node -> rc1 FAIL"; else fail "wrapper+no-node -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
 rm -rf "$t"
 
@@ -138,7 +153,7 @@ fi
 
 echo "== bare 'node' caveman cmd + node off PATH -> C1 WARN =="
 t="$(mktemp -d)"; write_settings "$t/claude" '"node \"X/hooks/caveman-activate.js\""'
-out="$(PATH="$TOOLS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+out="$(PATH="$NODELESS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if printf '%s' "$out" | grep -q 'WARN C1-node'; then pass "bare-node -> C1 WARN"; else fail "bare-node -> $(printf '%s' "$out" | grep C1-node)"; fi
 rm -rf "$t"
 
