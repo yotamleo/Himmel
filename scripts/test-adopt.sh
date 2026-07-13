@@ -79,7 +79,7 @@ chmod +x "$work/bin/claude"
 # shellcheck disable=SC1091
 . "$repo_root/scripts/lib/hermetic-path.sh"
 
-for _tool in bash git jq python3 grep sed cat cp mv rm mkdir chmod diff wc tr head tail basename dirname mktemp sort cut; do
+for _tool in bash git jq python3 grep sed cat cp mv rm ln mkdir chmod diff wc tr head tail basename dirname mktemp sort cut; do
   link_hermetic_tool "$_tool"
 done
 

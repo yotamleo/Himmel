@@ -1609,15 +1609,18 @@ _arm_registry_mutex_acquire() {
     _lockd="$_reg.lock"
     while :; do
         if mkdir "$_lockd" 2>/dev/null; then
-            # Brand the lock (see queue-lock.sh's twin for the rationale).
+            # Brand the lock (see queue-lock.sh's twin for the full uutils
+            # rationale, HIMMEL-966): mkdir is NOT a reliable mutex primitive
+            # on uutils coreutils (concurrent mkdir can BOTH return rc=0), so
+            # the OWNER create via set -C (noclobber) -- a single kernel
+            # open(O_CREAT|O_EXCL) by bash itself -- is the real arbiter.
+            # A losing co-winner leaves the winner's lock alone and falls
+            # through to the spin/reclaim path.
             _tok="pid$$-r$RANDOM"
-            if ! printf '%s' "$_tok" > "$_lockd/owner" 2>/dev/null; then
-                rm -f "$_lockd/owner" 2>/dev/null
-                rmdir "$_lockd" 2>/dev/null
-                return 1
+            if ( set -C; printf '%s' "$_tok" > "$_lockd/owner" ) 2>/dev/null; then
+                _ARM_REGISTRY_MUTEX_TOKEN="$_tok"
+                return 0
             fi
-            _ARM_REGISTRY_MUTEX_TOKEN="$_tok"
-            return 0
         fi
         if [ $(( _tries % 10 )) -eq 0 ]; then
             _m=$(py_armor_mtime "$_lockd") || _m=""
