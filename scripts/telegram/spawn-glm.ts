@@ -105,8 +105,12 @@ export function preflightWindowCheck(p: { briefChars: number; overheadChars: num
 // is a REPO-GLOBAL toggle (documented, left permanent).
 // CR round 2 F4: the poison string is compared against elsewhere
 // (runSharedDispatch's prior-pushurl capture) — one definition so the two
-// sites cannot drift apart.
-const POISON_SENTINEL = "DISABLED-glm-quarantine" as const;
+// sites cannot drift apart. Exported (HIMMEL-1003): the claudex lane reuses
+// poisonPushUrl AS-IS (lane-agnostic — the sentinel's literal text doesn't
+// matter functionally, only that a push against it fails) and needs the same
+// constant for its own runSharedDispatch twin's I2 crash-recovery compare, so
+// the three sites (this file's two + the claudex twin) share ONE definition.
+export const POISON_SENTINEL = "DISABLED-glm-quarantine" as const;
 
 export function poisonPushUrl(repoRoot: string, worktree: string): void {
   const g = (args: string[], cwd: string) => { const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.toString()}`); };

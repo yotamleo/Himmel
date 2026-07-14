@@ -108,16 +108,17 @@ the env var.
 
 Seven hooks wired in `.claude/settings.json` fire BEFORE Claude executes
 tool calls. Six BLOCK risky operations; one (`auto-approve-safe-bash`)
-GRANTS permission for safe ones so they don't hang. An eighth, ninth, tenth,
-and eleventh hook — `block-docker-privesc.sh` (HIMMEL-441),
+GRANTS permission for safe ones so they don't hang. An eighth, ninth, tenth, eleventh, and twelfth hook — `block-docker-privesc.sh` (HIMMEL-441),
 `block-merged-pr-commit.sh` (HIMMEL-512), `block-unresolved-cr-merge.sh`
-(HIMMEL-936), and `guard-implementor-dispatch.sh` (HIMMEL-920) — are shipped
+(HIMMEL-936), `block-rogue-codex-wsl.sh` (HIMMEL-999), and
+`guard-implementor-dispatch.sh` (HIMMEL-920) — are shipped
 via the **himmel-ops plugin `hooks.json`** rather than `.claude/settings.json`
 (so they can be agent-installed without a settings self-mod veto — same
-delivery path as `inject-minerva-critic.sh`); all four are live only after
+delivery path as `inject-minerva-critic.sh`); all five are live only after
 `/himmel-update` (marketplace re-sync) + a fresh session.
 `block-docker-privesc.sh` and `block-merged-pr-commit.sh` fail CLOSED
-(security boundaries); `block-unresolved-cr-merge.sh` blocks when it can
+(security boundaries); `block-rogue-codex-wsl.sh` fails CLOSED only for
+suspicious-token commands when jq is missing or parsing fails; `block-unresolved-cr-merge.sh` blocks when it can
 evaluate but fails OPEN on every API/dependency error (HIMMEL-936 design);
 `guard-implementor-dispatch.sh` is a COST guard and fails OPEN (see its own
 section below).

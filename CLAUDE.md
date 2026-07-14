@@ -257,7 +257,7 @@ Autonomous end-to-end execution of a well-scoped ticket: see
 
 ## ENFORCEMENT (runs automatically)
 
-himmel enforces structurally, not by prose: **11 PreToolUse hooks**
+himmel enforces structurally, not by prose: **12 PreToolUse hooks**
 (`auto-approve-safe-bash`, `block-edit-on-main`, `block-read-secrets`,
 `block-rogue-claude-schedule` — blocks raw scheduler-arms of claude that bypass
 arm-resume.sh (System32-cwd trap, HIMMEL-647),
@@ -269,7 +269,7 @@ session; likewise `block-merged-pr-commit` — hygiene guard that blocks committ
 onto a merged-PR branch, HIMMEL-512, same plugin delivery; `block-unresolved-cr-merge` —
 blocks `gh pr merge` while CodeRabbit review threads are unresolved or its check-run
 is in-flight on the head SHA, fail-open on every API/dep error, bypass
-`CR_MERGE_GATE_OK=1` — HIMMEL-936, same plugin delivery; and `guard-implementor-dispatch` —
+`CR_MERGE_GATE_OK=1` — HIMMEL-936, same plugin delivery; `block-rogue-codex-wsl` — blocks raw `wsl … codex exec` dispatches that bypass the WSL-lane chokepoint (HIMMEL-999, same plugin delivery); and `guard-implementor-dispatch` —
 bank-aware cost guard that blocks a Sonnet/Opus/Fable implementor-shaped Agent dispatch
 when the 5-hour bank is at/above 80% (advisory-only at 65%), fail-open on every infra
 error, bypass `IMPL_GUARD_OK=1` — HIMMEL-920, same plugin delivery), **1 PostToolUse hook**

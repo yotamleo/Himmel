@@ -72,6 +72,11 @@ LOCK_HELPER="${SBL_HELPER:-$SCRIPT_DIR/../lib/shared-branch-lock.sh}"
 JOBS_DIR="${CODEX_JOBS_DIR:-$HOME/.himmel/state/codex-exec-jobs}"
 REAP_HELPER="${CODEX_REAP_HELPER:-$SCRIPT_DIR/reap-mcp-fleet.sh}"
 
+# HIMMEL-999: the passthrough-args filter is shared with dispatch-codex-wsl.sh.
+# shellcheck source=codex-arg-filter.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/codex-arg-filter.sh"
+
 usage() {
     echo "usage: dispatch-codex-exec.sh --worktree <path> [--shared-branch <branch>] [codex exec args...]" >&2
     exit 2
@@ -163,87 +168,15 @@ if [ -n "$SHARED_BRANCH" ]; then
     fi
 fi
 
-# codex-adv r5/r6: 'codex exec resume' (esp. resume --all) selects sessions
-# ACROSS cwds - it can route work into state outside the preflighted
-# worktree. Codex accepts options BEFORE the subcommand token (e.g.
-# '--json resume --all'), so a first-arg check is bypassable: refuse the
-# bare tokens anywhere in the passthrough. (A prompt that is literally the
-# single word 'resume'/'review' is refused too - pass a real sentence.)
-for a in "$@"; do
-    case "$a" in
-        resume|review) echo "dispatch-codex-exec.sh: 'codex exec $a' refused - the lane dispatches fresh runs only (resume/review can escape the preflighted worktree)" >&2; exit 2 ;;
-    esac
-done
-
-# Invariant 3: refuse --background anywhere in the passthrough args.
-# Invariant 4 (codex-adv CR round 2): refuse workspace-redirect and
-# sandbox-widening flags - otherwise a caller can point codex at a directory
-# the ACL preflight never touched (-C/--cd/--add-dir) or drop the sandbox
-# entirely, defeating the lane guard this wrapper exists to enforce.
-have_model=0
-have_sandbox=0
-reasoning_effort=""
-prev=""
-NEW_ARGS=()
-for a in "$@"; do
-    case "$prev" in
-        --sandbox|-s)
-            case "$a" in
-                danger-full-access) echo "dispatch-codex-exec.sh: '$prev danger-full-access' refused - the lane guard requires a sandboxed run" >&2; exit 2 ;;
-            esac
-            ;;
-        --reasoning-effort)
-            case "$a" in
-                none|low|medium|high|xhigh|max) reasoning_effort="$a" ;;
-                *) echo "dispatch-codex-exec.sh: --reasoning-effort value '$a' not in none|low|medium|high|xhigh|max" >&2; exit 2 ;;
-            esac
-            prev="$a"
-            continue
-            ;;
-    esac
-    # ALLOW-LIST (codex-adv final round): deny-listing clap's option surface
-    # is unwinnable (attached short forms, --enable/--disable feature flags
-    # that rewrite config, future flags). Specific deny cases stay for their
-    # actionable messages; EVERYTHING ELSE dash-prefixed is refused by the
-    # catch-all. Allowed: --model/-m (all forms), --sandbox/-s with a
-    # non-danger value (all forms), --reasoning-effort (HIMMEL-905, stripped
-    # from the passthrough - see Invariant 7 above), --json, and positional
-    # prompt words.
-    case "$a" in
-        --reasoning-effort) prev="$a"; continue ;;
-        --reasoning-effort=*)
-            rev_val="${a#--reasoning-effort=}"
-            case "$rev_val" in
-                none|low|medium|high|xhigh|max) reasoning_effort="$rev_val" ;;
-                *) echo "dispatch-codex-exec.sh: --reasoning-effort value '$rev_val' not in none|low|medium|high|xhigh|max" >&2; exit 2 ;;
-            esac
-            prev="$a"
-            continue
-            ;;
-        --background|--background=*) echo "dispatch-codex-exec.sh: --background refused (upstream silent-death, HIMMEL-741) - use the default wait behavior + companion-liveness.sh" >&2; exit 2 ;;
-        -C*|--cd|--cd=*) echo "dispatch-codex-exec.sh: workspace-redirect flag '$a' refused - the wrapper owns the worktree (pass it via --worktree)" >&2; exit 2 ;;
-        --add-dir|--add-dir=*) echo "dispatch-codex-exec.sh: --add-dir refused - the ACL preflight covers only the dispatched worktree" >&2; exit 2 ;;
-        --dangerously-bypass-approvals-and-sandbox|--yolo) echo "dispatch-codex-exec.sh: sandbox-bypass flag '$a' refused - the lane guard requires a sandboxed run" >&2; exit 2 ;;
-        --sandbox=danger-full-access|-s=danger-full-access|-sdanger-full-access) echo "dispatch-codex-exec.sh: sandbox danger-full-access refused - the lane guard requires a sandboxed run" >&2; exit 2 ;;
-        -c*|--config|--config=*) echo "dispatch-codex-exec.sh: config-override flag '$a' refused - -c/--config can widen sandbox_permissions past the lane guard" >&2; exit 2 ;;
-        -p*|--profile|--profile=*) echo "dispatch-codex-exec.sh: profile flag '$a' refused - a config profile can widen the sandbox past the lane guard" >&2; exit 2 ;;
-        --dangerously-bypass-hook-trust|--ignore-rules) echo "dispatch-codex-exec.sh: trust-bypass flag '$a' refused - the lane guard does not vet hook sources or waive execpolicy rules" >&2; exit 2 ;;
-        --enable|--enable=*|--disable|--disable=*) echo "dispatch-codex-exec.sh: feature flag '$a' refused - config-equivalent (can disable the hooks feature past the lane guard)" >&2; exit 2 ;;
-        -o*|--output-last-message|--output-last-message=*) echo "dispatch-codex-exec.sh: output-file flag '$a' refused - a CLI-level write to a caller-supplied path can escape the worktree" >&2; exit 2 ;;
-        --model|--model=*|-m|-m?*) have_model=1 ;;
-        --sandbox|--sandbox=*|-s|-s=*|-s?*) have_sandbox=1 ;;
-        --json) ;;  # structured output - inert
-        -*) echo "dispatch-codex-exec.sh: flag '$a' is not in the lane allow-list (--model/-m, --sandbox/-s safe values, --reasoning-effort, --json) - refused" >&2; exit 2 ;;
-    esac
-    NEW_ARGS+=("$a")
-    prev="$a"
-done
-# Trailing bare --reasoning-effort (nothing follows): the main switch strips
-# the token before the value-validation branch ever runs, so without this
-# guard the flag vanishes silently and the run proceeds at default effort.
-if [ "$prev" = "--reasoning-effort" ]; then
-    echo "dispatch-codex-exec.sh: --reasoning-effort requires a value (none|low|medium|high|xhigh|max)" >&2
+if ! codex_filter_passthrough_args "$@"; then
     exit 2
+fi
+have_model="$CAF_HAVE_MODEL"
+have_sandbox="$CAF_HAVE_SANDBOX"
+reasoning_effort="$CAF_REASONING_EFFORT"
+NEW_ARGS=()
+if [ "${#CAF_NEW_ARGS[@]}" -gt 0 ]; then
+    NEW_ARGS=("${CAF_NEW_ARGS[@]}")
 fi
 # Rebuild the positional args with --reasoning-effort/its value stripped
 # (codex has no native flag for it - Invariant 7 translates it to -c below).

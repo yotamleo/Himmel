@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-wizard-probes.sh — hermetic tests for scripts/himmelctl/lib/probes.js
-# (HIMMEL-756 T1.4): the seven-probe-type engine, run against the REAL
+# (HIMMEL-756 T1.4): the eight-probe-type engine, run against the REAL
 # scripts/install/manifest.json descriptors (so a manifest authoring drift
 # breaks THIS suite, not silently). Mirrors sibling test-wizard-*.sh
 # conventions: scripts/lib/hermetic-path.sh's link_hermetic_tool/scrub_path
@@ -22,6 +22,8 @@
 #   cmd:has_qmd    qmd-binary, via a stubbed `qmd` on PATH.
 #   qmd-index      present (all 4 collections) / degraded (2 of 4) / absent
 #                  (no qmd on PATH).
+#   mcp-registered tokensave-mcp present / server missing / file missing,
+#                  resolving .claude.json from ctx.env.HOME.
 #   handover-dir   handover-wiring — HANDOVER_DIR set (ctx.env pass-through,
 #                  not process.env mutation) / unset with a non-repo cwd.
 #   dep            single-cmd (rtk) and the win32/posix platform union
@@ -391,6 +393,38 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outQIa" | jq -e '.actual == "absent"' >/dev/null || fail "qmd-index absent (no qmd on PATH): (got: $outQIa)"
 echo "ok: qmd-index present/degraded/absent"
+
+# ── mcp-registered: present / server missing / file missing ───────────────
+mcp_present_home="$work/mcp-present-home"; mkdir -p "$mcp_present_home"
+printf '{"mcpServers":{"tokensave":{"command":"tokensave-mcp"}}}' > "$mcp_present_home/.claude.json"
+mcp_server_missing_home="$work/mcp-server-missing-home"; mkdir -p "$mcp_server_missing_home"
+printf '{"mcpServers":{"graphify":{"command":"graphify-mcp"}}}' > "$mcp_server_missing_home/.claude.json"
+mcp_file_missing_home="$work/mcp-file-missing-home"; mkdir -p "$mcp_file_missing_home"
+mcp_null_root_home="$work/mcp-null-root-home"; mkdir -p "$mcp_null_root_home"
+printf 'null' > "$mcp_null_root_home/.claude.json"
+
+outMCP=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'tokensave-mcp');
+const probeHome = (home) => runProbe(item, {
+  repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: home }),
+});
+console.log(JSON.stringify([
+  probeHome('$(winpath "$mcp_present_home")'),
+  probeHome('$(winpath "$mcp_server_missing_home")'),
+  probeHome('$(winpath "$mcp_file_missing_home")'),
+  probeHome('$(winpath "$mcp_null_root_home")'),
+]));
+")
+echo "$outMCP" | jq -e '.[0].actual == "present" and .[1].actual == "absent" and .[2].actual == "absent" and .[3].actual == "absent"' >/dev/null \
+  || fail "mcp-registered present/server-missing/file-missing/null-root: (got: $outMCP)"
+echo "$outMCP" | jq -e '.[2].detail | contains("cannot read/parse")' >/dev/null \
+  || fail "mcp-registered file-missing detail should report cannot read/parse (got: $outMCP)"
+echo "$outMCP" | jq -e '.[3].detail | contains("unexpected JSON shape")' >/dev/null \
+  || fail "mcp-registered null-root detail should report unexpected JSON shape (got: $outMCP)"
+echo "ok: mcp-registered (tokensave-mcp) present/server-missing/file-missing/null-root via ctx.env.HOME"
 
 # ── handover-dir (handover-wiring) ──────────────────────────────────────────
 hd_present_dir="$work/hd-present-handoverdir"; mkdir -p "$hd_present_dir"

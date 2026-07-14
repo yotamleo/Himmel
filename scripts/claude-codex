@@ -1,0 +1,539 @@
+#!/usr/bin/env bash
+# claude-codex — thin launcher: Claude Code on the codex-subscription lane via a local CLIProxyAPI proxy. HIMMEL-979 (twin of scripts/claude-glm, HIMMEL-665). bash 3.2-safe.
+# shellcheck disable=SC1091  # load-dotenv.sh path issue
+set -u
+
+CODEX_PROXY_BASE_URL="${CODEX_PROXY_BASE_URL:-http://127.0.0.1:8317}"
+# Model names are whatever the local CLIProxyAPI /v1/models exposes for the
+# authed codex subscription (gpt-5.6-sol at ship time). All overridable per task.
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.6-sol}"
+CODEX_HAIKU="${CODEX_HAIKU:-$CODEX_MODEL}"
+CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-$CODEX_MODEL}"
+CONFIG_DIR="${HOME}/.claude-codex"
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/load-dotenv.sh
+# Sourcing only DEFINES load_dotenv(); it must be CALLED with the key name.
+# --root pins the .env to the LAUNCHER's repo (himmel), not the CWD repo —
+# the motivating workload runs with cwd in the luna vault, whose .env has no
+# CLIPROXY key; CWD-resolution would exit 2 despite himmel/.env holding the key.
+# CLAUDE_CODEX_DOTENV_ROOT (test hook) overrides that root so hermetic tests
+# never read the real himmel .env — same production code path either way.
+if [ -z "${CLIPROXY_API_KEY-}" ] && [ -f "$HERE/lib/load-dotenv.sh" ]; then
+  . "$HERE/lib/load-dotenv.sh"
+  load_dotenv --root "${CLAUDE_CODEX_DOTENV_ROOT:-$HERE/..}" CLIPROXY_API_KEY
+  # load_dotenv leaves surrounding quotes literal (the shared lib does not strip
+  # them); drop ONE matching surrounding quote pair so a `.env` value written as
+  # CLIPROXY_API_KEY="…" doesn't send the quotes to the API. bash 3.2-safe.
+  # Anchor name: "surrounding-quote-strip" - referenced by name (not line
+  # numbers) from scripts/claude-codex.ps1's twin strip.
+  case "${CLIPROXY_API_KEY-}" in
+    \"*\") CLIPROXY_API_KEY="${CLIPROXY_API_KEY#\"}"; CLIPROXY_API_KEY="${CLIPROXY_API_KEY%\"}" ;;
+    \'*\') CLIPROXY_API_KEY="${CLIPROXY_API_KEY#\'}"; CLIPROXY_API_KEY="${CLIPROXY_API_KEY%\'}" ;;
+  esac
+fi
+
+if [ -z "${CLIPROXY_API_KEY-}" ]; then
+  msg="claude-codex: CLIPROXY_API_KEY is not set. Export it or add it to the repo .env (never settings.json). It must match an api-keys entry in ~/.cli-proxy-api/config.yaml."
+  [ -f "$HERE/lib/load-dotenv.sh" ] || msg="$msg (note: lib/load-dotenv.sh not found next to the launcher — .env was never read; run scripts/claude-codex from the himmel checkout rather than a copied/symlinked binary)"
+  echo "$msg" >&2
+  exit 2
+fi
+
+RESEED=0
+FORCE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reseed) RESEED=1; shift ;;
+    --force)  FORCE=1;  shift ;;
+    *) break ;;
+  esac
+done
+
+CFG="${HOME}/.config/claude-codex"
+
+# Windows path-form normalization (CR HIMMEL-979 R4): on Git Bash the physical
+# cwd is /c/Users/... while operator-written guard roots may be C:\Users\... or
+# C:/Users/... — same NTFS directory, zero prefix overlap, guard fails OPEN.
+# Normalize BOTH sides: cygpath -u unifies the drive form, then lowercase
+# (NTFS is case-insensitive). No-op on non-Windows (case stays significant).
+UNAME_S="$(uname -s 2>/dev/null)"
+norm_path() { # $1 path -> normalized on stdout
+  _np="$1"
+  case "$UNAME_S" in
+    MINGW*|MSYS*|CYGWIN*)
+      if command -v cygpath >/dev/null 2>&1; then
+        _np="$(cygpath -u "$_np" 2>/dev/null)" || _np="$1"
+      fi
+      # shellcheck disable=SC1003  # tr '\\' is a literal backslash arg, not a quote escape
+      _np="$(printf '%s' "$_np" | tr '\\' '/' | tr '[:upper:]' '[:lower:]')"
+      ;;
+  esac
+  printf '%s' "$_np"
+}
+
+path_under_any() { # $1 path, $2 listfile
+  # returns: 0 = $1 is under a listed root; 1 = no restriction (absent list, or
+  # present but no line matches); 2 = list exists but is not a readable regular
+  # file (caller MUST fail closed — an unreadable guard config must never silently
+  # allow egress).
+  [ -e "$2" ] || return 1
+  { [ -f "$2" ] && [ -r "$2" ]; } || return 2
+  _target="$(norm_path "$1")"
+  # `|| [ -n "$root" ]` keeps the last line when the file lacks a trailing newline
+  # (POSIX read returns nonzero on an unterminated final line) — same idiom as
+  # lib/load-dotenv.sh; without it a PHI root on the final line fails open.
+  while IFS= read -r root || [ -n "$root" ]; do
+    root="${root%$'\r'}"                   # strip trailing CR (CRLF config lines)
+    root="${root%/}"                       # strip trailing slash
+    # emptiness check AFTER normalization (matches the PS twin): a CR-only line
+    # strips to "" and must be skipped, otherwise an empty root would form the
+    # pattern "/*" and match every absolute path. NOTE: a deliberate lone "/"
+    # root is likewise skipped — a block-everything root is not supported (also
+    # twin-consistent with PS).
+    [ -n "$root" ] || continue
+    root="$(norm_path "$root")"
+    # Re-strip AFTER normalization (CR HIMMEL-979 R7): a root written with a
+    # trailing BACKSLASH survives the pre-norm strip, and cygpath emits it as a
+    # trailing '/' — which would double the separator in the pattern below and
+    # fail OPEN for protected descendants.
+    root="${root%/}"
+    [ -n "$root" ] || continue
+    # Bidirectional overlap (CR HIMMEL-979 R5): target INSIDE a protected root
+    # OR a protected root INSIDE the target — an ancestor workspace (e.g. $HOME
+    # containing a PHI vault) grants the session the protected subtree, so it
+    # must refuse too. (Residual, documented: a descendant .salus marker with
+    # no phi-roots line is NOT found — that would need an unbounded tree scan.)
+    case "$_target/" in "$root"/*) return 0 ;; esac
+    case "$root/" in "$_target"/*) return 0 ;; esac
+  done < "$2"
+  return 1
+}
+
+# Guard-config UNION (CR HIMMEL-979 R2): this lane also honors the claude-glm
+# guard dir — an operator who provisioned phi-roots/egress-denylist for the GLM
+# lane must not launch a NEW cloud lane unguarded. Union is strictly more
+# restrictive (deny-guards compose safely); per-lane files stay authoritative
+# for lane-specific additions.
+CFG_GLM="${HOME}/.config/claude-glm"
+
+guard_hit_any() { # $1 path, $2 basename (phi-roots|egress-denylist) — union over both CFG dirs
+  # returns 0 = restricted by either lane's list; 1 = unrestricted; exits 3 on
+  # an unreadable guard config (fail closed, matching the single-dir behavior).
+  _hit=1
+  for _dir in "$CFG" "$CFG_GLM"; do
+    path_under_any "$1" "$_dir/$2"; _rc=$?
+    if [ "$_rc" -eq 2 ]; then
+      echo "claude-codex: guard config $_dir/$2 exists but is not a readable file — failing closed." >&2
+      exit 3
+    fi
+    [ "$_rc" -eq 0 ] && _hit=0
+  done
+  return "$_hit"
+}
+
+# guard_workspace (CR HIMMEL-979 R2/R3): the FULL screening for one directory —
+# .salus ancestor walk (marker guards the whole vault; -e so marker dirs/
+# symlinks count) + phi-roots union + egress-denylist union. Applied to the
+# launch cwd AND to every --add-dir value (R3: --add-dir <vault> must not
+# bypass the no-override PHI invariant). Physical paths via pwd -P (R3: a
+# symlinked launch path still prefix-matches the protected roots; documented
+# residual: a symlinked ROOT entry must be listed in its physical form).
+guard_workspace() { # $1 dir-as-given, $2 label for messages
+  _gw="$(cd "$1" 2>/dev/null && pwd -P)" || {
+    echo "claude-codex: REFUSED - $2 ($1) is not an accessible directory." >&2
+    exit 3
+  }
+  _d="$_gw"
+  _salus_hit=1
+  while :; do
+    if [ -e "$_d/.salus" ]; then _salus_hit=0; break; fi
+    _parent=$(dirname "$_d")
+    [ "$_parent" = "$_d" ] && break
+    _d="$_parent"
+  done
+  guard_hit_any "$_gw" phi-roots; _phi_rc=$?
+  if [ "$_salus_hit" -eq 0 ] || [ "$_phi_rc" -eq 0 ]; then
+    echo "claude-codex: REFUSED - $2 is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to a cloud codex backend." >&2
+    exit 3
+  fi
+  guard_hit_any "$_gw" egress-denylist; _deny_rc=$?
+  if [ "$_deny_rc" -eq 0 ]; then
+    if [ "$FORCE" -eq 1 ]; then
+      echo "claude-codex: WARNING - $2 is denylisted, proceeding under --force. Content WILL be sent to OpenAI via the local proxy." >&2
+    else
+      echo "claude-codex: REFUSED - $2 is on the egress denylist (claude-codex/claude-glm guard union). Re-run with --force to override." >&2
+      exit 3
+    fi
+  fi
+}
+
+CWD="$(pwd -P)"
+guard_workspace "$CWD" "this workspace"
+
+# Harness-integrity arg screen (CR HIMMEL-979 R3/R4): args pass to claude
+# verbatim, so flags that disable hooks or inject settings would break the
+# lane's core premise (the FULL guarded harness always runs):
+# - --bare / --safe-mode / --setting-sources: REFUSED (they skip or reorder
+#   the hook/settings machinery; run plain `claude` if you need them).
+# - --settings <file-or-json>: payload screened for env.ANTHROPIC_* /
+#   CLAUDE_CODE_USE_* (fail-closed on unparseable) — same trust boundary as
+#   the project-settings check.
+# - --add-dir is VARIADIC (<directories...>): EVERY value until the next
+#   option gets the same guard_workspace screening as the launch cwd.
+screen_settings_arg() { # $1 = --settings value (file path or inline JSON)
+  node -e '
+const fs=require("fs");
+let s=process.argv[1], j;
+try { j=JSON.parse(s.trim().charAt(0)==="{" ? s : fs.readFileSync(s,"utf8")); } catch (e) { process.exit(2); }
+for (const k of Object.keys((j&&j.env)||{})) {
+  const u=k.toUpperCase();
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) process.exit(3);
+}
+process.exit(0);
+' "$1"; _ss_rc=$?
+  if [ "$_ss_rc" -ne 0 ]; then
+    echo "claude-codex: REFUSED - --settings payload sets env.ANTHROPIC_* / CLAUDE_CODE_USE_* (or is unparseable, rc=$_ss_rc); it would defeat the proxy trust boundary." >&2
+    exit 3
+  fi
+}
+
+_pending=""
+for _arg in "$@"; do
+  if [ "$_pending" = "add-dir" ]; then
+    case "$_arg" in
+      -*) _pending="" ;;  # next option — stop consuming the variadic list
+      *)  guard_workspace "$_arg" "--add-dir $_arg"; continue ;;
+    esac
+  elif [ "$_pending" = "settings" ]; then
+    screen_settings_arg "$_arg"
+    _pending=""
+    continue
+  fi
+  case "$_arg" in
+    --bare|--safe-mode|--setting-sources|--setting-sources=*)
+      echo "claude-codex: REFUSED - $_arg alters the hook/settings machinery; this lane requires the full guarded harness. Use plain claude if you need it." >&2
+      exit 3 ;;
+    --add-dir)    _pending="add-dir" ;;
+    --add-dir=*)  guard_workspace "${_arg#--add-dir=}" "--add-dir ${_arg#--add-dir=}" ;;
+    --settings)   _pending="settings" ;;
+    --settings=*) screen_settings_arg "${_arg#--settings=}" ;;
+  esac
+done
+
+# Project-settings backend-override refusal (CR HIMMEL-979 R2/R3/R5): Claude
+# Code merges project .claude/settings{,.local}.json env on top of the
+# launcher's exported env, so a project-level ANTHROPIC_* key (e.g.
+# ANTHROPIC_BASE_URL) or an alternate-provider selector
+# (CLAUDE_CODE_USE_BEDROCK/VERTEX/...) would silently reroute the session away
+# from the validated proxy. Claude resolves the PROJECT ROOT by walking up
+# from cwd (R5: a nested launch must not miss an ancestor settings file) — so
+# screen every ancestor's .claude/settings{,.local}.json, cwd to filesystem
+# root. Fail closed on any such key and on an unparseable settings file.
+# Paths iterate QUOTED per level (CR HIMMEL-979 R6) — a space-delimited
+# accumulator word-splits on paths with spaces and silently SKIPS the check.
+screen_project_settings_file() { # $1 = settings file path
+  [ -f "$1" ] || return 0
+  node -e '
+const fs=require("fs");
+let j;
+try { j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); } catch (e) { process.exit(2); }
+for (const k of Object.keys((j&&j.env)||{})) {
+  const u=k.toUpperCase();
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) process.exit(3);
+}
+process.exit(0);
+' "$1"; _sf_rc=$?
+  if [ "$_sf_rc" -ne 0 ]; then
+    echo "claude-codex: REFUSED - $1 sets env.ANTHROPIC_* / CLAUDE_CODE_USE_* (or is unparseable, rc=$_sf_rc); a project-level backend override defeats the proxy trust boundary. Remove those env keys to launch this lane here." >&2
+    exit 3
+  fi
+}
+_sd="$CWD"
+while :; do
+  screen_project_settings_file "$_sd/.claude/settings.json"
+  screen_project_settings_file "$_sd/.claude/settings.local.json"
+  _sp=$(dirname "$_sd")
+  [ "$_sp" = "$_sd" ] && break
+  _sd="$_sp"
+done
+
+sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_*/CLAUDE_CODE_USE_* (node: himmel dep)
+  # keep in sync with claude-codex.ps1 $SanitizerJs (byte-identical JS)
+  node -e '
+const fs=require("fs");
+const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+delete j.model;
+if (j.env) for (const k of Object.keys(j.env)) { const u=k.toUpperCase(); if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) delete j.env[k]; }
+fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
+' "$1" "$2"
+}
+
+seed_fail() { # $1 = failing-operation detail — abort seeding, never mark it seeded
+  echo "claude-codex: FAILED to $1. Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-codex)." >&2
+  exit 4
+}
+
+seed_config_dir() {
+  # Transactional: the .seeded sentinel is removed FIRST and (re)written LAST, so
+  # ANY failure — first seed OR --reseed — leaves no sentinel and the next launch
+  # re-seeds. Without the up-front delete a failed --reseed would exit 4 yet leave
+  # a stale sentinel behind, and the next plain launch would proceed with the
+  # half-populated tree.
+  # Fatal on failure (CR HIMMEL-979 R6): an undeletable sentinel beside a
+  # later partial mutation would make the next launch treat a torn tree as
+  # seeded. The ps1 twin already maps this to the fatal exit-4 path.
+  rm -f "$CONFIG_DIR/.seeded" || seed_fail "clear the stale .seeded sentinel"
+  SRC="${HOME}/.claude"
+  mkdir -p "$CONFIG_DIR/plugins" || seed_fail "create $CONFIG_DIR/plugins"
+  if [ -f "$SRC/settings.json" ]; then
+    sanitize_settings "$SRC/settings.json" "$CONFIG_DIR/settings.json" \
+      || seed_fail "sanitize settings.json (node missing/broken?)"
+  else
+    # True mirror (HIMMEL-819): a deleted source must not leave a stale copy
+    # steering the lane — same rationale as the subtree re-mirror below.
+    rm -f "$CONFIG_DIR/settings.json" || seed_fail "remove stale settings.json"
+  fi
+  # Leaf files mirror deletion too (HIMMEL-828/819): CLAUDE.md literally steers the lane,
+  # so a deleted source must not leave a stale copy behind — same rationale as settings.
+  for f in CLAUDE.md RTK.md; do
+    if [ -f "$SRC/$f" ]; then
+      cp "$SRC/$f" "$CONFIG_DIR/$f" || seed_fail "copy $f"
+    else
+      rm -f "$CONFIG_DIR/$f" || seed_fail "remove stale $f"
+    fi
+  done
+  # Clean re-mirror + deletion mirror (HIMMEL-828/819): rm the destination subtree FIRST
+  # — drops files deleted from the source, avoids BSD cp -R nesting (commands/commands),
+  # AND mirrors a whole-subtree deletion so a removed command/hook does not linger
+  # steering the cloud lane ("a deleted source must not leave a stale copy steering the
+  # lane") — then copy only when the source still exists. No-op on the first seed; rm -rf
+  # on an absent dest is a safe no-op. Symmetric with the settings/manifest mirror.
+  for d in commands skills hooks agents; do
+    rm -rf "${CONFIG_DIR:?}/$d" || seed_fail "clear stale $d"
+    [ -d "$SRC/$d" ] && { cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"; }
+  done
+  for p in installed_plugins.json known_marketplaces.json; do
+    if [ -f "$SRC/plugins/$p" ]; then
+      cp "$SRC/plugins/$p" "$CONFIG_DIR/plugins/$p" || seed_fail "copy plugins/$p"
+    else
+      rm -f "$CONFIG_DIR/plugins/$p" || seed_fail "remove stale plugins/$p"
+    fi
+  done
+  rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear stale plugins/marketplaces"
+  [ -d "$SRC/plugins/marketplaces" ] && { cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
+  # claude-hud DISPLAY config — seed the single config.json only; the three cache
+  # dirs under plugins/claude-hud/ (config-cache/context-cache/transcript-cache) are
+  # runtime state, never seeded. Source-absent → mirror the deletion (HIMMEL-828/819).
+  if [ -f "$SRC/plugins/claude-hud/config.json" ]; then
+    mkdir -p "$CONFIG_DIR/plugins/claude-hud" || seed_fail "create $CONFIG_DIR/plugins/claude-hud"
+    cp "$SRC/plugins/claude-hud/config.json" "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "copy plugins/claude-hud/config.json"
+  else
+    rm -f "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
+  fi
+  : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
+}
+
+# Staleness-aware reseed (HIMMEL-819): a once-only seed strands lane workers on
+# whatever plugin/settings profile existed at first launch — the operator's lean
+# enabledPlugins profile never reaches the lane, so every worker pays duplicated
+# plugin context + duplicate MCP invocations. Track every allowlisted leaf source
+# (settings, CLAUDE.md, RTK.md, the two plugin manifests, claude-hud config — newer
+# than the sentinel OR deleted while a lane copy remains) AND the copied subtrees
+# (HIMMEL-828 Part B — a half-seeded/externally-removed subtree, a top-level
+# command/skill add/remove, or a deleted source, self-heals on plain launch); a deep
+# in-file subtree edit still needs --reseed (directory mtime granularity).
+# Opt-out: CLAUDE_LANE_AUTO_RESEED=0 restores the once-only seed (first seed +
+# explicit --reseed only) — the escape hatch if auto-reseed ever blocks a
+# launch in your setup (e.g. seed re-runs surfacing a broken node).
+config_seed_stale() { # rc=0 when any tracked source is newer than the sentinel, or gone but still mirrored
+  [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
+  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json; do
+    if [ -f "${HOME}/.claude/$s" ]; then
+      if [ "${HOME}/.claude/$s" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
+    elif [ -f "$CONFIG_DIR/$s" ]; then
+      return 0  # source deleted but lane copy remains — reseed mirrors the removal
+    fi
+  done
+  # HIMMEL-828 Part B — also track the copied subtrees, fully symmetric with the
+  # settings/manifest loop above. Per subtree: SOURCE present but DEST missing = a
+  # half-seed → reseed; SOURCE newer than the sentinel = top-level drift → reseed;
+  # SOURCE absent but DEST present = a deleted source whose lane copy lingers → reseed
+  # (the seeder mirrors the deletion, so this fires once then clears — no churn).
+  for d in commands skills hooks agents plugins/marketplaces; do
+    if [ -d "${HOME}/.claude/$d" ]; then
+      [ -d "$CONFIG_DIR/$d" ] || return 0
+      if [ "${HOME}/.claude/$d" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
+    elif [ -d "$CONFIG_DIR/$d" ]; then
+      return 0  # source deleted but lane copy remains — reseed mirrors the removal
+    fi
+  done
+  return 1
+}
+
+# Concurrency lock (HIMMEL-830): serialize concurrent same-lane reseeds so two
+# launches of THIS lane cannot interleave seed_config_dir's rm/cp sequence into a
+# torn config dir (the .seeded sentinel guards FAILED seeds, not CONCURRENT ones).
+# The lock is a DIRECTORY sibling of CONFIG_DIR (NOT under it, so the seeder's own
+# rm -rf sweeps can never delete it); mkdir is atomic on every platform incl. Git
+# Bash. The dir is kept EMPTY so the rmdir release is atomic and steal-safe.
+LOCK="$CONFIG_DIR.seed-lock"
+SEED_LOCK_TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"   # seconds to wait before giving up
+SEED_LOCK_STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"      # seconds after which a held lock is presumed abandoned
+
+seed_lock_is_stale() { # rc=0 when LOCK exists and its mtime is older than SEED_LOCK_STALE seconds
+  [ -d "$LOCK" ] || return 1
+  # GNU stat form first (Linux + Git Bash), BSD form fallback (macOS).
+  lock_mt="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null)"
+  [ -n "$lock_mt" ] || return 1
+  [ "$(( $(date +%s) - lock_mt ))" -ge "$SEED_LOCK_STALE" ]
+}
+
+seed_with_lock() {
+  # Acquire (mkdir), poll on contention, steal a stale holder, or time out (exit 4).
+  seed_lock_ticks=0
+  seed_lock_max=$(( SEED_LOCK_TIMEOUT * 2 ))   # two 0.5s polls per second
+  while ! mkdir_err="$(mkdir "$LOCK" 2>&1)"; do
+    # SINGLE-WINNER stale steal via atomic same-dir rename: only ONE waiter's mv
+    # succeeds (the path is gone for every loser, whose mv simply fails), and the
+    # winner's FRESH replacement lock can never be renamed away by a queued loser
+    # (a fresh lock is never stale). A plain rmdir steal is a TOCTOU double-acquire:
+    # two waiters both judge the dead lock stale, one rmdirs+re-acquires, the
+    # other's queued rmdir then deletes the winner's fresh EMPTY lock, both seed
+    # concurrently -- the torn config this lock exists to prevent. The renamed dir
+    # is removed best-effort; if it was non-empty (invariant violation) the orphan
+    # is harmless -- it is not the lock path. Accepted residual: a LIVE seeder
+    # holding the lock past SEED_LOCK_STALE gets stolen -- but seeds are sub-second
+    # copies, so a hold that long means a dead/hung holder in practice.
+    if seed_lock_is_stale && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+      rmdir "$LOCK.stale.$$" 2>/dev/null || true   # orphaned .stale dir is harmless (not the lock path)
+      continue
+    fi
+    if [ "$seed_lock_ticks" -ge "$seed_lock_max" ]; then
+      echo "claude-codex: timed out after ${SEED_LOCK_TIMEOUT}s waiting for the config-dir seed lock ($LOCK). If no other claude-codex launch of this lane is seeding, remove that dir, or tune CLAUDE_LANE_SEED_LOCK_TIMEOUT / CLAUDE_LANE_SEED_LOCK_STALE; last mkdir error: $mkdir_err" >&2
+      exit 4
+    fi
+    sleep 0.5
+    seed_lock_ticks=$(( seed_lock_ticks + 1 ))
+  done
+  # Release the lock on ANY exit while held (covers seed_fail's exit 4 path). This
+  # trap release stays best-effort SILENT -- the exit path already carries its own
+  # error. Accepted residual: an untrapped SIGINT/SIGTERM while holding leaks the
+  # lock until the stale steal (~SEED_LOCK_STALE s) -- deliberate; adding INT/TERM
+  # traps would change the launcher's existing signal semantics.
+  trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+  # Double-checked recheck UNDER the lock: the OUTER if was a cheap pre-check that
+  # raced other launches; a concurrent winner may have just seeded while we waited,
+  # so re-evaluate the same condition and skip a redundant reseed. RESEED=1 forces a
+  # reseed regardless (explicit operator intent), but still under the lock.
+  # Residual (accepted): a READER launch that judged the sentinel fresh a moment
+  # before the winner removed it can still exec claude against a mid-seed dir -- the
+  # window shrinks from the full seed duration to one stat. Full reader-writer
+  # exclusion would need an atomic dir swap Windows cannot give; out of scope.
+  if [ "$RESEED" -eq 1 ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then
+    seed_config_dir
+  fi
+  trap - EXIT
+  # Explicit release warns on failure (a non-empty/busy lock is an invariant
+  # violation worth surfacing) but stays NON-FATAL: the seed itself succeeded.
+  rmdir "$LOCK" 2>/dev/null || echo "claude-codex: WARNING - failed to release seed lock $LOCK (not empty or busy); it self-heals via stale steal after ${SEED_LOCK_STALE}s but concurrent launches wait/time out until then." >&2
+}
+
+if [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then
+  seed_with_lock
+fi
+
+# Trust boundary (CR HIMMEL-979): the proxy receives the auth key AND all
+# session content, so the default posture is loopback-only. A non-loopback
+# CODEX_PROXY_BASE_URL needs the explicit CLAUDE_CODEX_REMOTE_PROXY_OK=1
+# opt-in (prefer HTTPS for any remote endpoint).
+proxy_hostport="${CODEX_PROXY_BASE_URL#*://}"; proxy_hostport="${proxy_hostport%%/*}"
+# Userinfo refusal (CR HIMMEL-979 R3): an authority like 127.0.0.1:8317@evil.com
+# would GLOB-match the loopback patterns below yet connect to evil.com (all
+# text before the last @ is URL userinfo). A local proxy never needs userinfo —
+# refuse outright rather than parse around it.
+case "$proxy_hostport" in
+  *@*)
+    echo "claude-codex: REFUSED - CODEX_PROXY_BASE_URL ($CODEX_PROXY_BASE_URL) contains userinfo ('@'); this can smuggle a non-loopback host past the trust boundary and is not supported." >&2
+    exit 3
+    ;;
+esac
+case "$proxy_hostport" in
+  127.0.0.1|127.0.0.1:*|localhost|localhost:*|\[::1\]|\[::1\]:*) : ;;
+  *)
+    if [ "${CLAUDE_CODEX_REMOTE_PROXY_OK:-0}" != "1" ]; then
+      echo "claude-codex: REFUSED - CODEX_PROXY_BASE_URL ($CODEX_PROXY_BASE_URL) is not loopback. The proxy receives the key and session content; set CLAUDE_CODEX_REMOTE_PROXY_OK=1 to override (prefer HTTPS)." >&2
+      exit 3
+    fi
+    echo "claude-codex: WARNING - non-loopback proxy ($proxy_hostport) under CLAUDE_CODEX_REMOTE_PROXY_OK=1. Key + session content WILL leave this machine." >&2
+    ;;
+esac
+
+# Proxy preflight: the lane is dead without a running cli-proxy-api. Advisory
+# curl absence (fail-open with a warning); a refused/timed-out proxy is fatal.
+# The Authorization header travels via `-K -` (curl config on stdin), never the
+# argv, so the key is not readable from the process list (CR HIMMEL-979).
+if command -v curl >/dev/null 2>&1; then
+  if ! printf 'header "Authorization: Bearer %s"\n' "$CLIPROXY_API_KEY" \
+       | curl -sf -m 3 --noproxy '*' -K - "$CODEX_PROXY_BASE_URL/v1/models" >/dev/null 2>&1; then
+    echo "claude-codex: proxy not reachable at $CODEX_PROXY_BASE_URL — start cli-proxy-api (and complete --codex-login) first. See docs/tooling-catalog.md#claude-codex." >&2
+    exit 2
+  fi
+else
+  echo "claude-codex: WARNING - curl not found; skipping proxy reachability preflight." >&2
+fi
+
+command -v claude >/dev/null 2>&1 || { echo "claude-codex: 'claude' not found on PATH" >&2; exit 5; }
+
+# The last four CLAUDE_CODE_*/ENABLE_TOOL_SEARCH values follow the field-tested
+# claudex recipe: subagents stay on the codex lane, effort controls stay on, and
+# tool-search stays off for non-Claude models. They are intentionally not
+# env-overridable in v1.
+# Ambient provider-selector sweep (CR HIMMEL-979 R3/R4): clear EVERY
+# CLAUDE_CODE_USE_* from the environment — unknown future selectors included —
+# then keep the two known ones pinned empty in the export block as a belt.
+for _n in $(env | LC_ALL=C sed -n 's/^\(CLAUDE_CODE_USE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$_n" 2>/dev/null || true
+done
+# Ambient ANTHROPIC_* sweep (CR HIMMEL-979 R8): a pre-set provider/base/key
+# variable the export block does NOT explicitly override (e.g. ANTHROPIC_API_KEY,
+# ANTHROPIC_CUSTOM_HEADERS) would leak into claude and can steer auth/transport
+# around the validated proxy. Clear them all — the export block below re-sets
+# exactly the six this lane needs.
+for _n in $(env | LC_ALL=C sed -n 's/^\(ANTHROPIC_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$_n" 2>/dev/null || true
+done
+# Transport-proxy sweep (CR HIMMEL-979 R5): HTTP(S)_PROXY/ALL_PROXY route even
+# loopback connections through an external proxy host (undici/curl honor them),
+# which would carry the key + session content off-machine despite the loopback
+# check. The lane's claude talks ONLY to the local proxy — clear them and pin
+# NO_PROXY. (cli-proxy-api's own upstream egress is a separate process and
+# keeps its own environment.)
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy 2>/dev/null || true
+# Exported in the shell, NOT passed as `env VAR=...` argv (CR HIMMEL-979 R9):
+# `exec env ANTHROPIC_AUTH_TOKEN=... claude` exposes the key in
+# /proc/<pid>/cmdline for env's lifetime; exports leave argv clean.
+export NO_PROXY="127.0.0.1,localhost,::1"
+export no_proxy="127.0.0.1,localhost,::1"
+export CLAUDE_CODE_USE_BEDROCK=
+export CLAUDE_CODE_USE_VERTEX=
+export ANTHROPIC_BASE_URL="$CODEX_PROXY_BASE_URL"
+export ANTHROPIC_AUTH_TOKEN="$CLIPROXY_API_KEY"
+export ANTHROPIC_MODEL="$CODEX_MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CODEX_HAIKU"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$CODEX_MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$CODEX_MODEL"
+export CLAUDE_CODE_SUBAGENT_MODEL="$CODEX_SUBAGENT_MODEL"
+export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
+export CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=3
+export ENABLE_TOOL_SEARCH=false
+# HIMMEL-1001 effort default: pin the per-dispatch effort to `high` when unset —
+# theo's Codex ladder is medium/high default, xhigh rare, NEVER ultra. HIMMEL-1002
+# verified the effort reaches gpt-5.6-sol VERBATIM and the UNSET default is xhigh
+# (the "rare"/over-spend tier), so pin it down. UNLIKE the forced values above this
+# one is OVERRIDABLE per dispatch: `CLAUDE_CODE_EFFORT_LEVEL=<low|medium|high|xhigh>
+# cc-codex` still wins (the env sweeps above deliberately leave it untouched). Avoid
+# `max` — reachable but its codex juice is undocumented. Keep in sync with the .ps1 twin.
+export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-high}"
+export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+exec claude "$@"

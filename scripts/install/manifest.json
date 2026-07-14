@@ -67,6 +67,22 @@
       "probe": { "type": "qmd-index", "collections": ["himmel", "luna"] }
     },
     {
+      "id": "tokensave-mcp",
+      "kind": "mcp",
+      "scopes": ["project", "user"],
+      "profiles": ["luna", "all"],
+      "deps": [],
+      "probe": { "type": "mcp-registered", "server": "tokensave" }
+    },
+    {
+      "id": "graphify-mcp",
+      "kind": "mcp",
+      "scopes": ["project", "user"],
+      "profiles": ["luna", "all"],
+      "deps": [],
+      "probe": { "type": "mcp-registered", "server": "graphify" }
+    },
+    {
       "id": "luna-vault-scaffold",
       "kind": "vault",
       "scopes": ["user"],
