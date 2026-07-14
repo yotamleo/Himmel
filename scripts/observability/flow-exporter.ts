@@ -4,7 +4,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { ledgerPath as flowRunLedgerPath, type FlowRunEnd, type FlowRunRow, type FlowRunStart } from "../telegram/flow-run-ledger";
-import { ledgerPath as quotaGaugeLedgerPath, quotaGaugeRead } from "../telegram/quota-gauge";
+import { ledgerPath as quotaGaugeLedgerPath } from "../telegram/quota-gauge";
+import { defaultClaudeCachePath, readClaudeBank, readCodexBank, readGlmBank, readLaneQuotaTargets, type BankId, type BankResult } from "./quota-sources";
 
 const LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_STALL_DEADLINE_SECONDS = 6 * 60 * 60;
@@ -24,6 +25,11 @@ type ObservabilityConfig = {
   expected_tasks?: string[];
   vault_path?: string;
   host_detectors_ttl_seconds?: number;
+  quota_sources?: {
+    claude_cache_path?: string;
+    codex_sessions_dir?: string;
+    glm_ledger_path?: string;
+  };
 };
 
 type ScheduledTaskSample = {
@@ -90,13 +96,6 @@ type FlowStats = {
   inFlight: number;
 };
 
-type LaneRegistry = {
-  lanes?: Array<{
-    id?: string;
-    budget?: Record<string, unknown>;
-  }>;
-};
-
 function configPath(env: Record<string, string | undefined>): string {
   const override = env.HIMMEL_OBSERVABILITY_CONFIG;
   if (override && override.trim()) return override;
@@ -111,15 +110,6 @@ function readConfig(path: string): ObservabilityConfig {
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
-  }
-}
-
-function readJsonFile<T>(path: string): T | null {
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
-  } catch {
-    return null;
   }
 }
 
@@ -571,40 +561,48 @@ function lunaMetrics(config: ObservabilityConfig, nowMs: number, cache: Exporter
   return samples;
 }
 
-function laneBudgetLabels(lanesPath: string): Map<string, Record<string, string>> {
-  const registry = readJsonFile<LaneRegistry>(lanesPath);
-  const labels = new Map<string, Record<string, string>>();
-  for (const lane of registry?.lanes ?? []) {
-    if (!lane.id || !lane.budget || typeof lane.budget !== "object") continue;
-    const budgetLabels: Record<string, string> = {};
-    for (const [key, value] of Object.entries(lane.budget)) {
-      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-        budgetLabels[key] = String(value);
-      }
+// HIMMEL-1000: real per-lane bank gauges. Each lanes.json lane that declares
+// quota.bank fans out one series per live window of that bank; lanes without
+// a machine-readable source (or whose bank has no live reading) emit an
+// explicit omit comment: absent = dark, never fabricated.
+function quotaMetrics(
+  cfg: ObservabilityConfig,
+  env: Record<string, string | undefined>,
+  quotaLedgerPath: string,
+  lanesPath: string,
+  platform: NodeJS.Platform,
+  nowMs: number,
+): { lines: string[]; comments: string[] } {
+  const targets = readLaneQuotaTargets(lanesPath);
+  const comments: string[] = targets.without.map(
+    (lane) => `# lane_quota_used_pct omitted: lane ${lane} has no machine-readable quota source`,
+  );
+  const home = env.HOME ?? homedir();
+  const src = cfg.quota_sources ?? {};
+  const readers: Record<BankId, () => BankResult> = {
+    claude: () => readClaudeBank(src.claude_cache_path ?? defaultClaudeCachePath(env, platform), nowMs),
+    codex: () => readCodexBank(src.codex_sessions_dir ?? join(home, ".codex", "sessions"), nowMs),
+    glm: () => readGlmBank(src.glm_ledger_path ?? quotaLedgerPath, nowMs),
+  };
+  const banks = new Map<BankId, BankResult>();
+  const samples: string[] = [];
+  for (const { lane, bank } of targets.withBank) {
+    let result = banks.get(bank);
+    if (!result) {
+      result = readers[bank]();
+      banks.set(bank, result);
     }
-    labels.set(lane.id, budgetLabels);
+    if (result.readings.length === 0) {
+      comments.push(`# lane_quota_used_pct omitted: lane ${lane} (bank ${bank}): ${result.omitReason ?? "no live reading"}`);
+      continue;
+    }
+    for (const reading of result.readings) {
+      samples.push(sample("lane_quota_used_pct", { lane, bank, window: reading.window }, reading.usedPct));
+    }
   }
-  return labels;
-}
-
-function quotaMetrics(path: string, lanesPath: string, nowMs: number): string[] {
-  if (!existsSync(path)) return [];
-  let statuses: ReturnType<typeof quotaGaugeRead>;
-  try {
-    statuses = quotaGaugeRead({ path, nowMs });
-  } catch {
-    // A malformed quota ledger must not abort the whole scrape; the family
-    // is simply omitted this round (absent = dark, never fabricated).
-    return [];
-  }
-  const budget = laneBudgetLabels(lanesPath);
   const lines: string[] = [];
-  const samples = Object.values(statuses)
-    .filter((s) => typeof s.row?.used_pct === "number")
-    .sort((a, b) => a.lane.localeCompare(b.lane))
-    .map((s) => sample("lane_quota_used_pct", { lane: s.lane, ...(budget.get(s.lane) ?? {}) }, s.row!.used_pct!));
-  addFamily(lines, "lane_quota_used_pct", "Latest observed quota used percentage per lane from the passive quota gauge ledger.", "gauge", samples);
-  return lines;
+  addFamily(lines, "lane_quota_used_pct", "Bank quota used percent per lanes.json lane and governing window, from live local sources.", "gauge", samples);
+  return { lines, comments };
 }
 
 function defaultLanesPath(): string {
@@ -648,7 +646,9 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   lines.push(...host.lines);
 
   lines.push(...lunaMetrics(cfg, nowMs, cache));
-  lines.push(...quotaMetrics(quotaPath, lanesPath, nowMs));
+  const quota = quotaMetrics(cfg, env, quotaPath, lanesPath, options.platform ?? process.platform, nowMs);
+  lines.push(...quota.comments);
+  lines.push(...quota.lines);
 
   const durationS = (performance.now() - started) / 1000;
   addFamily(lines, "flow_exporter_scrape_duration_seconds", "Wall-clock duration of this exporter scrape.", "gauge", [

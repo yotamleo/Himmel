@@ -97,6 +97,7 @@ test("golden scrape folds active and rotated flow ledgers", async () => {
     configPath: config,
     flowLedgerPath: ledger,
     quotaLedgerPath: join(tmp, "missing-quota.jsonl"),
+    lanesPath: join(tmp, "empty-lanes.json"),
     platform: "linux",
   }));
 
@@ -144,7 +145,7 @@ test("stall inference separates expired unpaired starts from in-flight starts", 
     serializeFlowRunStart(flowStart("short-flow", "old", "2026-07-13T11:55:00Z")),
     serializeFlowRunStart(flowStart("short-flow", "new", "2026-07-13T11:58:20Z")),
   ]);
-  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none") });
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json") });
   expect(body).toContain('flow_run_outcome_total{flow="short-flow",outcome="stalled"} 1');
   expect(body).toContain('flow_run_in_flight{flow="short-flow"} 1');
 });
@@ -159,21 +160,88 @@ test("active ledger without config uses default six-hour stall deadline", async 
     configPath: join(tmp, "missing-observability.json"),
     flowLedgerPath: ledger,
     quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
   });
   expect(body).toContain('flow_run_outcome_total{flow="unconfigured-flow",outcome="stalled"} 1');
   expect(body).toContain('flow_run_in_flight{flow="unconfigured-flow"} 0');
 });
 
-test("quota gauge ledger is re-exported through quotaGaugeRead", async () => {
+test("lane quota fanout emits real bank readings per lanes.json lane and omits sourceless lanes", async () => {
   const flowLedger = join(tmp, "flow-runs.jsonl");
   const quotaLedger = join(tmp, "quota-gauge.jsonl");
   const lanes = join(tmp, "lanes.json");
+  const config = join(tmp, "observability.json");
+  const claudeCache = join(tmp, "statusline-usage-cache.json");
+  const sessions = join(tmp, "codex-sessions");
   writeLines(flowLedger, []);
-  writeLines(quotaLedger, [serializeQuotaGauge(quota({ lane: "glm", used_pct: 62 }))]);
-  writeFileSync(lanes, JSON.stringify({ lanes: [{ id: "glm", budget: { posture: "conserve" } }] }));
-  const body = await renderMetrics({ nowMs: NOW, flowLedgerPath: flowLedger, quotaLedgerPath: quotaLedger, lanesPath: lanes });
-  expect(body).toContain('# HELP lane_quota_used_pct Latest observed quota used percentage per lane from the passive quota gauge ledger.');
-  expect(body).toContain('lane_quota_used_pct{lane="glm",posture="conserve"} 62');
+  const futureEpoch = Math.floor(NOW / 1000) + 3600;
+  writeFileSync(claudeCache, JSON.stringify({
+    five_hour: { utilization: 17, resets_at: String(futureEpoch) },
+    seven_day: { utilization: 56, resets_at: String(futureEpoch) },
+  }));
+  const day = join(sessions, "2026", "07", "13");
+  mkdirSync(day, { recursive: true });
+  writeFileSync(join(day, "rollout-2026-07-13T08-00-03-x.jsonl"), JSON.stringify({
+    timestamp: "t", type: "event_msg",
+    payload: { type: "token_count", rate_limits: { primary: { used_percent: 76, window_minutes: 10080, resets_at: futureEpoch } } },
+  }) + "\n");
+  writeLines(quotaLedger, [serializeQuotaGauge(quota({ lane: "glm", used_pct: 3, reset_at: new Date(NOW + 3600_000).toISOString() }))]);
+  writeFileSync(lanes, JSON.stringify({ lanes: [
+    { id: "sonnet", quota: { bank: "claude" } },
+    { id: "claudex", quota: { bank: "codex" } },
+    { id: "glm", quota: { bank: "glm" } },
+    { id: "ollama-local" },
+  ] }));
+  writeFileSync(config, JSON.stringify({ quota_sources: { claude_cache_path: claudeCache, codex_sessions_dir: sessions } }));
+
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: flowLedger, quotaLedgerPath: quotaLedger, lanesPath: lanes, platform: "linux" });
+  expect(body).toContain('# HELP lane_quota_used_pct Bank quota used percent per lanes.json lane and governing window, from live local sources.');
+  expect(body).toContain('lane_quota_used_pct{bank="claude",lane="sonnet",window="5h"} 17');
+  expect(body).toContain('lane_quota_used_pct{bank="claude",lane="sonnet",window="weekly"} 56');
+  expect(body).toContain('lane_quota_used_pct{bank="codex",lane="claudex",window="weekly"} 76');
+  expect(body).toContain('lane_quota_used_pct{bank="glm",lane="glm",window="5h"} 3');
+  expect(body).toContain("# lane_quota_used_pct omitted: lane ollama-local has no machine-readable quota source");
+});
+
+test("lane quota fanout fans one bank read across every lane sharing that bank", async () => {
+  const flowLedger = join(tmp, "flow-runs.jsonl");
+  const lanes = join(tmp, "lanes.json");
+  const config = join(tmp, "observability.json");
+  const claudeCache = join(tmp, "statusline-usage-cache.json");
+  writeLines(flowLedger, []);
+  const futureEpoch = Math.floor(NOW / 1000) + 3600;
+  writeFileSync(claudeCache, JSON.stringify({
+    five_hour: { utilization: 17, resets_at: String(futureEpoch) },
+    seven_day: { utilization: 56, resets_at: String(futureEpoch) },
+  }));
+  writeFileSync(lanes, JSON.stringify({ lanes: [
+    { id: "haiku", quota: { bank: "claude" } },
+    { id: "sonnet", quota: { bank: "claude" } },
+    { id: "opus", quota: { bank: "claude" } },
+    { id: "fable", quota: { bank: "claude" } },
+  ] }));
+  writeFileSync(config, JSON.stringify({ quota_sources: { claude_cache_path: claudeCache, codex_sessions_dir: join(tmp, "absent-sessions") } }));
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: flowLedger, quotaLedgerPath: join(tmp, "absent-quota.jsonl"), lanesPath: lanes, platform: "linux" });
+  for (const lane of ["haiku", "sonnet", "opus", "fable"]) {
+    expect(body).toContain(`lane_quota_used_pct{bank="claude",lane="${lane}",window="5h"} 17`);
+    expect(body).toContain(`lane_quota_used_pct{bank="claude",lane="${lane}",window="weekly"} 56`);
+  }
+});
+
+test("lane quota fanout emits one omit comment per lane when a shared bank has no live reading", async () => {
+  const flowLedger = join(tmp, "flow-runs.jsonl");
+  const lanes = join(tmp, "lanes.json");
+  const config = join(tmp, "observability.json");
+  writeLines(flowLedger, []);
+  writeFileSync(lanes, JSON.stringify({ lanes: [
+    { id: "haiku", quota: { bank: "claude" } },
+    { id: "sonnet", quota: { bank: "claude" } },
+  ] }));
+  writeFileSync(config, JSON.stringify({ quota_sources: { claude_cache_path: join(tmp, "absent-cache.json"), codex_sessions_dir: join(tmp, "absent-sessions") } }));
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: flowLedger, quotaLedgerPath: join(tmp, "absent-quota.jsonl"), lanesPath: lanes, platform: "linux" });
+  expect(body).toContain("# lane_quota_used_pct omitted: lane haiku (bank claude): statusline cache not found");
+  expect(body).toContain("# lane_quota_used_pct omitted: lane sonnet (bank claude): statusline cache not found");
+  expect(body).not.toContain('lane_quota_used_pct{');
 });
 
 test("luna backlog counts inbox stages and monthly graduations, read-only", async () => {
@@ -191,7 +259,7 @@ test("luna backlog counts inbox stages and monthly graduations, read-only", asyn
   writeFileSync(join(clippings, "c.md"), "---\ntitle: raw\n---\nbody\n");
   writeFileSync(join(done, "old.md"), "graduated\n");
 
-  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none") });
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json") });
   expect(body).toContain('luna_inbox_backlog{stage="unprocessed"} 2');
   expect(body).toContain('luna_inbox_backlog{stage="unharvested"} 1');
   expect(body).toContain("luna_done_graduations_month 1");
@@ -211,15 +279,15 @@ test("scheduled-task scrape is platform-gated and TTL-cached", async () => {
       { task: "himmel-pipeline-synthesize", exists: 0 as const, enabled: 0 as const, next_run_timestamp: null },
     ];
   };
-  const first = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "win32", schedulerRunner: runner, cache });
-  const second = await renderMetrics({ nowMs: NOW + 1000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "win32", schedulerRunner: runner, cache });
+  const first = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", schedulerRunner: runner, cache });
+  const second = await renderMetrics({ nowMs: NOW + 1000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", schedulerRunner: runner, cache });
   expect(calls).toBe(1);
   expect(first).toContain('scheduled_task_exists{task="himmel-pipeline-harvest"} 1');
   expect(first).toContain('scheduled_task_enabled{task="himmel-pipeline-harvest"} 1');
   expect(first).toContain('scheduled_task_next_run_timestamp{task="himmel-pipeline-harvest"} 1783915200');
   expect(second).toContain('scheduled_task_exists{task="himmel-pipeline-synthesize"} 0');
 
-  const linux = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "linux", cache: createExporterCache() });
+  const linux = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "linux", cache: createExporterCache() });
   expect(linux).toContain("# scheduled_task_* omitted: platform has no Windows Scheduled Tasks API");
   expect(linux).not.toContain("scheduled_task_exists");
 });
@@ -256,7 +324,7 @@ test("host detector metrics render from fixture data", async () => {
     nowMs: NOW,
     configPath: config,
     flowLedgerPath: ledger,
-    quotaLedgerPath: join(tmp, "none"),
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
     platform: "win32",
     hostDetectorRunner: () => JSON.stringify({
       trees: [
@@ -278,7 +346,7 @@ test("host detector metrics render from fixture data", async () => {
 test("host detector scrape is platform-gated and fail-soft on runner errors", async () => {
   const ledger = join(tmp, "flow-runs.jsonl");
   writeLines(ledger, []);
-  const base = { nowMs: NOW, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none") };
+  const base = { nowMs: NOW, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json") };
 
   const linux = await renderMetrics({ ...base, platform: "linux", hostDetectorRunner: () => { throw new Error("should not run"); } });
   expect(linux).toContain("# agent_tree_*/orphan_* omitted: platform has no Windows process tree API");
@@ -309,9 +377,9 @@ test("host detector scrape uses TTL cache and drops cache on refresh failure", a
     };
   };
 
-  const first = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "win32", hostDetectorRunner: runner, cache });
-  const second = await renderMetrics({ nowMs: NOW + 1000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "win32", hostDetectorRunner: runner, cache });
-  const third = await renderMetrics({ nowMs: NOW + 3000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), platform: "win32", hostDetectorRunner: runner, cache });
+  const first = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", hostDetectorRunner: runner, cache });
+  const second = await renderMetrics({ nowMs: NOW + 1000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", hostDetectorRunner: runner, cache });
+  const third = await renderMetrics({ nowMs: NOW + 3000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", hostDetectorRunner: runner, cache });
 
   expect(calls).toBe(2);
   expect(first).toContain('agent_tree_rss_bytes{class="claude"} 1000');
