@@ -217,3 +217,49 @@ from the Claude `setup.sh` `[N/10]` flow. Wiring it into the broader setup /
 > Not to be confused with the project-local Codex **guardrail** wiring in the
 > repo's `.codex/` dir (hooks adapter, HIMMEL-427/565). That fires guardrails
 > *under* Codex; this provisions the user-global plugin set.
+
+## dispatch-codex-wsl.sh (HIMMEL-999)
+
+The `codex-wsl` impl lane dispatches codex CLI workers into an existing ext4
+clone inside a WSL distro. Use only the chokepoint:
+
+```sh
+bash scripts/codex/dispatch-codex-wsl.sh --distro <name> --clone <in-distro-abs-path> [--brief-file <path>] [--reasoning-effort <none|low|medium|high|xhigh|max>] [codex exec args...]
+```
+
+The wrapper enforces the WSL-lane invariant set:
+
+1. In-distro physical-path containment under `${CODEX_WSL_CLONE_ROOT:-$HOME/work}`.
+2. `/mnt/*` clone paths refused.
+3. Shared codex arg filter with WSL-specific remediation hints.
+4. Per-distro/per-physical-clone mutex, with stale locks auto-broken.
+5. Fail-open codex weekly quota preflight; live hard readings exit 3.
+6. `gpt-5.5` and `workspace-write` pins unless caller-named; reasoning effort becomes a trusted wrapper-computed config override.
+7. `flow-runs.jsonl` start/end rows with `flow=codex-wsl` and `task_name=<distro>:<physical-path>[:brief=<name>]`.
+
+Exit codes: `0` means the codex return code was 0, `2` means usage/refusal,
+`3` means a live quota hard reading refused the dispatch, `4` means the clone
+lock is held, and `127` means `wsl.exe` was not found.
+
+| Env var | Purpose |
+|---|---|
+| `CODEX_WSL_BIN` | Override the WSL binary for tests; default `wsl.exe`. |
+| `CODEX_WSL_CLONE_ROOT` | In-distro containment root; default `$HOME/work` resolved inside the distro. |
+| `CODEX_WSL_LOCKS_DIR` | Windows-side lock root; default `~/.himmel/state/codex-wsl-locks`. |
+| `CODEX_WSL_QUOTA_HARD` | Live weekly used-percent refusal threshold; default `85`. |
+| `CODEX_WSL_QUOTA_WARN` | Live weekly used-percent warning threshold; default `65`. |
+| `CODEX_WSL_QUOTA_MAX_AGE_SECS` | Rollout telemetry freshness bound; default `86400`. |
+| `CODEX_WSL_QUOTA_OK` | Set to `1` to bypass a live quota hard refusal. |
+| `CODEX_WSL_RAW_OK` | Hook bypass for a deliberate raw `wsl ... codex exec` run. |
+| `HIMMEL_FLOW_RUNS_LEDGER` | Test override for the flow-run ledger path. |
+
+Lock recovery: stale locks are auto-broken on the next acquire when the holder
+pid is dead. For a confirmed bad live lock, remove the corresponding directory
+under `~/.himmel/state/codex-wsl-locks/<key>` after checking the holder.
+
+Brief delivery: `--brief-file <path>` crosses the WSL boundary as the
+backgrounded child's explicit stdin and is materialized in-distro as the
+positional prompt via `"$(cat)"`. This avoids the bare-stdin silent no-op trap.
+Raw `wsl ... codex exec` dispatches from hooked sessions are blocked by
+`scripts/hooks/block-rogue-codex-wsl.sh`; diagnostics such as `codex --version`
+are still allowed.

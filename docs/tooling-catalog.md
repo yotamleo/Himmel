@@ -458,6 +458,189 @@ is manual — the **HIMMEL-665 Task 8 checklist**.
 
 ---
 
+<a id="claude-codex"></a>
+
+## claude-codex (`scripts/claude-codex`, `.ps1` twin, HIMMEL-979)
+
+**What:** Thin launcher that runs Claude Code as the harness over the codex
+subscription through a self-hosted CLIProxyAPI Anthropic-compatible proxy: the
+claudex pattern from the theo/t3.gg recipe. It keeps himmel's full Claude Code
+harness (skills, hooks, guardrails, worktrees) while spending the codex weekly
+bank, and opens mixed subagent lanes that the plain codex CLI harness does not.
+
+**Env table:**
+
+| Var | Value |
+|---|---|
+| `CODEX_PROXY_BASE_URL` | `http://127.0.0.1:8317` by default |
+| `CODEX_MODEL` | `gpt-5.6-sol` by default |
+| `CODEX_HAIKU` | `$CODEX_MODEL` by default |
+| `CODEX_SUBAGENT_MODEL` | `$CODEX_MODEL` by default |
+| `CLIPROXY_API_KEY` | Must match an `api-keys` entry in `~/.cli-proxy-api/config.yaml` |
+| `CLAUDE_CONFIG_DIR` | `$HOME/.claude-codex` |
+
+**Guard files:** the lane uses `~/.config/claude-codex/phi-roots` and
+`~/.config/claude-codex/egress-denylist`, plus the launch-cwd `.salus` marker.
+A PHI-marked workspace is refused with no override; denylisted workspaces require
+`--force`/`-Force` and warn that content will be sent to OpenAI via the local
+proxy.
+
+**Seeding:** same lane-seed mechanism as `claude-glm`: an isolated
+`$HOME/.claude-codex` config dir is seeded from `~/.claude`, sanitized to strip
+model and `env.ANTHROPIC_*`, refreshed by the shared `CLAUDE_LANE_*` reseed and
+lock knobs, and never copies credentials or history.
+
+**Prerequisite:** install a CLIProxyAPI release binary from
+`github.com/router-for-me/CLIProxyAPI`, write `~/.cli-proxy-api/config.yaml` with
+`host: "127.0.0.1"` (the default empty host binds ALL interfaces — that would
+LAN-expose the OAuth-wrapped endpoint), `port: 8317`, and an `api-keys` entry
+matching `CLIPROXY_API_KEY`, run `cli-proxy-api --codex-login` once to complete
+browser OAuth, and keep the proxy running while the lane is in use. This is subscription OAuth re-exposure; the
+ToS-risk posture is operator-accepted for HIMMEL-979.
+
+**Coexistence:** plain `claude` (Anthropic subscription, `~/.claude`, native
+OAuth) and `claude-codex` run side by side, even concurrently, because the lane's
+env applies only to its own invocation and its config dir (`~/.claude-codex`),
+guard dir, and seed lock are fully per-lane. Nothing in the codex lane touches
+the stock Claude Code install; it has the same isolation contract as
+`claude-glm`.
+
+**Effort mapping (HIMMEL-1002, verified 2026-07-14).** The launcher pins
+`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`; Claude Code emits the effort as top-level
+`output_config.effort` in the `/v1/messages` body, and CLIProxyAPI forwards it
+**verbatim** as the codex thinking level — no clamping, no proxy-side default
+override, so a per-dispatch effort **downgrade does reach `gpt-5.6-sol`** (proxy
+`apply.go` debug lines: `original config from request` == `processed config to
+apply`, `mode=level level=<X>`).
+
+| `CLAUDE_CODE_EFFORT_LEVEL` | Level sent to `gpt-5.6-sol` |
+|---|---|
+| _(unset — the lane default)_ | **`xhigh`** |
+| `low` / `medium` / `high` / `xhigh` | `low` / `medium` / `high` / `xhigh` |
+| `max` | `max` (accepted upstream — see caveat) |
+| `ultra`, or any unrecognized value | **`xhigh`** — silently falls back to the default |
+
+- **`ultra` is unreachable from the Claude Code side.** The effort enum tops out
+  at `max`; the literal `ultra` is never forwarded — Claude Code ignores any
+  unrecognized value and falls back to the lane default (`xhigh`). No
+  `CLAUDE_CODE_EFFORT_LEVEL` value produces `level=ultra` to codex, so **no
+  launcher guard against `ultra` is needed** (Claude Code itself refuses it).
+- **`max` is the real ultra-risk vector.** It IS reachable and forwarded
+  verbatim; codex returns `200`, but what juice codex resolves `max` to is *not*
+  observable in the proxy log (which shows only what is sent, not codex's
+  internal resolution). Because OpenAI's documented `reasoning_effort` ceiling is
+  `xhigh` and theo's post-mortem warns the top juice ("ultra") is buggy, treat
+  `max` as unverified/avoid — the HIMMEL-1001 operating ladder caps explicit
+  effort at `xhigh`.
+- **The implicit default is `xhigh`** (theo's "rare" tier) — higher than his
+  recommended medium/high default; HIMMEL-1001 pins it down.
+
+_Method: one bounded `claude -p` turn per tier through the live proxy with
+`debug: true` + `logging-to-file: true` added to `~/.cli-proxy-api/config.yaml`
+(hot-reloaded via the proxy's config watcher, reverted immediately after);
+levels read from the proxy `main.log` `apply.go` lines. Feeds HIMMEL-774
+(per-lane effort/tier calibration)._
+
+**Operating rules (HIMMEL-1001, from theo's gpt-5.6-sol post-mortem).** The lane
+spends the codex weekly bank, so GPT-5.6's token-burn mechanics apply. These are
+encoded where the lane runs (the launcher default + `lanes.json`), not just as
+vault prose (HIMMEL-195); the full mechanics live in luna
+`30-Resources/Tech/CLIProxyAPI.md`.
+
+- **Effort ladder — default `high`, `xhigh` rare, never `ultra`/`max`.** The
+  launcher now pins `CLAUDE_CODE_EFFORT_LEVEL=high` when unset (it was an implicit
+  `xhigh` — theo's "rare" over-spend tier); override per dispatch for a
+  harder/cheaper task. `ultra` is unreachable (see Effort mapping above); `max` is
+  reachable but its codex juice is undocumented — avoid it.
+- **272k context ceiling — GPT-5.6 bills 2× past ~272k tokens.** Keep claudex
+  sessions under it; long threads silently double (Codex briefly exposed 372k →
+  silent 2× before reverting).
+- **Subagent fan-out multiplies codex spend — linearly, not by parent-context
+  copy.** Claude Code gives each subagent a FRESH context (see the codex-CLI
+  contrast below), so the claudex lane avoids theo's worst multiplier (the v2
+  full-history copy); still, every subagent turn is a separate gpt-5.6-sol
+  consumer on the codex bank, so fan out deliberately and chunk big plans.
+
+Two of theo's rules are **codex-CLI-specific, not claudex levers** — they belong
+to the raw `codex-exec` / hermes gpt lanes (HIMMEL-1001 item 3, deferred), not
+this Claude Code harness: the **v2 subagent layer that copies the entire parent
+history** (a Codex-harness mechanism; the claudex lane uses Claude Code's own
+subagent context management) and **fast mode** (~2.5× per message; a Codex CLI
+toggle with no Claude Code equivalent).
+
+### spawn-claudex subagent dispatch path (`scripts/telegram/spawn-claudex.ts`, `marketplace/plugins/himmel-ops/agents/claudex-subagent.md`, HIMMEL-1003)
+
+**What:** the codex-lane twin of `spawn-glm`/`glm-subagent` (HIMMEL-654/726) —
+lets a parent Claude session hand a scoped implementation chunk to an inline
+gpt-5.6-sol worker running the FULL himmel harness (skills/hooks/guardrails/
+worktree) on the **codex weekly bank**, with the same review/merge contract as
+the GLM lane. `spawn-claudex.ts` dispatches THROUGH `claude-codex` itself
+(`bash <primary-repo>/scripts/claude-codex --permission-mode <mode>
+<pointer-prompt>`, cwd = the minted worker worktree) rather than
+re-implementing any of its trust-boundary guarding — it sets NO `ANTHROPIC_*`
+var and builds no GLM-style env block; the launcher owns the entire PHI/
+egress/env-sweep/proxy chain (the invocation is by the PRIMARY checkout's
+absolute path, since a worktree lacks the gitignored `.env` the launcher
+resolves its key from). Own-branch mode mints `claudex/<slug>`
+(`.claude/worktrees/claudex+<slug>`); `--branch <existing>` selects
+shared-branch mode (reuses `scripts/lib/shared-branch-lock.sh` under the
+`"codex"` lane name, serializing writers onto an existing PR branch — the
+same iterative CR-fix-round pattern as GLM's shared mode). Sessions live
+under `<BRIDGE_ROOT>/claudex-sessions/` (a sibling of `glm-sessions/`);
+`meta.json` records `lane: "codex"`.
+
+```
+bun scripts/telegram/spawn-claudex.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--branch <existing>] [--timeout-mins <n>] [--permission-mode <mode>] [--effort low|medium|high|xhigh] [--force]
+```
+
+**Codex weekly bank preflight (HIMMEL-1003 D4):** reads the LAST
+`"secondary":{"used_percent":<N>` occurrence from a bounded tail read of
+`~/.codex/logs_2.sqlite` (the rollout log; `secondary` = weekly, `primary` =
+5h) — fail-**OPEN** on any read error (a cold/absent log never bricks a
+dispatch). WARNs to stderr at `CLAUDEX_BANK_WARN_PCT` (default `80`);
+**REFUSES (exit 2) BEFORE any worktree side-effect** at `CLAUDEX_BANK_REFUSE_PCT`
+(default `90`) unless overridden (`CLAUDEX_BANK_OK=1` or `--force`) — a
+capped worker dies mid-run, so the tree survives but the work is lost.
+
+**Effort (HIMMEL-1001):** `--effort` is optional; unset lets the launcher's
+own `${CLAUDE_CODE_EFFORT_LEVEL:-high}` default apply. `spawn-claudex.ts`
+REFUSES `--effort max` (undocumented codex juice) and `--effort ultra`
+(unreachable — Claude Code silently falls back to `xhigh`) at parse time,
+pointing back at this section.
+
+**claudex-subagent** (`marketplace/plugins/himmel-ops/agents/claudex-subagent.md`)
+is the thin Bash-only Agent-tool dispatcher, parity with `glm-subagent`:
+refuses push/merge/PR tasks and non-himmel cwds, dispatches ONLY through the
+chokepoint above, and returns final `meta.json` status + the worker branch +
+`git diff main --stat` + the `outbox.jsonl` tail (+ `run.log` tail on
+failure) — the parent owns review + merge. **`guard-implementor-dispatch`
+(HIMMEL-920) orthogonality:** that hook gates an ALLOW-LIST of
+implementor-shaped `subagent_type`s (`general-purpose`, `claude`,
+`feature-dev:code-architect`) against the Claude 5-hour bank;
+`claudex-subagent` is not in that list (exactly like `glm-subagent`) and
+spends the codex weekly bank instead — the two guards deliberately don't
+overlap. The codex-lane cost control is the bank preflight above, not
+HIMMEL-920.
+
+**HIMMEL-1003 v1 scope — deferred to a followup ticket:** cap-guard /
+arm-on-cap resume scheduling (GLM cap-window classification +
+`arm-resume.sh` scheduling — a generic sentinel only marks a capped run
+`capped` in `meta.json`; no resume is armed), a quota-gauge ledger row for
+this lane, the grants/escalation channel (`--grant`/`--autonomous`/
+`--carry-from`), and an `await-claudex-worker.sh` twin of
+`await-glm-worker.sh` (until then, poll `meta.json` directly — see the agent
+def).
+
+**Acceptance:** `scripts/telegram/spawn-claudex.test.ts` (plan-function
+refusal branches for both modes, bank-preflight parsing incl. warn/refuse/
+override/fail-open, `--effort` refusal branches, dispatch-command
+construction against `claude-codex` with no `ANTHROPIC_*` var, shared-branch
+lock lifecycle against a real temp repo + the real lock script).
+
+**Bash convenience shims (HIMMEL-1012):** `scripts/shell/himmel-offload-shims.sh` installs idempotent `cc-codex` / `cc-glm` functions into `~/.bashrc` for Git Bash and WSL.
+
+---
+
 ## claude-routed + omniroute-config-lint (`scripts/claude-routed`, `scripts/omniroute-config-lint`, `.ps1` twins, HIMMEL-666)
 
 **What:** the WS2 OmniRoute-pilot wiring pair. `claude-routed` is a

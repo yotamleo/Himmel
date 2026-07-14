@@ -580,6 +580,23 @@ Notes:
   adopt) rewrites it to locate the bun-global install so plain `qmd` works everywhere.
 - Stop the shared daemon: `qmd mcp stop`. The index is sqlite+WAL read per query, so
   docs added by `qmd update` are live immediately — no daemon restart needed.
+- WSL Claude sessions need qmd installed and indexed separately inside WSL. The
+  fork is bun-built there, and its sqlite+WAL index must stay on the WSL
+  filesystem rather than being shared over `/mnt/c`; this differs from
+  graphify's plain-JSON store, which Windows and WSL can share.
+
+### 4f. cc-codex / cc-glm offload shims
+
+`scripts/shell/himmel-offload-shims.sh` provides the `cc-codex` and `cc-glm`
+Bash functions in both Git Bash and WSL. `bash scripts/setup.sh` installs the
+guarded source line in `~/.bashrc` best-effort; install it directly with:
+
+```bash
+bash scripts/shell/himmel-offload-shims.sh install
+```
+
+The resulting `~/.bashrc` line sources the checkout's absolute
+`scripts/shell/himmel-offload-shims.sh` path only when that file exists.
 
 ---
 
@@ -841,6 +858,10 @@ For per-repo opt-out, env-var disable, dry-run mode, and full operational refere
 ---
 
 ## 8. MCP Servers
+
+`himmelctl status` now reports the `tokensave-mcp` and `graphify-mcp`
+items by checking their registrations in `~/.claude.json` (for a focused
+check: `node scripts/himmelctl/bin.js status --items tokensave-mcp,graphify-mcp`).
 
 ### tokensave — recommended for every adopter (T0 always-on)
 
