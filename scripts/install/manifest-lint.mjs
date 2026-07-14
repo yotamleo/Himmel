@@ -24,6 +24,7 @@
 //   settings-hooks    | file: string; key: string
 //   cmd:has_qmd       | resolver: string
 //   qmd-index         | collections: non-empty string[]
+//   mcp-registered    | server: string
 //   handover-dir      | resolver: string
 //   dep               | EXACTLY ONE of cmd: string XOR (win32: string AND
 //                     | posix: string) — the win32/posix pair is the
@@ -44,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const KINDS = ['hook', 'plugin', 'dep', 'wiring', 'vault', 'scheduler', 'lane', 'mcp'];
-const PROBE_TYPES = ['file-exists', 'settings-key', 'settings-hooks', 'cmd:has_qmd', 'qmd-index', 'handover-dir', 'dep'];
+const PROBE_TYPES = ['file-exists', 'settings-key', 'settings-hooks', 'cmd:has_qmd', 'qmd-index', 'mcp-registered', 'handover-dir', 'dep'];
 const ITEM_KEYS = ['id', 'kind', 'scopes', 'profiles', 'deps', 'probe'];
 
 function resolveManifestPath() {
@@ -106,6 +107,11 @@ function checkProbeShape(probe, label, errors) {
     case 'qmd-index': {
       if (!isNonEmptyStringArray(probe.collections)) errors.push(`${label}: probe type 'qmd-index' requires 'collections' (non-empty array of strings)`);
       reportExtra(['collections']);
+      break;
+    }
+    case 'mcp-registered': {
+      if (typeof probe.server !== 'string') errors.push(`${label}: probe type 'mcp-registered' requires 'server' (string)`);
+      reportExtra(['server']);
       break;
     }
     case 'handover-dir': {

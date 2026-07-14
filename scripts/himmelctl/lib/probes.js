@@ -1,6 +1,6 @@
 'use strict';
 // scripts/himmelctl/lib/probes.js — the himmelctl probe engine (HIMMEL-756
-// T1.4): one function per probe.type, EXACTLY the seven in
+// T1.4): one function per probe.type, EXACTLY the eight in
 // scripts/install/manifest-lint.mjs's PROBE_TYPES vocabulary. Every probe is
 // a PURE READ (no writes, no prompts, no env mutation) returning
 // `{ actual: "present"|"absent"|"degraded", detail: "<string>" }`.
@@ -248,6 +248,29 @@ function probeQmdIndex(item, ctx) {
   return { actual: 'degraded', detail: `${present.length}/${collections.length} collections registered (missing: ${missing.join(', ')})` };
 }
 
+// ── mcp-registered ───────────────────────────────────────────────────────
+
+function probeMcpRegistered(item, ctx) {
+  const filePath = path.join((ctx.env && ctx.env.HOME) || os.homedir(), '.claude.json');
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (_e) {
+    return { actual: 'absent', detail: `cannot read/parse ${filePath}` };
+  }
+  // A valid-JSON but non-object root (null, array, string) has no mcpServers —
+  // guard before dereferencing so a malformed ~/.claude.json reads absent
+  // rather than throwing out of the whole status sweep.
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return { actual: 'absent', detail: `unexpected JSON shape in ${filePath}` };
+  }
+  const server = item.probe.server;
+  if (data.mcpServers && Object.prototype.hasOwnProperty.call(data.mcpServers, server)) {
+    return { actual: 'present', detail: filePath };
+  }
+  return { actual: 'absent', detail: `server '${server}' not registered in ${filePath}` };
+}
+
 // ── handover-dir ─────────────────────────────────────────────────────────
 
 function probeHandoverDir(item, ctx) {
@@ -284,6 +307,7 @@ const PROBES = {
   'settings-hooks': probeSettingsHooks,
   'cmd:has_qmd': probeCmdHasQmd,
   'qmd-index': probeQmdIndex,
+  'mcp-registered': probeMcpRegistered,
   'handover-dir': probeHandoverDir,
   dep: probeDep,
 };
