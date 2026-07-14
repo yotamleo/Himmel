@@ -24,6 +24,16 @@ These are non-negotiable. The pass is zero-loss **only** if you keep this order.
    **READ-ONLY** to mine the topic files in parallel. Exactly ONE writer (you,
    the parent) appends synthesized content to the vault. Never fan parallel
    writes at a shared note. (Single-writer rule: HIMMEL-166 / root `CLAUDE.md`.)
+   **All landings go on a BRANCH in a worktree — vault AND repo** (operator
+   directive 2026-07-14): himmel docs through the normal worktree → PR flow,
+   and vault notes via a vault worktree on a `chore/memory-compound-<date>`
+   branch (`git -C <vault> worktree add <path-outside-vault> -b <branch>`),
+   committed + pushed, and merged by the OPERATOR after review. The vault is
+   a single-writer personal repo with no PR gate by design (the
+   `.single-writer` convention in root `CLAUDE.md`) — the branch + operator
+   merge IS its review step; himmel-side landings keep the full PR + approval
+   flow. Never write the live vault checkout or main directly — the branch is
+   about trackability and reviewable merges, not parallelism.
 2. **Land before you trim.** Append the durable learning to its vault note
    BEFORE you touch `MEMORY.md`, and trim `MEMORY.md` BEFORE deleting any topic
    file.
@@ -137,6 +147,12 @@ needed a follow-up PR (HIMMEL-900). Classify each durable item:
   `docs/internals/enforcement.md`. Batch all of the pass's doc landings into
   ONE docs PR at the end. A luna copy is optional; the himmel doc is the
   system of record for these.
+  **When in doubt, land in himmel docs** (operator directive 2026-07-14):
+  luna is not shared, so an adopter-relevant item that lands only in luna is
+  silently dropped for every other user. Gotchas about himmel-SHIPPED tooling
+  (`/luna-upgrade`, `propagate-public.sh`, `/pr-check` profiles, dispatch
+  chokepoints, …) are adopter-relevant even when discovered on the operator's
+  own vault — land them in the repo (`docs/` or the owning plugin's README).
 - **Rule / restriction candidates.** An adopter-generic item that is
   frame-shaping or safety-critical deserves more than a doc: run it through
   the HIMMEL-177 layer test (default-hook / default-rule / lean-invoke /
@@ -163,11 +179,14 @@ qmd MCP `query` tool, or `qmd_cmd query`. A learning that does not surface is
 **not** compounded — fix the note (or its frontmatter) and re-index before
 proceeding. No findability → no deletion.
 
-**Adopter-generic caveat:** the `himmel` collection indexes the PRIMARY
-checkout, not worktrees — a doc landed on a PR branch is not qmd-findable
-until the PR merges. For those items the gate splits: verify the content sits
-in the pushed PR now, and delete the source topic file only AFTER the docs PR
-merges and a re-index finds the learning in the `himmel` collection.
+**Branch caveat (BOTH collections):** qmd indexes the PRIMARY checkouts, not
+worktrees — a doc landed on a himmel PR branch AND a vault note landed on a
+vault branch are not qmd-findable until their branches merge. For everything
+landed on a branch (which, per rail 1, is everything), the gate splits:
+verify the content sits in the pushed branch/PR now; run the re-index +
+findability spot-check AFTER the merges land in the primary checkouts, and
+only then delete the source topic files. Steps 5–6 of a fully-branched pass
+therefore run as a short POST-MERGE follow-up, not in the landing session.
 
 ### 5. Slim `MEMORY.md`
 Back it up first (a single `.bak`, removed in step 6 once the next session loads

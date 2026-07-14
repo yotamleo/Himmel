@@ -345,8 +345,10 @@ placed there — a git worktree, a patch you plan to apply later — can vanish
 mid-flow, leaving `git -C` failing "No such file or directory" plus a dangling
 worktree record. Keep work products in the session scratchpad or a home-dir
 path, finish flows that stage in `/tmp` in the same sitting, and remember
-PowerShell cannot see MSYS paths — `cygpath -m` first. (`git worktree prune`
-cleans up the dangling record afterwards.)
+PowerShell and Windows-native node cannot see MSYS paths — `cygpath -m`
+first, or parse JSON files under `/tmp` with `jq` rather than a node
+one-liner in Git-Bash pipelines. (`git worktree prune` cleans up the
+dangling record afterwards.)
 
 ## A pruned git worktree directory silently falls through to the PRIMARY repo
 
@@ -415,3 +417,129 @@ integrity-signed; GUI-only), then re-enable the stock agent elevated:
 Only native Windows `ssh.exe` hits the pipe — paramiko-based tooling and git
 SSH signing via `ssh-keygen.exe` are agent-free. Verify with the native
 `ssh-add -l`, not the MSYS one.
+
+## PowerShell 5.1: three silent script-killers fixtures can't catch
+
+Windows PowerShell 5.1 (the OS default that runs hooks and scheduled scripts)
+has three traps that parse clean and only fail — or worse, silently no-op —
+on the live code path:
+
+- **Read-only automatic variables.** Assigning `$pid` or `$home` throws
+  `VariableNotWritable` at runtime, only when that line executes. Use
+  distinct locals (`$treePid`, `$userHome`).
+- **Dot-sourcing binds params in the CALLER's scope.** `. other.ps1
+  -AsLibrary` can clobber a caller variable of the same name — observed
+  flipping an early-return guard so the main body never ran (exit 0, no
+  output, nothing to debug). Capture such flags into a distinct local
+  before any dot-source.
+- **`$x = if (cond) {…} else { @() }` assigns `$null`, not `@()`** when the
+  taken branch is the empty-array one; a downstream `[Parameter(Mandatory)]`
+  bind then fails "because it is null". Wrap the whole conditional:
+  `$x = @(if (cond) {…} else {…})`.
+
+Fixture/unit tests miss all three: they pass explicit non-null args or
+dot-source directly, so the script-scope + omitted-param code paths never
+execute. Require ONE live `powershell -File` run on Windows before trusting
+green tests for any `.ps1` destined for exporters or hooks. Cheap review
+heuristic: grep new/changed `.ps1` for assignments to
+`$pid|$home|$input|$args`, dot-sources below a `param()` block, and `= if (`
+with an empty-array branch.
+
+## Windows: `ssh` into a Windows host lands in cmd — multi-line PowerShell needs `-EncodedCommand`
+
+OpenSSH on a Windows target defaults the remote shell to `cmd`. Wrap
+one-liners in `powershell -NoProfile -Command "…"`. For MULTI-LINE scripts,
+do NOT pipe stdin into `powershell -Command -` — its stdin reader can
+silently stop after the first line of multi-line ForEach/try-catch blocks,
+with no error. Use `-EncodedCommand` with a UTF-16LE, base64-encoded payload
+instead — robust across every quoting layer. Never add
+`-ExecutionPolicy Bypass`: the flag sets the policy for the whole
+`powershell.exe` session (it is not `-File`-only), an inline
+`-Command`/`-EncodedCommand` payload doesn't need it, and it reads as a
+security bypass to auto-mode classifiers.
+
+Nested hops multiply the quoting problem: `ssh → cmd → wsl → bash` mangles
+inline `$` (a `$HOME` arrives literal). Base64 the bash payload and run
+`echo <b64> | base64 -d | bash`. Detach long remote jobs with
+`setsid nohup … &` — an ssh channel drop kills attached processes.
+
+## Windows: a scheduled-task-hosted service can be DOWN while its task reads "Ready"
+
+Services hosted as scheduled tasks (a Grafana under an `-AtLogOn` task, a
+metrics exporter) fail in ways task state doesn't show:
+
+- **"Ready" means idle, not running.** A stopped `-AtLogOn` Grafana looks
+  fine in `Get-ScheduledTask`. Before any API call, `Start-ScheduledTask`
+  explicitly and wait ~15–20s for the port to bind (first start also
+  initializes its sqlite DB); gate on `/api/health` returning
+  `database: ok`. The failure when skipped is connection-refused ("Unable
+  to connect to the remote server") — do NOT misdiagnose it as an
+  auth/credentials problem.
+- **Restart ≠ new code, and task success ≠ serving.** A restart picks up
+  whatever code is ON DISK — update the checkout to the target commit
+  BEFORE `Stop-ScheduledTask; Start-Sleep 2; Start-ScheduledTask` — and
+  verify by the live endpoint
+  (`curl -s http://127.0.0.1:<port>/metrics | findstr <new-field>`), never
+  by task state: the task can report success while serving stale code.
+- **Never string-interpolate a JSON API body.** A PowerShell double-quoted
+  string silently blanks literal `${VAR}`-style tokens that dashboard JSON
+  legitimately contains (e.g. `${DS_PROMETHEUS}`). Build request bodies
+  with `ConvertFrom-Json` → edit → `ConvertTo-Json -Depth 100`.
+
+## WSL git cannot read a Windows-created worktree
+
+A worktree created on the Windows side stores a Windows-style path in its
+`.git` pointer file, which WSL-side git cannot resolve — WSL git commands
+against that worktree fail (plain file reads still work). Cross-environment
+flows that need git on the WSL side (a WSL review lane over a Windows
+worktree) need an explicit temp-clone/copy step; never aim WSL git tooling
+directly at a Windows-created worktree.
+
+Sibling worktree trap: a gitignored, locally-overlaid config file (a tool
+config tuned in the primary checkout) does not exist in a fresh worktree —
+the tool silently falls back to the tracked default, resurrecting items the
+overlay deliberately disabled. Run such tools from the primary checkout, or
+copy the overlay into the worktree first.
+
+## WSL: boot-time bind mounts belong in `/etc/wsl.conf` `[boot]`, not `/etc/fstab`
+
+A bind mount a WSL-hosted service needs at distro start is not reliably up
+when declared in `/etc/fstab` (WSL's boot mount-ordering is not what fstab
+implies). Put the mount under `[boot]` in `/etc/wsl.conf`
+(`command = mount --bind …`) so it runs at distro init.
+
+## git: a branch with no upstream tracking — `git pull` errors, automation reads it as "no update"
+
+A checkout whose branch has no upstream configured (common after a tool-made
+clone or history surgery) fails `git pull` with "There is no tracking
+information for the current branch" — loud in a terminal, but a wrapper or
+cadence job that swallows stderr surfaces it as the repo silently "not
+updating". When a repo that should track a remote stays mysteriously stale,
+check `git branch -vv` first; fix with
+`git branch --set-upstream-to=<remote>/<branch>` using the branch's
+configured remote (e.g. `origin/main`).
+
+## qmd under WSL: the bun-shim PATH illusion, expired-session embeds, index sharing
+
+- **"qmd MISSING" is usually a PATH illusion.** qmd runs via a bun-global
+  shim, not a `qmd` binary on PATH; the real gap is often `bun` itself.
+  Check with `qmd_fork_served` from `scripts/lib/qmd-bin.sh` before
+  reinstalling anything. In non-interactive `bash -lc`, `.bashrc` returns
+  early BEFORE its bun PATH line — export `BUN_INSTALL="$HOME/.bun"` and
+  prepend `$BUN_INSTALL/bin` to `PATH` manually.
+- **`qmd embed` "⚠ Session expired — skipping N chunks" is resumable.** It
+  leaves `Pending: N`; re-running resumes. Loop `qmd embed` until no
+  `Pending:` line remains, capped at ~10 passes (real backlogs have cleared
+  in ~8) — if `Pending:` persists at the cap, stop and investigate the
+  session-expiry root cause instead of looping further.
+- **Share an index instead of re-embedding on a weak machine.** The index
+  lives at `~/.cache/qmd/index.sqlite` (+ `-wal`), collection config at
+  `~/.config/qmd/index.yml` — portable across machines with identical
+  collection paths. Copy them with qmd fully IDLE on the source (no
+  embed/serve running — in WAL mode the coherent state spans `index.sqlite`
+  + `-wal` + `-shm`), then `qmd pull` on the target (model download only),
+  and verify with `sqlite3 index.sqlite 'PRAGMA integrity_check;'` plus a
+  real search. Static post-embed copies work; live sharing over `/mnt/c`
+  does not. Never copy an index
+  containing sensitive collections (e.g. medical PHI) to another machine —
+  share only indexes built from clean collections.
