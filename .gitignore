@@ -34,6 +34,10 @@ Thumbs.db
 # the hooks write these into himmel handovers/ as untracked clutter on main.
 # (Followup: redirect the hook write path to HANDOVER_DIR — see HIMMEL ticket.)
 handovers/auto-arm-status-*.md
+# arm-resume lock files (arms.jsonl) — transient arming-lock state that lands in
+# the himmel handovers/ stub as untracked clutter; observed staged on main
+# (HIMMEL-1024), same class as the auto-arm-status snapshots above.
+handovers/.locks/
 # Overnight-mode reports/recovery artifacts — auto-generated session state
 # (morning-report.sh et al.) that belongs in the state repo, not the himmel
 # handovers/ stub. Archived copies live in <state-repo> handovers/yotamleo/himmel/.
