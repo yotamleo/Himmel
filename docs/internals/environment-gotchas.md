@@ -348,7 +348,7 @@ path, finish flows that stage in `/tmp` in the same sitting, and remember
 PowerShell and Windows-native node cannot see MSYS paths — `cygpath -m`
 first, or parse JSON files under `/tmp` with `jq` rather than a node
 one-liner in Git-Bash pipelines. (`git worktree prune` cleans up the
-dangling record afterwards.)
+dangling record afterward.)
 
 ## A pruned git worktree directory silently falls through to the PRIMARY repo
 
@@ -460,8 +460,11 @@ security bypass to auto-mode classifiers.
 
 Nested hops multiply the quoting problem: `ssh → cmd → wsl → bash` mangles
 inline `$` (a `$HOME` arrives literal). Base64 the bash payload and run
-`echo <b64> | base64 -d | bash`. Detach long remote jobs with
-`setsid nohup … &` — an ssh channel drop kills attached processes.
+`echo <b64> | base64 -d | bash`. Detach long remote jobs with explicit
+stream redirection — `setsid … </dev/null >job.log 2>&1 &`. Bare
+`nohup … &` only auto-redirects when attached to a TTY, so over ssh's
+non-TTY pipes those streams stay wired to the channel and a drop can still
+kill or hang the job; redirect all three explicitly.
 
 ## Windows: a scheduled-task-hosted service can be DOWN while its task reads "Ready"
 
@@ -470,11 +473,13 @@ metrics exporter) fail in ways task state doesn't show:
 
 - **"Ready" means idle, not running.** A stopped `-AtLogOn` Grafana looks
   fine in `Get-ScheduledTask`. Before any API call, `Start-ScheduledTask`
-  explicitly and wait ~15–20s for the port to bind (first start also
-  initializes its sqlite DB); gate on `/api/health` returning
-  `database: ok`. The failure when skipped is connection-refused ("Unable
-  to connect to the remote server") — do NOT misdiagnose it as an
-  auth/credentials problem.
+  explicitly, then POLL `/api/health` until it returns `database: ok` or a
+  bounded deadline (~30s) expires — don't rely on a fixed sleep, since start
+  time varies (first start also initializes its sqlite DB) so a fixed wait is
+  either too short or wasteful. On timeout, report the task's current
+  `Get-ScheduledTask` state alongside the failure. The failure when skipped is
+  connection-refused ("Unable to connect to the remote server") — do NOT
+  misdiagnose it as an auth/credentials problem.
 - **Restart ≠ new code, and task success ≠ serving.** A restart picks up
   whatever code is ON DISK — update the checkout to the target commit
   BEFORE `Stop-ScheduledTask; Start-Sleep 2; Start-ScheduledTask` — and
