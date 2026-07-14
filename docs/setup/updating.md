@@ -32,7 +32,21 @@ sweeps them all in **one best-effort, dry-run-first pass** instead of running
    backups).
 4. **Conflict help** — if your customized `_CLAUDE.md` conflicts with the new
    template, the command proposes a merged version for you to approve rather than
-   failing or silently overwriting your edits.
+   failing or silently overwriting your edits. On a heavily-customized vault this
+   conflict is a **permanent shape**, not a transient (`git merge-file` exits 2 and
+   the upgrade reports "NOT writing the version stamp" every time). If the new
+   template's semantic content already reached your `_CLAUDE.md` another way,
+   resolve ours-wins (change nothing) and hand-stamp `.vault-template.json` to the
+   new version so the next sweep reports current. Note the upgrade refreshing
+   template-owned `.obsidian` files on a live vault is designed behavior — with
+   one consequence to check before committing the result: bundled plugin files
+   (`.obsidian/plugins/*/{main.js,manifest.json,styles.css}`) are
+   overwrite-class, so the upgrade can clobber a plugin you've since updated
+   with the template's OLDER bundled copy. If your installed plugin versions
+   are newer, restore the affected plugin paths from the timestamped pre-apply
+   backup (`~/.claude/luna-upgrade-backups/<vault-slug>/<timestamp>/`) before
+   committing — or abandon the whole upgrade with
+   `luna-upgrade-all.sh restore --vault <path>`.
 
 It is **best-effort**: a vault with uncommitted git changes still appears in the
 sweep table (flagged `dirty=true`, plan shown), but `apply` refuses it until the
