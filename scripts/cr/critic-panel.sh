@@ -60,13 +60,14 @@ else
     TIER_FILTER="${CRITIC_PANEL_TIERS:-free}"
 fi
 
-ANCHOR_SLUG="lagunaor"
-ANCHOR_MODEL="poolside/laguna-xs-2.1:free"
-# The anchor model is OpenRouter-only, so the fallback rows must carry its
-# route_provider (threaded to hermes as --provider) exactly like the registry
-# row does — otherwise the registry-missing recovery path could route the
-# anchor to the wrong backend.
-ANCHOR_PROVIDER="openrouter"
+ANCHOR_SLUG="codex"
+ANCHOR_MODEL="gpt-5.5"
+# codex routes via the openai-codex provider (the hermes OAuth chokepoint), not
+# OpenRouter — the fallback rows carry it as the panel's --provider so a
+# registry-missing recovery routes the anchor to the right backend. (The free
+# laguna anchor was dropped for low-quality output; codex is the fallback anchor
+# when configured — adopters without codex infra still degrade to claude-only.)
+ANCHOR_PROVIDER="openai-codex"
 
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
 CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-240}"
@@ -127,7 +128,7 @@ if [ "$CHECK_MODE" = "1" ]; then
 
     if [ -z "${check_rows:-}" ]; then
         echo "critic-panel.sh: registry $REG missing/invalid/empty — anchor-only ($ANCHOR_SLUG)" >&2
-        check_rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	free	${ANCHOR_PROVIDER}"
+        check_rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	paid	${ANCHOR_PROVIDER}"
     fi
 
     check_prompt="$(mktemp -t critic-panel-check.XXXXXX)"

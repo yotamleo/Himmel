@@ -591,6 +591,80 @@ file_issue() {
     fi
 }
 
+# --- C15: enabled-plugin drift beyond the lean floor (HIMMEL-1032) ----------------
+# Read-only WARN: surfaces plugins enabled beyond the lean template floor (the
+# ad-hoc /plugin drift that costs context at session start). Never mutates — it
+# tells the operator what /himmel-update's reconcile WOULD disable so a plugin
+# they intentionally want isn't lost: keep it by adding it to settings.local.json.
+# The lean floor = template-`true` plugins; settings.local.json `true` entries
+# also count as intentionally-kept (never reported as drift).
+check_c15() {
+    local tmpl="$REPO_ROOT/docs/setup/settings-template.json"
+    if [ ! -f "$SETTINGS" ]; then
+        emit INFO C15-plugins "no ~/.claude/settings.json — plugin-set drift not checked"
+        return
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        emit INFO C15-plugins "jq not on PATH — plugin-set drift not checked"
+        return
+    fi
+    if [ ! -f "$tmpl" ] || ! jq -e . "$tmpl" >/dev/null 2>&1; then
+        emit INFO C15-plugins "lean template not found/parseable ($tmpl) — drift not checked"
+        return
+    fi
+    if ! jq -e . "$SETTINGS" >/dev/null 2>&1; then
+        emit INFO C15-plugins "settings.json ($SETTINGS) not valid JSON, drift not checked"
+        return
+    fi
+    local tmpl_ep live_ep local_ep local_file drift count
+    # A parseable file whose enabledPlugins is a non-object (string/array) would
+    # make the drift has($k) query error (suppressed → a false OK). Skip instead.
+    case "$(jq -r '.enabledPlugins | type' "$tmpl" 2>/dev/null)" in
+        object|null) ;;
+        *) emit INFO C15-plugins "lean template has a non-object enabledPlugins — drift not checked"; return ;;
+    esac
+    case "$(jq -r '.enabledPlugins | type' "$SETTINGS" 2>/dev/null)" in
+        object|null) ;;
+        *) emit INFO C15-plugins "settings.json has a non-object enabledPlugins — drift not checked"; return ;;
+    esac
+    tmpl_ep="$(jq -c '.enabledPlugins // {}' "$tmpl")"
+    live_ep="$(jq -c '.enabledPlugins // {}' "$SETTINGS")"
+    local_file="$CLAUDE_DIR_R/settings.local.json"
+    local_ep='{}'
+    if [ -f "$local_file" ]; then
+        # A malformed local file is NOT "no overrides": treating it as {} would
+        # report the operator's intentionally-kept plugins as drift, while the
+        # reconciler itself refuses to run in that state. Skip the check instead.
+        if ! jq -e . "$local_file" >/dev/null 2>&1; then
+            emit INFO C15-plugins "settings.local.json ($local_file) not valid JSON — drift not checked (its overrides can't be read)"
+            return
+        fi
+        # `jq -e .` only proves it PARSES. A parseable file whose enabledPlugins
+        # is not an object (string/array/number) makes local_ep unusable and the
+        # later has($k) would error (suppressed → false OK). Skip on bad shape too.
+        case "$(jq -r '.enabledPlugins | type' "$local_file" 2>/dev/null)" in
+            object|null) local_ep="$(jq -c '.enabledPlugins // {}' "$local_file")" ;;
+            *) emit INFO C15-plugins "settings.local.json ($local_file) has a non-object enabledPlugins — drift not checked"; return ;;
+        esac
+    fi
+    # drift = live-enabled specs that are NOT template-true AND absent from
+    # settings.local.json. ANY local entry (true OR false) is an explicit
+    # operator override, so it is never drift — a local `false` means the
+    # operator already disabled it on purpose.
+    drift="$(jq -rn --argjson t "$tmpl_ep" --argjson l "$live_ep" --argjson lo "$local_ep" '
+        [ $l | to_entries[] | select(.value != false)
+          | .key as $k | select( (($t[$k]) != true) and (($lo | has($k)) | not) ) | $k ] | .[]' 2>/dev/null || true)"
+    count="$(printf '%s\n' "$drift" | grep -c . || true)"
+    if [ "${count:-0}" -eq 0 ]; then
+        emit OK C15-plugins "enabled plugins are at the lean floor — no drift"
+        return
+    fi
+    local list; list="$(printf '%s' "$drift" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"
+    [ -n "$list" ] || list="$(printf '%s' "$drift" | tr '\n' ' ')"
+    emit WARN C15-plugins "$count plugin(s) enabled beyond the lean floor (context cost at session start): $list" \
+        "reclaim: bash \"$REPO_ROOT/scripts/machine-setup/reconcile-enabled-plugins.sh\" (or set HIMMEL_RECONCILE_PLUGINS=1 so /himmel-update enforces it). Keep any you want by adding \"<plugin>\": true to ~/.claude/settings.local.json first."
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -608,6 +682,7 @@ check_c11
 check_c12
 check_c13
 check_c14
+check_c15
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
