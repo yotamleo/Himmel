@@ -49,7 +49,7 @@ though the himmel repo also wires explicit `/handover *` commands.
 | `new-task <epic-id> <name>` | Create a task inside an epic (inherits the epic's source bucket; optional Jira Task linked via Epic Link). |
 | `new-standalone <name>` | Create a standalone (optional Jira Story). |
 | `update-status` | Regenerate `status.md` + `roadmap.md` + `tech-debt.md` from filesystem state. Run after any mutation. |
-| `handover-resume #N` | Resume a tracked item — surface its brief, decisions, and stop-point. Read-only (no worktree gate). |
+| `handover-resume #N` (or `/handover-resume [ID] [overnight]`) | Resume a tracked item — surface its brief, decisions, and stop-point. Read-only (no worktree gate). Forms: **no ID** → picker over active items; **`#N`/`HIMMEL-N`/bare number** → that item; append **`overnight`** → overnight-mode trigger. The `/handover-resume` slash command is a token-lean wrapper for this op (≡ "load #N"); distinct from `/handover-resume-armed`, which recovers an interrupted/armed session. |
 | `/handover bug <add\|fix\|status>` | Quick-add / update a bug in the active item's `bugs.md` (status + FAILED/WORKED fixes-tried). The circular-debugging breaker. |
 | `/handover bugs [--open]` | Cross-item dashboard of every tracked bug (item / id / status / symptom / #fixes + totals). Read-only. |
 | `/handover lessons` | Proposal-only sweep: recurring resolved-bug symptoms + CR findings as lesson candidates. Writes nothing. |
