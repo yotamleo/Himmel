@@ -119,6 +119,67 @@ Plain `git pull` works too if you don't need the marketplace re-sync.
 - **Plugins / slash commands / skills**: loaded at session start — **restart**
   any running Claude session to pick them up.
 
+## Lean plugin set — keeping session-start context low (HIMMEL-1032)
+
+Every **enabled** plugin injects its agents + skills + commands into the
+context at session start, whether or not you use it. Ad-hoc `/plugin` installs
+(and older maximal templates) drift the enabled set upward over time, and the
+plugin install step is *additive* — it enables the lean template's plugins but
+never disables the extras — so a manual prune used to drift back after the next
+update.
+
+The **lean floor** is the set of plugins flagged `true` in
+[`docs/setup/settings-template.json`](settings-template.json). To reconcile your
+`~/.claude/settings.json` back down to it:
+
+```bash
+# preview what would be disabled (writes nothing)
+bash scripts/machine-setup/reconcile-enabled-plugins.sh --dry-run
+# apply
+bash scripts/machine-setup/reconcile-enabled-plugins.sh
+```
+
+It uses a **whitelist**: only floor plugins survive; every other enabled plugin
+(including a future one that ships enabled) is set `false`. **`/himmel-doctor`**
+(check **C15**) reports drift read-only, so you can see the cost before acting.
+
+**Keep a plugin you actually want** — add it to `~/.claude/settings.local.json`.
+The reconciler reads this sibling file and **bakes its entries into
+`settings.json`** on every run, in both directions (a `true` keeps an off-floor
+plugin like `codex@openai-codex` enabled; a `false` disables a floor plugin like
+`playwright`), so your choice survives each reconcile — the override is enforced
+by the reconciler itself, not by Claude Code's runtime settings precedence:
+
+```json
+{
+  "enabledPlugins": {
+    "codex@openai-codex": true,
+    "playwright@claude-plugins-official": false,
+    "luna-correlate@himmel": false
+  }
+}
+```
+
+(All vendored `@himmel` plugins stay `true` in the shared template so adopters
+get them; disable the ones you personally don't run — like `luna-correlate` —
+here, without editing the shared floor.)
+
+**`/himmel-update` is adopter-safe**: by default it only *warns* about drift.
+To have it *enforce* the floor on every update — the operator's "prune stays
+pruned" switch — export the opt-in and persist it in your shell profile (once
+per machine) so it reaches `/himmel-update` and every new shell:
+
+```bash
+echo 'export HIMMEL_RECONCILE_PLUGINS=1' >> ~/.bashrc   # or ~/.zshrc / your profile
+export HIMMEL_RECONCILE_PLUGINS=1                        # this shell, now
+```
+
+Other lanes inherit this for free: GLM workers read the same
+`~/.claude/settings.json`. (The codex lane uses a different plugin model — its
+leanness is governed by what `install-himmel-codex.sh` provisions, not an
+`enabledPlugins` map — and himmelctl's full-set enable stays a deliberate opt-in
+that `settings.local.json` protects.)
+
 ## Uninstalling / offboarding
 
 The inverse of install is the wizard's `uninstall` subcommand:
