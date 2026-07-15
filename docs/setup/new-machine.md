@@ -669,11 +669,14 @@ Plugins live at `~/.claude/plugins/`. Different install methods per plugin — r
 
 ### Lean profile — disabled by default, enable on need (HIMMEL-816)
 
-`docs/setup/settings-template.json` ships **lean**: 12 `@claude-plugins-official`
-plugins, `obsidian@obsidian-skills`, and `caveman@caveman` (HIMMEL-701) are
-`false` in `enabledPlugins` — every adopter and every re-provisioned operator
-machine gets the minimal set by default instead of re-creating the maximal
-31-plugin install every time. Turn any of these back on with one command
+`docs/setup/settings-template.json` ships **lean**: 13 re-enableable
+`@claude-plugins-official` plugins (the table below), `obsidian@obsidian-skills`,
+and `caveman@caveman` (HIMMEL-701) are `false` in `enabledPlugins` — every adopter
+and every re-provisioned operator machine gets the minimal set by default instead
+of re-creating the maximal 31-plugin install every time. (A 14th
+`@claude-plugins-official` entry, `pr-review-toolkit`, is also `false` but is not
+listed for re-enable — himmel ships its own `pr-review-toolkit-himmel` fork.)
+Turn any of these back on with one command
 (`--scope user` shown; swap for `project`/`local` per [Scope](#scope-user-vs-project) above):
 
 | Plugin | Enable command | Note |
@@ -690,6 +693,7 @@ machine gets the minimal set by default instead of re-creating the maximal
 | `commit-commands@claude-plugins-official` | `claude plugin install commit-commands@claude-plugins-official --scope user` | |
 | `playground@claude-plugins-official` | `claude plugin install playground@claude-plugins-official --scope user` | |
 | `skill-creator@claude-plugins-official` | `claude plugin install skill-creator@claude-plugins-official --scope user` | |
+| `atlassian@claude-plugins-official` | `claude plugin install atlassian@claude-plugins-official --scope user` | **enable-on-need:** Jira is CLI-first per project rules (`scripts/jira/dist/index.js`) — enable only when a session needs interactive Confluence/Atlassian skills. The optional atlassian **MCP** integration is separate (see [Optional integrations](#optional-integrations)) |
 | `obsidian@obsidian-skills` | `claude plugin marketplace add kepano/obsidian-skills` then `claude plugin install obsidian@obsidian-skills --scope user` | `obsidian-triage` falls back to plain markdown when this isn't enabled (documented in the command body) — enable if you need proper OFM parity |
 | `caveman@caveman` | `claude plugin marketplace add JuliusBrussee/caveman` then `claude plugin install caveman@caveman --scope user` | Caveman compression mode + cavecrew subagents (HIMMEL-701) |
 
