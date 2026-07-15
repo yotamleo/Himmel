@@ -345,6 +345,57 @@ rewire_statusline() {
     fi
     return 0
 }
+# ─── lean plugin-set reconcile (HIMMEL-1032) ─────────────────────────────────
+# The lean plugin profile (HIMMEL-816) was additive-only: install-plugins
+# installs the template's `true` plugins but never writes the `false` ones, so
+# a plugin enabled once (manual toggle, old template, himmelctl full-set) stays
+# enabled forever and drifts back after every update (~10% context at session
+# start). This step reconciles the user settings.json enabledPlugins DOWN to the
+# template floor on every update — the plugin analog of --strict-mcp-config.
+# Whitelist model: only template-`true` plugins survive; everything else is
+# forced `false`. settings.local.json per-machine overrides still win (the
+# harness layers them over settings.json; the reconciler never touches it).
+# Best-effort: never fails the update. CLAUDE_USER_SETTINGS overridable for tests.
+reconcile_plugins() {
+    local mode="$1"   # check | apply
+    local script="$ROOT/scripts/machine-setup/reconcile-enabled-plugins.sh"
+    local settings="${CLAUDE_USER_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}"
+    echo ""
+    echo "==> lean plugin-set reconcile (HIMMEL-1032)"
+    if [ ! -f "$script" ]; then
+        echo "    skip: reconcile-enabled-plugins.sh not found ($script)."
+        return 0
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "    skip: jq not on PATH (cannot reconcile plugin set)."
+        return 0
+    fi
+    # Adopter-safe default: WARN-only. `/himmel-update` must never silently
+    # disable a plugin an adopter intentionally enabled — it reports the drift
+    # and stops. Enforcement (writing the floor) is OPT-IN via
+    # HIMMEL_RECONCILE_PLUGINS (1/all/true) — set once per machine so the
+    # operator gets automatic drift-clearing while a fresh adopter clone does
+    # not. Wanted plugins survive enforcement via settings.local.json regardless.
+    local apply=0
+    case "${HIMMEL_RECONCILE_PLUGINS:-}" in 1|all|true|yes) apply=1 ;; esac
+    # Scalar flag (not a `dry=()` array): on bash 3.2, expanding an empty array as
+    # `"${dry[@]}"` under `set -u` trips "unbound variable"; branch the call instead.
+    local do_apply=0
+    [ "$mode" = "apply" ] && [ "$apply" -eq 1 ] && do_apply=1
+    if [ "$do_apply" -eq 1 ]; then
+        bash "$script" --settings "$settings" \
+            || echo "    warn: plugin-set reconcile failed (non-fatal) — run bash scripts/machine-setup/reconcile-enabled-plugins.sh yourself." >&2
+    else
+        bash "$script" --dry-run --settings "$settings" \
+            || echo "    warn: plugin-set reconcile failed (non-fatal) — run bash scripts/machine-setup/reconcile-enabled-plugins.sh yourself." >&2
+    fi
+    if [ "$do_apply" -eq 0 ] && [ "$mode" = "apply" ]; then
+        echo "    (warn-only: set HIMMEL_RECONCILE_PLUGINS=1 to have /himmel-update enforce the lean floor;"
+        echo "     or apply once now: bash scripts/machine-setup/reconcile-enabled-plugins.sh)"
+    fi
+    return 0
+}
+
 # Test seam: source with HIMMEL_UPDATE_LIB=1 to load the functions above without
 # running any update mode (lets test-himmel-update-hermes.sh call update_hermes
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
@@ -384,6 +435,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
         echo "status:   $behind commit(s) behind — run /himmel-update (or bash scripts/himmel-update.sh) to pull."
     fi
     report_plugin_gap
+    reconcile_plugins check
     update_hermes check
     update_codex check
     report_cadence_stale
@@ -435,6 +487,11 @@ rewire_statusline
 #    marketplace re-sync above can't surface these (it only touches plugins that
 #    are already installed). Advisory; never fails the update.
 report_plugin_gap
+
+# 6b. Reconcile the user settings.json enabledPlugins DOWN to the lean template
+#     floor (HIMMEL-1032) — the marketplace re-sync above can re-enable drifted
+#     plugins but never disables them; this is the subtractive half. Best-effort.
+reconcile_plugins apply
 
 # 7. Nudge if an armed pipeline-cadence is firing pre-change (stale) runners
 #    that this pull's code won't regenerate on its own (HIMMEL-588). Advisory.

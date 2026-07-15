@@ -188,4 +188,30 @@ if ($missing.Count -gt 0) {
 }
 
 Write-Host "  All $($specs.Count) enabled plugins present."
+
+# ── Reconcile enabledPlugins to the lean floor (HIMMEL-1032) ─────────────────
+# Additive install already leaves a FRESH machine lean; the subtractive reconcile
+# only matters on a RE-RUN over pre-existing drift, where it would DISABLE plugins
+# the user may have enabled. OPT-IN only, identical to himmel-update
+# (HIMMEL_RECONCILE_PLUGINS) — never disable a user's plugins on a plain
+# re-install. Twin of the bash install-plugins.sh reconcile step.
+$reconcile = Join-Path $ScriptDir 'reconcile-enabled-plugins.ps1'
+# -cin (case-sensitive), matching the bash twin's `case … in 1|all|true|yes)` —
+# plain -in would also accept TRUE/YES, diverging from the shell gate.
+if ($env:HIMMEL_RECONCILE_PLUGINS -cin @('1', 'all', 'true', 'yes')) {
+    if (Test-Path $reconcile) {
+        Write-Host '──── Reconciling enabledPlugins to lean floor (HIMMEL_RECONCILE_PLUGINS) ────'
+        # The reconciler calls `exit N` (via Die) on validation failure, which does
+        # NOT throw — so a try/catch would miss it. Check $LASTEXITCODE after the call.
+        try { & $reconcile -Settings $settingsFile -Template $Template }
+        catch { Write-Host "  warn: plugin-set reconcile failed (non-fatal): $_" }
+        if ($LASTEXITCODE -ne 0) { Write-Host "  warn: plugin-set reconcile exited $LASTEXITCODE (non-fatal)." }
+    } else {
+        # Opted in but the reconciler is missing — enforcement would be a silent
+        # no-op, and the "set the flag" hint below is wrong (it IS set). Warn.
+        Write-Host "  warn: HIMMEL_RECONCILE_PLUGINS is set but reconcile-enabled-plugins.ps1 not found ($reconcile) - lean floor NOT enforced."
+    }
+} else {
+    Write-Host '  (install is additive-only; set HIMMEL_RECONCILE_PLUGINS=1 to also disable drifted plugins down to the lean floor)'
+}
 Write-Host '──── Done ────'
