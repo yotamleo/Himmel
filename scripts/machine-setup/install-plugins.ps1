@@ -188,4 +188,19 @@ if ($missing.Count -gt 0) {
 }
 
 Write-Host "  All $($specs.Count) enabled plugins present."
+
+# ── Reconcile enabledPlugins to the lean floor (HIMMEL-1032) ─────────────────
+# Additive install already leaves a FRESH machine lean; the subtractive reconcile
+# only matters on a RE-RUN over pre-existing drift, where it would DISABLE plugins
+# the user may have enabled. OPT-IN only, identical to himmel-update
+# (HIMMEL_RECONCILE_PLUGINS) — never disable a user's plugins on a plain
+# re-install. Twin of the bash install-plugins.sh reconcile step.
+$reconcile = Join-Path $ScriptDir 'reconcile-enabled-plugins.ps1'
+if (($env:HIMMEL_RECONCILE_PLUGINS -in @('1', 'all', 'true', 'yes')) -and (Test-Path $reconcile)) {
+    Write-Host '──── Reconciling enabledPlugins to lean floor (HIMMEL_RECONCILE_PLUGINS) ────'
+    try { & $reconcile -Settings $settingsFile -Template $Template }
+    catch { Write-Host "  warn: plugin-set reconcile failed (non-fatal): $_" }
+} else {
+    Write-Host '  (install is additive-only; set HIMMEL_RECONCILE_PLUGINS=1 to also disable drifted plugins down to the lean floor)'
+}
 Write-Host '──── Done ────'

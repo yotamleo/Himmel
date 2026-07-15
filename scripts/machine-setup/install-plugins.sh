@@ -232,4 +232,23 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
 fi
 
 echo "  All $(grep -c . <<< "$SPECS") enabled plugins present."
+
+# ── Reconcile enabledPlugins to the lean floor (HIMMEL-1032) ─────────────────
+# Install is additive (it only installs `true` entries), so a FRESH machine is
+# already lean — the extras were never installed. The subtractive reconcile only
+# matters on a RE-RUN over a machine with pre-existing drift, where it would
+# DISABLE plugins the user may have enabled. That must be OPT-IN, identical to
+# himmel-update (HIMMEL_RECONCILE_PLUGINS) — never disable a user's plugins on a
+# plain re-install. Best-effort: a reconcile hiccup must not fail the install.
+RECONCILE="$SCRIPT_DIR/reconcile-enabled-plugins.sh"
+case "${HIMMEL_RECONCILE_PLUGINS:-}" in
+  1|all|true|yes)
+    if [[ -f "$RECONCILE" ]]; then
+      echo "──── Reconciling enabledPlugins to lean floor (HIMMEL_RECONCILE_PLUGINS) ────"
+      bash "$RECONCILE" --settings "$SETTINGS_FILE" --template "$TEMPLATE" \
+        || echo "  warn: plugin-set reconcile failed (non-fatal)." >&2
+    fi ;;
+  *)
+    echo "  (install is additive-only; set HIMMEL_RECONCILE_PLUGINS=1 to also disable drifted plugins down to the lean floor)" ;;
+esac
 echo "──── Done ────"
