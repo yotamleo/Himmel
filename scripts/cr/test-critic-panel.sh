@@ -86,24 +86,27 @@ ANCHOR_PROVIDER="$(sed -n 's/^ANCHOR_PROVIDER="\(.*\)"$/\1/p' "$PANEL")"
 check "R: ANCHOR_SLUG extracted from critic-panel.sh" "$([ -n "$ANCHOR_SLUG" ] && echo yes)" "yes"
 check "R: ANCHOR_MODEL extracted from critic-panel.sh" "$([ -n "$ANCHOR_MODEL" ] && echo yes)" "yes"
 check "R: ANCHOR_PROVIDER extracted from critic-panel.sh" "$([ -n "$ANCHOR_PROVIDER" ] && echo yes)" "yes"
-reg_free="$(python3 - "$HERE/critics.json" <<'PYEOF'
+reg_valid="$(python3 - "$HERE/critics.json" <<'PYEOF'
 import sys, json
 d = json.load(open(sys.argv[1]))
-ok = any(e.get("slug") and e.get("model") and e.get("tier") == "free"
+ok = any(e.get("slug") and e.get("model") and e.get("tier") in ("free", "paid")
          for e in d.get("panel", []))
 print("yes" if ok else "no")
 PYEOF
 )"
-check "R: registry has >=1 valid free-tier critic" "$reg_free" "yes"
+check "R: registry has >=1 valid critic" "$reg_valid" "yes"
+# The anchor may be paid (the free laguna anchor was dropped); it routes via its
+# `provider` (openai-codex) rather than a `route_provider`. Accept either key.
 reg_anchor="$(python3 - "$HERE/critics.json" "$ANCHOR_SLUG" <<'PYEOF'
 import sys, json
 d = json.load(open(sys.argv[1]))
 for e in d.get("panel", []):
     if e.get("slug") == sys.argv[2]:
-        print(e.get("tier", "") + " " + e.get("model", "") + " " + e.get("route_provider", "")); break
+        prov = e.get("route_provider") or e.get("provider") or ""
+        print(e.get("tier", "") + " " + e.get("model", "") + " " + prov); break
 PYEOF
 )"
-check "R: anchor slug $ANCHOR_SLUG is free-tier + pinned to the panel's ANCHOR_MODEL + ANCHOR_PROVIDER" "$reg_anchor" "free $ANCHOR_MODEL $ANCHOR_PROVIDER"
+check "R: anchor slug $ANCHOR_SLUG is in the registry + pinned to the panel's ANCHOR_MODEL + ANCHOR_PROVIDER" "$reg_anchor" "paid $ANCHOR_MODEL $ANCHOR_PROVIDER"
 
 # Test A: merge + global renumber
 out_a="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>/dev/null)"
@@ -136,7 +139,7 @@ check "E: warning on missing registry" "$(printf '%s\n' "$stderr_e" | grep -cF '
 check "E: anchor used (1/1)" "$(printf '%s\n' "$out_e" | grep -cF '(1/1 critics responded)')" "1"
 check_contains "E: anchor finding present" "$out_e" "[$ANCHOR_SLUG-"
 # deliberately tied to the stub's qwen-branch text — proves the anchor MODEL ran
-check_contains "E: qwen anchor branch ran" "$out_e" "null dereference in handler"
+check_contains "E: codex anchor branch ran" "$out_e" "[codex-1]:"
 
 printf '{}' > "$tmp/critics-empty.json"
 stderr_e2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-empty.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
@@ -169,7 +172,7 @@ out_i2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-bad.json" CRITIC_FIRS
 check "I2: malformed JSON -> anchor warning" "$(printf '%s\n' "$stderr_i2" | grep -cF 'anchor-only')" "1"
 check_contains "I2: malformed JSON -> anchor finding present" "$out_i2" "[$ANCHOR_SLUG-"
 # deliberately tied to the stub's qwen-branch text — proves the anchor MODEL ran
-check_contains "I2: qwen anchor branch ran" "$out_i2" "null dereference in handler"
+check_contains "I2: codex anchor branch ran" "$out_i2" "[codex-1]:"
 
 # Test J: per-member timeout — hung member bounded and dropped
 STUB_HANG="$tmp/stub-hang.sh"
