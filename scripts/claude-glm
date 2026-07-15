@@ -12,6 +12,22 @@ GLM_BASE_URL="https://api.z.ai/api/anthropic"
 GLM_MODEL="${GLM_MODEL:-glm-5.2[1m]}"
 GLM_HAIKU="glm-4.7"
 GLM_CONTEXT_WINDOW="${GLM_CONTEXT_WINDOW:-1000000}"
+# CodeRabbit (HIMMEL-1027): validate the override — a non-positive-integer value
+# falls back to the default; a value above the Z.ai [1m] ceiling WARNS but is
+# honored (warn-not-clamp). Twin-parity with claude-codex.
+case "$GLM_CONTEXT_WINDOW" in
+  ''|*[!0-9]*) echo "claude-glm: WARNING - GLM_CONTEXT_WINDOW='$GLM_CONTEXT_WINDOW' is not a positive integer; using 1000000." >&2; GLM_CONTEXT_WINDOW=1000000 ;;
+esac
+# All-digits past here. Guard int64 overflow by digit length BEFORE any arithmetic
+# comparison (a >18-digit value can exceed the shell's integer range); reject zero;
+# otherwise warn-but-honor above the ceiling (CodeRabbit HIMMEL-1027).
+if [ "${#GLM_CONTEXT_WINDOW}" -gt 18 ]; then
+  echo "claude-glm: WARNING - GLM_CONTEXT_WINDOW=$GLM_CONTEXT_WINDOW is out of range; using 1000000." >&2; GLM_CONTEXT_WINDOW=1000000
+elif [ "$GLM_CONTEXT_WINDOW" -eq 0 ]; then
+  echo "claude-glm: WARNING - GLM_CONTEXT_WINDOW=0 is not positive; using 1000000." >&2; GLM_CONTEXT_WINDOW=1000000
+elif [ "$GLM_CONTEXT_WINDOW" -gt 1000000 ]; then
+  echo "claude-glm: WARNING - GLM_CONTEXT_WINDOW=$GLM_CONTEXT_WINDOW exceeds the Z.ai glm-5.2[1m] 1000000 ceiling. Proceeding as set." >&2
+fi
 CONFIG_DIR="${HOME}/.claude-glm"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

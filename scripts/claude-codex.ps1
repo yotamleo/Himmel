@@ -31,6 +31,31 @@ $CodexProxyBaseUrl = if ($env:CODEX_PROXY_BASE_URL) { $env:CODEX_PROXY_BASE_URL 
 $CodexModel         = if ($env:CODEX_MODEL) { $env:CODEX_MODEL } else { 'gpt-5.6-sol' }
 $CodexHaiku         = if ($env:CODEX_HAIKU) { $env:CODEX_HAIKU } else { $CodexModel }
 $CodexSubagentModel = if ($env:CODEX_SUBAGENT_MODEL) { $env:CODEX_SUBAGENT_MODEL } else { $CodexModel }
+# CODEX_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (env block below) so
+# Claude Code budgets against a real number instead of its ~200k default for the
+# unrecognized gpt-5.6-sol slug — twin of the bash launcher. gpt-5.6's actual
+# window is ~372k (95% effective ~353k, openai/codex#32486). The 272000 default is
+# the COST-OPTIMAL compaction point, NOT a hard ceiling: input past 272k bills 2x
+# input / 1.5x output for the whole request. Raise to CODEX_CONTEXT_WINDOW=353000
+# to use the full effective window at 2x cost past 272k.
+$CodexContextWindow = if ($env:CODEX_CONTEXT_WINDOW) { $env:CODEX_CONTEXT_WINDOW } else { '272000' }
+# CodeRabbit (HIMMEL-1027): validate the override — a non-positive-integer value
+# falls back to the default; above the ~372k backend window WARNS, above the 272k
+# 2x-billing cliff NOTES the cost (both honored — warn-not-clamp, twin-parity).
+[long]$CodexCtxParsed = 0
+if (-not [long]::TryParse($CodexContextWindow, [ref]$CodexCtxParsed) -or $CodexCtxParsed -le 0) {
+  [Console]::Error.WriteLine("claude-codex: WARNING - CODEX_CONTEXT_WINDOW='$CodexContextWindow' is not a positive integer; using 272000.")
+  $CodexContextWindow = '272000'
+} else {
+  # Independent checks (CodeRabbit HIMMEL-1027): a value >372000 also exceeds the
+  # 272k cliff, so emit BOTH the backend-window warning AND the billing note.
+  if ($CodexCtxParsed -gt 372000) {
+    [Console]::Error.WriteLine("claude-codex: WARNING - CODEX_CONTEXT_WINDOW=$CodexCtxParsed exceeds the ~372k gpt-5.6 backend window (95% effective ~353k); the backend may reject prompts past it. Proceeding as set.")
+  }
+  if ($CodexCtxParsed -gt 272000) {
+    [Console]::Error.WriteLine("claude-codex: NOTE - CODEX_CONTEXT_WINDOW=$CodexCtxParsed is above the 272k 2x-billing cliff; input past 272k bills 2x (backend window ~372k). Proceeding as set.")
+  }
+}
 # HOME equivalent: bash uses $HOME; here $env:USERPROFILE so hermetic tests can
 # override the home root per-invocation (PowerShell's $HOME is fixed at startup).
 $HomeDir   = $env:USERPROFILE
@@ -618,6 +643,7 @@ $env:ANTHROPIC_MODEL                = $CodexModel
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $CodexHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $CodexModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $CodexModel
+$env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $CodexContextWindow
 $env:CLAUDE_CODE_SUBAGENT_MODEL     = $CodexSubagentModel
 $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1'
 $env:CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = '3'

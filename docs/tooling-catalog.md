@@ -476,6 +476,7 @@ bank, and opens mixed subagent lanes that the plain codex CLI harness does not.
 | `CODEX_MODEL` | `gpt-5.6-sol` by default |
 | `CODEX_HAIKU` | `$CODEX_MODEL` by default |
 | `CODEX_SUBAGENT_MODEL` | `$CODEX_MODEL` by default |
+| `CODEX_CONTEXT_WINDOW` | `272000` by default → `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (twin of `GLM_CONTEXT_WINDOW`). Without it Claude Code assumes its ~200k default for the unrecognized `gpt-5.6-sol` slug and compacts early. gpt-5.6's real window is **~372k** (95% effective ~353k, [openai/codex#32486](https://github.com/openai/codex/issues/32486)); **272k is the 2× pricing cliff, NOT a hard ceiling** — input past 272k bills 2× input / 1.5× output. `272000` is the cost-optimal default (compact at the cliff); raise to `353000` to use the full window at 2× cost past 272k. |
 | `CLIPROXY_API_KEY` | Must match an `api-keys` entry in `~/.cli-proxy-api/config.yaml` |
 | `CLAUDE_CONFIG_DIR` | `$HOME/.claude-codex` |
 

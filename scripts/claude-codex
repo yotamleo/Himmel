@@ -9,6 +9,39 @@ CODEX_PROXY_BASE_URL="${CODEX_PROXY_BASE_URL:-http://127.0.0.1:8317}"
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.6-sol}"
 CODEX_HAIKU="${CODEX_HAIKU:-$CODEX_MODEL}"
 CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-$CODEX_MODEL}"
+# CODEX_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (export block below)
+# so Claude Code budgets against a real number instead of its ~200k default for
+# the unrecognized gpt-5.6-sol slug — the twin of claude-glm's GLM_CONTEXT_WINDOW.
+# gpt-5.6's actual window is ~372k (95% effective ~353k, openai/codex#32486). The
+# 272000 default is the COST-OPTIMAL compaction point, NOT a hard ceiling: input
+# past 272k bills 2x input / 1.5x output for the whole request, so compacting at
+# the 272k cliff keeps sessions cheap. Raise to CODEX_CONTEXT_WINDOW=353000 to use
+# the full effective window at 2x cost past 272k. HIMMEL-1027.
+CODEX_CONTEXT_WINDOW="${CODEX_CONTEXT_WINDOW:-272000}"
+# CodeRabbit (HIMMEL-1027): validate the override — a non-positive-integer value
+# falls back to the default; a value above the ~372k backend window WARNS, and a
+# value above the 272k 2x-billing cliff NOTES the cost (both honored — warn-not-
+# clamp). Twin-parity with claude-glm.
+case "$CODEX_CONTEXT_WINDOW" in
+  ''|*[!0-9]*) echo "claude-codex: WARNING - CODEX_CONTEXT_WINDOW='$CODEX_CONTEXT_WINDOW' is not a positive integer; using 272000." >&2; CODEX_CONTEXT_WINDOW=272000 ;;
+esac
+# All-digits past here. Guard int64 overflow by digit length BEFORE any arithmetic
+# comparison (a >18-digit value can exceed the shell's integer range); reject zero;
+# warn above the ~372k backend window / note above the 272k cost cliff (HIMMEL-1027).
+if [ "${#CODEX_CONTEXT_WINDOW}" -gt 18 ]; then
+  echo "claude-codex: WARNING - CODEX_CONTEXT_WINDOW=$CODEX_CONTEXT_WINDOW is out of range; using 272000." >&2; CODEX_CONTEXT_WINDOW=272000
+elif [ "$CODEX_CONTEXT_WINDOW" -eq 0 ]; then
+  echo "claude-codex: WARNING - CODEX_CONTEXT_WINDOW=0 is not positive; using 272000." >&2; CODEX_CONTEXT_WINDOW=272000
+else
+  # Independent checks (CodeRabbit HIMMEL-1027): a value >372000 also exceeds the
+  # 272k cliff, so emit BOTH the backend-window warning AND the billing note.
+  if [ "$CODEX_CONTEXT_WINDOW" -gt 372000 ]; then
+    echo "claude-codex: WARNING - CODEX_CONTEXT_WINDOW=$CODEX_CONTEXT_WINDOW exceeds the ~372k gpt-5.6 backend window (95% effective ~353k); the backend may reject prompts past it. Proceeding as set." >&2
+  fi
+  if [ "$CODEX_CONTEXT_WINDOW" -gt 272000 ]; then
+    echo "claude-codex: NOTE - CODEX_CONTEXT_WINDOW=$CODEX_CONTEXT_WINDOW is above the 272k 2x-billing cliff; input past 272k bills 2x (backend window ~372k). Proceeding as set." >&2
+  fi
+fi
 CONFIG_DIR="${HOME}/.claude-codex"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -523,6 +556,7 @@ export ANTHROPIC_MODEL="$CODEX_MODEL"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CODEX_HAIKU"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$CODEX_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$CODEX_MODEL"
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CODEX_CONTEXT_WINDOW"
 export CLAUDE_CODE_SUBAGENT_MODEL="$CODEX_SUBAGENT_MODEL"
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 export CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=3

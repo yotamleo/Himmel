@@ -32,6 +32,16 @@ $GlmBaseUrl = 'https://api.z.ai/api/anthropic'
 $GlmModel         = if ($env:GLM_MODEL) { $env:GLM_MODEL } else { 'glm-5.2[1m]' }
 $GlmHaiku         = 'glm-4.7'
 $GlmContextWindow = if ($env:GLM_CONTEXT_WINDOW) { $env:GLM_CONTEXT_WINDOW } else { '1000000' }
+# CodeRabbit (HIMMEL-1027): validate the override — a non-positive-integer value
+# falls back to the default; above the Z.ai [1m] ceiling WARNS but is honored
+# (warn-not-clamp, twin-parity with the bash launcher + claude-codex).
+[long]$GlmCtxParsed = 0
+if (-not [long]::TryParse($GlmContextWindow, [ref]$GlmCtxParsed) -or $GlmCtxParsed -le 0) {
+  [Console]::Error.WriteLine("claude-glm: WARNING - GLM_CONTEXT_WINDOW='$GlmContextWindow' is not a positive integer; using 1000000.")
+  $GlmContextWindow = '1000000'
+} elseif ($GlmCtxParsed -gt 1000000) {
+  [Console]::Error.WriteLine("claude-glm: WARNING - GLM_CONTEXT_WINDOW=$GlmCtxParsed exceeds the Z.ai glm-5.2[1m] 1000000 ceiling. Proceeding as set.")
+}
 
 # HOME equivalent: bash uses $HOME; here $env:USERPROFILE so hermetic tests can
 # override the home root per-invocation (PowerShell's $HOME is fixed at startup).
