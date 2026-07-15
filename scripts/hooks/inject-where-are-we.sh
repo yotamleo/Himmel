@@ -26,6 +26,7 @@
 # Test seams (used only by test-inject-where-are-we.sh):
 #   WHERE_ARE_WE_STATE_DIR            override the state dir (default $root/.where-are-we)
 #   HIMMEL_WHERE_ARE_WE_COLLECT_CMD   override the refresh command (default node collect.mjs)
+#   WHERE_ARE_WE_BRANCH_OVERRIDE      override the branch handed to dock.mjs (default: git)
 
 set -euo pipefail
 
@@ -70,7 +71,7 @@ _wa_marker="$_wa_dir/.refreshed-at"
 _wa_flag="$_wa_dir/.stale-flag"
 mkdir -p "$_wa_dir" 2>/dev/null || exit 0
 
-_wa_branch="$(git -C "$_wa_root" branch --show-current 2>/dev/null || true)"
+_wa_branch="${WHERE_ARE_WE_BRANCH_OVERRIDE:-$(git -C "$_wa_root" branch --show-current 2>/dev/null || true)}"
 
 # --- Render synchronously (no network) --------------------------------------
 _wa_out="$("$_wa_node" "$_wa_root/scripts/where-are-we/dock.mjs" \
@@ -78,9 +79,61 @@ _wa_out="$("$_wa_node" "$_wa_root/scripts/where-are-we/dock.mjs" \
     --stale-hours "${HIMMEL_WHERE_ARE_WE_STALE_HOURS:-6}" \
     --stale-flag-file "$_wa_flag" 2>/dev/null || true)"
 
-# --- Inject -----------------------------------------------------------------
+# --- Persist, then inject (pointer for the digest, inline for a card) --------
+# The large global digest (dock.mjs's "# Where are we" route, ~250 ticket
+# lines) is ~1-2k tokens rarely read in full — pointerize it. But an active-
+# ticket CARD (status / next / blockers / locks) is small and high-value, so
+# it stays inline: pointerizing it would defeat the relevance-routing contract
+# and hide blockers/locks. So: ALWAYS persist the full render to latest.md (so
+# we keep track), and inject a pointer ONLY when (a) the render is the global
+# digest AND (b) persistence succeeded. Everything else — a card, or a persist
+# failure (unwritable dir / disk full) — falls through to injecting the render
+# inline (fail-open), so the session never loses content. The freshness line
+# ("where-are-we · …") stays first on every path, so the L1 contract and the
+# smoke test still hold.
 if [ -n "$_wa_out" ]; then
-    printf '<system-reminder>\n%s\n</system-reminder>\n' "$_wa_out"
+    # Route detection is STRUCTURAL, not a whole-body search: the digest's first
+    # H1 heading is exactly "# Where are we" (render.mjs), while a card's first
+    # H1 is "# <TICKET>". Comparing only the FIRST `# ` heading means a card
+    # field (e.g. a multiline next_action) that happens to contain a
+    # "# Where are we" line cannot be misclassified as the digest.
+    _wa_first_h1="$(printf '%s\n' "$_wa_out" | grep -m1 '^# ' || true)"
+    if [ "$_wa_first_h1" = '# Where are we' ]; then
+        # Global digest → pointerize. latest.md is RESERVED for the digest: only
+        # this route ever writes it, so a concurrent/later active-ticket card
+        # session (same state dir) cannot overwrite the pointer target with its
+        # card. Persist atomically (temp + mv); skip if the target exists but is
+        # NOT a regular file so mv can't orphan the temp inside a directory. Any
+        # write/mv failure → fail-open, inject the digest inline below.
+        _wa_latest="$_wa_dir/latest.md"
+        _wa_persisted=0
+        if [ ! -e "$_wa_latest" ] || [ -f "$_wa_latest" ]; then
+            _wa_tmp="$_wa_latest.tmp.$$"
+            if printf '%s\n' "$_wa_out" > "$_wa_tmp" 2>/dev/null \
+                && mv -f "$_wa_tmp" "$_wa_latest" 2>/dev/null \
+                && [ -f "$_wa_latest" ]; then
+                _wa_persisted=1
+            else
+                rm -f "$_wa_tmp" 2>/dev/null || true
+            fi
+        fi
+        if [ "$_wa_persisted" = 1 ]; then
+            # First line via pure-bash parameter expansion — NOT `printf | head`,
+            # which under `set -o pipefail` can return nonzero (printf EPIPEs when
+            # head closes the pipe on a large digest), tripping the ERR trap into
+            # a silent exit 0 that injects nothing after latest.md was written.
+            _wa_head="${_wa_out%%$'\n'*}"
+            printf '<system-reminder>\n%s — full digest not loaded (context-lean); full digest at %s\n</system-reminder>\n' \
+                "$_wa_head" "$_wa_latest"
+        else
+            printf '<system-reminder>\n%s\n</system-reminder>\n' "$_wa_out"
+        fi
+    else
+        # Active-ticket card (or any non-digest render): inject inline so its
+        # status/next/blockers/locks stay visible, and do NOT touch latest.md —
+        # that file is reserved as the digest pointer's target.
+        printf '<system-reminder>\n%s\n</system-reminder>\n' "$_wa_out"
+    fi
 fi
 
 # --- Refresh asynchronously when stale (debounced) --------------------------

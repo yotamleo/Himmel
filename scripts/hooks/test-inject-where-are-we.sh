@@ -38,20 +38,119 @@ else
     fail "OFF -> expected empty+0, got rc=$rc1 out='$out1'"
 fi
 
-# --- Case 2: ON + fresh marker → injects, no spawn --------------------------
+# --- Case 2: ON, global-digest route → injects a POINTER, persists latest.md -
+# Force the digest route with the branch seam (independent of REPO_ROOT's real
+# branch). Assert the WRAPPER, the freshness line (L1 contract's first body
+# line), the POINTER marker, and that the full digest was persisted to
+# latest.md (so the pointer is not dangling).
 state2="$TMP/s2"; seed_ledger "$state2"; touch "$state2/.refreshed-at"
 out2="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=main \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2=$?
-# Assert the WRAPPER and a real rendered BODY (the freshness line is always the
-# first body line when dock.mjs renders — proves the body is non-empty, not just
-# the <system-reminder> tag; kimi-1). Branch-independent (freshness shows on
-# every route), so it holds whatever the real git branch of REPO_ROOT is.
 if [ "$rc2" = 0 ] \
     && printf '%s' "$out2" | grep -qF '<system-reminder>' \
-    && printf '%s' "$out2" | grep -qF 'where-are-we ·'; then
-    pass "ON -> injects <system-reminder> with a rendered body, exit 0"
+    && printf '%s' "$out2" | grep -qF 'where-are-we ·' \
+    && printf '%s' "$out2" | grep -qF 'digest not loaded' \
+    && [ -s "$state2/latest.md" ] \
+    && grep -qF 'where-are-we ·' "$state2/latest.md"; then
+    pass "digest route -> injects pointer + persists latest.md, exit 0"
 else
-    fail "ON -> expected reminder+body+0, got rc=$rc2 out='$out2'"
+    fail "digest route -> expected pointer+latest.md+0, got rc=$rc2 out='$out2'"
+fi
+
+# --- Case 2big: LARGE digest (> pipe buffer) still injects the pointer -------
+# Guards the fail-open contract against a first-line extraction that EPIPEs: a
+# render exceeding the OS pipe buffer (~64KB) must still emit the pointer, not
+# silently exit after writing latest.md. (codex adversarial CR — large digest.)
+state2b2="$TMP/s2big"; mkdir -p "$state2b2"
+big2=$(head -c 90000 /dev/zero | tr '\0' 'x')
+printf '{"ts":"2026-01-01T00:00:00Z","source":"jira","key":"HIMMEL-9","kind":"ticket","status":"%s"}\n' "$big2" > "$state2b2/ledger.jsonl"
+touch "$state2b2/.refreshed-at"
+out2b2="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2b2" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=main \
+    HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2b2=$?
+if [ "$rc2b2" = 0 ] \
+    && printf '%s' "$out2b2" | grep -qF '<system-reminder>' \
+    && printf '%s' "$out2b2" | grep -qF 'digest not loaded' \
+    && [ -s "$state2b2/latest.md" ]; then
+    pass "large digest -> pointer still injected (no EPIPE silent exit), exit 0"
+else
+    fail "large digest -> expected pointer+latest.md+0, got rc=$rc2b2 out(head)='$(printf '%s' "$out2b2" | head -c 200)'"
+fi
+
+# --- Case 2card: active-ticket CARD route → injected INLINE, not pointerized -
+# A ticket branch renders a small high-value card (status/next/blockers/locks).
+# It must NOT be pointerized (that would hide blockers/locks); assert the card
+# body appears inline and the pointer marker is absent. (codex-adv HIMMEL CR.)
+state2c="$TMP/s2card"; seed_ledger "$state2c"; touch "$state2c/.refreshed-at"
+out2c="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2c" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=feat/himmel-9-card \
+    HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2card=$?
+if [ "$rc2card" = 0 ] \
+    && printf '%s' "$out2c" | grep -qF '# HIMMEL-9' \
+    && printf '%s' "$out2c" | grep -qF 'status:' \
+    && ! printf '%s' "$out2c" | grep -qF 'digest not loaded' \
+    && [ ! -e "$state2c/latest.md" ]; then
+    pass "card route -> injected inline, latest.md reserved (not written), exit 0"
+else
+    fail "card route -> expected inline card + no latest.md, got rc=$rc2card out='$out2c'"
+fi
+
+# --- Case 2share: latest.md is reserved for the digest across a card render --
+# Sequence on ONE shared state dir: a digest session persists latest.md (pointer
+# target), then an active-ticket card session runs. The card MUST NOT overwrite
+# latest.md — a later reader of the digest pointer must still find the digest,
+# not unrelated ticket-local content. (codex adversarial CR — shared-state race.)
+state2s="$TMP/s2share"; seed_ledger "$state2s"; touch "$state2s/.refreshed-at"
+HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2s" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=main \
+    HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null >/dev/null 2>&1
+HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2s" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=feat/himmel-9-x \
+    HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null >/dev/null 2>&1
+if [ -s "$state2s/latest.md" ] && grep -qxF '# Where are we' "$state2s/latest.md"; then
+    pass "latest.md stays the digest after a later card render (reserved)"
+else
+    fail "latest.md was clobbered by the card render: $(cat "$state2s/latest.md" 2>/dev/null)"
+fi
+
+# --- Case 2card-adv: card whose field embeds a "# Where are we" line ---------
+# A whole-body search would misclassify this card as the global digest and
+# pointerize it (hiding blockers/locks). The structural first-H1 check must
+# still treat it as a card (first H1 = "# HIMMEL-9") and inject inline.
+# (codex adversarial CR — multiline card field containing the digest heading.)
+state2ca="$TMP/s2card_adv"; mkdir -p "$state2ca"
+printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","source":"jira","key":"HIMMEL-9","kind":"ticket","status":"in-progress\n# Where are we\ndone"}' > "$state2ca/ledger.jsonl"
+touch "$state2ca/.refreshed-at"
+out2ca="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2ca" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=feat/himmel-9-card \
+    HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2ca=$?
+if [ "$rc2ca" = 0 ] \
+    && printf '%s' "$out2ca" | grep -qF '# HIMMEL-9' \
+    && ! printf '%s' "$out2ca" | grep -qF 'digest not loaded'; then
+    pass "card w/ embedded heading -> still inline (not misclassified), exit 0"
+else
+    fail "card w/ embedded heading -> expected inline+0, got rc=$rc2ca out='$out2ca'"
+fi
+
+# --- Case 2a: persistence FAILS → fail-open, inject the FULL digest inline ---
+# Force the latest.md write to fail by pre-creating a DIRECTORY at that path
+# (mv then moves the temp inside it, so the `[ -f latest.md ]` guard fails).
+# The hook must then fall back to injecting the full digest (no pointer marker)
+# so the session never loses it. Digest route (branch=main) to prove the
+# fail-open path applies even where a pointer WOULD have been emitted.
+state2a="$TMP/s2a"; seed_ledger "$state2a"; touch "$state2a/.refreshed-at"
+mkdir -p "$state2a/latest.md"   # occupy the target path with a directory
+out2a="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2a" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=main \
+    HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2a=$?
+if [ "$rc2a" = 0 ] \
+    && printf '%s' "$out2a" | grep -qF '<system-reminder>' \
+    && printf '%s' "$out2a" | grep -qF 'where-are-we ·' \
+    && ! printf '%s' "$out2a" | grep -qF 'digest not loaded'; then
+    pass "persist fails -> fail-open, full digest injected inline, exit 0"
+else
+    fail "persist fails -> expected full inline digest+0, got rc=$rc2a out='$out2a'"
 fi
 
 # --- Case 2b: ON + fresh marker → NO refresh spawned (debounce) -------------
