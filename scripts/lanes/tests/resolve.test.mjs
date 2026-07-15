@@ -5,7 +5,7 @@ import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { resolveLanes, formatCodexHealth, buildCtx } from '../resolve.mjs';
+import { resolveLanes, formatCodexHealth, buildCtx, fmtCtx } from '../resolve.mjs';
 
 const REG = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'lanes.json'), 'utf8'));
 const ctx = (o = {}) => ({ env: o.env ?? {}, pathHas: (c) => (o.paths ?? []).includes(c), installed: o.installed ?? {} });
@@ -95,4 +95,23 @@ test('formatCodexHealth: findings (rc 1) annotate with each WARN line, count, an
 });
 test('formatCodexHealth: rc 1 but no WARN lines (defensive) → nothing', () => {
   assert.equal(formatCodexHealth(1, 'unexpected noise\n'), '');
+});
+
+// HIMMEL-1029 P1 — contextWindow formatting for the /lanes line.
+test('fmtCtx: compacts M / k, drops non-positive + non-numeric', () => {
+  assert.equal(fmtCtx(1000000), '1M');
+  assert.equal(fmtCtx(272000), '272k');
+  assert.equal(fmtCtx(200000), '200k');
+  assert.equal(fmtCtx(1234), '1234');   // not a clean k/M multiple → verbatim
+  assert.equal(fmtCtx(0), '');
+  assert.equal(fmtCtx(-5), '');
+  assert.equal(fmtCtx(undefined), '');  // absent contextWindow renders nothing
+  assert.equal(fmtCtx(NaN), '');
+});
+test('every contextWindow in the registry is a positive integer', () => {
+  for (const l of REG.lanes) {
+    if (l.contextWindow === undefined) continue;
+    assert.ok(Number.isInteger(l.contextWindow) && l.contextWindow > 0,
+      `${l.id} contextWindow must be a positive integer`);
+  }
 });
