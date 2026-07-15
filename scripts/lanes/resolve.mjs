@@ -84,10 +84,23 @@ function loadRegistry() {
   catch (e) { die(2, `lanes: cannot evaluate — registry is not valid JSON: ${e.message}`); }
 }
 
+// HIMMEL-1029 P1: compact a context-window token count for the /lanes line
+// (1000000 -> "1M", 272000 -> "272k"). Absent contextWindow renders nothing.
+export function fmtCtx(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n % 1000000 === 0) return `${n / 1000000}M`;
+  if (n % 1000 === 0) return `${n / 1000}k`;
+  return String(n);
+}
+
 function renderText(lanes) {
-  const rows = lanes.map((l) => `- ${l.label} — ${l.bestFor} (${l.effort})`);
+  const rows = lanes.map((l) => {
+    const ctx = fmtCtx(l.contextWindow);
+    return `- ${l.label} — ${l.bestFor} (${l.effort})` + (ctx ? ` [ctx: ${ctx}]` : '');
+  });
   return `Available delegation lanes on this machine (${lanes.length}):\n` + rows.join('\n') +
-    '\n\nNote: codex(paid) reflects CR_PROFILE=paid (opt-in preference, not a funded-bank guarantee).\n';
+    '\n\nNote: codex(paid) reflects CR_PROFILE=paid (opt-in preference, not a funded-bank guarantee).\n' +
+    'Note: [ctx: N] = the lane\'s max usable context; absent = unverified/varies. Route work to a lane whose window holds it (codex lanes are 272k, not 1M).\n';
 }
 
 // HIMMEL-747 — turn the codex startup-health detector's exit code + WARN lines
