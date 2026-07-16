@@ -80,6 +80,31 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MJSON="${DRIFT_MJSON:-$ROOT/marketplace/.claude-plugin/marketplace.json}"
 UPSTREAMS="${DRIFT_UPSTREAMS:-$ROOT/scripts/plugin-upstreams.json}"  # per-plugin true-upstream overrides (may be absent)
 
+# Portable replacement for `sort -V | tail -1`: GNU-only (BSD sort on macOS has
+# no -V), which would silently leave `latest`/`hi` empty on macOS and either
+# mark a tag_release check UNCHECKED or misreport it as BEHIND. Reads
+# newline-separated version strings on stdin (optional leading 'v', extra
+# non-numeric suffixes tolerated) and prints the one with the highest
+# major.minor.patch — via the python3 this class already requires.
+highest_version() {
+  python3 -c '
+import re, sys
+
+def numprefix(s):
+    m = re.match(r"\d+", s)
+    return int(m.group()) if m else 0
+
+def key(v):
+    v = v.strip().lstrip("vV")
+    parts = (v.split(".") + ["0", "0", "0"])[:3]
+    return tuple(numprefix(p) for p in parts)
+
+lines = [l.strip() for l in sys.stdin if l.strip()]
+if lines:
+    print(max(lines, key=key))
+'
+}
+
 if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
   echo "drift-check: gh CLI not available/authenticated — skipping (fail-open)."
   exit 0
@@ -535,7 +560,7 @@ PY
               echo "  $name: ? true upstream unreachable ($repo tags) — UNCHECKED"
               incomplete=1; continue
             fi
-            latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)"
+            latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
             if [ -z "$latest" ]; then
               echo "  $name: ? no stable version tags found on $repo — UNCHECKED"
               incomplete=1; continue
@@ -547,7 +572,7 @@ PY
           if [ "$norm_local" = "$norm_latest" ]; then
             echo "  $name: CURRENT  (installed $norm_local = $repo latest tag)${tier_note}"
           else
-            hi="$(printf '%s\n%s\n' "$norm_local" "$norm_latest" | sort -V | tail -1)"
+            hi="$(printf '%s\n%s\n' "$norm_local" "$norm_latest" | highest_version)"
             if [ "$hi" = "$norm_local" ]; then
               # Installed is newer than the latest STABLE tag (e.g. a prerelease or
               # locally-built version): not behind upstream's stable line.
