@@ -184,6 +184,29 @@ else
   assert_eq "D5 planted key NOT in committed tree" "0" \
     "$(git_in "$VC" ls-tree -r HEAD --name-only | grep -c 'leak\.md' || true)"
 
+  # D6-D9 — regression test for the local-proxy allowlist entry (HIMMEL-1055):
+  # the anchored regex (`^himmel-local-claudex$`) in .gitleaks.toml must let
+  # the exact constant through but still block a suffixed near-miss, guarding
+  # the anti-bypass rationale documented there.
+  rm -f "$VC/30-Resources/leak.md"
+  printf 'curl -H "Authorization: Bearer himmel-local-claudex"\n' >"$VC/30-Resources/proxy-token.md"
+  (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") >/dev/null 2>&1
+  assert_ok "D6 allowlisted local-proxy token: autosync commits (exit 0)" "$?"
+  assert_eq "D7 allowlisted token IS in committed tree" "1" \
+    "$(git_in "$VC" ls-tree -r HEAD --name-only | grep -c 'proxy-token\.md' || true)"
+
+  d8_before=$(git_in "$VC" rev-parse HEAD)
+  printf 'curl -H "Authorization: Bearer himmel-local-claudex-extra"\n' >"$VC/30-Resources/proxy-token-extra.md"
+  # Capture the output so the block can be attributed to the SECRET SCANNER, not
+  # an unrelated hook/setup failure that also exits non-zero (CR #1239). autosync
+  # runs `git commit` without muting the hooks, so gitleaks' own "leaks found"
+  # reaches this stream on a real secret block.
+  d8_out=$( (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") 2>&1 ); d8_rc=$?
+  assert_nz "D8 near-miss token (suffixed) still blocked (non-zero)" "$d8_rc"
+  printf '%s\n' "$d8_out" | grep -qiE 'gitleaks|leaks found'
+  assert_ok "D8b near-miss block attributable to gitleaks (secret scan)" "$?"
+  assert_eq "D9 near-miss token NOT in committed tree" "$d8_before" "$(git_in "$VC" rev-parse HEAD)"
+
   # =========================================================================
   # Phase E — clone-with-remote (no marker, PAST unborn HEAD): autosync must
   # ensure .single-writer itself so its on-main commit clears worktree-isolation

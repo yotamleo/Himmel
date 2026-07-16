@@ -20,7 +20,18 @@ description = "Telegram bot API token"
 regex = '''[0-9]{8,10}:[A-Za-z0-9_-]{35}'''
 
 [allowlist]
-description = "Vendored third-party Obsidian plugin bundles (minified upstream code)"
+description = "Vendored third-party Obsidian plugin bundles + the known-benign local-proxy test token"
 paths = [
   '''templates/luna-second-brain/\.obsidian/plugins/''',
+]
+# The luna template's gitleaks regression test embeds the loopback-only local
+# CLIProxyAPI token (Authorization Bearer) plus a deliberate suffixed near-miss
+# as FIXTURES, proving the template allowlist lets the exact constant through
+# but blocks a near-miss. That token is a documented, loopback-only shared
+# constant checked into himmel (scripts/setup/cli-proxy-lane.ps1), not a
+# credential. Scope the exception to those exact constants (anchored) rather
+# than path-allowlisting the whole test file, so real secrets in it are still
+# scanned (CR #1239). Anchored ^…$ avoids the substring-bypass hole (HIMMEL-1055).
+regexes = [
+  '''^himmel-local-claudex(-extra)?$''',
 ]
