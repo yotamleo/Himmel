@@ -30,6 +30,8 @@ Thumbs.db
 # Handover transient state
 .last-consolidate.json
 **/handovers/*/.last-consolidate.json
+.pending-new-item.json
+**/handovers/*/.pending-new-item.json
 # auto-arm-on-cap / auto-arm-on-subagent-cap runtime snapshots (HIMMEL-276) —
 # the hooks write these into himmel handovers/ as untracked clutter on main.
 # (Followup: redirect the hook write path to HANDOVER_DIR — see HIMMEL ticket.)
