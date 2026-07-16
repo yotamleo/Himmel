@@ -29,6 +29,8 @@ import {
   buildArmArgv,
   formatUsageWarn,
   parseWarnPct,
+  resolveProfileSettings,
+  DEFAULT_LANE_PROFILE,
   type CapGuardDeps,
 } from "./spawn-glm";
 import type { SettingsConflict } from "./glm-env";
@@ -583,6 +585,101 @@ test("parseArgs table: valid flags / positional-only / NaN timeout / trailing fl
   expect(trailingTimeout.ok).toBe(false);
 });
 
+// --- HIMMEL-1040: --profile / --add-plugins parsing + resolution ---
+
+test("parseArgs: profile defaults to lane-impl, addPlugins empty", () => {
+  const d = parseArgs(["do it"]);
+  expect((d as any).args.profile).toBe(DEFAULT_LANE_PROFILE);
+  expect((d as any).args.profile).toBe("lane-impl");
+  expect((d as any).args.addPlugins).toEqual([]);
+});
+
+test("parseArgs: --profile overrides, --add-plugins accumulates + splits CSV", () => {
+  const r = parseArgs(["do it", "--profile", "lane-content", "--add-plugins", "a@m,b@m", "--add-plugins", "c@m"]);
+  expect(r.ok).toBe(true);
+  expect((r as any).args.profile).toBe("lane-content");
+  expect((r as any).args.addPlugins).toEqual(["a@m", "b@m", "c@m"]);
+});
+
+test("parseArgs: --profile / --add-plugins with no value is a usage refusal", () => {
+  expect(parseArgs(["p", "--profile"]).ok).toBe(false);
+  expect(parseArgs(["p", "--add-plugins"]).ok).toBe(false);
+});
+
+// `installed: []` pins these to the registry alone — the live-settings default is
+// covered by the plugin-profiles resolver suite + the project/local test below.
+test("resolveProfileSettings: lane-impl → complete enabledPlugins JSON with floor on", () => {
+  const s = resolveProfileSettings("lane-impl", [], "/nonexistent-cwd", []);
+  expect(typeof s).toBe("string");
+  const parsed = JSON.parse(s as string);
+  expect(parsed.enabledPlugins["qmd@himmel"]).toBe(true); // floor
+  expect(parsed.enabledPlugins["pr-review-toolkit-himmel@himmel"]).toBe(true);
+  expect(parsed.enabledPlugins["claude-obsidian@himmel"]).toBe(false); // dropped content
+});
+
+test("resolveProfileSettings: overlay enables the named plugin", () => {
+  const s = resolveProfileSettings("lane-impl", ["claude-obsidian@himmel"], "/nonexistent-cwd", []);
+  expect(JSON.parse(s as string).enabledPlugins["claude-obsidian@himmel"]).toBe(true);
+});
+
+test("resolveProfileSettings: operator → undefined (no injection); operator + overlay refuses", () => {
+  expect(resolveProfileSettings("operator", [], "/nonexistent-cwd", [])).toBeUndefined();
+  expect(() => resolveProfileSettings("operator", ["claude-obsidian@himmel"], "/nonexistent-cwd", []))
+    .toThrow(/incompatible with --add-plugins/);
+});
+
+test("main() validates the profile pre-side-effect but resolves the BASELINE from the worktree (wiring pin)", () => {
+  const src = _rf("scripts/telegram/spawn-glm.ts", "utf8");
+  // pre-side-effect validation passes installed:[] (pure name/overlay check)
+  expect(src).toMatch(/resolveProfileSettings\(profile, addPlugins, absCwd, \[\]\)/);
+  // the REAL resolve happens in runBody against the worktree the worker runs in
+  expect(src).toMatch(/const settings = resolveProfileSettings\(profile, addPlugins, worktree\)/);
+});
+
+test("resolveProfileSettings: unknown profile / bad overlay id throws (main → exit 2)", () => {
+  expect(() => resolveProfileSettings("nope", [], "/nonexistent-cwd", [])).toThrow(/unknown profile/);
+  expect(() => resolveProfileSettings("lane-impl", ["no-marketplace"], "/nonexistent-cwd", [])).toThrow(/not a valid plugin@marketplace/);
+});
+
+test("resolveProfileSettings: a PROJECT/LOCAL-scoped plugin is explicitly disabled (deny-by-default spans all layers)", () => {
+  // A plugin enabled only in <cwd>/.claude/settings.local.json and unknown to the
+  // catalog must still be turned OFF for the lane — project/local scopes override
+  // user scope, so missing them would let it inherit `true` in the worker.
+  const dir = mkdtempSync(join(tmpdir(), "spawn-proj-"));
+  try {
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "proj-only@somewhere": true } }));
+    writeFileSync(join(dir, ".claude", "settings.local.json"), JSON.stringify({ enabledPlugins: { "local-only@somewhere": true } }));
+    const s = resolveProfileSettings("lane-impl", [], dir);
+    const p = JSON.parse(s as string).enabledPlugins;
+    expect(p["proj-only@somewhere"]).toBe(false);
+    expect(p["local-only@somewhere"]).toBe(false);
+    expect(p["qmd@himmel"]).toBe(true); // floor still wins
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("resolveProfileSettings: an unparseable settings layer FAILS CLOSED (main → exit 2)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spawn-bad-"));
+  try {
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "settings.json"), "not json");
+    expect(() => resolveProfileSettings("lane-impl", [], dir)).toThrow(/cannot determine the active plugin universe/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun threads the resolved settings into runSession's 6th arg", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    let seen: unknown;
+    const cap = (async (_p: string, _c: string, _pm: unknown, _lane: unknown, _model: unknown, settings: unknown) => {
+      seen = settings;
+      return { code: 0, capped: false, blocked: false, pid: 1, tail: "" };
+    }) as any;
+    await executeRun({ runSession: cap, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta, settings: '{"enabledPlugins":{"qmd@himmel":true}}' });
+    expect(seen).toBe('{"enabledPlugins":{"qmd@himmel":true}}');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // --- executeRun (F6: meta ALWAYS leaves "running") ---
 
 const seedRunningMeta = () => {
@@ -765,6 +862,16 @@ test("composeRespawnHandover emits --carry-from <capped sessionDir> (HIMMEL-682)
   const s = composeRespawnHandover({ task: "t", cwd: "C:/repo", slug: "job-r1", sessionDir: "C:/sess/glm-job-123", branch: "glm/job", resumeAtIso: "2026-07-04T02:10:00.000Z" });
   expect(s).toContain("--carry-from C:/sess/glm-job-123");   // carry the capped session's grants forward
   expect(s).toMatch(/-r\d+/);                                 // -rN name preserved
+});
+
+test("composeRespawnHandover (HIMMEL-1040): carries a non-default --profile + --add-plugins; omits both on defaults", () => {
+  const withProfile = composeRespawnHandover({ task: "t", cwd: "C:/repo", slug: "job-r1", sessionDir: "C:/s", branch: "glm/job", resumeAtIso: "2026-07-04T02:10:00.000Z", profile: "lane-content", addPlugins: ["a@m", "b@m"] });
+  expect(withProfile).toContain("--profile lane-content");
+  expect(withProfile).toContain("--add-plugins a@m,b@m");
+  // the lane-impl default + empty overlay add no flags (keeps the respawn lean)
+  const dflt = composeRespawnHandover({ task: "t", cwd: "C:/repo", slug: "job-r1", sessionDir: "C:/s", branch: "glm/job", resumeAtIso: "2026-07-04T02:10:00.000Z", profile: DEFAULT_LANE_PROFILE, addPlugins: [] });
+  expect(dflt).not.toContain("--profile");
+  expect(dflt).not.toContain("--add-plugins");
 });
 
 test("composeRespawnHandover shared mode (HIMMEL-800): re-dispatch command carries --branch, not --name -rN", () => {

@@ -12,6 +12,40 @@ import { checkGlmGuards } from "./glm-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, glmContextPreset, type SettingsConflict, type GlmUsage } from "./glm-env";
 import { appendQuotaGauge, buildGlmRow, isGlmPeak } from "./quota-gauge";
 import { parseGrantFlag, composeGrantLine, nextGrantId, authorityGate, classifyShape, composeEscalationForRefusedGrant, carryGrants, seedCarriedGrants, type GrantSpec } from "./grants";
+// HIMMEL-1040 plugin profiles: resolve the dispatch's lane profile (default
+// lane-impl) into a `--settings` payload, injected per-dispatch so the worker
+// runs lean while the operator's shared ~/.claude stays full.
+import { resolveProfileByName, parseAddPlugins, readEnabledPluginIds } from "../lanes/plugin-profiles.mjs";
+
+// HIMMEL-1040: the default lane profile for an impl worker — the lean set (floor
+// + pr-review-toolkit). Override per-dispatch with --profile; `operator` opts out
+// of injection entirely (worker inherits full ~/.claude).
+export const DEFAULT_LANE_PROFILE = "lane-impl";
+
+// Resolve a profile (+ overlay) into the `--settings` JSON string, or undefined
+// for the operator sentinel (no injection). Thin wrapper over the .mjs resolver
+// so main()'s early-refuse path and the respawn builder share one seam; a bad
+// profile name / overlay id throws (main maps it to a usage refusal).
+// `installed` widens the deny-by-default baseline beyond the checked-in catalog,
+// so a plugin enabled on THIS machine but not yet in the registry is still turned
+// off for the worker rather than inheriting `true` (the static-catalog
+// version-skew gap). Defaults to the live universe across ALL applicable settings
+// layers for `cwd` (user + project + local) — project/local scopes override user,
+// so reading only ~/.claude would miss a project-enabled plugin. Fails closed if a
+// layer exists but cannot be parsed.
+// The USER-scope layer is read from the child's EFFECTIVE config dir (CR): the GLM
+// child env is {...process.env, ...buildGlmEnv()} and glm-env deliberately does NOT
+// set CLAUDE_CONFIG_DIR, so an AMBIENT one propagates to the worker — reading
+// ~/.claude then inspects a config the child never loads. KNOWN GAP (HIMMEL-1066):
+// the claudex lane's child config dir is claude-codex's own ~/.claude-codex, which
+// this seam cannot see (the launcher owns + seeds it after we resolve).
+export function resolveProfileSettings(profile: string, addPlugins: string[], cwd: string, installed?: string[]): string | undefined {
+  const settings = resolveProfileByName(profile, {
+    addPlugins,
+    installed: installed ?? readEnabledPluginIds(homedir(), cwd, process.env.CLAUDE_CONFIG_DIR),
+  });
+  return settings === null ? undefined : JSON.stringify(settings);
+}
 
 export function glmSessionRoot(): string {
   return join(process.env.BRIDGE_ROOT ?? join(homedir(), ".claude", "handover", "bridge"), "glm-sessions");
@@ -261,7 +295,7 @@ export function gitIsDirty(worktreePath: string): boolean {
   return r.stdout.toString().trim().length > 0;
 }
 
-export type ParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small" };
+export type ParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small"; profile: string; addPlugins: string[] };
 // Pure + validated: a value-taking flag with no value, or a non-positive /
 // non-finite --timeout-mins, is a USAGE REFUSAL (main → exit 2) — NOT a silent
 // NaN that setTimeout(NaN)≈0 turns into an instant kill, and NOT a bare
@@ -278,6 +312,12 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
   let autonomous = false;
   let carryFrom: string | undefined;
   let context: "big" | "small" | undefined;
+  // HIMMEL-1040: --profile selects the lane plugin profile (default lane-impl);
+  // --add-plugins a@m,b@m is the per-dispatch overlay (repeatable — values
+  // accumulate). Resolution/validation happens in main() so a bad name/id is a
+  // clean pre-side-effect refusal.
+  let profile = DEFAULT_LANE_PROFILE;
+  const addPlugins: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
@@ -299,13 +339,15 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
     else if (a === "--autonomous") autonomous = true;
     else if (a === "--carry-from") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--carry-from requires a value" }; carryFrom = v; }
     else if (a === "--context") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--context requires a value" }; if (v !== "big" && v !== "small") return { ok: false, error: `--context must be big or small (got "${v}")` }; context = v; }
+    else if (a === "--profile") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--profile requires a value" }; profile = v; }
+    else if (a === "--add-plugins") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--add-plugins requires a value" }; addPlugins.push(...parseAddPlugins(v)); }
     else if (task === undefined) task = a;
   }
   // HIMMEL-800: --branch and --name are mutually exclusive — shared mode
   // derives its slug from the branch name, so a co-supplied --name would be
   // silently ignored (or ambiguous about which name wins). Refuse instead.
   if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
-  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context } };
+  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins } };
 }
 
 // HIMMEL-682 (Task L1): read a capped session's grants.jsonl and compute the
@@ -348,9 +390,12 @@ export async function executeRun(deps: {
   prompt: string; worktree: string; permMode?: PermissionMode;
   sessionDir: string; metaPath: string; runningMeta: Record<string, unknown>;
   capGuard?: CapGuardDeps;
+  // HIMMEL-1040: the resolved `--settings` plugin-profile payload (undefined =
+  // operator profile / no injection). Threaded to runSession's 6th arg.
+  settings?: string;
 }): Promise<{ code: number }> {
   try {
-    const res = await deps.runSession(deps.prompt, deps.worktree, deps.permMode, "glm");
+    const res = await deps.runSession(deps.prompt, deps.worktree, deps.permMode, "glm", undefined, deps.settings);
     // run.log append is COSMETIC persistence (the debug tail). Isolate it (#849):
     // an I/O failure here (EACCES/EISDIR/ENOSPC) must NOT throw into the outer
     // catch — that writes status:failed + rethrows, flipping a successful run to
@@ -405,7 +450,7 @@ export async function executeRun(deps: {
         writeFileSync(deps.metaPath, JSON.stringify({ ...base, resume_at: resumeAt.toISOString(), cap_source: capSource }, null, 2)); // meta FIRST (base layer)
         if (g.armOnCap) {
           const snap = join(deps.sessionDir, "respawn-handover.md");
-          writeFileSync(snap, composeRespawnHandover({ task: g.task, cwd: g.cwd, slug: g.slug, timeoutMins: g.timeoutMins, permMode: g.permMode, sessionDir: deps.sessionDir, branch: g.branch, resumeAtIso: resumeAt.toISOString(), shared: g.shared }));
+          writeFileSync(snap, composeRespawnHandover({ task: g.task, cwd: g.cwd, slug: g.slug, timeoutMins: g.timeoutMins, permMode: g.permMode, sessionDir: deps.sessionDir, branch: g.branch, resumeAtIso: resumeAt.toISOString(), shared: g.shared, profile: g.profile, addPlugins: g.addPlugins }));
           const rc = g.arm(toArmHHMM(resumeAt), snap);
           // rc=3 honesty (CR round): --dedup-any defers to ANY queued resume job,
           // possibly an UNRELATED handover — this task's respawn handover is then
@@ -509,11 +554,19 @@ export async function runSharedDispatch(p: {
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
-  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--context big|small]";
+  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--context big|small] [--profile <name>] [--add-plugins a@m,b@m]";
   if (!parsed.ok) { console.error(`spawn-glm: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context } = parsed.args;
+  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
   const absCwd = resolve(cwd);
+  // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —
+  // an unknown --profile / malformed --add-plugins id is a clean usage refusal
+  // (exit 2), never an orphan worktree/branch. `installed: []` keeps this to pure
+  // validation: the REAL deny baseline is computed later, in runBody, from the
+  // WORKER'S worktree (CR) — that is the cwd claude actually runs in, and its
+  // branch-local .claude/settings{,.local}.json can differ from the dispatcher's.
+  try { resolveProfileSettings(profile, addPlugins, absCwd, []); }
+  catch (e) { console.error(`spawn-glm: ${String((e as any)?.message ?? e)}`); console.error(usage); process.exit(2); }
   // HIMMEL-718: thread --context big|small into buildGlmEnv via GLM_CONTEXT (read by
   // the runSession env path + the preflight buildGlmEnv below). `?? "big"` makes the
   // default explicit so an ambient GLM_CONTEXT in the parent shell can't silently flip
@@ -589,6 +642,15 @@ async function main(): Promise<void> {
   // own-branch and shared modes; only the surrounding worktree
   // creation/mutation + lock ownership differ, below.
   const runBody = async (): Promise<number> => {
+    // HIMMEL-1040 (CR): resolve the profile FIRST — before meta.json is written.
+    // resolveProfileSettings throws on an unreadable/malformed settings layer, and
+    // it sits OUTSIDE executeRun's failure-transition guard; if it ran after the
+    // "running" write, a throw would exit leaving meta stuck at running — fleet
+    // control would report a phantom worker and await-glm-worker.sh would block to
+    // its deadline. Resolving here keeps the "meta.json ALWAYS leaves running"
+    // invariant: nothing has been written yet, so a throw simply aborts the
+    // dispatch. Uses the WORKTREE (the cwd the worker runs in), which exists by now.
+    const settings = resolveProfileSettings(profile, addPlugins, worktree);
     mkdirSync(sessionDir, { recursive: true });
     // GLM_SESSION_DIR (spec D5): the deny hook (running inside the worker child)
     // reads ${GLM_SESSION_DIR}/grants.jsonl. sessionEnv('glm') spreads process.env
@@ -647,10 +709,13 @@ async function main(): Promise<void> {
       startedAt: new Date(started_at),
       task, cwd: absCwd, slug, branch, timeoutMins, permMode,
       armOnCap, shared: sharedMode,
+      // HIMMEL-1040: carry the profile + overlay so a capped-run respawn
+      // re-dispatches on the SAME lane profile (not the lane-impl default).
+      profile, addPlugins,
       fetchUsage: () => fetchGlmUsage(readZaiKey(REPO_ROOT).key),
       arm: (hhmm, snap) => Bun.spawnSync(buildArmArgv(REPO_ROOT, hhmm, snap), { stdout: "inherit", stderr: "inherit" }).exitCode ?? 1,
     };
-    const { code } = await executeRun({ runSession, prompt, worktree, permMode, sessionDir, metaPath, runningMeta, capGuard });
+    const { code } = await executeRun({ runSession, prompt, worktree, permMode, sessionDir, metaPath, runningMeta, capGuard, settings });
     return code;
   };
 
@@ -721,12 +786,17 @@ export function nextRetrySlug(slug: string): string {
 
 // Self-contained cold-start respawn handover (spec (b) 3): the armed session
 // may be a fresh cold start — everything needed to re-dispatch is inline.
-export function composeRespawnHandover(p: { task: string; cwd: string; slug: string; timeoutMins?: number; permMode?: string; sessionDir: string; branch: string; resumeAtIso: string; shared?: boolean }): string {
+export function composeRespawnHandover(p: { task: string; cwd: string; slug: string; timeoutMins?: number; permMode?: string; sessionDir: string; branch: string; resumeAtIso: string; shared?: boolean; profile?: string; addPlugins?: string[] }): string {
   const respawnName = nextRetrySlug(p.slug);
   // HIMMEL-800: a shared-mode respawn carries --branch (the caller-named
   // branch, unchanged across retries) instead of --name <slug>-rN — shared
   // mode never mints -rN branches, it keeps writing onto the same one.
-  const flags = [`--cwd ${p.cwd}`, p.shared ? `--branch ${p.branch}` : `--name ${respawnName}`, p.timeoutMins !== undefined ? `--timeout-mins ${p.timeoutMins}` : "", p.permMode ? `--permission-mode ${p.permMode}` : "", `--carry-from ${p.sessionDir}`].filter(Boolean).join(" ");
+  // HIMMEL-1040: carry --profile only when it differs from the default, and
+  // --add-plugins only when a non-empty overlay was set, so the respawn lands on
+  // the same lean profile the original dispatch selected.
+  const profileFlag = p.profile && p.profile !== DEFAULT_LANE_PROFILE ? `--profile ${p.profile}` : "";
+  const addPluginsFlag = p.addPlugins && p.addPlugins.length ? `--add-plugins ${p.addPlugins.join(",")}` : "";
+  const flags = [`--cwd ${p.cwd}`, p.shared ? `--branch ${p.branch}` : `--name ${respawnName}`, p.timeoutMins !== undefined ? `--timeout-mins ${p.timeoutMins}` : "", p.permMode ? `--permission-mode ${p.permMode}` : "", profileFlag, addPluginsFlag, `--carry-from ${p.sessionDir}`].filter(Boolean).join(" ");
   return [
     "---",
     "type: handover",
@@ -761,6 +831,9 @@ export type CapGuardDeps = {
   // HIMMEL-800: threads shared-branch mode into the respawn handover so a
   // capped shared-mode run re-dispatches with --branch, not a fresh -rN --name.
   shared?: boolean;
+  // HIMMEL-1040: the lane plugin profile + overlay, carried into the respawn
+  // handover so a capped run re-dispatches on the same lean profile.
+  profile?: string; addPlugins?: string[];
   fetchUsage: () => Promise<GlmUsage | null>;
   arm: (hhmm: string, handoverPath: string) => number;   // rc of arm-resume.sh
   now?: () => Date;

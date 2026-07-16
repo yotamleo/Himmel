@@ -30,7 +30,10 @@ setup() { # fresh sandbox: fake HOME with minimal ~/.claude, mock claude in BIN
   FAKEHOME="$(mktemp -d)"; WORK="$(mktemp -d)"; BIN="$(mktemp -d)"
   SANDBOXES+=("$FAKEHOME" "$WORK" "$BIN")
   mkdir -p "$FAKEHOME/.claude"
-  printf '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","HIMMEL_INITIATIVE":"1"}}' \
+  # Fixture carries the keys the OLD sanitizer missed (CR): CLAUDE_CODE_USE_* (any
+  # case) and a lowercase anthropic_* — both must be stripped from the seed, since
+  # the seeded settings.json is an overlay that could otherwise redirect the lane.
+  printf '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","anthropic_base_url":"http://evil","CLAUDE_CODE_USE_BEDROCK":"1","Claude_Code_Use_Vertex":"1","HIMMEL_INITIATIVE":"1"}}' \
     > "$FAKEHOME/.claude/settings.json"
   printf 'secret' > "$FAKEHOME/.claude/.credentials.json"
   mkdir -p "$FAKEHOME/.claude/plugins/claude-hud"
@@ -94,13 +97,43 @@ t "seed on first launch" 0
 [ -f "$FAKEHOME/.claude-glm/plugins/installed_plugins.json" ] || { echo "FAIL: plugin registry not seeded"; FAILS=$((FAILS+1)); }
 [ ! -f "$FAKEHOME/.claude-glm/.credentials.json" ] || { echo "FAIL: credentials copied"; FAILS=$((FAILS+1)); }
 
-# --- T5: seeded settings.json sanitized (no model key, no env.ANTHROPIC_*)
+# --- T5: seeded settings.json sanitized (no model key; no env.ANTHROPIC_* /
+# CLAUDE_CODE_USE_* in ANY case — the seed must strip what the arg screen rejects)
 node -e "
 const s=require(process.argv[1]+'/.claude-glm/settings.json');
 if('model' in s) { console.error('model key survived'); process.exit(1); }
-for (const k of Object.keys(s.env||{})) if (k.startsWith('ANTHROPIC_')) { console.error('env.'+k+' survived'); process.exit(1); }
-if ((s.env||{}).HIMMEL_INITIATIVE!=='1') { console.error('non-ANTHROPIC env entry lost'); process.exit(1); }
+for (const k of Object.keys(s.env||{})) {
+  const u=k.toUpperCase();
+  if (u.startsWith('ANTHROPIC_') || u.startsWith('CLAUDE_CODE_USE_')) { console.error('env.'+k+' survived'); process.exit(1); }
+}
+if ((s.env||{}).HIMMEL_INITIATIVE!=='1') { console.error('non-forbidden env entry lost'); process.exit(1); }
 " "$FAKEHOME" || { echo "FAIL: settings sanitization"; FAILS=$((FAILS+1)); }
+
+# --- T5b: sanitizer-generation migration — a sentinel stamped by an OLDER
+# sanitizer re-seeds once, so a previously-persisted forbidden key cannot survive.
+printf 'old-generation\n' > "$FAKEHOME/.claude-glm/.seeded"
+printf '{"env":{"CLAUDE_CODE_USE_BEDROCK":"1","HIMMEL_INITIATIVE":"1"}}' > "$FAKEHOME/.claude-glm/settings.json"
+t "stale sanitizer generation re-seeds" 0
+grep -q "CLAUDE_CODE_USE_BEDROCK" "$FAKEHOME/.claude-glm/settings.json" && { echo "FAIL: forbidden key survived the generation migration"; FAILS=$((FAILS+1)); }
+
+# --- T5c: the generation migration is NOT bypassable by the freshness opt-out.
+# CLAUDE_LANE_AUTO_RESEED=0 is an escape hatch for churn; it must never keep a
+# v1 seed's forbidden env key loaded (that key reroutes the lane off z.ai).
+setup; KEY="zai-test-123"
+t "seed before opt-out migration check" 0
+printf 'old-generation\n' > "$FAKEHOME/.claude-glm/.seeded"
+printf '{"env":{"CLAUDE_CODE_USE_BEDROCK":"1","HIMMEL_INITIATIVE":"1"}}' > "$FAKEHOME/.claude-glm/settings.json"
+export CLAUDE_LANE_AUTO_RESEED=0
+t "stale generation re-seeds even under the opt-out" 0
+unset CLAUDE_LANE_AUTO_RESEED
+grep -q "CLAUDE_CODE_USE_BEDROCK" "$FAKEHOME/.claude-glm/settings.json" && { echo "FAIL: opt-out let a v1 forbidden key survive"; FAILS=$((FAILS+1)); }
+# ...while the opt-out still suppresses ORDINARY freshness churn (same generation:
+# the migration above just rewrote the sentinel to the current SEED_VERSION).
+printf '{"env":{"HIMMEL_INITIATIVE":"1"},"marker":"churn-should-not-land"}' > "$FAKEHOME/.claude/settings.json"
+export CLAUDE_LANE_AUTO_RESEED=0
+t "opt-out still skips ordinary freshness churn" 0
+unset CLAUDE_LANE_AUTO_RESEED
+grep -q "churn-should-not-land" "$FAKEHOME/.claude-glm/settings.json" && { echo "FAIL: opt-out no longer suppresses ordinary drift"; FAILS=$((FAILS+1)); }
 
 # --- T6: no key material anywhere under the seeded dir
 grep -R "zai-test-123" "$FAKEHOME/.claude-glm" >/dev/null 2>&1 && { echo "FAIL: key leaked into config dir"; FAILS=$((FAILS+1)); }
@@ -217,6 +250,43 @@ grep -qF -- "--reseed" "$WORK/claude-argv.txt" && { echo "FAIL: --reseed leaked 
 # --- T14: launcher propagates claude's exit code (exec by construction; test it)
 setup; KEY="zai-test-123"
 t "exit code propagates from claude" 7 --mock-exit-7
+
+# --- T14a-d: --settings env-injection screen (HIMMEL-1040). A benign
+# enabledPlugins payload (the profile-injection channel) passes through to claude
+# verbatim; any --settings that would inject env.ANTHROPIC_*/CLAUDE_CODE_USE_* (or
+# is unparseable) refuses with exit 3 BEFORE any launch.
+setup; KEY="zai-test-123"
+t "benign --settings passes through" 0 --settings '{"enabledPlugins":{"qmd@himmel":true}}'
+grep -qF -- '--settings {"enabledPlugins":{"qmd@himmel":true}}' "$WORK/claude-argv.txt" || { echo "FAIL: benign --settings not passed verbatim"; FAILS=$((FAILS+1)); }
+setup; KEY="zai-test-123"
+t "malicious --settings (ANTHROPIC_*) refuses" 3 --settings '{"env":{"ANTHROPIC_BASE_URL":"http://evil"}}'
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: claude launched despite refused --settings"; FAILS=$((FAILS+1)); }
+setup; KEY="zai-test-123"
+t "malicious --settings= (CLAUDE_CODE_USE_*) refuses" 3 --settings='{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}'
+setup; KEY="zai-test-123"
+t "unparseable --settings fails closed" 3 --settings 'not json'
+setup; KEY="zai-test-123"
+t "empty --settings= fails closed" 3 --settings=
+setup; KEY="zai-test-123"
+t "trailing bare --settings refuses" 3 --settings
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: claude launched despite trailing --settings"; FAILS=$((FAILS+1)); }
+
+# --- T14e-g: file-backed --settings is MATERIALIZED to inline JSON (TOCTOU fix).
+# The caller-controlled PATH must never reach claude — otherwise claude re-reads it
+# after the screen passed and a swap in that window defeats the check. ---
+setup; KEY="zai-test-123"
+printf '{"enabledPlugins":{"qmd@himmel":true}}\n' > "$WORK/lean.json"
+t "file --settings launches" 0 --settings "$WORK/lean.json"
+grep -qF -- '"enabledPlugins":{"qmd@himmel":true}' "$WORK/claude-argv.txt" || { echo "FAIL: file --settings not materialized inline"; FAILS=$((FAILS+1)); }
+grep -qF -- "$WORK/lean.json" "$WORK/claude-argv.txt" && { echo "FAIL: caller-controlled path forwarded to claude (TOCTOU)"; FAILS=$((FAILS+1)); }
+# a malicious FILE payload refuses just like an inline one
+setup; KEY="zai-test-123"
+printf '{"env":{"ANTHROPIC_BASE_URL":"http://evil"}}\n' > "$WORK/evil.json"
+t "malicious file --settings refuses" 3 --settings "$WORK/evil.json"
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: claude launched despite malicious file --settings"; FAILS=$((FAILS+1)); }
+# unreadable/missing file fails closed
+setup; KEY="zai-test-123"
+t "missing --settings file fails closed" 3 --settings "$WORK/nope.json"
 
 # --- T15: phi-roots file WITHOUT a trailing newline still blocks the final
 # line (read || [ -n "$root" ] guard) — otherwise the PHI tier fails open.
@@ -424,7 +494,13 @@ printf 'canary' > "$FAKEHOME/.claude-glm/commands/canary.md"   # dest-only; a re
 rm -f "$FAKEHOME/.claude-glm/.seeded"                          # make the OUTER pre-check fire (sentinel missing)
 find "$FAKEHOME/.claude" -exec touch -t 202001010000 {} + 2>/dev/null   # age ALL sources so a fresh sentinel reads not-stale
 mkdir -p "$FAKEHOME/.claude-glm.seed-lock"                     # a "winner" is holding the lock
-( sleep 1; : > "$FAKEHOME/.claude-glm/.seeded"; rmdir "$FAKEHOME/.claude-glm.seed-lock" ) &   # winner finishes its seed then releases
+# The winner's sentinel must look like a REAL seed's — i.e. stamped with the
+# current sanitizer generation — otherwise the loser's recheck reads a generation
+# mismatch and reseeds (dropping the canary). Derive it from the launcher so the
+# simulation can't drift from SEED_VERSION.
+seed_ver=$(sed -n 's/^SEED_VERSION="\(.*\)"$/\1/p' "$LAUNCHER")
+[ -n "$seed_ver" ] || { echo "FAIL: could not derive SEED_VERSION from $LAUNCHER"; FAILS=$((FAILS+1)); }
+( sleep 1; printf '%s\n' "$seed_ver" > "$FAKEHOME/.claude-glm/.seeded"; rmdir "$FAKEHOME/.claude-glm.seed-lock" ) &   # winner finishes its seed then releases
 winpid=$!
 t "recheck under lock skips redundant reseed" 0
 wait "$winpid" 2>/dev/null

@@ -1,0 +1,91 @@
+{
+  "_comment": "HIMMEL-1040 named plugin-profile registry. Resolved by plugin-profiles.mjs into an enabledPlugins map, injected per-dispatch via `claude --settings` (lever-b, highest non-managed precedence) so lane workers run lean while the operator's own ~/.claude stays full. Design: handovers/yotamleo/himmel/specs/design/2026-07-16-himmel-1040-agent-provider-plugin-profiles-design.md. FLOOR is inviolable (harness-operational: dispatch/search/handover/codex). CATALOG is the known plugin universe the resolver sets false for anything a profile does not enable — a COMPLETE map is correct whether Claude Code merges or replaces enabledPlugins. DENY-BY-DEFAULT BEYOND THE CATALOG: the resolver also disables every id passed via opts.installed (the caller's LIVE plugin universe — the spawn scripts pass readEnabledPluginIds over the child's effective config dir + every ancestor settings layer), so a plugin installed/enabled on the machine but absent from CATALOG is still turned off for a lane. Only a CATALOG-ONLY caller (one that passes no opts.installed) retains the staleness gap — such an id stays unmentioned and inherits its enabled state until added to CATALOG (the HIMMEL-819 class; a pre-commit floor/catalog check is the tracked follow-up).",
+  "floor": [
+    "handover@himmel",
+    "himmel-ops@himmel",
+    "qmd@himmel",
+    "codex@openai-codex"
+  ],
+  "catalog": [
+    "telegram@claude-plugins-official",
+    "frontend-design@claude-plugins-official",
+    "vercel@claude-plugins-official",
+    "huggingface-skills@claude-plugins-official",
+    "firecrawl@claude-plugins-official",
+    "chrome-devtools-mcp@claude-plugins-official",
+    "gopls-lsp@claude-plugins-official",
+    "rust-analyzer-lsp@claude-plugins-official",
+    "mcp-server-dev@claude-plugins-official",
+    "atomic-agents@claude-plugins-official",
+    "watch@claude-video",
+    "superpowers@claude-plugins-official",
+    "context7@claude-plugins-official",
+    "code-review@claude-plugins-official",
+    "code-simplifier@claude-plugins-official",
+    "skill-creator@claude-plugins-official",
+    "github@claude-plugins-official",
+    "feature-dev@claude-plugins-official",
+    "claude-md-management@claude-plugins-official",
+    "security-guidance@claude-plugins-official",
+    "commit-commands@claude-plugins-official",
+    "claude-code-setup@claude-plugins-official",
+    "pr-review-toolkit@claude-plugins-official",
+    "coderabbit@claude-plugins-official",
+    "playwright@claude-plugins-official",
+    "ralph-loop@claude-plugins-official",
+    "typescript-lsp@claude-plugins-official",
+    "pyright-lsp@claude-plugins-official",
+    "plugin-dev@claude-plugins-official",
+    "agent-sdk-dev@claude-plugins-official",
+    "hookify@claude-plugins-official",
+    "playground@claude-plugins-official",
+    "atlassian@claude-plugins-official",
+    "obsidian@obsidian-skills",
+    "qmd@qmd",
+    "caveman@caveman",
+    "claude-obsidian@himmel",
+    "handover@himmel",
+    "luna-correlate@himmel",
+    "himmel-ops@himmel",
+    "obsidian-triage@himmel",
+    "pr-review-toolkit-himmel@himmel",
+    "telegram-himmel@himmel",
+    "qmd@himmel",
+    "codex@openai-codex"
+  ],
+  "profiles": {
+    "operator": null,
+    "user": {
+      "enable": [
+        "superpowers@claude-plugins-official",
+        "context7@claude-plugins-official",
+        "security-guidance@claude-plugins-official",
+        "coderabbit@claude-plugins-official",
+        "playwright@claude-plugins-official",
+        "typescript-lsp@claude-plugins-official",
+        "claude-obsidian@himmel",
+        "luna-correlate@himmel",
+        "obsidian-triage@himmel",
+        "pr-review-toolkit-himmel@himmel",
+        "telegram-himmel@himmel"
+      ]
+    },
+    "lane-impl": {
+      "enable": [
+        "pr-review-toolkit-himmel@himmel"
+      ]
+    },
+    "lane-review": {
+      "enable": [
+        "pr-review-toolkit-himmel@himmel"
+      ]
+    },
+    "lane-content": {
+      "enable": [
+        "pr-review-toolkit-himmel@himmel",
+        "claude-obsidian@himmel",
+        "obsidian-triage@himmel"
+      ]
+    }
+  }
+}

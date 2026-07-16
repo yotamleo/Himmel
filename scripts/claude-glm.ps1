@@ -47,6 +47,13 @@ if (-not [long]::TryParse($GlmContextWindow, [ref]$GlmCtxParsed) -or $GlmCtxPars
 # override the home root per-invocation (PowerShell's $HOME is fixed at startup).
 $HomeDir   = $env:USERPROFILE
 $ConfigDir = Join-Path $HomeDir '.claude-glm'
+# Sanitizer generation, stamped into the .seeded sentinel — keep in lockstep with
+# claude-glm's SEED_VERSION. BUMP whenever the sanitizer TIGHTENS: a config dir
+# seeded under the older, laxer rule is otherwise kept until the SOURCE
+# settings.json happens to change, so a previously-persisted forbidden key would
+# linger past the fix (CR). A mismatch forces exactly one re-seed.
+# v2 = strip env.ANTHROPIC_*/CLAUDE_CODE_USE_* case-insensitively.
+$SeedVersion = '2'
 
 # --- key resolution: process env first, else the launcher-repo .env ----------
 # CLAUDE_GLM_DOTENV_ROOT (test hook) pins the .env root; production falls back to
@@ -94,6 +101,68 @@ foreach ($a in $args) {
   $leading = $false
   $ClaudeArgs.Add($a)
 }
+
+# Harness-integrity arg screen (HIMMEL-1040): $ClaudeArgs pass to claude verbatim
+# via `& claude @ClaudeArgs` below, so a --settings payload that injected
+# env.ANTHROPIC_* / CLAUDE_CODE_USE_* could redirect this lane away from the z.ai
+# endpoint. Screen it (fail-closed on unparseable) — the twin of claude-codex.ps1's
+# Test-SettingsArgOrRefuse. Scoped to --settings only (the glm lane's trust boundary
+# is the tiered egress guard below, not a proxy; --bare/--add-dir out of scope).
+# TOCTOU (CR): a FILE-backed --settings must not be forwarded as a PATH — claude
+# would re-read it after the screen passed, so a swap in that window defeats the
+# check. Get-ScreenedSettings therefore RETURNS the value to forward: an inline
+# payload verbatim (already immutable), a file payload MATERIALIZED to inline JSON
+# captured at validation time. The caller-controlled path never reaches claude.
+function Get-ScreenedSettings {
+  param([string]$Value)
+  $bad = $false
+  $forward = $null
+  try {
+    $inline = $Value.Trim().StartsWith('{')
+    $raw = if ($inline) { $Value } else { Get-Content -LiteralPath $Value -Raw -ErrorAction Stop }
+    $j = $raw | ConvertFrom-Json -ErrorAction Stop
+    if ($j -and $j.env) {
+      foreach ($p in $j.env.PSObject.Properties) {
+        $u = $p.Name.ToUpperInvariant()
+        if ($u.StartsWith('ANTHROPIC_') -or $u.StartsWith('CLAUDE_CODE_USE_')) { $bad = $true; break }
+      }
+    }
+    # Inline forwards verbatim (no round-trip mangling); only a file payload is
+    # re-serialized, which it must be to break the re-read.
+    if (-not $bad) { $forward = if ($inline) { $Value } else { $j | ConvertTo-Json -Depth 100 -Compress } }
+  } catch { $bad = $true }
+  if ($bad) {
+    [Console]::Error.WriteLine('claude-glm: REFUSED - --settings payload sets env.ANTHROPIC_* / CLAUDE_CODE_USE_* (or is unparseable/unreadable); it would redirect this lane away from the z.ai endpoint.')
+    exit 3
+  }
+  return $forward
+}
+
+# Rebuild the args with every --settings value replaced by its screened
+# (materialized) form, so what reaches claude is exactly what was validated.
+$screened = [System.Collections.Generic.List[string]]::new()
+$pending = ''
+foreach ($a in $ClaudeArgs) {
+  if ($pending -eq 'settings') {
+    $screened.Add((Get-ScreenedSettings -Value $a))
+    $pending = ''
+    continue
+  }
+  if ($a -eq '--settings') { $pending = 'settings'; $screened.Add($a); continue }
+  if ($a -like '--settings=*') {
+    $screened.Add('--settings=' + (Get-ScreenedSettings -Value $a.Substring('--settings='.Length)))
+    continue
+  }
+  $screened.Add($a)
+}
+# A trailing bare --settings (no value) leaves $pending set and unscreened — refuse
+# it before launch rather than forwarding a broken flag to claude.
+if ($pending -eq 'settings') {
+  [Console]::Error.WriteLine('claude-glm: REFUSED - trailing --settings with no value.')
+  exit 3
+}
+# Hand the LAUNCH the screened argv (file-backed --settings now materialized inline).
+$ClaudeArgs = $screened
 
 # --- tiered egress guard -----------------------------------------------------
 $Cfg = Join-Path $HomeDir (Join-Path '.config' 'claude-glm')
@@ -154,11 +223,19 @@ if (Test-PathUnderAny -Target $cwd -ListFile (Join-Path $Cfg 'egress-denylist'))
 # --- config-dir seeder -------------------------------------------------------
 # Same allowlist as the bash twin; credentials/history never copied. settings
 # sanitization delegates to the IDENTICAL node -e one-liner (no PS re-impl).
+# CR: the seeded settings.json is an overlay claude reads at launch, so it must
+# strip the SAME keys the --settings arg screen rejects, on the SAME terms —
+# case-INSENSITIVELY and including CLAUDE_CODE_USE_* (BEDROCK/VERTEX/…). The old
+# rule (case-sensitive, ANTHROPIC_* only) let the seed inject exactly the backend
+# redirect the screen blocks. Byte-identical to claude-glm's sanitize_settings JS.
 $SanitizerJs = @'
 const fs=require("fs");
 const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 delete j.model;
-if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) delete j.env[k];
+if (j.env) for (const k of Object.keys(j.env)) {
+  const u=k.toUpperCase();
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) delete j.env[k];
+}
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 '@
 
@@ -268,8 +345,9 @@ function Copy-SeedConfig {
     } elseif (Test-Path -LiteralPath $hudDst) {
       Remove-Item -LiteralPath $hudDst -Force
     }
-    # sentinel LAST: only a fully-populated seed reads as "seeded"
-    New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
+    # sentinel LAST: only a fully-populated seed reads as "seeded"; stamped with the
+    # sanitizer generation so a tightened rule re-seeds once (twin: SEED_VERSION).
+    Set-Content -LiteralPath (Join-Path $ConfigDir '.seeded') -Value $SeedVersion
   } catch {
     [Console]::Error.WriteLine("claude-glm: FAILED to seed config dir ($($_.Exception.Message)). Refusing to launch with a half-seeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-glm).")
     exit 4
@@ -289,6 +367,17 @@ function Copy-SeedConfig {
 # explicit -Reseed only) — the escape hatch if auto-reseed ever blocks a
 # launch in your setup (e.g. seed re-runs surfacing a broken node).
 function Test-ConfigSeedStale {
+  # Sanitizer-generation migration — checked BEFORE the freshness opt-out (CR).
+  # A seed written by an older, laxer sanitizer can carry a forbidden env key
+  # (e.g. CLAUDE_CODE_USE_BEDROCK) that silently reroutes an unattended lane off
+  # z.ai. CLAUDE_LANE_AUTO_RESEED=0 is an escape hatch for freshness CHURN — it
+  # must NOT keep a poisoned config loaded, so a generation mismatch always
+  # re-seeds regardless (twin: config_seed_stale).
+  $sentinelEarly = Join-Path $ConfigDir '.seeded'
+  if (Test-Path -LiteralPath $sentinelEarly) {
+    $stampEarly = (Get-Content -LiteralPath $sentinelEarly -Raw -ErrorAction SilentlyContinue)
+    if (($null -eq $stampEarly) -or ($stampEarly.Trim() -ne $SeedVersion)) { return $true }
+  }
   if ($env:CLAUDE_LANE_AUTO_RESEED -eq '0') { return $false }
   # try/catch: the predicate must never block a launch. A TOCTOU race (file
   # deleted between Test-Path and Get-Item under ErrorActionPreference=Stop)

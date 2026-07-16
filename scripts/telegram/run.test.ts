@@ -84,6 +84,17 @@ test("buildRunArgs injects --permission-mode before the prompt when set; omits i
   const b = buildRunArgs("do it");
   expect(b.cmd).toEqual(["claude", "--model", DEFAULT_MODEL, "do it"]); // no --permission-mode when unset (still model-pinned)
 });
+// --- HIMMEL-1040: --settings (plugin-profile) injection, before the prompt ---
+test("buildRunArgs injects --settings before the prompt when set; omits it otherwise", () => {
+  const s = '{"enabledPlugins":{"qmd@himmel":true}}';
+  const withSettings = buildRunArgs("do it", undefined, undefined, s);
+  expect(withSettings.cmd).toEqual(["claude", "--model", DEFAULT_MODEL, "--settings", s, "do it"]);
+  // co-present with --permission-mode: both precede the prompt, settings last
+  const both = buildRunArgs("do it", "bypassPermissions", undefined, s);
+  expect(both.cmd).toEqual(["claude", "--model", DEFAULT_MODEL, "--permission-mode", "bypassPermissions", "--settings", s, "do it"]);
+  // unset => no --settings flag at all
+  expect(buildRunArgs("do it").cmd).not.toContain("--settings");
+});
 // --- HIMMEL-671: bounded runs must pin an explicit --model (never inherit the
 // user default, which is currently Fable) ---
 test("buildRunArgs pins --model with the baked-in default in BOTH spawn branches (HIMMEL-671)", () => {

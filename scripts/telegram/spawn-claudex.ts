@@ -25,7 +25,11 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
 import { REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL } from "./spawn-glm";
+import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, DEFAULT_LANE_PROFILE } from "./spawn-glm";
+// HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
+// GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
+// screens + forwards --settings — so the resolved payload just rides its argv.
+import { parseAddPlugins } from "../lanes/plugin-profiles.mjs";
 
 export function claudexSessionRoot(): string {
   return join(process.env.BRIDGE_ROOT ?? join(homedir(), ".claude", "handover", "bridge"), "claudex-sessions");
@@ -201,7 +205,7 @@ export function revalidateSharedWorktree(deps: {
 // ── args parsing ──────────────────────────────────────────────────────────
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh";
-export type ClaudexParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; effort?: EffortLevel; force: boolean; skipAuthPreflight: boolean };
+export type ClaudexParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; effort?: EffortLevel; force: boolean; skipAuthPreflight: boolean; profile: string; addPlugins: string[] };
 
 // Pure + validated, mirrors spawn-glm's parseArgs (a value-taking flag with no
 // value, or a non-positive/non-finite --timeout-mins, is a usage refusal).
@@ -218,6 +222,10 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
   let effort: EffortLevel | undefined;
   let force = false;
   let skipAuthPreflight = false;
+  // HIMMEL-1040: --profile (default lane-impl) + --add-plugins overlay, resolved
+  // in main() so a bad name/id is a clean pre-side-effect refusal (mirrors spawn-glm).
+  let profile = DEFAULT_LANE_PROFILE;
+  const addPlugins: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
@@ -243,10 +251,12 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
     // var: an ambient/inherited setting must not be able to silently disable the
     // fail-closed auth gate and restore the original startup failure (codex-adv CR).
     else if (a === "--skip-auth-preflight") skipAuthPreflight = true;
+    else if (a === "--profile") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--profile requires a value" }; profile = v; }
+    else if (a === "--add-plugins") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--add-plugins requires a value" }; addPlugins.push(...parseAddPlugins(v)); }
     else if (task === undefined) task = a;
   }
   if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
-  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, effort, force, skipAuthPreflight } };
+  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, effort, force, skipAuthPreflight, profile, addPlugins } };
 }
 
 // ── codex weekly bank preflight (HIMMEL-1003 D4) ────────────────────────────
@@ -523,11 +533,17 @@ export function claudexLauncherPath(repoRoot: string): string {
 }
 
 // cmd construction only — the launcher's own arg screen passes
-// --permission-mode/the prompt through verbatim to `exec claude "$@"` (D1).
-// NO --model flag: claude-codex pins CODEX_MODEL via ANTHROPIC_MODEL/
+// --permission-mode/--settings/the prompt through verbatim to `exec claude "$@"`
+// (D1). NO --model flag: claude-codex pins CODEX_MODEL via ANTHROPIC_MODEL/
 // ANTHROPIC_DEFAULT_*_MODEL itself; passing one here would fight that.
-export function buildClaudexRunArgs(launcherPath: string, prompt: string, permMode?: PermissionMode): { cmd: string[] } {
-  const cmd = permMode ? ["bash", launcherPath, "--permission-mode", permMode, prompt] : ["bash", launcherPath, prompt];
+// settings (HIMMEL-1040): the resolved plugin-profile `--settings` payload —
+// claude-codex screens it (env-injection) then forwards it to claude. Omitted
+// (operator profile) => no flag. Placed before the prompt, after --permission-mode.
+export function buildClaudexRunArgs(launcherPath: string, prompt: string, permMode?: PermissionMode, settings?: string): { cmd: string[] } {
+  const cmd = ["bash", launcherPath];
+  if (permMode) cmd.push("--permission-mode", permMode);
+  if (settings) cmd.push("--settings", settings);
+  cmd.push(prompt);
   return { cmd };
 }
 
@@ -553,9 +569,9 @@ export type ClaudexRunResult = { code: number; capped: boolean; blocked: boolean
 // run.log persistence). NOT unit-tested directly (it launches a real
 // process) — executeClaudexRun below takes it as an injected dependency so
 // tests stub it and never launch claude-codex/claude for real.
-export async function runClaudexSession(prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string }): Promise<ClaudexRunResult> {
+export async function runClaudexSession(prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string; settings?: string }): Promise<ClaudexRunResult> {
   const launcherPath = claudexLauncherPath(opts.repoRoot);
-  const { cmd } = buildClaudexRunArgs(launcherPath, prompt, opts.permMode);
+  const { cmd } = buildClaudexRunArgs(launcherPath, prompt, opts.permMode, opts.settings);
   const env = claudexChildEnv(process.env, opts.effort);
   const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
@@ -578,12 +594,14 @@ export async function runClaudexSession(prompt: string, cwd: string, opts: { per
 // success path writes finalMeta (done/failed/capped/blocked/timeout), and a
 // thrown run() writes {status:"failed", exit_code:-1} THEN rethrows.
 export async function executeClaudexRun(deps: {
-  run: (prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string }) => Promise<ClaudexRunResult>;
+  run: (prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string; settings?: string }) => Promise<ClaudexRunResult>;
   prompt: string; worktree: string; permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string;
   sessionDir: string; metaPath: string; runningMeta: Record<string, unknown>;
+  // HIMMEL-1040: the resolved --settings plugin-profile payload (undefined = operator / no injection).
+  settings?: string;
 }): Promise<{ code: number }> {
   try {
-    const res = await deps.run(deps.prompt, deps.worktree, { permMode: deps.permMode, effort: deps.effort, repoRoot: deps.repoRoot });
+    const res = await deps.run(deps.prompt, deps.worktree, { permMode: deps.permMode, effort: deps.effort, repoRoot: deps.repoRoot, settings: deps.settings });
     // run.log append is COSMETIC persistence — isolated so an I/O failure here
     // never flips a successful run to failed (mirrors spawn-glm's executeRun).
     if (res.tail !== undefined) {
@@ -666,11 +684,19 @@ export async function runClaudexSharedDispatch(p: {
 // guarding itself, D1).
 async function main(): Promise<void> {
   const parsed = parseClaudexArgs(process.argv.slice(2));
-  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--effort low|medium|high|xhigh] [--force] [--skip-auth-preflight]";
+  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--effort low|medium|high|xhigh] [--profile <name>] [--add-plugins a@m,b@m] [--force] [--skip-auth-preflight]";
   if (!parsed.ok) { console.error(`spawn-claudex: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, effort, force, skipAuthPreflight } = parsed.args;
+  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, effort, force, skipAuthPreflight, profile, addPlugins } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
   const absCwd = resolve(cwd);
+  // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —
+  // an unknown --profile / malformed --add-plugins id is a clean usage refusal
+  // (exit 2), never an orphan worktree/branch. `installed: []` keeps this to pure
+  // validation: the REAL deny baseline is computed later, in runBody, from the
+  // WORKER'S worktree (CR) — that is the cwd claude actually runs in, and its
+  // branch-local .claude/settings{,.local}.json can differ from the dispatcher's.
+  try { resolveProfileSettings(profile, addPlugins, absCwd, []); }
+  catch (e) { console.error(`spawn-claudex: ${String((e as any)?.message ?? e)}`); console.error(usage); process.exit(2); }
 
   // Codex weekly bank preflight (D4) BEFORE any worktree/branch side-effect.
   const usedPct = fetchCodexWeeklyUsedPercent(homedir());
@@ -746,6 +772,13 @@ async function main(): Promise<void> {
   // between own-branch and shared modes; only the surrounding worktree
   // creation/mutation + lock ownership differ, below (mirrors spawn-glm).
   const runBody = async (): Promise<number> => {
+    // HIMMEL-1040 (CR): resolve the profile FIRST — before meta.json is written.
+    // resolveProfileSettings throws on an unreadable/malformed settings layer and
+    // sits OUTSIDE executeClaudexRun's failure-transition guard; after the
+    // "running" write a throw would leave meta stuck at running (a phantom worker
+    // for fleet control). Resolving here keeps the "meta.json ALWAYS leaves
+    // running" invariant. Uses the WORKTREE — the cwd the worker runs in.
+    const settings = resolveProfileSettings(profile, addPlugins, worktree);
     mkdirSync(sessionDir, { recursive: true });
     const metaPath = join(sessionDir, "meta.json");
     const started_at = new Date().toISOString();
@@ -762,7 +795,7 @@ async function main(): Promise<void> {
     // by the pre-launch auth preflight in main() (HIMMEL-1037), never by
     // re-running a worker (which could duplicate the worker's allowed side
     // effects). No retry wrapper here.
-    const { code } = await executeClaudexRun({ run: runClaudexSession, prompt, worktree, permMode, effort, repoRoot: REPO_ROOT, sessionDir, metaPath, runningMeta });
+    const { code } = await executeClaudexRun({ run: runClaudexSession, prompt, worktree, permMode, effort, repoRoot: REPO_ROOT, sessionDir, metaPath, runningMeta, settings });
     return code;
   };
 
