@@ -511,7 +511,16 @@ function Register-GraphifyMcp {
         Write-Host "  Manual: bash `"$HimmelRoot/scripts/lib/graphify-bin.sh`" register-mcp $Scope" -ForegroundColor Yellow
         return
     }
-    & $gitBash "$HimmelRoot/scripts/lib/graphify-bin.sh" register-mcp $Scope | ForEach-Object { Write-Host $_ }
+    if ($Scope -eq 'project') {
+        # project scope writes the committed .mcp.json relative to CWD (mirrors
+        # Install-Plugins) -- run from $Target so it lands in the adopted repo.
+        Push-Location $Target
+        try {
+            & $gitBash "$HimmelRoot/scripts/lib/graphify-bin.sh" register-mcp $Scope | ForEach-Object { Write-Host $_ }
+        } finally { Pop-Location }
+    } else {
+        & $gitBash "$HimmelRoot/scripts/lib/graphify-bin.sh" register-mcp $Scope | ForEach-Object { Write-Host $_ }
+    }
 }
 
 # Build-JiraCli -- build scripts/jira/dist/index.js (HIMMEL-842 gap 3). dist/ is
