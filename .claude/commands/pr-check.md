@@ -306,7 +306,18 @@ Steps:
    mandatory adjudicator — the session by default, the `code-reviewer` agent
    under `CR_CLAUDE_AGENTS=1` — ensures this).
 
-4.5. **Ledger append (runs after verdict extraction, before the step 5/6 gate decision; no-op ONLY when `panel_findings`, the step-3.1 `codex_findings`, AND the step-3.2 `coderabbit_findings` are ALL empty, i.e. claude-only path).** Single-writer: only this orchestrator step writes the ledger.
+4.5. **Ledger append (runs after verdict extraction, before the step 5/6 gate decision).** Single-writer: only this orchestrator step writes the ledger.
+
+   **Availability records are ALWAYS appended — never skipped (HIMMEL-1064).** The step-5 chokepoint requires at least one `avail … status=ok` at this HEAD to certify that a review actually happened, so a reviewer that responds CLEANLY (zero findings) must still be recorded — otherwise the gate reads "no responders" and refuses (exit 14) on a genuinely clean review. Findings are what varies; availability is what proves the review ran. In particular:
+   - A critic that responded with zero findings → still record `avail --status ok`.
+   - A critic that failed / rate-limited → record `avail --status unavailable`. That is a MISSING signal, and the chokepoint treats it as such.
+   - **The step-3.1 codex adversarial pass**, when it ran and returned (rc 0) — including a zero-finding `approve` verdict, which emits no `panel-availability:` line of its own → record `avail --model codex-adv --status ok`. A skip/timeout/failure → `--status unavailable`.
+   - **Claude-only path** (`CR_PROFILE=none`, or every cross-model source skipped/failed): you performed the step-3.5 backstop review yourself, so record THAT as the evidence — `bash scripts/cr/ledger-append.sh avail --branch "$branch" --head "$head" --model claude --status ok` — plus a `finding` record per blocking issue you found. Without it the claude-only mode can never clear its own marker.
+   - **Docs-audit lane** (step 2.5): it skips step 3 entirely, so NO cross-model source runs and nothing else would record availability — record the audit you performed the same way (`--model claude --status ok`, plus a `finding` per `[ACCURACY|DEAD-LINK|STALE|EXAMPLE|CONSISTENCY]` blocker — `[CONSISTENCY]` is Important per step 2.5, so it blocks too and must be recorded, or the chokepoint sees zero blockers and clears despite it). A docs-only push DOES write a marker (lane `docs-audit`), so without this record the docs lane can never clear it either.
+
+   Rule of thumb: **every path that completes a review records exactly one availability row for the reviewer that did it.** If a path can reach step 5 with zero `avail … ok` rows at this HEAD, the chokepoint refuses (exit 14) and the lane is unshippable — that is the bug this list exists to prevent.
+
+   Only the FINDING loop below is a no-op when `panel_findings`, `codex_findings`, and `coderabbit_findings` are all empty (there are no cross-model findings to record) — the availability records above still run.
 
    For each `[<slug>-N]` finding emitted by the panel, `[codex-adv-N]`
    finding emitted by the step-3.1 codex adversarial pass, or `[coderabbit-N]`
@@ -339,10 +350,19 @@ Steps:
        --model "<slug>" --status <ok|unavailable>
    ```
 
-   Both calls are best-effort — ledger errors are logged to stderr but do NOT
-   block the gate decision in steps 5/6. The ledger is deduped on
-   `(head, finding_id)` for findings and `(head, model)` for avail records, so
-   re-running `/pr-check` on the same HEAD is safe.
+   **Ledger persistence is a PREREQUISITE for clearing, not best-effort
+   (HIMMEL-1064).** It used to be advisory, which was safe while the ledger was
+   only a scorecard — but step 5's chokepoint now DERIVES its verdict from these
+   records, so a partial write is a gate hole: if an `avail … ok` row persists
+   while a blocking `finding` append fails, the chokepoint sees "a responder and
+   zero findings" and clears the marker on a review that actually found a
+   blocker. Check the exit status of EVERY `ledger-append.sh` call. If any append
+   fails, do NOT invoke `clear-cr-marker.sh` — treat the run as step 6 (marker
+   stays), surface the failure, and re-run once the ledger is writable. An
+   unrecorded finding must never read as no finding.
+
+   The ledger is deduped on `(head, finding_id)` for findings and `(head, model)`
+   for avail records, so re-running `/pr-check` on the same HEAD is safe.
 
 4.6. **Handover CR-findings capture (HIMMEL-416 F2 / C2) — runs alongside 4.5; best-effort, single-writer for the `## CR Findings` section, graceful skip when there is no active handover item.** Mirrors the panel findings into the current work-item's `reviewer-notes.md` so CR results survive the session (the F1 ledger is machine state; this is the human-readable trail surfaced on resume).
 
@@ -413,9 +433,26 @@ Steps:
    - `threads_rc = 0` → gate passed (zero unresolved threads, or no PR yet).
    - ANY other `threads_rc` → BLOCKING in step 6 — 3 = unresolved threads or changes requested, 2 = lookup/query failed (fail-closed), and any unexpected code is treated the same: address each comment, resolve its thread (always resolve the thread when fixing a CR finding), then re-run.
 
-5. If both `N == 0` AND step 4.8 reported `threads_rc = 0`:
-   - Delete `$marker` (`rm -f "$marker"`).
-   - Report: `CR clean — marker cleared for $branch (HEAD=$head). Safe to gh pr create.`
+5. If both `N == 0` AND step 4.8 reported `threads_rc = 0`, clear the marker via
+   the chokepoint — **never a bare `rm -f "$marker"`** (HIMMEL-1064):
+   ```bash
+   bash scripts/cr/clear-cr-marker.sh "$branch"
+   ```
+   A raw `rm` of `cr-pending/<branch>` is byte-identical to the
+   self-declare-clean pattern the auto-mode classifier flags as **[CI Bypass]**,
+   so it is reliably DENIED — the classifier cannot see that `/pr-check` really
+   ran. That denial is structural: EVERY clean run hit it, leaving a stale
+   marker that later blocks `gh pr create` on a branch whose CR was actually
+   clean. The script does not take this session's word for the verdict: it
+   re-derives it from what the step-4.5 ledger recorded at this exact SHA
+   (a critic actually responded + zero blocking findings), plus check-ci when a
+   PR already exists — so it is strictly STRONGER than the `rm` it replaces.
+   - Exit 0 → report its `CR clean — marker cleared …` line.
+   - Any non-zero → the marker STAYS and the gate is NOT clear; treat it as
+     step 6. Notably `14` = no critic responded at this SHA (a MISSING review
+     signal, e.g. the CodeRabbit CLI rate-limit — never a clean one) and `13` =
+     a commit landed after the review, so re-run `/pr-check` on the new HEAD.
+     Do NOT fall back to `rm`.
 
 6. If either `N > 0`, or step 4.8 reported `threads_rc != 0`:
    - Leave the marker in place.
