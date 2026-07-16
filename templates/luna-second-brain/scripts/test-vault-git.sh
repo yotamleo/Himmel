@@ -203,8 +203,24 @@ else
   # reaches this stream on a real secret block.
   d8_out=$( (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") 2>&1 ); d8_rc=$?
   assert_nz "D8 near-miss token (suffixed) still blocked (non-zero)" "$d8_rc"
-  printf '%s\n' "$d8_out" | grep -qiE 'gitleaks|leaks found'
-  assert_ok "D8b near-miss block attributable to gitleaks (secret scan)" "$?"
+  # Attribute the block to a REAL finding, not to any output that merely mentions
+  # gitleaks: an unavailable scanner also exits non-zero and prints the word, which
+  # would green D8b on a scan that never ran (CR #1243). gitleaks reports findings
+  # as `leaks found: <N>` and a clean scan as `no leaks found`, so the count is what
+  # separates them. Scanner-unavailable is reported distinctly from "not a finding".
+  # Both halves must name gitleaks: a bare "command not found" can come from an
+  # unrelated tool in the hook chain, and misreporting that as "scanner missing"
+  # would be its own wrong diagnosis.
+  case "$d8_out" in
+  *gitleaks*"command not found"* | *gitleaks*"executable file not found"* | *"command not found"*gitleaks* | *Executable*gitleaks*not?found*)
+    fail "D8b near-miss block attributable to gitleaks (secret scan)" \
+      "gitleaks unavailable — the secret scan never ran"
+    ;;
+  *)
+    printf '%s\n' "$d8_out" | grep -qE 'leaks found: *[1-9][0-9]*'
+    assert_ok "D8b near-miss block attributable to gitleaks (secret scan)" "$?"
+    ;;
+  esac
   assert_eq "D9 near-miss token NOT in committed tree" "$d8_before" "$(git_in "$VC" rev-parse HEAD)"
 
   # =========================================================================
