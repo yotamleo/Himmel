@@ -295,53 +295,28 @@ Autonomous end-to-end execution of a well-scoped ticket: see
 
 ## ENFORCEMENT (runs automatically)
 
-himmel enforces structurally, not by prose: **12 PreToolUse hooks**
-(`auto-approve-safe-bash`, `block-edit-on-main`, `block-read-secrets`,
-`block-rogue-claude-schedule` — blocks raw scheduler-arms of claude that bypass
-arm-resume.sh (System32-cwd trap, HIMMEL-647),
-`block-backend-tier` — registry-driven MCP guard, replaces `block-mcp-when-plugin-exists`,
-`auto-arm-on-cap`, `check-cr-marker-on-pr-create`, and `block-docker-privesc` —
-root-equivalent docker/podman mount+privilege guard, HIMMEL-441, shipped via the
-himmel-ops plugin `hooks.json` so it's live only after `/himmel-update` + a fresh
-session; likewise `block-merged-pr-commit` — hygiene guard that blocks committing
-onto a merged-PR branch, HIMMEL-512, same plugin delivery; `block-unresolved-cr-merge` —
-blocks `gh pr merge` while CodeRabbit review threads are unresolved or its check-run
-is in-flight on the head SHA, fail-open on every API/dep error, bypass
-`CR_MERGE_GATE_OK=1` — HIMMEL-936, same plugin delivery; `block-rogue-codex-wsl` — blocks raw `wsl … codex exec` dispatches that bypass the WSL-lane chokepoint (HIMMEL-999, same plugin delivery); and `guard-implementor-dispatch` —
-bank-aware cost guard that blocks a Sonnet/Opus/top-model implementor-shaped Agent dispatch
-when the 5-hour bank is at/above 80% (advisory-only at 65%), fail-open on every infra
-error, bypass `IMPL_GUARD_OK=1` — HIMMEL-920, same plugin delivery), **1 PostToolUse hook**
-(`auto-arm-on-subagent-cap` — detects cap in Agent tool results, HIMMEL-276),
-**pre-commit/commit-msg/pre-push gates** (source of truth
-`.pre-commit-config.yaml`; pre-push incl. `check-platforms-tested`;
-pre-commit+pre-push `doc-guard` — himmel-dev-only, blocks ADDING a
-command/skill without updating `docs/commands-catalog.md`, gated by
-`.himmel-dev` marker; pre-commit `agents-md-fresh` — himmel-dev-only, blocks a
-stale `AGENTS.md` (regenerate from this file via
-`scripts/agents-md/generate.mjs`, HIMMEL-471)), a
-`UserPromptSubmit` hook (`improve-on-submit.sh`,
-default OFF), a `SessionStart` hook (`inject-initiative.sh` — opt-in
-`HIMMEL_INITIATIVE` drive-to-ship directive over the shared leg grammar
-(`scripts/lib/initiative-legs.sh`, HIMMEL-443): `1`/`all` or a comma-subset of
-`plan,execute,prcheck,pr,ticket,merge,public,handover`; `HIMMEL_OVERNIGHT`
-selects the overnight profile reading `HIMMEL_INITIATIVE_OVERNIGHT`; default OFF,
-advisory only; HIMMEL-425), and shared **guardrail predicates** (`scripts/guardrails/lib.sh`).
-Hook bypass = session env var set in the LAUNCHING shell (e.g.
-`EDIT_ON_MAIN_OK=1 claude`); a per-call prefix does NOT work. Per-repo opt-out:
-a local gitignored `.single-writer` at a repo root allows on-main edits there
-(single-writer repos — personal vaults, state repos — that commit straight to
-main by design); clones without the marker stay protected. Remote auto-actions
-(Telegram `/arm`, HIMMEL-424): the trusted bridge parses + invokes directly (agent
-out of the trust path); operator-identity (DM or allowlisted group), typed-only,
-forwarded-refused; default OFF behind `TELEGRAM_AUTO_ACTIONS` (per-op flag, grammar
-mirrors `HIMMEL_INITIATIVE`). Per-hook
-behaviour, the full gate list, the guardrail matrix, and the `/arm` surface:
-[`docs/internals/enforcement.md`](docs/internals/enforcement.md). Required
-environment (HIMMEL-123):
+himmel enforces structurally, not by prose: PreToolUse hooks (safe-bash
+auto-approve; the edit-on-main / read-secrets / backend-tier / CR-marker /
+unresolved-CR-merge / merged-PR-commit / docker-privesc / rogue-schedule /
+rogue-codex-wsl guards; `guard-implementor-dispatch` cost guard; the cap-arm
+hooks), a PostToolUse cap-arm hook, **pre-commit/commit-msg/pre-push gates**
+(source of truth `.pre-commit-config.yaml`), and opt-in `SessionStart` /
+`UserPromptSubmit` hooks (`inject-initiative.sh` `HIMMEL_INITIATIVE`,
+`improve-on-submit.sh` — both default OFF). The full per-hook behaviour, the
+gate list, the guardrail matrix, the Telegram `/arm` surface, and billing
+detail: [`docs/internals/enforcement.md`](docs/internals/enforcement.md).
+
+**Session-critical (kept inline — needed at a glance):** hook bypass = a session
+env var set in the LAUNCHING shell (e.g. `EDIT_ON_MAIN_OK=1 claude`); a per-call
+prefix does NOT work. Per-repo opt-out: a local gitignored `.single-writer` at a
+repo root allows on-main edits there (single-writer repos — personal vaults,
+state repos — that commit straight to main by design); clones without the marker
+stay protected. Required environment (HIMMEL-123):
 [`docs/setup/new-machine.md`](docs/setup/new-machine.md#1-required-environment-himmel-123).
 
 ## REFERENCE INDEX
 
+- [`docs/internals/context-architecture.md`](docs/internals/context-architecture.md) — the lean-surface doctrine: where knowledge lives (4 rules, layering model, the nesting trap, memory-as-map). The anchor for the HIMMEL-177/195 frame above.
 - [`docs/internals/enforcement.md`](docs/internals/enforcement.md) — pre-commit + all hooks + guardrails + billing detail.
 - [`docs/internals/handover-system.md`](docs/internals/handover-system.md) — full handover system + user-slug resolution.
 - [`docs/internals/jira-plugin.md`](docs/internals/jira-plugin.md) — Jira plugin↔MCP op mapping.
