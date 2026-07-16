@@ -98,6 +98,14 @@ CLAUDE_BIN_DIR_PATH="$CLAUDE_BIN_DIR"
 if command -v cygpath >/dev/null 2>&1; then
     CLAUDE_BIN_DIR_PATH=$(cygpath -u "$CLAUDE_BIN_DIR")
 fi
+# EVERY invocation that reaches `arm` must carry $CLAUDE_BIN_DIR_PATH on PATH —
+# arm fail-fasts when `claude` is absent (HIMMEL-1070). Omitting it does NOT fail
+# on a dev box that happens to have the real CLI installed: the inherited $PATH
+# tail satisfies the probe by ACCIDENT, so the suite goes green locally and dies
+# on a clean CI runner with rc=2 (set -euo pipefail aborts the whole script on the
+# unguarded `arm` assignment, before any assertion prints). That is exactly how
+# this shipped to public CI once. The stub keeps the suite hermetic — a test's
+# result must never depend on what the operator has installed.
 
 # A PATH with the real system dirs (arm needs dirname/sed/mktemp at load time)
 # but with EVERY dir that carries a real `claude` filtered out — the fail-fast
@@ -505,7 +513,8 @@ EVIL_VAULT="$TMP_ROOT/va&ult \$X y"
 EVIL_DIR="$TMP_ROOT/cr%on rnr"
 mkdir -p "$EVIL_VAULT"
 out=$(env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" arm --vault "$EVIL_VAULT")
+    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$CLAUDE_BIN_DIR_PATH:$PATH" \
+    "$REAL_BASH" "$SCRIPT" arm --vault "$EVIL_VAULT")
 luna_sh=$(cat "$EVIL_DIR/graphmap-luna.sh" 2>/dev/null || echo MISSING)
 assert_contains "ampersand %q-escaped in runner" 'va\&ult' "$luna_sh"
 # shellcheck disable=SC2016  # literal \$X needle — asserting the %q escape itself
@@ -514,7 +523,8 @@ tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 assert_contains "percent cron-escaped in entry (\\%)" 'cr\%on' "$tab"
 assert_contains "space %q-escaped in entry" 'cr\%on\ rnr' "$tab"
 env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" disarm >/dev/null
+    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$CLAUDE_BIN_DIR_PATH:$PATH" \
+    "$REAL_BASH" "$SCRIPT" disarm >/dev/null
 
 # Test C13: unknown platform exits 2 ----------------------------------------------
 
@@ -610,7 +620,7 @@ BAT_DIR="$TMP_ROOT/bats"
 
 run_gc() {
     PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
-        PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
+        PATH="$TMP_ROOT/bin:$CLAUDE_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
 
 # Test 1: usage errors ------------------------------------------------------
