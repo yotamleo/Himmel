@@ -83,7 +83,7 @@ Canonical — linked, not restated:
 
 ## Memory & CLAUDE.md hygiene
 
-These shape what goes WHERE — the layer-selection discipline. The frame is canonical (HIMMEL-177 / HIMMEL-195 in [`CLAUDE.md`](../CLAUDE.md#operator-conventions-calibrated-through-repeated-sessions) + worked examples in [`docs/internals/enforcement.md`](internals/enforcement.md#operator-conventions--worked-examples)). Inlined habits:
+These shape what goes WHERE — the layer-selection discipline. The doctrine (4 rules, the layering model, the nesting trap, memory-as-map) is canonical in [`docs/internals/context-architecture.md`](internals/context-architecture.md); the layer-selection frame is in [`CLAUDE.md`](../CLAUDE.md#operator-conventions-calibrated-through-repeated-sessions) (HIMMEL-177 / HIMMEL-195) with worked examples in [`docs/internals/enforcement.md`](internals/enforcement.md#operator-conventions--worked-examples). Inlined habits:
 
 - **No operational "when stuck" rules in `CLAUDE.md`.** It is loaded every session and is prunable under context pressure, so detail Claude needs *when stuck* may be gone exactly when needed; it is also per-user/per-repo. Put operational guidance in a repo-distributed load-on-trigger skill / `docs/internals/` playbook, or fix it structurally in code (then there's no rule to maintain). This very doc is the application of that principle.
 - **Verify universal-quantifier claims before writing them.** Don't write "each/every X has Y" in `CLAUDE.md` without running the count first (`ls X | wc` vs `ls test-X | wc`). If not 1:1, write "Most X have Y — add one for new X". A false universal misleads every future session. Pair a correctness reviewer with the CLAUDE.md best-practice audit on CLAUDE.md PRs — they catch different misses.
