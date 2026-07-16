@@ -342,6 +342,48 @@ Paired artifacts: `scripts/lib/cr-merge-gate.sh` (predicate),
 `scripts/lib/test-cr-merge-gate.sh` and
 `scripts/hooks/test-block-unresolved-cr-merge.sh` (smoke suites).
 
+### CI-green merge gate (HIMMEL-1043)
+
+Runs on the SAME `gh pr merge` path as the CodeRabbit gate above, one step
+after it: blocks the merge while the target PR's **head SHA is not green** —
+any **non-CodeRabbit** check-run with a red conclusion (`failure`,
+`timed_out`, `cancelled`, `action_required`, `startup_failure`, `stale`) or
+still pending (`status != completed`), or a combined commit **status** of
+`failure`/`error` (or `pending` with ≥1 status). It also **fail-CLOSED-blocks**
+when the head has **>100 check-runs** (more than the single API page can
+certify — a failing/pending run may sit on an unread page 2; same page-limit
+stance as `cr-merge-gate`, HIMMEL-980). This repo has **no branch
+protection**, so GitHub will not otherwise block a merge over red/pending
+CI — this gate is the structural "ready to merge ⇒ green" enforcement
+(operator rule 2026-07-15; HIMMEL-195 structural > instructional; the
+green-gate HIMMEL-1042's true auto-merge needs). CodeRabbit check-runs are
+excluded here on purpose — the CR gate above owns CodeRabbit (threads + the
+in_progress/zombie override, HIMMEL-936/980), so this gate never
+double-blocks nor false-blocks on a hung CodeRabbit run.
+
+The signal is `ci_green_gate <pr-selector> [<owner/repo>]` from
+`scripts/lib/ci-green-gate.sh`. It is wired into **the same
+`block-unresolved-cr-merge.sh` PreToolUse hook** (reuses that hook's
+adversarially-hardened selector extraction; a block prints
+`block-red-ci-merge: …` to stderr and exits 2) AND into
+`scripts/handover/pr-merge.sh` before its mergeability poll (a block there
+exits `pr-merge.sh` with code **6**, distinct from the CR gate's 5 and a real
+merge failure's 4).
+
+**Fail-OPEN posture:** deny ONLY on positive red/pending evidence. `gh`/`jq`
+missing, `gh pr view` failure, API/parse error, and a genuinely **checkless
+PR** (zero check-runs AND zero commit statuses) all exit 0 with a
+``ci-green-gate: degraded (<why>) - failing open`` stderr note — never a
+false block on a repo/branch with no CI.
+
+**Bypass:** `CI_MERGE_GATE_OK=1` in the LAUNCHING shell (independent of the
+CR gate's `CR_MERGE_GATE_OK`; NOT coupled to `CR_PROFILE`).
+
+Paired artifacts: `scripts/lib/ci-green-gate.sh` (predicate),
+`scripts/lib/test-ci-green-gate.sh` and the shared
+`scripts/hooks/test-block-unresolved-cr-merge.sh` /
+`scripts/handover/test-pr-merge.sh` (smoke suites).
+
 ### `block-lesson-enforcement-writes.sh` — lesson-loop write-fence (HIMMEL-767)
 
 Fires on `Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell`, but only when

@@ -65,7 +65,9 @@ case "$verb" in
         # cr_merge_gate proceeds to its graphql arm; otherwise echo non-JSON
         # so the gate degrades + fails open (existing cases stay green).
         if printf ' %s ' "$@" | grep -q 'headRefOid'; then
-            if [ "${STUB_CR_BLOCK:-0}" = "1" ]; then
+            # STUB_CR_BLOCK=1 arms the CR gate; STUB_CI_BLOCK=1 arms the CI gate
+            # (both need parseable metadata to resolve the head SHA).
+            if [ "${STUB_CR_BLOCK:-0}" = "1" ] || [ "${STUB_CI_BLOCK:-0}" = "1" ]; then
                 echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}'
             else
                 echo "${STUB_VIEW_MERGEABLE:-MERGEABLE}"
@@ -107,15 +109,32 @@ case "$verb" in
         echo "merged"
         ;;
     "api graphql")
-        # HIMMEL-936 CR-gate reviewThreads query: one unresolved coderabbitai
-        # thread (fixture copied from test-cr-merge-gate.sh).
-        echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}'
+        # CR-gate reviewThreads query. STUB_CI_BLOCK=1 needs the CR gate to PASS
+        # (resolved coderabbit threads) so the CI gate is reached; otherwise one
+        # unresolved coderabbitai thread arms the CR block (fixture from
+        # test-cr-merge-gate.sh).
+        if [ "${STUB_CI_BLOCK:-0}" = "1" ]; then
+            echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}'
+        else
+            echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}'
+        fi
         ;;
     "api repos"*)
-        # HIMMEL-936 CR-gate check-runs query: completed CodeRabbit check-run.
-        # Not reached when the threads arm already blocks, but stubbed for
-        # completeness / the in-flight arm.
-        echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"}]}'
+        # check-runs vs combined-status, distinguished by the URL tail. The CR
+        # gate queries check-runs (CodeRabbit only); the CI gate queries both.
+        # STUB_CI_BLOCK=1 returns a FAILED non-CodeRabbit check-run so the CI
+        # gate blocks while the CR gate still passes.
+        if printf ' %s ' "$@" | grep -q 'check-runs'; then
+            if [ "${STUB_CI_BLOCK:-0}" = "1" ]; then
+                echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"},{"name":"tests","status":"completed","conclusion":"failure"}]}'
+            else
+                echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"}]}'
+            fi
+        elif printf ' %s ' "$@" | grep -q '/status'; then
+            echo '{"state":"success","total_count":1,"statuses":[{"context":"ci","state":"success"}]}'
+        else
+            echo '{}'
+        fi
         ;;
     *) ;;
 esac
@@ -271,6 +290,17 @@ if STUB_CR_BLOCK=1 \
     run_case "handover/x-slug" 5 "CR-gate block exits 5 before poll"; then
     assert_log_lacks "pr merge" "CR-gate block does not attempt merge"
     assert_err_has    "CR gate" "CR-gate block reports CR gate on stderr"
+fi
+
+# --- HIMMEL-1043: CI-green gate blocks AFTER the CR gate (exit 6) ---
+# STUB_CI_BLOCK=1: CR gate passes (resolved coderabbit threads + a completed
+# CodeRabbit check-run), but a non-CodeRabbit check-run ("tests") failed, so
+# ci_green_gate blocks. Runs AFTER the CR gate (exit 5) and BEFORE the
+# mergeability poll, so neither the poll's pr view nor `gh pr merge` is reached.
+if STUB_CI_BLOCK=1 \
+    run_case "handover/x-slug" 6 "CI-gate block exits 6 before poll"; then
+    assert_log_lacks "pr merge" "CI-gate block does not attempt merge"
+    assert_err_has    "CI gate" "CI-gate block reports CI gate on stderr"
 fi
 
 # --- summary ---
