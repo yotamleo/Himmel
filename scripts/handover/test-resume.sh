@@ -102,5 +102,17 @@ HANDOVER_DIR="$root" HANDOVER_REGISTRY="$reg" bash "$R" --repo-root >/dev/null 2
 check "--repo-root without value -> rc 2" "$?" "2"
 HANDOVER_DIR="$root" HANDOVER_REGISTRY="$reg" bash "$R" --repo-root "C:/Work/Other" 5 >/dev/null 2>&1
 check "unregistered repo -> rc 3" "$?" "3"
+run --list HIMMEL-389 >/dev/null 2>&1
+check "--list with an ID -> rc 2" "$?" "2"
+
+# 6. node lookup crash (rc neither 0/1/2) -> hard error, not misreported as graceful skip.
+fakebin="$tmp/fakebin"; mkdir -p "$fakebin"
+cat > "$fakebin/node" <<'SH'
+#!/usr/bin/env bash
+exit 5
+SH
+chmod +x "$fakebin/node"
+PATH="$fakebin:$PATH" HANDOVER_DIR="$root" HANDOVER_REGISTRY="$reg" bash "$R" --repo-root "$RR" 389 >/dev/null 2>&1
+check "node crash (rc=5) -> hard error, not graceful skip" "$?" "2"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

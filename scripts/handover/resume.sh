@@ -26,6 +26,10 @@ while [ $# -gt 0 ]; do case "$1" in
      id="$1"; shift;;
 esac; done
 
+if [ "$mode" = "list" ] && [ -n "$id" ]; then
+  echo "resume.sh: --list does not accept an ID" >&2; exit 2
+fi
+
 if [ "$mode" = "resume" ] && [ -z "$id" ]; then
   echo "resume.sh: no ID given (use --list for the picker)" >&2; exit 2
 fi
@@ -58,7 +62,8 @@ meta="$(REG="$reg" RR="$rr_canon" node -e '
   process.exit(1);
 ')"; node_rc=$?
 if [ "$node_rc" -eq 2 ]; then echo "resume.sh: registry unreadable ($reg)" >&2; exit 2; fi
-if [ "$node_rc" -ne 0 ]; then echo "resume.sh: repo not registered ($repo_root)" >&2; exit 3; fi
+if [ "$node_rc" -eq 1 ]; then echo "resume.sh: repo not registered ($repo_root)" >&2; exit 3; fi
+if [ "$node_rc" -ne 0 ]; then echo "resume.sh: registry lookup failed (node rc=$node_rc)" >&2; exit 2; fi
 user="${meta%%$'\t'*}"; rest="${meta#*$'\t'}"; bucket="${rest%%$'\t'*}"; jira="${rest#*$'\t'}"
 [ -n "$jira" ] || jira="$bucket"
 jira_uc="$(printf '%s' "$jira" | tr '[:lower:]' '[:upper:]')"
@@ -162,7 +167,7 @@ else
 fi
 
 # --- open bugs + latest CR findings panel (prints nothing when clean) ---
-panel="$(bash "$SCRIPT_DIR/resume-context.sh" --item "$item_dir" 2>/dev/null)"
+panel="$(bash "$SCRIPT_DIR/resume-context.sh" --item "$item_dir")"
 [ -n "$panel" ] && printf '\n%s\n' "$panel"
 
 # --- stale nudge (top-3 lingering/zombie bullets from tech-debt.md) ---

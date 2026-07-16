@@ -51,7 +51,7 @@ skill path incurred. The script resolves the target repo + bucket from
 4. **If the overnight flag was set** (e.g. `/handover-resume HIMMEL-1033 overnight`):
    after loading the item, treat this as the overnight-mode trigger for that item's
    latest `next-session-*.md` and run the autonomous pipeline per
-   [`docs/handover/overnight-mode.md`](../../../../docs/handover/overnight-mode.md)
+   [`docs/handover/overnight-mode.md`](../../docs/handover/overnight-mode.md)
    without pausing between phases.
 
 ## Not yet implemented (phase 2 — HIMMEL-1034)
