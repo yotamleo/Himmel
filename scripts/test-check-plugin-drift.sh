@@ -92,6 +92,23 @@ if [ "$(pick "$(printf 'v1.9.1\nv1.9.2\nv1.9.2-alpha\nv1.8.1\n')")" = "v1.9.2" ]
 if [ "$(pick "$(printf 'v1.9.2\nv1.9.3\n')")" = "v1.9.3" ]; then ok "stable-tag select: newer stable wins"; else bad "newer stable not selected"; fi
 if [ -z "$(pick "$(printf 'v1.9.2-alpha\nv1.9.3-rc1\n')")" ]; then ok "stable-tag select: all-prerelease -> empty (drives the UNCHECKED path)"; else bad "all-prerelease should select nothing, got '$(pick "$(printf 'v1.9.2-alpha\nv1.9.3-rc1\n')")'"; fi
 
+# 3d. The real upstreams.json registers the two SHA-pinned lib forks (HIMMEL-1046)
+#     against their TRUE upstreams — graphify via latest_source=release (its tags
+#     are non-monotonic: a stale v1.0.0 predates the current v0.9.x line), qmd via
+#     the default highest-tag path.
+REG="$ROOT/scripts/upstreams.json"
+if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$REG" >/dev/null 2>&1; then ok "upstreams.json is valid JSON"; else bad "upstreams.json is not valid JSON"; fi
+reg_probe="$(python3 - "$REG" <<'PY' 2>/dev/null | tr -d '\r'
+import json,sys
+d=json.load(open(sys.argv[1]))
+for e in d.get("entries",[]):
+    if e.get("name") in ("graphify","qmd"):
+        print("|".join([e.get("name",""), e.get("tracked_repo",""), e.get("kind",""), e.get("mode",""), e.get("latest_source","")]))
+PY
+)"
+if printf '%s\n' "$reg_probe" | grep -q 'graphify|Graphify-Labs/graphify|tag_release|base|release'; then ok "graphify entry -> true upstream Graphify-Labs, tag_release/base, latest_source=release"; else bad "graphify registry entry wrong/missing: $(printf '%s' "$reg_probe" | grep graphify)"; fi
+if printf '%s\n' "$reg_probe" | grep -q 'qmd|tobi/qmd|tag_release|base'; then ok "qmd entry -> true upstream tobi/qmd, tag_release/base"; else bad "qmd registry entry wrong/missing: $(printf '%s' "$reg_probe" | grep '^qmd')"; fi
+
 # 4. End-to-end: the script runs to completion with a sane exit code —
 #    0 (all current / fail-open), 2 (drift), or 3 (incomplete). Anything else
 #    (1, 127, crash) fails.
@@ -534,6 +551,74 @@ if printf '%s' "$w10_out" | grep 'timedprobe-tool' | grep -q 'probe timed out (1
 if printf '%s' "$w10_out" | grep -qE '^  timedprobe-tool: (CURRENT|BEHIND)'; then bad "timeout-path hanging probe: entry read CURRENT/BEHIND instead of UNCHECKED (partial pre-hang output was parsed)"; else ok "timeout-path hanging probe: entry never read CURRENT/BEHIND"; fi
 if [ "$w10_rc" -eq 3 ]; then ok "timeout-path hanging probe run exits 3 (incomplete)"; else bad "timeout-path hanging probe run rc=$w10_rc; expected 3"; fi
 rm -rf "$W10"
+
+# 11. latest_source=release (HIMMEL-1046): for a NON-MONOTONIC-tag upstream, the
+#     guard must read the maintainer's latest NON-prerelease via the Releases API,
+#     NOT the highest semver tag (a stale higher tag would be a phantom latest).
+#     The stub serves BOTH a stale-higher tag (v1.0.0) and the real release
+#     (v0.9.16); the release-mode entry compares against v0.9.16, while the default
+#     tag-mode control against the SAME repo picks the stale v1.0.0 — proving the
+#     opt-in changes the source.
+W11="$(mktemp -d)"; mkdir -p "$W11/bin"
+cat > "$W11/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+case "$*" in
+  *"/releases/latest"*) printf 'v0.9.16\n'; exit 0 ;;
+  *"/tags"*) printf 'v1.0.0\nv0.9.16\nv0.9.13\n'; exit 0 ;;
+esac
+exit 0
+GH
+chmod +x "$W11/bin/gh"
+cat > "$W11/reg-release.json" <<'JSON'
+{"entries":[
+ {"name":"nonmono-rel","kind":"tag_release","mode":"base","tracked_repo":"owner/nonmono","synced_base":"0.9.13","latest_source":"release","tier":"A"}
+]}
+JSON
+cat > "$W11/reg-tag.json" <<'JSON'
+{"entries":[
+ {"name":"nonmono-tag","kind":"tag_release","mode":"base","tracked_repo":"owner/nonmono","synced_base":"0.9.13","tier":"A"}
+]}
+JSON
+printf '{"plugins":[]}' >"$W11/empty_mjson.json"; printf '{}' >"$W11/empty_ups.json"
+rel_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-release.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"
+tag_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-tag.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"
+if printf '%s' "$rel_out" | grep 'nonmono-rel' | grep -q 'v0.9.16'; then ok "latest_source=release compares against Releases API (v0.9.16)"; else bad "release-mode did not use releases/latest; $(printf '%s' "$rel_out" | grep nonmono-rel)"; fi
+if printf '%s' "$rel_out" | grep 'nonmono-rel' | grep -q 'v1.0.0'; then bad "release-mode leaked the stale v1.0.0 tag"; else ok "latest_source=release ignores the stale v1.0.0 highest tag"; fi
+if printf '%s' "$tag_out" | grep 'nonmono-tag' | grep -q 'v1.0.0'; then ok "default tag-mode control picks the highest tag v1.0.0 — confirms the opt-in changes the source"; else bad "tag-mode control did not pick v1.0.0; $(printf '%s' "$tag_out" | grep nonmono-tag)"; fi
+# releases/latest unreachable -> UNCHECKED (never a phantom compare).
+cat > "$W11/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+case "$*" in
+  *"/releases/latest"*) exit 1 ;;
+esac
+exit 0
+GH
+chmod +x "$W11/bin/gh"
+unreach_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-release.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"; unreach_rc=$?
+if printf '%s' "$unreach_out" | grep 'nonmono-rel' | grep -q 'UNCHECKED'; then ok "latest_source=release: no latest release -> UNCHECKED"; else bad "release-mode unreachable not UNCHECKED; $(printf '%s' "$unreach_out" | grep nonmono-rel)"; fi
+if [ "$unreach_rc" -eq 3 ]; then ok "release-mode unreachable run exits 3 (incomplete)"; else bad "release-mode unreachable rc=$unreach_rc; expected 3"; fi
+# An UNKNOWN latest_source (typo like "releases") must be UNCHECKED, never a
+# silent fall-through to tag mode (which would re-introduce the phantom drift).
+cat > "$W11/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+case "$*" in
+  *"/tags"*) printf 'v1.0.0\nv0.9.16\n'; exit 0 ;;
+esac
+exit 0
+GH
+chmod +x "$W11/bin/gh"
+cat > "$W11/reg-bad.json" <<'JSON'
+{"entries":[
+ {"name":"bad-src","kind":"tag_release","mode":"base","tracked_repo":"owner/nonmono","synced_base":"0.9.13","latest_source":"releases","tier":"A"}
+]}
+JSON
+bad_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-bad.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"; bad_rc=$?
+if printf '%s' "$bad_out" | grep 'bad-src' | grep -q "unknown latest_source"; then ok "unknown latest_source -> UNCHECKED (not silent tag-mode)"; else bad "unknown latest_source not UNCHECKED; $(printf '%s' "$bad_out" | grep bad-src)"; fi
+if printf '%s' "$bad_out" | grep -qE '^  bad-src: (CURRENT|BEHIND)'; then bad "unknown latest_source fell through to a tag-mode verdict"; else ok "unknown latest_source never produced a CURRENT/BEHIND verdict"; fi
+rm -rf "$W11"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi

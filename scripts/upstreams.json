@@ -47,6 +47,25 @@
       "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z.-]*",
       "tier": "A",
       "note": "Installed CLI at ~/.local/bin/twitter (consumed by the telegram clipper). Tier A (proactive). UNCHECKED if twitter absent / --version yields no parseable version."
+    },
+    {
+      "name": "graphify",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "Graphify-Labs/graphify",
+      "synced_base": "0.9.13",
+      "latest_source": "release",
+      "tier": "A",
+      "note": "SHA-pinned lib fork yotamleo/graphify (pin in scripts/lib/graphify-bin.sh, HIMMEL-891; adoption verdict HIMMEL-621). tracked_repo is the TRUE upstream (Graphify-Labs), not the fork — a fork-HEAD compare would only catch fork-vs-pin drift, never upstream advance (same false-negative class as claude-statusline). synced_base = the upstream release the fork pin (v0.9.13-himmel.1) carries. latest_source=release because upstream tags are NON-MONOTONIC: a stale v1.0.0 (2026-04) predates the current v0.9.x line, so highest-semver-tag would report a permanent phantom BEHIND; the Releases API returns the real latest (v0.9.16). BEHIND here means: rebase the fork onto the newer upstream release, promote mcp->core dep, re-tag v<new>-himmel.1, bump the graphify-bin.sh pin, then bump synced_base here."
+    },
+    {
+      "name": "qmd",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "tobi/qmd",
+      "synced_base": "2.5.3",
+      "tier": "B",
+      "note": "SHA-pinned lib fork yotamleo/qmd (pin in scripts/lib/qmd-bin.sh; the additive-delta audit was previously the MANUAL step named in the header). tracked_repo is the TRUE upstream (tobi/qmd). synced_base = the highest upstream STABLE tag the fork carries (fork package.json reads 2.6.3, ahead of upstream's released tags, so this reads CURRENT until upstream tags a version > synced_base). Tier B (reactive) — expected to read BEHIND once upstream cuts 2.5.4+, that IS the signal to re-audit the fork delta."
     }
   ]
 }
