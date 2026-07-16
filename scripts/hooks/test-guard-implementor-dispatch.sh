@@ -229,6 +229,21 @@ printf '{"five_hour":{"utilization":85,"resets_at":"%s"}}' "$(date -u -d "@$(( $
 RC18=$(run_hook t18 "$(payload_full general-purpose sonnet 'implement the fix')"     IMPL_GUARD_CACHE_PATH="$CACHE18")
 assert_rc "T18 fractional-ISO future resets_at rc (deny)" 2 "$RC18"
 
+# T19/T20 (HIMMEL-1045): the DENY allow-list swapped feature-dev:code-architect
+# → the built-in Plan agent. At util=85 + sonnet + impl prompt:
+#   - feature-dev:code-architect is NO LONGER in-set → not hard-deny (rc=0).
+#   - Plan IS in-set → hard-deny (rc=2), same shape as T1's general-purpose.
+CACHE19="$TMP/cache19.json"; mkcache "$CACHE19" 85
+RC19=$(run_hook t19 "$(payload_full feature-dev:code-architect sonnet 'implement the fix')" \
+    IMPL_GUARD_CACHE_PATH="$CACHE19")
+assert_rc "T19 feature-dev:code-architect removed-from-set rc (allow)" 0 "$RC19"
+
+CACHE20="$TMP/cache20.json"; mkcache "$CACHE20" 85
+RC20=$(run_hook t20 "$(payload_full Plan sonnet 'implement the fix')" \
+    IMPL_GUARD_CACHE_PATH="$CACHE20")
+assert_rc "T20 Plan in-set hard-deny rc" 2 "$RC20"
+assert_contains "T20 Plan in-set deny stderr names glm-subagent" "glm-subagent" "$(cat "$TMP/err-t20")"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -26,7 +26,7 @@
 #   5. DENY-tier eligibility is an ALLOW-LIST of known-expensive implementor
 #      shapes (critic Q2 — a deny-list would false-block future reviewer
 #      agent types): subagent_type in {general-purpose, claude,
-#      feature-dev:code-architect} AND model in {sonnet, opus, fable, absent/
+#      Plan} AND model in {sonnet, opus, fable, absent/
 #      empty}. An absent/empty model IS DENY-eligible (HIMMEL-972 operator
 #      ruling 2026-07-12: an unnamed dispatch inherits the parent loop — the
 #      exact expensive shape this guard exists for; supersedes the original
@@ -117,7 +117,7 @@ model_lc=$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')
 # (critic Q2: a deny-list would false-block future reviewer agent types).
 subagent_in_set=0
 case "$subagent_type" in
-    general-purpose|claude|feature-dev:code-architect) subagent_in_set=1 ;;
+    general-purpose|claude|Plan) subagent_in_set=1 ;;
 esac
 model_in_set=0
 case "$model_lc" in
