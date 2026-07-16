@@ -46,8 +46,8 @@ dispatch step from `docs/handover/overnight-mode.md`.
    in parallel (single message, multiple Agent tool calls):
 
    - `description`: `Implement <KEY>` (3-5 words).
-   - `subagent_type`: `general-purpose` (or `feature-dev:feature-dev`
-     for larger features — pick based on ticket type/scope).
+   - `subagent_type`: `general-purpose` (the default). For architecture-heavy
+     tickets, run the built-in `Plan` agent first to design the implementation plan.
    - `isolation`: `worktree` (each subagent gets its own copy of the
      repo on the target branch).
    - `prompt`: The subagent prompt from the plan + the standard

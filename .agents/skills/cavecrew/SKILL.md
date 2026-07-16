@@ -20,7 +20,7 @@ Cavecrew = three subagent presets that emit caveman output. Same job as Anthropi
 | "Where is X defined / what calls Y / list uses of Z" | `cavecrew-investigator` |
 | Same but you also want suggestions/architecture commentary | `Explore` (vanilla) |
 | Surgical edit, ≤2 files, scope obvious | `cavecrew-builder` |
-| New feature / 3+ files / cross-cutting refactor | Main thread or `feature-dev:code-architect` |
+| New feature / 3+ files / cross-cutting refactor | Main thread or the built-in `Plan` agent |
 | Review diff, branch, or file for bugs | `cavecrew-reviewer` |
 | Deep code review with rationale + alternatives | `Code Reviewer` (vanilla) |
 | One-line answer you already know | Main thread, no subagent |

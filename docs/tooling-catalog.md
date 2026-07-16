@@ -617,7 +617,7 @@ chokepoint above, and returns final `meta.json` status + the worker branch +
 failure) — the parent owns review + merge. **`guard-implementor-dispatch`
 (HIMMEL-920) orthogonality:** that hook gates an ALLOW-LIST of
 implementor-shaped `subagent_type`s (`general-purpose`, `claude`,
-`feature-dev:code-architect`) against the Claude 5-hour bank;
+`Plan`) against the Claude 5-hour bank;
 `claudex-subagent` is not in that list (exactly like `glm-subagent`) and
 spends the codex weekly bank instead — the two guards deliberately don't
 overlap. The codex-lane cost control is the bank preflight above, not

@@ -14,7 +14,7 @@ have Bash only — by design.
 
 `guard-implementor-dispatch` (the 5-hour-Claude-bank cost guard on Agent
 dispatches, HIMMEL-920) gates an ALLOW-LIST of implementor-shaped
-`subagent_type`s (`general-purpose`, `claude`, `feature-dev:code-architect`)
+`subagent_type`s (`general-purpose`, `claude`, `Plan`)
 with an empty/sonnet/opus/fable model. This agent's `subagent_type` —
 `himmel-ops:claudex-subagent` — is NOT in that list, so dispatching it never
 trips HIMMEL-920, exactly like `himmel-ops:glm-subagent`. That is correct,
