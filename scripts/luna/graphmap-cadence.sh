@@ -25,9 +25,10 @@
 # and only publishes the curated MOC back into the vault's 60-Maps/. That
 # discipline lives in the runner; this scheduler just fires it.
 #
-# OPERATOR FLIP: arming this cadence commits to a daily DeepSeek extraction run
-# per corpus (real, if small, recurring API spend). It never auto-arms — `arm`
-# registers tasks only when explicitly invoked, so the operator decides.
+# OPERATOR FLIP: arming this cadence commits to a daily graphify extraction run
+# per corpus on the claude (claude-cli) backend (HIMMEL-1049 — no cloud API key;
+# the fence maps claude -> anthropic by effective endpoint). It never auto-arms —
+# `arm` registers tasks only when explicitly invoked, so the operator decides.
 #
 # Two daily tasks are registered:
 #   HIMMEL-GraphMap-Luna    daily (default 13:00 local)
@@ -35,13 +36,13 @@
 #   HIMMEL-GraphMap-Himmel  daily (default 13:20 local)
 #       bash <himmel>/scripts/graphify/refresh-graph-map.sh --name himmel ...
 #
-# WHY 13:00 / 13:20 LOCAL (and staggered 20 min apart): DeepSeek off-peak is
-# defined in UTC (peak UTC 1-4 + 6-10 charges ~2x). 13:00-13:20 LOCAL lands in
-# the off-peak-UTC valley across the common European/US operator zones, and
-# refresh-graph-map.sh ALSO emits its own UTC-peak-window advisory at fire time
-# as a backstop if the local->UTC mapping ever lands inside a peak window. The
-# 20-minute stagger keeps the two DeepSeek extraction jobs from running
-# simultaneously (avoids concurrent-run rate/cost spikes).
+# WHY 13:00 / 13:20 LOCAL (and staggered 20 min apart): a quiet mid-day default;
+# the 20-minute stagger REDUCES THE CHANCE of the two extraction jobs overlapping
+# (it cannot guarantee no overlap — luna and himmel are different corpora / out
+# dirs, so the per-out-dir promote lock does not serialize them; a slow job could
+# still run into the next). The claude-cli backend has no provider off-peak
+# window, so these times are not cost-driven. The backend is fixed as BACKEND in
+# this script — not a flag; edit + re-arm to change it.
 #
 # Usage:
 #   bash scripts/luna/graphmap-cadence.sh arm [--luna-time HH:MM]
@@ -126,7 +127,17 @@ LUNA_TAG="luna"
 HIMMEL_TITLE="Graphify Himmel Map"
 HIMMEL_SLUG="graphify-himmel-map"
 HIMMEL_TAG="himmel"
-BACKEND="deepseek"
+# HIMMEL-1049 (himmel off deepseek): the scheduled luna + himmel refresh runs on
+# the claude-cli extraction backend — graphify's `claude-cli` routes through the
+# locally-installed `claude` CLI (no extra API key), unlike `claude` which is the
+# pay-as-you-go Anthropic API path (ANTHROPIC_API_KEY). The deepseek pipe was
+# unreliable. BILLING CAVEAT: claude-cli rides the operator's Pro/Max
+# subscription only while NO Anthropic API credential is in the environment — a
+# set ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN takes precedence in the `claude`
+# CLI and switches the run to pay-as-you-go. The fence maps claude/claude-cli ->
+# a provider by their effective endpoint (see graphify-fence.sh); already-armed
+# tasks keep their baked-in --backend until re-armed with this default.
+BACKEND="claude-cli"
 
 usage() {
     cat <<'EOF'
@@ -146,8 +157,9 @@ Subcommands:
 Flags (arm only, except --dry-run):
   --luna-time <HH:MM>    Daily luna-map time, 24h local   (default 13:00)
   --himmel-time <HH:MM>  Daily himmel-map time, 24h local (default 13:20;
-                         staggered 20min after luna so the two DeepSeek
-                         extraction jobs don't run at once)
+                         staggered 20min after luna to reduce the chance of
+                         the two extraction jobs overlapping — different
+                         corpora/out-dirs, so no shared lock serializes them)
   --vault <PATH>         Luna vault root (default: $LUNA_VAULT_PATH if set,
                          else <user-profile>/Documents/luna). The vault's
                          60-Maps/ is where the curated MOCs are published.
@@ -155,10 +167,12 @@ Flags (arm only, except --dry-run):
   --dry-run              Print what would happen, touch nothing
                          (honored by arm AND disarm)
 
-WHY 13:00 / 13:20 local: DeepSeek off-peak is defined in UTC (peak UTC
-1-4 + 6-10 = ~2x). 13:00-13:20 local lands off-peak-UTC across common
-European/US zones; refresh-graph-map.sh also emits its own UTC-peak
-advisory at fire time as a backstop.
+WHY 13:00 / 13:20 local: a quiet mid-day default, staggered 20min to reduce
+the chance of the two extraction jobs overlapping (not a guarantee — they use
+different corpora/out-dirs, so no shared lock serializes them). The claude-cli
+backend has no provider off-peak window, so the times are not cost-driven.
+The extraction backend is NOT a flag here — it is fixed as BACKEND in this
+script (claude-cli); edit it there and re-arm to change it.
 EOF
 }
 
@@ -704,8 +718,8 @@ cmd_arm() {
 
   Each task fires bash + refresh-graph-map.sh directly (no claude
   session). StartWhenAvailable=true: a run missed because the PC was
-  off/asleep fires when the PC is next on. Arming = daily DeepSeek
-  extraction spend; disarm anytime with:
+  off/asleep fires when the PC is next on. Arming = daily graphify
+  extraction on the $BACKEND backend; disarm anytime with:
       bash scripts/luna/graphmap-cadence.sh disarm
 ================================================================
 EOF
@@ -985,7 +999,7 @@ cron_arm() {
   Runner .sh: $BAT_DIR
 
   Each task fires bash + refresh-graph-map.sh directly (no claude
-  session). Arming = daily DeepSeek extraction spend; disarm anytime:
+  session). Arming = daily graphify extraction on the $BACKEND backend; disarm anytime:
       bash scripts/luna/graphmap-cadence.sh disarm
 ================================================================
 EOF

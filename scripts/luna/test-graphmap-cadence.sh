@@ -246,7 +246,7 @@ assert_contains "luna runner fires refresh-graph-map.sh"   "refresh-graph-map.sh
 assert_contains "luna runner names the luna corpus"        "--name luna"          "$luna_sh"
 assert_contains "luna runner sets the luna slug"           "--slug graphify-luna-map" "$luna_sh"
 assert_contains "luna runner sets the luna corpus-tag"     "--corpus-tag luna"    "$luna_sh"
-assert_contains "luna runner uses the deepseek backend"    "--backend deepseek"   "$luna_sh"
+assert_contains "luna runner uses the claude-cli backend"      "--backend claude-cli --corpus-tag" "$luna_sh"
 assert_contains "luna runner sets the luna title"          "Graphify Luna Map"    "$luna_sh_plain"
 assert_contains "luna runner publishes into 60-Maps"       "60-Maps"              "$luna_sh_plain"
 # Strong corpus-root asserts (HIMMEL-829 CR, pr-test-analyzer): the luna map
@@ -258,7 +258,7 @@ assert_contains "luna runner corpus-root is the vault"     "--corpus-root $VAULT
 assert_contains "himmel runner names the himmel corpus"    "--name himmel"        "$himmel_sh"
 assert_contains "himmel runner sets the himmel slug"       "--slug graphify-himmel-map" "$himmel_sh"
 assert_contains "himmel runner sets the himmel corpus-tag" "--corpus-tag himmel"  "$himmel_sh"
-assert_contains "himmel runner uses the deepseek backend"  "--backend deepseek"   "$himmel_sh"
+assert_contains "himmel runner uses the claude-cli backend"    "--backend claude-cli --corpus-tag" "$himmel_sh"
 assert_contains "himmel runner corpus-root is the himmel repo" "--corpus-root $HIMMEL_ROOT_EXP" "$himmel_sh_plain"
 assert_contains "himmel runner sets the himmel title"      "Graphify Himmel Map"  "$himmel_sh_plain"
 assert_contains "luna runner cds into himmel root" "cd $HIMMEL_ROOT_EXP" "$luna_sh_plain"
@@ -625,7 +625,7 @@ assert_contains "luna bat fires refresh-graph-map.sh" "refresh-graph-map.sh" "$l
 assert_contains "luna bat names the luna corpus"      "--name luna"          "$luna_bat"
 assert_contains "luna bat sets the luna slug"         "--slug graphify-luna-map" "$luna_bat"
 assert_contains "luna bat sets the luna corpus-tag"   "--corpus-tag luna"    "$luna_bat"
-assert_contains "luna bat uses the deepseek backend"  "--backend deepseek"   "$luna_bat"
+assert_contains "luna bat uses the claude-cli backend"    "--backend claude-cli --corpus-tag" "$luna_bat"
 assert_contains "luna bat sets the luna title"        "Graphify Luna Map"    "$luna_bat"
 assert_contains "luna bat publishes into 60-Maps"     "60-Maps"              "$luna_bat"
 assert_contains "luna bat appends run log" 'graphmap-luna.log" 2>&1' "$luna_bat"
@@ -634,7 +634,7 @@ assert_contains "luna bat stamps every fire" 'echo [fired %DATE% %TIME%]' "$luna
 assert_contains "himmel bat names the himmel corpus"    "--name himmel"        "$himmel_bat"
 assert_contains "himmel bat sets the himmel slug"       "--slug graphify-himmel-map" "$himmel_bat"
 assert_contains "himmel bat sets the himmel corpus-tag" "--corpus-tag himmel"  "$himmel_bat"
-assert_contains "himmel bat uses the deepseek backend"  "--backend deepseek"   "$himmel_bat"
+assert_contains "himmel bat uses the claude-cli backend"    "--backend claude-cli --corpus-tag" "$himmel_bat"
 # Strong per-corpus-root asserts on the Windows path too (bat_payload is a
 # SEPARATE builder from the cron cron_payload, so the cron suite's exact asserts
 # don't guard a Windows-only swap). VAULT is already mixed-form here, so it

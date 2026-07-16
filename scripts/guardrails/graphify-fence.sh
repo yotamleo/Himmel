@@ -58,6 +58,20 @@
 #                      `openai` (falls to matrix default deny)
 #   glm | zai       -> zai-glm
 #   gemini | google -> google-gemini
+#   claude | claude-cli -> ENDPOINT-AWARE (HIMMEL-1049 + codex-adv-1): graphify's
+#                      claude backend honors ANTHROPIC_BASE_URL, so classify by
+#                      the effective endpoint, not the name -
+#                        unset / api.anthropic.com -> anthropic (the operating
+#                          harness itself; matrix allows it on every non-salus
+#                          corpus, HARD-DENIES salus/PHI, so a claude-only adopter
+#                          is WARNED-not-BLOCKED on ordinary corpora, salus blocked)
+#                        EXACT host api.z.ai / open.bigmodel.cn (claude-glm sets
+#                          ANTHROPIC_BASE_URL=https://api.z.ai/...) -> zai-glm
+#                          (matrix cell + ledger apply; no silent
+#                          Anthropic-labelled Z.ai egress)
+#                        any other host (lookalikes, unknown gateways, the
+#                          claude-routed loopback router) -> undeclared -> default
+#                          deny. EXACT-host match, not substring (spoof-proof)
 #   anything else   -> the literal backend string (undeclared -> default deny)
 #
 # Test overrides (mirror parity_guard's CLAUDE_GLM_CONFIG_DIR posture; let the
@@ -688,6 +702,65 @@ _ollama_local() {
     esac
 }
 
+# _map_anthropic_endpoint -> resolve the claude/claude-cli backend to a provider
+# by its EFFECTIVE endpoint (HIMMEL-1049 codex-adv-1). graphify's `claude`
+# backend honors ANTHROPIC_BASE_URL ("claude also reaches custom
+# Anthropic-compatible endpoints (LiteLLM proxy, gateways): set
+# ANTHROPIC_BASE_URL and ANTHROPIC_MODEL"), so the backend NAME alone does not
+# prove the traffic reaches Anthropic: the claude-glm / claude-routed launchers
+# set ANTHROPIC_BASE_URL to a Z.ai/GLM gateway (scripts/claude-glm; parity_guard
+# checks `api.z.ai in ANTHROPIC_BASE_URL`). Mirror the openai->deepseek endpoint
+# check so a claude extraction under those launchers is classified by its REAL
+# provider (zai-glm) and hits the matrix's zai-glm cell + ledger, instead of
+# being waved through as anthropic. Fail-closed on an unknown custom gateway.
+# Classification is by EXACT hostname (CodeRabbit-critical on HIMMEL-1049):
+# substring matching on the raw URL is spoofable - `api.anthropic.com.evil/`
+# and `evil/api.anthropic.com` both CONTAIN "api.anthropic.com" yet reach an
+# attacker. So parse the URL down to its hostname (pure-bash, bash-3.2 idiom
+# like _abs/_normalize: strip scheme, path, query, fragment, userinfo, port,
+# lowercase) and allowlist EXACT hosts; anything else fails closed.
+#   unset                              -> anthropic (graphify's default endpoint)
+#   host == api.anthropic.com          -> anthropic
+#   host in {api.z.ai, open.bigmodel.cn} -> zai-glm (the GLM gateway
+#                                         scripts/claude-glm points at; the
+#                                         matrix zai-glm cell + ledger apply)
+#   any other host (incl. lookalikes, the claude-routed 127.0.0.1 loopback
+#     router, unknown gateways, a scheme-less/malformed value) -> the literal
+#     "anthropic-custom" (undeclared -> matrix default deny; fail-closed)
+_map_anthropic_endpoint() {
+    local u host
+    u="${ANTHROPIC_BASE_URL:-}"
+    [ -n "$u" ] || { echo anthropic; return; }
+    u="$(_lc "$u")"
+    # Reject any backslash BEFORE host classification (CodeRabbit-major on
+    # HIMMEL-1049): a backslash is never valid in a URL authority, but some HTTP
+    # clients (WHATWG URL parsing) fold `\` into `/`, so
+    # `https://evil.com\@api.anthropic.com` could resolve to evil.com while the
+    # `${u##*@}` userinfo strip below sees api.anthropic.com. Fail closed.
+    case "$u" in *\\*) echo anthropic-custom; return ;; esac
+    # Require an explicit HTTPS scheme. A plaintext http:// endpoint would egress
+    # corpus content in cleartext; a scheme-less (`api.anthropic.com`) or
+    # arbitrary-scheme (`file://`, `evil://`) value is malformed/ambiguous. All of
+    # these fail closed to anthropic-custom (CodeRabbit-major on HIMMEL-1049), so a
+    # bare/plaintext trusted hostname can never be waved through as anthropic (the
+    # real gateways — api.anthropic.com, api.z.ai — are HTTPS).
+    case "$u" in
+        https://*) : ;;
+        *) echo anthropic-custom; return ;;
+    esac
+    u="${u#*://}"       # strip the (validated) https:// scheme
+    u="${u%%/*}"        # authority = up to the first '/'
+    u="${u%%\?*}"       # strip ?query   (scheme-/path-less forms)
+    u="${u%%#*}"        # strip #fragment
+    host="${u##*@}"     # drop userinfo (user:pass@)
+    host="${host%%:*}"  # drop :port
+    case "$host" in
+        api.anthropic.com)          echo anthropic ;;
+        api.z.ai|open.bigmodel.cn)  echo zai-glm ;;
+        *)                          echo anthropic-custom ;;
+    esac
+}
+
 # map_provider <backend(lowercased)> -> echoes provider (may be undeclared literal).
 map_provider() {
     local b="$1" hit=0
@@ -703,6 +776,7 @@ map_provider() {
             ;;
         glm|zai)       echo zai-glm ;;
         gemini|google) echo google-gemini ;;
+        claude|claude-cli) _map_anthropic_endpoint ;;
         *)             echo "$b" ;;
     esac
 }
@@ -868,6 +942,23 @@ apply_verdict() {
         backend_effective="$(_lc "$(_strip_wrap "$backend_raw")")"
     fi
     provider="$(map_provider "$backend_effective")"
+
+    # HARD-DENY the unverified-endpoint sentinel BEFORE the matrix eval
+    # (CodeRabbit-major on HIMMEL-1049). `anthropic-custom` is what
+    # _map_anthropic_endpoint returns when it CANNOT vouch for the claude
+    # backend's endpoint (unknown/lookalike host, plaintext http, scheme-less,
+    # backslash authority). Letting it reach the matrix would hand it to the
+    # `himmel-code x * x *` wildcard -> ALLOW: but that wildcard exists for
+    # RATIFIED providers (codex/GLM/alibaba/anthropic/deepseek), NOT for an
+    # arbitrary host an attacker can point ANTHROPIC_BASE_URL at. An endpoint we
+    # cannot verify must fail closed on EVERY corpus, public code included.
+    if [ "$provider" = "anthropic-custom" ]; then
+        # Do NOT echo the raw ANTHROPIC_BASE_URL (CodeRabbit-major): it can carry
+        # userinfo/credentials/query tokens (https://user:SECRET@host/...), and
+        # this message lands on stderr + in the hook trail. Name the VARIABLE, not
+        # its value; the operator can inspect it themselves.
+        deny "claude backend points at an unverified endpoint (ANTHROPIC_BASE_URL is set to an unrecognized/unsupported value - not echoed, it may carry credentials); refusing on every corpus (fail-closed). Fix: unset ANTHROPIC_BASE_URL, or point it at https://api.anthropic.com or the ratified gateway https://api.z.ai (https only, exact host); or pick a backend that does not read it (e.g. --backend ollama for local extraction)"
+    fi
 
     command -v node >/dev/null 2>&1 || deny "node not found; cannot evaluate the egress matrix (fail-closed)"
 

@@ -69,6 +69,42 @@ grep -q "Alpha" "$MAPS/graphify-luna-map.md" 2>/dev/null && pass "T1 MOC carries
 ls "$SCRATCH_PARENT"/graphify-refresh-* >/dev/null 2>&1 && fail "owned scratch subdir left behind" || pass "T1 owned scratch subdir cleaned"
 [ -f "$SCRATCH_PARENT/unrelated.txt" ] && pass "T1 scratch-parent unrelated data preserved" || fail "T1 clobbered unrelated data in scratch parent"
 
+# --- T1b: DEFAULT backend is claude-cli (HIMMEL-1049 "himmel off deepseek") —
+# when no --backend is passed, refresh-graph-map must invoke graphify with
+# --backend claude-cli: graphify's `claude-cli` routes through the local `claude`
+# CLI on the operator's Pro/Max SUBSCRIPTION (no ANTHROPIC_API_KEY, priced 0.0),
+# whereas `claude` is the pay-as-you-go Anthropic API path — the claude-only
+# adopter story needs claude-cli. A logging stub records the argv so we can
+# assert the exact default flowed through. ---
+LOGBIN="$WS/logbin"; mkdir -p "$LOGBIN"
+BACKEND_LOG="$WS/backend.log"; : > "$BACKEND_LOG"
+cat > "$LOGBIN/graphify" <<STUB
+#!/usr/bin/env bash
+# Log argv ONE-PER-LINE (CodeRabbit): preserves argument boundaries so the
+# assertion can check the exact token after --backend (a joined-string grep
+# would let --backend claude-cli satisfy a "--backend claude" substring match).
+printf '%s\n' "\$@" >> "$BACKEND_LOG"
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$LOGBIN/graphify"
+DCORPUS="$WS/dvault"; mkdir -p "$DCORPUS/notes"; printf '# n\ncontent\n' > "$DCORPUS/notes/a.md"
+DMAPS="$WS/dmaps"; mkdir -p "$DMAPS"
+out=$( GRAPHIFY_MAP_BIN="$LOGBIN/graphify" bash "$SCRIPT" --name dtest --corpus-root "$DCORPUS" \
+  --maps-dir "$DMAPS" --title "D" --slug d-map --corpus-tag dtest 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T1b default-backend run exit 0 (got $rc): $out"
+# Assert the token IMMEDIATELY AFTER --backend is EXACTLY claude-cli (not the
+# paid-API `claude`, not deepseek) — arg-boundary robust per the one-per-line log.
+got_backend=$(awk 'prev=="--backend"{print; exit} {prev=$0}' "$BACKEND_LOG")
+[ "$got_backend" = "claude-cli" ] && pass "T1b default backend is exactly claude-cli" || fail "T1b default backend not exactly claude-cli (got: '$got_backend')"
+[ "$got_backend" != "deepseek" ] && pass "T1b default no longer deepseek" || fail "T1b default still uses deepseek"
+
 # --- T2: --no-update publishes from an existing repo-local report without re-extracting ---
 printf 'SENTINEL-EXISTING' > "$CORPUS/graphify-out/graph.json"   # must NOT be overwritten under --no-update
 # F4 (HIMMEL-907): a .md added AFTER T1's stamp but BEFORE this no-update run

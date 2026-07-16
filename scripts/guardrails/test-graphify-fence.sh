@@ -61,7 +61,7 @@ LEDGER="$HOME/.claude/graphify-egress.jsonl"
 # env vars scrubbed on every fence call so the outer shell cannot leak state in.
 CLEAN_ENV="-u GRAPHIFY_SALUS_LOCAL_OK -u GRAPHIFY_CLIPPINGS_GLM_OK -u GRAPHIFY_LEDGER \
 -u GRAPHIFY_TOOL_CWD -u GRAPHIFY_DECLARED_BACKEND \
--u OPENAI_BASE_URL -u DEEPSEEK_BASE_URL -u LUNA_VAULT -u OLLAMA_HOST \
+-u OPENAI_BASE_URL -u DEEPSEEK_BASE_URL -u ANTHROPIC_BASE_URL -u LUNA_VAULT -u OLLAMA_HOST \
 -u DEEPSEEK_API_KEY -u ZAI_API_KEY -u DASHSCOPE_API_KEY -u OPENAI_API_KEY \
 -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u XAI_API_KEY \
 -u OPENROUTER_API_KEY -u NVIDIA_API_KEY"
@@ -144,6 +144,110 @@ run_fence deny no "$HIMMEL" "denylist-root x deepseek -> salus deny" \
 # gemini backend anywhere -> hard deny
 run_fence deny no "$HIMMEL" "himmel x gemini -> hard deny" \
     "graphify update $HIMMEL/scripts/thing.sh --backend gemini"
+
+echo "== claude backend -> anthropic: warn-not-block per corpus (HIMMEL-1049) =="
+
+# claude backend maps to the anthropic provider (the operating harness itself).
+# The matrix ALLOWS anthropic on every non-salus corpus (WARN-not-block: the
+# adopter proceeds) and HARD-DENIES salus/PHI (invariant, stays blocked).
+
+# himmel-code x claude -> allow (no ledger)
+run_fence allow no "$HIMMEL" "himmel-code x claude -> allow (warn-not-block)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude"
+
+# claude-cli alias maps identically -> allow
+run_fence allow no "$HIMMEL" "himmel-code x claude-cli -> allow (alias)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli"
+
+# luna-personal x claude -> allow (anthropic = operating substrate, no ledger)
+run_fence allow no "$HIMMEL" "luna-personal x claude -> allow (warn-not-block)" \
+    "graphify update $LUNA/journal-2026.md --backend claude"
+
+# luna-clippings x claude -> allow
+run_fence allow no "$HIMMEL" "luna-clippings x claude -> allow (warn-not-block)" \
+    "graphify update $LUNA/Clippings/clip.md --backend claude"
+
+# salus x claude -> HARD DENY (PHI invariant preserved)
+run_fence deny no "$HIMMEL" "salus x claude -> hard deny (PHI invariant)" \
+    "graphify update $SALUS/notes/patient.md --backend claude"
+
+# denylist-root (path-list PHI) x claude -> salus -> hard deny (user-extensible PHI set)
+run_fence deny no "$HIMMEL" "denylist-root x claude -> salus hard deny" \
+    "graphify update $DENYROOT/x/leak.md --backend claude"
+
+echo "== claude backend is ENDPOINT-AWARE (codex-adv-1: no Anthropic-labelled Z.ai egress) =="
+
+# THE HOLE: claude backend under a claude-glm launcher (ANTHROPIC_BASE_URL=api.z.ai)
+# actually egresses to Z.ai. It must classify as zai-glm, NOT anthropic — so
+# luna-personal x zai-glm -> matrix default deny (was silently ALLOWED as anthropic).
+run_fence deny no "$HIMMEL" "luna-personal x claude(z.ai baseurl) -> zai-glm deny" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+
+# same z.ai gateway on Clippings -> zai-glm conditional cell, no opt-in -> deny
+run_fence deny no "$HIMMEL" "clippings x claude(z.ai baseurl) -> zai-glm deny (no opt-in)" \
+    "graphify update $LUNA/Clippings/clip.md --backend claude" ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+
+# z.ai gateway on himmel-code -> zai-glm -> himmel-code allows any ratified lane
+run_fence allow no "$HIMMEL" "himmel-code x claude(z.ai baseurl) -> zai-glm allow" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude" ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+
+# explicit real Anthropic endpoint -> anthropic -> luna allow (operating substrate)
+run_fence allow no "$HIMMEL" "luna-personal x claude(api.anthropic.com) -> anthropic allow" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=https://api.anthropic.com
+
+# UNKNOWN custom gateway -> undeclared anthropic-custom -> fail-closed default deny
+run_fence deny no "$HIMMEL" "luna-personal x claude(unknown gateway) -> deny (fail-closed)" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=https://litellm.internal.example/v1
+
+# z.ai gateway on salus -> still HARD DENY (PHI invariant beats any provider)
+run_fence deny no "$HIMMEL" "salus x claude(z.ai baseurl) -> hard deny (PHI invariant)" \
+    "graphify update $SALUS/notes/patient.md --backend claude" ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+
+# EXACT-host match, not substring (CodeRabbit-critical): spoofed lookalike hosts
+# that CONTAIN a trusted host as a substring must NOT be classified as trusted.
+# api.anthropic.com.<attacker> -> NOT anthropic -> luna-personal default deny.
+run_fence deny no "$HIMMEL" "luna x claude(api.anthropic.com.evil) -> deny (no substring trust)" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=https://api.anthropic.com.evil.invalid/v1
+# a path that embeds a trusted host -> host is evil.invalid -> anthropic-custom.
+# Tested on luna-personal (himmel-code allows ANY provider by design, so a
+# restrictive corpus is where the lookalike deny is observable).
+run_fence deny no "$HIMMEL" "luna x claude(evil/api.anthropic.com path) -> deny" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=https://evil.invalid/api.anthropic.com
+# z.ai lookalike subdomain -> host api.z.ai.attacker.invalid -> anthropic-custom
+# (NOT trusted as anthropic) -> luna-personal deny.
+run_fence deny no "$HIMMEL" "luna x claude(api.z.ai.attacker) -> deny (no substring trust)" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=https://api.z.ai.attacker.invalid/v1
+# real z.ai host with a port + userinfo still normalizes to api.z.ai -> zai-glm.
+run_fence allow no "$HIMMEL" "himmel x claude(user@api.z.ai:443) -> zai-glm allow" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude" ANTHROPIC_BASE_URL=https://user@api.z.ai:443/api/anthropic
+# scheme-less bare trusted hostname must NOT be trusted -> fail-closed deny on luna.
+run_fence deny no "$HIMMEL" "luna x claude(scheme-less api.anthropic.com) -> deny (needs http(s))" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=api.anthropic.com
+# arbitrary non-http scheme -> fail-closed deny on luna.
+run_fence deny no "$HIMMEL" "luna x claude(file:// scheme) -> deny (needs https)" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=file:///api.anthropic.com
+# plaintext http:// to a trusted host -> deny (cleartext egress; https required).
+run_fence deny no "$HIMMEL" "luna x claude(http://api.anthropic.com) -> deny (https only)" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=http://api.anthropic.com
+# plaintext http:// to the z.ai gateway -> anthropic-custom (https required);
+# observable on luna (himmel-code allows any provider by design).
+run_fence deny no "$HIMMEL" "luna x claude(http://api.z.ai) -> deny (https only)" \
+    "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=http://api.z.ai/api/anthropic
+# backslash-in-authority (WHATWG \-as-/ confusion) -> fail-closed deny: a naive
+# userinfo strip would see api.anthropic.com, but the real host may be evil.com.
+run_fence deny no "$HIMMEL" "luna x claude(backslash authority) -> deny (fail-closed)" \
+    "graphify update $LUNA/journal-2026.md --backend claude" 'ANTHROPIC_BASE_URL=https://evil.invalid\@api.anthropic.com/v1'
+
+# An UNVERIFIED endpoint hard-denies on EVERY corpus — including himmel-code,
+# whose `* *` matrix wildcard is for RATIFIED providers, NOT an arbitrary host an
+# attacker can point ANTHROPIC_BASE_URL at. Without the anthropic-custom
+# hard-deny these would ALLOW via the wildcard (CodeRabbit-major regression pins).
+run_fence deny no "$HIMMEL" "himmel-code x claude(unknown gateway) -> hard deny (not the wildcard)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude" ANTHROPIC_BASE_URL=https://litellm.internal.example/v1
+run_fence deny no "$HIMMEL" "himmel-code x claude(api.anthropic.com.evil) -> hard deny" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude" ANTHROPIC_BASE_URL=https://api.anthropic.com.evil.invalid/v1
+run_fence deny no "$HIMMEL" "himmel-code x claude(http plaintext) -> hard deny" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude" ANTHROPIC_BASE_URL=http://api.anthropic.com
 
 echo "== C1: subcommand grammar + cwd-in-himmel reproduction =="
 
