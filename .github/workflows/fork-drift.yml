@@ -1,0 +1,67 @@
+name: fork-drift
+
+# Nightly upstream-drift watch (HIMMEL-1046). Runs the existing drift guard
+# (scripts/check-plugin-drift.sh + scripts/upstreams.json, HIMMEL-869) — which
+# now also covers the two SHA-pinned lib forks graphify + qmd — and, on real
+# DRIFT (guard exit 2), opens or refreshes ONE consolidated tracking issue
+# (himmel /himmel-doctor convention: never a new issue per run). exit 3
+# (INCOMPLETE — expected in CI, where the probe/checkout registry entries for
+# rtk/twitter/hermes have no local install) is summary-only, never an issue.
+on:
+  schedule:
+    - cron: '41 6 * * *'   # nightly, UTC (offset from ci.yml's 17 7)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: fork-drift-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run upstream-drift guard
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # rtk/twitter-cli (mode: probe) and hermes-agent (mode: checkout) have
+          # no local install/checkout on this runner and always read UNCHECKED
+          # here — that's expected, but it means the full registry would make
+          # this job exit 3 (incomplete) forever, even once real drift clears,
+          # and fork-drift-issue.sh intentionally leaves the tracking issue open
+          # on exit 3 (never auto-closes on an incomplete run). Strip those
+          # machine-local entries for CI so a genuinely all-current registry can
+          # still reach exit 0; a real API failure on a remaining entry still
+          # trips exit 3, unchanged.
+          jq '{entries: [.entries[] | select(.mode != "checkout" and .mode != "probe")]}' \
+            scripts/upstreams.json > fork-drift-ci-upstreams.json
+          # The guard's exit code IS the signal (0 current / 2 drift / 3
+          # incomplete); capture it without letting `set -e` abort the job.
+          set +e
+          DRIFT_REGISTRY=fork-drift-ci-upstreams.json \
+            bash scripts/check-plugin-drift.sh 2>&1 | tee drift-report.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Upsert / clear consolidated drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/fork-drift-issue.sh "${{ steps.guard.outputs.rc }}" drift-report.txt
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### fork-drift — guard exit ${{ steps.guard.outputs.rc }}"
+            echo '```'
+            cat drift-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

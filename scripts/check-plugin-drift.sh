@@ -38,7 +38,11 @@
 #           same discipline as the claude-obsidian fork override). mode `base`
 #           takes the version from `synced_base`; mode `probe` runs
 #           `version_command` and extracts the version via `version_regex` — for
-#           installed binaries/CLIs (rtk, twitter-cli).
+#           installed binaries/CLIs (rtk, twitter-cli). Optional `latest_source:
+#           release` reads the maintainer's latest-non-prerelease via the Releases
+#           API instead of the highest semver tag — for upstreams whose tags are
+#           NON-MONOTONIC (a stale higher-semver tag would otherwise be a phantom
+#           "latest"; graphify's months-old v1.0.0 vs its current v0.9.x line).
 #      Installed marketplaces (caveman, obsidian-skills, openai-codex,
 #      claude-video, claude-plugins-official, …) are NOT listed in the registry:
 #      they are discovered dynamically from ~/.claude/plugins/known_marketplaces.json
@@ -75,6 +79,31 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Paths are env-overridable so the test harness can point at fixtures.
 MJSON="${DRIFT_MJSON:-$ROOT/marketplace/.claude-plugin/marketplace.json}"
 UPSTREAMS="${DRIFT_UPSTREAMS:-$ROOT/scripts/plugin-upstreams.json}"  # per-plugin true-upstream overrides (may be absent)
+
+# Portable replacement for `sort -V | tail -1`: GNU-only (BSD sort on macOS has
+# no -V), which would silently leave `latest`/`hi` empty on macOS and either
+# mark a tag_release check UNCHECKED or misreport it as BEHIND. Reads
+# newline-separated version strings on stdin (optional leading 'v', extra
+# non-numeric suffixes tolerated) and prints the one with the highest
+# major.minor.patch — via the python3 this class already requires.
+highest_version() {
+  python3 -c '
+import re, sys
+
+def numprefix(s):
+    m = re.match(r"\d+", s)
+    return int(m.group()) if m else 0
+
+def key(v):
+    v = v.strip().lstrip("vV")
+    parts = (v.split(".") + ["0", "0", "0"])[:3]
+    return tuple(numprefix(p) for p in parts)
+
+lines = [l.strip() for l in sys.stdin if l.strip()]
+if lines:
+    print(max(lines, key=key))
+'
+}
 
 if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
   echo "drift-check: gh CLI not available/authenticated — skipping (fail-open)."
@@ -292,11 +321,14 @@ def expand(p):
     p = re.sub(r'%([A-Za-z_][A-Za-z0-9_]*)%', lambda m: os.environ.get(m.group(1), ''), p)
     return os.path.expanduser(p).replace('\\', '/')
 
-def line(name, kind, repo, mode, v1, v2, tier):
+def line(name, kind, repo, mode, v1, v2, tier, extra=''):
     # \x1f (ASCII unit separator), not '|': version_regex (v2, probe mode) can
     # legitimately contain '|' for regex alternation, which would misalign a
-    # pipe-delimited record.
-    print('\x1f'.join([name, kind, repo, mode, v1 or '', v2 or '', tier or '']))
+    # pipe-delimited record. `extra` (8th field) carries the tag_release
+    # `latest_source` ('release' -> read the maintainer's latest-non-prerelease
+    # via the Releases API instead of the highest semver tag, for upstreams
+    # whose tags are non-monotonic); empty for every other record.
+    print('\x1f'.join([name, kind, repo, mode, v1 or '', v2 or '', tier or '', extra or '']))
 
 if os.path.exists(reg_path) and os.path.getsize(reg_path) > 0:
     d = json.load(open(reg_path))   # malformed -> raises -> class UNCHECKED
@@ -310,9 +342,9 @@ if os.path.exists(reg_path) and os.path.getsize(reg_path) > 0:
         elif kind == 'commit_head' and mode == 'checkout':
             line(e['name'], 'commit_head', repo, 'checkout', expand(e.get('checkout_path', '')), '', tier)
         elif kind == 'tag_release' and mode == 'base':
-            line(e['name'], 'tag_release', repo, 'base', e.get('synced_base', ''), '', tier)
+            line(e['name'], 'tag_release', repo, 'base', e.get('synced_base', ''), '', tier, e.get('latest_source', ''))
         elif kind == 'tag_release' and mode == 'probe':
-            line(e['name'], 'tag_release', repo, 'probe', e.get('version_command', ''), e.get('version_regex', ''), tier)
+            line(e['name'], 'tag_release', repo, 'probe', e.get('version_command', ''), e.get('version_regex', ''), tier, e.get('latest_source', ''))
         else:
             # Unrecognized kind/mode: pass it through verbatim so the bash
             # dispatch reports the REAL kind/mode (e.g. a known kind with a bad
@@ -344,7 +376,7 @@ PY
     echo "  ? upstreams.json / known_marketplaces.json parse failed (python3 error) — carried-upstreams class UNCHECKED."
     incomplete=1
   else
-    while IFS=$'\x1f' read -r name kind repo mode v1 v2 tier; do
+    while IFS=$'\x1f' read -r name kind repo mode v1 v2 tier latest_src; do
       [ -n "$name" ] || continue
       tier_note=""
       if [ -n "$tier" ]; then tier_note="  [$tier]"; fi
@@ -504,15 +536,35 @@ PY
             echo "  $name: ? tag_release mode '$mode' unknown — UNCHECKED (fix scripts/upstreams.json)"
             incomplete=1; continue
           fi
-          tags_raw="$(gh api "repos/$repo/tags?per_page=100" --jq '.[].name' 2>/dev/null)"; api_rc=$?
-          if [ "$api_rc" -ne 0 ] || [ -z "$tags_raw" ]; then
-            echo "  $name: ? true upstream unreachable ($repo tags) — UNCHECKED"
+          if [ "$latest_src" = "release" ]; then
+            # Non-monotonic tags: a stale higher-semver tag (e.g. graphify's
+            # v1.0.0, cut months before the current v0.9.x line) would make
+            # `sort -V` pick a phantom "latest" and report a permanent false
+            # BEHIND. Opt into the maintainer's own latest-non-prerelease
+            # designation (the Releases API), which reflects real recency.
+            latest="$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null)"; api_rc=$?
+            if [ "$api_rc" -ne 0 ] || ! printf '%s' "$latest" | grep -qE '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+              echo "  $name: ? no parseable latest release on $repo (latest_source=release) — UNCHECKED"
+              incomplete=1; continue
+            fi
+          elif [ -n "$latest_src" ]; then
+            # Only an empty latest_source means "default: highest stable tag". Any
+            # other non-empty value is a typo (e.g. "releases") that would silently
+            # fall into tag mode and re-introduce the phantom-drift this option
+            # exists to prevent — mark it UNCHECKED, never guess.
+            echo "  $name: ? unknown latest_source '$latest_src' — UNCHECKED (use 'release' or omit; fix scripts/upstreams.json)"
             incomplete=1; continue
-          fi
-          latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)"
-          if [ -z "$latest" ]; then
-            echo "  $name: ? no stable version tags found on $repo — UNCHECKED"
-            incomplete=1; continue
+          else
+            tags_raw="$(gh api "repos/$repo/tags?per_page=100" --jq '.[].name' 2>/dev/null)"; api_rc=$?
+            if [ "$api_rc" -ne 0 ] || [ -z "$tags_raw" ]; then
+              echo "  $name: ? true upstream unreachable ($repo tags) — UNCHECKED"
+              incomplete=1; continue
+            fi
+            latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
+            if [ -z "$latest" ]; then
+              echo "  $name: ? no stable version tags found on $repo — UNCHECKED"
+              incomplete=1; continue
+            fi
           fi
           # Normalize leading 'v' on both sides before comparing.
           norm_local="${local_ver#v}"
@@ -520,7 +572,7 @@ PY
           if [ "$norm_local" = "$norm_latest" ]; then
             echo "  $name: CURRENT  (installed $norm_local = $repo latest tag)${tier_note}"
           else
-            hi="$(printf '%s\n%s\n' "$norm_local" "$norm_latest" | sort -V | tail -1)"
+            hi="$(printf '%s\n%s\n' "$norm_local" "$norm_latest" | highest_version)"
             if [ "$hi" = "$norm_local" ]; then
               # Installed is newer than the latest STABLE tag (e.g. a prerelease or
               # locally-built version): not behind upstream's stable line.
