@@ -236,6 +236,41 @@ assert_state_requery "success path confirms PR state"
 # 12. A truthy-but-not-1 opt-in also enables (yes/on/true).
 ARMAUTOMERGE=yes run_mog 0 "ARMAUTOMERGE=yes also enables"
 
+# 13. `--help` prints the WHOLE header reference, not a truncated prefix
+# (coderabbit, public round). The old `sed -n '2,30p'` stopped at exit code 11,
+# so an operator diagnosing a 12-16 refusal saw none of those codes. The range
+# is now anchored to the `set -uo pipefail` line, so a header edit cannot
+# silently truncate the reference again — this test is what holds that.
+# --help is parsed before every gate, so it needs no stubs.
+help_out=$(bash "$MOG" --help 2>&1)
+help_rc=$?
+if [ "$help_rc" -eq 0 ]; then
+    pass
+else
+    fail "--help exits 0 (got $help_rc)"
+fi
+for _code in 0 10 11 12 13 14 15 16; do
+    if printf '%s' "$help_out" | grep -qE "^ *${_code} +[a-z]"; then
+        pass
+    else
+        fail "--help documents exit code ${_code}"
+    fi
+done
+for _doc in MERGE_ON_GREEN_LOG ARMAUTOMERGE 'GATE INTEGRITY'; do
+    if printf '%s' "$help_out" | grep -q "$_doc"; then
+        pass
+    else
+        fail "--help includes $_doc"
+    fi
+done
+# The terminating `set -uo pipefail` line is code, not help text — it must be
+# dropped, or the range anchor leaks the first line of the script body.
+if printf '%s' "$help_out" | grep -q 'set -uo pipefail'; then
+    fail "--help leaks the 'set -uo pipefail' code line"
+else
+    pass
+fi
+
 echo
 echo "merge-on-green: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
