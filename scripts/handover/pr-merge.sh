@@ -24,6 +24,7 @@
 #   3  not on a handover/* branch (refuses)
 #   4  gh pr merge failed
 #   5  blocked by the CR merge gate (unresolved CodeRabbit remarks - HIMMEL-936)
+#   6  blocked by the CI-green merge gate (head SHA not green - HIMMEL-1043)
 #
 # Environment overrides:
 #   FORGE / GH_CMD / BITBUCKET_CMD   Forge-seam overrides (HIMMEL-326). The PR
@@ -135,6 +136,23 @@ if [ "$forge" = "github" ]; then
         if [ "$_gate_rc" = "2" ]; then
             echo "pr-merge: CR gate: $_gate_reason" >&2
             exit 5
+        fi
+    fi
+    # HIMMEL-1043: CI-green gate, same predicate as the PreToolUse hook's
+    # second gate, so machines without the plugin hook still require green CI
+    # on this path. Runs AFTER the CR gate (exit 5) and before the
+    # mergeability poll; a CI-blocked merge fails fast (exit 6). pr-merge passes
+    # only the PR number (no --repo): a selector that fails to resolve is a
+    # plain fail-open rc=3 here — no cwd-branch re-anchor (this path already
+    # knows its PR via forge_pr_find_open).
+    # shellcheck disable=SC1091
+    if . "$SCRIPT_DIR/../lib/ci-green-gate.sh" 2>/dev/null; then
+        _ci_reason=""
+        _ci_rc=0
+        _ci_reason=$(ci_green_gate "$pr_num") || _ci_rc=$?
+        if [ "$_ci_rc" = "2" ]; then
+            echo "pr-merge: CI gate: $_ci_reason" >&2
+            exit 6
         fi
     fi
 fi

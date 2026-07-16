@@ -1,22 +1,31 @@
 #!/usr/bin/env bash
 # PreToolUse hook: block-unresolved-cr-merge.sh
 #
-# Blocks `gh pr merge` while the PR has unresolved CodeRabbit review threads
-# or a CodeRabbit check-run still running on the head SHA (HIMMEL-936), except
-# a proven old zombie backed by success status + zero unresolved threads (HIMMEL-980;
-# operator rule 2026-07-11: never merge over unresolved CodeRabbit remarks).
+# Blocks `gh pr merge` on TWO independent gates, run in order:
+#   1. CR gate (HIMMEL-936): unresolved CodeRabbit review threads or a
+#      CodeRabbit check-run still running on the head SHA (except a proven old
+#      zombie backed by success status + zero unresolved threads, HIMMEL-980;
+#      operator rule 2026-07-11: never merge over unresolved CodeRabbit remarks).
+#   2. CI-green gate (HIMMEL-1043): the PR's head SHA must have green overall
+#      CI — no failing/pending check-run, no failing/pending combined status.
+#      This repo has NO branch protection, so GitHub will not otherwise block a
+#      merge over red/pending CI (operator rule: "ready to merge" requires green).
 # Sibling of check-cr-marker-on-pr-create.sh / block-merged-pr-commit.sh.
 #
 # Exit: 0 allow (incl. every fail-open path), 2 block (stderr shown to model).
-# Bypass: CR_MERGE_GATE_OK=1 in the LAUNCHING shell. CR_PROFILE=none skips.
+# Bypass: CR_MERGE_GATE_OK=1 and/or CI_MERGE_GATE_OK=1 in the LAUNCHING shell
+# (each gates its own check independently). CR_PROFILE=none skips the CR gate.
 set -uo pipefail
 # NOT set -e: fail-open hook, must never abort on a sub-call's rc 1.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-[ "${CR_MERGE_GATE_OK:-0}" = "1" ] && exit 0
-[ "${CR_PROFILE:-}" = "none" ] && exit 0
-
+# The CR-gate bypasses (CR_MERGE_GATE_OK=1 / CR_PROFILE=none) are handled
+# INSIDE cr_merge_gate (self-bypass → rc 0), NOT with an early exit here — an
+# early `exit 0` would also skip the independent CI-green gate below, letting a
+# red/pending-CI merge through whenever a CR bypass is set (CodeRabbit, #1230).
+# The CI gate has its OWN bypass (CI_MERGE_GATE_OK=1) inside ci_green_gate. So
+# both gates are always reached; each self-bypasses its own check.
 command -v jq >/dev/null 2>&1 || exit 0   # cannot parse stdin: fail open
 
 payload=$(cat) || exit 0
@@ -140,6 +149,31 @@ if [ "$rc" = "3" ] && [ -n "$cwd_branch" ]; then
 fi
 if [ "$rc" = "2" ]; then
     echo "block-unresolved-cr-merge: $reason" >&2
+    exit 2
+fi
+
+# ── CI-green merge gate (HIMMEL-1043) — runs SECOND, after the CR gate ──
+# Same extracted selector ($sel)/$repo + rc=3 re-anchor pattern as the CR gate
+# above; the CI gate is independent (its own bypass CI_MERGE_GATE_OK=1) and
+# never coupled to CR_PROFILE. A guard bug must NEVER block a legit merge, so
+# every unresolvable/degraded path fails open (rc 0/3) inside ci_green_gate.
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/ci-green-gate.sh" 2>/dev/null || exit 0
+
+ci_reason=""
+ci_rc=0
+ci_reason=$(ci_green_gate "$sel" "$repo") || ci_rc=$?
+if [ "$ci_rc" = "3" ] && [ -n "$cwd_branch" ]; then
+    # Mirror the CR gate's re-anchor: the extracted token did not resolve to a
+    # PR, so retry once on the cwd branch (in the cwd repo) so ordinary CLI
+    # syntax cannot dodge the gate; if this also fails, ci_green_gate fails open.
+    if [ "$cwd_branch" != "$sel" ] || [ -n "$repo" ]; then
+        ci_rc=0
+        ci_reason=$(ci_green_gate "$cwd_branch" "") || ci_rc=$?
+    fi
+fi
+if [ "$ci_rc" = "2" ]; then
+    echo "block-red-ci-merge: $ci_reason" >&2
     exit 2
 fi
 exit 0
