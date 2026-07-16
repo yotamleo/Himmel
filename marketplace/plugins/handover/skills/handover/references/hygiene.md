@@ -133,13 +133,13 @@ Most-edited reviewer-notes.md (last 30d):
 
 Maintenance command. `<mode>` is `triage`, `consolidate`, `analyse`, or omitted (= all three). Load `references/resolution.md` for Target Repo Resolution.
 
-0. **Resolve target repo.**
+0. **Resolve target repo.** When triage will apply a verdict — `close` / `move bucket` / `re-activate` are frontmatter mutations — enter the target repo's **Worktree Gate** first (`references/resolution.md`), never on `main`. The read-only `consolidate` / `analyse` scans need no gate.
 1. **Read** `<state-root>/tech-debt.md` (already up-to-date from latest `update-status`).
 2. Execute the requested mode(s) per the "Hygiene command modes" section above:
    - **triage** — iterate over every entry in tech-debt.md; `AskUserQuestion` per item with per-tier action options.
    - **consolidate** — run path-overlap, DoD-overlap, slug-similarity, and ghost-follow-up scans; print numbered suggestions.
    - **analyse** — compute corpus metrics; print summary.
-3. **Apply** triage verdicts as soon as the user answers (skill executes the chosen action: close, move bucket, re-activate, etc.).
+3. **Apply** triage verdicts as soon as the user answers (skill executes the chosen action: close, move bucket, re-activate, etc.). Once verdicts are applied, **run `update-status`** to regenerate `status.md` / `roadmap.md` / `tech-debt.md` — triage changes item state, so the auto-files are stale until regenerated.
 4. **Apply** consolidate suggestions only on `/handover consolidate apply <N>` follow-up (this command does NOT auto-act on consolidate).
 5. **Print** analyse output to stdout (no side effects).
 6. **Append** a single hygiene entry to `sync.log`.
@@ -156,10 +156,16 @@ The skill must remember the most-recent consolidate output. Store it transiently
 
 0. **Resolve target repo → Worktree Gate.** Enter the target repo's worktree before any mutation.
 1. Read `<state-root>/.last-consolidate.json` (reference it by its full `<state-root>` path — it lives at the state root, NOT inside the worktree entered in step 0, so a bare relative read from the worktree cwd would miss it); locate suggestion N.
-2. **Preflight — validate before mutating.** Confirm every referenced item dir still exists at its recorded path and every Jira key still resolves; if a target is missing or already moved, report which and stop (the stored suggestion is stale — re-run `/handover hygiene consolidate`). Do not begin a partial apply on a stale suggestion.
-3. Execute its proposed action. Do each sub-step so it is **individually re-runnable** (skip a move whose destination already exists; skip a Jira transition already in the target state):
-   - "fold X under Y" → `git mv` dir X under Y/tasks/; rewrite refs; transition X's Jira to a Task under Y's Epic.
-   - "promote A+B+C to new epic" → `AskUserQuestion` for new epic name; create epic; move A/B/C as tasks under it.
+2. **Preflight — validate before mutating** (retry-aware, compatible with the step-3 re-runnable skips). For each referenced item, accept EITHER of two valid states: (a) the source dir still exists at its recorded path, or (b) the move already completed on an earlier run — the source is **absent** AND the expected destination already holds the **same** `<ID>-<slug>` item (identity match). Treat (b) as VALID and let step 3's re-runnable skips carry the retry forward; do NOT reject it as stale. Confirm every Jira key still resolves. **Stop and report** only for genuinely bad states: a source is missing with **no** identity-matched destination (the stored suggestion is stale — re-run `/handover hygiene consolidate`), or the expected destination is occupied by an **unrelated** item (a real directory collision). Do not begin a partial apply on a genuinely stale suggestion.
+3. Execute its proposed action. Do each sub-step so it is **individually re-runnable** — but a re-run must never mask a real conflict:
+   - **Skip a move only on an identity match.** Skip a `git mv` when the destination already exists **and** holds the expected source item (same `<ID>-<slug>`). If the destination exists but holds an **unrelated** item (a directory collision), **stop and report** — never treat an unrelated collision as a completed move.
+   - **Rewrite references idempotently.** Match and rewrite only the **old** path (old → new); a ref already pointing at the new path is left untouched. A second pass over already-updated links must be a no-op — never double-rewrite (e.g. never turn an already-rewritten `Y/tasks/X` into `Y/tasks/Y/tasks/X`) or otherwise corrupt links, so re-running the rewrite after a partial run is safe.
+   - Skip a Jira transition already in the target state.
+   - **Persist and reuse a created epic ID.** When "promote A+B+C to new epic" creates the epic, record its Jira key in `<state-root>/.last-consolidate.json` immediately; on a retry after partial failure, **reuse** that recorded key instead of creating a second epic.
+
+   Sub-steps:
+   - "fold X under Y" → `git mv` dir X under Y/tasks/ (identity-checked skip above); rewrite refs; transition X's Jira to a Task under Y's Epic.
+   - "promote A+B+C to new epic" → `AskUserQuestion` for new epic name; create epic (reuse the persisted key on retry); move A/B/C as tasks under it.
    - "ghost follow-up X referenced but never filed" → `AskUserQuestion`: "file as standalone now?"
    On any sub-step failure, **stop and report exactly which sub-steps completed** (do not silently continue past a failed move/transition); the operator re-runs `apply <N>` and the idempotent skips carry it forward from where it stopped.
 4. Run `update-status`.

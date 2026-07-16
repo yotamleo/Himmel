@@ -22,7 +22,7 @@ Creates a numbered session file. Append-only — never overwrites.
 
 **Cold-start prompt format** (lives under `## Cold-Start Prompt` heading inside `next-session-N.md`; `handover-resume` extracts the block between that heading and the next `## ` heading or EOF):
 
-```
+```text
 Continue <type> #N <name> in repo <repo-name>.
 
 Load context:

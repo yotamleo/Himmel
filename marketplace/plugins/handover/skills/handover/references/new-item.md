@@ -13,17 +13,17 @@ Creates a new epic in the target repo.
 2. **Bucket selection** — two orthogonal axes:
    - **Time-horizon bucket** (frontmatter `bucket:`) — if `defaults["new_*.bucket"]` is set, use it; else `AskUserQuestion` ("which time-horizon bucket for this new epic?") with the 4 active vocab options. Offer save-default opt-in.
    - **Source-repo bucket** (which `<state-root>/<bucket>/` dir the item lands in, HIMMEL-307; `new-epic`/`new-standalone` only — a `new-task` inherits its parent epic's source bucket) — resolve per Bucket Resolution. When the state-root host repo defines a non-empty `source_buckets_extra`, additionally offer the recognized extra buckets via `AskUserQuestion` ("which source bucket?"), defaulting to the prefix-derived bucket (dismiss ⇒ prefix default = today's behaviour). When `source_buckets_extra` is absent/empty, skip this sub-prompt entirely — the prefix rule resolves the source bucket exactly as before.
-3. **Worktree gate** — create worktree off latest main:
-   - If item will be Jira-keyed: branch = `<branch_prefix><JIRA-KEY>-<slug>` (key known only after step 5; rename branch after Jira create resolves)
-   - If item will be `#N`: branch = `<branch_prefix><slug>`
+3. **Worktree gate** — create worktree off latest main. The Jira key isn't known yet (Jira create is step 5), so both flows start from a provisional slug-only branch — but **do not assume `<branch_prefix><slug>` is free.** This is a *new-item creation*: it must NEVER enter an existing unmerged worktree of that name (unlike the shared Worktree Gate in `references/resolution.md`, which enters an existing unmerged branch — that branch belongs to another item, or to a concurrent/retried creation of the same slug, and entering it would write this item into the wrong worktree). **Allocate a uniquely-owned provisional branch instead:** if `<branch_prefix><slug>` does not exist, create it; if a branch by that name already exists (merged or not), fall through to `<branch_prefix><slug>-<N>`, incrementing `N` until an unused name is found (same conflict-suffix convention as the Worktree Gate's fresh-worktree branch). Call the allocated name `<prov-branch>`.
+   - If item will be Jira-keyed: `<prov-branch>` is **renamed** to `<branch_prefix><JIRA-KEY>-<slug>` at step 6, after Jira create succeeds — and that rename target is itself collision-checked (suffix `-<N>` if a branch by that name already exists).
+   - If item will be `#N`: the branch stays `<prov-branch>`.
 4. **Derive `next_id`** (only used for the offline-fallback `#N` path) by scanning `<state-root>` (see ID Derivation).
 5. **Jira auto-create gate** — apply `defaults["new_epic.jira_autocreate"]`:
    - `true` → run `jira create --type Epic --project <jira_project> --title "<name>" --desc "handover epic"`. Capture key on success.
    - `false` → skip Jira; use `#N`.
    - absent → `AskUserQuestion` "Create Jira Epic for this?" with save-default opt-in.
 6. **Resolve dir name:**
-   - Jira create SUCCESS → `epics/<JIRA-KEY>-<slug>/`. **Now rename the provisional branch** created in step 3: `git branch -m <branch_prefix><slug> <branch_prefix><JIRA-KEY>-<slug>`, then `git worktree move` the worktree dir to match (step 3 named the branch with the `#N`-free provisional `<slug>` because the key wasn't known yet — this is the rename step 3 defers to).
-   - Jira create FAILED → `epics/#N-<slug>/` with `pending_jira_link: true` (keep the provisional `<slug>` branch; a later `/handover jira-link` performs the rename)
+   - Jira create SUCCESS → `epics/<JIRA-KEY>-<slug>/`. **Now rename the provisional branch** `<prov-branch>` created in step 3 to `<branch_prefix><JIRA-KEY>-<slug>` (collision-check the target first — suffix `-<N>` if a branch by that name already exists): `git branch -m <prov-branch> <branch_prefix><JIRA-KEY>-<slug>`, then `git worktree move` the worktree dir to match (step 3 named the branch with the key-free provisional slug because the key wasn't known yet — this is the rename step 3 defers to).
+   - Jira create FAILED → `epics/#N-<slug>/` with `pending_jira_link: true` (keep the provisional `<prov-branch>` branch; a later `/handover jira-link` performs the rename)
    - Jira skipped (user opted out / no jira_project) → `epics/#N-<slug>/` with `pending_jira_link: false`
 7. Create dir + `tasks/.gitkeep`.
 8. Copy templates from `<state-root>/_templates/` and fill placeholders (see Template Placeholders + `references/v2-schema.md`). Frontmatter must include the v2 fields; `created` and `updated` set to `date -u +"%Y-%m-%dT%H:%M:%SZ"`.
@@ -75,8 +75,8 @@ Creates a task inside an existing epic. `<epic-id>` is `<JIRA-KEY>`, `#N`, or ba
    - absent → `AskUserQuestion` with save-default opt-in.
 5. **Derive `next_id`** for the `#N` fallback path.
 6. **Resolve dir name** (same rules as `new-epic` step 6, including the branch rename):
-   - SUCCESS → `standalones/<JIRA-KEY>-<slug>/`. Rename the provisional branch from step 3: `git branch -m <branch_prefix><slug> <branch_prefix><JIRA-KEY>-<slug>`, then `git worktree move` the worktree dir to match.
-   - FAILED → `standalones/#N-<slug>/` with `pending_jira_link: true` (keep the provisional `<slug>` branch)
+   - SUCCESS → `standalones/<JIRA-KEY>-<slug>/`. Rename the provisional branch `<prov-branch>` from step 3 to `<branch_prefix><JIRA-KEY>-<slug>` (collision-check the target — suffix `-<N>` if taken): `git branch -m <prov-branch> <branch_prefix><JIRA-KEY>-<slug>`, then `git worktree move` the worktree dir to match.
+   - FAILED → `standalones/#N-<slug>/` with `pending_jira_link: true` (keep the provisional `<prov-branch>` branch)
    - SKIPPED → `standalones/#N-<slug>/` with `pending_jira_link: false`
 7. Copy templates filling placeholders (v2 frontmatter):
    - `brief.md` from `standalone-brief.md`

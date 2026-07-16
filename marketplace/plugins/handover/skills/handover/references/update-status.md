@@ -4,7 +4,7 @@ Load `references/resolution.md` first (Target Repo Resolution, Bucket Resolution
 
 ## `update-status`
 
-Regenerates `<state-root>/status.md` + `roadmap.md` + `tech-debt.md` from filesystem state. Run after any mutation. Never ask.
+Regenerates `<state-root>/status.md` + `roadmap.md` + `tech-debt.md` from filesystem state. Run after any mutation. Never ask **for confirmation to regenerate** — but still resolve the target repo (step 0 / `references/resolution.md` Target Repo Resolution), which **prompts when the repo is ambiguous**. Skipping the confirmation ≠ skipping repo resolution.
 
 0. **Resolve target repo.**
 1. **Worktree gate** — must not be on `main`.

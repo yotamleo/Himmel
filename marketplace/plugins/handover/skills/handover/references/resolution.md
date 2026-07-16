@@ -20,7 +20,7 @@ Full algorithm + canonicalisation rules: `references/routing.md` (load only on a
 
 Some registered repos — the **state-root host** an operator chose at `/handover-setup` (e.g. a repo named `<state-repo>`) — split `<state-root>` into per-source-repo buckets to keep work from multiple code repos disambiguated:
 
-```
+```text
 <state-root>/
   himmel/{epics,standalones}/
   luna/{epics,standalones}/
@@ -93,7 +93,7 @@ If `<state-root>/counter.md` exists with `Next: K` where `K > max(all N) + 1`, p
 
 ## Worktree Gate
 
-**All mutation commands** (`new-epic`, `new-task`, `new-standalone`, `end-session`, `update-status`) must run inside a git worktree of the **target repo** — never on `main`.
+**Every target-repo mutation** must run inside a git worktree of the **target repo** — never on `main`. This covers **all** ops that write under `<state-root>`: `new-epic`, `new-task`, `new-standalone`, `end-session`, `update-status`, `bucket`, `priority`, `jira-link`, `hygiene` (when triage applies a verdict), and `consolidate apply`. The only exceptions are the **registry-only** ops `defaults` and `repos add/remove`, which write `~/.claude/handover/registry.json` (not a target-repo write) and so need no worktree.
 
 Before any file write to `<state-root>`:
 
@@ -174,7 +174,7 @@ Rules:
 
 ## File Paths
 
-```
+```text
 <repo-root>/
   handovers/
     manual_notes.md                      ← freeform, human-maintained (at the state-root host; Mode B if configured)
@@ -237,7 +237,7 @@ Rules:
 
 Registry (machine-global, not per-repo):
 
-```
+```text
 ~/.claude/handover/
   registry.json                          ← repo registry, atomic writes
 ```
