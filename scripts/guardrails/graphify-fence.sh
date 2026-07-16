@@ -61,6 +61,16 @@
 #   claude | claude-cli -> ENDPOINT-AWARE (HIMMEL-1049 + codex-adv-1): graphify's
 #                      claude backend honors ANTHROPIC_BASE_URL, so classify by
 #                      the effective endpoint, not the name -
+#                        claude-cli ONLY, any CLAUDE_CODE_USE_* reroute selector
+#                          SET (HIMMEL-1070; see _CLAUDE_REROUTE_VARS) ->
+#                          anthropic-rerouted -> HARD DENY on every corpus. These
+#                          reroute the claude CLI to Bedrock/Vertex/Foundry/a
+#                          gateway without touching ANTHROPIC_BASE_URL, so they
+#                          are checked FIRST; none is a ratified matrix provider.
+#                          ONLY unset/empty is off - '0'/'false' are SET and deny.
+#                          NOT applied to `claude`: that backend is a plain HTTP
+#                          call and never execs the CLI, so the vars are inert
+#                          for it (the endpoint check below still covers both)
 #                        unset / api.anthropic.com -> anthropic (the operating
 #                          harness itself; matrix allows it on every non-salus
 #                          corpus, HARD-DENIES salus/PHI, so a claude-only adopter
@@ -702,6 +712,37 @@ _ollama_local() {
     esac
 }
 
+# The CLAUDE_CODE_USE_* selectors that reroute the CLI's model traffic AWAY from
+# the Anthropic API, none of which touch ANTHROPIC_BASE_URL (HIMMEL-1070). The
+# list is explicit, not a `CLAUDE_CODE_USE_*` wildcard, because the CLI ships
+# same-prefixed vars that are ordinary FEATURE flags and must NOT deny
+# (CLAUDE_CODE_USE_COWORK_PLUGINS / _NATIVE_FILE_SEARCH / _POWERSHELL_TOOL);
+# enumerated from the installed CLI's own selector strings + the Bedrock/Vertex
+# setup docs. A newly-added selector is the maintenance cost of that precision -
+# accepted: a wrong wildcard deny is worse than a known list to extend.
+_CLAUDE_REROUTE_VARS="CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_GATEWAY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_USE_ANTHROPIC_AWS"
+
+# _claude_reroute_var -> echoes the name of the FIRST reroute selector that is
+# SET (any non-empty value), or "" when none is.
+#
+# SET, not "truthy" (CodeRabbit-major on HIMMEL-1070): an earlier cut treated
+# `0` / `false` as OFF, which assumed a boolean PARSE the docs never promise.
+# The docs only ever show `=1` and never define an off-value; Claude Code is a
+# Node app, where a plain `Boolean(process.env.X)` check reads the STRING "0" as
+# TRUE - so `CLAUDE_CODE_USE_BEDROCK=0` would very plausibly ENABLE Bedrock while
+# a bash-minded fence read it as disabled. That is the exact fail-open this whole
+# fix exists to close. Only UNSET or EMPTY is off; every other value denies. The
+# cost is a false deny for an operator who writes `=0` to mean "off" (loud, one
+# `unset` away); the cost of the other misread is silent cross-cloud egress.
+_claude_reroute_var() {
+    local n v
+    for n in $_CLAUDE_REROUTE_VARS; do
+        eval "v=\"\${$n:-}\""
+        if [ -n "$v" ]; then printf '%s' "$n"; return; fi
+    done
+    printf ''
+}
+
 # _map_anthropic_endpoint -> resolve the claude/claude-cli backend to a provider
 # by its EFFECTIVE endpoint (HIMMEL-1049 codex-adv-1). graphify's `claude`
 # backend honors ANTHROPIC_BASE_URL ("claude also reaches custom
@@ -728,7 +769,34 @@ _ollama_local() {
 #     router, unknown gateways, a scheme-less/malformed value) -> the literal
 #     "anthropic-custom" (undeclared -> matrix default deny; fail-closed)
 _map_anthropic_endpoint() {
-    local u host
+    local backend_name="${1:-}" u host
+    # REROUTE SELECTORS FIRST (HIMMEL-1070, public-CR-critical): these reroute
+    # the `claude` CLI away from Anthropic WITHOUT touching ANTHROPIC_BASE_URL,
+    # so the endpoint check below is blind to them - unset base-url +
+    # CLAUDE_CODE_USE_BEDROCK=1 returned `anthropic` and egressed corpus content
+    # to AWS classified as Anthropic. Same bypass class as the Z.ai hole above,
+    # different selector. himmel's own scripts/claude-codex treats these as
+    # session-rerouting vars and explicitly CLEARS them. None of these targets is
+    # a ratified matrix provider, so any of them set maps to a fail-closed
+    # sentinel -> hard-denied before the matrix eval (a sentinel distinct from
+    # anthropic-custom purely so the deny message can name the RIGHT variable;
+    # both are equally hard-denied).
+    #
+    # claude-cli ONLY (CodeRabbit-major on HIMMEL-1070): these are Claude CODE
+    # env vars, so they bind only to the backend that actually SHELLS that CLI.
+    # Verified in graphify's own llm.py: `claude-cli` dispatches _call_claude_cli
+    # (:1484) and inherits the env, while `claude` is a plain HTTP call to
+    # base_url/ANTHROPIC_API_KEY (:60-67) that never execs the CLI and cannot see
+    # them. Denying `claude` on a set selector was a FALSE deny - it would block
+    # the legitimate config of an operator whose interactive Claude Code runs on
+    # Bedrock while graphify extracts over the API. Same precision principle as
+    # the explicit-list-not-wildcard choice above; the ENDPOINT check below still
+    # applies to BOTH, because the `claude` backend genuinely does read
+    # ANTHROPIC_BASE_URL. (graphify also has a separate first-class `bedrock`
+    # backend, which maps to the literal `bedrock` -> undeclared -> default deny.)
+    if [ "$backend_name" = "claude-cli" ] && [ -n "$(_claude_reroute_var)" ]; then
+        echo anthropic-rerouted; return
+    fi
     u="${ANTHROPIC_BASE_URL:-}"
     [ -n "$u" ] || { echo anthropic; return; }
     u="$(_lc "$u")"
@@ -776,7 +844,7 @@ map_provider() {
             ;;
         glm|zai)       echo zai-glm ;;
         gemini|google) echo google-gemini ;;
-        claude|claude-cli) _map_anthropic_endpoint ;;
+        claude|claude-cli) _map_anthropic_endpoint "$b" ;;
         *)             echo "$b" ;;
     esac
 }
@@ -952,6 +1020,17 @@ apply_verdict() {
     # RATIFIED providers (codex/GLM/alibaba/anthropic/deepseek), NOT for an
     # arbitrary host an attacker can point ANTHROPIC_BASE_URL at. An endpoint we
     # cannot verify must fail closed on EVERY corpus, public code included.
+    # Same fail-closed treatment for the reroute sentinel (HIMMEL-1070): a
+    # CLAUDE_CODE_USE_* selector sends the claude CLI's traffic to AWS Bedrock /
+    # Google Vertex / a Foundry/gateway endpoint, none of them ratified matrix
+    # providers - so they must not reach the matrix and land on the
+    # `himmel-code x * x *` wildcard either. Named separately from
+    # anthropic-custom only so the message names the variable the operator must
+    # actually clear (the value is NOT echoed - same reasoning as below).
+    if [ "$provider" = "anthropic-rerouted" ]; then
+        deny "claude backend is rerouted away from Anthropic ($(_claude_reroute_var) is set); its target (AWS Bedrock / Google Vertex / Foundry / a gateway) is not a ratified egress-matrix provider, so corpus content must not reach it classified as anthropic; refusing on every corpus (fail-closed). NOTE: only UNSET/EMPTY counts as off - '0' and 'false' are still set, and the CLI may well read them as ON. Fix: unset that variable in the launching shell, or pick a backend that does not read it (e.g. --backend ollama for local extraction)"
+    fi
+
     if [ "$provider" = "anthropic-custom" ]; then
         # Do NOT echo the raw ANTHROPIC_BASE_URL (CodeRabbit-major): it can carry
         # userinfo/credentials/query tokens (https://user:SECRET@host/...), and

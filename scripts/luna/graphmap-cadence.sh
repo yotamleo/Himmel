@@ -15,10 +15,15 @@
 # interactive `claude "<prompt>" < NUL` bounded sessions (each pipeline task = a
 # claude session, wired with a --settings auto-approve fragment). THIS scheduler
 # fires a DETERMINISTIC SCRIPT directly — `bash <himmel>/scripts/graphify/
-# refresh-graph-map.sh <args>` — so it has NO claude, NO NUL-stdin, NO settings
-# fragment, NO auto-approve hook, and NO claude-billing concern (HIMMEL-128 does
-# not apply). That keeps pipeline-cadence's "every task = a claude session"
-# invariant clean, and makes this scheduler strictly simpler than its sibling.
+# refresh-graph-map.sh <args>` — so it has NO claude SESSION, NO NUL-stdin, NO
+# settings fragment, and NO auto-approve hook. That keeps pipeline-cadence's
+# "every task = a claude session" invariant clean, and makes this scheduler
+# strictly simpler than its sibling.
+# HIMMEL-128 DOES APPLY, indirectly (HIMMEL-1070): the fired script is still not
+# a claude session, but the claude-cli BACKEND makes graphify shell the claude
+# CLI headlessly underneath it — a call on the separate billing bucket. The
+# approval marker therefore lives at the REAL dispatch site
+# (refresh-graph-map.sh, where graphify is invoked with --backend), not here.
 #
 # FENCE SAFETY: refresh-graph-map.sh never extracts on a live vault — it copies
 # the corpus to a PID-owned scratchpad, carries the `.graphify-corpus` marker,
@@ -138,6 +143,13 @@ HIMMEL_TAG="himmel"
 # a provider by their effective endpoint (see graphify-fence.sh); already-armed
 # tasks keep their baked-in --backend until re-armed with this default.
 BACKEND="claude-cli"
+
+# Resolved by validate_arm_inputs (both arm paths call it): the `claude` CLI the
+# BACKEND above shells at fire time, and its directory. Both runner formats
+# prepend the directory to PATH — see the HIMMEL-1070 note in
+# validate_arm_inputs.
+CLAUDE_BIN=""
+CLAUDE_DIR=""
 
 usage() {
     cat <<'EOF'
@@ -438,10 +450,17 @@ bat_payload() {
 # run log (one prior run kept as .log.prev), stamp the fire time, cd into the
 # himmel root (a failing cd aborts + is logged, instead of firing from the wrong
 # CWD), then fire bash + refresh-graph-map.sh with its stdout+stderr captured to
-# the rotating log. NO claude, NO stdin redirect: the runner IS the payload.
+# the rotating log. NO claude SESSION, NO stdin redirect: the runner IS the
+# payload (the claude-cli BACKEND does shell `claude` underneath graphify — hence
+# the PATH prepend below, mirroring emit_runner's).
 emit_bat() {
-    local himmel_win_esc="$1" bash_win="$2" payload="$3" log_win_esc="$4"
+    local himmel_win_esc="$1" bash_win="$2" payload="$3" log_win_esc="$4" claude_dir_win_esc="${5:-}"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
+    # schtasks fires with a minimal PATH that need not carry the npm-global bin
+    # dir, so pin the `claude` CLI the claude-cli backend shells (HIMMEL-1070).
+    if [ -n "$claude_dir_win_esc" ]; then
+        printf 'set "PATH=%s;%%PATH%%"\r\n' "$claude_dir_win_esc"
+    fi
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$himmel_win_esc" "$log_win_esc"
@@ -544,6 +563,42 @@ validate_arm_inputs() {
         echo "ERR graphmap-cadence: refresh-graph-map.sh not found at $REFRESH_SCRIPT" >&2
         exit 2
     fi
+    # FAIL FAST on a missing `claude` (HIMMEL-1070). BACKEND is fixed at
+    # claude-cli, which makes graphify shell the local `claude` CLI — so the
+    # cadence is only armable on a machine that has it. Resolving it HERE, at arm
+    # time, is what makes the failure visible: cron and schtasks fire with a
+    # MINIMAL PATH (no nvm/npm-global bin dir), so without this the arm "succeeds"
+    # and the first unattended fire dies in a log nobody reads with
+    # "backend 'claude-cli' requires the `claude` CLI on $PATH". The resolved
+    # directory is prepended to PATH in BOTH generated runner formats (.sh/.bat),
+    # for the same reason the node dir already is.
+    if ! CLAUDE_BIN=$(command -v claude 2>/dev/null); then
+        {
+            echo "ERR graphmap-cadence: 'claude' not on PATH at arm time, but the $BACKEND backend shells it at fire time."
+            echo "    The scheduler fires with a minimal PATH, so this must resolve HERE — arming now would"
+            echo "    produce a cadence that fails on every fire. Install the Claude Code CLI (or put it on PATH)"
+            echo "    and re-arm."
+        } >&2
+        exit 2
+    fi
+    # `command -v` resolves more than on-PATH executables: a shell FUNCTION or
+    # ALIAS resolves to its own name/definition, and a relative PATH entry
+    # resolves to a relative path. Either would make CLAUDE_DIR meaningless in a
+    # runner that has cd'd elsewhere and runs under a different PATH — the exact
+    # failure this check exists to prevent, silently reintroduced (CodeRabbit-major
+    # on HIMMEL-1070). Demand a real, absolute, executable file (Windows: the
+    # `.exe`/`.cmd` a POSIX -x test still accepts under MSYS).
+    case "$CLAUDE_BIN" in
+        /*|[A-Za-z]:[/\\]*) : ;;
+        *)
+            echo "ERR graphmap-cadence: 'claude' resolved to a non-absolute path ('$CLAUDE_BIN') — a shell function/alias or a relative PATH entry cannot be pinned into a scheduled runner. Install the CLI on PATH as a real executable and re-arm." >&2
+            exit 2 ;;
+    esac
+    if [ ! -f "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then
+        echo "ERR graphmap-cadence: 'claude' resolved to '$CLAUDE_BIN', which is not an executable file — refusing to pin it into a scheduled runner." >&2
+        exit 2
+    fi
+    CLAUDE_DIR=$(dirname "$CLAUDE_BIN")
 }
 
 cmd_arm() {
@@ -619,7 +674,12 @@ cmd_arm() {
     fi
 
     # cmd-escape the path values interpolated into each .bat payload.
-    local script_esc vault_esc maps_esc himmel_esc himmel_win_esc
+    local script_esc vault_esc maps_esc himmel_esc himmel_win_esc claude_dir_win claude_dir_win_esc
+    if ! claude_dir_win=$(cygpath -w "$CLAUDE_DIR" 2>&1); then
+        echo "ERR graphmap-cadence: cygpath -w failed for claude dir: $claude_dir_win" >&2
+        exit 4
+    fi
+    claude_dir_win_esc=$(cmd_escape "$claude_dir_win")
     script_esc=$(cmd_escape "$script_mixed")
     vault_esc=$(cmd_escape "$vault_mixed")
     maps_esc=$(cmd_escape "$maps_mixed")
@@ -669,9 +729,9 @@ cmd_arm() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY graphmap-cadence: would write $bat_luna:"
-        emit_bat "$himmel_win_esc" "$bash_win" "$payload_luna" "$log_luna_esc" | sed 's/^/    /'
+        emit_bat "$himmel_win_esc" "$bash_win" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would write $bat_himmel:"
-        emit_bat "$himmel_win_esc" "$bash_win" "$payload_himmel" "$log_himmel_esc" | sed 's/^/    /'
+        emit_bat "$himmel_win_esc" "$bash_win" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_LUNA /xml <daily $LUNA_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_luna_win" "$LUNA_TIME" "$sched" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_HIMMEL /xml <daily $HIMMEL_TIME, StartWhenAvailable=true> /f"
@@ -681,8 +741,8 @@ cmd_arm() {
     fi
 
     mkdir -p "$BAT_DIR"
-    emit_bat "$himmel_win_esc" "$bash_win" "$payload_luna" "$log_luna_esc" > "$bat_luna"
-    emit_bat "$himmel_win_esc" "$bash_win" "$payload_himmel" "$log_himmel_esc" > "$bat_himmel"
+    emit_bat "$himmel_win_esc" "$bash_win" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" > "$bat_luna"
+    emit_bat "$himmel_win_esc" "$bash_win" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" > "$bat_himmel"
 
     local err_file
     err_file=$(mktemp -t graphmap-cadence.err.XXXXXX)
@@ -806,16 +866,22 @@ cron_payload() {
 
 # Emit the runner .sh body for one cadence task: stamp the format version,
 # rotate the run log, stamp the fire time, cd into the himmel root, then fire the
-# payload with output captured to the log. Optional PATH prepend for nvm-managed
-# node (refresh-graph-map.sh calls node) under cron's minimal PATH.
+# payload with output captured to the log. PATH prepends for nvm-managed node
+# (refresh-graph-map.sh calls node) and for the `claude` CLI (the claude-cli
+# BACKEND shells it) under cron's minimal PATH. The two dirs are frequently the
+# same npm-global bin — a duplicate PATH entry is harmless, so they are emitted
+# independently rather than deduped.
 # shellcheck disable=SC2016  # single-quoted $log/$(date)/_rc are emitted literally for the runner's own /bin/sh
 emit_runner() {
-    local name="$1" payload="$2" q_log="$3" q_himmel="$4" q_node_dir="${5:-}"
+    local name="$1" payload="$2" q_log="$3" q_himmel="$4" q_node_dir="${5:-}" q_claude_dir="${6:-}"
     printf '#!/bin/sh\n'
     printf '# %s runner — generated by graphmap-cadence.sh arm (HIMMEL-829)\n' "$name"
     printf '# %s %s\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     if [ -n "$q_node_dir" ]; then
         printf 'export PATH=%s:$PATH\n' "$q_node_dir"
+    fi
+    if [ -n "$q_claude_dir" ]; then
+        printf 'export PATH=%s:$PATH\n' "$q_claude_dir"
     fi
     printf 'log=%s\n' "$q_log"
     printf 'if [ -f "$log" ]; then\n'
@@ -923,10 +989,11 @@ cron_arm() {
         fi
     fi
 
-    local q_bash q_script q_node_dir q_vault q_himmel q_maps q_luna_title q_himmel_title q_log_luna q_log_himmel
+    local q_bash q_script q_node_dir q_claude_dir q_vault q_himmel q_maps q_luna_title q_himmel_title q_log_luna q_log_himmel
     q_bash=$(printf '%q' "$bash_bin")
     q_script=$(printf '%q' "$REFRESH_SCRIPT")
     q_node_dir=$([ -n "$node_dir" ] && printf '%q' "$node_dir" || printf '')
+    q_claude_dir=$(printf '%q' "$CLAUDE_DIR")
     q_vault=$(printf '%q' "$VAULT")
     q_himmel=$(printf '%q' "$HIMMEL_ROOT")
     q_maps=$(printf '%q' "$VAULT/60-Maps")
@@ -951,9 +1018,9 @@ cron_arm() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY graphmap-cadence: would write $CRON_RUNNER_LUNA:"
-        emit_runner "$TASK_LUNA" "$payload_luna" "$q_log_luna" "$q_himmel" "$q_node_dir" | sed 's/^/    /'
+        emit_runner "$TASK_LUNA" "$payload_luna" "$q_log_luna" "$q_himmel" "$q_node_dir" "$q_claude_dir" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would write $CRON_RUNNER_HIMMEL:"
-        emit_runner "$TASK_HIMMEL" "$payload_himmel" "$q_log_himmel" "$q_himmel" "$q_node_dir" | sed 's/^/    /'
+        emit_runner "$TASK_HIMMEL" "$payload_himmel" "$q_log_himmel" "$q_himmel" "$q_node_dir" "$q_claude_dir" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would add crontab entries:"
         echo "    $entry_luna"
         echo "    $entry_himmel"
@@ -967,8 +1034,8 @@ cron_arm() {
     # install (exit 4) leave the OLD crontab live while the runner files already
     # carry the NEW config — a silent half-state under --force re-arm.
     local tmp_luna="$CRON_RUNNER_LUNA.tmp.$$" tmp_himmel="$CRON_RUNNER_HIMMEL.tmp.$$"
-    emit_runner "$TASK_LUNA" "$payload_luna" "$q_log_luna" "$q_himmel" "$q_node_dir" > "$tmp_luna"
-    emit_runner "$TASK_HIMMEL" "$payload_himmel" "$q_log_himmel" "$q_himmel" "$q_node_dir" > "$tmp_himmel"
+    emit_runner "$TASK_LUNA" "$payload_luna" "$q_log_luna" "$q_himmel" "$q_node_dir" "$q_claude_dir" > "$tmp_luna"
+    emit_runner "$TASK_HIMMEL" "$payload_himmel" "$q_log_himmel" "$q_himmel" "$q_node_dir" "$q_claude_dir" > "$tmp_himmel"
     chmod +x "$tmp_luna" "$tmp_himmel"
 
     # Single atomic rewrite: everything that isn't ours, then both entries.

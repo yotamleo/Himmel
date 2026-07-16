@@ -77,6 +77,42 @@ mkdir -p "$TMP_ROOT/bin"
 printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/bin/bash"
 chmod +x "$TMP_ROOT/bin/bash"
 
+# Fake `claude` on PATH (HIMMEL-1070): arm now resolves it via `command -v claude`
+# and FAILS FAST when it is absent, because the fixed claude-cli BACKEND shells it
+# at fire time under the scheduler's minimal PATH. A stub keeps the suite
+# deterministic on machines with and without a real CLI installed; like the bash
+# stub it is never fired, only resolved + its dirname read.
+#
+# It lives in its OWN dir, entered on PATH in POSIX form, for two reasons the
+# `bin` dir above cannot serve: (1) TMP_ROOT is cygpath -m'd (C:/... mixed form)
+# and Git-Bash cannot resolve a PATH entry in that form — a stub in `bin` is
+# INVISIBLE on Windows, so the arm would silently resolve the operator's REAL
+# installed claude and the runner assertion below would pin a machine-specific
+# path; (2) adding a POSIX entry for `bin` itself would newly expose the fake
+# `bash` on Windows, changing what the existing suite bakes into its runners.
+CLAUDE_BIN_DIR="$TMP_ROOT/claude-bin"
+mkdir -p "$CLAUDE_BIN_DIR"
+printf '#!/bin/sh\nexit 0\n' > "$CLAUDE_BIN_DIR/claude"
+chmod +x "$CLAUDE_BIN_DIR/claude"
+CLAUDE_BIN_DIR_PATH="$CLAUDE_BIN_DIR"
+if command -v cygpath >/dev/null 2>&1; then
+    CLAUDE_BIN_DIR_PATH=$(cygpath -u "$CLAUDE_BIN_DIR")
+fi
+
+# A PATH with the real system dirs (arm needs dirname/sed/mktemp at load time)
+# but with EVERY dir that carries a real `claude` filtered out — the fail-fast
+# probe below must not be satisfied by an installed CLI. Filtering the real PATH
+# beats replacing it: a bare stub dir strips coreutils and the script dies rc=127
+# on `dirname` before it ever reaches the check under test.
+PATH_NOCLAUDE=""
+_oldifs=$IFS; IFS=:
+for _d in $PATH; do
+    [ -n "$_d" ] || continue
+    if [ -x "$_d/claude" ] || [ -x "$_d/claude.exe" ] || [ -x "$_d/claude.cmd" ]; then continue; fi
+    PATH_NOCLAUDE="${PATH_NOCLAUDE:+$PATH_NOCLAUDE:}$_d"
+done
+IFS=$_oldifs
+
 # Hermeticity: point HOME/USERPROFILE at the temp dir so a stray BAT_DIR default
 # (should the seam ever be dropped) can't land under the real user profile.
 export HOME="$TMP_ROOT/home"
@@ -169,7 +205,8 @@ CRON_DIR="$TMP_ROOT/cron-runners"
 
 run_cron() {
     env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-        GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
+        GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$TMP_ROOT/bin:$CLAUDE_BIN_DIR_PATH:$PATH" \
+        "$REAL_BASH" "$SCRIPT" "$@"
 }
 
 # Test C1: status with no crontab installed ----------------------------------
@@ -188,6 +225,25 @@ rc=0; out=$(run_cron arm --vault "$VAULT" --himmel-time 25:00 2>&1) || rc=$?
 assert_rc "cron bad --himmel-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_cron arm --vault "$TMP_ROOT/does-not-exist" 2>&1) || rc=$?
 assert_rc "cron missing vault dir -> rc 1" 1 "$rc"
+
+# Test C13: arm fails fast when `claude` is absent (HIMMEL-1070) --------------
+#
+# The cadence's fixed claude-cli backend shells `claude` at fire time under the
+# scheduler's minimal PATH. Arming on a machine without it would "succeed" and
+# then die on every unattended fire, in a log nobody reads. PATH is REPLACED
+# (not prepended) so a really-installed claude cannot satisfy the probe here.
+
+echo "TEST: cron arm fails fast when claude is not on PATH"
+rc=0; out=$(env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
+    GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$PATH_NOCLAUDE" \
+    "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "cron arm without claude -> rc 2" 2 "$rc"
+assert_contains "missing-claude error names the CLI" "'claude' not on PATH at arm time" "$out"
+if [ ! -f "$CSTATE/crontab" ] && [ ! -d "$CRON_DIR" ]; then
+    pass "failed arm installed nothing"
+else
+    fail "failed arm left state behind" "$(ls -a "$CRON_DIR" 2>/dev/null; cat "$CSTATE/crontab" 2>/dev/null)"
+fi
 
 # Test C2: arm --dry-run touches nothing --------------------------------------
 
@@ -271,6 +327,13 @@ for what in luna himmel; do
     body=$(eval "printf '%s' \"\$${what}_sh\"")
     assert_not_contains "$what runner has no --settings (not a claude session)" "--settings" "$body"
     assert_not_contains "$what runner has no bounded-claude stdin marker" "< /dev/null" "$body"
+    # HIMMEL-1070: cron's minimal PATH carries neither node nor claude, so the
+    # runner must pin the claude CLI's dir the same way it already pins node's —
+    # without it every fire dies with "backend 'claude-cli' requires the `claude`
+    # CLI on $PATH". The expected dir is where the stub claude lives.
+    # shellcheck disable=SC2016  # literal $PATH — the runner expands it at fire time
+    assert_contains "$what runner prepends the claude dir to PATH" \
+        "export PATH=$CLAUDE_BIN_DIR_PATH:\$PATH" "${body//\\/}"
 done
 
 # Test C5: status after arm ----------------------------------------------------
