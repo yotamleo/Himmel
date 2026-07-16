@@ -278,6 +278,83 @@ graphify_wsl_share_store() {
   return 0
 }
 
+# graphify_register_mcp <scope> -- register the graphify MCP server (the
+# mcp__graphify__* tools) with Claude Code at <scope> (local|user|project;
+# default user), so an install actually delivers the MCP tools and not just the
+# CLI (HIMMEL-1047). ONE implementation consumed by setup.sh + adopt.sh (and,
+# via the CLI entry below, the pwsh mirrors). SCOPE-DEPENDENT entrypoint:
+#   - user/local (a PERSONAL config) -> the ABSOLUTE path (robust in the MCP
+#     launch context; matches /himmel-doctor's absolute-not-bare convention).
+#     uv places the shim in `uv tool dir --bin` (graphify-mcp.exe on Windows,
+#     graphify-mcp on posix), with a PATH lookup as fallback.
+#   - project (a COMMITTED .mcp.json) -> the BARE name, PATH-resolved per
+#     machine: a machine-specific absolute path would break for teammates on
+#     other machines (CR HIMMEL-1047).
+# Idempotent PER SCOPE (skips only when graphify already exists AT THE TARGET
+# scope, so a personal user entry never suppresses a project registration) and
+# WARN-not-fail by contract: a missing claude/entrypoint or an add hiccup prints
+# the manual command and returns 0, never aborting the caller.
+graphify_register_mcp() {
+  local scope="${1:-user}" bin_dir mcp_arg="" hint
+  # Scope-appropriate manual hint: project = the portable bare name; user/local =
+  # the absolute path. Used by every "register later / manually" message below so
+  # a project adopter is never told to commit a machine-specific path.
+  if [ "$scope" = "project" ]; then
+    hint="claude mcp add -s $scope graphify -- graphify-mcp"
+  else
+    hint="claude mcp add -s $scope graphify -- \"\$(uv tool dir --bin)/graphify-mcp\""
+  fi
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "  graphify MCP: 'claude' CLI not found -- skipping registration (CLI still installed)." >&2
+    echo "  Register later: $hint" >&2
+    return 0
+  fi
+  if [ "$scope" = "project" ]; then
+    # Committed .mcp.json must stay portable across machines -> bare name,
+    # resolved from PATH per machine (setup/adopt put uv's bin dir on PATH).
+    mcp_arg="graphify-mcp"
+  else
+    # `|| true`: a plain `bin_dir=$(...)` assignment propagates the substitution's
+    # exit status, so under a caller's `set -e` (adopt.sh is `set -euo pipefail`) a
+    # missing/failing uv would ABORT the adopt instead of warn-not-failing.
+    bin_dir="$(uv tool dir --bin 2>/dev/null || true)"
+    if [ -n "$bin_dir" ] && [ -f "$bin_dir/graphify-mcp.exe" ]; then
+      mcp_arg="$bin_dir/graphify-mcp.exe"
+    elif [ -n "$bin_dir" ] && [ -f "$bin_dir/graphify-mcp" ]; then
+      mcp_arg="$bin_dir/graphify-mcp"
+    else
+      mcp_arg="$(command -v graphify-mcp 2>/dev/null || true)"
+    fi
+    if [ -z "$mcp_arg" ]; then
+      echo "  graphify MCP: 'graphify-mcp' entrypoint not found -- skipping (check the uv tool bin dir)." >&2
+      echo "  Register later: $hint" >&2
+      return 0
+    fi
+  fi
+  # Attempt the add AT THE TARGET SCOPE. `claude mcp get` has no scope flag, so an
+  # unscoped pre-check would let a user entry suppress a project add; instead add
+  # directly and treat "already exists in <scope> config" (rc!=0) as an idempotent
+  # skip. Any other failure is WARN-not-fail.
+  local add_out add_rc
+  # `if var=$(...)`: the assignment sits in a condition, where set -e is EXEMPT.
+  # A bare `add_out=$(...)` would propagate a nonzero `claude mcp add` — notably
+  # the COMMON "already exists" idempotent case (rc=1) — and abort a `set -e`
+  # caller (adopt.sh) before the handling below ever runs.
+  if add_out="$(claude mcp add -s "$scope" graphify -- "$mcp_arg" 2>&1)"; then
+    add_rc=0
+  else
+    add_rc=$?
+  fi
+  if [ "$add_rc" -eq 0 ]; then
+    echo "  graphify MCP: registered (scope=$scope, $mcp_arg) -- mcp__graphify__* tools available."
+  elif printf '%s' "$add_out" | grep -qi "already exists"; then
+    echo "  graphify MCP: already registered at $scope scope -- skipping."
+  else
+    echo "  WARNING: graphify MCP registration failed -- CLI works; register manually:" >&2
+    echo "  $hint" >&2
+  fi
+}
+
 # CLI entry -- only when EXECUTED (not sourced). Lets the pwsh mirrors
 # (scripts/setup.ps1, scripts/adopt.ps1) delegate to this ONE implementation
 # (`bash scripts/lib/graphify-bin.sh install`) instead of duplicating the
@@ -287,6 +364,7 @@ if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
     install) graphify_install ;;
     source)  graphify_source ;;
     share-store) graphify_wsl_share_store ;;
-    *) echo "Usage: bash scripts/lib/graphify-bin.sh install|source|share-store" >&2; exit 2 ;;
+    register-mcp) graphify_register_mcp "${2:-user}" ;;
+    *) echo "Usage: bash scripts/lib/graphify-bin.sh install|source|share-store|register-mcp [scope]" >&2; exit 2 ;;
   esac
 fi

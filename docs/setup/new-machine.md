@@ -932,12 +932,23 @@ an existing foreign graphify install is adopted as-is, never reinstalled —
 see `scripts/lib/graphify-bin.sh`.)
 
 The install exposes two binaries: `graphify` (the CLI) and `graphify-mcp`
-(the MCP server). Register the server with Claude Code — use the absolute
-path, not the bare name (`/himmel-doctor` flags PATH-fragile
-bare-interpreter MCP entries). `uv tool install` places entry points in
-the directory `uv tool dir --bin` reports (usually `~/.local/bin` on
-Linux/macOS; on Windows the executable is copied there as
-`graphify-mcp.exe`) — derive the path rather than hard-coding it:
+(the MCP server). **`setup.sh --with-graphify` (and `adopt.sh --with-graphify`)
+now register the MCP server automatically** (HIMMEL-1047) — `setup.sh` at
+`user` scope, `adopt.sh` at its `--scope` — so the install delivers the
+`mcp__graphify__*` tools, not just the CLI. Registration is idempotent (skips
+when graphify is already registered). The entry point is **scope-dependent**:
+`user`/`local` (a personal config) registers the **absolute** path — robust in
+the MCP launch context, and the form `/himmel-doctor` expects (it flags
+PATH-fragile bare entries); `project` (a committed `.mcp.json`) registers the
+**bare** name so the path stays portable across teammates' machines.
+
+To register (or re-register) manually — the shared implementation, same as the
+installers call — pass the scope explicitly (`user` or `project`, not both;
+`[user|project]` below is a placeholder):
+`bash scripts/lib/graphify-bin.sh register-mcp user`. For `user`/`local` it
+resolves the entry point from the directory `uv tool dir --bin` reports
+(usually `~/.local/bin` on Linux/macOS; on Windows the executable is copied
+there as `graphify-mcp.exe`). The raw equivalent (user scope):
 
 ```bash
 claude mcp add --scope user graphify -- "$(uv tool dir --bin)/graphify-mcp"

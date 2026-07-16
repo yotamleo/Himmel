@@ -325,9 +325,21 @@ wire_graphify_core() {
   echo "──── Wiring graphify (opt-in, --with-graphify) ────"
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "DRY: graphify_install"
+    echo "DRY: claude mcp add -s $SCOPE graphify -- <graphify-mcp: absolute path for user/local, bare name for project>"
     return 0
   fi
-  graphify_install || echo "  WARNING: graphify install failed — continuing without graphify." >&2
+  # Install the CLI first; a failed install returns before we try to register
+  # the MCP server (there'd be no graphify-mcp entrypoint to register). MCP
+  # registration is the shared graphify-bin.sh impl — adopt's SCOPE (project|
+  # user) is a valid `claude mcp add -s` scope (HIMMEL-1047).
+  graphify_install || { echo "  WARNING: graphify install failed — continuing without graphify." >&2; return 0; }
+  if [[ "$SCOPE" == "project" ]]; then
+    # project scope writes the committed .mcp.json relative to CWD (mirrors
+    # install_plugins) — run from $TARGET so it lands in the adopted repo.
+    ( cd "$TARGET" && graphify_register_mcp "$SCOPE" )
+  else
+    graphify_register_mcp "$SCOPE"
+  fi
 }
 
 # build_jira_cli — build scripts/jira/dist/index.js (HIMMEL-842 gap 3). dist/ is
