@@ -260,7 +260,7 @@ Autonomous end-to-end execution of a well-scoped ticket: see
 himmel enforces structurally, not by prose: PreToolUse hooks (safe-bash
 auto-approve; the edit-on-main / read-secrets / backend-tier / CR-marker /
 unresolved-CR-merge / merged-PR-commit / docker-privesc / rogue-schedule /
-rogue-codex-wsl guards; `guard-implementor-dispatch` bank guard; the cap-arm
+rogue-codex-wsl guards; `guard-implementor-dispatch` cost guard; the cap-arm
 hooks), a PostToolUse cap-arm hook, **pre-commit/commit-msg/pre-push gates**
 (source of truth `.pre-commit-config.yaml`), and opt-in `SessionStart` /
 `UserPromptSubmit` hooks (`inject-initiative.sh` `HIMMEL_INITIATIVE`,
