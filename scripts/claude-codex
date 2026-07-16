@@ -75,10 +75,17 @@ fi
 
 RESEED=0
 FORCE=0
+PREFLIGHT_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --reseed) RESEED=1; shift ;;
     --force)  FORCE=1;  shift ;;
+    # HIMMEL-1037: cheap auth/liveness probe for the background dispatcher's
+    # PRE-LAUNCH backoff — run the proxy preflight and exit (0=healthy,
+    # 2=unavailable) WITHOUT launching a worker, so spawn-claudex can wait out
+    # the transient 503 auth_unavailable OAuth-refresh gap before it ever spins
+    # a worker (and never re-runs one, which could duplicate side effects).
+    --preflight-only) PREFLIGHT_ONLY=1; shift ;;
     *) break ;;
   esac
 done
@@ -472,7 +479,10 @@ seed_with_lock() {
   rmdir "$LOCK" 2>/dev/null || echo "claude-codex: WARNING - failed to release seed lock $LOCK (not empty or busy); it self-heals via stale steal after ${SEED_LOCK_STALE}s but concurrent launches wait/time out until then." >&2
 }
 
-if [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then
+# HIMMEL-1037: a --preflight-only probe never launches claude, so it needs no
+# seeded config dir — skip the (potentially heavy) seed entirely to keep the
+# per-dispatch auth probe cheap.
+if [ "$PREFLIGHT_ONLY" -ne 1 ] && { [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; }; then
   seed_with_lock
 fi
 
@@ -502,6 +512,61 @@ case "$proxy_hostport" in
     ;;
 esac
 
+# HIMMEL-1037 auth-gap probe (--preflight-only): detect the transient
+# 503 auth_unavailable OAuth-refresh gap by exercising the REAL upstream codex
+# provider. /v1/models is served from CLIProxyAPI's model REGISTRY and stays 200
+# during the gap (codex-adv CR — a registry GET is blind to upstream OAuth
+# readiness), so the probe makes a minimal 1-token /v1/messages call (the lane's
+# actual Anthropic-shaped transport) and classifies ONLY a confirmed 503 /
+# auth_unavailable as retryable. Exit 2 = gap (dispatcher backs off); exit 0 =
+# healthy OR any non-gap status (let the real run surface a genuine config
+# error). Key via `-K -` (curl config on stdin), never argv (CR HIMMEL-979).
+if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+  # NO test seam here (coderabbit CR): an env-driven stand-in for the probe result
+  # would let ambient/inherited env fake this auth gate. Tests drive the REAL curl
+  # against a controlled loopback endpoint via CODEX_PROXY_BASE_URL instead.
+  if ! command -v curl >/dev/null 2>&1; then
+    # The background gate FAILS CLOSED without curl (codex-adv CR): it cannot
+    # verify the proxy/auth, so reporting healthy would let the unattended
+    # dispatcher launch a worker blind and recreate the exact startup failure.
+    # exit 21 (fatal) → probeClaudexAuth "fatal" → the dispatcher aborts before
+    # any worktree. (The regular launch preflight below keeps its fail-open
+    # warning — a human is watching an interactive launch.)
+    echo "claude-codex: --preflight-only needs curl to verify codex auth — refusing to report healthy without it (fatal)." >&2
+    exit 21
+  fi
+  probe_out="$(printf 'header "Authorization: Bearer %s"\n' "$CLIPROXY_API_KEY" \
+    | curl -s -w '\n%{http_code}' -m 8 --noproxy '*' -K - \
+      -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+      -d '{"model":"'"$CODEX_MODEL"'","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' \
+      "$CODEX_PROXY_BASE_URL/v1/messages" 2>/dev/null)"
+  curl_rc=$?   # curl's OWN exit — a nonzero rc means the transfer FAILED
+  probe_code="${probe_out##*$'\n'}"   # last line = %{http_code} (000 on connect failure)
+  # Transport-status guard (codex-adv CR): trust %{http_code} ONLY when curl
+  # itself succeeded. A partial/stalled 200 (headers arrive, then the body times
+  # out or truncates) prints "200" yet exits nonzero (e.g. 28 = timeout) — that
+  # is NOT healthy. A nonzero curl rc is a transport failure → transient (retry).
+  # We control the curl invocation (validated loopback URL, no user args), so the
+  # deterministic-config curl rc's do not occur at runtime; all nonzero = transient.
+  if [ "$curl_rc" -ne 0 ]; then exit 20; fi
+  # Three DISTINCT outcomes so the caller never confuses them (HIMMEL-1037,
+  # codex-adv CR): exit 0 = auth healthy (any 2xx); exit 20 = TRANSIENT and
+  # retry-worthy — the 503/auth_unavailable refresh gap PLUS other momentary
+  # failures that clear on their own (000 transport/proxy-restart, 429 rate
+  # limit, any 5xx gateway hiccup); exit 21 = a DETERMINISTIC failure that a
+  # retry cannot fix (4xx auth/config — 400/401/403/404…) → the caller ABORTS
+  # before minting a worktree. A non-2xx must NEVER read as healthy.
+  case "$probe_code" in
+    2??) exit 0 ;;              # any 2xx = upstream healthy
+    429|5??|000) exit 20 ;;     # rate-limit / any 5xx / transport failure = transient
+    *)
+      case "$probe_out" in
+        *auth_unavailable*) exit 20 ;;   # the gap can arrive with a non-5xx status too
+        *) exit 21 ;;                    # deterministic 4xx (400/401/403/404…) = fatal
+      esac ;;
+  esac
+fi
+
 # Proxy preflight: the lane is dead without a running cli-proxy-api. Advisory
 # curl absence (fail-open with a warning); a refused/timed-out proxy is fatal.
 # The Authorization header travels via `-K -` (curl config on stdin), never the
@@ -513,6 +578,9 @@ if command -v curl >/dev/null 2>&1; then
     exit 2
   fi
 else
+  # curl absent: cannot probe. For --preflight-only fail OPEN (exit 0) so the
+  # dispatcher still proceeds — mirrors the launch path's curl-absent skip.
+  [ "$PREFLIGHT_ONLY" -eq 1 ] && exit 0
   echo "claude-codex: WARNING - curl not found; skipping proxy reachability preflight." >&2
 fi
 

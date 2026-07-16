@@ -99,11 +99,15 @@ if ([string]::IsNullOrEmpty($key)) {
 # --- flags lead, rest passes to claude verbatim ------------------------------
 $Reseed = $false
 $Force  = $false
+# HIMMEL-1037: --preflight-only mirrors the bash twin — a cheap auth/liveness
+# probe (0=healthy, 2=unavailable) that exits without launching a worker.
+$PreflightOnly = $false
 $ClaudeArgs = [System.Collections.Generic.List[string]]::new()
 $leading = $true
 foreach ($a in $args) {
   if ($leading -and ($a -ieq '-Reseed' -or $a -ieq '--reseed')) { $Reseed = $true; continue }
   if ($leading -and ($a -ieq '-Force'  -or $a -ieq '--force'))  { $Force  = $true; continue }
+  if ($leading -and ($a -ieq '-PreflightOnly' -or $a -ieq '--preflight-only')) { $PreflightOnly = $true; continue }
   $leading = $false
   $ClaudeArgs.Add($a)
 }
@@ -573,7 +577,8 @@ function Invoke-SeedWithLock {
   }
 }
 
-if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
+# HIMMEL-1037: a --preflight-only probe never launches claude, so skip seeding.
+if ((-not $PreflightOnly) -and ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale))) {
   Invoke-SeedWithLock
 }
 
@@ -598,6 +603,36 @@ if (-not $isLoopback) {
   [Console]::Error.WriteLine("claude-codex: WARNING - non-loopback proxy ($proxyHostPort) under CLAUDE_CODEX_REMOTE_PROXY_OK=1. Key + session content WILL leave this machine.")
 }
 
+# HIMMEL-1037 auth-gap probe (--preflight-only): detect the transient
+# 503 auth_unavailable OAuth-refresh gap by exercising the REAL upstream codex
+# provider. /v1/models is served from CLIProxyAPI's model REGISTRY and stays 200
+# during the gap (codex-adv CR), so probe a minimal 1-token /v1/messages call
+# (the lane's Anthropic-shaped transport) and classify ONLY a confirmed 503 /
+# auth_unavailable as retryable. exit 2 = gap; exit 0 = healthy or any non-gap
+# status (let the real run surface a genuine error). Mirrors the bash twin.
+if ($PreflightOnly) {
+  try {
+    $body = '{"model":"' + $CodexModel + '","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}'
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 8 -NoProxy -Method Post `
+      -Headers @{Authorization="Bearer $key"; 'content-type'='application/json'; 'anthropic-version'='2023-06-01'} `
+      -Body $body -Uri "$CodexProxyBaseUrl/v1/messages" | Out-Null
+    exit 0   # any 2xx = upstream healthy (Invoke-WebRequest throws on non-2xx)
+  } catch {
+    # Three DISTINCT outcomes (HIMMEL-1037, codex-adv CR), mirroring the bash
+    # twin: exit 20 = TRANSIENT (auth_unavailable gap, 429 rate-limit, any 5xx,
+    # OR a connection failure with no response = proxy restart); exit 21 =
+    # DETERMINISTIC 4xx (400/401/403/404…) a retry cannot fix → the caller ABORTS.
+    # A non-2xx never reads healthy (Invoke-WebRequest throws on non-2xx).
+    $resp = $_.Exception.Response
+    $code = $null; if ($resp) { try { $code = [int]$resp.StatusCode } catch { } }
+    if (("$_" -match 'auth_unavailable')) { exit 20 }
+    if ($code -eq 429) { exit 20 }
+    if ($null -ne $code -and $code -ge 500 -and $code -le 599) { exit 20 }  # any 5xx = transient
+    if ($null -eq $code) { exit 20 }                                        # no response = transport failure = transient
+    exit 21   # deterministic 4xx = fatal
+  }
+}
+
 # --- proxy preflight ---------------------------------------------------------
 # The lane is dead without a running cli-proxy-api; a refused/timed-out proxy is fatal.
 try {
@@ -609,6 +644,8 @@ try {
   [Console]::Error.WriteLine("claude-codex: proxy not reachable at $CodexProxyBaseUrl — start cli-proxy-api (and complete --codex-login) first. See docs/tooling-catalog.md#claude-codex.")
   exit 2
 }
+# Probe healthy — the dispatcher may now spin the worker (this run does not).
+if ($PreflightOnly) { exit 0 }
 
 # --- launch: env contract mirrors the bash `exec env … claude "$@"` -----------
 # The CLAUDE_CODE_*/ENABLE_TOOL_SEARCH values follow the field-tested claudex
