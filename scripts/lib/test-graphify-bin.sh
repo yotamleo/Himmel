@@ -362,6 +362,47 @@ assert "setup.sh calls graphify_install" grep -q 'graphify_install' "$repo_root/
 assert "adopt.sh sources graphify-bin.sh" grep -q 'lib/graphify-bin.sh' "$repo_root/scripts/adopt.sh"
 assert "adopt.sh calls graphify_install" grep -q 'graphify_install' "$repo_root/scripts/adopt.sh"
 
+# HIMMEL-1047: MCP registration is the shared graphify_register_mcp impl, exposed
+# via the `register-mcp` CLI case, called by both installers (adopt at its scope,
+# setup at user scope) and delegated to by the pwsh mirrors.
+assert "graphify-bin.sh defines graphify_register_mcp" grep -q 'graphify_register_mcp()' "$SCRIPT_DIR/graphify-bin.sh"
+assert "graphify-bin.sh CLI exposes register-mcp" grep -q 'register-mcp) graphify_register_mcp' "$SCRIPT_DIR/graphify-bin.sh"
+# Scope forwarding (HIMMEL-1047 CR): setup.sh pins user scope; adopt.sh forwards
+# its own $SCOPE (project|user) — not a hardcoded scope.
+assert "setup.sh registers at user scope" grep -q 'graphify_register_mcp user' "$repo_root/scripts/setup.sh"
+# The grep pattern intentionally matches the LITERAL string graphify_register_mcp "$SCOPE"
+# in adopt.sh (\$ = a literal $ in the BRE); it is not meant to expand here.
+# shellcheck disable=SC2016
+assert "adopt.sh forwards its SCOPE to register" grep -q 'graphify_register_mcp "\$SCOPE"' "$repo_root/scripts/adopt.sh"
+# Project scope must NOT embed a machine-specific absolute path in the committed
+# .mcp.json — the helper branches to the bare name for project scope (CR C14).
+assert "graphify_register_mcp uses bare name for project scope" grep -q 'mcp_arg="graphify-mcp"' "$SCRIPT_DIR/graphify-bin.sh"
+assert "setup.ps1 delegates register-mcp to bash" grep -q 'graphify-bin.sh" register-mcp' "$repo_root/scripts/setup.ps1"
+assert "adopt.ps1 delegates register-mcp to bash" grep -q 'graphify-bin.sh" register-mcp' "$repo_root/scripts/adopt.ps1"
+
+# set -e regression (HIMMEL-1047 CR, codex): a nonzero `claude mcp add` — the
+# COMMON "already exists" idempotent case (rc=1) — must NOT abort a set -e caller
+# (adopt.sh is `set -euo pipefail`). Hermetic: a stub claude returns exists/rc1;
+# project scope avoids any uv/graphify-mcp dependency (bare name).
+se_stub="$(mktemp -d)"
+cat > "$se_stub/claude" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"mcp add"*) echo "MCP server graphify already exists in project config" >&2; exit 1 ;;
+esac
+exit 0
+STUB
+chmod +x "$se_stub/claude"
+se_out="$(PATH="$se_stub:$PATH" bash -c 'set -euo pipefail; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_register_mcp project; echo SE-REACHED-END' 2>&1 || true)"
+# $1 is the INNER bash's positional (the passed "$se_out"), intentionally literal.
+# shellcheck disable=SC2016
+assert "set -e caller: nonzero mcp add (already-exists) does not abort" \
+  bash -c 'printf "%s" "$1" | grep -q SE-REACHED-END' _ "$se_out"
+# shellcheck disable=SC2016
+assert "already-exists rc!=0 handled as idempotent skip" \
+  bash -c 'printf "%s" "$1" | grep -qi "already registered at project scope"' _ "$se_out"
+rm -rf "$se_stub"
+
 echo
 echo "[test-graphify-bin] pass=$pass fail=$fail"
 test "$fail" -eq 0

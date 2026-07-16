@@ -411,7 +411,14 @@ else
 fi
 
 if [ "$_install_graphify" = "1" ]; then
-  graphify_install || echo "  WARNING: graphify install failed; setup continues." >&2
+  if graphify_install; then
+    # Register the MCP server so the install delivers the mcp__graphify__* tools,
+    # not just the CLI (HIMMEL-1047). user scope — setup.sh provisions this
+    # machine's own environment. WARN-not-fail; idempotent.
+    graphify_register_mcp user
+  else
+    echo "  WARNING: graphify install failed; setup continues." >&2
+  fi
 else
   if [ "$WITH_GRAPHIFY" != "1" ] && { [ -t 0 ] && [ -t 1 ]; }; then
     echo "  Skipped. Install later: $(graphify_install_hint)"

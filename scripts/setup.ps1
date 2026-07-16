@@ -505,6 +505,11 @@ if ($installGraphify) {
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  WARNING: graphify install failed (rc=$LASTEXITCODE); setup continues." -ForegroundColor Yellow
             Write-Host "  Retry manually: bash `"$RepoRoot/scripts/lib/graphify-bin.sh`" install" -ForegroundColor Yellow
+        } else {
+            # Register the MCP server so the install delivers the mcp__graphify__*
+            # tools, not just the CLI (HIMMEL-1047). user scope; delegates to the
+            # ONE bash impl. WARN-not-fail; idempotent.
+            & bash "$RepoRoot/scripts/lib/graphify-bin.sh" register-mcp user
         }
     } finally {
         $ErrorActionPreference = $savedEAP

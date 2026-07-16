@@ -332,6 +332,9 @@ printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* himmel$' || fail "
 printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* luna$'   || fail "dry-run missing luna register DRY line"
 printf '%s' "$out" | grep -q 'Wiring graphify (opt-in' || fail "dry-run --with-graphify missing the graphify wiring banner"
 printf '%s' "$out" | grep -q 'DRY: graphify_install'   || fail "dry-run --with-graphify missing graphify_install DRY line"
+# HIMMEL-1047: --with-graphify also registers the MCP server at the adopt scope
+# (here --scope user), so the dry-run must emit the mcp-add DRY line.
+printf '%s' "$out" | grep -q 'DRY: claude mcp add -s user graphify' || fail "dry-run --with-graphify missing the graphify MCP registration DRY line"
 # HIMMEL-842 gap 3: build_jira_cli runs after install_plugins; with npm scrubbed
 # suite-wide and bun stubbed present, it picks bun and emits its DRY build line.
 printf '%s' "$out" | grep -q 'DRY:.*(cd scripts/jira && bun install && bun run build)' || fail "dry-run missing build_jira_cli DRY line"

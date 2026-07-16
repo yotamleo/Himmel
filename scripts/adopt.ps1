@@ -467,6 +467,7 @@ function Wire-GraphifyCore {
     Write-Host "---- Wiring graphify (opt-in, -WithGraphify) ----"
     if ($DryRun) {
         Write-Host "DRY: Install-Graphify"
+        Write-Host "DRY: claude mcp add -s $Scope graphify -- <graphify-mcp: absolute path for user/local, bare name for project>"
         return
     }
     # WARN-not-fail structural guarantee (CR-r2): under this script's
@@ -486,11 +487,31 @@ function Wire-GraphifyCore {
         $installRc = Install-Graphify
         if ($installRc -ne 0) {
             Write-Host "  WARNING: graphify install failed (rc=$installRc) - continuing without graphify." -ForegroundColor Yellow
+        } else {
+            # Register the MCP server INSIDE this block: the decoupled native-EAP
+            # posture keeps a nonzero `claude mcp get` (not-registered probe) from
+            # terminating the adopt.
+            Register-GraphifyMcp
         }
     } finally {
         $ErrorActionPreference = $savedEAP
         if ($null -ne $savedNativeEAP) { $global:PSNativeCommandUseErrorActionPreference = $savedNativeEAP }
     }
+}
+
+# Register-GraphifyMcp -- register the graphify MCP server (mcp__graphify__*) at
+# the adopt Scope, delegating to the ONE shared implementation in
+# scripts/lib/graphify-bin.sh (`register-mcp`) rather than duplicating the
+# resolve/add recipe natively (mirrors Install-Graphify's delegation). The bash
+# impl resolves the absolute entrypoint + is idempotent + WARN-not-fail.
+function Register-GraphifyMcp {
+    $gitBash = Resolve-QmdGitBash
+    if (-not $gitBash) {
+        Write-Host "  graphify MCP: Git Bash not found - skipping registration." -ForegroundColor Yellow
+        Write-Host "  Manual: bash `"$HimmelRoot/scripts/lib/graphify-bin.sh`" register-mcp $Scope" -ForegroundColor Yellow
+        return
+    }
+    & $gitBash "$HimmelRoot/scripts/lib/graphify-bin.sh" register-mcp $Scope | ForEach-Object { Write-Host $_ }
 }
 
 # Build-JiraCli -- build scripts/jira/dist/index.js (HIMMEL-842 gap 3). dist/ is
