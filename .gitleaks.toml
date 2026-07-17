@@ -22,16 +22,28 @@ regex = '''[0-9]{8,10}:[A-Za-z0-9_-]{35}'''
 [allowlist]
 description = "Vendored third-party Obsidian plugin bundles + the known-benign local-proxy test token"
 paths = [
-  '''templates/luna-second-brain/\.obsidian/plugins/''',
+  '''^templates/luna-second-brain/\.obsidian/plugins/''',
 ]
 # The luna template's gitleaks regression test embeds the loopback-only local
 # CLIProxyAPI token (Authorization Bearer) plus a deliberate suffixed near-miss
-# as FIXTURES, proving the template allowlist lets the exact constant through
-# but blocks a near-miss. That token is a documented, loopback-only shared
-# constant checked into himmel (scripts/setup/cli-proxy-lane.ps1), not a
-# credential. Scope the exception to those exact constants (anchored) rather
-# than path-allowlisting the whole test file, so real secrets in it are still
-# scanned (CR #1239). Anchored ^…$ avoids the substring-bypass hole (HIMMEL-1055).
+# as FIXTURES. That token is a documented, loopback-only shared constant checked
+# into himmel (scripts/setup/cli-proxy-lane.ps1), not a credential. Scope the
+# exception to those exact constants (anchored) rather than path-allowlisting the
+# whole test file, so real secrets in it are still scanned (CR #1239). Anchored
+# ^…$ avoids the substring-bypass hole (HIMMEL-1055) — each fixture is listed as
+# its OWN anchored entry, never as one loose `(-extra)?` alternation.
+#
+# THIS config is himmel's own full-tree scan (`gitleaks dir .` in CI + pre-commit).
+# Its ONLY job here is to not flag the two fixture LITERALS that necessarily sit in
+# test-vault-git.sh's source. It has NOTHING to do with what the D6-D9 regression
+# test proves: that test scans a temp vault carrying the TEMPLATE config
+# (templates/luna-second-brain/.gitleaks.toml), which allowlists the exact constant
+# ONLY — that is what makes D8 block the near-miss. Do not "narrow" the near-miss
+# entry out of this file to tighten D8: it cannot tighten D8 (different config), and
+# it makes `gitleaks dir .` flag test-vault-git.sh:199 and fail the secret-scan gate
+# on every run (verified: exit 1, `leaks found: 1`). Reviewed and rejected once
+# (CR #1243 round 1) — the two configs are separate surfaces.
 regexes = [
-  '''^himmel-local-claudex(-extra)?$''',
+  '''^himmel-local-claudex$''',
+  '''^himmel-local-claudex-extra$''',
 ]
