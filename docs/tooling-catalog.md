@@ -487,14 +487,27 @@ operator's primary config. The fix is **lever-b**: resolve a profile to an
 changing which config dir loads, so hooks are unaffected).
 
 **Registry (`plugin-profiles.json`):**
-- `floor` — the inviolable operational set present in EVERY profile:
+- `floor` — the inviolable operational set present in every INJECTED profile:
   `handover@himmel`, `himmel-ops@himmel`, `qmd@himmel`, `codex@openai-codex`
-  (a lane that can't dispatch/search/handover is broken).
+  (a lane that can't dispatch/search/handover is broken). `operator` is the
+  exception — it's a `null` sentinel that injects nothing at all, so the floor
+  doesn't apply to it.
 - `catalog` — the known plugin universe; the resolver sets `false` for anything a
   profile doesn't enable, so the injected map is **complete** (correct whether
-  Claude Code merges or replaces `enabledPlugins`). A newly-installed plugin
-  absent from `catalog` isn't disabled on a lane until added (the HIMMEL-819
-  staleness class).
+  Claude Code merges or replaces `enabledPlugins`). Beyond the catalog the
+  resolver also sets `false` for every id in `opts.installed` — the caller's LIVE
+  plugin universe — so a newly-installed plugin absent from `catalog` is still
+  disabled on a lane whose caller passes that set (the spawn scripts do, via
+  `readEnabledPluginIds`). Two exceptions:
+  - **The claudex lane does not fully close this** (KNOWN GAP, HIMMEL-1066):
+    `readEnabledPluginIds` reads the dispatcher's ambient config dir, but a
+    claudex worker's effective user scope is `~/.claude-codex` (the launcher owns
+    and seeds it AFTER the resolve). A plugin enabled only there, and absent from
+    `catalog`, is missing from `opts.installed` and can stay enabled in an
+    unattended worker. See the seam note at `spawn-glm.ts:36-41`.
+  - A CATALOG-ONLY caller (one passing no `opts.installed`) retains the gap:
+    there, an id absent from `catalog` goes unmentioned and inherits its enabled
+    state until added (the HIMMEL-819 staleness class).
 - `profiles` — `operator` (`null` sentinel: full `~/.claude`, never injected),
   `user` (adopter set, HIMMEL-1044), `lane-impl` (impl workers: floor +
   `pr-review-toolkit-himmel`), `lane-review` (CR-only, same lean set),

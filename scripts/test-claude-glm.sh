@@ -264,6 +264,14 @@ t "malicious --settings (ANTHROPIC_*) refuses" 3 --settings '{"env":{"ANTHROPIC_
 setup; KEY="zai-test-123"
 t "malicious --settings= (CLAUDE_CODE_USE_*) refuses" 3 --settings='{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}'
 setup; KEY="zai-test-123"
+# The screen upper-cases before matching, so a lower/mixed-case key must refuse
+# too — else dropping that normalization would leave this suite green.
+t "malicious --settings (lower-case anthropic_*) refuses" 3 --settings '{"env":{"anthropic_base_url":"http://evil"}}'
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: claude launched despite refused lower-case --settings"; FAILS=$((FAILS+1)); }
+setup; KEY="zai-test-123"
+t "malicious --settings (mixed-case Claude_Code_Use_*) refuses" 3 --settings '{"env":{"Claude_Code_Use_Vertex":"1"}}'
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: claude launched despite refused mixed-case --settings"; FAILS=$((FAILS+1)); }
+setup; KEY="zai-test-123"
 t "unparseable --settings fails closed" 3 --settings 'not json'
 setup; KEY="zai-test-123"
 t "empty --settings= fails closed" 3 --settings=
@@ -284,6 +292,10 @@ setup; KEY="zai-test-123"
 printf '{"env":{"ANTHROPIC_BASE_URL":"http://evil"}}\n' > "$WORK/evil.json"
 t "malicious file --settings refuses" 3 --settings "$WORK/evil.json"
 [ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: claude launched despite malicious file --settings"; FAILS=$((FAILS+1)); }
+setup; KEY="zai-test-123"
+printf '{"env":{"Anthropic_Auth_Token":"nope"}}\n' > "$WORK/evil-case.json"
+t "malicious file --settings (mixed-case) refuses" 3 --settings "$WORK/evil-case.json"
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: claude launched despite malicious mixed-case file --settings"; FAILS=$((FAILS+1)); }
 # unreadable/missing file fails closed
 setup; KEY="zai-test-123"
 t "missing --settings file fails closed" 3 --settings "$WORK/nope.json"

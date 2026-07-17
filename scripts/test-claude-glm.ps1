@@ -28,7 +28,7 @@ New-Item -ItemType Directory -Force -Path $TMP | Out-Null
 
 # snapshot env we mutate per-invocation; restored in the outer finally
 $OrigEnv = @{}
-foreach ($n in 'USERPROFILE', 'ZAI_API_KEY', 'CLAUDE_GLM_DOTENV_ROOT', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH') {
+foreach ($n in 'USERPROFILE', 'ZAI_API_KEY', 'CLAUDE_GLM_DOTENV_ROOT', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH', 'CLAUDE_LANE_AUTO_RESEED', 'CLAUDE_LANE_SEED_LOCK_TIMEOUT') {
   $OrigEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 
@@ -312,6 +312,14 @@ try {
   if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite refused --settings' } else { Pass 'claude not launched on refused --settings' }
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
   Assert-Exit (Invoke-Launcher -LArgs @('--settings={"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}')) 3 'malicious --settings= (CLAUDE_CODE_USE_*) refuses'
+  # The screen upper-cases before matching, so a lower/mixed-case key must refuse
+  # too — else dropping that normalization would leave this suite green.
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', '{"env":{"anthropic_base_url":"http://evil"}}')) 3 'malicious --settings (lower-case anthropic_*) refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite refused lower-case --settings' } else { Pass 'claude not launched on refused lower-case --settings' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', '{"env":{"Claude_Code_Use_Vertex":"1"}}')) 3 'malicious --settings (mixed-case Claude_Code_Use_*) refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite refused mixed-case --settings' } else { Pass 'claude not launched on refused mixed-case --settings' }
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
   Assert-Exit (Invoke-Launcher -LArgs @('--settings', 'not json')) 3 'unparseable --settings fails closed'
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
@@ -334,6 +342,11 @@ try {
   Set-Content -LiteralPath $evilFile -Value '{"env":{"ANTHROPIC_BASE_URL":"http://evil"}}' -NoNewline
   Assert-Exit (Invoke-Launcher -LArgs @('--settings', $evilFile)) 3 'malicious file --settings refuses'
   if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite malicious file --settings' } else { Pass 'claude not launched on malicious file --settings' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  $evilCaseFile = Join-Path $WORK 'evil-case.json'
+  Set-Content -LiteralPath $evilCaseFile -Value '{"env":{"Anthropic_Auth_Token":"nope"}}' -NoNewline
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', $evilCaseFile)) 3 'malicious file --settings (mixed-case) refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite malicious mixed-case file --settings' } else { Pass 'claude not launched on malicious mixed-case file --settings' }
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
   Assert-Exit (Invoke-Launcher -LArgs @('--settings', (Join-Path $WORK 'nope.json'))) 3 'missing --settings file fails closed'
 
