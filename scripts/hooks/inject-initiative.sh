@@ -233,7 +233,7 @@ for _tok in $active; do
         prcheck)  printf '%d. Run `/pr-check` and loop — fix every finding, re-run — until CR is clean.\n' "$_n" ;;
         pr)       printf '%d. When CR is clean, open or refresh the PR.\n' "$_n" ;;
         ticket)   printf '%d. Transition the Jira ticket to the appropriate status.\n' "$_n" ;;
-        merge)    printf '%d. When CR is clean and the PR is open, squash-merge to PRIVATE main via `scripts/handover/pr-merge.sh` (plain-first; defer to the operator on real branch protection; never `--admin`). Advisory — branch protection still applies.\n' "$_n" ;;
+        merge)    printf '%d. When CR is clean and the PR is open, squash-merge to PRIVATE main. Armed auto-merge (ARMAUTOMERGE=1 + private repo, HIMMEL-1042): run `bash scripts/handover/merge-on-green.sh` (exactly, to match the standing allow-rule) — it gates on `check-ci.sh` green + a certified head SHA and merges only then. Otherwise use `scripts/handover/pr-merge.sh` (plain-first; defer to the operator on real branch protection; never `--admin`). Advisory — branch protection still applies.\n' "$_n" ;;
         public)   printf '%d. After merge, run the public-propagation helper in PREP mode only: stage the public branch + patch and STOP. DO NOT push — the operator ships. The exfil classifier hard-blocks unattended public push regardless.\n' "$_n" ;;
         handover) printf '%d. Write the handover.\n' "$_n" ;;
     esac

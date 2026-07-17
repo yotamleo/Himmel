@@ -165,10 +165,43 @@ export function gitIsDirty(worktreePath: string): boolean {
   return r.stdout.toString().trim().length > 0;
 }
 
+// Under-the-lock revalidation of a REUSED shared worktree (HIMMEL-1037,
+// codex-adv CR). The plan's pre-lock checks can go stale between then and lock
+// acquisition — the worktree could be switched to another branch, recreated, or
+// dirtied by a concurrent worker. Re-resolve identity + cleanliness so the
+// worker never commits onto the WRONG branch or another worker's mixed state:
+//   - fresh worktree (needsWorktreeAdd) ⇒ nothing to revalidate, ok.
+//   - the branch must still map to the SAME non-primary worktree path.
+//   - that worktree must be clean.
+// Deps injected (worktreeOf/isDirty) so it is unit-tested without real git.
+export function revalidateSharedWorktree(deps: {
+  needsWorktreeAdd: boolean; branch: string; worktree: string;
+  worktreeOf: (b: string) => { path: string; isPrimary: boolean } | null;
+  isDirty: (p: string) => boolean;
+}): { ok: true } | { ok: false; reason: string } {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/$/, "");
+  const wtNow = deps.worktreeOf(deps.branch);
+  if (deps.needsWorktreeAdd) {
+    // Planned to CREATE the worktree — but under the lock a concurrent dispatch
+    // may have created the branch→worktree mapping during the backoff; a second
+    // `git worktree add` would then fail. Refuse cleanly instead (codex-adv/
+    // coderabbit CR). Absent mapping ⇒ ours to create, proceed.
+    if (wtNow) return { ok: false, reason: `spawn-claudex: worktree for ${deps.branch} was created by a concurrent dispatch during the preflight (now ${wtNow.path}) — refusing the duplicate worktree-add; re-dispatch (HIMMEL-1037).` };
+    return { ok: true };
+  }
+  if (!wtNow || wtNow.isPrimary || norm(wtNow.path) !== norm(deps.worktree)) {
+    return { ok: false, reason: `spawn-claudex: shared worktree for ${deps.branch} changed under the lock (no longer the expected non-primary worktree ${deps.worktree}) — refusing before launch (a worker could commit to the wrong branch); re-dispatch (HIMMEL-1037).` };
+  }
+  if (deps.isDirty(deps.worktree)) {
+    return { ok: false, reason: `spawn-claudex: reused worktree ${deps.worktree} became dirty before the lock (a concurrent shared worker left uncommitted changes) — refusing rather than commit onto mixed state; commit/stash there and re-dispatch (HIMMEL-1037).` };
+  }
+  return { ok: true };
+}
+
 // ── args parsing ──────────────────────────────────────────────────────────
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh";
-export type ClaudexParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; effort?: EffortLevel; force: boolean };
+export type ClaudexParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; effort?: EffortLevel; force: boolean; skipAuthPreflight: boolean };
 
 // Pure + validated, mirrors spawn-glm's parseArgs (a value-taking flag with no
 // value, or a non-positive/non-finite --timeout-mins, is a usage refusal).
@@ -184,6 +217,7 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
   let permMode: PermissionMode | undefined;
   let effort: EffortLevel | undefined;
   let force = false;
+  let skipAuthPreflight = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
@@ -205,10 +239,14 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
       effort = v;
     }
     else if (a === "--force") force = true;
+    // Auth-preflight override is an EXPLICIT per-invocation flag, never an env
+    // var: an ambient/inherited setting must not be able to silently disable the
+    // fail-closed auth gate and restore the original startup failure (codex-adv CR).
+    else if (a === "--skip-auth-preflight") skipAuthPreflight = true;
     else if (task === undefined) task = a;
   }
   if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
-  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, effort, force } };
+  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, effort, force, skipAuthPreflight } };
 }
 
 // ── codex weekly bank preflight (HIMMEL-1003 D4) ────────────────────────────
@@ -316,6 +354,162 @@ export function detectClaudexCap(output: string): boolean {
   return CLAUDEX_CAP_SENTINELS.some((r) => r.test(output));
 }
 
+// ── transient codex OAuth refresh-gap PRE-LAUNCH preflight (HIMMEL-1037) ────
+//
+// The CLIProxyAPI codex gateway (127.0.0.1:8317) returns 503 auth_unavailable
+// during the ~seconds window while the codex OAuth *access* token is
+// mid-refresh — a transient ~1h-lapse window, NOT a dead credential. A
+// BACKGROUND dispatch that starts up inside that window dies immediately; the
+// proven 2026-07-15 incident was 3 back-to-back immediate retries all landing
+// in the SAME gap (an interactive retry a minute later worked, because the
+// human waited).
+//
+// We fix this BEFORE launching the worker — never by re-running one. `probe`
+// runs `claude-codex --preflight-only` (the launcher's OWN authed 1-token
+// /v1/messages check — the registry /v1/models stays 200 during the gap, so it
+// must exercise the real upstream; exits 0=healthy / 20=transient-retry /
+// 21=fatal WITHOUT spinning a worker) and is retried with backoff until auth is
+// healthy or fatal/exhausted; only then does the caller mint
+// the worktree and spawn the worker, exactly once. A worker's allowed side
+// effects (Jira writes, outbox appends — see the worker prompt) can therefore
+// never be duplicated by a re-run: post-hoc "did the worker do work?" inference
+// is unsound (codex-adv CR), so a pre-execution auth signal is the only safe
+// gate. It also avoids minting a worktree for a doomed run. Interactive
+// cc-codex needs none of this — its human provides the retry delay — so this
+// lives only in the background dispatcher; claude-codex still owns the authed
+// call (the probe just asks it), keeping the D1 trust boundary intact.
+
+// Backoff schedule between preflight probe attempts: 10s/20s/30s (=60s total).
+// The refresh gap is a ~seconds window, so a modest schedule catches the common
+// case; a gap that outlasts the whole schedule hits the refuse-on-exhaustion
+// path (main), not an ever-longer wait. The total is deliberately BOUNDED and
+// small because the preflight runs in the FOREGROUND before the worker — a
+// long backoff plus a multi-minute worker could exceed a caller's foreground
+// dispatch budget (codex-adv CR). Immediate (0-delay) retries are futile (the
+// gap outlasts them). Overridable via CLAUDEX_AUTH_RETRY_DELAYS (comma-separated
+// SECONDS); an empty/invalid value falls back (parsePct style).
+export const DEFAULT_AUTH_RETRY_DELAYS_MS = [10_000, 20_000, 30_000];
+export function parseAuthRetryDelaysMs(raw: string | undefined, fallbackMs: number[]): number[] {
+  const s = raw?.trim();
+  if (s === undefined || s === "") return fallbackMs;
+  const toks = s.split(",").map((t) => t.trim()).filter((t) => t !== "");
+  if (toks.length === 0) return fallbackMs;
+  const secs = toks.map((t) => Number(t));
+  if (secs.some((n) => !Number.isFinite(n) || n < 0)) return fallbackMs;
+  const ms = secs.map((n) => Math.round(n * 1000));
+  // Reject an absurd schedule rather than defeat the backoff (both CR):
+  //  - 1e308 s overflows to Infinity once scaled to ms (coderabbit);
+  //  - a finite value past Bun/Node's signed-32-bit setTimeout cap
+  //    (2147483647 ms) is silently reset to ~1ms → immediate retry (codex-adv);
+  //  - too many attempts, OR an aggregate that exceeds the bounded FOREGROUND
+  //    deadline, would strand the invoking parent (codex-adv: a per-value cap
+  //    alone still allows a ~25-day single sleep). Require a safe integer within
+  //    the timer cap, at most MAX_AUTH_RETRY_ATTEMPTS delays, summing within
+  //    MAX_TOTAL_BACKOFF_MS — else fall back to the small default.
+  if (ms.some((n) => !Number.isSafeInteger(n) || n > MAX_TIMER_MS)) return fallbackMs;
+  if (ms.length > MAX_AUTH_RETRY_ATTEMPTS) return fallbackMs;
+  const totalMs = ms.reduce((a, b) => a + b, 0);
+  // An all-zero schedule (e.g. "0,0") has budgetMs 0 → the deadline is `now()`,
+  // so the very first probe gets a 0ms timeout and the loop breaks before any
+  // re-probe: zero effective retries AND a killed first probe. Immediate retries
+  // are documented futile anyway, so fall back to the real default (coderabbit CR).
+  if (totalMs === 0 || totalMs > MAX_TOTAL_BACKOFF_MS) return fallbackMs;
+  return ms;
+}
+// Bun/Node setTimeout delay is a signed 32-bit int; a larger value fires ~immediately.
+export const MAX_TIMER_MS = 2_147_483_647;
+// The preflight runs in the FOREGROUND before the worker, so its total wall-clock
+// is hard-bounded: at most 8 backoff delays summing to ≤3 min, even under an
+// operator override (codex-adv CR — otherwise a single huge delay strands the parent).
+export const MAX_AUTH_RETRY_ATTEMPTS = 8;
+export const MAX_TOTAL_BACKOFF_MS = 180_000;
+
+// Dedicated launcher exit code for the transient codex OAuth-refresh gap
+// (claude-codex --preflight-only). Keeps the retry from ever firing on a
+// PERMANENT error (missing key = the launcher's early exit 2, egress refusal =
+// 3, etc.), which would otherwise waste the whole backoff then launch a doomed
+// worker (codex-adv CR). Keep in sync with scripts/claude-codex{,.ps1}.
+export const CLAUDEX_PREFLIGHT_GAP_EXIT = 20;
+// Hard per-probe wall-clock cap so ONE synchronous probe can never blow the
+// preflight's absolute deadline (codex/coderabbit CR: spawnSync is not
+// cancellable, so bound it at the source). Comfortably above the launcher's own
+// curl -m 8 plus bash/guard overhead; a probe killed at this cap is transient.
+export const PROBE_TIMEOUT_MS = 12_000;
+export type AuthProbeResult = "ok" | "unavailable" | "fatal";
+
+// Run the launcher's --preflight-only auth probe (no worker spawned). The
+// launcher exercises the REAL upstream provider (a 1-token /v1/messages call),
+// so this distinguishes:
+//   exit 0                        ⇒ "ok"        (auth healthy, or a non-gap
+//                                                 status the real run surfaces)
+//   exit CLAUDEX_PREFLIGHT_GAP_EXIT⇒ "unavailable" (transient 503 refresh gap → retry)
+//   any other nonzero             ⇒ "fatal"     (missing key / config / egress
+//                                                 refusal — permanent; abort, do
+//                                                 NOT retry or mint a worktree)
+// A probe KILLED at PROBE_TIMEOUT_MS (spawnSync timeout → exitCode null +
+// signalCode) is TRANSIENT, not fatal — the gate couldn't complete, so retry
+// within the deadline rather than abort. TELEGRAM_OWN_POLLER is stripped
+// (claudexChildEnv) so the probe never adopts poller ownership.
+export function probeClaudexAuth(repoRoot: string, cwd: string, timeoutMs: number = PROBE_TIMEOUT_MS): AuthProbeResult {
+  const launcherPath = claudexLauncherPath(repoRoot);
+  const r = Bun.spawnSync(["bash", launcherPath, "--preflight-only"], { cwd, stdout: "pipe", stderr: "pipe", env: claudexChildEnv(process.env) as Record<string, string>, timeout: timeoutMs });
+  if (r.exitCode === null || r.signalCode != null) return "unavailable"; // killed / timed out
+  if (r.exitCode === 0) return "ok";
+  if (r.exitCode === CLAUDEX_PREFLIGHT_GAP_EXIT) return "unavailable";
+  return "fatal";
+}
+
+// Poll the auth probe with backoff BEFORE any worktree side-effect. Returns as
+// soon as the probe is decisive:
+//   {ready:true}              — auth healthy, spin the worker.
+//   {fatal:true}             — a permanent config error; the caller aborts
+//                              WITHOUT minting a worktree (no doomed run, no
+//                              wasted backoff).
+//   {ready:false,fatal:false}— still the transient gap after the whole schedule:
+//                              REFUSED by the caller (don't launch into a known
+//                              outage).
+// An ABSOLUTE wall-clock deadline (start + Σdelays) bounds the WHOLE preflight —
+// sleeps AND synchronous probe time — so it can NEVER exceed the budget (codex-adv
+// CR: a per-delay cap alone ignored probe latency, and even a hard per-probe cap
+// let the FINAL probe overshoot). Each backoff AND each probe timeout is clamped
+// to the budget remaining at that instant, and the loop stops the moment the
+// budget is spent — total elapsed ≤ deadline. `probe` receives its clamped
+// timeout (ms); `probe`/`sleep`/`now` are injected so tests never spawn or wait.
+export async function runAuthPreflightWithBackoff(
+  probe: (timeoutMs: number) => AuthProbeResult,
+  deps: { delaysMs: number[]; sleep: (ms: number) => Promise<void>; log?: (m: string) => void; now?: () => number },
+): Promise<{ ready: boolean; fatal: boolean; attempts: number }> {
+  const now = deps.now ?? (() => Date.now());
+  const budgetMs = deps.delaysMs.reduce((a, b) => a + b, 0);
+  // The deadline covers the configured SLEEPS **plus** a probe allowance — one
+  // bounded probe per attempt (n delays ⇒ n+1 attempts). Without the allowance
+  // probe time eats the sleep budget, silently truncating the last delay and
+  // dropping the final probe, so recovery after the last wait is undetectable
+  // and the advertised schedule never runs (coderabbit CR). Worst-case foreground
+  // is therefore Σdelays + (n+1)·PROBE_TIMEOUT_MS — larger, but honest and hard.
+  const probeAllowanceMs = (deps.delaysMs.length + 1) * PROBE_TIMEOUT_MS;
+  const deadline = now() + budgetMs + probeAllowanceMs;
+  const probeBudget = () => Math.min(PROBE_TIMEOUT_MS, Math.max(0, deadline - now()));
+  let res = probe(probeBudget());
+  let attempts = 1;
+  if (res === "ok") return { ready: true, fatal: false, attempts };
+  if (res === "fatal") return { ready: false, fatal: true, attempts };
+  for (let i = 0; i < deps.delaysMs.length; i++) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break; // out of the foreground budget (probes consumed it)
+    const wait = Math.min(deps.delaysMs[i], remaining);
+    deps.log?.(`spawn-claudex: codex auth unavailable (503 refresh gap?) on preflight ${i + 1}/${deps.delaysMs.length + 1}; backing off ${Math.round(wait / 1000)}s before re-probing (HIMMEL-1037)`);
+    await deps.sleep(wait);
+    if (deadline - now() <= 0) break; // budget spent by the sleep — do NOT probe past the deadline
+    res = probe(probeBudget());
+    attempts++;
+    if (res === "ok") return { ready: true, fatal: false, attempts };
+    if (res === "fatal") return { ready: false, fatal: true, attempts };
+  }
+  deps.log?.(`spawn-claudex: codex auth still unavailable after ${attempts} preflight attempt(s) across the ${Math.round(budgetMs / 1000)}s backoff schedule — refusing (likely a real outage, not the transient gap) (HIMMEL-1037)`);
+  return { ready: false, fatal: false, attempts };
+}
+
 // ── dispatch through scripts/claude-codex (D1) ──────────────────────────────
 
 // REPO_ROOT is derived from run.ts's OWN file location (see run.ts) —
@@ -417,12 +611,19 @@ export async function executeClaudexRun(deps: {
 export async function runClaudexSharedDispatch(p: {
   repoDir: string; worktree: string; branch: string; needsWorktreeAdd: boolean;
   lockScript: string; gitAdd: () => void; runBody: () => Promise<number>;
+  // codex-adv CR: re-validate the reused worktree AFTER the lock. The plan's
+  // pre-lock cleanliness check can go stale — another shared worker may run
+  // (and leave uncommitted changes) between it and this acquire. Called right
+  // after acquire, before gitAdd/poison; returns ok:false to refuse (the finally
+  // still releases the lock). Absent ⇒ skipped (own-mode / tests).
+  revalidateClean?: () => { ok: true } | { ok: false; reason: string };
 }): Promise<{ ok: true; code: number } | { ok: false; reason: string }> {
   const acquire = Bun.spawnSync(["bash", p.lockScript, "acquire", p.repoDir, p.branch, "codex"], { stdout: "pipe", stderr: "pipe" });
   if (acquire.exitCode !== 0) return { ok: false, reason: acquire.stderr.toString().trim() || `spawn-claudex: shared-branch-lock acquire failed (rc=${acquire.exitCode})` };
   let priorPushUrl: string | undefined;
   let poisoned = false;
   try {
+    if (p.revalidateClean) { const rv = p.revalidateClean(); if (!rv.ok) return rv; } // stale-clean guard, lock released in finally
     if (p.needsWorktreeAdd) p.gitAdd(); // NO -b: an existing branch, never minted here
     const priorRes = Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "--get", "remote.origin.pushurl"], { stdout: "pipe", stderr: "pipe" });
     if (priorRes.exitCode === 0) {
@@ -465,9 +666,9 @@ export async function runClaudexSharedDispatch(p: {
 // guarding itself, D1).
 async function main(): Promise<void> {
   const parsed = parseClaudexArgs(process.argv.slice(2));
-  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--effort low|medium|high|xhigh] [--force]";
+  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--effort low|medium|high|xhigh] [--force] [--skip-auth-preflight]";
   if (!parsed.ok) { console.error(`spawn-claudex: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, effort, force } = parsed.args;
+  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, effort, force, skipAuthPreflight } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
   const absCwd = resolve(cwd);
 
@@ -512,6 +713,33 @@ async function main(): Promise<void> {
   const pre = preflightWindowCheck({ briefChars: briefText.length, overheadChars, windowTokens: CLAUDEX_WINDOW_TOKENS });
   if (!pre.ok) { console.error(pre.reason); process.exit(2); }
 
+  // Auth preflight (HIMMEL-1037): wait out a transient codex OAuth-refresh gap
+  // (503 auth_unavailable) BEFORE any worktree side-effect but AFTER all the
+  // side-effect-free local validation (bank/plan/window) — so a deterministic
+  // refusal (bad branch, dirty/primary/trunk worktree, brief-too-big) fails
+  // FAST and locally, never wasting billable probes or masking itself behind an
+  // auth failure (codex-adv CR). The shared-worktree race a long backoff could
+  // open is handled under the lock by runClaudexSharedDispatch.revalidateClean.
+  // REFUSES (no worktree, no worker) on `!ready` — BOTH a permanent failure
+  // (pf.fatal) AND an exhausted transient gap. The probe is claude-codex's own
+  // authed check, so no key is handled here (D1). The ONLY override is the
+  // EXPLICIT per-invocation --skip-auth-preflight flag, never an env var: an
+  // ambient/inherited setting that silently disabled this gate would restore the
+  // exact unattended startup failure this branch fixes (codex-adv CR).
+  if (skipAuthPreflight) {
+    console.error("spawn-claudex: WARNING - --skip-auth-preflight given: the codex auth gate is DISABLED for this dispatch. The worker may launch straight into a 503 refresh gap / invalid auth, die at startup, and strand a worktree (HIMMEL-1037).");
+  } else {
+    const preflightDelaysMs = parseAuthRetryDelaysMs(process.env.CLAUDEX_AUTH_RETRY_DELAYS, DEFAULT_AUTH_RETRY_DELAYS_MS);
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    const pf = await runAuthPreflightWithBackoff((t) => probeClaudexAuth(REPO_ROOT, absCwd, t), { delaysMs: preflightDelaysMs, sleep, log: (m) => console.error(m) });
+    if (!pf.ready) {
+      console.error(pf.fatal
+        ? "spawn-claudex: codex auth preflight reports a PERMANENT failure (missing/invalid CLIPROXY_API_KEY, a deterministic auth 4xx like 401/403, curl unavailable, or a config/egress refusal — NOT a transient 5xx/timeout, which is retried) — aborting before any worktree; fix the claude-codex config, then re-dispatch (HIMMEL-1037)."
+        : "spawn-claudex: codex auth still unavailable (503 refresh gap / transient 5xx/timeout) after the full backoff budget — refusing rather than launch into a known-doomed auth state (would reproduce the failure and strand a worktree); re-dispatch once the gateway recovers (HIMMEL-1037).");
+      process.exit(2);
+    }
+  }
+
   const g = (args: string[]) => { const r = Bun.spawnSync(["git", "-C", absCwd, ...args], { stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.toString()}`); };
 
   // The run body (mkdir sessionDir through executeClaudexRun) is IDENTICAL
@@ -530,6 +758,10 @@ async function main(): Promise<void> {
     const prompt = composeClaudexPointerPrompt(briefPath);
     if (timeoutMins !== undefined) process.env.RUN_TIMEOUT_MS = String(timeoutMins * 60 * 1000);
 
+    // The worker runs EXACTLY ONCE — the transient codex OAuth gap is waited out
+    // by the pre-launch auth preflight in main() (HIMMEL-1037), never by
+    // re-running a worker (which could duplicate the worker's allowed side
+    // effects). No retry wrapper here.
     const { code } = await executeClaudexRun({ run: runClaudexSession, prompt, worktree, permMode, effort, repoRoot: REPO_ROOT, sessionDir, metaPath, runningMeta });
     return code;
   };
@@ -544,7 +776,17 @@ async function main(): Promise<void> {
     // CLAUDE.md Subagent policy). Lock acquired AFTER guards pass, BEFORE any
     // worktree mutation, released in a finally on every catchable exit path.
     const lockScript = join(REPO_ROOT, "scripts", "lib", "shared-branch-lock.sh");
-    const shared = await runClaudexSharedDispatch({ repoDir: absCwd, worktree, branch, needsWorktreeAdd, lockScript, gitAdd: () => g(["worktree", "add", worktree, branch]), runBody });
+    const shared = await runClaudexSharedDispatch({
+      repoDir: absCwd, worktree, branch, needsWorktreeAdd, lockScript,
+      gitAdd: () => g(["worktree", "add", worktree, branch]), runBody,
+      // codex-adv CR: re-resolve the REUSED worktree's identity + cleanliness
+      // under the lock (branch could be switched/dirtied since the plan).
+      revalidateClean: () => revalidateSharedWorktree({
+        needsWorktreeAdd, branch, worktree,
+        worktreeOf: (b) => gitWorktreeOf(absCwd, b),
+        isDirty: (p) => gitIsDirty(p),
+      }),
+    });
     if (!shared.ok) { console.error(shared.reason); process.exit(4); }
     code = shared.code;
   }

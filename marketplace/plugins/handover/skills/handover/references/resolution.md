@@ -89,6 +89,14 @@ No counter file required. Derive next ID by scanning these locations under `<sta
 
 Extract all `N` across every bucket plus the (legacy) flat root. `next_id = max(all N) + 1`. If empty: `next_id = 1`. Counter scope is `<state-root>`-wide — never per-bucket — so `#N` IDs never collide across buckets.
 
+**Allocate `#N` by attempting creation, not by trusting the scan.** For a setup with no external ticket system, `#N` *is* the ticket ID — so it gets the same treatment as provisional branch allocation (`references/new-item.md` step 3): the scan above is a *proposal*, not a reservation. Two runs scanning concurrently both compute the same `max + 1` and would both claim it. Instead create the item dir with an operation that **fails when the path already exists** (`mkdir` without `-p`, which is atomic) and let that be the arbiter. Never pre-check with a "does `#N-*` exist?" test and then create — that is the same check-then-use race, and here it silently produces two different items sharing one ID.
+
+**On a collision, identity-check before re-deriving** (same rule as `references/hygiene.md`'s move-skip): a collision does not by itself mean the ID is taken by someone else. `mkdir` can succeed and the run then die before templates / `update-status` / `sync.log`, leaving this run's **own partial item** behind.
+- Existing `#N-<slug>` holds **this** item (identity match on `<slug>` + type) → it is a resumable partial from an earlier attempt: **adopt it and resume the remaining post-create steps.** Do NOT re-derive — that strands the partial and creates a duplicate under a fresh ID.
+- Existing `#N-*` holds an **unrelated** item → the ID really is taken: re-derive `next_id` and retry.
+
+A stronger form (reserving IDs in their own atomic namespace, independent of the item dir) is tracked in **HIMMEL-1068**; the identity-check above is what keeps the common crash-and-retry case correct without it.
+
 If `<state-root>/counter.md` exists with `Next: K` where `K > max(all N) + 1`, prefer K (preserves in-flight increments that haven't reached disk yet).
 
 ## Worktree Gate

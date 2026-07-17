@@ -241,9 +241,10 @@ out=$(printf '{}' | HIMMEL_INITIATIVE=prcheck,execute bash "$hook")
 assert_has "execute step present" "subagent-driven-development" "$out"
 
 # ---------- 18. merge leg renders a merge step + drops the no-merge line ------
-echo "Test 18: 'prcheck,merge' points at pr-merge.sh, guards --admin, no no-merge line"
+echo "Test 18: 'prcheck,merge' points at pr-merge.sh, names the armed auto-merge path, guards --admin, no no-merge line"
 out=$(printf '{}' | HIMMEL_INITIATIVE=prcheck,merge bash "$hook")
 assert_has   "merge step names pr-merge.sh" "pr-merge.sh"       "$out"
+assert_has   "merge step names armed auto-merge path (HIMMEL-1042)" "merge-on-green.sh" "$out"
 assert_has   "merge step guards --admin"    "never .*--admin"   "$out"
 assert_lacks "no-merge line dropped when merge active" "Do NOT merge" "$out"
 
