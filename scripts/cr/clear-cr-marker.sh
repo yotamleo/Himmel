@@ -23,10 +23,13 @@
 #      clean one (the CodeRabbit CLI rate-limit shape) — refuse.
 #   4. The ledger records NO blocking finding at that SHA (severity crit|imp
 #      whose verdict is anything other than `disproved`).
-#   5. POST-PR ONLY: when a PR already exists for the branch, check-ci.sh must
-#      also return 0 (CI green + all review threads resolved + no
-#      changes-requested). Pre-PR there is no PR to evaluate — that is the
-#      marker's PRIMARY case (it gates `gh pr create`), so gates 1-4 stand alone.
+#   5. POST-PR ONLY: when a PR already exists for the branch, its head commit
+#      must BE the certified SHA, and check-ci.sh must also return 0 (CI green +
+#      all review threads resolved + no changes-requested). check-ci evaluates
+#      the PR HEAD, so without the head binding a green PR at a DIFFERENT commit
+#      would satisfy this gate for code the review never covered. Pre-PR there is
+#      no PR to evaluate — that is the marker's PRIMARY case (it gates
+#      `gh pr create`), so gates 1-4 stand alone.
 #
 # Usage: clear-cr-marker.sh [<branch>] [--dry-run]
 #   branch     optional; defaults to the current branch
@@ -40,7 +43,8 @@
 #   13  marker SHA is not the branch tip (stale review) — re-run /pr-check
 #   14  no critic responded at that SHA — no evidence /pr-check ran; refused
 #   15  blocking finding(s) recorded at that SHA — address them, re-run /pr-check
-#   16  a PR exists but the check-ci gate is not green — refused
+#   16  a PR exists but its head is not the certified SHA, or its check-ci gate
+#       is not green — refused
 #
 # GATE INTEGRITY (mirrors merge-on-green.sh): the ledger path, `check-ci.sh`,
 # and `gh` are NOT environment-overridable here. ledger-append.sh honors a
@@ -146,8 +150,10 @@ if [ "$marker_sha" != "$tip" ]; then
 fi
 
 # 3+4. Ledger evidence at the certified SHA. The ledger is keyed on the SHORT
-# sha /pr-check passes; match by prefix against the full tip so either form
-# resolves. FIXED path — no CR_LEDGER seam (see GATE INTEGRITY above).
+# sha /pr-check passes, so both forms must resolve — but an abbreviation is
+# matched by RESOLVING it through git and requiring the full object to BE the
+# tip, never by string prefix (see atHead below). FIXED path — no CR_LEDGER seam
+# (see GATE INTEGRITY above).
 command -v node >/dev/null 2>&1 || {
     echo "clear-cr-marker: required tool 'node' not on PATH (cannot read the CR ledger) — refusing." >&2
     audit "REFUSED reason=no-node branch=$branch sha=$tip"
@@ -158,10 +164,39 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
   const fs = require("fs"), e = process.env;
   const lines = fs.existsSync(e.LEDGER)
       ? fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean) : [];
+  const cp = require("child_process");
+  // A ledger head is EVIDENCE — it must name the certified commit, not merely
+  // look like it. Prefix equality (the shipped form) accepted any record whose
+  // head shared the tip first 7 chars, so a record for a DIFFERENT commit with a
+  // colliding abbreviation satisfied gates 3/4. /pr-check step 4.5 writes SHORT
+  // heads, so short-SHA support must survive: RESOLVE, then compare. An
+  // unresolvable OR ambiguous abbreviation resolves to null and matches nothing
+  // — an unknown head is not this head.
+  const HEX = "0123456789abcdef";
+  const isHex = (s) => s.length >= 7 && s.length <= 40 &&
+      s.split("").every((c) => HEX.indexOf(c) >= 0);
+  const cache = new Map();
+  const resolve = (h) => {
+      if (!cache.has(h)) {
+          let full = null;
+          try {
+              // No --git-dir: cwd is inside the repo (every other git call here
+              // relies on that too). --quiet turns an unknown OR ambiguous rev
+              // into a silent non-zero, which the catch maps to null.
+              full = cp.execFileSync("git",
+                  ["rev-parse", "--verify", "--quiet", h + "^{commit}"],
+                  { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+          } catch { full = null; }
+          cache.set(h, full || null);
+      }
+      return cache.get(h);
+  };
   const atHead = (o) => {
       const h = String(o.head || "");
-      // >=7 chars guards against a truncated/garbage head matching everything.
-      return h.length >= 7 && (e.FULL_SHA === h || e.FULL_SHA.startsWith(h));
+      // The length floor also guards a truncated/garbage head from resolving.
+      if (!isHex(h)) return false;
+      if (e.FULL_SHA === h) return true;
+      return resolve(h) === e.FULL_SHA;
   };
   // A malformed record is a REFUSAL, not a skip (coderabbit). Silently
   // skipping unparseable lines fails OPEN: if a blocking finding is truncated
@@ -240,33 +275,52 @@ command -v gh >/dev/null 2>&1 || {
 # real "no PR yet" state; a non-zero rc is an unreadable state and must refuse.
 # Swallowing the error and reading empty as "no PR" would FAIL OPEN — a
 # transient gh outage would skip the post-PR CI gate and clear unverified.
+#
+# `headRefOid` rides along with the number (coderabbit, public #468): check-ci.sh
+# certifies the PR HEAD, but nothing here proved the PR head IS the SHA this
+# marker certifies. A green PR whose head differs from $tip would satisfy this
+# gate for a commit no critic reviewed. One extra --json field closes it.
 pr_num=""
+pr_head=""
 pr_rc=0
-pr_lookup=$(gh pr list --head "$branch" --state open --json number -q '.[].number' 2>&1) || pr_rc=$?
+pr_lookup=$(gh pr list --head "$branch" --state open --json number,headRefOid \
+    -q '.[] | "\(.number) \(.headRefOid)"' 2>&1) || pr_rc=$?
 if [ "$pr_rc" -ne 0 ]; then
     echo "clear-cr-marker: cannot determine whether '$branch' has a PR (gh: ${pr_lookup:-<no output>}) — refusing. An unreadable PR state must not skip the CI gate." >&2
     audit "REFUSED reason=pr-lookup-failed branch=$branch gh_rc=$pr_rc"
     exit 16
 fi
 # A SUCCESSFUL call returning unexpected text must NOT be filtered down to
-# "no PR" (coderabbit): stripping non-numeric lines would silently take the
+# "no PR" (coderabbit): stripping non-matching lines would silently take the
 # pre-PR path and skip check-ci entirely. Empty output is the only valid no-PR
-# result; anything that is neither blank nor a PR number is an unreadable state.
-invalid_pr_lookup=$(printf '%s\n' "$pr_lookup" | grep -Ev '^[[:space:]]*$|^[0-9]+$' || true)
+# result; anything that is neither blank nor a `<number> <full-sha>` pair is an
+# unreadable state.
+invalid_pr_lookup=$(printf '%s\n' "$pr_lookup" | grep -Ev '^[[:space:]]*$|^[0-9]+ [0-9a-f]{40}$' || true)
 if [ -n "$invalid_pr_lookup" ]; then
     echo "clear-cr-marker: unexpected output from the PR lookup ($(printf '%s' "$invalid_pr_lookup" | head -1)) — refusing. An unreadable PR state must not skip the CI gate." >&2
     audit "REFUSED reason=invalid-pr-lookup branch=$branch"
     exit 16
 fi
-pr_lookup=$(printf '%s\n' "$pr_lookup" | grep -E '^[0-9]+$' || true)
+pr_lookup=$(printf '%s\n' "$pr_lookup" | grep -E '^[0-9]+ [0-9a-f]{40}$' || true)
 pr_count=$(printf '%s' "$pr_lookup" | grep -c . || true)
 if [ "${pr_count:-0}" -gt 1 ]; then
-    echo "clear-cr-marker: '$branch' has ${pr_count} open PRs ($(printf '%s' "$pr_lookup" | tr '\n' ' ')) — ambiguous; refusing to guess which gates this marker." >&2
+    echo "clear-cr-marker: '$branch' has ${pr_count} open PRs ($(printf '%s' "$pr_lookup" | awk '{print $1}' | tr '\n' ' ')) — ambiguous; refusing to guess which gates this marker." >&2
     audit "REFUSED reason=ambiguous-prs branch=$branch count=$pr_count"
     exit 16
 fi
-[ "${pr_count:-0}" -eq 1 ] && pr_num="$pr_lookup"
+if [ "${pr_count:-0}" -eq 1 ]; then
+    pr_num="${pr_lookup%% *}"
+    pr_head="${pr_lookup##* }"
+fi
 if [ -n "$pr_num" ]; then
+    # The certified SHA must be the code the PR actually proposes. check-ci.sh
+    # reads the PR head, so a mismatch here means its verdict would certify a
+    # commit this marker never covered.
+    if [ "$pr_head" != "$tip" ]; then
+        echo "clear-cr-marker: PR #$pr_num is at ${pr_head:0:8} but the marker certifies ${tip:0:8} — the PR does not propose the reviewed code. Push this HEAD (or re-run /pr-check on the PR head). Refusing." >&2
+        audit "REFUSED reason=pr-head-mismatch branch=$branch pr=#$pr_num pr_head=$pr_head sha=$tip"
+        exit 16
+    fi
     if [ ! -f "$CHECK_CI" ]; then
         echo "clear-cr-marker: PR #$pr_num exists but check-ci.sh is missing at $CHECK_CI — cannot certify CI. Refusing." >&2
         audit "REFUSED reason=no-check-ci branch=$branch pr=#$pr_num"

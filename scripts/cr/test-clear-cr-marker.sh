@@ -58,14 +58,18 @@ avail_ok()   { printf '{"kind":"avail","head":"%s","model":"codex","status":"ok"
 avail_bad()  { printf '{"kind":"avail","head":"%s","model":"coderabbit","status":"unavailable"}' "$1"; }
 finding()    { printf '{"kind":"finding","head":"%s","model":"codex","finding_id":"codex-1","severity":"%s","file":"a.sh","line":1,"verdict":"%s"}' "$1" "$2" "$3"; }
 
-# stub_gh <tmp> <pr-number-or-empty>
-# Empty => the genuine "no PR yet" shape. NOTE the shape is `gh pr list --head`,
+# stub_gh <tmp> <pr-number-or-empty> [head-sha]
+# Empty pr => the genuine "no PR yet" shape. NOTE the shape is `gh pr list --head`,
 # NOT `gh pr view`: a head query with no match SUCCEEDS with empty output. (An
 # rc=1 "no pull requests found" is the `pr view` shape — this gate no longer
 # uses it, because a positional lookup would resolve a numeric branch to a PR
 # number.) A real auth/network failure is a DIFFERENT shape — see stub_gh_broken.
+#
+# The gate now asks for `number,headRefOid`, so the stub emits the real
+# `<number> <full-sha>` pair. head-sha defaults to the branch tip (the normal
+# pushed-PR state); pass a different SHA for the mismatch case.
 stub_gh() {
-    local tmp="$1" pr="${2:-}"
+    local tmp="$1" pr="${2:-}" head="${3:-${sha:-}}"
     if [ -z "$pr" ]; then
         cat > "$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -78,7 +82,7 @@ STUB
     else
         cat > "$tmp/bin/gh" <<STUB
 #!/usr/bin/env bash
-for a in "\$@"; do [ "\$a" = "--head" ] && { echo "$pr"; exit 0; }; done
+for a in "\$@"; do [ "\$a" = "--head" ] && { echo "$pr $head"; exit 0; }; done
 echo "positional PR lookup used" >&2
 exit 1
 STUB
@@ -137,6 +141,45 @@ make_repo
 write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:7}")"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "short-sha ledger head matches full tip → exit 0"
+rm -rf "$tmp"
+
+# 2d. A ledger head that only ABBREVIATES ambiguously must NOT certify the tip.
+# This is finding (b) from public #468: the shipped gate matched ledger heads by
+# string prefix, so a record written for a DIFFERENT commit whose abbreviation
+# collides with the tip satisfied gates 3/4 — evidence for one commit clearing
+# the marker of another.
+#
+# A real 7-char collision cannot be brute-forced in a test, so we produce the
+# state a collision CREATES: a prefix git itself calls ambiguous. Copying an
+# existing commit object to a filename sharing the tip's first 7 chars gives the
+# prefix two commit candidates ("error: short object ID <x> is ambiguous"), which
+# is exactly what the ledger head would hit in the real case. Resolve-then-compare
+# yields no match => 14. Prefix matching yields a CLEARED marker => 0.
+make_repo
+_tip7="${sha:0:7}"
+_other=$(git -C "$tmp" rev-parse --verify "refs/heads/feat/x^")
+cp "$tmp/.git/objects/${_other:0:2}/${_other:2}" \
+   "$tmp/.git/objects/${sha:0:2}/${sha:2:5}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+# Guard: assert the setup really produced AMBIGUITY, else this test passes
+# vacuously (a test that cannot fail is worse than no test). A non-zero
+# rev-parse alone is not enough (coderabbit): it would also cover a setup that
+# broke for an unrelated reason, and the exit-14 assertion below would then be
+# testing something other than the collision shape this case exists for. Require
+# git's own ambiguity diagnostic. LC_ALL=C pins the message; `2>&1 >/dev/null`
+# captures stderr ONLY (order matters — stderr to the capture, stdout dropped),
+# and --quiet is omitted so the diagnostic is actually emitted.
+_amb_err=$(LC_ALL=C git -C "$tmp" rev-parse --verify "${_tip7}^{commit}" 2>&1 >/dev/null)
+_amb_rc=$?
+if [ "$_amb_rc" -eq 0 ]; then
+    fail "2d setup: '${_tip7}' still resolves — the ambiguity was not created"
+elif ! printf '%s' "$_amb_err" | grep -q 'is ambiguous'; then
+    fail "2d setup: '${_tip7}' failed to resolve but NOT from ambiguity — the collision shape was not reproduced (git said: ${_amb_err})"
+else
+    write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "$_tip7")"
+    stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+    run_clear "$tmp" 14 "ambiguous ledger abbreviation does not certify the tip → exit 14"
+    if marker_exists "$tmp"; then pass; else fail "ambiguous ledger head: marker must REMAIN"; fi
+fi
 rm -rf "$tmp"
 
 # 2c. A too-short/garbage head must NOT match everything (the >=7 guard).
@@ -331,12 +374,24 @@ run_clear "$tmp" 16 "gh returns unexpected text (rc 0) → exit 16, not no-PR"
 if marker_exists "$tmp"; then pass; else fail "garbage PR lookup: marker must REMAIN"; fi
 rm -rf "$tmp"
 
+# 7i2. POST-PR: the PR head is NOT the certified SHA → refuse (finding (a),
+# public #468). check-ci.sh evaluates the PR HEAD, so a GREEN PR sitting at a
+# different commit would otherwise satisfy gate 5 for code the review never
+# covered. check-ci is stubbed green precisely to prove the head binding — not
+# CI — is what refuses.
+make_repo
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" 42 "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"; stub_check_ci "$tmp" 0
+run_clear "$tmp" 16 "PR head != certified SHA (CI green) → exit 16"
+if marker_exists "$tmp"; then pass; else fail "PR head mismatch: marker must REMAIN"; fi
+rm -rf "$tmp"
+
 # 7i. Two open PRs for one head → ambiguous → refuse rather than guess.
 make_repo
 write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
-cat > "$tmp/bin/gh" <<'STUB'
+cat > "$tmp/bin/gh" <<STUB
 #!/usr/bin/env bash
-printf '41\n42\n'
+printf '41 %s\n42 %s\n' "$sha" "$sha"
 exit 0
 STUB
 chmod +x "$tmp/bin/gh"
