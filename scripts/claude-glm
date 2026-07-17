@@ -29,6 +29,13 @@ elif [ "$GLM_CONTEXT_WINDOW" -gt 1000000 ]; then
   echo "claude-glm: WARNING - GLM_CONTEXT_WINDOW=$GLM_CONTEXT_WINDOW exceeds the Z.ai glm-5.2[1m] 1000000 ceiling. Proceeding as set." >&2
 fi
 CONFIG_DIR="${HOME}/.claude-glm"
+# Sanitizer generation, stamped into the .seeded sentinel. BUMP whenever
+# sanitize_settings TIGHTENS its rules: a config dir seeded under the older, laxer
+# sanitizer is otherwise kept until the SOURCE settings.json happens to change, so
+# a previously-persisted forbidden key would linger past the fix (CR). A mismatch
+# forces exactly one re-seed, which re-sanitizes under the current rule.
+# v2 = strip env.ANTHROPIC_*/CLAUDE_CODE_USE_* case-insensitively (was: ANTHROPIC_* only, case-sensitive).
+SEED_VERSION="2"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/load-dotenv.sh
@@ -68,6 +75,69 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
+
+# Harness-integrity arg screen (HIMMEL-1040): the remaining args pass to claude
+# verbatim via `exec … claude "$@"` below, so a --settings payload that injected
+# env.ANTHROPIC_* / CLAUDE_CODE_USE_* could redirect this lane away from the z.ai
+# endpoint. Screen it (fail-closed on unparseable) — the twin of claude-codex's
+# screen_settings_arg, so the profile-injection channel (spawn-glm --settings) is
+# gated identically on both lanes. Scoped to --settings only: --bare/--safe-mode/
+# --add-dir are NOT screened here because the glm lane's trust boundary is the
+# tiered egress guard below (not a proxy) — out of this ticket's scope.
+# TOCTOU (CR): a FILE-backed --settings must not be forwarded as a PATH — claude
+# would re-read it after the screen passed, so a swap in that window defeats the
+# check. screen_settings_arg therefore prints the value to FORWARD: an inline
+# payload verbatim (already immutable), a file payload MATERIALIZED to inline JSON
+# captured at validation time. The caller-controlled path never reaches claude, so
+# there is no re-read and no temp artifact to clean up.
+# NOTE: `exit 3` here fires inside the caller's $( ) subshell, so every call site
+# must be `... || exit 3` to propagate the refusal to the script.
+screen_settings_arg() { # $1 = --settings value (file path or inline JSON)
+  _ss_out=$(node -e '
+const fs=require("fs");
+let s=process.argv[1], inline = s.trim().charAt(0)==="{", j;
+try { j=JSON.parse(inline ? s : fs.readFileSync(s,"utf8")); } catch (e) { process.exit(2); }
+for (const k of Object.keys((j&&j.env)||{})) {
+  const u=k.toUpperCase();
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) process.exit(3);
+}
+process.stdout.write(inline ? s : JSON.stringify(j));
+process.exit(0);
+' "$1"); _ss_rc=$?
+  if [ "$_ss_rc" -ne 0 ]; then
+    echo "claude-glm: REFUSED - --settings payload sets env.ANTHROPIC_* / CLAUDE_CODE_USE_* (or is unparseable/unreadable, rc=$_ss_rc); it would redirect this lane away from the z.ai endpoint." >&2
+    exit 3
+  fi
+  printf '%s' "$_ss_out"
+}
+
+# Rebuild the argv with every --settings value replaced by its screened
+# (materialized) form, so what reaches claude is exactly what was validated.
+_screened_args=()
+_pending=""
+for _arg in "$@"; do
+  if [ "$_pending" = "settings" ]; then
+    _snap=$(screen_settings_arg "$_arg") || exit 3
+    _screened_args+=( "$_snap" )
+    _pending=""
+    continue
+  fi
+  case "$_arg" in
+    --settings)   _pending="settings"; _screened_args+=( "$_arg" ) ;;
+    --settings=*) _snap=$(screen_settings_arg "${_arg#--settings=}") || exit 3
+                  _screened_args+=( "--settings=$_snap" ) ;;
+    *)            _screened_args+=( "$_arg" ) ;;
+  esac
+done
+# A trailing bare --settings (no value) leaves _pending set and unscreened — refuse
+# it before launch rather than forwarding a broken flag to claude.
+if [ "$_pending" = "settings" ]; then
+  echo "claude-glm: REFUSED - trailing --settings with no value." >&2
+  exit 3
+fi
+# bash 3.2 + `set -u`: "${arr[@]}" on an EMPTY array is an unbound-variable error,
+# so expand through the ${arr[@]+…} guard.
+set -- ${_screened_args[@]+"${_screened_args[@]}"}
 
 CFG="${HOME}/.config/claude-glm"
 
@@ -119,13 +189,21 @@ if [ "$deny_rc" -eq 0 ]; then
   fi
 fi
 
-sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_* (node: himmel dep)
+sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_*/CLAUDE_CODE_USE_* (node: himmel dep)
   # keep in sync with claude-glm.ps1 $SanitizerJs (byte-identical JS)
+  # CR: the seeded settings.json is an overlay claude reads at launch, so it must
+  # strip the SAME keys the --settings arg screen rejects, on the SAME terms —
+  # case-INSENSITIVELY and including CLAUDE_CODE_USE_* (BEDROCK/VERTEX/…). The old
+  # rule (case-sensitive, ANTHROPIC_* only) let the seed inject exactly the
+  # backend redirect the screen blocks, leaving a hole behind the guard.
   node -e '
 const fs=require("fs");
 const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 delete j.model;
-if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) delete j.env[k];
+if (j.env) for (const k of Object.keys(j.env)) {
+  const u=k.toUpperCase();
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) delete j.env[k];
+}
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 ' "$1" "$2"
 }
@@ -189,7 +267,7 @@ seed_config_dir() {
   else
     rm -f "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
   fi
-  : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
+  printf '%s\n' "$SEED_VERSION" > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
 }
 
 # Staleness-aware reseed (HIMMEL-819): a once-only seed strands lane workers on
@@ -205,6 +283,14 @@ seed_config_dir() {
 # explicit --reseed only) — the escape hatch if auto-reseed ever blocks a
 # launch in your setup (e.g. seed re-runs surfacing a broken node).
 config_seed_stale() { # rc=0 when any tracked source is newer than the sentinel, or gone but still mirrored
+  # Sanitizer-generation migration — checked BEFORE the freshness opt-out (CR).
+  # A seed written by an older, laxer sanitize_settings can carry a forbidden env
+  # key (e.g. CLAUDE_CODE_USE_BEDROCK) that silently reroutes an unattended lane
+  # off z.ai. CLAUDE_LANE_AUTO_RESEED=0 is an escape hatch for freshness CHURN —
+  # it must NOT keep a poisoned config loaded, so a generation mismatch always
+  # re-seeds regardless. Fail-closed by construction: a failed reseed exits 4 via
+  # seed_fail rather than launching on the stale seed.
+  [ "$(cat "$CONFIG_DIR/.seeded" 2>/dev/null)" = "$SEED_VERSION" ] || return 0
   [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
   for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json; do
     if [ -f "${HOME}/.claude/$s" ]; then

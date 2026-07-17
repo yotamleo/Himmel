@@ -801,6 +801,45 @@ test("buildClaudexRunArgs: NEVER includes a --model flag (claude-codex pins the 
   expect(cmd).not.toContain("--model");
 });
 
+// --- HIMMEL-1040: --settings (plugin-profile) injection + --profile parsing ---
+
+test("buildClaudexRunArgs: injects --settings before the prompt when set; omits it otherwise", () => {
+  const s = '{"enabledPlugins":{"qmd@himmel":true}}';
+  expect(buildClaudexRunArgs("/repo/scripts/claude-codex", "go", undefined, s).cmd)
+    .toEqual(["bash", "/repo/scripts/claude-codex", "--settings", s, "go"]);
+  // co-present with --permission-mode: both precede the prompt, settings last
+  expect(buildClaudexRunArgs("/repo/scripts/claude-codex", "go", "bypassPermissions", s).cmd)
+    .toEqual(["bash", "/repo/scripts/claude-codex", "--permission-mode", "bypassPermissions", "--settings", s, "go"]);
+  expect(buildClaudexRunArgs("/repo/scripts/claude-codex", "go").cmd).not.toContain("--settings");
+});
+
+test("parseClaudexArgs: profile defaults to lane-impl, addPlugins empty; flags parse + accumulate", () => {
+  const d = parseClaudexArgs(["do it"]);
+  expect((d as any).args.profile).toBe("lane-impl");
+  expect((d as any).args.addPlugins).toEqual([]);
+  const r = parseClaudexArgs(["do it", "--profile", "lane-content", "--add-plugins", "a@m,b@m", "--add-plugins", "c@m"]);
+  expect((r as any).args.profile).toBe("lane-content");
+  expect((r as any).args.addPlugins).toEqual(["a@m", "b@m", "c@m"]);
+  expect(parseClaudexArgs(["p", "--profile"]).ok).toBe(false);
+  expect(parseClaudexArgs(["p", "--add-plugins"]).ok).toBe(false);
+});
+
+test("executeClaudexRun threads the resolved settings into run()'s opts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "claudexexec-"));
+  const metaPath = join(dir, "meta.json");
+  const runningMeta = { status: "running", pid: 0, started_at: "t0", lane: "codex", task_name: "x" };
+  writeFileSync(metaPath, JSON.stringify(runningMeta, null, 2));
+  try {
+    let seen: unknown;
+    const run = (async (_p: string, _c: string, opts: { settings?: string }) => {
+      seen = opts.settings;
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 1, tail: "" };
+    }) as any;
+    await executeClaudexRun({ run, prompt: "p", worktree: "/wt", repoRoot: "/repo", sessionDir: dir, metaPath, runningMeta, settings: '{"enabledPlugins":{"qmd@himmel":true}}' });
+    expect(seen).toBe('{"enabledPlugins":{"qmd@himmel":true}}');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("claudexChildEnv: adds ONLY CLAUDE_CODE_EFFORT_LEVEL when effort is given, sets no ANTHROPIC_* var", () => {
   const base = { FOO: "bar", PATH: "/usr/bin" };
   const withEffort = claudexChildEnv(base, "high");

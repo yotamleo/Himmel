@@ -371,6 +371,8 @@ Displays: model, context %, git branch, rate-limit bars (current/weekly/extra), 
 
 ---
 
+<a id="claude-glm"></a>
+
 ## claude-glm (`scripts/claude-glm`, `.ps1` twin, HIMMEL-665)
 
 **What:** Thin launcher that runs Claude Code against the Z.ai GLM
@@ -445,6 +447,14 @@ parsing and everything from there passes to `claude` verbatim. (The PS twin is
 deliberately a plain script with no `param()` block, so real claude flags like
 `-p`/`-d`/`-v` aren't hijacked by PowerShell's automatic parameter binding.)
 
+**`--settings` env-injection screen (HIMMEL-1040):** a `--settings <file|json>`
+arg passes through to `claude` (this is the plugin-profile injection channel —
+see [Lane plugin profiles](#lane-plugin-profiles)), but the launcher first
+screens the payload and **refuses (exit 3)** any `--settings` that sets
+`env.ANTHROPIC_*` / `env.CLAUDE_CODE_USE_*` (or is unparseable) — such a payload
+would redirect the lane away from the z.ai endpoint. Twin of claude-codex's
+`screen_settings_arg`; a plugin-only `{"enabledPlugins":{…}}` payload passes.
+
 **Off-peak annotation:** an advisory stderr line notes whether you're inside the
 GLM peak window (14:00–18:00 UTC+8); advisory only, changes no behavior.
 
@@ -452,9 +462,90 @@ GLM peak window (14:00–18:00 UTC+8); advisory only, changes no behavior.
 [`docs/setup/new-machine.md`](setup/new-machine.md) §1 and §4d.
 
 **Acceptance:** the hermetic launcher tests in
-`scripts/test-claude-glm.{sh,ps1}` cover the key gate, the seeder, and the
-PHI/egress guards against a mock `claude`; only the live-backend acceptance leg
-is manual — the **HIMMEL-665 Task 8 checklist**.
+`scripts/test-claude-glm.{sh,ps1}` cover the key gate, the seeder, the
+PHI/egress guards, and the `--settings` env-injection screen against a mock
+`claude`; only the live-backend acceptance leg is manual — the **HIMMEL-665
+Task 8 checklist**.
+
+---
+
+<a id="lane-plugin-profiles"></a>
+
+## Lane plugin profiles (`scripts/lanes/plugin-profiles.{json,mjs}`, HIMMEL-1040)
+
+**What:** Named plugin profiles injected per-dispatch so a lane worker runs a
+**lean** plugin set while the operator's own `~/.claude` stays full. A lane worker
+resolves its plugin surface from the operator's config either way — `spawn-glm`
+shares `~/.claude` directly (no `CLAUDE_CONFIG_DIR`, so himmel hooks load), while
+the interactive `claude-glm` launcher runs against a seeded `$HOME/.claude-glm`
+**mirror** of `~/.claude` ([claude-glm](#claude-glm) above) — so both would otherwise
+inherit the operator's entire (full) plugin catalog: duplicated plugin context +
+duplicate MCP invocations on every worker, and neither live-mutates the
+operator's primary config. The fix is **lever-b**: resolve a profile to an
+`enabledPlugins` map and inject it as `claude --settings '{"enabledPlugins":{…}}'`
+(highest non-managed precedence, overrides the inherited/mirrored profile without
+changing which config dir loads, so hooks are unaffected).
+
+**Registry (`plugin-profiles.json`):**
+- `floor` — the inviolable operational set present in every INJECTED profile:
+  `handover@himmel`, `himmel-ops@himmel`, `qmd@himmel`, `codex@openai-codex`
+  (a lane that can't dispatch/search/handover is broken). `operator` is the
+  exception — it's a `null` sentinel that injects nothing at all, so the floor
+  doesn't apply to it.
+- `catalog` — the known plugin universe; the resolver sets `false` for anything a
+  profile doesn't enable, so the injected map is **complete** (correct whether
+  Claude Code merges or replaces `enabledPlugins`). Beyond the catalog the
+  resolver also sets `false` for every id in `opts.installed` — the caller's LIVE
+  plugin universe — so a newly-installed plugin absent from `catalog` is still
+  disabled on a lane whose caller passes that set (the spawn scripts do, via
+  `readEnabledPluginIds`). Two exceptions:
+  - **The claudex lane does not fully close this** (KNOWN GAP, HIMMEL-1066):
+    `readEnabledPluginIds` reads the dispatcher's ambient config dir, but a
+    claudex worker's effective user scope is `~/.claude-codex` (the launcher owns
+    and seeds it AFTER the resolve). A plugin enabled only there, and absent from
+    `catalog`, is missing from `opts.installed` and can stay enabled in an
+    unattended worker. See the seam note at `spawn-glm.ts:36-41`.
+  - A CATALOG-ONLY caller (one passing no `opts.installed`) retains the gap:
+    there, an id absent from `catalog` goes unmentioned and inherits its enabled
+    state until added (the HIMMEL-819 staleness class).
+- `profiles` — `operator` (`null` sentinel: full `~/.claude`, never injected),
+  `user` (adopter set, HIMMEL-1044), `lane-impl` (impl workers: floor +
+  `pr-review-toolkit-himmel`), `lane-review` (CR-only, same lean set),
+  `lane-content` (impl + `claude-obsidian` + `obsidian-triage`).
+
+**Resolver (`plugin-profiles.mjs`):** `resolveProfile(registry, name, {addPlugins,
+installed})` → `null` for `operator`, else `{enabledPlugins:{…}}`; the floor is
+forced `true` last (nothing can drop it); unknown name / malformed overlay id /
+overlay id absent from the catalog / `operator`+overlay all throw.
+`resolveProfileByName(name, opts)` is the file-reading convenience the spawn
+scripts + CLI use — it loads the registry, **validates it and fails closed**, then
+delegates. `opts.installed` widens the deny-by-default baseline beyond the static
+catalog with the caller's LIVE plugin universe (`readEnabledPluginIds(home, cwd,
+configDir)` — the child's effective config dir plus every ancestor
+`.claude/settings{,.local}.json` from `cwd` to the filesystem root; absent layer =
+no opinion, unparseable layer = fail closed). CLI:
+`node scripts/lanes/plugin-profiles.mjs <profile> [--add-plugins a@m,b@m]` prints
+the `--settings` JSON; `--validate` checks the floor/catalog invariants;
+`--list` lists profiles.
+
+**Dispatch flags (`spawn-glm` / `spawn-claudex`):** both inject the resolved
+profile by default (`lane-impl`); override with `--profile <name>` and layer a
+per-dispatch overlay with `--add-plugins a@m,b@m` (repeatable; e.g. an obsidian
+task on the impl lane adds `claude-obsidian@himmel` for that one dispatch). An
+unknown profile / bad overlay id is a clean usage refusal (exit 2) before any
+worktree side-effect. spawn-glm carries a non-default profile into its
+cap-respawn handover; spawn-claudex dispatches through `claude-codex`, which
+already screens + forwards `--settings`.
+
+**Measured delta (`claude plugin details`, 2026-07-16 operator machine):**
+`lane-impl` drops **~5,058 always-on tok/session** vs the operator's full
+profile — dominated by `obsidian-triage` (~3,671), `superpowers` (~715),
+`hookify` (~292), `coderabbit` (~205), `claude-md-management` (~175) — paid per
+worker, per session, so it multiplies across a fan-out.
+
+**Acceptance:** `node --test scripts/lanes/tests/plugin-profiles.test.mjs`
+(resolver invariants: floor always on, complete map, overlay, operator→null,
+registry validation) + the `--settings` cases in the spawn/launcher suites.
 
 ---
 

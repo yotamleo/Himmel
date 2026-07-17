@@ -28,11 +28,17 @@ function resolveModel(): string {
 // modelOverride (HIMMEL-654 GLM lane): GLM runs pin their alias explicitly and
 // MUST NOT consult TELEGRAM_CLAUDE_MODEL — a poller-pinned raw Anthropic model
 // id must never leak to the Z.ai endpoint (spec D3).
-export function buildRunArgs(prompt: string, permissionMode?: PermissionMode, modelOverride?: string) {
+// settings (HIMMEL-1040 plugin profiles): when set, injected as
+// `--settings <json>` before the prompt — the lever-b per-dispatch plugin-profile
+// payload spawn-glm resolves. Highest non-managed precedence, so a lane runs the
+// lean profile while ~/.claude (shared, no CLAUDE_CONFIG_DIR) stays full for the
+// operator. Omitted (operator profile / unset) => no flag, inherits ~/.claude.
+export function buildRunArgs(prompt: string, permissionMode?: PermissionMode, modelOverride?: string, settings?: string) {
   const model = modelOverride ?? resolveModel();
-  const cmd = permissionMode
-    ? ["claude", "--model", model, "--permission-mode", permissionMode, prompt]
-    : ["claude", "--model", model, prompt];
+  const cmd = ["claude", "--model", model];
+  if (permissionMode) cmd.push("--permission-mode", permissionMode);
+  if (settings) cmd.push("--settings", settings);
+  cmd.push(prompt);
   return { cmd, stdin: "ignore" as const };
 }
 
@@ -156,7 +162,7 @@ export function laneModel(lane?: "glm"): string | undefined {
   return lane === "glm" ? GLM_MODEL_ALIAS : undefined;
 }
 
-export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
+export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
   const env = sessionEnv(lane);
   // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
@@ -170,7 +176,7 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   // else the FILE-and-commit flow deadlocks on un-answerable prompts. bypass does
   // NOT loosen containment: the VAULT's PreToolUse hooks (e.g. block-cloud-egress)
   // still fire and HARD-block web/cloud/push. Non-vault sessions keep the default.
-  const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane));
+  const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane), settings);
   const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
   const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000);

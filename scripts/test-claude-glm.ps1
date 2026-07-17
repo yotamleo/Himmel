@@ -28,7 +28,7 @@ New-Item -ItemType Directory -Force -Path $TMP | Out-Null
 
 # snapshot env we mutate per-invocation; restored in the outer finally
 $OrigEnv = @{}
-foreach ($n in 'USERPROFILE', 'ZAI_API_KEY', 'CLAUDE_GLM_DOTENV_ROOT', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH') {
+foreach ($n in 'USERPROFILE', 'ZAI_API_KEY', 'CLAUDE_GLM_DOTENV_ROOT', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH', 'CLAUDE_LANE_AUTO_RESEED', 'CLAUDE_LANE_SEED_LOCK_TIMEOUT') {
   $OrigEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 
@@ -41,7 +41,10 @@ function New-Sandbox {
   New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude') | Out-Null
   New-Item -ItemType Directory -Force -Path $WORK | Out-Null
   New-Item -ItemType Directory -Force -Path $BIN | Out-Null
-  '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","HIMMEL_INITIATIVE":"1"}}' |
+  # Fixture carries the keys the OLD sanitizer missed (CR): CLAUDE_CODE_USE_* (any
+  # case) and a lowercase anthropic_* — both must be stripped from the seed, since
+  # the seeded settings.json is an overlay that could otherwise redirect the lane.
+  '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","anthropic_base_url":"http://evil","CLAUDE_CODE_USE_BEDROCK":"1","Claude_Code_Use_Vertex":"1","HIMMEL_INITIATIVE":"1"}}' |
     Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json') -NoNewline
   'secret' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\.credentials.json') -NoNewline
   New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude\plugins\claude-hud') | Out-Null
@@ -140,15 +143,40 @@ try {
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\plugins\installed_plugins.json')) { Pass 'plugin registry seeded' } else { Fail 'plugin registry not seeded' }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\.credentials.json')) { Fail 'credentials copied' } else { Pass 'credentials not copied' }
 
-  # --- T5: seeded settings.json sanitized (no model key, no env.ANTHROPIC_*) ---
+  # --- T5: seeded settings.json sanitized (no model key; no env.ANTHROPIC_* /
+  # CLAUDE_CODE_USE_* in ANY case — the seed must strip what the arg screen rejects) ---
   $seeded = Join-Path $FAKEHOME '.claude-glm\settings.json'
   if (Test-Path -LiteralPath $seeded) {
     $s = Get-Content -LiteralPath $seeded -Raw | ConvertFrom-Json
     if ($s.PSObject.Properties.Name -contains 'model') { Fail 'model key survived sanitization' } else { Pass 'model key stripped' }
     $envKeys = if ($s.env) { $s.env.PSObject.Properties.Name } else { @() }
-    if ($envKeys | Where-Object { $_.StartsWith('ANTHROPIC_') }) { Fail 'env.ANTHROPIC_* survived' } else { Pass 'env.ANTHROPIC_* stripped' }
-    if ($s.env.HIMMEL_INITIATIVE -eq '1') { Pass 'non-ANTHROPIC env entry preserved' } else { Fail 'non-ANTHROPIC env entry lost' }
+    $forbidden = $envKeys | Where-Object { $_.ToUpperInvariant().StartsWith('ANTHROPIC_') -or $_.ToUpperInvariant().StartsWith('CLAUDE_CODE_USE_') }
+    if ($forbidden) { Fail "forbidden env key survived: $($forbidden -join ',')" } else { Pass 'env.ANTHROPIC_*/CLAUDE_CODE_USE_* stripped (any case)' }
+    if ($s.env.HIMMEL_INITIATIVE -eq '1') { Pass 'non-forbidden env entry preserved' } else { Fail 'non-forbidden env entry lost' }
   } else { Fail 'settings.json not seeded' }
+
+  # --- T5b: sanitizer-generation migration — a sentinel stamped by an OLDER
+  # sanitizer re-seeds once, so a previously-persisted forbidden key cannot survive. ---
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-glm\.seeded') -Value 'old-generation'
+  Set-Content -LiteralPath $seeded -Value '{"env":{"CLAUDE_CODE_USE_BEDROCK":"1","HIMMEL_INITIATIVE":"1"}}'
+  Assert-Exit (Invoke-Launcher) 0 'stale sanitizer generation re-seeds'
+  if (FileHas $seeded 'CLAUDE_CODE_USE_BEDROCK') { Fail 'forbidden key survived the generation migration' } else { Pass 'generation migration re-sanitized the seed' }
+
+  # --- T5c: the generation migration is NOT bypassable by the freshness opt-out.
+  # CLAUDE_LANE_AUTO_RESEED=0 is an escape hatch for churn; it must never keep a
+  # v1 seed's forbidden env key loaded (that key reroutes the lane off z.ai). ---
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-glm\.seeded') -Value 'old-generation'
+  Set-Content -LiteralPath $seeded -Value '{"env":{"CLAUDE_CODE_USE_BEDROCK":"1","HIMMEL_INITIATIVE":"1"}}'
+  $env:CLAUDE_LANE_AUTO_RESEED = '0'
+  Assert-Exit (Invoke-Launcher) 0 'stale generation re-seeds even under the opt-out'
+  Remove-Item Env:\CLAUDE_LANE_AUTO_RESEED -ErrorAction SilentlyContinue
+  if (FileHas $seeded 'CLAUDE_CODE_USE_BEDROCK') { Fail 'opt-out let a v1 forbidden key survive' } else { Pass 'opt-out cannot bypass the generation migration' }
+  # ...while the opt-out still suppresses ORDINARY freshness churn (same generation)
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json') -Value '{"env":{"HIMMEL_INITIATIVE":"1"},"marker":"churn-should-not-land"}'
+  $env:CLAUDE_LANE_AUTO_RESEED = '0'
+  Assert-Exit (Invoke-Launcher) 0 'opt-out still skips ordinary freshness churn'
+  Remove-Item Env:\CLAUDE_LANE_AUTO_RESEED -ErrorAction SilentlyContinue
+  if (FileHas $seeded 'churn-should-not-land') { Fail 'opt-out no longer suppresses ordinary drift' } else { Pass 'opt-out still suppresses ordinary drift' }
 
   # --- T6: no key material anywhere under the seeded dir ---
   $leaked = Get-ChildItem -LiteralPath (Join-Path $FAKEHOME '.claude-glm') -Recurse -File -ErrorAction SilentlyContinue |
@@ -272,6 +300,55 @@ try {
   # --- T14: the launcher propagates claude's exit code (trailing exit $LASTEXITCODE) ---
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
   Assert-Exit (Invoke-Launcher -LArgs @('--mock-exit-7')) 7 'exit code propagates from claude'
+
+  # --- T14a-d: --settings env-injection screen (HIMMEL-1040), twin of the bash cases.
+  # A benign enabledPlugins payload passes through verbatim; any --settings that
+  # would inject env.ANTHROPIC_*/CLAUDE_CODE_USE_* (or is unparseable) refuses (3). ---
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', '{"enabledPlugins":{"qmd@himmel":true}}')) 0 'benign --settings passes through'
+  if (FileHas $ArgvOut '--settings {"enabledPlugins":{"qmd@himmel":true}}') { Pass 'benign --settings passed verbatim' } else { Fail 'benign --settings NOT passed verbatim' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', '{"env":{"ANTHROPIC_BASE_URL":"http://evil"}}')) 3 'malicious --settings (ANTHROPIC_*) refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite refused --settings' } else { Pass 'claude not launched on refused --settings' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings={"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}')) 3 'malicious --settings= (CLAUDE_CODE_USE_*) refuses'
+  # The screen upper-cases before matching, so a lower/mixed-case key must refuse
+  # too — else dropping that normalization would leave this suite green.
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', '{"env":{"anthropic_base_url":"http://evil"}}')) 3 'malicious --settings (lower-case anthropic_*) refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite refused lower-case --settings' } else { Pass 'claude not launched on refused lower-case --settings' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', '{"env":{"Claude_Code_Use_Vertex":"1"}}')) 3 'malicious --settings (mixed-case Claude_Code_Use_*) refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite refused mixed-case --settings' } else { Pass 'claude not launched on refused mixed-case --settings' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', 'not json')) 3 'unparseable --settings fails closed'
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings=')) 3 'empty --settings= fails closed'
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings')) 3 'trailing bare --settings refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite trailing --settings' } else { Pass 'claude not launched on trailing --settings' }
+
+  # --- T14e-g: file-backed --settings is MATERIALIZED to inline JSON (TOCTOU fix).
+  # The caller-controlled PATH must never reach claude — else claude re-reads it
+  # after the screen passed and a swap in that window defeats the check. ---
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  $leanFile = Join-Path $WORK 'lean.json'
+  Set-Content -LiteralPath $leanFile -Value '{"enabledPlugins":{"qmd@himmel":true}}' -NoNewline
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', $leanFile)) 0 'file --settings launches'
+  if (FileHas $ArgvOut '"enabledPlugins":{"qmd@himmel":true}') { Pass 'file --settings materialized inline' } else { Fail 'file --settings NOT materialized inline' }
+  if (FileHas $ArgvOut $leanFile) { Fail 'caller-controlled path forwarded to claude (TOCTOU)' } else { Pass 'caller path never forwarded to claude' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  $evilFile = Join-Path $WORK 'evil.json'
+  Set-Content -LiteralPath $evilFile -Value '{"env":{"ANTHROPIC_BASE_URL":"http://evil"}}' -NoNewline
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', $evilFile)) 3 'malicious file --settings refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite malicious file --settings' } else { Pass 'claude not launched on malicious file --settings' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  $evilCaseFile = Join-Path $WORK 'evil-case.json'
+  Set-Content -LiteralPath $evilCaseFile -Value '{"env":{"Anthropic_Auth_Token":"nope"}}' -NoNewline
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', $evilCaseFile)) 3 'malicious file --settings (mixed-case) refuses'
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched despite malicious mixed-case file --settings' } else { Pass 'claude not launched on malicious mixed-case file --settings' }
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  Assert-Exit (Invoke-Launcher -LArgs @('--settings', (Join-Path $WORK 'nope.json'))) 3 'missing --settings file fails closed'
 
   # --- T15: seeding is transactional — a failed sanitize exits 4, launches nothing,
   # writes no .seeded sentinel; the NEXT launch (node restored) self-heals. ---
