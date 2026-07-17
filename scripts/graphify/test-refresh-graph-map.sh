@@ -69,6 +69,42 @@ grep -q "Alpha" "$MAPS/graphify-luna-map.md" 2>/dev/null && pass "T1 MOC carries
 ls "$SCRATCH_PARENT"/graphify-refresh-* >/dev/null 2>&1 && fail "owned scratch subdir left behind" || pass "T1 owned scratch subdir cleaned"
 [ -f "$SCRATCH_PARENT/unrelated.txt" ] && pass "T1 scratch-parent unrelated data preserved" || fail "T1 clobbered unrelated data in scratch parent"
 
+# --- T1b: DEFAULT backend is claude-cli (HIMMEL-1049 "himmel off deepseek") —
+# when no --backend is passed, refresh-graph-map must invoke graphify with
+# --backend claude-cli: graphify's `claude-cli` routes through the local `claude`
+# CLI on the operator's Pro/Max SUBSCRIPTION (no ANTHROPIC_API_KEY, priced 0.0),
+# whereas `claude` is the pay-as-you-go Anthropic API path — the claude-only
+# adopter story needs claude-cli. A logging stub records the argv so we can
+# assert the exact default flowed through. ---
+LOGBIN="$WS/logbin"; mkdir -p "$LOGBIN"
+BACKEND_LOG="$WS/backend.log"; : > "$BACKEND_LOG"
+cat > "$LOGBIN/graphify" <<STUB
+#!/usr/bin/env bash
+# Log argv ONE-PER-LINE (CodeRabbit): preserves argument boundaries so the
+# assertion can check the exact token after --backend (a joined-string grep
+# would let --backend claude-cli satisfy a "--backend claude" substring match).
+printf '%s\n' "\$@" >> "$BACKEND_LOG"
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$LOGBIN/graphify"
+DCORPUS="$WS/dvault"; mkdir -p "$DCORPUS/notes"; printf '# n\ncontent\n' > "$DCORPUS/notes/a.md"
+DMAPS="$WS/dmaps"; mkdir -p "$DMAPS"
+out=$( GRAPHIFY_MAP_BIN="$LOGBIN/graphify" bash "$SCRIPT" --name dtest --corpus-root "$DCORPUS" \
+  --maps-dir "$DMAPS" --title "D" --slug d-map --corpus-tag dtest 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T1b default-backend run exit 0 (got $rc): $out"
+# Assert the token IMMEDIATELY AFTER --backend is EXACTLY claude-cli (not the
+# paid-API `claude`, not deepseek) — arg-boundary robust per the one-per-line log.
+got_backend=$(awk 'prev=="--backend"{print; exit} {prev=$0}' "$BACKEND_LOG")
+[ "$got_backend" = "claude-cli" ] && pass "T1b default backend is exactly claude-cli" || fail "T1b default backend not exactly claude-cli (got: '$got_backend')"
+[ "$got_backend" != "deepseek" ] && pass "T1b default no longer deepseek" || fail "T1b default still uses deepseek"
+
 # --- T2: --no-update publishes from an existing repo-local report without re-extracting ---
 printf 'SENTINEL-EXISTING' > "$CORPUS/graphify-out/graph.json"   # must NOT be overwritten under --no-update
 # F4 (HIMMEL-907): a .md added AFTER T1's stamp but BEFORE this no-update run
@@ -303,6 +339,147 @@ if [ -f "$GOUT/manifest.json" ] && [ -f "$GOUT/.graphify_root" ]; then
 else
   fail "T6g freshness stamps missing after publish failure (F2 stamp-before-publish broke)"
 fi
+
+# --- T7 (HIMMEL-1070): the clean-tree probe must not be defeatable by config.
+# `git status --porcelain` HONORS status.showUntrackedFiles, so on a repo (or a
+# machine) configured with `showUntrackedFiles=no` a tree full of untracked work
+# reported CLEAN and the refresh pulled straight over it. The probe now forces
+# --untracked-files=normal on the command line, where no config can weaken it.
+# Asserting on the PROBE's own decision ("not a clean git toplevel") keeps this
+# pin independent of whether a bounded `timeout` binary exists on the host. ---
+git_corpus() { # <dir> — a git repo with one commit, hermetic identity
+  mkdir -p "$1"
+  git -C "$1" init -q 2>/dev/null
+  git -C "$1" config user.email t@t.invalid
+  git -C "$1" config user.name  T
+  git -C "$1" config commit.gpgsign false
+  printf '# tracked\ncontent\n' > "$1/tracked.md"
+  git -C "$1" add -A >/dev/null 2>&1
+  git -C "$1" -c core.hooksPath=/dev/null commit -qm init >/dev/null 2>&1
+}
+UCORPUS="$WS/ucorpus"; UMAPS="$WS/umaps"; mkdir -p "$UMAPS"
+git_corpus "$UCORPUS"
+# THE REPRO: hide untracked files from `git status --porcelain`, then leave
+# untracked work in the tree.
+git -C "$UCORPUS" config status.showUntrackedFiles no
+printf '# WIP\nuncommitted untracked work\n' > "$UCORPUS/wip.md"
+out=$( bash "$SCRIPT" --name upd --corpus-root "$UCORPUS" --backend deepseek \
+  --maps-dir "$UMAPS" --title "U Map" --slug u-map --corpus-tag u 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T7 run exit 0 (got $rc): $out"
+echo "$out" | grep -q "not a clean git toplevel" \
+  && pass "T7 untracked work seen despite showUntrackedFiles=no (pull skipped)" \
+  || fail "T7 probe was fooled by showUntrackedFiles=no (would pull over untracked work): $out"
+grep -q "uncommitted untracked work" "$UCORPUS/wip.md" 2>/dev/null \
+  && pass "T7 untracked work survived" || fail "T7 untracked work lost"
+
+# --- T7b: the inverse — a genuinely CLEAN git toplevel must still be judged
+# pullable (the strict flags must not make every repo look dirty forever). ---
+CCORPUS="$WS/ccorpus"; CMAPS="$WS/cmaps"; mkdir -p "$CMAPS"
+git_corpus "$CCORPUS"
+out=$( bash "$SCRIPT" --name cln --corpus-root "$CCORPUS" --backend deepseek \
+  --maps-dir "$CMAPS" --title "C Map" --slug c-map --corpus-tag c 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T7b run exit 0 (got $rc): $out"
+echo "$out" | grep -q "not a clean git toplevel" \
+  && fail "T7b a clean repo was judged unpullable (probe over-tightened): $out" \
+  || pass "T7b clean repo still judged pullable"
+
+# --- T8 (HIMMEL-1070): the clean-tree verdict must not go STALE across the
+# fetch. The probe ran before a bounded NETWORK op that can take the better part
+# of a minute; this refresh is unattended, so an operator starting to edit during
+# that window is routine. Merging on the stale verdict fast-forwards the worktree
+# out from under live work. Re-probing before `merge --ff-only` fixes it.
+# Harness: a fake `git` that forwards to the real one, DIRTIES the corpus during
+# `fetch` (the exact race), and logs which subcommands were reached; a fake
+# `timeout` so the bounded-fetch branch is taken on hosts without coreutils
+# timeout. The assertion is that `merge` is never reached. ---
+FAKEBIN="$WS/fakebin"; mkdir -p "$FAKEBIN"
+GIT_LOG="$WS/git-calls.log"; : > "$GIT_LOG"
+REAL_GIT="$(command -v git)"
+DCORPUS_G="$WS/gitrace"; DMAPS_G="$WS/gitracemaps"; mkdir -p "$DMAPS_G"
+git_corpus "$DCORPUS_G"
+cat > "$FAKEBIN/git" <<STUB
+#!/usr/bin/env bash
+# Log the subcommand (first non-flag, non -C/-c value token) and forward.
+sub=""; skip=0
+for a in "\$@"; do
+  if [ "\$skip" = 1 ]; then skip=0; continue; fi
+  case "\$a" in
+    -C|-c) skip=1 ;;
+    -*)    : ;;
+    *)     sub="\$a"; break ;;
+  esac
+done
+printf '%s\n' "\$sub" >> "$GIT_LOG"
+if [ "\$sub" = fetch ]; then
+  # THE RACE: the operator starts editing while the fetch is in flight.
+  printf '# racing\nwork started during the fetch\n' > "$DCORPUS_G/raced.md"
+  exit 0   # a "successful" fetch, so the script proceeds to the merge decision
+fi
+exec "$REAL_GIT" "\$@"
+STUB
+chmod +x "$FAKEBIN/git"
+# Minimal `timeout` stub: supports the script's `-k N N true` capability probe
+# and otherwise drops `-k <n> <duration>` and execs the command.
+cat > "$FAKEBIN/timeout" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "-k" ] && shift 2
+shift   # duration
+exec "$@"
+STUB
+chmod +x "$FAKEBIN/timeout"
+out=$( PATH="$FAKEBIN:$PATH" bash "$SCRIPT" --name race --corpus-root "$DCORPUS_G" \
+  --backend deepseek --maps-dir "$DMAPS_G" --title "R Map" --slug r-map --corpus-tag r 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T8 run exit 0 (got $rc): $out"
+grep -qx "fetch" "$GIT_LOG" 2>/dev/null \
+  && pass "T8 harness reached the fetch (bounded branch taken)" \
+  || fail "T8 harness never reached the fetch — the pin is vacuous: $(cat "$GIT_LOG")"
+if grep -qx "merge" "$GIT_LOG" 2>/dev/null; then
+  fail "T8 merged on a STALE clean-tree verdict (tree went dirty during the fetch)"
+else
+  pass "T8 re-probe caught the mid-fetch dirty tree (merge skipped)"
+fi
+grep -q "work started during the fetch" "$DCORPUS_G/raced.md" 2>/dev/null \
+  && pass "T8 racing work survived" || fail "T8 racing work lost"
+
+# --- T9 (HIMMEL-1070 codex-adv-1): the scheduled path must not egress to
+# another cloud. graphify-fence.sh hard-denies the CLAUDE_CODE_USE_* reroute
+# selectors, but it is a PreToolUse hook — it only sees what an AGENT types,
+# never this script fired directly by cron/schtasks. So the fence's guarantee is
+# worthless here unless THIS script clears them: an inherited
+# CLAUDE_CODE_USE_BEDROCK would reroute the claude-cli backend to AWS with
+# nothing in the path to stop it. A stub records the env it was dispatched with;
+# every selector must be gone by then. ---
+RCORPUS="$WS/rcorpus"; RMAPS="$WS/rmaps"; mkdir -p "$RCORPUS/notes" "$RMAPS"
+printf '# r\ncontent\n' > "$RCORPUS/notes/r.md"
+RBIN="$WS/rbin"; mkdir -p "$RBIN"
+REROUTE_LOG="$WS/reroute-env.log"; : > "$REROUTE_LOG"
+cat > "$RBIN/graphify" <<STUB
+#!/usr/bin/env bash
+# Record every reroute selector still visible at dispatch time.
+for v in CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY \\
+         CLAUDE_CODE_USE_GATEWAY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_USE_ANTHROPIC_AWS; do
+  eval "val=\\\${\$v:-}"
+  [ -n "\$val" ] && printf '%s=%s\n' "\$v" "\$val" >> "$REROUTE_LOG"
+done
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$RBIN/graphify"
+out=$( env CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_USE_VERTEX=1 CLAUDE_CODE_USE_FOUNDRY=1 \
+  CLAUDE_CODE_USE_GATEWAY=1 CLAUDE_CODE_USE_MANTLE=1 CLAUDE_CODE_USE_ANTHROPIC_AWS=1 \
+  GRAPHIFY_MAP_BIN="$RBIN/graphify" PATH="$RBIN:$PATH" \
+  bash "$SCRIPT" --name reroute --corpus-root "$RCORPUS" --backend claude-cli \
+  --maps-dir "$RMAPS" --title "R2 Map" --slug r2-map --corpus-tag r2 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T9 run exit 0 (got $rc): $out"
+[ -s "$REROUTE_LOG" ] \
+  && fail "T9 reroute selectors survived into the graphify dispatch (scheduled path can egress to another cloud): $(cat "$REROUTE_LOG")" \
+  || pass "T9 reroute selectors cleared before the graphify dispatch"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

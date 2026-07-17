@@ -77,6 +77,50 @@ mkdir -p "$TMP_ROOT/bin"
 printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/bin/bash"
 chmod +x "$TMP_ROOT/bin/bash"
 
+# Fake `claude` on PATH (HIMMEL-1070): arm now resolves it via `command -v claude`
+# and FAILS FAST when it is absent, because the fixed claude-cli BACKEND shells it
+# at fire time under the scheduler's minimal PATH. A stub keeps the suite
+# deterministic on machines with and without a real CLI installed; like the bash
+# stub it is never fired, only resolved + its dirname read.
+#
+# It lives in its OWN dir, entered on PATH in POSIX form, for two reasons the
+# `bin` dir above cannot serve: (1) TMP_ROOT is cygpath -m'd (C:/... mixed form)
+# and Git-Bash cannot resolve a PATH entry in that form — a stub in `bin` is
+# INVISIBLE on Windows, so the arm would silently resolve the operator's REAL
+# installed claude and the runner assertion below would pin a machine-specific
+# path; (2) adding a POSIX entry for `bin` itself would newly expose the fake
+# `bash` on Windows, changing what the existing suite bakes into its runners.
+CLAUDE_BIN_DIR="$TMP_ROOT/claude-bin"
+mkdir -p "$CLAUDE_BIN_DIR"
+printf '#!/bin/sh\nexit 0\n' > "$CLAUDE_BIN_DIR/claude"
+chmod +x "$CLAUDE_BIN_DIR/claude"
+CLAUDE_BIN_DIR_PATH="$CLAUDE_BIN_DIR"
+if command -v cygpath >/dev/null 2>&1; then
+    CLAUDE_BIN_DIR_PATH=$(cygpath -u "$CLAUDE_BIN_DIR")
+fi
+# EVERY invocation that reaches `arm` must carry $CLAUDE_BIN_DIR_PATH on PATH —
+# arm fail-fasts when `claude` is absent (HIMMEL-1070). Omitting it does NOT fail
+# on a dev box that happens to have the real CLI installed: the inherited $PATH
+# tail satisfies the probe by ACCIDENT, so the suite goes green locally and dies
+# on a clean CI runner with rc=2 (set -euo pipefail aborts the whole script on the
+# unguarded `arm` assignment, before any assertion prints). That is exactly how
+# this shipped to public CI once. The stub keeps the suite hermetic — a test's
+# result must never depend on what the operator has installed.
+
+# A PATH with the real system dirs (arm needs dirname/sed/mktemp at load time)
+# but with EVERY dir that carries a real `claude` filtered out — the fail-fast
+# probe below must not be satisfied by an installed CLI. Filtering the real PATH
+# beats replacing it: a bare stub dir strips coreutils and the script dies rc=127
+# on `dirname` before it ever reaches the check under test.
+PATH_NOCLAUDE=""
+_oldifs=$IFS; IFS=:
+for _d in $PATH; do
+    [ -n "$_d" ] || continue
+    if [ -x "$_d/claude" ] || [ -x "$_d/claude.exe" ] || [ -x "$_d/claude.cmd" ]; then continue; fi
+    PATH_NOCLAUDE="${PATH_NOCLAUDE:+$PATH_NOCLAUDE:}$_d"
+done
+IFS=$_oldifs
+
 # Hermeticity: point HOME/USERPROFILE at the temp dir so a stray BAT_DIR default
 # (should the seam ever be dropped) can't land under the real user profile.
 export HOME="$TMP_ROOT/home"
@@ -169,7 +213,8 @@ CRON_DIR="$TMP_ROOT/cron-runners"
 
 run_cron() {
     env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-        GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
+        GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$TMP_ROOT/bin:$CLAUDE_BIN_DIR_PATH:$PATH" \
+        "$REAL_BASH" "$SCRIPT" "$@"
 }
 
 # Test C1: status with no crontab installed ----------------------------------
@@ -188,6 +233,25 @@ rc=0; out=$(run_cron arm --vault "$VAULT" --himmel-time 25:00 2>&1) || rc=$?
 assert_rc "cron bad --himmel-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_cron arm --vault "$TMP_ROOT/does-not-exist" 2>&1) || rc=$?
 assert_rc "cron missing vault dir -> rc 1" 1 "$rc"
+
+# Test C13: arm fails fast when `claude` is absent (HIMMEL-1070) --------------
+#
+# The cadence's fixed claude-cli backend shells `claude` at fire time under the
+# scheduler's minimal PATH. Arming on a machine without it would "succeed" and
+# then die on every unattended fire, in a log nobody reads. PATH is REPLACED
+# (not prepended) so a really-installed claude cannot satisfy the probe here.
+
+echo "TEST: cron arm fails fast when claude is not on PATH"
+rc=0; out=$(env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
+    GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$PATH_NOCLAUDE" \
+    "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "cron arm without claude -> rc 2" 2 "$rc"
+assert_contains "missing-claude error names the CLI" "'claude' not on PATH at arm time" "$out"
+if [ ! -f "$CSTATE/crontab" ] && [ ! -d "$CRON_DIR" ]; then
+    pass "failed arm installed nothing"
+else
+    fail "failed arm left state behind" "$(ls -a "$CRON_DIR" 2>/dev/null; cat "$CSTATE/crontab" 2>/dev/null)"
+fi
 
 # Test C2: arm --dry-run touches nothing --------------------------------------
 
@@ -246,7 +310,7 @@ assert_contains "luna runner fires refresh-graph-map.sh"   "refresh-graph-map.sh
 assert_contains "luna runner names the luna corpus"        "--name luna"          "$luna_sh"
 assert_contains "luna runner sets the luna slug"           "--slug graphify-luna-map" "$luna_sh"
 assert_contains "luna runner sets the luna corpus-tag"     "--corpus-tag luna"    "$luna_sh"
-assert_contains "luna runner uses the deepseek backend"    "--backend deepseek"   "$luna_sh"
+assert_contains "luna runner uses the claude-cli backend"      "--backend claude-cli --corpus-tag" "$luna_sh"
 assert_contains "luna runner sets the luna title"          "Graphify Luna Map"    "$luna_sh_plain"
 assert_contains "luna runner publishes into 60-Maps"       "60-Maps"              "$luna_sh_plain"
 # Strong corpus-root asserts (HIMMEL-829 CR, pr-test-analyzer): the luna map
@@ -258,7 +322,7 @@ assert_contains "luna runner corpus-root is the vault"     "--corpus-root $VAULT
 assert_contains "himmel runner names the himmel corpus"    "--name himmel"        "$himmel_sh"
 assert_contains "himmel runner sets the himmel slug"       "--slug graphify-himmel-map" "$himmel_sh"
 assert_contains "himmel runner sets the himmel corpus-tag" "--corpus-tag himmel"  "$himmel_sh"
-assert_contains "himmel runner uses the deepseek backend"  "--backend deepseek"   "$himmel_sh"
+assert_contains "himmel runner uses the claude-cli backend"    "--backend claude-cli --corpus-tag" "$himmel_sh"
 assert_contains "himmel runner corpus-root is the himmel repo" "--corpus-root $HIMMEL_ROOT_EXP" "$himmel_sh_plain"
 assert_contains "himmel runner sets the himmel title"      "Graphify Himmel Map"  "$himmel_sh_plain"
 assert_contains "luna runner cds into himmel root" "cd $HIMMEL_ROOT_EXP" "$luna_sh_plain"
@@ -271,6 +335,13 @@ for what in luna himmel; do
     body=$(eval "printf '%s' \"\$${what}_sh\"")
     assert_not_contains "$what runner has no --settings (not a claude session)" "--settings" "$body"
     assert_not_contains "$what runner has no bounded-claude stdin marker" "< /dev/null" "$body"
+    # HIMMEL-1070: cron's minimal PATH carries neither node nor claude, so the
+    # runner must pin the claude CLI's dir the same way it already pins node's —
+    # without it every fire dies with "backend 'claude-cli' requires the `claude`
+    # CLI on $PATH". The expected dir is where the stub claude lives.
+    # shellcheck disable=SC2016  # literal $PATH — the runner expands it at fire time
+    assert_contains "$what runner prepends the claude dir to PATH" \
+        "export PATH=$CLAUDE_BIN_DIR_PATH:\$PATH" "${body//\\/}"
 done
 
 # Test C5: status after arm ----------------------------------------------------
@@ -442,7 +513,8 @@ EVIL_VAULT="$TMP_ROOT/va&ult \$X y"
 EVIL_DIR="$TMP_ROOT/cr%on rnr"
 mkdir -p "$EVIL_VAULT"
 out=$(env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" arm --vault "$EVIL_VAULT")
+    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$CLAUDE_BIN_DIR_PATH:$PATH" \
+    "$REAL_BASH" "$SCRIPT" arm --vault "$EVIL_VAULT")
 luna_sh=$(cat "$EVIL_DIR/graphmap-luna.sh" 2>/dev/null || echo MISSING)
 assert_contains "ampersand %q-escaped in runner" 'va\&ult' "$luna_sh"
 # shellcheck disable=SC2016  # literal \$X needle — asserting the %q escape itself
@@ -451,7 +523,8 @@ tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 assert_contains "percent cron-escaped in entry (\\%)" 'cr\%on' "$tab"
 assert_contains "space %q-escaped in entry" 'cr\%on\ rnr' "$tab"
 env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" disarm >/dev/null
+    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$CLAUDE_BIN_DIR_PATH:$PATH" \
+    "$REAL_BASH" "$SCRIPT" disarm >/dev/null
 
 # Test C13: unknown platform exits 2 ----------------------------------------------
 
@@ -547,7 +620,7 @@ BAT_DIR="$TMP_ROOT/bats"
 
 run_gc() {
     PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
-        PATH="$TMP_ROOT/bin:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
+        PATH="$TMP_ROOT/bin:$CLAUDE_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
 
 # Test 1: usage errors ------------------------------------------------------
@@ -625,7 +698,7 @@ assert_contains "luna bat fires refresh-graph-map.sh" "refresh-graph-map.sh" "$l
 assert_contains "luna bat names the luna corpus"      "--name luna"          "$luna_bat"
 assert_contains "luna bat sets the luna slug"         "--slug graphify-luna-map" "$luna_bat"
 assert_contains "luna bat sets the luna corpus-tag"   "--corpus-tag luna"    "$luna_bat"
-assert_contains "luna bat uses the deepseek backend"  "--backend deepseek"   "$luna_bat"
+assert_contains "luna bat uses the claude-cli backend"    "--backend claude-cli --corpus-tag" "$luna_bat"
 assert_contains "luna bat sets the luna title"        "Graphify Luna Map"    "$luna_bat"
 assert_contains "luna bat publishes into 60-Maps"     "60-Maps"              "$luna_bat"
 assert_contains "luna bat appends run log" 'graphmap-luna.log" 2>&1' "$luna_bat"
@@ -634,7 +707,7 @@ assert_contains "luna bat stamps every fire" 'echo [fired %DATE% %TIME%]' "$luna
 assert_contains "himmel bat names the himmel corpus"    "--name himmel"        "$himmel_bat"
 assert_contains "himmel bat sets the himmel slug"       "--slug graphify-himmel-map" "$himmel_bat"
 assert_contains "himmel bat sets the himmel corpus-tag" "--corpus-tag himmel"  "$himmel_bat"
-assert_contains "himmel bat uses the deepseek backend"  "--backend deepseek"   "$himmel_bat"
+assert_contains "himmel bat uses the claude-cli backend"    "--backend claude-cli --corpus-tag" "$himmel_bat"
 # Strong per-corpus-root asserts on the Windows path too (bat_payload is a
 # SEPARATE builder from the cron cron_payload, so the cron suite's exact asserts
 # don't guard a Windows-only swap). VAULT is already mixed-form here, so it

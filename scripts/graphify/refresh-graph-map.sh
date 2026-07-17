@@ -32,7 +32,17 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
-NAME="" CORPUS_ROOT="" BACKEND="deepseek" MAPS_DIR="" TITLE="" SLUG="" CORPUS_TAG=""
+# BACKEND default = claude-cli (HIMMEL-1049): graphify distinguishes `claude`
+# (Anthropic API — requires ANTHROPIC_API_KEY, pay-as-you-go) from `claude-cli`
+# (routes through the locally-installed `claude` CLI). The claude-ONLY adopter
+# story needs claude-cli, not claude.
+# BILLING CAVEAT (CodeRabbit): claude-cli authenticates via the operator's
+# existing Pro/Max SUBSCRIPTION *only when no Anthropic API credential is in the
+# environment* — a set ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN takes precedence
+# in the `claude` CLI and switches the run back to pay-as-you-go. We deliberately
+# do NOT strip those vars here (the operator may intend the API path); this is a
+# default, not a billing guarantee.
+NAME="" CORPUS_ROOT="" BACKEND="claude-cli" MAPS_DIR="" TITLE="" SLUG="" CORPUS_TAG=""
 SCRATCH="" DO_UPDATE=1 CORPUS_CLASS="luna-personal"
 usage() { echo "usage: refresh-graph-map.sh --name N --corpus-root P --maps-dir D --title T --slug S [--backend B] [--corpus-tag T] [--corpus-class C] [--scratch DIR] [--no-update]" >&2; exit 1; }
 while [ $# -gt 0 ]; do
@@ -209,6 +219,148 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # Clean the owned subdir on ANY exit — a graphify/cluster-only failure (exit 2)
   # otherwise leaks it (CR suggestion). Scoped to the PID-owned dir only.
   trap 'rm -rf "$SCRATCH" 2>/dev/null || true; _promote_lock_release' EXIT
+  # pull-before-regenerate (HIMMEL-1050): refresh the corpus from its remote
+  # before copying to scratch, so the graph reflects the latest pushed state, not
+  # a stale local checkout. Best-effort + advisory: a miss regenerates from the
+  # current checkout (a stale-but-present corpus still yields a useful incremental
+  # graph). --ff-only stays non-destructive (never a merge commit or a left-behind
+  # conflict). Guarded so `set -e` never trips on the miss path.
+  #
+  # GUARDED (codex-adv-1 on HIMMEL-1049) — pull ONLY when the corpus is BOTH:
+  #   (a) the git TOPLEVEL (empty --show-prefix), never a nested corpus whose
+  #       pull would mutate an unrelated PARENT repo (a subdir passes
+  #       is-inside-work-tree but a pull there updates the whole parent tree); and
+  #   (b) a CLEAN tree (empty status --porcelain), never pulling over uncommitted
+  #       work the operator/another session is mid-edit on.
+  # --show-prefix keeps this Windows-safe (no C:/ vs /c/ path-form comparison).
+  #
+  # NOT under the promote lock — deliberate (codex-adv-3 + CodeRabbit asked for a
+  # lock here; it was tried and REVERTED, and here is why). The promote lock's
+  # takeover is AGE-based (PROMOTE_LOCK_STALE_SECONDS): holding it across the
+  # pull+copy+extraction — extraction can outlast the stale floor — would let a
+  # second refresh judge a STILL-ALIVE holder stale and take over, breaking the
+  # very promote exclusivity HIMMEL-910 built (and a heartbeat, or splitting into
+  # two holds, each conflicts with that same stale-takeover contract). The lock
+  # therefore stays SHORT and promote-only, exactly as designed.
+  # The residual it leaves is small and self-healing: only TWO CONCURRENT refreshes
+  # of the SAME corpus could interleave a pull against the other's copy, yielding a
+  # mixed-revision SCRATCH -> a slightly-off graph, corrected on the next refresh;
+  # the promote itself stays serialized, and the scratch manifest always attests
+  # exactly what that copy saw (never a lie). What IS hardened below instead — the
+  # real teeth of codex-adv-3 — is the pull itself: toplevel-only (never mutate a
+  # nested corpus's PARENT repo), clean-tree-only (never pull over uncommitted
+  # work), and bounded + non-interactive (never hang).
+  # CLEAN-TREE PROBE (CodeRabbit): `git status` must SUCCEED *and* be EMPTY. A
+  # FAILED status (permissions, corrupt index, ...) writes nothing to STDOUT, so a
+  # bare `[ -z "$(...)" ]` would misread the failure as "clean" and pull over an
+  # unknown state. Capture rc via the assignment-in-condition form (set -e exempt).
+  # EVERY probe must SUCCEED before its output is tested for emptiness — a failed
+  # probe writes nothing to stdout, so a bare `[ -z "$(...)" ]` would read the
+  # FAILURE as "empty prefix" (= toplevel) or "empty status" (= clean) and pull
+  # over an unknown state (CodeRabbit). Assignment-in-condition captures rc and is
+  # set -e exempt.
+  # The probe FLAGS matter as much as its rc (public CodeRabbit, HIMMEL-1070):
+  # `git status --porcelain` honors the repo/global `status.showUntrackedFiles`
+  # setting, so on a machine with `status.showUntrackedFiles=no` a tree full of
+  # untracked work reports CLEAN and we pull over it. Submodules are equally
+  # suppressible via `status.submoduleSummary`/`diff.ignoreSubmodules`. Force
+  # both to the strict setting on the command line, where no config can weaken
+  # them: --untracked-files=normal makes untracked files visible again, and
+  # --ignore-submodules=none makes dirty submodules count as dirty.
+  _corpus_clean() { # -> 0 only if `git status` SUCCEEDS *and* reports nothing
+    local out
+    out="$(git -C "$CORPUS_ROOT" status --porcelain \
+             --untracked-files=normal --ignore-submodules=none 2>/dev/null)" || return 1
+    [ -z "$out" ]
+  }
+  corpus_pullable=0
+  if git -C "$CORPUS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if prefix_out="$(git -C "$CORPUS_ROOT" rev-parse --show-prefix 2>/dev/null)" \
+       && [ -z "$prefix_out" ]; then
+      _corpus_clean && corpus_pullable=1
+    fi
+  fi
+  if [ "$corpus_pullable" = 1 ]; then
+    # NEVER RUN THE PULL UNBOUNDED (CodeRabbit-major). This is a best-effort
+    # freshness pull, so the safe degradation is to SKIP it — never to risk a hang:
+    #   * GRAPHIFY_PULL_TIMEOUT_SECONDS must be a POSITIVE integer; non-numeric or
+    #     <=0 DISABLES the pull (an explicit opt-out, not an unbounded run).
+    #   * a HARD wall-clock cap requires coreutils `timeout` — absent on stock
+    #     macOS, where Homebrew's coreutils installs it as `gtimeout` (CodeRabbit),
+    #     so BOTH names are probed. With neither we SKIP rather than pull unbounded
+    #     (git's own transport limits bound a STALLED transfer but are not a
+    #     wall-clock cap).
+    # Belt-and-braces on the bounded path: git's transport limits also abort a
+    # stalled transfer early, and GIT_TERMINAL_PROMPT=0 + ssh BatchMode make a
+    # credential prompt FAIL FAST instead of hanging. Any miss simply regenerates
+    # from the current checkout.
+    pull_t="${GRAPHIFY_PULL_TIMEOUT_SECONDS:-60}"
+    case "$pull_t" in ''|*[!0-9]*) pull_t=0 ;; esac   # non-numeric -> disabled
+    # coreutils timeout: GNU installs `timeout`; Homebrew on macOS installs the
+    # g-prefixed `gtimeout` (CodeRabbit) — probe both. Being ON PATH is not
+    # enough: the fetch below needs GNU's `-k` (kill-after), which some builds
+    # (e.g. older busybox) lack, so FUNCTIONALLY probe `-k` on a trivial command
+    # and only accept a binary that actually supports it (CodeRabbit). Without a
+    # usable one we SKIP rather than pull unbounded — and say so honestly instead
+    # of degrading into a misleading "could not fast-forward" warning.
+    timeout_bin=""
+    for _t in timeout gtimeout; do
+      if command -v "$_t" >/dev/null 2>&1 && "$_t" -k 1 1 true >/dev/null 2>&1; then
+        timeout_bin="$_t"; break
+      fi
+    done
+    pull_ok=0
+    if [ "$pull_t" -le 0 ]; then
+      echo "refresh-graph-map: pull-before-regenerate disabled (GRAPHIFY_PULL_TIMEOUT_SECONDS not a positive integer); regenerating from the current checkout" >&2
+    elif [ -z "$timeout_bin" ]; then
+      echo "refresh-graph-map: pull-before-regenerate SKIPPED — no 'timeout'/'gtimeout' supporting GNU -k is available to bound the fetch (macOS: brew install coreutils provides gtimeout); refusing to fetch unbounded, regenerating from the current checkout" >&2
+    else
+      # FETCH (bounded, killable) then MERGE (local, fast, NOT killed) — never a
+      # timeout-killed `pull` (CodeRabbit). A `pull` both fetches AND mutates the
+      # worktree, so SIGKILLing it mid-flight can strand a half-updated checkout
+      # (interrupted merge/checkout, a left-behind index.lock) that we would then
+      # silently regenerate from. Splitting them means the only thing the timeout
+      # can kill is the NETWORK op, which never touches the worktree (a killed
+      # fetch just leaves the object store short of some objects). The worktree
+      # mutation is then a purely local `merge --ff-only` against the freshly
+      # fetched upstream: fast, offline, and safe to leave unbounded.
+      #   -k 5: SIGKILL 5s after SIGTERM so a wedged transport cannot outlive the bound.
+      if GIT_TERMINAL_PROMPT=0 "$timeout_bin" -k 5 "$pull_t" \
+           git -C "$CORPUS_ROOT" \
+             -c http.lowSpeedLimit=1000 -c "http.lowSpeedTime=$pull_t" \
+             -c "core.sshCommand=ssh -o ConnectTimeout=$pull_t -o BatchMode=yes" \
+             fetch --quiet >/dev/null 2>&1; then
+        # @{u} = the current branch's upstream (empty/absent -> merge fails -> WARN).
+        # core.hooksPath=/dev/null: a fast-forward still fires the repo's
+        # post-merge hook, which is arbitrary user code and CAN BLOCK — that would
+        # hang this unattended refresh (CodeRabbit). We do NOT bound the merge with
+        # a kill instead: SIGKILLing a mutating merge is exactly the strand risk we
+        # removed by splitting fetch from merge. Disabling hooks keeps it both
+        # unhangable and unkilled. Scoped to THIS internal, automated
+        # fast-forward only (it is not a user-authored commit/push), and it also
+        # stops a post-merge graph-refresh hook (HIMMEL-1050) recursing into us.
+        # RE-PROBE (public CodeRabbit, HIMMEL-1070): the clean-tree probe above
+        # ran BEFORE the fetch, and the fetch is a bounded NETWORK op that can
+        # take the better part of a minute. In that window the operator (or a
+        # parallel session) can start editing the corpus — this refresh is
+        # unattended and fires on a schedule, so that overlap is routine, not
+        # exotic. Merging on the stale verdict would fast-forward the worktree
+        # out from under live work. The fetch itself never touches the worktree,
+        # so re-checking here costs one local `git status` and makes the
+        # clean-tree guarantee hold at the moment it is actually load-bearing.
+        if _corpus_clean; then
+          git -C "$CORPUS_ROOT" -c core.hooksPath=/dev/null merge --ff-only '@{u}' >/dev/null 2>&1 && pull_ok=1
+        fi
+      fi
+      if [ "$pull_ok" = 1 ]; then
+        echo "refresh-graph-map: fast-forwarded $CORPUS_ROOT to its upstream before regenerating" >&2
+      else
+        echo "refresh-graph-map: WARN could not fast-forward $CORPUS_ROOT (no upstream, offline, fetch timed out, diverged, or the tree went dirty during the fetch); regenerating from the current checkout" >&2
+      fi
+    fi
+  else
+    echo "refresh-graph-map: pull-before-regenerate skipped for $CORPUS_ROOT (not a clean git toplevel); regenerating from the current checkout" >&2
+  fi
   # Copy only markdown (matches the extraction corpus); carry the fence marker.
   # No 2>/dev/null on find — a scan failure (permission/IO) is aborted by
   # set -euo pipefail, and find's own stderr is the ONLY diagnostic for it (CR).
@@ -216,8 +368,36 @@ if [ "$DO_UPDATE" -eq 1 ]; then
       | while IFS= read -r -d '' f; do mkdir -p "$SCRATCH/$(dirname "$f")"; cp "$f" "$SCRATCH/$f"; done ) \
     || { echo "refresh-graph-map: corpus scan/copy failed (see find/cp output above)" >&2; exit 1; }
   printf '%s\n' "$CORPUS_CLASS" > "$SCRATCH/.graphify-corpus"
+  # CLEAR THE CLAUDE REROUTE SELECTORS before dispatching (HIMMEL-1070,
+  # codex-adv-1). graphify-fence.sh hard-denies these, but the fence is a
+  # PreToolUse hook — it only sees graphify invocations an AGENT types. THIS
+  # script is fired directly by cron/schtasks (graphmap-cadence.sh), so the
+  # fence never runs on the scheduled path: an inherited CLAUDE_CODE_USE_BEDROCK
+  # would send corpus content to AWS with nothing to stop it, and the hard-deny
+  # we document would be true only for the interactive path. Clearing them here
+  # makes the property hold where the extraction actually happens. This is
+  # exactly what himmel's own scripts/claude-codex does with the same variables,
+  # for the same "would silently reroute the session away" reason.
+  # Clearing (not refusing) keeps a Bedrock/Vertex-configured operator's cadence
+  # working on the intended provider, and fails LOUDLY if their CLI genuinely
+  # cannot auth without the reroute — never silently to another cloud. Harmless
+  # for non-claude backends, which do not read these at all.
+  unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+  unset CLAUDE_CODE_USE_GATEWAY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_USE_ANTHROPIC_AWS
+  # RESIDUAL, tracked as HIMMEL-1084 (codex-adv round 2): ANTHROPIC_BASE_URL and
+  # the Anthropic credentials still pass through, so a scheduled run launched
+  # from a routed environment can still reach a gateway with no matrix eval and
+  # no ledger line. NOT blanket-cleared here on purpose — that would break two
+  # SUPPORTED configs: `--backend claude` is the API path and NEEDS
+  # ANTHROPIC_API_KEY, and zai-glm is a ratified matrix provider whose
+  # luna-clippings cell the matrix explicitly allows. Clearing them would
+  # override an allowed configuration rather than enforce the policy. The real
+  # fix is an in-script preflight running the SAME matrix eval the fence runs —
+  # a design surface, hence its own ticket.
   echo "refresh-graph-map: incremental update on scratchpad copy ($SCRATCH) backend=$BACKEND" >&2
+  # headless-claude-ok: the default BACKEND (claude-cli) makes graphify shell `claude -p` from this unattended refresh — HIMMEL-128 approved for the graphmap cadence: it is a scheduled, no-session extraction whose whole point is running without an interactive harness, and the alternative (a paid API backend) is what the claude-cli backend exists to avoid.
   "$GRAPHIFY_MAP" "$SCRATCH" --update --backend "$BACKEND" --max-concurrency 6 --api-timeout 300 >&2 || { echo "refresh-graph-map: graphify --update failed" >&2; exit 2; }
+  # headless-claude-ok: same dispatch, clustering pass (see the marker above).
   "$GRAPHIFY_MAP" cluster-only "$SCRATCH" --backend "$BACKEND" >&2 || { echo "refresh-graph-map: cluster-only failed" >&2; exit 2; }
   # HIMMEL-907: stamp freshness artifacts so the companion guard
   # check-graph-freshness.sh can VERIFY this graph (not "fresh by age" only).
@@ -252,9 +432,11 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # HIMMEL-910: acquire the exclusive per-out-dir lock (see its definition
   # above) around the WHOLE promote block that follows -- steps 1-4 below
   # must run as one atomic unit relative to any OTHER refresh-graph-map
-  # promoting into this same out dir. exit 2 matches the graphify/cluster-
-  # only failure exit code above (a refuse-to-clobber is a fence/tooling
-  # failure, not a usage error).
+  # promoting into this same out dir. Acquired HERE (not earlier, around the
+  # pull/extraction -- see the pull note above for why a long hold breaks the
+  # age-based stale takeover) so the hold stays SHORT. exit 2 matches the
+  # graphify/cluster-only failure exit code above (a refuse-to-clobber is a
+  # fence/tooling failure, not a usage error).
   _promote_lock_acquire || exit 2
   # Test-only hook (HIMMEL-910): hold the lock for N seconds before doing any
   # promote work, so a concurrency test can create a deterministic overlap
