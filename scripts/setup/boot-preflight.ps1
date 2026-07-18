@@ -13,7 +13,10 @@
 # CHECKS (each independently fail-soft - one section's error never blocks
 # the others or the exit):
 #   1. Orphan-sweep arm: HIMMEL-CodexOrphanSweep must carry an hourly
-#      Repetition (Interval=PT1H) on its trigger(s). If a trigger is
+#      Repetition (Interval=PT1H) on its trigger(s) AND be ENABLED - a
+#      disabled task with an otherwise-durable hourly trigger will never
+#      actually run, so the enabled/disabled state is flagged as its own
+#      PROBLEM even when the trigger checks pass. If a trigger is
 #      missing it, re-assert it in place via Set-ScheduledTask - this
 #      script runs in the TASK'S OWN context (SYSTEM/InteractiveToken at
 #      logon), not the interactive session's guarded shell, so the
@@ -220,6 +223,7 @@ function Test-KeysPresent {
 function Get-ReadinessReport {
   param(
     [Parameter(Mandatory)][bool]$SweepTaskFound,
+    [Parameter(Mandatory)][bool]$SweepTaskEnabled,
     [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SweepTriggers,
     [Parameter(Mandatory)][bool]$SweepReassertAttempted,
     [Parameter(Mandatory)][bool]$SweepReassertOk,
@@ -235,6 +239,12 @@ function Get-ReadinessReport {
   if (-not $SweepTaskFound) {
     $lines.Add('[sweep]    PROBLEM - HIMMEL-CodexOrphanSweep task not found')
     $problems.Add('HIMMEL-CodexOrphanSweep scheduled task is missing - arm it: bash scripts/cleanup/codex-sweep-cadence.sh arm')
+  } elseif (-not $SweepTaskEnabled) {
+    # A disabled task never runs regardless of its trigger/repetition state -
+    # checked ahead of $sweepArmedNow so a durably-hourly-but-disabled task is
+    # still flagged (a disabled-but-hourly task will never actually sweep).
+    $lines.Add('[sweep]    PROBLEM - HIMMEL-CodexOrphanSweep task is DISABLED')
+    $problems.Add('HIMMEL-CodexOrphanSweep scheduled task is disabled - enable it: schtasks /change /tn HIMMEL-CodexOrphanSweep /enable')
   } elseif ($sweepArmedNow) {
     if ($SweepReassertAttempted -and $SweepReassertOk) {
       $lines.Add('[sweep]    OK - hourly repetition (PT1H) was missing; re-asserted this run')
@@ -317,12 +327,14 @@ $RegisterHint = "Register-ScheduledTask -TaskName 'HIMMEL-BootPreflight' -Trigge
 # --- 1. orphan-sweep arm: check + belt-and-suspenders re-assert ---
 $SweepTaskName = 'HIMMEL-CodexOrphanSweep'
 $sweepTaskFound = $false
+$sweepTaskEnabled = $true
 $sweepTriggers = @()
 $sweepReassertAttempted = $false
 $sweepReassertOk = $false
 try {
   $sweepTask = Get-ScheduledTask -TaskName $SweepTaskName -ErrorAction Stop
   $sweepTaskFound = $true
+  $sweepTaskEnabled = [bool]$sweepTask.Enabled
   $sweepTriggers = @($sweepTask.Triggers | ForEach-Object {
     New-SweepTriggerDescriptor -Interval ([string]$_.Repetition.Interval) `
       -Duration ([string]$_.Repetition.Duration) `
@@ -409,7 +421,8 @@ try {
 # --- assemble the report ---
 $report = $null
 try {
-  $report = Get-ReadinessReport -SweepTaskFound $sweepTaskFound -SweepTriggers $sweepTriggers `
+  $report = Get-ReadinessReport -SweepTaskFound $sweepTaskFound -SweepTaskEnabled $sweepTaskEnabled `
+    -SweepTriggers $sweepTriggers `
     -SweepReassertAttempted $sweepReassertAttempted -SweepReassertOk $sweepReassertOk `
     -GatewayHttpCode $gatewayHttpCode -EnvText $envText
 } catch {

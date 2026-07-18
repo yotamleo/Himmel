@@ -528,6 +528,22 @@ if ($timedOut -or $waitFailed) {
 } else {
   $code = 1
   try { $code = $proc.ExitCode } catch { $code = 1 }
+  if ($code -ne 0) {
+    # CR fix (MAJOR): a nonzero $code used to hit the SAME clear-and-release
+    # path as success below -- KILL_ON_JOB_CLOSE got stripped even though the
+    # wrapped command FAILED, so any descendant it left running (a partial
+    # install's background helper, a daemon spawned before the failure) was
+    # released to keep running unsupervised instead of being torn down along
+    # with the failed install. A failed primitive gets no benefit of the
+    # doubt: leave KILL_ON_JOB_CLOSE set (never call Clear-JobKillOnClose
+    # here) so CloseHandle terminates every surviving descendant, exactly
+    # like the timeout branch above -- then propagate the wrapped command's
+    # ORIGINAL failure exit code unchanged (never a cleanup sentinel; there
+    # is nothing to report here that CloseHandle itself could fail at, since
+    # the limit flag is left untouched).
+    [HimmelCtl.JobNative]::CloseHandle($hJob) | Out-Null
+    exit $code
+  }
   # CR fix (codex round 17 -- FAIL-OPEN, same class as round 16's
   # WaitForExit find): clearing KILL_ON_JOB_CLOSE is what lets a legitimate
   # background descendant (a service/daemon an install deliberately
@@ -544,7 +560,9 @@ if ($timedOut -or $waitFailed) {
   # kill-on-close all the same), so the honest move is to REPORT it: a
   # distinct sentinel, fail-closed, exactly like every other exceptional
   # path in this file. A successful wrapped command whose tree we may have
-  # just killed is NOT a success.
+  # just killed is NOT a success. This clear-and-release path is reached
+  # ONLY for a genuinely SUCCESSFUL wrapped command ($code -eq 0) -- see the
+  # CR fix above for why a FAILED command takes the opposite branch instead.
   $cleared = Clear-JobKillOnClose -HJob $hJob
   [HimmelCtl.JobNative]::CloseHandle($hJob) | Out-Null
   if (-not $cleared) { exit $CLEANUP_FAILED_EXIT_CODE }

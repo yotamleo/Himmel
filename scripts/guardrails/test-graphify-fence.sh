@@ -552,7 +552,7 @@ run_fence deny no "$LUNA" ".. traversal Clippings/../../salus -> deny" \
 run_fence allow yes "$LUNA" ".. traversal out of Clippings -> luna-personal allow+ledger (HIMMEL-1122)" \
     "graphify update Clippings/../journal-2026.md --backend glm" GRAPHIFY_CLIPPINGS_GLM_OK=1
 
-# (11) uppercase --backend GLM is lower-cased -> zai-glm -> luna-personal deny
+# (11) uppercase --backend GLM is lower-cased -> zai-glm -> luna-personal allow+ledger (HIMMEL-1122)
 run_fence allow yes "$HIMMEL" "uppercase --backend GLM -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend GLM"
 

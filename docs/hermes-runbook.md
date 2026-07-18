@@ -101,8 +101,9 @@ working setup — the CR-critic and junior tiers need nothing further.
 
 ### 4. (Optional, alpha) add the `himmel_agent` main tier
 
-The full-control orchestrator tier is **experimental** — its guard parity isn't
-complete. It is not required for the CR-critic or junior tiers. If you want it,
+The full-control orchestrator tier is **experimental** — its `parity_guard`
+tests green for the guard-parity set, but it still has less live mileage than
+the Claude/himmel path. It is not required for the CR-critic or junior tiers. If you want it,
 provision the additive profile per [Profiles](#profiles-your-default--himmels-himmel_agent-main-tier-himmel-557)
 below.
 

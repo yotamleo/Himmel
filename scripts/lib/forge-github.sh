@@ -69,20 +69,27 @@ _gh_is_cosmetic_branch_delete() {
 }
 
 # squash-merge + delete source branch; plain first, --admin only when
-# GH_ADMIN_MERGE_OK=1 (HIMMEL-224). args: NUMBER [VETTED_HEAD_SHA]
-# rc 0 = merged (incl. cosmetic branch-delete fail); rc 4 = real failure.
+# GH_ADMIN_MERGE_OK=1 (HIMMEL-224). args: NUMBER VETTED_HEAD_SHA.
+# rc 0 = merged (incl. cosmetic branch-delete fail); rc 4 = real failure
+# (incl. a missing vetted head — refused below, never merged unbound).
 #
 # VETTED_HEAD_SHA closes the HIMMEL-1058 TOCTOU window: the gates certify
 # headRefOid at check time, but a push landing between that capture and this
 # merge would slip an UNVETTED commit into main. `--match-head-commit` makes
 # GitHub reject the merge unless the head still is the SHA we vetted, so the
-# race fails loudly instead of merging unreviewed code. Optional — callers that
-# have no vetted SHA keep the old unbound behavior.
+# race fails loudly instead of merging unreviewed code. The binding is now
+# MANDATORY (CodeRabbit #470): an empty head is REFUSED here rather than merged
+# unbound. The sole orchestrator caller (pr-merge.sh) already exits 7 on an
+# unreadable head, so this only ever fires as a backstop against a future
+# caller that forgets to pass the vetted SHA.
 gh_forge_pr_merge() {
     local number="$1" head="${2:-}"
     local out
-    local -a match=()
-    [ -n "$head" ] && match=(--match-head-commit "$head")
+    if [ -z "$head" ]; then
+        echo "ERR forge(github): refusing to merge PR #$number without a vetted head SHA — the HIMMEL-1058 head binding is mandatory (CodeRabbit #470)." >&2
+        return 4
+    fi
+    local -a match=(--match-head-commit "$head")
     if out=$(_gh pr merge "$number" --squash --delete-branch "${match[@]+"${match[@]}"}" 2>&1); then
         echo "forge(github): merged PR #$number${head:+ (bound to vetted head $head)}"
         return 0

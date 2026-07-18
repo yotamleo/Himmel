@@ -95,14 +95,14 @@ Check 'neither present -> DEEPSEEK false' ($keysNeither.DEEPSEEK_API_KEY -eq $fa
 Check 'neither present -> ZAI false' ($keysNeither.ZAI_API_KEY -eq $false)
 
 # --- Get-ReadinessReport: all-ready -> no alert -------------------------------
-$readyReport = Get-ReadinessReport -SweepTaskFound $true -SweepTriggers @(Trig 'PT1H') `
+$readyReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $true -SweepTriggers @(Trig 'PT1H') `
   -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '200' -EnvText $envBoth
 Check 'all-ready report: Ready is true' ($readyReport.Ready -eq $true)
 Check 'all-ready report: AlertText is null (no-alert contract)' ($null -eq $readyReport.AlertText)
 Check 'all-ready report: no problems recorded' (@($readyReport.Problems).Count -eq 0)
 
 # --- Get-ReadinessReport: gateway problem -> alert with remediation text ----
-$gatewayProblemReport = Get-ReadinessReport -SweepTaskFound $true -SweepTriggers @(Trig 'PT1H') `
+$gatewayProblemReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $true -SweepTriggers @(Trig 'PT1H') `
   -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '401' -EnvText $envBoth
 Check 'gateway problem: Ready is false' ($gatewayProblemReport.Ready -eq $false)
 Check 'gateway problem: AlertText present' (-not [string]::IsNullOrEmpty($gatewayProblemReport.AlertText))
@@ -111,25 +111,25 @@ Check 'gateway 401: alert names the -Login remediation' ($gatewayProblemReport.A
 # --- Get-ReadinessReport: gateway 000 -> connectivity remediation, NOT -Login
 # (CR round 2, HIMMEL-1163: 000 means the proxy is unreachable, not that a
 # credential was rejected - telling the operator to re-login is misleading).
-$gatewayDownReport = Get-ReadinessReport -SweepTaskFound $true -SweepTriggers @(Trig 'PT1H') `
+$gatewayDownReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $true -SweepTriggers @(Trig 'PT1H') `
   -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '000' -EnvText $envBoth
 Check 'gateway 000: Ready is false' ($gatewayDownReport.Ready -eq $false)
 Check 'gateway 000: alert names connectivity, not -Login' (($gatewayDownReport.AlertText -match 'gateway unavailable') -and ($gatewayDownReport.AlertText -notmatch 'cli-proxy-lane\.ps1 -Login'))
 
 # --- Get-ReadinessReport: gateway other code -> generic "inspect" remediation
-$gatewayOtherReport = Get-ReadinessReport -SweepTaskFound $true -SweepTriggers @(Trig 'PT1H') `
+$gatewayOtherReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $true -SweepTriggers @(Trig 'PT1H') `
   -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '503' -EnvText $envBoth
 Check 'gateway 503: Ready is false' ($gatewayOtherReport.Ready -eq $false)
 Check 'gateway 503: alert names the code, not -Login' (($gatewayOtherReport.AlertText -match 'HTTP 503') -and ($gatewayOtherReport.AlertText -notmatch 'cli-proxy-lane\.ps1 -Login'))
 
 # --- Get-ReadinessReport: missing key -> alert with remediation text --------
-$keyProblemReport = Get-ReadinessReport -SweepTaskFound $true -SweepTriggers @(Trig 'PT1H') `
+$keyProblemReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $true -SweepTriggers @(Trig 'PT1H') `
   -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '200' -EnvText $envOneMissing
 Check 'missing key: Ready is false' ($keyProblemReport.Ready -eq $false)
 Check 'missing key: alert names ZAI_API_KEY' ($keyProblemReport.AlertText -match 'ZAI_API_KEY')
 
 # --- Get-ReadinessReport: sweep not armed, no reassert attempted -------------
-$sweepProblemReport = Get-ReadinessReport -SweepTaskFound $true -SweepTriggers @(Trig '') `
+$sweepProblemReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $true -SweepTriggers @(Trig '') `
   -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '200' -EnvText $envBoth
 Check 'sweep not armed: Ready is false' ($sweepProblemReport.Ready -eq $false)
 Check 'sweep not armed: alert names HIMMEL-CodexOrphanSweep' ($sweepProblemReport.AlertText -match 'HIMMEL-CodexOrphanSweep')
@@ -138,19 +138,28 @@ Check 'sweep not armed: alert names HIMMEL-CodexOrphanSweep' ($sweepProblemRepor
 # End-to-end proof of the lifetime finding (HIMMEL-1163 CR): an interval-only
 # check would call this "armed", but the hourly repeats stop when the window
 # elapses, so the report must flag it and the reassert path must not be skipped.
-$sweepFiniteReport = Get-ReadinessReport -SweepTaskFound $true -SweepTriggers @(Trig 'PT1H' 'PT4H') `
+$sweepFiniteReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $true -SweepTriggers @(Trig 'PT1H' 'PT4H') `
   -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '200' -EnvText $envBoth
 Check 'sweep PT1H+finite duration: Ready is false' ($sweepFiniteReport.Ready -eq $false)
 Check 'sweep PT1H+finite duration: alert names HIMMEL-CodexOrphanSweep' ($sweepFiniteReport.AlertText -match 'HIMMEL-CodexOrphanSweep')
 
+# --- Get-ReadinessReport: durably-hourly trigger but task DISABLED -> NOT ready
+# A disabled task never fires regardless of how healthy its trigger is - an
+# interval/lifetime-only check would call this "armed", so the enabled/disabled
+# state must be its own PROBLEM even with a durable PT1H trigger present.
+$sweepDisabledReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $false -SweepTriggers @(Trig 'PT1H') `
+  -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '200' -EnvText $envBoth
+Check 'sweep disabled task: Ready is false' ($sweepDisabledReport.Ready -eq $false)
+Check 'sweep disabled task: alert recommends enabling' ($sweepDisabledReport.AlertText -match 'enable')
+
 # --- Get-ReadinessReport: sweep not armed but successfully re-asserted THIS run
-$sweepReassertedReport = Get-ReadinessReport -SweepTaskFound $true -SweepTriggers @(Trig 'PT1H') `
+$sweepReassertedReport = Get-ReadinessReport -SweepTaskFound $true -SweepTaskEnabled $true -SweepTriggers @(Trig 'PT1H') `
   -SweepReassertAttempted $true -SweepReassertOk $true -GatewayHttpCode '200' -EnvText $envBoth
 Check 're-asserted this run: Ready is true (self-healed)' ($sweepReassertedReport.Ready -eq $true)
 Check 're-asserted this run: no alert' ($null -eq $sweepReassertedReport.AlertText)
 
 # --- Get-ReadinessReport: sweep task not found at all ------------------------
-$sweepMissingReport = Get-ReadinessReport -SweepTaskFound $false -SweepTriggers @() `
+$sweepMissingReport = Get-ReadinessReport -SweepTaskFound $false -SweepTaskEnabled $true -SweepTriggers @() `
   -SweepReassertAttempted $false -SweepReassertOk $false -GatewayHttpCode '200' -EnvText $envBoth
 Check 'sweep task not found: Ready is false' ($sweepMissingReport.Ready -eq $false)
 Check 'sweep task not found: alert names codex-sweep-cadence.sh arm' ($sweepMissingReport.AlertText -match 'codex-sweep-cadence\.sh arm')

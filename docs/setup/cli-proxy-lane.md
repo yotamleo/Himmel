@@ -76,7 +76,7 @@ not a blocking outage — re-auth with the DEVICE flow (`-codex-login` plain
 OAuth needs a localhost callback; the device flow does not):
 
 ```shell
-cd ~/.cli-proxy-api && ./cli-proxy-api.exe -codex-device-login
+cd ~/.cli-proxy-api && ./cli-proxy-api.exe -config ./config.yaml -codex-device-login
 ```
 
 After ~2–4 seconds it prints
@@ -89,7 +89,7 @@ URL + code as sensitive authorization material: surface them to the
 operator directly and nowhere else — never into shared logs, chat
 channels, screenshots, or CI output (anyone holding the active code can
 authorize the login). On authorize the process writes
-`~/.cli-proxy-api/codex-<email>-plus.json` ("Codex authentication
+`~/.cli-proxy-api/codex-<email>.json` ("Codex authentication
 successful") and exits 0; re-verify the lane end-to-end (section above).
 
 Detection caveat: the gateway's `/v1/models` endpoint is registry-backed and

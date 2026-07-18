@@ -596,12 +596,35 @@ def _tg_asset_name(group_slug, ref, content_hash=None):
     return f"{group_slug}__{p.name}"
 
 
+_TG_CHUNK_SIZE = 1 << 20  # 1 MiB — bounds memory for large media (videos)
+
+
 def _tg_same_bytes(a, b):
-    """True iff files a and b hold identical content."""
+    """True iff files a and b hold identical content. Streamed in bounded
+    chunks so a large video is never pulled fully into memory."""
     try:
-        return a.read_bytes() == b.read_bytes()
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        with a.open("rb") as fa, b.open("rb") as fb:
+            while True:
+                chunk_a = fa.read(_TG_CHUNK_SIZE)
+                chunk_b = fb.read(_TG_CHUNK_SIZE)
+                if chunk_a != chunk_b:
+                    return False
+                if not chunk_a:
+                    return True
     except OSError:
         return False
+
+
+def _tg_sha256_file(path):
+    """SHA-256 hex digest of a file's contents, read in bounded chunks so a
+    large video is never pulled fully into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(_TG_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _tg_copy_media(refs, export_dir, assets_dir, group_slug, dry_run):
@@ -635,7 +658,7 @@ def _tg_copy_media(refs, export_dir, assets_dir, group_slug, dry_run):
             # same basename, DIFFERENT bytes (Telegram renumbers per export, so a
             # partial re-export can reuse photo_N for other content) -> keep both
             # under a content-hashed name; the note embeds this one, not the stale.
-            digest = hashlib.sha256(resolved.read_bytes()).hexdigest()[:12]
+            digest = _tg_sha256_file(resolved)[:12]
             name = _tg_asset_name(group_slug, ref, digest)
             dest = assets_dir / name
         ref_to_name[ref] = name
@@ -690,6 +713,19 @@ def _tg_month_note(group_name, group_slug, month, entries, assets_dir_rel,
     return "\n".join(lines) + "\n"
 
 
+def _tg_note_signature(text):
+    """The comparable content of a rendered month note: title+day/message
+    text with the frontmatter (carries the `messages:` count) and media
+    embed lines (`![[...]]`, whose name is content-hashed on a byte
+    collision — see `_tg_asset_name`) stripped off. Two renders of the same
+    messages compare equal even if the count metadata or a re-hashed media
+    name differs."""
+    m = re.search(r"^# ", text, re.M)
+    body = text[m.start():] if m else text
+    return "\n".join(line for line in body.splitlines()
+                     if not line.startswith("![["))
+
+
 def _fold_telegram(export_dir, vault_dir, dry_run, group_slug_override=None):
     export_dir, vault_dir = Path(export_dir), Path(vault_dir)
     group_name, msgs = parse_telegram(export_dir)
@@ -721,26 +757,27 @@ def _fold_telegram(export_dir, vault_dir, dry_run, group_slug_override=None):
     report.assets_missing = missing
 
     # monthly notes — idempotent re-import: a re-run overwrites the month note
-    # with THIS export's messages. Guard against a PARTIAL/date-limited re-export
-    # silently shrinking an already-fuller month note (data loss): skip + warn
-    # when the existing note holds MORE messages than this import for that month.
-    # Limitation: Telegram HTML carries no stable message id, so an equal-count
-    # DISJOINT same-month re-export can't be detected — use FULL exports (the
-    # default); to force a replace, delete the month note first.
+    # with THIS export's messages, but only when doing so can't lose data.
+    # Message COUNT alone doesn't prove that: Telegram HTML carries no stable
+    # message id, so an equal-or-larger-count re-export could still be a
+    # different/disjoint set for that month. Instead compare rendered content:
+    # skip + warn unless the incoming render reproduces the existing note
+    # verbatim (identical re-import) or as a prefix (a fuller, later export) —
+    # to force a replace, delete the month note first.
     written = 0
     for month, entries in sorted(by_month.items()):
         dest = group_dir / f"{month}.md"
-        if dest.exists():  # shrink-guard runs in dry-run too, so the reported
-            m = re.search(r'^messages:\s*(\d+)\s*$',  # count matches a real run
-                          dest.read_text(encoding="utf-8"), re.M)
-            if m and int(m.group(1)) > len(entries):
-                print(f"warning: {dest.relative_to(vault_dir)} has {m.group(1)} "
-                      f"messages > incoming {len(entries)} — skipping to avoid "
-                      f"clobbering a fuller export (delete the note to force)",
-                      file=sys.stderr)
-                continue
         note_text = _tg_month_note(group_name, group_slug, month, entries,
                                    assets_dir_rel, ref_to_name)
+        if dest.exists():  # guard runs in dry-run too, so the reported count
+            existing_sig = _tg_note_signature(dest.read_text(encoding="utf-8"))
+            new_sig = _tg_note_signature(note_text)
+            if not new_sig.startswith(existing_sig):
+                print(f"warning: {dest.relative_to(vault_dir)} holds messages "
+                      f"not reproduced by this import — skipping to avoid "
+                      f"clobbering them (delete the note to force)",
+                      file=sys.stderr)
+                continue
         if not dry_run:
             group_dir.mkdir(parents=True, exist_ok=True)
             dest.write_text(note_text, encoding="utf-8")
@@ -838,6 +875,9 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would happen; write nothing")
     args = parser.parse_args(argv)
+    if args.group_slug is not None and args.provider != "telegram":
+        parser.error("--group-slug is telegram-only "
+                      f"(provider is {args.provider!r})")
 
     export_dir, vault_dir = Path(args.export), Path(args.vault)
     if not export_dir.is_dir():

@@ -509,7 +509,18 @@ function runHardenedSpawn(entry) {
   }
   const timeoutMs = installTimeoutMs();
   const childEnv = Object.assign({}, process.env);
-  delete childEnv.HIMMELCTL_SUDO_PASSWORD;
+  // CR fix (SECURITY, MAJOR): Windows env var names are case-insensitive —
+  // an exact-case `delete childEnv.HIMMELCTL_SUDO_PASSWORD` only removes a
+  // key spelled EXACTLY that way. Object.assign copies process.env's own
+  // keys with whatever casing the underlying environment block actually
+  // carries, so a differently-cased HIMMELCTL_SUDO_PASSWORD would survive
+  // the exact-case delete and leak into the child's env. Scrub every key
+  // that matches case-insensitively instead (a no-op extra check on POSIX,
+  // where case differences are genuinely different variables, so this can
+  // never over-delete an unrelated var there either).
+  for (const key of Object.keys(childEnv)) {
+    if (key.toUpperCase() === 'HIMMELCTL_SUDO_PASSWORD') delete childEnv[key];
+  }
   return process.platform === 'win32'
     ? runHardenedSpawnWin32(entry, timeoutMs, childEnv)
     : runHardenedSpawnPosix(entry, timeoutMs, childEnv);
@@ -797,4 +808,5 @@ function runUnwire(spec) {
 
 module.exports = {
   planInstall, runInstall, unwireCommand, runUnwire, settingsPath, RUNNABLE_INSTALL_TYPES, INSTALL_TARGETS, reverseDependencyOrder,
+  resolveSudoPassword,
 };

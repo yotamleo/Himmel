@@ -206,16 +206,34 @@ echo "ok: caseL a global flag before 'config' (--dry-run config set …) routes 
 # mistaken for the config subcommand. If it misroutes to cmdConfig, cmdConfig
 # rejects the stray '--items' as `config: unknown argument` — assert that
 # symptom is absent (i.e. it reached status, which validates --items itself).
+# CodeRabbit (Minor): the two absence-only greps above are ALSO satisfied by a
+# crash (e.g. cmdStatus's loadManifest() throwing ENOENT because fxM — like
+# every other case's fixture — carries no scripts/install/manifest.json) or
+# any other unrelated parser failure, neither of which proves routing worked.
+# So fxM additionally gets a real manifest.json + a minimal cached install
+# profile (the two things cmdStatus needs to reach ITS OWN --items
+# validation, which runs before 'config' would even need to be a known item
+# id), and the test now captures rcM and asserts the concrete, deterministic
+# diagnostic that validation produces.
 fxM="$work/fixtureM"; build_fixture "$fxM"
-_hM="$work/home-M-$$-$RANDOM"; mkdir -p "$_hM"
+mkdir -p "$fxM/scripts/install"
+cp "$repo_root/scripts/install/manifest.json" "$fxM/scripts/install/manifest.json"
+_hM="$work/home-M-$$-$RANDOM"; mkdir -p "$_hM/.claude/himmel"
+cat > "$_hM/.claude/himmel/install-profile.json" <<'JSON'
+{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"alwaysOn":false}
+JSON
 set +e
 outM=$(HOME="$_hM" HIMMELCTL_REPO_ROOT="$(winpath "$fxM")" \
   "$node_bin" "$wizard" --items config status 2>&1)
+rcM=$?
 set -e
 printf '%s' "$outM" | grep -qF 'config: unknown argument' \
   && fail "caseM: '--items config status' misrouted to cmdConfig (got: $outM)"
 printf '%s' "$outM" | grep -qF 'what would you like to configure' \
   && fail "caseM: '--items config status' wrongly entered the config TUI (got: $outM)"
+[ "$rcM" -eq 2 ] || fail "caseM: '--items config status' should reach cmdStatus's own --items validation and exit 2 (got rc=$rcM): $outM"
+printf '%s' "$outM" | grep -qF 'unknown --items id: config' \
+  || fail "caseM: expected cmdStatus's own diagnostic 'unknown --items id: config' (got: $outM)"
 echo "ok: caseM an --items VALUE of 'config' routes to status, never the config subcommand"
 
 # ── Case F: hooks.improveOnSubmit — not settable/readable via config (rc 2) ──

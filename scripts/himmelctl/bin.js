@@ -2390,25 +2390,45 @@ async function cmdScopeSet(args) {
     }
   }
 
+  // Build the target-scope wire plan ONCE here — planInstall is deterministic
+  // (no spawn, pure computation), so an unrunnable install descriptor (e.g.
+  // an unmapped win32 dep) is known BEFORE Step 3 unwires the old scope,
+  // instead of only surfacing after. Reused as-is by the dry-run preview
+  // below AND by Step 4's runInstall — planInstall is invoked exactly once
+  // per switch.
+  const wirePlan = wireItems.length > 0
+    ? installEngineLib.planInstall(wireItems, {
+        repoRoot: repoRoot(), scope: newScope, profile: targetProfile, targetPath: newBaseTargetPath, env: process.env,
+        vaultPath: expandHome(cachedAnswers.vault && cachedAnswers.vault.path),
+      })
+    : [];
+
   // --dry-run: print the plan (unwire old, wire new, re-key) and exit 0
   // WITHOUT executing or mutating anything. state.json is not saved (the
-  // save below is gated on !args.dryRun).
+  // save below is gated on !args.dryRun). Unrunnable wire-plan entries are
+  // printed same as always — dry-run stays non-fatal even when Step 3 below
+  // would abort a real run.
   if (args.dryRun) {
     for (const item of installEngineLib.reverseDependencyOrder(unwireItems)) {
       console.log(`DRY: unwire ${item.id} (from ${oldScope})`);
     }
-    if (wireItems.length > 0) {
-      const plan = installEngineLib.planInstall(wireItems, {
-        repoRoot: repoRoot(), scope: newScope, profile: targetProfile, targetPath: newBaseTargetPath, env: process.env,
-        vaultPath: expandHome(cachedAnswers.vault && cachedAnswers.vault.path),
-      });
-      for (const p of plan) {
-        if (p.unrunnable) { console.log(`DRY: ${p.id}: ${p.unrunnable}`); continue; }
-        console.log(`DRY: ${p.cmd} ${p.args.join(' ')}`);
-      }
+    for (const p of wirePlan) {
+      if (p.unrunnable) { console.log(`DRY: ${p.id}: ${p.unrunnable}`); continue; }
+      console.log(`DRY: ${p.cmd} ${p.args.join(' ')}`);
     }
     console.log(`DRY: re-key state '${oldTargetKey}' -> '${newTargetKey}'`);
     return 0;
+  }
+
+  // Fail-closed BEFORE any mutation: an unrunnable wire-plan entry (e.g. an
+  // unmapped win32 dep) must abort the switch here, before Step 3 (the first
+  // mutating step) unwires the old scope — not after, when Step 4 would
+  // otherwise discover it with the old scope already torn down.
+  const wirePlanErrors = wirePlan.filter((p) => p.unrunnable);
+  if (wirePlanErrors.length > 0) {
+    for (const p of wirePlanErrors) console.error(`himmelctl: ${p.id}: ${p.unrunnable}`);
+    console.error(`himmelctl: scope switch aborted — the target scope '${newScope}' has ${wirePlanErrors.length} unrunnable item(s); old scope '${oldScope}' was NOT touched.`);
+    return 1;
   }
 
   // Consent granted (--yes or an interactive confirm). The re-keyed state is
@@ -2465,15 +2485,12 @@ async function cmdScopeSet(args) {
   }
 
   // Step 4: WIRE the target scope (toward-enabled). Skipped entirely if an
-  // unwire failure aborted above. Routes through the same planInstall/
-  // runInstall cmdEnsure uses (topological order, coalescing, hardened spawn).
+  // unwire failure aborted above. Reuses `wirePlan` (built + validated above,
+  // before Step 3) via the same runInstall cmdEnsure uses (topological order,
+  // coalescing, hardened spawn) — planInstall is not called again here.
   let failed = [];
   if (wireItems.length > 0) {
-    const plan = installEngineLib.planInstall(wireItems, {
-      repoRoot: repoRoot(), scope: newScope, profile: targetProfile, targetPath: newBaseTargetPath, env: process.env,
-      vaultPath: expandHome(cachedAnswers.vault && cachedAnswers.vault.path),
-    });
-    const result = installEngineLib.runInstall(plan, { dryRun: false });
+    const result = installEngineLib.runInstall(wirePlan, { dryRun: false });
     failed = result.failed;
   }
 
@@ -2913,6 +2930,11 @@ function cmdConfigSet(pathParts, value, args) {
 async function cmdConfigInteractive(args) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   const ask = makeAsk(rl);
+  // Track the highest failure across the session — a failed .env/lane/plugin
+  // mutation must not let the interactive session still exit 0 once the
+  // operator quits. The loop keeps running (a mid-session setter failure
+  // shouldn't abort the whole TUI), but the process exit reflects it.
+  let exitCode = 0;
   for (;;) {
     const category = await askEnum(
       ask,
@@ -2924,7 +2946,8 @@ async function cmdConfigInteractive(args) {
       const leg = await askEnum(ask, `? which leg? [${INITIATIVE_LEGS.join('|')}] (blank to cancel)\n> `, INITIATIVE_LEGS, '');
       if (!leg) continue;
       const onOff = await askEnum(ask, '? on or off? [on|off] (default: on)\n> ', ['on', 'off'], 'on');
-      cmdConfigSetInitiative(leg, onOff, args);
+      const rc = cmdConfigSetInitiative(leg, onOff, args);
+      if (rc !== 0) exitCode = Math.max(exitCode, rc);
       continue;
     }
     if (category === 'lanes') {
@@ -2935,7 +2958,8 @@ async function cmdConfigInteractive(args) {
       const laneId = await askPath(ask, prompt, '');
       if (!laneId) continue;
       const onOff = await askEnum(ask, '? on or off? [on|off] (default: on)\n> ', ['on', 'off'], 'on');
-      cmdConfigSetLane(laneId, onOff, args);
+      const rc = cmdConfigSetLane(laneId, onOff, args);
+      if (rc !== 0) exitCode = Math.max(exitCode, rc);
       continue;
     }
     if (category === 'hooks') {
@@ -2946,12 +2970,13 @@ async function cmdConfigInteractive(args) {
       );
       if (!target) continue;
       const onOff = await askEnum(ask, '? on or off? [on|off] (default: on)\n> ', ['on', 'off'], 'on');
-      cmdConfigSetHook(target.split('.'), onOff, args);
+      const rc = cmdConfigSetHook(target.split('.'), onOff, args);
+      if (rc !== 0) exitCode = Math.max(exitCode, rc);
       continue;
     }
   }
   rl.close();
-  return 0;
+  return exitCode;
 }
 
 // `himmelctl config [get <path> | set <path> <value>]` — no action -> the

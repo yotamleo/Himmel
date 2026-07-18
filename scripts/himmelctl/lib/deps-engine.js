@@ -34,6 +34,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { which } = require('./helpers.js');
+const { resolveSudoPassword } = require('./install-engine.js');
 
 // Read scripts/install/deps.json under repoRoot and return its deps array.
 // CR fix: a MISSING deps.json (fs ENOENT) is distinguished from a MALFORMED
@@ -234,12 +235,30 @@ function depStatus(dep, ctx) {
 // `ensure_tools()` (which SKIPS an already-present tool by design — it's an
 // "ensure present" primitive, not an upgrade one), upgrading git/jq/python3
 // needs to re-run the package manager's install command even when the tool
-// is already there. `sudo` is applied unconditionally on linux (mirrors
-// ensure-tools.sh's own best-effort posture — a missing sudo just fails the
-// spawn, surfaced as a normal failed-entry reason by runInstall).
-const UPGRADE_APT_DNF_BREW_SNIPPET = 'if command -v apt-get >/dev/null 2>&1; then '
-  + 'sudo apt-get update >/dev/null 2>&1 || true; sudo apt-get install -y "$1"; '
-  + 'elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y "$1"; '
+// is already there.
+// CR fix (SECURITY, MAJOR): `sudo` used to be invoked bare here, ignoring
+// the configured HIMMELCTL_SUDO_PASSWORD entirely — a non-interactive
+// `deps upgrade --yes` on linux would either prompt (hanging with no tty
+// until sudo's own timeout) or just fail, instead of using the SAME
+// hardened credential path install-engine.js's own linux 'dep' buildEntry()
+// case already uses. Two variants now exist: the _SUDO_PASSWORD one reads
+// the password via `sudo -S -p ''` from stdin (routed through
+// runHardenedSpawn's `needsSudoPassword` marker, below); the
+// _NO_SUDO_PASSWORD one uses `sudo -n` (fails fast rather than hanging).
+// Both keep the brew branch (macOS, no sudo involved) and the
+// "no supported package manager" branch unchanged. buildDepEntry (below)
+// picks between them based on whether resolveSudoPassword(ctx.repoRoot)
+// finds a configured value — never on which branch the bash snippet will
+// actually take at runtime (that's decided by `command -v`, not knowable
+// here).
+const UPGRADE_APT_DNF_BREW_SUDO_PASSWORD_SNIPPET = 'if command -v apt-get >/dev/null 2>&1; then '
+  + 'sudo -S -p \'\' apt-get update >/dev/null 2>&1 || true; sudo -S -p \'\' apt-get install -y "$1"; '
+  + 'elif command -v dnf >/dev/null 2>&1; then sudo -S -p \'\' dnf install -y "$1"; '
+  + 'elif command -v brew >/dev/null 2>&1; then brew upgrade "$1" 2>/dev/null || brew install "$1"; '
+  + 'else echo "no supported package manager for upgrade of $1" >&2; exit 1; fi';
+const UPGRADE_APT_DNF_BREW_NO_SUDO_PASSWORD_SNIPPET = 'if command -v apt-get >/dev/null 2>&1; then '
+  + 'sudo -n apt-get update >/dev/null 2>&1 || true; sudo -n apt-get install -y "$1"; '
+  + 'elif command -v dnf >/dev/null 2>&1; then sudo -n dnf install -y "$1"; '
   + 'elif command -v brew >/dev/null 2>&1; then brew upgrade "$1" 2>/dev/null || brew install "$1"; '
   + 'else echo "no supported package manager for upgrade of $1" >&2; exit 1; fi';
 
@@ -272,7 +291,20 @@ function buildDepEntry(dep, ctx, opts) {
       if (!upgrade) {
         return { id: dep.id, type: 'dep', cmd: 'bash', args: ['-c', '. "$1" && ensure_tools "$2"', 'himmel-dep', ensureToolsPath, dep.cmd] };
       }
-      return { id: dep.id, type: 'dep', cmd: 'bash', args: ['-c', UPGRADE_APT_DNF_BREW_SNIPPET, 'himmel-dep', dep.cmd] };
+      // CR fix (SECURITY, MAJOR): route through the SAME hardened sudo
+      // credential path install-engine.js's own linux 'dep' buildEntry()
+      // case uses — see the snippet constants' own header above.
+      if (resolveSudoPassword(ctx.repoRoot)) {
+        return {
+          id: dep.id,
+          type: 'dep',
+          cmd: 'bash',
+          args: ['-c', UPGRADE_APT_DNF_BREW_SUDO_PASSWORD_SNIPPET, 'himmel-dep', dep.cmd],
+          needsSudoPassword: true,
+          repoRoot: ctx.repoRoot,
+        };
+      }
+      return { id: dep.id, type: 'dep', cmd: 'bash', args: ['-c', UPGRADE_APT_DNF_BREW_NO_SUDO_PASSWORD_SNIPPET, 'himmel-dep', dep.cmd] };
     }
     case 'brew': {
       const line = upgrade ? 'brew upgrade "$1" 2>/dev/null || brew install "$1"' : 'brew install "$1"';
