@@ -291,6 +291,14 @@ bun install
 
 Pinned to `playwright@1.58.0`. Bun runtime preferred; `node` (>=20) also works.
 
+`node_modules/` is gitignored ("source files only ship in git"), so a
+git-derived copy of this directory (notably the Claude plugin cache
+install) never has it done automatically — `ensure-deps.sh` is the
+preflight runbooks call instead of assuming this one-time step already
+happened (HIMMEL-1135): fast no-op if deps are present, installs them
+(without playwright's browser binaries) if not, non-zero + a remediation
+message if it can't.
+
 ## Auth (per-service, ~quarterly refresh)
 
 X and YouTube both need an interactive login to capture cookies. Run once
@@ -598,7 +606,7 @@ currently wired, not a fixed guarantee.
 
 ```json
 {
-  "whitelist": ["examplehandle"],
+  "whitelist": ["cyrilxbt"],
   "exclude": []
 }
 ```
@@ -641,6 +649,7 @@ bash ../tests/test-playwright-crawl.sh
 bash ../tests/test-dedup-sweep.sh   # LUNA-37
 bash ../tests/test-component-scan.sh   # LUNA-57
 for t in ../tests/test-follow-*.sh; do bash "$t" || exit 1; done   # HIMMEL-660
+bash ../tests/test-ensure-deps.sh   # HIMMEL-1135
 ```
 
 Verifies: scripts pass `node --check`, package.json declares the right

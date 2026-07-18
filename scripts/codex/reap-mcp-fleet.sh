@@ -172,7 +172,7 @@ _reap_main() {
             --root-pid=*) _root_pid="${1#--root-pid=}"; shift ;;
             --started-at) [ $# -ge 2 ] || { echo "reap-mcp-fleet: missing value for $1" >&2; return 1; }; _started_at="$2"; shift 2 ;;
             --started-at=*) _started_at="${1#--started-at=}"; shift ;;
-            -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
+            -h|--help) sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; return 0 ;;
             *) echo "ERR: unknown argument: $1" >&2; return 1 ;;
         esac
     done

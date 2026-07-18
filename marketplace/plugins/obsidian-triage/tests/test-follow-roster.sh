@@ -30,7 +30,7 @@ lib_url_early="$(node -e 'console.log(require("url").pathToFileURL(process.argv[
 out="$(node -e '
 import(process.argv[1]).then(m => {
   const cases = [["@Theo","theo"],["https://x.com/_avichawla","_avichawla"],
-                 ["twitter.com/bcherny/","bcherny"],["ExampleHandle","examplehandle"]];
+                 ["twitter.com/bcherny/","bcherny"],["CyrilXBT","cyrilxbt"]];
   let ok=1; for (const [i,e] of cases) if (m.normalizeHandle(i)!==e){ok=0;console.log("MISS",i,m.normalizeHandle(i))}
   console.log(ok?"NORM_OK":"NORM_FAIL");
 });' "$lib_url_early" 2>&1)"

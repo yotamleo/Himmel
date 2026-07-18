@@ -67,7 +67,17 @@ case "$verb" in
         if printf ' %s ' "$@" | grep -q 'headRefOid'; then
             # STUB_CR_BLOCK=1 arms the CR gate; STUB_CI_BLOCK=1 arms the CI gate
             # (both need parseable metadata to resolve the head SHA).
-            if [ "${STUB_CR_BLOCK:-0}" = "1" ] || [ "${STUB_CI_BLOCK:-0}" = "1" ]; then
+            # HIMMEL-1058: pr-merge reads the head SHA to bind the merge to it,
+            # via `pr view <n> --json headRefOid --jq .headRefOid` — which on
+            # real gh prints the BARE SHA, not the JSON object. The gate's
+            # metadata call (--json number,headRefOid,url, no --jq) still gets
+            # the object. Distinguish on --jq.
+            if printf ' %s ' "$@" | grep -q -- '--jq'; then
+                # STUB_HEAD_UNREADABLE=1 fails ONLY this read, exercising the
+                # refuse-rather-than-merge-unbound path.
+                [ "${STUB_HEAD_UNREADABLE:-0}" = "1" ] && { echo ""; exit 0; }
+                echo "abc123"
+            elif [ "${STUB_CR_BLOCK:-0}" = "1" ] || [ "${STUB_CI_BLOCK:-0}" = "1" ] || [ "${STUB_ALL_GREEN:-0}" = "1" ]; then
                 echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}'
             else
                 echo "${STUB_VIEW_MERGEABLE:-MERGEABLE}"
@@ -113,25 +123,37 @@ case "$verb" in
         # (resolved coderabbit threads) so the CI gate is reached; otherwise one
         # unresolved coderabbitai thread arms the CR block (fixture from
         # test-cr-merge-gate.sh).
-        if [ "${STUB_CI_BLOCK:-0}" = "1" ]; then
+        if [ "${STUB_CI_BLOCK:-0}" = "1" ] || [ "${STUB_ALL_GREEN:-0}" = "1" ]; then
             echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}'
         else
             echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}'
         fi
         ;;
     "api repos"*)
-        # check-runs vs combined-status, distinguished by the URL tail. The CR
-        # gate queries check-runs (CodeRabbit only); the CI gate queries both.
+        # check-runs vs statuses, distinguished by the URL tail. Match
+        # 'statuses' FIRST — '/status' is a prefix of '/statuses' and would
+        # otherwise swallow it.
         # STUB_CI_BLOCK=1 returns a FAILED non-CodeRabbit check-run so the CI
         # gate blocks while the CR gate still passes.
         if printf ' %s ' "$@" | grep -q 'check-runs'; then
             if [ "${STUB_CI_BLOCK:-0}" = "1" ]; then
-                echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"},{"name":"tests","status":"completed","conclusion":"failure"}]}'
+                echo '{"check_runs":[{"name":"tests","status":"completed","conclusion":"failure"}]}'
             else
-                echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"}]}'
+                echo '{"check_runs":[]}'
             fi
-        elif printf ' %s ' "$@" | grep -q '/status'; then
-            echo '{"state":"success","total_count":1,"statuses":[{"context":"ci","state":"success"}]}'
+        elif printf ' %s ' "$@" | grep -q 'statuses'; then
+            # CodeRabbit's real shape: a commit STATUS with creator identity
+            # (HIMMEL-1072). The CR gate requires it PRESENT + success on the
+            # head; the CI gate excludes it and reads the rest.
+            # Under STUB_CI_BLOCK the non-CodeRabbit `ci` status goes red too, so
+            # the fixture describes ONE coherent world rather than a red check-run
+            # beside a green status (coderabbit-9). It does not change any verdict
+            # — ci-green-gate blocks on the red check-run in step 1 and returns
+            # before it ever queries statuses — but a self-contradicting fixture
+            # is a trap for the next reader.
+            ci_state="success"
+            [ "${STUB_CI_BLOCK:-0}" = "1" ] && ci_state="failure"
+            printf '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}},{"context":"ci","state":"%s","created_at":"2026-07-16T19:10:05Z","creator":{"id":1,"login":"ci","type":"Bot"}}]\n' "$ci_state"
         else
             echo '{}'
         fi
@@ -301,6 +323,49 @@ if STUB_CI_BLOCK=1 \
     run_case "handover/x-slug" 6 "CI-gate block exits 6 before poll"; then
     assert_log_lacks "pr merge" "CI-gate block does not attempt merge"
     assert_err_has    "CI gate" "CI-gate block reports CI gate on stderr"
+fi
+
+# --- HIMMEL-1058: the merge is BOUND to the vetted head SHA ---
+# STUB_ALL_GREEN=1: metadata resolves, threads are resolved, CodeRabbit's status
+# is success, CI is green — so both gates pass and the merge actually runs. The
+# TOCTOU fix is only real if `--match-head-commit <vetted sha>` reaches gh: a
+# push landing between the gates and the merge must be REJECTED by GitHub rather
+# than silently merged unvetted.
+if STUB_ALL_GREEN=1 \
+    run_case "handover/x-slug" 0 "all-green merges"; then
+    # The flag must ride the SAME `pr merge` invocation (coderabbit-12) — an
+    # independent "log contains --match-head-commit" check would also pass if the
+    # flag appeared on some other call, which would bind nothing.
+    if grep -E '^pr merge .*--match-head-commit abc123' "$LAST_GH_LOG" >/dev/null; then
+        pass
+    else
+        fail "merge call itself carries --match-head-commit abc123 (log: $(cat "$LAST_GH_LOG"))"
+    fi
+    # The head must be READ before the gates run, or the value bound is not the
+    # one the gates saw-or-newer (the whole HIMMEL-1058 ordering argument).
+    head_ln=$(grep -n -- '--jq .headRefOid' "$LAST_GH_LOG" | head -1 | cut -d: -f1)
+    # The gate's FIRST call is its metadata read (`pr view --json
+    # number,headRefOid,url`), not the graphql/api calls that follow — matching
+    # only the latter would let the head read slip behind the gate's own first
+    # operation and still pass (coderabbit-16). Both are `pr view` lines; the
+    # head read is the one carrying --jq.
+    gate_ln=$(grep -n 'pr view .*--json number,headRefOid,url\|api graphql\|api repos' "$LAST_GH_LOG" | head -1 | cut -d: -f1)
+    if [ -n "$head_ln" ] && { [ -z "$gate_ln" ] || [ "$head_ln" -lt "$gate_ln" ]; }; then
+        pass
+    else
+        fail "head SHA is read before the first gate call (head@${head_ln:-none} gate@${gate_ln:-none})"
+    fi
+fi
+
+# A head SHA that cannot be read means the merge cannot be bound — refuse (7)
+# rather than fall back to an unbound merge.
+if STUB_ALL_GREEN=1 STUB_HEAD_UNREADABLE=1 \
+    run_case "handover/x-slug" 7 "unreadable head refuses to merge unbound"; then
+    assert_log_lacks "pr merge" "unbound merge is never attempted"
+    # It refuses BEFORE spending any gate call — the bind is a precondition, not
+    # an afterthought (coderabbit-12).
+    assert_log_lacks "api graphql" "unreadable head runs no CR gate"
+    assert_log_lacks "api repos"   "unreadable head runs no CI gate"
 fi
 
 # --- summary ---

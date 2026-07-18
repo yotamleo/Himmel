@@ -277,9 +277,13 @@ node scripts/agents-md/generate.mjs --check
 `config.toml` registers the himmel marketplace + `handover@himmel`,
 `obsidian-triage@himmel`, `telegram-himmel@himmel` (enabled). A few **external**
 plugins' `hooks.json` (warp, hookify, ralph-loop, security-guidance) carry a
-top-level `description` key that Codex's strict parser rejects ("unknown field
-description") — Codex skips just those hooks and runs normally. No himmel-owned
-plugin ships that shape. **Sanitize** (supersedes the 2026-06-20 "accept",
+top-level `description` key that Codex **before `rust-v0.143.0`** rejects
+("unknown field description") — Codex skips just those hooks and runs normally
+(per-plugin isolation, verified HIMMEL-1104). No himmel-owned plugin ships that
+shape. **Fixed upstream:** codex PR #30229 added `description` to the `HooksFile`
+schema, shipping in **`rust-v0.143.0`** — on that version or newer the key is
+accepted and no sanitizing is needed (HIMMEL-1104; removal of the automatic
+phase is HIMMEL-1114). **Sanitize** (supersedes the 2026-06-20 "accept",
 operator decision 2026-06-30, HIMMEL-651): `scripts/codex/sanitize-plugin-hooks.{sh,ps1}`
 strips the top-level `description` from every `hooks.json` under
 `~/.codex/plugins/cache/` (idempotent; re-run after a plugin update re-adds the

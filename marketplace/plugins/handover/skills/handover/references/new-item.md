@@ -1,6 +1,6 @@
 # Handover — `new-epic` / `new-task` / `new-standalone`
 
-Load `references/resolution.md` first (shared Target Repo Resolution, Bucket Resolution, ID Derivation, Worktree Gate, Template Placeholders — referenced by section name below).
+Load `references/resolution.md` first (shared Target Repo Resolution, Bucket Resolution, ID Derivation, Worktree Gate, Idempotent Remote Create, Template Placeholders — referenced by section name below).
 
 ## `new-epic <name>`
 
@@ -18,21 +18,20 @@ Creates a new epic in the target repo.
    - If item will be `#N`: the branch stays `<prov-branch>`.
 4. **Derive `next_id`** (only used for the offline-fallback `#N` path) by scanning `<state-root>` (see ID Derivation).
 5. **Jira auto-create gate** — apply `defaults["new_epic.jira_autocreate"]`:
-   - `true` → run `jira create --type Epic --project <jira_project> --title "<name>" --desc "handover epic"`. Capture key on success.
-     **Persist the key the instant it is created, BEFORE step 6's renames** — record `<JIRA-KEY>` in `<state-root>/.pending-new-item.json` (gitignored, same persist-and-reuse pattern `references/hygiene.md` uses for the created-epic ID). Everything after Jira create can fail, and a Jira create is **not** idempotent: without this record a retry files a SECOND epic for the same item.
+   - `true` → follow **Idempotent Remote Create** in `references/resolution.md`: mint the nonce, write the intent record, look up the marker, then create the epic WITH the marker — `jira create --type Epic --project <jira_project> --title "<name>" --desc "handover epic" --labels handover-idem-<nonce>`. Capture the key on success (or, if the marker lookup already found one, adopt that key and skip the create).
 
-     **Key the record on the item's stable creation identity — `(source-bucket, type, slug)` — NEVER on `<prov-branch>`.** The provisional branch name is not an identity: step 6 *renames* it, and the `-<N>` collision suffix means a retry may not even land on the same name. Keyed on the branch, the record becomes undiscoverable the moment the rename succeeds — so a failure in steps 7-10 would find nothing and file a duplicate anyway, defeating the record's whole purpose. `(source-bucket, type, slug)` is fixed at step 1-2 and survives every rename. Store `<prov-branch>` as a *field* of the record (it is what step 6 must finalize), not as its key.
+     **Key the intent record on the item's stable creation identity — `(source-bucket, type, slug)` — NEVER on `<prov-branch>`.** The provisional branch name is not an identity: step 6 *renames* it, and the `-<N>` collision suffix means a retry may not even land on the same name. Keyed on the branch, the record becomes undiscoverable the moment the rename succeeds — so a failure in steps 7-10 would find nothing and file a duplicate anyway, defeating the record's whole purpose. `(source-bucket, type, slug)` is fixed at step 1-2 and survives every rename. Store `<prov-branch>` as a *field* of the record (it is what step 6 must finalize), not as its key. The record is `<state-root>/.pending-new-item/<canonical-identity>.json`.
 
-     **This record exists only for the EXTERNAL-ticket path.** It is needed because `jira create` is a non-idempotent call to a remote system that a retry cannot undo or discover. The `#N` fallback below (no ticket system configured, or Jira skipped/failed) needs no such record: its ID is derived locally and re-derived on retry, so a crash cannot strand a filed ticket. `#N` has its own allocation hazard instead — it is claimed by atomic dir creation with retry, never by trusting the scan (see ID Derivation in `references/resolution.md`).
-
-     **Scope of this contract (HIMMEL-1068).** It closes the common case — a crash anywhere after `jira create` resumes and reuses the key instead of filing a duplicate. It is deliberately NOT a full transactional protocol: it does not journal per-step progress, does not re-persist the branch identity after the step-6 rename (a resume re-derives it), and does not serialize two concurrent runs racing the same `(source-bucket, type, slug)` create. Those are tracked in **HIMMEL-1068** and must land across this flow AND `references/hygiene.md`'s "promote A+B+C to new epic" (same non-idempotent-create gap) together — fixing one surface alone is the half-measure HIMMEL-1058 exists to avoid. Do not extend this contract piecemeal here.
-
-     **On (re-)entry, look up `(source-bucket, type, slug)` first:** on a hit, **reuse that key and skip the create entirely** — resume from the first incomplete post-create step rather than allocating a fresh branch or creating a new epic.
+     **What this contract covers, and what it does not.** The shared protocol closes the common case — a crash anywhere in the create-or-resume window resumes and reuses (or adopts) the key instead of filing a duplicate. It is deliberately NOT a full transactional protocol: it does not serialize two concurrent runs racing the same `(source-bucket, type, slug)` create (cross-process locking is out of scope by decision), and it does not journal per-step progress — that was considered and rejected (see below), because every post-create step is filesystem-observable or idempotent. Do not extend this contract piecemeal here; it lives once, in `references/resolution.md`.
 
      **Resolve the branch by discovery, never by trusting the recorded `<prov-branch>` verbatim.** The record is written before step 6 and is not re-persisted after the rename, so on resume `<prov-branch>` may already be gone — adopting it blindly would target a branch that no longer exists. Decide from what is actually present:
      - `<prov-branch>` exists → the rename has not happened yet: resume at step 6.
      - `<prov-branch>` is absent but `<branch_prefix><JIRA-KEY>-<slug>` (or its `-<N>` variant, matched via the worktree's own metadata) exists → **the rename already completed**: adopt that branch and resume at step 7.
      - Neither exists → stop and report; do **not** create a second epic — the key is recorded, so this is a state to inspect, not to re-create through. **Clear the record only after EVERY post-create step has succeeded** (through step 10's `sync.log` append) — not at step 6: clearing it there would leave a failure in steps 7-10 (dir/templates/`update-status`/`sync.log`) with no key to resume from. Because the clear necessarily follows the `sync.log` append, a crash between the two is possible — so make step 10 **idempotent** (a `sync.log` entry already bearing this `<JIRA-KEY>` + trigger is not appended twice) and treat a resume that finds every post-create step already done as a **clear-only** finalization. Losing the key is the expensive failure (a duplicate Jira item); a redundant clear costs nothing.
+
+     **A resume RE-RUNS the post-create steps (7-10) from the top, each converging if already done** — this is why no per-step progress journal is needed. Step 8 (copy templates) is **OVERWRITE-FROM-TEMPLATE, not skip-if-exists**: a crash mid-write of `brief.md` leaves a truncated file, and skip-if-exists would see it present, skip, and leave the item permanently carrying a half-written brief; overwriting is safe because nothing user-authored can exist during creation. Step 10's idempotence is the existing rule above (a `sync.log` entry already bearing this `<JIRA-KEY>` + trigger is not appended twice).
+
+     **Per-step progress journal — considered and rejected.** Every post-create step is filesystem-observable or idempotent, so a journal recovers nothing discovery cannot; and it would be a second copy of the filesystem's state that can drift — a surface asserting a state it cannot observe. (The full argument lives in the design doc, not here.)
    - `false` → skip Jira; use `#N`.
    - absent → `AskUserQuestion` "Create Jira Epic for this?" with save-default opt-in.
 6. **Resolve dir name:**
@@ -41,8 +40,8 @@ Creates a new epic in the target repo.
      2. `git branch -m <prov-branch> <candidate>`. If it fails because the target ref already exists, advance to the next `-<N>` candidate and repeat from 1 (re-moving the dir to stay in sync). Any other failure: **stop and report the exact half-state** — dir moved, branch still `<prov-branch>` — do not proceed.
 
      (Step 3 named the branch with the key-free provisional slug because the key wasn't known yet — this is the rename step 3 defers to.)
-   - Jira create FAILED → `epics/#N-<slug>/` with `pending_jira_link: true` (keep the provisional `<prov-branch>` branch; a later `/handover jira-link` performs the rename)
-   - Jira skipped (user opted out / no jira_project) → `epics/#N-<slug>/` with `pending_jira_link: false`
+   - Jira create OUTCOME-UNKNOWN (failed / timed out / no key returned — the create WAS issued) → **do NOT auto-file `#N`**: per **Idempotent Remote Create** step 4, keep the intent record, re-query the marker, adopt a hit, else **stop and report**. Only the operator may then choose to proceed offline → `epics/#N-<slug>/` with `pending_jira_link: true` (keep `<prov-branch>`; retain the intent record so a later `/handover jira-link` re-queries the marker and adopts a late-appearing issue rather than creating a second one, then performs the rename).
+   - Jira SKIPPED — no create was ever issued (user opted out / no jira_project) → `epics/#N-<slug>/` with `pending_jira_link: false`. Safe to automate: nothing can exist remotely.
 7. Create dir + `tasks/.gitkeep`.
 8. Copy templates from `<state-root>/_templates/` and fill placeholders (see Template Placeholders + `references/v2-schema.md`). Frontmatter must include the v2 fields; `created` and `updated` set to `date -u +"%Y-%m-%dT%H:%M:%SZ"`.
 9. Run `update-status` (regenerates `status.md` + `roadmap.md` + `tech-debt.md`).
@@ -62,15 +61,15 @@ Creates a task inside an existing epic. `<epic-id>` is `<JIRA-KEY>`, `#N`, or ba
 2. **Slug ambiguity check** — same rule as `new-epic` step 1.
 3. **Bucket selection (time-horizon axis only)** — same rule as `new-epic` step 2's *time-horizon* bucket. The **source bucket is inherited from the parent epic** (a task never lives in a different source bucket than its epic), so the source-bucket sub-prompt does NOT apply to `new-task`.
 4. **Jira auto-create gate** — apply `defaults["new_task.jira_autocreate"]`:
-   - `true` → **first check the parent epic has a real Jira key.** If the parent is offline (`#N` dir / `jira` is `—` / `pending_jira_link: true`), there is no `<epic-jira-key>` to `--parent`, so do NOT emit an unparented or malformed `jira create`: fall back to the offline `#N` task path (`pending_jira_link: true`) and tell the user to `/handover jira-link <epic-id>` first if they want the task Jira-linked. When the parent HAS a key → run `jira create --type Task --parent <epic-jira-key> --title "<name>" --desc "handover task"`. This creates a Jira Task linked to the parent Epic via Epic Link (NOT a Sub-task).
+   - `true` → **first check the parent epic has a real Jira key.** If the parent is offline (`#N` dir / `jira` is `—` / `pending_jira_link: true`), there is no `<epic-jira-key>` to `--parent`, so do NOT emit an unparented or malformed `jira create`: fall back to the offline `#N` task path (`pending_jira_link: true`) and tell the user to `/handover jira-link <epic-id>` first if they want the task Jira-linked. When the parent HAS a key → follow **Idempotent Remote Create** in `references/resolution.md` and run `jira create --type Task --parent <epic-jira-key> --title "<name>" --desc "handover task" --labels handover-idem-<nonce>`. This creates a Jira Task linked to the parent Epic via Epic Link (NOT a Sub-task). The intent record is `<state-root>/.pending-new-item/<canonical-identity>.json`, keyed on `(<canonical-epic-identity>, type, slug)` — the parent epic pins the identity, and a task inherits its epic's source bucket so the bucket is not an independent axis here. **Canonicalize the parent BEFORE keying** (per the shared section's store contract): `<epic-id>` may arrive as `<JIRA-KEY>`, `#N`, or bare numeric for the SAME parent, so keying on the raw argument would make `123`, `#123`, and `HIMMEL-123` three identities with three nonces — and a retry invoked in a different form would miss its own marker and file a duplicate. **This step already resolves the parent** — the offline check above cannot read the parent's `jira` frontmatter without locating its dir — so key on THAT resolved identity, here, before the intent record is written. Do not defer to step 7's dir resolution: it runs *after* this gate, so the canonical identity would not yet exist at the moment the record must be committed.
    - `false` → skip Jira; use `#N`.
    - absent → `AskUserQuestion` "Create Jira Task for this?" with save-default opt-in.
 5. **Derive `next_id`** for the `#N` fallback path.
 6. Resolve epic dir: `<state-root>/{,<bucket>/}epics/<epic-form>-*/` matching `<epic-id>` — in an active bucket layer the epic lives under its resolved source bucket (`<state-root>/<bucket>/epics/...`, per `references/resolution.md` Bucket Resolution); fall back to the flat `<state-root>/epics/...` only when the bucket layer is inactive.
 7. **Resolve dir name** (same rules as `new-epic` step 6):
    - SUCCESS → `tasks/<JIRA-KEY>-<slug>/`
-   - FAILED → `tasks/#N-<slug>/` with `pending_jira_link: true`
-   - SKIPPED → `tasks/#N-<slug>/` with `pending_jira_link: false`
+   - OUTCOME-UNKNOWN (create issued, failed / timed out / no key) → **not automatic**: per **Idempotent Remote Create** step 4 — adopt a marker hit, else stop and report; only an operator choice yields `tasks/#N-<slug>/` with `pending_jira_link: true` (intent record retained for `/handover jira-link`).
+   - SKIPPED (no create issued) → `tasks/#N-<slug>/` with `pending_jira_link: false`
 8. Copy templates filling placeholders (v2 frontmatter):
    - `brief.md` from `task-brief.md`
    - `bugs.md` from `task-bugs.md`
@@ -88,14 +87,14 @@ Creates a task inside an existing epic. `<epic-id>` is `<JIRA-KEY>`, `#N`, or ba
 2. **Bucket selection** — same rule as `new-epic` step 2.
 3. **Worktree gate** — create worktree off latest main (branch naming same rules as `new-epic` step 3).
 4. **Jira auto-create gate** — apply `defaults["new_standalone.jira_autocreate"]`:
-   - `true` → run `jira create --type Story --project <jira_project> --title "<name>" --desc "handover standalone"`. No `--parent`. **Persist the key before step 6's renames and reuse it on re-entry** — identical contract to `new-epic` step 5 (`<state-root>/.pending-new-item.json`), so a failure after the create resumes instead of filing a second Story.
+   - `true` → follow **Idempotent Remote Create** in `references/resolution.md` and run `jira create --type Story --project <jira_project> --title "<name>" --desc "handover standalone" --labels handover-idem-<nonce>`. No `--parent`. The intent record is `<state-root>/.pending-new-item/<canonical-identity>.json`, keyed on `(source-bucket, type, slug)` — the same identity and contract as `new-epic` step 5, so a failure after the create resumes instead of filing a second Story.
    - `false` → skip Jira; use `#N`.
    - absent → `AskUserQuestion` with save-default opt-in.
 5. **Derive `next_id`** for the `#N` fallback path.
 6. **Resolve dir name** (same rules as `new-epic` step 6, including the branch rename):
    - SUCCESS → `standalones/<JIRA-KEY>-<slug>/`. Rename the provisional branch `<prov-branch>` from step 3 to `<branch_prefix><JIRA-KEY>-<slug>` using the **exact per-candidate move-then-`git branch -m` retry loop of `new-epic` step 6** — no collision pre-check (`git branch -m` is the atomic arbiter; on target-exists advance to the next `-<N>` candidate and re-move the dir to stay in sync), worktree move first so a move failure aborts with nothing renamed, and any other rename failure stops and reports the exact half-state.
-   - FAILED → `standalones/#N-<slug>/` with `pending_jira_link: true` (keep the provisional `<prov-branch>` branch)
-   - SKIPPED → `standalones/#N-<slug>/` with `pending_jira_link: false`
+   - OUTCOME-UNKNOWN (create issued, failed / timed out / no key) → **not automatic**: per **Idempotent Remote Create** step 4 — adopt a marker hit, else stop and report; only an operator choice yields `standalones/#N-<slug>/` with `pending_jira_link: true` (keep `<prov-branch>`; intent record retained for `/handover jira-link`).
+   - SKIPPED (no create issued) → `standalones/#N-<slug>/` with `pending_jira_link: false`
 7. Copy templates filling placeholders (v2 frontmatter):
    - `brief.md` from `standalone-brief.md`
    - `bugs.md` from `standalone-bugs.md`

@@ -390,7 +390,10 @@ def _has_audio_stream(video: Path) -> bool:
     ffmpeg reporting the 0:a:0 map "matches no streams". Every other failure
     (no ffmpeg, timeout, decode error, corrupt media) reports True so the
     caller keeps the conservative failed/partial path instead of silently
-    replacing a lost transcript with a screenshot (codex-adv HIMMEL-786)."""
+    replacing a lost transcript with a screenshot (codex-adv HIMMEL-786).
+    The probe subprocess is pinned to LC_ALL=C/LANG=C so the substring match
+    is locale-independent (HIMMEL-791) - the env override is load-bearing;
+    a localized ffmpeg build would otherwise silently disable the fallback."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return True
@@ -398,7 +401,8 @@ def _has_audio_stream(video: Path) -> bool:
            "-f", "null", "-"]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=FFMPEG_TIMEOUT)
+                           timeout=FFMPEG_TIMEOUT,
+                           env={**os.environ, "LC_ALL": "C", "LANG": "C"})
     except subprocess.TimeoutExpired:
         print(f"ffmpeg(probe): timed out after {FFMPEG_TIMEOUT}s",
               file=sys.stderr)
@@ -527,6 +531,9 @@ def render_crawled(transcripts, slide_embeds, caption):
     for t in transcripts:
         # Mixed carousels label each video block by its slide index.
         if slide_embeds:
+            # (HIMMEL-791) This full-carousel label is intentionally decoupled
+            # from render_slides' compact slide-XX filenames; unified numbering
+            # is deferred.
             lines += ["### Transcript", f"**Slide {t['index']} (video):**",
                       t["text"], ""]
         else:
@@ -754,6 +761,7 @@ def enrich_batch(args, selected, matched_total, remaining):
             # Split media in carousel order: images -> vault slides; videos (any
             # position, incl. mixed carousels) -> whisper, labeled by slide index.
             images = classify(files)["images"]
+            screenshot_image_positions = set()
             videos = [(i, f) for i, f in enumerate(files, start=1)
                       if f.suffix.lower() in VIDEO_EXTS]
             expected_videos = len(videos)
@@ -776,16 +784,35 @@ def enrich_batch(args, selected, matched_total, remaining):
                 videos_failed = still_failed
                 if screenshots:
                     expected_videos -= len(screenshots)
-                    images = [screenshots.get(i, f)
-                              for i, f in enumerate(files, start=1)
-                              if i in screenshots
-                              or f.suffix.lower() in IMAGE_EXTS]
+                    rebuilt_images = []
+                    for i, f in enumerate(files, start=1):
+                        if i in screenshots:
+                            rebuilt_images.append(screenshots[i])
+                            screenshot_image_positions.add(len(rebuilt_images))
+                        elif f.suffix.lower() in IMAGE_EXTS:
+                            rebuilt_images.append(f)
+                    images = rebuilt_images
             slug = clip_slug(p)
             expected_images = len(images[:SLIDE_CAP])
             media_dir = _media_dir(args.vault, slug)
             media_pre_existed = media_dir.exists()
             slide_embeds, slides_failed = (
                 render_slides(images, slug, args.vault) if images else ([], []))
+            recompress_failed = set(slides_failed)
+            video_frame_slides = sum(
+                1 for pos in screenshot_image_positions
+                if pos <= SLIDE_CAP and pos not in recompress_failed)
+            # Outcome-line qualifiers (HIMMEL-791): "(M video-frame)" counts
+            # screenshot slides that actually rendered; "(K capped)" discloses
+            # SLIDE_CAP-trimmed items (log-only - cap != failure, the clip's
+            # ok/partial status is untouched).
+            capped_out = len(images) - expected_images
+            quals = []
+            if video_frame_slides:
+                quals.append(f"{video_frame_slides} video-frame")
+            if capped_out:
+                quals.append(f"{capped_out} capped")
+            qual_suffix = " ({})".format(", ".join(quals)) if quals else ""
             text, has_crlf = read_clip(p)
             fm, fm_raw, body, present = parse_frontmatter(text)
             if not present:
@@ -815,7 +842,8 @@ def enrich_batch(args, selected, matched_total, remaining):
                                    enriched=False)
                 if ok:
                     print(f"~ {relpath}: partial "
-                          f"({len(slide_embeds)}/{expected_images} slides, "
+                          f"({len(slide_embeds)}/{expected_images} slides"
+                          f"{qual_suffix}, "
                           f"{len(transcripts)}/{expected_videos} transcripts; "
                           f"{descriptor})")
                     partial += 1
@@ -824,7 +852,7 @@ def enrich_batch(args, selected, matched_total, remaining):
                                           media_pre_existed, relpath)
                     failed += 1
             elif write_crawled(p, text, fm_raw, body, section, has_crlf):
-                print(f"v {relpath}: {len(slide_embeds)} slides + "
+                print(f"v {relpath}: {len(slide_embeds)} slides{qual_suffix} + "
                       f"{len(transcripts)} transcript")
                 enriched += 1
             else:

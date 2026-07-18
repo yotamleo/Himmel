@@ -10,7 +10,7 @@ it):
 |------|--------------|--------|
 | **CR critic** | Independent model-family reviewer over a branch diff, wired into `/pr-check` (`scripts/cr/hermes-critic.sh` + `critic-first-pass.sh` → `scripts/hermes/invoke.sh`). Free panel default `nemotron-3-nano`; paid escalation `codex`/`gpt-5.5`. Fail-closed verdict, fail-open transport. | **Working — the production hermes lane today.** |
 | **Junior** | Chore-shaped work (vault inbox capture, summaries, note-taking) on free inference, behind a read-only `luna_vault_guard` write fence. | **Working.** |
-| **`himmel_agent` main tier** | A full-control orchestrator (Codex / GPT-5.5) carrying `parity_guard` instead of the junior fence — does real engineering / research / vault work. | **Alpha — guard parity is not complete; treat as experimental.** |
+| **`himmel_agent` main tier** | A full-control orchestrator (Codex / GPT-5.5) carrying `parity_guard` instead of the junior fence — does real engineering / research / vault work. | **Alpha - guard parity now tests green; still treat as experimental until more live mileage.** |
 
 See the registry row in [`docs/tool-adoption/registry.md`](tool-adoption/registry.md)
 (HIMMEL-272 rubric) for the adoption rationale and trust posture. The rest of this
@@ -116,11 +116,12 @@ below.
 
 ## Profiles: your `default` + himmel's `himmel_agent` main tier (HIMMEL-557)
 
-> **Alpha.** The `himmel_agent` main tier is **experimental** — its
-> `parity_guard` is not yet at full parity with what Claude/himmel enforce, so
-> running a free-tier-capable agent with write/git/PR control still carries
-> risk. The working, production hermes lanes today are the **CR critic** and
-> **junior** tiers (top of this doc). Use `himmel_agent` only knowingly.
+> **Alpha.** The `himmel_agent` main tier is **experimental**. Its
+> `parity_guard` now tests green for the guard-parity set in
+> [`docs/internals/lane-parity.md`](internals/lane-parity.md), but it still has
+> less live mileage than the Claude/himmel path. The working, production hermes
+> lanes today are the **CR critic** and **junior** tiers (top of this doc). Use
+> `himmel_agent` knowingly.
 
 Hermes supports named **profiles** (`hermes profile create|list|use|show`), each
 an isolated workspace at `<home>/profiles/<name>/` with its own `SOUL.md`,
@@ -240,6 +241,52 @@ session is running) to pick up changes.
 > documented below. The Nemotron block is kept for history; a full re-doc of
 > the current routing is tracked. Verify the live model with
 > `hermes profile list` (Model column) or `hermes model`.
+
+### Context-window budgeting for multi-model lanes (2026-07-07)
+
+Do **not** assume a model slug's marketing maximum applies on every backend.
+Hermes budgets against the **provider-enforced** context window, and that value
+can differ for the same slug across providers. Upstream issue
+[`NousResearch/hermes-agent#27918`](https://github.com/NousResearch/hermes-agent/issues/27918)
+closed the Codex/GPT-5.5 "should be 1M" report as **not a bug**: live
+`openai-codex` reports and enforces `gpt-5.5` at `272000` tokens, while direct
+OpenAI API `gpt-5.5` can resolve around `1050000`. Pinning Codex to 1M would
+over-budget prompts that the Codex backend rejects.
+
+Operational rule: every lane that can be triggered as its own model/provider
+must carry its own verified maximum context window, not inherit the parent
+lane's expectation.
+
+- `himmel_agent` main tier: `openai-codex` + `gpt-5.5` is currently a **272K
+  Codex window**. This is expected even though the direct OpenAI API slug is
+  larger.
+- GLM / Z.ai lanes: request the explicit long-context model id
+  `glm-5.2[1m]` on Claude Code compatible launchers. Bare `glm-5.2` can run
+  capped below the advertised maximum, so it is not the desired full-control
+  lane.
+- Hermes `/model` and delegation switches recalculate context for the new
+  provider/model. A top-level `model.context_length` override applies to that
+  profile's active model; it is not a generic guarantee for aliases or sibling
+  external launchers. For custom endpoints that need explicit per-model windows,
+  prefer `custom_providers[].models.<model>.context_length` in Hermes config.
+
+Verification snippets (zero/near-zero inference):
+
+```bash
+hermes --profile himmel_agent profile show himmel_agent
+"<hermes-venv-python>" - <<'PY'
+from agent.model_metadata import get_model_context_length
+print(get_model_context_length('gpt-5.5', provider='openai-codex',
+    base_url='https://chatgpt.com/backend-api/codex', api_key=''))
+print(get_model_context_length('glm-5.2[1m]', provider='custom',
+    base_url='https://api.z.ai/api/anthropic', api_key=''))
+PY
+```
+
+If a context number changes, update this runbook and any lane launcher/config
+that budgets or summarizes context. Do not "fix" a lower provider-enforced
+window by hardcoding a larger one unless a live request proves the larger window
+is accepted on that exact backend.
 
 Routing policy per the ticket: free routes first, fail-open down the
 chain with a visible note. The gemini-cli / Google-OAuth subscription

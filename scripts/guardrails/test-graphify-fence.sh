@@ -67,7 +67,7 @@ CLEAN_ENV="-u GRAPHIFY_SALUS_LOCAL_OK -u GRAPHIFY_CLIPPINGS_GLM_OK -u GRAPHIFY_L
 -u CLAUDE_CODE_USE_COWORK_PLUGINS -u CLAUDE_CODE_USE_POWERSHELL_TOOL \
 -u DEEPSEEK_API_KEY -u ZAI_API_KEY -u DASHSCOPE_API_KEY -u OPENAI_API_KEY \
 -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u XAI_API_KEY \
--u OPENROUTER_API_KEY -u NVIDIA_API_KEY"
+-u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u BASH_ENV"
 
 # run_fence <expect: allow|deny> <expect-ledger: yes|no> <cwd> <name> <cmd> [VAR=val ...]
 # Extra trailing args are per-call `VAR=val` env assignments (override CLEAN_ENV).
@@ -294,6 +294,93 @@ run_fence deny no "$HIMMEL" "luna x claude-cli(mantle) -> hard deny" \
     "graphify update $LUNA/journal-2026.md --backend claude-cli" CLAUDE_CODE_USE_MANTLE=1
 run_fence deny no "$HIMMEL" "luna x claude-cli(anthropic_aws) -> hard deny" \
     "graphify update $LUNA/journal-2026.md --backend claude-cli" CLAUDE_CODE_USE_ANTHROPIC_AWS=1
+# CASE-INSENSITIVE (CodeRabbit-major regression pins): bash matches var names
+# case-SENSITIVELY, Node's process.env on Windows does NOT — so a lowercase
+# selector turns Bedrock ON for the CLI while an exact-case fence read it as
+# unset and allowed the run. Proven: `env claude_code_use_bedrock=1 node -e
+# 'process.env.CLAUDE_CODE_USE_BEDROCK'` -> "1", same var in bash -> unset.
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock) -> hard deny (Node env is case-insensitive)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock=1
+run_fence deny no "$HIMMEL" "luna x claude-cli(MiXeD-case vertex) -> hard deny" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" Claude_Code_Use_Vertex=1
+run_fence deny no "$HIMMEL" "himmel-code x claude-cli(lowercase bedrock) -> hard deny (not the wildcard)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" claude_code_use_bedrock=1
+# a lowercase FEATURE flag still must not deny (the list is exact, case aside)
+run_fence allow no "$HIMMEL" "himmel-code x claude-cli(lowercase cowork flag) -> allow (feature flag)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" claude_code_use_cowork_plugins=1
+# a lowercase selector with an EMPTY value is still off
+run_fence allow no "$HIMMEL" "himmel-code x claude-cli(lowercase bedrock empty) -> allow (empty = off)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" claude_code_use_bedrock=
+# LOCALE-INDEPENDENT matching (CodeRabbit-major): under tr_TR, lowercase/uppercase
+# equivalence differs around 'i', so an unpinned nocasematch could miss
+# claude_code_use_anthropic_aws and ALLOW the run. _claude_reroute_var pins
+# LC_ALL=C before enabling nocasematch. Runs under a Turkish locale when the box
+# has one; SKIPs (never silently passes) otherwise, since without the locale the C
+# comparison is what runs anyway and the case proves nothing.
+# The locale MUST arrive via LANG/LC_CTYPE, never LC_ALL (CodeRabbit-minor): the
+# fence pins LC_ALL=C itself, so an LC_ALL-driven case would be overridden by the
+# very line under test and prove nothing.
+if locale -a 2>/dev/null | grep -qi '^tr_TR'; then
+    tr_loc=$(locale -a 2>/dev/null | grep -i '^tr_TR' | head -1)
+    run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase anthropic_aws under $tr_loc) -> hard deny (locale-independent match)" \
+        "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_anthropic_aws=1 LANG="$tr_loc" LC_CTYPE="$tr_loc"
+else
+    printf '  SKIP  lowercase anthropic_aws under a Turkish locale (no tr_TR locale on this box)\n'
+fi
+# BUILTIN-ONLY matching: caller-controlled PATH entries for `env` or `tr` must
+# be irrelevant to the selector sweep. The fake dir is PREPENDED to the REAL PATH
+# so the rest of the fence still runs normally; the selective fake `tr` forwards
+# non-selector folds because other _lc() sites intentionally still use it and
+# already fail closed on errors.
+hj_tr="$WS/hijack-tr";   mkdir -p "$hj_tr"
+hj_env="$WS/hijack-env"; mkdir -p "$hj_env"
+real_tr="$(command -p -v tr)"
+cat > "$hj_tr/tr" <<EOF
+#!/bin/sh
+in=\$(cat)
+case "\$in" in
+    claude_code_use_*|Claude_Code_Use_*) printf 'X_NOT_A_SELECTOR' ;;
+    *) printf '%s' "\$in" | "$real_tr" "\$@" ;;
+esac
+EOF
+printf '#!/bin/sh\necho NOTHING=1\n' > "$hj_env/env"
+chmod +x "$hj_tr/tr" "$hj_env/env"
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, fake tr on PATH) -> hard deny (builtin nocasematch)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock=1 PATH="$hj_tr:$PATH"
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, fake env on PATH) -> hard deny (builtin compgen)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock=1 PATH="$hj_env:$PATH"
+# HIMMEL-1133 regression: model a host where the OLD `command -p tr` lookup
+# errors, without modifying the machine's real default PATH. BASH_ENV installs a
+# narrow command wrapper inside the fence process: only `command -p tr ...`
+# returns 127; every other command builtin call delegates unchanged. The old fold
+# therefore produced an empty name and ALLOWED this lowercase Bedrock selector;
+# the builtin-only path never touches the wrapper and must DENY.
+no_command_p_tr_env="$WS/no-command-p-tr.bash"
+cat > "$no_command_p_tr_env" <<'EOF'
+command() {
+    if [ "${1:-}" = "-p" ] && [ "${2:-}" = "tr" ]; then return 127; fi
+    builtin command "$@"
+}
+EOF
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, command -p tr unusable) -> hard deny (builtin-only)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock=1 BASH_ENV="$no_command_p_tr_env"
+# NEWLINE-IN-VALUE (CodeRabbit-major, private #1263): a LIVE fail-open, measured.
+# The sweep used to parse `env` output line-by-line, so a selector whose value
+# STARTS with a newline printed as `claude_code_use_bedrock=` + `x` — the first
+# line read as an EMPTY value and hit the empty-skip, the selector went unseen and
+# the run was ALLOWED (rc=0), while Node reads "\nx" as truthy and Bedrock is ON.
+# Reading values BY NAME (compgen -e) removes the line-oriented round-trip that
+# made this expressible at all. The `=` and mid-value cases pin the neighbours.
+nl_lead="$(printf '\nx')"
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, LEADING-newline value) -> hard deny (value read by name)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock="$nl_lead"
+nl_mid="$(printf 'a\nb')"
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, MID-value newline) -> hard deny" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock="$nl_mid"
+# a forged lookalike LINE inside a value must not be readable as a selector
+nl_forge="$(printf 'x\nclaude_code_use_vertex=1')"
+run_fence allow no "$HIMMEL" "himmel-code x claude-cli(harmless var forging a selector LINE in its value) -> allow (no line parsing)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" harmless_var="$nl_forge"
 # EMPTY is the only off value besides unset — it must NOT false-deny
 run_fence allow no "$HIMMEL" "himmel-code x claude-cli(bedrock empty) -> allow (empty = off)" \
     "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" CLAUDE_CODE_USE_BEDROCK=

@@ -68,6 +68,18 @@ assert_has() {
     fi
 }
 
+# assert_has_fixed <desc> <fixed-needle> <haystack> — like assert_has, but the
+# needle is matched as a literal string (grep -F), not a basic-regex pattern
+# (CodeRabbit, HIMMEL-1080 round-1): use for needles containing regex
+# metacharacters (e.g. `.`) that must match EXACTLY, not loosely.
+assert_has_fixed() {
+    if printf '%s' "$3" | grep -qF -- "$2"; then
+        assert_pass "$1"
+    else
+        assert_fail "$1 (missing: $2)"
+    fi
+}
+
 # assert_lacks <desc> <bre-needle> <haystack> — haystack must NOT contain it.
 assert_lacks() {
     if printf '%s' "$3" | grep -q "$2"; then
@@ -244,7 +256,19 @@ assert_has "execute step present" "subagent-driven-development" "$out"
 echo "Test 18: 'prcheck,merge' points at pr-merge.sh, names the armed auto-merge path, guards --admin, no no-merge line"
 out=$(printf '{}' | HIMMEL_INITIATIVE=prcheck,merge bash "$hook")
 assert_has   "merge step names pr-merge.sh" "pr-merge.sh"       "$out"
-assert_has   "merge step names armed auto-merge path (HIMMEL-1042)" "merge-on-green.sh" "$out"
+# Pin BOTH the exact directive AND the ARMAUTOMERGE=1 opt-in on the SAME line
+# (CodeRabbit round-2, HIMMEL-1080). The hook renders the merge step as a
+# SINGLE line naming both (verified). Asserting each token against the whole
+# $out would let two unrelated lines — or stray prose — satisfy them
+# independently, never proving the merge step ITSELF names both. So first
+# isolate that one line (grep the unique merge-on-green.sh mention), THEN
+# assert each token against ONLY it. The fixed-string helper (round-1) is
+# kept for the directive: its `.` chars are basic-regex metachars under
+# assert_has's `grep -q` and must match literally.
+merge_step=$(printf '%s\n' "$out" | grep -F "merge-on-green.sh" | head -1)
+assert_has_fixed "merge step names the exact armed auto-merge directive (HIMMEL-1042)" \
+             "\`bash scripts/handover/merge-on-green.sh\`" "$merge_step"
+assert_has   "merge step names the ARMAUTOMERGE opt-in on the same line" "ARMAUTOMERGE=1" "$merge_step"
 assert_has   "merge step guards --admin"    "never .*--admin"   "$out"
 assert_lacks "no-merge line dropped when merge active" "Do NOT merge" "$out"
 

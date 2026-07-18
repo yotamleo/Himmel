@@ -11,6 +11,11 @@ export function evalProbe(probe, ctx) {
       return raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean).includes(probe.token);
     }
     case 'installed': return ctx.installed?.[probe.tool] === true;
+    // HIMMEL-758: the forced-off half of `himmelctl config`'s lanes.local.json
+    // overlay (set-lane-override.mjs writes 'always'/'never' only) — an
+    // operator override that should suppress a lane regardless of what its
+    // base probe would otherwise evaluate to.
+    case 'never':     return false;
     default:          return false; // fail-closed on unknown kind
   }
 }

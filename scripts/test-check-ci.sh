@@ -70,20 +70,22 @@ cmd="${1:-}"
 if [ "$cmd" = "api" ]; then
     case "${2:-}" in
         repos/octo/demo/commits/sha1/check-runs*)
-            case "$GH_STUB_MODE" in
-                zombie|zombie-no-status|zombie-status-error|zombie-late)
-                    echo '{"check_runs":[{"name":"CodeRabbit","status":"in_progress","started_at":"2000-01-01T00:00:00Z"}]}' ;;
-                zombie-young)
-                    echo "{\"check_runs\":[{\"name\":\"CodeRabbit\",\"status\":\"in_progress\",\"started_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}" ;;
-                *) echo '{"check_runs":[]}' ;;
-            esac
+            echo '{"check_runs":[]}'
             exit 0 ;;
-        repos/octo/demo/commits/sha1/status)
+        # CodeRabbit's REAL shape: a commit STATUS on the head SHA, carrying
+        # creator identity (HIMMEL-1072/1058). The list endpoint is newest-first.
+        # 136622811 = coderabbitai[bot].
+        repos/octo/demo/commits/sha1/statuses*)
             case "$GH_STUB_MODE" in
-                zombie|zombie-late) echo '{"statuses":[{"context":"CodeRabbit","state":"success"}]}' ;;
-                zombie-status-error) echo "status boom" >&2; exit 1 ;;
-                zombie-no-status) echo '{"statuses":[]}' ;;
-                *) echo '{"statuses":[{"context":"CodeRabbit","state":"pending"}]}' ;;
+                cr-absent)      echo '[]' ;;
+                cr-pending)     echo '[{"context":"CodeRabbit","state":"pending","created_at":"2026-07-16T19:08:46Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                cr-failure)     echo '[{"context":"CodeRabbit","state":"failure","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                cr-spoofed)     echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":999999,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                cr-query-error) echo "statuses boom" >&2; exit 1 ;;
+                # A full page with no CodeRabbit on it: indeterminate, not
+                # absent — the verdict may be on page two (coderabbit-2).
+                cr-paged)       jq -nc '[range(100) | {context: "ci/ctx\(.)", state: "success", created_at: "2026-07-16T19:10:05Z", creator: {id: 1, login: "ci", type: "Bot"}}]' ;;
+                *)              echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
             esac
             exit 0 ;;
     esac
@@ -202,13 +204,11 @@ case "$GH_STUB_MODE" in
     watch-error)
         if [ "$is_watch" -eq 1 ]; then echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1; fi
         exit 8 ;;
-    zombie|zombie-young|zombie-no-status|zombie-status-error)
-        if [ "$is_watch" -eq 1 ]; then echo "gh stub: zombie watch must not complete" >&2; exit 99; fi
-        exit 8 ;;
-    zombie-late)
-        # After the dropped override the watch path MUST run — and completes green.
+    cr-absent|cr-pending|cr-failure|cr-spoofed|cr-query-error|cr-paged)
+        # Checks are GREEN and threads are clean in every one of these — the
+        # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
-        exit 8 ;;
+        exit 0 ;;
     *)
         echo "gh stub: unknown GH_STUB_MODE '$GH_STUB_MODE'" >&2; exit 99 ;;
 esac
@@ -219,6 +219,9 @@ chmod +x "$STUBDIR/gh" || { echo "FATAL: chmod on gh stub failed"; exit 1; }
 OUT=""; ERR=""; RC=0
 # Per-case opt-in overrides, reset after every run:
 SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
+# CR_PROFILE_OVERRIDE=none exercises the CodeRabbit-less-repo opt-out
+# (HIMMEL-1072); empty = a normal repo where the signal is required.
+CR_PROFILE_OVERRIDE=""
 # run <mode> [args...]
 run() {
     local mode="$1"; shift
@@ -242,11 +245,13 @@ run() {
         GH_STUB_THREADS="$THREADS_OVERRIDE" \
         CHECK_CI_POLL_INTERVAL="$POLL_OVERRIDE" \
         CHECK_CI_SETTLE="$SETTLE_OVERRIDE" \
+        CR_PROFILE="$CR_PROFILE_OVERRIDE" \
         bash "$SCRIPT" "$@" >"$of" 2>"$ef"
     RC=$?
     OUT=$(cat "$of"); ERR=$(cat "$ef")
     rm -f "$of" "$ef"
     SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
+    CR_PROFILE_OVERRIDE=""
 }
 
 assert_rc()      { if [ "$RC" -eq "$1" ]; then pass "$2"; else fail "$2" "rc=$RC want $1"; fi; }
@@ -466,39 +471,48 @@ run red-liar
 assert_rc 2 "26 red-liar rc 2"
 assert_err_has "no check is in the fail bucket" "26 structured-confirm message"
 
-# 27 — old in-progress CodeRabbit + successful same-head commit status + clean
-# threads overrides the zombie and never enters the hanging watch.
-run zombie
-assert_rc 0 "27 zombie override rc 0"
-assert_out_has "zombie check-run override:" "27 zombie override loud line"
-assert_out_has "commit status=success + 0 unresolved threads" "27 zombie evidence printed"
+# --- HIMMEL-1072: the CodeRabbit signal is REQUIRED, not evaluated-if-present ---
+# The old cases 27-32 here exercised the HIMMEL-980 "zombie check-run override".
+# That override keyed off a CodeRabbit CHECK-RUN — which CodeRabbit has never
+# posted (it posts a commit STATUS; verified on 5 consecutive live PRs). The
+# override was unreachable and these fixtures were the only place its trigger
+# shape existed. Both are gone; the status is read directly instead.
 
-# 28 — a young in-progress run remains blocking (the watch path cannot certify).
-run zombie-young
-assert_rc 2 "28 young in-progress still blocks"
+# 27 — the regression that merged #1243: checks green, threads clean, but
+# CodeRabbit never posted on this head. Absent is NOT green.
+run cr-absent
+assert_rc 2 "27 absent CodeRabbit status rc 2"
+assert_err_has "has posted NO status" "27 absent reports the missing review"
 
-# 29 — old run without successful commit status remains blocking.
-run zombie-no-status
-assert_rc 2 "29 old run without success still blocks"
+# 28 — CodeRabbit still reviewing the head: not green YET (re-run), never 0.
+run cr-pending
+assert_rc 2 "28 pending CodeRabbit status rc 2"
 
-# 30 — unresolved threads prevent override before the status probe.
-THREADS_OVERRIDE=1
-run zombie
-assert_rc 3 "30 old success with unresolved thread blocks"
+# 29 — CodeRabbit's own status failed/errored → a failed check (rc 1).
+run cr-failure
+assert_rc 1 "29 failed CodeRabbit status rc 1"
 
-# 31 — status API errors are no-override and remain fail-closed.
-run zombie-status-error
-assert_rc 2 "31 status probe error still blocks"
+# 30 — identity, not display name (HIMMEL-1058): a success status carrying the
+# CodeRabbit context but a foreign creator.id must not satisfy the gate.
+run cr-spoofed
+assert_rc 2 "30 spoofed creator.id does not satisfy the gate"
 
-# 32 — a non-CodeRabbit check registering during the settle window drops the
-# override: the run falls back to the watch path (which completes green here)
-# instead of certifying on the stale snapshot (codex-adv-2).
-SETTLE_OVERRIDE=1
-run zombie-late
-assert_rc 0 "32 late-check settle re-probe rc 0 via watch path"
-assert_out_has "zombie check-run override:" "32 override initially taken"
-assert_out_has "zombie override dropped:" "32 override dropped on late arrival"
-grep -q -- "--watch" "$STUBDIR/args.log" || { echo "FAIL: 32 watch path never ran"; FAIL=$((FAIL+1)); }
+# 31 — a repo with no CodeRabbit opts out explicitly rather than being blocked
+# forever: CR_PROFILE=none skips the required-signal gate.
+CR_PROFILE_OVERRIDE=none
+run cr-absent
+assert_rc 0 "31 CR_PROFILE=none allows an absent CodeRabbit"
+
+# 32 — the status query itself failing is cannot-evaluate, never a pass.
+run cr-query-error
+assert_rc 2 "32 CodeRabbit status query error rc 2"
+
+# 34 — coderabbit-2: a FULL page of unrelated statuses with no CodeRabbit among
+# them is indeterminate (its verdict may be on page two), not absent — and
+# certainly not green. (Numbered 34: a "33" already exists further down.)
+run cr-paged
+assert_rc 2 "34 full status page without CodeRabbit rc 2"
+assert_err_has "more commit statuses than one API page" "34 page-limit reason"
 
 # 33 — an unresolved thread landing DURING the watch (head SHA unmoved) is
 # caught by the post-watch review-state re-verification, not certified from
@@ -510,5 +524,5 @@ assert_err_has "unresolved review thread" "33 late-thread reason printed"
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 34 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 34"; exit 1; fi
+if [ "$COUNT" -ne 35 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 35"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

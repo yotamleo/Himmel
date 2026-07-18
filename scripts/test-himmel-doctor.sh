@@ -549,6 +549,80 @@ out="$(PATH="$FAKEOLLAMA:$TOOLS_PATH" OLLAMA_NO_CLOUD=1 DOCTOR_WORKTREE_ROOT="$C
 if printf '%s' "$out" | grep -q 'OK   C14-ollama-no-cloud' && printf '%s' "$out" | grep -q 'pin is set'; then pass "C14 -> OK (pin set)"; else fail "C14 set -> $(printf '%s' "$out" | grep C14)"; fi
 rm -rf "$t"
 
+# ── C16: delegate to `himmelctl status --json` for install/wiring truth (HIMMEL-755 F) ──
+# winpath <path> — MSYS/cygwin path -> Windows form (node.exe misresolves
+# MSYS /tmp-style paths for HIMMELCTL_REPO_ROOT/HIMMELCTL_CACHE_DIR), mirrors
+# scripts/himmelctl/test/test-wizard-status-cmd.sh's own helper.
+winpath() {
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+echo "== C16: no himmelctl install profile -> INFO graceful skip, exit 0 =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+EMPTYCACHE="$t/cache-empty"; mkdir -p "$EMPTYCACHE"
+out="$(HIMMELCTL_CACHE_DIR="$(winpath "$EMPTYCACHE")" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'INFO C16-status' && printf '%s' "$out" | grep -q 'no himmelctl install profile found' && [ "$rc" -eq 0 ]; then
+    pass "C16 -> INFO (no profile, graceful skip, rc0)"
+else
+    fail "C16 no-profile -> rc=$rc; $(printf '%s' "$out" | grep C16)"
+fi
+rm -rf "$t"
+
+if command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    echo "== C16: himmelctl status reports a red item -> WARN C16-status surfaces it =="
+    t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+
+    # A minimal himmelctl fixture repo (real manifest.json + the repoRoot-
+    # relative files its file-exists probes read), mirroring
+    # test-wizard-status-cmd.sh's fixtureRepo.
+    fixtureRepo="$t/fixture-repo"
+    mkdir -p "$fixtureRepo/scripts/install" "$fixtureRepo/scripts/jira/dist" "$fixtureRepo/scripts/bitbucket/dist" "$fixtureRepo/scripts/lib"
+    cp "$REPO_ROOT/scripts/install/manifest.json" "$fixtureRepo/scripts/install/manifest.json"
+    : > "$fixtureRepo/scripts/jira/dist/index.js"
+    : > "$fixtureRepo/scripts/bitbucket/dist/index.js"
+    : > "$fixtureRepo/scripts/lib/doc-guard-map.sh"
+
+    targetC16="$t/target"
+    mkdir -p "$targetC16/.claude" "$targetC16/scripts/guardrails"
+    : > "$targetC16/scripts/guardrails/lib.sh"
+    # Deliberately NO .pre-commit-config.yaml — the known-red item this case
+    # asserts gets surfaced (mirrors test-wizard-status-cmd.sh case b).
+    cat > "$targetC16/.claude/settings.json" <<'JSON'
+{"statusLine":{"command":"bash foo.sh"},"enabledPlugins":{"foo@bar":true}}
+JSON
+    cacheC16="$t/cache"; mkdir -p "$cacheC16"
+    cat > "$cacheC16/install-profile.json" <<'JSON'
+{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"alwaysOn":false}
+JSON
+
+    out="$(cd "$targetC16" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC16")" \
+        DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+        CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+    # Assert both within the SAME C16 block: capture from the WARN C16-status
+    # line up to (but not including) the next severity-prefixed check line, and
+    # require pre-commit-hooks to appear as one of its detail rows (rather than
+    # matching the two strings independently anywhere in the full doctor output,
+    # or slurping trailing lines past the C16 block — robust even if a check is
+    # ever added after C16).
+    c16block="$(printf '%s\n' "$out" | awk '
+        /WARN[[:space:]]+C16-status/ { capture = 1; next }
+        capture && /^(FAIL|WARN|INFO|OK)[[:space:]]/ { exit }
+        capture { print }
+    ')"
+    if [ -n "$c16block" ] && printf '%s' "$c16block" | grep -q 'pre-commit-hooks'; then
+        pass "C16 -> WARN (delegated red item surfaced)"
+    else
+        fail "C16 red-item -> $(printf '%s' "$out" | grep -A6 C16-status)"
+    fi
+    rm -rf "$t"
+else
+    pass "C16 -> WARN (skipped: node/jq not both available on this host)"
+fi
+
 rm -rf "$FAKEROOT"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

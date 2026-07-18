@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "_comment": "himmelctl deps status|ensure|upgrade (HIMMEL-759). A version-aware toolchain declaration, SEPARATE from scripts/install/manifest.json's presence-only kind:\"dep\" items -- see this ticket's design note in scripts/himmelctl/lib/deps-engine.js for why the two coexist (different lifecycles: manifest.json drives the wizard's install/ensure wiring reconcile; deps.json is a flat, standalone toolchain-version view). minVersion carries the floors already documented in docs/setup/new-machine.md (git 2.30, node 18, bun 1.0, python3 3.10, jq 1.6, pre-commit 3.5); uv and qmd have no documented floor so they stay null (presence-only). bootstrap:true marks node/bun -- himmelctl (a node script) cannot install node itself, so their install recipes always shell out to a bash layer (ensure-tools.sh / a package manager), never inline node logic.",
+  "deps": [
+    {
+      "id": "node",
+      "cmd": "node",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": "18.0",
+      "bootstrap": true,
+      "install": {
+        "linux": { "manager": "hint", "detail": "no automated recipe for node on linux -- install via your distro's package manager or https://nodejs.org, then re-run" },
+        "macos": { "manager": "brew", "pkg": "node" },
+        "win32": { "manager": "winget", "id": "OpenJS.NodeJS.LTS" }
+      }
+    },
+    {
+      "id": "bun",
+      "cmd": "bun",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": "1.0",
+      "bootstrap": true,
+      "install": {
+        "linux": { "manager": "ensure-tools" },
+        "macos": { "manager": "ensure-tools" },
+        "win32": { "manager": "hint", "detail": "no winget id known for bun -- install manually: https://bun.sh" }
+      }
+    },
+    {
+      "id": "jq",
+      "cmd": "jq",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": "1.6",
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "ensure-tools" },
+        "macos": { "manager": "ensure-tools" },
+        "win32": { "manager": "winget", "id": "jqlang.jq" }
+      }
+    },
+    {
+      "id": "python3",
+      "cmd": "python3",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": "3.10",
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "ensure-tools" },
+        "macos": { "manager": "ensure-tools" },
+        "win32": { "manager": "winget", "id": "Python.Python.3.12" }
+      }
+    },
+    {
+      "id": "qmd",
+      "cmd": "qmd",
+      "resolver": "scripts/lib/qmd-bin.sh",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": null,
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "script", "script": "scripts/lib/qmd-bin.sh", "args": ["install"] },
+        "macos": { "manager": "script", "script": "scripts/lib/qmd-bin.sh", "args": ["install"] },
+        "win32": { "manager": "script", "script": "scripts/lib/qmd-bin.sh", "args": ["install"] }
+      }
+    },
+    {
+      "id": "git",
+      "cmd": "git",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": "2.30",
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "ensure-tools" },
+        "macos": { "manager": "ensure-tools" },
+        "win32": { "manager": "winget", "id": "Git.Git" }
+      }
+    },
+    {
+      "id": "pre-commit",
+      "cmd": "pre-commit",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": "3.5",
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "pip", "pkg": "pre-commit" },
+        "macos": { "manager": "pip", "pkg": "pre-commit" },
+        "win32": { "manager": "pip", "pkg": "pre-commit" }
+      }
+    },
+    {
+      "id": "uv",
+      "cmd": "uv",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": null,
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "pip", "pkg": "uv" },
+        "macos": { "manager": "pip", "pkg": "uv" },
+        "win32": { "manager": "pip", "pkg": "uv" }
+      }
+    }
+  ]
+}

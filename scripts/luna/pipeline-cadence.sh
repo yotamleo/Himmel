@@ -619,10 +619,21 @@ emit_bat() {
 # absolute path (HIMMEL-575). hook_path must be a forward-slash, JSON-safe
 # absolute path (no backslashes — use cygpath -m on Windows). The command is
 # unquoted to match himmel's own .claude/settings.json hook wiring convention.
+#
+# HIMMEL-1036: the fragment also force-enables obsidian-triage@himmel via
+# enabledPlugins. The operator disables that plugin INTERACTIVELY (user-scope
+# settings.local.json {"obsidian-triage@himmel": false}) — it's the luna clip
+# pipeline, unused in hand-driven sessions. But this cadence IS that pipeline,
+# so the nightly run must re-enable it. `--settings` is the highest non-managed
+# precedence layer (spike-confirmed, HIMMEL-1040 design), so this enabledPlugins
+# override wins over the settings.local.json disable and keeps the cadence live.
 emit_settings_fragment() {
     local hook_path="$1"
     cat <<JSON
 {
+  "enabledPlugins": {
+    "obsidian-triage@himmel": true
+  },
   "hooks": {
     "PreToolUse": [
       {

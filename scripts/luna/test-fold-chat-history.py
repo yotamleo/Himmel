@@ -853,5 +853,399 @@ class TestCli(unittest.TestCase):
             self.assertEqual(rc, 1)
 
 
+# ---------- Telegram HTML group export (HIMMEL-1170) ----------
+
+# Minimal Telegram Desktop HTML export shape: a page_header group name, one
+# `service` date separator (must be skipped), one message with <b>+<br> in the
+# text, one `joined` message (no from_name -> inherits previous sender), and one
+# message with a full-res photo_wrap href (thumb lives in src=, must be ignored).
+TG_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head><body>
+<div class="page_wrap">
+  <div class="page_header"><div class="content">
+    <div class="text bold">Test Group</div>
+  </div></div>
+  <div class="page_body"><div class="history">
+    <div class="message service" id="service1">
+      <div class="body details">18 July 2026</div>
+    </div>
+    <div class="message default clearfix" id="msg1">
+      <div class="body">
+        <div class="pull_right date details" title="18.07.2026 09:00:00">09:00</div>
+        <div class="from_name">Alice</div>
+        <div class="text">Hello <b>world</b><br>second line</div>
+      </div>
+    </div>
+    <div class="message default clearfix joined" id="msg2">
+      <div class="body">
+        <div class="pull_right date details" title="18.07.2026 09:05:00">09:05</div>
+        <div class="text">follow-up</div>
+      </div>
+    </div>
+    <div class="message default clearfix" id="msg3">
+      <div class="body">
+        <div class="pull_right date details" title="18.07.2026 10:00:00">10:00</div>
+        <div class="from_name">Bob</div>
+        <div class="text">look</div>
+        <a class="photo_wrap clearfix" href="photos/photo_1@18-07-2026.jpg">
+          <img class="photo" src="photos/photo_1@18-07-2026_thumb.jpg">
+        </a>
+      </div>
+    </div>
+  </div></div>
+</div>
+</body></html>"""
+
+
+def _tg_export(td, html=None):
+    """Build a Telegram export dir: messages.html + the referenced full-res photo."""
+    ed = Path(td) / "export"
+    ed.mkdir()
+    (ed / "messages.html").write_text(html or TG_HTML, encoding="utf-8")
+    (ed / "photos").mkdir()
+    (ed / "photos" / "photo_1@18-07-2026.jpg").write_bytes(JPEG_MAGIC)
+    return ed
+
+
+class TestParseTelegram(unittest.TestCase):
+    def test_group_name_from_header(self):
+        with tempfile.TemporaryDirectory() as td:
+            group, msgs = fch.parse_telegram(_tg_export(td))
+            self.assertEqual(group, "Test Group")
+
+    def test_service_skipped_timestamps_parsed(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, msgs = fch.parse_telegram(_tg_export(td))
+            # 4 message divs, but the `service` date separator is skipped -> 3
+            self.assertEqual(len(msgs), 3)
+            self.assertEqual([m.ts for m in msgs], [
+                datetime(2026, 7, 18, 9, 0, 0),
+                datetime(2026, 7, 18, 9, 5, 0),
+                datetime(2026, 7, 18, 10, 0, 0),
+            ])
+
+    def test_joined_message_inherits_sender(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, msgs = fch.parse_telegram(_tg_export(td))
+            self.assertEqual(msgs[0].sender, "Alice")
+            self.assertEqual(msgs[1].sender, "Alice")  # joined, no from_name
+            self.assertEqual(msgs[2].sender, "Bob")
+
+    def test_br_to_newline_tags_stripped_unescaped(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, msgs = fch.parse_telegram(_tg_export(td))
+            # <b>world</b> stripped, <br> -> newline
+            self.assertEqual(msgs[0].body, "Hello world\nsecond line")
+            self.assertEqual(msgs[1].body, "follow-up")
+
+    def test_media_full_res_captured_thumb_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, msgs = fch.parse_telegram(_tg_export(td))
+            # href = full-res; the _thumb lives in src= and is never matched
+            self.assertEqual(msgs[2].media, ["photos/photo_1@18-07-2026.jpg"])
+
+    def test_no_messages_returns_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td) / "export"
+            ed.mkdir()
+            (ed / "messages.html").write_text(
+                "<html><body><div class='page_wrap'></div></body></html>",
+                encoding="utf-8")
+            group, msgs = fch.parse_telegram(ed)
+            self.assertEqual(group, "")
+            self.assertEqual(msgs, [])
+
+
+class TestFoldTelegram(unittest.TestCase):
+    def test_fold_writes_monthly_note_frontmatter_and_body(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = _tg_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            report = fch.fold("telegram", ed, vault, dry_run=False)
+            self.assertEqual(report.tg_group, "Test Group")
+            self.assertEqual(report.tg_messages, 3)
+            self.assertEqual(report.tg_months, 1)
+            self.assertEqual(report.notes_created, 1)
+            self.assertEqual(report.assets_copied, 1)
+            # monthly note path: chats/telegram/<group-slug>/<YYYY-MM>.md
+            # slugify preserves case -> "Test Group" becomes "Test-Group"
+            note = vault / "chats" / "telegram" / "Test-Group" / "2026-07.md"
+            self.assertTrue(note.exists())
+            text = note.read_text(encoding="utf-8")
+            # frontmatter keys (no enriched: key for telegram)
+            self.assertIn("type: chat-import", text)
+            self.assertIn("source: telegram", text)
+            self.assertIn('group: "Test Group"', text)
+            self.assertIn("created: 2026-07-18", text)
+            self.assertIn("month: 2026-07", text)
+            self.assertIn("messages: 3", text)
+            self.assertIn("tags: [chat-import, telegram]", text)
+            self.assertNotIn("enriched:", text)
+            # body: title + day header + per-message header + preserved body
+            self.assertIn("# Test Group — 2026-07", text)
+            self.assertIn("## 2026-07-18 (", text)  # weekday is locale-dependent
+            self.assertIn("**09:00 · Alice**", text)
+            self.assertIn("**09:05 · Alice**", text)  # joined sender preserved
+            self.assertIn("**10:00 · Bob**", text)
+            self.assertIn("Hello world\nsecond line", text)  # <br> -> newline
+            # media embed + copied file are GROUP-SCOPED (<slug>__) to avoid
+            # cross-group basename collisions (Telegram numbers photos from 1)
+            self.assertIn("![[chats/telegram/_assets/Test-Group__photo_1@18-07-2026.jpg]]", text)
+            # full-res media copied (thumb was not)
+            self.assertTrue((vault / "chats" / "telegram" / "_assets"
+                             / "Test-Group__photo_1@18-07-2026.jpg").exists())
+            # gitignore + index refreshed
+            self.assertIn("chats/*/_assets/",
+                          (vault / ".gitignore").read_text(encoding="utf-8"))
+            self.assertIn("Test Group",
+                          (vault / "chats" / "_index.md").read_text(encoding="utf-8"))
+
+    def test_fold_group_slug_override(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = _tg_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            fch.fold("telegram", ed, vault, dry_run=False, group_slug="custom-slug")
+            self.assertTrue(
+                (vault / "chats" / "telegram" / "custom-slug" / "2026-07.md").exists())
+            # derived slug dir is NOT used when override is given
+            self.assertFalse((vault / "chats" / "telegram" / "Test-Group").exists())
+
+    def test_fold_dry_run_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = _tg_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            report = fch.fold("telegram", ed, vault, dry_run=True)
+            self.assertEqual(report.tg_messages, 3)
+            self.assertEqual(report.tg_months, 1)
+            self.assertEqual(report.assets_copied, 1)  # would have copied
+            self.assertEqual(report.notes_created, 1)
+            self.assertEqual(list(vault.iterdir()), [])
+
+    def test_fold_idempotent_overwrites_note_skips_existing_asset(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = _tg_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            fch.fold("telegram", ed, vault, dry_run=False)
+            report2 = fch.fold("telegram", ed, vault, dry_run=False)
+            # month note re-written (no skip); asset already present -> skipped
+            self.assertEqual(report2.notes_created, 1)
+            self.assertEqual(report2.assets_copied, 0)
+            self.assertEqual(report2.assets_skipped_existing, 1)
+            self.assertEqual(report2.tg_messages, 3)
+
+    def test_fold_path_traversal_media_counted_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td) / "export"
+            ed.mkdir()
+            (ed / "messages.html").write_text(TG_HTML.replace(
+                "photos/photo_1@18-07-2026.jpg",
+                "photos/../../evil.jpg"), encoding="utf-8")
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            report = fch.fold("telegram", ed, vault, dry_run=False)
+            self.assertEqual(report.assets_missing, 1)
+            self.assertFalse((vault / "evil.jpg").exists())
+            self.assertFalse((Path(td) / "evil.jpg").exists())
+
+
+class TestCliTelegram(unittest.TestCase):
+    def test_main_telegram_dry_run_prints_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = _tg_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            import contextlib, io
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = fch.main(["--provider", "telegram", "--export", str(ed),
+                               "--vault", str(vault), "--dry-run"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("group: Test Group", out)
+            self.assertIn("messages: 3", out)
+            self.assertIn("months: 1", out)
+            self.assertEqual(list(vault.iterdir()), [])
+
+    def test_main_telegram_group_slug_flag(self):
+        with tempfile.TemporaryDirectory() as td:
+            ed = _tg_export(td)
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            import contextlib, io
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = fch.main(["--provider", "telegram", "--export", str(ed),
+                               "--vault", str(vault), "--group-slug", "cli-slug"])
+            self.assertEqual(rc, 0)
+            self.assertTrue(
+                (vault / "chats" / "telegram" / "cli-slug" / "2026-07.md").exists())
+
+
+class TestTelegramRobustness(unittest.TestCase):
+    """CR-fix regressions (HIMMEL-1170): natural page order, group-scoped
+    assets, and no-clobber on a partial re-export."""
+
+    def test_page_key_natural_order(self):
+        k = fch._tg_page_key
+        self.assertEqual(k(Path("messages.html")), 1)
+        self.assertEqual(k(Path("messages2.html")), 2)
+        self.assertEqual(k(Path("messages10.html")), 10)
+        self.assertLess(k(Path("messages2.html")), k(Path("messages10.html")))
+
+    def test_joined_sender_across_pages_uses_natural_order(self):
+        # page1 ends Alice; messages2 opens with a joined msg that must inherit
+        # Alice; messages10 has Bob. Lexical order (messages10 < messages2)
+        # would mis-attribute the joined msg to Bob.
+        def msg(mid, ts, sender=None, text="x"):
+            frm = f'<div class="from_name">{sender}</div>' if sender else ""
+            cls = "message default clearfix" + ("" if sender else " joined")
+            return (f'<div class="{cls}" id="{mid}"><div class="body">'
+                    f'<div class="pull_right date details" title="{ts}">t</div>'
+                    f'{frm}<div class="text">{text}</div></div></div>')
+        with tempfile.TemporaryDirectory() as td:
+            ed = Path(td) / "export"
+            ed.mkdir()
+            (ed / "messages.html").write_text(
+                '<div class="page_header"><div class="text bold">G</div></div>'
+                + msg("m1", "18.07.2026 09:00:00", "Alice"), encoding="utf-8")
+            (ed / "messages2.html").write_text(
+                msg("m2", "18.07.2026 09:05:00", None, "joined"), encoding="utf-8")
+            (ed / "messages10.html").write_text(
+                msg("m3", "18.07.2026 10:00:00", "Bob"), encoding="utf-8")
+            _, msgs = fch.parse_telegram(ed)
+            by_ts = {m.ts.strftime("%H:%M"): m.sender for m in msgs}
+            self.assertEqual(by_ts["09:05"], "Alice")  # not Bob
+
+    def test_assets_group_scoped_no_cross_group_alias(self):
+        # two groups share a photo basename with DIFFERENT bytes -> both survive
+        # under <slug>__ names; neither note aliases the other's media.
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "luna"
+            (vault / "chats").mkdir(parents=True)
+            for slug, magic in (("ga", b"\x89PNG-A"), ("gb", b"\x89PNG-B")):
+                base = Path(td) / slug
+                base.mkdir()
+                ed = _tg_export(str(base))
+                (ed / "photos" / "photo_1@18-07-2026.jpg").write_bytes(magic)
+                fch.fold("telegram", ed, vault, False, group_slug=slug)
+            adir = vault / "chats" / "telegram" / "_assets"
+            self.assertEqual((adir / "ga__photo_1@18-07-2026.jpg").read_bytes(), b"\x89PNG-A")
+            self.assertEqual((adir / "gb__photo_1@18-07-2026.jpg").read_bytes(), b"\x89PNG-B")
+            note_b = (vault / "chats" / "telegram" / "gb" / "2026-07.md").read_text(encoding="utf-8")
+            self.assertIn("gb__photo_1@18-07-2026.jpg", note_b)
+            self.assertNotIn("ga__photo_1", note_b)
+
+    def test_slug_cannot_escape_telegram_dir(self):
+        # a group named `.`/`..`/path-sep must never yield a traversal slug
+        self.assertEqual(fch._tg_clean_slug(".."), "")
+        self.assertEqual(fch._tg_clean_slug("."), "")
+        self.assertEqual(fch._tg_clean_slug("untitled"), "")
+        self.assertEqual(fch._tg_clean_slug("a/b"), "ab")
+        for bad in ("..", ".", "../../etc"):
+            slug = fch._tg_group_slug(bad, Path("/x/ChatExport"), None)
+            self.assertNotIn("..", slug)
+            self.assertNotIn("/", slug)
+            self.assertTrue(slug)  # non-empty (fallback)
+
+    def test_group_name_yaml_escaped(self):
+        entry = fch.TgMessage(datetime(2026, 7, 18, 9, 0, 0), "Alice", "hi", [])
+        text = fch._tg_month_note('Ops "Primary"\\x', "g", "2026-07", [entry], "rel")
+        self.assertIn(r'group: "Ops \"Primary\"\\x"', text)
+
+    def test_partial_reexport_does_not_clobber(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "luna"
+            (vault / "chats").mkdir(parents=True)
+            base = Path(td) / "full"
+            base.mkdir()
+            fch.fold("telegram", _tg_export(str(base)), vault, False, group_slug="g")
+            note = vault / "chats" / "telegram" / "g" / "2026-07.md"
+            self.assertIn("messages: 3", note.read_text(encoding="utf-8"))
+            # partial re-export of the SAME month (1 msg) must NOT clobber the 3
+            partial = (
+                '<div class="page_header"><div class="text bold">Test Group</div></div>'
+                '<div class="message default clearfix" id="p1"><div class="body">'
+                '<div class="pull_right date details" title="18.07.2026 09:00:00">09:00</div>'
+                '<div class="from_name">Alice</div><div class="text">only one</div>'
+                '</div></div>')
+            pbase = Path(td) / "partial"
+            pbase.mkdir()
+            fch.fold("telegram", _tg_export(str(pbase), html=partial), vault,
+                     False, group_slug="g")
+            self.assertIn("messages: 3", note.read_text(encoding="utf-8"))
+
+    def test_reserved_assets_slug_rejected(self):
+        # --group-slug _assets (any case on a case-insensitive FS) would make
+        # group_dir == assets_dir and drop notes into the gitignored media dir.
+        for slug in ("_assets", "_Assets", "_assets/", "_assets\\", "_assets."):
+            self.assertEqual(fch._tg_clean_slug(slug), "")
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "luna"
+            (vault / "chats").mkdir(parents=True)
+            base = Path(td) / "src"
+            base.mkdir()
+            fch.fold("telegram", _tg_export(str(base)), vault, False,
+                     group_slug="_assets")
+            tg = vault / "chats" / "telegram"
+            self.assertFalse((tg / "_assets" / "2026-07.md").exists())
+            notes = list(tg.glob("*/2026-07.md"))
+            self.assertEqual(len(notes), 1)
+            self.assertNotEqual(notes[0].parent.name, "_assets")
+
+    def test_asset_same_basename_diff_bytes_no_alias(self):
+        # Telegram renumbers per export: a re-export reusing photo_1 for DIFFERENT
+        # bytes must not alias the stale asset — both survive, note embeds the new.
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "luna"
+            (vault / "chats").mkdir(parents=True)
+            b1 = Path(td) / "e1"
+            b1.mkdir()
+            ed1 = _tg_export(str(b1))
+            (ed1 / "photos" / "photo_1@18-07-2026.jpg").write_bytes(b"OLD-BYTES")
+            fch.fold("telegram", ed1, vault, False, group_slug="g")
+            b2 = Path(td) / "e2"
+            b2.mkdir()
+            ed2 = _tg_export(str(b2))
+            (ed2 / "photos" / "photo_1@18-07-2026.jpg").write_bytes(b"NEW-BYTES")
+            fch.fold("telegram", ed2, vault, False, group_slug="g")
+            adir = vault / "chats" / "telegram" / "_assets"
+            names = sorted(p.name for p in adir.iterdir())
+            self.assertEqual(len(names), 2)  # stale kept + new distinct
+            self.assertIn("g__photo_1@18-07-2026.jpg", names)
+            note = (vault / "chats" / "telegram" / "g" / "2026-07.md").read_text(
+                encoding="utf-8")
+            m = re.search(r"g__photo_1@18-07-2026-[0-9a-f]{12}\.jpg", note)
+            self.assertIsNotNone(m)  # note embeds the content-hashed name
+            self.assertIn(m.group(0), names)
+            self.assertEqual((adir / m.group(0)).read_bytes(), b"NEW-BYTES")
+            self.assertEqual(
+                (adir / "g__photo_1@18-07-2026.jpg").read_bytes(), b"OLD-BYTES")
+
+    def test_dry_run_reports_shrink_skip(self):
+        # dry-run must report the SAME notes_created a real run would: the
+        # shrink-guard applies in dry-run, so a shrinking month isn't counted.
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "luna"
+            (vault / "chats").mkdir(parents=True)
+            base = Path(td) / "full"
+            base.mkdir()
+            fch.fold("telegram", _tg_export(str(base)), vault, False, group_slug="g")
+            partial = (
+                '<div class="page_header"><div class="text bold">Test Group</div></div>'
+                '<div class="message default clearfix" id="p1"><div class="body">'
+                '<div class="pull_right date details" title="18.07.2026 09:00:00">09:00</div>'
+                '<div class="from_name">Alice</div><div class="text">only one</div>'
+                '</div></div>')
+            pbase = Path(td) / "partial"
+            pbase.mkdir()
+            report = fch.fold("telegram", _tg_export(str(pbase), html=partial),
+                              vault, True, group_slug="g")  # dry_run=True
+            self.assertEqual(report.notes_created, 0)  # shrinking month skipped
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

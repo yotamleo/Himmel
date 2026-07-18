@@ -114,10 +114,16 @@ bb_forge_pr_has_merged() {
         node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let a=[];try{a=JSON.parse(s||"[]")}catch{};process.stdout.write(String(Array.isArray(a)?a.length:0))})'
 }
 
-# squash-merge + close source branch. args: NUMBER
+# squash-merge + close source branch. args: NUMBER [VETTED_HEAD_SHA]
 # rc 0 = merged; rc 4 = failure. The CLI exits 2 on a merge conflict (the
 # verified §5.1 signal, atomic — nothing merged); surface that distinctly from a
 # generic failure so a caller can tell "rebase needed" from "auth/network died".
+#
+# VETTED_HEAD_SHA (HIMMEL-1058) is accepted for seam parity and IGNORED: the
+# Bitbucket Cloud merge endpoint has no --match-head-commit equivalent, so the
+# TOCTOU window cannot be closed here. It stays theoretical on this backend —
+# the CR/CI gates that produce a vetted SHA are GitHub-only (pr-merge.sh runs
+# them under `[ "$forge" = "github" ]`), so no bitbucket caller has one to pass.
 bb_forge_pr_merge() {
     local number="$1"
     if _bb pr merge "$number" --squash --delete-branch; then

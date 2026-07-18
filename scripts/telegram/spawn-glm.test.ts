@@ -30,6 +30,7 @@ import {
   formatUsageWarn,
   parseWarnPct,
   resolveProfileSettings,
+  teardownMintedWorktree,
   DEFAULT_LANE_PROFILE,
   type CapGuardDeps,
 } from "./spawn-glm";
@@ -343,6 +344,135 @@ test("runSharedDispatch (I7): needsWorktreeAdd:true invokes gitAdd exactly once 
 // FAIL-CLOSED (C3) throw path, against real git state (mirrors the
 // makeSharedRepo real-temp-repo pattern used by the I6/I7 suite above).
 
+// Real `git worktree add` + `branch -D` against a temp repo runs 6-16s on Windows
+// (well over bun's 5000ms default). Pinned explicitly so these prove the teardown
+// everywhere, instead of timing out into a false red on a slow box.
+const GIT_TEST_TIMEOUT_MS = 60_000;
+
+// A throwaway repo with the HOST's global hooks switched off. Not a nicety: a
+// global core.hooksPath (tokensave installs one) fires a post-checkout auto-init
+// on `worktree add` — it reads an all-zeros old-ref as a fresh clone — and
+// backgrounds a full index into the temp repo. That costs ~30s per test and
+// holds tokensave.db open long enough to EBUSY the rmSync cleanup. These tests
+// exercise git, not whatever the host has installed globally.
+function initHermeticRepo(prefix: string): { repo: string; run: (args: string[]) => void } {
+  const repo = mkdtempSync(join(tmpdir(), prefix));
+  // Throw on a failed git command rather than swallowing it. Setup errors must
+  // surface AS setup errors — and silently ignoring the core.hooksPath call
+  // would be worse than a confusing failure: the test would still run, but
+  // WITHOUT the hermeticity this helper exists to guarantee, i.e. a false green.
+  const run = (args: string[]) => {
+    const r = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed (rc=${r.exitCode}): ${r.stderr.toString().trim()}`);
+  };
+  run(["init", "-b", "main"]);
+  const noHooks = join(repo, "no-hooks");
+  mkdirSync(noHooks, { recursive: true });
+  run(["config", "core.hooksPath", noHooks]);
+  run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"]);
+  return { repo, run };
+}
+
+// HIMMEL-1094 — behavioural proof on a REAL repo. The wiring pins above show the
+// teardown is called in the right place; this shows it actually undoes both the
+// worktree and the branch, and that it is inert when there is nothing to undo.
+test("HIMMEL-1094: teardownMintedWorktree removes a just-minted worktree AND its branch", () => {
+  const { repo, run } = initHermeticRepo("teardown-");
+  try {
+    const wt = join(repo, "wt-minted");
+    run(["worktree", "add", wt, "-b", "glm/minted"]);
+    expect(existsSync(wt)).toBe(true);
+    expect(gitBranchExists(repo, "glm/minted")).toBe(true);
+
+    teardownMintedWorktree(repo, wt, "glm/minted");
+
+    expect(existsSync(wt)).toBe(false);
+    expect(gitBranchExists(repo, "glm/minted")).toBe(false);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
+test("HIMMEL-1094: teardown is best-effort — a bogus worktree/branch never throws (must not mask the original error)", () => {
+  const { repo } = initHermeticRepo("teardown-noop-");
+  try {
+    // Teardown runs on an ALREADY-failing path; if it threw, it would replace the
+    // real resolve error with a confusing git error.
+    expect(() => teardownMintedWorktree(repo, join(repo, "does-not-exist"), "no/such-branch")).not.toThrow();
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
+// HIMMEL-1094 — the FAIL-SAFE guarantee, and the reason the teardown carries no
+// --force (operator call, 2026-07-17). A worktree that still holds content must
+// survive teardown, and its branch must survive with it: the branch is the only
+// handle left on a worktree git refuses to delete, so dropping it would strand
+// the directory AND destroy the way back to it. Uncommitted work is simulated
+// with an untracked file — the same shape `git worktree remove` refuses on.
+// Mutation-proof: restoring --force deletes the worktree (first expect fails);
+// making the branch delete unconditional deletes the branch (second fails).
+test("HIMMEL-1094: teardown refuses a worktree holding content, and KEEPS its branch", () => {
+  const { repo, run } = initHermeticRepo("teardown-safe-");
+  try {
+    const wt = join(repo, "wt-dirty");
+    run(["worktree", "add", wt, "-b", "glm/dirty"]);
+    writeFileSync(join(wt, "worker-output.txt"), "work that must not be destroyed");
+
+    teardownMintedWorktree(repo, wt, "glm/dirty");
+
+    expect(existsSync(wt)).toBe(true);
+    expect(gitBranchExists(repo, "glm/dirty")).toBe(true);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
+// HIMMEL-1094 [CodeRabbit] — the retry must actually OUTLAST the race it exists
+// for. The tokensave init that dirties a fresh worktree indexes for ~30s, so a
+// window shorter than that expires mid-init and strands the orphan. Simulated in
+// miniature: an untracked file makes the first remove refuse, and a separate
+// PROCESS clears it 3s later (Bun.sleepSync blocks this thread, so a timer here
+// would never fire — and process.execPath avoids the bare-`bash` WSL-stub trap).
+// 3s, not 1s: each `git worktree remove` spawn costs ~300ms, so a 1s blocker
+// sits in the noise floor and even an 800ms deadline drifts past it — the test
+// then passes on the very window it is meant to reject. Mutation-verified: at
+// 3s the old 5x200ms=800ms window fails this test, and 30s passes it.
+test("HIMMEL-1094: teardown RETRIES until a transient blocker clears (the tokensave race, in miniature)", () => {
+  const { repo, run } = initHermeticRepo("teardown-retry-");
+  try {
+    const wt = join(repo, "wt-transient");
+    run(["worktree", "add", wt, "-b", "glm/transient"]);
+    const blocker = join(wt, "transient-blocker.txt");
+    writeFileSync(blocker, "stands in for a half-written .tokensave/");
+    Bun.spawn([process.execPath, "-e", `setTimeout(() => { try { require("fs").rmSync(${JSON.stringify(blocker)}); } catch {} }, 3000)`], { stdout: "ignore", stderr: "ignore" });
+
+    teardownMintedWorktree(repo, wt, "glm/transient");
+
+    expect(existsSync(wt)).toBe(false);
+    expect(gitBranchExists(repo, "glm/transient")).toBe(false);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
+// HIMMEL-1094 — the exact damage the parked WIP did, pinned. When a remove dies
+// partway through deleting the directory, git prunes the worktree's admin record
+// FIRST, so the branch stops looking checked-out and `git branch -D` starts
+// SUCCEEDING — stranding the directory while destroying the branch that was its
+// only handle. That is strictly worse than the orphan this teardown fixes.
+// Reproduced by deleting the admin record directly ($GIT_DIR/worktrees/<id>),
+// which is the state git leaves behind after a failed delete.
+// Mutation-proof: this is the case git does NOT protect for us — drop the
+// existsSync gate and the branch really is deleted, and this test fails.
+test("HIMMEL-1094: a stranded worktree (admin record already pruned) still KEEPS its branch", () => {
+  const { repo, run } = initHermeticRepo("teardown-stranded-");
+  try {
+    const wt = join(repo, "wt-stranded");
+    run(["worktree", "add", wt, "-b", "glm/stranded"]);
+    // Simulate git's own prune-then-fail: the record goes, the directory stays.
+    rmSync(join(repo, ".git", "worktrees", "wt-stranded"), { recursive: true, force: true });
+    expect(existsSync(wt)).toBe(true);
+
+    teardownMintedWorktree(repo, wt, "glm/stranded");
+
+    expect(existsSync(wt)).toBe(true);
+    expect(gitBranchExists(repo, "glm/stranded")).toBe(true);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
 test("gitIsDirty (F1): a real clean temp repo -> false; with an uncommitted file -> true", () => {
   const repo = mkdtempSync(join(tmpdir(), "gitdirty-"));
   const run = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
@@ -633,7 +763,48 @@ test("main() validates the profile pre-side-effect but resolves the BASELINE fro
   // pre-side-effect validation passes installed:[] (pure name/overlay check)
   expect(src).toMatch(/resolveProfileSettings\(profile, addPlugins, absCwd, \[\]\)/);
   // the REAL resolve happens in runBody against the worktree the worker runs in
-  expect(src).toMatch(/const settings = resolveProfileSettings\(profile, addPlugins, worktree\)/);
+  expect(src).toMatch(/settings = resolveProfileSettings\(profile, addPlugins, worktree\)/);
+});
+
+// HIMMEL-1094 — the teardown's BLAST RADIUS is the whole point of these pins:
+// scoped to the resolve, own-branch only. Getting it wrong deletes a running
+// worker's worktree, so pin the wiring, not just the helper's behaviour.
+test("HIMMEL-1094: own-branch dispatch passes a teardown; shared mode does NOT (wiring pin)", () => {
+  for (const f of ["scripts/telegram/spawn-glm.ts", "scripts/telegram/spawn-claudex.ts"]) {
+    const src = _rf(f, "utf8");
+    // own-branch (-b mints worktree AND branch) hands runBody a teardown
+    expect(src).toMatch(/code = await runBody\(\(\) => teardownMintedWorktree\(absCwd, worktree, branch\)\)/);
+    // shared mode reuses a CALLER-owned worktree/branch, so the teardown must be
+    // wired at EXACTLY ONE call site — the own-branch one pinned above. If a
+    // future edit also hands it to runSharedDispatch, this count trips.
+    expect(src.match(/teardownMintedWorktree\(absCwd, worktree, branch\)/g)?.length).toBe(1);
+  }
+});
+
+// HIMMEL-1094 [coderabbit-1] — the pin above proves the teardown is handed in at
+// exactly one call site; this proves WHERE it fires. runBody wraps executeRun
+// too, so a teardown reachable from executeRun's failure path would delete a
+// RUNNING worker's worktree with its work still in it. Pin that onSetupFail is
+// invoked from exactly one place, and that the place is the resolve's catch —
+// which does nothing but tear down and rethrow the ORIGINAL error.
+test("HIMMEL-1094: onSetupFail fires ONLY in the resolve catch, never around executeRun (blast-radius pin)", () => {
+  for (const f of ["scripts/telegram/spawn-glm.ts", "scripts/telegram/spawn-claudex.ts"]) {
+    const src = _rf(f, "utf8");
+    expect(src).toMatch(/settings = resolveProfileSettings\(profile, addPlugins, worktree\);\s*\}\s*catch \(e\) \{[^}]*onSetupFail\?\.\(\);\s*throw e;\s*\}/);
+    // Exactly one invocation site — a second one could only be a wider scope.
+    expect(src.match(/onSetupFail\?\.\(\)/g)?.length).toBe(1);
+  }
+});
+
+test("HIMMEL-1094: teardown fires ONLY on the resolve throw, never around executeRun (blast-radius pin)", () => {
+  for (const f of ["scripts/telegram/spawn-glm.ts", "scripts/telegram/spawn-claudex.ts"]) {
+    const src = _rf(f, "utf8");
+    // the catch that calls onSetupFail must be the one wrapping the resolve
+    expect(src).toMatch(/settings = resolveProfileSettings\(profile, addPlugins, worktree\);\s*\}\s*catch \(e\) \{[\s\S]{0,400}?onSetupFail\?\.\(\);\s*throw e;/);
+    // executeRun must NOT be inside a teardown-bearing catch: that worktree holds
+    // the worker's WORK. Exactly one onSetupFail call site per file.
+    expect(src.match(/onSetupFail\?\.\(\)/g)?.length).toBe(1);
+  }
 });
 
 test("resolveProfileSettings: unknown profile / bad overlay id throws (main → exit 2)", () => {

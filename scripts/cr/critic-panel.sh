@@ -226,8 +226,29 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
   const tiers = (process.env.TIER_FILTER || "free").split(",").map(t => t.trim());
   try {
     const j = JSON.parse(fs.readFileSync(reg, "utf8"));
-    const p = (j.panel || []).filter(r => r.slug && r.model && tiers.includes(r.tier));
-    if (!p.length) throw new Error("no rows");
+    // A non-array panel, or a null/non-object row, must be IGNORED rather
+    // than throw: "usable" means exactly the rows we can act on, so one
+    // malformed row should not condemn an otherwise-fine registry to rc=7.
+    // (No backticks in this comment: shellcheck reads them as SC2016
+    // command-substitution-in-single-quotes inside the node -e block.)
+    // "usable" must require a non-empty tier too, not just slug+model: the
+    // rc=8 exit below MEANS "the registry is fine, you asked for a tier nobody
+    // has". A tier-less row can never match ANY filter, so counting it as
+    // usable would report a MALFORMED registry (every row missing tier) as
+    // rc=8 "no tier match" instead of rc=7 "invalid" — undermining the very
+    // distinction this split exists to draw.
+    const panel = Array.isArray(j.panel) ? j.panel : [];
+    const nonEmptyStr = (v) => typeof v === "string" && v.trim().length > 0;
+    const usable = panel.filter(r =>
+      r && typeof r === "object" &&
+      nonEmptyStr(r.slug) && nonEmptyStr(r.model) && nonEmptyStr(r.tier)
+    );
+    const p = usable.filter(r => tiers.includes(r.tier));
+    // Distinct exits so the caller can tell "registry broken" (7) from
+    // "registry fine, but no row matches the requested tier" (8) — collapsing
+    // both into one "missing/invalid/empty" message sent a HIMMEL-1093 run
+    // hunting a registry that was present and valid all along.
+    if (!p.length) process.exit(usable.length ? 8 : 7);
     // "-" placeholder for empty middle fields: tab is IFS WHITESPACE in the
     // bash readers, so consecutive tabs collapse and a non-empty 4th field
     // would shift LEFT into the perspective slot (HIMMEL-729 field-shift bug).
@@ -258,10 +279,30 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
   } catch (e) {
     process.exit(7);
   }
-' 2>/dev/null)" || rows=""
+' 2>/dev/null)" || rows_rc=$?
 
 if [ -z "${rows:-}" ]; then
-    echo "critic-panel.sh: registry $REG missing/invalid/empty — anchor-only ($ANCHOR_SLUG)" >&2
+    # rc=8 (HIMMEL-1101): registry present and VALID, but zero rows match the
+    # requested tier — the anchor fallback below then escalates to a PAID
+    # critic. Say so: this path is how an unset CR_PROFILE (tier filter
+    # "free", zero free rows registered) silently spends the OpenAI bank, and
+    # it also bypasses HIMMEL-737's triviality gate, which only fires when
+    # "paid" is IN the tier filter.
+    # Each rc gets its OWN diagnostic: an `else` that swallows 7 together with
+    # every unexpected rc (a node crash, an empty-stdout-at-rc-0) would report
+    # "missing/invalid/empty" for a registry that is nothing of the sort — the
+    # same over-broad message this split set out to kill.
+    case "${rows_rc:-0}" in
+        8)
+            echo "critic-panel.sh: no critics in $REG match tier(s) '$TIER_FILTER' — falling back to the PAID anchor ($ANCHOR_SLUG/$ANCHOR_MODEL), which SPENDS the OpenAI bank (CR_PROFILE=none for claude-only)" >&2
+            ;;
+        7)
+            echo "critic-panel.sh: registry $REG missing/invalid/empty — anchor-only ($ANCHOR_SLUG)" >&2
+            ;;
+        *)
+            echo "critic-panel.sh: registry $REG parse failed unexpectedly (rc=${rows_rc:-0}) — anchor-only ($ANCHOR_SLUG)" >&2
+            ;;
+    esac
     rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	-	-	${ANCHOR_PROVIDER}	-	-"
 fi
 

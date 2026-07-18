@@ -400,7 +400,146 @@ regardless of cwd. (A per-run scope override lands with the Phase-2 verbs.)
 It's the shared pre-check/post-check/enable-time primitive later himmelctl
 verbs (install/uninstall/enable) build on.
 
-#### Guardrail mode — global vs project (HIMMEL-709)
+### `himmelctl ensure` — converge this target (HIMMEL-755)
+
+```bash
+node scripts/himmelctl/bin.js ensure [--profile core|luna|all] [--items a,b] [--yes] [--dry-run]
+```
+
+Three steps: a `status`-shaped pre-check read, driving whatever it reports
+red/degraded through the EXISTING install primitives (`adopt.sh`/`setup.sh`/
+the `wire-*.sh` libs/`install-plugins.sh`/qmd's `qmd_install` — never
+reimplemented), then a `status`-shaped post-check. Idempotent — an
+already-green target is a no-op. `--profile` reconciles the target to a
+different profile FIRST (so e.g. `ensure --profile luna` on a core-derived
+target converges the luna-only items too) before converging. `--items` scopes
+the run to a comma-list of item ids. Both `status --items` and `ensure --items`
+reject an unknown item id outright (exit 2); what `ensure --items` adds —
+**unlike `status`**, which validates ids and nothing further, staying a pure
+read/display filter — is that it validates the
+selection's dependency closure in BOTH directions before touching anything: a
+selection that omits a still-desired, red/degraded prerequisite an item being
+converged depends on is **rejected** (exit 2, zero mutation), naming both ids
+and the remediation that actually resolves it; the mirror check on the
+toward-disabled side rejects unwiring a prerequisite while a still-desired
+dependent isn't being unwired too. Naming a prerequisite in `--items` is not
+by itself sufficient to satisfy this check if that prerequisite is hint-only
+(see below, and the "never fail-closes" caveat there) — only a prerequisite
+that will genuinely converge this run does. `--dry-run` prints the
+ordered convergence plan and makes **zero mutations** — no primitive is ever
+invoked. Without `--yes` a single consolidated `himmelctl: about to ...` line
+prints once up front (never a per-item prompt) — interactively (a real TTY)
+this is followed by one `Proceed? [Y/n]` confirm. That one line may list
+convergence work ("converge N item(s): ..."), disable/unwire work ("disable N
+item(s): ..."), or **both** at once (semicolon-joined) when a single `ensure`
+run has items moving in each direction — either way, **one** `Proceed?`
+confirmation authorizes **everything listed**, including any unwiring/
+disabling, not just the installs. A **non-interactive, non-dry-run** run
+(piped/automation — how `ensure` runs outside a Claude session) that has
+**any work to perform** (convergence, disable, or both) and passes neither
+`--yes` nor `--dry-run` exits **2** with `non-interactive ensure requires
+--yes` and makes zero mutations — automation must pass `--yes` explicitly;
+there is no silent unattended consent. An already-green run (nothing to
+converge or disable) needs no consent and exits **0** whether or not `--yes`
+is given.
+
+An item with no automated install path yet (a `config`-type item, pending
+sub-ticket D, or one with no `install` descriptor at all) is reported as a
+hint. Two distinct guarantees here, not one: once a run is actually
+converging, a hint-only item never fail-closes it on its own account — it's
+never dispatched, so `ensure` never waits on or blocks over its success.
+But `--items` dependency-closure VALIDATION (above) is a separate, EARLIER
+gate — naming a dependent whose desired+red prerequisite is hint-only is
+rejected before anything runs at all, precisely because that prerequisite
+can never converge no matter how it's selected. So a hint-only item CAN
+block a selection from proceeding in the first place, even though it never
+blocks convergence once a run is genuinely underway. An enabled item the
+operator no longer wants converges by its `removable` field: `per-item` runs
+the matching `unwire-*.sh` primitive; `full-offboard-only` errors, naming
+the item and pointing at `himmelctl uninstall`.
+
+#### `HIMMELCTL_SUDO_PASSWORD` — optional, for unattended Linux dep installs
+
+`ensure` can converge missing host binaries (`dep`-type manifest items —
+`jq`, `git`, `shellcheck`, ...) via the platform package manager. On Linux
+that means `apt-get`, which needs `sudo`. `HIMMELCTL_SUDO_PASSWORD` is an
+**optional** var: set it to let an unattended `ensure` run authenticate and
+install via apt non-interactively; leave it unset and `ensure` falls back to
+the non-interactive `sudo -n` form, which never prompts and never hangs —
+a dep whose sudo would PROMPT for a password fails FAST rather than blocking
+forever waiting for interactive input nobody outside a Claude session is
+there to provide. `sudo -n` is **not** an unconditional failure: where sudo
+is already cached from a recent authentication, or the account is configured
+`NOPASSWD`, it succeeds and the dep installs normally — the var only matters
+when authentication would actually prompt. Resolution order mirrors every other himmel
+`.env`-backed setting: a live `HIMMELCTL_SUDO_PASSWORD` in the process
+environment wins; otherwise it's read from the **primary checkout's**
+`.env`. Without it configured, `ensure` prints a one-line advisory (once per
+run, never per dep item) pointing here — it never reveals whether the var
+was merely absent or present-but-empty, only "not configured".
+
+**Security:** the password is passed to `sudo` on **stdin only** (`sudo -S
+-p ''`) — never as a command-line argument (`ps`-visible to every user on
+the box), never logged, never printed in a `--dry-run` preview or an error
+message, and never present in the **child process's environment** either:
+`ensure` passes every apt/winget/brew primitive an explicit, scrubbed copy
+of its own environment with `HIMMELCTL_SUDO_PASSWORD` deleted — an
+inherited env var would otherwise be readable from `/proc/<pid>/environ` by
+any other process running as your user for the primitive's whole lifetime,
+and would propagate to every grandchild it spawns (apt hooks, postinst
+scripts, ...), none of which need it. A timed-out primitive is torn down
+tree-wide (not just the direct child) so a wedged installer does not leave a
+credential-bearing descendant running in the background — but the two
+platforms give **materially different guarantees**, and the POSIX one is
+weaker: on Linux/macOS the installer runs in its own process group, killed
+as a group on timeout, which is **best-effort** — a descendant that
+deliberately leaves that group (a `setsid`, a double-fork — routine daemon
+behaviour) is no longer reached by the group kill and survives it. Do not
+read the POSIX path as a Job-Object equivalent; it has no comparable
+structural teardown. On **Windows**, the installer and every descendant it spawns run
+inside a kill-on-close **Job Object** (`scripts/himmelctl/lib/job-run.ps1`,
+plain PowerShell + Win32 P/Invoke, zero new npm dependencies) — every
+descendant automatically joins the same job at creation, so a timeout can't
+leave a survivor even if an intermediate process has already exited and
+"re-parented" its own child (exactly what installer postinst/daemon scripts
+routinely do), a case a plain process-tree walk can miss. Job Object setup
+(creation, limit configuration, assigning the installer process to the job)
+is **fail-closed**, not best-effort: if any step of it fails, job-run.ps1
+refuses to run the installer at all (or kills it immediately if it had
+already started) rather than silently falling back to a weaker
+direct-child-only cleanup, so the primitive lands in `failed[]` instead of
+running unprotected. One residual gap this doesn't close: the installer
+process is assigned to the job in a separate call right after it starts,
+not atomically with its own creation (avoiding a `CREATE_SUSPENDED`-based
+launch, more Win32 P/Invoke surface than this file otherwise needs) — a
+descendant the installer spawns in that sub-millisecond window, before
+assignment completes, would not itself inherit job membership and could in
+principle survive a later timeout.
+
+Because the value lives in a plaintext `.env` file, treat it like any other
+secret in that file:
+- The primary checkout's `.env` **must stay untracked** — it is already
+  listed in himmel's `.gitignore`; never `git add -f` it or copy its
+  contents into a tracked file.
+- Give it **owner-only permissions** on Linux/macOS: `chmod 600 .env`.
+- Where available, prefer a real secret manager (your OS keychain, `pass`,
+  a vault/secrets-manager integration, CI secret store, ...) over a
+  plaintext `.env` value — set `HIMMELCTL_SUDO_PASSWORD` in the process
+  environment from there instead of writing it to disk at all; recall the
+  resolution order above (a live process-env value always wins over the
+  `.env` fallback), so this requires no code changes, just not writing the
+  file-based fallback.
+
+macOS needs no equivalent for a **standard** Homebrew install: the default,
+supported prefix (`/opt/homebrew` on Apple Silicon, `/usr/local` on Intel)
+is owned by the invoking user, so `brew install` never prompts for a
+password there. A **custom** prefix, or an install directory with
+pre-existing permission problems, can still require elevation or fail
+outright — `HIMMELCTL_SUDO_PASSWORD` has no effect on brew either way (it's
+only ever consumed by the Linux `sudo -S apt-get` path), so a brew failure
+of that kind needs manual remediation. Windows dep installs go through
+`winget`, also non-interactive (`--silent --disable-interactivity
+--accept-*-agreements`), no credential needed.
 
 The three generic guardrails (`auto-approve-safe-bash`, `block-edit-on-main`,
 `block-read-secrets`) can live at the **user** scope (protects every repo you

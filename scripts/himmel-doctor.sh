@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
         --file-issue) DO_FILE=1 ;;
         --repo) shift; REPO_FLAG="${1:-}" ;;
         --no-color) USE_COLOR=0 ;;
-        -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,/^set /p' "${BASH_SOURCE[0]}" | sed '$d'; exit 0 ;;
         *) echo "himmel-doctor: unknown arg '$1'" >&2; exit 2 ;;
     esac
     shift
@@ -554,6 +554,64 @@ check_c14() {
     fi
 }
 
+# --- C16: delegate to `himmelctl status --json` for install/wiring TRUTH -------
+# HIMMEL-755 sub-ticket F (doctor<->status dedup). Operator-locked design:
+# `himmelctl status --json` OWNS install/wiring truth (the install manifest's
+# desired-vs-actual diff). C1-C15 stay harness-health checks status does not
+# cover (resolution robustness, shadowing, dirty vaults, drift, PATH-
+# fragility, worktrees, registry gaps, egress pins, startup health) -- none
+# of them reimplement a manifest presence probe, so there is nothing to
+# dedup there. This section instead COMPOSES the two surfaces: run status
+# ONCE and surface its red/degraded DESIRED items as doctor findings, rather
+# than doctor re-deriving any install/wiring presence fact itself. Read-only;
+# degrades gracefully -- no install profile (rc=2), no node, or any other
+# unparsable/non-zero result is an INFO skip, never a crash or a false FAIL
+# (mirrors the read-only advisory stance of C7/C9-C12).
+check_c16() {
+    local node_bin
+    if ! node_bin="$(resolve_node 2>/dev/null)"; then
+        emit INFO C16-status "no node found -- himmelctl status delegation skipped" "install Node.js to enable install/wiring-truth findings via himmel-doctor"
+        return
+    fi
+    local bin="$REPO_ROOT/scripts/himmelctl/bin.js"
+    if [ ! -f "$bin" ]; then
+        emit INFO C16-status "scripts/himmelctl/bin.js not found -- delegation skipped"
+        return
+    fi
+
+    local out rc
+    out="$("$node_bin" "$bin" status --json 2>/dev/null)"; rc=$?
+    case "$rc" in
+        0) : ;;
+        2) emit INFO C16-status "no himmelctl install profile found -- run 'node scripts/himmelctl/bin.js install' to enable install/wiring-truth findings here"; return ;;
+        *) emit INFO C16-status "himmelctl status --json unavailable (rc=$rc) -- delegation skipped"; return ;;
+    esac
+
+    # Require the EXPECTED schema, not merely valid JSON: an object with an
+    # array-valued .items. Valid JSON of the wrong shape (e.g. `{}` from a
+    # future/broken status build) would otherwise pass a bare `jq -e .`, yield
+    # zero items, and emit a misleading "no findings" OK — treat it as
+    # unavailable and take the delegation-skipped path instead.
+    if ! command -v jq >/dev/null 2>&1 \
+       || ! printf '%s' "$out" | jq -e 'type == "object" and (.items | type == "array")' >/dev/null 2>&1; then
+        emit INFO C16-status "himmelctl status --json output unavailable/unparsable -- delegation skipped"
+        return
+    fi
+
+    local bad count
+    bad="$(printf '%s' "$out" | jq -r '.items[]? | select(.desired == true and (.severity == "red" or .severity == "degraded")) | "\(.severity)/\(.id): \(.detail)"' 2>/dev/null || true)"
+    count="$(printf '%s\n' "$bad" | grep -c . || true)"
+    if [ "${count:-0}" -eq 0 ]; then
+        emit OK C16-status "himmelctl status: no red/degraded install/wiring findings"
+        return
+    fi
+    emit WARN C16-status "$count himmelctl install/wiring finding(s) (delegated from 'himmelctl status --json')" "node scripts/himmelctl/bin.js status   # or: ... ensure"
+    printf '%s\n' "$bad" | sed 's/^/       · /'
+    # Persist the per-item detail into the filed-issue body too, not only
+    # stdout — otherwise `--file-issue` reports the count without the items.
+    printf '%s\n' "$bad" | sed 's/^/  - /' >> "$BODY"
+}
+
 # --- issue filing ---------------------------------------------------------------
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
@@ -683,6 +741,7 @@ check_c12
 check_c13
 check_c14
 check_c15
+check_c16
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

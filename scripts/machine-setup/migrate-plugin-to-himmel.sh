@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
         --apply)  APPLY=1; shift ;;
         --target) TARGET="${2:?--target needs a value}"; shift 2 ;;
         -h|--help)
-            sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
             exit 0 ;;
         -*) echo "ERROR: unknown flag: $1" >&2; exit 2 ;;
         *)  SPECS+=("$1"); shift ;;

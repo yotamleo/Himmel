@@ -5,7 +5,7 @@ import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { resolveLanes, formatCodexHealth, buildCtx, fmtCtx } from '../resolve.mjs';
+import { resolveLanes, formatCodexHealth, buildCtx, fmtCtx, mergeLocalOverlay } from '../resolve.mjs';
 
 const REG = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'lanes.json'), 'utf8'));
 const ctx = (o = {}) => ({ env: o.env ?? {}, pathHas: (c) => (o.paths ?? []).includes(c), installed: o.installed ?? {} });
@@ -114,4 +114,41 @@ test('every contextWindow in the registry is a positive integer', () => {
     assert.ok(Number.isInteger(l.contextWindow) && l.contextWindow > 0,
       `${l.id} contextWindow must be a positive integer`);
   }
+});
+
+// HIMMEL-758 — mergeLocalOverlay(): the true per-lane lanes.local.json overlay
+// `himmelctl config` writes through set-lane-override.mjs.
+test('mergeLocalOverlay: no local overrides -> base returned unchanged (same lane objects)', () => {
+  const base = { lanes: [{ id: 'a', label: 'A', probe: { kind: 'always' } }] };
+  const merged = mergeLocalOverlay(base, { lanes: [] });
+  assert.deepEqual(merged.lanes, base.lanes);
+});
+test('mergeLocalOverlay: a local entry shallow-merges onto the matching base id (local wins)', () => {
+  const base = { lanes: [
+    { id: 'a', label: 'A', probe: { kind: 'always' } },
+    { id: 'b', label: 'B', probe: { kind: 'env', name: 'X' } },
+  ] };
+  const local = { lanes: [{ id: 'a', probe: { kind: 'never' } }] };
+  const merged = mergeLocalOverlay(base, local);
+  assert.deepEqual(merged.lanes.map((l) => l.id), ['a', 'b']); // base order preserved
+  assert.deepEqual(merged.lanes[0], { id: 'a', label: 'A', probe: { kind: 'never' } }); // label survives, probe overridden
+  assert.deepEqual(merged.lanes[1], base.lanes[1]); // untouched lane unchanged
+});
+test('mergeLocalOverlay: a local-only id (absent from base) is appended', () => {
+  const base = { lanes: [{ id: 'a', probe: { kind: 'always' } }] };
+  const local = { lanes: [{ id: 'custom', probe: { kind: 'always' } }] };
+  const merged = mergeLocalOverlay(base, local);
+  assert.deepEqual(merged.lanes.map((l) => l.id), ['a', 'custom']);
+});
+test('mergeLocalOverlay: malformed/empty inputs never throw', () => {
+  assert.deepEqual(mergeLocalOverlay({}, {}).lanes, []);
+  assert.deepEqual(mergeLocalOverlay({ lanes: [] }, { lanes: [] }).lanes, []);
+  assert.deepEqual(mergeLocalOverlay(undefined, undefined).lanes, []);
+});
+test('mergeLocalOverlay: never applied against the REAL lanes.json base + a synthetic override, resolveLanes then suppresses that lane', () => {
+  const local = { lanes: [{ id: 'haiku', probe: { kind: 'never' } }] };
+  const merged = mergeLocalOverlay(REG, local);
+  const ids = resolveLanes(merged, ctx()).map((l) => l.id);
+  assert.ok(!ids.includes('haiku'), 'a never-overridden lane must not resolve even though its base probe (always) would');
+  assert.ok(ids.includes('sonnet'), 'every other always-on lane still resolves');
 });

@@ -38,6 +38,19 @@ make_home() {
 
 # A real-shape WARN row body (level+target+span+message on one printable line).
 db_hook_row()  { printf 'WARN codex_core_plugins::manifest session_loop{thread_id=%s}:submission_dispatch{}:turn: load_plugins_from_layer_stack: ignoring hooks: expected a string, string array, object, or object array; found object\n' "$1"; }
+# HIMMEL-1104: the SAME "ignoring hooks" text from the marketplace SUGGESTION
+# scan (non-installed plugins; parsed hooks discarded). Real shape, captured live.
+db_suggest_row() { printf 'WARN codex_core_plugins::manifest session_loop{thread_id=%s}:submission_dispatch{}:turn:built_tools.load_discoverable_tools:list_tool_suggest_discoverable_tools_with_auth:list_tool_suggest_discoverable_plugins: ignoring hooks: expected a string, string array, object, or object array; found object\n' "$1"; }
+# Write a plugin-cache hooks.json fixture: make_hooks <home> <rel-dir> <with_desc>
+make_hooks() {
+  local dir="$1/plugins/cache/$2"
+  mkdir -p "$dir"
+  if [ "$3" = "desc" ]; then
+    printf '%s\n' '{"description":"x","hooks":{"SessionStart":[]}}' > "$dir/hooks.json"
+  else
+    printf '%s\n' '{"hooks":{"SessionStart":[]}}' > "$dir/hooks.json"
+  fi
+}
 db_skill_row() { printf 'WARN codex_core_plugins::manifest session_loop{thread_id=%s}:built_tools: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=X/.codex-plugin/plugin.json\n' "$1"; }
 db_noise_row() { printf 'INFO codex_core_skills::service session_loop{thread_id=%s}: skills cache cleared (0 entries)\n' "$1"; }
 
@@ -66,6 +79,95 @@ H="$(make_home hookfail "$NEW_TID" "$SMALL_WAW")"
 rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
 check_rc 1 "$rc" "hook-failure -> exit 1"
 want_line '^WARN hook-failure:' "$out" "hook-failure WARN line present"
+
+# --- 2b. HIMMEL-1104: suggestion-scan noise must NOT fire -> exit 0 -------------
+# The regression that made a session distrust its own guardrails (live 2026-07-16):
+# the marketplace suggestion scan emits the identical "ignoring hooks" text, but
+# discards the parsed hooks. Offending plugins present in the cache too, to prove
+# it is the SPAN that gates the finding, not the cache contents.
+H="$(make_home suggestnoise "$NEW_TID" "$SMALL_WAW")"
+make_hooks "$H" "claude-plugins-official/hookify/local/hooks" desc
+{ db_noise_row "$NEW_TID"; db_suggest_row "$NEW_TID"; db_suggest_row "$NEW_TID"; } > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 0 "$rc" "suggestion-scan 'ignoring hooks' noise -> exit 0 (not a hook failure)"
+if [ -z "$out" ]; then pass "suggestion-scan noise -> no findings printed"; else fail "suggestion noise printed: $out"; fi
+
+# --- 2c. upstream candidate named, but NOT declared safe -> exit 1 --------------
+# The log row carries no path, so a cache hit is a CANDIDATE, not proof. Naming an
+# upstream candidate must NOT clear himmel's guardrails: himmel's own hooks could
+# be failing for an unrelated reason while an upstream file merely happens to
+# carry a `description`. Fail closed.
+H="$(make_home upstreamoffender "$NEW_TID" "$SMALL_WAW")"
+make_hooks "$H" "claude-plugins-official/ralph-loop/1.0.0/hooks" desc
+make_hooks "$H" "himmel/himmel-ops/0.4.0/hooks" clean
+{ db_noise_row "$NEW_TID"; db_hook_row "$NEW_TID"; } > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "upstream candidate -> exit 1"
+want_line 'ralph-loop' "$out" "upstream candidate names the plugin path"
+want_line 'NOT correlated' "$out" "upstream candidate is not correlated to the failure"
+if printf '%s\n' "$out" | grep -q 'safe to route'; then
+  fail "upstream candidate must NOT declare the lane safe to route (out: $out)"
+else
+  pass "upstream candidate does not declare the lane safe (fail-closed)"
+fi
+
+# --- 2e. cache unscannable -> offender unidentified, still fail-closed -> exit 1 -
+# No plugins/cache at all: must report "could NOT be scanned", never assert that
+# no file carries a `description` (a fact never checked).
+H="$(make_home noscan "$NEW_TID" "$SMALL_WAW")"
+{ db_noise_row "$NEW_TID"; db_hook_row "$NEW_TID"; } > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "unscannable cache -> exit 1"
+want_line 'could NOT be scanned' "$out" "unscannable cache says so rather than asserting none found"
+
+# --- 2h. case parity: a `Description` key is NOT the lowercase field ------------
+# jq's has("description") and codex's serde field matching are both
+# case-sensitive; the ps1 twin must use -ccontains to agree (plain -contains is
+# case-INSENSITIVE and would flag this).
+H="$(make_home casevariant "$NEW_TID" "$SMALL_WAW")"
+mkdir -p "$H/plugins/cache/claude-plugins-official/casey/1.0.0/hooks"
+printf '%s\n' '{"Description":"x","hooks":{"SessionStart":[]}}' > "$H/plugins/cache/claude-plugins-official/casey/1.0.0/hooks/hooks.json"
+{ db_noise_row "$NEW_TID"; db_hook_row "$NEW_TID"; } > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "case-variant Description -> exit 1"
+if printf '%s\n' "$out" | grep -q 'casey'; then
+  fail "case-variant 'Description' must NOT be flagged as a description offender (out: $out)"
+else
+  pass "case-variant Description is not flagged (jq/serde case-sensitivity)"
+fi
+
+# --- 2f. unparseable hooks.json -> INCOMPLETE, never a clean "none found" -------
+# A malformed hooks.json is exactly the shape codex rejects; judging it as
+# "no description" would assert a fact never checked.
+H="$(make_home badjson "$NEW_TID" "$SMALL_WAW")"
+mkdir -p "$H/plugins/cache/himmel/himmel-ops/0.4.0/hooks"
+printf '%s\n' '{"hooks":{ THIS IS NOT JSON' > "$H/plugins/cache/himmel/himmel-ops/0.4.0/hooks/hooks.json"
+{ db_noise_row "$NEW_TID"; db_hook_row "$NEW_TID"; } > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "unparseable hooks.json -> exit 1"
+want_line 'could NOT be scanned' "$out" "unparseable hooks.json marks the scan incomplete"
+
+# --- 2g. incompleteness is surfaced ALONGSIDE a found candidate -----------------
+# One good offender + one unparseable file: name the candidate AND admit the scan
+# was incomplete (candidates may be missing).
+H="$(make_home partial "$NEW_TID" "$SMALL_WAW")"
+make_hooks "$H" "claude-plugins-official/ralph-loop/1.0.0/hooks" desc
+mkdir -p "$H/plugins/cache/claude-plugins-official/broken/1.0.0/hooks"
+printf '%s\n' '{ nope' > "$H/plugins/cache/claude-plugins-official/broken/1.0.0/hooks/hooks.json"
+{ db_noise_row "$NEW_TID"; db_hook_row "$NEW_TID"; } > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "candidate + unparseable file -> exit 1"
+want_line 'ralph-loop' "$out" "still names the found candidate"
+want_line 'INCOMPLETE' "$out" "admits the scan was incomplete alongside the candidate"
+
+# --- 2d. himmel-owned offender -> GUARDRAILS MAY BE OFF -> exit 1 ---------------
+H="$(make_home himmeloffender "$NEW_TID" "$SMALL_WAW")"
+make_hooks "$H" "himmel/himmel-ops/0.4.0/hooks" desc
+{ db_noise_row "$NEW_TID"; db_hook_row "$NEW_TID"; } > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "himmel-owned offender -> exit 1"
+want_line 'GUARDRAILS MAY BE OFF' "$out" "himmel offender escalates the finding"
+want_line 'himmel-ops' "$out" "himmel offender names the plugin path"
 
 # --- 3. skill-truncation detected -> exit 1 ------------------------------------
 H="$(make_home skilltrunc "$NEW_TID" "$SMALL_WAW")"

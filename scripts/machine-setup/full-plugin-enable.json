@@ -1,0 +1,19 @@
+{
+  "_comment": "Canonical pluginSet=full enable table (HIMMEL-816, HIMMEL-755 A4). Single source of truth for scripts/himmelctl/bin.js's FULL_PLUGIN_ENABLE — the documented per-plugin enable list from docs/setup/new-machine.md's Claude Code Plugins section. Every install is --scope user. Extracted so this list has ONE canonical home instead of living inline in bin.js (HIMMEL-755 A4 plugin-spec canonicalization); scripts/machine-setup/install-plugins.sh is a SEPARATE, template-driven orchestrator (docs/setup/settings-template.json's enabledPlugins) and is intentionally NOT re-pointed at this file — the two lists serve different purposes (this is a fixed pluginSet=full bonus list; install-plugins.sh installs whatever a scope's settings-template flags true) and collapsing them would be a functional change, not a list extraction.",
+  "plugins": [
+    { "spec": "github@claude-plugins-official" },
+    { "spec": "feature-dev@claude-plugins-official" },
+    { "spec": "plugin-dev@claude-plugins-official" },
+    { "spec": "code-review@claude-plugins-official" },
+    { "spec": "ralph-loop@claude-plugins-official" },
+    { "spec": "pyright-lsp@claude-plugins-official" },
+    { "spec": "agent-sdk-dev@claude-plugins-official" },
+    { "spec": "claude-code-setup@claude-plugins-official" },
+    { "spec": "code-simplifier@claude-plugins-official" },
+    { "spec": "commit-commands@claude-plugins-official" },
+    { "spec": "playground@claude-plugins-official" },
+    { "spec": "skill-creator@claude-plugins-official" },
+    { "spec": "obsidian@obsidian-skills", "marketplaceAdd": "kepano/obsidian-skills" },
+    { "spec": "caveman@caveman", "marketplaceAdd": "JuliusBrussee/caveman" }
+  ]
+}

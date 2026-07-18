@@ -6,8 +6,15 @@
 # `autoUpdate` only RE-SYNCS plugins from the on-disk dir — it never fetches
 # from GitHub. And the core hooks + slash commands aren't plugins at all;
 # they run from $CLAUDE_PROJECT_DIR. So `git pull` of THIS checkout is the only
-# thing that delivers a himmel update. This wraps the two steps that follow it:
-# pull, then refresh the marketplace from the freshly-pulled local dir.
+# thing that delivers a himmel update.
+#
+# HIMMEL-893: this is also the SHARED ENGINE behind `himmelctl update`
+# (scripts/himmelctl/bin.js's cmdUpdate is a thin wrapper that shells out
+# here) — the full dependency chain lives in ONE place so the two front ends
+# never drift. The chain (see the STATUS_*/update_*/print_status_table
+# functions below) covers six managed items in order — checkout pull,
+# marketplace re-sync, jira CLI dist rebuild, qmd fork, hermes, luna template
+# — each with its own per-item status, aborting on the first genuine failure.
 #
 # Full model: docs/setup/updating.md.
 set -euo pipefail
@@ -116,8 +123,12 @@ EOF
 # checkout (default %LOCALAPPDATA%/hermes/hermes-agent), NOT a himmel plugin and
 # NOT in this repo — so `git pull` of this checkout never updates it. This step
 # pulls that checkout and refreshes the editable install. Operator-personal +
-# à-la-carte: absent on most machines, so it skips cleanly and is always
-# best-effort (never fails the himmel update). HERMES_HOME (install root) /
+# à-la-carte: absent/unconfigured/offline is always a clean SKIP (never fails
+# the himmel update) — but once the checkout IS present + configured + the
+# remote IS reachable, a genuine update failure (non-ff pull, or the editable
+# pip refresh erroring) IS a real failure and propagates as such (CR fix — see
+# run_hermes_step below, which surfaces it as STATUS_hermes="failed" and
+# aborts the chain like any other item). HERMES_HOME (install root) /
 # HERMES_PY (venv python) override the defaults; HERMES_PY mirrors
 # scripts/hermes/invoke.sh resolution.
 update_hermes() {
@@ -143,15 +154,35 @@ update_hermes() {
         return 0
     fi
 
+    # Resolve the branch's CONFIGURED upstream (branch.<name>.remote + .merge)
+    # rather than assuming a same-named branch on origin. Detached HEAD or no
+    # upstream configured falls back to origin/HEAD.
+    local branch remote merge_ref
+    branch=$(git -C "$src" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+    remote=""; merge_ref=""
+    if [ -n "$branch" ]; then
+        remote=$(git -C "$src" config "branch.$branch.remote" 2>/dev/null || echo "")
+        merge_ref=$(git -C "$src" config "branch.$branch.merge" 2>/dev/null || echo "")
+    fi
+    if [ -z "$remote" ] || [ -z "$merge_ref" ]; then
+        remote="origin"
+        merge_ref="HEAD"
+    fi
+
     if [ "$mode" = "check" ]; then
-        if ! git -C "$src" fetch -q origin 2>/dev/null; then
+        # Non-mutating remote comparison (CR fix): `git fetch` updates
+        # remote-tracking refs + FETCH_HEAD in the EXTERNAL hermes checkout,
+        # which violates --check's read-only contract. `git ls-remote` queries
+        # the remote directly over the wire without touching any local git
+        # state — no refs, no FETCH_HEAD, nothing written under $src/.git.
+        local here there
+        here=$(git -C "$src" rev-parse HEAD 2>/dev/null || echo "?")
+        there=$(git -C "$src" ls-remote "$remote" "$merge_ref" 2>/dev/null | cut -f1)
+        if [ -z "$there" ]; then
             echo "    skip: could not reach origin (offline?)."
             return 0
         fi
-        local here there
-        here=$(git -C "$src" rev-parse @ 2>/dev/null || echo "?")
-        there=$(git -C "$src" rev-parse '@{u}' 2>/dev/null || echo "")
-        if [ -n "$there" ] && [ "$here" != "$there" ]; then
+        if [ "$here" != "$there" ]; then
             echo "    update available — run /himmel-update (no --check) to pull + reinstall."
         else
             echo "    hermes is current."
@@ -159,10 +190,20 @@ update_hermes() {
         return 0
     fi
 
-    # apply
-    if ! git -C "$src" pull --ff-only; then
-        echo "    warn: hermes git pull was not fast-forward (local edits / diverged?) — resolve in $src." >&2
+    # apply. Fetch FIRST, separately from the merge, so an unreachable remote
+    # (offline / transient network) is a clean SKIP — "couldn't attempt" —
+    # never a "failed". Only once the fetch has genuinely succeeded does a
+    # non-fast-forward merge (diverged / local edits) count as a real FAILURE
+    # (CR fix: this used to `git pull --ff-only` in one shot and swallow BOTH
+    # cases as a non-aborting warn, hiding a genuine broken update behind
+    # "skipped").
+    if ! git -C "$src" fetch -q "$remote" "$merge_ref" 2>/dev/null; then
+        echo "    skip: could not reach origin (offline?)."
         return 0
+    fi
+    if ! git -C "$src" merge --ff-only -q FETCH_HEAD 2>/dev/null; then
+        echo "    FAILED: hermes git pull was not fast-forward (local edits / diverged?) — resolve in $src." >&2
+        return 1
     fi
     # Resolve the venv python at RUNTIME (HIMMEL-613): HERMES_PY wins only when
     # it still points at an executable, else probe $src/venv — a moved/rebuilt
@@ -177,8 +218,14 @@ update_hermes() {
             || "$py" -m ensurepip --upgrade >/dev/null 2>&1 \
             || echo "    warn: could not bootstrap pip in the hermes venv (ensurepip failed) — see docs/hermes-runbook.md." >&2
         echo "    refreshing editable install (deps may have changed)…"
-        "$py" -m pip install -e "$src" --quiet \
-            || echo "    warn: pip editable refresh failed (non-fatal) — see docs/hermes-runbook.md (recover a broken venv pip) if hermes misbehaves." >&2
+        # The editable pip refresh IS the second half of "update" (code pulled
+        # but the install left stale) — a genuine error here is a real
+        # failure, not a best-effort warn (CR fix, same rationale as the pull
+        # above).
+        if ! "$py" -m pip install -e "$src" --quiet; then
+            echo "    FAILED: pip editable refresh failed — see docs/hermes-runbook.md (recover a broken venv pip)." >&2
+            return 1
+        fi
     else
         echo "    note: hermes venv python not found — code pulled, but run 'pip install -e .' in the venv if pyproject changed."
     fi
@@ -188,11 +235,15 @@ update_hermes() {
 # ─── codex plugin re-sync + hooks.json sanitize (HIMMEL-742 / 605) ───────────
 # The codex-CLI side is provisioned by scripts/codex/install-himmel-codex.sh,
 # whose phase 3 strips the top-level `description` key from external-plugin
-# hooks.json (codex's strict parser rejects it and silently unloads those hooks,
-# sanitize-plugin-hooks.sh). That runs at FIRST install only — a later codex
-# plugin re-sync/update re-adds `description`, so the hooks silently unload again
-# with nothing to re-clean them. This step re-runs the installer on /himmel-update
-# so the codex side re-syncs + re-sanitizes alongside the Claude marketplace
+# hooks.json (sanitize-plugin-hooks.sh). Codex BEFORE rust-v0.143.0 rejects that
+# key and silently unloads those hooks; upstream fixed it in rust-v0.143.0
+# (PR #30229), so on newer codex the strip is a no-op benefit — HIMMEL-1104/1114.
+# Running the INSTALLER is a first-install action, so on its own the sanitize
+# would happen once — while a later codex plugin re-sync/update re-adds
+# `description`, silently unloading the hooks again with nothing to re-clean them.
+# Hence this step: it re-runs the installer on /himmel-update, so phase 3 (and
+# therefore the sanitize) runs on UPDATES TOO, not just at first install,
+# alongside the Claude marketplace
 # re-sync. install-himmel-codex.sh is non-destructive + idempotent (re-runs are
 # no-ops) and chains sanitize as its phase 3, so it is the right re-run entry
 # point. Operator-personal + à-la-carte: skips cleanly when codex is absent or
@@ -396,6 +447,296 @@ reconcile_plugins() {
     return 0
 }
 
+# ─── the full dependency chain (HIMMEL-893) ──────────────────────────────────
+# Six MANAGED items — the things this file already updates (or, for jira/qmd/
+# luna below, already has a real recipe for elsewhere in this repo that this
+# wires in rather than re-inventing): the checkout pull, the marketplace
+# re-sync, the jira CLI dist rebuild, the qmd fork, hermes, and the luna
+# template. graphify/headroom are NOT managed yet (HIMMEL-890/891 pending) —
+# deliberately absent here.
+#
+# Per-item status is one of: updated | up-to-date | skipped | failed |
+# not-attempted. ONLY "failed" (a step that ran and genuinely errored, never a
+# clean skip for an absent/unconfigured optional tool) aborts the chain — the
+# first failure stops the remaining items at "not-attempted", the status table
+# always prints, and the script exits non-zero. bash-3.2-safe throughout: no
+# arrays, no associative maps — six items means six named STATUS_*/DETAIL_*
+# scalar pairs, read back by print_status_table's own fixed heredoc list
+# (mirrors report_cadence_stale's read-loop style above).
+STATUS_pull="not-attempted";          DETAIL_pull=""
+STATUS_marketplace="not-attempted";   DETAIL_marketplace=""
+STATUS_jira_cli="not-attempted";      DETAIL_jira_cli=""
+STATUS_qmd_fork="not-attempted";      DETAIL_qmd_fork=""
+STATUS_hermes="not-attempted";        DETAIL_hermes=""
+STATUS_luna_template="not-attempted"; DETAIL_luna_template=""
+
+# 1. checkout pull. The real `git pull --ff-only` (apply only — --check mode
+#    has its own read-only fetch+rev-list reporting above and sets STATUS_pull
+#    itself). Distinguishes up-to-date (HEAD unchanged) from updated so the
+#    status table is honest, not just "ran without error".
+update_pull() {
+    local before after
+    before=$(git rev-parse HEAD 2>/dev/null || echo "")
+    if ! git pull --ff-only; then
+        STATUS_pull="failed"
+        DETAIL_pull="pull was not a fast-forward (branch '$branch' diverged from upstream, or local edits block it) — resolve manually, then re-run"
+        return 1
+    fi
+    after=$(git rev-parse HEAD 2>/dev/null || echo "")
+    if [ "$before" = "$after" ]; then
+        STATUS_pull="up-to-date"; DETAIL_pull="already at ${after:-?}"
+    else
+        STATUS_pull="updated"; DETAIL_pull="${before:-?} -> ${after:-?}"
+    fi
+    return 0
+}
+
+# Last non-empty line of $1, leading whitespace stripped — used to pull a
+# one-line DETAIL_* summary out of a captured multi-line step output (the
+# steps below echo indented "    ..." lines; the table's own indentation
+# would otherwise double up).
+_last_line_trimmed() {
+    local line
+    line=$(printf '%s' "$1" | tail -1)
+    printf '%s' "${line#"${line%%[![:space:]]*}"}"
+}
+
+# 2. marketplace re-sync. claude CLI absent is a clean skip (many machines);
+#    present-but-failing is a real failure. HIMMEL_UPDATE_CLAUDE_BIN overrides
+#    the binary (tests — a stub that logs/fails without touching the real
+#    ~/.claude marketplace state; mirrors update_codex's CODEX_BIN seam).
+update_marketplace() {
+    local mode="$1"   # check | apply
+    local claude_bin="${HIMMEL_UPDATE_CLAUDE_BIN:-claude}"
+    if ! command -v "$claude_bin" >/dev/null 2>&1; then
+        STATUS_marketplace="skipped"; DETAIL_marketplace="claude CLI not on PATH"
+        return 0
+    fi
+    if [ "$mode" = "check" ]; then
+        STATUS_marketplace="skipped"; DETAIL_marketplace="check mode — re-sync deferred to apply"
+        return 0
+    fi
+    if "$claude_bin" plugin marketplace update himmel; then
+        STATUS_marketplace="updated"; DETAIL_marketplace="re-synced from local dir"
+        return 0
+    fi
+    STATUS_marketplace="failed"
+    DETAIL_marketplace="$claude_bin plugin marketplace update himmel failed — run it yourself"
+    return 1
+}
+
+# 3. jira CLI dist rebuild. scripts/jira/dist is a GITIGNORED build artifact —
+#    adopt.sh's build_jira_cli builds it once at fresh-clone time and SKIPS if
+#    already built (an install-time step only). A `git pull` here can change
+#    scripts/jira/*.ts without ever rebuilding dist/, so the jira CLI silently
+#    runs stale code after an update. This is the update-time counterpart:
+#    always rebuilds (never skip-if-exists), reusing adopt.sh's own npm/bun
+#    recipe rather than inventing a new one. No npm/bun on PATH, or no
+#    scripts/jira here at all, is a clean skip; a present package manager that
+#    fails the build is a real failure.
+update_jira_cli() {
+    local mode="$1"   # check | apply
+    local jira_dir="$ROOT/scripts/jira"
+
+    if [ ! -f "$jira_dir/package.json" ]; then
+        STATUS_jira_cli="skipped"; DETAIL_jira_cli="scripts/jira not found"
+        return 0
+    fi
+    local pm=""
+    if command -v npm >/dev/null 2>&1; then
+        pm=npm
+    elif command -v bun >/dev/null 2>&1; then
+        pm=bun
+    fi
+    if [ -z "$pm" ]; then
+        STATUS_jira_cli="skipped"; DETAIL_jira_cli="no npm or bun on PATH"
+        return 0
+    fi
+    if [ "$mode" = "check" ]; then
+        STATUS_jira_cli="skipped"; DETAIL_jira_cli="check mode — rebuild deferred to apply"
+        return 0
+    fi
+    if [ "$pm" = "npm" ]; then
+        if ( cd "$jira_dir" && npm install --silent && npm run build --silent ); then
+            STATUS_jira_cli="updated"; DETAIL_jira_cli="rebuilt via npm"
+            return 0
+        fi
+    else
+        if ( cd "$jira_dir" && bun install && bun run build ); then
+            STATUS_jira_cli="updated"; DETAIL_jira_cli="rebuilt via bun"
+            return 0
+        fi
+    fi
+    STATUS_jira_cli="failed"
+    DETAIL_jira_cli="build failed — (cd scripts/jira && $pm install && $pm run build)"
+    return 1
+}
+
+# 4. qmd fork update. qmd ships from the himmel FORK, pinned by commit SHA
+#    (scripts/lib/qmd-bin.sh, HIMMEL-877/911) — `git pull` of THIS checkout
+#    never touches that separate clone. qmd_install() (sourced from
+#    qmd-bin.sh) IS the real, existing update mechanism: idempotent, skips
+#    cleanly when already fork-served at the pin, else clones/fetches +
+#    rebuilds + re-links. No qmd-bin.sh, or no git/bun on PATH (never adopted
+#    qmd), is a clean skip; a present git+bun that fails install/build is a
+#    real failure.
+update_qmd_fork() {
+    local mode="$1"   # check | apply
+    local lib="$ROOT/scripts/lib/qmd-bin.sh"
+
+    if [ ! -f "$lib" ]; then
+        STATUS_qmd_fork="skipped"; DETAIL_qmd_fork="qmd-bin.sh not found"
+        return 0
+    fi
+    if ! command -v git >/dev/null 2>&1 || ! command -v bun >/dev/null 2>&1; then
+        STATUS_qmd_fork="skipped"; DETAIL_qmd_fork="git or bun not on PATH"
+        return 0
+    fi
+    # shellcheck source=lib/qmd-bin.sh
+    # shellcheck disable=SC1090,SC1091
+    # A PRESENT-but-unsourceable qmd-bin.sh is a genuine breakage of a
+    # himmel-shipped managed helper — distinct from the "not found" / "no
+    # git or bun" precondition-gap skips just above, which are legit
+    # environment gaps, not bugs. Fail the chain in apply mode instead of
+    # reporting a misleading "skipped".
+    if ! . "$lib"; then
+        STATUS_qmd_fork="failed"; DETAIL_qmd_fork="could not source qmd-bin.sh"
+        return 1
+    fi
+    if qmd_fork_served; then
+        STATUS_qmd_fork="up-to-date"; DETAIL_qmd_fork="$(qmd_cmd --version 2>/dev/null)"
+        return 0
+    fi
+    if [ "$mode" = "check" ]; then
+        STATUS_qmd_fork="skipped"; DETAIL_qmd_fork="update available — run without --check to install"
+        return 0
+    fi
+    if qmd_install; then
+        STATUS_qmd_fork="updated"; DETAIL_qmd_fork="$(qmd_cmd --version 2>/dev/null)"
+        return 0
+    fi
+    STATUS_qmd_fork="failed"
+    DETAIL_qmd_fork="qmd_install failed — see: bash scripts/lib/qmd-bin.sh install"
+    return 1
+}
+
+# 5. hermes junior-tier update. Reuses update_hermes() (defined above) and
+#    classifies its outcome into STATUS_hermes/DETAIL_hermes for the shared
+#    status table. CR fix: update_hermes now returns NON-ZERO for a genuine
+#    failure (checkout present + configured but the pull/pip refresh actually
+#    errored) while staying 0 for every "couldn't attempt" skip (absent,
+#    foreign checkout, offline). This step propagates that distinction —
+#    STATUS_hermes="failed" + return 1 on a real failure (so the chain's
+#    `if ! run_hermes_step apply; then chain_rc=1` aborts it like every other
+#    item), STATUS_hermes="skipped" on a clean skip, STATUS_hermes="updated"
+#    otherwise.
+run_hermes_step() {
+    local mode="$1"   # check | apply
+    local out rc
+    if out=$(update_hermes "$mode" 2>&1); then rc=0; else rc=$?; fi
+    printf '%s\n' "$out"
+    DETAIL_hermes="$(_last_line_trimmed "$out")"
+    if [ "$mode" = "check" ]; then
+        STATUS_hermes="skipped"   # check mode never mutates, by update_hermes's own contract
+        return 0
+    fi
+    if [ "$rc" -ne 0 ]; then
+        STATUS_hermes="failed"
+        return 1
+    fi
+    case "$out" in
+        *"skip:"*) STATUS_hermes="skipped" ;;
+        *)         STATUS_hermes="updated" ;;
+    esac
+    return 0
+}
+
+# 6. luna template upgrade. Vault-side counterpart to this harness update
+#    (HIMMEL-389) — the vault at LUNA_VAULT_PATH is scaffolded once from
+#    templates/luna-second-brain and never re-reads it; upgrade.sh is the
+#    real, existing content-preserving refresh path (never touches
+#    journal/notes/clips; a _CLAUDE.md conflict is fail-closed — original kept,
+#    conflicted merge written to a sidecar, version stamp NOT advanced). No
+#    LUNA_VAULT_PATH (or no vault/upgrade.sh there) is a clean skip — operator-
+#    personal + à-la-carte, same class as hermes. --yes (non-interactive)
+#    matches this file's other auto-apply steps (hermes, codex, qmd fork);
+#    safe because upgrade.sh's own contract never destroys user content.
+update_luna_template() {
+    local mode="$1"   # check | apply
+    local vault="${LUNA_VAULT_PATH:-}"
+    local template="$ROOT/templates/luna-second-brain"
+    local upgrade="$template/scripts/upgrade.sh"
+
+    if [ -z "$vault" ]; then
+        STATUS_luna_template="skipped"; DETAIL_luna_template="LUNA_VAULT_PATH not set"
+        return 0
+    fi
+    if [ ! -d "$vault" ]; then
+        STATUS_luna_template="skipped"; DETAIL_luna_template="vault dir not found ($vault)"
+        return 0
+    fi
+    if [ ! -f "$upgrade" ]; then
+        STATUS_luna_template="skipped"; DETAIL_luna_template="upgrade.sh not found ($upgrade)"
+        return 0
+    fi
+
+    local flag="--check"
+    [ "$mode" = "apply" ] && flag="--yes"
+    local out rc
+    # Guard the command substitution (CR codex-1): the --check dispatch calls
+    # this function UNGUARDED (bare `update_luna_template check`, not the
+    # `if ! update_luna_template apply` chain form that already suspends set -e),
+    # so a non-zero upgrade.sh — e.g. `--check` signalling "upgrade available" —
+    # would otherwise trigger errexit HERE and kill the whole script before the
+    # check-mode status table prints. The `if …; then rc=0; else rc=$?; fi`
+    # form captures the real rc while staying set -e-safe in every call context.
+    if out=$(bash "$upgrade" --template-dir "$template" --vault-dir "$vault" "$flag" 2>&1); then rc=0; else rc=$?; fi
+    printf '%s\n' "$out"
+    if [ "$mode" = "check" ]; then
+        STATUS_luna_template="skipped"; DETAIL_luna_template="$(_last_line_trimmed "$out")"
+        return 0
+    fi
+    if [ "$rc" -eq 0 ]; then
+        if printf '%s' "$out" | grep -qi "already current"; then
+            STATUS_luna_template="up-to-date"
+        else
+            STATUS_luna_template="updated"
+        fi
+        DETAIL_luna_template="$(_last_line_trimmed "$out")"
+        return 0
+    fi
+    STATUS_luna_template="failed"
+    DETAIL_luna_template="upgrade.sh exited $rc — see docs/luna, resolve any _CLAUDE.md.template-merge conflict"
+    return 1
+}
+
+# Prints the six-item status table in FIXED chain order (a heredoc read-loop,
+# not a bash array — bash-3.2-safe, mirrors report_cadence_stale's style).
+print_status_table() {
+    echo ""
+    echo "==> update chain status"
+    local id status detail
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        case "$id" in
+            pull)          status="$STATUS_pull";          detail="$DETAIL_pull" ;;
+            marketplace)   status="$STATUS_marketplace";   detail="$DETAIL_marketplace" ;;
+            jira_cli)      status="$STATUS_jira_cli";      detail="$DETAIL_jira_cli" ;;
+            qmd_fork)      status="$STATUS_qmd_fork";      detail="$DETAIL_qmd_fork" ;;
+            hermes)        status="$STATUS_hermes";        detail="$DETAIL_hermes" ;;
+            luna_template) status="$STATUS_luna_template"; detail="$DETAIL_luna_template" ;;
+        esac
+        printf '    %-14s %-14s %s\n' "$id" "$status" "$detail"
+    done <<EOF
+pull
+marketplace
+jira_cli
+qmd_fork
+hermes
+luna_template
+EOF
+}
+
 # Test seam: source with HIMMEL_UPDATE_LIB=1 to load the functions above without
 # running any update mode (lets test-himmel-update-hermes.sh call update_hermes
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
@@ -431,75 +772,133 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     echo "ahead:    $ahead"
     if [ "$behind" = "0" ]; then
         echo "status:   up to date — nothing to pull."
+        STATUS_pull="up-to-date"; DETAIL_pull="up to date"
     elif [ "$behind" != "?" ]; then
         echo "status:   $behind commit(s) behind — run /himmel-update (or bash scripts/himmel-update.sh) to pull."
+        STATUS_pull="skipped"; DETAIL_pull="$behind commit(s) behind — run without --check to pull"
+    else
+        STATUS_pull="skipped"; DETAIL_pull="unknown (git rev-list failed)"
     fi
     report_plugin_gap
     reconcile_plugins check
-    update_hermes check
-    update_codex check
+    # `|| true` on each: check mode is READ-ONLY reporting and must never
+    # abort under set -e. STATUS_* is already set as a side effect before
+    # any of these return, so `|| true` just prevents a non-zero return
+    # (e.g. update_qmd_fork's can't-source "failed" case above) from
+    # errexiting the script before print_status_table runs — the apply
+    # chain below is where a failure is allowed to abort (via chain_rc).
+    update_marketplace check || true
+    update_jira_cli check || true
+    update_qmd_fork check || true
+    run_hermes_step check || true
+    update_codex check || true
+    update_luna_template check || true
     report_cadence_stale
     report_guardrail_block
+    print_status_table
     exit 0
 fi
 
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
 
-# 1. Pull. --ff-only so a diverged/feature branch fails loudly instead of
-#    opening a merge — the operator decides how to reconcile in that case.
-echo "==> git pull --ff-only (branch: $branch)"
-if ! git pull --ff-only; then
+# ─── dirty-tree pre-check (HIMMEL-893) ───────────────────────────────────────
+# A `git pull` into a dirty tree is exactly the failure this guards against —
+# refuse up front rather than let `git pull --ff-only` fail confusingly (or,
+# worse, silently mix local edits into the pulled tree). is_dirty() is
+# guardrails/lib.sh's own predicate (already sourced above) — the same one the
+# edit-on-main guard uses, so "dirty" means the same thing everywhere in himmel.
+if is_dirty "$ROOT"; then
     echo "" >&2
-    echo "update: pull was not a fast-forward (branch '$branch' has diverged from upstream, or local edits block the update)." >&2
-    echo "        Resolve manually: stash/commit local work, or 'git checkout main' first," >&2
-    echo "        then re-run. himmel updates land on the default branch." >&2
+    echo "update: checkout has uncommitted changes — refusing to pull into a dirty tree." >&2
+    echo "        commit or stash your changes, then re-run." >&2
     exit 1
 fi
 
-# 2. Re-sync the himmel marketplace from the (now-updated) local dir so a
-#    running install picks up plugin changes. Best-effort: skip cleanly if the
-#    claude CLI is absent. `marketplace update` is non-interactive.
-if command -v claude >/dev/null 2>&1; then
-    echo "==> claude plugin marketplace update himmel"
-    claude plugin marketplace update himmel || \
-        echo "update: marketplace re-sync failed (non-fatal) — run 'claude plugin marketplace update himmel' yourself." >&2
-else
-    echo "update: claude CLI not on PATH — skipping marketplace re-sync." >&2
+# ─── the full dependency chain (HIMMEL-893) ──────────────────────────────────
+# Six managed items, in order, tracked via chain_rc rather than exiting
+# immediately on failure. The CHAIN still aborts on the first genuine failure
+# (never a clean skip) — each later item is guarded by `[ "$chain_rc" -eq 0 ]`
+# so once chain_rc flips to 1 it is never attempted, staying "not-attempted"
+# (and its own "==> [N/6] ..." header never prints). But the five pre-existing
+# advisory steps below (update_codex's security-relevant hooks re-sanitize
+# among them) predate this ticket and ALWAYS ran regardless of the git-pull
+# outcome — a chain failure must not skip them, so they now run
+# UNCONDITIONALLY after the chain, win or lose. The status table prints
+# exactly ONCE, after the advisory steps, and the script exits non-zero only
+# then — never mid-chain (set -e must not kill the script before the report
+# prints).
+chain_rc=0
+
+echo "==> [1/6] git pull --ff-only (branch: $branch)"
+if ! update_pull; then
+    chain_rc=1
 fi
 
-# 3. Re-sync + re-sanitize the codex-CLI plugin side (HIMMEL-742/605) — a codex
-#    plugin re-sync re-adds the top-level `description` key that codex's strict
-#    parser rejects, silently unloading those hooks; install-himmel-codex.sh
-#    re-syncs and re-strips it (its phase 3). Best-effort; skips cleanly when
-#    codex is absent or was never provisioned.
+if [ "$chain_rc" -eq 0 ]; then
+    echo ""
+    echo "==> [2/6] claude plugin marketplace update himmel"
+    if ! update_marketplace apply; then
+        chain_rc=1
+    fi
+fi
+
+if [ "$chain_rc" -eq 0 ]; then
+    echo ""
+    echo "==> [3/6] jira CLI dist rebuild (scripts/jira/dist)"
+    if ! update_jira_cli apply; then
+        chain_rc=1
+    fi
+fi
+
+if [ "$chain_rc" -eq 0 ]; then
+    echo ""
+    echo "==> [4/6] qmd fork update"
+    if ! update_qmd_fork apply; then
+        chain_rc=1
+    fi
+fi
+
+if [ "$chain_rc" -eq 0 ]; then
+    echo ""
+    echo "==> [5/6] hermes junior-tier update"
+    # Guarded like every other item: run_hermes_step returns non-zero on a
+    # GENUINE hermes failure (a real pull/pip-refresh error), aborting the
+    # chain here exactly like every other item — never on an absent/foreign/
+    # offline skip (see its own comment above). A compound command's
+    # condition also suspends set -e for everything executed while it's
+    # tested, so this structurally protects against the
+    # `out=$(update_hermes ...)` command substitution silently killing the
+    # script before the status table prints.
+    if ! run_hermes_step apply; then
+        chain_rc=1
+    fi
+fi
+
+if [ "$chain_rc" -eq 0 ]; then
+    echo ""
+    echo "==> [6/6] luna template upgrade (LUNA_VAULT_PATH)"
+    if ! update_luna_template apply; then
+        chain_rc=1
+    fi
+fi
+
+# ─── existing advisory steps (best-effort; ALWAYS run, chain outcome or not)─
+# None of these are managed CHAIN items (HIMMEL-890/891 pending for
+# graphify/headroom; these five predate this ticket) — they stay best-effort
+# and never abort the script. They run here UNCONDITIONALLY, even after a
+# mid-chain failure (chain_rc=1) — restoring their pre-HIMMEL-893 behavior of
+# always running regardless of the pull/marketplace/jira/qmd/luna outcome,
+# including the security-relevant update_codex hooks.json re-sanitize.
 update_codex apply
-
-# 4. Update the hermes junior tier (separate editable git checkout outside this
-#    repo — see update_hermes). Best-effort; skips cleanly when hermes is absent.
-update_hermes apply
-
-# 5. Re-wire existing himmel statusLine installs to the hud renderer. Fresh
-#    installs already get hud via setup/adopt; update previously had the rollout
-#    gap for users still wired to the bash bar. Advisory; never fails the update.
 rewire_statusline
-
-# 6. Report any himmel-marketplace plugins not installed from @himmel — the
-#    marketplace re-sync above can't surface these (it only touches plugins that
-#    are already installed). Advisory; never fails the update.
 report_plugin_gap
-
-# 6b. Reconcile the user settings.json enabledPlugins DOWN to the lean template
-#     floor (HIMMEL-1032) — the marketplace re-sync above can re-enable drifted
-#     plugins but never disables them; this is the subtractive half. Best-effort.
 reconcile_plugins apply
-
-# 7. Nudge if an armed pipeline-cadence is firing pre-change (stale) runners
-#    that this pull's code won't regenerate on its own (HIMMEL-588). Advisory.
 report_cadence_stale
-
-# 8. Check the himmel-owned guardrail-mode block for baked-path drift (HIMMEL-709).
-#    Advisory; never mutates ~/.claude/settings.json.
 report_guardrail_block
+
+print_status_table
+
+[ "$chain_rc" -eq 0 ] || exit 1
 
 cat <<'EOF'
 
@@ -510,3 +909,18 @@ cat <<'EOF'
     - hermes (if installed) was pulled + reinstalled; restart its gateway to
       pick up changes (docs/hermes-runbook.md).
 EOF
+# CR fix: only claim Luna files were refreshed when the step actually RAN
+# (updated/up-to-date) — by the time we reach here chain_rc is 0, so
+# STATUS_luna_template is one of updated/up-to-date/skipped (a failure would
+# have exit 1'd above); skipped (vault/upgrade.sh missing, or LUNA_VAULT_PATH
+# unset) prints nothing, matching the other steps' silence-on-skip.
+case "$STATUS_luna_template" in
+    updated)
+        echo "    - the luna template step refreshed template-owned vault files —"
+        echo "      journal/notes/clips are never touched."
+        ;;
+    up-to-date)
+        echo "    - the luna template step ran — vault was already current with the"
+        echo "      template (journal/notes/clips are never touched)."
+        ;;
+esac

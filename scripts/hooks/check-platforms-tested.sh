@@ -144,13 +144,36 @@ commit_msgs=$(git log --format='%B' "${diff_base}..HEAD" 2>/dev/null || true)
 PLATFORM_RE='(linux|windows|macos|ubuntu|debian|fedora|arch|mac|darwin|wsl|posix|gitbash|git-bash|powershell|pwsh)'
 ATTEST_RE="^[[:space:]]*Platforms tested:.*\\b${PLATFORM_RE}\\b"
 
-if printf '%s' "$commit_msgs" | grep -qiE '^\s*\[skip platforms-check\]'; then
+# HIMMEL-1115: match with a here-string, NOT `printf ... | grep -q`.
+#
+# Under this script's `set -euo pipefail`, the piped form is actively broken
+# once "$commit_msgs" exceeds the OS pipe buffer (~64KB): printf BLOCKS
+# mid-write, `grep -q` matches the attestation early (git log is
+# newest-first, so the newest commit's trailer appears almost immediately)
+# and exits by design, the blocked printf takes SIGPIPE and dies 141, and
+# pipefail promotes that 141 to the pipeline's status. The `if` then went
+# FALSE *because* the attestation was found, and found early — blocking a
+# correctly-attested push, and getting MORE likely to do so the more
+# diligently the operator attested. Observed on PR #1242 at 76,283 bytes.
+#
+# A here-string is backed by a temp file, not a pipe: there is no writer
+# process for grep's early exit to SIGPIPE, so the size dependency is gone
+# entirely. `grep -m1` (below) replaces `| head -1` for the same reason —
+# head's early exit would SIGPIPE grep, and a failing command substitution
+# aborts the script under `set -e`. Both forms are bash 3.2-safe.
+# `[[:space:]]`, not `\s` (CodeRabbit on this PR): `\s` is a GNU grep
+# extension, not POSIX. BSD grep (macOS) reads it as a LITERAL 's', so
+# `^\s*\[skip …\]` degrades to `^s*\[skip …\]` — which still matches an
+# UNINDENTED marker (zero 's') and therefore looks fine, but silently fails
+# to match an INDENTED one. This repo targets macOS (scripts/hooks/CLAUDE.md),
+# and ATTEST_RE above already uses [[:space:]] — this was the odd one out.
+if grep -qiE '^[[:space:]]*\[skip platforms-check\]' <<<"$commit_msgs"; then
     echo "→ platforms-check: [skip platforms-check] in commit msg — skipping (WARNING: verify cross-platform behaviour manually)" >&2
     exit 0
 fi
 
-if printf '%s' "$commit_msgs" | grep -qiE "$ATTEST_RE"; then
-    line=$(printf '%s' "$commit_msgs" | grep -iE "$ATTEST_RE" | head -1 | sed 's/^[[:space:]]*//')
+if grep -qiE "$ATTEST_RE" <<<"$commit_msgs"; then
+    line=$(grep -m1 -iE "$ATTEST_RE" <<<"$commit_msgs" | sed 's/^[[:space:]]*//')
     echo "→ platforms-check: ${line}" >&2
     exit 0
 fi
@@ -161,8 +184,11 @@ pr_body=""
 if command -v gh >/dev/null 2>&1; then
     pr_body=$(gh pr view "$branch" --json body --jq '.body' 2>/dev/null || true)
 fi
-if [ -n "$pr_body" ] && printf '%s' "$pr_body" | grep -qiE "$ATTEST_RE"; then
-    line=$(printf '%s' "$pr_body" | grep -iE "$ATTEST_RE" | head -1 | sed 's/^[[:space:]]*//')
+# Same here-string form as the commit-message matches above (HIMMEL-1115). A
+# PR body rarely approaches 64KB, but the hazard is identical in shape and
+# there is no reason to leave one instance of it standing.
+if [ -n "$pr_body" ] && grep -qiE "$ATTEST_RE" <<<"$pr_body"; then
+    line=$(grep -m1 -iE "$ATTEST_RE" <<<"$pr_body" | sed 's/^[[:space:]]*//')
     echo "→ platforms-check: ${line} (from PR body)" >&2
     exit 0
 fi

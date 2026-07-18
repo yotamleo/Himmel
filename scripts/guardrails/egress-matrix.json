@@ -135,9 +135,19 @@
       "why": "operator override 2026-07-05 (speed): luna non-Clippings graphify extraction on DeepSeek, single model, ledgered per run"
     },
     {
+      "corpus": "luna-personal", "provider": "zai-glm", "purpose": "extraction",
+      "verdict": "allow+log",
+      "why": "operator ratification 2026-07-17 (HIMMEL-1122): luna non-Clippings graphify extraction on GLM, ledgered per run. WIDENS THE PERMITTED PROVIDER SET — full luna non-Clippings note bodies may now reach a second, additional vendor (Z.ai) that could not receive them before; the vendor count for this exposure goes 1 -> 2. Corpus, purpose, region (CN) and content scope are UNCHANGED from the 2026-07-05 DeepSeek cell above, so the KIND of exposure is the same even though the number of vendors holding it is not. Measured on an identical corpus 2026-07-17: glm-5.2 link-recall 63-79% vs deepseek 26%, file coverage 100% vs 95%, at flat-rate Coding-Plan cost vs $3.14 per full-vault deepseek run — i.e. the incumbent was strictly worse AND paid. NOT a default: refresh-graph-map.sh stays claude-cli (HIMMEL-1049 claude-only adopter story); GLM is opt-in per run."
+    },
+    {
       "corpus": "luna-personal", "provider": "deepseek", "purpose": "enrichment",
       "verdict": "allow+log",
       "why": "operator ratification 2026-07-10 (HIMMEL-833): chat-note enrichment — full note bodies of luna/chats/* to DeepSeek, plus the vault-wide top-200 tag vocabulary (tag names only) sent with each request as the allowed-tags list; exposure-identical in kind to the 2026-07-05 extraction override; ledgered per run incl. vocab_tags (log obligation survives ratification, never plain allow)"
+    },
+    {
+      "corpus": "luna-personal", "provider": "zai-glm", "purpose": "enrichment",
+      "verdict": "allow+log",
+      "why": "operator ratification 2026-07-17 (HIMMEL-1167): chat-note enrichment on GLM — full note bodies of luna/chats/* to Z.ai, plus the vault-wide top-200 tag vocabulary (tag names only) sent with each request as the allowed-tags list; exposure-identical in kind to the 2026-07-17 zai-glm EXTRACTION cell (HIMMEL-1122): same corpus, provider, CN region, and content scope — the vendor already holds this exposure class. Ledgered per run incl. vocab_tags; log obligation survives ratification, never plain allow"
     },
     {
       "corpus": "luna-personal", "provider": "alibaba", "purpose": "embedding",

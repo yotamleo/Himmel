@@ -59,11 +59,23 @@ function Register-LogonTask {
     [string]$TaskName,
     [string]$Execute,
     [string]$Arguments,
-    [string]$WorkingDirectory
+    [string]$WorkingDirectory,
+    # Optional ISO-8601 delay (e.g. 'PT3M') applied to the logon trigger. Used
+    # only by Grafana: at logon w32time (trigger-started on Win11) has not yet
+    # corrected the boot clock, so Grafana signs its internal ID token against a
+    # fast clock; once the clock settles backward it caches that now-future-dated
+    # token for the process lifetime and every grafana.app API call 500s with
+    # "token issued in the future (iat)" until restart (RestartCount can't help —
+    # Grafana never exits). Delaying its start past the boot clock-settle window
+    # avoids it. Prometheus/exporters sign nothing clock-sensitive, so they omit
+    # this. Manual Start-ScheduledTask (below, at install time) ignores the
+    # trigger delay, so the interactive install stays immediate.
+    [string]$StartupDelay
   )
 
   $action = New-ScheduledTaskAction -Execute $Execute -Argument $Arguments -WorkingDirectory $WorkingDirectory
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  if ($StartupDelay) { $trigger.Delay = $StartupDelay }
   $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -212,7 +224,8 @@ Register-LogonTask `
   -TaskName 'himmel-observability-grafana' `
   -Execute $grafanaExe `
   -Arguments "$grafanaServerArgPrefix--homepath `"$grafanaHome`" --config `"$grafanaIni`"" `
-  -WorkingDirectory $grafanaHome
+  -WorkingDirectory $grafanaHome `
+  -StartupDelay 'PT3M'
 
 Register-LogonTask `
   -TaskName 'himmel-observability-windows-exporter' `

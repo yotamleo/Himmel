@@ -151,6 +151,15 @@ assert_rc "code + empty value = block"               1 "$(run_in "$d")"
 rm -rf "$d"
 
 # Skip marker
+# INDENTED skip marker — twin of the case in test-check-platforms-tested.sh
+# (CodeRabbit on the HIMMEL-1115 PR): `\s` is GNU-only and BSD grep reads it as
+# a literal 's', so an indented marker silently failed to match on macOS while
+# an unindented one kept working. Same honest caveat: this cannot fail on a
+# GNU-grep box, so it pins the contract rather than proving the fix red.
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\n    [skip security-review]\n')")
+assert_rc "non-docs + INDENTED skip marker (BSD-grep safe)" 0 "$(run_in "$d")"
+rm -rf "$d"
+
 d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\n[skip security-review]\n')")
 assert_rc "code + skip marker"                       0 "$(run_in "$d")"
 rm -rf "$d"
@@ -158,6 +167,88 @@ rm -rf "$d"
 # Env bypass
 d=$(make_repo "src/foo.ts" "feat: foo")
 assert_rc "code + env bypass"                        0 "$(run_in "$d" "SKIP_SECURITY_REVIEW=1")"
+rm -rf "$d"
+
+# --- HIMMEL-1115: a >64KB commit-message range must not SIGPIPE the gate ---
+#
+# Regression. The gate used to test the attestation with
+#   printf '%s' "$commit_msgs" | grep -qiE "$ATTEST_RE"
+# under `set -euo pipefail`. Once the range's messages exceed the OS pipe
+# buffer (~64KB), printf BLOCKS mid-write; grep -q matches the attestation
+# early (git log is newest-first and the attestation lives in the NEWEST
+# commit) and exits immediately; the blocked printf then takes SIGPIPE and
+# dies 141; pipefail promotes that 141 to the pipeline's status. The `if`
+# therefore went FALSE *because* the attestation was found, and found early
+# — blocking a correctly-attested push, and getting likelier to do so the
+# MORE diligently the operator attested (every extra trailer grows the
+# range). Observed on PR #1242 at 76,283 bytes after ~22 attested commits.
+#
+# The fixture mirrors that exact shape: bulk in the older commit, the
+# attestation in the newest. It FAILS against the pre-fix hook (rc=1) — that
+# is the point of it.
+d=$(mktemp -d)
+(
+    cd "$d" || exit 1
+    git init -q -b main
+    git config user.email t@t
+    git config user.name t
+    echo r > README.md
+    git add README.md
+    git -c commit.gpgsign=false commit -q -m "init"
+    git checkout -q -b feat/x
+    mkdir -p src
+    echo x > src/foo.ts
+    git add -A
+    # ~136KB of earlier commit-message bulk, carrying NO attestation itself.
+    # Written via `commit -F <file>`, NOT `-m`: a message this size blows past
+    # Windows' ~32KB command-line limit, and the resulting E2BIG silently
+    # collapses the fixture to a single small commit that no longer
+    # reproduces anything (found the hard way while writing this test).
+    {
+        echo "feat: bulky earlier commit"
+        echo
+        # awk, not `yes | head` — see the twin comment in
+        # test-check-platforms-tested.sh: `yes | head` is itself a
+        # SIGPIPE-on-early-exit pipeline, which is the wrong thing to depend
+        # on inside a pipefail script testing that very hazard. awk emits the
+        # bulk in one process, no pipeline, nothing to SIGPIPE.
+        awk 'BEGIN { for (i = 0; i < 4000; i++) print "padding line for pipe-buffer bulk" }'
+    } > "$d/.bulkmsg"
+    git -c commit.gpgsign=false commit -q -F "$d/.bulkmsg"
+    rm -f "$d/.bulkmsg"
+    echo y >> src/foo.ts
+    git add -A
+    # NEWEST commit carries the attestation => grep -q matches almost
+    # immediately, leaving ~88KB unread behind it.
+    git -c commit.gpgsign=false commit -q -m "feat: attested change
+
+Security reviewed: manual"
+) >/dev/null 2>&1
+fixture_rc=$?
+# Do NOT trust that subshell. Its exit status was discarded, and a silently-
+# failed setup step (notably the bulk `commit -F "$d/.bulkmsg"` blowing past
+# Windows' ~32KB argv limit -> E2BIG) collapses the range to a single small
+# commit that the FIXED hook passes trivially. The test would then report
+# GREEN while proving nothing (a first draft of this fixture did exactly
+# that — see the bulkmsg notes above). The test's whole reason to exist is
+# to exercise the >64KB SIGPIPE path, so PROVE the range was actually built
+# before asserting a hook verdict on it.
+if [ "$fixture_rc" -ne 0 ]; then
+    echo "FAIL HIMMEL-1115: >64KB fixture setup failed (rc=$fixture_rc); cannot assert on a broken fixture"
+    FAILED=$((FAILED + 1))
+else
+    # `git log | wc -c` cannot SIGPIPE — wc reads to EOF and never exits
+    # early — so it is safe here even though the suite's whole subject is
+    # that exact hazard. BSD wc pads stdin counts with spaces;
+    # $((range_bytes)) coerces to a clean integer for the compare.
+    range_bytes=$(git -C "$d" log --format=%B main..HEAD | wc -c)
+    if [ "$((range_bytes))" -le 65536 ]; then
+        echo "FAIL HIMMEL-1115: >64KB range collapsed to $((range_bytes)) bytes (<= 65536); SIGPIPE path NOT exercised"
+        FAILED=$((FAILED + 1))
+    else
+        assert_rc "HIMMEL-1115: >64KB range, attestation in newest commit" 0 "$(run_in "$d")"
+    fi
+fi
 rm -rf "$d"
 
 # --- PR-body fallback (gh stub) ---

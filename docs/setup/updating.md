@@ -4,10 +4,13 @@
 deliver himmel updates on its own.** Run `/himmel-update` (or `bash
 scripts/himmel-update.sh`) to do the pull + marketplace re-sync in one step.
 
-> This updates the himmel **harness**. To refresh an existing **luna vault**
-> from the current template, use [`/luna-upgrade`](../../marketplace/plugins/obsidian-triage/skills/luna-upgrade/SKILL.md);
-> to do both in one shot, use `/himmel-update-all`. To bring **multiple**
-> luna-family vaults up to the current template in one pass, use
+> This updates the himmel **harness**. A configured `LUNA_VAULT_PATH` is
+> already refreshed by `/himmel-update`'s own dependency chain (step 6,
+> below) — reserve
+> [`/luna-upgrade`](../../marketplace/plugins/obsidian-triage/skills/luna-upgrade/SKILL.md)
+> for an **explicit**, Luna-only run, and `/himmel-update-all` for running
+> both the harness and the vault update together deliberately. To bring
+> **multiple** luna-family vaults up to the current template in one pass, use
 > [`/luna-upgrade-all`](../../marketplace/plugins/obsidian-triage/skills/luna-upgrade-all/SKILL.md)
 > (see [Updating multiple vaults](#updating-multiple-luna-vaults) below).
 
@@ -92,24 +95,56 @@ covers the core hooks.**
 ## How to update
 
 ```bash
-/himmel-update                 # inside Claude Code
+/himmel-update                              # inside Claude Code
 # or
-bash scripts/himmel-update.sh  # from a shell, in the himmel checkout
+bash scripts/himmel-update.sh               # from a shell, in the himmel checkout
+# or, an equivalent entry point:
+node scripts/himmelctl/bin.js update        # thin wrapper, same engine
 ```
 
-`scripts/himmel-update.sh`:
+`scripts/himmel-update.sh` (HIMMEL-893), in **apply mode** (no `--check`),
+refuses to run against a **dirty checkout** (uncommitted changes) — commit or
+stash first, then re-run. (The read-only `--check` mode does not reject a dirty
+tree; it reports the chain without pulling.) On a clean tree it runs a
+**six-item dependency chain, in order**, each item
+reporting `updated` / `up-to-date` / `skipped` / `failed` / `not-attempted`
+in a closing status table:
+
 1. `git pull --ff-only` (fails loudly if your branch has diverged from upstream
    or local edits block the update — reconcile manually, updates land on the
-   default branch).
+   currently checked-out branch's configured upstream).
 2. `claude plugin marketplace update himmel` — refresh plugins from the
    freshly-pulled local dir.
-3. **Plugin install-state report** (HIMMEL-434) — `marketplace update` only
-   re-syncs *already-installed* plugins, so it can't surface a himmel plugin
-   that is missing or being served from a non-`@himmel` marketplace. The report
-   prints the `claude plugin install …@himmel` / migrate commands for any gap.
-   Run it standalone with `bash scripts/himmel-update.sh --plugins-check`.
+3. **jira CLI dist rebuild** — `scripts/jira/dist` is a gitignored build
+   artifact; a pull that changes the jira TypeScript source needs a rebuild
+   to take effect.
+4. **qmd fork update** — qmd ships from a himmel-pinned fork outside this
+   checkout, so `git pull` here never touches it.
+5. **hermes junior-tier update** (HIMMEL-426) — hermes is a separate editable
+   git checkout outside this repo; pulls + reinstalls it, skipping cleanly
+   when hermes isn't installed.
+6. **luna template upgrade** (`LUNA_VAULT_PATH`) — content-preserving refresh
+   of template-owned vault files only.
 
-Plain `git pull` works too if you don't need the marketplace re-sync.
+The **first genuine failure aborts the chain** — later items report
+`not-attempted`, the status table still prints, and the script exits
+non-zero. There is no rollback or atomicity: items that already succeeded
+before the failure are **not** undone — only the not-yet-attempted items are
+skipped.
+
+After the chain — win or lose, these five never abort and always run,
+including on a chain failure — five pre-existing **best-effort advisory
+steps** run: a codex plugin re-sync + hooks.json re-sanitize (HIMMEL-742), a
+statusLine hud re-wire (HIMMEL-718), a **plugin install-state report**
+(HIMMEL-434 — `marketplace update` only re-syncs *already-installed*
+plugins, so it can't surface a himmel plugin that is missing or being served
+from a non-`@himmel` marketplace; the report prints the
+`claude plugin install …@himmel` / migrate commands for any gap; run it
+standalone with `bash scripts/himmel-update.sh --plugins-check`), a lean
+plugin-set reconcile (HIMMEL-1032), and stale cadence-runner / guardrail-mode
+block drift checks.
+
+Plain `git pull` works too if you don't need the rest of the chain.
 
 ## When changes take effect
 

@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
         --check) ;;                                            # only mode; no-op
         --config-dir) shift; CONFIG_DIR="${1:?--config-dir needs a DIR}" ;;
         --source)     shift; SOURCE="${1:?--source needs a DIR}" ;;
-        -h|--help)    sed -n '2,21p' "$0"; exit 0 ;;
+        -h|--help)    sed -n '2,/^set /p' "$0" | sed '$d'; exit 0 ;;
         *) echo "claude-glm-seed-check: unknown arg '$1'" >&2; exit 2 ;;
     esac
     shift

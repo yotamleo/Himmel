@@ -25,7 +25,7 @@ PARITY_TARGETS=""
 for arg in "$@"; do
   case "$arg" in
     --parity-guard=*) PARITY_TARGETS="${arg#*=}" ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "ERR: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done

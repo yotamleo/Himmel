@@ -10,11 +10,39 @@ import { evalProbe } from './probe.mjs';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT  = join(SCRIPT_DIR, '..', '..');           // scripts/lanes -> repo (or worktree) root
 const REGISTRY   = process.env.LANES_REGISTRY || join(SCRIPT_DIR, 'lanes.json');
+// HIMMEL-758: the machine-local, gitignored overlay `himmelctl config` writes
+// to (via set-lane-override.mjs) — never scripts/lanes/lanes.json itself.
+const LOCAL_REGISTRY = join(SCRIPT_DIR, 'lanes.local.json');
 
 const die = (code, msg) => { process.stderr.write(msg + '\n'); process.exit(code); };
 
 export function resolveLanes(registry, ctx) {
   return (registry.lanes ?? []).filter((l) => evalProbe(l.probe, ctx));
+}
+
+// mergeLocalOverlay(base, local) -> merged registry object (HIMMEL-758). A
+// TRUE per-lane overlay, not a wholesale replace: each entry in
+// `local.lanes` is shallow-merged onto the base lane sharing its `id` (local
+// fields win), so lanes.local.json only ever needs to carry the DELTA (e.g.
+// just `{ id, probe }`), never a full copy of the shared registry. A local
+// entry naming an id absent from `base` is appended as a genuinely
+// machine-local lane. Base lane order is preserved; local-only entries land
+// at the end. Pure — no I/O, no process.env reads.
+export function mergeLocalOverlay(base, local) {
+  const baseLanes = (base && base.lanes) || [];
+  const localLanes = (local && local.lanes) || [];
+  const byId = new Map(baseLanes.map((l) => [l.id, l]));
+  for (const patch of localLanes) {
+    if (!patch || !patch.id) continue;
+    const existing = byId.get(patch.id);
+    byId.set(patch.id, existing ? { ...existing, ...patch } : patch);
+  }
+  const baseIds = new Set(baseLanes.map((l) => l.id));
+  const merged = baseLanes.map((l) => byId.get(l.id));
+  for (const patch of localLanes) {
+    if (patch && patch.id && !baseIds.has(patch.id)) merged.push(byId.get(patch.id));
+  }
+  return { ...base, lanes: merged };
 }
 
 // Parse a KEY=VALUE from a .env line (one surrounding quote-pair stripped), matching glm-env.ts semantics.
@@ -80,8 +108,27 @@ export function buildCtx(repoRoot, procEnv) {
 
 function loadRegistry() {
   if (!existsSync(REGISTRY)) die(2, `lanes: cannot evaluate — missing registry: ${REGISTRY}`);
-  try { return JSON.parse(readFileSync(REGISTRY, 'utf8')); }
+  let base;
+  try { base = JSON.parse(readFileSync(REGISTRY, 'utf8')); }
   catch (e) { die(2, `lanes: cannot evaluate — registry is not valid JSON: ${e.message}`); }
+  // Malformed-but-valid-JSON shapes (e.g. `{ "lanes": {} }`) would otherwise
+  // reach the `for...of` / mergeLocalOverlay's `.map` and throw an uncaught
+  // TypeError. Reject via the same controlled die(2) path here, covering BOTH
+  // the LANES_REGISTRY early-return below AND the overlay-merge path.
+  if (!base || typeof base !== 'object' || !Array.isArray(base.lanes)) {
+    die(2, `lanes: cannot evaluate — registry ${REGISTRY} must be an object with a 'lanes' array`);
+  }
+  // LANES_REGISTRY (explicit full-override — tests/CI) replaces wholesale,
+  // exactly as before HIMMEL-758: no local overlay applied on top of an
+  // explicit override. Only the DEFAULT registry path layers lanes.local.json.
+  if (process.env.LANES_REGISTRY || !existsSync(LOCAL_REGISTRY)) return base;
+  let local;
+  try { local = JSON.parse(readFileSync(LOCAL_REGISTRY, 'utf8')); }
+  catch (e) { die(2, `lanes: cannot evaluate — lanes.local.json is not valid JSON: ${e.message}`); }
+  if (!local || typeof local !== 'object' || !Array.isArray(local.lanes)) {
+    die(2, `lanes: cannot evaluate — ${LOCAL_REGISTRY} must be an object with a 'lanes' array`);
+  }
+  return mergeLocalOverlay(base, local);
 }
 
 // HIMMEL-1029 P1: compact a context-window token count for the /lanes line

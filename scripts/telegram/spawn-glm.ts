@@ -47,6 +47,80 @@ export function resolveProfileSettings(profile: string, addPlugins: string[], cw
   return settings === null ? undefined : JSON.stringify(settings);
 }
 
+// HIMMEL-1094: undo a worktree+branch this dispatch just MINTED, when setup
+// fails before the worker executes. Scope is deliberately narrow — see the call
+// sites: it fires ONLY on resolveProfileSettings throwing, never on an
+// executeRun failure (that worktree holds the worker's WORK), and never in
+// shared (--branch) mode (the worktree/branch are the caller's, not ours).
+// Best-effort by design: teardown runs on an already-failing path, so a failure
+// here must surface the ORIGINAL error, not mask it — hence no throw.
+//
+// Deliberately NO --force. The worker never ran, so nothing here is worth
+// keeping; --force's only extra power is deleting UNCOMMITTED WORK, which is
+// exactly what a mis-scoped teardown must never do. Plain remove refuses loudly
+// instead — fail-safe over fail-silent.
+//
+// The retry exists because the remove races a tokensave `init`: a global
+// post-checkout hook backgrounds one into every fresh checkout, and a
+// `git worktree add` looks like a fresh clone to it ($1 = all-zeros old-ref).
+// Its half-written .tokensave/ reads as untracked until init finishes and adds
+// the dir to .git/info/exclude, so a retry converges once init settles.
+// The deadline is sized to the race it exists to outlast: a tokensave init
+// indexes for ~30s, and until it finishes writing .tokensave/ to
+// .git/info/exclude the worktree reads dirty and the remove refuses. A shorter
+// window would expire mid-init and strand exactly the orphan this fixes.
+// It is a DEADLINE, not a fixed cost: the common case is the teardown winning
+// the race outright on attempt 1 (the worktree is seconds old), which returns
+// immediately. Only a real race pays, and it pays on an already-failing path.
+//
+// 45s is deliberate HEADROOM over that ~30s, which is a rough observation and
+// not a measured boundary — index time scales with repo size, so a deadline
+// equal to the estimate would leave no room for the retry that must land AFTER
+// the blocker clears. The exact value is not load-bearing and is not worth
+// further tuning: the loop exits on first success, and when the window does
+// expire the outcome is a loud refusal with the branch kept either way. Retune
+// only against a real measurement on a real repo (HIMMEL-1094), not by taste.
+const TEARDOWN_DEADLINE_MS = 45_000;
+const TEARDOWN_BACKOFF_MS = 200;
+
+export function teardownMintedWorktree(repoDir: string, worktree: string, branch: string): void {
+  // The whole body is guarded: Bun.spawnSync THROWS on an unresolvable binary
+  // (the `spawn ENOENT` shape), and this runs inside the resolve's catch — an
+  // escaping throw here would replace the operator's real resolve error with a
+  // confusing git one. Never-throws is the contract, so enforce it structurally
+  // rather than trusting every call below to stay throw-free.
+  try {
+    let err = "";
+    const deadline = Date.now() + TEARDOWN_DEADLINE_MS;
+    for (;;) {
+      const r = Bun.spawnSync(["git", "-C", repoDir, "worktree", "remove", worktree], { stdout: "pipe", stderr: "pipe" });
+      if (r.exitCode === 0) break;
+      err = r.stderr.toString().trim();
+      // Only a refusal that left the worktree INTACT is retryable (the transient
+      // -dirt case). Once a remove has deleted the worktree's .git link it has
+      // pruned the admin record too, so git answers "not a working tree" from
+      // here on and no amount of waiting brings it back — retrying that until
+      // the deadline just stalls an already-failing dispatch for 30s.
+      if (!existsSync(join(worktree, ".git"))) break;
+      if (Date.now() + TEARDOWN_BACKOFF_MS >= deadline) break;
+      Bun.sleepSync(TEARDOWN_BACKOFF_MS);
+    }
+    // The DIRECTORY is the gate, not git's exit code. A remove that dies partway
+    // through the delete (the lost-race case) prunes the worktree's admin record
+    // BEFORE it fails, so every later remove reports "not a working tree" while
+    // the directory itself survives. Deleting the branch off a zero exit code
+    // would then strand the worktree AND destroy its only handle.
+    if (existsSync(worktree)) {
+      console.error(`spawn: teardown left worktree ${worktree} in place (${err}); keeping branch ${branch} so it stays reachable — prune with /clean_garden`);
+      return;
+    }
+    const b = Bun.spawnSync(["git", "-C", repoDir, "branch", "-D", branch], { stdout: "pipe", stderr: "pipe" });
+    if (b.exitCode !== 0) console.error(`spawn: teardown could not delete branch ${branch}: ${b.stderr.toString().trim()}`);
+  } catch (e) {
+    console.error(`spawn: teardown threw for worktree ${worktree} (${e}); leaving it and branch ${branch} in place — prune with /clean_garden`);
+  }
+}
+
 export function glmSessionRoot(): string {
   return join(process.env.BRIDGE_ROOT ?? join(homedir(), ".claude", "handover", "bridge"), "glm-sessions");
 }
@@ -641,7 +715,10 @@ async function main(): Promise<void> {
   // The run body (mkdir sessionDir through executeRun) is IDENTICAL between
   // own-branch and shared modes; only the surrounding worktree
   // creation/mutation + lock ownership differ, below.
-  const runBody = async (): Promise<number> => {
+  // HIMMEL-1094: onSetupFail runs ONLY if the profile resolve below throws —
+  // i.e. before ANY of the worker's state exists. The own-branch caller passes a
+  // teardown; shared mode passes nothing (runSharedDispatch calls runBody()).
+  const runBody = async (onSetupFail?: () => void): Promise<number> => {
     // HIMMEL-1040 (CR): resolve the profile FIRST — before meta.json is written.
     // resolveProfileSettings throws on an unreadable/malformed settings layer, and
     // it sits OUTSIDE executeRun's failure-transition guard; if it ran after the
@@ -650,7 +727,17 @@ async function main(): Promise<void> {
     // its deadline. Resolving here keeps the "meta.json ALWAYS leaves running"
     // invariant: nothing has been written yet, so a throw simply aborts the
     // dispatch. Uses the WORKTREE (the cwd the worker runs in), which exists by now.
-    const settings = resolveProfileSettings(profile, addPlugins, worktree);
+    let settings: string | undefined;
+    try {
+      settings = resolveProfileSettings(profile, addPlugins, worktree);
+    } catch (e) {
+      // HIMMEL-1094: the resolve NEEDS the worktree cwd (branch-local settings
+      // layers), so it necessarily runs after `worktree add` — which is why a
+      // throw here would otherwise strand the worktree+branch we just minted.
+      // Undo them, then rethrow the ORIGINAL error unchanged.
+      onSetupFail?.();
+      throw e;
+    }
     mkdirSync(sessionDir, { recursive: true });
     // GLM_SESSION_DIR (spec D5): the deny hook (running inside the worker child)
     // reads ${GLM_SESSION_DIR}/grants.jsonl. sessionEnv('glm') spreads process.env
@@ -723,7 +810,10 @@ async function main(): Promise<void> {
   if (!sharedMode) {
     g(["worktree", "add", worktree, "-b", branch]);
     poisonPushUrl(absCwd, worktree);
-    code = await runBody();
+    // HIMMEL-1094: this dispatch MINTED both the worktree and the branch (-b), so
+    // it owns them until the worker starts. Teardown is passed ONLY here — shared
+    // mode must never tear down a caller-owned worktree/branch.
+    code = await runBody(() => teardownMintedWorktree(absCwd, worktree, branch));
   } else {
     // HIMMEL-800: serialize writers on the shared branch (single-writer
     // invariant, CLAUDE.md Subagent policy). runSharedDispatch acquires the

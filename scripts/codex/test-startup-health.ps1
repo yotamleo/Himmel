@@ -40,8 +40,18 @@ function Run([string]$homeDir, [hashtable]$envx = @{}) {
   return @{ rc = $rc; out = ($out -join "`n") }
 }
 
+function New-Hooks([string]$homeDir, [string]$rel, [bool]$withDesc) {
+  $d = Join-Path $homeDir "plugins/cache/$rel"
+  New-Item -ItemType Directory -Force -Path $d | Out-Null
+  $json = if ($withDesc) { '{"description":"x","hooks":{"SessionStart":[]}}' } else { '{"hooks":{"SessionStart":[]}}' }
+  $json | Set-Content -LiteralPath (Join-Path $d 'hooks.json') -Encoding utf8
+}
+
 $small = "<system-reminder>`n# Where are we`nsmall"
-$hookLine  = "WARN codex_core_plugins::manifest session_loop{thread_id=__TID__}:x: load_plugins_from_layer_stack: ignoring hooks: found object"
+$hookLine  = "WARN codex_core_plugins::manifest session_loop{thread_id=__TID__}:submission_dispatch{}:turn: load_plugins_from_layer_stack: ignoring hooks: expected a string, string array, object, or object array; found object"
+# HIMMEL-1104: same "ignoring hooks" text from the marketplace SUGGESTION scan
+# (non-installed plugins; parsed hooks discarded) — must NOT be a hook failure.
+$suggestLine = "WARN codex_core_plugins::manifest session_loop{thread_id=__TID__}:submission_dispatch{}:turn:built_tools.load_discoverable_tools:list_tool_suggest_discoverable_tools_with_auth:list_tool_suggest_discoverable_plugins: ignoring hooks: expected a string, string array, object, or object array; found object"
 $skillLine = "WARN codex_core_plugins::manifest session_loop{thread_id=__TID__}:built_tools: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=X"
 
 try {
@@ -56,6 +66,67 @@ try {
   Set-Db $h ($hookLine -replace '__TID__', $NEW)
   $r = Run $h
   if ($r.rc -eq 1 -and $r.out -match '^WARN hook-failure:') { Pass 'hook-failure -> exit 1' } else { Fail "hook rc=$($r.rc) out=$($r.out)" }
+
+  # 2b. suggestion-scan noise must NOT fire (offenders present in cache too, to
+  # prove it is the SPAN that gates the finding, not the cache contents).
+  # Twin parity: same span shape as the .sh fixture, emitted twice.
+  $h = New-Home 'suggest' $NEW $small
+  New-Hooks $h 'claude-plugins-official/hookify/local/hooks' $true
+  Set-Db $h (($suggestLine -replace '__TID__', $NEW) + "`n" + ($suggestLine -replace '__TID__', $NEW))
+  $r = Run $h
+  if ($r.rc -eq 0 -and [string]::IsNullOrWhiteSpace($r.out)) { Pass "suggestion-scan noise -> exit 0 (not a hook failure)" } else { Fail "suggest rc=$($r.rc) out=$($r.out)" }
+
+  # 2c. upstream candidate named, but NOT declared safe (log carries no path).
+  $h = New-Home 'upstream' $NEW $small
+  New-Hooks $h 'claude-plugins-official/ralph-loop/1.0.0/hooks' $true
+  New-Hooks $h 'himmel/himmel-ops/0.4.0/hooks' $false
+  Set-Db $h ($hookLine -replace '__TID__', $NEW)
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match 'ralph-loop' -and $r.out -match 'NOT correlated' -and $r.out -notmatch 'safe to route') { Pass 'upstream candidate named, not declared safe (fail-closed)' } else { Fail "upstream rc=$($r.rc) out=$($r.out)" }
+
+  # 2d. himmel-owned offender escalates
+  $h = New-Home 'himmeloff' $NEW $small
+  New-Hooks $h 'himmel/himmel-ops/0.4.0/hooks' $true
+  Set-Db $h ($hookLine -replace '__TID__', $NEW)
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match 'GUARDRAILS MAY BE OFF' -and $r.out -match 'himmel-ops') { Pass 'himmel-owned offender escalates' } else { Fail "himmeloff rc=$($r.rc) out=$($r.out)" }
+
+  # 2e. missing plugins/cache -> fail closed, report "could NOT be scanned"
+  # (twin parity with the .sh suite).
+  $h = New-Home 'noscan' $NEW $small
+  Set-Db $h ($hookLine -replace '__TID__', $NEW)
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match 'could NOT be scanned') { Pass 'unscannable cache says so rather than asserting none found' } else { Fail "noscan rc=$($r.rc) out=$($r.out)" }
+
+  # 2f. unparseable hooks.json -> INCOMPLETE, never a clean "none found"
+  $h = New-Home 'badjson' $NEW $small
+  $bd = Join-Path $h 'plugins/cache/himmel/himmel-ops/0.4.0/hooks'
+  New-Item -ItemType Directory -Force -Path $bd | Out-Null
+  '{"hooks":{ THIS IS NOT JSON' | Set-Content -LiteralPath (Join-Path $bd 'hooks.json') -Encoding utf8
+  Set-Db $h ($hookLine -replace '__TID__', $NEW)
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match 'could NOT be scanned') { Pass 'unparseable hooks.json marks the scan incomplete' } else { Fail "badjson rc=$($r.rc) out=$($r.out)" }
+
+  # 2g. incompleteness surfaced ALONGSIDE a found candidate
+  $h = New-Home 'partial' $NEW $small
+  New-Hooks $h 'claude-plugins-official/ralph-loop/1.0.0/hooks' $true
+  $pd = Join-Path $h 'plugins/cache/claude-plugins-official/broken/1.0.0/hooks'
+  New-Item -ItemType Directory -Force -Path $pd | Out-Null
+  '{ nope' | Set-Content -LiteralPath (Join-Path $pd 'hooks.json') -Encoding utf8
+  Set-Db $h ($hookLine -replace '__TID__', $NEW)
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match 'ralph-loop' -and $r.out -match 'INCOMPLETE') { Pass 'names candidate + admits incomplete scan' } else { Fail "partial rc=$($r.rc) out=$($r.out)" }
+
+  # 2h. case parity with the .sh twin: a `Description` key is NOT the lowercase
+  # `description` field. jq (and codex's serde) are case-sensitive, so PowerShell
+  # must use -ccontains — plain -contains would flag this and diverge.
+  $h = New-Home 'casevariant' $NEW $small
+  $cd = Join-Path $h 'plugins/cache/claude-plugins-official/casey/1.0.0/hooks'
+  New-Item -ItemType Directory -Force -Path $cd | Out-Null
+  '{"Description":"x","hooks":{"SessionStart":[]}}' | Set-Content -LiteralPath (Join-Path $cd 'hooks.json') -Encoding utf8
+  Set-Db $h ($hookLine -replace '__TID__', $NEW)
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -notmatch 'casey') { Pass 'case-variant Description is not flagged (matches jq/serde case-sensitivity)' } else { Fail "casevariant rc=$($r.rc) out=$($r.out)" }
 
   # 3. skill-truncation
   $h = New-Home 'skill' $NEW $small

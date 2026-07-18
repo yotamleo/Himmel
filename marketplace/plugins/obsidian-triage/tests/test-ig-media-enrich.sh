@@ -565,6 +565,10 @@ n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VP/Clippings/clip.md")"
 assert "exactly 20 slide embeds (cap)" 20 "$n"
 nf="$(find "$VP/Clippings/_media/clip" -name 'slide-*.jpg' | wc -l | tr -d ' ')"
 assert "exactly 20 slide files (cap)" 20 "$nf"
+# HIMMEL-791: cap trimming is disclosed on the outcome line (log-only; the
+# clip still writes ok - cap != failure).
+grep -qF "20 slides (5 capped) + 0 transcript" "$tmp/cap.out" && a=ok || a=no
+assert "cap outcome line discloses 5 capped" ok "$a"
 
 # --- Test 12 (c): mixed carousel -> 2 image slides + slide-indexed transcript
 echo "Test 12: mixed carousel (image + video + image)"
@@ -1682,9 +1686,22 @@ cat > "$tmp/bin/ffmpeg" <<'STUB'
 # HIMMEL-786 stub: -vn (WAV extract) fails like a soundless video; the audio
 # probe (-map 0:a:0) exits 1 (no audio stream); frame-extract/recompress copy
 # the -i source to the last arg.
+# HIMMEL-791: the probe branch mirrors a NON-English ffmpeg build - it reports a
+# LOCALIZED "matches no streams" string unless LC_ALL=C. An UNPINNED probe (locale
+# leaked from the parent env) emits the localized form, the tool's substring check
+# misses it, _has_audio_stream stays conservative-True, and the screenshot
+# fallback silently no-ops. The tool must pin LC_ALL=C on the probe subprocess.
 case " $* " in
   *" -vn "*) echo "Output file does not contain any stream" >&2; exit 1 ;;
-  *" 0:a:0 "*) echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+  *" 0:a:0 "*)
+    # Witness the locale the probe actually ran under; the test asserts == C.
+    printf '%s' "${LC_ALL:-}" > "${IG_PROBE_WITNESS:-/dev/null}"
+    if [ "${LC_ALL:-}" = "C" ]; then
+      echo "Stream map '0:a:0' matches no streams." >&2
+    else
+      echo "Stream-Zuordnung '0:a:0' passt zu keinem Stream." >&2
+    fi
+    exit 1 ;;
 esac
 src=""; prev=""; last=""
 for a in "$@"; do
@@ -1699,7 +1716,11 @@ cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
 echo %*| findstr /C:"-vn" >nul
 if not errorlevel 1 ( echo Output file does not contain any stream 1>&2 & exit /b 1 )
 echo %*| findstr /C:"0:a:0" >nul
-if not errorlevel 1 ( echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+if not errorlevel 1 (
+  if defined IG_PROBE_WITNESS <nul set /p="%LC_ALL%">"%IG_PROBE_WITNESS%"
+  if "%LC_ALL%"=="C" ( echo Stream map '0:a:0' matches no streams. 1>&2 ) else ( echo Stream-Zuordnung '0:a:0' passt zu keinem Stream. 1>&2 )
+  exit /b 1
+)
 setlocal enabledelayedexpansion
 set "src="
 set "prev="
@@ -1717,8 +1738,21 @@ exit /b 0
 STUB
 VSL="$tmp/vault-soundless"
 make_ig_vault "$VSL" SLNT036
-run_tool "$VSL" >"$tmp/soundless.out" 2>"$tmp/soundless.err"
+# HIMMEL-791: force a NON-C locale into the tool's parent env so a LEAKED
+# (unpinned) probe is detectable. The pinned tool overrides it to LC_ALL=C for
+# the probe subprocess; an UNPINNED one leaks POSIX -> localized probe message
+# -> conservative-True -> no screenshot -> the 3-slide assertions below FAIL.
+# (POSIX is always a valid locale, so python startup is unaffected.)
+# cygpath -m on Windows: the witness path crosses bash -> python -> cmd.exe
+# (the .bat stub twin), and cmd cannot resolve an MSYS /tmp/... path. A
+# mixed-mode C:/... path is writable by cmd AND readable by bash cat.
+IG_PROBE_WITNESS="$(cygpath -m "$tmp/ig-probe-locale" 2>/dev/null || printf '%s' "$tmp/ig-probe-locale")"
+export IG_PROBE_WITNESS
+LC_ALL=POSIX run_tool "$VSL" >"$tmp/soundless.out" 2>"$tmp/soundless.err"
 assert "soundless run exit 0" 0 "$?"
+assert "soundless: audio probe ran under LC_ALL=C (HIMMEL-791)" "C" "$(cat "$IG_PROBE_WITNESS" 2>/dev/null)"
+# Don't leak the witness var into later tests' stub environments.
+unset IG_PROBE_WITNESS
 n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VSL/Clippings/clip.md")"
 assert "soundless: 3 slide embeds (2 images + 1 screenshot)" 3 "$n"
 for k in 01 02 03; do
@@ -1737,8 +1771,8 @@ grep -qF '**Slide 2 (video):**' "$VSL/Clippings/clip.md" && a=present || a=absen
 assert "soundless: no video transcript label" absent "$a"
 grep -q '^media_enrichment_status: ok$' "$VSL/Clippings/clip.md" && a=ok || a=no
 assert "soundless: media_enrichment_status ok (NOT partial)" ok "$a"
-grep -qF "3 slides + 0 transcript" "$tmp/soundless.out" && a=ok || a=no
-assert "soundless: outcome line 3 slides + 0 transcript" ok "$a"
+grep -qF "3 slides (1 video-frame) + 0 transcript" "$tmp/soundless.out" && a=ok || a=no
+assert "soundless: outcome line marks 1 video-frame" ok "$a"
 vid="$(find "$VSL" \( -name '*.mp4' -o -name '*.wav' \) 2>/dev/null)"
 [ -z "$vid" ] && a=ok || a=no
 assert "soundless: no video/wav under the vault" ok "$a"
@@ -1900,8 +1934,8 @@ n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VOR/Clippings/clip.md")"
 assert "soundless-only reel: exactly 1 screenshot slide embed" 1 "$n"
 grep -q '^media_enrichment_status: ok$' "$VOR/Clippings/clip.md" && a=ok || a=no
 assert "soundless-only reel: enriched ok (not partial/failed)" ok "$a"
-grep -qF "1 slides + 0 transcript" "$tmp/onlyreel.out" && a=ok || a=no
-assert "soundless-only reel: outcome line 1 slides + 0 transcript" ok "$a"
+grep -qF "1 slides (1 video-frame) + 0 transcript" "$tmp/onlyreel.out" && a=ok || a=no
+assert "soundless-only reel: outcome line marks 1 video-frame" ok "$a"
 
 # --- Test 40: frame extraction fails AFTER a conclusive no-audio probe -------
 # The other half of soundless_video_frame's branches: probe proves soundless
@@ -2016,8 +2050,8 @@ n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VMX/Clippings/clip.md")"
 assert "mixed-probe: 2 slide embeds (image + screenshot of 2.mp4)" 2 "$n"
 grep -q '^media_enrichment_status: partial$' "$VMX/Clippings/clip.md" && a=ok || a=no
 assert "mixed-probe: partial (3.mp4 transcript genuinely lost)" ok "$a"
-grep -qF "2/2 slides, 0/1 transcripts" "$tmp/mixedprobe.out" && a=ok || a=no
-assert "mixed-probe: outcome line 2/2 slides, 0/1 transcripts" ok "$a"
+grep -qF "2/2 slides (1 video-frame), 0/1 transcripts" "$tmp/mixedprobe.out" && a=ok || a=no
+assert "mixed-probe: outcome line marks surviving video-frame" ok "$a"
 
 # --- Test 42: frame-extract TIMEOUT after a conclusive probe -> traced +
 #     partial (codex-adv round 3). IG_MEDIA_FRAME_TIMEOUT=1 seams ONLY the
@@ -2165,6 +2199,122 @@ seam_out=$(env -u IG_MEDIA_FRAME_TIMEOUT IG_MEDIA_FFMPEG_TIMEOUT=7 PYTHONUTF8=1 
 assert "seam-inherit: FRAME_TIMEOUT follows IG_MEDIA_FFMPEG_TIMEOUT when FRAME unset" "7 7" "$seam_out"
 seam_out=$(IG_MEDIA_FFMPEG_TIMEOUT=1 IG_MEDIA_FRAME_TIMEOUT=9 PYTHONUTF8=1 uv run --python 3.12 python -c "$seam_py" "$TOOL")
 assert "seam-inherit: explicit IG_MEDIA_FRAME_TIMEOUT wins over the global" "9 1" "$seam_out"
+
+# --- Test 43: screenshot past SLIDE_CAP is trimmed, not partial --------------
+echo "Test 43: screenshot past SLIDE_CAP is capped out without partial (HIMMEL-791)"
+# 20 authored images fill SLIDE_CAP; the soundless video frame lands at source
+# position 21 and is trimmed by the slide cap. Cap trimming alone is not a
+# failure, and capped-out frames must not be counted in the outcome marker.
+# Word-splitting is intentional: each padded name is its own emit_gallery_dl arg.
+# shellcheck disable=SC2046
+emit_gallery_dl $(seq -w 1 20 | sed 's/$/.jpg/') 21.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" -vn "*) echo "Output file does not contain any stream" >&2; exit 1 ;;
+  *" 0:a:0 "*) echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Output file does not contain any stream 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk43
+if "%~1"=="" goto done43
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk43
+:done43
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VSC="$tmp/vault-slidecap-frame"
+make_ig_vault "$VSC" SCAP043
+run_tool "$VSC" >"$tmp/slidecapframe.out" 2>"$tmp/slidecapframe.err"
+assert "slidecap-frame run exit 0" 0 "$?"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VSC/Clippings/clip.md")"
+assert "slidecap-frame: exactly SLIDE_CAP slide embeds" 20 "$n"
+grep -q '^media_enrichment_status: ok$' "$VSC/Clippings/clip.md" && a=ok || a=no
+assert "slidecap-frame: cap trimming alone is ok (not partial)" ok "$a"
+grep -qF "20 slides (1 capped) + 0 transcript" "$tmp/slidecapframe.out" && a=ok || a=no
+assert "slidecap-frame: outcome line has no video-frame marker, discloses cap" ok "$a"
+grep -qF "video-frame" "$tmp/slidecapframe.out" && a=present || a=absent
+assert "slidecap-frame: capped-out screenshot not counted as video-frame" absent "$a"
+
+# --- Test 44: within-cap screenshot whose recompress FAILS is excluded from
+#     the video-frame marker (HIMMEL-791) -------------------------------------
+# The other guard of the marker count: the screenshot survives frame
+# extraction (it IS in images at a position <= SLIDE_CAP) but its own
+# recompress drops out, so it lands in slides_failed, produces no embed, and
+# must NOT be counted as a video-frame. The clip stays honestly partial.
+echo "Test 44: recompress-failed screenshot excluded from video-frame marker (HIMMEL-791)"
+emit_gallery_dl 1.jpg 2.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" -vn "*) echo "Output file does not contain any stream" >&2; exit 1 ;;
+  *" 0:a:0 "*) echo "Stream map '0:a:0' matches no streams." >&2; exit 1 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+# Recompress of the extracted screenshot fails; frame extraction (src=2.mp4)
+# and the authored 1.jpg recompress still succeed.
+case "$src" in *frame*) exit 1 ;; esac
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"-vn" >nul
+if not errorlevel 1 ( echo Output file does not contain any stream 1>&2 & exit /b 1 )
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo Stream map '0:a:0' matches no streams. 1>&2 & exit /b 1 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk44
+if "%~1"=="" goto done44
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk44
+:done44
+echo !src!| findstr /C:"frame" >nul && exit /b 1
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+VFF="$tmp/vault-frame-recompress-fail"
+make_ig_vault "$VFF" FRCF044
+run_tool "$VFF" >"$tmp/framercfail.out" 2>"$tmp/framercfail.err"
+assert "frame-recompress-fail run exit 0" 0 "$?"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VFF/Clippings/clip.md")"
+assert "frame-recompress-fail: only the authored slide embeds" 1 "$n"
+grep -q '^media_enrichment_status: partial$' "$VFF/Clippings/clip.md" && a=ok || a=no
+assert "frame-recompress-fail: stays partial (screenshot lost)" ok "$a"
+grep -qF "1/2 slides, 0/0 transcripts" "$tmp/framercfail.out" && a=ok || a=no
+assert "frame-recompress-fail: outcome line 1/2 slides, 0/0 transcripts" ok "$a"
+grep -qF "video-frame" "$tmp/framercfail.out" && a=present || a=absent
+assert "frame-recompress-fail: failed screenshot not counted as video-frame" absent "$a"
 
 echo ""
 echo "ig-media-enrich tests: $pass passed, $fail failed"

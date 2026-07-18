@@ -2,7 +2,7 @@
 # Tests for HIMMEL-660 follow-list-score.mjs — Task 7 `assemble` subcommand.
 # Reads <handle>.judgment.json + dossier JSON fixtures written directly to
 # disk (no live judge pass), ranks via follow-score.mjs's rankAccounts
-# against the real ./follow-overrides.json seed ({whitelist:["examplehandle"],
+# against the real ./follow-overrides.json seed ({whitelist:["cyrilxbt"],
 # exclude:[]}), and asserts the regenerated ai-x-follow-list.md +
 # ai-x-follow-scores.md. Hermetic: no network. Cross-platform: bash on
 # Linux/macOS/Git-Bash. Uses node (not bun) for CI.
@@ -138,12 +138,12 @@ cat > "$vault/30-Resources/.follow-scores/theo.judgment.json" <<'EOF'
 }
 EOF
 
-# examplehandle: computes "exclude" (composite 1.0, confidence low -> adjusted 0.7),
+# cyrilxbt: computes "exclude" (composite 1.0, confidence low -> adjusted 0.7),
 # NO verified claims -- confidence:low satisfies the invariant instead.
 # Whitelisted via the real ./follow-overrides.json seed -> must surface at Tier 3.
-cat > "$vault/30-Resources/.follow-scores/examplehandle.json" <<'EOF'
+cat > "$vault/30-Resources/.follow-scores/cyrilxbt.json" <<'EOF'
 {
-  "handle": "examplehandle",
+  "handle": "cyrilxbt",
   "roster": { "clip_count": 3, "in_list": true },
   "account": { "bio": "quiet account", "followers": 50, "following": 20, "created_at": null, "cadence_days": null, "source": "fxtwitter", "fetch_status": "ok" },
   "repos": { "login": null, "repo_count": null, "total_stars": null, "recent_pushed_at": null, "topical_hits": null, "sample_descriptions": [], "source": null, "status": null },
@@ -153,9 +153,9 @@ cat > "$vault/30-Resources/.follow-scores/examplehandle.json" <<'EOF'
   "screen_status": "ok"
 }
 EOF
-cat > "$vault/30-Resources/.follow-scores/examplehandle.judgment.json" <<'EOF'
+cat > "$vault/30-Resources/.follow-scores/cyrilxbt.judgment.json" <<'EOF'
 {
-  "handle": "examplehandle",
+  "handle": "cyrilxbt",
   "scores": { "factual_reliability": 1, "resources": 1, "focus_fit": 1, "substance": 1, "reach": 1 },
   "confidence": "low",
   "rationale": "borderline account, thin evidence",
@@ -229,14 +229,14 @@ console.log("OLD_GONE=" + !updated.includes("@old"));
 console.log("HAS_ALICE=" + updated.includes("[@alice]"));
 console.log("HAS_BOB=" + updated.includes("[@bob]"));
 console.log("HAS_THEO=" + updated.includes("[@theo]"));
-console.log("HAS_CYRIL=" + updated.includes("[@examplehandle]"));
+console.log("HAS_CYRIL=" + updated.includes("[@cyrilxbt]"));
 console.log("HAS_DAVE=" + updated.includes("[@dave]"));
 
 const tier3Idx = updated.indexOf("## Tier 3");
 const excludedIdx = updated.indexOf("## Excluded");
-const cyrilIdx = updated.indexOf("[@examplehandle]");
+const cyrilIdx = updated.indexOf("[@cyrilxbt]");
 console.log("CYRIL_IN_TIER3=" + (tier3Idx !== -1 && excludedIdx !== -1 && cyrilIdx > tier3Idx && cyrilIdx < excludedIdx));
-const cyrilLine = updated.split("\n").find(l => l.includes("[@examplehandle]"));
+const cyrilLine = updated.split("\n").find(l => l.includes("[@cyrilxbt]"));
 console.log("CYRIL_HAS_OVERRIDE=" + (!!cyrilLine && /override/i.test(cyrilLine)));
 
 const daveIdx = updated.indexOf("[@dave]");
@@ -254,10 +254,10 @@ echo "$list_check" | grep -q 'OLD_GONE=true' && r=yes || r=no; assert "stale tie
 echo "$list_check" | grep -q 'HAS_ALICE=true' && r=yes || r=no; assert "alice present in list" yes "$r"
 echo "$list_check" | grep -q 'HAS_BOB=true' && r=yes || r=no; assert "bob present in list" yes "$r"
 echo "$list_check" | grep -q 'HAS_THEO=true' && r=yes || r=no; assert "theo present in list" yes "$r"
-echo "$list_check" | grep -q 'HAS_CYRIL=true' && r=yes || r=no; assert "examplehandle present in list (whitelist override)" yes "$r"
+echo "$list_check" | grep -q 'HAS_CYRIL=true' && r=yes || r=no; assert "cyrilxbt present in list (whitelist override)" yes "$r"
 echo "$list_check" | grep -q 'HAS_DAVE=true' && r=yes || r=no; assert "dave present in list (Excluded section)" yes "$r"
-echo "$list_check" | grep -q 'CYRIL_IN_TIER3=true' && r=yes || r=no; assert "examplehandle placed at Tier 3, not promoted higher" yes "$r"
-echo "$list_check" | grep -q 'CYRIL_HAS_OVERRIDE=true' && r=yes || r=no; assert "examplehandle's bullet carries an override note" yes "$r"
+echo "$list_check" | grep -q 'CYRIL_IN_TIER3=true' && r=yes || r=no; assert "cyrilxbt placed at Tier 3, not promoted higher" yes "$r"
+echo "$list_check" | grep -q 'CYRIL_HAS_OVERRIDE=true' && r=yes || r=no; assert "cyrilxbt's bullet carries an override note" yes "$r"
 echo "$list_check" | grep -q 'DAVE_IN_EXCLUDED=true' && r=yes || r=no; assert "dave (computed exclude, not whitelisted) lands in ## Excluded" yes "$r"
 
 # -- Test 3: scorecard content -- low_sample flag + verified-vs-confidence invariant
@@ -277,23 +277,23 @@ console.log("THEO_LOW_SAMPLE=" + /low_sample/.test(blockFor("theo")));
 console.log("ALICE_VERIFIED=" + /verified: "/.test(blockFor("alice")));
 console.log("BOB_VERIFIED=" + /verified: "/.test(blockFor("bob")));
 console.log("THEO_VERIFIED=" + /verified: "/.test(blockFor("theo")));
-console.log("CYRIL_CONF_LOW=" + /confidence: low/.test(blockFor("examplehandle")));
+console.log("CYRIL_CONF_LOW=" + /confidence: low/.test(blockFor("cyrilxbt")));
 console.log("ALICE_BLOCK_NONEMPTY=" + (blockFor("alice").length > 0));
 console.log("BOB_BLOCK_NONEMPTY=" + (blockFor("bob").length > 0));
 console.log("THEO_BLOCK_NONEMPTY=" + (blockFor("theo").length > 0));
-console.log("CYRIL_BLOCK_NONEMPTY=" + (blockFor("examplehandle").length > 0));
+console.log("CYRIL_BLOCK_NONEMPTY=" + (blockFor("cyrilxbt").length > 0));
 ' > "$tmpdir/scorecard-check.txt"
 
 scorecard_check="$(cat "$tmpdir/scorecard-check.txt")"
 echo "$scorecard_check" | grep -q 'ALICE_BLOCK_NONEMPTY=true' && r=yes || r=no; assert "scorecard has an alice row" yes "$r"
 echo "$scorecard_check" | grep -q 'BOB_BLOCK_NONEMPTY=true' && r=yes || r=no; assert "scorecard has a bob row" yes "$r"
 echo "$scorecard_check" | grep -q 'THEO_BLOCK_NONEMPTY=true' && r=yes || r=no; assert "scorecard has a theo row" yes "$r"
-echo "$scorecard_check" | grep -q 'CYRIL_BLOCK_NONEMPTY=true' && r=yes || r=no; assert "scorecard has a examplehandle row" yes "$r"
+echo "$scorecard_check" | grep -q 'CYRIL_BLOCK_NONEMPTY=true' && r=yes || r=no; assert "scorecard has a cyrilxbt row" yes "$r"
 echo "$scorecard_check" | grep -q 'THEO_LOW_SAMPLE=true' && r=yes || r=no; assert "theo's row (roster.clip_count==0) is flagged low_sample" yes "$r"
 echo "$scorecard_check" | grep -q 'ALICE_VERIFIED=true' && r=yes || r=no; assert "alice's row cites >=1 verified evidence item" yes "$r"
 echo "$scorecard_check" | grep -q 'BOB_VERIFIED=true' && r=yes || r=no; assert "bob's row cites >=1 verified evidence item" yes "$r"
 echo "$scorecard_check" | grep -q 'THEO_VERIFIED=true' && r=yes || r=no; assert "theo's row cites >=1 verified evidence item" yes "$r"
-echo "$scorecard_check" | grep -q 'CYRIL_CONF_LOW=true' && r=yes || r=no; assert "examplehandle's row carries confidence: low (no verified evidence needed)" yes "$r"
+echo "$scorecard_check" | grep -q 'CYRIL_CONF_LOW=true' && r=yes || r=no; assert "cyrilxbt's row carries confidence: low (no verified evidence needed)" yes "$r"
 
 # -- Test 4: determinism -- re-running assemble yields a byte-identical list -
 echo "Test 4: determinism (re-run -> byte-identical)"

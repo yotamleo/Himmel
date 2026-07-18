@@ -27,6 +27,22 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #   STUB_CWD_NWO        the CURRENT checkout's owner/repo. Default = STUB_NWO.
 #   STUB_CWD_FAIL=1     `gh repo view --json nameWithOwner` (cwd) exits 1.
 #   STUB_SHA            `headRefOid` in the meta query. Default a fixed fake sha.
+#   STUB_BASE            `baseRefName` in the meta query. Default main.
+#   STUB_DEFAULT_BRANCH  `defaultBranchRef.name` in the repo-meta query. Default main.
+#   STUB_BASE_PREMERGE   `baseRefName` in the FIX-1 pre-merge re-query (fires
+#                        after check-ci, before merging). Default = STUB_BASE.
+#   STUB_DEFAULT_BRANCH_PREMERGE  `defaultBranchRef.name` in the FIX-1 pre-merge
+#                        re-query. Default = STUB_DEFAULT_BRANCH.
+#   STUB_PRIVATE_PREMERGE  `isPrivate` in the FIX-1 pre-merge re-verify
+#                        (HIMMEL-1080 CR round-3 folds isPrivate into the
+#                        pre-merge repo view). Default = STUB_PRIVATE. Set false
+#                        to simulate a repo made public during the CI wait.
+#   STUB_DEFAULT_BRANCH_NULL=1  the repo-meta query's defaultBranchRef is JSON
+#                        null over the wire — runs the SCRIPT'S OWN --jq filter
+#                        (captured from argv) through real jq against synthetic
+#                        null JSON, so this proves the coalesce fix rather than
+#                        a hand-picked stub string.
+#   STUB_DEFAULT_BRANCH_PREMERGE_NULL=1  same, for the FIX-1 pre-merge query.
 #   STUB_CI_RC          exit code of the stub check-ci. Default 0.
 #   STUB_MERGE_FAIL=1   `gh pr merge` exits 1 (generic failure).
 #   STUB_MERGE_COSMETIC=1  `gh pr merge` exits 1 with the held-worktree message.
@@ -60,18 +76,30 @@ run_mog() {
 #!/usr/bin/env bash
 echo "$*" >> "$GH_LOG"
 verb="$1 $2"
+repo_arg="${3:-}"
 json=""
-while [ $# -gt 0 ]; do case "$1" in --json) json="${2:-}";; esac; shift; done
+jqexpr=""
+while [ $# -gt 0 ]; do case "$1" in --json) json="${2:-}";; --jq) jqexpr="${2:-}";; esac; shift; done
 nwo="${STUB_NWO:-owner/repo}"
 case "$verb" in
     "pr view")
         [ "${STUB_NO_PR:-0}" = "1" ] && { echo 'no pull requests found for branch "x"' >&2; exit 1; }
         [ "${STUB_STATE_FAIL:-0}" = "1" ] && { echo "gh: api error" >&2; exit 1; }
         case "$json" in
-            "state,url,number,headRefOid")
-                # Consolidated meta query (codex-1 fix): state|url|number|headRefOid.
-                printf '%s|https://github.com/%s/pull/%s|%s|%s' \
-                    "${STUB_STATE-OPEN}" "$nwo" "${STUB_NUM:-77}" "${STUB_NUM:-77}" "${STUB_SHA-abc123def456}" ;;
+            "state,url,number,headRefOid,baseRefName")
+                # Consolidated meta query (HIMMEL-1080 adds baseRefName):
+                # state|url|number|headRefOid|baseRefName.
+                printf '%s|https://github.com/%s/pull/%s|%s|%s|%s' \
+                    "${STUB_STATE-OPEN}" "$nwo" "${STUB_NUM:-77}" "${STUB_NUM:-77}" "${STUB_SHA-abc123def456}" "${STUB_BASE-main}" ;;
+            "baseRefName")
+                # FIX-1 pre-merge re-query (HIMMEL-1080 CR round-1, codex-adv):
+                # a fresh baseRefName read right before merging, independent of
+                # the consolidated meta query above. Defaults to STUB_BASE so
+                # existing tests (no premerge override) see an unchanged base.
+                # `-` (not `:-`) so an explicitly-empty STUB_BASE_PREMERGE is
+                # preserved, letting a test simulate an empty pre-merge base
+                # (fail-closed path) rather than silently defaulting (coderabbit).
+                printf '%s' "${STUB_BASE_PREMERGE-${STUB_BASE-main}}" ;;
             "state")
                 # Post-merge re-query: the cosmetic branch-delete path AND the
                 # merge-confirmation poll on the success path (coderabbit).
@@ -80,12 +108,50 @@ case "$verb" in
         esac
         ;;
     "repo view")
-        # isPrivate is keyed off the repo POSITIONAL ($3) — the PR's own repo,
-        # not cwd (codex-1). nameWithOwner (no positional) = the CURRENT checkout
-        # for the same-repo binding (codex-adv-2).
+        # isPrivate + defaultBranchRef are queried TOGETHER (HIMMEL-1080 folds
+        # the base-branch guard into the SAME query, no extra round-trip) and
+        # keyed off the repo POSITIONAL ($3) — the PR's own repo, not cwd
+        # (codex-1). nameWithOwner (no positional) = the CURRENT checkout for
+        # the same-repo binding (codex-adv-2).
         case "$json" in
-            isPrivate)     printf '%s' "${STUB_PRIVATE-true}" ;;
+            isPrivate,defaultBranchRef)
+                # (CodeRabbit) Assert the positional repo arg — a regression
+                # back to a cwd-scoped query would otherwise pass silently.
+                if [ "$repo_arg" != "$nwo" ]; then
+                    echo "gh stub: 'repo view' isPrivate,defaultBranchRef queried '$repo_arg', expected the PR repo '$nwo'" >&2
+                    exit 92
+                fi
+                # This shape is queried TWICE per run — guard 2b (query time)
+                # and the FIX-1 pre-merge re-verify (HIMMEL-1080 CR round-3 folds
+                # isPrivate into the pre-merge repo view). Route by call ORDER via
+                # the gh argv log: 1st occurrence = guard 2b, 2nd = pre-merge.
+                # This call is already appended to GH_LOG (top of stub), so the
+                # match count is 1 on the first call, 2 on the second.
+                n=$(grep -c 'isPrivate,defaultBranchRef' "$GH_LOG" 2>/dev/null || echo 1)
+                if [ "${n:-1}" -le 1 ]; then
+                    # guard 2b (query time). defaultBranchRef is NULLABLE
+                    # (CodeRabbit): feed synthetic null JSON through the SCRIPT'S
+                    # OWN --jq filter (captured above) via real jq, proving the
+                    # coalesce fix in merge-on-green.sh rather than a stub string.
+                    if [ "${STUB_DEFAULT_BRANCH_NULL:-0}" = "1" ]; then
+                        printf '{"isPrivate":%s,"defaultBranchRef":null}' "${STUB_PRIVATE-true}" | jq -r "$jqexpr"
+                    else
+                        printf '%s|%s' "${STUB_PRIVATE-true}" "${STUB_DEFAULT_BRANCH-main}"
+                    fi
+                else
+                    # FIX-1 pre-merge re-verify (privacy + default branch both
+                    # re-read). STUB_PRIVATE_PREMERGE / STUB_DEFAULT_BRANCH_PREMERGE
+                    # default to their guard-2b values so tests that don't
+                    # override see an unchanged repo.
+                    if [ "${STUB_DEFAULT_BRANCH_PREMERGE_NULL:-0}" = "1" ]; then
+                        printf '{"isPrivate":%s,"defaultBranchRef":null}' "${STUB_PRIVATE_PREMERGE:-${STUB_PRIVATE-true}}" | jq -r "$jqexpr"
+                    else
+                        printf '%s|%s' "${STUB_PRIVATE_PREMERGE:-${STUB_PRIVATE-true}}" "${STUB_DEFAULT_BRANCH_PREMERGE:-${STUB_DEFAULT_BRANCH-main}}"
+                    fi
+                fi ;;
             nameWithOwner)
+                # No positional — this is the CURRENT checkout query
+                # (codex-adv-2), not the PR's repo. Do NOT add a repo_arg check.
                 [ "${STUB_CWD_FAIL:-0}" = "1" ] && { echo "gh: api error" >&2; exit 1; }
                 printf '%s' "${STUB_CWD_NWO:-${STUB_NWO:-owner/repo}}" ;;
             *) echo "gh stub: unhandled 'repo view' query: --json '$json'" >&2; exit 90 ;;
@@ -201,6 +267,95 @@ assert_gh_has  "privacy check scoped to the PR repo" "repo view acme/private-rep
 assert_audit_has "audit records MERGING intent"   "MERGING"
 assert_audit_has "audit records MERGED + sha"     "MERGED"
 assert_audit_has "audit records the certified sha" "sha=feedface99"
+
+# 9b. Base-branch guard (HIMMEL-1080): PR based on the repo's default branch
+# still reaches the merge — the guard is additive, not a behavior change for
+# the (common) approved-target case.
+STUB_SHA="basecheck01" STUB_BASE="main" STUB_DEFAULT_BRANCH="main" \
+    run_mog 0 "PR on default branch → merged"
+assert_merge_has "base-branch-ok merge pins the certified sha" "--match-head-commit basecheck01"
+
+# 9c. Base-branch guard (HIMMEL-1080): PR based on any OTHER branch is refused
+# (exit 12), no merge — the standing allow-rule only covers PRs against the
+# repo's default branch (inject-initiative.sh:236: "squash-merge to PRIVATE
+# main").
+STUB_BASE="some/other-branch" STUB_DEFAULT_BRANCH="main" \
+    run_mog 12 "PR on non-default base branch → exit 12"
+assert_gh_lacks "wrong-base: no merge attempted" "pr merge"
+assert_audit_has "wrong-base audits the refusal reason" "reason=wrong-base-branch"
+assert_audit_has "wrong-base audit records the pr base" "pr_base=some/other-branch"
+assert_audit_has "wrong-base audit records the authorized branch" "authorized_branch=main"
+
+# 9d. Base-branch guard fail-closed: an undeterminable repo default branch
+# refuses (exit 12) rather than waving the merge through.
+STUB_DEFAULT_BRANCH="" run_mog 12 "undeterminable default branch → exit 12 fail-closed"
+assert_gh_lacks "undeterminable-default: no merge attempted" "pr merge"
+assert_audit_has "undeterminable-default audits the reason" "reason=base-branch-undeterminable"
+
+# 9e. Base-branch retarget race (HIMMEL-1080 CR round-1, codex-adv [high]): the
+# PR was on the default branch at the gate (guard 2c) but got RETARGETED during
+# check-ci.sh's watch window — the head SHA never moved (gh allows editing a
+# PR's base without touching its head), so --match-head-commit alone would not
+# catch it. The pre-merge re-query (FIX-1) must catch the retarget and refuse
+# (exit 12); the merge must never fire.
+STUB_SHA="retarget01" STUB_BASE="main" STUB_DEFAULT_BRANCH="main" \
+    STUB_BASE_PREMERGE="some/other-branch" \
+    run_mog 12 "base retargeted after the gate → exit 12"
+assert_gh_lacks "retargeted-base: no merge attempted" "pr merge"
+assert_audit_has "retargeted-base audits the reason" "reason=base-branch-changed"
+assert_audit_has "retargeted-base audit records the base certified at the gate" "pr_base_at_gate=main"
+assert_audit_has "retargeted-base audit records the new base" "pr_base_now=some/other-branch"
+
+# 9e2. Repository made PUBLIC during the CI wait (HIMMEL-1080 CR round-3,
+# coderabbit [major]): the repo passed the private-only boundary at guard 2b
+# but was flipped public during check-ci.sh's watch window — the same staleness
+# class as the base retarget above. The pre-merge re-verify folds isPrivate into
+# its repo view and must refuse (exit 12); the merge must never fire.
+STUB_SHA="pubrace01" STUB_PRIVATE=true STUB_PRIVATE_PREMERGE=false \
+    run_mog 12 "repo made public during the CI wait → exit 12"
+assert_gh_lacks "public-race: no merge attempted" "pr merge"
+assert_audit_has "public-race audits the pre-merge privacy reason" "reason=not-private-premerge"
+
+# 9e3. Empty pre-merge baseRefName (HIMMEL-1080 CR round-3, coderabbit): a fresh
+# baseRefName that comes back EMPTY right before merging is undeterminable →
+# refuse (exit 12) fail-closed, never default silently. The stub preserves an
+# explicitly-empty STUB_BASE_PREMERGE (`-`, not `:-`) so this path is reachable.
+STUB_SHA="emptybase01" STUB_BASE_PREMERGE="" \
+    run_mog 12 "empty pre-merge base → exit 12 fail-closed"
+assert_gh_lacks "empty-premerge-base: no merge attempted" "pr merge"
+assert_audit_has "empty-premerge-base audits undeterminable" "reason=base-branch-undeterminable"
+
+# External `jq` availability (CodeRabbit round-2, HIMMEL-1080): the two null-
+# coalesce cases below feed synthetic null JSON through the SCRIPT'S OWN --jq
+# filter via real jq — proving the coalesce fix in merge-on-green.sh itself
+# rather than a hand-picked stub string. jq is NOT an established dependency
+# of this repo (no standalone `jq` anywhere under scripts/ — the many `--jq`
+# are gh's OWN embedded jq, not the external binary). On a machine without jq
+# SKIP those cases cleanly instead of silently breaking: this suite has no
+# skip counter, so a SKIP line is not counted as pass or fail. Behaviour is
+# unchanged when jq IS installed.
+have_jq=0; command -v jq >/dev/null 2>&1 && have_jq=1
+
+# 9f. Nullable defaultBranchRef at guard 2b/2c (CodeRabbit [minor]): a repo API
+# response with defaultBranchRef: null must be coalesced in the script's OWN
+# --jq filter to "" (undeterminable), not jq's literal "null" string sliding
+# past -z and mislabeling as wrong-base-branch.
+if [ "$have_jq" = "1" ]; then
+    STUB_DEFAULT_BRANCH_NULL=1 run_mog 12 "null defaultBranchRef at the gate → exit 12 undeterminable"
+    assert_gh_lacks "null-default-branch: no merge attempted" "pr merge"
+    assert_audit_has "null-default-branch audits undeterminable, not wrong-base" "reason=base-branch-undeterminable"
+else
+    echo "  SKIP: jq not installed — null-defaultBranchRef-at-gate case (CodeRabbit, HIMMEL-1080)"
+fi
+
+# 9g. Same nullable-coalesce fix applied to the FIX-1 pre-merge re-query.
+if [ "$have_jq" = "1" ]; then
+    STUB_DEFAULT_BRANCH_PREMERGE_NULL=1 run_mog 12 "null defaultBranchRef at the pre-merge re-query → exit 12 undeterminable"
+    assert_gh_lacks "null-default-branch-premerge: no merge attempted" "pr merge"
+    assert_audit_has "null-default-branch-premerge audits undeterminable" "reason=base-branch-undeterminable"
+else
+    echo "  SKIP: jq not installed — null-defaultBranchRef-pre-merge case (CodeRabbit, HIMMEL-1080)"
+fi
 
 # 10. --dry-run: gates pass but NO merge fires.
 run_mog 0 "dry-run passes gates, no merge" -- --dry-run

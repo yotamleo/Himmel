@@ -25,7 +25,7 @@ VAULT="${HOME}/Documents/luna"
 while [ $# -gt 0 ]; do
     case "$1" in
         --vault) VAULT="$2"; shift 2 ;;
-        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set /p' "$0" | sed '$d'; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done

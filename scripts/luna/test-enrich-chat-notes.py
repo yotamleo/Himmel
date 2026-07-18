@@ -193,7 +193,7 @@ class TestKeyAndRoot(unittest.TestCase):
     def test_env_key_wins(self):
         os.environ["DEEPSEEK_API_KEY"] = "sk-env"
         try:
-            self.assertEqual(mod.resolve_api_key(Path(".")), "sk-env")
+            self.assertEqual(mod.resolve_api_key(Path("."), "DEEPSEEK_API_KEY"), "sk-env")
         finally:
             del os.environ["DEEPSEEK_API_KEY"]
 
@@ -206,7 +206,7 @@ class TestKeyAndRoot(unittest.TestCase):
             orig = mod.primary_root
             mod.primary_root = lambda d: root
             try:
-                self.assertEqual(mod.resolve_api_key(Path(".")), "sk-dotenv")
+                self.assertEqual(mod.resolve_api_key(Path("."), "DEEPSEEK_API_KEY"), "sk-dotenv")
             finally:
                 mod.primary_root = orig
 
@@ -216,7 +216,7 @@ class TestKeyAndRoot(unittest.TestCase):
             orig = mod.primary_root
             mod.primary_root = lambda d: Path(td)
             try:
-                self.assertIsNone(mod.resolve_api_key(Path(".")))
+                self.assertIsNone(mod.resolve_api_key(Path("."), "DEEPSEEK_API_KEY"))
             finally:
                 mod.primary_root = orig
 
@@ -224,18 +224,18 @@ class TestKeyAndRoot(unittest.TestCase):
 class TestGateAndLedger(unittest.TestCase):
     def test_gate_parses_verdict_line(self):
         orig = mod._run_gate_eval
-        mod._run_gate_eval = lambda root: (0, "allow+log\toperator override\n", "")
+        mod._run_gate_eval = lambda root, egress: (0, "allow+log\toperator override\n", "")
         try:
-            self.assertEqual(mod.egress_gate(Path(".")),
+            self.assertEqual(mod.egress_gate(Path("."), "deepseek"),
                              ("allow+log", "operator override"))
         finally:
             mod._run_gate_eval = orig
 
     def test_gate_nonzero_exit_is_error(self):
         orig = mod._run_gate_eval
-        mod._run_gate_eval = lambda root: (2, "", "boom")
+        mod._run_gate_eval = lambda root, egress: (2, "", "boom")
         try:
-            self.assertEqual(mod.egress_gate(Path("."))[0], "error")
+            self.assertEqual(mod.egress_gate(Path("."), "deepseek")[0], "error")
         finally:
             mod._run_gate_eval = orig
 
@@ -244,7 +244,7 @@ class TestGateAndLedger(unittest.TestCase):
             ledger = Path(td) / "led.jsonl"
             os.environ["GRAPHIFY_LEDGER"] = str(ledger)
             try:
-                ok = mod.ledger_append(Path("/v/chats"), 7, 200)
+                ok = mod.ledger_append(Path("/v/chats"), 7, 200, "deepseek")
             finally:
                 del os.environ["GRAPHIFY_LEDGER"]
             self.assertTrue(ok)
@@ -262,7 +262,7 @@ class TestGateAndLedger(unittest.TestCase):
     def test_ledger_failure_returns_false(self):
         os.environ["GRAPHIFY_LEDGER"] = os.devnull + "/nope/led.jsonl"
         try:
-            self.assertFalse(mod.ledger_append(Path("/v/chats"), 1, 200))
+            self.assertFalse(mod.ledger_append(Path("/v/chats"), 1, 200, "deepseek"))
         finally:
             del os.environ["GRAPHIFY_LEDGER"]
 
@@ -271,7 +271,7 @@ class TestGateAndLedger(unittest.TestCase):
         buf = io.StringIO()
         try:
             with contextlib.redirect_stderr(buf):
-                ok = mod.ledger_append(Path("/v/chats"), 1, 200)
+                ok = mod.ledger_append(Path("/v/chats"), 1, 200, "deepseek")
         finally:
             del os.environ["GRAPHIFY_LEDGER"]
         self.assertFalse(ok)
@@ -299,14 +299,15 @@ class TestRealMatrixWrapper(unittest.TestCase):
 class TestDeepseekClient(unittest.TestCase):
     def test_call_builds_request_and_parses(self):
         seen = {}
-        def fake_post(key, body):
-            seen["key"], seen["body"] = key, body
+        def fake_post(url, body, headers):
+            seen["url"], seen["body"], seen["headers"] = url, body, headers
             return {"choices": [{"message": {"content":
                 json.dumps({"summary": "s.", "tags": ["jira"]})}}]}
-        got = mod.call_deepseek("sk-x", "T", "hello", ["jira", "poetry"],
-                                post=fake_post)
+        got = mod.call_openai(mod.API_URL, "sk-x", mod.MODEL, "T", "hello",
+                              ["jira", "poetry"], post=fake_post)
         self.assertEqual(got, {"summary": "s.", "tags": ["jira"]})
-        self.assertEqual(seen["key"], "sk-x")
+        self.assertEqual(seen["url"], mod.API_URL)
+        self.assertEqual(seen["headers"]["Authorization"], "Bearer sk-x")
         self.assertEqual(seen["body"]["model"], mod.MODEL)
         self.assertEqual(seen["body"]["response_format"], {"type": "json_object"})
         user = seen["body"]["messages"][1]["content"]
@@ -315,7 +316,7 @@ class TestDeepseekClient(unittest.TestCase):
 
     def test_retry_then_success(self):
         calls = {"n": 0}
-        def flaky(key, body):
+        def flaky(url, body, headers):
             calls["n"] += 1
             if calls["n"] < 3:
                 raise urllib.error.URLError("down")
@@ -323,20 +324,22 @@ class TestDeepseekClient(unittest.TestCase):
         orig = mod.time.sleep
         mod.time.sleep = lambda s: None
         try:
-            got = mod.call_deepseek("k", "t", "p", [], post=flaky)
+            got = mod.call_openai(mod.API_URL, "k", mod.MODEL, "t", "p", [],
+                                  post=flaky)
         finally:
             mod.time.sleep = orig
         self.assertEqual(got, {})
         self.assertEqual(calls["n"], 3)
 
     def test_exhausted_retries_raise(self):
-        def dead(key, body):
+        def dead(url, body, headers):
             raise urllib.error.URLError("down")
         orig = mod.time.sleep
         mod.time.sleep = lambda s: None
         try:
             with self.assertRaises(urllib.error.URLError):
-                mod.call_deepseek("k", "t", "p", [], post=dead)
+                mod.call_openai(mod.API_URL, "k", mod.MODEL, "t", "p", [],
+                                post=dead)
         finally:
             mod.time.sleep = orig
 
@@ -463,11 +466,11 @@ class TestVaultClassification(unittest.TestCase):
         self._cfg_td = tempfile.TemporaryDirectory()
         os.environ["CLAUDE_GLM_CONFIG_DIR"] = self._cfg_td.name
         self._orig = (mod.egress_gate, mod.resolve_api_key,
-                      mod.call_deepseek, mod.ledger_append)
+                      mod.call_openai, mod.ledger_append)
 
     def tearDown(self):
         (mod.egress_gate, mod.resolve_api_key,
-         mod.call_deepseek, mod.ledger_append) = self._orig
+         mod.call_openai, mod.ledger_append) = self._orig
         self._cfg_td.cleanup()
         for k, v in self._env.items():
             if v is not None:
@@ -480,7 +483,7 @@ class TestVaultClassification(unittest.TestCase):
             raise AssertionError("must not be called on a refused vault")
         mod.egress_gate = _boom
         mod.ledger_append = _boom
-        mod.call_deepseek = _boom
+        mod.call_openai = _boom
 
     def _cfg(self, name):
         return Path(self._cfg_td.name) / name
@@ -578,10 +581,10 @@ class TestVaultClassification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
             os.environ["LUNA_VAULT_PATH"] = str(vault)
-            mod.egress_gate = lambda root: ("allow+log", "ok")
-            mod.resolve_api_key = lambda d: "sk"
-            mod.ledger_append = lambda root, n, v: True
-            mod.call_deepseek = lambda *a, **k: {"summary": "s.",
+            mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+            mod.resolve_api_key = lambda d, key_env: "sk"
+            mod.ledger_append = lambda root, n, v, provider: True
+            mod.call_openai = lambda *a, **k: {"summary": "s.",
                                                  "tags": ["jira", "workflow"]}
             rc = mod.main(["--vault", str(vault)])
             self.assertEqual(rc, 0)
@@ -600,7 +603,7 @@ class TestVaultClassification(unittest.TestCase):
         orig = mod.subprocess.run
         mod.subprocess.run = fake_run
         try:
-            rc, _out, _err = mod._run_gate_eval(Path("/repo"))
+            rc, _out, _err = mod._run_gate_eval(Path("/repo"), "deepseek")
         finally:
             mod.subprocess.run = orig
         self.assertEqual(rc, 0)
@@ -617,7 +620,7 @@ class TestMain(unittest.TestCase):
         self._cfg_td = tempfile.TemporaryDirectory()
         os.environ["CLAUDE_GLM_CONFIG_DIR"] = self._cfg_td.name
         self._orig = (mod.egress_gate, mod.resolve_api_key,
-                      mod.call_deepseek, mod.ledger_append, mod.classify_vault)
+                      mod.call_openai, mod.ledger_append, mod.classify_vault)
         # These tests cover the post-classification flow (gate/ledger/key/api),
         # not classification itself — short-circuit it so the operator's real
         # env/config is never consulted. TestVaultClassification owns classify.
@@ -625,7 +628,7 @@ class TestMain(unittest.TestCase):
 
     def tearDown(self):
         (mod.egress_gate, mod.resolve_api_key,
-         mod.call_deepseek, mod.ledger_append, mod.classify_vault) = self._orig
+         mod.call_openai, mod.ledger_append, mod.classify_vault) = self._orig
         self._cfg_td.cleanup()
         for k, v in self._env.items():
             if v is not None:
@@ -636,8 +639,8 @@ class TestMain(unittest.TestCase):
     def test_dry_run_writes_nothing_and_calls_nothing(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
-            mod.egress_gate = lambda root: (_ for _ in ()).throw(AssertionError("gate called"))
-            mod.call_deepseek = lambda *a, **k: (_ for _ in ()).throw(AssertionError("api called"))
+            mod.egress_gate = lambda root, egress: (_ for _ in ()).throw(AssertionError("gate called"))
+            mod.call_openai = lambda *a, **k: (_ for _ in ()).throw(AssertionError("api called"))
             before = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
             rc = mod.main(["--vault", str(vault), "--dry-run"])
             self.assertEqual(rc, 0)
@@ -647,39 +650,46 @@ class TestMain(unittest.TestCase):
     def test_gate_deny_refuses_before_any_call(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
-            mod.egress_gate = lambda root: ("deny", "pending")
-            mod.call_deepseek = lambda *a, **k: (_ for _ in ()).throw(AssertionError("api called"))
+            mod.egress_gate = lambda root, egress: ("deny", "pending")
+            mod.call_openai = lambda *a, **k: (_ for _ in ()).throw(AssertionError("api called"))
             self.assertEqual(mod.main(["--vault", str(vault)]), 2)
 
-    def test_plain_allow_also_refuses(self):
-        with tempfile.TemporaryDirectory() as td:
-            vault = _mk_vault(td)
-            mod.egress_gate = lambda root: ("allow", "misconfigured")
-            self.assertEqual(mod.main(["--vault", str(vault)]), 2)
+    def test_non_permitted_verdict_refuses(self):
+        # Only `allow` / `allow+log` proceed (CR coderabbit: plain `allow` is
+        # now PERMITTED — the anthropic cell — see
+        # TestProviderEgressWiring.test_main_claude_honors_plain_allow_verdict).
+        # Every other verdict refuses before any egress.
+        for bad in ("conditional", "error", "pending-operator"):
+            with tempfile.TemporaryDirectory() as td:
+                vault = _mk_vault(td)
+                mod.egress_gate = lambda root, egress, _v=bad: (_v, "n/a")
+                mod.call_openai = lambda *a, **k: (_ for _ in ()).throw(
+                    AssertionError("api called"))
+                self.assertEqual(mod.main(["--vault", str(vault)]), 2)
 
     def test_ledger_failure_refuses_before_any_call(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
-            mod.egress_gate = lambda root: ("allow+log", "ok")
-            mod.resolve_api_key = lambda d: "sk"
-            mod.ledger_append = lambda root, n, v: False
-            mod.call_deepseek = lambda *a, **k: (_ for _ in ()).throw(AssertionError("api called"))
+            mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+            mod.resolve_api_key = lambda d, key_env: "sk"
+            mod.ledger_append = lambda root, n, v, provider: False
+            mod.call_openai = lambda *a, **k: (_ for _ in ()).throw(AssertionError("api called"))
             self.assertEqual(mod.main(["--vault", str(vault)]), 2)
 
     def test_missing_key_refuses(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
-            mod.egress_gate = lambda root: ("allow+log", "ok")
-            mod.resolve_api_key = lambda d: None
+            mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+            mod.resolve_api_key = lambda d, key_env: None
             self.assertEqual(mod.main(["--vault", str(vault)]), 2)
 
     def test_happy_path_enriches_and_flips(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
-            mod.egress_gate = lambda root: ("allow+log", "ok")
-            mod.resolve_api_key = lambda d: "sk"
-            mod.ledger_append = lambda root, n, v: True
-            mod.call_deepseek = lambda *a, **k: {"summary": "s.",
+            mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+            mod.resolve_api_key = lambda d, key_env: "sk"
+            mod.ledger_append = lambda root, n, v, provider: True
+            mod.call_openai = lambda *a, **k: {"summary": "s.",
                                                  "tags": ["jira", "workflow"]}
             rc = mod.main(["--vault", str(vault)])
             self.assertEqual(rc, 0)
@@ -693,12 +703,12 @@ class TestMain(unittest.TestCase):
     def test_api_failure_skips_note_and_returns_1(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
-            mod.egress_gate = lambda root: ("allow+log", "ok")
-            mod.resolve_api_key = lambda d: "sk"
-            mod.ledger_append = lambda root, n, v: True
+            mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+            mod.resolve_api_key = lambda d, key_env: "sk"
+            mod.ledger_append = lambda root, n, v, provider: True
             def boom(*a, **k):
                 raise urllib.error.URLError("down")
-            mod.call_deepseek = boom
+            mod.call_openai = boom
             rc = mod.main(["--vault", str(vault)])
             self.assertEqual(rc, 1)  # candidates present, zero progress
             text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
@@ -714,13 +724,13 @@ class TestMain(unittest.TestCase):
         # and the run continue (rc=1: candidate present, zero progress).
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
-            mod.egress_gate = lambda root: ("allow+log", "ok")
-            mod.resolve_api_key = lambda d: "sk"
-            mod.ledger_append = lambda root, n, v: True
+            mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+            mod.resolve_api_key = lambda d, key_env: "sk"
+            mod.ledger_append = lambda root, n, v, provider: True
 
             def boom(*a, **k):
                 raise IndexError("choices empty")
-            mod.call_deepseek = boom
+            mod.call_openai = boom
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
                 rc = mod.main(["--vault", str(vault)])
@@ -735,10 +745,10 @@ class TestMain(unittest.TestCase):
         # None -> note stays enriched: false, rc=1 (candidate, zero progress).
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
-            mod.egress_gate = lambda root: ("allow+log", "ok")
-            mod.resolve_api_key = lambda d: "sk"
-            mod.ledger_append = lambda root, n, v: True
-            mod.call_deepseek = lambda *a, **k: {"summary": "s.",
+            mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+            mod.resolve_api_key = lambda d, key_env: "sk"
+            mod.ledger_append = lambda root, n, v, provider: True
+            mod.call_openai = lambda *a, **k: {"summary": "s.",
                                                  "tags": ["not-in-vocab"]}
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
@@ -755,10 +765,10 @@ class TestMain(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as td:
                 vault = _mk_vault(td)
-                mod.egress_gate = lambda root: ("allow+log", "ok")
-                mod.resolve_api_key = lambda d: "sk"
-                mod.ledger_append = lambda root, n, v: True
-                mod.call_deepseek = lambda *a, **k: {"summary": "s.",
+                mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+                mod.resolve_api_key = lambda d, key_env: "sk"
+                mod.ledger_append = lambda root, n, v, provider: True
+                mod.call_openai = lambda *a, **k: {"summary": "s.",
                                                      "tags": ["jira"]}
                 mod.main(["--vault", str(vault)])
                 text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
@@ -766,6 +776,288 @@ class TestMain(unittest.TestCase):
                 self.assertEqual(mod.fm_value(fm, "enriched_at"), "2026-07-10")
         finally:
             mod.datetime = orig
+
+
+class TestProviderRegistry(unittest.TestCase):
+    """The 4 providers resolve to the right api_style/url/model/key_env/egress
+    (HIMMEL-1167). Anthropic-style providers also carry an auth scheme."""
+    def test_all_four_providers_present_and_default(self):
+        self.assertEqual(set(mod.PROVIDERS), {"deepseek", "codex", "glm", "claude"})
+        self.assertEqual(mod.DEFAULT_PROVIDER, "deepseek")
+
+    def test_deepseek(self):
+        c = mod.PROVIDERS["deepseek"]
+        self.assertEqual(c["api_style"], "openai")
+        self.assertEqual(c["url"], mod.API_URL)
+        self.assertEqual(c["model"], mod.MODEL)
+        self.assertEqual(c["key_env"], "DEEPSEEK_API_KEY")
+        self.assertEqual(c["egress"], "deepseek")
+        self.assertNotIn("auth", c)  # auth is anthropic-path only
+
+    def test_codex(self):
+        c = mod.PROVIDERS["codex"]
+        self.assertEqual(c["api_style"], "openai")
+        self.assertEqual(c["url"], "https://api.openai.com/v1/chat/completions")
+        self.assertEqual(c["model"], "gpt-5.6")
+        self.assertEqual(c["key_env"], "OPENAI_API_KEY")
+        self.assertEqual(c["egress"], "openai-codex")
+
+    def test_glm(self):
+        c = mod.PROVIDERS["glm"]
+        self.assertEqual(c["api_style"], "anthropic")
+        self.assertEqual(c["url"], "https://api.z.ai/api/anthropic/v1/messages")
+        self.assertEqual(c["model"], "glm-5.2")
+        self.assertEqual(c["key_env"], "ZAI_API_KEY")
+        self.assertEqual(c["egress"], "zai-glm")
+        self.assertEqual(c["auth"], "bearer")
+
+    def test_claude(self):
+        c = mod.PROVIDERS["claude"]
+        self.assertEqual(c["api_style"], "anthropic")
+        self.assertEqual(c["url"], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(c["model"], "claude-haiku-4-5")
+        self.assertEqual(c["key_env"], "ANTHROPIC_API_KEY")
+        self.assertEqual(c["egress"], "anthropic")
+        self.assertEqual(c["auth"], "x-api-key")
+
+
+class TestAnthropicClient(unittest.TestCase):
+    """call_anthropic (glm/claude Messages-API path) parses content[0].text JSON
+    — including a ```json fence — and feeds the SAME validate_result as the
+    openai path. Mock all HTTP (no network)."""
+    def _resp(self, text):
+        def fake_post(url, body, headers):
+            return {"content": [{"text": text}]}
+        return fake_post
+
+    def test_parses_plain_json_and_builds_messages_body(self):
+        seen = {}
+        def fake_post(url, body, headers):
+            seen["url"], seen["body"], seen["headers"] = url, body, headers
+            return {"content": [{"text":
+                json.dumps({"summary": "s.", "tags": ["jira"]})}]}
+        got = mod.call_anthropic(mod.PROVIDERS["glm"]["url"], "zai-key", "glm-5.2",
+                                 "T", "hello", ["jira", "poetry"], "bearer",
+                                 post=fake_post)
+        self.assertEqual(got, {"summary": "s.", "tags": ["jira"]})
+        # Messages API shape: system rides at top level, NO response_format,
+        # one user message carrying vocab + title + transcript.
+        self.assertNotIn("response_format", seen["body"])
+        self.assertEqual(seen["body"]["system"], mod.SYSTEM_PROMPT)
+        self.assertEqual(seen["body"]["model"], "glm-5.2")
+        self.assertEqual(len(seen["body"]["messages"]), 1)
+        self.assertEqual(seen["body"]["messages"][0]["role"], "user")
+        user = seen["body"]["messages"][0]["content"]
+        self.assertIn("jira, poetry", user)
+        self.assertIn("Title: T", user)
+        # z.ai compat -> bearer; common headers present
+        self.assertEqual(seen["headers"]["Authorization"], "Bearer zai-key")
+        self.assertEqual(seen["headers"]["anthropic-version"], "2023-06-01")
+        self.assertEqual(seen["headers"]["Content-Type"], "application/json")
+
+    def test_thinking_budget_is_at_least_1024(self):
+        # CR codex-adv-2: GLM-5 thinking is on by default and max_tokens bounds
+        # thinking + answer combined; a 500 budget can truncate the JSON answer.
+        # The anthropic path must send z.ai's recommended >=1024 min.
+        seen = {}
+        def fake_post(url, body, headers):
+            seen["body"] = body
+            return {"content": [{"text": "{}"}]}
+        mod.call_anthropic(mod.PROVIDERS["glm"]["url"], "k", "glm-5.2", "T",
+                           "p", [], "bearer", post=fake_post)
+        self.assertGreaterEqual(seen["body"]["max_tokens"], 1024)
+
+    def test_x_api_key_auth_for_claude(self):
+        seen = {}
+        def fake_post(url, body, headers):
+            seen["headers"] = headers
+            return {"content": [{"text": "{}"}]}
+        mod.call_anthropic(mod.PROVIDERS["claude"]["url"], "ant-key",
+                           "claude-haiku-4-5", "T", "p", [], "x-api-key",
+                           post=fake_post)
+        self.assertEqual(seen["headers"]["x-api-key"], "ant-key")
+        self.assertNotIn("Authorization", seen["headers"])
+
+    def test_strips_json_fence_then_validate(self):
+        fenced = '```json\n{"summary": "fenced summary", "tags": ["jira"]}\n```'
+        got = mod.call_anthropic(mod.PROVIDERS["glm"]["url"], "k", "glm-5.2", "T",
+                                 "p", ["jira", "poetry"], "bearer",
+                                 post=self._resp(fenced))
+        # same validate_result the openai client's output flows through
+        self.assertEqual(mod.validate_result(got, ["jira", "poetry"]),
+                         {"summary": "fenced summary", "tags": ["jira"]})
+
+    def test_strips_bare_fence(self):
+        got = mod.call_anthropic(mod.PROVIDERS["glm"]["url"], "k", "glm-5.2", "T",
+                                 "p", [], "bearer", post=self._resp('```\n{}\n```'))
+        self.assertEqual(got, {})
+
+    def test_retry_then_success(self):
+        calls = {"n": 0}
+        def flaky(url, body, headers):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise urllib.error.URLError("down")
+            return {"content": [{"text": "{}"}]}
+        orig = mod.time.sleep
+        mod.time.sleep = lambda s: None
+        try:
+            got = mod.call_anthropic(mod.PROVIDERS["glm"]["url"], "k", "glm-5.2",
+                                     "t", "p", [], "bearer", post=flaky)
+        finally:
+            mod.time.sleep = orig
+        self.assertEqual(got, {})
+        self.assertEqual(calls["n"], 3)
+
+    def test_thinking_block_first_is_skipped(self):
+        # GLM-5 enables thinking by default (z.ai): a valid Messages response
+        # leads with a thinking block (no `text` key) before the final text
+        # block. Blindly indexing content[0]["text"] KeyErrors and double-bills
+        # the note on retry; call_anthropic must pick the text block instead.
+        def thinking_first(url, body, headers):
+            return {"content": [
+                {"type": "thinking", "thinking": "let me summarize..."},
+                {"type": "text",
+                 "text": json.dumps({"summary": "s.", "tags": ["jira"]})}]}
+        got = mod.call_anthropic(mod.PROVIDERS["glm"]["url"], "k", "glm-5.2",
+                                 "t", "p", ["jira"], "bearer", post=thinking_first)
+        self.assertEqual(got, {"summary": "s.", "tags": ["jira"]})
+
+    def test_no_text_block_raises_valueerror(self):
+        # empty content list, or thinking-only, -> ValueError (caught set)
+        def empty(url, body, headers):
+            return {"content": []}
+        with self.assertRaises(ValueError):
+            mod.call_anthropic(mod.PROVIDERS["glm"]["url"], "k", "glm-5.2", "t",
+                               "p", [], "bearer", post=empty)
+        def thinking_only(url, body, headers):
+            return {"content": [{"type": "thinking", "thinking": "..."}]}
+        with self.assertRaises(ValueError):
+            mod.call_anthropic(mod.PROVIDERS["glm"]["url"], "k", "glm-5.2", "t",
+                               "p", [], "bearer", post=thinking_only)
+
+
+class TestProviderEgressWiring(unittest.TestCase):
+    """The gate helper + ledger carry the CHOSEN provider's egress id, not a
+    hardcoded 'deepseek' (HIMMEL-1167)."""
+    def test_gate_eval_passes_provider_egress_id(self):
+        seen = {}
+        fake_proc = types.SimpleNamespace(returncode=0, stdout="allow+log\tok", stderr="")
+
+        def fake_run(argv, **kw):
+            seen["argv"] = list(argv)
+            return fake_proc
+        orig = mod.subprocess.run
+        mod.subprocess.run = fake_run
+        try:
+            for egress in ("deepseek", "zai-glm", "anthropic"):
+                mod._run_gate_eval(Path("/repo"), egress)
+                self.assertEqual(seen["argv"][-3:],
+                                 ["luna-personal", egress, "enrichment"])
+        finally:
+            mod.subprocess.run = orig
+
+    def test_egress_gate_forwards_egress_id(self):
+        seen = {}
+
+        def fake_eval(root, egress):
+            seen["egress"] = egress
+            return (0, "allow+log\tok", "")
+        orig = mod._run_gate_eval
+        mod._run_gate_eval = fake_eval
+        try:
+            self.assertEqual(mod.egress_gate(Path("/repo"), "zai-glm"),
+                             ("allow+log", "ok"))
+        finally:
+            mod._run_gate_eval = orig
+        self.assertEqual(seen["egress"], "zai-glm")
+
+    def test_ledger_records_provider_egress_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            ledger = Path(td) / "led.jsonl"
+            os.environ["GRAPHIFY_LEDGER"] = str(ledger)
+            try:
+                ok = mod.ledger_append(Path("/v/chats"), 3, 50, "zai-glm")
+            finally:
+                del os.environ["GRAPHIFY_LEDGER"]
+            self.assertTrue(ok)
+            rec = json.loads(ledger.read_text(encoding="utf-8").strip())
+            self.assertEqual(rec["provider"], "zai-glm")
+            self.assertEqual(rec["corpus"], "luna-personal")
+            self.assertEqual(rec["purpose"], "enrichment")
+
+    def test_main_glm_provider_end_to_end(self):
+        # --provider glm dispatches through call_anthropic, writes
+        # enriched_model = glm-5.2, ledgers provider=zai-glm, and SKIPS the
+        # deepseek-only off-peak advisory.
+        with tempfile.TemporaryDirectory() as td:
+            vault = _mk_vault(td)
+            os.environ["LUNA_VAULT_PATH"] = str(vault)
+            led = Path(td) / "led.jsonl"
+            os.environ["GRAPHIFY_LEDGER"] = str(led)
+            orig = (mod.classify_vault, mod.egress_gate, mod.resolve_api_key,
+                    mod.call_anthropic, mod.offpeak_warn)
+            called = {"anthropic": 0, "offpeak": 0}
+            mod.classify_vault = lambda v: ("luna-personal", "")
+            mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+            mod.resolve_api_key = lambda d, key_env: "zai-key"
+
+            def fake_anthropic(*a, **k):
+                called["anthropic"] += 1
+                return {"summary": "s.", "tags": ["jira"]}
+
+            def fake_offpeak():
+                called["offpeak"] += 1
+            mod.call_anthropic = fake_anthropic
+            mod.offpeak_warn = fake_offpeak
+            try:
+                rc = mod.main(["--vault", str(vault), "--provider", "glm"])
+            finally:
+                (mod.classify_vault, mod.egress_gate, mod.resolve_api_key,
+                 mod.call_anthropic, mod.offpeak_warn) = orig
+                os.environ.pop("LUNA_VAULT_PATH", None)
+                os.environ.pop("GRAPHIFY_LEDGER", None)
+            self.assertEqual(rc, 0)
+            self.assertEqual(called["anthropic"], 1)
+            self.assertEqual(called["offpeak"], 0)
+            text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
+            fm, _ = mod.split_frontmatter(text)
+            self.assertEqual(mod.fm_value(fm, "enriched"), "true")
+            self.assertEqual(mod.fm_value(fm, "enriched_model"), "glm-5.2")
+            rec = json.loads(led.read_text(encoding="utf-8").strip())
+            self.assertEqual(rec["provider"], "zai-glm")
+
+
+    def test_main_claude_honors_plain_allow_verdict(self):
+        # CR coderabbit: the anthropic egress cell returns plain `allow` (not
+        # `allow+log`); the gate must honor it, or --provider claude is
+        # permanently unusable. Proves plain `allow` proceeds to enrich +
+        # ledgers unconditionally (audit trail holds).
+        with tempfile.TemporaryDirectory() as td:
+            vault = _mk_vault(td)
+            os.environ["LUNA_VAULT_PATH"] = str(vault)
+            led = Path(td) / "led.jsonl"
+            os.environ["GRAPHIFY_LEDGER"] = str(led)
+            orig = (mod.classify_vault, mod.egress_gate, mod.resolve_api_key,
+                    mod.call_anthropic)
+            mod.classify_vault = lambda v: ("luna-personal", "")
+            mod.egress_gate = lambda root, egress: ("allow", "substrate")
+            mod.resolve_api_key = lambda d, key_env: "ant-key"
+            mod.call_anthropic = lambda *a, **k: {"summary": "s.", "tags": ["jira"]}
+            try:
+                rc = mod.main(["--vault", str(vault), "--provider", "claude"])
+            finally:
+                (mod.classify_vault, mod.egress_gate, mod.resolve_api_key,
+                 mod.call_anthropic) = orig
+                os.environ.pop("LUNA_VAULT_PATH", None)
+                os.environ.pop("GRAPHIFY_LEDGER", None)
+            self.assertEqual(rc, 0)
+            fm, _ = mod.split_frontmatter(
+                (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8"))
+            self.assertEqual(mod.fm_value(fm, "enriched"), "true")
+            self.assertEqual(mod.fm_value(fm, "enriched_model"), "claude-haiku-4-5")
+            rec = json.loads(led.read_text(encoding="utf-8").strip())
+            self.assertEqual(rec["provider"], "anthropic")
 
 
 if __name__ == "__main__":

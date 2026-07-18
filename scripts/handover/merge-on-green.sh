@@ -11,9 +11,34 @@
 # specific standing allow-rule — `Bash(bash scripts/handover/merge-on-green.sh:*)`
 # — never a raw `gh pr merge` (still classifier-blocked) and never a permission
 # widening. It merges ONLY on: opt-in (ARMAUTOMERGE=1) AND a PRIVATE github repo
+# AND the PR targets that repo's DEFAULT branch (HIMMEL-1080, coderabbit public
+# round: repo-bound alone still let it merge a PR against ANY base, even though
+# inject-initiative.sh documents the scope as "squash-merge to PRIVATE main")
 # AND check-ci.sh exit 0 (all checks green + all review threads resolved + no
 # review requesting changes) AND the certified head SHA is still the PR head at
 # merge time (`--match-head-commit`). Public propagation stays operator/bridge.
+#
+# The base-branch binding is RE-VERIFIED immediately before merging, after the
+# check-ci gate (HIMMEL-1080 CR round-1, codex-adv): check-ci.sh watches CI to
+# green and can block for minutes, and GitHub allows retargeting a PR's base
+# (`gh pr edit --base`) WITHOUT moving its head SHA — so a base checked once,
+# early, can go stale during that window, and `--match-head-commit` alone would
+# not catch it (it only pins the HEAD). A fresh base/default-branch read that
+# disagrees with the certified base fails closed, same as the first check.
+#
+# RESIDUAL, tracked as HIMMEL-1105 (codex-adv round-2): the re-verification and
+# the `gh pr merge` are two separate API calls, so a retarget landing in the
+# gap between them still slips through. That window is IRREDUCIBLE client-side
+# — `gh pr merge` pins the head (`--match-head-commit`) but offers no
+# `--match-base-ref`, so some network round-trip always separates the last read
+# from the merge. What the re-verify above buys is the SIZE of the window:
+# minutes (a check-ci CI watch) -> one round-trip. Closing the remainder needs
+# enforcement at the GitHub merge boundary itself (a repository ruleset or a
+# merge queue) — server-side and outside this agent-writable worktree, which is
+# also what HIMMEL-1056 wants for this same lever. Not reordering the local
+# audit I/O below to shave it further: those are two local file writes against
+# a network round-trip, and the MERGING record is deliberately written BEFORE
+# the merge so a crash still leaves a durable trace.
 #
 # The PreToolUse block-unresolved-cr-merge hook fires on the AGENT's Bash call
 # (this script), not on the `gh pr merge` this script spawns as a subprocess —
@@ -28,7 +53,10 @@
 #   0   merged (or --dry-run passed, or no PR — nothing to merge)
 #   10  not opted in (ARMAUTOMERGE unset/false) — refused
 #   11  required tool missing (gh / git)
-#   12  not a private github repo (public or undeterminable) — refused fail-closed
+#   12  not a private github repo (public or undeterminable), or the PR's base
+#       branch is not the repo's default branch (undeterminable counts too) —
+#       refused fail-closed. Also returned by the pre-merge re-verification of
+#       the same binding (see above) if the base changed after the gate.
 #   13  cannot resolve the PR or its head SHA — refused
 #   14  check-ci gate not green (unresolved threads / red CI / changes requested)
 #   15  merge failed (gh error, incl. a --match-head-commit head-moved abort, a
@@ -144,8 +172,8 @@ gh_pr_view() {
 # real auth/network failure (must refuse, never a silent no-op), like check-ci.
 meta=""
 meta_rc=0
-meta=$(gh_pr_view --json state,url,number,headRefOid \
-        --jq '"\(.state)|\(.url)|\(.number)|\(.headRefOid)"' 2>&1) || meta_rc=$?
+meta=$(gh_pr_view --json state,url,number,headRefOid,baseRefName \
+        --jq '"\(.state)|\(.url)|\(.number)|\(.headRefOid)|\(.baseRefName)"' 2>&1) || meta_rc=$?
 if [ "$meta_rc" -ne 0 ]; then
     if printf '%s' "$meta" | grep -qi 'no pull requests found'; then
         echo "merge-on-green: no open PR for the target — nothing to merge."
@@ -158,7 +186,8 @@ if [ "$meta_rc" -ne 0 ]; then
 fi
 pr_state=${meta%%|*}; _rest=${meta#*|}
 pr_url=${_rest%%|*}; _rest=${_rest#*|}
-pr_num=${_rest%%|*}; sha=${_rest#*|}
+pr_num=${_rest%%|*}; _rest=${_rest#*|}
+sha=${_rest%%|*}; pr_base=${_rest#*|}
 case "$pr_state" in
     OPEN) ;;
     ''|*)
@@ -208,10 +237,34 @@ fi
 
 # 2b. Private-repo guard — on the (now cwd-bound) repo, fail CLOSED. Public or
 # undeterminable ⇒ refuse; public propagation stays an operator/bridge step.
-is_private=$("$GH" repo view "$nwo" --json isPrivate --jq .isPrivate 2>/dev/null || true)
+# Folds the default branch into this SAME query (HIMMEL-1080, coderabbit): the
+# base-branch guard below needs it too, and this avoids a second API round-trip.
+# defaultBranchRef is NULLABLE (a repo can have no default branch) — coalesce
+# to "" (CodeRabbit) so a null field reads as "undeterminable" below instead of
+# jq's literal "null" string slipping past the -z check as a non-empty value.
+repo_meta=$("$GH" repo view "$nwo" --json isPrivate,defaultBranchRef \
+        --jq '"\(.isPrivate)|\(.defaultBranchRef.name // "")"' 2>/dev/null || true)
+is_private=${repo_meta%%|*}
+default_branch=${repo_meta#*|}
 if [ "$is_private" != "true" ]; then
     echo "merge-on-green: repo $nwo is not confirmed PRIVATE (isPrivate='${is_private:-<unknown>}') — refusing. Public propagation stays an operator/bridge step." >&2
     audit "REFUSED reason=not-private repo=$nwo isPrivate=${is_private:-unknown}"
+    exit 12
+fi
+
+# 2c. Base-branch guard (HIMMEL-1080, coderabbit public round) — this lever was
+# repo-bound but NOT base-branch-bound: it would merge ANY open PR in the
+# private repo regardless of base, even though inject-initiative.sh:236
+# documents the scope as "squash-merge to PRIVATE main". Fail CLOSED: an
+# empty/unreadable PR base or repo default branch must refuse, never guess.
+if [ -z "$pr_base" ] || [ -z "$default_branch" ]; then
+    echo "merge-on-green: cannot determine the PR base branch ('${pr_base:-<empty>}') or the repo default branch ('${default_branch:-<empty>}') — refusing. Re-run." >&2
+    audit "REFUSED reason=base-branch-undeterminable pr_base=${pr_base:-empty} default_branch=${default_branch:-empty} repo=$nwo pr=#$pr_num"
+    exit 12
+fi
+if [ "$pr_base" != "$default_branch" ]; then
+    echo "merge-on-green: PR #$pr_num targets '$pr_base', not the repo's default branch '$default_branch' — refusing. This lever only merges PRs against $default_branch." >&2
+    audit "REFUSED reason=wrong-base-branch pr_base=$pr_base authorized_branch=$default_branch repo=$nwo pr=#$pr_num"
     exit 12
 fi
 
@@ -232,6 +285,47 @@ if [ "$ci_rc" -ne 0 ]; then
     echo "merge-on-green: check-ci gate did not pass (exit $ci_rc) — not merging. Address the gate, then re-run." >&2
     audit "REFUSED reason=gate-not-green gate=check-ci:$ci_rc repo=$nwo pr=#$pr_num sha=$sha"
     exit 14
+fi
+
+# 3b. Base-branch re-verification (HIMMEL-1080 CR round-1, codex-adv) — guard 2c
+# above only proved the base binding at QUERY time, but check-ci.sh just above
+# WATCHES CI and can block for minutes. GitHub allows retargeting a PR's base
+# (`gh pr edit --base`) WITHOUT moving its head SHA, so the base checked at
+# guard 2c can go stale during that window; `--match-head-commit` below only
+# pins the HEAD, so the merge would still land the certified SHA into the newly
+# selected base, defeating guard 2c entirely — the same staleness class the
+# head SHA already gets `--match-head-commit` for. Re-query the base,
+# default-branch AND privacy values fresh (never reuse $pr_base /
+# $default_branch / $is_private captured at guard 2b/2c) right before
+# merging; placed here, before the DRY_RUN branch, so the dry-run path is
+# covered too — everything from here to the merge is local/fast, so this is
+# effectively "immediately before merging". Same nullable-defaultBranchRef
+# coalesce as guard 2b (CodeRabbit).
+#
+# HIMMEL-1080 CR round-3 (coderabbit): fold isPrivate into the SAME pre-merge
+# repo view call as the default branch (no extra round-trip, mirroring guard
+# 2b's combined query). The private-only boundary (guard 2b) is subject to the
+# SAME CI-wait staleness window as the base binding — a repo made PUBLIC during
+# the check-ci watch would otherwise merge on the stale guard-2b isPrivate.
+fresh_base=$(gh_pr_view --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
+fresh_repo_meta=$("$GH" repo view "$nwo" --json isPrivate,defaultBranchRef \
+        --jq '"\(.isPrivate)|\(.defaultBranchRef.name // "")"' 2>/dev/null || true)
+fresh_private=${fresh_repo_meta%%|*}
+fresh_default=${fresh_repo_meta#*|}
+if [ -z "$fresh_base" ] || [ -z "$fresh_default" ]; then
+    echo "merge-on-green: cannot re-verify the PR base branch ('${fresh_base:-<empty>}') or the repo default branch ('${fresh_default:-<empty>}') right before merging — refusing. Re-run." >&2
+    audit "REFUSED reason=base-branch-undeterminable pr_base=${fresh_base:-empty} default_branch=${fresh_default:-empty} repo=$nwo pr=#$pr_num"
+    exit 12
+fi
+if [ "$fresh_private" != "true" ]; then
+    echo "merge-on-green: repo $nwo is no longer confirmed PRIVATE (isPrivate='${fresh_private:-<unknown>}') right before merging — refusing. A repo made public during the CI wait must not auto-merge." >&2
+    audit "REFUSED reason=not-private-premerge repo=$nwo isPrivate=${fresh_private:-unknown} pr=#$pr_num"
+    exit 12
+fi
+if [ "$fresh_base" != "$fresh_default" ] || [ "$fresh_base" != "$pr_base" ]; then
+    echo "merge-on-green: PR #$pr_num base branch changed since the gate (was '$pr_base', now '$fresh_base', repo default '$fresh_default') — refusing. The base binding must hold from certification to merge." >&2
+    audit "REFUSED reason=base-branch-changed pr_base_at_gate=$pr_base pr_base_now=$fresh_base default_branch_now=$fresh_default repo=$nwo pr=#$pr_num"
+    exit 12
 fi
 
 # Audit-sink preflight — an unauditable merge must not proceed. Runs after the

@@ -22,30 +22,28 @@ case "$1 $2" in
     echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}' ;;
   "api graphql")
     case "$GH_STUB_MODE" in
-      unresolved|zombie-unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
       other-author) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"someuser"}}]}}]}}}}}' ;;
-      zombie-paged) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
-      zombie-nopageinfo) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
       *) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
     esac ;;
+  # CodeRabbit posts NO check-run (HIMMEL-1072) — these carry only the
+  # tests/lint/build signal the CI gate reads.
   "api repos/o/r/commits/abc123/check-runs"*)
     case "$GH_STUB_MODE" in
-      inflight|zombie|zombie-unresolved|zombie-no-status|zombie-status-error|zombie-paged|zombie-nopageinfo) echo '{"check_runs":[{"name":"CodeRabbit","status":"in_progress","started_at":"2000-01-01T00:00:00Z","conclusion":null}]}' ;;
-      young) echo "{\"check_runs\":[{\"name\":\"CodeRabbit\",\"status\":\"in_progress\",\"started_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"conclusion\":null}]}" ;;
-      # HIMMEL-1043 CI-gate cases: a completed CodeRabbit run keeps the CR gate
-      # green (it only looks at CodeRabbit); a non-CodeRabbit run carries the
-      # red/green signal only the CI gate reads.
-      ci-red)   echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"},{"name":"tests","status":"completed","conclusion":"failure"}]}' ;;
-      ci-green) echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"},{"name":"tests","status":"completed","conclusion":"success"}]}' ;;
-      *)        echo '{"check_runs":[{"name":"CodeRabbit","status":"completed","conclusion":"success"}]}' ;;
+      ci-red)   echo '{"check_runs":[{"name":"tests","status":"completed","conclusion":"failure"}]}' ;;
+      ci-green) echo '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}' ;;
+      *)        echo '{"check_runs":[]}' ;;
     esac ;;
-  "api repos/o/r/commits/abc123/status")
+  # CodeRabbit's real signal: a commit STATUS with creator identity. Glob the
+  # tail — the gates query `/statuses?per_page=100`, and an exact-match arm
+  # silently falls through to the `*)` catch-all and degrades the gate open.
+  "api repos/o/r/commits/abc123/statuses"*)
     case "$GH_STUB_MODE" in
-      zombie|zombie-unresolved|zombie-paged|zombie-nopageinfo) echo '{"statuses":[{"context":"CodeRabbit","state":"success"}]}' ;;
-      zombie-status-error) exit 1 ;;
-      zombie-no-status) echo '{"statuses":[]}' ;;
-      ci-green) echo '{"state":"success","total_count":1,"statuses":[{"context":"ci","state":"success"}]}' ;;
-      *) echo '{"statuses":[{"context":"CodeRabbit","state":"pending"}]}' ;;
+      inflight)   echo '[{"context":"CodeRabbit","state":"pending","created_at":"2026-07-16T19:08:46Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+      cr-absent)  echo '[]' ;;
+      cr-spoofed) echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":999999,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+      ci-green)   echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}},{"context":"ci","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":1,"login":"ci","type":"Bot"}}]' ;;
+      *)          echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
     esac ;;
   *) echo '{}' ;;
 esac
@@ -73,19 +71,19 @@ t() { # t <name> <expected-rc> <tool> <command>
 GH_STUB_MODE=unresolved t merge-with-unresolved-blocks   2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=error      t api-error-fails-open           0 Bash "gh pr merge 42 --squash"
+# HIMMEL-1072 — the CodeRabbit signal is a commit STATUS on the head SHA. The
+# removed `zombie*`/`young` cases here drove the HIMMEL-980 override off a
+# CodeRabbit CHECK-RUN that production never emits: the override could not fire,
+# and these fixtures were the only place its trigger existed.
 GH_STUB_MODE=inflight   t inflight-review-blocks         2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=zombie     t zombie-review-allows           0 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=young      t young-inflight-blocks          2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=zombie-no-status t zombie-no-success-blocks 2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=zombie-unresolved t zombie-unresolved-blocks 2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=zombie-status-error t zombie-status-error-blocks 2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=zombie-paged t zombie-paged-threads-blocks 2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=zombie-nopageinfo t zombie-nopageinfo-blocks 2 Bash "gh pr merge 42 --squash"
+# An unreviewed head must not merge — the #1243 regression.
+GH_STUB_MODE=cr-absent  t absent-review-blocks           2 Bash "gh pr merge 42 --squash"
+# Identity over display name (HIMMEL-1058).
+GH_STUB_MODE=cr-spoofed t spoofed-creator-id-blocks      2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=other-author t other-author-thread-allows 0 Bash "gh pr merge 42 --squash"
-CR_ZOMBIE_CHECKRUN_MINS=090 GH_STUB_MODE=zombie t zombie-leading-zero-mins-allows 0 Bash "gh pr merge 42 --squash"
 # ── HIMMEL-1043: CI-green gate runs SECOND (after the CR gate) ──
-# ci-red: CR gate passes (resolved CodeRabbit thread + completed CodeRabbit
-# check-run), but a non-CodeRabbit check-run ("tests") failed -> CI gate
+# ci-red: CR gate passes (resolved CodeRabbit thread + a success CodeRabbit
+# STATUS), but a non-CodeRabbit check-run ("tests") failed -> CI gate
 # blocks. ci-green: every check-run green -> merge allowed.
 GH_STUB_MODE=ci-red   t merge-over-red-ci-blocks    2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=ci-green t merge-over-green-ci-allows  0 Bash "gh pr merge 42 --squash"
@@ -124,7 +122,9 @@ done
 grep -qi "unresolved" "$TMP/err-merge-with-unresolved-blocks" || { echo "FAIL stderr reason missing"; fail=$((fail+1)); }
 # HIMMEL-1043: the CI gate's block surfaces with its own prefix on stderr
 grep -q "block-red-ci-merge" "$TMP/err-merge-over-red-ci-blocks" || { echo "FAIL ci-block stderr reason missing"; fail=$((fail+1)); }
-grep -q "zombie check-run override:.*commit status=success + 0 unresolved threads.*HIMMEL-980" "$TMP/err-zombie-review-allows" || { echo "FAIL zombie override line missing"; fail=$((fail+1)); }
+# HIMMEL-1072: an absent review must say so — "no CodeRabbit status" is the
+# actionable half; a bare "blocked" would read as a false-block and get bypassed.
+grep -qi "has not reviewed" "$TMP/err-absent-review-blocks" || { echo "FAIL absent-review reason missing"; fail=$((fail+1)); }
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

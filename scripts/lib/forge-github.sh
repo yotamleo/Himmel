@@ -69,13 +69,22 @@ _gh_is_cosmetic_branch_delete() {
 }
 
 # squash-merge + delete source branch; plain first, --admin only when
-# GH_ADMIN_MERGE_OK=1 (HIMMEL-224). args: NUMBER
+# GH_ADMIN_MERGE_OK=1 (HIMMEL-224). args: NUMBER [VETTED_HEAD_SHA]
 # rc 0 = merged (incl. cosmetic branch-delete fail); rc 4 = real failure.
+#
+# VETTED_HEAD_SHA closes the HIMMEL-1058 TOCTOU window: the gates certify
+# headRefOid at check time, but a push landing between that capture and this
+# merge would slip an UNVETTED commit into main. `--match-head-commit` makes
+# GitHub reject the merge unless the head still is the SHA we vetted, so the
+# race fails loudly instead of merging unreviewed code. Optional — callers that
+# have no vetted SHA keep the old unbound behavior.
 gh_forge_pr_merge() {
-    local number="$1"
+    local number="$1" head="${2:-}"
     local out
-    if out=$(_gh pr merge "$number" --squash --delete-branch 2>&1); then
-        echo "forge(github): merged PR #$number"
+    local -a match=()
+    [ -n "$head" ] && match=(--match-head-commit "$head")
+    if out=$(_gh pr merge "$number" --squash --delete-branch "${match[@]+"${match[@]}"}" 2>&1); then
+        echo "forge(github): merged PR #$number${head:+ (bound to vetted head $head)}"
         return 0
     fi
     if _gh_is_cosmetic_branch_delete "$out"; then
@@ -88,8 +97,11 @@ gh_forge_pr_merge() {
         return 4
     fi
     echo "forge(github): plain merge failed; GH_ADMIN_MERGE_OK=1 — retrying with --admin" >&2
-    if out=$(_gh pr merge "$number" --squash --admin --delete-branch 2>&1); then
-        echo "forge(github): merged PR #$number (--admin fallback)"
+    # --admin bypasses branch protection, NOT the head binding: the retry stays
+    # pinned to the vetted SHA (an admin merge of an unvetted head is exactly the
+    # HIMMEL-1058 risk).
+    if out=$(_gh pr merge "$number" --squash --admin --delete-branch "${match[@]+"${match[@]}"}" 2>&1); then
+        echo "forge(github): merged PR #$number (--admin fallback${head:+, bound to vetted head $head})"
         return 0
     fi
     if _gh_is_cosmetic_branch_delete "$out"; then
