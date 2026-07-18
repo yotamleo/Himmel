@@ -99,6 +99,18 @@ case "$1" in
                 fi
                 exit 0
                 ;;
+            view)
+                # HIMMEL-1058: pr-merge.sh reads `pr view --json headRefOid` to bind
+                # the merge to a vetted head SHA, and the forge seam's mergeability
+                # poll reads `pr view --json mergeable`. Answer by which --json field
+                # was requested so both callers get a usable value.
+                if printf '%s' "$*" | grep -q 'headRefOid'; then
+                    printf '%s\n' "${FAKE_GH_HEAD_SHA:-abc1234abc1234abc1234abc1234abc1234abc1}"
+                elif printf '%s' "$*" | grep -q 'mergeable'; then
+                    printf '%s\n' "${FAKE_GH_MERGEABLE:-MERGEABLE}"
+                fi
+                exit 0
+                ;;
             merge)
                 if [ "${FAKE_GH_FAIL:-}" = "merge" ]; then
                     printf '%s\n' "${FAKE_GH_MERGE_OUT:-fake merge failure}" >&2
