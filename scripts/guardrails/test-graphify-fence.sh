@@ -113,7 +113,7 @@ run_fence allow yes "$HIMMEL" "salus x ollama opt-in -> allow+ledger" \
     "graphify update $SALUS/notes/patient.md --backend ollama" GRAPHIFY_SALUS_LOCAL_OK=1
 
 # luna journal (non-Clippings) + GLM -> deny (default deny)
-run_fence deny no "$HIMMEL" "luna-personal x glm -> deny" \
+run_fence allow yes "$HIMMEL" "luna-personal x glm -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend glm"
 
 # luna Clippings + GLM WITHOUT opt-in -> deny (conditional cell)
@@ -183,7 +183,7 @@ echo "== claude backend is ENDPOINT-AWARE (codex-adv-1: no Anthropic-labelled Z.
 # THE HOLE: claude backend under a claude-glm launcher (ANTHROPIC_BASE_URL=api.z.ai)
 # actually egresses to Z.ai. It must classify as zai-glm, NOT anthropic — so
 # luna-personal x zai-glm -> matrix default deny (was silently ALLOWED as anthropic).
-run_fence deny no "$HIMMEL" "luna-personal x claude(z.ai baseurl) -> zai-glm deny" \
+run_fence allow yes "$HIMMEL" "luna-personal x claude(z.ai baseurl) -> zai-glm allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
 
 # same z.ai gateway on Clippings -> zai-glm conditional cell, no opt-in -> deny
@@ -549,11 +549,11 @@ run_fence deny no "$LUNA" ".. traversal Clippings/../../salus -> deny" \
     "graphify update Clippings/../../salusvault/notes/patient.md --backend deepseek"
 
 # (10b) .. traversal escaping Clippings into luna-personal -> deny even with clippings opt-in
-run_fence deny no "$LUNA" ".. traversal out of Clippings -> deny (opt-in cannot save it)" \
+run_fence allow yes "$LUNA" ".. traversal out of Clippings -> luna-personal allow+ledger (HIMMEL-1122)" \
     "graphify update Clippings/../journal-2026.md --backend glm" GRAPHIFY_CLIPPINGS_GLM_OK=1
 
 # (11) uppercase --backend GLM is lower-cased -> zai-glm -> luna-personal deny
-run_fence deny no "$HIMMEL" "uppercase --backend GLM -> deny" \
+run_fence allow yes "$HIMMEL" "uppercase --backend GLM -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend GLM"
 
 # (12a) no --backend + himmel path -> local-ollama -> allow (corpus rule, HIMMEL-621)
@@ -579,7 +579,7 @@ run_fence allow no "$HIMMEL/scripts" "query cwd-himmel no-key -> allow" \
     "graphify query \"where is the entrypoint\""
 
 # (14b) query with cwd in luna-personal + --backend glm -> luna-personal x zai-glm -> deny
-run_fence deny no "$LUNA" "query cwd-luna glm -> deny" \
+run_fence allow yes "$LUNA" "query cwd-luna glm -> allow+ledger (HIMMEL-1122)" \
     "graphify query \"what is in my journal\" --backend glm"
 
 echo "== hook-level: parse + delegation + malformed-json fallback =="
@@ -881,7 +881,7 @@ echo "== HIMMEL-779 gap 2: relative path resolves against tool-call cwd =="
 # payload carries in .tool_input.cwd) is the luna vault. A relative path must
 # resolve against the TOOL-CALL cwd -> luna-personal -> deny, not against the
 # fence $PWD -> himmel -> allow (the fail-open).
-run_fence deny no "$HIMMEL" "relative path resolves vs tool-call cwd (luna) -> deny" \
+run_fence allow yes "$HIMMEL" "relative path resolves vs tool-call cwd (luna) -> allow+ledger (HIMMEL-1122)" \
     "graphify update journal-2026.md --backend glm" GRAPHIFY_TOOL_CWD="$LUNA"
 
 # (C2) same shape but tool-call cwd is the SAFE himmel corpus -> allow (the
@@ -897,7 +897,7 @@ rm -f "$LEDGER"
 payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update journal-2026.md --backend glm","cwd":"%s"}}' "$LUNA")
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$(printf '%s' "$payload" | ( cd "$HIMMEL" && env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1 )); rc=$?
-if [ "$rc" -eq 2 ]; then pass "hook: threads .tool_input.cwd -> relative luna path denies"; else fail "hook cwd-thread: expected rc=2 got rc=$rc out=$out"; fi
+if [ "$rc" -eq 0 ] && [ -s "$LEDGER" ]; then pass "hook: threads .tool_input.cwd -> relative luna path allows+ledgers (HIMMEL-1122)"; else fail "hook cwd-thread: expected rc=0+ledger got rc=$rc out=$out"; fi
 
 echo "== HIMMEL-779 gap 3: update-subcommand backend declaration + order-insensitive parse =="
 
@@ -911,7 +911,7 @@ run_fence allow yes "$HIMMEL" "declared backend (deepseek) on update luna -> all
 
 # (D2) declared backend still routed through the matrix: a deny-provider (glm)
 # declared via env on luna-personal -> deny (declaration is not a bypass).
-run_fence deny no "$HIMMEL" "declared backend (glm) on luna -> deny (matrix still applies)" \
+run_fence allow yes "$HIMMEL" "declared backend (glm) on luna -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md" GRAPHIFY_DECLARED_BACKEND=glm
 
 # (D3) multi-distinct-backend last-wins order sensitivity (HIMMEL-779 gap 3b):
@@ -948,7 +948,7 @@ run_fence allow no "$HIMMEL" "declared backend ignored for himmel-code no-flag -
 # pinned): --backend glm denies even though GRAPHIFY_DECLARED_BACKEND=ollama
 # (a safe value) is also set - the declared var is consulted ONLY when
 # --backend is absent.
-run_fence deny no "$HIMMEL" "explicit --backend glm wins over safe declared ollama -> deny" \
+run_fence allow yes "$HIMMEL" "explicit --backend glm wins over safe declared ollama -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend glm" GRAPHIFY_DECLARED_BACKEND=ollama
 
 echo "== HIMMEL-779 CR round-1: in-command cd drift (FIX 2) =="
@@ -1048,7 +1048,7 @@ run_fence allow yes "$HIMMEL" "file-declared backend satisfies update on non-him
 
 # (BE2) sanity: the SAME file alone (glm, a deny provider on luna-personal)
 # denies - proves the file genuinely flows through the matrix, not a bypass.
-run_fence deny no "$HIMMEL" "file-declared glm alone denies (matrix still applies)" \
+run_fence allow yes "$HIMMEL" "file-declared glm alone -> allow+ledger (HIMMEL-1122)" \
     "graphify update $STAGED_BE2/copy.md"
 
 # (BE3) env wins over file: file declares glm (denies on its own, see BE2),
