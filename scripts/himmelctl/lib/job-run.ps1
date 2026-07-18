@@ -541,7 +541,15 @@ if ($timedOut -or $waitFailed) {
     # ORIGINAL failure exit code unchanged (never a cleanup sentinel; there
     # is nothing to report here that CloseHandle itself could fail at, since
     # the limit flag is left untouched).
+    #
+    # Belt-and-suspenders explicit teardown, mirroring the timeout branch
+    # above: KILL_ON_JOB_CLOSE is left SET so the CloseHandle alone already
+    # tears the tree down, but terminate the job and direct child explicitly
+    # too so a FAILED command can never leave a descendant supervised —
+    # identical teardown to the timeout path, not the implicit-kill shortcut.
+    [HimmelCtl.JobNative]::TerminateJobObject($hJob, 1) | Out-Null
     [HimmelCtl.JobNative]::CloseHandle($hJob) | Out-Null
+    try { $proc.Kill() } catch {}
     exit $code
   }
   # CR fix (codex round 17 -- FAIL-OPEN, same class as round 16's

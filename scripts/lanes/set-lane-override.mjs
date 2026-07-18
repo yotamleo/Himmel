@@ -20,7 +20,7 @@
 // understands; a config toggle that needs a genuinely conditional probe
 // (env/path/installed/crprofile) is hand-authored in lanes.local.json
 // directly, same as lanes.json itself.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync, renameSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -63,16 +63,50 @@ function loadLocal(file) {
 // the loadLocal -> applyLaneOverride -> write-tmp -> rename sequence across
 // concurrent invocations so two writers can't interleave and clobber each
 // other's update.
+//
+// Stale-lock recovery (CodeRabbit #470): a process that dies AFTER mkdirSync
+// but before releaseLock would strand `${file}.lock` forever, wedging every
+// later update at the 10s timeout until someone deletes it by hand. So the
+// holder records its PID inside the lock, and a waiter reclaims the lock at
+// most ONCE if its owner process is gone (ESRCH) or the lock is older than
+// LOCK_STALE_MS — far above the sub-second hold, so a live holder is never
+// reclaimed. Reclamation is race-safe: rmSync(force) then a fresh atomic
+// mkdirSync, so if two waiters both reclaim, only one wins the mkdir and the
+// other keeps contending normally.
+const LOCK_STALE_MS = 30000;
+
+function _lockIsStale(lockPath) {
+  // Owner process gone -> definitely stale. Otherwise decide on age.
+  try {
+    const pid = Number(readFileSync(join(lockPath, 'owner'), 'utf8').trim());
+    if (Number.isInteger(pid) && pid > 0) {
+      try { process.kill(pid, 0); }                        // alive (or not ours)
+      catch (e) { if (e.code === 'ESRCH') return true; }   // no such process
+    }
+  } catch { /* no/unreadable owner file — fall back to age alone */ }
+  try { return Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS; }
+  catch { return false; }
+}
+
 function acquireLock(file, opts = {}) {
   const { timeoutMs = 10000, backoffMs = 20 } = opts;
   const lockPath = `${file}.lock`;
   const deadline = Date.now() + timeoutMs;
+  let reclaimed = false;
   while (true) {
     try {
       mkdirSync(lockPath);
+      try { writeFileSync(join(lockPath, 'owner'), String(process.pid)); } catch { /* best effort */ }
       return;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e; // non-lock error — surface immediately
+      // Reclaim an abandoned lock at most ONCE per acquire, so a lock a live
+      // holder keeps legitimately recreating is never repeatedly nuked.
+      if (!reclaimed && _lockIsStale(lockPath)) {
+        reclaimed = true;
+        try { rmSync(lockPath, { recursive: true, force: true }); } catch { /* lost the reclaim race */ }
+        continue;
+      }
       if (Date.now() >= deadline) {
         throw new Error(`set-lane-override: lock timeout for ${file}`);
       }
@@ -84,7 +118,7 @@ function acquireLock(file, opts = {}) {
 
 function releaseLock(file) {
   try {
-    rmdirSync(`${file}.lock`);
+    rmSync(`${file}.lock`, { recursive: true, force: true });
   } catch (e) {
     if (e.code !== 'ENOENT') throw e;
   }
