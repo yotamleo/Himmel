@@ -29,6 +29,26 @@ Alibaba for embeddings).
   allowed-tags list; its `luna-personal × deepseek` cell was **ratified
   2026-07-10** (operator, HIMMEL-833): `allow+log` (the ledger obligation
   survives ratification — never plain `allow`).
+- **`luna-personal × zai-glm × extraction`** was **ratified 2026-07-17**
+  (operator, HIMMEL-1122): `allow+log`. **This WIDENS the permitted provider
+  set** — full luna non-Clippings note bodies may now leave the machine to a
+  second, additional vendor (Z.ai) that could not receive them before. What it
+  does *not* change is the corpus, purpose, region (CN), or content scope: those
+  are identical to the 2026-07-05 DeepSeek extraction override it sits beside, so
+  the *kind* of exposure is unchanged even though the *number of vendors holding
+  it* goes from one to two. Both facts matter to a privacy review; neither
+  cancels the other. Ratified because a measured
+  A/B on an identical corpus put glm-5.2 ahead of the incumbent on every axis
+  (link recall 63–79% vs DeepSeek's 26%, file coverage 100% vs 95%) at
+  flat-rate Coding-Plan cost, against $3.14 per full-vault DeepSeek run — the
+  vault was paying for the weaker backend purely because the matrix had no GLM
+  cell. Scope is deliberately narrow:
+  - `luna-personal × zai-glm × inference` stays **deny** — extraction only.
+  - `salus × * × *` stays **deny, hard** — untouched, and no override can flip it.
+  - **Not a default.** `refresh-graph-map.sh` keeps `BACKEND=claude-cli`
+    (HIMMEL-1049, the claude-only adopter story). GLM is a per-run opt-in for an
+    operator who has a Coding Plan; an adopter without one is never expected to
+    have it.
 
 ## Corpus resolution (shared primitives, not new ones)
 

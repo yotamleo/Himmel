@@ -184,6 +184,8 @@ export function isThinRedditBody(body) {
     if (!l) continue;
     const h = l.match(/^#{1,6}\s+(.*)$/);
     if (h) {                                                 // heading
+      // Sub-headings inside harvest template sections would exit this exclusion;
+      // current generated templates do not contain them (HIMMEL-795).
       inTemplateSection = REDDIT_TEMPLATE_SECTIONS.has(h[1].trim().toLowerCase());
       continue;
     }

@@ -10,9 +10,26 @@ node_modules/
 /.claude/settings.local.json
 # tokensave MCP code-graph state (local SQLite DB, session-generated — never commit).
 /.tokensave/
-# graphify knowledge-graph artifacts (HIMMEL-621): extraction output + the
-# vendored skill copy are install-local, never committed.
-graphify-out/
+# graphify knowledge-graph artifacts (HIMMEL-621). The DERIVED GRAPH is tracked
+# (HIMMEL-1123) — extraction is LLM-backed and genuinely expensive, so stations
+# that cannot afford to build it (win2: "no resources") pull it instead of
+# re-extracting. That is the cost-of-regeneration split: tokensave regenerates
+# free on local CPU and stays ignored above; a graph does not.
+# WSL needs no transport (HIMMEL-996 shares the Windows store over /mnt/c) —
+# this is for physically separate hosts.
+#
+# Ignore the CONTENTS, then re-include only the two portable artifacts. The
+# per-machine STAMPS stay local on purpose:
+#   .graphify_root  - an ABSOLUTE corpus path; committed, it makes the freshness
+#                     guard resolve win1's path on win2 and fail closed as
+#                     "corpus orphaned" (HIMMEL-1116 makes it portable).
+#   manifest.json   - mtimes are machine-local, and after a checkout every file
+#                     is checkout-fresh, so a pulled graph would read as FRESH
+#                     regardless of its real age.
+#   cache/          - graphify's semantic cache; local, and large.
+graphify-out/*
+!graphify-out/graph.json
+!graphify-out/GRAPH_REPORT.md
 /.claude/skills/graphify/
 # Generated/junk artifacts that must never be committed (HIMMEL-371).
 # NOT package-lock.json globally — 6 legit npm packages track theirs. The
@@ -30,8 +47,10 @@ Thumbs.db
 # Handover transient state
 .last-consolidate.json
 **/handovers/*/.last-consolidate.json
-.pending-new-item.json
-**/handovers/*/.pending-new-item.json
+.pending-new-item*
+**/handovers/*/.pending-new-item*
+.pending-consolidate*
+**/handovers/*/.pending-consolidate*
 # auto-arm-on-cap / auto-arm-on-subagent-cap runtime snapshots (HIMMEL-276) —
 # the hooks write these into himmel handovers/ as untracked clutter on main.
 # (Followup: redirect the hook write path to HANDOVER_DIR — see HIMMEL ticket.)
@@ -77,5 +96,7 @@ logs/gemini/
 .himmel-dev
 # per-operator CR registry overlay (account quota state) — never commit (HIMMEL-727)
 scripts/cr/critics.local.json
+# per-machine lane availability/override overlay (himmelctl config) — never commit (HIMMEL-758)
+scripts/lanes/lanes.local.json
 # machine-local grok tool-schema cache dir — never commit (HIMMEL-876)
 /mcps/

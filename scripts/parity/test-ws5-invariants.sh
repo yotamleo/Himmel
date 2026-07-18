@@ -10,9 +10,10 @@
 #                       unbounded-loop / background-service / JS-timer marker
 #                       in the SHIPPED source the diff adds (test fixtures are
 #                       excluded: a harness loop is not runtime surface).
-#   T14 locks        -- no claude-codex launcher file anywhere in the diff; no
-#                       per-token-lane wiring in shipped source; the
+#   T14 locks        -- no per-token-lane wiring in shipped source; the
 #                       gemini/copilot/cursor index rows stay deferred.
+#                       (The former T14(a) claude-codex-launcher prohibition
+#                       was retired 2026-07-13, HIMMEL-979.)
 #   T15 x-platform   -- every NEW scripts/**/*.sh ships a .ps1 twin OR carries
 #                       a documented platform-guard marker in its header.
 #
@@ -135,18 +136,13 @@ fi
 
 # ----------------------------------------------------------------------------
 # T14 -- locks (AC8).
-# (a) no claude-codex launcher file anywhere in the diff (D9 -- the index has
-#     NO claude-codex row by design; a prose note about that absence is fine,
-#     a launcher script/binary is not);
+# (a) RETIRED 2026-07-13 (operator decision, HIMMEL-979): the D9 no-claude-codex
+#     lock was superseded -- the claude-codex lane (scripts/claude-codex{,.ps1})
+#     ships with native guard posture (Claude Code IS the harness, same column
+#     as claude-glm). See docs/internals/lane-parity.md "claude-codex lock".
 # (b) no per-token-lane wiring in shipped source;
 # (c) gemini/copilot/cursor index rows stay deferred.
 # ----------------------------------------------------------------------------
-t14a_hit=0
-if git diff "$BASE...HEAD" --name-only | grep -E 'claude-codex' >/dev/null; then
-    t14a_hit=1
-    echo "FAIL T14(a): claude-codex launcher file in the diff." >&2
-fi
-
 t14b_hit=0
 if grep -Ei 'token-lane' "$SHIPPED" >/dev/null; then
     t14b_hit=1
@@ -173,8 +169,8 @@ else
     fi
 fi
 
-if [ "$t14a_hit" -eq 0 ] && [ "$t14b_hit" -eq 0 ] && [ "$t14c_hit" -eq 0 ]; then
-    echo "PASS T14 locks: no claude-codex launcher; no per-token-lane wiring; gemini/copilot deferred."
+if [ "$t14b_hit" -eq 0 ] && [ "$t14c_hit" -eq 0 ]; then
+    echo "PASS T14 locks: no per-token-lane wiring; gemini/copilot/cursor deferred. (T14(a) claude-codex lock retired, HIMMEL-979.)"
 else
     FAIL=$((FAIL + 1))
 fi

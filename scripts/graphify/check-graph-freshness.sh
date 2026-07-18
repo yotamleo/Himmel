@@ -56,8 +56,10 @@ case "$MAX_AGE_DAYS" in
 esac
 
 # Remediation embedded in every non-OK message: the refresh invocation shape
-# (mirrors refresh-graph-map.sh's own usage).
-REMEDIATION="Rebuild with: bash $REFRESH --name <N> --corpus-root <path> --backend deepseek --maps-dir <vault>/60-Maps --title \"<Title>\" --slug <slug>"
+# (mirrors refresh-graph-map.sh's own usage). No --backend: the runner's own
+# default (claude-cli since HIMMEL-1049) is the one we want a copy-paste of this
+# hint to use — naming a backend here is how it went stale in the first place.
+REMEDIATION="Rebuild with: bash $REFRESH --name <N> --corpus-root <path> --maps-dir <vault>/60-Maps --title \"<Title>\" --slug <slug>"
 
 # python3 is required (manifest.json parse + cross-platform mtime). `stat -c %Y`
 # is GNU-only and `stat -f %m` is BSD-only, so mtime goes through python3.
@@ -79,19 +81,52 @@ fail() {
 # --- 2. manifest.json present + parseable (flat object of filename -> {...}) ---
 MANIFEST="$OUT/manifest.json"
 [ -f "$MANIFEST" ] || fail "manifest.json missing at $MANIFEST."
-# Emit one manifest key per line; exit non-zero on unparseable / non-object / empty.
-if ! KEYS="$(python3 - "$MANIFEST" <<'PYEOF'
+# Emit one manifest key per line.
+#
+# UTF-8 IS LOAD-BEARING, BOTH WAYS (HIMMEL-1116). The manifest keys are
+# corpus-relative FILENAMES, and a real vault has filenames outside the Windows
+# default codepage (Hebrew, emoji). Two separate crashes came from that:
+#   * `open()` without encoding= decodes the manifest as cp1252 on Windows -> UnicodeDecodeError
+#   * `print(k)` encodes to a cp1252 stdout                                -> UnicodeEncodeError
+# Either killed python, which the shell then reported as "manifest unparseable"
+# — so the guard failed CLOSED on a perfectly good graph and sent the operator
+# into a ~45min/$3 rebuild for nothing. Same class the salus vault_health.py
+# already handles with PYTHONUTF8=1.
+#
+# Exit codes are DISTINCT on purpose: a crash and a corrupt manifest are
+# different facts and must not share one message (they did, and that is what
+# made the bug hard to see).
+#   0 = ok   1 = genuinely not a non-empty JSON object   3 = internal/encoding error
+KEYS_RC=0
+KEYS="$(python3 - "$MANIFEST" <<'PYEOF'
 import json, sys
-with open(sys.argv[1]) as fh:
-    d = json.load(fh)
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")  # py3.7+; keys may be non-cp1252
+except AttributeError:                        # pragma: no cover - ancient python
+    sys.exit(3)
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        d = json.load(fh)
+except (OSError, UnicodeError) as exc:
+    print("read/decode failed: %s" % exc, file=sys.stderr)
+    sys.exit(3)
+except ValueError:
+    sys.exit(1)          # real corruption: not JSON
+
 if not isinstance(d, dict) or not d:
-    sys.exit(1)
+    sys.exit(1)          # real: parsed, but not a non-empty object
+
 for k in d:
     print(k)
 PYEOF
-)"; then
-  fail "manifest.json at $MANIFEST is not a non-empty JSON object (unparseable/empty)."
-fi
+)" || KEYS_RC=$?
+case "$KEYS_RC" in
+  0) ;;
+  1) fail "manifest.json at $MANIFEST is not a non-empty JSON object (unparseable/empty)." ;;
+  *) fail "manifest.json at $MANIFEST could not be READ (rc=$KEYS_RC; see stderr above) — this is an internal/encoding error, NOT proof the manifest is corrupt. The graph may be fine." ;;
+esac
 
 # --- 3. corpus resolution + orphan check ---
 if [ -n "$CORPUS_ROOT" ]; then

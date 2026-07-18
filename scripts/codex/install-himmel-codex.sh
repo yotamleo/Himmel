@@ -32,7 +32,7 @@ for arg in "$@"; do
     --dry-run)        DRY_RUN=1 ;;
     --all)            ALL=1 ;;
     --plugins=*)      PLUGINS_OVERRIDE="${arg#*=}" ;;
-    -h|--help)        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)        sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "ERR: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -103,10 +103,13 @@ for p in $PLUGINS; do
 done
 
 # --- 3. sanitize external-plugin hooks.json (HIMMEL-651) ---------------------
-# Codex's strict plugin-hooks parser rejects a top-level `description` key that
+# Codex versions BEFORE rust-v0.143.0 reject a top-level `description` key that
 # several external plugins ship in their hooks.json ("unknown field
-# description") and skips those hooks at boot. Strip it so `codex` boots clean.
+# description") and skip those hooks at boot. Strip it so `codex` boots clean.
 # Idempotent + non-fatal (cosmetic cleanup must never fail the install).
+# DEPRECATED (HIMMEL-1104): upstream fixed this in rust-v0.143.0 (PR #30229), so
+# on that version or newer this phase mutates external plugin files for no
+# benefit. Removing the phase is tracked in HIMMEL-1114.
 echo ""
 echo "--- 3. sanitize external-plugin hooks.json (codex strict-parser workaround) ---"
 if [ "$DRY_RUN" = "1" ]; then

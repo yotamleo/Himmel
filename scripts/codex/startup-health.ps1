@@ -62,6 +62,39 @@ if ($newest) {
   if ($m.Success) { $tid = $m.Groups[1].Value }
 }
 
+# Name the codex plugin-cache hooks.json files carrying a root-level
+# `description`. Deterministic JSON key test — no log parsing, no sqlite.
+#
+# These are CANDIDATES, never proof: codex's "ignoring hooks" row carries NO
+# path, so the failing manifest CANNOT be correlated to a cache file. A scan hit
+# never licenses declaring a lane safe — every branch fails CLOSED; only a
+# himmel-owned hit escalates. Mirrors the .sh twin.
+# ONE scan yields BOTH results, so status can never drift from contents:
+#   .Offenders — paths carrying a root-level `description`
+#   .Scan      — 'ok' | 'incomplete'  (anything that could not be enumerated,
+#                read, or parsed makes it incomplete — never a clean "none
+#                found", which would assert a fact never checked).
+function Get-DescScan {
+  $cache = Join-Path $codexHome 'plugins/cache'
+  $res = [pscustomobject]@{ Offenders = @(); Scan = 'ok' }
+  if (-not (Test-Path -LiteralPath $cache)) { $res.Scan = 'incomplete'; return $res }
+  $files = @()
+  try { $files = @(Get-ChildItem -LiteralPath $cache -Recurse -Filter 'hooks.json' -File -ErrorAction Stop) }
+  catch { $res.Scan = 'incomplete'; return $res }
+  foreach ($f in $files) {
+    $b = Read-SharedBytes $f.FullName
+    if (-not $b) { $res.Scan = 'incomplete'; continue }   # unreadable -> cannot judge
+    try { $o = [System.Text.Encoding]::UTF8.GetString($b) | ConvertFrom-Json }
+    catch { $res.Scan = 'incomplete'; continue }          # unparseable -> cannot judge
+    # -ccontains, NOT -contains: PowerShell comparisons are case-INSENSITIVE by
+    # default, so -contains would flag a `Description` key that jq's
+    # has("description") in the .sh twin ignores. codex's serde field matching is
+    # case-sensitive too, so only the exact lowercase key is the real field.
+    if ($o.PSObject.Properties.Name -ccontains 'description') { $res.Offenders += $f.FullName }
+  }
+  return $res
+}
+
 # --- (a) skill/plugin prompt truncation + (b) lifecycle hook failure -----------
 # logs_2.sqlite stores TEXT inline as UTF-8; extract printable runs (>=20 chars),
 # keep those carrying the current session thread_id, count the WARN markers.
@@ -73,11 +106,34 @@ if ((Test-Path -LiteralPath $logdb) -and $tid) {
   foreach ($run in [regex]::Matches($text, '[\x20-\x7E]{20,}')) {
     $r = $run.Value
     if ($r -notmatch [regex]::Escape($tid)) { continue }
-    if ($r -match 'ignoring hooks') { $hookHits++ }
+    # HIMMEL-1104: LOAD path only. The identical "ignoring hooks" text is also
+    # emitted by list_tool_suggest_discoverable_plugins — a marketplace
+    # SUGGESTION scan over NON-INSTALLED plugins that discards the parsed hooks.
+    # Matching the bare string reported a healthy session as DEGRADED.
+    if ($r -match 'load_plugins_from_layer_stack: ignoring hooks') { $hookHits++ }
     if ($r -match 'ignoring interface\.defaultPrompt|prompt must be at most|maximum of [0-9]+ prompts') { $skillHits++ }
   }
   if ($hookHits -gt 0) {
-    Emit 'hook-failure' "codex ignored a lifecycle hooks block in the current session (codex_core_plugins::manifest 'ignoring hooks') — SessionStart/UserPromptSubmit/Stop hooks may not be running"
+    # Split by BLAST RADIUS. A dropped hooks block is per-plugin isolated, so an
+    # upstream offender never implies himmel's guardrails are off.
+    $scan = Get-DescScan
+    $himmelHit = @(); $upstreamHit = @()
+    foreach ($f in $scan.Offenders) {
+      $rel = ($f -replace '^.*[\\/]plugins[\\/]cache[\\/]', '') -replace '\\', '/'
+      if ($rel -match '^(himmel|qmd)/') { $himmelHit += $rel } else { $upstreamHit += $rel }
+    }
+    $scopeNote = "Scope: the codex CLI only — claudex / cc-glm / hermes are separate surfaces and are NOT implicated by this finding."
+    $upgradeNote = "Most likely fix: upgrade codex to >= rust-v0.143.0, which accepts a root-level 'description' (upstream PR #30229)."
+    $scanNote = if ($scan.Scan -ne 'ok') { " NOTE: the cache scan was INCOMPLETE (a hooks.json could not be enumerated, read, or parsed), so candidates may be missing." } else { '' }
+    if ($himmelHit.Count -gt 0) {
+      Emit 'hook-failure' "codex CLI ($codexHome) dropped a lifecycle hooks block, and a HIMMEL-OWNED plugin carries the root-level 'description' that triggers it — $($himmelHit -join ' ') — GUARDRAILS MAY BE OFF, do not route work to the codex CLI lane until fixed. $upgradeNote $scopeNote$scanNote"
+    } elseif ($upstreamHit.Count -gt 0) {
+      Emit 'hook-failure' "codex CLI ($codexHome) dropped a lifecycle hooks block. Upstream cache candidate(s) carrying a root-level 'description': $($upstreamHit -join ' '). The log row names NO path, so this is NOT correlated to the failing manifest — himmel's guardrails are NOT proven unaffected. Do not route to the codex CLI lane until ownership is confirmed. $upgradeNote $scopeNote$scanNote"
+    } elseif ($scan.Scan -ne 'ok') {
+      Emit 'hook-failure' "codex CLI ($codexHome) dropped a lifecycle hooks block (codex_core_plugins::manifest 'load_plugins_from_layer_stack: ignoring hooks'), and the plugin cache could NOT be scanned (no cache dir, or an unreadable/unparseable hooks.json) — offender unidentified. Do not route to the codex CLI lane until confirmed. $scopeNote"
+    } else {
+      Emit 'hook-failure' "codex CLI ($codexHome) dropped a lifecycle hooks block (codex_core_plugins::manifest 'load_plugins_from_layer_stack: ignoring hooks'), but no plugin-cache hooks.json carries a root-level 'description' — cause unidentified, inspect $codexHome/plugins/cache/**/hooks.json by hand. Do not route to the codex CLI lane until confirmed. $scopeNote"
+    }
   }
   if ($skillHits -gt 0) {
     Emit 'skill-truncation' "codex truncated $skillHits skill/plugin prompt field(s) in the current session (codex_core_plugins::manifest 'defaultPrompt ... at most N chars / maximum of N prompts') — skill content silently dropped"

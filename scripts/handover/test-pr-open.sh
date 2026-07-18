@@ -17,7 +17,9 @@
 #   6. pr-merge --dry-run prints the squash --admin --delete-branch invocation.
 #   7. pr-merge exits 0 when no PR is found for the branch.
 #   8. pr-merge suppresses the worktree-held branch-delete cosmetic error.
-#   9. HANDOVER_PR_AUTO=0 short-circuits pr-open (exit 0, no gh calls).
+#   9. pr-merge fails closed (rc=7) when the head SHA is explicitly empty
+#      (HIMMEL-1058 — refuses to merge unbound).
+#  10. HANDOVER_PR_AUTO=0 short-circuits pr-open (exit 0, no gh calls).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,6 +98,18 @@ case "$1" in
                 if [ "${FAKE_GH_FAIL:-}" = "edit" ]; then
                     echo "fake gh: pr edit failure" >&2
                     exit 1
+                fi
+                exit 0
+                ;;
+            view)
+                # HIMMEL-1058: pr-merge.sh reads `pr view --json headRefOid` to bind
+                # the merge to a vetted head SHA, and the forge seam's mergeability
+                # poll reads `pr view --json mergeable`. Answer by which --json field
+                # was requested so both callers get a usable value.
+                if printf '%s' "$*" | grep -q 'headRefOid'; then
+                    printf '%s\n' "${FAKE_GH_HEAD_SHA-abc1234abc1234abc1234abc1234abc1234abc1}"
+                elif printf '%s' "$*" | grep -q 'mergeable'; then
+                    printf '%s\n' "${FAKE_GH_MERGEABLE:-MERGEABLE}"
                 fi
                 exit 0
                 ;;
@@ -239,7 +253,20 @@ out=$(
 assert_eq       "rc=0 (cosmetic ignored)" "0" "$rc"
 assert_contains "stdout mentions cosmetic-fail" "cosmetic-fail" "$out"
 
-# Test 9: HANDOVER_PR_AUTO=0 short-circuits ---------------------------
+# Test 9: pr-merge fails closed on an explicitly-empty head SHA --------
+# HIMMEL-1058: an empty headRefOid must never fall through to an unbound
+# merge. FAKE_GH_HEAD_SHA="" (vs. unset) exercises that fail-closed branch.
+
+echo "TEST: pr-merge fails closed (rc=7) on empty head SHA"
+rc=0
+out=$(
+    cd "$REPO"
+    GH_CMD="$FAKE_GH" FAKE_GH_PR_LIST="42" FAKE_GH_HEAD_SHA="" bash "$PR_MERGE" 2>&1
+) || rc=$?
+assert_eq       "rc=7 (refuses to merge unbound)" "7" "$rc"
+assert_contains "stderr explains unbound refusal" "refusing to merge unbound" "$out"
+
+# Test 10: HANDOVER_PR_AUTO=0 short-circuits ---------------------------
 
 echo "TEST: HANDOVER_PR_AUTO=0 short-circuits pr-open"
 : > "$FAKE_GH_LOG"

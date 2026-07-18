@@ -12,12 +12,15 @@
 #   Deny ONLY on positive evidence: a NON-GREEN CI state on the PR's head SHA
 #   among NON-CodeRabbit check-runs — either a check-run with a RED conclusion
 #   (failure, timed_out, cancelled, action_required, startup_failure, stale), a
-#   check-run still PENDING (status != completed) — or a combined commit status
-#   of failure (or pending with >=1 status, evaluated in full). CodeRabbit
-#   check-runs are EXCLUDED (the CR gate, HIMMEL-936/980, owns CodeRabbit; this
+#   check-run still PENDING (status != completed) — or a NON-CodeRabbit commit
+#   status (newest per context) of failure/error/pending. CodeRabbit is EXCLUDED
+#   from BOTH (the CR gate, HIMMEL-936/1072, owns CodeRabbit; this
 #   gate owns the tests/lint/build CI the repo otherwise has no guard for — see
 #   brief WHY "a red or still-running non-CodeRabbit check", and it keeps a hung
-#   CodeRabbit check-run from false-blocking here). This repo has NO branch
+#   CodeRabbit review from false-blocking here — which, until HIMMEL-1072, it did
+#   NOT: the exclusion was written against check-runs CodeRabbit never posts,
+#   while its real commit STATUS rode the combined aggregate straight into the
+#   pending block). This repo has NO branch
 #   protection, so GitHub will not otherwise block `gh pr merge` over red/pending
 #   CI (HIMMEL-1043). EVERYTHING else (gh/jq missing, gh pr view failure, API
 #   error, parse failure, a check-less PR with zero check-runs AND zero statuses)
@@ -33,6 +36,14 @@
 # HIMMEL-1043. Mirrors scripts/lib/cr-merge-gate.sh in structure + conventions.
 
 _cig_degrade() { echo "ci-green-gate: degraded ($*) - failing open" >&2; }
+
+# Shared CodeRabbit identity (HIMMEL-1072) — this gate EXCLUDES CodeRabbit's own
+# status from the CI aggregate it owns, and must agree with cr-merge-gate on what
+# that identity is. Sourced relative to this file so a hook can source it from
+# any cwd.
+# shellcheck source=scripts/lib/cr-signal.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-signal.sh"
 
 ci_green_gate() {
     [ "${CI_MERGE_GATE_OK:-0}" = "1" ] && return 0
@@ -107,23 +118,69 @@ ci_green_gate() {
         return 2
     fi
 
-    # 2) combined commit status on the head SHA. Block on .state=="failure",
-    # or .state=="pending" with >=1 status (total_count>0). "success"/empty is
-    # ok. This catches legacy status contexts not surfaced as check-runs.
-    # Parse total_count FIRST as the parse-failure canary: a valid payload
-    # yields a number (0 for a status-less commit); a jq parse failure yields
-    # empty (degrade, fail open).
-    local statuses state total
-    statuses=$(gh api "repos/$owner/$name/commits/$head/status" 2>/dev/null) || { _cig_degrade "status query failed"; return 0; }
-    total=$(printf '%s' "$statuses" | jq -r '.total_count // 0' 2>/dev/null || true)
-    if [ -z "$total" ]; then _cig_degrade "status parse failed"; return 0; fi
-    state=$(printf '%s' "$statuses" | jq -r '.state // empty' 2>/dev/null || true)
-    if [ "$state" = "failure" ] || [ "$state" = "error" ]; then
-        echo "BLOCK: PR #$num head $head has a $state commit status — CI not green. Bypass: CI_MERGE_GATE_OK=1."
+    # 2) commit statuses on the head SHA — the legacy contexts never surfaced as
+    # check-runs.
+    #
+    # This used to read the COMBINED /status endpoint and block on its aggregate
+    # .state. That silently defeated the CodeRabbit exclusion this gate documents
+    # above: CodeRabbit publishes a commit STATUS (see cr-signal.sh), the combined
+    # .state folds every context together, so a pending CodeRabbit review turned
+    # the aggregate pending and false-blocked HERE — precisely the "hung
+    # CodeRabbit must not block the CI gate" case the .check_runs exclusion was
+    # written for (and which that exclusion never handled, since CodeRabbit posts
+    # no check-run to exclude).
+    #
+    # So: read the LIST endpoint, drop CodeRabbit's own statuses by IDENTITY
+    # (creator.id, shared with the CR gate via cr_signal_bot_id), and aggregate
+    # what's left. GitHub returns statuses newest-first and a context can carry
+    # many over its lifetime, so reduce to the NEWEST per context — an old
+    # `pending` superseded by `success` must not block.
+    local statuses kind total latest red_ctx pending_ctx uid ctx
+    uid=$(cr_signal_bot_id)
+    ctx=$(cr_signal_context)
+    statuses=$(gh api "repos/$owner/$name/commits/$head/statuses?per_page=100" 2>/dev/null) || { _cig_degrade "status query failed"; return 0; }
+    # Canary: a valid payload is an array (empty for a status-less commit); an
+    # error object or parse failure yields empty -> degrade, fail open.
+    kind=$(printf '%s' "$statuses" | jq -r 'if type=="array" then "array" else empty end' 2>/dev/null || true)
+    if [ "$kind" != "array" ]; then _cig_degrade "status parse failed"; return 0; fi
+    total=$(printf '%s' "$statuses" | jq -r 'length' 2>/dev/null || true)
+    if [ -z "$total" ]; then _cig_degrade "status length parse failed"; return 0; fi
+    # Page-limit guard (coderabbit-1): this single page cannot certify green — a
+    # failing or pending status may sit on an unread page 2 (the endpoint returns
+    # every status for the SHA, undeduped, so a repo with many contexts x updates
+    # overflows one page). A merge SAFETY gate must not pass on that uncertainty:
+    # BLOCK, exactly as the >100 check-runs guard above does.
+    if [ "${total:-0}" -ge 100 ] 2>/dev/null; then
+        echo "BLOCK: PR #$num head $head has $total commit statuses (at or over the single page limit of 100) — cannot certify CI green from a single page. Bypass: CI_MERGE_GATE_OK=1."
         return 2
     fi
-    if [ "$state" = "pending" ] && [ "${total:-0}" -gt 0 ] 2>/dev/null; then
-        echo "BLOCK: PR #$num head $head has $total pending commit status(es) — wait for green. Bypass: CI_MERGE_GATE_OK=1."
+    # Reduce to the NEWEST status per context. `first(…)` over the array in its
+    # returned order is the whole mechanism: GitHub DOCUMENTS statuses as
+    # reverse-chronological, so the first match per context is its current state.
+    #
+    # Deliberately NOT `group_by(.context) | map(.[0])` (codex-1): that is
+    # correct only because jq's group_by happens to be stable within a group —
+    # verified true on jq 1.8.2, but the manual documents group_by's ordering of
+    # the GROUPS, not the order WITHIN one. A merge gate should not rest on an
+    # unguaranteed jq property across the mac/Linux/Windows jq builds himmel
+    # supports, so the dependency is removed rather than commented.
+    latest=$(printf '%s' "$statuses" | jq -c --arg ctx "$ctx" --argjson uid "$uid" \
+        '[ .[]? | select((.creator.id == $uid and .context == $ctx) | not) ] as $rest
+         | [ $rest[].context ] | unique
+         | map(. as $c | first($rest[] | select(.context == $c)))' 2>/dev/null || true)
+    if [ -z "$latest" ]; then _cig_degrade "status aggregate parse failed"; return 0; fi
+    red_ctx=$(printf '%s' "$latest" | jq -r \
+        '[.[] | select(.state=="failure" or .state=="error") | .context // "?"] | join(", ")' \
+        2>/dev/null || true)
+    if [ -n "$red_ctx" ]; then
+        echo "BLOCK: PR #$num head $head has failing commit status(es) [$red_ctx] — CI not green. Bypass: CI_MERGE_GATE_OK=1."
+        return 2
+    fi
+    pending_ctx=$(printf '%s' "$latest" | jq -r \
+        '[.[] | select(.state=="pending") | .context // "?"] | join(", ")' \
+        2>/dev/null || true)
+    if [ -n "$pending_ctx" ]; then
+        echo "BLOCK: PR #$num head $head has pending commit status(es) [$pending_ctx] — wait for green. Bypass: CI_MERGE_GATE_OK=1."
         return 2
     fi
 

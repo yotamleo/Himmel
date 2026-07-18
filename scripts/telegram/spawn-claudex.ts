@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
 import { REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, DEFAULT_LANE_PROFILE } from "./spawn-glm";
+import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE } from "./spawn-glm";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
@@ -771,14 +771,27 @@ async function main(): Promise<void> {
   // The run body (mkdir sessionDir through executeClaudexRun) is IDENTICAL
   // between own-branch and shared modes; only the surrounding worktree
   // creation/mutation + lock ownership differ, below (mirrors spawn-glm).
-  const runBody = async (): Promise<number> => {
+  // HIMMEL-1094: onSetupFail runs ONLY if the profile resolve below throws —
+  // i.e. before ANY of the worker's state exists. The own-branch caller passes a
+  // teardown; shared mode passes nothing (runSharedDispatch calls runBody()).
+  const runBody = async (onSetupFail?: () => void): Promise<number> => {
     // HIMMEL-1040 (CR): resolve the profile FIRST — before meta.json is written.
     // resolveProfileSettings throws on an unreadable/malformed settings layer and
     // sits OUTSIDE executeClaudexRun's failure-transition guard; after the
     // "running" write a throw would leave meta stuck at running (a phantom worker
     // for fleet control). Resolving here keeps the "meta.json ALWAYS leaves
     // running" invariant. Uses the WORKTREE — the cwd the worker runs in.
-    const settings = resolveProfileSettings(profile, addPlugins, worktree);
+    let settings: string | undefined;
+    try {
+      settings = resolveProfileSettings(profile, addPlugins, worktree);
+    } catch (e) {
+      // HIMMEL-1094: the resolve NEEDS the worktree cwd (branch-local settings
+      // layers), so it necessarily runs after `worktree add` — which is why a
+      // throw here would otherwise strand the worktree+branch we just minted.
+      // Undo them, then rethrow the ORIGINAL error unchanged.
+      onSetupFail?.();
+      throw e;
+    }
     mkdirSync(sessionDir, { recursive: true });
     const metaPath = join(sessionDir, "meta.json");
     const started_at = new Date().toISOString();
@@ -803,7 +816,10 @@ async function main(): Promise<void> {
   if (!sharedMode) {
     g(["worktree", "add", worktree, "-b", branch]);
     poisonPushUrl(absCwd, worktree);
-    code = await runBody();
+    // HIMMEL-1094: this dispatch MINTED both the worktree and the branch (-b), so
+    // it owns them until the worker starts. Teardown is passed ONLY here — shared
+    // mode must never tear down a caller-owned worktree/branch.
+    code = await runBody(() => teardownMintedWorktree(absCwd, worktree, branch));
   } else {
     // Serialize writers on the shared branch (single-writer invariant,
     // CLAUDE.md Subagent policy). Lock acquired AFTER guards pass, BEFORE any

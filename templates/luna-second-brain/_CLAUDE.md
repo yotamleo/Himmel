@@ -42,7 +42,7 @@ knowledge.
 - **Owner:** {{OWNER_NAME}}
 - **Vault name:** {{VAULT_NAME}}
 - **Primary purpose:** {{VAULT_PURPOSE}}
-- **Instantiated from:** [luna-brain](https://github.com/yotamleo/Himmel/tree/main/templates/luna-second-brain) skeleton
+- **Instantiated from:** [luna-brain](https://github.com/yotamleo/himmel/tree/main/templates/luna-second-brain) skeleton
 - **Created:** {{CREATED_DATE}}
 
 ---

@@ -1,6 +1,6 @@
 # Handover — item mutation ops (`bucket` / `priority` / `jira-link` / `defaults`)
 
-Load `references/resolution.md` first (Target Repo Resolution, Bucket Resolution, Worktree Gate).
+Load `references/resolution.md` first (Target Repo Resolution, Bucket Resolution, Worktree Gate, Idempotent Remote Create).
 
 ## `/handover bucket <id> <bucket>`
 
@@ -54,8 +54,15 @@ Upgrade a `#N-slug/` item to `<JIRA-KEY>-slug/`. Required for offline-fallback i
 0. **Resolve target repo.**
 1. **Worktree gate.**
 2. Resolve item path. Refuse (warn-only, not error) if the item already has a real Jira key in frontmatter (`jira` is not `—` and not blank). Caller can pass `--force` to re-link.
-3. **If `<key>` provided** → use it directly (user supplied a manually-created Jira ticket).
-   **Else** → run `jira create --type <T> [--parent <P>] --title "<slug>" --desc "..."`. Type is inferred from dir position (Epic for `epics/`, Task for `epics/*/tasks/`, Story for `standalones/`). Parent for tasks is the parent epic's Jira key.
+3. **First, adopt any pending intent record for this item.** `jira-link` is the retry path for an item whose create outcome was UNKNOWN (see `references/new-item.md`), so a marked issue for it may ALREADY exist remotely — creating again would duplicate it. If an intent record for this item survives in `<state-root>/.pending-new-item/`, resolve it per **Idempotent Remote Create** (`references/resolution.md`) FIRST: re-query its nonce's marker and let the verdict table decide — a hit is **adopted** (use that key; do not create), and an unresolved outcome **stops and reports**. Clear the record only after **every** step of this flow has succeeded — through step 8's `sync.log` append, NOT after the step-4-6 renames. Clearing at step 6 would erase the nonce while steps 7-8 (frontmatter `jira: <KEY>` / `pending_jira_link: false`, and the log append) are still outstanding: a crash in that gap leaves the item un-linked with no nonce left to recover by, so the next `jira-link` misses marker recovery and creates a duplicate. The nonce must outlive every step that still needs it.
+
+   **Precedence is deterministic — the pending record is resolved FIRST, and a marker hit always wins:**
+   - **Marker hit + no `<key>`** → adopt the marker's key.
+   - **Marker hit + `<key>` that MATCHES** → same key; adopt, no conflict.
+   - **Marker hit + `<key>` that CONFLICTS** → **stop and report; do NOT use the supplied key.** Honouring it would link this item to one issue while the marked issue this item's own create produced stays orphaned remotely — and clearing the record afterwards would erase the only pointer to it. Two candidate keys is a state for the operator to reconcile, not to pick between.
+   - **No pending record** → **`<key>` provided** → use it directly (user supplied a manually-created Jira ticket).
+   - **Pending record whose outcome will not resolve** (marker lookup empty after the backoff, i.e. POST-ATTEMPT) → stop and report per the verdict table; do not fall through to the `<key>` or create branches.
+   **Else** → follow **Idempotent Remote Create** (`references/resolution.md`) and run `jira create --type <T> [--parent <P>] --title "<slug>" --desc "..." --labels handover-idem-<nonce>` — mint + durably record the nonce BEFORE the create, exactly as the new-item flows do, so a crash between this create and step 4's rename cannot duplicate the issue on the next `jira-link`. Type is inferred from dir position (Epic for `epics/`, Task for `epics/*/tasks/`, Story for `standalones/`). Parent for tasks is the parent epic's Jira key.
 4. **Rename dir:** `git mv <path>/#N-slug/ <path>/<JIRA-KEY>-slug/`.
 5. **Rename worktree branch** (if exists): `git branch -m <branch_prefix><slug> <branch_prefix><JIRA-KEY>-<slug>`. To rename the worktree directory under `.claude/worktrees/`, use **`git worktree move <old-path> <new-path>`** — never rename the directory by hand (a manual `mv` orphans Git's worktree metadata, which still points at the old path). Move through Git, then the branch rename above.
 6. **Rewrite inbound refs** in:

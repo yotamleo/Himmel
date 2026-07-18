@@ -31,9 +31,16 @@ trap cleanup EXIT
 # The documented allow-set (brief T6): every script bin.js is permitted to
 # shell out to. bin.js's own comments name the non-script exec surfaces this
 # guard does NOT enumerate here (the platform pkg-mgr via `bash -c` [T1] and
-# the documented `claude plugin ...` commands [T4.5]) — those never carry a
-# .sh/.ps1 literal, so extract_script_targets() below can't confuse them with
-# a NEW script reference.
+# the documented `claude plugin ...` commands [T4.5/config]) — those never
+# carry a .sh/.ps1/.mjs literal, so extract_script_targets() below can't
+# confuse them with a NEW script reference.
+#
+# HIMMEL-758: set-env-var.sh (the `config` HIMMEL_INITIATIVE writer) and
+# set-lane-override.mjs (the `config` lanes.local.json writer) added — both
+# are existing-primitive shell-outs, same class as set-handover-dir.sh above,
+# not a reimplementation of the write logic inline in bin.js.
+# HIMMEL-893: himmel-update.sh (the `update` command's dependency-chain engine)
+# added — bin.js's `update` delegates to it, same existing-primitive class.
 allow_full="$work/allow-full.txt"
 cat > "$allow_full" <<'NAMES'
 preflight-adopter.sh
@@ -45,13 +52,17 @@ luna-upgrade-all.sh
 set-handover-dir.sh
 uninstall.sh
 uninstall.ps1
+set-env-var.sh
+set-lane-override.mjs
+himmel-update.sh
 NAMES
 
-# extract_script_targets — every 'name.sh' / "name.sh" / 'name.ps1' quoted
-# literal referenced anywhere in bin.js (source text, so a rogue reference
-# even inside a comment still trips the guard — a conservative trip-wire).
+# extract_script_targets — every 'name.sh' / "name.sh" / 'name.ps1' /
+# 'name.mjs' quoted literal referenced anywhere in bin.js (source text, so a
+# rogue reference even inside a comment still trips the guard — a
+# conservative trip-wire). .mjs joined HIMMEL-758 (set-lane-override.mjs).
 extract_script_targets() {
-  grep -oE "['\"][A-Za-z0-9_.-]+\.(sh|ps1)['\"]" "$wizard" | tr -d "'\"" | sort -u
+  grep -oE "['\"][A-Za-z0-9_.-]+\.(sh|ps1|mjs)['\"]" "$wizard" | tr -d "'\"" | sort -u
 }
 
 # check_allow_set <allow-set-file> — 0 iff every script target bin.js

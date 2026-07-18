@@ -121,8 +121,53 @@ Small-set green ≠ production green (benchmark-saturation lesson).
 is fail-closed. "Fail-closed" anywhere in this doc refers to the verdict/marker
 axis (no verdict ⇒ no advance), never to panel availability.
 
-**⚑ Fork B DEFAULT:** free-anchor unavailability (qwen3coder down) ⇒ degrade
-fail-open to Claude-only adjudication, for ALL chains including the D1 lane gate.
+**⚑ Fork B DEFAULT:** **critic-panel UNAVAILABILITY** ⇒ degrade fail-open to
+Claude-only adjudication, for ALL chains including the D1 lane gate.
+"Unavailable" is the runbook's own umbrella for BOTH shapes: the panel runs and
+every critic errors/times out (`panel_rc=1`), OR the panel cannot be run at all
+(e.g. the diff could not be produced — `pr-check.md:99`). `CR_PROFILE=none` is
+the explicit opt-out and also lands Claude-only; an empty diff simply skips the
+panel.
+
+The clarification this needs (HIMMEL-1101): a **registry fallback is NOT
+unavailability** — the panel RAN, on the paid anchor. Of the four shapes below,
+only 3 and 4 reach Claude-only; 1 and 2 BILL:
+
+1. **Registry missing / invalid / empty** (`critic-panel.sh` node parse exits 7)
+   ⇒ **paid** codex anchor-only. The stderr line says so verbatim:
+   `registry <path> missing/invalid/empty — anchor-only (codex)`.
+2. **Registry present and valid, but no row matches the tier filter** (exit 8)
+   ⇒ **paid** codex anchor-only, via the same fallback. This is the shipped
+   default today: `critics.json` holds exactly one row (`codex`/`gpt-5.5`, tier
+   `paid`) and no free anchor, so an unset `CR_PROFILE` (tier filter `free`)
+   matches nothing and lands here.
+   The free lane was REMOVED DELIBERATELY (operator, HIMMEL-1101): the free
+   critics made more trouble than they were worth — HIMMEL-667 dropped
+   gptoss+kimi on a 12%/13% agreed-rate (noise), and the surviving qwen3coder
+   anchor kept erroring rc=1 (HIMMEL-953). This is a decision, not drift; the
+   panel is paid-by-default on purpose and only the docs had lagged.
+3. **The selected panel runs but every critic errors/times out** (panel rc=1)
+   ⇒ Claude-only fail-open, exactly as this fork has always specified.
+   Unchanged, and still fires. Observed live 2026-07-17: the sole registered
+   critic (paid codex) returned rc=1 for a whole run once its weekly bank was
+   exhausted — with no free row registered, that is 0/1 panel critics.
+   **This does NOT by itself block the CR gate.** `clear-cr-marker.sh` counts
+   ANY ledger `avail … status=ok` as a responder (`:176`), and the CodeRabbit
+   CLI pass (`/pr-check` step 3.2) records its own — so the gate can still
+   certify on CodeRabbit while every panel critic is down, and did. What a
+   single-critic roster costs is the panel's own cross-model redundancy, not
+   the gate's ability to certify. Accepted knowingly (HIMMEL-1101).
+4. **The panel cannot be run at all** — e.g. the diff could not be produced
+   (`pr-check.md:99`, "critic panel unavailable — claude-only review (git diff
+   failed …)") ⇒ Claude-only fail-open. `CR_PROFILE=none` is the explicit
+   operator opt-out onto the same path; an empty diff skips the panel outright.
+
+Operator-relevant consequence: cases 1 and 2 both SPEND the OpenAI bank on the
+paid anchor (paid usage is user-enabled by design). Do not read "the panel was
+unavailable" as "nothing was billed" — only 3 and 4 reach zero panel members.
+
+So the fork's rationale below holds for cases 3-4; cases 1-2 reach a paid critic
+rather than zero panel members.
 Rationale: for GLM/Codex-origin artifacts the adjudicator is already a DIFFERENT
 family than the implementer — the WS3 "evaluator = different family, never
 self-grading" invariant holds even with zero panel members. The known residual

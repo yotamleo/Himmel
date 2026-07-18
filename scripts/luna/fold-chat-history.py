@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """fold-chat-history — fold an exported provider chat history into the luna vault.
 
-HIMMEL-832. Provider 1: ChatGPT export (conversations-*.json + .dat assets).
-Zero-LLM: parses + renders markdown notes; enrichment is HIMMEL-833.
+HIMMEL-832. ChatGPT (conversations-*.json + .dat assets) and Gemini
+(conversations/*.json) exports fold one note per conversation; enrichment
+is HIMMEL-833. HIMMEL-1170: Telegram Desktop HTML group export
+(messages*.html + photos/video_files) folds into monthly notes.
 
 Usage:
   python scripts/luna/fold-chat-history.py --provider chatgpt \
       --export <export-dir> --vault <vault-dir> [--dry-run]
+  python scripts/luna/fold-chat-history.py --provider telegram \
+      --export <ChatExport-dir> --vault <vault-dir> [--group-slug SLUG] [--dry-run]
 """
 import argparse
 import hashlib
+import html
 import json
 import re
 import shutil
@@ -23,7 +28,7 @@ if hasattr(sys.stdout, "reconfigure"):  # Windows cp1252 trap
     sys.stderr.reconfigure(encoding="utf-8")
 
 # provider-id -> vault subdir under chats/ (spec: stated once)
-PROVIDER_DIRS = {"chatgpt": "gpt", "gemini": "gemini"}
+PROVIDER_DIRS = {"chatgpt": "gpt", "gemini": "gemini", "telegram": "telegram"}
 
 # provider-id -> (source: value, tags: gpt-style second tag) for render_note
 _SOURCE_TAGS = {"chatgpt": ("chatgpt", "gpt"), "gemini": ("gemini", "gemini")}
@@ -372,8 +377,24 @@ class Report:
     assets_unrecognized: int = 0
     audio_placeholders: int = 0
     dry_run: bool = False
+    # telegram-only (HIMMEL-1170); unused for chatgpt/gemini
+    provider: str = ""
+    tg_group: str = ""
+    tg_months: int = 0
+    tg_messages: int = 0
 
     def lines(self):
+        if self.provider == "telegram":
+            mode = "DRY-RUN — would have: " if self.dry_run else ""
+            return [
+                f"{mode}group: {self.tg_group}",
+                f"months: {self.tg_months}",
+                f"messages: {self.tg_messages}",
+                f"month notes written: {self.notes_created}",
+                f"media copied: {self.assets_copied}",
+                f"media skipped (already present): {self.assets_skipped_existing}",
+                f"media missing from export: {self.assets_missing}",
+            ]
         mode = "DRY-RUN — would have: " if self.dry_run else ""
         return [
             f"{mode}notes created: {self.notes_created}",
@@ -448,7 +469,333 @@ def write_index(chats_dir, dry_run):
                                              encoding="utf-8")
 
 
-def fold(provider, export_dir, vault_dir, dry_run):
+# --------------------------------------------------------------------------
+# Telegram Desktop HTML group export (HIMMEL-1170)
+# One chronological group log -> monthly notes. It has no user/assistant
+# turns, so it does NOT go through render_note; it has its own parse+render.
+# --------------------------------------------------------------------------
+
+_TG_TS_RE = re.compile(r'title="(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2}):(\d{2})')
+_TG_FROM_RE = re.compile(r'<div class="from_name">\s*(.*?)\s*</div>', re.S)
+_TG_TEXT_RE = re.compile(r'<div class="text">(.*?)</div>', re.S)
+_TG_MEDIA_RE = re.compile(r'href="((?:photos|video_files)/[^"]+)"')
+_TG_HEADER_RE = re.compile(r'<div class="text bold">\s*(.*?)\s*</div>', re.S)
+
+
+@dataclass
+class TgMessage:
+    ts: datetime
+    sender: str
+    body: str
+    media: list
+
+
+def _tg_strip_text(raw):
+    """`<br>` -> newline, drop remaining tags, unescape entities, strip."""
+    raw = re.sub(r'<br\s*/?>', '\n', raw)
+    raw = re.sub(r'<[^>]+>', '', raw)
+    return html.unescape(raw).strip()
+
+
+def _tg_page_key(path):
+    """Natural page order: messages.html=1, messages2.html=2, ... — NOT the
+    lexical sort (which puts messages10.html before messages2.html and would
+    mis-order sender inheritance across page boundaries)."""
+    m = re.search(r'messages(\d*)\.html$', path.name)
+    return int(m.group(1)) if (m and m.group(1)) else 1
+
+
+def parse_telegram(export_dir):
+    """All non-service messages from sorted messages*.html, chronologically.
+
+    Returns (group_name, [TgMessage]). `service` divs (date separators,
+    group-creation events) are skipped. `joined` messages (no from_name)
+    inherit the previous sender. Full-res media hrefs are captured per message;
+    thumbnails (which live in `src=`, not `href=`) never match, and any
+    `_thumb` href is filtered defensively.
+    """
+    export_dir = Path(export_dir)
+    group_name = ""
+    blocks = []
+    for hf in sorted(export_dir.glob("messages*.html"), key=_tg_page_key):
+        text = hf.read_text(encoding="utf-8")
+        if not group_name:
+            m = _TG_HEADER_RE.search(text)
+            if m:
+                group_name = _tg_strip_text(m.group(1))
+        # split on message-div boundaries; keep the delimiter with the block
+        blocks += re.split(r'(?=<div class="message )', text)[1:]
+    msgs = []
+    last_sender = None
+    for blk in blocks:
+        if 'class="message service"' in blk:
+            continue
+        m = _TG_TS_RE.search(blk)
+        if not m:
+            continue
+        dd, mm, yyyy, hh, mi, ss = m.groups()
+        ts = datetime(int(yyyy), int(mm), int(dd), int(hh), int(mi), int(ss))
+        fm = _TG_FROM_RE.search(blk)
+        if fm:
+            last_sender = _tg_strip_text(fm.group(1))
+        sender = last_sender or "?"
+        tx = _TG_TEXT_RE.search(blk)
+        body = _tg_strip_text(tx.group(1)) if tx else ""
+        media, seen = [], set()
+        for ref in _TG_MEDIA_RE.findall(blk):
+            if "_thumb" in ref or ref in seen:
+                continue
+            seen.add(ref)
+            media.append(ref)
+        msgs.append(TgMessage(ts, sender, body, media))
+    msgs.sort(key=lambda x: x.ts)
+    return group_name, msgs
+
+
+def _tg_group_slug(group_name, export_dir, override=None):
+    """Directory slug for the group. `override` (--group-slug) wins; otherwise
+    slugify the header group name (preserving Unicode — Hebrew survives — and
+    stripping only FS-unsafe chars). Empty -> export-dir basename -> telegram-group.
+    """
+    slug = _tg_clean_slug(slugify(override if override else group_name))
+    if not slug:
+        slug = _tg_clean_slug(slugify(Path(export_dir).name))
+    return slug or "telegram-group"
+
+
+def _tg_clean_slug(slug):
+    """Strip path-dangerous parts so a group dir can NEVER escape
+    chats/telegram/: slugify's empty sentinel 'untitled' -> '', the reserved
+    '_assets' media-dir name -> '' (a '_assets' group dir would equal assets_dir
+    and drop notes into the gitignored media folder; casefold guards
+    case-insensitive filesystems), path separators dropped, dot runs -> '-' (so a
+    group named `.`/`..` cannot become a `..` traversal), then trim. The reserved
+    check runs AFTER normalization so variants like `_assets/`, `_assets.` (which
+    normalize back to `_assets`) are also rejected. May return '' -> caller falls
+    back."""
+    slug = slug.replace("/", "").replace("\\", "")
+    slug = re.sub(r"\.+", "-", slug).strip("-. ")
+    if slug.casefold() in {"untitled", "_assets"}:
+        return ""
+    return slug
+
+
+def _tg_asset_name(group_slug, ref, content_hash=None):
+    """Filename inside the shared `chats/telegram/_assets/` dir, GROUP-SCOPED:
+    Telegram numbers photos per-export from `photo_1`, so two unrelated groups
+    can share a basename; the `<slug>__` prefix keeps them from aliasing (a
+    skipped-because-exists copy would otherwise make a note embed the wrong
+    group's media). `content_hash` (set only on a same-basename BYTE collision)
+    disambiguates WITHIN a group: Telegram renumbers per export, so a
+    partial/disjoint re-export can reuse `photo_1` for DIFFERENT bytes; the hash
+    keeps the stale and the new asset distinct instead of one aliasing the other.
+    """
+    p = Path(ref)
+    if content_hash:
+        return f"{group_slug}__{p.stem}-{content_hash}{p.suffix}"
+    return f"{group_slug}__{p.name}"
+
+
+_TG_CHUNK_SIZE = 1 << 20  # 1 MiB — bounds memory for large media (videos)
+
+
+def _tg_same_bytes(a, b):
+    """True iff files a and b hold identical content. Streamed in bounded
+    chunks so a large video is never pulled fully into memory."""
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        with a.open("rb") as fa, b.open("rb") as fb:
+            while True:
+                chunk_a = fa.read(_TG_CHUNK_SIZE)
+                chunk_b = fb.read(_TG_CHUNK_SIZE)
+                if chunk_a != chunk_b:
+                    return False
+                if not chunk_a:
+                    return True
+    except OSError:
+        return False
+
+
+def _tg_sha256_file(path):
+    """SHA-256 hex digest of a file's contents, read in bounded chunks so a
+    large video is never pulled fully into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(_TG_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _tg_copy_media(refs, export_dir, assets_dir, group_slug, dry_run):
+    """Copy referenced full-res photos/videos into assets_dir under a
+    group-scoped name (deduped, skip existing). -> (copied, skipped_existing,
+    missing, ref_to_name). `ref_to_name` maps each resolved ref to the asset
+    basename the note must embed — content-addressed on a same-basename byte
+    collision so a note never embeds a stale image. A ref whose resolved src
+    escapes export_dir (path traversal) or is absent counts as missing.
+    """
+    export_dir, assets_dir = Path(export_dir), Path(assets_dir)
+    copied = skipped = missing = 0
+    ref_to_name = {}
+    try:
+        export_root = export_dir.resolve()
+    except OSError:
+        export_root = export_dir.absolute()
+    for ref in refs:
+        try:
+            resolved = (export_dir / ref).resolve()
+            resolved.relative_to(export_root)  # containment guard
+        except (ValueError, OSError):
+            missing += 1
+            continue
+        if not resolved.exists():
+            missing += 1
+            continue
+        name = _tg_asset_name(group_slug, ref)  # group-scoped basename -> no traversal + no cross-group alias
+        dest = assets_dir / name
+        if dest.exists() and not _tg_same_bytes(dest, resolved):
+            # same basename, DIFFERENT bytes (Telegram renumbers per export, so a
+            # partial re-export can reuse photo_N for other content) -> keep both
+            # under a content-hashed name; the note embeds this one, not the stale.
+            digest = _tg_sha256_file(resolved)[:12]
+            name = _tg_asset_name(group_slug, ref, digest)
+            dest = assets_dir / name
+        ref_to_name[ref] = name
+        if dest.exists():
+            skipped += 1
+            continue
+        if not dry_run:
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(resolved, dest)
+        copied += 1
+    return copied, skipped, missing, ref_to_name
+
+
+def _tg_month_note(group_name, group_slug, month, entries, assets_dir_rel,
+                   ref_to_name=None):
+    """Render one month of messages as a markdown note (timestamps preserved).
+    `ref_to_name` maps a media ref to its (possibly content-hashed) asset
+    basename; a ref absent from the map (missing media) falls back to the plain
+    group-scoped name."""
+    ref_to_name = ref_to_name or {}
+    first = entries[0].ts
+    group_fm = re.sub(r"\s+", " ", group_name).strip()
+    display = group_fm or "Telegram"
+    # escape for a double-quoted YAML scalar — a `"` or `\` in the group name
+    # would otherwise break the frontmatter (invalid YAML / Obsidian props)
+    group_yaml = group_fm.replace("\\", "\\\\").replace('"', '\\"')
+    lines = [
+        "---",
+        "type: chat-import",
+        "source: telegram",
+        f'group: "{group_yaml}"',
+        f"created: {first:%Y-%m-%d}",
+        f"month: {month}",
+        f"messages: {len(entries)}",
+        "tags: [chat-import, telegram]",
+        "---",
+        "",
+        f"# {display} — {month}",
+    ]
+    cur_day = None
+    for msg in entries:
+        day = f"{msg.ts:%Y-%m-%d (%A)}"
+        if day != cur_day:
+            cur_day = day
+            lines += ["", f"## {day}"]
+        lines += ["", f"**{msg.ts:%H:%M} · {msg.sender}**"]
+        if msg.body:
+            lines.append(msg.body)
+        for ref in msg.media:
+            name = ref_to_name.get(ref) or _tg_asset_name(group_slug, ref)
+            lines.append(f"![[{assets_dir_rel}/{name}]]")
+    return "\n".join(lines) + "\n"
+
+
+def _tg_note_signature(text):
+    """The comparable content of a rendered month note: title+day/message
+    text with the frontmatter (carries the `messages:` count) and media
+    embed lines (`![[...]]`, whose name is content-hashed on a byte
+    collision — see `_tg_asset_name`) stripped off. Two renders of the same
+    messages compare equal even if the count metadata or a re-hashed media
+    name differs."""
+    m = re.search(r"^# ", text, re.M)
+    body = text[m.start():] if m else text
+    return "\n".join(line for line in body.splitlines()
+                     if not line.startswith("![["))
+
+
+def _fold_telegram(export_dir, vault_dir, dry_run, group_slug_override=None):
+    export_dir, vault_dir = Path(export_dir), Path(vault_dir)
+    group_name, msgs = parse_telegram(export_dir)
+    group_slug = _tg_group_slug(group_name, export_dir, group_slug_override)
+    group_dir = vault_dir / "chats" / "telegram" / group_slug
+    assets_dir = vault_dir / "chats" / "telegram" / "_assets"
+    assets_dir_rel = "chats/telegram/_assets"
+
+    report = Report(dry_run=dry_run, provider="telegram")
+    report.tg_group = group_name or group_slug
+    report.tg_messages = len(msgs)
+
+    by_month = {}
+    for msg in msgs:
+        by_month.setdefault(f"{msg.ts:%Y-%m}", []).append(msg)
+    report.tg_months = len(by_month)
+
+    # unique media refs across all messages (deduped, order-preserving)
+    uniq_refs, seen = [], set()
+    for msg in msgs:
+        for ref in msg.media:
+            if ref not in seen:
+                seen.add(ref)
+                uniq_refs.append(ref)
+    copied, skipped, missing, ref_to_name = _tg_copy_media(
+        uniq_refs, export_dir, assets_dir, group_slug, dry_run)
+    report.assets_copied = copied
+    report.assets_skipped_existing = skipped
+    report.assets_missing = missing
+
+    # monthly notes — idempotent re-import: a re-run overwrites the month note
+    # with THIS export's messages, but only when doing so can't lose data.
+    # Message COUNT alone doesn't prove that: Telegram HTML carries no stable
+    # message id, so an equal-or-larger-count re-export could still be a
+    # different/disjoint set for that month. Instead compare rendered content:
+    # skip + warn unless the incoming render reproduces the existing note
+    # verbatim (identical re-import) or as a prefix (a fuller, later export) —
+    # to force a replace, delete the month note first.
+    written = 0
+    for month, entries in sorted(by_month.items()):
+        dest = group_dir / f"{month}.md"
+        note_text = _tg_month_note(group_name, group_slug, month, entries,
+                                   assets_dir_rel, ref_to_name)
+        if dest.exists():  # guard runs in dry-run too, so the reported count
+            existing_sig = _tg_note_signature(dest.read_text(encoding="utf-8"))
+            new_sig = _tg_note_signature(note_text)
+            if not new_sig.startswith(existing_sig):
+                print(f"warning: {dest.relative_to(vault_dir)} holds messages "
+                      f"not reproduced by this import — skipping to avoid "
+                      f"clobbering them (delete the note to force)",
+                      file=sys.stderr)
+                continue
+        if not dry_run:
+            group_dir.mkdir(parents=True, exist_ok=True)
+            dest.write_text(note_text, encoding="utf-8")
+        written += 1
+    report.notes_created = written
+
+    try:
+        ensure_gitignore(vault_dir, dry_run)
+        if not dry_run and (vault_dir / "chats").is_dir():
+            write_index(vault_dir / "chats", dry_run)
+    except Exception as e:
+        print(f"warning: index/gitignore update failed: {e}", file=sys.stderr)
+    return report
+
+
+def fold(provider, export_dir, vault_dir, dry_run, group_slug=None):
+    if provider == "telegram":
+        return _fold_telegram(export_dir, vault_dir, dry_run, group_slug)
     export_dir, vault_dir = Path(export_dir), Path(vault_dir)
     provider_dir = vault_dir / "chats" / PROVIDER_DIRS[provider]
     assets_dir = provider_dir / "_assets"
@@ -523,9 +870,14 @@ def main(argv=None):
                         help="export root (holds conversations-*.json)")
     parser.add_argument("--vault", required=True, metavar="DIR",
                         help="luna vault root")
+    parser.add_argument("--group-slug", default=None, metavar="SLUG",
+                        help="(telegram only) override the derived group dir slug")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would happen; write nothing")
     args = parser.parse_args(argv)
+    if args.group_slug is not None and args.provider != "telegram":
+        parser.error("--group-slug is telegram-only "
+                      f"(provider is {args.provider!r})")
 
     export_dir, vault_dir = Path(args.export), Path(args.vault)
     if not export_dir.is_dir():
@@ -535,7 +887,8 @@ def main(argv=None):
         print(f"error: vault dir not found: {vault_dir}", file=sys.stderr)
         return 1
 
-    report = fold(args.provider, export_dir, vault_dir, args.dry_run)
+    report = fold(args.provider, export_dir, vault_dir, args.dry_run,
+                  group_slug=args.group_slug)
     for line in report.lines():
         print(line)
     return 0

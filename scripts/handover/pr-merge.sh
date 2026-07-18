@@ -25,6 +25,8 @@
 #   4  gh pr merge failed
 #   5  blocked by the CR merge gate (unresolved CodeRabbit remarks - HIMMEL-936)
 #   6  blocked by the CI-green merge gate (head SHA not green - HIMMEL-1043)
+#   7  cannot read the PR head SHA, so the merge cannot be bound to the vetted
+#      commit — refuses rather than merge unbound (HIMMEL-1058)
 #
 # Environment overrides:
 #   FORGE / GH_CMD / BITBUCKET_CMD   Forge-seam overrides (HIMMEL-326). The PR
@@ -127,7 +129,24 @@ fi
 # before the mergeability poll so a CR-blocked merge fails fast (exit 5)
 # instead of burning the 5x3s poll (plan-critic #7). GitHub-only: cr_merge_gate
 # resolves via gh; the bitbucket forge skips it.
+vetted_head=""
 if [ "$forge" = "github" ]; then
+    # HIMMEL-1058 (TOCTOU): capture the head we are about to vet, and bind the
+    # eventual merge to it. Captured BEFORE the gates on purpose — the gates run
+    # inside `$(...)` subshells and cannot hand their own SHA back, so this is
+    # the only value we can prove the gates saw-or-newer. If a push lands during
+    # the gate run, the gate vets the NEWER sha while we stay bound to this one,
+    # and `--match-head-commit` rejects the merge — loudly, which is the point.
+    # A non-empty value is required for the binding to mean anything: fail rather
+    # than silently fall back to an unbound merge.
+    # "${GH_CMD:-gh}", not a bare `gh` — the forge seam's github backend routes
+    # every call through GH_CMD and the tests set it to a stub.
+    vetted_head=$("${GH_CMD:-gh}" pr view "$pr_num" --json headRefOid --jq '.headRefOid' 2>/dev/null) || vetted_head=""
+    if [ -z "$vetted_head" ]; then
+        echo "ERR pr-merge: cannot read the head SHA of PR #$pr_num — refusing to merge unbound (HIMMEL-1058)." >&2
+        exit 7
+    fi
+
     # shellcheck disable=SC1091
     if . "$SCRIPT_DIR/../lib/cr-merge-gate.sh" 2>/dev/null; then
         _gate_reason=""
@@ -203,7 +222,7 @@ fi
 # maps a 400 merge-conflict (spec §5.1, atomic — nothing merged) to a distinct
 # failure. Either way: rc 0 = merged, non-zero = real failure.
 merge_rc=0
-forge_pr_merge "$pr_num" || merge_rc=$?
+forge_pr_merge "$pr_num" "$vetted_head" || merge_rc=$?
 if [ "$merge_rc" -eq 0 ]; then
     exit 0
 fi

@@ -734,13 +734,50 @@ _CLAUDE_REROUTE_VARS="CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE
 # fix exists to close. Only UNSET or EMPTY is off; every other value denies. The
 # cost is a false deny for an operator who writes `=0` to mean "off" (loud, one
 # `unset` away); the cost of the other misread is silent cross-cloud egress.
+#
+# CASE-INSENSITIVE (CodeRabbit-major on HIMMEL-1070, public round). bash matches
+# variable names case-SENSITIVELY; Node's process.env on Windows does NOT. Proven
+# on this box:
+#   env claude_code_use_bedrock=1 node -e 'process.env.CLAUDE_CODE_USE_BEDROCK' -> "1"
+#   env claude_code_use_bedrock=1 bash -c 'echo ${CLAUDE_CODE_USE_BEDROCK:-unset}' -> unset
+# So a lower/mixed-case selector reroutes the CLI to Bedrock while an exact-case
+# bash check reads "not set" and waves the run through as anthropic - the exact
+# fail-open class this whole fix exists to close, reintroduced through casing.
 _claude_reroute_var() {
-    local n v
+    # LC_ALL=C for THIS function only: both nocasematch and [A-Za-z0-9_] are
+    # locale-dependent, and a miss here is FAIL-OPEN. Deliberately NOT global:
+    # the other _lc() sites fold toward a DENY on mismatch and stay untouched.
+    local LC_ALL=C
+    local n v name val matched="" nocasematch_restore
+    # Exact-case fast path (the documented spelling, every POSIX host).
     for n in $_CLAUDE_REROUTE_VARS; do
         eval "v=\"\${$n:-}\""
         if [ -n "$v" ]; then printf '%s' "$n"; return; fi
     done
-    printf ''
+    # Case-insensitive sweep for the Windows shape. Scan exported variable NAMES
+    # with compgen -e (a bash builtin), then read each value BY NAME. Values never
+    # round-trip through line-oriented `env` output, so a leading newline cannot
+    # hide the selector or forge a lookalike variable line.
+    #
+    # HIMMEL-1133: keep the comparison builtin-only. The previous external `tr`
+    # fold could fail or be absent even on command -p's default PATH; an empty fold
+    # then missed every lowercase selector and silently allowed rerouted egress.
+    # nocasematch removes both that fail-open dependency and the command -p surface.
+    # Save/restore the global shell option so this helper cannot affect later cases.
+    nocasematch_restore="$(shopt -p nocasematch)"
+    shopt -s nocasematch
+    for name in $(compgen -e 2>/dev/null); do
+        case "$name" in
+            ''|*[!A-Za-z0-9_]*) continue ;;   # not a plain variable name
+        esac
+        eval "val=\"\${$name:-}\""
+        [ -n "$val" ] || continue
+        case " $_CLAUDE_REROUTE_VARS " in
+            *" $name "*) matched="$name"; break ;;
+        esac
+    done
+    eval "$nocasematch_restore"
+    printf '%s' "$matched"
 }
 
 # _map_anthropic_endpoint -> resolve the claude/claude-cli backend to a provider

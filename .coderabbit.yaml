@@ -21,6 +21,32 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # base_branches (HIMMEL-1102): defaults to [] = ONLY the repo default
+    # branch, so every STACKED PR was silently skipped -- CodeRabbit posted
+    # "Review skipped: reviews are disabled for this base branch" AND a GREEN
+    # "pass" check, i.e. a passing badge for a review that never ran. Stacking
+    # is a routine himmel pattern (a PR based on an open PR, to avoid
+    # conflicting a live session's CR loop), so this fired often and silently.
+    # ADDITIVE, not a replacement -- setting this does NOT stop main from being
+    # reviewed. Per the CodeRabbit docs (configuration/auto-review): "The
+    # default branch is always included, and the base_branches setting extends
+    # this set." So main PRs keep their auto-review regardless; this only ADDS
+    # non-default bases. (A CR pass on this change raised the opposite concern
+    # -- that a pattern list drops the default branch -- so the answer is
+    # recorded here rather than re-litigated by the next reader.)
+    #
+    # ".*" = EVERY base branch, deliberately (operator: CodeRabbit on all our
+    # items). An enumerated prefix list was written first and REJECTED: it is
+    # the same drift trap this ticket exists to kill. That draft listed only the
+    # type/slug vocabulary (feat|fix|chore|docs|refactor|test) and ALREADY
+    # missed glm/ -- live on origin right now -- plus the claudex/ and
+    # handover/ prefixes the offload lanes and handover system mint. A
+    # hand-maintained list rots the moment a new lane appears, and its failure
+    # mode is invisible: those PRs just quietly stop being reviewed. A catch-all
+    # cannot drift. (This also moots the anchoring bug CR caught in that draft:
+    # unanchored "fix/.*" matched hotfix/foo.)
+    base_branches:
+      - ".*"
   path_filters:
     - "!**/package-lock.json"
   path_instructions:

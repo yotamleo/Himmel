@@ -67,7 +67,7 @@ CLEAN_ENV="-u GRAPHIFY_SALUS_LOCAL_OK -u GRAPHIFY_CLIPPINGS_GLM_OK -u GRAPHIFY_L
 -u CLAUDE_CODE_USE_COWORK_PLUGINS -u CLAUDE_CODE_USE_POWERSHELL_TOOL \
 -u DEEPSEEK_API_KEY -u ZAI_API_KEY -u DASHSCOPE_API_KEY -u OPENAI_API_KEY \
 -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u XAI_API_KEY \
--u OPENROUTER_API_KEY -u NVIDIA_API_KEY"
+-u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u BASH_ENV"
 
 # run_fence <expect: allow|deny> <expect-ledger: yes|no> <cwd> <name> <cmd> [VAR=val ...]
 # Extra trailing args are per-call `VAR=val` env assignments (override CLEAN_ENV).
@@ -113,7 +113,7 @@ run_fence allow yes "$HIMMEL" "salus x ollama opt-in -> allow+ledger" \
     "graphify update $SALUS/notes/patient.md --backend ollama" GRAPHIFY_SALUS_LOCAL_OK=1
 
 # luna journal (non-Clippings) + GLM -> deny (default deny)
-run_fence deny no "$HIMMEL" "luna-personal x glm -> deny" \
+run_fence allow yes "$HIMMEL" "luna-personal x glm -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend glm"
 
 # luna Clippings + GLM WITHOUT opt-in -> deny (conditional cell)
@@ -183,7 +183,7 @@ echo "== claude backend is ENDPOINT-AWARE (codex-adv-1: no Anthropic-labelled Z.
 # THE HOLE: claude backend under a claude-glm launcher (ANTHROPIC_BASE_URL=api.z.ai)
 # actually egresses to Z.ai. It must classify as zai-glm, NOT anthropic — so
 # luna-personal x zai-glm -> matrix default deny (was silently ALLOWED as anthropic).
-run_fence deny no "$HIMMEL" "luna-personal x claude(z.ai baseurl) -> zai-glm deny" \
+run_fence allow yes "$HIMMEL" "luna-personal x claude(z.ai baseurl) -> zai-glm allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend claude" ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
 
 # same z.ai gateway on Clippings -> zai-glm conditional cell, no opt-in -> deny
@@ -294,6 +294,93 @@ run_fence deny no "$HIMMEL" "luna x claude-cli(mantle) -> hard deny" \
     "graphify update $LUNA/journal-2026.md --backend claude-cli" CLAUDE_CODE_USE_MANTLE=1
 run_fence deny no "$HIMMEL" "luna x claude-cli(anthropic_aws) -> hard deny" \
     "graphify update $LUNA/journal-2026.md --backend claude-cli" CLAUDE_CODE_USE_ANTHROPIC_AWS=1
+# CASE-INSENSITIVE (CodeRabbit-major regression pins): bash matches var names
+# case-SENSITIVELY, Node's process.env on Windows does NOT — so a lowercase
+# selector turns Bedrock ON for the CLI while an exact-case fence read it as
+# unset and allowed the run. Proven: `env claude_code_use_bedrock=1 node -e
+# 'process.env.CLAUDE_CODE_USE_BEDROCK'` -> "1", same var in bash -> unset.
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock) -> hard deny (Node env is case-insensitive)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock=1
+run_fence deny no "$HIMMEL" "luna x claude-cli(MiXeD-case vertex) -> hard deny" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" Claude_Code_Use_Vertex=1
+run_fence deny no "$HIMMEL" "himmel-code x claude-cli(lowercase bedrock) -> hard deny (not the wildcard)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" claude_code_use_bedrock=1
+# a lowercase FEATURE flag still must not deny (the list is exact, case aside)
+run_fence allow no "$HIMMEL" "himmel-code x claude-cli(lowercase cowork flag) -> allow (feature flag)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" claude_code_use_cowork_plugins=1
+# a lowercase selector with an EMPTY value is still off
+run_fence allow no "$HIMMEL" "himmel-code x claude-cli(lowercase bedrock empty) -> allow (empty = off)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" claude_code_use_bedrock=
+# LOCALE-INDEPENDENT matching (CodeRabbit-major): under tr_TR, lowercase/uppercase
+# equivalence differs around 'i', so an unpinned nocasematch could miss
+# claude_code_use_anthropic_aws and ALLOW the run. _claude_reroute_var pins
+# LC_ALL=C before enabling nocasematch. Runs under a Turkish locale when the box
+# has one; SKIPs (never silently passes) otherwise, since without the locale the C
+# comparison is what runs anyway and the case proves nothing.
+# The locale MUST arrive via LANG/LC_CTYPE, never LC_ALL (CodeRabbit-minor): the
+# fence pins LC_ALL=C itself, so an LC_ALL-driven case would be overridden by the
+# very line under test and prove nothing.
+if locale -a 2>/dev/null | grep -qi '^tr_TR'; then
+    tr_loc=$(locale -a 2>/dev/null | grep -i '^tr_TR' | head -1)
+    run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase anthropic_aws under $tr_loc) -> hard deny (locale-independent match)" \
+        "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_anthropic_aws=1 LANG="$tr_loc" LC_CTYPE="$tr_loc"
+else
+    printf '  SKIP  lowercase anthropic_aws under a Turkish locale (no tr_TR locale on this box)\n'
+fi
+# BUILTIN-ONLY matching: caller-controlled PATH entries for `env` or `tr` must
+# be irrelevant to the selector sweep. The fake dir is PREPENDED to the REAL PATH
+# so the rest of the fence still runs normally; the selective fake `tr` forwards
+# non-selector folds because other _lc() sites intentionally still use it and
+# already fail closed on errors.
+hj_tr="$WS/hijack-tr";   mkdir -p "$hj_tr"
+hj_env="$WS/hijack-env"; mkdir -p "$hj_env"
+real_tr="$(command -p -v tr)"
+cat > "$hj_tr/tr" <<EOF
+#!/bin/sh
+in=\$(cat)
+case "\$in" in
+    claude_code_use_*|Claude_Code_Use_*) printf 'X_NOT_A_SELECTOR' ;;
+    *) printf '%s' "\$in" | "$real_tr" "\$@" ;;
+esac
+EOF
+printf '#!/bin/sh\necho NOTHING=1\n' > "$hj_env/env"
+chmod +x "$hj_tr/tr" "$hj_env/env"
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, fake tr on PATH) -> hard deny (builtin nocasematch)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock=1 PATH="$hj_tr:$PATH"
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, fake env on PATH) -> hard deny (builtin compgen)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock=1 PATH="$hj_env:$PATH"
+# HIMMEL-1133 regression: model a host where the OLD `command -p tr` lookup
+# errors, without modifying the machine's real default PATH. BASH_ENV installs a
+# narrow command wrapper inside the fence process: only `command -p tr ...`
+# returns 127; every other command builtin call delegates unchanged. The old fold
+# therefore produced an empty name and ALLOWED this lowercase Bedrock selector;
+# the builtin-only path never touches the wrapper and must DENY.
+no_command_p_tr_env="$WS/no-command-p-tr.bash"
+cat > "$no_command_p_tr_env" <<'EOF'
+command() {
+    if [ "${1:-}" = "-p" ] && [ "${2:-}" = "tr" ]; then return 127; fi
+    builtin command "$@"
+}
+EOF
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, command -p tr unusable) -> hard deny (builtin-only)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock=1 BASH_ENV="$no_command_p_tr_env"
+# NEWLINE-IN-VALUE (CodeRabbit-major, private #1263): a LIVE fail-open, measured.
+# The sweep used to parse `env` output line-by-line, so a selector whose value
+# STARTS with a newline printed as `claude_code_use_bedrock=` + `x` — the first
+# line read as an EMPTY value and hit the empty-skip, the selector went unseen and
+# the run was ALLOWED (rc=0), while Node reads "\nx" as truthy and Bedrock is ON.
+# Reading values BY NAME (compgen -e) removes the line-oriented round-trip that
+# made this expressible at all. The `=` and mid-value cases pin the neighbours.
+nl_lead="$(printf '\nx')"
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, LEADING-newline value) -> hard deny (value read by name)" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock="$nl_lead"
+nl_mid="$(printf 'a\nb')"
+run_fence deny no "$HIMMEL" "luna x claude-cli(lowercase bedrock, MID-value newline) -> hard deny" \
+    "graphify update $LUNA/journal-2026.md --backend claude-cli" claude_code_use_bedrock="$nl_mid"
+# a forged lookalike LINE inside a value must not be readable as a selector
+nl_forge="$(printf 'x\nclaude_code_use_vertex=1')"
+run_fence allow no "$HIMMEL" "himmel-code x claude-cli(harmless var forging a selector LINE in its value) -> allow (no line parsing)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" harmless_var="$nl_forge"
 # EMPTY is the only off value besides unset — it must NOT false-deny
 run_fence allow no "$HIMMEL" "himmel-code x claude-cli(bedrock empty) -> allow (empty = off)" \
     "graphify update $HIMMEL/scripts/thing.sh --backend claude-cli" CLAUDE_CODE_USE_BEDROCK=
@@ -462,11 +549,11 @@ run_fence deny no "$LUNA" ".. traversal Clippings/../../salus -> deny" \
     "graphify update Clippings/../../salusvault/notes/patient.md --backend deepseek"
 
 # (10b) .. traversal escaping Clippings into luna-personal -> deny even with clippings opt-in
-run_fence deny no "$LUNA" ".. traversal out of Clippings -> deny (opt-in cannot save it)" \
+run_fence allow yes "$LUNA" ".. traversal out of Clippings -> luna-personal allow+ledger (HIMMEL-1122)" \
     "graphify update Clippings/../journal-2026.md --backend glm" GRAPHIFY_CLIPPINGS_GLM_OK=1
 
-# (11) uppercase --backend GLM is lower-cased -> zai-glm -> luna-personal deny
-run_fence deny no "$HIMMEL" "uppercase --backend GLM -> deny" \
+# (11) uppercase --backend GLM is lower-cased -> zai-glm -> luna-personal allow+ledger (HIMMEL-1122)
+run_fence allow yes "$HIMMEL" "uppercase --backend GLM -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend GLM"
 
 # (12a) no --backend + himmel path -> local-ollama -> allow (corpus rule, HIMMEL-621)
@@ -492,7 +579,7 @@ run_fence allow no "$HIMMEL/scripts" "query cwd-himmel no-key -> allow" \
     "graphify query \"where is the entrypoint\""
 
 # (14b) query with cwd in luna-personal + --backend glm -> luna-personal x zai-glm -> deny
-run_fence deny no "$LUNA" "query cwd-luna glm -> deny" \
+run_fence allow yes "$LUNA" "query cwd-luna glm -> allow+ledger (HIMMEL-1122)" \
     "graphify query \"what is in my journal\" --backend glm"
 
 echo "== hook-level: parse + delegation + malformed-json fallback =="
@@ -794,7 +881,7 @@ echo "== HIMMEL-779 gap 2: relative path resolves against tool-call cwd =="
 # payload carries in .tool_input.cwd) is the luna vault. A relative path must
 # resolve against the TOOL-CALL cwd -> luna-personal -> deny, not against the
 # fence $PWD -> himmel -> allow (the fail-open).
-run_fence deny no "$HIMMEL" "relative path resolves vs tool-call cwd (luna) -> deny" \
+run_fence allow yes "$HIMMEL" "relative path resolves vs tool-call cwd (luna) -> allow+ledger (HIMMEL-1122)" \
     "graphify update journal-2026.md --backend glm" GRAPHIFY_TOOL_CWD="$LUNA"
 
 # (C2) same shape but tool-call cwd is the SAFE himmel corpus -> allow (the
@@ -810,7 +897,7 @@ rm -f "$LEDGER"
 payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update journal-2026.md --backend glm","cwd":"%s"}}' "$LUNA")
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$(printf '%s' "$payload" | ( cd "$HIMMEL" && env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1 )); rc=$?
-if [ "$rc" -eq 2 ]; then pass "hook: threads .tool_input.cwd -> relative luna path denies"; else fail "hook cwd-thread: expected rc=2 got rc=$rc out=$out"; fi
+if [ "$rc" -eq 0 ] && [ -s "$LEDGER" ]; then pass "hook: threads .tool_input.cwd -> relative luna path allows+ledgers (HIMMEL-1122)"; else fail "hook cwd-thread: expected rc=0+ledger got rc=$rc out=$out"; fi
 
 echo "== HIMMEL-779 gap 3: update-subcommand backend declaration + order-insensitive parse =="
 
@@ -824,7 +911,7 @@ run_fence allow yes "$HIMMEL" "declared backend (deepseek) on update luna -> all
 
 # (D2) declared backend still routed through the matrix: a deny-provider (glm)
 # declared via env on luna-personal -> deny (declaration is not a bypass).
-run_fence deny no "$HIMMEL" "declared backend (glm) on luna -> deny (matrix still applies)" \
+run_fence allow yes "$HIMMEL" "declared backend (glm) on luna -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md" GRAPHIFY_DECLARED_BACKEND=glm
 
 # (D3) multi-distinct-backend last-wins order sensitivity (HIMMEL-779 gap 3b):
@@ -861,7 +948,7 @@ run_fence allow no "$HIMMEL" "declared backend ignored for himmel-code no-flag -
 # pinned): --backend glm denies even though GRAPHIFY_DECLARED_BACKEND=ollama
 # (a safe value) is also set - the declared var is consulted ONLY when
 # --backend is absent.
-run_fence deny no "$HIMMEL" "explicit --backend glm wins over safe declared ollama -> deny" \
+run_fence allow yes "$HIMMEL" "explicit --backend glm wins over safe declared ollama -> allow+ledger (HIMMEL-1122)" \
     "graphify update $LUNA/journal-2026.md --backend glm" GRAPHIFY_DECLARED_BACKEND=ollama
 
 echo "== HIMMEL-779 CR round-1: in-command cd drift (FIX 2) =="
@@ -961,7 +1048,7 @@ run_fence allow yes "$HIMMEL" "file-declared backend satisfies update on non-him
 
 # (BE2) sanity: the SAME file alone (glm, a deny provider on luna-personal)
 # denies - proves the file genuinely flows through the matrix, not a bypass.
-run_fence deny no "$HIMMEL" "file-declared glm alone denies (matrix still applies)" \
+run_fence allow yes "$HIMMEL" "file-declared glm alone -> allow+ledger (HIMMEL-1122)" \
     "graphify update $STAGED_BE2/copy.md"
 
 # (BE3) env wins over file: file declares glm (denies on its own, see BE2),

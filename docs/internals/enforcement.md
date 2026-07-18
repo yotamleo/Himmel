@@ -51,7 +51,7 @@ Stages currently wired:
 Worktree isolation was structurally enforced only in himmel; other repos
 the operator works in (notably luna) relied on prose. `.pre-commit-hooks.yaml`
 at the repo root exports two gates other repos opt into via pre-commit's
-remote-repo mechanism (`repo: https://github.com/yotamleo/Himmel` +
+remote-repo mechanism (`repo: https://github.com/yotamleo/himmel` +
 pinned `rev:`):
 
 - **`pr-lane-isolation`** (`check-pr-lane-isolation.sh`) — path-scoped:
@@ -106,9 +106,10 @@ the env var.
 
 ## Claude PreToolUse Hooks
 
-Seven hooks wired in `.claude/settings.json` fire BEFORE Claude executes
-tool calls. Six BLOCK risky operations; one (`auto-approve-safe-bash`)
-GRANTS permission for safe ones so they don't hang. An eighth, ninth, tenth, eleventh, and twelfth hook — `block-docker-privesc.sh` (HIMMEL-441),
+Nine hooks wired in `.claude/settings.json` fire BEFORE Claude executes
+tool calls. Seven BLOCK risky operations; one (`auto-approve-safe-bash`)
+GRANTS permission for safe ones so they don't hang; one (`auto-arm-on-cap`)
+is a fail-open watchdog that decides nothing. Five FURTHER hooks — `block-docker-privesc.sh` (HIMMEL-441),
 `block-merged-pr-commit.sh` (HIMMEL-512), `block-unresolved-cr-merge.sh`
 (HIMMEL-936), `block-rogue-codex-wsl.sh` (HIMMEL-999), and
 `guard-implementor-dispatch.sh` (HIMMEL-920) — are shipped
@@ -169,6 +170,72 @@ that names main as the target or runs from the `main` branch, are NOT granted
 (they stay deny-listed / fall through; `check-no-force-push.sh` hard-refuses
 force-to-main as the ref-level backstop).
 Spec: `scripts/hooks/test-auto-approve-safe-bash.sh`.
+
+### `block-jira-compound-write.sh` — jira write-shape bounce (HIMMEL-1077)
+
+Fires on Bash. Jira CLI writes are sanctioned (HIMMEL-205), but approval is
+decided on command SHAPE: wrap a sanctioned `create` in `$(…)`, a heredoc, or
+chain it with a segment the gateway above cannot vet, and the gateway stays
+silent — the write then falls through to the auto-mode classifier, which judges
+it cold and denies it as "[External System Writes] unrequested publishing".
+Incident (2026-07-16): two sanctioned creates denied inside a compound chain;
+the identical creates as literal single commands auto-approved seconds later.
+Root cause = shape, not permission (HIMMEL-203) — so per HIMMEL-195 the fix is
+structural, not prose.
+
+This hook turns that opaque denial into a deterministic bounce naming the ONE
+sanctioned retry shape: reissue the SAME verb with the SAME arguments as one
+literal command, moving any inline BODY to a file written with the Write tool
+(verbs that carry no body — `transition`, `assign`, `watch`, … — just get
+reissued literally). Naming exactly one shape is deliberate — the same incident
+had paced retries across shapes read as "[Auto Mode Bypass]" tool-shopping.
+
+The example names the verb the agent ACTUALLY used, never a substitute: printing
+a `create` example for a blocked `assign` invites the retry to file a ticket
+instead of assigning. Arguments stay "same as before" apart from what the shape
+requires (`--desc-file` for `create`, `--comment-file` for `comment`, a
+positional status for `transition`, no `<TICKET>` for `project-create`) — even
+spelling out `--type Task` would tell a `--type Bug` retry to file the wrong type.
+
+The named CLI path is the one INVOKED when that is absolute (another checkout may
+front a different Jira, so its write must not be redirected here); only a
+RELATIVE path resolves to this primary checkout via git-common-dir, because
+`dist/` is untracked and the relative form dies `MODULE_NOT_FOUND` from a linked
+worktree — a bounce whose "do exactly this" command cannot run would provoke the
+very retry-across-shapes it exists to stop.
+
+**Blocks iff BOTH hold:** the command invokes the Jira CLI with a WRITE verb
+(`create|comment|transition|edit|link|assign|move|watch|unwatch|attach|
+project-create|sprint|worklog add` — the first non-flag token after the CLI,
+which must be the script `node` actually runs, in a simple command's command
+position, matched against a quote-masked copy so a verb inside quoted DATA never
+counts; the list is static rather than introspected because this hook fires on
+EVERY Bash call — a missing verb only forfeits the guidance, it can never wrongly
+block), AND
+`auto-approve-safe-bash.sh` — consulted as a subprocess, so there is ONE safety
+model and no forked copy to drift — declines to approve it. Whatever the gateway
+approves runs untouched: literal single writes (bare or `cd`-prefixed), and
+chains whose every segment the gateway vets, are never bounced. Read verbs are
+never bounced. Fails OPEN (missing jq, unparseable input, a gateway that errors)
+— a guard that only improves a denial message must never itself brick a write.
+
+**Only PROVABLY UNCONDITIONAL writes are in scope** — the rule the whole design
+turns on. The retry guidance is unconditional, so it must never be handed to a
+write that might not run: anything after `&&`/`||`, inside an `if`/loop/`case`
+body, or in a function definition is left alone, as are shapes the flat scanner
+cannot justify a verdict on (multiple heredocs on a line, unparseable delimiters,
+whitespace CLI paths, quoted verbs). Every such gap forfeits GUIDANCE only — the
+write keeps its pre-HIMMEL-1077 classifier denial. What it must never do is
+bounce a command that writes nothing, because the "do exactly this" message would
+then order a mutation the command never made. Data that merely LOOKS like a write
+is masked accordingly: quoted spans, comments, quoted-delimiter heredoc bodies,
+array elements, arithmetic, and `${…}` expansions — while a top-level `$(…)`/backtick
+substitution, which really does run, stays visible. The exception is a substitution
+nested inside a `${…}` expansion (`${x:-$(cmd)}`): the flat scanner masks the whole
+expansion, so that `$(…)` is masked too — a documented MISS (guidance forfeited on
+that shape), never a wrong block.
+Bypass: `JIRA_COMPOUND_WRITE_OK=1 claude` (launching shell).
+Spec: `scripts/hooks/test-block-jira-compound-write.sh` (100 checks).
 
 ### `block-edit-on-main.sh` — pre-edit guard
 
@@ -308,26 +375,54 @@ Paired artifacts: `scripts/lib/branch-shipped.sh` (predicate),
 ### `block-unresolved-cr-merge.sh` — CodeRabbit merge-remark gate (HIMMEL-936)
 
 Fires on Bash/PowerShell. Blocks a `gh pr merge` while the target PR has
-unresolved CodeRabbit review threads OR a CodeRabbit check-run still queued
-or in-progress on the head SHA — structural enforcement of the operator's
-"never merge over unresolved CodeRabbit remarks" rule (HIMMEL-195:
+unresolved CodeRabbit review threads OR CodeRabbit's verdict on the head SHA is
+anything other than `success` — including **absent** — structural enforcement of
+the operator's "never merge over unresolved CodeRabbit remarks" rule (HIMMEL-195:
 structural > instructional). The signal is `cr_merge_gate <pr-selector>
 [<owner/repo>]` from `scripts/lib/cr-merge-gate.sh`, which runs a GraphQL
 `reviewThreads` query (counts unresolved threads whose first-comment author
 matches `coderabbit`, covering both `coderabbitai` and `coderabbitai[bot]`
-login forms) and a `check-runs` query on the head SHA. The same predicate is
+login forms) and reads CodeRabbit's commit **status** on the head SHA via
+`scripts/lib/cr-signal.sh`. The same predicate is
 called from `scripts/handover/pr-merge.sh` (GitHub forge only) before its
 mergeability poll, so machines without the plugin hook still get the gate on
 that path (a block there exits `pr-merge.sh` with code 5, distinct from a
 real `gh pr merge` failure's code 4).
 
-**Fail-OPEN posture:** deny ONLY on positive evidence. Every other path
-exits 0 — `gh`/`jq` missing, `gh pr view` failure, incomplete PR metadata,
-GraphQL/check-runs API error, jq parse failure, no `gh pr merge` at command
-position, unresolvable selector. Each fail-open path emits a
+**HIMMEL-1072 — CodeRabbit posts a STATUS, not a check-run.** This gate used to
+query `check-runs` for `.name=="CodeRabbit"`, which matched **nothing on every
+PR since it shipped** (verified on 5 consecutive live PRs: `check-runs` = 0,
+`statuses` = 3–5). The in-flight block never fired and the HIMMEL-980 zombie
+override beneath it was unreachable; the fixtures mocked a check-run, so the
+suite confirmed the wrong shape instead of catching it. `statusCheckRollup`
+merges check-runs AND statuses, which is why `gh pr checks` showed CodeRabbit
+while the check-runs API did not. The gate now reads the `/statuses` LIST
+endpoint (the combined `/status` drops `creator`, and the rollup carries no
+identity at all) and matches on **`creator.id`** — HIMMEL-1058's "identity, not
+display name". The zombie override is **gone**: reviving it on the status would
+wave a >90m pending review through on age alone, which is the same
+uncertainty-reads-as-green bug. `CR_ZOMBIE_CHECKRUN_MINS` is no longer read.
+
+**Posture:** deny on unresolved threads, and on a CodeRabbit status that is
+`pending`/`failure`/`error`/**absent**. Absent-blocks is a deliberate 2026-07-16
+break from the old "positive evidence only" stance: an unreviewed head reading as
+green is what merged #1243 with 6 unresolved threads (reverted in #1244).
+INFRASTRUCTURE failures still fail OPEN — `gh`/`jq` missing, incomplete PR
+metadata, GraphQL/status API error, jq parse failure, and no `gh pr merge` at
+command position all exit **0**; an unresolvable selector (`gh pr view` failure)
+exits **3** — allow, but re-anchorable, so the PreToolUse hook retries once with
+the cwd branch rather than letting a quoted/mis-tokenized selector dodge the gate
+(top-level consumers treat any non-2 rc as allow). Each emits a
 ``cr-merge-gate: degraded (<why>) - failing open`` note to stderr so the
-uncertainty is visible without blocking. A repo without the CodeRabbit app
-has no `coderabbitai` threads, so the gate is inert there.
+uncertainty is visible without blocking. A broken query is not evidence.
+A degraded VERDICT query is the one exception that does not return early: the
+thread query still runs and its evidence still blocks, because an unresolved
+thread is evidence even when the status endpoint is down (observed live — GitHub
+503'd `/commits/<sha>/statuses` on 2026-07-17).
+
+**Adopter note:** a repo without the CodeRabbit app now has NO status on any
+head, so the gate blocks every merge there. Such repos must set `CR_PROFILE=none`
+(the established per-user CR opt-out) — the gate is no longer silently inert.
 
 **Bypass:** `CR_MERGE_GATE_OK=1` set in the shell that LAUNCHED Claude
 (same session-sticky convention as the other block-* hooks). Setting
@@ -339,7 +434,9 @@ exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as `block-docker-privesc` /
 re-sync) + a fresh session.
 
 Paired artifacts: `scripts/lib/cr-merge-gate.sh` (predicate),
-`scripts/lib/test-cr-merge-gate.sh` and
+`scripts/lib/cr-signal.sh` (the ONE reader for CodeRabbit's verdict — shared with
+`ci-green-gate.sh` and `check-ci.sh`, so all three agree on the bot's identity by
+construction), `scripts/lib/test-cr-merge-gate.sh` and
 `scripts/hooks/test-block-unresolved-cr-merge.sh` (smoke suites).
 
 ### CI-green merge gate (HIMMEL-1043)
@@ -348,18 +445,23 @@ Runs on the SAME `gh pr merge` path as the CodeRabbit gate above, one step
 after it: blocks the merge while the target PR's **head SHA is not green** —
 any **non-CodeRabbit** check-run with a red conclusion (`failure`,
 `timed_out`, `cancelled`, `action_required`, `startup_failure`, `stale`) or
-still pending (`status != completed`), or a combined commit **status** of
-`failure`/`error` (or `pending` with ≥1 status). It also **fail-CLOSED-blocks**
+still pending (`status != completed`), or a **non-CodeRabbit** commit **status**
+(newest per context) of `failure`/`error`/`pending`. It also **fail-CLOSED-blocks**
 when the head has **>100 check-runs** (more than the single API page can
 certify — a failing/pending run may sit on an unread page 2; same page-limit
 stance as `cr-merge-gate`, HIMMEL-980). This repo has **no branch
 protection**, so GitHub will not otherwise block a merge over red/pending
 CI — this gate is the structural "ready to merge ⇒ green" enforcement
 (operator rule 2026-07-15; HIMMEL-195 structural > instructional; the
-green-gate HIMMEL-1042's true auto-merge needs). CodeRabbit check-runs are
-excluded here on purpose — the CR gate above owns CodeRabbit (threads + the
-in_progress/zombie override, HIMMEL-936/980), so this gate never
-double-blocks nor false-blocks on a hung CodeRabbit run.
+green-gate HIMMEL-1042's true auto-merge needs). CodeRabbit is excluded here on
+purpose — the CR gate above owns it — so this gate never double-blocks nor
+false-blocks on a hung CodeRabbit review. **HIMMEL-1072:** that exclusion only
+became real then. It was written against CodeRabbit *check-runs*, which
+CodeRabbit never posts (it posts a commit **status**), while its real status rode
+the *combined* `/status` aggregate straight into this gate's pending block — so
+the gate false-blocked on exactly the signal it documented that it ignored. It
+now reads the `/statuses` LIST endpoint and excludes CodeRabbit by **creator
+identity** (`creator.id`, shared with the CR gate via `cr_signal_bot_id`).
 
 The signal is `ci_green_gate <pr-selector> [<owner/repo>]` from
 `scripts/lib/ci-green-gate.sh`. It is wired into **the same
@@ -371,10 +473,16 @@ exits `pr-merge.sh` with code **6**, distinct from the CR gate's 5 and a real
 merge failure's 4).
 
 **Fail-OPEN posture:** deny ONLY on positive red/pending evidence. `gh`/`jq`
-missing, `gh pr view` failure, API/parse error, and a genuinely **checkless
-PR** (zero check-runs AND zero commit statuses) all exit 0 with a
-``ci-green-gate: degraded (<why>) - failing open`` stderr note — never a
-false block on a repo/branch with no CI.
+missing, API/parse error, and a genuinely **checkless PR** (zero check-runs AND
+zero commit statuses) all exit **0**, and an unresolvable selector (`gh pr view`
+failure) exits **3** — allow, but re-anchorable, so the PreToolUse hook retries
+once with the cwd branch rather than letting a mis-tokenized selector dodge the
+gate (coderabbit-4; top-level consumers treat any non-2 rc as allow). Every
+fail-open path emits a ``ci-green-gate: degraded (<why>) - failing open`` stderr
+note — never a false block on a repo/branch with no CI.
+**Exception (HIMMEL-1072):** the page limits are NOT fail-open — >100 check-runs
+or ≥100 commit statuses on the head **block** (rc 2), because a red one may sit
+on an unread page and a merge gate must not certify green from a partial view.
 
 **Bypass:** `CI_MERGE_GATE_OK=1` in the LAUNCHING shell (independent of the
 CR gate's `CR_MERGE_GATE_OK`; NOT coupled to `CR_PROFILE`).

@@ -67,6 +67,35 @@ bash scripts/claude-codex -p "reply OK"
 cc-codex -p "reply OK"
 ```
 
+## Re-login when the codex token is invalidated
+
+When the gateway's codex token goes stale, the lane fails with the proxy
+error log showing `authentication_error: Your authentication token has been
+invalidated. Please try signing in again`. This is a self-service re-login,
+not a blocking outage — re-auth with the DEVICE flow (`-codex-login` plain
+OAuth needs a localhost callback; the device flow does not):
+
+```shell
+cd ~/.cli-proxy-api && ./cli-proxy-api.exe -config ./config.yaml -codex-device-login
+```
+
+After ~2–4 seconds it prints
+`Codex device URL: https://auth.openai.com/codex/device` plus a 9-character
+device code, then polls until authorized — leave it running in the
+FOREGROUND of a dedicated terminal until authorization completes, and do
+NOT kill it early (the URL + code only print after that short delay).
+Authorize from a logged-in browser or a second terminal. Treat the device
+URL + code as sensitive authorization material: surface them to the
+operator directly and nowhere else — never into shared logs, chat
+channels, screenshots, or CI output (anyone holding the active code can
+authorize the login). On authorize the process writes
+`~/.cli-proxy-api/codex-<email>.json` ("Codex authentication
+successful") and exits 0; re-verify the lane end-to-end (section above).
+
+Detection caveat: the gateway's `/v1/models` endpoint is registry-backed and
+keeps returning 200 during an OAuth gap — probe a real completion
+(`/v1/messages`) to detect an auth gap, never `/v1/models`.
+
 ## Notes
 
 - `config.yaml` pins `host: "127.0.0.1"` on purpose — the CLIProxyAPI default

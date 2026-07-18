@@ -30,7 +30,8 @@
  * deleted post -> removed (permanent, enriched_at set).
  *
  * Usage:  node reddit-enrich.mjs --vault <path> [--limit N] [--dry-run] [--include-evidence]
- * Exit:   0 run done | 1 bad usage | 2 cookie file absent.
+ * Exit:   0 run done | 1 bad usage | 2 cookie file absent | 3 unproductive
+ *         run (no ok; every processed clip hard-failed or auth_expired).
  *
  * Test seams (env): REDDIT_FIXTURE (JSON {status,body}), REDDIT_MORE_FIXTURE
  * (JSON {status,body} for /api/morechildren), REDDIT_HEAD_LOCATION
@@ -38,7 +39,9 @@
  * driving the REAL redirect loop, so the in-loop cookie-scoping guard is
  * exercised) + REDDIT_HEAD_CAPTURE (append per-hop {url,cookie} records),
  * REDDIT_COOKIE_FILE (cookie path override), REDDIT_SCREENER (injection
- * screener override).
+ * screener override), REDDIT_SECTION_CAP_BYTES (shrink the section byte
+ * budget so cap tests stay small, HIMMEL-795), REDDIT_FAIL_READ (force the
+ * read-failure path for one clip basename, HIMMEL-795).
  */
 import { existsSync, readFileSync, writeFileSync, readdirSync, appendFileSync } from "node:fs";
 import { join, relative, sep, dirname } from "node:path";
@@ -57,7 +60,7 @@ const MAX_TOTAL_COMMENTS = 400;      // whole-tree honesty cap (HIMMEL-789)
 const MORE_BATCH = 100;              // /api/morechildren accepts <=100 ids/call
 const MAX_MORE_BATCHES = 3;          // bounded expansion: <=300 extra comments
 const INDENT_DEPTH_MAX = 6;          // deeper replies render at this indent
-const SECTION_CAP_BYTES = 120000;
+const SECTION_CAP_BYTES = Number.parseInt(process.env.REDDIT_SECTION_CAP_BYTES || "120000", 10) || 120000;
 const MAX_REDIRECT_HOPS = 3;
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -102,6 +105,21 @@ function parseArgs(argv) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+
+function truncateUtf8Safe(str, maxBytes) {
+  if (maxBytes <= 0) return "";
+  let out = "";
+  let used = 0;
+  // for...of iterates CODE POINTS (a surrogate pair is one unit) - a byte- or
+  // charCode-indexed loop would reintroduce the split-multibyte bug (HIMMEL-795).
+  for (const ch of str) {
+    const n = Buffer.byteLength(ch, "utf-8");
+    if (used + n > maxBytes) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
 
 /** Glob Clippings/*.md + one-level subfolders, excluding pipeline-internal dirs.
  * includeEvidence lifts the _evidence/ exclusion (HIMMEL-789 backfill reach). */
@@ -355,6 +373,7 @@ function commentRow(d, depth) {
 function extractCommentTree(listing) {
   const comments = [];
   const moreIds = [];
+  const moreSeen = new Set();
   const depthMap = new Map();
   const rowByName = new Map();   // t1 fullname -> row (for positional insert)
   let omitted = 0;
@@ -364,7 +383,16 @@ function extractCommentTree(listing) {
       if (c?.kind === "more" && c.data) {
         const ids = Array.isArray(c.data.children) ? c.data.children : [];
         if (ids.length) {
-          moreIds.push(...ids);
+          // Dedup across stubs is safe: placement of an expanded comment is
+          // driven by the FETCHED thing's parent_id (single parent per
+          // comment), never by which stub referenced the id - one fetch
+          // cannot misattribute or starve a second stub (HIMMEL-795).
+          for (const id of ids) {
+            const s = String(id);
+            if (moreSeen.has(s)) continue;
+            moreSeen.add(s);
+            moreIds.push(s);
+          }
         } else {
           // "continue this thread" stub: count>0, children:[] - no ids to
           // expand, but the cut chain MUST reach the disclosure (silent-
@@ -377,7 +405,9 @@ function extractCommentTree(listing) {
       const d = c.data;
       if (d.name) depthMap.set(String(d.name), depth);
       const kids = d.replies?.data?.children;
+      const skippedStickied = d.stickied === true;
       let row = commentRow(d, depth);
+      if (!row && skippedStickied) omitted++;
       // A filtered parent (deleted/stickied) with live replies OR a more-stub
       // still needs a visible anchor, or its (expanded) replies would render
       // nested under the PREVIOUS visible comment - misattributing who they
@@ -398,12 +428,22 @@ function extractCommentTree(listing) {
 }
 
 /** Fetch one /api/morechildren batch. Returns { status, body }. Seamed by
- * REDDIT_MORE_FIXTURE (same envelope contract as REDDIT_FIXTURE). */
+ * REDDIT_MORE_FIXTURE (same envelope contract as REDDIT_FIXTURE). A JSON
+ * ARRAY is consumed one envelope per batch call (cross-batch tests,
+ * HIMMEL-795; the last envelope repeats when batches outnumber entries);
+ * a single object keeps the original same-envelope-every-call contract.
+ * The call counter is PER-PROCESS, not per-clip - a multi-clip vault using
+ * an array fixture would bleed envelopes across clips (test-only seam;
+ * every current test runs one reddit clip per invocation). */
+let _moreFixtureCall = 0;
 async function fetchMoreChildrenBatch(linkName, ids, cookieHeader) {
   if (process.env.REDDIT_MORE_FIXTURE) {
     const env = JSON.parse(readFileSync(process.env.REDDIT_MORE_FIXTURE, "utf-8"));
-    const body = typeof env.body === "string" ? env.body : JSON.stringify(env.body ?? "");
-    return { status: env.status ?? 200, body };
+    const pick = Array.isArray(env)
+      ? env[Math.min(_moreFixtureCall++, env.length - 1)]
+      : env;
+    const body = typeof pick.body === "string" ? pick.body : JSON.stringify(pick.body ?? "");
+    return { status: pick.status ?? 200, body };
   }
   const url = "https://www.reddit.com/api/morechildren.json?api_type=json" +
     `&raw_json=1&link_id=${encodeURIComponent(linkName)}` +
@@ -448,8 +488,12 @@ async function fetchMoreComments(linkName, moreIds, cookieHeader, tree, opts = {
       // nested row that visually attaches to the preceding comment: give it
       // its own [omitted] anchor at the parent's depth first (codex-adv r6).
       if (row.depth > 0) {
+        // isAnchor marks the row synthetic so a LATER batch delivering the
+        // parent's real record promotes it in place instead of being dropped
+        // by the dedup guard (HIMMEL-795 CR - honesty invariant).
         const anchor = { author: "[omitted]", score: 0,
-          body: "(comment removed or omitted)", depth: row.depth - 1 };
+          body: "(comment removed or omitted)", depth: row.depth - 1,
+          isAnchor: true };
         tree.comments.push(anchor);
         if (parentName) tree.rowByName.set(parentName, anchor);
       }
@@ -487,9 +531,36 @@ async function fetchMoreComments(linkName, moreIds, cookieHeader, tree, opts = {
       if (parent.startsWith("t3_")) depth = 0;
       else if (tree.depthMap.has(parent)) depth = tree.depthMap.get(parent) + 1;
       else depth = 1;
-      if (d.name) tree.depthMap.set(String(d.name), depth);
+      const name = d.name ? String(d.name) : "";
+      if (name && tree.rowByName.has(name)) {
+        const existing = tree.rowByName.get(name);
+        if (existing.isAnchor) {
+          // A child from an EARLIER batch left a synthetic [omitted] anchor
+          // for this then-unseen parent. Promote the anchor in place with the
+          // real record - never drop it silently, and never lose its
+          // children's attach point (HIMMEL-795 CR - honesty invariant).
+          if (!tree.depthMap.has(name)) tree.depthMap.set(name, existing.depth);
+          const real = commentRow(d, existing.depth);
+          if (real) {
+            existing.author = real.author;
+            existing.score = real.score;
+            existing.body = real.body;
+            delete existing.isAnchor;
+          } else if (d.stickied === true) {
+            omitted++;   // content stays hidden; the anchor keeps tree shape
+          }
+        }
+        // Non-anchor hit = the same t1 fullname already rendered (duplicate
+        // across batches) - skip, a comment renders exactly once.
+        return;
+      }
+      if (name) tree.depthMap.set(name, depth);
       const row = commentRow(d, depth);
-      if (row) insertRow(row, d.name ? String(d.name) : "", parent);
+      if (!row) {
+        if (d.stickied === true) omitted++;
+        return;
+      }
+      insertRow(row, name, parent);
     };
     // The API gives no within-batch ordering guarantee: process things
     // topologically (parents first) so a child arriving before its batch-mate
@@ -551,8 +622,7 @@ function renderRedditSection(post, comments, omitted = 0) {
   let out = head.join("\n").replace(/\n+$/, "");
   let truncated = false;
   if (Buffer.byteLength(out, "utf-8") > budget) {
-    out = Buffer.from(out, "utf-8").subarray(0, budget).toString("utf-8")
-      .replace(/\n+$/, "");
+    out = truncateUtf8Safe(out, budget).replace(/\n+$/, "");
     truncated = true;
     omitted += comments.length;   // no room for ANY comment - all disclosed
     comments = [];
@@ -606,7 +676,16 @@ function rescreenInjection(clipPath) {
 export async function processClip(clipPath, vault, dryRun, opts = {}) {
   const rel = relative(vault, clipPath).split(sep).join("/");
   let text;
-  try { text = readFileSync(clipPath, "utf-8"); }
+  try {
+    // REDDIT_FAIL_READ (test seam, HIMMEL-795): force the read-failure path
+    // deterministically for one basename - a directory named *.md never
+    // reaches here (findClips is isFile-gated) and symlinks are unreliable
+    // on Windows Git Bash, so filesystem tricks cannot exercise this branch.
+    if (process.env.REDDIT_FAIL_READ && rel.endsWith(process.env.REDDIT_FAIL_READ)) {
+      throw new Error("forced read failure (REDDIT_FAIL_READ test seam)");
+    }
+    text = readFileSync(clipPath, "utf-8");
+  }
   catch (e) { return { glyph: "x", message: `${rel} -- failed (read): ${e.message}` }; }
   const baselineSha = sha256(text);
   const { fm, fmRaw, body, present } = parseFrontmatter(text);
@@ -624,7 +703,7 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
     return writeEnrichment({
       clipPath, rel, text, baselineSha, fmRaw, body,
       markers: { enrichment_source: "reddit-json", enrichment_status: "failed", last_error: "auth_expired" },
-      section: null, statusGlyph: "~",
+      section: null, statusGlyph: "~", code: "auth_expired",
       statusMsg: "partial (auth_expired: cookie set empty/expired; refresh ~/.luna/cookies/reddit.txt)",
     });
   }
@@ -674,7 +753,8 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
     return writeEnrichment({
       clipPath, rel, text, baselineSha, fmRaw, body,
       markers: { ...base, enrichment_status: "failed", last_error: verdict.error },
-      section: null, statusGlyph: "~", statusMsg: `partial (${verdict.error})`,
+      section: null, statusGlyph: "~", code: verdict.error,
+      statusMsg: `partial (${verdict.error})`,
     });
   }
   if (verdict.kind === "removed") {
@@ -745,8 +825,11 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
   return res;
 }
 
-/** Write with full G-3 / YAML verification and revert-on-failure. */
-async function writeEnrichment({ clipPath, rel, text, baselineSha, fmRaw, body, markers, section, statusGlyph, statusMsg }) {
+/** Write with full G-3 / YAML verification and revert-on-failure. `code` is a
+ * machine-readable error class carried through to the SUCCESS-shape return
+ * only (main()'s exit-3 accounting keys on it, not on message prose -
+ * HIMMEL-795); revert/failure shapes deliberately omit it. */
+async function writeEnrichment({ clipPath, rel, text, baselineSha, fmRaw, body, markers, section, statusGlyph, statusMsg, code }) {
   let nowText;
   try { nowText = readFileSync(clipPath, "utf-8"); }
   catch (e) { return { glyph: "x", message: `${rel} -- failed (re-read): ${e.message}` }; }
@@ -779,7 +862,7 @@ async function writeEnrichment({ clipPath, rel, text, baselineSha, fmRaw, body, 
   }
   try { const yaml = await import("js-yaml"); yaml.load(post.fmRaw); }
   catch (e) { writeFileSync(clipPath, text, { encoding: "utf-8" }); return { glyph: "x", message: `${rel} -- failed (yaml parse; reverted): ${e.message}` }; }
-  return { glyph: statusGlyph, message: `${rel} -- ${statusMsg}` };
+  return { glyph: statusGlyph, message: `${rel} -- ${statusMsg}`, ...(code ? { code } : {}) };
 }
 
 // -------------------------------------------------------------------------
@@ -807,7 +890,7 @@ async function main() {
   const clips = findClips(args.vault, args.includeEvidence);
   if (clips.length === 0) { console.log("reddit-enrich: 0 clips found."); process.exit(0); }
 
-  let ok = 0, partial = 0, failed = 0, skipped = 0, processed = 0;
+  let ok = 0, partial = 0, failed = 0, skipped = 0, processed = 0, authExpired = 0;
   for (const clip of clips) {
     if (args.limit > 0 && processed >= args.limit) break;
     let res;
@@ -826,11 +909,31 @@ async function main() {
       res.glyph === "~" ? "PART" : "FAIL";
     (res.glyph === "x" ? process.stderr : process.stdout).write(`${prefix} ${res.message}\n`);
     if (res.glyph === "v") { ok++; processed++; }
-    else if (res.glyph === "~") { partial++; processed++; }
+    else if (res.glyph === "~") {
+      partial++; processed++;
+      // Structured code, not message prose (HIMMEL-795 CR): a wording change
+      // must not silently disarm the exit-3 outage signal.
+      if (res.code === "auth_expired") authExpired++;
+    }
     else if (res.glyph === "x") { failed++; processed++; }
     else skipped++;
   }
   console.log(`\nreddit-enrich: ${ok} ok, ${partial} partial, ${failed} failed, ${skipped} skipped. (dry_run=${args.dryRun})`);
+  // Exit 3 = totally unproductive run: nothing enriched and every processed
+  // clip either hard-failed or bounced on auth (empty, expired, OR
+  // server-rejected cookies - codex-adv HIMMEL-795). Runs with any ok result
+  // or any non-auth retryable partial (rate_limited, more_fetch, ...) stay
+  // exit 0 - those are normal in-progress states, not an outage.
+  if (processed > 0 && ok === 0 && failed + authExpired === processed) {
+    if (authExpired === processed) {
+      console.error("reddit-enrich: all processed clips auth_expired (cookie set empty/expired/rejected); exiting 3");
+    } else if (failed === processed) {
+      console.error("reddit-enrich: all processed clips failed; exiting 3");
+    } else {
+      console.error(`reddit-enrich: no clip enriched (${failed} failed + ${authExpired} auth_expired of ${processed} processed); exiting 3`);
+    }
+    process.exit(3);
+  }
   process.exit(0);
 }
 

@@ -29,10 +29,16 @@ line endings). It is **idempotent** and **non-destructive**:
 
 3. **Sanitizes external-plugin `hooks.json`** as a final phase (HIMMEL-651): a
    few external plugins (warp, hookify, ralph-loop, security-guidance) ship a
-   top-level `description` that Codex's strict parser rejects ("unknown field
-   description"), skipping those hooks with a boot warning. The installer strips
-   it via `sanitize-plugin-hooks.{sh,ps1}` (idempotent; non-fatal). himmel-owned
-   plugins never ship that shape.
+   top-level `description` that Codex versions **before `rust-v0.143.0`** reject
+   ("unknown field description"), skipping those hooks with a boot warning. The
+   installer strips it via `sanitize-plugin-hooks.{sh,ps1}` (idempotent;
+   non-fatal). himmel-owned plugins never ship that shape.
+
+   > **Deprecated (HIMMEL-1104).** Upstream fixed this: codex PR #30229 added
+   > `description` to the `HooksFile` schema, shipping in **`rust-v0.143.0`**. On
+   > that version or newer the key is accepted and this phase mutates external
+   > upstream plugin files for no benefit — prefer upgrading codex. Removing the
+   > automatic invocation is tracked in **HIMMEL-1114**.
 
 For plugin enablement it only ever *adds* — it never removes or disables a
 plugin, and a re-run on a provisioned machine is a no-op. (The sanitize phase

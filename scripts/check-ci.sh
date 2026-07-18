@@ -31,12 +31,20 @@
 # session, automation) during the run means the certified commit is not the
 # mergeable one, so the script fails closed with exit 2 (re-run).
 #
+# A green verdict additionally REQUIRES CodeRabbit to have concluded on that head
+# SHA (HIMMEL-1072). An absent review is not a passing one: the watch only waits
+# on checks that already exist, so a review that registers later was never waited
+# on, and "green" got reported over a PR nobody had reviewed. See cr_signal_gate.
+#
 # Exit codes:
-#   0 — all checks green AND all review threads resolved (safe to merge)
-#   1 — at least one check failed (--fail-fast: returns on the first red)
+#   0 — all checks green AND all review threads resolved AND CodeRabbit concluded
+#       success on the head SHA (safe to merge)
+#   1 — at least one check failed (--fail-fast: returns on the first red), or
+#       CodeRabbit's own status is failure/error
 #   2 — cannot evaluate: usage error / no PR found / no checks registered
 #       within --grace / gh error on the probe or the watch / thread-state
 #       query failed or returned a malformed page / PR head moved during the run
+#       / CodeRabbit's status is absent or still pending on the head SHA
 #   3 — checks green but the review state blocks the merge: unresolved review
 #       threads remain, or a review requests changes — address, resolve, re-run
 #
@@ -44,8 +52,13 @@
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
 #                            tests set 0; non-numeric falls back to default)
 #   CHECK_CI_SETTLE        — default for --settle (flag wins)
-#   CR_ZOMBIE_CHECKRUN_MINS — minimum CodeRabbit in-progress age for the
-#                             success-status + clean-threads override (default 90)
+#   CR_PROFILE=none        — this repo has no CodeRabbit: skip the required-signal
+#                            gate. Without it, a CodeRabbit-less repo exits 2.
+#   CR_BOT_USER_ID         — creator.id to trust as CodeRabbit (see cr-signal.sh)
+#
+# The HIMMEL-980 zombie-check-run override is GONE: it keyed off a CodeRabbit
+# CHECK-RUN, which CodeRabbit never posts (it posts a commit STATUS), so it had
+# never once fired. Reading the status directly makes it moot.
 #
 # Un-maskable verdict (HIMMEL-974): every exit path additionally prints
 # "check-ci: verdict exit=N" to STDOUT via an EXIT trap installed after arg
@@ -57,9 +70,12 @@ set -uo pipefail
 usage() {
     cat >&2 <<'EOF'
 usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only]
-exit codes: 0 = checks green + all review threads resolved, 1 = a check failed,
-            2 = cannot evaluate (usage / no PR / no checks within --grace / thread query failed / PR head moved),
+exit codes: 0 = checks green + all review threads resolved + CodeRabbit concluded success on the head SHA,
+            1 = a check failed, or CodeRabbit's status is failure/error,
+            2 = cannot evaluate (usage / no PR / no checks within --grace / thread query failed / PR head moved
+                / CodeRabbit's status absent or still pending on the head SHA),
             3 = checks green but unresolved review threads remain or a review requests changes
+env: CR_PROFILE=none skips the required-CodeRabbit-signal gate (repos without CodeRabbit)
 EOF
 }
 
@@ -109,6 +125,21 @@ if ! command -v gh >/dev/null 2>&1; then
     echo "check-ci: gh CLI not found on PATH" >&2
     exit 2
 fi
+# jq is needed ONLY to read CodeRabbit's status, so require it only on the path
+# that actually does (coderabbit-7). --threads-only is a pure GraphQL+gh path —
+# /pr-check step 4.8 calls it — and CR_PROFILE=none skips the signal gate
+# entirely; making either exit 2 over a missing jq would be a regression, since
+# neither needs it.
+if [ "$THREADS_ONLY" -ne 1 ] && [ "${CR_PROFILE:-}" != "none" ]; then
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "check-ci: jq not found on PATH (required to read CodeRabbit's status)" >&2
+        exit 2
+    fi
+    # The ONE reader for CodeRabbit's verdict (HIMMEL-1072).
+    # shellcheck source=scripts/lib/cr-signal.sh
+    # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+    . "$(cd "$(dirname "$0")" && pwd)/lib/cr-signal.sh"
+fi
 
 pr_checks() {
     if [ -n "$selector" ]; then gh pr checks "$selector" "$@"; else gh pr checks "$@"; fi
@@ -116,11 +147,6 @@ pr_checks() {
 
 pr_view() {
     if [ -n "$selector" ]; then gh pr view "$selector" "$@"; else gh pr view "$@"; fi
-}
-
-started_epoch() {
-    date -u -d "$1" +%s 2>/dev/null && return 0
-    date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null
 }
 
 red_exit() {
@@ -325,81 +351,81 @@ review_state_gate() {
 
 review_state_gate
 
-zombie_override=0
-if [ "$THREADS_ONLY" -eq 0 ]; then
-    zombie_mins="${CR_ZOMBIE_CHECKRUN_MINS:-90}"
-    case "$zombie_mins" in ''|*[!0-9]*) zombie_mins=90 ;; esac
-    # 10# guard (coderabbit 980-r4): a leading-zero value ("090") passes
-    # the digit check but blows up base-8 arithmetic in $((… * 60)).
-    zombie_mins=$((10#$zombie_mins))
-    runs=$(gh api "repos/$owner/$repo/commits/$head0/check-runs?per_page=100" 2>/dev/null) || runs=""
-    pending_runs=$(printf '%s' "$runs" | jq -r \
-        '[.check_runs[]? | select(.name=="CodeRabbit") | select(.status!="completed")] | length' \
-        2>/dev/null || true)
-    started=$(printf '%s' "$runs" | jq -r \
-        '[.check_runs[]? | select(.name=="CodeRabbit") | select(.status=="in_progress") | .started_at // empty] | max // empty' \
-        2>/dev/null || true)
-    started_count=$(printf '%s' "$runs" | jq -r \
-        '[.check_runs[]? | select(.name=="CodeRabbit") | select(.status=="in_progress") | select(.started_at != null)] | length' \
-        2>/dev/null || true)
-    run_started=$(started_epoch "$started" 2>/dev/null || true)
-    now_epoch=$(date -u +%s 2>/dev/null || true)
-    if [ -n "$pending_runs" ] && [ "$started_count" = "$pending_runs" ] \
-        && [ "$pending_runs" -gt 0 ] 2>/dev/null \
-        && [ -n "$run_started" ] && [ -n "$now_epoch" ] \
-        && [ $((now_epoch - run_started)) -gt $((zombie_mins * 60)) ]; then
-        statuses=$(gh api "repos/$owner/$repo/commits/$head0/status" 2>/dev/null) || statuses=""
-        status_state=$(printf '%s' "$statuses" | jq -r \
-            '[.statuses[]? | select(.context=="CodeRabbit")][0].state // empty' \
-            2>/dev/null || true)
-        other_pending=$(pr_checks --json name,bucket --jq \
-            '[.[] | select(.name != "CodeRabbit") | select(.bucket != "pass" and .bucket != "skipping")] | length' \
-            2>/dev/null || true)
-        if [ "$status_state" = "success" ] && [ "$other_pending" = "0" ]; then
-            echo "zombie check-run override: CodeRabbit run in_progress since $started (>${zombie_mins}m) but commit status=success + 0 unresolved threads — treating as completed (HIMMEL-980)"
-            zombie_override=1
-        fi
-    fi
-fi
+# cr_signal_gate — HIMMEL-1072, the reason this file changed.
+#
+# `gh pr checks --watch` only waits on checks that EXIST when the watch starts.
+# CodeRabbit registers seconds-to-minutes after a push, so a watch launched right
+# after `git push` concluded "all checks green" over a rollup containing only
+# `Mergeable` (title/message lint — not a review). Reproduced on PR #1249 @
+# 80042b18: at T+0 `grep -c CodeRabbit` over the watch output was 0 and this
+# script exited 0; at T+~4min the rollup showed CodeRabbit PENDING. The gate
+# concluded before the reviewer arrived. That false green is what merged #1243
+# with 6 unresolved threads.
+#
+# So the CodeRabbit signal is REQUIRED, not merely evaluated-if-present: it must
+# be PRESENT and CONCLUDED on the exact head SHA we watched. "Whatever is in the
+# rollup right now" cannot tell `not required` from `hasn't posted yet` from
+# `passed` — only an explicit requirement can.
+#
+# Runs AFTER the watch + settle so the normal registration race resolves itself
+# in the window that already exists; only a signal still missing by then fails.
+cr_signal_gate() {
+    [ "${CR_PROFILE:-}" = "none" ] && return 0
+
+    local state
+    state=$(cr_signal_state "$owner" "$repo" "$head0") || {
+        echo "check-ci: could not read CodeRabbit's status on head $head0 — cannot evaluate the gate; re-run" >&2
+        exit 2
+    }
+    case "$state" in
+        success) ;;
+        pending)
+            echo "check-ci: CodeRabbit is still reviewing head $head0 of PR #$num — not green yet; re-run when it concludes" >&2
+            exit 2 ;;
+        failure|error)
+            echo "check-ci: CodeRabbit reported '$state' on head $head0 of PR #$num — its review did not complete" >&2
+            exit 1 ;;
+        absent)
+            echo "check-ci: CodeRabbit has posted NO status on head $head0 of PR #$num — an unreviewed head is not a green one (HIMMEL-1072). Wait for the review and re-run; if this repo has no CodeRabbit, set CR_PROFILE=none." >&2
+            exit 2 ;;
+        paged)
+            # Indeterminate, not absent (coderabbit-2) — see cr-signal.sh.
+            echo "check-ci: head $head0 of PR #$num has more commit statuses than one API page (100) and none is CodeRabbit's — cannot certify the review; check manually" >&2
+            exit 2 ;;
+        *)
+            echo "check-ci: unrecognized CodeRabbit state '$state' on head $head0 — cannot evaluate the gate; re-run" >&2
+            exit 2 ;;
+    esac
+}
 
 if [ "$THREADS_ONLY" -eq 1 ]; then
     echo "check-ci: all review threads resolved (PR #$num)"
     exit 0
 fi
 
-# The override skips the hanging watch, but it must NOT skip the settle
-# protection (codex-adv-2): a non-CodeRabbit check registering right after the
-# other_pending snapshot would otherwise never be observed. Keep the settle
-# window and re-probe; any late arrival drops the override back to the watch
-# path (which waits for — or fails fast on — the newcomer).
-if [ "$zombie_override" -eq 1 ] && [ "$SETTLE" -gt 0 ]; then
+# Watch round 1: authoritative red/green for the checks registered so far.
+watch_round
+
+# Settle round (codex-adv-1): give slow-registering check runs time to appear,
+# then watch again — round 2 waits for (or fails fast on) any late arrivals.
+if [ "$SETTLE" -gt 0 ]; then
     sleep "$SETTLE"
-    late_pending=$(pr_checks --json name,bucket --jq \
-        '[.[] | select(.name != "CodeRabbit") | select(.bucket != "pass" and .bucket != "skipping")] | length' \
-        2>/dev/null || true)
-    if [ "$late_pending" != "0" ]; then
-        echo "zombie override dropped: ${late_pending:-?} non-CodeRabbit check(s) pending after the ${SETTLE}s settle window — falling back to the watch path"
-        zombie_override=0
-    fi
-fi
-
-if [ "$zombie_override" -eq 0 ]; then
-    # Watch round 1: authoritative red/green for the checks registered so far.
     watch_round
-
-    # Settle round (codex-adv-1): give slow-registering check runs time to appear,
-    # then watch again — round 2 waits for (or fails fast on) any late arrivals.
-    if [ "$SETTLE" -gt 0 ]; then
-        sleep "$SETTLE"
-        watch_round
-    fi
 fi
 
-# Re-verify review state AFTER the watch/settle (codex-adv 980-r2): a review
-# can request changes or a new unresolved thread can land during a long watch
-# without moving the head SHA — certifying the pre-watch snapshot would let
-# merge-on-green proceed over fresh blocking feedback. Runs on the zombie
-# override path too (the settle window is short, but not zero).
+# CodeRabbit must be PRESENT + CONCLUDED on this head (HIMMEL-1072). It runs
+# AFTER the watch/settle (that window is where a racing review posts) but BEFORE
+# the thread re-verification below, and that order is load-bearing
+# (coderabbit-11): threads-first loses a race — snapshot threads (clean) ->
+# CodeRabbit posts its findings and flips to success -> read the verdict
+# (success) -> exit 0 over threads never seen. Establishing that the reviewer
+# CONCLUDED first makes the thread set below final.
+cr_signal_gate
+
+# Re-verify review state AFTER the watch/settle (codex-adv 980-r2) and after the
+# verdict: a review can request changes or a new unresolved thread can land
+# during a long watch without moving the head SHA — certifying the pre-watch
+# snapshot would let merge-on-green proceed over fresh blocking feedback.
 review_state_gate
 
 # Re-read the head: the green verdict only holds for the SHA we watched.

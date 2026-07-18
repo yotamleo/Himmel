@@ -16,6 +16,11 @@
 #      flaky free critic must not clear the gate)
 #   4. zero critics responded         -> FAIL (defensive)
 #   5. Critical>0 or Important>0      -> NOT CLEAN
+# CodeRabbit pass (HIMMEL-932): a third cross-model finding source run on an
+# otherwise-clean panel. Availability-gated FAIL-OPEN (unlike the fail-closed
+# codex seat at gate 3): a missing CLI (exit 3) or a failed review (exit 1)
+# never blocks - only exit 0 findings feed the gate as blocking candidates
+# ([coderabbit-N]), same merge contract as the interactive /pr-check step 3.2.
 # The CR marker is NOT touched here; the marker clear is bound to the pushed SHA
 # in ship-branch.sh.
 #
@@ -107,7 +112,9 @@ reviewed_short="$(git rev-parse --short "$BRANCH" 2>/dev/null || echo "$reviewed
 diff_file="$(mktemp -t pr-check-ext-diff.XXXXXX)"
 panel_out="$(mktemp -t pr-check-ext-out.XXXXXX)"
 panel_err="$(mktemp -t pr-check-ext-err.XXXXXX)"
-trap 'rm -f "$diff_file" "$panel_out" "$panel_err"' EXIT
+coderabbit_out="$(mktemp -t pr-check-ext-cr.XXXXXX)"
+cr_err="$(mktemp -t pr-check-ext-crerr.XXXXXX)"
+trap 'rm -f "$diff_file" "$panel_out" "$panel_err" "$coderabbit_out" "$cr_err"' EXIT
 
 # 3-dot diff against origin/<base>. Fail-closed if it cannot be computed (a bad
 # ref / no merge base) rather than reviewing an empty diff by accident.
@@ -169,6 +176,54 @@ if [ "$nc" -ne 0 ] || [ "$ni" -ne 0 ]; then
     cat "$panel_out" >&2
     exit 1
 fi
+
+# CodeRabbit pass (HIMMEL-932): third cross-model finding source, availability-
+# gated FAIL-OPEN. Runs ONLY on an otherwise-clean panel - a panel that already
+# found Critical/Important has blocked the branch at GATE 5 regardless, so
+# spending a (paid, minutes-long) CodeRabbit review there is waste. The codex
+# fail-closed posture at GATE 3 is untouched; this seat is its fail-open peer.
+# Wrapper contract: stdout = findings, stderr = one panel-availability line;
+# exit 0 = review completed, 1 = review failed (fail-open), 3 = CLI absent (skip).
+cr_rc=0
+bash "$SCRIPT_DIR/coderabbit-review.sh" --branch "$BRANCH" --base "$BASE" \
+    > "$coderabbit_out" 2> "$cr_err" || cr_rc=$?
+# Surface the wrapper's stderr: the skip note on exit 3, the panel-availability
+# line on exit 1 (a machine without the CLI / a failed review is not a critic
+# drop-out - the operator just sees the availability state).
+cat "$cr_err" >&2
+case "$cr_rc" in
+    0)
+        # Review completed. The wrapper passes the CLI's --agent stream through
+        # (JSONL: status/heartbeat/complete lines PLUS '"type":"finding"' lines),
+        # so gate on finding lines, not on non-empty stdout. Severity map matches
+        # the interactive /pr-check step 3.2: critical/major block ([coderabbit-N]
+        # candidates); minor = Suggestion tier, surfaced but non-blocking. A
+        # finding with a missing/unknown severity blocks (fail-closed - no
+        # adjudicator on this Claude-absent path). Non-empty output with NO
+        # recognizable JSONL at all = format drift - also fail-closed.
+        cr_blocking=$(grep '"type":"finding"' "$coderabbit_out" 2>/dev/null | grep -cv '"severity":"minor"' || true)
+        cr_minor=$(grep '"type":"finding"' "$coderabbit_out" 2>/dev/null | grep -c '"severity":"minor"' || true)
+        if [ -s "$coderabbit_out" ] && ! grep -q '"type":"' "$coderabbit_out" 2>/dev/null; then
+            echo "pr-check-external: NOT CLEAN - CodeRabbit output in unrecognized format (fail-closed):" >&2
+            cat "$coderabbit_out" >&2
+            exit 1
+        fi
+        if [ "${cr_blocking:-0}" -gt 0 ]; then
+            echo "pr-check-external: NOT CLEAN - CodeRabbit critical/major findings (blocking candidates [coderabbit-N]):" >&2
+            grep '"type":"finding"' "$coderabbit_out" | grep -v '"severity":"minor"' >&2
+            exit 1
+        fi
+        if [ "${cr_minor:-0}" -gt 0 ]; then
+            echo "pr-check-external: CodeRabbit minor findings (Suggestion tier - non-blocking):" >&2
+            grep '"type":"finding"' "$coderabbit_out" | grep '"severity":"minor"' >&2
+        fi
+        ;;  # clean / minor-only: fall through to the verdict.
+    3)
+        : ;;  # CLI absent - skip note already surfaced above; continue fail-open.
+    *)
+        echo "pr-check-external: CodeRabbit review failed (rc=$cr_rc) - continuing without it (fail-open)" >&2
+        ;;  # availability line already surfaced above; continue fail-open.
+esac
 
 echo "pr-check-external: CLEAN - Critical=0 Important=0, codex responded ($responders critics) @ $reviewed_short" >&2
 

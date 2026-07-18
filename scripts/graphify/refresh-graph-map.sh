@@ -364,9 +364,36 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # Copy only markdown (matches the extraction corpus); carry the fence marker.
   # No 2>/dev/null on find — a scan failure (permission/IO) is aborted by
   # set -euo pipefail, and find's own stderr is the ONLY diagnostic for it (CR).
-  ( cd "$CORPUS_ROOT" && find . -name '*.md' -not -path './graphify-out/*' -print0 \
-      | while IFS= read -r -d '' f; do mkdir -p "$SCRATCH/$(dirname "$f")"; cp "$f" "$SCRATCH/$f"; done ) \
-    || { echo "refresh-graph-map: corpus scan/copy failed (see find/cp output above)" >&2; exit 1; }
+  #
+  # STREAMED, not per-file (HIMMEL-1103). This was a `while read` loop running
+  # dirname + mkdir -p + cp PER FILE — three process spawns each. Windows process
+  # creation is expensive, so staging the luna vault (15,235 md files) measured
+  # ~1.8 files/sec => ~130 MINUTES of copying before extraction even started; the
+  # daily HIMMEL-829 cadence firing at 13:00 was still copying at ~15:10. tar
+  # streams the same file set in ONE pass (3 processes, not ~45k) and preserves
+  # the relative layout, so the scratch mirrors the corpus exactly as before.
+  # --null -T - consumes find's -print0 list verbatim, so the predicate and the
+  # graphify-out exclusion are byte-identical to the loop's — no re-globbing, and
+  # filenames with spaces/newlines stay safe. GNU tar and macOS's bsdtar both
+  # accept `--null -T -`.
+  # pipefail keeps the failure contract: a find/tar failure at ANY stage fails the
+  # pipeline and trips the || below, so a partial corpus can never be silently
+  # extracted into a confidently-wrong graph.
+  # NOTE tar preserves source mtimes where cp stamped copy-time. The manifest
+  # below carries mtimes as free-form provenance only (the guard reads its KEYS,
+  # never these values), so nothing depends on the old behaviour — and the
+  # preserved mtime is the more honest provenance of what the graph actually saw.
+  # -type f is LOAD-BEARING for the tar form (CodeRabbit): `-name '*.md'` also
+  # matches DIRECTORIES, and tar -T RECURSES into a directory entry — so a dir
+  # named `foo.md` would drag its entire non-md subtree into the corpus and thus
+  # into the graph. The old per-file `cp` could not do that (it just failed on a
+  # directory), so this predicate is what keeps the streamed form equivalent.
+  # Both corpora are 100% regular files today (luna 15,239 / himmel 9,114, zero
+  # dirs or symlinks named *.md), so this is a no-op on current data and a guard
+  # against a silently-wrong corpus later.
+  ( cd "$CORPUS_ROOT" && find . -type f -name '*.md' -not -path './graphify-out/*' -print0 \
+      | tar --null -T - -cf - ) | ( cd "$SCRATCH" && tar -xf - ) \
+    || { echo "refresh-graph-map: corpus scan/copy failed (see find/tar output above)" >&2; exit 1; }
   printf '%s\n' "$CORPUS_CLASS" > "$SCRATCH/.graphify-corpus"
   # CLEAR THE CLAUDE REROUTE SELECTORS before dispatching (HIMMEL-1070,
   # codex-adv-1). graphify-fence.sh hard-denies these, but the fence is a
@@ -395,9 +422,22 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # fix is an in-script preflight running the SAME matrix eval the fence runs —
   # a design surface, hence its own ticket.
   echo "refresh-graph-map: incremental update on scratchpad copy ($SCRATCH) backend=$BACKEND" >&2
-  # headless-claude-ok: the default BACKEND (claude-cli) makes graphify shell `claude -p` from this unattended refresh — HIMMEL-128 approved for the graphmap cadence: it is a scheduled, no-session extraction whose whole point is running without an interactive harness, and the alternative (a paid API backend) is what the claude-cli backend exists to avoid.
+  # HIMMEL-128 billing note (NOT a gate marker — see below). Under the default
+  # BACKEND (claude-cli) graphify shells the claude CLI headlessly from inside
+  # these two dispatches, so this unattended refresh does bill on the separate
+  # headless bucket. That is approved for the graphmap cadence: it is a
+  # scheduled, no-session extraction whose entire point is running without an
+  # interactive harness, and the alternative (a paid API backend) is precisely
+  # what the claude-cli backend exists to avoid.
+  # Deliberately NOT a `headless-claude-ok:` marker (HIMMEL-1070, public CR
+  # thread): the no-headless-claude gate matches `claude` + `-p|--print|--bg` in
+  # THIS repo's shell, and these lines invoke `graphify`. The gate never fires
+  # here, so a marker would suppress nothing and would imply an enforcement that
+  # does not exist. (It also matches PROSE - an earlier cut of this very comment
+  # tripped the gate by containing the literal flag, so the marker would only
+  # have been suppressing itself.) The real control for what those nested calls
+  # can reach is the reroute-selector clearing above + the egress fence.
   "$GRAPHIFY_MAP" "$SCRATCH" --update --backend "$BACKEND" --max-concurrency 6 --api-timeout 300 >&2 || { echo "refresh-graph-map: graphify --update failed" >&2; exit 2; }
-  # headless-claude-ok: same dispatch, clustering pass (see the marker above).
   "$GRAPHIFY_MAP" cluster-only "$SCRATCH" --backend "$BACKEND" >&2 || { echo "refresh-graph-map: cluster-only failed" >&2; exit 2; }
   # HIMMEL-907: stamp freshness artifacts so the companion guard
   # check-graph-freshness.sh can VERIFY this graph (not "fresh by age" only).
@@ -426,7 +466,8 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # tmp name -> invalidate the old stamps -> promote the derived graph ->
   # atomically install the new stamps (same-dir mv + marker write).
   mkdir -p "$OUT_DIR"
-  CORPUS_ROOT_ABS="$(cd "$CORPUS_ROOT" && pwd)"
+  # (CORPUS_ROOT_ABS removed with HIMMEL-1116 — the .graphify_root marker is now
+  # relative, and that assignment was its only consumer.)
   OUT_DIR_ABS="$(cd "$OUT_DIR" && pwd)"
   SCRATCH_ABS="$(cd "$SCRATCH" && pwd)"
   # HIMMEL-910: acquire the exclusive per-out-dir lock (see its definition
@@ -444,6 +485,174 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   if [ -n "${GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS:-}" ]; then
     sleep "$GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS"
   fi
+  # HIMMEL-1134 CR follow-up round 5: sanitize + guard-scan now run on the
+  # SCRATCH artifacts (staging), BEFORE anything in $OUT_DIR is touched.
+  # Previously this block invalidated the old manifest.json/.graphify_root
+  # stamps and cp'd the new graph.json/GRAPH_REPORT.md into the TRACKED
+  # $OUT_DIR first, then sanitized + guard-scanned those PROMOTED copies --
+  # so a REJECTED (leaking) refresh had already (a) invalidated the prior
+  # stamps and (b) written leaked bytes into graphify-out/ before the
+  # guard's `exit 2` ever ran. The reject still failed closed on PUBLISH
+  # (nothing shipped to the vault's 60-Maps), but the tracked out dir was
+  # left holding leaked bytes a later `git add -A` could commit, and the
+  # corpus's prior-good stamps were gone. Scanning the scratch copies gives
+  # IDENTICAL coverage (byte-for-byte what would be promoted) while
+  # guaranteeing $OUT_DIR's prior clean artifacts + stamps are completely
+  # untouched on rejection.
+  SCRATCH_REPORT="$SCRATCH/graphify-out/GRAPH_REPORT.md"
+  SCRATCH_GRAPH="$SCRATCH/graphify-out/graph.json"
+  # HIMMEL-1134 CR follow-up (CodeRabbit App, PR #1274): assert BOTH staging
+  # artifacts exist BEFORE the sanitize/guard even start. Without this, a
+  # missing graph.json (or report) would fall through every check below --
+  # `head ... 2>/dev/null || true` silently swallows the read failure, the
+  # `case` has no default so an empty/garbage header just skips the
+  # sanitize, and the scan loop's (now-removed) `[ -f ] || continue` would
+  # skip a missing artifact rather than refuse -- letting a malformed
+  # staging area reach $OUT_DIR mutation before some LATER cp happened to
+  # fail, defeating the round-5 preservation guarantee this whole reorder
+  # exists for.
+  for required_artifact in "$SCRATCH_REPORT" "$SCRATCH_GRAPH"; do
+    if [ ! -f "$required_artifact" ]; then
+      echo "refresh-graph-map: missing required scratch artifact ${required_artifact##*/}" >&2
+      exit 2
+    fi
+  done
+  # HIMMEL-1134: sanitize the scratch report's HEADER, before promotion.
+  # graphify titles GRAPH_REPORT.md by the EXTRACTION path -- here that's
+  # $SCRATCH, a PID-suffixed scratchpad dir = the operator's home dir +
+  # username -- and that header would otherwise land in a TRACKED,
+  # public-mirrored artifact (graphify-out/ went tracked in HIMMEL-1123).
+  # Rewrite line 1 to carry the corpus NAME instead, preserving a trailing
+  # " (YYYY-MM-DD)" stamp if present. Matched on the generic
+  # `# Graph Report - <anything>` SHAPE, not the specific scratch string
+  # (MSYS vs Windows give different separator forms). awk, not
+  # sed/parameter-expansion: $NAME lands as an awk -v value (no
+  # regex-replacement escaping of & or \ to worry about).
+  if ! report_line1="$(head -n 1 "$SCRATCH_REPORT" 2>/dev/null)"; then
+    echo "refresh-graph-map: failed to read report header" >&2
+    exit 2
+  fi
+  case "$report_line1" in
+    '# Graph Report - '*)
+      report_date="$(printf '%s\n' "$report_line1" | grep -oE '\([0-9]{4}-[0-9]{2}-[0-9]{2}\)$' || true)"
+      if [ -n "$report_date" ]; then
+        report_header="# Graph Report - $NAME  $report_date"
+      else
+        report_header="# Graph Report - $NAME"
+      fi
+      # HIMMEL-1134 CR follow-up round 4: explicit success/failure branches,
+      # not `awk ... && mv` -- under `set -euo pipefail` a command on the
+      # LEFT of `&&` is EXEMPT from set -e, so an awk failure there would
+      # short-circuit the `&&` (skipping the mv) and fall through SILENTLY.
+      # Fail loudly on either awk or mv failing, and clean up the tmp file
+      # on both paths (belt-and-braces -- it now lives inside $SCRATCH, so
+      # the EXIT trap's `rm -rf "$SCRATCH"` would also catch it).
+      if awk -v h="$report_header" 'NR==1 { print h; next } { print }' "$SCRATCH_REPORT" > "$SCRATCH_REPORT.tmp"; then
+        if ! mv "$SCRATCH_REPORT.tmp" "$SCRATCH_REPORT"; then
+          echo "refresh-graph-map: failed to install sanitized report header" >&2
+          rm -f "$SCRATCH_REPORT.tmp"
+          exit 2
+        fi
+      else
+        echo "refresh-graph-map: failed to sanitize report header (awk)" >&2
+        rm -f "$SCRATCH_REPORT.tmp"
+        exit 2
+      fi
+      ;;
+    *)
+      # HIMMEL-1134 CR follow-up (CodeRabbit App, PR #1274): the `case`
+      # previously had no default -- an unexpected header format (not
+      # starting with the fixed `# Graph Report - ` prefix graphify always
+      # emits) silently SKIPPED the sanitize and fell through to the guard
+      # with whatever line 1 already was. Fail loudly instead: a header
+      # this script doesn't recognize is itself a signal something is
+      # wrong upstream (empty/corrupted report, a different tool's output,
+      # ...), not a shape to quietly pass through.
+      echo "refresh-graph-map: failed to sanitize report header (unexpected format)" >&2
+      exit 2
+      ;;
+  esac
+  # HIMMEL-1134: host-path GUARD, failing LOUDLY, BEFORE any $OUT_DIR
+  # mutation (CR follow-up round 5). The sanitize above only touches line 1
+  # -- a leak elsewhere in the report (or in graph.json) would otherwise
+  # ship silently until a reviewer happened to catch it by eye. Scan both
+  # SCRATCH artifacts about to be promoted for a host-path SHAPE (case
+  # insensitive): a Users dir (POSIX or Windows-drive form, either slash
+  # direction), a bare \Users\, a /home/<user>/ dir, or an AppData PATH
+  # SEGMENT -- PLUS explicit JSON-escaped double-backslash alternatives
+  # (graph.json is JSON, so a Windows path in it is serialized with each
+  # backslash doubled, e.g. C:\\Users\\name). The single-backslash
+  # drive-letter alternative above ([A-Za-z]:\Users\, anchored right after
+  # the colon) does NOT match that doubled form; the bare \Users\
+  # alternative already happens to catch most doubled-backslash cases too (a
+  # run of 2 backslashes contains 1 as a substring), but the explicit
+  # doubled-backslash alternatives make that coverage textual instead of
+  # incidental, so it survives if the bare alternative is ever narrowed or
+  # removed. AppData is bounded by path delimiters -- (^|[/\])AppData([/\]|$)
+  # -- rather than a bare substring: an UNBOUNDED "AppData" would false-
+  # positive-refuse a clean refresh over a legit node name or prose mentioning
+  # it (e.g. "MyAppDataStore", "AppData sync"), which have no delimiter
+  # immediately before/after the word (CR-caught, HIMMEL-1134 follow-up). A
+  # hit refuses the promote -- same exit-2 convention as the
+  # graphify/cluster-only and lock-acquire failures above (a leak
+  # fence-tripping is a tooling failure, not a usage error).
+  leak_pattern='(/Users/|[A-Za-z]:\\Users\\|[A-Za-z]:/Users/|\\Users\\|[A-Za-z]:\\\\Users\\\\|\\\\Users\\\\|/home/[^/]+/|(^|[/\\])AppData([/\\]|$))'
+  # The upfront existence check above already guarantees both artifacts are
+  # present, so no `[ -f ] || continue` skip is needed here (CR follow-up,
+  # CodeRabbit App PR #1274 -- that skip is now dead code the existence
+  # check made redundant, and a redundant skip is one more place a real gap
+  # could silently hide).
+  for leak_artifact in "$SCRATCH_REPORT" "$SCRATCH_GRAPH"; do
+    # basenamed (CR follow-up round 5): the FULL path (now under $SCRATCH,
+    # previously $OUT_DIR/graph.json) can itself carry the corpus/home path
+    # -- error messages below print only the filename, never the full path.
+    leak_artifact_name="${leak_artifact##*/}"
+    # -m1: grep stops after its OWN first match (rc 0 hit / rc 1 miss) -- no
+    # pipe to `head`, so no SIGPIPE. Under `set -o pipefail` (line 30), a
+    # `grep | head -n 1` pipeline where grep gets SIGPIPE'd by head closing
+    # early reports a NON-ZERO pipeline rc even on a real match, which made
+    # `&&` short-circuit past the `exit 2` below -- the guard failed OPEN on
+    # exactly the leaks with a second match past the closed pipe (CR-caught,
+    # HIMMEL-1134 follow-up).
+    #
+    # grep has THREE exit statuses, not two (CR-caught, HIMMEL-1134 follow-up
+    # round 3): 0 = match, 1 = no match, >1 = SCAN ERROR (unreadable
+    # artifact, bad regex, out of memory, ...). `leak_line=$(...) && [ -n ]`
+    # treated rc>1 the same as rc 1 (no match) -- a scan the guard couldn't
+    # even perform was silently read as "clean", so a real leak in an
+    # artifact grep failed to read would still ship. Capture the rc
+    # explicitly (`|| grep_rc=$?` stays set -e safe) and fail CLOSED on
+    # rc>1, distinct from the rc-0 leak-found path.
+    #
+    # -a (--binary-files=text, CR follow-up, CodeRabbit App PR #1274): a NUL
+    # byte anywhere in the artifact flips GNU grep into "Binary file
+    # matches" mode, which drops the line-number extraction this guard's
+    # error message depends on and makes a real leak's detectability
+    # unpredictable on adversarial/binary content. Force text mode instead
+    # -- both artifacts are supposed to be text (a report is markdown, the
+    # graph is JSON), so treating a NUL as just another byte is correct
+    # here, not a workaround.
+    leak_line=""
+    grep_rc=0
+    leak_line="$(grep -a -m1 -inE "$leak_pattern" "$leak_artifact")" || grep_rc=$?
+    if [ "$grep_rc" -eq 0 ]; then
+      # HIMMEL-1134 CR follow-up: do NOT echo $leak_line -- it's the matched
+      # grep line, i.e. it CONTAINS the leaked host path. Printing it here
+      # would have the guard leak the very secret it's refusing to promote,
+      # straight into stderr (and from there into CI logs / captured
+      # output). Report only the file NAME + the line NUMBER (grep's own
+      # "N:..." prefix, stripped at the first colon).
+      leak_line_number="${leak_line%%:*}"
+      echo "refresh-graph-map: REFUSING to promote -- host path detected in $leak_artifact_name at line $leak_line_number" >&2
+      exit 2
+    elif [ "$grep_rc" -gt 1 ]; then
+      echo "refresh-graph-map: REFUSING to promote -- leak SCAN FAILED for $leak_artifact_name (grep rc=$grep_rc)" >&2
+      exit 2
+    fi
+    # grep_rc -eq 1: no leak found in this artifact, continue.
+  done
+  # ONLY past this point (guard passed clean) does anything in $OUT_DIR
+  # change -- everything above ran against $SCRATCH only.
   # 1. build the new manifest from the scratch corpus into a tmp name (atomic
   #    content write is fine — it's a tmp name, not the stamp itself).
   python3 - "$SCRATCH_ABS" "$OUT_DIR_ABS" <<'PYEOF'
@@ -472,14 +681,27 @@ PYEOF
   # 2. INVALIDATE the old stamps so a half-promoted out dir is never mistaken
   #    for fresh (no manifest marker <-> guard fails closed).
   rm -f "$OUT_DIR/manifest.json" "$OUT_DIR/.graphify_root"
-  # 3. promote the refreshed derived artifacts into the corpus's repo-local out.
-  cp "$SCRATCH/graphify-out/graph.json" "$OUT_DIR/graph.json"
-  cp "$SCRATCH/graphify-out/GRAPH_REPORT.md" "$REPORT"
+  # 3. promote the (already sanitized + guard-scanned) derived artifacts into
+  #    the corpus's repo-local out.
+  cp "$SCRATCH_GRAPH" "$OUT_DIR/graph.json"
+  cp "$SCRATCH_REPORT" "$REPORT"
   # 4. STAMP: same-dir rename = atomic install of the manifest, then (re)write
-  #    the marker. .graphify_root stays CORPUS_ROOT_ABS — the guard joins the
-  #    corpus-relative manifest keys against the LIVE corpus root.
+  #    the marker. The guard joins the corpus-relative manifest keys against the
+  #    resolved corpus root.
+  #
+  #    .graphify_root is RELATIVE (".") — not CORPUS_ROOT_ABS (HIMMEL-1116).
+  #    OUT_DIR is always <corpus>/graphify-out, so the guard's relative branch
+  #    (`CORPUS_RESOLVED="$OUT/../$MARKER_ROOT"`) resolves "$OUT/../." == the
+  #    corpus root on EVERY machine. An absolute marker only works on the host
+  #    that wrote it: the derived graph is now a tracked, SHARED artifact
+  #    (HIMMEL-1123 — stations that cannot afford extraction pull it instead of
+  #    building it), so a marker carrying THIS host's path would make the guard
+  #    resolve a non-existent corpus on win2, fail closed "corpus orphaned", and
+  #    tell that station to rebuild the very graph we shipped it to avoid
+  #    rebuilding. The guard already supported relative markers; nothing there
+  #    changes.
   mv "$OUT_DIR/.manifest.tmp" "$OUT_DIR/manifest.json"
-  printf '%s\n' "$CORPUS_ROOT_ABS" > "$OUT_DIR/.graphify_root"
+  printf '%s\n' "." > "$OUT_DIR/.graphify_root"
   # CR r2 [codex-adv-r2]: do NOT release here -- the publish step below
   # READS $REPORT from the shared out dir, and a second refresh's promote
   # overwrites it with a non-atomic cp; releasing before that read let a

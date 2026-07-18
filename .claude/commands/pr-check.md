@@ -63,16 +63,18 @@ Steps:
 
    **Step 3.0 — critic panel first-pass (decimal substep, runs BEFORE any Agent dispatch):**
 
-   `/pr-check` runs the free cross-model panel (qwen3coder-480B, ~2min — bounded by the 240 s per-member `CRITIC_TIMEOUT_SECS`) by **default**. gptoss + kimi were DROPPED 2026-07-03 (operator decision, HIMMEL-667: 12% / 13% ledger agreed-rate — noise; qwen3coder is the free anchor). Control via `CR_PROFILE`.
+   `/pr-check` runs the cross-model panel (~2min — bounded by the 240 s per-member `CRITIC_TIMEOUT_SECS`, but ONLY when the `timeout` binary is present; without it each member runs unbounded — see step 3.0's hang-protection note) by **default**. Control via `CR_PROFILE`.
+
+   **The default is the PAID codex critic — there is no free anchor (HIMMEL-1101; operator decision recorded on that ticket: accept paid-by-default).** The free lane was **removed deliberately** — it made more trouble than it was worth: gptoss + kimi were dropped 2026-07-03 (HIMMEL-667: 12% / 13% ledger agreed-rate — noise), and the surviving qwen3coder anchor kept erroring rc=1 (HIMMEL-953). Paid-by-default is the intended posture, not drift; only these docs had lagged. `critics.json` today contains exactly one row — `codex` / `gpt-5.5`, tier `paid`. So an unset `CR_PROFILE` resolves to zero free rows and falls back to the paid anchor: **a default `/pr-check` that actually runs the panel consumes the OpenAI usage bank.** The panel is skipped (no spend) when the diff is empty or `CR_PROFILE=none`; note the HIMMEL-737 triviality gate does NOT save you here, since it only fires when `paid` is already in the tier filter and the default filter is `free`. Use `CR_PROFILE=none` for instant claude-only when spend is not wanted.
 
    **Structural note (HIMMEL-558): do NOT hand-compute a tier filter.** `CR_PROFILE` is loaded from the primary checkout's `.env` and exported; `critic-panel.sh` resolves its tiers **from `CR_PROFILE` itself** and treats it as authoritative (it wins over any `CRITIC_PANEL_TIERS`). This closes a drift where a run scoped the panel to free-only (silently dropping the paid codex critic) by hardcoding `CRITIC_PANEL_TIERS=free`. Your only job here is to load+export `CR_PROFILE` and honor the `none` skip; the panel does the rest. Semantics the panel implements:
-   - `CR_PROFILE` unset/empty → **DEFAULT**: free panel (qwen3coder). Print note: "Default free cross-model CR (qwen3coder, ~2min; set CR_PROFILE=none for instant claude-only)."
+   - `CR_PROFILE` unset/empty → **DEFAULT**: tier filter `free`, which currently matches NO rows in `critics.json` → the panel falls back to the **paid** codex anchor. Print note: "Default cross-model CR — no free critics registered, using the PAID codex anchor (~2min; set CR_PROFILE=none for instant claude-only)."
    - `CR_PROFILE=none` → **claude-only** (skip panel entirely, in THIS runbook); print a one-line note and skip.
    - `CR_PROFILE=thorough` → panel tiers `free,thorough` (equals the default while critics.json defines no thorough-tier rows; the branch is kept so heavier critics can slot back in).
    - `CR_PROFILE=paid` → the **paid escalation** critic (codex / `gpt-5.5` via hermes `openai-codex` OAuth, HIMMEL-417) — for high-stakes PRs or when the free panel disagrees. Consumes your OpenAI usage bank. Combine with the free panel via `CR_PROFILE=free,paid`. **Triviality gate (HIMMEL-737):** when the diff is classified *trivial* (docs-only, or a ~one-line non-safety code change — ≤2 changed diff lines, i.e. one modified line), the panel drops the paid tier to save codex spend — set `CR_TRIVIALITY_OVERRIDE=full` to force the full panel regardless. If `paid` was the ONLY requested tier, the panel does not substitute free — it exits 1 (the documented all-critics-failed path) and the run degrades to claude-only, loudly.
    - any other value → passed through as the tier filter verbatim (advanced/custom, e.g. `free,paid`).
 
-   Per-member hang protection: `CRITIC_TIMEOUT_SECS` (default 240 s, HIMMEL-558 — raised from 150 s after codex + qwen3coder were seen clipping at 150 s). `CR_PROFILE=none` skips the panel entirely.
+   Per-member hang protection: `CRITIC_TIMEOUT_SECS` — default **240 s**, which is ALSO the fallback when the supplied value is non-numeric or ≤0 (the panel warns and uses 240 rather than failing). HIMMEL-558 raised it from 150 s after codex + qwen3coder were seen clipping at 150 s. It **needs the `timeout` binary but does not require it**: when `timeout` is absent the panel prints "per-member hang protection disabled" and runs each member **unbounded** (`critic-panel.sh:90-92`) — the same graceful-degrade convention the step-3.1 codex pass uses. `CR_PROFILE=none` skips the panel entirely.
 
    ```bash
    # Resolve the protected default (main OR master, HIMMEL-297) for the diff base.
@@ -98,7 +100,7 @@ Steps:
    elif [ -z "$diff_out" ]; then
        echo "empty diff — critic panel skipped"
    else
-       [ -z "${CR_PROFILE:-}" ] && echo "Default free cross-model CR (qwen3coder, ~2min; set CR_PROFILE=none for instant claude-only)."
+       [ -z "${CR_PROFILE:-}" ] && echo "Default cross-model CR — no free critics registered, using the PAID codex anchor (~2min; set CR_PROFILE=none for instant claude-only)."
        panel_tmp=$(mktemp -t cr-panel-avail.XXXXXX)
        # CR_USAGE_LOG=1 (HIMMEL-485): each critic logs a chars/4 ESTIMATED `usage`
        # ledger record (hermes does not expose real usage via the one-shot

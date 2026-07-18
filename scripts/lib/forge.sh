@@ -80,6 +80,9 @@ forge_pr_find_open()   { _forge_dispatch forge_pr_find_open "$@"; }
 forge_pr_create()      { _forge_dispatch forge_pr_create "$@"; }
 forge_pr_set_body()    { _forge_dispatch forge_pr_set_body "$@"; }
 forge_pr_mergeable()   { _forge_dispatch forge_pr_mergeable "$@"; }
+# args: NUMBER [VETTED_HEAD_SHA]. The optional vetted SHA binds the merge to the
+# commit the gates certified (HIMMEL-1058 TOCTOU) — honored by github
+# (--match-head-commit), accepted-and-ignored by bitbucket (no equivalent).
 forge_pr_merge()       { _forge_dispatch forge_pr_merge "$@"; }
 forge_pr_has_merged()  { _forge_dispatch forge_pr_has_merged "$@"; }
 # issue create (CR deferred-issue filing, HIMMEL-327). args: REPO TITLE BODY LABEL.

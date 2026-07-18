@@ -28,6 +28,24 @@ PANELEOF
 chmod +x "$PANEL"
 export CRITIC_PANEL_CMD="$PANEL"
 
+# Default the CodeRabbit seat to ABSENT so T1-T6 stay hermetic and fast (no real
+# CodeRabbit review on the GLM branch). T7-T9 override CODERABBIT_BIN per-case.
+# CODERABBIT_WSL is overridden too so a host with real WSL does not resolve it.
+export CODERABBIT_BIN="$tmp/no-coderabbit-bin"
+export CODERABBIT_WSL="$tmp/no-coderabbit-wsl"
+
+# --- A coderabbit stub driven by STUB_FINDINGS / STUB_RC ----------------------
+# Mirrors test-coderabbit-review.sh: coderabbit-review.sh runs it inside the
+# review clone, so STUB_FINDINGS/STUB_RC must reach it via the environment.
+CRSTUBS="$tmp/crstubs"
+mkdir -p "$CRSTUBS"
+cat > "$CRSTUBS/coderabbit" <<'CRSTUBEOF'
+#!/usr/bin/env bash
+[ -n "${STUB_FINDINGS:-}" ] && printf '%s\n' "$STUB_FINDINGS"
+exit "${STUB_RC:-0}"
+CRSTUBEOF
+chmod +x "$CRSTUBS/coderabbit"
+
 # Panel stdout for a given (critical,important) pair.
 panel_stdout() {
     printf '# Critic Panel Review (2/2 critics responded)\n\n## Critical Issues (%s found)\n\n## Important Issues (%s found)\n\n## Suggestions (0 found)\n' "$1" "$2"
@@ -132,5 +150,97 @@ else
     ok "T6 Critical>0 not clean"
 fi
 if [ -z "$(meta_verdict "$sd/meta.json")" ]; then ok "T6 no verdict when not clean"; else bad "T6: verdict should not be written when not clean"; fi
+
+# --- T7: coderabbit major finding BLOCKS (exit 1, no verdict) -----------------
+# Clean panel + codex ok, but the coderabbit stub emits a critical/major
+# finding (realistic --agent JSONL: status lines + a finding line) -> the gate
+# fails closed on it ([coderabbit-N] blocking candidates).
+sd="$tmp/s7"; new_session "$sd"
+if (cd "$repo" && FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=0 \
+    STUB_FINDINGS='{"type":"status","phase":"analyzing","status":"reviewing"}
+{"type":"finding","severity":"major","fileName":"f.txt","codegenInstructions":"bug here"}
+{"type":"complete","status":"review_completed","findings":1}' \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main >/dev/null 2>&1); then
+    bad "T7: coderabbit major finding should BLOCK"
+else
+    ok "T7 coderabbit major finding blocks"
+fi
+if [ -z "$(meta_verdict "$sd/meta.json")" ]; then ok "T7 no verdict when coderabbit blocks"; else bad "T7: verdict should not be written when coderabbit blocks"; fi
+
+# --- T7b: coderabbit minor-only findings do NOT block (Suggestion tier) -------
+# Severity map parity with interactive /pr-check step 3.2: minor -> Suggestion,
+# surfaced but non-blocking (PR #1139 CodeRabbit app finding, adjudicated).
+sd="$tmp/s7b"; new_session "$sd"
+out="$(cd "$repo" && FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=0 \
+    STUB_FINDINGS='{"type":"finding","severity":"minor","fileName":"f.txt","codegenInstructions":"nit"}
+{"type":"complete","status":"review_completed","findings":1}' \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ]; then ok "T7b minor-only does not block (exit 0)"; else bad "T7b: minor-only should not block (got $rc)"; fi
+v="$(meta_verdict "$sd/meta.json")"
+case "$v" in
+    "pass (sha="*) ok "T7b verdict written on minor-only ($v)" ;;
+    *) bad "T7b: verdict wrong (got: $v)" ;;
+esac
+
+# --- T7c: clean review with status-lines-only stdout does NOT block -----------
+# The --agent stream always carries status/complete JSONL even with zero
+# findings; a non-empty-stdout gate would false-block every clean review.
+sd="$tmp/s7c"; new_session "$sd"
+if (cd "$repo" && FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=0 \
+    STUB_FINDINGS='{"type":"status","phase":"analyzing","status":"reviewing"}
+{"type":"complete","status":"review_completed","findings":0}' \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main >/dev/null 2>&1); then
+    ok "T7c status-only stdout stays clean"
+else
+    bad "T7c: clean review with status lines must not block"
+fi
+
+# --- T7d: unrecognized (non-JSONL) output BLOCKS (format drift, fail-closed) --
+sd="$tmp/s7d"; new_session "$sd"
+if (cd "$repo" && FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=0 \
+    STUB_FINDINGS="[coderabbit-1] f.txt:1 critical bug here" \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main >/dev/null 2>&1); then
+    bad "T7d: unrecognized output format should BLOCK (fail-closed)"
+else
+    ok "T7d format drift fails closed"
+fi
+
+# --- T8: coderabbit absent (rc=3) skips cleanly (exit 0, verdict pass) --------
+# A machine without the CLI is not a critic drop-out: skip note + fail-open.
+sd="$tmp/s8"; new_session "$sd"
+out="$(cd "$repo" && FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$tmp/no-coderabbit-bin" CODERABBIT_WSL="$tmp/no-coderabbit-wsl" \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ]; then ok "T8 coderabbit-absent skips (exit 0)"; else bad "T8: coderabbit-absent should exit 0 (got $rc)"; fi
+case "$out" in
+    "external_cr_verdict: pass ("*) ok "T8 snippet printed (fail-open to verdict)" ;;
+    *) bad "T8: verdict snippet missing (got: $out)" ;;
+esac
+v="$(meta_verdict "$sd/meta.json")"
+case "$v" in
+    "pass (sha="*) ok "T8 verdict written ($v)" ;;
+    *) bad "T8: verdict wrong (got: $v)" ;;
+esac
+
+# --- T9: coderabbit review failed (rc=1) degrades open (exit 0, verdict) ------
+# Stub exits 7 -> coderabbit-review.sh maps it to rc=1 + an unavailable line ->
+# the external lane fails open and still records the pass verdict.
+sd="$tmp/s9"; new_session "$sd"
+out="$(cd "$repo" && FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=7 \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ]; then ok "T9 coderabbit-failed degrades open (exit 0)"; else bad "T9: coderabbit-failed should exit 0 (got $rc)"; fi
+v="$(meta_verdict "$sd/meta.json")"
+case "$v" in
+    "pass (sha="*) ok "T9 verdict written despite coderabbit failure ($v)" ;;
+    *) bad "T9: verdict should be written fail-open (got: $v)" ;;
+esac
 
 if [ "$fail" -eq 0 ]; then echo "PASS test-pr-check-external"; else echo "FAILURES in test-pr-check-external"; exit 1; fi

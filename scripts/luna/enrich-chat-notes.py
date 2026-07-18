@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""enrich-chat-notes — DeepSeek enrichment pass over enriched:false chat-import notes.
+"""enrich-chat-notes — provider-pluggable enrichment pass over enriched:false chat-import notes.
 
-HIMMEL-833. Sibling of fold-chat-history.py (HIMMEL-832). Per note: one
-DeepSeek call (up to 2 attempts on invalid response shape) (summary +
-vocab-constrained tags); each request also carries the vault-wide top-200
-tag vocabulary (tag names only, from all vault markdown) alongside the note
-payload as the allowed-tags list. Related Notes are computed LOCALLY by tag
-overlap (zero egress). Egress is gated by the egress matrix (purpose:
-enrichment) and ledgered per run.
+HIMMEL-833 (DeepSeek, original); HIMMEL-1167 generalizes the LLM backend to a
+selectable provider (--provider deepseek|codex|glm|claude, default deepseek).
+Sibling of fold-chat-history.py (HIMMEL-832). Per note: one provider call
+(up to 2 attempts on invalid response shape) (summary + vocab-constrained
+tags); each request also carries the vault-wide top-200 tag vocabulary
+(tag names only, from all vault markdown) alongside the note payload as the
+allowed-tags list. Related Notes are computed LOCALLY by tag overlap (zero
+egress). Egress is gated by the egress matrix (purpose: enrichment) under the
+chosen provider's own cell and ledgered per run.
 
 This tool is luna-personal-only by design: the corpus in the gate query and
 ledger is PINNED (not resolved from --vault), and --vault is allow-listed to
@@ -46,6 +48,46 @@ RELATED_MAX = 5
 PEAK_HOURS_UTC = (1, 2, 3, 6, 7, 8, 9)
 API_URL = "https://api.deepseek.com/chat/completions"
 SKIP_DIRS = {".obsidian", ".trash", ".git", "graphify-out", "_assets", "assets"}
+
+# Provider registry (HIMMEL-1167): the LLM backend is selectable so adopters
+# enrich on whichever provider their egress matrix ratifies. deepseek is the
+# default for back-compat. Each cell pins the api_style (which HTTP path),
+# endpoint url, model id, the env var holding the API key, the egress-matrix
+# provider id the gate+ledger are queried/recorded under, and — for the
+# anthropic api_style only — the auth header scheme.
+PROVIDERS = {
+    "deepseek": {
+        "api_style": "openai",
+        "url": API_URL,
+        "model": MODEL,
+        "key_env": "DEEPSEEK_API_KEY",
+        "egress": "deepseek",
+    },
+    "codex": {
+        "api_style": "openai",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "model": "gpt-5.6",
+        "key_env": "OPENAI_API_KEY",
+        "egress": "openai-codex",
+    },
+    "glm": {
+        "api_style": "anthropic",
+        "url": "https://api.z.ai/api/anthropic/v1/messages",
+        "model": "glm-5.2",
+        "key_env": "ZAI_API_KEY",
+        "egress": "zai-glm",
+        "auth": "bearer",
+    },
+    "claude": {
+        "api_style": "anthropic",
+        "url": "https://api.anthropic.com/v1/messages",
+        "model": "claude-haiku-4-5",
+        "key_env": "ANTHROPIC_API_KEY",
+        "egress": "anthropic",
+        "auth": "x-api-key",
+    },
+}
+DEFAULT_PROVIDER = "deepseek"
 
 
 def split_frontmatter(text):
@@ -251,36 +293,41 @@ def primary_root(script_dir):
     return script_dir.parent.parent
 
 
-def resolve_api_key(script_dir):
-    """Env DEEPSEEK_API_KEY wins; else the PRIMARY checkout's .env.
-    Never resolves from the process CWD (HIMMEL-460 trap)."""
-    key = os.environ.get("DEEPSEEK_API_KEY")
+def resolve_api_key(script_dir, key_env):
+    """Env var named `key_env` wins; else the PRIMARY checkout's .env.
+    Never resolves from the process CWD (HIMMEL-460 trap). `key_env` is the
+    provider's key env var (DEEPSEEK_API_KEY / OPENAI_API_KEY / ZAI_API_KEY /
+    ANTHROPIC_API_KEY)."""
+    key = os.environ.get(key_env)
     if key:
         return key
     envf = primary_root(script_dir) / ".env"
     if not envf.is_file():
         return None
+    prefix = key_env + "="
     for ln in envf.read_text(encoding="utf-8").splitlines():
         ln = ln.strip()
-        if ln.startswith("DEEPSEEK_API_KEY="):
+        if ln.startswith(prefix):
             val = ln.split("=", 1)[1].strip().strip('"').strip("'")
             return val or None
     return None
 
 
-def _run_gate_eval(repo_root):
-    """(returncode, stdout, stderr) of the matrix eval. Seam for tests."""
+def _run_gate_eval(repo_root, egress):
+    """(returncode, stdout, stderr) of the matrix eval for provider egress id.
+    Seam for tests."""
     helper = repo_root / "scripts" / "guardrails" / "egress-matrix-eval.mjs"
     out = subprocess.run(
-        ["node", str(helper), "luna-personal", "deepseek", "enrichment"],
+        ["node", str(helper), "luna-personal", egress, "enrichment"],
         capture_output=True, text=True, timeout=30)
     return out.returncode, out.stdout, out.stderr
 
 
-def egress_gate(repo_root):
-    """(verdict, note). ('error', msg) on subprocess failure/nonzero exit."""
+def egress_gate(repo_root, egress):
+    """(verdict, note). ('error', msg) on subprocess failure/nonzero exit.
+    `egress` is the provider's egress-matrix id (deepseek/zai-glm/...)."""
     try:
-        rc, stdout, stderr = _run_gate_eval(repo_root)
+        rc, stdout, stderr = _run_gate_eval(repo_root, egress)
     except (OSError, subprocess.SubprocessError) as e:
         return ("error", str(e))
     if rc != 0:
@@ -289,18 +336,19 @@ def egress_gate(repo_root):
     return (verdict, note)
 
 
-def ledger_append(chats_root, count, vocab_count):
+def ledger_append(chats_root, count, vocab_count, provider):
     """One JSONL audit line BEFORE first egress. False = caller must refuse.
 
     `count` = notes egressed this run; `vocab_count` = number of vault-wide
-    tag names carried with each request (the allowed-tags vocabulary)."""
+    tag names carried with each request (the allowed-tags vocabulary);
+    `provider` = the provider's egress-matrix id (deepseek/zai-glm/...)."""
     path = Path(os.environ.get("GRAPHIFY_LEDGER")
                 or Path.home() / ".claude" / "graphify-egress.jsonl")
     rec = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "path": str(chats_root),
         "corpus": "luna-personal",
-        "provider": "deepseek",
+        "provider": provider,
         "purpose": "enrichment",
         "verdict": "allow+log",
         "tool": "enrich-chat-notes",
@@ -332,19 +380,19 @@ SYSTEM_PROMPT = (
     '"tags": [3 to 8 tags chosen STRICTLY from the provided vocabulary]}')
 
 
-def _http_post(api_key, body):
+def _http_post(url, body, headers):
     req = urllib.request.Request(
-        API_URL,
+        url,
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json",
-                 "Authorization": "Bearer " + api_key},
+        headers=headers,
         method="POST")
     with urllib.request.urlopen(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def call_deepseek(api_key, title, payload, vocab, post=None):
-    """One enrichment call. Sends the note payload plus the vault-wide tag
+def call_openai(url, api_key, model, title, payload, vocab, post=None):
+    """One enrichment call over an OpenAI-compatible chat/completions endpoint
+    (deepseek, codex). Sends the note payload plus the vault-wide tag
     vocabulary (`vocab`, tag names only — the allowed-tags list) to the
     provider; returns the model's parsed JSON dict. Raises
     urllib.error.*/OSError/ValueError/KeyError/TypeError/IndexError on
@@ -352,7 +400,7 @@ def call_deepseek(api_key, title, payload, vocab, post=None):
     empty choices list or a null content)."""
     post = post or _http_post
     body = {
-        "model": MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content":
@@ -363,10 +411,12 @@ def call_deepseek(api_key, title, payload, vocab, post=None):
         "temperature": 0.2,
         "max_tokens": 500,
     }
+    headers = {"Content-Type": "application/json",
+               "Authorization": "Bearer " + api_key}
     data = None
     for attempt in range(3):
         try:
-            data = post(api_key, body)
+            data = post(url, body, headers)
             break
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503) and attempt < 2:
@@ -379,6 +429,85 @@ def call_deepseek(api_key, title, payload, vocab, post=None):
                 continue
             raise
     return json.loads(data["choices"][0]["message"]["content"])
+
+
+def _strip_fence(text):
+    """Strip one leading ``` (optionally ```json) and trailing ``` fence."""
+    text = text.strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.split("\n")
+    lines = lines[1:]  # drop the opening fence (incl. any ```json lang tag)
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _anthropic_text(data):
+    """Concatenate every top-level `text` content block from a Messages API
+    response, skipping thinking/redacted_thinking blocks. GLM-5 enables
+    thinking by DEFAULT (z.ai), so a valid response commonly LEADS with a
+    thinking block that has no `text` key — blindly indexing content[0]["text"]
+    would KeyError and, via the caller's retry, send + bill the note twice
+    while leaving it unenriched. Thinking blocks carry a `thinking` key (no
+    `text`), so filtering on the presence of `text` skips them. Raises
+    ValueError when no text block is present (flows to the per-note skip path,
+    same caught set as the other shape failures)."""
+    parts = [b["text"] for b in data["content"]
+             if isinstance(b, dict) and "text" in b]
+    joined = "".join(parts).strip()
+    if not joined:
+        raise ValueError("anthropic response carried no text block")
+    return joined
+
+
+def call_anthropic(url, api_key, model, title, payload, vocab, auth, post=None):
+    """One enrichment call over an Anthropic Messages API endpoint (glm via
+    z.ai anthropic-compat, claude). Same payload/vocab contract as
+    call_openai; the Messages API has no response_format, so JSON-only output
+    relies on SYSTEM_PROMPT and the response text is parsed (with a markdown
+    ```/```json fence stripped if present). `auth` is "x-api-key" (Anthropic
+    native) or "bearer" (z.ai compat). Same retry/backoff and exception set as
+    call_openai."""
+    post = post or _http_post
+    # 1024, not 500: GLM-5 enables thinking by default (z.ai), and max_tokens
+    # bounds thinking + answer combined. z.ai's documented recommended minimum
+    # is 1024 — at 500 a verbose thinking block can truncate the (tiny) JSON
+    # answer, which then fails json.loads, retries (double egress), and skips
+    # the note. The openai path (deepseek) has no default thinking, so it keeps
+    # the tighter 500 budget. (CR codex-adv-2, HIMMEL-1167.)
+    body = {
+        "model": model,
+        "max_tokens": 1024,
+        "system": SYSTEM_PROMPT,
+        "messages": [
+            {"role": "user", "content":
+                "Vocabulary: " + ", ".join(vocab)
+                + "\n\nTitle: " + title + "\n\nTranscript:\n" + payload},
+        ],
+    }
+    headers = {"Content-Type": "application/json",
+               "anthropic-version": "2023-06-01"}
+    if auth == "x-api-key":
+        headers["x-api-key"] = api_key
+    else:
+        headers["Authorization"] = "Bearer " + api_key
+    data = None
+    for attempt in range(3):
+        try:
+            data = post(url, body, headers)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503) and attempt < 2:
+                time.sleep(2 ** attempt * 2)
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt < 2:
+                time.sleep(2 ** attempt * 2)
+                continue
+            raise
+    return json.loads(_strip_fence(_anthropic_text(data)))
 
 
 def validate_result(raw, vocab):
@@ -459,12 +588,18 @@ def write_atomic(path, text):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="DeepSeek enrichment pass over enriched:false chat-import notes (HIMMEL-833)")
+        description="Provider-pluggable enrichment pass over enriched:false "
+                    "chat-import notes (HIMMEL-833/1167)")
     ap.add_argument("--vault", required=True, help="vault root (contains chats/)")
+    ap.add_argument("--provider", choices=sorted(PROVIDERS),
+                    default=DEFAULT_PROVIDER,
+                    help="LLM backend (deepseek|codex|glm|claude); each gated "
+                         "by its own egress-matrix cell. Default: deepseek")
     ap.add_argument("--limit", type=int, default=None, help="max notes this run")
     ap.add_argument("--dry-run", action="store_true",
                     help="list candidates + payload sizes; no egress, no writes")
     args = ap.parse_args(argv)
+    cfg = PROVIDERS[args.provider]
     vault = Path(args.vault)
     if not (vault / "chats").is_dir():
         print(f"enrich-chat-notes: no chats/ under {vault}", file=sys.stderr)
@@ -492,22 +627,30 @@ def main(argv=None):
     # Policy is read from the PRIMARY checkout, not this worktree: a worktree
     # cannot self-approve egress by editing its local matrix copy, so a
     # pre-merge worktree run sees the old matrix and fails closed (default deny).
-    verdict, vnote = egress_gate(root)
-    if verdict != "allow+log":
-        # plain allow is a misconfiguration for enrichment: the ledger
-        # obligation is part of the ratified deal (spec: never unaudited)
+    verdict, vnote = egress_gate(root, cfg["egress"])
+    if verdict not in ("allow", "allow+log"):
+        # Accept BOTH permitted verdicts: `allow+log` (the deepseek/zai-glm
+        # cells — matrix ledger obligation) and plain `allow` (the anthropic
+        # cell — Claude is the operating substrate). This tool calls
+        # ledger_append UNCONDITIONALLY below regardless of which verdict, so
+        # the audit trail holds even for a plain-allow provider — accepting
+        # `allow` never yields an unaudited enrichment run. Only
+        # deny/conditional/error/pending-operator refuse here.
+        # (CR coderabbit: `!= "allow+log"` made --provider claude — whose cell
+        # is plain `allow` — permanently unusable.)
         print(f"enrich-chat-notes: REFUSE egress (verdict={verdict}: {vnote})",
               file=sys.stderr)
         return 2
-    key = resolve_api_key(script_dir)
+    key = resolve_api_key(script_dir, cfg["key_env"])
     if not key:
-        print("enrich-chat-notes: DEEPSEEK_API_KEY not set (env or primary .env)",
+        print(f"enrich-chat-notes: {cfg['key_env']} not set (env or primary .env)",
               file=sys.stderr)
         return 2
-    offpeak_warn()
+    if args.provider == "deepseek":
+        offpeak_warn()  # DeepSeek-peak-specific 2x advisory; other providers don't peak-bill
     vocab, index = scan_vault_index(vault)
     gset = generic_tags(vault)
-    if not ledger_append(vault / "chats", len(candidates), len(vocab)):
+    if not ledger_append(vault / "chats", len(candidates), len(vocab), cfg["egress"]):
         print("enrich-chat-notes: ledger append failed; refusing to egress",
               file=sys.stderr)
         return 2
@@ -522,7 +665,12 @@ def main(argv=None):
         last_exc = None
         for _ in range(2):  # one extra attempt on unparseable/invalid shape
             try:
-                raw = call_deepseek(key, title, payload, vocab)
+                if cfg["api_style"] == "anthropic":
+                    raw = call_anthropic(cfg["url"], key, cfg["model"], title,
+                                         payload, vocab, cfg["auth"])
+                else:
+                    raw = call_openai(cfg["url"], key, cfg["model"], title,
+                                      payload, vocab)
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                     OSError, ValueError, KeyError, TypeError, IndexError) as e:
                 last_exc = e
@@ -543,7 +691,7 @@ def main(argv=None):
             continue
         related = related_notes(p, result["tags"], index, gset)
         new_text, reason = enrich_note_text(text, result["summary"], result["tags"],
-                                            related, today)
+                                            related, today, model=cfg["model"])
         if new_text is None:
             failed += 1
             print(f"enrich-chat-notes: SKIP (frontmatter out of contract: {reason}) {p.name}",

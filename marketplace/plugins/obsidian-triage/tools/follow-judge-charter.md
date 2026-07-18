@@ -26,7 +26,7 @@ outside knowledge of the handle.
 - **reach** — audience size/engagement judged as *evidence of signal*, not
   a goal in itself. A small account with strong resources can outscore a
   huge account with none.
-- **focus_fit** — overlap with the operator's focus axes (below). An account
+- **focus_fit** — overlap with Yotam's focus axes (below). An account
   wholly outside these axes scores low here even if it's otherwise
   excellent on every other dimension.
 - **substance** — the depth/rigor of the account's own content: does it
@@ -53,10 +53,10 @@ would if the same content were about any other topic; a crypto-tagged
 account with weak resources/reliability/substance scores exactly as low
 as it would on any other topic. `focus_fit` is judged solely against the
 focus axes below, independent of whether the content happens to be
-crypto-tagged — crypto is not itself one of the operator's focus axes, and it is
+crypto-tagged — crypto is not itself one of Yotam's focus axes, and it is
 not a penalty axis either.
 
-## The operator's focus axes (for focus_fit)
+## Yotam's focus axes (for focus_fit)
 
 - agent harnesses
 - agentic OS / Jarvis

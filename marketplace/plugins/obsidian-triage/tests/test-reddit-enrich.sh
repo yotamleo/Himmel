@@ -77,6 +77,50 @@ grep -q 'mod sticky' "$CF" && a=present || a=absent; assert "stickied comment ex
 # G-3: original ## Source survives verbatim
 grep -q '^## Source$' "$CF" && a=ok || a=no; assert "original ## Source preserved" ok "$a"
 
+# -- Test 2b: stickied comments count as omitted, not silently dropped --------
+echo "Test 2b: stickied comment omission accounting"
+V2b="$tmp/v-stickied"; mkclip "$V2b" "c.md" "https://www.reddit.com/r/x/comments/2b/sticky"
+cat > "$tmp/stickied.json" <<'EOF'
+{"status":200,"body":[
+ {"kind":"Listing","data":{"children":[{"kind":"t3","data":{"name":"t3_2bx","title":"sticky count","selftext":"post body","author":"a","subreddit":"x","score":1,"created_utc":1720000000}}]}},
+ {"kind":"Listing","data":{"children":[
+   {"kind":"t1","data":{"name":"t1_stick","body":"sticky should be omitted","author":"mod","score":1,"stickied":true,"replies":""}},
+   {"kind":"t1","data":{"name":"t1_norm1","body":"normal one","author":"bob","score":2,"stickied":false,"replies":""}},
+   {"kind":"t1","data":{"name":"t1_norm2","body":"normal two","author":"carol","score":3,"stickied":false,"replies":""}}
+ ]}}
+]}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/stickied.json" node "$SCRIPT" --vault "$V2b" >/dev/null 2>&1
+CF2b="$V2b/Clippings/c.md"
+grep -q 'sticky should be omitted' "$CF2b" && a=present || a=absent
+assert "stickied top-level comment body excluded" absent "$a"
+grep -qF '(1 more comments not captured)' "$CF2b" && a=ok || a=no
+assert "stickied top-level comment counted in omission line" ok "$a"
+
+# -- Test 2c: stickied comments from morechildren count as omitted ------------
+echo "Test 2c: stickied morechildren omission accounting"
+V2c="$tmp/v-stickied-more"; mkclip "$V2c" "c.md" "https://www.reddit.com/r/x/comments/2c/stickymore"
+cat > "$tmp/stickied-more-listing.json" <<'EOF'
+{"status":200,"body":[
+ {"kind":"Listing","data":{"children":[{"kind":"t3","data":{"name":"t3_2cx","title":"sticky more","selftext":"post body","author":"a","subreddit":"x","score":1,"created_utc":1720000000}}]}},
+ {"kind":"Listing","data":{"children":[
+   {"kind":"more","data":{"children":["s1"]}}
+ ]}}
+]}
+EOF
+cat > "$tmp/stickied-more-expand.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_s1","parent_id":"t3_2cx","body":"expanded sticky should be omitted","author":"mod","score":1,"stickied":true}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/stickied-more-listing.json" \
+  REDDIT_MORE_FIXTURE="$tmp/stickied-more-expand.json" node "$SCRIPT" --vault "$V2c" >/dev/null 2>&1
+CF2c="$V2c/Clippings/c.md"
+grep -q 'expanded sticky should be omitted' "$CF2c" && a=present || a=absent
+assert "stickied morechildren body excluded" absent "$a"
+grep -qF '(1 more comments not captured)' "$CF2c" && a=ok || a=no
+assert "stickied morechildren comment counted in omission line" ok "$a"
+
 # -- Test 3: idempotent re-run -> skip (already enriched) ----------------------
 echo "Test 3: idempotency"
 before="$(sha256sum "$CF" | cut -d' ' -f1)"
@@ -129,7 +173,11 @@ cat > "$tmp/removed.json" <<'EOF'
  {"kind":"Listing","data":{"children":[]}}
 ]}
 EOF
-REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/removed.json" node "$SCRIPT" --vault "$V6" >/dev/null 2>&1
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/removed.json" node "$SCRIPT" --vault "$V6" >"$tmp/t6.out" 2>&1
+rc6=$?
+assert "removed-only all-failed run exits 3" 3 "$rc6"
+grep -q 'all processed clips failed' "$tmp/t6.out" && a=ok || a=no
+assert "all-failed exit-3 reason reported" ok "$a"
 grep -q 'last_error: removed' "$V6/Clippings/c.md" && a=ok || a=no; assert "removed -> last_error removed" ok "$a"
 grep -q 'enrichment_status: failed' "$V6/Clippings/c.md" && a=ok || a=no; assert "removed -> status failed" ok "$a"
 grep -qE '^enriched_at: "?[0-9]' "$V6/Clippings/c.md" && a=ok || a=no; assert "removed -> enriched_at SET (permanent)" ok "$a"
@@ -158,13 +206,70 @@ REDDIT_COOKIE_FILE="$tmp/nonexistent-cookies.txt" node "$SCRIPT" --vault "$V8" >
 assert "missing cookie file exits 2" 2 "$?"
 grep -qi 'cookie file not found' "$tmp/t8.out" && a=ok || a=no; assert "cookie-missing message present" ok "$a"
 
-# -- Test 9: expired-only cookie set -> auth_expired retryable ----------------
+# -- Test 9: expired-only cookie set -> auth_expired retryable + exit 3 -------
+# The jar is non-empty but every cookie is expired, so the expiry filter in
+# cookieHeaderFor produces an empty header - exercising BOTH the filter and
+# the all-auth-expired exit-3 shape (HIMMEL-795).
 echo "Test 9: expired cookies -> auth_expired"
 V9="$tmp/v9"; mkclip "$V9" "c.md" "https://www.reddit.com/r/x/comments/9/t"
 printf '.reddit.com\tTRUE\t/\tTRUE\t1000000000\tonly\tdead\n' > "$tmp/expired.txt"
-REDDIT_COOKIE_FILE="$tmp/expired.txt" REDDIT_FIXTURE="$tmp/rich.json" node "$SCRIPT" --vault "$V9" >/dev/null 2>&1
+REDDIT_COOKIE_FILE="$tmp/expired.txt" REDDIT_FIXTURE="$tmp/rich.json" node "$SCRIPT" --vault "$V9" >"$tmp/t9.out" 2>&1
+rc9=$?
+assert "expired cookies all-auth-expired run exits 3" 3 "$rc9"
+grep -q 'auth_expired' "$tmp/t9.out" && grep -q 'exiting 3' "$tmp/t9.out" && a=ok || a=no
+assert "expired-cookie exit-3 reason reported" ok "$a"
 grep -q 'last_error: auth_expired' "$V9/Clippings/c.md" && a=ok || a=no; assert "expired cookies -> auth_expired" ok "$a"
 grep -qE '^enriched_at:' "$V9/Clippings/c.md" && a=present || a=absent; assert "expired cookies -> retryable (no enriched_at)" absent "$a"
+
+# -- Test 9b: VALID cookies but reddit rejects (403) -> still exit 3 ----------
+# codex-adv (HIMMEL-795): a stale-but-unexpired jar yields a NON-empty cookie
+# header, then reddit 403s every fetch -> every processed clip lands
+# auth_expired. That total-outage shape must exit 3 too, not just the
+# empty-header variant above.
+echo "Test 9b: rejected cookies (403) -> auth_expired + exit 3"
+V9b="$tmp/v9b"; mkclip "$V9b" "c.md" "https://www.reddit.com/r/x/comments/9b/t"
+cat > "$tmp/rejected.json" <<'EOF'
+{"status":403,"body":""}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/rejected.json" node "$SCRIPT" --vault "$V9b" >"$tmp/t9b.out" 2>&1
+rc9b=$?
+assert "rejected cookies all-auth-expired run exits 3" 3 "$rc9b"
+grep -q 'auth_expired' "$tmp/t9b.out" && grep -q 'exiting 3' "$tmp/t9b.out" && a=ok || a=no
+assert "rejected-cookie exit-3 reason reported" ok "$a"
+grep -q 'last_error: auth_expired' "$V9b/Clippings/c.md" && a=ok || a=no; assert "rejected cookies -> auth_expired" ok "$a"
+
+# -- Test 9c: MIXED unproductive run (hard-fail + auth_expired) -> exit 3 -----
+# One clip hard-fails its read (REDDIT_FAIL_READ seam -> glyph x; a directory
+# named *.md never reaches processClip - findClips is isFile-gated) and one
+# bounces on auth (403 -> glyph ~): ok stays 0 and every processed clip is
+# failed-or-auth -> the run must exit 3 via the MIXED branch (HIMMEL-795 CR:
+# neither all-auth nor all-failed alone matches this shape).
+echo "Test 9c: mixed hard-fail + auth_expired -> exit 3"
+V9c="$tmp/v9c"; mkclip "$V9c" "c.md" "https://www.reddit.com/r/x/comments/9c/t"
+mkclip "$V9c" "z-fail.md" "https://www.reddit.com/r/x/comments/9cz/t"
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/rejected.json" \
+  REDDIT_FAIL_READ="z-fail.md" node "$SCRIPT" --vault "$V9c" >"$tmp/t9c.out" 2>&1
+rc9c=$?
+assert "mixed hard-fail + auth run exits 3" 3 "$rc9c"
+grep -q 'failed (read)' "$tmp/t9c.out" && a=ok || a=no
+assert "mixed run actually hard-failed one clip" ok "$a"
+grep -q 'no clip enriched' "$tmp/t9c.out" && grep -q 'exiting 3' "$tmp/t9c.out" && a=ok || a=no
+assert "mixed exit-3 reason uses the mixed branch" ok "$a"
+
+# -- Test 9d: mixed PRODUCTIVE run (one ok + one hard-fail) -> exit 0 ---------
+# Pin the healthy-mixed shape so a future exit-3 broadening (e.g. failed > 0)
+# cannot flip a partially-successful run into a false outage (HIMMEL-795 CR).
+echo "Test 9d: mixed ok + hard-fail -> exit 0"
+V9d="$tmp/v9d"; mkclip "$V9d" "c.md" "https://www.reddit.com/r/x/comments/9d/t"
+mkclip "$V9d" "z-fail.md" "https://www.reddit.com/r/x/comments/9dz/t"
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/rich.json" \
+  REDDIT_FAIL_READ="z-fail.md" node "$SCRIPT" --vault "$V9d" >"$tmp/t9d.out" 2>&1
+rc9d=$?
+assert "mixed ok + hard-fail run exits 0" 0 "$rc9d"
+grep -q 'failed (read)' "$tmp/t9d.out" && a=ok || a=no
+assert "mixed productive run actually hard-failed one clip" ok "$a"
+grep -q 'enrichment_status: ok' "$V9d/Clippings/c.md" && a=ok || a=no
+assert "mixed run still enriched the readable clip" ok "$a"
 
 # -- Test 10: redd.it short link resolved via HEAD seam ----------------------
 echo "Test 10: redd.it resolution"
@@ -281,6 +386,62 @@ writeFileSync(process.env.OUT, JSON.stringify(fx));
 REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/big.json" node "$SCRIPT" --vault "$V15" >/dev/null 2>&1
 grep -q 'truncated' "$V15/Clippings/c.md" && a=ok || a=no; assert "oversized section carries truncation marker" ok "$a"
 grep -q 'enrichment_status: ok' "$V15/Clippings/c.md" && a=ok || a=no; assert "truncated clip still enriched ok" ok "$a"
+
+# -- Test 15b: UTF-8-safe truncation at a byte boundary (HIMMEL-795) ----------
+echo "Test 15b: UTF-8-safe truncation"
+V15b="$tmp/v15b"; mkclip "$V15b" "c.md" "https://www.reddit.com/r/x/comments/15b/utf8"
+OUT="$tmp/utf8big.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const big = "\u6f22".repeat(120);
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_15bx", title: "utf8 cap", selftext: big, author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: [] } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/utf8big.json" \
+  REDDIT_SECTION_CAP_BYTES=260 node "$SCRIPT" --vault "$V15b" >/dev/null 2>&1
+CF15b="$V15b/Clippings/c.md"
+grep -q 'truncated' "$CF15b" && a=ok || a=no; assert "UTF-8 cap fixture takes head-overflow truncation path" ok "$a"
+CLIP="$CF15b" node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const txt = readFileSync(process.env.CLIP, "utf8");
+process.exit(txt.includes("\uFFFD") ? 1 : 0);
+' && a=ok || a=no
+assert "UTF-8 truncation emits no replacement character" ok "$a"
+CLIP="$CF15b" CAP=260 node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const txt = readFileSync(process.env.CLIP, "utf8");
+const start = txt.indexOf("## Crawled content");
+const end = txt.indexOf("\n## Source", start);
+const section = txt.slice(start, end < 0 ? txt.length : end);
+process.exit(Buffer.byteLength(section, "utf8") <= Number(process.env.CAP) ? 0 : 1);
+' && a=ok || a=no
+assert "UTF-8 truncated section stays under cap bytes" ok "$a"
+
+# -- Test 15c: 4-byte sequences (surrogate pairs) survive the cut too --------
+# for...of iterates code points, so an emoji is kept/dropped whole; a
+# UTF-16-indexed "simplification" would split the pair (HIMMEL-795).
+V15c="$tmp/v15c"; mkclip "$V15c" "c.md" "https://www.reddit.com/r/x/comments/15c/emoji"
+OUT="$tmp/emojibig.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const big = "\u{1F600}".repeat(100);
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_15cx", title: "emoji cap", selftext: big, author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: [] } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/emojibig.json" \
+  REDDIT_SECTION_CAP_BYTES=261 node "$SCRIPT" --vault "$V15c" >/dev/null 2>&1
+CF15c="$V15c/Clippings/c.md"
+grep -q 'truncated' "$CF15c" && a=ok || a=no; assert "emoji cap fixture takes truncation path" ok "$a"
+CLIP="$CF15c" node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const txt = readFileSync(process.env.CLIP, "utf8");
+process.exit(txt.includes("\uFFFD") ? 1 : 0);
+' && a=ok || a=no
+assert "emoji truncation emits no replacement character" ok "$a"
 
 # -- Test 16: redd.it redirect landing off reddit -> redirect_offsite ---------
 echo "Test 16: redirect-offsite guard"
@@ -402,11 +563,81 @@ grep -q 'last_error: more_fetch' "$CF20b" && a=ok || a=no; assert "more-fetch fa
 grep -q 'enrichment_status: failed' "$CF20b" && a=ok || a=no; assert "more-fetch failure -> status failed (not ok)" ok "$a"
 grep -qE '^enriched_at:' "$CF20b" && a=present || a=absent; assert "more-fetch failure -> enriched_at UNSET (retryable)" absent "$a"
 grep -q '## Crawled content' "$CF20b" && a=present || a=absent; assert "more-fetch failure -> no crawled section" absent "$a"
+grep -q 'more_fetch: http_500' "$tmp/t20b.out" && a=ok || a=no
+assert "more-fetch failure status line includes failReason http_500" ok "$a"
 # retry eligibility: same clip, working expansion fixture -> enriches fully
 REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/more-listing.json" \
   REDDIT_MORE_FIXTURE="$tmp/more-expand.json" node "$SCRIPT" --vault "$V20b" >"$tmp/t20c.out" 2>&1
 grep -q 'enrichment_status: ok' "$CF20b" && a=ok || a=no; assert "re-run after transient failure enriches ok" ok "$a"
 grep -q 'expanded nested reply' "$CF20b" && a=ok || a=no; assert "re-run captures the previously-missing comments" ok "$a"
+
+# (c) duplicate more-stub ids must not fetch/splice the same comment twice
+V20d="$tmp/v20d"; mkclip "$V20d" "c.md" "https://www.reddit.com/r/x/comments/20/dedup"
+OUT="$tmp/more-dedup-listing.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const ids = ["dup1"];
+for (let i = 1; i <= 99; i++) ids.push("x" + i);
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_20dx", title: "dedup more", selftext: "post body", author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: [
+    { kind: "more", data: { children: ids } },
+    { kind: "more", data: { children: ["dup1"] } },
+  ] } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+cat > "$tmp/more-dedup-expand.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_dup1","parent_id":"t3_20dx","body":"expanded duplicate body","author":"dina","score":1,"stickied":false}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/more-dedup-listing.json" \
+  REDDIT_MORE_FIXTURE="$tmp/more-dedup-expand.json" node "$SCRIPT" --vault "$V20d" >"$tmp/t20d.out" 2>&1
+CF20d="$V20d/Clippings/c.md"
+dups20d="$(grep -c 'expanded duplicate body' "$CF20d")"
+assert "shared more-stub child id renders exactly once" 1 "$dups20d"
+grep -q 'enrichment_status: ok' "$CF20d" && a=ok || a=no; assert "dedup more-stub clip enriched ok" ok "$a"
+
+# (e) cross-batch anchor promotion: a child expanded in batch 1 leaves an
+# [omitted] anchor for its yet-unseen parent; the parent's REAL record in
+# batch 2 must PROMOTE that anchor in place - never be silently dropped by
+# the dedup guard (HIMMEL-795 CR, honesty invariant). Array-form
+# REDDIT_MORE_FIXTURE = one envelope per batch call.
+V20e="$tmp/v20e"; mkclip "$V20e" "c.md" "https://www.reddit.com/r/x/comments/20/promote"
+OUT="$tmp/more-promote-listing.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const ids = ["kid1"];
+for (let i = 1; i <= 99; i++) ids.push("f" + i);
+ids.push("lateparent");
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_20ex", title: "promote", selftext: "post body", author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: [
+    { kind: "more", data: { children: ids } },
+  ] } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+cat > "$tmp/more-promote-expand.json" <<'EOF'
+[
+ {"status":200,"body":{"json":{"data":{"things":[
+   {"kind":"t1","data":{"name":"t1_kid1","parent_id":"t1_lateparent","body":"early child body","author":"kid","score":1,"stickied":false}}
+ ]}}}},
+ {"status":200,"body":{"json":{"data":{"things":[
+   {"kind":"t1","data":{"name":"t1_lateparent","parent_id":"t3_20ex","body":"late parent real body","author":"lara","score":9,"stickied":false}}
+ ]}}}}
+]
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/more-promote-listing.json" \
+  REDDIT_MORE_FIXTURE="$tmp/more-promote-expand.json" node "$SCRIPT" --vault "$V20e" >"$tmp/t20e.out" 2>&1
+CF20e="$V20e/Clippings/c.md"
+grep -q 'late parent real body' "$CF20e" && a=ok || a=no
+assert "late-batch parent real content survives (anchor promoted)" ok "$a"
+grep -qF '(comment removed or omitted)' "$CF20e" && a=present || a=absent
+assert "no leftover [omitted] anchor after promotion" absent "$a"
+grep -q 'early child body' "$CF20e" && a=ok || a=no
+assert "early-batch child still renders" ok "$a"
+n20e="$(grep -c 'late parent real body' "$CF20e")"
+assert "promoted parent renders exactly once" 1 "$n20e"
 
 # -- Test 21: --include-evidence reaches _evidence/ clips (HIMMEL-789) --------
 echo "Test 21: --include-evidence"
@@ -545,6 +776,37 @@ grep -qF '(50 more comments not captured)' "$CF23" && a=ok || a=no
 assert "omission line states the 50 dropped by the bound" ok "$a"
 grep -q 'enrichment_status: ok' "$CF23" && a=ok || a=no; assert "bounded clip enriched ok (deliberate cap)" ok "$a"
 
+# -- Test 23b: orphan anchor plus MAX_TOTAL_COMMENTS bound (HIMMEL-795) -------
+echo "Test 23b: orphan anchor at the 400-comment bound"
+V23b="$tmp/v23b"; mkclip "$V23b" "c.md" "https://www.reddit.com/r/x/comments/23b/orphanbound"
+OUT="$tmp/orphanbound.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+const comments = [];
+for (let i = 1; i <= 399; i++) comments.push({ kind: "t1", data: { name: "t1_ob" + i, body: "orphan-bound comment " + i, author: "u" + i, score: 1, stickied: false, replies: "" } });
+comments.push({ kind: "more", data: { children: ["orph1"] } });
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_23bx", title: "orphan bound", selftext: "body", author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  { kind: "Listing", data: { children: comments } },
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+cat > "$tmp/orphanbound-expand.json" <<'EOF'
+{"status":200,"body":{"json":{"data":{"things":[
+  {"kind":"t1","data":{"name":"t1_orph_bound","parent_id":"t1_missing_bound","body":"orphan at comment bound","author":"olivia","score":1,"stickied":false}}
+]}}}}
+EOF
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/orphanbound.json" \
+  REDDIT_MORE_FIXTURE="$tmp/orphanbound-expand.json" node "$SCRIPT" --vault "$V23b" >"$tmp/t23b.out" 2>&1
+CF23b="$V23b/Clippings/c.md"
+n23b="$(grep -c '^- \*\*u/' "$CF23b")"
+assert "orphan-bound render still capped at 400 rows" 400 "$n23b"
+grep -q '^- \*\*u/\[omitted\]\*\*' "$CF23b" && a=ok || a=no
+assert "orphan anchor renders at cap boundary" ok "$a"
+grep -q 'orphan at comment bound' "$CF23b" && a=present || a=absent
+assert "orphan row past cap is not misattributed" absent "$a"
+grep -qF '(1 more comments not captured)' "$CF23b" && a=ok || a=no
+assert "orphan row past cap counted in omission line" ok "$a"
+
 # -- Test 24: byte-cap truncation must NOT swallow the omission disclosure ----
 # (codex-adv: disclosures are appended AFTER the cap so they always survive.)
 echo "Test 24: truncation preserves omission disclosure"
@@ -646,6 +908,30 @@ bobl="$(grep -n 'u/bob' "$CF27" | cut -d: -f1)"
 [ -n "$alicel" ] && [ -n "$oml" ] && [ -n "$bobl" ] && [ "$alicel" -lt "$oml" ] && [ "$oml" -lt "$bobl" ] && a=ok || a=no
 assert "anchor order: alice < [omitted] < bob (reply not under alice)" ok "$a"
 grep -q 'enrichment_status: ok' "$CF27" && a=ok || a=no; assert "anchor clip enriched ok" ok "$a"
+
+# -- Test 27b: INDENT_DEPTH_MAX clamps deep reply indentation (HIMMEL-795) ----
+echo "Test 27b: deep reply indentation clamp"
+V27b="$tmp/v27b"; mkclip "$V27b" "c.md" "https://www.reddit.com/r/x/comments/27b/deepindent"
+OUT="$tmp/deepindent.json" node --input-type=module -e '
+import { writeFileSync } from "node:fs";
+let child = "";
+for (let d = 8; d >= 0; d--) {
+  child = { kind: "Listing", data: { children: [
+    { kind: "t1", data: { name: "t1_d" + d, body: "depth " + d + (d === 8 ? " clamp target" : ""), author: "u" + d, score: 1, stickied: false, replies: child } },
+  ] } };
+}
+const fx = { status: 200, body: [
+  { kind: "Listing", data: { children: [{ kind: "t3", data: { name: "t3_27bx", title: "deep indent", selftext: "post body", author: "a", subreddit: "x", score: 1, created_utc: 1720000000 } }] } },
+  child,
+] };
+writeFileSync(process.env.OUT, JSON.stringify(fx));
+'
+REDDIT_COOKIE_FILE="$COOKIES" REDDIT_FIXTURE="$tmp/deepindent.json" node "$SCRIPT" --vault "$V27b" >"$tmp/t27b.out" 2>&1
+CF27b="$V27b/Clippings/c.md"
+grep -q '^            - \*\*u/u8\*\*.*depth 8 clamp target' "$CF27b" && a=ok || a=no
+assert "depth 8 comment clamps to 12-space indent" ok "$a"
+grep -q '^              - \*\*u/u8\*\*.*depth 8 clamp target' "$CF27b" && a=present || a=absent
+assert "depth 8 comment does not render past 12 spaces" absent "$a"
 
 # -- Test 28: filtered parent whose ONLY child is a more-stub (codex-adv r6) --
 # The [omitted] anchor must exist even when the filtered parent's replies are
@@ -802,6 +1088,12 @@ CF32="$V32/Clippings/c.md"
 grep -qF '(50 more comments not captured)' "$CF32" && a=ok || a=no
 assert "4th batch (50 ids) past MAX_MORE_BATCHES disclosed as omitted" ok "$a"
 grep -q 'enrichment_status: ok' "$CF32" && a=ok || a=no; assert "bounded multi-batch clip enriched ok" ok "$a"
+# The static fixture redelivers the SAME things on batches 2/3 - the dedup
+# guard must render each exactly once (HIMMEL-795: pins the duplicate-skip
+# path; without an occurrence-count assertion a guard regression would
+# silently duplicate comments).
+n32one="$(grep -c 'batch comment one' "$CF32")"
+assert "redelivered batch comment renders exactly once" 1 "$n32one"
 
 echo ""
 echo "reddit-enrich tests: $pass passed, $fail failed"

@@ -1,6 +1,7 @@
 {
-  "_compliance": "panel/router lanes must terminate per-token keys only; the Z.ai Coding-Plan subscription (and any subscription lane) is launcher-only (ToS restricts it to officially supported tools) — never behind a panel or router.",
+  "_compliance": "panel/router lanes default to per-token keys; a subscription lane is otherwise launcher-only (ToS restricts it to officially supported tools). EXCEPTION (operator-authorized 2026-07-17, HIMMEL-1096): the existing Z.ai Coding-Plan key MAY back the `glm` critic row below — the operator accepted the ToS trade-off to drop codex as the panel's single point of failure. Scope: this key + this one read-only critic row only; do NOT generalize to other subscription lanes or to router/impl dispatch without a fresh operator decision.",
   "panel": [
-    { "slug": "codex",      "model": "gpt-5.5",                             "provider": "openai-codex", "tier": "paid" }
+    { "slug": "codex",      "model": "gpt-5.5",                             "provider": "openai-codex", "tier": "paid" },
+    { "slug": "glm",        "model": "glm-5.2",                             "provider": "zai",          "tier": "paid", "route_provider": "glm" }
   ]
 }

@@ -43,7 +43,7 @@ SINCE_EXPLICIT=0
 MODE="dry-run"   # dry-run (default) | pr | out
 OUT_PATH=""
 HIMMEL_REPO_FULL="yotamleo/himmel"
-LUNA_BRAIN_REPO_FULL="yotamleo/Himmel/tree/main/templates/luna-second-brain"
+LUNA_BRAIN_REPO_FULL="yotamleo/himmel/tree/main/templates/luna-second-brain"
 # Handover state repo checkout (for the handover-commit walk). Override with
 # --state-repo or $STATE_REPO_PATH; otherwise derived from the parent of
 # $HANDOVER_DIR (the repo that hosts handovers/). If neither resolves, the
@@ -78,7 +78,7 @@ EXAMPLES:
     $SCRIPT_NAME --since 2026-05-01 --pr          # since May 1, open PR in luna-brain
 
 REQUIREMENTS:
-    - gh (authenticated for yotamleo/himmel + yotamleo/Himmel/tree/main/templates/luna-second-brain)
+    - gh (authenticated for yotamleo/himmel + yotamleo/himmel/tree/main/templates/luna-second-brain)
     - jq
     - git
     - A local clone of the handover state repo (for the handover commit walk)

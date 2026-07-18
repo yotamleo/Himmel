@@ -289,7 +289,7 @@ calls=$(cat "$STATE/calls.log" 2>/dev/null || echo MISSING)
 assert_contains "schtasks invoked with /create /tn HIMMEL-CodexOrphanSweep /xml" "/create /tn HIMMEL-CodexOrphanSweep /xml" "$calls"
 
 bat=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
-assert_contains "bat stamps the format version (HIMMEL-588)" "himmel-cadence-runner-format: 3" "$bat"
+assert_contains "bat stamps the format version (HIMMEL-588)" "himmel-cadence-runner-format: 4" "$bat"
 assert_contains "bat fires sweep-codex-orphans.ps1 -Kill" "sweep-codex-orphans.ps1" "$bat"
 assert_contains "bat fires reap-mcp-fleet.ps1 -Kill" "reap-mcp-fleet.ps1" "$bat"
 assert_contains "bat passes -Kill to the sweep payload" "sweep-codex-orphans.ps1" "$bat"
@@ -481,7 +481,7 @@ fi
 probe=$(cat "$STATE/create-time-runner-probe.bat" 2>/dev/null || echo MISSING)
 assert_contains "create-time probe carries the full new runner content (sweep payload)" "sweep-codex-orphans.ps1" "$probe"
 assert_contains "create-time probe carries the full new runner content (reap payload)" "reap-mcp-fleet.ps1" "$probe"
-assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 3" "$probe"
+assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 4" "$probe"
 
 # Test T6: --dry-run touches nothing ------------------------------------------
 

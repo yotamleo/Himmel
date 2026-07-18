@@ -7,8 +7,9 @@
 > [`enforcement.md`](enforcement.md)). WS5 design decisions D1-D9 are the
 > binding contract; this doc implements D1 (a living index, doc + tested
 > subset), D6 (doctrine lives here, not root `CLAUDE.md`), D7 (merge-trust is a
-> WS7-owned column the index consumes, not the trust gate), and D9 (no
-> `claude-codex` row).
+> WS7-owned column the index consumes, not the trust gate). D9 (no
+> `claude-codex` row) was **RETIRED 2026-07-13** (operator decision,
+> HIMMEL-979) — see the superseded-lock note below.
 
 ## Doctrine
 
@@ -152,10 +153,20 @@ engines; the GLM-engine write-fence LANDED (HIMMEL-695) and is resolved in the
 write-authority row above (`tested:scripts/hermes/test-parity-guard.sh`); the
 residual non-write-fence GAPs are enumerated in the guard-parity table below.
 
-**No `claude-codex` row (D9, locked).** Codex reaches real work ONLY via
-`codex-direct` (Codex CLI as its own harness) or `hermes` (engine = Codex) --
-never a `claude` backend swap. The index deliberately has no `claude-codex`
-row; its absence asserts the lock structurally.
+**`claude-codex` lock (D9) — RETIRED 2026-07-13 (operator decision, HIMMEL-979).**
+D9 locked "Codex reaches real work ONLY via `codex-direct` or `hermes` — never
+a `claude` backend swap" at a time when no Anthropic-compatible codex endpoint
+existed. The claudex pattern (a self-hosted CLIProxyAPI OAuth-wrapping the
+codex subscription behind an Anthropic-compatible surface; theo/t3.gg recipe,
+field evidence in luna) changed the feasibility AND the payoff: the swap keeps
+the FULL native himmel harness — every PreToolUse hook fires natively, exactly
+as in the `claude-glm` lane, so guard parity is native-column, not an adapter
+column. The launcher shipped as `scripts/claude-codex{,.ps1}` (HIMMEL-979); the
+old T14(a) invariant — which FAILED the suite whenever any `claude-codex`
+launcher file appeared in a branch diff — was retired in the same change. A
+full index row for the lane (guard x lane cells) is deferred to the next
+parity task — until then the lane's guard posture is: native (same column as
+`claude-glm`).
 
 ## Guard-firing conformance sub-table (deny-guard x lane)
 

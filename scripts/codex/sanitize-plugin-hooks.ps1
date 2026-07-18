@@ -4,10 +4,22 @@
   Codex plugin cache (HIMMEL-651) — twin of sanitize-plugin-hooks.sh.
 
 .DESCRIPTION
-  Codex's strict plugin-hooks parser rejects a top-level `description`
-  ("unknown field description") and skips those hooks at boot. himmel-owned
-  plugins don't ship that shape; this clears the boot-time noise from external
-  plugins (warp, hookify, ralph-loop, security-guidance, ...).
+  DEPRECATED (HIMMEL-1104, 2026-07-17) — upstream FIXED the bug this works
+  around. codex PR #30229 ("Relax hooks.json top-level metadata validation",
+  2026-06-26) added `description` to the `HooksFile` serde struct, so a
+  root-level `description` is accepted from rust-v0.143.0 onward. PREFER
+  UPGRADING CODEX to >= rust-v0.143.0 over running this. Retained only as a
+  manual escape hatch for installs pinned below that version: it MUTATES
+  external upstream plugin files, which is not something to do by default to fix
+  a bug upstream has already fixed. Removing the automatic invocation from
+  install-himmel-codex.{sh,ps1} phase 3 is tracked separately.
+
+  Codex versions BEFORE rust-v0.143.0 reject a top-level `description`
+  ("unknown field description") and skip those hooks at boot; from rust-v0.143.0
+  the key is accepted and this script is unnecessary (see the deprecation notice
+  above). himmel-owned plugins don't ship that shape; on an affected version this
+  clears the boot-time noise from external plugins (warp, hookify, ralph-loop,
+  security-guidance, ...).
 
   Idempotent + re-runnable: re-run after a `codex` plugin update re-adds the
   field. Only the `description` key is removed; the `hooks` block is preserved.

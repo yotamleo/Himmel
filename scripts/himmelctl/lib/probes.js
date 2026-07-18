@@ -323,4 +323,7 @@ function runProbe(item, ctx) {
   return fn(item, ctx);
 }
 
-module.exports = { runProbe };
+// parseDotEnv is also exported for reuse (HIMMEL-755): install-engine.js's
+// HIMMELCTL_SUDO_PASSWORD resolution reads the primary checkout's .env with
+// this SAME minimal parser rather than writing a second one.
+module.exports = { runProbe, parseDotEnv };

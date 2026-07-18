@@ -9,7 +9,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLEAR="$SCRIPT_DIR/clear-cr-marker.sh"
+LEDGER_APPEND="$SCRIPT_DIR/ledger-append.sh"
+CODEX_SKILL="$ROOT/.agents/skills/pr-check/SKILL.md"
 
 PASS=0
 FAIL=0
@@ -37,6 +40,7 @@ make_repo() {
     sha=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
     mkdir -p "$tmp/scripts/cr" "$tmp/bin"
     cp "$CLEAR" "$tmp/scripts/cr/clear-cr-marker.sh"
+    cp "$LEDGER_APPEND" "$tmp/scripts/cr/ledger-append.sh"
 }
 
 # write_marker <tmp> <sha> [lane]
@@ -118,9 +122,91 @@ run_clear() {
     fi
 }
 
+# append_ledger <tmp> <name> <kind+args...>
+append_ledger() {
+    local tmp="$1" name="$2"; shift 2
+    local rc=0 out
+    out=$(cd "$tmp" && bash "$tmp/scripts/cr/ledger-append.sh" "$@" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then pass; else
+        fail "$name (ledger append rc=$rc)"; echo "    out: $out" >&2
+    fi
+}
+
 marker_exists() { [ -f "$1/.git/cr-pending/feat/x" ]; }
 
 echo "== clear-cr-marker.sh tests =="
+
+# Codex /pr-check contract: ledger evidence must precede the sanctioned clear
+# chokepoint, and the skill must not self-declare clean with a bare marker rm.
+if grep -Fq 'bash scripts/cr/ledger-append.sh finding' "$CODEX_SKILL"; then pass; else
+    fail "Codex skill records blocking findings in the CR ledger"
+fi
+if grep -Fq 'bash scripts/cr/ledger-append.sh avail' "$CODEX_SKILL"; then pass; else
+    fail "Codex skill records critic availability in the CR ledger"
+fi
+# shellcheck disable=SC2016  # literal skill contract; do not expand $(...)
+if grep -Fq 'head=$(git rev-parse HEAD)' "$CODEX_SKILL"; then pass; else
+    fail "Codex skill records ledger evidence with the full HEAD SHA"
+fi
+# shellcheck disable=SC2016  # literal skill contract; do not expand $branch
+if grep -Fq 'bash scripts/cr/clear-cr-marker.sh "$branch"' "$CODEX_SKILL"; then pass; else
+    fail "Codex skill routes marker clearing through clear-cr-marker.sh"
+fi
+# shellcheck disable=SC2016  # literal forbidden contract; do not expand $marker
+if grep -Eq '(^|[;&|])[[:space:]]*(if[[:space:]]+)?!?[[:space:]]*rm([[:space:]]|$)[^;&|]*(\$marker|\$\{marker\})' "$CODEX_SKILL"; then
+    fail "Codex skill must not clear its CR marker with direct rm"
+else
+    pass
+fi
+
+# Ordering contract (coderabbit-2, HIMMEL-1171): the skill must document the
+# HEAD capture + ledger evidence (finding + avail) BEFORE it invokes the
+# sanctioned clear chokepoint — guards against a future reorder that would
+# clear before recording evidence. (The ledger-append calls span multiple
+# lines, so ordering tracks each command's FIRST occurrence; the --head "$head"
+# binding is asserted separately below.)
+# shellcheck disable=SC2016  # literal skill contract patterns; do not expand
+contract_order_ok() {
+    awk '
+        !head  && /head=\$\(git rev-parse HEAD\)/          { head = NR }
+        !find_ && /bash scripts\/cr\/ledger-append\.sh finding/ { find_ = NR }
+        !avail && /bash scripts\/cr\/ledger-append\.sh avail/   { avail = NR }
+        !clear && /bash scripts\/cr\/clear-cr-marker\.sh "\$branch"/ { clear = NR }
+        END { exit !(head && find_ && avail && clear &&
+                     head < find_ && head < avail &&
+                     find_ < clear && avail < clear) }
+    ' "$CODEX_SKILL"
+}
+if contract_order_ok; then pass; else
+    fail "Codex skill records ledger evidence before marker clearing"
+fi
+# Each ledger-append command must bind --head "$head" within its OWN
+# (multi-line) continuation block — not merely somewhere in the file (coderabbit
+# r2). Walk each `ledger-append.sh <kind>` command to its end-of-continuation.
+# shellcheck disable=SC2016  # literal skill contract patterns; do not expand
+ledger_command_has_head() {
+    awk -v kind="$1" '
+        $0 ~ "bash scripts/cr/ledger-append\\.sh " kind {
+            if (command) invalid = 1
+            command = 1
+            bound = 0
+            seen = 1
+        }
+        command {
+            if (index($0, "--head \"$head\"")) bound = 1
+            if ($0 !~ /\\[[:space:]]*$/) {
+                if (!bound) invalid = 1
+                command = 0
+            }
+        }
+        END { exit !(seen && !command && !invalid) }
+    ' "$CODEX_SKILL"
+}
+if ledger_command_has_head finding && ledger_command_has_head avail; then
+    pass
+else
+    fail "Codex skill binds each ledger evidence command to the full HEAD SHA"
+fi
 
 # 1. No marker at all → nothing to do, exit 0.
 make_repo
@@ -220,6 +306,42 @@ make_repo
 write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "deadbeef")"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 14 "ledger evidence for another sha → exit 14"
+rm -rf "$tmp"
+
+# 4d. Codex skill integration: a clean panel writes an avail-ok row through
+# ledger-append.sh, then the chokepoint clears the marker.
+make_repo
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "Codex clean panel appends avail-ok" avail \
+    --branch feat/x --head "$sha" --model codex --status ok
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "Codex clean ledger evidence → exit 0"
+if marker_exists "$tmp"; then fail "Codex clean path: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
+# 4e. Codex skill integration: a recorded Important finding remains blocking
+# even with a responder row, so the chokepoint refuses with exit 15.
+make_repo
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "Codex blocker appends finding" finding \
+    --branch feat/x --head "$sha" --model codex --id codex-1 \
+    --severity imp --file scripts/example.sh --line 7 --verdict agreed
+append_ledger "$tmp" "Codex blocker appends avail-ok" avail \
+    --branch feat/x --head "$sha" --model codex --status ok
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "Codex blocking ledger finding → exit 15"
+if marker_exists "$tmp"; then pass; else fail "Codex blocker path: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 4f. Codex skill integration: unavailable-only evidence is not a response, so
+# the chokepoint refuses with exit 14 and retains the marker.
+make_repo
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "Codex unavailable panel appends row" avail \
+    --branch feat/x --head "$sha" --model codex --status unavailable
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "Codex no avail-ok evidence → exit 14"
+if marker_exists "$tmp"; then pass; else fail "Codex no-responder path: marker must REMAIN"; fi
 rm -rf "$tmp"
 
 # 5. Blocking findings at this head → refuse.

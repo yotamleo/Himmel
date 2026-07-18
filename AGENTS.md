@@ -87,7 +87,12 @@ operator's user-scope `~/.claude/CLAUDE.md`. Use judgement on trivial tasks.
 - All feature work in git worktrees. Never commit directly to main.
 - All changes via PR. No direct pushes to main. PRs need ≥1 approval before merge.
 - Conventional commits: `type(scope): [HIMMEL-N ]message` where type ∈
-  `feat|fix|chore|docs|refactor|test`. Ticket ID optional, validated if present.
+  `feat|fix|chore|docs|refactor|test`. Ticket ID optional per commit, validated
+  if present.
+- **Every private-repo PR carries a Jira ticket** (operator, 2026-07-16).
+  Retro-filing is fine — the ticket may be created after the work started —
+  but the PR must reference one (title and/or commits) before merge. Search
+  Jira first; extend an existing ticket rather than re-filing.
 - Pre-push gates need attestation trailers (`Platforms tested: <os>` on
   shell/script diffs; `Security reviewed: <token>` on non-docs code) in the
   **FIRST commit** after genuinely testing + reviewing. Recovery when a gate
@@ -240,6 +245,15 @@ existing `docs/specs/` files migrate per-ticket.
 first for recent vault context (~500-word Tier-2 hot cache) before crawling luna
 `index.md`.
 
+### Memory recall — the index routes, it does not store (HIMMEL-570)
+The always-loaded `MEMORY.md` index carries **routing lines, not bodies**. On a
+surprising harness/tool symptom, **read the theme topic file its keyword names
+before improvising** — that read is the primary path. qmd the substrate
+**second** (cross-repo / historic), scoped to a curated collection via
+**`-c <name>`** — `--collections` is not a qmd flag and is **silently ignored**
+(it searches everything while looking scoped). A qmd miss is **not** evidence a
+fact is absent.
+
 ### graphify — retrieval routing (HIMMEL-621)
 graphify is the knowledge-graph CLI over vaults/docs (entity/relation
 extraction + graph queries). One flow, three organs: **qmd finds content,
@@ -297,8 +311,8 @@ Autonomous end-to-end execution of a well-scoped ticket: see
 
 himmel enforces structurally, not by prose: PreToolUse hooks (safe-bash
 auto-approve; the edit-on-main / read-secrets / backend-tier / CR-marker /
-unresolved-CR-merge / merged-PR-commit / docker-privesc / rogue-schedule /
-rogue-codex-wsl guards; `guard-implementor-dispatch` cost guard; the cap-arm
+jira-compound-write / unresolved-CR-merge / merged-PR-commit / docker-privesc /
+rogue-schedule / rogue-codex-wsl guards; `guard-implementor-dispatch` cost guard; the cap-arm
 hooks), a PostToolUse cap-arm hook, **pre-commit/commit-msg/pre-push gates**
 (source of truth `.pre-commit-config.yaml`), and opt-in `SessionStart` /
 `UserPromptSubmit` hooks (`inject-initiative.sh` `HIMMEL_INITIATIVE`,

@@ -167,6 +167,65 @@ bug is suspect — re-verify in-file.
 Sibling MINGW gotcha: `grep -iF` aborts (SIGABRT, rc 134) on the `-i`+`-F`
 combination even on pure ASCII input. Use `-F` alone.
 
+## Windows: `graphify install` writes a backslash exe path that dies under Git Bash (Claude hooks)
+
+`graphify install` (graphifyy ≤ 0.9.18) writes hook commands whose executable is
+an absolute **Windows path with backslashes** — e.g.
+`C:\Users\<you>\.local\bin\graphify.EXE hook-guard search` — into the harness hook
+configs. Whether that breaks depends on the shell each harness runs hook commands
+through on Windows, which **differs by harness** — so "fix it everywhere the same
+way" is wrong:
+
+- **Claude Code runs hook commands through bash** (Git Bash). Bash consumes the
+  backslashes, so the command collapses to `C:Usersyou.localbingraphify.EXE` →
+  `command not found`, and the hook fails on **every** Bash/Read/Glob call. It is
+  *non-blocking*, so the only symptom is a repeated `PreToolUse hook error …
+  command not found` line and the graph-context injection silently never firing.
+  **This is the breakage you actually observe.**
+- **codex and gemini run hook commands through cmd.exe**, not bash — codex via its
+  `.codex/run-hook.cmd` cmd wrapper (whose own comments note "bare `bash` via
+  cmd.exe hits the WSL System32 stub"), gemini-cli via Node's default Windows
+  shell. cmd.exe does **not** eat backslashes, so `C:\Users\…\graphify.EXE …` runs
+  there unchanged — the codex/gemini graphify hooks are **not** broken by the
+  backslash path. Do **not** "fix" them by copying Claude's MSYS `/c/…` form: see
+  the verification below.
+
+Root cause is upstream: `graphify/install.py::_resolve_graphify_exe()` returns
+`shutil.which("graphify")` (a backslash path) and the hook builders interpolate it
+**unquoted** (`f"{exe} hook-guard search"`; the gemini builder quotes only when the
+path contains a space). The in-code "#522 fix" comment ("parses under sh, cmd.exe
+and PowerShell alike") does not hold for Windows + a POSIX hook shell.
+
+**Fix — use the forward-slash Windows path, the one form that works in every
+executor:** `C:/Users/<you>/.local/bin/graphify.exe hook-guard search`. Verified on
+this host: in **bash** both `/c/Users/…` (MSYS) and `C:/Users/…` run; in **cmd.exe**
+only `C:/Users/…` runs — the MSYS `/c/…` form returns "the system cannot find the
+path specified". So the MSYS `/c/…` form fixes Claude but **breaks** a cmd.exe
+harness (codex/gemini); the forward-slash `C:/…` form is universal. Affected
+configs: `.claude/settings.json`, `.codex/hooks.json`, `.gemini/settings.json`
+(and `~/.claude/settings.json` if installed globally).
+
+**Quote the exe if its path contains a space.** Removing backslashes is not enough
+when the path itself has a space — e.g. `C:/Users/Jane Doe/.local/bin/graphify.exe`
+— because the command runs through a shell that word-splits an unquoted string
+(bash splits on the space; cmd.exe treats `C:/Users/Jane` as the program). Wrap the
+executable in quotes inside the command value (JSON-escaped, e.g.
+`"\"C:/Users/Jane Doe/.local/bin/graphify.exe\" hook-guard search"`), or install
+graphify to a space-free path.
+
+Re-install caveat: 0.9.18 `graphify install` (claude) no longer writes
+settings.json hooks (skill + CLAUDE.md + version-stamp refresh only), so a fixed
+Claude hook survives re-install — but `graphify codex install` / `graphify gemini
+install` still re-emit the backslash path (harmless under cmd.exe, but re-normalize
+to the `C:/…` form for consistency + space-safety). A durable himmel-owned
+post-install path-normalizer is tracked in HIMMEL-1168.
+
+Upgrade gotcha: `uv tool upgrade graphifyy` from **inside** a live session running
+the graphify MCP server + hooks can leave the `graphify` CLI shim unwritten — a
+Windows file-lock on the venv `Scripts\` dir (`Access is denied`) — while `uv tool
+list` still reports the new version. Repair from a context where `graphify-mcp` is
+not running: stop those processes, then `uv tool install "graphifyy[all]" --force`.
+
 ## bash 5.1+ treats a literal `&` in `${var//pat/repl}` as the matched text
 
 In a parameter-expansion replacement, bash 5.1+ expands a literal `&` to the
@@ -524,7 +583,7 @@ check `git branch -vv` first; fix with
 `git branch --set-upstream-to=<remote>/<branch>` using the branch's
 configured remote (e.g. `origin/main`).
 
-## qmd under WSL: the bun-shim PATH illusion, expired-session embeds, index sharing
+## qmd: the bun-shim PATH illusion (WSL), expired-session embeds, index sharing
 
 - **"qmd MISSING" is usually a PATH illusion.** qmd runs via a bun-global
   shim, not a `qmd` binary on PATH; the real gap is often `bun` itself.
@@ -539,12 +598,151 @@ configured remote (e.g. `origin/main`).
   session-expiry root cause instead of looping further.
 - **Share an index instead of re-embedding on a weak machine.** The index
   lives at `~/.cache/qmd/index.sqlite` (+ `-wal`), collection config at
-  `~/.config/qmd/index.yml` — portable across machines with identical
-  collection paths. Copy them with qmd fully IDLE on the source (no
-  embed/serve running — in WAL mode the coherent state spans `index.sqlite`
-  + `-wal` + `-shm`), then `qmd pull` on the target (model download only),
-  and verify with `sqlite3 index.sqlite 'PRAGMA integrity_check;'` plus a
-  real search. Static post-embed copies work; live sharing over `/mnt/c`
-  does not. Never copy an index
-  containing sensitive collections (e.g. medical PHI) to another machine —
-  share only indexes built from clean collections.
+  `~/.config/qmd/index.yml`. Prefer `VACUUM INTO '<out>.sqlite'` over
+  copying files: it snapshots a LIVE WAL database coherently (no need to
+  stop the daemon, no `-wal`/`-shm` to carry, freed pages reclaimed in the
+  same step). Make sure the target's `index.yml` already lists the
+  collections BEFORE you open the copy with qmd — opening an index whose
+  config does not match empties `store_collections` (next bullet), so
+  verifying can itself mutate what you just shipped. Then `qmd pull` on the
+  target (model download only), and verify with `PRAGMA integrity_check`
+  plus a real search; do the sqlite-only checks first if the config is not
+  in place yet. Live sharing over `/mnt/c` does not work. Never copy an
+  index containing sensitive collections (e.g. medical PHI) to another
+  machine — share only indexes built from clean collections.
+- **Portability is one row.** `documents.path` is RELATIVE to its
+  collection root; the only absolute paths live in `store_collections.path`.
+  Retargeting an index at a machine with different roots is an UPDATE of
+  those rows, not a rewrite. (`index.yml` and `store_collections` are
+  reconciled by qmd — running `qmd --index <name> …` against a named index
+  with no config entry will empty `store_collections`.)
+- **The DB, not the config, is the authority on what an index contains.**
+  `qmd status` and `index.yml` enumerate *configured* collections; a
+  collection dropped from the config keeps its rows. A live index carried a
+  stale `salus` (1138 docs) invisible to both. Always audit with
+  `SELECT DISTINCT collection FROM documents` before sharing — the config
+  is not a PHI clearance.
+- **A shared index carries document TEXT, not just vectors.** `content.doc`
+  holds full bodies, so an index stays fully searchable on a machine that
+  lacks the source vault — sensitive rows are not inert there. This is why
+  the "clean collections only" rule above is load-bearing.
+- **Stripping a collection out of an index is surgery.** If you must (a
+  full re-embed being the alternative):
+  - `vectors_vec` is a `vec0` virtual table. Any external client
+    (`sqlite3`, bun:sqlite) fails `no such module: vec0` on reads AND
+    deletes until you load qmd's bundled extension
+    (`<bun-global>/node_modules/sqlite-vec-<platform>/vec0`). It throws
+    rather than half-deleting, so the enclosing transaction rolls back
+    intact — a failed strip is not a corrupted index.
+  - `content` is hash-deduped and SHARED: byte-identical files across
+    collections point at ONE row. Delete only
+    `hashes(target) − hashes(keep)` or you punch holes in the collections
+    you kept (11 of 1096 hashes were shared in a real run).
+  - `documents_fts` is keyed `<collection>/<path>`, and its rowid is NOT
+    `documents.id` (FTS covers only `active=1`). Delete by ANCHORED
+    filepath (`LIKE 'salus/%'`) — an unanchored `%salus%` also matches
+    legitimate `himmel/templates/.../_profiles/salus/*` files. Same
+    anchoring lesson as the gitleaks-allowlist bullet below.
+  - Verify STRUCTURALLY, not with a text scan: SQL `LIKE '%term%'` is
+    substring + case-insensitive, so it false-positives against longer
+    clean strings. Assert instead: expected `DISTINCT collection` set only;
+    zero content rows unreferenced by any doc; zero content referenced by
+    an unexpected collection; zero FTS rows outside expected collections;
+    zero `content_vectors`/`vectors_vec_rowids` without a content row;
+    `PRAGMA integrity_check` ok; `PRAGMA foreign_key_check` empty
+    (`integrity_check` does NOT cover FK violations, and `documents.hash`
+    → `content.hash` is a declared FK); SHA256 match across machines.
+- **`~/.cache/qmd/mcp.pid` goes stale — it is not proof qmd is idle.** It
+  named a dead PID while the real daemon holding the DB ran elsewhere; find
+  the holder by command line
+  (`Get-CimInstance Win32_Process -Filter "Name='bun.exe'"`) rather than
+  trusting the PID file. Pair with the PowerShell trap below: `Move-Item` on
+  a file locked by that daemon fails NON-terminating, so a following
+  `'OK'` echo still prints and `-ErrorAction SilentlyContinue` hides the
+  failure — the step reports success having done nothing. Use
+  `-ErrorAction Stop` + try/catch and re-list the directory to confirm.
+
+## Windows PowerShell: embedded double-quotes in native-command args get STRIPPED — and a non-atomic write then blanks the file
+
+Do not pipe a jq filter containing embedded `"` (e.g.
+`jq '.enabledPlugins["a@b"]=true' file`) through PowerShell: PowerShell
+re-parses native-command arguments and strips the inner double-quotes, so
+jq receives `.enabledPlugins[a@b]` → syntax error → **empty stdout**. If
+the caller then writes that output non-atomically
+(`[IO.File]::WriteAllText($file, $out)`), the config file is blanked —
+this live-corrupted a machine's `~/.claude/settings.local.json`.
+
+Three rules:
+
+- **No jq-with-quotes from PowerShell.** Write the literal JSON string
+  directly, or do the jq work from Git Bash (jq-in-bash is fine).
+- **Config rewrites are temp-file + atomic move, never in-place.** Write
+  the temp file on the SAME volume as the target, validate the output
+  (non-empty, parses) before the move, and use an atomic rename — under
+  those preconditions a mid-pipeline failure cannot blank the live file.
+- **Remote multi-shell exec (`ssh → cmd → powershell`/`wsl`): base64 the
+  whole script** (`powershell -EncodedCommand <utf16le-b64>`;
+  `wsl bash -lc "echo <b64> | base64 -d | bash"`). This kills every layer
+  of nested-quote escaping at once — see the `ssh` section above; `\$HOME`
+  through ssh'd single-quotes arrives literal, another reason to base64.
+
+## WSL2 cannot reach host `127.0.0.1`-bound services via the gateway IP — use mirrored networking
+
+Services that bind loopback only (Obsidian Local REST API, a local
+CLIProxyAPI gateway, most dev servers) are unreachable from WSL2 through
+the often-documented NAT gateway IP (`ip route show default`): the request
+returns HTTP 000 because the listener is `127.0.0.1:<port>`, not
+`0.0.0.0` — and `localhostForwarding` does NOT bridge the WSL→host
+direction either. The fix is mirrored networking. In
+`%USERPROFILE%\.wslconfig`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+
+[experimental]
+hostAddressLoopback=true
+```
+
+then `wsl --shutdown` and restart the distro. Per Microsoft's WSL docs,
+mirrored mode itself is what lets WSL reach Windows-host listeners via
+`127.0.0.1`; `hostAddressLoopback=true` additionally allows reaching the
+host through its assigned IPv4 addresses. The pair above is the
+live-verified working config. WSL `127.0.0.1:<port>` then reaches the
+host service directly, and because the client connects via `127.0.0.1`,
+a self-signed cert bound to `127.0.0.1` keeps its SAN match. Requires
+Windows 11 22H2+ (build 22621+). It is a global change
+(all distros; can interact with Docker Desktop/VPNs), so gate the
+`wsl --shutdown` on the operator — but it solves the whole loopback class
+at once, which is why it beats per-service `netsh portproxy` rules.
+
+## Claude Code: a background-task notification's "exit code 0" is the LAST command in the chain
+
+The completion notification for a background Bash task reports the exit
+code of the final command in the chain — a trailing `echo`/`tail` masks a
+failing gate earlier in the same chain (observed: a merge-gate script
+exiting 3 under an "exit code 0" notification because the chain ended in
+an echo). Read the task's actual output for the verdict; never trust the
+notification's exit code for anything but the last command.
+
+## gitleaks: anchor allowlist regexes — and the pre-push scan covers the staged INDEX
+
+- **Allowlist regexes for a known-benign literal must be anchored**
+  (`'''^the-literal$'''`), never a bare substring: an unanchored regex also
+  suppresses any REAL secret that merely *contains* the literal — a
+  scanner-bypass hole. Verified behaviour: anchored keeps a
+  prefixed/suffixed variant flagged; unanchored suppresses both.
+- **A correct anchor will still fire on nested contexts** — the same
+  benign literal embedded inside other text (e.g. a `printf` line captured
+  into a shipped `.patch` file) extracts as a longer candidate secret that
+  `^…$` rightly does not match. That firing is correct, not a bug: do NOT
+  un-anchor to silence it (that reopens the substring hole). Fix at the
+  source (keep the literal out of the shipped text) or add a
+  path-scoped allowlist entry.
+- **The pre-push hook scans the STAGED INDEX, not just your push range.**
+  In a repo shared by concurrent sessions, one session's staged secret
+  blocks *every* session's push — and `git log --all -- <file>` finds
+  nothing because the file was never committed. Diagnose with
+  `git status --short -- <file>` — an `A` in the first column followed by
+  a space means staged-new — and let the owning session fix its own
+  staged file.

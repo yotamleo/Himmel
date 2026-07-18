@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "harness": "claude",
   "items": [
     {
@@ -8,23 +8,30 @@
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": ".pre-commit-config.yaml" }
+      "probe": { "type": "file-exists", "path": ".pre-commit-config.yaml" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "wiring-pretooluse",
       "kind": "wiring",
-      "scopes": ["project"],
+      "scopes": ["project", "user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "settings-hooks", "file": ".claude/settings.json", "key": "hooks.PreToolUse" }
+      "probe": { "type": "settings-hooks", "file": ".claude/settings.json", "key": "hooks.PreToolUse" },
+      "install": { "type": "wire", "target": "pretooluse-hooks" },
+      "unwire": { "type": "wire", "target": "pretooluse-hooks" },
+      "removable": "per-item"
     },
     {
       "id": "wiring-statusline",
       "kind": "wiring",
-      "scopes": ["project"],
+      "scopes": ["project", "user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "statusLine.command" }
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "statusLine.command" },
+      "install": { "type": "wire", "target": "statusline" },
+      "unwire": { "type": "wire", "target": "statusline" },
+      "removable": "per-item"
     },
     {
       "id": "jira-cli-dist-build",
@@ -32,7 +39,9 @@
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/jira/dist/index.js" }
+      "probe": { "type": "file-exists", "path": "scripts/jira/dist/index.js" },
+      "install": { "type": "build", "target": "jira-cli" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "jira-env-keys",
@@ -40,7 +49,9 @@
       "scopes": ["project", "user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "settings-key", "file": ".env", "keys": ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY"] }
+      "probe": { "type": "settings-key", "file": ".env", "keys": ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY"] },
+      "install": { "type": "config", "keys": ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY"] },
+      "removable": "full-offboard-only"
     },
     {
       "id": "bitbucket-cli-build",
@@ -48,7 +59,9 @@
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/bitbucket/dist/index.js" }
+      "probe": { "type": "file-exists", "path": "scripts/bitbucket/dist/index.js" },
+      "install": { "type": "build", "target": "bitbucket-cli" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "qmd-binary",
@@ -56,7 +69,10 @@
       "scopes": ["project", "user"],
       "profiles": ["luna", "all"],
       "deps": [],
-      "probe": { "type": "cmd:has_qmd", "resolver": "scripts/lib/qmd-bin.sh" }
+      "probe": { "type": "cmd:has_qmd", "resolver": "scripts/lib/qmd-bin.sh" },
+      "install": { "type": "qmd" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "qmd-index",
@@ -64,15 +80,28 @@
       "scopes": ["project", "user"],
       "profiles": ["luna", "all"],
       "deps": ["qmd-binary"],
-      "probe": { "type": "qmd-index", "collections": ["himmel", "luna"] }
+      "probe": { "type": "qmd-index", "collections": ["himmel", "luna"] },
+      "install": { "type": "qmd" },
+      "removable": "full-offboard-only"
+    },
+    {
+      "id": "tokensave-binary",
+      "kind": "dep",
+      "scopes": ["project", "user"],
+      "profiles": ["luna", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "tokensave" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "tokensave-mcp",
       "kind": "mcp",
       "scopes": ["project", "user"],
       "profiles": ["luna", "all"],
-      "deps": [],
-      "probe": { "type": "mcp-registered", "server": "tokensave" }
+      "deps": ["tokensave-binary"],
+      "probe": { "type": "mcp-registered", "server": "tokensave" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "graphify-mcp",
@@ -80,7 +109,8 @@
       "scopes": ["project", "user"],
       "profiles": ["luna", "all"],
       "deps": [],
-      "probe": { "type": "mcp-registered", "server": "graphify" }
+      "probe": { "type": "mcp-registered", "server": "graphify" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "luna-vault-scaffold",
@@ -88,15 +118,21 @@
       "scopes": ["user"],
       "profiles": ["luna", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "{vaultPath}/.vault-template.json" }
+      "probe": { "type": "file-exists", "path": "{vaultPath}/.vault-template.json" },
+      "install": { "type": "adopt" },
+      "removable": "full-offboard-only",
+      "offboard": "keep"
     },
     {
       "id": "claude-plugins-pluginSet",
       "kind": "plugin",
-      "scopes": ["project"],
+      "scopes": ["project", "user"],
       "profiles": ["core", "luna", "all"],
       "deps": [],
-      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins" }
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins" },
+      "install": { "type": "plugins" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "handover-wiring",
@@ -104,7 +140,9 @@
       "scopes": ["project", "user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "handover-dir", "resolver": "scripts/lib/handover-path.sh" }
+      "probe": { "type": "handover-dir", "resolver": "scripts/lib/handover-path.sh" },
+      "install": { "type": "config", "key": "HANDOVER_DIR" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "scheduler-backend",
@@ -112,7 +150,9 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "win32": "schtasks", "posix": "at" }
+      "probe": { "type": "dep", "win32": "schtasks", "posix": "at" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "guardrail-scope",
@@ -120,7 +160,9 @@
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/guardrails/lib.sh" }
+      "probe": { "type": "file-exists", "path": "scripts/guardrails/lib.sh" },
+      "install": { "type": "adopt" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "hermes-lanes",
@@ -128,7 +170,8 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/lanes/lanes.json" }
+      "probe": { "type": "file-exists", "path": "scripts/lanes/lanes.json" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "telegram-bridge",
@@ -136,7 +179,8 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/telegram/telegram-api.ts" }
+      "probe": { "type": "file-exists", "path": "scripts/telegram/telegram-api.ts" },
+      "removable": "full-offboard-only"
     },
     {
       "id": "rtk",
@@ -144,7 +188,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "rtk" }
+      "probe": { "type": "dep", "cmd": "rtk" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "uv",
@@ -152,7 +199,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "uv" }
+      "probe": { "type": "dep", "cmd": "uv" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "npm-less-node",
@@ -160,7 +210,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": ["node"],
-      "probe": { "type": "dep", "cmd": "npm" }
+      "probe": { "type": "dep", "cmd": "npm" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "node",
@@ -168,7 +221,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "node" }
+      "probe": { "type": "dep", "cmd": "node" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "bun",
@@ -176,7 +232,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "bun" }
+      "probe": { "type": "dep", "cmd": "bun" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "jq",
@@ -184,7 +243,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "jq" }
+      "probe": { "type": "dep", "cmd": "jq" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "git",
@@ -192,7 +254,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "git" }
+      "probe": { "type": "dep", "cmd": "git" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "python3",
@@ -200,7 +265,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "python3" }
+      "probe": { "type": "dep", "cmd": "python3" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "shellcheck",
@@ -208,7 +276,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "shellcheck" }
+      "probe": { "type": "dep", "cmd": "shellcheck" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "gitleaks",
@@ -216,7 +287,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "gitleaks" }
+      "probe": { "type": "dep", "cmd": "gitleaks" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "pre-commit",
@@ -224,7 +298,10 @@
       "scopes": ["project", "user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "pre-commit" }
+      "probe": { "type": "dep", "cmd": "pre-commit" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "gh",
@@ -232,7 +309,10 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "dep", "cmd": "gh" }
+      "probe": { "type": "dep", "cmd": "gh" },
+      "install": { "type": "dep" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "graphify",
@@ -240,7 +320,9 @@
       "scopes": ["user"],
       "profiles": ["core", "luna", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/graphify/check-graph-freshness.sh" }
+      "probe": { "type": "file-exists", "path": "scripts/graphify/check-graph-freshness.sh" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     },
     {
       "id": "doc-guard-map",
@@ -248,7 +330,9 @@
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/lib/doc-guard-map.sh" }
+      "probe": { "type": "file-exists", "path": "scripts/lib/doc-guard-map.sh" },
+      "install": { "type": "adopt" },
+      "removable": "full-offboard-only"
     }
   ]
 }

@@ -82,10 +82,13 @@ is_win32() {
 
 # build_fixture <dir> — a throwaway HIMMELCTL_REPO_ROOT target: no-op
 # uninstall.sh/uninstall.ps1 stubs, each logging its argv to
-# <dir>/uninstall-calls.log.
+# <dir>/uninstall-calls.log, PLUS a minimal scripts/install/manifest.json
+# (HIMMEL-755 sub-ticket E: cmdUninstall now loadManifest()s + partitions by
+# `offboard` before asking/executing — without this file that load throws
+# and every case below would fail closed on an unrelated ENOENT).
 build_fixture() {
   local _d="$1"
-  mkdir -p "$_d/scripts"
+  mkdir -p "$_d/scripts/install"
   cat > "$_d/scripts/uninstall.sh" <<STUB
 #!/usr/bin/env bash
 printf 'uninstall.sh: %s\n' "\$*" >> "$_d/uninstall-calls.log"
@@ -100,6 +103,17 @@ param([switch]\$Yes,[switch]\$DryRun)
 Add-Content -Path '$_dw/uninstall-calls.log' -Value "uninstall.ps1: Yes=\$Yes DryRun=\$DryRun"
 exit 0
 STUB
+  cat > "$_d/scripts/install/manifest.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "harness": "claude",
+  "items": [
+    { "id": "fixture-unwire", "kind": "wiring", "scopes": ["project"], "profiles": ["core", "all"], "deps": [], "probe": { "type": "file-exists", "path": "untracked.marker" }, "removable": "full-offboard-only" },
+    { "id": "fixture-advise", "kind": "dep", "scopes": ["user"], "profiles": ["core", "all"], "deps": [], "probe": { "type": "dep", "cmd": "node" }, "removable": "full-offboard-only", "offboard": "advise" },
+    { "id": "fixture-keep", "kind": "vault", "scopes": ["user"], "profiles": ["luna", "all"], "deps": [], "probe": { "type": "file-exists", "path": "{vaultPath}/.marker" }, "removable": "full-offboard-only", "offboard": "keep" }
+  ]
+}
+JSON
 }
 
 # ── Case A: flag-assertion guard — script-flag drift ───────────────────────
