@@ -13,11 +13,24 @@
 #      prompt (unlike uninstall — update has none, matching /himmel-update's
 #      own established no-confirm behavior), its exit code propagates, and
 #      it is invoked with EXACTLY the expected args (none — deriveUpdateCommand
-#      passes only ['bash', script], nothing extra).
+#      passes only [<bash>, script], nothing extra).
 #   C. a failing update propagates its exact (non-standard) exit code
 #      unchanged back through himmelctl, not just "any" non-zero.
 #   D. `update` rejects options not in its own whitelist (e.g. --items),
 #      same validation posture as every other subcommand.
+#   E. deriveUpdateCommand forward-slashes the script path (toBashPath) so the
+#      resolved Git Bash doesn't MSYS-mangle a backslash Windows path (part 2
+#      of the HIMMEL-1192 Windows fix).
+#   F. resolveBash() picks a Windows-native Git Bash DETERMINISTICALLY from
+#      %ProgramFiles% instead of trusting PATH order — part 1, the REOPENED
+#      HIMMEL-1192 root cause: bare `bash` on the operator's PowerShell PATH is
+#      C:\Windows\System32\bash.exe (WSL), which cannot run a Windows-path
+#      script AT ALL. The s2 fix (toBashPath only) targeted the wrong bash.
+#
+# Cases A–E pin HIMMELCTL_BASH=bash so they exercise the update WRAPPER +
+# toBashPath in isolation — argv[0] stays the bare 'bash' those assertions
+# expect, independent of whichever Git Bash resolveBash would pick on the host.
+# Case F drops the pin to exercise resolveBash()'s real resolution.
 
 set -euo pipefail
 
@@ -88,7 +101,7 @@ cA=$(build_path "$stubA" bash git jq python3 npm -- )
 hA="$work/hA"; mkdir -p "$hA"
 fixtureA="$work/caseA-fixture"; build_fixture "$fixtureA" 0
 set +e
-out=$(PATH="$cA" HOME="$hA" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$cA" HOME="$hA" HIMMELCTL_INTERACTIVE=0 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureA")" \
       "$node_bin" "$wizard" update --dry-run \
       </dev/null 2>&1); rc=$?
@@ -106,7 +119,7 @@ cB=$(build_path "$stubB" bash git jq python3 npm -- )
 hB="$work/hB"; mkdir -p "$hB"
 fixtureB="$work/caseB-fixture"; build_fixture "$fixtureB" 0
 set +e
-out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureB")" \
       "$node_bin" "$wizard" update \
       </dev/null 2>&1); rc=$?
@@ -135,7 +148,7 @@ cC=$(build_path "$stubC" bash git jq python3 npm -- )
 hC="$work/hC"; mkdir -p "$hC"
 fixtureC="$work/caseC-fixture"; build_fixture "$fixtureC" 42
 set +e
-out=$(PATH="$cC" HOME="$hC" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cC" HOME="$hC" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureC")" \
       "$node_bin" "$wizard" update \
       </dev/null 2>&1); rc=$?
@@ -151,7 +164,7 @@ cD=$(build_path "$stubD" bash git jq python3 npm -- )
 hD="$work/hD"; mkdir -p "$hD"
 fixtureD="$work/caseD-fixture"; build_fixture "$fixtureD" 0
 set +e
-out=$(PATH="$cD" HOME="$hD" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cD" HOME="$hD" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureD")" \
       "$node_bin" "$wizard" update --items foo \
       </dev/null 2>&1); rc=$?
@@ -162,5 +175,85 @@ printf '%s' "$out" | grep -q -- '--items is not valid' \
 [ -f "$fixtureD/update-args.log" ] \
   && fail "caseD: --items rejection must NOT invoke himmel-update.sh (got: $(cat "$fixtureD/update-args.log"))"
 echo "ok: caseD update rejects options outside its whitelist (--items), stub never invoked"
+
+# ── Case E (HIMMEL-1192): a backslash repo root is forward-slashed for bash ──
+# deriveUpdateCommand must run the script path through toBashPath so Git Bash
+# does not eat the backslashes ('\U'->'U', '\D'->'D' ...) and collapse
+# C:\Users\...\himmel-update.sh into a nonexistent C:Users...himmel-update.sh.
+# Feed a Windows-style backslash HIMMELCTL_REPO_ROOT and assert the printed
+# derived command carries NO backslash (every separator forward-slashed) — the
+# tell that toBashPath was applied. --dry-run prints without executing, and
+# repoRoot() returns HIMMELCTL_REPO_ROOT verbatim, so the fake root needs no
+# real himmel-update.sh on disk. The assertion holds on posix too: path.join
+# leaves the input backslashes as literals there, and toBashPath still maps
+# them to '/'. HIMMELCTL_BASH=bash pins argv[0] to the bare 'bash' so the
+# no-backslash assertion below scopes cleanly to the SCRIPT path (a resolved
+# Git-Bash launcher would itself carry backslashes — that is Case F's concern).
+stubE="$work/caseE"; mkdir -p "$stubE"
+cE=$(build_path "$stubE" bash git jq python3 npm -- )
+hE="$work/hE"; mkdir -p "$hE"
+set +e
+out=$(PATH="$cE" HOME="$hE" HIMMELCTL_INTERACTIVE=0 HIMMELCTL_BASH=bash \
+      HIMMELCTL_REPO_ROOT='C:\Users\test\himmel' \
+      "$node_bin" "$wizard" update --dry-run \
+      </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "caseE: dry-run should exit 0 (got rc=$rc): $out"
+derived_line=$(printf '%s\n' "$out" | grep 'derived:')
+case "$derived_line" in
+  *\\*) fail "caseE: derived command still contains a backslash — toBashPath not applied: $derived_line" ;;
+esac
+printf '%s' "$derived_line" | grep -qE 'bash C:/Users/test/himmel/scripts/himmel-update\.sh' \
+  || fail "caseE: expected forward-slashed script path in derived command (got: $derived_line)"
+echo "ok: caseE backslash repo root -> derived command forward-slashed (toBashPath applied)"
+
+# ── Case F (HIMMEL-1192 REOPENED): resolveBash picks a deterministic Git Bash ─
+# The real, reopened root cause: bare `bash` on the operator's PowerShell PATH
+# resolves to C:\Windows\System32\bash.exe (WSL) because Git Bash is LAST on
+# PATH — and WSL cannot run a Windows-path script in ANY form. resolveBash()
+# must therefore pick a Windows-native Git Bash DETERMINISTICALLY from
+# %ProgramFiles%\Git\..., ignoring PATH order — NEVER a bare `bash`.
+#
+# Host-aware, because %ProgramFiles% cannot be overridden for a node child from
+# an MSYS shell (Windows re-injects the real system value regardless of an
+# inline/`env` assignment — verified), so a fake-ProgramFiles fixture is
+# impossible here; the REAL host resolution IS the assertion:
+#   - win32 (this suite runs under Git Bash, so a standard Git-for-Windows
+#     install is present): the derived launcher must be a concrete
+#     ...\Git\...\bash.exe, NOT bare 'bash'. The candidate list never contains
+#     System32\bash.exe, so resolving to Git\...\bash.exe IS proof WSL is never
+#     chosen. A revert to `argv: ['bash', script]` flips this to bare 'bash' and
+#     trips the guard. (The operator additionally validates from a real
+#     PowerShell shell, where bare `bash` would be WSL — the handover's ask.)
+#   - posix: no %ProgramFiles%/Git, so resolveBash falls through to bare 'bash'
+#     — assert exactly that (unchanged behavior off-Windows).
+# No HIMMELCTL_BASH — that seam would short-circuit the resolution under test.
+stubF="$work/caseF"; mkdir -p "$stubF"
+cF=$(build_path "$stubF" bash git jq python3 npm -- )
+hF="$work/hF"; mkdir -p "$hF"
+fixtureF="$work/caseF-fixture"; build_fixture "$fixtureF" 0
+set +e
+out=$(PATH="$cF" HOME="$hF" HIMMELCTL_INTERACTIVE=0 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureF")" \
+      "$node_bin" "$wizard" update --dry-run \
+      </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "caseF: dry-run should exit 0 (got rc=$rc): $out"
+derived_lineF=$(printf '%s\n' "$out" | grep 'derived:')
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    printf '%s' "$derived_lineF" | grep -qE '[/\\]Git[/\\](usr[/\\])?bin[/\\]bash\.exe' \
+      || fail "caseF(win32): resolveBash should resolve a concrete Git Bash (…\\Git\\…\\bash.exe), not bare 'bash' — is Git for Windows installed under %ProgramFiles%? (got: $derived_lineF)"
+    printf '%s' "$derived_lineF" | grep -qE 'derived: bash ' \
+      && fail "caseF(win32): derived launcher is bare 'bash' — resolveBash fell back to PATH instead of Git Bash, which on a PowerShell PATH is WSL (got: $derived_lineF)"
+    ;;
+  *)
+    printf '%s' "$derived_lineF" | grep -qE 'derived: bash .*himmel-update\.sh$' \
+      || fail "caseF(posix): resolveBash should fall through to bare 'bash' off-Windows (got: $derived_lineF)"
+    ;;
+esac
+[ -f "$fixtureF/update-calls.log" ] \
+  && fail "caseF: --dry-run must NOT execute himmel-update.sh (got: $(cat "$fixtureF/update-calls.log"))"
+echo "ok: caseF resolveBash -> deterministic Git Bash on win32 / bare 'bash' fallback on posix (never WSL)"
 
 echo "PASS"

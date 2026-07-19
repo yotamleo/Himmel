@@ -12,12 +12,32 @@ function collect(value: string, prev: string[]): string[] {
   return [...prev, value];
 }
 
+/**
+ * Jira's REST field is `summary`; the CLI's long-standing flag is `--title`
+ * (matches `edit --title`). `--summary` is accepted as an alias since that's
+ * the literal Jira field name and the natural reach for anyone who knows the
+ * API. If both are given, `--title` wins — it's the documented flag, so this
+ * is the least-surprising resolution (no error; --summary is a pure
+ * alias, not a distinct value to reconcile).
+ */
+export function resolveTitle(opts: { title?: string; summary?: string }): string {
+  const title = opts.title ?? opts.summary;
+  if (title === undefined) {
+    throw new Error('Create requires --title (or --summary)');
+  }
+  return title;
+}
+
 export function registerCreate(program: Command): void {
   program
     .command('create')
     .description('Create a Jira issue')
     .requiredOption('--type <type>', 'Issue type: Epic, Story, Task, Subtask')
-    .requiredOption('--title <title>', 'Issue summary')
+    .option('--title <title>', 'Issue summary (required; alias: --summary)')
+    .option(
+      '--summary <summary>',
+      "Issue summary — alias for --title (Jira's own field name). If both are given, --title wins.",
+    )
     .option('--desc <desc>', 'Description (markdown supported)')
     .option(
       '--desc-file <path>',
@@ -32,7 +52,8 @@ export function registerCreate(program: Command): void {
     .action(
       async (options: {
         type: string;
-        title: string;
+        title?: string;
+        summary?: string;
         desc?: string;
         descFile?: string;
         adfFile?: string;
@@ -43,7 +64,7 @@ export function registerCreate(program: Command): void {
       }) => {
         const fields: Record<string, unknown> = {
           project: { key: options.project ?? projectKey() },
-          summary: options.title,
+          summary: resolveTitle(options),
           issuetype: { name: options.type },
         };
         if (options.adfFile) {

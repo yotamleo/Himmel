@@ -252,12 +252,17 @@ function depStatus(dep, ctx) {
 // actually take at runtime (that's decided by `command -v`, not knowable
 // here).
 const UPGRADE_APT_DNF_BREW_SUDO_PASSWORD_SNIPPET = 'if command -v apt-get >/dev/null 2>&1; then '
-  + 'sudo -S -p \'\' apt-get update >/dev/null 2>&1 || true; sudo -S -p \'\' apt-get install -y "$1"; '
+  + 'sudo -S -p \'\' sh -c \'apt-get update >/dev/null 2>&1 || true; apt-get install -y "$1"\' himmel-dep "$1"; '
   + 'elif command -v dnf >/dev/null 2>&1; then sudo -S -p \'\' dnf install -y "$1"; '
-  + 'elif command -v brew >/dev/null 2>&1; then brew upgrade "$1" 2>/dev/null || brew install "$1"; '
+  // CR fix (SECURITY, MAJOR — CR #1191): brew needs no sudo, so redirect its
+  // stdin from /dev/null. runHardenedSpawn pipes the sudo password to this
+  // bash's stdin for the apt/dnf `sudo -S` branches, but the branch is chosen
+  // at runtime by `command -v`; without this redirect the brew branch (and any
+  // descendant it spawns) would inherit the credential-bearing stdin.
+  + 'elif command -v brew >/dev/null 2>&1; then { brew upgrade "$1" 2>/dev/null || brew install "$1"; } </dev/null; '
   + 'else echo "no supported package manager for upgrade of $1" >&2; exit 1; fi';
 const UPGRADE_APT_DNF_BREW_NO_SUDO_PASSWORD_SNIPPET = 'if command -v apt-get >/dev/null 2>&1; then '
-  + 'sudo -n apt-get update >/dev/null 2>&1 || true; sudo -n apt-get install -y "$1"; '
+  + 'sudo -n sh -c \'apt-get update >/dev/null 2>&1 || true; apt-get install -y "$1"\' himmel-dep "$1"; '
   + 'elif command -v dnf >/dev/null 2>&1; then sudo -n dnf install -y "$1"; '
   + 'elif command -v brew >/dev/null 2>&1; then brew upgrade "$1" 2>/dev/null || brew install "$1"; '
   + 'else echo "no supported package manager for upgrade of $1" >&2; exit 1; fi';

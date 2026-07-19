@@ -5,10 +5,13 @@ repos:
       # Vendored Obsidian plugin bundles (minified js/css) and the vendored
       # claude-hud tree (HIMMEL-718, pinned byte-for-byte — drift guard hashes
       # it against the upstream pin) are kept verbatim — don't reformat them.
+      # graphify-out/ holds generated graph artifacts (HIMMEL-1193): reformatting
+      # them fights graphify's own output byte-for-byte and would leave the
+      # graph-generating station perpetually dirty against the committed copy.
       - id: trailing-whitespace
-        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/)'
+        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/)'
       - id: end-of-file-fixer
-        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/)'
+        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/)'
       - id: check-yaml
       - id: check-json
 

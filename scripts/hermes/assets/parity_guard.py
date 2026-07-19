@@ -154,7 +154,9 @@ TERMINAL_DESTRUCTIVE = re.compile(
     + r"|\b(del|erase|rd|rmdir)\b[^|;&\n]*/s(?:[^A-Za-z0-9_.-]|$)"  # recursive Windows delete; /s bound to the switch, not a path prefix like /scripts (HIMMEL-851 U1)
     + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:(?:format|diskpart|bcdedit)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)|mkfs)"
     + r"|\bcipher\s+/w"
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"schtasks(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"    # protects scheduled jobs
+    # HIMMEL-1141 verb split: schtasks /query is read-only (cadence diagnostic),
+    # so only the mutating verbs are refused. Mirrors the .sh hook schtasks line.
+    + r"|" + _CMDPOS_DESTRUCTIVE + r"schtasks(?:\.exe)?\s+(/create|/change|/delete|/end|/run|/config)(?:[^A-Za-z0-9_.-]|$)"    # protects scheduled jobs (mutations only)
     + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:taskkill|stop-process|pskill)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r"|\bkill\s+-9"
     + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:shutdown|reboot|logoff)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"

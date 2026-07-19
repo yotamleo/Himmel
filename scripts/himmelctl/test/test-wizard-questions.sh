@@ -43,6 +43,18 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # making node itself unlaunchable.
 node_bin=$(command -v node)
 
+# HIMMEL-1192: pin bin.js's bash spawns (detectRole shells out to the STUB
+# `git` via `bash -c`) to the bare, PATH-honoring `bash` this suite links into
+# its stub dir. Without the pin, resolveBash() would pick a Windows-native Git
+# Bash (…\Git\bin\bash.exe) whose MSYS launcher PREPENDS Git's /mingw64/bin to
+# PATH — shadowing the hermetic `git` stub with the real git, so detectRole
+# reads the real repo origin and the role heuristic under test breaks. `git` is
+# the one stubbed tool that also ships inside Git Bash's own bin dirs; the seam
+# keeps this question-engine suite isolated from the bash-resolution concern
+# (resolveBash itself is covered by test-wizard-update.sh Case F). No-op on
+# posix, where resolveBash returns bare 'bash' anyway.
+export HIMMELCTL_BASH=bash
+
 # shellcheck source=lib/hermetic-path.sh
 # shellcheck disable=SC1091
 . "$repo_root/scripts/lib/hermetic-path.sh"

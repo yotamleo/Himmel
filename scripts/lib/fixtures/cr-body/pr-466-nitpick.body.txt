@@ -1,0 +1,160 @@
+**Actionable comments posted: 5**
+
+<details>
+<summary>🧹 Nitpick comments (1)</summary><blockquote>
+
+<details>
+<summary>scripts/test-claude-glm.ps1 (1)</summary><blockquote>
+
+`304-338`: _🔒 Security & Privacy_ | _🔵 Trivial_ | _⚡ Quick win_
+
+**Add mixed-case forbidden-key cases to the Windows settings-screen tests.**
+
+These cases only use uppercase `ANTHROPIC_*` and `CLAUDE_CODE_USE_*` names, while the sanitizer tests explicitly require case-insensitive filtering. A case-sensitive regression in the PowerShell `--settings` screen would pass this suite. Add inline and file-backed cases such as `anthropic_base_url` and `Claude_Code_Use_Vertex`.
+
+As per path instructions, Windows `.ps1` twins should be checked for behavioral drift against their same-named `.sh` counterparts.
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@scripts/test-claude-glm.ps1` around lines 304 - 338, Add mixed-case
+forbidden-key coverage to the PowerShell settings-screen tests near the existing
+T14a-d and T14e-g cases: include inline --settings payloads using keys such as
+anthropic_base_url and Claude_Code_Use_Vertex, plus equivalent file-backed
+payloads, and assert each exits with code 3 without launching Claude. Keep the
+cases behaviorally aligned with the same-named shell tests and preserve the
+existing benign and materialization checks.
+```
+
+</details>
+
+<!-- cr-comment:v1:1fc034125a5198311c1d0a8f -->
+
+_Source: Path instructions_
+
+</blockquote></details>
+
+</blockquote></details>
+
+<details>
+<summary>🤖 Prompt for all review comments with AI agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Inline comments:
+In `@docs/tooling-catalog.md`:
+- Around line 489-492: Update the Registry floor description in
+plugin-profiles.json documentation to state that the listed plugins are present
+in every injected non-operator profile, excluding the operator sentinel because
+operator resolves to null and is not injected. Preserve the existing floor
+plugin list and rationale.
+- Around line 493-497: Update the catalog description in the tooling catalog
+documentation to remove the stale-catalog claim and its HIMMEL-819 caveat.
+Document that the resolver incorporates runtime plugin IDs from
+opts.installed/readEnabledPluginIds into the complete false baseline, so newly
+discovered plugins absent from the static catalog are still disabled.
+
+In `@scripts/telegram/spawn-claudex.ts`:
+- Around line 28-32: The claudex plugin-profile flow must discover plugins from
+the effective ~/.claude-codex configuration rather than the ambient
+CLAUDE_CONFIG_DIR or ~/.claude. Update the parseAddPlugins integration in
+spawn-claudex.ts to use a claudex-specific config discovery seam, ensuring
+plugins present only in ~/.claude-codex are included and unlisted plugins remain
+emitted as false.
+
+In `@scripts/telegram/spawn-glm.ts`:
+- Around line 645-653: Handle resolveProfileSettings failures without leaking
+resources: in scripts/telegram/spawn-glm.ts at lines 645-653, either move
+resolution before own-branch worktree/branch creation or clean up only the newly
+created GLM worktree and branch when resolution throws; apply the same contract
+in scripts/telegram/spawn-claudex.ts at lines 775-781. Preserve the existing
+pre-metadata resolution behavior and ensure failed dispatches leave no orphaned
+worktree or branch.
+
+In `@scripts/test-claude-glm.ps1`:
+- Around line 170-178: Add CLAUDE_LANE_AUTO_RESEED and
+CLAUDE_LANE_SEED_LOCK_TIMEOUT to the $OrigEnv snapshot list near the harness
+initialization, so cleanup restores pre-existing caller values. Ensure all
+mutation sites, including the cases around the opt-out checks and referenced
+later sections, use the existing snapshot/cleanup mechanism without leaving
+variables set after normal or interrupted execution.
+
+---
+
+Nitpick comments:
+In `@scripts/test-claude-glm.ps1`:
+- Around line 304-338: Add mixed-case forbidden-key coverage to the PowerShell
+settings-screen tests near the existing T14a-d and T14e-g cases: include inline
+--settings payloads using keys such as anthropic_base_url and
+Claude_Code_Use_Vertex, plus equivalent file-backed payloads, and assert each
+exits with code 3 without launching Claude. Keep the cases behaviorally aligned
+with the same-named shell tests and preserve the existing benign and
+materialization checks.
+```
+
+</details>
+
+<details>
+<summary>🪄 Autofix (Beta)</summary>
+
+Fix all unresolved CodeRabbit comments on this PR:
+
+- [ ] <!-- {"checkboxId": "4b0d0e0a-96d7-4f10-b296-3a18ea78f0b9"} --> Push a commit to this branch (recommended)
+- [ ] <!-- {"checkboxId": "ff5b1114-7d8c-49e6-8ac1-43f82af23a33"} --> Create a new PR with the fixes
+
+</details>
+
+---
+
+<details>
+<summary>ℹ️ Review info</summary>
+
+<details>
+<summary>⚙️ Run configuration</summary>
+
+**Configuration used**: Path: .coderabbit.yaml
+
+**Review profile**: CHILL
+
+**Plan**: Pro Plus
+
+**Run ID**: `4b14673e-a4a9-447b-a2d6-a2ada8f90f2a`
+
+</details>
+
+<details>
+<summary>📥 Commits</summary>
+
+Reviewing files that changed from the base of the PR and between e5d5fc481c42d31186c2d922fdcaee5e83012979 and 76d4d0a2c36dc186d565e8665e3ad332ccb23d94.
+
+</details>
+
+<details>
+<summary>📒 Files selected for processing (14)</summary>
+
+* `docs/tooling-catalog.md`
+* `scripts/claude-glm`
+* `scripts/claude-glm.ps1`
+* `scripts/lanes/plugin-profiles.json`
+* `scripts/lanes/plugin-profiles.mjs`
+* `scripts/lanes/tests/plugin-profiles.test.mjs`
+* `scripts/telegram/run.test.ts`
+* `scripts/telegram/run.ts`
+* `scripts/telegram/spawn-claudex.test.ts`
+* `scripts/telegram/spawn-claudex.ts`
+* `scripts/telegram/spawn-glm.test.ts`
+* `scripts/telegram/spawn-glm.ts`
+* `scripts/test-claude-glm.ps1`
+* `scripts/test-claude-glm.sh`
+
+</details>
+
+</details>
+
+<!-- This is an auto-generated comment by CodeRabbit for review status -->

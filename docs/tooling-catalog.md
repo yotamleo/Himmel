@@ -733,7 +733,7 @@ lock lifecycle against a real temp repo + the real lock script).
 
 ---
 
-## claude-routed + omniroute-config-lint (`scripts/claude-routed`, `scripts/omniroute-config-lint`, `.ps1` twins, HIMMEL-666)
+## claude-routed + omniroute-config-lint (`scripts/claude-routed`, `scripts/omniroute-config-lint.sh`, `.ps1` twins, HIMMEL-666)
 
 **What:** the WS2 OmniRoute-pilot wiring pair. `claude-routed` is a
 copy-and-edit variant of `claude-glm` (the WS1 extensibility seam): identical
@@ -881,7 +881,7 @@ Specs saved to: `docs/superpowers/specs/YYYY-MM-DD-feature.md`
 **What:** Token-efficient CLI proxy. Intercepts common commands and strips irrelevant output before it enters Claude's context.
 **Usage:** `rtk git status`, `rtk git add`, etc.
 **Savings:** 60–90% token reduction on dev operations.
-**Auto-rewriting:** Requires `rtk init -g` to install the shell hook. Without it, prefix commands manually with `rtk`.
+**Auto-rewriting:** himmel's full machine-setup scripts run `rtk init -g` once (then reconcile the entry into the `rtk-hook-guard.sh` wrapper — see [`docs/setup/new-machine.md`](setup/new-machine.md#3a-expected-post-setup-state-no-hook-installed-banner) §3a). **Do NOT run `rtk init -g` manually outside setup** — it appends a duplicate bare hook entry; use `bash scripts/lib/reconcile-rtk-hook.sh ~/.claude/settings.json <himmel-path>` to collapse duplicates instead (see "Reconcile" below). Without any hook installed, prefix commands manually with `rtk`.
 **Verify:** `rtk gain` — shows token savings analytics.
 **Note:** Name collision risk — `reachingforthejack/rtk` (Rust Type Kit) is a different tool. If `rtk gain` fails, check which binary is installed.
 **Reconcile after a standalone `rtk init -g` (HIMMEL-399):** `rtk init -g` appends a bare `rtk hook claude` entry without checking for an existing one, so running it outside full machine-setup can stack duplicates. himmel swaps that bare entry for the `rtk-hook-guard.sh` wrapper (HIMMEL-241). The full machine-setup scripts run `rtk init -g` once and reconcile inline; for an on-demand reconcile run `bash scripts/lib/reconcile-rtk-hook.sh ~/.claude/settings.json <himmel-path>` — idempotent + duplicate-safe (collapses to exactly one guard entry). Reconcile **user scope only** (`~/.claude/settings.json`): `rtk init -g` is global and the guard is an absolute path, so a project-scope copy would just double-fire the hook.

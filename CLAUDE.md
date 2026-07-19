@@ -277,9 +277,10 @@ auto-approve; the edit-on-main / read-secrets / backend-tier / CR-marker /
 jira-compound-write / unresolved-CR-merge / merged-PR-commit / docker-privesc /
 rogue-schedule / rogue-codex-wsl guards; `guard-implementor-dispatch` cost guard; the cap-arm
 hooks), a PostToolUse cap-arm hook, **pre-commit/commit-msg/pre-push gates**
-(source of truth `.pre-commit-config.yaml`), and opt-in `SessionStart` /
-`UserPromptSubmit` hooks (`inject-initiative.sh` `HIMMEL_INITIATIVE`,
-`improve-on-submit.sh` — both default OFF). The full per-hook behaviour, the
+(source of truth `.pre-commit-config.yaml`), and an opt-in `SessionStart` hook (`inject-initiative.sh`
+`HIMMEL_INITIATIVE`, default OFF); `improve-on-submit.sh` is a
+`UserPromptSubmit` hook wired only in the Codex lane
+(`.codex/hooks.json`), not `.claude/settings.json`. The full per-hook behaviour, the
 gate list, the guardrail matrix, the Telegram `/arm` surface, and billing
 detail: [`docs/internals/enforcement.md`](docs/internals/enforcement.md).
 
