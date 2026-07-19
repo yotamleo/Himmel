@@ -57,10 +57,14 @@ test("composeWorkerPrompt teaches COMMIT EARLY (HIMMEL-1200): commit when tests 
   const p = composeWorkerPrompt("do X", "/tmp/gs/glm-a-1", "glm/a");
   expect(p).toMatch(/COMMIT EARLY/);
   expect(p).toMatch(/follow-up commits/i);
+  // HIMMEL-1206: must teach a CONVENTIONAL message or the commit-msg gate rejects
+  // the early commit — recreating the uncommitted-timeout failure it prevents.
+  expect(p).toMatch(/CONVENTIONAL commit message/);
   // shared mode carries it too (the commit-convergence failure is lane-wide)
   const shared = composeWorkerPrompt("do X", "/tmp/gs/glm-a-1", "feat/live-pr", { shared: true });
   expect(shared).toMatch(/COMMIT EARLY/);
   expect(shared).toMatch(/follow-up commits/i);
+  expect(shared).toMatch(/CONVENTIONAL commit message/);
 });
 
 test("composeWorkerPrompt shared mode (HIMMEL-800): teaches the no-rebase/no-new-branch/add-commits-only contract + names the branch", () => {
