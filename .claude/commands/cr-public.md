@@ -109,8 +109,10 @@ code; trust the final `check-ci: verdict exit=N` line printed on stdout.)
   all three land on `3`. For each finding: **verify its premise against the
   diff first** (a public-context finding can be a false positive — same
   verify-before-complying discipline as private CR), fix the real ones in the
-  public worktree, push, resolve each addressed thread
-  (`gh pr comment` / resolve via the GraphQL thread id), and re-run step 3. On the
+  public worktree, push, then **resolve each addressed thread via the GraphQL
+  `resolveReviewThread` mutation on its thread id** (`gh pr comment` only posts a
+  reply — it does NOT resolve the thread, so the gate would still block), and
+  re-run step 3. On the
   PRIVATE repo a fix push re-reviews automatically; on the PUBLIC repo it often
   does NOT — see the bounded-wait fallback below before looping forever.
 
