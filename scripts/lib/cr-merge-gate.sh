@@ -214,17 +214,26 @@ cr_merge_gate() {
                     nitpick=*) nitpick=${tok#nitpick=} ;;
                 esac
             done
-            case "$outside$nitpick" in
-                *[!0-9]*|'')
-                    body_degraded=1 ;;
-                *)
-                    if [ "$outside" -gt 0 ]; then
-                        echo "BLOCK: CodeRabbit's review body reports $outside outside-diff-range finding(s) on head $head of PR #$num — these carry no thread to resolve. Fix + address them, or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated."
-                        return 2
-                    fi
-                    body_nitpick="$nitpick"
-                    ;;
-            esac
+            # Validate EACH field independently, NOT the concatenation (CR #1297):
+            # an empty/missing `outside` masked by the joined string (nitpick=5 ->
+            # "5" passes the all-digits test) would let `[ "$outside" -gt 0 ]` below
+            # error on the empty value, read as false, and the outside-diff gate
+            # fail OPEN. Per-field guards fail closed (degraded) — mirrors the same
+            # fix in check-ci.sh's cr_body_gate.
+            _body_bad=0
+            for _v in "$outside" "$nitpick"; do
+                case "$_v" in
+                    ''|*[!0-9]*) _body_bad=1 ;;
+                esac
+            done
+            if [ "$_body_bad" -eq 1 ]; then
+                body_degraded=1
+            elif [ "$outside" -gt 0 ]; then
+                echo "BLOCK: CodeRabbit's review body reports $outside outside-diff-range finding(s) on head $head of PR #$num — these carry no thread to resolve. Fix + address them, or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated."
+                return 2
+            else
+                body_nitpick="$nitpick"
+            fi
             ;;
         1)
             body_degraded=1 ;;

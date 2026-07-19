@@ -352,7 +352,8 @@ Fires on Bash/PowerShell. Shared floor with the Codex lane — ports the
 shared-machine/irreversible shapes at COMMAND POSITION regardless of
 tool-permission config: recursive `rm` / Windows `del`/`erase`/`rd`/`rmdir`,
 disk/boot mutation (`format`/`diskpart`/`bcdedit`/`mkfs`), disk wipe
-(`cipher /w`), `schtasks`, process termination (`taskkill`/`Stop-Process`/
+(`cipher /w`), `schtasks` (mutating verbs only — `/query` + help/no-verb
+forms stay allowed, HIMMEL-1141), process termination (`taskkill`/`Stop-Process`/
 `pskill`/`kill -9`), system shutdown/reboot/logoff, Windows registry
 mutation, permission mutation (`icacls`/`takeown`), `git push --force*`,
 `git reset --hard`, `git clean -f`, `git filter-branch`, and remote-exec

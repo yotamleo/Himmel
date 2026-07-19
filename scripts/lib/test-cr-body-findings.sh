@@ -9,7 +9,7 @@ export HOME="$TMP/home"; mkdir -p "$HOME"
 
 FIXDIR="$SCRIPT_DIR/fixtures/cr-body"
 OUTSIDE_BODY="$FIXDIR/pr-1261-outside-diff-2.body.txt"   # real: outside=2 nitpick=0 additional=0 markers=2
-NITPICK_BODY="$FIXDIR/pr-466-nitpick.body.txt"           # real: outside=0 nitpick=1 additional=0 markers=0
+NITPICK_BODY="$FIXDIR/pr-466-nitpick.body.txt"           # real: outside=0 nitpick=1 additional=0 markers=1
 
 # ── synthetic fixtures (kept inline — small, one-off; NOT captured CodeRabbit
 # output like the two files above) ──────────────────────────────────────────
