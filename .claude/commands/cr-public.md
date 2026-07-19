@@ -38,8 +38,13 @@ wrongly trigger PR creation.
 ```bash
 if printf '%s' "$sel" | grep -qE '^[0-9]+$'; then
     pr="$sel"
-    branch=$(gh pr view "$pr" --repo "$REPO" --json headRefName -q .headRefName) \
+    # Fetch state alongside headRefName: a numeric selector can name a CLOSED or
+    # MERGED PR, which must NOT be babysat (HIMMEL-1207). Reject anything but OPEN.
+    prjson=$(gh pr view "$pr" --repo "$REPO" --json headRefName,state) \
         || { echo "cr-public: cannot evaluate — gh pr view $pr failed (auth/network?)"; exit 2; }
+    state=$(printf '%s' "$prjson" | jq -r .state)
+    [ "$state" = "OPEN" ] || { echo "cr-public: PR #$pr is $state, not OPEN — refusing to babysit a closed/merged PR"; exit 2; }
+    branch=$(printf '%s' "$prjson" | jq -r .headRefName)
 else
     branch="$sel"
     pr=$(gh pr list --repo "$REPO" --head "$branch" --state open --json number -q '.[0].number') \
@@ -47,9 +52,15 @@ else
 fi
 ```
 - `$pr` set → use it.
-- `$pr` empty and `$branch` is a **pushed branch** → create the PR (agent-allowed on public):
+- `$pr` empty and `$branch` is a **pushed branch** → create the PR (agent-allowed on public),
+  then **capture the new PR number** — `$pr` is still empty here, so without this step
+  3 would build `.../pull/` and watch nothing (HIMMEL-1207):
   ```bash
-  gh pr create --repo "$REPO" --base main --head "$branch" --fill
+  url=$(gh pr create --repo "$REPO" --base main --head "$branch" --fill) \
+      || { echo "cr-public: cannot evaluate — gh pr create failed"; exit 2; }
+  pr=$(printf '%s' "$url" | grep -oE '[0-9]+$')   # gh prints the PR URL; take its trailing number
+  [ -n "$pr" ] || pr=$(gh pr list --repo "$REPO" --head "$branch" --state open --json number -q '.[0].number')
+  [ -n "$pr" ] || { echo "cr-public: created a PR but could not resolve its number"; exit 2; }
   ```
   `--fill` uses the branch's commits for title/body. Pass an explicit
   `--title`/`--body-file` instead when the propagation prep produced a body file.
@@ -84,14 +95,18 @@ code; trust the final `check-ci: verdict exit=N` line printed on stdout.)
   ```
   (`--admin` is correct on the public repo: the operator owns it and it may carry
   branch protection, unlike the private repo where `--admin` is a no-op HIMMEL-224.)
-- **`1`** — a CI check failed. Read the failing run (in a SUBAGENT if the log is
-  bulky — don't flood the parent), fix it in the public worktree, push to the
-  branch, then re-run step 3. A red within seconds is often a GitHub Actions
+- **`1`** — a CI check failed (a check in `check-ci.sh`'s fail bucket). Note this
+  is CI-red ONLY — a CodeRabbit **App** review that requests changes or posts
+  findings is exit `3` (below), and a review-tool/gh error that cannot be
+  evaluated is exit `2`, never `1`. Read the failing run (in a SUBAGENT if the
+  log is bulky — don't flood the parent), fix it in the public worktree, push to
+  the branch, then re-run step 3. A red within seconds is often a GitHub Actions
   billing/permissions block, not the code — check the run annotations first.
 - **`2`** — cannot evaluate (no checks yet, gh/network error, or the PR head moved
   during the watch). Re-run step 3; widen `--grace` if checks never registered.
-- **`3`** — CI green but the review blocks: unresolved CodeRabbit threads or a
-  changes-requested review. For each finding: **verify its premise against the
+- **`3`** — CI green but the review blocks: unresolved CodeRabbit threads, a
+  changes-requested review, **or an outside-diff / body finding (HIMMEL-1126)** —
+  all three land on `3`. For each finding: **verify its premise against the
   diff first** (a public-context finding can be a false positive — same
   verify-before-complying discipline as private CR), fix the real ones in the
   public worktree, push, resolve each addressed thread
@@ -110,27 +125,55 @@ HIMMEL-1126 A2 gate inside `check-ci.sh` correctly refuses to certify (prior hea
 had outside-diff findings, current head unreviewed), so the babysit loop can never
 reach exit `0` and would stall indefinitely.
 
-Do NOT loop forever. After a fix push, wait a **bounded** window for a
-review-at-head (~15 min; re-run step 3, optionally with one `@coderabbitai review`
-nudge). If no fresh review lands in that window, STOP looping and fall back to an
-**operator-merge recommendation** — but ONLY when all of these hold:
+Do NOT loop forever, and do NOT treat a single `check-ci.sh` run (or its `--grace`
+value — that is check-*registration* grace, not a CodeRabbit-review wait) as "the
+15-minute wait." Enforce an **explicit monotonic deadline** (HIMMEL-1207): capture
+a start time, then re-poll for a review-at-head until either a fresh review lands
+or the deadline expires. One `@coderabbitai review` nudge early in the window is
+fine; the deadline — not the nudge — decides when to stop:
+```bash
+deadline=$(( $(date +%s) + 900 ))     # ~15 min, monotonic
+head=$(gh pr view "$pr" --repo "$REPO" --json headRefSha -q .headRefSha)
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    # fresh review at the CURRENT head? (CodeRabbit posts a review whose commit == head)
+    reviewed=$(gh pr view "$pr" --repo "$REPO" --json reviews \
+        -q "[.reviews[] | select(.author.login==\"coderabbitai\" and .commit.oid==\"$head\")] | length")
+    [ "${reviewed:-0}" -gt 0 ] && break
+    sleep 60
+done
+```
+Only AFTER the deadline expires with no fresh review may you fall back to an
+**operator-merge recommendation** — and ONLY when all of these hold:
 - CI is green, and
 - every inline review thread is resolved, and
 - every outside-diff / body finding was objectively addressed by a fix that is
   **content-identical to a change that already passed CR in private**, and
-- the **ENTIRE current public diff** is content-identical to code already
-  reviewed in private — compare the whole diff, hunk by hunk, not just the
-  flagged findings. Because the public App may have reviewed only an OLDER head,
-  a change it never flagged is not thereby safe: **any** public hunk that is not
-  a re-projection of already-reviewed private code — flagged or not, related to a
-  finding or not — blocks the recommendation.
+- the **ENTIRE current public diff** is content-identical to an explicit,
+  **named private ref** — the source private PR(s)/commit(s) this propagation
+  projects (state them in the PR body). Compare the WHOLE patch, deterministically,
+  and record the result — do not eyeball only the flagged findings (HIMMEL-1207):
+  ```bash
+  # PRIV_REF = the private merge commit(s) this public branch re-projects.
+  # Compare the full public diff-vs-base against the private diff-vs-its-base,
+  # after stripping PRIVATE_PATHS (they never propagate). Identical => a faithful
+  # re-projection of already-reviewed code.
+  git -C <public-wt> diff origin/main...HEAD > /tmp/pub.patch
+  git -C <private-repo> diff "$PRIV_REF~1...$PRIV_REF" -- . ':(exclude)<PRIVATE_PATHS>' > /tmp/priv.patch
+  diff <(grep '^[+-]' /tmp/pub.patch) <(grep '^[+-]' /tmp/priv.patch)   # empty => content-identical
+  ```
+  Because the public App may have reviewed only an OLDER head, a change it never
+  flagged is not thereby safe: if that comparison is NOT empty — **any** public
+  hunk that is not a re-projection of the named private ref, flagged or not —
+  the recommendation is BLOCKED. Record the comparison result (the named ref +
+  empty/non-empty verdict) in your operator report so the merge is auditable.
 
 When those hold, the missing signal is a CodeRabbit *re-run*, not a real finding:
-report the PR as operator-mergeable with that reasoning and the merge command,
-and STOP. The A2 gate is a safety net for **unattended** merges; an **attended**
-operator-merge on an already-reviewed re-projection is legitimate. If any public
-change (flagged or not) introduces logic not already reviewed in private, do NOT
-recommend the merge — keep it blocked and hand it to the operator.
+report the PR as operator-mergeable with that reasoning, the named private ref,
+the recorded comparison verdict, and the merge command — then STOP. The A2 gate
+is a safety net for **unattended** merges; an **attended** operator-merge on an
+already-reviewed re-projection is legitimate. If any public change (flagged or
+not) introduces logic not already reviewed in private, do NOT recommend the
+merge — keep it blocked and hand it to the operator.
 
 ## 5. Where fixes are applied
 
