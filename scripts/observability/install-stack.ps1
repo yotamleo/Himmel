@@ -92,6 +92,37 @@ function Register-LogonTask {
     -Force | Out-Null
 }
 
+# Register-IntervalTask (HIMMEL-1199): unlike the long-running exporters above
+# (one AtLogOn trigger, process stays up), luna-sync-alert.ts is a short-lived
+# one-shot check meant to run on a cadence — an -Once trigger with a
+# RepetitionInterval, starting at the next logon and repeating indefinitely
+# (RepetitionDuration left unset = forever).
+function Register-IntervalTask {
+  param(
+    [string]$TaskName,
+    [string]$Execute,
+    [string]$Arguments,
+    [string]$WorkingDirectory,
+    [int]$IntervalMinutes
+  )
+
+  $action = New-ScheduledTaskAction -Execute $Execute -Argument $Arguments -WorkingDirectory $WorkingDirectory
+  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
+  $trigger.Repetition.StopAtDurationEnd = $false
+  $settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+
+  Register-ScheduledTask `
+    -TaskName $TaskName `
+    -Action $action `
+    -Trigger $trigger `
+    -Settings $settings `
+    -Description "himmel local observability stack task" `
+    -Force | Out-Null
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $RepoRoot) {
   $RepoRoot = (Resolve-Path (Join-Path $scriptDir '..\..')).Path
@@ -239,13 +270,22 @@ Register-LogonTask `
   -Arguments "run `"$flowExporter`"" `
   -WorkingDirectory $RepoRoot
 
+$lunaSyncAlert = Join-Path $RepoRoot 'scripts\observability\luna-sync-alert.ts'
+Register-IntervalTask `
+  -TaskName 'himmel-observability-luna-sync-alert' `
+  -Execute $bunExe `
+  -Arguments "run `"$lunaSyncAlert`"" `
+  -WorkingDirectory $RepoRoot `
+  -IntervalMinutes 10
+
 # Logon triggers only fire at the NEXT logon; start each task now so the
 # verification URLs below are live immediately after install.
 foreach ($taskName in @(
     'himmel-observability-prometheus',
     'himmel-observability-grafana',
     'himmel-observability-windows-exporter',
-    'himmel-observability-flow-exporter')) {
+    'himmel-observability-flow-exporter',
+    'himmel-observability-luna-sync-alert')) {
   Write-Step "Starting $taskName"
   Start-ScheduledTask -TaskName $taskName
 }
@@ -261,3 +301,4 @@ Write-Output '    himmel-observability-prometheus'
 Write-Output '    himmel-observability-grafana'
 Write-Output '    himmel-observability-windows-exporter'
 Write-Output '    himmel-observability-flow-exporter'
+Write-Output '    himmel-observability-luna-sync-alert (every 10 minutes)'

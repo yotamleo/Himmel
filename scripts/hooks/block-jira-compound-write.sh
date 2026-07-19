@@ -67,6 +67,15 @@
 #     have to guess, and guessing here is what orders writes that never happened.
 #     Defining a shell function in the same call as a jira write is not a shape
 #     anything in this repo produces.
+#   * ERREXIT / `set -e` reachability (`set -e; false; node … create`). Whether a
+#     preceding command FAILS (and so aborts the chain under errexit, leaving a later
+#     write unreachable) is a RUNTIME fact — none of it has run when this PreToolUse
+#     hook fires — so a flat scanner cannot prove the write unreachable. The
+#     codex-adversarial "fail open for every statement after `set -e`" fix is WRONG
+#     here: the common `set -e; node …/jira create --desc "$(…)"` is fully reachable
+#     (nothing before it fails) and SHOULD bounce, and blanket post-`set -e`
+#     fail-open would neuter the guard for exactly that shape. Accepted flat-scanner
+#     limitation; the real reachability fix is a shell AST (separate, larger work).
 #   * Multiple heredocs on a line, unparseable delimiters, whitespace CLI paths.
 # Every gap forfeits GUIDANCE only — the write keeps its pre-HIMMEL-1077 classifier
 # denial, exactly as before this hook existed. None can produce a wrong block.
@@ -620,7 +629,8 @@ segment_has_write() {
 }
 
 has_jira_write() {
-    local t stmt sub seg kw
+    local t stmt sub seg kw ekw nm val rest exec_cmd et
+    local -a ets
     # Split on real command SEPARATORS only, with or without cosmetic spaces:
     # `echo ok;node …`, `true&&node …`, `echo x|node …` all RUN node, and splitting
     # on whitespace alone would yield `ok;node` and miss the write. Safe by
@@ -697,28 +707,95 @@ has_jira_write() {
                 *) break ;;
             esac
         done
-        # An unconditional `exit` terminates the shell: every statement AFTER it is
-        # UNREACHABLE, so a write there never runs — bouncing it (and telling the
-        # agent to reissue standalone) would order a Jira write the command never
-        # performs, the same hazard the conditional bails below guard against. A
-        # CONDITIONAL exit (`foo || exit`) was already truncated to `foo` upstream,
-        # so only a genuinely unconditional `exit` statement reaches here. Stop
-        # scanning; a real write BEFORE the exit already returned 0 in its own turn.
-        # Resolve wrapped (`command exit`, `builtin exit`) and redirected
-        # (`exit>/dev/null`) forms first so they read as terminators too — else a
-        # later unreachable write gets the wrong bounce (coderabbit). A backgrounded
-        # `exit &` does NOT terminate the parent, so only redirects (`>`/`<`) count.
+        # An unconditional TERMINATOR ends the shell, so every statement AFTER it is
+        # UNREACHABLE — a write there never runs, and bouncing it (telling the agent
+        # to reissue standalone) would order a Jira write the command never performs,
+        # the same hazard the conditional bails below guard against. A CONDITIONAL
+        # terminator (`foo || exit`) was already truncated to `foo` upstream, so only
+        # a genuinely unconditional one reaches here. Stop scanning; a real write
+        # BEFORE the terminator already returned 0 in its own turn.
+        #
+        # Terminators (HIMMEL-1182 extends the bare-`exit` break): a bare `exit`; a
+        # wrapped `command exit` / `builtin exit`; an assignment-prefixed `FOO=1
+        # exit`; and `exec <cmd>` (which REPLACES the shell). A backgrounded
+        # `exit &` / `exec cmd &` does NOT terminate the PARENT, but the bare `&`
+        # already split this statement off upstream, so it does not reach here as the
+        # same statement.
+        #
+        # CRITICAL: `exec` WITH a command replaces the shell (terminates); `exec
+        # >file` / `exec 2>&1` — exec with ONLY redirections — just reassigns file
+        # descriptors and execution CONTINUES, so a later write may still run.
+        # Treating redirect-only exec as a terminator would mask a REACHABLE write —
+        # the one place a wrong block could sneak in here. So `exec` is resolved by
+        # scanning its remaining tokens: a non-redirect word means a command is
+        # present. Strip leading wrappers and VAR=val assignments first so the word
+        # sits in command position.
         ekw="$kw"
         while : ; do
+            ekw="${ekw#"${ekw%%[![:space:]]*}"}"   # strip leading whitespace
             case "$ekw" in
                 command[[:space:]]*|builtin[[:space:]]*)
                     ekw="${ekw#*[[:space:]]}"
-                    ekw="${ekw#"${ekw%%[![:space:]]*}"}" ;;
-                *) break ;;
+                    continue ;;
             esac
+            # Strip ONE leading VAR=val assignment prefix (`FOO=1 exit`, chained
+            # `A=1 B=2 exit`, `FOO=1 exec <cmd>`). A masked `VAR=$(…)` value already
+            # split this statement on the substitution's newline, so only a literal
+            # or quoted value is inline here; a quoted value was blanked to spaces,
+            # which the value-word strip below consumes harmlessly. Valid name =
+            # [A-Za-z_][A-Za-z0-9_]* (same rule as segment_has_write); `foo-bar=1`
+            # is not an assignment (bash reads it as a command name), so it is left.
+            nm="${ekw%%=*}"
+            case "$nm" in
+                [A-Za-z_]*)
+                    case "$nm" in *[!A-Za-z0-9_]*) nm="" ;; esac ;;
+                *) nm="" ;;
+            esac
+            if [ -n "$nm" ] && [ "${ekw:${#nm}:1}" = '=' ]; then
+                ekw="${ekw:$(( ${#nm} + 1 ))}"      # drop NAME=
+                val="${ekw%%[[:space:]]*}"          # the value word (empty if quoted)
+                ekw="${ekw#"$val"}"
+                continue
+            fi
+            break
         done
         case "$ekw" in
             exit|exit[[:space:]]*|exit'>'*|exit'<'*) break ;;
+            exec|exec[[:space:]]*|exec'>'*|exec'<'*)
+                # `exec <cmd>` replaces the shell → terminator; `exec >file` /
+                # `exec 2>&1` (redirections only) does NOT — execution continues.
+                rest="${ekw#exec}"
+                rest="${rest#"${rest%%[![:space:]]*}"}"
+                exec_cmd=0
+                if [ -n "$rest" ]; then
+                    set -f
+                    # shellcheck disable=SC2206 # intentional word split for tokenisation
+                    ets=($rest)
+                    set +f
+                    expect_target=0
+                    for et in "${ets[@]}"; do
+                        if [ "$expect_target" = 1 ]; then
+                            expect_target=0   # this token is a redirect TARGET
+                            continue          # (space-separated: `exec > /tmp/f`)
+                        fi
+                        case "$et" in
+                            [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*)     # a redirect token
+                                # A token that is JUST the operator (ends in > or <,
+                                # e.g. `>`, `>>`, `2>`) takes the NEXT whitespace-
+                                # separated token as its target — consume it, or the
+                                # target reads as a command and a pure-redirect exec
+                                # is wrongly treated as terminating. A glued target
+                                # (`>/tmp/f`, `2>1`) needs no lookahead.
+                                case "$et" in
+                                    *'>'|*'<') expect_target=1 ;;
+                                esac
+                                ;;
+                            *) exec_cmd=1; break ;;              # a command word
+                        esac
+                    done
+                fi
+                [ "$exec_cmd" = 1 ] && break
+                ;;
         esac
         case "$kw" in
             function|function[[:space:]]*|\

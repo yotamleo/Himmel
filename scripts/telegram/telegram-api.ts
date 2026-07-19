@@ -17,21 +17,28 @@ export async function sendChatAction(token: string, chat_id: number, f: F = fetc
   } catch {}
 }
 
+// Returns whether Telegram actually ACCEPTED the message — the HTTP request
+// succeeded AND the Bot API JSON reports `ok: true` (same success signal
+// getUpdates/getFile validate; an HTTP 200 with `{ ok: false }` is NOT a
+// delivery). A permanent 4xx drop or retry-exhaustion returns false rather
+// than throwing, so best-effort callers can ignore it while a caller that must
+// know delivery happened (e.g. luna-sync-alert's cooldown state) can gate on it.
 export async function sendMessage(token: string, chat_id: number, text: string,
-    f: F = fetch, sleep: (ms:number)=>Promise<void> = (ms)=>Bun.sleep(ms)): Promise<void> {
+    f: F = fetch, sleep: (ms:number)=>Promise<void> = (ms)=>Bun.sleep(ms)): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const res = await f(API(token, "sendMessage"), { method: "POST",
       headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id, text }) });
-    if (res.ok) return;
     const j: any = await res.json().catch(() => ({}));
+    if (res.ok && j?.ok === true) return true;
     if (res.status === 429) { await sleep((j?.parameters?.retry_after ?? 1) * 1000); continue; }
     if (res.status >= 400 && res.status < 500) {           // permanent client error → log + drop (never loop)
       console.error(`[telegram] sendMessage ${res.status} chat=${chat_id}: ${j?.description ?? ""}`);
-      return;
+      return false;
     }
-    await sleep(1000);                                       // transient 5xx → bounded retry
+    await sleep(1000);                                       // transient 5xx (or 2xx ok:false) → bounded retry
   }
   console.error(`[telegram] sendMessage gave up after retries chat=${chat_id}`);
+  return false;
 }
 // Bound on file-fetch calls: unlike getUpdates (long-poll bounds itself), a hung
 // getFile/download would stall the single-threaded ingest loop indefinitely (CR).

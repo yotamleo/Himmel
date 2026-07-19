@@ -171,6 +171,68 @@
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 21,
+      "panels": [],
+      "title": "Luna sync",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "git rev-list --count @{u}..HEAD in the luna vault clone, no fetch (HIMMEL-1199). Omitted (no data) when the vault has no upstream configured. The exact signal for the incident this ticket detects: an auto-sync push silently blocked, commits piling up unpushed.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 19 },
+      "id": 22,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [
+        { "expr": "luna_git_unpushed_commits", "legendFormat": "unpushed commits", "refId": "A" }
+      ],
+      "title": "Luna vault unpushed commits",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Line count of git status --porcelain in the luna vault clone (HIMMEL-1199) — catches a commit-gate block, complementing the push-gate signal above.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 19 },
+      "id": 23,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [
+        { "expr": "luna_git_uncommitted_files", "legendFormat": "uncommitted files", "refId": "A" }
+      ],
+      "title": "Luna vault uncommitted files",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
       "id": 14,
       "panels": [],
       "title": "Host",
@@ -179,7 +241,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "fieldConfig": { "defaults": { "mappings": [], "unit": "short" }, "overrides": [] },
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 19 },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 25 },
       "id": 15,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
       "targets": [
@@ -191,7 +253,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "fieldConfig": { "defaults": { "mappings": [], "unit": "percentunit" }, "overrides": [] },
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 19 },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 25 },
       "id": 16,
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "targets": [
@@ -203,7 +265,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "fieldConfig": { "defaults": { "mappings": [], "unit": "percentunit" }, "overrides": [] },
-      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 19 },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 25 },
       "id": 17,
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "targets": [
@@ -213,7 +275,7 @@
       "type": "timeseries"
     },
     {
-      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 19 },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 25 },
       "id": 18,
       "options": { "code": { "language": "plaintext", "showLineNumbers": false, "showMiniMap": false }, "content": "RAM process trees, orphan detection, and per-subtree attribution are intentionally out of scope for HIMMEL-922. They belong to HIMMEL-924.", "mode": "markdown" },
       "title": "HIMMEL-924 placeholder",
@@ -221,7 +283,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
       "id": 19,
       "panels": [],
       "title": "Lanes/bank",
@@ -246,7 +308,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 25 },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 31 },
       "id": 20,
       "description": "Real bank sources (HIMMEL-1000): claude = statusline usage cache (5h + weekly), codex = newest rollout rate_limits (weekly; used_percent emitted verbatim), glm = quota-gauge ledger (5h). One bar per lanes.json lane × governing window. Lanes without a machine-readable quota are omitted — /metrics carries an explicit omit comment per lane.",
       "options": { "displayMode": "gradient", "maxVizHeight": 300, "minVizHeight": 10, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": true, "valueMode": "color" },

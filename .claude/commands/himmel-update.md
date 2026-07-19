@@ -13,7 +13,10 @@ described below, so the two entry points never drift.
 
 In **apply mode** (no `--check`), refuses to run against a **dirty checkout**
 (uncommitted changes) up front — commit or stash first, then re-run. (The
-read-only `--check` mode does not reject a dirty tree.) On a clean tree it runs
+read-only `--check` mode does not reject a dirty tree.) To update through
+deliberately-kept local tracked diffs (e.g. locally-installed skills), set
+`HIMMEL_UPDATE_AUTOSTASH=1` per-invocation to autostash them around the pull
+(HIMMEL-1197). On a clean tree it runs
 a **six-item dependency chain, in order**: (1) `git pull --ff-only` of this checkout, (2)
 `claude plugin marketplace update himmel` to refresh plugins from the
 freshly-pulled dir, (3) a **jira CLI dist rebuild** (`scripts/jira/dist` is

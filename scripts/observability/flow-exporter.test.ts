@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderMetrics, createExporterCache, parseHostDetectorJson } from "./flow-exporter";
+import { renderMetrics, createExporterCache, parseHostDetectorJson, runGitDivergence } from "./flow-exporter";
 import { serializeFlowRunEnd, serializeFlowRunStart, type FlowRunEnd, type FlowRunStart } from "../telegram/flow-run-ledger";
 import { serializeQuotaGauge, type QuotaGaugeRecord } from "../telegram/quota-gauge";
 
@@ -259,10 +259,134 @@ test("luna backlog counts inbox stages and monthly graduations, read-only", asyn
   writeFileSync(join(clippings, "c.md"), "---\ntitle: raw\n---\nbody\n");
   writeFileSync(join(done, "old.md"), "graduated\n");
 
-  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json") });
+  // platform/gitRunner pinned (HIMMEL-1199): this test only cares about the
+  // synchronous luna backlog walk — without these, vault_path being set also
+  // triggers a REAL host-detector powershell spawn and a REAL git spawn,
+  // which is slow/environment-dependent and unrelated to what's asserted here.
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "linux", gitRunner: async () => ({ unpushed: null, uncommittedFiles: 0 }) });
   expect(body).toContain('luna_inbox_backlog{stage="unprocessed"} 2');
   expect(body).toContain('luna_inbox_backlog{stage="unharvested"} 1');
   expect(body).toContain("luna_done_graduations_month 1");
+});
+
+test("luna git divergence renders unpushed commits and uncommitted files from an injected runner", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  const vault = join(tmp, "vault");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({ vault_path: vault }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    gitRunner: async () => ({ unpushed: 9, uncommittedFiles: 2 }),
+  });
+  expect(body).toContain('# HELP luna_git_unpushed_commits');
+  expect(body).toContain("luna_git_unpushed_commits 9");
+  expect(body).toContain("luna_git_uncommitted_files 2");
+});
+
+test("luna git divergence omits only the unpushed sample when the branch has no upstream", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  const vault = join(tmp, "vault");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({ vault_path: vault }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    gitRunner: async () => ({ unpushed: null, uncommittedFiles: 0 }),
+  });
+  expect(body).not.toContain("luna_git_unpushed_commits ");
+  expect(body).toContain("luna_git_uncommitted_files 0");
+});
+
+test("luna git divergence family is omitted, fail-soft, when the git runner errors or times out", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  const vault = join(tmp, "vault");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({ vault_path: vault }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    gitRunner: async () => { throw new Error("git status timed out"); },
+  });
+  expect(body).toContain("# luna_git_* omitted: git status timed out");
+  expect(body).not.toContain("luna_git_unpushed_commits");
+  expect(body).not.toContain("luna_git_uncommitted_files");
+});
+
+test("luna git divergence is omitted with no vault_path configured, without invoking the runner", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, []);
+  let called = false;
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: join(tmp, "missing-observability.json"), flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    gitRunner: async () => { called = true; return { unpushed: 0, uncommittedFiles: 0 }; },
+  });
+  expect(called).toBe(false);
+  expect(body).not.toContain("luna_git_");
+});
+
+// runGitDivergence branch discrimination (HIMMEL-1199 CR fix). A genuine
+// "no upstream configured" omits ONLY the unpushed sample (unpushed: null);
+// ANY other rev-list failure — timeout, spawn error, non-"no upstream" nonzero
+// exit, non-numeric output — must PROPAGATE so the caller omits the WHOLE
+// family, never fold into a false "clean" (unpushed: null) reading. The git
+// command runner is injected so the branching is exercised without real git.
+type GitCmdResult = { exitCode: number; stdout?: string; stderr?: string };
+function gitCmd(responses: Record<string, GitCmdResult>) {
+  return async (args: string[]) => {
+    const r = responses[args[0]];
+    if (!r) throw new Error(`unexpected git ${args.join(" ")}`);
+    return { exitCode: r.exitCode, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
+}
+
+test("runGitDivergence: happy path reports the unpushed count and uncommitted file count", async () => {
+  const result = await runGitDivergence("C:/vault", gitCmd({
+    status: { exitCode: 0, stdout: " M a.md\n M b.md\n" },
+    "rev-list": { exitCode: 0, stdout: "9\n" },
+  }));
+  expect(result).toEqual({ unpushed: 9, uncommittedFiles: 2 });
+});
+
+test("runGitDivergence: genuine 'no upstream configured' omits ONLY the unpushed sample (null)", async () => {
+  const result = await runGitDivergence("C:/vault", gitCmd({
+    status: { exitCode: 0, stdout: "" },
+    "rev-list": { exitCode: 128, stderr: "fatal: no upstream configured for branch 'main'\n" },
+  }));
+  expect(result).toEqual({ unpushed: null, uncommittedFiles: 0 });
+});
+
+test("runGitDivergence: a rev-list nonzero exit that is NOT no-upstream propagates (family omitted, not null-clean)", async () => {
+  await expect(runGitDivergence("C:/vault", gitCmd({
+    status: { exitCode: 0, stdout: "" },
+    "rev-list": { exitCode: 128, stderr: "fatal: bad revision '@{u}..HEAD'\n" },
+  }))).rejects.toThrow();
+});
+
+test("runGitDivergence: a thrown rev-list (spawn error / timeout) propagates rather than reading clean", async () => {
+  const run = async (args: string[]) => {
+    if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+    throw new Error("spawn git ENOENT");
+  };
+  await expect(runGitDivergence("C:/vault", run)).rejects.toThrow(/ENOENT/);
+});
+
+test("runGitDivergence: exit 0 but non-numeric rev-list output propagates (ambiguous, not null-clean)", async () => {
+  await expect(runGitDivergence("C:/vault", gitCmd({
+    status: { exitCode: 0, stdout: "" },
+    "rev-list": { exitCode: 0, stdout: "not-a-number\n" },
+  }))).rejects.toThrow();
 });
 
 test("scheduled-task scrape is platform-gated and TTL-cached", async () => {

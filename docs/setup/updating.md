@@ -105,7 +105,16 @@ node scripts/himmelctl/bin.js update        # thin wrapper, same engine
 `scripts/himmel-update.sh` (HIMMEL-893), in **apply mode** (no `--check`),
 refuses to run against a **dirty checkout** (uncommitted changes) — commit or
 stash first, then re-run. (The read-only `--check` mode does not reject a dirty
-tree; it reports the chain without pulling.) On a clean tree it runs a
+tree; it reports the chain without pulling.) If you are **developing with local
+tracked diffs you deliberately keep** (e.g. locally-installed skills that append
+to `skills-lock.json` / `.gitignore`), set `HIMMEL_UPDATE_AUTOSTASH=1` to
+autostash them around the pull instead of refusing (HIMMEL-1197):
+`HIMMEL_UPDATE_AUTOSTASH=1 bash scripts/himmel-update.sh`. Prefer the
+per-invocation form shown; exporting it in your shell profile leaves the
+HIMMEL-893 guard defeated for **every** future update (any dirty state), so unset
+it when done. If the reapply conflicts (upstream changed the same file) the pull
+still applies but the step reports `failed` and your changes are preserved in
+`git stash list` for manual recovery. On a clean tree it runs a
 **six-item dependency chain, in order**, each item
 reporting `updated` / `up-to-date` / `skipped` / `failed` / `not-attempted`
 in a closing status table:

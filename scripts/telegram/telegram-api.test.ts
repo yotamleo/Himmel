@@ -27,16 +27,26 @@ test("sendMessage honors 429 retry_after then succeeds", async () => {
   const fakeFetch = async () => { n++;
     if (n === 1) return new Response(JSON.stringify({ ok:false, error_code:429, parameters:{ retry_after:2 }}), {status:429});
     return new Response(JSON.stringify({ ok:true, result:{} })); };
-  await sendMessage("T", 1, "hi", fakeFetch as any, (s:number)=>{sleeps.push(s);return Promise.resolve();});
+  const ok = await sendMessage("T", 1, "hi", fakeFetch as any, (s:number)=>{sleeps.push(s);return Promise.resolve();});
   expect(sleeps).toEqual([2000]);
+  expect(ok).toBe(true);        // delivered after the retry
 });
-test("sendMessage drops on 400 client error without looping or sleeping", async () => {
+test("sendMessage drops on 400 client error without looping or sleeping, and reports not-delivered", async () => {
   let n = 0; const sleeps: number[] = [];
   const fakeFetch = async () => { n++;
     return new Response(JSON.stringify({ ok:false, error_code:400, description:"chat not found" }), {status:400}); };
-  await sendMessage("T", 1, "hi", fakeFetch as any, (s:number)=>{sleeps.push(s);return Promise.resolve();});
+  const ok = await sendMessage("T", 1, "hi", fakeFetch as any, (s:number)=>{sleeps.push(s);return Promise.resolve();});
   expect(n).toBe(1);            // called once, no retry loop
   expect(sleeps).toEqual([]);   // permanent error → no sleep
+  expect(ok).toBe(false);       // permanent drop → false (never silently "delivered")
+});
+test("sendMessage does NOT report delivered on HTTP 200 with ok:false (validates Telegram's ok flag)", async () => {
+  let n = 0;
+  const fakeFetch = async () => { n++;
+    return new Response(JSON.stringify({ ok:false, description:"blocked" }), {status:200}); };  // 2xx but app-level failure
+  const ok = await sendMessage("T", 1, "hi", fakeFetch as any, () => Promise.resolve());
+  expect(ok).toBe(false);       // must not treat a 200/{ok:false} as delivered
+  expect(n).toBe(5);            // bounded retry, then gives up (no infinite loop)
 });
 // --- getFile + downloadFile (HIMMEL-250) ---
 import { getFile, downloadFile } from "./telegram-api";
