@@ -39,8 +39,11 @@ trap cleanup EXIT
 # set-lane-override.mjs (the `config` lanes.local.json writer) added — both
 # are existing-primitive shell-outs, same class as set-handover-dir.sh above,
 # not a reimplementation of the write logic inline in bin.js.
-# HIMMEL-893: himmel-update.sh (the `update` command's dependency-chain engine)
-# added — bin.js's `update` delegates to it, same existing-primitive class.
+#
+# HIMMEL-893/1192: himmel-update.sh — the existing dependency-chain update
+# engine `himmelctl update` (deriveUpdateCommand) delegates to. Same class:
+# an enumerated existing-script shell-out, not new inline logic. It was
+# omitted when `update` landed (#1279), leaving this guard red; added here.
 allow_full="$work/allow-full.txt"
 cat > "$allow_full" <<'NAMES'
 preflight-adopter.sh
@@ -52,9 +55,9 @@ luna-upgrade-all.sh
 set-handover-dir.sh
 uninstall.sh
 uninstall.ps1
+himmel-update.sh
 set-env-var.sh
 set-lane-override.mjs
-himmel-update.sh
 NAMES
 
 # extract_script_targets — every 'name.sh' / "name.sh" / 'name.ps1' /

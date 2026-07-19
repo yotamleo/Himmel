@@ -51,6 +51,15 @@ assert_rc "wget pipe bash"             2 "$(run_case "$(j_bash 'wget -qO- x | ba
 assert_rc "wget.exe pipe sh"           2 "$(run_case "$(j_bash 'wget.exe -qO- x | sh')")"
 assert_rc "schtasks create"            2 "$(run_case "$(j_bash 'schtasks /create /tn x /tr y')")"
 assert_rc "schtasks.exe create"        2 "$(run_case "$(j_bash 'schtasks.exe /create /tn x /tr y')")"
+# HIMMEL-1141: mutating verbs stay refused.
+assert_rc "schtasks /change"           2 "$(run_case "$(j_bash 'schtasks /change /tn x /disable')")"
+assert_rc "schtasks /end"              2 "$(run_case "$(j_bash 'schtasks /end /tn x')")"
+assert_rc "schtasks /run"              2 "$(run_case "$(j_bash 'schtasks /run /tn x')")"
+# HIMMEL-1141 security lock: UPPERCASE / mixed-case mutating verbs are STILL
+# refused — cmd_lc lowercases before matching, so the lowercase verb pattern
+# catches the capitalized form MS docs use. No case-bypass of the guard.
+assert_rc "schtasks /CREATE upper"     2 "$(run_case "$(j_bash 'schtasks /CREATE /tn x /tr y')")"
+assert_rc "schtasks /Delete mixed"     2 "$(run_case "$(j_bash 'schtasks /Delete /tn x /f')")"
 assert_rc "del /s /q x"                2 "$(run_case "$(j_bash 'del /s /q x')")"
 assert_rc "PowerShell shutdown.exe"    2 "$(run_case "$(j_pwsh 'shutdown.exe /s /t 0')")"
 assert_rc "format c:"                  2 "$(run_case "$(j_bash 'format c:')")"
@@ -114,6 +123,13 @@ assert_rc "git log --pretty=format:"   0 "$(run_case "$(j_bash 'git log --pretty
 assert_rc "git log quoted format"      0 "$(run_case "$(j_bash 'git log --pretty="format:%h %s"')")"
 assert_rc "grep -rn format src/"       0 "$(run_case "$(j_bash 'grep -rn format src/')")"
 assert_rc "rg format scripts/"         0 "$(run_case "$(j_bash 'rg "format" scripts/')")"
+# HIMMEL-1141: schtasks /query is read-only — the cadence diagnostic that was
+# over-blocked. /query (and help/no-verb) is allowed; only mutating verbs trip.
+assert_rc "schtasks /query"            0 "$(run_case "$(j_bash 'schtasks /query')")"
+assert_rc "schtasks /query /fo LIST"   0 "$(run_case "$(j_bash 'schtasks /query /fo LIST /v')")"
+assert_rc "schtasks.exe /query"        0 "$(run_case "$(j_bash 'schtasks.exe /query')")"
+assert_rc "schtasks /Query mixed case" 0 "$(run_case "$(j_bash 'schtasks /Query /fo LIST')")"
+assert_rc "grep -n schtasks string"    0 "$(run_case "$(j_bash 'grep -n schtasks scripts/hooks/block-destructive-commands.sh')")"
 assert_rc "commit msg mentions reboot" 0 "$(run_case "$(j_bash 'git commit -m "fix reboot loop"')")"
 assert_rc "rd /scripts (path, not switch)" 0 "$(run_case "$(j_bash 'rd /scripts foo')")"
 assert_rc "echo shutdown mid-argument"  0 "$(run_case "$(j_bash 'echo shutdown')")"

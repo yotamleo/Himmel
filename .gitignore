@@ -31,6 +31,15 @@ graphify-out/*
 !graphify-out/graph.json
 !graphify-out/GRAPH_REPORT.md
 /.claude/skills/graphify/
+# graphify multi-harness init scatters per-machine integration files across the
+# repo (HIMMEL-1193). Regenerable via /graphify, same as the ignored skills dir
+# above; `.gemini/settings.json` also embeds an absolute local graphify.exe path
+# (per-machine, HIMMEL-1134/1168 leak class) so it can't be committed as-is.
+# Shipping graphify multi-harness support portably is HIMMEL-1194.
+.gemini/
+/.github/copilot-instructions.md
+.agents/rules/graphify.md
+.agents/workflows/graphify.md
 # Generated/junk artifacts that must never be committed (HIMMEL-371).
 # NOT package-lock.json globally — 6 legit npm packages track theirs. The
 # wrong-PM lockfile case (a package-lock.json inside a bun package, left by the
@@ -40,6 +49,9 @@ graphify-out/*
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+# stray empty scratch file at the repo root — not produced by any himmel script
+# (HIMMEL-1193); anchored so it only ignores the root stray.
+/.tmp
 # end-session-wiki hook local artifacts — contain raw transcript excerpts (potential secrets).
 # Match any .claude/ dir (the hook writes into the cwd's .claude/, e.g. scripts/telegram/.claude/).
 **/.claude/end-session-wiki.log

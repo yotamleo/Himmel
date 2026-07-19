@@ -85,7 +85,29 @@ if [ "$cmd" = "api" ]; then
                 # A full page with no CodeRabbit on it: indeterminate, not
                 # absent — the verdict may be on page two (coderabbit-2).
                 cr-paged)       jq -nc '[range(100) | {context: "ci/ctx\(.)", state: "success", created_at: "2026-07-16T19:10:05Z", creator: {id: 1, login: "ci", type: "Bot"}}]' ;;
+                # body-* modes: CodeRabbit CONCLUDED success on this head
+                # (default case below already covers it); only the reviews
+                # fixture below differs per mode.
                 *)              echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+            esac
+            exit 0 ;;
+        # CodeRabbit's review-BODY findings (HIMMEL-1126/1147) — a separate
+        # endpoint from the commit status above; head-independent (the real
+        # API lists every review on the PR, filtering by commit_id is the
+        # reader's job). Default '[]' (no review posted yet) keeps every
+        # UNRELATED case above reaching this point rc-0/all-zero, so their
+        # assertions stay exactly as they were before this gate existed.
+        repos/octo/demo/pulls/42/reviews*)
+            case "$GH_STUB_MODE" in
+                body-outside) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Outside diff range comments (2)"}]' ;;
+                body-nitpick) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Nitpick comments (1)"}]' ;;
+                body-drift)   echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Outside diff range comments were noted but the count did not survive a format change"}]' ;;
+                body-error)   echo "reviews boom" >&2; exit 1 ;;
+                # A2 (spec addendum): a review at a PRIOR head (not sha1)
+                # carried unaddressed outside-diff findings, and NO review
+                # exists yet at the current head — cannot certify.
+                body-a2)      echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]' ;;
+                *)            echo '[]' ;;
             esac
             exit 0 ;;
     esac
@@ -207,6 +229,12 @@ case "$GH_STUB_MODE" in
     cr-absent|cr-pending|cr-failure|cr-spoofed|cr-query-error|cr-paged)
         # Checks are GREEN and threads are clean in every one of these — the
         # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
+        if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
+        exit 0 ;;
+    body-outside|body-nitpick|body-drift|body-error|body-a2)
+        # Checks GREEN, threads clean, CodeRabbit CONCLUDED (default statuses
+        # fixture) in every one of these — the verdict must turn entirely on
+        # the review-BODY findings gate (HIMMEL-1126/1147).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
         exit 0 ;;
     *)
@@ -522,7 +550,83 @@ run register-then-green
 assert_rc 3 "33 late thread post-watch blocks"
 assert_err_has "unresolved review thread" "33 late-thread reason printed"
 
+# --- HIMMEL-1126/1147: review-BODY findings (S1) — checks green, threads
+# clean, CodeRabbit concluded success in every case below; only the reviews
+# fixture differs, so these isolate the NEW body gate ---
+
+# 35 — an outside-diff-range finding in the review body blocks, same rank as
+# an unresolved thread (rc 3), even though no thread exists for it at all.
+run body-outside
+assert_rc 3 "35 outside-diff body finding blocks"
+assert_err_has "outside-diff-range finding" "35 outside-diff reason printed"
+
+# 36 — a nitpick-only body is non-blocking; its count rides the success line.
+run body-nitpick
+assert_rc 0 "36 nitpick-only body allows"
+assert_out_has "nitpick=1" "36 nitpick count surfaced on the success line"
+
+# 37 — anti-drift canary (body SHOWS "Outside diff" but the count won't
+# parse): check-ci is the CERTIFIER, so this fails CLOSED (rc 2) same as
+# every other cannot-evaluate path here.
+run body-drift
+assert_rc 2 "37 drift-canary body cannot certify"
+assert_err_has "cannot count" "37 drift-canary reason printed"
+
+# 38 — the reviews query itself fails (infrastructure, reader rc 1): unlike
+# cr-merge-gate's fail-OPEN on this code, check-ci fails CLOSED on it too —
+# the certifier never has a fail-open path.
+run body-error
+assert_rc 2 "38 body-findings query failure cannot certify"
+assert_err_has "could not read CodeRabbit's review-body findings" "38 body-query-failure reason printed"
+
+# 39 — A2 (spec addendum): a prior head had outside-diff findings unaddressed
+# and CodeRabbit has not yet reviewed the CURRENT head — cannot certify, not
+# a silent pass.
+run body-a2
+assert_rc 2 "39 A2 stale-head cannot certify"
+assert_err_has "HIMMEL-1126 A2" "39 A2 reason printed"
+
+# 40 — --threads-only now ALSO runs the body gate (previously skipped head
+# binding entirely, S1 was invisible here too): an outside-diff finding
+# blocks this path exactly like the full run, and still never touches
+# `gh pr checks`.
+run body-outside --threads-only
+assert_rc 3 "40 threads-only outside-diff body finding blocks"
+assert_err_has "outside-diff-range finding" "40 threads-only outside-diff reason printed"
+if grep -- 'checks' "$STUBDIR/args.log" >/dev/null; then
+    fail "40 threads-only still skips gh pr checks" "args.log: $(cat "$STUBDIR/args.log")"
+else
+    pass "40 threads-only still skips gh pr checks"
+fi
+
+# 41 — codex CR: --threads-only must RE-verify threads AFTER CodeRabbit
+# concludes (cr_signal_gate/cr_body_gate), not just the pre-conclude snapshot
+# from the unconditional review_state_gate call at the top of the script.
+# GH_STUB_THREADS=latethread reports clean on the FIRST graphql query and one
+# unresolved thread on every query after — so this only goes rc 3 if the
+# threads-only branch actually re-queries post-conclude, mirroring the full
+# path's case 33.
+THREADS_OVERRIDE=latethread
+run register-then-green --threads-only
+assert_rc 3 "41 threads-only re-verifies threads after CodeRabbit concludes"
+assert_err_has "unresolved review thread" "41 threads-only late-thread reason printed"
+if grep -- 'checks' "$STUBDIR/args.log" >/dev/null; then
+    fail "41 threads-only late-thread case still skips gh pr checks" "args.log: $(cat "$STUBDIR/args.log")"
+else
+    pass "41 threads-only late-thread case still skips gh pr checks"
+fi
+
+# 42 — codex CR: --threads-only must re-bind the head before reporting
+# success — a push during this (admittedly short) run must not certify a
+# stale SHA, mirroring the full path's case 18. HEAD_OVERRIDE=moving returns
+# a new SHA on every headRefOid read; this path reads it twice (head0 before
+# cr_signal_gate/cr_body_gate, head1 just before success).
+HEAD_OVERRIDE=moving
+run register-then-green --threads-only
+assert_rc 2 "42 threads-only head moved during the run rc 2"
+assert_err_has "PR head moved during the run" "42 threads-only head-moved message"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 35 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 35"; exit 1; fi
+if [ "$COUNT" -ne 43 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 43"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

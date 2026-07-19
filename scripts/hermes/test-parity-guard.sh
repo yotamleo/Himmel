@@ -82,6 +82,18 @@ g "git push force" block '{"tool_name":"terminal","tool_input":{"command":"git p
 g "rm -rf"         block '{"tool_name":"terminal","tool_input":{"command":"rm -rf build"}}'
 g "plain rm"       allow '{"tool_name":"terminal","tool_input":{"command":"rm tmp.txt"}}'
 g "schtasks"       block '{"tool_name":"terminal","tool_input":{"command":"schtasks /delete /tn X"}}'
+# HIMMEL-1141: schtasks /query is read-only (allowed); other mutating verbs refused.
+g "schtasks /query allowed"      allow '{"tool_name":"terminal","tool_input":{"command":"schtasks /query /fo LIST /v"}}'
+g "schtasks.exe /query allowed"  allow '{"tool_name":"terminal","tool_input":{"command":"schtasks.exe /query"}}'
+g "schtasks /Query mixed case"   allow '{"tool_name":"terminal","tool_input":{"command":"schtasks /Query /fo LIST"}}'
+g "schtasks /change refused"     block '{"tool_name":"terminal","tool_input":{"command":"schtasks /change /tn X /disable"}}'
+g "schtasks /run refused"        block '{"tool_name":"terminal","tool_input":{"command":"schtasks /run /tn X"}}'
+g "schtasks /end refused"        block '{"tool_name":"terminal","tool_input":{"command":"schtasks /end /tn X"}}'
+# HIMMEL-1141 security lock: UPPERCASE / mixed-case mutating verbs still refused
+# — norm() lowercases before matching, so no case-bypass of the parity guard.
+g "schtasks /CREATE upper refused" block '{"tool_name":"terminal","tool_input":{"command":"schtasks /CREATE /tn X /tr Y"}}'
+g "schtasks /Delete mixed refused" block '{"tool_name":"terminal","tool_input":{"command":"schtasks /Delete /tn X /f"}}'
+g "grep schtasks string allowed" allow '{"tool_name":"terminal","tool_input":{"command":"grep -n schtasks file.sh"}}'
 
 echo "== parity_guard: destructive-floor spec fixes (HIMMEL-851) =="
 # U1: /s is bound to the switch, not a path prefix — `rd /scripts` is not a

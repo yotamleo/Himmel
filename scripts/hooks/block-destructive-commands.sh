@@ -119,7 +119,11 @@ fi
 if contains '(^|[^[:alnum:]_.-])cipher(\.exe)?[[:space:]]+/w'; then
     deny "disk wipe"
 fi
-if contains "${CMDPOS}"'schtasks(\.exe)?([^[:alnum:]_.-]|$)'; then
+# Verb split (HIMMEL-1141): schtasks /query is read-only (the diagnostic the
+# clip-pipe cadence investigation was blocked from running), so only the
+# mutating verbs are refused — /query and help/no-verb forms stay allowed.
+# Mirrors parity_guard.py's schtasks line (lockstep, HIMMEL-754).
+if contains "${CMDPOS}"'schtasks(\.exe)?[[:space:]]+(/create|/change|/delete|/end|/run|/config)([^[:alnum:]_.-]|$)'; then
     deny "scheduled-task mutation"
 fi
 if contains "${CMDPOS}"'(taskkill|stop-process|pskill)(\.exe)?([^[:alnum:]_.-]|$)'; then

@@ -1,0 +1,132 @@
+
+
+> [!CAUTION]
+> Some comments are outside the diff and can’t be posted inline due to platform limitations.
+>
+>
+>
+> <details>
+> <summary>⚠️ Outside diff range comments (2)</summary><blockquote>
+>
+> <details>
+> <summary>scripts/codex/sanitize-plugin-hooks.ps1 (1)</summary><blockquote>
+>
+> `7-20`: _📐 Maintainability & Code Quality_ | _🟡 Minor_ | _⚡ Quick win_
+>
+> **Qualify the legacy parser behavior by Codex version.**
+>
+> The new header says `description` is accepted from `rust-v0.143.0`, but Lines 17-20 still claim unconditionally that Codex rejects it. Change this to “Codex versions before `rust-v0.143.0`” so upgraded users are not told their parser remains affected.
+>
+> <details>
+> <summary>🤖 Prompt for AI Agents</summary>
+>
+> ```
+> Verify each finding against current code. Fix only still-valid issues, skip the
+> rest with a brief reason, keep changes minimal, and validate.
+>
+> In `@scripts/codex/sanitize-plugin-hooks.ps1` around lines 7 - 20, Update the
+> explanatory parser-behavior text in sanitize-plugin-hooks.ps1 to state that
+> top-level description is rejected only by Codex versions before rust-v0.143.0.
+> Keep the existing plugin examples and remediation context unchanged.
+> ```
+>
+> </details>
+>
+> <!-- cr-comment:v1:b8bffb5a9ae367eb2e3e284e -->
+>
+> </blockquote></details>
+> <details>
+> <summary>scripts/codex/sanitize-plugin-hooks.sh (1)</summary><blockquote>
+>
+> `4-20`: _📐 Maintainability & Code Quality_ | _🟡 Minor_ | _⚡ Quick win_
+>
+> **Qualify the legacy parser behavior by Codex version.**
+>
+> Lines 16-20 contradict the new deprecation notice by saying Codex always rejects `description`. Specify that this applies only to versions before `rust-v0.143.0`.
+>
+> <details>
+> <summary>🤖 Prompt for AI Agents</summary>
+>
+> ```
+> Verify each finding against current code. Fix only still-valid issues, skip the
+> rest with a brief reason, keep changes minimal, and validate.
+>
+> In `@scripts/codex/sanitize-plugin-hooks.sh` around lines 4 - 20, Update the
+> explanatory comment above the sanitize logic to qualify the strict-parser
+> rejection as applying only to Codex versions before rust-v0.143.0, consistent
+> with the deprecation notice and the added HooksFile description support. Keep
+> the description of affected external plugins and boot behavior unchanged.
+> ```
+>
+> </details>
+>
+> <!-- cr-comment:v1:2ede8731272ed8d2849b1393 -->
+>
+> </blockquote></details>
+>
+> </blockquote></details>
+
+<details>
+<summary>🤖 Prompt for all review comments with AI agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Outside diff comments:
+In `@scripts/codex/sanitize-plugin-hooks.ps1`:
+- Around line 7-20: Update the explanatory parser-behavior text in
+sanitize-plugin-hooks.ps1 to state that top-level description is rejected only
+by Codex versions before rust-v0.143.0. Keep the existing plugin examples and
+remediation context unchanged.
+
+In `@scripts/codex/sanitize-plugin-hooks.sh`:
+- Around line 4-20: Update the explanatory comment above the sanitize logic to
+qualify the strict-parser rejection as applying only to Codex versions before
+rust-v0.143.0, consistent with the deprecation notice and the added HooksFile
+description support. Keep the description of affected external plugins and boot
+behavior unchanged.
+```
+
+</details>
+
+---
+
+<details>
+<summary>ℹ️ Review info</summary>
+
+<details>
+<summary>⚙️ Run configuration</summary>
+
+**Configuration used**: Path: .coderabbit.yaml
+
+**Review profile**: CHILL
+
+**Plan**: Pro Plus
+
+**Run ID**: `30e88047-2b34-4914-b678-c79dd5e23a52`
+
+</details>
+
+<details>
+<summary>📥 Commits</summary>
+
+Reviewing files that changed from the base of the PR and between 9e2ba38e3eb75452706a5fbec68870f0f2418363 and 72a7b28d8b028a817db3ca16e1d5f66147ba6a4f.
+
+</details>
+
+<details>
+<summary>📒 Files selected for processing (6)</summary>
+
+* `scripts/codex/sanitize-plugin-hooks.ps1`
+* `scripts/codex/sanitize-plugin-hooks.sh`
+* `scripts/codex/startup-health.ps1`
+* `scripts/codex/startup-health.sh`
+* `scripts/codex/test-startup-health.ps1`
+* `scripts/codex/test-startup-health.sh`
+
+</details>
+
+</details>
+
+<!-- This is an auto-generated comment by CodeRabbit for review status -->

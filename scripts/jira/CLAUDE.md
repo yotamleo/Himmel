@@ -18,6 +18,9 @@ helpers (HIMMEL-437).
   `npm run build` (`tsc`) or the `dist/index.js` callers run stale code.
 - Tests are colocated `*.test.ts`; run `npm run test` (vitest) after edits.
 - `transition` takes a status **NAME**, not an ID (no two-call lookup).
+- `create --summary` is an alias for `create --title` (Jira's own field name
+  is `summary`, so it's the natural reach). If both are given, `--title`
+  wins; one of the two is required (HIMMEL-1188).
 - Verify every `create`/`move` by checking the printed `Created HIMMEL-N`.
 - `JIRA_PROJECT_KEY` is required at runtime — no `HIMMEL` fallback.
 

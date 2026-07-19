@@ -45,6 +45,13 @@ _cmg_degrade() { echo "cr-merge-gate: degraded ($*) - failing open" >&2; }
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-signal.sh"
 
+# The ONE reader for CodeRabbit's review-BODY findings (HIMMEL-1126/1147) —
+# outside-diff-range / nitpick / additional comments the thread gate below
+# cannot see (S1: no thread, no isResolved, unresolvable by construction).
+# shellcheck source=scripts/lib/cr-body-findings.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-body-findings.sh"
+
 cr_merge_gate() {
     [ "${CR_MERGE_GATE_OK:-0}" = "1" ] && return 0
     [ "${CR_PROFILE:-}" = "none" ] && return 0
@@ -172,12 +179,79 @@ cr_merge_gate() {
         return 2
     fi
 
-    # Nothing blocked. If the verdict query itself degraded, THIS is where we
-    # fail open (codex-1) — only after the independent thread evidence above had
-    # its say. A broken query is not evidence; unresolved threads are.
-    if [ "$cr_degraded" -eq 1 ]; then
-        _cmg_degrade "CodeRabbit status query failed"
+    # 3) CodeRabbit review-BODY findings (HIMMEL-1126/1147, S1 — see
+    # cr-body-findings.sh header): outside-diff-range comments carry NO
+    # thread, so every gate above is blind to them by construction. Read only
+    # now that CodeRabbit has concluded and the thread set above is final —
+    # same ordering rationale as (1)/(2).
+    #
+    # Fail-open/closed asymmetry is DELIBERATE here (spec §4) — this is a
+    # merge HOOK, not the certifier (check-ci fails closed on the same two
+    # codes). An INFRASTRUCTURE failure (rc 1: query/parse error) is
+    # remembered and only fails OPEN at the very end, mirroring cr_degraded —
+    # a broken query is not evidence. An anti-drift CANARY (rc 2: the body
+    # SHOWS a section keyword but the count would not parse) is POSITIVE
+    # evidence of an unparseable finding and BLOCKS outright, same rank as
+    # outside>0 itself. `nitpick` is surfaced on the ALLOW note only
+    # (HIMMEL-1147: the failure was invisibility, not permissiveness —
+    # blocking Trivial-severity findings tanks the loop).
+    local body_line body_rc outside nitpick body_degraded=0 body_nitpick=0 tok
+    body_line=$(cr_body_findings "$owner" "$name" "$num" "$head")
+    body_rc=$?
+    case "$body_rc" in
+        0)
+            # Word-split + anchor on `case`, NOT a `.*key=` sed/grep regex: the
+            # reader's line has both `outside=` and `prior_outside=`, and an
+            # unanchored `.*outside=` regex greedily matches the LATTER
+            # (matched the drift-canary test's own fixture during dev — a
+            # real bug this reader-line shape invites). `case` patterns match
+            # from the START of the token, so `outside=*` cannot match a
+            # token that begins with `prior_outside=`.
+            outside=""; nitpick=""
+            for tok in $body_line; do
+                case "$tok" in
+                    outside=*) outside=${tok#outside=} ;;
+                    nitpick=*) nitpick=${tok#nitpick=} ;;
+                esac
+            done
+            case "$outside$nitpick" in
+                *[!0-9]*|'')
+                    body_degraded=1 ;;
+                *)
+                    if [ "$outside" -gt 0 ]; then
+                        echo "BLOCK: CodeRabbit's review body reports $outside outside-diff-range finding(s) on head $head of PR #$num — these carry no thread to resolve. Fix + address them, or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated."
+                        return 2
+                    fi
+                    body_nitpick="$nitpick"
+                    ;;
+            esac
+            ;;
+        1)
+            body_degraded=1 ;;
+        2)
+            echo "BLOCK: CodeRabbit's review body on head $head of PR #$num shows a finding the parser cannot count (format drift) — positive evidence of an unparseable finding (HIMMEL-1126). Check the PR body manually, or bypass with CR_MERGE_GATE_OK=1."
+            return 2 ;;
+        *)
+            body_degraded=1 ;;
+    esac
+
+    # Nothing blocked. If the verdict query or the body-findings reader
+    # degraded, THIS is where we fail open (codex-1 / HIMMEL-1126) — only
+    # after the independent evidence above had its say. A broken query is not
+    # evidence; unresolved threads and outside-diff findings are.
+    if [ "$cr_degraded" -eq 1 ] || [ "$body_degraded" -eq 1 ]; then
+        [ "$cr_degraded" -eq 1 ] && _cmg_degrade "CodeRabbit status query failed"
+        [ "$body_degraded" -eq 1 ] && _cmg_degrade "cr-body-findings query/parse failed"
         return 0
+    fi
+
+    # stderr, not stdout (codex CR round): both hook callers only capture +
+    # print `reason=$(cr_merge_gate ...)` when it BLOCKs (rc 2) — an ALLOW-
+    # path echo on stdout here would be captured into $reason and then
+    # silently dropped on every allow. stderr surfaces it regardless of
+    # what the caller does with stdout, same as every _cmg_degrade note above.
+    if [ "$body_nitpick" -gt 0 ]; then
+        echo "ALLOW: PR #$num — CodeRabbit's review body also reports nitpick=$body_nitpick (non-blocking)." >&2
     fi
 
     return 0

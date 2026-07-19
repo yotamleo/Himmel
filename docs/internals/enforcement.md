@@ -26,8 +26,34 @@ Stages currently wired:
   `claude -p` / `claude --print` / `claude --bg` introductions unless
   the call has a `# headless-claude-ok: <reason>` marker on the same or
   preceding line — see "Claude invocation billing" below).
-- **Dependency integrity (pre-commit):** npm lockfile-integrity,
-  uv-lock-integrity, pip-hashes (requirements*.txt must use --generate-hashes).
+- **Headless-gemini gate (pre-commit):** no-headless-gemini (mirrors
+  no-headless-claude for `gemini -p` / `--prompt` / `--bg`; opt-in marker
+  `# headless-gemini-ok: <reason>`; HIMMEL-157).
+- **Fork/template drift guards (pre-commit):** telegram-fork-drift (flags
+  the vendored `telegram-himmel` fork drifting from the
+  claude-plugins-official `telegram` version it's pinned to — fail-open if
+  upstream isn't installed locally, fail-closed on detected drift; bypass
+  `SKIP=telegram-fork-drift`), template-himmel-plugins (every
+  locally-vendored `@himmel` marketplace plugin must be enabled in
+  `docs/setup/settings-template.json`, the single list `adopt.sh`/
+  `install-plugins.sh` installs from — fail-closed on drift), hud-drift
+  (himmel-dev only — the vendored `claude-hud` tree must match its recorded
+  pin in `marketplace/plugins/claude-hud/VENDORED.md`; bypass
+  `HUD_DRIFT_OK=1`; HIMMEL-718).
+- **Repo-integrity guards (pre-commit):** hookspath-misconfig (`core.hooksPath`
+  must be unset or point inside the repo/`git-common-dir` — catches the
+  HIMMEL-45 class of bug where hooks are silently skipped; bypass
+  `HOOKSPATH_OK=1`), artifact-leakage (blocks newly-staged generated
+  artifacts — `node_modules/`, OS junk files, a wrong-package-manager
+  lockfile sitting next to a `bun.lock`; HIMMEL-371).
+- **Lane-inventory guard (pre-commit, himmel-dev only):**
+  lanes-inventory-guard (blocks the lane inventory being re-added to
+  CLAUDE.md prose — the inventory lives in `scripts/lanes/lanes.json`,
+  queried via `/lanes`; HIMMEL-689).
+- **Dependency integrity (pre-commit):** lockfile-integrity (npm + bun —
+  every `package.json` under `scripts/` needs a tracked, in-sync sibling
+  lockfile), uv-lock-integrity, pip-hashes (requirements*.txt must use
+  --generate-hashes).
 - **Commit-msg:** conventional-commit-msg (validates conventional format +
   optional HIMMEL-N).
 - **Doc-guard (pre-commit + pre-push, himmel-dev only):** check-doc-guard
@@ -41,7 +67,12 @@ Stages currently wired:
   behind `.himmel-dev`; bypass `AGENTS_MD_OK=1`).
 - **Pre-push:** no-push-to-main, npm-audit (high+), npm-licenses (allowlist),
   npm-audit-signatures, code-review-before-push (multi-agent CR via
-  pr-review-toolkit), platforms-tested (cross-platform attestation for
+  pr-review-toolkit), pr-mergeable-gate (refuses to push while the branch's
+  open PR is CONFLICTING; bypass `SKIP_PR_MERGEABLE=1`; HIMMEL-136),
+  no-force-push (hard-refuses a force-push to `main` with no bypass; warns
+  but proceeds on a force-push to any other ref, bypass
+  `SKIP_FORCE_PUSH_GATE=1` to silence the warning; HIMMEL-136),
+  platforms-tested (cross-platform attestation for
   shell/script changes — see below), security-reviewed (security-review
   attestation for non-docs code changes; HIMMEL-176, see
   `docs/security-review.md`).
@@ -70,15 +101,19 @@ exception: `SKIP=<hook-id> git commit …` (pre-commit native), i.e.
 Consumer snippet + luna's concrete PR-lane regex:
 [`docs/luna/pr-lane-guard.md`](../luna/pr-lane-guard.md).
 
-## Claude UserPromptSubmit Hooks
+## UserPromptSubmit Hooks (Codex lane only)
 
-One hook wired in `.claude/settings.json` fires when the operator
-submits a prompt, before Claude processes it.
+**`.claude/settings.json` has NO `UserPromptSubmit` key** — no hook fires on
+prompt submit in the Claude Code lane. `improve-on-submit.sh` exists but is
+wired only in `.codex/hooks.json` (the Codex-lane hook manifest, run via
+`.codex/run-hook.cmd --sandbox improve-on-submit.sh`); it never runs under
+plain `claude`. (`inject-initiative.sh` is a real Claude-lane hook, but it
+fires on `SessionStart`, not `UserPromptSubmit` — see below.)
 
-### `improve-on-submit.sh` — /improve auto-trigger (HIMMEL-127)
+### `improve-on-submit.sh` — /improve auto-trigger (Codex lane, HIMMEL-127)
 
 Default: OFF. When `IMPROVE_ON_SUBMIT=1` is set in the launching
-shell, every prompt the operator submits gets context injected
+shell, every prompt the operator submits under Codex gets context injected
 suggesting Claude run `/improve` on it first to refine before
 responding. Drains stdin gracefully; never blocks a prompt.
 
@@ -170,6 +205,29 @@ that names main as the target or runs from the `main` branch, are NOT granted
 (they stay deny-listed / fall through; `check-no-force-push.sh` hard-refuses
 force-to-main as the ref-level backstop).
 Spec: `scripts/hooks/test-auto-approve-safe-bash.sh`.
+
+### `check-cr-marker-on-pr-create.sh` — CR-marker-pending pre-PR-create guard
+
+Fires on Bash. Blocks `gh pr create` — including one hidden inside `$(…)` or
+backticks, matched only at command position (start of string, or right after
+a `;`, `&`, `|`, backtick, or `$(` / `(`) — while a CR-pending marker file
+exists for the branch. This is a plain regex scan over the extracted command
+string, not a real shell parse: it correctly skips a plain string literal or
+comment (`echo "gh pr create docs"`, `# TODO: gh pr create`), but a quoted
+argument that itself contains one of those separator characters immediately
+before the literal text — e.g. `grep -E 'x|gh pr create' file` — CAN still be
+false-blocked, since the regex has no notion of quoting. The
+marker (`<git-common-dir>/cr-pending/<branch>`) is written by
+`check-cr-before-push.sh` on push and cleared when `/pr-check` runs clean.
+Resolves the branch to check from `--head`/`-H` when present (a `gh pr
+create` invoked from a worktree targets a branch other than
+`CLAUDE_PROJECT_DIR`'s own current branch — HIMMEL-213), else falls back to
+the project dir's current branch. A marker whose recorded SHA no longer
+matches HEAD blocks as "stale marker — re-review needed" rather than
+silently passing. Fails OPEN on any parse/lookup failure (missing jq/git, no
+branch resolved, unreadable marker) — a missed block is cheaper than
+bricking `gh pr create` on this hook's own bug.
+Spec: `scripts/hooks/test-check-cr-marker-on-pr-create.sh`.
 
 ### `block-jira-compound-write.sh` — jira write-shape bounce (HIMMEL-1077)
 
@@ -285,6 +343,34 @@ print or grep the contents of a secret file (`.env`, `.env.*`,
 print file contents to stdout (`awk '{print}' .env`, `sed s/X/Y/ .env`).
 Prefer asking the operator to echo specific values via the `!` prefix
 instead of bypassing.
+
+### `block-destructive-commands.sh` — deterministic destructive-command floor (HIMMEL-754)
+
+Fires on Bash/PowerShell. Shared floor with the Codex lane — ports the
+`TERMINAL_DESTRUCTIVE` command classes from
+`scripts/hermes/assets/parity_guard.py` — blocking catastrophic/
+shared-machine/irreversible shapes at COMMAND POSITION regardless of
+tool-permission config: recursive `rm` / Windows `del`/`erase`/`rd`/`rmdir`,
+disk/boot mutation (`format`/`diskpart`/`bcdedit`/`mkfs`), disk wipe
+(`cipher /w`), `schtasks`, process termination (`taskkill`/`Stop-Process`/
+`pskill`/`kill -9`), system shutdown/reboot/logoff, Windows registry
+mutation, permission mutation (`icacls`/`takeown`), `git push --force*`,
+`git reset --hard`, `git clean -f`, `git filter-branch`, and remote-exec
+pipes (`curl`/`wget … | sh`). Recognizes a bounded set of launcher wrappers
+(`sudo`, `env`, `cmd /c`, `powershell`/`pwsh -c`) and an executable-path
+prefix, so a wrapped or path-qualified form (`/usr/bin/env rm -rf /`,
+`C:\…\format.exe`) is refused like the bare name. Routine git/gh/mv/cp,
+non-recursive `rm`, `curl` without a remote-exec pipe, and normal
+`git status`/`commit`/`push` are all allowed.
+
+Deliberately NOT a general shell parser: quoted-payload wrappers (`bash -c
+"rm -rf /"`, `xargs`, `nohup` chains) are an accepted residual gap — this
+hook plus the auto-mode classifier are the outer defense layers, not an
+arms race against every wrapper permutation. Fails CLOSED on missing `jq`
+or malformed/truncated JSON (a security floor, not a convenience hook — the
+EXIT trap also converts any unexpected top-level failure to a block rather
+than a fail-open rc=1). Bypass: `DESTRUCTIVE_OK=1` (launching shell,
+session-sticky). Spec: `scripts/hooks/test-block-destructive-commands.sh`.
 
 ### `block-rogue-claude-schedule.sh` — raw scheduler-arm guard (HIMMEL-647)
 

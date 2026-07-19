@@ -36,17 +36,28 @@
 # on checks that already exist, so a review that registers later was never waited
 # on, and "green" got reported over a PR nobody had reviewed. See cr_signal_gate.
 #
+# A green verdict ALSO requires CodeRabbit's review-BODY to carry zero
+# outside-diff-range findings (HIMMEL-1126/1147, S1): CodeRabbit posts some
+# findings only in the review body's collapsible sections, never as a
+# resolvable thread — the thread gate above is blind to them by construction.
+# See cr_body_gate (in scripts/lib/cr-body-findings.sh). Runs on BOTH the full
+# path and --threads-only (the latter now binds its own head to do so).
+#
 # Exit codes:
 #   0 — all checks green AND all review threads resolved AND CodeRabbit concluded
-#       success on the head SHA (safe to merge)
+#       success on the head SHA AND zero outside-diff-range body findings (safe
+#       to merge; nitpick/additional body findings are surfaced, non-blocking)
 #   1 — at least one check failed (--fail-fast: returns on the first red), or
 #       CodeRabbit's own status is failure/error
 #   2 — cannot evaluate: usage error / no PR found / no checks registered
 #       within --grace / gh error on the probe or the watch / thread-state
 #       query failed or returned a malformed page / PR head moved during the run
-#       / CodeRabbit's status is absent or still pending on the head SHA
+#       / CodeRabbit's status is absent or still pending on the head SHA / the
+#       review-body-findings reader could not evaluate (infra failure or an
+#       anti-drift canary — both fail closed here, see cr-body-findings.sh)
 #   3 — checks green but the review state blocks the merge: unresolved review
-#       threads remain, or a review requests changes — address, resolve, re-run
+#       threads remain, a review requests changes, or CodeRabbit's review body
+#       reports an outside-diff-range finding — address, resolve, re-run
 #
 # Env:
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
@@ -70,12 +81,14 @@ set -uo pipefail
 usage() {
     cat >&2 <<'EOF'
 usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only]
-exit codes: 0 = checks green + all review threads resolved + CodeRabbit concluded success on the head SHA,
+exit codes: 0 = checks green + all review threads resolved + CodeRabbit concluded success on the head SHA
+                + zero outside-diff-range body findings,
             1 = a check failed, or CodeRabbit's status is failure/error,
             2 = cannot evaluate (usage / no PR / no checks within --grace / thread query failed / PR head moved
-                / CodeRabbit's status absent or still pending on the head SHA),
-            3 = checks green but unresolved review threads remain or a review requests changes
-env: CR_PROFILE=none skips the required-CodeRabbit-signal gate (repos without CodeRabbit)
+                / CodeRabbit's status absent or still pending on the head SHA / body-findings reader failed),
+            3 = checks green but unresolved review threads remain, a review requests changes, or CodeRabbit's
+                review body reports an outside-diff-range finding
+env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings gates (repos without CodeRabbit)
 EOF
 }
 
@@ -125,12 +138,13 @@ if ! command -v gh >/dev/null 2>&1; then
     echo "check-ci: gh CLI not found on PATH" >&2
     exit 2
 fi
-# jq is needed ONLY to read CodeRabbit's status, so require it only on the path
-# that actually does (coderabbit-7). --threads-only is a pure GraphQL+gh path —
-# /pr-check step 4.8 calls it — and CR_PROFILE=none skips the signal gate
-# entirely; making either exit 2 over a missing jq would be a regression, since
-# neither needs it.
-if [ "$THREADS_ONLY" -ne 1 ] && [ "${CR_PROFILE:-}" != "none" ]; then
+# jq is needed to read CodeRabbit's status + review-body findings, so require
+# it only when CR_PROFILE=none does not skip both gates entirely (coderabbit-7,
+# extended by HIMMEL-1126): --threads-only USED to be a pure GraphQL+gh path,
+# but it now also runs cr_signal_gate + cr_body_gate (S1 — a body-only finding
+# is exactly as invisible to /pr-check step 4.8's threads-only call as it is to
+# the full run), so it needs jq too whenever CodeRabbit is in play.
+if [ "${CR_PROFILE:-}" != "none" ]; then
     if ! command -v jq >/dev/null 2>&1; then
         echo "check-ci: jq not found on PATH (required to read CodeRabbit's status)" >&2
         exit 2
@@ -139,6 +153,12 @@ if [ "$THREADS_ONLY" -ne 1 ] && [ "${CR_PROFILE:-}" != "none" ]; then
     # shellcheck source=scripts/lib/cr-signal.sh
     # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
     . "$(cd "$(dirname "$0")" && pwd)/lib/cr-signal.sh"
+    # The ONE reader for CodeRabbit's review-BODY findings (HIMMEL-1126/1147) —
+    # outside-diff-range / nitpick / additional comments the thread gate below
+    # cannot see (S1: no thread, no isResolved, unresolvable by construction).
+    # shellcheck source=scripts/lib/cr-body-findings.sh
+    # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+    . "$(cd "$(dirname "$0")" && pwd)/lib/cr-body-findings.sh"
 fi
 
 pr_checks() {
@@ -398,8 +418,134 @@ cr_signal_gate() {
     esac
 }
 
+# cr_body_gate — HIMMEL-1126/1147 (S1, see cr-body-findings.sh header):
+# CodeRabbit posts findings the thread gate above cannot see at all — outside-
+# diff-range / nitpick / additional comments living only in the review BODY
+# text, never as a resolvable thread. Runs after cr_signal_gate (concluded)
+# and review_state_gate (threads) — spec order concluded -> threads -> bodies
+# -> head re-bind — so a body posted while CodeRabbit was still concluding is
+# caught by the same re-verification window the other two gates already rely
+# on.
+#
+# check-ci is the CERTIFIER (spec §4): it fails CLOSED everywhere, so the
+# reader's rc 1 (infrastructure) and rc 2 (anti-drift canary) both mean
+# "cannot certify" here, unlike cr-merge-gate's asymmetric fail-open/closed
+# split on the same two codes.
+#
+# nitpick/additional counts are non-blocking; they ride the caller's final
+# success line via body_nitpick/body_additional + _cbg_note (globals, not
+# `local` — they must survive past this function's return).
+cr_body_gate() {
+    [ "${CR_PROFILE:-}" = "none" ] && return 0
+
+    local line rc outside nitpick additional prior_outside head_reviews tok
+    line=$(cr_body_findings "$owner" "$repo" "$num" "$head0")
+    rc=$?
+    case "$rc" in
+        0) ;;
+        1)
+            echo "check-ci: ${ctx}could not read CodeRabbit's review-body findings on head $head0 of PR #$num (query/parse failure) — cannot evaluate the gate; re-run" >&2
+            exit 2 ;;
+        2)
+            echo "check-ci: ${ctx}CodeRabbit's review body on head $head0 of PR #$num shows a finding the parser cannot count (format drift) — cannot evaluate the gate; check the PR body manually" >&2
+            exit 2 ;;
+        *)
+            echo "check-ci: ${ctx}cr-body-findings returned an unrecognized rc=$rc on PR #$num — cannot evaluate the gate; re-run" >&2
+            exit 2 ;;
+    esac
+
+    # Word-split + anchor on `case`, NOT a `.*key=` sed/grep regex: the line
+    # carries both `outside=` and `prior_outside=`, and an unanchored
+    # `.*outside=` regex greedily matches the LATTER. `case` patterns match
+    # from the START of the token, so `outside=*` cannot match a token that
+    # begins with `prior_outside=`.
+    outside=""; nitpick=""; additional=""; prior_outside=""; head_reviews=""
+    for tok in $line; do
+        case "$tok" in
+            outside=*) outside=${tok#outside=} ;;
+            nitpick=*) nitpick=${tok#nitpick=} ;;
+            additional=*) additional=${tok#additional=} ;;
+            prior_outside=*) prior_outside=${tok#prior_outside=} ;;
+            head_reviews=*) head_reviews=${tok#head_reviews=} ;;
+        esac
+    done
+    # Validate EACH field independently, NOT the concatenation (CR #1297): a
+    # missing/empty `outside` would be masked by the other numerics in the
+    # joined string (nitpick=5 additional=3 -> "53" passes the all-digits test),
+    # then `[ "$outside" -gt 0 ]` below errors on the empty value, is treated as
+    # false, and the outside-diff gate fails OPEN. Per-field guards fail closed.
+    for _v in "$outside" "$nitpick" "$additional" "$prior_outside" "$head_reviews"; do
+        case "$_v" in
+            ''|*[!0-9]*)
+                echo "check-ci: ${ctx}cr-body-findings returned an unparseable line ('$line') on PR #$num — cannot evaluate the gate; re-run" >&2
+                exit 2 ;;
+        esac
+    done
+
+    # A2 (spec addendum): a prior head carried unaddressed outside-diff
+    # findings, but no CodeRabbit review exists yet at the CURRENT head — a
+    # stale, uncertified head is not a pass (same stance as cr-signal's
+    # "absent").
+    if [ "$prior_outside" -gt 0 ] && [ "$head_reviews" -eq 0 ]; then
+        echo "check-ci: ${ctx}PR #$num had unresolved outside-diff findings at a prior head, but CodeRabbit has not reviewed the current head $head0 — cannot certify (HIMMEL-1126 A2); re-run once it does" >&2
+        exit 2
+    fi
+
+    if [ "$outside" -gt 0 ]; then
+        echo "check-ci: ${ctx}CodeRabbit's review body reports $outside outside-diff-range finding(s) on head $head0 of PR #$num — these carry no thread to resolve; address them, then re-run" >&2
+        exit 3
+    fi
+
+    body_nitpick="$nitpick"
+    body_additional="$additional"
+}
+
+# _cbg_note — appended to the success line when non-blocking body findings
+# exist (HIMMEL-1147: the failure mode was invisibility, not permissiveness —
+# surface the count, never block on it alone).
+_cbg_note() {
+    if [ "${body_nitpick:-0}" -gt 0 ] || [ "${body_additional:-0}" -gt 0 ]; then
+        printf ' (CodeRabbit body: nitpick=%s additional=%s, non-blocking)' "${body_nitpick:-0}" "${body_additional:-0}"
+    fi
+}
+
 if [ "$THREADS_ONLY" -eq 1 ]; then
-    echo "check-ci: all review threads resolved (PR #$num)"
+    # Bind + certify this path's own head (previously skipped entirely — S1
+    # was invisible here too): cr_signal_gate/cr_body_gate both need a head0,
+    # and /pr-check step 4.8 calling this path must get the SAME body-finding
+    # protection as the full run, not just the thread gate.
+    if [ "${CR_PROFILE:-}" != "none" ]; then
+        head0=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
+        if [ -z "$head0" ]; then
+            echo "check-ci: cannot read the PR head SHA — cannot bind the verdict; re-run" >&2
+            exit 2
+        fi
+        cr_signal_gate
+
+        # Re-verify threads AFTER CodeRabbit has concluded (codex CR round;
+        # mirrors the full path's post-watch re-verification, codex-adv
+        # 980-r2): CodeRabbit can post an unresolved thread and THEN flip its
+        # status to success WHILE cr_signal_gate ran above — the pre-conclude
+        # snapshot from the earlier unconditional review_state_gate call
+        # (before this if) must not be the one that gets certified.
+        review_state_gate
+
+        # Body findings LAST — after concluded + threads (spec order
+        # concluded -> threads -> bodies -> head, mirroring the full path,
+        # CR #1297): a body becoming visible during the thread re-verification
+        # must not slip past on a pre-refresh read.
+        cr_body_gate
+
+        # Re-read the head: the verdict this path just certified (threads +
+        # CodeRabbit concluded + body findings) only holds for the SHA it
+        # queried — mirrors the full path's post-watch head1 re-bind below.
+        head1=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
+        if [ "$head1" != "$head0" ]; then
+            echo "check-ci: PR head moved during the run (${head0} → ${head1:-unreadable}) — checks certified a different commit; re-run" >&2
+            exit 2
+        fi
+    fi
+    echo "check-ci: all review threads resolved (PR #$num)$(_cbg_note)"
     exit 0
 fi
 
@@ -428,6 +574,13 @@ cr_signal_gate
 # snapshot would let merge-on-green proceed over fresh blocking feedback.
 review_state_gate
 
+# Body findings (HIMMEL-1126/1147, S1): runs after the concluded + threads
+# re-verification above, before the final head re-bind (spec-ordered
+# concluded -> threads -> bodies -> head re-bind) — a body posted in the
+# same post-watch window the other two gates already re-check must not slip
+# past on a stale pre-watch read.
+cr_body_gate
+
 # Re-read the head: the green verdict only holds for the SHA we watched.
 head1=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
 if [ "$head1" != "$head0" ]; then
@@ -435,5 +588,5 @@ if [ "$head1" != "$head0" ]; then
     exit 2
 fi
 
-echo "check-ci: all checks green + all review threads resolved (PR #$num @ $head0)"
+echo "check-ci: all checks green + all review threads resolved (PR #$num @ $head0)$(_cbg_note)"
 exit 0

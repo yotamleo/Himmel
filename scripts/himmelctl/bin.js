@@ -409,7 +409,7 @@ function hardGateCheck() {
 // missing-handler below reports bash).
 function runPreflight() {
   const script = path.join(__dirname, '..', 'preflight-adopter.sh');
-  const r = spawnSync('bash', [script], { stdio: 'inherit' });
+  const r = spawnSync(resolveBash(), [toBashPath(script)], { stdio: 'inherit' });
   return { ran: !r.error, rc: r.status };
 }
 
@@ -452,7 +452,7 @@ const WINGET_IDS = {
 // interpolating into a shell line carries no injection risk.
 function runInstallerLine(line) {
   console.error(`himmelctl: running: ${line}`);
-  const r = spawnSync('bash', ['-c', line], { stdio: 'inherit' });
+  const r = spawnSync(resolveBash(), ['-c', line], { stdio: 'inherit' });
   if (r.error) console.error(`himmelctl: failed to launch installer: ${r.error.message}`);
   if (typeof r.status === 'number' && r.status !== 0) console.error(`himmelctl: installer exited ${r.status}`);
 }
@@ -554,13 +554,13 @@ async function handleMissing(missing, args) {
 // installMissing's bash-wrap pattern. Both git lines are fixed strings,
 // never user input, so the shell lines carry no injection risk.
 function detectRole() {
-  const r = spawnSync('bash', ['-c', 'git remote get-url origin'], { encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', 'git remote get-url origin'], { encoding: 'utf8' });
   if (r.error || r.status !== 0 || !r.stdout) {
     return { role: 'adopter', reason: 'no origin remote -> default adopter' };
   }
   const url = r.stdout.trim();
   if (/himmel(\.git)?$/i.test(url)) {
-    const t = spawnSync('bash', ['-c', 'git rev-parse --show-toplevel'], { encoding: 'utf8' });
+    const t = spawnSync(resolveBash(), ['-c', 'git rev-parse --show-toplevel'], { encoding: 'utf8' });
     const top = (!t.error && t.status === 0 && t.stdout) ? t.stdout.trim() : '';
     if (top && fs.existsSync(path.join(top, '.himmel-dev'))) {
       return { role: 'contributor', reason: `origin = ${url} + .himmel-dev marker -> default contributor` };
@@ -857,8 +857,8 @@ function deriveExistingVaultPlan(answers) {
   const vaultPath = expandHome(answers.vault.path);
   const settings = settingsPathForScope(answers.scope);
   return {
-    wire: { argv: ['bash', path.join(scriptsDir, 'lib', 'wire-luna-vault.sh'), settings, vaultPath] },
-    apply: { argv: ['bash', path.join(scriptsDir, 'luna-upgrade-all.sh'), 'apply', '--vault', vaultPath] },
+    wire: { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'lib', 'wire-luna-vault.sh')), settings, vaultPath] },
+    apply: { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'luna-upgrade-all.sh')), 'apply', '--vault', vaultPath] },
   };
 }
 
@@ -881,9 +881,9 @@ function deriveCommand(answers) {
     if (process.platform === 'win32') {
       return { argv: ['powershell', '-ExecutionPolicy', 'Bypass', '-File', path.join(scriptsDir, 'setup.ps1')] };
     }
-    return { argv: ['bash', path.join(scriptsDir, 'setup.sh')] };
+    return { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'setup.sh'))] };
   }
-  const argv = ['bash', path.join(scriptsDir, 'adopt.sh')];
+  const argv = [resolveBash(), toBashPath(path.join(scriptsDir, 'adopt.sh'))];
   const profile = profileForVault(answers);
   argv.push('--profile', profile, '--scope', answers.scope || 'project');
   if (profile === 'all' && answers.vault && answers.vault.path) {
@@ -946,7 +946,7 @@ function writeHandoverDir(p) {
     console.error(`himmelctl: failed to create handover dir ${target}: ${e.message}`);
     return false;
   }
-  const r = spawnSync('bash', [script, target, '--env-file', toBashPath(envFile)], { encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), [toBashPath(script), target, '--env-file', toBashPath(envFile)], { encoding: 'utf8' });
   if (r.error || r.status !== 0) {
     const detail = (r.stderr || (r.error && r.error.message) || '').trim();
     console.error(`himmelctl: failed to write HANDOVER_DIR via ${script}${detail ? `: ${detail}` : ''}`);
@@ -1024,7 +1024,7 @@ function runPluginEnable() {
   for (const argv of fullPluginEnableCommands()) {
     const line = argv.map(shellQuote).join(' ');
     console.log(`himmelctl: ${line}`);
-    const r = spawnSync('bash', ['-c', line], { stdio: 'inherit' });
+    const r = spawnSync(resolveBash(), ['-c', line], { stdio: 'inherit' });
     if (r.error) {
       console.error(`himmelctl: failed to launch: ${r.error.message}`);
       failed.push(line);
@@ -1259,7 +1259,7 @@ function deriveUninstallCommand() {
   if (process.platform === 'win32') {
     return { argv: ['powershell', '-ExecutionPolicy', 'Bypass', '-File', path.join(scriptsDir, 'uninstall.ps1'), '-Yes'] };
   }
-  return { argv: ['bash', path.join(scriptsDir, 'uninstall.sh'), '--yes'] };
+  return { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'uninstall.sh')), '--yes'] };
 }
 
 // HIMMEL-755 sub-ticket E (uninstall-completeness, operator LOCKED
@@ -1425,8 +1425,16 @@ async function cmdUninstall(args) {
 // install/uninstall's own --dry-run.
 
 function deriveUpdateCommand() {
-  const script = path.join(repoRoot(), 'scripts', 'himmel-update.sh');
-  return { argv: ['bash', script] };
+  // HIMMEL-1192 (two-part Windows fix, BOTH parts required):
+  //  1. resolveBash() picks a Windows-native Git Bash — bare `bash` from a
+  //     PowerShell PATH is System32\bash.exe (WSL), which cannot run a
+  //     Windows-path script AT ALL (backslashes eaten; C:/... absent from the
+  //     WSL rootfs). This is the reopened root cause the s2 fix missed.
+  //  2. toBashPath() forward-slashes the script path so the Git Bash chosen in
+  //     (1) doesn't itself MSYS-mangle the backslashes (\U->U, \D->D ...) into
+  //     a nonexistent C:Users...himmel-update.sh -> "No such file or directory".
+  const script = toBashPath(path.join(repoRoot(), 'scripts', 'himmel-update.sh'));
+  return { argv: [resolveBash(), script] };
 }
 
 async function cmdUpdate(args) {
@@ -2618,13 +2626,88 @@ function envFilePath() {
   return path.join(repoRoot(), '.env');
 }
 
+// The bash executable EVERY himmelctl bash spawn must use (HIMMEL-1192).
+// `bash` bare is resolved by the OS PATH, and on the operator's Windows
+// PowerShell PATH that resolves to C:\Windows\System32\bash.exe — the WSL
+// launcher — because Git Bash is LAST on PATH. WSL cannot run a Windows-path
+// script in ANY form: backslashes are eaten (C:\...\x.sh -> C:...x.sh, "No
+// such file or directory") and the forward-slashed C:/... form is absent from
+// the WSL rootfs (which needs /mnt/c/...). So trusting PATH order is the bug
+// (sibling of the MSYS backslash mangling toBashPath handles — that one only
+// helps once the RIGHT, Git-Bash, interpreter is chosen). Resolve a
+// Windows-native Git Bash DETERMINISTICALLY instead: it runs the mixed C:/...
+// form toBashPath produces. Candidate search over the standard
+// Git-for-Windows install locations; first hit wins (bin\bash.exe preferred —
+// it sets up the MSYS environment). There is deliberately NO process.platform
+// guard: the ProgramFiles/LOCALAPPDATA env vars being set (and a Git\bin\bash
+// actually existing under them) IS the "this is a Windows Git install" signal,
+// which keeps the helper uniformly unit-testable on a posix CI runner (point
+// ProgramFiles at a fixture) — on real posix those vars are unset, so the loop
+// finds nothing and falls through. If the standard locations miss, a win32
+// fallback scans PATH for a Git Bash installed elsewhere (scoop / portable /
+// choco-to-custom-dir) but NOT a WSL launcher (CR [codex-1] — HIMMEL-1192).
+// Only then does it fall back to bare 'bash' (posix always; win32 only if the
+// sole bash on PATH is WSL — then HIMMELCTL_BASH is the escape hatch; himmel
+// hard-gates bash, so an adopter has one). HIMMELCTL_BASH overrides everything
+// (nonstandard install OR a hermetic test pinning a specific bash) — same
+// env-seam class as HIMMELCTL_REPO_ROOT.
+function resolveBash() {
+  if (process.env.HIMMELCTL_BASH) return process.env.HIMMELCTL_BASH;
+  const localPrograms = process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, 'Programs')
+    : null;
+  const bases = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], localPrograms];
+  const relCandidates = [['Git', 'bin', 'bash.exe'], ['Git', 'usr', 'bin', 'bash.exe']];
+  for (const base of bases) {
+    if (!base) continue;
+    for (const rel of relCandidates) {
+      const cand = path.join(base, ...rel);
+      try {
+        if (fs.existsSync(cand)) return cand;
+      } catch (_e) { /* unreadable base — try the next candidate */ }
+    }
+  }
+  // Git installed off the standard locations but ON PATH — return it rather
+  // than the WSL bare-'bash'. win32-only: on posix bare 'bash' is correct and a
+  // concrete PATH hit would needlessly break the hermetic suites' bare-'bash'
+  // contract (they pin a stub bash on PATH).
+  if (process.platform === 'win32') {
+    const onPath = firstNonWslBashOnPath();
+    if (onPath) return onPath;
+  }
+  return 'bash';
+}
+
+// Scan PATH for the first `bash`/`bash.exe` that is NOT a Windows WSL launcher
+// (System32\bash.exe, or the WindowsApps app-execution alias) — those ARE the
+// WSL bash resolveBash() exists to avoid. Returns null when the only bash on
+// PATH is a WSL launcher (or none is), leaving resolveBash's bare-'bash' last
+// resort + the HIMMELCTL_BASH override. win32-only caller, but pure/portable.
+function firstNonWslBashOnPath() {
+  const raw = process.env.PATH || process.env.Path || '';
+  for (const dir of raw.split(path.delimiter)) {
+    if (!dir) continue;
+    const low = dir.toLowerCase();
+    if (low.includes('system32') || low.includes('windowsapps')) continue;
+    for (const name of ['bash.exe', 'bash']) {
+      const cand = path.join(dir, name);
+      try {
+        if (fs.existsSync(cand)) return cand;
+      } catch (_e) { /* unreadable dir — try the next */ }
+    }
+  }
+  return null;
+}
+
 // Convert a native repo path to the Git-Bash/MSYS-safe form for any path
 // handed to `bash` as a spawn arg. path.join() emits BACKSLASHES on Windows
 // (C:\...); Git-Bash can misresolve a backslashed/drive-letter --env-file
 // target to the wrong file, whereas the forward-slice form (C:/...) resolves
 // reliably — the same convention the test harness's own winpath()/cygpath -m
 // uses at the node/bash boundary. No-op on posix (no backslashes). Applied to
-// the --env-file target by writeEnvVar AND writeHandoverDir (HIMMEL-758).
+// every SCRIPT-PATH arg handed to resolveBash() (writeEnvVar, writeHandoverDir,
+// runPreflight, deriveCommand, deriveExistingVaultPlan, deriveUpdateCommand)
+// and to the --env-file target by writeEnvVar/writeHandoverDir (HIMMEL-758/1192).
 function toBashPath(p) {
   return p.replace(/\\/g, '/');
 }
@@ -2667,7 +2750,7 @@ function writeEnvVar(key, value, args) {
     return true;
   }
   const script = path.join(repoRoot(), 'scripts', 'lib', 'set-env-var.sh');
-  const r = spawnSync('bash', [script, key, value, '--env-file', toBashPath(target)], { encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), [toBashPath(script), key, value, '--env-file', toBashPath(target)], { encoding: 'utf8' });
   if (r.error || r.status !== 0) {
     const detail = (r.stderr || (r.error && r.error.message) || '').trim();
     console.error(`himmelctl: failed to write ${key} via ${script}${detail ? `: ${detail}` : ''}`);
@@ -2830,7 +2913,7 @@ function cmdConfigSetHook(hookPath, onOff, args) {
     // plain script on PATH, and avoids win32 spawnSync's own PATH resolution
     // picking an unrelated same-named binary over the correct .cmd shim.
     console.log(`himmelctl: ${line}`);
-    const r = spawnSync('bash', ['-c', line], { stdio: 'inherit' });
+    const r = spawnSync(resolveBash(), ['-c', line], { stdio: 'inherit' });
     if (r.error) {
       console.error(`himmelctl: failed to launch: ${r.error.message}`);
       return 1;
