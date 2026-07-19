@@ -108,6 +108,7 @@ build_scenario() {
     cp "$SRC_SCRIPTS/guardrails/lib.sh"          "$clone/scripts/guardrails/lib.sh"
     cp "$SRC_SCRIPTS/lib/cadence-format.sh"      "$clone/scripts/lib/cadence-format.sh"
     cp "$SRC_SCRIPTS/lib/resolve-hermes-py.sh"   "$clone/scripts/lib/resolve-hermes-py.sh"
+    cp "$SRC_SCRIPTS/lib/load-dotenv.sh"         "$clone/scripts/lib/load-dotenv.sh"
     CLONE="$clone"
 }
 
