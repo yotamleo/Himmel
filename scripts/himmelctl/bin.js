@@ -857,8 +857,8 @@ function deriveExistingVaultPlan(answers) {
   const vaultPath = expandHome(answers.vault.path);
   const settings = settingsPathForScope(answers.scope);
   return {
-    wire: { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'lib', 'wire-luna-vault.sh')), settings, vaultPath] },
-    apply: { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'luna-upgrade-all.sh')), 'apply', '--vault', vaultPath] },
+    wire: { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'lib', 'wire-luna-vault.sh')), toBashPath(settings), toBashPath(vaultPath)] },
+    apply: { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'luna-upgrade-all.sh')), 'apply', '--vault', toBashPath(vaultPath)] },
   };
 }
 
@@ -887,7 +887,7 @@ function deriveCommand(answers) {
   const profile = profileForVault(answers);
   argv.push('--profile', profile, '--scope', answers.scope || 'project');
   if (profile === 'all' && answers.vault && answers.vault.path) {
-    argv.push('--luna-target', expandHome(answers.vault.path));
+    argv.push('--luna-target', toBashPath(expandHome(answers.vault.path)));
   }
   return { argv };
 }
