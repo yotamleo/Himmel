@@ -30,6 +30,9 @@ cd "$ROOT"
 # shellcheck source=lib/resolve-hermes-py.sh
 # shellcheck disable=SC1091
 . "$ROOT/scripts/lib/resolve-hermes-py.sh"
+# shellcheck source=lib/load-dotenv.sh
+# shellcheck disable=SC1091
+. "$ROOT/scripts/lib/load-dotenv.sh"
 
 # ─── plugin install-state gap report (HIMMEL-434) ────────────────────────────
 # Advisory: `marketplace update` only re-syncs plugins that are ALREADY
@@ -475,11 +478,30 @@ STATUS_luna_template="not-attempted"; DETAIL_luna_template=""
 #    itself). Distinguishes up-to-date (HEAD unchanged) from updated so the
 #    status table is honest, not just "ran without error".
 update_pull() {
-    local before after
+    local before after autostash=""
     before=$(git rev-parse HEAD 2>/dev/null || echo "")
-    if ! git pull --ff-only; then
+    # HIMMEL_UPDATE_AUTOSTASH=1 opts into stash->pull->restore around the pull so a
+    # dirty tree (e.g. local skill-dev diffs to skills-lock.json/.gitignore) can be
+    # updated through instead of the HIMMEL-893 pre-check refusing (HIMMEL-1197).
+    [ "${HIMMEL_UPDATE_AUTOSTASH:-}" = "1" ] && autostash="--autostash"
+    # shellcheck disable=SC2086  # $autostash is a fixed literal or empty; intentional split
+    if ! git pull --ff-only $autostash; then
         STATUS_pull="failed"
-        DETAIL_pull="pull was not a fast-forward (branch '$branch' diverged from upstream, or local edits block it) — resolve manually, then re-run"
+        if [ -n "$autostash" ]; then
+            DETAIL_pull="pull failed with autostash active — any local changes are preserved in 'git stash list'; see the git output above, resolve manually, then re-run"
+        else
+            DETAIL_pull="pull was not a fast-forward (branch '$branch' diverged from upstream, or local edits block it) — resolve manually, then re-run"
+        fi
+        return 1
+    fi
+    # `git pull --ff-only --autostash` returns 0 even when the autostash REAPPLY
+    # conflicts: the fast-forward applied, but git left conflict markers in the
+    # tree and kept the stash (verified: git 2.55). Detect that here and report
+    # failed — otherwise the chain would proceed on a conflicted tree reported as
+    # "updated" (HIMMEL-1197).
+    if [ -n "$autostash" ] && [ -n "$(git ls-files --unmerged 2>/dev/null)" ]; then
+        STATUS_pull="failed"
+        DETAIL_pull="pull applied but autostash reapply conflicted — your local changes are preserved in 'git stash list' and left as conflict markers; resolve them (or 'git checkout -- .' then 'git stash pop' later), then re-run"
         return 1
     fi
     after=$(git rev-parse HEAD 2>/dev/null || echo "")
@@ -742,6 +764,12 @@ EOF
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
 [ "${HIMMEL_UPDATE_LIB:-}" = "1" ] && return 0
 
+# Let the repo-root .env supply update opt-ins (HIMMEL_UPDATE_AUTOSTASH), same
+# as the Jira CLI reads .env (HIMMEL-1205) — a live shell env var still wins (load_dotenv only
+# fills UNSET keys). Without this, the var had to be exported in the launching
+# shell; putting it in .env silently did nothing.
+load_dotenv HIMMEL_UPDATE_AUTOSTASH
+
 # ─── --plugins-check mode ────────────────────────────────────────────────────
 # Just the plugin install-state report; no git, no network. Exit 0 always.
 if [ "${1:-}" = "--plugins-check" ]; then
@@ -808,10 +836,19 @@ branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
 # guardrails/lib.sh's own predicate (already sourced above) — the same one the
 # edit-on-main guard uses, so "dirty" means the same thing everywhere in himmel.
 if is_dirty "$ROOT"; then
-    echo "" >&2
-    echo "update: checkout has uncommitted changes — refusing to pull into a dirty tree." >&2
-    echo "        commit or stash your changes, then re-run." >&2
-    exit 1
+    if [ "${HIMMEL_UPDATE_AUTOSTASH:-}" = "1" ]; then
+        # Opt-in (HIMMEL-1197): autostash local changes around the pull instead of
+        # refusing — update_pull adds --autostash and reports failed (stash kept)
+        # if the reapply conflicts. Set per-invocation to avoid weakening HIMMEL-893.
+        echo "" >&2
+        echo "update: dirty tree — HIMMEL_UPDATE_AUTOSTASH=1, autostashing local changes around the pull." >&2
+    else
+        echo "" >&2
+        echo "update: checkout has uncommitted changes — refusing to pull into a dirty tree." >&2
+        echo "        commit or stash your changes, then re-run." >&2
+        echo "        (or set HIMMEL_UPDATE_AUTOSTASH=1 to autostash them around the pull)." >&2
+        exit 1
+    fi
 fi
 
 # ─── the full dependency chain (HIMMEL-893) ──────────────────────────────────

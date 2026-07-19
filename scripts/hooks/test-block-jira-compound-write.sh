@@ -149,6 +149,53 @@ for term in "exit>/dev/null" "command exit" "builtin exit"; do
 done
 pass "wrapped/redirected unconditional exit truncates scanning"
 
+# HIMMEL-1182 — the OTHER unconditional terminators stop scanning too, so a write
+# made unreachable by them is left alone (not bounced with guidance to reissue):
+#   * `exec <cmd>` REPLACES the shell — a following `node … create` never runs.
+#   * `FOO=1 exit` / `FOO=1 exec <cmd>` — an assignment prefix is not a condition;
+#     it applies to the terminator's environment and the shell still ends.
+for term in \
+  "exec node build.js" \
+  "exec /usr/bin/node build.js" \
+  "exec node build.js >out" \
+  "FOO=1 exit" \
+  "FOO=1 BAR=2 exit" \
+  "FOO=1 exec node build.js" \
+  "command exec node build.js" \
+  ; do
+  run_hook Bash "$term; node $JIRA create --type Task --title x --desc \"\$(cat body)\""
+  [ "$RC" -eq 0 ] || fail "write after '$term' (unreachable) bounced (rc=$RC)"
+done
+pass "exec-with-command / assignment-prefixed terminators truncate scanning"
+
+# CRITICAL DISTINCTION (HIMMEL-1182): `exec` with ONLY redirections does NOT
+# terminate — it reassigns file descriptors and execution CONTINUES — so a write
+# after it is still reachable and MUST still bounce. (`2>&1` is normalised to `2>1`
+# upstream; `>>`, fd-digit, and glued `exec>>` forms all stay redirect-only.)
+# Covers BOTH glued (`>/tmp/f`) AND space-separated (`> /tmp/f`) redirect targets —
+# the space-separated target is its own token and must not read as a command
+# (coderabbit [critical]: `exec > /var/log/out.log 2>&1` was misclassified).
+for redir in "exec >/tmp/f" "exec 2>&1" "exec >/tmp/f 2>&1" "exec>>/tmp/f" "exec 2</tmp/f" \
+             "exec > /tmp/f" "exec > /var/log/out.log 2>&1" "exec >> /tmp/f" "exec 2> /tmp/f" "exec < /tmp/f"; do
+  run_hook Bash "$redir; node $JIRA create --type Task --title x --desc \"\$(cat body)\""
+  [ "$RC" -eq 2 ] || fail "write after '$redir' NOT bounced (exec-redirect misread as terminator) (rc=$RC)"
+done
+pass "exec-redirect-only does NOT truncate scanning (glued + space-separated targets)"
+
+# A redirect FOLLOWED by a command still terminates (the command replaces the shell):
+# `exec > /tmp/f node build.js` — the space-separated target is consumed, `node` is
+# the command, so a later write IS unreachable and must NOT bounce.
+run_hook Bash "exec > /tmp/f node build.js; node $JIRA create --type Task --title x --desc \"\$(cat body)\""
+[ "$RC" -eq 0 ] && pass "exec <redirect> <command> still terminates (target not misread as the command)" || fail "exec-redirect-then-command not treated as terminator (rc=$RC)"
+
+# bare `exec` (no command, no redirect) is a no-op: a later write still bounces.
+run_hook Bash "exec; node $JIRA create --type Task --title x --desc \"\$(cat body)\""
+[ "$RC" -eq 2 ] && pass "bare 'exec' (no-op) does not truncate scanning" || fail "bare 'exec' masked a real write (rc=$RC)"
+
+# A REACHABLE write BEFORE an exec-with-command still bounces.
+run_hook Bash "node $JIRA create --type Task --title x --desc \"\$(cat body)\"; exec node build.js"
+[ "$RC" -eq 2 ] && pass "write before exec-with-command still bounced" || fail "write before exec missed (rc=$RC)"
+
 # A canonical-RELATIVE CLI path after a `cd` (coderabbit [major]): the `cd` moves the
 # CWD off this checkout, so resolving `scripts/jira/dist/index.js` to THIS checkout's
 # primary CLI could redirect the write elsewhere or turn a would-fail command into a

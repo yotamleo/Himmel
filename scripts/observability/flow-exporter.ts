@@ -12,6 +12,7 @@ const DEFAULT_STALL_DEADLINE_SECONDS = 6 * 60 * 60;
 const CACHE_TTL_MS = 60 * 1000;
 const SCHEDULER_QUERY_TIMEOUT_MS = 10 * 1000;
 const HOST_DETECTOR_TIMEOUT_MS = 10 * 1000;
+const GIT_QUERY_TIMEOUT_MS = 10 * 1000;
 const DEFAULT_PORT = 9877;
 
 type FlowConfig = {
@@ -20,7 +21,7 @@ type FlowConfig = {
   stall_deadline_seconds?: number;
 };
 
-type ObservabilityConfig = {
+export type ObservabilityConfig = {
   flows?: FlowConfig[];
   expected_tasks?: string[];
   vault_path?: string;
@@ -59,6 +60,14 @@ type HostDetectorResult = {
 
 type HostDetectorRunner = () => unknown | Promise<unknown>;
 
+// luna_git_* (HIMMEL-1199): local-refs-only divergence read for the luna vault
+// clone. `unpushed` is null when the branch has no upstream configured (@{u}
+// fails) — omitted, never fabricated as 0. NO fetch anywhere in this path: a
+// true "behind" count needs a fetch, which would violate the exporter's
+// passivity invariant, so it is intentionally not implemented.
+export type GitDivergenceResult = { unpushed: number | null; uncommittedFiles: number };
+export type GitRunner = (vaultPath: string) => GitDivergenceResult | Promise<GitDivergenceResult>;
+
 type Cached<T> = {
   key: string;
   fetchedAtMs: number;
@@ -69,6 +78,7 @@ export type ExporterCache = {
   scheduler?: Cached<{ samples: ScheduledTaskSample[]; comments: string[] }>;
   hostDetectors?: Cached<HostDetectorResult>;
   luna?: Cached<{ samples: string[] }>;
+  lunaGit?: Cached<GitDivergenceResult>;
 };
 
 export type RenderMetricsOptions = {
@@ -81,6 +91,7 @@ export type RenderMetricsOptions = {
   platform?: NodeJS.Platform;
   schedulerRunner?: SchedulerRunner;
   hostDetectorRunner?: HostDetectorRunner;
+  gitRunner?: GitRunner;
   cache?: ExporterCache;
 };
 
@@ -96,14 +107,16 @@ type FlowStats = {
   inFlight: number;
 };
 
-function configPath(env: Record<string, string | undefined>): string {
+// Exported (HIMMEL-1199) so luna-sync-alert.ts resolves the same vault_path
+// the exporter does, instead of re-deriving its own config path/parse rules.
+export function configPath(env: Record<string, string | undefined>): string {
   const override = env.HIMMEL_OBSERVABILITY_CONFIG;
   if (override && override.trim()) return override;
   const home = env.HOME ?? homedir();
   return join(home, ".himmel", "observability.json");
 }
 
-function readConfig(path: string): ObservabilityConfig {
+export function readConfig(path: string): ObservabilityConfig {
   if (!existsSync(path)) return {};
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as ObservabilityConfig;
@@ -561,6 +574,98 @@ function lunaMetrics(config: ObservabilityConfig, nowMs: number, cache: Exporter
   return samples;
 }
 
+export type GitCommandResult = { exitCode: number; stdout: string; stderr: string };
+export type GitCommandRunner = (args: string[], cwd: string, timeoutMs: number) => Promise<GitCommandResult>;
+
+async function runGitCommand(args: string[], cwd: string, timeoutMs: number): Promise<GitCommandResult> {
+  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => {
+    try { proc.kill(); } catch { /* already gone */ }
+  }, timeoutMs);
+  try {
+    const [exitCode, out, err] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    clearTimeout(timer);
+    return { exitCode, stdout: out, stderr: err };
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
+
+// Local-refs-only divergence read (HIMMEL-1199) — the exact signal for the
+// incident this ticket detects (an auto-sync push silently blocked, commits
+// piling up unpushed). NO `git fetch` anywhere here: that is the passivity
+// invariant this exporter is built on. `git status --porcelain` proves the
+// vault is a readable repo; if it fails (missing repo, timeout, spawn error)
+// the whole family is omitted by the caller. `@{u}..HEAD` separately fails
+// ONLY when the branch has no upstream configured — that omits just the
+// unpushed sample, since the uncommitted-files reading is still valid. Every
+// OTHER rev-list failure (timeout, spawn error, non-numeric output, any other
+// nonzero exit) is ambiguous and must PROPAGATE so the caller omits the whole
+// family — never fold a transient failure into a false "clean" (unpushed:null)
+// reading, which is the exact silent-failure mode this ticket exists to kill.
+// The git command runner is injected (default: real spawn) so the branch
+// discrimination is unit-testable without a live git.
+export async function runGitDivergence(vaultPath: string, run: GitCommandRunner = runGitCommand): Promise<GitDivergenceResult> {
+  const status = await run(["status", "--porcelain"], vaultPath, GIT_QUERY_TIMEOUT_MS);
+  if (status.exitCode !== 0) throw new Error(`git status exited ${status.exitCode}`);
+  const uncommittedFiles = status.stdout.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+
+  const rev = await run(["rev-list", "--count", "@{u}..HEAD"], vaultPath, GIT_QUERY_TIMEOUT_MS);
+  let unpushed: number | null;
+  if (rev.exitCode === 0 && /^\d+$/.test(rev.stdout.trim())) {
+    unpushed = Number(rev.stdout.trim());
+  } else if (/no upstream configured/i.test(rev.stderr)) {
+    // Genuine "branch has no upstream" — nothing to compare. Omit only the
+    // unpushed sample; the uncommitted-files reading above is still valid.
+    unpushed = null;
+  } else {
+    // Timeout / spawn error / non-numeric output / any other nonzero exit —
+    // cause unknown. Propagate so the whole family is omitted, not "clean".
+    const detail = (rev.stderr.trim() || rev.stdout.trim() || "no output").slice(0, 200);
+    throw new Error(`git rev-list @{u}..HEAD exited ${rev.exitCode}: ${detail}`);
+  }
+
+  return { unpushed, uncommittedFiles };
+}
+
+function lunaGitOmitComment(reason: string): string {
+  return `# luna_git_* omitted: ${reason.replace(/\s+/g, " ").trim() || "git query failed"}`;
+}
+
+function buildLunaGitLines(result: GitDivergenceResult): string[] {
+  const lines: string[] = [];
+  addFamily(lines, "luna_git_unpushed_commits", "Commits on HEAD not yet pushed to @{u} (git rev-list --count @{u}..HEAD; no fetch). Omitted when the vault has no upstream configured — a true 'behind' count would need a fetch and is intentionally not implemented (passivity invariant).", "gauge",
+    result.unpushed !== null ? [sample("luna_git_unpushed_commits", {}, result.unpushed)] : []);
+  addFamily(lines, "luna_git_uncommitted_files", "Line count of `git status --porcelain` in the luna vault clone.", "gauge",
+    [sample("luna_git_uncommitted_files", {}, result.uncommittedFiles)]);
+  return lines;
+}
+
+async function lunaGitMetrics(
+  config: ObservabilityConfig,
+  opts: Required<Pick<RenderMetricsOptions, "nowMs" | "cache">> & { gitRunner?: GitRunner },
+): Promise<{ lines: string[]; comments: string[] }> {
+  const vault = config.vault_path;
+  if (!vault) return { lines: [], comments: [] };
+
+  const key = vault;
+  if (opts.cache.lunaGit && opts.cache.lunaGit.key === key && opts.nowMs - opts.cache.lunaGit.fetchedAtMs < CACHE_TTL_MS) {
+    return { lines: buildLunaGitLines(opts.cache.lunaGit.value), comments: [] };
+  }
+
+  const runner = opts.gitRunner ?? runGitDivergence;
+  try {
+    const result = await runner(vault);
+    opts.cache.lunaGit = { key, fetchedAtMs: opts.nowMs, value: result };
+    return { lines: buildLunaGitLines(result), comments: [] };
+  } catch (e) {
+    delete opts.cache.lunaGit;
+    const message = e instanceof Error && e.message ? e.message : "git query failed";
+    return { lines: [], comments: [lunaGitOmitComment(message)] };
+  }
+}
+
 // HIMMEL-1000: real per-lane bank gauges. Each lanes.json lane that declares
 // quota.bank fans out one series per live window of that bank; lanes without
 // a machine-readable source (or whose bank has no live reading) emit an
@@ -646,6 +751,10 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   lines.push(...host.lines);
 
   lines.push(...lunaMetrics(cfg, nowMs, cache));
+  const lunaGit = await lunaGitMetrics(cfg, { nowMs, cache, gitRunner: options.gitRunner });
+  lines.push(...lunaGit.comments);
+  lines.push(...lunaGit.lines);
+
   const quota = quotaMetrics(cfg, env, quotaPath, lanesPath, options.platform ?? process.platform, nowMs);
   lines.push(...quota.comments);
   lines.push(...quota.lines);

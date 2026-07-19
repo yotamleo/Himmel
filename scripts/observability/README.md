@@ -117,6 +117,25 @@ an explanatory `# agent_tree_*/orphan_* omitted: ...` comment.
   `hermes-gateway-orphan`, `codex-app-server-orphan`,
   `mcp-dead-parent-unattributed`).
 
+`luna_git_unpushed_commits`/`luna_git_uncommitted_files` (HIMMEL-1199) are a
+local-refs-only divergence read of the `vault_path` git clone, cached for 60s
+alongside the Luna backlog walk:
+
+- `luna_git_unpushed_commits` - `git rev-list --count @{u}..HEAD`. Omitted
+  (no sample, not a fabricated `0`) when the branch has no upstream
+  configured. This is the exact signal for the HIMMEL-1199 incident: an
+  auto-sync push silently blocked by a gitleaks false positive, so
+  auto-committed commits piled up unpushed with zero visible signal. No
+  fetch is ever run — a true "behind" count needs a fetch, which would
+  violate the passivity invariant above, so it is intentionally not
+  implemented.
+- `luna_git_uncommitted_files` - line count of `git status --porcelain`;
+  catches a commit-gate block, complementing the push-gate signal.
+
+Any git error, missing repo, or timeout omits the whole family with an
+explanatory `# luna_git_* omitted: ...` comment, same fail-soft contract as
+the scheduled-task and host-detector families.
+
 ## Install on Windows
 
 From a PowerShell session in the repo:
@@ -133,6 +152,7 @@ registers user-level logon scheduled tasks:
 - `himmel-observability-grafana`
 - `himmel-observability-windows-exporter`
 - `himmel-observability-flow-exporter`
+- `himmel-observability-luna-sync-alert` (every 10 minutes — see Alerting below)
 
 URLs after the tasks are running:
 
@@ -144,8 +164,30 @@ URLs after the tasks are running:
 Import `dashboards/war-room-system.json` into Grafana and bind the
 `${DS_PROMETHEUS}` variable to the local Prometheus datasource.
 
+## Alerting (HIMMEL-1199 — a boundary change)
+
+The flow exporter above stays a pure Prometheus reader — no alerting lives
+inside `flow-exporter.ts` or its request path. `luna-sync-alert.ts` is a
+**separate, small scheduled checker**, registered as its own task
+(`himmel-observability-luna-sync-alert`, every 10 minutes) by
+`install-stack.ps1`. It reuses the exact same git read the exporter uses
+(`runGitDivergence`, imported from `flow-exporter.ts`, so the two never drift
+on what "unpushed" means) and sends a Telegram message via
+`scripts/telegram/telegram-api.ts`'s `sendMessage` when the luna vault clone
+has unpushed commits — debounced by a tiny state file
+(`~/.himmel/luna-sync-alert-state.json`): immediate on the rising edge,
+re-alerting only after a cooldown (default 6h) while the condition persists.
+It reads the bot token the same way the bridge does
+(`~/.claude/channels/telegram/.env`'s `TELEGRAM_BOT_TOKEN`) and the chat_id
+from the bridge's own allowlist (`access.json`'s `allowFrom[0]`, override via
+`LUNA_SYNC_ALERT_CHAT_ID`). It never runs `git fetch`, same passivity
+invariant as the exporter.
+
 ## Deliberately not here
 
-- Alert rules and Telegram alerting.
+- Alert rules and Telegram alerting for the wider stack (flows, quota,
+  scheduled tasks, host) — `luna-sync-alert.ts` above is the one narrow
+  exception, and it is deliberately outside the exporter's passivity
+  boundary, not a precedent for adding more alerting inside it.
 - Loki or log ingestion.
 - Docker, brew, apt, or other Phase B packaging.

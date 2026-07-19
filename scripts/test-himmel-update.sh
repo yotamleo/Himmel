@@ -100,6 +100,7 @@ make_repo_behind() {
     cp "$src_scripts/guardrails/lib.sh"      "$clone/scripts/guardrails/lib.sh"
     cp "$src_scripts/lib/cadence-format.sh"  "$clone/scripts/lib/cadence-format.sh"
     cp "$src_scripts/lib/resolve-hermes-py.sh" "$clone/scripts/lib/resolve-hermes-py.sh"
+    cp "$src_scripts/lib/load-dotenv.sh"       "$clone/scripts/lib/load-dotenv.sh"
     CHECKOUT_DIR="$clone"
 }
 
@@ -317,6 +318,60 @@ if jq -e 'has("description")' "$CACHE_C/hooks.json" >/dev/null 2>&1; then
 else
     assert_fail "update_codex check: MUTATED cache in read-only mode"
 fi
+
+# ─── Test 7: dirty-tree autostash opt-in reads repo-root .env (HIMMEL-1205) ───
+# HIMMEL_UPDATE_AUTOSTASH set in the checkout's .env must flip the dirty-tree
+# guard from "refusing" to "autostashing" — the same .env source the Jira CLI
+# reads. A live shell var still wins (load_dotenv fills only UNSET keys), so the
+# cases below unset it (the harness shell itself may export it) to isolate .env.
+echo "Test 7: dirty tree — .env HIMMEL_UPDATE_AUTOSTASH=1 flips refuse → autostash"
+make_repo_behind 1
+printf 'local-dirty-edit\n' > "$CHECKOUT_DIR/file.txt"   # dirty the working tree
+
+# Case a — no .env opt-in: refuses (exits at the guard, before the chain).
+out=$(env -u HIMMEL_UPDATE_AUTOSTASH bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || true
+assert_contains "dirty + no opt-in: refuses to pull" "refusing to pull into a dirty tree" "$out"
+
+# Case b — .env opt-in (shell var still unset): autostashes instead of refusing.
+# No `timeout` (not portable — macOS lacks GNU timeout). The run stays bounded +
+# offline via a throwaway HOME/HERMES_HOME: the autostash reapply conflicts on
+# the shared file, so the pull fails and the chain aborts fast; the "autostashing"
+# line prints at the guard, before the pull. The chain's remaining steps also
+# fail fast (the mock clone has no marketplace/jira/qmd dirs) with no network.
+printf 'HIMMEL_UPDATE_AUTOSTASH=1\n' > "$CHECKOUT_DIR/.env"
+th7_home="$TMP/th7-home"; mkdir -p "$th7_home/.claude"
+rc=0
+out=$(env -u HIMMEL_UPDATE_AUTOSTASH USERPROFILE='' HOME="$th7_home" \
+      HERMES_HOME="$TMP/th7-no-hermes" CLAUDE_USER_SETTINGS="$th7_home/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+assert_contains "dirty + .env opt-in: autostashes (not refuses)" "autostashing local changes" "$out"
+# The guard line above would still print if the pull dropped --autostash, so
+# assert the CONTRACT at the pull: a stash entry exists only because the pull
+# ran with --autostash (the guard itself never stashes), and update_pull's
+# autostash-only failure detail only renders when $autostash was non-empty.
+if [ -n "$(git -C "$CHECKOUT_DIR" stash list 2>/dev/null)" ]; then
+    assert_pass "dirty + .env opt-in: pull ran with --autostash (stash entry created)"
+else
+    assert_fail "dirty + .env opt-in: no stash entry — pull did NOT get --autostash"
+fi
+assert_contains "dirty + .env opt-in: autostash-only pull detail" \
+    "autostash \(active\|reapply conflicted\)" "$out"
+# The reapply conflicts on the shared file, so the chain aborts non-zero. Assert
+# it rather than masking with `|| true` (a 0 here would mean the guard never
+# reached the failing pull).
+if [ "$rc" -ne 0 ]; then
+    assert_pass "dirty + .env opt-in: chain aborts non-zero on the conflicted reapply"
+else
+    assert_fail "dirty + .env opt-in: expected non-zero exit, got 0"
+fi
+
+# Case c — live shell var WINS over .env: .env says 1, live says 0 → refuses.
+# load_dotenv fills only UNSET keys, so an explicit live 0 must not be overridden.
+make_repo_behind 1
+printf 'local-dirty-edit\n' > "$CHECKOUT_DIR/file.txt"
+printf 'HIMMEL_UPDATE_AUTOSTASH=1\n' > "$CHECKOUT_DIR/.env"
+out=$(HIMMEL_UPDATE_AUTOSTASH=0 bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || true
+assert_contains "live 0 overrides .env 1: refuses to pull" "refusing to pull into a dirty tree" "$out"
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo

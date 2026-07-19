@@ -101,6 +101,7 @@ make_mock_clone() {
     cp "$src_scripts/guardrails/lib.sh"        "$clone/scripts/guardrails/lib.sh"
     cp "$src_scripts/lib/cadence-format.sh"    "$clone/scripts/lib/cadence-format.sh"
     cp "$src_scripts/lib/resolve-hermes-py.sh" "$clone/scripts/lib/resolve-hermes-py.sh"
+    cp "$src_scripts/lib/load-dotenv.sh"       "$clone/scripts/lib/load-dotenv.sh"
     # Commit the scaffolding — a clean tree is the precondition every case
     # below actually wants to test, not test-harness noise.
     git -C "$clone" add -A
@@ -126,7 +127,11 @@ claude_ok_1="$TMP/claude-ok-test1"; make_claude_stub "$claude_ok_1" 0
 # developer machine's real ~/.claude instead of staying hermetic.
 fake_home_1="$TMP/fake-home-test1"; mkdir -p "$fake_home_1"
 rc=0
+# HIMMEL_UPDATE_AUTOSTASH='' keeps this hermetic: without it, an operator who
+# exported the opt-in (or set it in .env, now bridged) would flip this guard to
+# autostash and fail the refusal assertions below on their machine.
 out=$(USERPROFILE='' HOME="$fake_home_1" HIMMEL_UPDATE_CLAUDE_BIN="$claude_ok_1" HERMES_HOME="$TMP/no-hermes" \
+      HIMMEL_UPDATE_AUTOSTASH='' \
       CLAUDE_USER_SETTINGS="$fake_home_1/.claude/settings.json" \
       bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
 assert_eq "dirty tree: rc non-zero" "1" "$rc"

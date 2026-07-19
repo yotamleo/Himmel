@@ -47,6 +47,7 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 | /pr-triage | Lightweight 4-step PR triage gate (steipete) — decide if a PR is even worth a deep multi-agent CR before running /pr-check |
 | /pr-check | Run the multi-agent CR review on the current branch and clear the pre-push marker on clean output |
 | /check-ci | Token-free PR merge-gate watcher — one process loops inside gh pr checks --watch --fail-fast, then verifies zero unresolved review threads and no changes-requested review, and returns a single exit code (0=green+resolved, 1=red, 2=cannot evaluate/no PR/usage error, 3=unresolved threads or changes requested), so merge-on-green costs ~zero tokens (HIMMEL-949). |
+| /cr-public | Babysit a PUBLIC propagation PR (default repo yotamleo/Himmel) to CR-clean + CI-green before the operator merges — creates the PR if the branch is pushed but has none, watches the CodeRabbit App review + CI via check-ci.sh, loops fixes, and STOPS at PR-ready. The public squash-merge stays an operator action (HIMMEL-1196). |
 | /cr-scores | Print the per-critic agreed/availability scorecard and surface drop advice |
 | /cr-tune | Mine the CR ledger for disproved classes per critic and draft citation-backed tuning proposals (.coderabbit.yaml / critics.json) — proposals only, never auto-applied |
 | /claude-md-audit | Audit changed CLAUDE.md files against the claude-md-improver rubric before PR — audit-only, applies no edits on its own |
