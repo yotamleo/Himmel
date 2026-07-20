@@ -229,6 +229,146 @@ fi
 rm -rf "$sb6"
 
 # --------------------------------------------------------------------------
+# Case 7 — zero discovered suites must FAIL, not silently green (HIMMEL-1128).
+# A scan root that resolves to no runnable suite (a typo'd path, an empty dir)
+# used to print "OK: all 0 run suites passed" and exit 0 — a false green on a
+# process-integrity gate. The runner must exit non-zero when nothing ran.
+# --------------------------------------------------------------------------
+echo "== Case 7: zero discovered suites -> non-zero exit =="
+
+# 7a — non-existent scan root.
+out7a=$(bash "$RUNNER" no-such-directory-xyz 2>&1)
+rc7a=$?
+if [ "$rc7a" -ne 0 ]; then
+  pass "non-existent scan root -> non-zero exit ($rc7a)"
+else
+  fail "non-existent scan root -> expected non-zero got 0; output: $out7a"
+fi
+
+# 7b — empty scan root (exists, but contains no test-*.sh).
+sb7=$(mktemp -d)
+out7b=$(bash "$RUNNER" "$sb7" 2>&1)
+rc7b=$?
+if [ "$rc7b" -ne 0 ]; then
+  pass "empty scan root -> non-zero exit ($rc7b)"
+else
+  fail "empty scan root -> expected non-zero got 0; output: $out7b"
+fi
+
+# 7c — --list of a zero-discovered root must ALSO fail (the discovered==0 guard
+# fires before the --list early exit); listing an empty plan and exiting 0 is
+# the same false-green footgun.
+out7c=$(bash "$RUNNER" --list no-such-directory-xyz 2>&1)
+rc7c=$?
+if [ "$rc7c" -ne 0 ]; then
+  pass "--list non-existent scan root -> non-zero exit ($rc7c)"
+else
+  fail "--list non-existent scan root -> expected non-zero got 0; output: $out7c"
+fi
+
+out7d=$(bash "$RUNNER" --list "$sb7" 2>&1)
+rc7d=$?
+if [ "$rc7d" -ne 0 ]; then
+  pass "--list empty scan root -> non-zero exit ($rc7d)"
+else
+  fail "--list empty scan root -> expected non-zero got 0; output: $out7d"
+fi
+rm -rf "$sb7"
+
+# --------------------------------------------------------------------------
+# Case 8 — discovery error masked by a partial result (HIMMEL-1128, codex-adv).
+# A `find` that emits at least one suite and THEN exits non-zero (unreadable
+# subtree, I/O error) used to slip past: the emitted suite ran, ran>0, and the
+# zero-suite guard passed → green on an incomplete scan. The runner must fail
+# when discovery itself errored, even though a suite ran.
+# --------------------------------------------------------------------------
+echo "== Case 8: find discovery error -> non-zero exit =="
+sb8=$(mktemp -d)
+cat > "$sb8/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+chmod +x "$sb8/test-pass.sh"
+# Fake `find` on PATH: prints one real suite path, then exits non-zero.
+fakebin=$(mktemp -d)
+cat > "$fakebin/find" <<SHEOF
+#!/usr/bin/env bash
+printf '%s\n' "$sb8/test-pass.sh"
+exit 2
+SHEOF
+chmod +x "$fakebin/find"
+
+out8=$(PATH="$fakebin:$PATH" bash "$RUNNER" "$sb8" 2>&1)
+rc8=$?
+if [ "$rc8" -ne 0 ]; then
+  pass "find discovery error -> non-zero exit ($rc8)"
+else
+  fail "find discovery error -> expected non-zero got 0; output: $out8"
+fi
+rm -rf "$sb8" "$fakebin"
+
+# --------------------------------------------------------------------------
+# Case 9 — sort discovery-stage error masked by a partial result (HIMMEL-1128,
+# codex-adv). Mirror of Case 8 for the second discovery stage: a `sort` that
+# emits one suite and THEN exits non-zero must fail the runner, not green.
+# --------------------------------------------------------------------------
+echo "== Case 9: sort discovery error -> non-zero exit =="
+sb9=$(mktemp -d)
+cat > "$sb9/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+chmod +x "$sb9/test-pass.sh"
+# Fake `sort` on PATH: prints one real suite path, then exits non-zero.
+fakebin9=$(mktemp -d)
+cat > "$fakebin9/sort" <<SHEOF
+#!/usr/bin/env bash
+printf '%s\n' "$sb9/test-pass.sh"
+exit 2
+SHEOF
+chmod +x "$fakebin9/sort"
+
+out9=$(PATH="$fakebin9:$PATH" bash "$RUNNER" "$sb9" 2>&1)
+rc9=$?
+if [ "$rc9" -ne 0 ]; then
+  pass "sort discovery error -> non-zero exit ($rc9)"
+else
+  fail "sort discovery error -> expected non-zero got 0; output: $out9"
+fi
+rm -rf "$sb9" "$fakebin9"
+
+# --------------------------------------------------------------------------
+# Case 10 — all-skipped EXECUTION root must fail (ran==0), but --list of the
+# same root must SUCCEED (HIMMEL-1128). Suites were discovered (discovered>0),
+# so this is distinct from the empty-root case: the execution path enforces
+# run>0, while --list legitimately prints the skip plan and exits 0.
+# --------------------------------------------------------------------------
+echo "== Case 10: all-skipped root -> execution fails, --list succeeds =="
+sb10=$(mktemp -d)
+cat > "$sb10/test-skipme.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+chmod +x "$sb10/test-skipme.sh"
+
+out10a=$(bash "$RUNNER" "$sb10" --skip-extra test-skipme.sh 2>&1)
+rc10a=$?
+if [ "$rc10a" -ne 0 ]; then
+  pass "all-skipped execution root -> non-zero exit ($rc10a)"
+else
+  fail "all-skipped execution root -> expected non-zero got 0; output: $out10a"
+fi
+
+out10b=$(bash "$RUNNER" --list "$sb10" --skip-extra test-skipme.sh 2>&1)
+rc10b=$?
+if [ "$rc10b" -eq 0 ]; then
+  pass "--list all-skipped root -> exit 0 (skip plan is valid inspection)"
+else
+  fail "--list all-skipped root -> expected exit 0 got $rc10b; output: $out10b"
+fi
+rm -rf "$sb10"
+
+# --------------------------------------------------------------------------
 # Final tally
 # --------------------------------------------------------------------------
 echo

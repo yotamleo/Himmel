@@ -21,7 +21,9 @@
 #   Flags may appear before or after the scan-root.
 #   scan-root defaults to "scripts" when omitted.
 #
-# Exit codes: 0 — all run suites passed; 1 — at least one failed.
+# Exit codes: 0 — one or more suites ran and all passed; 1 — at least one suite
+#             failed, OR zero suites ran (a resolved-to-nothing scan root is a
+#             misconfiguration, not a pass — HIMMEL-1128).
 #
 # bash 3.2-safe (macOS ships 3.2): no mapfile, no associative arrays.
 set -uo pipefail
@@ -148,10 +150,41 @@ scan="${scan:-scripts}"
 # (piping into while would run in a subshell on some shells).
 # --------------------------------------------------------------------------
 suites_file=$(mktemp)
-trap 'rm -f "$suites_file"' EXIT
+suites_raw=$(mktemp)
+trap 'rm -f "$suites_file" "$suites_raw"' EXIT
 
-find "$scan" -path '*/node_modules' -prune -o -name 'test-*.sh' -print \
-  | grep -v '/node_modules/' | sort > "$suites_file"
+# Check EVERY discovery stage so a partial-output-then-fail can't mask an
+# incomplete scan (ran>0 with the guard below passing → green on a scan that
+# never finished — the same false-green class HIMMEL-1128 closes). The two
+# stages are `find` and `sort`; the earlier `grep -v /node_modules/` was
+# redundant (find's `-path '*/node_modules' -prune` already excludes those
+# subtrees) so it is dropped rather than status-checked.
+find "$scan" -path '*/node_modules' -prune -o -name 'test-*.sh' -print > "$suites_raw" 2>/dev/null
+find_rc=$?
+if [ "$find_rc" -ne 0 ]; then
+  printf 'ERROR: suite discovery failed under scan root "%s" (find rc=%s) — refusing to report green.\n' "$scan" "$find_rc" >&2
+  exit 1
+fi
+sort "$suites_raw" > "$suites_file"
+sort_rc=$?
+if [ "$sort_rc" -ne 0 ]; then
+  printf 'ERROR: suite discovery sort failed (rc=%s) — refusing to report green.\n' "$sort_rc" >&2
+  exit 1
+fi
+
+# Zero DISCOVERED suites = a resolved-to-nothing scan root (typo, empty dir, a
+# file-valued root). Fail BEFORE the mode split so --list is guarded too: a
+# --list of a bad root printing an empty plan and exiting 0 is the same
+# false-green footgun as the execution path (HIMMEL-1128). (--list of a root
+# whose suites are all SKIPPED is NOT failed here — listing a skip plan is the
+# mode's purpose; only the execution path enforces run>0, at the ran==0 guard.)
+# Test the completed discovery file directly with the `-s` builtin (non-empty)
+# — no external `grep`/`wc` whose own failure could let an empty file slip past
+# the guard and re-open the false-green.
+if [ ! -s "$suites_file" ]; then
+  printf 'ERROR: no test suites discovered under scan root "%s" — refusing to report green.\n' "$scan" >&2
+  exit 1
+fi
 
 pass=0 fail=0 skip=0 ran=0
 failed_suites=""
@@ -222,6 +255,13 @@ fi
 printf ' PASS: %s\n SKIP: %s\n FAIL: %s\n' "$pass" "$skip" "$fail"
 if [ "$fail" -gt 0 ]; then
   printf 'Failed suites:\n%s' "$failed_suites"
+  exit 1
+fi
+# Suites were discovered (the discovered==0 guard above already passed) but
+# every one was skipped, so nothing actually ran — not a pass. Reporting it
+# green is a false green on a process-integrity gate (HIMMEL-1128).
+if [ "$ran" -eq 0 ]; then
+  printf 'ERROR: no suites ran under scan root "%s" (all discovered suites were skipped) — refusing to report green.\n' "$scan" >&2
   exit 1
 fi
 echo "OK: all $ran run suites passed ($skip skipped)"

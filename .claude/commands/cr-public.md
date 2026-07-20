@@ -47,7 +47,7 @@ if printf '%s' "$sel" | grep -qE '^[0-9]+$'; then
     branch=$(printf '%s' "$prjson" | jq -r .headRefName)
 else
     branch="$sel"
-    pr=$(gh pr list --repo "$REPO" --head "$branch" --state open --json number -q '.[0].number') \
+    pr=$(gh pr list --repo "$REPO" --head "$branch" --base main --state open --json number -q '.[0].number') \
         || { echo "cr-public: cannot evaluate — gh pr list failed (auth/network?)"; exit 2; }
 fi
 ```
@@ -59,7 +59,12 @@ fi
   url=$(gh pr create --repo "$REPO" --base main --head "$branch" --fill) \
       || { echo "cr-public: cannot evaluate — gh pr create failed"; exit 2; }
   pr=$(printf '%s' "$url" | grep -oE '[0-9]+$')   # gh prints the PR URL; take its trailing number
-  [ -n "$pr" ] || pr=$(gh pr list --repo "$REPO" --head "$branch" --state open --json number -q '.[0].number')
+  # Guard this fallback too: an auth/network failure here must read as "cannot
+  # evaluate", not as the (misleading) "could not resolve its number" below.
+  if [ -z "$pr" ]; then
+      pr=$(gh pr list --repo "$REPO" --head "$branch" --base main --state open --json number -q '.[0].number') \
+          || { echo "cr-public: cannot evaluate — fallback gh pr list failed (auth/network?)"; exit 2; }
+  fi
   [ -n "$pr" ] || { echo "cr-public: created a PR but could not resolve its number"; exit 2; }
   ```
   `--fill` uses the branch's commits for title/body. Pass an explicit
@@ -129,23 +134,44 @@ reach exit `0` and would stall indefinitely.
 
 Do NOT loop forever, and do NOT treat a single `check-ci.sh` run (or its `--grace`
 value — that is check-*registration* grace, not a CodeRabbit-review wait) as "the
-15-minute wait." Enforce an **explicit monotonic deadline** (HIMMEL-1207): capture
-a start time, then re-poll for a review-at-head until either a fresh review lands
-or the deadline expires. One `@coderabbitai review` nudge early in the window is
-fine; the deadline — not the nudge — decides when to stop:
+15-minute wait." Enforce a **bounded wait** (HIMMEL-1207): `date +%s` is
+wall-clock, NOT monotonic, so pair the deadline with a fixed iteration cap — a
+clock jump alone can't extend the wait past that cap. Re-read the head on
+EVERY iteration (a push during the wait moves it; a sha captured once before
+the loop would leave you polling for a review that can never land at the
+stale head). One `@coderabbitai review` nudge early in the window is fine; the
+deadline/cap — not the nudge — decides when to stop:
 ```bash
-deadline=$(( $(date +%s) + 900 ))     # ~15 min, monotonic
-head=$(gh pr view "$pr" --repo "$REPO" --json headRefSha -q .headRefSha)
-while [ "$(date +%s)" -lt "$deadline" ]; do
+deadline=$(( $(date +%s) + 900 ))     # ~15 min wall-clock deadline
+max_iter=15                           # + hard iteration cap (15 * 60s sleep) vs a clock jump
+iter=0
+reviewed=0
+while [ "$(date +%s)" -lt "$deadline" ] && [ "$iter" -lt "$max_iter" ]; do
+    # FAIL CLOSED on an unevaluable poll. An ignored gh failure yields an empty
+    # head + zero reviews — indistinguishable from "no fresh review" — and would
+    # then let the wait expire straight into the operator-merge fallback on what
+    # was really an auth/network error.
+    head=$(gh pr view "$pr" --repo "$REPO" --json headRefSha -q .headRefSha) \
+        || { echo "cr-public: cannot evaluate — gh pr view (headRefSha) failed"; exit 2; }
+    [ -n "$head" ] || { echo "cr-public: cannot evaluate — empty head sha"; exit 2; }
     # fresh review at the CURRENT head? (CodeRabbit posts a review whose commit == head)
     reviewed=$(gh pr view "$pr" --repo "$REPO" --json reviews \
-        -q "[.reviews[] | select(.author.login==\"coderabbitai\" and .commit.oid==\"$head\")] | length")
+        -q "[.reviews[] | select(.author.login==\"coderabbitai\" and .commit.oid==\"$head\")] | length") \
+        || { echo "cr-public: cannot evaluate — gh pr view (reviews) failed"; exit 2; }
     [ "${reviewed:-0}" -gt 0 ] && break
+    iter=$((iter + 1))
     sleep 60
 done
 ```
-Only AFTER the deadline expires with no fresh review may you fall back to an
-**operator-merge recommendation** — and ONLY when all of these hold:
+If `reviewed` is non-zero, a fresh review landed at the current head —
+**go back to step 3** (re-run `check-ci.sh`) to re-certify against it. Do NOT
+fall through to the operator-merge fallback below; that path exists ONLY for
+the case where the deadline/iteration cap expired with NO fresh review ever
+landing.
+
+Only after the deadline (or iteration cap) expires with no fresh review may you
+fall back to an **operator-merge recommendation** — and ONLY when all of these
+hold:
 - CI is green, and
 - every inline review thread is resolved, and
 - every outside-diff / body finding was objectively addressed by a fix that is
@@ -156,12 +182,35 @@ Only AFTER the deadline expires with no fresh review may you fall back to an
   and record the result — do not eyeball only the flagged findings (HIMMEL-1207):
   ```bash
   # PRIV_REF = the private merge commit(s) this public branch re-projects.
-  # Compare the full public diff-vs-base against the private diff-vs-its-base,
-  # after stripping PRIVATE_PATHS (they never propagate). Identical => a faithful
-  # re-projection of already-reviewed code.
-  git -C <public-wt> diff origin/main...HEAD > /tmp/pub.patch
-  git -C <private-repo> diff "$PRIV_REF~1...$PRIV_REF" -- . ':(exclude)<PRIVATE_PATHS>' > /tmp/priv.patch
-  diff <(grep '^[+-]' /tmp/pub.patch) <(grep '^[+-]' /tmp/priv.patch)   # empty => content-identical
+  # Fetch first — a stale local origin/main can make a genuinely-differing
+  # public diff look identical to private.
+  # EVERY step below is checked: an unchecked failure fakes a pass. A failed
+  # fetch leaves a stale baseline; a failed `git diff` leaves an empty/partial
+  # patch file — and two empty files compare EQUAL, i.e. "identical" for the
+  # wrong reason. Any evaluation error must BLOCK, never certify.
+  git -C <public-wt> fetch origin main \
+      || { echo "cr-public: cannot evaluate — fetch of public origin/main failed"; exit 2; }
+  # Compare the FULL patches (file paths + hunk context + content) — not just
+  # added/removed line TEXT — two identical +/- lines in a DIFFERENT file or
+  # position must not compare as equal. Strip PRIVATE_PATHS first (they never
+  # propagate). Identical => a faithful re-projection of already-reviewed code.
+  git -C <public-wt> diff origin/main...HEAD > /tmp/pub.patch \
+      || { echo "cr-public: cannot evaluate — public diff failed"; exit 2; }
+  git -C <private-repo> diff "$PRIV_REF~1...$PRIV_REF" -- . ':(exclude)<PRIVATE_PATHS>' > /tmp/priv.patch \
+      || { echo "cr-public: cannot evaluate — private diff failed"; exit 2; }
+  # diff's exit code is three-valued: 0 = identical, 1 = differs, >1 = ERROR.
+  # Collapsing >1 into "differs" would be safe here, but collapsing it into
+  # "identical" would not — so branch on all three explicitly. Capture rc into a
+  # variable first: `$?` read inside an `elif` after `if diff ...` is a known
+  # bash footgun (any intervening command clobbers it).
+  diff /tmp/pub.patch /tmp/priv.patch; rc=$?
+  if [ "$rc" -eq 0 ]; then
+      verdict="identical"            # faithful re-projection
+  elif [ "$rc" -eq 1 ]; then
+      verdict="DIFFERS — merge recommendation BLOCKED"
+  else
+      verdict="cannot evaluate (diff errored) — merge recommendation BLOCKED"
+  fi
   ```
   Because the public App may have reviewed only an OLDER head, a change it never
   flagged is not thereby safe: if that comparison is NOT empty — **any** public
@@ -184,6 +233,10 @@ public clone (concurrent-session race — see `propagate-public.sh` header). Reu
 the worktree the prep created, or make a fresh one:
 ```bash
 bash scripts/propagate-public.sh new "$branch"    # isolated worktree off origin/<branch>
+# NOT `/worktree <branch>` — /worktree manages PRIVATE-repo worktrees for feature
+# branches; this command deliberately creates an isolated worktree in the PUBLIC
+# clone (see propagate-public.sh's own header for the concurrent-session race
+# this prevents). A reviewer suggesting `/worktree` here is conflating the two.
 ```
 Commit the fix there, push to the public branch, then re-watch. If the fix-push is
 classifier-blocked, print the exact `git -C <wt> push` + resolve commands for the
