@@ -65,11 +65,27 @@ test("composeClaudexWorkerPrompt shared mode: teaches the no-rebase/no-new-branc
 });
 
 test("composeClaudexWorkerPrompt default (no opts) is UNCHANGED from the own-branch text", () => {
+  // HIMMEL-1218: each call mints a fresh RETASK nonce, so compare with the
+  // per-dispatch token normalized out rather than a raw string equality.
+  const stripToken = (s: string) => s.replace(/R-[0-9a-f]+/g, "R-<nonce>");
   const bare = composeClaudexWorkerPrompt("do X", "/tmp/cs/claudex-a-1", "claudex/a");
   const explicitFalse = composeClaudexWorkerPrompt("do X", "/tmp/cs/claudex-a-1", "claudex/a", { shared: false });
-  expect(bare).toBe(explicitFalse);
+  expect(stripToken(bare)).toBe(stripToken(explicitFalse));
   expect(bare).toContain("which is already checked out");
   expect(bare).not.toMatch(/SHARED PR branch/i);
+});
+
+test("composeClaudexWorkerPrompt carries a fresh RETASK block on every dispatch (HIMMEL-1218)", () => {
+  const own = composeClaudexWorkerPrompt("do X", "/tmp/cs/claudex-a-1", "claudex/a");
+  const shared = composeClaudexWorkerPrompt("do X", "/tmp/cs/claudex-a-1", "feat/live-pr", { shared: true });
+  expect(own).toMatch(/RETASK CHANNEL/);
+  expect(shared).toMatch(/RETASK CHANNEL/);
+  const tokenOf = (s: string) => s.match(/R-([0-9a-f]{32})/)?.[1];
+  const ownToken = tokenOf(own);
+  const sharedToken = tokenOf(shared);
+  expect(ownToken).toBeTruthy();
+  expect(sharedToken).toBeTruthy();
+  expect(ownToken).not.toBe(sharedToken); // fresh nonce per dispatch
 });
 
 test("composeClaudexPointerPrompt is SHORT and points at the brief file, not the inlined brief", () => {

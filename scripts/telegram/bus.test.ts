@@ -53,6 +53,10 @@ test("sendToSession creates target dir and appends text record to inbox.jsonl", 
   const raw = await Bun.file(inbox).text();
   const rec = JSON.parse(raw.trim());
   expect(rec.text).toBe("hi from A");
+  // HIMMEL-1218: the trusted A->B writer stamps its origin so a receiving
+  // session's RETASK-channel verification can distinguish it from a directly
+  // Telegram-relayed inbox record (which carries no origin field).
+  expect(rec.origin).toBe("sendToSession");
 });
 
 test("truncateFullyConsumed resets file+cursor only when cursor reached EOF; preserves a half-read log + later reads start fresh", async () => {

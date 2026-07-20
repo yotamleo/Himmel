@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
 import { REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE } from "./spawn-glm";
+import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock } from "./spawn-glm";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
@@ -54,6 +54,9 @@ export function composeClaudexWorkerPrompt(task: string, sessionDir: string, bra
     `You are an unattended claudex-lane worker session (himmel offload, codex weekly bank, HIMMEL-654/979/1003) — do the scoped chunk below and stop, do not expand scope.`,
     branchLine,
     `HARD RULES: never push, never open a PR — a validating session reviews your branch and owns the git/PR surface. Jira updates (status, comments, followup tickets) ARE allowed via node scripts/jira/dist/index.js (audited + recoverable). If a step is hard-blocked, skip it, continue the rest of the task, and note the skipped step in your final ${context} summary — v1 has no escalation channel to append to.`,
+    // HIMMEL-1218: RETASK channel — see spawn-glm.ts's composeWorkerPrompt for
+    // the same block; imported verbatim so both lanes carry identical rules text.
+    composeRetaskBlock(mintRetaskNonce()),
     `Report progress by APPENDING one JSON line {"text":"<note>"} per update to ${outbox}. That is the only channel to the operator.`,
     `THE TASK: ${task}`,
     `As your FINAL action, append a one-line summary of what you did to ${context}, then stop.`,

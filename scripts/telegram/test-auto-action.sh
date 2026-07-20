@@ -125,5 +125,65 @@ assert_rc "T10 already-armed maps to rc 5" 5 "$rc"
 out=$(ARM_STUB_RC=2 run arm-resume HIMMEL-777 smart); rc=$?
 assert_rc "T11 arm failure maps to rc 6" 6 "$rc"
 
+# --- merge-public (HIMMEL-1213) --------------------------------------------
+# merge-public-on-green stub: records argv, exits with MERGE_STUB_RC (default 0).
+MERGE_STUB="$TMP/merge-stub.sh"
+cat > "$MERGE_STUB" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$MERGE_ARGS_FILE"
+echo "merge-public-on-green: [stub] pr=$1 sha=$2 rc=${MERGE_STUB_RC:-0}"
+exit "${MERGE_STUB_RC:-0}"
+EOF
+chmod +x "$MERGE_STUB"
+export AUTO_ACTION_MERGE_PUBLIC_CMD="bash $MERGE_STUB"
+export MERGE_ARGS_FILE="$TMP/merge-args"
+
+runmp() { MERGE_STUB_RC="${MERGE_STUB_RC:-0}" bash "$AA" "$@" 2>"$TMP/err"; }
+
+# --- T12: merge-public op is recognized (not "unknown op") -----------------
+out=$(runmp merge-public 123 abcdef123456); rc=$?
+assert_rc "T12 merge-public recognized, stub rc 0 passes through" 0 "$rc"
+assert_contains "T12 stub invoked with pr + sha positional args" "pr=123 sha=abcdef123456" "$out"
+args=$(cat "$MERGE_ARGS_FILE" 2>/dev/null)
+assert_contains "T12 merge chokepoint got the PR number" "123" "$args"
+assert_contains "T12 merge chokepoint got the SHA" "abcdef123456" "$args"
+
+# --- T13: bad PR number (non-numeric) → exit 1, chokepoint NEVER invoked ---
+rm -f "$MERGE_ARGS_FILE"
+out=$(runmp merge-public abc abcdef123456); rc=$?
+assert_rc "T13 non-numeric PR → exit 1" 1 "$rc"
+if [ -f "$MERGE_ARGS_FILE" ]; then
+    echo "FAIL T13 — merge chokepoint was invoked despite a bad PR number"; FAILED=$((FAILED + 1))
+else
+    echo "PASS T13 chokepoint not invoked on bad PR"
+fi
+
+# --- T14: bad SHA (too short / not hex) → exit 1, chokepoint NEVER invoked -
+rm -f "$MERGE_ARGS_FILE"
+out=$(runmp merge-public 123 abc12); rc=$?
+assert_rc "T14a SHA too short → exit 1" 1 "$rc"
+out=$(runmp merge-public 123 not-a-sha); rc=$?
+assert_rc "T14b non-hex SHA → exit 1" 1 "$rc"
+if [ -f "$MERGE_ARGS_FILE" ]; then
+    echo "FAIL T14 — merge chokepoint was invoked despite a bad SHA"; FAILED=$((FAILED + 1))
+else
+    echo "PASS T14 chokepoint not invoked on bad SHA"
+fi
+
+# --- T15: full 40-char SHA accepted -----------------------------------------
+rm -f "$MERGE_ARGS_FILE"
+SHA40="0123456789abcdef0123456789abcdef01234567"
+out=$(runmp merge-public 123 "$SHA40"); rc=$?
+assert_rc "T15 full 40-char SHA accepted" 0 "$rc"
+
+# --- T16: merge chokepoint's rc is relayed VERBATIM (not remapped) ---------
+rm -f "$MERGE_ARGS_FILE"
+out=$(MERGE_STUB_RC=16 runmp merge-public 123 abcdef123456); rc=$?
+assert_rc "T16 chokepoint rc 16 (not-green) relayed verbatim" 16 "$rc"
+out=$(MERGE_STUB_RC=15 runmp merge-public 123 abcdef123456); rc=$?
+assert_rc "T16b chokepoint rc 15 (head-moved) relayed verbatim" 15 "$rc"
+out=$(MERGE_STUB_RC=19 runmp merge-public 123 abcdef123456); rc=$?
+assert_rc "T16c chokepoint rc 19 (CLAUDECODE self-refusal) relayed verbatim" 19 "$rc"
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASS"; else echo "$FAILED FAILED"; exit 1; fi

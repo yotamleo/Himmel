@@ -9,13 +9,17 @@ conflict reconciles like the dc0d57e gap), so backport / context-drift errors ca
 slip in that the private CR never saw. This skill runs a real CodeRabbit + CI pass
 on the public PR and babysits it to clean — the operator only merges.
 
-**Scope of what the agent may do on the public surface (HIMMEL-1196):** the
-exfil classifier HARD-blocks the *unattended private→public propagation push*
-(the operator ships that — see `propagate-public.sh`). It does NOT block
-`gh pr create` on an already-pushed branch (verified on #471), nor reading CI/CR
-state. A CR *fix-push* to an existing public branch may or may not clear the
-classifier — try it; if blocked, hand the operator the push and continue
-babysitting. The **merge stays the operator's** either way.
+**Scope of what the agent may do on the public surface (HIMMEL-1213, supersedes HIMMEL-1196):** the
+agent runs the whole pre-merge pipeline: the propagation push via
+`bash scripts/propagate-public.sh ship …` (standing allow-rule; the `ship`
+subcommand's fail-closed leak scan + byte-verify — not a human at the keyboard —
+are the structural exfil gate), `gh pr create`, and CR fix-pushes. Before ANY
+fix-push, leak-scan the outgoing delta first:
+`git -C <wt> diff origin/main...HEAD > <tmp>.patch && bash scripts/propagate-public.sh scan <tmp>.patch`
+— a finding blocks the push. The **public squash-merge stays human-authorized**:
+report PR-ready (URL + short head SHA + the ready-to-send `/mergepub <pr> <sha7>`
+line + the PR URL for the GitHub-UI fallback) and STOP. Never run `gh pr merge` on
+the public repo yourself.
 
 ## 1. Resolve the target
 
@@ -69,9 +73,16 @@ fi
   ```
   `--fill` uses the branch's commits for title/body. Pass an explicit
   `--title`/`--body-file` instead when the propagation prep produced a body file.
-- `$pr` empty and the branch is **not on the public remote** → STOP: the operator
-  must push the propagation branch first (`propagate-public.sh` ship block). The
-  agent cannot do that push (exfil hard-block).
+- `$pr` empty and the branch is **not on the public remote** → run `ship` yourself
+  (it is idempotent, HIMMEL-837), then CAPTURE the new PR number before step 3
+  (`ship` opens the PR but leaves `$pr` empty):
+  ```bash
+  bash scripts/propagate-public.sh ship "$branch" <base>..<head> \
+    --commit-file <f> --title <t> --body-file <f>
+  pr=$(gh pr list --repo "$REPO" --head "$branch" --base main --state open --json number -q '.[0].number') \
+      || { echo "cr-public: cannot evaluate — gh pr list after ship failed"; exit 2; }
+  [ -n "$pr" ] || { echo "cr-public: ship completed but no open PR was found"; exit 2; }
+  ```
 
 ## 3. Babysit CI + CodeRabbit (token-free)
 
@@ -93,10 +104,13 @@ code; trust the final `check-ci: verdict exit=N` line printed on stdout.)
 ## 4. Act on the exit code (loop until 0)
 
 - **`0`** — CI green, all review threads resolved, no CHANGES_REQUESTED. The PR is
-  CR-clean + CI-green. **STOP here** and report PR-ready to the operator with the
-  merge command — do NOT merge:
+  CR-clean + CI-green. **STOP here** and report PR-ready to the operator (do NOT
+  merge): PR URL + short head SHA + the check-ci verdict + the diff-identity
+  verdict (where the bounded-wait named-private-ref path ran) + the ready-to-send
+  `/mergepub <pr> <sha7>` line + the GitHub-UI fallback link. The printed
+  `gh pr merge` command is kept only as the operator's terminal alternative:
   ```bash
-  gh pr merge <pr> --squash --admin --repo <REPO>
+  gh pr merge <pr> --squash --admin --repo <REPO>   # operator's terminal alternative
   ```
   (`--admin` is correct on the public repo: the operator owns it and it may carry
   branch protection, unlike the private repo where `--admin` is a no-op HIMMEL-224.)

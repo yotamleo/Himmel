@@ -79,7 +79,7 @@ index nears its load budget, compound the durable facts out into the substrate
 and slim the index (himmel does this via the `memory-compound` skill,
 HIMMEL-569); the index never becomes the store.
 
-Two guards keep retrieval honest:
+Three guards keep retrieval honest:
 
 - **Curate the map.** Pure semantic retrieval *structurally forgets* — an
   un-curated index silently drops what it can't surface. The index must be
@@ -90,6 +90,13 @@ Two guards keep retrieval honest:
   the invariant — required with or without those markers — is that when a recalled
   fact is found stale, you re-check and update it (or delete it), never act on a
   stale claim silently.
+- **Triage by shape.** Eviction to the substrate works for **fact-shaped**
+  memories (looked up on a symptom). It fails for **directive-shaped** ones — the
+  model does not query for a rule it does not know it is violating, so a directive
+  behind a query is dead. Directives stay resident, or become structural gates
+  (HIMMEL-195). The measured failure this corrects: a 1,472-char index line
+  chaining ~24 gotchas at ~61 chars each **is** the store — the exact thing this
+  section forbids. The doctrine was right; the implementation had drifted from it.
 
 ## Where the canonical pieces live
 

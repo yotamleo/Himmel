@@ -43,6 +43,11 @@ mkdir -p "$stubs"
 cat > "$stubs/coderabbit" <<'STUBEOF'
 #!/usr/bin/env bash
 [ -n "${STUB_LOG:-}" ] && printf '%s\n' "$*" >> "$STUB_LOG"
+[ -n "${STUB_STDERR:-}" ] && printf '%s\n' "$STUB_STDERR" >&2
+# Attribution tests (HIMMEL-1219): dump the CLONE's .git/config while the clone
+# still lives, so a test can prove what origin URL the script wrote to disk
+# (and that no embedded credential survived). cwd here is the clone root.
+[ -n "${STUB_CONFIG_LOG:-}" ] && cat .git/config >> "$STUB_CONFIG_LOG" 2>/dev/null
 if [ -f branch-marker.txt ]; then echo "saw-branch-marker"; fi
 if git rev-parse --verify -q main >/dev/null; then echo "saw-base-branch"; fi
 if [ -f untracked-secret.txt ]; then echo "LEAKED-untracked-file"; fi
@@ -164,6 +169,184 @@ case "$(cat "$tmp/t6.err")" in
     *"panel-availability: coderabbit ok"*) ok "T6 availability ok line" ;;
     *) bad "T6: availability ok line missing" ;;
 esac
+
+# --- T7: rate-limit text -> rc=4 (distinct from generic failure rc=1; HIMMEL-1219)
+# Same stub rc=1 a real 429 masquerades as, but the CLI text reveals it. Proves
+# detection + that no findings leak to stdout (a rate-limited reviewer produced
+# nothing valid) + that availability is recorded unavailable, never ok.
+out="$(cd "$repo" && CODERABBIT_BIN="$stubs/coderabbit" STUB_RC=1 \
+    STUB_STDERR="Error: rate limit exceeded - too many requests, retry later" \
+    bash "$SCRIPT" --branch feat/x --base main 2>"$tmp/t7.err")"
+rc=$?
+[ "$rc" -eq 4 ] && ok "T7 rc=4 on rate-limit text" || bad "T7: rc=$rc (want 4)"
+case "$out" in
+    "") ok "T7 no findings on stdout (rate-limit review produced nothing valid)" ;;
+    *) bad "T7: findings leaked to stdout on rate-limit (got: $out)" ;;
+esac
+case "$(cat "$tmp/t7.err")" in
+    *"coderabbit pass rate-limited"*) ok "T7 retry-later note printed" ;;
+    *) bad "T7: retry-later note missing (got: $(cat "$tmp/t7.err"))" ;;
+esac
+case "$(cat "$tmp/t7.err")" in
+    *"panel-availability: coderabbit unavailable (rc=4)"*) ok "T7 unavailable (rc=4) line" ;;
+    *) bad "T7: unavailable (rc=4) line missing" ;;
+esac
+case "$(cat "$tmp/t7.err")" in
+    *"panel-availability: coderabbit ok"*) bad "T7: ok line printed on rate-limit (would clear the marker on a review that never ran)" ;;
+    *) ok "T7 no ok line on rate-limit" ;;
+esac
+
+# --- T8: normal failure (no rate-limit text) still rc=1, NOT misclassified -----
+# Discriminator: identical stub rc=1 as T7, but a generic error message. Must
+# stay a generic failure (rc=1, unavailable rc=1) and NOT be elevated to rc=4.
+out="$(cd "$repo" && CODERABBIT_BIN="$stubs/coderabbit" STUB_RC=1 \
+    STUB_STDERR="Error: review failed - authentication required" \
+    bash "$SCRIPT" --branch feat/x --base main 2>"$tmp/t8.err")"
+rc=$?
+[ "$rc" -eq 1 ] && ok "T8 rc=1 on normal failure (not misclassified as rate-limit)" || bad "T8: rc=$rc (want 1)"
+case "$(cat "$tmp/t8.err")" in
+    *"panel-availability: coderabbit unavailable (rc=1)"*) ok "T8 unavailable (rc=1) line" ;;
+    *) bad "T8: unavailable (rc=1) line missing (got: $(cat "$tmp/t8.err"))" ;;
+esac
+case "$(cat "$tmp/t8.err")" in
+    *"coderabbit pass rate-limited"*) bad "T8: rate-limit note printed on a normal failure" ;;
+    *) ok "T8 no rate-limit note on normal failure" ;;
+esac
+# stdout must stay clean on a generic failure too (same invariant T7/T12 assert
+# for the rate-limit / timeout paths): a non-zero review_rc routes review_out to
+# stderr, so a failed review never leaks partial output as findings (HIMMEL-1219).
+case "$out" in
+    "") ok "T8 no findings on stdout (generic failure keeps stdout clean)" ;;
+    *) bad "T8: findings leaked to stdout on generic failure (got: $out)" ;;
+esac
+
+# --- T12: timeout that is REALLY rate-limiting -> rc=4, not a silent timeout ---
+# The round-4 MAJOR-1 fix. A review killed by the timeout WHILE the CLI was
+# emitting rate-limit text must surface as rc=4 (a MISSING signal), NOT rc=124
+# (a generic timeout the caller fails open on). Before the fix this path
+# returned BEFORE the rate-limit grep AND discarded both captured streams, so a
+# rate-limited hang was indistinguishable from a slow one AND yielded zero
+# diagnostics - the exact silent-fail-open shape HIMMEL-1219 exists to kill.
+# The stub sleeps past the 2s timeout with rate-limit text on stderr, so the
+# inner script sees rc=124 + rate-limit text and must re-classify rc=4. Also
+# asserts both captured streams reach the caller (the stub's rate-limit line is
+# visible) and stdout stays clean (findings cat'd to stderr as debug only).
+started="$(date +%s)"
+out="$(cd "$repo" && CODERABBIT_BIN="$stubs/coderabbit" \
+    STUB_STDERR="Error: rate limit exceeded - too many requests, retry later" \
+    STUB_SLEEP_SECS=10 CODERABBIT_TIMEOUT_SECS=2 \
+    bash "$SCRIPT" --branch feat/x --base main 2>"$tmp/t12.err")"
+rc=$?
+elapsed=$(( $(date +%s) - started ))
+[ "$rc" -eq 4 ] && ok "T12 rc=4 on timeout-while-rate-limited (not silent rc=1/124)" \
+    || bad "T12: rc=$rc (want 4)"
+[ "$elapsed" -ge 2 ] && [ "$elapsed" -lt 10 ] \
+    && ok "T12 real timeout killed stub after ${elapsed}s" \
+    || bad "T12: elapsed=${elapsed}s (want >=2 and <10)"
+case "$out" in
+    "") ok "T12 no findings on stdout (streams kept stderr-only)" ;;
+    *) bad "T12: findings leaked to stdout on timeout (got: $out)" ;;
+esac
+case "$(cat "$tmp/t12.err")" in
+    *"rate limit exceeded"*) ok "T12 captured stderr emitted (not discarded on timeout)" ;;
+    *) bad "T12: stub stderr missing - streams discarded on timeout (got: $(cat "$tmp/t12.err"))" ;;
+esac
+case "$(cat "$tmp/t12.err")" in
+    *"coderabbit pass rate-limited"*) ok "T12 retry-later note printed" ;;
+    *) bad "T12: retry-later note missing (got: $(cat "$tmp/t12.err"))" ;;
+esac
+case "$(cat "$tmp/t12.err")" in
+    *"panel-availability: coderabbit unavailable (rc=4)"*) ok "T12 unavailable (rc=4) line" ;;
+    *) bad "T12: unavailable (rc=4) line missing (got: $(cat "$tmp/t12.err"))" ;;
+esac
+case "$(cat "$tmp/t12.err")" in
+    *"panel-availability: coderabbit unavailable (timeout"*) bad "T12: classified as timeout (rate-limit masked)" ;;
+    *) ok "T12 not classified as timeout" ;;
+esac
+case "$(cat "$tmp/t12.err")" in
+    *"panel-availability: coderabbit ok"*) bad "T12: ok line printed on rate-limited timeout" ;;
+    *) ok "T12 no ok line on rate-limited timeout" ;;
+esac
+
+# --- Attribution helpers (HIMMEL-1219) ----------------------------------------
+# The clone-origin rewrite is the fix: CodeRabbit matches a review to an org by
+# reading origin's URL. Spin a fresh primary checkout (main + feat/x, cloned from
+# the hermetic repo so the branch graph is reusable) with a configurable origin,
+# then read back the CLONE's .git/config (captured by the stub above while the
+# clone still lived). Reading the file directly is hermetic and authoritative -
+# no `git remote get-url` insteadOf rewriting can mask what is on disk.
+make_src_repo() {
+    local _dst="$1" _origin="$2"
+    git clone -q "$repo" "$_dst"
+    # A plain clone only materializes a local ref for the HEAD branch (main);
+    # feat/x lands at refs/remotes/origin/feat/x. The script clones with
+    # --branch feat/x, which needs refs/heads/feat/x - recreate it before the
+    # script runs (do this while origin still exists, so the ref resolves).
+    git -C "$_dst" branch -q feat/x refs/remotes/origin/feat/x
+    if [ -n "$_origin" ]; then
+        git -C "$_dst" remote set-url origin "$_origin" 2>/dev/null \
+            || git -C "$_dst" remote add origin "$_origin"
+    else
+        git -C "$_dst" remote remove origin 2>/dev/null || true
+    fi
+}
+config_origin_url() {
+    sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*//p' "$1" | head -n1
+}
+STUB_CONFIG_LOG="$tmp/stub-config.log"
+
+# --- T9: clean HTTPS origin is copied verbatim to the clone -------------------
+: > "$STUB_CONFIG_LOG"
+src_clean="$tmp/src-clean"
+make_src_repo "$src_clean" "https://github.com/yotamleo/himmel-private.git"
+(cd "$src_clean" && CODERABBIT_BIN="$stubs/coderabbit" STUB_CONFIG_LOG="$STUB_CONFIG_LOG" \
+    bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t9.err")
+rc=$?
+[ "$rc" -eq 0 ] && ok "T9 rc=0 with clean upstream origin" || bad "T9: rc=$rc (want 0; err: $(cat "$tmp/t9.err"))"
+clone_url="$(config_origin_url "$STUB_CONFIG_LOG")"
+[ "$clone_url" = "https://github.com/yotamleo/himmel-private.git" ] \
+    && ok "T9 clone origin rewritten to the upstream URL" \
+    || bad "T9: clone origin not the upstream URL (got: $clone_url)"
+
+# --- T10: primary checkout with NO origin still completes; note printed -------
+: > "$STUB_CONFIG_LOG"
+src_noorigin="$tmp/src-noorigin"
+make_src_repo "$src_noorigin" ""
+(cd "$src_noorigin" && CODERABBIT_BIN="$stubs/coderabbit" STUB_CONFIG_LOG="$STUB_CONFIG_LOG" \
+    bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t10.err")
+rc=$?
+[ "$rc" -eq 0 ] && ok "T10 rc=0 with no origin (attribution skipped, review proceeds)" \
+    || bad "T10: rc=$rc (want 0; err: $(cat "$tmp/t10.err"))"
+case "$(cat "$tmp/t10.err")" in
+    *"primary checkout has no origin remote"*) ok "T10 no-origin note printed" ;;
+    *) bad "T10: no-origin note missing (got: $(cat "$tmp/t10.err"))" ;;
+esac
+clone_url="$(config_origin_url "$STUB_CONFIG_LOG")"
+case "$clone_url" in
+    *"github.com"*) bad "T10: clone origin rewritten despite no upstream (got: $clone_url)" ;;
+    *) ok "T10 clone origin left as the local path (no upstream to set)" ;;
+esac
+
+# --- T11: credentialed HTTPS origin is written WITHOUT credentials ------------
+# THE security-critical case (HIMMEL-1219): a user:token@ origin must never
+# reach the temp clone's .git/config. Assert both that the bare URL is written
+# AND that the secret is absent from the WHOLE config dump.
+: > "$STUB_CONFIG_LOG"
+src_cred="$tmp/src-cred"
+make_src_repo "$src_cred" "https://yotamleo:ghp_TOKENSECRET@github.com/yotamleo/himmel-private.git"
+(cd "$src_cred" && CODERABBIT_BIN="$stubs/coderabbit" STUB_CONFIG_LOG="$STUB_CONFIG_LOG" \
+    bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t11.err")
+rc=$?
+[ "$rc" -eq 0 ] && ok "T11 rc=0 with credentialed origin" || bad "T11: rc=$rc (want 0; err: $(cat "$tmp/t11.err"))"
+clone_url="$(config_origin_url "$STUB_CONFIG_LOG")"
+[ "$clone_url" = "https://github.com/yotamleo/himmel-private.git" ] \
+    && ok "T11 clone origin stripped to bare HTTPS" \
+    || bad "T11: clone origin not stripped to bare HTTPS (got: $clone_url)"
+if grep -q 'TOKENSECRET' "$STUB_CONFIG_LOG"; then
+    bad "T11: CREDENTIAL LEAKED into clone .git/config (url: $clone_url)"
+else
+    ok "T11 no credential in clone .git/config"
+fi
 
 echo
 if [ "$fail" -eq 0 ]; then
