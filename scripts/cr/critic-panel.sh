@@ -29,19 +29,83 @@ export LC_ALL
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFP="${CRITIC_FIRST_PASS:-$SCRIPT_DIR/critic-first-pass.sh}"
-# Registry resolution (HIMMEL-727 operator-vs-universal split): CRITICS_JSON env
-# (tests/CI) > critics.local.json (gitignored per-operator overlay — carries
-# ACCOUNT state like exhausted free quotas / upgraded models, so the shipped
-# registry stays adopter-neutral) > critics.json (universal defaults).
+INVOKE="${CRITIC_INVOKE:-$SCRIPT_DIR/../hermes/invoke.sh}"
+
+# Registry resolution (HIMMEL-727 split + HIMMEL-1221 merge). CRITICS_JSON env
+# (tests/CI) wins outright. Otherwise critics.json is the BASE and
+# critics.local.json (gitignored per-operator overlay — ACCOUNT state like
+# exhausted free quotas / upgraded models) is MERGED per-slug ON TOP: a local row
+# OVERRIDES or APPENDS by slug, and a local row with "drop":true REMOVES the base
+# row of that slug. Merge (not the pre-1221 wholesale replace) so a stale overlay
+# can no longer silently mask a shipped critic — the glm row HIMMEL-1096 added
+# lived only in critics.json and an overlay predating it dropped it. Test hooks:
+# CRITICS_BASE_JSON / CRITICS_LOCAL_JSON override the two merge inputs.
+_MERGED_REG=""
+_REG_BASE="${CRITICS_BASE_JSON:-$SCRIPT_DIR/critics.json}"
+_REG_LOCAL="${CRITICS_LOCAL_JSON:-$SCRIPT_DIR/critics.local.json}"
 if [ -n "${CRITICS_JSON:-}" ]; then
     REG="$CRITICS_JSON"
-elif [ -f "$SCRIPT_DIR/critics.local.json" ]; then
-    REG="$SCRIPT_DIR/critics.local.json"
-    echo "critic-panel.sh: using operator-local registry critics.local.json" >&2
+elif [ -f "$_REG_LOCAL" ]; then
+    _MERGED_REG="$(mktemp -t critics-merged.XXXXXX)" || _MERGED_REG=""
+    # Early EXIT trap so the validation / arg-parse error exits below can't leak the
+    # merged temp file. The --check and main traps RE-INCLUDE this rm because a
+    # later `trap ... EXIT` REPLACES (not extends) an earlier one.
+    [ -n "$_MERGED_REG" ] && trap 'rm -f "$_MERGED_REG"' EXIT
+    if [ -n "$_MERGED_REG" ] && MERGE_BASE="$_REG_BASE" MERGE_LOCAL="$_REG_LOCAL" node -e '
+        const fs = require("fs");
+        const rd = p => { try { const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            return Array.isArray(j.panel) ? j.panel : []; } catch (e) { return null; } };
+        const base = rd(process.env.MERGE_BASE), local = rd(process.env.MERGE_LOCAL);
+        if (base === null && local === null) process.exit(7);   // both unreadable
+        const bp = base || [], lp = local || [];
+        const drop = new Set(), over = new Map();               // local rows by slug
+        for (const r of lp) { if (r && typeof r === "object" && typeof r.slug === "string") {
+            if (r.drop === true) drop.add(r.slug); else over.set(r.slug, r); } }
+        const out = [], seen = new Set();
+        for (const r of bp) {                                   // base order first
+            if (!r || typeof r !== "object" || typeof r.slug !== "string") { out.push(r); continue; }
+            if (drop.has(r.slug)) { seen.add(r.slug); continue; }
+            out.push(over.has(r.slug) ? over.get(r.slug) : r);  // local override wins
+            seen.add(r.slug);
+        }
+        for (const r of lp) {                                   // local-only appends
+            if (!r || typeof r !== "object" || typeof r.slug !== "string") continue;
+            if (r.drop === true || seen.has(r.slug)) continue;
+            out.push(r); seen.add(r.slug);
+        }
+        process.stdout.write(JSON.stringify({ panel: out }));
+    ' > "$_MERGED_REG" 2>/dev/null; then
+        REG="$_MERGED_REG"
+        echo "critic-panel.sh: merged critics.local.json over critics.json" >&2
+    else
+        # Fail-open to the pre-1221 behavior: local overlay verbatim.
+        echo "critic-panel.sh: overlay merge failed — using critics.local.json verbatim" >&2
+        rm -f "$_MERGED_REG"; _MERGED_REG=""; REG="$_REG_LOCAL"
+    fi
 else
-    REG="$SCRIPT_DIR/critics.json"
+    REG="$_REG_BASE"
 fi
-INVOKE="${CRITIC_INVOKE:-$SCRIPT_DIR/../hermes/invoke.sh}"
+
+# HIMMEL-1221: load the Z.ai critic credential from the primary checkout's .env so
+# the paid glm panel row (provider zai / route_provider glm, HIMMEL-1096)
+# authenticates with NO manual env export — but ONLY when the resolved registry
+# actually contains a Z.ai critic (a "zai"/"glm" provider, route_provider, or
+# slug). load_dotenv forks a subshell per .env line (≈1.5s on Git Bash over a
+# large .env), so gating on need keeps that cost off every free-only / glm-less
+# panel run (the common path). load_dotenv sets a key ONLY when currently UNSET
+# (a live env value wins) and never sources/logs the .env — it extracts only the
+# requested KEY= lines (block-read-secrets safe). Scoped to the CR panel per the
+# HIMMEL-1096 Z.ai-key compliance note; deliberately NOT loaded at the hermes
+# chokepoint (invoke.sh stays auth-agnostic, HIMMEL-278). load_dotenv exports each
+# key it sets, so the child critic-first-pass.sh -> invoke.sh processes inherit it.
+if grep -Eq '"(zai|glm)"' "$REG" 2>/dev/null; then
+    # shellcheck source=../lib/load-dotenv.sh
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/load-dotenv.sh" 2>/dev/null || true
+    if command -v load_dotenv >/dev/null 2>&1; then
+        load_dotenv GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY 2>/dev/null || true
+    fi
+fi
 
 # Effective tier resolution (HIMMEL-558). CR_PROFILE is AUTHORITATIVE when set —
 # it is the operator's opt-in profile (loaded from .env, exported by /pr-check).
@@ -132,7 +196,7 @@ if [ "$CHECK_MODE" = "1" ]; then
     fi
 
     check_prompt="$(mktemp -t critic-panel-check.XXXXXX)"
-    trap 'rm -f "$check_prompt"' EXIT
+    trap 'rm -f "$check_prompt"; [ -n "$_MERGED_REG" ] && rm -f "$_MERGED_REG"' EXIT
     printf '%s' 'Reply with exactly: ok' > "$check_prompt"
 
     check_failed="0"
@@ -156,6 +220,7 @@ $check_rows
 CHECKROWSEOF
 
     rm -f "$check_prompt"
+    [ -n "$_MERGED_REG" ] && rm -f "$_MERGED_REG"   # normal --check path (trap is disarmed next)
     trap - EXIT
     [ "$check_failed" -eq 0 ] || exit 1
     exit 0
@@ -311,7 +376,7 @@ tmp="$(mktemp -t critic-panel.XXXXXX)"
 _seq_out=""
 _seq_err=""
 outdir=""
-trap 'rm -f "$tmp"; [ -n "$_seq_out" ] && rm -f "$_seq_out"; [ -n "${_seq_err:-}" ] && rm -f "$_seq_err"; [ -n "$outdir" ] && rm -rf "$outdir"' EXIT
+trap 'rm -f "$tmp"; [ -n "$_seq_out" ] && rm -f "$_seq_out"; [ -n "${_seq_err:-}" ] && rm -f "$_seq_err"; [ -n "$outdir" ] && rm -rf "$outdir"; [ -n "$_MERGED_REG" ] && rm -f "$_MERGED_REG"' EXIT
 printf '%s' "$diff_in" > "$tmp"
 
 # Run each panel member; collect per-member output and renumber globally.
