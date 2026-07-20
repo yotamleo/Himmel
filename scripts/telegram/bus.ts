@@ -89,9 +89,15 @@ export async function readNewLines(file: string, cursorFile: string): Promise<an
 // IPC (T6/HIMMEL-219): append a message to <target>'s durable inbox so the
 // poller's delivery scan spawns a bounded run for the target (if idle) to consume
 // it. ensureSession first so a not-yet-seen target still queues durably.
+// origin:"sendToSession" (HIMMEL-1218): this is the TRUSTED A->B inter-session
+// writer (the only current caller is the `bus.ts send` CLI) — distinct from
+// poller.ts's direct inbox.jsonl append for a real inbound Telegram message
+// (no origin field there). Stamping it lets a session's RETASK-channel
+// verification tell "arrived via the trusted bus" from "arrived via Telegram"
+// without inferring it from message shape.
 export async function sendToSession(root: string, target: string, text: string): Promise<void> {
   await ensureSession(root, target);
-  await appendLine(join(sessionDir(root, target), "inbox.jsonl"), JSON.stringify({ text, from: 0, ts: 0 }));
+  await appendLine(join(sessionDir(root, target), "inbox.jsonl"), JSON.stringify({ text, from: 0, ts: 0, origin: "sendToSession" }));
 }
 
 // context.md: a session's cross-run memory. The bounded run is its SOLE writer

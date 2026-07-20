@@ -91,6 +91,61 @@ Do this ONCE per machine before the first `/ig-media-enrich` run.
    IG rate-limits aggressively). Steady-state runs (no flag) never touch
    `_evidence/`; use the flag only for the one-time backfill.
 
+### X/Twitter media rung: `/x-media-enrich` (HIMMEL-1226)
+
+The X parallel of `/ig-media-enrich`. The harvest pipeline stores a tweet's
+**text + media metadata** only: X media is referenced by URL
+(`<video ... src="https://video.twimg.com/...">`,
+`![Image](https://pbs.twimg.com/media/...)`) and never downloaded, so a tweet
+whose substance IS the media - a video/GIF demo, an animated UI element, a
+caption-less visual - leaves nothing searchable behind. This rung captures it.
+
+**Selection differs from the IG rung by design.** IG parks a thin clip with
+`ig_media_pending` at harvest and the download rung drains it. X clips are
+already harvested rich (the tweet text is in the body) and mostly graduated, so
+selection is **body-driven**: `tools/x-media-fetch.py` picks any X-source clip
+whose body references `video.twimg.com` / `pbs.twimg.com/media/` and which
+carries no `media_enriched_at:`. No harvest/triage/migrate hold is added for X -
+the rung enriches clips in place wherever they live. It **parks a retryable
+failure with `x_media_pending: true`** (an operator breadcrumb; the clip stays
+selectable regardless) and clears it on a verified success.
+
+The rung is **lean-invoke** (`/x-media-enrich`, run manually or by the harvest
+cadence - never auto-fired from `/harvest-clips`, because the download +
+local-whisper path is expensive and needs burner cookies). It downloads the
+tweet's media via `gallery-dl` (burner-account cookies at
+`~/.luna/cookies/twitter.txt`, contents never printed), transcribes videos
+locally (`ffmpeg` -> mono-16k WAV -> faster-whisper), and recompresses images
+into `Clippings/_media/<slug>/slide-NN.jpg` embedded under `### Slides`. A
+**soundless GIF-like video** (a `tweet_video` with no audio - the animated-UI
+case that motivated the ticket) has no audio to transcribe, so its first frame is
+screenshotted into the vault as a slide instead; an agent then reads the slide
+and the mechanical `--apply-digest` applier writes the `### Slide digest`
+(scoped-G-3 + revert) so the purely-visual content becomes searchable text. It
+shares the IG rung's **marker namespace** (`media_enriched_at` /
+`media_enrichment_status` / `media_last_error`) - safe because the two rungs
+select disjoint clip sets (IG source vs X source). **Videos never enter the
+vault** - only the transcript TEXT (or the first-frame screenshot for a soundless
+GIF) is written; the downloaded video stays in the `~/.luna/x-media/` cache. A
+**permanent** failure (`removed` / 404) stamps `media_enriched_at` and releases
+the clip so it parks as caption-only; a **partial** enrichment writes what
+survived, is marked `media_enrichment_status: partial`, and keeps
+`x_media_pending` for retry. Command runbook: `commands/x-media-enrich.md`.
+
+One-time setup mirrors the IG rung (burner X account, Cookie-Editor export to
+`~/.luna/cookies/twitter.txt` `chmod 600`, `gallery-dl` + `ffmpeg`, pre-fetched
+whisper model). `--include-evidence` and `--include-done` are **orthogonal pool
+switches** (each opens exactly one gated pool; neither implies the other): the
+steady-state run scans only the inbox, `--include-evidence` adds the
+reviewed-evidence pool (never `_evidence/_rejected/`), and `--include-done` adds
+the graduated `Clippings/_done/` pool. The **historical backfill** - the pass
+that recovers the already-lost visual ideas - passes BOTH so it sweeps every
+pool where an old X clip may live:
+
+```
+PYTHONUTF8=1 uv run --python 3.12 python marketplace/plugins/obsidian-triage/tools/x-media-fetch.py <vault> --include-done --include-evidence --limit 0
+```
+
 **Inbox-internal names** (never source clips; excluded from harvest/triage/archive scans): `_synthesis/` (synthesize output), `_done/` (archive of graduated clips), `_deferred.md` (archive backlog log), `_evidence/` (reviewed-evidence pool — see below; `/synthesize-clips` intentionally keeps visibility into it).
 
 ### Evidence-pool substrate (LUNA-83)

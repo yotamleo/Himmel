@@ -2,8 +2,9 @@
 # Tests for scripts/check-ci.sh (HIMMEL-949).
 #
 # Hermetic: `gh` is a PATH stub whose behavior is driven by GH_STUB_MODE +
-# counter files; CHECK_CI_POLL_INTERVAL=0 removes the grace-window sleeps and
-# CHECK_CI_SETTLE=0 disables the settle round unless a case opts in.
+# counter files; CHECK_CI_POLL_INTERVAL=0 removes the grace-window sleeps,
+# CHECK_CI_SETTLE=0 disables the settle round unless a case opts in, and the
+# escalation wait defaults to 0 so ordinary bounded-loop cases never sleep.
 # Never talks to GitHub.
 #
 # Cases:
@@ -37,6 +38,17 @@
 #   24. non-adjacent A→B→A cursor cycle      → rc 2 via the 50-page cap (codex follow-up)
 #   25. watch exits non-1 with empty stderr  → rc 2, only gh rc 1 is a red check (CR follow-up)
 #   26. watch rc 1 but zero checks in the fail bucket → rc 2 (structured red confirm, codex)
+#   39. incremental-silent body shape       → rc 4 + full-review instruction
+#   43. zero head reviews, no prior finding → rc 0 (PR #1321 benign shape)
+#   44. --escalate posts once, head review appears → rc 0
+#   45. --escalate sees per-head marker      → rc 0, no duplicate post
+#   46. --escalate budget expires            → rc 4 + DO-NOT-MERGE
+#   47. malformed wait + zero escalation poll → warn + fallback, still evaluates
+#   48. escalated review has outside finding → rc 3 (normal evaluation preserved)
+#   49. escalated review creates new thread → rc 3 (thread re-check preserved)
+#   50. positive wait + zero escalation poll → rc 4, at most 3 body reads
+#   51. leading-zero wait 08 (octal crash)  → normalized to 8, rc 4, no arithmetic error
+#   52. leading-zero wait 007 (silent octal) → normalized to decimal 7, rc 0
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,8 +72,9 @@ if [ -z "$STUBDIR" ] || [ ! -d "$STUBDIR" ]; then echo "FATAL: no stub dir"; exi
 cat > "$STUBDIR/gh" <<'EOF'
 #!/usr/bin/env bash
 # gh stub for test-check-ci.sh — checks behavior via GH_STUB_MODE, probe/watch/
-# api counters via GH_STUB_COUNT / GH_STUB_WATCH / GH_STUB_API files,
-# unresolved-thread count via GH_STUB_THREADS ("fail" makes the graphql call
+# api/review/comment counters via GH_STUB_COUNT / GH_STUB_WATCH / GH_STUB_API /
+# GH_STUB_REVIEWS / GH_STUB_COMMENTS files, unresolved-thread count via
+# GH_STUB_THREADS ("fail" makes the graphql call
 # error; "paged" puts the unresolved thread on page two). graphql pages are
 # echoed in the script's parsed shape: "<count> <hasNextPage> <endCursor>".
 # Args are logged to GH_STUB_ARGS.
@@ -103,11 +116,43 @@ if [ "$cmd" = "api" ]; then
                 body-nitpick) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Nitpick comments (1)"}]' ;;
                 body-drift)   echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Outside diff range comments were noted but the count did not survive a format change"}]' ;;
                 body-error)   echo "reviews boom" >&2; exit 1 ;;
-                # A2 (spec addendum): a review at a PRIOR head (not sha1)
-                # carried unaddressed outside-diff findings, and NO review
-                # exists yet at the current head — cannot certify.
-                body-a2)      echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]' ;;
-                *)            echo '[]' ;;
+                # Incremental-silent shape: a prior review carries outside-diff
+                # findings while the concluded current head has no review object.
+                body-a2)
+                    echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]' ;;
+                body-a2-timeout)
+                    a=$(cat "$GH_STUB_REVIEWS" 2>/dev/null)
+                    a=${a:-0}
+                    echo $((a+1)) > "$GH_STUB_REVIEWS"
+                    echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]' ;;
+                # Escalation modes expose the same stale shape on the first read,
+                # then a clean review object at sha1 on the bounded re-read.
+                body-a2-escalate|body-a2-marker|body-a2-escalate-outside)
+                    a=$(cat "$GH_STUB_REVIEWS" 2>/dev/null)
+                    a=${a:-0}
+                    echo $((a+1)) > "$GH_STUB_REVIEWS"
+                    if [ "$a" -eq 0 ]; then
+                        echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]'
+                    elif [ "$GH_STUB_MODE" = "body-a2-escalate-outside" ]; then
+                        echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"},{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Outside diff range comments (1)"}]'
+                    else
+                        echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"},{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":""}]'
+                    fi ;;
+                body-empty) echo '[]' ;;
+                *)          echo '[]' ;;
+            esac
+            exit 0 ;;
+        repos/octo/demo/issues/42/comments*)
+            case " $* " in
+                *" -f body="*)
+                    c=$(cat "$GH_STUB_COMMENTS" 2>/dev/null)
+                    c=${c:-0}
+                    echo $((c+1)) > "$GH_STUB_COMMENTS"
+                    echo '{"id":1001}' ;;
+                *)
+                    if [ "$GH_STUB_MODE" = "body-a2-marker" ]; then
+                        echo '<!-- himmel:cr-escalate:sha1 -->'
+                    fi ;;
             esac
             exit 0 ;;
     esac
@@ -127,6 +172,17 @@ if [ "$cmd" = "api" ]; then
         # First thread query (pre-watch gate) is clean; every later query
         # (the post-watch re-verification) reports one unresolved thread —
         # a review comment that landed DURING the watch (codex-adv 980-r2).
+        a=$(cat "$GH_STUB_API" 2>/dev/null)
+        a=${a:-0}
+        echo $((a+1)) > "$GH_STUB_API"
+        if [ "$a" -eq 0 ]; then echo "0 false null"; else echo "1 false null"; fi
+        exit 0
+    fi
+    if [ "${GH_STUB_THREADS:-0}" = "escalatethread" ]; then
+        # The first thread snapshot is clean; every query from the second onward
+        # (including the post-full-review re-check) reports the inline finding
+        # escalation created - so the re-check observes it regardless of how
+        # many queries the flow makes, not only when it lands on query >=3.
         a=$(cat "$GH_STUB_API" 2>/dev/null)
         a=${a:-0}
         echo $((a+1)) > "$GH_STUB_API"
@@ -231,10 +287,10 @@ case "$GH_STUB_MODE" in
         # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
         exit 0 ;;
-    body-outside|body-nitpick|body-drift|body-error|body-a2)
+    body-outside|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside)
         # Checks GREEN, threads clean, CodeRabbit CONCLUDED (default statuses
         # fixture) in every one of these — the verdict must turn entirely on
-        # the review-BODY findings gate (HIMMEL-1126/1147).
+        # the review-BODY findings gate (HIMMEL-1126/1147/1219).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
         exit 0 ;;
     *)
@@ -247,6 +303,7 @@ chmod +x "$STUBDIR/gh" || { echo "FATAL: chmod on gh stub failed"; exit 1; }
 OUT=""; ERR=""; RC=0
 # Per-case opt-in overrides, reset after every run:
 SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
+ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0
 # CR_PROFILE_OVERRIDE=none exercises the CodeRabbit-less-repo opt-out
 # (HIMMEL-1072); empty = a normal repo where the signal is required.
 CR_PROFILE_OVERRIDE=""
@@ -261,6 +318,8 @@ run() {
     : > "$STUBDIR/watch"
     : > "$STUBDIR/api"
     : > "$STUBDIR/headc"
+    : > "$STUBDIR/reviews"
+    : > "$STUBDIR/comments"
     PATH="$STUBDIR:$PATH" \
         GH_STUB_MODE="$mode" \
         GH_STUB_ARGS="$STUBDIR/args.log" \
@@ -268,17 +327,22 @@ run() {
         GH_STUB_WATCH="$STUBDIR/watch" \
         GH_STUB_API="$STUBDIR/api" \
         GH_STUB_HEADC="$STUBDIR/headc" \
+        GH_STUB_REVIEWS="$STUBDIR/reviews" \
+        GH_STUB_COMMENTS="$STUBDIR/comments" \
         GH_STUB_HEAD="$HEAD_OVERRIDE" \
         GH_STUB_DECISION="$DECISION_OVERRIDE" \
         GH_STUB_THREADS="$THREADS_OVERRIDE" \
         CHECK_CI_POLL_INTERVAL="$POLL_OVERRIDE" \
         CHECK_CI_SETTLE="$SETTLE_OVERRIDE" \
+        CR_ESCALATE_WAIT="$ESCALATE_WAIT_OVERRIDE" \
+        CR_ESCALATE_POLL="$ESCALATE_POLL_OVERRIDE" \
         CR_PROFILE="$CR_PROFILE_OVERRIDE" \
         bash "$SCRIPT" "$@" >"$of" 2>"$ef"
     RC=$?
     OUT=$(cat "$of"); ERR=$(cat "$ef")
     rm -f "$of" "$ef"
     SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
+    ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0
     CR_PROFILE_OVERRIDE=""
 }
 
@@ -579,12 +643,13 @@ run body-error
 assert_rc 2 "38 body-findings query failure cannot certify"
 assert_err_has "could not read CodeRabbit's review-body findings" "38 body-query-failure reason printed"
 
-# 39 — A2 (spec addendum): a prior head had outside-diff findings unaddressed
-# and CodeRabbit has not yet reviewed the CURRENT head — cannot certify, not
-# a silent pass.
+# 39 — incremental-silent: CodeRabbit concluded on sha1 but emitted no review
+# object there, while a prior head carries outside-diff findings. This is the
+# resolvable rc 4 state, not the genuinely unreadable rc 2 state.
 run body-a2
-assert_rc 2 "39 A2 stale-head cannot certify"
-assert_err_has "HIMMEL-1126 A2" "39 A2 reason printed"
+assert_rc 4 "39 incremental-silent body state rc 4"
+assert_err_has "@coderabbitai full review" "39 full-review resolution printed"
+assert_verdict 4 "39 un-maskable exit 4 verdict line"
 
 # 40 — --threads-only now ALSO runs the body gate (previously skipped head
 # binding entirely, S1 was invisible here too): an outside-diff finding
@@ -626,7 +691,107 @@ run register-then-green --threads-only
 assert_rc 2 "42 threads-only head moved during the run rc 2"
 assert_err_has "PR head moved during the run" "42 threads-only head-moved message"
 
+# 43 — the real PR #1321 shape stays green: CodeRabbit status succeeded at the
+# head, no review object exists there, and no prior outside-diff finding exists.
+run body-empty
+assert_rc 0 "43 benign zero-head-review shape stays green"
+assert_out_has "all checks green + all review threads resolved" "43 benign shape reaches normal success"
+
+# 44 — opt-in escalation posts one full-review request carrying the per-head
+# marker, then a clean review object appears on the immediate bounded re-read.
+run body-a2-escalate --escalate
+assert_rc 0 "44 escalation resolves incremental-silent state"
+posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
+if [ "$posts" -eq 1 ]; then pass "44 escalation posts exactly once"; else fail "44 escalation posts exactly once" "posts=$posts want 1"; fi
+if grep -F -- '@coderabbitai full review' "$STUBDIR/args.log" >/dev/null \
+    && grep -F -- '<!-- himmel:cr-escalate:sha1 -->' "$STUBDIR/args.log" >/dev/null; then
+    pass "44 escalation body carries command + head marker"
+else
+    fail "44 escalation body carries command + head marker" "args.log: $(cat "$STUBDIR/args.log")"
+fi
+
+# 45 — a retry on the same head sees the exact marker and waits without
+# posting again; the subsequent read can still complete the normal gate.
+run body-a2-marker --escalate
+assert_rc 0 "45 existing marker still evaluates the refreshed review"
+posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
+if [ "$posts" -eq 0 ]; then pass "45 existing marker suppresses duplicate post"; else fail "45 existing marker suppresses duplicate post" "posts=$posts want 0"; fi
+assert_err_has "already requested" "45 existing marker path is surfaced"
+
+# 46 — bounded escalation never turns a missing review object into success.
+# A zero-second budget makes the timeout immediate and hermetic.
+run body-a2-timeout --escalate
+assert_rc 4 "46 escalation timeout rc 4"
+assert_err_has "DO-NOT-MERGE" "46 timeout is loud and merge-blocking"
+assert_verdict 4 "46 timeout prints exit 4 verdict"
+
+# 47 — tuning knobs are not gate inputs: a malformed wait warns and falls back
+# at the case-guard, and a zero poll against the resulting positive wait budget
+# is caught by the cross-check, while the immediate refreshed review still
+# reaches normal evaluation. CR_ESCALATE_POLL=0 (no sleep between re-reads) is
+# what makes the case exercise this validation path fast rather than waiting on
+# the fallen-back 120s poll (HIMMEL-1219).
+ESCALATE_WAIT_OVERRIDE=soon
+ESCALATE_POLL_OVERRIDE=0
+run body-a2-escalate --escalate
+assert_rc 0 "47 invalid escalation tuning still evaluates"
+assert_err_has "CR_ESCALATE_WAIT='soon'" "47 invalid wait warns + falls back"
+assert_err_has "CR_ESCALATE_POLL=0 is invalid" "47 zero poll vs positive wait warns + falls back"
+
+# 48 — escalation resolves only unreadability. A refreshed review carrying a
+# real outside-diff finding still flows through the normal rc 3 body gate.
+run body-a2-escalate-outside --escalate
+assert_rc 3 "48 escalated outside-diff finding still blocks"
+assert_err_has "outside-diff-range finding" "48 refreshed finding reaches normal evaluation"
+
+# 49 — a full review may also create inline threads after the normal thread
+# snapshot. Escalation must re-run that gate before it can certify success.
+THREADS_OVERRIDE=escalatethread
+run body-a2-escalate --escalate
+assert_rc 3 "49 escalated inline finding still blocks"
+assert_err_has "unresolved review thread" "49 full-review thread re-check runs"
+
+# 50 — zero is not a valid poll interval for a positive wait budget: it falls
+# back before the loop, so the stale-review fixture gets no API-hammering burst.
+ESCALATE_WAIT_OVERRIDE=1
+ESCALATE_POLL_OVERRIDE=0
+run body-a2-timeout --escalate
+assert_rc 4 "50 zero escalation poll still times out"
+assert_err_has "CR_ESCALATE_POLL=0 is invalid" "50 zero escalation poll warns + falls back"
+reads=$(cat "$STUBDIR/reviews" 2>/dev/null); reads=${reads:-0}
+if [ "$reads" -ge 2 ] && [ "$reads" -le 3 ]; then
+    pass "50 zero escalation poll bounds body reads"
+else
+    fail "50 zero escalation poll bounds body reads" "reads=$reads want 2..3"
+fi
+
+# 51 — leading-zero waits PASS the all-digits guard but crash the budget
+# arithmetic: bash reads a leading 0 as OCTAL in $(( )), so without the
+# base-10 normalization $((08 - elapsed)) aborts with "value too great for
+# base". body-a2-timeout drives the loop through that arithmetic, so this
+# case proves 08 reaches a normal rc 4 timeout instead of erroring (HIMMEL-1219).
+ESCALATE_WAIT_OVERRIDE=08
+ESCALATE_POLL_OVERRIDE=0
+run body-a2-timeout --escalate
+assert_rc 4 "51 leading-zero wait 08 evaluates (no octal crash)"
+assert_err_has "waiting up to 8s" "51 wait 08 normalized to decimal 8"
+if printf '%s' "$ERR" | grep -F -- "value too great for base" >/dev/null; then
+    fail "51 wait 08 did not crash the budget arithmetic" "stderr leaked a bash arithmetic error"
+else
+    pass "51 wait 08 did not crash the budget arithmetic"
+fi
+
+# 52 — 007 carries no 8/9 digit so it never crashes, yet read as octal it is
+# silently 7 — coincidentally right for 007, wrong for any 01x value. The
+# base-10 normalization forces decimal interpretation, so the budget reports
+# 7s rather than the literal "007s" (HIMMEL-1219).
+ESCALATE_WAIT_OVERRIDE=007
+ESCALATE_POLL_OVERRIDE=0
+run body-a2-escalate --escalate
+assert_rc 0 "52 leading-zero wait 007 still evaluates"
+assert_err_has "waiting up to 7s" "52 wait 007 normalized to decimal 7 (not octal)"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 43 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 43"; exit 1; fi
+if [ "$COUNT" -ne 53 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 53"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

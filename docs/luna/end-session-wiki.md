@@ -116,9 +116,9 @@ So: **`--reheal`** for husks (contentless-looking notes captured before the husk
 
 ## Security note — log files contain raw transcript text
 
-The hook writes diagnostic output to `.claude/end-session-wiki.log` and (during dry-run mode) the full rendered note including the `## Raw Conversation` callout that quotes the tail of your session transcript. Anything you typed into Claude — pasted credentials, API keys, secrets — can appear verbatim in those logs.
+The hook writes diagnostic output to `~/.claude/logs/end-session-wiki/<project-slug>.log` and (during dry-run mode) the full rendered note including the `## Raw Conversation` callout that quotes the tail of your session transcript. Anything you typed into Claude — pasted credentials, API keys, secrets — can appear verbatim in those logs.
 
-These files are gitignored by default. Do not commit them. If you copy them off-disk for debugging, redact secrets first.
+The log lives outside any repo (per-machine, keyed by project — see [Logs](#logs) below), so it can never end up committed. If you copy it off-disk for debugging, redact secrets first. On POSIX, the .sh hook sets `umask 077` before creating anything, so the log directory/files are created owner-only (0700/0600) rather than inheriting a permissive shell umask.
 
 ## How to opt out
 
@@ -205,11 +205,13 @@ LUNA_VAULT_PATH="$HOME/Documents/my-vault"
 
 ## Logs
 
-Path: `.claude/end-session-wiki.log` (repo-local).
+Path: `~/.claude/logs/end-session-wiki/<project-slug>.log` — **per-machine, outside any repo** (HIMMEL-1215). The hook is registered globally, so it fires in every repo a session runs in; a repo-local log previously caused merge-conflict junk (and, in `dry_run` mode, leaked raw transcript text) into shared/synced repos. `<project-slug>` is the same cwd-encoding Claude Code uses for its own `~/.claude/projects/<slug>` dirs (path separators and `:` replaced by `-`), derived from `$CLAUDE_PROJECT_DIR` (falls back to `pwd`) — so each repo still gets its own log file, just outside the repo tree. The directory is created automatically on first write.
 
 Every hook invocation appends one line: `[<UTC-ISO timestamp>] <message>`. Messages include `wrote <path> (<ms>ms)`, `skipped: <reason>`, and `ERROR: <detail>` (for failed vault writes). In dry-run mode, the full rendered markdown is appended between `===` separators so you can inspect the exact note that would have been written.
 
-**Rotation:** when the log exceeds 1 MB, it is renamed to `.claude/end-session-wiki.log.old` (overwriting any prior `.log.old`) and a fresh log begins on the next write. Only the two most recent files (`.log` + `.log.old`) are retained.
+**Rotation:** when the log exceeds 1 MB, it is renamed to `<project-slug>.log.old` in the same directory (overwriting any prior `.log.old`) and a fresh log begins on the next write. Only the two most recent files (`.log` + `.log.old`) are retained.
+
+The degradation marker (`<project-slug>.degraded`) lives alongside the log in the same per-machine directory.
 
 ## Inspecting captured notes
 

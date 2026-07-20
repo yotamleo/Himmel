@@ -16,8 +16,9 @@
 #   - Dry-run:      renders note to log file instead of vault HTTP PUT.
 #   - Min duration: sessions shorter than min_duration_seconds are skipped.
 #   - Error isol.:  set +e + EXIT trap; any failure logs + EXITS 0.
-#   - Log:          $CLAUDE_PROJECT_DIR/.claude/end-session-wiki.log
-#                   Rotates to .log.old at 1 MB.
+#   - Log:          ~/.claude/logs/end-session-wiki/<project-slug>.log
+#                   (per-machine, OUTSIDE any repo — HIMMEL-1215). Rotates to
+#                   .log.old at 1 MB.
 #
 # Failure policy (#27): hook MUST NEVER exit non-zero. See epic success
 # criterion #5.
@@ -36,22 +37,43 @@ esac
 set +e
 set -u 2>/dev/null || true
 
+# Owner-only permissions for everything this hook creates (log/marker/notes can
+# carry raw transcript text — dry_run mode and the degraded-fallback note are
+# secret-bearing, HIMMEL-1215 CR). Applies for the rest of the process; doesn't
+# retroactively tighten a pre-existing file/dir from before this change.
+umask 077
+
 # Bootstrap log path early so the trap can use it even if anything below blows up.
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-LOG_DIR="${PROJECT_DIR}/.claude"
-LOG_PATH="${LOG_DIR}/end-session-wiki.log"
-LOG_OLD_PATH="${LOG_DIR}/end-session-wiki.log.old"
-CONFIG_PATH="${LOG_DIR}/end-session-wiki.json"
+CONFIG_PATH="${PROJECT_DIR}/.claude/end-session-wiki.json"
+# Per-machine log location (HIMMEL-1215): this hook is registered GLOBALLY, so
+# it fires in every repo the session runs in — a repo-local log dir caused
+# merge-conflict junk in shared/synced repos, and dry_run mode dumps raw
+# transcript text (secrets) into a file arbitrary repos might track. Relocate
+# the log + rotation + degraded marker OUT of any repo tree, keyed per-project
+# by the SAME cwd-slug encoding Claude Code itself uses for its
+# ~/.claude/projects/<slug> dirs (path separators/colon -> "-"; e.g.
+# `C:\Users\x\repo` -> `C--Users-x-repo`). The .ps1 twin derives this
+# byte-for-byte identically so both land at the same path on the same machine.
+PROJECT_SLUG="$(printf '%s' "$PROJECT_DIR" | sed 's/[\/\\:]/-/g')"
+LOG_DIR="${HOME}/.claude/logs/end-session-wiki"
+# HIMMEL-1215 (CR): dry-run logs can carry raw transcript text (secrets), so
+# restrict the per-machine log dir to the owner — a 0700 dir blocks other local
+# users from reading the logs on shared POSIX hosts; log/marker files are 0600.
+(umask 077; mkdir -p "$LOG_DIR") 2>/dev/null
+chmod 700 "$LOG_DIR" 2>/dev/null
+LOG_PATH="${LOG_DIR}/${PROJECT_SLUG}.log"
+LOG_OLD_PATH="${LOG_DIR}/${PROJECT_SLUG}.log.old"
 # Persisted degradation marker (HIMMEL-711): present ⟺ the LAST REST-attempted
 # session note failed to reach the live vault and went to disk only. A
 # SessionStart / where-are-we surface can pick this up; cleared on a healthy PUT.
-DEGRADED_MARKER_PATH="${LOG_DIR}/end-session-wiki.degraded"
+DEGRADED_MARKER_PATH="${LOG_DIR}/${PROJECT_SLUG}.degraded"
 
 log_msg() {
     local msg="$1"
     # Best-effort: never let logging itself break the hook.
     {
-        mkdir -p "$LOG_DIR" 2>/dev/null
+        (umask 077; mkdir -p "$LOG_DIR") 2>/dev/null
         # Rotate at 1 MB (1048576 bytes)
         if [ -f "$LOG_PATH" ]; then
             local size
@@ -63,6 +85,7 @@ log_msg() {
         local stamp
         stamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
         printf '[%s] %s\n' "$stamp" "$msg" >> "$LOG_PATH" 2>/dev/null
+        chmod 600 "$LOG_PATH" 2>/dev/null
     } 2>/dev/null
     return 0
 }
@@ -89,8 +112,9 @@ flag_degraded_fallback() {
         b2="!! Session note saved to DISK ONLY: ${rel} (in ${target}) — it did NOT sync through the live vault."
     fi
     {
-        mkdir -p "$LOG_DIR" 2>/dev/null
+        (umask 077; mkdir -p "$LOG_DIR") 2>/dev/null
         printf '%s\n' "$line" > "$DEGRADED_MARKER_PATH" 2>/dev/null
+        chmod 600 "$DEGRADED_MARKER_PATH" 2>/dev/null
     } 2>/dev/null
     printf '!! end-session-wiki: Obsidian REST API unreachable / all vault keys rejected (HTTP %s).\n' "$code" >&2
     printf '%s\n' "$b2" >&2

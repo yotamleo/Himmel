@@ -341,6 +341,12 @@ FAIL. Tests: `scripts/test-himmel-doctor.sh`, `scripts/lib/test-{resolve,run,wir
 
 ---
 
+## Memory-capture audit (`scripts/memory/audit-memory-capture.sh`, HIMMEL-1090)
+
+Decoupled, standalone detector for the auto-memory capture discipline (HIMMEL-570/1076 Task 5) — it deliberately does NOT ride the memory-compound cadence (compound now runs weeks-to-months apart, so a detector riding it would grow its own latency in proportion to the design working). Reads the deny/write log appended by `scripts/hooks/guard-memory-capture.sh` (`MEMORY_CAPTURE_LOG`, default `$MEMDIR/.capture-log.jsonl`). Checks: **orphaned denies** — a fact the hook denied and the model never re-landed in the substrate (windowed to a trailing epoch window via `MEMORY_AUDIT_WINDOW_DAYS` so a reworded/re-landed fact stops ringing once its deny ages out; WARNs rather than silently reporting clean when denies exist but the substrate is unresolvable — LUNA_VAULT_PATH → `<home>/Documents/luna` fallback, P2-13/P2-14); **orphan topic files** — a topic file whose basename is not referenced by any `MEMORY.md` routing line (Rev2: topic files ARE the design, so the old ">2 topic files = drift" check is inverted); **line-count tripwire** (net pointer-line growth in-window); **index budget + over-length-line discipline**; and a best-effort **qmd `luna-curated` collection-freshness** check (skips cleanly when qmd is absent or `MEMORY_AUDIT_SKIP_QMD=1`). Exit 0 clean / 1 findings; bash 3.2-safe, no `date -d`. Tests: `scripts/memory/test-audit-memory-capture.sh`.
+
+---
+
 ## auto-arm scheduler backend (`scripts/lib/scheduler-backend.sh`, HIMMEL-594)
 
 Pure, sourceable, bash-3.2-safe detection/remediation lib whose status mirrors

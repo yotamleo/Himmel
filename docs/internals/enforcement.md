@@ -344,6 +344,52 @@ print file contents to stdout (`awk '{print}' .env`, `sed s/X/Y/ .env`).
 Prefer asking the operator to echo specific values via the `!` prefix
 instead of bypassing.
 
+### `guard-memory-capture.sh` — auto-memory capture guard (HIMMEL-570 / HIMMEL-1088)
+
+Fires on Edit/Write/MultiEdit/NotebookEdit, scoped to the Claude Code
+auto-memory store (`*/.claude/projects/*/memory/*`). The always-loaded
+`MEMORY.md` index is O(themes), not O(facts): it carries one ≤200-char
+**routing** line per theme, and the facts live in the theme **topic files** it
+names (natively lazy-loaded). This guard enforces only the mechanically-
+decidable **form** rules on that index — everything semantic (is this
+status-only? does a theme already cover it?) is left to the model + the
+`memory-compound` skill.
+
+What it gates, by target:
+- **`MEMORY.md`** — (1) any `- ` pointer line >200 chars → deny; (2) more than
+  ~60 pointer lines → deny (the structural ceiling on `n`, the O(facts)
+  backstop); (3) net growth >400B in one write → deny (raises evasion friction,
+  does not close it); and it logs a **line-count-delta tripwire** on every
+  allowed write. `Edit`/`MultiEdit`/`NotebookEdit` to `MEMORY.md` are denied —
+  their payloads don't reveal the resulting line count/length, so the guard
+  forces a whole-file `Write` it can inspect.
+- **topic files** — the tier-2 landing spot; **unrestricted** (no body cap,
+  `Edit` allowed). This is what makes capture always work.
+- **`*.bak`** — exempt (compound writes a ~25KB backup by design).
+
+Adopter story is **unconditional**: no vault/qmd predicate. A machine with no
+substrate still gets index form-gating (the rules are pure form) and still
+captures freely into topic files.
+
+Semantics: **deny = exit 2** with a retry contract on stderr (shown to the
+model: "append the durable body to the theme topic file the index routes to,
+then retry with a ≤200-char routing line"). Never `ask` — `ask` hangs
+unattended sessions. Every deny is logged to `.capture-log.jsonl` (append-only
+JSONL: hash + ≤120-char excerpt + target + `lines_delta` + lane), the input to
+the decoupled capture audit. The deny-log excerpt reads `.new_string` as well
+as `.content`, because the index append fires as an `Edit` (measured in the
+Phase-0 spike, HIMMEL-1086) — without the fallback every routine deny would log
+empty.
+
+Bypass: `MEMORY_CAPTURE_OK=1` — checked **first**, before any deny branch, and
+**restart-only** (set in the launching shell; a per-call prefix does not reach a
+running session). **Compound is NOT bypass-exempt** — binding compound's own
+output to the 200-char rule is the point (the 2026-07-16 pass emitted a
+1,472-char "pointer" line; `*.bak` covers its backup). Optional advisory on
+allow via `MEMORY_GUARD_ADVISORY=1` (default off; the spike verified
+`additionalContext` reaches the model but arrives *after* the write, so it is a
+next-action nudge, not a pre-action steer).
+
 ### `block-destructive-commands.sh` — deterministic destructive-command floor (HIMMEL-754)
 
 Fires on Bash/PowerShell. Shared floor with the Codex lane — ports the
@@ -1335,11 +1381,20 @@ dedup; no `--force`/`--dedup-any` remotely).
 **Activation flag — `TELEGRAM_AUTO_ACTIONS` (default OFF, operator-only).** A per-op
 enable-list whose grammar **mirrors `HIMMEL_INITIATIVE`** (so users learn one
 convention): unset / `0`/`off`/`no` → no ops (inert; `/arm` is ordinary chat);
-`1`/`all`/`on`/`yes` → every op; else a comma-list of op names (case-insensitive,
-unknown tokens dropped, pure-typo → off). v1 ships one op (`arm-resume`), so `=1`
-and `=arm-resume` are equivalent. The dispatch-table keys (`OPS`/`KNOWN_OPS` in
-`auto-action.ts`) are the closed op allow-list, re-asserted in `auto-action.sh`.
-Set it in the bridge's launching env + restart the bridge to activate.
+`1`/`all`/`on`/`yes` → every NON-privileged op; else a comma-list of op names
+(case-insensitive, unknown tokens dropped, pure-typo → off). v1 shipped one op
+(`arm-resume`); v2 (HIMMEL-1213) adds a second, `merge-public` — each op is its own
+independent opt-in token (enabling one does NOT enable the other), and
+`merge-public` ships DISABLED by default like every op here — adding its name to the
+dispatch table only makes it *recognizable*, never enabled. **`merge-public` is
+`EXPLICIT_ONLY` (a privileged public squash-merge): the blanket `=1`/`=all`/`on`/`yes`
+aliases do NOT enable it — it requires being NAMED explicitly (`=merge-public` or
+`=arm-resume,merge-public`), so an operator already running `=1` for `arm-resume`
+cannot silently inherit the merge capability** (HIMMEL-1213 CR). The enable-all
+aliases turn on every *non-EXPLICIT_ONLY* known op. The dispatch-table keys
+(`OPS`/`KNOWN_OPS` in `auto-action.ts`) are the closed op allow-list, re-asserted in
+`auto-action.sh`; `EXPLICIT_ONLY_OPS` is the privileged subset the alias skips. Set it in the bridge's
+launching env + restart the bridge to activate.
 
 **Guards (fail-closed):**
 - **Operator-identity** — an auto-command runs only when the SENDER is the allowlisted
@@ -1361,12 +1416,68 @@ Set it in the bridge's launching env + restart the bridge to activate.
 **Audit:** one append-only, sanitized line per attempt (executed OR refused) to
 `bridgeRoot()/auto-action-audit.log`:
 `<iso-ts> chat=<id> user=<id> fwd=<0|1> op=<op> arg=<arg> resolved=<basename> time=<t> rc=<n> result=<armed|already-armed|ambiguous|refused-forwarded|no-match|error>`.
+For `merge-public` the SAME log/line shape is reused (`arg`=PR number, `time`=SHA,
+`resolved` empty) with additional `result` values: `merged` / `not-green` /
+`head-moved` / `no-open-pr`, else `error`. The `result=` label is computed by
+`poller.ts`'s **op-aware** `auditResult(op, rc)` (HIMMEL-1213 codex-adv): because
+`merge-public` relays `merge-public-on-green.sh`'s own rc space, rc=0 logs as
+`merged` (never arm-resume's `armed`) and 12/15/16 as `no-open-pr`/`head-moved`/
+`not-green`, so result-keyed forensic queries stay correct for the irreversible
+merge outcome.
+
+**`merge-public` (HIMMEL-1213) — the Telegram-authorized PUBLIC-repo merge.**
+Command: `/mergepub <pr> <sha12>` (`sha12` = the PR's head SHA, ≥12 hex chars, from
+the agent's PR-ready report). The 12-hex floor (48 bits, up from 7=28 bits) blunts
+a prefix-grinding attack: the agent may push public fix-commits, so a 7-hex prefix
+could be ground to a malicious commit sharing the operator-approved prefix and pass
+both the SHA gates and `--match-head-commit` (HIMMEL-1213 gate review). Anchored on
+the whole message, same as `/arm` — a mid-text or malformed `/mergepub` falls
+through to chat, never auto. On a match the bridge shells the new chokepoint
+`scripts/merge-public-on-green.sh <pr> <sha>` (stripped child env, no
+`TELEGRAM_BOT_TOKEN`) via `auto-action.sh`'s `merge-public` case, which additionally
+validates the PR is numeric and the SHA is 12-40 lowercase hex (anchored, rejecting
+multi-line values) before shelling out. This is the ONLY way a public squash-merge
+gets authorized — no allow-rule for this script or a public `gh pr merge` exists
+anywhere, so an agent can reach it only through the broad `Bash(bash scripts/*)`
+rule, and the script self-refuses under that path (see gate 7 below). The
+chokepoint enforces 7 gates, mirroring `merge-on-green.sh`'s (HIMMEL-1042)
+structure but with the binding INVERTED (public-pinned, not private-only) — see
+`scripts/merge-public-on-green.sh`'s header for the full exit-code reference:
+1. **Repo pin** — the PR's own URL must resolve to `CR_PUBLIC_REPO` (default
+   `yotamleo/Himmel`, the same env var `.claude/commands/cr-public.md` uses) —
+   never cwd-derived (the script runs from the bridge's private-checkout cwd).
+2. **PR OPEN + base = default branch**, re-verified FRESH immediately before
+   merging (the HIMMEL-1080 retarget-race lesson, ported verbatim).
+3. **Head identity** — the PR's `headRefOid` must prefix-match the
+   operator-supplied SHA, checked BOTH up front and at the fresh pre-merge
+   re-verify. Mismatch = refuse ("head moved"), never merge.
+4. **`check-ci.sh` exit 0** is the only pass (CI green + zero unresolved threads
+   + no changes-requested + the HIMMEL-1126 body/outside-diff gate). Since this
+   script runs from the private-repo cwd, it invokes `check-ci.sh` with the PR's
+   full URL as the selector, never a bare number, so gh resolves the right repo.
+5. **Audit preflight + durable MERGING record** before the merge; refuse if the
+   sink is unwritable (same fail-closed contract as `merge-on-green.sh`).
+6. **`gh pr merge <pr> --squash --admin --repo <repo> --match-head-commit
+   <fresh-headRefOid>`**, then poll to confirmed `MERGED` before reporting
+   success — a zero `gh` rc means "accepted", never "merged" outright.
+7. **`CLAUDECODE` self-refusal** — exits immediately (before any gh call) if the
+   `CLAUDECODE` env marker is present; the bridge spawns this script's env
+   WITHOUT that marker, so this can only fire on an agent-initiated call.
+Deliberately a SEPARATE script from `merge-on-green.sh`, not a shared "which
+repo class" switch — the private-only guard there is a safety boundary, and a
+flag that inverts a safety boundary is the failure mode this avoids. Supports
+`--dry-run` (every gate runs, no merge fires) for manual/terminal shakedown; the
+Telegram command grammar has no dry-run variant. Not added to `PRIVATE_PATHS` —
+it is propagatable (no operator secrets; the repo name is already public
+knowledge) — only the activation flag + `allowFrom` are operator-personal.
 
 **Still HARD-blocked (out of scope):** editing `access.json`/`settings.json`,
-`--force`/`--dedup-any` arms, merging PRs, ops other than `arm-resume`.
+`--force`/`--dedup-any` arms, merging PRs *except via the head-SHA-bound
+`merge-public` op*, ops other than `arm-resume`/`merge-public`.
 
 Tests: `scripts/telegram/{router,auto-action,poller}.test.ts` (bun) +
-`scripts/telegram/test-auto-action.sh` (privileged-script smoke).
+`scripts/telegram/test-auto-action.sh` + `scripts/test-merge-public-on-green.sh`
+(privileged-script smoke).
 
 ## Claude invocation billing (HIMMEL-128)
 

@@ -272,11 +272,12 @@ assert_has   "merge step names the ARMAUTOMERGE opt-in on the same line" "ARMAUT
 assert_has   "merge step guards --admin"    "never .*--admin"   "$out"
 assert_lacks "no-merge line dropped when merge active" "Do NOT merge" "$out"
 
-# ---------- 19. public leg renders a PREP-ONLY step --------------------------
-echo "Test 19: 'merge,public' renders a prep-only public step (stops before push)"
+# ---------- 19. public leg renders a ship-mode step --------------------------
+echo "Test 19: 'merge,public' renders a ship-mode public step (agent ships to PR-ready; merge stays human-authorized)"
 out=$(printf '{}' | HIMMEL_INITIATIVE=merge,public bash "$hook")
-assert_has "public step is prep-only" "PREP"                    "$out"
-assert_has "public step says do not push" "DO NOT push"         "$out"
+assert_has   "public step ships via the leak-gated helper"  "propagate-public.sh ship" "$out"
+assert_has   "public step keeps the merge human-authorized" "never run it yourself"    "$out"
+assert_lacks "prep-only wording gone"                       "DO NOT push"              "$out"
 
 # ---------- 20. overnight profile: selector reads the overnight var ----------
 echo "Test 20: HIMMEL_OVERNIGHT=1 + HIMMEL_INITIATIVE_OVERNIGHT=all → 6-leg set"

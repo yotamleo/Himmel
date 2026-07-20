@@ -350,9 +350,23 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn,
   if (meta.status === "idle" || meta.status === "done") await run(session, modelOverride);
 }
 
-// Map the auto-action.sh exit code to an audit result label.
-function auditResult(rc: number): string {
-  switch (rc) {
+// Map the auto-action.sh exit code to an audit result label. OP-AWARE
+// (HIMMEL-1213 codex-adv): merge-public relays merge-public-on-green.sh's OWN rc
+// space (0=merged, 12=no-open-pr, 15=head-moved, 16=not-green), which is disjoint
+// from arm-resume's — so an irreversible successful public merge is logged as
+// `merged`, not the arm-specific `armed`, and its refusal states keep their
+// meaning for forensic/result-keyed queries.
+function auditResult(op: string, rc: number): string {
+  if (op === "merge-public") {
+    switch (rc) {
+      case 0:  return "merged";
+      case 12: return "no-open-pr";
+      case 15: return "head-moved";
+      case 16: return "not-green";
+      default: return "error";
+    }
+  }
+  switch (rc) {   // arm-resume
     case 0:  return "armed";
     case 3:  return "no-match";
     case 4:  return "ambiguous";
@@ -387,7 +401,7 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
     return;
   }
   const res = await dispatchAutoAction({ runScript: deps.runScript }, route);
-  await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, resolved: res.resolved, time: route.time, rc: res.rc, result: auditResult(res.rc) });
+  await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, resolved: res.resolved, time: route.time, rc: res.rc, result: auditResult(route.op, res.rc) });
   await reply(res.message);
 }
 

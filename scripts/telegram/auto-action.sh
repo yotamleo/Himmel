@@ -17,9 +17,18 @@
 #   5  already armed (arm-resume dedup rc=3)
 #   6  arm-resume failed (any other non-zero)
 #
+# merge-public (HIMMEL-1213) is a SEPARATE flow below the op allow-list check:
+# it does NOT share arm-resume's rc space above — this script instead RELAYS
+# merge-public-on-green.sh's own exit code verbatim (0 merged / 1 bad usage /
+# 10-19 refusal codes; see that script's header) after validating PR/SHA shape
+# here (bad shape -> 1, reusing arm-resume's "bad input" code since the two
+# ops' rc spaces never co-occur within one invocation).
+#
 # Args ALWAYS land as the VALUE of `arm-resume --handover`, never a bare positional
-# (so a path like `--force` can't be misread as a flag). Test seam:
-# AUTO_ACTION_ARM_CMD overrides the arm command (default the real arm-resume.sh).
+# (so a path like `--force` can't be misread as a flag). Test seams:
+# AUTO_ACTION_ARM_CMD overrides the arm command (default the real arm-resume.sh);
+# AUTO_ACTION_MERGE_PUBLIC_CMD overrides the merge command (default the real
+# merge-public-on-green.sh).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,10 +41,53 @@ fi
 
 # Closed op allow-list (defense-in-depth vs the bridge parse layer).
 case "$OP" in
-    arm-resume) ;;
+    arm-resume|merge-public) ;;
     *) echo "ERR auto-action: unknown op: $OP" >&2; exit 2 ;;
 esac
 
+# merge-public (HIMMEL-1213): ARG carries the PR number, TIME carries the
+# operator-approved head SHA — the `<op> <arg> <time>` shape is reused
+# verbatim from arm-resume (see router.ts's MERGEPUB comment for why). Branch
+# out to the merge chokepoint BEFORE any arm-resume-specific validation below:
+# the HH:MM/smart/auto time check would reject a SHA outright, and a merge
+# needs no handover_root resolution at all.
+if [ "$OP" = "merge-public" ]; then
+    PR="$ARG"; SHA="$TIME"
+    case "$PR" in
+        ''|*[!0-9]*) echo "ERR auto-action: bad PR number: '$PR'" >&2; exit 1 ;;
+    esac
+    # 12-hex floor (was 7): a 7-hex prefix is 28 bits and grindable by an agent
+    # that can push public fix-commits (HIMMEL-1213 Fable gate-review). Anchored
+    # `case` — NOT `grep -Eq '^…$'`, which passes if ANY line of a multi-line
+    # value matches (audit-log line-injection vector). case matches the WHOLE
+    # string, so an embedded newline lands a non-hex char and is rejected.
+    case "$SHA" in
+        *[!0-9a-f]*) echo "ERR auto-action: bad SHA (non-hex or multi-line): '$SHA'" >&2; exit 1 ;;
+    esac
+    if [ "${#SHA}" -lt 12 ] || [ "${#SHA}" -gt 40 ]; then
+        echo "ERR auto-action: bad SHA (expected 12-40 lowercase hex chars): '$SHA'" >&2
+        exit 1
+    fi
+    MERGE_CMD="${AUTO_ACTION_MERGE_PUBLIC_CMD:-bash $SCRIPT_DIR/../merge-public-on-green.sh}"
+    # Strip the bot token (+ TELEGRAM_OWN_POLLER) from the child env, same as
+    # the arm-resume path below — this chokepoint doesn't need them either.
+    # DELIBERATELY do NOT strip CLAUDECODE (HIMMEL-1213 codex CR-1): it MUST
+    # propagate to the chokepoint's gate 0. This script is itself reachable by an
+    # agent through the broad `Bash(bash scripts/*)` allow-rule, so the ONLY thing
+    # stopping an agent from laundering `auto-action.sh merge-public …` into a real
+    # merge is CLAUDECODE reaching gate 0 and self-refusing there. The legitimate
+    # bridge runs WITHOUT CLAUDECODE (it is not a Claude session), so it is
+    # unaffected; a bridge accidentally launched inside a Claude session correctly
+    # fails closed rather than merging. Unsetting it here would open that bypass.
+    # MERGE_CMD is an intentional command+args split — word-splitting wanted.
+    # shellcheck disable=SC2086
+    out=$(TELEGRAM_BOT_TOKEN="" TELEGRAM_OWN_POLLER="" $MERGE_CMD "$PR" "$SHA" 2>&1)
+    rc=$?
+    printf '%s\n' "$out"
+    exit "$rc"
+fi
+
+# --- arm-resume path (below) ---
 # Validate time FIRST (identical regex to arm-resume's HH:MM, so the early reject
 # can't diverge from the real validator).
 case "$TIME" in

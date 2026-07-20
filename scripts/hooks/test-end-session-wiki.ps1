@@ -28,13 +28,24 @@ $script:fails = 0
 function Pass([string]$m) { "PASS: $m" }
 function Fail([string]$m) { "FAIL: $m"; $script:fails++ }
 
+# Log/marker relocated per-machine, OUTSIDE any repo (HIMMEL-1215): mirrors the
+# hook's own $projectSlug derivation exactly (path separators/colon -> "-") so
+# tests can compute the expected log/marker path for a given (USERPROFILE, proj).
+function Get-EswSlug([string]$ProjDir) { return ($ProjDir -replace '[\\/:]', '-') }
+function Get-EswLogPath([string]$HomeDir, [string]$ProjDir) {
+    return (Join-Path $HomeDir ".claude\logs\end-session-wiki\$(Get-EswSlug $ProjDir).log")
+}
+function Get-EswMarkerPath([string]$HomeDir, [string]$ProjDir) {
+    return (Join-Path $HomeDir ".claude\logs\end-session-wiki\$(Get-EswSlug $ProjDir).degraded")
+}
+
 $SB = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path (Join-Path $SB 'proj\.claude') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $SB 'home\Documents\medic\.obsidian') -Force | Out-Null
 $transcript = Join-Path $SB 'transcript.jsonl'
 Set-Content -LiteralPath $transcript -Value '{"timestamp":"2026-06-17T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"l1\nl2"}]}}'
 $cfgPath = Join-Path $SB 'proj\.claude\end-session-wiki.json'
-$logPath = Join-Path $SB 'proj\.claude\end-session-wiki.log'
+$logPath = Get-EswLogPath -HomeDir (Join-Path $SB 'home') -ProjDir (Join-Path $SB 'proj')
 $payload = @{ transcript_path = $transcript; cwd = (Join-Path $SB 'proj'); session_id = 't'; reason = 'other' } | ConvertTo-Json -Compress
 
 function Invoke-Hook {
@@ -106,6 +117,25 @@ try {
     if (Notes (Join-Path $SB 'home')) { Fail 'invalid name wrote a note' } else { Pass 'invalid name wrote no note' }
     $log = Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue
     if ($log -match 'skipped: vault') { Pass 'skip logged' } else { Fail 'skip not logged' }
+
+    # Case 2b (HIMMEL-1215 CR): the relocated per-machine log dir + log file are
+    # hardened owner-only — the Windows equivalent of the .sh twin's 0700/0600
+    # (icacls /inheritance:r /grant:r <current-user>). dry_run logs + the degraded
+    # note can carry raw transcript text (secrets), so no other local user may
+    # read them. Assert inheritance is disabled AND the only principal is the
+    # running user. (Cases 1–2 already ran the hook, so $logDir + $logPath exist.)
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $logDirForAcl = Split-Path -Parent $logPath
+    function Test-OwnerOnly([string]$Path) {
+        if (-not (Test-Path -LiteralPath $Path)) { return $false }
+        $acl = Get-Acl -LiteralPath $Path
+        if (-not $acl.AreAccessRulesProtected) { return $false }   # inheritance still on
+        if ($acl.Access.Count -lt 1) { return $false }
+        foreach ($r in $acl.Access) { if ($r.IdentityReference.Value -ne $me) { return $false } }
+        return $true
+    }
+    if (Test-OwnerOnly $logDirForAcl) { Pass 'ACL: log dir owner-only (inheritance off, current user only)' } else { Fail 'ACL: log dir not hardened owner-only' }
+    if (Test-OwnerOnly $logPath)      { Pass 'ACL: log file owner-only' } else { Fail 'ACL: log file not hardened owner-only' }
 
     # ---- Pinned-fixture cases (Cases 3–5) ------------------------------------
     if (-not (Test-Path $FixturePath))  { Fail 'fixture.jsonl not found — skipping pinned cases'; $script:reached = $true; throw 'skip' }
@@ -210,7 +240,7 @@ try {
     Invoke-HookCustom -Transcript $huskTs -VaultPath $huskVault -ProjPath $huskProj
     if (Notes (Join-Path $huskVault 'sessions')) { Fail 'husk: a note was written for a contentless transcript' }
     else { Pass 'husk: no note written for a contentless transcript' }
-    $huskLog = Get-Content -LiteralPath (Join-Path $huskProj '.claude\end-session-wiki.log') -Raw -ErrorAction SilentlyContinue
+    $huskLog = Get-Content -LiteralPath (Get-EswLogPath -HomeDir (Join-Path $SB 'home') -ProjDir $huskProj) -Raw -ErrorAction SilentlyContinue
     if ($huskLog -match 'skipped: husk \(no content\)') { Pass 'husk: skip logged' } else { Fail 'husk: skip not logged' }
 
     # Case 7: a thinking/tool-only session IS captured with a command-activity summary.
@@ -285,7 +315,7 @@ try {
     $rulesCfg = Join-Path $huskProj '.claude\end-session-wiki.json'
     Set-Content -LiteralPath $rulesCfg -Value '{"enabled":true,"crystallize_rules":"~/missing-rules.md"}'
     Invoke-HookCustom -Transcript $toolTs -VaultPath $huskVault -ProjPath $huskProj
-    $rulesLog = Get-Content -LiteralPath (Join-Path $huskProj '.claude\end-session-wiki.log') -Raw -ErrorAction SilentlyContinue
+    $rulesLog = Get-Content -LiteralPath (Get-EswLogPath -HomeDir (Join-Path $SB 'home') -ProjDir $huskProj) -Raw -ErrorAction SilentlyContinue
     if ($rulesLog -match 'crystallize_rules not readable') { Pass 'rules(hook): unreadable crystallize_rules logged' } else { Fail 'rules(hook): unreadable crystallize_rules NOT logged' }
     $expandedMissing = Join-Path (Join-Path $SB 'home') 'missing-rules.md'
     if ($rulesLog -and $rulesLog.Contains($expandedMissing)) { Pass 'rules(hook): log carries the tilde-EXPANDED path' } else { Fail 'rules(hook): log missing the expanded path' }
@@ -357,7 +387,7 @@ try {
     Set-Content -LiteralPath $putStub -Value 'param([string]$Key,[string]$Uri); if ($Key -eq $env:ESW_STUB_OK_KEY) { "200" } else { "401" }'
     $mvTs = Join-Path $mvProj 'transcript.jsonl'
     Set-Content -LiteralPath $mvTs -Value '{"timestamp":"2026-06-17T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"l1\nl2"}]}}'
-    $mvLog = Join-Path $mvProj '.claude\end-session-wiki.log'
+    $mvLog = Get-EswLogPath -HomeDir $mvHome -ProjDir $mvProj
 
     function Invoke-HookMV {
         param([string]$OkKey)
@@ -377,7 +407,8 @@ try {
     Remove-Item -LiteralPath $mvLog -ErrorAction SilentlyContinue
     # Seed a STALE degradation marker: a healthy recovery PUT must clear it (the
     # self-healing half of the loud flag — prevents a permanent false banner).
-    $marker13 = Join-Path $mvProj '.claude\end-session-wiki.degraded'
+    $marker13 = Get-EswMarkerPath -HomeDir $mvHome -ProjDir $mvProj
+    New-Item -ItemType Directory -Path (Split-Path -Parent $marker13) -Force | Out-Null
     Set-Content -LiteralPath $marker13 -Value 'stale DEGRADED marker from a prior session'
     Invoke-HookMV -OkKey 'sibling-key-B'
     $log13 = Get-Content -LiteralPath $mvLog -Raw -ErrorAction SilentlyContinue
@@ -395,8 +426,16 @@ try {
     if (($log14 -match 'local fs fallback') -and $mvNote) { Pass '401-retry(ps): all keys 401 -> on-disk fallback preserved' } else { Fail '401-retry(ps): all-keys-401 did not fall back to disk' }
     # The loud degradation flag (HIMMEL-711): a persisted marker must be written so
     # a SessionStart / where-are-we surface can pick up the silent-disk fallback.
-    $marker14 = Join-Path $mvProj '.claude\end-session-wiki.degraded'
+    $marker14 = Get-EswMarkerPath -HomeDir $mvHome -ProjDir $mvProj
     if ((Test-Path -LiteralPath $marker14) -and ((Get-Content -LiteralPath $marker14 -Raw) -match 'DEGRADED')) { Pass '401-retry(ps): degradation marker persisted on disk-only fallback' } else { Fail '401-retry(ps): no degradation marker written on disk-only fallback' }
+    # HIMMEL-1215 CR: the degraded marker is ALSO owner-only hardened + written
+    # UTF-8 no-BOM — the text-only check above would pass even if protection
+    # failed or a BOM were reintroduced, so assert both explicitly.
+    if (Test-OwnerOnly $marker14) { Pass 'ACL: degraded marker owner-only' } else { Fail 'ACL: degraded marker not hardened owner-only' }
+    $marker14Bytes = [System.IO.File]::ReadAllBytes($marker14)
+    if ($marker14Bytes.Length -ge 3 -and $marker14Bytes[0] -eq 0xEF -and $marker14Bytes[1] -eq 0xBB -and $marker14Bytes[2] -eq 0xBF) {
+        Fail 'encoding: degraded marker has a UTF-8 BOM (EF BB BF)'
+    } else { Pass 'encoding: degraded marker is UTF-8 no-BOM' }
     # Redaction (hard requirement): no apiKey value in the log OR the marker.
     $blob14 = "$log14`n$(Get-Content -LiteralPath $marker14 -Raw -ErrorAction SilentlyContinue)"
     if ($blob14 -match 'primary-key-A') { Fail '401-retry(ps): an apiKey value leaked into the log/marker on fallback' } else { Pass '401-retry(ps): no apiKey value in the log or marker (redaction holds)' }

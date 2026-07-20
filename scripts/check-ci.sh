@@ -9,11 +9,14 @@
 # AND zero unresolved PR review threads (a CR comment left unresolved is a
 # merge blocker, same as a red check).
 #
-# Usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only]
+# Usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only] [--escalate]
 #   selector        optional; defaults to the PR for the current branch
 #   --threads-only  skip the checks watch entirely and run just the
 #                   review-thread gate (used by /pr-check step 4.8 so both
 #                   enforcement points share ONE implementation)
+#   --escalate      if an incremental CodeRabbit pass produced no review object
+#                   while a prior head had outside-diff findings, request ONE
+#                   @coderabbitai full review and poll for its review object
 #   --grace <sec>   how long to wait for checks to REGISTER before giving up
 #                   (default 180). Right after `git push` / `gh pr create`,
 #                   `gh pr checks` errors with "no checks reported" until the
@@ -58,11 +61,16 @@
 #   3 — checks green but the review state blocks the merge: unresolved review
 #       threads remain, a review requests changes, or CodeRabbit's review body
 #       reports an outside-diff-range finding — address, resolve, re-run
+#   4 — CodeRabbit concluded incrementally on the head but posted no review
+#       object there while a prior head had outside-diff findings; request
+#       @coderabbitai full review (or opt in with --escalate), then re-run
 #
 # Env:
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
 #                            tests set 0; non-numeric falls back to default)
 #   CHECK_CI_SETTLE        — default for --settle (flag wins)
+#   CR_ESCALATE_WAIT       — --escalate total wait budget (default 600)
+#   CR_ESCALATE_POLL       — --escalate seconds between re-reads (default 120)
 #   CR_PROFILE=none        — this repo has no CodeRabbit: skip the required-signal
 #                            gate. Without it, a CodeRabbit-less repo exits 2.
 #   CR_BOT_USER_ID         — creator.id to trust as CodeRabbit (see cr-signal.sh)
@@ -80,19 +88,23 @@ set -uo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only]
+usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only] [--escalate]
 exit codes: 0 = checks green + all review threads resolved + CodeRabbit concluded success on the head SHA
                 + zero outside-diff-range body findings,
             1 = a check failed, or CodeRabbit's status is failure/error,
             2 = cannot evaluate (usage / no PR / no checks within --grace / thread query failed / PR head moved
                 / CodeRabbit's status absent or still pending on the head SHA / body-findings reader failed),
             3 = checks green but unresolved review threads remain, a review requests changes, or CodeRabbit's
-                review body reports an outside-diff-range finding
+                review body reports an outside-diff-range finding,
+            4 = CodeRabbit concluded incrementally but posted no review object at the head while a prior head
+                had outside-diff findings; request @coderabbitai full review or use --escalate
 env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings gates (repos without CodeRabbit)
+     CR_ESCALATE_WAIT / CR_ESCALATE_POLL tune --escalate (defaults 600 / 120 seconds)
 EOF
 }
 
 THREADS_ONLY=0
+ESCALATE=0
 GRACE=180
 SETTLE="${CHECK_CI_SETTLE:-30}"
 POLL="${CHECK_CI_POLL_INTERVAL:-10}"
@@ -113,6 +125,8 @@ while [ $# -gt 0 ]; do
             SETTLE="$2"; shift 2 ;;
         --threads-only)
             THREADS_ONLY=1; shift ;;
+        --escalate)
+            ESCALATE=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "check-ci: unknown option: $1" >&2; usage; exit 2 ;;
         *)
@@ -127,6 +141,40 @@ esac
 case "$SETTLE" in
     ''|*[!0-9]*) echo "check-ci: --settle must be a non-negative integer, got '$SETTLE'" >&2; exit 2 ;;
 esac
+
+# Escalation is an explicit write path, never a default gate side effect: both
+# clear-cr-marker.sh and merge-on-green.sh call this script as pure observers.
+# These knobs are therefore read only when --escalate opts into the action.
+if [ "$ESCALATE" -eq 1 ]; then
+    CR_ESCALATE_WAIT="${CR_ESCALATE_WAIT-600}"
+    CR_ESCALATE_POLL="${CR_ESCALATE_POLL-120}"
+    case "$CR_ESCALATE_WAIT" in
+        ''|*[!0-9]*)
+            echo "check-ci: CR_ESCALATE_WAIT='$CR_ESCALATE_WAIT' is not a non-negative integer — using 600" >&2
+            CR_ESCALATE_WAIT=600 ;;
+    esac
+    case "$CR_ESCALATE_POLL" in
+        ''|*[!0-9]*)
+            echo "check-ci: CR_ESCALATE_POLL='$CR_ESCALATE_POLL' is not a non-negative integer — using 120" >&2
+            CR_ESCALATE_POLL=120 ;;
+    esac
+    # Leading-zero values like 08 / 007 PASS the all-digits guard above but
+    # poison the budget arithmetic in _cr_body_escalate: bash reads a leading
+    # 0 as OCTAL inside $(( )), so $((08 - elapsed)) throws "value too great
+    # for base" and aborts the script, while $((007 ...)) silently evaluates
+    # as octal 7 (coincidentally right for 007, wrong for any 01x value). The
+    # [ -gt ] / -ge tests happen to be base-10, but the one $(()) site is not,
+    # so normalize at the source — force base-10 and every downstream use is
+    # safe (HIMMEL-1219).
+    CR_ESCALATE_WAIT=$((10#$CR_ESCALATE_WAIT))
+    CR_ESCALATE_POLL=$((10#$CR_ESCALATE_POLL))
+    if [ "$CR_ESCALATE_WAIT" -gt 0 ] && [ "$CR_ESCALATE_POLL" -eq 0 ]; then
+        # CR_ESCALATE_WAIT=0 is the immediate-timeout lever. With a positive
+        # budget, zero would worsen the rate-limit pressure this path reduces.
+        echo "check-ci: CR_ESCALATE_POLL=0 is invalid when CR_ESCALATE_WAIT > 0 — using 120" >&2
+        CR_ESCALATE_POLL=120
+    fi
+fi
 
 # Un-maskable verdict line (HIMMEL-974) — installed only now, after arg
 # parsing, so --help and usage errors above stay clean. Prints on EVERY later
@@ -435,10 +483,12 @@ cr_signal_gate() {
 # nitpick/additional counts are non-blocking; they ride the caller's final
 # success line via body_nitpick/body_additional + _cbg_note (globals, not
 # `local` — they must survive past this function's return).
-cr_body_gate() {
-    [ "${CR_PROFILE:-}" = "none" ] && return 0
-
-    local line rc outside nitpick additional prior_outside head_reviews tok
+# _cr_body_read — one fail-closed read+parse+validate unit, shared by the
+# normal gate and the bounded escalation loop. The _cbg_* outputs are globals
+# so a successful loop re-read becomes the normal evaluation below; duplicating
+# this parser would risk drifting the load-bearing per-field validation.
+_cr_body_read() {
+    local line rc tok _v
     line=$(cr_body_findings "$owner" "$repo" "$num" "$head0")
     rc=$?
     case "$rc" in
@@ -459,45 +509,105 @@ cr_body_gate() {
     # `.*outside=` regex greedily matches the LATTER. `case` patterns match
     # from the START of the token, so `outside=*` cannot match a token that
     # begins with `prior_outside=`.
-    outside=""; nitpick=""; additional=""; prior_outside=""; head_reviews=""
+    _cbg_outside=""; _cbg_nitpick=""; _cbg_additional=""; _cbg_prior_outside=""; _cbg_head_reviews=""
     for tok in $line; do
         case "$tok" in
-            outside=*) outside=${tok#outside=} ;;
-            nitpick=*) nitpick=${tok#nitpick=} ;;
-            additional=*) additional=${tok#additional=} ;;
-            prior_outside=*) prior_outside=${tok#prior_outside=} ;;
-            head_reviews=*) head_reviews=${tok#head_reviews=} ;;
+            outside=*) _cbg_outside=${tok#outside=} ;;
+            nitpick=*) _cbg_nitpick=${tok#nitpick=} ;;
+            additional=*) _cbg_additional=${tok#additional=} ;;
+            prior_outside=*) _cbg_prior_outside=${tok#prior_outside=} ;;
+            head_reviews=*) _cbg_head_reviews=${tok#head_reviews=} ;;
         esac
     done
     # Validate EACH field independently, NOT the concatenation (CR #1297): a
     # missing/empty `outside` would be masked by the other numerics in the
     # joined string (nitpick=5 additional=3 -> "53" passes the all-digits test),
-    # then `[ "$outside" -gt 0 ]` below errors on the empty value, is treated as
-    # false, and the outside-diff gate fails OPEN. Per-field guards fail closed.
-    for _v in "$outside" "$nitpick" "$additional" "$prior_outside" "$head_reviews"; do
+    # then `[ "$_cbg_outside" -gt 0 ]` below errors on the empty value, is
+    # treated as false, and the outside-diff gate fails OPEN. Per-field guards
+    # fail closed.
+    for _v in "$_cbg_outside" "$_cbg_nitpick" "$_cbg_additional" "$_cbg_prior_outside" "$_cbg_head_reviews"; do
         case "$_v" in
             ''|*[!0-9]*)
                 echo "check-ci: ${ctx}cr-body-findings returned an unparseable line ('$line') on PR #$num — cannot evaluate the gate; re-run" >&2
                 exit 2 ;;
         esac
     done
+}
 
-    # A2 (spec addendum): a prior head carried unaddressed outside-diff
-    # findings, but no CodeRabbit review exists yet at the CURRENT head — a
-    # stale, uncertified head is not a pass (same stance as cr-signal's
-    # "absent").
-    if [ "$prior_outside" -gt 0 ] && [ "$head_reviews" -eq 0 ]; then
-        echo "check-ci: ${ctx}PR #$num had unresolved outside-diff findings at a prior head, but CodeRabbit has not reviewed the current head $head0 — cannot certify (HIMMEL-1126 A2); re-run once it does" >&2
+# _cr_body_escalate — the ONLY write path in check-ci, reachable solely through
+# --escalate. CodeRabbit's normal incremental command is a no-op after it has
+# concluded, while `@coderabbitai full review` deliberately ignores incremental
+# state. The per-head marker makes retries idempotent; the bounded loop keeps a
+# missing review object visibly fail-closed instead of waiting forever.
+_cr_body_escalate() {
+    local marker comments body start elapsed remaining nap
+    marker="<!-- himmel:cr-escalate:$head0 -->"
+    comments=$(gh api "repos/$owner/$repo/issues/$num/comments" --paginate --jq '.[].body' 2>/dev/null) || {
+        echo "check-ci: ${ctx}could not scan PR #$num comments for the CodeRabbit escalation marker — cannot evaluate the gate; re-run" >&2
         exit 2
+    }
+    if printf '%s\n' "$comments" | grep -F -- "$marker" >/dev/null; then
+        echo "check-ci: CodeRabbit full review was already requested for head $head0 of PR #$num; waiting for its review object" >&2
+    else
+        body=$(printf '@coderabbitai full review\n\n%s' "$marker")
+        if ! gh api "repos/$owner/$repo/issues/$num/comments" -f body="$body" >/dev/null 2>&1; then
+            echo "check-ci: ${ctx}could not post @coderabbitai full review for head $head0 of PR #$num — cannot evaluate the gate; re-run" >&2
+            exit 2
+        fi
+        echo "check-ci: requested @coderabbitai full review for head $head0 of PR #$num; waiting up to ${CR_ESCALATE_WAIT}s" >&2
     fi
 
-    if [ "$outside" -gt 0 ]; then
-        echo "check-ci: ${ctx}CodeRabbit's review body reports $outside outside-diff-range finding(s) on head $head0 of PR #$num — these carry no thread to resolve; address them, then re-run" >&2
+    start=$SECONDS
+    while :; do
+        _cr_body_read
+        if [ "$_cbg_head_reviews" -gt 0 ]; then
+            echo "check-ci: CodeRabbit full review is visible at head $head0 of PR #$num; evaluating its findings" >&2
+            # The full review can create inline threads AFTER the normal
+            # pre-body thread gate ran. Re-run that gate, then refresh the body
+            # once more, preserving the normal concluded -> threads -> bodies
+            # order so escalation cannot launder either finding shape.
+            review_state_gate
+            _cr_body_read
+            [ "$_cbg_head_reviews" -gt 0 ] && return 0
+        fi
+        elapsed=$((SECONDS - start))
+        if [ "$elapsed" -ge "$CR_ESCALATE_WAIT" ]; then
+            echo "check-ci: DO-NOT-MERGE — CodeRabbit full review is still not visible at head $head0 of PR #$num after ${CR_ESCALATE_WAIT}s; cannot certify" >&2
+            exit 4
+        fi
+        remaining=$((CR_ESCALATE_WAIT - elapsed))
+        nap=$CR_ESCALATE_POLL
+        [ "$nap" -gt "$remaining" ] && nap=$remaining
+        [ "$nap" -gt 0 ] && sleep "$nap"
+    done
+}
+
+cr_body_gate() {
+    [ "${CR_PROFILE:-}" = "none" ] && return 0
+
+    _cr_body_read
+
+    # A2's evidence is readable but incrementally silent: CodeRabbit concluded
+    # on this head, yet its incremental pass created no review object while a
+    # prior head still carries outside-diff findings. That is distinct from rc 2
+    # (the gate genuinely cannot be read) and has one known resolution: force a
+    # full review. Default observers stay read-only and return rc 4; --escalate
+    # opts into posting the command once and boundedly re-reading.
+    if [ "$_cbg_prior_outside" -gt 0 ] && [ "$_cbg_head_reviews" -eq 0 ]; then
+        if [ "$ESCALATE" -eq 0 ]; then
+            echo "check-ci: ${ctx}PR #$num had unresolved outside-diff findings at a prior head, but CodeRabbit's incremental pass posted no review object at current head $head0 — request @coderabbitai full review, then re-run" >&2
+            exit 4
+        fi
+        _cr_body_escalate
+    fi
+
+    if [ "$_cbg_outside" -gt 0 ]; then
+        echo "check-ci: ${ctx}CodeRabbit's review body reports $_cbg_outside outside-diff-range finding(s) on head $head0 of PR #$num — these carry no thread to resolve; address them, then re-run" >&2
         exit 3
     fi
 
-    body_nitpick="$nitpick"
-    body_additional="$additional"
+    body_nitpick="$_cbg_nitpick"
+    body_additional="$_cbg_additional"
 }
 
 # _cbg_note — appended to the success line when non-blocking body findings

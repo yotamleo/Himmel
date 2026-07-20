@@ -228,19 +228,75 @@ case "$v" in
     *) bad "T8: verdict wrong (got: $v)" ;;
 esac
 
-# --- T9: coderabbit review failed (rc=1) degrades open (exit 0, verdict) ------
+# --- T9: coderabbit attempted-but-failed (rc=1) fails CLOSED - no verdict ---
 # Stub exits 7 -> coderabbit-review.sh maps it to rc=1 + an unavailable line ->
-# the external lane fails open and still records the pass verdict.
+# the external lane fails closed and records no pass verdict.
+# `cd "$repo" || exit 99` makes a failed cd yield rc=99, NOT 1, so a broken test
+# setup can never satisfy the fail-closed (rc=1) assertion below — the script
+# exit is what is asserted, not a cd failure (CR #1330, coderabbit).
 sd="$tmp/s9"; new_session "$sd"
-out="$(cd "$repo" && FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+out="$(cd "$repo" || exit 99; FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
     CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=7 \
     bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main 2>/dev/null)"
 rc=$?
-if [ "$rc" -eq 0 ]; then ok "T9 coderabbit-failed degrades open (exit 0)"; else bad "T9: coderabbit-failed should exit 0 (got $rc)"; fi
-v="$(meta_verdict "$sd/meta.json")"
+if [ "$rc" -eq 99 ]; then
+    bad "T9: cd to repo failed (test setup) — fail-closed path not exercised"
+elif [ "$rc" -eq 1 ]; then
+    ok "T9 coderabbit attempted-but-failed fails closed (exit 1)"
+else
+    bad "T9: coderabbit attempted-but-failed should exit 1 (got $rc)"
+fi
+if [ -z "$(meta_verdict "$sd/meta.json")" ]; then ok "T9 no verdict when coderabbit review fails"; else bad "T9: verdict should not be written when coderabbit review fails"; fi
+
+# --- T10: a failed rerun REVOKES a pre-existing same-SHA pass (no stale auth) --
+# codex-adv (PR #1330): exit-1 alone left a prior `external_cr_verdict: pass`
+# usable by ship-branch.sh at an unchanged SHA. Seed a same-SHA pass, force
+# CodeRabbit failure (STUB_RC=7 -> rc=1), and assert the verdict is revoked.
+sd="$tmp/s10"; new_session "$sd"
+seed_sha="$(git -C "$repo" rev-parse glm/x)"
+node -e 'const fs=require("fs");const m=JSON.parse(fs.readFileSync(process.argv[1]));m.external_cr_verdict="pass (sha="+process.argv[2]+"; critics=2)";fs.writeFileSync(process.argv[1],JSON.stringify(m,null,2)+"\n")' "$sd/meta.json" "$seed_sha"
+[ -n "$(meta_verdict "$sd/meta.json")" ] || bad "T10 setup: seed verdict not written"
+if (cd "$repo" || exit 99; FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=7 \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main >/dev/null 2>&1); then
+    bad "T10: failed CodeRabbit rerun should exit non-zero"
+else
+    rc=$?
+    if [ "$rc" -eq 99 ]; then
+        bad "T10: cd to repo failed (test setup) — fail-closed path not exercised"
+    elif [ "$rc" -eq 1 ]; then
+        ok "T10 failed rerun fails closed (exit 1)"
+    else
+        bad "T10: failed CodeRabbit rerun should exit 1 (got $rc)"
+    fi
+fi
+if [ -z "$(meta_verdict "$sd/meta.json")" ]; then ok "T10 stale verdict revoked on failed rerun"; else bad "T10: stale external_cr_verdict survived a failed rerun"; fi
+
+# --- T11: a revocation FAILURE fails closed (never warn-and-continue) --------
+# codex-1 + CodeRabbit (PR #1330): a failed revoke must not let the review
+# proceed and re-authorize. A corrupt meta makes the revoke node throw; the lane
+# must exit non-zero and leave no readable 'pass'. STUB_RC=0 (clean CodeRabbit)
+# proves the non-zero exit is the revoke-failure path, not a review finding.
+sd="$tmp/s11"; new_session "$sd"
+printf '%s' 'not valid json {' > "$sd/meta.json"
+if (cd "$repo" || exit 99; FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=0 \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main >/dev/null 2>&1); then
+    bad "T11: revocation failure (corrupt meta) should FAIL closed"
+else
+    rc=$?
+    if [ "$rc" -eq 99 ]; then
+        bad "T11: cd to repo failed (test setup) — revocation path not exercised"
+    elif [ "$rc" -eq 1 ]; then
+        ok "T11 revocation failure fails closed (exit 1)"
+    else
+        bad "T11: revocation failure should exit 1 (got $rc)"
+    fi
+fi
+v="$(meta_verdict "$sd/meta.json" 2>/dev/null || true)"
 case "$v" in
-    "pass (sha="*) ok "T9 verdict written despite coderabbit failure ($v)" ;;
-    *) bad "T9: verdict should be written fail-open (got: $v)" ;;
+    "pass "*|"pass") bad "T11: a trusted pass resulted from a revocation failure (got: $v)" ;;
+    *) ok "T11 no trusted pass after revocation failure" ;;
 esac
 
 if [ "$fail" -eq 0 ]; then echo "PASS test-pr-check-external"; else echo "FAILURES in test-pr-check-external"; exit 1; fi

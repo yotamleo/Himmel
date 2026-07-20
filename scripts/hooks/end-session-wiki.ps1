@@ -16,8 +16,9 @@
 #   - Min duration: sessions shorter than min_duration_seconds are skipped.
 #   - Error isol.:  entire body wrapped in try/catch; on any failure the hook
 #                   logs the exception + stack and EXITS 0.
-#   - Log:          $CLAUDE_PROJECT_DIR/.claude/end-session-wiki.log
-#                   Rotates to .log.old at 1 MB.
+#   - Log:          ~/.claude/logs/end-session-wiki/<project-slug>.log
+#                   (per-machine, OUTSIDE any repo — HIMMEL-1215). Rotates to
+#                   .log.old at 1 MB.
 #
 # Failure policy (#27): hook MUST NEVER exit non-zero. See epic success
 # criterion #5.
@@ -35,23 +36,53 @@ if ($PSVersionTable.PSEdition -eq 'Core' -and -not $IsWindows) {
     exit 0
 }
 
+# Protect-OwnerOnly <path> [-IsDirectory] — restrict a path to the current user
+# only (strip ACL inheritance; grant just the running user), the Windows
+# equivalent of the .sh twin's `chmod 700` (dir) / `chmod 600` (file). The
+# relocated per-machine log + degraded marker can carry raw transcript text (the
+# dry_run render + the degraded-fallback note), so no other local user may read
+# them (HIMMEL-1215 CR). Best-effort / fail-open: an ACL failure MUST NEVER make
+# the hook throw or exit non-zero (mirrors the .sh's `2>/dev/null` on every chmod).
+function Protect-OwnerOnly {
+    param([string]$Path, [switch]$IsDirectory)
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $grant = if ($IsDirectory) { "${me}:(OI)(CI)F" } else { "${me}:F" }
+        & icacls $Path /inheritance:r /grant:r $grant 2>&1 | Out-Null
+    } catch { }
+}
+
 # ---------- Bootstrap log path + rotation (must work even if body throws) ----
 
 $projectDir = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { (Get-Location).Path }
-$logDir     = Join-Path $projectDir '.claude'
-$logPath    = Join-Path $logDir 'end-session-wiki.log'
-$logOldPath = Join-Path $logDir 'end-session-wiki.log.old'
-$configPath = Join-Path $logDir 'end-session-wiki.json'
+$configPath = Join-Path $projectDir '.claude\end-session-wiki.json'
+# Per-machine log location (HIMMEL-1215): this hook is registered GLOBALLY, so
+# it fires in every repo the session runs in — a repo-local log dir caused
+# merge-conflict junk in shared/synced repos, and dry_run mode dumps raw
+# transcript text (secrets) into a file arbitrary repos might track. Relocate
+# the log + rotation + degraded marker OUT of any repo tree, keyed per-project
+# by the SAME cwd-slug encoding Claude Code itself uses for its
+# ~/.claude/projects/<slug> dirs (path separators/colon -> "-"; e.g.
+# `C:\Users\x\repo` -> `C--Users-x-repo`). The .sh twin derives this
+# byte-for-byte identically so both land at the same path on the same machine.
+$projectSlug = $projectDir -replace '[\\/:]', '-'
+$logDir = Join-Path $env:USERPROFILE '.claude\logs\end-session-wiki'
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+Protect-OwnerOnly -Path $logDir -IsDirectory
+$logPath    = Join-Path $logDir "$projectSlug.log"
+$logOldPath = Join-Path $logDir "$projectSlug.log.old"
 # Persisted degradation marker (HIMMEL-711): present <=> the LAST REST-attempted
 # session note failed to reach the live vault and went to disk only. A
 # SessionStart / where-are-we surface can pick this up; cleared on a healthy PUT.
-$degradedMarkerPath = Join-Path $logDir 'end-session-wiki.degraded'
+$degradedMarkerPath = Join-Path $logDir "$projectSlug.degraded"
 
 function Write-HookLog {
     param([string]$Message)
     try {
         if (-not (Test-Path $logDir)) {
             New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+            Protect-OwnerOnly -Path $logDir -IsDirectory
         }
         # Rotate at 1 MB
         if (Test-Path $logPath) {
@@ -60,8 +91,9 @@ function Write-HookLog {
                 Move-Item -LiteralPath $logPath -Destination $logOldPath -Force
             }
         }
-        $stamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+        $stamp = ([DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"))
         Add-Content -LiteralPath $logPath -Value "[$stamp] $Message"
+        Protect-OwnerOnly -Path $logPath
     } catch {
         # Last-resort: swallow. Hook must never block.
     }
@@ -80,7 +112,7 @@ function Write-HookLog {
 # NOT implemented here (tracked on HIMMEL-711).
 function Set-DegradedFallbackFlag {
     param([string]$Code, [string]$RelPath, [string]$Target, [string]$Outcome = 'disk')
-    $stamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+    $stamp = ([DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"))
     if ($Outcome -eq 'lost') {
         $line = "[$stamp] end-session-wiki DATA LOST: REST PUT (HTTP $Code) AND the on-disk fallback BOTH failed — $RelPath (target $Target) was written NOWHERE. See $logPath."
         $b2   = "!! Session note $RelPath was saved NOWHERE — REST PUT (HTTP $Code) AND the on-disk fallback FAILED. The note is LOST. See $logPath."
@@ -89,8 +121,12 @@ function Set-DegradedFallbackFlag {
         $b2   = "!! Session note saved to DISK ONLY: $RelPath (in $Target) — it did NOT sync through the live vault."
     }
     try {
-        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-        Set-Content -LiteralPath $degradedMarkerPath -Value $line
+        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null; Protect-OwnerOnly -Path $logDir -IsDirectory }
+        # UTF-8 (no BOM), matching Write-NoteToFile: Set-Content writes ANSI on
+        # PS 5.1 and UTF-8 no-BOM on PS7, so the marker encoding would otherwise
+        # drift between shells (HIMMEL-1215 CR).
+        [System.IO.File]::WriteAllText($degradedMarkerPath, $line + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+        Protect-OwnerOnly -Path $degradedMarkerPath
     } catch { }
     [Console]::Error.WriteLine("!! end-session-wiki: Obsidian REST API unreachable / all vault keys rejected (HTTP $Code).")
     [Console]::Error.WriteLine($b2)

@@ -17,10 +17,11 @@
 #   4. zero critics responded         -> FAIL (defensive)
 #   5. Critical>0 or Important>0      -> NOT CLEAN
 # CodeRabbit pass (HIMMEL-932): a third cross-model finding source run on an
-# otherwise-clean panel. Availability-gated FAIL-OPEN (unlike the fail-closed
-# codex seat at gate 3): a missing CLI (exit 3) or a failed review (exit 1)
-# never blocks - only exit 0 findings feed the gate as blocking candidates
-# ([coderabbit-N]), same merge contract as the interactive /pr-check step 3.2.
+# otherwise-clean panel. A missing CLI (exit 3) fails OPEN (never blocks); an
+# attempted-but-failed review (any other non-zero, e.g. exit 1) fails CLOSED
+# (HIMMEL-1222, HIMMEL-1126 parity). Only exit 0 findings feed the gate as
+# blocking candidates ([coderabbit-N]), same merge contract as the interactive
+# /pr-check step 3.2.
 # The CR marker is NOT touched here; the marker clear is bound to the pushed SHA
 # in ship-branch.sh.
 #
@@ -127,6 +128,38 @@ if [ ! -s "$diff_file" ]; then
     exit 0
 fi
 
+# HIMMEL-1222 (codex-adv): a real review is about to run, so REVOKE any existing
+# external_cr_verdict for this session NOW. Otherwise a fail-closed exit below
+# (a panel/codex/CodeRabbit failure) would leave a stale 'pass (sha=X)' that
+# ship-branch.sh still trusts while the branch tip is unchanged -- defeating the
+# fail-closed posture. The verdict is re-written only after every gate passes.
+if [ -n "$SESSION_DIR" ] && [ -f "$SESSION_DIR/meta.json" ]; then
+    if ! node -e '
+const fs = require("fs");
+const mp = process.argv[1];
+const m = JSON.parse(fs.readFileSync(mp, "utf8"));
+if ("external_cr_verdict" in m) { delete m.external_cr_verdict; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + "\n"); }
+' "$SESSION_DIR/meta.json" 2>/dev/null; then
+        # Revocation FAILED (unparseable or unwritable meta): we cannot prove a
+        # stale 'pass' is gone, so FAIL CLOSED rather than warn-and-continue.
+        # Best-effort stamp a denied verdict ship-branch.sh rejects, then abort
+        # BEFORE reviewing so no fresh pass is written either. (An unwritable
+        # meta may keep a stale pass on disk -- unprotectable here; the exit 1
+        # still stops THIS lane from proceeding and re-authorizing.)
+        node -e '
+const fs = require("fs");
+const mp = process.argv[1];
+try {
+  const m = JSON.parse(fs.readFileSync(mp, "utf8"));
+  m.external_cr_verdict = "denied (verdict-revocation failed)";
+  fs.writeFileSync(mp, JSON.stringify(m, null, 2) + "\n");
+} catch (e) { /* best-effort; the exit 1 below is the real guard */ }
+' "$SESSION_DIR/meta.json" 2>/dev/null || true
+        echo "pr-check-external: FAIL - could not revoke a prior external_cr_verdict at $SESSION_DIR/meta.json - fail-closed (stamped denied where writable), not reviewing" >&2
+        exit 1
+    fi
+fi
+
 echo "pr-check-external: reviewing $BRANCH @ $reviewed_short vs origin/$BASE (CR_PROFILE=$CR_PROFILE)" >&2
 
 CR_USAGE_LOG=1 bash "$PANEL_CMD" < "$diff_file" > "$panel_out" 2> "$panel_err"
@@ -183,7 +216,8 @@ fi
 # spending a (paid, minutes-long) CodeRabbit review there is waste. The codex
 # fail-closed posture at GATE 3 is untouched; this seat is its fail-open peer.
 # Wrapper contract: stdout = findings, stderr = one panel-availability line;
-# exit 0 = review completed, 1 = review failed (fail-open), 3 = CLI absent (skip).
+# exit 0 = review completed, 1 = review failed (fail-closed, HIMMEL-1222), 3 = CLI absent (skip),
+# 4 = rate-limited/quota-exhausted (HIMMEL-1219; a MISSING-review signal, not a failure).
 cr_rc=0
 bash "$SCRIPT_DIR/coderabbit-review.sh" --branch "$BRANCH" --base "$BASE" \
     > "$coderabbit_out" 2> "$cr_err" || cr_rc=$?
@@ -220,9 +254,18 @@ case "$cr_rc" in
         ;;  # clean / minor-only: fall through to the verdict.
     3)
         : ;;  # CLI absent - skip note already surfaced above; continue fail-open.
+    4)
+        # Rate-limited/quota-exhausted (HIMMEL-1219) — a MISSING-review signal,
+        # NOT a failure, so do NOT fall through to the generic "review failed"
+        # message below (that would mislabel a rate-limit). The wrapper's stderr
+        # already carried the retry-later note + `panel-availability: coderabbit
+        # unavailable (rc=4)` (surfaced above); continue fail-open, same posture
+        # as the absent-CLI (3) and failed-review (1) arms.
+        : ;;
     *)
-        echo "pr-check-external: CodeRabbit review failed (rc=$cr_rc) - continuing without it (fail-open)" >&2
-        ;;  # availability line already surfaced above; continue fail-open.
+        echo "pr-check-external: NOT CLEAN - CodeRabbit review was attempted but failed (rc=$cr_rc) -> fail-closed (HIMMEL-1126/1222 parity); a machine without the CLI (exit 3) is the fail-open path" >&2
+        exit 1
+        ;;
 esac
 
 echo "pr-check-external: CLEAN - Critical=0 Important=0, codex responded ($responders critics) @ $reviewed_short" >&2
