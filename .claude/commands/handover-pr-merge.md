@@ -33,8 +33,6 @@ Environment:
 - `GH_CMD=<cmd>` — override the gh binary (tests use `echo`).
 - `GH_ADMIN_MERGE_OK=1` — authorize the `--admin` fallback on a
   non-cosmetic plain-merge failure (default off).
-- `PR_MERGE_POLL_ATTEMPTS` / `PR_MERGE_POLL_INTERVAL` — mergeability-poll
-  tuning (HIMMEL-179; defaults 5 / 3s).
 
 Exit codes:
 - `0` merged (or no PR found — nothing to do)

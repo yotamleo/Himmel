@@ -94,6 +94,58 @@ assert_eq "gh pr_create url"    "https://github.com/owner/repo/pull/9" "$(FORGE=
 assert_eq "gh pr_has_merged"    "2" "$(FORGE=github GH_CMD="$GH_STUB" forge_pr_has_merged feat/x)"
 assert_eq "gh issue_create url" "https://github.com/owner/repo/issues/5" "$(FORGE=github GH_CMD="$GH_STUB" forge_issue_create owner/repo "A nit" "Fix it." cr-deferred)"
 
+# ── github pr_mergeable: LOCAL git merge-tree, not GitHub's async field ───────
+# HIMMEL-1232: gh_forge_pr_mergeable reads only base+head refs from gh (a
+# synchronous field read, stubbed here) and computes the conflict locally with
+# `git merge-tree`. So this exercises a REAL merge against real commits, not a
+# mocked mergeable string.
+echo "TEST: github pr_mergeable computes conflicts locally (git merge-tree, HIMMEL-1232)"
+MREPO="$TMP_ROOT/mergerepo"
+git init -q -b main "$MREPO" 2>/dev/null || { git init -q "$MREPO"; git -C "$MREPO" checkout -q -b main; }
+git -C "$MREPO" config user.email t@t.t
+git -C "$MREPO" config user.name test
+printf 'a\nb\nc\n' > "$MREPO/f"; git -C "$MREPO" add f; git -C "$MREPO" commit -qm base
+# Clean branch: adds an unrelated file — no overlap with main.
+git -C "$MREPO" checkout -q -b feat/clean
+echo x > "$MREPO/g"; git -C "$MREPO" add g; git -C "$MREPO" commit -qm clean
+# Conflict branch off base changes line 2; main then changes the same line.
+git -C "$MREPO" checkout -q -b feat/conflict main
+printf 'a\nTHEIRS\nc\n' > "$MREPO/f"; git -C "$MREPO" add f; git -C "$MREPO" commit -qm theirs
+git -C "$MREPO" checkout -q main
+printf 'a\nOURS\nc\n' > "$MREPO/f"; git -C "$MREPO" add f; git -C "$MREPO" commit -qm ours
+CLEAN_OID=$(git -C "$MREPO" rev-parse feat/clean)
+CONFLICT_OID=$(git -C "$MREPO" rev-parse feat/conflict)
+
+# Stub gh: answer only the base+head metadata read. MT_HEAD selects which commit
+# is the PR head; MT_NOPR=1 simulates "no PR" (gh exits non-zero, empty stdout).
+MT_STUB="$TMP_ROOT/gh-mergetree.sh"
+cat >"$MT_STUB" <<'STUB'
+#!/usr/bin/env bash
+case "$* " in
+    *"pr view"*baseRefName*)
+        [ "${MT_NOPR:-0}" = "1" ] && exit 1
+        printf '%s %s\n' "${MT_BASE:-main}" "${MT_HEAD:?MT_HEAD unset}"
+        ;;
+    *) echo "stub: unhandled gh args: $*" >&2; exit 99 ;;
+esac
+STUB
+chmod +x "$MT_STUB"
+
+# merge-tree runs in cwd, so each call is made from inside MREPO.
+assert_eq "gh pr_mergeable MERGEABLE (clean branch)" "MERGEABLE" \
+    "$(cd "$MREPO" && FORGE=github GH_CMD="$MT_STUB" MT_HEAD="$CLEAN_OID" forge_pr_mergeable feat/clean)"
+assert_eq "gh pr_mergeable CONFLICTING (real overlap)" "CONFLICTING" \
+    "$(cd "$MREPO" && FORGE=github GH_CMD="$MT_STUB" MT_HEAD="$CONFLICT_OID" forge_pr_mergeable feat/conflict)"
+# No PR -> empty (callers treat empty as "nothing to gate on").
+assert_eq "gh pr_mergeable no-PR → empty" "" \
+    "$(cd "$MREPO" && FORGE=github GH_CMD="$MT_STUB" MT_NOPR=1 forge_pr_mergeable feat/x)"
+# Unresolvable head SHA -> UNKNOWN (fail open, never a false CONFLICTING).
+assert_eq "gh pr_mergeable unresolvable head → UNKNOWN" "UNKNOWN" \
+    "$(cd "$MREPO" && FORGE=github GH_CMD="$MT_STUB" MT_HEAD=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef forge_pr_mergeable feat/x)"
+# gh error (CLI missing) -> empty (fail open).
+assert_eq "gh pr_mergeable gh-error → empty" "" \
+    "$(cd "$MREPO" && FORGE=github GH_CMD=/no/such/gh forge_pr_mergeable feat/x)"
+
 # ── verb routing: bitbucket backend (BITBUCKET_CMD stub) ─────────────────────
 echo "TEST: bitbucket verbs route through BITBUCKET_CMD"
 BB_STUB="$TMP_ROOT/bb-stub.sh"
