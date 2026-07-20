@@ -156,6 +156,18 @@ himmel | luna | luna_brain | cross) — SKILL.md resolver auto-detects
 the layer when any bucket dir exists under `<state-root>` and falls
 back to the flat layout otherwise.
 
+`luna_brain` is a **legacy built-in bucket, not an active repo bucket**
+(HIMMEL-1212). `luna_brain` ceased to be a separate local repo when
+HIMMEL-310 folded its content into `himmel/templates/luna-second-brain/`;
+the bucket is empty and no repo is registered against it. It stays in
+the built-in vocab so the resolver needs no change — the `LUNA-BRAIN-*`
+ticket-prefix rule still resolves here
+(`marketplace/plugins/handover/skills/handover/references/resolution.md`),
+it just has nothing to route. Do not read the bucket as evidence of a
+live repo. (Distinct from upstream OSS **`luna-brain`**, the publish
+target the template ships to — see HIMMEL-315 and
+[`public-propagation.md`](public-propagation.md).)
+
 ## HIMMEL-118 single-root resolver (still wired for scripts)
 
 `scripts/lib/handover-path.sh` provides a single-root resolver that

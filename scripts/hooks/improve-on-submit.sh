@@ -16,7 +16,7 @@
 #     context for Claude on this turn.
 #   - Non-zero exit → blocks the prompt (we never block; only ever 0).
 #
-# Wiring (in .claude/settings.json):
+# Wiring (in .codex/hooks.json):
 #   {
 #     "hooks": {
 #       "UserPromptSubmit": [

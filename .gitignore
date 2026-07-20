@@ -94,6 +94,14 @@ logs/gemini/
 # Mode A (no HANDOVER_DIR) regenerates plans under docs/superpowers/plans/ —
 # keep those local, never re-track the folder into the public repo.
 /docs/superpowers/
+# Internal design/plan/decision specs belong in the luna state repo, never in
+# himmel docs/ (HIMMEL-409). himmel docs/ is reference + OSS-public only. Ignore
+# docs/specs/ so migrated-out specs can't silently re-track (and never leak to
+# the public mirror). New specs go to <state-repo>/handovers/<user>/<repo>/specs/.
+/docs/specs/
+# Decision records (ADRs) are state-repo work artifacts too (HIMMEL-409) —
+# they belong in <state-repo>/.../specs/decision/, never himmel docs/.
+/docs/adr/
 # Codex artifacts (HIMMEL-427: codex IS now wired). The guardrail wiring is
 # TRACKED (hooks.json + the run-hook.cmd polyglot + its README); codex's local
 # runtime config, sessions, and auto-generated slash-command→skill mirrors stay

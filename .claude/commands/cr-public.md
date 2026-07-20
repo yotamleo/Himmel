@@ -194,16 +194,23 @@ hold:
   # added/removed line TEXT — two identical +/- lines in a DIFFERENT file or
   # position must not compare as equal. Strip PRIVATE_PATHS first (they never
   # propagate). Identical => a faithful re-projection of already-reviewed code.
-  git -C <public-wt> diff origin/main...HEAD > /tmp/pub.patch \
+  # Per-run scratch dir — two concurrent /cr-public sessions MUST NOT share
+  # /tmp/*.patch: one overwrites the other's patch before the diff runs, faking
+  # an "identical" verdict and an unsafe merge recommendation (HIMMEL-1209).
+  # mktemp -d isolates each run; the EXIT trap cleans up on every path, the
+  # exit-2 gates included.
+  tmp_dir=$(mktemp -d) || { echo "cr-public: cannot evaluate — mktemp -d failed"; exit 2; }
+  trap 'rm -rf "$tmp_dir"' EXIT
+  git -C <public-wt> diff origin/main...HEAD > "$tmp_dir/pub.patch" \
       || { echo "cr-public: cannot evaluate — public diff failed"; exit 2; }
-  git -C <private-repo> diff "$PRIV_REF~1...$PRIV_REF" -- . ':(exclude)<PRIVATE_PATHS>' > /tmp/priv.patch \
+  git -C <private-repo> diff "$PRIV_REF~1...$PRIV_REF" -- . ':(exclude)<PRIVATE_PATHS>' > "$tmp_dir/priv.patch" \
       || { echo "cr-public: cannot evaluate — private diff failed"; exit 2; }
   # diff's exit code is three-valued: 0 = identical, 1 = differs, >1 = ERROR.
   # Collapsing >1 into "differs" would be safe here, but collapsing it into
   # "identical" would not — so branch on all three explicitly. Capture rc into a
   # variable first: `$?` read inside an `elif` after `if diff ...` is a known
   # bash footgun (any intervening command clobbers it).
-  diff /tmp/pub.patch /tmp/priv.patch; rc=$?
+  diff "$tmp_dir/pub.patch" "$tmp_dir/priv.patch"; rc=$?
   if [ "$rc" -eq 0 ]; then
       verdict="identical"            # faithful re-projection
   elif [ "$rc" -eq 1 ]; then
