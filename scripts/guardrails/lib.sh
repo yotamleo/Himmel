@@ -266,24 +266,53 @@ is_behind_origin_main() {
     [ "${behind:-0}" -gt 0 ]
 }
 
+# _himmel_dev_marker_path [DIR] — echo the PRIMARY checkout's .himmel-dev path,
+# resolved via git-common-dir so it is correct from the primary AND from every
+# linked worktree (the marker is gitignored and lives only in the primary).
+# Prints nothing and returns 1 when DIR is not a git repo.
+_himmel_dev_marker_path() {
+    local d="${1:-.}" common_dir bare
+    common_dir=$(git -C "$d" rev-parse --git-common-dir 2>/dev/null) || return 1
+    common_dir=$(cd "$d" 2>/dev/null && cd "$common_dir" 2>/dev/null && pwd) || return 1
+    bare=$(git -C "$d" rev-parse --is-bare-repository 2>/dev/null) || return 1
+    [ "$bare" = "false" ] || return 1
+    printf '%s/.himmel-dev' "$(dirname "$common_dir")"
+}
+
 # is_himmel_dev_repo [DIR]
 # True only in a himmel-contributor checkout, signalled by an untracked,
 # gitignored `.himmel-dev` marker dropped by contributor setup.
 # Keeps the doc-guard gate OFF for adopters/users who run himmel as a harness.
 # Returns rc: 0 present | 1 absent | 2 cannot resolve repo root (fail-closed).
 is_himmel_dev_repo() {
-    local top
-    top=$(git rev-parse --show-toplevel 2>/dev/null) || return 2
-    [ -f "$top/.himmel-dev" ]
+    # Resolve from --git-common-dir (the PRIMARY worktree's .git, shared by all
+    # linked worktrees) rather than --show-toplevel (the CURRENT worktree root).
+    # The gitignored .himmel-dev marker lives only in the primary checkout, so a
+    # --show-toplevel lookup returns absent from every linked worktree — and
+    # every dependent gate then silently no-ops inside a worktree, which is
+    # exactly where himmel feature work happens (HIMMEL-1131).
+    # --git-common-dir may be relative (".git") in the primary — resolve to an
+    # absolute path so dirname yields the primary worktree root.
+    # Honor the optional DIR arg (defaults to PWD) like every other predicate in
+    # this lib, resolving the primary marker relative to it.
+    local d="${1:-.}" m
+    m=$(_himmel_dev_marker_path "$d") || return 2
+    [ -f "$m" ]
 }
 
 # warn_doc_guard_off DIR — non-fatal nudge (stderr) when DIR is a himmel-source
 # checkout (catalog + pre-commit config present) but the opt-in .himmel-dev
 # marker is absent, so the doc-guard gate is silently off. Always rc 0.
 warn_doc_guard_off() {
-    local d="${1:-.}"
-    if [ -f "$d/docs/commands-catalog.md" ] && [ -f "$d/.pre-commit-config.yaml" ] && [ ! -f "$d/.himmel-dev" ]; then
-        echo "⚠ doc-guard is OFF: this looks like a himmel-source checkout but .himmel-dev is missing. Run 'touch .himmel-dev' (see docs/contributing.md) to enable the catalog-sync gate." >&2
+    local d="${1:-.}" m
+    m=$(_himmel_dev_marker_path "$d") || m=""
+    # Require a resolved marker path ([ -n "$m" ]): a non-git dir has no primary
+    # checkout to enable the gate in, so don't nudge there. The hint points at the
+    # RESOLVED primary marker "$m" (not a bare ".himmel-dev") so that from a linked
+    # worktree the operator touches the primary's marker, not a stray file in the
+    # worktree root that would not enable the gate (HIMMEL-1131).
+    if [ -n "$m" ] && [ -f "$d/docs/commands-catalog.md" ] && [ -f "$d/.pre-commit-config.yaml" ] && [ ! -f "$m" ]; then
+        echo "⚠ doc-guard is OFF: this looks like a himmel-source checkout but .himmel-dev is missing. Run 'touch \"$m\"' (see docs/contributing.md) to enable the catalog-sync gate." >&2
     fi
     return 0
 }

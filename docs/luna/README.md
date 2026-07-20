@@ -26,7 +26,7 @@ features in this repo live here. Personal-state work artifacts
 |---|---|
 | Luna-touching reference docs for himmel | `himmel/docs/luna/` (here) |
 | Luna repo's own reference docs | `luna/docs/` |
-| luna_brain reference docs (OSS-bootstrap-ready) | `luna_brain/docs/` |
+| Vault-template reference docs (OSS-bootstrap-ready) | `himmel/templates/luna-second-brain/docs/` |
 | Plugin specs | `plugins/<plugin>/README.md` |
 | Handovers / work logs / decision journals | `<state-repo>/handovers/<USER_SLUG>/<repo-bucket>/` |
 | Luna vault content (clips, human notes) | luna vault itself (unchanged) |

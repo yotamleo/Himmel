@@ -21,7 +21,8 @@ PR introducing this file).
 - Epics: `<PROJECT>-N` (e.g. `HIMMEL-29` for VirtualBox VM Management).
 - Standalones (himmel concept): historically not in Jira — tracked only in
   `<state-repo>/handovers/<USER_SLUG>/<repo>/standalones/` (`<repo>` ∈ himmel | luna |
-  luna_brain | cross; post-HIMMEL-129 bucket layout). New convention from
+  cross in practice; `luna_brain` remains a built-in resolver bucket but is
+  inactive — see HIMMEL-1212; post-HIMMEL-129 bucket layout). New convention from
   2026-05-19 forward files standalones as Stories in their topical project
   (e.g. Luna-related standalones → LUNA-N Story under
   `<state-repo>/handovers/<USER_SLUG>/luna/standalones/`).

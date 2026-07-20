@@ -32,6 +32,12 @@ __pycache__/
 /.worktrees/
 /.claude/settings.local.json
 
+# Per-machine hook logs. These append-only logs are written by the
+# end-session-wiki hook on every machine that opens the vault; committing
+# them to a shared repo produced a merge conflict on every cross-machine
+# pull. Config (end-session-wiki.json) stays tracked; only the logs are local.
+**/.claude/*.log
+
 # Single-writer opt-in marker. A per-clone, gitignored file that designates
 # THIS clone as committing/pushing straight to main by design (a personal,
 # local-only vault). setup.{sh,ps1} create it for a local vault with no remote;
@@ -50,3 +56,7 @@ __pycache__/
 .vault-template.base/
 *.template-merge
 *.upgrade-tmp.*
+
+# Obsidian graph cache + per-chat asset dumps (machine-local)
+.obsidian/graph.json
+chats/*/_assets/

@@ -18,10 +18,13 @@ export async function sendChatAction(token: string, chat_id: number, f: F = fetc
 }
 
 // Redact chat_id for logs (CR public-474): it's a stable user/group identifier
-// and these logs get captured into session notes committed to a vault. Keeps
-// the last 2 digits so repeated failures for the same chat can still be
-// correlated without exposing the raw id.
-const redactChatId = (chat_id: number): string => `***${String(chat_id).slice(-2)}`;
+// and these logs get captured into session notes committed to a vault. For
+// longer ids, keeps the last 2 digits so repeated failures for the same chat
+// can still be correlated without exposing the raw id.
+const redactChatId = (chat_id: number): string => {
+  const id = String(chat_id);
+  return id.length > 2 ? `***${id.slice(-2)}` : "***";
+};
 
 // Returns whether Telegram actually ACCEPTED the message — the HTTP request
 // succeeded AND the Bot API JSON reports `ok: true` (same success signal
@@ -33,8 +36,14 @@ const redactChatId = (chat_id: number): string => `***${String(chat_id).slice(-2
 export async function sendMessage(token: string, chat_id: number, text: string,
     f: F = fetch, sleep: (ms:number)=>Promise<void> = (ms)=>Bun.sleep(ms)): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
-    const res = await f(API(token, "sendMessage"), { method: "POST",
-      headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id, text }) });
+    let res: Response;
+    try {
+      res = await f(API(token, "sendMessage"), { method: "POST",
+        headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id, text }) });
+    } catch {
+      // A lost response is indistinguishable from a failed send; retrying can duplicate alerts (HIMMEL-1211 / CR #1327).
+      return false;
+    }
     const j: any = await res.json().catch(() => ({}));
     if (res.ok && j?.ok === true) return true;
     if (res.status === 429) { if (attempt < 4) await sleep((j?.parameters?.retry_after ?? 1) * 1000); continue; }

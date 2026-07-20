@@ -5,6 +5,13 @@
 # Usage: bash scripts/guardrails/test-lib.sh
 #
 # Exit 0 if all cases pass, 1 otherwise.
+#
+# The linter cannot follow lib.sh when only this file is passed as input (the
+# test sources it dynamically via $REPO_ROOT / inside subshells, and the
+# pre-commit hook lints just the single changed file). SC1091 is info-only, so
+# disable it file-wide (directive must precede the first command) to keep a
+# test-only commit from being blocked.
+# shellcheck disable=SC1091
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -271,15 +278,68 @@ if ( cd "$td" && . "$REPO_ROOT/scripts/guardrails/lib.sh" && ! is_himmel_dev_rep
   pass "is_himmel_dev_repo false when marker absent"; else fail "is_himmel_dev_repo false when marker absent"; fi
 rm -rf "$td"
 
+# Honors the optional DIR arg (called from a DIFFERENT cwd, no cd) like every
+# other predicate in this lib.
+td=$(mktemp -d); git -C "$td" init -q; : > "$td/.himmel-dev"
+if is_himmel_dev_repo "$td"; then pass "is_himmel_dev_repo honors DIR arg (marker present)"; else fail "is_himmel_dev_repo honors DIR arg (marker present)"; fi
+rm -f "$td/.himmel-dev"
+if ! is_himmel_dev_repo "$td"; then pass "is_himmel_dev_repo honors DIR arg (marker absent)"; else fail "is_himmel_dev_repo honors DIR arg (marker absent)"; fi
+rm -rf "$td"
+
+# A bare repo has no worktree root, so marker resolution must fail closed even
+# when a .himmel-dev file exists in the bare repo's parent directory.
+bare=$(mktemp -d)/repo.git; git init --bare -q "$bare"; : > "$(dirname "$bare")/.himmel-dev"
+is_himmel_dev_repo "$bare"; rc=$?
+if [ "$rc" -eq 2 ]; then pass "is_himmel_dev_repo bare repo -> rc=2"; else fail "is_himmel_dev_repo bare repo -> expected 2 got $rc"; fi
+rm -rf "$(dirname "$bare")"
+
+# HIMMEL-1131: the marker is gitignored and lives ONLY in the primary worktree,
+# so detection must resolve it from --git-common-dir, not the current worktree
+# root — else every himmel-dev gate silently no-ops inside a worktree (where
+# himmel work happens). Prove the gate FIRES from a linked worktree.
+td=$(mktemp -d); git -C "$td" init -q -b main
+git -C "$td" config user.email t@t; git -C "$td" config user.name t
+git -C "$td" commit --allow-empty -q -m init
+: > "$td/.himmel-dev"
+wtparent=$(mktemp -d); wtd="$wtparent/wt"
+git -C "$td" worktree add -q "$wtd" -b wt-branch
+if ( cd "$wtd" && . "$REPO_ROOT/scripts/guardrails/lib.sh" && is_himmel_dev_repo ); then
+  pass "is_himmel_dev_repo true from a worktree (marker on primary)"; else fail "is_himmel_dev_repo true from a worktree (marker on primary)"; fi
+# No false positive: marker removed from primary -> false from the worktree too.
+rm -f "$td/.himmel-dev"
+if ( cd "$wtd" && . "$REPO_ROOT/scripts/guardrails/lib.sh" && ! is_himmel_dev_repo ); then
+  pass "is_himmel_dev_repo false from a worktree when primary marker absent"; else fail "is_himmel_dev_repo false from a worktree when primary marker absent"; fi
+git -C "$td" worktree remove --force "$wtd" 2>/dev/null
+rm -rf "$td" "$wtparent"
+
 echo "== warn_doc_guard_off =="
-R=$(mktemp -d); mkdir -p "$R/docs"; : > "$R/docs/commands-catalog.md"; : > "$R/.pre-commit-config.yaml"
-out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$R" 2>&1 )
-if printf '%s' "$out" | grep -qi "\.himmel-dev"; then pass "warns when source checkout lacks marker"; else fail "warns when source checkout lacks marker"; fi
+R=$(mktemp -d); git -C "$R" init -q; mkdir -p "$R/docs"; : > "$R/docs/commands-catalog.md"; : > "$R/.pre-commit-config.yaml"
+out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$R" 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qi "\.himmel-dev"; then pass "warns when source checkout lacks marker"; else fail "warns when source checkout lacks marker (rc=$rc)"; fi
 
 : > "$R/.himmel-dev"
-out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$R" 2>&1 )
-if [ -z "$out" ]; then pass "silent when marker present"; else fail "silent when marker present"; fi
+out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$R" 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then pass "silent when marker present"; else fail "silent when marker present (rc=$rc)"; fi
 rm -rf "$R"
+
+# The source checkout files live in the linked worktree, but the untracked marker
+# lives only in the primary. The warning must use the same common-dir resolution
+# as is_himmel_dev_repo instead of falsely reporting that doc-guard is off.
+td=$(mktemp -d); git -C "$td" init -q -b main
+git -C "$td" config user.email t@t; git -C "$td" config user.name t
+mkdir -p "$td/docs"; : > "$td/docs/commands-catalog.md"; : > "$td/.pre-commit-config.yaml"
+git -C "$td" add docs/commands-catalog.md .pre-commit-config.yaml
+git -C "$td" commit -q -m init
+: > "$td/.himmel-dev"
+wtparent=$(mktemp -d); wtd="$wtparent/wt"
+git -C "$td" worktree add -q "$wtd" -b warn-wt-branch
+out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$wtd" 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then pass "silent from a worktree when marker is on primary"; else fail "silent from a worktree when marker is on primary (rc=$rc)"; fi
+rm -f "$td/.himmel-dev"
+out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$wtd" 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qi "\.himmel-dev"; then pass "warns from a worktree when primary marker absent"; else fail "warns from a worktree when primary marker absent (rc=$rc)"; fi
+git -C "$td" worktree remove --force "$wtd" 2>/dev/null
+rm -rf "$td" "$wtparent"
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"

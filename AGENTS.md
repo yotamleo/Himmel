@@ -165,9 +165,11 @@ model — the Opus parent spawns a top-model child for the one hard call;
 the child answers and returns. Top-model-as-parent only by operator
 choice — it then delegates EVERY implementation chunk to a cheaper
 lane and owns planning/judgment/final synthesis; inline impl on a
-top-tier parent is the anti-pattern (sole exception: a CR-fix faster
-to apply than to re-brief). Work above your tier? Return it — don't
-burn tokens on it.
+top-tier parent is the anti-pattern (sole exception: ONE trivial
+CR-fix faster to apply than to re-brief — per PR, not per round;
+from the second CR round on, batch remaining findings to a worker
+lane in shared-branch mode, HIMMEL-1216). Work above your tier?
+Return it — don't burn tokens on it.
 
 **Every dispatch names an explicit model** — an unnamed dispatch
 inherits the parent loop and burns the scarcer, weekly-capped parent
@@ -223,8 +225,11 @@ per-layer example set: [`docs/internals/enforcement.md`](docs/internals/enforcem
 Three tiers for luna-touching artifacts:
 1. **Reference docs operators consume** (guides, runbooks, architecture) →
    the relevant repo's `docs/` (himmel luna docs → `himmel/docs/luna/`;
-   luna → `luna/docs/`; luna_brain → `luna_brain/docs/`, OSS-quality from
-   day 1; plugin specs stay in `plugins/<plugin>/README.md`).
+   luna → `luna/docs/`; the vendored vault template →
+   `himmel/templates/luna-second-brain/docs/`, OSS-quality from day 1 because it
+   propagates to the separate public `luna-brain` repo — it is the source, not
+   the publish target itself; plugin specs stay in
+   `plugins/<plugin>/README.md`).
 2. **Personal-state work artifacts** (handovers, work/decision logs,
    journal-style decision records, next-session-resume) →
    `<state-repo>/handovers/<USER_SLUG>/<repo-bucket>/` (cross-cutting → `…/cross/`).
@@ -262,7 +267,8 @@ Route by question shape:
 - Content lookup ("where is X discussed") → **qmd**, first hop.
 - Structure/neighborhood ("what clusters around X", "what does this epic
   touch") → `graphify query` / `graphify explain`; whole-architecture
-  review → `GRAPH_REPORT.md` / `graphify wiki`.
+  review → `GRAPH_REPORT.md` (graphify ≤0.9.18 has no `wiki` command; at
+  >5000 nodes `graph.html` is skipped — use `graphify tree` for a viz).
 - Symbol-level code ops → **tokensave**; graphify = architecture/community
   views + all non-code. (headroom, if ever adopted post-H4 gate
   (HIMMEL-622), = context-window management only — not retrieval.)
@@ -314,9 +320,10 @@ auto-approve; the edit-on-main / read-secrets / backend-tier / CR-marker /
 jira-compound-write / unresolved-CR-merge / merged-PR-commit / docker-privesc /
 rogue-schedule / rogue-codex-wsl guards; `guard-implementor-dispatch` cost guard; the cap-arm
 hooks), a PostToolUse cap-arm hook, **pre-commit/commit-msg/pre-push gates**
-(source of truth `.pre-commit-config.yaml`), and opt-in `SessionStart` /
-`UserPromptSubmit` hooks (`inject-initiative.sh` `HIMMEL_INITIATIVE`,
-`improve-on-submit.sh` — both default OFF). The full per-hook behaviour, the
+(source of truth `.pre-commit-config.yaml`), and an opt-in `SessionStart` hook (`inject-initiative.sh`
+`HIMMEL_INITIATIVE`, default OFF); `improve-on-submit.sh` is a
+`UserPromptSubmit` hook wired only in the Codex lane
+(`.codex/hooks.json`), not `.claude/settings.json`. The full per-hook behaviour, the
 gate list, the guardrail matrix, the Telegram `/arm` surface, and billing
 detail: [`docs/internals/enforcement.md`](docs/internals/enforcement.md).
 

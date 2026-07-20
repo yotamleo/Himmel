@@ -127,9 +127,11 @@ model — the Opus parent spawns a Fable child for the one hard call;
 the child answers and returns. Fable-as-parent only by operator
 choice — it then delegates EVERY implementation chunk to a cheaper
 lane and owns planning/judgment/final synthesis; inline impl on a
-top-tier parent is the anti-pattern (sole exception: a CR-fix faster
-to apply than to re-brief). Work above your tier? Return it — don't
-burn tokens on it.
+top-tier parent is the anti-pattern (sole exception: ONE trivial
+CR-fix faster to apply than to re-brief — per PR, not per round;
+from the second CR round on, batch remaining findings to a worker
+lane in shared-branch mode, HIMMEL-1216). Work above your tier?
+Return it — don't burn tokens on it.
 
 **Every dispatch names an explicit model** — an unnamed dispatch
 inherits the parent loop and burns the scarcer, weekly-capped parent
@@ -185,8 +187,11 @@ per-layer example set: [`docs/internals/enforcement.md`](docs/internals/enforcem
 Three tiers for luna-touching artifacts:
 1. **Reference docs operators consume** (guides, runbooks, architecture) →
    the relevant repo's `docs/` (himmel luna docs → `himmel/docs/luna/`;
-   luna → `luna/docs/`; luna_brain → `luna_brain/docs/`, OSS-quality from
-   day 1; plugin specs stay in `plugins/<plugin>/README.md`).
+   luna → `luna/docs/`; the vendored vault template →
+   `himmel/templates/luna-second-brain/docs/`, OSS-quality from day 1 because it
+   propagates to the separate public `luna-brain` repo — it is the source, not
+   the publish target itself; plugin specs stay in
+   `plugins/<plugin>/README.md`).
 2. **Personal-state work artifacts** (handovers, work/decision logs,
    journal-style decision records, next-session-resume) →
    `<state-repo>/handovers/<USER_SLUG>/<repo-bucket>/` (cross-cutting → `…/cross/`).

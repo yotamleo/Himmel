@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, spyOn, mock } from "bun:test";
 import { getUpdates, sendMessage, sendChatAction } from "./telegram-api";
 
 test("sendChatAction posts chat_id + action; failure is swallowed (best-effort)", async () => {
@@ -47,6 +47,24 @@ test("sendMessage does NOT report delivered on HTTP 200 with ok:false (validates
   const ok = await sendMessage("T", 1, "hi", fakeFetch as any, () => Promise.resolve());
   expect(ok).toBe(false);       // must not treat a 200/{ok:false} as delivered
   expect(n).toBe(5);            // bounded retry, then gives up (no infinite loop)
+});
+test("sendMessage does not retry a rejected fetch and returns false", async () => {
+  const fakeFetch = mock(async () => { throw new Error("net down"); });
+  const ok = await sendMessage("T", 123, "hi", fakeFetch as any);
+  expect(ok).toBe(false);
+  expect(fakeFetch).toHaveBeenCalledTimes(1);
+});
+test("sendMessage fully redacts one- and two-character chat ids in logs", async () => {
+  const fakeFetch = async () => new Response(JSON.stringify({ ok:false, description:"bad" }), {status:400});
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await sendMessage("T", 7, "hi", fakeFetch as any);
+    await sendMessage("T", 42, "hi", fakeFetch as any);
+    expect(error.mock.calls.map(([message]) => String(message))).toEqual([
+      "[telegram] sendMessage 400 chat=***: bad",
+      "[telegram] sendMessage 400 chat=***: bad",
+    ]);
+  } finally { error.mockRestore(); }
 });
 // --- getFile + downloadFile (HIMMEL-250) ---
 import { getFile, downloadFile } from "./telegram-api";
