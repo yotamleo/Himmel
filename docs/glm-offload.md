@@ -393,7 +393,7 @@ wait   # each prints its 3-line inspect contract (session-dir / transcript-dir /
 #   1. inspect meta.json + outbox.jsonl + run.log
 #   2. review glm/<slug> diff through the CR loop  → fix findings
 #   3. attestation-commit → push → /pr-check → gh pr create → merge
-#   4. propagate-public prep → operator/validator ships
+#   4. propagate-public ship → /cr-public to PR-ready → human /mergepub authorizes (HIMMEL-1213)
 #   5. CR ledger append (ledger-append.sh, main thread only; cr-scores.sh reads)
 ```
 
