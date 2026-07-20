@@ -171,7 +171,7 @@ The flag (and its `harvest_flag_detail:` sibling) is never written or cleared by
   - `tweet` → Folder Map `idea` entry, else `<vault>/Ideas/` if it exists, else `<vault>/00-Inbox/`. Cross-suggest a `<vault>/20-Areas/<author>.md` link target if the author has a known person note.
   - `reddit` → Folder Map `discussion`/`resource` entry, else `<vault>/30-Resources/`
   - `newsletter` → Folder Map `newsletter`/`resource` entry, else `<vault>/30-Resources/`
-  - **Unknown `type:`**: log `⊘ <clip> — skipped (phase-6-promotion): unknown type "<type>", no promotion mapping`. Do NOT mark `processed: true` for this clip — let the user inspect.
+  - **Any other `type:` (default — terminal; never halts).** No type-specific mapping. Resolve the promotion target to the Folder Map `resource` entry if present, else `<vault>/30-Resources/` (the same generic bucket `reddit`/`newsletter` fall back to). Annotate the `## Promotion candidate` exactly like a mapped type, with the **Rationale** noting it is a generic default the operator should re-route on promotion (e.g. `no type-specific mapping for "<type>"; generic default — re-route on promotion`). Then continue to Phase 7 + Phase 8 like any mapped type — including the Phase 8 step-0 `ig_media_pending` hold, which still applies to un-enriched instagram clips. This is the closed-mapping guard: no `type:` value falls through to a silent skip, so a newly-introduced type (e.g. `instagram`, `note`) reaches `_evidence/` instead of re-running phases 1–5 forever.
 
 - Write a `## Promotion candidate` section at the end of the clip body (append, do not replace any user content above it):
   ```markdown
