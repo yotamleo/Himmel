@@ -286,6 +286,15 @@ rm -f "$td/.himmel-dev"
 if ! is_himmel_dev_repo "$td"; then pass "is_himmel_dev_repo honors DIR arg (marker absent)"; else fail "is_himmel_dev_repo honors DIR arg (marker absent)"; fi
 rm -rf "$td"
 
+# A repo using --separate-git-dir keeps its common git dir outside the checkout.
+# The primary worktree entry must still resolve the marker at the checkout root,
+# not at the separate git dir's parent.
+sep_checkout=$(mktemp -d); sep_git_parent=$(mktemp -d)
+git init -q --separate-git-dir="$sep_git_parent/repo.git" "$sep_checkout"
+: > "$sep_checkout/.himmel-dev"
+if is_himmel_dev_repo "$sep_checkout"; then pass "is_himmel_dev_repo separate git dir -> marker at checkout root"; else fail "is_himmel_dev_repo separate git dir -> expected marker at checkout root"; fi
+rm -rf "$sep_checkout" "$sep_git_parent"
+
 # A bare repo has no worktree root, so marker resolution must fail closed even
 # when a .himmel-dev file exists in the bare repo's parent directory.
 bare=$(mktemp -d)/repo.git; git init --bare -q "$bare"; : > "$(dirname "$bare")/.himmel-dev"

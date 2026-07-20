@@ -48,19 +48,25 @@ test("sendMessage does NOT report delivered on HTTP 200 with ok:false (validates
   expect(ok).toBe(false);       // must not treat a 200/{ok:false} as delivered
   expect(n).toBe(5);            // bounded retry, then gives up (no infinite loop)
 });
-test("sendMessage does not retry a rejected fetch and returns false", async () => {
+test("sendMessage logs a redacted transport failure, does not retry, and returns false", async () => {
   const fakeFetch = mock(async () => { throw new Error("net down"); });
-  const ok = await sendMessage("T", 123, "hi", fakeFetch as any);
-  expect(ok).toBe(false);
-  expect(fakeFetch).toHaveBeenCalledTimes(1);
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const ok = await sendMessage("T", 123, "hi", fakeFetch as any);
+    expect(ok).toBe(false);
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith("[telegram] sendMessage transport failure chat=***23");
+  } finally { error.mockRestore(); }
 });
-test("sendMessage fully redacts one- and two-character chat ids in logs", async () => {
+test("sendMessage fully redacts one- and two-digit chat ids in logs, including signed ids", async () => {
   const fakeFetch = async () => new Response(JSON.stringify({ ok:false, description:"bad" }), {status:400});
   const error = spyOn(console, "error").mockImplementation(() => {});
   try {
     await sendMessage("T", 7, "hi", fakeFetch as any);
     await sendMessage("T", 42, "hi", fakeFetch as any);
+    await sendMessage("T", -42, "hi", fakeFetch as any);
     expect(error.mock.calls.map(([message]) => String(message))).toEqual([
+      "[telegram] sendMessage 400 chat=***: bad",
       "[telegram] sendMessage 400 chat=***: bad",
       "[telegram] sendMessage 400 chat=***: bad",
     ]);

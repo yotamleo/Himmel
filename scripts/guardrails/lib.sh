@@ -267,16 +267,33 @@ is_behind_origin_main() {
 }
 
 # _himmel_dev_marker_path [DIR] — echo the PRIMARY checkout's .himmel-dev path,
-# resolved via git-common-dir so it is correct from the primary AND from every
-# linked worktree (the marker is gitignored and lives only in the primary).
-# Prints nothing and returns 1 when DIR is not a git repo.
+# resolved from the first `git worktree list --porcelain` entry so it is correct
+# for normal repos, linked worktrees, AND repos using --separate-git-dir (the
+# marker is gitignored and lives only in the primary). Prints nothing and
+# returns 1 when DIR is not a non-bare git repo.
 _himmel_dev_marker_path() {
-    local d="${1:-.}" common_dir bare
-    common_dir=$(git -C "$d" rev-parse --git-common-dir 2>/dev/null) || return 1
-    common_dir=$(cd "$d" 2>/dev/null && cd "$common_dir" 2>/dev/null && pwd) || return 1
+    local d="${1:-.}" bare git_dir common_dir top
     bare=$(git -C "$d" rev-parse --is-bare-repository 2>/dev/null) || return 1
     [ "$bare" = "false" ] || return 1
-    printf '%s/.himmel-dev' "$(dirname "$common_dir")"
+    # A LINKED worktree's per-worktree git dir differs from the shared common
+    # dir; a main checkout (normal OR --separate-git-dir) has them equal. That
+    # distinction picks the right marker root in every case — no single path
+    # expression does (HIMMEL-1131 / CR #478):
+    #  - main checkout  -> --show-toplevel is the checkout root (correct for a
+    #    normal repo AND --separate-git-dir, where the git dir lives elsewhere so
+    #    dirname(common_dir) would point outside the worktree).
+    #  - linked worktree -> the marker lives in the PRIMARY checkout, i.e. the
+    #    parent of the shared common git dir.
+    git_dir=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    git_dir=$(cd "$git_dir" 2>/dev/null && pwd) || return 1
+    common_dir=$(git -C "$d" rev-parse --git-common-dir 2>/dev/null) || return 1
+    common_dir=$(cd "$d" 2>/dev/null && cd "$common_dir" 2>/dev/null && pwd) || return 1
+    if [ "$git_dir" = "$common_dir" ]; then
+        top=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) || return 1
+    else
+        top=$(dirname "$common_dir")
+    fi
+    printf '%s/.himmel-dev' "$top"
 }
 
 # is_himmel_dev_repo [DIR]
@@ -285,14 +302,13 @@ _himmel_dev_marker_path() {
 # Keeps the doc-guard gate OFF for adopters/users who run himmel as a harness.
 # Returns rc: 0 present | 1 absent | 2 cannot resolve repo root (fail-closed).
 is_himmel_dev_repo() {
-    # Resolve from --git-common-dir (the PRIMARY worktree's .git, shared by all
-    # linked worktrees) rather than --show-toplevel (the CURRENT worktree root).
-    # The gitignored .himmel-dev marker lives only in the primary checkout, so a
-    # --show-toplevel lookup returns absent from every linked worktree — and
-    # every dependent gate then silently no-ops inside a worktree, which is
-    # exactly where himmel feature work happens (HIMMEL-1131).
-    # --git-common-dir may be relative (".git") in the primary — resolve to an
-    # absolute path so dirname yields the primary worktree root.
+    # Resolve from `git worktree list --porcelain` rather than --show-toplevel
+    # (the CURRENT worktree root). The gitignored .himmel-dev marker lives only
+    # in the primary checkout, so a --show-toplevel lookup returns absent from
+    # every linked worktree — and every dependent gate then silently no-ops
+    # inside a worktree, which is exactly where himmel feature work happens
+    # (HIMMEL-1131). The worktree list also identifies the primary checkout when
+    # its git dir lives elsewhere via --separate-git-dir.
     # Honor the optional DIR arg (defaults to PWD) like every other predicate in
     # this lib, resolving the primary marker relative to it.
     local d="${1:-.}" m

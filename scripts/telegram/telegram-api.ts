@@ -22,8 +22,8 @@ export async function sendChatAction(token: string, chat_id: number, f: F = fetc
 // longer ids, keeps the last 2 digits so repeated failures for the same chat
 // can still be correlated without exposing the raw id.
 const redactChatId = (chat_id: number): string => {
-  const id = String(chat_id);
-  return id.length > 2 ? `***${id.slice(-2)}` : "***";
+  const digits = String(chat_id).replace(/^-/, "");
+  return digits.length > 2 ? `***${digits.slice(-2)}` : "***";
 };
 
 // Returns whether Telegram actually ACCEPTED the message — the HTTP request
@@ -42,6 +42,7 @@ export async function sendMessage(token: string, chat_id: number, text: string,
         headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id, text }) });
     } catch {
       // A lost response is indistinguishable from a failed send; retrying can duplicate alerts (HIMMEL-1211 / CR #1327).
+      console.error(`[telegram] sendMessage transport failure chat=${redactChatId(chat_id)}`);
       return false;
     }
     const j: any = await res.json().catch(() => ({}));
