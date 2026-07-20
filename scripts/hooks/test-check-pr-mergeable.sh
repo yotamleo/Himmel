@@ -36,6 +36,12 @@ assert_rc() {
 TMP_ROOT=$(mktemp -d); if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
 
 # Fake gh: behavior driven by FAKE_GH_* env.
+#
+# HIMMEL-1232: forge_pr_mergeable (github) now reads only base+head refs from gh
+# and computes the conflict LOCALLY via `git merge-tree`. So the fake emits
+# "<base> <headoid>" (a synchronous field read), and the test drives a clean vs
+# conflicting verdict by pointing FAKE_GH_HEAD at a real clean / conflicting
+# commit in the repo below — not by returning a mocked mergeable string.
 FAKE_GH="$TMP_ROOT/gh-fake.sh"
 cat >"$FAKE_GH" <<'FAKE'
 #!/usr/bin/env bash
@@ -46,12 +52,12 @@ case "$1 $2" in
     "pr view")
         if [ "${FAKE_GH_NO_PR:-0}" = "1" ]; then
             # gh pr view exits non-zero with no stdout when no PR exists; the
-            # forge backend's `|| true` turns that into an empty mergeable.
+            # forge backend's `|| return 0` turns that into an empty verdict.
             exit 1
         fi
-        # forge_pr_mergeable calls `gh pr view <branch> --json mergeable --jq
-        # .mergeable`, so gh emits just the bare status value.
-        printf '%s\n' "${FAKE_GH_MERGEABLE:-MERGEABLE}"
+        # forge_pr_mergeable calls `gh pr view <branch> --json
+        # baseRefName,headRefOid --jq ...`, so gh emits "<base> <headoid>".
+        printf '%s %s\n' "${FAKE_GH_BASE:-main}" "${FAKE_GH_HEAD:?FAKE_GH_HEAD unset}"
         exit 0
         ;;
 esac
@@ -59,18 +65,32 @@ exit 0
 FAKE
 chmod +x "$FAKE_GH"
 
-# tmp repo on a non-main branch
+# tmp repo on a non-main branch, with real clean + conflicting branches so
+# `git merge-tree` produces a genuine verdict.
 REPO="$TMP_ROOT/repo"
 git init -q --initial-branch=main "$REPO" 2>/dev/null || git init -q "$REPO"
 (
     cd "$REPO" || exit 99
-    git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "init"
+    git config user.email t@test.com; git config user.name test
+    printf 'a\nb\nc\n' > f; git add f; git commit -q -m "init"
     git branch -m main 2>/dev/null || true
-    git checkout -q -b feat/test
+    # clean branch: adds an unrelated file — no overlap with main.
+    git checkout -q -b feat/clean
+    echo x > g; git add g; git commit -q -m clean
+    # conflict branch off init changes line 2; main then changes the same line.
+    git checkout -q -b feat/conflict main
+    printf 'a\nTHEIRS\nc\n' > f; git add f; git commit -q -m theirs
+    git checkout -q main
+    printf 'a\nOURS\nc\n' > f; git add f; git commit -q -m ours
+    # feat/test is the branch under test (the hook reads its NAME); its own
+    # content is irrelevant — the fake injects the head commit to check.
+    git checkout -q -b feat/test main
     # Forge seam (HIMMEL-326): the hook resolves the forge from origin; a github
     # origin selects the github backend (gh pr view via the GH_CMD stub).
     git remote add origin https://github.com/test/test.git
 )
+CLEAN_OID=$(git -C "$REPO" rev-parse feat/clean)
+CONFLICT_OID=$(git -C "$REPO" rev-parse feat/conflict)
 
 # The forge github backend invokes "${GH_CMD}" by its absolute path (no PATH
 # lookup, no word-split), so GH_CMD must be a single executable — point it at
@@ -120,28 +140,28 @@ rc=0
 out=$(export FAKE_GH_NO_PR=1; run 2>&1) || rc=$?
 assert_rc "no-pr rc=0" "0" "$rc"
 
-# Test 4: MERGEABLE -> exit 0 -----------------------------------------
-echo "TEST: PR MERGEABLE -> exit 0"
+# Test 4: clean branch -> MERGEABLE -> exit 0 -------------------------
+echo "TEST: clean branch (merge-tree MERGEABLE) -> exit 0"
 rc=0
 # shellcheck disable=SC2030,SC2031
-out=$(export FAKE_GH_MERGEABLE=MERGEABLE; run 2>&1) || rc=$?
+out=$(export FAKE_GH_HEAD="$CLEAN_OID"; run 2>&1) || rc=$?
 assert_rc "mergeable rc=0" "0" "$rc"
 
-# Test 5: CONFLICTING -> exit 1 ---------------------------------------
-echo "TEST: PR CONFLICTING -> exit 1 + helpful stderr"
+# Test 5: conflicting branch -> CONFLICTING -> exit 1 -----------------
+echo "TEST: conflicting branch (merge-tree CONFLICTING) -> exit 1 + helpful stderr"
 rc=0
 # shellcheck disable=SC2030,SC2031
-out=$(export FAKE_GH_MERGEABLE=CONFLICTING; run 2>&1) || rc=$?
+out=$(export FAKE_GH_HEAD="$CONFLICT_OID"; run 2>&1) || rc=$?
 assert_rc "conflicting rc=1" "1" "$rc"
 assert_contains "stderr mentions CONFLICTING" "CONFLICTING state" "$out"
 assert_contains "stderr suggests inspect"     "gh pr view"        "$out"
 assert_contains "stderr names bypass var"     "SKIP_PR_MERGEABLE"  "$out"
 
 # Test 6: SKIP_PR_MERGEABLE=1 short-circuits --------------------------
-echo "TEST: SKIP_PR_MERGEABLE=1 short-circuits even on CONFLICTING"
+echo "TEST: SKIP_PR_MERGEABLE=1 short-circuits even on a conflicting branch"
 rc=0
 # shellcheck disable=SC2030,SC2031
-out=$(export SKIP_PR_MERGEABLE=1 FAKE_GH_MERGEABLE=CONFLICTING; run 2>&1) || rc=$?
+out=$(export SKIP_PR_MERGEABLE=1 FAKE_GH_HEAD="$CONFLICT_OID"; run 2>&1) || rc=$?
 assert_rc "skip rc=0" "0" "$rc"
 assert_contains "stderr explains skip" "SKIP_PR_MERGEABLE=1" "$out"
 
@@ -152,7 +172,7 @@ out=$(
     # shellcheck disable=SC2030,SC2031,SC2164
     cd "$REPO" || exit 99
     # shellcheck disable=SC2030,SC2031
-    export GH_CMD="$FAKE_GH"
+    export GH_CMD="$FAKE_GH" FAKE_GH_HEAD="$CLEAN_OID"
     printf 'a b c d\ne f g h\n' | bash "$HOOK" 2>&1
 ) || rc=$?
 assert_rc "multi-line stdin rc=0" "0" "$rc"

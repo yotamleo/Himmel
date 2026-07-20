@@ -36,23 +36,19 @@
 #   GH_ADMIN_MERGE_OK        When `1`, authorizes the `--admin` fallback on a
 #                            non-cosmetic plain-merge failure (GitHub only).
 #                            Default off. The github backend reads this directly.
-#   PR_MERGE_POLL_ATTEMPTS   Mergeability-poll attempts (HIMMEL-179). Default 5.
-#   PR_MERGE_POLL_INTERVAL   Seconds slept between poll attempts. Default 3.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Forge-dispatch seam: forge_pr_find_open / forge_pr_mergeable / forge_pr_merge
 # route to the github or bitbucket backend per the repo's origin (HIMMEL-326).
 # The admin-fallback + cosmetic-branch-delete handling lives in the github
-# backend (gh_forge_pr_merge); this script orchestrates find → poll → merge.
+# backend (gh_forge_pr_merge); this script orchestrates find → check → merge.
 # shellcheck source=../lib/forge.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/forge.sh"
 
 # GH_ADMIN_MERGE_OK is consumed by the github backend (gh_forge_pr_merge) — it
 # reads the env var directly, so this script no longer normalizes it.
-POLL_ATTEMPTS="${PR_MERGE_POLL_ATTEMPTS:-5}"
-POLL_INTERVAL="${PR_MERGE_POLL_INTERVAL:-3}"
 DRY_RUN=0
 
 usage() {
@@ -126,9 +122,8 @@ fi
 
 # HIMMEL-936: CR merge gate on the same predicate as the PreToolUse hook, so
 # machines without the plugin hook still get the gate on this path. Placed
-# before the mergeability poll so a CR-blocked merge fails fast (exit 5)
-# instead of burning the 5x3s poll (plan-critic #7). GitHub-only: cr_merge_gate
-# resolves via gh; the bitbucket forge skips it.
+# before the mergeability check so a CR-blocked merge fails fast (exit 5).
+# GitHub-only: cr_merge_gate resolves via gh; the bitbucket forge skips it.
 vetted_head=""
 if [ "$forge" = "github" ]; then
     # HIMMEL-1058 (TOCTOU): capture the head we are about to vet, and bind the
@@ -160,7 +155,7 @@ if [ "$forge" = "github" ]; then
     # HIMMEL-1043: CI-green gate, same predicate as the PreToolUse hook's
     # second gate, so machines without the plugin hook still require green CI
     # on this path. Runs AFTER the CR gate (exit 5) and before the
-    # mergeability poll; a CI-blocked merge fails fast (exit 6). pr-merge passes
+    # mergeability check; a CI-blocked merge fails fast (exit 6). pr-merge passes
     # only the PR number (no --repo): a selector that fails to resolve is a
     # plain fail-open rc=3 here — no cwd-branch re-anchor (this path already
     # knows its PR via forge_pr_find_open).
@@ -176,44 +171,24 @@ if [ "$forge" = "github" ]; then
     fi
 fi
 
-# Bounded poll for mergeability to settle before merging (HIMMEL-179 sharp#1) —
-# GitHub only. This is the SECOND stage of the two-stage UNKNOWN handling: the
-# pre-push gate (scripts/hooks/check-pr-mergeable.sh, HIMMEL-136) lets
-# `mergeable: UNKNOWN` pass through because GitHub hasn't finished computing
-# mergeability right after a push; that pass-through can leave the real merge
-# below to fail, so we wait for `mergeable` to settle:
-#   MERGEABLE       -> proceed to merge.
+# Deterministic mergeability check before merging (HIMMEL-1232) — GitHub only.
+# forge_pr_mergeable now computes the conflict LOCALLY via `git merge-tree`
+# (github backend), so there is no async GitHub `mergeable` field to wait on: the
+# old bounded poll (HIMMEL-179, 5x3s) is gone — a single read decides.
 #   CONFLICTING     -> fail fast (exit 4); a conflict won't self-resolve.
-#   UNKNOWN / empty -> retry after a short sleep; if attempts exhaust while still
-#                      unsettled, fall through to the merge attempt (preserve the
-#                      pre-check's pass-through behavior — don't hard-fail). A
-#                      transient view-query failure surfaces as empty here too.
-# Bitbucket Cloud has no mergeable field (forge_pr_mergeable returns UNKNOWN), so
-# the poll is pointless there — the 400 at merge time is the only conflict signal
-# (spec §5.1), surfaced by forge_pr_merge. Skip the poll entirely for bitbucket.
+#   MERGEABLE       -> proceed to merge.
+#   UNKNOWN / empty -> a tooling gap (git < 2.38, refs unavailable, no PR view).
+#                      Fail OPEN and proceed — the merge still fails loudly if it
+#                      truly conflicts, and hard-blocking on a tool gap is worse.
+# Bitbucket Cloud has no pre-merge mergeable signal (forge_pr_mergeable returns
+# UNKNOWN), so this is skipped there — the 400 at merge time is the only conflict
+# signal (spec §5.1), surfaced by forge_pr_merge.
 if [ "$forge" = "github" ]; then
-    attempt=1
-    while [ "$attempt" -le "$POLL_ATTEMPTS" ]; do
-        mergeable=$(forge_pr_mergeable "$pr_num")
-        case "$mergeable" in
-            MERGEABLE)
-                break
-                ;;
-            CONFLICTING)
-                echo "ERR pr-merge: PR #$pr_num is CONFLICTING — resolve conflicts before merging. Refusing." >&2
-                exit 4
-                ;;
-            *)
-                # UNKNOWN (or empty/unexpected): still computing or a transient
-                # view failure. Retry after a sleep; never sleep after the last.
-                if [ "$attempt" -lt "$POLL_ATTEMPTS" ]; then
-                    echo "pr-merge: PR #$pr_num mergeable=${mergeable:-<empty>} (attempt $attempt/$POLL_ATTEMPTS) — waiting ${POLL_INTERVAL}s" >&2
-                    sleep "$POLL_INTERVAL"
-                fi
-                ;;
-        esac
-        attempt=$((attempt + 1))
-    done
+    mergeable=$(forge_pr_mergeable "$pr_num")
+    if [ "$mergeable" = "CONFLICTING" ]; then
+        echo "ERR pr-merge: PR #$pr_num is CONFLICTING — resolve conflicts before merging. Refusing." >&2
+        exit 4
+    fi
 fi
 
 # Squash-merge via the forge seam. The github backend does a PLAIN squash first

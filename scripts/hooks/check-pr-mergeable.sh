@@ -13,9 +13,11 @@
 # - Skips on a protected default (main OR master — HIMMEL-297) / detached
 #   HEAD (no PR ever opens for the default branch; detached pushes have no
 #   head ref to query).
-# - Queries `gh pr view --head <branch> --json mergeable`. When no PR
-#   exists, exits 0 (nothing to gate on).
-# - Refuses (exit 1) when `mergeable` is `CONFLICTING`. Surfaces the
+# - Asks forge_pr_mergeable for the branch's open PR. On GitHub that now
+#   computes the conflict LOCALLY via `git merge-tree` (HIMMEL-1232) rather
+#   than reading GitHub's flaky async `mergeable` field. When no PR exists,
+#   exits 0 (nothing to gate on).
+# - Refuses (exit 1) when the verdict is `CONFLICTING`. Surfaces the
 #   PR URL + the gh command to inspect.
 # - Falls back to exit 0 (best-effort) when gh CLI is missing or
 #   unauthenticated — a hard refuse would block pushes whenever the
@@ -88,15 +90,11 @@ EOF
         exit 1
         ;;
     MERGEABLE|UNKNOWN|*)
-        # MERGEABLE: clearly OK. UNKNOWN: not computed yet (GitHub) or no
-        # pre-merge signal (Bitbucket) — let it through; the merge gate blocks
-        # again at merge time if it's actually conflicting. Anything else:
-        # be lenient.
-        #
-        # Two-stage UNKNOWN handling (HIMMEL-179): this pre-push pass-through
-        # is stage 1. Stage 2 is the bounded mergeability poll in
-        # scripts/handover/pr-merge.sh, which waits for UNKNOWN to settle to
-        # MERGEABLE/CONFLICTING before the real merge.
+        # MERGEABLE: clearly OK. UNKNOWN: a tooling gap (git < 2.38, base/head
+        # refs unavailable — GitHub) or no pre-merge signal (Bitbucket). Let it
+        # through best-effort — the merge gate (scripts/handover/pr-merge.sh)
+        # runs the same local check again and blocks at merge time if it is
+        # actually conflicting. Anything else: be lenient.
         exit 0
         ;;
 esac

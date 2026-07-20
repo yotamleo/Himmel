@@ -23,13 +23,14 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #   STUB_ADMIN_FAIL=1  : `gh pr merge` WITH --admin exits 1.
 #   STUB_COSMETIC=1    : `gh pr merge` exits 1 with the cosmetic
 #                        "branch is already used by worktree" error.
-#   STUB_VIEW_FAIL=1   : `gh pr view` (mergeability poll) exits 1 — simulates
-#                        a transient gh/network failure (HIMMEL-179).
-#   STUB_VIEW_MERGEABLE: value `gh pr view` prints for `.mergeable`. Default
-#                        MERGEABLE. Set CONFLICTING / UNKNOWN to drive the poll.
-#   STUB_VIEW_UNKNOWN_THEN=N : first N `gh pr view` calls print UNKNOWN, then
-#                        MERGEABLE — exercises the retry-then-settle path. Uses
-#                        a counter file at $GH_VIEW_COUNT.
+#   SETUP_MERGE_CONFLICT=1 : build a real add/add conflict between the branch
+#                        and main so the HIMMEL-1232 local merge-tree check
+#                        returns CONFLICTING.
+#   STUB_MERGE_UNKNOWN=1 : the base+head read reports a head SHA not present
+#                        locally, so the check cannot verify it -> UNKNOWN
+#                        (fail-open tooling-gap path).
+#   STUB_MERGE_VIEW_FAIL=1 : `gh pr view --json baseRefName,headRefOid` exits 1
+#                        — a transient gh/network failure (fail-open path).
 # After the run, $LAST_GH_LOG holds the path to the recorded gh argv log so
 # callers can assert on --admin presence/absence.
 LAST_GH_LOG=""
@@ -58,12 +59,27 @@ case "$verb" in
         echo "42"
         ;;
     "pr view")
-        # HIMMEL-936 CR-gate metadata call is `gh pr view <sel> --json
-        # number,headRefOid,url`; the mergeability poll is `gh pr view <pr>
-        # --json mergeable`. Distinguish by the requested --json fields.
-        # STUB_CR_BLOCK=1 answers the metadata call with parseable JSON so
-        # cr_merge_gate proceeds to its graphql arm; otherwise echo non-JSON
-        # so the gate degrades + fails open (existing cases stay green).
+        # Three distinct `gh pr view` shapes reach this stub — matched by the
+        # requested --json fields (order matters; the first two also contain
+        # headRefOid, so the mergeability check must be matched FIRST):
+        #   1. HIMMEL-1232 mergeability check: --json baseRefName,headRefOid --jq
+        #   2. HIMMEL-1058 head-SHA bind read: --json headRefOid --jq .headRefOid
+        #   3. HIMMEL-936 CR-gate metadata:    --json number,headRefOid,url (no --jq)
+        if printf ' %s ' "$@" | grep -q 'baseRefName'; then
+            # forge_pr_mergeable (github) reads base+head, then computes the
+            # conflict LOCALLY with git merge-tree. Emit "<base> <headoid>":
+            #   STUB_MERGE_VIEW_FAIL=1 -> gh error (backend fails open -> proceed)
+            #   STUB_MERGE_UNKNOWN=1   -> a head SHA not present locally (backend
+            #                             cannot verify it -> UNKNOWN -> proceed)
+            #   default                -> the real current-branch tip, so
+            #                             merge-tree runs against real commits
+            #                             (clean by default; SETUP_MERGE_CONFLICT
+            #                             built a conflicting head).
+            [ "${STUB_MERGE_VIEW_FAIL:-0}" = "1" ] && { echo "gh: could not resolve PR" >&2; exit 1; }
+            [ "${STUB_MERGE_UNKNOWN:-0}" = "1" ] && { echo "main deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"; exit 0; }
+            echo "main $(git rev-parse HEAD)"
+            exit 0
+        fi
         if printf ' %s ' "$@" | grep -q 'headRefOid'; then
             # STUB_CR_BLOCK=1 arms the CR gate; STUB_CI_BLOCK=1 arms the CI gate
             # (both need parseable metadata to resolve the head SHA).
@@ -80,28 +96,11 @@ case "$verb" in
             elif [ "${STUB_CR_BLOCK:-0}" = "1" ] || [ "${STUB_CI_BLOCK:-0}" = "1" ] || [ "${STUB_ALL_GREEN:-0}" = "1" ]; then
                 echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}'
             else
-                echo "${STUB_VIEW_MERGEABLE:-MERGEABLE}"
+                # Non-JSON so cr_merge_gate degrades + fails open (existing cases
+                # without STUB_CR_BLOCK/CI_BLOCK/ALL_GREEN stay green).
+                echo "degraded-non-json"
             fi
             exit 0
-        fi
-        # Mergeability poll (HIMMEL-179). pr-merge calls:
-        #   gh pr view <pr> --json mergeable --jq '.mergeable'
-        if [ "${STUB_VIEW_FAIL:-0}" = "1" ]; then
-            echo "gh: could not resolve PR" >&2
-            exit 1
-        fi
-        if [ "${STUB_VIEW_UNKNOWN_THEN:-0}" != "0" ]; then
-            n=0
-            [ -f "$GH_VIEW_COUNT" ] && n=$(cat "$GH_VIEW_COUNT")
-            n=$((n + 1))
-            echo "$n" > "$GH_VIEW_COUNT"
-            if [ "$n" -le "$STUB_VIEW_UNKNOWN_THEN" ]; then
-                echo "UNKNOWN"
-            else
-                echo "MERGEABLE"
-            fi
-        else
-            echo "${STUB_VIEW_MERGEABLE:-MERGEABLE}"
         fi
         ;;
     "pr merge")
@@ -169,14 +168,25 @@ STUB
         git config user.email t@t.t
         git config user.name t
         git commit -q --allow-empty -m init
+        # HIMMEL-1232: the github mergeability check resolves the base as
+        # origin/main (absent — no fetch) then local `main`, so a `main` ref
+        # must exist at the base for git merge-tree to run.
+        git branch -M main
         git checkout -q -b "$branch" 2>/dev/null || git checkout -q "$branch"
+        # SETUP_MERGE_CONFLICT=1: build a real add/add conflict between this
+        # branch and main so forge_pr_mergeable returns CONFLICTING.
+        if [ "${SETUP_MERGE_CONFLICT:-0}" = "1" ]; then
+            printf 'theirs\n' > cf; git add cf; git commit -q -m theirs
+            git checkout -q main
+            printf 'ours\n' > cf; git add cf; git commit -q -m ours
+            git checkout -q "$branch"
+        fi
         # Forge seam (HIMMEL-326): pr-merge resolves the forge from origin. A
         # github origin selects the github backend, which reproduces the exact
         # `gh pr merge` shapes (incl. --admin fallback) these asserts expect.
         git remote add origin https://github.com/test/test.git
-        GH_LOG="$ghlog" GH_VIEW_COUNT="$tmp/view.count" \
+        GH_LOG="$ghlog" \
             PATH="$tmp/bin:$PATH" GH_CMD=gh \
-            PR_MERGE_POLL_INTERVAL="${PR_MERGE_POLL_INTERVAL:-0}" \
             bash "$PR_MERGE" "$@" >"$tmp/out" 2>"$tmp/err"
     )
     local rc=$?
@@ -268,48 +278,45 @@ STUB_LIST_FAIL=1 \
     run_case "handover/x-slug" 4 "gh pr list failure exits 4 (not silent no-op)"
 assert_log_lacks "pr merge" "no merge attempted when PR state is unknown"
 
-# --- mergeability poll (HIMMEL-179 sharp#1) ---
+# --- deterministic mergeability check (HIMMEL-1232, local git merge-tree) ---
+# The old bounded poll (HIMMEL-179) is gone: forge_pr_mergeable now computes the
+# conflict locally in one shot. The check reads base+head via
+# `gh pr view <n> --json baseRefName,headRefOid` and runs git merge-tree.
 
-# (a) MERGEABLE immediately => merges after a single poll.
-if STUB_VIEW_MERGEABLE=MERGEABLE \
-    run_case "handover/x-slug" 0 "poll: MERGEABLE merges"; then
-    assert_log_has "pr view 42 --json mergeable" "poll queried mergeability"
-    assert_log_has "pr merge 42 --squash"        "MERGEABLE proceeds to merge"
+# (a) clean branch (merge-tree MERGEABLE) => proceeds to merge.
+if run_case "handover/x-slug" 0 "check: MERGEABLE merges"; then
+    assert_log_has "pr view 42 --json baseRefName,headRefOid" "check queried base+head refs"
+    assert_log_has "pr merge 42 --squash"                     "MERGEABLE proceeds to merge"
 fi
 
-# (b) UNKNOWN twice then MERGEABLE => merges after the poll settles.
-if STUB_VIEW_UNKNOWN_THEN=2 \
-    run_case "handover/x-slug" 0 "poll: UNKNOWN-then-MERGEABLE merges"; then
-    assert_log_has "pr merge 42 --squash" "settled UNKNOWN proceeds to merge"
-fi
-
-# (c) CONFLICTING => exit 4, no merge attempted.
-if STUB_VIEW_MERGEABLE=CONFLICTING \
-    run_case "handover/x-slug" 4 "poll: CONFLICTING exits 4"; then
+# (b) real conflict (merge-tree CONFLICTING) => exit 4, no merge attempted.
+if SETUP_MERGE_CONFLICT=1 \
+    run_case "handover/x-slug" 4 "check: CONFLICTING exits 4"; then
     assert_log_lacks "pr merge" "CONFLICTING does not attempt merge"
 fi
 
-# (d) UNKNOWN never settles (attempts exhausted) => falls through to merge.
-if STUB_VIEW_MERGEABLE=UNKNOWN PR_MERGE_POLL_ATTEMPTS=3 \
-    run_case "handover/x-slug" 0 "poll: UNKNOWN exhausted falls through to merge"; then
-    assert_log_has "pr merge 42 --squash" "exhausted UNKNOWN still attempts merge"
+# (c) UNKNOWN (head SHA not resolvable locally — a tooling gap) => fails OPEN
+#     and falls through to merge (never hard-block on a tool gap).
+if STUB_MERGE_UNKNOWN=1 \
+    run_case "handover/x-slug" 0 "check: UNKNOWN fails open to merge"; then
+    assert_log_has "pr merge 42 --squash" "UNKNOWN still attempts merge"
 fi
 
-# (e) gh pr view itself fails => skips poll, falls through to merge.
-if STUB_VIEW_FAIL=1 \
-    run_case "handover/x-slug" 0 "poll: gh pr view failure falls through to merge"; then
+# (d) gh pr view (base+head read) itself fails => empty verdict => fails OPEN.
+if STUB_MERGE_VIEW_FAIL=1 \
+    run_case "handover/x-slug" 0 "check: gh view failure falls through to merge"; then
     assert_log_has "pr merge 42 --squash" "view failure still attempts merge"
 fi
 
-# --- HIMMEL-936: CR merge gate blocks before the poll (exit 5) ---
+# --- HIMMEL-936: CR merge gate blocks before the mergeability check (exit 5) ---
 # STUB_CR_BLOCK=1 arms the gate's pr-view metadata arm + the graphql arm so
 # cr_merge_gate positively confirms an unresolved coderabbitai thread. The
-# gate runs BEFORE the mergeability poll, so neither the poll's pr view nor
+# gate runs BEFORE the mergeability check, so neither the check's pr view nor
 # `gh pr merge` is reached. Existing cases above stay green by design: their
 # stub returns non-JSON for the gate's pr-view (headRefOid branch, STUB_CR_BLOCK
 # unset), so cr_merge_gate degrades and fails open (plan-critic #4).
 if STUB_CR_BLOCK=1 \
-    run_case "handover/x-slug" 5 "CR-gate block exits 5 before poll"; then
+    run_case "handover/x-slug" 5 "CR-gate block exits 5 before check"; then
     assert_log_lacks "pr merge" "CR-gate block does not attempt merge"
     assert_err_has    "CR gate" "CR-gate block reports CR gate on stderr"
 fi
@@ -318,9 +325,9 @@ fi
 # STUB_CI_BLOCK=1: CR gate passes (resolved coderabbit threads + a completed
 # CodeRabbit check-run), but a non-CodeRabbit check-run ("tests") failed, so
 # ci_green_gate blocks. Runs AFTER the CR gate (exit 5) and BEFORE the
-# mergeability poll, so neither the poll's pr view nor `gh pr merge` is reached.
+# mergeability check, so neither the check's pr view nor `gh pr merge` is reached.
 if STUB_CI_BLOCK=1 \
-    run_case "handover/x-slug" 6 "CI-gate block exits 6 before poll"; then
+    run_case "handover/x-slug" 6 "CI-gate block exits 6 before check"; then
     assert_log_lacks "pr merge" "CI-gate block does not attempt merge"
     assert_err_has    "CI gate" "CI-gate block reports CI gate on stderr"
 fi
