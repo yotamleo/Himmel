@@ -71,8 +71,11 @@ Resolve paths from the himmel checkout (minerva runs inside it):
 ```bash
 REPO="$(git rev-parse --show-toplevel)"; CR="$REPO/scripts/cr"
 CHARTER="$REPO/marketplace/plugins/himmel-ops/skills/minerva/panel-charter.md"
-# 1. Enumerate the free critic rows:
-node -e 'JSON.parse(require("fs").readFileSync(process.argv[1])).panel.filter(r=>r.tier==="free").forEach(r=>console.log(r.slug+"\t"+r.model))' "$CR/critics.json"
+# 1. Enumerate the advisory critic rows (free-preferred; if the registry has NO
+#    free rows, fall back to the PAID rows rather than an empty panel — an empty
+#    advisory panel silently degrades minerva to claude-only, HIMMEL-1221 G3).
+#    Reads the UNIVERSAL critics.json (adopter-neutral), NOT the operator overlay.
+bash "$CR/advisory-rows.sh" "$CR/critics.json"
 # 2. Per row, critique the spec artifact (dead row exits non-zero → FAIL OPEN, note + continue):
 #    bash "$CR/artifact-critic.sh" --artifact <spec-file> --charter "$CHARTER" --model <model> --slug <slug>
 ```
@@ -109,7 +112,8 @@ contents into the subagent prompt verbatim (no inline second copy — same
 HIMMEL-195 rule as Stage 2).
 
 **⚑ fork-1 ADVISORY panel lane** — mirror Stage 2's lane on the PLAN artifact:
-same free-row enumeration + fail-open + Claude-adjudicates-and-gates, but with
+same `advisory-rows.sh` enumeration (free-preferred, paid-fallback; HIMMEL-1221
+G3) + fail-open + Claude-adjudicates-and-gates, but with
 `--artifact <plan-file> --charter "$REPO/marketplace/plugins/himmel-ops/skills/minerva/plan-charter.md"`
 and the ledger records segmented as `--artifact plan`
 (`cr-scores.sh --artifact plan` reports them). The Claude plan-critic remains the

@@ -508,17 +508,22 @@ check "PV2: provider metadata alone does NOT thread --provider <name>" "$(grep -
 printf '%s' "$DIFF" | CRITICS_JSON="$tmp/does-not-exist.json" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" >/dev/null 2>&1
 check "PV3: anchor-only fallback threads --provider ANCHOR_PROVIDER" "$(grep -c -- "--provider $ANCHOR_PROVIDER" "$CAPTURE_FILE")" "1"
 
-# Test O: operator-local registry overlay (HIMMEL-727). critics.local.json next
-# to the panel wins over critics.json; CRITICS_JSON env wins over both. Run a
-# COPY of the panel from a tmp dir so the repo tree is never polluted with a
-# local overlay file (concurrent sessions share this checkout).
+# Test O: operator-local registry overlay (HIMMEL-727 + HIMMEL-1221 merge).
+# critics.local.json next to the panel is now MERGED per-slug OVER critics.json
+# (was: wholesale replacement) — a local-only slug appends, a base-only slug
+# survives; CRITICS_JSON env still wins over both (no merge). Run a COPY of the
+# panel from a tmp dir so the repo tree is never polluted with a local overlay
+# file (concurrent sessions share this checkout).
 mkdir -p "$tmp/panelcopy"
 cp "$PANEL" "$tmp/panelcopy/critic-panel.sh"
 printf '%s' '{"panel":[{"slug":"repodefault","model":"fake/repo","provider":"test","tier":"free"}]}' > "$tmp/panelcopy/critics.json"
 printf '%s' '{"panel":[{"slug":"localoverlay","model":"fake/local","provider":"test","tier":"free"}]}' > "$tmp/panelcopy/critics.local.json"
 stderr_l="$(printf '%s' "$DIFF" | CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
 check "O1: local overlay used when present" "$(printf '%s\n' "$stderr_l" | grep -cF 'panel-availability: localoverlay')" "1"
-check "O1: local overlay announced on stderr" "$(printf '%s\n' "$stderr_l" | grep -cF 'critics.local.json')" "1"
+# HIMMEL-1221: the base row is now MERGED IN (not masked by the overlay). Reverting
+# Change 2 to wholesale replacement makes this assertion fail — it guards the shift.
+check "O1: base row also merged in (HIMMEL-1221)" "$(printf '%s\n' "$stderr_l" | grep -cF 'panel-availability: repodefault')" "1"
+check "O1: overlay merge announced on stderr" "$(printf '%s\n' "$stderr_l" | grep -cF 'critics.local.json')" "1"
 stderr_l2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/panelcopy/critics.json" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
 check "O2: CRITICS_JSON env wins over local overlay" "$(printf '%s\n' "$stderr_l2" | grep -cF 'panel-availability: repodefault')" "1"
 rm -f "$tmp/panelcopy/critics.local.json"
