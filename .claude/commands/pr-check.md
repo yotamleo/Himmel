@@ -372,7 +372,7 @@ Steps:
        # avail status=ok at the SHA, which the panel/codex passes that FOUND
        # the surviving blocker already provide.
        echo "coderabbit pass CONSERVED — phase A adjudication left $prior_count surviving panel/codex blocker(s); holding the scarce CodeRabbit call for the next pass after fixes (conserved, NOT failed)" >&2
-       coderabbit_avail="panel-availability: coderabbit unavailable (conserved)"
+       coderabbit_avail="panel-availability: coderabbit unavailable (conserved) reason=conserved"
    else
        cr_tmp=$(mktemp -t coderabbit-avail.XXXXXX)
        coderabbit_findings=$(bash scripts/cr/coderabbit-review.sh --base "$db" 2>"$cr_tmp") || coderabbit_rc=$?
@@ -626,9 +626,9 @@ Steps:
    For each `panel-availability:` line captured in `$panel_avail_lines` from
    step 3.0 — plus the `$coderabbit_avail` line from step 3.2, when present
    (format: `panel-availability: <slug> ok` for responders, or
-   `panel-availability: <slug> unavailable (rc=N)` for drops, or
-   `panel-availability: coderabbit unavailable (conserved)` when step 3.2 held
-   the call under the HIMMEL-1219 conservation gate), call.
+   `panel-availability: <slug> unavailable (rc=N) reason=<class>` for drops, or
+   `panel-availability: coderabbit unavailable (conserved) reason=conserved`
+   when step 3.2 held the call under the HIMMEL-1219 conservation gate), call.
    Parsing: the slug is the 2nd whitespace-delimited token and the status is
    the 3rd token (`ok` or `unavailable`) — ignore any trailing suffix, whether
    `(rc=N)` (a failed / absent / rate-limited CLI) or `(conserved)` (the
@@ -639,10 +639,30 @@ Steps:
    critic DID respond, via its fallback model) → `ok`; a `fallback-failed`
    line accompanies an `unavailable` line for the same slug — record only the
    `unavailable`. Pass `--status` as exactly `ok` or `unavailable`.
+
+   **Reason capture (HIMMEL-1176), OPTIONAL — never blocks on a parse miss.**
+   The critic panel (`critic-panel.sh`) and the step-3.2 conserved line append
+   a `reason=<class>` token AFTER the existing `(rc=N)`/`(timeout Ns)`/
+   `(conserved)` suffix (append-only — the old suffix is untouched, so any
+   prior parsing that only reads the 2nd/3rd tokens keeps working unchanged).
+   When an `unavailable` line carries a `reason=<class>` token, extract it
+   (whitespace-delimited, no internal spaces) and pass `--reason <class>` on
+   the `ledger-append.sh avail` call below. A `detail=<text>` token, when
+   present (e.g. `detail=fallback-chain exhausted` on an exhausted fallback
+   chain), is the REMAINDER of the line — pass it verbatim as `--detail
+   "<text>"` (ledger-append.sh truncates + secret-scrubs it, so no
+   pre-processing is needed here). The **CodeRabbit CLI's own** `(rc=4)`
+   rate-limited line is not yet reason-classified at its source
+   (`coderabbit-review.sh`, out of scope for HIMMEL-1176) — map it by hand:
+   `coderabbit_avail` matching `unavailable (rc=4)` → `--reason rate-limit`.
+   A line with no `reason=` token (e.g. an older critic build, or a lane not
+   yet wired) omits `--reason`/`--detail` entirely — this is the default,
+   fully back-compat path; do not invent a reason.
    ```bash
    bash scripts/cr/ledger-append.sh avail \
        --branch "$branch" --head "$head" \
-       --model "<slug>" --status <ok|unavailable>
+       --model "<slug>" --status <ok|unavailable> \
+       ${reason:+--reason "$reason"} ${detail:+--detail "$detail"}
    ```
 
    **Ledger persistence is a PREREQUISITE for clearing, not best-effort

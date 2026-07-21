@@ -84,4 +84,55 @@ CR_LEDGER="$L" bash "$LA" bogus --branch b --head H1 --model m >/dev/null 2>&1
 check "unknown kind rejected" "$?" "2"
 
 check "valid json lines" "$(L="$L" node -e 'require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).forEach(l=>JSON.parse(l));console.log("ok")')" "ok"
+
+# ── HIMMEL-1176: --reason/--detail plumbing (additive, back-compat) ────────
+LR="$tmp/reason.jsonl"
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH1 --model glm --status unavailable --reason quota-5h --detail "429 usage limit reached"
+check "reason field stored" "$(L="$LR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="RH1");console.log(o.reason)')" "quota-5h"
+check "detail field stored" "$(L="$LR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="RH1");console.log(o.detail)')" "429 usage limit reached"
+
+# Omitted --reason/--detail -> fields ABSENT (not empty strings) — back-compat.
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH2 --model glm --status ok
+check "no --reason -> reason key absent" "$(L="$LR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="RH2");console.log("reason" in o)')" "false"
+check "no --detail -> detail key absent" "$(L="$LR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="RH2");console.log("detail" in o)')" "false"
+
+# Dedup key is UNCHANGED by --reason/--detail (still (head,model) for avail).
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH1 --model glm --status unavailable --reason auth --detail "different text"
+check "reason/detail do not widen the avail dedup key" "$(grep -c '"head":"RH1"' "$LR")" "1"
+
+# reason/detail also plumb through `finding` (generic support, same flags).
+CR_LEDGER="$LR" bash "$LA" finding --branch b --head RH3 --model m --id m-9 --severity minor --file f --line 1 --verdict agreed --reason malformed-output
+check "finding reason field stored" "$(L="$LR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="RH3");console.log(o.reason)')" "malformed-output"
+
+# detail truncated to <=200 chars.
+LONG_DETAIL="$(printf 'x%.0s' $(seq 1 250))"
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH4 --model m --status unavailable --reason generic-rc-1 --detail "$LONG_DETAIL"
+check "detail truncated to <=200 chars" "$(L="$LR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="RH4");console.log(o.detail.length<=200)')" "true"
+
+# detail flattens embedded newlines to spaces.
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH5 --model m --status unavailable --reason http-5xx --detail "line one
+line two"
+check "detail flattens newlines" "$(L="$LR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="RH5");console.log(o.detail)')" "line one line two"
+
+# ── HIMMEL-1176: detail secret-scrub ────────────────────────────────────────
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH6 --model m --status unavailable --reason auth --detail "auth failed, token: abcdef0123456789ghijklm"  # gitleaks:allow (fake fixture for the scrub test)
+check "detail scrubs a token=<value> shape" "$(L="$LR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="RH6");console.log(o.detail.includes("abcdef0123456789ghijklm"))')" "false"  # gitleaks:allow (fake fixture)
+contains_json_detail() { L="$LR" HEAD_="$1" NEEDLE="$2" node -e 'const fs=require("fs"),e=process.env;const o=fs.readFileSync(e.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head===e.HEAD_);console.log(o.detail.includes(e.NEEDLE))'; }
+check "detail scrub leaves [REDACTED] marker" "$(contains_json_detail RH6 '[REDACTED]')" "true"
+
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH7 --model m --status unavailable --reason auth --detail "Authorization: Bearer sk-abcdefghij0123456789"  # gitleaks:allow (fake fixture for the scrub test)
+check "detail scrubs a Bearer token" "$(contains_json_detail RH7 'sk-abcdefghij0123456789')" "false"  # gitleaks:allow (fake fixture)
+
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH8 --model m --status unavailable --reason auth --detail "aws key AKIAABCDEFGHIJKLMNOP leaked"  # gitleaks:allow (fake fixture for the scrub test)
+check "detail scrubs an AWS-shaped key" "$(contains_json_detail RH8 'AKIAABCDEFGHIJKLMNOP')" "false"  # gitleaks:allow (fake fixture)
+
+# Fake telegram-bot-token fixture built at runtime from split parts so the
+# digits:secret LITERAL never appears in source — a literal would trip gitleaks
+# AND the public-propagation leak scanner (which, unlike gitleaks, ignores
+# `# gitleaks:allow`), blocking propagation. Joined at runtime it still matches
+# the scrub regex [0-9]{8,10}:[A-Za-z0-9_-]{35}.
+_tg_id="123456789"; _tg_sec="AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawX"
+CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH9 --model m --status unavailable --reason http-4xx --detail "telegram token ${_tg_id}:${_tg_sec} leaked"
+check "detail scrubs a telegram-bot-token shape" "$(contains_json_detail RH9 "${_tg_id}:${_tg_sec}")" "false"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

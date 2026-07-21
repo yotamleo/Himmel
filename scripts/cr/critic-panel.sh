@@ -34,6 +34,24 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFP="${CRITIC_FIRST_PASS:-$SCRIPT_DIR/critic-first-pass.sh}"
 INVOKE="${CRITIC_INVOKE:-$SCRIPT_DIR/../hermes/invoke.sh}"
 
+# failure-classify.sh (HIMMEL-1176): sole owner of the quota-exhaustion
+# signature table (is_quota_exhaustion, ex-HIMMEL-729 _is_quota_exhaustion)
+# and of classify_failure, used below to append a reason= to every
+# panel-availability unavailable line. Sourcing only defines functions (no
+# side effect; failure-classify.sh runs without `-e`, so it does not leak
+# errexit into this script the way triviality-gate.sh does). Fail-open on a
+# missing file: a should-never-happen case degrades to no reason capture and
+# an always-false exhaustion check, rather than breaking the panel.
+if [ -r "$SCRIPT_DIR/failure-classify.sh" ]; then
+    # shellcheck source=scripts/cr/failure-classify.sh
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/failure-classify.sh"
+else
+    echo "critic-panel.sh: failure-classify.sh not readable at $SCRIPT_DIR - reason capture disabled, quota-exhaustion check degrades to always-false" >&2
+    is_quota_exhaustion() { return 1; }
+    classify_failure() { echo "generic-rc-${1:-1}"; }
+fi
+
 # Registry resolution (HIMMEL-727 split + HIMMEL-1221 merge). CRITICS_JSON env
 # (tests/CI) wins outright. Otherwise critics.json is the BASE and
 # critics.local.json (gitignored per-operator overlay — ACCOUNT state like
@@ -424,27 +442,13 @@ agg_sug=""
 # back to its OpenRouter fallback_model. A plain timeout (rc 124/137) never
 # reaches here: process_member short-circuits timeouts BEFORE this check, so a
 # timeout is never mistaken for exhaustion.
+# Thin wrapper (HIMMEL-1176): the signature table itself now lives in
+# scripts/cr/failure-classify.sh's is_quota_exhaustion, the SOLE owner, so
+# critic-panel.sh's fallback trigger and classify_failure's quota-5h bucket
+# never drift against two copies of the same table.
 # ---------------------------------------------------------------------------
 _is_quota_exhaustion() {
-    # Bare AccessDenied is NOT exhaustion (codex adversarial CR on HIMMEL-729):
-    # e.g. Alibaba's AccessDenied.Unpurchased means "service not activated" and
-    # a plain AccessDenied is an auth/permission failure — falling back on those
-    # would mask a dead primary lane as a healthy critic. AccessDenied counts
-    # only when PAIRED with an exhaustion/quota/arrearage phrase.
-    # NOTE: plain .* is correct here — grep matches line-by-line, so .* can
-    # never cross a newline; [^\n] in POSIX ERE would wrongly mean "any char
-    # except backslash or the letter n" (codex CR round 2).
-    # AllocationQuota.FreeTierOnly (HIMMEL-736): Alibaba Stop-on-Exhaust's
-    # documented free-tier-exhaustion 403 code — the dotted literal, kept
-    # tight so bare "AllocationQuota" elsewhere can't false-positive.
-    _qe_sig='exceeded.*quota|quota.*exhaust|Arrearage|Throttling\.User|allocated quota|AllocationQuota\.FreeTierOnly|AccessDenied.*(quota|exhaust|arrear)|(quota|exhaust|arrear).*AccessDenied'
-    if [ -n "$1" ] && [ -f "$1" ] && grep -qiE "$_qe_sig" "$1"; then
-        return 0
-    fi
-    if [ -n "${2:-}" ] && [ -f "$2" ] && grep -qiE "$_qe_sig" "$2"; then
-        return 0
-    fi
-    return 1
+    is_quota_exhaustion "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -567,7 +571,7 @@ process_member() {
     fi
 
     if [ "$_pm_is_timeout" -eq 1 ] && [ "$_pm_do_fallback" -eq 0 ]; then
-        echo "panel-availability: $_pm_slug unavailable (timeout ${_pm_timeout}s)" >&2
+        echo "panel-availability: $_pm_slug unavailable (timeout ${_pm_timeout}s) reason=timeout" >&2
         return
     fi
     if [ "$_pm_rc" -ne 0 ]; then
@@ -621,15 +625,24 @@ process_member() {
             IFS="$_fb_old_ifs"
             unset _RM_TIMEOUT_SECS
             if [ "$_fb_success" -ne 1 ]; then
+                # Reason capture (HIMMEL-1176): classify off the PRIMARY
+                # attempt's captured files — $_pm_out_file/$_pm_err_file are
+                # still the primary's (they are reassigned only on fallback
+                # SUCCESS, above), so an exhausted chain keeps the primary's
+                # reason, not the last fallback candidate's.
+                _pm_reason="$(classify_failure "$_pm_rc" "$_pm_out_file" "$_pm_err_file" 2>/dev/null)"
+                [ -n "$_pm_reason" ] || _pm_reason="generic-rc-$_pm_rc"
                 if [ "$_pm_is_timeout" -eq 1 ]; then
-                    echo "panel-availability: $_pm_slug unavailable (timeout ${_pm_timeout}s)" >&2
+                    echo "panel-availability: $_pm_slug unavailable (timeout ${_pm_timeout}s) reason=$_pm_reason detail=fallback-chain exhausted" >&2
                 else
-                    echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
+                    echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc) reason=$_pm_reason detail=fallback-chain exhausted" >&2
                 fi
                 return
             fi
         else
-            echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
+            _pm_reason="$(classify_failure "$_pm_rc" "$_pm_out_file" "$_pm_err_file" 2>/dev/null)"
+            [ -n "$_pm_reason" ] || _pm_reason="generic-rc-$_pm_rc"
+            echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc) reason=$_pm_reason" >&2
             return
         fi
     fi
