@@ -312,22 +312,21 @@ function collectActivityLines(ctx) {
     }
     return activityLines;
 }
-function renderElementLine(ctx, element, options) {
+function renderElementLine(ctx, element, labelOptions = {}) {
     const display = ctx.config?.display;
-    const alignProgressLabels = options?.alignProgressLabels ?? false;
     switch (element) {
         case 'project':
             return renderProjectLine(ctx);
         case 'addedDirs':
             return renderAddedDirsLine(ctx);
         case 'context':
-            return renderIdentityLine(ctx, alignProgressLabels);
+            return renderIdentityLine(ctx, labelOptions);
         case 'usage':
-            return renderUsageLine(ctx, alignProgressLabels);
+            return renderUsageLine(ctx, labelOptions);
         case 'promptCache':
             return renderPromptCacheLine(ctx);
         case 'memory':
-            return renderMemoryLine(ctx);
+            return renderMemoryLine(ctx, labelOptions);
         case 'environment':
             return renderEnvironmentLine(ctx);
         case 'tools':
@@ -356,6 +355,15 @@ function renderExpanded(ctx, terminalWidth = null) {
     const elementOrder = ctx.config?.elementOrder ?? DEFAULT_ELEMENT_ORDER;
     const mergeGroups = ctx.config?.display?.mergeGroups ?? DEFAULT_MERGE_GROUPS;
     const mergeGroupLookup = buildMergeGroupLookup(mergeGroups);
+    const memoryLineVisible = elementOrder.includes('memory')
+        && ctx.config?.display?.showMemoryUsage === true
+        && ctx.memoryUsage != null;
+    const otherProgressLineVisible = elementOrder.includes('context')
+        || (elementOrder.includes('usage') && renderUsageLine(ctx) != null);
+    const separateMemoryLabelOptions = memoryLineVisible
+        && otherProgressLineVisible
+        ? { align: true, includeMemoryInWidth: true }
+        : undefined;
     const seen = new Set();
     const lines = [];
     for (let index = 0; index < elementOrder.length; index += 1) {
@@ -371,10 +379,17 @@ function renderExpanded(ctx, terminalWidth = null) {
                 for (const groupedElement of mergeSequence) {
                     seen.add(groupedElement);
                 }
+                // A memory label only needs to influence a group's padding when its
+                // progress bar is rendered on a different row. If memory is part of
+                // this combined row, keep the candidate compact and align only if the
+                // row is later forced to stack.
+                const groupLabelOptions = memoryLineVisible && !mergeSequence.includes('memory')
+                    ? separateMemoryLabelOptions
+                    : undefined;
                 const renderedGroupLines = mergeSequence
                     .map(groupedElement => ({
                     element: groupedElement,
-                    line: renderElementLine(ctx, groupedElement),
+                    line: renderElementLine(ctx, groupedElement, groupLabelOptions),
                 }))
                     .filter((entry) => typeof entry.line === 'string' && entry.line.length > 0);
                 if (renderedGroupLines.length > 1) {
@@ -390,7 +405,8 @@ function renderExpanded(ctx, terminalWidth = null) {
                     else {
                         for (const { element: groupedElement, line } of renderedGroupLines) {
                             const stackedLine = renderElementLine(ctx, groupedElement, {
-                                alignProgressLabels: true,
+                                align: true,
+                                includeMemoryInWidth: memoryLineVisible,
                             }) ?? line;
                             lines.push({
                                 line: stackedLine,
@@ -401,8 +417,9 @@ function renderExpanded(ctx, terminalWidth = null) {
                 }
                 else if (renderedGroupLines.length === 1) {
                     const [{ element: groupedElement, line }] = renderedGroupLines;
+                    const separateLine = renderElementLine(ctx, groupedElement, separateMemoryLabelOptions) ?? line;
                     lines.push({
-                        line,
+                        line: separateLine,
                         isActivity: ACTIVITY_ELEMENTS.has(groupedElement),
                     });
                 }
@@ -410,7 +427,7 @@ function renderExpanded(ctx, terminalWidth = null) {
             }
         }
         seen.add(element);
-        const line = renderElementLine(ctx, element);
+        const line = renderElementLine(ctx, element, separateMemoryLabelOptions);
         if (!line) {
             continue;
         }

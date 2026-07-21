@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG } from "../dist/config.js";
 import { setLanguage } from "../dist/i18n/index.js";
 import { formatSessionDuration, main } from "../dist/index.js";
@@ -158,7 +159,7 @@ test("index entrypoint runs when executed directly", async () => {
     process.env.CLAUDE_CONFIG_DIR = dir;
     setLanguage("en");
     const moduleUrl = new URL("../dist/index.js", import.meta.url);
-    process.argv[1] = new URL(moduleUrl).pathname;
+    process.argv[1] = fileURLToPath(moduleUrl);
     Object.defineProperty(process.stdin, "isTTY", {
       value: true,
       configurable: true,
@@ -599,4 +600,54 @@ test("main skips memoryUsage lookup for compact layout even when enabled", async
   });
 
   assert.equal(lookupCalls, 0);
+});
+
+test("main reads auth info only when an auth segment is enabled", async () => {
+  let renderedContext;
+  let lookupCalls = 0;
+
+  await main({
+    readStdin: async () => makeStdin(),
+    parseTranscript: async () => makeTranscript(),
+    countConfigs: async () => makeCounts(),
+    loadConfig: async () => makeConfig({
+      display: { showAuth: true, showAuthUser: false },
+    }),
+    getGitStatus: async () => null,
+    readAuthInfo: () => {
+      lookupCalls += 1;
+      return { method: "API Key", user: null };
+    },
+    render: (ctx) => {
+      renderedContext = ctx;
+    },
+  });
+
+  assert.equal(lookupCalls, 1);
+  assert.deepEqual(renderedContext?.authInfo, { method: "API Key", user: null });
+});
+
+test("main skips auth file I/O when auth segments are disabled", async () => {
+  let renderedContext;
+  let lookupCalls = 0;
+
+  await main({
+    readStdin: async () => makeStdin(),
+    parseTranscript: async () => makeTranscript(),
+    countConfigs: async () => makeCounts(),
+    loadConfig: async () => makeConfig({
+      display: { showAuth: false, showAuthUser: false },
+    }),
+    getGitStatus: async () => null,
+    readAuthInfo: () => {
+      lookupCalls += 1;
+      return { method: "API Key", user: null };
+    },
+    render: (ctx) => {
+      renderedContext = ctx;
+    },
+  });
+
+  assert.equal(lookupCalls, 0);
+  assert.equal(renderedContext?.authInfo, null);
 });

@@ -1,5 +1,5 @@
 import { label } from '../colors.js';
-import { getLanguage, t } from '../../i18n/index.js';
+import { interpolate, t } from '../../i18n/index.js';
 function pad(n) {
     return n < 10 ? `0${n}` : `${n}`;
 }
@@ -15,10 +15,7 @@ function formatRelativeTime(ms) {
     if (ms < 0) {
         return t('format.justNow');
     }
-    const withAgo = (value) => {
-        const ago = t('format.ago');
-        return getLanguage() === 'zh' ? `${value}${ago}` : `${value} ${ago}`;
-    };
+    const withAgo = (value) => interpolate(t('format.relativeTime'), { value });
     const seconds = Math.floor(ms / 1000);
     if (seconds < 60) {
         return withAgo(`${seconds}s`);

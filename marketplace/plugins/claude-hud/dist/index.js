@@ -8,6 +8,7 @@ import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand, shouldRunCustomLine } from "./custom-line-cmd.js";
 import { getClaudeCodeVersion } from "./version.js";
 import { getMemoryUsage } from "./memory.js";
+import { readAuthInfo } from "./auth.js";
 import { resolveEffortLevel } from "./effort.js";
 import { applyContextWindowFallback } from "./context-cache.js";
 import { getUsageFromExternalSnapshot, writeExternalUsageSnapshot } from "./external-usage.js";
@@ -32,7 +33,7 @@ export function isHudDisabled(env = process.env) {
 export async function main(overrides = {}) {
     if (isHudDisabled()) {
         // Print nothing so Claude Code renders an empty statusline, and skip all
-        // work (stdin parse, transcript scan, git) for the ~300ms polling loop.
+        // work (stdin parse, transcript scan, git) on each event-driven refresh.
         return;
     }
     const deps = {
@@ -49,6 +50,7 @@ export async function main(overrides = {}) {
         runCustomLineCommand,
         getClaudeCodeVersion,
         getMemoryUsage,
+        readAuthInfo,
         applyContextWindowFallback,
         render,
         now: () => Date.now(),
@@ -124,10 +126,13 @@ export async function main(overrides = {}) {
             ? await deps.getClaudeCodeVersion()
             : undefined;
         const effortInfo = config.display.showEffortLevel
-            ? resolveEffortLevel(stdin.effort)
+            ? resolveEffortLevel(stdin.effort, { ultracodeActive: transcript.ultracodeActive })
             : null;
         const memoryUsage = config.display.showMemoryUsage && config.lineLayout === "expanded"
             ? await deps.getMemoryUsage()
+            : null;
+        const authInfo = config.display.showAuth || config.display.showAuthUser
+            ? deps.readAuthInfo()
             : null;
         const ctx = {
             stdin,
@@ -147,6 +152,7 @@ export async function main(overrides = {}) {
             claudeCodeVersion,
             effortLevel: effortInfo?.level,
             effortSymbol: effortInfo?.symbol,
+            authInfo,
         };
         deps.render(ctx);
     }

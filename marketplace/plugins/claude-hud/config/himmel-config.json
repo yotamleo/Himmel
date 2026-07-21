@@ -3,6 +3,7 @@
     "autocompactBuffer": "disabled",
     "timeFormat": "absolute",
     "externalUsagePath": "/tmp/claude/hud-usage-snapshot.json",
+    "sevenDayThreshold": 0,
     "customLineCommand": "bash \"<himmel-path>/scripts/statusline/hud-custom-lines.sh\""
   }
 }

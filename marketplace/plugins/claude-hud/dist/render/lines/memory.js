@@ -1,8 +1,8 @@
 import { formatBytes } from "../../memory.js";
-import { label, getQuotaColor, quotaBar, RESET } from "../colors.js";
+import { getQuotaColor, quotaBar, RESET } from "../colors.js";
 import { getAdaptiveBarWidth } from "../../utils/terminal.js";
-import { t } from "../../i18n/index.js";
-export function renderMemoryLine(ctx) {
+import { progressLabel, } from "./label-align.js";
+export function renderMemoryLine(ctx, labelOptions = {}) {
     const display = ctx.config?.display;
     const colors = ctx.config?.colors;
     if (ctx.config?.lineLayout !== "expanded") {
@@ -14,7 +14,7 @@ export function renderMemoryLine(ctx) {
     if (!ctx.memoryUsage) {
         return null;
     }
-    const memoryLabel = label(t("label.approxRam"), colors);
+    const memoryLabel = progressLabel("label.approxRam", colors, { ...labelOptions, includeMemoryInWidth: true });
     const percentColor = getQuotaColor(ctx.memoryUsage.usedPercent, colors);
     const percent = `${percentColor}${ctx.memoryUsage.usedPercent}%${RESET}`;
     const bar = quotaBar(ctx.memoryUsage.usedPercent, getAdaptiveBarWidth(), colors);

@@ -919,15 +919,45 @@ if [ "$chain_rc" -eq 0 ]; then
     fi
 fi
 
+# ─── graphify pin sync (HIMMEL-1048) ─────────────────────────────────────────
+# Best-effort advisory: roll an EXISTING graphify install forward to the pinned
+# version so `himmelctl update` propagates a graphify pin bump to other machines.
+# The de-fork (HIMMEL-1048 / issue #469) made graphify a version-pinned upstream
+# PyPI install, so a pin bump only reaches a machine if something reinstalls at
+# the new pin — `git pull` alone updates graphify-bin.sh but not the installed
+# tool. Sources the ONE resolver impl; a missing/foreign install is handled
+# inside graphify_update (fresh install / never clobber). Never aborts the script.
+sync_graphify() {
+    local lib="$ROOT/scripts/lib/graphify-bin.sh"
+    echo "==> graphify pin sync (HIMMEL-1048)"
+    if [ ! -f "$lib" ]; then
+        echo "    skip: graphify-bin.sh not found ($lib)."
+        return 0
+    fi
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "    skip: uv not on PATH — graphify is uv-managed."
+        return 0
+    fi
+    # shellcheck source=lib/graphify-bin.sh
+    # shellcheck disable=SC1090,SC1091
+    if ! . "$lib" 2>/dev/null; then
+        echo "    warn: could not load graphify-bin.sh (non-fatal)." >&2
+        return 0
+    fi
+    graphify_update || echo "    warn: graphify pin sync failed (non-fatal)." >&2
+    return 0
+}
+
 # ─── existing advisory steps (best-effort; ALWAYS run, chain outcome or not)─
-# None of these are managed CHAIN items (HIMMEL-890/891 pending for
-# graphify/headroom; these five predate this ticket) — they stay best-effort
-# and never abort the script. They run here UNCONDITIONALLY, even after a
-# mid-chain failure (chain_rc=1) — restoring their pre-HIMMEL-893 behavior of
-# always running regardless of the pull/marketplace/jira/qmd/luna outcome,
+# None of these are managed CHAIN items (headroom is HIMMEL-890 pending; graphify
+# is now covered by the best-effort sync_graphify step above, HIMMEL-1048) — they
+# stay best-effort and never abort the script. They run here UNCONDITIONALLY, even
+# after a mid-chain failure (chain_rc=1) — restoring their pre-HIMMEL-893 behavior
+# of always running regardless of the pull/marketplace/jira/qmd/luna outcome,
 # including the security-relevant update_codex hooks.json re-sanitize.
 update_codex apply
 rewire_statusline
+sync_graphify
 report_plugin_gap
 reconcile_plugins apply
 report_cadence_stale

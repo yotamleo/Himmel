@@ -21,14 +21,14 @@ export const en = {
     // Format
     "format.resets": "resets",
     "format.resetsIn": "resets in",
-    "format.at": "at",
+    "format.absoluteTime": "at {time}",
     "format.in": "in",
     "format.cache": "cache",
     "format.out": "out",
     "format.tok": "tok",
     "format.tokPerSec": "tok/s",
     "format.justNow": "just now",
-    "format.ago": "ago",
+    "format.relativeTime": "{value} ago",
     // Init
     "init.initializing": "[claude-hud] Initializing...",
     "init.macosNote": "[claude-hud] Note: On macOS, you may need to restart Claude Code for the HUD to appear.",

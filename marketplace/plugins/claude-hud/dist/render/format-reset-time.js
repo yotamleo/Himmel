@@ -1,4 +1,4 @@
-import { t } from '../i18n/index.js';
+import { interpolate, t } from '../i18n/index.js';
 /**
  * Formats a usage-window reset timestamp for display in the HUD.
  *
@@ -43,17 +43,14 @@ function formatRelative(diffMs) {
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 }
 function formatAbsolute(resetAt, now) {
-    // The "at" prefix is i18n-aware. Locales that bake the preposition into
-    // "format.resets" (e.g. zh: "重置于") set "format.at" to "" so the time
-    // is returned bare ("14:30") and the preposition is supplied by the caller.
-    const at = t('format.at');
-    const prefix = at ? `${at} ` : '';
+    // The preposition + spacing live in each locale's "format.absoluteTime"
+    // pattern (en: "at {time}", zh: "{time}" — bare, preposition baked elsewhere).
     const timeStr = resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     // Show the date only when the reset falls on a different calendar day
     if (resetAt.toDateString() === now.toDateString()) {
-        return `${prefix}${timeStr}`;
+        return interpolate(t('format.absoluteTime'), { time: timeStr });
     }
     const dateStr = resetAt.toLocaleDateString([], { month: 'short', day: 'numeric' });
-    return `${prefix}${dateStr} ${timeStr}`;
+    return interpolate(t('format.absoluteTime'), { time: `${dateStr} ${timeStr}` });
 }
 //# sourceMappingURL=format-reset-time.js.map

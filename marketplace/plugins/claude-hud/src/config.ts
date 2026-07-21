@@ -24,6 +24,14 @@ export type GitBranchOverflowMode = 'truncate' | 'wrap';
 export type ModelFormatMode = 'full' | 'compact' | 'short';
 export type TimeFormatMode = 'relative' | 'absolute' | 'both' | 'elapsed' | 'elapsedAndAbsolute';
 export type CustomLinePosition = 'first' | 'last';
+
+/**
+ * Controls how many directory segments of cwd are shown in the project badge.
+ *
+ *   1 | 2 | 3: Show the last N segments (e.g. 2 -> "ai_workspace/knowledge-forge")
+ *   'full':    Show the entire absolute path from root (e.g. "/Users/name/…")
+ */
+export type PathLevels = 1 | 2 | 3 | 'full';
 export type HudElement =
   | 'project'
   | 'addedDirs'
@@ -38,6 +46,34 @@ export type HudElement =
   | 'agents'
   | 'todos'
   | 'sessionTime';
+
+/**
+ * Coarse, orderable segments of the first HUD line (the identity/project
+ * line). Shared by the expanded project line and the compact session line:
+ *
+ *   model:       provider + model badge + effort (compact mode also keeps the
+ *                context bar attached to this segment)
+ *   project:     project path + added dirs + git status (kept as one segment)
+ *   advisor:     advisor model label
+ *   sessionName: session title from /rename
+ *   version:     Claude Code version
+ *   extra:       extra-cmd custom label
+ *   duration:    session duration
+ *   cost:        session cost estimate
+ *   speed:       output speed
+ *   auth:        auth method / account
+ */
+export type FirstLineSegment =
+  | 'model'
+  | 'project'
+  | 'advisor'
+  | 'sessionName'
+  | 'version'
+  | 'extra'
+  | 'duration'
+  | 'cost'
+  | 'speed'
+  | 'auth';
 
 export type AddedDirsLayout = 'inline' | 'line';
 export type HudColorName =
@@ -89,16 +125,35 @@ export const DEFAULT_MERGE_GROUPS: HudElement[][] = [
   ['context', 'usage'],
 ];
 
+const PROJECT_LINE_SEGMENTS: FirstLineSegment[] = [
+  'model',
+  'project',
+  'advisor',
+  'sessionName',
+  'version',
+  'extra',
+  'duration',
+  'cost',
+  'speed',
+  'auth',
+];
+
+// An empty order is deliberate: renderers retain their byte-for-byte native
+// order until the user opts in to moving one or more segments.
+export const DEFAULT_PROJECT_LINE_ORDER: FirstLineSegment[] = [];
+
 const KNOWN_ELEMENTS = new Set<HudElement>(DEFAULT_ELEMENT_ORDER);
+const KNOWN_FIRST_LINE_SEGMENTS = new Set<FirstLineSegment>(PROJECT_LINE_SEGMENTS);
 
 export interface HudConfig {
   language: Language;
   lineLayout: LineLayoutType;
   showSeparators: boolean;
-  pathLevels: 1 | 2 | 3;
+  pathLevels: PathLevels;
   maxWidth: number | null;
   forceMaxWidth: boolean;
   elementOrder: HudElement[];
+  projectLineOrder: FirstLineSegment[];
   gitStatus: {
     enabled: boolean;
     showDirty: boolean;
@@ -117,6 +172,9 @@ export interface HudConfig {
     contextValue: ContextValueMode;
     showConfigCounts: boolean;
     showCost: boolean;
+    // Also show cost for routed providers (Bedrock/Vertex) that `showCost`
+    // hides by default. Requires `showCost` too. Default off.
+    showRoutedCost: boolean;
     showDuration: boolean;
     showSpeed: boolean;
     showTokenBreakdown: boolean;
@@ -133,6 +191,13 @@ export interface HudConfig {
     showAgents: boolean;
     showTodos: boolean;
     showSessionName: boolean;
+    // Show the auth method (subscription plan) for the current login,
+    // e.g. "Claude Max 20x", as its own segment at the end of the first line.
+    showAuth: boolean;
+    // Show the logged-in account (email local part) next to the auth method.
+    showAuthUser: boolean;
+    // Max characters of the account name to display (0 = full).
+    authUserLength: number;
     showClaudeCodeVersion: boolean;
     showEffortLevel: boolean;
     showMemoryUsage: boolean;
@@ -157,6 +222,15 @@ export interface HudConfig {
     externalUsageFreshnessMs: number;
     modelFormat: ModelFormatMode;
     modelOverride: string;
+    // Controls which source the model name comes from:
+    //   "auto"      — Use stdin model for Claude models, transcript model for
+    //                 non-Claude (proxy redirect detection). Opt-in.
+    //   "stdin"     — Always use the model Claude Code reports (display_name).
+    //                 Default; preserves existing behavior.
+    //   "transcript"— Always use the model from the API response (message.model).
+    //                 Best for proxy users (cc-switch, LiteLLM, etc.) who want
+    //                 the actual served model, not the configured one.
+    modelSource: 'auto' | 'stdin' | 'transcript';
     // Show the provider label (custom name or auto-detected Bedrock/Vertex/
     // Enterprise) BEFORE the model name on the project line. Default off.
     showProvider: boolean;
@@ -188,6 +262,7 @@ export const DEFAULT_CONFIG: HudConfig = {
   maxWidth: null,
   forceMaxWidth: false,
   elementOrder: [...DEFAULT_ELEMENT_ORDER],
+  projectLineOrder: [...DEFAULT_PROJECT_LINE_ORDER],
   gitStatus: {
     enabled: true,
     showDirty: true,
@@ -206,6 +281,7 @@ export const DEFAULT_CONFIG: HudConfig = {
     contextValue: 'percent',
     showConfigCounts: false,
     showCost: false,
+    showRoutedCost: false,
     showDuration: false,
     showSpeed: false,
     showTokenBreakdown: true,
@@ -222,6 +298,9 @@ export const DEFAULT_CONFIG: HudConfig = {
     showAgents: false,
     showTodos: false,
     showSessionName: false,
+    showAuth: false,
+    showAuthUser: false,
+    authUserLength: 8,
     showClaudeCodeVersion: false,
     showEffortLevel: false,
     showMemoryUsage: false,
@@ -244,6 +323,7 @@ export const DEFAULT_CONFIG: HudConfig = {
     externalUsageFreshnessMs: 300000,
     modelFormat: 'full',
     modelOverride: '',
+    modelSource: 'stdin',
     showProvider: false,
     providerName: '',
     customLine: '',
@@ -276,8 +356,8 @@ export function getConfigPath(): string {
   return path.join(getHudPluginDir(homeDir), 'config.json');
 }
 
-function validatePathLevels(value: unknown): value is 1 | 2 | 3 {
-  return value === 1 || value === 2 || value === 3;
+function validatePathLevels(value: unknown): value is PathLevels {
+  return value === 1 || value === 2 || value === 3 || value === 'full';
 }
 
 function validateLineLayout(value: unknown): value is LineLayoutType {
@@ -301,7 +381,7 @@ function validateUsageValue(value: unknown): value is UsageValueMode {
 }
 
 function validateLanguage(value: unknown): value is Language {
-  return value === 'en' || value === 'zh' || value === 'zh-Hans';
+  return value === 'en' || value === 'zh' || value === 'zh-Hans' || value === 'zh-Hant' || value === 'zh-TW';
 }
 
 function validateModelFormat(value: unknown): value is ModelFormatMode {
@@ -379,6 +459,34 @@ function validateElementOrder(value: unknown): HudElement[] {
   return elementOrder.length > 0 ? elementOrder : [...DEFAULT_ELEMENT_ORDER];
 }
 
+// Unlike `elementOrder`, `projectLineOrder` only reorders segments. A partial
+// list is preserved as a requested prefix; each renderer appends all remaining
+// visible parts in its own existing order.
+function validateProjectLineOrder(value: unknown): FirstLineSegment[] {
+  if (!Array.isArray(value)) {
+    return [...DEFAULT_PROJECT_LINE_ORDER];
+  }
+
+  const seen = new Set<FirstLineSegment>();
+  const order: FirstLineSegment[] = [];
+
+  for (const item of value) {
+    if (typeof item !== 'string' || !KNOWN_FIRST_LINE_SEGMENTS.has(item as FirstLineSegment)) {
+      continue;
+    }
+
+    const segment = item as FirstLineSegment;
+    if (seen.has(segment)) {
+      continue;
+    }
+
+    seen.add(segment);
+    order.push(segment);
+  }
+
+  return order;
+}
+
 function validateMergeGroups(value: unknown): HudElement[][] {
   if (!Array.isArray(value)) {
     return DEFAULT_MERGE_GROUPS.map(group => [...group]);
@@ -450,7 +558,7 @@ function migrateConfig(userConfig: Partial<HudConfig> & LegacyConfig): Partial<H
       const obj = userConfig.layout as Record<string, unknown>;
       if (typeof obj.lineLayout === 'string') migrated.lineLayout = obj.lineLayout as any;
       if (typeof obj.showSeparators === 'boolean') migrated.showSeparators = obj.showSeparators;
-      if (typeof obj.pathLevels === 'number') migrated.pathLevels = obj.pathLevels as any;
+      if (typeof obj.pathLevels === 'number' || obj.pathLevels === 'full') migrated.pathLevels = obj.pathLevels as any;
     }
     delete migrated.layout;
   }
@@ -458,9 +566,9 @@ function migrateConfig(userConfig: Partial<HudConfig> & LegacyConfig): Partial<H
   return migrated;
 }
 
-function validateThreshold(value: unknown, max = 100): number {
-  if (typeof value !== 'number') return 0;
-  return Math.max(0, Math.min(max, value));
+function validateThreshold(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(100, value));
 }
 
 function validateContextThreshold(value: unknown, fallback: number): number {
@@ -531,6 +639,7 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
     : null;
 
   const elementOrder = validateElementOrder(migrated.elementOrder);
+  const projectLineOrder = validateProjectLineOrder(migrated.projectLineOrder);
   const forceMaxWidth = typeof (migrated as Record<string, unknown>).forceMaxWidth === 'boolean'
     ? (migrated as Record<string, unknown>).forceMaxWidth as boolean
     : DEFAULT_CONFIG.forceMaxWidth;
@@ -580,6 +689,9 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
     showCost: typeof migrated.display?.showCost === 'boolean'
       ? migrated.display.showCost
       : DEFAULT_CONFIG.display.showCost,
+    showRoutedCost: typeof migrated.display?.showRoutedCost === 'boolean'
+      ? migrated.display.showRoutedCost
+      : DEFAULT_CONFIG.display.showRoutedCost,
     showDuration: typeof migrated.display?.showDuration === 'boolean'
       ? migrated.display.showDuration
       : DEFAULT_CONFIG.display.showDuration,
@@ -630,6 +742,16 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
     showSessionName: typeof migrated.display?.showSessionName === 'boolean'
       ? migrated.display.showSessionName
       : DEFAULT_CONFIG.display.showSessionName,
+    showAuth: typeof migrated.display?.showAuth === 'boolean'
+      ? migrated.display.showAuth
+      : DEFAULT_CONFIG.display.showAuth,
+    showAuthUser: typeof migrated.display?.showAuthUser === 'boolean'
+      ? migrated.display.showAuthUser
+      : DEFAULT_CONFIG.display.showAuthUser,
+    authUserLength: validateNonNegativeInteger(
+      migrated.display?.authUserLength,
+      DEFAULT_CONFIG.display.authUserLength,
+    ),
     showClaudeCodeVersion: typeof migrated.display?.showClaudeCodeVersion === 'boolean'
       ? migrated.display.showClaudeCodeVersion
       : DEFAULT_CONFIG.display.showClaudeCodeVersion,
@@ -673,9 +795,18 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
       migrated.display?.contextCriticalThreshold,
       DEFAULT_CONFIG.display.contextCriticalThreshold,
     ),
-    usageThreshold: validateThreshold(migrated.display?.usageThreshold, 100),
-    sevenDayThreshold: validateThreshold(migrated.display?.sevenDayThreshold, 100),
-    environmentThreshold: validateThreshold(migrated.display?.environmentThreshold, 100),
+    usageThreshold: validateThreshold(
+      migrated.display?.usageThreshold,
+      DEFAULT_CONFIG.display.usageThreshold,
+    ),
+    sevenDayThreshold: validateThreshold(
+      migrated.display?.sevenDayThreshold,
+      DEFAULT_CONFIG.display.sevenDayThreshold,
+    ),
+    environmentThreshold: validateThreshold(
+      migrated.display?.environmentThreshold,
+      DEFAULT_CONFIG.display.environmentThreshold,
+    ),
     externalUsagePath: validateOptionalPath(migrated.display?.externalUsagePath),
     externalUsageWritePath: validateOptionalPath(migrated.display?.externalUsageWritePath),
     externalUsageFreshnessMs: validateFreshnessMs(migrated.display?.externalUsageFreshnessMs),
@@ -685,6 +816,9 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
     modelOverride: typeof migrated.display?.modelOverride === 'string'
       ? migrated.display.modelOverride.slice(0, 80)
       : DEFAULT_CONFIG.display.modelOverride,
+    modelSource: ['auto', 'stdin', 'transcript'].includes(migrated.display?.modelSource as string)
+      ? (migrated.display!.modelSource as 'auto' | 'stdin' | 'transcript')
+      : DEFAULT_CONFIG.display.modelSource,
     showProvider: typeof migrated.display?.showProvider === 'boolean'
       ? migrated.display.showProvider
       : DEFAULT_CONFIG.display.showProvider,
@@ -754,7 +888,7 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
       : DEFAULT_CONFIG.colors.barEmpty,
   };
 
-  return { language, lineLayout, showSeparators, pathLevels, maxWidth, forceMaxWidth, elementOrder, gitStatus, display, colors };
+  return { language, lineLayout, showSeparators, pathLevels, maxWidth, forceMaxWidth, elementOrder, projectLineOrder, gitStatus, display, colors };
 }
 
 export async function loadConfig(): Promise<HudConfig> {

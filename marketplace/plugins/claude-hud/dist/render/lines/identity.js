@@ -2,11 +2,11 @@ import { getContextPercent, getBufferedPercent, } from "../../stdin.js";
 import { coloredBar, label, getContextColor, RESET } from "../colors.js";
 import { getAdaptiveBarWidth } from "../../utils/terminal.js";
 import { t } from "../../i18n/index.js";
-import { progressLabel } from "./label-align.js";
+import { progressLabel, } from "./label-align.js";
 import { formatTokens, formatContextValue } from "../../utils/format.js";
 import { createDebug } from "../../debug.js";
 const debug = createDebug("context");
-export function renderIdentityLine(ctx, alignLabels = false) {
+export function renderIdentityLine(ctx, labelOptions = {}) {
     const autoCompactWindow = ctx.config?.display?.autoCompactWindow ?? null;
     const rawPercent = getContextPercent(ctx.stdin, autoCompactWindow);
     const bufferedPercent = getBufferedPercent(ctx.stdin, autoCompactWindow);
@@ -25,8 +25,8 @@ export function renderIdentityLine(ctx, alignLabels = false) {
     const contextValue = formatContextValue(ctx, percent, contextValueMode);
     const contextValueDisplay = `${getContextColor(percent, colors, contextThresholds)}${contextValue}${RESET}`;
     let line = display?.showContextBar !== false
-        ? `${progressLabel("label.context", colors, alignLabels)} ${coloredBar(percent, getAdaptiveBarWidth(), colors, contextThresholds)} ${contextValueDisplay}`
-        : `${progressLabel("label.context", colors, alignLabels)} ${contextValueDisplay}`;
+        ? `${progressLabel("label.context", colors, labelOptions)} ${coloredBar(percent, getAdaptiveBarWidth(), colors, contextThresholds)} ${contextValueDisplay}`
+        : `${progressLabel("label.context", colors, labelOptions)} ${contextValueDisplay}`;
     if (display?.showTokenBreakdown !== false && percent >= (display?.contextCriticalThreshold ?? 85)) {
         const usage = ctx.stdin.context_window?.current_usage;
         if (usage) {

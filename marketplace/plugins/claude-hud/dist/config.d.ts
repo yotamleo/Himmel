@@ -14,7 +14,31 @@ export type GitBranchOverflowMode = 'truncate' | 'wrap';
 export type ModelFormatMode = 'full' | 'compact' | 'short';
 export type TimeFormatMode = 'relative' | 'absolute' | 'both' | 'elapsed' | 'elapsedAndAbsolute';
 export type CustomLinePosition = 'first' | 'last';
+/**
+ * Controls how many directory segments of cwd are shown in the project badge.
+ *
+ *   1 | 2 | 3: Show the last N segments (e.g. 2 -> "ai_workspace/knowledge-forge")
+ *   'full':    Show the entire absolute path from root (e.g. "/Users/name/…")
+ */
+export type PathLevels = 1 | 2 | 3 | 'full';
 export type HudElement = 'project' | 'addedDirs' | 'context' | 'usage' | 'promptCache' | 'memory' | 'environment' | 'tools' | 'skills' | 'mcp' | 'agents' | 'todos' | 'sessionTime';
+/**
+ * Coarse, orderable segments of the first HUD line (the identity/project
+ * line). Shared by the expanded project line and the compact session line:
+ *
+ *   model:       provider + model badge + effort (compact mode also keeps the
+ *                context bar attached to this segment)
+ *   project:     project path + added dirs + git status (kept as one segment)
+ *   advisor:     advisor model label
+ *   sessionName: session title from /rename
+ *   version:     Claude Code version
+ *   extra:       extra-cmd custom label
+ *   duration:    session duration
+ *   cost:        session cost estimate
+ *   speed:       output speed
+ *   auth:        auth method / account
+ */
+export type FirstLineSegment = 'model' | 'project' | 'advisor' | 'sessionName' | 'version' | 'extra' | 'duration' | 'cost' | 'speed' | 'auth';
 export type AddedDirsLayout = 'inline' | 'line';
 export type HudColorName = 'dim' | 'red' | 'green' | 'yellow' | 'magenta' | 'cyan' | 'brightBlue' | 'brightMagenta';
 /** A color value: named preset, 256-color index (0-255), or hex string (#rrggbb). */
@@ -36,14 +60,16 @@ export interface HudColorOverrides {
 }
 export declare const DEFAULT_ELEMENT_ORDER: HudElement[];
 export declare const DEFAULT_MERGE_GROUPS: HudElement[][];
+export declare const DEFAULT_PROJECT_LINE_ORDER: FirstLineSegment[];
 export interface HudConfig {
     language: Language;
     lineLayout: LineLayoutType;
     showSeparators: boolean;
-    pathLevels: 1 | 2 | 3;
+    pathLevels: PathLevels;
     maxWidth: number | null;
     forceMaxWidth: boolean;
     elementOrder: HudElement[];
+    projectLineOrder: FirstLineSegment[];
     gitStatus: {
         enabled: boolean;
         showDirty: boolean;
@@ -62,6 +88,7 @@ export interface HudConfig {
         contextValue: ContextValueMode;
         showConfigCounts: boolean;
         showCost: boolean;
+        showRoutedCost: boolean;
         showDuration: boolean;
         showSpeed: boolean;
         showTokenBreakdown: boolean;
@@ -78,6 +105,9 @@ export interface HudConfig {
         showAgents: boolean;
         showTodos: boolean;
         showSessionName: boolean;
+        showAuth: boolean;
+        showAuthUser: boolean;
+        authUserLength: number;
         showClaudeCodeVersion: boolean;
         showEffortLevel: boolean;
         showMemoryUsage: boolean;
@@ -100,6 +130,7 @@ export interface HudConfig {
         externalUsageFreshnessMs: number;
         modelFormat: ModelFormatMode;
         modelOverride: string;
+        modelSource: 'auto' | 'stdin' | 'transcript';
         showProvider: boolean;
         providerName: string;
         customLine: string;

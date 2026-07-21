@@ -6,9 +6,9 @@
       "kind": "commit_head",
       "mode": "pin",
       "tracked_repo": "jarrodwatts/claude-hud",
-      "pinned_commit": "b83b44593af24de1db6183788a51d08715501c02",
+      "pinned_commit": "2bbfaedb32ac2619c172b0d825bbf172369a1147",
       "tier": "A",
-      "note": "Vendored at marketplace/plugins/claude-hud (VENDORED.md); pin = upstream v0.3.0. The local vendored-tree drift (our own edits) is separately guarded by scripts/statusline/check-hud-drift.sh (himmel-dev pre-commit); this entry guards UPSTREAM advance. Not in marketplace.json by design — it is the statusline renderer (wired via node), not a marketplace plugin."
+      "note": "Vendored at marketplace/plugins/claude-hud (VENDORED.md); pin = upstream v0.6.0. The local vendored-tree drift (our own edits) is separately guarded by scripts/statusline/check-hud-drift.sh (himmel-dev pre-commit); this entry guards UPSTREAM advance. Not in marketplace.json by design — it is the statusline renderer (wired via node), not a marketplace plugin."
     },
     {
       "name": "hermes-agent",
@@ -44,10 +44,10 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "Graphify-Labs/graphify",
-      "synced_base": "0.9.13",
+      "synced_base": "0.9.22",
       "latest_source": "release",
       "tier": "A",
-      "note": "SHA-pinned lib fork yotamleo/graphify (pin in scripts/lib/graphify-bin.sh, HIMMEL-891; adoption verdict HIMMEL-621). tracked_repo is the TRUE upstream (Graphify-Labs), not the fork — a fork-HEAD compare would only catch fork-vs-pin drift, never upstream advance (same false-negative class as claude-statusline). synced_base = the upstream release the fork pin (v0.9.13-himmel.1) carries. latest_source=release because upstream tags are NON-MONOTONIC: a stale v1.0.0 (2026-04) predates the current v0.9.x line, so highest-semver-tag would report a permanent phantom BEHIND; the Releases API returns the real latest (v0.9.16). BEHIND here means: rebase the fork onto the newer upstream release, promote mcp->core dep, re-tag v<new>-himmel.1, bump the graphify-bin.sh pin, then bump synced_base here."
+      "note": "Upstream PyPI graphifyy, version-pinned in scripts/lib/graphify-bin.sh (_graphify_version). DE-FORKED from yotamleo/graphify in HIMMEL-1048 / issue #469: the fork carried ZERO delta over upstream (its only purpose — declaring the mcp dep, which upstream keeps optional — is handled by the `--with mcp` install flag), so himmel tracks upstream directly. tracked_repo is the TRUE upstream (Graphify-Labs). synced_base = the pinned upstream release. latest_source=release because upstream tags are NON-MONOTONIC: a stale v1.0.0 (2026-04) predates the current v0.9.x line, so highest-semver-tag would report a permanent phantom BEHIND; the Releases API returns the real latest. BEHIND here means: bump _graphify_version in graphify-bin.sh to the new release AND bump synced_base here (a reviewed one-line pair — no fork rebase)."
     },
     {
       "name": "qmd",

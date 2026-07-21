@@ -22,7 +22,23 @@ export const DEFAULT_ELEMENT_ORDER = [
 export const DEFAULT_MERGE_GROUPS = [
     ['context', 'usage'],
 ];
+const PROJECT_LINE_SEGMENTS = [
+    'model',
+    'project',
+    'advisor',
+    'sessionName',
+    'version',
+    'extra',
+    'duration',
+    'cost',
+    'speed',
+    'auth',
+];
+// An empty order is deliberate: renderers retain their byte-for-byte native
+// order until the user opts in to moving one or more segments.
+export const DEFAULT_PROJECT_LINE_ORDER = [];
 const KNOWN_ELEMENTS = new Set(DEFAULT_ELEMENT_ORDER);
+const KNOWN_FIRST_LINE_SEGMENTS = new Set(PROJECT_LINE_SEGMENTS);
 export const DEFAULT_CONFIG = {
     language: 'en',
     lineLayout: 'expanded',
@@ -31,6 +47,7 @@ export const DEFAULT_CONFIG = {
     maxWidth: null,
     forceMaxWidth: false,
     elementOrder: [...DEFAULT_ELEMENT_ORDER],
+    projectLineOrder: [...DEFAULT_PROJECT_LINE_ORDER],
     gitStatus: {
         enabled: true,
         showDirty: true,
@@ -49,6 +66,7 @@ export const DEFAULT_CONFIG = {
         contextValue: 'percent',
         showConfigCounts: false,
         showCost: false,
+        showRoutedCost: false,
         showDuration: false,
         showSpeed: false,
         showTokenBreakdown: true,
@@ -65,6 +83,9 @@ export const DEFAULT_CONFIG = {
         showAgents: false,
         showTodos: false,
         showSessionName: false,
+        showAuth: false,
+        showAuthUser: false,
+        authUserLength: 8,
         showClaudeCodeVersion: false,
         showEffortLevel: false,
         showMemoryUsage: false,
@@ -87,6 +108,7 @@ export const DEFAULT_CONFIG = {
         externalUsageFreshnessMs: 300000,
         modelFormat: 'full',
         modelOverride: '',
+        modelSource: 'stdin',
         showProvider: false,
         providerName: '',
         customLine: '',
@@ -118,7 +140,7 @@ export function getConfigPath() {
     return path.join(getHudPluginDir(homeDir), 'config.json');
 }
 function validatePathLevels(value) {
-    return value === 1 || value === 2 || value === 3;
+    return value === 1 || value === 2 || value === 3 || value === 'full';
 }
 function validateLineLayout(value) {
     return value === 'compact' || value === 'expanded';
@@ -136,7 +158,7 @@ function validateUsageValue(value) {
     return value === 'percent' || value === 'remaining';
 }
 function validateLanguage(value) {
-    return value === 'en' || value === 'zh' || value === 'zh-Hans';
+    return value === 'en' || value === 'zh' || value === 'zh-Hans' || value === 'zh-Hant' || value === 'zh-TW';
 }
 function validateModelFormat(value) {
     return value === 'full' || value === 'compact' || value === 'short';
@@ -203,6 +225,28 @@ function validateElementOrder(value) {
     }
     return elementOrder.length > 0 ? elementOrder : [...DEFAULT_ELEMENT_ORDER];
 }
+// Unlike `elementOrder`, `projectLineOrder` only reorders segments. A partial
+// list is preserved as a requested prefix; each renderer appends all remaining
+// visible parts in its own existing order.
+function validateProjectLineOrder(value) {
+    if (!Array.isArray(value)) {
+        return [...DEFAULT_PROJECT_LINE_ORDER];
+    }
+    const seen = new Set();
+    const order = [];
+    for (const item of value) {
+        if (typeof item !== 'string' || !KNOWN_FIRST_LINE_SEGMENTS.has(item)) {
+            continue;
+        }
+        const segment = item;
+        if (seen.has(segment)) {
+            continue;
+        }
+        seen.add(segment);
+        order.push(segment);
+    }
+    return order;
+}
 function validateMergeGroups(value) {
     if (!Array.isArray(value)) {
         return DEFAULT_MERGE_GROUPS.map(group => [...group]);
@@ -263,17 +307,17 @@ function migrateConfig(userConfig) {
                 migrated.lineLayout = obj.lineLayout;
             if (typeof obj.showSeparators === 'boolean')
                 migrated.showSeparators = obj.showSeparators;
-            if (typeof obj.pathLevels === 'number')
+            if (typeof obj.pathLevels === 'number' || obj.pathLevels === 'full')
                 migrated.pathLevels = obj.pathLevels;
         }
         delete migrated.layout;
     }
     return migrated;
 }
-function validateThreshold(value, max = 100) {
-    if (typeof value !== 'number')
-        return 0;
-    return Math.max(0, Math.min(max, value));
+function validateThreshold(value, fallback) {
+    if (typeof value !== 'number' || !Number.isFinite(value))
+        return fallback;
+    return Math.max(0, Math.min(100, value));
 }
 function validateContextThreshold(value, fallback) {
     if (typeof value !== 'number' || !Number.isFinite(value))
@@ -332,6 +376,7 @@ export function mergeConfig(userConfig) {
         ? Math.floor(rawMaxWidth)
         : null;
     const elementOrder = validateElementOrder(migrated.elementOrder);
+    const projectLineOrder = validateProjectLineOrder(migrated.projectLineOrder);
     const forceMaxWidth = typeof migrated.forceMaxWidth === 'boolean'
         ? migrated.forceMaxWidth
         : DEFAULT_CONFIG.forceMaxWidth;
@@ -379,6 +424,9 @@ export function mergeConfig(userConfig) {
         showCost: typeof migrated.display?.showCost === 'boolean'
             ? migrated.display.showCost
             : DEFAULT_CONFIG.display.showCost,
+        showRoutedCost: typeof migrated.display?.showRoutedCost === 'boolean'
+            ? migrated.display.showRoutedCost
+            : DEFAULT_CONFIG.display.showRoutedCost,
         showDuration: typeof migrated.display?.showDuration === 'boolean'
             ? migrated.display.showDuration
             : DEFAULT_CONFIG.display.showDuration,
@@ -423,6 +471,13 @@ export function mergeConfig(userConfig) {
         showSessionName: typeof migrated.display?.showSessionName === 'boolean'
             ? migrated.display.showSessionName
             : DEFAULT_CONFIG.display.showSessionName,
+        showAuth: typeof migrated.display?.showAuth === 'boolean'
+            ? migrated.display.showAuth
+            : DEFAULT_CONFIG.display.showAuth,
+        showAuthUser: typeof migrated.display?.showAuthUser === 'boolean'
+            ? migrated.display.showAuthUser
+            : DEFAULT_CONFIG.display.showAuthUser,
+        authUserLength: validateNonNegativeInteger(migrated.display?.authUserLength, DEFAULT_CONFIG.display.authUserLength),
         showClaudeCodeVersion: typeof migrated.display?.showClaudeCodeVersion === 'boolean'
             ? migrated.display.showClaudeCodeVersion
             : DEFAULT_CONFIG.display.showClaudeCodeVersion,
@@ -457,9 +512,9 @@ export function mergeConfig(userConfig) {
             : DEFAULT_CONFIG.display.autocompactBuffer,
         contextWarningThreshold: validateContextThreshold(migrated.display?.contextWarningThreshold, DEFAULT_CONFIG.display.contextWarningThreshold),
         contextCriticalThreshold: validateContextThreshold(migrated.display?.contextCriticalThreshold, DEFAULT_CONFIG.display.contextCriticalThreshold),
-        usageThreshold: validateThreshold(migrated.display?.usageThreshold, 100),
-        sevenDayThreshold: validateThreshold(migrated.display?.sevenDayThreshold, 100),
-        environmentThreshold: validateThreshold(migrated.display?.environmentThreshold, 100),
+        usageThreshold: validateThreshold(migrated.display?.usageThreshold, DEFAULT_CONFIG.display.usageThreshold),
+        sevenDayThreshold: validateThreshold(migrated.display?.sevenDayThreshold, DEFAULT_CONFIG.display.sevenDayThreshold),
+        environmentThreshold: validateThreshold(migrated.display?.environmentThreshold, DEFAULT_CONFIG.display.environmentThreshold),
         externalUsagePath: validateOptionalPath(migrated.display?.externalUsagePath),
         externalUsageWritePath: validateOptionalPath(migrated.display?.externalUsageWritePath),
         externalUsageFreshnessMs: validateFreshnessMs(migrated.display?.externalUsageFreshnessMs),
@@ -469,6 +524,9 @@ export function mergeConfig(userConfig) {
         modelOverride: typeof migrated.display?.modelOverride === 'string'
             ? migrated.display.modelOverride.slice(0, 80)
             : DEFAULT_CONFIG.display.modelOverride,
+        modelSource: ['auto', 'stdin', 'transcript'].includes(migrated.display?.modelSource)
+            ? migrated.display.modelSource
+            : DEFAULT_CONFIG.display.modelSource,
         showProvider: typeof migrated.display?.showProvider === 'boolean'
             ? migrated.display.showProvider
             : DEFAULT_CONFIG.display.showProvider,
@@ -536,7 +594,7 @@ export function mergeConfig(userConfig) {
             ? migrated.colors.barEmpty
             : DEFAULT_CONFIG.colors.barEmpty,
     };
-    return { language, lineLayout, showSeparators, pathLevels, maxWidth, forceMaxWidth, elementOrder, gitStatus, display, colors };
+    return { language, lineLayout, showSeparators, pathLevels, maxWidth, forceMaxWidth, elementOrder, projectLineOrder, gitStatus, display, colors };
 }
 export async function loadConfig() {
     const configPath = getConfigPath();
