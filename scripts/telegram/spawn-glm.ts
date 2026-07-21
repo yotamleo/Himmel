@@ -410,6 +410,19 @@ export function gitIsDirty(worktreePath: string): boolean {
   return r.stdout.toString().trim().length > 0;
 }
 
+// HIMMEL-1225: --help/-h must short-circuit BEFORE any side effect (worktree
+// add, branch mint, meta.json write, dispatch). A bare `--help`/`-h` was
+// previously parsed as the TASK POSITIONAL by parseArgs below (no recognized
+// flag matches it), so it silently became the prompt and dispatched a REAL
+// unattended worker — burning ~3x quota and leaving an orphan worktree.
+// Checked on the RAW argv, before parseArgs runs, so --help/-h ANYWHERE in the
+// invocation short-circuits regardless of what else was passed. Lane-agnostic:
+// spawn-claudex.ts imports this so both lanes share one definition (twins
+// can't drift apart).
+export function isHelpFlag(argv: string[]): boolean {
+  return argv.includes("--help") || argv.includes("-h");
+}
+
 export type ParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small"; profile: string; addPlugins: string[] };
 // Pure + validated: a value-taking flag with no value, or a non-positive /
 // non-finite --timeout-mins, is a USAGE REFUSAL (main → exit 2) — NOT a silent
@@ -456,6 +469,10 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
     else if (a === "--context") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--context requires a value" }; if (v !== "big" && v !== "small") return { ok: false, error: `--context must be big or small (got "${v}")` }; context = v; }
     else if (a === "--profile") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--profile requires a value" }; profile = v; }
     else if (a === "--add-plugins") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--add-plugins requires a value" }; addPlugins.push(...parseAddPlugins(v)); }
+    // HIMMEL-1225: a bare unrecognized flag (--help/-h already short-circuit in
+    // main) is a mistyped/unsupported option, NOT a task — fail closed rather
+    // than dispatch a real worker to reason about the literal flag string.
+    else if (a.startsWith("-")) return { ok: false, error: `unrecognized flag "${a}" (--help for usage)` };
     else if (task === undefined) task = a;
   }
   // HIMMEL-800: --branch and --name are mutually exclusive — shared mode
@@ -668,8 +685,11 @@ export async function runSharedDispatch(p: {
 }
 
 async function main(): Promise<void> {
-  const parsed = parseArgs(process.argv.slice(2));
   const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--context big|small] [--profile <name>] [--add-plugins a@m,b@m]";
+  const rawArgv = process.argv.slice(2);
+  // HIMMEL-1225: help short-circuit — before parseArgs, before any side effect.
+  if (isHelpFlag(rawArgv)) { console.log(usage); process.exit(0); }
+  const parsed = parseArgs(rawArgv);
   if (!parsed.ok) { console.error(`spawn-glm: ${parsed.error}`); console.error(usage); process.exit(2); }
   const { task, cwd, name, branch: branchArg, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }

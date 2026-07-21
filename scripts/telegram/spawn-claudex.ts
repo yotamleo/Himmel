@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
 import { REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock } from "./spawn-glm";
+import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, isHelpFlag } from "./spawn-glm";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
@@ -256,6 +256,10 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
     else if (a === "--skip-auth-preflight") skipAuthPreflight = true;
     else if (a === "--profile") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--profile requires a value" }; profile = v; }
     else if (a === "--add-plugins") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--add-plugins requires a value" }; addPlugins.push(...parseAddPlugins(v)); }
+    // HIMMEL-1225: a bare unrecognized flag (--help/-h already short-circuit in
+    // main) is a mistyped/unsupported option, NOT a task — fail closed rather
+    // than dispatch a real worker to reason about the literal flag string.
+    else if (a.startsWith("-")) return { ok: false, error: `unrecognized flag "${a}" (--help for usage)` };
     else if (task === undefined) task = a;
   }
   if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
@@ -680,14 +684,18 @@ export async function runClaudexSharedDispatch(p: {
 
 // ── main ─────────────────────────────────────────────────────────────────
 //
-// Exit codes: 1 = uncaught error (main().catch) · 2 = a refusal (usage, bank
-// preflight, himmel-checkout / shared-branch plan, window preflight, --effort
+// Exit codes: 0 = --help/-h (usage printed to stdout, HIMMEL-1225) · 1 =
+// uncaught error (main().catch) · 2 = a refusal (usage, bank preflight,
+// himmel-checkout / shared-branch plan, window preflight, --effort
 // max/ultra) · 4 = shared-branch-lock acquire failure (parity with spawn-glm;
 // there is no exit-3 GLM-guard equivalent here — claude-codex owns PHI/egress
 // guarding itself, D1).
 async function main(): Promise<void> {
-  const parsed = parseClaudexArgs(process.argv.slice(2));
   const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--effort low|medium|high|xhigh] [--profile <name>] [--add-plugins a@m,b@m] [--force] [--skip-auth-preflight]";
+  const rawArgv = process.argv.slice(2);
+  // HIMMEL-1225: help short-circuit — before parseClaudexArgs, before any side effect.
+  if (isHelpFlag(rawArgv)) { console.log(usage); process.exit(0); }
+  const parsed = parseClaudexArgs(rawArgv);
   if (!parsed.ok) { console.error(`spawn-claudex: ${parsed.error}`); console.error(usage); process.exit(2); }
   const { task, cwd, name, branch: branchArg, timeoutMins, permMode, effort, force, skipAuthPreflight, profile, addPlugins } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
