@@ -719,8 +719,8 @@ def _tg_month_note(group_name, group_slug, month, entries, assets_dir_rel,
 def _tg_note_signature(text):
     """The comparable content of a rendered month note: title+day/message
     text with the frontmatter (carries the `messages:` count) stripped and
-    every media embed line (`![[...]]`, whose name is content-hashed on a
-    byte collision — see `_tg_asset_name`) normalized to a nameless marker.
+    every generated Telegram asset embed line (whose name is content-hashed
+    on a byte collision — see `_tg_asset_name`) normalized to a nameless marker.
     Two renders of the same messages compare equal even if the count metadata
     or a re-hashed media NAME differs, but a re-import that ADDS or REMOVES
     media changes the marker count — so the overwrite guard sees it as a
@@ -728,7 +728,8 @@ def _tg_note_signature(text):
     PR #1295)."""
     m = re.search(r"^# ", text, re.M)
     body = text[m.start():] if m else text
-    return "\n".join("![[]]" if line.startswith("![[") else line
+    media_prefix = "![[chats/telegram/_assets/"
+    return "\n".join("![[]]" if line.startswith(media_prefix) else line
                      for line in body.splitlines())
 
 
