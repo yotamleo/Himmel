@@ -685,6 +685,12 @@ run_hermes_step() {
 #    safe because upgrade.sh's own contract never destroys user content.
 update_luna_template() {
     local mode="$1"   # check | apply
+    # Load LUNA_VAULT_PATH from the primary checkout's .env when it is not
+    # already in the process env (a live shell env var still wins — load_dotenv
+    # only fills the gap). Without this, `himmelctl update` run from a shell that
+    # never exported LUNA_VAULT_PATH silently skipped the luna-template upgrade
+    # even though it was configured in .env (operator report 2026-07-21).
+    load_dotenv LUNA_VAULT_PATH 2>/dev/null || true
     local vault="${LUNA_VAULT_PATH:-}"
     local template="$ROOT/templates/luna-second-brain"
     local upgrade="$template/scripts/upgrade.sh"
