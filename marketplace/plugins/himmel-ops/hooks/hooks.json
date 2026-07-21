@@ -125,6 +125,24 @@
             "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/jira-nudge-on-end.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-session-end.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'h=\"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-notification.sh\"; if [ -f \"$h\" ]; then exec bash \"$h\"; fi'"
+          }
+        ]
       }
     ]
   }
