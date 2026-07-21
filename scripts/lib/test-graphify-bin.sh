@@ -352,6 +352,35 @@ assert "update ahead-of-pin: reports not behind / leaving as-is" grep -qiE 'not 
 # shellcheck disable=SC2016
 assert "update ahead-of-pin: no install call (never downgrade)" bash -c '! grep -q "tool install" "$1"' _ "$gua_log"
 
+echo "[test-graphify-bin] _graphify_version_lt fails safe on empty/unparseable input (CR HIMMEL-1048)"
+# Empty or non-numeric version must return 1 (NOT lower), never 0 — else
+# graphify_update force-reinstalls an unreadable-version install (clobber).
+# shellcheck disable=SC2016
+assert "version_lt: empty installed -> NOT lower (rc 1)" \
+  bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; ! _graphify_version_lt "" "0.9.22"'
+assert "version_lt: genuine behind -> lower (rc 0)" \
+  bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_version_lt "0.9.1" "0.9.22"'
+
+echo "[test-graphify-bin] graphify_update: uv graphifyy with UNPARSEABLE version -> left as-is, no install (CR HIMMEL-1048)"
+guu_home="$tmpdir/gup-unparse"; mkdir -p "$guu_home"
+guu_tools="$tmpdir/gup-unparse-tools"; mkdir -p "$guu_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$guu_tools/graphifyy/uv-receipt.toml"
+guu_list="$tmpdir/gup-unparse-list"; printf 'graphifyy vunknown\n' > "$guu_list"   # version unreadable
+guu_bin="$tmpdir/gup-unparse-bin"; mkdir -p "$guu_bin"
+cat > "$guu_bin/graphify" <<'EOF'
+#!/usr/bin/env bash
+echo x
+EOF
+chmod +x "$guu_bin/graphify"
+guu_log="$tmpdir/gup-unparse-log"; : > "$guu_log"
+out=$(HOME="$guu_home" PATH="$guu_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$guu_tools" UV_LIST_FILE="$guu_list" \
+      UV_BIN_DIR="$guu_bin" UV_LOG="$guu_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "update unparseable-ver: rc 0" grep -q '^RC=0$' <<<"$out"
+# shellcheck disable=SC2016
+assert "update unparseable-ver: no install call (never clobber on uncertainty)" \
+  bash -c '! grep -q "tool install" "$1"' _ "$guu_log"
+
 echo "[test-graphify-bin] graphify_update: not installed -> fresh install at pin"
 gun_home="$tmpdir/gup-none"; mkdir -p "$gun_home"
 gun_tools="$tmpdir/gup-none-tools"; mkdir -p "$gun_tools"

@@ -389,6 +389,13 @@ PY
 # return 1 (NOT lower), so graphify_update fails SAFE: when we cannot prove the
 # install is behind the pin, we do NOT reinstall (never clobber on uncertainty).
 _graphify_version_lt() {
+  # Fail SAFE on an empty/absent version string (CR HIMMEL-1048): the python
+  # key() below defaults every unparseable component to 0, so an EMPTY $1 would
+  # compare as (0,0,0) < pin -> "lower" -> trigger an unwanted force-reinstall of
+  # a uv graphifyy whose version could not be read (the "foreign, unprovable"
+  # case). Guard it here so an unreadable version is treated as NOT-behind
+  # (leave as-is), honoring this function's own never-clobber-on-uncertainty contract.
+  [ -n "$1" ] && [ -n "$2" ] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
   python3 - "$1" "$2" <<'PY' 2>/dev/null
 import re, sys
