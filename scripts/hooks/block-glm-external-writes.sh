@@ -18,7 +18,8 @@
 #
 # Blocked on-lane:
 #   - ALL mcp__* tools EXCEPT the qmd KB carve-out (v1 chores are repo-local;
-#     blanket beats a verb list; qmd KB reads are operator-allowed, see below)
+#     blanket beats a verb list; qmd KB reads are operator-allowed, COLLECTION-
+#     SCOPED to "himmel" only — see below)
 #   - git push; git remote set-url; git config …url (tripwire un-poisoning)
 #   - the gh CLI EXCEPT the carve-out below — pr create/merge/edit/review/
 #     comment/ready, api, repo, release, gist, … stay blocked (parent-session
@@ -32,7 +33,25 @@
 #     Jira history + recoverable, so GLM workers may update status/comments and
 #     file followup tickets. Atlassian MCP stays blocked (mcp__* below) — Jira
 #     routing is CLI-first (block-backend-tier enforces that in every session).
-#   - the qmd KB (mcp__plugin_qmd_qmd__* tools): read-only knowledge-base access.
+#   - the qmd KB (mcp__plugin_qmd_qmd__* tools): read-only knowledge-base
+#     access, COLLECTION-SCOPED (HIMMEL-1239). qmd indexes salus (a PHI medical
+#     vault) alongside himmel/luna/luna-curated with NO built-in isolation, so
+#     a blanket allow would let the GLM lane egress PHI to api.z.ai via the qmd
+#     MCP path even though egress-matrix.json hard-denies salus by file path.
+#     v1 allow-list = {himmel} ONLY (widening it, e.g. adding luna-curated, is
+#     a SEPARATE named operator decision):
+#       - `query`: allowed only when tool_input.collections is a non-empty
+#         array whose every entry is "himmel" — an absent/empty collections
+#         filter falls back to the store's default collections (unknown from
+#         the tool-call JSON, may include salus) and is denied as unscoped.
+#       - `get` / `multi_get`: allowed only when every file/pattern segment is
+#         a fully-qualified `qmd://himmel/...` virtual path. qmd's resolver
+#         falls back to matching a bare/relative filename or a #docid against
+#         EVERY collection in turn, so anything short of the qmd://<collection>
+#         scheme cannot be positively attributed to one collection and is
+#         denied fail-closed.
+#       - `status` (and any other/future qmd tool): has no collection-scoping
+#         input at all, so it is denied fail-closed too.
 #   - gh issue <anything> (full issue surface — reads AND writes; cr-deferred
 #     followups are gh issues, audited in GitHub + recoverable), plus read-only
 #     PR/CI context: `gh pr view|diff|checks|status|list`, `gh run
@@ -103,8 +122,85 @@ deny() {
     exit 2
 }
 
+# qmd MCP collection fence (HIMMEL-1239). v1 allow-list: ONLY the "himmel"
+# collection (non-sensitive, repo-local docs). Widening this list (e.g. adding
+# luna-curated) is a SEPARATE named operator decision — do not add collections
+# here without one. `qmd_himmel_scoped "<value>"` -> 0 iff the value is a
+# fully-qualified qmd://himmel/... virtual path (see header comment above for
+# why bare/relative paths and #docids are rejected instead of allowed).
+qmd_himmel_scoped() {
+    # Whole-STRING prefix match (CR round 5, HIMMEL-1239) — NOT grep's
+    # per-line match. grep -qE '^...' anchors at the start of EACH LINE, so a
+    # value with an embedded newline where any line starts with
+    # qmd://himmel/ (e.g. "qmd://salus/x\nqmd://himmel/y") passed even though
+    # the value itself starts with salus. Python's re.match (no MULTILINE)
+    # anchors at the actual string start; this replicates that exactly via
+    # parameter expansion (bash 3.2-safe, no grep/sed) — strip leading
+    # whitespace, then a plain glob-prefix case match.
+    _q="$1"
+    _q="${_q#"${_q%%[![:space:]]*}"}"   # strip leading whitespace (\s* in the regex)
+    case "$_q" in qmd://himmel/*) return 0 ;; *) return 1 ;; esac
+}
+
 case "$tool" in
-    mcp__plugin_qmd_qmd__*) exit 0 ;; # KB search/read — operator-allowed (audited-lane policy 2026-07-03)
+    mcp__plugin_qmd_qmd__query)
+        # Single authoritative jq validation (CodeRabbit PR #1353, HIMMEL-1239)
+        # — do NOT round-trip collections through shell lines: the earlier
+        # extract + `[ -z ]` + `grep -vxF` form let collections:["himmel",""]
+        # through, because the empty entry collapses out of the newline-joined
+        # jq -r output and command-substitution trailing-newline stripping, so
+        # `qmd_bad` ended up empty and the deny never fired (an empty-string
+        # collection can mean "all collections" to qmd — a PHI-egress path).
+        # This one check subsumes: non-array (was CR round 1 codex-2),
+        # unscoped/empty array, AND any non-"himmel"/blank entry — matches the
+        # Python qmd_scope_reason() query branch exactly.
+        if ! printf '%s' "$input" | jq -e '(.tool_input.collections) | (type=="array") and (length>0) and (all(.=="himmel"))' >/dev/null 2>&1; then
+            deny "qmd query 'collections' must be a non-empty JSON array of only \"himmel\" on the GLM lane (HIMMEL-1239) — no blank/other entries."
+        fi
+        exit 0
+        ;;
+    mcp__plugin_qmd_qmd__get)
+        qmd_file=$(printf '%s' "$input" | jq -r '.tool_input.file // empty' 2>/dev/null || true)
+        if [ -z "$qmd_file" ] || ! qmd_himmel_scoped "$qmd_file"; then
+            deny "qmd get on the GLM lane requires a fully-qualified qmd://himmel/... path (v1 allow-list, HIMMEL-1239) — bare paths and #docids are cross-collection-ambiguous and denied fail-closed."
+        fi
+        exit 0
+        ;;
+    mcp__plugin_qmd_qmd__multi_get)
+        qmd_pattern=$(printf '%s' "$input" | jq -r '.tool_input.pattern // empty' 2>/dev/null || true)
+        if [ -z "$qmd_pattern" ]; then
+            deny "qmd multi_get on the GLM lane requires a qmd://himmel/... pattern (HIMMEL-1239)."
+        fi
+        # Root-cause fix (CR round 4, HIMMEL-1239): this is the 4th finding
+        # rooted in the same mismatch — bash word-splitting (the prior
+        # `IFS=',' for qmd_seg in $qmd_pattern` loop) DROPS empty
+        # comma-separated fields, so a trailing comma ("a.md,"), a leading
+        # comma (",a.md"), and adjacent commas ("a,,b") all lost their empty
+        # segment and passed despite containing one. Rather than patch the
+        # split mechanism again, replace it: awk -F',' preserves empty fields
+        # (NF counts them), making this PROVABLY equivalent to the Python
+        # qmd_scope_reason() multi_get branch (`[s.strip() for s in
+        # pattern.split(",")]` + a full-match check on every segment, denying
+        # on any empty/non-"qmd://himmel/" segment). No IFS/set -f/for-loop
+        # left to diverge from Python's split semantics.
+        if ! printf '%s' "$qmd_pattern" | awk -F',' '{
+                if (NF==0) exit 1
+                for (i=1;i<=NF;i++) {
+                    s=$i
+                    gsub(/^[[:space:]]+|[[:space:]]+$/,"",s)
+                    if (s !~ /^qmd:\/\/himmel\//) exit 1
+                }
+            }'; then
+            deny "qmd multi_get on the GLM lane requires a non-empty comma list where EVERY segment is a fully-qualified qmd://himmel/... path (HIMMEL-1239) — no empty/blank segments."
+        fi
+        exit 0
+        ;;
+    mcp__plugin_qmd_qmd__*)
+        # status (no scoping input) and any other/future qmd tool: scope
+        # cannot be positively determined from the tool-call JSON -> deny
+        # fail-closed (HIMMEL-1239).
+        deny "qmd tool '$tool' has no collection-scoping input the GLM lane can verify — denied fail-closed (HIMMEL-1239)."
+        ;;
     mcp__*) deny "MCP tool '$tool' is blocked on the GLM lane." ;;
     Bash|PowerShell) ;;
     *) exit 0 ;;
