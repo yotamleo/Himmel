@@ -3,6 +3,27 @@ import { label } from '../colors.js';
 import { t } from '../../i18n/index.js';
 import { formatTokens } from '../../utils/format.js';
 
+export function formatSessionTokenSummary(
+  tokens: NonNullable<RenderContext['transcript']['sessionTokens']>,
+  prefix: string,
+): string | null {
+  const total = tokens.inputTokens + tokens.outputTokens + tokens.cacheCreationTokens + tokens.cacheReadTokens;
+  if (total === 0) {
+    return null;
+  }
+
+  const parts: string[] = [
+    `${t('format.in')}: ${formatTokens(tokens.inputTokens)}`,
+    `${t('format.out')}: ${formatTokens(tokens.outputTokens)}`,
+  ];
+
+  if (tokens.cacheCreationTokens > 0 || tokens.cacheReadTokens > 0) {
+    parts.push(`${t('format.cache')}: ${formatTokens(tokens.cacheCreationTokens + tokens.cacheReadTokens)}`);
+  }
+
+  return `${prefix} ${formatTokens(total)} (${parts.join(', ')})`;
+}
+
 export function renderSessionTokensLine(ctx: RenderContext): string | null {
   const display = ctx.config?.display;
   if (display?.showSessionTokens === false) {
@@ -14,20 +35,7 @@ export function renderSessionTokensLine(ctx: RenderContext): string | null {
     return null;
   }
 
-  const total = tokens.inputTokens + tokens.outputTokens + tokens.cacheCreationTokens + tokens.cacheReadTokens;
-  if (total === 0) {
-    return null;
-  }
-
   const colors = ctx.config?.colors;
-  const parts: string[] = [
-    `${t('format.in')}: ${formatTokens(tokens.inputTokens)}`,
-    `${t('format.out')}: ${formatTokens(tokens.outputTokens)}`,
-  ];
-
-  if (tokens.cacheCreationTokens > 0 || tokens.cacheReadTokens > 0) {
-    parts.push(`${t('format.cache')}: ${formatTokens(tokens.cacheCreationTokens + tokens.cacheReadTokens)}`);
-  }
-
-  return label(`${t('label.tokens')} ${formatTokens(total)} (${parts.join(', ')})`, colors);
+  const summary = formatSessionTokenSummary(tokens, t('label.tokens'));
+  return summary ? label(summary, colors) : null;
 }

@@ -152,7 +152,9 @@ function directoryExists(dir, deps) {
 }
 export function writeExternalUsageSnapshot(config, usage, now = Date.now(), deps = fsDeps) {
     const snapshotPath = resolveSnapshotWritePath(config.display.externalUsageWritePath);
-    if (!snapshotPath || !usage) {
+    if (!snapshotPath
+        || !usage
+        || (usage.fiveHour === null && usage.sevenDay === null)) {
         return false;
     }
     const snapshot = snapshotFromUsage(usage, now);

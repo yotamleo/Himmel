@@ -1,5 +1,6 @@
 import type { HudConfig } from './config.js';
 import type { GitStatus } from './git.js';
+import type { AuthInfo } from './auth.js';
 
 export interface StdinData {
   transcript_path?: string;
@@ -44,6 +45,17 @@ export interface StdinData {
       used_percentage?: number | null;
       resets_at?: number | null;
     } | null;
+    /**
+     * Model-scoped weekly windows (e.g. the Fable weekly quota shown on /usage).
+     * Additive field — Claude Code's internal status schema defines it as
+     * { display_name, utilization (0-100 percent), resets_at (ISO-8601) } and only
+     * includes it when the server returns per-model windows.
+     */
+    model_scoped?: Array<{
+      display_name?: string | null;
+      utilization?: number | null;
+      resets_at?: string | null;
+    }> | null;
   } | null;
   // Claude Code 2.1.115+ exposes effort as an object: { level: "max" }.
   // Earlier versions (≤2.1.114) did not send this field at all. The bare-string
@@ -83,6 +95,15 @@ export interface UsageData {
   fiveHourResetAt: Date | null;
   sevenDayResetAt: Date | null;
   balanceLabel?: string | null;  // optional raw balance text (e.g. "¥6.35")
+  /** Model-scoped weekly windows (e.g. Fable) from stdin rate_limits.model_scoped. */
+  scopedWindows?: ScopedUsageWindow[];
+}
+
+/** One model-scoped weekly quota window (e.g. label "Fable", used percent 0-100). */
+export interface ScopedUsageWindow {
+  label: string;
+  percent: number | null;
+  resetAt: Date | null;
 }
 
 export interface ExternalUsageSnapshot {
@@ -137,6 +158,15 @@ export interface TranscriptData {
   // after `/advisor` is set (e.g. "claude-opus-4-7"). undefined when /advisor
   // is off or no assistant turn has happened yet.
   advisorModel?: string;
+  // Current ultracode effort state from the most recent transcript signal
+  // (`ultra_effort_enter`/`ultra_effort_exit` attachment or `/effort` output).
+  // undefined when ultracode was never entered this session.
+  ultracodeActive?: boolean;
+  // Model ID from the most recent assistant message's `message.model` field.
+  // This reflects what the API actually served — may differ from stdin.model
+  // when a proxy (e.g. cc-switch) routes to a different model. Transcript
+  // parsing sanitizes terminal controls and caps the retained value at 80 chars.
+  lastAssistantModel?: string;
 }
 
 export interface RenderContext {
@@ -157,4 +187,7 @@ export interface RenderContext {
   claudeCodeVersion?: string;
   effortLevel?: string;
   effortSymbol?: string;
+  // Auth method + account for the current login (see auth.ts). Only populated
+  // when display.showAuth or display.showAuthUser is enabled.
+  authInfo?: AuthInfo | null;
 }

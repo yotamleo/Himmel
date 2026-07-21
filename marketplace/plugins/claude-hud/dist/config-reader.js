@@ -80,19 +80,50 @@ function readStringSetting(filePath, key) {
     }
     return undefined;
 }
-function countRulesInDir(rulesDir) {
-    if (!fs.existsSync(rulesDir))
+const MAX_RULE_TREE_ENTRIES = 10_000;
+const MAX_RULE_TREE_DIRECTORIES = 1_000;
+function newRuleTraversalState() {
+    return { visited: new Set(), entries: 0, directories: 0 };
+}
+function inspectRulePath(inputPath) {
+    try {
+        const realPath = fs.realpathSync.native(inputPath);
+        return { realPath, stat: fs.statSync(realPath) };
+    }
+    catch {
+        return null;
+    }
+}
+function countRulesInDir(rulesDir, state = newRuleTraversalState()) {
+    const root = inspectRulePath(rulesDir);
+    if (!root?.stat.isDirectory() || state.visited.has(root.realPath))
         return 0;
+    if (state.directories >= MAX_RULE_TREE_DIRECTORIES) {
+        debug(`Rule directory traversal limit reached at ${rulesDir}`);
+        return 0;
+    }
+    state.visited.add(root.realPath);
+    state.directories += 1;
     let count = 0;
     try {
-        const entries = fs.readdirSync(rulesDir, { withFileTypes: true });
+        const entries = fs.readdirSync(root.realPath, { withFileTypes: true });
         for (const entry of entries) {
-            const fullPath = path.join(rulesDir, entry.name);
-            if (entry.isDirectory()) {
-                count += countRulesInDir(fullPath);
+            if (state.entries >= MAX_RULE_TREE_ENTRIES) {
+                debug(`Rule entry traversal limit reached at ${rulesDir}`);
+                break;
             }
-            else if (entry.isFile() && entry.name.endsWith('.md')) {
-                count++;
+            state.entries += 1;
+            const fullPath = path.join(root.realPath, entry.name);
+            const node = inspectRulePath(fullPath);
+            if (!node || state.visited.has(node.realPath)) {
+                continue;
+            }
+            if (node.stat.isDirectory()) {
+                count += countRulesInDir(fullPath, state);
+            }
+            else if (node.stat.isFile() && entry.name.endsWith('.md')) {
+                state.visited.add(node.realPath);
+                count += 1;
             }
         }
     }
@@ -134,7 +165,11 @@ function getConfigCachePath(cwd, claudeConfigDir, homeDir) {
 function statSentinel(filePath) {
     try {
         const stat = fs.statSync(filePath);
-        return { mtimeMs: stat.mtimeMs, size: stat.size };
+        return {
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            realPath: normalizePathForComparison(fs.realpathSync.native(filePath)),
+        };
     }
     catch (err) {
         debug('Failed to stat sentinel %s:', filePath, err instanceof Error ? err.message : err);
@@ -157,17 +192,31 @@ function buildSentinelPaths(claudeDir, claudeConfigJsonPath, cwd) {
     }
     return paths;
 }
-function collectRuleDirectorySentinels(rulesDir) {
-    if (!fs.existsSync(rulesDir))
+function collectRuleDirectorySentinels(rulesDir, state = newRuleTraversalState()) {
+    const root = inspectRulePath(rulesDir);
+    if (!root?.stat.isDirectory() || state.visited.has(root.realPath))
         return [];
+    if (state.directories >= MAX_RULE_TREE_DIRECTORIES) {
+        debug(`Rule sentinel traversal limit reached at ${rulesDir}`);
+        return [];
+    }
+    state.visited.add(root.realPath);
+    state.directories += 1;
     const sentinels = [rulesDir];
     try {
-        const entries = fs.readdirSync(rulesDir, { withFileTypes: true });
+        const entries = fs.readdirSync(root.realPath, { withFileTypes: true });
         for (const entry of entries) {
-            if (!entry.isDirectory()) {
+            if (state.entries >= MAX_RULE_TREE_ENTRIES) {
+                debug(`Rule sentinel entry limit reached at ${rulesDir}`);
+                break;
+            }
+            state.entries += 1;
+            const fullPath = path.join(root.realPath, entry.name);
+            const node = inspectRulePath(fullPath);
+            if (!node?.stat.isDirectory() || state.visited.has(node.realPath)) {
                 continue;
             }
-            sentinels.push(...collectRuleDirectorySentinels(path.join(rulesDir, entry.name)));
+            sentinels.push(...collectRuleDirectorySentinels(fullPath, state));
         }
     }
     catch (error) {
@@ -203,7 +252,7 @@ function sentinelsMatch(a, b) {
             continue;
         if (sa === null || sb === null)
             return false;
-        if (sa.mtimeMs !== sb.mtimeMs || sa.size !== sb.size)
+        if (sa.mtimeMs !== sb.mtimeMs || sa.size !== sb.size || sa.realPath !== sb.realPath)
             return false;
     }
     return true;

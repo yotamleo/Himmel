@@ -4,6 +4,71 @@ All notable changes to Claude HUD will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-20
+
+### Added
+- Support `pathLevels: "full"` to show the entire absolute working directory in the project badge, instead of being capped at the last 3 segments (#678).
+- Allow users to reorder visible first-line segments with `projectLineOrder` while preserving the existing default output (#680).
+
+### Fixed
+- Show each agent's resolved runtime model when the launch input omits a model alias, while preserving unknown and provider-qualified model identifiers (#679).
+
+### Security
+- Keep full working-directory paths terminal-safe across compact, expanded, and reordered layouts by stripping control and bidirectional characters before rendering (#678, #680).
+
+## [0.5.1] - 2026-07-17
+
+### Fixed
+- Align context, usage, and opt-in memory progress bars by terminal cell width in CJK locales, including merged and narrow layouts (#673).
+
+## [0.5.0] - 2026-07-16
+
+### Added
+- Render bounded model-scoped weekly usage windows from Claude Code statusline input in expanded and compact layouts, including remaining-value, reset-time, threshold, and custom-color modes (#669).
+
+### Security
+- Sanitize and bound model-scoped usage labels and values before terminal rendering, and keep scoped-only input from overwriting shared external usage snapshots (#669).
+- Clean compiled output before every build and enforce source-to-artifact parity so removed modules cannot remain in release packages (#670).
+
+## [0.4.2] - 2026-07-15
+
+### Fixed
+- Show a useful git ref for detached HEAD sessions by preferring exact tags and falling back to a linked short commit label (#664).
+- Preserve slash-separated branch names in GitHub branch links so clicking the HUD branch opens the expected remote branch (#664).
+- Allow opt-in `--extra-cmd` hooks to use the last non-empty line of sanitized plain-text output in addition to JSON labels (#664).
+- Strip control and bidirectional characters from Git refs in compact rendering (#664).
+
+## [0.4.1] - 2026-07-14
+
+### Fixed
+- Restore the default 80% weekly-usage threshold when the setting is omitted or invalid, preventing the weekly segment from appearing at 0% while preserving the existing usage and environment defaults (#662).
+
+## [0.4.0] - 2026-07-13
+
+### Added
+- Add opt-in routed-provider cost display for Bedrock and Vertex sessions, with explicit native-versus-estimated labeling (#648).
+- Add opt-in authentication method and account display with terminal-safe truncation and active API-key precedence (#652).
+- Add Traditional Chinese (`zh-Hant` / `zh-TW`) across configuration, onboarding, and rendered labels (#645).
+- Add opt-in transcript and automatic model-source modes for proxy users, with bounded terminal-safe model labels (#643).
+
+### Changed
+- Show ultracode sessions as `ultracode(xhigh)` from transcript attachment and `/effort` signals (#640).
+- Move locale-specific time layout into named interpolation patterns so translations control word order and spacing (#647).
+- Keep effort suffixes attached to model names and enforce opt-in render guards consistently (#650).
+
+### Fixed
+- Deduplicate repeated assistant usage by bounded message IDs while preserving the idless transcript fallback (#646).
+- Show cache creation and cache read tokens in compact session-token summaries (#653).
+- Count symlinked rule files and directories with cycle-safe, bounded traversal and cache invalidation (#644).
+- Handle non-ASCII checkout paths correctly in direct-entrypoint tests (#655).
+
+### Removed
+- Drop the `ps`-based parent-process `--effort` fallback (#471); the effort label now comes solely from Claude Code's stdin, which carries the level directly.
+
+### Dependencies
+- Bump `@types/node` from 25.9.3 to 26.1.1 (#657).
+- Bump TypeScript from 6.0.3 to 7.0.2 (#656).
+
 ## [0.3.0] - 2026-06-19
 
 ### Added

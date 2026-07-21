@@ -25,14 +25,14 @@ export const en: Messages = {
   // Format
   "format.resets": "resets",
   "format.resetsIn": "resets in",
-  "format.at": "at",
+  "format.absoluteTime": "at {time}",
   "format.in": "in",
   "format.cache": "cache",
   "format.out": "out",
   "format.tok": "tok",
   "format.tokPerSec": "tok/s",
   "format.justNow": "just now",
-  "format.ago": "ago",
+  "format.relativeTime": "{value} ago",
 
   // Init
   "init.initializing": "[claude-hud] Initializing...",

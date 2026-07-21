@@ -6,6 +6,7 @@ const PROGRESS_LABEL_KEYS = [
     "label.context",
     "label.usage",
     "label.weekly",
+    "label.approxRam",
 ];
 /**
  * Compute the visual width of a plain-text string (no ANSI).
@@ -26,10 +27,13 @@ function plainTextWidth(str) {
     }
     return width;
 }
-/** Compute the max visual width across the three progress-bar labels. */
-function maxLabelWidth() {
+/** Compute the max visual width across the progress-bar labels in view. */
+function maxLabelWidth(includeMemory = false) {
     let max = 0;
     for (const key of PROGRESS_LABEL_KEYS) {
+        if (key === "label.approxRam" && !includeMemory) {
+            continue;
+        }
         const w = plainTextWidth(t(key));
         if (w > max)
             max = w;
@@ -41,14 +45,17 @@ function maxLabelWidth() {
  * progress-bar label in the current locale, then wrapped with the `label()`
  * ANSI helper.
  */
-export function paddedLabel(key, colors) {
+export function paddedLabel(key, colors, options = {}) {
     const text = t(key);
-    const pad = maxLabelWidth() - plainTextWidth(text);
+    const pad = maxLabelWidth(options.includeMemoryInWidth) - plainTextWidth(text);
     const padded = pad > 0 ? text + " ".repeat(pad) : text;
     return label(padded, colors);
 }
-export function progressLabel(key, colors, align = false) {
-    return align ? paddedLabel(key, colors) : label(t(key), colors);
+export function progressLabel(key, colors, options = {}) {
+    const normalized = typeof options === "boolean" ? { align: options } : options;
+    return normalized.align
+        ? paddedLabel(key, colors, normalized)
+        : label(t(key), colors);
 }
 // Exported for testing only.
 export { plainTextWidth as _plainTextWidth, maxLabelWidth as _maxLabelWidth };

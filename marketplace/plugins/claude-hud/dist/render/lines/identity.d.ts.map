@@ -1,1 +1,1 @@
-{"version":3,"file":"identity.d.ts","sourceRoot":"","sources":["../../../src/render/lines/identity.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,aAAa,EAAE,MAAM,gBAAgB,CAAC;AAcpD,wBAAgB,kBAAkB,CAChC,GAAG,EAAE,aAAa,EAClB,WAAW,UAAQ,GAClB,MAAM,CA4CR"}
+{"version":3,"file":"identity.d.ts","sourceRoot":"","sources":["../../../src/render/lines/identity.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,aAAa,EAAE,MAAM,gBAAgB,CAAC;AAQpD,OAAO,EAEL,KAAK,kBAAkB,EACxB,MAAM,kBAAkB,CAAC;AAM1B,wBAAgB,kBAAkB,CAChC,GAAG,EAAE,aAAa,EAClB,YAAY,GAAE,kBAAuB,GACpC,MAAM,CA4CR"}

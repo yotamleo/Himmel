@@ -1,5 +1,6 @@
 import type { HudConfig } from './config.js';
 import type { GitStatus } from './git.js';
+import type { AuthInfo } from './auth.js';
 export interface StdinData {
     transcript_path?: string;
     cwd?: string;
@@ -42,6 +43,17 @@ export interface StdinData {
             used_percentage?: number | null;
             resets_at?: number | null;
         } | null;
+        /**
+         * Model-scoped weekly windows (e.g. the Fable weekly quota shown on /usage).
+         * Additive field — Claude Code's internal status schema defines it as
+         * { display_name, utilization (0-100 percent), resets_at (ISO-8601) } and only
+         * includes it when the server returns per-model windows.
+         */
+        model_scoped?: Array<{
+            display_name?: string | null;
+            utilization?: number | null;
+            resets_at?: string | null;
+        }> | null;
     } | null;
     effort?: string | {
         level?: string | null;
@@ -76,6 +88,14 @@ export interface UsageData {
     fiveHourResetAt: Date | null;
     sevenDayResetAt: Date | null;
     balanceLabel?: string | null;
+    /** Model-scoped weekly windows (e.g. Fable) from stdin rate_limits.model_scoped. */
+    scopedWindows?: ScopedUsageWindow[];
+}
+/** One model-scoped weekly quota window (e.g. label "Fable", used percent 0-100). */
+export interface ScopedUsageWindow {
+    label: string;
+    percent: number | null;
+    resetAt: Date | null;
 }
 export interface ExternalUsageSnapshot {
     five_hour?: {
@@ -117,6 +137,8 @@ export interface TranscriptData {
     lastCompactPostTokens?: number;
     compactionCount?: number;
     advisorModel?: string;
+    ultracodeActive?: boolean;
+    lastAssistantModel?: string;
 }
 export interface RenderContext {
     stdin: StdinData;
@@ -136,5 +158,6 @@ export interface RenderContext {
     claudeCodeVersion?: string;
     effortLevel?: string;
     effortSymbol?: string;
+    authInfo?: AuthInfo | null;
 }
 //# sourceMappingURL=types.d.ts.map

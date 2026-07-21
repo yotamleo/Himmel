@@ -21,18 +21,18 @@ export type MessageKey =
   // Format
   | "format.resets"
   | "format.resetsIn"
-  | "format.at"
+  | "format.absoluteTime"
   | "format.in"
   | "format.cache"
   | "format.out"
   | "format.tok"
   | "format.tokPerSec"
   | "format.justNow"
-  | "format.ago"
+  | "format.relativeTime"
   // Init
   | "init.initializing"
   | "init.macosNote";
 
 export type Messages = Record<MessageKey, string>;
 
-export type Language = "en" | "zh" | "zh-Hans";
+export type Language = "en" | "zh" | "zh-Hans" | "zh-Hant" | "zh-TW";

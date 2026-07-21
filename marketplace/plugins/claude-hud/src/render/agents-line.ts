@@ -1,6 +1,7 @@
 import type { RenderContext, AgentEntry } from '../types.js';
 import { yellow, green, magenta, label } from './colors.js';
 import { truncateString } from '../utils/truncate.js';
+import { sanitize as sanitizeDisplayText } from './lines/added-dirs.js';
 
 const MAX_RECENT_COMPLETED = 2;
 const MAX_AGENTS_SHOWN = 3;
@@ -34,6 +35,47 @@ export function renderAgentsLine(ctx: RenderContext): string | null {
   return lines.join('\n');
 }
 
+/**
+ * Compacts an agent model into a statusline-sized label.
+ *
+ * The transcript reports raw model IDs (e.g. "claude-opus-4-8[1m]",
+ * "claude-haiku-4-5-20251001"), which are far too long to sit inside an agent
+ * line. Family plus version is the part that carries meaning, so the wrapper
+ * bits are dropped: the "claude-" prefix, the bracketed context-window variant,
+ * and the trailing release date.
+ *
+ * Anything that does not look like a model ID — notably the short aliases a
+ * caller can pass as `model` ("opus", "sonnet", "haiku") — is returned
+ * unchanged, so explicit overrides keep rendering the way they always have.
+ */
+export function formatAgentModel(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+
+  const cleaned = sanitizeDisplayText(model).trim();
+  if (!cleaned) return undefined;
+
+  const candidate = cleaned.replace(/\[[^\]]*\]$/, '');
+  const current = candidate.match(
+    /^claude-(opus|sonnet|haiku)-(\d+)(?:-(\d+))?(?:-\d{8})?$/i,
+  );
+  if (current) {
+    const [, family, major, minor] = current;
+    return `${family.toLowerCase()}-${major}${minor ? `.${minor}` : ''}`;
+  }
+
+  const legacy = candidate.match(
+    /^claude-(\d+)(?:-(\d+))?-(opus|sonnet|haiku)(?:-\d{8})?$/i,
+  );
+  if (legacy) {
+    const [, major, minor, family] = legacy;
+    return `${family.toLowerCase()}-${major}${minor ? `.${minor}` : ''}`;
+  }
+
+  // Provider-qualified and custom model IDs carry routing information. Keep
+  // unknown shapes intact rather than guessing which token is the family.
+  return /^claude-$/i.test(candidate) ? undefined : cleaned;
+}
+
 function getStatusIcon(
   status: AgentEntry['status']
 ): string {
@@ -52,7 +94,8 @@ function formatAgent(
 ): string {
   const statusIcon = getStatusIcon(agent.status);
   const type = magenta(agent.type);
-  const model = agent.model ? label(`[${agent.model}]`, colors) : '';
+  const modelLabel = formatAgentModel(agent.model);
+  const model = modelLabel ? label(`[${modelLabel}]`, colors) : '';
   const desc = agent.description
     ? label(`: ${truncateString(agent.description, 40)}`, colors)
     : '';

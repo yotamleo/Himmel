@@ -1,4 +1,4 @@
-import type { StdinData, UsageData } from './types.js';
+import type { StdinData, UsageData, TranscriptData } from './types.js';
 import type { ModelFormatMode } from './config.js';
 type StdinStream = Pick<NodeJS.ReadStream, 'setEncoding' | 'on' | 'off' | 'pause'> & {
     isTTY?: boolean;
@@ -13,6 +13,17 @@ export declare function getTotalTokens(stdin: StdinData): number;
 export declare function getContextPercent(stdin: StdinData, autoCompactWindow?: number | null): number;
 export declare function getBufferedPercent(stdin: StdinData, autoCompactWindow?: number | null): number;
 export declare function getModelName(stdin: StdinData): string;
+/**
+ * Resolves the model name to display, respecting `display.modelSource` config.
+ *
+ * - "stdin":      Always use the model from Claude Code's stdin (display_name).
+ * - "transcript": Always use the model from the API response (message.model).
+ *                 Falls back to stdin when transcript has no assistant messages yet.
+ * - "auto": Use stdin for Claude models, transcript for non-Claude.
+ *                      Detects proxy redirects (cc-switch, LiteLLM, etc.) that
+ *                      serve a different model than what Claude Code requested.
+ */
+export declare function resolveModelName(stdin: StdinData, transcript: TranscriptData | undefined, modelSource?: 'auto' | 'stdin' | 'transcript'): string;
 export declare function isBedrockModelId(modelId?: string): boolean;
 export declare function isVertexModelId(modelId?: string): boolean;
 export declare function isEnterpriseModelId(modelId?: string): boolean;

@@ -25,14 +25,14 @@ export const zhHans: Messages = {
   // Format
   "format.resets": "重置于",
   "format.resetsIn": "重置剩余",
-  "format.at": "",
+  "format.absoluteTime": "{time}",
   "format.in": "输入",
   "format.cache": "缓存",
   "format.out": "输出",
   "format.tok": "词元",
   "format.tokPerSec": "tok/s",
   "format.justNow": "刚刚",
-  "format.ago": "前",
+  "format.relativeTime": "{value} 前",
 
   // Init
   "init.initializing": "[claude-hud] 正在初始化...",

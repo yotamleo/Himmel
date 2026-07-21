@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
 # scripts/lib/test-graphify-bin.sh — smoke test for graphify-bin.sh resolver
-# (HIMMEL-891).
+# (HIMMEL-891; de-forked to upstream PyPI in HIMMEL-1048 / issue #469).
 #
 # Hermetic: the operator machine already carries a REAL `uv tool install
-# graphifyy` (v0.9.10, per HIMMEL-891 context) — every scenario below scrubs
-# any PATH dir carrying a real `uv` or `graphify` (scripts/lib/hermetic-path.sh
-# scrub_path) before layering in a stub `uv` (argv-logging to a file, behavior
-# controlled by env vars) ahead of it. No network, no real installs.
+# graphifyy` — every scenario below scrubs any PATH dir carrying a real `uv` or
+# `graphify` (scripts/lib/hermetic-path.sh scrub_path) before layering in a stub
+# `uv` (argv-logging to a file, behavior controlled by env vars) ahead of it.
+# No network, no real installs.
 #
 # Validates:
 #   1. graphify_install_hint emits the uv-tool-install recipe pinned to a
-#      full commit SHA, never a movable branch/tag (+ REPO/REF overrides;
-#      the 40-hex pin policy has its own dedicated assertion).
+#      specific PyPI VERSION of graphifyy (not `latest`, not a git ref), with a
+#      GRAPHIFY_VERSION override; the version-pin policy has its own assertion.
 #   2. has_graphify is presence-only.
 #   3. missing -> exactly one `uv tool install` call; graphify then resolvable.
 #   4. idempotent re-run -> still exactly one call total (skip, adopt as
-#      himmel-fork).
-#   5. foreign install (uv tool list shows graphifyy from elsewhere, OR the
-#      same repo at a DIFFERENT ref, OR a receipt-less uv package, OR a bare
-#      PATH-resolved graphify with no uv package at all) -> adopted, ZERO
-#      install calls, every way.
+#      himmel-pin — the uv-resolved version equals the pinned version).
+#   5. foreign install (uv tool list shows graphifyy at a DIFFERENT version, OR a
+#      uv package whose version can't be read, OR a bare PATH-resolved graphify
+#      with no uv package at all) -> adopted, ZERO install calls, every way.
 #   6. no uv on PATH / install failure / installed-but-unresolvable -> WARN +
 #      honest nonzero rc, never crashes.
 #   7. consumer wiring — setup.sh/adopt.sh source graphify-bin.sh and call
@@ -54,34 +53,35 @@ trap 'rm -rf "$tmpdir"' EXIT
 # Base PATH carrying neither a real `uv` nor a real `graphify`.
 base_path="$(scrub_path "$PATH" uv graphify)"
 
-echo "[test-graphify-bin] graphify_install_hint (HIMMEL-891)"
+# The pinned version the committed resolver installs (env override cleared so we
+# read the committed default). Tests derive from this so a pin bump never breaks
+# them: "our" install uses this version; foreign installs use a guaranteed-different one.
+pinned_ver="$(env -u GRAPHIFY_VERSION bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_version')"
+
+echo "[test-graphify-bin] graphify_install_hint (HIMMEL-1048: PyPI version pin)"
 hint="$(graphify_install_hint)"
 assert "hint uses uv tool install" grep -q '^uv tool install ' <<<"$hint"
-assert "hint mentions the himmel fork repo" grep -q 'yotamleo/graphify' <<<"$hint"
-assert "hint pins a full commit SHA (CR-r3), not a movable ref" grep -qE '@[0-9a-f]{40} ' <<<"$hint"
+assert "hint pins the graphifyy package to a specific PyPI version" \
+  grep -qE 'graphifyy==[0-9]+\.[0-9]+\.[0-9]+' <<<"$hint"
 # shellcheck disable=SC2016
 # Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
-assert "hint does NOT install from the mutable himmel-main branch" \
-  bash -c '! grep -q "@himmel-main" <<<"$1"' _ "$hint"
-assert "hint mentions the graphifyy package" grep -q 'graphifyy$' <<<"$hint"
-assert "hint carries --with mcp (HIMMEL-996: fork pyproject lacks the mcp dep)" \
+assert "hint does NOT install from a git source (de-forked)" \
+  bash -c '! grep -q "git+" <<<"$1"' _ "$hint"
+assert "hint carries --with mcp (HIMMEL-996: upstream keeps the mcp dep optional)" \
   grep -q -- '--with mcp' <<<"$hint"
 
-echo "[test-graphify-bin] pin policy (CR-r3): the configured ref IS a full 40-hex commit SHA"
-# Tags/branches are force-movable; only a commit SHA is content-addressed.
-# This pins the POLICY so a future 'bump the pin' change that swaps in a tag
-# or branch name fails here. (Run with the env override cleared -- the test
-# targets the committed default.)
-default_ref="$(env -u GRAPHIFY_FORK_REF bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_fork_ref')"
+echo "[test-graphify-bin] pin policy (HIMMEL-1048): the configured version IS a semver, not a movable ref"
+# `latest`/a branch/a bare tag would be non-reproducible; a published PyPI version
+# is immutable. This pins the POLICY so a future 'bump the pin' change that swaps
+# in `latest` or a non-version string fails here.
 # shellcheck disable=SC2016
 # Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
-assert "default GRAPHIFY_FORK_REF is a full 40-hex SHA" \
-  bash -c 'printf "%s" "$1" | grep -qE "^[0-9a-f]{40}$"' _ "$default_ref"
+assert "default GRAPHIFY_VERSION is a semver (X.Y.Z...)" \
+  bash -c 'printf "%s" "$1" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+"' _ "$pinned_ver"
 
-echo "[test-graphify-bin] GRAPHIFY_FORK_REPO / GRAPHIFY_FORK_REF overrides"
-override_hint="$(GRAPHIFY_FORK_REPO=https://example.test/mirror/graphify GRAPHIFY_FORK_REF=my-ref graphify_install_hint)"
-assert "hint honors GRAPHIFY_FORK_REPO override" grep -q 'example.test/mirror/graphify' <<<"$override_hint"
-assert "hint honors GRAPHIFY_FORK_REF override" grep -q 'my-ref' <<<"$override_hint"
+echo "[test-graphify-bin] GRAPHIFY_VERSION override"
+override_hint="$(GRAPHIFY_VERSION=9.9.9 graphify_install_hint)"
+assert "hint honors GRAPHIFY_VERSION override" grep -q 'graphifyy==9.9.9' <<<"$override_hint"
 
 echo "[test-graphify-bin] has_graphify is presence-only"
 noreal_home="$tmpdir/noreal"; mkdir -p "$noreal_home"
@@ -90,10 +90,10 @@ PATH="$base_path" HOME="$noreal_home" bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.s
 assert "has_graphify=false with no graphify on PATH" test "$rc" -ne 0
 
 # ── Stub uv: logs every call to UV_LOG; `tool list` echoes UV_LIST_FILE;
-#    `tool dir` echoes UV_TOOL_DIR; `tool install --from <url> graphifyy`
-#    writes a matching uv-receipt.toml under UV_TOOL_DIR, appends to
-#    UV_LIST_FILE, and drops a working `graphify` shim into UV_BIN_DIR
-#    (simulating uv's own tool-bin-dir shim) unless STUB_UV_INSTALL_RC != 0.
+#    `tool dir` echoes UV_TOOL_DIR; `tool install ... graphifyy==<ver>` appends a
+#    matching "graphifyy v<ver>" line to UV_LIST_FILE (the provenance signal the
+#    resolver reads after the de-fork), writes a PyPI-shaped receipt, and drops a
+#    working `graphify` shim into UV_BIN_DIR unless STUB_UV_INSTALL_RC != 0.
 stub_dir="$tmpdir/stub"
 mkdir -p "$stub_dir/bin"
 cat > "$stub_dir/bin/uv" <<'STUB'
@@ -109,21 +109,20 @@ if [ "$1" = "tool" ] && [ "$2" = "dir" ]; then
 fi
 if [ "$1" = "tool" ] && [ "$2" = "install" ]; then
   [ "${STUB_UV_INSTALL_RC:-0}" -eq 0 ] || exit "${STUB_UV_INSTALL_RC}"
-  mkdir -p "${UV_TOOL_DIR:?}/graphifyy"
-  # Scan argv for the --from value (HIMMEL-996 added `--with mcp` ahead of it,
-  # so positional $4 no longer holds the source). Write the receipt in uv's
-  # REAL serialization (git and rev as SEPARATE keys, no combined git+url@ref
-  # literal) so the provenance probes are exercised against what a real
-  # install leaves behind (CR-2).
-  src=""; prev=""
+  # Scan argv for the graphifyy==<ver> package spec (after the de-fork the
+  # install has no --from; the package spec IS the source). Echo the resolved
+  # version back into `uv tool list` exactly as a real uv install would, so the
+  # resolver's version-based provenance probe is exercised against real output.
+  ver="0.0.0"
   for a in "$@"; do
-    [ "$prev" = "--from" ] && src="$a"
-    prev="$a"
+    case "$a" in
+      graphifyy==*)       ver="${a#graphifyy==}" ;;     # bare pin: graphifyy==X
+      graphifyy\[*\]==*)  ver="${a##*==}" ;;            # extras pin: graphifyy[all]==X
+    esac
   done
-  src="${src#git+}"
-  printf 'requirements = [{ name = "graphifyy", git = "%s", rev = "%s" }]\n' \
-    "${src%@*}" "${src##*@}" > "${UV_TOOL_DIR}/graphifyy/uv-receipt.toml"
-  printf 'graphifyy v0.0.0-test\n' >> "${UV_LIST_FILE:?}"
+  mkdir -p "${UV_TOOL_DIR:?}/graphifyy"
+  printf 'requirements = [{ name = "graphifyy" }]\n' > "${UV_TOOL_DIR}/graphifyy/uv-receipt.toml"
+  printf 'graphifyy v%s\n' "$ver" >> "${UV_LIST_FILE:?}"
   mkdir -p "${UV_BIN_DIR:?}"
   cat > "${UV_BIN_DIR}/graphify" <<'INNER'
 #!/usr/bin/env bash
@@ -149,8 +148,8 @@ out=$(HOME="$fresh_home" PATH="$fresh_path" UV_TOOL_DIR="$fresh_tools" UV_LIST_F
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_install; echo "RC=$?"' 2>&1)
 assert "missing: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "missing: exactly one uv tool install call" test "$(grep -c 'UV tool install' "$fresh_log")" -eq 1
-assert "missing: install argv carries --with mcp (HIMMEL-996)" \
-  grep -q 'UV tool install --with mcp --from' "$fresh_log"
+assert "missing: install argv carries --with mcp + the graphifyy version pin" \
+  grep -qE 'UV tool install --with mcp graphifyy==[0-9]' "$fresh_log"
 assert "missing: graphify shim landed on PATH" test -x "$fresh_bin/graphify"
 assert "missing: has_graphify true post-install" \
   env PATH="$fresh_path" HOME="$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
@@ -159,18 +158,18 @@ out2=$(HOME="$fresh_home" PATH="$fresh_path" UV_TOOL_DIR="$fresh_tools" UV_LIST_
        UV_BIN_DIR="$fresh_bin" UV_LOG="$fresh_log" \
        bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_install; echo "RC=$?"' 2>&1)
 assert "idempotent re-run: rc 0" grep -q '^RC=0$' <<<"$out2"
-assert "idempotent re-run: reports adopted himmel-fork" grep -q 'source=himmel-fork' <<<"$out2"
+assert "idempotent re-run: reports adopted himmel-pin" grep -q 'source=himmel-pin' <<<"$out2"
 assert "idempotent re-run: still exactly one install call total" test "$(grep -c 'UV tool install' "$fresh_log")" -eq 1
 
-echo "[test-graphify-bin] foreign uv-list entry, binary NOT resolvable -> WARN + nonzero, no install (CR-r2)"
-# uv metadata says graphifyy is installed (foreign receipt) but NO graphify
-# resolves on PATH (stale receipt / missing shim / uv bin dir off PATH).
-# Adopting that silently would report success for a broken install; the
-# adopted path must require has_graphify and answer WARN + honest nonzero --
-# and still never auto-reinstall over the foreign uv metadata.
+echo "[test-graphify-bin] foreign uv-list entry (different version), binary NOT resolvable -> WARN + nonzero, no install (CR-r2)"
+# uv metadata says graphifyy is installed but at a DIFFERENT version than we pin
+# (a foreign/operator install), and NO graphify resolves on PATH (stale receipt /
+# missing shim / uv bin dir off PATH). Adopting that silently would report success
+# for a broken install; the adopted path must require has_graphify and answer WARN
+# + honest nonzero -- and still never auto-reinstall over the foreign uv metadata.
 funiv_home="$tmpdir/foreignuv"; mkdir -p "$funiv_home"
 funiv_tools="$tmpdir/foreignuv-tools"; mkdir -p "$funiv_tools/graphifyy"
-printf 'requirements = ["graphifyy==1.2.3"]\n' > "$funiv_tools/graphifyy/uv-receipt.toml"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$funiv_tools/graphifyy/uv-receipt.toml"
 funiv_list="$tmpdir/foreignuv-list"; printf 'graphifyy v1.2.3\n' > "$funiv_list"
 funiv_log="$tmpdir/foreignuv-uvlog"; : > "$funiv_log"
 funiv_path="$stub_dir/bin:$base_path"
@@ -186,7 +185,7 @@ assert "foreign(uv-list, unresolvable): names source=foreign" grep -q 'source=fo
 assert "foreign(uv-list, unresolvable): no install call (never reinstall over uv metadata)" \
   bash -c '! grep -q "tool install" "$1"' _ "$funiv_log"
 
-echo "[test-graphify-bin] foreign uv-list entry, binary resolvable -> adopted rc 0, no install"
+echo "[test-graphify-bin] foreign uv-list entry (different version), binary resolvable -> adopted rc 0, no install"
 # Same foreign uv metadata, but a working graphify IS on PATH -> clean adopt.
 funivok_bin="$tmpdir/foreignuv-okbin"; mkdir -p "$funivok_bin"
 cat > "$funivok_bin/graphify" <<'EOF'
@@ -227,65 +226,37 @@ assert "foreign(PATH): no install call" bash -c '! grep -q "tool install" "$1"' 
 assert "foreign(PATH): has_graphify true (adopted binary resolvable)" \
   env PATH="$funpath_path" HOME="$funpath_home" bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
 
-echo "[test-graphify-bin] graphify_source direct receipt match -> himmel-fork"
-fork_home="$tmpdir/forkdirect"; mkdir -p "$fork_home"
-fork_tools="$tmpdir/forkdirect-tools"; mkdir -p "$fork_tools/graphifyy"
-printf 'requirements = [{ name = "graphifyy", git = "https://github.com/yotamleo/graphify", rev = "df74ab44817d3b7f8ecafb333ec99899fe634f9d" }]\n' \
-  > "$fork_tools/graphifyy/uv-receipt.toml"
-fork_list="$tmpdir/forkdirect-list"; printf 'graphifyy v0.9.13\n' > "$fork_list"
-src=$(UV_TOOL_DIR="$fork_tools" UV_LIST_FILE="$fork_list" UV_LOG="$tmpdir/forkdirect-log" \
-      PATH="$stub_dir/bin:$base_path" HOME="$fork_home" \
+echo "[test-graphify-bin] graphify_source: uv graphifyy at the PINNED version -> himmel-pin"
+pin_home="$tmpdir/pindirect"; mkdir -p "$pin_home"
+pin_tools="$tmpdir/pindirect-tools"; mkdir -p "$pin_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$pin_tools/graphifyy/uv-receipt.toml"
+pin_list="$tmpdir/pindirect-list"; printf 'graphifyy v%s\n' "$pinned_ver" > "$pin_list"
+src=$(UV_TOOL_DIR="$pin_tools" UV_LIST_FILE="$pin_list" UV_LOG="$tmpdir/pindirect-log" \
+      PATH="$stub_dir/bin:$base_path" HOME="$pin_home" \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_source')
-assert "direct receipt match (real uv git/rev serialization) -> himmel-fork" test "$src" = "himmel-fork"
-# CR-r2: the SAME himmel-fork metadata with no resolvable binary must not
-# report success either -- WARN + nonzero, zero install calls.
-fork_log="$tmpdir/forkdirect-uvlog"; : > "$fork_log"
-out=$(HOME="$fork_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$fork_tools" UV_LIST_FILE="$fork_list" \
-      UV_BIN_DIR="$tmpdir/forkdirect-bin" UV_LOG="$fork_log" \
+assert "uv graphifyy at the pinned version -> himmel-pin" test "$src" = "himmel-pin"
+# CR-r2: the SAME himmel-pin metadata with no resolvable binary must not report
+# success either -- WARN + nonzero, zero install calls.
+pin_log="$tmpdir/pindirect-uvlog"; : > "$pin_log"
+out=$(HOME="$pin_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$pin_tools" UV_LIST_FILE="$pin_list" \
+      UV_BIN_DIR="$tmpdir/pindirect-bin" UV_LOG="$pin_log" \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_install; echo "RC=$?"' 2>&1)
-assert "himmel-fork metadata, unresolvable: rc nonzero" grep -qv '^RC=0$' <<<"$out"
-assert "himmel-fork metadata, unresolvable: WARNs 'not resolvable on PATH'" grep -qi 'not resolvable on PATH' <<<"$out"
+assert "himmel-pin metadata, unresolvable: rc nonzero" grep -qv '^RC=0$' <<<"$out"
+assert "himmel-pin metadata, unresolvable: WARNs 'not resolvable on PATH'" grep -qi 'not resolvable on PATH' <<<"$out"
 # shellcheck disable=SC2016
 # Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
-assert "himmel-fork metadata, unresolvable: no install call" bash -c '! grep -q "tool install" "$1"' _ "$fork_log"
+assert "himmel-pin metadata, unresolvable: no install call" bash -c '! grep -q "tool install" "$1"' _ "$pin_log"
 
-echo "[test-graphify-bin] same repo, DIFFERENT ref -> foreign (CR-2: provenance = exact pin)"
-sameref_home="$tmpdir/samerepo"; mkdir -p "$sameref_home"
-sameref_tools="$tmpdir/samerepo-tools"; mkdir -p "$sameref_tools/graphifyy"
-printf 'requirements = [{ name = "graphifyy", git = "https://github.com/yotamleo/graphify", rev = "himmel-main" }]\n' \
-  > "$sameref_tools/graphifyy/uv-receipt.toml"
-sameref_list="$tmpdir/samerepo-list"; printf 'graphifyy v0.9.13\n' > "$sameref_list"
-src=$(UV_TOOL_DIR="$sameref_tools" UV_LIST_FILE="$sameref_list" UV_LOG="$tmpdir/samerepo-log" \
-      PATH="$stub_dir/bin:$base_path" HOME="$sameref_home" \
+echo "[test-graphify-bin] uv graphifyy whose version can't be read -> foreign (present but unprovable)"
+# uv lists the package but the version token is unparseable (odd `uv tool list`
+# output shape). Provenance can't confirm it's ours -> foreign, never 'not installed'.
+badver_home="$tmpdir/badver"; mkdir -p "$badver_home"
+badver_tools="$tmpdir/badver-tools"; mkdir -p "$badver_tools/graphifyy"
+badver_list="$tmpdir/badver-list"; printf 'graphifyy vunknown\n' > "$badver_list"
+src=$(UV_TOOL_DIR="$badver_tools" UV_LIST_FILE="$badver_list" UV_LOG="$tmpdir/badver-log" \
+      PATH="$stub_dir/bin:$base_path" HOME="$badver_home" \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_source')
-assert "same-repo-different-ref receipt -> foreign" test "$src" = "foreign"
-sameref_uvlog="$tmpdir/samerepo-uvlog"; : > "$sameref_uvlog"
-# A resolvable binary rides this run: the point here is CR-2 (adopt, never
-# reinstall over a different-ref install) -- the unresolvable-metadata rc is
-# covered by the CR-r2 scenarios above/below.
-sameref_bin="$tmpdir/samerepo-okbin"; mkdir -p "$sameref_bin"
-cat > "$sameref_bin/graphify" <<'EOF'
-#!/usr/bin/env bash
-echo "SAMEREPO GRAPHIFY $*"
-EOF
-chmod +x "$sameref_bin/graphify"
-out=$(HOME="$sameref_home" PATH="$sameref_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$sameref_tools" \
-      UV_LIST_FILE="$sameref_list" UV_BIN_DIR="$tmpdir/samerepo-bin" UV_LOG="$sameref_uvlog" \
-      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_install; echo "RC=$?"' 2>&1)
-assert "same-repo-different-ref: install adopts (rc 0)" grep -q '^RC=0$' <<<"$out"
-assert "same-repo-different-ref: reported as source=foreign" grep -q 'source=foreign' <<<"$out"
-# shellcheck disable=SC2016
-# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
-assert "same-repo-different-ref: no install call" bash -c '! grep -q "tool install" "$1"' _ "$sameref_uvlog"
-
-echo "[test-graphify-bin] uv-managed package with MISSING receipt -> foreign (CR-6 pin)"
-norcpt_home="$tmpdir/noreceipt"; mkdir -p "$norcpt_home"
-norcpt_tools="$tmpdir/noreceipt-tools"; mkdir -p "$norcpt_tools/graphifyy"
-norcpt_list="$tmpdir/noreceipt-list"; printf 'graphifyy v0.9.13\n' > "$norcpt_list"
-src=$(UV_TOOL_DIR="$norcpt_tools" UV_LIST_FILE="$norcpt_list" UV_LOG="$tmpdir/noreceipt-log" \
-      PATH="$stub_dir/bin:$base_path" HOME="$norcpt_home" \
-      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_source')
-assert "missing receipt -> foreign (present but unprovable, never 'not installed')" test "$src" = "foreign"
+assert "unreadable version -> foreign (present but unprovable, never 'not installed')" test "$src" = "foreign"
 
 echo "[test-graphify-bin] no uv on PATH -> WARN + nonzero rc"
 nouv_home="$tmpdir/nouv"; mkdir -p "$nouv_home"
@@ -320,6 +291,95 @@ out=$(HOME="$nopath_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$nopath_t
 assert "unresolvable: install WAS attempted (one uv call)" test "$(grep -c 'UV tool install' "$nopath_log")" -eq 1
 assert "unresolvable: rc nonzero" grep -qv '^RC=0$' <<<"$out"
 assert "unresolvable: WARNs 'not resolvable on PATH'" grep -qi 'not resolvable on PATH' <<<"$out"
+
+echo "[test-graphify-bin] graphify_update: uv graphifyy AT the pin -> up to date, no install"
+gup_home="$tmpdir/gup-atpin"; mkdir -p "$gup_home"
+gup_tools="$tmpdir/gup-atpin-tools"; mkdir -p "$gup_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gup_tools/graphifyy/uv-receipt.toml"
+gup_list="$tmpdir/gup-atpin-list"; printf 'graphifyy v%s\n' "$pinned_ver" > "$gup_list"
+gup_bin="$tmpdir/gup-atpin-bin"; mkdir -p "$gup_bin"
+cat > "$gup_bin/graphify" <<'EOF'
+#!/usr/bin/env bash
+echo x
+EOF
+chmod +x "$gup_bin/graphify"
+gup_log="$tmpdir/gup-atpin-log"; : > "$gup_log"
+out=$(HOME="$gup_home" PATH="$gup_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gup_tools" UV_LIST_FILE="$gup_list" \
+      UV_BIN_DIR="$gup_bin" UV_LOG="$gup_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "update at-pin: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "update at-pin: reports up to date" grep -qi 'up to date' <<<"$out"
+# shellcheck disable=SC2016
+assert "update at-pin: no install call" bash -c '! grep -q "tool install" "$1"' _ "$gup_log"
+
+echo "[test-graphify-bin] graphify_update: uv graphifyy at DIFFERENT version + [all] extras -> reinstall at pin, extras preserved"
+gud_home="$tmpdir/gup-diff"; mkdir -p "$gud_home"
+gud_tools="$tmpdir/gup-diff-tools"; mkdir -p "$gud_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy", extras = ["all"] }]\n' > "$gud_tools/graphifyy/uv-receipt.toml"
+gud_list="$tmpdir/gup-diff-list"; printf 'graphifyy v0.0.1\n' > "$gud_list"   # != pin
+gud_bin="$tmpdir/gup-diff-bin"; mkdir -p "$gud_bin"
+cat > "$gud_bin/graphify" <<'EOF'
+#!/usr/bin/env bash
+echo x
+EOF
+chmod +x "$gud_bin/graphify"
+gud_log="$tmpdir/gup-diff-log"; : > "$gud_log"
+out=$(HOME="$gud_home" PATH="$gud_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gud_tools" UV_LIST_FILE="$gud_list" \
+      UV_BIN_DIR="$gud_bin" UV_LOG="$gud_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "update diff-ver: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "update diff-ver: force-reinstalls at pin preserving [all] extras" \
+  grep -qE 'tool install --force --with mcp graphifyy\[all\]==[0-9]' "$gud_log"
+
+echo "[test-graphify-bin] graphify_update: uv graphifyy AHEAD of pin -> left as-is, no install (CR codex-1: never downgrade/clobber)"
+gua_home="$tmpdir/gup-ahead"; mkdir -p "$gua_home"
+gua_tools="$tmpdir/gup-ahead-tools"; mkdir -p "$gua_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gua_tools/graphifyy/uv-receipt.toml"
+# 99.0.0 is guaranteed ahead of any real pin -> update must NOT touch it.
+gua_list="$tmpdir/gup-ahead-list"; printf 'graphifyy v99.0.0\n' > "$gua_list"
+gua_bin="$tmpdir/gup-ahead-bin"; mkdir -p "$gua_bin"
+cat > "$gua_bin/graphify" <<'EOF'
+#!/usr/bin/env bash
+echo x
+EOF
+chmod +x "$gua_bin/graphify"
+gua_log="$tmpdir/gup-ahead-log"; : > "$gua_log"
+out=$(HOME="$gua_home" PATH="$gua_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gua_tools" UV_LIST_FILE="$gua_list" \
+      UV_BIN_DIR="$gua_bin" UV_LOG="$gua_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "update ahead-of-pin: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "update ahead-of-pin: reports not behind / leaving as-is" grep -qiE 'not behind|leaving as-is' <<<"$out"
+# shellcheck disable=SC2016
+assert "update ahead-of-pin: no install call (never downgrade)" bash -c '! grep -q "tool install" "$1"' _ "$gua_log"
+
+echo "[test-graphify-bin] graphify_update: not installed -> fresh install at pin"
+gun_home="$tmpdir/gup-none"; mkdir -p "$gun_home"
+gun_tools="$tmpdir/gup-none-tools"; mkdir -p "$gun_tools"
+gun_list="$tmpdir/gup-none-list"; : > "$gun_list"
+gun_bin="$tmpdir/gup-none-bin"; mkdir -p "$gun_bin"
+gun_log="$tmpdir/gup-none-log"; : > "$gun_log"
+out=$(HOME="$gun_home" PATH="$gun_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gun_tools" UV_LIST_FILE="$gun_list" \
+      UV_BIN_DIR="$gun_bin" UV_LOG="$gun_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "update missing: exactly one install call (fresh at pin)" test "$(grep -c 'UV tool install' "$gun_log")" -eq 1
+
+echo "[test-graphify-bin] graphify_update: foreign NON-uv install -> left as-is, no install"
+guf_home="$tmpdir/gup-foreign"; mkdir -p "$guf_home"
+guf_bin="$tmpdir/gup-foreign-bin"; mkdir -p "$guf_bin"
+cat > "$guf_bin/graphify" <<'EOF'
+#!/usr/bin/env bash
+echo x
+EOF
+chmod +x "$guf_bin/graphify"
+guf_list="$tmpdir/gup-foreign-list"; : > "$guf_list"   # empty: NO uv graphifyy package
+guf_log="$tmpdir/gup-foreign-log"; : > "$guf_log"
+out=$(HOME="$guf_home" PATH="$guf_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$tmpdir/gup-foreign-tools" UV_LIST_FILE="$guf_list" \
+      UV_BIN_DIR="$tmpdir/gup-foreign-bin2" UV_LOG="$guf_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "update foreign non-uv: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "update foreign non-uv: left as-is" grep -qi 'leaves it as-is' <<<"$out"
+# shellcheck disable=SC2016
+assert "update foreign non-uv: no install call" bash -c '! grep -q "tool install" "$1"' _ "$guf_log"
 
 echo "[test-graphify-bin] _graphify_mcp_import_ok probes the ENTRYPOINT's interpreter (HIMMEL-996)"
 # A console script's shebang python is the most-specific env (covers pip/
