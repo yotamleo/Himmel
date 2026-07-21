@@ -732,12 +732,12 @@ Steps:
    ```bash
    threads_rc=2  # default: unknown = blocking; every path below overwrites it
    pr_rc=0
-   pr_lookup=$(gh pr view --json number -q .number 2>&1) || pr_rc=$?
+   pr_lookup=$(gh pr list --state open --head "$branch" --json number --jq '.[0].number' 2>&1) || pr_rc=$?
    if [ "$pr_rc" -ne 0 ]; then
-       case "$pr_lookup" in
-           *"no pull requests"*|*"no open pull"*) echo "4.8: no PR yet — thread gate skipped (re-applies after gh pr create; /check-ci enforces it at merge time)"; threads_rc=0 ;;
-           *) echo "4.8: gh pr view failed ($pr_lookup) — thread state UNKNOWN, treat as BLOCKING" >&2; threads_rc=2 ;;
-       esac
+       echo "4.8: gh pr list failed ($pr_lookup) — thread state UNKNOWN, treat as BLOCKING" >&2
+   elif [ -z "$pr_lookup" ]; then
+       echo "4.8: no PR yet — thread gate skipped (re-applies after gh pr create; /check-ci enforces it at merge time)"
+       threads_rc=0
    else
        threads_rc=0
        bash scripts/check-ci.sh --threads-only || threads_rc=$?

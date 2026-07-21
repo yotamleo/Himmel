@@ -148,15 +148,15 @@ cA=$(build_path "$stubA" uname node -- )
 fixtureA="$work/shA-fixture"; build_bin_js_fixture "$fixtureA"
 set +e
 out=$(PATH="$cA" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureA")" \
-      "$bash_bin" "$bootstrap_sh" 2>&1); rc=$?
+      "$bash_bin" "$bootstrap_sh" --default-scope user 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseA(sh): node-present should exit 0 (got rc=$rc): $out"
 printf '%s' "$out" | grep -q 'node found' \
   || fail "caseA(sh): expected the node-found hand-off message (got: $out)"
 [ -f "$fixtureA/scripts/himmelctl/bin-js-calls.log" ] \
   || fail "caseA(sh): expected bin.js to be invoked (out: $out)"
-grep -q 'install' "$fixtureA/scripts/himmelctl/bin-js-calls.log" \
-  || fail "caseA(sh): expected bin.js invoked with the 'install' arg"
+grep -q '^bin.js: install --default-scope user$' "$fixtureA/scripts/himmelctl/bin-js-calls.log" \
+  || fail "caseA(sh): expected bin.js invoked with 'install --default-scope user'"
 [ -f "$stubA/install-calls.log" ] \
   && fail "caseA(sh): node-present short-circuit must NOT invoke the platform installer"
 echo "ok: caseA(sh) node present -> short-circuits straight to hand-off, installer never invoked"
@@ -314,6 +314,7 @@ elif command -v pwsh >/dev/null 2>&1; then
   pwsh_bin=$(command -v pwsh)
 fi
 win_host=0
+# WSL reports uname=Linux, so this intentionally false-skips the Windows-only .ps1 stubs there.
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) win_host=1 ;;
 esac
@@ -329,13 +330,15 @@ else
   fixtureA2="$work/psA-fixture"; build_bin_js_fixture "$fixtureA2"
   set +e
   out=$(PATH="$stubA2:$PATH" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureA2")" \
-        "$pwsh_bin" -NoProfile -File "$(winpath "$bootstrap_ps1")" 2>&1); rc=$?
+        "$pwsh_bin" -NoProfile -File "$(winpath "$bootstrap_ps1")" -DefaultScope user 2>&1); rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "caseA(ps1): node-present should exit 0 (got rc=$rc): $out"
   printf '%s' "$out" | grep -q 'node found' \
     || fail "caseA(ps1): expected the node-found hand-off message (got: $out)"
   [ -f "$fixtureA2/scripts/himmelctl/bin-js-calls.log" ] \
     || fail "caseA(ps1): expected bin.js to be invoked (out: $out)"
+  grep -q '^bin.js: install --default-scope user$' "$fixtureA2/scripts/himmelctl/bin-js-calls.log" \
+    || fail "caseA(ps1): expected bin.js invoked with 'install --default-scope user'"
   [ -f "$stubA2/install-calls.log" ] \
     && fail "caseA(ps1): node-present short-circuit must NOT invoke winget"
   echo "ok: caseA(ps1) node present -> short-circuits straight to hand-off, winget never invoked"

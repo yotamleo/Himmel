@@ -9,7 +9,7 @@
 # bootstrap.ps1 instead (winget).
 #
 # Usage:
-#   bash scripts/himmelctl/bootstrap.sh [--dry-run]
+#   bash scripts/himmelctl/bootstrap.sh [--dry-run] [--default-scope project|user]
 #
 # HIMMELCTL_REPO_ROOT overrides where bin.js is looked up (same seam bin.js
 # itself honors) so a hermetic test can point the hand-off at a stub.
@@ -21,14 +21,26 @@ repo_root="${HIMMELCTL_REPO_ROOT:-$(cd -- "$script_dir/../.." && pwd)}"
 bin_js="$repo_root/scripts/himmelctl/bin.js"
 
 dry_run=0
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) dry_run=1 ;;
-    *) echo "bootstrap: unknown argument: $arg" >&2; exit 2 ;;
+default_scope=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --default-scope)
+      default_scope="${2:-}"
+      case "$default_scope" in project|user) ;; *) echo "bootstrap: --default-scope must be project or user" >&2; exit 2 ;; esac
+      shift 2
+      ;;
+    *) echo "bootstrap: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-handoff_cmd="node \"$bin_js\" install"
+handoff_args=(install)
+rerun_args=""
+if [ -n "$default_scope" ]; then
+  handoff_args+=(--default-scope "$default_scope")
+  rerun_args=" --default-scope $default_scope"
+fi
+handoff_cmd="node \"$bin_js\" ${handoff_args[*]}"
 
 # install_plan — the package-manager line for this platform. darwin: brew
 # (node+bun both brew-installable); everything else (linux, and any posix
@@ -75,7 +87,7 @@ if command -v node >/dev/null 2>&1; then
   # node-present short-circuit: straight to the hand-off, no install step.
   echo "bootstrap: node found -- handing off to: $handoff_cmd"
   [ "$dry_run" -eq 1 ] && exit 0
-  exec node "$bin_js" install
+  exec node "$bin_js" "${handoff_args[@]}"
 fi
 
 plan="$(install_plan)"
@@ -91,10 +103,10 @@ note_bun_optional
 
 if command -v node >/dev/null 2>&1; then
   echo "bootstrap: node installed -- handing off to: $handoff_cmd"
-  exec node "$bin_js" install
+  exec node "$bin_js" "${handoff_args[@]}"
 fi
 
 # PATH-refresh trap (Draft-A §6): the fresh install's PATH edit is invisible
 # to this process. Print the ONE re-run line rather than chaining blindly.
-echo "bootstrap: node installed but not resolvable in this shell -- open a new terminal and re-run: bash \"$script_dir/bootstrap.sh\"" >&2
+echo "bootstrap: node installed but not resolvable in this shell -- open a new terminal and re-run: bash \"$script_dir/bootstrap.sh\"$rerun_args" >&2
 exit 1
