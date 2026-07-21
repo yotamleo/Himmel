@@ -1088,6 +1088,13 @@ class TestFoldTelegram(unittest.TestCase):
             self.assertFalse((vault / "evil.jpg").exists())
             self.assertFalse((Path(td) / "evil.jpg").exists())
 
+    def test_note_signature_preserves_literal_embeds(self):
+        a = ("---\nmessages: 3\n---\n# G — 2026-07\n\n## day\n"
+             "**09:00 · Alice**\n![[literal-a]]\n")
+        b = ("---\nmessages: 3\n---\n# G — 2026-07\n\n## day\n"
+             "**09:00 · Alice**\n![[literal-b]]\n")
+        self.assertNotEqual(fch._tg_note_signature(a), fch._tg_note_signature(b))
+
     def test_note_signature_preserves_media_presence(self):
         # Same message text, media re-hashed (same COUNT) -> equal signature:
         # an idempotent re-import must still overwrite (documented intent).
