@@ -998,3 +998,44 @@ test("runSharedDispatch releases the lock via a finally (wiring pin)", () => {
   const src = readFileSync("scripts/telegram/spawn-claudex.ts", "utf8");
   expect(/finally\s*\{[\s\S]*?"release", p\.repoDir, p\.branch/.test(src)).toBe(true);
 });
+
+// --- HIMMEL-1225: --help/-h short-circuits BEFORE any side effect ---
+// (isHelpFlag itself is lane-agnostic and unit-tested in spawn-glm.test.ts —
+// spawn-claudex imports it verbatim so both lanes share one definition and
+// can't drift apart; these pins wire it into THIS lane's main().)
+
+test("main() imports isHelpFlag from spawn-glm and checks it BEFORE parseClaudexArgs / any side effect (wiring pin)", () => {
+  const src = readFileSync("scripts/telegram/spawn-claudex.ts", "utf8");
+  expect(/import \{[^}]*\bisHelpFlag\b[^}]*\} from "\.\/spawn-glm"/.test(src)).toBe(true);
+  const helpIdx = src.indexOf("isHelpFlag(rawArgv)");
+  const parseIdx = src.indexOf("parseClaudexArgs(rawArgv)");
+  const wtIdx = src.indexOf('"worktree", "add"');
+  const bankIdx = src.indexOf("fetchCodexWeeklyUsedPercent(homedir())");
+  expect(helpIdx).toBeGreaterThan(-1);
+  expect(parseIdx).toBeGreaterThan(-1);
+  expect(helpIdx).toBeLessThan(parseIdx);   // help checked before parseClaudexArgs even runs
+  expect(helpIdx).toBeLessThan(wtIdx);
+  expect(helpIdx).toBeLessThan(bankIdx);
+  expect(/if \(isHelpFlag\(rawArgv\)\) \{ console\.log\(usage\); process\.exit\(0\); \}/.test(src)).toBe(true);
+});
+
+test("spawn-claudex --help / -h: real CLI invocation prints usage, exits 0, and returns fast (no worktree/dispatch side effects)", () => {
+  for (const flag of ["--help", "-h"]) {
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-claudex.ts", flag], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 10_000,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.toString()).toMatch(/usage: spawn-claudex/);
+    expect(r.stdout.toString()).not.toContain("session-dir:");
+  }
+});
+
+test("parseClaudexArgs: a bare unrecognized flag is a usage refusal, not swallowed as the task (HIMMEL-1225)", () => {
+  const typo = parseClaudexArgs(["--tiemout-mins", "45", "real task"]);
+  expect(typo.ok).toBe(false);
+  expect((typo as any).error).toMatch(/unrecognized flag "--tiemout-mins"/);
+  // a bogus flag AFTER a valid positional is still refused (fail-closed)
+  expect(parseClaudexArgs(["do it", "--bogus"]).ok).toBe(false);
+  // recognized flags + a normal positional still parse fine
+  expect(parseClaudexArgs(["do it", "--cwd", "/repo"]).ok).toBe(true);
+});

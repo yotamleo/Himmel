@@ -34,6 +34,7 @@ import {
   DEFAULT_LANE_PROFILE,
   mintRetaskNonce,
   composeRetaskBlock,
+  isHelpFlag,
   type CapGuardDeps,
 } from "./spawn-glm";
 import type { SettingsConflict } from "./glm-env";
@@ -738,6 +739,63 @@ test("parseArgs table: valid flags / positional-only / NaN timeout / trailing fl
 
   const trailingTimeout = parseArgs(["p", "--timeout-mins"]);
   expect(trailingTimeout.ok).toBe(false);
+});
+
+// --- HIMMEL-1225: --help/-h short-circuits BEFORE any side effect ---
+
+test("isHelpFlag: detects --help and -h anywhere in argv; a normal prompt is untouched", () => {
+  expect(isHelpFlag(["--help"])).toBe(true);
+  expect(isHelpFlag(["-h"])).toBe(true);
+  expect(isHelpFlag(["do the thing", "--help"])).toBe(true);
+  expect(isHelpFlag(["--cwd", "/repo", "-h"])).toBe(true);
+  expect(isHelpFlag(["do the thing"])).toBe(false);
+  expect(isHelpFlag([])).toBe(false);
+  expect(isHelpFlag(["--cwd", "/repo", "--name", "task1"])).toBe(false);
+});
+
+test("main() checks isHelpFlag BEFORE parseArgs and before any side effect (worktree add, ZAI preflight) — wiring pin", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  const helpIdx = src.indexOf("isHelpFlag(rawArgv)");
+  const parseIdx = src.indexOf("parseArgs(rawArgv)");
+  const wtIdx = src.indexOf('"worktree", "add"');
+  const zaiIdx = src.indexOf("buildGlmEnv(REPO_ROOT)");
+  expect(helpIdx).toBeGreaterThan(-1);
+  expect(parseIdx).toBeGreaterThan(-1);
+  expect(helpIdx).toBeLessThan(parseIdx);   // help checked before parseArgs even runs
+  expect(helpIdx).toBeLessThan(wtIdx);
+  expect(helpIdx).toBeLessThan(zaiIdx);
+  // the help branch exits 0 to stdout — distinct from the exit-2 usage-error path
+  expect(/if \(isHelpFlag\(rawArgv\)\) \{ console\.log\(usage\); process\.exit\(0\); \}/.test(src)).toBe(true);
+});
+
+test("spawn-glm --help / -h: real CLI invocation prints usage, exits 0, and returns fast (no worktree/dispatch side effects)", () => {
+  for (const flag of ["--help", "-h"]) {
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-glm.ts", flag], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 10_000,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.toString()).toMatch(/usage: spawn-glm/);
+    // no orphan worktree/branch minted before the short-circuit
+    expect(r.stdout.toString()).not.toContain("session-dir:");
+  }
+});
+
+test("spawn-glm with only --help as the sole arg does NOT fall through to the missing-prompt usage-error path (exit 0, not exit 2)", () => {
+  const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-glm.ts", "--help"], {
+    cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 10_000,
+  });
+  expect(r.exitCode).toBe(0);
+  expect(r.stderr.toString()).toBe("");
+});
+
+test("parseArgs: a bare unrecognized flag is a usage refusal, not swallowed as the task (HIMMEL-1225)", () => {
+  const typo = parseArgs(["--tiemout-mins", "45", "real task"]);
+  expect(typo.ok).toBe(false);
+  expect((typo as any).error).toMatch(/unrecognized flag "--tiemout-mins"/);
+  // a bogus flag AFTER a valid positional is still refused (fail-closed)
+  expect(parseArgs(["do it", "--bogus"]).ok).toBe(false);
+  // recognized flags + a normal positional still parse fine
+  expect(parseArgs(["do it", "--cwd", "/repo"]).ok).toBe(true);
 });
 
 // --- HIMMEL-1040: --profile / --add-plugins parsing + resolution ---
