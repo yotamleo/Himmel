@@ -26,8 +26,9 @@ Advanced settings such as `colors.*`, `pathLevels`, `maxWidth`, `forceMaxWidth`,
 `display.environmentThreshold`, `display.contextWarningThreshold`,
 `display.contextCriticalThreshold`, `display.advisorOverride`,
 `display.showAuth`, `display.showAuthUser`, `display.authUserLength`, and the
-`display.externalUsage*` keys are preserved when saving but are not edited by
-this guided flow.
+`display.externalUsage*` keys, plus `jjStatus.showDirty` and
+`jjStatus.showConflicts`, are preserved when saving but are not edited by this
+guided flow.
 
 ---
 
@@ -83,6 +84,7 @@ Save as `language: "en"`, `language: "zh-Hans"`, or `language: "zh-Hant"`.
   - "Project name" - my-project path display
   - "Added directories" - +repo +shared workspace directories from /add-dir
   - "Git status" - git:(main*) branch indicator
+  - "Jujutsu status" - jj:(bookmark*) opt-in indicator
   - "Config counts" - 2 CLAUDE.md | 4 rules
   - "Token breakdown" - (in: 45k, cache: 12k)
   - "Output speed" - out: 42.1 tok/s
@@ -139,6 +141,7 @@ If user chooses "Enter custom text", use AskUserQuestion to get their text. Save
   - "Project name" - my-project path display
   - "Added directories" - +repo +shared workspace directories from /add-dir
   - "Git status" - git:(main*) branch indicator
+  - "Jujutsu status" - jj:(bookmark*) opt-in indicator
   - "Session name" - fix-auth-bug (session slug or custom title)
   - "Session tokens" - Tokens 12.8M (in: 7k, out: 28k, cache: 12.8M)
   - "Reasoning level" - ◑ high (low/medium/high/xhigh/max, or ultracode(xhigh))
@@ -172,6 +175,7 @@ Info items (Counts, Tokens, Usage, Speed, Duration) can be turned off via "Reset
   - "Usage reset label" - show or hide the `resets in` prefix
   - "Compact usage" - 5h: 25% (1h 30m) shorter format (only if usageCompact is false)
   - "Added directories" - +repo +shared workspace directories from /add-dir
+  - "Jujutsu status" - jj:(bookmark*) opt-in indicator
   - "Session name" - fix-auth-bug (session slug or custom title)
   - "Session tokens" - Tokens 12.8M (in: 7k, out: 28k, cache: 12.8M)
   - "Session duration" - ⏱️ 5m
@@ -245,16 +249,19 @@ If user chooses "Remove", set `display.customLine` to `""` in config.
 - Activity: Tools ON, Skills ON, MCP ON, Agents ON, Todos ON
 - Info: Added Dirs ON, Counts ON, Tokens ON, Usage ON, Reset Label ON, Cost ON, Duration ON, Session Name ON, Session Tokens ON, Reasoning Level ON, Output Style ON, Memory ON, Prompt Cache ON, CC Version ON, Compactions ON, Advisor ON
 - Git: ON (with dirty indicator, no ahead/behind)
+- Jujutsu: ON (opted in, with dirty and conflict indicators)
 
 **Essential** (activity + git):
 - Activity: Tools ON, Agents ON, Todos ON
 - Info: Counts OFF, Tokens OFF, Usage OFF, Duration ON, Session Name OFF, Session Tokens OFF
 - Git: ON (with dirty indicator)
+- Jujutsu: OFF
 
 **Minimal** (core only — this is the default):
 - Activity: Tools OFF, Agents OFF, Todos OFF
 - Info: Counts OFF, Tokens OFF, Usage OFF, Duration OFF, Session Name OFF, Session Tokens OFF
 - Git: ON (with dirty indicator)
+- Jujutsu: OFF
 
 ---
 
@@ -303,6 +310,7 @@ If user chooses "Remove", set `display.customLine` to `""` in config.
 | Project name | `display.showProject` |
 | Added directories | `display.showAddedDirs` (layout via `display.addedDirsLayout`) |
 | Git status | `gitStatus.enabled` |
+| Jujutsu status | `jjStatus.enabled` |
 | Config counts | `display.showConfigCounts` |
 | Token breakdown | `display.showTokenBreakdown` |
 | Output speed | `display.showSpeed` |

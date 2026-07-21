@@ -14,14 +14,15 @@ contributions; it exists so himmel controls the pin and can carry a small delta.
 ```
 fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HIMMEL-718)
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
-pinned_commit:        2bbfaedb32ac2619c172b0d825bbf172369a1147  # v0.6.0
-pinned_upstream_tree: 969753395a7af34bdcd89a1e198dae10e73d958a  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   69349390985064dd42d146691c5edcd8540cf1146f385c6da676439149d75584  # sha256 over VENDORED.manifest
+pinned_commit:        e39bafc6d778d61f41592eced53f8aa58bf5239c  # post-v0.6.0 main HEAD (jj status indicators #685; HIMMEL-1254)
+pinned_upstream_tree: 4fcbfe47ab8780e1b11c2ddb36c18be1b24a371f  # git tree of pinned_commit (provenance)
+vendored_tree_hash:   3c99c19df13fc951e03bbe27b4824938cc4ae6e3648cb42f80766309ecd16fd6  # sha256 over VENDORED.manifest
 vendored_at:          2026-07-21
 ```
 
-`pinned_commit` points at the **upstream** base `2bbfaed` (v0.6.0); the vendored
-tree is that base **plus** himmel's `customLineCommand` delta (see **Fork delta**
+`pinned_commit` points at the **upstream** base `e39bafc` (post-v0.6.0 main
+HEAD); the vendored tree is that base **plus** himmel's `customLineCommand` delta
+(see **Fork delta**
 below), so `vendored_tree_hash` reflects that delta. `fork_repo`
 (`yotamleo/claude-hud`) is a public provenance mirror himmel does NOT install
 from (himmel vendors the tree directly), so keeping it in sync is optional — the
@@ -93,3 +94,19 @@ protected: editing it without bumping the pin trips the guard.
     and the old "id-less ⇒ accumulate as-is" test asserts behaviour upstream
     changed (id-less entries now dedup by usage fingerprint). Kept only where
     still additive; the obsolete no-id test was dropped.
+
+- **Re-vendored to upstream `e39bafc` (HIMMEL-1254, 2026-07-21, fork-drift issue
+  #491):** +2 commits past v0.6.0 — upstream `adec51e` "add safe Jujutsu status
+  indicators (#685)" + its `dist/` compile. New upstream files (`src/jj.ts`,
+  `src/render/vcs-status.ts`, `tests/jj.test.js`) plus a refactor routing git
+  status through the new `vcs-status` abstraction (`src/git.ts`, `src/config.ts`,
+  `src/index.ts`, `src/render/lines/project.ts`, `src/render/session-line.ts`).
+  **Inert for himmel:** himmel repos are git, not Jujutsu — `src/jj.ts` detection
+  returns false and the renderer falls back to git, so behaviour is unchanged on
+  every himmel machine. Adopted per the Tier-A "always sync + additive" policy
+  (HIMMEL-869) to keep the carried delta small. himmel's `customLineCommand` delta
+  is preserved — the `src/config.ts` + `src/index.ts` 3-way merges were clean
+  (both upstream's jj wiring and himmel's customLineCommand wiring coexist);
+  `tests/custom-line-cmd.test.js` stays 6/6. The jj tests are inert where the `jj`
+  binary is absent (skip); the only new Windows failures are EPERM on symlink
+  fixtures in `tests/jj.test.js` (platform, not code).

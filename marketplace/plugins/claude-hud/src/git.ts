@@ -33,6 +33,10 @@ export interface GitStatus {
   fileStats?: FileStats;
   lineDiff?: LineDiff;
   branchUrl?: string;
+  /** Which VCS produced this status. Omitted (undefined) means 'git'. */
+  vcs?: 'git' | 'jj';
+  /** jj-native: true when the working-copy commit has an unresolved conflict. */
+  conflict?: boolean;
 }
 
 export async function getGitBranch(cwd?: string): Promise<string | null> {

@@ -3,6 +3,7 @@ import { parseTranscript } from "./transcript.js";
 import { render } from "./render/index.js";
 import { countConfigs } from "./config-reader.js";
 import { getGitStatus } from "./git.js";
+import { getJjStatus, isJjRepo } from "./jj.js";
 import { loadConfig } from "./config.js";
 import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand, shouldRunCustomLine } from "./custom-line-cmd.js";
@@ -30,6 +31,23 @@ export function isHudDisabled(env = process.env) {
     }
     return value !== "0" && value !== "false" && value !== "off" && value !== "no";
 }
+/**
+ * Prefers jj when an eligible `.jj` marker is found and the opt-in is enabled.
+ * If the bounded jj probe fails, Git remains the safe compatibility fallback.
+ */
+export async function resolveVcsStatus(deps, config, cwd) {
+    if (!cwd)
+        return null;
+    if (config.jjStatus.enabled && deps.isJjRepo(cwd)) {
+        const jjStatus = await deps.getJjStatus(cwd);
+        if (jjStatus)
+            return jjStatus;
+    }
+    if (config.gitStatus.enabled) {
+        return deps.getGitStatus(cwd);
+    }
+    return null;
+}
 export async function main(overrides = {}) {
     if (isHudDisabled()) {
         // Print nothing so Claude Code renders an empty statusline, and skip all
@@ -44,6 +62,8 @@ export async function main(overrides = {}) {
         parseTranscript,
         countConfigs,
         getGitStatus,
+        getJjStatus,
+        isJjRepo,
         loadConfig,
         parseExtraCmdArg,
         runExtraCmd,
@@ -79,9 +99,7 @@ export async function main(overrides = {}) {
         const { claudeMdCount, rulesCount, mcpCount, hooksCount, outputStyle } = await deps.countConfigs(stdin.cwd);
         const config = await deps.loadConfig();
         setLanguage(config.language);
-        const gitStatus = config.gitStatus.enabled
-            ? await deps.getGitStatus(stdin.cwd)
-            : null;
+        const gitStatus = await resolveVcsStatus(deps, config, stdin.cwd);
         let usageData = null;
         const shouldReadUsage = config.display.showUsage !== false;
         const shouldWriteUsage = Boolean(config.display.externalUsageWritePath);

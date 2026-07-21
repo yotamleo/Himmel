@@ -163,6 +163,11 @@ export interface HudConfig {
     pushWarningThreshold: number;
     pushCriticalThreshold: number;
   };
+  jjStatus: {
+    enabled: boolean;
+    showDirty: boolean;
+    showConflicts: boolean;
+  };
   display: {
     showModel: boolean;
     showProject: boolean;
@@ -271,6 +276,11 @@ export const DEFAULT_CONFIG: HudConfig = {
     branchOverflow: 'truncate',
     pushWarningThreshold: 0,
     pushCriticalThreshold: 0,
+  },
+  jjStatus: {
+    enabled: false,
+    showDirty: true,
+    showConflicts: true,
   },
   display: {
     showModel: true,
@@ -664,6 +674,18 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
     pushCriticalThreshold: validateCountThreshold(migrated.gitStatus?.pushCriticalThreshold),
   };
 
+  const jjStatus = {
+    enabled: typeof migrated.jjStatus?.enabled === 'boolean'
+      ? migrated.jjStatus.enabled
+      : DEFAULT_CONFIG.jjStatus.enabled,
+    showDirty: typeof migrated.jjStatus?.showDirty === 'boolean'
+      ? migrated.jjStatus.showDirty
+      : DEFAULT_CONFIG.jjStatus.showDirty,
+    showConflicts: typeof migrated.jjStatus?.showConflicts === 'boolean'
+      ? migrated.jjStatus.showConflicts
+      : DEFAULT_CONFIG.jjStatus.showConflicts,
+  };
+
   const display = {
     showModel: typeof migrated.display?.showModel === 'boolean'
       ? migrated.display.showModel
@@ -888,7 +910,7 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
       : DEFAULT_CONFIG.colors.barEmpty,
   };
 
-  return { language, lineLayout, showSeparators, pathLevels, maxWidth, forceMaxWidth, elementOrder, projectLineOrder, gitStatus, display, colors };
+  return { language, lineLayout, showSeparators, pathLevels, maxWidth, forceMaxWidth, elementOrder, projectLineOrder, gitStatus, jjStatus, display, colors };
 }
 
 export async function loadConfig(): Promise<HudConfig> {
