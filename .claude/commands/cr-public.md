@@ -86,8 +86,12 @@ fi
 
 ## 3. Babysit CI + CodeRabbit (token-free)
 
-The public repo carries `.coderabbit.yaml`, so the CodeRabbit **App** auto-reviews
-each push — no local matrix needed. `check-ci.sh` gates all of it in one process:
+The public repo carries `.coderabbit.yaml` with `auto_review.enabled: false`
+(HIMMEL-1252), so the CodeRabbit **App** does NOT auto-review on push and is no
+longer a merge gate. When a CR pass on this PR is wanted, post one
+`@coderabbitai review` comment early in the babysit window to trigger it; the
+default green path does not wait on a CR review object (see step 4). `check-ci.sh`
+gates the rest in one process:
 CI checks + unresolved review threads + (post-HIMMEL-1126) CodeRabbit body /
 outside-diff findings. Run it in a **background** Bash on the public PR URL — the
 Bash tool with `run_in_background: true`, NOT a shell `&`; the completion
