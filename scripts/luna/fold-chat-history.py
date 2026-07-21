@@ -19,9 +19,10 @@ import json
 import re
 import shutil
 import sys
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal, NamedTuple
 
 if hasattr(sys.stdout, "reconfigure"):  # Windows cp1252 trap
     sys.stdout.reconfigure(encoding="utf-8")
@@ -38,14 +39,15 @@ SKIP_CONTENT_TYPES = ("thoughts", "reasoning_recap")
 AUDIO_POINTER_TYPES = ("audio_asset_pointer",
                        "real_time_user_audio_video_asset_pointer")
 
-# Segment = ("text", body) | ("image", file_id) | ("audio", file_id)
-Segment = tuple
+class Segment(NamedTuple):
+    kind: Literal["text", "image", "audio"]
+    value: str
 
 
 @dataclass
 class Turn:
     role: str
-    segments: list
+    segments: list[Segment]
 
 
 @dataclass
@@ -72,20 +74,20 @@ def _segments_from_content(content):
     for part in content.get("parts") or []:
         if isinstance(part, str):
             if part.strip():
-                segments.append(("text", part.strip()))
+                segments.append(Segment("text", part.strip()))
         elif isinstance(part, dict):
             ptype = part.get("content_type")
             if ptype == "audio_transcription":
                 text = (part.get("text") or "").strip()
                 if text:
-                    segments.append(("text", text))
+                    segments.append(Segment("text", text))
             elif ptype == "image_asset_pointer":
                 pointer = part.get("asset_pointer") or ""
                 if pointer:
-                    segments.append(("image", _normalize_pointer(pointer)))
+                    segments.append(Segment("image", _normalize_pointer(pointer)))
             elif ptype in AUDIO_POINTER_TYPES:
                 pointer = part.get("asset_pointer") or ""
-                segments.append(("audio", _normalize_pointer(pointer)))
+                segments.append(Segment("audio", _normalize_pointer(pointer)))
     return segments
 
 
@@ -104,7 +106,7 @@ def _linearize(raw):
 
 
 def parse_conversation(raw):
-    """Raw export conversation dict -> Conversation, or None if 0 turns."""
+    """None for a non-dict record, missing create_time, or no renderable turns."""
     if not isinstance(raw, dict):
         return None
     ct = raw.get("create_time")
@@ -139,15 +141,15 @@ def parse_conversation(raw):
     return Conversation(
         id=cid,
         title=(raw.get("title") or "").strip() or "untitled",
-        created=datetime.fromtimestamp(ct),
-        updated=datetime.fromtimestamp(updated) if updated else None,
+        created=datetime.fromtimestamp(ct, timezone.utc),
+        updated=datetime.fromtimestamp(updated, timezone.utc) if updated else None,
         model=model,
         turns=turns,
     )
 
 
 def parse_chatgpt(export_dir):
-    """All renderable Conversations from conversations-*.json (sorted)."""
+    """Renderable conversations, processing files in sorted filename order."""
     export_dir = Path(export_dir)
     conversations = []
     for jf in sorted(export_dir.glob("conversations-*.json")):
@@ -458,7 +460,8 @@ def write_index(chats_dir, dry_run):
             except (OSError, UnicodeDecodeError):
                 continue
             link = note.relative_to(chats_dir.parent).with_suffix("").as_posix()
-            rows.append((created, f"| {created} | [[{link}\\|{title}]] | {messages} |"))
+            escaped_title = title.replace("|", "\\|")
+            rows.append((created, f"| {created} | [[{link}\\|{escaped_title}]] | {messages} |"))
         lines += [f"## {provider_dir.name}", "",
                   f"{len(rows)} conversations.", "",
                   "| date | conversation | msgs |", "|---|---|---|"]
@@ -715,15 +718,18 @@ def _tg_month_note(group_name, group_slug, month, entries, assets_dir_rel,
 
 def _tg_note_signature(text):
     """The comparable content of a rendered month note: title+day/message
-    text with the frontmatter (carries the `messages:` count) and media
-    embed lines (`![[...]]`, whose name is content-hashed on a byte
-    collision — see `_tg_asset_name`) stripped off. Two renders of the same
-    messages compare equal even if the count metadata or a re-hashed media
-    name differs."""
+    text with the frontmatter (carries the `messages:` count) stripped and
+    every media embed line (`![[...]]`, whose name is content-hashed on a
+    byte collision — see `_tg_asset_name`) normalized to a nameless marker.
+    Two renders of the same messages compare equal even if the count metadata
+    or a re-hashed media NAME differs, but a re-import that ADDS or REMOVES
+    media changes the marker count — so the overwrite guard sees it as a
+    different note and won't silently drop media embeds (codex + CodeRabbit,
+    PR #1295)."""
     m = re.search(r"^# ", text, re.M)
     body = text[m.start():] if m else text
-    return "\n".join(line for line in body.splitlines()
-                     if not line.startswith("![["))
+    return "\n".join("![[]]" if line.startswith("![[") else line
+                     for line in body.splitlines())
 
 
 def _fold_telegram(export_dir, vault_dir, dry_run, group_slug_override=None):
@@ -772,7 +778,13 @@ def _fold_telegram(export_dir, vault_dir, dry_run, group_slug_override=None):
         if dest.exists():  # guard runs in dry-run too, so the reported count
             existing_sig = _tg_note_signature(dest.read_text(encoding="utf-8"))
             new_sig = _tg_note_signature(note_text)
-            if not new_sig.startswith(existing_sig):
+            # Require the existing signature to be a COMPLETE-line prefix of
+            # the incoming one (boundary at "\n"), not a mid-message character
+            # prefix: "foo" is a str-prefix of an edited "foobar", but that is
+            # a changed last message, and overwriting would drop it (codex CR
+            # #470). Equal ⇒ identical re-import; prefix+"\n" ⇒ a strictly
+            # fuller later export that preserves every existing message whole.
+            if not (new_sig == existing_sig or new_sig.startswith(existing_sig + "\n")):
                 print(f"warning: {dest.relative_to(vault_dir)} holds messages "
                       f"not reproduced by this import — skipping to avoid "
                       f"clobbering them (delete the note to force)",
@@ -807,6 +819,8 @@ def fold(provider, export_dir, vault_dir, dry_run, group_slug=None):
     else:
         all_raw_count = 0
         conversations = []
+        # Keep this loop aligned with parse_chatgpt(): sorted files, then records
+        # in file order. It is duplicated here only so the report retains raw count.
         for jf in sorted(export_dir.glob("conversations-*.json")):
             for raw in json.loads(jf.read_text(encoding="utf-8")):
                 all_raw_count += 1

@@ -45,6 +45,8 @@ $mt = Get-CxcTokens -CommandLine "x cxc-one-codex-app-server and cxc-two-codex-a
 Check 'multi-token -> both'             (($mt -join ',') -eq 'one,two') "got='$($mt -join ',')'"
 Check 'no-pipe line -> empty array'     ((Get-CxcTokens -CommandLine 'nothing here').Count -eq 0)
 Check 'dashed token a1-b2 preserved'    ((Get-CxcToken -CommandLine 'cxc-a1-b2-codex-app-server') -eq 'a1-b2') "got='$(Get-CxcToken -CommandLine 'cxc-a1-b2-codex-app-server')'"
+Check 'quoted --cwd preserves spaces'   ((Get-BrokerCwd -CommandLine 'node broker.mjs --cwd="C:\Users\Example User\repo"') -eq 'C:\Users\Example User\repo')
+Check 'unquoted --cwd still parses'     ((Get-BrokerCwd -CommandLine 'node broker.mjs --cwd=C:\repo') -eq 'C:\repo')
 
 # --- Test 2: broker / client predicates --------------------------------------
 Write-Host "Test 2: broker + client predicate classification"

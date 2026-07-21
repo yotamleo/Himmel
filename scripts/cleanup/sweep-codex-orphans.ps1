@@ -123,7 +123,10 @@ function Test-IsCodexAppServerClient {
 function Get-BrokerCwd {
   param([string]$CommandLine)
   if (-not $CommandLine) { return '(unknown)' }
-  if ($CommandLine -match '(?:^|\s)--cwd[ =]?"?([^"\s]+)"?') { return $Matches[1] }
+  if ($CommandLine -match '(?:^|\s)--cwd[ =](?:"([^"]+)"|(\S+))') {
+    if ($Matches[1]) { return $Matches[1] }
+    return $Matches[2]
+  }
   if ($CommandLine -match '(\S*app-server-broker\.mjs)') {
     try { return [System.IO.Path]::GetDirectoryName($Matches[1]) } catch { return $Matches[1] }
   }

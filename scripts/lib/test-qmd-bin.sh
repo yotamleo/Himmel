@@ -712,7 +712,7 @@ assert "ubuntu.sh does NOT call qmd_cmd (wiring delegated, HIMMEL-887)" \
 # (codex-adv finding, HIMMEL-934 CR round).
 # shellcheck disable=SC2016
 assert "ubuntu.sh execs himmelctl bootstrap.sh (delegation is real, HIMMEL-887)" \
-  grep -qF -- 'exec bash "$HIMMEL_PATH/scripts/himmelctl/bootstrap.sh"' "$repo_root/scripts/machine-setup/ubuntu.sh"
+  grep -qE -- '^[[:space:]]*(HIMMELCTL_REPO_ROOT="\$HIMMEL_PATH"[[:space:]]+)?exec[[:space:]]+bash[[:space:]]+"\$HIMMEL_PATH/scripts/himmelctl/bootstrap\.sh"[[:space:]]*$' "$repo_root/scripts/machine-setup/ubuntu.sh"
 assert "ubuntu.sh prints the himmelctl bootstrap delegation NOTICE (HIMMEL-887)" \
   grep -q 'delegating to himmelctl bootstrap' "$repo_root/scripts/machine-setup/ubuntu.sh"
 

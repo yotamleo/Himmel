@@ -317,6 +317,7 @@ run_cron() {
 echo "TEST: cron status with no crontab installed"
 out=$(run_cron status)
 assert_contains "cron harvest not armed"    "not armed  HIMMEL-Pipeline-Harvest"    "$out"
+assert_contains "cron harvest not-armed summary names the full daily chain" "-> /harvest-clips + /triage-clips + /ig-media-enrich" "$out"
 assert_contains "cron synthesize not armed" "not armed  HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "cron health not armed"     "not armed  HIMMEL-Pipeline-Health"     "$out"
 
@@ -590,6 +591,10 @@ if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
 else
     fail "duplicate entries after --force re-arm" "$(cat "$CSTATE/crontab")"
 fi
+
+out=$(run_cron arm --vault "$VAULT" --force --ig-limit 0 --harvest-model opus 2>&1)
+harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
+assert_contains "cron --ig-limit 0 reaches harvest runner" "/ig-media-enrich --limit 0" "${harvest_sh//\\/}"
 
 # Test C14: dry-run disarm with armed entries prints DRY tail, touches nothing --
 
@@ -1277,6 +1282,10 @@ if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
 else
     fail "duplicate tasks after --force re-arm" "$(ls "$STATE/tasks")"
 fi
+
+out=$(run_pc arm --vault "$VAULT" --force --ig-limit 25 --harvest-model opus 2>&1)
+harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
+assert_contains "--ig-limit 25 reaches harvest bat" "/ig-media-enrich --limit 25" "$harvest_bat"
 
 # Test 9b: --force re-arm model pin round-trips through status (HIMMEL-506).
 # status parses the --model token back out of the .bat runner; after a

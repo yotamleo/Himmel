@@ -87,7 +87,7 @@ fi
 # statement too, so removing the exec while keeping the NOTICE fails
 # (codex-adv finding, HIMMEL-934 CR round).
 # shellcheck disable=SC2016  # single quotes intentional: $HIMMEL_PATH is ubuntu.sh's variable
-if grep -qF -- 'exec bash "$HIMMEL_PATH/scripts/himmelctl/bootstrap.sh"' "$ubuntu_sh"; then
+if grep -qE -- '^[[:space:]]*(HIMMELCTL_REPO_ROOT="\$HIMMEL_PATH"[[:space:]]+)?exec[[:space:]]+bash[[:space:]]+"\$HIMMEL_PATH/scripts/himmelctl/bootstrap\.sh"[[:space:]]*$' "$ubuntu_sh"; then
     assert_pass "ubuntu.sh execs himmelctl bootstrap.sh (delegation is real, HIMMEL-887)"
 else
     assert_fail "ubuntu.sh does not exec himmelctl bootstrap.sh (NOTICE without delegation)"
