@@ -10,6 +10,14 @@
 #   - request_changes_workflow off: the merge gate is a clean /pr-check
 #     (CR-marker hook); a bot "request changes" state adds a second,
 #     unenforced gate on a repo merged via --admin.
+#   - auto_review off (HIMMEL-1252): the App reviews ONLY on an explicit
+#     `@coderabbitai review` comment, not on every push. himmel's PRIMARY CR
+#     gate is the CLI lane (/pr-check step 3.2, coderabbit-review.sh), which is
+#     independent of the App and unaffected by this flag; the per-push App
+#     auto-review was a duplicative signal burning the shared CR rate limit.
+#     Consequence: CodeRabbit is no longer a merge gate — it was also dropped
+#     from the public repo's branch-protection required checks (it would
+#     otherwise be an unsatisfiable required context with auto-review off).
 #   - Jira integration deliberately NOT connected: the jira CLI owns that loop.
 language: "en-US"
 reviews:
@@ -19,7 +27,13 @@ reviews:
   poem: false
   collapse_walkthrough: true
   auto_review:
-    enabled: true
+    # HIMMEL-1252: comment-triggered, not per-push. false = the App does not
+    # auto-review on push/open; a reviewer posts `@coderabbitai review` (or
+    # `@coderabbitai full review`) to run it on demand. Conserves the shared CR
+    # rate limit; the /pr-check CLI lane remains the primary gate. The
+    # base_branches setting below is inert while this is false (it only scopes
+    # which bases get AUTO-reviewed) — kept so re-enabling needs no re-derivation.
+    enabled: false
     drafts: false
     # base_branches (HIMMEL-1102): defaults to [] = ONLY the repo default
     # branch, so every STACKED PR was silently skipped -- CodeRabbit posted
