@@ -63,9 +63,70 @@ done
 if [ -z "$NAME" ] || [ -z "$CORPUS_ROOT" ] || [ -z "$MAPS_DIR" ] || [ -z "$TITLE" ] || [ -z "$SLUG" ]; then usage; fi
 [ -d "$CORPUS_ROOT" ] || { echo "refresh-graph-map: corpus root not found: $CORPUS_ROOT" >&2; exit 1; }
 
+# GLM (Z.ai) alias (HIMMEL-1048). graphify has NO native `glm` backend — GLM is
+# reached via graphify's `claude` backend pointed at Z.ai's Anthropic-compatible
+# endpoint. The egress matrix + fence already classify `--backend glm` as the
+# ratified zai-glm provider (luna-personal extraction = allow+log, HIMMEL-1096/1122),
+# so make `--backend glm` a single-flag process instead of hand-setting ANTHROPIC_*
+# env each run: it remaps to `--backend claude` + ANTHROPIC_BASE_URL=<z.ai> +
+# ANTHROPIC_MODEL=glm-5.2 + ANTHROPIC_API_KEY=<ZAI_API_KEY, loaded from .env, never
+# printed>. A live ANTHROPIC_* env still wins (only fills gaps).
+case "$BACKEND" in
+  glm|zai-glm)
+    BACKEND="claude"
+    : "${ANTHROPIC_BASE_URL:=https://api.z.ai/api/anthropic}"
+    : "${ANTHROPIC_MODEL:=glm-5.2}"
+    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+      # shellcheck source=../lib/load-dotenv.sh
+      # shellcheck disable=SC1091
+      if . "$(dirname "$0")/../lib/load-dotenv.sh" 2>/dev/null && load_dotenv ZAI_API_KEY 2>/dev/null && [ -n "${ZAI_API_KEY:-}" ]; then
+        ANTHROPIC_API_KEY="$ZAI_API_KEY"
+      else
+        echo "refresh-graph-map: --backend glm needs ZAI_API_KEY (in the primary checkout's .env) or ANTHROPIC_API_KEY set." >&2
+        exit 1
+      fi
+    fi
+    export ANTHROPIC_BASE_URL ANTHROPIC_MODEL ANTHROPIC_API_KEY
+    echo "refresh-graph-map: --backend glm -> claude backend @ $ANTHROPIC_BASE_URL (model $ANTHROPIC_MODEL)" >&2
+    ;;
+esac
+
 GRAPHIFY_MAP="${GRAPHIFY_MAP_BIN:-graphify}"   # test hook: stub graphify
 # graphify is only needed for the extraction path — --no-update publishes from
 # an existing report and must not require it (CR: code-reviewer).
+
+# Extraction/labeling concurrency knob (HIMMEL-1097 mitigation). --max-concurrency
+# caps only how many requests are IN FLIGHT at once — it is not true rate-limiting
+# (no pacing/backoff between sequential requests), so it reduces request pressure
+# but cannot beat a hard per-key quota. The default 6 overshoots a rate-limited
+# backend badly — `--backend glm` (Z.ai) 429s (rate_limit_error code 1302) on most
+# chunks at 6. Lowering it (e.g. GRAPHIFY_MAX_CONCURRENCY=1) eases the pressure and
+# is worth trying, but is NOT guaranteed to complete: an exhausted/hard request
+# quota 429s even serialized (observed 2026-07-21 — chunk 1 failed at concurrency 1
+# with ~33s spacing). Applies to BOTH the --update extraction and the cluster-only
+# labeling pass (both make backend LLM calls against the same limit). Must be a
+# positive integer; anything else (including an explicitly-empty value) fails loud.
+# Band-aid — the durable fix (seed graphify's semantic cache so the regen is a
+# small incremental, not a full 255-chunk extraction) is HIMMEL-1097.
+# `-6` (unset-only default), NOT `:-6`: an explicitly-empty value stays empty and
+# is caught by the validation below, rather than silently defaulting to 6.
+# The default stays 6 (not glm-lowered): this script's DEFAULT backend is
+# claude-cli (line 45), which is unaffected — lowering the default would 6x-slow
+# every non-glm regen for no gain. glm callers pass the knob explicitly, and a
+# lower value would not rescue glm anyway when the request quota is exhausted
+# (it 429s even serialized, as above). Wiring a throttled default into the glm
+# cadence is a separate concern, out of scope for this knob.
+GRAPHIFY_MAX_CONCURRENCY="${GRAPHIFY_MAX_CONCURRENCY-6}"
+# Validate ONLY on the extraction path (DO_UPDATE=1): the knob feeds the
+# --update + cluster-only graphify calls, which a --no-update publish-only run
+# never makes — so an invalid value is irrelevant there and must not fail an
+# unrelated republish (CR: codex-1).
+if [ "$DO_UPDATE" -eq 1 ]; then
+  case "$GRAPHIFY_MAX_CONCURRENCY" in
+    ''|*[!0-9]*) echo "refresh-graph-map: GRAPHIFY_MAX_CONCURRENCY must be a positive integer (got '$GRAPHIFY_MAX_CONCURRENCY')" >&2; exit 1 ;;
+  esac
+  [ "$GRAPHIFY_MAX_CONCURRENCY" -ge 1 ] || { echo "refresh-graph-map: GRAPHIFY_MAX_CONCURRENCY must be >= 1 (got '$GRAPHIFY_MAX_CONCURRENCY')" >&2; exit 1; }
+fi
 
 # Off-peak advisory (DeepSeek peak-valley UTC 1-4 + 6-10 = 2x). Advisory only —
 # a scheduler should aim off-peak; we never hard-refuse (an operator may run ad hoc).
@@ -437,8 +498,8 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # tripped the gate by containing the literal flag, so the marker would only
   # have been suppressing itself.) The real control for what those nested calls
   # can reach is the reroute-selector clearing above + the egress fence.
-  "$GRAPHIFY_MAP" "$SCRATCH" --update --backend "$BACKEND" --max-concurrency 6 --api-timeout 300 >&2 || { echo "refresh-graph-map: graphify --update failed" >&2; exit 2; }
-  "$GRAPHIFY_MAP" cluster-only "$SCRATCH" --backend "$BACKEND" >&2 || { echo "refresh-graph-map: cluster-only failed" >&2; exit 2; }
+  "$GRAPHIFY_MAP" "$SCRATCH" --update --backend "$BACKEND" --max-concurrency "$GRAPHIFY_MAX_CONCURRENCY" --api-timeout 300 >&2 || { echo "refresh-graph-map: graphify --update failed" >&2; exit 2; }
+  "$GRAPHIFY_MAP" cluster-only "$SCRATCH" --backend "$BACKEND" --max-concurrency "$GRAPHIFY_MAX_CONCURRENCY" >&2 || { echo "refresh-graph-map: cluster-only failed" >&2; exit 2; }
   # HIMMEL-907: stamp freshness artifacts so the companion guard
   # check-graph-freshness.sh can VERIFY this graph (not "fresh by age" only).
   # Source-of-truth for shape is the guard's parser: manifest.json = flat
