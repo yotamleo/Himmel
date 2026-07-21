@@ -77,6 +77,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: scripts/${{ matrix.pkg }}/package-lock.json
       - run: npm ci
         working-directory: scripts/${{ matrix.pkg }}
       - run: npm test
@@ -126,6 +128,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
       - uses: oven-sh/setup-bun@v2
 
       # gitleaks: pinned to the SAME version as the pre-commit hook
