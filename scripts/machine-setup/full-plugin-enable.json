@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical pluginSet=full enable table (HIMMEL-816, HIMMEL-755 A4). Single source of truth for scripts/himmelctl/bin.js's FULL_PLUGIN_ENABLE — the documented per-plugin enable list from docs/setup/new-machine.md's Claude Code Plugins section. Every install is --scope user. Extracted so this list has ONE canonical home instead of living inline in bin.js (HIMMEL-755 A4 plugin-spec canonicalization); scripts/machine-setup/install-plugins.sh is a SEPARATE, template-driven orchestrator (docs/setup/settings-template.json's enabledPlugins) and is intentionally NOT re-pointed at this file — the two lists serve different purposes (this is a fixed pluginSet=full bonus list; install-plugins.sh installs whatever a scope's settings-template flags true) and collapsing them would be a functional change, not a list extraction.",
+  "_comment": "Canonical pluginSet=full enable table (HIMMEL-816, HIMMEL-755 A4). scripts/himmelctl/bin.js loads this file at runtime; every install is --scope user. scripts/machine-setup/install-plugins.sh remains a separate template-driven orchestrator over docs/setup/settings-template.json because that broader enabledPlugins map serves a different purpose.",
   "plugins": [
     { "spec": "github@claude-plugins-official" },
     { "spec": "feature-dev@claude-plugins-official" },

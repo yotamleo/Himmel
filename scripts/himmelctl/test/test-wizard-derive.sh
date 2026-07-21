@@ -133,7 +133,8 @@ JSON
 # "surface the BACKUP line" behavior is exercised without a real apply.
 build_fixture() {
   local _d="$1"
-  mkdir -p "$_d/scripts/handover" "$_d/scripts/lib"
+  mkdir -p "$_d/scripts/handover" "$_d/scripts/lib" "$_d/scripts/machine-setup"
+  cp "$repo_root/scripts/machine-setup/full-plugin-enable.json" "$_d/scripts/machine-setup/full-plugin-enable.json"
   cat > "$_d/scripts/adopt.sh" <<STUB
 #!/usr/bin/env bash
 printf 'adopt.sh: %s\n' "\$*" >> "$_d/adopt-calls.log"
@@ -794,5 +795,47 @@ printf '%s' "$out" | grep -q '^DRY: claude plugin install github@claude-plugins-
 printf '%s' "$out" | grep -qE 'derived:.*adopt\.sh --profile all --scope project --luna-target' \
   || fail "caseK: expected the --profile all --luna-target derived line (got: $out)"
 echo "ok: caseK --dry-run (full + external + default-template combo) -> zero mutation, DRY previews only"
+
+# ── Case U: EACCES settings pre-check fails friendly before wire/plugin ──────
+stubU="$work/caseU"; mkdir -p "$stubU"
+cU=$(build_path "$stubU" bash git jq python3 npm -- )
+hU="$work/hU"; mkdir -p "$hU/.claude"
+settingsU="$hU/.claude/settings.json"; printf '{}\n' > "$settingsU"
+fixtureU="$work/caseU-fixture"; build_fixture "$fixtureU"
+vaultU="$work/caseU-vault"; stamp_vault "$vaultU"
+cacheU="$work/caseU-profile.json"
+write_cache "$cacheU" adopter user existing "$(winpath "$vaultU")" inline "" lean
+denyU="$work/deny-settings-write.js"
+cat > "$denyU" <<'JS'
+const fs = require('fs');
+const path = require('path');
+const realAccessSync = fs.accessSync;
+fs.accessSync = function (p, mode) {
+  if (path.resolve(String(p)) === path.resolve(process.env.DENY_SETTINGS_PATH)) {
+    const err = new Error('simulated permission denied');
+    err.code = 'EACCES';
+    throw err;
+  }
+  return realAccessSync.call(fs, p, mode);
+};
+JS
+set +e
+out=$(PATH="$cU" HOME="$hU" HIMMELCTL_INTERACTIVE=0 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureU")" \
+      DENY_SETTINGS_PATH="$(winpath "$settingsU")" \
+      NODE_OPTIONS="--require=$(winpath "$denyU")" \
+      "$node_bin" "$wizard" install --from-profile "$(winpath "$cacheU")" \
+      </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "caseU: simulated EACCES should fail before wiring (got rc=0): $out"
+printf '%s' "$out" | grep -q 'target settings.json is not writable' \
+  || fail "caseU: expected the friendly settings writability diagnostic (got: $out)"
+printf '%s' "$out" | grep -q 'EACCES' \
+  || fail "caseU: expected the EACCES code in the diagnostic (got: $out)"
+[ -f "$fixtureU/wire-luna-vault-calls.log" ] \
+  && fail "caseU: EACCES pre-check must abort before wire-luna-vault.sh"
+[ -f "$fixtureU/luna-upgrade-all-calls.log" ] \
+  && fail "caseU: EACCES pre-check must abort before luna-upgrade-all.sh"
+echo "ok: caseU simulated settings EACCES -> friendly fail before wire/plugin steps"
 
 echo "PASS"

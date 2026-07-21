@@ -9,13 +9,15 @@
 #
 # Usage (-ExecutionPolicy Bypass: a clean machine's default policy is
 # Restricted, which refuses -File outright):
-#   powershell -ExecutionPolicy Bypass -File scripts/himmelctl/bootstrap.ps1 [-DryRun]
+#   powershell -ExecutionPolicy Bypass -File scripts/himmelctl/bootstrap.ps1 [-DryRun] [-DefaultScope project|user]
 #
 # HIMMELCTL_REPO_ROOT overrides where bin.js is looked up (same seam bin.js
 # itself honors) so a hermetic test can point the hand-off at a stub.
 
 param(
-  [switch]$DryRun
+  [switch]$DryRun,
+  [ValidateSet('project', 'user')]
+  [string]$DefaultScope = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +29,13 @@ if (-not $repoRoot) {
 }
 $binJs = Join-Path $repoRoot 'scripts\himmelctl\bin.js'
 
-$handoffCmd = "node `"$binJs`" install"
+$handoffArgs = @($binJs, 'install')
+$rerunArg = ''
+if ($DefaultScope) {
+  $handoffArgs += @('--default-scope', $DefaultScope)
+  $rerunArg = " -DefaultScope $DefaultScope"
+}
+$handoffCmd = "node `"$binJs`" " + (($handoffArgs | Select-Object -Skip 1) -join ' ')
 $installPlan = 'winget install --id OpenJS.NodeJS.LTS -e'
 
 function Test-NodePresent {
@@ -38,7 +46,7 @@ if (Test-NodePresent) {
   # node-present short-circuit: straight to the hand-off, no install step.
   Write-Output "bootstrap: node found -- handing off to: $handoffCmd"
   if ($DryRun) { exit 0 }
-  & node $binJs install
+  & node @handoffArgs
   exit $LASTEXITCODE
 }
 
@@ -57,7 +65,7 @@ Write-Output "bootstrap: bun not installed (optional -- needed later for qmd/tel
 
 if (Test-NodePresent) {
   Write-Output "bootstrap: node installed -- handing off to: $handoffCmd"
-  & node $binJs install
+  & node @handoffArgs
   exit $LASTEXITCODE
 }
 
@@ -74,5 +82,5 @@ if ($wingetExit -ne 0) {
 # PATH-refresh trap (Draft-A §6): winget SUCCEEDED but the fresh install's PATH
 # edit is invisible to this process. Print the ONE re-run line rather than
 # chaining blindly.
-Write-Output "bootstrap: node installed but not resolvable in this shell -- open a new terminal and re-run: powershell -ExecutionPolicy Bypass -File `"$scriptDir\bootstrap.ps1`""
+Write-Output "bootstrap: node installed but not resolvable in this shell -- open a new terminal and re-run: powershell -ExecutionPolicy Bypass -File `"$scriptDir\bootstrap.ps1`"$rerunArg"
 exit 1
