@@ -85,9 +85,11 @@ else
 fi
 # The NOTICE alone is not the contract: assert the executable delegation
 # statement too, so removing the exec while keeping the NOTICE fails
-# (codex-adv finding, HIMMEL-934 CR round).
+# (codex-adv finding, HIMMEL-934 CR round). The optional trailing
+# `--default-scope <scope>` is the HIMMEL-1253 user-scope default hint the
+# machine-setup shims pass (#1130) — allowed, but the exec must still be real.
 # shellcheck disable=SC2016  # single quotes intentional: $HIMMEL_PATH is ubuntu.sh's variable
-if grep -qE -- '^[[:space:]]*(HIMMELCTL_REPO_ROOT="\$HIMMEL_PATH"[[:space:]]+)?exec[[:space:]]+bash[[:space:]]+"\$HIMMEL_PATH/scripts/himmelctl/bootstrap\.sh"[[:space:]]*$' "$ubuntu_sh"; then
+if grep -qE -- '^[[:space:]]*(HIMMELCTL_REPO_ROOT="\$HIMMEL_PATH"[[:space:]]+)?exec[[:space:]]+bash[[:space:]]+"\$HIMMEL_PATH/scripts/himmelctl/bootstrap\.sh"([[:space:]]+--default-scope[[:space:]]+[A-Za-z]+)?[[:space:]]*$' "$ubuntu_sh"; then
     assert_pass "ubuntu.sh execs himmelctl bootstrap.sh (delegation is real, HIMMEL-887)"
 else
     assert_fail "ubuntu.sh does not exec himmelctl bootstrap.sh (NOTICE without delegation)"

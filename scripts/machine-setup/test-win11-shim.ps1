@@ -124,4 +124,10 @@ if ($source -match 'NOTE: -LunaRemote was passed') {
 }
 Write-Output "ok: caseC -LunaRemote fail-closed guard (offset $($guardMatch.Index)) sits before provisioning (offset $firstProvisionIdx); silent-drop NOTE gone"
 
+# ── Case D: machine-restore delegation explicitly defaults scope to user ─────
+if ($source -notmatch [regex]::Escape("-DefaultScope user")) {
+    Fail "caseD: delegated bootstrap must carry '-DefaultScope user'"
+}
+Write-Output "ok: caseD delegated bootstrap carries the explicit user-scope default hint"
+
 Write-Output "PASS"

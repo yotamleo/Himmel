@@ -76,10 +76,11 @@ winpath() {
 # repo's own .env / scripts/lanes/*.json.
 build_fixture() {
   local _d="$1"
-  mkdir -p "$_d/scripts/lib" "$_d/scripts/lanes"
+  mkdir -p "$_d/scripts/lib" "$_d/scripts/lanes" "$_d/scripts/machine-setup"
   cp "$repo_root/scripts/lib/set-env-var.sh" "$_d/scripts/lib/set-env-var.sh"
   cp "$repo_root/scripts/lanes/set-lane-override.mjs" "$_d/scripts/lanes/set-lane-override.mjs"
   cp "$repo_root/scripts/lanes/lanes.json" "$_d/scripts/lanes/lanes.json"
+  cp "$repo_root/scripts/machine-setup/full-plugin-enable.json" "$_d/scripts/machine-setup/full-plugin-enable.json"
 }
 
 run_cfg() {

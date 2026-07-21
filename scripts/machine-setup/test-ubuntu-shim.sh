@@ -83,10 +83,11 @@ EOF
 
 cat > "$stub_bin/git" <<'EOF'
 #!/usr/bin/env bash
+echo "GIT:$*"
 if [ "$1" = "clone" ]; then
   target="$*"
   target="${target##* }"
-  mkdir -p "$target/scripts/hooks" "$target/scripts/himmelctl" "$target/scripts/lib"
+  mkdir -p "$target/.git" "$target/scripts/hooks" "$target/scripts/himmelctl" "$target/scripts/lib"
   cat > "$target/scripts/hooks/check-hookspath.sh" <<'INNER'
 #!/usr/bin/env bash
 echo "STUB:check-hookspath"
@@ -178,7 +179,10 @@ bootstrap_pwd=$(grep '^BOOTSTRAP:pwd ' "$log" | head -1 | sed 's/^BOOTSTRAP:pwd 
 [ -n "$bootstrap_pwd" ] || { cat "$log" >&2; fail "caseB: no BOOTSTRAP:pwd marker found (log above)"; }
 [ "$bootstrap_pwd" = "$expected_pwd" ] \
   || fail "caseB: bootstrap must be invoked with cwd=\$HIMMEL_PATH ($expected_pwd), got: $bootstrap_pwd"
-echo "ok: caseB provisioning ($provision_line) < notice ($notice_line) < delegated bootstrap ($bootstrap_line), cwd=\$HIMMEL_PATH"
+bootstrap_args=$(grep '^BOOTSTRAP:invoked ' "$log" | head -1 | sed 's/^BOOTSTRAP:invoked //')
+[ "$bootstrap_args" = "--default-scope user" ] \
+  || fail "caseB: machine-restore delegation must hint user scope, got: $bootstrap_args"
+echo "ok: caseB provisioning ($provision_line) < notice ($notice_line) < delegated bootstrap ($bootstrap_line), cwd=\$HIMMEL_PATH, default scope=user"
 
 # HIMMEL-985: the shim must reconcile the rtk hook (bare `rtk hook claude`
 # from `rtk init -g --auto-patch` → the rtk-hook-guard wrapper) AFTER the
@@ -203,6 +207,19 @@ reconcile_args=$(grep '^STUB:reconcile-rtk-hook ' "$log" | head -1 | sed 's/^STU
 [ "$reconcile_args" = "$tmp_home/.claude/settings.json $expected_pwd" ] \
   || fail "caseB: reconcile-rtk-hook args must be '<settings.json> <himmel-path>', got: $reconcile_args"
 echo "ok: caseB reconcile-rtk-hook ($reconcile_line) < bootstrap ($bootstrap_line), args OK"
+
+# ── Case D: re-run reuses the existing clone and fetches it ─────────────────
+logD="$work/run-rerun.log"
+set +e
+HOME="$tmp_home" PATH="$stub_bin:$PATH" bash "$target" >"$logD" 2>&1
+run_rcD=$?
+set -e
+[ "$run_rcD" -eq 0 ] || { cat "$logD" >&2; fail "caseD: re-run should succeed against the existing clone (rc=$run_rcD)"; }
+grep -q "^GIT:-C $expected_pwd fetch --all --prune$" "$logD" \
+  || { cat "$logD" >&2; fail "caseD: re-run must fetch/reuse the existing clone"; }
+grep -q '^GIT:clone ' "$logD" \
+  && fail "caseD: re-run must not clone over the existing checkout"
+echo "ok: caseD existing clone -> fetch --all --prune + reuse, no second clone"
 
 # ── Case C: --luna-remote -> fail-closed BEFORE any provisioning ───────────
 # Reuses the Case B stub environment (same stub PATH + temp HOME) so a

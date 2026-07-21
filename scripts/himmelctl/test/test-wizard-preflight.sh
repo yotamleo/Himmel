@@ -13,6 +13,8 @@
 #      stub that logs its argv and creates the missing tool -> answering `y`
 #      triggers exactly ONE pkg-mgr call and the re-check reaches
 #      `preflight OK`.
+#   3b. Windows only: missing bash + git installs Git.Git exactly once through
+#      cmd/winget, then the re-check sees both tools (clean-machine path).
 #   4. interactive, missing jq, stdin closed BEFORE any answer at the
 #      "Install missing tools now?" confirm -> declines safely (CR r1 FIX 8:
 #      the confirm used to hang forever on EOF-before-answer; it now uses the
@@ -102,17 +104,22 @@ log3="$work/case3-pkgmgr.log"
 # The wizard invokes a platform-specific package manager; stub whichever one it
 # will reach so the same case is hermetic on win32/darwin/linux.
 case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) pkgmgr='winget' ;;
-  Darwin)              pkgmgr='brew' ;;
-  Linux)               pkgmgr='sudo' ;;
-  *) fail "case3: unsupported platform $(uname -s)" ;;
-esac
-# The stub logs its argv (so the test can count calls) and fabricates each named
-# missing tool inside the stub dir, so the wizard's re-check finds it. The
-# winget branch receives `install --id <ID> -e` (CR r2: one exact package id
-# per invocation, never a bare-name query), so ids map back to tool names;
-# apt/brew still receive bare tool names.
-cat > "$stub3/$pkgmgr" <<STUB
+  MINGW*|MSYS*|CYGWIN*)
+    pkgmgr='winget.cmd'
+    jq_src=$(cygpath -w "$(command -v jq)")
+    stub3_win=$(cygpath -w "$stub3")
+    log3_win=$(cygpath -w "$log3")
+    cat > "$stub3/$pkgmgr" <<STUB
+@echo off
+echo called: %*>>"$log3_win"
+copy /Y "$jq_src" "$stub3_win\jq.exe" >nul
+exit /b 0
+STUB
+    ;;
+  Darwin|Linux)
+    if [ "$(uname -s)" = "Darwin" ]; then pkgmgr='brew'; else pkgmgr='sudo'; fi
+    # The posix stub fabricates each named missing tool so the re-check finds it.
+    cat > "$stub3/$pkgmgr" <<STUB
 #!/usr/bin/env bash
 echo "called: \$*" >> "$log3"
 for a in "\$@"; do
@@ -128,7 +135,10 @@ for a in "\$@"; do
 done
 exit 0
 STUB
-chmod +x "$stub3/$pkgmgr"
+    chmod +x "$stub3/$pkgmgr"
+    ;;
+  *) fail "case3: unsupported platform $(uname -s)" ;;
+esac
 c3path=$(build_path "$stub3" bash git python3 npm -- jq)
 PATH="$c3path" command -v jq >/dev/null 2>&1 \
   && fail "case3 sanity: jq should be absent before the install offer"
@@ -147,6 +157,45 @@ calls=0
 printf '%s' "$out" | grep -q 'preflight OK' \
   || fail "case3: recheck should reach preflight OK (got: $out)"
 echo "ok: case3 interactive -> exactly 1 $pkgmgr call + recheck passes -> preflight OK"
+
+# ── Case 3b: Windows clean machine installs Git.Git once for bash + git ─────
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    stub3b="$work/case3b"; mkdir -p "$stub3b"
+    log3b="$work/case3b-pkgmgr.log"
+    bash_src=$(cygpath -w "$(command -v bash)")
+    git_src=$(cygpath -w "$(command -v git)")
+    stub3b_win=$(cygpath -w "$stub3b")
+    log3b_win=$(cygpath -w "$log3b")
+    cat > "$stub3b/winget.cmd" <<STUB
+@echo off
+echo called: %*>>"$log3b_win"
+copy /Y "$bash_src" "$stub3b_win\bash.exe" >nul
+copy /Y "$git_src" "$stub3b_win\git.exe" >nul
+exit /b 0
+STUB
+    c3bpath=$(build_path "$stub3b" jq python3 npm -- bash git)
+    PATH="$c3bpath" command -v bash >/dev/null 2>&1 \
+      && fail "case3b sanity: bash should be absent before the install offer"
+    PATH="$c3bpath" command -v git >/dev/null 2>&1 \
+      && fail "case3b sanity: git should be absent before the install offer"
+    h3b="$work/h3b"; mkdir -p "$h3b"
+    set +e
+    out=$(PATH="$c3bpath" HOME="$h3b" HIMMELCTL_INTERACTIVE=1 \
+          "$node_bin" "$wizard" install <<<"y" 2>&1); rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || fail "case3b: Git.Git install+recheck should reach preflight OK (got rc=$rc): $out"
+    calls=$(wc -l < "$log3b")
+    [ "$calls" = "1" ] \
+      || fail "case3b: bash + git must deduplicate to one Git.Git install (got $calls): $(cat "$log3b")"
+    grep -q 'Git.Git' "$log3b" \
+      || fail "case3b: the one winget call must install Git.Git (got: $(cat "$log3b"))"
+    printf '%s' "$out" | grep -q 'preflight OK' \
+      || fail "case3b: recheck should reach preflight OK (got: $out)"
+    echo "ok: case3b Windows missing bash + git -> one cmd/winget Git.Git install + recheck passes"
+    ;;
+  *) echo "SKIP: case3b Windows clean-machine Git.Git path (non-Windows host)" ;;
+esac
 
 # ── Case 4: interactive, closed stdin at the install confirm -> no hang ────
 # CR r1 FIX 8 made the confirm EOF-safe so a closed stdin declines instead of
