@@ -115,6 +115,10 @@ case "$verb" in
         # the same-repo binding (codex-adv-2).
         case "$json" in
             isPrivate,defaultBranchRef)
+                if [ -z "$jqexpr" ]; then
+                    echo "gh stub: 'repo view' isPrivate,defaultBranchRef missing required --jq expression" >&2
+                    exit 93
+                fi
                 # (CodeRabbit) Assert the positional repo arg — a regression
                 # back to a cwd-scoped query would otherwise pass silently.
                 if [ "$repo_arg" != "$nwo" ]; then

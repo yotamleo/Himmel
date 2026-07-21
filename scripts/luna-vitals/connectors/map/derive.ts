@@ -312,7 +312,8 @@ export function deriveSleep(response: { dataPoints?: unknown[] }): { rows: Extra
   // Each warning is recorded in `warnings` (durable, returned to the caller) AND
   // printed to stderr with the [google-health] prefix (the pre-HIMMEL-794 operator
   // signal, kept byte-identical). The stderr line is `[google-health] ` + text —
-  // `date` is carried only in the returned copy, never in the stderr line.
+  // `date` is carried only in the returned copy, never in the stderr line. Callers
+  // that embed a date in `text` must pass that same date as the second argument.
   const warn = (text: string, date?: string): void => {
     warnings.push({ date, text });
     console.error(`[google-health] ${text}`);
@@ -322,7 +323,8 @@ export function deriveSleep(response: { dataPoints?: unknown[] }): { rows: Extra
   // DISTINCT dropped sessions can never share a text — the merge CLI dedups
   // warnings by exact text, so identical text must mean the same event. (Across
   // re-pulls with different windows the same session may carry a different index;
-  // over-reporting there is the accepted safe direction.)
+  // over-reporting there is the accepted safe direction.) Fully undated drops in
+  // separate artifacts can still share an index and collapse during merge.
   for (const [i, dp] of (response.dataPoints ?? []).entries()) {
     const point = dp as DataPoint;
     const fieldKey = Object.keys(point).find((k) => k !== 'name' && k !== 'dataSource');

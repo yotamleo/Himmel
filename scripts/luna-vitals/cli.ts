@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     // degraded pull can produce a rows-empty artifact whose warnings still must
     // merge through (HIMMEL-794), but rows-empty AND warnings-empty inputs
     // (including zero artifact files) are a total extraction failure — error out.
-    if (!det.length && !llm.length && !collectedWarnings.length) { console.error("usage: merge [--det <det.json>...] [--llm <llm.json>...] --out <merged.json> (no input artifacts found)"); process.exit(1); }
+    if (!det.length && !llm.length && !collectedWarnings.length) { console.error("usage: merge [--det <det.json>...] [--llm <llm.json>...] --out <merged.json> (no rows or warnings to merge)"); process.exit(1); }
     const uniq = [...new Set(buckets)];
     const bucket = uniq.length === 1 ? uniq[0] : `merged(${uniq.join(",")})`;
     const merged = mergeRows({ deterministic: det, llm, bucket });

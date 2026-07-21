@@ -744,6 +744,33 @@ describe('deriveSleep', () => {
     });
   });
 
+  test('null and object-shaped "stages" fields follow the same malformed-stage path', () => {
+    for (const stages of [null, {}]) {
+      const fixture = {
+        dataPoints: [
+          {
+            dataSource: { platform: 'HEALTH_CONNECT' },
+            sleep: {
+              interval: {
+                startTime: '2026-01-01T22:00:00Z',
+                startUtcOffset: '0s',
+                endTime: '2026-01-02T06:00:00Z',
+                endUtcOffset: '0s',
+              },
+              stages,
+            },
+          },
+        ],
+      };
+      const { rows, warnings } = deriveSleep(fixture);
+      expect(rows.map((r) => r.metric)).toEqual(['sleep_in_bed_hours']);
+      expect(warnings).toEqual([{
+        date: '2026-01-02',
+        text: 'sleep 2026-01-02: non-array "stages" field - treated as stage-less (sleep_hours unavailable)',
+      }]);
+    }
+  });
+
   test('REGRESSION: malformed non-array stages on a shorter NAP session does not warn (main session wins) — HIMMEL-794 Fix B / codex-adv-2', () => {
     // A clean, longer main session (valid stages) plus a shorter same-date nap
     // session whose `stages` field is malformed. Only the MAIN session may warn —

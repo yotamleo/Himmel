@@ -123,6 +123,9 @@ main loop and burns the time-limited Fable quota on work a cheaper
 tier handles.
 Raise *effort* before raising model tier — Fable-5 `low` ≈ prior-gen
 `xhigh`, and the same shift applies down-tier.
+| Fable 5 | judgment, taste — hardest calls; escalation target |
+compare per task vs Fable-low
+Fable stays CONSERVED (limited release)
 EOF
 SAVED_SRC="$SRC"; SAVED_TGT="$TGT"; SRC="$FAB"; TGT="$TGTFAB"
 run 0 "fable fixture write succeeds" -- --write
@@ -138,6 +141,15 @@ else bad "wrap-spanning 'Fable main loop' entry matched across the newline"; fi
 if grep -q 'on Claude, Fable-5' "$TGT"; then
   ok "effort calibration attributed to Claude"
 else bad "effort calibration attributed to Claude"; fi
+if grep -qF '| top model | judgment, taste — hardest calls; escalation target |' "$TGT"; then
+  ok "top-model lane row neutralized"
+else bad "top-model lane row neutralized"; fi
+if grep -qF 'compare per task vs top-model-low' "$TGT"; then
+  ok "top-model-low comparison neutralized"
+else bad "top-model-low comparison neutralized"; fi
+if grep -qF 'The top model stays CONSERVED (limited release)' "$TGT"; then
+  ok "top-model conservation sentence neutralized"
+else bad "top-model conservation sentence neutralized"; fi
 SRC="$SAVED_SRC"; TGT="$SAVED_TGT"
 
 # b) real-CLAUDE.md leak check: after generation, no identity-claiming Fable

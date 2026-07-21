@@ -61,7 +61,8 @@ degraded date carries `warnings: ["sleep <date>: malformed stage timestamps - sl
 omitted (degraded stage data)"]`. The stderr line is unchanged — the artifact copy is
 additive. A dated warning is recorded on the artifact only when its date falls inside the
 pull's `[from, to]` window (matching the rows filter); a warning with no derivable date is
-always recorded regardless of window.
+always recorded regardless of window. A malformed date is also kept conservatively; that
+arm is defensive because current derivation emits only valid ISO dates or no date.
 
 Four adjacent paths that previously skipped silently now each produce a warning too
 (stderr + artifact); row-emission behavior is unchanged for all four. The three

@@ -9,7 +9,7 @@ import re
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 _MOD_PATH = Path(__file__).resolve().parent / "fold-chat-history.py"
@@ -556,10 +556,9 @@ class TestFold(unittest.TestCase):
             # placeholder but does NOT increment the counter
             self.assertEqual(report.audio_placeholders, 1)
             gpt = vault / "chats" / "gpt"
-            # derive expected dates via the SAME local-time conversion the
-            # module uses — hard-coding the day would be timezone-fragile
-            d1 = datetime.fromtimestamp(1755500000.0)
-            d2 = datetime.fromtimestamp(1758200000.0)
+            # Derive expected dates via the same UTC conversion the module uses.
+            d1 = datetime.fromtimestamp(1755500000.0, timezone.utc)
+            d2 = datetime.fromtimestamp(1758200000.0, timezone.utc)
             heb_name = f"{d1:%Y-%m-%d}-שיחה-בעברית.md"
             pic_name = f"{d2:%Y-%m-%d}-Pic-chat.md"
             notes = sorted(p.name for p in gpt.rglob("*.md"))
@@ -579,6 +578,19 @@ class TestFold(unittest.TestCase):
             # gitignore rule not duplicated
             gi2 = (vault / ".gitignore").read_text(encoding="utf-8")
             self.assertEqual(gi2.count("chats/*/_assets/"), 1)
+
+    def test_index_escapes_pipe_in_title(self):
+        with tempfile.TemporaryDirectory() as td:
+            conv = chain(u("q"), a("a"), title="Pipe | title")
+            ed = self._make_export(td, convs=[conv])
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            fch.fold("chatgpt", ed, vault, dry_run=False)
+            index = (vault / "chats" / "_index.md").read_text(encoding="utf-8")
+            self.assertRegex(
+                index,
+                r"\| [^|]+ \| \[\[[^\]]+\\\|Pipe \\\| title\]\] \| \d+ \|",
+            )
 
     def test_fold_dry_run_writes_nothing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -852,6 +864,31 @@ class TestCli(unittest.TestCase):
                            "--vault", td])
             self.assertEqual(rc, 1)
 
+    def test_main_rejects_missing_vault_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            export = Path(td) / "export"
+            export.mkdir()
+            rc = fch.main(["--provider", "chatgpt", "--export", str(export),
+                           "--vault", str(Path(td) / "nope")])
+            self.assertEqual(rc, 1)
+
+    def test_main_empty_export_reports_all_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            export = Path(td) / "export"
+            vault = Path(td) / "vault"
+            export.mkdir()
+            vault.mkdir()
+            import contextlib, io
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = fch.main(["--provider", "chatgpt", "--export", str(export),
+                               "--vault", str(vault), "--dry-run"])
+            self.assertEqual(rc, 0)
+            report = buf.getvalue()
+            self.assertIn("notes created: 0", report)
+            self.assertIn("conversations skipped (empty): 0", report)
+            self.assertIn("assets copied: 0", report)
+
 
 # ---------- Telegram HTML group export (HIMMEL-1170) ----------
 
@@ -1050,6 +1087,21 @@ class TestFoldTelegram(unittest.TestCase):
             self.assertEqual(report.assets_missing, 1)
             self.assertFalse((vault / "evil.jpg").exists())
             self.assertFalse((Path(td) / "evil.jpg").exists())
+
+    def test_note_signature_preserves_media_presence(self):
+        # Same message text, media re-hashed (same COUNT) -> equal signature:
+        # an idempotent re-import must still overwrite (documented intent).
+        a = ("---\nmessages: 3\n---\n# G — 2026-07\n\n## day\n"
+             "**09:00 · Alice**\nhello\n![[chats/telegram/_assets/g__photo_1.jpg]]\n")
+        b = ("---\nmessages: 3\n---\n# G — 2026-07\n\n## day\n"
+             "**09:00 · Alice**\nhello\n![[chats/telegram/_assets/g__photo_1.abc123.jpg]]\n")
+        self.assertEqual(fch._tg_note_signature(a), fch._tg_note_signature(b))
+        # Same text but media REMOVED (fewer embeds) -> different signature, so
+        # the overwrite guard treats it as a different note and won't silently
+        # drop the existing media embed (codex + CodeRabbit, PR #1295).
+        c = ("---\nmessages: 3\n---\n# G — 2026-07\n\n## day\n"
+             "**09:00 · Alice**\nhello\n")
+        self.assertNotEqual(fch._tg_note_signature(a), fch._tg_note_signature(c))
 
 
 class TestCliTelegram(unittest.TestCase):

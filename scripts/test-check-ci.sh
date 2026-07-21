@@ -312,7 +312,8 @@ run() {
     local mode="$1"; shift
     COUNT=$((COUNT+1))
     local of ef
-    of=$(mktemp); ef=$(mktemp)
+    if ! of=$(mktemp "$STUBDIR/out.XXXXXX"); then echo "FATAL: mktemp for stdout capture failed" >&2; exit 1; fi
+    if ! ef=$(mktemp "$STUBDIR/err.XXXXXX"); then rm -f "$of"; echo "FATAL: mktemp for stderr capture failed" >&2; exit 1; fi
     : > "$STUBDIR/args.log"
     : > "$STUBDIR/count"
     : > "$STUBDIR/watch"

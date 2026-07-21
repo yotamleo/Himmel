@@ -61,6 +61,24 @@ test("merge preserves warnings from inputs (deduped) when an input carries them"
   expect(m.rows).toContainEqual({ metric: "migraine", date: "2024-06-15", value: 1, source: "b.md" });
 });
 
+test("merge combines one rows-only artifact with one warnings-only artifact", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "luna-vitals-cli-mixed-shapes-"));
+  const rowsOnly = join(dir, "rows.json");
+  const warningsOnly = join(dir, "warnings.json");
+  const merged = join(dir, "merged.json");
+  const warning = "sleep dataPoint 0: missing interval startTime/endTime - session dropped";
+  await Bun.write(rowsOnly, JSON.stringify({
+    bucket: "rows", conflicts: [],
+    rows: [{ metric: "migraine", date: "2024-06-14", value: 3, source: "daily.md" }],
+  }));
+  await Bun.write(warningsOnly, JSON.stringify({ bucket: "warnings", conflicts: [], rows: [], warnings: [warning] }));
+  const p = Bun.spawn(["bun", "run", "cli.ts", "merge", rowsOnly, warningsOnly, "--out", merged], { cwd: ROOT, stderr: "pipe" });
+  expect(await p.exited).toBe(0);
+  const artifact = await readJson(merged);
+  expect(artifact.rows).toContainEqual({ metric: "migraine", date: "2024-06-14", value: 3, source: "daily.md" });
+  expect(artifact.warnings).toEqual([warning]);
+});
+
 test("merge warns on stderr (naming the file) for a positional arg that is not a .json artifact", async () => {
   const dir = mkdtempSync(join(tmpdir(), "luna-vitals-cli-warn-"));
   const det = join(dir, "det.json");
@@ -113,7 +131,7 @@ test("merge of a single rows-empty, warnings-free artifact exits 1 (total extrac
   const p = Bun.spawn(["bun", "run", "cli.ts", "merge", a, "--out", join(dir, "merged.json")], { cwd: ROOT, stderr: "pipe" });
   const err = await new Response(p.stderr).text();
   expect(await p.exited).toBe(1);
-  expect(err).toContain("no input artifacts found");
+  expect(err).toContain("no rows or warnings to merge");
 });
 
 test("merge with NO artifact inputs at all still exits 1 with the usage message", async () => {
@@ -121,7 +139,7 @@ test("merge with NO artifact inputs at all still exits 1 with the usage message"
   const p = Bun.spawn(["bun", "run", "cli.ts", "merge", "--out", join(dir, "merged.json")], { cwd: ROOT, stderr: "pipe" });
   const err = await new Response(p.stderr).text();
   expect(await p.exited).toBe(1);
-  expect(err).toContain("no input artifacts found");
+  expect(err).toContain("no rows or warnings to merge");
 });
 
 test("write on an artifact carrying warnings: exit 0, series written, warnings surfaced on stderr and harmlessly ignored (HIMMEL-794 Fix E)", async () => {
