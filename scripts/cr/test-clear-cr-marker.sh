@@ -394,6 +394,162 @@ run_clear "$tmp" 15 "Claude floor with a blocking finding → exit 15"
 if marker_exists "$tmp"; then pass; else fail "Claude floor blocker: marker must REMAIN"; fi
 rm -rf "$tmp"
 
+# 4k-4o. Opt-in cross-model floor (HIMMEL-1237, CR_REQUIRE_CROSS_MODEL). When set,
+# the Claude self-review floor alone is NOT a sufficient responder — a NON-claude
+# critic must have recorded `avail ... ok` at this SHA. Default off keeps the
+# HIMMEL-1224 adopter behaviour (a claude-only floor clears — covered by 4g).
+# The test copy has no scripts/lib/load-dotenv.sh, so the script's .env load is a
+# no-op and the process env set here is authoritative.
+export CR_REQUIRE_CROSS_MODEL=1
+
+# 4k. Required-on + ONLY the Claude floor responded → cross-model missing →
+# exit 14, marker REMAINS. This is the operator's "claude alone is not enough".
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")"
+run_clear "$tmp" 14 "cross-model required + claude-only floor → exit 14"
+if marker_exists "$tmp"; then pass; else fail "cross-model required, claude-only: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 4l. Required-on + Claude floor + an EXTERNAL responder (codex ok) → cross-model
+# met → exit 0, marker GONE.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "cross-model required + claude + codex ok → exit 0"
+if marker_exists "$tmp"; then fail "cross-model met: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
+# 4m. Required-on + Claude floor + an external lane that ATTEMPTED and FAILED
+# (coderabbit unavailable) → still no non-claude OK row → exit 14, marker REMAINS.
+# The key case: a failed cross-model lane is NOT papered over by the floor here.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_bad "${sha:0:8}")"
+run_clear "$tmp" 14 "cross-model required + claude + failed external → exit 14"
+if marker_exists "$tmp"; then pass; else fail "cross-model required, failed external: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 4n. Required-on + an external responder ALONE (codex ok, no claude row) →
+# cross-model met → exit 0, marker GONE (the requirement is >=1 non-claude, not
+# "claude PLUS one").
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "cross-model required + external-only responder → exit 0"
+if marker_exists "$tmp"; then fail "external-only responder: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
+unset CR_REQUIRE_CROSS_MODEL
+
+# 4o. Truthy guard: CR_REQUIRE_CROSS_MODEL=0 means OFF (not "any non-empty = on"),
+# so a claude-only floor still clears — a `=0` in .env must not silently gate.
+export CR_REQUIRE_CROSS_MODEL=0
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "CR_REQUIRE_CROSS_MODEL=0 is OFF → claude-only floor clears"
+if marker_exists "$tmp"; then fail "flag=0 (off): marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+unset CR_REQUIRE_CROSS_MODEL
+
+# 4p. Production .env bridge (glm-1 CR suggestion). Cases 4k-4o set the flag via
+# the PROCESS env; the flag's REAL entry point is clear-cr-marker.sh sourcing
+# scripts/lib/load-dotenv.sh and reading CR_REQUIRE_CROSS_MODEL from the primary
+# checkout's .env. Exercise THAT path: copy the real load-dotenv.sh into the temp
+# script tree, write the temp repo's .env, and leave the process env UNSET (4o
+# unset it) so the .env is the sole source. A .env-only flag + claude-only floor
+# must gate (exit 14) — which can only happen if the bridge actually read .env.
+make_repo
+mkdir -p "$tmp/scripts/lib"
+cp "$SCRIPT_DIR/../lib/load-dotenv.sh" "$tmp/scripts/lib/load-dotenv.sh"
+printf 'CR_REQUIRE_CROSS_MODEL=1\n' > "$tmp/.env"
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")"
+run_clear "$tmp" 14 ".env bridge (no process-env): flag read from .env + claude-only floor → exit 14"
+if marker_exists "$tmp"; then pass; else fail ".env bridge: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 4r. Malformed/legacy avail row with NO model field must not satisfy the
+# cross-model requirement (codex-1/glm-2 CR round). `o.model && o.model !==
+# "claude"` requires a NAMED external critic; a bare `!== "claude"` would JS-match
+# a missing model (undefined !== "claude" is true) and let a model-less `avail ok`
+# clear the gate without any external review. Flag on + claude floor + a model-less
+# ok row → still 0 non-claude → exit 14 (fail closed).
+export CR_REQUIRE_CROSS_MODEL=1
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(printf '{"kind":"avail","head":"%s","status":"ok"}' "${sha:0:8}")"
+run_clear "$tmp" 14 "model-less avail ok does not satisfy cross-model → exit 14"
+if marker_exists "$tmp"; then pass; else fail "model-less avail: marker must REMAIN"; fi
+rm -rf "$tmp"
+unset CR_REQUIRE_CROSS_MODEL
+
+# 4s. Normalisation guard (coderabbit-1/2): a whitespace-padded, mis-cased
+# " Claude " model is the floor, not cross-model evidence — the model check
+# trims AND lowercases before comparing. Flag on + claude floor + an avail-ok row
+# with model " Claude " → still 0 non-claude → exit 14.
+export CR_REQUIRE_CROSS_MODEL=1
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(printf '{"kind":"avail","head":"%s","model":" Claude ","status":"ok"}' "${sha:0:8}")"
+run_clear "$tmp" 14 "whitespace/mis-cased Claude is not cross-model → exit 14"
+if marker_exists "$tmp"; then pass; else fail "whitespace/mis-cased Claude: marker must REMAIN"; fi
+rm -rf "$tmp"
+unset CR_REQUIRE_CROSS_MODEL
+
+# 4t. Process-env precedence over .env (coderabbit App). load_dotenv preserves an
+# already-set process var (load-dotenv.sh:71 exports only when unset), so a
+# process CR_REQUIRE_CROSS_MODEL=0 WINS over a .env CR_REQUIRE_CROSS_MODEL=1 — the
+# gate stays OFF and the claude-only floor clears (exit 0). Exercises the real
+# .env bridge; also guards that the thread-1 fail-closed load never fires on a
+# normal readable .env.
+make_repo
+mkdir -p "$tmp/scripts/lib"
+cp "$SCRIPT_DIR/../lib/load-dotenv.sh" "$tmp/scripts/lib/load-dotenv.sh"
+printf 'CR_REQUIRE_CROSS_MODEL=1\n' > "$tmp/.env"
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+export CR_REQUIRE_CROSS_MODEL=0
+run_clear "$tmp" 0 "process-env 0 overrides .env 1 → claude-only floor clears → exit 0"
+if marker_exists "$tmp"; then fail "process-env precedence: marker should be GONE"; else pass; fi
+unset CR_REQUIRE_CROSS_MODEL
+rm -rf "$tmp"
+
+# 4u. Whitespace-padded flag value (coderabbit App): ' true ' from .env/env must
+# still enable the gate — the truthy check trims before matching, so a padded
+# value cannot silently disable an intended opt-in. Padded flag + claude-only
+# floor → gate ON → exit 14.
+export CR_REQUIRE_CROSS_MODEL=' true '
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")"
+run_clear "$tmp" 14 "padded ' true ' flag still enables the gate → exit 14"
+if marker_exists "$tmp"; then pass; else fail "padded truthy flag: marker must REMAIN"; fi
+rm -rf "$tmp"
+unset CR_REQUIRE_CROSS_MODEL
+
+# 4v. Fail-closed on .env LOAD failure (coderabbit App thread 1 / glm-1). If
+# load_dotenv returns non-zero (a genuine .env read failure — permission/race),
+# clear-cr-marker must REFUSE (exit 14), never fall through to
+# require_cross_model=0 and clear WITHOUT the configured cross-model evidence.
+# Portably simulate the read failure with a stub load-dotenv.sh that returns 1
+# (chmod-based unreadable-file tests are unreliable on Git Bash/Windows). An
+# external responder is present so that, absent the fail-closed, the marker WOULD
+# clear — proving the refuse comes from the load failure, not a missing responder.
+make_repo
+mkdir -p "$tmp/scripts/lib"
+printf '#!/usr/bin/env bash\nload_dotenv() { return 1; }\n' > "$tmp/scripts/lib/load-dotenv.sh"
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+run_clear "$tmp" 14 "load_dotenv failure → fail-closed refuse → exit 14"
+if marker_exists "$tmp"; then pass; else fail "load failure: marker must REMAIN"; fi
+rm -rf "$tmp"
+
 # 5. Blocking findings at this head → refuse.
 for _sev in crit imp; do
     for _v in agreed conflict unaddressed; do

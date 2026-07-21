@@ -17,7 +17,11 @@ Stated once, per path, so the floor is explicit rather than implied by which gat
 happens to fail-close:
 - interactive `/pr-check` (a Claude session is present) → the **Claude
   self-review** backstop is the floor: fail-OPEN on lane ABSENCE, fail-CLOSED on
-  an attempted-but-failed lane, distinct from `SKIP_CR`.
+  an attempted-but-failed lane, distinct from `SKIP_CR`. **Opt-in raise
+  (`CR_REQUIRE_CROSS_MODEL=1`, HIMMEL-1237):** a setup that wants cross-model
+  coverage *required* makes the Claude-alone floor insufficient — `clear-cr-marker.sh`
+  gate 3b then also requires ≥1 **non-Claude** `avail … ok` at the SHA. Default
+  off keeps the adopter-portable Claude-alone floor.
 - `scripts/cr/pr-check-external.sh` (the Claude-FREE ship lane) → **"codex
   responded"** is the floor, RAISED to a **codex + CodeRabbit quorum** for diffs
   that change the gate infrastructure itself.
