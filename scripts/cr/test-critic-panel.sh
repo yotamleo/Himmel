@@ -212,10 +212,56 @@ if command -v timeout > /dev/null 2>&1; then
     check_contains "J1: hung member timeout in stderr" "$stderr_j" "unavailable (timeout 2s)"
     check_contains "J1: hung member slug in stderr" "$stderr_j" "hang-critic"
     check "J1: all-hang -> exit 1" "$j_rc" "1"
+
+    # Test J2 (HIMMEL-1245): a row's OPT-IN timeout_secs governs even when the
+    # shared CRITIC_TIMEOUT_SECS default is much larger — proves the per-row
+    # value actually threads through the timeout wrap, not just gets parsed.
+    HANG_OVERRIDE_JSON="$tmp/critics-hang-override.json"
+    printf '%s\n' '{"panel":[{"slug":"hang-critic2","model":"fake/hang2","provider":"test","tier":"free","timeout_secs":1}]}' > "$HANG_OVERRIDE_JSON"
+
+    j2_case() {
+        j2_rc=0
+        stderr_j2="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=20 CRITICS_JSON="$HANG_OVERRIDE_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
+            timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j2_rc=$?
+        printf '%s' "$stderr_j2" | grep -qF "unavailable (timeout 1s)" \
+            && printf '%s' "$stderr_j2" | grep -qF "hang-critic2" \
+            && [ "$j2_rc" = "1" ]
+    }
+    retry_once j2_case
+
+    check_contains "J2: row timeout_secs overrides shared default (1s, not 20s)" "$stderr_j2" "unavailable (timeout 1s)"
+    check_contains "J2: overridden member slug in stderr" "$stderr_j2" "hang-critic2"
+    check "J2: all-hang (override) -> exit 1" "$j2_rc" "1"
+
+    # Test J3 (HIMMEL-1245): an INVALID timeout_secs (non-numeric) must NOT fail
+    # the row — it falls back to the shared CRITIC_TIMEOUT_SECS default, with a
+    # stderr note (mirrors the existing CRITIC_TIMEOUT_SECS-itself validation).
+    HANG_BAD_JSON="$tmp/critics-hang-bad.json"
+    printf '%s\n' '{"panel":[{"slug":"hang-critic3","model":"fake/hang3","provider":"test","tier":"free","timeout_secs":"nope"}]}' > "$HANG_BAD_JSON"
+
+    j3_case() {
+        j3_rc=0
+        stderr_j3="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=2 CRITICS_JSON="$HANG_BAD_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
+            timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j3_rc=$?
+        printf '%s' "$stderr_j3" | grep -qF "unavailable (timeout 2s)" \
+            && printf '%s' "$stderr_j3" | grep -qF "hang-critic3" \
+            && [ "$j3_rc" = "1" ]
+    }
+    retry_once j3_case
+
+    check_contains "J3: invalid timeout_secs falls back to shared default (2s)" "$stderr_j3" "unavailable (timeout 2s)"
+    check_contains "J3: invalid timeout_secs logs a warning" "$stderr_j3" "timeout_secs=nope invalid, using shared default"
+    check "J3: all-hang (invalid override) -> exit 1" "$j3_rc" "1"
 else
     echo "ok - J1: SKIP (no timeout binary)"
     echo "ok - J1: SKIP (no timeout binary)"
     echo "ok - J1: SKIP (no timeout binary)"
+    echo "ok - J2: SKIP (no timeout binary)"
+    echo "ok - J2: SKIP (no timeout binary)"
+    echo "ok - J2: SKIP (no timeout binary)"
+    echo "ok - J3: SKIP (no timeout binary)"
+    echo "ok - J3: SKIP (no timeout binary)"
+    echo "ok - J3: SKIP (no timeout binary)"
 fi
 
 # Tests K1+K2+K3: parallel mode (CRITIC_PARALLEL=1)

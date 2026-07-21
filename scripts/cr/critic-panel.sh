@@ -21,6 +21,9 @@
 #          nothing — 150 clipped their occasional slow reasoning. 240 gives headroom
 #          while still bounding a genuinely hung provider. Lower it for a faster gate.
 #          Requires GNU coreutils 'timeout'; gracefully degrades without it.
+#          A registry row's OPTIONAL "timeout_secs" (HIMMEL-1245) overrides this
+#          shared default for that ONE member only — e.g. the glm row needs more
+#          headroom than codex on a large diff. Invalid/absent -> this default.
 #      CRITIC_PARALLEL — set to 1 to run critics concurrently (default 0 = sequential).
 #          Output is byte-identical to sequential: results merged in registry order.
 set -uo pipefail
@@ -141,6 +144,25 @@ else
     echo "critic-panel.sh: CRITIC_TIMEOUT_SECS=$CRITIC_TIMEOUT_SECS invalid, using 240" >&2
     CRITIC_TIMEOUT_SECS="240"
 fi
+
+# _resolve_member_timeout <slug> <raw_timeout_secs> (HIMMEL-1245)
+# Echoes the effective per-member timeout: the row's OPT-IN timeout_secs when
+# it is a positive integer (Bash 3.2 safe via expr, same check as
+# CRITIC_TIMEOUT_SECS above), else the shared CRITIC_TIMEOUT_SECS default —
+# with a stderr note when a present value was invalid, so a typo'd registry
+# row degrades instead of failing closed.
+_resolve_member_timeout() {
+    _rmt_slug="$1"
+    _rmt_raw="$2"
+    if [ -n "$_rmt_raw" ]; then
+        if expr "$_rmt_raw" : '^[0-9][0-9]*$' > /dev/null 2>&1 && [ "$_rmt_raw" -gt 0 ]; then
+            echo "$_rmt_raw"
+            return
+        fi
+        echo "critic-panel.sh: row $_rmt_slug timeout_secs=$_rmt_raw invalid, using shared default (${CRITIC_TIMEOUT_SECS}s)" >&2
+    fi
+    echo "$CRITIC_TIMEOUT_SECS"
+}
 
 # Validate CRITIC_PARALLEL
 CRITIC_PARALLEL="${CRITIC_PARALLEL:-0}"
@@ -334,12 +356,17 @@ rows="$(REG="$REG" TIER_FILTER="$TIER_FILTER" node -e '
     // candidate chain (e.g. all OpenRouter free models) any failure on one
     // candidate is reason enough to try the next. "-" (unset) keeps the
     // HIMMEL-729 exhaustion-only default for every other row.
+    // Field 8 = TIMEOUT_SECS (HIMMEL-1245): OPT-IN per row. Overrides the
+    // shared CRITIC_TIMEOUT_SECS wall-clock budget for THIS member only
+    // (e.g. glm needs more headroom than codex on a large diff). "-" (unset)
+    // -> the shared default; bash validates positivity (see
+    // _resolve_member_timeout), same as CRITIC_TIMEOUT_SECS itself.
     process.stdout.write(p.map(r => {
       let chain = Array.isArray(r.fallback_models) ? r.fallback_models
                 : (r.fallback_model ? [r.fallback_model] : []);
       chain = chain.filter(m => typeof m === "string" && m.length);
       const fb = chain.length ? chain.join(",") : "-";
-      return r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + fb + "\t" + (r.route_provider || "-") + "\t" + (r.fallback_trigger || "-") + "\t" + (r.fallback_provider || "-");
+      return r.slug + "\t" + r.model + "\t" + (r.perspective || "-") + "\t" + fb + "\t" + (r.route_provider || "-") + "\t" + (r.fallback_trigger || "-") + "\t" + (r.fallback_provider || "-") + "\t" + (r.timeout_secs || "-");
     }).join("\n"));
   } catch (e) {
     process.exit(7);
@@ -368,7 +395,7 @@ if [ -z "${rows:-}" ]; then
             echo "critic-panel.sh: registry $REG parse failed unexpectedly (rc=${rows_rc:-0}) — anchor-only ($ANCHOR_SLUG)" >&2
             ;;
     esac
-    rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	-	-	${ANCHOR_PROVIDER}	-	-"
+    rows="${ANCHOR_SLUG}	${ANCHOR_MODEL}	-	-	${ANCHOR_PROVIDER}	-	-	-"
 fi
 
 # Write diff to a temp file so each member can read it via stdin redirect
@@ -484,6 +511,11 @@ _run_cfp_member() {
 #      requiring a quota-exhaustion signature match. Opt-in per row so the
 #      HIMMEL-729 "don't mask a dead primary lane" contract stays the DEFAULT
 #      for rows that don't set it ("" = exhaustion-signature-only, unchanged).
+# $10 = the RESOLVED per-member timeout in seconds for this slug (HIMMEL-1245):
+#      the row's timeout_secs when valid, else the shared CRITIC_TIMEOUT_SECS
+#      default — already resolved by _resolve_member_timeout at the call site,
+#      so this is used here only for accurate "unavailable (timeout Ns)"
+#      reporting and the fallback-chain seat budget. Unset -> CRITIC_TIMEOUT_SECS.
 # ---------------------------------------------------------------------------
 process_member() {
     _pm_slug="$1"
@@ -498,6 +530,7 @@ process_member() {
     # possibly cross-provider) per the HIMMEL-729 registry contract.
     _pm_fb_provider="${8:-}"
     _pm_trigger="${9:-}"
+    _pm_timeout="${10:-$CRITIC_TIMEOUT_SECS}"
     if [ -n "$_pm_model" ]; then
         _pm_avail="panel-availability: $_pm_slug ok responding-model($_pm_model)"
     else
@@ -534,7 +567,7 @@ process_member() {
     fi
 
     if [ "$_pm_is_timeout" -eq 1 ] && [ "$_pm_do_fallback" -eq 0 ]; then
-        echo "panel-availability: $_pm_slug unavailable (timeout ${CRITIC_TIMEOUT_SECS}s)" >&2
+        echo "panel-availability: $_pm_slug unavailable (timeout ${_pm_timeout}s)" >&2
         return
     fi
     if [ "$_pm_rc" -ne 0 ]; then
@@ -554,12 +587,12 @@ process_member() {
             # stack N full timeouts (observed 240s hangs on free tiers would
             # otherwise block a seat ~4x240s in sequential mode). Each attempt
             # gets the REMAINING budget via the _run_cfp_member override.
-            _fb_deadline=$((SECONDS + CRITIC_TIMEOUT_SECS))
+            _fb_deadline=$((SECONDS + _pm_timeout))
             for _fb_model in $_pm_fallback; do
                 [ -n "$_fb_model" ] || continue
                 _fb_remaining=$((_fb_deadline - SECONDS))
                 if [ "$_fb_remaining" -le 0 ]; then
-                    echo "panel-availability: $_pm_slug fallback-chain budget exhausted (${CRITIC_TIMEOUT_SECS}s) — remaining candidates skipped" >&2
+                    echo "panel-availability: $_pm_slug fallback-chain budget exhausted (${_pm_timeout}s) — remaining candidates skipped" >&2
                     break
                 fi
                 _RM_TIMEOUT_SECS="$_fb_remaining"
@@ -589,7 +622,7 @@ process_member() {
             unset _RM_TIMEOUT_SECS
             if [ "$_fb_success" -ne 1 ]; then
                 if [ "$_pm_is_timeout" -eq 1 ]; then
-                    echo "panel-availability: $_pm_slug unavailable (timeout ${CRITIC_TIMEOUT_SECS}s)" >&2
+                    echo "panel-availability: $_pm_slug unavailable (timeout ${_pm_timeout}s)" >&2
                 else
                     echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc)" >&2
                 fi
@@ -689,7 +722,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
     _seq_out="$(mktemp -t critic-panel-seq.XXXXXX)"
     _seq_err="$(mktemp -t critic-panel-seq-err.XXXXXX)"
 
-    while IFS="	" read -r slug model perspective fallback_chain row_provider fallback_trigger fb_provider; do
+    while IFS="	" read -r slug model perspective fallback_chain row_provider fallback_trigger fb_provider row_timeout; do
         [ -n "$slug" ] || continue
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
@@ -698,13 +731,18 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
         [ "$row_provider" = "-" ] && row_provider=""
         [ "$fallback_trigger" = "-" ] && fallback_trigger=""
         [ "$fb_provider" = "-" ] && fb_provider=""
+        [ "$row_timeout" = "-" ] && row_timeout=""
         total=$((total + 1))
+
+        # Per-member timeout override (HIMMEL-1245): the row's timeout_secs
+        # when valid, else the shared CRITIC_TIMEOUT_SECS default.
+        member_timeout="$(_resolve_member_timeout "$slug" "$row_timeout")"
 
         # Run this member (with per-member timeout if available). --provider ""
         # is a no-op in critic-first-pass.sh, so it is passed unconditionally.
         if [ -n "$perspective" ]; then
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
                 bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
@@ -712,7 +750,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
             fi
         else
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
                 bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
@@ -720,7 +758,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
             fi
         fi
 
-        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_chain" "$perspective" "$model" "$fb_provider" "$fallback_trigger"
+        process_member "$slug" "$_seq_out" "$rc" "$_seq_err" "$fallback_chain" "$perspective" "$model" "$fb_provider" "$fallback_trigger" "$member_timeout"
 
     done << ROWSEOF
 $rows
@@ -734,7 +772,7 @@ else
 
     # Launch each member indexed by position i (i=0,1,2,...)
     i=0
-    while IFS="	" read -r slug model perspective fallback_chain row_provider fallback_trigger fb_provider; do
+    while IFS="	" read -r slug model perspective fallback_chain row_provider fallback_trigger fb_provider row_timeout; do
         [ -n "$slug" ] || continue
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
@@ -743,7 +781,11 @@ else
         [ "$row_provider" = "-" ] && row_provider=""
         [ "$fallback_trigger" = "-" ] && fallback_trigger=""
         [ "$fb_provider" = "-" ] && fb_provider=""
+        [ "$row_timeout" = "-" ] && row_timeout=""
         total=$((total + 1))
+        # Per-member timeout override (HIMMEL-1245): the row's timeout_secs
+        # when valid, else the shared CRITIC_TIMEOUT_SECS default.
+        member_timeout="$(_resolve_member_timeout "$slug" "$row_timeout")"
         # Write slug and model so the result loop can recover them
         printf '%s' "$slug"  > "$outdir/$i.slug"
         printf '%s' "$model" > "$outdir/$i.model"
@@ -754,10 +796,11 @@ else
         printf '%s' "$fallback_chain"  > "$outdir/$i.fb"
         printf '%s' "$fallback_trigger" > "$outdir/$i.trigger"
         printf '%s' "$fb_provider"      > "$outdir/$i.fbprov"
+        printf '%s' "$member_timeout"   > "$outdir/$i.timeout"
         (
             if [ -n "$perspective" ]; then
                 if [ -n "$_TIMEOUT_BIN" ]; then
-                    "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 else
                     bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
@@ -765,7 +808,7 @@ else
                 fi
             else
                 if [ -n "$_TIMEOUT_BIN" ]; then
-                    "$_TIMEOUT_BIN" -k 5 "$CRITIC_TIMEOUT_SECS" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 else
                     bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
@@ -795,6 +838,8 @@ ROWSEOF
         read -r trig_val < "$outdir/$i.trigger" 2>/dev/null || true
         fbprov_val=""
         read -r fbprov_val < "$outdir/$i.fbprov" 2>/dev/null || true
+        timeout_val=""
+        read -r timeout_val < "$outdir/$i.timeout" 2>/dev/null || true
         # Note: if .rc is absent (subshell received a signal during the .out write,
         # e.g. outer timeout SIGKILLs mid-run before the echo $? line runs),
         # rc_val stays at its initialized 1 → process_member treats the member as
@@ -802,7 +847,7 @@ ROWSEOF
         # process_member sees zero findings and counts the member as responded.
         model_val=""
         read -r model_val < "$outdir/$i.model" 2>/dev/null || true
-        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err" "$fb_val" "$persp_val" "$model_val" "$fbprov_val" "$trig_val"
+        process_member "$slug" "$outdir/$i.out" "$rc_val" "$outdir/$i.err" "$fb_val" "$persp_val" "$model_val" "$fbprov_val" "$trig_val" "$timeout_val"
         i=$((i + 1))
     done
 fi
