@@ -28,8 +28,8 @@
 #      detection `kind`:
 #        a. commit_head — compare a local commit to the tracked repo's default
 #           HEAD. mode `pin` takes the commit from `pinned_commit` (full or short
-#           SHA; short is resolved via gh) — for vendored copies that are NOT a
-#           git checkout of upstream (claude-hud, claude-statusline). mode
+#           SHA; short is resolved via gh) — for a vendored copy pinned by SHA,
+#           not tracked as a git checkout of upstream (claude-hud). mode
 #           `checkout` takes it from a local git checkout at `checkout_path`
 #           (env-expanded cross-platform) — for editable/installed checkouts
 #           (hermes-agent). Drift = the tracked repo advanced past our commit.

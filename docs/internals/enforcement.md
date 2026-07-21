@@ -923,16 +923,24 @@ This is the *detect* half of HIMMEL-122 (the arm half is
 parks the OWNER relaunch; this hook arms a WORK-session resume — both
 funnel through the `HIMMEL-Resume-*` scheduler dedup.
 Kill switch: `AUTO_ARM_DISABLE=1` in the launching shell.
-Operational dependency: the statusline usage cache is only fresh while
-the yotamleo/claude-statusline statusline is rendering — and on this
-setup the statusline's stdin-rates path never rewrites the cache during
-a live session, so the cache freezes at session start (observed
-2026-06-10/11; the freeze is structural, the NORM on long sessions, not
-a freak failure). The hook therefore does NOT quietly stand down on a
-stale cache: past the escalation bound it safety-arms and blocks once
-per session (the HIMMEL-275 path above). Expect the "STATUSLINE
-WEDGED" block routinely on long sessions until the upstream statusline
-fix lands.
+Operational dependency: the usage cache is only fresh while the
+statusline is rendering. Under claude-hud (HIMMEL-718) the hud
+custom-line composer drives the usage-cache producer
+(`scripts/statusline/usage-cache-producer.sh`) render-timed but
+freshness-gated — it re-forks the producer only when the consumer cache
+(`/tmp/claude/statusline-usage-cache.json`, the filename retained from
+the claude-statusline lineage; live production is now claude-hud's) is
+older than `USAGE_CACHE_TTL` (default 300s), so a live session refreshes
+it at most once per TTL instead of freezing at session start. The
+session-start freeze that drove HIMMEL-275 — observed 2026-06-10/11
+against the *legacy bash bar*, whose stdin-rates path never rewrote the
+cache mid-session — no longer occurs on this setup (verified
+HIMMEL-1233: cache mtime tracks live renders, utilization signal
+current, no spurious "STATUSLINE WEDGED" escalations). The HIMMEL-275
+escalation path stays wired as a SAFETY NET: if the producer ever stops
+feeding the cache during a live session (hud unwired, composer failing),
+past the escalation bound the hook safety-arms and blocks once per
+session rather than quietly standing down on a stale cache.
 Spec: `scripts/hooks/test-auto-arm-on-cap.sh` (paired smoke suite).
 
 **Wiring (two layers, both shipped):**

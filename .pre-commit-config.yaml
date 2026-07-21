@@ -18,8 +18,9 @@ repos:
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1
     hooks:
-      # Vendored statusline (HIMMEL-331) is kept byte-identical to the
-      # yotamleo/claude-statusline fork — don't lint third-party code.
+      # Vendored statusline bar (HIMMEL-331) is third-party code (upstream
+      # nilbuild/claude-statusline; the yotamleo fork is archived, HIMMEL-1233)
+      # — don't lint it.
       - id: shellcheck
         exclude: '^scripts/statusline/'
 
