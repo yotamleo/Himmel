@@ -60,6 +60,9 @@ write_ledger() {
 
 avail_ok()   { printf '{"kind":"avail","head":"%s","model":"codex","status":"ok"}' "$1"; }
 avail_bad()  { printf '{"kind":"avail","head":"%s","model":"coderabbit","status":"unavailable"}' "$1"; }
+# HIMMEL-1224 — the Claude-only floor evidence: a self-review avail row with
+# model "claude", the ONLY avail row a zero-external-critic adopter produces.
+avail_ok_claude() { printf '{"kind":"avail","head":"%s","model":"claude","status":"ok"}' "$1"; }
 finding()    { printf '{"kind":"finding","head":"%s","model":"codex","finding_id":"codex-1","severity":"%s","file":"a.sh","line":1,"verdict":"%s"}' "$1" "$2" "$3"; }
 
 # stub_gh <tmp> <pr-number-or-empty> [head-sha]
@@ -342,6 +345,53 @@ append_ledger "$tmp" "Codex unavailable panel appends row" avail \
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 14 "Codex no avail-ok evidence → exit 14"
 if marker_exists "$tmp"; then pass; else fail "Codex no-responder path: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 4g-4j. Claude-only floor / availability escape hatch (HIMMEL-1224). The gate
+# must be adopter-portable: a config with ZERO external critics (no codex / glm /
+# CodeRabbit) still clears on the session's own diff review, recorded as
+# `avail --model claude --status ok`. The floor opens for lane ABSENCE, never for
+# a lane that ATTEMPTED and failed (that records `unavailable`, HIMMEL-1126). The
+# failed-lane-as-SOLE-evidence → exit 14 shape is already covered by tests 4 / 4f
+# (coderabbit / codex `unavailable`-only); the cases here add the claude-floor
+# story on top of it.
+
+# 4g. Claude-only floor is sufficient evidence: a single `avail claude ok` row
+# (written through the REAL ledger-append path /pr-check step 4.5 uses) with zero
+# findings clears the marker — the zero-external-critic adopter path.
+make_repo
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "Claude floor appends avail-ok" avail \
+    --branch feat/x --head "$sha" --model claude --status ok
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "Claude-only floor (avail claude ok, no findings) → exit 0"
+if marker_exists "$tmp"; then fail "Claude floor clear path: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
+# 4h. A configured external lane that ATTEMPTED and FAILED records `unavailable`,
+# but that MISSING signal does not retain the marker when the Claude floor
+# covered the HEAD — fail-open because the failed lane is not the SOLE evidence.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_bad "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "Claude floor + failed external lane (unavailable) → exit 0"
+if marker_exists "$tmp"; then fail "Claude floor + failed lane: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
+# 4j. The floor itself is fail-closed on a blocker: a Claude self-review that
+# RESPONDED (avail ok) AND recorded a blocking finding stays closed (exit 15) —
+# a review happening is not the same as a review being clean (HIMMEL-1126).
+make_repo
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "Claude floor blocker appends finding" finding \
+    --branch feat/x --head "$sha" --model claude --id claude-1 \
+    --severity crit --file scripts/example.sh --line 7 --verdict agreed
+append_ledger "$tmp" "Claude floor blocker appends avail-ok" avail \
+    --branch feat/x --head "$sha" --model claude --status ok
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "Claude floor with a blocking finding → exit 15"
+if marker_exists "$tmp"; then pass; else fail "Claude floor blocker: marker must REMAIN"; fi
 rm -rf "$tmp"
 
 # 5. Blocking findings at this head → refuse.

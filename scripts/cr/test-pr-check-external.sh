@@ -72,6 +72,13 @@ make_repo() {
         echo change >> f.txt
         git commit -q -am change
         git checkout -q -b glm/empty main
+        # glm/gate: a diff that TOUCHES the gate infrastructure (scripts/cr/**),
+        # used by the HIMMEL-1224 gate-infra quorum tests (T12-T14).
+        git checkout -q -b glm/gate main
+        mkdir -p scripts/cr
+        printf 'x\n' > scripts/cr/dummy-gate.sh
+        git add scripts/cr/dummy-gate.sh
+        git commit -q -m "gate-infra change (scripts/cr/)"
     )
 }
 
@@ -297,6 +304,59 @@ v="$(meta_verdict "$sd/meta.json" 2>/dev/null || true)"
 case "$v" in
     "pass "*|"pass") bad "T11: a trusted pass resulted from a revocation failure (got: $v)" ;;
     *) ok "T11 no trusted pass after revocation failure" ;;
+esac
+
+# --- T12: gate-infra diff + CodeRabbit RESPONDED (rc=0, clean) -> quorum met ->
+# CLEAN (exit 0); the verdict records coderabbit=ok (HIMMEL-1224 Q2/Q3). ---
+sd="$tmp/s12"; new_session "$sd"
+out="$(cd "$repo" || exit 99; FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$CRSTUBS/coderabbit" STUB_RC=0 \
+    STUB_FINDINGS='{"type":"complete","status":"review_completed","findings":0}' \
+    bash "$SCRIPT" --branch glm/gate --session-dir "$sd" --base main 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ]; then ok "T12 gate-infra diff + CodeRabbit responded -> quorum met (exit 0)"; else bad "T12: gate-infra quorum-met should exit 0 (got $rc)"; fi
+v="$(meta_verdict "$sd/meta.json")"
+case "$v" in
+    *"coderabbit=ok"*) ok "T12 verdict records coderabbit=ok ($v)" ;;
+    *) bad "T12: verdict missing coderabbit=ok (got: $v)" ;;
+esac
+
+# --- T13: gate-infra diff + CodeRabbit ABSENT (rc=3) -> quorum NOT met ->
+# NOT CLEAN (exit 1), and a pre-existing pass verdict is REVOKED (not left usable
+# by ship-branch.sh). Capture the exit status and require EXACTLY 1 so a failure
+# for any OTHER reason is caught rather than mistaken for the quorum outcome
+# (CodeRabbit, HIMMEL-1224; matches the T9/T10/T11 rc-capture + stale-revocation
+# pattern). A change to the gate itself must not clear on codex alone. ---
+sd="$tmp/s13"; new_session "$sd"
+seed_sha13="$(git -C "$repo" rev-parse glm/gate)"
+node -e 'const fs=require("fs");const m=JSON.parse(fs.readFileSync(process.argv[1]));m.external_cr_verdict="pass (sha="+process.argv[2]+"; critics=2; coderabbit=ok)";fs.writeFileSync(process.argv[1],JSON.stringify(m,null,2)+"\n")' "$sd/meta.json" "$seed_sha13"
+[ -n "$(meta_verdict "$sd/meta.json")" ] || bad "T13 setup: seed verdict not written"
+rc=0
+(cd "$repo" || exit 99; FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$tmp/no-coderabbit-bin" CODERABBIT_WSL="$tmp/no-coderabbit-wsl" \
+    bash "$SCRIPT" --branch glm/gate --session-dir "$sd" --base main >/dev/null 2>&1) || rc=$?
+if [ "$rc" -eq 99 ]; then
+    bad "T13: cd to repo failed (test setup) - quorum path not exercised"
+elif [ "$rc" -eq 1 ]; then
+    ok "T13 gate-infra quorum-not-met fails closed (exit 1)"
+else
+    bad "T13: expected exit 1 (quorum-not-met), got $rc"
+fi
+if [ -z "$(meta_verdict "$sd/meta.json")" ]; then ok "T13 stale verdict revoked on quorum-not-met"; else bad "T13: stale external_cr_verdict survived quorum-not-met"; fi
+
+# --- T14: NON-gate diff + CodeRabbit absent -> the single-codex floor is
+# UNCHANGED (CLEAN, exit 0) and the verdict surfaces coderabbit=absent. Guards
+# that the quorum does NOT over-apply to non-gate diffs (HIMMEL-1224 Q2/Q3). ---
+sd="$tmp/s14"; new_session "$sd"
+out="$(cd "$repo" || exit 99; FAKE_OUT="$(panel_stdout 0 0)" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=0 \
+    CODERABBIT_BIN="$tmp/no-coderabbit-bin" CODERABBIT_WSL="$tmp/no-coderabbit-wsl" \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ]; then ok "T14 non-gate diff + CodeRabbit absent stays CLEAN (single-codex floor)"; else bad "T14: non-gate diff should exit 0 (got $rc)"; fi
+v="$(meta_verdict "$sd/meta.json")"
+case "$v" in
+    *"coderabbit=absent"*) ok "T14 verdict surfaces coderabbit=absent ($v)" ;;
+    *) bad "T14: verdict missing coderabbit=absent (got: $v)" ;;
 esac
 
 if [ "$fail" -eq 0 ]; then echo "PASS test-pr-check-external"; else echo "FAILURES in test-pr-check-external"; exit 1; fi
