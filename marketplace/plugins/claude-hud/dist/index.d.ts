@@ -3,6 +3,7 @@ import { parseTranscript } from "./transcript.js";
 import { render } from "./render/index.js";
 import { countConfigs } from "./config-reader.js";
 import { getGitStatus } from "./git.js";
+import { getJjStatus, isJjRepo } from "./jj.js";
 import { loadConfig } from "./config.js";
 import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand } from "./custom-line-cmd.js";
@@ -11,6 +12,8 @@ import { getMemoryUsage } from "./memory.js";
 import { readAuthInfo } from "./auth.js";
 import { applyContextWindowFallback } from "./context-cache.js";
 import { getUsageFromExternalSnapshot, writeExternalUsageSnapshot } from "./external-usage.js";
+import type { GitStatus } from "./git.js";
+import type { HudConfig } from "./config.js";
 export { getUsageFromExternalSnapshot, writeExternalUsageSnapshot } from "./external-usage.js";
 export type MainDeps = {
     readStdin: typeof readStdin;
@@ -20,6 +23,8 @@ export type MainDeps = {
     parseTranscript: typeof parseTranscript;
     countConfigs: typeof countConfigs;
     getGitStatus: typeof getGitStatus;
+    getJjStatus: typeof getJjStatus;
+    isJjRepo: typeof isJjRepo;
     loadConfig: typeof loadConfig;
     parseExtraCmdArg: typeof parseExtraCmdArg;
     runExtraCmd: typeof runExtraCmd;
@@ -40,6 +45,11 @@ export type MainDeps = {
  * while keeping the statusLine entry in settings.json intact.
  */
 export declare function isHudDisabled(env?: NodeJS.ProcessEnv): boolean;
+/**
+ * Prefers jj when an eligible `.jj` marker is found and the opt-in is enabled.
+ * If the bounded jj probe fails, Git remains the safe compatibility fallback.
+ */
+export declare function resolveVcsStatus(deps: Pick<MainDeps, "getGitStatus" | "getJjStatus" | "isJjRepo">, config: HudConfig, cwd?: string): Promise<GitStatus | null>;
 export declare function main(overrides?: Partial<MainDeps>): Promise<void>;
 export declare function formatSessionDuration(sessionStart?: Date, now?: () => number): string;
 //# sourceMappingURL=index.d.ts.map

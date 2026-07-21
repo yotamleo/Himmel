@@ -16,12 +16,12 @@ import { formatAuthSegment } from '../auth.js';
 import { createDebug } from '../debug.js';
 import { formatModelDisplay } from './model-display.js';
 import { formatSessionTokenSummary } from './lines/session-tokens.js';
-import { sanitizeDisplayText } from '../utils/sanitize.js';
 import { formatProjectPath } from './project-path.js';
 import { DEFAULT_PROJECT_LINE_ORDER } from '../config.js';
 import type { FirstLineSegment } from '../config.js';
 import { orderFirstLineParts } from './first-line-order.js';
 import type { FirstLinePart } from './first-line-order.js';
+import { getVcsDisplayState } from './vcs-status.js';
 
 const debug = createDebug('session-line');
 
@@ -89,31 +89,28 @@ export function renderSessionLine(ctx: RenderContext): string {
   }
 
   let gitPart = '';
-  const gitConfig = ctx.config?.gitStatus;
-  const showGit = gitConfig?.enabled ?? true;
-  const branchOverflow = gitConfig?.branchOverflow ?? 'truncate';
+  const vcs = getVcsDisplayState(ctx.gitStatus, ctx.config);
+  const branchOverflow = vcs?.branchOverflow ?? ctx.config.gitStatus?.branchOverflow ?? 'truncate';
 
-  if (showGit && ctx.gitStatus) {
-    const gitParts: string[] = [sanitizeDisplayText(ctx.gitStatus.branch)];
+  if (vcs) {
+    const gitParts: string[] = [vcs.branch];
 
     // Show dirty indicator
-    if ((gitConfig?.showDirty ?? true) && ctx.gitStatus.isDirty) {
+    if (vcs.dirty) {
       gitParts.push('*');
     }
 
     // Show ahead/behind (with space separator for readability)
-    if (gitConfig?.showAheadBehind) {
-      if (ctx.gitStatus.ahead > 0) {
-        gitParts.push(` ↑${ctx.gitStatus.ahead}`);
-      }
-      if (ctx.gitStatus.behind > 0) {
-        gitParts.push(` ↓${ctx.gitStatus.behind}`);
-      }
+    if (vcs.ahead > 0) {
+      gitParts.push(` ↑${vcs.ahead}`);
+    }
+    if (vcs.behind > 0) {
+      gitParts.push(` ↓${vcs.behind}`);
     }
 
     // Show file stats in Starship-compatible format (!modified +added ✘deleted ?untracked)
-    if (gitConfig?.showFileStats && ctx.gitStatus.fileStats) {
-      const { modified, added, deleted, untracked } = ctx.gitStatus.fileStats;
+    if (vcs.fileStats) {
+      const { modified, added, deleted, untracked } = vcs.fileStats;
       const statParts: string[] = [];
       if (modified > 0) statParts.push(`!${modified}`);
       if (added > 0) statParts.push(`+${added}`);
@@ -124,7 +121,8 @@ export function renderSessionLine(ctx: RenderContext): string {
       }
     }
 
-    gitPart = `${gitColor('git:(', colors)}${gitBranchColor(gitParts.join(''), colors)}${gitColor(')', colors)}`;
+    const conflictPart = vcs.conflict ? ` ${critical('!conflict', colors)}` : '';
+    gitPart = `${gitColor(`${vcs.kind}:(`, colors)}${gitBranchColor(gitParts.join(''), colors)}${conflictPart}${gitColor(')', colors)}`;
   }
 
   if (projectPart && gitPart) {

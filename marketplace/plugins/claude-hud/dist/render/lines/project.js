@@ -11,8 +11,9 @@ import { getFileHref, safeHyperlink } from '../../utils/hyperlinks.js';
 import { formatModelDisplay } from '../model-display.js';
 import { formatAuthSegment } from '../../auth.js';
 import { formatProjectPath } from '../project-path.js';
-import { DEFAULT_PROJECT_LINE_ORDER } from '../../config.js';
+import { DEFAULT_CONFIG, DEFAULT_PROJECT_LINE_ORDER } from '../../config.js';
 import { orderFirstLineParts } from '../first-line-order.js';
+import { getVcsDisplayState } from '../vcs-status.js';
 function resolvePathWithinCwd(cwd, candidatePath) {
     const resolvedCwd = path.resolve(cwd);
     const resolvedPath = path.resolve(cwd, candidatePath);
@@ -61,23 +62,21 @@ export function renderProjectLine(ctx) {
         addedDirsPart = rendered.join(' ');
     }
     let gitPart = '';
-    const gitConfig = ctx.config?.gitStatus;
-    const showGit = gitConfig?.enabled ?? true;
-    const branchOverflow = gitConfig?.branchOverflow ?? 'truncate';
-    if (showGit && ctx.gitStatus) {
-        const branchText = sanitizeDisplayText(ctx.gitStatus.branch + ((gitConfig?.showDirty ?? true) && ctx.gitStatus.isDirty ? '*' : ''));
+    const vcs = getVcsDisplayState(ctx.gitStatus, ctx.config);
+    const gitConfig = ctx.config.gitStatus ?? DEFAULT_CONFIG.gitStatus;
+    const branchOverflow = vcs?.branchOverflow ?? gitConfig.branchOverflow;
+    if (vcs) {
+        const branchText = vcs.branch + (vcs.dirty ? '*' : '');
         const coloredBranch = gitBranchColor(branchText, colors);
-        const linkedBranch = safeHyperlink(ctx.gitStatus.branchUrl, coloredBranch);
+        const linkedBranch = safeHyperlink(vcs.branchUrl, coloredBranch);
         const gitInner = [linkedBranch];
-        if (gitConfig?.showAheadBehind) {
-            if (ctx.gitStatus.ahead > 0) {
-                gitInner.push(formatAheadCount(ctx.gitStatus.ahead, gitConfig, colors));
-            }
-            if (ctx.gitStatus.behind > 0)
-                gitInner.push(gitBranchColor(`↓${ctx.gitStatus.behind}`, colors));
+        if (vcs.ahead > 0) {
+            gitInner.push(formatAheadCount(vcs.ahead, gitConfig, colors));
         }
-        if (gitConfig?.showFileStats && ctx.gitStatus.lineDiff) {
-            const { added, deleted } = ctx.gitStatus.lineDiff;
+        if (vcs.behind > 0)
+            gitInner.push(gitBranchColor(`↓${vcs.behind}`, colors));
+        if (vcs.lineDiff) {
+            const { added, deleted } = vcs.lineDiff;
             const diffParts = [];
             if (added > 0)
                 diffParts.push(green(`+${added}`));
@@ -87,7 +86,11 @@ export function renderProjectLine(ctx) {
                 gitInner.push(`[${diffParts.join(' ')}]`);
             }
         }
-        gitPart = `${gitColor('git:(', colors)}${gitInner.join(' ')}${gitColor(')', colors)}`;
+        if (vcs.conflict) {
+            gitInner.push(criticalColor('!conflict', colors));
+        }
+        const vcsLabel = vcs.kind === 'jj' ? 'jj:(' : 'git:(';
+        gitPart = `${gitColor(vcsLabel, colors)}${gitInner.join(' ')}${gitColor(')', colors)}`;
     }
     const projectWithDirs = projectPart && addedDirsPart
         ? `${projectPart} ${addedDirsPart}`

@@ -48,6 +48,12 @@ test('loadConfig returns valid config structure', async () => {
   assert.equal(typeof config.gitStatus.pushWarningThreshold, 'number');
   assert.equal(typeof config.gitStatus.pushCriticalThreshold, 'number');
 
+  // Jujutsu support is an explicit opt-in with independently validated flags.
+  assert.equal(typeof config.jjStatus, 'object');
+  assert.equal(typeof config.jjStatus.enabled, 'boolean');
+  assert.equal(typeof config.jjStatus.showDirty, 'boolean');
+  assert.equal(typeof config.jjStatus.showConflicts, 'boolean');
+
   // display object with expected properties
   assert.equal(typeof config.display, 'object');
   assert.equal(typeof config.display.showModel, 'boolean');
@@ -213,6 +219,32 @@ test('mergeConfig defaults git push thresholds to disabled', () => {
   assert.equal(config.gitStatus.branchOverflow, 'truncate');
   assert.equal(config.gitStatus.pushWarningThreshold, 0);
   assert.equal(config.gitStatus.pushCriticalThreshold, 0);
+});
+
+test('mergeConfig keeps jj status opt-in by default', () => {
+  const config = mergeConfig({});
+  assert.equal(config.jjStatus.enabled, false);
+  assert.equal(config.jjStatus.showDirty, true);
+  assert.equal(config.jjStatus.showConflicts, true);
+  assert.equal(DEFAULT_CONFIG.jjStatus.enabled, false);
+});
+
+test('mergeConfig preserves valid jj status booleans', () => {
+  const config = mergeConfig({
+    jjStatus: { enabled: true, showDirty: false, showConflicts: false },
+  });
+  assert.deepEqual(config.jjStatus, {
+    enabled: true,
+    showDirty: false,
+    showConflicts: false,
+  });
+});
+
+test('mergeConfig rejects invalid jj status values independently', () => {
+  const config = mergeConfig({
+    jjStatus: { enabled: 'yes', showDirty: 1, showConflicts: null },
+  });
+  assert.deepEqual(config.jjStatus, DEFAULT_CONFIG.jjStatus);
 });
 
 test('mergeConfig preserves explicit git push thresholds', () => {

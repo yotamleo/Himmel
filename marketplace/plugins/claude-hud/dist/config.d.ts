@@ -79,6 +79,11 @@ export interface HudConfig {
         pushWarningThreshold: number;
         pushCriticalThreshold: number;
     };
+    jjStatus: {
+        enabled: boolean;
+        showDirty: boolean;
+        showConflicts: boolean;
+    };
     display: {
         showModel: boolean;
         showProject: boolean;

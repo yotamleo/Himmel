@@ -3,6 +3,7 @@ import { parseTranscript } from "./transcript.js";
 import { render } from "./render/index.js";
 import { countConfigs } from "./config-reader.js";
 import { getGitStatus } from "./git.js";
+import { getJjStatus, isJjRepo } from "./jj.js";
 import { loadConfig } from "./config.js";
 import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand, shouldRunCustomLine } from "./custom-line-cmd.js";
@@ -14,6 +15,8 @@ import { applyContextWindowFallback } from "./context-cache.js";
 import { getUsageFromExternalSnapshot, writeExternalUsageSnapshot } from "./external-usage.js";
 import { setLanguage, t } from "./i18n/index.js";
 import type { RenderContext } from "./types.js";
+import type { GitStatus } from "./git.js";
+import type { HudConfig } from "./config.js";
 
 export { getUsageFromExternalSnapshot, writeExternalUsageSnapshot } from "./external-usage.js";
 import { fileURLToPath } from "node:url";
@@ -27,6 +30,8 @@ export type MainDeps = {
   parseTranscript: typeof parseTranscript;
   countConfigs: typeof countConfigs;
   getGitStatus: typeof getGitStatus;
+  getJjStatus: typeof getJjStatus;
+  isJjRepo: typeof isJjRepo;
   loadConfig: typeof loadConfig;
   parseExtraCmdArg: typeof parseExtraCmdArg;
   runExtraCmd: typeof runExtraCmd;
@@ -55,6 +60,26 @@ export function isHudDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return value !== "0" && value !== "false" && value !== "off" && value !== "no";
 }
 
+/**
+ * Prefers jj when an eligible `.jj` marker is found and the opt-in is enabled.
+ * If the bounded jj probe fails, Git remains the safe compatibility fallback.
+ */
+export async function resolveVcsStatus(
+  deps: Pick<MainDeps, "getGitStatus" | "getJjStatus" | "isJjRepo">,
+  config: HudConfig,
+  cwd?: string,
+): Promise<GitStatus | null> {
+  if (!cwd) return null;
+  if (config.jjStatus.enabled && deps.isJjRepo(cwd)) {
+    const jjStatus = await deps.getJjStatus(cwd);
+    if (jjStatus) return jjStatus;
+  }
+  if (config.gitStatus.enabled) {
+    return deps.getGitStatus(cwd);
+  }
+  return null;
+}
+
 export async function main(overrides: Partial<MainDeps> = {}): Promise<void> {
   if (isHudDisabled()) {
     // Print nothing so Claude Code renders an empty statusline, and skip all
@@ -70,6 +95,8 @@ export async function main(overrides: Partial<MainDeps> = {}): Promise<void> {
     parseTranscript,
     countConfigs,
     getGitStatus,
+    getJjStatus,
+    isJjRepo,
     loadConfig,
     parseExtraCmdArg,
     runExtraCmd,
@@ -112,9 +139,7 @@ export async function main(overrides: Partial<MainDeps> = {}): Promise<void> {
 
     const config = await deps.loadConfig();
     setLanguage(config.language);
-    const gitStatus = config.gitStatus.enabled
-      ? await deps.getGitStatus(stdin.cwd)
-      : null;
+    const gitStatus = await resolveVcsStatus(deps, config, stdin.cwd);
 
     let usageData: RenderContext["usageData"] = null;
     const shouldReadUsage = config.display.showUsage !== false;
