@@ -21,6 +21,9 @@
 #   3. The CR ledger records a critic that actually RESPONDED at that SHA
 #      (>=1 `avail ... status=ok`). Zero responders is a MISSING signal, not a
 #      clean one (the CodeRabbit CLI rate-limit shape) — refuse.
+#   3b. OPT-IN (CR_REQUIRE_CROSS_MODEL, HIMMEL-1237): >=1 responder must be
+#      NON-claude — a single-model Claude self-review floor is not sufficient in
+#      this setup. Default off (adopter-portable HIMMEL-1224 floor). Else refuse.
 #   4. The ledger records NO blocking finding at that SHA (severity crit|imp
 #      whose verdict is anything other than `disproved`).
 #   5. POST-PR ONLY: when a PR already exists for the branch, its head commit
@@ -41,7 +44,8 @@
 #   11  required tool missing (git / node)
 #   12  cannot resolve the branch, its tip, or the marker path — refused
 #   13  marker SHA is not the branch tip (stale review) — re-run /pr-check
-#   14  no critic responded at that SHA — no evidence /pr-check ran; refused
+#   14  no critic responded at that SHA — no evidence /pr-check ran; refused.
+#       Also: CR_REQUIRE_CROSS_MODEL set but no NON-claude critic responded (3b).
 #   15  blocking finding(s) recorded at that SHA — address them, re-run /pr-check
 #   16  a PR exists but its head is not the certified SHA, or its check-ci gate
 #       is not green — refused
@@ -149,6 +153,41 @@ if [ "$marker_sha" != "$tip" ]; then
     exit 13
 fi
 
+# HIMMEL-1237 — resolve the opt-in cross-model floor flag. Default unset => the
+# Claude self-review floor alone is a sufficient responder (HIMMEL-1224
+# adopter-portable behaviour). When truthy (himmel's own .env), gate 3b below
+# additionally requires a NON-claude responder. Loaded from the primary
+# checkout's .env (process env wins) so the gate honours it even invoked
+# directly or from a worktree — mirrors how /pr-check bridges CR_PROFILE. This
+# flag can only make the gate STRICTER (fail-closed), so reading it from the
+# trusted local .env never weakens the gate; the GATE INTEGRITY seams (ledger,
+# check-ci, gh) stay non-overridable.
+if [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/load-dotenv.sh"
+    # FAIL CLOSED if the opt-in flag cannot be loaded (coderabbit App, Major).
+    # load_dotenv returns 0 on a missing/unresolvable .env (load-dotenv.sh:58,60),
+    # so an adopter with no .env never trips this. A NON-zero return means .env
+    # EXISTS but could not be READ (permission/race) — ignoring it would let a
+    # genuine read failure silently fall through to require_cross_model=0 and
+    # clear the marker WITHOUT the configured cross-model evidence (a fail-OPEN in
+    # the wrong direction for a security-relevant opt-in). Refuse instead.
+    if ! load_dotenv CR_REQUIRE_CROSS_MODEL; then
+        echo "clear-cr-marker: could not load CR_REQUIRE_CROSS_MODEL from .env (read failure) — refusing (cannot certify the configured cross-model policy)." >&2
+        audit "REFUSED reason=dotenv-unreadable branch=$branch sha=$tip"
+        exit 14
+    fi
+fi
+# Truthy check, case-INSENSITIVE + whitespace-TRIMMED (1/true/on/yes). Lowercase
+# then strip leading/trailing whitespace so any casing works, the accept-list
+# can't drift (a hand-listed set of mixed-case variants omitted ON/True), and a
+# padded ' true ' from .env cannot silently disable an intended opt-in
+# (glm-1/coderabbit-1 CR round + coderabbit App).
+case "$(printf '%s' "${CR_REQUIRE_CROSS_MODEL:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
+    1|true|on|yes) require_cross_model=1 ;;
+    *) require_cross_model=0 ;;
+esac
+
 # 3+4. Ledger evidence at the certified SHA. The ledger is keyed on the SHORT
 # sha /pr-check passes, so both forms must resolve — but an abbreviation is
 # matched by RESOLVING it through git and requiring the full object to BE the
@@ -203,12 +242,29 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
   // or corrupted while an avail-ok line stays readable, the gate would clear
   // the marker without ever evaluating that finding. An unreadable ledger is
   // an unknown verdict, and unknown must never mean clean.
-  let responders = 0, blocking = [], malformed = 0;
+  let responders = 0, nonClaudeResponders = 0, blocking = [], malformed = 0;
   for (const l of lines) {
       let o;
       try { o = JSON.parse(l); } catch { malformed++; continue; }
       if (!atHead(o)) continue;
-      if (o.kind === "avail" && o.status === "ok") responders++;
+      if (o.kind === "avail" && o.status === "ok") {
+          responders++;
+          // HIMMEL-1237: the Claude self-review floor writes model "claude";
+          // every external critic (codex/glm/coderabbit/...) is non-claude.
+          // Gate 3b uses this to enforce cross-model coverage when required.
+          // Require a PRESENT, non-claude model string — a bare != "claude"
+          // also matches a MISSING model (JS: undefined !== "claude" is true),
+          // letting a malformed/legacy avail-ok row satisfy
+          // CR_REQUIRE_CROSS_MODEL with no external critic. Normalise
+          // (trim+lowercase) so a mis-cased "Claude" stays the floor, never
+          // cross-model evidence (codex-1/glm-2/coderabbit-1 CR round). Fail
+          // closed. (Scope: this tightens the cross-model count only — the
+          // gate-3 responders count is unchanged; a model-less row cannot
+          // occur via ledger-append.sh, which requires --model.  No backticks
+          // in this single-quoted node block — they trip shellcheck SC2016.)
+          const model = (typeof o.model === "string" ? o.model : "").trim().toLowerCase();
+          if (model && model !== "claude") nonClaudeResponders++;
+      }
       if (o.kind === "finding" && (o.severity === "crit" || o.severity === "imp")
           && o.verdict !== "disproved") {
           // String concat, not a template literal: a dollar-brace inside this
@@ -218,7 +274,7 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
               (o.verdict || "no-verdict") + ")");
       }
   }
-  console.log(JSON.stringify({ responders, blocking, malformed }));
+  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, malformed }));
 ' 2>/dev/null)
 if [ -z "$verdict" ]; then
     echo "clear-cr-marker: could not read the CR ledger at $ledger — refusing (cannot certify the review)." >&2
@@ -226,6 +282,7 @@ if [ -z "$verdict" ]; then
     exit 14
 fi
 responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).responders))' 2>/dev/null)
+non_claude_responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).nonClaudeResponders))' 2>/dev/null)
 blocking=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).blocking.join(" ")))' 2>/dev/null)
 malformed=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).malformed))' 2>/dev/null)
 
@@ -242,6 +299,20 @@ fi
 if [ "${responders:-0}" -lt 1 ]; then
     echo "clear-cr-marker: no critic responded at ${tip:0:8} (ledger records 0 'avail ... ok') — that is a MISSING review signal, not a clean one. Run /pr-check on this HEAD." >&2
     audit "REFUSED reason=no-responders branch=$branch sha=$tip"
+    exit 14
+fi
+
+# 3b. Cross-model floor (HIMMEL-1237, opt-in via CR_REQUIRE_CROSS_MODEL). Default
+# off => the Claude self-review floor alone satisfies gate 3 (HIMMEL-1224
+# adopter-portable behaviour). When set (himmel's own .env), a single-model
+# Claude review is NOT enough: require >=1 NON-claude 'avail ... ok' at this SHA.
+# A configured cross-model lane (codex/glm/CodeRabbit) that was absent OR
+# attempted-but-failed leaves no non-claude 'ok' row, so the gate stays CLOSED
+# rather than clearing on the floor. Structural — enforced HERE in the gate, not
+# by pr-check.md prose (HIMMEL-195).
+if [ "${require_cross_model:-0}" = "1" ] && [ "${non_claude_responders:-0}" -lt 1 ]; then
+    echo "clear-cr-marker: CR_REQUIRE_CROSS_MODEL is set but no non-Claude 'avail ... ok' responder exists at ${tip:0:8} (${responders:-0} total responders, ${non_claude_responders:-0} non-Claude). This setup requires cross-model coverage — a codex/glm/CodeRabbit lane must actually review this SHA. Configure/retry an external critic, or unset CR_REQUIRE_CROSS_MODEL." >&2
+    audit "REFUSED reason=no-cross-model branch=$branch sha=$tip responders=$responders non_claude=${non_claude_responders:-0}"
     exit 14
 fi
 
