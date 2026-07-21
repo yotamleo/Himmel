@@ -1045,7 +1045,20 @@ view into the vault — the bridge between the derived graph and the KB.
 - **Cost + cadence:** a full ecosystem sync is ~$2 (measured 2026-07-09);
   `--update` is a fraction of that, so a **daily** off-peak run is affordable.
   Schedule per corpus (example, Git Bash on Windows via schtasks or cron):
-  `bash scripts/graphify/refresh-graph-map.sh --name luna --corpus-root <vault> --maps-dir <vault>/60-Maps --title "Graphify Luna Vault Map" --slug graphify-luna-map --corpus-tag luna`.
+  `bash scripts/graphify/refresh-graph-map.sh --name luna --corpus-root <vault> --backend glm --maps-dir <vault>/60-Maps --title "Graphify Luna Vault Map" --slug graphify-luna-map --corpus-tag luna`
+  (`--backend glm` is the ratified luna extraction provider — zai-glm, allow+log on
+  luna-personal, HIMMEL-1096/1122; it auto-routes to graphify's `claude` backend at
+  the Z.ai Anthropic-compatible endpoint using `ZAI_API_KEY` from `.env`, so no
+  hand-set `ANTHROPIC_*` env is needed).
+  **Throttle knob (`GRAPHIFY_MAX_CONCURRENCY`, default 6):** concurrency 6
+  overshoots Z.ai's request limit — `--backend glm` 429s (`rate_limit_error`
+  1302) on most chunks and the regen fails. `GRAPHIFY_MAX_CONCURRENCY=1`
+  serializes the extraction + cluster-only LLM calls, which eases request
+  pressure but is NOT true rate-limiting (no pacing/backoff) and cannot beat a
+  hard per-key quota — an exhausted quota 429s even serialized (observed
+  2026-07-21: chunk 1 failed at concurrency 1). Band-aid for the full-extraction
+  cost; the durable fix (seed graphify's semantic cache so a regen is a small
+  incremental, not a 255-chunk full run) is HIMMEL-1097.
   Model: the derived graph.json + full report stay repo-local (gitignored,
   regenerable); only the curated MOC is committed to the vault, so each refresh
   shows the map's drift as a small git diff.

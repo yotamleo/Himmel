@@ -37,6 +37,11 @@ BIN="$WS/bin"; mkdir -p "$BIN"
 cat > "$BIN/graphify" <<STUB
 #!/usr/bin/env bash
 # args: either "<path> --update ..." or "cluster-only <path> ..."
+# When GRAPHIFY_CALL_LOG is set, append the full arg line of every invocation
+# (one per line) so a test can assert what flags reached graphify (T21 uses this
+# to verify GRAPHIFY_MAX_CONCURRENCY is wired to --max-concurrency, and that an
+# invalid value fails BEFORE any extraction call).
+[ -n "\$GRAPHIFY_CALL_LOG" ] && printf '%s\n' "\$*" >> "\$GRAPHIFY_CALL_LOG"
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
@@ -1078,6 +1083,83 @@ echo "$out" | grep -q "Binary file" \
 echo "$out" | grep -q "nulleak" \
   && fail "T20 error output exposes the rejected host path: $out" \
   || pass "T20 error output redacts the rejected host path"
+
+# --- T21: GRAPHIFY_MAX_CONCURRENCY knob (HIMMEL-1097 throttle) ---
+# Invalid values fail LOUD (rc=1) before any extraction, rather than silently
+# reverting to a concurrency that 429s the rate-limited backend.
+# GRAPHIFY_CALL_LOG lets the stub record every graphify invocation, so these
+# tests can assert an invalid value fails BEFORE any extraction call (empty log),
+# and a valid value wires --max-concurrency into both graphify subcommands.
+t21log="$WS/t21-calls.log"; : > "$t21log"
+out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY=abc bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend deepseek \
+  --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
+[ "$rc" -eq 1 ] && pass "T21a non-numeric GRAPHIFY_MAX_CONCURRENCY rejected (rc=1)" \
+  || fail "T21a non-numeric GRAPHIFY_MAX_CONCURRENCY should fail rc=1 (got $rc): $out"
+echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be a positive integer" \
+  && pass "T21a error names the invalid knob" \
+  || fail "T21a error should name GRAPHIFY_MAX_CONCURRENCY: $out"
+[ ! -s "$t21log" ] && pass "T21a invalid value fails before any extraction call" \
+  || fail "T21a extraction ran on an invalid value: $(cat "$t21log")"
+# Assert rc=1 AND the concurrency-validation message (not just any rc=1), so an
+# unrelated early failure cannot pass these. Zero and empty hit different
+# branches ("must be >= 1" vs "must be a positive integer") — assert the common
+# `GRAPHIFY_MAX_CONCURRENCY must be` prefix both emit.
+: > "$t21log"
+out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY=0 bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend deepseek \
+  --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
+{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be"; } \
+  && pass "T21b zero GRAPHIFY_MAX_CONCURRENCY rejected (rc=1 + validation msg)" \
+  || fail "T21b zero GRAPHIFY_MAX_CONCURRENCY should fail rc=1 with the validation msg (got $rc): $out"
+[ ! -s "$t21log" ] && pass "T21b zero value fails before any extraction call" \
+  || fail "T21b extraction ran on a zero value: $(cat "$t21log")"
+# Explicitly-empty value fails loud too (unset-only `-6` default preserves it
+# for the validation instead of silently defaulting to 6).
+: > "$t21log"
+out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY='' bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend deepseek \
+  --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
+{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be"; } \
+  && pass "T21b2 explicitly-empty GRAPHIFY_MAX_CONCURRENCY rejected (rc=1 + validation msg)" \
+  || fail "T21b2 empty GRAPHIFY_MAX_CONCURRENCY should fail rc=1 with the validation msg (got $rc): $out"
+[ ! -s "$t21log" ] && pass "T21b2 empty value fails before any extraction call" \
+  || fail "T21b2 extraction ran on an empty value: $(cat "$t21log")"
+# Negative value: the leading '-' is a non-digit, so it hits the same
+# positive-integer branch as T21a and fails before extraction.
+: > "$t21log"
+out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY=-1 bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend deepseek \
+  --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
+{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be"; } \
+  && pass "T21b3 negative GRAPHIFY_MAX_CONCURRENCY rejected (rc=1 + validation msg)" \
+  || fail "T21b3 negative GRAPHIFY_MAX_CONCURRENCY should fail rc=1 with the validation msg (got $rc): $out"
+[ ! -s "$t21log" ] && pass "T21b3 negative value fails before any extraction call" \
+  || fail "T21b3 extraction ran on a negative value: $(cat "$t21log")"
+# A valid non-default value still drives the full path to a published MOC AND
+# reaches BOTH graphify subcommands as --max-concurrency (the wiring this change
+# adds — verified via the stub call-log, since GRAPHIFY_MAP_BIN is a stub).
+T21MAPS="$WS/t21maps"; mkdir -p "$T21MAPS"; : > "$t21log"
+out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY=3 bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend deepseek \
+  --maps-dir "$T21MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] && [ -f "$T21MAPS/graphify-luna-map.md" ] \
+  && pass "T21c valid non-default GRAPHIFY_MAX_CONCURRENCY still publishes (rc=0)" \
+  || fail "T21c valid GRAPHIFY_MAX_CONCURRENCY=3 should publish (rc=$rc): $out"
+# Require TWO distinct call records — one --update, one cluster-only — each with
+# --max-concurrency 3, and reject any single record combining both (guards against
+# a future stub logging both phases on one line masking a half-wired change).
+awk '
+  /--update/ && /cluster-only/ { combined=1 }
+  /--update/ && /--max-concurrency 3( |$)/ { update=1 }
+  /cluster-only/ && /--max-concurrency 3( |$)/ { cluster=1 }
+  END { exit !((update && cluster) && !combined) }
+' "$t21log" \
+  && pass "T21c both graphify subprocesses received --max-concurrency 3 (distinct records)" \
+  || fail "T21c concurrency propagation not verified on two distinct records: $(cat "$t21log")"
+# T21d: --no-update (publish-only) never makes the extraction/cluster-only calls,
+# so an invalid throttle value is irrelevant and must NOT trip the validation
+# (the run may still fail later for other reasons, but never on the throttle msg).
+out=$( GRAPHIFY_MAX_CONCURRENCY=abc bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend deepseek \
+  --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna --no-update 2>&1 ); rc=$?
+echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be" \
+  && fail "T21d --no-update wrongly validated the irrelevant throttle value: $out" \
+  || pass "T21d --no-update skips throttle validation (invalid value tolerated on publish-only path)"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"
