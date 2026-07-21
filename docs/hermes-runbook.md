@@ -262,7 +262,7 @@ lane's expectation.
   Codex window**. This is expected even though the direct OpenAI API slug is
   larger.
 - GLM / Z.ai lanes: request the explicit long-context model id
-  `glm-5.2[1m]` on Claude Code compatible launchers. Bare `glm-5.2` can run
+  `glm-5.2[1m]` on Claude Code-compatible launchers. Bare `glm-5.2` can run
   capped below the advertised maximum, so it is not the desired full-control
   lane.
 - Hermes `/model` and delegation switches recalculate context for the new
