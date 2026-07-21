@@ -1,25 +1,34 @@
 # Vendored: claude-statusline
 
+> **SUPERSEDED (HIMMEL-718 / HIMMEL-1233).** This vendored bash bar is no longer
+> the wired statusline renderer — that role moved to the vendored claude-hud fork
+> (`marketplace/plugins/claude-hud/`, a `node` process). `bin/statusline.sh` is
+> **retained in-tree as the rollback fallback only**; its full decommission is a
+> separate step gated on the HIMMEL-718 Phase-5 leak gate. The source fork
+> `yotamleo/claude-statusline` is now **ARCHIVED**, so the fork-sync / re-vendor
+> path below is closed — do not push edits back to it or re-vendor from it.
+
 This directory is a **vendored copy** of the statusline, bound into himmel so
 that himmel (and public-himmel) users get the status bar without cloning an
 external repo or hand-editing global `~/.claude/settings.json`.
 
-- **Source fork:** `yotamleo/claude-statusline` (origin)
+- **Source fork:** `yotamleo/claude-statusline` (origin, **archived**)
 - **Upstream:** `nilbuild/claude-statusline` (`Kamran Ahmed`, MIT — see `LICENSE`)
 - **Vendored at commit:** `3f64887` (`feat: mirror himmel-vendored statusline (jq degrade guard + period knob)`)
 - **himmel cache-metrics patch:** `docs/patches/2026-05-16-cache-statusline.md`
 
-> Fork in sync as of `3f64887` (2026-07-04): the `HIMMEL_STATUSLINE_PERIOD`
-> period knob (HIMMEL-617) and the fail-visible jq degrade guard (HIMMEL-612)
-> were mirrored to `yotamleo/claude-statusline` with their `test_cache.sh`
-> coverage, closing the divergence previously noted here. (The local-hash
-> drift guard is a separate follow-up.)
+> Partial mirror history (as of `3f64887`, 2026-07-04): the
+> `HIMMEL_STATUSLINE_PERIOD` period knob (HIMMEL-617) and the fail-visible jq
+> degrade guard (HIMMEL-612) were mirrored to `yotamleo/claude-statusline` with
+> their `test_cache.sh` coverage. That closed the divergence for *those*
+> patches — but the vendored tree is **not** fully synchronized: the HIMMEL-690
+> label edits noted below were never mirrored (now moot, the fork is archived).
 >
-> **Pending mirror (HIMMEL-690):** the rate-limit bank labels here were
-> renamed `current`→`5h bank`, `weekly`→`7d bank`, and a `ctx` prefix added
-> to the ✍️ context-window figure (killing the "97%" bank/context confusion).
-> Push these `bin/statusline.sh` label edits back to
-> `yotamleo/claude-statusline` to re-close the divergence.
+> **Pending mirror (HIMMEL-690) — OBSOLETE (HIMMEL-1233):** local
+> `bin/statusline.sh` label edits (`current`→`5h bank`, `weekly`→`7d bank`, a
+> `ctx` prefix on the context-window figure) were never mirrored to the fork.
+> With the fork archived and the bar superseded by claude-hud, no mirror is owed
+> — the divergence is intentionally left un-closed.
 
 ## What's here
 
@@ -36,17 +45,18 @@ references the script directly rather than npm-installing it.
 
 ## Wiring
 
-`docs/setup/settings-template.json` and the `wire-statusline.{sh,ps1}` helpers
-(used by `scripts/machine-setup/{win11.ps1,ubuntu.sh}`) point `statusLine.command`
-at the himmel wrapper `<himmel-path>/scripts/where-are-we/statusline.sh`
-(HIMMEL-538), which **composes this vendored `bin/statusline.sh` verbatim** and
-appends one where-are-we line (active handover + epic progression). The vendored
-file here is **not edited** by that feature — so it triggers no re-vendor
-obligation. There is no external clone step.
+**Current (HIMMEL-718):** the `wire-statusline.{sh,ps1}` helpers point
+`statusLine.command` at the claude-hud node renderer
+(`node "<himmel-path>/marketplace/plugins/claude-hud/dist/index.js"`), NOT at
+this bar. `unwire-statusline.sh` can repoint to the legacy bash wrapper
+`<himmel-path>/scripts/where-are-we/statusline.sh` (which composes this vendored
+`bin/statusline.sh` + a where-are-we line, HIMMEL-538) as a rollback fallback.
+There is no external clone step.
 
-## Keeping in sync with the fork
+## Keeping in sync with the fork — CLOSED
 
-This copy is the deployed artifact. **Edits to `bin/statusline.sh` here must be
-pushed back to `yotamleo/claude-statusline`** so the fork mirrors the
-himmel-bound version (and stays a viable standalone / upstream-tracking repo).
-Pull upstream `nilbuild` fixes into the fork first, then re-vendor here.
+The `yotamleo/claude-statusline` fork is **archived** and this bar is superseded
+by claude-hud (above), so the former "push edits back to the fork, pull
+`nilbuild` fixes, re-vendor here" loop no longer applies. Do not re-vendor from
+or push to the archived fork. Upstream-drift tracking for this component was
+removed from `scripts/upstreams.json` (HIMMEL-1233).
