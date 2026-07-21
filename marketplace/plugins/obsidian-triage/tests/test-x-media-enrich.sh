@@ -621,6 +621,294 @@ assert "inbox same.md -> _media/same-7001/" ok "$a"
 [ -d "$VX/Clippings/_media/same-7002" ] && a=ok || a=no
 assert "_done same.md -> _media/same-7002/ (distinct, no collision)" ok "$a"
 
+# --- Test 15: _splice_crawled preserves x-media provenance when splicing into
+# an EXISTING ## Crawled content section from an earlier fxtwitter pass
+# (HIMMEL-1235). Before the fix, the existing-section branch started at the
+# first ### heading and dropped the <!-- media-enriched ... via x-media -->
+# comment, so --apply-digest's provenance guard refused every such clip.
+echo "Test 15: _splice_crawled preserves provenance into an EXISTING crawled section (HIMMEL-1235)"
+emit_gallery_dl 1.jpg
+SP="$tmp/vault-splice"; mkdir -p "$SP/Clippings"
+cat > "$SP/Clippings/clip.md" <<EOF
+---
+title: "splice existing"
+source: "https://x.com/someuser/status/2001"
+type: tweet
+---
+# splice existing
+$IMAGE_MEDIA
+
+## Crawled content
+<!-- enriched 2026-07-01 via fxtwitter -->
+
+Some prior fxtwitter crawled text.
+
+## Source
+[link](https://x.com/someuser/status/2001)
+EOF
+run_tool "$SP" >"$tmp/splice.out" 2>"$tmp/splice.err"
+assert "splice run exit 0" 0 "$?"
+today="$(date +%Y-%m-%d)"
+grep -qF "<!-- media-enriched $today via x-media -->" "$SP/Clippings/clip.md" && a=ok || a=no
+assert "x-media provenance comment present after splice into existing section" ok "$a"
+grep -qF "Some prior fxtwitter crawled text." "$SP/Clippings/clip.md" && a=ok || a=no
+assert "prior fxtwitter content preserved" ok "$a"
+prov_line="$(grep -n 'media-enriched' "$SP/Clippings/clip.md" | head -1 | cut -d: -f1)"
+marker_line="$(grep -n 'slides-pending-digest' "$SP/Clippings/clip.md" | head -1 | cut -d: -f1)"
+if [ -n "$prov_line" ] && [ -n "$marker_line" ] && [ "$prov_line" -lt "$marker_line" ]; then a=ok; else a=no; fi
+assert "provenance precedes pending marker" ok "$a"
+printf 'Slide 1: repaired splice digest.\n' > "$tmp/splice-digest.txt"
+run_tool --apply-digest "$SP/Clippings/clip.md" --digest-file "$tmp/splice-digest.txt" >"$tmp/splice-apply.out" 2>"$tmp/splice-apply.err"
+assert "apply-digest succeeds after splice provenance fix" 0 "$?"
+
+# --- Test 16: --repair-provenance mechanical one-time repair (HIMMEL-1235) --
+# Backfill for clips already written by the pre-fix splice: a ### Slides block
+# + pending marker sit in a ## Crawled content section with NO x-media
+# provenance. When the referenced slide file is present on disk, repair
+# inserts the provenance comment before the Slides block and --apply-digest
+# then succeeds.
+echo "Test 16: --repair-provenance (mechanical one-time repair, HIMMEL-1235)"
+RP="$tmp/vault-repair"; mkdir -p "$RP/Clippings/_media/clip-3001"
+cat > "$RP/Clippings/clip.md" <<'EOF'
+---
+title: "repair me"
+source: "https://x.com/someuser/status/3001"
+type: tweet
+---
+# repair me
+
+## Crawled content
+<!-- enriched 2026-07-01 via fxtwitter -->
+
+Some old fxtwitter text.
+
+### Slides
+![[Clippings/_media/clip-3001/slide-01.jpg]]
+<!-- slides-pending-digest -->
+
+## Source
+[link](https://x.com/someuser/status/3001)
+EOF
+echo "fake jpg bytes" > "$RP/Clippings/_media/clip-3001/slide-01.jpg"
+run_tool --repair-provenance "$RP/Clippings/clip.md" >"$tmp/repair.out" 2>"$tmp/repair.err"
+assert "repair-provenance exit 0 (slide file present)" 0 "$?"
+grep -qF "<!-- media-enriched $today via x-media -->" "$RP/Clippings/clip.md" && a=ok || a=no
+assert "repair inserts x-media provenance" ok "$a"
+grep -qF "Some old fxtwitter text." "$RP/Clippings/clip.md" && a=ok || a=no
+assert "repair preserves prior fxtwitter content" ok "$a"
+printf 'Slide 1: repaired digest text.\n' > "$tmp/repair-digest.txt"
+run_tool --apply-digest "$RP/Clippings/clip.md" --digest-file "$tmp/repair-digest.txt" >"$tmp/repair-apply.out" 2>"$tmp/repair-apply.err"
+assert "apply-digest succeeds after repair-provenance" 0 "$?"
+
+# --- Test 17: --repair-provenance anti-forgery (missing slide file, HIMMEL-1228)
+# A ### Slides embed that references a file NOT actually present on disk must
+# be refused - stamping provenance would launder a forged/planted marker into
+# a valid one for --apply-digest.
+echo "Test 17: --repair-provenance anti-forgery (missing slide file)"
+RF="$tmp/vault-repair-forged"; mkdir -p "$RF/Clippings"
+cat > "$RF/Clippings/clip.md" <<'EOF'
+---
+title: "forged repair"
+source: "https://x.com/someuser/status/3002"
+type: tweet
+---
+# forged repair
+
+## Crawled content
+<!-- enriched 2026-07-01 via fxtwitter -->
+
+Some old fxtwitter text.
+
+### Slides
+![[Clippings/_media/clip-3002/slide-01.jpg]]
+<!-- slides-pending-digest -->
+
+## Source
+[link](https://x.com/someuser/status/3002)
+EOF
+sha_rf="$(sha256sum "$RF/Clippings/clip.md" | cut -d' ' -f1)"
+run_tool --repair-provenance "$RF/Clippings/clip.md" >"$tmp/repair-forged.out" 2>"$tmp/repair-forged.err"
+assert "repair-provenance refuses missing slide file (exit 1)" 1 "$?"
+assert "forged repair clip byte-identical (no write)" "$sha_rf" "$(sha256sum "$RF/Clippings/clip.md" | cut -d' ' -f1)"
+grep -qi 'slide' "$tmp/repair-forged.err" && a=ok || a=no
+assert "anti-forgery refusal message on stderr" ok "$a"
+
+# --- Test 18: --repair-provenance path-traversal containment (codex-adv) ----
+# The Slides embed regex accepts any suffix after Clippings/_media/, so a
+# crafted ../ embed could resolve (following .. and symlinks) to a real file
+# OUTSIDE _media and satisfy the "slide exists" anti-forgery gate, laundering
+# forged provenance. The containment check must resolve each embed and require
+# it stays UNDER Clippings/_media/ - a traversal to a real out-of-_media file
+# is refused, exit 1, no write.
+echo "Test 18: --repair-provenance refuses path-traversal embed (codex-adv)"
+RT="$tmp/vault-repair-traversal"; mkdir -p "$RT/Clippings/_media"
+echo "a real file outside _media" > "$RT/secret.txt"
+cat > "$RT/Clippings/clip.md" <<'EOF'
+---
+title: "traversal repair"
+source: "https://x.com/someuser/status/3003"
+type: tweet
+---
+# traversal repair
+
+## Crawled content
+<!-- enriched 2026-07-01 via fxtwitter -->
+
+Some old fxtwitter text.
+
+### Slides
+![[Clippings/_media/../../secret.txt]]
+<!-- slides-pending-digest -->
+
+## Source
+[link](https://x.com/someuser/status/3003)
+EOF
+sha_rt="$(sha256sum "$RT/Clippings/clip.md" | cut -d' ' -f1)"
+run_tool --repair-provenance "$RT/Clippings/clip.md" >"$tmp/repair-trav.out" 2>"$tmp/repair-trav.err"
+assert "repair-provenance refuses ../ traversal embed (exit 1)" 1 "$?"
+assert "traversal repair clip byte-identical (no write)" "$sha_rt" "$(sha256sum "$RT/Clippings/clip.md" | cut -d' ' -f1)"
+grep -qF "<!-- media-enriched" "$RT/Clippings/clip.md" && a=no || a=ok
+assert "no x-media provenance stamped on traversal embed" ok "$a"
+
+# --- Test 19: untrusted crawled prose containing the literal "via x-media -->"
+# substring must NOT be mistaken for real provenance (codex-adv HIMMEL-1235).
+# Before the anchored-regex fix, a bare substring match in _splice_crawled
+# suppressed the real provenance insert (permanently stranding the clip's
+# digest) and --apply-digest's own substring guard would also be fooled.
+echo "Test 19: untrusted prose substring 'via x-media -->' does not defeat anchored provenance detection (codex-adv)"
+emit_gallery_dl 1.jpg
+SB="$tmp/vault-substring"; mkdir -p "$SB/Clippings"
+cat > "$SB/Clippings/clip.md" <<EOF
+---
+title: "substring defeat attempt"
+source: "https://x.com/someuser/status/2002"
+type: tweet
+---
+# substring defeat attempt
+$IMAGE_MEDIA
+
+## Crawled content
+<!-- enriched 2026-07-01 via fxtwitter -->
+
+Some tweet text mentioning via x-media --> inline.
+
+## Source
+[link](https://x.com/someuser/status/2002)
+EOF
+run_tool "$SB" >"$tmp/substring.out" 2>"$tmp/substring.err"
+assert "substring-defeat run exit 0" 0 "$?"
+today="$(date +%Y-%m-%d)"
+grep -qE "^<!-- media-enriched .* via x-media -->" "$SB/Clippings/clip.md" && a=ok || a=no
+assert "anchored provenance line present despite untrusted substring in prose" ok "$a"
+printf 'Slide 1: substring-defeat digest.\n' > "$tmp/substring-digest.txt"
+run_tool --apply-digest "$SB/Clippings/clip.md" --digest-file "$tmp/substring-digest.txt" >"$tmp/substring-apply.out" 2>"$tmp/substring-apply.err"
+assert "apply-digest succeeds with anchored provenance recognized" 0 "$?"
+
+# --- Test 20: --repair-provenance marker must be INSIDE the ### Slides block --
+# The applicability guard counts the pending marker as an anchored line within
+# the ### Slides block, NOT anywhere in the ## Crawled content section
+# (CodeRabbit). A marker planted elsewhere in the section (here, before the
+# Slides block) must NOT qualify the clip for repair - even though a real slide
+# file is present, so it is the marker guard (not the embed guard) that refuses.
+echo "Test 20: --repair-provenance refuses a pending marker outside the ### Slides block (CodeRabbit)"
+RM="$tmp/vault-repair-marker"; mkdir -p "$RM/Clippings/_media/clip-3004"
+echo "fake jpg bytes" > "$RM/Clippings/_media/clip-3004/slide-01.jpg"
+cat > "$RM/Clippings/clip.md" <<'EOF'
+---
+title: "marker outside slides"
+source: "https://x.com/someuser/status/3004"
+type: tweet
+---
+# marker outside slides
+
+## Crawled content
+<!-- enriched 2026-07-01 via fxtwitter -->
+<!-- slides-pending-digest -->
+
+Some old fxtwitter text.
+
+### Slides
+![[Clippings/_media/clip-3004/slide-01.jpg]]
+
+## Source
+[link](https://x.com/someuser/status/3004)
+EOF
+sha_rm="$(sha256sum "$RM/Clippings/clip.md" | cut -d' ' -f1)"
+run_tool --repair-provenance "$RM/Clippings/clip.md" >"$tmp/repair-marker.out" 2>"$tmp/repair-marker.err"
+assert "repair-provenance refuses marker outside ### Slides (exit 1)" 1 "$?"
+assert "marker-outside repair clip byte-identical (no write)" "$sha_rm" "$(sha256sum "$RM/Clippings/clip.md" | cut -d' ' -f1)"
+grep -qF "<!-- media-enriched" "$RM/Clippings/clip.md" && a=no || a=ok
+assert "no x-media provenance stamped when marker is outside Slides" ok "$a"
+
+# --- Test 21: --repair-provenance marker in a LATER sibling ### subsection ----
+# slides_block is bounded to the ### Slides subsection (up to the next ##/###
+# heading), so a marker in a following ### subsection (e.g. ### Transcript) is
+# NOT counted as inside Slides (codex). A real slide is present, so it is the
+# marker guard - not the embed guard - that refuses.
+echo "Test 21: --repair-provenance refuses a marker in a later sibling ### subsection (codex)"
+RS="$tmp/vault-repair-sibling"; mkdir -p "$RS/Clippings/_media/clip-3005"
+echo "fake jpg bytes" > "$RS/Clippings/_media/clip-3005/slide-01.jpg"
+cat > "$RS/Clippings/clip.md" <<'EOF'
+---
+title: "marker in sibling subsection"
+source: "https://x.com/someuser/status/3005"
+type: tweet
+---
+# marker in sibling subsection
+
+## Crawled content
+<!-- enriched 2026-07-01 via fxtwitter -->
+
+### Slides
+![[Clippings/_media/clip-3005/slide-01.jpg]]
+
+### Transcript
+<!-- slides-pending-digest -->
+
+## Source
+[link](https://x.com/someuser/status/3005)
+EOF
+sha_rs="$(sha256sum "$RS/Clippings/clip.md" | cut -d' ' -f1)"
+run_tool --repair-provenance "$RS/Clippings/clip.md" >"$tmp/repair-sibling.out" 2>"$tmp/repair-sibling.err"
+assert "repair-provenance refuses marker in later ### subsection (exit 1)" 1 "$?"
+assert "sibling-subsection repair clip byte-identical (no write)" "$sha_rs" "$(sha256sum "$RS/Clippings/clip.md" | cut -d' ' -f1)"
+grep -qF "<!-- media-enriched" "$RS/Clippings/clip.md" && a=no || a=ok
+assert "no x-media provenance stamped when marker is in a sibling subsection" ok "$a"
+
+# --- Test 22: --repair-provenance requires the EXACT ### Slides heading -------
+# `^### Slides\b` accepted decorated headings like `### Slides are attached` or
+# `### Slides<!-- x -->`; the anchored `^### Slides[ \t]*$` rejects them, so a
+# crafted heading (with a valid embed + marker) can't pass the repair gate
+# (CodeRabbit, Major/Security). Real slide present -> it's the heading match, not
+# the embed guard, that refuses.
+echo "Test 22: --repair-provenance rejects a decorated ### Slides heading (CodeRabbit)"
+RH="$tmp/vault-repair-heading"; mkdir -p "$RH/Clippings/_media/clip-3006"
+echo "fake jpg bytes" > "$RH/Clippings/_media/clip-3006/slide-01.jpg"
+cat > "$RH/Clippings/clip.md" <<'EOF'
+---
+title: "decorated slides heading"
+source: "https://x.com/someuser/status/3006"
+type: tweet
+---
+# decorated slides heading
+
+## Crawled content
+<!-- enriched 2026-07-01 via fxtwitter -->
+
+### Slides are attached
+![[Clippings/_media/clip-3006/slide-01.jpg]]
+<!-- slides-pending-digest -->
+
+## Source
+[link](https://x.com/someuser/status/3006)
+EOF
+sha_rh="$(sha256sum "$RH/Clippings/clip.md" | cut -d' ' -f1)"
+run_tool --repair-provenance "$RH/Clippings/clip.md" >"$tmp/repair-heading.out" 2>"$tmp/repair-heading.err"
+assert "repair-provenance rejects decorated ### Slides heading (exit 1)" 1 "$?"
+assert "decorated-heading repair clip byte-identical (no write)" "$sha_rh" "$(sha256sum "$RH/Clippings/clip.md" | cut -d' ' -f1)"
+grep -qF "<!-- media-enriched" "$RH/Clippings/clip.md" && a=no || a=ok
+assert "no x-media provenance stamped on decorated ### Slides heading" ok "$a"
+
 # --- Test 14: doc-contract -------------------------------------------------
 echo "Test 14: /x-media-enrich runbook + catalog + README doc-contract"
 CMD="$SCRIPT_DIR/../commands/x-media-enrich.md"

@@ -54,6 +54,12 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 TODAY = datetime.date.today().isoformat()
+# Anchored provenance detector (codex-adv HIMMEL-1235): a real x-media
+# provenance comment occupies its own line. A bare substring match (e.g.
+# "via x-media -->" anywhere in the text) is defeatable by untrusted
+# crawled/tweet prose that happens to contain that literal string, so every
+# provenance-detection site shares THIS anchored full-line check instead.
+PROV_RE = re.compile(r"(?m)^<!-- media-enriched \S+ via x-media -->[ \t]*$")
 RATE_LIMIT_S = 0 if os.environ.get("X_MEDIA_NO_SLEEP") else 10
 DEFAULT_LIMIT = 10
 SLIDE_CAP = 20
@@ -638,6 +644,18 @@ def _splice_crawled(body: str, section: str) -> str:
         head, after = body[:cut], body[cut:]
         h3 = re.search(r"(?m)^### ", section)
         blocks = (section[h3.start():] if h3 else section).rstrip("\n")
+        # HIMMEL-1235: starting `blocks` at the first ### heading drops
+        # render_crawled's <!-- media-enriched ... via x-media --> provenance
+        # comment (it lives BEFORE the first ###). An existing section from an
+        # earlier fxtwitter pass carries no such comment, so the spliced-in
+        # ### Slides + pending marker would land with no x-media provenance and
+        # the --apply-digest guard would refuse forever. Prepend it here -
+        # unless the existing section already has x-media provenance (a
+        # same-tool re-run), which must not duplicate the comment. Detection is
+        # the anchored PROV_RE (codex-adv): a bare "via x-media -->" substring
+        # buried in untrusted crawled prose no longer counts as real provenance.
+        if not PROV_RE.search(body[m.start():cut]):
+            blocks = f"<!-- media-enriched {TODAY} via x-media -->\n\n" + blocks
         sep = "" if head.endswith("\n\n") else ("\n" if head.endswith("\n") else "\n\n")
         return head + sep + blocks + "\n" + after
     src = re.search(r"(?m)^## Source\b", body)
@@ -744,6 +762,7 @@ def parse_args(argv):
     ap.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
     ap.add_argument("--apply-digest", type=Path, default=None, metavar="CLIP")
     ap.add_argument("--digest-file", type=Path, default=None, metavar="FILE")
+    ap.add_argument("--repair-provenance", type=Path, default=None, metavar="CLIP")
     ap.add_argument("--flag-screen", type=Path, default=None, metavar="CLIP")
     ap.add_argument("--detail", default=None, metavar="DETAIL")
     return ap.parse_args(argv)
@@ -947,18 +966,18 @@ def run_apply_digest(clip: Path, digest_file: Path) -> int:
         print("x-media-fetch --apply-digest: expected exactly one pending "
               "marker; found %d" % body.count(marker), file=sys.stderr)
         return 1
-    # Provenance guard (codex-adv HIMMEL-1226, partial): the pending marker must
+    # Provenance guard (codex-adv HIMMEL-1226/1235): the pending marker must
     # sit inside a tool-written x-media ## Crawled content section - proven by
-    # the "via x-media" provenance comment that render_crawled always emits and
-    # the marker following it. A bare marker planted in attacker-controlled clip
-    # prose (or a clip that merely mentions the literal string) is refused, so
-    # the applier never treats forged/accidental markers as workflow control.
+    # an ANCHORED, full-line "via x-media" provenance comment (PROV_RE) that
+    # render_crawled always emits, with the marker following it. A bare marker
+    # planted in attacker-controlled clip prose (or a clip whose crawled prose
+    # merely CONTAINS the literal substring, mid-line) is refused, so the
+    # applier never treats forged/accidental markers as workflow control.
     # NOT unforgeable (an attacker who copies the whole crawled block still
     # passes) - the full per-run-nonce + media-path-ownership fix spanning BOTH
     # media rungs is HIMMEL-1228; this raises the bar cheaply for now.
-    prov = body.find("<!-- media-enriched")
-    prov_end = body.find("via x-media -->", prov) if prov >= 0 else -1
-    if prov < 0 or prov_end < 0 or body.index(marker) < prov_end:
+    prov_m = PROV_RE.search(body)
+    if prov_m is None or body.index(marker) < prov_m.end():
         print("x-media-fetch --apply-digest: pending marker is not inside an "
               "x-media crawled section (no 'via x-media' provenance before it); "
               "refusing", file=sys.stderr)
@@ -992,6 +1011,137 @@ def run_apply_digest(clip: Path, digest_file: Path) -> int:
               "reverted", file=sys.stderr)
         return 3
     print(f"OK apply-digest {clip.name}: 1 ### Slide digest H3 added, marker stripped")
+    return 0
+
+
+def _vault_root_from_clip(clip: Path) -> Path:
+    """Vault root = the directory above the clip's Clippings/ ancestor (the
+    clip lives at <vault>/Clippings/..., possibly nested under a pool like
+    _done/2026-05/). Walk parents rather than assume a fixed depth."""
+    for p in clip.resolve().parents:
+        if p.name == "Clippings":
+            return p.parent
+    return clip.resolve().parent
+
+
+def run_repair_provenance(clip: Path) -> int:
+    """One-time mechanical repair (HIMMEL-1235) for clips already written by
+    the pre-fix _splice_crawled: a ### Slides block + exactly one
+    <!-- slides-pending-digest --> marker were spliced into a PRE-EXISTING
+    ## Crawled content section (e.g. from an earlier fxtwitter pass) with NO
+    <!-- media-enriched ... via x-media --> provenance comment, so
+    --apply-digest's provenance guard refuses them forever. Not applicable
+    (exit 1, no write) when there is no ## Crawled content section, no
+    ### Slides block + exactly one pending marker inside it, or the section
+    already carries x-media provenance.
+
+    Anti-forgery (HIMMEL-1228): BEFORE stamping provenance, every
+    ![[Clippings/_media/<slug>/slide-NN.jpg]] embed in the ### Slides block
+    must resolve to a file that actually exists on disk (relative to the
+    vault root derived from the clip's own path) - a bare Slides block with no
+    embeds, or an embed pointing at a missing file, is refused. This prevents
+    laundering a forged/planted marker into one --apply-digest will accept.
+
+    Scoped-G-3: a reconstruction check (removing exactly the inserted
+    provenance text reproduces the pre-write body byte-for-byte) plus fm_raw
+    hash immutability, mirroring run_apply_digest. Reverts on any violation.
+    Exit 0 repaired, 1 usage/not-applicable, 3 G-3 failure."""
+    if not clip.is_file():
+        print("x-media-fetch --repair-provenance: clip not found: %s" % clip,
+              file=sys.stderr)
+        return 1
+    text, has_crlf = read_clip(clip)
+    _fm, fm_raw, body, present = parse_frontmatter(text)
+    if not present:
+        print("x-media-fetch --repair-provenance: no frontmatter",
+              file=sys.stderr)
+        return 1
+    m = re.search(r"(?m)^## Crawled content\b", body)
+    if not m:
+        print("x-media-fetch --repair-provenance: no ## Crawled content "
+              "section; not applicable", file=sys.stderr)
+        return 1
+    rest = body[m.end():]
+    nxt = re.search(r"(?m)^## (?!Crawled content)", rest)
+    sec_end = m.end() + (nxt.start() if nxt else len(rest))
+    section = body[m.start():sec_end]
+    marker = "<!-- slides-pending-digest -->"
+    marker_re = re.compile(r"(?m)^" + re.escape(marker) + r"[ \t]*$")
+    slides_m = re.search(r"(?m)^### Slides[ \t]*$", section)
+    # HIMMEL-1235 (CodeRabbit/codex): the pending marker must sit INSIDE the
+    # ### Slides block as its own anchored line, not merely somewhere in the
+    # ## Crawled content section - a marker planted elsewhere in the section, in
+    # a LATER sibling ### subsection, or mid-line in prose must not qualify a
+    # clip for provenance repair. Bound slides_block to the ### Slides subsection
+    # (up to the next ## / ### heading), so the marker AND embed checks below are
+    # scoped to Slides alone.
+    if slides_m:
+        after_slides = section[slides_m.end():]
+        nxt_h = re.search(r"(?m)^#{2,3} ", after_slides)
+        slides_end = slides_m.end() + (nxt_h.start() if nxt_h else len(after_slides))
+        slides_block = section[slides_m.start():slides_end]
+    else:
+        slides_block = ""
+    if not slides_m or len(marker_re.findall(slides_block)) != 1:
+        print("x-media-fetch --repair-provenance: no ### Slides block + "
+              "exactly one pending marker line in the ### Slides block; not "
+              "applicable", file=sys.stderr)
+        return 1
+    if PROV_RE.search(section):
+        print("x-media-fetch --repair-provenance: section already carries "
+              "x-media provenance; not applicable", file=sys.stderr)
+        return 1
+    embeds = re.findall(r"(?m)^!\[\[(Clippings/_media/[^\]]+?)\]\]$",
+                        slides_block)
+    vault_root = _vault_root_from_clip(clip)
+    media_root = (vault_root / "Clippings" / "_media").resolve()
+
+    def _contained_slide(embed: str) -> bool:
+        # Anti-forgery containment (HIMMEL-1235 / codex-adv): the embed regex
+        # accepts any suffix after Clippings/_media/, so a crafted ../ (or
+        # symlink) embed could otherwise resolve to an arbitrary existing file
+        # (e.g. .../Windows/win.ini) and satisfy the "slide exists" gate,
+        # laundering forged provenance. Resolve the path (following .. and
+        # symlinks) and require it stays UNDER Clippings/_media/ AND is a real
+        # file. (Binding a slide to the clip's own status id stays HIMMEL-1228.)
+        try:
+            p = (vault_root / embed).resolve()
+        except (OSError, RuntimeError):
+            return False
+        return p.is_relative_to(media_root) and p.is_file()
+
+    missing = [e for e in embeds if not _contained_slide(e)]
+    if not embeds or missing:
+        print("x-media-fetch --repair-provenance: refusing - referenced "
+              "slide file(s) missing on disk: %s"
+              % (", ".join(missing) if missing else "(no slide embeds found)"),
+              file=sys.stderr)
+        return 1
+    slides_abs = m.start() + slides_m.start()
+    before, after = body[:slides_abs], body[slides_abs:]
+    sep = "" if before.endswith("\n\n") else ("\n" if before.endswith("\n") else "\n\n")
+    prov = f"<!-- media-enriched {TODAY} via x-media -->"
+    inserted = sep + prov + "\n\n"
+    new_body = before + inserted + after
+    # Scoped-G-3: removing exactly the inserted text must reproduce the
+    # baseline body byte-for-byte (proves nothing outside it changed).
+    reconstructed = new_body.replace(inserted, "", 1)
+    if reconstructed != body:
+        print("x-media-fetch --repair-provenance: scoped-G-3 reconstruction "
+              "mismatch; refusing", file=sys.stderr)
+        return 3
+    new_text = f"---\n{fm_raw}\n---\n{new_body}"
+    write_clip(clip, new_text, has_crlf)
+    disk, _ = read_clip(clip)
+    _dfm, dfm_raw, dbody, dpresent = parse_frontmatter(disk)
+    ok = dpresent and dbody == new_body and _sha(dfm_raw) == _sha(fm_raw)
+    if not ok:
+        write_clip(clip, text, has_crlf)   # revert
+        print("x-media-fetch --repair-provenance: post-write verify failed; "
+              "reverted", file=sys.stderr)
+        return 3
+    print(f"OK repair-provenance {clip.name}: x-media provenance inserted "
+          f"before ### Slides")
     return 0
 
 
@@ -1035,6 +1185,8 @@ def main():
     args = parse_args(sys.argv[1:])
     if args.apply_digest is not None:
         sys.exit(run_apply_digest(args.apply_digest, args.digest_file))
+    if args.repair_provenance is not None:
+        sys.exit(run_repair_provenance(args.repair_provenance))
     if args.flag_screen is not None:
         sys.exit(run_flag_screen(args.flag_screen, args.detail))
     if args.vault is None or not args.vault.is_dir():
