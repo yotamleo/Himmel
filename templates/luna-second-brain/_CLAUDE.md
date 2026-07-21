@@ -34,6 +34,11 @@ knowledge.
    decision, or concept uses `[[wikilinks]]`.
 7. **Confidence levels** — Mark claims as
    `stated | high | medium | speculation`.
+8. **Preserve the graph** — never break a `[[wikilink]]`. When you move
+   or rename a note, rewrite every inbound link so none dangle (a
+   relocation skill like `/archive-clips` does this on move; a manual
+   move must do the same by hand). Ask before any restructuring that
+   relinks many notes at once.
 
 ---
 
@@ -91,6 +96,10 @@ Claude should auto-save the following **without asking**:
 - Tasks assigned or committed to → `10-Projects/` relevant note
 - Knowledge learned → `30-Resources/` appropriate subfolder
 - Dev/work sessions → today's daily note + project note
+- A substantial Claude output worth reusing (research brief, synthesis,
+  strategy doc) → save it as a file, don't leave it in chat. Route per
+  the Folder Map (synthesis/concept → `30-Resources/`; cross-topic map →
+  `60-Maps/`).
 
 Claude should **ask before saving**:
 - Anything touching finances or private personal data
