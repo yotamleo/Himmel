@@ -371,9 +371,9 @@ idempotent `scripts/lib/register-auto-arm-hook.sh`. Tests:
 
 Displays: model, context %, git branch, rate-limit bars (current/weekly/extra), cache TTL countdown, per-session and all-sessions cache read/write/hit/savings.
 
-**Source fork:** `yotamleo/claude-statusline` (fork of `nilbuild/claude-statusline`) — kept as upstream-tracking source; edits to the vendored script are pushed back to the fork so both mirror.
+**Source fork:** `yotamleo/claude-statusline` — **ARCHIVED (HIMMEL-1233)**; superseded as the renderer by the vendored claude-hud fork (see the claude-hud entry). The bar (`bin/statusline.sh`) is retained in-tree as the rollback fallback but is no longer wired or re-vendored, so the fork-sync path is closed.
 **Patch applied:** `docs/patches/2026-05-16-cache-statusline.md`
-**Upstream:** `nilbuild/claude-statusline` (PR not yet opened)
+**Upstream:** `nilbuild/claude-statusline` (fork now archived; no PR path)
 
 ---
 

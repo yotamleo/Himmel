@@ -16,7 +16,7 @@ Invoke-WebRequest "https://raw.githubusercontent.com/yotamleo/Himmel/main/script
 pwsh -ExecutionPolicy Bypass -File "$env:TEMP\win11.ps1" -LunaRemote "https://github.com/<you>/<your-vault>.git"
 ```
 
-**What it installs:** winget packages (git, node LTS, python, jq), uv+uvx, Claude Code CLI, RTK, himmel repo + setup, claude-statusline, CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (shallow top-level merge), **end-session-wiki SessionEnd hook (prompted: PowerShell / Bash / Both / Skip)**, Obsidian.
+**What it installs:** winget packages (git, node LTS, python, jq), uv+uvx, Claude Code CLI, RTK, himmel repo + setup, claude-hud statusline (HIMMEL-718), CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (shallow top-level merge), **end-session-wiki SessionEnd hook (prompted: PowerShell / Bash / Both / Skip)**, Obsidian.
 
 **After run:** Complete the printed manual checklist (Jira token, Atlassian MCP token, qmd embed).
 
@@ -34,7 +34,7 @@ curl -fsSL "https://raw.githubusercontent.com/yotamleo/Himmel/main/scripts/machi
 bash /tmp/ubuntu.sh --luna-remote "https://github.com/<you>/<your-vault>.git"
 ```
 
-**What it installs:** apt packages (git, python3, jq, curl), node LTS via NodeSource, uv+uvx, Claude Code CLI, RTK (.deb), himmel repo + setup, claude-statusline, CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (jq deep-merge), **end-session-wiki SessionEnd hook (prompted: Y/n, bash-only)**, **`at` + atd (auto-arm scheduler backend, prompted: Y/n)**, Obsidian (.deb).
+**What it installs:** apt packages (git, python3, jq, curl), node LTS via NodeSource, uv+uvx, Claude Code CLI, RTK (.deb), himmel repo + setup, claude-hud statusline (HIMMEL-718), CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (jq deep-merge), **end-session-wiki SessionEnd hook (prompted: Y/n, bash-only)**, **`at` + atd (auto-arm scheduler backend, prompted: Y/n)**, Obsidian (.deb).
 
 **After run:** Complete the printed manual checklist (Jira token, Atlassian MCP token, qmd embed).
 
