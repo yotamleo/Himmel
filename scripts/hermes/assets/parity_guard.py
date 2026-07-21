@@ -591,6 +591,69 @@ def terminal_external_write_reason(cmd_norm: str):
     return None
 
 
+# --- qmd MCP collection fence (HIMMEL-1239) ---------------------------------
+# v1 allow-list: ONLY the "himmel" collection (non-sensitive, repo-local
+# docs). qmd indexes salus (a PHI medical vault) alongside himmel/luna/
+# luna-curated with NO built-in isolation, so a blanket allow of the qmd MCP
+# tools would let an untrusted engine egress PHI via the qmd MCP path even
+# though the PHI/data-egress fence above hard-denies salus by file path.
+# Widening this list (e.g. adding luna-curated) is a SEPARATE named operator
+# decision — do not add collections here without one.
+QMD_ALLOWED_COLLECTIONS = {"himmel"}
+
+# qmd's findDocument() resolver (qmd src/store.ts) falls back to matching a
+# bare/relative filename or a #docid against EVERY collection in turn when no
+# `qmd://<collection>/` scheme is given — such an input cannot be positively
+# attributed to one collection from the tool-call JSON alone, so only the
+# fully-qualified qmd://himmel/... virtual-path form is accepted.
+QMD_HIMMEL_SCOPED = re.compile(r"^\s*qmd://himmel/")
+
+
+def qmd_scope_reason(tool: str, args: dict):
+    """Return a block reason if this qmd MCP call (tool startswith
+    'mcp__plugin_qmd_qmd__') is not positively scoped to the v1 allow-listed
+    collection, else None (allow)."""
+    if tool == "mcp__plugin_qmd_qmd__query":
+        collections = args.get("collections")
+        if not isinstance(collections, list) or not collections:
+            return ("qmd query with no 'collections' filter is unscoped "
+                    "(falls back to the store's default collections, which "
+                    "may include salus) — pass collections=[\"himmel\"] "
+                    "(HIMMEL-1239).")
+        # isinstance-guard each entry — a non-string entry (e.g. a dict) makes
+        # `c not in <set-of-str>` raise TypeError, which would otherwise reach
+        # the outer fail-closed catch-all (main()'s try/except) instead of
+        # denying with a specific, documented reason (CR round 1, HIMMEL-1239).
+        bad = [c for c in collections
+               if not isinstance(c, str) or c not in QMD_ALLOWED_COLLECTIONS]
+        if bad:
+            return (f"qmd query is scoped to the 'himmel' collection only "
+                     f"(v1 allow-list, HIMMEL-1239); saw: {bad}.")
+        return None
+    if tool == "mcp__plugin_qmd_qmd__get":
+        file_arg = args.get("file")
+        if not isinstance(file_arg, str) or not QMD_HIMMEL_SCOPED.match(file_arg):
+            return ("qmd get requires a fully-qualified qmd://himmel/... path "
+                     "(v1 allow-list, HIMMEL-1239) — bare paths and #docids "
+                     "are cross-collection-ambiguous and denied fail-closed.")
+        return None
+    if tool == "mcp__plugin_qmd_qmd__multi_get":
+        pattern = args.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            return ("qmd multi_get requires a qmd://himmel/... pattern "
+                     "(HIMMEL-1239).")
+        segs = [s.strip() for s in pattern.split(",")]
+        if not all(QMD_HIMMEL_SCOPED.match(s) for s in segs):
+            return ("qmd multi_get requires every segment to be a fully-"
+                     "qualified qmd://himmel/... path/glob (v1 allow-list, "
+                     "HIMMEL-1239).")
+        return None
+    # status (no scoping input) and any other/future qmd tool: scope cannot
+    # be positively determined from the tool-call JSON -> deny fail-closed.
+    return (f"qmd tool '{tool}' has no collection-scoping input this guard "
+            f"can verify — denied fail-closed (HIMMEL-1239).")
+
+
 def main() -> None:
     payload = json.load(sys.stdin)
     tool = payload.get("tool_name", "")
@@ -600,11 +663,16 @@ def main() -> None:
     # 731). himmel's CC PreToolUse hooks do NOT load under hermes, so an MCP tool
     # call would reach the engine UNFENCED — a real external-write surface on the
     # default lane. Blanket-deny every mcp__* tool EXCEPT the read-only qmd
-    # knowledge-base carve-out (mirrors block-glm-external-writes.sh). This fires
-    # unconditionally on this cloud profile (both engines); the matcher extension
-    # in wire_parity_guard.py is what makes the guard see mcp__* tools at all.
+    # knowledge-base carve-out (mirrors block-glm-external-writes.sh), which is
+    # itself COLLECTION-SCOPED to the "himmel" v1 allow-list (HIMMEL-1239 — see
+    # qmd_scope_reason() above). This fires unconditionally on this cloud
+    # profile (both engines); the matcher extension in wire_parity_guard.py is
+    # what makes the guard see mcp__* tools at all.
     if tool.startswith("mcp__"):
         if tool.startswith("mcp__plugin_qmd_qmd__"):
+            reason = qmd_scope_reason(tool, args)
+            if reason:
+                block(reason)
             allow()
         block(f"MCP tool '{tool}' is refused under hermes — the MCP/backend "
               "surface is an unfenced external-write path on this cloud "

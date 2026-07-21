@@ -101,8 +101,62 @@ assert_rc "glm gh pr checks (allowed)"     0 "$(run_case "$(j_bash 'gh pr checks
 assert_rc "glm gh pr list (allowed)"       0 "$(run_case "$(j_bash 'gh pr list')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm gh run list (allowed)"      0 "$(run_case "$(j_bash 'gh run list')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm gh run watch (allowed)"     0 "$(run_case "$(j_bash 'gh run watch 123')" "ANTHROPIC_BASE_URL=$GLM_URL")"
-# qmd KB reads are operator-allowed on-lane (carve-out before the blanket mcp deny).
-assert_rc "glm mcp qmd read (allowed)"   0 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# qmd KB reads are operator-allowed on-lane (carve-out before the blanket mcp
+# deny), but COLLECTION-SCOPED to "himmel" only (HIMMEL-1239) — an unscoped
+# query (no collections filter) could hit salus (PHI vault) and must deny.
+assert_rc "glm mcp qmd query unscoped (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd query scoped himmel (allowed)" 0 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["himmel"]}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd query scoped salus (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["salus"]}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd query scoped luna (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["luna"]}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd query mixed himmel+salus (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["himmel","salus"]}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd query empty collections array (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":[]}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# CR round 1 (codex-2): collections must be a JSON ARRAY — an object's VALUES
+# must not satisfy the allow-list via `.[]` (e.g. {"x":"himmel"} must deny,
+# matching the Python-side isinstance(collections, list) contract).
+assert_rc "glm mcp qmd query collections object not array (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":{"x":"himmel"}}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# CodeRabbit PR #1353: himmel + a BLANK entry must still deny — the earlier
+# extract+grep-vxF shell round-trip let this through because the empty jq -r
+# line collapsed out via command-substitution trailing-newline stripping.
+assert_rc "glm mcp qmd query himmel+blank entry (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["himmel",""]}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# get/multi_get: only a fully-qualified qmd://himmel/... path is positively
+# scoped; bare paths and #docids are cross-collection-ambiguous (deny).
+assert_rc "glm mcp qmd get scoped himmel (allowed)" 0 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{"file":"qmd://himmel/README.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd get scoped salus (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{"file":"qmd://salus/patient.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd get bare filename unscoped (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{"file":"README.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd get docid unscoped (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{"file":"#abc123"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# CR round 5 (codex-1 r5): qmd_himmel_scoped was grep-based (per-LINE match),
+# so a value with an embedded newline where any line starts with
+# qmd://himmel/ passed even though the value itself starts with salus. It
+# must be a whole-STRING prefix check (matches Python re.match, no MULTILINE).
+QMD_NEWLINE_FILE="$(jq -n --arg file "$(printf 'qmd://salus/secret\nqmd://himmel/x')" '{tool_name:"mcp__plugin_qmd_qmd__get",tool_input:{file:$file}}')"
+assert_rc "glm mcp qmd get salus-then-himmel via newline (denied)" 2 "$(run_case "$QMD_NEWLINE_FILE" "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd multi_get scoped himmel (allowed)" 0 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://himmel/*.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd multi_get mixed scoped+unscoped (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://himmel/a.md,notes.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd multi_get luna referenced (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://luna/*.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# CR round 1 (glm-3): under nullglob, a glob-bearing non-himmel segment that
+# matches no file must still DENY. The awk-based validation (CR round 4)
+# never does pathname expansion at all, so this stays denied unconditionally
+# regardless of nullglob — kept as a regression pin.
+assert_rc "glm mcp qmd multi_get salus glob under nullglob (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://salus/*.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL" "BASHOPTS=nullglob")"
+# CR round 2 (codex-1 r2): a pattern of only empty comma-separated segments
+# (",") must deny. Originally guarded by an explicit zero-iteration counter;
+# now covered directly by the awk validation's NF==0 / empty-field checks
+# (CR round 4) — kept as a regression pin.
+assert_rc "glm mcp qmd multi_get comma-only pattern (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":","}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# CR round 4 (codex-1 r4) — ROOT CAUSE: bash word-splitting DROPS empty
+# comma-separated fields, so a trailing/leading/adjacent-comma pattern lost
+# its empty segment and was wrongly allowed despite containing one. The awk
+# -F',' replacement preserves empty fields (NF counts them), matching
+# Python's `pattern.split(",")` exactly — these three must all deny.
+assert_rc "glm mcp qmd multi_get trailing comma (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://himmel/a.md,"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd multi_get leading comma (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":",qmd://himmel/a.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm mcp qmd multi_get adjacent commas (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://himmel/a.md,,qmd://himmel/b.md"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# status has no scoping input at all -> denied fail-closed.
+assert_rc "glm mcp qmd status (denied)" 2 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__status","tool_input":{}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
+# off-lane: qmd fence does not apply — the pre-existing off-lane mcp allow
+# case above ("off-lane mcp tool") already covers an unscoped qmd call
+# reaching this hook when ANTHROPIC_BASE_URL is not the GLM lane.
+assert_rc "off-lane mcp qmd query unscoped (allowed, off-lane)" 0 "$(run_case '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{}}')"
 assert_rc "glm Read tool ignored"        0 "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"x"}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm empty command"            0 "$(run_case '{"tool_name":"Bash","tool_input":{}}' "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm multi-line prose push"    0 "$(run_case "$(j_bash "$(printf 'git commit -m "notes\nabout git push etiquette"')")" "ANTHROPIC_BASE_URL=$GLM_URL")"
@@ -201,7 +255,7 @@ fi
 # Total-count guard: every assert_rc increments CASES; a drift here means a case
 # was silently dropped (or an early exit skipped the tail) even though nothing
 # FAILED. Update EXPECTED_CASES deliberately when adding/removing a case.
-EXPECTED_CASES=82
+EXPECTED_CASES=104
 if [ "$CASES" -ne "$EXPECTED_CASES" ]; then
     echo "CASE-COUNT MISMATCH — ran $CASES, expected $EXPECTED_CASES"
     exit 1

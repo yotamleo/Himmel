@@ -271,8 +271,27 @@ echo "== parity_guard: block-backend-tier / MCP fence parity (HIMMEL-731) =="
 g "mcp github tool refused"    block '{"tool_name":"mcp__plugin_github_github__create_pull_request","tool_input":{}}'
 g "mcp vercel tool refused"    block '{"tool_name":"mcp__plugin_vercel_vercel__deploy_to_vercel","tool_input":{}}'
 g "mcp bare tool refused"      block '{"tool_name":"mcp__whatever__do","tool_input":{}}'
-g "mcp qmd KB carve-out allowed"    allow '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{}}'
-g "mcp qmd KB get carve-out allowed" allow '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{}}'
+# qmd MCP collection fence (HIMMEL-1239): the KB carve-out is COLLECTION-
+# SCOPED to "himmel" only — qmd indexes salus (PHI vault) with no built-in
+# isolation, so an unscoped call must deny fail-closed.
+g "mcp qmd query unscoped refused"       block '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{}}'
+g "mcp qmd query scoped himmel allowed"  allow '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["himmel"]}}'
+g "mcp qmd query scoped salus refused"   block '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["salus"]}}'
+g "mcp qmd query scoped luna refused"    block '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["luna"]}}'
+g "mcp qmd query mixed himmel+salus refused" block '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":["himmel","salus"]}}'
+g "mcp qmd query empty collections refused" block '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":[]}}'
+g "mcp qmd get scoped himmel allowed"    allow '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{"file":"qmd://himmel/README.md"}}'
+g "mcp qmd get scoped salus refused"     block '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{"file":"qmd://salus/patient.md"}}'
+g "mcp qmd get bare filename refused"    block '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{"file":"README.md"}}'
+g "mcp qmd get docid refused"            block '{"tool_name":"mcp__plugin_qmd_qmd__get","tool_input":{"file":"#abc123"}}'
+g "mcp qmd multi_get scoped himmel allowed" allow '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://himmel/*.md"}}'
+g "mcp qmd multi_get mixed scoped+unscoped refused" block '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://himmel/a.md,notes.md"}}'
+g "mcp qmd multi_get luna referenced refused" block '{"tool_name":"mcp__plugin_qmd_qmd__multi_get","tool_input":{"pattern":"qmd://luna/*.md"}}'
+g "mcp qmd status refused (no scoping input)" block '{"tool_name":"mcp__plugin_qmd_qmd__status","tool_input":{}}'
+# CR round 1 (codex-1): a non-string collections entry (e.g. a dict) must not
+# crash the guard via `c not in <set-of-str>` raising TypeError — it must
+# deny fail-closed like any other non-"himmel" entry.
+g "mcp qmd query non-string collections entry refused (no crash)" block '{"tool_name":"mcp__plugin_qmd_qmd__query","tool_input":{"collections":[{"x":1}]}}'
 
 echo "== parity_guard: fail-closed on malformed payload =="
 g "malformed json" block 'NOT JSON'
