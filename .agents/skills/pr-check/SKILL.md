@@ -11,6 +11,23 @@ panel** plus CR-marker handling. It does NOT dispatch the Claude
 adjudication step. (Codex native `/review` integration is a post-HIMMEL-527
 follow-up.)
 
+## Review floor (HIMMEL-1224)
+
+Stated once, per path, so the floor is explicit rather than implied by which gate
+happens to fail-close:
+- interactive `/pr-check` (a Claude session is present) → the **Claude
+  self-review** backstop is the floor: fail-OPEN on lane ABSENCE, fail-CLOSED on
+  an attempted-but-failed lane, distinct from `SKIP_CR`.
+- `scripts/cr/pr-check-external.sh` (the Claude-FREE ship lane) → **"codex
+  responded"** is the floor, RAISED to a **codex + CodeRabbit quorum** for diffs
+  that change the gate infrastructure itself.
+- **this Codex subset** → **"a panel critic responded"**. Step 5 clears only when
+  the panel returned ≥1 responder and `clear-cr-marker.sh` sees `avail … ok` at
+  the reviewed SHA. There is **no Claude self-review backstop here** (the codex
+  harness has no adjudication step), so a fully-unavailable panel (`0/N`) RETAINS
+  the marker and points the operator at `SKIP_CR=1` — this path fails CLOSED
+  rather than degrading to a lone free critic.
+
 ## 1. Locate the marker
 
     branch=$(git branch --show-current)

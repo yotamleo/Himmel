@@ -22,6 +22,20 @@
 # (HIMMEL-1222, HIMMEL-1126 parity). Only exit 0 findings feed the gate as
 # blocking candidates ([coderabbit-N]), same merge contract as the interactive
 # /pr-check step 3.2.
+# Review floor (HIMMEL-1224) — stated once, per path, not left implied by which
+# gate happens to fail-close:
+#   * interactive /pr-check (a Claude session is present): the Claude self-review
+#     backstop is the floor. It fails OPEN on the ABSENCE of external lanes
+#     (codex/glm/CodeRabbit) and fails CLOSED on a lane that ATTEMPTED and failed;
+#     distinct from SKIP_CR (a no-review bypass).
+#   * THIS external path (Claude-FREE): there is NO Claude backstop, so the floor
+#     is "the paid codex critic responded" (GATE 3). It fails CLOSED when codex is
+#     absent rather than degrading to a lone flaky free critic. For a diff that
+#     changes the CR/merge gate infrastructure ITSELF, the floor is RAISED to a
+#     quorum (codex AND CodeRabbit both responded — the gate-infra quorum below).
+# Lane outages are surfaced IN the verdict (critics=N; coderabbit=<state>), so a
+# recorded 'pass' shows how much review actually ran — not merely that it passed.
+#
 # The CR marker is NOT touched here; the marker clear is bound to the pushed SHA
 # in ship-branch.sh.
 #
@@ -128,6 +142,18 @@ if [ ! -s "$diff_file" ]; then
     exit 0
 fi
 
+# HIMMEL-1224: the changed-file list for the gate-infra quorum check (GATE 6).
+# Computed HERE, right after the diff was validated non-empty (a diff failure
+# already fail-closed above), so the quorum decision never rides on a
+# silently-empty list. Same 3-dot range as $diff_file, so the two never disagree.
+# FAIL-CLOSED on enumeration failure (CodeRabbit, HIMMEL-1224): if we cannot list
+# the changed files we cannot tell a gate-infra diff from a non-gate one, so the
+# quorum must NOT be silently skipped (no `|| true` masking the failure).
+if ! changed_files="$(git diff --name-only "origin/${BASE}...${BRANCH}" 2>/dev/null)"; then
+    echo "pr-check-external: FAIL - cannot enumerate changed files for the gate-infra quorum (git diff --name-only failed) - fail-closed" >&2
+    exit 1
+fi
+
 # HIMMEL-1222 (codex-adv): a real review is about to run, so REVOKE any existing
 # external_cr_verdict for this session NOW. Otherwise a fail-closed exit below
 # (a panel/codex/CodeRabbit failure) would leave a stale 'pass (sha=X)' that
@@ -225,8 +251,14 @@ bash "$SCRIPT_DIR/coderabbit-review.sh" --branch "$BRANCH" --base "$BASE" \
 # line on exit 1 (a machine without the CLI / a failed review is not a critic
 # drop-out - the operator just sees the availability state).
 cat "$cr_err" >&2
+# HIMMEL-1224: record the CodeRabbit availability state — surfaced in the verdict
+# (critics=N; coderabbit=<state>) and consumed by the gate-infra quorum below.
+# "ok" only when the review actually RAN (rc=0); absent (rc=3) / unavailable
+# (rc=4) are MISSING-review signals, never a responded reviewer.
+coderabbit_state="unknown"
 case "$cr_rc" in
     0)
+        coderabbit_state="ok"
         # Review completed. The wrapper passes the CLI's --agent stream through
         # (JSONL: status/heartbeat/complete lines PLUS '"type":"finding"' lines),
         # so gate on finding lines, not on non-empty stdout. Severity map matches
@@ -253,8 +285,10 @@ case "$cr_rc" in
         fi
         ;;  # clean / minor-only: fall through to the verdict.
     3)
+        coderabbit_state="absent"
         : ;;  # CLI absent - skip note already surfaced above; continue fail-open.
     4)
+        coderabbit_state="unavailable"
         # Rate-limited/quota-exhausted (HIMMEL-1219) — a MISSING-review signal,
         # NOT a failure, so do NOT fall through to the generic "review failed"
         # message below (that would mislabel a rate-limit). The wrapper's stderr
@@ -268,7 +302,23 @@ case "$cr_rc" in
         ;;
 esac
 
-echo "pr-check-external: CLEAN - Critical=0 Important=0, codex responded ($responders critics) @ $reviewed_short" >&2
+# GATE 6 — gate-infrastructure quorum (HIMMEL-1224). A diff that changes the
+# CR/merge gate machinery is reviewed by the very gate it changes, so on this
+# Claude-absent path a lone codex reviewer (GATE 3) is not enough: require a
+# SECOND trusted cross-model reviewer (CodeRabbit) to have RESPONDED. CodeRabbit
+# absent (rc=3) or rate-limited (rc=4) does NOT meet quorum — a change to the
+# gate itself must not clear on one reviewer. Non-gate diffs keep the
+# single-codex floor. The interactive /pr-check (with its Claude backstop) is the
+# path for gate-infra changes when the external lane cannot reach two reviewers.
+gate_infra_touched="$(printf '%s\n' "$changed_files" | grep -E '^(scripts/cr/|scripts/glm/ship-branch\.sh|scripts/hooks/|scripts/handover/merge-on-green\.sh|scripts/check-ci\.sh|\.claude/commands/pr-check\.md|\.agents/skills/pr-check/SKILL\.md)' || true)"
+if [ -n "$gate_infra_touched" ] && [ "$coderabbit_state" != "ok" ]; then
+    echo "pr-check-external: NOT CLEAN - gate-infrastructure diff requires a quorum (codex + CodeRabbit both responded), but coderabbit=$coderabbit_state. A change to the gate itself must not clear on a single reviewer; use the interactive /pr-check (Claude backstop) or retry when CodeRabbit recovers. Gate files touched:" >&2
+    printf '%s\n' "$gate_infra_touched" | sed 's/^/  - /' >&2
+    exit 1
+fi
+[ -n "$gate_infra_touched" ] && echo "pr-check-external: gate-infrastructure diff - quorum met (codex + CodeRabbit both responded)" >&2
+
+echo "pr-check-external: CLEAN - Critical=0 Important=0, codex responded ($responders critics), coderabbit=$coderabbit_state @ $reviewed_short" >&2
 
 # Record the verdict into the spawn-glm session meta.json (mirror d1-verdict.sh's
 # node -e merge; string args are injection-safe). DISTINCT key external_cr_verdict
@@ -284,15 +334,24 @@ if [ -n "$SESSION_DIR" ]; then
     # to the branch tip - an authorization gate must not accept a short-prefix
     # match a grafted commit could collide on, CR [codex-1]).
     # shellcheck disable=SC2016  # ${...} below are JS template literals, not shell
-    node -e '
+    # FAIL-CLOSED if the verdict cannot be persisted (CodeRabbit, HIMMEL-1224):
+    # node exits non-zero on an unreadable meta OR an unwritable file, and the
+    # script must NOT then print/exit-0 a `pass` that never reached disk. (The
+    # early revocation already removed any stale verdict, so a failed write leaves
+    # meta.json with NO pass - ship-branch.sh reads meta.json, so it authorizes
+    # nothing; the non-zero exit here also stops the misleading green.)
+    if ! node -e '
 const fs = require("fs");
-const [mp, sha, critics] = process.argv.slice(1);
+const [mp, sha, critics, coderabbit] = process.argv.slice(1);
 const m = JSON.parse(fs.readFileSync(mp, "utf8"));
-m.external_cr_verdict = `pass (sha=${sha}; critics=${critics})`;
+m.external_cr_verdict = `pass (sha=${sha}; critics=${critics}; coderabbit=${coderabbit})`;
 fs.writeFileSync(mp, JSON.stringify(m, null, 2) + "\n");
-' "$META" "$reviewed_sha" "$responders"
+' "$META" "$reviewed_sha" "$responders" "$coderabbit_state"; then
+        echo "pr-check-external: FAIL - could not persist external_cr_verdict to $META (write failed) - fail-closed, no pass recorded" >&2
+        exit 1
+    fi
     echo "pr-check-external: wrote external_cr_verdict to $META" >&2
 fi
 
-printf 'external_cr_verdict: pass (%s)\n' "$reviewed_short"
+printf 'external_cr_verdict: pass (%s; coderabbit=%s)\n' "$reviewed_short" "$coderabbit_state"
 exit 0
