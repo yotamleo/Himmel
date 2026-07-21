@@ -21,7 +21,7 @@ export async function sendChatAction(token: string, chat_id: number, f: F = fetc
 // and these logs get captured into session notes committed to a vault. For
 // longer ids, keeps the last 2 digits so repeated failures for the same chat
 // can still be correlated without exposing the raw id.
-const redactChatId = (chat_id: number): string => {
+export const redactChatId = (chat_id: number): string => {
   const digits = String(chat_id).replace(/^-/, "");
   return digits.length > 2 ? `***${digits.slice(-2)}` : "***";
 };
