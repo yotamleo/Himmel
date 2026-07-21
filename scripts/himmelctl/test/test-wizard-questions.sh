@@ -24,6 +24,8 @@
 #      the fresh clone) -> ADOPTER default, scope asked, and the accepted
 #      defaults derive adopt.sh with the vault flags honored — never
 #      setup.sh.
+#   8. --default-scope user changes only the adopter scope question's default;
+#      accepting it still prints the plan normally and preserves confirmation.
 # Covers (T3):
 #   5. interactive run writes the cache; --from-profile on it reproduces the
 #      same answer JSON with ZERO prompts.
@@ -352,5 +354,31 @@ printf '%s' "$out" | grep -q 'case7-luna' \
 printf '%s' "$out" | grep '^derived:' | grep -q 'setup\.sh' \
   && fail "case7: an official-clone adopter must never derive setup.sh (got: $out)"
 echo "ok: case7 himmel origin without .himmel-dev -> adopter default, scope asked, adopt.sh derived with vault flags"
+
+# ── Case 8: explicit user-scope hint changes the confirmable default only ────
+stub8="$work/case8"; mkdir -p "$stub8"
+c8path=$(build_path "$stub8" bash jq python3 npm -- )
+make_git_stub "$stub8" "https://github.com/someone/other-repo.git"
+h8="$work/h8"; mkdir -p "$h8"
+set +e
+out=$(PATH="$c8path" HOME="$h8" HIMMELCTL_INTERACTIVE=1 \
+      "$node_bin" "$wizard" install --dry-run --default-scope user 2>&1 <<INPUT
+
+
+none
+inline
+lean
+INPUT
+)
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "case8: user-scope hint run should succeed (got rc=$rc): $out"
+printf '%s' "$out" | grep -qF '? scope [project|user] (default: user)' \
+  || fail "case8: scope question should display user as its default (got: $out)"
+printf '%s' "$out" | grep -q '"scope": "user"' \
+  || fail "case8: accepting the scope default should record user (got: $out)"
+printf '%s' "$out" | grep -qE 'derived:.*adopt\.sh --profile core --scope user$' \
+  || fail "case8: accepted hint should derive the normal user-scope plan (got: $out)"
+echo "ok: case8 --default-scope user -> confirmable scope default=user + normal derived plan"
 
 echo "PASS"

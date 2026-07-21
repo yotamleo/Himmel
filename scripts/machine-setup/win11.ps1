@@ -204,9 +204,9 @@ Write-Step "Delegate himmel/luna wiring to himmelctl bootstrap (HIMMEL-887)"
 # remote-vault handling is needed here.)
 #
 # CR r4: delegate FROM the himmel clone, not from wherever the operator
-# launched this shim. The wizard's role/scope inference reads the CWD's git
-# origin, and scope=project wires .claude into the CWD — delegating from the
-# launch directory would target the WRONG repo. The wizard is interactive by
+# launched this shim. The wizard's role inference reads the CWD's git origin;
+# the explicit user-scope hint below fits this machine-restore flow while the
+# interactive question + plan/confirm remain unchanged. The wizard is interactive by
 # design: an unattended/non-TTY run fails loud with remediation (documented
 # posture); this Set-Location only guarantees that when it DOES run, its
 # inference targets the himmel clone deterministically.
@@ -215,5 +215,5 @@ Set-Location $HimmelPath
 # Pin HIMMELCTL_REPO_ROOT to this clone so a stale inherited value can't
 # redirect the bootstrap hand-off at a different repo's bin.js (HIMMEL-935 / CR #1126).
 $env:HIMMELCTL_REPO_ROOT = $HimmelPath
-& (Join-Path $HimmelPath 'scripts\himmelctl\bootstrap.ps1')
+& (Join-Path $HimmelPath 'scripts\himmelctl\bootstrap.ps1') -DefaultScope user
 exit $LASTEXITCODE

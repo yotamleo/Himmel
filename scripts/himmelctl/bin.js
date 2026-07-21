@@ -83,6 +83,7 @@ commands:
 
 options:
   --from-profile <path>  install non-interactively from a saved profile cache
+  --default-scope <s>    install question default: project|user (answer remains confirmable)
   --advanced             reserved: surface advanced options (parsed, not yet honored)
   --dry-run              print the derived plan/actions without executing
   --items <a,b>          status/ensure: scope the run to these item ids (comma list)
@@ -101,7 +102,7 @@ options:
 // each option (so passing the DEFAULT value explicitly is never flagged —
 // only a genuinely-set option outside the whitelist is).
 const ALLOWED_OPTIONS = {
-  install: ['fromProfile', 'advanced', 'dryRun'],
+  install: ['fromProfile', 'defaultScope', 'advanced', 'dryRun'],
   uninstall: ['dryRun'],
   update: ['dryRun'],
   status: ['items', 'json'],
@@ -133,12 +134,12 @@ const DEPS_VERB_ALLOWED_OPTIONS = {
   upgrade: ['dryRun', 'yes', 'withModels'],
 };
 const OPTION_FLAGS = {
-  fromProfile: '--from-profile', advanced: '--advanced', dryRun: '--dry-run',
+  fromProfile: '--from-profile', defaultScope: '--default-scope', advanced: '--advanced', dryRun: '--dry-run',
   items: '--items', json: '--json', profile: '--profile', yes: '--yes',
   withModels: '--with-models',
 };
 const OPTION_DEFAULTS = {
-  fromProfile: null, advanced: false, dryRun: false, items: null, json: false, profile: null, yes: false,
+  fromProfile: null, defaultScope: null, advanced: false, dryRun: false, items: null, json: false, profile: null, yes: false,
   withModels: false,
 };
 
@@ -150,6 +151,7 @@ function parseArgs(argv) {
   const args = {
     subcommand: null,
     fromProfile: null, // reserved (T0: parse only)
+    defaultScope: null, // install question default: project|user (null = project)
     advanced: false,   // reserved (T0: parse only)
     dryRun: false,
     items: null,       // status/ensure: --items comma list (null = no filter)
@@ -295,6 +297,14 @@ function parseArgs(argv) {
           return args;
         }
         break;
+      case '--default-scope':
+        args.defaultScope = argv[++i];
+        if (['project', 'user'].indexOf(args.defaultScope) === -1) {
+          console.error(`himmelctl: --default-scope must be one of project|user (got ${args.defaultScope})`);
+          process.exitCode = 2;
+          return args;
+        }
+        break;
       case '--advanced':
         args.advanced = true;
         break;
@@ -433,10 +443,11 @@ function isInteractive(args) {
 // win32: winget takes ONE exact package id per invocation — `winget install
 // jq python3 npm` is a single search QUERY, not multiple packages, and bare
 // tool names are not winget ids. Map each hard-gate tool to its documented
-// id (mirrors scripts/machine-setup/win11.ps1's per-tool installs). bash is
-// never installed through this map (self-install paradox, special-cased
-// below); it ships with Git.Git anyway.
+// id (mirrors scripts/machine-setup/win11.ps1's per-tool installs). Git.Git
+// supplies both git and Git Bash, so a clean Windows machine can install bash
+// through cmd without the old bash self-install paradox.
 const WINGET_IDS = {
+  bash: 'Git.Git',
   git: 'Git.Git',
   jq: 'jqlang.jq',
   python3: 'Python.Python.3.12',
@@ -444,15 +455,15 @@ const WINGET_IDS = {
   npm: 'OpenJS.NodeJS.LTS',
 };
 
-// Run one package-manager line via `bash -c` (bash is guaranteed present at
-// every call site — the bash-missing paradox is special-cased before this is
-// reached) and log a launch failure or nonzero exit instead of swallowing it.
-// The bash-wrap keeps the call testable with an extensionless stub on every
-// OS. Every line is assembled from fixed vocabulary — never user input — so
-// interpolating into a shell line carries no injection risk.
+// Run one package-manager line and log a launch failure or nonzero exit
+// instead of swallowing it. Windows uses cmd directly so the clean-machine
+// winget path does not depend on Git Bash already being installed; posix keeps
+// bash -c. Every line is fixed vocabulary — never user input.
 function runInstallerLine(line) {
   console.error(`himmelctl: running: ${line}`);
-  const r = spawnSync(resolveBash(), ['-c', line], { stdio: 'inherit' });
+  const r = process.platform === 'win32'
+    ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], { stdio: 'inherit' })
+    : spawnSync(resolveBash(), ['-c', line], { stdio: 'inherit' });
   if (r.error) console.error(`himmelctl: failed to launch installer: ${r.error.message}`);
   if (typeof r.status === 'number' && r.status !== 0) console.error(`himmelctl: installer exited ${r.status}`);
 }
@@ -461,24 +472,24 @@ function runInstallerLine(line) {
 // darwin/linux: ONE brew/apt invocation for the whole list. win32: one
 // `winget install --id <ID> -e` per tool (see WINGET_IDS); a tool with no
 // mapped id gets a manual-install pointer instead of a doomed bare-name
-// query. bash CAN itself be the missing tool, and shelling out via `bash -c`
-// to install bash is a paradox (nothing to shell out THROUGH) — that case
-// prints a platform-appropriate pointer and skips the spawn entirely.
+// query. On posix, bash cannot shell out to install itself; Windows avoids
+// that paradox by running winget through cmd and mapping bash to Git.Git.
 function installMissing(missing) {
-  if (missing.indexOf('bash') !== -1) {
+  if (process.platform !== 'win32' && missing.indexOf('bash') !== -1) {
     console.error('himmelctl: bash itself is missing and cannot be self-installed via a bash shell-out.');
-    console.error(process.platform === 'win32'
-      ? '  install Git for Windows (Git Bash) or enable WSL, then re-run himmelctl.'
-      : '  install bash via your platform package manager, then re-run himmelctl.');
+    console.error('  install bash via your platform package manager, then re-run himmelctl.');
     return;
   }
   if (process.platform === 'win32') {
+    const installedIds = [];
     for (const tool of missing) {
       const id = WINGET_IDS[tool];
       if (!id) {
         console.error(`himmelctl: no winget id known for '${tool}' — install it manually, then re-run himmelctl.`);
         continue;
       }
+      if (installedIds.indexOf(id) !== -1) continue;
+      installedIds.push(id);
       runInstallerLine(`winget install --id ${id} -e`);
     }
     return;
@@ -664,7 +675,7 @@ async function askPath(ask, prompt, defaultVal) {
 }
 
 // Walk all questions interactively and return the answer object.
-async function askQuestions() {
+async function askQuestions(defaultScope) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   const ask = makeAsk(rl);
 
@@ -674,9 +685,10 @@ async function askQuestions() {
   const role = await askEnum(ask, `? role [adopter|contributor] (default: ${det.role})\n> `, ['adopter', 'contributor'], det.role);
 
   // 2. scope — adopter only. Contributor never asks (setup.sh is user-scope).
-  let scope = 'project';
+  const scopeDefault = defaultScope || 'project';
+  let scope = scopeDefault;
   if (role === 'adopter') {
-    scope = await askEnum(ask, '? scope [project|user] (default: project)\n> ', ['project', 'user'], 'project');
+    scope = await askEnum(ask, `? scope [project|user] (default: ${scopeDefault})\n> `, ['project', 'user'], scopeDefault);
   }
 
   // 3. vault. T2 collects mode+path only (non-luna->luna conversion is O1,
@@ -704,10 +716,10 @@ async function askQuestions() {
 
 // All-default answers (no prompts) for --dry-run previews. Still prints the
 // role reasoning line so the preview shows what would happen.
-function defaultAnswers() {
+function defaultAnswers(defaultScope) {
   const det = detectRole();
   console.log(`detected: ${det.reason}`);
-  return buildAnswers(det.role, det.role === 'contributor' ? 'user' : 'project', 'none', '', 'inline', '', 'lean');
+  return buildAnswers(det.role, det.role === 'contributor' ? 'user' : (defaultScope || 'project'), 'none', '', 'inline', '', 'lean');
 }
 
 // ── T3: answer schema + cache ────────────────────────────────────────────────
@@ -845,6 +857,32 @@ function settingsPathForScope(scope) {
   return path.join(process.cwd(), '.claude', 'settings.json');
 }
 
+// Fail before the install/wire/plugin steps when their target settings file
+// cannot be written. Existing files are checked directly; for a not-yet-created
+// file, check the nearest existing parent that would need to create it.
+function settingsTargetsWritable(answers) {
+  const targets = [settingsPathForScope(answers.scope)];
+  if (answers.pluginSet === 'full') targets.push(settingsPathForScope('user'));
+  for (const target of targets.filter((p, i, all) => all.indexOf(p) === i)) {
+    let probe = target;
+    while (!fs.existsSync(probe)) {
+      const parent = path.dirname(probe);
+      if (parent === probe) break;
+      probe = parent;
+    }
+    try {
+      if (probe === target && !fs.statSync(probe).isFile()) throw new Error('target is not a regular file');
+      if (probe !== target && !fs.statSync(probe).isDirectory()) throw new Error('parent is not a directory');
+      fs.accessSync(probe, fs.constants.W_OK);
+    } catch (e) {
+      const code = e && e.code ? ` (${e.code})` : '';
+      console.error(`himmelctl: target settings.json is not writable: ${target}${code}`);
+      return false;
+    }
+  }
+  return true;
+}
+
 // T5b STAMPED plan (locked O1): wire env.LUNA_VAULT_PATH into the
 // scope-appropriate settings.json, THEN run luna-upgrade-all.sh apply against
 // the vault. Backup is built into apply itself (its own BACKUP\t<path> line,
@@ -956,50 +994,24 @@ function writeHandoverDir(p) {
   return true;
 }
 
-// T4.5 pluginSet=full: the DOCUMENTED per-plugin enable table (HIMMEL-816,
-// docs/setup/new-machine.md § "Claude Code Plugins" — "Turn any of these
-// back on with one command"). Hardcoded to match that table EXACTLY rather
-// than derived from docs/setup/settings-template.json's `enabledPlugins`:
-// the JSON additionally disables `qmd@qmd` (the served fork is `qmd@himmel`;
-// enabling the upstream registration too would duplicate/conflict with it),
-// which the doc's curated table deliberately omits — so "every false entry"
-// is not the same set as "the documented enable path." Every install is
-// --scope user, matching the doc literally (this is independent of the
-// adopter's own --scope answer, which only applies to adopt.sh's core
-// profile).
-//
-// HIMMEL-755 A4: the CANONICAL copy of this list now also lives at
-// scripts/machine-setup/full-plugin-enable.json (a shared data file other
-// consumers, e.g. a future install-plugins.sh mode, can read without
-// depending on bin.js). This const is intentionally kept INLINE rather than
-// read from that file at runtime — every derive/bootstrap hermetic test
-// fixture builds its OWN minimal HIMMELCTL_REPO_ROOT tree with only the
-// files each case needs, and making pluginSet=full's dry-run preview do a
-// fresh fs read would require every such fixture to also carry the JSON
-// file, which is invasive and unrelated to what those suites cover. Instead
-// test-wizard-install-engine.sh asserts this const and the JSON file's
-// `plugins` array stay byte-identical, so any future drift between them is
-// CI-caught rather than silent.
-const FULL_PLUGIN_ENABLE = [
-  { spec: 'github@claude-plugins-official' },
-  { spec: 'feature-dev@claude-plugins-official' },
-  { spec: 'plugin-dev@claude-plugins-official' },
-  { spec: 'code-review@claude-plugins-official' },
-  { spec: 'ralph-loop@claude-plugins-official' },
-  { spec: 'pyright-lsp@claude-plugins-official' },
-  { spec: 'agent-sdk-dev@claude-plugins-official' },
-  { spec: 'claude-code-setup@claude-plugins-official' },
-  { spec: 'code-simplifier@claude-plugins-official' },
-  { spec: 'commit-commands@claude-plugins-official' },
-  { spec: 'playground@claude-plugins-official' },
-  { spec: 'skill-creator@claude-plugins-official' },
-  { spec: 'obsidian@obsidian-skills', marketplaceAdd: 'kepano/obsidian-skills' },
-  { spec: 'caveman@caveman', marketplaceAdd: 'JuliusBrussee/caveman' },
-];
+// T4.5 pluginSet=full: load the canonical documented enable table from data,
+// rather than keeping a second inline copy that can drift. This is deliberately
+// separate from settings-template.json's broader enabledPlugins map: qmd@qmd
+// must stay excluded because himmel serves qmd@himmel instead. Every install is
+// --scope user, independent of the adopter's core-install scope answer.
+let fullPluginEnableCache = null;
+function fullPluginEnable() {
+  if (fullPluginEnableCache !== null) return fullPluginEnableCache;
+  const dataPath = path.join(repoRoot(), 'scripts', 'machine-setup', 'full-plugin-enable.json');
+  const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+  if (!Array.isArray(data.plugins)) throw new Error(`invalid full plugin data: ${dataPath}`);
+  fullPluginEnableCache = data.plugins;
+  return fullPluginEnableCache;
+}
 
 function fullPluginEnableCommands() {
   const cmds = [];
-  for (const p of FULL_PLUGIN_ENABLE) {
+  for (const p of fullPluginEnable()) {
     if (p.marketplaceAdd) cmds.push(['claude', 'plugin', 'marketplace', 'add', p.marketplaceAdd]);
     cmds.push(['claude', 'plugin', 'install', p.spec, '--scope', 'user']);
   }
@@ -1137,6 +1149,7 @@ async function runPlan(answers, args) {
         return 0;
       }
     }
+    if (!settingsTargetsWritable(answers)) return 1;
     if (!applyHandoverStep(answers)) return 1;
     const wireRc = runSpawn(plan.wire);
     if (wireRc !== 0) return wireRc;
@@ -1170,6 +1183,11 @@ async function runPlan(answers, args) {
       return 0;
     }
   }
+
+  // Fail before any installer/wire/plugin mutation when the relevant target
+  // settings.json cannot be written, so EACCES is actionable rather than a raw
+  // downstream script error.
+  if (!settingsTargetsWritable(answers)) return 1;
 
   // T4.5: handover.mode=external → persist HANDOVER_DIR before the install.
   // inline → no-op (adopt.sh's/setup.sh's own inline handovers/ default).
@@ -1225,10 +1243,10 @@ async function cmdInstall(args) {
   if (profileAnswers) {
     answers = profileAnswers;
   } else if (shouldPrompt(args)) {
-    answers = await askQuestions();
+    answers = await askQuestions(args.defaultScope);
     writeCache(answers);
   } else if (args.dryRun) {
-    answers = defaultAnswers();
+    answers = defaultAnswers(args.defaultScope);
   } else {
     console.error('himmelctl: non-interactive install requires --from-profile <path>');
     console.error('  (or set HIMMELCTL_INTERACTIVE=1 to answer prompts interactively)');
@@ -2617,10 +2635,11 @@ async function cmdScope(args) {
 // no behavior yet (nothing to toggle).
 const INITIATIVE_LEGS = ['execute', 'prcheck', 'pr', 'ticket', 'merge', 'public', 'handover'];
 
-// The plugin names `hooks.plugin.<name>` accepts — derived from
-// FULL_PLUGIN_ENABLE (single source of truth, T4.5's own pluginSet=full
-// table) rather than a second hand-maintained list.
-const HOOK_PLUGIN_NAMES = FULL_PLUGIN_ENABLE.map((p) => p.spec.split('@')[0]);
+// The plugin names `hooks.plugin.<name>` accepts — derived lazily from the
+// canonical pluginSet=full data rather than a second hand-maintained list.
+function hookPluginNames() {
+  return fullPluginEnable().map((p) => p.spec.split('@')[0]);
+}
 
 function envFilePath() {
   return path.join(repoRoot(), '.env');
@@ -2898,8 +2917,8 @@ function cmdConfigSetHook(hookPath, onOff, args) {
   }
   if (hookPath.length === 2 && hookPath[0] === 'plugin') {
     const name = hookPath[1];
-    if (HOOK_PLUGIN_NAMES.indexOf(name) === -1) {
-      console.error(`himmelctl: unknown plugin '${name}' (known: ${HOOK_PLUGIN_NAMES.join(', ')})`);
+    if (hookPluginNames().indexOf(name) === -1) {
+      console.error(`himmelctl: unknown plugin '${name}' (known: ${hookPluginNames().join(', ')})`);
       return 2;
     }
     const verb = onOff === 'on' ? 'enable' : 'disable';
@@ -2972,8 +2991,8 @@ function cmdConfigGet(pathParts) {
     // what CodeRabbit flagged (an "instructions, not current value" get), so all
     // `get hooks*` paths reject with rc 2 + guidance on where the real state
     // lives. (`config set hooks.plugin.<name>` still performs the real toggle.)
-    if (rest.length === 2 && rest[0] === 'plugin' && HOOK_PLUGIN_NAMES.indexOf(rest[1]) === -1) {
-      console.error(`himmelctl: config get: unknown plugin '${rest[1]}' (known: ${HOOK_PLUGIN_NAMES.join(', ')})`);
+    if (rest.length === 2 && rest[0] === 'plugin' && hookPluginNames().indexOf(rest[1]) === -1) {
+      console.error(`himmelctl: config get: unknown plugin '${rest[1]}' (known: ${hookPluginNames().join(', ')})`);
       return 2;
     }
     const validShape = rest.length === 0
@@ -2985,7 +3004,7 @@ function cmdConfigGet(pathParts) {
     }
     console.error('himmelctl: config get does not report hook state — hooks are not a readable config value.');
     console.error('  hooks.improveOnSubmit: launching-shell env var — check IMPROVE_ON_SUBMIT in the shell that launches claude.');
-    console.error(`  hooks.plugin.<name>: claude-owned — run 'claude plugin list' for actual enabled state (known: ${HOOK_PLUGIN_NAMES.join(', ')}).`);
+    console.error(`  hooks.plugin.<name>: claude-owned — run 'claude plugin list' for actual enabled state (known: ${hookPluginNames().join(', ')}).`);
     return 2;
   }
   console.error(`himmelctl: unknown config path: ${pathParts.join('.')}`);
@@ -3048,7 +3067,7 @@ async function cmdConfigInteractive(args) {
     if (category === 'hooks') {
       const target = await askPath(
         ask,
-        `? hook target ('improveOnSubmit' or 'plugin.<name>'; known plugins: ${HOOK_PLUGIN_NAMES.join(', ')}) (blank to cancel)\n> `,
+        `? hook target ('improveOnSubmit' or 'plugin.<name>'; known plugins: ${hookPluginNames().join(', ')}) (blank to cancel)\n> `,
         '',
       );
       if (!target) continue;

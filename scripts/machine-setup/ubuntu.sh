@@ -103,7 +103,18 @@ rtk --version
 
 step "Clone himmel repo"
 mkdir -p "$(dirname "$HIMMEL_PATH")"
-git clone https://github.com/yotamleo/himmel.git "$HIMMEL_PATH"
+if [ -d "$HIMMEL_PATH/.git" ]; then
+  # Idempotent re-run: fetch AND fast-forward the checked-out branch to its
+  # upstream — a bare fetch updates refs only, leaving the working tree (and the
+  # bootstrap.sh this script exec's below) STALE, so the re-run would provision
+  # from old code. --ff-only never clobbers a diverged/dirty/detached operator
+  # clone: it fails, we note it, and reuse the existing checkout.
+  git -C "$HIMMEL_PATH" fetch --all --prune
+  git -C "$HIMMEL_PATH" merge --ff-only '@{u}' 2>/dev/null \
+    || echo "  note: himmel clone not fast-forward-updatable (diverged/dirty/detached HEAD) — reusing the existing checkout; update it manually if a newer himmel is needed" >&2
+else
+  git clone https://github.com/yotamleo/himmel.git "$HIMMEL_PATH"
+fi
 cd "$HIMMEL_PATH"
 
 # HIMMEL-105: gate the clone for core.hooksPath misconfiguration BEFORE any
@@ -161,13 +172,13 @@ step "Delegate himmel/luna wiring to himmelctl bootstrap (HIMMEL-887)"
 # handling is needed here.)
 #
 # CR r4: delegate FROM the himmel clone, not from wherever the operator
-# launched this shim. The wizard's role/scope inference reads the CWD's git
-# origin, and scope=project wires .claude into the CWD — delegating from the
-# launch directory would target the WRONG repo. cd (not a subshell) because
+# launched this shim. The wizard's role inference reads the CWD's git origin;
+# the explicit user-scope hint below fits this machine-restore flow while the
+# interactive question + plan/confirm remain unchanged. cd (not a subshell) because
 # the exec below replaces this process. The wizard is interactive by design:
 # an unattended/non-TTY run fails loud with remediation (documented posture);
 # this cd only guarantees that when it DOES run, its inference targets the
 # himmel clone deterministically.
 echo "NOTICE: himmel/luna wiring in this script is soft-deprecated (HIMMEL-887) -- delegating to himmelctl bootstrap. Hard-remove deferred to HIMMEL-755."
 cd "$HIMMEL_PATH"
-HIMMELCTL_REPO_ROOT="$HIMMEL_PATH" exec bash "$HIMMEL_PATH/scripts/himmelctl/bootstrap.sh"
+HIMMELCTL_REPO_ROOT="$HIMMEL_PATH" exec bash "$HIMMEL_PATH/scripts/himmelctl/bootstrap.sh" --default-scope user

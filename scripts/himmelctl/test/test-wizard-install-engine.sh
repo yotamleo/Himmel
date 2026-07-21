@@ -31,11 +31,9 @@
 #      NON-default --scope project still runs its HIMMEL_RECONCILE_PLUGINS
 #      lean-floor reconcile step — proving the `plugins` install type's
 #      delegation to it is behavior-preserving, not a capability regression.
-#   g. plugin-spec canonicalization drift check: bin.js's inline
-#      FULL_PLUGIN_ENABLE table stays byte-identical to the canonical
-#      scripts/machine-setup/full-plugin-enable.json `plugins` array (kept
-#      inline rather than read from the file at runtime — see bin.js's own
-#      comment — so this test is what actually keeps the two from drifting).
+#   g. plugin-spec canonicalization: bin.js has no inline FULL_PLUGIN_ENABLE
+#      duplicate and loads scripts/machine-setup/full-plugin-enable.json; the
+#      data file carries the expected 14 unique plugin specs.
 #   h. a signal-terminated primitive (r.signal set, r.status null — a real
 #      OS signal kill does not reliably surface via Node's spawnSync.signal
 #      field on Windows, verified empirically; a child_process.spawnSync
@@ -338,35 +336,19 @@ else
   echo "ok: case f — install-plugins.sh at a non-default --scope project still runs its lean-floor reconcile (orchestrator preserved)"
 fi
 
-# ── case g: plugin-spec canonicalization drift check ───────────────────────
+# ── case g: plugin-spec canonicalization has one runtime source ─────────────
 wizard="$repo_root/scripts/himmelctl/bin.js"
 plugin_json="$repo_root/scripts/machine-setup/full-plugin-enable.json"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 [ -f "$plugin_json" ] || { echo "FAIL: $plugin_json not found" >&2; exit 1; }
-WIZARD_PATH="$(winpath "$wizard")"
-PLUGIN_JSON_PATH="$(winpath "$plugin_json")"
-export WIZARD_PATH PLUGIN_JSON_PATH
-outG=$("$node_bin" -e "
-const fs = require('fs');
-const src = fs.readFileSync(process.env.WIZARD_PATH, 'utf8');
-const m = src.match(/const FULL_PLUGIN_ENABLE = (\[[\s\S]*?\n\]);/);
-if (!m) { console.log(JSON.stringify({ error: 'FULL_PLUGIN_ENABLE const not found in bin.js' })); process.exit(0); }
-// Safe JS-literal -> JSON transform (NOT eval): the const is a plain array of
-// { spec, marketplaceAdd? } object literals with single-quoted string values
-// and bare (unquoted) keys — quote the two known keys, swap quote style, and
-// drop the trailing comma before the closing bracket, then JSON.parse it.
-const jsonish = m[1]
-  .replace(/'/g, '\"')
-  .replace(/\b(spec|marketplaceAdd)\b\s*:/g, '\"\$1\":')
-  .replace(/,(\s*\])/g, '\$1');
-const inline = JSON.parse(jsonish);
-const fromFile = JSON.parse(fs.readFileSync(process.env.PLUGIN_JSON_PATH, 'utf8')).plugins;
-console.log(JSON.stringify({ inline, fromFile }));
-")
-echo "$outG" | jq -e '.error == null' >/dev/null || fail "case g: could not extract FULL_PLUGIN_ENABLE from bin.js (got: $outG)"
-echo "$outG" | jq -e '.inline == .fromFile' >/dev/null \
-  || fail "case g: bin.js's inline FULL_PLUGIN_ENABLE has drifted from scripts/machine-setup/full-plugin-enable.json (got: $outG)"
-echo "ok: case g — bin.js's inline FULL_PLUGIN_ENABLE stays byte-identical to the canonical full-plugin-enable.json"
+grep -q 'const FULL_PLUGIN_ENABLE = ' "$wizard" \
+  && fail "case g: bin.js must not keep an inline FULL_PLUGIN_ENABLE duplicate"
+grep -q "full-plugin-enable.json" "$wizard" \
+  || fail "case g: bin.js must load the canonical full-plugin-enable.json"
+outG=$(jq -c '{count:(.plugins|length), unique:(.plugins|map(.spec)|unique|length), valid:(.plugins|all(.spec|type == "string" and length > 0))}' "$plugin_json")
+echo "$outG" | jq -e '.count == 14 and .unique == 14 and .valid == true' >/dev/null \
+  || fail "case g: full-plugin-enable.json must carry 14 unique valid plugin specs (got: $outG)"
+echo "ok: case g — bin.js loads the canonical full-plugin-enable.json; no inline duplicate remains"
 
 # ── case h: a signal-terminated primitive lands in failed[], never ran[] ───
 # child_process.spawnSync is monkey-patched to return the exact
