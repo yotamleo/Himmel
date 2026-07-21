@@ -200,6 +200,10 @@ check_contains "2: plain unavailable (rc=1)" "$stderr2" "panel-availability: qwe
 check_not_contains "2: NO WARN line" "$stderr2" "WARN critic-panel"
 check_not_contains "2: NO fallback token" "$stderr2" "fallback("
 check "2: fallback model NEVER invoked" "$fb_calls2" "0"
+# HIMMEL-1176: reason= is APPENDED after the untouched (rc=1) — a generic
+# "connection refused" body matches no signature -> generic-rc-1.
+check_contains "2: reason=generic-rc-1 appended (HIMMEL-1176)" "$stderr2" \
+    "panel-availability: qwen3coder unavailable (rc=1) reason=generic-rc-1"
 
 # ===========================================================================
 # Case 3: timeout (rc=124) -> NO fallback (timeout is never exhaustion).
@@ -211,6 +215,9 @@ check_contains "3: timeout-unavailable line" "$stderr3" "panel-availability: qwe
 check_not_contains "3: NO WARN line" "$stderr3" "WARN critic-panel"
 check_not_contains "3: NO fallback token" "$stderr3" "fallback("
 check "3: fallback model NEVER invoked on timeout" "$fb_calls3" "0"
+# HIMMEL-1176: rc 124/137 always classifies timeout, appended after the
+# existing "(timeout Ns)" wording.
+check_contains "3: reason=timeout appended (HIMMEL-1176)" "$stderr3" "reason=timeout"
 
 # ===========================================================================
 # Case 4: registry row WITHOUT fallback_model + exhaustion failure -> still no
@@ -227,6 +234,10 @@ check_contains "4: no-fallback row -> plain unavailable on exhaustion" "$stderr4
 check_not_contains "4: NO WARN line" "$stderr4" "WARN critic-panel"
 check "4: fallback model NEVER invoked when row has empty fallback_models" \
     "$(grep -cF -- "$FB" "$tmp/cap4")" "0"
+# HIMMEL-1176: the primary's own exhaustion-signature text classifies quota-5h
+# even though no fallback ran (fallback_models empty gates only the retry).
+check_contains "4: reason=quota-5h appended (HIMMEL-1176)" "$stderr4" \
+    "panel-availability: qwen3coder unavailable (rc=1) reason=quota-5h"
 
 # ===========================================================================
 # Case 5: GENERIC AccessDenied (auth/permission, e.g. Alibaba
@@ -243,6 +254,10 @@ check_not_contains "5: NO WARN line" "$stderr5" "WARN critic-panel"
 check_not_contains "5: NO fallback token" "$stderr5" "fallback("
 check "5: fallback model NEVER invoked on bare AccessDenied" \
     "$(grep -cF -- "$FB" "$tmp/cap5")" "0"
+# HIMMEL-1176: a bare (unpaired) AccessDenied classifies auth, never a quota
+# bucket — the same HIMMEL-729 pairing rule that gates the fallback trigger.
+check_contains "5: reason=auth appended, NOT a quota class (HIMMEL-1176)" "$stderr5" \
+    "panel-availability: qwen3coder unavailable (rc=1) reason=auth"
 
 # ===========================================================================
 # Case 6: AccessDenied PAIRED with a quota phrase -> fallback DOES fire
@@ -364,6 +379,11 @@ check_contains "10: exhausted -> unavailable (primary rc preserved)" "$stderr10"
 check "10: each fallback invoked exactly once" \
     "$([ "$(grep -cF -- "$FB1" "$tmp/cap10")" = "1" ] && [ "$(grep -cF -- "$FB2" "$tmp/cap10")" = "1" ] && echo ok)" "ok"
 check "10: all-exhausted -> exit 1" "$rc10" "1"
+# HIMMEL-1176: an exhausted fallback chain keeps the PRIMARY's reason
+# (the primary always quota-exhausts in this stub -> quota-5h), never the
+# last fallback attempt's, plus a detail note that the chain was exhausted.
+check_contains "10: chain-exhausted keeps the PRIMARY's reason=quota-5h" "$stderr10" \
+    "panel-availability: qwen3coder unavailable (rc=1) reason=quota-5h detail=fallback-chain exhausted"
 
 # ===========================================================================
 # Cases 9p/10p (CR round): the chain must behave identically under

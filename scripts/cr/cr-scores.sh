@@ -28,6 +28,7 @@ if [ ! -f "$ledger" ] || [ ! -s "$ledger" ]; then
   exit 0
 fi
 
+# shellcheck disable=SC2016  # $-refs below are inside the single-quoted node script (JS), not shell (HIMMEL-1176 surfaced this latent finding by extending the block)
 DROP_BELOW="$CR_SCORES_DROP_BELOW" MIN_N="$CR_SCORES_MIN_N" WINDOW="$WINDOW" LEDGER="$ledger" FILTER_ARTIFACT="$FILTER_ARTIFACT" FILTER_PERSPECTIVE="$FILTER_PERSPECTIVE" node -e '
 const fs = require("fs");
 const DROP_BELOW = Number(process.env.DROP_BELOW);
@@ -180,5 +181,33 @@ if (usageModels.length) {
     cumTotal += u.est_total; cumN += u.n;
   }
   console.log("cumulative: est_total=" + cumTotal + " over " + cumN + " critic call(s)");
+}
+
+// ── Unavailability breakdown (HIMMEL-1176) ──────────────────────────────────
+// Per-model x reason counts, from `avail` records carrying a `reason` field
+// (only present when the emitting script recorded a failure classification —
+// additive capture, HIMMEL-1176). Rendered ONLY when >=1 such record exists,
+// so a reason-less ledger keeps BYTE-IDENTICAL output (same precedent as the
+// Usage section above).
+const reasonCounts = {}; // "model\treason" -> count
+let hasReasons = false;
+for (const r of filteredRecords) {
+  if (r.kind === "avail" && r.model && r.reason) {
+    hasReasons = true;
+    const key = r.model + "\t" + r.reason;
+    reasonCounts[key] = (reasonCounts[key] || 0) + 1;
+  }
+}
+if (hasReasons) {
+  const rCols = ["model","reason","count"];
+  const RW    = [22,     16,      6];
+  const rRow  = cells => cells.map((c,i)=>String(c).padEnd(RW[i])).join("  ");
+  console.log("\n=== Unavailability breakdown ===");
+  console.log(rRow(rCols));
+  console.log(rCols.map((_,i)=>"-".repeat(RW[i])).join("  "));
+  for (const key of Object.keys(reasonCounts).sort()) {
+    const [m, reason] = key.split("\t");
+    console.log(rRow([m, reason, reasonCounts[key]]));
+  }
 }
 '

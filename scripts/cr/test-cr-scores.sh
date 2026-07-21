@@ -173,5 +173,39 @@ off_legacy="$(CR_LEDGER="$L" bash "$CS" --perspective off 2>&1)"
 contains "legacy records coerce to perspective off (alpha 67 present)" "$off_legacy" "67"
 on_legacy="$(CR_LEDGER="$L" bash "$CS" --perspective on 2>&1)"
 not_contains "legacy records absent from perspective on (no 67)" "$on_legacy" "67"
+
+# ── HIMMEL-1176: Unavailability breakdown (additive, reason-capture) ────────
+# 12. A reason-less ledger (every fixture used above) must render NO
+#     "Unavailability breakdown" section — output stays byte-identical to
+#     pre-HIMMEL-1176 (same precedent as the Usage section: rendered only
+#     when the underlying record type is present).
+not_contains "no breakdown section on a reason-less ledger" "$out" "Unavailability breakdown"
+
+# 13. A ledger WITH avail.reason fields renders the breakdown table, grouped
+#     per (model, reason), and leaves the existing tables untouched.
+L6="$tmp/reason-scores.jsonl"
+{
+  echo '{"kind":"avail","ts":"2026-03-01T00:00:00Z","branch":"b","head":"RH1","model":"glm","status":"ok"}'
+  echo '{"kind":"avail","ts":"2026-03-01T00:00:01Z","branch":"b","head":"RH2","model":"glm","status":"unavailable","reason":"quota-5h"}'
+  echo '{"kind":"avail","ts":"2026-03-01T00:00:02Z","branch":"b","head":"RH3","model":"glm","status":"unavailable","reason":"quota-5h"}'
+  echo '{"kind":"avail","ts":"2026-03-01T00:00:03Z","branch":"b","head":"RH4","model":"glm","status":"unavailable","reason":"auth"}'
+  echo '{"kind":"avail","ts":"2026-03-01T00:00:04Z","branch":"b","head":"RH5","model":"codex","status":"unavailable","reason":"timeout"}'
+} >> "$L6"
+reason_out="$(CR_LEDGER="$L6" bash "$CS" 2>&1)"
+contains "breakdown section header present" "$reason_out" "Unavailability breakdown"
+contains "breakdown counts glm/quota-5h=2" "$reason_out" "glm                     quota-5h          2"
+contains "breakdown counts glm/auth=1" "$reason_out" "glm                     auth              1"
+contains "breakdown counts codex/timeout=1" "$reason_out" "codex                   timeout           1"
+# The pre-existing avail% table must be untouched by the new reason field
+# (glm: 1 ok / 4 total = 25%).
+contains "existing avail table unaffected by reason field (glm 25%)" "$reason_out" "25%"
+
+# 14. A record whose reason is an EMPTY string must NOT be counted (mirrors
+#     the "absent, not empty" rule enforced by ledger-append.sh).
+L7="$tmp/reason-empty.jsonl"
+echo '{"kind":"avail","ts":"2026-03-01T00:00:00Z","branch":"b","head":"EH1","model":"m","status":"unavailable","reason":""}' > "$L7"
+empty_reason_out="$(CR_LEDGER="$L7" bash "$CS" 2>&1)"
+not_contains "empty-string reason does not trigger breakdown section" "$empty_reason_out" "Unavailability breakdown"
+
 # ── Final ──────────────────────────────────────────────────────────────────
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
