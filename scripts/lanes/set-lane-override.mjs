@@ -104,7 +104,20 @@ function acquireLock(file, opts = {}) {
       // holder keeps legitimately recreating is never repeatedly nuked.
       if (!reclaimed && _lockIsStale(lockPath)) {
         reclaimed = true;
-        try { rmSync(lockPath, { recursive: true, force: true }); } catch { /* lost the reclaim race */ }
+        // Reclaim via an atomic rename, not a bare rmSync: renameSync of the
+        // observed dir has exactly one winner, so two writers that both see the
+        // stale lock can't both remove-and-enter — the loser gets ENOENT and
+        // falls back to normal mkdirSync contention. releaseLock also checks
+        // the recorded PID and won't remove a lock reclaimed away from it, so an
+        // over-long live holder can't free a newer holder's lock. (A fully
+        // generation-safe reclaim under PID reuse would still need a token;
+        // disproportionate for this low-contention single-machine tool — codex
+        // CR #470 / PR #1295.)
+        try {
+          const dead = `${lockPath}.dead.${process.pid}`;
+          renameSync(lockPath, dead);
+          rmSync(dead, { recursive: true, force: true });
+        } catch { /* another writer reclaimed it first — contend normally */ }
         continue;
       }
       if (Date.now() >= deadline) {
@@ -117,8 +130,19 @@ function acquireLock(file, opts = {}) {
 }
 
 function releaseLock(file) {
+  const lockPath = `${file}.lock`;
+  // Release only a lock we still own. If a waiter reclaimed us as stale (we
+  // exceeded LOCK_STALE_MS while alive), the dir now records the NEW holder's
+  // PID — removing it would free a live holder's lock and admit a concurrent
+  // writer that clobbers registry updates. An absent/unreadable owner = our
+  // own lock before the best-effort owner write landed, so it is still ours to
+  // release. (codex + CodeRabbit, PR #1295.)
   try {
-    rmSync(`${file}.lock`, { recursive: true, force: true });
+    const owner = readFileSync(join(lockPath, 'owner'), 'utf8').trim();
+    if (owner && Number(owner) !== process.pid) return;
+  } catch { /* no/unreadable owner — our own lock; fall through to remove */ }
+  try {
+    rmSync(lockPath, { recursive: true, force: true });
   } catch (e) {
     if (e.code !== 'ENOENT') throw e;
   }
@@ -152,8 +176,13 @@ function main(argv) {
   // resolve.mjs treats as the base layer. Compare case-insensitively on win32:
   // NTFS is case-insensitive, so a differently-cased --file (e.g. LANES.JSON)
   // opens the SAME physical file and must not slip past this guard.
+  // Case-fold on the case-insensitive default filesystems — win32 (NTFS) AND
+  // macOS (APFS/HFS+): `LANES.JSON` opens the same file as `lanes.json` on both,
+  // so the shared-registry guard must compare case-insensitively there or it is
+  // bypassable by casing on macOS too (codex CR #470).
+  const _ciFs = process.platform === 'win32' || process.platform === 'darwin';
   const _sameAsRegistry = (p) =>
-    process.platform === 'win32'
+    _ciFs
       ? resolve(p).toLowerCase() === resolve(SHARED_REGISTRY).toLowerCase()
       : resolve(p) === resolve(SHARED_REGISTRY);
   if (_sameAsRegistry(file)) {

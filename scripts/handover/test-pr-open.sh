@@ -78,7 +78,7 @@ FAKE_GH="$TMP_ROOT/gh-fake.sh"
 cat >"$FAKE_GH" <<'FAKEGH'
 #!/usr/bin/env bash
 # Records each invocation to $FAKE_GH_LOG and emits canned responses.
-echo "gh $*" >: > "$FAKE_GH_LOG"
+echo "gh $*" >> "$FAKE_GH_LOG"
 case "$1" in
     pr)
         case "$2" in
@@ -259,12 +259,16 @@ assert_contains "stdout mentions cosmetic-fail" "cosmetic-fail" "$out"
 
 echo "TEST: pr-merge fails closed (rc=7) on empty head SHA"
 rc=0
+: > "$FAKE_GH_LOG"
 out=$(
     cd "$REPO"
     GH_CMD="$FAKE_GH" FAKE_GH_PR_LIST="42" FAKE_GH_HEAD_SHA="" bash "$PR_MERGE" 2>&1
 ) || rc=$?
 assert_eq       "rc=7 (refuses to merge unbound)" "7" "$rc"
 assert_contains "stderr explains unbound refusal" "refusing to merge unbound" "$out"
+# HIMMEL-1058 side effect: the unbound path must never reach `gh pr merge` —
+# an impl that merged first and returned 7 would pass the checks above (CR #1295).
+assert_eq       "unbound head never invokes pr merge" "0" "$(grep -c '^gh pr merge' "$FAKE_GH_LOG" || true)"
 
 # Test 10: HANDOVER_PR_AUTO=0 short-circuits ---------------------------
 

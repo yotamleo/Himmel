@@ -334,7 +334,10 @@ $sweepReassertOk = $false
 try {
   $sweepTask = Get-ScheduledTask -TaskName $SweepTaskName -ErrorAction Stop
   $sweepTaskFound = $true
-  $sweepTaskEnabled = [bool]$sweepTask.Enabled
+  # Get-ScheduledTask exposes the enabled flag on .Settings.Enabled, NOT a
+  # top-level .Enabled (which is $null -> [bool]$null = $false, falsely
+  # reporting every enabled task as disabled). CodeRabbit/codex CR #470.
+  $sweepTaskEnabled = [bool]$sweepTask.Settings.Enabled
   $sweepTriggers = @($sweepTask.Triggers | ForEach-Object {
     New-SweepTriggerDescriptor -Interval ([string]$_.Repetition.Interval) `
       -Duration ([string]$_.Repetition.Duration) `
