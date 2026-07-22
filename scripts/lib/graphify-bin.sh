@@ -45,7 +45,7 @@
 # (HIMMEL-891) -- without carrying a fork. A pin bump is a reviewed change to this
 # line, paired with `synced_base` in scripts/upstreams.json so the nightly
 # fork-drift guard stays truthful.
-_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.22}"; }
+_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.23}"; }
 _graphify_pypi_name() { printf '%s\n' "graphifyy"; }
 # The `uv tool install` package spec: `graphifyy==<version>`.
 _graphify_pinned_source() { printf '%s==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
