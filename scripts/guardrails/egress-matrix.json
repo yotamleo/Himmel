@@ -25,9 +25,9 @@
     "local-ollama": { "region": "local", "note": "zero egress; includes qmd local GGUF embeddings" },
     "anthropic": { "region": "US", "note": "the operating harness itself (Claude sessions natively read the vaults); recording status quo, not a widening" },
     "openai-codex": { "region": "US", "note": "codex via hermes, paid usage bank" },
-    "deepseek": { "region": "CN", "note": "operator-accepted 2026-07-05 for luna extraction (speed override)" },
+    "deepseek": { "region": "CN", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): dropped from vault + handover-state egress — bad extraction/enrichment results. Prior ratifications (2026-07-05, HIMMEL-343, HIMMEL-833) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code)." },
     "zai-glm": { "region": "CN", "note": "GLM Coding Plan impl lanes" },
-    "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "qwen text lanes + free-quota modality bank (HIMMEL-729/765)" },
+    "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): not pursuing the HIMMEL-765 pilot — bad results. Vault/handover cells demoted to explicit deny; himmel-code wildcard unaffected (public code)." },
     "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" }
   },
   "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding", "enrichment"],
@@ -63,8 +63,8 @@
     },
     {
       "corpus": "handover-state", "provider": "deepseek", "purpose": "extraction",
-      "verdict": "allow+log",
-      "why": "operator ratification 2026-07-09 (jarvis s19→s20 handover authorization: graphify the handover state repo + luna as ONE vault; extends the 2026-07-05 DeepSeek luna override to the handover-state slice, HIMMEL-343), ledgered per run"
+      "verdict": "deny",
+      "why": "REVERSED 2026-07-22 (HIMMEL-1257): the 2026-07-09 HIMMEL-343 ratification (extend the 2026-07-05 DeepSeek luna override to the handover-state slice) is dropped — DeepSeek de-listed for bad results. Sanctioned set = GLM/Claude/Codex. Explicit deny keeps the reversal legible; not hard (a future operator decision could re-add)."
     },
     {
       "corpus": "handover-state", "provider": "openai-codex", "purpose": "inference",
@@ -80,9 +80,8 @@
     },
     {
       "corpus": "handover-state", "provider": "alibaba", "purpose": "inference",
-      "verdict": "conditional",
-      "condition": "brief-scoped: task briefs/excerpts through the guarded dispatch chokepoints only — never bulk corpus runs",
-      "why": "same as openai-codex row"
+      "verdict": "deny",
+      "why": "REVERSED 2026-07-22 (HIMMEL-1257): Alibaba de-listed (bad results). The brief-scoped worker cell goes with the rest — the remaining handover-state inference cells (openai-codex, zai-glm conditional + anthropic/ollama) are now exactly the sanctioned worker set {Codex, GLM} + substrate."
     },
     {
       "corpus": "luna-clippings", "provider": "local-ollama", "purpose": "*",
@@ -94,8 +93,8 @@
     },
     {
       "corpus": "luna-clippings", "provider": "deepseek", "purpose": "extraction",
-      "verdict": "allow+log",
-      "why": "subsumed by the operator DeepSeek override (2026-07-05) which covers the more-sensitive luna-personal corpus"
+      "verdict": "deny",
+      "why": "REVERSED 2026-07-22 (HIMMEL-1257): DeepSeek de-listed (bad results). Was subsumed by the 2026-07-05 luna-personal override, which is itself reversed."
     },
     {
       "corpus": "luna-clippings", "provider": "zai-glm", "purpose": "extraction",
@@ -105,21 +104,18 @@
     },
     {
       "corpus": "luna-clippings", "provider": "alibaba", "purpose": "embedding",
-      "verdict": "pending-operator",
-      "decision_needed": "HIMMEL-765 pilot: ratify Alibaba embedding egress for Clippings (recommended FIRST pilot corpus — clipped public web content, lowest sensitivity)",
-      "why": "filed as valuable (765) but the egress widening was never explicitly ratified; default deny until flipped"
+      "verdict": "deny",
+      "why": "NOT PURSUING the HIMMEL-765 pilot (2026-07-22, HIMMEL-1257): Alibaba de-listed — bad results. Was pending-operator (effective deny); now explicit deny."
     },
     {
       "corpus": "luna-clippings", "provider": "alibaba", "purpose": "rerank",
-      "verdict": "pending-operator",
-      "decision_needed": "same HIMMEL-765 decision as the embedding cell",
-      "why": "rerank sends query + candidate documents — same content egress class"
+      "verdict": "deny",
+      "why": "NOT PURSUING HIMMEL-765 (2026-07-22, HIMMEL-1257): rerank sends query + candidate documents (content egress); Alibaba de-listed."
     },
     {
       "corpus": "luna-clippings", "provider": "alibaba", "purpose": "vision-embedding",
-      "verdict": "pending-operator",
-      "decision_needed": "same HIMMEL-765 decision (tongyi-embedding-vision; vault image search)",
-      "why": "images from clips are content egress too"
+      "verdict": "deny",
+      "why": "NOT PURSUING HIMMEL-765 (2026-07-22, HIMMEL-1257): clip images are content egress; Alibaba de-listed."
     },
     {
       "corpus": "luna-personal", "provider": "local-ollama", "purpose": "*",
@@ -131,8 +127,8 @@
     },
     {
       "corpus": "luna-personal", "provider": "deepseek", "purpose": "extraction",
-      "verdict": "allow+log",
-      "why": "operator override 2026-07-05 (speed): luna non-Clippings graphify extraction on DeepSeek, single model, ledgered per run"
+      "verdict": "deny",
+      "why": "REVERSED 2026-07-22 (HIMMEL-1257): the 2026-07-05 operator speed override (luna non-Clippings extraction on DeepSeek) is dropped — bad results. GLM (zai-glm) is the sanctioned CN extraction lane (see the zai-glm cell below). Explicit deny keeps the reversal legible; not hard."
     },
     {
       "corpus": "luna-personal", "provider": "zai-glm", "purpose": "extraction",
@@ -141,8 +137,8 @@
     },
     {
       "corpus": "luna-personal", "provider": "deepseek", "purpose": "enrichment",
-      "verdict": "allow+log",
-      "why": "operator ratification 2026-07-10 (HIMMEL-833): chat-note enrichment — full note bodies of luna/chats/* to DeepSeek, plus the vault-wide top-200 tag vocabulary (tag names only) sent with each request as the allowed-tags list; exposure-identical in kind to the 2026-07-05 extraction override; ledgered per run incl. vocab_tags (log obligation survives ratification, never plain allow)"
+      "verdict": "deny",
+      "why": "REVERSED 2026-07-22 (HIMMEL-1257): the 2026-07-10 HIMMEL-833 chat-note enrichment ratification (full luna/chats/* bodies + top-200 tag vocabulary to DeepSeek) is dropped — DeepSeek de-listed for bad results. GLM enrichment (HIMMEL-1167, below) is the sanctioned lane. Explicit deny; not hard."
     },
     {
       "corpus": "luna-personal", "provider": "zai-glm", "purpose": "enrichment",
@@ -151,15 +147,13 @@
     },
     {
       "corpus": "luna-personal", "provider": "alibaba", "purpose": "embedding",
-      "verdict": "pending-operator",
-      "decision_needed": "HIMMEL-765: ratify Alibaba embedding egress for PERSONAL luna content (journals/notes/sessions). This is THE contradiction cell from the Fable 2026-07-08 review — the 621/622 fence as specced denies it; 765 as filed needs it",
-      "why": "personal-content egress to a new provider is an operator call, not an agent default; deny until ratified"
+      "verdict": "deny",
+      "why": "NOT PURSUING the HIMMEL-765 pilot (2026-07-22, HIMMEL-1257): Alibaba de-listed — bad results. This was THE contradiction cell from the Fable 2026-07-08 review (fence denied it, 765 needed it); resolved by dropping the pilot. Was pending-operator (effective deny); now explicit deny."
     },
     {
       "corpus": "luna-personal", "provider": "alibaba", "purpose": "rerank",
-      "verdict": "pending-operator",
-      "decision_needed": "same HIMMEL-765 decision as the embedding cell",
-      "why": "same content egress class"
+      "verdict": "deny",
+      "why": "NOT PURSUING HIMMEL-765 (2026-07-22, HIMMEL-1257): same content-egress class as the embedding cell; Alibaba de-listed."
     }
   ],
   "default": "deny"

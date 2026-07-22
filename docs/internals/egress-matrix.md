@@ -7,7 +7,8 @@ ad-hoc egress decisions (ollama-only → DeepSeek override → GLM-Clippings
 exception → Alibaba embeddings) accumulated across four documents with no
 single owner, producing a live contradiction (the HIMMEL-621/622 fence as
 specced denied Alibaba for luna content; HIMMEL-765 sends luna content to
-Alibaba for embeddings).
+Alibaba for embeddings). *(That contradiction is now moot: HIMMEL-1257 de-listed
+DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
 
 ## Semantics
 
@@ -26,9 +27,10 @@ Alibaba for embeddings).
 - **enrichment (HIMMEL-833)** is content egress like extraction — full note
   bodies leave the machine, plus the vault-wide top-200 tag vocabulary (tag
   names only, derived from all vault markdown) sent with each request as the
-  allowed-tags list; its `luna-personal × deepseek` cell was **ratified
-  2026-07-10** (operator, HIMMEL-833): `allow+log` (the ledger obligation
-  survives ratification — never plain `allow`).
+  allowed-tags list. Its `luna-personal × deepseek` cell was ratified 2026-07-10
+  (HIMMEL-833) then **REVERSED 2026-07-22 (HIMMEL-1257): now `deny`** — DeepSeek
+  de-listed (bad results). Enrichment on the sanctioned GLM lane
+  (`luna-personal × zai-glm × enrichment`, HIMMEL-1167) stays `allow+log`.
 - **`luna-personal × zai-glm × extraction`** was **ratified 2026-07-17**
   (operator, HIMMEL-1122): `allow+log`. **This WIDENS the permitted provider
   set** — full luna non-Clippings note bodies may now leave the machine to a
@@ -49,6 +51,18 @@ Alibaba for embeddings).
     (HIMMEL-1049, the claude-only adopter story). GLM is a per-run opt-in for an
     operator who has a Coding Plan; an adopter without one is never expected to
     have it.
+- **Provider policy — DeepSeek + Alibaba de-listed (HIMMEL-1257, 2026-07-22).**
+  The sanctioned provider set for vault/handover egress is **GLM (zai-glm) +
+  Claude (anthropic) + Codex (openai-codex)**. DeepSeek and Alibaba were dropped
+  (bad results, operator judgment): every DeepSeek vault/handover cell (the
+  2026-07-05 extraction override, HIMMEL-343 handover-state, HIMMEL-833
+  enrichment) and every Alibaba cell (the five HIMMEL-765 pilot cells + the
+  brief-scoped `handover-state × alibaba × inference` cell) is now explicit
+  `deny`. Both providers stay **allow on `himmel-code`** via its `* ×` wildcard
+  — the de-listing is about *private-content* egress, not public code, so
+  `hard:true` is NOT used (that stays reserved for salus + gemini-keys-unset).
+  The reversal is legible (each cell's `why` records it) and reversible (a
+  future operator decision could re-add a cell). Salus PHI egress is untouched.
 
 ## Corpus resolution (shared primitives, not new ones)
 
@@ -128,14 +142,16 @@ real vault path listed beside it); mixed staged+real invocations need
 | `scripts/guardrails/graphify-fence.sh` (HIMMEL-621 Phase G-F) | maps graphify `--backend` → provider, target path → corpus, purpose = `extraction`; verdict via `scripts/guardrails/egress-matrix-eval.mjs` (the reference semantics as a CLI); wired as the narrow `block-graphify-egress` PreToolUse hook |
 | `parity_guard.py` PHI/egress fence (HIMMEL-695) | the `salus` row (hard deny) — already enforced; the matrix documents the policy it implements |
 | `glm-guard.ts` | same `salus`/denylist row |
-| HIMMEL-765 embedding/rerank pilot client | the `alibaba` × `embedding`/`rerank`/`vision-embedding` cells (all five currently `pending-operator` = deny) |
+| HIMMEL-765 embedding/rerank pilot client | the `alibaba` × `embedding`/`rerank`/`vision-embedding` cells — all now explicit `deny` (Alibaba de-listed, HIMMEL-1257; the pilot is not being pursued) |
 
 ## Invariants (enforced by the test)
 
 - `default` is `deny`; salus × any-cloud × anything is a **hard** deny with
   no recordable override; google-gemini is denied everywhere (keys stay
-  unset); `pending-operator` cells evaluate as deny; the DeepSeek override
-  covers **extraction only**; no bulk pipelines over handover-state.
+  unset); there are now **zero `pending-operator` cells** (the five HIMMEL-765
+  Alibaba cells were demoted to explicit `deny` by HIMMEL-1257); **DeepSeek +
+  Alibaba are de-listed** for vault/handover egress (explicit `deny`), and stay
+  `allow` on `himmel-code` only; no bulk pipelines over handover-state.
 - Run: `node scripts/guardrails/test-egress-matrix.mjs`.
 
 ## Changing the matrix
@@ -150,9 +166,8 @@ and cite the ratifying ticket in the commit.
 
 ## Open operator decisions carried in the matrix
 
-- **HIMMEL-765 (Alibaba embedding/rerank):** five `pending-operator` cells
-  — `luna-clippings` × embedding/rerank/vision-embedding (recommended first
-  pilot corpus: clipped public web content, lowest sensitivity) and
-  `luna-personal` × embedding/rerank (the contradiction cell from the
-  2026-07-08 Fable design review; personal-content egress to a new provider
-  is an operator call). Until flipped, the 765 pilot is gated.
+- *(none)* — the former **HIMMEL-765 (Alibaba embedding/rerank)** decision (five
+  `pending-operator` cells) was **closed by HIMMEL-1257**: Alibaba de-listed for
+  bad results, so those cells are now explicit `deny` and the pilot is not being
+  pursued. Re-opening it would be a fresh operator ratification (a one-line PR
+  flipping the relevant cells, per *Changing the matrix* above).

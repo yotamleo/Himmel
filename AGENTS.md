@@ -185,7 +185,10 @@ Invariants (not model-tuned): spawn-depth limit **2** (kept on
 measured nesting-overhead cost); **Haiku does NOT spawn**;
 single-writer — many readers, ONE writer, never fan parallel writes
 at one shared artifact (`/overnight-shift` per-ticket branches are
-independent products; parent/operator does merge + synthesis).
+independent products; parent/operator does merge + synthesis);
+**salus dev/impl work routes to Claude tiers + Codex lanes only
+(never GLM), a routing invariant distinct from the salus PHI hard-deny**
+(sanctioned provider set GLM/Claude/Codex, DeepSeek+Alibaba dropped — HIMMEL-1257).
 <!-- /FABLE-WINDOW -->
 
 **RETASK channel (HIMMEL-1218):** never seal a brief absolutely — every

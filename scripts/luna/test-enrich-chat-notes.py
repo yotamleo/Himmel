@@ -244,7 +244,10 @@ class TestGateAndLedger(unittest.TestCase):
             ledger = Path(td) / "led.jsonl"
             os.environ["GRAPHIFY_LEDGER"] = str(ledger)
             try:
-                ok = mod.ledger_append(Path("/v/chats"), 7, 200, "deepseek")
+                # zai-glm: a sanctioned enrichment provider (HIMMEL-1167/1257) —
+                # the ledger records allow+log only for a permitted provider now
+                # that deepseek is de-listed.
+                ok = mod.ledger_append(Path("/v/chats"), 7, 200, "zai-glm")
             finally:
                 del os.environ["GRAPHIFY_LEDGER"]
             self.assertTrue(ok)
@@ -252,7 +255,7 @@ class TestGateAndLedger(unittest.TestCase):
             self.assertEqual(rec["purpose"], "enrichment")
             self.assertEqual(rec["tool"], "enrich-chat-notes")
             self.assertEqual(rec["corpus"], "luna-personal")
-            self.assertEqual(rec["provider"], "deepseek")
+            self.assertEqual(rec["provider"], "zai-glm")
             self.assertEqual(rec["verdict"], "allow+log")
             self.assertEqual(rec["notes"], 7)
             self.assertEqual(rec["vocab_tags"], 200)
@@ -586,7 +589,9 @@ class TestVaultClassification(unittest.TestCase):
             mod.ledger_append = lambda root, n, v, provider: True
             mod.call_openai = lambda *a, **k: {"summary": "s.",
                                                  "tags": ["jira", "workflow"]}
-            rc = mod.main(["--vault", str(vault)])
+            # Pin the openai-api_style client under test (gate mocked above); the
+            # shipped default is now claude/anthropic-style (HIMMEL-1257).
+            rc = mod.main(["--vault", str(vault), "--provider", "deepseek"])
             self.assertEqual(rc, 0)
             text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
             fm, _ = mod.split_frontmatter(text)
@@ -691,7 +696,8 @@ class TestMain(unittest.TestCase):
             mod.ledger_append = lambda root, n, v, provider: True
             mod.call_openai = lambda *a, **k: {"summary": "s.",
                                                  "tags": ["jira", "workflow"]}
-            rc = mod.main(["--vault", str(vault)])
+            # openai-api_style client under test; gate mocked (HIMMEL-1257).
+            rc = mod.main(["--vault", str(vault), "--provider", "deepseek"])
             self.assertEqual(rc, 0)
             text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
             fm, body = mod.split_frontmatter(text)
@@ -709,10 +715,36 @@ class TestMain(unittest.TestCase):
             def boom(*a, **k):
                 raise urllib.error.URLError("down")
             mod.call_openai = boom
-            rc = mod.main(["--vault", str(vault)])
+            # Pin the openai-api_style client under test so the mocked failure
+            # (not a real network call) drives the skip — the shipped default is
+            # now claude/anthropic-style (HIMMEL-1257), which would hit the real
+            # client here (non-hermetic).
+            rc = mod.main(["--vault", str(vault), "--provider", "deepseek"])
             self.assertEqual(rc, 1)  # candidates present, zero progress
             text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
             self.assertIn("enriched: false", text)
+
+    def test_default_provider_claude_happy_path(self):
+        # HIMMEL-1257: with NO --provider, the shipped default is claude
+        # (anthropic api_style) -> call_anthropic. Verify the default path
+        # enriches (gate/key/client mocked; hermetic — no real network call).
+        # call_anthropic is not in the setUp/tearDown tuple, so save+restore it.
+        _orig_anthropic = mod.call_anthropic
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                vault = _mk_vault(td)
+                mod.egress_gate = lambda root, egress: ("allow+log", "ok")
+                mod.resolve_api_key = lambda d, key_env: "sk"
+                mod.ledger_append = lambda root, n, v, provider: True
+                mod.call_anthropic = lambda *a, **k: {"summary": "s.",
+                                                       "tags": ["jira", "workflow"]}
+                rc = mod.main(["--vault", str(vault)])  # no --provider -> default claude
+                self.assertEqual(rc, 0)
+                text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
+                fm, _ = mod.split_frontmatter(text)
+                self.assertEqual(mod.fm_value(fm, "enriched"), "true")
+        finally:
+            mod.call_anthropic = _orig_anthropic
 
     def test_no_chats_dir_is_config_error(self):
         with tempfile.TemporaryDirectory() as td:
@@ -733,7 +765,8 @@ class TestMain(unittest.TestCase):
             mod.call_openai = boom
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
-                rc = mod.main(["--vault", str(vault)])
+                # openai-api_style client under test; gate mocked (HIMMEL-1257).
+                rc = mod.main(["--vault", str(vault), "--provider", "deepseek"])
             self.assertEqual(rc, 1)
             self.assertIn("IndexError", buf.getvalue())
             self.assertIn("choices empty", buf.getvalue())
@@ -752,7 +785,8 @@ class TestMain(unittest.TestCase):
                                                  "tags": ["not-in-vocab"]}
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
-                rc = mod.main(["--vault", str(vault)])
+                # openai-api_style client under test; gate mocked (HIMMEL-1257).
+                rc = mod.main(["--vault", str(vault), "--provider", "deepseek"])
             self.assertEqual(rc, 1)
             self.assertIn("invalid response shape", buf.getvalue())
             text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
@@ -770,7 +804,8 @@ class TestMain(unittest.TestCase):
                 mod.ledger_append = lambda root, n, v, provider: True
                 mod.call_openai = lambda *a, **k: {"summary": "s.",
                                                      "tags": ["jira"]}
-                mod.main(["--vault", str(vault)])
+                # openai-api_style client under test; gate mocked (HIMMEL-1257).
+                mod.main(["--vault", str(vault), "--provider", "deepseek"])
                 text = (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8")
                 fm, _ = mod.split_frontmatter(text)
                 self.assertEqual(mod.fm_value(fm, "enriched_at"), "2026-07-10")
@@ -783,7 +818,9 @@ class TestProviderRegistry(unittest.TestCase):
     (HIMMEL-1167). Anthropic-style providers also carry an auth scheme."""
     def test_all_four_providers_present_and_default(self):
         self.assertEqual(set(mod.PROVIDERS), {"deepseek", "codex", "glm", "claude"})
-        self.assertEqual(mod.DEFAULT_PROVIDER, "deepseek")
+        # HIMMEL-1257: DeepSeek de-listed; shipped default is Claude-only
+        # (anthropic is the always-allowed operating substrate on luna-personal).
+        self.assertEqual(mod.DEFAULT_PROVIDER, "claude")
 
     def test_deepseek(self):
         c = mod.PROVIDERS["deepseek"]

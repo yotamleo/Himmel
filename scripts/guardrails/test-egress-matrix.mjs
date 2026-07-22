@@ -42,6 +42,19 @@ function assert(cond, msg) {
   if (!cond) { failures++; console.error(`FAIL: ${msg}`); }
 }
 
+// assertExplicitDeny: the cell must deny via its OWN explicit `deny` rule (the
+// exact corpus×provider×purpose), NOT merely fall through to `default: deny`.
+// This pins the HIMMEL-1257 de-listing as legible explicit deny ROWS (the
+// audit-trail intent) — deleting a row would silently pass a plain
+// `effective === "deny"` check via the default (CodeRabbit HIMMEL-1257).
+function assertExplicitDeny(corpus, provider, purpose, msg) {
+  const { effective, rule } = evaluate(corpus, provider, purpose);
+  assert(effective === "deny", `${msg} — effective must be deny, got ${effective}`);
+  assert(rule && rule.verdict === "deny" && rule.corpus === corpus &&
+         rule.provider === provider && rule.purpose === purpose,
+    `${msg} — must deny via an EXPLICIT ${corpus} x ${provider} x ${purpose} deny rule, not default-deny (got ${rule ? `${rule.corpus} x ${rule.provider} x ${rule.purpose} = ${rule.verdict}` : "default"})`);
+}
+
 const corpora = Object.keys(m.corpora);
 const providers = Object.keys(m.providers);
 const purposes = m.purposes;
@@ -85,26 +98,29 @@ for (const c of corpora) for (const u of purposes) {
 }
 
 // 5. EVERY pending-operator cell evaluates as deny — programmatic enumeration,
-//    so a future pending cell shadowed by an earlier allow rule fails loudly
-// NOTE: the count below is a deletion tripwire. Ratifying a 765 cell
-// (pending-operator -> allow+log) legitimately LOWERS it — update the
-// expected count consciously in the same PR that flips the cell.
+//    so a future pending cell shadowed by an earlier allow rule fails loudly.
+// HIMMEL-1257: the five HIMMEL-765 Alibaba cells were demoted from
+// pending-operator to explicit deny (Alibaba de-listed, bad results), so there
+// are now ZERO pending-operator cells. The enumeration loop below still runs
+// (no-op on empty). A future pending cell would (correctly) trip the === 0
+// tripwire, forcing a conscious count update in the PR that adds it.
 const pendingRules = m.rules.filter(r => r.verdict === "pending-operator");
-assert(pendingRules.length >= 5, "expected the five 765 gate cells to be pending-operator (update consciously when ratifying a cell)");
+assert(pendingRules.length === 0, "expected ZERO pending-operator cells (the five 765 Alibaba cells were denied by HIMMEL-1257; update consciously if a new pending cell is added)");
 for (const r of pendingRules) {
   const { effective, rule } = evaluate(r.corpus, r.provider, r.purpose);
   assert(effective === "deny" && rule?.verdict === "pending-operator",
     `pending cell ${r.corpus} x ${r.provider} x ${r.purpose} must evaluate deny via its own pending-operator rule (shadowed by an earlier rule?), got ${effective}/${rule?.verdict}`);
 }
 
-// 5e. HIMMEL-833: the enrichment cell must exist and may only ever be
-//     pending-operator (pre-ratification) or allow+log (post) — never a
-//     plain allow: the ledger obligation survives ratification.
+// 5e. The luna-personal x deepseek x enrichment cell must exist and, since
+//     HIMMEL-1257 (DeepSeek de-listed), must be `deny` (the 2026-07-10
+//     HIMMEL-833 allow+log ratification was reversed). Pins that the cell is
+//     not silently deleted and stays denied.
 const enrichmentRule = m.rules.find(r =>
   r.corpus === "luna-personal" && r.provider === "deepseek" && r.purpose === "enrichment");
-assert(enrichmentRule, "missing luna-personal x deepseek x enrichment rule (HIMMEL-833)");
-assert(["pending-operator", "allow+log"].includes(enrichmentRule.verdict),
-  `enrichment cell must be pending-operator or allow+log, got ${enrichmentRule.verdict}`);
+assert(enrichmentRule, "missing luna-personal x deepseek x enrichment rule (HIMMEL-833/1257)");
+assert(enrichmentRule.verdict === "deny",
+  `enrichment cell must be deny post-HIMMEL-1257 (DeepSeek de-listed), got ${enrichmentRule.verdict}`);
 
 // 5b. Fail-closed for UNDECLARED inputs — the exact shape a resolver bug
 //     produces (a path that fails to classify into a known corpus)
@@ -121,7 +137,7 @@ assert(evaluate("mystery-corpus", "google-gemini", "inference").effective === "d
 //     programmatic, so a typo'd conditional->allow on the CN brief-egress
 //     cells (or a shadowing earlier rule) fails loudly
 const conditionalRules = m.rules.filter(r => r.verdict === "conditional");
-assert(conditionalRules.length >= 5, "expected the salus opt-in + 3 handover brief-scoped + clippings-GLM cells");
+assert(conditionalRules.length >= 4, "expected the salus opt-in + 2 handover brief-scoped (codex, glm) + clippings-GLM cells (the alibaba brief cell was denied by HIMMEL-1257)");
 for (const r of conditionalRules) {
   const probe = {
     corpus: r.corpus === "*" ? corpora[0] : r.corpus,
@@ -139,17 +155,32 @@ for (const r of conditionalRules) {
 assert(evaluate("himmel-code", "brand-new-provider", "inference").effective === "allow",
   "himmel-code x * x * is the deliberate allow-all (change this test consciously if narrowing)");
 
-// 6. Ratified allows stay allowed (regression guard both directions)
-assert(evaluate("luna-personal", "deepseek", "extraction").effective === "allow",
-  "luna-personal x deepseek x extraction is the ratified operator override (allow+log)");
-assert(evaluate("handover-state", "deepseek", "extraction").effective === "allow",
-  "handover-state x deepseek x extraction is the ratified operator override (HIMMEL-343, allow+log)");
+// 6. Regression guard both directions.
+// HIMMEL-1257: DeepSeek + Alibaba de-listed for vault/handover egress (bad
+// results); the sanctioned set is GLM (zai-glm) + Claude (anthropic) + Codex
+// (openai-codex). himmel-code stays provider-agnostic (public code).
+// Each de-listed cell must deny via its OWN explicit deny row (not default-deny).
+assertExplicitDeny("luna-personal", "deepseek", "extraction",
+  "luna-personal x deepseek x extraction — DeepSeek de-listed (HIMMEL-1257), was the reversed 2026-07-05 override");
+assertExplicitDeny("handover-state", "deepseek", "extraction",
+  "handover-state x deepseek x extraction — DeepSeek de-listed (HIMMEL-1257), was the reversed HIMMEL-343 ratification");
+assertExplicitDeny("luna-personal", "deepseek", "enrichment",
+  "luna-personal x deepseek x enrichment — DeepSeek de-listed (HIMMEL-1257), was the reversed HIMMEL-833 ratification");
+assertExplicitDeny("handover-state", "alibaba", "inference",
+  "handover-state x alibaba x inference — Alibaba de-listed (HIMMEL-1257); the brief-scoped worker cell is denied");
+assertExplicitDeny("luna-personal", "alibaba", "embedding",
+  "luna-personal x alibaba x embedding — Alibaba de-listed, 765 pilot not pursued (HIMMEL-1257)");
+// The sanctioned providers stay as-ratified (guard against over-broad edits).
+assert(evaluate("luna-personal", "zai-glm", "extraction").effective === "allow",
+  "luna-personal x zai-glm x extraction stays allow+log (HIMMEL-1122; the sanctioned CN lane)");
 assert(evaluate("himmel-code", "openai-codex", "inference").effective === "allow",
   "himmel-code x codex impl lane must stay allowed");
+assert(evaluate("himmel-code", "deepseek", "inference").effective === "allow",
+  "himmel-code x deepseek stays allow — de-listing is for private-content egress, not public code (wildcard)");
 assert(evaluate("luna-personal", "zai-glm", "inference").effective === "deny",
-  "luna-personal x zai-glm must fall through to default deny");
+  "luna-personal x zai-glm x inference must fall through to default deny (extraction/enrichment only)");
 assert(evaluate("luna-personal", "deepseek", "embedding").effective === "deny",
-  "DeepSeek override covers extraction ONLY — embedding must deny");
+  "luna-personal x deepseek x embedding must deny (DeepSeek de-listed; no embedding cell existed anyway)");
 assert(evaluate("handover-state", "openai-codex", "embedding").effective === "deny",
   "no bulk pipelines over handover-state");
 
