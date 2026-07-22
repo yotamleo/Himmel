@@ -50,8 +50,9 @@ API_URL = "https://api.deepseek.com/chat/completions"
 SKIP_DIRS = {".obsidian", ".trash", ".git", "graphify-out", "_assets", "assets"}
 
 # Provider registry (HIMMEL-1167): the LLM backend is selectable so adopters
-# enrich on whichever provider their egress matrix ratifies. deepseek is the
-# default for back-compat. Each cell pins the api_style (which HTTP path),
+# enrich on whichever provider their egress matrix ratifies. claude is the
+# default (HIMMEL-1049/1257: shipped default Claude-only; anthropic is the
+# always-allowed operating substrate on luna-personal; DeepSeek de-listed). Each cell pins the api_style (which HTTP path),
 # endpoint url, model id, the env var holding the API key, the egress-matrix
 # provider id the gate+ledger are queried/recorded under, and — for the
 # anthropic api_style only — the auth header scheme.
@@ -87,7 +88,7 @@ PROVIDERS = {
         "auth": "x-api-key",
     },
 }
-DEFAULT_PROVIDER = "deepseek"
+DEFAULT_PROVIDER = "claude"
 
 
 def split_frontmatter(text):
@@ -594,7 +595,7 @@ def main(argv=None):
     ap.add_argument("--provider", choices=sorted(PROVIDERS),
                     default=DEFAULT_PROVIDER,
                     help="LLM backend (deepseek|codex|glm|claude); each gated "
-                         "by its own egress-matrix cell. Default: deepseek")
+                         "by its own egress-matrix cell. Default: claude (deepseek de-listed, HIMMEL-1257)")
     ap.add_argument("--limit", type=int, default=None, help="max notes this run")
     ap.add_argument("--dry-run", action="store_true",
                     help="list candidates + payload sizes; no egress, no writes")
