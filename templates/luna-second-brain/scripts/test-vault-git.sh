@@ -196,7 +196,12 @@ else
     "$(git_in "$VC" ls-tree -r HEAD --name-only | grep -c 'proxy-token\.md' || true)"
 
   d8_before=$(git_in "$VC" rev-parse HEAD)
-  printf 'curl -H "Authorization: Bearer himmel-local-claudex-extra"\n' >"$VC/30-Resources/proxy-token-extra.md"
+  # Keep the near-miss token OUT of the format string: inlined, this line is
+  # itself a curl-auth-header hit, and the vault's own .gitleaks.toml allowlists
+  # only the exact (anchored) constant — so the harness would block every
+  # post-/luna-upgrade vault commit (public issue #510). Passing it as a printf
+  # ARGUMENT writes byte-identical fixture content without tripping the rule.
+  printf 'curl -H "Authorization: Bearer %s"\n' 'himmel-local-claudex-extra' >"$VC/30-Resources/proxy-token-extra.md"
   # Capture the output so the block can be attributed to the SECRET SCANNER, not
   # an unrelated hook/setup failure that also exits non-zero (CR #1239). autosync
   # runs `git commit` without muting the hooks, so gitleaks' own "leaks found"
