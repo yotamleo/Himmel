@@ -264,7 +264,7 @@ d0098b6e0c0a40876fb033bf3970ab688fd83f37  dist/utils/truncate.js.map
 1a09e382e7a248007be2da37e750114c8065ece1  dist/version.d.ts.map
 54444685d064ba09e3afd66124497394c737ec3d  dist/version.js
 e527e286a9eae26d52e32fd5a7751b47225d7512  dist/version.js.map
-3d7c8f988a52ceb965239c82799132e29aa37da1  package-lock.json
+f25de1fa0c2c92be2964bfd98f8d0be049ce6341  package-lock.json
 e048d5031bb8fe194a090bba9992f6317d9200a0  package.json
 ae323f37c223573fbbe914b4713a349400dfe1e5  scripts/clean-dist.mjs
 a9fba8d0ca539fc6828ff1589ca0b7f9c75d0bdb  src/auth.ts
