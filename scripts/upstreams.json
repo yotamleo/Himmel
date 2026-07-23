@@ -44,7 +44,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "Graphify-Labs/graphify",
-      "synced_base": "0.9.23",
+      "synced_base": "0.9.25",
       "latest_source": "release",
       "tier": "A",
       "note": "Upstream PyPI graphifyy, version-pinned in scripts/lib/graphify-bin.sh (_graphify_version). DE-FORKED from yotamleo/graphify in HIMMEL-1048 / issue #469: the fork carried ZERO delta over upstream (its only purpose — declaring the mcp dep, which upstream keeps optional — is handled by the `--with mcp` install flag), so himmel tracks upstream directly. tracked_repo is the TRUE upstream (Graphify-Labs). synced_base = the pinned upstream release. latest_source=release because upstream tags are NON-MONOTONIC: a stale v1.0.0 (2026-04) predates the current v0.9.x line, so highest-semver-tag would report a permanent phantom BEHIND; the Releases API returns the real latest. BEHIND here means: bump _graphify_version in graphify-bin.sh to the new release AND bump synced_base here (a reviewed one-line pair — no fork rebase)."

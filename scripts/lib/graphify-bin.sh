@@ -3,7 +3,12 @@
 #
 # Resolver for the graphify CLI. graphify is a knowledge-graph tool distributed
 # via PyPI as `graphifyy` (binary name `graphify`, upstream Graphify-Labs/graphify,
-# MIT). This resolver installs it from PyPI pinned to a specific version via
+# Apache-2.0 as of v0.9.25 -- MIT through v0.9.24; upstream keeps the historical MIT
+# text in LICENSE-MIT for pre-relicense contributions and references it from NOTICE).
+# himmel neither vendors nor redistributes graphify -- `uv tool install` fetches it
+# from PyPI onto the operator's own machine -- so the relicense carries no bundled-
+# notice obligation here; it is a pin-review fact, not a compliance gate.
+# This resolver installs it from PyPI pinned to a specific version via
 # `uv tool install --with mcp graphifyy==<version>`. uv tool installs are already
 # self-isolating (their own venv + a shim in uv's tool bin dir), so — unlike
 # scripts/lib/qmd-bin.sh's bun-global junction — there is no separate PATH-provider
@@ -45,7 +50,7 @@
 # (HIMMEL-891) -- without carrying a fork. A pin bump is a reviewed change to this
 # line, paired with `synced_base` in scripts/upstreams.json so the nightly
 # fork-drift guard stays truthful.
-_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.23}"; }
+_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.25}"; }
 _graphify_pypi_name() { printf '%s\n' "graphifyy"; }
 # The `uv tool install` package spec: `graphifyy==<version>`.
 _graphify_pinned_source() { printf '%s==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
