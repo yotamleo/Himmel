@@ -6,6 +6,7 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 
 - [getting-started.md](getting-started.md) — clone to your first PR-gated loop in ~15 minutes.
 - [daily-loop.md](daily-loop.md) — one full loop (worktree → PR → merge → clean → handover), with every hook and gate explained where it fires.
+- [configuration.md](configuration.md) — the canonical configuration + control-surface reference: the chains (mermaid), every gate classified HARD / auth-gated / advisory, every knob by surface, and the off-switches. Pairs with [.env.example](../.env.example), the per-key flag map.
 
 ## Setup
 

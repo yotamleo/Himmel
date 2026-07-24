@@ -15,8 +15,9 @@ depth*, not a prerequisite — the steps below stand on their own.
 > **Before you start:** himmel is a harness *for* Claude Code, so you need
 > [Claude Code](https://claude.com/claude-code) installed —
 > `curl -fsSL https://claude.ai/install.sh | bash` (Linux/macOS) or
-> `irm https://claude.ai/install.ps1 | iex` (Windows). `setup.sh` checks for it
-> and installs everything else.
+> `irm https://claude.ai/install.ps1 | iex` (Windows). The install wizard
+> checks for it — and for the other prerequisites, failing fast with install
+> hints (the node-less bootstrap step below installs Node itself).
 
 ## 1. Install (≈3 min hands-on, plus install time)
 
@@ -33,7 +34,16 @@ into a repo you already have, in one command. The full adopter guide is
 `git`, `bash` 3.2+ (**Git Bash** on Windows), `node` (node-less machine? the
 bootstrap step below installs it), `jq`, `python3`, and the
 [Claude Code](https://claude.com/claude-code) CLI on your `PATH`. `gh` is
-optional — only the worktree-prune step uses it.
+optional for the *install* — but the PR steps of the first loop below use it
+on a GitHub repo (on Bitbucket Cloud, himmel's bundled Bitbucket CLI takes
+its place), and the worktree-prune step uses it too. The optional extras
+mentioned below — the companion vault tooling, qmd search, the Telegram
+bridge, armed resume — additionally need [`bun`](https://bun.sh); the core
+loop does not. (The README's standalone/contributor path lists `bun` as a
+prerequisite because developing himmel itself uses it — that's the other
+install path, not this one. Likewise `uv`/`pipx`/pre-commit: the contributor
+path hard-requires one of them, but on *this* path the wizard only warns —
+the pre-commit gates are an optional add-on for your repo.)
 
 Clone once, then run the install wizard:
 
@@ -43,14 +53,17 @@ node himmel/scripts/himmelctl/bin.js install
 ```
 
 Node-less machine? `bash himmel/scripts/himmelctl/bootstrap.sh` first
-(Windows: `pwsh -ExecutionPolicy Bypass -File himmel\scripts\himmelctl\bootstrap.ps1`),
-then re-run `install`. The wizard asks a few questions (role, scope, vault,
-handover, plugins) and derives the `adopt.sh`/`adopt.ps1` invocation under the
-hood — for example, the most common outcome, `--profile core` at project scope:
+(Windows: `powershell -ExecutionPolicy Bypass -File himmel\scripts\himmelctl\bootstrap.ps1`
+— built-in `powershell`, since a fresh machine may not have `pwsh`),
+then re-run `install`. The wizard asks a few questions (role, target repo,
+scope, vault, handover, plugins) and derives the `adopt.sh`/`adopt.ps1`
+invocation under the hood — for example, the most common outcome, `--profile core` at project scope:
 
 ```bash
 bash himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
 # Windows:  pwsh -ExecutionPolicy Bypass -File himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
+#   (adopt.ps1 needs PowerShell 7 `pwsh` — its plugin/settings helpers invoke pwsh
+#    internally. Only the node-less BOOTSTRAP step above works in built-in powershell.)
 ```
 
 Invoke `adopt.sh`/`adopt.ps1` directly for the manual or CI path. Full
@@ -87,8 +100,8 @@ himmel needs almost nothing to start:
   sessions and understand how capture → triage → synthesize compound over time,
   see the [compounding loop guide](luna/compounding.md).
 
-**For your first loop you need none of this** — `setup.sh` already did the work.
-Skip straight to step 3.
+**For your first loop you need none of this** — the install wizard already did
+the work. Skip straight to step 3.
 
 ## 3. Your first loop (≈5 minutes)
 
@@ -100,6 +113,9 @@ inside an active session. Then the day-to-day loop is:
 /worktree feat/my-thing      # isolated branch + worktree. Branch must be type/slug —
                              #   type in feat|fix|chore|docs|refactor|test. Never edit main.
 #   … make a small change with Claude …
+git add -A && git commit -m "feat: my change" && git push -u origin feat/my-thing
+                             # conventional-commit gate fires at commit; the pre-push
+                             #   gates run and record that a review is owed
 /pr-check                    # multi-agent review; clears the merge gate when clean
 #   gh pr create / gh pr merge --squash
 /clean                       # prune merged-PR worktrees
@@ -112,10 +128,11 @@ inside an active session. Then the day-to-day loop is:
 > git repo (via `HANDOVER_DIR`). It's configurable, not hardcoded, so your
 > cross-session notes land wherever you want them.
 
-**How to tell it's working:** `pre-commit run --all-files` should pass, and if you
-try to edit a file on `main` you'll get a `block-edit-on-main` message pointing you
-back into a worktree (`/clean_garden` or `/worktree`). That message is the guardrail
-doing its job — a sign of success, not an error.
+**How to tell it's working:** if you try to edit a file on `main` you'll get a
+`block-edit-on-main` message pointing you back into a worktree (`/clean_garden`
+or `/worktree`). That message is the guardrail doing its job — a sign of
+success, not an error. (If you also installed the optional pre-commit gates,
+`pre-commit run --all-files` should pass too.)
 
 **You're done when:** `/pr-check` reports clean, the PR merges, `/clean` removes
 the worktree, and `/handover` confirms a saved snapshot. To verify, run
@@ -138,35 +155,49 @@ Two optional accelerators sit on top of the loop. Both are opt-in.
 
 When set, each session proactively drives finished work toward shipping at
 *natural completion points* (a logical chunk is done **and** verified), instead
-of waiting for you to say "ship it" each time. The chain has four legs, run in
-order:
+of waiting for you to say "ship it" each time. In the default (interactive)
+profile, the `all` master switch runs four legs, in order:
 
 1. **`prcheck`** — run `/pr-check` and loop until the review is clean.
 2. **`pr`** — open or refresh the PR.
 3. **`ticket`** — transition the Jira ticket.
 4. **`handover`** — write the handover.
 
-> **It never merges.** Merge is *always* an explicit action you take — there is
-> no auto-merge leg. The directive also can't relax any safety rail (the
-> CR-marker hook still gates `gh pr create`; attestation trailers are still
-> required; reactive `--amend` and settings self-edits stay vetoed).
+> **Merging is opt-in, never a surprise.** None of the four interactive legs
+> merges. The full grammar does include `merge` and `public` legs — used by
+> the overnight profile or an explicit subset. Know exactly what `merge`
+> means before enabling it: **the leg itself authorizes an autonomous private
+> merge** — `ARMAUTOMERGE` only selects *which* merge path it takes (the
+> CI-certified chokepoint vs a plain squash-merge), it is not an extra on/off
+> gate. The off switch is simply not enabling the leg. The `public` leg stops
+> at PR-ready; the public merge always stays a human action. See
+> [configuration.md](configuration.md) for the complete grammar and gate
+> conditions. The directive also can't relax any safety rail — every gate in
+> [configuration.md](configuration.md) still applies: the review-owed marker
+> still gates `gh pr create`, the attestation commit-lines
+> (`Platforms tested:` / `Security reviewed:`) are still required, and
+> reactive history rewrites / settings self-edits stay vetoed.
 
 **Enable it in the launching shell** (it's read at session start):
 
 ```bash
-HIMMEL_INITIATIVE=all claude        # all four legs
+HIMMEL_INITIATIVE=all claude        # the four interactive legs
 HIMMEL_INITIATIVE=prcheck,pr claude # just CR + open the PR
 ```
 
-Grammar: a master switch `1`/`true`/`on`/`yes`/`all` (= all four legs), or a
-comma-separated subset of `prcheck,pr,ticket,handover`. Case-insensitive,
+Grammar: a master switch `1`/`true`/`on`/`yes`/`all` (= the four legs above),
+or a comma-separated subset of the full vocabulary
+`plan,execute,prcheck,pr,ticket,merge,public,handover`. Case-insensitive,
 whitespace-tolerant; an unset/falsy/typo value is **OFF** (the default), a
-byte-identical no-op.
+byte-identical no-op. A separate overnight profile (`HIMMEL_OVERNIGHT` +
+`HIMMEL_INITIATIVE_OVERNIGHT`) widens `all` to six legs for unattended runs —
+grammar, per-leg semantics, and profiles:
+[configuration.md](configuration.md).
 
 **Most people should leave the aggressive legs OFF.** Default is OFF for a
 reason — auto-opening PRs and transitioning tickets is a lot of initiative. If
 you want some of it, start conservative (`prcheck`, or `prcheck,handover`) and
-reserve `all` for trusted/overnight contexts.
+reserve `all` (or the overnight profile) for trusted/overnight contexts.
 
 **Per-project override (user default + per-repo tightening).** Beyond the
 launching-shell variable, you can set it via the `env` block in
@@ -203,23 +234,37 @@ guard is yours to lift:
   and permissions in `.claude/settings.json`, gates in `.pre-commit-config.yaml`.
   Read them; change them.
 - **What himmel adds to your repo:** PreToolUse hooks (block edits on `main`,
-  block secret reads, gate PR creation on a passing review), pre-commit/pre-push
-  gates, and an auto-mode classifier. The full inventory + exactly what each does:
+  block secret reads, gate PR creation on a passing review) and
+  pre-commit/pre-push gates. (The auto-mode classifier you may hit in
+  unattended sessions is Claude Code's own, not himmel's — himmel just routes
+  sanctioned commands around it.) The full inventory + exactly what each does:
   [`docs/internals/enforcement.md`](internals/enforcement.md).
-- **Every guard has an off switch.** Each hook is bypassed by a session env var
-  set in the launching shell, e.g. `EDIT_ON_MAIN_OK=1 claude` to edit `main`, or
-  `READ_SECRETS_OK=1 claude` if the (deliberately strict) secret-read guard blocks
-  a file you need to inspect. The [`stuck-playbook`](internals/stuck-playbook.md)
-  lists the escape hatch for each guard.
-- **No surprise network or spend.** Optional integrations are opt-in; headless
-  Claude/Gemini calls are gated; the local Jira CLI talks only to your own
-  Atlassian site.
+- **Nearly every guard has an off switch.** Each session hook is bypassed by an
+  env var set in the launching shell, e.g. `EDIT_ON_MAIN_OK=1 claude` to edit
+  `main`, or `READ_SECRETS_OK=1 claude` if the (deliberately strict)
+  secret-read guard blocks a file you need to inspect. A small set of gates is
+  deliberately hard (secret-leak scans, the human-only public merge) — the
+  per-gate map, including that list, is in
+  [configuration.md](configuration.md); the
+  [`stuck-playbook`](internals/stuck-playbook.md) has the recovery flow for
+  each guard.
+- **No surprise network or spend — with three named exceptions.** Optional
+  integrations are opt-in; headless Claude/Gemini calls are gated; the local
+  Jira CLI talks only to your own Atlassian site. The exceptions, all
+  switchable: a throttled session-start update check (a plain `git fetch` of
+  your own himmel clone's remote, no data sent — `UPDATE_CHECK_DISABLE=1`);
+  the usage-cap watchdog, which schedules a local session relaunch when a cap
+  approaches (`AUTO_ARM_DISABLE=1`); and `/pr-check`'s external review
+  critics, which run only where you configured their lane — `CR_PROFILE=none`
+  forces a Claude-only review with no external spend. The full map:
+  [configuration.md](configuration.md).
 
 ## Where to go next
 
 | You want to… | Read |
 |---|---|
 | See one full loop explained | [daily-loop.md](daily-loop.md) |
+| See every knob, gate, and off switch in one place | [configuration.md](configuration.md) |
 | Understand every hook + gate | [internals/enforcement.md](internals/enforcement.md) |
 | Browse the slash commands | [commands-catalog.md](commands-catalog.md) |
 | Browse every tool/script | [tooling-catalog.md](tooling-catalog.md) |
