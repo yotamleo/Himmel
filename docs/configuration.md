@@ -320,16 +320,24 @@ Minimum config: nothing is strictly required — `USER_SLUG` is recommended
 only if you use Jira. Everything else in this section is opt-in.
 
 The tables below organize every operator-meaningful knob by what it controls.
-"Set in" uses: `.env` (tool-loaded), `.env†` (bridged exception — `.env`
-works), `env` (live environment: export, or `settings.json` `"env"` block),
-`shell` (launching shell only), `own .env` (the external tool's file).
+"Set in" uses: `.env` (tool-loaded), `.env` (bridged), `env` (live
+environment: export, or `settings.json` `"env"` block), `shell` (launching
+shell only), `own .env` (the external tool's file).
+
+`.env` (bridged) marks the exceptions to the PROCESS-ENV trap: the reader is
+a script that consumes the **live environment**, but it explicitly bridges
+that key from the primary checkout's `.env` via `scripts/lib/load-dotenv.sh`
+before reading — so a value sitting only in `.env` IS picked up, while a
+live-env value (shell export or `settings.json` `"env"`) still wins. The
+bridged set is inventoried in [`.env.example`](../.env.example)'s header, and
+each bridged var's own comment there names its bridging reader.
 
 **Identity, handover, Jira & forge**
 
 | Knob | Default | Set in | Read by |
 |---|---|---|---|
-| `USER_SLUG` | slugified `git user.name` | `.env†` | handover bucket + worktree naming (`scripts/lib/user-slug.sh`) |
-| `HANDOVER_DIR` | inline `<repo>/handovers/` | `.env†` | `scripts/lib/handover-path.sh` — external handover state repo (Mode B) |
+| `USER_SLUG` | slugified `git user.name` | `.env` (bridged) | handover bucket + worktree naming (`scripts/lib/user-slug.sh`) |
+| `HANDOVER_DIR` | inline `<repo>/handovers/` | `.env` (bridged) | `scripts/lib/handover-path.sh` — external handover state repo (Mode B) |
 | `HANDOVER_DIRECT_MAIN` / `HANDOVER_PR_AUTO` / `HANDOVER_PR_BASE` | branched-PR flow ON | env | handover PR flow (`.claude/commands/handover-pr-open.md`) |
 | `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` / `JIRA_PROJECT_KEY` | — | `.env` | the Jira CLI (`scripts/jira/`); these four are all it needs — no cloud ID |
 | `JIRA_PROJECTS`, `JIRA_BOARD_ID`, `JIRA_SEVERITY_FIELD`, `JIRA_CLOUD_ID` | optional | `.env` | Jira CLI extras; `JIRA_CLOUD_ID` only for the optional Atlassian MCP |
@@ -341,9 +349,9 @@ works), `env` (live environment: export, or `settings.json` `"env"` block),
 
 | Knob | Default | Set in | Effect |
 |---|---|---|---|
-| `CR_PROFILE` | unset (see Effect) | `.env†` | which critic tier `/pr-check` runs. `none` = claude-only, panel skipped — the guaranteed no-external-spend setting. Unset → tier `free`, which (with no free critic row in `scripts/cr/critics.json` today) falls back to the paid codex anchor *where that lane is configured* — a lane without its key/CLI can't run and fails open. Note: a lane key configured for *any* purpose (e.g. `CLIPROXY_API_KEY` for claudex delegation) makes the paid anchor runnable — set `CR_PROFILE=none` if you want delegation without paid review critics |
-| `CR_CLAUDE_AGENTS` | OFF | `.env†` | opt-in Claude-agent reviewer fan-out inside `/pr-check` |
-| `CR_REQUIRE_CROSS_MODEL` | OFF | env | require ≥1 non-Claude critic verdict before the CR marker clears |
+| `CR_PROFILE` | unset (see Effect) | `.env` (bridged) | which critic tier `/pr-check` runs. `none` = claude-only, panel skipped — the guaranteed no-external-spend setting. Unset → tier `free`, which (with no free critic row in `scripts/cr/critics.json` today) falls back to the paid codex anchor *where that lane is configured*. A lane without its key/CLI can't run and fails open — open onto the **mandatory claude-only floor**, never onto "no review": when every cross-model critic is absent or produced nothing, `/pr-check` performs the full diff review itself and the gate still requires that recorded review to clear (`scripts/cr/critic-panel.sh` exit contract — all critics failed → caller falls back claude-only; the backstop + HIMMEL-1224 hatch invariants live in `.claude/commands/pr-check.md` step 3.5). So "no codex" = a Claude self-review, not zero CR. The fail-open is for **absent** lanes only — a lane that *ran* and errored records `unavailable`, and if that failed attempt is the sole evidence at the HEAD the gate stays closed (`scripts/cr/clear-cr-marker.sh` exit 14). To make the Claude-alone floor *insufficient*, set `CR_REQUIRE_CROSS_MODEL` (two rows down). Note: a lane key configured for *any* purpose (e.g. `CLIPROXY_API_KEY` for claudex delegation) makes the paid anchor runnable — set `CR_PROFILE=none` if you want delegation without paid review critics |
+| `CR_CLAUDE_AGENTS` | OFF | `.env` (bridged) | opt-in Claude-agent reviewer fan-out inside `/pr-check` |
+| `CR_REQUIRE_CROSS_MODEL` | OFF | `.env` (bridged) | opt-in cross-model floor (HIMMEL-1237): require ≥1 non-Claude critic `avail … ok` at the SHA before the CR marker clears — makes the claude-only floor above insufficient. Bridged from `.env` by `scripts/cr/clear-cr-marker.sh` itself (gate 3b); a live-env value wins |
 | `CRITIC_TIMEOUT_SECS` / `CRITIC_PARALLEL` / `CRITIC_PANEL_TIERS` / `CR_TRIVIALITY_OVERRIDE` / `CODERABBIT_TIMEOUT_SECS` / `CR_USAGE_LOG` | 240s / sequential / `free` / heuristic / 900s / off | env | panel cost/scope tuning (`scripts/cr/critic-panel.sh`, `.claude/commands/pr-check.md`) |
 | `scripts/cr/critics.local.json` | — | file (gitignored) | per-machine critic overlay; `"drop": true` removes a base row |
 | `ARMAUTOMERGE` | OFF | env | arms `merge-on-green.sh` (private auto-merge — full condition list in [§3.3](#33-merge--publish-gates)) |
@@ -375,8 +383,8 @@ default subset:
 
 | Knob | Default | Set in | Effect |
 |---|---|---|---|
-| `HIMMEL_INITIATIVE` | OFF | `.env†` | interactive-profile leg set (above) |
-| `HIMMEL_OVERNIGHT` + `HIMMEL_INITIATIVE_OVERNIGHT` | OFF | `.env†` | switches to the overnight profile + its leg set |
+| `HIMMEL_INITIATIVE` | OFF | `.env` (bridged) | interactive-profile leg set (above) |
+| `HIMMEL_OVERNIGHT` + `HIMMEL_INITIATIVE_OVERNIGHT` | OFF | `.env` (bridged) | switches to the overnight profile + its leg set |
 | `OVERNIGHT_PROJECT` / `OVERNIGHT_STATUS` / `OVERNIGHT_LIMIT` / `OVERNIGHT_PRIORITY` | `HIMMEL` / `To Do,In Progress` / 5 / `key-desc` | env | `/overnight-shift` ticket-plan defaults (`scripts/overnight/build-plan.sh`) |
 | `OVERNIGHT_STOP_DIR` | `~/.claude` | env | where the `/stop` halt marker lives (`scripts/overnight/stop-marker.sh`) |
 
@@ -428,31 +436,31 @@ change; token and access config live *outside* the repo):
 | `BRIDGE_ROOT` | `~/.claude/handover/bridge` | env | bridge session-state root |
 | `CR_PUBLIC_REPO` | `yotamleo/Himmel` | env | the pinned public repo `/mergepub` may merge into |
 | `TELEGRAM_OWN_POLLER` / `HIMMEL_MCP_TELEGRAM` | OFF | shell | opt a Claude session into the vendored telegram plugin (poll-owner / send-only). Never run both the plugin poller and the bun bridge — one `getUpdates` consumer per token |
-| `TELEGRAM_CHAT_ID` / `TELEGRAM_GROUP_CHAT_ID` | unset (silent no-op) | `.env†` | targets for the opt-in jira-nudge and session-status relays |
+| `TELEGRAM_CHAT_ID` / `TELEGRAM_GROUP_CHAT_ID` | unset (silent no-op) | `.env` (bridged) | targets for the opt-in jira-nudge and session-status relays |
 
 **Session nudges & ambient context** (all advisory, all default-OFF except
 the statusline segment):
 
 | Knob | Default | Set in | Effect |
 |---|---|---|---|
-| `HIMMEL_WHERE_ARE_WE` | ON for the statusline segment, OFF for the SessionStart inject (split polarity — noted in `.env.example`) | `.env†` | repo-state digest surfacing |
-| `HIMMEL_WHERE_ARE_WE_STALE_HOURS` / `_ROLLUP_TTL` / `_SEG_TIMEOUT` | 6h / 900s / 5s | `.env†` / env / env | staleness + refresh tuning |
-| `HIMMEL_DOC_FRESHNESS` | OFF | `.env†` | doc-freshness advisories (`advise,session,morning` subset) |
-| `HIMMEL_WORKTREE_NUDGE` / `HIMMEL_JIRA_NUDGE` | OFF | `.env†` | worktree-before-edit nudge / "you never touched Jira" SessionEnd relay |
+| `HIMMEL_WHERE_ARE_WE` | ON for the statusline segment, OFF for the SessionStart inject (split polarity — noted in `.env.example`) | `.env` (bridged) | repo-state digest surfacing |
+| `HIMMEL_WHERE_ARE_WE_STALE_HOURS` / `_ROLLUP_TTL` / `_SEG_TIMEOUT` | 6h / 900s / 5s | `.env` (bridged) / env / env | staleness + refresh tuning |
+| `HIMMEL_DOC_FRESHNESS` | OFF | `.env` (bridged) | doc-freshness advisories (`advise,session,morning` subset) |
+| `HIMMEL_WORKTREE_NUDGE` / `HIMMEL_JIRA_NUDGE` | OFF | `.env` (bridged) | worktree-before-edit nudge / "you never touched Jira" SessionEnd relay |
 | `UPDATE_CHECK_INTERVAL` | 4h | env | SessionStart update-check throttle |
 
 **Vault & misc**
 
 | Knob | Default | Set in | Effect |
 |---|---|---|---|
-| `LUNA_VAULT_PATH` | `~/Documents/luna` | env (not bridged) | which vault the luna tooling targets |
+| `LUNA_VAULT_PATH` | `~/Documents/luna` | env | which vault the luna tooling targets. Exception: `/himmel-update`'s luna-template step (`scripts/himmel-update.sh`) bridges it from `.env` — every other reader needs a live-env value |
 | `CLAUDE_END_SESSION_WIKI` | unset | env | `0` disables the SessionEnd vault capture hook |
 | `OBSIDIAN_API_KEY` | unset (on-disk fallback works) | `.env` | Obsidian REST plugin access |
 | `PERPLEXITY_API_KEY` / `XAI_API_KEY` / `DASHSCOPE_API_KEY` | blank = feature off | `.env` | research/x-read skills, fleet-control providers |
 | `SKILL_INDEX_DIR`, `SKILL_TELEMETRY_DISABLE`/`_DIR` | `~/.claude/skill-index` / on | env / shell | skill index + telemetry |
 | `ubuntu_vm_user`/`ubuntu_vm_pass`, `windows_vm_user`/`windows_vm_pass` | — | `.env` | test-VM credentials (deliberately lower-case names) |
 | `HIMMEL_REPO` | auto-resolved | env | pin the himmel checkout used by `/himmel-update` and the hooks' `.env` bridge |
-| `HIMMEL_UPDATE_AUTOSTASH` | OFF | `.env†` | let `/himmel-update` stash a dirty checkout |
+| `HIMMEL_UPDATE_AUTOSTASH` | OFF | `.env` (bridged) | let `/himmel-update` stash a dirty checkout |
 
 ### 4.2 Claude Code settings & hooks
 
