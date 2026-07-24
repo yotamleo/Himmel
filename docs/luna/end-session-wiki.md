@@ -175,7 +175,7 @@ Your vault almost certainly does not live where the operator's does, and you may
 
 1. **`vault_path` in `.claude/end-session-wiki.json`** (per-repo, absolute path) — the most specific, highest priority. An absolute path is machine-specific, so prefer `vault` (below) for anything you commit and share.
 2. **`vault` name in `.claude/end-session-wiki.json`** (per-repo, **distributable**) — a vault *name* instead of a path, so the same committed config works on every machine. Resolved per-machine: first the operator registry `~/.claude/luna-vaults.json`, else the convention `~/Documents/<name>`. The convention target must be a real vault (contain an `.obsidian/` folder); a name that resolves to no real vault — or fails validation (1–64 chars, must match `[A-Za-z0-9._-]`, start alphanumeric, no `/` or `..`) — **skips the capture rather than misrouting it** (logged as `skipped: vault …`). A config file that exists but is **not valid JSON** also skips (fail-closed) rather than falling through to the default, so a malformed config can't silently leak a sensitive repo's sessions into the general vault.
-3. **`LUNA_VAULT_PATH` environment variable** (global) — your default vault for everything that doesn't override it per-repo. Set it in your shell profile or your `.env` (see `.env.example`).
+3. **`LUNA_VAULT_PATH` environment variable** (global) — your default vault for everything that doesn't override it per-repo. The hook reads the **live process environment**, so set it in `~/.claude/settings.json`'s `env` block (what `/end-session-wiki-setup` and `scripts/adopt.sh` write, via `scripts/lib/wire-luna-vault.{sh,ps1}`) or export it from your shell profile. Putting it in the repo-root `.env` does **nothing** for this hook — that key is not bridged (see `.env.example`). A `settings.json` `env` value is applied at session start, so it takes effect for **new** sessions.
 4. **Built-in default** — the `luna` vault: the `luna` entry in `~/.claude/luna-vaults.json` if you have one, else the `~/Documents/luna` (`$HOME`/`$USERPROFILE`) convention. The bare convention is honored **only when it is a real vault** (contains an `.obsidian/` folder), so a stock luna install works with zero config. With no configured vault **and** no real `~/Documents/luna`, the hook **skips** (logged `skipped: vault unresolved …`) rather than materializing a phantom vault for someone who never set luna up (HIMMEL-590). An explicit `luna` registry entry is honored as-is (no existence check), like `vault_path`.
 
 `vault_path` configures a path (renaming/moving the vault means updating that path). `vault` configures a name and each machine resolves the path — so the same committed value works everywhere: an operator either follows the `~/Documents/<name>` convention (zero extra config) or maps the name in their registry.
@@ -198,9 +198,20 @@ Your vault almost certainly does not live where the operator's does, and you may
 { "vaults": { "salus": "~/Documents/salus" } }
 ```
 
+```json
+// ~/.claude/settings.json — global default vault for all repos (process env,
+// applied at session start). Store the DRIVE-QUALIFIED form on Windows (C:/…),
+// never the Git-Bash MSYS form (/c/…) — the PowerShell hook resolves a leading
+// / under the current drive root. ~/Documents/my-vault expands to the MSYS form
+// under Git Bash, so pipe it through cygpath -m (a no-op absent on POSIX):
+//   bash scripts/lib/wire-luna-vault.sh ~/.claude/settings.json \
+//     "$(cygpath -m ~/Documents/my-vault 2>/dev/null || echo ~/Documents/my-vault)"
+{ "env": { "LUNA_VAULT_PATH": "C:/Users/me/Documents/my-vault" } }
+```
+
 ```bash
-# .env or shell profile — global default vault for all repos
-LUNA_VAULT_PATH="$HOME/Documents/my-vault"
+# …or export it from your shell profile before launching claude (NOT the repo .env)
+export LUNA_VAULT_PATH="$HOME/Documents/my-vault"
 ```
 
 ## Logs

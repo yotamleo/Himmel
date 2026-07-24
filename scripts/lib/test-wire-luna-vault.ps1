@@ -70,7 +70,33 @@ $s7 = Join-Path $td 's7.json'
 $c7 = Get-Content $s7 -Raw | ConvertFrom-Json
 Check 'whitespace file -> created' $c7.env.LUNA_VAULT_PATH 'C:/Documents/luna'
 
-# 8. F1-SC4 cross-twin parity: same backslash input to .sh (Git Bash) and .ps1
+# 8. SEAM (HIMMEL-1269): what wire-luna-vault writes into settings.json .env is
+#    exactly what the end-session-wiki resolver consumes at step 3. Claude Code
+#    applies a settings.json "env" block to the process env at session start;
+#    this test makes that hop explicitly (read the key back, set it in the
+#    process env) and then asserts Resolve-VaultRoot returns the wired path with
+#    an EMPTY config and registry -- i.e. /end-session-wiki-setup's GLOBAL tier
+#    actually reaches the hook. Mirrors case 8 of the .sh twin. The .sh twin
+#    additionally carries a case 9 (MSYS /c/... input normalized via cygpath -m,
+#    per /end-session-wiki-setup step 2c); there is deliberately no twin here --
+#    PowerShell never produces an MSYS path, so its inputs are already
+#    drive-qualified and case 8 is the whole story on this side.
+$s8 = Join-Path $td 's8.json'
+& pwsh -NoProfile -File $wire -SettingsPath $s8 -VaultPath 'C:\Users\me\Documents\luna' | Out-Null
+$wired = (Get-Content $s8 -Raw | ConvertFrom-Json).env.LUNA_VAULT_PATH
+$cfg8 = Join-Path $td 'cfg8.json'; '{}' | Set-Content $cfg8 -Encoding utf8
+$reg8 = Join-Path $td 'reg8.json'; '{"vaults":{}}' | Set-Content $reg8 -Encoding utf8
+. (Join-Path $here 'vault-resolve.ps1')
+$prevLvp = $env:LUNA_VAULT_PATH
+$env:LUNA_VAULT_PATH = $wired
+try { $got8 = Resolve-VaultRoot -ConfigPath $cfg8 -RegistryPath $reg8 }
+finally {
+    if ($null -eq $prevLvp) { Remove-Item Env:LUNA_VAULT_PATH -ErrorAction SilentlyContinue }
+    else { $env:LUNA_VAULT_PATH = $prevLvp }
+}
+Check 'seam: settings.json env -> resolver step 3' $got8 'C:/Users/me/Documents/luna'
+
+# 9. F1-SC4 cross-twin parity: same backslash input to .sh (Git Bash) and .ps1
 #    must yield byte-identical .env.LUNA_VAULT_PATH. Skip cleanly if no Git Bash.
 $gitBash = 'C:\Program Files\Git\bin\bash.exe'
 if (-not (Test-Path $gitBash)) {

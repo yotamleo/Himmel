@@ -453,7 +453,7 @@ the statusline segment):
 
 | Knob | Default | Set in | Effect |
 |---|---|---|---|
-| `LUNA_VAULT_PATH` | `~/Documents/luna` | env | which vault the luna tooling targets. Exception: `/himmel-update`'s luna-template step (`scripts/himmel-update.sh`) bridges it from `.env` — every other reader needs a live-env value |
+| `LUNA_VAULT_PATH` | `~/Documents/luna` | env (`~/.claude/settings.json` `env` block, or your shell profile) | which vault the luna tooling targets. `/end-session-wiki-setup` and `scripts/adopt.sh` persist it via `scripts/lib/wire-luna-vault.{sh,ps1}`. Exception: `/himmel-update`'s luna-template step (`scripts/himmel-update.sh`) bridges it from `.env` — every other reader needs a live-env value |
 | `CLAUDE_END_SESSION_WIKI` | unset | env | `0` disables the SessionEnd vault capture hook |
 | `OBSIDIAN_API_KEY` | unset (on-disk fallback works) | `.env` | Obsidian REST plugin access |
 | `PERPLEXITY_API_KEY` / `XAI_API_KEY` / `DASHSCOPE_API_KEY` | blank = feature off | `.env` | research/x-read skills, fleet-control providers |
