@@ -30,7 +30,9 @@ The payoff of running Claude Code through himmel rather than bare:
   stopped, with the decisions intact (not just *what* shipped, but *why*).
 - **Unattended overnight execution.** `/overnight-shift` dispatches scoped tickets
   as parallel agents that branch, self-review, and open PRs while you sleep;
-  arm-on-cap relaunches the session after a usage cap so a long run survives one.
+  on approaching a usage cap, the auto-arm-on-cap watchdog "arms" a scheduled
+  relaunch — an OS scheduler task that restarts the session — so a long run
+  survives it.
 - **Mistakes are structurally hard, not just discouraged.** Guardrail hooks block
   edits on `main`, secret reads, and opening a PR without a passing review — at the
   tool-call layer. Correctness lives in the structure, not in Claude remembering a
@@ -38,11 +40,14 @@ The payoff of running Claude Code through himmel rather than bare:
 - **Multi-agent review before every merge.** `/pr-check` runs a panel of review
   agents plus a cross-model first pass and gates the PR on a clean result —
   with an adversarial verify-before-critical rule to kill hallucinated findings.
-- **Token-cheap by construction.** A local Jira CLI instead of an MCP server, an
+- **Token-cheap by construction.** A local Jira CLI instead of an MCP (Model
+  Context Protocol) server, an
   output-summarizing CLI proxy, and lean per-subagent context briefs keep the
   context window (and the bill) small.
-- **Memory you can read and edit by hand.** A plain-markdown Camp-2 substrate with
-  no opaque memory backend — the only index (qmd, BM25 + vectors) is a derived,
+- **Memory you can read and edit by hand.** A plain-markdown Camp-2 substrate
+  (the two-camps taxonomy is unpacked in
+  [Memory architecture](#memory-architecture--camp-2-a-context-substrate-not-a-backend)
+  below) with no opaque memory backend — the only index (qmd, BM25 + vectors) is a derived,
   disposable view that always points back at the source files, never a
   replacement for them.
 - **Forge-agnostic.** The worktree→PR→merge loop, PR review threads, and
@@ -105,9 +110,10 @@ luna, telegram, hermes, and Jira are all optional — the harness runs without t
 | `HANDOVER_DIR`       | recommended | Path to your external handover repo (Mode B). See handover docs. |
 
 The local Jira CLI needs only those four (`JIRA_BASE_URL`, `JIRA_EMAIL`,
-`JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`) — **no cloud ID**. `JIRA_CLOUD_ID` /
-`ORGANIZATION_ID` are only for the optional Atlassian MCP server (Confluence and
-a few ops the CLI lacks), not the CLI. Full list: [`.env.example`](.env.example).
+`JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`) — **no cloud ID**. `JIRA_CLOUD_ID` is
+only for the optional Atlassian MCP server (Confluence and a few ops the CLI
+lacks), not the CLI; `ORGANIZATION_ID` is legacy — nothing reads it today.
+Full list: [`.env.example`](.env.example).
 
 After setup, sanity-check the install:
 
@@ -139,7 +145,7 @@ flowchart LR
 ```bash
 /worktree feat/my-thing   # isolated branch + git worktree (never edit on main)
 #   … work with Claude in the worktree …
-git commit && git push    # commit-msg gate, then pre-push gates write the CR marker
+git commit && git push    # commit-msg gate; pre-push gates write the CR (code-review-owed) marker
 /pr-check                 # multi-agent review; clears the merge gate when clean
 #   gh pr create / gh pr merge --squash   # PR-gated; ≥1 approval to merge
 /clean                    # prune merged-PR worktrees
@@ -154,8 +160,11 @@ Going unattended:
 ```
 
 The narrated walkthrough — every hook and gate explained at the point it fires —
-is in [`docs/daily-loop.md`](docs/daily-loop.md). Working LLMs (or a new session)
-should start from [`llms.txt`](llms.txt), the machine-readable map of the repo.
+is in [`docs/daily-loop.md`](docs/daily-loop.md). The full control surface —
+every chain, gate (HARD vs auth-gated vs advisory), knob, and off switch in one
+place — is [`docs/configuration.md`](docs/configuration.md). Working LLMs (or a
+new session) should start from [`llms.txt`](llms.txt), the machine-readable map
+of the repo.
 
 ## Features
 
