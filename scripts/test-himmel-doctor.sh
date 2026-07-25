@@ -19,10 +19,14 @@ unset OLLAMA_NO_CLOUD
 
 # Hermeticity (HIMMEL-969): C8's runner-home defaults resolve via
 # cadence_user_home (USERPROFILE via cygpath on Windows) — per-case HOME
-# redirection does NOT cover that, so pin all three seams to empty dirs
-# globally; C8 cases override them per-case.
+# redirection does NOT cover that, so pin all four seams to empty dirs
+# globally; C8 cases override them per-case. EVERY seam in C8's table must be
+# pinned here: an unpinned one falls through to the operator's REAL
+# ~/.claude/<cadence> dir, so an armed cadence on the dev box would leak into
+# the "no armed cadence runners" and "no false nudges" cases (HIMMEL-568 added
+# the qmd seam).
 C8_EMPTY="$(mktemp -d)"
-export PIPELINE_BAT_DIR="$C8_EMPTY/pipeline" SWEEP_BAT_DIR="$C8_EMPTY/sweep" GRAPHMAP_BAT_DIR="$C8_EMPTY/graphmap"
+export PIPELINE_BAT_DIR="$C8_EMPTY/pipeline" SWEEP_BAT_DIR="$C8_EMPTY/sweep" GRAPHMAP_BAT_DIR="$C8_EMPTY/graphmap" QMD_CADENCE_BAT_DIR="$C8_EMPTY/qmd"
 
 failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
@@ -394,6 +398,22 @@ out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" 
 if printf '%s' "$out" | grep -q 'WARN C8-cadence: graphmap-cadence runners are stale' \
     && printf '%s' "$out" | grep -q 'bash scripts/luna/graphmap-cadence.sh arm --force'; then
     pass "C8 -> WARN (stale graphmap runner)"
+else
+    fail "C8 -> $(printf '%s' "$out" | grep C8)"
+fi
+rm -rf "$t"
+
+echo "== C8: stale qmd runner -> WARN + qmd re-arm hint =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/qmd"; write_settings "$t/claude" "$WRAPPER"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho old qmd\n' "$STALE_CADENCE_VER" > "$t/qmd/qmd-reindex.sh"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" \
+    SWEEP_BAT_DIR="$t/sweep-empty" GRAPHMAP_BAT_DIR="$t/graphmap-empty" \
+    QMD_CADENCE_BAT_DIR="$t/qmd" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if printf '%s' "$out" | grep -q 'WARN C8-cadence: qmd-cadence runners are stale' \
+    && printf '%s' "$out" | grep -q 'bash scripts/luna/qmd-cadence.sh arm --force'; then
+    pass "C8 -> WARN (stale qmd runner)"
 else
     fail "C8 -> $(printf '%s' "$out" | grep C8)"
 fi

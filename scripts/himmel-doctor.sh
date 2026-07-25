@@ -346,6 +346,7 @@ check_c8() {
 pipeline-cadence|${PIPELINE_BAT_DIR:-$uh/.claude/pipeline-cadence}|bash scripts/luna/pipeline-cadence.sh arm --force
 codex-sweep-cadence|${SWEEP_BAT_DIR:-$uh/.claude/codex-sweep-cadence}|bash scripts/cleanup/codex-sweep-cadence.sh arm --force
 graphmap-cadence|${GRAPHMAP_BAT_DIR:-$uh/.claude/graphmap-cadence}|bash scripts/luna/graphmap-cadence.sh arm --force
+qmd-cadence|${QMD_CADENCE_BAT_DIR:-$uh/.claude/qmd-cadence}|bash scripts/luna/qmd-cadence.sh arm --force
 EOF
     if [ "$saw_any" -eq 0 ]; then
         emit OK C8-cadence "no armed cadence runners (skipped)"
