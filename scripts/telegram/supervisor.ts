@@ -11,8 +11,39 @@ export function nextBackoff(consecutiveFails: number): number {
   return Math.min(60000, 1000 * Math.pow(2, Math.max(0, consecutiveFails)));
 }
 
-const MAX_FAILS = Number(process.env.POLLER_MAX_FAILS ?? 5);
-const IMMEDIATE_MS = 5000;   // exiting within 5s counts as an immediate crash
+const DEFAULT_MAX_FAILS = 5;
+// POLLER_MAX_FAILS validation (HIMMEL-1272 CR). A bare
+// `Number(process.env.POLLER_MAX_FAILS ?? 5)` turns any garbage into NaN, and
+// `fails >= NaN` is ALWAYS false — the breaker would never trip and a
+// crash-looping poller would spin forever, which is the exact opposite of what
+// the breaker is for. The other end is worse for /restart specifically: `=0`
+// makes `fails >= 0` true on the FIRST exit, so a deliberate rung-1 bounce would
+// halt the bridge and leave no channel to report it on. Both fall back to the
+// documented default, loudly.
+export function resolveMaxFails(raw: string | undefined = process.env.POLLER_MAX_FAILS): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_MAX_FAILS;
+  const n = Number(raw);
+  // isSafeInteger, not isInteger: "9007199254740993" parses to a valid integer
+  // ABOVE Number.MAX_SAFE_INTEGER, and a threshold that large means `fails >= n`
+  // is never true in practice — the same silently-disabled breaker as the NaN
+  // case, reached by a different route.
+  if (Number.isSafeInteger(n) && n > 0) return n;
+  console.error(`[supervisor] POLLER_MAX_FAILS="${raw}" is not a positive integer — using the default ${DEFAULT_MAX_FAILS}`);
+  return DEFAULT_MAX_FAILS;
+}
+export const MAX_FAILS = resolveMaxFails();
+export const IMMEDIATE_MS = 5000;   // exiting within 5s counts as an immediate crash
+
+// The breaker's accounting, extracted (HIMMEL-1272) so it is TESTED rather than
+// re-implemented in the test. It used to be an inline expression in main(), which
+// left a test no way to exercise it without restating the rule — a test that
+// passes even after production drifts away from it.
+// A run that lasted at least IMMEDIATE_MS resets the counter: that is what makes a
+// deliberate `/restart` of a healthy poller free, while a poller that dies on boot
+// still accumulates toward MAX_FAILS.
+export function nextFailCount(prev: number, ranMs: number): number {
+  return ranMs < IMMEDIATE_MS ? prev + 1 : 0;
+}
 
 // --- Pidfile (HIMMEL-221): make `--kill` a real lever, not a stub. ---
 // The supervisor records its own pid + the current poller child pid so a
@@ -85,7 +116,7 @@ async function main(): Promise<void> {
     const code = await p.exited;
     writePidfile({ supervisor: process.pid, poller: null });   // poller gone until respawn
     const ranMs = performance.now() - started;
-    if (ranMs < IMMEDIATE_MS) fails++; else fails = 0;   // long run resets the breaker
+    fails = nextFailCount(fails, ranMs);   // a long run resets the breaker
     console.error(`[supervisor] poller exited code=${code} ranMs=${Math.round(ranMs)} consecutiveImmediateFails=${fails}`);
     if (breakerTrips(fails, MAX_FAILS)) {
       console.error(`[supervisor] circuit breaker TRIPPED after ${fails} immediate crashes — halting. Investigate the poller (token/.env, network, bus perms).`);

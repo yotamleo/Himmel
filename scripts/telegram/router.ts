@@ -14,6 +14,7 @@ export type Route =
   | { kind: "followup"; ticket: string; text: string }
   | { kind: "auto"; op: "arm-resume"; arg: string; time: string }
   | { kind: "auto"; op: "merge-public"; arg: string; time: string }
+  | { kind: "auto"; op: "restart"; arg: string; time: string }
   | { kind: "chat"; text: string };
 
 // Structured auto-command (HIMMEL-424 B2): `/arm <ticket|path> [at HH:MM|auto|smart]`.
@@ -46,6 +47,22 @@ const ARM = /^\/arm\s+(\S+)(?:\s+(?:at\s+((?:[01][0-9]|2[0-3]):[0-5][0-9])|(auto
 // merge-public-on-green.sh, not here.
 const MERGEPUB = /^\/mergepub\s+#?(\d{1,6})\s+([0-9a-f]{12,40})$/i;
 
+// Structured self-restart auto-command (HIMMEL-1272): `/restart` (rung 1, poller
+// bounce) or `/restart full` (rung 2, whole-supervisor relaunch via the registered
+// scheduled task). Anchored on the WHOLE trimmed message like /arm and /mergepub,
+// so `/restart now` or a mid-text `/restart` falls through to chat rather than
+// bouncing the bridge on a stray word. The RUNG rides in `arg` (the Route variant
+// reuses the same {arg,time} shape as the other two ops so poller.ts's generic
+// auto-command plumbing — the audit-line builder in particular — needs no change);
+// `time` is the fixed placeholder "-" since a restart has no schedule.
+// Why two rungs: the supervisor already respawns an exited poller, but that respawn
+// INHERITS the supervisor's environment, frozen at its launching shell. So rung 1
+// picks up anything re-read from a file (post-HIMMEL-1270 that includes
+// TELEGRAM_AUTO_ACTIONS) but NOT a changed User-scope env var. Only a
+// scheduler-service-launched process reads the current User environment at fire
+// time — that is rung 2.
+const RESTART = /^\/restart(?:\s+(full))?$/i;
+
 export function classify(raw: string): Route {
   const t = raw.trim();
   if (t === "status" || t === "sessions") return { kind: "control", verb: t as "status" | "sessions" };
@@ -62,6 +79,9 @@ export function classify(raw: string): Route {
   // normalized HERE, else it classifies as executable then fails downstream
   // validation (HIMMEL-1213 codex CR-2). arg (PR digits) has no case.
   if (mergepub) return { kind: "auto", op: "merge-public", arg: mergepub[1], time: mergepub[2].toLowerCase() };
+  const restart = t.match(RESTART);
+  // Bare `/restart` => rung 1 ("poller"); `/restart full` => rung 2 ("full").
+  if (restart) return { kind: "auto", op: "restart", arg: restart[1] ? "full" : "poller", time: "-" };
   const fu = t.match(/^([A-Z][A-Z0-9]+-[0-9]+):\s*([\s\S]+)$/);
   if (fu) return { kind: "followup", ticket: fu[1], text: fu[2] };
   return { kind: "chat", text: t };

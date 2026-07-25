@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  OPS, KNOWN_OPS, parseEnabledOps, describeEnabledOps, isExecutableAutoCommand,
+  OPS, KNOWN_OPS, EXPLICIT_ONLY_OPS, SELF_EXECUTED_OPS, parseEnabledOps, describeEnabledOps, isExecutableAutoCommand,
   dispatchAutoAction, formatAuditLine, appendAuditLine, type AuditFields,
 } from "./auto-action";
 import type { Route } from "./router";
@@ -19,7 +19,7 @@ const mergePublicRoute = (over: Partial<{ pr: string; sha: string }> = {}): Extr
   ({ kind: "auto", op: "merge-public", arg: over.pr ?? "123", time: over.sha ?? "abcdef123456" });
 
 test("OPS table seeds the closed op allow-list", () => {
-  expect([...KNOWN_OPS].sort()).toEqual(["arm-resume", "merge-public"]);
+  expect([...KNOWN_OPS].sort()).toEqual(["arm-resume", "merge-public", "restart"]);
   expect(OPS["arm-resume"].script).toBe("arm-resume");
   expect(OPS["merge-public"].script).toBe("merge-public");
 });
@@ -33,7 +33,7 @@ test("parseEnabledOps mirrors the initiative-mode grammar (fail toward inert)", 
   // is EXPLICIT_ONLY (HIMMEL-1213 codex CR-2 — a privileged public merge must not ride
   // the blanket alias), so =1/all/on/yes yield ONLY arm-resume, never merge-public.
   for (const v of ["1", "all", "on", "yes", "true", "ALL"])
-    expect([...parseEnabledOps(v, k)].sort()).toEqual(["arm-resume"]);
+    expect([...parseEnabledOps(v, k)].sort()).toEqual(["arm-resume", "restart"]);
   // …and the enable-all alias explicitly does NOT include the privileged op
   for (const v of ["1", "all", "on", "yes"])
     expect(parseEnabledOps(v, k).has("merge-public")).toBe(false);
@@ -208,6 +208,7 @@ test("describeEnabledOps: a partially-valid list enables what it can AND names t
   // glm CR: /arm works, the "auto-actions enabled:" line looks healthy, and
   // /mergepub stays inert with no explanation — this ticket's failure in a quieter costume.
   const { ops, warning } = describeEnabledOps("arm-resume,mergepublic", KNOWN_OPS);
+  // An explicit list enables EXACTLY what it names — no alias expansion.
   expect(ops).toEqual(new Set(["arm-resume"]));
   expect(warning).toContain("DROPPED");
   expect(warning).toContain("mergepublic");
@@ -224,7 +225,44 @@ test("describeEnabledOps: the whole-value enable-all aliases are never treated a
   // `1` is not in KNOWN_OPS, but it is an alias, not a typo — warning it would be noise.
   for (const alias of ["1", "all", "on", "yes", "true", "ALL"]) {
     const { ops, warning } = describeEnabledOps(alias, KNOWN_OPS);
-    expect(ops).toEqual(new Set(["arm-resume"]));
+    expect(ops).toEqual(new Set(["arm-resume", "restart"]));
     expect(warning).toBeUndefined();
   }
+});
+
+// --- restart op (HIMMEL-1272) ---
+
+test("restart is a known op with NO script — it is executed by the poller itself", () => {
+  expect(KNOWN_OPS.has("restart")).toBe(true);
+  expect(OPS["restart"].script).toBeNull();
+  expect(SELF_EXECUTED_OPS.has("restart")).toBe(true);
+});
+
+test("restart is NOT explicit-only: =1/all enable it, and it is inert when unset", () => {
+  // Materially less privileged than merge-public — no git write, no public repo,
+  // no scheduler persistence — so it rides the ordinary enable-all alias.
+  expect(EXPLICIT_ONLY_OPS.has("restart")).toBe(false);
+  for (const v of ["1", "all", "on", "yes"]) expect(parseEnabledOps(v, KNOWN_OPS).has("restart")).toBe(true);
+  expect(parseEnabledOps("restart", KNOWN_OPS)).toEqual(new Set(["restart"]));
+  for (const v of [undefined, "", "0", "off"]) expect(parseEnabledOps(v, KNOWN_OPS).has("restart")).toBe(false);
+  // …and enabling restart alone does NOT drag in the privileged op
+  expect(parseEnabledOps("restart", KNOWN_OPS).has("merge-public")).toBe(false);
+});
+
+test("dispatchAutoAction REFUSES restart — a self-executed op must never reach auto-action.sh", async () => {
+  let called = false;
+  const res = await dispatchAutoAction(
+    { runScript: async () => { called = true; return { code: 0, stdout: "", stderr: "" }; } },
+    { kind: "auto", op: "restart", arg: "poller", time: "-" } as Extract<Route, { kind: "auto" }>,
+  );
+  expect(called).toBe(false);
+  expect(res.ok).toBe(false);
+  expect(res.message).toContain("not script-dispatched");
+});
+
+test("isExecutableAutoCommand applies the SAME guards to restart (op-agnostic)", () => {
+  const r = { kind: "auto", op: "restart", arg: "poller", time: "-" } as Extract<Route, { kind: "auto" }>;
+  expect(isExecutableAutoCommand(r, false, false)).toBe(true);
+  expect(isExecutableAutoCommand(r, true, false)).toBe(false);    // forwarded
+  expect(isExecutableAutoCommand(r, false, true)).toBe(false);    // caption
 });

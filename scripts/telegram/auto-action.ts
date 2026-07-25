@@ -16,9 +16,17 @@ import type { Route } from "./router";
 // opt-in the operator sets explicitly; adding the op name to this table only makes it
 // RECOGNIZABLE, never enabled). No per-op arg validators in the table (validation lives
 // in auto-action.sh, which owns the privileged half + the real shell env).
-export const OPS: Record<string, { script: string }> = {
+// v3 (HIMMEL-1272) adds "restart" — the bridge bouncing ITSELF. It is the one op
+// with no `script`: rung 1 is the poller exiting 0 so the supervisor respawns it,
+// and rung 2 fires the already-registered HimmelTelegramBridge scheduled task.
+// Neither can be done by a child of auto-action.sh (rung 1 must exit the CALLER;
+// rung 2's relaunch has to outlive the processes it kills), so restart is executed
+// in poller.ts and never reaches dispatchAutoAction. It is listed here because THIS
+// table is the closed allow-list that TELEGRAM_AUTO_ACTIONS parses against.
+export const OPS: Record<string, { script: string | null }> = {
   "arm-resume": { script: "arm-resume" },
   "merge-public": { script: "merge-public" },
+  "restart": { script: null },
 };
 export const KNOWN_OPS = new Set(Object.keys(OPS));
 
@@ -28,7 +36,18 @@ export const KNOWN_OPS = new Set(Object.keys(OPS));
 // an operator already running `=1`/`=all` for arm-resume must NOT silently inherit the
 // public-merge capability. This preserves the ship-disabled / independent-opt-in intent
 // even for enable-all users; arm-resume (and any future low-risk op) stays in the alias.
+// `restart` is deliberately NOT here (HIMMEL-1272): it is materially less
+// privileged than merge-public — no git write, no public repo, no scheduler
+// persistence, and its worst case is a bridge that comes back up. It belongs in
+// the ordinary tier, so `=1`/`all` enables it. The DoS shape (a restart loop) is
+// bounded by the same operator-only sender check every auto-command carries, plus
+// the supervisor's POLLER_MAX_FAILS breaker as the backstop.
 export const EXPLICIT_ONLY_OPS = new Set(["merge-public"]);
+
+// Ops executed by the poller ITSELF rather than by shelling auto-action.sh.
+// dispatchAutoAction refuses these (they must never be laundered into a script
+// call), and handleAutoCommand routes them to their in-process handler.
+export const SELF_EXECUTED_OPS = new Set(["restart"]);
 
 // parseEnabledOps — the per-op activation flag parser. Grammar mirrors HIMMEL_INITIATIVE
 // (425) so users learn one convention. Fails toward inert (empty set): unset / falsy /
@@ -135,6 +154,11 @@ function mapMergePublicResult(pr: string, sha: string, code: number, stdout: str
 // stdout; merge-public has no analogous "resolved" concept.
 export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route: AutoActionRoute): Promise<AutoResult> {
   if (!KNOWN_OPS.has(route.op)) return { ok: false, rc: 2, message: `⚠️ unknown op: ${route.op}` };
+  // Defense-in-depth (HIMMEL-1272): a self-executed op has no script, so reaching
+  // here means a caller tried to route it through auto-action.sh. Refuse rather
+  // than spawn `auto-action.sh restart …`, which would hit that script's own
+  // unknown-op guard anyway — but fail here, at the layer that knows why.
+  if (SELF_EXECUTED_OPS.has(route.op)) return { ok: false, rc: 2, message: `⚠️ ${route.op} is not script-dispatched` };
   const { code, stdout, stderr } = await deps.runScript(route.op, route.arg, route.time);
   if (route.op === "merge-public") return mapMergePublicResult(route.arg, route.time, code, stdout, stderr);
   const resolved = parseResolved(stdout);
@@ -154,7 +178,8 @@ export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route
 // "no-open-pr"/"head-moved"/"not-green", keeping result-keyed forensic queries
 // correct. The labels below are the closed union both ops draw from.
 export type AuditResult = "armed" | "already-armed" | "ambiguous" | "refused-forwarded" | "no-match" | "error"
-  | "merged" | "not-green" | "head-moved" | "no-open-pr";
+  | "merged" | "not-green" | "head-moved" | "no-open-pr"
+  | "restarting" | "restart-unsupported";
 export type AuditFields = {
   chat_id: number; user: number; forwarded: boolean; op: string;
   arg: string; resolved?: string; time: string; rc: number; result: string;

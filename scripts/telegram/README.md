@@ -167,17 +167,19 @@ allowlist edit.
 an allowlisted channel — first post surfaced its id via the gated-out log,
 allowlisted + restarted, posts then processed with replies into the channel.
 
-## Privileged auto-commands — `/arm` and `/mergepub` (default OFF)
+## Privileged auto-commands — `/arm`, `/mergepub`, `/restart` (default OFF)
 
-Two commands are executed by the TRUSTED bridge itself rather than by a spawned
+These commands are executed by the TRUSTED bridge itself rather than by a spawned
 Claude session — the agent is never in the trust path:
 
 | Command | Op name | What it does |
 |---|---|---|
 | `/arm <ticket-or-path> [at HH:MM\|auto\|smart]` | `arm-resume` | schedules a resume session via `arm-resume.sh` (time defaults to `smart`) |
 | `/mergepub <pr> <sha12>` | `merge-public` | SHA-bound squash-merge of a PUBLIC propagation PR |
+| `/restart` | `restart` | bounces the POLLER — supervisor respawns it (rung 1) |
+| `/restart full` | `restart` | relaunches the WHOLE bridge with a fresh environment (rung 2) |
 
-**Both ship disabled.** Enable per-op with `TELEGRAM_AUTO_ACTIONS`, read from the
+**All ship disabled.** Enable per-op with `TELEGRAM_AUTO_ACTIONS`, read from the
 bridge's own `~/.claude/channels/telegram/.env` (the file that already holds
 `TELEGRAM_BOT_TOKEN`) **or** the poller's process env — a process env var wins.
 Restart the bridge to apply.
@@ -193,11 +195,12 @@ TELEGRAM_AUTO_ACTIONS=arm-resume,merge-public
 
 Rules worth knowing before you edit that line:
 
-- The op names are exactly `arm-resume` and `merge-public`. Unknown tokens are
+- The op names are exactly `arm-resume`, `merge-public` and `restart`. Unknown tokens are
   dropped, so `TELEGRAM_AUTO_ACTIONS=arm` enables **nothing** — the poller now
   logs a startup `WARNING: … enables NOTHING` naming the bad tokens (HIMMEL-1270;
   before that it was silent and indistinguishable from "off").
-- `=1`/`all`/`on`/`yes` enable `arm-resume` but **never** `merge-public`. The
+- `=1`/`all`/`on`/`yes` enable the non-merge ops (`arm-resume` + `restart`)
+  but **never** `merge-public`. The
   public merge is `EXPLICIT_ONLY` — it must be named, so an operator running `=1`
   cannot silently inherit the capability.
 - `/mergepub` needs a **12+ hex** SHA (`[0-9a-f]{12,40}`). A 7-hex one fails the
@@ -206,14 +209,70 @@ Rules worth knowing before you edit that line:
   one-run kill switch: an explicitly empty process value beats the file, so it
   turns file-enabled ops off without editing anything.
 - A disabled or unmatched auto-command is not an error: it never enters the
-  auto-action path, it routes as normal chat. Diagnosing a `/mergepub` that did
-  not merge: if it produced no merge AND no refusal message, check the three
-  points above (enabled? named explicitly? 12+ hex?). If it produced a refusal —
-  `not-green`, `head-moved`, `no-open-pr` — it DID match and the chokepoint
-  declined; `auto-action-audit.log` records which, one line per attempt.
+  auto-action path, it routes as normal chat. So the first question for any
+  command that "did nothing" is whether it MATCHED at all — and
+  `auto-action-audit.log` answers it, because a matched command always leaves a
+  line there and an unmatched one never does. The `result=` labels:
+
+  | Label | Meaning |
+  |---|---|
+  | `armed` / `already-armed` / `ambiguous` / `no-match` | `/arm` outcomes |
+  | `merged` / `not-green` / `head-moved` / `no-open-pr` | `/mergepub` outcomes |
+  | `restarting` | `/restart` accepted and fired |
+  | `restart-unsupported` | `/restart full` on non-Windows (rc 20), or a build with no restart dep wired |
+  | `refused-forwarded` | the injection kill-switch — any op, forwarded |
+  | `error` | any op, any other non-zero rc |
+
+  No line at all means it never matched: check the three points above (enabled?
+  named explicitly? `/mergepub` 12+ hex? `/restart` with no trailing words?).
 - Guards are unconditional and fail-closed: operator-only sender, typed (not a
   caption), not forwarded, whole-message match. Every attempt — executed or
-  refused — appends one line to `~/.claude/handover/bridge/auto-action-audit.log`.
+  refused — appends a line to `~/.claude/handover/bridge/auto-action-audit.log`.
+  One line each, with one exception: an accepted `/restart` logs `restarting`
+  when it fires and a SECOND line (`error`, with the rc) if the fire itself
+  failed — the acceptance and the outcome are separate events, because the
+  process expects not to survive the first one.
+
+### Which `/restart` do you want? (HIMMEL-1272)
+
+The bridge can bounce itself, but the two rungs pick up different things, and the
+difference is the **environment freeze**:
+
+| | `/restart` (rung 1) | `/restart full` (rung 2) |
+|---|---|---|
+| What restarts | the poller only | supervisor + poller |
+| Mechanism | poller exits 0, `supervisor.ts` respawns it | fires the registered `HimmelTelegramBridge` scheduled task |
+| Picks up | anything re-read from a FILE at startup — incl. `TELEGRAM_AUTO_ACTIONS` | that, **plus** changed User/Machine env vars |
+| Cost | ~instant | a few seconds |
+
+Rung 1's respawn inherits the supervisor's environment, frozen when the operator's
+shell launched it — so it will **not** see a `[Environment]::SetEnvironmentVariable(…, 'User')`
+change. Only a process created by the Task Scheduler service reads the current User
+environment at fire time, which is what rung 2 uses. That is also why rung 2 is not
+just "run `restart-bridge.ps1`": that script's `Get-BridgeProcs` matches
+`scripts[\/]+telegram`, which includes the calling poller, so an in-process call
+kills its own caller mid-command. The scheduled task is launched by the scheduler
+service and is fully detached.
+
+Caveats for rung 2, both from the task's registration:
+
+- **Logon mode is "Interactive only"** — it can only run while you are logged ON.
+  Locked is fine; logged off is not. A failed `schtasks /run` is reported back to
+  you with its rc rather than swallowed.
+- **Trigger is "At logon time"**, so there is no periodic trigger and no watchdog.
+  If a restart fails, nothing retries it for you.
+- The ack is written to the outbox **before** the restart fires — the firing is
+  what kills the transport. Expect the confirmation to arrive from the *new*
+  bridge, a second or two later.
+- `schtasks /run` exiting 0 only means the task was **launched**. If
+  `restart-bridge.ps1` then fails, the old poller just keeps running — so rung 2
+  arms a 90s watchdog: if the bridge is still alive when it fires, you get a
+  second message saying the relaunch did not take effect, and an `error` audit
+  line. Silence after the ack means it worked.
+
+**Bootstrap, once:** enabling `/restart` for the first time requires a restart, by
+hand, because the flag is read at poller startup. `pwsh -File scripts/telegram/restart-bridge.ps1`.
+After that the bridge can bounce itself.
 
 Semantics + threat model: [`docs/internals/enforcement.md`](../../docs/internals/enforcement.md).
 Where each knob is set: [`docs/configuration.md`](../../docs/configuration.md).

@@ -357,6 +357,16 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn,
 // `merged`, not the arm-specific `armed`, and its refusal states keep their
 // meaning for forensic/result-keyed queries.
 function auditResult(op: string, rc: number): string {
+  // restart (HIMMEL-1272) has its own two-value space: it either got far enough to
+  // fire (0) or it did not. There is no "succeeded" beyond that — by the time a
+  // restart has actually happened this process is gone and cannot log anything.
+  if (op === "restart") {
+    switch (rc) {
+      case 0:  return "restarting";
+      case 20: return "restart-unsupported";
+      default: return "error";
+    }
+  }
   if (op === "merge-public") {
     switch (rc) {
       case 0:  return "merged";
@@ -375,10 +385,25 @@ function auditResult(op: string, rc: number): string {
   }
 }
 
+// restart (HIMMEL-1272): invoked AFTER the ack has been appended + audited, because
+// it takes down the transport that would deliver them. Returns the fire result; it
+// does not return at all on the rung-1 happy path (the process exits).
+export type RestartFn = (rung: string) => Promise<{ rc: number; message: string }>;
+
+// Rung-2 watchdog (HIMMEL-1272 CR). `schtasks /run` exiting 0 means the TASK WAS
+// LAUNCHED, not that the relaunch succeeded — restart-bridge.ps1 can still fail
+// after that, and this process simply keeps running. Without a watchdog the
+// operator is left holding a confirmation that never came true, which is the same
+// false-success this op already guards against on the fire path.
+export type ScheduleWatchdogFn = (afterMs: number, fire: () => void) => void;
+export const RESTART_WATCHDOG_MS = 90_000;   // restart-bridge.ps1 settles ~12s; 90s is comfortably past a slow-but-working relaunch
+
 export type AutoCommandDeps = {
   runScript: RunScriptFn;
   reply: (chat_id: number, text: string) => Promise<void>;
   audit: (f: AuditFields) => Promise<void>;
+  restart?: RestartFn;
+  scheduleWatchdog?: ScheduleWatchdogFn;
 };
 
 // The auto-command flow (HIMMEL-424 B2). Run FIRE-AND-FORGET off the ingest loop (via
@@ -400,9 +425,125 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
     await reply("⚠️ forwarded commands are not executed");
     return;
   }
+  // restart (HIMMEL-1272) is executed IN THIS PROCESS, not by auto-action.sh: rung 1
+  // must exit the caller, and rung 2's relaunch has to outlive the processes it
+  // kills. ORDERING IS LOAD-BEARING — ack, then audit, THEN fire. The reply is an
+  // outbox APPEND (durable on disk); the running poller never gets to flush it,
+  // because firing is exactly what kills the transport. The respawned poller drains
+  // outbox.jsonl on its next tick, so the operator sees the ack a second or two
+  // later. Fire first and the operator watches the bridge go silent with no
+  // confirmation it heard them.
+  if (route.op === "restart") {
+    if (!deps.restart) {
+      await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 20, result: auditResult(route.op, 20) });
+      await reply("⚠️ restart is not wired in this poller build");
+      return;
+    }
+    await reply(route.arg === "full"
+      ? "♻️ restarting the whole bridge (fresh env) — back in a moment"
+      : "♻️ bouncing the poller — back in a moment");
+    await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 0, result: auditResult(route.op, 0) });
+    const out = await deps.restart(route.arg);
+    // Only reached when the fire FAILED (a successful rung 1 never returns, and a
+    // successful rung 2 is killed by the task it just started). Surface the rc
+    // rather than leaving the operator with an ack and a bridge that never went
+    // away — a silent no-op here is indistinguishable from a slow restart.
+    if (out.rc !== 0) {
+      await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: out.rc, result: auditResult(route.op, out.rc) });
+      await reply(out.message);
+      return;
+    }
+    // rc 0 on rung 2 means schtasks LAUNCHED the task, not that the relaunch
+    // worked. If restart-bridge.ps1 fails after that we just keep running, and the
+    // operator is left holding a "restarting…" that never came true. Still alive
+    // well past a slow-but-working relaunch ⇒ say so. (Rung 1 needs no watchdog:
+    // it exits, so surviving is impossible.) unref'd via the injected scheduler so
+    // this timer never keeps the process up on the path where it DOES restart.
+    if (route.arg === "full" && deps.scheduleWatchdog) {
+      deps.scheduleWatchdog(RESTART_WATCHDOG_MS, () => {
+        void (async () => {
+          await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 23, result: auditResult(route.op, 23) });
+          await reply(`⚠️ this poller is STILL RUNNING ${Math.round(RESTART_WATCHDOG_MS / 1000)}s after \`/restart full\` — the task fired, but the relaunch has not taken effect yet. If the bridge comes back in the next moment, ignore this. If not: HimmelTelegramBridge is "Interactive only" (needs you logged ON, not just unlocked) and has no periodic trigger, so nothing will retry it — restart manually with pwsh -File scripts/telegram/restart-bridge.ps1`);
+        })().catch((e) => console.error(`[poller] /restart watchdog failed: ${e}`));
+      });
+    }
+    return;
+  }
   const res = await dispatchAutoAction({ runScript: deps.runScript }, route);
   await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, resolved: res.resolved, time: route.time, rc: res.rc, result: auditResult(route.op, res.rc) });
   await reply(res.message);
+}
+
+// The real restart executor (HIMMEL-1272). Injected into handleAutoCommand so the
+// unit tests never bounce anything.
+//
+// Rung 1 — exit 0. supervisor.ts's main() loop respawns the poller immediately and
+// rewrites the pidfile; a >5s run resets its immediate-crash counter, so a healthy
+// bridge never walks toward POLLER_MAX_FAILS. This picks up anything re-read from
+// a FILE at startup (post-HIMMEL-1270 that includes TELEGRAM_AUTO_ACTIONS) but NOT
+// a changed User-scope env var: the respawn inherits the supervisor's environment,
+// frozen when the operator's shell launched it.
+//
+// Rung 2 — `schtasks /run` on the ALREADY-REGISTERED HimmelTelegramBridge task
+// (install-logon-task.ps1:28), whose action is restart-bridge.ps1. Two reasons this
+// is the right primitive rather than a fresh one-shot task or an in-poller call:
+//   * It is launched by the Task Scheduler SERVICE, so it is fully detached. A
+//     naive in-poller `restart-bridge.ps1` cannot work — Get-BridgeProcs matches
+//     `scripts[\/]+telegram`, which includes the calling poller, so the restarter
+//     kills itself mid-command.
+//   * A scheduler-launched process reads the CURRENT User/Machine environment at
+//     fire time. That is the only mechanism that picks up
+//     [Environment]::SetEnvironmentVariable(..., 'User') without a reboot — i.e.
+//     the only rung that delivers a changed env knob.
+// We do NOT exit here: restart-bridge.ps1 kills the bridge procs itself, and
+// exiting first would have the supervisor respawn a poller into the middle of that.
+// Args go through Bun.spawn as an argv ARRAY (no shell), so `/run` reaches
+// schtasks.exe verbatim — routing it through a shell would let MSYS rewrite the
+// leading-slash flags into paths.
+export function makeRestart(deps: { exit?: (code: number) => never; spawnSync?: typeof Bun.spawnSync; platform?: string } = {}): RestartFn {
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const spawnSync = deps.spawnSync ?? Bun.spawnSync;
+  const platform = deps.platform ?? process.platform;
+  return async (rung: string) => {
+    if (rung !== "full") {
+      console.error("[poller] /restart: exiting 0 — the supervisor will respawn the poller");
+      exit(0);
+      return { rc: 0, message: "" };   // unreachable in prod; keeps the type honest for tests
+    }
+    if (platform !== "win32") {
+      return { rc: 20, message: "⚠️ `/restart full` needs the Windows HimmelTelegramBridge scheduled task; use `/restart` (poller bounce) or restart the bridge manually" };
+    }
+    // spawnSync THROWS (it does not return a non-zero exitCode) when the binary
+    // cannot be launched at all — no schtasks on PATH, EACCES. Unhandled, that
+    // escapes deps.restart() into autoFire's .catch(), which only console.errors:
+    // the operator would be left holding the ack with the bridge still up and no
+    // failure message — the precise silent no-op the rc handling below exists to
+    // prevent. Same failure shape, so it takes the same path.
+    let r: { exitCode: number | null; stdout?: Buffer; stderr?: Buffer };
+    try {
+      r = spawnSync(["schtasks", "/run", "/tn", "HimmelTelegramBridge"], { stdout: "pipe", stderr: "pipe" });
+    } catch (e) {
+      return {
+        rc: 22,
+        message: `⚠️ couldn't launch schtasks (${String((e as any)?.message ?? e)}) — the HimmelTelegramBridge task could not be started. The poller is still running; restart manually.`,
+      };
+    }
+    if (r.exitCode === 0) {
+      console.error("[poller] /restart full: HimmelTelegramBridge fired — the scheduled task now owns the relaunch");
+      return { rc: 0, message: "" };
+    }
+    // "Interactive only" logon mode: the task can only run while the operator is
+    // LOGGED ON (locked is fine, logged off is not), and an at-logon task has no
+    // periodic trigger — so there is no watchdog to fall back on. Say so rather
+    // than leaving the operator waiting for a bridge that is not coming back.
+    const detail = (r.stderr?.toString() || r.stdout?.toString() || "").trim().split("\n")[0] ?? "";
+    return {
+      rc: r.exitCode ?? 21,
+      // Same nullish fallback as the returned rc — a signal-killed process has a
+      // null exitCode, and "rc=null" in the operator's message is noise.
+      message: `⚠️ couldn't fire HimmelTelegramBridge (rc=${r.exitCode ?? 21}${detail ? `: ${detail}` : ""}). The task is "Interactive only" — it needs you logged on, and it has no periodic trigger. The poller is still running; restart manually if needed.`,
+    };
+  };
 }
 
 // tail: last chunk of the run's stdout+stderr (HIMMEL-262) — persisted to run.log
@@ -1020,8 +1161,12 @@ export async function main(): Promise<void> {
     return { code, stdout, stderr };
   };
   const auditFn = appendAuditLine(root);
+  const restart = makeRestart();
+  // unref'd: on the path where the restart DOES take effect this process is killed
+  // long before the timer fires, and a ref'd timer would hold it open in between.
+  const scheduleWatchdog: ScheduleWatchdogFn = (afterMs, fire) => { setTimeout(fire, afterMs).unref?.(); };
   const autoFire: AutoFire = (msg, route) => {
-    void handleAutoCommand(root, msg, route, { runScript, reply: (chat, text) => replyViaOutbox(root, chat, text), audit: auditFn })
+    void handleAutoCommand(root, msg, route, { runScript, reply: (chat, text) => replyViaOutbox(root, chat, text), audit: auditFn, restart, scheduleWatchdog })
       .catch((e) => console.error(`[poller] auto-action failed for op ${route.op}: ${e}`));
   };
   // authorize = operator-identity (global allowFrom) AND chat-allowlisted (makeAllow):
