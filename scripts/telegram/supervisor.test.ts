@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { breakerTrips, nextBackoff, formatPidfile, parsePidfile, killBridge } from "./supervisor";
+import { breakerTrips, nextBackoff, nextFailCount, resolveMaxFails, formatPidfile, parsePidfile, killBridge, IMMEDIATE_MS, MAX_FAILS } from "./supervisor";
 test("breaker trips after N immediate crashes; resets implied by caller", () => {
   expect(breakerTrips(3, 3)).toBe(true);
   expect(breakerTrips(2, 3)).toBe(false);
@@ -73,4 +73,55 @@ test("killBridge: supervisor kill OK, poller kill EPERM → rc 2 + pidfile KEPT"
     expect(callCount).toBe(2);   // both pids were attempted
     expect(existsSync(pidfile)).toBe(true);   // pidfile kept so retry can find bridge
   });
+});
+
+// --- /restart interaction with the circuit breaker (HIMMEL-1272) ---
+
+test("an intentional /restart of a HEALTHY poller never walks toward the breaker", () => {
+  // Exercises the PRODUCTION accounting (nextFailCount + breakerTrips + the real
+  // IMMEDIATE_MS / MAX_FAILS), not a restatement of it — a test that re-implements
+  // the rule keeps passing after main() drifts away from it.
+  // A FIXED local threshold, not the env-derived MAX_FAILS: an operator with
+  // POLLER_MAX_FAILS exported would otherwise silently change what this test
+  // exercises (loop bounds and the trip point), which is not something a unit
+  // test's meaning should depend on.
+  const MAX = 5;
+  let fails = 0;
+  for (let i = 0; i < MAX * 4; i++) {
+    fails = nextFailCount(fails, IMMEDIATE_MS * 12);   // healthy uptime, then /restart
+    expect(fails).toBe(0);
+    expect(breakerTrips(fails, MAX)).toBe(false);
+  }
+  // …whereas a poller that dies immediately on boot still trips at MAX.
+  fails = 0;
+  for (let i = 0; i < MAX; i++) fails = nextFailCount(fails, 10);
+  expect(breakerTrips(fails, MAX)).toBe(true);
+  // …and one healthy run in between clears the accumulated count.
+  fails = nextFailCount(fails, IMMEDIATE_MS);          // the boundary IS a healthy run
+  expect(fails).toBe(0);
+  expect(breakerTrips(fails, MAX)).toBe(false);
+});
+
+test("resolveMaxFails rejects values that would DISABLE or hair-trigger the breaker (HIMMEL-1272 CR)", () => {
+  // NaN is the dangerous one: `fails >= NaN` is always false, so a garbage value
+  // would silently disable the breaker and let a crash-looping poller spin forever.
+  // "9007199254740993" parses to a valid integer ABOVE MAX_SAFE_INTEGER — a
+  // threshold that large is a disabled breaker by another route, so isSafeInteger
+  // (not isInteger) is the right predicate.
+  for (const bad of ["", "   ", "garbage", "NaN", "1.5", "-1", "0", "1e999", "9007199254740993", "1e300"]) {
+    expect(resolveMaxFails(bad)).toBe(5);
+    expect(Number.isInteger(resolveMaxFails(bad))).toBe(true);
+  }
+  // Explicit blank input ONLY — resolveMaxFails(undefined) defaults its parameter
+  // to process.env.POLLER_MAX_FAILS, so asserting 5 there would fail on a machine
+  // that legitimately sets it. That is the same env-dependence the last round
+  // flagged, reintroduced by the fix for it.
+  expect(resolveMaxFails("")).toBe(5);
+  expect(Number.isSafeInteger(resolveMaxFails("9007199254740993"))).toBe(true);
+  // …and a legitimate override still wins.
+  expect(resolveMaxFails("1")).toBe(1);
+  expect(resolveMaxFails("12")).toBe(12);
+  // The hair-trigger end matters for /restart: with MAX_FAILS=0 the breaker would
+  // trip on the FIRST exit, so a deliberate rung-1 bounce would halt the bridge.
+  expect(breakerTrips(nextFailCount(0, IMMEDIATE_MS * 12), resolveMaxFails("0"))).toBe(false);
 });

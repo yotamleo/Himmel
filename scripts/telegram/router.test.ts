@@ -70,3 +70,27 @@ test("/mergepub with bad/missing pieces or mid-text falls through to chat (never
   // trailing garbage after a valid pair → chat (whole-message anchor)
   expect(classify("/mergepub 123 abcdef123456 please")).toEqual({ kind: "chat", text: "/mergepub 123 abcdef123456 please" });
 });
+
+// --- /restart (HIMMEL-1272) ---
+
+test("/restart classifies as the restart auto-op, rung in arg", () => {
+  expect(classify("/restart")).toEqual({ kind: "auto", op: "restart", arg: "poller", time: "-" });
+  expect(classify("  /restart  ")).toEqual({ kind: "auto", op: "restart", arg: "poller", time: "-" });
+  expect(classify("/RESTART")).toEqual({ kind: "auto", op: "restart", arg: "poller", time: "-" });
+  expect(classify("/restart full")).toEqual({ kind: "auto", op: "restart", arg: "full", time: "-" });
+  expect(classify("/restart FULL")).toEqual({ kind: "auto", op: "restart", arg: "full", time: "-" });
+});
+
+test("/restart is anchored on the WHOLE message — anything else is chat", () => {
+  // A stray /restart inside a sentence must never bounce the bridge.
+  for (const t of [
+    "please /restart the bridge",
+    "/restart now",
+    "/restart full please",
+    "/restarted",
+    "/restart --hard",
+    "/restart poller",
+  ]) {
+    expect(classify(t).kind).toBe("chat");
+  }
+});

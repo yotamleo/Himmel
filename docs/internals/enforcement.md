@@ -1391,7 +1391,8 @@ enable-list whose grammar **mirrors `HIMMEL_INITIATIVE`** (so users learn one
 convention): unset / `0`/`off`/`no` → no ops (inert; `/arm` is ordinary chat);
 `1`/`all`/`on`/`yes` → every NON-privileged op; else a comma-list of op names
 (case-insensitive, unknown tokens dropped, pure-typo → off). v1 shipped one op
-(`arm-resume`); v2 (HIMMEL-1213) adds a second, `merge-public` — each op is its own
+(`arm-resume`); v2 (HIMMEL-1213) adds a second, `merge-public`; v3 (HIMMEL-1272)
+adds a third, `restart` (the bridge bouncing itself — see below) — each op is its own
 independent opt-in token (enabling one does NOT enable the other), and
 `merge-public` ships DISABLED by default like every op here — adding its name to the
 dispatch table only makes it *recognizable*, never enabled. **`merge-public` is
@@ -1443,6 +1444,37 @@ For `merge-public` the SAME log/line shape is reused (`arg`=PR number, `time`=SH
 `not-green`, so result-keyed forensic queries stay correct for the irreversible
 merge outcome.
 
+**`restart` (HIMMEL-1272) — the bridge bouncing ITSELF.** Commands: `/restart`
+(rung 1, poller only) and `/restart full` (rung 2, whole bridge). Anchored on the
+whole message like the other two, so a stray `/restart` mid-sentence is chat. It
+carries the SAME unconditional guards (operator-only sender, typed-not-forwarded,
+not a caption) but sits in the ORDINARY tier, **not** `EXPLICIT_ONLY_OPS`: it does
+no git write, touches no public repo, persists nothing in the scheduler, and its
+worst case is a bridge that comes back up. The obvious abuse is a restart loop, and
+the sender is already pinned to the global operator; the supervisor's
+`POLLER_MAX_FAILS` breaker is the backstop.
+
+Unlike the other two ops it has NO script — it is executed in-process by
+`poller.ts` (`makeRestart`), because rung 1 must exit the caller and rung 2's
+relaunch must outlive the processes it kills. `dispatchAutoAction` refuses it
+(`SELF_EXECUTED_OPS`) so it can never be laundered into an `auto-action.sh` call.
+Rung 1 exits 0 and lets `supervisor.ts` respawn; rung 2 shells
+`schtasks /run /tn HimmelTelegramBridge` — the already-registered logon task
+(`install-logon-task.ps1`), fired by the scheduler SERVICE so it is detached from
+the poller it is about to kill, and so it reads the CURRENT User environment (the
+only mechanism that picks up a `SetEnvironmentVariable(…, 'User')` without a
+reboot). Non-Windows refuses rung 2 with rc **20** rather than pretending.
+
+The ack is APPENDED to `outbox.jsonl` before firing and is drained by the
+*respawned* poller on its next tick — this process never flushes it, because
+firing is what kills the transport. Audit labels are `restarting` (accepted +
+fired), `restart-unsupported` (rc 20, or a build with no restart dep wired) and
+`error` (a non-zero fire rc, which is reported rather than swallowed). An accepted
+restart whose fire FAILS therefore writes two lines: `restarting` then `error` —
+acceptance and outcome are separate events, since the process expects not to
+survive the first. Bootstrap caveat: enabling `restart` requires one manual
+restart, because the flag is read at poller startup.
+
 **`merge-public` (HIMMEL-1213) — the Telegram-authorized PUBLIC-repo merge.**
 Command: `/mergepub <pr> <sha12>` (`sha12` = the PR's head SHA, ≥12 hex chars, from
 the agent's PR-ready report). The 12-hex floor (48 bits, up from 7=28 bits) blunts
@@ -1491,7 +1523,8 @@ knowledge) — only the activation flag + `allowFrom` are operator-personal.
 
 **Still HARD-blocked (out of scope):** editing `access.json`/`settings.json`,
 `--force`/`--dedup-any` arms, merging PRs *except via the head-SHA-bound
-`merge-public` op*, ops other than `arm-resume`/`merge-public`.
+`merge-public` op*, ops other than `arm-resume`/`merge-public`/`restart` (the
+closed allow-list is `OPS`/`KNOWN_OPS` in `auto-action.ts` — this line tracks it).
 
 Tests: `scripts/telegram/{router,auto-action,poller}.test.ts` (bun) +
 `scripts/telegram/test-auto-action.sh` + `scripts/test-merge-public-on-green.sh`

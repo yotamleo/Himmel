@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { isAllowed, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -1787,4 +1787,201 @@ test("parseBridgeEnv: a later TELEGRAM_AUTO_ACTIONS assignment REVOKES an earlie
   ].join("\n"));
   expect(both.TELEGRAM_BOT_TOKEN).toBe("1:real");
   expect(both.TELEGRAM_AUTO_ACTIONS).toBe("");
+});
+
+// --- /restart (HIMMEL-1272) ---
+
+const restartRoute = (rung = "poller") =>
+  ({ kind: "auto", op: "restart", arg: rung, time: "-" }) as any;
+const restartMsg = () => ({ chat_id: 5, from: 7, text: "/restart", forwarded: false, caption: false, ts: 1 }) as any;
+
+test("/restart acks and audits BEFORE firing — the fire kills the transport (HIMMEL-1272)", async () => {
+  // Ordering is the whole point: reply is an outbox APPEND, and this process never
+  // gets to flush it. The respawned poller drains outbox.jsonl. Fire first and the
+  // operator watches the bridge go silent with no confirmation it heard them.
+  const order: string[] = [];
+  await handleAutoCommand("/root", restartMsg(), restartRoute(), {
+    runScript: async () => { order.push("script"); return { code: 0, stdout: "", stderr: "" }; },
+    reply: async (_c, t) => { order.push(`reply:${t}`); },
+    audit: async (f) => { order.push(`audit:${f.result}`); },
+    restart: async (rung) => { order.push(`fire:${rung}`); return { rc: 0, message: "" }; },
+  });
+  expect(order[0]).toContain("reply:");
+  expect(order[0]).toContain("bouncing the poller");
+  expect(order[1]).toBe("audit:restarting");
+  expect(order[2]).toBe("fire:poller");
+  expect(order).not.toContain("script");   // never shelled to auto-action.sh
+});
+
+test("/restart full announces the fresh-env restart and passes the rung through", async () => {
+  const order: string[] = [];
+  await handleAutoCommand("/root", restartMsg(), restartRoute("full"), {
+    runScript: async () => ({ code: 0, stdout: "", stderr: "" }),
+    reply: async (_c, t) => { order.push(`reply:${t}`); },
+    audit: async (f) => { order.push(`audit:${f.result}`); },
+    restart: async (rung) => { order.push(`fire:${rung}`); return { rc: 0, message: "" }; },
+  });
+  expect(order[0]).toContain("whole bridge");
+  expect(order).toContain("fire:full");
+});
+
+test("/restart surfaces a FAILED fire instead of leaving an ack and a live bridge", async () => {
+  // A silent no-op here is indistinguishable from a slow restart, which is the
+  // worst outcome: the operator waits for a bridge that never went away.
+  const replies: string[] = [];
+  const audits: string[] = [];
+  await handleAutoCommand("/root", restartMsg(), restartRoute("full"), {
+    runScript: async () => ({ code: 0, stdout: "", stderr: "" }),
+    reply: async (_c, t) => { replies.push(t); },
+    audit: async (f) => { audits.push(`${f.result}:${f.rc}`); },
+    restart: async () => ({ rc: 1, message: "⚠️ couldn't fire HimmelTelegramBridge (rc=1)" }),
+  });
+  expect(replies).toHaveLength(2);
+  expect(replies[1]).toContain("couldn't fire");
+  expect(audits).toEqual(["restarting:0", "error:1"]);
+});
+
+test("/restart is refused when forwarded, like every other auto-command", async () => {
+  let fired = false;
+  const replies: string[] = [];
+  await handleAutoCommand("/root", { ...restartMsg(), forwarded: true }, restartRoute(), {
+    runScript: async () => ({ code: 0, stdout: "", stderr: "" }),
+    reply: async (_c, t) => { replies.push(t); },
+    audit: async () => {},
+    restart: async () => { fired = true; return { rc: 0, message: "" }; },
+  });
+  expect(fired).toBe(false);
+  expect(replies[0]).toContain("forwarded");
+});
+
+test("/restart degrades safely when the poller build has no restart dep wired", async () => {
+  const replies: string[] = [];
+  const audits: string[] = [];
+  await handleAutoCommand("/root", restartMsg(), restartRoute(), {
+    runScript: async () => ({ code: 0, stdout: "", stderr: "" }),
+    reply: async (_c, t) => { replies.push(t); },
+    audit: async (f) => { audits.push(f.result); },
+  });
+  expect(replies[0]).toContain("not wired");
+  expect(audits).toEqual(["restart-unsupported"]);
+});
+
+test("makeRestart rung 1 exits 0 so the supervisor respawns; it never shells anything", async () => {
+  const exits: number[] = [];
+  let spawned = false;
+  const restart = makeRestart({
+    exit: ((c: number) => { exits.push(c); return undefined as never; }),
+    spawnSync: (() => { spawned = true; return { exitCode: 0 } as any; }) as any,
+    platform: "win32",
+  });
+  await restart("poller");
+  expect(exits).toEqual([0]);
+  expect(spawned).toBe(false);
+});
+
+test("makeRestart rung 2 fires schtasks /run with argv-array flags (no shell, no MSYS rewrite)", async () => {
+  let cmd: string[] = [];
+  const restart = makeRestart({
+    exit: ((c: number) => { throw new Error(`unexpected exit ${c}`); }) as any,
+    spawnSync: ((c: string[]) => { cmd = c; return { exitCode: 0 } as any; }) as any,
+    platform: "win32",
+  });
+  const out = await restart("full");
+  expect(out.rc).toBe(0);
+  expect(cmd).toEqual(["schtasks", "/run", "/tn", "HimmelTelegramBridge"]);
+});
+
+test("makeRestart rung 2 surfaces a non-zero schtasks rc and does NOT exit the poller", async () => {
+  let exited = false;
+  const restart = makeRestart({
+    exit: ((c: number) => { exited = true; return undefined as never; }),
+    spawnSync: (() => ({ exitCode: 1, stderr: Buffer.from("ERROR: The system cannot find the file specified.\n"), stdout: Buffer.from("") } as any)) as any,
+    platform: "win32",
+  });
+  const out = await restart("full");
+  expect(exited).toBe(false);
+  expect(out.rc).toBe(1);
+  expect(out.message).toContain("Interactive only");
+  expect(out.message).toContain("cannot find the file");
+});
+
+test("makeRestart rung 2 refuses on non-Windows rather than pretending", async () => {
+  const restart = makeRestart({
+    exit: ((c: number) => { throw new Error(`unexpected exit ${c}`); }) as any,
+    spawnSync: (() => { throw new Error("must not spawn"); }) as any,
+    platform: "linux",
+  });
+  const out = await restart("full");
+  expect(out.rc).toBe(20);
+  expect(out.message).toContain("Windows");
+});
+
+test("makeRestart rung 2: a spawn that THROWS is reported, not left as a silent no-op (HIMMEL-1272 CR)", async () => {
+  // Bun.spawnSync throws (rather than returning a non-zero exitCode) when the
+  // binary cannot be launched at all — no schtasks on PATH, EACCES. Unhandled it
+  // escapes into autoFire's .catch(), which only console.errors, leaving the
+  // operator with an ack and a bridge that never went away.
+  let exited = false;
+  const restart = makeRestart({
+    exit: ((c: number) => { exited = true; return undefined as never; }),
+    spawnSync: (() => { throw Object.assign(new Error("spawn schtasks ENOENT"), { code: "ENOENT" }); }) as any,
+    platform: "win32",
+  });
+  const out = await restart("full");
+  expect(exited).toBe(false);
+  expect(out.rc).toBe(22);
+  expect(out.message).toContain("couldn't launch schtasks");
+  expect(out.message).toContain("ENOENT");
+  expect(out.message).toContain("still running");
+});
+
+test("/restart full arms a watchdog — schtasks rc 0 means LAUNCHED, not restarted (HIMMEL-1272 CR)", async () => {
+  // The panel's finding: schtasks exiting 0 only says the task was launched. If
+  // restart-bridge.ps1 then fails, this process keeps running and the operator is
+  // left holding a "restarting…" that never came true.
+  const replies: string[] = [];
+  const audits: string[] = [];
+  let armedMs = -1;
+  let fire: (() => void) | null = null;
+  await handleAutoCommand("/root", restartMsg(), restartRoute("full"), {
+    runScript: async () => ({ code: 0, stdout: "", stderr: "" }),
+    reply: async (_c, t) => { replies.push(t); },
+    audit: async (f) => { audits.push(`${f.result}:${f.rc}`); },
+    restart: async () => ({ rc: 0, message: "" }),
+    scheduleWatchdog: (ms, f) => { armedMs = ms; fire = f; },
+  });
+  expect(armedMs).toBe(RESTART_WATCHDOG_MS);
+  expect(audits).toEqual(["restarting:0"]);          // nothing alarming yet
+  // …the bridge is still alive when it fires ⇒ the relaunch did not take effect.
+  fire!();
+  await Bun.sleep(20);
+  expect(audits).toEqual(["restarting:0", "error:23"]);
+  expect(replies[1]).toContain("STILL RUNNING");
+  expect(replies[1]).toContain("Interactive only");
+  expect(replies[1]).toContain("restart-bridge.ps1");
+});
+
+test("/restart (rung 1) arms NO watchdog — it exits, so surviving is impossible", async () => {
+  let armed = false;
+  await handleAutoCommand("/root", restartMsg(), restartRoute("poller"), {
+    runScript: async () => ({ code: 0, stdout: "", stderr: "" }),
+    reply: async () => {},
+    audit: async () => {},
+    restart: async () => ({ rc: 0, message: "" }),
+    scheduleWatchdog: () => { armed = true; },
+  });
+  expect(armed).toBe(false);
+});
+
+test("/restart full does NOT arm a watchdog when the fire itself failed", async () => {
+  // A failed fire already replied with the rc; a later 'still running' would be noise.
+  let armed = false;
+  await handleAutoCommand("/root", restartMsg(), restartRoute("full"), {
+    runScript: async () => ({ code: 0, stdout: "", stderr: "" }),
+    reply: async () => {},
+    audit: async () => {},
+    restart: async () => ({ rc: 1, message: "boom" }),
+    scheduleWatchdog: () => { armed = true; },
+  });
+  expect(armed).toBe(false);
 });
