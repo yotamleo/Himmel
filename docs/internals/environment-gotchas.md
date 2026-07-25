@@ -32,6 +32,28 @@ fallback path. Operator hand-off commands that call bash on Windows must use the
 full Git Bash path `& "C:\Program Files\Git\bin\bash.exe" …`. (This is the same
 stub Codex's hook wrapper has to skip — see `harness-compat.md`.)
 
+**It bites long-running child processes too, and there it is silent.** A
+`spawn(["bash", "<abs-script>"])` from Node/Bun resolves `bash` through the
+*spawning process's* PATH — which for a daemon is whatever its launcher had, not
+your interactive shell's. The telegram bridge's supervisor is started by the
+`HimmelTelegramBridge` scheduled task under `pwsh -NoProfile`, whose PATH puts
+System32 ahead of `Git\bin`, so every `bash` the poller spawned hit the stub and
+exited 127 (HIMMEL-1279). Two things make this hard to see:
+
+- **POSIX-ifying the path does not help.** The stub eats the backslashes during
+  the WSL argv translation, so the error text reads
+  `/bin/bash: C:UsersyotamDocuments…: No such file or directory` and looks like a
+  quoting bug — but it exits 127 on `C:/…` too. Resolve the *interpreter*, not
+  the argument.
+- **Reproducing it from an interactive shell misleads you**, because that PATH
+  usually has `Git\bin` first. Probe with the stub named explicitly
+  (`C:\Windows\System32\bash.exe`), or read the daemon's own log.
+
+TS/JS side: use the shared `resolveBash()` / `BASH_BIN` in
+`scripts/telegram/run.ts` (candidates first, `git.exe`-derived root next, PATH
+last minus `system32`/`windowsapps`) rather than a literal `"bash"`. Shell side
+has `cygpath`; the `.ps1` side has the snippet above.
+
 ## Windows WSL / Docker resource budget
 
 WSL2 and Docker Desktop share the Windows host's CPU, memory, disk IO, and page

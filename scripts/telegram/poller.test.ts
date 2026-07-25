@@ -3,9 +3,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { isAllowed, vaultForChat } from "./gate";
+import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
 import type { TriageVerdict } from "./triage";
 
 const root = () => mkdtempSync(join(tmpdir(), "poller-"));
@@ -1593,4 +1594,197 @@ test("makeRunFn: an empty-string vault normalizes to null (repoCwd, no bypass) �
   await makeRunFn(r, "/repo", spy, 5000, undefined, 3, () => "")("E");   // blank vault
   expect(calls[0].cwd).toBe("/repo");                   // not "" — normalized
   expect(calls[0].mode).toBeUndefined();                // no bypass for a falsy vault
+});
+
+// --- bridge config file: TELEGRAM_AUTO_ACTIONS is read from it (HIMMEL-1270) ---
+
+test("parseBridgeEnv reads both keys, ignores comments, and strips surrounding quotes", () => {
+  const parsed = parseBridgeEnv([
+    "# TELEGRAM_AUTO_ACTIONS=commented-out-must-not-win",
+    "TELEGRAM_BOT_TOKEN=123:abc",
+    'TELEGRAM_AUTO_ACTIONS="arm-resume,merge-public"',
+    "UNRELATED=x",
+  ].join("\n"));
+  expect(parsed.TELEGRAM_BOT_TOKEN).toBe("123:abc");
+  expect(parsed.TELEGRAM_AUTO_ACTIONS).toBe("arm-resume,merge-public");
+});
+
+test("parseBridgeEnv tolerates spacing, single quotes and a missing key", () => {
+  const parsed = parseBridgeEnv("TELEGRAM_BOT_TOKEN =  '9:z' \n");
+  expect(parsed.TELEGRAM_BOT_TOKEN).toBe("9:z");
+  expect(parsed.TELEGRAM_AUTO_ACTIONS).toBeUndefined();
+});
+
+test("loadBridgeEnv reads TELEGRAM_AUTO_ACTIONS from the file the docs point at (HIMMEL-1270)", async () => {
+  // The bug: the poller read this key from process.env ONLY, so the operator's
+  // correctly-edited bridge config enabled nothing and /mergepub routed as chat.
+  const dir = mkdtempSync(join(tmpdir(), "bridgecfg-"));
+  const cfg = join(dir, "bridge-config");
+  await writeFile(cfg, "TELEGRAM_BOT_TOKEN=1:tok\nTELEGRAM_AUTO_ACTIONS=arm-resume,merge-public\n");
+  const prevPath = process.env.TELEGRAM_ENV;
+  const prevOps = process.env.TELEGRAM_AUTO_ACTIONS;
+  process.env.TELEGRAM_ENV = cfg;
+  delete process.env.TELEGRAM_AUTO_ACTIONS;
+  try {
+    const env = await loadBridgeEnv();
+    expect(env.TELEGRAM_BOT_TOKEN).toBe("1:tok");
+    expect(env.TELEGRAM_AUTO_ACTIONS).toBe("arm-resume,merge-public");
+    expect(env.path).toBe(cfg);
+  } finally {
+    if (prevPath === undefined) delete process.env.TELEGRAM_ENV; else process.env.TELEGRAM_ENV = prevPath;
+    if (prevOps !== undefined) process.env.TELEGRAM_AUTO_ACTIONS = prevOps;
+  }
+});
+
+test("loadBridgeEnv: a real process env var WINS over the file (launching shell is the narrower scope)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bridgecfg-"));
+  const cfg = join(dir, "bridge-config");
+  await writeFile(cfg, "TELEGRAM_BOT_TOKEN=1:fromfile\nTELEGRAM_AUTO_ACTIONS=arm-resume\n");
+  const prevPath = process.env.TELEGRAM_ENV;
+  const prevOps = process.env.TELEGRAM_AUTO_ACTIONS;
+  process.env.TELEGRAM_ENV = cfg;
+  process.env.TELEGRAM_AUTO_ACTIONS = "merge-public";
+  try {
+    const env = await loadBridgeEnv();
+    expect(env.TELEGRAM_AUTO_ACTIONS).toBe("merge-public");
+    expect(env.TELEGRAM_BOT_TOKEN).toBe("1:fromfile");   // not set in process env → file wins
+  } finally {
+    if (prevPath === undefined) delete process.env.TELEGRAM_ENV; else process.env.TELEGRAM_ENV = prevPath;
+    if (prevOps === undefined) delete process.env.TELEGRAM_AUTO_ACTIONS; else process.env.TELEGRAM_AUTO_ACTIONS = prevOps;
+  }
+});
+
+test("loadBridgeEnv still throws when no token is resolvable anywhere", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bridgecfg-"));
+  const cfg = join(dir, "bridge-config");
+  await writeFile(cfg, "TELEGRAM_AUTO_ACTIONS=arm-resume\n");
+  const prevPath = process.env.TELEGRAM_ENV;
+  const prevTok = process.env.TELEGRAM_BOT_TOKEN;
+  process.env.TELEGRAM_ENV = cfg;
+  delete process.env.TELEGRAM_BOT_TOKEN;
+  try {
+    await expect(loadBridgeEnv()).rejects.toThrow("TELEGRAM_BOT_TOKEN not found");
+  } finally {
+    if (prevPath === undefined) delete process.env.TELEGRAM_ENV; else process.env.TELEGRAM_ENV = prevPath;
+    if (prevTok !== undefined) process.env.TELEGRAM_BOT_TOKEN = prevTok;
+  }
+});
+
+test("loadBridgeEnv: an EMPTY process TELEGRAM_AUTO_ACTIONS disables file-enabled ops (kill switch)", async () => {
+  // `TELEGRAM_AUTO_ACTIONS=` in the launching shell is how the operator turns
+  // privileged ops off for one run. Treating it as "unset" would leave the
+  // file's merge-public enabled — a fail-OPEN on the privileged direction.
+  const dir = mkdtempSync(join(tmpdir(), "bridgecfg-"));
+  const cfg = join(dir, "bridge-config");
+  await writeFile(cfg, "TELEGRAM_BOT_TOKEN=1:tok\nTELEGRAM_AUTO_ACTIONS=arm-resume,merge-public\n");
+  const prevPath = process.env.TELEGRAM_ENV;
+  const prevOps = process.env.TELEGRAM_AUTO_ACTIONS;
+  process.env.TELEGRAM_ENV = cfg;
+  process.env.TELEGRAM_AUTO_ACTIONS = "";
+  try {
+    const env = await loadBridgeEnv();
+    expect(env.TELEGRAM_AUTO_ACTIONS).toBe("");
+    expect(describeEnabledOps(env.TELEGRAM_AUTO_ACTIONS, KNOWN_OPS).ops.size).toBe(0);
+    expect(env.TELEGRAM_BOT_TOKEN).toBe("1:tok");   // token untouched by the kill switch
+  } finally {
+    if (prevPath === undefined) delete process.env.TELEGRAM_ENV; else process.env.TELEGRAM_ENV = prevPath;
+    if (prevOps === undefined) delete process.env.TELEGRAM_AUTO_ACTIONS; else process.env.TELEGRAM_AUTO_ACTIONS = prevOps;
+  }
+});
+
+test("loadBridgeEnv: NO process TELEGRAM_BOT_TOKEN can override the bridge file's (HIMMEL-1270 CR)", async () => {
+  // The token is FILE-ONLY, as loadToken() always was. This repo runs a SECOND
+  // bot: the HIMMEL_JIRA_NUDGE SessionEnd relay reads TELEGRAM_BOT_TOKEN from the
+  // repo .env. If the process env could win, launching the bridge from a shell
+  // that had sourced that file would authenticate the poller AS THE RELAY BOT —
+  // a deaf bridge, or two consumers racing the same getUpdates offset.
+  const dir = mkdtempSync(join(tmpdir(), "bridgecfg-"));
+  const cfg = join(dir, "bridge-config");
+  await writeFile(cfg, "TELEGRAM_BOT_TOKEN=1:bridgebot\n");
+  const prevPath = process.env.TELEGRAM_ENV;
+  const prevTok = process.env.TELEGRAM_BOT_TOKEN;
+  process.env.TELEGRAM_ENV = cfg;
+  try {
+    for (const intruder of ["9:relaybot", ""]) {
+      process.env.TELEGRAM_BOT_TOKEN = intruder;
+      const env = await loadBridgeEnv();
+      expect(env.TELEGRAM_BOT_TOKEN).toBe("1:bridgebot");
+      expect(env.source.TELEGRAM_BOT_TOKEN).toBe("file");
+    }
+  } finally {
+    if (prevPath === undefined) delete process.env.TELEGRAM_ENV; else process.env.TELEGRAM_ENV = prevPath;
+    if (prevTok === undefined) delete process.env.TELEGRAM_BOT_TOKEN; else process.env.TELEGRAM_BOT_TOKEN = prevTok;
+  }
+});
+
+test("parseBridgeEnv: an empty scaffold placeholder never masks a later real token (HIMMEL-1270 CR)", async () => {
+  // scripts/setup/onboard-telegram.{sh,ps1} writes a literal `TELEGRAM_BOT_TOKEN=`
+  // placeholder. An operator who APPENDED the real token has a working bridge;
+  // first-match-wins would resolve the empty line and abort startup on upgrade.
+  // Same rule as scripts/lib/load-dotenv.sh: FIRST NON-EMPTY assignment wins.
+  const parsed = parseBridgeEnv([
+    "# Telegram bot token for the himmel bun bridge",
+    "TELEGRAM_BOT_TOKEN=",
+    "TELEGRAM_BOT_TOKEN=1:real",
+  ].join("\n"));
+  expect(parsed.TELEGRAM_BOT_TOKEN).toBe("1:real");
+  // …and the reverse arrangement (real first) is unchanged.
+  expect(parseBridgeEnv("TELEGRAM_BOT_TOKEN=1:real\nTELEGRAM_BOT_TOKEN=\n").TELEGRAM_BOT_TOKEN).toBe("1:real");
+  // A key whose ONLY assignment is empty still resolves to "" — meaningful for
+  // TELEGRAM_AUTO_ACTIONS (explicitly off), and a throw for the token.
+  expect(parseBridgeEnv("TELEGRAM_AUTO_ACTIONS=\n").TELEGRAM_AUTO_ACTIONS).toBe("");
+});
+
+test("loadBridgeEnv tracks provenance so a warning points at the right place (HIMMEL-1270 CR)", async () => {
+  // A typo'd PROCESS value that was reported as "read from <file>" would send the
+  // operator to edit the file; after restart the process value wins again and
+  // /mergepub is still dead.
+  const dir = mkdtempSync(join(tmpdir(), "bridgecfg-"));
+  const cfg = join(dir, "bridge-config");
+  await writeFile(cfg, "TELEGRAM_BOT_TOKEN=1:tok\nTELEGRAM_AUTO_ACTIONS=arm-resume\n");
+  const prevPath = process.env.TELEGRAM_ENV;
+  const prevOps = process.env.TELEGRAM_AUTO_ACTIONS;
+  process.env.TELEGRAM_ENV = cfg;
+  try {
+    delete process.env.TELEGRAM_AUTO_ACTIONS;
+    const fromFile = await loadBridgeEnv();
+    expect(fromFile.source.TELEGRAM_AUTO_ACTIONS).toBe("file");
+    expect(bridgeEnvOrigin(fromFile, "TELEGRAM_AUTO_ACTIONS")).toBe(cfg);
+
+    process.env.TELEGRAM_AUTO_ACTIONS = "arm";        // the typo, in the process env
+    const fromProc = await loadBridgeEnv();
+    expect(fromProc.source.TELEGRAM_AUTO_ACTIONS).toBe("process env");
+    expect(bridgeEnvOrigin(fromProc, "TELEGRAM_AUTO_ACTIONS")).toContain("process env");
+    expect(bridgeEnvOrigin(fromProc, "TELEGRAM_AUTO_ACTIONS")).not.toContain(cfg);
+    expect(describeEnabledOps(fromProc.TELEGRAM_AUTO_ACTIONS, KNOWN_OPS).warning).toContain("enables NOTHING");
+    // the token still came from the file — provenance is per-key, not global
+    expect(bridgeEnvOrigin(fromProc, "TELEGRAM_BOT_TOKEN")).toBe(cfg);
+  } finally {
+    if (prevPath === undefined) delete process.env.TELEGRAM_ENV; else process.env.TELEGRAM_ENV = prevPath;
+    if (prevOps === undefined) delete process.env.TELEGRAM_AUTO_ACTIONS; else process.env.TELEGRAM_AUTO_ACTIONS = prevOps;
+  }
+});
+
+test("parseBridgeEnv: a later TELEGRAM_AUTO_ACTIONS assignment REVOKES an earlier one (HIMMEL-1270 CR)", async () => {
+  // Opposite rule from the token, deliberately. This is a CAPABILITY flag: with
+  // first-wins, an operator who appended `off` under an existing
+  // `merge-public` line would still have a live public-merge capability while
+  // believing they revoked it. Last-wins fails toward LESS capability, and reads
+  // the way an operator scanning the file top-to-bottom expects.
+  const revoke = (second: string) =>
+    parseBridgeEnv(`TELEGRAM_AUTO_ACTIONS=arm-resume,merge-public\nTELEGRAM_AUTO_ACTIONS=${second}\n`).TELEGRAM_AUTO_ACTIONS;
+  expect(revoke("")).toBe("");                      // appended empty  -> off
+  expect(revoke("off")).toBe("off");                // appended off    -> off
+  expect(revoke("arm-resume")).toBe("arm-resume");  // narrowed        -> no merge-public
+  for (const v of ["", "off", "arm-resume"])
+    expect(describeEnabledOps(revoke(v), KNOWN_OPS).ops.has("merge-public")).toBe(false);
+  // …while the token keeps first-non-empty in the SAME file, unaffected.
+  const both = parseBridgeEnv([
+    "TELEGRAM_BOT_TOKEN=",
+    "TELEGRAM_BOT_TOKEN=1:real",
+    "TELEGRAM_AUTO_ACTIONS=merge-public",
+    "TELEGRAM_AUTO_ACTIONS=",
+  ].join("\n"));
+  expect(both.TELEGRAM_BOT_TOKEN).toBe("1:real");
+  expect(both.TELEGRAM_AUTO_ACTIONS).toBe("");
 });

@@ -17,9 +17,14 @@ are the structural exfil gate), `gh pr create`, and CR fix-pushes. Before ANY
 fix-push, leak-scan the outgoing delta first:
 `git -C <wt> diff origin/main...HEAD > <tmp>.patch && bash scripts/propagate-public.sh scan <tmp>.patch`
 — a finding blocks the push. The **public squash-merge stays human-authorized**:
-report PR-ready (URL + short head SHA + the ready-to-send `/mergepub <pr> <sha7>`
+report PR-ready (URL + short head SHA + the ready-to-send `/mergepub <pr> <sha12>`
 line + the PR URL for the GitHub-UI fallback) and STOP. Never run `gh pr merge` on
-the public repo yourself.
+the public repo yourself. **`sha12`, never `sha7`** — `router.ts`'s MERGEPUB regex
+requires `[0-9a-f]{12,40}`, so a 7-hex line fails the match and never reaches the
+auto-merge path — it falls through to ordinary chat, with no refusal to read back
+(HIMMEL-1270; the floor was raised from 7 in
+HIMMEL-1213 because a 7-hex prefix is grindable at ~2^28 and an agent can push to
+the public branch).
 
 ## 1. Resolve the target
 
@@ -111,7 +116,8 @@ code; trust the final `check-ci: verdict exit=N` line printed on stdout.)
   CR-clean + CI-green. **STOP here** and report PR-ready to the operator (do NOT
   merge): PR URL + short head SHA + the check-ci verdict + the diff-identity
   verdict (where the bounded-wait named-private-ref path ran) + the ready-to-send
-  `/mergepub <pr> <sha7>` line + the GitHub-UI fallback link. The printed
+  `/mergepub <pr> <sha12>` line (**12+ hex — a 7-hex SHA silently classifies as
+  chat**, see §intro) + the GitHub-UI fallback link. The printed
   `gh pr merge` command is kept only as the operator's terminal alternative:
   ```bash
   gh pr merge <pr> --squash --admin --repo <REPO>   # operator's terminal alternative

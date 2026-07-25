@@ -37,6 +37,7 @@ import {
   isHelpFlag,
   type CapGuardDeps,
 } from "./spawn-glm";
+import { BASH_BIN } from "./run";
 import type { SettingsConflict } from "./glm-env";
 import { composeGrantLine, nextGrantId, classifyShape, authorityGate, composeEscalationForRefusedGrant } from "./grants";
 
@@ -1234,7 +1235,7 @@ test("parseArgs arm flags", () => {
 
 test("buildArmArgv matches arm-resume's documented flag contract", () => {
   const a = buildArmArgv("C:/repo", "04:10", "C:/sess/respawn-handover.md");
-  expect(a[0]).toBe("bash");
+  expect(a[0]).toBe(BASH_BIN);
   expect(a[1]).toContain("arm-resume.sh");
   expect(a.slice(2)).toEqual(["--dedup-any", "--time", "04:10", "--handover", "C:/sess/respawn-handover.md"]);
 });

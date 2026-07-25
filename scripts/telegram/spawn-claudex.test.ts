@@ -31,6 +31,7 @@ import {
   claudexChildEnv,
   executeClaudexRun,
 } from "./spawn-claudex";
+import { BASH_BIN } from "./run";
 
 // --- claudexSessionRoot ------------------------------------------------------
 
@@ -746,7 +747,7 @@ test("claude-codex --preflight-only classifies REAL HTTP responses: 2xx->0, 503/
   // time out and read transient. Await the child instead.
   const run = async (s: number, b: string, urlOverride?: string): Promise<number> => {
     status = s; body = b;
-    const p = Bun.spawn(["bash", "scripts/claude-codex", "--preflight-only"], {
+    const p = Bun.spawn([BASH_BIN, "scripts/claude-codex", "--preflight-only"], {
       cwd: process.cwd(),
       env: { ...process.env, CLIPROXY_API_KEY: "test-key", CODEX_PROXY_BASE_URL: urlOverride ?? base } as Record<string, string>,
       stdout: "pipe", stderr: "pipe",
@@ -787,7 +788,7 @@ test("claude-codex --preflight-only: a stalled body (200 headers, then hang) is 
   try {
     // async spawn — spawnSync would block the loop and stall the server for the
     // WRONG reason, making this pass without exercising the partial-200 path
-    const p = Bun.spawn(["bash", "scripts/claude-codex", "--preflight-only"], {
+    const p = Bun.spawn([BASH_BIN, "scripts/claude-codex", "--preflight-only"], {
       cwd: process.cwd(),
       env: { ...process.env, CLIPROXY_API_KEY: "test-key", CODEX_PROXY_BASE_URL: `http://127.0.0.1:${server.port}` } as Record<string, string>,
       stdout: "pipe", stderr: "pipe",
@@ -804,12 +805,12 @@ test("claudexLauncherPath joins repoRoot + scripts/claude-codex", () => {
 
 test("buildClaudexRunArgs: invokes bash <launcher> --permission-mode <mode> <prompt> when permMode is set", () => {
   const { cmd } = buildClaudexRunArgs("/repo/scripts/claude-codex", "read the brief", "bypassPermissions");
-  expect(cmd).toEqual(["bash", "/repo/scripts/claude-codex", "--permission-mode", "bypassPermissions", "read the brief"]);
+  expect(cmd).toEqual([BASH_BIN, "/repo/scripts/claude-codex", "--permission-mode", "bypassPermissions", "read the brief"]);
 });
 
 test("buildClaudexRunArgs: omits --permission-mode when unset — bash <launcher> <prompt>", () => {
   const { cmd } = buildClaudexRunArgs("/repo/scripts/claude-codex", "read the brief");
-  expect(cmd).toEqual(["bash", "/repo/scripts/claude-codex", "read the brief"]);
+  expect(cmd).toEqual([BASH_BIN, "/repo/scripts/claude-codex", "read the brief"]);
 });
 
 test("buildClaudexRunArgs: NEVER includes a --model flag (claude-codex pins the model itself)", () => {
@@ -822,10 +823,10 @@ test("buildClaudexRunArgs: NEVER includes a --model flag (claude-codex pins the 
 test("buildClaudexRunArgs: injects --settings before the prompt when set; omits it otherwise", () => {
   const s = '{"enabledPlugins":{"qmd@himmel":true}}';
   expect(buildClaudexRunArgs("/repo/scripts/claude-codex", "go", undefined, s).cmd)
-    .toEqual(["bash", "/repo/scripts/claude-codex", "--settings", s, "go"]);
+    .toEqual([BASH_BIN, "/repo/scripts/claude-codex", "--settings", s, "go"]);
   // co-present with --permission-mode: both precede the prompt, settings last
   expect(buildClaudexRunArgs("/repo/scripts/claude-codex", "go", "bypassPermissions", s).cmd)
-    .toEqual(["bash", "/repo/scripts/claude-codex", "--permission-mode", "bypassPermissions", "--settings", s, "go"]);
+    .toEqual([BASH_BIN, "/repo/scripts/claude-codex", "--permission-mode", "bypassPermissions", "--settings", s, "go"]);
   expect(buildClaudexRunArgs("/repo/scripts/claude-codex", "go").cmd).not.toContain("--settings");
 });
 

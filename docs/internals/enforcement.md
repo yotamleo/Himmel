@@ -1401,8 +1401,18 @@ aliases do NOT enable it — it requires being NAMED explicitly (`=merge-public`
 cannot silently inherit the merge capability** (HIMMEL-1213 CR). The enable-all
 aliases turn on every *non-EXPLICIT_ONLY* known op. The dispatch-table keys
 (`OPS`/`KNOWN_OPS` in `auto-action.ts`) are the closed op allow-list, re-asserted in
-`auto-action.sh`; `EXPLICIT_ONLY_OPS` is the privileged subset the alias skips. Set it in the bridge's
-launching env + restart the bridge to activate.
+`auto-action.sh`; `EXPLICIT_ONLY_OPS` is the privileged subset the alias skips.
+
+**Where to set `TELEGRAM_AUTO_ACTIONS` (HIMMEL-1270)** — the flag; `EXPLICIT_ONLY_OPS`
+above is a code-defined constant, not an operator setting. Either the bridge's own
+`~/.claude/channels/telegram/.env` (the file that already holds
+`TELEGRAM_BOT_TOKEN`) or the poller's launching env — a real process env var wins
+over the file. Restart the bridge to apply either way. Until HIMMEL-1270 the
+poller read this key from `process.env` ONLY while the docs pointed at the file,
+so a correctly-edited `.env` enabled nothing and `/mergepub` silently routed as
+chat. A configured value that parses to zero ops (e.g. `arm` instead of
+`arm-resume`) now logs a startup WARNING naming the unrecognised tokens, so
+"I enabled it and nothing happened" is no longer indistinguishable from "it's off".
 
 **Guards (fail-closed):**
 - **Operator-identity** — an auto-command runs only when the SENDER is the allowlisted

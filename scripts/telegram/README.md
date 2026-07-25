@@ -166,6 +166,58 @@ allowlist edit.
 — plain message ingested, bounded run replied INTO the group, DM untouched;
 an allowlisted channel — first post surfaced its id via the gated-out log,
 allowlisted + restarted, posts then processed with replies into the channel.
+
+## Privileged auto-commands — `/arm` and `/mergepub` (default OFF)
+
+Two commands are executed by the TRUSTED bridge itself rather than by a spawned
+Claude session — the agent is never in the trust path:
+
+| Command | Op name | What it does |
+|---|---|---|
+| `/arm <ticket-or-path> [at HH:MM\|auto\|smart]` | `arm-resume` | schedules a resume session via `arm-resume.sh` (time defaults to `smart`) |
+| `/mergepub <pr> <sha12>` | `merge-public` | SHA-bound squash-merge of a PUBLIC propagation PR |
+
+**Both ship disabled.** Enable per-op with `TELEGRAM_AUTO_ACTIONS`, read from the
+bridge's own `~/.claude/channels/telegram/.env` (the file that already holds
+`TELEGRAM_BOT_TOKEN`) **or** the poller's process env — a process env var wins.
+Restart the bridge to apply.
+
+`TELEGRAM_AUTO_ACTIONS` is the *only* key that takes a process override.
+`TELEGRAM_BOT_TOKEN` is read from that file and nowhere else, because the repo
+`.env` holds a different bot's token for the jira-nudge relay.
+
+```ini
+# ~/.claude/channels/telegram/.env
+TELEGRAM_AUTO_ACTIONS=arm-resume,merge-public
+```
+
+Rules worth knowing before you edit that line:
+
+- The op names are exactly `arm-resume` and `merge-public`. Unknown tokens are
+  dropped, so `TELEGRAM_AUTO_ACTIONS=arm` enables **nothing** — the poller now
+  logs a startup `WARNING: … enables NOTHING` naming the bad tokens (HIMMEL-1270;
+  before that it was silent and indistinguishable from "off").
+- `=1`/`all`/`on`/`yes` enable `arm-resume` but **never** `merge-public`. The
+  public merge is `EXPLICIT_ONLY` — it must be named, so an operator running `=1`
+  cannot silently inherit the capability.
+- `/mergepub` needs a **12+ hex** SHA (`[0-9a-f]{12,40}`). A 7-hex one fails the
+  router regex and reads as ordinary chat.
+- Launching the bridge with `TELEGRAM_AUTO_ACTIONS=` (defined but empty) is the
+  one-run kill switch: an explicitly empty process value beats the file, so it
+  turns file-enabled ops off without editing anything.
+- A disabled or unmatched auto-command is not an error: it never enters the
+  auto-action path, it routes as normal chat. Diagnosing a `/mergepub` that did
+  not merge: if it produced no merge AND no refusal message, check the three
+  points above (enabled? named explicitly? 12+ hex?). If it produced a refusal —
+  `not-green`, `head-moved`, `no-open-pr` — it DID match and the chokepoint
+  declined; `auto-action-audit.log` records which, one line per attempt.
+- Guards are unconditional and fail-closed: operator-only sender, typed (not a
+  caption), not forwarded, whole-message match. Every attempt — executed or
+  refused — appends one line to `~/.claude/handover/bridge/auto-action-audit.log`.
+
+Semantics + threat model: [`docs/internals/enforcement.md`](../../docs/internals/enforcement.md).
+Where each knob is set: [`docs/configuration.md`](../../docs/configuration.md).
+
 ## Group triage (HIMMEL-721)
 
 Plain group/channel chat is fronted by a cheap classifier before the bridge
