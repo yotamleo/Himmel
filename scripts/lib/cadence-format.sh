@@ -43,7 +43,7 @@ CADENCE_FORMAT_MARKER="himmel-cadence-runner-format:"
 # Basename registry for generated cadence runners. Keep explicit: a stray
 # foreign *.bat/*.sh in a runner dir must not poison the staleness probe.
 # shellcheck disable=SC2034  # consumed by cadence_runner_stamp callers/tests
-CADENCE_RUNNER_BASENAMES="pipeline-harvest pipeline-synthesize pipeline-health codex-sweep graphmap-luna graphmap-himmel"
+CADENCE_RUNNER_BASENAMES="pipeline-harvest pipeline-synthesize pipeline-health codex-sweep graphmap-luna graphmap-himmel qmd-reindex"
 
 # cadence_user_home
 # The runner homes the EMITTERS write under key off resolve_user_home

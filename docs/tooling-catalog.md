@@ -1078,6 +1078,47 @@ view into the vault — the bridge between the derived graph and the KB.
 
 ---
 
+## qmd reindex cadence (`scripts/luna/qmd-*.sh`, HIMMEL-568)
+
+Keeps the qmd search index from going silently stale. The index once sat 5 days
+stale (luna `lastUpdated` 2026-06-22 with `needsEmbedding: 0`) while notes
+written that week were simply not searchable — every qmd-backed workflow
+(compounding, ingest, synthesis, recall) answered off a stale index and nothing
+signalled it. Same runner/scheduler split as the graphify pair above.
+
+- `scripts/luna/qmd-reindex.sh` — the RUNNER. `qmd update` (re-index changed
+  files) then `qmd embed` (generate missing vectors), then a COMPLETENESS ASSERT:
+  a second `qmd embed` that must report "All content hashes already have
+  embeddings". That assert is the point — `qmd embed` has a session cap
+  (`--timeout`, default 30 min), and a run that hits it exits 0 having embedded
+  only PART of the pending set, leaving vectors lagging lex: the same silently-
+  wrong state with a fresher timestamp. Distinct exit codes (3 update failed,
+  4 embed failed, 5 embed incomplete) so a scheduler log says which half broke.
+  Scope is ALL configured collections — `qmd update`/`qmd embed` default to
+  everything and take `-c` only to NARROW, so nothing is hardcoded and a
+  collection added later needs no edit. `--qmd-bin` pins the executable (the
+  scheduler fires with a minimal PATH that lacks bun's bin dir); `--dry-run`
+  previews. Does NOT fence the qmd MCP daemon. What was actually observed
+  (2026-07-25): with the daemon running, a full `qmd update` + `qmd embed`
+  completed without error and the daemon was still serving on the same PID
+  afterwards. That is a process-survival + no-error observation, NOT a
+  concurrency proof — nothing exercised reads racing the writes. It is the
+  basis for not fencing today; if a fence is ever needed it belongs in the
+  runner, not the scheduler. Hermetic test `test-qmd-reindex.sh` (stubs qmd).
+- `scripts/luna/qmd-cadence.sh` — the scheduler that arms it. Deterministic-script
+  shape (the graphmap sibling, NOT a pipeline-cadence leg): no claude session, no
+  NUL stdin, no `--settings` fragment, so HIMMEL-128 does not apply at all.
+  `arm`/`status`/`disarm` register ONE daily task, `HIMMEL-Qmd-Reindex`
+  (default 05:00 local — AFTER the pipeline legs that WRITE to the vault
+  (Harvest 02:00, Synthesize 03:00, Health 04:00) so the reindex picks up what
+  they wrote instead of racing them, and clear of the graphmap slots 13:00/13:20).
+  A full local refresh measured 16s + 24s, so daily is cheap. schtasks (Windows,
+  StartWhenAvailable + IgnoreNew XML) / crontab (POSIX); dedup-guarded; hermetic
+  test `test-qmd-cadence.sh`. Arming is an operator flip, never auto-armed:
+  `bash scripts/luna/qmd-cadence.sh arm` (`--time` / `--force` / `--dry-run`).
+
+---
+
 ## Codex Cleanup Cadence (`scripts/cleanup/`, HIMMEL-892)
 
 Windows-only scheduled cleanup for orphaned codex processes and stale MCP fleet.
