@@ -1,6 +1,6 @@
 import { spawn } from "bun";
 import { join } from "node:path";
-import { REPO_ROOT, killTree } from "./run";
+import { BASH_BIN, REPO_ROOT, killTree } from "./run";
 
 export type TriageVerdict = "ignore" | "ack" | "spawn-low" | "spawn-high";
 // The only model the triage seam ever injects is the spawn-low haiku override
@@ -84,7 +84,10 @@ export async function classifyForSpawn(text: string, deps: TriageDeps = {}): Pro
   const model = process.env.TELEGRAM_TRIAGE_MODEL?.trim() || "deepseek-v4-flash";
   const provider = process.env.TELEGRAM_TRIAGE_PROVIDER?.trim() || "deepseek";
   // Absolute path: the poller's cwd is not guaranteed to be the repo root.
-  const args = ["bash", join(REPO_ROOT, "scripts", "hermes", "invoke.sh"), "--model", model, "--provider", provider];
+  // BASH_BIN, not a bare "bash" (HIMMEL-1279): under the poller's PATH a bare
+  // "bash" hit the WSL System32 stub, which exits 127 on any C: path — so the
+  // classifier fail-opened to spawn-high on 100% of messages, invisibly.
+  const args = [BASH_BIN, join(REPO_ROOT, "scripts", "hermes", "invoke.sh"), "--model", model, "--provider", provider];
   // deps.timeoutMs (tests) wins; otherwise the env-tunable deadline.
   const timeoutMs = deps.timeoutMs ?? resolveTimeoutMs();
   const label = deps.sessionLabel ?? "unknown-session";

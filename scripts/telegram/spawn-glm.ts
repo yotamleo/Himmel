@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, sta
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { runSession, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow } from "./run";
+import { runSession, BASH_BIN, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow } from "./run";
 import { checkGlmGuards } from "./glm-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, glmContextPreset, type SettingsConflict, type GlmUsage } from "./glm-env";
 import { appendQuotaGauge, buildGlmRow, isGlmPeak } from "./quota-gauge";
@@ -618,7 +618,7 @@ export async function runSharedDispatch(p: {
   repoDir: string; worktree: string; branch: string; needsWorktreeAdd: boolean;
   lockScript: string; gitAdd: () => void; runBody: () => Promise<number>;
 }): Promise<{ ok: true; code: number } | { ok: false; reason: string }> {
-  const acquire = Bun.spawnSync(["bash", p.lockScript, "acquire", p.repoDir, p.branch, "glm"], { stdout: "pipe", stderr: "pipe" });
+  const acquire = Bun.spawnSync([BASH_BIN, p.lockScript, "acquire", p.repoDir, p.branch, "glm"], { stdout: "pipe", stderr: "pipe" });
   if (acquire.exitCode !== 0) return { ok: false, reason: acquire.stderr.toString().trim() || `spawn-glm: shared-branch-lock acquire failed (rc=${acquire.exitCode})` };
   let priorPushUrl: string | undefined;
   // CR round 2 F5: only true once poisonPushUrl has actually completed — gates
@@ -675,7 +675,7 @@ export async function runSharedDispatch(p: {
       console.error(`spawn-glm: WARNING - pushurl restore threw (${String((e as any)?.message ?? e)}); ${p.worktree} may stay push-poisoned`);
     } finally {
       try {
-        const rel = Bun.spawnSync(["bash", p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
+        const rel = Bun.spawnSync([BASH_BIN, p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
         if (rel.exitCode !== 0) console.error(`spawn-glm: WARNING - shared-branch-lock release failed (rc=${rel.exitCode}); the lock for ${p.branch} may stay held: ${rel.stderr.toString().trim()}`);
       } catch (e) {
         console.error(`spawn-glm: WARNING - shared-branch-lock release threw (${String((e as any)?.message ?? e)}); the lock for ${p.branch} may stay held`);
@@ -992,7 +992,7 @@ export type CapGuardDeps = {
 // argv builder for the real arm invoker — pure so the flag contract
 // (--dedup-any --time <HH:MM> --handover <path>) is unit-asserted.
 export function buildArmArgv(repoRoot: string, hhmm: string, handoverPath: string): string[] {
-  return ["bash", join(repoRoot, "scripts", "handover", "arm-resume.sh"), "--dedup-any", "--time", hhmm, "--handover", handoverPath];
+  return [BASH_BIN, join(repoRoot, "scripts", "handover", "arm-resume.sh"), "--dedup-any", "--time", hhmm, "--handover", handoverPath];
 }
 
 // Preflight warn (spec (c)): warn-only — a heuristic-threshold refusal would

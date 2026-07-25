@@ -1,5 +1,7 @@
 import { spawn } from "bun";
 import { buildGlmEnv, GLM_MODEL_ALIAS } from "./glm-env";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bounded-run spawn helper. Runs an INTERACTIVE `claude "<prompt>"` with stdin
@@ -45,6 +47,45 @@ export function buildRunArgs(prompt: string, permissionMode?: PermissionMode, mo
 // fileURLToPath is the cross-platform form — new URL(...).pathname yields a
 // broken leading-slash path on Windows (/C:/Users/...). Exported for the test.
 export const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+
+// BASH_BIN (HIMMEL-1279): every `bash <abs-script>` the bridge spawns must name
+// Git Bash by absolute path. A bare "bash" resolves through the spawning
+// process's PATH, and the supervisor is launched by the HimmelTelegramBridge
+// schtask under `pwsh -NoProfile`, whose PATH has System32 ahead of Git\bin —
+// so "bash" lands on the WSL stub C:\Windows\System32\bash.exe. That stub sees
+// no C: drive at all: it exits 127 on BOTH `C:\...` (backslashes eaten by the
+// WSL argv translation, hence the "C:UsersyotamDocuments..." in supervisor.log)
+// and `C:/...`. POSIX-ifying the path does NOT help — resolving the interpreter
+// does. Same candidate order as scripts/setup-hooks.sh, preflight-sim.sh and
+// scripts/ci-orchestrator/tests/*.ts; see docs/internals/environment-gotchas.md.
+const WIN_BASH_CANDIDATES = ["C:/Program Files/Git/bin/bash.exe", "C:/Program Files (x86)/Git/bin/bash.exe"];
+export function resolveBash(): string {
+  if (process.platform !== "win32") return "bash";
+  // Derive from git.exe too — <GitRoot>/cmd/git.exe => <GitRoot>/bin/bash.exe —
+  // so a non-default Git install location still resolves.
+  const candidates = [...WIN_BASH_CANDIDATES];
+  const gitExe = Bun.which("git");
+  if (gitExe) candidates.push(dirname(dirname(gitExe.replace(/\\/g, "/"))) + "/bin/bash.exe");
+  for (const c of candidates) if (existsSync(c)) return c;
+  // PATH fallback, minus the two known stub locations.
+  const pathBash = Bun.which("bash");
+  if (pathBash && !/system32|windowsapps/i.test(pathBash)) return pathBash;
+  // Nothing safe found. Returning the bare "bash" here would re-introduce the
+  // exact defect this function exists to prevent: spawn would resolve it
+  // through PATH straight back to the WSL stub, which "runs" and exits 127 —
+  // silent, and indistinguishable from a script bug. Return the canonical Git
+  // Bash path instead, which on this machine does NOT exist: spawn then fails
+  // ENOENT naming the interpreter we actually require. Loud beats invisible.
+  // Not a throw — run.ts is imported for far more than bash spawning, and
+  // taking the whole poller down at module load over a missing classifier
+  // dependency trades a narrow failure for a total one.
+  console.error(
+    `[bridge] no usable Git Bash found (checked ${candidates.join(", ")} and PATH minus the WSL stub); ` +
+      `every bash child will fail ENOENT until Git for Windows is installed`,
+  );
+  return WIN_BASH_CANDIDATES[0];
+}
+export const BASH_BIN = resolveBash();
 
 // glmChildEnv (HIMMEL-654): the GLM lane's child env — the current process env
 // with the GLM block (buildGlmEnv) merged over it, and TELEGRAM_OWN_POLLER

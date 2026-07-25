@@ -48,6 +48,40 @@ export function parseEnabledOps(raw: string | undefined, knownOps: Set<string>):
   return out;
 }
 
+// Whole-value aliases. Both parse to a deliberate outcome and carry no op-name
+// list, so there are no tokens to validate and nothing to warn about.
+const OFF_ALIASES = new Set(["", "0", "off", "no", "false"]);
+const ON_ALIASES = new Set(["1", "all", "on", "yes", "true"]);
+
+// describeEnabledOps (HIMMEL-1270) — the startup line(s) for TELEGRAM_AUTO_ACTIONS.
+// The failure this exists for: the shipped `.env.example` taught
+// `TELEGRAM_AUTO_ACTIONS=arm`, which is not a token in KNOWN_OPS (`arm-resume` is),
+// so it parsed to the EMPTY set and enabled nothing — and the poller only logged
+// when the set was NON-empty, making "I enabled it and nothing happened"
+// indistinguishable from "it's off". A configured-but-inert value now says so, and
+// names the tokens it did not recognise.
+export function describeEnabledOps(raw: string | undefined, knownOps: Set<string>): { ops: Set<string>; warning?: string } {
+  const ops = parseEnabledOps(raw, knownOps);
+  const v = (raw ?? "").trim().toLowerCase();
+  if (OFF_ALIASES.has(v) || ON_ALIASES.has(v)) return { ops };
+  const unknown = v.split(",").map((t) => t.trim()).filter((t) => t && !knownOps.has(t));
+  // A PARTIALLY valid list warns too: `arm-resume,mergepublic` enables /arm, so the
+  // "auto-actions enabled:" line looks healthy while /mergepub stays inert with no
+  // explanation — the same puzzle in a quieter costume.
+  if (ops.size > 0 && unknown.length === 0) return { ops };
+  const tail =
+    `Valid ops: ${[...knownOps].join(", ")}` +
+    ` (${[...EXPLICIT_ONLY_OPS].join(", ")} must be named explicitly — the =1/all/on/yes aliases never enable them).`;
+  const dropped = unknown.length ? ` unrecognised token(s): ${unknown.join(", ")}.` : "";
+  return {
+    ops,
+    warning:
+      ops.size === 0
+        ? `TELEGRAM_AUTO_ACTIONS="${raw}" enables NOTHING —${dropped || " no valid op names in it."} ${tail}`
+        : `TELEGRAM_AUTO_ACTIONS="${raw}" enabled ${[...ops].join(",")} but DROPPED${dropped} ${tail}`,
+  };
+}
+
 // The injection-test seam (pure). An auto-command executes ONLY when it is a typed
 // (caption === false), non-forwarded (forwarded === false) auto route. Strict `=== false`
 // so an unknown/undefined flag refuses rather than fail-open — this is THE security

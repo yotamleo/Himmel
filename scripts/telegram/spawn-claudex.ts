@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, writeFileSync, appendFileSync, statSync, openSyn
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
-import { REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
+import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
 import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, isHelpFlag } from "./spawn-glm";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
@@ -469,7 +469,7 @@ export type AuthProbeResult = "ok" | "unavailable" | "fatal";
 // (claudexChildEnv) so the probe never adopts poller ownership.
 export function probeClaudexAuth(repoRoot: string, cwd: string, timeoutMs: number = PROBE_TIMEOUT_MS): AuthProbeResult {
   const launcherPath = claudexLauncherPath(repoRoot);
-  const r = Bun.spawnSync(["bash", launcherPath, "--preflight-only"], { cwd, stdout: "pipe", stderr: "pipe", env: claudexChildEnv(process.env) as Record<string, string>, timeout: timeoutMs });
+  const r = Bun.spawnSync([BASH_BIN, launcherPath, "--preflight-only"], { cwd, stdout: "pipe", stderr: "pipe", env: claudexChildEnv(process.env) as Record<string, string>, timeout: timeoutMs });
   if (r.exitCode === null || r.signalCode != null) return "unavailable"; // killed / timed out
   if (r.exitCode === 0) return "ok";
   if (r.exitCode === CLAUDEX_PREFLIGHT_GAP_EXIT) return "unavailable";
@@ -547,7 +547,7 @@ export function claudexLauncherPath(repoRoot: string): string {
 // claude-codex screens it (env-injection) then forwards it to claude. Omitted
 // (operator profile) => no flag. Placed before the prompt, after --permission-mode.
 export function buildClaudexRunArgs(launcherPath: string, prompt: string, permMode?: PermissionMode, settings?: string): { cmd: string[] } {
-  const cmd = ["bash", launcherPath];
+  const cmd = [BASH_BIN, launcherPath];
   if (permMode) cmd.push("--permission-mode", permMode);
   if (settings) cmd.push("--settings", settings);
   cmd.push(prompt);
@@ -643,7 +643,7 @@ export async function runClaudexSharedDispatch(p: {
   // still releases the lock). Absent ⇒ skipped (own-mode / tests).
   revalidateClean?: () => { ok: true } | { ok: false; reason: string };
 }): Promise<{ ok: true; code: number } | { ok: false; reason: string }> {
-  const acquire = Bun.spawnSync(["bash", p.lockScript, "acquire", p.repoDir, p.branch, "codex"], { stdout: "pipe", stderr: "pipe" });
+  const acquire = Bun.spawnSync([BASH_BIN, p.lockScript, "acquire", p.repoDir, p.branch, "codex"], { stdout: "pipe", stderr: "pipe" });
   if (acquire.exitCode !== 0) return { ok: false, reason: acquire.stderr.toString().trim() || `spawn-claudex: shared-branch-lock acquire failed (rc=${acquire.exitCode})` };
   let priorPushUrl: string | undefined;
   let poisoned = false;
@@ -673,7 +673,7 @@ export async function runClaudexSharedDispatch(p: {
       console.error(`spawn-claudex: WARNING - pushurl restore threw (${String((e as any)?.message ?? e)}); ${p.worktree} may stay push-poisoned`);
     } finally {
       try {
-        const rel = Bun.spawnSync(["bash", p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
+        const rel = Bun.spawnSync([BASH_BIN, p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
         if (rel.exitCode !== 0) console.error(`spawn-claudex: WARNING - shared-branch-lock release failed (rc=${rel.exitCode}); the lock for ${p.branch} may stay held: ${rel.stderr.toString().trim()}`);
       } catch (e) {
         console.error(`spawn-claudex: WARNING - shared-branch-lock release threw (${String((e as any)?.message ?? e)}); the lock for ${p.branch} may stay held`);

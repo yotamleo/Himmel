@@ -3,10 +3,10 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, truncateFullyConsumed, type Meta } from "./bus";
 import { classify, type Route } from "./router";
-import { dispatchAutoAction, parseEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
+import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { isAllowed, isGroupAllowed, loadAccess, vaultForChat, type Access } from "./gate";
-import { runSession, buildPrompt, type BusPaths, type PermissionMode } from "./run";
+import { runSession, buildPrompt, BASH_BIN, type BusPaths, type PermissionMode } from "./run";
 import { classifyForSpawn, type TriageVerdict, type TriageModelOverride } from "./triage";
 import { transcribe } from "./transcribe";
 
@@ -788,12 +788,118 @@ export async function sweepAttachments(dir: string, maxAgeMs: number = ATTACHMEN
   return removed;
 }
 
-async function loadToken(): Promise<string> {
+// Bridge config file (HIMMEL-1270). Until now the ONLY key ever read out of
+// ~/.claude/channels/telegram/.env was TELEGRAM_BOT_TOKEN, while the shipped docs
+// told operators to set TELEGRAM_AUTO_ACTIONS there too — so a correctly-edited
+// .env enabled nothing and `/mergepub` silently routed as chat, twice. Every
+// other knob is still process.env-only and stays that way; these two keys are the
+// ones the docs point at the file for.
+//
+// The parsed values are returned as an explicit config object and NOT merged into
+// process.env: the auto-action child inherits the poller env wholesale (see
+// runScript below), and widening that surface from a config file is not something
+// this ticket needs.
+export const BRIDGE_ENV_KEYS = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_AUTO_ACTIONS"] as const;
+export type BridgeEnvKey = (typeof BRIDGE_ENV_KEYS)[number];
+
+// Strips ONE layer of matching surrounding quotes. dotenv-style files quote
+// values routinely, and an unstripped `"arm-resume"` is not a known op token —
+// it would parse to the empty set, which is the exact silent-nothing this ticket
+// exists to kill.
+function unquote(v: string): string {
+  const m = v.match(/^(['"])(.*)\1$/);
+  return m ? m[2] : v;
+}
+
+// Duplicate-key precedence, line by line. The two keys need OPPOSITE rules, and
+// picking one for both is wrong in a way that bites:
+//
+//   TELEGRAM_BOT_TOKEN — FIRST NON-EMPTY wins (the rule
+//     scripts/lib/load-dotenv.sh:62-76 already implements). onboard-telegram.{sh,ps1}
+//     scaffolds a literal empty `TELEGRAM_BOT_TOKEN=` placeholder, so an operator who
+//     APPENDED the real token instead of editing the placeholder has a working bridge
+//     today; letting the empty first line win would abort startup and take the whole
+//     bridge down on upgrade. An empty assignment must never mask a real one.
+//
+//   TELEGRAM_AUTO_ACTIONS — LAST assignment wins, empty included. This is a
+//     CAPABILITY flag, so the failure that matters is the opposite one: with
+//     first-wins, `TELEGRAM_AUTO_ACTIONS=merge-public` followed by an appended
+//     ``, `off`, or narrower value would leave the public-merge capability live
+//     while the operator believes they revoked it. Editing by appending is exactly
+//     the habit the token rule above accommodates, so duplicates are realistic.
+//     Last-wins makes the file behave the way an operator reading it top-to-bottom
+//     expects, and fails toward LESS capability.
+const LAST_ASSIGNMENT_WINS: ReadonlySet<BridgeEnvKey> = new Set<BridgeEnvKey>(["TELEGRAM_AUTO_ACTIONS"]);
+
+export function parseBridgeEnv(txt: string): Partial<Record<BridgeEnvKey, string>> {
+  const out: Partial<Record<BridgeEnvKey, string>> = {};
+  const known = new Set<string>(BRIDGE_ENV_KEYS);
+  for (const raw of txt.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim() as BridgeEnvKey;
+    if (!known.has(key)) continue;
+    const val = unquote(line.slice(eq + 1).trim());
+    // first-non-empty keys: a value that already won is never replaced
+    if (!LAST_ASSIGNMENT_WINS.has(key) && out[key]) continue;
+    out[key] = val;
+  }
+  return out;
+}
+
+// A real process env var still WINS over the file — the launching shell is the
+// more specific scope, and that is the precedence the rest of the bridge assumes.
+//
+// Only TELEGRAM_AUTO_ACTIONS accepts a process-env override. TELEGRAM_BOT_TOKEN is
+// deliberately FILE-ONLY, exactly as loadToken() was before HIMMEL-1270.
+//
+// The reason is specific, not conservatism: this repo runs a SECOND bot. The
+// HIMMEL_JIRA_NUDGE SessionEnd relay reads `TELEGRAM_BOT_TOKEN` from the repo
+// `.env` (see the jira-nudge block in .env.example), which is a different
+// credential from the poller's. Letting the process env win would mean that
+// launching the bridge from any shell that had sourced the repo `.env`
+// authenticates the poller AS THE RELAY BOT — a deaf bridge, or two consumers
+// competing for the same getUpdates offset, depending on which token it grabbed.
+// The dedicated bridge file is the only correct source for that credential.
+//
+// For TELEGRAM_AUTO_ACTIONS the override is the point, and an EMPTY value counts:
+// `TELEGRAM_AUTO_ACTIONS=` in the launching shell is the one-run kill switch, so
+// treating it as "unset" would leave the file's `merge-public` live — a fail-OPEN
+// on the privileged direction.
+const PROCESS_OVERRIDABLE: ReadonlySet<BridgeEnvKey> = new Set<BridgeEnvKey>(["TELEGRAM_AUTO_ACTIONS"]);
+
+// `source` records WHERE each effective value came from, so a startup warning can
+// point the operator at the thing they actually have to edit. Reporting the file
+// path for a value the process env supplied would send them to fix the wrong
+// place — they would edit the file, restart, and the process value would win again.
+export type BridgeEnvSource = "process env" | "file";
+export type LoadedBridgeEnv = Partial<Record<BridgeEnvKey, string>> & {
+  path: string;
+  source: Partial<Record<BridgeEnvKey, BridgeEnvSource>>;
+};
+
+export async function loadBridgeEnv(): Promise<LoadedBridgeEnv> {
   const envPath = process.env.TELEGRAM_ENV ?? join(homedir(), ".claude", "channels", "telegram", ".env");
-  const txt = await readFile(envPath, "utf8");
-  const m = txt.match(/^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$/m);
-  if (!m) throw new Error("TELEGRAM_BOT_TOKEN not found in " + envPath);
-  return m[1].trim();
+  const fromFile = parseBridgeEnv(await readFile(envPath, "utf8"));
+  const merged: Partial<Record<BridgeEnvKey, string>> = { ...fromFile };
+  const source: Partial<Record<BridgeEnvKey, BridgeEnvSource>> = {};
+  for (const key of BRIDGE_ENV_KEYS) if (fromFile[key] !== undefined) source[key] = "file";
+  for (const key of BRIDGE_ENV_KEYS) {
+    if (!PROCESS_OVERRIDABLE.has(key)) continue;
+    const live = process.env[key];
+    if (live === undefined) continue;
+    merged[key] = live;          // "" included — the kill switch
+    source[key] = "process env";
+  }
+  if (!merged.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN not found in " + envPath);
+  return { ...merged, path: envPath, source };
+}
+
+// Where to tell the operator to go for a given key's EFFECTIVE value.
+export function bridgeEnvOrigin(env: LoadedBridgeEnv, key: BridgeEnvKey): string {
+  return env.source[key] === "process env" ? "the poller's process env" : env.path;
 }
 
 async function sessionsList(root: string): Promise<string[]> {
@@ -819,7 +925,8 @@ export async function replyViaOutbox(root: string, chat_id: number, text: string
 export async function main(): Promise<void> {
   const root = bridgeRoot();
   const repoCwd = process.env.HIMMEL_REPO ?? process.cwd();
-  const token = await loadToken();
+  const bridgeEnv = await loadBridgeEnv();
+  const token = bridgeEnv.TELEGRAM_BOT_TOKEN!;
   const access = await loadAccess();
   const allow = makeAllow(access);
   // cap/transient/giveup/blocked notice (HIMMEL-260/263/353): poller-side direct
@@ -891,14 +998,20 @@ export async function main(): Promise<void> {
   // never into env. We strip only TELEGRAM_BOT_TOKEN (+ TELEGRAM_OWN_POLLER) — the one
   // credential the arm path demonstrably never needs (fix M3). The arm runs
   // FIRE-AND-FORGET (autoFire) so a slow `--time smart` arm never stalls the ingest loop.
-  const enabledOps = parseEnabledOps(process.env.TELEGRAM_AUTO_ACTIONS, KNOWN_OPS);
+  // Read from the bridge .env (with a real process env var still winning) —
+  // HIMMEL-1270: this used to be process.env ONLY, so the documented .env location
+  // was inert. The describe* wrapper also makes a configured-but-inert value say so
+  // at startup instead of looking identical to "off".
+  const { ops: enabledOps, warning: autoActionsWarning } =
+    describeEnabledOps(bridgeEnv.TELEGRAM_AUTO_ACTIONS, KNOWN_OPS);
   if (enabledOps.size > 0) console.error(`[poller] auto-actions enabled: ${[...enabledOps].join(",")}`);
+  if (autoActionsWarning) console.error(`[poller] WARNING: ${autoActionsWarning} (set in ${bridgeEnvOrigin(bridgeEnv, "TELEGRAM_AUTO_ACTIONS")})`);
   const autoScript = join(import.meta.dir, "auto-action.sh");
   const runScript: RunScriptFn = async (op, arg, time) => {
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
     delete env.TELEGRAM_BOT_TOKEN;
     delete env.TELEGRAM_OWN_POLLER;
-    const p = Bun.spawn(["bash", autoScript, op, arg, time], { cwd: repoCwd, env, stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn([BASH_BIN, autoScript, op, arg, time], { cwd: repoCwd, env, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([
       new Response(p.stdout).text(),
       new Response(p.stderr).text(),

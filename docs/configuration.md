@@ -443,7 +443,7 @@ change; token and access config live *outside* the repo):
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | — | `~/.claude/channels/telegram/.env` (path override `TELEGRAM_ENV`) | bot auth. A *separate* copy in the repo `.env` feeds only the opt-in jira-nudge / session-status relays |
 | `access.json` (`TELEGRAM_ACCESS_PATH`) | — | `~/.claude/channels/telegram/access.json` | the allowlist: `allowFrom` (DM senders), `groups` (chat-id keys), per-group `allowFrom`/`vault`, `defaultVault`. Fails closed |
-| `TELEGRAM_AUTO_ACTIONS` | OFF | own .env | enables `/arm` (`arm-resume`) and `/mergepub` (`merge-public`) per-op; `merge-public` must be named explicitly — `all` never enables it |
+| `TELEGRAM_AUTO_ACTIONS` | OFF | bridge .env *or* process env (process wins) | enables `/arm` (`arm-resume`) and `/mergepub` (`merge-public`) per-op; `merge-public` must be named explicitly — `all` never enables it. Op names are exactly `arm-resume` / `merge-public`; the whole-value aliases `1`/`all`/`on`/`yes` enable `arm-resume` only, and any other unrecognised token parses to nothing (the poller warns at startup, naming the dropped tokens) |
 | `TELEGRAM_CLAUDE_MODEL` | `opus` | own .env | model pin for bounded bridge runs (never inherits your default) |
 | `TELEGRAM_MAX_CONCURRENT_RUNS` / `TELEGRAM_RETRY_MS` / `TELEGRAM_MAX_RETRIES` / `RUN_TIMEOUT_MS` | 2 / 15min / 3 / 30min | own .env | run concurrency/retry/deadline |
 | `TELEGRAM_TRIAGE` (+ `_MODEL`, `_PROVIDER`, `_TIMEOUT_MS`) | on (`deepseek-v4-flash`) | own .env | cheap group-message triage classifier; `TELEGRAM_TRIAGE=off` disables |
@@ -578,7 +578,7 @@ tables; this is the layer level.)
 | Recurring vault cadence | `scripts/luna/pipeline-cadence.sh disarm` | OS scheduler |
 | An overnight run in flight | `/stop` (graceful, marker-based; `--hard` also stops subagents) | marker file |
 | Telegram bridge | never started unless you start it; stop: `bun --cwd scripts/telegram supervisor.ts --kill`; remove the optional logon task: `pwsh -File scripts/telegram/install-logon-task.ps1 -Remove` | process / scheduler |
-| Telegram privileged ops | leave/unset `TELEGRAM_AUTO_ACTIONS` (default OFF; `merge-public` needs explicit naming even then) | bridge env |
+| Telegram privileged ops | default OFF — but there are now TWO sources, so "unset it" is not enough: clear/empty `TELEGRAM_AUTO_ACTIONS` in the bridge `.env` **and** unset any process override. For one run without editing the file, launch the bridge with `TELEGRAM_AUTO_ACTIONS=` (defined-but-empty beats the file). (`merge-public` needs explicit naming even when enabled) | bridge .env *or* process env (process wins) |
 | An external lane | `node scripts/lanes/set-lane-override.mjs <lane> never`, or unset its API key / remove its CLI from PATH | machine |
 | Lane config auto-reseed | `CLAUDE_LANE_AUTO_RESEED=0` | launching shell |
 | External CR critics | `CR_PROFILE=none` (claude-only review, no external spend) | `.env` / shell |

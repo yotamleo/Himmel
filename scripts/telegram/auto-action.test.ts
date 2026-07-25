@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  OPS, KNOWN_OPS, parseEnabledOps, isExecutableAutoCommand,
+  OPS, KNOWN_OPS, parseEnabledOps, describeEnabledOps, isExecutableAutoCommand,
   dispatchAutoAction, formatAuditLine, appendAuditLine, type AuditFields,
 } from "./auto-action";
 import type { Route } from "./router";
@@ -167,4 +167,64 @@ test("appendAuditLine appends a line and swallows a write failure (best-effort)"
   // injected writer that rejects → swallowed, no throw (best-effort contract)
   const boom = appendAuditLine(dir, { write: async () => { throw new Error("disk full"); } });
   await expect(boom(base)).resolves.toBeUndefined();
+});
+
+// --- describeEnabledOps: configured-but-inert must SAY so (HIMMEL-1270) ---
+
+test("describeEnabledOps: a value that enables ops returns no warning", () => {
+  expect(describeEnabledOps("arm-resume", KNOWN_OPS)).toEqual({ ops: new Set(["arm-resume"]) });
+  expect(describeEnabledOps("arm-resume,merge-public", KNOWN_OPS).warning).toBeUndefined();
+  expect(describeEnabledOps("1", KNOWN_OPS).warning).toBeUndefined();
+});
+
+test("describeEnabledOps: deliberately-off values are silent, not warnings", () => {
+  for (const off of [undefined, "", "  ", "0", "off", "no", "false", "OFF"]) {
+    const { ops, warning } = describeEnabledOps(off, KNOWN_OPS);
+    expect(ops.size).toBe(0);
+    expect(warning).toBeUndefined();
+  }
+});
+
+test("describeEnabledOps: the shipped .env.example typo warns and names the bad token (HIMMEL-1270)", () => {
+  // `arm` is what .env.example taught; KNOWN_OPS has `arm-resume`. It parsed to
+  // the empty set and the poller logged NOTHING — indistinguishable from "off",
+  // which is why the misconfiguration survived four days.
+  const { ops, warning } = describeEnabledOps("arm", KNOWN_OPS);
+  expect(ops.size).toBe(0);
+  expect(warning).toContain("enables NOTHING");
+  expect(warning).toContain("arm");
+  expect(warning).toContain("arm-resume");
+  expect(warning).toContain("merge-public");
+});
+
+test("describeEnabledOps: warns on an all-unknown list and reports every bad token", () => {
+  const { ops, warning } = describeEnabledOps("arm, mergepub", KNOWN_OPS);
+  expect(ops.size).toBe(0);
+  expect(warning).toContain("arm");
+  expect(warning).toContain("mergepub");
+});
+
+test("describeEnabledOps: a partially-valid list enables what it can AND names the dropped token", () => {
+  // glm CR: /arm works, the "auto-actions enabled:" line looks healthy, and
+  // /mergepub stays inert with no explanation — this ticket's failure in a quieter costume.
+  const { ops, warning } = describeEnabledOps("arm-resume,mergepublic", KNOWN_OPS);
+  expect(ops).toEqual(new Set(["arm-resume"]));
+  expect(warning).toContain("DROPPED");
+  expect(warning).toContain("mergepublic");
+});
+
+test("describeEnabledOps: the warning states the EXPLICIT_ONLY rule (merge-public is not covered by =1)", () => {
+  // The second half of the 1270 doc defect: `=1` looks like "enable everything"
+  // but never turns on merge-public, and nothing said so.
+  expect(describeEnabledOps("1", KNOWN_OPS).ops.has("merge-public")).toBe(false);
+  expect(describeEnabledOps("arm", KNOWN_OPS).warning).toContain("named explicitly");
+});
+
+test("describeEnabledOps: the whole-value enable-all aliases are never treated as op tokens", () => {
+  // `1` is not in KNOWN_OPS, but it is an alias, not a typo — warning it would be noise.
+  for (const alias of ["1", "all", "on", "yes", "true", "ALL"]) {
+    const { ops, warning } = describeEnabledOps(alias, KNOWN_OPS);
+    expect(ops).toEqual(new Set(["arm-resume"]));
+    expect(warning).toBeUndefined();
+  }
 });
