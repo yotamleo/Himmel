@@ -29,7 +29,15 @@
 #
 # Optional:
 #   --threshold <pct>   Utilization at/above which a window counts as
-#                       exhausted. Default 90.
+#                       exhausted. Must be 0-100. Default 90. Env override:
+#                       RESUME_SLOT_THRESHOLD (HIMMEL-1271) — an explicit
+#                       flag still wins; a non-numeric OR out-of-range env
+#                       value falls back to the default instead of erroring
+#                       (an out-of-range FLAG errors). This is the
+#                       SECOND, independent bank wall: the auto-arm watchdog
+#                       has its own AUTO_ARM_THRESHOLD (scripts/hooks/
+#                       auto-arm-on-cap.sh) and raising one does NOT raise
+#                       the other.
 #   --buffer-min <min>  Minutes from now for the ASAP slot. Default 4.
 #   --cache <path>      Override cache path.
 #   --max-age <s>       Refuse if cache older than <s>s. Default 300. 0 skips.
@@ -49,7 +57,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/py-armor.sh"
 
-THRESHOLD=90
+# Shipped default stays 90 (HIMMEL-1271): the threshold is how much runway is
+# left to write a handover before the bank walls, so the conservative value is
+# the right default for adopters. An operator who wants a tighter wall sets
+# RESUME_SLOT_THRESHOLD in their environment (and, separately,
+# AUTO_ARM_THRESHOLD for the watchdog wall — the two are independent).
+THRESHOLD_DEFAULT=90
+THRESHOLD="${RESUME_SLOT_THRESHOLD:-$THRESHOLD_DEFAULT}"
+THRESHOLD_FROM_ENV=1   # cleared by an explicit --threshold flag below
 BUFFER_MIN=4
 CACHE_PATH="/tmp/claude/statusline-usage-cache.json"
 MAX_AGE_SEC=300
@@ -64,20 +79,44 @@ Usage: resume-slot.sh [--threshold <pct>] [--buffer-min <min>]
 Reads the claude-statusline usage cache and prints the best relaunch slot:
 ASAP (now + buffer) when the bank has headroom, else the latest reset of any
 exhausted window. Default emit: HH:MM 24h local.
+
+Threshold must be 0-100; default 90. Override with RESUME_SLOT_THRESHOLD in the
+environment (an explicit --threshold wins; a non-numeric or out-of-range env
+value falls back to 90). The auto-arm watchdog's AUTO_ARM_THRESHOLD is a
+SEPARATE wall — raising one does not raise the other.
 EOF
+}
+
+# A two-arg option given with no value would reach `shift 2` with one arg left;
+# that returns nonzero and `set -e` kills the script with rc 1 and NO message —
+# so arm-resume's relay prints an EMPTY error, the exact failure this script's
+# error contract exists to prevent (see the rc relay at the bottom). Fail with
+# a usage line instead. Called as `_need_val "$@"`, so $1 is the option and $2
+# its value, if any.
+# A following token that is itself an option (`--threshold --emit epoch`) is a
+# missing value too: it would be swallowed as the value, and the REAL next arg
+# then fails as "unknown arg", pointing at the wrong token. No option here takes
+# a value that starts with `--`, so rejecting that shape is safe.
+_need_val() {
+    if [ $# -lt 2 ]; then
+        echo "ERR resume-slot: $1 needs a value" >&2; usage >&2; exit 1
+    fi
+    case "$2" in
+        --*) echo "ERR resume-slot: $1 needs a value (got the option '$2')" >&2; usage >&2; exit 1 ;;
+    esac
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --threshold)    THRESHOLD="${2:-}"; shift 2 ;;
-        --threshold=*)  THRESHOLD="${1#--threshold=}"; shift ;;
-        --buffer-min)   BUFFER_MIN="${2:-}"; shift 2 ;;
+        --threshold)    _need_val "$@"; THRESHOLD="$2"; THRESHOLD_FROM_ENV=0; shift 2 ;;
+        --threshold=*)  THRESHOLD="${1#--threshold=}"; THRESHOLD_FROM_ENV=0; shift ;;
+        --buffer-min)   _need_val "$@"; BUFFER_MIN="$2"; shift 2 ;;
         --buffer-min=*) BUFFER_MIN="${1#--buffer-min=}"; shift ;;
-        --cache)        CACHE_PATH="${2:-}"; shift 2 ;;
+        --cache)        _need_val "$@"; CACHE_PATH="$2"; shift 2 ;;
         --cache=*)      CACHE_PATH="${1#--cache=}"; shift ;;
-        --max-age)      MAX_AGE_SEC="${2:-}"; shift 2 ;;
+        --max-age)      _need_val "$@"; MAX_AGE_SEC="$2"; shift 2 ;;
         --max-age=*)    MAX_AGE_SEC="${1#--max-age=}"; shift ;;
-        --emit)         EMIT="${2:-}"; shift 2 ;;
+        --emit)         _need_val "$@"; EMIT="$2"; shift 2 ;;
         --emit=*)       EMIT="${1#--emit=}"; shift ;;
         -h|--help)      usage; exit 0 ;;
         *) echo "ERR resume-slot: unknown arg: $1" >&2; usage >&2; exit 1 ;;
@@ -87,8 +126,24 @@ done
 case "$EMIT" in hhmm|epoch|iso|reason|all) ;; *)
     echo "ERR resume-slot: --emit must be hhmm|epoch|iso|reason|all, got: $EMIT" >&2; exit 1 ;;
 esac
-if ! [[ "$THRESHOLD" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-    echo "ERR resume-slot: --threshold must be numeric, got: $THRESHOLD" >&2; exit 1
+# Numeric AND in range 0-100. The range check is not pedantry: a
+# syntactically-numeric but out-of-range value — `RESUME_SLOT_THRESHOLD=970`,
+# a fat-finger for 97 — makes every window's 0-100% utilization compare as
+# headroom, so `--time smart` picks ASAP and relaunches straight back into a
+# walled bank. As an env var that misconfiguration is PERSISTENT: it would
+# apply silently to every arm, including the auto-arm watchdog's, which is
+# exactly when parking at the reset matters. awk does the compare because the
+# threshold may be fractional and bash arithmetic is integer-only.
+if ! [[ "$THRESHOLD" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+   || ! awk -v t="$THRESHOLD" 'BEGIN { exit !(t >= 0 && t <= 100) }'; then
+    if [ "$THRESHOLD_FROM_ENV" -eq 1 ]; then
+        # A typo'd RESUME_SLOT_THRESHOLD must not break the resume-critical
+        # path — fall back silently to the shipped default, mirroring the
+        # auto-arm-on-cap.sh:186 contract. An explicit FLAG typo still errors.
+        THRESHOLD="$THRESHOLD_DEFAULT"
+    else
+        echo "ERR resume-slot: --threshold must be a number in 0-100, got: $THRESHOLD" >&2; exit 1
+    fi
 fi
 if ! [[ "$BUFFER_MIN" =~ ^[0-9]+$ ]]; then
     echo "ERR resume-slot: --buffer-min must be a non-negative integer, got: $BUFFER_MIN" >&2; exit 1

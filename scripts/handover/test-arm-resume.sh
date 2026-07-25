@@ -27,6 +27,11 @@ unset SKILL_TELEMETRY_DISABLE 2>/dev/null || true
 # ARM_NAME_TEMPLATE would skew every derived-name assertion below (N/S cases);
 # S8/S9 set it per-call.
 unset ARM_NAME_TEMPLATE 2>/dev/null || true
+# Slot-threshold shield (HIMMEL-1271): the --time smart cases assert against
+# the SHIPPED default wall, and an operator shell exporting
+# RESUME_SLOT_THRESHOLD reaches resume-slot.sh through this script. T9c sets
+# it per-call.
+unset RESUME_SLOT_THRESHOLD 2>/dev/null || true
 # Global workspace-trust shield (HIMMEL-386): arm-resume now pre-trusts the
 # resolved cwd in ~/.claude.json. The non-dry-run arm cases below (T14-T20
 # bridge/channel checks, dedup-any) would otherwise write the operator's real
@@ -313,6 +318,32 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
     *)
         assert_contains "T9 smart flows an at -t stamp" "at -t " "$out" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# T9b/T9c: RESUME_SLOT_THRESHOLD reaches resume-slot.sh THROUGH arm-resume
+#     (HIMMEL-1271). arm-resume deliberately does not forward a --threshold
+#     flag — the child process inherits the environment — so this is the
+#     end-to-end proof of that contract. One 95% seven_day fixture: EXHAUSTED
+#     under the shipped 90 default (park at the reset), HEADROOM under an
+#     operator-set 97 (ASAP).
+# ---------------------------------------------------------------------------
+HO=$(make_handover "$WORK_REPO")
+BUSY_CACHE="$TMP/usage-95.json"
+printf '{"five_hour":{"utilization":10.0,"resets_at":"%s"},"seven_day":{"utilization":95.0,"resets_at":"%s"}}' \
+    "$FIVE_RESET" "$SEVEN_RESET" > "$BUSY_CACHE"
+out=$(RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T9b default wall exits 0" 0 "$rc"
+assert_contains "T9b 95% is exhausted under the shipped 90 default" "wait for seven-day reset" "$out"
+
+HO=$(make_handover "$WORK_REPO")
+out=$(RESUME_SLOT_THRESHOLD=97 RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T9c env-97 wall exits 0" 0 "$rc"
+assert_contains "T9c RESUME_SLOT_THRESHOLD=97 reaches the child -> ASAP" "bank free" "$out"
+assert_contains "T9c child applied the env threshold, not 90" "< 97%" "$out"
 
 # ---------------------------------------------------------------------------
 # T10: --time smart with an exhausted-but-null-reset cache fails loud (rc 1

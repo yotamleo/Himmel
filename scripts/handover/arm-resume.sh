@@ -347,6 +347,12 @@ case "$RESUME_TIME" in
         # genuinely abandoned cache (>1h) still errors out. SLOT_MAX_AGE
         # overrides for tests / tighter freshness; RESUME_SLOT_CACHE injects a
         # fixture cache (test seam — keeps the smart path end-to-end testable).
+        # The THRESHOLD is deliberately NOT in _slot_args (HIMMEL-1271):
+        # resume-slot.sh runs as a plain child of this process, so a
+        # RESUME_SLOT_THRESHOLD set in the environment already reaches it —
+        # including down the auto-arm-on-cap.sh -> arm-resume -> resume-slot
+        # chain. Forwarding it as a flag would be a redundant second copy of
+        # the same knob (and a second place for its default to drift).
         _slot_args=(--max-age "${SLOT_MAX_AGE:-3600}")
         [ -n "${RESUME_SLOT_CACHE:-}" ] && _slot_args+=(--cache "$RESUME_SLOT_CACHE")
         # One --emit all call (epoch<TAB>hhmm<TAB>reason) — avoids a second,

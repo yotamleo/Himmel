@@ -88,7 +88,12 @@
 #
 # Env knobs (all optional):
 #   AUTO_ARM_DISABLE=1          kill switch (set in the launching shell)
-#   AUTO_ARM_THRESHOLD          utilization % that trips the arm (default 90)
+#   AUTO_ARM_THRESHOLD          utilization % that trips the arm (default 90).
+#                               INDEPENDENT of the slot-resolution wall
+#                               RESUME_SLOT_THRESHOLD (resume-slot.sh, also
+#                               default 90), which decides ASAP-vs-wait once
+#                               this hook has tripped. Raising one does NOT
+#                               raise the other — set both (HIMMEL-1271).
 #   AUTO_ARM_CACHE              usage-cache path override
 #   AUTO_ARM_STATE_DIR          throttle/fired marker dir (default /tmp/claude)
 #   AUTO_ARM_CHECK_INTERVAL     seconds between real checks (default 60)
