@@ -6,6 +6,11 @@ set -uo pipefail
 SLOT="$(cd "$(dirname "$0")" && pwd)/resume-slot.sh"
 [ -x "$SLOT" ] || chmod +x "$SLOT"
 
+# Hermetic run (HIMMEL-1271): the operator may have RESUME_SLOT_THRESHOLD
+# exported. Every case below asserts against the SHIPPED default unless it sets
+# the var itself, so clear it for the whole suite.
+unset RESUME_SLOT_THRESHOLD
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 FAILED=0
@@ -222,6 +227,128 @@ printf '{"five_hour":{"utilization":10.0,"resets_at":%s},"seven_day":{"utilizati
 out=$(bash "$SLOT" --cache "$TMP/epochnum.json" --max-age 0 --emit reason 2>&1); rc=$?
 assert_rc "T16b numeric resets_at exits 0" 0 "$rc"
 assert_contains "T16b waits for seven-day reset" "wait for seven-day reset" "$out"
+
+# ---------------------------------------------------------------------------
+# T17: RESUME_SLOT_THRESHOLD env override (HIMMEL-1271). The --time smart wall
+#      used to be hardcoded at 90, so an operator who considers a 95% bank
+#      usable still got parked at the window reset. Four contracts:
+#      env honoured / explicit flag beats env / bad env falls back silently /
+#      bad flag still errors.
+# ---------------------------------------------------------------------------
+# Default (no env, no flag): 95% counts as exhausted -> wait for the reset.
+mk_cache "$TMP/at95.json" 10.0 "$(iso_in 9000)" 95.0 "$(iso_in 200000)"
+out=$(bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T17 default threshold exits 0" 0 "$rc"
+assert_contains "T17 default (90) treats 95% as exhausted" "wait for seven-day reset" "$out"
+assert_contains "T17 default threshold is 90 in the reason" ">= 90%" "$out"
+
+# Env override 97: the same 95% cache now has headroom -> ASAP.
+out=$(RESUME_SLOT_THRESHOLD=97 bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T17b env override exits 0" 0 "$rc"
+assert_contains "T17b env 97 makes 95% headroom -> ASAP" "bank free" "$out"
+assert_contains "T17b reason reports the env threshold" "< 97%" "$out"
+
+# ...and 98% is still exhausted under the same env value.
+mk_cache "$TMP/at98.json" 10.0 "$(iso_in 9000)" 98.0 "$(iso_in 200000)"
+out=$(RESUME_SLOT_THRESHOLD=97 bash "$SLOT" --cache "$TMP/at98.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T17c env-97 exhausted path exits 0" 0 "$rc"
+assert_contains "T17c env 97 still treats 98% as exhausted" "wait for seven-day reset" "$out"
+
+# Explicit --threshold WINS over the env var.
+out=$(RESUME_SLOT_THRESHOLD=97 bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --threshold 90 --emit reason 2>&1); rc=$?
+assert_rc "T17d explicit --threshold exits 0" 0 "$rc"
+assert_contains "T17d explicit --threshold beats the env var" "wait for seven-day reset" "$out"
+assert_contains "T17d flag value (90) is the one applied" ">= 90%" "$out"
+
+# A typo'd env value falls back to the shipped default SILENTLY — this sits on
+# the resume-critical path (auto-arm -> arm-resume -> resume-slot), so it must
+# not error the way a bad FLAG does. Mirrors auto-arm-on-cap.sh:186.
+err=$(RESUME_SLOT_THRESHOLD=ninetyseven bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1 >"$TMP/t17e-out"); rc=$?
+assert_rc "T17e non-numeric env exits 0 (no crash)" 0 "$rc"
+assert_contains "T17e non-numeric env falls back to 90" ">= 90%" "$(cat "$TMP/t17e-out")"
+assert_not_contains "T17e fallback is silent (no ERR line)" "ERR resume-slot" "$err"
+# Multi-dot and empty are the same class of typo — same rc-0 + silent contract
+# as T17e, asserted explicitly so a future regression that starts ERRing on one
+# of these shapes cannot hide behind the fallback-reason check alone.
+err=$(RESUME_SLOT_THRESHOLD=9..7 bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1 >"$TMP/t17f-out"); rc=$?
+assert_rc "T17f multi-dot env exits 0 (no crash)" 0 "$rc"
+assert_contains "T17f multi-dot env falls back to 90" ">= 90%" "$(cat "$TMP/t17f-out")"
+assert_not_contains "T17f fallback is silent (no ERR line)" "ERR resume-slot" "$err"
+err=$(RESUME_SLOT_THRESHOLD='' bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1 >"$TMP/t17g-out"); rc=$?
+assert_rc "T17g empty env exits 0 (no crash)" 0 "$rc"
+assert_contains "T17g empty env falls back to 90" ">= 90%" "$(cat "$TMP/t17g-out")"
+assert_not_contains "T17g fallback is silent (no ERR line)" "ERR resume-slot" "$err"
+
+# A bad --threshold FLAG still errors loudly, even with a valid env value set —
+# loudly meaning a diagnostic on stderr, not just a nonzero rc.
+err=$(RESUME_SLOT_THRESHOLD=97 bash "$SLOT" --threshold abc --cache "$TMP/at95.json" --max-age 0 2>&1 >/dev/null); rc=$?
+assert_rc "T17h bad --threshold flag still exits 1 under a valid env" 1 "$rc"
+assert_contains "T17h bad --threshold flag reports the value it rejected" "ERR resume-slot: --threshold must be a number in 0-100, got: abc" "$err"
+
+# ---------------------------------------------------------------------------
+# T18: RANGE guard (codex-adv, HIMMEL-1271). A syntactically-numeric but
+#      out-of-range value — 970, the fat-finger for 97 — would make every
+#      window's 0-100% utilization compare as headroom, so `--time smart`
+#      would pick ASAP and relaunch straight back into a walled bank. As an
+#      env var that misconfiguration PERSISTS across every arm, so it must be
+#      caught, not trusted.
+# ---------------------------------------------------------------------------
+err=$(RESUME_SLOT_THRESHOLD=970 bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1 >"$TMP/t18-out"); rc=$?
+assert_rc "T18 out-of-range env exits 0 (no crash)" 0 "$rc"
+assert_contains "T18 out-of-range env falls back to 90 (not treated as headroom)" ">= 90%" "$(cat "$TMP/t18-out")"
+assert_not_contains "T18 env fallback is silent (no ERR line)" "ERR resume-slot" "$err"
+# The 95% window must still be EXHAUSTED — proving 970 never reached the compare.
+assert_contains "T18 95% still parks at the reset under a 970 typo" "wait for seven-day reset" "$(cat "$TMP/t18-out")"
+
+# An out-of-range explicit FLAG errors loudly (rc 1), like any other bad flag.
+err=$(bash "$SLOT" --threshold 101 --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T18b --threshold 101 exits 1" 1 "$rc"
+assert_contains "T18b surfaces the 0-100 range in the error" "must be a number in 0-100" "$err"
+
+# Boundaries stay VALID: 0 and 100 are legal thresholds.
+out=$(bash "$SLOT" --threshold 100 --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T18c --threshold 100 is valid" 0 "$rc"
+assert_contains "T18c at 100 a 95% window has headroom" "bank free" "$out"
+out=$(bash "$SLOT" --threshold 0 --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T18d --threshold 0 is valid" 0 "$rc"
+assert_contains "T18d at 0 every window is exhausted" "wait for seven-day reset" "$out"
+
+# ...and the SAME boundaries via the env path — the range guard must ACCEPT
+# 0/100 there too, not quietly fall back to 90 (which would still produce a
+# plausible-looking slot and hide the bug).
+out=$(RESUME_SLOT_THRESHOLD=100 bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T18e env threshold 100 is valid" 0 "$rc"
+assert_contains "T18e env 100 leaves a 95% window with headroom" "bank free" "$out"
+assert_contains "T18e env 100 was applied, not the 90 fallback" "< 100%" "$out"
+out=$(RESUME_SLOT_THRESHOLD=0 bash "$SLOT" --cache "$TMP/at95.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T18f env threshold 0 is valid" 0 "$rc"
+assert_contains "T18f env 0 exhausts every window" "wait for seven-day reset" "$out"
+assert_contains "T18f env 0 was applied, not the 90 fallback" ">= 0%" "$out"
+
+# ---------------------------------------------------------------------------
+# T19: a two-arg option with NO value must fail with a MESSAGE, not silently
+#      (CodeRabbit). `shift 2` with one arg left returns nonzero, and under
+#      `set -e` that killed the script with rc 1 and empty stderr — which
+#      arm-resume then relayed as an empty error, the exact shape this
+#      script's "the block OWNS its error reporting" contract forbids.
+# ---------------------------------------------------------------------------
+for _opt in --threshold --buffer-min --cache --max-age --emit; do
+    err=$(bash "$SLOT" "$_opt" 2>&1 >/dev/null); rc=$?
+    assert_rc "T19 $_opt with no value exits 1" 1 "$rc"
+    assert_contains "T19 $_opt with no value says so" "ERR resume-slot: $_opt needs a value" "$err"
+done
+# The =VALUE form is unaffected, and a present-but-invalid value still takes the
+# normal validation path (a message about the VALUE, not about a missing one).
+err=$(bash "$SLOT" --threshold=abc --cache "$TMP/at95.json" --max-age 0 2>&1 >/dev/null); rc=$?
+assert_rc "T19b --threshold=abc exits 1" 1 "$rc"
+assert_contains "T19b --threshold=abc is a value error, not a missing-value error" "must be a number in 0-100" "$err"
+
+# A following OPTION is a missing value too — otherwise it is swallowed as the
+# value and the error points at the wrong (next) token.
+err=$(bash "$SLOT" --threshold --emit epoch 2>&1 >/dev/null); rc=$?
+assert_rc "T19c --threshold followed by an option exits 1" 1 "$rc"
+assert_contains "T19c blames the option, not the token after it" "--threshold needs a value (got the option '--emit')" "$err"
+assert_not_contains "T19c does not misreport the next arg as unknown" "unknown arg: epoch" "$err"
 
 # ---------------------------------------------------------------------------
 # Summary

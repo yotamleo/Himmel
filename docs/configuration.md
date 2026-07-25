@@ -400,8 +400,24 @@ default subset:
 | `ARM_DUP_OK` / `QUEUE_LOCK_TAKEOVER` | unset | shell | override cross-machine duplicate-arm / fresh-queue-lock refusals |
 | `HIMMEL_HEADROOM_PROXY` | OFF | env | route the armed relaunch through a local headroom API proxy |
 | `AUTO_ARM_DISABLE` / `AUTO_ARM_SUBAGENT_DISABLE` | OFF (watchdogs armed) | shell | kill switches for the cap watchdogs (`scripts/hooks/auto-arm-on-cap.sh`, `auto-arm-on-subagent-cap.sh`) |
-| `AUTO_ARM_THRESHOLD` (+ `AUTO_ARM_CHECK_INTERVAL`, `AUTO_ARM_CACHE`, `AUTO_ARM_STATE_DIR`, `AUTO_ARM_MAX_ARM_FAILURES`, `AUTO_ARM_STALE_*`, `AUTO_ARM_BIN`) | 90% (60s, …) | env | watchdog tuning |
+| `AUTO_ARM_THRESHOLD` (+ `AUTO_ARM_CHECK_INTERVAL`, `AUTO_ARM_CACHE`, `AUTO_ARM_STATE_DIR`, `AUTO_ARM_MAX_ARM_FAILURES`, `AUTO_ARM_STALE_*`, `AUTO_ARM_BIN`) | 90% (60s, …) | env | watchdog tuning — **bank wall 1**, see below |
+| `RESUME_SLOT_THRESHOLD` | 90% | env | **bank wall 2**: utilization at/above which `--time smart` treats a window as exhausted (`scripts/handover/resume-slot.sh`) — an explicit `--threshold` still wins; must be 0-100, and a non-numeric or out-of-range value falls back to 90 silently (a `970` typo would otherwise read every window as headroom) |
 | Recurring vault cadence | — | `scripts/luna/pipeline-cadence.sh arm` | daily harvest/synthesize + weekly health runs, per-leg cheap model pins, `HIMMEL-Pipeline-*` dedup |
+
+**The two bank walls are INDEPENDENT** (HIMMEL-1271). Both default to 90% and
+both must be raised to move the effective wall:
+
+- `AUTO_ARM_THRESHOLD` decides **when the watchdog trips** — the utilization at
+  which `auto-arm-on-cap.sh` writes a snapshot and arms a resume.
+- `RESUME_SLOT_THRESHOLD` decides **where that resume is parked** —
+  `resume-slot.sh` (the `--time smart` resolver, used by the armed watchdog,
+  the Telegram bridge, and every manual `arm-resume.sh --time smart`) counts a
+  window at/above it as exhausted and waits for its reset instead of relaunching
+  ASAP.
+
+Raising only the first still parks the resume at the window reset; raising only
+the second still trips the watchdog at 90%. Both are **process env** — a value
+written only into `.env` is not read (`load-dotenv.sh` bridges neither).
 
 **Lanes & delegation**
 
