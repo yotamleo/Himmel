@@ -598,6 +598,14 @@ graphify_update() {
         echo "        (each live session spawns one), then re-run. Or install by hand once clear:"
         echo "            uv tool install --force --with mcp $spec"
       } >&2
+      # Share the WSL store like EVERY other path that leaves a working
+      # uv-managed install in place and returns 0 (already-at-pin,
+      # not-behind-pin, successful reinstall). Omitting it here was a real gap,
+      # not a deliberate difference: this SKIP is the ROUTINE outcome on a busy
+      # workstation — every live Claude Code session spawns a graphify-mcp — so
+      # a WSL operator would have silently lost the store link on most updates
+      # (HIMMEL-1289, public-PR CR outside-diff finding).
+      graphify_wsl_share_store
       # rc 0: nothing failed and nothing is broken — this is a deliberate,
       # healthy skip. A nonzero here would print himmel-update's generic
       # "failed (non-fatal)" warning on top, which is the misleading wording
