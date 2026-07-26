@@ -151,7 +151,11 @@ _qmd_win_path() {
 # POSIX has no such aliasing, so plain `pwd -P` is enough there.
 _qmd_canonical_dir() {
   local real
-  real="$(cd -- "$1" 2>/dev/null && pwd -P)" || return 1
+  # CDPATH= is load-bearing (public-PR CR, sibling of the _qmd_abs_path site
+  # below): with CDPATH exported — ordinary on a dev machine, and these run
+  # from an interactive session — `cd` ECHOES the directory it landed in, so
+  # the capture becomes TWO lines and can resolve somewhere else entirely.
+  real="$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)" || return 1
   [ -n "$real" ] || return 1
   if _qmd_is_windows; then
     _qmd_win_path "$real"
@@ -595,7 +599,9 @@ _qmd_abs_path() {
   esac
   d="$(dirname -- "$p")"
   b="$(basename -- "$p")"
-  d="$(cd -- "$d" 2>/dev/null && pwd)" || return 1
+  # CDPATH= — see _qmd_canonical_dir. Worse here: this value is a PINNED token
+  # baked into a scheduled runner, so a two-line capture ships silently.
+  d="$(CDPATH='' cd -- "$d" 2>/dev/null && pwd)" || return 1
   [ -n "$d" ] || return 1
   printf '%s/%s\n' "${d%/}" "$b"
 }

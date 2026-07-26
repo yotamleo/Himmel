@@ -397,6 +397,151 @@ exit 0
 # shellcheck disable=SC2016
 assert "pgrep rc 0 with 3 matches -> 3"   bash -c 'out=$(PATH="$1:/usr/bin:/bin" bash -c ". \"$2/graphify-bin.sh\"; _graphify_mcp_holders") && [ "$out" = "3" ]' _ "$probe_dir" "$SCRIPT_DIR"
 
+# Needle PARITY with the Windows branch (public-PR CR). Two needles are
+# documented above _graphify_mcp_holders — the entrypoint name AND the uv tool
+# dir — and Windows matches both, but the Unix branches searched only the
+# entrypoint. A uv-installed holder whose argv names the tool dir without the
+# literal entrypoint string was therefore counted CLEAR on Unix and HELD on
+# Windows: the same machine, two answers. Asserted on the PATTERN the probe
+# hands its matcher, which is where the omission lived.
+echo "[test-graphify-bin] _graphify_mcp_holders: Unix branches search BOTH needles"
+pat_log="$tmpdir/probe-pattern.txt"
+cat > "$probe_dir/pgrep" <<'FAKEPGREP'
+#!/bin/sh
+printf '%s\n' "$2" > "$PGREP_PAT_LOG"
+exit 1
+FAKEPGREP
+chmod +x "$probe_dir/pgrep"
+# The fake pgrep SHADOWS any host one (probe_dir is first on PATH), so this
+# case genuinely exercises the pgrep branch on every host — unlike the ps
+# fallback below, which needs pgrep absent outright.
+#
+# Single level, absolute interpreter, PATH set INSIDE the child and SCRIPT_DIR
+# passed POSITIONALLY — the same shape as the two ps-fallback asserts below
+# (CodeRabbit round). The earlier nested form interpolated SCRIPT_DIR into the
+# inner `bash -c` string, so a repo path containing a quote would have broken
+# the command; and its inner `bash` was looked up under the REWRITTEN PATH,
+# which is the 127 trap this suite hit twice already. PGREP_PAT_LOG rides in as
+# a prefix on the pinned interpreter, so the fake pgrep still inherits it.
+# shellcheck disable=SC2016
+PGREP_PAT_LOG="$pat_log" "$(command -v bash)" -c 'PATH="$1:/usr/bin:/bin"; export PATH; . "$2/graphify-bin.sh"; _graphify_mcp_holders' _ "$probe_dir" "$SCRIPT_DIR" >/dev/null 2>&1 || true
+assert "pgrep pattern carries the entrypoint needle" grep -q 'graphify-mcp' "$pat_log"
+assert "pgrep pattern carries the uv tool-dir needle too" grep -q 'uv\[' "$pat_log"
+
+# Same parity on the `ps` FALLBACK — which needs pgrep to be genuinely absent,
+# not merely missing from the fixture dir (CodeRabbit round). The first draft
+# used PATH="$probe_dir:/usr/bin:/bin", which still exposes the HOST's pgrep:
+# _graphify_mcp_holders would then take the pgrep branch, run the real pgrep
+# against the real process table, and never reach the fake ps at all. It passed
+# here only because Git Bash ships no pgrep — on a Linux CI runner, which has
+# one, these assertions would have gone red. A test whose branch depends on the
+# host is not testing the branch it names.
+#
+# So: an ISOLATED PATH containing only fakes plus a thin exec-wrapper for the
+# one real tool the fallback needs (grep). Wrapper, not a copy — an MSYS binary
+# copied out of /usr/bin loses its DLL neighbours and will not load.
+iso_dir="$tmpdir/iso-nopgrep"; mkdir -p "$iso_dir"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v grep)" > "$iso_dir/grep"
+printf '#!/bin/sh\necho Linux\n' > "$iso_dir/uname"
+chmod +x "$iso_dir/grep" "$iso_dir/uname"
+# shellcheck disable=SC2016
+gfy_pypi="$(bash -c '. "$1/graphify-bin.sh"; _graphify_pypi_name' _ "$SCRIPT_DIR")"
+cat > "$iso_dir/ps" <<FAKEPS
+#!/bin/sh
+printf '%s\n' "/home/u/.local/share/uv/tools/$gfy_pypi/bin/python -m server"
+FAKEPS
+chmod +x "$iso_dir/ps"
+# The interpreter is pinned ABSOLUTELY and PATH is set INSIDE the child — the
+# same trap this suite's sibling hit: `PATH=… bash -c` makes the parent look up
+# `bash` under the new PATH, so an isolated dir with no bash yields 127 and the
+# assertion never runs the code it claims to.
+# shellcheck disable=SC2016
+assert "ps fallback counts a tool-dir-only holder (was missed pre-fix)" \
+  "$(command -v bash)" -c 'PATH="$1"; export PATH; out=$(. "$2/graphify-bin.sh"; _graphify_mcp_holders) && [ "$out" = "1" ]' _ "$iso_dir" "$SCRIPT_DIR"
+# shellcheck disable=SC2016
+assert "the isolated fixture really has no pgrep (guards the guard)" \
+  bash -c '! PATH="$1" command -v pgrep >/dev/null 2>&1' _ "$iso_dir"
+
+# A CONFIGURED uv tool dir must be covered too (codex-adv round). `uv tool dir`
+# honours UV_TOOL_DIR, and this file already derives real paths from
+# _graphify_uv_tool_dir elsewhere, so a custom root is a supported shape — but
+# the needle was the hardcoded DEFAULT layout, so a holder under /custom/root
+# matched nothing and the probe reported CLEAR on a held venv.
+echo "[test-graphify-bin] _graphify_mcp_holders: a CUSTOM uv tool dir is covered"
+custom_root="$tmpdir/custom-uv-root"
+cat > "$iso_dir/uv" <<UVFAKE
+#!/bin/sh
+[ "\$1" = "tool" ] && [ "\$2" = "dir" ] && { printf '%s\n' "$custom_root"; exit 0; }
+exit 1
+UVFAKE
+chmod +x "$iso_dir/uv"
+cat > "$iso_dir/ps" <<FAKEPS2
+#!/bin/sh
+printf '%s\n' "$custom_root/$gfy_pypi/bin/python -m server"
+FAKEPS2
+chmod +x "$iso_dir/ps"
+# Same isolated PATH + absolute interpreter as above.
+# shellcheck disable=SC2016
+assert "ps fallback counts a holder under a CUSTOM uv tool dir" \
+  "$(command -v bash)" -c 'PATH="$1"; export PATH; out=$(. "$2/graphify-bin.sh"; _graphify_mcp_holders) && [ "$out" = "1" ]' _ "$iso_dir" "$SCRIPT_DIR"
+rm -f "$iso_dir/ps" "$iso_dir/uv"
+
+# The path->pattern helper must survive regex metacharacters in a real path: an
+# unbalanced paren is an ERE SYNTAX error, which would make the probe rc 2 —
+# "unavailable" — on a machine that is merely oddly named.
+echo "[test-graphify-bin] _graphify_pat_from_path escapes metacharacters"
+# shellcheck disable=SC2016
+assert "a path with parens and a dot still matches itself" \
+  bash -c 'p="/opt/tools (v2)/.hidden/graphifyy"; pat=$(. "$1/graphify-bin.sh"; _graphify_pat_from_path "$p"); printf "%s\n" "$p/bin/python" | grep -qE -- "$pat"' _ "$SCRIPT_DIR"
+# shellcheck disable=SC2016
+assert "the dot is escaped, not a wildcard" \
+  bash -c 'pat=$(. "$1/graphify-bin.sh"; _graphify_pat_from_path "/a/.local/graphifyy"); ! printf "%s\n" "/a/Xlocal/graphifyy" | grep -qE -- "$pat"' _ "$SCRIPT_DIR"
+
+# Windows branch: an apostrophe in the resolved tool dir must not break the
+# -Command string (codex-adv round). pat_dir carries a RESOLVED path now, so
+# `C:\Users\O'Brien\…` — an ordinary profile — would close the PowerShell
+# single-quoted string early. That is not a soft failure: the probe returns
+# "unavailable", and the CALLER treats "cannot probe" as "proceed", so the
+# reinstall would run against a held venv on the very platform this guard was
+# written for. Asserted on the generated -Command, captured from a fake pwsh.
+echo "[test-graphify-bin] Windows probe survives an apostrophe in the tool dir"
+win_dir="$tmpdir/win-probe"; mkdir -p "$win_dir"
+apos_root="/c/Users/O'Brien/AppData/uv/tools"
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$win_dir/uname"; chmod +x "$win_dir/uname"
+cat > "$win_dir/uv" <<UVAPOS
+#!/bin/sh
+[ "\$1" = "tool" ] && [ "\$2" = "dir" ] && { printf '%s\n' "$apos_root"; exit 0; }
+exit 1
+UVAPOS
+chmod +x "$win_dir/uv"
+# Fake pwsh: log the -Command it was handed, then answer "1 holder".
+cat > "$win_dir/pwsh" <<'PWSHFAKE'
+#!/bin/sh
+for a in "$@"; do last="$a"; done
+printf '%s\n' "$last" > "$PS_CMD_LOG"
+printf '1\n'
+PWSHFAKE
+chmod +x "$win_dir/pwsh"
+ps_log="$tmpdir/ps-command.txt"
+# SCRIPT_DIR goes in as a POSITIONAL arg, not interpolated into the command
+# string (CodeRabbit round): a repo path containing a quote would otherwise
+# break the command the same way the apostrophe this very test is about breaks
+# the PowerShell one.
+# shellcheck disable=SC2016
+apos_out="$(PATH="$win_dir:/usr/bin:/bin" PS_CMD_LOG="$ps_log" bash -c '. "$1/graphify-bin.sh"; _graphify_mcp_holders' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert "apostrophe path -> probe returns a COUNT, not unavailable" test "$apos_out" = "1"
+# The probe must not count ITSELF: the needles appear in this pwsh process's
+# own CommandLine, so without the exclusion a machine with zero real holders
+# reported 1 and the update was skipped forever.
+assert "generated -Command excludes the probe's own PID" grep -q 'ProcessId -ne' "$ps_log"
+# The generated command must have balanced single quotes; a lone apostrophe
+# from the path is exactly what unbalances it.
+apos_sq="'"
+# shellcheck disable=SC2016
+assert "generated -Command has balanced single quotes" \
+  bash -c 'n=$(tr -cd "$2" < "$1" | wc -c); [ $((n % 2)) -eq 0 ]' _ "$ps_log" "$apos_sq"
+assert "the apostrophe was doubled for PowerShell" grep -q "O''Brien" "$ps_log"
+
 echo "[test-graphify-bin] graphify_update: install 'succeeds' but the binary does not run -> HARD failure"
 gb_home="$tmpdir/gup-broken"; mkdir -p "$gb_home"
 gb_tools="$tmpdir/gup-broken-tools"; mkdir -p "$gb_tools/graphifyy"

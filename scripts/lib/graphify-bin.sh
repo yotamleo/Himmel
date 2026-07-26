@@ -460,6 +460,35 @@ PY
 # and every reinstall test skips. That is not hypothetical: it is how this seam
 # came to exist (the pre-existing extras-preserved test went red on a machine
 # with 4 live sessions).
+# _graphify_pat_from_path <path> — turn a REAL filesystem path into a pattern
+# that matches it in both an ERE (`pgrep -f`, `grep -E`) and a .NET regex
+# (PowerShell `-match`), so one needle serves every branch of the holder probe.
+#
+# Two jobs. Escape the regex metacharacters a real path can contain — a `.` in
+# `~/.local` otherwise matches any character, and an unbalanced `(` in a path
+# like `/opt/tools (v2)/…` is a SYNTAX error that makes the whole probe rc 2,
+# i.e. "unavailable" on a machine that is merely oddly named. And normalize
+# BOTH separators to `[/\]`, because the same install is spelled with `/` under
+# MSYS and `\` in a Windows argv.
+#
+# Done character-by-character rather than with sed: the separator class has to
+# survive the metacharacter pass without being re-escaped, and every sed
+# spelling of that needs `/` inside a bracket expression (which closes the
+# s/// early) or a delimiter that then collides with `|`. Bash 3.2-safe.
+_graphify_pat_from_path() {
+  local s="$1" out="" ch i=0 n=${#1}
+  while [ "$i" -lt "$n" ]; do
+    ch="${s:$i:1}"
+    case "$ch" in
+      /|\\)                                            out="${out}[/\\\\]" ;;
+      .|"["|"]"|"^"|"$"|"*"|+|"?"|"("|")"|"{"|"}"|"|") out="${out}\\${ch}" ;;
+      *)                                               out="${out}${ch}" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s\n' "$out"
+}
+
 _graphify_mcp_holders() {
   local pat_entry='graphify-mcp' pat_dir tool_name c ps_bin="" _out=""
   if [ -n "${GRAPHIFY_MCP_HOLDERS:-}" ]; then
@@ -468,7 +497,24 @@ _graphify_mcp_holders() {
     return 0
   fi
   tool_name="$(_graphify_pypi_name)"
-  pat_dir="uv[/\\\\]tools[/\\\\]${tool_name}"
+  # Two tool-dir needles, OR'd (codex-adv round): the RESOLVED dir plus the
+  # default layout as a fallback.
+  #
+  # The default-shape literal alone failed OPEN on a configured UV_TOOL_DIR —
+  # `uv tool dir` honours it, and this file already derives real paths from
+  # _graphify_uv_tool_dir twice (the venv probe and the receipt read), so a
+  # custom root is a SUPPORTED shape, not a hypothetical. A holder living in
+  # /custom/root/graphifyy matched neither needle, so the probe said "clear"
+  # and graphify_update walked into `uv tool install --force` against a held
+  # venv — the corruption this guard exists to stop.
+  #
+  # Keeping the default-shape branch too is deliberate: if `uv` is absent or
+  # `uv tool dir` fails, the resolved value falls back to the default anyway,
+  # and an extra alternative can only make the probe match MORE. This guard
+  # must fail CLOSED, so a redundant needle is the right kind of wrong.
+  local pat_root
+  pat_root="$(_graphify_pat_from_path "$(_graphify_uv_tool_dir)/${tool_name}")"
+  pat_dir="${pat_root}|uv[/\\\\]tools[/\\\\]${tool_name}"
   case "$(uname -s 2>/dev/null || echo)" in
     MINGW*|MSYS*|CYGWIN*)
       for c in pwsh powershell; do command -v "$c" >/dev/null 2>&1 && { ps_bin="$c"; break; }; done
@@ -479,8 +525,32 @@ _graphify_mcp_holders() {
       # "0 holders" — so the reinstall proceeded on exactly the platform this
       # guard protects, which inverts the entire point of it. An unusable probe
       # is UNAVAILABLE (rc 1), never "clear" (HIMMEL-1289, public-PR CR).
+      #
+      # Doubling apostrophes is the PowerShell string boundary, and it is
+      # SEPARATE from the regex escaping (codex-adv round). pat_dir now carries
+      # a RESOLVED path, so it can contain `'` — `C:\Users\O'Brien\...` is an
+      # ordinary profile — and a lone apostrophe closes the single-quoted
+      # -Command string, making it a syntax error. That is not a harmless
+      # failure: an unusable probe returns 1, and the CALLER treats "cannot
+      # probe" as "proceed", so the reinstall would run against a held venv —
+      # the corruption this guard exists to stop, on the platform it was
+      # written for. Escaping here, not in _graphify_pat_from_path, because
+      # that helper also feeds pgrep/grep where `''` would be a literal.
+      local ps_entry ps_dir
+      ps_entry="$(printf '%s' "$pat_entry" | sed "s/'/''/g")"
+      ps_dir="$(printf '%s' "$pat_dir" | sed "s/'/''/g")"
+      # `ProcessId -ne $PID` excludes the PROBE ITSELF (CodeRabbit round). The
+      # needles are literally present in this pwsh process's own CommandLine,
+      # so Win32_Process matched it every time and the count was always one
+      # too high. That is the Windows twin of the `[g]raphify-mcp` bracket
+      # trick on the ps branch, and it was missing: on a machine with ZERO
+      # real holders the probe returned 1, the caller read "1 holder — NOT
+      # attempting the reinstall", and the graphify pin could never advance on
+      # Windows at all. Measured on this host: 7 matches self-counted vs 6
+      # real. Fails closed, so nothing was corrupted — it just silently never
+      # updated.
       _out="$(MSYS_NO_PATHCONV=1 "$ps_bin" -NoProfile -Command \
-        "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { \$_.CommandLine -match '$pat_entry' -or \$_.CommandLine -match '$pat_dir' }).Count" \
+        "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { \$_.ProcessId -ne \$PID -and (\$_.CommandLine -match '$ps_entry' -or \$_.CommandLine -match '$ps_dir') }).Count" \
         2>/dev/null | tr -cd '0-9')" || return 1
       case "$_out" in ''|*[!0-9]*) return 1 ;; esac
       printf '%s\n' "$_out"
@@ -498,7 +568,12 @@ _graphify_mcp_holders() {
         # fail-open). pgrep's codes are load-bearing here:
         #   0 = matched, 1 = ran fine and matched NOTHING (a real zero),
         #   2/3 = usage error / fatal -> the probe is UNAVAILABLE, not clear.
-        _out="$(pgrep -f "$pat_entry" 2>/dev/null)"
+        # BOTH needles, same as the Windows branch (public-PR CR): the two
+        # documented above are entrypoint-name AND tool-dir, and a holder can
+        # present either — a uv-installed server whose argv names the tool dir
+        # without the literal entrypoint string was counted as CLEAR here while
+        # Windows counted it. `pgrep -f` takes an ERE, so alternation is free.
+        _out="$(pgrep -f "$pat_entry|$pat_dir" 2>/dev/null)"
         case "$?" in
           0) _out="$(printf '%s\n' "$_out" | grep -c . || true)" ;;
           1) _out=0 ;;
@@ -517,7 +592,22 @@ _graphify_mcp_holders() {
         # which would read as a clear machine.
         _out="$(ps -eo args 2>/dev/null)" || return 1
         [ -n "$_out" ] || return 1
-        _out="$(printf '%s\n' "$_out" | grep -c -- "[g]raphify-mcp" || true)"
+        # -cE + both needles, matching the pgrep branch and Windows.
+        #
+        # What keeps this from matching ITSELF is the pre-captured snapshot
+        # above, NOT the bracket trick (CR round — the first draft of this
+        # comment credited the brackets and was wrong). `ps` has already run
+        # and its output is in $_out before grep starts, so grep's own argv was
+        # never in the text being searched.
+        #
+        # The brackets alone would NOT save it: pat_dir ends with the plain,
+        # unbracketed tool name, so the argv string
+        #   grep -cE -- [g]raphify-mcp|uv[/\]tools[/\]graphify-mcp
+        # contains a literal `graphify-mcp` that the `[g]raphify-mcp` branch
+        # matches — verified. Refactoring this to a live `ps -eo args | grep`
+        # pipe would therefore count grep itself and report a phantom holder,
+        # blocking every update forever. Keep the capture-then-search shape.
+        _out="$(printf '%s\n' "$_out" | grep -cE -- "[g]raphify-mcp|$pat_dir" || true)"
         case "$_out" in ''|*[!0-9]*) return 1 ;; esac
         printf '%s\n' "$_out"
       else

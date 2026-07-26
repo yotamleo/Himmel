@@ -163,8 +163,14 @@ assert "relative resolution still ends at the bun-global qmd.js" \
 # pinning an empty string into a runner.
 rm -f "$tmpdir/bin/qmd" "$tmpdir/bin/bun"
 rc=0
-HOME="$tmpdir" PATH="$tmpdir/bin" BUN_INSTALL="$tmpdir/no-bun-here" \
-  bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation' >/dev/null 2>&1 || rc=$?
+# Interpreter pinned ABSOLUTELY, sanitized PATH set INSIDE the child (public-PR
+# CR). As a command prefix, `PATH=… bash -c` makes the parent search for `bash`
+# under the NEW PATH — and $tmpdir/bin has no bash — so the shell never started
+# and "command not found" is ALSO 127. The assertion then held no matter what
+# qmd_pinned_invocation did, including returning 0 with a bogus token. Verified:
+# `PATH=<empty-dir> bash -c 'echo hi'` exits 127 without running anything.
+HOME="$tmpdir" BUN_INSTALL="$tmpdir/no-bun-here" \
+  "$(command -v bash)" -c 'PATH="'"$tmpdir"'/bin"; . "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation' >/dev/null 2>&1 || rc=$?
 assert "no qmd anywhere -> rc 127" test "$rc" -eq 127
 # Restore the fake bun the later tests rely on.
 cat > "$tmpdir/bin/bun" <<'EOF'
@@ -777,6 +783,49 @@ assert "ubuntu.sh execs himmelctl bootstrap.sh (delegation is real, HIMMEL-887)"
   grep -qE -- '^[[:space:]]*(HIMMELCTL_REPO_ROOT="\$HIMMEL_PATH"[[:space:]]+)?exec[[:space:]]+bash[[:space:]]+"\$HIMMEL_PATH/scripts/himmelctl/bootstrap\.sh"([[:space:]]+--default-scope[[:space:]]+[A-Za-z]+)?[[:space:]]*$' "$repo_root/scripts/machine-setup/ubuntu.sh"
 assert "ubuntu.sh prints the himmelctl bootstrap delegation NOTICE (HIMMEL-887)" \
   grep -q 'delegating to himmelctl bootstrap' "$repo_root/scripts/machine-setup/ubuntu.sh"
+
+# --- CDPATH hygiene (public-PR CR) -----------------------------------------
+# With CDPATH exported, `cd -- "$d" && pwd` inside $( ) captures TWO lines: cd
+# echoes the directory it landed in, then pwd prints it again. The resolver
+# would bake that two-line value into a pinned runner token. Both cd sites are
+# CDPATH=-prefixed; this pins the behaviour so a future edit cannot drop it.
+#
+# The operand must stay RELATIVE in both cases below. CDPATH is consulted only
+# for a relative path that does not begin with ./ or ../, so handing these
+# helpers an ABSOLUTE dir would make the test pass with the guard deleted — it
+# would assert nothing at all.
+echo "[test-qmd-bin] CDPATH does not corrupt path resolution"
+cdp_dir="$tmpdir/cdpath-probe"
+mkdir -p "$cdp_dir/target"
+: > "$cdp_dir/target/file.js"
+# shellcheck disable=SC2016
+cdp_out="$(cd "$cdp_dir" && CDPATH="$cdp_dir" "$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_abs_path "target/file.js"' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert "CDPATH set -> _qmd_abs_path still emits ONE line" \
+  test "$(printf '%s\n' "$cdp_out" | wc -l)" -eq 1
+assert "CDPATH set -> resolved path still ends at the requested file" \
+  grep -q 'target/file\.js$' <<<"$cdp_out"
+# The SIBLING cd site, _qmd_canonical_dir, needs its own pin (CodeRabbit round):
+# the CDPATH='' guard went onto BOTH sites but only _qmd_abs_path was covered,
+# so a future edit could drop it here and the whole suite would still pass.
+#
+# Pinned by EQUALITY, not by line count — the first draft of this test used
+# `wc -l` like its sibling above and passed with the guard DELETED. On Windows
+# the canonical form goes through `cygpath -w`, which COLLAPSES the stray
+# newline rather than choking on it: the two-line capture comes back as one
+# entirely plausible single path with the directory spliced onto itself,
+#   C:\…\Temp\tmp.X\target\tmp\tmp.X\target
+# which is nonexistent but perfectly well-formed. Measured, guard removed:
+# 1 line, wrong path, assertion green. Comparing the relative operand against
+# the ABSOLUTE one — which never consults CDPATH — catches that shape and the
+# plain two-line POSIX shape both.
+# shellcheck disable=SC2016
+cdp_can="$(cd "$cdp_dir" && CDPATH="$cdp_dir" "$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_canonical_dir "target"' _ "$SCRIPT_DIR" 2>/dev/null)"
+# shellcheck disable=SC2016
+cdp_can_abs="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_canonical_dir "$2"' _ "$SCRIPT_DIR" "$cdp_dir/target" 2>/dev/null)"
+assert "the absolute-operand baseline resolved at all (guards the guard)" \
+  test -n "$cdp_can_abs"
+assert "CDPATH set -> _qmd_canonical_dir matches the absolute-operand resolution" \
+  test "$cdp_can" = "$cdp_can_abs"
 
 echo "[test-qmd-bin] has_qmd matches binary presence in this env"
 if has_qmd; then
