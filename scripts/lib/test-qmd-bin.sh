@@ -125,7 +125,7 @@ assert "token 1 is the bun executable" \
 assert "token 2 is the bun-global qmd.js" \
   test "$(printf '%s\n' "$pin_out" | sed -n '2p')" = "$tmpdir/custom-bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
 # shellcheck disable=SC2016
-assert "both tokens are absolute" bash -c '! grep -qv "^/\|^[A-Za-z]:[/\\\\]" <<<"$1"' _ "$pin_out"
+assert "both tokens are absolute" bash -c '! grep -qvE "^(/|[A-Za-z]:[/\\])" <<<"$1"' _ "$pin_out"
 
 echo "[test-qmd-bin] qmd_pinned_invocation — PATH fallback + hard failure"
 # No bun-js anywhere: falls through to a PATH qmd, ONE token.
@@ -142,7 +142,7 @@ assert "PATH branch emits exactly one token" test "$(printf '%s\n' "$pin_path" |
 assert "PATH branch token is exactly the PATH qmd" test "$pin_path" = "$tmpdir/bin/qmd"
 # shellcheck disable=SC2016
 assert "PATH branch token is absolute" \
-  bash -c 'grep -q "^/\|^[A-Za-z]:[/\\\\]" <<<"$1"' _ "$pin_path"
+  bash -c 'grep -qE "^(/|[A-Za-z]:[/\\])" <<<"$1"' _ "$pin_path"
 # RELATIVE inputs must still yield ABSOLUTE tokens (HIMMEL-1283 CR). Two ways a
 # relative path leaks in: a relative entry on PATH (so `command -v` answers
 # relatively) and a relative BUN_INSTALL (so the derived qmd.js path is
@@ -153,7 +153,7 @@ pin_rel="$(cd "$tmpdir" && HOME="$tmpdir" PATH="bin:$PATH" BUN_INSTALL="custom-b
   bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation')"
 # shellcheck disable=SC2016
 assert "relative PATH + relative BUN_INSTALL still yield absolute tokens" \
-  bash -c '! grep -qv "^/\|^[A-Za-z]:[/\\\\]" <<<"$1"' _ "$pin_rel"
+  bash -c '! grep -qvE "^(/|[A-Za-z]:[/\\])" <<<"$1"' _ "$pin_rel"
 assert "relative resolution still emits two tokens" \
   test "$(printf '%s\n' "$pin_rel" | wc -l)" -eq 2
 assert "relative resolution still ends at the bun-global qmd.js" \

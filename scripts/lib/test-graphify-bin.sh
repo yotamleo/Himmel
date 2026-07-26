@@ -362,6 +362,41 @@ assert "held: NO uv install attempted (this is what keeps graphify working)" \
 assert "held: does NOT use the misleading 'non-fatal' wording" \
   bash -c '! grep -q "non-fatal" <<<"$1"' _ "$out"
 
+# HIMMEL-1289: a BROKEN probe must read as UNAVAILABLE, never as "0 holders".
+# Both critics caught that the first attempt at this was itself fail-open:
+# `pgrep … | grep -c .` always emits a digit, so the numeric validator could
+# never fire and a broken pgrep reported a clear machine — letting the guarded
+# reinstall proceed on exactly the platform the guard protects.
+echo "[test-graphify-bin] _graphify_mcp_holders: a broken probe is UNAVAILABLE, not 0"
+probe_dir="$tmpdir/broken-probe"; mkdir -p "$probe_dir"
+# A fake `uname` is REQUIRED, not decoration: _graphify_mcp_holders branches on
+# uname -s, and on Git Bash (MINGW*) it takes the WINDOWS branch and never
+# reaches pgrep at all. Without this the assertions below pass for the wrong
+# reason — the Windows branch returning 1 because no pwsh is on the stripped
+# PATH — which is a false green that proves nothing about the pgrep path.
+printf '#!/bin/sh
+echo Linux
+' > "$probe_dir/uname"; chmod +x "$probe_dir/uname"
+printf '#!/bin/sh
+exit 2
+' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"   # usage error
+# shellcheck disable=SC2016
+assert "broken pgrep (rc 2) -> probe returns nonzero, emits no count"   bash -c 'PATH="$1:/usr/bin:/bin" bash -c ". \"$2/graphify-bin.sh\"; ! _graphify_mcp_holders >/dev/null 2>&1"' _ "$probe_dir" "$SCRIPT_DIR"
+# And the honest zero still works: a pgrep that RAN and matched nothing (rc 1)
+# is a real 0, not a failure — otherwise the guard would block every update.
+printf '#!/bin/sh
+exit 1
+' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"
+# shellcheck disable=SC2016
+assert "pgrep rc 1 (ran, no matches) -> a real 0"   bash -c 'out=$(PATH="$1:/usr/bin:/bin" bash -c ". \"$2/graphify-bin.sh\"; _graphify_mcp_holders") && [ "$out" = "0" ]' _ "$probe_dir" "$SCRIPT_DIR"
+# A pgrep that MATCHED must count the lines it printed.
+printf '#!/bin/sh
+printf "111\n222\n333\n"
+exit 0
+' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"
+# shellcheck disable=SC2016
+assert "pgrep rc 0 with 3 matches -> 3"   bash -c 'out=$(PATH="$1:/usr/bin:/bin" bash -c ". \"$2/graphify-bin.sh\"; _graphify_mcp_holders") && [ "$out" = "3" ]' _ "$probe_dir" "$SCRIPT_DIR"
+
 echo "[test-graphify-bin] graphify_update: install 'succeeds' but the binary does not run -> HARD failure"
 gb_home="$tmpdir/gup-broken"; mkdir -p "$gb_home"
 gb_tools="$tmpdir/gup-broken-tools"; mkdir -p "$gb_tools/graphifyy"

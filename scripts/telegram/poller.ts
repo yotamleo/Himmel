@@ -924,7 +924,15 @@ export type BurstCoalescer = RunFn & {
 
 // Env numbers are operator-supplied: a typo must not silently disable the cap
 // (NaN comparisons are always false, which would hold a burst forever).
+//
+// The empty/whitespace guard is load-bearing (HIMMEL-1289, public-PR CR):
+// Number("") is 0, NOT NaN — and 0 is a MEANINGFUL value here (it disables
+// coalescing). So `TELEGRAM_BATCH_QUIET_MS=` — set but empty, which is what a
+// commented-out or half-edited .env line produces — would have silently turned
+// burst coalescing OFF while looking configured, instead of falling back to the
+// default. An empty value is absence, not a request for zero.
 function positiveEnvMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
@@ -972,7 +980,16 @@ export function makeBurstCoalescer(
       // tick — the pre-existing safety net, which only works if the hold is
       // gone by then.
       holds.delete(session);
-      await dispatch(session, h.model);
+      // Isolate per-session failures (HIMMEL-1289, public-PR CR): one session's
+      // dispatch throwing must not abort the sweep and delay every OTHER
+      // already-due session to the next tick. Self-healing either way — the
+      // hold is already dropped and deliverAllPending re-offers the session —
+      // but there is no reason to couple unrelated chats to one failure.
+      try {
+        await dispatch(session, h.model);
+      } catch (e) {
+        console.error(`[poller] burst flush failed for ${session}: ${e}`);
+      }
     }
   };
   return request;

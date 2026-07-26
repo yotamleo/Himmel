@@ -461,7 +461,7 @@ PY
 # came to exist (the pre-existing extras-preserved test went red on a machine
 # with 4 live sessions).
 _graphify_mcp_holders() {
-  local pat_entry='graphify-mcp' pat_dir tool_name c ps_bin=""
+  local pat_entry='graphify-mcp' pat_dir tool_name c ps_bin="" _out=""
   if [ -n "${GRAPHIFY_MCP_HOLDERS:-}" ]; then
     [ "$GRAPHIFY_MCP_HOLDERS" = "unavailable" ] && return 1
     printf '%s\n' "$GRAPHIFY_MCP_HOLDERS"
@@ -473,22 +473,53 @@ _graphify_mcp_holders() {
     MINGW*|MSYS*|CYGWIN*)
       for c in pwsh powershell; do command -v "$c" >/dev/null 2>&1 && { ps_bin="$c"; break; }; done
       [ -n "$ps_bin" ] || return 1
-      MSYS_NO_PATHCONV=1 "$ps_bin" -NoProfile -Command \
+      # Capture, THEN validate. Piping straight to stdout failed OPEN: if pwsh
+      # errors or is blocked by policy the pipeline emits nothing, and the
+      # caller's `case ''|*[!0-9]*) holders=0` sanitizer read that empty line as
+      # "0 holders" — so the reinstall proceeded on exactly the platform this
+      # guard protects, which inverts the entire point of it. An unusable probe
+      # is UNAVAILABLE (rc 1), never "clear" (HIMMEL-1289, public-PR CR).
+      _out="$(MSYS_NO_PATHCONV=1 "$ps_bin" -NoProfile -Command \
         "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { \$_.CommandLine -match '$pat_entry' -or \$_.CommandLine -match '$pat_dir' }).Count" \
-        2>/dev/null | tr -cd '0-9' | head -c 8
-      printf '\n'
+        2>/dev/null | tr -cd '0-9')" || return 1
+      case "$_out" in ''|*[!0-9]*) return 1 ;; esac
+      printf '%s\n' "$_out"
       ;;
     *)
       if command -v pgrep >/dev/null 2>&1; then
-        pgrep -fc "$pat_entry" 2>/dev/null || echo 0
+        # NOT `pgrep -c`: the count flag is a GNU/procps extension and macOS
+        # BSD pgrep has no equivalent, so `-fc` there is a usage error.
+        #
+        # Branch on pgrep's OWN exit code, and do NOT pipe it into a counter.
+        # `pgrep … | grep -c .` always emits a digit, so the numeric validator
+        # can never fire and a BROKEN pgrep still reports "0 holders" — the
+        # exact fail-open this fix was supposed to close (caught by both
+        # critics on the first pass; the first attempt at it was itself
+        # fail-open). pgrep's codes are load-bearing here:
+        #   0 = matched, 1 = ran fine and matched NOTHING (a real zero),
+        #   2/3 = usage error / fatal -> the probe is UNAVAILABLE, not clear.
+        _out="$(pgrep -f "$pat_entry" 2>/dev/null)"
+        case "$?" in
+          0) _out="$(printf '%s\n' "$_out" | grep -c . || true)" ;;
+          1) _out=0 ;;
+          *) return 1 ;;
+        esac
+        case "$_out" in ''|*[!0-9]*) return 1 ;; esac
+        printf '%s\n' "$_out"
       elif command -v ps >/dev/null 2>&1; then
         # shellcheck disable=SC2009
         # pgrep is preferred and tried first; this is the fallback for hosts
         # without it. The bracket in "[g]raphify-mcp" keeps the grep from
         # matching ITS OWN argv in the ps output — the classic off-by-one that
         # would report a holder on a completely idle machine and block the
-        # update forever.
-        ps -eo args 2>/dev/null | grep -c -- "[g]raphify-mcp" || echo 0
+        # update forever. `ps` is captured and status-checked FIRST for the
+        # same reason as above: a failed ps piped into grep -c yields "0",
+        # which would read as a clear machine.
+        _out="$(ps -eo args 2>/dev/null)" || return 1
+        [ -n "$_out" ] || return 1
+        _out="$(printf '%s\n' "$_out" | grep -c -- "[g]raphify-mcp" || true)"
+        case "$_out" in ''|*[!0-9]*) return 1 ;; esac
+        printf '%s\n' "$_out"
       else
         return 1
       fi

@@ -2112,3 +2112,39 @@ test("typing fires while a burst is held, not just while a run is in flight", as
   await signalTyping(r, isBusy, async () => ["s"], async (chat) => { chats.push(chat); });
   expect(chats).toEqual([42]);           // operator sees "typing…" during the hold
 });
+
+// HIMMEL-1289 (public-PR CR): an EMPTY env var is ABSENCE, not a request for 0.
+// Number("") is 0, not NaN, and 0 is meaningful here (it disables coalescing) —
+// so `TELEGRAM_BATCH_QUIET_MS=` (a commented-out or half-edited .env line) would
+// have silently turned coalescing OFF while looking configured.
+test("an EMPTY TELEGRAM_BATCH_QUIET_MS falls back to the default, it does not mean 0", async () => {
+  const prev = process.env.TELEGRAM_BATCH_QUIET_MS;
+  try {
+    process.env.TELEGRAM_BATCH_QUIET_MS = "";
+    const runs: string[] = [];
+    let now = 0;
+    // No explicit quietMs -> the env path is exercised.
+    const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { now: () => now });
+    await c("s");
+    expect(runs).toEqual([]);              // held, NOT dispatched immediately
+    expect(c.isHolding("s")).toBe(true);   // i.e. the default (4000) applied
+  } finally {
+    if (prev === undefined) delete process.env.TELEGRAM_BATCH_QUIET_MS;
+    else process.env.TELEGRAM_BATCH_QUIET_MS = prev;
+  }
+});
+
+test("one session's dispatch failure does not abort the flush of others", async () => {
+  const runs: string[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (s) => {
+    if (s === "boom") throw new Error("dispatch exploded");
+    runs.push(s);
+  }, { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("boom");
+  await c("fine");
+  now = 200;
+  await c.flushDue(now);                   // must not reject
+  expect(runs).toEqual(["fine"]);          // the healthy session still went
+  expect(c.isHolding("boom")).toBe(false); // and the failed hold was released
+});

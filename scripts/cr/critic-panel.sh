@@ -678,11 +678,23 @@ process_member() {
             _fb_deadline=$((SECONDS + _pm_timeout))
             for _fb_model in $_pm_fallback; do
                 [ -n "$_fb_model" ] || continue
+                # The TOTAL-panel budget outranks the chain's own seat budget
+                # (HIMMEL-1289, public-PR CR). The HIMMEL-1280 clamp bounded the
+                # PRIMARY attempt only; a trigger=any primary that times out
+                # then entered this chain with a FRESH deadline built from the
+                # full per-member timeout, so a run could exceed the total the
+                # caller was promised. Refuse to start a candidate once the
+                # panel budget is spent, and cap each one by what is left.
+                if _panel_deadline_passed; then
+                    echo "panel-availability: $_pm_slug fallback-chain stopped — total panel deadline reached reason=panel-deadline" >&2
+                    break
+                fi
                 _fb_remaining=$((_fb_deadline - SECONDS))
                 if [ "$_fb_remaining" -le 0 ]; then
                     echo "panel-availability: $_pm_slug fallback-chain budget exhausted (${_pm_timeout}s) — remaining candidates skipped" >&2
                     break
                 fi
+                _fb_remaining="$(_clamp_to_panel_budget "$_fb_remaining")"
                 _RM_TIMEOUT_SECS="$_fb_remaining"
                 _fb_out="$(mktemp -t critic-panel-fb.XXXXXX)"
                 _fb_err="$(mktemp -t critic-panel-fb-err.XXXXXX)"
