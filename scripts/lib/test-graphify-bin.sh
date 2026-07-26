@@ -380,22 +380,27 @@ echo Linux
 printf '#!/bin/sh
 exit 2
 ' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"   # usage error
+# Single level, absolute interpreter, PATH set INSIDE the child, SCRIPT_DIR
+# passed POSITIONALLY — the shape established for the pattern assert below, and
+# the reason is the same for all three of these: the earlier nested form spliced
+# SCRIPT_DIR into the inner `bash -c` string (a repo path containing a quote
+# breaks it) and looked its inner `bash` up under the REWRITTEN PATH.
 # shellcheck disable=SC2016
-assert "broken pgrep (rc 2) -> probe returns nonzero, emits no count"   bash -c 'PATH="$1:/usr/bin:/bin" bash -c ". \"$2/graphify-bin.sh\"; ! _graphify_mcp_holders >/dev/null 2>&1"' _ "$probe_dir" "$SCRIPT_DIR"
+assert "broken pgrep (rc 2) -> probe returns nonzero, emits no count"   "$(command -v bash)" -c 'PATH="$1:/usr/bin:/bin"; export PATH; . "$2/graphify-bin.sh"; ! _graphify_mcp_holders >/dev/null 2>&1' _ "$probe_dir" "$SCRIPT_DIR"
 # And the honest zero still works: a pgrep that RAN and matched nothing (rc 1)
 # is a real 0, not a failure — otherwise the guard would block every update.
 printf '#!/bin/sh
 exit 1
 ' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"
 # shellcheck disable=SC2016
-assert "pgrep rc 1 (ran, no matches) -> a real 0"   bash -c 'out=$(PATH="$1:/usr/bin:/bin" bash -c ". \"$2/graphify-bin.sh\"; _graphify_mcp_holders") && [ "$out" = "0" ]' _ "$probe_dir" "$SCRIPT_DIR"
+assert "pgrep rc 1 (ran, no matches) -> a real 0"   "$(command -v bash)" -c 'PATH="$1:/usr/bin:/bin"; export PATH; . "$2/graphify-bin.sh"; out=$(_graphify_mcp_holders) && [ "$out" = "0" ]' _ "$probe_dir" "$SCRIPT_DIR"
 # A pgrep that MATCHED must count the lines it printed.
 printf '#!/bin/sh
 printf "111\n222\n333\n"
 exit 0
 ' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"
 # shellcheck disable=SC2016
-assert "pgrep rc 0 with 3 matches -> 3"   bash -c 'out=$(PATH="$1:/usr/bin:/bin" bash -c ". \"$2/graphify-bin.sh\"; _graphify_mcp_holders") && [ "$out" = "3" ]' _ "$probe_dir" "$SCRIPT_DIR"
+assert "pgrep rc 0 with 3 matches -> 3"   "$(command -v bash)" -c 'PATH="$1:/usr/bin:/bin"; export PATH; . "$2/graphify-bin.sh"; out=$(_graphify_mcp_holders) && [ "$out" = "3" ]' _ "$probe_dir" "$SCRIPT_DIR"
 
 # Needle PARITY with the Windows branch (public-PR CR). Two needles are
 # documented above _graphify_mcp_holders — the entrypoint name AND the uv tool

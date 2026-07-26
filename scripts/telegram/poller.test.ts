@@ -752,6 +752,43 @@ test("cold runFn: empty tick reclaims a fully-consumed inbox; a fresh message st
   expect((await peekPending(r, "HIMMEL-8")).count).toBe(0);
 });
 
+// The self-drain is the third consumer of the pending slice, and the only one
+// that lacked the isHeld guard. A message landing mid-run is held by the
+// coalescer WITH its resolved model override; if the drain consumed it first it
+// ran with no override at all, so a spawn-low burst arriving while the same
+// session was busy still went out on the default model.
+test("clean-run self-drain SKIPS a coalescer-held session (the burst keeps its model)", async () => {
+  const r = root(); await ensureSession(r, "HELD");
+  await writeMeta(r, "HELD", { chat_id:9, status:"idle", last_run_pid:null, last_run_at:null, task_name:null, retry_at:null });
+  const inbox = join(sessionDir(r,"HELD"), "inbox.jsonl");
+  await appendLine(inbox, JSON.stringify({ text:"first" }));
+  let calls = 0;
+  const fakeRun = async () => {
+    calls++;
+    if (calls === 1) await appendLine(inbox, JSON.stringify({ text:"mid-run burst line" }));
+    return { code:0, capped:false, pid:1 };
+  };
+  await makeRunFn(r, "/repo", fakeRun, 5000, undefined, 3, undefined, () => true)("HELD");
+  expect(calls).toBe(1);                                  // drain skipped — did NOT eat the held line
+  expect((await peekPending(r, "HELD")).count).toBe(1);   // still pending for the coalescer's dispatch
+});
+
+test("clean-run self-drain still runs when the session is NOT held", async () => {
+  const r = root(); await ensureSession(r, "FREE");
+  await writeMeta(r, "FREE", { chat_id:9, status:"idle", last_run_pid:null, last_run_at:null, task_name:null, retry_at:null });
+  const inbox = join(sessionDir(r,"FREE"), "inbox.jsonl");
+  await appendLine(inbox, JSON.stringify({ text:"first" }));
+  let calls = 0;
+  const fakeRun = async () => {
+    calls++;
+    if (calls === 1) await appendLine(inbox, JSON.stringify({ text:"mid-run line" }));
+    return { code:0, capped:false, pid:1 };
+  };
+  await makeRunFn(r, "/repo", fakeRun)("FREE");           // default isHeld = () => false
+  expect(calls).toBe(2);                                  // drained the mid-run line, as before
+  expect((await peekPending(r, "FREE")).count).toBe(0);
+});
+
 test("reconcile clears a dead last_run_pid so the session isn't stuck busy", async () => {
   const r = root(); await ensureSession(r,"S");
   await writeMeta(r,"S",{chat_id:1,status:"running",last_run_pid:2147480000,last_run_at:null,task_name:null,retry_at:null});
@@ -2066,6 +2103,121 @@ test("a burst keeps the STRONGEST model — a cheap first line cannot pin haiku"
   await c("s", undefined);               // then a spawn-high line
   now = 200; await c.flushDue(now);
   expect(got).toEqual([undefined]);      // NOT "haiku"
+});
+
+// The test above hands makeBurstCoalescer a STUB dispatch fn, so it exercises
+// the coalescer's model arithmetic and nothing downstream of it. That is how the
+// real drop shipped: makeDispatcher declared `(session)` only and called
+// `runFn(session)`, and the `as Dispatcher` cast hid the arity mismatch from the
+// compiler — the strongest model was computed correctly and then discarded one
+// call later. This wires the REAL chain, coalescer -> makeDispatcher -> runFn.
+//
+// The expectation must be a NON-undefined model. Asserting the escalation case
+// (haiku then undefined -> undefined) would pass against the broken dispatcher
+// too, since a dropped argument also arrives as undefined.
+test("burst coalescing forwards the model through the REAL dispatcher, not just to a stub", async () => {
+  const got: (string | undefined)[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(makeDispatcher(async (_s, m) => { got.push(m); }, 4), { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("s", "haiku");
+  await c("s", "haiku");                 // whole burst is spawn-low -> stays haiku
+  now = 200; await c.flushDue(now);
+  for (let i = 0; i < 5; i++) await Promise.resolve();   // dispatch fires without awaiting the run
+  expect(got).toEqual(["haiku"]);        // undefined here = the override was dropped in transit
+});
+
+// Forwarding on the ACCEPTED path is only half of it. A dispatch can also DEFER
+// (session already in flight, or the global concurrency cap full), and the hold
+// used to be dropped either way — handing the retry to deliverAllPending, which
+// calls runFn(s) with no override and never re-triages. So a spawn-low burst
+// that happened to flush while the dispatcher was busy came back as a
+// DEFAULT-model run: a silent cost regression that only appeared under load,
+// which is exactly when the cap causes the deferral.
+test("a DEFERRED dispatch keeps the burst's model — the retry still runs haiku", async () => {
+  const got: (string | undefined)[] = [];
+  const resolvers: Record<string, () => void> = {};
+  let now = 0;
+  const d = makeDispatcher(async (s, m) => { got.push(m); return new Promise<void>((res) => { resolvers[s] = res; }); }, 1);
+  const c = makeBurstCoalescer(d, { quietMs: 100, maxHoldMs: 999999, now: () => now });
+
+  await d("OTHER");                      // fills the cap of 1
+  expect(d.inFlightCount()).toBe(1);
+
+  await c("s", "haiku");
+  now = 200; await c.flushDue(now);      // due, but the cap is full -> deferred
+  expect(got).toEqual([undefined]);      // only OTHER ran; "s" was NOT dispatched
+  expect(c.isHolding("s")).toBe(true);   // re-held, so h.model survives
+
+  resolvers["OTHER"]();                  // free the slot
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+
+  now = 300; await c.flushDue(now);      // retry now that capacity exists
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(got).toEqual([undefined, "haiku"]);   // the deferred run kept its override
+  expect(c.isHolding("s")).toBe(false);        // released on the accepted dispatch
+  resolvers["s"]?.();
+});
+
+// The hold is deleted BEFORE the await, so a message landing DURING the dispatch
+// finds no hold and starts a fresh one. Re-setting the snapshot on a deferral
+// would clobber it — losing that message's model contribution in the dangerous
+// direction (a spawn-high line downgraded back to the snapshot's "haiku") and
+// rewinding lastAt so the burst looks quiet sooner than it is.
+test("a deferred re-hold MERGES with a hold created during the await (no clobber)", async () => {
+  const seen: (string | undefined)[] = [];
+  let now = 0;
+  let landMidAwait: (() => Promise<void>) | null = null;
+  let deferNext = true;
+  const c = makeBurstCoalescer(async (_s, m) => {
+    seen.push(m);
+    if (landMidAwait) { const f = landMidAwait; landMidAwait = null; await f(); }
+    const deferred = deferNext; deferNext = false;
+    return !deferred;                              // first attempt defers, later ones accept
+  }, { quietMs: 100, maxHoldMs: 999999, now: () => now });
+
+  await c("s", "haiku");                           // burst so far: spawn-low
+  now = 200;
+  landMidAwait = async () => { await c("s", undefined); };   // spawn-high lands mid-dispatch
+  await c.flushDue(now);
+  expect(seen).toEqual(["haiku"]);                 // first attempt carried the pre-await snapshot
+  expect(c.isHolding("s")).toBe(true);             // deferred -> re-held
+
+  now = 400; await c.flushDue(now);                // quiet again, and now accepted
+  expect(seen).toEqual(["haiku", undefined]);      // merged: the spawn-high line won
+  expect(c.isHolding("s")).toBe(false);            // released on the accepted dispatch
+});
+
+// flushDue iterates a SNAPSHOT ([...holds.entries()]), not the live Map. That
+// spread used to be incidental — nothing was re-inserted mid-sweep — but the
+// re-hold above made it load-bearing: a JS Map iterator DOES visit keys added
+// during iteration, so re-holding a persistently-deferred session against a live
+// iterator spins forever inside one sweep (verified: a live iterator yields
+// a,b,a,b,... while the spread yields a,b). Raised by the glm critic as a live
+// defect; it is disproved by the existing spread, and this pins it so a future
+// refactor that drops the spread goes red instead of hanging the poller.
+test("flushDue dispatches a persistently-deferred session ONCE per sweep (snapshot, not live Map)", async () => {
+  let attempts = 0;
+  let now = 0;
+  const c = makeBurstCoalescer(async () => { attempts++; return false; },   // always defers
+    { quietMs: 100, maxHoldMs: 999999, now: () => now });
+  await c("a", "haiku");
+  await c("b", "haiku");
+  now = 200; await c.flushDue(now);
+  expect(attempts).toBe(2);              // one attempt per held session, not an unbounded re-visit
+  expect(c.holdingCount()).toBe(2);      // both re-held for the next sweep
+  now = 300; await c.flushDue(now);
+  expect(attempts).toBe(4);              // next sweep retries each exactly once again
+});
+
+// A throwing dispatch deliberately does NOT re-hold: deliverAllPending takes it,
+// as it did before. Re-holding something that throws every tick would spin on
+// the same session forever.
+test("a THROWING dispatch does not re-hold (the safety net owns it, no spin)", async () => {
+  let now = 0;
+  const c = makeBurstCoalescer(async () => { throw new Error("dispatch exploded"); }, { quietMs: 100, maxHoldMs: 999999, now: () => now });
+  await c("s", "haiku");
+  now = 200; await c.flushDue(now);
+  expect(c.isHolding("s")).toBe(false);
 });
 
 test("deliverAllPending SKIPS a held session (else the hold is defeated same-tick)", async () => {
