@@ -937,6 +937,42 @@ function positiveEnvMs(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+// Interval PERIODS (HIMMEL-1291, public-PR CR). Same operator-typo hazard as
+// above, worse consequence: setInterval clamps a 0/NaN period to ~1ms, so an
+// unvalidated value does not fall back to the default — it spins the sweep at
+// a thousand ticks a second. positiveEnvMs already turns ""/NaN/negative into
+// the fallback, but it PERMITS 0, which is meaningful for a quiet WINDOW
+// (0 disables coalescing) and never for a timer.
+//
+// So a period under 1ms falls back — it does NOT floor to 1 (codex-adv round).
+// The public-CR patch proposed `Math.max(1, positiveEnvMs(…))`, which keeps the
+// worst case intact: `TELEGRAM_FLUSH_MS=0` would still be a 1ms hot loop
+// hammering the Telegram API and the outbox sweep, just spelled differently.
+// Nothing here reads 0 as "disable the timer" — the timers are unconditional —
+// so there is no operator intent to honour, only a bad value to reject. That
+// makes sub-1ms exactly like "" and NaN: absence, and absence means default.
+//
+// The UPPER bound is the same hazard wearing the opposite disguise (codex-adv
+// round 2, verified on bun 1.3.14): setInterval keeps its delay in a signed
+// 32-bit int, so anything above 2147483647 does not become a long interval —
+// it warns TimeoutOverflowWarning and is set to 1. A fat-fingered env value
+// with a few extra digits therefore lands on the SAME 1ms hot loop as `=0`.
+// Both ends fall back rather than clamp, for the same reason: an
+// out-of-range period is a typo, and a typo means default.
+// A FRACTIONAL period falls back too (CodeRabbit round). Not because it is a
+// new hot-loop class — setInterval truncates, so 1.5 becomes 1, which is no
+// worse than the 1 this function already permits outright — but because
+// silently truncating is the one input shape that did not follow the contract
+// the rest of the function states: a period that is not a whole millisecond is
+// malformed, and malformed means default. Without it "0.4" fell back while
+// "1.5" was quietly accepted and rounded, which is a distinction no operator
+// could predict.
+const MAX_INTERVAL_MS = 2_147_483_647;   // setInterval's signed-32-bit ceiling
+export function intervalEnvMs(raw: string | undefined, fallback: number): number {
+  const ms = positiveEnvMs(raw, fallback);
+  return Number.isInteger(ms) && ms >= 1 && ms <= MAX_INTERVAL_MS ? ms : fallback;
+}
+
 export function makeBurstCoalescer(
   dispatch: RunFn,
   opts: { quietMs?: number; maxHoldMs?: number; now?: () => number } = {},
@@ -1290,7 +1326,7 @@ export async function main(): Promise<void> {
   const coalesce = makeBurstCoalescer(dispatch);
   // Its own short timer — the main loop below blocks in a 30s long-poll, so
   // driving the flush from the tick would stretch a 4s quiet window to 30s.
-  const BATCH_TICK_MS = Number(process.env.TELEGRAM_BATCH_TICK_MS ?? 500);
+  const BATCH_TICK_MS = intervalEnvMs(process.env.TELEGRAM_BATCH_TICK_MS, 500);
   const batchTimer = setInterval(guarded(() => coalesce.flushDue(Date.now())), BATCH_TICK_MS);
   if (typeof batchTimer.unref === "function") batchTimer.unref();
   // typing indicator while a session's bounded child works (HIMMEL-260), and
@@ -1298,7 +1334,7 @@ export async function main(): Promise<void> {
   // is in flight, so without this the operator gets several seconds of dead
   // silence after sending — which reads as "the bridge is down", the opposite
   // of the reassurance this indicator exists to give.
-  const TYPING_MS = Number(process.env.TELEGRAM_TYPING_MS ?? 4000);
+  const TYPING_MS = intervalEnvMs(process.env.TELEGRAM_TYPING_MS, 4000);
   const isBusy = (s: string) => dispatch.isInFlight(s) || coalesce.isHolding(s);
   const typingTimer = setInterval(guarded(() => signalTyping(root, isBusy, () => sessionsList(root), (chat) => sendChatAction(token, chat))), TYPING_MS);
   if (typeof typingTimer.unref === "function") typingTimer.unref();
@@ -1307,7 +1343,7 @@ export async function main(): Promise<void> {
   // process that appends to outbox.jsonl as it works, so the concurrent flush still earns
   // its keep. The flush path touches only outbox files; the run path touches only
   // inbox/meta/pending — disjoint, so the timer adds no shared-file race.
-  const FLUSH_MS = Number(process.env.TELEGRAM_FLUSH_MS ?? 1000);
+  const FLUSH_MS = intervalEnvMs(process.env.TELEGRAM_FLUSH_MS, 1000);
   const flushTimer = setInterval(guarded(() => flushOutboxes(root, send)), FLUSH_MS);
   if (typeof flushTimer.unref === "function") flushTimer.unref();
   for (;;) {

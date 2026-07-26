@@ -653,6 +653,104 @@ seq_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANE
 check "W6: sequential path agrees (both reported, none run)" "$(printf '%s
 ' "$seq_out" | grep -c 'reason=panel-deadline')" "2"
 
+# --- HIMMEL-1291 (public-PR CR): the clamp RESERVES the `timeout -k` grace ----
+#
+# The runners spend nominal + CRITIC_KILL_GRACE_SECS on a member that ignores
+# SIGTERM. Clamping to the BARE remainder therefore still let the panel finish
+# up to ONE grace past the total deadline (one, not grace * n_members:
+# _panel_remaining recomputes from wall clock, so an earlier member's overrun
+# is absorbed into the next member's remaining). The clamp must hand out
+# (remaining - grace) so nominal + grace fits inside.
+#
+# Observed through a fake `timeout` first on PATH: it is the only place the
+# EFFECTIVE per-member value is visible from outside (the member itself never
+# sees it). It logs the -k grace, the nominal seconds, and the budget REMAINING
+# at the moment of launch, then execs the real command so the run proceeds
+# normally.
+#
+# Logging `left` is what makes W7b setup-time independent (CR round: a fixed
+# [45,55] band around the expected 55 only discriminated while setup stayed
+# under 5s — slower setup would have slid the UNFIXED 60 into the band and
+# false-passed the very regression this guards). The fake recomputes `left`
+# from the SAME two env vars the panel used, so the assertion is on the
+# RESERVED DELTA (left - secs) rather than on an absolute value that drifts
+# with however long setup took.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/timeout" <<'FAKETO'
+#!/usr/bin/env bash
+# invoked as: timeout -k <grace> <secs> <cmd...>
+_left=NA
+if [ -n "${CRITIC_PANEL_STARTED_AT:-}" ] && [ "${CRITIC_PANEL_TOTAL_TIMEOUT_SECS:-0}" -gt 0 ] 2>/dev/null; then
+    _left=$(( CRITIC_PANEL_TOTAL_TIMEOUT_SECS - ( $(date +%s) - CRITIC_PANEL_STARTED_AT ) ))
+fi
+printf 'k=%s secs=%s left=%s\n' "$2" "$3" "$_left" >> "$TO_LOG"
+shift 3
+exec "$@"
+FAKETO
+chmod +x "$tmp/bin/timeout"
+
+# Pull one named field off the FIRST logged launch (fields are `name=value`,
+# so a positional sed breaks the moment a field is added — as `left=` just was).
+_to_field() {
+    awk -v k="$2" 'NR==1{for(i=1;i<=NF;i++) if(index($i, k "=")==1){sub("^" k "=","",$i); print $i; exit}}' "$1"
+}
+
+# W7a — budget far from spent: the clamp is a no-op and the member gets its
+# full nominal timeout. Pins the grace the runners actually pass, which is the
+# value the clamp subtracts; a literal drifting from the constant fails here.
+_to_noclamp="$tmp/to-noclamp.log"
+: > "$_to_noclamp"
+PATH="$tmp/bin:$PATH" TO_LOG="$_to_noclamp" bash -c 'printf "%s" "$1" | CRITICS_JSON="$2" CRITIC_TIMEOUT_SECS=240 CRITIC_PANEL_TOTAL_TIMEOUT_SECS=900 CRITIC_FIRST_PASS="$3" bash "$4" >/dev/null 2>&1' _ "$DIFF" "$tmp/dl-critics.json" "$CAPTURE_STUB" "$tmp/panelcopy/critic-panel.sh"
+check "W7a: runner passes the named grace, not a drifting literal" "$(_to_field "$_to_noclamp" k)" "5"
+check "W7a: an unspent budget leaves the nominal timeout untouched" "$(_to_field "$_to_noclamp" secs)" "240"
+
+# W7b — the discriminator. ~60s left of a 900s budget, so the clamp binds
+# (60 < the 240s nominal). Assert the RESERVED DELTA, not an absolute:
+# post-fix the member gets left-grace, so left-secs == 5; pre-fix it got the
+# bare remainder, so left-secs == 0. Setup time cancels out of the difference
+# entirely, which is the point — the only slack needed is ±1 for the second
+# boundary the panel and the fake can land either side of. That leaves 5 vs 0
+# with a 3-wide gap, and no way for slow setup to blur them.
+_to_clamped="$tmp/to-clamped.log"
+: > "$_to_clamped"
+_bd60=$(( $(date +%s) - 840 ))
+PATH="$tmp/bin:$PATH" TO_LOG="$_to_clamped" bash -c 'printf "%s" "$1" | CRITICS_JSON="$2" CRITIC_TIMEOUT_SECS=240 CRITIC_PANEL_TOTAL_TIMEOUT_SECS=900 CRITIC_PANEL_STARTED_AT="$5" CRITIC_FIRST_PASS="$3" bash "$4" >/dev/null 2>&1' _ "$DIFF" "$tmp/dl-critics.json" "$CAPTURE_STUB" "$tmp/panelcopy/critic-panel.sh" "$_bd60"
+_secs="$(_to_field "$_to_clamped" secs)"
+_left="$(_to_field "$_to_clamped" left)"
+_reserved=""
+case "$_secs$_left" in
+    ''|*[!0-9]*) ;;                       # a missing/non-numeric field leaves it unset -> FAIL below
+    *) _reserved=$(( _left - _secs )) ;;
+esac
+# The clamp must have bound at all — if it did not, `left` was not ~60 and the
+# scenario never exercised the reservation (a silent vacuous pass otherwise).
+check "W7b: the clamp actually bound (nominal 240 was reduced)" \
+    "$( [ -n "$_secs" ] && [ "$_secs" -lt 240 ] 2>/dev/null && echo bound || echo "unbound(secs=$_secs)" )" "bound"
+if [ -n "$_reserved" ] && [ "$_reserved" -ge 4 ] && [ "$_reserved" -le 6 ]; then
+    check "W7b: clamp reserves the grace (left=${_left} secs=${_secs}, reserved ${_reserved}s)" "reserved" "reserved"
+else
+    check "W7b: clamp reserves the grace (0 = the unfixed value; left=${_left} secs=${_secs})" \
+        "reserved=${_reserved:-<unparsed>}" "4..6"
+fi
+
+# W7c — the floor holds. `timeout 0` means NO timeout in GNU coreutils and a
+# negative value is an error, so subtracting the grace must never push the
+# clamp to 0 or below however little budget is left.
+_to_floor="$tmp/to-floor.log"
+: > "$_to_floor"
+_bd_tight=$(( $(date +%s) - 896 ))
+PATH="$tmp/bin:$PATH" TO_LOG="$_to_floor" bash -c 'printf "%s" "$1" | CRITICS_JSON="$2" CRITIC_TIMEOUT_SECS=240 CRITIC_PANEL_TOTAL_TIMEOUT_SECS=900 CRITIC_PANEL_STARTED_AT="$5" CRITIC_FIRST_PASS="$3" bash "$4" >/dev/null 2>&1' _ "$DIFF" "$tmp/dl-critics.json" "$CAPTURE_STUB" "$tmp/panelcopy/critic-panel.sh" "$_bd_tight"
+# Any launch at all must carry secs>=1. A run where the deadline check fired
+# first logs nothing, which is also correct — hence "no bad line", not "some
+# good line". Combined across all three scenarios so the invariant is total.
+#
+# Compared NUMERICALLY on the extracted field, not by matching the raw line
+# (CR round): the earlier `secs=(0$|-)` regex anchored zero to end-of-line, so
+# the moment `left=` was appended after it the zero half of the guard went
+# INERT while still reading like it covered both. A field-keyed numeric test
+# cannot rot that way when a field is added or reordered.
+check "W7c: the clamp never emits a 0 or negative timeout" \
+    "$(cat "$tmp"/to-*.log 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(index($i,"secs=")==1){v=$i; sub(/^secs=/,"",v); if(v+0 < 1) n++}} END{print n+0}')" "0"
 
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"

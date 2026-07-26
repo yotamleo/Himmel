@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { isAllowed, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -2132,6 +2132,60 @@ test("an EMPTY TELEGRAM_BATCH_QUIET_MS falls back to the default, it does not me
     if (prev === undefined) delete process.env.TELEGRAM_BATCH_QUIET_MS;
     else process.env.TELEGRAM_BATCH_QUIET_MS = prev;
   }
+});
+
+// HIMMEL-1291 (public-PR CR): the timer PERIODS bypassed the hardening above.
+// `Number(process.env.X ?? d)` yields 0 for an empty value and NaN for a typo,
+// and setInterval clamps both to ~1ms — so a half-edited .env line did not fall
+// back to the default, it spun the sweep. positiveEnvMs handles ""/NaN/negative
+// but permits 0, which is fine for a quiet window and never for a period, hence
+// the floor.
+test("intervalEnvMs: an EMPTY value is absence, not a 1ms spin", () => {
+  expect(intervalEnvMs("", 500)).toBe(500);
+  expect(intervalEnvMs("   ", 500)).toBe(500);
+});
+
+test("intervalEnvMs: a typo (NaN) falls back instead of spinning", () => {
+  expect(intervalEnvMs("50O", 500)).toBe(500);      // letter O for zero
+  expect(intervalEnvMs("abc", 500)).toBe(500);
+});
+
+test("intervalEnvMs: a negative period falls back", () => {
+  expect(intervalEnvMs("-1", 500)).toBe(500);
+  expect(intervalEnvMs("-9999", 500)).toBe(500);
+});
+
+// codex-adv round: flooring 0 to 1 (the public-CR patch's `Math.max(1, …)`)
+// keeps the worst case — a 1ms hot loop — and only respells it. Nothing reads
+// 0 as "disable the timer", so a sub-1ms period is a bad value, not intent.
+test("intervalEnvMs: an explicit 0 falls back — it is NOT floored to a 1ms spin", () => {
+  expect(intervalEnvMs("0", 500)).toBe(500);
+  expect(intervalEnvMs("0.4", 500)).toBe(500);   // sub-1ms is the same hazard
+});
+
+// codex-adv round 2, verified on bun 1.3.14: setInterval holds its delay in a
+// signed 32-bit int, so >2147483647 does NOT become a long interval — it warns
+// TimeoutOverflowWarning and is set to 1. A few extra digits in an env value
+// therefore lands on the SAME 1ms hot loop as `=0`, from the opposite end.
+test("intervalEnvMs: a period past setInterval's 32-bit ceiling falls back", () => {
+  expect(intervalEnvMs("2147483648", 500)).toBe(500);      // ceiling + 1
+  expect(intervalEnvMs("999999999999", 500)).toBe(500);    // fat-fingered digits
+  expect(intervalEnvMs("2147483647", 500)).toBe(2147483647); // the ceiling itself is fine
+});
+
+// CodeRabbit round. setInterval truncates a fractional delay (verified on bun
+// 1.3.14: 1.5 -> 1, 500.7 -> 500), so this is not a new hot-loop class — 1 is
+// permitted outright anyway. It is a contract fix: without it "0.4" fell back
+// while "1.5" was quietly accepted and rounded.
+test("intervalEnvMs: a fractional period falls back rather than being truncated", () => {
+  expect(intervalEnvMs("1.5", 500)).toBe(500);
+  expect(intervalEnvMs("500.7", 500)).toBe(500);
+});
+
+test("intervalEnvMs: absent uses the default, and a valid value passes through", () => {
+  expect(intervalEnvMs(undefined, 500)).toBe(500);
+  expect(intervalEnvMs("250", 500)).toBe(250);
+  expect(intervalEnvMs("1", 500)).toBe(1);
 });
 
 test("one session's dispatch failure does not abort the flush of others", async () => {

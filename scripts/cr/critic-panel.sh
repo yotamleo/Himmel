@@ -199,6 +199,14 @@ else
     CRITIC_TIMEOUT_SECS="240"
 fi
 
+# SIGKILL grace handed to every `timeout -k` below (HIMMEL-1291, public-PR CR).
+# A member that ignores SIGTERM lives this many seconds PAST its nominal
+# timeout, so the nominal timeout is not the member's real wall-clock cost —
+# nominal + grace is. Named once here because the clamp below has to subtract
+# exactly what the runners pass: a literal that drifts from the clamp silently
+# re-opens the overrun this constant closes.
+CRITIC_KILL_GRACE_SECS=5
+
 # TOTAL-panel wall clock (HIMMEL-1280). CRITIC_TIMEOUT_SECS bounds ONE member;
 # nothing bounded the panel as a whole, so N members each clipping their own
 # budget could still hold a caller for N*CRITIC_TIMEOUT_SECS with no ceiling
@@ -240,9 +248,27 @@ _panel_deadline_passed() {
 # really total + one member. Clamping makes the ceiling the caller was told
 # about the ceiling they actually get. Never returns <1 (the deadline check
 # above has already broken the loop by then).
+#
+# The cap RESERVES the `timeout -k` grace (HIMMEL-1291, public-PR CR): the
+# runners spend nominal + CRITIC_KILL_GRACE_SECS on a member that ignores
+# SIGTERM, so clamping to the bare remainder still let the panel finish
+# CRITIC_KILL_GRACE_SECS past the total deadline. Clamping to
+# (remaining - grace) makes nominal + grace fit INSIDE what is left. Only the
+# floor case can still overrun, and by then the budget is within a grace of
+# zero anyway.
+#
+# The overrun is ONE grace, not grace * n_members (the public-CR report said
+# the latter; panel round said otherwise and was right). _panel_remaining
+# recomputes from wall clock on every call, so an earlier member's grace
+# overrun is already absorbed into the next member's remaining before it
+# launches — only the LAST member to be clamped can end past the deadline.
+# Parallel mode is the same bound for a different reason: members overlap, so
+# their graces do not sum. One grace is still an overrun of a bound the caller
+# was promised, which is why this reserves it.
 _clamp_to_panel_budget() {
     local _member="$1" _left
     _left="$(_panel_remaining)" || { printf '%s\n' "$_member"; return 0; }
+    _left=$(( _left - CRITIC_KILL_GRACE_SECS ))
     if [ "$_left" -lt 1 ]; then _left=1; fi
     if [ "$_left" -lt "$_member" ]; then printf '%s\n' "$_left"; else printf '%s\n' "$_member"; fi
 }
@@ -552,7 +578,7 @@ _run_cfp_member() {
     _rm_to="${_RM_TIMEOUT_SECS:-$CRITIC_TIMEOUT_SECS}"
     if [ -n "$_rm_persp" ]; then
         if [ -n "$_TIMEOUT_BIN" ]; then
-            "$_TIMEOUT_BIN" -k 5 "$_rm_to" bash "$CFP" \
+            "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$_rm_to" bash "$CFP" \
                 --model "$_rm_model" --provider "$_rm_provider" --slug "$_rm_slug" \
                 --perspective-file "$SCRIPT_DIR/$_rm_persp" \
                 < "$tmp" > "$_rm_out" 2>"$_rm_err"
@@ -565,7 +591,7 @@ _run_cfp_member() {
         fi
     else
         if [ -n "$_TIMEOUT_BIN" ]; then
-            "$_TIMEOUT_BIN" -k 5 "$_rm_to" bash "$CFP" \
+            "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$_rm_to" bash "$CFP" \
                 --model "$_rm_model" --provider "$_rm_provider" --slug "$_rm_slug" \
                 < "$tmp" > "$_rm_out" 2>"$_rm_err"
             _rm_rc=$?
@@ -871,7 +897,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
         # is a no-op in critic-first-pass.sh, so it is passed unconditionally.
         if [ -n "$perspective" ]; then
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
                 bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
@@ -879,7 +905,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
             fi
         else
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
                 bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
@@ -948,7 +974,7 @@ else
         (
             if [ -n "$perspective" ]; then
                 if [ -n "$_TIMEOUT_BIN" ]; then
-                    "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 else
                     bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
@@ -956,7 +982,7 @@ else
                 fi
             else
                 if [ -n "$_TIMEOUT_BIN" ]; then
-                    "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 else
                     bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
