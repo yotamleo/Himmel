@@ -906,7 +906,7 @@ export async function signalTyping(root: string, isInFlight: (s: string) => bool
 // coalesced model override — that is lost unless whoever holds it keeps it.
 export type Dispatcher = ((session: string, modelOverride?: TriageModelOverride) => Promise<boolean>)
   & { inFlightCount: () => number; isInFlight: (s: string) => boolean };
-export function makeDispatcher(runFn: RunFn, cap: number = Number(process.env.TELEGRAM_MAX_CONCURRENT_RUNS ?? 2)): Dispatcher {
+export function makeDispatcher(runFn: RunFn, cap: number = positiveEnvInt(process.env.TELEGRAM_MAX_CONCURRENT_RUNS, 2)): Dispatcher {
   const inFlight = new Set<string>();
   // `modelOverride` must be declared AND forwarded. Dispatcher is RunFn, which
   // takes it, but the `as Dispatcher` cast below silences the arity mismatch —
@@ -972,6 +972,39 @@ function positiveEnvMs(raw: string | undefined, fallback: number): number {
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+// A concurrency cap is a positive INTEGER, and unlike the millisecond periods
+// above, 0 is not a meaningful setting here — it is a stall. Both malformed
+// shapes fail, in opposite and equally bad directions:
+//   TELEGRAM_MAX_CONCURRENT_RUNS=   -> Number("") is 0 -> cap 0 -> EVERY dispatch
+//     defers. The coalescer re-holds, deliverAllPending skips held sessions, and
+//     the bridge goes quiet while looking configured.
+//   TELEGRAM_MAX_CONCURRENT_RUNS=tow -> NaN -> `inFlight.size >= NaN` is always
+//     false, so the cap is silently REMOVED and unbounded claude children run in
+//     parallel — precisely what the cap exists to prevent, and it burns the Max
+//     quota rather than merely stalling.
+// A fractional value is rejected too: "2.5" is not a number of concurrent runs.
+// Same contract as the interval periods — malformed means default, and an empty
+// value is absence rather than a request for zero.
+//
+// The bound at the TOP matters as much as the one at the bottom, and for the
+// same reason intervalEnvMs carries a ceiling: a fat-fingered value with a few
+// extra digits is a typo, not a request. `Number()` alone cannot see the
+// difference — Number("1e6") is 1000000 and Number.isInteger says yes — so an
+// exponent or an over-long digit string would restore precisely the unbounded
+// parallelism the cap exists to prevent, while looking configured. Hence a
+// strict decimal parse (no exponent, no hex, no sign, no separators) plus a
+// ceiling. The ceiling is a fat-finger guardrail, NOT a tuning limit: every run
+// is a claude child process, so a machine wanting more than this many in
+// parallel has a different problem than a misread env var.
+const MAX_CONCURRENT_RUNS = 64;
+function positiveEnvInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const t = raw.trim();
+  if (!/^[0-9]+$/.test(t)) return fallback;   // also rejects "" , "1e6", "0x10", "+5", "2.5", "-1", "NaN"
+  const n = Number(t);
+  return n >= 1 && n <= MAX_CONCURRENT_RUNS ? n : fallback;
 }
 
 // Interval PERIODS (HIMMEL-1291, public-PR CR). Same operator-typo hazard as

@@ -218,7 +218,7 @@ resolve_remote_paths() {
 # stays a parser, just one anchored on the stable part of the format.
 remote_collections() {
     ssh "$HOST" 'qmd collection list' 2>/dev/null \
-        | sed 's/\r$//' \
+        | tr -d '\r' \
         | sed -n 's/^\([A-Za-z0-9._-]\{1,\}\) (qmd:\/\/.*/\1/p' \
         | sort -u \
         | paste -sd, - || true

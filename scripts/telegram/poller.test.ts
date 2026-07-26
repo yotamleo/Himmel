@@ -283,6 +283,49 @@ test("dispatcher: concurrency cap defers extra sessions; freed slot admits them"
   resolvers["B"](); resolvers["C"]();
 });
 
+// The cap was the one env read in this file still on the raw Number() pattern
+// everything else was hardened away from. Both malformed shapes fail badly and
+// in OPPOSITE directions: "" is 0, which stalls the bridge outright (every
+// dispatch defers, the coalescer re-holds, deliverAllPending skips held
+// sessions), while a typo is NaN, and `inFlight.size >= NaN` is always false —
+// the cap silently disappears and unbounded runs go out in parallel.
+test("dispatcher cap: malformed TELEGRAM_MAX_CONCURRENT_RUNS falls back to 2, never 0 or unbounded", async () => {
+  const prev = process.env.TELEGRAM_MAX_CONCURRENT_RUNS;
+  // Effective cap is observed, not asserted on an internal: fill it and see
+  // where dispatch starts refusing.
+  const effectiveCap = async (): Promise<number> => {
+    const resolvers: Record<string, () => void> = {};
+    const d = makeDispatcher((s: string) => new Promise<void>((res) => { resolvers[s] = res; }));
+    let admitted = 0;
+    for (let i = 0; i < 12; i++) if (await d("S" + i) === true) admitted++;
+    Object.values(resolvers).forEach((r) => r());
+    return admitted;
+  };
+  try {
+    // The over-large shapes matter as much as the empty/NaN ones: Number("1e6")
+    // is 1000000 and IS an integer, so a plain isInteger check would hand back
+    // an effectively unbounded cap — the same failure as NaN, reached from the
+    // other end. "65" is one past the ceiling; "0x10"/"+5" are non-decimal
+    // shapes a lenient Number() would also accept.
+    for (const bad of ["", "   ", "abc", "0", "-1", "2.5", "NaN",
+                       "1e6", "999999999999", "65", "0x10", "+5"]) {
+      process.env.TELEGRAM_MAX_CONCURRENT_RUNS = bad;
+      expect(await effectiveCap()).toBe(2);          // default — not 0 (stall), not 12 (uncapped)
+    }
+    delete process.env.TELEGRAM_MAX_CONCURRENT_RUNS;
+    expect(await effectiveCap()).toBe(2);            // absent -> default
+    process.env.TELEGRAM_MAX_CONCURRENT_RUNS = "5";
+    expect(await effectiveCap()).toBe(5);            // a valid value is still honoured
+    process.env.TELEGRAM_MAX_CONCURRENT_RUNS = " 6 ";
+    expect(await effectiveCap()).toBe(6);            // surrounding whitespace is not a typo
+    process.env.TELEGRAM_MAX_CONCURRENT_RUNS = "64";
+    expect(await effectiveCap()).toBe(12);           // at the ceiling: honoured, admits all 12 offered
+  } finally {
+    if (prev === undefined) delete process.env.TELEGRAM_MAX_CONCURRENT_RUNS;
+    else process.env.TELEGRAM_MAX_CONCURRENT_RUNS = prev;
+  }
+});
+
 test("dispatcher: a rejected run clears in-flight (no permanent wedge)", async () => {
   const runFn = (_s: string) => Promise.reject(new Error("boom"));
   const d = makeDispatcher(runFn, 4);

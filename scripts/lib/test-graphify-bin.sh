@@ -581,6 +581,33 @@ assert "broken-after-install: rc 1 (presence is not proof it runs)" grep -q '^RC
 assert "broken-after-install: names it BROKEN" grep -q 'BROKEN' <<<"$out"
 assert "broken-after-install: gives the repair command" grep -q 'uv tool install --force --with mcp graphifyy' <<<"$out"
 
+# The fourth corner of the state matrix (public-PR CR): install FAILED but the
+# binary SURVIVED. The other three are covered above and below; without this one
+# the two arms of the post-failure branch are never told apart, and the arm that
+# reports a survivable state could rot into the alarming one unnoticed. The
+# distinction is the whole point of that branch — "failed" alone was the blanket
+# answer it was written to replace.
+echo "[test-graphify-bin] graphify_update: install fails but the binary still RUNS -> WARNING, not BROKEN"
+gs_home="$tmpdir/gup-survive"; mkdir -p "$gs_home"
+gs_tools="$tmpdir/gup-survive-tools"; mkdir -p "$gs_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gs_tools/graphifyy/uv-receipt.toml"
+gs_list="$tmpdir/gup-survive-list"; printf 'graphifyy v0.0.1\n' > "$gs_list"
+gs_bin="$tmpdir/gup-survive-bin"; mkdir -p "$gs_bin"
+# Unlike the broken-after-install stub above, this one NEVER flips: the install
+# fails and leaves the working entry point untouched.
+printf '#!/usr/bin/env bash\necho x\n' > "$gs_bin/graphify"; chmod +x "$gs_bin/graphify"
+gs_log="$tmpdir/gup-survive-log"; : > "$gs_log"
+gs_uvbin="$tmpdir/gup-survive-uvbin"; mkdir -p "$gs_uvbin"
+out=$(HOME="$gs_home" PATH="$gs_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gs_tools" UV_LIST_FILE="$gs_list" \
+      UV_BIN_DIR="$gs_uvbin" UV_LOG="$gs_log" GRAPHIFY_MCP_HOLDERS=0 STUB_UV_INSTALL_RC=1 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "install-failed-binary-survives: rc 1 (the pin did not advance)" grep -q '^RC=1$' <<<"$out"
+assert "install-failed-binary-survives: says the install still RUNS" grep -q 'still RUNS' <<<"$out"
+assert "install-failed-binary-survives: says the pin was not advanced" grep -q 'pin not advanced' <<<"$out"
+gs_broken=$(grep -c 'BROKEN' <<<"$out" || true)   # counted, not negated in a subshell — no nested `bash -c`
+assert "install-failed-binary-survives: does NOT cry BROKEN" [ "$gs_broken" = 0 ]
+assert "install-failed-binary-survives: the install was actually attempted" grep -qE 'tool install --force --with mcp graphifyy' "$gs_log"
+
 echo "[test-graphify-bin] graphify_update: unprobeable platform -> proceeds, verify-after is the net"
 gp_home="$tmpdir/gup-probe"; mkdir -p "$gp_home"
 gp_tools="$tmpdir/gup-probe-tools"; mkdir -p "$gp_tools/graphifyy"
