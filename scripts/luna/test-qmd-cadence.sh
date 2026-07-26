@@ -132,6 +132,15 @@ IFS=$_oldifs
 export HOME="$TMP_ROOT/home"
 mkdir -p "$HOME"
 export USERPROFILE="$HOME"
+# BUN_INSTALL too (HIMMEL-1283 CR): arm resolves qmd through
+# qmd_pinned_invocation, whose FIRST branch looks for the bun-served install at
+# $BUN_INSTALL/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js — before
+# it consults PATH at all. BUN_INSTALL defaults to $HOME/.bun, so redirecting
+# HOME happens to cover it today; that makes hermeticity INCIDENTAL, and an
+# operator with BUN_INSTALL exported would silently arm against their REAL qmd
+# instead of the fixture. Pin it explicitly at a path that does not exist. Tests
+# that WANT the bun branch set BUN_INSTALL to their own fixture per-invocation.
+export BUN_INSTALL="$TMP_ROOT/bun-none"
 
 # The himmel root the runner cds into is this script's ../.. (same resolution
 # qmd-cadence.sh uses for HIMMEL_ROOT).
@@ -246,7 +255,7 @@ rc=0; out=$(env OSTYPE=linux-gnu QMD_CADENCE_CRONTAB="$FAKE_CRONTAB" \
     QMD_CADENCE_BAT_DIR="$CRON_DIR" PATH="$PATH_NOQMD" \
     "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
 assert_rc "cron arm without qmd -> rc 2" 2 "$rc"
-assert_contains "missing-qmd error names the CLI" "'qmd' not on PATH at arm time" "$out"
+assert_contains "missing-qmd error names the CLI" "no usable qmd found at arm time" "$out"
 if [ ! -f "$CSTATE/crontab" ] && [ ! -d "$CRON_DIR" ]; then
     pass "failed arm installed nothing"
 else
@@ -296,7 +305,7 @@ runner=$(cat "$CRON_DIR/qmd-reindex.sh" 2>/dev/null || echo MISSING)
 # The sh runner embeds paths via printf %q (backslash-escapes); strip the
 # escapes before multi-word / path asserts.
 runner_plain=${runner//\\/}
-assert_contains "runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 4" "$runner"
+assert_contains "runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 5" "$runner"
 assert_contains "runner fires qmd-reindex.sh" "qmd-reindex.sh" "$runner_plain"
 assert_contains "runner points at the SHIPPED reindex script" \
     "$HIMMEL_ROOT_EXP/scripts/luna/qmd-reindex.sh" "$runner_plain"
@@ -525,6 +534,83 @@ env OSTYPE=linux-gnu QMD_CADENCE_CRONTAB="$FAKE_CRONTAB" \
     QMD_CADENCE_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" \
     "$REAL_BASH" "$SCRIPT" disarm >/dev/null
 
+# Test C18: LIVENESS — a qmd that EXISTS but errors must refuse to arm --------
+#
+# HIMMEL-1283, the core of the ticket. Every pre-existing guard here proves
+# "a file exists, is absolute, and is executable" — which the broken
+# Claude-plugin stub satisfies perfectly. It resolves, arms cleanly, and then
+# dies on every unattended fire with `Module not found ... dist/cli/qmd.js`.
+# So arm must RUN the resolved invocation and refuse on a nonzero rc.
+# The fixture is that stub: a qmd earlier on PATH that execs fine and exits 1.
+
+echo "TEST: cron arm REFUSES a qmd that resolves but errors (liveness, C18)"
+STUB_DIR="$TMP_ROOT/stub-bin"
+mkdir -p "$STUB_DIR"
+printf '#!/bin/sh\necho "error: Module not found \\"/plugins/cache/qmd/dist/cli/qmd.js\\"" >&2\nexit 1\n' \
+    > "$STUB_DIR/qmd"
+chmod +x "$STUB_DIR/qmd"
+# PATH entries must be POSIX form: TMP_ROOT is cygpath -m'd (C:/... mixed) and
+# Git-Bash cannot resolve a mixed-form PATH entry, so a stub added raw is
+# INVISIBLE on Windows and the test silently exercises "no qmd at all" instead
+# of "a qmd that errors" — the same trap the qmd/claude stub dirs above document.
+STUB_DIR_PATH="$STUB_DIR"
+if command -v cygpath >/dev/null 2>&1; then STUB_DIR_PATH=$(cygpath -u "$STUB_DIR"); fi
+rc=0; out=$(env OSTYPE=linux-gnu QMD_CADENCE_CRONTAB="$FAKE_CRONTAB" \
+    QMD_CADENCE_BAT_DIR="$CRON_DIR" PATH="$STUB_DIR_PATH:$PATH_NOQMD" \
+    "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
+assert_rc "arm with a broken-but-present qmd -> rc 2" 2 "$rc"
+assert_contains "liveness failure says NOT USABLE" "NOT USABLE" "$out"
+assert_contains "liveness failure surfaces the probe output" "Module not found" "$out"
+# Assert what THIS arm did, not that the dir is pristine: earlier tests in this
+# suite legitimately leave a qmd-reindex.log behind, and a stale log is not
+# state a refusing arm installed. The two things that must be absent are the
+# runner it would have written and a crontab entry it would have registered.
+if [ ! -f "$CRON_DIR/qmd-reindex.sh" ] \
+   && ! grep -q 'HIMMEL-Qmd' "$CSTATE/crontab" 2>/dev/null; then
+    pass "broken-qmd arm installed no runner and no cron entry"
+else
+    fail "broken-qmd arm left state behind" "$(ls -a "$CRON_DIR" 2>/dev/null; cat "$CSTATE/crontab" 2>/dev/null)"
+fi
+
+# Test C19: a bun-served qmd is pinned as TWO tokens (--qmd-bin + --qmd-js) ----
+#
+# The resolver prefers the bun-served install, whose canonical invocation is
+# `bun <.../dist/cli/qmd.js>` — neither token is a `qmd` executable, so the
+# single-path pin could not express it. Assert the runner carries both flags
+# and that the js path is the bun-global one, not whatever was on PATH.
+
+echo "TEST: bun-served qmd pins --qmd-bin <bun> --qmd-js <qmd.js> (C19)"
+BUN_ROOT="$TMP_ROOT/bunroot"
+BUN_JS_DIR="$BUN_ROOT/install/global/node_modules/@tobilu/qmd/dist/cli"
+mkdir -p "$BUN_JS_DIR" "$TMP_ROOT/bun-bin"
+printf 'console.log("stub");\n' > "$BUN_JS_DIR/qmd.js"
+# Fake `bun`: the liveness probe runs `<bun> <qmd.js> collection list`, so it
+# must exit 0. Prints a plausible collection listing.
+printf '#!/bin/sh\necho "himmel (qmd://himmel/)"\nexit 0\n' > "$TMP_ROOT/bun-bin/bun"
+chmod +x "$TMP_ROOT/bun-bin/bun"
+BUN_BIN_PATH="$TMP_ROOT/bun-bin"
+if command -v cygpath >/dev/null 2>&1; then BUN_BIN_PATH=$(cygpath -u "$TMP_ROOT/bun-bin"); fi
+# The resolver reports whatever `command -v bun` yields, which under a POSIX
+# PATH entry is the POSIX path — assert against that same form.
+BUN_EXPECTED="$BUN_BIN_PATH/bun"
+# Capture the arm rc and assert it BEFORE reading the runner: without this a
+# failed arm shows up only as a confusing "MISSING" in the pin assertions, with
+# arm's own diagnosis discarded.
+rc=0; out=$(env OSTYPE=linux-gnu QMD_CADENCE_CRONTAB="$FAKE_CRONTAB" \
+    QMD_CADENCE_BAT_DIR="$CRON_DIR" BUN_INSTALL="$BUN_ROOT" \
+    PATH="$BUN_BIN_PATH:$STUB_DIR_PATH:$PATH_NOQMD" \
+    "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
+assert_rc "bun-served arm succeeds" 0 "$rc"
+[ "$rc" -eq 0 ] || printf '    arm output:\n%s\n' "$out" | sed 's/^/    /'
+runner=$(cat "$CRON_DIR/qmd-reindex.sh" 2>/dev/null || echo MISSING)
+assert_contains "runner pins --qmd-bin at the bun executable" "--qmd-bin $BUN_EXPECTED" "$runner"
+assert_contains "runner pins --qmd-js at the bun-global qmd.js" "--qmd-js $BUN_JS_DIR/qmd.js" "$runner"
+assert_not_contains "the broken PATH stub is NOT what got pinned" "$STUB_DIR/qmd" "$runner"
+env OSTYPE=linux-gnu QMD_CADENCE_CRONTAB="$FAKE_CRONTAB" \
+    QMD_CADENCE_BAT_DIR="$CRON_DIR" BUN_INSTALL="$BUN_ROOT" \
+    PATH="$BUN_BIN_PATH:$STUB_DIR_PATH:$PATH_NOQMD" \
+    "$REAL_BASH" "$SCRIPT" disarm >/dev/null 2>&1 || true
+
 # Test C17: unknown platform exits 2 ----------------------------------------------
 
 echo "TEST: unknown platform (OSTYPE=beos) exits 2"
@@ -664,7 +750,7 @@ assert_contains "Exec points at the runner bat" "qmd-reindex.bat" "$task_xml"
 
 echo "TEST: .bat runner fires bash qmd-reindex.sh (deterministic, no claude)"
 bat=$(cat "$BAT_DIR/qmd-reindex.bat" 2>/dev/null || echo MISSING)
-assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 4" "$bat"
+assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 5" "$bat"
 assert_contains "bat cds into himmel root" 'cd /d "' "$bat"
 assert_contains "bat fires qmd-reindex.sh" "qmd-reindex.sh" "$bat"
 assert_contains "bat pins the resolved qmd absolute path" "--qmd-bin \"$QMD_BIN_DIR/qmd\"" "$bat"
@@ -830,5 +916,33 @@ else
     fail "dry-run disarm mutated state"
 fi
 run_qc disarm >/dev/null
+
+# Test W12: hostile-but-legal BAT_DIR lands on the REAL dir in the .bat -------
+#
+# HIMMEL-1281: every value the emitter interpolates sits inside double quotes,
+# where cmd.exe treats & < > | as literal data and ^ as a literal character.
+# So the only transform cadence_cmd_escape applies is % -> %% (percent
+# expansion DOES happen inside quotes in a .bat). The caret escaping this
+# replaced turned `rnr&x^y` into `rnr^&x^^y` — a path that does not exist, so
+# the runner's `>>` redirect pointed at a directory cmd could not open.
+
+echo "TEST: hostile %&^ in BAT_DIR lands on the REAL dir in the .bat (W12)"
+EVIL_BAT_DIR="$TMP_ROOT/cr%on rnr&x^y"
+mkdir -p "$EVIL_BAT_DIR"
+out=$(QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$EVIL_BAT_DIR" \
+    PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" arm)
+evil_bat=$(cat "$EVIL_BAT_DIR/qmd-reindex.bat" 2>/dev/null || echo MISSING)
+# Assert the WHOLE `>> "<path>"` redirect as ONE contiguous string — separate
+# opening/closing checks could match in two different places, and the quoting
+# is exactly what makes the escape correct. Built the way the emitter builds
+# it (cygpath -w the bat dir, append the log name, then % -> %%).
+EVIL_BAT_DIR_WIN=$(cygpath -w "$EVIL_BAT_DIR")
+EVIL_LOG_EXPECTED=">> \"${EVIL_BAT_DIR_WIN//%/%%}\\qmd-reindex.log\""
+assert_contains "log redirect targets the real dir, fully quoted (% doubled, & ^ verbatim)" \
+    "$EVIL_LOG_EXPECTED" "$evil_bat"
+assert_not_contains "no caret-escaped ampersand" '^&' "$evil_bat"
+assert_not_contains "no doubled caret" '^^' "$evil_bat"
+QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$EVIL_BAT_DIR" \
+    PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" disarm >/dev/null 2>&1 || true
 
 summary

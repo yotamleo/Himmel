@@ -88,8 +88,24 @@ case "$*" in
       if [ -e "$STATE/no-remote-home" ]; then exit 1; fi
       printf "C:\\\\Users\\\\fakeuser\r\n" ;;
   *"qmd collection list"*)
+      # The REAL `qmd collection list` output (HIMMEL-1284), not a pre-parsed
+      # one. This fixture used to emit a bare "himmel\nluna" — already shaped
+      # like the parser OUTPUT — so the suite could not see the header bug at
+      # all: `Collections (2):` was being picked up as a phantom collection and
+      # every default ship died in prepare-ship-index. A stub that answers with
+      # the answer tests nothing. CRs on purpose: this arrives over ssh.
       if [ -e "$STATE/no-remote-collections" ]; then exit 1; fi
-      echo "himmel"; echo "luna" ;;
+      printf "Collections (2):\r\n"
+      printf "\r\n"
+      printf "himmel (qmd://himmel/)\r\n"
+      printf "  Pattern:  **/*.md\r\n"
+      printf "  Files:    286\r\n"
+      printf "  Updated:  22h ago\r\n"
+      printf "\r\n"
+      printf "luna (qmd://luna/)\r\n"
+      printf "  Pattern:  **/*.md\r\n"
+      printf "  Files:    14155\r\n"
+      printf "  Updated:  22h ago\r\n" ;;
   *"cmd /c del"*)
       # per-run artifact cleanup — always succeeds, never the ship result
       exit 0 ;;
@@ -208,6 +224,45 @@ rc=0; out=$(env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" \
 assert_rc "failed reindex rc 3" 3 "$rc"
 assert_contains "says nothing was shipped" "NOTHING shipped" "$out"
 assert_not_contains "no upload attempted after a failed reindex" "scp " "$(calls)"
+
+# ============================================================================
+echo "TEST: remote_collections parses ROWS, never the header (HIMMEL-1284)"
+# ============================================================================
+# Unit-level, independent of the ship flow: extract the function and feed it a
+# fake `ssh` that emits the REAL `qmd collection list` prose. The regression is
+# specifically that `Collections (2):` — whose first token is a bare identifier
+# — was kept as a collection name, so assert its ABSENCE explicitly rather than
+# only asserting the happy set. Also covers the detail lines (`Pattern:`,
+# `Files:`, `Updated:`), which the old identifier filter dropped only because
+# they happen to carry a colon.
+rc_fixture=$(mktemp -t ship-collections.XXXXXX)
+{
+    printf 'ssh() {\n'
+    printf '  printf "Collections (2):\\r\\n"\n'
+    printf '  printf "\\r\\n"\n'
+    printf '  printf "himmel (qmd://himmel/)\\r\\n"\n'
+    printf '  printf "  Pattern:  **/*.md\\r\\n"\n'
+    printf '  printf "  Files:    286\\r\\n"\n'
+    printf '  printf "  Updated:  22h ago\\r\\n"\n'
+    printf '  printf "\\r\\n"\n'
+    printf '  printf "luna (qmd://luna/)\\r\\n"\n'
+    printf '  printf "  Pattern:  **/*.md\\r\\n"\n'
+    printf '  printf "  Files:    14155\\r\\n"\n'
+    printf '  printf "  Updated:  22h ago\\r\\n"\n'
+    printf '}\n'
+    printf 'HOST=fakehost\n'
+    sed -n '/^remote_collections()/,/^}/p' "$SCRIPT"
+    printf 'remote_collections\n'
+} > "$rc_fixture"
+parsed=$(bash "$rc_fixture")
+rm -f "$rc_fixture"
+if [ "$parsed" = "himmel,luna" ]; then
+    pass "real qmd output parses to exactly himmel,luna"
+else
+    fail "real qmd output mis-parsed" "expected 'himmel,luna', got '$parsed'"
+fi
+assert_not_contains "the 'Collections' header is NOT a collection" "Collections" "$parsed"
+assert_not_contains "detail-line labels are not collections" "Pattern" "$parsed"
 
 # ============================================================================
 echo "TEST: the RECEIVER decides the collection set"

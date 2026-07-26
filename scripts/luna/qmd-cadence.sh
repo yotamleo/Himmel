@@ -39,11 +39,31 @@
 # PATH that does not carry the bun bin dir where qmd installs (~/.bun/bin here).
 # Resolving it HERE, at arm time, is what makes the failure visible — otherwise
 # the arm "succeeds" and every unattended fire dies in a log nobody reads. The
-# resolved ABSOLUTE path is passed to the runner as --qmd-bin. Unlike the
-# graphmap sibling (which must PATH-prepend, because graphify spawns `claude`
-# itself), we invoke qmd directly, so passing the path is both simpler and
-# stricter. Verified 2026-07-25: qmd runs correctly under a bare
+# resolved ABSOLUTE invocation is passed to the runner as --qmd-bin (+ --qmd-js).
+# Unlike the graphmap sibling (which must PATH-prepend, because graphify spawns
+# `claude` itself), we invoke qmd directly, so passing the path is both simpler
+# and stricter. Verified 2026-07-25: qmd runs correctly under a bare
 # PATH=C:\Windows\system32, so no PATH surgery is needed.
+#
+# HOW it is resolved, and why that matters (HIMMEL-1283): via
+# scripts/lib/qmd-bin.sh's qmd_pinned_invocation, NOT a bare `command -v qmd`.
+# The bare lookup finds the broken Claude-plugin stub
+# (~/.claude/plugins/cache/qmd/qmd/<v>/bin/qmd) that shadows the bun shim on Git
+# Bash $PATH inside a Claude Code session — which is exactly where an operator
+# arms this from — and bakes THAT into the runner, so every fire dies with
+# `Module not found "...plugins/cache/qmd/.../dist/cli/qmd.js"`. The shared
+# resolver prefers the bun-served install, whose canonical invocation is
+# `bun <…/dist/cli/qmd.js>`: TWO tokens, neither of them a `qmd` executable —
+# which is why the runner grew a --qmd-js flag rather than the pin being
+# squeezed into one path. (qmd_cmd itself is NOT usable here: it INVOKES, and a
+# cadence needs a pinnable absolute invocation.)
+#
+# And the pin is LIVENESS-checked, not existence-checked: the resolved
+# invocation is actually RUN once (`collection list`, which opens the index —
+# `--version` does not, so it passes on an install whose better-sqlite3 binding
+# is broken) and must exit 0 before it is written into a runner. An
+# existence-only test passes on the broken stub, which is the whole failure
+# class this closes.
 #
 # OPERATOR FLIP: this NEVER auto-arms. `arm` registers the task only when
 # explicitly invoked, exactly like graphmap-cadence — arming is the operator's
@@ -100,6 +120,13 @@ REINDEX_SCRIPT="$HIMMEL_ROOT/scripts/luna/qmd-reindex.sh"
 # Runner-format version stamp (HIMMEL-588): emit_bat / emit_runner stamp
 # CADENCE_RUNNER_FORMAT_VERSION into the runner so a stale-format armed cadence
 # is detectable. Shared lib, same as the sibling cadences.
+# Shared qmd resolver (HIMMEL-1283): qmd_pinned_invocation returns the absolute
+# tokens qmd_cmd would choose, so the cadence pins the SAME install every other
+# consumer resolves instead of whatever `command -v qmd` happens to hit first.
+# shellcheck source=../lib/qmd-bin.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/qmd-bin.sh"
+
 # shellcheck source=../lib/cadence-format.sh
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/cadence-format.sh"
@@ -112,9 +139,14 @@ DRY_RUN=0
 # subsequent create failure can tell the operator the machine is now unarmed.
 REPLACED_EXISTING=0
 
-# Resolved by validate_arm_inputs: the absolute qmd executable handed to the
-# runner as --qmd-bin. See the header for why this is pinned at arm time.
+# Resolved by validate_arm_inputs: the absolute qmd invocation handed to the
+# runner. QMD_BIN is the executable (--qmd-bin); QMD_JS is the optional script
+# argument (--qmd-js), set only when the bun-served install wins the resolver's
+# preference order — there the canonical invocation is `bun <…/dist/cli/qmd.js>`,
+# two tokens, neither of which is a `qmd` executable (HIMMEL-1283). See the
+# header for why this is pinned at arm time.
 QMD_BIN=""
+QMD_JS=""
 
 usage() {
     cat <<'EOF'
@@ -222,21 +254,6 @@ esac
 # MSYS_NO_PATHCONV=1 per call: without it gitbash mangles /query, /create etc.
 # into Windows-rooted paths before schtasks sees them.
 run_schtasks() { MSYS_NO_PATHCONV=1 "$SCHTASKS_BIN" "$@"; }
-
-# Escape CMD metacharacters for values interpolated into the .bat (same order as
-# the sibling cadences' cmd_escape) so a path containing legal-but-hostile chars
-# (% & ^ are valid in Windows dirnames) can't inject commands at fire time.
-cmd_escape() {
-    local s="$1"
-    s="${s//\"/\\\"}"
-    s="${s//%/%%}"
-    s="${s//^/^^}"
-    s="${s//&/^&}"
-    s="${s//</^<}"
-    s="${s//>/^>}"
-    s="${s//|/^|}"
-    printf '%s' "$s"
-}
 
 # Dedup listing: every scheduled task named HIMMEL-Qmd-*. Fail-CLOSED if the
 # query tool itself errors (mirrors the sibling cadences' list_existing).
@@ -518,17 +535,31 @@ validate_arm_inputs() {
     # FAIL FAST on a missing `qmd`. The scheduler fires with a MINIMAL PATH that
     # does not carry qmd's bin dir (bun installs to ~/.bun/bin), so this must
     # resolve HERE — without it the arm "succeeds" and the first unattended fire
-    # dies in a log nobody reads. The resolved absolute path is handed to the
-    # runner as --qmd-bin.
-    if ! QMD_BIN=$(command -v qmd 2>/dev/null); then
+    # dies in a log nobody reads. The resolved absolute invocation is handed to
+    # the runner as --qmd-bin (+ --qmd-js when the bun-served install wins).
+    #
+    # Resolve through the SHARED resolver's preference order, NOT a bare
+    # `command -v qmd` (HIMMEL-1283). The bare lookup finds the broken
+    # Claude-plugin stub (~/.claude/plugins/cache/qmd/qmd/<v>/bin/qmd) that
+    # shadows the bun shim on Git Bash $PATH inside a Claude Code session —
+    # which is exactly where an operator arms this from — and bakes THAT into
+    # the runner. Every unattended fire then dies with
+    # `Module not found "...plugins/cache/qmd/.../dist/cli/qmd.js"`.
+    # qmd_pinned_invocation is not qmd_cmd: qmd_cmd INVOKES (wrong shape for a
+    # cadence, which needs a pinnable absolute invocation), this returns the
+    # absolute tokens qmd_cmd would have chosen.
+    local _resolved
+    if ! _resolved=$(qmd_pinned_invocation 2>/dev/null); then
         {
-            echo "ERR qmd-cadence: 'qmd' not on PATH at arm time, but the cadence runs it at fire time."
+            echo "ERR qmd-cadence: no usable qmd found at arm time, but the cadence runs it at fire time."
             echo "    The scheduler fires with a minimal PATH, so this must resolve HERE — arming now"
             echo "    would produce a cadence that fails on every fire. Install qmd (or put it on PATH)"
             echo "    and re-arm."
         } >&2
         exit 2
     fi
+    QMD_BIN=$(printf '%s\n' "$_resolved" | sed -n '1p')
+    QMD_JS=$(printf '%s\n' "$_resolved" | sed -n '2p')
     # `command -v` resolves more than on-PATH executables: a shell FUNCTION or
     # ALIAS resolves to its own name/definition, and a relative PATH entry
     # resolves to a relative path. Either would be meaningless in a runner that
@@ -545,6 +576,86 @@ validate_arm_inputs() {
     if [ ! -f "$QMD_BIN" ] || [ ! -x "$QMD_BIN" ]; then
         echo "ERR qmd-cadence: 'qmd' resolved to '$QMD_BIN', which is not an executable file — refusing to pin it into a scheduled runner." >&2
         exit 2
+    fi
+    # The script arg gets the absolute + real-file discipline too. NOT the -x
+    # test: it is a .js handed to an interpreter, never executed directly.
+    if [ -n "$QMD_JS" ]; then
+        case "$QMD_JS" in
+            /*|[A-Za-z]:[/\\]*) : ;;
+            *)
+                echo "ERR qmd-cadence: qmd script path resolved non-absolute ('$QMD_JS') — cannot be pinned into a scheduled runner." >&2
+                exit 2 ;;
+        esac
+        if [ ! -f "$QMD_JS" ]; then
+            echo "ERR qmd-cadence: qmd script path '$QMD_JS' is not a file — refusing to pin it into a scheduled runner." >&2
+            exit 2
+        fi
+    fi
+
+    # LIVENESS, not existence (HIMMEL-1283). Everything above proves "a file
+    # exists and is executable" — which the broken plugin stub also satisfies.
+    # It is the exact class of failure the arm-time fail-fast was written to
+    # prevent, reintroduced one layer up. So RUN the resolved invocation once
+    # and require rc 0 before pinning it.
+    #
+    # `collection list` is the probe, deliberately NOT `--version`: --version
+    # never opens the index, so it passes even when better-sqlite3's native
+    # binding is missing or wrong-ABI (HIMMEL-928) — a qmd that answers
+    # --version and then dies on every real op is precisely what must not get
+    # armed. `collection list` opens the DB, which is what the cadence's
+    # `update`/`embed` do. It is also the same probe the shared resolver's own
+    # has_index() uses, so this agrees with the rest of the repo.
+    # BOUNDED. A probe that HANGS is the third failure mode, and an unbounded
+    # one would wedge `arm` forever with no output — a worse outcome than the
+    # broken stub this check exists for, since the operator gets nothing to act
+    # on. qmd opens a SQLite index that another process may hold, so a stall is
+    # a live possibility, not a hypothetical. `timeout` is used when present and
+    # the call degrades to a direct invocation when it is not (macOS ships no
+    # coreutils `timeout` by default) — the same graceful-degrade convention
+    # critic-panel.sh uses for its per-member cap.
+    # Build the probe as ONE argv rather than branching timeout × QMD_JS into
+    # four near-identical invocations — four copies of the same command line is
+    # four places for a future change to half-land. The array is never empty
+    # (QMD_BIN is always appended), so "${probe_cmd[@]}" is safe under set -u.
+    local probe_out probe_rc=0 probe_timeout="${QMD_PROBE_TIMEOUT_SECS:-60}"
+    local probe_cmd=()
+    command -v timeout >/dev/null 2>&1 && probe_cmd=(timeout -k 5 "$probe_timeout")
+    probe_cmd+=("$QMD_BIN")
+    [ -n "$QMD_JS" ] && probe_cmd+=("$QMD_JS")
+    probe_out=$("${probe_cmd[@]}" collection list 2>&1) || probe_rc=$?
+    if [ "$probe_rc" -ne 0 ]; then
+        {
+            # 124/137 are timeout's own codes — name that case, because "rc=124"
+            # alone reads as a qmd error and sends the operator hunting the
+            # wrong thing.
+            case "$probe_rc" in
+                124|137)
+                    echo "ERR qmd-cadence: the resolved qmd HUNG (no answer in ${probe_timeout}s) — refusing to arm a cadence that would stall on every fire."
+                    echo "    A hung probe usually means the index is locked by another qmd process"
+                    echo "    (a resident 'qmd mcp' daemon, or a reindex still running)."
+                    echo "    Raise the bound with QMD_PROBE_TIMEOUT_SECS if this machine is just slow."
+                    ;;
+                *)
+                    echo "ERR qmd-cadence: the resolved qmd is NOT USABLE (rc=$probe_rc) — refusing to arm a cadence that would fail on every fire."
+                    ;;
+            esac
+            echo "    invocation: $(qmd_invocation_desc)"
+            echo "    probe:      <invocation> collection list"
+            printf '%s\n' "$probe_out" | sed 's/^/    /'
+            echo "    A qmd that exists but errors here is the whole point of this check: an"
+            echo "    existence-only test passes on the broken Claude-plugin stub. Fix the install"
+            echo "    (bash scripts/lib/qmd-bin.sh install) and re-arm."
+        } >&2
+        exit 2
+    fi
+}
+
+# Human-readable form of the pinned invocation, for messages and status output.
+qmd_invocation_desc() {
+    if [ -n "$QMD_JS" ]; then
+        printf '%s %s' "$QMD_BIN" "$QMD_JS"
+    else
+        printf '%s' "$QMD_BIN"
     fi
 }
 
@@ -570,13 +681,17 @@ cmd_arm() {
 
     # bash consumes these paths (POSIX/mixed C:/ form via cygpath -m, which
     # Git-Bash reads); the himmel cd target is a Windows path.
-    local script_mixed qmd_mixed himmel_win
+    local script_mixed qmd_mixed qmd_js_mixed="" himmel_win
     if ! script_mixed=$(cygpath -m "$REINDEX_SCRIPT" 2>&1); then
         echo "ERR qmd-cadence: cygpath -m failed for reindex script: $script_mixed" >&2
         exit 4
     fi
     if ! qmd_mixed=$(cygpath -m "$QMD_BIN" 2>&1); then
         echo "ERR qmd-cadence: cygpath -m failed for qmd path: $qmd_mixed" >&2
+        exit 4
+    fi
+    if [ -n "$QMD_JS" ] && ! qmd_js_mixed=$(cygpath -m "$QMD_JS" 2>&1); then
+        echo "ERR qmd-cadence: cygpath -m failed for qmd script path: $qmd_js_mixed" >&2
         exit 4
     fi
     if ! himmel_win=$(cygpath -w "$HIMMEL_ROOT" 2>&1); then
@@ -621,16 +736,21 @@ cmd_arm() {
     # "unlikely" is not "escaped": a `%` anywhere in the resolved path would be
     # expanded by cmd.exe at fire time instead of taken literally, and leaving
     # one of three interpolated values unescaped is the kind of asymmetry that
-    # reads as intentional later. (The graphmap sibling leaves its bash path
-    # raw; this is a deliberate divergence, not a copy miss.)
-    local bash_win_esc script_esc qmd_esc himmel_win_esc
-    bash_win_esc=$(cmd_escape "$bash_win")
-    script_esc=$(cmd_escape "$script_mixed")
-    qmd_esc=$(cmd_escape "$qmd_mixed")
-    himmel_win_esc=$(cmd_escape "$himmel_win")
+    # reads as intentional later. (The graphmap sibling used to leave its bash
+    # path raw — HIMMEL-1281 closed that divergence in graphmap's favour of
+    # this one, so all four emitters now escape every interpolated value.)
+    local bash_win_esc script_esc qmd_esc himmel_win_esc qmd_js_esc=""
+    bash_win_esc=$(cadence_cmd_escape "$bash_win")
+    script_esc=$(cadence_cmd_escape "$script_mixed")
+    qmd_esc=$(cadence_cmd_escape "$qmd_mixed")
+    himmel_win_esc=$(cadence_cmd_escape "$himmel_win")
+    [ -n "$qmd_js_mixed" ] && qmd_js_esc=$(cadence_cmd_escape "$qmd_js_mixed")
 
+    # --qmd-js rides along only when the bun-served install won the resolver
+    # (HIMMEL-1283); a PATH-qmd pin emits the single-token form unchanged.
     local payload
     payload="\"$bash_win_esc\" \"$script_esc\" --qmd-bin \"$qmd_esc\""
+    [ -n "$qmd_js_esc" ] && payload="$payload --qmd-js \"$qmd_js_esc\""
 
     local bat="$BAT_DIR/qmd-reindex.bat"
 
@@ -640,7 +760,7 @@ cmd_arm() {
         echo "ERR qmd-cadence: cygpath -w failed for bat dir: $bat_dir_win" >&2
         exit 4
     fi
-    log_esc=$(cmd_escape "$bat_dir_win\\qmd-reindex.log")
+    log_esc=$(cadence_cmd_escape "$bat_dir_win\\qmd-reindex.log")
 
     # The .bat runner is the task's Exec Command. cygpath -w is a pure string
     # transform (the .bat need not exist yet), so resolve the win path before the
@@ -701,7 +821,7 @@ cmd_arm() {
   QMD REINDEX CADENCE ARMED (HIMMEL-568)
   $TASK_REINDEX  daily $REINDEX_TIME  -> qmd update + qmd embed
   Scope:  all configured qmd collections
-  qmd:    $QMD_BIN
+  qmd:    $(qmd_invocation_desc)
   Himmel: $HIMMEL_ROOT
   Runner .bat: $BAT_DIR
 
@@ -894,15 +1014,19 @@ cron_arm() {
         fi
     fi
 
-    local q_bash q_script q_qmd q_himmel q_log
+    local q_bash q_script q_qmd q_himmel q_log q_qmd_js=""
     q_bash=$(printf '%q' "$bash_bin")
     q_script=$(printf '%q' "$REINDEX_SCRIPT")
     q_qmd=$(printf '%q' "$QMD_BIN")
     q_himmel=$(printf '%q' "$HIMMEL_ROOT")
     q_log=$(printf '%q' "$BAT_DIR/qmd-reindex.log")
+    [ -n "$QMD_JS" ] && q_qmd_js=$(printf '%q' "$QMD_JS")
 
+    # Same two-token pin as the Windows path (HIMMEL-1283): --qmd-js only when
+    # the bun-served install won the resolver.
     local payload
     payload="$q_bash $q_script --qmd-bin $q_qmd"
+    [ -n "$q_qmd_js" ] && payload="$payload --qmd-js $q_qmd_js"
 
     local hh mm
     hh="${REINDEX_TIME%:*}"; mm="${REINDEX_TIME#*:}"
@@ -950,7 +1074,7 @@ cron_arm() {
   QMD REINDEX CADENCE ARMED (HIMMEL-568, cron)
   $TASK_REINDEX  daily $REINDEX_TIME  -> qmd update + qmd embed
   Scope:  all configured qmd collections
-  qmd:    $QMD_BIN
+  qmd:    $(qmd_invocation_desc)
   Himmel: $HIMMEL_ROOT
   Runner .sh: $BAT_DIR
 

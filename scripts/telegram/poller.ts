@@ -645,12 +645,19 @@ export function guarded(task: () => Promise<void>): () => void {
 // runFn — telegram backlog, IPC bus-send (T6), or a due-capped retry. A capped
 // session is SKIPPED until its retry_at passes, so the cap backoff holds;
 // every other session is run (runFn no-ops when nothing is pending).
-export async function deliverAllPending(root: string, runFn: RunFn, now: Date, sessions: () => Promise<string[]>): Promise<void> {
+// isHeld (HIMMEL-1273): a session whose burst is still inside its quiet window
+// is SKIPPED here. Without this the coalescer would be pointless — handleInbound
+// appends the line and holds the dispatch, then this scan, running later in the
+// SAME tick, would fire the run immediately and split the burst exactly as
+// before. The hold is bounded (max-hold cap), and the coalescer drops it before
+// dispatching, so a session can never be skipped here indefinitely.
+export async function deliverAllPending(root: string, runFn: RunFn, now: Date, sessions: () => Promise<string[]>, isHeld: (s: string) => boolean = () => false): Promise<void> {
   for (const s of await sessions()) {
     const m = await readMeta(root, s);
     if (!m) continue;
     if (m.status === "capped" && !isRetryDue(m, now)) continue;
     if (m.status === "failed") continue;   // retry cap exhausted (HIMMEL-263) — only a new message un-parks
+    if (isHeld(s)) continue;               // burst still landing — the coalescer owns this dispatch
     await runFn(s);
   }
 }
@@ -881,6 +888,94 @@ export function makeDispatcher(runFn: RunFn, cap: number = Number(process.env.TE
   dispatch.inFlightCount = () => inFlight.size;
   dispatch.isInFlight = (s: string) => inFlight.has(s);
   return dispatch;
+}
+
+// --- Burst coalescing (HIMMEL-1273) ---
+// Messages sent in close proximity — especially a bulk of attachments — used to
+// land as N cold runs answering N fragments of one intent. Runs were already
+// serialized per session and peekPending already takes the whole unconsumed
+// slice, so the machinery to batch existed; what was missing is a QUIET PERIOD.
+// Two things split a burst:
+//   - intra-tick: the main loop dispatched on the FIRST line of a tick, so lines
+//     2..N were appended after the run had already peeked and got re-offered as
+//     a second cold run. (Dispatching after the ingest loop fixes that alone.)
+//   - cross-tick: getUpdates returns as soon as updates exist, so a phone
+//     sending 3 PDFs usually produces 2-3 separate ticks. Only a timer fixes it.
+//
+// So this wraps the dispatcher: a request RECORDS intent instead of firing, and
+// the hold is released once the session has been quiet for quietMs — or once
+// maxHoldMs has elapsed since the first message, so a steady trickle can never
+// starve the session (HIMMEL-358 asked for that cap and it still applies).
+//
+// Flushing is driven by an explicit `flushDue(now)` rather than per-session
+// setTimeout: it is deterministic to test, leaks no timers, and matches the
+// typing/outbox timers this file already runs. It CANNOT be driven off the main
+// loop's tick — that blocks in a 30s long-poll, which would stretch a 4s window
+// to 30s — so main wires it to its own short interval.
+//
+// Auto-ops (/arm, /mergepub, /restart) never reach here: handleInbound fires
+// them and returns before the run call, so a privileged op is never buffered.
+// That is asserted by test, not just by reading.
+export type BurstCoalescer = RunFn & {
+  isHolding: (s: string) => boolean;
+  holdingCount: () => number;
+  flushDue: (nowMs: number) => Promise<void>;
+};
+
+// Env numbers are operator-supplied: a typo must not silently disable the cap
+// (NaN comparisons are always false, which would hold a burst forever).
+function positiveEnvMs(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+export function makeBurstCoalescer(
+  dispatch: RunFn,
+  opts: { quietMs?: number; maxHoldMs?: number; now?: () => number } = {},
+): BurstCoalescer {
+  // Default 4s, NOT the 5 minutes HIMMEL-358 asked for: this is the general
+  // assistant chat, where a 5-minute hold would make normal conversation feel
+  // dead. A link-triage group that wants minutes raises it per-deployment.
+  const quietMs = opts.quietMs ?? positiveEnvMs(process.env.TELEGRAM_BATCH_QUIET_MS, 4000);
+  const maxHoldMs = opts.maxHoldMs ?? positiveEnvMs(process.env.TELEGRAM_BATCH_MAX_HOLD_MS, 30000);
+  const nowFn = opts.now ?? (() => Date.now());
+  type Hold = { firstAt: number; lastAt: number; model?: TriageModelOverride };
+  const holds = new Map<string, Hold>();
+
+  const request = (async (session: string, modelOverride?: TriageModelOverride): Promise<void> => {
+    // quietMs=0 disables coalescing entirely — an explicit escape hatch back to
+    // the old dispatch-per-message behaviour.
+    if (quietMs <= 0) { await dispatch(session, modelOverride); return; }
+    const t = nowFn();
+    const cur = holds.get(session);
+    if (cur) {
+      cur.lastAt = t;
+      // Keep the STRONGEST model seen in the burst: a burst triaged spawn-low
+      // then spawn-high must not run as haiku because the cheap line arrived
+      // first. undefined (spawn-high) outranks an explicit downgrade.
+      if (modelOverride === undefined) cur.model = undefined;
+    } else {
+      holds.set(session, { firstAt: t, lastAt: t, model: modelOverride });
+    }
+  }) as BurstCoalescer;
+
+  request.isHolding = (s: string) => holds.has(s);
+  request.holdingCount = () => holds.size;
+  request.flushDue = async (nowMs: number): Promise<void> => {
+    for (const [session, h] of [...holds.entries()]) {
+      const quietElapsed = nowMs - h.lastAt >= quietMs;
+      const cappedOut = nowMs - h.firstAt >= maxHoldMs;
+      if (!quietElapsed && !cappedOut) continue;
+      // Drop the hold BEFORE dispatching. If dispatch no-ops (session already
+      // in flight, or the global cap is reached) the lines stay unconsumed in
+      // inbox.jsonl and deliverAllPending re-offers the session on a later
+      // tick — the pre-existing safety net, which only works if the hold is
+      // gone by then.
+      holds.delete(session);
+      await dispatch(session, h.model);
+    }
+  };
+  return request;
 }
 
 // In-loop watchdog (HIMMEL-246): a session stuck status=running that THIS poller
@@ -1173,9 +1268,22 @@ export async function main(): Promise<void> {
   // the operator in a DM or an allowlisted group arms; a non-operator group member or a
   // non-allowlisted chat is refused. Self-sufficient — re-asserts the chat gate (CR S1).
   const autoGate: AutoGate = { enabledOps, authorize: (from, chat_id) => isAllowed(access, from) && allow(from, chat_id), fire: autoFire };
-  // typing indicator while a session's bounded child works (HIMMEL-260)
+  // Burst coalescing (HIMMEL-1273): handleInbound requests through this instead
+  // of dispatching per message, so a burst becomes ONE run.
+  const coalesce = makeBurstCoalescer(dispatch);
+  // Its own short timer — the main loop below blocks in a 30s long-poll, so
+  // driving the flush from the tick would stretch a 4s quiet window to 30s.
+  const BATCH_TICK_MS = Number(process.env.TELEGRAM_BATCH_TICK_MS ?? 500);
+  const batchTimer = setInterval(guarded(() => coalesce.flushDue(Date.now())), BATCH_TICK_MS);
+  if (typeof batchTimer.unref === "function") batchTimer.unref();
+  // typing indicator while a session's bounded child works (HIMMEL-260), and
+  // while a burst is being held (HIMMEL-1273): during the quiet window nothing
+  // is in flight, so without this the operator gets several seconds of dead
+  // silence after sending — which reads as "the bridge is down", the opposite
+  // of the reassurance this indicator exists to give.
   const TYPING_MS = Number(process.env.TELEGRAM_TYPING_MS ?? 4000);
-  const typingTimer = setInterval(guarded(() => signalTyping(root, dispatch.isInFlight, () => sessionsList(root), (chat) => sendChatAction(token, chat))), TYPING_MS);
+  const isBusy = (s: string) => dispatch.isInFlight(s) || coalesce.isHolding(s);
+  const typingTimer = setInterval(guarded(() => signalTyping(root, isBusy, () => sessionsList(root), (chat) => sendChatAction(token, chat))), TYPING_MS);
   if (typeof typingTimer.unref === "function") typingTimer.unref();
   // Flush outboxes on an independent ~1s timer so a bounded run's reply lands without
   // waiting up to 30s for the next long-poll to complete (T4). A cold child is a separate
@@ -1193,8 +1301,11 @@ export async function main(): Promise<void> {
     const fresh = await readNewLines(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"));
     // dispatch (not runFn) everywhere: runs fire WITHOUT blocking this loop —
     // ingest keeps polling while bounded children work (HIMMEL-246)
-    for (const i of fresh) await handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, dispatch, autoGate);
-    await deliverAllPending(root, dispatch, new Date(), () => sessionsList(root));
+    // coalesce (not dispatch): each inbound RECORDS intent, so a same-tick burst
+    // is one run even before the quiet window elapses — the intra-tick race the
+    // ticket calls near-free to close (HIMMEL-1273).
+    for (const i of fresh) await handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate);
+    await deliverAllPending(root, dispatch, new Date(), () => sessionsList(root), coalesce.isHolding);
     await sweepStuckRunning(root, dispatch.isInFlight, () => sessionsList(root));
   }
 }

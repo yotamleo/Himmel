@@ -111,6 +111,68 @@ output="$(HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bu
 assert "BUN_INSTALL is honored" grep -q '^BUN ' <<<"$output"
 assert "BUN_INSTALL path appears in dispatch" grep -q 'custom-bun' <<<"$output"
 
+echo "[test-qmd-bin] qmd_pinned_invocation — absolute tokens for a pinned runner (HIMMEL-1283)"
+# The bun branch: two lines, executable then script. A cadence bakes these into
+# a scheduled runner, so both must be ABSOLUTE — the scheduler fires with a
+# minimal PATH and a cwd of its own.
+pin_out="$(HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bun" \
+  bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation')"
+assert "bun branch emits exactly two tokens" test "$(printf '%s\n' "$pin_out" | wc -l)" -eq 2
+# ORDER, not membership: the caller runs token 1 WITH token 2 as its first
+# argument, so a swapped pair would try to exec the .js. Compare positionally.
+assert "token 1 is the bun executable" \
+  test "$(printf '%s\n' "$pin_out" | sed -n '1p')" = "$tmpdir/bin/bun"
+assert "token 2 is the bun-global qmd.js" \
+  test "$(printf '%s\n' "$pin_out" | sed -n '2p')" = "$tmpdir/custom-bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+# shellcheck disable=SC2016
+assert "both tokens are absolute" bash -c '! grep -qv "^/\|^[A-Za-z]:[/\\\\]" <<<"$1"' _ "$pin_out"
+
+echo "[test-qmd-bin] qmd_pinned_invocation — PATH fallback + hard failure"
+# No bun-js anywhere: falls through to a PATH qmd, ONE token.
+cat > "$tmpdir/bin/qmd" <<'EOF'
+#!/usr/bin/env bash
+echo "PATHQMD $*"
+EOF
+chmod +x "$tmpdir/bin/qmd"
+pin_path="$(HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/no-bun-here" \
+  bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation')"
+assert "PATH branch emits exactly one token" test "$(printf '%s\n' "$pin_path" | wc -l)" -eq 1
+# Exact, not a substring: 'bin/qmd' would also match a RELATIVE path, and the
+# whole point of this function is that a runner can pin what it returns.
+assert "PATH branch token is exactly the PATH qmd" test "$pin_path" = "$tmpdir/bin/qmd"
+# shellcheck disable=SC2016
+assert "PATH branch token is absolute" \
+  bash -c 'grep -q "^/\|^[A-Za-z]:[/\\\\]" <<<"$1"' _ "$pin_path"
+# RELATIVE inputs must still yield ABSOLUTE tokens (HIMMEL-1283 CR). Two ways a
+# relative path leaks in: a relative entry on PATH (so `command -v` answers
+# relatively) and a relative BUN_INSTALL (so the derived qmd.js path is
+# relative). Either would pin a path that resolves against the caller's cwd,
+# which a scheduler does not share. Run from inside $tmpdir so "bin" and
+# "custom-bun" are valid relative references.
+pin_rel="$(cd "$tmpdir" && HOME="$tmpdir" PATH="bin:$PATH" BUN_INSTALL="custom-bun" \
+  bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation')"
+# shellcheck disable=SC2016
+assert "relative PATH + relative BUN_INSTALL still yield absolute tokens" \
+  bash -c '! grep -qv "^/\|^[A-Za-z]:[/\\\\]" <<<"$1"' _ "$pin_rel"
+assert "relative resolution still emits two tokens" \
+  test "$(printf '%s\n' "$pin_rel" | wc -l)" -eq 2
+assert "relative resolution still ends at the bun-global qmd.js" \
+  grep -q 'custom-bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js$' <<<"$pin_rel"
+
+# Nothing resolvable at all -> rc 127, so callers can fail fast rather than
+# pinning an empty string into a runner.
+rm -f "$tmpdir/bin/qmd" "$tmpdir/bin/bun"
+rc=0
+HOME="$tmpdir" PATH="$tmpdir/bin" BUN_INSTALL="$tmpdir/no-bun-here" \
+  bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation' >/dev/null 2>&1 || rc=$?
+assert "no qmd anywhere -> rc 127" test "$rc" -eq 127
+# Restore the fake bun the later tests rely on.
+cat > "$tmpdir/bin/bun" <<'EOF'
+#!/usr/bin/env bash
+echo "BUN $*"
+EOF
+chmod +x "$tmpdir/bin/bun"
+
 echo "[test-qmd-bin] qmd_cmd resolver — multi-arg + spaces passthrough"
 output="$(HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_cmd collection add "/path with space" --name himmel')"
 assert "multi-arg dispatched intact" grep -q 'collection add ' <<<"$output"

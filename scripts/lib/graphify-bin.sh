@@ -441,9 +441,74 @@ PY
 # non-uv install (pip/pipx/brew), and it logs the transition. The adopt-don't-
 # clobber contract still governs graphify_install (fresh setup), where disturbing
 # an existing install WOULD be wrong; update is a deliberately different verb.
+# _graphify_mcp_holders (HIMMEL-1274)
+# Count processes holding the uv tool dir open — i.e. live graphify-mcp servers.
+# Echoes a COUNT on stdout; rc 1 when this platform offers no probe (the caller
+# must not read the count then).
+#
+# Match on the COMMAND LINE, not the process name. A uv-installed graphify-mcp
+# runs as a plain `python.exe` whose argv is
+# `<...>\Scripts\python.exe <...>\Scripts\<entrypoint>.exe` (verified live on
+# Windows, 2026-07-26), so a name-based probe finds nothing and reports "clear"
+# on exactly the busy machine this guard exists for.
+#
+# Two needles: the entrypoint name, and the uv tool dir itself — a process
+# executing anything out of that directory holds it just as effectively.
+# Test seam: GRAPHIFY_MCP_HOLDERS forces the count (and "unavailable" for a
+# platform with no probe). Without it a suite running on a real workstation is
+# not hermetic — the probe finds the developer's OWN live graphify-mcp servers
+# and every reinstall test skips. That is not hypothetical: it is how this seam
+# came to exist (the pre-existing extras-preserved test went red on a machine
+# with 4 live sessions).
+_graphify_mcp_holders() {
+  local pat_entry='graphify-mcp' pat_dir tool_name c ps_bin=""
+  if [ -n "${GRAPHIFY_MCP_HOLDERS:-}" ]; then
+    [ "$GRAPHIFY_MCP_HOLDERS" = "unavailable" ] && return 1
+    printf '%s\n' "$GRAPHIFY_MCP_HOLDERS"
+    return 0
+  fi
+  tool_name="$(_graphify_pypi_name)"
+  pat_dir="uv[/\\\\]tools[/\\\\]${tool_name}"
+  case "$(uname -s 2>/dev/null || echo)" in
+    MINGW*|MSYS*|CYGWIN*)
+      for c in pwsh powershell; do command -v "$c" >/dev/null 2>&1 && { ps_bin="$c"; break; }; done
+      [ -n "$ps_bin" ] || return 1
+      MSYS_NO_PATHCONV=1 "$ps_bin" -NoProfile -Command \
+        "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { \$_.CommandLine -match '$pat_entry' -or \$_.CommandLine -match '$pat_dir' }).Count" \
+        2>/dev/null | tr -cd '0-9' | head -c 8
+      printf '\n'
+      ;;
+    *)
+      if command -v pgrep >/dev/null 2>&1; then
+        pgrep -fc "$pat_entry" 2>/dev/null || echo 0
+      elif command -v ps >/dev/null 2>&1; then
+        # shellcheck disable=SC2009
+        # pgrep is preferred and tried first; this is the fallback for hosts
+        # without it. The bracket in "[g]raphify-mcp" keeps the grep from
+        # matching ITS OWN argv in the ps output — the classic off-by-one that
+        # would report a holder on a completely idle machine and block the
+        # update forever.
+        ps -eo args 2>/dev/null | grep -c -- "[g]raphify-mcp" || echo 0
+      else
+        return 1
+      fi
+      ;;
+  esac
+}
+
+# _graphify_binary_ok (HIMMEL-1274) — does the installed graphify actually RUN?
+# `uv tool install` removes the old distribution's entry points BEFORE it fails
+# on a locked directory, so "the install returned nonzero" and "the binary still
+# works" are INDEPENDENT facts. Presence is not the question: the broken state
+# leaves the PATH shim in place and it throws a runpy traceback when invoked.
+_graphify_binary_ok() {
+  command -v graphify >/dev/null 2>&1 || return 1
+  graphify --version >/dev/null 2>&1
+}
+
 # Idempotent + WARN-not-fail by contract (a best-effort himmel-update step).
 graphify_update() {
-  local src installed pin extras spec
+  local src installed pin extras spec holders
   src="$(graphify_source)" || true
   if [ -z "$src" ]; then
     graphify_install
@@ -477,13 +542,71 @@ graphify_update() {
   fi
   extras="$(_graphify_installed_extras)"
   spec="$(_graphify_pypi_name)${extras}==${pin}"
+
+  # PRE-FLIGHT (HIMMEL-1274). `uv tool install --force` removes the old
+  # distribution's entry points, THEN replaces the tool dir. On Windows a live
+  # graphify-mcp holds that directory open, so the removal half-succeeds: the
+  # entry points are gone, the replace fails, and the machine goes from
+  # "graphify present and working" to "graphify absent and broken". Refusing to
+  # start is the only fail-SAFE option — a reinstall that cannot finish is worse
+  # than one never attempted.
+  #
+  # This is the NORMAL case on a busy workstation, not an edge case: every live
+  # Claude Code session spawns a graphify-mcp, and /himmel-update is routinely
+  # run from inside one. The step only ever appeared to work because the pin had
+  # not moved.
+  if holders="$(_graphify_mcp_holders)"; then
+    case "$holders" in ''|*[!0-9]*) holders=0 ;; esac
+    if [ "$holders" -gt 0 ]; then
+      {
+        echo "  SKIP: $holders graphify-mcp process(es) hold the uv tool dir — NOT attempting the reinstall."
+        echo "        graphify stays at v${installed:-?} and KEEPS WORKING; the pin has NOT advanced to $pin."
+        echo "        uv would delete the old entry points and then fail to replace the locked"
+        echo "        directory, leaving graphify broken (HIMMEL-1274). Refusing is the safe outcome."
+        echo "        To advance the pin: close the Claude Code sessions holding graphify-mcp"
+        echo "        (each live session spawns one), then re-run. Or install by hand once clear:"
+        echo "            uv tool install --force --with mcp $spec"
+      } >&2
+      # rc 0: nothing failed and nothing is broken — this is a deliberate,
+      # healthy skip. A nonzero here would print himmel-update's generic
+      # "failed (non-fatal)" warning on top, which is the misleading wording
+      # this ticket exists to remove.
+      return 0
+    fi
+  else
+    echo "  note: cannot probe for graphify-mcp holders on this platform — proceeding; the post-install verify below is the safety net."
+  fi
+
   echo "  graphify ${installed:-?} -> $pin (uv reinstall at pin, extras='${extras:-none}')..."
   if uv tool install --force --with mcp "$spec"; then
+    # VERIFY AFTER (HIMMEL-1274): a zero exit is not proof the binary resolves.
+    if ! _graphify_binary_ok; then
+      {
+        echo "  ERROR: uv reported success but 'graphify --version' does not run — the install is BROKEN."
+        echo "         Repair once no graphify-mcp process is live:"
+        echo "             uv tool install --force --with mcp $spec"
+      } >&2
+      return 1
+    fi
     echo "  graphify updated to $pin (source=himmel-pin)."
     graphify_wsl_share_store
     return 0
   fi
-  echo "  WARNING: graphify update to $pin failed (non-fatal)." >&2
+
+  # The install FAILED. Whether that was harmless depends entirely on whether
+  # the binary survived — report the state instead of a blanket "non-fatal",
+  # which was actively wrong in the reported case.
+  if _graphify_binary_ok; then
+    echo "  WARNING: graphify update to $pin failed; the existing install still RUNS (v${installed:-?}) — pin not advanced." >&2
+  else
+    {
+      echo "  ERROR: graphify update to $pin failed AND the existing install is now BROKEN ('graphify --version' does not run)."
+      echo "         uv removes the old entry points before replacing the tool dir, so a mid-way failure"
+      echo "         leaves no working graphify (HIMMEL-1274)."
+      echo "         Repair: close every Claude Code session (each holds a graphify-mcp), then:"
+      echo "             uv tool install --force --with mcp $spec"
+    } >&2
+  fi
   return 1
 }
 

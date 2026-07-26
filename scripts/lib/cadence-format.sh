@@ -33,8 +33,15 @@
 # interactive disable lands the pipeline runs with the plugin OFF — nudge
 # `arm --force` to regenerate the fragment. Same class as the HIMMEL-575 bug
 # noted at the top of this file.
+# v5 (HIMMEL-1281): cadence_cmd_escape replaces the four per-emitter cmd_escape
+# copies and drops their caret escaping of ^ & < > | (the " and % rules stay).
+# Inside the double quotes every interpolated value sits in, `^` is LITERAL, so
+# those carets corrupted the value instead of protecting it. An armed v4 runner
+# keeps firing the corrupted form, so an operator whose bat dir / repo root /
+# vault path carries one of those characters must `arm --force` to pick the fix
+# up. Everyone else's regenerated runner is byte-identical bar the stamp.
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=4
+CADENCE_RUNNER_FORMAT_VERSION=5
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).
@@ -59,6 +66,41 @@ cadence_user_home() {
     else
         printf '%s' "${HOME:-${USERPROFILE:-/tmp}}"
     fi
+}
+
+# cadence_cmd_escape <value>
+# Escape a value for interpolation into a generated .bat, INSIDE DOUBLE QUOTES.
+# That context is the whole contract (HIMMEL-1281) — every call site must emit
+# the result as "%s", never bare. Two rules, and only two:
+#
+#   %  ->  %%   percent expansion DOES happen inside double quotes in a .bat,
+#               so a literal % must be doubled or cmd eats `%X%` as a variable.
+#               This one is complete: it makes any % safe.
+#   "  ->  \"   carried over from the four copies this replaces. It is a
+#               BEST EFFORT, not a guarantee: the receiving .exe parses \" as a
+#               literal quote under MSVCRT argv rules, but cmd.exe itself
+#               toggles quoting on every " regardless of backslashes, so an
+#               embedded quote still shifts where cmd sees the quoted run end.
+#               arm-resume.sh reaches the same conclusion and REFUSES such a
+#               payload outright. It does not bite here because the values are
+#               Windows paths (" is illegal in a path component) plus the
+#               operator's own cadence prompts. Do not extend this function to
+#               a value that can carry an arbitrary quote — refuse instead.
+#
+# What is deliberately NOT escaped: ^ & < > |. Inside double quotes cmd.exe
+# already treats & < > | as literal data, and `^` is not an escape character
+# there at all — it is literal. Caret-escaping them does not protect anything;
+# it CORRUPTS the value. `C:\some&dir\bash.exe` emitted as "C:\some^&dir\..."
+# hands the child a path that does not exist. (The four per-emitter copies this
+# replaces all made exactly that mistake.)
+#
+# The quoting itself is what makes the value safe: a path can carry & < > | and
+# still not inject, because cmd never re-parses inside the quotes.
+cadence_cmd_escape() {
+    local s="$1"
+    s="${s//\"/\\\"}"
+    s="${s//%/%%}"
+    printf '%s' "$s"
 }
 
 # cadence_runner_stamp <bat_dir>

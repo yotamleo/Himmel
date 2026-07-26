@@ -255,21 +255,6 @@ esac
 # into Windows-rooted paths before schtasks sees them.
 run_schtasks() { MSYS_NO_PATHCONV=1 "$SCHTASKS_BIN" "$@"; }
 
-# Escape CMD metacharacters for values interpolated into the .bat (same order as
-# pipeline-cadence's cmd_escape) so a path containing legal-but-hostile chars
-# (% & ^ are valid in Windows dirnames) can't inject commands at fire time.
-cmd_escape() {
-    local s="$1"
-    s="${s//\"/\\\"}"
-    s="${s//%/%%}"
-    s="${s//^/^^}"
-    s="${s//&/^&}"
-    s="${s//</^<}"
-    s="${s//>/^>}"
-    s="${s//|/^|}"
-    printf '%s' "$s"
-}
-
 # Dedup listing: every scheduled task named HIMMEL-GraphMap-*. Fail-CLOSED if
 # the query tool itself errors (mirrors pipeline-cadence list_existing).
 list_existing() {
@@ -454,7 +439,13 @@ bat_payload() {
 # payload (the claude-cli BACKEND does shell `claude` underneath graphify — hence
 # the PATH prepend below, mirroring emit_runner's).
 emit_bat() {
-    local himmel_win_esc="$1" bash_win="$2" payload="$3" log_win_esc="$4" claude_dir_win_esc="${5:-}"
+    # No bash-path parameter: the interpreter is already baked into $payload by
+    # the caller (cmd-escaped, HIMMEL-1281). There used to be a $2 carrying the
+    # RAW bash_win that this body never read — dead weight, and the one raw
+    # value left sitting among escaped ones, which is exactly how an unescaped
+    # path gets used by accident later. Dropped rather than fed an escaped
+    # value nothing reads.
+    local himmel_win_esc="$1" payload="$2" log_win_esc="$3" claude_dir_win_esc="${4:-}"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     # schtasks fires with a minimal PATH that need not carry the npm-global bin
     # dir, so pin the `claude` CLI the claude-cli backend shells (HIMMEL-1070).
@@ -679,12 +670,12 @@ cmd_arm() {
         echo "ERR graphmap-cadence: cygpath -w failed for claude dir: $claude_dir_win" >&2
         exit 4
     fi
-    claude_dir_win_esc=$(cmd_escape "$claude_dir_win")
-    script_esc=$(cmd_escape "$script_mixed")
-    vault_esc=$(cmd_escape "$vault_mixed")
-    maps_esc=$(cmd_escape "$maps_mixed")
-    himmel_esc=$(cmd_escape "$himmel_mixed")
-    himmel_win_esc=$(cmd_escape "$himmel_win")
+    claude_dir_win_esc=$(cadence_cmd_escape "$claude_dir_win")
+    script_esc=$(cadence_cmd_escape "$script_mixed")
+    vault_esc=$(cadence_cmd_escape "$vault_mixed")
+    maps_esc=$(cadence_cmd_escape "$maps_mixed")
+    himmel_esc=$(cadence_cmd_escape "$himmel_mixed")
+    himmel_win_esc=$(cadence_cmd_escape "$himmel_win")
 
     # Per-corpus payloads. NOTE the asymmetric --corpus-root: the luna map
     # extracts the VAULT ($vault_esc); the himmel map extracts the HIMMEL REPO
@@ -696,8 +687,15 @@ cmd_arm() {
     payload_luna=$(bat_payload "$script_esc" luna "$vault_esc" "$maps_esc" "$LUNA_TITLE" "$LUNA_SLUG" "$LUNA_TAG")
     payload_himmel=$(bat_payload "$script_esc" himmel "$himmel_esc" "$maps_esc" "$HIMMEL_TITLE" "$HIMMEL_SLUG" "$HIMMEL_TAG")
     # Both .bats get the bash exe prepended; assemble the full exec line.
-    payload_luna="\"$bash_win\" $payload_luna"
-    payload_himmel="\"$bash_win\" $payload_himmel"
+    # bash_win is cmd-escaped like every other interpolated value (HIMMEL-1281
+    # CR round 1). It used to go in raw — a documented divergence from the qmd
+    # sibling, but the wrong side of it: a `%` anywhere in the resolved
+    # interpreter path would be expanded by cmd.exe at fire time instead of
+    # taken literally, and it is inside quotes exactly like the rest.
+    local bash_win_esc
+    bash_win_esc=$(cadence_cmd_escape "$bash_win")
+    payload_luna="\"$bash_win_esc\" $payload_luna"
+    payload_himmel="\"$bash_win_esc\" $payload_himmel"
 
     local bat_luna="$BAT_DIR/graphmap-luna.bat"
     local bat_himmel="$BAT_DIR/graphmap-himmel.bat"
@@ -708,8 +706,8 @@ cmd_arm() {
         echo "ERR graphmap-cadence: cygpath -w failed for bat dir: $bat_dir_win" >&2
         exit 4
     fi
-    log_luna_esc=$(cmd_escape "$bat_dir_win\\graphmap-luna.log")
-    log_himmel_esc=$(cmd_escape "$bat_dir_win\\graphmap-himmel.log")
+    log_luna_esc=$(cadence_cmd_escape "$bat_dir_win\\graphmap-luna.log")
+    log_himmel_esc=$(cadence_cmd_escape "$bat_dir_win\\graphmap-himmel.log")
 
     # The .bat runner is the task's Exec Command. cygpath -w is a pure string
     # transform (the .bat need not exist yet), so resolve the win paths before
@@ -729,9 +727,9 @@ cmd_arm() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY graphmap-cadence: would write $bat_luna:"
-        emit_bat "$himmel_win_esc" "$bash_win" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" | sed 's/^/    /'
+        emit_bat "$himmel_win_esc" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would write $bat_himmel:"
-        emit_bat "$himmel_win_esc" "$bash_win" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" | sed 's/^/    /'
+        emit_bat "$himmel_win_esc" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_LUNA /xml <daily $LUNA_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_luna_win" "$LUNA_TIME" "$sched" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_HIMMEL /xml <daily $HIMMEL_TIME, StartWhenAvailable=true> /f"
@@ -741,8 +739,8 @@ cmd_arm() {
     fi
 
     mkdir -p "$BAT_DIR"
-    emit_bat "$himmel_win_esc" "$bash_win" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" > "$bat_luna"
-    emit_bat "$himmel_win_esc" "$bash_win" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" > "$bat_himmel"
+    emit_bat "$himmel_win_esc" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" > "$bat_luna"
+    emit_bat "$himmel_win_esc" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" > "$bat_himmel"
 
     local err_file
     err_file=$(mktemp -t graphmap-cadence.err.XXXXXX)

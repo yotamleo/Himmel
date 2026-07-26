@@ -576,6 +576,84 @@ rm -f "$tmp/panelcopy/critics.local.json"
 stderr_l3="$(printf '%s' "$DIFF" | CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
 check "O3: no overlay -> repo registry" "$(printf '%s\n' "$stderr_l3" | grep -cF 'panel-availability: repodefault')" "1"
 
+# --- HIMMEL-1280: liveness beacon + total-panel deadline --------------------
+#
+# The wedge this guards against produced 0 bytes and ~0.1 CPU-seconds with NO
+# child process: the shell never reached its first echo. A 0-byte output is
+# otherwise ambiguous between "still thinking" and "never started", and a live
+# session waited 3h13m on the wrong reading.
+
+beacon_out="$(printf '%s' "$DIFF" | CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W1: beacon is emitted" "$beacon_out" "critic-panel.sh: START pid="
+# It must be the FIRST line: anything printed before it is work that could
+# block, which would re-open the ambiguity the beacon exists to remove.
+check "W1: beacon is the FIRST stderr line" "$(printf '%s
+' "$beacon_out" | head -1 | grep -c 'critic-panel.sh: START pid=')" "1"
+
+# The beacon must survive a registry that cannot be read at all — that failure
+# happens AFTER the beacon, so absence still means "never started".
+bad_reg_out="$(printf '%s' "$DIFF" | CRITICS_JSON=/nonexistent/nope.json CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W2: beacon precedes even a registry failure" "$bad_reg_out" "critic-panel.sh: START pid="
+
+# Total-panel deadline: 1s budget, and the stub burns >1s on the first member,
+# so the SECOND member must be skipped and reported unavailable rather than run.
+SLOW_STUB="$tmp/slow-cfp.sh"
+cat > "$SLOW_STUB" <<'SLOW'
+#!/usr/bin/env bash
+sleep 2
+echo "## Critical Issues (0 found)"
+echo "## Important Issues (0 found)"
+echo "## Suggestions (0 found)"
+SLOW
+chmod +x "$SLOW_STUB"
+# TWO rows: the deadline is checked BETWEEN members, so a single-member
+# registry never reaches the check at all. The first member burns past the 1s
+# budget; the second must be skipped.
+printf '%s' '{"panel":[{"slug":"dl1","model":"fake/one","provider":"test","tier":"free"},{"slug":"dl2","model":"fake/two","provider":"test","tier":"free"}]}' > "$tmp/dl-critics.json"
+dl_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=1 CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W3: total deadline announces itself" "$dl_out" "TOTAL panel deadline"
+check_contains "W3: skipped member is reported unavailable, not silently dropped" "$dl_out" "reason=panel-deadline"
+check_contains "W3: it is the SECOND member that was skipped" "$dl_out" "panel-availability: dl2 unavailable (panel-deadline)"
+
+# 0 disables the cap. Uses the SAME slow stub and two-row registry as W3 — the
+# identical setup that DID trip the deadline there, so the only difference is
+# the cap being off. With the fast stub this would pass vacuously (nothing to
+# exceed) and prove nothing about the disable path.
+off_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=0 CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check "W4: 0 disables the cap (no deadline line) under the SAME load that tripped W3" "$(printf '%s
+' "$off_out" | grep -c 'TOTAL panel deadline')" "0"
+# And prove it by outcome, not just by the absent warning: BOTH members ran.
+check_contains "W4: first member still ran" "$off_out" "panel-availability: dl1"
+check_contains "W4: second member ran too (not skipped)" "$off_out" "panel-availability: dl2"
+check "W4: no member was reported panel-deadline" "$(printf '%s
+' "$off_out" | grep -c 'reason=panel-deadline')" "0"
+
+# An invalid value must fall back to the default, never disable the cap silently.
+inv_out="$(printf '%s' "$DIFF" | CRITIC_PANEL_TOTAL_TIMEOUT_SECS=abc CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W5: invalid total timeout warns and uses the default" "$inv_out" "CRITIC_PANEL_TOTAL_TIMEOUT_SECS=abc invalid, using 900"
+
+# W6 (CR codex-1): the PARALLEL path must honour the deadline on the LAUNCH
+# side too. The clamp alone only shortens a member — it does not stop it
+# starting — so without this check CRITIC_PARALLEL=1 could still launch every
+# member after the budget was spent. A 0-second budget is already spent before
+# the first launch, which is the deterministic way to exercise it.
+# Backdate the panel start so the budget is ALREADY spent at loop entry.
+# Without the seam this is untestable: launches are near-instant so no real
+# budget expires during the loop, and 0 means "disabled", not "already spent".
+_backdated=$(( $(date +%s) - 5000 ))
+par_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PARALLEL=1 CRITIC_PANEL_TOTAL_TIMEOUT_SECS=1     CRITIC_PANEL_STARTED_AT="$_backdated"     CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W6: parallel path announces the deadline" "$par_out" "TOTAL panel deadline"
+check_contains "W6: parallel path reports the un-launched member unavailable" "$par_out" "reason=panel-deadline"
+# Both members must be reported — an already-spent budget means NOTHING launches.
+check "W6: both members reported, none launched" "$(printf '%s
+' "$par_out" | grep -c 'reason=panel-deadline')" "2"
+# Same seam, sequential path: proves the two paths agree rather than one
+# silently drifting.
+seq_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=1     CRITIC_PANEL_STARTED_AT="$_backdated"     CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check "W6: sequential path agrees (both reported, none run)" "$(printf '%s
+' "$seq_out" | grep -c 'reason=panel-deadline')" "2"
+
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

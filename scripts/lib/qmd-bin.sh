@@ -582,6 +582,75 @@ qmd_cmd() {
   fi
 }
 
+# _qmd_abs_path <path>
+# Echo <path> as an absolute path. Already-absolute input (POSIX or Windows
+# drive form) passes straight through; anything else is resolved against the
+# CURRENT cwd by canonicalizing its directory. rc 1 when that directory does
+# not resolve, so a caller can refuse rather than pin something unusable.
+# bash 3.2-safe, no realpath dependency (macOS ships none).
+_qmd_abs_path() {
+  local p="$1" d b
+  case "$p" in
+    /*|[A-Za-z]:[/\\]*) printf '%s\n' "$p"; return 0 ;;
+  esac
+  d="$(dirname -- "$p")"
+  b="$(basename -- "$p")"
+  d="$(cd -- "$d" 2>/dev/null && pwd)" || return 1
+  [ -n "$d" ] || return 1
+  printf '%s/%s\n' "${d%/}" "$b"
+}
+
+# qmd_pinned_invocation (HIMMEL-1283)
+# Print the ABSOLUTE invocation qmd_cmd would choose, one token per line:
+#   line 1  the executable      (bun's absolute path, or a qmd found on PATH)
+#   line 2  optional script arg (the bun-global dist/cli/qmd.js, when line 1
+#                                is bun -- absent for the PATH-qmd case)
+# rc 0 on success, 127 when nothing resolves.
+#
+# WHY THIS IS SEPARATE FROM qmd_cmd: qmd_cmd is an INVOKER -- it runs qmd now,
+# in this shell, under this PATH. A scheduler (schtasks/cron) fires with a
+# MINIMAL PATH carrying neither bun's bin dir nor qmd's, so a cadence cannot
+# call an invoker; it has to BAKE an absolute invocation into the runner it
+# generates. This is that: qmd_cmd's PREFERENCE ORDER, resolved to absolute
+# tokens a runner can pin. (The ticket calls this out explicitly -- qmd_cmd is
+# not a drop-in for the cadence.)
+#
+# The preference order is the whole point. A bare `command -v qmd` picks up the
+# broken Claude-plugin stub that shadows the bun shim on Git Bash $PATH inside a
+# Claude Code session -- which is exactly where an operator arms the cadence
+# from -- and bakes THAT into the runner, so every unattended fire dies with
+# `Module not found ... dist/cli/qmd.js` in a log nobody reads.
+#
+# Two lines, not one string: the caller must be able to quote each token
+# separately. Joining them would break the moment a bun root or the user
+# profile contains a space (`C:\Program Files\...`), which is the common case
+# on Windows.
+#
+# EVERY returned token is canonicalized to an absolute path. Two ways a relative
+# one can otherwise leak out: a relative entry on $PATH makes `command -v`
+# answer relatively, and a relative $BUN_INSTALL makes the derived qmd.js path
+# relative. Either would pin a path that resolves against the CALLER's cwd —
+# and the entire point of this function is that a scheduler, with a cwd of its
+# own, can run the result. Callers do re-validate and fail loudly, but a
+# resolver that can hand back an unusable answer is the wrong place to leave
+# that to chance.
+qmd_pinned_invocation() {
+  local bun_qmd bun_abs qmd_abs js_abs
+  bun_qmd="$(_qmd_bun_js)"
+  if [ -f "$bun_qmd" ] && bun_abs="$(command -v bun 2>/dev/null)"; then
+    bun_abs="$(_qmd_abs_path "$bun_abs")" || return 127
+    js_abs="$(_qmd_abs_path "$bun_qmd")" || return 127
+    printf '%s\n%s\n' "$bun_abs" "$js_abs"
+    return 0
+  fi
+  if qmd_abs="$(command -v qmd 2>/dev/null)"; then
+    qmd_abs="$(_qmd_abs_path "$qmd_abs")" || return 127
+    printf '%s\n' "$qmd_abs"
+    return 0
+  fi
+  return 127
+}
+
 # Presence check ONLY — does not invoke the binary, so real runtime errors
 # (corrupt better-sqlite3 prebuild, broken cache) reach the caller instead
 # of being masked as "qmd not installed".

@@ -286,23 +286,6 @@ esac
 # /query, /create etc. into Windows-rooted paths before schtasks sees them.
 run_schtasks() { MSYS_NO_PATHCONV=1 "$SCHTASKS_BIN" "$@"; }
 
-# Escape CMD metacharacters for values interpolated into the .bat —
-# same escape (and same order: " %, then ^, then the chars that GAIN a
-# caret) as arm-resume.sh, so a vault path containing legal-but-hostile
-# chars (% & ^ are valid in Windows dirnames) can't inject commands at
-# fire time.
-cmd_escape() {
-    local s="$1"
-    s="${s//\"/\\\"}"
-    s="${s//%/%%}"
-    s="${s//^/^^}"
-    s="${s//&/^&}"
-    s="${s//</^<}"
-    s="${s//>/^>}"
-    s="${s//|/^|}"
-    printf '%s' "$s"
-}
-
 # Dedup listing: every scheduled task named HIMMEL-Pipeline-*.
 # Fail-CLOSED if the query tool itself errors — a silent empty result
 # followed by an arm would double-register (same rationale as
@@ -577,17 +560,21 @@ cmd_disarm() {
 # `status` surfaces the log.
 emit_bat() {
     local vault_win_esc="$1" claude_win="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5" model="$6" flow="$7" task_name="$8" bash_win="$9" flow_lib_m="${10}"
-    # cmd_escape the per-leg model (HIMMEL-506 CR fix): every other value
-    # interpolated below is already escaped, but the model was a raw "%s" -
-    # a value carrying " % & ^ < > | would corrupt the .bat at fire time.
+    # Escape the per-leg model too (HIMMEL-506 CR fix): every other value
+    # interpolated below goes through cadence_cmd_escape, but the model was a
+    # raw "%s" - a value carrying " or % would corrupt the .bat at fire time.
     # validate_arm_inputs rejects metacharacters at the gate; escape here
     # too (defense in depth - the gate also guards emit_runner's printf '%q').
-    local model_esc flow_esc task_name_esc bash_win_esc flow_lib_m_esc
-    model_esc=$(cmd_escape "$model")
-    flow_esc=$(cmd_escape "$flow")
-    task_name_esc=$(cmd_escape "$task_name")
-    bash_win_esc=$(cmd_escape "$bash_win")
-    flow_lib_m_esc=$(cmd_escape "$flow_lib_m")
+    # claude_win gets the same treatment (HIMMEL-1281 CR round 1) — it was the
+    # last raw "%s" in this emitter, and a `%` in the resolved CLI path would
+    # be expanded by cmd.exe at fire time rather than taken literally.
+    local model_esc flow_esc task_name_esc bash_win_esc flow_lib_m_esc claude_win_esc
+    model_esc=$(cadence_cmd_escape "$model")
+    flow_esc=$(cadence_cmd_escape "$flow")
+    task_name_esc=$(cadence_cmd_escape "$task_name")
+    bash_win_esc=$(cadence_cmd_escape "$bash_win")
+    flow_lib_m_esc=$(cadence_cmd_escape "$flow_lib_m")
+    claude_win_esc=$(cadence_cmd_escape "$claude_win")
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
@@ -604,7 +591,7 @@ emit_bat() {
     printf 'del /q "%%FLOW_RUN_TMP%%" >NUL 2>&1\r\n'
     # HIMMEL-951: no bg-wait ceiling override here — CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
     # only affects --print mode, and cadence runners are interactive-shaped (HIMMEL-128).
-    printf '"%s" --model "%s" --settings "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win" "$model_esc" "$settings_esc" "$prompt_esc" "$log_win_esc"
+    printf '"%s" --model "%s" --settings "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win_esc" "$model_esc" "$settings_esc" "$prompt_esc" "$log_win_esc"
     printf 'set "FLOW_RUN_RC=%%ERRORLEVEL%%"\r\n'
     printf 'set "FLOW_RUN_OUTCOME=complete"\r\n'
     printf '"%s" "%s" --classify "%%FLOW_RUN_RC%%" "%s" > "%%FLOW_RUN_TMP%%" 2>NUL\r\n' "$bash_win_esc" "$flow_lib_m_esc" "$log_win_esc"
@@ -925,10 +912,10 @@ cmd_arm() {
     fi
 
     local vault_esc harvest_esc synth_esc health_esc
-    vault_esc=$(cmd_escape "$vault_win")
-    harvest_esc=$(cmd_escape "$HARVEST_PROMPT")
-    synth_esc=$(cmd_escape "$SYNTH_PROMPT")
-    health_esc=$(cmd_escape "$HEALTH_PROMPT")
+    vault_esc=$(cadence_cmd_escape "$vault_win")
+    harvest_esc=$(cadence_cmd_escape "$HARVEST_PROMPT")
+    synth_esc=$(cadence_cmd_escape "$SYNTH_PROMPT")
+    health_esc=$(cadence_cmd_escape "$HEALTH_PROMPT")
     local bat_harvest="$BAT_DIR/pipeline-harvest.bat"
     local bat_synth="$BAT_DIR/pipeline-synthesize.bat"
     local bat_health="$BAT_DIR/pipeline-health.bat"
@@ -940,16 +927,16 @@ cmd_arm() {
         echo "ERR pipeline-cadence: cygpath -w failed for bat dir: $bat_dir_win" >&2
         exit 4
     fi
-    log_harvest_esc=$(cmd_escape "$bat_dir_win\\pipeline-harvest.log")
-    log_synth_esc=$(cmd_escape "$bat_dir_win\\pipeline-synthesize.log")
-    log_health_esc=$(cmd_escape "$bat_dir_win\\pipeline-health.log")
+    log_harvest_esc=$(cadence_cmd_escape "$bat_dir_win\\pipeline-harvest.log")
+    log_synth_esc=$(cadence_cmd_escape "$bat_dir_win\\pipeline-synthesize.log")
+    log_health_esc=$(cadence_cmd_escape "$bat_dir_win\\pipeline-health.log")
 
     # Settings fragment (HIMMEL-575): the `claude --settings` target inside each
     # .bat (a Windows path, cmd-escaped) plus the auto-approve hook's mixed
     # (C:/...) path embedded in the fragment JSON (forward-slash so it's both
     # JSON-safe and bash-readable when claude runs the hook command).
     local settings_esc hook_path_m
-    settings_esc=$(cmd_escape "$bat_dir_win\\cadence-settings.json")
+    settings_esc=$(cadence_cmd_escape "$bat_dir_win\\cadence-settings.json")
     if ! hook_path_m=$(cygpath -m "$AUTO_APPROVE_HOOK" 2>&1); then
         echo "ERR pipeline-cadence: cygpath -m failed for hook path: $hook_path_m" >&2
         exit 4

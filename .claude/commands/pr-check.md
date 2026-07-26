@@ -127,6 +127,19 @@ Steps:
 
    Per-member hang protection: `CRITIC_TIMEOUT_SECS` — default **240 s**, which is ALSO the fallback when the supplied value is non-numeric or ≤0 (the panel warns and uses 240 rather than failing). HIMMEL-558 raised it from 150 s after codex + qwen3coder were seen clipping at 150 s. It **needs the `timeout` binary but does not require it**: when `timeout` is absent the panel prints "per-member hang protection disabled" and runs each member **unbounded** (`critic-panel.sh:90-92`) — the same graceful-degrade convention the step-3.1 codex pass uses. `CR_PROFILE=none` skips the panel entirely.
 
+   Total-panel hang protection (HIMMEL-1280): `CRITIC_PANEL_TOTAL_TIMEOUT_SECS` — default **900 s**, `0` disables. `CRITIC_TIMEOUT_SECS` bounds ONE member; this bounds the run as a whole, so N members each clipping their own budget cannot hold you for N×240 s. It works two ways: the deadline is checked **between** members (remaining critics are then reported `unavailable … reason=panel-deadline` — a MISSING signal, never a clean one), **and** each member's own timeout is clamped to whatever is left of the budget, so a member starting just before the deadline cannot overrun it by a further 240 s. Be precise about the limit: the clamp needs the `timeout` binary, so on a host without it a member already in flight still runs unbounded and the effective guarantee degrades to "no NEW member starts after the deadline".
+
+   > **NEVER wait unbounded on a backgrounded panel (HIMMEL-1280).** An armed session lost **3h13m** to a backgrounded `/pr-check` that produced 0 bytes and ~0.1 CPU-seconds with **no child process** — it never reached its first `echo`, so nothing was ever coming. Its own words were *"I'll wait for that to land rather than poll."* A backgrounded Bash task's `timeout` parameter does **not** bound a detached task.
+   >
+   > When you background the panel, poll it with a hard deadline instead of sleeping on it:
+   >
+   > - `critic-panel.sh` emits `critic-panel.sh: START pid=…` as its **first** line, before any sourcing or subshell. Use it as the liveness probe:
+   >   - **beacon present** → the panel is running; let its own timeouts bound it.
+   >   - **beacon absent after ~60 s** → the wedge is BEFORE the panel (the `bash -c -l` login-shell wrapper, profile init under a detached/no-tty handle, or your own redirect). It will not recover. Kill the `bash.exe` PIDs — the task reaps in ~1 s and you lose nothing, because 0 bytes is 0 bytes.
+   > - Then fall back to `CR_PROFILE=none` (claude-only) for that round and **say so in the PR body**, rather than stalling.
+   >
+   > **Do not read liveness from the transcript's file mtime** — it kept advancing while the content was frozen and byte-identical, which is exactly what made a prior status check report "wrote 45 min ago" on a 3-hour-dead session. The reliable test is **max in-content `timestamp` + file size**.
+
    ```bash
    # Resolve the protected default (main OR master, HIMMEL-297) for the diff base.
    db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)

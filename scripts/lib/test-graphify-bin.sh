@@ -324,12 +324,92 @@ echo x
 EOF
 chmod +x "$gud_bin/graphify"
 gud_log="$tmpdir/gup-diff-log"; : > "$gud_log"
+# GRAPHIFY_MCP_HOLDERS=0 (HIMMEL-1274): pin the holder probe to "clear". Without
+# it this test is NOT hermetic — the real probe finds the DEVELOPER'S own live
+# graphify-mcp servers (every Claude Code session spawns one) and the new
+# pre-flight guard correctly skips the reinstall, so the assertion below goes
+# red on a busy workstation and green on CI. Observed exactly that.
 out=$(HOME="$gud_home" PATH="$gud_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gud_tools" UV_LIST_FILE="$gud_list" \
-      UV_BIN_DIR="$gud_bin" UV_LOG="$gud_log" \
+      UV_BIN_DIR="$gud_bin" UV_LOG="$gud_log" GRAPHIFY_MCP_HOLDERS=0 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "update diff-ver: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "update diff-ver: force-reinstalls at pin preserving [all] extras" \
   grep -qE 'tool install --force --with mcp graphifyy\[all\]==[0-9]' "$gud_log"
+
+# --- HIMMEL-1274: the pre-flight holder guard + verify-after ----------------
+echo "[test-graphify-bin] graphify_update: live graphify-mcp holders -> SKIP the reinstall, leave the install alone"
+gh_home="$tmpdir/gup-held"; mkdir -p "$gh_home"
+gh_tools="$tmpdir/gup-held-tools"; mkdir -p "$gh_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy", extras = ["all"] }]\n' > "$gh_tools/graphifyy/uv-receipt.toml"
+gh_list="$tmpdir/gup-held-list"; printf 'graphifyy v0.0.1\n' > "$gh_list"   # behind the pin
+gh_bin="$tmpdir/gup-held-bin"; mkdir -p "$gh_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$gh_bin/graphify"; chmod +x "$gh_bin/graphify"
+gh_log="$tmpdir/gup-held-log"; : > "$gh_log"
+out=$(HOME="$gh_home" PATH="$gh_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gh_tools" UV_LIST_FILE="$gh_list" \
+      UV_BIN_DIR="$gh_bin" UV_LOG="$gh_log" GRAPHIFY_MCP_HOLDERS=3 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+# rc 0: a deliberate, healthy skip — nothing failed and nothing is broken.
+assert "held: rc 0 (a skip is not a failure)" grep -q '^RC=0$' <<<"$out"
+assert "held: says SKIP with the holder count" grep -q 'SKIP: 3 graphify-mcp process' <<<"$out"
+assert "held: states graphify KEEPS WORKING" grep -q 'KEEPS WORKING' <<<"$out"
+assert "held: says the pin did NOT advance" grep -q 'has NOT advanced' <<<"$out"
+assert "held: gives the manual repair command" grep -q 'uv tool install --force --with mcp graphifyy' <<<"$out"
+# THE POINT: no uv install was attempted, so the entry points were never removed.
+# shellcheck disable=SC2016
+assert "held: NO uv install attempted (this is what keeps graphify working)" \
+  bash -c '! grep -q "tool install" "$1"' _ "$gh_log"
+# shellcheck disable=SC2016
+assert "held: does NOT use the misleading 'non-fatal' wording" \
+  bash -c '! grep -q "non-fatal" <<<"$1"' _ "$out"
+
+echo "[test-graphify-bin] graphify_update: install 'succeeds' but the binary does not run -> HARD failure"
+gb_home="$tmpdir/gup-broken"; mkdir -p "$gb_home"
+gb_tools="$tmpdir/gup-broken-tools"; mkdir -p "$gb_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gb_tools/graphifyy/uv-receipt.toml"
+gb_list="$tmpdir/gup-broken-list"; printf 'graphifyy v0.0.1\n' > "$gb_list"
+gb_bin="$tmpdir/gup-broken-bin"; mkdir -p "$gb_bin"
+gb_log="$tmpdir/gup-broken-log"; : > "$gb_log"
+# Model the REAL sequence, not just the end state: graphify works BEFORE the
+# reinstall and throws AFTER it. A stub that is broken from the start is a
+# different scenario entirely — graphify_source cannot identify the install, so
+# the update path is never even reached. The stub flips once the uv log shows
+# an install ran, which is exactly what uv does when it removes the old entry
+# points and then fails to replace the locked directory.
+cat > "$gb_bin/graphify" <<'EOF'
+#!/usr/bin/env bash
+if grep -q "tool install" "${UV_LOG:-/nonexistent}" 2>/dev/null; then
+  echo "runpy traceback: No module named graphify.__main__" >&2
+  exit 1
+fi
+echo x
+EOF
+chmod +x "$gb_bin/graphify"
+# UV_BIN_DIR must NOT be gb_bin: the uv stub drops a WORKING graphify shim into
+# UV_BIN_DIR on a successful install, which would overwrite the flipping stub
+# above and make the binary look healthy — testing the opposite of the point.
+# Keep it off PATH so `command -v graphify` keeps resolving the flipping stub.
+gb_uvbin="$tmpdir/gup-broken-uvbin"; mkdir -p "$gb_uvbin"
+out=$(HOME="$gb_home" PATH="$gb_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gb_tools" UV_LIST_FILE="$gb_list" \
+      UV_BIN_DIR="$gb_uvbin" UV_LOG="$gb_log" GRAPHIFY_MCP_HOLDERS=0 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "broken-after-install: rc 1 (presence is not proof it runs)" grep -q '^RC=1$' <<<"$out"
+assert "broken-after-install: names it BROKEN" grep -q 'BROKEN' <<<"$out"
+assert "broken-after-install: gives the repair command" grep -q 'uv tool install --force --with mcp graphifyy' <<<"$out"
+
+echo "[test-graphify-bin] graphify_update: unprobeable platform -> proceeds, verify-after is the net"
+gp_home="$tmpdir/gup-probe"; mkdir -p "$gp_home"
+gp_tools="$tmpdir/gup-probe-tools"; mkdir -p "$gp_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gp_tools/graphifyy/uv-receipt.toml"
+gp_list="$tmpdir/gup-probe-list"; printf 'graphifyy v0.0.1\n' > "$gp_list"
+gp_bin="$tmpdir/gup-probe-bin"; mkdir -p "$gp_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$gp_bin/graphify"; chmod +x "$gp_bin/graphify"
+gp_log="$tmpdir/gup-probe-log"; : > "$gp_log"
+out=$(HOME="$gp_home" PATH="$gp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gp_tools" UV_LIST_FILE="$gp_list" \
+      UV_BIN_DIR="$gp_bin" UV_LOG="$gp_log" GRAPHIFY_MCP_HOLDERS=unavailable \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "unprobeable: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "unprobeable: says it cannot probe" grep -q 'cannot probe for graphify-mcp holders' <<<"$out"
+assert "unprobeable: still performs the install" grep -qE 'tool install --force --with mcp graphifyy' "$gp_log"
 
 echo "[test-graphify-bin] graphify_update: uv graphifyy AHEAD of pin -> left as-is, no install (CR codex-1: never downgrade/clobber)"
 gua_home="$tmpdir/gup-ahead"; mkdir -p "$gua_home"

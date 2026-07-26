@@ -111,6 +111,14 @@ case "${1:-}" in
             echo "Embedded 100 chunks from 20 documents in 5s"
             exit 0
         fi
+        # A future qmd release that REWORDS its no-op line (HIMMEL-1282). Note
+        # what this says: the index IS complete, just phrased differently. The
+        # runner must not report it as "INCOMPLETE" — that diagnosis would be
+        # wrong, and wrong nightly.
+        if [ -e "$STATE/reworded" ] && [ "$n" -ge 2 ]; then
+            echo "Nothing to embed: every content hash is up to date."
+            exit 0
+        fi
         if [ -e "$STATE/did-work" ] && [ "$n" -eq 1 ]; then
             echo "Embedded 457 chunks from 81 documents in 22s"
             exit 0
@@ -145,6 +153,24 @@ for _d in $PATH; do
     PATH_NOQMD="${PATH_NOQMD:+$PATH_NOQMD:}$_d"
 done
 IFS=$_oldifs
+
+# HERMETICITY: PATH filtering ALONE is no longer sufficient (HIMMEL-1283).
+# The no-flag fallback now resolves through scripts/lib/qmd-bin.sh, whose
+# preference order checks the bun-served install at
+# $BUN_INSTALL/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js BEFORE
+# consulting PATH at all — and BUN_INSTALL defaults to $HOME/.bun. On a
+# developer machine that path is the operator's REAL qmd, so a suite that only
+# sanitises PATH will reach straight past its fake and run `qmd update` +
+# `qmd embed` against the LIVE index. That is not a hypothetical: it happened
+# while writing this change, and a real `qmd embed` is a multi-hour job.
+#
+# Point HOME, USERPROFILE and BUN_INSTALL at the temp dir so the bun branch
+# cannot resolve anything real. Tests that want the bun branch exercised set
+# BUN_INSTALL explicitly to a fixture (see the bun-preference test below).
+export HOME="$TMP_ROOT/home"
+mkdir -p "$HOME"
+export USERPROFILE="$HOME"
+export BUN_INSTALL="$TMP_ROOT/bun-none"
 
 # ============================================================================
 # Argument handling
@@ -183,7 +209,9 @@ assert_rc "empty --qmd-bin=VALUE rc 1" 1 "$rc"
 echo "TEST: qmd not found (absent from PATH, no --qmd-bin) exits 2"
 rc=0; out=$(env PATH="$PATH_NOQMD" bash "$SCRIPT" 2>&1) || rc=$?
 assert_rc "missing qmd rc 2" 2 "$rc"
-assert_contains "missing-qmd error is actionable" "not found on PATH" "$out"
+# Wording follows the resolver, not PATH: since HIMMEL-1283 the fallback checks
+# the bun-served install too, so "not found on PATH" would have been a lie.
+assert_contains "missing-qmd error is actionable" "no usable qmd found" "$out"
 
 echo "TEST: --qmd-bin pointing at a non-existent file exits 2"
 rc=0; out=$(bash "$SCRIPT" --qmd-bin "$TMP_ROOT/no-such-qmd" 2>&1) || rc=$?
@@ -260,6 +288,57 @@ rc=0; out=$(env PATH="$TMP_ROOT:$PATH" bash "$SCRIPT" 2>&1) || rc=$?
 assert_rc "PATH-resolved qmd rc 0" 0 "$rc"
 assert_contains "banner names the resolved qmd" "$FAKE_QMD" "$out"
 
+# HIMMEL-1283: with no --qmd-bin, the fallback goes through the SHARED resolver,
+# which prefers the bun-served install over whatever is first on PATH — the same
+# preference order qmd_cmd uses, and the whole point of the ticket (a bare
+# `command -v qmd` finds the broken Claude-plugin stub). Assert the preference
+# actually holds AND that it is invoked as TWO tokens (`bun <qmd.js> update`),
+# which is why --qmd-js exists at all.
+echo "TEST: the bun-served install WINS over a PATH qmd, pinned as two tokens"
+reset_state
+touch "$STATE/did-work"
+BUN_FIX="$TMP_ROOT/bunfix"
+BUN_JS="$BUN_FIX/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+mkdir -p "$(dirname "$BUN_JS")" "$TMP_ROOT/bunbin"
+printf 'stub\n' > "$BUN_JS"
+# Fake `bun`: records "<js-basename> <args>" so we can prove it was invoked with
+# the js path as its FIRST argument, then behaves like the fake qmd for the
+# update/embed calls the runner makes.
+cat >"$TMP_ROOT/bunbin/bun" <<BUNFAKE
+#!/bin/sh
+STATE="$STATE"
+BUNFAKE
+cat >>"$TMP_ROOT/bunbin/bun" <<'BUNFAKE'
+js="$1"; shift
+printf 'bun-js:%s %s\n' "$js" "$*" >> "$STATE/calls"
+case "${1:-}" in
+    update) echo "Indexed: 1 new" ;;
+    embed)  echo "All content hashes already have embeddings" ;;
+esac
+exit 0
+BUNFAKE
+chmod +x "$TMP_ROOT/bunbin/bun"
+# BOTH PATH entries need POSIX form on Windows, not just the bun one: TMP_ROOT
+# carries the fake qmd, and a mixed-form (C:/...) entry is unresolvable to
+# Git-Bash — leaving it raw makes the fake unreachable, so the test would prove
+# "bun beat nothing" instead of "bun beat a PATH qmd".
+BUNBIN_PATH="$TMP_ROOT/bunbin"
+TMP_ROOT_PATH="$TMP_ROOT"
+if command -v cygpath >/dev/null 2>&1; then
+    BUNBIN_PATH=$(cygpath -u "$TMP_ROOT/bunbin")
+    TMP_ROOT_PATH=$(cygpath -u "$TMP_ROOT")
+fi
+rc=0; out=$(env BUN_INSTALL="$BUN_FIX" PATH="$BUNBIN_PATH:$TMP_ROOT_PATH:$PATH_NOQMD" \
+    bash "$SCRIPT" 2>&1) || rc=$?
+assert_rc "bun-served resolution rc 0" 0 "$rc"
+assert_contains "banner names the two-token bun invocation" "$BUN_JS" "$out"
+assert_contains "bun was invoked with the js path first" "bun-js:$BUN_JS update" "$(calls)"
+# Assert against the CALL RECORDER, not stdout: the recorder is the direct
+# evidence of what actually executed, whereas stdout only shows what a banner
+# happened to print — a fake qmd that ran silently would slip past a stdout
+# check entirely.
+assert_not_contains "the PATH qmd was NOT what ran" "$FAKE_QMD" "$(calls)"
+
 # ============================================================================
 # Failure paths — each must be LOUD and carry its own exit code
 # ============================================================================
@@ -293,6 +372,29 @@ assert_contains "incomplete embed is named as such" "embed INCOMPLETE" "$out"
 assert_contains "incomplete embed explains the likely cause" "session" "$out"
 assert_contains "incomplete embed offers the manual escape" "embed --timeout 0" "$out"
 assert_not_contains "incomplete embed never claims success" "index refreshed, all content hashes embedded" "$out"
+
+# HIMMEL-1282: a REWORDED verifier is not an incomplete index -----------------
+#
+# This is the whole ticket. Before, anything that was not the exact sentinel
+# read as "embed INCOMPLETE" (rc 5) — so the day qmd rewords its no-op line, a
+# fully COMPLETE index reports a loud failure with a WRONG diagnosis, nightly,
+# and the rational operator response to a cadence that cries wolf every night
+# is to disarm it. That re-opens the staleness hole HIMMEL-568 closed. The
+# fixture below says "the index IS complete", just differently: the runner must
+# still refuse (fail-closed), but say what is actually true — it cannot READ the
+# verifier — and it must NOT claim the index is stale.
+echo "TEST: a REWORDED verifier exits 6 (unreadable), NOT 5 (incomplete)"
+reset_state
+touch "$STATE/reworded"
+rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "reworded verifier rc 6" 6 "$rc"
+assert_contains "names the real problem: cannot read the verifier" "UNRECOGNIZED verifier output" "$out"
+assert_contains "explicitly denies the stale-index reading" "This is NOT 'the index is stale'" "$out"
+assert_contains "surfaces the sentinel it looked for" "All content hashes already have embeddings" "$out"
+assert_contains "names the version the sentinels were checked against" "qmd 2.6.3" "$out"
+assert_contains "shows what qmd actually printed" "Nothing to embed" "$out"
+assert_not_contains "does NOT misreport it as incomplete" "embed INCOMPLETE" "$out"
+assert_not_contains "reworded verifier never claims success" "index refreshed, all content hashes embedded" "$out"
 
 echo "TEST: a failing verify pass exits 4 (not silently treated as complete)"
 reset_state

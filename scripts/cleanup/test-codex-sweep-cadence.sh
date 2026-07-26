@@ -289,7 +289,7 @@ calls=$(cat "$STATE/calls.log" 2>/dev/null || echo MISSING)
 assert_contains "schtasks invoked with /create /tn HIMMEL-CodexOrphanSweep /xml" "/create /tn HIMMEL-CodexOrphanSweep /xml" "$calls"
 
 bat=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
-assert_contains "bat stamps the format version (HIMMEL-588)" "himmel-cadence-runner-format: 4" "$bat"
+assert_contains "bat stamps the format version (HIMMEL-588)" "himmel-cadence-runner-format: 5" "$bat"
 assert_contains "bat fires sweep-codex-orphans.ps1 -Kill" "sweep-codex-orphans.ps1" "$bat"
 assert_contains "bat fires reap-mcp-fleet.ps1 -Kill" "reap-mcp-fleet.ps1" "$bat"
 assert_contains "bat passes -Kill to the sweep payload" "sweep-codex-orphans.ps1" "$bat"
@@ -481,7 +481,7 @@ fi
 probe=$(cat "$STATE/create-time-runner-probe.bat" 2>/dev/null || echo MISSING)
 assert_contains "create-time probe carries the full new runner content (sweep payload)" "sweep-codex-orphans.ps1" "$probe"
 assert_contains "create-time probe carries the full new runner content (reap payload)" "reap-mcp-fleet.ps1" "$probe"
-assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 4" "$probe"
+assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 5" "$probe"
 
 # Test T6: --dry-run touches nothing ------------------------------------------
 
@@ -504,15 +504,27 @@ fi
 
 # Test T7: hostile-but-legal BAT_DIR is cmd-escaped in the .bat --------------
 
-echo "TEST: hostile %&^ in BAT_DIR arrives cmd-escaped in the .bat (T7)"
+echo "TEST: hostile %&^ in BAT_DIR lands on the REAL dir in the .bat (T7)"
 reset_state
 EVIL_DIR="$TMP_ROOT/cr%on rnr&x^y"
 out=$(env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$EVIL_DIR" SWEEP_PWSH="$FAKE_PWSH" \
     HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm)
 evil_bat=$(cat "$EVIL_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
-assert_contains "percent doubled (%% in bat)" '%%' "$evil_bat"
-assert_contains "ampersand careted (^& in bat)" '^&' "$evil_bat"
-assert_contains "caret doubled (^^ in bat)" '^^' "$evil_bat"
+# HIMMEL-1281: only % -> %% ; & and ^ arrive verbatim because every value sits
+# inside double quotes. The `set LOG=` line was the one bare-context emitter
+# line and is now `set "LOG=..."`, which is what makes that contract hold.
+# Assert the WHOLE `set "LOG=<path>"` assignment as ONE contiguous string.
+# Checking `set "LOG=` and the trailing `"` as separate substrings would let
+# them match in two different places, so a malformed or unterminated
+# assignment could still pass — and the quoting is precisely what makes the
+# escape correct. Built the way the emitter builds it (cygpath -w, then
+# % -> %%).
+EVIL_DIR_WIN=$(cygpath -w "$EVIL_DIR")
+EVIL_LOG_EXPECTED="set \"LOG=${EVIL_DIR_WIN//%/%%}\\codex-sweep.log\""
+assert_contains "LOG assignment is the real dir, fully quoted (% doubled, & ^ verbatim)" \
+    "$EVIL_LOG_EXPECTED" "$evil_bat"
+assert_not_contains "no caret-escaped ampersand" '^&' "$evil_bat"
+assert_not_contains "no doubled caret" '^^' "$evil_bat"
 env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$EVIL_DIR" SWEEP_PWSH="$FAKE_PWSH" \
     HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm >/dev/null 2>&1 || true
 

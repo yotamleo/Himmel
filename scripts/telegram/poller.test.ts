@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { isAllowed, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -1984,4 +1984,131 @@ test("/restart full does NOT arm a watchdog when the fire itself failed", async 
     scheduleWatchdog: () => { armed = true; },
   });
   expect(armed).toBe(false);
+});
+
+// --- HIMMEL-1273: burst coalescing ------------------------------------------
+//
+// A fake clock throughout: the whole point is time-based behaviour, and a suite
+// that sleeps for real windows is slow and flaky. flushDue takes `now` for
+// exactly this reason.
+
+test("burst within the quiet window dispatches exactly ONE run", async () => {
+  const runs: string[] = [];
+  let now = 1_000;
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 4000, maxHoldMs: 30000, now: () => now });
+
+  // three messages 200ms apart — a phone sending 3 PDFs
+  await c("__chat__"); now += 200;
+  await c("__chat__"); now += 200;
+  await c("__chat__");
+  expect(runs).toEqual([]);              // nothing fired yet
+  expect(c.isHolding("__chat__")).toBe(true);
+
+  await c.flushDue(now + 3999);          // still inside the window
+  expect(runs).toEqual([]);
+
+  await c.flushDue(now + 4000);          // quiet elapsed
+  expect(runs).toEqual(["__chat__"]);
+  expect(c.isHolding("__chat__")).toBe(false);
+});
+
+test("each new message RESETS the quiet window (it is a debounce, not a fixed delay)", async () => {
+  const runs: string[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 1000, maxHoldMs: 60000, now: () => now });
+  await c("s");
+  now = 900; await c.flushDue(now); expect(runs).toEqual([]);
+  await c("s");                          // refreshes lastAt to 900
+  now = 1800; await c.flushDue(now);     // 900 since the LAST message, not 1800 since the first
+  expect(runs).toEqual([]);
+  now = 1900; await c.flushDue(now);
+  expect(runs).toEqual(["s"]);
+});
+
+test("a steady trickle fires at the max-hold cap and is never starved", async () => {
+  const runs: string[] = [];
+  let now = 0;
+  // quiet window never elapses because a message lands every 500ms
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 1000, maxHoldMs: 3000, now: () => now });
+  for (let t = 0; t <= 2500; t += 500) { now = t; await c("s"); await c.flushDue(now); }
+  expect(runs).toEqual([]);              // still held, quiet never reached
+  now = 3000; await c.flushDue(now);     // max-hold since FIRST message
+  expect(runs).toEqual(["s"]);
+  expect(c.isHolding("s")).toBe(false);
+});
+
+test("sessions are held independently — one flushing does not fire another", async () => {
+  const runs: string[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 1000, maxHoldMs: 30000, now: () => now });
+  await c("a");
+  now = 800; await c("b");
+  now = 1000; await c.flushDue(now);     // a is quiet 1000, b only 200
+  expect(runs).toEqual(["a"]);
+  expect(c.isHolding("b")).toBe(true);
+  now = 1800; await c.flushDue(now);
+  expect(runs).toEqual(["a", "b"]);
+});
+
+test("quietMs=0 disables coalescing — dispatch is immediate (escape hatch)", async () => {
+  const runs: string[] = [];
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 0 });
+  await c("s");
+  expect(runs).toEqual(["s"]);
+  expect(c.isHolding("s")).toBe(false);
+});
+
+test("a burst keeps the STRONGEST model — a cheap first line cannot pin haiku", async () => {
+  const got: (string | undefined)[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (_s, m) => { got.push(m); }, { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("s", "haiku");                 // triaged spawn-low
+  await c("s", undefined);               // then a spawn-high line
+  now = 200; await c.flushDue(now);
+  expect(got).toEqual([undefined]);      // NOT "haiku"
+});
+
+test("deliverAllPending SKIPS a held session (else the hold is defeated same-tick)", async () => {
+  const r = root();
+  await ensureSession(r, "held");
+  await ensureSession(r, "free");
+  await writeMeta(r, "held", { chat_id: 1, status: "idle", last_run_pid: null, last_run_at: null, task_name: null, retry_at: null });
+  await writeMeta(r, "free", { chat_id: 2, status: "idle", last_run_pid: null, last_run_at: null, task_name: null, retry_at: null });
+  const runs: string[] = [];
+  await deliverAllPending(r, async (s) => { runs.push(s); }, new Date(), async () => ["held", "free"], (s) => s === "held");
+  expect(runs).toEqual(["free"]);
+  // and with no isHeld supplied it keeps the pre-HIMMEL-1273 behaviour
+  const runs2: string[] = [];
+  await deliverAllPending(r, async (s) => { runs2.push(s); }, new Date(), async () => ["held", "free"]);
+  expect(runs2.sort()).toEqual(["free", "held"]);
+});
+
+test("an AUTO-OP is never buffered — it fires immediately even mid-burst", async () => {
+  const r = root();
+  const runs: string[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 5000, maxHoldMs: 30000, now: () => now });
+  const fired: string[] = [];
+  const auto = { enabledOps: new Set(["arm-resume"]), authorize: () => true, fire: (_m: any, route: any) => { fired.push(route.op); } };
+  // ordinary chat first — starts a hold
+  await handleInbound(r, { from: 7, chat_id: 7, text: "hello", ts: 1, forwarded: false, caption: false } as any, c, auto as any);
+  expect(c.isHolding("__chat__")).toBe(true);
+  // a privileged op lands DURING the window
+  await handleInbound(r, { from: 7, chat_id: 7, text: "/arm HIMMEL-1", ts: 2, forwarded: false, caption: false } as any, c, auto as any);
+  expect(fired).toEqual(["arm-resume"]); // fired NOW, not at flush time
+  expect(runs).toEqual([]);              // and it did not trigger the chat run
+});
+
+test("typing fires while a burst is held, not just while a run is in flight", async () => {
+  const r = root();
+  await ensureSession(r, "s");
+  await writeMeta(r, "s", { chat_id: 42, status: "idle", last_run_pid: null, last_run_at: null, task_name: null, retry_at: null });
+  let now = 0;
+  const c = makeBurstCoalescer(async () => {}, { quietMs: 5000, maxHoldMs: 30000, now: () => now });
+  await c("s");
+  const chats: number[] = [];
+  // the composed predicate main wires: in-flight OR holding
+  const isBusy = (x: string) => false || c.isHolding(x);
+  await signalTyping(r, isBusy, async () => ["s"], async (chat) => { chats.push(chat); });
+  expect(chats).toEqual([42]);           // operator sees "typing…" during the hold
 });

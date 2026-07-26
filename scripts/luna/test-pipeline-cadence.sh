@@ -401,9 +401,9 @@ echo "TEST: runner .sh is bounded interactive claude (no headless flags)"
 harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
 synth_sh=$(cat "$CRON_DIR/pipeline-synthesize.sh" 2>/dev/null || echo MISSING)
 health_sh=$(cat "$CRON_DIR/pipeline-health.sh" 2>/dev/null || echo MISSING)
-assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 4" "$harvest_sh"
-assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 4" "$synth_sh"
-assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 4" "$health_sh"
+assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 5" "$harvest_sh"
+assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 5" "$synth_sh"
+assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 5" "$health_sh"
 assert_contains "harvest runner cds into vault" "cd $VAULT || exit 1" "$harvest_sh"
 assert_contains "harvest runner runs /harvest-clips" "/harvest-clips" "$harvest_sh"
 assert_contains "harvest runner chains /triage-clips" "/triage-clips" "$harvest_sh"
@@ -1133,9 +1133,9 @@ echo "TEST: .bat runners are bounded interactive claude (no headless flags)"
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
 synth_bat=$(cat "$BAT_DIR/pipeline-synthesize.bat" 2>/dev/null || echo MISSING)
 health_bat=$(cat "$BAT_DIR/pipeline-health.bat" 2>/dev/null || echo MISSING)
-assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 4" "$harvest_bat"
-assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 4" "$synth_bat"
-assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 4" "$health_bat"
+assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 5" "$harvest_bat"
+assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 5" "$synth_bat"
+assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 5" "$health_bat"
 assert_contains "harvest bat cds into vault" 'cd /d "' "$harvest_bat"
 assert_contains "harvest bat runs /harvest-clips" "/harvest-clips" "$harvest_bat"
 assert_contains "harvest bat chains /triage-clips" "/triage-clips" "$harvest_bat"
@@ -1351,20 +1351,31 @@ assert_contains "second disarm is a no-op" "no-op" "$out"
 
 # Test 11: cmd_escape — hostile-but-legal vault dirname can't inject ----------
 
-echo "TEST: vault path with CMD metachars is escaped in the .bat"
+echo "TEST: vault path with CMD metachars lands on the REAL dir in the .bat"
 EVIL_VAULT="$TMP_ROOT/va&ult %X%^Y"
 mkdir -p "$EVIL_VAULT"
 out=$(run_pc arm --vault "$EVIL_VAULT")
+# HIMMEL-1281: every value is interpolated INSIDE double quotes, where cmd.exe
+# treats & < > | as literal data and ^ as a literal character. So the only
+# transform is % -> %% ; the & and ^ must arrive VERBATIM. The old caret
+# escaping produced "va^&ult %%X%%^^Y" — a directory that does not exist.
+# Assert the WHOLE `cd /d "<path>"` fragment as ONE contiguous string, not the
+# path plus a stray quote: the escape is only correct BECAUSE the value sits
+# inside double quotes, and checking the opening and closing boundaries as
+# separate substrings would let them match in two different places. Building
+# the expectation the same way the emitter does (cygpath -w, then % -> %%)
+# keeps this pinned to the real resolved path rather than a basename fragment.
+EVIL_VAULT_WIN=$(cygpath -w "$EVIL_VAULT")
+EVIL_CD_EXPECTED="cd /d \"${EVIL_VAULT_WIN//%/%%}\""
 synth_bat=$(cat "$BAT_DIR/pipeline-synthesize.bat" 2>/dev/null || echo MISSING)
-assert_contains "percent doubled (%% in bat)" '%%X%%' "$synth_bat"
-assert_contains "ampersand careted (^& in bat)" '^&' "$synth_bat"
-assert_contains "caret doubled (^^ in bat)" '^^' "$synth_bat"
-assert_not_contains "raw &ult survives unescaped" 'va&ult' "$synth_bat"
-# Harvest .bat goes through the same cmd_escape path — assert it too.
+assert_contains "cd targets the real dir, fully quoted (% doubled, & ^ verbatim)" "$EVIL_CD_EXPECTED" "$synth_bat"
+assert_not_contains "no caret-escaped ampersand" '^&' "$synth_bat"
+assert_not_contains "no doubled caret" '^^' "$synth_bat"
+# Harvest .bat goes through the same cadence_cmd_escape path — assert it too.
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
-assert_contains "harvest: percent doubled (%% in bat)" '%%X%%' "$harvest_bat"
-assert_contains "harvest: ampersand careted (^& in bat)" '^&' "$harvest_bat"
-assert_not_contains "harvest: raw &ult survives unescaped" 'va&ult' "$harvest_bat"
+assert_contains "harvest: cd targets the real dir, fully quoted" "$EVIL_CD_EXPECTED" "$harvest_bat"
+assert_not_contains "harvest: no caret-escaped ampersand" '^&' "$harvest_bat"
+assert_not_contains "harvest: no doubled caret" '^^' "$harvest_bat"
 run_pc disarm >/dev/null
 
 # Test 12: half-arm rollback when the SECOND /create fails --------------------
