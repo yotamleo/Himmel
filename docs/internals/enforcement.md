@@ -22,6 +22,16 @@ Stages currently wired:
 - **MCP plugin enforcement (pre-commit):** mcp-plugin-refs (blocks commits
   referencing Atlassian MCP Jira tools that have a himmel-jira plugin
   equivalent — see `block-backend-tier.sh` below).
+- **`gh --json` field-name guard (pre-commit):** gh-json-fields (every
+  literal `gh <sub> … --json a,b,c` in staged markdown/shell/ts/js is
+  checked against the field list `gh <sub> --json __bogus__` prints —
+  offline, no API call). A typo'd field makes `gh` exit 1, which callers
+  report as a generic "cannot evaluate", so the guarded path silently
+  never runs: that is how `/cr-public`'s HIMMEL-1202 bounded wait shipped
+  polling the nonexistent `headRefSha` (HIMMEL-1288). Non-literal
+  field lists (`--json "$FIELDS"`) and subcommands with no `--json`
+  support are skipped; a missing `gh` skips the gate loudly rather than
+  blocking the commit.
 - **Headless-claude gate (pre-commit):** no-headless-claude (blocks new
   `claude -p` / `claude --print` / `claude --bg` introductions unless
   the call has a `# headless-claude-ok: <reason>` marker on the same or

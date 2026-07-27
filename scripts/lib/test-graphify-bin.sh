@@ -645,7 +645,14 @@ gs_broken=$(grep -c 'BROKEN' <<<"$out" || true)   # counted, not negated in a su
 assert "install-failed-binary-survives: does NOT cry BROKEN" [ "$gs_broken" = 0 ]
 assert "install-failed-binary-survives: the install was actually attempted" grep -qE 'tool install --force --with mcp graphifyy' "$gs_log"
 
-echo "[test-graphify-bin] graphify_update: unprobeable platform -> proceeds, verify-after is the net"
+# --- HIMMEL-1293: an UNPROBEABLE host must fail CLOSED ----------------------
+# The probe returns rc 1 for "this platform offers no probe" — NOT for "the
+# machine is clear". Until HIMMEL-1293 the caller conflated the two and ran
+# `uv tool install --force` anyway, which is the destructive step: uv removes
+# the old entry points before replacing the tool dir, so an unprobeable host
+# with a live holder went from working graphify to broken graphify. The
+# post-install verify only reports that state; it cannot undo it.
+echo "[test-graphify-bin] graphify_update: unprobeable platform -> SKIP (fail closed), no install attempted"
 gp_home="$tmpdir/gup-probe"; mkdir -p "$gp_home"
 gp_tools="$tmpdir/gup-probe-tools"; mkdir -p "$gp_tools/graphifyy"
 printf 'requirements = [{ name = "graphifyy" }]\n' > "$gp_tools/graphifyy/uv-receipt.toml"
@@ -656,9 +663,59 @@ gp_log="$tmpdir/gup-probe-log"; : > "$gp_log"
 out=$(HOME="$gp_home" PATH="$gp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gp_tools" UV_LIST_FILE="$gp_list" \
       UV_BIN_DIR="$gp_bin" UV_LOG="$gp_log" GRAPHIFY_MCP_HOLDERS=unavailable \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
-assert "unprobeable: rc 0" grep -q '^RC=0$' <<<"$out"
+# rc 0 for the same reason as the holders>0 skip: a deliberate, healthy decline
+# on a still-working install, not a failure worth himmel-update's generic warning.
+assert "unprobeable: rc 0 (a deliberate skip is not a failure)" grep -q '^RC=0$' <<<"$out"
 assert "unprobeable: says it cannot probe" grep -q 'cannot probe for graphify-mcp holders' <<<"$out"
-assert "unprobeable: still performs the install" grep -qE 'tool install --force --with mcp graphifyy' "$gp_log"
+assert "unprobeable: announces a SKIP" grep -q 'SKIP: cannot probe' <<<"$out"
+assert "unprobeable: states graphify KEEPS WORKING" grep -q 'KEEPS WORKING' <<<"$out"
+assert "unprobeable: says the pin did NOT advance" grep -q 'has NOT advanced' <<<"$out"
+# THE POINT: no uv install ran, so the entry points were never removed.
+# shellcheck disable=SC2016
+assert "unprobeable: NO uv install attempted (this is the whole fix)" \
+  bash -c '! grep -q "tool install" "$1"' _ "$gp_log"
+# Both remedies must be printed — fail-closed is only acceptable because the
+# operator is told exactly how to get unstuck. A silent decline would recreate
+# the permanent-staleness failure of the HIMMEL-1274 Windows self-match bug.
+assert "unprobeable: gives the manual install command" \
+  grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
+assert "unprobeable: names the GRAPHIFY_UNPROBED_OK override" grep -q 'GRAPHIFY_UNPROBED_OK=1' <<<"$out"
+
+echo "[test-graphify-bin] graphify_update: unprobeable + GRAPHIFY_UNPROBED_OK=1 -> proceeds anyway"
+gpo_home="$tmpdir/gup-probe-ok"; mkdir -p "$gpo_home"
+gpo_tools="$tmpdir/gup-probe-ok-tools"; mkdir -p "$gpo_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gpo_tools/graphifyy/uv-receipt.toml"
+gpo_list="$tmpdir/gup-probe-ok-list"; printf 'graphifyy v0.0.1\n' > "$gpo_list"
+gpo_bin="$tmpdir/gup-probe-ok-bin"; mkdir -p "$gpo_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$gpo_bin/graphify"; chmod +x "$gpo_bin/graphify"
+gpo_log="$tmpdir/gup-probe-ok-log"; : > "$gpo_log"
+out=$(HOME="$gpo_home" PATH="$gpo_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gpo_tools" UV_LIST_FILE="$gpo_list" \
+      UV_BIN_DIR="$gpo_bin" UV_LOG="$gpo_log" GRAPHIFY_MCP_HOLDERS=unavailable GRAPHIFY_UNPROBED_OK=1 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "unprobeable+override: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "unprobeable+override: performs the install" grep -qE 'tool install --force --with mcp graphifyy' "$gpo_log"
+# The override must not be silent — the operator opted into a real risk.
+assert "unprobeable+override: still warns the install can leave graphify BROKEN" \
+  grep -q 'can leave graphify BROKEN' <<<"$out"
+
+# A live holder still wins over the override: the override says "I cannot
+# probe", not "ignore a probe that came back positive". Anything else would let
+# one env var disable the guard outright.
+echo "[test-graphify-bin] graphify_update: holders>0 + GRAPHIFY_UNPROBED_OK=1 -> still SKIPs"
+gpv_home="$tmpdir/gup-probe-veto"; mkdir -p "$gpv_home"
+gpv_tools="$tmpdir/gup-probe-veto-tools"; mkdir -p "$gpv_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gpv_tools/graphifyy/uv-receipt.toml"
+gpv_list="$tmpdir/gup-probe-veto-list"; printf 'graphifyy v0.0.1\n' > "$gpv_list"
+gpv_bin="$tmpdir/gup-probe-veto-bin"; mkdir -p "$gpv_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$gpv_bin/graphify"; chmod +x "$gpv_bin/graphify"
+gpv_log="$tmpdir/gup-probe-veto-log"; : > "$gpv_log"
+out=$(HOME="$gpv_home" PATH="$gpv_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gpv_tools" UV_LIST_FILE="$gpv_list" \
+      UV_BIN_DIR="$gpv_bin" UV_LOG="$gpv_log" GRAPHIFY_MCP_HOLDERS=2 GRAPHIFY_UNPROBED_OK=1 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "holders+override: still reports the holder SKIP" grep -q 'SKIP: 2 graphify-mcp process' <<<"$out"
+# shellcheck disable=SC2016
+assert "holders+override: NO uv install attempted" \
+  bash -c '! grep -q "tool install" "$1"' _ "$gpv_log"
 
 echo "[test-graphify-bin] graphify_update: uv graphifyy AHEAD of pin -> left as-is, no install (CR codex-1: never downgrade/clobber)"
 gua_home="$tmpdir/gup-ahead"; mkdir -p "$gua_home"
