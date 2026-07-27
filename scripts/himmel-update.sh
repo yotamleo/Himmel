@@ -951,7 +951,14 @@ sync_graphify() {
         echo "    warn: could not load graphify-bin.sh (non-fatal)." >&2
         return 0
     fi
-    graphify_update || echo "    warn: graphify pin sync failed (non-fatal)." >&2
+    # No blanket "(non-fatal)" here any more (HIMMEL-1274): that wording was
+    # actively wrong in the reported case — the step had left graphify BROKEN,
+    # not merely un-updated. graphify_update now reports its own outcome
+    # precisely (skipped / still-working / broken, with the repair command), so
+    # this caller must not paper over it with a generic reassurance. It stays
+    # advisory to the CHAIN (return 0) — himmel-update does not abort on it —
+    # but the operator-visible text comes from the step itself.
+    graphify_update || echo "    warn: graphify pin sync did not complete — see the message above for the resulting state." >&2
     return 0
 }
 

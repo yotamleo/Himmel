@@ -55,6 +55,12 @@ assert "default QMD_FORK_REF is a full 40-hex SHA" \
 
 echo "[test-qmd-bin] qmd_cmd resolver — prefer bun"
 tmpdir="$(mktemp -d)"
+# PHYSICALLY resolve it — same reason as test-qmd-reindex.sh (public-PR CR).
+# This suite compares paths against _qmd_abs_path, which canonicalizes with
+# `pwd -P`; `mktemp -d` yields the LOGICAL path, and on macOS the two differ
+# (/var/folders/… vs /private/var/folders/…). Resolving here keeps every fixture
+# path spelled the way the resolver will spell it.
+tmpdir="$(cd "$tmpdir" && pwd -P)"
 trap 'rm -rf "$tmpdir"' EXIT
 
 # Fake bun + fake bun-qmd dist file. Use HOME override to control resolution.
@@ -110,6 +116,74 @@ chmod +x "$tmpdir/bin/bun"
 output="$(HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_cmd --version')"
 assert "BUN_INSTALL is honored" grep -q '^BUN ' <<<"$output"
 assert "BUN_INSTALL path appears in dispatch" grep -q 'custom-bun' <<<"$output"
+
+echo "[test-qmd-bin] qmd_pinned_invocation — absolute tokens for a pinned runner (HIMMEL-1283)"
+# The bun branch: two lines, executable then script. A cadence bakes these into
+# a scheduled runner, so both must be ABSOLUTE — the scheduler fires with a
+# minimal PATH and a cwd of its own.
+pin_out="$(HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bun" \
+  bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation')"
+assert "bun branch emits exactly two tokens" test "$(printf '%s\n' "$pin_out" | wc -l)" -eq 2
+# ORDER, not membership: the caller runs token 1 WITH token 2 as its first
+# argument, so a swapped pair would try to exec the .js. Compare positionally.
+assert "token 1 is the bun executable" \
+  test "$(printf '%s\n' "$pin_out" | sed -n '1p')" = "$tmpdir/bin/bun"
+assert "token 2 is the bun-global qmd.js" \
+  test "$(printf '%s\n' "$pin_out" | sed -n '2p')" = "$tmpdir/custom-bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+# shellcheck disable=SC2016
+assert "both tokens are absolute" bash -c '! grep -qvE "^(/|[A-Za-z]:[/\\])" <<<"$1"' _ "$pin_out"
+
+echo "[test-qmd-bin] qmd_pinned_invocation — PATH fallback + hard failure"
+# No bun-js anywhere: falls through to a PATH qmd, ONE token.
+cat > "$tmpdir/bin/qmd" <<'EOF'
+#!/usr/bin/env bash
+echo "PATHQMD $*"
+EOF
+chmod +x "$tmpdir/bin/qmd"
+pin_path="$(HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/no-bun-here" \
+  bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation')"
+assert "PATH branch emits exactly one token" test "$(printf '%s\n' "$pin_path" | wc -l)" -eq 1
+# Exact, not a substring: 'bin/qmd' would also match a RELATIVE path, and the
+# whole point of this function is that a runner can pin what it returns.
+assert "PATH branch token is exactly the PATH qmd" test "$pin_path" = "$tmpdir/bin/qmd"
+# shellcheck disable=SC2016
+assert "PATH branch token is absolute" \
+  bash -c 'grep -qE "^(/|[A-Za-z]:[/\\])" <<<"$1"' _ "$pin_path"
+# RELATIVE inputs must still yield ABSOLUTE tokens (HIMMEL-1283 CR). Two ways a
+# relative path leaks in: a relative entry on PATH (so `command -v` answers
+# relatively) and a relative BUN_INSTALL (so the derived qmd.js path is
+# relative). Either would pin a path that resolves against the caller's cwd,
+# which a scheduler does not share. Run from inside $tmpdir so "bin" and
+# "custom-bun" are valid relative references.
+pin_rel="$(cd "$tmpdir" && HOME="$tmpdir" PATH="bin:$PATH" BUN_INSTALL="custom-bun" \
+  bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation')"
+# shellcheck disable=SC2016
+assert "relative PATH + relative BUN_INSTALL still yield absolute tokens" \
+  bash -c '! grep -qvE "^(/|[A-Za-z]:[/\\])" <<<"$1"' _ "$pin_rel"
+assert "relative resolution still emits two tokens" \
+  test "$(printf '%s\n' "$pin_rel" | wc -l)" -eq 2
+assert "relative resolution still ends at the bun-global qmd.js" \
+  grep -q 'custom-bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js$' <<<"$pin_rel"
+
+# Nothing resolvable at all -> rc 127, so callers can fail fast rather than
+# pinning an empty string into a runner.
+rm -f "$tmpdir/bin/qmd" "$tmpdir/bin/bun"
+rc=0
+# Interpreter pinned ABSOLUTELY, sanitized PATH set INSIDE the child (public-PR
+# CR). As a command prefix, `PATH=… bash -c` makes the parent search for `bash`
+# under the NEW PATH — and $tmpdir/bin has no bash — so the shell never started
+# and "command not found" is ALSO 127. The assertion then held no matter what
+# qmd_pinned_invocation did, including returning 0 with a bogus token. Verified:
+# `PATH=<empty-dir> bash -c 'echo hi'` exits 127 without running anything.
+HOME="$tmpdir" BUN_INSTALL="$tmpdir/no-bun-here" \
+  "$(command -v bash)" -c 'PATH="'"$tmpdir"'/bin"; . "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_pinned_invocation' >/dev/null 2>&1 || rc=$?
+assert "no qmd anywhere -> rc 127" test "$rc" -eq 127
+# Restore the fake bun the later tests rely on.
+cat > "$tmpdir/bin/bun" <<'EOF'
+#!/usr/bin/env bash
+echo "BUN $*"
+EOF
+chmod +x "$tmpdir/bin/bun"
 
 echo "[test-qmd-bin] qmd_cmd resolver — multi-arg + spaces passthrough"
 output="$(HOME="$tmpdir" PATH="$tmpdir/bin:$PATH" BUN_INSTALL="$tmpdir/custom-bun" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_cmd collection add "/path with space" --name himmel')"
@@ -715,6 +789,135 @@ assert "ubuntu.sh execs himmelctl bootstrap.sh (delegation is real, HIMMEL-887)"
   grep -qE -- '^[[:space:]]*(HIMMELCTL_REPO_ROOT="\$HIMMEL_PATH"[[:space:]]+)?exec[[:space:]]+bash[[:space:]]+"\$HIMMEL_PATH/scripts/himmelctl/bootstrap\.sh"([[:space:]]+--default-scope[[:space:]]+[A-Za-z]+)?[[:space:]]*$' "$repo_root/scripts/machine-setup/ubuntu.sh"
 assert "ubuntu.sh prints the himmelctl bootstrap delegation NOTICE (HIMMEL-887)" \
   grep -q 'delegating to himmelctl bootstrap' "$repo_root/scripts/machine-setup/ubuntu.sh"
+
+# --- CDPATH hygiene (public-PR CR) -----------------------------------------
+# With CDPATH exported, `cd -- "$d" && pwd` inside $( ) captures TWO lines: cd
+# echoes the directory it landed in, then pwd prints it again. The resolver
+# would bake that two-line value into a pinned runner token. Both cd sites are
+# CDPATH=-prefixed; this pins the behaviour so a future edit cannot drop it.
+#
+# The operand must stay RELATIVE in both cases below. CDPATH is consulted only
+# for a relative path that does not begin with ./ or ../, so handing these
+# helpers an ABSOLUTE dir would make the test pass with the guard deleted — it
+# would assert nothing at all.
+echo "[test-qmd-bin] CDPATH does not corrupt path resolution"
+cdp_dir="$tmpdir/cdpath-probe"
+mkdir -p "$cdp_dir/target"
+: > "$cdp_dir/target/file.js"
+# shellcheck disable=SC2016
+cdp_out="$(cd "$cdp_dir" && CDPATH="$cdp_dir" "$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_abs_path "target/file.js"' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert "CDPATH set -> _qmd_abs_path still emits ONE line" \
+  test "$(printf '%s\n' "$cdp_out" | wc -l)" -eq 1
+assert "CDPATH set -> resolved path still ends at the requested file" \
+  grep -q 'target/file\.js$' <<<"$cdp_out"
+# The SIBLING cd site, _qmd_canonical_dir, needs its own pin (CodeRabbit round):
+# the CDPATH='' guard went onto BOTH sites but only _qmd_abs_path was covered,
+# so a future edit could drop it here and the whole suite would still pass.
+#
+# Pinned by EQUALITY, not by line count — the first draft of this test used
+# `wc -l` like its sibling above and passed with the guard DELETED. On Windows
+# the canonical form goes through `cygpath -w`, which COLLAPSES the stray
+# newline rather than choking on it: the two-line capture comes back as one
+# entirely plausible single path with the directory spliced onto itself,
+#   C:\…\Temp\tmp.X\target\tmp\tmp.X\target
+# which is nonexistent but perfectly well-formed. Measured, guard removed:
+# 1 line, wrong path, assertion green. Comparing the relative operand against
+# the ABSOLUTE one — which never consults CDPATH — catches that shape and the
+# plain two-line POSIX shape both.
+# shellcheck disable=SC2016
+cdp_can="$(cd "$cdp_dir" && CDPATH="$cdp_dir" "$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_canonical_dir "target"' _ "$SCRIPT_DIR" 2>/dev/null)"
+# shellcheck disable=SC2016
+cdp_can_abs="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_canonical_dir "$2"' _ "$SCRIPT_DIR" "$cdp_dir/target" 2>/dev/null)"
+assert "the absolute-operand baseline resolved at all (guards the guard)" \
+  test -n "$cdp_can_abs"
+assert "CDPATH set -> _qmd_canonical_dir matches the absolute-operand resolution" \
+  test "$cdp_can" = "$cdp_can_abs"
+
+# _qmd_abs_path resolves PHYSICALLY (`pwd -P`), like its sibling
+# _qmd_canonical_dir (public-PR CR). The value is a PINNED token baked into a
+# scheduled runner, so keeping the symlink the caller happened to come through —
+# e.g. a package-manager-managed bun install dir — means a later repoint
+# silently resolves the pin somewhere else.
+#
+# Asserted by comparing the symlinked operand against the REAL directory's own
+# resolution: a logical `pwd` returns the link path, which is not equal, so this
+# goes red the moment the -P is dropped. (A "does it contain the filename" check
+# would pass either way and assert nothing.)
+echo "[test-qmd-bin] _qmd_abs_path resolves through a symlink to the physical path"
+sym_root="$tmpdir/symprobe"
+mkdir -p "$sym_root/real/target"
+: > "$sym_root/real/target/file.js"
+# `ln -s` EXIT CODE is not enough to conclude a symlink exists. Without
+# privileges (or CYGWIN/MSYS winsymlinks), MSYS ln quietly falls back to COPYING
+# the directory and still exits 0 — measured on this host. The copy is a second
+# real directory, so the comparison below would compare two unrelated physical
+# paths and fail for a reason that has nothing to do with `pwd -P`. Require the
+# thing itself, not the command's opinion of it.
+#
+# Three outcomes, kept DISTINCT (CodeRabbit round): a real symlink runs the
+# assertions; a non-symlink at the link path is the documented MSYS copy and
+# SKIPs; NOTHING at the link path is a genuine setup failure and FAILS. Folding
+# the last into the SKIP branch is the same defect this file keeps finding —
+# a setup that never happened would read as "this host cannot symlink" forever.
+ln -s "$sym_root/real/target" "$sym_root/link" 2>/dev/null || true
+if [ -L "$sym_root/link" ]; then
+  # shellcheck disable=SC2016
+  sym_via_link="$(cd "$sym_root" && "$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_abs_path "link/file.js"' _ "$SCRIPT_DIR" 2>/dev/null)"
+  # shellcheck disable=SC2016
+  sym_real="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_abs_path "$2"' _ "$SCRIPT_DIR" "$sym_root/real/target/file.js" 2>/dev/null)"
+  assert "the physical-path baseline resolved at all (guards the guard)" \
+    test -n "$sym_real"
+  assert "_qmd_abs_path through a symlink equals the physical resolution" \
+    test "$sym_via_link" = "$sym_real"
+  # The ABSOLUTE operand is the shape that actually matters, and the one the
+  # first version of this test missed (CodeRabbit Major): qmd_pinned_invocation
+  # feeds this `command -v` output, which is always absolute, and absolute
+  # operands used to return verbatim — so the pwd -P guarantee was dead code on
+  # the only path production uses, while this suite stayed green on the relative
+  # operand. Asserting the absolute case is what pins the real contract.
+  # shellcheck disable=SC2016
+  sym_via_abs="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_abs_path "$2"' _ "$SCRIPT_DIR" "$sym_root/link/file.js" 2>/dev/null)"
+  assert "_qmd_abs_path on an ABSOLUTE symlinked path equals the physical resolution" \
+    test "$sym_via_abs" = "$sym_real"
+elif [ -e "$sym_root/link" ]; then
+  # Unprivileged Windows cannot create real symlinks; CI (ubuntu shell-unit)
+  # can, so the assertion is not lost — it just does not run here. Announced
+  # rather than silently skipped, so a permanently-skipping test cannot
+  # masquerade as green.
+  echo "  SKIP: this host produced a copy, not a symlink (unprivileged MSYS ln) — covered on the ubuntu shell-unit runner"
+else
+  # Neither a symlink NOR a copy — ln did not produce anything. That is a
+  # broken fixture, not a platform limitation, so it must not wear the SKIP.
+  assert "symlink fixture was created (neither a symlink nor the MSYS copy appeared)" \
+    test -e "$sym_root/link"
+fi
+
+# qmd_bin_desc — the shared human-readable invocation form (public-PR CR).
+# qmd-reindex.sh's qmd_desc() and qmd-cadence.sh's qmd_invocation_desc() were
+# byte-identical copies of this; both are now thin aliases, so this is the one
+# place the format is pinned.
+echo "[test-qmd-bin] qmd_bin_desc renders the pinned invocation"
+# shellcheck disable=SC2016
+desc_one="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; QMD_BIN=/usr/bin/qmd QMD_JS= qmd_bin_desc' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert "qmd_bin_desc: no QMD_JS -> the binary alone" \
+  test "$desc_one" = "/usr/bin/qmd"
+# shellcheck disable=SC2016
+desc_two="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; QMD_BIN=/usr/bin/bun QMD_JS=/opt/qmd/qmd.js qmd_bin_desc' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert "qmd_bin_desc: bun-served -> both tokens, space-separated" \
+  test "$desc_two" = "/usr/bin/bun /opt/qmd/qmd.js"
+# The `:-` reads are load-bearing: this lib is sourced by scripts that never pin
+# at all, and an unset global under `set -u` would abort them rather than print
+# an empty string. Drop the `:-` and this goes red.
+# `unset` in the CHILD is load-bearing (CodeRabbit round): this suite runs from
+# a shell where a real qmd is present, so QMD_BIN/QMD_JS can be exported in the
+# ambient environment and inherited. Without the unset the child would exercise
+# the SET path and pass no matter what the `:-` guards did — a test that cannot
+# fail, asserting the opposite of its own name.
+desc_unset_rc=0
+# shellcheck disable=SC2016
+"$(command -v bash)" -c 'set -u; unset QMD_BIN QMD_JS; . "$1/qmd-bin.sh"; qmd_bin_desc >/dev/null' _ "$SCRIPT_DIR" 2>/dev/null || desc_unset_rc=$?
+assert "qmd_bin_desc: unset QMD_BIN/QMD_JS under set -u does not abort the caller" \
+  test "$desc_unset_rc" -eq 0
 
 echo "[test-qmd-bin] has_qmd matches binary presence in this env"
 if has_qmd; then

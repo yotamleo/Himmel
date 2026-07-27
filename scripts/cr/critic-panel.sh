@@ -27,6 +27,42 @@
 #      CRITIC_PARALLEL — set to 1 to run critics concurrently (default 0 = sequential).
 #          Output is byte-identical to sequential: results merged in registry order.
 set -uo pipefail
+
+# LIVENESS BEACON (HIMMEL-1280) — the FIRST thing this script does, before any
+# sourcing, subshell, mktemp, cygpath or dotenv read, and before LC_ALL export.
+# Nothing above this line can block.
+#
+# WHY IT IS THE FIRST LINE: an armed session lost 3h13m to a backgrounded panel
+# that produced 0 bytes and ~0.1 CPU-seconds with NO child process. A 0-byte
+# output is otherwise ambiguous — "the panel is thinking" and "the shell never
+# reached its first echo" look identical from outside, and the session waited
+# on the first reading when the second was true. This beacon disambiguates them
+# permanently:
+#
+#   beacon ABSENT  -> the wedge is BEFORE the panel: the `bash -c -l` login-shell
+#                     wrapper, profile init under a detached/no-tty handle, or
+#                     the caller's own redirect. critic-panel.sh never ran. Do
+#                     not debug the panel.
+#   beacon PRESENT -> the panel started; whatever follows (or does not) is the
+#                     panel's own doing and its phase lines below localise it.
+#
+# Unbuffered by construction: one printf to stderr, no pipeline, no subshell.
+printf 'critic-panel.sh: START pid=%s (HIMMEL-1280 liveness beacon)\n' "$$" >&2
+
+# Start the total-panel clock HERE, next to the beacon — not down at the
+# timeout-config block. Everything between the two (registry read, local-overlay
+# merge, triviality gate, tier resolution) is real wall clock the caller is
+# waiting through, and a budget that excludes setup is not the budget the caller
+# reasons about (CR).
+#
+# CRITIC_PANEL_STARTED_AT is a TEST SEAM (epoch seconds). The launch-side
+# deadline check cannot be reached otherwise: launches are near-instant, so no
+# real budget expires *during* the loop, and 0 means "disabled" rather than
+# "already spent". Backdating the start is the only deterministic way to put the
+# panel past its deadline at a chosen point — and it keeps the suite from
+# sleeping through real budgets to get there.
+_PANEL_STARTED_AT="${CRITIC_PANEL_STARTED_AT:-$(date +%s 2>/dev/null || echo 0)}"
+
 LC_ALL=C
 export LC_ALL
 
@@ -157,11 +193,102 @@ ANCHOR_PROVIDER="openai-codex"
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
 CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-240}"
 if expr "$CRITIC_TIMEOUT_SECS" : '^[0-9][0-9]*$' > /dev/null 2>&1 && [ "$CRITIC_TIMEOUT_SECS" -gt 0 ]; then
-    : # valid
+    # Normalize to base 10 (public-PR CR). The regex accepts a LEADING ZERO, and
+    # `$(( ))` reads a leading zero as OCTAL — so `0900` validates here and then
+    # dies later with "value too great for base" (9 is not an octal digit). See
+    # the sibling block below for the failure this produces.
+    CRITIC_TIMEOUT_SECS=$((10#$CRITIC_TIMEOUT_SECS))
 else
     echo "critic-panel.sh: CRITIC_TIMEOUT_SECS=$CRITIC_TIMEOUT_SECS invalid, using 240" >&2
     CRITIC_TIMEOUT_SECS="240"
 fi
+
+# SIGKILL grace handed to every `timeout -k` below (HIMMEL-1291, public-PR CR).
+# A member that ignores SIGTERM lives this many seconds PAST its nominal
+# timeout, so the nominal timeout is not the member's real wall-clock cost —
+# nominal + grace is. Named once here because the clamp below has to subtract
+# exactly what the runners pass: a literal that drifts from the clamp silently
+# re-opens the overrun this constant closes.
+CRITIC_KILL_GRACE_SECS=5
+
+# TOTAL-panel wall clock (HIMMEL-1280). CRITIC_TIMEOUT_SECS bounds ONE member;
+# nothing bounded the panel as a whole, so N members each clipping their own
+# budget could still hold a caller for N*CRITIC_TIMEOUT_SECS with no ceiling
+# the caller can reason about. Default 900s = comfortably above a healthy
+# 2-member run (~2min) and above the worst legitimate case, so it fires only on
+# a genuine pile-up. 0 disables the cap.
+CRITIC_PANEL_TOTAL_TIMEOUT_SECS="${CRITIC_PANEL_TOTAL_TIMEOUT_SECS:-900}"
+if expr "$CRITIC_PANEL_TOTAL_TIMEOUT_SECS" : '^[0-9][0-9]*$' > /dev/null 2>&1; then
+    # Normalize to base 10 (public-PR CR) — valid, including 0 = disabled.
+    #
+    # The regex accepts a LEADING ZERO. `[ "0900" -gt 0 ]` then PASSES (test's
+    # integer comparison is decimal), so both guards in _panel_remaining are
+    # satisfied — and the failure lands one line later, in `$(( ))`, which reads
+    # a leading zero as OCTAL: "0900: value too great for base". Measured, the
+    # whole function then returns rc 1 with empty output, which is its
+    # documented "no usable budget" path — so a fat-fingered CRITIC_PANEL_TOTAL_
+    # TIMEOUT_SECS=0900 SILENTLY DISABLES the total-panel cap and leaks a shell
+    # error to stderr on every call, while looking configured.
+    #
+    # That is the same shape this PR keeps fixing: a value that passes its own
+    # validation and then fails open somewhere the validation cannot see.
+    CRITIC_PANEL_TOTAL_TIMEOUT_SECS=$((10#$CRITIC_PANEL_TOTAL_TIMEOUT_SECS))
+else
+    echo "critic-panel.sh: CRITIC_PANEL_TOTAL_TIMEOUT_SECS=$CRITIC_PANEL_TOTAL_TIMEOUT_SECS invalid, using 900" >&2
+    CRITIC_PANEL_TOTAL_TIMEOUT_SECS="900"
+fi
+# _panel_remaining — seconds left in the total budget, or "" when there is no
+# usable budget (cap disabled, or an unusable clock). Fail-OPEN by design: a
+# broken deadline check must never shorten or abort a panel that is working —
+# the per-member timeouts still bound the run.
+_panel_remaining() {
+    [ "$CRITIC_PANEL_TOTAL_TIMEOUT_SECS" -gt 0 ] 2>/dev/null || return 1
+    [ "$_PANEL_STARTED_AT" -gt 0 ] 2>/dev/null || return 1
+    local _now _left
+    _now="$(date +%s 2>/dev/null || echo 0)"
+    [ "$_now" -gt 0 ] 2>/dev/null || return 1
+    _left=$(( CRITIC_PANEL_TOTAL_TIMEOUT_SECS - (_now - _PANEL_STARTED_AT) ))
+    printf '%s\n' "$_left"
+}
+
+# True once the total budget is spent.
+_panel_deadline_passed() {
+    local _left
+    _left="$(_panel_remaining)" || return 1
+    [ "$_left" -le 0 ]
+}
+
+# _clamp_to_panel_budget <member_timeout> (HIMMEL-1280 CR)
+# Echo the member timeout capped by whatever is LEFT of the total budget.
+# Without this the total cap only stops NEW members starting: one member with a
+# 240s budget begun at T-1 second still runs to T+239, so the "total" bound is
+# really total + one member. Clamping makes the ceiling the caller was told
+# about the ceiling they actually get. Never returns <1 (the deadline check
+# above has already broken the loop by then).
+#
+# The cap RESERVES the `timeout -k` grace (HIMMEL-1291, public-PR CR): the
+# runners spend nominal + CRITIC_KILL_GRACE_SECS on a member that ignores
+# SIGTERM, so clamping to the bare remainder still let the panel finish
+# CRITIC_KILL_GRACE_SECS past the total deadline. Clamping to
+# (remaining - grace) makes nominal + grace fit INSIDE what is left. Only the
+# floor case can still overrun, and by then the budget is within a grace of
+# zero anyway.
+#
+# The overrun is ONE grace, not grace * n_members (the public-CR report said
+# the latter; panel round said otherwise and was right). _panel_remaining
+# recomputes from wall clock on every call, so an earlier member's grace
+# overrun is already absorbed into the next member's remaining before it
+# launches — only the LAST member to be clamped can end past the deadline.
+# Parallel mode is the same bound for a different reason: members overlap, so
+# their graces do not sum. One grace is still an overrun of a bound the caller
+# was promised, which is why this reserves it.
+_clamp_to_panel_budget() {
+    local _member="$1" _left
+    _left="$(_panel_remaining)" || { printf '%s\n' "$_member"; return 0; }
+    _left=$(( _left - CRITIC_KILL_GRACE_SECS ))
+    if [ "$_left" -lt 1 ]; then _left=1; fi
+    if [ "$_left" -lt "$_member" ]; then printf '%s\n' "$_left"; else printf '%s\n' "$_member"; fi
+}
 
 # _resolve_member_timeout <slug> <raw_timeout_secs> (HIMMEL-1245)
 # Echoes the effective per-member timeout: the row's OPT-IN timeout_secs when
@@ -468,7 +595,7 @@ _run_cfp_member() {
     _rm_to="${_RM_TIMEOUT_SECS:-$CRITIC_TIMEOUT_SECS}"
     if [ -n "$_rm_persp" ]; then
         if [ -n "$_TIMEOUT_BIN" ]; then
-            "$_TIMEOUT_BIN" -k 5 "$_rm_to" bash "$CFP" \
+            "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$_rm_to" bash "$CFP" \
                 --model "$_rm_model" --provider "$_rm_provider" --slug "$_rm_slug" \
                 --perspective-file "$SCRIPT_DIR/$_rm_persp" \
                 < "$tmp" > "$_rm_out" 2>"$_rm_err"
@@ -481,7 +608,7 @@ _run_cfp_member() {
         fi
     else
         if [ -n "$_TIMEOUT_BIN" ]; then
-            "$_TIMEOUT_BIN" -k 5 "$_rm_to" bash "$CFP" \
+            "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$_rm_to" bash "$CFP" \
                 --model "$_rm_model" --provider "$_rm_provider" --slug "$_rm_slug" \
                 < "$tmp" > "$_rm_out" 2>"$_rm_err"
             _rm_rc=$?
@@ -594,11 +721,23 @@ process_member() {
             _fb_deadline=$((SECONDS + _pm_timeout))
             for _fb_model in $_pm_fallback; do
                 [ -n "$_fb_model" ] || continue
+                # The TOTAL-panel budget outranks the chain's own seat budget
+                # (HIMMEL-1289, public-PR CR). The HIMMEL-1280 clamp bounded the
+                # PRIMARY attempt only; a trigger=any primary that times out
+                # then entered this chain with a FRESH deadline built from the
+                # full per-member timeout, so a run could exceed the total the
+                # caller was promised. Refuse to start a candidate once the
+                # panel budget is spent, and cap each one by what is left.
+                if _panel_deadline_passed; then
+                    echo "panel-availability: $_pm_slug fallback-chain stopped — total panel deadline reached reason=panel-deadline" >&2
+                    break
+                fi
                 _fb_remaining=$((_fb_deadline - SECONDS))
                 if [ "$_fb_remaining" -le 0 ]; then
                     echo "panel-availability: $_pm_slug fallback-chain budget exhausted (${_pm_timeout}s) — remaining candidates skipped" >&2
                     break
                 fi
+                _fb_remaining="$(_clamp_to_panel_budget "$_fb_remaining")"
                 _RM_TIMEOUT_SECS="$_fb_remaining"
                 _fb_out="$(mktemp -t critic-panel-fb.XXXXXX)"
                 _fb_err="$(mktemp -t critic-panel-fb-err.XXXXXX)"
@@ -737,6 +876,23 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
 
     while IFS="	" read -r slug model perspective fallback_chain row_provider fallback_trigger fb_provider row_timeout; do
         [ -n "$slug" ] || continue
+        # TOTAL-PANEL DEADLINE (HIMMEL-1280). CRITIC_TIMEOUT_SECS bounds ONE
+        # member; nothing bounded the panel as a whole, so N members each
+        # clipping their own budget could still hold a caller for N*240s.
+        # Checked BETWEEN members — no signals, no self-kill: a watchdog that
+        # kills its own process group is a worse hazard on msys than the stall
+        # it fixes, and an in-flight member is already bounded by its own
+        # timeout. Remaining members are reported unavailable so the caller's
+        # ledger records a MISSING signal rather than silently fewer critics.
+        if _panel_deadline_passed; then
+            echo "critic-panel.sh: TOTAL panel deadline ${CRITIC_PANEL_TOTAL_TIMEOUT_SECS}s exceeded after ${total} member(s) — skipping the rest (raise CRITIC_PANEL_TOTAL_TIMEOUT_SECS)" >&2
+            echo "panel-availability: $slug unavailable (panel-deadline) reason=panel-deadline" >&2
+            while IFS="	" read -r _s _rest; do
+                [ -n "$_s" ] || continue
+                echo "panel-availability: $_s unavailable (panel-deadline) reason=panel-deadline" >&2
+            done
+            break
+        fi
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
         [ "$perspective" = "-" ] && perspective=""
@@ -750,12 +906,15 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
         # Per-member timeout override (HIMMEL-1245): the row's timeout_secs
         # when valid, else the shared CRITIC_TIMEOUT_SECS default.
         member_timeout="$(_resolve_member_timeout "$slug" "$row_timeout")"
+        # Cap by what is LEFT of the total budget (HIMMEL-1280 CR): otherwise the
+        # total bound is really total + one member.
+        member_timeout="$(_clamp_to_panel_budget "$member_timeout")"
 
         # Run this member (with per-member timeout if available). --provider ""
         # is a no-op in critic-first-pass.sh, so it is passed unconditionally.
         if [ -n "$perspective" ]; then
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
                 bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$_seq_out" 2>"$_seq_err"
@@ -763,7 +922,7 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
             fi
         else
             if [ -n "$_TIMEOUT_BIN" ]; then
-                "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
+                "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
                 rc=$?
             else
                 bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$_seq_out" 2>"$_seq_err"
@@ -787,6 +946,22 @@ else
     i=0
     while IFS="	" read -r slug model perspective fallback_chain row_provider fallback_trigger fb_provider row_timeout; do
         [ -n "$slug" ] || continue
+        # TOTAL-PANEL DEADLINE, launch side (HIMMEL-1280 CR codex-1). The
+        # sequential path had this; the parallel path did not, so with
+        # CRITIC_PARALLEL=1 a member could still be LAUNCHED after the deadline
+        # — the clamp alone only shortens it, it does not stop it starting.
+        # Launches are near-instant here (each member is backgrounded), so this
+        # normally only fires when setup itself blew the budget; it matters
+        # exactly then, which is the case this ticket is about.
+        if _panel_deadline_passed; then
+            echo "critic-panel.sh: TOTAL panel deadline ${CRITIC_PANEL_TOTAL_TIMEOUT_SECS}s exceeded after launching ${i} member(s) — not launching the rest (raise CRITIC_PANEL_TOTAL_TIMEOUT_SECS)" >&2
+            echo "panel-availability: $slug unavailable (panel-deadline) reason=panel-deadline" >&2
+            while IFS="	" read -r _s _rest; do
+                [ -n "$_s" ] || continue
+                echo "panel-availability: $_s unavailable (panel-deadline) reason=panel-deadline" >&2
+            done
+            break
+        fi
         # Map the "-" empty-field placeholder back to "" (see the registry
         # emission above — plain empty fields collapse under tab-IFS).
         [ "$perspective" = "-" ] && perspective=""
@@ -799,6 +974,9 @@ else
         # Per-member timeout override (HIMMEL-1245): the row's timeout_secs
         # when valid, else the shared CRITIC_TIMEOUT_SECS default.
         member_timeout="$(_resolve_member_timeout "$slug" "$row_timeout")"
+        # Cap by what is LEFT of the total budget (HIMMEL-1280 CR): otherwise the
+        # total bound is really total + one member.
+        member_timeout="$(_clamp_to_panel_budget "$member_timeout")"
         # Write slug and model so the result loop can recover them
         printf '%s' "$slug"  > "$outdir/$i.slug"
         printf '%s' "$model" > "$outdir/$i.model"
@@ -813,7 +991,7 @@ else
         (
             if [ -n "$perspective" ]; then
                 if [ -n "$_TIMEOUT_BIN" ]; then
-                    "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 else
                     bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" --perspective-file "$SCRIPT_DIR/$perspective" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
@@ -821,7 +999,7 @@ else
                 fi
             else
                 if [ -n "$_TIMEOUT_BIN" ]; then
-                    "$_TIMEOUT_BIN" -k 5 "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
+                    "$_TIMEOUT_BIN" -k "$CRITIC_KILL_GRACE_SECS" "$member_timeout" bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"
                     echo $? > "$outdir/$i.rc"
                 else
                     bash "$CFP" --model "$model" --provider "$row_provider" --slug "$slug" < "$tmp" > "$outdir/$i.out" 2>"$outdir/$i.err"

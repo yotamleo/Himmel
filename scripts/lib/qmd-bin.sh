@@ -151,7 +151,11 @@ _qmd_win_path() {
 # POSIX has no such aliasing, so plain `pwd -P` is enough there.
 _qmd_canonical_dir() {
   local real
-  real="$(cd -- "$1" 2>/dev/null && pwd -P)" || return 1
+  # CDPATH= is load-bearing (public-PR CR, sibling of the _qmd_abs_path site
+  # below): with CDPATH exported — ordinary on a dev machine, and these run
+  # from an interactive session — `cd` ECHOES the directory it landed in, so
+  # the capture becomes TWO lines and can resolve somewhere else entirely.
+  real="$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)" || return 1
   [ -n "$real" ] || return 1
   if _qmd_is_windows; then
     _qmd_win_path "$real"
@@ -580,6 +584,128 @@ qmd_cmd() {
   else
     return 127
   fi
+}
+
+# _qmd_abs_path <path>
+# Echo <path> as an absolute path. Already-absolute input (POSIX or Windows
+# drive form) passes straight through; anything else is resolved against the
+# CURRENT cwd by canonicalizing its directory. rc 1 when that directory does
+# not resolve, so a caller can refuse rather than pin something unusable.
+# bash 3.2-safe, no realpath dependency (macOS ships none).
+_qmd_abs_path() {
+  local p="$1" d b
+  case "$p" in
+    # Root is its own answer. Without this the dirname/basename split below
+    # rejoins it as `//` (dirname / = /, basename / = /), which is a different
+    # path on some POSIX systems and simply wrong on all of them. Unreachable
+    # from qmd_pinned_invocation, but this is a general-purpose resolver.
+    /) printf '/\n'; return 0 ;;
+    # DRIVE-LETTER form only. A `C:\…` / `C:/…` operand is returned verbatim
+    # because `pwd -P` would hand back the MSYS form (`/c/…`) and silently
+    # CHANGE the shape of a token that gets baked into a .bat — a different bug
+    # than the one below. _qmd_canonical_dir carries _qmd_win_path for that
+    # conversion; this resolver has no such need today, since the only absolute
+    # inputs it actually receives are POSIX-form (see below).
+    [A-Za-z]:[/\\]*) printf '%s\n' "$p"; return 0 ;;
+  esac
+  # POSIX-absolute operands fall THROUGH to the canonicalization below rather
+  # than returning early (public-PR CR, CodeRabbit Major). They used to return
+  # verbatim, which made the `pwd -P` fix below dead code on the ONLY path that
+  # matters: qmd_pinned_invocation feeds this `command -v bun` / `command -v qmd`
+  # output, and that is always absolute (measured here: /c/Users/…/.bun/bin/bun).
+  # So the physical-resolution guarantee this function advertises applied to
+  # exactly the operand shape production never passes it.
+  d="$(dirname -- "$p")"
+  b="$(basename -- "$p")"
+  # CDPATH= — see _qmd_canonical_dir. Worse here: this value is a PINNED token
+  # baked into a scheduled runner, so a two-line capture ships silently.
+  # `pwd -P`, matching _qmd_canonical_dir (public-PR CR): the whole point of this
+  # function is to bake a STABLE absolute path into a runner, and a logical `pwd`
+  # keeps whatever symlink the caller came through — e.g. a package-manager-managed
+  # bun install dir. Repoint that symlink later and the pin silently resolves
+  # somewhere else, which is the same class of fragility the CDPATH guard above
+  # exists to prevent.
+  d="$(CDPATH='' cd -- "$d" 2>/dev/null && pwd -P)"
+  if [ -z "$d" ]; then
+    # The directory did not resolve. An ABSOLUTE operand still succeeds,
+    # verbatim — that is what it did before this function canonicalized them,
+    # and a caller handing us an absolute path that does not exist yet should
+    # not start failing now. A RELATIVE one is still unusable (there is nothing
+    # to anchor it to), so it keeps returning 1.
+    case "$1" in
+      /*) printf '%s\n' "$1"; return 0 ;;
+      *)  return 1 ;;
+    esac
+  fi
+  printf '%s/%s\n' "${d%/}" "$b"
+}
+
+# qmd_pinned_invocation (HIMMEL-1283)
+# Print the ABSOLUTE invocation qmd_cmd would choose, one token per line:
+#   line 1  the executable      (bun's absolute path, or a qmd found on PATH)
+#   line 2  optional script arg (the bun-global dist/cli/qmd.js, when line 1
+#                                is bun -- absent for the PATH-qmd case)
+# rc 0 on success, 127 when nothing resolves.
+#
+# WHY THIS IS SEPARATE FROM qmd_cmd: qmd_cmd is an INVOKER -- it runs qmd now,
+# in this shell, under this PATH. A scheduler (schtasks/cron) fires with a
+# MINIMAL PATH carrying neither bun's bin dir nor qmd's, so a cadence cannot
+# call an invoker; it has to BAKE an absolute invocation into the runner it
+# generates. This is that: qmd_cmd's PREFERENCE ORDER, resolved to absolute
+# tokens a runner can pin. (The ticket calls this out explicitly -- qmd_cmd is
+# not a drop-in for the cadence.)
+#
+# The preference order is the whole point. A bare `command -v qmd` picks up the
+# broken Claude-plugin stub that shadows the bun shim on Git Bash $PATH inside a
+# Claude Code session -- which is exactly where an operator arms the cadence
+# from -- and bakes THAT into the runner, so every unattended fire dies with
+# `Module not found ... dist/cli/qmd.js` in a log nobody reads.
+#
+# Two lines, not one string: the caller must be able to quote each token
+# separately. Joining them would break the moment a bun root or the user
+# profile contains a space (`C:\Program Files\...`), which is the common case
+# on Windows.
+#
+# EVERY returned token is canonicalized to an absolute path. Two ways a relative
+# one can otherwise leak out: a relative entry on $PATH makes `command -v`
+# answer relatively, and a relative $BUN_INSTALL makes the derived qmd.js path
+# relative. Either would pin a path that resolves against the CALLER's cwd —
+# and the entire point of this function is that a scheduler, with a cwd of its
+# own, can run the result. Callers do re-validate and fail loudly, but a
+# resolver that can hand back an unusable answer is the wrong place to leave
+# that to chance.
+qmd_pinned_invocation() {
+  local bun_qmd bun_abs qmd_abs js_abs
+  bun_qmd="$(_qmd_bun_js)"
+  if [ -f "$bun_qmd" ] && bun_abs="$(command -v bun 2>/dev/null)"; then
+    bun_abs="$(_qmd_abs_path "$bun_abs")" || return 127
+    js_abs="$(_qmd_abs_path "$bun_qmd")" || return 127
+    printf '%s\n%s\n' "$bun_abs" "$js_abs"
+    return 0
+  fi
+  if qmd_abs="$(command -v qmd 2>/dev/null)"; then
+    qmd_abs="$(_qmd_abs_path "$qmd_abs")" || return 127
+    printf '%s\n' "$qmd_abs"
+    return 0
+  fi
+  return 127
+}
+
+# Human-readable form of the pinned invocation above, for logs and --dry-run:
+# `$QMD_BIN`, or `$QMD_BIN $QMD_JS` for the bun-served install whose canonical
+# invocation is two tokens. Reads the pair the CALLER pinned from
+# qmd_pinned_invocation — the same contract the two copies this replaces had
+# (public-PR CR: qmd-reindex.sh's qmd_desc and qmd-cadence.sh's
+# qmd_invocation_desc were byte-identical, so a format change had to be kept in
+# sync by hand in two places). `:-` on both reads because this lib is sourced by
+# scripts that never pin at all, and an unset global under `set -u` would abort
+# them at source time rather than here.
+qmd_bin_desc() {
+    if [ -n "${QMD_JS:-}" ]; then
+        printf '%s %s' "${QMD_BIN:-}" "${QMD_JS:-}"
+    else
+        printf '%s' "${QMD_BIN:-}"
+    fi
 }
 
 # Presence check ONLY — does not invoke the binary, so real runtime errors

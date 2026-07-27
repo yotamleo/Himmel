@@ -249,22 +249,6 @@ command -v "$SCHTASKS_BIN" >/dev/null 2>&1 || {
 # into Windows-rooted paths before schtasks sees them.
 run_schtasks() { MSYS_NO_PATHCONV=1 "$SCHTASKS_BIN" "$@"; }
 
-# Escape CMD metacharacters for values interpolated into the .bat (same order
-# as graphmap-cadence's cmd_escape) so a path containing legal-but-hostile
-# chars (% & ^ are valid in Windows dirnames) can't inject commands at fire
-# time.
-cmd_escape() {
-    local s="$1"
-    s="${s//\"/\\\"}"
-    s="${s//%/%%}"
-    s="${s//^/^^}"
-    s="${s//&/^&}"
-    s="${s//</^<}"
-    s="${s//>/^>}"
-    s="${s//|/^|}"
-    printf '%s' "$s"
-}
-
 # Emit the runner .bat body: stamp the format version, rotate the log
 # (move /y to .prev on each fire), stamp the fire time, then run the sweep
 # payload followed by the reap payload with each %ERRORLEVEL% captured to
@@ -275,7 +259,14 @@ emit_bat() {
     printf '@echo off\r\n'
     printf 'rem codex-sweep-cadence runner (HIMMEL-892)\r\n'
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
-    printf 'set LOG=%s\\codex-sweep.log\r\n' "$bat_dir_esc"
+    # Quoted `set "LOG=..."`, not bare `set LOG=...` (HIMMEL-1281). This was
+    # the ONE emitter line interpolating an escaped value OUTSIDE quotes —
+    # where & < > | really are live metacharacters and the old caret escapes
+    # were load-bearing. cadence_cmd_escape's contract is quoted-context only,
+    # so the line moves into quotes rather than the escape growing a second
+    # mode. Bonus: the quoted form also stops a trailing space in the bat dir
+    # from landing in %LOG%.
+    printf 'set "LOG=%s\\codex-sweep.log"\r\n' "$bat_dir_esc"
     printf 'if exist "%%LOG%%" move /y "%%LOG%%" "%%LOG%%.prev" >nul\r\n'
     printf 'echo [fired %%date%% %%time%%] > "%%LOG%%"\r\n'
     printf '"%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$sweep_esc"
@@ -607,10 +598,10 @@ cmd_arm() {
     fi
 
     local pwsh_esc sweep_esc reap_esc bat_dir_esc
-    pwsh_esc=$(cmd_escape "$pwsh_win")
-    sweep_esc=$(cmd_escape "$sweep_win")
-    reap_esc=$(cmd_escape "$reap_win")
-    bat_dir_esc=$(cmd_escape "$bat_dir_win")
+    pwsh_esc=$(cadence_cmd_escape "$pwsh_win")
+    sweep_esc=$(cadence_cmd_escape "$sweep_win")
+    reap_esc=$(cadence_cmd_escape "$reap_win")
+    bat_dir_esc=$(cadence_cmd_escape "$bat_dir_win")
 
     local bat_file="$BAT_DIR/codex-sweep.bat" bat_win
     if ! bat_win=$(cygpath -w "$bat_file" 2>&1); then

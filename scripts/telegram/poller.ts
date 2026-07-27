@@ -645,12 +645,24 @@ export function guarded(task: () => Promise<void>): () => void {
 // runFn — telegram backlog, IPC bus-send (T6), or a due-capped retry. A capped
 // session is SKIPPED until its retry_at passes, so the cap backoff holds;
 // every other session is run (runFn no-ops when nothing is pending).
-export async function deliverAllPending(root: string, runFn: RunFn, now: Date, sessions: () => Promise<string[]>): Promise<void> {
+// isHeld (HIMMEL-1273): a session whose burst is still inside its quiet window
+// is SKIPPED here. Without this the coalescer would be pointless — handleInbound
+// appends the line and holds the dispatch, then this scan, running later in the
+// SAME tick, would fire the run immediately and split the burst exactly as
+// before. The hold is bounded (max-hold cap), and the coalescer releases it on
+// an accepted dispatch, so a session can never be skipped here indefinitely.
+// A DEFERRED dispatch is re-held on purpose (see flushDue) so the burst's model
+// override survives the retry — that keeps the session skipped here for as long
+// as the dispatcher is refusing it, which is precisely while a run for it is
+// already in flight or the concurrency cap is full. Both clear on their own, and
+// the coalescer retries every tick, so it is still bounded.
+export async function deliverAllPending(root: string, runFn: (session: string) => Promise<unknown>, now: Date, sessions: () => Promise<string[]>, isHeld: (s: string) => boolean = () => false): Promise<void> {
   for (const s of await sessions()) {
     const m = await readMeta(root, s);
     if (!m) continue;
     if (m.status === "capped" && !isRetryDue(m, now)) continue;
     if (m.status === "failed") continue;   // retry cap exhausted (HIMMEL-263) — only a new message un-parks
+    if (isHeld(s)) continue;               // burst still landing — the coalescer owns this dispatch
     await runFn(s);
   }
 }
@@ -765,7 +777,7 @@ const MAX_RETRIES = Number(process.env.TELEGRAM_MAX_RETRIES ?? 3);
 // are filed into, from its meta.chat_id (gate.vaultForChat over loaded access).
 // Optional — when absent or it returns null, the prompt carries no file-into-vault clause.
 export type VaultForFn = (chatId: number) => string | null;
-export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn): RunFn {
+export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn, isHeld: (s: string) => boolean = () => false): RunFn {
   const retryAt = () => new Date(Date.now() + RETRY_MS).toISOString();
   const noticed = new Set<string>();
   const safeNotify = async (session: string, retryAtIso: string, kind: NotifyKind) => {
@@ -815,7 +827,28 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
       noticed.delete(session);                                  // clean run ends the backoff episode
       const m = await readMeta(root, session);
       if (m?.fail_count) await writeMeta(root, session, { ...m, fail_count: null });
-      await commitPending(root, session, nextPos); await runOnce(session);
+      await commitPending(root, session, nextPos);
+      // Self-drain: a clean run immediately re-runs to pick up anything that
+      // landed WHILE it was running, so a mid-run message does not wait for the
+      // next poll tick.
+      //
+      // But it is the third consumer of the pending lines, and the only one that
+      // was never given the isHeld guard the other two have (deliverAllPending
+      // takes it; the coalescer's own dispatch carries the model). That gap
+      // leaked the burst model (public-PR CR round 4, second codex pass): lines
+      // arriving mid-run are held by the coalescer with their resolved override,
+      // and this drain would consume them first — with no override at all —
+      // before the dispatcher cleared in-flight and the coalescer-owned retry
+      // could run. The held burst then ran on the DEFAULT model, which is the
+      // same silent cost regression the re-hold above exists to prevent, just
+      // reached by a different path.
+      //
+      // Skipping while held is not a delay: the coalescer flushes on its own
+      // timer (bounded by maxHoldMs), and its dispatch lands after this run's
+      // promise settles and clears in-flight — so the lines run with the model
+      // the burst actually resolved to. Guarding all three consumers closes the
+      // set; there is no fourth reader of the pending slice.
+      if (!isHeld(session)) await runOnce(session);
       return;
     }
     // unsuccessful (cap OR non-zero exit / timeout / crash) → do NOT commit; the
@@ -867,20 +900,259 @@ export async function signalTyping(root: string, isInFlight: (s: string) => bool
 // concurrent claude children can't burn the Max quota in parallel. An over-cap
 // or overlapping dispatch is a NO-OP — deliverAllPending re-offers every pending
 // session each tick, so deferred sessions are picked up when a slot frees.
-export type Dispatcher = RunFn & { inFlightCount: () => number; isInFlight: (s: string) => boolean };
-export function makeDispatcher(runFn: RunFn, cap: number = Number(process.env.TELEGRAM_MAX_CONCURRENT_RUNS ?? 2)): Dispatcher {
+// Returns whether the run was ACCEPTED. The two no-op paths (already in flight,
+// global cap reached) are not failures, but the caller has to be able to tell
+// them apart from an accepted run: a deferred dispatch carries state — the
+// coalesced model override — that is lost unless whoever holds it keeps it.
+export type Dispatcher = ((session: string, modelOverride?: TriageModelOverride) => Promise<boolean>)
+  & { inFlightCount: () => number; isInFlight: (s: string) => boolean };
+export function makeDispatcher(runFn: RunFn, cap: number = positiveEnvInt(process.env.TELEGRAM_MAX_CONCURRENT_RUNS, 2)): Dispatcher {
   const inFlight = new Set<string>();
-  const dispatch = (async (session: string): Promise<void> => {
-    if (inFlight.has(session)) return;            // per-session serialization
-    if (inFlight.size >= cap) return;             // cap reached — next tick retries
+  // `modelOverride` must be declared AND forwarded. Dispatcher is RunFn, which
+  // takes it, but the `as Dispatcher` cast below silences the arity mismatch —
+  // so a one-parameter dispatch type-checks while dropping the argument on the
+  // floor. That is exactly how burst coalescing lost it: flushDue computes the
+  // strongest model across the burst, passes it here, and it went nowhere.
+  const dispatch = (async (session: string, modelOverride?: TriageModelOverride): Promise<boolean> => {
+    if (inFlight.has(session)) return false;      // per-session serialization
+    if (inFlight.size >= cap) return false;       // cap reached — next tick retries
     inFlight.add(session);
-    runFn(session)
+    runFn(session, modelOverride)
       .catch((e) => { console.error("[poller] dispatched run failed for " + session + ": " + e); })
       .finally(() => { inFlight.delete(session); });
+    return true;
   }) as Dispatcher;
   dispatch.inFlightCount = () => inFlight.size;
   dispatch.isInFlight = (s: string) => inFlight.has(s);
   return dispatch;
+}
+
+// --- Burst coalescing (HIMMEL-1273) ---
+// Messages sent in close proximity — especially a bulk of attachments — used to
+// land as N cold runs answering N fragments of one intent. Runs were already
+// serialized per session and peekPending already takes the whole unconsumed
+// slice, so the machinery to batch existed; what was missing is a QUIET PERIOD.
+// Two things split a burst:
+//   - intra-tick: the main loop dispatched on the FIRST line of a tick, so lines
+//     2..N were appended after the run had already peeked and got re-offered as
+//     a second cold run. (Dispatching after the ingest loop fixes that alone.)
+//   - cross-tick: getUpdates returns as soon as updates exist, so a phone
+//     sending 3 PDFs usually produces 2-3 separate ticks. Only a timer fixes it.
+//
+// So this wraps the dispatcher: a request RECORDS intent instead of firing, and
+// the hold is released once the session has been quiet for quietMs — or once
+// maxHoldMs has elapsed since the first message, so a steady trickle can never
+// starve the session (HIMMEL-358 asked for that cap and it still applies).
+//
+// Flushing is driven by an explicit `flushDue(now)` rather than per-session
+// setTimeout: it is deterministic to test, leaks no timers, and matches the
+// typing/outbox timers this file already runs. It CANNOT be driven off the main
+// loop's tick — that blocks in a 30s long-poll, which would stretch a 4s window
+// to 30s — so main wires it to its own short interval.
+//
+// Auto-ops (/arm, /mergepub, /restart) never reach here: handleInbound fires
+// them and returns before the run call, so a privileged op is never buffered.
+// That is asserted by test, not just by reading.
+export type BurstCoalescer = RunFn & {
+  isHolding: (s: string) => boolean;
+  holdingCount: () => number;
+  flushDue: (nowMs: number) => Promise<void>;
+};
+
+// Env numbers are operator-supplied: a typo must not silently disable the cap
+// (NaN comparisons are always false, which would hold a burst forever).
+//
+// The empty/whitespace guard is load-bearing (HIMMEL-1289, public-PR CR):
+// Number("") is 0, NOT NaN — and 0 is a MEANINGFUL value here (it disables
+// coalescing). So `TELEGRAM_BATCH_QUIET_MS=` — set but empty, which is what a
+// commented-out or half-edited .env line produces — would have silently turned
+// burst coalescing OFF while looking configured, instead of falling back to the
+// default. An empty value is absence, not a request for zero.
+function positiveEnvMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+// A concurrency cap is a positive INTEGER, and unlike the millisecond periods
+// above, 0 is not a meaningful setting here — it is a stall. Both malformed
+// shapes fail, in opposite and equally bad directions:
+//   TELEGRAM_MAX_CONCURRENT_RUNS=   -> Number("") is 0 -> cap 0 -> EVERY dispatch
+//     defers. The coalescer re-holds, deliverAllPending skips held sessions, and
+//     the bridge goes quiet while looking configured.
+//   TELEGRAM_MAX_CONCURRENT_RUNS=tow -> NaN -> `inFlight.size >= NaN` is always
+//     false, so the cap is silently REMOVED and unbounded claude children run in
+//     parallel — precisely what the cap exists to prevent, and it burns the Max
+//     quota rather than merely stalling.
+// A fractional value is rejected too: "2.5" is not a number of concurrent runs.
+// Same contract as the interval periods — malformed means default, and an empty
+// value is absence rather than a request for zero.
+//
+// The bound at the TOP matters as much as the one at the bottom, and for the
+// same reason intervalEnvMs carries a ceiling: a fat-fingered value with a few
+// extra digits is a typo, not a request. `Number()` alone cannot see the
+// difference — Number("1e6") is 1000000 and Number.isInteger says yes — so an
+// exponent or an over-long digit string would restore precisely the unbounded
+// parallelism the cap exists to prevent, while looking configured. Hence a
+// strict decimal parse (no exponent, no hex, no sign, no separators) plus a
+// ceiling. The ceiling is a fat-finger guardrail, NOT a tuning limit: every run
+// is a claude child process, so a machine wanting more than this many in
+// parallel has a different problem than a misread env var.
+const MAX_CONCURRENT_RUNS = 64;
+function positiveEnvInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const t = raw.trim();
+  if (!/^[0-9]+$/.test(t)) return fallback;   // also rejects "" , "1e6", "0x10", "+5", "2.5", "-1", "NaN"
+  const n = Number(t);
+  return n >= 1 && n <= MAX_CONCURRENT_RUNS ? n : fallback;
+}
+
+// Interval PERIODS (HIMMEL-1291, public-PR CR). Same operator-typo hazard as
+// above, worse consequence: setInterval clamps a 0/NaN period to ~1ms, so an
+// unvalidated value does not fall back to the default — it spins the sweep at
+// a thousand ticks a second. positiveEnvMs already turns ""/NaN/negative into
+// the fallback, but it PERMITS 0, which is meaningful for a quiet WINDOW
+// (0 disables coalescing) and never for a timer.
+//
+// So a period under 1ms falls back — it does NOT floor to 1 (codex-adv round).
+// The public-CR patch proposed `Math.max(1, positiveEnvMs(…))`, which keeps the
+// worst case intact: `TELEGRAM_FLUSH_MS=0` would still be a 1ms hot loop
+// hammering the Telegram API and the outbox sweep, just spelled differently.
+// Nothing here reads 0 as "disable the timer" — the timers are unconditional —
+// so there is no operator intent to honour, only a bad value to reject. That
+// makes sub-1ms exactly like "" and NaN: absence, and absence means default.
+//
+// The UPPER bound is the same hazard wearing the opposite disguise (codex-adv
+// round 2, verified on bun 1.3.14): setInterval keeps its delay in a signed
+// 32-bit int, so anything above 2147483647 does not become a long interval —
+// it warns TimeoutOverflowWarning and is set to 1. A fat-fingered env value
+// with a few extra digits therefore lands on the SAME 1ms hot loop as `=0`.
+// Both ends fall back rather than clamp, for the same reason: an
+// out-of-range period is a typo, and a typo means default.
+// A FRACTIONAL period falls back too (CodeRabbit round). Not because it is a
+// new hot-loop class — setInterval truncates, so 1.5 becomes 1, which is no
+// worse than the 1 this function already permits outright — but because
+// silently truncating is the one input shape that did not follow the contract
+// the rest of the function states: a period that is not a whole millisecond is
+// malformed, and malformed means default. Without it "0.4" fell back while
+// "1.5" was quietly accepted and rounded, which is a distinction no operator
+// could predict.
+const MAX_INTERVAL_MS = 2_147_483_647;   // setInterval's signed-32-bit ceiling
+export function intervalEnvMs(raw: string | undefined, fallback: number): number {
+  const ms = positiveEnvMs(raw, fallback);
+  return Number.isInteger(ms) && ms >= 1 && ms <= MAX_INTERVAL_MS ? ms : fallback;
+}
+
+// Burst WINDOWS (public-CR round: the one env class here that never got a
+// ceiling). positiveEnvMs alone accepts any finite non-negative value, so
+// `TELEGRAM_BATCH_MAX_HOLD_MS=300000000` — a fat-fingered 30000 with four extra
+// digits — parks a burst for three and a half DAYS. That is exactly the
+// starvation the max-hold cap exists to prevent, arriving through the cap's own
+// setting. positiveEnvInt and intervalEnvMs both grew ceilings for this reason;
+// the windows were the gap.
+//
+// Unlike intervalEnvMs, 0 stays LEGAL and is not a typo: quietMs=0 is the
+// documented escape hatch back to dispatch-per-message (see makeBurstCoalescer),
+// and maxHoldMs=0 flushes on the next tick. So this floors at 0, not 1.
+//
+// The ceiling is a fat-finger guardrail, not a tuning limit — 10 minutes is far
+// past any window that leaves a chat bridge feeling responsive (the defaults are
+// 4s and 30s), while still catching the extra-digit class the finding names. A
+// deployment that genuinely wants a longer hold is asking for a different
+// product, not a bigger number.
+const MAX_WINDOW_MS = 600_000;   // 10 minutes
+export function windowEnvMs(raw: string | undefined, fallback: number): number {
+  const ms = positiveEnvMs(raw, fallback);
+  return Number.isInteger(ms) && ms >= 0 && ms <= MAX_WINDOW_MS ? ms : fallback;
+}
+
+// `dispatch` returns `false` when it DEFERRED the run (Dispatcher). A plain RunFn
+// returning Promise<void> is still accepted — `undefined` is not `false`, so it
+// reads as "accepted", which is the right default for a caller that cannot defer.
+export function makeBurstCoalescer(
+  dispatch: (session: string, modelOverride?: TriageModelOverride) => Promise<boolean | void>,
+  opts: { quietMs?: number; maxHoldMs?: number; now?: () => number } = {},
+): BurstCoalescer {
+  // Default 4s, NOT the 5 minutes HIMMEL-358 asked for: this is the general
+  // assistant chat, where a 5-minute hold would make normal conversation feel
+  // dead. A link-triage group that wants minutes raises it per-deployment.
+  const quietMs = opts.quietMs ?? windowEnvMs(process.env.TELEGRAM_BATCH_QUIET_MS, 4000);
+  const maxHoldMs = opts.maxHoldMs ?? windowEnvMs(process.env.TELEGRAM_BATCH_MAX_HOLD_MS, 30000);
+  const nowFn = opts.now ?? (() => Date.now());
+  type Hold = { firstAt: number; lastAt: number; model?: TriageModelOverride };
+  const holds = new Map<string, Hold>();
+
+  const request = (async (session: string, modelOverride?: TriageModelOverride): Promise<void> => {
+    // quietMs=0 disables coalescing entirely — an explicit escape hatch back to
+    // the old dispatch-per-message behaviour.
+    if (quietMs <= 0) { await dispatch(session, modelOverride); return; }
+    const t = nowFn();
+    const cur = holds.get(session);
+    if (cur) {
+      cur.lastAt = t;
+      // Keep the STRONGEST model seen in the burst: a burst triaged spawn-low
+      // then spawn-high must not run as haiku because the cheap line arrived
+      // first. undefined (spawn-high) outranks an explicit downgrade.
+      if (modelOverride === undefined) cur.model = undefined;
+    } else {
+      holds.set(session, { firstAt: t, lastAt: t, model: modelOverride });
+    }
+  }) as BurstCoalescer;
+
+  request.isHolding = (s: string) => holds.has(s);
+  request.holdingCount = () => holds.size;
+  request.flushDue = async (nowMs: number): Promise<void> => {
+    for (const [session, h] of [...holds.entries()]) {
+      const quietElapsed = nowMs - h.lastAt >= quietMs;
+      const cappedOut = nowMs - h.firstAt >= maxHoldMs;
+      if (!quietElapsed && !cappedOut) continue;
+      // Drop the hold BEFORE dispatching, then RE-HOLD if the dispatch was
+      // deferred (session already in flight, or the global cap reached).
+      //
+      // The re-hold is the load-bearing part (public-PR CR round 4). Letting the
+      // hold stay dropped falls back on deliverAllPending re-offering the
+      // session — the pre-existing safety net — but that net calls `runFn(s)`
+      // with NO model override and never re-triages, so a deferred spawn-low
+      // burst came back as a DEFAULT-model run. That is a silent cost
+      // regression, and it bit exactly under load, when the cap is what caused
+      // the deferral in the first place. Keeping the hold keeps `h.model` with
+      // it, and flushDue retries on the next tick because the hold is already
+      // past due. deliverAllPending skips a held session, so ownership stays
+      // here rather than being split — which is the point: only the holder
+      // still knows what model the burst resolved to.
+      holds.delete(session);
+      // Isolate per-session failures (HIMMEL-1289, public-PR CR): one session's
+      // dispatch throwing must not abort the sweep and delay every OTHER
+      // already-due session to the next tick. A THROW deliberately does not
+      // re-hold — the safety net takes it, as before. Re-holding a dispatch
+      // that throws every tick would spin forever on the same session.
+      try {
+        if (await dispatch(session, h.model) === false) {
+          // MERGE, never overwrite (public-PR CR round 4, CodeRabbit). The hold
+          // was deleted before the await, so a message arriving DURING it finds
+          // no hold and starts a fresh one. Blindly re-setting the snapshot
+          // would drop that message's contribution — and in the dangerous
+          // direction: a spawn-high line landing mid-await would be clobbered
+          // back to the snapshot's "haiku", which is exactly the downgrade the
+          // strongest-model rule exists to prevent. It would also rewind
+          // lastAt, making the burst look quiet sooner than it is and splitting
+          // it. Same arithmetic as the request() path above, applied to both
+          // halves: strongest model wins, widest window wins.
+          const cur = holds.get(session);
+          if (!cur) {
+            holds.set(session, h);
+          } else {
+            cur.firstAt = Math.min(cur.firstAt, h.firstAt);   // max-hold measures from the true burst start
+            cur.lastAt = Math.max(cur.lastAt, h.lastAt);      // quiet window measures from the newest line
+            if (h.model === undefined || cur.model === undefined) cur.model = undefined;
+          }
+        }
+      } catch (e) {
+        console.error(`[poller] burst flush failed for ${session}: ${e}`);
+      }
+    }
+  };
+  return request;
 }
 
 // In-loop watchdog (HIMMEL-246): a session stuck status=running that THIS poller
@@ -1081,7 +1353,12 @@ export async function main(): Promise<void> {
   };
   // documents sent to a chat are filed into the vault resolved from access.json (HIMMEL-321)
   const vaultFor: VaultForFn = (chatId) => vaultForChat(access, chatId);
-  const runFn = makeRunFn(root, repoCwd, undefined, undefined, notify, undefined, vaultFor);
+  // runFn -> dispatch -> coalesce -> isHolding -> runFn is a cycle, so the
+  // hold predicate is late-bound. It reads false until `coalesce` exists a few
+  // lines below, which is correct: nothing can be held before the coalescer is
+  // constructed, and no run can have started either.
+  let isHeldRef: (s: string) => boolean = () => false;
+  const runFn = makeRunFn(root, repoCwd, undefined, undefined, notify, undefined, vaultFor, (s) => isHeldRef(s));
   const dispatch = makeDispatcher(runFn);
   await reconcile(root, isAlive);
   // photo downloads land in a shared root-level attachments/ (named by update_id —
@@ -1173,16 +1450,30 @@ export async function main(): Promise<void> {
   // the operator in a DM or an allowlisted group arms; a non-operator group member or a
   // non-allowlisted chat is refused. Self-sufficient — re-asserts the chat gate (CR S1).
   const autoGate: AutoGate = { enabledOps, authorize: (from, chat_id) => isAllowed(access, from) && allow(from, chat_id), fire: autoFire };
-  // typing indicator while a session's bounded child works (HIMMEL-260)
-  const TYPING_MS = Number(process.env.TELEGRAM_TYPING_MS ?? 4000);
-  const typingTimer = setInterval(guarded(() => signalTyping(root, dispatch.isInFlight, () => sessionsList(root), (chat) => sendChatAction(token, chat))), TYPING_MS);
+  // Burst coalescing (HIMMEL-1273): handleInbound requests through this instead
+  // of dispatching per message, so a burst becomes ONE run.
+  const coalesce = makeBurstCoalescer(dispatch);
+  isHeldRef = coalesce.isHolding;   // closes the runFn -> dispatch -> coalesce cycle declared above
+  // Its own short timer — the main loop below blocks in a 30s long-poll, so
+  // driving the flush from the tick would stretch a 4s quiet window to 30s.
+  const BATCH_TICK_MS = intervalEnvMs(process.env.TELEGRAM_BATCH_TICK_MS, 500);
+  const batchTimer = setInterval(guarded(() => coalesce.flushDue(Date.now())), BATCH_TICK_MS);
+  if (typeof batchTimer.unref === "function") batchTimer.unref();
+  // typing indicator while a session's bounded child works (HIMMEL-260), and
+  // while a burst is being held (HIMMEL-1273): during the quiet window nothing
+  // is in flight, so without this the operator gets several seconds of dead
+  // silence after sending — which reads as "the bridge is down", the opposite
+  // of the reassurance this indicator exists to give.
+  const TYPING_MS = intervalEnvMs(process.env.TELEGRAM_TYPING_MS, 4000);
+  const isBusy = (s: string) => dispatch.isInFlight(s) || coalesce.isHolding(s);
+  const typingTimer = setInterval(guarded(() => signalTyping(root, isBusy, () => sessionsList(root), (chat) => sendChatAction(token, chat))), TYPING_MS);
   if (typeof typingTimer.unref === "function") typingTimer.unref();
   // Flush outboxes on an independent ~1s timer so a bounded run's reply lands without
   // waiting up to 30s for the next long-poll to complete (T4). A cold child is a separate
   // process that appends to outbox.jsonl as it works, so the concurrent flush still earns
   // its keep. The flush path touches only outbox files; the run path touches only
   // inbox/meta/pending — disjoint, so the timer adds no shared-file race.
-  const FLUSH_MS = Number(process.env.TELEGRAM_FLUSH_MS ?? 1000);
+  const FLUSH_MS = intervalEnvMs(process.env.TELEGRAM_FLUSH_MS, 1000);
   const flushTimer = setInterval(guarded(() => flushOutboxes(root, send)), FLUSH_MS);
   if (typeof flushTimer.unref === "function") flushTimer.unref();
   for (;;) {
@@ -1193,8 +1484,11 @@ export async function main(): Promise<void> {
     const fresh = await readNewLines(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"));
     // dispatch (not runFn) everywhere: runs fire WITHOUT blocking this loop —
     // ingest keeps polling while bounded children work (HIMMEL-246)
-    for (const i of fresh) await handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, dispatch, autoGate);
-    await deliverAllPending(root, dispatch, new Date(), () => sessionsList(root));
+    // coalesce (not dispatch): each inbound RECORDS intent, so a same-tick burst
+    // is one run even before the quiet window elapses — the intra-tick race the
+    // ticket calls near-free to close (HIMMEL-1273).
+    for (const i of fresh) await handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate);
+    await deliverAllPending(root, dispatch, new Date(), () => sessionsList(root), coalesce.isHolding);
     await sweepStuckRunning(root, dispatch.isInFlight, () => sessionsList(root));
   }
 }

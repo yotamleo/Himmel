@@ -324,12 +324,341 @@ echo x
 EOF
 chmod +x "$gud_bin/graphify"
 gud_log="$tmpdir/gup-diff-log"; : > "$gud_log"
+# GRAPHIFY_MCP_HOLDERS=0 (HIMMEL-1274): pin the holder probe to "clear". Without
+# it this test is NOT hermetic — the real probe finds the DEVELOPER'S own live
+# graphify-mcp servers (every Claude Code session spawns one) and the new
+# pre-flight guard correctly skips the reinstall, so the assertion below goes
+# red on a busy workstation and green on CI. Observed exactly that.
 out=$(HOME="$gud_home" PATH="$gud_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gud_tools" UV_LIST_FILE="$gud_list" \
-      UV_BIN_DIR="$gud_bin" UV_LOG="$gud_log" \
+      UV_BIN_DIR="$gud_bin" UV_LOG="$gud_log" GRAPHIFY_MCP_HOLDERS=0 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "update diff-ver: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "update diff-ver: force-reinstalls at pin preserving [all] extras" \
   grep -qE 'tool install --force --with mcp graphifyy\[all\]==[0-9]' "$gud_log"
+
+# --- HIMMEL-1274: the pre-flight holder guard + verify-after ----------------
+echo "[test-graphify-bin] graphify_update: live graphify-mcp holders -> SKIP the reinstall, leave the install alone"
+gh_home="$tmpdir/gup-held"; mkdir -p "$gh_home"
+gh_tools="$tmpdir/gup-held-tools"; mkdir -p "$gh_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy", extras = ["all"] }]\n' > "$gh_tools/graphifyy/uv-receipt.toml"
+gh_list="$tmpdir/gup-held-list"; printf 'graphifyy v0.0.1\n' > "$gh_list"   # behind the pin
+gh_bin="$tmpdir/gup-held-bin"; mkdir -p "$gh_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$gh_bin/graphify"; chmod +x "$gh_bin/graphify"
+gh_log="$tmpdir/gup-held-log"; : > "$gh_log"
+out=$(HOME="$gh_home" PATH="$gh_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gh_tools" UV_LIST_FILE="$gh_list" \
+      UV_BIN_DIR="$gh_bin" UV_LOG="$gh_log" GRAPHIFY_MCP_HOLDERS=3 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+# rc 0: a deliberate, healthy skip — nothing failed and nothing is broken.
+assert "held: rc 0 (a skip is not a failure)" grep -q '^RC=0$' <<<"$out"
+assert "held: says SKIP with the holder count" grep -q 'SKIP: 3 graphify-mcp process' <<<"$out"
+assert "held: states graphify KEEPS WORKING" grep -q 'KEEPS WORKING' <<<"$out"
+assert "held: says the pin did NOT advance" grep -q 'has NOT advanced' <<<"$out"
+assert "held: gives the manual repair command" grep -q "uv tool install --force --with mcp 'graphifyy" <<<"$out"
+# The repair line is a COPY-PASTE instruction, and this fixture records extras
+# ["all"], so the spec reads graphifyy[all]==<pin>. Unquoted, zsh — the macOS
+# default shell — globs the brackets and the paste dies with "no matches found"
+# instead of installing (public-PR CR). Assert the WHOLE spec is single-quoted:
+# matching only the opening quote would still pass if the closing one were lost.
+assert "held: the repair command single-quotes the [all] spec (zsh globs it otherwise)" \
+  grep -qE "uv tool install --force --with mcp 'graphifyy\[all\]==[0-9][^']*'" <<<"$out"
+# THE POINT: no uv install was attempted, so the entry points were never removed.
+# shellcheck disable=SC2016
+assert "held: NO uv install attempted (this is what keeps graphify working)" \
+  bash -c '! grep -q "tool install" "$1"' _ "$gh_log"
+# shellcheck disable=SC2016
+assert "held: does NOT use the misleading 'non-fatal' wording" \
+  bash -c '! grep -q "non-fatal" <<<"$1"' _ "$out"
+
+# HIMMEL-1289: a BROKEN probe must read as UNAVAILABLE, never as "0 holders".
+# Both critics caught that the first attempt at this was itself fail-open:
+# `pgrep … | grep -c .` always emits a digit, so the numeric validator could
+# never fire and a broken pgrep reported a clear machine — letting the guarded
+# reinstall proceed on exactly the platform the guard protects.
+echo "[test-graphify-bin] _graphify_mcp_holders: a broken probe is UNAVAILABLE, not 0"
+probe_dir="$tmpdir/broken-probe"; mkdir -p "$probe_dir"
+# A fake `uname` is REQUIRED, not decoration: _graphify_mcp_holders branches on
+# uname -s, and on Git Bash (MINGW*) it takes the WINDOWS branch and never
+# reaches pgrep at all. Without this the assertions below pass for the wrong
+# reason — the Windows branch returning 1 because no pwsh is on the stripped
+# PATH — which is a false green that proves nothing about the pgrep path.
+printf '#!/bin/sh
+echo Linux
+' > "$probe_dir/uname"; chmod +x "$probe_dir/uname"
+printf '#!/bin/sh
+exit 2
+' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"   # usage error
+# Single level, absolute interpreter, PATH set INSIDE the child, SCRIPT_DIR
+# passed POSITIONALLY — the shape established for the pattern assert below, and
+# the reason is the same for all three of these: the earlier nested form spliced
+# SCRIPT_DIR into the inner `bash -c` string (a repo path containing a quote
+# breaks it) and looked its inner `bash` up under the REWRITTEN PATH.
+# shellcheck disable=SC2016
+assert "broken pgrep (rc 2) -> probe returns nonzero, emits no count"   "$(command -v bash)" -c 'PATH="$1:/usr/bin:/bin"; export PATH; . "$2/graphify-bin.sh"; ! _graphify_mcp_holders >/dev/null 2>&1' _ "$probe_dir" "$SCRIPT_DIR"
+# And the honest zero still works: a pgrep that RAN and matched nothing (rc 1)
+# is a real 0, not a failure — otherwise the guard would block every update.
+printf '#!/bin/sh
+exit 1
+' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"
+# shellcheck disable=SC2016
+assert "pgrep rc 1 (ran, no matches) -> a real 0"   "$(command -v bash)" -c 'PATH="$1:/usr/bin:/bin"; export PATH; . "$2/graphify-bin.sh"; out=$(_graphify_mcp_holders) && [ "$out" = "0" ]' _ "$probe_dir" "$SCRIPT_DIR"
+# A pgrep that MATCHED must count the lines it printed.
+printf '#!/bin/sh
+printf "111\n222\n333\n"
+exit 0
+' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"
+# shellcheck disable=SC2016
+assert "pgrep rc 0 with 3 matches -> 3"   "$(command -v bash)" -c 'PATH="$1:/usr/bin:/bin"; export PATH; . "$2/graphify-bin.sh"; out=$(_graphify_mcp_holders) && [ "$out" = "3" ]' _ "$probe_dir" "$SCRIPT_DIR"
+
+# Needle PARITY with the Windows branch (public-PR CR). Two needles are
+# documented above _graphify_mcp_holders — the entrypoint name AND the uv tool
+# dir — and Windows matches both, but the Unix branches searched only the
+# entrypoint. A uv-installed holder whose argv names the tool dir without the
+# literal entrypoint string was therefore counted CLEAR on Unix and HELD on
+# Windows: the same machine, two answers. Asserted on the PATTERN the probe
+# hands its matcher, which is where the omission lived.
+echo "[test-graphify-bin] _graphify_mcp_holders: Unix branches search BOTH needles"
+pat_log="$tmpdir/probe-pattern.txt"
+cat > "$probe_dir/pgrep" <<'FAKEPGREP'
+#!/bin/sh
+printf '%s\n' "$2" > "$PGREP_PAT_LOG"
+exit 1
+FAKEPGREP
+chmod +x "$probe_dir/pgrep"
+# The fake pgrep SHADOWS any host one (probe_dir is first on PATH), so this
+# case genuinely exercises the pgrep branch on every host — unlike the ps
+# fallback below, which needs pgrep absent outright.
+#
+# Single level, absolute interpreter, PATH set INSIDE the child and SCRIPT_DIR
+# passed POSITIONALLY — the same shape as the two ps-fallback asserts below
+# (CodeRabbit round). The earlier nested form interpolated SCRIPT_DIR into the
+# inner `bash -c` string, so a repo path containing a quote would have broken
+# the command; and its inner `bash` was looked up under the REWRITTEN PATH,
+# which is the 127 trap this suite hit twice already. PGREP_PAT_LOG rides in as
+# a prefix on the pinned interpreter, so the fake pgrep still inherits it.
+# shellcheck disable=SC2016
+PGREP_PAT_LOG="$pat_log" "$(command -v bash)" -c 'PATH="$1:/usr/bin:/bin"; export PATH; . "$2/graphify-bin.sh"; _graphify_mcp_holders' _ "$probe_dir" "$SCRIPT_DIR" >/dev/null 2>&1 || true
+assert "pgrep pattern carries the entrypoint needle" grep -q 'graphify-mcp' "$pat_log"
+assert "pgrep pattern carries the uv tool-dir needle too" grep -q 'uv\[' "$pat_log"
+
+# Same parity on the `ps` FALLBACK — which needs pgrep to be genuinely absent,
+# not merely missing from the fixture dir (CodeRabbit round). The first draft
+# used PATH="$probe_dir:/usr/bin:/bin", which still exposes the HOST's pgrep:
+# _graphify_mcp_holders would then take the pgrep branch, run the real pgrep
+# against the real process table, and never reach the fake ps at all. It passed
+# here only because Git Bash ships no pgrep — on a Linux CI runner, which has
+# one, these assertions would have gone red. A test whose branch depends on the
+# host is not testing the branch it names.
+#
+# So: an ISOLATED PATH containing only fakes plus a thin exec-wrapper for the
+# one real tool the fallback needs (grep). Wrapper, not a copy — an MSYS binary
+# copied out of /usr/bin loses its DLL neighbours and will not load.
+iso_dir="$tmpdir/iso-nopgrep"; mkdir -p "$iso_dir"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v grep)" > "$iso_dir/grep"
+printf '#!/bin/sh\necho Linux\n' > "$iso_dir/uname"
+chmod +x "$iso_dir/grep" "$iso_dir/uname"
+# shellcheck disable=SC2016
+gfy_pypi="$(bash -c '. "$1/graphify-bin.sh"; _graphify_pypi_name' _ "$SCRIPT_DIR")"
+cat > "$iso_dir/ps" <<FAKEPS
+#!/bin/sh
+printf '%s\n' "/home/u/.local/share/uv/tools/$gfy_pypi/bin/python -m server"
+FAKEPS
+chmod +x "$iso_dir/ps"
+# The interpreter is pinned ABSOLUTELY and PATH is set INSIDE the child — the
+# same trap this suite's sibling hit: `PATH=… bash -c` makes the parent look up
+# `bash` under the new PATH, so an isolated dir with no bash yields 127 and the
+# assertion never runs the code it claims to.
+# shellcheck disable=SC2016
+assert "ps fallback counts a tool-dir-only holder (was missed pre-fix)" \
+  "$(command -v bash)" -c 'PATH="$1"; export PATH; out=$(. "$2/graphify-bin.sh"; _graphify_mcp_holders) && [ "$out" = "1" ]' _ "$iso_dir" "$SCRIPT_DIR"
+# shellcheck disable=SC2016
+assert "the isolated fixture really has no pgrep (guards the guard)" \
+  bash -c '! PATH="$1" command -v pgrep >/dev/null 2>&1' _ "$iso_dir"
+
+# A CONFIGURED uv tool dir must be covered too (codex-adv round). `uv tool dir`
+# honours UV_TOOL_DIR, and this file already derives real paths from
+# _graphify_uv_tool_dir elsewhere, so a custom root is a supported shape — but
+# the needle was the hardcoded DEFAULT layout, so a holder under /custom/root
+# matched nothing and the probe reported CLEAR on a held venv.
+echo "[test-graphify-bin] _graphify_mcp_holders: a CUSTOM uv tool dir is covered"
+custom_root="$tmpdir/custom-uv-root"
+cat > "$iso_dir/uv" <<UVFAKE
+#!/bin/sh
+[ "\$1" = "tool" ] && [ "\$2" = "dir" ] && { printf '%s\n' "$custom_root"; exit 0; }
+exit 1
+UVFAKE
+chmod +x "$iso_dir/uv"
+cat > "$iso_dir/ps" <<FAKEPS2
+#!/bin/sh
+printf '%s\n' "$custom_root/$gfy_pypi/bin/python -m server"
+FAKEPS2
+chmod +x "$iso_dir/ps"
+# Same isolated PATH + absolute interpreter as above.
+# shellcheck disable=SC2016
+assert "ps fallback counts a holder under a CUSTOM uv tool dir" \
+  "$(command -v bash)" -c 'PATH="$1"; export PATH; out=$(. "$2/graphify-bin.sh"; _graphify_mcp_holders) && [ "$out" = "1" ]' _ "$iso_dir" "$SCRIPT_DIR"
+rm -f "$iso_dir/ps" "$iso_dir/uv"
+
+# The probe asks for `ps -ww` first so a long tool-dir path is not truncated out
+# of the command line, then falls back to plain `ps`. Both fake `ps` stubs above
+# ignore their arguments, so they exercise the -ww branch and say NOTHING about
+# the fallback — and the fallback is the one that matters on Git Bash, whose
+# MSYS `ps` rejects -ww outright. Without this case a regression that dropped the
+# fallback would leave every such host unable to probe at all, with a green
+# suite. So: a stub that FAILS on -ww and succeeds without it.
+cat > "$iso_dir/ps" <<FAKEPS3
+#!/bin/sh
+case "\$1" in -ww) echo "ps: unknown option -- ww" >&2; exit 1 ;; esac
+printf '%s\n' "/home/u/.local/share/uv/tools/$gfy_pypi/bin/python -m server"
+FAKEPS3
+chmod +x "$iso_dir/ps"
+# shellcheck disable=SC2016
+assert "ps fallback survives a ps that rejects -ww (the Git Bash shape)" \
+  "$(command -v bash)" -c 'PATH="$1"; export PATH; out=$(. "$2/graphify-bin.sh"; _graphify_mcp_holders) && [ "$out" = "1" ]' _ "$iso_dir" "$SCRIPT_DIR"
+rm -f "$iso_dir/ps"
+
+# The path->pattern helper must survive regex metacharacters in a real path: an
+# unbalanced paren is an ERE SYNTAX error, which would make the probe rc 2 —
+# "unavailable" — on a machine that is merely oddly named.
+echo "[test-graphify-bin] _graphify_pat_from_path escapes metacharacters"
+# shellcheck disable=SC2016
+assert "a path with parens and a dot still matches itself" \
+  bash -c 'p="/opt/tools (v2)/.hidden/graphifyy"; pat=$(. "$1/graphify-bin.sh"; _graphify_pat_from_path "$p"); printf "%s\n" "$p/bin/python" | grep -qE -- "$pat"' _ "$SCRIPT_DIR"
+# shellcheck disable=SC2016
+assert "the dot is escaped, not a wildcard" \
+  bash -c 'pat=$(. "$1/graphify-bin.sh"; _graphify_pat_from_path "/a/.local/graphifyy"); ! printf "%s\n" "/a/Xlocal/graphifyy" | grep -qE -- "$pat"' _ "$SCRIPT_DIR"
+
+# Windows branch: an apostrophe in the resolved tool dir must not break the
+# -Command string (codex-adv round). pat_dir carries a RESOLVED path now, so
+# `C:\Users\O'Brien\…` — an ordinary profile — would close the PowerShell
+# single-quoted string early. That is not a soft failure: the probe returns
+# "unavailable", and the CALLER treats "cannot probe" as "proceed", so the
+# reinstall would run against a held venv on the very platform this guard was
+# written for. Asserted on the generated -Command, captured from a fake pwsh.
+echo "[test-graphify-bin] Windows probe survives an apostrophe in the tool dir"
+win_dir="$tmpdir/win-probe"; mkdir -p "$win_dir"
+apos_root="/c/Users/O'Brien/AppData/uv/tools"
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$win_dir/uname"; chmod +x "$win_dir/uname"
+cat > "$win_dir/uv" <<UVAPOS
+#!/bin/sh
+[ "\$1" = "tool" ] && [ "\$2" = "dir" ] && { printf '%s\n' "$apos_root"; exit 0; }
+exit 1
+UVAPOS
+chmod +x "$win_dir/uv"
+# Fake pwsh: log the -Command it was handed, then answer "1 holder".
+cat > "$win_dir/pwsh" <<'PWSHFAKE'
+#!/bin/sh
+for a in "$@"; do last="$a"; done
+printf '%s\n' "$last" > "$PS_CMD_LOG"
+printf '1\n'
+PWSHFAKE
+chmod +x "$win_dir/pwsh"
+ps_log="$tmpdir/ps-command.txt"
+# SCRIPT_DIR goes in as a POSITIONAL arg, not interpolated into the command
+# string (CodeRabbit round): a repo path containing a quote would otherwise
+# break the command the same way the apostrophe this very test is about breaks
+# the PowerShell one.
+# shellcheck disable=SC2016
+apos_out="$(PATH="$win_dir:/usr/bin:/bin" PS_CMD_LOG="$ps_log" bash -c '. "$1/graphify-bin.sh"; _graphify_mcp_holders' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert "apostrophe path -> probe returns a COUNT, not unavailable" test "$apos_out" = "1"
+# The probe must not count ITSELF: the needles appear in this pwsh process's
+# own CommandLine, so without the exclusion a machine with zero real holders
+# reported 1 and the update was skipped forever.
+assert "generated -Command excludes the probe's own PID" grep -q 'ProcessId -ne' "$ps_log"
+# The generated command must have balanced single quotes; a lone apostrophe
+# from the path is exactly what unbalances it.
+apos_sq="'"
+# shellcheck disable=SC2016
+assert "generated -Command has balanced single quotes" \
+  bash -c 'n=$(tr -cd "$2" < "$1" | wc -c); [ $((n % 2)) -eq 0 ]' _ "$ps_log" "$apos_sq"
+assert "the apostrophe was doubled for PowerShell" grep -q "O''Brien" "$ps_log"
+
+echo "[test-graphify-bin] graphify_update: install 'succeeds' but the binary does not run -> HARD failure"
+gb_home="$tmpdir/gup-broken"; mkdir -p "$gb_home"
+gb_tools="$tmpdir/gup-broken-tools"; mkdir -p "$gb_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gb_tools/graphifyy/uv-receipt.toml"
+gb_list="$tmpdir/gup-broken-list"; printf 'graphifyy v0.0.1\n' > "$gb_list"
+gb_bin="$tmpdir/gup-broken-bin"; mkdir -p "$gb_bin"
+gb_log="$tmpdir/gup-broken-log"; : > "$gb_log"
+# Model the REAL sequence, not just the end state: graphify works BEFORE the
+# reinstall and throws AFTER it. A stub that is broken from the start is a
+# different scenario entirely — graphify_source cannot identify the install, so
+# the update path is never even reached. The stub flips once the uv log shows
+# an install ran, which is exactly what uv does when it removes the old entry
+# points and then fails to replace the locked directory.
+cat > "$gb_bin/graphify" <<'EOF'
+#!/usr/bin/env bash
+if grep -q "tool install" "${UV_LOG:-/nonexistent}" 2>/dev/null; then
+  echo "runpy traceback: No module named graphify.__main__" >&2
+  exit 1
+fi
+echo x
+EOF
+chmod +x "$gb_bin/graphify"
+# UV_BIN_DIR must NOT be gb_bin: the uv stub drops a WORKING graphify shim into
+# UV_BIN_DIR on a successful install, which would overwrite the flipping stub
+# above and make the binary look healthy — testing the opposite of the point.
+# Keep it off PATH so `command -v graphify` keeps resolving the flipping stub.
+gb_uvbin="$tmpdir/gup-broken-uvbin"; mkdir -p "$gb_uvbin"
+out=$(HOME="$gb_home" PATH="$gb_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gb_tools" UV_LIST_FILE="$gb_list" \
+      UV_BIN_DIR="$gb_uvbin" UV_LOG="$gb_log" GRAPHIFY_MCP_HOLDERS=0 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "broken-after-install: rc 1 (presence is not proof it runs)" grep -q '^RC=1$' <<<"$out"
+assert "broken-after-install: names it BROKEN" grep -q 'BROKEN' <<<"$out"
+assert "broken-after-install: gives the repair command" grep -q "uv tool install --force --with mcp 'graphifyy" <<<"$out"
+# Assert BOTH quotes, like the held scenario above (CodeRabbit round). Matching
+# only the opening quote + package prefix leaves this site able to lose its
+# CLOSING quote and still pass — an asymmetry between two assertions that exist
+# for one reason.
+#
+# Deliberately NOT the held scenario's `\[all\]` pattern: CodeRabbit proposed
+# that verbatim, but THIS fixture's uv-receipt records `{ name = "graphifyy" }`
+# with no extras, so the spec here is `graphifyy==<pin>` and a bracket pattern
+# would assert a shape that can never appear. The extras-free spec is the point
+# of coverage — the two scenarios pin the quoting on both shapes.
+assert "broken-after-install: the repair command single-quotes the whole spec" \
+  grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
+
+# The fourth corner of the state matrix (public-PR CR): install FAILED but the
+# binary SURVIVED. The other three are covered above and below; without this one
+# the two arms of the post-failure branch are never told apart, and the arm that
+# reports a survivable state could rot into the alarming one unnoticed. The
+# distinction is the whole point of that branch — "failed" alone was the blanket
+# answer it was written to replace.
+echo "[test-graphify-bin] graphify_update: install fails but the binary still RUNS -> WARNING, not BROKEN"
+gs_home="$tmpdir/gup-survive"; mkdir -p "$gs_home"
+gs_tools="$tmpdir/gup-survive-tools"; mkdir -p "$gs_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gs_tools/graphifyy/uv-receipt.toml"
+gs_list="$tmpdir/gup-survive-list"; printf 'graphifyy v0.0.1\n' > "$gs_list"
+gs_bin="$tmpdir/gup-survive-bin"; mkdir -p "$gs_bin"
+# Unlike the broken-after-install stub above, this one NEVER flips: the install
+# fails and leaves the working entry point untouched.
+printf '#!/usr/bin/env bash\necho x\n' > "$gs_bin/graphify"; chmod +x "$gs_bin/graphify"
+gs_log="$tmpdir/gup-survive-log"; : > "$gs_log"
+gs_uvbin="$tmpdir/gup-survive-uvbin"; mkdir -p "$gs_uvbin"
+out=$(HOME="$gs_home" PATH="$gs_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gs_tools" UV_LIST_FILE="$gs_list" \
+      UV_BIN_DIR="$gs_uvbin" UV_LOG="$gs_log" GRAPHIFY_MCP_HOLDERS=0 STUB_UV_INSTALL_RC=1 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "install-failed-binary-survives: rc 1 (the pin did not advance)" grep -q '^RC=1$' <<<"$out"
+assert "install-failed-binary-survives: says the install still RUNS" grep -q 'still RUNS' <<<"$out"
+assert "install-failed-binary-survives: says the pin was not advanced" grep -q 'pin not advanced' <<<"$out"
+gs_broken=$(grep -c 'BROKEN' <<<"$out" || true)   # counted, not negated in a subshell — no nested `bash -c`
+assert "install-failed-binary-survives: does NOT cry BROKEN" [ "$gs_broken" = 0 ]
+assert "install-failed-binary-survives: the install was actually attempted" grep -qE 'tool install --force --with mcp graphifyy' "$gs_log"
+
+echo "[test-graphify-bin] graphify_update: unprobeable platform -> proceeds, verify-after is the net"
+gp_home="$tmpdir/gup-probe"; mkdir -p "$gp_home"
+gp_tools="$tmpdir/gup-probe-tools"; mkdir -p "$gp_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gp_tools/graphifyy/uv-receipt.toml"
+gp_list="$tmpdir/gup-probe-list"; printf 'graphifyy v0.0.1\n' > "$gp_list"
+gp_bin="$tmpdir/gup-probe-bin"; mkdir -p "$gp_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$gp_bin/graphify"; chmod +x "$gp_bin/graphify"
+gp_log="$tmpdir/gup-probe-log"; : > "$gp_log"
+out=$(HOME="$gp_home" PATH="$gp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gp_tools" UV_LIST_FILE="$gp_list" \
+      UV_BIN_DIR="$gp_bin" UV_LOG="$gp_log" GRAPHIFY_MCP_HOLDERS=unavailable \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "unprobeable: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "unprobeable: says it cannot probe" grep -q 'cannot probe for graphify-mcp holders' <<<"$out"
+assert "unprobeable: still performs the install" grep -qE 'tool install --force --with mcp graphifyy' "$gp_log"
 
 echo "[test-graphify-bin] graphify_update: uv graphifyy AHEAD of pin -> left as-is, no install (CR codex-1: never downgrade/clobber)"
 gua_home="$tmpdir/gup-ahead"; mkdir -p "$gua_home"

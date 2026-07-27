@@ -192,11 +192,45 @@ resolve_remote_paths() {
     REMOTE_TMP="${REMOTE_TMP:-$REMOTE_HOME/AppData/Local/Temp}"
 }
 
+# The receiver's collection set, parsed from `qmd collection list`.
+#
+# Match the COLLECTION ROWS, not every line (HIMMEL-1284). The previous version
+# took the first token of every line and kept anything that looked like an
+# identifier — which swallowed the command's own header. `qmd collection list`
+# opens with `Collections (2):`, whose first token `Collections` has no colon,
+# so it passed the identifier filter cleanly and became a phantom collection.
+# Every default (no --collections) ship then died in prepare-ship-index with
+# "receiver expects collection(s) the SOURCE does not have: Collections" — the
+# guard doing its job on a name the parser invented. That made the documented
+# default invocation 100% broken for every receiver.
+#
+# The rows are recognisable by their `<name> (qmd://<name>/)` shape, which the
+# header never has. Anchor on that instead:
+#
+#   Collections (2):            <- header, no (qmd:// -> skipped
+#                               <- blank
+#   himmel (qmd://himmel/)      <- row -> himmel
+#     Pattern:  **/*.md         <- indented detail, no (qmd:// -> skipped
+#
+# The two <name>s are tied together by a BACKREFERENCE, not matched
+# independently (public-PR CR). Anchoring on `(qmd://` alone accepted a row
+# whose display name and URI disagree — `wrong (qmd://other/)` yielded `wrong` —
+# so the parser would have shipped to a collection the URI never named. That
+# shape does not occur in qmd 2.6.3's output, which is exactly why it is worth
+# asserting: the invariant this parser RELIES on is now checked rather than
+# assumed, and a future format change surfaces as a dropped row (visible: the
+# receiver's collection set comes back short) instead of a silently wrong name.
+# `\1` in a BRE and `\{0,1\}` are both POSIX, not GNU extensions — unlike the
+# `sed 's/\r$//'` this file replaced with `tr -d '\r'` for the same reason.
+#
+# No machine-readable mode to prefer here: checked against qmd 2.6.3 —
+# `qmd collection list --json` is silently IGNORED (it prints the same prose),
+# and `--format json` is a SEARCH option, not a collection-list one. So this
+# stays a parser, just one anchored on the stable part of the format.
 remote_collections() {
     ssh "$HOST" 'qmd collection list' 2>/dev/null \
-        | sed 's/\r$//' \
-        | awk '{print $1}' \
-        | grep -E '^[A-Za-z0-9._-]+$' \
+        | tr -d '\r' \
+        | sed -n 's/^\([A-Za-z0-9._-]\{1,\}\) (qmd:\/\/\1\/\{0,1\}).*/\1/p' \
         | sort -u \
         | paste -sd, - || true
 }

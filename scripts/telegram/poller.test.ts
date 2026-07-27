@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { isAllowed, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -281,6 +281,49 @@ test("dispatcher: concurrency cap defers extra sessions; freed slot admits them"
   await d("C");                       // next tick picks it up
   expect(d.isInFlight("C")).toBe(true);
   resolvers["B"](); resolvers["C"]();
+});
+
+// The cap was the one env read in this file still on the raw Number() pattern
+// everything else was hardened away from. Both malformed shapes fail badly and
+// in OPPOSITE directions: "" is 0, which stalls the bridge outright (every
+// dispatch defers, the coalescer re-holds, deliverAllPending skips held
+// sessions), while a typo is NaN, and `inFlight.size >= NaN` is always false —
+// the cap silently disappears and unbounded runs go out in parallel.
+test("dispatcher cap: malformed TELEGRAM_MAX_CONCURRENT_RUNS falls back to 2, never 0 or unbounded", async () => {
+  const prev = process.env.TELEGRAM_MAX_CONCURRENT_RUNS;
+  // Effective cap is observed, not asserted on an internal: fill it and see
+  // where dispatch starts refusing.
+  const effectiveCap = async (): Promise<number> => {
+    const resolvers: Record<string, () => void> = {};
+    const d = makeDispatcher((s: string) => new Promise<void>((res) => { resolvers[s] = res; }));
+    let admitted = 0;
+    for (let i = 0; i < 12; i++) if (await d("S" + i) === true) admitted++;
+    Object.values(resolvers).forEach((r) => r());
+    return admitted;
+  };
+  try {
+    // The over-large shapes matter as much as the empty/NaN ones: Number("1e6")
+    // is 1000000 and IS an integer, so a plain isInteger check would hand back
+    // an effectively unbounded cap — the same failure as NaN, reached from the
+    // other end. "65" is one past the ceiling; "0x10"/"+5" are non-decimal
+    // shapes a lenient Number() would also accept.
+    for (const bad of ["", "   ", "abc", "0", "-1", "2.5", "NaN",
+                       "1e6", "999999999999", "65", "0x10", "+5"]) {
+      process.env.TELEGRAM_MAX_CONCURRENT_RUNS = bad;
+      expect(await effectiveCap()).toBe(2);          // default — not 0 (stall), not 12 (uncapped)
+    }
+    delete process.env.TELEGRAM_MAX_CONCURRENT_RUNS;
+    expect(await effectiveCap()).toBe(2);            // absent -> default
+    process.env.TELEGRAM_MAX_CONCURRENT_RUNS = "5";
+    expect(await effectiveCap()).toBe(5);            // a valid value is still honoured
+    process.env.TELEGRAM_MAX_CONCURRENT_RUNS = " 6 ";
+    expect(await effectiveCap()).toBe(6);            // surrounding whitespace is not a typo
+    process.env.TELEGRAM_MAX_CONCURRENT_RUNS = "64";
+    expect(await effectiveCap()).toBe(12);           // at the ceiling: honoured, admits all 12 offered
+  } finally {
+    if (prev === undefined) delete process.env.TELEGRAM_MAX_CONCURRENT_RUNS;
+    else process.env.TELEGRAM_MAX_CONCURRENT_RUNS = prev;
+  }
 });
 
 test("dispatcher: a rejected run clears in-flight (no permanent wedge)", async () => {
@@ -750,6 +793,43 @@ test("cold runFn: empty tick reclaims a fully-consumed inbox; a fresh message st
   await makeRunFn(r, "/repo", fakeRun)("HIMMEL-8");
   expect(calls).toBe(2);
   expect((await peekPending(r, "HIMMEL-8")).count).toBe(0);
+});
+
+// The self-drain is the third consumer of the pending slice, and the only one
+// that lacked the isHeld guard. A message landing mid-run is held by the
+// coalescer WITH its resolved model override; if the drain consumed it first it
+// ran with no override at all, so a spawn-low burst arriving while the same
+// session was busy still went out on the default model.
+test("clean-run self-drain SKIPS a coalescer-held session (the burst keeps its model)", async () => {
+  const r = root(); await ensureSession(r, "HELD");
+  await writeMeta(r, "HELD", { chat_id:9, status:"idle", last_run_pid:null, last_run_at:null, task_name:null, retry_at:null });
+  const inbox = join(sessionDir(r,"HELD"), "inbox.jsonl");
+  await appendLine(inbox, JSON.stringify({ text:"first" }));
+  let calls = 0;
+  const fakeRun = async () => {
+    calls++;
+    if (calls === 1) await appendLine(inbox, JSON.stringify({ text:"mid-run burst line" }));
+    return { code:0, capped:false, pid:1 };
+  };
+  await makeRunFn(r, "/repo", fakeRun, 5000, undefined, 3, undefined, () => true)("HELD");
+  expect(calls).toBe(1);                                  // drain skipped — did NOT eat the held line
+  expect((await peekPending(r, "HELD")).count).toBe(1);   // still pending for the coalescer's dispatch
+});
+
+test("clean-run self-drain still runs when the session is NOT held", async () => {
+  const r = root(); await ensureSession(r, "FREE");
+  await writeMeta(r, "FREE", { chat_id:9, status:"idle", last_run_pid:null, last_run_at:null, task_name:null, retry_at:null });
+  const inbox = join(sessionDir(r,"FREE"), "inbox.jsonl");
+  await appendLine(inbox, JSON.stringify({ text:"first" }));
+  let calls = 0;
+  const fakeRun = async () => {
+    calls++;
+    if (calls === 1) await appendLine(inbox, JSON.stringify({ text:"mid-run line" }));
+    return { code:0, capped:false, pid:1 };
+  };
+  await makeRunFn(r, "/repo", fakeRun)("FREE");           // default isHeld = () => false
+  expect(calls).toBe(2);                                  // drained the mid-run line, as before
+  expect((await peekPending(r, "FREE")).count).toBe(0);
 });
 
 test("reconcile clears a dead last_run_pid so the session isn't stuck busy", async () => {
@@ -1984,4 +2064,396 @@ test("/restart full does NOT arm a watchdog when the fire itself failed", async 
     scheduleWatchdog: () => { armed = true; },
   });
   expect(armed).toBe(false);
+});
+
+// --- HIMMEL-1273: burst coalescing ------------------------------------------
+//
+// A fake clock throughout: the whole point is time-based behaviour, and a suite
+// that sleeps for real windows is slow and flaky. flushDue takes `now` for
+// exactly this reason.
+
+test("burst within the quiet window dispatches exactly ONE run", async () => {
+  const runs: string[] = [];
+  let now = 1_000;
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 4000, maxHoldMs: 30000, now: () => now });
+
+  // three messages 200ms apart — a phone sending 3 PDFs
+  await c("__chat__"); now += 200;
+  await c("__chat__"); now += 200;
+  await c("__chat__");
+  expect(runs).toEqual([]);              // nothing fired yet
+  expect(c.isHolding("__chat__")).toBe(true);
+
+  await c.flushDue(now + 3999);          // still inside the window
+  expect(runs).toEqual([]);
+
+  await c.flushDue(now + 4000);          // quiet elapsed
+  expect(runs).toEqual(["__chat__"]);
+  expect(c.isHolding("__chat__")).toBe(false);
+});
+
+test("each new message RESETS the quiet window (it is a debounce, not a fixed delay)", async () => {
+  const runs: string[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 1000, maxHoldMs: 60000, now: () => now });
+  await c("s");
+  now = 900; await c.flushDue(now); expect(runs).toEqual([]);
+  await c("s");                          // refreshes lastAt to 900
+  now = 1800; await c.flushDue(now);     // 900 since the LAST message, not 1800 since the first
+  expect(runs).toEqual([]);
+  now = 1900; await c.flushDue(now);
+  expect(runs).toEqual(["s"]);
+});
+
+test("a steady trickle fires at the max-hold cap and is never starved", async () => {
+  const runs: string[] = [];
+  let now = 0;
+  // quiet window never elapses because a message lands every 500ms
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 1000, maxHoldMs: 3000, now: () => now });
+  for (let t = 0; t <= 2500; t += 500) { now = t; await c("s"); await c.flushDue(now); }
+  expect(runs).toEqual([]);              // still held, quiet never reached
+  now = 3000; await c.flushDue(now);     // max-hold since FIRST message
+  expect(runs).toEqual(["s"]);
+  expect(c.isHolding("s")).toBe(false);
+});
+
+test("sessions are held independently — one flushing does not fire another", async () => {
+  const runs: string[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 1000, maxHoldMs: 30000, now: () => now });
+  await c("a");
+  now = 800; await c("b");
+  now = 1000; await c.flushDue(now);     // a is quiet 1000, b only 200
+  expect(runs).toEqual(["a"]);
+  expect(c.isHolding("b")).toBe(true);
+  now = 1800; await c.flushDue(now);
+  expect(runs).toEqual(["a", "b"]);
+});
+
+test("quietMs=0 disables coalescing — dispatch is immediate (escape hatch)", async () => {
+  const runs: string[] = [];
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 0 });
+  await c("s");
+  expect(runs).toEqual(["s"]);
+  expect(c.isHolding("s")).toBe(false);
+});
+
+test("a burst keeps the STRONGEST model — a cheap first line cannot pin haiku", async () => {
+  const got: (string | undefined)[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (_s, m) => { got.push(m); }, { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("s", "haiku");                 // triaged spawn-low
+  await c("s", undefined);               // then a spawn-high line
+  now = 200; await c.flushDue(now);
+  expect(got).toEqual([undefined]);      // NOT "haiku"
+});
+
+// The test above hands makeBurstCoalescer a STUB dispatch fn, so it exercises
+// the coalescer's model arithmetic and nothing downstream of it. That is how the
+// real drop shipped: makeDispatcher declared `(session)` only and called
+// `runFn(session)`, and the `as Dispatcher` cast hid the arity mismatch from the
+// compiler — the strongest model was computed correctly and then discarded one
+// call later. This wires the REAL chain, coalescer -> makeDispatcher -> runFn.
+//
+// The expectation must be a NON-undefined model. Asserting the escalation case
+// (haiku then undefined -> undefined) would pass against the broken dispatcher
+// too, since a dropped argument also arrives as undefined.
+test("burst coalescing forwards the model through the REAL dispatcher, not just to a stub", async () => {
+  const got: (string | undefined)[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(makeDispatcher(async (_s, m) => { got.push(m); }, 4), { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("s", "haiku");
+  await c("s", "haiku");                 // whole burst is spawn-low -> stays haiku
+  now = 200; await c.flushDue(now);
+  for (let i = 0; i < 5; i++) await Promise.resolve();   // dispatch fires without awaiting the run
+  expect(got).toEqual(["haiku"]);        // undefined here = the override was dropped in transit
+});
+
+// Forwarding on the ACCEPTED path is only half of it. A dispatch can also DEFER
+// (session already in flight, or the global concurrency cap full), and the hold
+// used to be dropped either way — handing the retry to deliverAllPending, which
+// calls runFn(s) with no override and never re-triages. So a spawn-low burst
+// that happened to flush while the dispatcher was busy came back as a
+// DEFAULT-model run: a silent cost regression that only appeared under load,
+// which is exactly when the cap causes the deferral.
+test("a DEFERRED dispatch keeps the burst's model — the retry still runs haiku", async () => {
+  const got: (string | undefined)[] = [];
+  const resolvers: Record<string, () => void> = {};
+  let now = 0;
+  const d = makeDispatcher(async (s, m) => { got.push(m); return new Promise<void>((res) => { resolvers[s] = res; }); }, 1);
+  const c = makeBurstCoalescer(d, { quietMs: 100, maxHoldMs: 999999, now: () => now });
+
+  await d("OTHER");                      // fills the cap of 1
+  expect(d.inFlightCount()).toBe(1);
+
+  await c("s", "haiku");
+  now = 200; await c.flushDue(now);      // due, but the cap is full -> deferred
+  expect(got).toEqual([undefined]);      // only OTHER ran; "s" was NOT dispatched
+  expect(c.isHolding("s")).toBe(true);   // re-held, so h.model survives
+
+  resolvers["OTHER"]();                  // free the slot
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+
+  now = 300; await c.flushDue(now);      // retry now that capacity exists
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(got).toEqual([undefined, "haiku"]);   // the deferred run kept its override
+  expect(c.isHolding("s")).toBe(false);        // released on the accepted dispatch
+  resolvers["s"]?.();
+});
+
+// The hold is deleted BEFORE the await, so a message landing DURING the dispatch
+// finds no hold and starts a fresh one. Re-setting the snapshot on a deferral
+// would clobber it — losing that message's model contribution in the dangerous
+// direction (a spawn-high line downgraded back to the snapshot's "haiku") and
+// rewinding lastAt so the burst looks quiet sooner than it is.
+test("a deferred re-hold MERGES with a hold created during the await (no clobber)", async () => {
+  const seen: (string | undefined)[] = [];
+  let now = 0;
+  let landMidAwait: (() => Promise<void>) | null = null;
+  let deferNext = true;
+  const c = makeBurstCoalescer(async (_s, m) => {
+    seen.push(m);
+    if (landMidAwait) { const f = landMidAwait; landMidAwait = null; await f(); }
+    const deferred = deferNext; deferNext = false;
+    return !deferred;                              // first attempt defers, later ones accept
+  }, { quietMs: 100, maxHoldMs: 999999, now: () => now });
+
+  await c("s", "haiku");                           // burst so far: spawn-low
+  now = 200;
+  landMidAwait = async () => { await c("s", undefined); };   // spawn-high lands mid-dispatch
+  await c.flushDue(now);
+  expect(seen).toEqual(["haiku"]);                 // first attempt carried the pre-await snapshot
+  expect(c.isHolding("s")).toBe(true);             // deferred -> re-held
+
+  now = 400; await c.flushDue(now);                // quiet again, and now accepted
+  expect(seen).toEqual(["haiku", undefined]);      // merged: the spawn-high line won
+  expect(c.isHolding("s")).toBe(false);            // released on the accepted dispatch
+});
+
+// flushDue iterates a SNAPSHOT ([...holds.entries()]), not the live Map. That
+// spread used to be incidental — nothing was re-inserted mid-sweep — but the
+// re-hold above made it load-bearing: a JS Map iterator DOES visit keys added
+// during iteration, so re-holding a persistently-deferred session against a live
+// iterator spins forever inside one sweep (verified: a live iterator yields
+// a,b,a,b,... while the spread yields a,b). Raised by the glm critic as a live
+// defect; it is disproved by the existing spread, and this pins it so a future
+// refactor that drops the spread goes red instead of hanging the poller.
+test("flushDue dispatches a persistently-deferred session ONCE per sweep (snapshot, not live Map)", async () => {
+  let attempts = 0;
+  let now = 0;
+  const c = makeBurstCoalescer(async () => { attempts++; return false; },   // always defers
+    { quietMs: 100, maxHoldMs: 999999, now: () => now });
+  await c("a", "haiku");
+  await c("b", "haiku");
+  now = 200; await c.flushDue(now);
+  expect(attempts).toBe(2);              // one attempt per held session, not an unbounded re-visit
+  expect(c.holdingCount()).toBe(2);      // both re-held for the next sweep
+  now = 300; await c.flushDue(now);
+  expect(attempts).toBe(4);              // next sweep retries each exactly once again
+});
+
+// A throwing dispatch deliberately does NOT re-hold: deliverAllPending takes it,
+// as it did before. Re-holding something that throws every tick would spin on
+// the same session forever.
+test("a THROWING dispatch does not re-hold (the safety net owns it, no spin)", async () => {
+  let now = 0;
+  const c = makeBurstCoalescer(async () => { throw new Error("dispatch exploded"); }, { quietMs: 100, maxHoldMs: 999999, now: () => now });
+  await c("s", "haiku");
+  now = 200; await c.flushDue(now);
+  expect(c.isHolding("s")).toBe(false);
+});
+
+test("deliverAllPending SKIPS a held session (else the hold is defeated same-tick)", async () => {
+  const r = root();
+  await ensureSession(r, "held");
+  await ensureSession(r, "free");
+  await writeMeta(r, "held", { chat_id: 1, status: "idle", last_run_pid: null, last_run_at: null, task_name: null, retry_at: null });
+  await writeMeta(r, "free", { chat_id: 2, status: "idle", last_run_pid: null, last_run_at: null, task_name: null, retry_at: null });
+  const runs: string[] = [];
+  await deliverAllPending(r, async (s) => { runs.push(s); }, new Date(), async () => ["held", "free"], (s) => s === "held");
+  expect(runs).toEqual(["free"]);
+  // and with no isHeld supplied it keeps the pre-HIMMEL-1273 behaviour
+  const runs2: string[] = [];
+  await deliverAllPending(r, async (s) => { runs2.push(s); }, new Date(), async () => ["held", "free"]);
+  expect(runs2.sort()).toEqual(["free", "held"]);
+});
+
+test("an AUTO-OP is never buffered — it fires immediately even mid-burst", async () => {
+  const r = root();
+  const runs: string[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { quietMs: 5000, maxHoldMs: 30000, now: () => now });
+  const fired: string[] = [];
+  const auto = { enabledOps: new Set(["arm-resume"]), authorize: () => true, fire: (_m: any, route: any) => { fired.push(route.op); } };
+  // ordinary chat first — starts a hold
+  await handleInbound(r, { from: 7, chat_id: 7, text: "hello", ts: 1, forwarded: false, caption: false } as any, c, auto as any);
+  expect(c.isHolding("__chat__")).toBe(true);
+  // a privileged op lands DURING the window
+  await handleInbound(r, { from: 7, chat_id: 7, text: "/arm HIMMEL-1", ts: 2, forwarded: false, caption: false } as any, c, auto as any);
+  expect(fired).toEqual(["arm-resume"]); // fired NOW, not at flush time
+  expect(runs).toEqual([]);              // and it did not trigger the chat run
+});
+
+test("typing fires while a burst is held, not just while a run is in flight", async () => {
+  const r = root();
+  await ensureSession(r, "s");
+  await writeMeta(r, "s", { chat_id: 42, status: "idle", last_run_pid: null, last_run_at: null, task_name: null, retry_at: null });
+  let now = 0;
+  const c = makeBurstCoalescer(async () => {}, { quietMs: 5000, maxHoldMs: 30000, now: () => now });
+  await c("s");
+  const chats: number[] = [];
+  // the composed predicate main wires: in-flight OR holding
+  const isBusy = (x: string) => false || c.isHolding(x);
+  await signalTyping(r, isBusy, async () => ["s"], async (chat) => { chats.push(chat); });
+  expect(chats).toEqual([42]);           // operator sees "typing…" during the hold
+});
+
+// HIMMEL-1289 (public-PR CR): an EMPTY env var is ABSENCE, not a request for 0.
+// Number("") is 0, not NaN, and 0 is meaningful here (it disables coalescing) —
+// so `TELEGRAM_BATCH_QUIET_MS=` (a commented-out or half-edited .env line) would
+// have silently turned coalescing OFF while looking configured.
+test("an EMPTY TELEGRAM_BATCH_QUIET_MS falls back to the default, it does not mean 0", async () => {
+  const prev = process.env.TELEGRAM_BATCH_QUIET_MS;
+  try {
+    process.env.TELEGRAM_BATCH_QUIET_MS = "";
+    const runs: string[] = [];
+    let now = 0;
+    // No explicit quietMs -> the env path is exercised.
+    const c = makeBurstCoalescer(async (s) => { runs.push(s); }, { now: () => now });
+    await c("s");
+    expect(runs).toEqual([]);              // held, NOT dispatched immediately
+    expect(c.isHolding("s")).toBe(true);   // i.e. the default (4000) applied
+  } finally {
+    if (prev === undefined) delete process.env.TELEGRAM_BATCH_QUIET_MS;
+    else process.env.TELEGRAM_BATCH_QUIET_MS = prev;
+  }
+});
+
+// HIMMEL-1291 (public-PR CR): the timer PERIODS bypassed the hardening above.
+// `Number(process.env.X ?? d)` yields 0 for an empty value and NaN for a typo,
+// and setInterval clamps both to ~1ms — so a half-edited .env line did not fall
+// back to the default, it spun the sweep. positiveEnvMs handles ""/NaN/negative
+// but permits 0, which is fine for a quiet window and never for a period, hence
+// the floor.
+test("intervalEnvMs: an EMPTY value is absence, not a 1ms spin", () => {
+  expect(intervalEnvMs("", 500)).toBe(500);
+  expect(intervalEnvMs("   ", 500)).toBe(500);
+});
+
+test("intervalEnvMs: a typo (NaN) falls back instead of spinning", () => {
+  expect(intervalEnvMs("50O", 500)).toBe(500);      // letter O for zero
+  expect(intervalEnvMs("abc", 500)).toBe(500);
+});
+
+test("intervalEnvMs: a negative period falls back", () => {
+  expect(intervalEnvMs("-1", 500)).toBe(500);
+  expect(intervalEnvMs("-9999", 500)).toBe(500);
+});
+
+// codex-adv round: flooring 0 to 1 (the public-CR patch's `Math.max(1, …)`)
+// keeps the worst case — a 1ms hot loop — and only respells it. Nothing reads
+// 0 as "disable the timer", so a sub-1ms period is a bad value, not intent.
+test("intervalEnvMs: an explicit 0 falls back — it is NOT floored to a 1ms spin", () => {
+  expect(intervalEnvMs("0", 500)).toBe(500);
+  expect(intervalEnvMs("0.4", 500)).toBe(500);   // sub-1ms is the same hazard
+});
+
+// codex-adv round 2, verified on bun 1.3.14: setInterval holds its delay in a
+// signed 32-bit int, so >2147483647 does NOT become a long interval — it warns
+// TimeoutOverflowWarning and is set to 1. A few extra digits in an env value
+// therefore lands on the SAME 1ms hot loop as `=0`, from the opposite end.
+test("intervalEnvMs: a period past setInterval's 32-bit ceiling falls back", () => {
+  expect(intervalEnvMs("2147483648", 500)).toBe(500);      // ceiling + 1
+  expect(intervalEnvMs("999999999999", 500)).toBe(500);    // fat-fingered digits
+  expect(intervalEnvMs("2147483647", 500)).toBe(2147483647); // the ceiling itself is fine
+});
+
+// CodeRabbit round. setInterval truncates a fractional delay (verified on bun
+// 1.3.14: 1.5 -> 1, 500.7 -> 500), so this is not a new hot-loop class — 1 is
+// permitted outright anyway. It is a contract fix: without it "0.4" fell back
+// while "1.5" was quietly accepted and rounded.
+test("intervalEnvMs: a fractional period falls back rather than being truncated", () => {
+  expect(intervalEnvMs("1.5", 500)).toBe(500);
+  expect(intervalEnvMs("500.7", 500)).toBe(500);
+});
+
+test("intervalEnvMs: absent uses the default, and a valid value passes through", () => {
+  expect(intervalEnvMs(undefined, 500)).toBe(500);
+  expect(intervalEnvMs("250", 500)).toBe(250);
+  expect(intervalEnvMs("1", 500)).toBe(1);
+});
+
+// Public-CR round: the burst WINDOWS were the one env class here with no
+// ceiling. A fat-fingered TELEGRAM_BATCH_MAX_HOLD_MS parks a burst for days —
+// the starvation the max-hold cap exists to prevent, arriving through the cap's
+// own setting.
+test("windowEnvMs: a window past the ceiling falls back instead of parking a burst for days", () => {
+  expect(windowEnvMs("300000000", 30000)).toBe(30000);   // the finding's example: ~3.5 days
+  expect(windowEnvMs("600001", 30000)).toBe(30000);      // ceiling + 1
+  expect(windowEnvMs("600000", 30000)).toBe(600000);     // the ceiling itself is honoured
+});
+
+// The floor differs from intervalEnvMs ON PURPOSE: 0 is a documented setting
+// here (quietMs=0 disables coalescing), not a typo. A test that only checked
+// "rejects out-of-range" would pass against a copy of intervalEnvMs, which
+// would silently remove that escape hatch.
+test("windowEnvMs: 0 is legal — it is the documented disable-coalescing hatch, not a typo", () => {
+  expect(windowEnvMs("0", 4000)).toBe(0);
+});
+
+test("windowEnvMs: malformed shapes fall back, matching the sibling helpers", () => {
+  expect(windowEnvMs("", 4000)).toBe(4000);        // set-but-empty is absence
+  expect(windowEnvMs("   ", 4000)).toBe(4000);
+  expect(windowEnvMs("4OOO", 4000)).toBe(4000);    // letter O for zero
+  expect(windowEnvMs("-1", 4000)).toBe(4000);
+  expect(windowEnvMs("1e6", 4000)).toBe(4000);     // over the ceiling via exponent
+  expect(windowEnvMs("4000.5", 4000)).toBe(4000);  // fractional ms is malformed
+  expect(windowEnvMs(undefined, 4000)).toBe(4000);
+});
+
+test("windowEnvMs: an in-range value passes through", () => {
+  expect(windowEnvMs("8000", 4000)).toBe(8000);
+  expect(windowEnvMs("30000", 4000)).toBe(30000);
+});
+
+// The guardrail must not pass by rejecting everything: the coalescer has to
+// actually READ the env value, and an out-of-range one has to leave the default
+// behaviour intact rather than disabling coalescing or holding forever.
+test("makeBurstCoalescer: a fat-fingered quiet-window env falls back to the 4s default", async () => {
+  const prev = process.env.TELEGRAM_BATCH_QUIET_MS;
+  process.env.TELEGRAM_BATCH_QUIET_MS = "300000000";   // ~3.5 days
+  try {
+    const dispatched: string[] = [];
+    const now = 0;
+    // No quietMs in opts, so the env value is what this reads.
+    // maxHoldMs pinned explicitly so an ambient TELEGRAM_BATCH_MAX_HOLD_MS
+    // cannot decide this test's outcome (CodeRabbit round) — the assertion is
+    // about the QUIET window falling back, and a max-hold inherited from the
+    // environment could fire the flush for an unrelated reason.
+    const c = makeBurstCoalescer(async (s) => { dispatched.push(s); }, { now: () => now, maxHoldMs: 600_000 });
+    await c("s1");
+    expect(dispatched).toEqual([]);         // still held — coalescing is ON, not disabled
+    await c.flushDue(3999);                 // inside the 4s DEFAULT window
+    expect(dispatched).toEqual([]);
+    await c.flushDue(4000);                 // the default fired...
+    expect(dispatched).toEqual(["s1"]);     // ...so the 3.5-day value never took effect
+  } finally {
+    if (prev === undefined) delete process.env.TELEGRAM_BATCH_QUIET_MS;
+    else process.env.TELEGRAM_BATCH_QUIET_MS = prev;
+  }
+});
+
+test("one session's dispatch failure does not abort the flush of others", async () => {
+  const runs: string[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (s) => {
+    if (s === "boom") throw new Error("dispatch exploded");
+    runs.push(s);
+  }, { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("boom");
+  await c("fine");
+  now = 200;
+  await c.flushDue(now);                   // must not reject
+  expect(runs).toEqual(["fine"]);          // the healthy session still went
+  expect(c.isHolding("boom")).toBe(false); // and the failed hold was released
 });

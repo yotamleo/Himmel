@@ -576,6 +576,211 @@ rm -f "$tmp/panelcopy/critics.local.json"
 stderr_l3="$(printf '%s' "$DIFF" | CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
 check "O3: no overlay -> repo registry" "$(printf '%s\n' "$stderr_l3" | grep -cF 'panel-availability: repodefault')" "1"
 
+# --- HIMMEL-1280: liveness beacon + total-panel deadline --------------------
+#
+# The wedge this guards against produced 0 bytes and ~0.1 CPU-seconds with NO
+# child process: the shell never reached its first echo. A 0-byte output is
+# otherwise ambiguous between "still thinking" and "never started", and a live
+# session waited 3h13m on the wrong reading.
+
+beacon_out="$(printf '%s' "$DIFF" | CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W1: beacon is emitted" "$beacon_out" "critic-panel.sh: START pid="
+# It must be the FIRST line: anything printed before it is work that could
+# block, which would re-open the ambiguity the beacon exists to remove.
+check "W1: beacon is the FIRST stderr line" "$(printf '%s
+' "$beacon_out" | head -1 | grep -c 'critic-panel.sh: START pid=')" "1"
+
+# The beacon must survive a registry that cannot be read at all — that failure
+# happens AFTER the beacon, so absence still means "never started".
+bad_reg_out="$(printf '%s' "$DIFF" | CRITICS_JSON=/nonexistent/nope.json CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W2: beacon precedes even a registry failure" "$bad_reg_out" "critic-panel.sh: START pid="
+
+# Total-panel deadline: 1s budget, and the stub burns >1s on the first member,
+# so the SECOND member must be skipped and reported unavailable rather than run.
+SLOW_STUB="$tmp/slow-cfp.sh"
+cat > "$SLOW_STUB" <<'SLOW'
+#!/usr/bin/env bash
+sleep 2
+echo "## Critical Issues (0 found)"
+echo "## Important Issues (0 found)"
+echo "## Suggestions (0 found)"
+SLOW
+chmod +x "$SLOW_STUB"
+# TWO rows: the deadline is checked BETWEEN members, so a single-member
+# registry never reaches the check at all. The first member burns past the 1s
+# budget; the second must be skipped.
+printf '%s' '{"panel":[{"slug":"dl1","model":"fake/one","provider":"test","tier":"free"},{"slug":"dl2","model":"fake/two","provider":"test","tier":"free"}]}' > "$tmp/dl-critics.json"
+dl_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=1 CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W3: total deadline announces itself" "$dl_out" "TOTAL panel deadline"
+check_contains "W3: skipped member is reported unavailable, not silently dropped" "$dl_out" "reason=panel-deadline"
+check_contains "W3: it is the SECOND member that was skipped" "$dl_out" "panel-availability: dl2 unavailable (panel-deadline)"
+
+# 0 disables the cap. Uses the SAME slow stub and two-row registry as W3 — the
+# identical setup that DID trip the deadline there, so the only difference is
+# the cap being off. With the fast stub this would pass vacuously (nothing to
+# exceed) and prove nothing about the disable path.
+off_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=0 CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check "W4: 0 disables the cap (no deadline line) under the SAME load that tripped W3" "$(printf '%s
+' "$off_out" | grep -c 'TOTAL panel deadline')" "0"
+# And prove it by outcome, not just by the absent warning: BOTH members ran.
+check_contains "W4: first member still ran" "$off_out" "panel-availability: dl1"
+check_contains "W4: second member ran too (not skipped)" "$off_out" "panel-availability: dl2"
+check "W4: no member was reported panel-deadline" "$(printf '%s
+' "$off_out" | grep -c 'reason=panel-deadline')" "0"
+
+# An invalid value must fall back to the default, never disable the cap silently.
+inv_out="$(printf '%s' "$DIFF" | CRITIC_PANEL_TOTAL_TIMEOUT_SECS=abc CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W5: invalid total timeout warns and uses the default" "$inv_out" "CRITIC_PANEL_TOTAL_TIMEOUT_SECS=abc invalid, using 900"
+
+# W5b (public-PR CR): a LEADING ZERO passes the `^[0-9][0-9]*$` regex, and
+# `[ "0900" -gt 0 ]` passes too (test's integer comparison is decimal) — so both
+# guards in _panel_remaining are satisfied and the failure lands one line later
+# in `$(( ))`, which reads a leading zero as OCTAL. Measured before the fix:
+#   0900: value too great for base (error token is "0900")
+# and _panel_remaining then returns rc 1 with empty output — its documented
+# "no usable budget" path. So a fat-fingered 0900 SILENTLY DISABLED the cap and
+# leaked a shell error on every call, while looking configured.
+#
+# The VALUE matters: only a leading zero containing an 8 or a 9 is invalid
+# octal. `$(( 01 ))` is 1 and `$(( 07 ))` is 7 — both fine — while `$(( 08 ))`,
+# `$(( 09 ))` and `$(( 0900 ))` all die. A first draft of this test used `01`
+# and passed with the fix REMOVED, i.e. it asserted nothing; `08` is the
+# shortest value that actually reproduces.
+#
+# Asserted on the OBSERVABLE consequence, not the internal value: the panel
+# start is backdated so an 8-second budget is already spent, so with the cap
+# genuinely active the panel must report a panel-deadline drop. If the octal bug
+# came back, _panel_remaining would return "no usable budget" and no member
+# would carry that reason.
+_lz_backdated=$(( $(date +%s) - 5000 ))
+lz_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=08 CRITIC_PANEL_STARTED_AT="$_lz_backdated" CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W5b: a leading-zero total timeout is honoured, not silently disabled" "$lz_out" "reason=panel-deadline"
+if printf '%s' "$lz_out" | grep -q 'value too great for base'; then
+    fails=$((fails+1)); echo "  FAIL: W5b: no octal arithmetic error leaked to stderr"
+else
+    echo "  ok: W5b: no octal arithmetic error leaked to stderr"
+fi
+
+# W6 (CR codex-1): the PARALLEL path must honour the deadline on the LAUNCH
+# side too. The clamp alone only shortens a member — it does not stop it
+# starting — so without this check CRITIC_PARALLEL=1 could still launch every
+# member after the budget was spent. A 0-second budget is already spent before
+# the first launch, which is the deterministic way to exercise it.
+# Backdate the panel start so the budget is ALREADY spent at loop entry.
+# Without the seam this is untestable: launches are near-instant so no real
+# budget expires during the loop, and 0 means "disabled", not "already spent".
+_backdated=$(( $(date +%s) - 5000 ))
+par_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PARALLEL=1 CRITIC_PANEL_TOTAL_TIMEOUT_SECS=1     CRITIC_PANEL_STARTED_AT="$_backdated"     CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W6: parallel path announces the deadline" "$par_out" "TOTAL panel deadline"
+check_contains "W6: parallel path reports the un-launched member unavailable" "$par_out" "reason=panel-deadline"
+# Both members must be reported — an already-spent budget means NOTHING launches.
+check "W6: both members reported, none launched" "$(printf '%s
+' "$par_out" | grep -c 'reason=panel-deadline')" "2"
+# Same seam, sequential path: proves the two paths agree rather than one
+# silently drifting.
+seq_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=1     CRITIC_PANEL_STARTED_AT="$_backdated"     CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check "W6: sequential path agrees (both reported, none run)" "$(printf '%s
+' "$seq_out" | grep -c 'reason=panel-deadline')" "2"
+
+# --- HIMMEL-1291 (public-PR CR): the clamp RESERVES the `timeout -k` grace ----
+#
+# The runners spend nominal + CRITIC_KILL_GRACE_SECS on a member that ignores
+# SIGTERM. Clamping to the BARE remainder therefore still let the panel finish
+# up to ONE grace past the total deadline (one, not grace * n_members:
+# _panel_remaining recomputes from wall clock, so an earlier member's overrun
+# is absorbed into the next member's remaining). The clamp must hand out
+# (remaining - grace) so nominal + grace fits inside.
+#
+# Observed through a fake `timeout` first on PATH: it is the only place the
+# EFFECTIVE per-member value is visible from outside (the member itself never
+# sees it). It logs the -k grace, the nominal seconds, and the budget REMAINING
+# at the moment of launch, then execs the real command so the run proceeds
+# normally.
+#
+# Logging `left` is what makes W7b setup-time independent (CR round: a fixed
+# [45,55] band around the expected 55 only discriminated while setup stayed
+# under 5s — slower setup would have slid the UNFIXED 60 into the band and
+# false-passed the very regression this guards). The fake recomputes `left`
+# from the SAME two env vars the panel used, so the assertion is on the
+# RESERVED DELTA (left - secs) rather than on an absolute value that drifts
+# with however long setup took.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/timeout" <<'FAKETO'
+#!/usr/bin/env bash
+# invoked as: timeout -k <grace> <secs> <cmd...>
+_left=NA
+if [ -n "${CRITIC_PANEL_STARTED_AT:-}" ] && [ "${CRITIC_PANEL_TOTAL_TIMEOUT_SECS:-0}" -gt 0 ] 2>/dev/null; then
+    _left=$(( CRITIC_PANEL_TOTAL_TIMEOUT_SECS - ( $(date +%s) - CRITIC_PANEL_STARTED_AT ) ))
+fi
+printf 'k=%s secs=%s left=%s\n' "$2" "$3" "$_left" >> "$TO_LOG"
+shift 3
+exec "$@"
+FAKETO
+chmod +x "$tmp/bin/timeout"
+
+# Pull one named field off the FIRST logged launch (fields are `name=value`,
+# so a positional sed breaks the moment a field is added — as `left=` just was).
+_to_field() {
+    awk -v k="$2" 'NR==1{for(i=1;i<=NF;i++) if(index($i, k "=")==1){sub("^" k "=","",$i); print $i; exit}}' "$1"
+}
+
+# W7a — budget far from spent: the clamp is a no-op and the member gets its
+# full nominal timeout. Pins the grace the runners actually pass, which is the
+# value the clamp subtracts; a literal drifting from the constant fails here.
+_to_noclamp="$tmp/to-noclamp.log"
+: > "$_to_noclamp"
+PATH="$tmp/bin:$PATH" TO_LOG="$_to_noclamp" bash -c 'printf "%s" "$1" | CRITICS_JSON="$2" CRITIC_TIMEOUT_SECS=240 CRITIC_PANEL_TOTAL_TIMEOUT_SECS=900 CRITIC_FIRST_PASS="$3" bash "$4" >/dev/null 2>&1' _ "$DIFF" "$tmp/dl-critics.json" "$CAPTURE_STUB" "$tmp/panelcopy/critic-panel.sh"
+check "W7a: runner passes the named grace, not a drifting literal" "$(_to_field "$_to_noclamp" k)" "5"
+check "W7a: an unspent budget leaves the nominal timeout untouched" "$(_to_field "$_to_noclamp" secs)" "240"
+
+# W7b — the discriminator. ~60s left of a 900s budget, so the clamp binds
+# (60 < the 240s nominal). Assert the RESERVED DELTA, not an absolute:
+# post-fix the member gets left-grace, so left-secs == 5; pre-fix it got the
+# bare remainder, so left-secs == 0. Setup time cancels out of the difference
+# entirely, which is the point — the only slack needed is ±1 for the second
+# boundary the panel and the fake can land either side of. That leaves 5 vs 0
+# with a 3-wide gap, and no way for slow setup to blur them.
+_to_clamped="$tmp/to-clamped.log"
+: > "$_to_clamped"
+_bd60=$(( $(date +%s) - 840 ))
+PATH="$tmp/bin:$PATH" TO_LOG="$_to_clamped" bash -c 'printf "%s" "$1" | CRITICS_JSON="$2" CRITIC_TIMEOUT_SECS=240 CRITIC_PANEL_TOTAL_TIMEOUT_SECS=900 CRITIC_PANEL_STARTED_AT="$5" CRITIC_FIRST_PASS="$3" bash "$4" >/dev/null 2>&1' _ "$DIFF" "$tmp/dl-critics.json" "$CAPTURE_STUB" "$tmp/panelcopy/critic-panel.sh" "$_bd60"
+_secs="$(_to_field "$_to_clamped" secs)"
+_left="$(_to_field "$_to_clamped" left)"
+_reserved=""
+case "$_secs$_left" in
+    ''|*[!0-9]*) ;;                       # a missing/non-numeric field leaves it unset -> FAIL below
+    *) _reserved=$(( _left - _secs )) ;;
+esac
+# The clamp must have bound at all — if it did not, `left` was not ~60 and the
+# scenario never exercised the reservation (a silent vacuous pass otherwise).
+check "W7b: the clamp actually bound (nominal 240 was reduced)" \
+    "$( [ -n "$_secs" ] && [ "$_secs" -lt 240 ] 2>/dev/null && echo bound || echo "unbound(secs=$_secs)" )" "bound"
+if [ -n "$_reserved" ] && [ "$_reserved" -ge 4 ] && [ "$_reserved" -le 6 ]; then
+    check "W7b: clamp reserves the grace (left=${_left} secs=${_secs}, reserved ${_reserved}s)" "reserved" "reserved"
+else
+    check "W7b: clamp reserves the grace (0 = the unfixed value; left=${_left} secs=${_secs})" \
+        "reserved=${_reserved:-<unparsed>}" "4..6"
+fi
+
+# W7c — the floor holds. `timeout 0` means NO timeout in GNU coreutils and a
+# negative value is an error, so subtracting the grace must never push the
+# clamp to 0 or below however little budget is left.
+_to_floor="$tmp/to-floor.log"
+: > "$_to_floor"
+_bd_tight=$(( $(date +%s) - 896 ))
+PATH="$tmp/bin:$PATH" TO_LOG="$_to_floor" bash -c 'printf "%s" "$1" | CRITICS_JSON="$2" CRITIC_TIMEOUT_SECS=240 CRITIC_PANEL_TOTAL_TIMEOUT_SECS=900 CRITIC_PANEL_STARTED_AT="$5" CRITIC_FIRST_PASS="$3" bash "$4" >/dev/null 2>&1' _ "$DIFF" "$tmp/dl-critics.json" "$CAPTURE_STUB" "$tmp/panelcopy/critic-panel.sh" "$_bd_tight"
+# Any launch at all must carry secs>=1. A run where the deadline check fired
+# first logs nothing, which is also correct — hence "no bad line", not "some
+# good line". Combined across all three scenarios so the invariant is total.
+#
+# Compared NUMERICALLY on the extracted field, not by matching the raw line
+# (CR round): the earlier `secs=(0$|-)` regex anchored zero to end-of-line, so
+# the moment `left=` was appended after it the zero half of the guard went
+# INERT while still reading like it covered both. A field-keyed numeric test
+# cannot rot that way when a field is added or reordered.
+check "W7c: the clamp never emits a 0 or negative timeout" \
+    "$(cat "$tmp"/to-*.log 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(index($i,"secs=")==1){v=$i; sub(/^secs=/,"",v); if(v+0 < 1) n++}} END{print n+0}')" "0"
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

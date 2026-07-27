@@ -304,8 +304,8 @@ himmel_sh=$(cat "$CRON_DIR/graphmap-himmel.sh" 2>/dev/null || echo MISSING)
 # strip the escapes before multi-word asserts.
 luna_sh_plain=${luna_sh//\\/}
 himmel_sh_plain=${himmel_sh//\\/}
-assert_contains "luna runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 4" "$luna_sh"
-assert_contains "himmel runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 4" "$himmel_sh"
+assert_contains "luna runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 5" "$luna_sh"
+assert_contains "himmel runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 5" "$himmel_sh"
 assert_contains "luna runner fires refresh-graph-map.sh"   "refresh-graph-map.sh" "$luna_sh_plain"
 assert_contains "luna runner names the luna corpus"        "--name luna"          "$luna_sh"
 assert_contains "luna runner sets the luna slug"           "--slug graphify-luna-map" "$luna_sh"
@@ -691,8 +691,8 @@ assert_contains "himmel Exec points at runner bat" "graphmap-himmel.bat" "$himme
 echo "TEST: .bat runners fire bash refresh-graph-map.sh with the right payload"
 luna_bat=$(cat "$BAT_DIR/graphmap-luna.bat" 2>/dev/null || echo MISSING)
 himmel_bat=$(cat "$BAT_DIR/graphmap-himmel.bat" 2>/dev/null || echo MISSING)
-assert_contains "luna bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 4" "$luna_bat"
-assert_contains "himmel bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 4" "$himmel_bat"
+assert_contains "luna bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 5" "$luna_bat"
+assert_contains "himmel bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 5" "$himmel_bat"
 assert_contains "luna bat cds into himmel root" 'cd /d "' "$luna_bat"
 assert_contains "luna bat fires refresh-graph-map.sh" "refresh-graph-map.sh" "$luna_bat"
 assert_contains "luna bat names the luna corpus"      "--name luna"          "$luna_bat"
@@ -780,14 +780,24 @@ assert_contains "second disarm is a no-op" "no-op" "$out"
 
 # Test 11: cmd_escape — hostile-but-legal vault dirname can't inject ----------
 
-echo "TEST: vault path with CMD metachars is escaped in the .bat"
+echo "TEST: vault path with CMD metachars lands on the REAL dir in the .bat"
 EVIL_VAULT="$TMP_ROOT/va&ult %X%^Y"
 mkdir -p "$EVIL_VAULT"
 out=$(run_gc arm --vault "$EVIL_VAULT")
+# HIMMEL-1281: --corpus-root is interpolated INSIDE double quotes, where & is
+# literal data and ^ is a literal character. Only % -> %% applies; the old
+# caret escaping pointed graphify at a directory that does not exist.
+# Assert the WHOLE `--corpus-root "<path>"` fragment as ONE contiguous string —
+# see the note in test-pipeline-cadence.sh: separate opening/closing checks
+# could match in two different places, and the quoting is exactly what makes
+# the escape correct. Built the way the emitter builds it (cygpath -m for the
+# bash-consumed corpus root, then % -> %%).
+EVIL_VAULT_MIXED=$(cygpath -m "$EVIL_VAULT")
+EVIL_CORPUS_EXPECTED="--corpus-root \"${EVIL_VAULT_MIXED//%/%%}\""
 luna_bat=$(cat "$BAT_DIR/graphmap-luna.bat" 2>/dev/null || echo MISSING)
-assert_contains "percent doubled (%% in bat)" '%%X%%' "$luna_bat"
-assert_contains "ampersand careted (^& in bat)" '^&' "$luna_bat"
-assert_contains "caret doubled (^^ in bat)" '^^' "$luna_bat"
+assert_contains "corpus-root is the real dir, fully quoted (% doubled, & ^ verbatim)" "$EVIL_CORPUS_EXPECTED" "$luna_bat"
+assert_not_contains "no caret-escaped ampersand" '^&' "$luna_bat"
+assert_not_contains "no doubled caret" '^^' "$luna_bat"
 run_gc disarm >/dev/null
 
 # Test 12: half-arm rollback when the SECOND /create fails --------------------

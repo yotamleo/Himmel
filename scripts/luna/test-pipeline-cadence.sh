@@ -401,9 +401,9 @@ echo "TEST: runner .sh is bounded interactive claude (no headless flags)"
 harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
 synth_sh=$(cat "$CRON_DIR/pipeline-synthesize.sh" 2>/dev/null || echo MISSING)
 health_sh=$(cat "$CRON_DIR/pipeline-health.sh" 2>/dev/null || echo MISSING)
-assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 4" "$harvest_sh"
-assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 4" "$synth_sh"
-assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 4" "$health_sh"
+assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 5" "$harvest_sh"
+assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 5" "$synth_sh"
+assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 5" "$health_sh"
 assert_contains "harvest runner cds into vault" "cd $VAULT || exit 1" "$harvest_sh"
 assert_contains "harvest runner runs /harvest-clips" "/harvest-clips" "$harvest_sh"
 assert_contains "harvest runner chains /triage-clips" "/triage-clips" "$harvest_sh"
@@ -1133,9 +1133,9 @@ echo "TEST: .bat runners are bounded interactive claude (no headless flags)"
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
 synth_bat=$(cat "$BAT_DIR/pipeline-synthesize.bat" 2>/dev/null || echo MISSING)
 health_bat=$(cat "$BAT_DIR/pipeline-health.bat" 2>/dev/null || echo MISSING)
-assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 4" "$harvest_bat"
-assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 4" "$synth_bat"
-assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 4" "$health_bat"
+assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 5" "$harvest_bat"
+assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 5" "$synth_bat"
+assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 5" "$health_bat"
 assert_contains "harvest bat cds into vault" 'cd /d "' "$harvest_bat"
 assert_contains "harvest bat runs /harvest-clips" "/harvest-clips" "$harvest_bat"
 assert_contains "harvest bat chains /triage-clips" "/triage-clips" "$harvest_bat"
@@ -1351,20 +1351,31 @@ assert_contains "second disarm is a no-op" "no-op" "$out"
 
 # Test 11: cmd_escape — hostile-but-legal vault dirname can't inject ----------
 
-echo "TEST: vault path with CMD metachars is escaped in the .bat"
+echo "TEST: vault path with CMD metachars lands on the REAL dir in the .bat"
 EVIL_VAULT="$TMP_ROOT/va&ult %X%^Y"
 mkdir -p "$EVIL_VAULT"
 out=$(run_pc arm --vault "$EVIL_VAULT")
+# HIMMEL-1281: every value is interpolated INSIDE double quotes, where cmd.exe
+# treats & < > | as literal data and ^ as a literal character. So the only
+# transform is % -> %% ; the & and ^ must arrive VERBATIM. The old caret
+# escaping produced "va^&ult %%X%%^^Y" — a directory that does not exist.
+# Assert the WHOLE `cd /d "<path>"` fragment as ONE contiguous string, not the
+# path plus a stray quote: the escape is only correct BECAUSE the value sits
+# inside double quotes, and checking the opening and closing boundaries as
+# separate substrings would let them match in two different places. Building
+# the expectation the same way the emitter does (cygpath -w, then % -> %%)
+# keeps this pinned to the real resolved path rather than a basename fragment.
+EVIL_VAULT_WIN=$(cygpath -w "$EVIL_VAULT")
+EVIL_CD_EXPECTED="cd /d \"${EVIL_VAULT_WIN//%/%%}\""
 synth_bat=$(cat "$BAT_DIR/pipeline-synthesize.bat" 2>/dev/null || echo MISSING)
-assert_contains "percent doubled (%% in bat)" '%%X%%' "$synth_bat"
-assert_contains "ampersand careted (^& in bat)" '^&' "$synth_bat"
-assert_contains "caret doubled (^^ in bat)" '^^' "$synth_bat"
-assert_not_contains "raw &ult survives unescaped" 'va&ult' "$synth_bat"
-# Harvest .bat goes through the same cmd_escape path — assert it too.
+assert_contains "cd targets the real dir, fully quoted (% doubled, & ^ verbatim)" "$EVIL_CD_EXPECTED" "$synth_bat"
+assert_not_contains "no caret-escaped ampersand" '^&' "$synth_bat"
+assert_not_contains "no doubled caret" '^^' "$synth_bat"
+# Harvest .bat goes through the same cadence_cmd_escape path — assert it too.
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
-assert_contains "harvest: percent doubled (%% in bat)" '%%X%%' "$harvest_bat"
-assert_contains "harvest: ampersand careted (^& in bat)" '^&' "$harvest_bat"
-assert_not_contains "harvest: raw &ult survives unescaped" 'va&ult' "$harvest_bat"
+assert_contains "harvest: cd targets the real dir, fully quoted" "$EVIL_CD_EXPECTED" "$harvest_bat"
+assert_not_contains "harvest: no caret-escaped ampersand" '^&' "$harvest_bat"
+assert_not_contains "harvest: no doubled caret" '^^' "$harvest_bat"
 run_pc disarm >/dev/null
 
 # Test 12: half-arm rollback when the SECOND /create fails --------------------
@@ -1525,5 +1536,220 @@ assert_contains "silent rc=1 prints QUERY ERR" "QUERY ERR" "$out"
 # path legitimately prints "refusing to treat as 'not armed'".
 assert_not_contains "silent rc=1 never reads not armed" "not armed  HIMMEL-Pipeline-" "$out"
 rm -f "$STATE/notfound-silent"
+
+# ---------------------------------------------------------------------------
+# A --vault with a TRAILING SEPARATOR (public-PR CR). Shell tab-completion
+# supplies "…/vault/" routinely, and `cygpath -w` PRESERVES it, so the emitted
+# `cd /d "%s"` would carry a backslash immediately before the closing quote.
+# Normalized at the source now; this pins that the .bat never contains the
+# `\"` sequence, and — the half that matters — that the cd still targets the
+# REAL directory rather than a truncated one.
+echo "TEST: a --vault with a trailing separator emits a clean cd target"
+TRAIL_VAULT="$TMP_ROOT/trailing vault"
+mkdir -p "$TRAIL_VAULT"
+rc=0; out=$(run_pc arm --vault "$TRAIL_VAULT/" 2>&1) || rc=$?
+assert_rc "trailing-separator vault arms rc 0" 0 "$rc"
+trail_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
+TRAIL_WIN=$(cygpath -w "$TRAIL_VAULT")
+assert_contains "cd targets the real dir with no trailing separator" \
+    "cd /d \"${TRAIL_WIN//%/%%}\"" "$trail_bat"
+assert_not_contains "no backslash-quote sequence in the emitted .bat" '\"' "$trail_bat"
+run_pc disarm >/dev/null
+
+# A DRIVE ROOT must KEEP its separator: `cd /d "C:\"` is the root of C:, while
+# `cd /d "C:"` is the current directory on C: — a different place. Asserted on
+# the normalizer directly, since arming against a drive root is not something
+# this suite can stage.
+norm_root() {
+    local w="$1"
+    while :; do
+        case "$w" in
+            [A-Za-z]:\\) break ;;
+            *\\)         w="${w%\\}" ;;
+            *)           break ;;
+        esac
+    done
+    printf '%s' "$w"
+}
+
+# norm_root above is a COPY of the production loop, so on its own it would
+# validate the copy and say nothing about the real code (panel round, [glm-1]):
+# a change to either emitter's loop would leave the drive-root assertion green.
+# The two assertions above that ARM a real vault do exercise the production path
+# (verified by deletion), but the drive-root case cannot be staged through
+# `arm` — you cannot arm against C:\.
+#
+# So pin the copy to the sources instead: extract the loop from BOTH emitters
+# and require them to be identical to each other. If production changes, the
+# divergence surfaces here rather than silently making the assertion hollow.
+# The two emitters name their variable differently ($vault_win vs $himmel_win),
+# which is legitimate — so the identifier is normalized to a placeholder before
+# comparing. What is being pinned is the loop's SHAPE (the drive-root guard and
+# the suffix strip), not its spelling.
+extract_norm_loop() {
+    # shellcheck disable=SC2016  # the $ and {} are literal source text to rewrite
+    sed -n '/^    while :; do$/,/^    done$/p' "$1" \
+        | sed -E 's/\$\{?(vault_win|himmel_win)/${VAR/g; s/(vault_win|himmel_win)=/VAR=/g' \
+        | sed 's/[[:space:]]*$//'
+}
+norm_pipeline=$(extract_norm_loop "$SCRIPT")
+norm_graphmap=$(extract_norm_loop "$SCRIPT_DIR/graphmap-cadence.sh")
+if [ -n "$norm_pipeline" ] && [ -n "$norm_graphmap" ]; then
+    pass "both emitters' normalizer loops were located"
+else
+    fail "both emitters' normalizer loops were located" "one of the two extractions came back empty"
+fi
+if [ "$norm_pipeline" = "$norm_graphmap" ]; then
+    pass "the two emitters normalize identically"
+else
+    fail "the two emitters normalize identically" "the loops have diverged"
+fi
+
+# Built from its OCTAL code rather than written inline. A literal backslash
+# before a closing quote reads as an attempted escape (SC1003) in every quoting
+# style, and this test is entirely ABOUT trailing backslashes — so the character
+# is produced rather than spelled.
+BS=$(printf '\134')
+if [ "$(norm_root "C:$BS")" = "C:$BS" ] \
+   && [ "$(norm_root "C:${BS}a b$BS")" = "C:${BS}a b" ] \
+   && [ "$(norm_root "C:${BS}x$BS$BS")" = "C:${BS}x" ]; then
+    pass "trailing-separator normalization keeps a drive root, strips the rest"
+else
+    fail "trailing-separator normalization keeps a drive root, strips the rest" \
+        "drive root -> $(norm_root "C:$BS") ; spaced dir -> $(norm_root "C:${BS}a b$BS")"
+fi
+
+# ---------------------------------------------------------------------------
+# emit_bat's escaping CONVENTION (public-PR CR)
+#
+# This emitter used to escape six of its ten parameters internally while the
+# other four arrived pre-escaped from cmd_arm. Both sibling emitters
+# (codex-sweep-cadence.sh, graphmap-cadence.sh) have the caller escape
+# everything, and the split is exactly how a value slips through unescaped —
+# this PR's history has the model, then bash_win, then claude_win each found as
+# "the last raw %s" in a separate round, because a raw parameter sitting among
+# escaped ones looks handled.
+#
+# A behavioural test cannot see this: the .bat is byte-identical either way, so
+# every existing assertion above stays green if a future edit reintroduces the
+# split. These are structural, and they are the only thing that would fail.
+echo "TEST: emit_bat receives everything pre-escaped (no escaping inside the emitter)"
+# End anchor is `^\}$` — a line that is EXACTLY a closing brace — NOT `^\}`
+# (panel round, [glm-2]). The looser form also matches a redirect block's
+# `} >&2` / `} > "$f"`, which this codebase uses; if emit_bat ever gained one at
+# column 0 the range would stop THERE, and the "no escaping inside" check below
+# would scan a partial body and pass while missing a real cadence_cmd_escape
+# call after the truncation point. A check that cannot fail is the thing this
+# whole PR is about. Over-running (a brace with trailing whitespace) is the
+# safe direction — it scans more and can only over-report.
+emit_body=$(awk '/^emit_bat\(\) \{/,/^\}$/' "$SCRIPT")
+if [ -n "$emit_body" ]; then
+    pass "emit_bat body was located"
+else
+    fail "emit_bat body was located" "awk range matched nothing — the guards below would assert nothing"
+fi
+# Full-line COMMENTS are stripped before the search (CodeRabbit round). The body
+# carries explanatory comments, and one of them naming cadence_cmd_escape — e.g.
+# "these arrive pre-escaped by cadence_cmd_escape in cmd_arm", the most natural
+# sentence to write here — would fail this guard on prose. That direction is
+# fail-closed and so not dangerous by itself; the danger is the pressure it puts
+# on the next person to weaken or delete the guard to make a spurious red go
+# away. A trailing comment on a real code line is still caught: the filter drops
+# only lines that BEGIN with #, so `x=$(cadence_cmd_escape "$y")  # note` stays.
+if printf '%s' "$emit_body" | grep -Ev '^[[:space:]]*#' | grep -q 'cadence_cmd_escape'; then
+    fail "emit_bat does not escape internally" "found a cadence_cmd_escape call inside emit_bat"
+else
+    pass "emit_bat does not escape internally"
+fi
+# Every one of the ten positional locals must carry the _esc suffix. That is the
+# checkable form of the convention: if it is not named _esc it does not belong
+# in a printf here, so the NEXT parameter added is reviewable by eye.
+# Scans EVERY `local` line in the body, not just the one carrying "$1"
+# (CodeRabbit round). The old form anchored on that single declaration, so
+# splitting the parameters across two `local` lines — the obvious thing to do
+# when an 11th is added and the line gets long — left everything on the second
+# line UNCHECKED. That is the false-PASS direction, in the one guard whose whole
+# job is to catch a newly added parameter that is not escaped.
+#
+# Matches `name="$1"` and `name="${10}"`; the braced form is how positional
+# parameters past 9 must be written, so omitting it would silently skip the
+# tenth parameter this emitter already has.
+# shellcheck disable=SC2016  # the \$N is a literal to match in the SOURCE text
+emit_params=$(printf '%s\n' "$emit_body" \
+    | grep -E '^[[:space:]]*local[[:space:]]' \
+    | tr -s '[:space:]' '\n' \
+    | grep -E '^[A-Za-z_][A-Za-z0-9_]*="\$\{?[0-9]+\}?"$' || true)
+if [ -n "$emit_params" ]; then
+    pass "emit_bat parameter line was located"
+else
+    fail "emit_bat parameter line was located" "no 'local ...=\"\$N\"' declarations found"
+fi
+unescaped=$(printf '%s\n' "$emit_params" | sed 's/=.*//' | grep -vE '_esc$' || true)
+if [ -z "$unescaped" ]; then
+    pass "all emit_bat parameters are named _esc"
+else
+    fail "all emit_bat parameters are named _esc" "raw-looking parameter(s): $(printf '%s' "$unescaped" | tr '\n' ' ')"
+fi
+
+# The THIRD leg, and the one that actually pins this round's fix (CodeRabbit
+# round). The two checks above constrain the CALLEE: its parameters are named
+# _esc, and it escapes nothing itself. Neither looks at what the CALLER passes.
+# Revert one call-site argument to a raw `"$HARVEST_MODEL"` and both still pass
+# — the parameter is still NAMED model_esc, emit_bat still escapes nothing, and
+# the emitted .bat is byte-identical for any value without a metacharacter. That
+# is exactly the regression this PR fixed, and until now nothing pinned it.
+#
+# Arguments are taken from `emit_bat` up to the first pipe or redirect, so the
+# trailing `| sed 's/^/    /'` and `> "$bat_harvest"` are not mistaken for
+# arguments (the sed script is not even a variable, and the redirect target is
+# legitimately not escaped).
+# FAIL CLOSED on a construct this guard cannot read (CodeRabbit round). The
+# checks below are line-based greps over shell source, which is an approximation
+# — and the approximation has a specific hole: a call continued across lines
+# with a trailing backslash is seen only up to the first line, so every argument
+# after it bypasses the convention check silently. The call sites carry ten
+# arguments each, so wrapping them is exactly what someone would eventually do.
+#
+# The answer is NOT more grep fidelity — that is a losing race against shell
+# syntax, and the preceding rounds of this guard were each one more patch of one
+# more approximation. It is to make the limit EXPLICIT: if a continued call
+# appears, refuse to certify rather than quietly check a prefix of it. A guard
+# that says "I cannot read this" is worth more than one that silently reads half.
+continued_calls=$(grep -nE '^[[:space:]]*emit_bat([[:space:]].*)?\\[[:space:]]*$' "$SCRIPT" || true)
+if [ -z "$continued_calls" ]; then
+    pass "emit_bat call sites are single-line (the shape this guard can read)"
+else
+    fail "emit_bat call sites are single-line (the shape this guard can read)" \
+        "backslash-continued call(s) cannot be checked safely: $(printf '%s' "$continued_calls" | tr '\n' ' ')"
+fi
+
+# Anchored at line start (CodeRabbit round): an unanchored `emit_bat "` also
+# matches PROSE — a comment quoting a call, say — and any "$VAR" inside that
+# prose would then be reported as a raw argument of a call site that does not
+# exist. No such line exists today; anchoring keeps it that way for free.
+call_lines=$(grep -nE '^[[:space:]]*emit_bat[[:space:]]+"' "$SCRIPT" || true)
+if [ -n "$call_lines" ]; then
+    pass "emit_bat call sites were located"
+else
+    fail "emit_bat call sites were located" "no 'emit_bat \"' call lines found in $SCRIPT"
+fi
+# BRACED expansions count too (CodeRabbit round). `"${HARVEST_MODEL}"` is the
+# same raw argument as `"$HARVEST_MODEL"`, but the unbraced-only pattern did not
+# match it — so the guard would have waved through exactly the regression it
+# exists to catch, written with braces. Measured before the fix: a line carrying
+# "${HARVEST_MODEL}" yielded only `a_esc`, i.e. a silent pass.
+# shellcheck disable=SC2016  # the $ { } are literal characters to STRIP, not expansions
+raw_args=$(printf '%s\n' "$call_lines" \
+    | sed 's/[|>].*//' \
+    | grep -oE '"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"' \
+    | tr -d '"${}$' \
+    | grep -vE '_esc$' \
+    | sort -u || true)
+if [ -z "$raw_args" ]; then
+    pass "every emit_bat call-site argument is an _esc variable"
+else
+    fail "every emit_bat call-site argument is an _esc variable" \
+        "raw argument(s) passed: $(printf '%s' "$raw_args" | tr '\n' ' ')"
+fi
 
 summary
