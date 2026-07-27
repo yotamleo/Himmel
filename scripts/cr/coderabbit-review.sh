@@ -25,7 +25,17 @@
 # Usage: coderabbit-review.sh [--branch <b>] [--base <ref>]
 #   default --branch = current branch; default --base = repo default branch.
 #
-# Env: CODERABBIT_TIMEOUT_SECS - wall-clock cap for the review call inside the
+# Env: CODERABBIT_CLI_DISABLE - operator opt-out (HIMMEL-1314). Set to exactly
+#          "1" to skip the CLI leg entirely and exit 3, for setups where the
+#          CodeRabbit APP already reviews every PR in CI and a second, local
+#          pass is duplicated spend against the same rate-limited account.
+#          Checked BEFORE lane resolution so a disabled run never probes
+#          wsl.exe - on Windows that probe is what BOOTS the WSL distro (and
+#          with it dockerd/containerd/ollama), so a late check would still pay
+#          the cost this switch exists to avoid. Only "1" activates; any other
+#          value (including "0") leaves the CLI enabled, matching the
+#          HIMMEL_HEADROOM_PROXY convention.
+#      CODERABBIT_TIMEOUT_SECS - wall-clock cap for the review call inside the
 #          clone; clone/fetch use one quarter (default 900).
 #      CODERABBIT_BIN - test seam: overrides the binary probed/invoked.
 #      CODERABBIT_WSL - test seam: overrides the wsl.exe launcher (also lets a
@@ -84,6 +94,38 @@ fi
 case "$BRANCH$BASE" in
     *[!A-Za-z0-9._/+-]*) echo "coderabbit-review: branch/base contains unsupported characters" >&2; exit 2 ;;
 esac
+
+# Operator opt-out (HIMMEL-1314), checked BEFORE any lane resolution. On a
+# Windows host the lane probe shells out to wsl.exe, which BOOTS the distro
+# (and everything that autostarts in it) purely to answer "is the CLI here?" —
+# so an opt-out placed after that probe would still pay the cost it exists to
+# avoid. Exits 3, the established not-configured/skip contract: the caller
+# prints the note, records NO availability line, and the panel/codex legs
+# still cover the SHA. Exact-"1" only, matching HIMMEL_HEADROOM_PROXY.
+# Bridge the flag from the primary checkout's .env when the process env carries
+# no signal, mirroring how clear-cr-marker.sh bridges CR_REQUIRE_CROSS_MODEL and
+# /pr-check bridges CR_PROFILE — so the opt-out holds when this script is invoked
+# directly or from a worktree (a worktree has no .env of its own). A live env
+# value wins outright. Unlike that gate's flag this one can only make the run do
+# LESS work, never weaken a gate: skipping records no availability row, so the
+# marker still needs a real responder from the panel/codex legs. That is why a
+# .env read failure here is non-fatal — it just leaves the CLI enabled (the
+# pre-1314 behaviour), rather than refusing.
+# Set-NESS test (+x), not emptiness (:-): an explicitly empty live
+# CODERABBIT_CLI_DISABLE= is a deliberate "leave the CLI on" override and must
+# win over .env, which is what "a live env value wins" above promises. With
+# `:-` an empty live value read as unset, fell through to the bridge, and a
+# .env value of 1 would then skip the CLI against the operator's explicit
+# instruction. Matches arm-resume.sh's HIMMEL_HEADROOM_PROXY convention.
+if [ -z "${CODERABBIT_CLI_DISABLE+x}" ] && [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/load-dotenv.sh"
+    load_dotenv CODERABBIT_CLI_DISABLE 2>/dev/null || true
+fi
+if [ "${CODERABBIT_CLI_DISABLE:-}" = "1" ]; then
+    echo "coderabbit pass skipped (CODERABBIT_CLI_DISABLE=1 — the CodeRabbit App reviews in CI)" >&2
+    exit 3
+fi
 
 # Timeout validation (same convention as critic-panel.sh).
 CODERABBIT_TIMEOUT_SECS="${CODERABBIT_TIMEOUT_SECS:-900}"
