@@ -1043,6 +1043,29 @@ export function intervalEnvMs(raw: string | undefined, fallback: number): number
   return Number.isInteger(ms) && ms >= 1 && ms <= MAX_INTERVAL_MS ? ms : fallback;
 }
 
+// Burst WINDOWS (public-CR round: the one env class here that never got a
+// ceiling). positiveEnvMs alone accepts any finite non-negative value, so
+// `TELEGRAM_BATCH_MAX_HOLD_MS=300000000` — a fat-fingered 30000 with four extra
+// digits — parks a burst for three and a half DAYS. That is exactly the
+// starvation the max-hold cap exists to prevent, arriving through the cap's own
+// setting. positiveEnvInt and intervalEnvMs both grew ceilings for this reason;
+// the windows were the gap.
+//
+// Unlike intervalEnvMs, 0 stays LEGAL and is not a typo: quietMs=0 is the
+// documented escape hatch back to dispatch-per-message (see makeBurstCoalescer),
+// and maxHoldMs=0 flushes on the next tick. So this floors at 0, not 1.
+//
+// The ceiling is a fat-finger guardrail, not a tuning limit — 10 minutes is far
+// past any window that leaves a chat bridge feeling responsive (the defaults are
+// 4s and 30s), while still catching the extra-digit class the finding names. A
+// deployment that genuinely wants a longer hold is asking for a different
+// product, not a bigger number.
+const MAX_WINDOW_MS = 600_000;   // 10 minutes
+export function windowEnvMs(raw: string | undefined, fallback: number): number {
+  const ms = positiveEnvMs(raw, fallback);
+  return Number.isInteger(ms) && ms >= 0 && ms <= MAX_WINDOW_MS ? ms : fallback;
+}
+
 // `dispatch` returns `false` when it DEFERRED the run (Dispatcher). A plain RunFn
 // returning Promise<void> is still accepted — `undefined` is not `false`, so it
 // reads as "accepted", which is the right default for a caller that cannot defer.
@@ -1053,8 +1076,8 @@ export function makeBurstCoalescer(
   // Default 4s, NOT the 5 minutes HIMMEL-358 asked for: this is the general
   // assistant chat, where a 5-minute hold would make normal conversation feel
   // dead. A link-triage group that wants minutes raises it per-deployment.
-  const quietMs = opts.quietMs ?? positiveEnvMs(process.env.TELEGRAM_BATCH_QUIET_MS, 4000);
-  const maxHoldMs = opts.maxHoldMs ?? positiveEnvMs(process.env.TELEGRAM_BATCH_MAX_HOLD_MS, 30000);
+  const quietMs = opts.quietMs ?? windowEnvMs(process.env.TELEGRAM_BATCH_QUIET_MS, 4000);
+  const maxHoldMs = opts.maxHoldMs ?? windowEnvMs(process.env.TELEGRAM_BATCH_MAX_HOLD_MS, 30000);
   const nowFn = opts.now ?? (() => Date.now());
   type Hold = { firstAt: number; lastAt: number; model?: TriageModelOverride };
   const holds = new Map<string, Hold>();

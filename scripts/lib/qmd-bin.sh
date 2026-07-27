@@ -601,7 +601,13 @@ _qmd_abs_path() {
   b="$(basename -- "$p")"
   # CDPATH= — see _qmd_canonical_dir. Worse here: this value is a PINNED token
   # baked into a scheduled runner, so a two-line capture ships silently.
-  d="$(CDPATH='' cd -- "$d" 2>/dev/null && pwd)" || return 1
+  # `pwd -P`, matching _qmd_canonical_dir (public-PR CR): the whole point of this
+  # function is to bake a STABLE absolute path into a runner, and a logical `pwd`
+  # keeps whatever symlink the caller came through — e.g. a package-manager-managed
+  # bun install dir. Repoint that symlink later and the pin silently resolves
+  # somewhere else, which is the same class of fragility the CDPATH guard above
+  # exists to prevent.
+  d="$(CDPATH='' cd -- "$d" 2>/dev/null && pwd -P)" || return 1
   [ -n "$d" ] || return 1
   printf '%s/%s\n' "${d%/}" "$b"
 }
@@ -655,6 +661,23 @@ qmd_pinned_invocation() {
     return 0
   fi
   return 127
+}
+
+# Human-readable form of the pinned invocation above, for logs and --dry-run:
+# `$QMD_BIN`, or `$QMD_BIN $QMD_JS` for the bun-served install whose canonical
+# invocation is two tokens. Reads the pair the CALLER pinned from
+# qmd_pinned_invocation — the same contract the two copies this replaces had
+# (public-PR CR: qmd-reindex.sh's qmd_desc and qmd-cadence.sh's
+# qmd_invocation_desc were byte-identical, so a format change had to be kept in
+# sync by hand in two places). `:-` on both reads because this lib is sourced by
+# scripts that never pin at all, and an unset global under `set -u` would abort
+# them at source time rather than here.
+qmd_bin_desc() {
+    if [ -n "${QMD_JS:-}" ]; then
+        printf '%s %s' "${QMD_BIN:-}" "${QMD_JS:-}"
+    else
+        printf '%s' "${QMD_BIN:-}"
+    fi
 }
 
 # Presence check ONLY — does not invoke the binary, so real runtime errors

@@ -558,23 +558,24 @@ cmd_disarm() {
 # cd is visible instead of silently absent. The task fires in a
 # transient console (03:00 Sunday) whose output would otherwise vanish;
 # `status` surfaces the log.
+# EVERY parameter arrives already cadence_cmd_escape'd, and every name says so.
+# This emitter used to split the job: four values came in pre-escaped from
+# cmd_arm while six arrived raw and were escaped here (public-PR CR). Both
+# sibling emitters — codex-sweep-cadence.sh and graphmap-cadence.sh — settle on
+# caller-escapes-everything, so this file was the outlier. The split is also
+# precisely how a value slips through unescaped: this PR's own history has the
+# model (HIMMEL-506), then bash_win, then claude_win (HIMMEL-1281) each being
+# discovered as "the last raw %s" in a separate round, because a raw parameter
+# sitting among escaped ones looks like it was already handled. With the
+# convention "if it is not named _esc it does not belong in a printf here",
+# the next added parameter is checkable by eye instead of by archaeology.
+#
+# The escaping itself did NOT move to a weaker place: cmd_arm already builds
+# vault/prompt/log/settings that way and is the single call path (the dry-run
+# preview and the real write share one set of locals), and validate_arm_inputs
+# still rejects metacharacters at the gate.
 emit_bat() {
-    local vault_win_esc="$1" claude_win="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5" model="$6" flow="$7" task_name="$8" bash_win="$9" flow_lib_m="${10}"
-    # Escape the per-leg model too (HIMMEL-506 CR fix): every other value
-    # interpolated below goes through cadence_cmd_escape, but the model was a
-    # raw "%s" - a value carrying " or % would corrupt the .bat at fire time.
-    # validate_arm_inputs rejects metacharacters at the gate; escape here
-    # too (defense in depth - the gate also guards emit_runner's printf '%q').
-    # claude_win gets the same treatment (HIMMEL-1281 CR round 1) — it was the
-    # last raw "%s" in this emitter, and a `%` in the resolved CLI path would
-    # be expanded by cmd.exe at fire time rather than taken literally.
-    local model_esc flow_esc task_name_esc bash_win_esc flow_lib_m_esc claude_win_esc
-    model_esc=$(cadence_cmd_escape "$model")
-    flow_esc=$(cadence_cmd_escape "$flow")
-    task_name_esc=$(cadence_cmd_escape "$task_name")
-    bash_win_esc=$(cadence_cmd_escape "$bash_win")
-    flow_lib_m_esc=$(cadence_cmd_escape "$flow_lib_m")
-    claude_win_esc=$(cadence_cmd_escape "$claude_win")
+    local vault_win_esc="$1" claude_win_esc="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5" model_esc="$6" flow_esc="$7" task_name_esc="$8" bash_win_esc="$9" flow_lib_m_esc="${10}"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
@@ -916,6 +917,31 @@ cmd_arm() {
     harvest_esc=$(cadence_cmd_escape "$HARVEST_PROMPT")
     synth_esc=$(cadence_cmd_escape "$SYNTH_PROMPT")
     health_esc=$(cadence_cmd_escape "$HEALTH_PROMPT")
+    # The remaining six emit_bat parameters, escaped HERE rather than inside the
+    # emitter (public-PR CR — see emit_bat's header). Escaped once and reused by
+    # both the dry-run preview and the real write below, so the two can never
+    # disagree about what lands in the .bat.
+    local claude_win_esc bash_win_esc flow_lib_m_esc
+    claude_win_esc=$(cadence_cmd_escape "$claude_win")
+    bash_win_esc=$(cadence_cmd_escape "$bash_win")
+    flow_lib_m_esc=$(cadence_cmd_escape "$flow_lib_m")
+    local harvest_model_esc synth_model_esc health_model_esc
+    harvest_model_esc=$(cadence_cmd_escape "$HARVEST_MODEL")
+    synth_model_esc=$(cadence_cmd_escape "$SYNTH_MODEL")
+    health_model_esc=$(cadence_cmd_escape "$HEALTH_MODEL")
+    local task_harvest_esc task_synth_esc task_health_esc
+    task_harvest_esc=$(cadence_cmd_escape "$TASK_HARVEST")
+    task_synth_esc=$(cadence_cmd_escape "$TASK_SYNTH")
+    task_health_esc=$(cadence_cmd_escape "$TASK_HEALTH")
+    # The flow names are in-repo literals, not operator input, so escaping them
+    # changes nothing today. They go through the same call anyway: the value of
+    # this convention is that NOTHING reaches emit_bat unescaped, and an
+    # exception "because this one is a literal" is what makes the next one
+    # arguable.
+    local flow_harvest_esc flow_synth_esc flow_health_esc
+    flow_harvest_esc=$(cadence_cmd_escape "pipeline-harvest")
+    flow_synth_esc=$(cadence_cmd_escape "pipeline-synthesize")
+    flow_health_esc=$(cadence_cmd_escape "pipeline-health")
     local bat_harvest="$BAT_DIR/pipeline-harvest.bat"
     local bat_synth="$BAT_DIR/pipeline-synthesize.bat"
     local bat_health="$BAT_DIR/pipeline-health.bat"
@@ -973,11 +999,11 @@ cmd_arm() {
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$hook_path_m" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_harvest:"
-        emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$HARVEST_MODEL" "pipeline-harvest" "$TASK_HARVEST" "$bash_win" "$flow_lib_m" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_synth:"
-        emit_bat "$vault_esc" "$claude_win" "$synth_esc" "$log_synth_esc" "$settings_esc" "$SYNTH_MODEL" "pipeline-synthesize" "$TASK_SYNTH" "$bash_win" "$flow_lib_m" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc" "$log_synth_esc" "$settings_esc" "$synth_model_esc" "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_health:"
-        emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" "$HEALTH_MODEL" "pipeline-health" "$TASK_HEALTH" "$bash_win" "$flow_lib_m" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc" "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_HARVEST /xml <daily $HARVEST_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_harvest_win" "$HARVEST_TIME" "$sched_harvest" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_SYNTH /xml <daily $SYNTH_TIME, StartWhenAvailable=true> /f"
@@ -990,9 +1016,9 @@ cmd_arm() {
 
     mkdir -p "$BAT_DIR"
     emit_settings_fragment "$hook_path_m" > "$SETTINGS_FRAGMENT"
-    emit_bat "$vault_esc" "$claude_win" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$HARVEST_MODEL" "pipeline-harvest" "$TASK_HARVEST" "$bash_win" "$flow_lib_m" > "$bat_harvest"
-    emit_bat "$vault_esc" "$claude_win" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$SYNTH_MODEL"   "pipeline-synthesize" "$TASK_SYNTH" "$bash_win" "$flow_lib_m" > "$bat_synth"
-    emit_bat "$vault_esc" "$claude_win" "$health_esc" "$log_health_esc" "$settings_esc" "$HEALTH_MODEL"  "pipeline-health" "$TASK_HEALTH" "$bash_win" "$flow_lib_m" > "$bat_health"
+    emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_harvest"
+    emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$synth_model_esc"   "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_synth"
+    emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc"  "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_health"
 
     local err_file
     err_file=$(mktemp -t pipeline-cadence.err.XXXXXX)

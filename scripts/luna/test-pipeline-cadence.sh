@@ -1537,4 +1537,55 @@ assert_contains "silent rc=1 prints QUERY ERR" "QUERY ERR" "$out"
 assert_not_contains "silent rc=1 never reads not armed" "not armed  HIMMEL-Pipeline-" "$out"
 rm -f "$STATE/notfound-silent"
 
+# ---------------------------------------------------------------------------
+# emit_bat's escaping CONVENTION (public-PR CR)
+#
+# This emitter used to escape six of its ten parameters internally while the
+# other four arrived pre-escaped from cmd_arm. Both sibling emitters
+# (codex-sweep-cadence.sh, graphmap-cadence.sh) have the caller escape
+# everything, and the split is exactly how a value slips through unescaped —
+# this PR's history has the model, then bash_win, then claude_win each found as
+# "the last raw %s" in a separate round, because a raw parameter sitting among
+# escaped ones looks handled.
+#
+# A behavioural test cannot see this: the .bat is byte-identical either way, so
+# every existing assertion above stays green if a future edit reintroduces the
+# split. These are structural, and they are the only thing that would fail.
+echo "TEST: emit_bat receives everything pre-escaped (no escaping inside the emitter)"
+# End anchor is `^\}$` — a line that is EXACTLY a closing brace — NOT `^\}`
+# (panel round, [glm-2]). The looser form also matches a redirect block's
+# `} >&2` / `} > "$f"`, which this codebase uses; if emit_bat ever gained one at
+# column 0 the range would stop THERE, and the "no escaping inside" check below
+# would scan a partial body and pass while missing a real cadence_cmd_escape
+# call after the truncation point. A check that cannot fail is the thing this
+# whole PR is about. Over-running (a brace with trailing whitespace) is the
+# safe direction — it scans more and can only over-report.
+emit_body=$(awk '/^emit_bat\(\) \{/,/^\}$/' "$SCRIPT")
+if [ -n "$emit_body" ]; then
+    pass "emit_bat body was located"
+else
+    fail "emit_bat body was located" "awk range matched nothing — the guards below would assert nothing"
+fi
+if printf '%s' "$emit_body" | grep -q 'cadence_cmd_escape'; then
+    fail "emit_bat does not escape internally" "found a cadence_cmd_escape call inside emit_bat"
+else
+    pass "emit_bat does not escape internally"
+fi
+# Every one of the ten positional locals must carry the _esc suffix. That is the
+# checkable form of the convention: if it is not named _esc it does not belong
+# in a printf here, so the NEXT parameter added is reviewable by eye.
+# shellcheck disable=SC2016  # the \$1 is a literal to match in the SOURCE text
+emit_params=$(printf '%s' "$emit_body" | sed -n 's/^ *local \(.*="\$1".*\)$/\1/p')
+if [ -n "$emit_params" ]; then
+    pass "emit_bat parameter line was located"
+else
+    fail "emit_bat parameter line was located" "no 'local ...=\"\$1\"' line found"
+fi
+unescaped=$(printf '%s\n' "$emit_params" | tr ' ' '\n' | grep -oE '^[a-z_]+=' | sed 's/=$//' | grep -vE '_esc$' || true)
+if [ -z "$unescaped" ]; then
+    pass "all emit_bat parameters are named _esc"
+else
+    fail "all emit_bat parameters are named _esc" "raw-looking parameter(s): $(printf '%s' "$unescaped" | tr '\n' ' ')"
+fi
+
 summary

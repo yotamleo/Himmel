@@ -827,6 +827,77 @@ assert "the absolute-operand baseline resolved at all (guards the guard)" \
 assert "CDPATH set -> _qmd_canonical_dir matches the absolute-operand resolution" \
   test "$cdp_can" = "$cdp_can_abs"
 
+# _qmd_abs_path resolves PHYSICALLY (`pwd -P`), like its sibling
+# _qmd_canonical_dir (public-PR CR). The value is a PINNED token baked into a
+# scheduled runner, so keeping the symlink the caller happened to come through —
+# e.g. a package-manager-managed bun install dir — means a later repoint
+# silently resolves the pin somewhere else.
+#
+# Asserted by comparing the symlinked operand against the REAL directory's own
+# resolution: a logical `pwd` returns the link path, which is not equal, so this
+# goes red the moment the -P is dropped. (A "does it contain the filename" check
+# would pass either way and assert nothing.)
+echo "[test-qmd-bin] _qmd_abs_path resolves through a symlink to the physical path"
+sym_root="$tmpdir/symprobe"
+mkdir -p "$sym_root/real/target"
+: > "$sym_root/real/target/file.js"
+# `ln -s` EXIT CODE is not enough to conclude a symlink exists. Without
+# privileges (or CYGWIN/MSYS winsymlinks), MSYS ln quietly falls back to COPYING
+# the directory and still exits 0 — measured on this host. The copy is a second
+# real directory, so the comparison below would compare two unrelated physical
+# paths and fail for a reason that has nothing to do with `pwd -P`. Require the
+# thing itself, not the command's opinion of it.
+#
+# Three outcomes, kept DISTINCT (CodeRabbit round): a real symlink runs the
+# assertions; a non-symlink at the link path is the documented MSYS copy and
+# SKIPs; NOTHING at the link path is a genuine setup failure and FAILS. Folding
+# the last into the SKIP branch is the same defect this file keeps finding —
+# a setup that never happened would read as "this host cannot symlink" forever.
+ln -s "$sym_root/real/target" "$sym_root/link" 2>/dev/null || true
+if [ -L "$sym_root/link" ]; then
+  # shellcheck disable=SC2016
+  sym_via_link="$(cd "$sym_root" && "$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_abs_path "link/file.js"' _ "$SCRIPT_DIR" 2>/dev/null)"
+  # shellcheck disable=SC2016
+  sym_real="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_abs_path "$2"' _ "$SCRIPT_DIR" "$sym_root/real/target/file.js" 2>/dev/null)"
+  assert "the physical-path baseline resolved at all (guards the guard)" \
+    test -n "$sym_real"
+  assert "_qmd_abs_path through a symlink equals the physical resolution" \
+    test "$sym_via_link" = "$sym_real"
+elif [ -e "$sym_root/link" ]; then
+  # Unprivileged Windows cannot create real symlinks; CI (ubuntu shell-unit)
+  # can, so the assertion is not lost — it just does not run here. Announced
+  # rather than silently skipped, so a permanently-skipping test cannot
+  # masquerade as green.
+  echo "  SKIP: this host produced a copy, not a symlink (unprivileged MSYS ln) — covered on the ubuntu shell-unit runner"
+else
+  # Neither a symlink NOR a copy — ln did not produce anything. That is a
+  # broken fixture, not a platform limitation, so it must not wear the SKIP.
+  assert "symlink fixture was created (neither a symlink nor the MSYS copy appeared)" \
+    test -e "$sym_root/link"
+fi
+
+# qmd_bin_desc — the shared human-readable invocation form (public-PR CR).
+# qmd-reindex.sh's qmd_desc() and qmd-cadence.sh's qmd_invocation_desc() were
+# byte-identical copies of this; both are now thin aliases, so this is the one
+# place the format is pinned.
+echo "[test-qmd-bin] qmd_bin_desc renders the pinned invocation"
+# shellcheck disable=SC2016
+desc_one="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; QMD_BIN=/usr/bin/qmd QMD_JS= qmd_bin_desc' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert "qmd_bin_desc: no QMD_JS -> the binary alone" \
+  test "$desc_one" = "/usr/bin/qmd"
+# shellcheck disable=SC2016
+desc_two="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; QMD_BIN=/usr/bin/bun QMD_JS=/opt/qmd/qmd.js qmd_bin_desc' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert "qmd_bin_desc: bun-served -> both tokens, space-separated" \
+  test "$desc_two" = "/usr/bin/bun /opt/qmd/qmd.js"
+# The `:-` reads are load-bearing: this lib is sourced by scripts that never pin
+# at all, and an unset global under `set -u` would abort them rather than print
+# an empty string. Drop the `:-` and this goes red.
+desc_unset_rc=0
+# shellcheck disable=SC2016
+"$(command -v bash)" -c 'set -u; . "$1/qmd-bin.sh"; qmd_bin_desc >/dev/null' _ "$SCRIPT_DIR" 2>/dev/null || desc_unset_rc=$?
+assert "qmd_bin_desc: unset QMD_BIN/QMD_JS under set -u does not abort the caller" \
+  test "$desc_unset_rc" -eq 0
+
 echo "[test-qmd-bin] has_qmd matches binary presence in this env"
 if has_qmd; then
   echo "  has_qmd=true in this env (real qmd present)"

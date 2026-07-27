@@ -674,6 +674,12 @@ graphify_update() {
   fi
   extras="$(_graphify_installed_extras)"
   spec="$(_graphify_pypi_name)${extras}==${pin}"
+  # Every place this spec is PRINTED as a copy-paste repair command single-quotes
+  # it (public-PR CR). With extras recorded it reads `graphifyy[all]==0.9.25`, and
+  # zsh — the macOS default — globs the brackets: pasting the unquoted form dies
+  # with "no matches found" instead of installing. The quotes are for the reader's
+  # shell only; the `uv tool install` this script runs itself passes "$spec" as
+  # one argv word already.
 
   # PRE-FLIGHT (HIMMEL-1274). `uv tool install --force` removes the old
   # distribution's entry points, THEN replaces the tool dir. On Windows a live
@@ -697,7 +703,7 @@ graphify_update() {
         echo "        directory, leaving graphify broken (HIMMEL-1274). Refusing is the safe outcome."
         echo "        To advance the pin: close the Claude Code sessions holding graphify-mcp"
         echo "        (each live session spawns one), then re-run. Or install by hand once clear:"
-        echo "            uv tool install --force --with mcp $spec"
+        echo "            uv tool install --force --with mcp '$spec'"
       } >&2
       # Share the WSL store like EVERY other path that leaves a working
       # uv-managed install in place and returns 0 (already-at-pin,
@@ -724,7 +730,7 @@ graphify_update() {
       {
         echo "  ERROR: uv reported success but 'graphify --version' does not run — the install is BROKEN."
         echo "         Repair once no graphify-mcp process is live:"
-        echo "             uv tool install --force --with mcp $spec"
+        echo "             uv tool install --force --with mcp '$spec'"
       } >&2
       return 1
     fi
@@ -744,7 +750,7 @@ graphify_update() {
       echo "         uv removes the old entry points before replacing the tool dir, so a mid-way failure"
       echo "         leaves no working graphify (HIMMEL-1274)."
       echo "         Repair: close every Claude Code session (each holds a graphify-mcp), then:"
-      echo "             uv tool install --force --with mcp $spec"
+      echo "             uv tool install --force --with mcp '$spec'"
     } >&2
   fi
   return 1

@@ -670,13 +670,11 @@ validate_arm_inputs() {
 }
 
 # Human-readable form of the pinned invocation, for messages and status output.
-qmd_invocation_desc() {
-    if [ -n "$QMD_JS" ]; then
-        printf '%s %s' "$QMD_BIN" "$QMD_JS"
-    else
-        printf '%s' "$QMD_BIN"
-    fi
-}
+# Thin alias for the shared qmd_bin_desc() in scripts/lib/qmd-bin.sh (public-PR
+# CR): this and qmd-reindex.sh's qmd_desc() were byte-identical copies, so the
+# format lived in two places. Kept as a local name so the three call sites read
+# unchanged.
+qmd_invocation_desc() { qmd_bin_desc; }
 
 cmd_arm() {
     validate_arm_inputs

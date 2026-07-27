@@ -353,7 +353,14 @@ assert "held: rc 0 (a skip is not a failure)" grep -q '^RC=0$' <<<"$out"
 assert "held: says SKIP with the holder count" grep -q 'SKIP: 3 graphify-mcp process' <<<"$out"
 assert "held: states graphify KEEPS WORKING" grep -q 'KEEPS WORKING' <<<"$out"
 assert "held: says the pin did NOT advance" grep -q 'has NOT advanced' <<<"$out"
-assert "held: gives the manual repair command" grep -q 'uv tool install --force --with mcp graphifyy' <<<"$out"
+assert "held: gives the manual repair command" grep -q "uv tool install --force --with mcp 'graphifyy" <<<"$out"
+# The repair line is a COPY-PASTE instruction, and this fixture records extras
+# ["all"], so the spec reads graphifyy[all]==<pin>. Unquoted, zsh — the macOS
+# default shell — globs the brackets and the paste dies with "no matches found"
+# instead of installing (public-PR CR). Assert the WHOLE spec is single-quoted:
+# matching only the opening quote would still pass if the closing one were lost.
+assert "held: the repair command single-quotes the [all] spec (zsh globs it otherwise)" \
+  grep -qE "uv tool install --force --with mcp 'graphifyy\[all\]==[0-9][^']*'" <<<"$out"
 # THE POINT: no uv install was attempted, so the entry points were never removed.
 # shellcheck disable=SC2016
 assert "held: NO uv install attempted (this is what keeps graphify working)" \
@@ -597,7 +604,19 @@ out=$(HOME="$gb_home" PATH="$gb_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gb_t
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "broken-after-install: rc 1 (presence is not proof it runs)" grep -q '^RC=1$' <<<"$out"
 assert "broken-after-install: names it BROKEN" grep -q 'BROKEN' <<<"$out"
-assert "broken-after-install: gives the repair command" grep -q 'uv tool install --force --with mcp graphifyy' <<<"$out"
+assert "broken-after-install: gives the repair command" grep -q "uv tool install --force --with mcp 'graphifyy" <<<"$out"
+# Assert BOTH quotes, like the held scenario above (CodeRabbit round). Matching
+# only the opening quote + package prefix leaves this site able to lose its
+# CLOSING quote and still pass — an asymmetry between two assertions that exist
+# for one reason.
+#
+# Deliberately NOT the held scenario's `\[all\]` pattern: CodeRabbit proposed
+# that verbatim, but THIS fixture's uv-receipt records `{ name = "graphifyy" }`
+# with no extras, so the spec here is `graphifyy==<pin>` and a bracket pattern
+# would assert a shape that can never appear. The extras-free spec is the point
+# of coverage — the two scenarios pin the quoting on both shapes.
+assert "broken-after-install: the repair command single-quotes the whole spec" \
+  grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
 
 # The fourth corner of the state matrix (public-PR CR): install FAILED but the
 # binary SURVIVED. The other three are covered above and below; without this one

@@ -169,14 +169,12 @@ run_qmd() {
     fi
 }
 
-# Human-readable form of the invocation, for logs and --dry-run.
-qmd_desc() {
-    if [ -n "$QMD_JS" ]; then
-        printf '%s %s' "$QMD_BIN" "$QMD_JS"
-    else
-        printf '%s' "$QMD_BIN"
-    fi
-}
+# Human-readable form of the invocation, for logs and --dry-run. Thin alias for
+# the shared qmd_bin_desc() in scripts/lib/qmd-bin.sh (public-PR CR): this and
+# qmd-cadence.sh's qmd_invocation_desc() were byte-identical copies, so the
+# format lived in two places. Kept as a local name so the six call sites below
+# read unchanged.
+qmd_desc() { qmd_bin_desc; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -245,10 +243,17 @@ fi
 # runs this from by hand — and that stub dies with "Module not found …
 # dist/cli/qmd.js". qmd_pinned_invocation prefers the bun-served install the
 # same way qmd_cmd does, and returns absolute tokens.
+# Sourced UNCONDITIONALLY, not just on the resolve path below (public-PR CR).
+# qmd_desc() is now a thin alias for the lib's qmd_bin_desc(), and it is called
+# on EVERY run — including the `--qmd-bin <path>` run that skips resolution
+# entirely. Sourcing only inside the `if` would leave those runs calling an
+# undefined function. Safe to source always: the lib is functions plus a
+# `BASH_SOURCE == $0` CLI guard, so it has no source-time side effects.
+# shellcheck source=../lib/qmd-bin.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/qmd-bin.sh"
+
 if [ -z "$QMD_BIN" ]; then
-    # shellcheck source=../lib/qmd-bin.sh
-    # shellcheck disable=SC1091
-    . "$(dirname "${BASH_SOURCE[0]}")/../lib/qmd-bin.sh"
     _resolved=""
     if ! _resolved=$(qmd_pinned_invocation 2>/dev/null); then
         {

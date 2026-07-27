@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { isAllowed, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -2381,6 +2381,62 @@ test("intervalEnvMs: absent uses the default, and a valid value passes through",
   expect(intervalEnvMs(undefined, 500)).toBe(500);
   expect(intervalEnvMs("250", 500)).toBe(250);
   expect(intervalEnvMs("1", 500)).toBe(1);
+});
+
+// Public-CR round: the burst WINDOWS were the one env class here with no
+// ceiling. A fat-fingered TELEGRAM_BATCH_MAX_HOLD_MS parks a burst for days —
+// the starvation the max-hold cap exists to prevent, arriving through the cap's
+// own setting.
+test("windowEnvMs: a window past the ceiling falls back instead of parking a burst for days", () => {
+  expect(windowEnvMs("300000000", 30000)).toBe(30000);   // the finding's example: ~3.5 days
+  expect(windowEnvMs("600001", 30000)).toBe(30000);      // ceiling + 1
+  expect(windowEnvMs("600000", 30000)).toBe(600000);     // the ceiling itself is honoured
+});
+
+// The floor differs from intervalEnvMs ON PURPOSE: 0 is a documented setting
+// here (quietMs=0 disables coalescing), not a typo. A test that only checked
+// "rejects out-of-range" would pass against a copy of intervalEnvMs, which
+// would silently remove that escape hatch.
+test("windowEnvMs: 0 is legal — it is the documented disable-coalescing hatch, not a typo", () => {
+  expect(windowEnvMs("0", 4000)).toBe(0);
+});
+
+test("windowEnvMs: malformed shapes fall back, matching the sibling helpers", () => {
+  expect(windowEnvMs("", 4000)).toBe(4000);        // set-but-empty is absence
+  expect(windowEnvMs("   ", 4000)).toBe(4000);
+  expect(windowEnvMs("4OOO", 4000)).toBe(4000);    // letter O for zero
+  expect(windowEnvMs("-1", 4000)).toBe(4000);
+  expect(windowEnvMs("1e6", 4000)).toBe(4000);     // over the ceiling via exponent
+  expect(windowEnvMs("4000.5", 4000)).toBe(4000);  // fractional ms is malformed
+  expect(windowEnvMs(undefined, 4000)).toBe(4000);
+});
+
+test("windowEnvMs: an in-range value passes through", () => {
+  expect(windowEnvMs("8000", 4000)).toBe(8000);
+  expect(windowEnvMs("30000", 4000)).toBe(30000);
+});
+
+// The guardrail must not pass by rejecting everything: the coalescer has to
+// actually READ the env value, and an out-of-range one has to leave the default
+// behaviour intact rather than disabling coalescing or holding forever.
+test("makeBurstCoalescer: a fat-fingered quiet-window env falls back to the 4s default", async () => {
+  const prev = process.env.TELEGRAM_BATCH_QUIET_MS;
+  process.env.TELEGRAM_BATCH_QUIET_MS = "300000000";   // ~3.5 days
+  try {
+    const dispatched: string[] = [];
+    const now = 0;
+    // No quietMs in opts, so the env value is what this reads.
+    const c = makeBurstCoalescer(async (s) => { dispatched.push(s); }, { now: () => now });
+    await c("s1");
+    expect(dispatched).toEqual([]);         // still held — coalescing is ON, not disabled
+    await c.flushDue(3999);                 // inside the 4s DEFAULT window
+    expect(dispatched).toEqual([]);
+    await c.flushDue(4000);                 // the default fired...
+    expect(dispatched).toEqual(["s1"]);     // ...so the 3.5-day value never took effect
+  } finally {
+    if (prev === undefined) delete process.env.TELEGRAM_BATCH_QUIET_MS;
+    else process.env.TELEGRAM_BATCH_QUIET_MS = prev;
+  }
 });
 
 test("one session's dispatch failure does not abort the flush of others", async () => {
