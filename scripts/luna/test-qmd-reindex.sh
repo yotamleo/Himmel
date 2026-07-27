@@ -58,6 +58,15 @@ summary() {
 }
 
 TMP_ROOT=$(mktemp -d)
+# PHYSICALLY resolve the root (public-PR CR). _qmd_abs_path now canonicalizes
+# with `pwd -P`, so every path this suite compares against the resolver's output
+# has to be spelled the same way. `mktemp -d` returns the LOGICAL path, and on
+# macOS that differs: /var/folders/… vs the physical /private/var/folders/…
+# ($TMPDIR lives behind a /var -> /private/var symlink). The assertions would
+# then compare two correct spellings of the same file and fail — on macOS only,
+# invisibly to Windows and Linux CI. Resolving once here makes every derived
+# path (BUN_FIX, BUN_JS, STATE, …) canonical by construction.
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 STATE="$TMP_ROOT/state"
 mkdir -p "$STATE"
 

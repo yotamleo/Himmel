@@ -55,6 +55,12 @@ assert "default QMD_FORK_REF is a full 40-hex SHA" \
 
 echo "[test-qmd-bin] qmd_cmd resolver — prefer bun"
 tmpdir="$(mktemp -d)"
+# PHYSICALLY resolve it — same reason as test-qmd-reindex.sh (public-PR CR).
+# This suite compares paths against _qmd_abs_path, which canonicalizes with
+# `pwd -P`; `mktemp -d` yields the LOGICAL path, and on macOS the two differ
+# (/var/folders/… vs /private/var/folders/…). Resolving here keeps every fixture
+# path spelled the way the resolver will spell it.
+tmpdir="$(cd "$tmpdir" && pwd -P)"
 trap 'rm -rf "$tmpdir"' EXIT
 
 # Fake bun + fake bun-qmd dist file. Use HOME override to control resolution.
