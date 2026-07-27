@@ -51,15 +51,101 @@ function build() {
   let table;
   try { table = JSON.parse(readFileSync(DEBRAND, 'utf8')); }
   catch (e) { die(2, `agents-md: cannot evaluate — debrand table is not valid JSON: ${e.message}`); }
+  if (!Array.isArray(table)) {
+    die(2, `agents-md: cannot evaluate — debrand table must be a JSON array, got ${typeof table}.`);
+  }
+  // Coverage validation (HIMMEL-480). `split/join` silently no-ops when `from`
+  // is absent, so a CLAUDE.md edit that moves or rewrites debranded text turns
+  // its rule into a dead no-op with NO signal — the transform quietly stops
+  // protecting that string. Every rule must therefore either match, or declare
+  // `"dormant": true` with a `note` saying why. An unmatched, undeclared rule is
+  // a hard error: structural, not a warning nobody reads (HIMMEL-195).
+  const orphans = [];
+  const revived = [];
+  const seenFrom = new Set();
   for (const entry of table) {
-    const { from, to } = entry;
-    // Skip malformed entries: a non-string/empty `from` would either no-op or
-    // (empty string) corrupt the body by inserting `to` between every char.
-    if (typeof from !== 'string' || from === '' || typeof to !== 'string') {
-      process.stderr.write(`agents-md: skipping malformed debrand entry: ${JSON.stringify(entry)}\n`);
-      continue;
+    // Validate the entry SHAPE before destructuring — `const {…} = null` throws
+    // a raw TypeError instead of the structured cannot-evaluate message.
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      die(2, `agents-md: cannot evaluate — malformed debrand entry (expected an object):\n` +
+             `         ${JSON.stringify(entry)}`);
     }
+    const { from, to, dormant } = entry;
+    // Malformed entries are FATAL, not skipped. A non-string/empty `from` would
+    // either no-op or (empty string) corrupt the body by inserting `to` between
+    // every char — and a skipped entry never reaches the orphan calculation
+    // below, so a one-character schema typo would silently disable a live
+    // neutralization rule while BOTH gates still went green. Fail closed.
+    if (typeof from !== 'string' || from === '' || typeof to !== 'string') {
+      die(2, `agents-md: cannot evaluate — malformed debrand entry ` +
+             `(needs a non-empty string "from" and a string "to"):\n` +
+             `         ${JSON.stringify(entry)}`);
+    }
+    if (to === from) {
+      die(2, `agents-md: cannot evaluate — debrand entry maps "from" to itself:\n` +
+             `         ${JSON.stringify(entry)}\n` +
+             `         This performs no substitution and therefore protects nothing.`);
+    }
+    if (seenFrom.has(from)) {
+      die(2, `agents-md: cannot evaluate — duplicate debrand "from" value:\n` +
+             `         ${JSON.stringify(entry)}\n` +
+             `         Each source string may appear only once in the ordered mapping table.`);
+    }
+    seenFrom.add(from);
+    // A `dormant` flag suppresses the coverage error below, so it must carry its
+    // own justification — an unexplained dormant rule is the same silent drift
+    // the coverage check exists to surface, just opted out of.
+    if (dormant === true && (typeof entry.note !== 'string' || entry.note.trim() === '')) {
+      die(2, `agents-md: cannot evaluate — debrand entry is marked "dormant": true but has no "note" ` +
+             `explaining why:\n         · ${JSON.stringify(from)}\n` +
+             `         Record where the content went, so the rule can be revived or deleted later.`);
+    }
+    // Match against the ORIGINAL body, not the progressively rewritten text:
+    // an earlier rule's replacement can destroy a later rule's `from` (false
+    // orphan) or synthesize one (false revival). Coverage is a question about
+    // the SOURCE, so it must be asked of the source.
+    const matched = body.includes(from);
+    if (!matched && dormant !== true) orphans.push(from);
+    if (matched && dormant === true) revived.push(from);
+    const before = debranded;
     debranded = debranded.split(from).join(to);
+    if (matched && debranded === before) {
+      die(2, `agents-md: cannot evaluate — live debrand entry produced no substitution:\n` +
+             `         ${JSON.stringify(entry)}\n` +
+             `         An earlier rule consumed its source text, so this mapping silently protects nothing.`);
+    }
+  }
+  if (revived.length) {
+    const msg = `${revived.length} debrand rule(s) marked "dormant": true now MATCH again:\n` +
+      revived.map((f) => `         · ${JSON.stringify(f)}`).join('\n') + '\n' +
+      `         Drop their "dormant" flag. While the flag stays, the rule is exempt\n` +
+      `         from orphan detection — so a later rewrite of that phrase would go\n` +
+      `         unnoticed, which is the exact silent drift this check exists to stop.`;
+    // Fatal under enforcement, advisory otherwise: a dormant flag left on a live
+    // rule quietly re-opens the fail-open path for every future edit.
+    if (process.env.AGENTS_MD_ENFORCE_COVERAGE === '1') {
+      die(2, `agents-md: cannot evaluate — ${msg}`);
+    }
+    process.stderr.write(`agents-md: NOTE — ${msg}\n`);
+  }
+  // Coverage enforcement is OPT-IN, because this generator legitimately runs
+  // against partial sources: the freshness hooks regenerate from a staged temp
+  // copy, and both test suites build stub fixtures containing none of the live
+  // phrases. Making it unconditional fails all of those spuriously; keying it
+  // on "does SOURCE look like the canonical CLAUDE.md" fails the opposite way —
+  // the freshness hook's temp copy never matches, so the check would be dead in
+  // the one path that gates a commit.
+  //
+  // Instead the dedicated pre-commit gate (scripts/hooks/check-debrand-coverage.sh)
+  // sets AGENTS_MD_ENFORCE_COVERAGE=1 and points SOURCE at the real staged
+  // CLAUDE.md. One job per caller; the gate is what makes this structural.
+  if (orphans.length && process.env.AGENTS_MD_ENFORCE_COVERAGE === '1') {
+    die(2, `agents-md: cannot evaluate — ${orphans.length} debrand rule(s) no longer match ${SOURCE}:\n` +
+           orphans.map((f) => `         · ${JSON.stringify(f)}`).join('\n') + '\n' +
+           `         A rule that matches nothing is a silent no-op: the string it protected\n` +
+           `         is either gone or moved OUT of CLAUDE.md (and is therefore no longer\n` +
+           `         debranded anywhere). Either restore the text, or mark the rule\n` +
+           `         "dormant": true with a "note" recording where the content went.`);
   }
 
   // Assemble: preamble, exactly one blank line, then the (debranded) body. LF, single trailing newline.

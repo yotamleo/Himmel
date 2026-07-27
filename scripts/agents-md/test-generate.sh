@@ -210,6 +210,78 @@ if sed 's/on Claude, Fable-5//g' "$broken_stripped" | grep -q 'Fable'; then
 else bad "leak check fires on a rewrap-broken entry (red path)"; fi
 SRC="$SAVED_SRC"; TGT="$SAVED_TGT"
 
+# ---- 10. debrand coverage enforcement (HIMMEL-480) ------------------------
+# Coverage is OPT-IN (AGENTS_MD_ENFORCE_COVERAGE=1) and enforced by the
+# dedicated gate scripts/hooks/check-debrand-coverage.sh. It must fire on ANY
+# source the gate hands it — including a staged temp copy, which is what
+# check-agents-md-fresh.sh generates from. Keying enforcement on "SOURCE looks
+# like the canonical CLAUDE.md" would leave it dead in exactly that path
+# (codex-adv finding, CR round 4).
+COVSRC="$TMP/staged-copy/CLAUDE.md"; mkdir -p "$TMP/staged-copy"
+# A source containing NONE of the live debrand phrases -> every live rule orphaned.
+printf '# Staged copy\n\nNo branded phrases here at all.\n' > "$COVSRC"
+AGENTS_MD_ENFORCE_COVERAGE=1 \
+AGENTS_MD_SOURCE="$COVSRC" AGENTS_MD_TARGET="$TMP/AGENTS-cov.md" \
+  AGENTS_MD_PREAMBLE="$PREAMBLE" AGENTS_MD_DEBRAND="$SCRIPT_DIR/debrand.json" \
+  node "$GEN" --write >"$TMP/out" 2>"$TMP/err"
+covrc=$?
+if [ "$covrc" -eq 2 ]; then
+  ok "coverage fires on a staged temp copy when enforced (rc=2)"
+else bad "coverage fires on a staged temp copy when enforced (rc=$covrc, want 2); stderr: $(cat "$TMP/err")"; fi
+if grep -q 'no longer match' "$TMP/err"; then
+  ok "coverage error names the dead rules"
+else bad "coverage error names the dead rules"; fi
+# Without the opt-in, the same partial source must generate cleanly — that is
+# what keeps the freshness hook and both fixture suites working.
+AGENTS_MD_SOURCE="$COVSRC" AGENTS_MD_TARGET="$TMP/AGENTS-cov.md" \
+  AGENTS_MD_PREAMBLE="$PREAMBLE" AGENTS_MD_DEBRAND="$SCRIPT_DIR/debrand.json" \
+  node "$GEN" --write >"$TMP/out" 2>"$TMP/err"
+nooptrc=$?
+if [ "$nooptrc" -eq 0 ]; then ok "partial source generates cleanly without the opt-in"
+else bad "partial source generates cleanly without the opt-in (rc=$nooptrc); stderr: $(cat "$TMP/err")"; fi
+# The real CLAUDE.md must PASS coverage — this is the live-repo assertion.
+AGENTS_MD_ENFORCE_COVERAGE=1 \
+AGENTS_MD_SOURCE="$SCRIPT_DIR/../../CLAUDE.md" AGENTS_MD_TARGET="$TMP/AGENTS-live.md" \
+  AGENTS_MD_PREAMBLE="$PREAMBLE" AGENTS_MD_DEBRAND="$SCRIPT_DIR/debrand.json" \
+  node "$GEN" --write >"$TMP/out" 2>"$TMP/err"
+livercv=$?
+if [ "$livercv" -eq 0 ]; then ok "live CLAUDE.md passes debrand coverage"
+else bad "live CLAUDE.md passes debrand coverage (rc=$livercv); stderr: $(cat "$TMP/err")"; fi
+# Malformed entries must be FATAL, not skipped (codex-adv + coderabbit, round 5).
+# A skipped entry never reaches the orphan calculation, so a one-character schema
+# typo would silently disable a live rule while both gates stayed green. Each
+# case is checked WITHOUT the coverage opt-in, proving the guard is unconditional.
+malformed_case() {
+  local desc="$1" json="$2" want="$3"
+  local f="$TMP/debrand-malformed.json"
+  printf '%s\n' "$json" > "$f"
+  AGENTS_MD_SOURCE="$COVSRC" AGENTS_MD_TARGET="$TMP/AGENTS-cov.md" \
+    AGENTS_MD_PREAMBLE="$PREAMBLE" AGENTS_MD_DEBRAND="$f" \
+    node "$GEN" --write >"$TMP/out" 2>"$TMP/err"
+  local mrc=$?
+  if [ "$mrc" -eq "$want" ]; then ok "$desc"
+  else bad "$desc (rc=$mrc, want $want)"; fi
+}
+malformed_case "missing 'from' is fatal"      '[{"to":"x"}]'                       2
+malformed_case "empty 'from' is fatal"        '[{"from":"","to":"x"}]'             2
+malformed_case "non-string 'from' is fatal"   '[{"from":123,"to":"x"}]'            2
+malformed_case "missing 'to' is fatal"        '[{"from":"spawns a Fable child"}]'  2
+malformed_case "null 'to' is fatal"           '[{"from":"a","to":null}]'           2
+malformed_case "same 'from' and 'to' is fatal" '[{"from":"a","to":"a"}]'            2
+malformed_case "duplicate 'from' is fatal"    '[{"from":"duplicate-phrase","to":"x"},{"from":"duplicate-phrase","to":"y"}]' 2
+malformed_case "an earlier overlapping rule cannot consume a live source" '[{"from":"branded phrases","to":"neutral text"},{"from":"branded","to":"generic"}]' 2
+malformed_case "non-array table is fatal"     '{"from":"a","to":"b"}'              2
+
+# A dormant rule with no note is rejected — independent of the coverage opt-in.
+NONOTE="$TMP/debrand-nonote.json"
+printf '[{"from":"zzz-absent-phrase","to":"x","dormant":true}]\n' > "$NONOTE"
+AGENTS_MD_SOURCE="$COVSRC" AGENTS_MD_TARGET="$TMP/AGENTS-cov.md" \
+  AGENTS_MD_PREAMBLE="$PREAMBLE" AGENTS_MD_DEBRAND="$NONOTE" \
+  node "$GEN" --write >"$TMP/out" 2>"$TMP/err"
+nonotercv=$?
+if [ "$nonotercv" -eq 2 ]; then ok "dormant rule without a note is rejected"
+else bad "dormant rule without a note is rejected (rc=$nonotercv)"; fi
+
 # ---- summary --------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

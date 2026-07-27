@@ -2,66 +2,83 @@
   {
     "from": "the Skill tool",
     "to": "your skill-invocation mechanism",
-    "note": "Claude-Code tool name -> behavioral. Full-phrase ('the X tool') so it only matches unambiguous tool references, never factual prose."
+    "dormant": true,
+    "note": "Claude-Code tool name -> behavioral. Full-phrase ('the X tool') so it only matches unambiguous tool references, never factual prose. DORMANT: phrase not in live CLAUDE.md; retained for the test-generate.sh fixture."
   },
   {
     "from": "the Agent tool",
     "to": "your subagent-dispatch mechanism",
-    "note": "Full-phrase only; deliberately does NOT match bare 'Agent tool' which appears inside a factual hook description in CLAUDE.md."
+    "dormant": true,
+    "note": "Full-phrase only; deliberately does NOT match bare 'Agent tool' which appears inside a factual hook description in CLAUDE.md. DORMANT: phrase not in live CLAUDE.md; retained for the test fixture."
   },
   {
     "from": "the Bash tool",
     "to": "your shell-execution mechanism",
-    "note": "Full-phrase tool reference -> behavioral text."
+    "dormant": true,
+    "note": "Full-phrase tool reference -> behavioral text. DORMANT: phrase not in live CLAUDE.md; retained for the test fixture."
   },
   {
     "from": "the **Fable main thread**",
     "to": "the **main thread**",
+    "dormant": true,
     "note": "HIMMEL-559: identity claim — a Codex/GPT session must not read itself as the Fable main thread. DORMANT since HIMMEL-688 (phrase no longer in live CLAUDE.md); retained because the test-generate.sh fixture exercises it. Fable mentions in FABLE-WINDOW provenance comments stay (documentary, not identity)."
   },
   {
     "from": "inherits the Fable\nmain loop",
     "to": "inherits the main\nloop",
+    "dormant": true,
     "note": "HIMMEL-559: spans CLAUDE.md's hard wrap — embedded newline load-bearing. DORMANT since HIMMEL-688; retained for the test fixture."
   },
   {
     "from": "the time-limited Fable quota",
     "to": "the time-limited top-tier quota",
+    "dormant": true,
     "note": "HIMMEL-559: quota claim — neutral tier language. DORMANT since HIMMEL-688; retained for the test fixture."
   },
   {
     "from": "Fable-5 `low` ≈ prior-gen\n`xhigh`",
     "to": "on Claude, Fable-5 `low` ≈ prior-gen\n`xhigh`",
-    "note": "HIMMEL-559: the effort calibration is a Claude-family fact (false for GPT) — attribute it instead of asserting it about the reading model. Embedded newline matches CLAUDE.md's wrap, same caveat as above."
+    "dormant": true,
+    "note": "HIMMEL-559: the effort calibration is a Claude-family fact (false for GPT) — attribute it instead of asserting it about the reading model. DORMANT since HIMMEL-480: the calibration prose moved to docs/internals/lane-calibration.md, which carries its own non-Claude reader note. Retained for the test fixture."
   },
   {
     "from": "| Fable 5 | judgment, taste — hardest calls; escalation target |",
     "to": "| top model | judgment, taste — hardest calls; escalation target |",
-    "note": "HIMMEL-688 lane table row — neutral tier language for non-Claude drivers; table rows never wrap so the full-cell match is stable. Re-matched after the 2026-07-08 effort-calibration rewording dropped 'the ~10%' (HIMMEL-806)."
+    "dormant": true,
+    "note": "HIMMEL-688 lane table row — neutral tier language for non-Claude drivers. DORMANT since HIMMEL-480: the tier table moved to docs/internals/lane-calibration.md, which is NOT debranded (this transform only covers CLAUDE.md -> AGENTS.md); that doc carries an explicit non-Claude reader note instead. Retained for the test fixture."
   },
   {
     "from": "spawns a Fable child",
     "to": "spawns a top-model child",
-    "note": "HIMMEL-688 escalation prose — routing fact, neutralized so a GPT/Codex driver doesn't read a Claude-only dispatch as an instruction it can execute."
+    "note": "HIMMEL-688 escalation prose — routing fact, neutralized so a GPT/Codex driver doesn't read a Claude-only dispatch as an instruction it can execute. LIVE — keep this string intact when editing the escalation paragraph."
+  },
+  {
+    "from": "Fable 5 = judgment and taste, the\nescalation target",
+    "to": "the top model = judgment and taste, the\nescalation target",
+    "note": "HIMMEL-480: the condensed tier-semantics sentence that replaced the lane table in CLAUDE.md — same neutralization the table row (now dormant) provided. LIVE. Embedded newline matches CLAUDE.md's hard wrap; re-check this rule if that paragraph is rewrapped."
   },
   {
     "from": "Fable-as-parent",
     "to": "Top-model-as-parent",
-    "note": "HIMMEL-688 escalation prose — same neutralization."
+    "dormant": true,
+    "note": "HIMMEL-688 escalation prose — same neutralization. DORMANT since HIMMEL-480: the escalation-shape prose moved to docs/internals/lane-calibration.md, which carries its own non-Claude reader note. Retained for the test fixture."
   },
   {
     "from": "compare per task vs Fable-low",
     "to": "compare per task vs top-model-low",
+    "dormant": true,
     "note": "HIMMEL-806: Sonnet-row pricing comparison added 2026-07-08 — neutral tier language; full-phrase scopes the replacement to that comparison clause. DORMANT since 2026-07-10 (HIMMEL-774 row replaced the clause); retained for the test fixture."
   },
   {
     "from": "Fable stays CONSERVED (limited release)",
     "to": "The top model stays CONSERVED (limited release)",
-    "note": "HIMMEL-806: conservation note added 2026-07-08 — sentence-initial, single line, so the full-phrase match is stable."
+    "dormant": true,
+    "note": "HIMMEL-806: conservation note added 2026-07-08. DORMANT since HIMMEL-480: the cost-posture prose moved to docs/internals/lane-calibration.md, which carries its own non-Claude reader note. Retained for the test fixture."
   },
   {
     "from": "a Sonnet/Opus/Fable implementor-shaped Agent dispatch",
     "to": "a Sonnet/Opus/top-model implementor-shaped Agent dispatch",
-    "note": "HIMMEL-920: guard-implementor-dispatch hook description in the ENFORCEMENT section — neutral tier language, same pattern as the Fable-5 lane-table row."
+    "dormant": true,
+    "note": "HIMMEL-920: guard-implementor-dispatch hook description in the ENFORCEMENT section — neutral tier language, same pattern as the Fable-5 lane-table row. DORMANT: the ENFORCEMENT hook enumeration was replaced by a pointer in HIMMEL-480; retained for the test fixture."
   }
 ]
