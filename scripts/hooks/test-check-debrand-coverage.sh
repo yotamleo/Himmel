@@ -40,7 +40,12 @@ expect_rc() { local want=$1; shift; local rc=0; "$@" || rc=$?; [ "$rc" -eq "$wan
 _failures=0
 run_test() {
   local name="$1" body="$2"; local rc=0
-  ( eval "$body" ) 2>/dev/null || rc=$?
+  # The EXIT trap runs INSIDE the per-test subshell, where setup_repo's $R is
+  # set — each case makes exactly one throwaway repo, so one trap cleans it.
+  # Without this a 13-case run leaves 13 mktemp -d git repos behind, and they
+  # accumulate across runs. `${R:-}` keeps it a harmless no-op if a case exits
+  # before setup_repo runs.
+  ( trap 'rm -rf "${R:-}"' EXIT; eval "$body" ) 2>/dev/null || rc=$?
   if [ "$rc" -eq 0 ]; then printf '  PASS  %s\n' "$name"
   else printf '  FAIL  %s (subshell rc=%s)\n' "$name" "$rc"; _failures=$((_failures + 1)); fi
 }
