@@ -348,6 +348,45 @@ else
     ok "T11 no credential in clone .git/config"
 fi
 
+# --- T13 (HIMMEL-1314): CODERABBIT_CLI_DISABLE=1 skips the CLI leg -----------
+# rc 3 is the not-configured/skip contract (no availability line), and the run
+# must NOT shell out to the lane probe: on Windows that probe boots the WSL
+# distro, which is the cost this switch exists to avoid. A wsl stub that logs
+# every invocation proves the probe never ran.
+src_dis="$tmp/src-disable"
+make_src_repo "$src_dis" "https://github.com/yotamleo/himmel-private.git"
+WSL_CALL_LOG="$tmp/wsl-calls.log"
+: > "$WSL_CALL_LOG"
+cat > "$stubs/wsl-probe-spy" <<EOF
+#!/usr/bin/env bash
+echo "invoked: \$*" >> "$WSL_CALL_LOG"
+exit 1
+EOF
+chmod +x "$stubs/wsl-probe-spy"
+
+(cd "$src_dis" && CODERABBIT_CLI_DISABLE=1 CODERABBIT_BIN="$stubs/coderabbit" \
+    CODERABBIT_WSL="$stubs/wsl-probe-spy" \
+    bash "$SCRIPT" --branch feat/x --base main >"$tmp/t13.out" 2>"$tmp/t13.err")
+rc=$?
+[ "$rc" -eq 3 ] && ok "T13 CODERABBIT_CLI_DISABLE=1 exits 3 (skip)" \
+    || bad "T13: rc=$rc (want 3; err: $(cat "$tmp/t13.err"))"
+grep -q 'CODERABBIT_CLI_DISABLE=1' "$tmp/t13.err" \
+    && ok "T13 skip note names the operator opt-out" \
+    || bad "T13: skip note does not name the opt-out (got: $(cat "$tmp/t13.err"))"
+# No availability line — a deliberate opt-out is not a critic drop-out.
+grep -q '^panel-availability:' "$tmp/t13.err" \
+    && bad "T13: emitted a panel-availability line on a skip" \
+    || ok "T13 no availability line on skip"
+[ -s "$WSL_CALL_LOG" ] \
+    && bad "T13: lane probe ran despite the opt-out (would boot WSL): $(cat "$WSL_CALL_LOG")" \
+    || ok "T13 lane probe never ran (WSL not booted)"
+# Guard the exact-"1" contract: any other value leaves the CLI enabled.
+(cd "$src_dis" && CODERABBIT_CLI_DISABLE=0 CODERABBIT_BIN="$stubs/coderabbit" \
+    bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t13b.err")
+rc=$?
+[ "$rc" -eq 0 ] && ok "T13b CODERABBIT_CLI_DISABLE=0 still reviews" \
+    || bad "T13b: rc=$rc (want 0; err: $(cat "$tmp/t13b.err"))"
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "ALL PASS"
