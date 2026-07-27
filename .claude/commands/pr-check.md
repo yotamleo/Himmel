@@ -251,7 +251,12 @@ Steps:
    elif [ -z "$companion" ]; then
        echo "codex adversarial pass skipped (codex not configured)"
    else
-       codex_to=$(( ${CRITIC_TIMEOUT_SECS:-240} * 2 ))
+       # 10# forces base 10: `$(( ))` reads a LEADING ZERO as octal, so
+       # CRITIC_TIMEOUT_SECS=08 would die here with "value too great for base",
+       # leave codex_to empty, and surface as "codex adversarial pass failed" —
+       # a wrong cause for a value that looks perfectly configured. Same fix
+       # critic-panel.sh applies to its own copy of this variable.
+       codex_to=$(( 10#${CRITIC_TIMEOUT_SECS:-240} * 2 ))
        if command -v timeout >/dev/null 2>&1; then
            codex_findings=$(timeout -k 5 "$codex_to" node "$companion" adversarial-review --wait --base "$db" 2>/dev/null) || codex_rc=$?
        else

@@ -193,7 +193,11 @@ ANCHOR_PROVIDER="openai-codex"
 # Per-member timeout: validate CRITIC_TIMEOUT_SECS (Bash 3.2 safe via expr).
 CRITIC_TIMEOUT_SECS="${CRITIC_TIMEOUT_SECS:-240}"
 if expr "$CRITIC_TIMEOUT_SECS" : '^[0-9][0-9]*$' > /dev/null 2>&1 && [ "$CRITIC_TIMEOUT_SECS" -gt 0 ]; then
-    : # valid
+    # Normalize to base 10 (public-PR CR). The regex accepts a LEADING ZERO, and
+    # `$(( ))` reads a leading zero as OCTAL — so `0900` validates here and then
+    # dies later with "value too great for base" (9 is not an octal digit). See
+    # the sibling block below for the failure this produces.
+    CRITIC_TIMEOUT_SECS=$((10#$CRITIC_TIMEOUT_SECS))
 else
     echo "critic-panel.sh: CRITIC_TIMEOUT_SECS=$CRITIC_TIMEOUT_SECS invalid, using 240" >&2
     CRITIC_TIMEOUT_SECS="240"
@@ -215,7 +219,20 @@ CRITIC_KILL_GRACE_SECS=5
 # a genuine pile-up. 0 disables the cap.
 CRITIC_PANEL_TOTAL_TIMEOUT_SECS="${CRITIC_PANEL_TOTAL_TIMEOUT_SECS:-900}"
 if expr "$CRITIC_PANEL_TOTAL_TIMEOUT_SECS" : '^[0-9][0-9]*$' > /dev/null 2>&1; then
-    : # valid (0 = disabled)
+    # Normalize to base 10 (public-PR CR) — valid, including 0 = disabled.
+    #
+    # The regex accepts a LEADING ZERO. `[ "0900" -gt 0 ]` then PASSES (test's
+    # integer comparison is decimal), so both guards in _panel_remaining are
+    # satisfied — and the failure lands one line later, in `$(( ))`, which reads
+    # a leading zero as OCTAL: "0900: value too great for base". Measured, the
+    # whole function then returns rc 1 with empty output, which is its
+    # documented "no usable budget" path — so a fat-fingered CRITIC_PANEL_TOTAL_
+    # TIMEOUT_SECS=0900 SILENTLY DISABLES the total-panel cap and leaks a shell
+    # error to stderr on every call, while looking configured.
+    #
+    # That is the same shape this PR keeps fixing: a value that passes its own
+    # validation and then fails open somewhere the validation cannot see.
+    CRITIC_PANEL_TOTAL_TIMEOUT_SECS=$((10#$CRITIC_PANEL_TOTAL_TIMEOUT_SECS))
 else
     echo "critic-panel.sh: CRITIC_PANEL_TOTAL_TIMEOUT_SECS=$CRITIC_PANEL_TOTAL_TIMEOUT_SECS invalid, using 900" >&2
     CRITIC_PANEL_TOTAL_TIMEOUT_SECS="900"

@@ -632,6 +632,35 @@ check "W4: no member was reported panel-deadline" "$(printf '%s
 inv_out="$(printf '%s' "$DIFF" | CRITIC_PANEL_TOTAL_TIMEOUT_SECS=abc CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
 check_contains "W5: invalid total timeout warns and uses the default" "$inv_out" "CRITIC_PANEL_TOTAL_TIMEOUT_SECS=abc invalid, using 900"
 
+# W5b (public-PR CR): a LEADING ZERO passes the `^[0-9][0-9]*$` regex, and
+# `[ "0900" -gt 0 ]` passes too (test's integer comparison is decimal) — so both
+# guards in _panel_remaining are satisfied and the failure lands one line later
+# in `$(( ))`, which reads a leading zero as OCTAL. Measured before the fix:
+#   0900: value too great for base (error token is "0900")
+# and _panel_remaining then returns rc 1 with empty output — its documented
+# "no usable budget" path. So a fat-fingered 0900 SILENTLY DISABLED the cap and
+# leaked a shell error on every call, while looking configured.
+#
+# The VALUE matters: only a leading zero containing an 8 or a 9 is invalid
+# octal. `$(( 01 ))` is 1 and `$(( 07 ))` is 7 — both fine — while `$(( 08 ))`,
+# `$(( 09 ))` and `$(( 0900 ))` all die. A first draft of this test used `01`
+# and passed with the fix REMOVED, i.e. it asserted nothing; `08` is the
+# shortest value that actually reproduces.
+#
+# Asserted on the OBSERVABLE consequence, not the internal value: the panel
+# start is backdated so an 8-second budget is already spent, so with the cap
+# genuinely active the panel must report a panel-deadline drop. If the octal bug
+# came back, _panel_remaining would return "no usable budget" and no member
+# would carry that reason.
+_lz_backdated=$(( $(date +%s) - 5000 ))
+lz_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=08 CRITIC_PANEL_STARTED_AT="$_lz_backdated" CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
+check_contains "W5b: a leading-zero total timeout is honoured, not silently disabled" "$lz_out" "reason=panel-deadline"
+if printf '%s' "$lz_out" | grep -q 'value too great for base'; then
+    fails=$((fails+1)); echo "  FAIL: W5b: no octal arithmetic error leaked to stderr"
+else
+    echo "  ok: W5b: no octal arithmetic error leaked to stderr"
+fi
+
 # W6 (CR codex-1): the PARALLEL path must honour the deadline on the LAUNCH
 # side too. The clamp alone only shortens a member — it does not stop it
 # starting — so without this check CRITIC_PARALLEL=1 could still launch every
