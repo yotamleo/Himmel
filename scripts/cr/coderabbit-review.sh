@@ -111,7 +111,13 @@ esac
 # marker still needs a real responder from the panel/codex legs. That is why a
 # .env read failure here is non-fatal — it just leaves the CLI enabled (the
 # pre-1314 behaviour), rather than refusing.
-if [ -z "${CODERABBIT_CLI_DISABLE:-}" ] && [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
+# Set-NESS test (+x), not emptiness (:-): an explicitly empty live
+# CODERABBIT_CLI_DISABLE= is a deliberate "leave the CLI on" override and must
+# win over .env, which is what "a live env value wins" above promises. With
+# `:-` an empty live value read as unset, fell through to the bridge, and a
+# .env value of 1 would then skip the CLI against the operator's explicit
+# instruction. Matches arm-resume.sh's HIMMEL_HEADROOM_PROXY convention.
+if [ -z "${CODERABBIT_CLI_DISABLE+x}" ] && [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
     # shellcheck disable=SC1091
     . "$SCRIPT_DIR/../lib/load-dotenv.sh"
     load_dotenv CODERABBIT_CLI_DISABLE 2>/dev/null || true

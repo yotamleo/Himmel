@@ -386,6 +386,28 @@ grep -q '^panel-availability:' "$tmp/t13.err" \
 rc=$?
 [ "$rc" -eq 0 ] && ok "T13b CODERABBIT_CLI_DISABLE=0 still reviews" \
     || bad "T13b: rc=$rc (want 0; err: $(cat "$tmp/t13b.err"))"
+# T13c: an explicitly EMPTY live value is a deliberate "leave the CLI on"
+# override and must beat a .env that says 1 — the "a live env value wins"
+# contract. Guards the set-ness (+x) test: with `:-` an empty live value read as
+# unset, the bridge loaded .env's 1, and the CLI was skipped against the
+# operator's explicit instruction. A real .env carrying the flag is planted in
+# the repo the script resolves as its primary checkout.
+printf 'CODERABBIT_CLI_DISABLE=1\n' > "$src_dis/.env"
+(cd "$src_dis" && CODERABBIT_CLI_DISABLE='' CODERABBIT_BIN="$stubs/coderabbit" \
+    bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t13c.err")
+rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "T13c empty live value beats .env=1 (CLI still reviews)" \
+    || bad "T13c: rc=$rc (want 0 — empty live override lost to .env; err: $(cat "$tmp/t13c.err"))"
+# Control: with NO live value at all, the same .env DOES disable the CLI —
+# proving T13c passed because the override won, not because the bridge is dead.
+(cd "$src_dis" && env -u CODERABBIT_CLI_DISABLE CODERABBIT_BIN="$stubs/coderabbit" \
+    bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t13d.err")
+rc=$?
+[ "$rc" -eq 3 ] \
+    && ok "T13d unset live value lets .env=1 disable the CLI (bridge works)" \
+    || bad "T13d: rc=$rc (want 3; err: $(cat "$tmp/t13d.err"))"
+rm -f "$src_dis/.env"
 
 echo
 if [ "$fail" -eq 0 ]; then
