@@ -7,7 +7,7 @@ description: Arm the OS scheduler to relaunch claude at a given time with a give
 
 When the user asks to arm a scheduled resume, run:
 
-    bash scripts/handover/arm-resume.sh --time <HH:MM|smart|auto> --handover <path> [--force] [--dry-run]
+    bash scripts/handover/arm-resume.sh --time <HH:MM|smart|auto> --handover <path> [--force] [--dedup-any] [--dry-run]
 
 `--time smart` (prefer) reads the usage cache and picks the throughput-maximizing
 slot; `auto` waits for the next cap reset; `HH:MM` is explicit local time.

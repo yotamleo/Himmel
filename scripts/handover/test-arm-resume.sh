@@ -1026,6 +1026,15 @@ else
     echo "FAIL T28d expected 2 slots before force, got $(count_slots "$DB28F" "$DB28FD")"
     FAILED=$((FAILED + 1))
 fi
+_slot_ids() {   # echo one HIMMEL-Resume-* identity per recorded slot
+    case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+        msys*|cygwin*|win32*|MINGW*) grep -ho 'HIMMEL-Resume-[^[:space:]"]*' "$DB28F" 2>/dev/null || true ;;
+        *) grep -rho 'HIMMEL-Resume-[^[:space:]"]*' "$DB28FD" 2>/dev/null || true ;;
+    esac
+}
+# Snapshot the two siblings' identities BEFORE the force, so the post-check can
+# prove the survivor is the new arm rather than one of them.
+_ids_before=$(_slot_ids | sort -u)
 out=$(TMPDIR="$TMP" SCHED_DB="$DB28F" SCHED_DB_DIR="$DB28FD" PATH="$STATEFUL_STUB:$PATH" \
     bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_F3" --dedup-any --force 2>&1)
 rc=$?
@@ -1034,6 +1043,21 @@ if [ "$(count_slots "$DB28F" "$DB28FD")" = "1" ]; then
     echo "PASS T28d --dedup-any --force deleted BOTH siblings (1 slot remains)"
 else
     echo "FAIL T28d expected 1 slot after --dedup-any --force, got $(count_slots "$DB28F" "$DB28FD")"
+    FAILED=$((FAILED + 1))
+fi
+# Cardinality alone is not enough: a regression that deleted ONE sibling and then
+# failed to create the replacement also leaves exactly one slot. Assert the
+# surviving slot is the NEW one — its identity must differ from both siblings'
+# (captured above, before the force). Compares the recorded HIMMEL-Resume-*
+# identities rather than re-deriving the task name here, so this stays correct
+# if the name composition ever changes.
+_ids_after=$(_slot_ids | sort -u)
+_surviving=$(printf '%s\n' "$_ids_after" | grep -c . || true)
+if [ "$_surviving" = "1" ] && [ -n "$_ids_before" ] \
+   && ! printf '%s\n' "$_ids_before" | grep -qxF "$_ids_after"; then
+    echo "PASS T28d the surviving slot is the NEW arm, not a leftover sibling"
+else
+    echo "FAIL T28d surviving slot identity wrong (before='$(printf '%s' "$_ids_before" | tr '\n' ',')' after='$(printf '%s' "$_ids_after" | tr '\n' ',')')"
     FAILED=$((FAILED + 1))
 fi
 
