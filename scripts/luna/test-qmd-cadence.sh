@@ -63,6 +63,21 @@ summary() {
 }
 
 TMP_ROOT=$(mktemp -d)
+# PHYSICALLY resolve the root (public-PR CR), same reason and same shape as
+# test-qmd-reindex.sh and scripts/lib/test-qmd-bin.sh. The arm under test pins
+# its tokens through qmd_pinned_invocation -> _qmd_abs_path, which canonicalizes
+# with `pwd -P`; `mktemp -d` returns the LOGICAL path, and on macOS the two
+# differ (/var/folders/… vs the physical /private/var/folders/…, because $TMPDIR
+# sits behind a /var -> /private/var symlink). The runner assertions would then
+# compare two correct spellings of the same file and fail — on macOS only,
+# invisibly to Windows and Linux CI. Measured under WSL with a deliberately
+# symlinked $TMPDIR: 3 failures before this line, 0 after (the two --qmd-bin /
+# --qmd-js pins in C19 AND the cron suite's own --qmd-bin pin — the round-11
+# note that this suite never compares against _qmd_abs_path was wrong).
+# BEFORE the cygpath conversion below: `pwd -P` speaks POSIX, and resolving once
+# here makes every derived path (QMD_BIN_DIR, STUB_DIR, BUN_ROOT, …) canonical
+# by construction, so all of them keep moving together.
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
 
 # Shared fixtures ------------------------------------------------------------
