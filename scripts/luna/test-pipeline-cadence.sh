@@ -1566,7 +1566,15 @@ if [ -n "$emit_body" ]; then
 else
     fail "emit_bat body was located" "awk range matched nothing — the guards below would assert nothing"
 fi
-if printf '%s' "$emit_body" | grep -q 'cadence_cmd_escape'; then
+# Full-line COMMENTS are stripped before the search (CodeRabbit round). The body
+# carries explanatory comments, and one of them naming cadence_cmd_escape — e.g.
+# "these arrive pre-escaped by cadence_cmd_escape in cmd_arm", the most natural
+# sentence to write here — would fail this guard on prose. That direction is
+# fail-closed and so not dangerous by itself; the danger is the pressure it puts
+# on the next person to weaken or delete the guard to make a spurious red go
+# away. A trailing comment on a real code line is still caught: the filter drops
+# only lines that BEGIN with #, so `x=$(cadence_cmd_escape "$y")  # note` stays.
+if printf '%s' "$emit_body" | grep -Ev '^[[:space:]]*#' | grep -q 'cadence_cmd_escape'; then
     fail "emit_bat does not escape internally" "found a cadence_cmd_escape call inside emit_bat"
 else
     pass "emit_bat does not escape internally"
@@ -1574,18 +1582,92 @@ fi
 # Every one of the ten positional locals must carry the _esc suffix. That is the
 # checkable form of the convention: if it is not named _esc it does not belong
 # in a printf here, so the NEXT parameter added is reviewable by eye.
-# shellcheck disable=SC2016  # the \$1 is a literal to match in the SOURCE text
-emit_params=$(printf '%s' "$emit_body" | sed -n 's/^ *local \(.*="\$1".*\)$/\1/p')
+# Scans EVERY `local` line in the body, not just the one carrying "$1"
+# (CodeRabbit round). The old form anchored on that single declaration, so
+# splitting the parameters across two `local` lines — the obvious thing to do
+# when an 11th is added and the line gets long — left everything on the second
+# line UNCHECKED. That is the false-PASS direction, in the one guard whose whole
+# job is to catch a newly added parameter that is not escaped.
+#
+# Matches `name="$1"` and `name="${10}"`; the braced form is how positional
+# parameters past 9 must be written, so omitting it would silently skip the
+# tenth parameter this emitter already has.
+# shellcheck disable=SC2016  # the \$N is a literal to match in the SOURCE text
+emit_params=$(printf '%s\n' "$emit_body" \
+    | grep -E '^[[:space:]]*local[[:space:]]' \
+    | tr -s '[:space:]' '\n' \
+    | grep -E '^[A-Za-z_][A-Za-z0-9_]*="\$\{?[0-9]+\}?"$' || true)
 if [ -n "$emit_params" ]; then
     pass "emit_bat parameter line was located"
 else
-    fail "emit_bat parameter line was located" "no 'local ...=\"\$1\"' line found"
+    fail "emit_bat parameter line was located" "no 'local ...=\"\$N\"' declarations found"
 fi
-unescaped=$(printf '%s\n' "$emit_params" | tr ' ' '\n' | grep -oE '^[a-z_]+=' | sed 's/=$//' | grep -vE '_esc$' || true)
+unescaped=$(printf '%s\n' "$emit_params" | sed 's/=.*//' | grep -vE '_esc$' || true)
 if [ -z "$unescaped" ]; then
     pass "all emit_bat parameters are named _esc"
 else
     fail "all emit_bat parameters are named _esc" "raw-looking parameter(s): $(printf '%s' "$unescaped" | tr '\n' ' ')"
+fi
+
+# The THIRD leg, and the one that actually pins this round's fix (CodeRabbit
+# round). The two checks above constrain the CALLEE: its parameters are named
+# _esc, and it escapes nothing itself. Neither looks at what the CALLER passes.
+# Revert one call-site argument to a raw `"$HARVEST_MODEL"` and both still pass
+# — the parameter is still NAMED model_esc, emit_bat still escapes nothing, and
+# the emitted .bat is byte-identical for any value without a metacharacter. That
+# is exactly the regression this PR fixed, and until now nothing pinned it.
+#
+# Arguments are taken from `emit_bat` up to the first pipe or redirect, so the
+# trailing `| sed 's/^/    /'` and `> "$bat_harvest"` are not mistaken for
+# arguments (the sed script is not even a variable, and the redirect target is
+# legitimately not escaped).
+# FAIL CLOSED on a construct this guard cannot read (CodeRabbit round). The
+# checks below are line-based greps over shell source, which is an approximation
+# — and the approximation has a specific hole: a call continued across lines
+# with a trailing backslash is seen only up to the first line, so every argument
+# after it bypasses the convention check silently. The call sites carry ten
+# arguments each, so wrapping them is exactly what someone would eventually do.
+#
+# The answer is NOT more grep fidelity — that is a losing race against shell
+# syntax, and the preceding rounds of this guard were each one more patch of one
+# more approximation. It is to make the limit EXPLICIT: if a continued call
+# appears, refuse to certify rather than quietly check a prefix of it. A guard
+# that says "I cannot read this" is worth more than one that silently reads half.
+continued_calls=$(grep -nE '^[[:space:]]*emit_bat([[:space:]].*)?\\[[:space:]]*$' "$SCRIPT" || true)
+if [ -z "$continued_calls" ]; then
+    pass "emit_bat call sites are single-line (the shape this guard can read)"
+else
+    fail "emit_bat call sites are single-line (the shape this guard can read)" \
+        "backslash-continued call(s) cannot be checked safely: $(printf '%s' "$continued_calls" | tr '\n' ' ')"
+fi
+
+# Anchored at line start (CodeRabbit round): an unanchored `emit_bat "` also
+# matches PROSE — a comment quoting a call, say — and any "$VAR" inside that
+# prose would then be reported as a raw argument of a call site that does not
+# exist. No such line exists today; anchoring keeps it that way for free.
+call_lines=$(grep -nE '^[[:space:]]*emit_bat[[:space:]]+"' "$SCRIPT" || true)
+if [ -n "$call_lines" ]; then
+    pass "emit_bat call sites were located"
+else
+    fail "emit_bat call sites were located" "no 'emit_bat \"' call lines found in $SCRIPT"
+fi
+# BRACED expansions count too (CodeRabbit round). `"${HARVEST_MODEL}"` is the
+# same raw argument as `"$HARVEST_MODEL"`, but the unbraced-only pattern did not
+# match it — so the guard would have waved through exactly the regression it
+# exists to catch, written with braces. Measured before the fix: a line carrying
+# "${HARVEST_MODEL}" yielded only `a_esc`, i.e. a silent pass.
+# shellcheck disable=SC2016  # the $ { } are literal characters to STRIP, not expansions
+raw_args=$(printf '%s\n' "$call_lines" \
+    | sed 's/[|>].*//' \
+    | grep -oE '"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"' \
+    | tr -d '"${}$' \
+    | grep -vE '_esc$' \
+    | sort -u || true)
+if [ -z "$raw_args" ]; then
+    pass "every emit_bat call-site argument is an _esc variable"
+else
+    fail "every emit_bat call-site argument is an _esc variable" \
+        "raw argument(s) passed: $(printf '%s' "$raw_args" | tr '\n' ' ')"
 fi
 
 summary

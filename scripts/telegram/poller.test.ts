@@ -2426,7 +2426,11 @@ test("makeBurstCoalescer: a fat-fingered quiet-window env falls back to the 4s d
     const dispatched: string[] = [];
     const now = 0;
     // No quietMs in opts, so the env value is what this reads.
-    const c = makeBurstCoalescer(async (s) => { dispatched.push(s); }, { now: () => now });
+    // maxHoldMs pinned explicitly so an ambient TELEGRAM_BATCH_MAX_HOLD_MS
+    // cannot decide this test's outcome (CodeRabbit round) — the assertion is
+    // about the QUIET window falling back, and a max-hold inherited from the
+    // environment could fire the flush for an unrelated reason.
+    const c = makeBurstCoalescer(async (s) => { dispatched.push(s); }, { now: () => now, maxHoldMs: 600_000 });
     await c("s1");
     expect(dispatched).toEqual([]);         // still held — coalescing is ON, not disabled
     await c.flushDue(3999);                 // inside the 4s DEFAULT window

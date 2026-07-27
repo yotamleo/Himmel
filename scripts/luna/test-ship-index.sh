@@ -264,6 +264,57 @@ fi
 assert_not_contains "the 'Collections' header is NOT a collection" "Collections" "$parsed"
 assert_not_contains "detail-line labels are not collections" "Pattern" "$parsed"
 
+# A row whose DISPLAY NAME and URI disagree must be rejected outright, not
+# silently resolved to the display name (public-PR CR). Anchoring on `(qmd://`
+# alone accepted `wrong (qmd://other/)` and yielded `wrong`, so the parser could
+# have shipped to a collection the URI never named. The two names are now tied
+# by a backreference. This shape does not occur in qmd 2.6.3's output — which is
+# the point: the invariant the parser RELIES on is asserted rather than assumed,
+# and it fails visibly (a short collection set) instead of silently wrong.
+#
+# The fixture keeps ONE good row alongside the bad one, so the assertion cannot
+# pass by rejecting everything.
+rc_bad=$(mktemp -t ship-collections-bad.XXXXXX)
+{
+    printf 'ssh() {\n'
+    printf '  printf "Collections (2):\\r\\n"\n'
+    printf '  printf "\\r\\n"\n'
+    printf '  printf "himmel (qmd://himmel/)\\r\\n"\n'
+    printf '  printf "wrong (qmd://other/)\\r\\n"\n'
+    printf '}\n'
+    printf 'HOST=fakehost\n'
+    sed -n '/^remote_collections()/,/^}/p' "$SCRIPT"
+    printf 'remote_collections\n'
+} > "$rc_bad"
+parsed_bad=$(bash "$rc_bad")
+rm -f "$rc_bad"
+if [ "$parsed_bad" = "himmel" ]; then
+    pass "a name/URI mismatch row is rejected, the matching row survives"
+else
+    fail "name/URI mismatch not rejected" "expected 'himmel', got '$parsed_bad'"
+fi
+assert_not_contains "the mismatched display name is not emitted" "wrong" "$parsed_bad"
+
+# A row with NO trailing slash still parses — the slash is optional in the
+# pattern, and asserting it here stops a future tightening from quietly
+# requiring a trailing slash that qmd may omit.
+rc_noslash=$(mktemp -t ship-collections-noslash.XXXXXX)
+{
+    printf 'ssh() {\n'
+    printf '  printf "himmel (qmd://himmel)\\r\\n"\n'
+    printf '}\n'
+    printf 'HOST=fakehost\n'
+    sed -n '/^remote_collections()/,/^}/p' "$SCRIPT"
+    printf 'remote_collections\n'
+} > "$rc_noslash"
+parsed_noslash=$(bash "$rc_noslash")
+rm -f "$rc_noslash"
+if [ "$parsed_noslash" = "himmel" ]; then
+    pass "a row without the trailing slash still parses"
+else
+    fail "trailing-slash-less row mis-parsed" "expected 'himmel', got '$parsed_noslash'"
+fi
+
 # ============================================================================
 echo "TEST: the RECEIVER decides the collection set"
 # ============================================================================

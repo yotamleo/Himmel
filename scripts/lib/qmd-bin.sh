@@ -595,8 +595,26 @@ qmd_cmd() {
 _qmd_abs_path() {
   local p="$1" d b
   case "$p" in
-    /*|[A-Za-z]:[/\\]*) printf '%s\n' "$p"; return 0 ;;
+    # Root is its own answer. Without this the dirname/basename split below
+    # rejoins it as `//` (dirname / = /, basename / = /), which is a different
+    # path on some POSIX systems and simply wrong on all of them. Unreachable
+    # from qmd_pinned_invocation, but this is a general-purpose resolver.
+    /) printf '/\n'; return 0 ;;
+    # DRIVE-LETTER form only. A `C:\…` / `C:/…` operand is returned verbatim
+    # because `pwd -P` would hand back the MSYS form (`/c/…`) and silently
+    # CHANGE the shape of a token that gets baked into a .bat — a different bug
+    # than the one below. _qmd_canonical_dir carries _qmd_win_path for that
+    # conversion; this resolver has no such need today, since the only absolute
+    # inputs it actually receives are POSIX-form (see below).
+    [A-Za-z]:[/\\]*) printf '%s\n' "$p"; return 0 ;;
   esac
+  # POSIX-absolute operands fall THROUGH to the canonicalization below rather
+  # than returning early (public-PR CR, CodeRabbit Major). They used to return
+  # verbatim, which made the `pwd -P` fix below dead code on the ONLY path that
+  # matters: qmd_pinned_invocation feeds this `command -v bun` / `command -v qmd`
+  # output, and that is always absolute (measured here: /c/Users/…/.bun/bin/bun).
+  # So the physical-resolution guarantee this function advertises applied to
+  # exactly the operand shape production never passes it.
   d="$(dirname -- "$p")"
   b="$(basename -- "$p")"
   # CDPATH= — see _qmd_canonical_dir. Worse here: this value is a PINNED token
@@ -607,8 +625,18 @@ _qmd_abs_path() {
   # bun install dir. Repoint that symlink later and the pin silently resolves
   # somewhere else, which is the same class of fragility the CDPATH guard above
   # exists to prevent.
-  d="$(CDPATH='' cd -- "$d" 2>/dev/null && pwd -P)" || return 1
-  [ -n "$d" ] || return 1
+  d="$(CDPATH='' cd -- "$d" 2>/dev/null && pwd -P)"
+  if [ -z "$d" ]; then
+    # The directory did not resolve. An ABSOLUTE operand still succeeds,
+    # verbatim — that is what it did before this function canonicalized them,
+    # and a caller handing us an absolute path that does not exist yet should
+    # not start failing now. A RELATIVE one is still unusable (there is nothing
+    # to anchor it to), so it keeps returning 1.
+    case "$1" in
+      /*) printf '%s\n' "$1"; return 0 ;;
+      *)  return 1 ;;
+    esac
+  fi
   printf '%s/%s\n' "${d%/}" "$b"
 }
 

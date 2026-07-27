@@ -863,6 +863,16 @@ if [ -L "$sym_root/link" ]; then
     test -n "$sym_real"
   assert "_qmd_abs_path through a symlink equals the physical resolution" \
     test "$sym_via_link" = "$sym_real"
+  # The ABSOLUTE operand is the shape that actually matters, and the one the
+  # first version of this test missed (CodeRabbit Major): qmd_pinned_invocation
+  # feeds this `command -v` output, which is always absolute, and absolute
+  # operands used to return verbatim — so the pwd -P guarantee was dead code on
+  # the only path production uses, while this suite stayed green on the relative
+  # operand. Asserting the absolute case is what pins the real contract.
+  # shellcheck disable=SC2016
+  sym_via_abs="$("$(command -v bash)" -c '. "$1/qmd-bin.sh"; _qmd_abs_path "$2"' _ "$SCRIPT_DIR" "$sym_root/link/file.js" 2>/dev/null)"
+  assert "_qmd_abs_path on an ABSOLUTE symlinked path equals the physical resolution" \
+    test "$sym_via_abs" = "$sym_real"
 elif [ -e "$sym_root/link" ]; then
   # Unprivileged Windows cannot create real symlinks; CI (ubuntu shell-unit)
   # can, so the assertion is not lost — it just does not run here. Announced
@@ -892,9 +902,14 @@ assert "qmd_bin_desc: bun-served -> both tokens, space-separated" \
 # The `:-` reads are load-bearing: this lib is sourced by scripts that never pin
 # at all, and an unset global under `set -u` would abort them rather than print
 # an empty string. Drop the `:-` and this goes red.
+# `unset` in the CHILD is load-bearing (CodeRabbit round): this suite runs from
+# a shell where a real qmd is present, so QMD_BIN/QMD_JS can be exported in the
+# ambient environment and inherited. Without the unset the child would exercise
+# the SET path and pass no matter what the `:-` guards did — a test that cannot
+# fail, asserting the opposite of its own name.
 desc_unset_rc=0
 # shellcheck disable=SC2016
-"$(command -v bash)" -c 'set -u; . "$1/qmd-bin.sh"; qmd_bin_desc >/dev/null' _ "$SCRIPT_DIR" 2>/dev/null || desc_unset_rc=$?
+"$(command -v bash)" -c 'set -u; unset QMD_BIN QMD_JS; . "$1/qmd-bin.sh"; qmd_bin_desc >/dev/null' _ "$SCRIPT_DIR" 2>/dev/null || desc_unset_rc=$?
 assert "qmd_bin_desc: unset QMD_BIN/QMD_JS under set -u does not abort the caller" \
   test "$desc_unset_rc" -eq 0
 
