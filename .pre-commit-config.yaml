@@ -104,6 +104,15 @@ repos:
         pass_filenames: true
         stages: [pre-commit]
 
+      - id: gh-json-fields
+        name: Validate gh --json field names against gh's own list (HIMMEL-1288)
+        language: system
+        entry: bash scripts/hooks/check-gh-json-fields.sh
+        pass_filenames: true
+        files: '\.(md|sh|bash|ts|js|mjs|cjs)$'
+        exclude: '^(archive/|.*/node_modules/)'
+        stages: [pre-commit]
+
       - id: no-headless-claude
         name: Block headless claude (-p / --print / --bg) introductions (HIMMEL-128)
         language: system

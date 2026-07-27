@@ -175,8 +175,8 @@ while [ "$(date +%s)" -lt "$deadline" ] && [ "$iter" -lt "$max_iter" ]; do
     # head + zero reviews — indistinguishable from "no fresh review" — and would
     # then let the wait expire straight into the operator-merge fallback on what
     # was really an auth/network error.
-    head=$(gh pr view "$pr" --repo "$REPO" --json headRefSha -q .headRefSha) \
-        || { echo "cr-public: cannot evaluate — gh pr view (headRefSha) failed"; exit 2; }
+    head=$(gh pr view "$pr" --repo "$REPO" --json headRefOid -q .headRefOid) \
+        || { echo "cr-public: cannot evaluate — gh pr view (headRefOid) failed"; exit 2; }
     [ -n "$head" ] || { echo "cr-public: cannot evaluate — empty head sha"; exit 2; }
     # fresh review at the CURRENT head? (CodeRabbit posts a review whose commit == head)
     reviewed=$(gh pr view "$pr" --repo "$REPO" --json reviews \

@@ -720,7 +720,57 @@ graphify_update() {
       return 0
     fi
   else
-    echo "  note: cannot probe for graphify-mcp holders on this platform — proceeding; the post-install verify below is the safety net."
+    # FAIL CLOSED when the probe cannot run (HIMMEL-1293). "Could not tell"
+    # is not "clear", and this arm gates a DESTRUCTIVE step: `uv tool install
+    # --force` removes the old entry points BEFORE replacing the tool dir, so
+    # if a holder is in fact live the host goes from "graphify works" to
+    # "graphify broken". The old wording called the post-install verify a
+    # "safety net", but _graphify_binary_ok only DETECTS that state — it does
+    # not repair it, and by then the entry points are already gone.
+    #
+    # The asymmetry decides it. Proceeding wrongly costs a broken install that
+    # needs every Claude Code session closed plus a manual reinstall; declining
+    # wrongly costs an unadvanced pin on an install that KEEPS WORKING, with
+    # both remedies printed right here. This is also the contract the rest of
+    # this file already keeps: _graphify_version_lt returns "not lower" on any
+    # parse failure ("never clobber on uncertainty"), and _graphify_mcp_holders
+    # documents itself as a guard that "must fail CLOSED". This caller was the
+    # one place that read its rc 1 as permission to proceed.
+    #
+    # Retrying the install on verify failure — the other candidate fix — does
+    # not address this case: the reason the install failed is a holder that is
+    # still live on the retry, so attempt two fails identically, after the
+    # entry points are already gone.
+    #
+    # GRAPHIFY_UNPROBED_OK=1 is the escape hatch for a host that legitimately
+    # cannot probe (no pwsh/powershell on Windows; neither pgrep nor ps on a
+    # slim POSIX image). Without it, fail-closed would mean such a host never
+    # updates again — the same silent permanent staleness the Windows
+    # self-match bug caused (HIMMEL-1274) — so the default is safe and the
+    # operator keeps an explicit, one-line way out.
+    if [ "${GRAPHIFY_UNPROBED_OK:-}" = "1" ]; then
+      echo "  note: cannot probe for graphify-mcp holders on this platform — proceeding anyway (GRAPHIFY_UNPROBED_OK=1). If a graphify-mcp is live this reinstall can leave graphify BROKEN; the post-install verify reports that but cannot repair it." >&2
+    else
+      {
+        echo "  SKIP: cannot probe for graphify-mcp holders on this platform — NOT attempting the reinstall."
+        echo "        graphify stays at v${installed:-?} and KEEPS WORKING; the pin has NOT advanced to $pin."
+        echo "        A probe that cannot run does not mean the machine is clear. If a graphify-mcp"
+        echo "        IS live, uv would delete the old entry points and then fail to replace the"
+        echo "        locked directory, leaving graphify broken (HIMMEL-1274/1293)."
+        echo "        To advance the pin, either close the Claude Code sessions holding graphify-mcp"
+        echo "        (each live session spawns one) and install by hand:"
+        echo "            uv tool install --force --with mcp '$spec'"
+        echo "        or, on a host that genuinely cannot probe, re-run with the override:"
+        echo "            GRAPHIFY_UNPROBED_OK=1 <this command>"
+      } >&2
+      # Same as the holders>0 skip: a working uv-managed install is left in
+      # place and we return 0, so the WSL store link must be shared here too.
+      graphify_wsl_share_store
+      # rc 0 for the same reason as that skip — nothing failed and nothing is
+      # broken. A nonzero would draw himmel-update's generic "failed
+      # (non-fatal)" warning on top of a deliberate, healthy decline.
+      return 0
+    fi
   fi
 
   echo "  graphify ${installed:-?} -> $pin (uv reinstall at pin, extras='${extras:-none}')..."
