@@ -619,7 +619,26 @@ validate_arm_inputs() {
     # (QMD_BIN is always appended), so "${probe_cmd[@]}" is safe under set -u.
     local probe_out probe_rc=0 probe_timeout="${QMD_PROBE_TIMEOUT_SECS:-60}"
     local probe_cmd=()
-    command -v timeout >/dev/null 2>&1 && probe_cmd=(timeout -k 5 "$probe_timeout")
+    # `command -v timeout` is NOT enough on Git Bash (public-PR CR). Windows
+    # ships C:\Windows\System32\timeout.exe, which is a SLEEP, not a command
+    # runner: it has no -k and takes no subcommand. If PATH resolves to that one,
+    # `timeout -k 5 60 qmd collection list` fails instantly, the probe reports a
+    # perfectly healthy qmd as HUNG, and `arm` is blocked on a supported
+    # platform — a false negative that sends the operator hunting an index lock
+    # that does not exist.
+    #
+    # Only GNU coreutils names itself in --version (the Windows one answers with
+    # an "Invalid value for timeout (/T)" error on stderr and nothing on stdout),
+    # so that is the discriminator. Captured into a variable rather than piped
+    # into grep -q: an early-exiting reader can SIGPIPE the producer, and under
+    # `set -o pipefail` that would read as "not GNU" and silently drop the
+    # bounded probe on the very hosts that have it.
+    local _timeout_ver=""
+    _timeout_ver="$(timeout --version 2>/dev/null || true)"
+    case "$_timeout_ver" in
+        *oreutils*) probe_cmd=(timeout -k 5 "$probe_timeout") ;;
+        *)          : ;;   # absent, or Windows timeout.exe -> run the probe UNBOUNDED rather than break it
+    esac
     probe_cmd+=("$QMD_BIN")
     [ -n "$QMD_JS" ] && probe_cmd+=("$QMD_JS")
     probe_out=$("${probe_cmd[@]}" collection list 2>&1) || probe_rc=$?

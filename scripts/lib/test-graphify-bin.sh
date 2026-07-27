@@ -491,6 +491,24 @@ assert "ps fallback counts a holder under a CUSTOM uv tool dir" \
   "$(command -v bash)" -c 'PATH="$1"; export PATH; out=$(. "$2/graphify-bin.sh"; _graphify_mcp_holders) && [ "$out" = "1" ]' _ "$iso_dir" "$SCRIPT_DIR"
 rm -f "$iso_dir/ps" "$iso_dir/uv"
 
+# The probe asks for `ps -ww` first so a long tool-dir path is not truncated out
+# of the command line, then falls back to plain `ps`. Both fake `ps` stubs above
+# ignore their arguments, so they exercise the -ww branch and say NOTHING about
+# the fallback — and the fallback is the one that matters on Git Bash, whose
+# MSYS `ps` rejects -ww outright. Without this case a regression that dropped the
+# fallback would leave every such host unable to probe at all, with a green
+# suite. So: a stub that FAILS on -ww and succeeds without it.
+cat > "$iso_dir/ps" <<FAKEPS3
+#!/bin/sh
+case "\$1" in -ww) echo "ps: unknown option -- ww" >&2; exit 1 ;; esac
+printf '%s\n' "/home/u/.local/share/uv/tools/$gfy_pypi/bin/python -m server"
+FAKEPS3
+chmod +x "$iso_dir/ps"
+# shellcheck disable=SC2016
+assert "ps fallback survives a ps that rejects -ww (the Git Bash shape)" \
+  "$(command -v bash)" -c 'PATH="$1"; export PATH; out=$(. "$2/graphify-bin.sh"; _graphify_mcp_holders) && [ "$out" = "1" ]' _ "$iso_dir" "$SCRIPT_DIR"
+rm -f "$iso_dir/ps"
+
 # The path->pattern helper must survive regex metacharacters in a real path: an
 # unbalanced paren is an ERE SYNTAX error, which would make the probe rc 2 —
 # "unavailable" — on a machine that is merely oddly named.

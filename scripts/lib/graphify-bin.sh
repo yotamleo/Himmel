@@ -590,7 +590,18 @@ _graphify_mcp_holders() {
         # update forever. `ps` is captured and status-checked FIRST for the
         # same reason as above: a failed ps piped into grep -c yields "0",
         # which would read as a clear machine.
-        _out="$(ps -eo args 2>/dev/null)" || return 1
+        # -ww FIRST, with a fallback (public-PR CR): plain `ps -eo args` truncates
+        # the command line to terminal width on procps, and the tool-dir needle
+        # this branch now also searches for is a long absolute path — exactly the
+        # part that gets cut. A truncated line silently reads as "no holder",
+        # which is the fail-OPEN direction: it lets the destructive update
+        # proceed while a graphify-mcp is live.
+        #
+        # It cannot be applied unconditionally, though — the MSYS `ps` that Git
+        # Bash ships REJECTS -ww (verified on this host), and a hard switch would
+        # turn every such host from "probes correctly" into "cannot probe at
+        # all". So: try widened, fall back to plain, and only then give up.
+        _out="$(ps -ww -eo args 2>/dev/null)" || _out="$(ps -eo args 2>/dev/null)" || return 1
         [ -n "$_out" ] || return 1
         # -cE + both needles, matching the pgrep branch and Windows.
         #
