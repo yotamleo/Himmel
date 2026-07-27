@@ -1538,6 +1538,88 @@ assert_not_contains "silent rc=1 never reads not armed" "not armed  HIMMEL-Pipel
 rm -f "$STATE/notfound-silent"
 
 # ---------------------------------------------------------------------------
+# A --vault with a TRAILING SEPARATOR (public-PR CR). Shell tab-completion
+# supplies "…/vault/" routinely, and `cygpath -w` PRESERVES it, so the emitted
+# `cd /d "%s"` would carry a backslash immediately before the closing quote.
+# Normalized at the source now; this pins that the .bat never contains the
+# `\"` sequence, and — the half that matters — that the cd still targets the
+# REAL directory rather than a truncated one.
+echo "TEST: a --vault with a trailing separator emits a clean cd target"
+TRAIL_VAULT="$TMP_ROOT/trailing vault"
+mkdir -p "$TRAIL_VAULT"
+rc=0; out=$(run_pc arm --vault "$TRAIL_VAULT/" 2>&1) || rc=$?
+assert_rc "trailing-separator vault arms rc 0" 0 "$rc"
+trail_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
+TRAIL_WIN=$(cygpath -w "$TRAIL_VAULT")
+assert_contains "cd targets the real dir with no trailing separator" \
+    "cd /d \"${TRAIL_WIN//%/%%}\"" "$trail_bat"
+assert_not_contains "no backslash-quote sequence in the emitted .bat" '\"' "$trail_bat"
+run_pc disarm >/dev/null
+
+# A DRIVE ROOT must KEEP its separator: `cd /d "C:\"` is the root of C:, while
+# `cd /d "C:"` is the current directory on C: — a different place. Asserted on
+# the normalizer directly, since arming against a drive root is not something
+# this suite can stage.
+norm_root() {
+    local w="$1"
+    while :; do
+        case "$w" in
+            [A-Za-z]:\\) break ;;
+            *\\)         w="${w%\\}" ;;
+            *)           break ;;
+        esac
+    done
+    printf '%s' "$w"
+}
+
+# norm_root above is a COPY of the production loop, so on its own it would
+# validate the copy and say nothing about the real code (panel round, [glm-1]):
+# a change to either emitter's loop would leave the drive-root assertion green.
+# The two assertions above that ARM a real vault do exercise the production path
+# (verified by deletion), but the drive-root case cannot be staged through
+# `arm` — you cannot arm against C:\.
+#
+# So pin the copy to the sources instead: extract the loop from BOTH emitters
+# and require them to be identical to each other. If production changes, the
+# divergence surfaces here rather than silently making the assertion hollow.
+# The two emitters name their variable differently ($vault_win vs $himmel_win),
+# which is legitimate — so the identifier is normalized to a placeholder before
+# comparing. What is being pinned is the loop's SHAPE (the drive-root guard and
+# the suffix strip), not its spelling.
+extract_norm_loop() {
+    # shellcheck disable=SC2016  # the $ and {} are literal source text to rewrite
+    sed -n '/^    while :; do$/,/^    done$/p' "$1" \
+        | sed -E 's/\$\{?(vault_win|himmel_win)/${VAR/g; s/(vault_win|himmel_win)=/VAR=/g' \
+        | sed 's/[[:space:]]*$//'
+}
+norm_pipeline=$(extract_norm_loop "$SCRIPT")
+norm_graphmap=$(extract_norm_loop "$SCRIPT_DIR/graphmap-cadence.sh")
+if [ -n "$norm_pipeline" ] && [ -n "$norm_graphmap" ]; then
+    pass "both emitters' normalizer loops were located"
+else
+    fail "both emitters' normalizer loops were located" "one of the two extractions came back empty"
+fi
+if [ "$norm_pipeline" = "$norm_graphmap" ]; then
+    pass "the two emitters normalize identically"
+else
+    fail "the two emitters normalize identically" "the loops have diverged"
+fi
+
+# Built from its OCTAL code rather than written inline. A literal backslash
+# before a closing quote reads as an attempted escape (SC1003) in every quoting
+# style, and this test is entirely ABOUT trailing backslashes — so the character
+# is produced rather than spelled.
+BS=$(printf '\134')
+if [ "$(norm_root "C:$BS")" = "C:$BS" ] \
+   && [ "$(norm_root "C:${BS}a b$BS")" = "C:${BS}a b" ] \
+   && [ "$(norm_root "C:${BS}x$BS$BS")" = "C:${BS}x" ]; then
+    pass "trailing-separator normalization keeps a drive root, strips the rest"
+else
+    fail "trailing-separator normalization keeps a drive root, strips the rest" \
+        "drive root -> $(norm_root "C:$BS") ; spaced dir -> $(norm_root "C:${BS}a b$BS")"
+fi
+
+# ---------------------------------------------------------------------------
 # emit_bat's escaping CONVENTION (public-PR CR)
 #
 # This emitter used to escape six of its ten parameters internally while the

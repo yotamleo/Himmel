@@ -868,6 +868,37 @@ cmd_arm() {
         echo "ERR pipeline-cadence: cygpath -w failed for vault path: $vault_win" >&2
         exit 4
     fi
+    # Drop a trailing separator (public-PR CR). `--vault` is operator input and
+    # shell tab-completion happily supplies "…/vault/", which cygpath -w
+    # PRESERVES: `C:\…\vault\`. That lands bare in `cd /d "%s"`, giving a
+    # backslash immediately before the closing quote.
+    #
+    # Honesty about WHY: the review said cmd.exe's batch parser consumes that
+    # `\"` as an escaped quote and corrupts the rest of the line. That does NOT
+    # reproduce — measured on a spaced path with a trailing backslash, `cd`
+    # succeeded, the `>>` redirect was honoured, the following line ran, rc 0.
+    # Backslash-escaping of quotes is the C runtime's argv convention, not cmd's
+    # own tokenizer, and this value is consumed by `cd /d`, a cmd BUILTIN.
+    #
+    # Normalizing anyway, because it stands on its own terms: a trailing
+    # separator is redundant in a `cd` target (C:\foo and C:\foo\ are the same
+    # directory), it is noise in a generated runner an operator has to read, and
+    # stripping it removes the whole question rather than resting the runner's
+    # correctness on a parser subtlety. Done HERE, at the source, rather than in
+    # cadence_cmd_escape — the shared escaper is the %-only contract four
+    # emitters depend on and that this PR spent rounds hardening; a path-shape
+    # concern does not belong in it.
+    # A DRIVE ROOT keeps its separator: `cd /d "C:\"` is the root of C:, while
+    # `cd /d "C:"` means "the current directory on C:" — a different place, and
+    # stripping there would be a real regression in the name of cosmetics.
+    # Plain suffix removal in a loop (bash 3.2-safe; no extglob).
+    while :; do
+        case "$vault_win" in
+            [A-Za-z]:\\) break ;;
+            *\\)         vault_win="${vault_win%\\}" ;;
+            *)           break ;;
+        esac
+    done
 
     # Pre-trust the vault dir (HIMMEL-386) so the fired cadence runs don't stall
     # on Claude Code's interactive workspace-trust prompt ("Is this a project

@@ -635,6 +635,23 @@ cmd_arm() {
         echo "ERR graphmap-cadence: cygpath -w failed for himmel root: $himmel_win" >&2
         exit 4
     fi
+    # Same trailing-separator normalization as pipeline-cadence.sh's vault path
+    # (public-PR CR, secondary site) — see the long note there for why this is
+    # done at the source rather than in the shared cadence_cmd_escape, and for
+    # the measurement showing cmd.exe does NOT consume the `\"` as an escape.
+    # Lower probability here: HIMMEL_ROOT is resolved via `cd … && pwd`, which
+    # does not produce a trailing separator. Normalized anyway so the two `cd /d`
+    # emitters answer the question identically instead of one of them relying on
+    # its input happening to be well-shaped.
+    # A DRIVE ROOT keeps its separator: `cd /d "C:\"` is the root of C:, while
+    # `cd /d "C:"` is the current directory on C:.
+    while :; do
+        case "$himmel_win" in
+            [A-Za-z]:\\) break ;;
+            *\\)         himmel_win="${himmel_win%\\}" ;;
+            *)           break ;;
+        esac
+    done
 
     # Dedup guard — never double-register the cadence.
     local existing
