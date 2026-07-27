@@ -571,6 +571,115 @@ stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "disproved crit is not blocking → exit 0"
 rm -rf "$tmp"
 
+# 6a-1. HIMMEL-1294 — an `amend` supersede record is APPLIED before gate 4
+# judges. Incident 1: a blocking imp recorded honestly wedged the branch, and
+# re-appending at a lower severity silently no-op'd, so the only escapes were a
+# hand-edit of the JSONL or an operator. The amend must actually take effect
+# here, or the verb is theatre.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(finding "${sha:0:8}" imp agreed)" \
+  "$(printf '{"kind":"amend","target_head":"%s","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"severity":"sug"},"reason":"out of diff"}' "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "amend severity imp->sug unblocks gate 4 → exit 0"
+rm -rf "$tmp"
+
+# 6a-2. Incident 2: the finding was keyed to the head that FIXES it instead of
+# the head it was raised against. An amend that re-keys `head` must move the
+# finding OFF this head entirely.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(finding "${sha:0:8}" imp agreed)" \
+  "$(printf '{"kind":"amend","target_head":"%s","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"head":"deadbeef"},"reason":"raised against deadbeef, mis-keyed"}' "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "amend re-keying head moves the finding off this SHA → exit 0"
+rm -rf "$tmp"
+
+# 6a-3. An amend must not be a universal unblock: one that leaves the finding
+# blocking still blocks.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(finding "${sha:0:8}" imp agreed)" \
+  "$(printf '{"kind":"amend","target_head":"%s","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"file":"b.sh"},"reason":"wrong file"}' "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "an amend that does not clear the finding still blocks → exit 15"
+rm -rf "$tmp"
+
+# 6a-4. An amend record is metadata, not review evidence — it must never count
+# toward the gate-3 responder floor.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(printf '{"kind":"amend","target_head":"%s","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"severity":"sug"},"reason":"x"}' "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "an amend alone is not a responder → exit 14"
+rm -rf "$tmp"
+
+# 6c. HIMMEL-1294 — a TRACKED deferral clears gate 4. Before this the only
+# mechanical exits for an honest out-of-diff crit|imp were a downgrade to sug or
+# a false `disproved`, so the gate pushed an honest session toward mis-recording.
+deferred_finding() { printf '{"kind":"finding","head":"%s","model":"codex","finding_id":"codex-1","severity":"imp","file":"a.sh","line":1,"verdict":"deferred","deferred_to":"%s","reason":"%s"}' "$1" "$2" "$3"; }
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(deferred_finding "${sha:0:8}" HIMMEL-1293 "pre-existing, already public")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "tracked deferral (ticket + reason) is not blocking → exit 0"
+rm -rf "$tmp"
+
+# 6d. …but a deferral is only honest if it is TRACKED. A bare `deferred`, or one
+# missing either half of the evidence, must STILL block — otherwise the verdict
+# is just a cheaper lie than `disproved`.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(finding "${sha:0:8}" imp deferred)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "bare deferred with no ticket still blocks → exit 15"
+rm -rf "$tmp"
+
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(deferred_finding "${sha:0:8}" HIMMEL-1293 "")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "deferral with a ticket but no reason still blocks → exit 15"
+rm -rf "$tmp"
+
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(deferred_finding "${sha:0:8}" "not-a-ticket" "why")" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "deferral with a malformed ticket key still blocks → exit 15"
+rm -rf "$tmp"
+
+# 6e. glm-3 — deferring an ALREADY-RECORDED finding through amend must actually
+# clear gate 4. The gate reads the FINDING-level reason, so an amend that sets
+# only verdict+ticket leaves it blocking; this is the end-to-end shape the
+# gate's own error message prints, so if it does not work the hint is a trap.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(finding "${sha:0:8}" imp agreed)" \
+  "$(printf '{"kind":"amend","target_head":"%s","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"verdict":"deferred","deferred_to":"HIMMEL-1293","reason":"pre-existing, already public"},"reason":"deferred after review"}' "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "amend to a TRACKED deferral clears gate 4 → exit 0"
+rm -rf "$tmp"
+
+# …and the half-done version must NOT clear: verdict+ticket with no
+# finding-level reason is exactly the dead end glm-3 found.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(finding "${sha:0:8}" imp agreed)" \
+  "$(printf '{"kind":"amend","target_head":"%s","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"verdict":"deferred","deferred_to":"HIMMEL-1293"},"reason":"deferred after review"}' "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "amend deferral without a finding-level reason still blocks → exit 15"
+rm -rf "$tmp"
+
+# 6f. codex-1 — the ticket-key check must be an anchored regex, not a glob.
+# `HI-1x` passes a `[A-Z][A-Z0-9]*-[0-9]*` glob and must still block here.
+make_repo
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(deferred_finding "${sha:0:8}" "HI-1x" "why")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "ticket key with a trailing non-digit still blocks → exit 15"
+rm -rf "$tmp"
+
 # 6b. A Suggestion never blocks.
 make_repo
 write_marker "$tmp" "$sha"

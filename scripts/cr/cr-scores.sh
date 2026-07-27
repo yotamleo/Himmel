@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 # scripts/cr/cr-scores.sh — per-critic agreed/availability scorecard (HIMMEL-415)
 # Usage: cr-scores.sh [--window N] [--artifact kind] [--perspective on|off]
+#        cr-scores.sh --by-branch [<branch>]
 # Reads CR_LEDGER (default: $(git rev-parse --git-common-dir)/cr-critic-scores.jsonl)
 # and prints a per-model table plus drop advice.
+#
+# --by-branch (HIMMEL-1299): per-PR review SPEND. Every other table here is
+# per-model and cumulative, so "what did this PR cost the scarce reviewer?" was
+# unanswerable — the fix-then-re-review loop has no budget, no termination
+# policy, and no way to see the budget is nearly gone. #523 ran twelve rounds
+# before anyone could say how many CodeRabbit calls that had been.
+#
+# It needs no new record kind. `avail` already carries branch + model and is
+# written once per (head, model); every round produces a new head, so the ROW
+# COUNT for a (branch, model) pair IS the number of calls that lane made on
+# that PR, and the distinct heads are the rounds. Measurement only: it sets no
+# budget and blocks nothing — you cannot budget what you cannot yet measure.
 set -uo pipefail
 
 # ── Named threshold constants (referenced by test-cr-scores.sh) ────────────
@@ -11,12 +24,20 @@ CR_SCORES_MIN_N="${CR_SCORES_MIN_N:-10}"
 WINDOW=20
 FILTER_ARTIFACT=""
 FILTER_PERSPECTIVE=""
+BY_BRANCH=0
+BRANCH_FILTER=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --window) [ $# -ge 2 ] || { echo "cr-scores.sh: --window requires an argument" >&2; exit 2; }; WINDOW="$2"; shift 2;;
     --artifact) [ $# -ge 2 ] || { echo "cr-scores.sh: --artifact requires an argument" >&2; exit 2; }; FILTER_ARTIFACT="$2"; shift 2;;
     --perspective) [ $# -ge 2 ] || { echo "cr-scores.sh: --perspective requires an argument" >&2; exit 2; }; FILTER_PERSPECTIVE="$2"; shift 2;;
+    --by-branch)
+      BY_BRANCH=1; shift
+      # Optional positional branch. Do NOT swallow a following flag.
+      if [ $# -gt 0 ]; then
+        case "$1" in -*) ;; *) BRANCH_FILTER="$1"; shift ;; esac
+      fi ;;
     *) echo "cr-scores.sh: unknown option $1" >&2; exit 2;;
   esac
 done
@@ -25,6 +46,75 @@ ledger="${CR_LEDGER:-$(git rev-parse --git-common-dir 2>/dev/null)/cr-critic-sco
 
 if [ ! -f "$ledger" ] || [ ! -s "$ledger" ]; then
   echo "no critic scores recorded yet (ledger: $ledger)"
+  exit 0
+fi
+
+if [ "$BY_BRANCH" = "1" ]; then
+  # shellcheck disable=SC2016  # the $-refs below are JS inside a single-quoted node script, not shell
+  LEDGER="$ledger" BRANCH_FILTER="$BRANCH_FILTER" node -e '
+const fs = require("fs");
+const ledger = process.env.LEDGER;
+const only   = process.env.BRANCH_FILTER || "";
+const records = [];
+for (const l of fs.readFileSync(ledger, "utf8").split("\n").filter(Boolean)) {
+  try { records.push(JSON.parse(l)); } catch (_) { /* skip malformed */ }
+}
+// calls[branch][model] = {ok, unavailable, est_total}; heads[branch] = Set
+const calls = {}, heads = {}, findings = {};
+for (const r of records) {
+  const b = r.branch;
+  if (!b) continue;                       // pre-branch records: not attributable
+  if (only && b !== only) continue;
+  if (r.head) { (heads[b] = heads[b] || new Set()).add(r.head); }
+  if (r.kind === "avail" && r.model) {
+    const m = ((calls[b] = calls[b] || {})[r.model] =
+               calls[b][r.model] || { ok:0, unavailable:0, est_total:0 });
+    if (r.status === "ok") m.ok++; else m.unavailable++;
+  } else if (r.kind === "usage" && r.model) {
+    const m = ((calls[b] = calls[b] || {})[r.model] =
+               calls[b][r.model] || { ok:0, unavailable:0, est_total:0 });
+    m.est_total += Number(r.est_total_tokens) || 0;
+  } else if (r.kind === "finding") {
+    findings[b] = (findings[b] || 0) + 1;
+  }
+}
+const branches = Object.keys(calls).sort();
+if (!branches.length) {
+  console.log(only ? ("no review spend recorded for branch " + only)
+                   : "no branch-attributed review spend recorded yet");
+  process.exit(0);
+}
+const W = [34, 16, 7, 7, 8, 11];
+const row = cells => cells.map((c,i)=>String(c).padEnd(W[i])).join("  ");
+console.log("=== Review spend per branch (HIMMEL-1299) ===");
+console.log("A call is one avail record = one (head, model) pair. Rounds are distinct heads.");
+console.log("");
+console.log(row(["branch","model","calls","failed","rounds","est_tokens"]));
+console.log(W.map(w=>"-".repeat(w)).join("  "));
+let worst = null;
+for (const b of branches) {
+  const rounds = heads[b] ? heads[b].size : 0;
+  const models = Object.keys(calls[b]).sort();
+  let first = true, branchCalls = 0;
+  for (const m of models) {
+    const c = calls[b][m];
+    branchCalls += c.ok + c.unavailable;
+    console.log(row([first ? b : "", m, c.ok + c.unavailable, c.unavailable,
+                     first ? rounds : "", c.est_total || ""]));
+    first = false;
+  }
+  // Per-branch summary as prose, not a table row: findings and rounds are
+  // branch-level facts and would sit under the wrong column headers.
+  console.log("    -> " + rounds + " round(s), " + branchCalls + " critic call(s), "
+              + (findings[b] || 0) + " finding(s) recorded");
+  if (!worst || branchCalls > worst.calls) worst = { b, calls: branchCalls, rounds };
+}
+if (!only && worst) {
+  console.log("");
+  console.log("Most expensive branch: " + worst.b + " — " + worst.calls
+              + " critic call(s) across " + worst.rounds + " round(s).");
+}
+'
   exit 0
 fi
 

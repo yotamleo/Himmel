@@ -135,4 +135,105 @@ _tg_id="123456789"; _tg_sec="AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawX"
 CR_LEDGER="$LR" bash "$LA" avail --branch b --head RH9 --model m --status unavailable --reason http-4xx --detail "telegram token ${_tg_id}:${_tg_sec} leaked"
 check "detail scrubs a telegram-bot-token shape" "$(contains_json_detail RH9 "${_tg_id}:${_tg_sec}")" "false"
 
+# ── HIMMEL-1294: conflicting re-append + the amend verb ─────────────────────
+# The wedge this ticket is about: re-appending a finding with a LOWER severity
+# hit the dedup key, wrote nothing, and exited 0. The caller believed the
+# record was corrected; the gate kept reading the original and kept refusing.
+AM="$tmp/amend.jsonl"; : > "$AM"
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH1 --model codex-adv --id codex-adv-1 --severity imp --file f --line 3 --verdict agreed
+
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH1 --model codex-adv --id codex-adv-1 --severity sug --file f --line 3 --verdict agreed 2>"$tmp/conflict.err"
+check "conflicting re-append exits non-zero (was a silent 0)" "$?" "3"
+check "conflicting re-append wrote NOTHING" "$(wc -l < "$AM" | tr -d ' ')" "1"
+check "conflicting re-append names the amend verb" "$(grep -c 'amend --head' "$tmp/conflict.err")" "1"
+check "conflicting re-append says nothing was written" "$(grep -c 'NOTHING was written' "$tmp/conflict.err")" "1"
+
+# An IDENTICAL re-append must stay a quiet success — /pr-check re-runs on the
+# same head as a matter of course, and idempotency is a real feature.
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH1 --model codex-adv --id codex-adv-1 --severity imp --file f --line 3 --verdict agreed
+check "identical re-append still exits 0 (idempotent)" "$?" "0"
+check "identical re-append adds no line" "$(wc -l < "$AM" | tr -d ' ')" "1"
+
+# amend appends a SUPERSEDE record; it never rewrites the original line.
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set severity=sug --reason "out of diff, pre-existing, already public"
+check "amend exits 0" "$?" "0"
+check "amend APPENDS rather than rewriting" "$(wc -l < "$AM" | tr -d ' ')" "2"
+check "the original finding line is untouched" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="finding");console.log(o.severity)')" "imp"
+check "amend records the target + the set" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.target_head+","+o.finding_id+","+o.set.severity)')" "AH1,codex-adv-1,sug"
+check "amend records the reason" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.reason)')" "out of diff, pre-existing, already public"
+
+# The whole point of the verb: it must NEVER report success without writing.
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id no-such-finding --set severity=sug --reason x 2>"$tmp/noop.err"
+check "amend with no target exits non-zero" "$?" "3"
+check "amend with no target says nothing was amended" "$(grep -c 'nothing amended' "$tmp/noop.err")" "1"
+check "amend with no target wrote no line" "$(wc -l < "$AM" | tr -d ' ')" "2"
+
+# A correction with no stated reason is indistinguishable from tampering.
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set severity=sug 2>/dev/null
+check "amend requires --reason" "$?" "2"
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --reason x 2>/dev/null
+check "amend requires at least one --set" "$?" "2"
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set model=evil --reason x 2>/dev/null
+check "amend refuses to set a non-amendable key" "$?" "2"
+
+# Incident 2: the finding was keyed to the head that FIXES it instead of the
+# head it was raised against. amend can re-key it.
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set head=deadbeef --reason "raised against deadbeef, mis-keyed onto the fixing head"
+check "amend can re-key the head" "$(L="$AM" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend");console.log(rs[rs.length-1].set.head)')" "deadbeef"
+
+# codex-1 round 3: a re-key to something the gate cannot recognise as a head
+# makes the finding vanish from gate 4 entirely - fail OPEN. Validate exactly
+# the shape the gate consumes (isHex: 7-40 hex chars), no narrower, no wider.
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set head=HEAD~1 --reason x 2>/dev/null
+check "amend rejects a non-sha head (would silently unblock)" "$?" "2"
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set head=abc123 --reason x 2>/dev/null
+check "amend rejects a too-short head" "$?" "2"
+
+# codex-1 round 4: after a re-key, the original row still reads the OLD head
+# (append-only), so a second amend aimed at the NEW head - the only head an
+# operator can see in the effective state - must still resolve. Otherwise the
+# recovery path breaks exactly when it is being used to recover.
+CR_LEDGER="$AM" bash "$LA" amend --head deadbeef --id codex-adv-1 --set severity=sug --reason "second amend, aimed at the re-keyed head"
+check "amend resolves a finding through a prior re-key" "$?" "0"
+check "the follow-up amend still keys on the ORIGINAL head" "$(L="$AM" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend");console.log(rs[rs.length-1].target_head)')" "AH1"
+
+# ── HIMMEL-1294: the deferral field ─────────────────────────────────────────
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH3 --model glm --id glm-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason "pre-existing, already public"
+check "finding stores deferred_to" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="AH3");console.log(o.verdict+","+o.deferred_to)')" "deferred,HIMMEL-1293"
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH4 --model glm --id glm-2 --severity imp --file f --line 1 --verdict deferred --deferred-to "not a ticket" 2>/dev/null
+check "a malformed --deferred-to is rejected" "$?" "2"
+
+# codex-1: the validator was a shell GLOB, not a regex. In `[A-Z][A-Z0-9]*-[0-9]*`
+# the trailing `*` means ANY characters, so HI-1x passed here and was then
+# rejected by the gate's anchored regex — split validation, the exact trap that
+# makes a deferral fail late and opaquely.
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH5 --model glm --id glm-3 --severity imp --file f --line 1 --verdict deferred --deferred-to "HI-1x" --reason r 2>/dev/null
+check "ticket key with a trailing non-digit is rejected (glob-vs-regex)" "$?" "2"
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH5 --model glm --id glm-3 --severity imp --file f --line 1 --verdict deferred --deferred-to "himmel-1" --reason r 2>/dev/null
+check "lowercase ticket key is rejected" "$?" "2"
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH6 --model glm --id glm-4 --severity imp --file f --line 1 --verdict deferred --deferred-to "HI-1" --reason r
+check "a minimal well-formed ticket key is accepted" "$?" "0"
+
+# codex-1: gate 4 blocks on severity IN (crit, imp), so a typo matches neither
+# and would silently unblock. The one verb that can change a gate verdict must
+# not fail OPEN on a fat finger.
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set severity=suq --reason x 2>/dev/null
+check "amend rejects a typo'd severity (would silently unblock)" "$?" "2"
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set severity=imp --reason x
+check "amend accepts a valid severity" "$?" "0"
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set verdict=disprovd --reason x 2>/dev/null
+check "amend rejects a typo'd verdict" "$?" "2"
+
+# glm-5: --set deferred_to= must get the SAME eager validation, or a typo is
+# only caught at gate time — on the very path amend exists to unblock.
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set deferred_to=nope --reason x 2>/dev/null
+check "amend --set deferred_to= validates the ticket key too" "$?" "2"
+
+# glm-3: the gate reads the FINDING's reason, so `reason` must be amendable —
+# otherwise deferring an already-recorded finding (the documented recovery) is a
+# dead end for any finding logged without one.
+CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set reason="out of scope for this branch" --reason "deferring after review"
+check "amend can set the finding-level reason" "$?" "0"
+check "amend --set reason lands in set, not on the amend reason" "$(L="$AM" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend");const r=rs[rs.length-1];console.log(r.set.reason+"|"+r.reason)')" "out of scope for this branch|deferring after review"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

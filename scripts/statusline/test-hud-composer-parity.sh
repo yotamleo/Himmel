@@ -72,9 +72,27 @@ stdin_json="$(printf '{"model":{"id":"claude-opus-4-8"},"transcript_path":"%s","
 
 run_composer() {
     # $@ = extra env assignments already exported by caller.
+    #
+    # The segment timeout is pinned WELL above the 3s production default on
+    # purpose. The composer runs the WAW segment under `timeout` and fails open
+    # to an empty line when it overruns — correct on the render path, but it
+    # turns the two WAW cases below into a measurement of machine speed: on a
+    # loaded box (e.g. immediately after test/test_cache.sh, which spawns jq
+    # several hundred times) the ~1s segment crosses 3s and both cases fail with
+    # no WAW line at all. Verified by forcing the mechanism directly:
+    # HIMMEL_WHERE_ARE_WE_SEG_TIMEOUT=1 reproduces exactly that 2-failure
+    # signature. These cases assert composer/segment PARITY, so the segment must
+    # be allowed to finish; the timeout's own fail-open behaviour is not what is
+    # under test here.
+    #
+    # Pinned UNCONDITIONALLY, not `${VAR:-30}`: honouring an inherited value let
+    # an ambient 1 or 3 in the caller's environment silently reintroduce the very
+    # missing-segment flake this pin exists to remove, turning a parity assertion
+    # back into a machine-speed one. A hermetic test sets its own preconditions.
     printf '%s' "$stdin_json" | \
         HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HANDOVER_DIR="$HROOT" \
         CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" \
+        HIMMEL_WHERE_ARE_WE_SEG_TIMEOUT=30 \
         bash "$COMPOSER" 2>/dev/null
 }
 
@@ -100,7 +118,15 @@ fi
 if [ -n "$key" ]; then
     seg_line="$(printf '%s' "$stdin_json" | HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HANDOVER_DIR="$HROOT" \
                 bash "$SEGMENT" --cwd "$WT" 2>/dev/null)"
-    if [ -n "$seg_line" ] && printf '%s\n' "$out" | grep -qF "$seg_line"; then
+    # LC_ALL=C is load-bearing, not decoration. The segment line carries 📋
+    # (U+1F4CB), a 4-byte astral-plane character, and GNU grep 3.0 — what
+    # Git-Bash/MSYS ships — fails to match an astral character through `-F` when
+    # the locale is UTF-8 (en_GB.UTF-8 here): the identical byte sequence is
+    # reported as absent. Verified in isolation: the same needle matches under
+    # LC_ALL=C and does not under LC_ALL=en_GB.UTF-8, while `⎇` (3-byte) and the
+    # ASCII parts match under both. This test compares BYTES for a byte-identity
+    # claim, so the C locale is also the semantically correct choice.
+    if [ -n "$seg_line" ] && printf '%s\n' "$out" | LC_ALL=C grep -qF "$seg_line"; then
         pass "WAW parity -> composer emits the segment line verbatim ('$seg_line')"
     else
         fail "WAW parity -> seg='$seg_line' not found in composer out"

@@ -697,6 +697,52 @@ Steps:
    The ledger is deduped on `(head, finding_id)` for findings and `(head, model)`
    for avail records, so re-running `/pr-check` on the same HEAD is safe.
 
+   **Record the head the finding was RAISED AGAINST (HIMMEL-1294).** `--head`
+   is the SHA the critic reviewed, not the SHA that fixes it. Keying a finding
+   onto the fixing head makes gate 4 block a commit that already resolved it,
+   and the fix then requires an `amend` (below). On the `/cr-public` path,
+   where the public review lands against an earlier head than the private
+   commit carrying the fix, this is easy to get wrong — take the head from the
+   review, not from `git rev-parse HEAD`.
+
+   **A genuinely out-of-scope blocking finding is DEFERRED, never downgraded
+   (HIMMEL-1294).** When a `crit`/`imp` finding is real but out-of-diff,
+   pre-existing, or out-of-scope for this branch, do NOT record it as `sug` and
+   do NOT claim `disproved` — both are false, and the gate used to leave no
+   other mechanical exit. File a ticket and record the truth:
+   ```bash
+   bash scripts/cr/ledger-append.sh finding \
+       --branch "$branch" --head "$head" \
+       --model "<slug>" --id "<slug>-N" --severity imp \
+       --file <file> --line <line> \
+       --verdict deferred --deferred-to HIMMEL-<n> \
+       --reason "<why it is out of scope for this branch>"
+   ```
+   Gate 4 accepts a deferral ONLY with both the ticket key and the reason — a
+   bare `deferred` still blocks, so this is a truthful third exit, not a free
+   pass. The deferral is printed and audit-logged when the marker clears.
+
+   **Correcting a record: `amend`, never a re-append (HIMMEL-1294).** Findings
+   dedup on `(head, finding_id)`, so re-appending with different content writes
+   nothing. That used to exit 0 silently — the caller believed the severity was
+   fixed while the gate kept reading the original — and it wedged the
+   HIMMEL-1291 loop twice. It is now a loud non-zero pointing here:
+   ```bash
+   bash scripts/cr/ledger-append.sh amend \
+       --head <head-the-finding-is-CURRENTLY-recorded-at> --id "<slug>-N" \
+       --set severity=sug --reason "<why the original record was wrong>"
+   # or re-key a mis-keyed finding onto the head it was raised against:
+   #   --set head=<raised-against-sha>
+   # or defer it after the fact — `--set reason=` is required and is NOT the
+   # same field as `--reason` (which says why the RECORD was wrong; the gate
+   # reads the FINDING's reason):
+   #   --set verdict=deferred --set deferred_to=HIMMEL-<n> --set reason="<why out of scope>"
+   ```
+   `amend` APPENDS a supersede record — the ledger stays append-only and the
+   correction is itself auditable. It refuses non-zero when no matching finding
+   exists, so it can never report success without writing. Never hand-edit
+   `.git/cr-critic-scores.jsonl`.
+
 4.6. **Handover CR-findings capture (HIMMEL-416 F2 / C2) — runs alongside 4.5; best-effort, single-writer for the `## CR Findings` section, graceful skip when there is no active handover item.** Mirrors the panel findings into the current work-item's `reviewer-notes.md` so CR results survive the session (the F1 ledger is machine state; this is the human-readable trail surfaced on resume).
 
    Resolve the active item ONCE; skip the whole block (no error) if there is none:
