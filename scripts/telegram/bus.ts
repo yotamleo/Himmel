@@ -68,7 +68,13 @@ export async function truncateFullyConsumed(file: string, cursorFile: string): P
   return true;
 }
 // reader tracks a byte offset in <file>.cursor; parses only '\n'-terminated lines.
-export async function readNewLines(file: string, cursorFile: string): Promise<any[]> {
+// Generic in the record shape (HIMMEL-1296 CR glm-1) so a caller can NAME what
+// it is reading — the poller reads Inbound from inbound.jsonl, sessions read
+// their own inbox shape — instead of casting `any[]` at the call site. Defaults
+// to `any`, so every existing caller is unchanged. The parse itself stays
+// unchecked: these are JSON lines off disk, and T is the caller's assertion
+// about them, not a validation.
+export async function readNewLines<T = any>(file: string, cursorFile: string): Promise<T[]> {
   let start = 0;
   try { start = Number(await readFile(cursorFile, "utf8")) || 0; } catch {}
   let buf = "";

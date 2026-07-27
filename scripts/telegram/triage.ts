@@ -9,7 +9,10 @@ export type TriageVerdict = "ignore" | "ack" | "spawn-low" | "spawn-high";
 // fall-through to the default model.
 export type TriageModelOverride = "haiku";
 export type TriageInvokeFn = (args: string[], prompt: string) => Promise<string>;
-export type TriageDeps = { invoke?: TriageInvokeFn; timeoutMs?: number; sessionLabel?: string };
+// fromOperator (HIMMEL-1296 CR codex-adv-1): the sender's ROLE, which selects
+// the prompt framing. Defaults false — the conservative side: an unwired caller
+// gets the shared-group framing, never the operator one.
+export type TriageDeps = { invoke?: TriageInvokeFn; timeoutMs?: number; sessionLabel?: string; fromOperator?: boolean };
 
 const VERDICTS = new Set<TriageVerdict>(["ignore", "ack", "spawn-low", "spawn-high"]);
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -28,9 +31,61 @@ function resolveTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
 }
 
-function triagePrompt(text: string): string {
+// HIMMEL-1296. Two things were wrong with the bare-message prompt.
+//
+// 1. It never said what the group IS, so a terse follow-up (`try again..`,
+//    `Status?`) was indistinguishable from idle chatter.
+// 2. `ack` LIES about its effect. To a classifier the token reads "send an
+//    acknowledgement"; at the poller it means the same as `ignore` — silently
+//    discarded, nobody ever sees it. So the model picked the label whose name
+//    matched its intent and unknowingly chose the drop.
+//
+// Naming each verdict's consequence is what actually moves messages out of the
+// drop set. Measured against the three texts the incident lost, via the live
+// classifier (deepseek-v4-flash):
+//
+//   prompt                     try again..   …upgrraded whispper?   why didn't we got an answer
+//   bare (before)              ignore        ignore                 ack
+//   + channel framing only     ack           ack                    ack        ← still dropped
+//   + verdict EFFECTS (this)   spawn-low     spawn-low              spawn-low  ← answered
+//
+// and genuine chatter (`lol nice`, `haha 😂`, `ok`) still classifies `ack`, so
+// the HIMMEL-721 spam gate keeps its teeth.
+//
+// Deliberately stateless — no conversation history: the poller's triage gate
+// runs BEFORE the enqueue precisely so it needs no session I/O.
+function triagePrompt(text: string, fromOperator: boolean): string {
   return [
     "Classify this Telegram group message for whether it needs an agent spawn.",
+    // ROLE-SPLIT (CR codex-adv-1). The framing was originally sent to EVERY
+    // sender, which told the classifier "most traffic is the operator" even for
+    // an ordinary member of a shared group — a bare group allowlist admits every
+    // member. Measured chatter still classified `ack` under it, so no promotion
+    // was observed, but asserting something false about the sender to widen a
+    // spam gate is the wrong shape regardless: HIMMEL-721 exists to filter
+    // exactly those members. The operator framing now goes only where it is true.
+    ...(fromOperator
+      ? ["This message is from the human operator the agent works for: it is an",
+         "instruction or a question addressed to the agent, and a terse or",
+         "context-free follow-up is still a request."]
+      // Deliberately says "not from the operator" rather than "from another
+      // member": anonymous CHANNEL posts also land here (ingest falls their
+      // `from` back to sender_chat, a channel id that is never in allowFrom), and
+      // a broadcast post is not a group member. Their handling is unchanged from
+      // before this ticket — no exemption existed for anyone — so this is
+      // accuracy, not a behaviour change. Recognising an operator posting under a
+      // channel identity would need a trusted-channel policy; not in scope here.
+      : ["This message is a shared-group post and is NOT from the operator.",
+         "Most such traffic is ordinary chatter that needs no agent at all."]),
+    // Role-NEUTRAL, and the half that actually did the work: the verdict labels
+    // lie about their effect to anyone who has not been told otherwise.
+    "The verdict decides what HAPPENS to the message:",
+    "- ignore: silently discarded, nobody ever sees it. Group noise only.",
+    "- ack: ALSO silently discarded — no acknowledgement is sent. Use it only for",
+    "  messages that need no response at all.",
+    "- spawn-low: answered by a small cheap model. Use for anything addressed to",
+    "  the agent that is simple, terse, or a follow-up.",
+    "- spawn-high: answered by the full model. Use for real work or hard questions.",
     "Answer with exactly one token: ignore, ack, spawn-low, or spawn-high.",
     "Message:",
     text,
@@ -93,7 +148,7 @@ export async function classifyForSpawn(text: string, deps: TriageDeps = {}): Pro
   const label = deps.sessionLabel ?? "unknown-session";
 
   try {
-    const prompt = triagePrompt(text);
+    const prompt = triagePrompt(text, deps.fromOperator === true);
     const output = deps.invoke
       ? await invokeWithTimeout(deps.invoke(args, prompt), timeoutMs)
       : await defaultInvoke(args, prompt, timeoutMs);
