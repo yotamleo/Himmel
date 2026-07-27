@@ -922,6 +922,10 @@ out=$(TMPDIR="$TMP" SCHED_DB="$DB26" SCHED_DB_DIR="$DB26D" PATH="$STATEFUL_STUB:
 rc=$?
 assert_rc "T26b same handover re-arm still blocks (rc 3)" 3 "$rc"
 assert_contains "T26b dedup ERR text preserved" "already scheduled" "$out"
+# HIMMEL-1297: the refusal must state the scope it actually enforces. A blurb
+# that reads prefix-wide taught the operator to serialise independent tickets.
+assert_contains "T26b refusal names the SAME-handover scope" "for the SAME handover" "$out"
+assert_contains "T26b refusal says a different handover needs no flag" "arms concurrently with" "$out"
 if [ "$(count_slots "$DB26" "$DB26D")" = "1" ]; then
     echo "PASS T26c same-handover dedup keeps exactly one slot"
 else
@@ -963,6 +967,13 @@ out=$(TMPDIR="$TMP" SCHED_DB="$DB28" SCHED_DB_DIR="$DB28D" PATH="$STATEFUL_STUB:
 rc=$?
 assert_rc "T28a --dedup-any distinct handover blocks when any slot exists (rc 3)" 3 "$rc"
 assert_contains "T28a dedup ERR text preserved" "already scheduled" "$out"
+# HIMMEL-1297: the broad scope refuses for a DIFFERENT reason than the default
+# per-handover scope, so it must not claim the slot is the same handover's.
+assert_contains "T28a refusal names the --dedup-any scope" "--dedup-any safety-arm semantics" "$out"
+assert_not_contains "T28a refusal does not claim same-handover" "for the SAME handover" "$out"
+# The refusal must warn that --force in THIS scope is multi-delete (T28d proves
+# it actually is) — reading it as "replace that one job" costs sibling arms.
+assert_contains "T28a refusal warns --force here is multi-delete" "deletes EVERY" "$out"
 # Sanity: WITHOUT --dedup-any the same distinct arm would succeed (T25 proves
 # this), so the rc 3 here is the flag's doing, not a stuck scheduler.
 if [ "$(count_slots "$DB28" "$DB28D")" = "1" ]; then
@@ -978,6 +989,53 @@ out=$(TMPDIR="$TMP" SCHED_DB="$DB28E" SCHED_DB_DIR="$DB28ED" PATH="$STATEFUL_STU
     bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dedup-any 2>&1)
 rc=$?
 assert_rc "T28c --dedup-any on empty scheduler arms (rc 0)" 0 "$rc"
+
+# T28d (HIMMEL-1297): --dedup-any --force is the one genuinely DESTRUCTIVE
+# combination. Its dedup scope matches EVERY resume job, so the --force replace
+# loop deletes them all — two queued sibling arms collapse to the single new
+# one. Pin that here so the refusal message's multi-delete warning (T28a) stays
+# tied to real behaviour, and so a future scoping change to the --force path
+# can't silently pass. Contrast T30: WITHOUT --dedup-any, --force is scoped to
+# the arming handover and sibling slots survive.
+#
+# CHARACTERIZATION, NOT ENDORSEMENT (HIMMEL-1304). This pins what the code
+# does TODAY so the warning text can't drift from it — it does not bless the
+# design. The deletion happens BEFORE the rc 7 queue-lock check, the rc 8
+# cross-host registry check, and schedule_arm itself, so an arm that deletes
+# and THEN exits 7/8 (or fails to schedule) leaves the siblings destroyed with
+# no replacement and no rollback. That non-transactional ordering is a real
+# pre-existing defect tracked in HIMMEL-1304; when it is fixed, this test
+# should be re-pointed at the new (transactional) contract rather than kept as
+# a guarantee that multi-delete stays unconditional.
+DB28F="$TMP/db28f.tasks"; DB28FD="$TMP/db28f.atdir"; : > "$DB28F"; mkdir -p "$DB28FD"
+HO_F1=$(make_handover "$WORK_REPO")
+HO_F2=$(make_handover "$WORK_REPO")
+HO_F3=$(make_handover "$WORK_REPO")
+# Seed the two siblings at DISTINCT minutes. They only need to coexist, not to
+# share a minute, and giving them their own slots keeps this test independent of
+# whether the backend under test implements exact-minute collision detection
+# (HIMMEL-407): on one that does, same-minute seeds would refuse rc=6 and the
+# test would fail during setup, before it ever exercised --dedup-any --force.
+TMPDIR="$TMP" SCHED_DB="$DB28F" SCHED_DB_DIR="$DB28FD" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "23:57" --handover "$HO_F1" >/dev/null 2>&1
+TMPDIR="$TMP" SCHED_DB="$DB28F" SCHED_DB_DIR="$DB28FD" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "23:58" --handover "$HO_F2" >/dev/null 2>&1
+if [ "$(count_slots "$DB28F" "$DB28FD")" = "2" ]; then
+    echo "PASS T28d two sibling slots queued before the --dedup-any --force arm"
+else
+    echo "FAIL T28d expected 2 slots before force, got $(count_slots "$DB28F" "$DB28FD")"
+    FAILED=$((FAILED + 1))
+fi
+out=$(TMPDIR="$TMP" SCHED_DB="$DB28F" SCHED_DB_DIR="$DB28FD" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_F3" --dedup-any --force 2>&1)
+rc=$?
+assert_rc "T28d --dedup-any --force arms (rc 0)" 0 "$rc"
+if [ "$(count_slots "$DB28F" "$DB28FD")" = "1" ]; then
+    echo "PASS T28d --dedup-any --force deleted BOTH siblings (1 slot remains)"
+else
+    echo "FAIL T28d expected 1 slot after --dedup-any --force, got $(count_slots "$DB28F" "$DB28FD")"
+    FAILED=$((FAILED + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # T29: soft slot cap (HIMMEL-340 decision: WARN, never block). With

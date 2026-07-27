@@ -1522,8 +1522,27 @@ if [ -n "$existing" ]; then
                 echo "    $marker"
             done <<< "$existing"
             echo ""
-            echo "Dedup safeguard — never want two claude sessions cron-relaunched"
-            echo "for the same handover. To replace, re-run with --force. Inspect:"
+            # Scope-accurate reason (HIMMEL-1297): the default per-handover scope
+            # and the --dedup-any broad scope refuse for DIFFERENT reasons, and a
+            # single "same handover" blurb misdescribes the broad one — the same
+            # doc-overstates-the-guard drift this ticket fixed in the runbooks.
+            if [ "$DEDUP_SCOPE" = task ]; then
+                echo "Dedup safeguard — never want two claude sessions cron-relaunched"
+                echo "for the SAME handover. A DIFFERENT handover normally"
+                echo "arms concurrently with no flag at all. To replace, use --force."
+                echo "The match is on the DERIVED task name, which strips punctuation"
+                echo "(HIMMEL-1304), so two distinct paths can collide — CONFIRM the job"
+                echo "above is really this handover's, before --force replaces it. Inspect:"
+            else
+                echo "--dedup-any safety-arm semantics — defer to whatever resume slot is"
+                echo "already queued, whichever handover it points at. To arm this handover"
+                echo "alongside it, drop --dedup-any. Adding --force in THIS scope"
+                echo "deletes EVERY job listed above, not just one — sibling"
+                echo "relaunches included. That deletion happens FIRST, before the"
+                echo "remaining refusals and before the new job is scheduled, so a"
+                echo "later failure can leave you with NO arm at all and no rollback"
+                echo "(HIMMEL-1304). Inspect:"
+            fi
             case "$PLATFORM" in
                 windows) echo "    schtasks /query /tn \"<task-name>\"" ;;
                 *)       echo "    atq && at -c <job-id>   (or: crontab -l)" ;;
