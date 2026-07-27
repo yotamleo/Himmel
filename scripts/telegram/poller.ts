@@ -261,7 +261,17 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
 
 export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; forwarded?: boolean; caption?: boolean; image_path?: string; document_path?: string; document_name?: string };
 export type RunFn = (session: string, modelOverride?: TriageModelOverride) => Promise<void>;
-export type TriageFn = (text: string, sessionLabel?: string) => Promise<TriageVerdict>;
+// fromOperator selects the classifier's prompt framing (HIMMEL-1296 CR
+// codex-adv-1) — operator framing must not be told to a shared group's ordinary
+// members, whose chatter is what HIMMEL-721 exists to filter.
+export type TriageFn = (text: string, sessionLabel?: string, fromOperator?: boolean) => Promise<TriageVerdict>;
+// Is this sender the operator (the GLOBAL allowFrom identity — the same one
+// AutoGate.authorize uses), as opposed to some other member of a shared group?
+// Kept a separate dep from AutoGate rather than reusing its authorize: the
+// triage floor below is what keeps an operator message out of the drop path,
+// and it must not silently die if the /arm surface is ever disabled or rewired
+// (HIMMEL-1296).
+export type OperatorFn = (fromId: number) => boolean;
 
 // Auto-command gate (HIMMEL-424 B2). `fire` is FIRE-AND-FORGET so a slow arm never
 // blocks the ingest loop; `enabledOps` is parsed from TELEGRAM_AUTO_ACTIONS (empty by
@@ -277,7 +287,9 @@ export type AutoGate = { enabledOps: Set<string>; authorize: (from: number, chat
 
 // Single-threaded dispatch: the poller calls handleInbound serially, so the
 // "status === running" in-flight check needs no atomic CAS.
-export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn, auto?: AutoGate, triage: TriageFn = (text, sessionLabel) => classifyForSpawn(text, { sessionLabel })): Promise<void> {
+// isOperator defaults to "nobody is the operator" so every existing caller keeps
+// the pure HIMMEL-721 behaviour; main() is the one production wiring.
+export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn, auto?: AutoGate, triage: TriageFn = (text, sessionLabel, fromOperator) => classifyForSpawn(text, { sessionLabel, fromOperator }), isOperator: OperatorFn = () => false): Promise<void> {
   const route = classify(msg.text);
   // control verbs act directly; minimal handling for v2.2 (status/sessions/stop)
   if (route.kind === "control") {
@@ -317,8 +329,33 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn,
   // fail-open (any error → spawn-high) so a real failure still enqueues + spawns.
   let modelOverride: TriageModelOverride | undefined;
   if (msg.chat_id < 0 && (route.kind === "chat" || route.kind === "auto") && process.env.TELEGRAM_TRIAGE !== "off") {
-    const verdict = await triage(msg.text, session);
-    switch (verdict) {
+    // Resolved ONCE and used for both the classifier's framing and the floor —
+    // they must agree on who the sender is.
+    const fromOperator = isOperator(msg.from);
+    const verdict = await triage(msg.text, session, fromOperator);
+    // OPERATOR FLOOR (HIMMEL-1296). The drop above is for shared-group CHATTER;
+    // HIMMEL-721 exists to cut resource spam, never to filter the operator. When
+    // the sender IS the operator this is a message addressed to the agent, so an
+    // ignore/ack is a misclassification that costs the message with no trace —
+    // exactly the incident: `try again..` and `didn't understand the cosmetic
+    // item…` classified `ignore`, and `why didn't we got an answer on last
+    // messagE?` classified `ack`, i.e. the complaint about the drop was eaten by
+    // the same drop. Floored, not overridden: verdicts at or above spawn-low are
+    // untouched, so the classifier still picks cheap-vs-full model as before.
+    // SCOPE, precisely: this removes the TRIAGE drop. It does not make ingest
+    // crash-durable — `readNewLines` commits inbound.jsonl.cursor for the whole
+    // batch before this handler runs, so a crash between that commit and the
+    // inbox append below still loses the record. That window is pre-existing and
+    // applies to every message, not just floored ones; closing it is a per-record
+    // peek/ack redesign tracked as HIMMEL-1302 (found by the codex CR pass here).
+    // Logged when it fires (panel CR glm-1): a rescue is exactly as invisible as
+    // the drop it replaces, and "why did this spawn?" is the question the next
+    // triage misclassification will be debugged from. Same stream as the drop
+    // line below, so the supervisor log shows both sides of the gate.
+    const operatorFloor = fromOperator && (verdict === "ignore" || verdict === "ack");
+    const floored: TriageVerdict = operatorFloor ? "spawn-low" : verdict;
+    if (operatorFloor) console.error(`[poller] triage ${verdict} → spawn-low (operator floor) for ${session}`);
+    switch (floored) {
       case "ignore":
       case "ack":
         console.error(`[poller] triage ${verdict}: dropped (never enqueued) for ${session}`);
@@ -331,7 +368,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn,
       // exhaustive (mirrors noticeText): a future 5th verdict is a compile error,
       // not a silent fall-through that spawns untriaged.
       default:
-        return ((_: never) => { throw new Error(`unhandled triage verdict: ${String(_)}`); })(verdict);
+        return ((_: never) => { throw new Error(`unhandled triage verdict: ${String(_)}`); })(floored);
     }
   }
   const { created } = await ensureSession(root, session);
@@ -347,7 +384,21 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn,
   }
   const line = route.kind === "followup" ? route.text : msg.text;
   await appendLine(join(sessionDir(root, session), "inbox.jsonl"), JSON.stringify({ text: line, from: msg.from, ts: msg.ts ?? 0, ...(msg.image_path ? { image_path: msg.image_path } : {}), ...(msg.document_path ? { document_path: msg.document_path, document_name: msg.document_name } : {}) }));
-  if (meta.status === "idle" || meta.status === "done") await run(session, modelOverride);
+  // Everything above this line can throw BEFORE the append, and handleBatch's
+  // drop notice ("could not be queued — please resend") is truthful for those.
+  // The dispatch below is AFTER the message is durable, so its failure must not
+  // escape wearing that label (CR coderabbit-1): telling the operator to resend
+  // an already-enqueued message manufactures a duplicate. Reachable, not
+  // theoretical — with TELEGRAM_BATCH_QUIET_MS=0 the coalescer awaits dispatch
+  // inline, so a rejection propagates straight out of here. deliverAllPending
+  // is the existing recovery path for exactly this: the line is in the inbox.
+  if (meta.status === "idle" || meta.status === "done") {
+    try {
+      await run(session, modelOverride);
+    } catch (e) {
+      console.error(`[poller] dispatch after enqueue failed for ${session} — message is durable, deliverAllPending will re-serve it: ${e}`);
+    }
+  }
 }
 
 // Map the auto-action.sh exit code to an audit result label. OP-AWARE
@@ -626,6 +677,56 @@ export async function reconcile(root: string, isAlive: (pid: number) => boolean)
     const m = await readMeta(root, s);
     if (m && m.status === "running" && (m.last_run_pid == null || !isAlive(m.last_run_pid))) {
       await writeMeta(root, s, { ...m, status: "idle", last_run_pid: null });
+    }
+  }
+}
+
+// Drive ONE ingest batch, isolating each record (HIMMEL-1296 CR, codex-adv-1).
+// readNewLines has ALREADY advanced inbound.jsonl.cursor for the whole batch by
+// the time these records are handled, so a throw escaping this loop did double
+// damage: it killed the poller (the main loop wraps only getUpdates in a catch)
+// AND took every LATER record of that batch with it — permanently, because the
+// cursor says they were consumed. Those later records include operator messages
+// that never reached the triage floor, which is the exact loss this ticket
+// exists to close. handleInbound's own I/O is the reachable thrower here
+// (ensureSession / writeMeta / appendLine — EPERM, ENOSPC, EISDIR); triage
+// itself is fail-open. Losing ONE record loudly beats losing the rest silently.
+// This does NOT make ingest durable: the window between the cursor commit and
+// the inbox append remains, and closing it needs per-record peek/ack — HIMMEL-1302.
+// onDrop makes the drop VISIBLE instead of merely survivable (CR round 4).
+// Containing the throw traded a loud crash-loop for a quiet one: before, a
+// persistent session-storage fault killed the poller over and over, which at
+// least LOOKED broken; contained, it would consume and discard batch after batch
+// while the bridge looked healthy — the precise failure signature this ticket
+// exists to kill. So a drop tells the chat it happened. main() wires onDrop to a
+// DIRECT Telegram send rather than the session outbox, precisely so the notice
+// shares no state with the I/O whose failure it is reporting. onDrop's own
+// failure is caught and logged: a notice that cannot be delivered must not
+// abort the batch and strand the records behind it.
+// onDrop is FIRE-AND-FORGET BY SIGNATURE — it returns void and is never awaited
+// (CR codex-adv-1 round 7). The notice goes over the network, and sendMessage
+// retries up to 5x honouring Telegram's UNCAPPED retry_after; awaiting it here
+// would let one rate-limited chat stall every later record in a batch the cursor
+// has already consumed, and a restart while blocked would lose them for good.
+// Declaring it void puts that guarantee in the seam instead of in the caller's
+// good behaviour: a notifier that never settles cannot block the loop, because
+// the loop does not wait for it. Same reason AutoGate.fire is fire-and-forget.
+export async function handleBatch(
+  fresh: Inbound[],
+  handle: (rec: Inbound) => Promise<void>,
+  onDrop?: (rec: Inbound, err: unknown) => void,
+): Promise<void> {
+  for (const rec of fresh) {
+    try {
+      await handle(rec);
+    } catch (e) {
+      // update_id is the replay key (CR round 4): without it the log names no
+      // specific message, so a post-mortem cannot tell WHICH message was lost.
+      console.error(`[poller] handleInbound failed for update ${rec.update_id} chat ${rec.chat_id} — record dropped, batch continues: ${e}`);
+      if (onDrop) {
+        try { onDrop(rec, e); }
+        catch (e2) { console.error(`[poller] drop notice could not be raised for update ${rec.update_id}: ${e2}`); }
+      }
     }
   }
 }
@@ -1481,13 +1582,50 @@ export async function main(): Promise<void> {
     let updates: any[] = [];
     try { updates = await getUpdates(token, offset, 30); } catch (e) { console.error("[poller] getUpdates failed: " + e); await Bun.sleep(1000); continue; }
     await ingestUpdates(root, updates, allow, fetchImage, fetchVoice, fetchDoc, notifyDocFail);
-    const fresh = await readNewLines(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"));
+    const fresh = await readNewLines<Inbound>(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"));
+    // Per-BATCH, so it resets every poll tick: a chat whose fault persists is
+    // re-notified on the next batch rather than silenced for the session.
+    const notifiedChats = new Set<number>();
     // dispatch (not runFn) everywhere: runs fire WITHOUT blocking this loop —
     // ingest keeps polling while bounded children work (HIMMEL-246)
     // coalesce (not dispatch): each inbound RECORDS intent, so a same-tick burst
     // is one run even before the quiet window elapses — the intra-tick race the
     // ticket calls near-free to close (HIMMEL-1273).
-    for (const i of fresh) await handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate);
+    // isOperator = global allowFrom identity only (HIMMEL-1296): a per-group
+    // allowFrom member is an ordinary group member and stays fully triaged.
+    // handleBatch, not a bare for-await: one record's I/O failure must not take
+    // the rest of the already-consumed batch with it (HIMMEL-1296 CR).
+    await handleBatch(
+      fresh,
+      (i) => handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate, undefined, (from) => isAllowed(access, from)),
+      // sendMessage, NOT replyViaOutbox (CR codex-adv-1 round 6): the outbox is
+      // written INTO the same session directory whose failure caused the drop,
+      // so on an unwritable session it fails too — and the bridge would then eat
+      // that chat's messages indefinitely with nothing but supervisor.log to show
+      // for it, staying alive because the root inbound log is still fine. A
+      // direct send shares no state with the session, so the one failure that
+      // matters most is exactly the one it can still report.
+      (i) => {
+        // ONE notice per chat per batch (CR coderabbit-2). The failure this
+        // reports is usually per-SESSION and persistent — an unwritable session
+        // directory fails for every message to that chat — so a naive
+        // notice-per-record turns a broken chat into a burst of identical alerts,
+        // which is the resource spam HIMMEL-721 exists to prevent, aimed at the
+        // operator. Every dropped record is still logged individually below.
+        if (notifiedChats.has(i.chat_id)) {
+          console.error(`[poller] drop notice suppressed (chat already notified this batch) for update ${i.update_id} chat ${i.chat_id}`);
+          return;
+        }
+        notifiedChats.add(i.chat_id);
+        // The boolean IS the error channel: sendMessage returns false on a
+        // permanent 4xx, a transport failure, or exhausted retries rather than
+        // throwing (telegram-api.ts), so ignoring it would let the visibility
+        // guarantee fail silently — the exact shape of this whole ticket.
+        void sendMessage(token, i.chat_id, `⚠️ Your last message could not be queued (update ${i.update_id}) and was NOT answered — please resend. Details in supervisor.log.`)
+          .then((ok) => { if (!ok) console.error(`[poller] drop notice UNDELIVERED for update ${i.update_id} chat ${i.chat_id} — this log is now the only record of the drop`); })
+          .catch((e) => { console.error(`[poller] drop notice threw for update ${i.update_id}: ${e}`); });
+      },
+    );
     await deliverAllPending(root, dispatch, new Date(), () => sessionsList(root), coalesce.isHolding);
     await sweepStuckRunning(root, dispatch.isInFlight, () => sessionsList(root));
   }

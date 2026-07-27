@@ -64,6 +64,66 @@ test("classifyForSpawn spawns a real non-WSL bash against an existing script (HI
   expect(resolveBash()).toBe(BASH_BIN);
 });
 
+// HIMMEL-1296. The prompt handed the classifier a bare message: no statement of
+// what the group IS, and — the part that actually caused the loss — no statement
+// that `ack` DISCARDS the message. `ack` reads as "send an acknowledgement", so
+// the model picked it for messages it had understood were addressed to the
+// agent, and the poller threw them away. Both halves are asserted here; the
+// measured verdict shift they produce is recorded above triagePrompt().
+test("triage prompt frames the channel AND names each verdict's effect (HIMMEL-1296)", async () => {
+  let prompt = "";
+  await classifyForSpawn("try again..", {
+    invoke: async (_args, input) => { prompt = input; return "spawn-low"; },
+    timeoutMs: 1000,
+    fromOperator: true,
+  });
+
+  expect(prompt).toContain("from the human operator");
+  expect(prompt).toContain("follow-up is still a request");
+  // the drop verdicts must both be described as discarding — `ack` especially,
+  // whose token name otherwise promises the opposite of what it does
+  expect(prompt).toContain("ignore: silently discarded");
+  expect(prompt).toContain("ack: ALSO silently discarded");
+  expect(prompt).toContain("try again..");
+  // the four-token answer contract must survive the added framing
+  expect(prompt).toContain("exactly one token: ignore, ack, spawn-low, or spawn-high");
+});
+
+// The operator framing must go ONLY where it is true (CR codex-adv-1). A bare
+// group allowlist admits every member, so telling the classifier "this is from
+// the operator" for an ordinary member would widen the very spam gate
+// HIMMEL-721 exists to keep — and the branch's own measurements show framing
+// moves verdicts, so this is not a harmless inaccuracy.
+test("a NON-operator gets shared-group framing, never the operator framing (HIMMEL-1296)", async () => {
+  let prompt = "";
+  await classifyForSpawn("lol nice", {
+    invoke: async (_args, input) => { prompt = input; return "ack"; },
+    timeoutMs: 1000,
+    fromOperator: false,
+  });
+
+  expect(prompt).not.toContain("from the human operator");
+  expect(prompt).not.toContain("follow-up is still a request");
+  expect(prompt).toContain("NOT from the operator");
+  expect(prompt).toContain("ordinary chatter");
+  // the ROLE-NEUTRAL half — what the verdicts actually do — is still told to
+  // everyone, because that is what stops `ack` reading as "acknowledge"
+  expect(prompt).toContain("ack: ALSO silently discarded");
+});
+
+// Absence of the flag must fall to the SAFE side: an unwired caller gets the
+// shared-group framing, never the operator's.
+test("triage prompt defaults to shared-group framing when the role is unset (HIMMEL-1296)", async () => {
+  let prompt = "";
+  await classifyForSpawn("hello", {
+    invoke: async (_args, input) => { prompt = input; return "ack"; },
+    timeoutMs: 1000,
+  });
+
+  expect(prompt).not.toContain("from the human operator");
+  expect(prompt).toContain("NOT from the operator");
+});
+
 test("classifyForSpawn fails open on classifier timeout", async () => {
   const verdict = await classifyForSpawn("hello", {
     invoke: async () => {

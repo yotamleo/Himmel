@@ -1,9 +1,9 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { isAllowed, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -12,6 +12,16 @@ import type { TriageVerdict } from "./triage";
 const root = () => mkdtempSync(join(tmpdir(), "poller-"));
 const allowAll = () => true;
 const spawnHighTriage = async (): Promise<TriageVerdict> => "spawn-high";
+
+// The triage gate is skipped entirely when TELEGRAM_TRIAGE=off — and that is a
+// real User env var on the operator's box while a triage incident is mitigated
+// (HIMMEL-1296). Inherited, it made every triage test below silently pass-through
+// and still report green. Clear it so the suite tests the code, not the host.
+// beforeEACH, not beforeAll (panel CR codex-1): the kill switch is exactly the
+// kind of state a test sets and could fail to restore, and a once-per-file clear
+// would let that leak forward and silently disable triage for every later test —
+// re-creating the false-green this guard exists to prevent. Per-test is cheap.
+beforeEach(() => { delete process.env.TELEGRAM_TRIAGE; });
 
 // --- retry cap + run.log (HIMMEL-262/263) ---
 
@@ -547,6 +557,204 @@ test("group chat spawn-low triage passes haiku as the run model override", async
     async (): Promise<TriageVerdict> => "spawn-low");
 
   expect(ran).toEqual([{ session: "group_-50", modelOverride: "haiku" }]);
+});
+
+// --- operator is never triaged away (HIMMEL-1296) ---
+// The incident: with the classifier live on Windows for the first time
+// (HIMMEL-1279 fixed the bash-path bug that had fail-opened it), ordinary
+// operator questions in the himmel-ops group classified as ignore/ack and were
+// dropped PERMANENTLY — including `why didn't we got an answer on last messagE?`,
+// the complaint about the message the same bug had already eaten. HIMMEL-721's
+// purpose was cutting resource spam in SHARED groups, never filtering the
+// operator, so an operator message floors to spawn-low instead of dropping.
+
+test("operator group message triaged `ignore` is floored to spawn-low, never dropped (HIMMEL-1296)", async () => {
+  const r = root(); const ran: any[] = [];
+  await handleInbound(r, { from:5, chat_id:-50, text:"try again.." },
+    async (session:string, modelOverride?: string) => { ran.push({ session, modelOverride }); },
+    undefined,
+    async (): Promise<TriageVerdict> => "ignore",
+    (fromId) => fromId === 5);
+
+  expect(ran).toEqual([{ session: "group_-50", modelOverride: "haiku" }]);
+  // and it is durably enqueued, so a crash before the run still replays it
+  expect((await peekPending(r, "group_-50")).count).toBe(1);
+});
+
+test("operator group message triaged `ack` is floored to spawn-low, never dropped (HIMMEL-1296)", async () => {
+  const r = root(); const ran: any[] = [];
+  await handleInbound(r, { from:5, chat_id:-50, text:"why didn't we got an answer on last messagE?" },
+    async (session:string, modelOverride?: string) => { ran.push({ session, modelOverride }); },
+    undefined,
+    async (): Promise<TriageVerdict> => "ack",
+    (fromId) => fromId === 5);
+
+  expect(ran).toEqual([{ session: "group_-50", modelOverride: "haiku" }]);
+  expect((await peekPending(r, "group_-50")).count).toBe(1);
+});
+
+// The floor is a FLOOR, not an override: it lifts ignore/ack to spawn-low and
+// leaves every verdict at or above it alone, so the classifier keeps deciding
+// cheap-vs-full model for the operator exactly as before.
+test("operator exemption is a floor: spawn-high keeps the full model (HIMMEL-1296)", async () => {
+  const r = root(); const ran: any[] = [];
+  await handleInbound(r, { from:5, chat_id:-50, text:"rewrite the retry cap" },
+    async (session:string, modelOverride?: string) => { ran.push({ session, modelOverride }); },
+    undefined,
+    async (): Promise<TriageVerdict> => "spawn-high",
+    (fromId) => fromId === 5);
+
+  expect(ran).toEqual([{ session: "group_-50", modelOverride: undefined }]);
+});
+
+// HIMMEL-721 must still do its job: a NON-operator member of a shared group is
+// triaged exactly as before, so the exemption did not neuter the spam gate.
+test("non-operator group chatter is still dropped when the exemption is wired (HIMMEL-1296)", async () => {
+  const r = root(); const ran: string[] = [];
+  await handleInbound(r, { from:9, chat_id:-50, text:"lol nice" },
+    async (s:string) => { ran.push(s); },
+    undefined,
+    async (): Promise<TriageVerdict> => "ignore",
+    (fromId) => fromId === 5);
+
+  expect(ran).toEqual([]);
+  expect(await readMeta(r, "group_-50")).toBeNull();
+});
+
+// The batch is already marked consumed by readNewLines before any of it is
+// handled, so a record that throws used to kill the poller and take every LATER
+// record with it — permanently. That is how an operator message could be lost
+// without ever reaching the floor above. (The remaining crash window between the
+// cursor commit and the inbox append is HIMMEL-1302, not closed here.)
+const inbound = (text: string, update_id: number, from = 5) =>
+  ({ from, chat_id: -50, text, ts: 0, update_id, forwarded: false, caption: false });
+
+test("handleBatch isolates a throwing record so later records still land (HIMMEL-1296)", async () => {
+  const handled: string[] = [];
+  await handleBatch(
+    [inbound("poison", 1, 9), inbound("try again..", 2), inbound("status?", 3)],
+    async (rec) => { if (rec.text === "poison") throw new Error("EPERM: writeMeta exploded"); handled.push(rec.text); },
+  );
+
+  // the throw is contained: both operator messages behind it are still handled
+  expect(handled).toEqual(["try again..", "status?"]);
+});
+
+// Containing the throw must not make the loss QUIET — that would swap a loud
+// crash-loop for a healthy-looking bridge that silently eats messages, which is
+// the exact signature HIMMEL-1296 exists to kill.
+test("handleBatch notifies on a dropped record, keyed by update_id (HIMMEL-1296)", async () => {
+  const drops: number[] = [];
+  await handleBatch(
+    [inbound("poison", 42), inbound("fine", 43)],
+    async (rec) => { if (rec.text === "poison") throw new Error("EISDIR"); },
+    (rec) => { drops.push(rec.update_id); },
+  );
+
+  expect(drops).toEqual([42]);
+});
+
+// The notice can fail on its own (Telegram down, chat gone). That must not
+// abort the batch and strand the records queued behind the failed one.
+test("handleBatch survives an onDrop that itself throws (HIMMEL-1296)", async () => {
+  const handled: string[] = [];
+  await handleBatch(
+    [inbound("poison", 1), inbound("later", 2)],
+    async (rec) => { if (rec.text === "poison") throw new Error("EISDIR"); handled.push(rec.text); },
+    () => { throw new Error("send failed too"); },
+  );
+
+  expect(handled).toEqual(["later"]);
+});
+
+// The notice goes over the network, and sendMessage honours Telegram's uncapped
+// retry_after. If handleBatch awaited it, ONE rate-limited chat would stall every
+// later record of a batch the cursor has already consumed — and a restart while
+// blocked would lose them permanently. onDrop is fire-and-forget by signature,
+// so a notifier that never settles cannot hold the loop.
+test("a drop notifier that never settles does not stall later records (HIMMEL-1296)", async () => {
+  const handled: string[] = [];
+  await handleBatch(
+    [inbound("poison", 1), inbound("later", 2), inbound("later still", 3)],
+    async (rec) => { if (rec.text === "poison") throw new Error("EPERM"); handled.push(rec.text); },
+    // RETURNED, not merely constructed (CR coderabbit-1): discarding it made the
+    // callback return undefined immediately, so the test proved nothing about
+    // awaiting. Returning it from a void-typed callback is exactly the shape a
+    // real async notifier has, and is what makes this a regression test.
+    () => new Promise<void>(() => {}),   // never settles; must not be awaited
+  );
+
+  expect(handled).toEqual(["later", "later still"]);
+});
+
+test("handleBatch handles every record when none throw (HIMMEL-1296)", async () => {
+  const handled: string[] = [];
+  await handleBatch(
+    [inbound("a", 1), inbound("b", 2)],
+    async (rec) => { handled.push(rec.text); },
+  );
+
+  expect(handled).toEqual(["a", "b"]);
+});
+
+// The tests above inject a mock isOperator, which proves the FLOOR but not the
+// production WIRING (panel CR glm-2). This one composes the real predicate —
+// `(from) => isAllowed(access, from)`, exactly what main() passes — against an
+// access.json shape where the two identities differ, so the claim that the floor
+// keys on the GLOBAL allowFrom (and not on group membership) is actually tested.
+test("operator floor keys on GLOBAL allowFrom: a per-group allowFrom member is still triaged (HIMMEL-1296)", async () => {
+  // 5 is the operator; 9 is merely allowed to post in group -50
+  const access = { allowFrom: ["5"], groups: { "-50": { allowFrom: ["9"] } } };
+  const isOperator = (from: number) => isAllowed(access, from);
+  const ignoreTriage = async (): Promise<TriageVerdict> => "ignore";
+
+  const rMember = root(); const memberRan: string[] = [];
+  await handleInbound(rMember, { from:9, chat_id:-50, text:"lol nice" },
+    async (s:string) => { memberRan.push(s); }, undefined, ignoreTriage, isOperator);
+  expect(memberRan).toEqual([]);                       // group member: dropped, gate keeps its teeth
+  expect(await readMeta(rMember, "group_-50")).toBeNull();
+
+  const rOp = root(); const opRan: string[] = [];
+  await handleInbound(rOp, { from:5, chat_id:-50, text:"try again.." },
+    async (s:string) => { opRan.push(s); }, undefined, ignoreTriage, isOperator);
+  expect(opRan).toEqual(["group_-50"]);                // operator: floored, never dropped
+});
+
+// A dispatch failure happens AFTER the message is durable, so it must not
+// escape handleInbound — handleBatch would label it "could not be queued" and
+// tell the operator to resend an already-enqueued message (CR coderabbit-1).
+// Reachable via TELEGRAM_BATCH_QUIET_MS=0, where the coalescer awaits dispatch.
+test("a dispatch failure after the inbox append does not escape handleInbound (HIMMEL-1296)", async () => {
+  const r = root();
+  let threw = false;
+  try {
+    await handleInbound(r, { from:5, chat_id:-50, text:"try again.." },
+      async () => { throw new Error("dispatch exploded"); },
+      undefined,
+      async (): Promise<TriageVerdict> => "spawn-high");
+  } catch { threw = true; }
+
+  expect(threw).toBe(false);
+  // and the message really is durable, so deliverAllPending can re-serve it
+  expect((await peekPending(r, "group_-50")).count).toBe(1);
+});
+
+// The poller must tell the classifier the SAME sender role the floor uses —
+// otherwise a group member could be classified under operator framing (CR
+// codex-adv-1), or the operator under shared-group framing.
+test("the sender role handleInbound passes to triage matches the floor's (HIMMEL-1296)", async () => {
+  const seen: Array<boolean | undefined> = [];
+  const recordingTriage = async (_t: string, _s?: string, fromOperator?: boolean): Promise<TriageVerdict> => {
+    seen.push(fromOperator); return "spawn-high";
+  };
+  const isOperator = (from: number) => from === 5;
+
+  await handleInbound(root(), { from:5, chat_id:-50, text:"try again.." },
+    async () => {}, undefined, recordingTriage, isOperator);
+  await handleInbound(root(), { from:9, chat_id:-50, text:"lol nice" },
+    async () => {}, undefined, recordingTriage, isOperator);
+
+  expect(seen).toEqual([true, false]);
 });
 
 test("DM chat bypasses cheap triage", async () => {
