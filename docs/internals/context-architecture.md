@@ -98,11 +98,42 @@ Three guards keep retrieval honest:
   chaining ~24 gotchas at ~61 chars each **is** the store — the exact thing this
   section forbids. The doctrine was right; the implementation had drifted from it.
 
-## Where the canonical pieces live
+## Layer selection — lean-invoke vs default (HIMMEL-177)
 
-- **Layer-selection frame** (lean-invoke vs default-rule vs default-hook vs
-  defer) + **structural > instructional** escalation → [`CLAUDE.md`](../../CLAUDE.md)
-  (HIMMEL-177 / HIMMEL-195).
+When adding a rule or capability, pick the cheapest layer. **Default to
+lean-invoke** (the operator runs a slash command on demand) UNLESS a trigger
+applies:
+
+- **Safety-critical** → `default-hook` (PreToolUse / pre-commit / pre-push). The
+  cost of forgetting to invoke manually beats the cost of always running.
+  E.g. `block-edit-on-main`, `block-read-secrets`, `no-headless-claude`, `gitleaks`.
+- **Frame-shaping** (changes how Claude reads the *whole* task) → `default-rule`
+  (root `CLAUDE.md`). E.g. "PRs require approval", conventional commits,
+  "prefer plugin over MCP".
+- **High frequency × low marginal cost** → `default-rule` + installed skill.
+  E.g. `/handover`, `/clean`, `/worktree`.
+- **Eval-shaped** ("read X, decide, write ADR", no ship-code) → `defer`: file a
+  timeboxed ticket, close Won't Do on expiry. Do NOT install as always-on.
+
+Default-everything is the failure mode — more always-on rules without a trigger
+above creates drift: the file grows, both operator and Claude stop reading it,
+rules lose authority. Lean-invoke keeps the cost on the operator's side, which
+is the right side: the operator knows when a rule applies; Claude does not.
+
+## Enforcement strength — structural > instructional (HIMMEL-195)
+
+Track the **drift count** per instructional rule. First drift is signal; on the
+**second** drift escalate to structural (PreToolUse hook, pre-commit/pre-push
+gate, classifier, dispatcher guard) — don't wait for the third, by then the rule
+has lost authority and Claude is rationalising bypasses. Prose does not enforce.
+`default-rule` is a fine first layer, but its next layer after drift is
+structural, not "stronger prose."
+
+Worked escalation examples (MCP-jira, headless-billing, edit-on-main,
+secrets-reads) + the per-layer example set:
+[`enforcement.md`](enforcement.md#operator-conventions--worked-examples).
+
+## Where the canonical pieces live
 - **The habits** (no operational rules in the root, verify universal claims,
   generic example names, specs live in the state repo, memory staleness
   frontmatter) → [`operator-conventions.md`](../operator-conventions.md#memory--claudemd-hygiene).
