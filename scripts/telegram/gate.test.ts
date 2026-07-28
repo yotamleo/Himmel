@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isAllowed, isGroupAllowed, vaultForChat } from "./gate";
+import { GROUP_ANONYMOUS_BOT_ID, isAllowed, isGroupAllowed, isOperatorIdentity, vaultForChat } from "./gate";
 
 // Real access.json shape (~/.claude/channels/telegram/access.json):
 //   { "dmPolicy": "allowlist", "allowFrom": ["1000000001"], "groups": {}, "pending": {} }
@@ -61,6 +61,98 @@ test("isGroupAllowed: empty/missing per-group allowFrom admits any member; requi
   // parse entities, so requireMention has no effect here
   expect(isGroupAllowed({ groups: { "-50": { allowFrom: [] } } }, -50, 999)).toBe(true);
   expect(isGroupAllowed({ groups: { "-50": { requireMention: true } } }, -50, 999)).toBe(true);
+});
+
+// --- operator identity, including anonymous group admins (HIMMEL-1358) ---
+// When a group admin posts with "Remain anonymous" on, Telegram replaces the
+// sender with the fixed GroupAnonymousBot id, so the operator's real id never
+// reaches us and a raw allowFrom comparison can never match. Measured live:
+// every message from the affected group carried 1087968824, while the same
+// sender's DMs carried their real id. Fixtures below are synthetic.
+
+const OPTED_IN = { allowFrom: ["1000000001"], groups: { "-1009999999": { trustAnonymousAdmins: true } } };
+
+test("isOperatorIdentity: the anonymous-admin id is operator in an opted-in group (HIMMEL-1358)", () => {
+  expect(isOperatorIdentity(OPTED_IN, 1000000001, -1009999999)).toBe(true);              // named post
+  expect(isOperatorIdentity(OPTED_IN, GROUP_ANONYMOUS_BOT_ID, -1009999999)).toBe(true);  // anonymous post
+  expect(isOperatorIdentity(OPTED_IN, "1087968824", "-1009999999")).toBe(true);          // string ids too
+});
+
+// The codex adversarial CR's finding, pinned: the anonymous id is shared by
+// EVERY admin of the chat, so allow-listing a group (which only means "ingest
+// this chat") must NOT by itself promote its admins to operator. The opt-in is
+// what says that out loud, per group.
+test("isOperatorIdentity: allow-listing alone does NOT trust anonymous admins (HIMMEL-1358)", () => {
+  const noOptIn = { allowFrom: ["1000000001"], groups: { "-1009999999": {} } };
+  expect(isOperatorIdentity(noOptIn, GROUP_ANONYMOUS_BOT_ID, -1009999999)).toBe(false);
+  expect(isOperatorIdentity(noOptIn, 1000000001, -1009999999)).toBe(true);   // named post is unaffected
+  // an explicit false is the same as absent
+  const optedOut = { allowFrom: ["1000000001"], groups: { "-1009999999": { trustAnonymousAdmins: false } } };
+  expect(isOperatorIdentity(optedOut, GROUP_ANONYMOUS_BOT_ID, -1009999999)).toBe(false);
+});
+
+// Telegram's sender_chat is the authoritative "which chat does this post
+// represent". Where it is supplied it must BE the destination chat, so the floor
+// no longer rests on inferring that 1087968824 here means an admin of here.
+// Absent is permitted on purpose — see the note on isOperatorIdentity.
+test("isOperatorIdentity: a mismatched sender_chat is refused; matching and absent pass (HIMMEL-1358)", () => {
+  expect(isOperatorIdentity(OPTED_IN, GROUP_ANONYMOUS_BOT_ID, -1009999999, -1009999999)).toBe(true);   // matches
+  expect(isOperatorIdentity(OPTED_IN, GROUP_ANONYMOUS_BOT_ID, -1009999999, "-1009999999")).toBe(true); // string form
+  expect(isOperatorIdentity(OPTED_IN, GROUP_ANONYMOUS_BOT_ID, -1009999999, -777)).toBe(false);         // some OTHER chat
+  expect(isOperatorIdentity(OPTED_IN, GROUP_ANONYMOUS_BOT_ID, -1009999999, undefined)).toBe(true);     // absent → allowed
+  expect(isOperatorIdentity(OPTED_IN, GROUP_ANONYMOUS_BOT_ID, -1009999999, null)).toBe(true);          // null → allowed
+  // the named-identity path is unaffected by sender_chat entirely
+  expect(isOperatorIdentity(OPTED_IN, 1000000001, -1009999999, -777)).toBe(true);
+});
+
+test("isOperatorIdentity: the anonymous-admin id is NOT operator outside its opted-in group (HIMMEL-1358)", () => {
+  expect(isOperatorIdentity(OPTED_IN, GROUP_ANONYMOUS_BOT_ID, -50)).toBe(false);            // unlisted group
+  expect(isOperatorIdentity(OPTED_IN, GROUP_ANONYMOUS_BOT_ID, 1087968824)).toBe(false);     // positive chat_id (DM)
+  expect(isOperatorIdentity(OPTED_IN, 9, -1009999999)).toBe(false);                      // ordinary member
+});
+
+// The narrower gate wins, deliberately: trustAnonymousAdmins must not quietly
+// undo a per-group allowFrom the operator set on purpose. The consequence — such
+// a group keeps losing anonymous posts (they are rejected at INGEST by
+// makeAllow, before triage) unless 1087968824 is added to that allowFrom too —
+// is a real trap and is documented in README.md rather than papered over here.
+test("isOperatorIdentity: a per-group allowFrom that excludes the anon id keeps it out (HIMMEL-1358)", () => {
+  const access = { allowFrom: ["5"], groups: { "-50": { allowFrom: ["9"], trustAnonymousAdmins: true } } };
+  expect(isOperatorIdentity(access, GROUP_ANONYMOUS_BOT_ID, -50)).toBe(false);
+  expect(isOperatorIdentity(access, 9, -50)).toBe(false);   // per-group member is not the operator (HIMMEL-1296)
+  expect(isOperatorIdentity(access, 5, -50)).toBe(true);    // global allowFrom identity still wins
+  // ...and listing the anon id in that allowFrom is what admits it (the README's escape hatch)
+  const listed = { allowFrom: ["5"], groups: { "-50": { allowFrom: ["9", "1087968824"], trustAnonymousAdmins: true } } };
+  expect(isOperatorIdentity(listed, GROUP_ANONYMOUS_BOT_ID, -50)).toBe(true);
+});
+
+// The anonymous branch is a SUBSTITUTION rule — "Telegram replaced the
+// operator's id" — so it is meaningless where no operator identity is
+// configured at all. With an empty/absent global allowFrom nobody is the
+// operator, and the anon id must not become one by default.
+// A globally-listed anonymous id must not short-circuit past the group-scoped
+// guards (CodeRabbit CR). The id is not a person, so globally it means nothing —
+// and this misconfiguration is one indentation level away from the per-group
+// allowFrom entry the README now recommends.
+test("isOperatorIdentity: the anon id in the GLOBAL allowFrom grants nothing (HIMMEL-1358)", () => {
+  const misconfigured = { allowFrom: ["1000000001", "1087968824"], groups: { "-50": {} } };
+  expect(isOperatorIdentity(misconfigured, GROUP_ANONYMOUS_BOT_ID, -50)).toBe(false);        // no group opt-in
+  expect(isOperatorIdentity(misconfigured, GROUP_ANONYMOUS_BOT_ID, 12345)).toBe(false);      // and not in a DM
+  expect(isOperatorIdentity(misconfigured, GROUP_ANONYMOUS_BOT_ID, -1)).toBe(false);         // nor an unlisted group
+  // it still cannot skip sender_chat once a group DOES opt in
+  const optedIn = { allowFrom: ["1000000001", "1087968824"], groups: { "-50": { trustAnonymousAdmins: true } } };
+  expect(isOperatorIdentity(optedIn, GROUP_ANONYMOUS_BOT_ID, -50, -777)).toBe(false);
+  expect(isOperatorIdentity(optedIn, GROUP_ANONYMOUS_BOT_ID, -50, -50)).toBe(true);
+  // and a real operator id in the global allowFrom is unaffected
+  expect(isOperatorIdentity(misconfigured, 1000000001, -50)).toBe(true);
+});
+
+test("isOperatorIdentity: fails closed when no operator identity is configured (HIMMEL-1358)", () => {
+  expect(isOperatorIdentity({}, GROUP_ANONYMOUS_BOT_ID, -50)).toBe(false);
+  expect(isOperatorIdentity({ groups: { "-50": { trustAnonymousAdmins: true } } }, GROUP_ANONYMOUS_BOT_ID, -50)).toBe(false);
+  expect(isOperatorIdentity({ allowFrom: [], groups: { "-50": { trustAnonymousAdmins: true } } }, GROUP_ANONYMOUS_BOT_ID, -50)).toBe(false);
+  expect(isOperatorIdentity(null as any, 5, -50)).toBe(false);
+  expect(isOperatorIdentity(undefined as any, GROUP_ANONYMOUS_BOT_ID, -50)).toBe(false);
 });
 
 // --- per-group vault routing (HIMMEL-321) ---

@@ -5,7 +5,7 @@ import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta
 import { classify, type Route } from "./router";
 import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
-import { isAllowed, isGroupAllowed, loadAccess, vaultForChat, type Access } from "./gate";
+import { isAllowed, isGroupAllowed, isOperatorIdentity, loadAccess, vaultForChat, type Access } from "./gate";
 import { runSession, buildPrompt, BASH_BIN, type BusPaths, type PermissionMode } from "./run";
 import { classifyForSpawn, type TriageVerdict, type TriageModelOverride } from "./triage";
 import { transcribe } from "./transcribe";
@@ -27,7 +27,7 @@ const RETRY_MS = Number(process.env.TELEGRAM_RETRY_MS ?? 15 * 60 * 1000);
 // present (the injection-refuse signal). `caption` = the text came from a media caption
 // or voice transcript, NOT a genuinely typed m.text. Both fail toward "not a typed
 // command" so an undefined-deserialized value can never fail OPEN.
-export type Inbound = { from: number; chat_id: number; text: string; ts: number; update_id: number; forwarded: boolean; caption: boolean; image_path?: string; document_path?: string; document_name?: string };
+export type Inbound = { from: number; chat_id: number; text: string; ts: number; update_id: number; sender_chat?: number; forwarded: boolean; caption: boolean; image_path?: string; document_path?: string; document_name?: string };
 export type AllowFn = (fromId: number, chatId: number) => boolean;
 // Downloads a photo by file_id, returns the local path (null on failure).
 export type FetchImageFn = (file_id: string, update_id: number) => Promise<string | null>;
@@ -160,6 +160,11 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
     if (!hasText && !photo && !voice && !doc) continue;
     // channel posts have no `from` (anonymous) — fall back to sender_chat (the channel itself)
     const fromId = m.from?.id ?? m.sender_chat?.id ?? 0;
+    // PRESERVED, not just used as the fromId fallback (HIMMEL-1358, codex CR):
+    // for an on-behalf-of-chat message this is the chat Telegram says the post
+    // actually represents, and the anonymous-admin operator floor checks it
+    // against the destination chat. Undefined for an ordinary user post.
+    const senderChat = m.sender_chat?.id;
     if (!allow(fromId, chatId)) {                          // gated out (offset still advances below)
       // log non-DM rejects so the operator can discover a new group/channel chat_id
       if (chatId < 0) console.error(`[poller] gated out chat ${chatId} (add to groups in access.json to allow)`);
@@ -194,14 +199,14 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
         text = (caption ? caption + "\n" : "") + "[voice transcript] " + transcript;
       }
       // caption:true — a voice transcript is never a typed command (auto-ineligible).
-      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: true });
+      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: true, ...(senderChat != null ? { sender_chat: senderChat } : {}) });
     } else if (doc && fetchDoc) {
       // Document (e.g. PDF) — same concurrent, time-bounded download as photos (HIMMEL-321).
       const docName = typeof doc.file_name === "string" ? doc.file_name : "file";
       text = caption || `[document: ${docName}]`;
       const downloadP = fetchDoc(doc.file_id, u.update_id, docName)
         .catch((e: unknown) => { console.error(`[poller] document download failed for update ${u.update_id}: ${e}`); return null; });
-      pendingDocs.push({ rec: { from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, document_name: docName, forwarded, caption: true }, p: downloadP });
+      pendingDocs.push({ rec: { from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, document_name: docName, forwarded, caption: true, ...(senderChat != null ? { sender_chat: senderChat } : {}) }, p: downloadP });
     } else if (photo && fetchImage) {
       // Start the download immediately (after allow gate) but do NOT await it here —
       // downloads run concurrently across the batch (HIMMEL-266); each one is
@@ -209,7 +214,7 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
       text = caption || "[photo]";
       const downloadP = fetchImage(photo.file_id, u.update_id)
         .catch((e: unknown) => { console.error(`[poller] photo download failed for update ${u.update_id}: ${e}`); return null; });
-      pendingPhotos.push({ rec: { from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: true }, p: downloadP });
+      pendingPhotos.push({ rec: { from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: true, ...(senderChat != null ? { sender_chat: senderChat } : {}) }, p: downloadP });
     } else {
       // plain text, or photo/document with no fetch fn wired (forward caption text only)
       text = photo ? (caption || "[photo]")
@@ -217,7 +222,7 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
            : m.text;
       // caption:true iff the text came from a media caption (photo/doc present), else it
       // is a genuinely typed m.text (caption:false) — the only auto-command-eligible shape.
-      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: !!(photo || doc) });
+      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: !!(photo || doc), ...(senderChat != null ? { sender_chat: senderChat } : {}) });
     }
   }
   // Write all non-photo inbox entries.
@@ -259,7 +264,7 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
   if (maxId >= offset) await saveOffset(root, maxId + 1);
 }
 
-export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; forwarded?: boolean; caption?: boolean; image_path?: string; document_path?: string; document_name?: string };
+export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; sender_chat?: number; forwarded?: boolean; caption?: boolean; image_path?: string; document_path?: string; document_name?: string };
 export type RunFn = (session: string, modelOverride?: TriageModelOverride) => Promise<void>;
 // fromOperator selects the classifier's prompt framing (HIMMEL-1296 CR
 // codex-adv-1) — operator framing must not be told to a shared group's ordinary
@@ -271,7 +276,11 @@ export type TriageFn = (text: string, sessionLabel?: string, fromOperator?: bool
 // triage floor below is what keeps an operator message out of the drop path,
 // and it must not silently die if the /arm surface is ever disabled or rewired
 // (HIMMEL-1296).
-export type OperatorFn = (fromId: number) => boolean;
+// Takes the CHAT as well as the sender (HIMMEL-1358): an anonymous group-admin
+// post carries GroupAnonymousBot instead of the operator's real id, so identity
+// there is only decidable relative to the chat it was posted in. See
+// gate.ts isOperatorIdentity for the rule.
+export type OperatorFn = (fromId: number, chatId: number, senderChatId?: number) => boolean;
 
 // Auto-command gate (HIMMEL-424 B2). `fire` is FIRE-AND-FORGET so a slow arm never
 // blocks the ingest loop; `enabledOps` is parsed from TELEGRAM_AUTO_ACTIONS (empty by
@@ -331,7 +340,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: RunFn,
   if (msg.chat_id < 0 && (route.kind === "chat" || route.kind === "auto") && process.env.TELEGRAM_TRIAGE !== "off") {
     // Resolved ONCE and used for both the classifier's framing and the floor —
     // they must agree on who the sender is.
-    const fromOperator = isOperator(msg.from);
+    const fromOperator = isOperator(msg.from, msg.chat_id, msg.sender_chat);
     const verdict = await triage(msg.text, session, fromOperator);
     // OPERATOR FLOOR (HIMMEL-1296). The drop above is for shared-group CHATTER;
     // HIMMEL-721 exists to cut resource spam, never to filter the operator. When
@@ -1591,13 +1600,16 @@ export async function main(): Promise<void> {
     // coalesce (not dispatch): each inbound RECORDS intent, so a same-tick burst
     // is one run even before the quiet window elapses — the intra-tick race the
     // ticket calls near-free to close (HIMMEL-1273).
-    // isOperator = global allowFrom identity only (HIMMEL-1296): a per-group
-    // allowFrom member is an ordinary group member and stays fully triaged.
+    // isOperator = global allowFrom identity (HIMMEL-1296): a per-group
+    // allowFrom member is an ordinary group member and stays fully triaged —
+    // plus the anonymous-admin substitute id in a group that opted in via
+    // `trustAnonymousAdmins` (HIMMEL-1358), which is the only form the
+    // operator's own posts take in a group he has "Remain anonymous" on for.
     // handleBatch, not a bare for-await: one record's I/O failure must not take
     // the rest of the already-consumed batch with it (HIMMEL-1296 CR).
     await handleBatch(
       fresh,
-      (i) => handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate, undefined, (from) => isAllowed(access, from)),
+      (i) => handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, sender_chat: i.sender_chat, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate, undefined, (from, chat_id, sender_chat) => isOperatorIdentity(access, from, chat_id, sender_chat)),
       // sendMessage, NOT replyViaOutbox (CR codex-adv-1 round 6): the outbox is
       // written INTO the same session directory whose failure caused the drop,
       // so on an unwritable session it fails too — and the bridge would then eat
