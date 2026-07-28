@@ -135,6 +135,72 @@ replies route back to that chat — the operator DM is untouched. Ticket verbs
 replies go to whichever chat FIRST created that session. Non-allowed groups
 fail closed.
 
+### Posting with "Remain anonymous" on (HIMMEL-1358)
+
+When a group ADMIN posts with Telegram's **Remain anonymous** switch on, Telegram
+strips the real sender and substitutes the fixed `GroupAnonymousBot` id
+`1087968824`. Your own id never reaches the bridge, so the triage **operator
+floor** (which keeps an operator message out of the cheap-triage drop path) can
+never match it — your messages get classified `ignore`/`ack` and are dropped
+permanently, with only a `[poller] triage ignore: dropped (never enqueued)` line
+in `supervisor.log` to show for it. That is not a bridge outage; the bridge is
+healthy and discarding the messages.
+
+Opt the group in per-group — allow-listing alone deliberately does **not** do
+this:
+
+```json
+"groups": { "-1009999999": { "trustAnonymousAdmins": true } }
+```
+
+**What you are trusting.** The anonymous id is shared by EVERY admin of that
+chat, so this says "any admin here may speak as me". Set it only where you
+control the admin list.
+
+Be precise about what the flag does and does not change, because the honest
+answer is not "triage only":
+
+- It does **not** grant any new capability. Allow-listing the group already lets
+  every member submit work to the bridge (see the trust warning below), and
+  `run-prompt.md` frames pending messages as the operator's requests regardless
+  of who sent them (tracked as HIMMEL-1359). What the flag changes is narrower
+  than "gets answered": an opted-in group's anonymous posts are guaranteed to be
+  **enqueued** rather than subject to the classifier's ignore/ack verdict.
+  Ordinary group messages stay fully triaged, and an enqueued message still waits
+  if that session is already running — enqueue is the guarantee, not an immediate
+  run. The verdict it bypasses was never a security boundary either: the triage
+  gate is a cost filter and is fail-open (a classifier error returns spawn-high).
+- It is **not** wired into the `/arm` auto-command surface. An anonymous `/arm`
+  is refused by `autoGate.authorize` and falls through to ordinary chat, because
+  an anonymous post cannot distinguish you from a co-admin.
+
+**If the group also has a per-group `allowFrom`, the flag alone is not enough.**
+A non-empty per-group `allowFrom` restricts senders at INGEST — before any
+triage runs — and the substituted `1087968824` is not your real id, so an
+anonymous post is rejected there and the floor never sees it. That rejection is
+correct (the restriction is deliberate and this flag must not quietly undo it),
+but it means a restrictively-configured group still loses anonymous posts
+silently. To admit them, add `1087968824` to that group's `allowFrom` as well:
+
+```json
+"groups": { "-1009999999": { "allowFrom": ["<your-id>", "1087968824"], "trustAnonymousAdmins": true } }
+```
+
+Understand what that costs: the id is shared, so listing it admits the anonymous
+posts of **every** admin of that chat — the same trust statement
+`trustAnonymousAdmins` makes, now also at the ingest gate. If you are not willing
+to make it, the alternative is to turn "Remain anonymous" off for that group.
+
+**Deploying it:** `access.json` is read at poller startup, so the flag takes
+effect only after a bridge restart —
+`pwsh -File scripts/telegram/restart-bridge.ps1`. Verify with a real post from
+that group: `supervisor.log` should show
+`[poller] triage <verdict> → spawn-low (operator floor) for group_<chat_id>`, or
+no triage line at all if the classifier already said spawn. A fresh
+`dropped (never enqueued)` line means the flag did not take — check that the
+chat_id key matches exactly (including the leading `-`) and that the restart
+actually reloaded.
+
 **Trust warning:** allowing a group trusts EVERY member of it — any member
 can drive the bridge: chat text spawns bounded claude runs (prompt-injection
 risk), and `work on <TICKET>` / `stop <TICKET>` verbs dispatch/halt ticket
