@@ -128,21 +128,117 @@ if command -v rebuild_all_sessions_index >/dev/null 2>&1 \
     index_file="$econ_dir/cache-${window_id}-index.json"
     lock="${index_file}.lock"
     mkdir -p "$econ_dir" 2>/dev/null || true
+    # Releases the economics lock. The owner-pid marker lives INSIDE the lock
+    # dir so `mkdir` stays the atomic acquire and a lock created by the legacy
+    # bar (which writes no marker) is still a plain empty dir it can rmdir.
+    _econ_release_lock() {
+        rm -f "$lock/owner.pid" "$lock/heartbeat" 2>/dev/null || true
+        # `rmdir` only removes an EMPTY dir, so any entry this function does not
+        # know about — a marker written by a future version, an editor swapfile,
+        # a filesystem turd — makes the release silently fail and wedges the
+        # refresh for every later session (the reaper below would keep finding a
+        # lock it just declined to remove). Fall back to a recursive remove: by
+        # the time this runs the lock is either OURS or has been positively
+        # confirmed dead, so there is no live owner to pull the rug from under.
+        # Narrowly scoped — "$lock" is always "$index_file.lock" under $econ_dir.
+        rmdir "$lock" 2>/dev/null || rm -rf "$lock" 2>/dev/null || true
+    }
+    # Spawn-free lock heartbeat (HIMMEL-1300). Passed to the rebuild via the
+    # `command -v _hud_rb_heartbeat` seam in all-sessions-index.sh, which calls
+    # it once per transcript. `printf` + redirect are builtins — no touch(1)
+    # fork in the per-file hot path. It stamps a SEPARATE file rather than
+    # re-writing owner.pid, so a concurrent reaper can never catch the pid
+    # marker mid-truncate and mistake this live owner for a marker-less lock.
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly, from the sourced
+    # lib's `command -v _hud_rb_heartbeat` seam — never called by name here.
+    _hud_rb_heartbeat() {
+        printf '%s\n' "$$" > "$lock/heartbeat" 2>/dev/null || true
+    }
+    # Kill-path cleanup: release the lock AND drop the temps this pass left
+    # behind — the rebuild's mktemps (registered by the lib in
+    # $_HUD_RB_TMPFILES) plus the two `.$$.tmp` staging files the atomic
+    # publish uses. The lib is SOURCED, so `$$` is this process and the staging
+    # names match (HIMMEL-1300 R3-4).
+    _econ_cleanup() {
+        rm -f "${index_file}.$$.tmp" "${cache_file}.$$.tmp" 2>/dev/null || true
+        command -v _hud_rb_rmtemps >/dev/null 2>&1 && _hud_rb_rmtemps
+        _econ_release_lock
+    }
+    # The SIGNAL path must EXIT; cleaning up is not enough. A bash INT/TERM
+    # trap RESUMES the interrupted script once the handler returns — it does
+    # not terminate. Demonstrated directly: a script trapping TERM with a
+    # cleanup-only handler ran its cleanup on the signal and then continued to
+    # the last line. So a cleanup-only signal trap here released the lock and
+    # deleted the pass's temps while rebuild_all_sessions_index was STILL
+    # running — leaving the checkpoint writer publishing through temps that no
+    # longer exist, and (the real damage) leaving the lock free so the next
+    # session's refresher could acquire it and write the same cache/index
+    # concurrently. That is precisely the double-writer the lock exists to
+    # prevent, reached BY the kill that is the normal termination mode here.
+    # Exit 0, not 128+signo: hooks in this repo fail CLOSED (a non-zero exit
+    # blocks the action), and this one is a cache-warmer whose documented
+    # contract is that it never blocks the session. Disarm EXIT first so the
+    # cleanup does not run a second time on the way out.
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly, via the trap below.
+    _econ_signal_exit() {
+        _econ_cleanup
+        trap - EXIT
+        exit 0
+    }
   if ! _cache_fresh "$cache_file" "${HIMMEL_STATUSLINE_REFRESH_TTL:-30}"; then
-    # Clear a stale lock left by a crashed rebuild so refresh can't wedge.
+    # Reap a leaked lock. HIMMEL-1300 R3-4: a hook timeout-kill never reaches
+    # the release below, and while the index heals a kill is the NORMAL
+    # termination mode — so with only the 300s age threshold EVERY overrun
+    # leaked the lock and any session started within the next 5 minutes skipped
+    # the refresh entirely. The lock now records its owner PID: an owner that is
+    # gone means the lock is dead, reap it immediately. The 300s age threshold
+    # is KEPT as the fallback — it covers a lock with no pid marker (the legacy
+    # bar's own mkdir-lock, so the two refreshers still interoperate) and the
+    # pathological PID-reuse case where a dead owner's number is live again.
     if [ -d "$lock" ]; then
-        lock_mtime=$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo 0)
-        if [ "$(( $(date +%s) - lock_mtime ))" -gt 300 ]; then
-            rmdir "$lock" 2>/dev/null || true
+        lock_stale=0
+        lock_pid=""
+        # The -f guard is load-bearing: a failing `<` redirect is reported by
+        # the SHELL, so its own `2>/dev/null` cannot suppress the message — and
+        # a marker-less legacy-bar lock is the normal case, not an error.
+        [ -f "$lock/owner.pid" ] && lock_pid=$(tr -dc '0-9' < "$lock/owner.pid" 2>/dev/null)
+        if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+            lock_stale=1
+        else
+            # Either no pid marker (a legacy-bar lock) or a LIVE pid. The age
+            # test alone was wrong for the live case: a genuine owner grinding
+            # through a slow rebuild crosses 300s and was reaped out from under
+            # itself, so a second refresher then ran concurrently on the same
+            # cache files. A live owner now re-stamps $lock/heartbeat once per
+            # transcript, so measure THAT when it exists — a fresh heartbeat
+            # proves the owner is still working, while an alive-but-silent pid
+            # is a recycled PID number sitting on a dead lock and still ages
+            # out. The lock dir's own mtime stays the fallback: it covers the
+            # marker-less legacy lock and an owner killed before its first
+            # heartbeat.
+            lock_ref="$lock"
+            [ -f "$lock/heartbeat" ] && lock_ref="$lock/heartbeat"
+            lock_mtime=$(stat -c %Y "$lock_ref" 2>/dev/null || stat -f %m "$lock_ref" 2>/dev/null || echo 0)
+            [ "$(( $(date +%s) - lock_mtime ))" -gt 300 ] && lock_stale=1
         fi
+        [ "$lock_stale" -eq 1 ] && _econ_release_lock
     fi
     if mkdir "$lock" 2>/dev/null; then
+        printf '%s\n' "$$" > "$lock/owner.pid" 2>/dev/null || true
+        # SIGKILL cannot be trapped — that path is covered by the dead-owner
+        # reap above; these traps cover SIGTERM/SIGINT and any early exit.
+        # INT/TERM route through _econ_signal_exit (which EXITS) rather than
+        # sharing the EXIT handler — see that function for why a cleanup-only
+        # signal trap kept the rebuild running past its own lock release.
+        trap '_econ_cleanup' EXIT
+        trap '_econ_signal_exit' INT TERM
         if [ "$window_id" = "all-stats" ]; then
             rebuild_all_sessions_index "$proj_root" "$cache_file" "$index_file"
         else
             rebuild_all_sessions_index "$proj_root" "$cache_file" "$index_file" "$window_start" "$window_end"
         fi
-        rmdir "$lock" 2>/dev/null || true
+        trap - EXIT INT TERM
+        _econ_cleanup
     fi
   fi
 fi

@@ -25,7 +25,11 @@
 #      NON-claude — a single-model Claude self-review floor is not sufficient in
 #      this setup. Default off (adopter-portable HIMMEL-1224 floor). Else refuse.
 #   4. The ledger records NO blocking finding at that SHA (severity crit|imp
-#      whose verdict is anything other than `disproved`).
+#      whose verdict is anything other than `disproved` or a TRACKED `deferred`).
+#      `amend` supersede records are applied before this is judged, so a
+#      correction (wrong severity, wrong head) actually takes effect; a
+#      `deferred` verdict clears ONLY with a ticket key AND a reason, so a bare
+#      "deferred" is still blocking (HIMMEL-1294).
 #   5. POST-PR ONLY: when a PR already exists for the branch, its head commit
 #      must BE the certified SHA, and check-ci.sh must also return 0 (CI green +
 #      all review threads resolved + no changes-requested). check-ci evaluates
@@ -242,10 +246,49 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
   // or corrupted while an avail-ok line stays readable, the gate would clear
   // the marker without ever evaluating that finding. An unreadable ledger is
   // an unknown verdict, and unknown must never mean clean.
-  let responders = 0, nonClaudeResponders = 0, blocking = [], malformed = 0;
+  let responders = 0, nonClaudeResponders = 0, blocking = [], malformed = 0, deferred = [], applied = [];
+  // AMENDS (HIMMEL-1294). The ledger is append-only, so a correction arrives as
+  // a supersede record rather than an edited line. Collect them FIRST, keyed by
+  // each finding by its ORIGINAL (head, finding_id, artifact, perspective), and
+  // apply them before any finding is judged. NOTE: no apostrophes, backticks or
+  // dollar-braces anywhere in this node block — it is single-quoted for the
+  // shell, so an apostrophe ends the quote and every line after it becomes
+  // shell syntax. Without this pass the ledger could
+  // record a correction that the gate never sees - which is the same
+  // caller-thinks-it-worked failure the amend verb exists to end.
+  // Later amends win per key; a set.head then re-keys the finding, so atHead
+  // below evaluates it against the head it was actually raised at.
+  //
+  // SEP is U+001F (unit separator), built with String.fromCharCode so no raw
+  // control byte ever sits in this file. A PRINTABLE delimiter is the real
+  // hazard codex-2/glm-4 pointed at: it can occur inside a field, so two
+  // different tuples could flatten to one key and an amend could land on the
+  // wrong finding. U+001F cannot appear in a sha, slug, artifact or perspective.
+  const SEP = String.fromCharCode(31);
+  const amends = new Map();
+  for (const l of lines) {
+      let a;
+      try { a = JSON.parse(l); } catch { continue; }   // counted below in the main pass
+      if (a.kind !== "amend" || !a.set || typeof a.set !== "object") continue;
+      const k = [a.target_head, a.finding_id, a.artifact || "diff", a.perspective || "off"].join(SEP);
+      amends.set(k, Object.assign({}, amends.get(k) || {}, a.set));
+  }
   for (const l of lines) {
       let o;
       try { o = JSON.parse(l); } catch { malformed++; continue; }
+      if (o.kind === "amend") continue;   // metadata, not a verdict record
+      if (o.kind === "finding") {
+          const k = [o.head, o.finding_id, o.artifact || "diff", o.perspective || "off"].join(SEP);
+          if (amends.has(k)) {
+              // Report every amend the gate ACTS on. An amend can move a
+              // finding off this SHA or change its severity, i.e. it can be the
+              // reason the gate cleared - so applying one silently would make
+              // the decisive evidence the one thing the transcript does not
+              // show. Reported whether or not the finding ends up blocking.
+              applied.push((o.finding_id || "?") + JSON.stringify(amends.get(k)));
+              o = Object.assign({}, o, amends.get(k));
+          }
+      }
       if (!atHead(o)) continue;
       if (o.kind === "avail" && o.status === "ok") {
           responders++;
@@ -267,6 +310,20 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
       }
       if (o.kind === "finding" && (o.severity === "crit" || o.severity === "imp")
           && o.verdict !== "disproved") {
+          // DEFERRAL (HIMMEL-1294). Before this, an honestly-recorded
+          // out-of-diff / pre-existing crit|imp had exactly two mechanical
+          // exits: downgrade it to sug, or claim disproved. Both are false, so
+          // the gate pushed an honest session toward mis-recording - and a
+          // single such record wedged a branch permanently.
+          // A deferral is accepted ONLY when it is TRACKED: verdict deferred
+          // AND a ticket key AND a stated reason. A bare "deferred" stays
+          // blocking, so this is a third truthful exit, not a free pass.
+          const ticket = typeof o.deferred_to === "string" ? o.deferred_to.trim() : "";
+          const why = typeof o.reason === "string" ? o.reason.trim() : "";
+          if (o.verdict === "deferred" && /^[A-Z][A-Z0-9]*-[0-9]+$/.test(ticket) && why) {
+              deferred.push((o.finding_id || "?") + "->" + ticket);
+              continue;
+          }
           // String concat, not a template literal: a dollar-brace inside this
           // single-quoted node block trips shellcheck SC2016, and the quotes
           // must stay single so the shell never expands the JS.
@@ -274,7 +331,7 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
               (o.verdict || "no-verdict") + ")");
       }
   }
-  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, malformed }));
+  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, malformed, deferred, applied }));
 ' 2>/dev/null)
 if [ -z "$verdict" ]; then
     echo "clear-cr-marker: could not read the CR ledger at $ledger — refusing (cannot certify the review)." >&2
@@ -285,6 +342,16 @@ responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",
 non_claude_responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).nonClaudeResponders))' 2>/dev/null)
 blocking=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).blocking.join(" ")))' 2>/dev/null)
 malformed=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).malformed))' 2>/dev/null)
+deferred=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).deferred||[]).join(" ")))' 2>/dev/null)
+applied_amends=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).applied||[]).join(" ")))' 2>/dev/null)
+# Say what was amended BEFORE reporting the verdict it produced. An amend can be
+# the reason the gate cleared (it can re-key a blocking finding off this SHA, or
+# lower its severity), so it must never be the one piece of decisive evidence
+# the transcript omits.
+if [ -n "$applied_amends" ]; then
+    echo "clear-cr-marker: applied amend(s) at ${tip:0:8}: $applied_amends" >&2
+    audit "AMENDS branch=$branch sha=$tip applied=$applied_amends"
+fi
 
 # Malformed ledger lines => the verdict is UNKNOWN. Refuse (coderabbit).
 if [ "${malformed:-0}" -gt 0 ]; then
@@ -319,8 +386,19 @@ fi
 # 4. Blocking findings recorded at this SHA.
 if [ -n "$blocking" ]; then
     echo "clear-cr-marker: blocking finding(s) recorded at ${tip:0:8}: $blocking — address them, resolve the threads, re-run /pr-check." >&2
+    echo "  If a finding is genuinely out-of-diff / pre-existing / out-of-scope, DEFER it to a ticket instead of downgrading or disproving it (HIMMEL-1294):" >&2
+    # `--set reason=` is NOT redundant with `--reason` (glm-3): the gate reads
+    # the FINDING's reason, while --reason documents why the RECORD was wrong.
+    # Omitting it leaves the deferral rejected for a missing reason, i.e. this
+    # very hint would send the reader into a dead end.
+    echo "    scripts/cr/ledger-append.sh amend --head $tip --id <finding-id> --set verdict=deferred --set deferred_to=<TICKET> --set reason=\"<why it is out of scope here>\" --reason \"deferred after review\"" >&2
     audit "REFUSED reason=blocking-findings branch=$branch sha=$tip findings=$blocking"
     exit 15
+fi
+# Deferrals are not silent: they cleared the gate, so say so and name the tickets.
+if [ -n "$deferred" ]; then
+    echo "clear-cr-marker: deferred finding(s) at ${tip:0:8} (tracked, not blocking): $deferred" >&2
+    audit "DEFERRED branch=$branch sha=$tip findings=$deferred"
 fi
 
 # 5. Post-PR / pre-merge gate — when a PR already exists, the review threads and

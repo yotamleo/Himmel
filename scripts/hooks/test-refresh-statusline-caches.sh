@@ -152,6 +152,148 @@ else
     fail "main branch -> rc=$rc rollup_called=$([ -f "$rollup_marker" ] && echo yes || echo no)"
 fi
 
+# ── Cases 3.1-3.3: economics lock reaping (HIMMEL-1300) ─────────────────────
+# All three drive the reaper through the SAME discriminator: if the lock is
+# reaped, the hook acquires it and writes cache-all-stats.json; if it is not,
+# the hook skips the refresh entirely and no cache appears. TTL=0 forces past
+# the freshness gate so the reaper is always reached.
+#
+# Ages the lock dir past the 300s staleness threshold. Returns 1 when this
+# platform's touch(1) cannot set an explicit mtime, so a case can skip rather
+# than assert on a setup that never happened.
+# `touch -d @epoch` is GNU-only, so on a stock macOS this returned 1 and cases
+# 3.1/3.2 SKIPped permanently — silently dropping coverage of the heartbeat-vs-age
+# reaper logic on one of the three declared platforms. Falls back to the POSIX
+# `-t` form via `date -r`, the same pair lib/all-sessions-index.sh already uses to
+# build its `find -newer` reference (~324-326). Still returns 1 when NEITHER form
+# works, so a case can skip rather than assert on a setup that never happened.
+_age_lock() {
+    local _when=$(( $(date +%s) - 600 ))
+    touch -d "@$_when" "$1" 2>/dev/null \
+        || touch -t "$(date -r "$_when" +%Y%m%d%H%M.%S 2>/dev/null)" "$1" 2>/dev/null
+}
+
+run_hook_econ() {  # $1 = econ dir
+    CLAUDE_PROJECTS_DIR="$PROJ" CLAUDE_ALL_SESSIONS_CACHE_DIR="$1" \
+        HIMMEL_STATUSLINE_REFRESH_TTL=0 \
+        HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HIMMEL_WHERE_ARE_WE_ROLLUP_CMD="bash $rollup_stub" \
+        bash "$HOOK" --cwd "$GITDIR" </dev/null >/dev/null 2>&1
+}
+
+# 3.1 — a LIVE owner whose heartbeat is fresh must SURVIVE, even though the lock
+# dir itself is older than the 300s threshold. This is the regression the
+# heartbeat exists for: before it, a genuine rebuild running longer than 300s
+# was reaped out from under itself and a second refresher ran concurrently on
+# the same cache files. $$ is this test process — unambiguously alive.
+ECON_HB="$TMP/econ-hb"; mkdir -p "$ECON_HB"
+LOCK_HB="$ECON_HB/cache-all-stats-index.json.lock"
+mkdir -p "$LOCK_HB"
+printf '%s\n' "$$" > "$LOCK_HB/owner.pid"
+printf '%s\n' "$$" > "$LOCK_HB/heartbeat"     # fresh: written just now
+if ! _age_lock "$LOCK_HB"; then
+    echo "SKIP live-owner heartbeat -> touch(1) cannot set an explicit mtime here"
+else
+    run_hook_econ "$ECON_HB"
+    if [ -d "$LOCK_HB" ] && [ ! -f "$ECON_HB/cache-all-stats.json" ]; then
+        pass "live owner + fresh heartbeat -> lock NOT reaped, refresh skipped"
+    else
+        fail "live owner + fresh heartbeat -> lock reaped (lock=$([ -d "$LOCK_HB" ] && echo kept || echo gone), cache=$([ -f "$ECON_HB/cache-all-stats.json" ] && echo written || echo none))"
+    fi
+fi
+
+# 3.2 — an alive PID with a STALE heartbeat is a recycled PID number sitting on
+# a dead lock (a real owner would have re-stamped it), so the age fallback must
+# still reap it. Without this the 3.1 fix would wedge the refresh forever.
+ECON_ST="$TMP/econ-stale"; mkdir -p "$ECON_ST"
+LOCK_ST="$ECON_ST/cache-all-stats-index.json.lock"
+mkdir -p "$LOCK_ST"
+printf '%s\n' "$$" > "$LOCK_ST/owner.pid"
+printf '%s\n' "$$" > "$LOCK_ST/heartbeat"
+if ! _age_lock "$LOCK_ST/heartbeat" || ! _age_lock "$LOCK_ST"; then
+    echo "SKIP recycled-pid stale heartbeat -> touch(1) cannot set an explicit mtime here"
+else
+    run_hook_econ "$ECON_ST"
+    if [ -f "$ECON_ST/cache-all-stats.json" ]; then
+        pass "alive pid + stale heartbeat -> reaped by the age fallback, refresh ran"
+    else
+        fail "alive pid + stale heartbeat -> not reaped, refresh never ran"
+    fi
+fi
+
+# 3.3 — release must survive an UNEXPECTED entry in the lock dir. `rmdir` only
+# removes an empty dir, so a stray file made the release silently fail and
+# wedged every later session. Uses a dead owner pid so the reap path (not the
+# acquire path) does the removal.
+ECON_FR="$TMP/econ-force"; mkdir -p "$ECON_FR"
+LOCK_FR="$ECON_FR/cache-all-stats-index.json.lock"
+mkdir -p "$LOCK_FR"
+( exit 0 ) & dead_pid=$!; wait "$dead_pid" 2>/dev/null
+printf '%s\n' "$dead_pid" > "$LOCK_FR/owner.pid"
+printf '%s\n' 'stray marker from some future version' > "$LOCK_FR/unexpected-entry"
+if kill -0 "$dead_pid" 2>/dev/null; then
+    echo "SKIP force-release -> reaped pid $dead_pid is somehow still alive (pid reuse)"
+else
+    run_hook_econ "$ECON_FR"
+    if [ -f "$ECON_FR/cache-all-stats.json" ]; then
+        pass "dead owner + stray lock entry -> force-release reaped it, refresh ran"
+    else
+        fail "dead owner + stray lock entry -> rmdir-only release wedged the refresh"
+    fi
+fi
+
+# 3.4 — a SIGTERM mid-rebuild must TERMINATE the hook, not merely clean up.
+# A bash INT/TERM trap RESUMES the interrupted script when the handler returns,
+# so a cleanup-only signal trap released the lock and deleted the pass's temps
+# while rebuild_all_sessions_index kept running — a second refresher could then
+# acquire the lock and write the same cache/index concurrently. Killing is the
+# NORMAL termination mode for this hook (the SessionStart timeout), so this is
+# the common path, not a corner case. A slow-jq PATH shim makes the rebuild long
+# enough to signal mid-pass; the assertion is that the process is GONE shortly
+# after the TERM, which fails if the trap only cleans up.
+ECON_SIG="$TMP/econ-sig"; mkdir -p "$ECON_SIG"
+SIGPROJ="$TMP/sigprojects"; mkdir -p "$SIGPROJ"
+for n in 1 2 3 4 5 6 7 8; do
+    mkdir -p "$SIGPROJ/s$n"
+    printf '%s\n' '{"type":"assistant","message":{"usage":{"cache_read_input_tokens":1000}}}' > "$SIGPROJ/s$n/t.jsonl"
+done
+SLOWJQ="$TMP/slowjq"; mkdir -p "$SLOWJQ"
+REAL_JQ=$(command -v jq)
+cat > "$SLOWJQ/jq" <<SIGJQ
+#!/usr/bin/env bash
+sleep 1
+exec "$REAL_JQ" "\$@"
+SIGJQ
+chmod +x "$SLOWJQ/jq"
+SIGLOCK="$ECON_SIG/cache-all-stats-index.json.lock"
+CLAUDE_PROJECTS_DIR="$SIGPROJ" CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_SIG" \
+    HIMMEL_STATUSLINE_REFRESH_TTL=0 PATH="$SLOWJQ:$PATH" \
+    HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HIMMEL_WHERE_ARE_WE_ROLLUP_CMD="bash $rollup_stub" \
+    bash "$HOOK" --cwd "$GITDIR" </dev/null >/dev/null 2>&1 &
+sig_pid=$!
+# Wait for the rebuild to actually be under way (lock acquired), bounded.
+waited=0
+while [ ! -d "$SIGLOCK" ] && [ "$waited" -lt 100 ]; do sleep 0.1; waited=$((waited + 1)); done
+if [ ! -d "$SIGLOCK" ]; then
+    echo "SKIP signal-exit -> hook never acquired the lock within 10s (cannot stage the scenario)"
+    kill -TERM "$sig_pid" 2>/dev/null; wait "$sig_pid" 2>/dev/null
+else
+    kill -TERM "$sig_pid" 2>/dev/null
+    # Poll for death rather than `wait` — `wait` would block until the process
+    # ends either way and could not distinguish "exited on the signal" from
+    # "ran the whole rebuild to completion", which is the entire distinction.
+    gone=0
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        kill -0 "$sig_pid" 2>/dev/null || { gone=1; break; }
+        sleep 0.2
+    done
+    wait "$sig_pid" 2>/dev/null
+    if [ "$gone" -eq 1 ]; then
+        pass "SIGTERM mid-rebuild -> hook exited on the signal (did not resume the rebuild past its own lock release)"
+    else
+        fail "SIGTERM mid-rebuild -> hook still running 3s after TERM; the signal trap cleaned up but did not exit"
+    fi
+fi
+
 # ── Case 4: static no-spawn — the hook itself carries no detached-fork pattern
 strip_comments() { sed -E 's/^[[:space:]]*#.*//; s/([[:space:]])#.*/\1/' "$1"; }
 if [ -z "$(strip_comments "$HOOK" | grep -nE '&[[:space:]]*disown|\([^)]*&[[:space:]]*\)|[^&>|]&[[:space:]]*$' || true)" ]; then

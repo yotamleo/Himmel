@@ -4,6 +4,47 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATUSLINE="$SCRIPT_DIR/../bin/statusline.sh"
 
+# ── HIMMEL-1300 R3-8: save/restore the LIVE all-sessions caches ───────────
+# This suite repeatedly overwrites/removes /tmp/claude/cache-all-stats.json
+# (and its -index.json sibling) as fixtures throughout the file below —
+# read_all_sessions_cache_stats (bin/statusline.sh) hardcodes /tmp/claude, so
+# there is no cache-dir seam to redirect through. Left unguarded, a local
+# full-suite run destroys the operator's real historical totals. Mirrors the
+# restore_usage_cache trap further down (same technique, same file).
+ALLSTATS_CACHE=/tmp/claude/cache-all-stats.json
+ALLSTATS_INDEX=/tmp/claude/cache-all-stats-index.json
+ALLSTATS_CACHE_BACKUP=$(mktemp)
+ALLSTATS_INDEX_BACKUP=$(mktemp)
+ALLSTATS_CACHE_HAD_FILE=false
+ALLSTATS_INDEX_HAD_FILE=false
+mkdir -p /tmp/claude 2>/dev/null || true
+if [ -f "$ALLSTATS_CACHE" ]; then
+    ALLSTATS_CACHE_HAD_FILE=true
+    cp "$ALLSTATS_CACHE" "$ALLSTATS_CACHE_BACKUP"
+fi
+if [ -f "$ALLSTATS_INDEX" ]; then
+    ALLSTATS_INDEX_HAD_FILE=true
+    cp "$ALLSTATS_INDEX" "$ALLSTATS_INDEX_BACKUP"
+fi
+# Presence flag (not -s), same reasoning as restore_usage_cache: an originally
+# absent file must come back absent, not as an empty file.
+restore_allstats_cache() {
+    if $ALLSTATS_CACHE_HAD_FILE; then
+        mv -f "$ALLSTATS_CACHE_BACKUP" "$ALLSTATS_CACHE"
+    else
+        rm -f "$ALLSTATS_CACHE_BACKUP" "$ALLSTATS_CACHE"
+    fi
+    if $ALLSTATS_INDEX_HAD_FILE; then
+        mv -f "$ALLSTATS_INDEX_BACKUP" "$ALLSTATS_INDEX"
+    else
+        rm -f "$ALLSTATS_INDEX_BACKUP" "$ALLSTATS_INDEX"
+    fi
+}
+# Set NOW so an early failure (before the usage-cache trap below is installed)
+# still restores; the usage-cache trap installation further down replaces this
+# with a combined trap that runs both restores.
+trap restore_allstats_cache EXIT
+
 # ── Inline deps from original script ──────────────────────
 iso_to_epoch() {
     local iso_str="$1"
@@ -418,7 +459,10 @@ restore_usage_cache() {
     fi
     rm -f "$SL_ERR"
 }
-trap restore_usage_cache EXIT
+# Combined trap: both restores must run on exit (a single EXIT trap slot
+# replaces, not adds — chain explicitly rather than losing the R3-8 restore
+# installed above).
+trap 'restore_usage_cache; restore_allstats_cache' EXIT
 
 run_statusline() {  # $1 = stdin payload; stderr kept for FAIL output
     printf '%s' "$1" | bash "$STATUSLINE" >/dev/null 2>"$SL_ERR" || true
@@ -681,6 +725,393 @@ echo "$plain_lbl" | grep -q "r:6k" \
     || { echo "FAIL: month windowed totals missing in: $plain_lbl"; FAIL=$(( FAIL + 1 )); }
 rm -f /tmp/claude/cache-month-202606.json
 rm -rf "$TMPDIR_LBL"
+
+# ── HIMMEL-1300: dedup by message.id (duplicate collapsed, distinct summed) ──
+# Claude Code dual/triple-logs the same API response into the transcript; a
+# naive per-row sum over-counts 1.9x-3.3x (spec §1.1). rebuild_all_sessions_index
+# must count each message.id once, but still sum genuinely distinct messages.
+TMPDIR_DEDUP=$(mktemp -d)
+DEDUP_PROJ="$TMPDIR_DEDUP/.claude/projects"; mkdir -p "$DEDUP_PROJ/p"
+cat > "$DEDUP_PROJ/p/s.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}}
+{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}}
+{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}}
+{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":20,"output_tokens":8,"cache_creation_input_tokens":300,"cache_read_input_tokens":400}}}
+EOF
+DEDUP_CACHE="$TMPDIR_DEDUP/cache.json"; DEDUP_INDEX="$TMPDIR_DEDUP/index.json"
+rebuild_all_sessions_index "$DEDUP_PROJ" "$DEDUP_CACHE" "$DEDUP_INDEX" || true
+assert_eq "dedup by message.id: reads (m1 once + m2, not m1 x3)" "$(jq -r '.reads'   "$DEDUP_CACHE" 2>/dev/null)" "600"
+assert_eq "dedup by message.id: writes (m1 once + m2)"          "$(jq -r '.writes'  "$DEDUP_CACHE" 2>/dev/null)" "400"
+assert_eq "dedup by message.id: inputs (m1 once + m2)"          "$(jq -r '.inputs'  "$DEDUP_CACHE" 2>/dev/null)" "30"
+assert_eq "dedup by message.id: outputs (m1 once + m2)"         "$(jq -r '.outputs' "$DEDUP_CACHE" 2>/dev/null)" "13"
+rm -rf "$TMPDIR_DEDUP"
+
+# ── HIMMEL-1300: id-less consecutive-fingerprint fallback + reset ────────────
+# No fixture here carries message.id, so dedup falls back to comparing usage
+# fingerprints against the IMMEDIATELY PREVIOUS row: identical-consecutive is
+# skipped, a change counts, and the key RESETS on every non-assistant row (so
+# two distinct id-less messages separated by a user row do NOT fuse into one).
+# usage A: input=1 output=2 write=10 read=20 ; usage B: input=3 output=4 write=30 read=40
+# Sequence: A, A(dup->skip), user(reset), A(post-reset->count again), B(count), B(dup->skip)
+# Expected: 2xA + 1xB -> reads=20+20+40=80 writes=10+10+30=50 inputs=1+1+3=5 outputs=2+2+4=8
+TMPDIR_FP=$(mktemp -d)
+FP_PROJ="$TMPDIR_FP/.claude/projects"; mkdir -p "$FP_PROJ/p"
+cat > "$FP_PROJ/p/s.jsonl" <<'EOF'
+{"type":"assistant","message":{"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":20}}}
+{"type":"assistant","message":{"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":20}}}
+{"type":"user","message":{"content":"reset here"}}
+{"type":"assistant","message":{"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":20}}}
+{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":4,"cache_creation_input_tokens":30,"cache_read_input_tokens":40}}}
+{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":4,"cache_creation_input_tokens":30,"cache_read_input_tokens":40}}}
+EOF
+FP_CACHE="$TMPDIR_FP/cache.json"; FP_INDEX="$TMPDIR_FP/index.json"
+rebuild_all_sessions_index "$FP_PROJ" "$FP_CACHE" "$FP_INDEX" || true
+assert_eq "id-less fallback: reads (2xA + 1xB, dups skipped, reset across user row)"  "$(jq -r '.reads'   "$FP_CACHE" 2>/dev/null)" "80"
+assert_eq "id-less fallback: writes"                                                  "$(jq -r '.writes'  "$FP_CACHE" 2>/dev/null)" "50"
+assert_eq "id-less fallback: inputs"                                                  "$(jq -r '.inputs'  "$FP_CACHE" 2>/dev/null)" "5"
+assert_eq "id-less fallback: outputs"                                                 "$(jq -r '.outputs' "$FP_CACHE" 2>/dev/null)" "8"
+rm -rf "$TMPDIR_FP"
+
+# ── HIMMEL-1300: normalization (non-number / null / negative / fractional) ──
+# normcount: non-number -> 0; null -> 0; negative -> clamped to 0; fractional
+# -> floor.
+TMPDIR_NORM=$(mktemp -d)
+NORM_PROJ="$TMPDIR_NORM/.claude/projects"; mkdir -p "$NORM_PROJ/p"
+cat > "$NORM_PROJ/p/s.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"norm1","usage":{"input_tokens":"abc","output_tokens":null,"cache_creation_input_tokens":-50,"cache_read_input_tokens":12.7}}}
+EOF
+NORM_CACHE="$TMPDIR_NORM/cache.json"; NORM_INDEX="$TMPDIR_NORM/index.json"
+rebuild_all_sessions_index "$NORM_PROJ" "$NORM_CACHE" "$NORM_INDEX" || true
+assert_eq "normalization: fractional 12.7 reads floors to 12" "$(jq -r '.reads'   "$NORM_CACHE" 2>/dev/null)" "12"
+assert_eq "normalization: negative -50 writes clamps to 0"    "$(jq -r '.writes'  "$NORM_CACHE" 2>/dev/null)" "0"
+assert_eq "normalization: non-number \"abc\" inputs -> 0"     "$(jq -r '.inputs'  "$NORM_CACHE" 2>/dev/null)" "0"
+assert_eq "normalization: null outputs -> 0"                  "$(jq -r '.outputs' "$NORM_CACHE" 2>/dev/null)" "0"
+rm -rf "$TMPDIR_NORM"
+
+# ── HIMMEL-1300 R3-2/§3.3: v2 entry carried forward untouched; a stale/v-less
+# entry re-enters the recompute set ──────────────────────────────────────────
+# fileA (v=2, known) and fileB (v stripped, simulating a pre-dedup/stale
+# entry) both get their CONTENT changed on disk while their mtime is reset to
+# its pre-change value (so neither is `-newer` than the index). fileA — known
+# and unchanged per the index — must be carried forward exactly as indexed,
+# ignoring the new bytes. fileB — not "known" (no current v) — must re-enter
+# recompute via the backfill missing-set regardless of mtime, and pick up its
+# new content.
+TMPDIR_V2=$(mktemp -d)
+V2_PROJ="$TMPDIR_V2/.claude/projects"; mkdir -p "$V2_PROJ/pa" "$V2_PROJ/pb"
+cat > "$V2_PROJ/pa/fileA.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"va1","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":111}}}
+EOF
+cat > "$V2_PROJ/pb/fileB.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"vb1","usage":{"input_tokens":2,"output_tokens":2,"cache_creation_input_tokens":200,"cache_read_input_tokens":222}}}
+EOF
+V2_CACHE="$TMPDIR_V2/cache.json"; V2_INDEX="$TMPDIR_V2/index.json"
+sleep 1
+rebuild_all_sessions_index "$V2_PROJ" "$V2_CACHE" "$V2_INDEX" || true
+assert_eq "v2 seed: fileA indexed at reads=111, v=2" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("fileA.jsonl")) | "\(.value.reads)/\(.value.v)"' "$V2_INDEX" 2>/dev/null)" "111/2"
+
+# Strip fileB's v stamp — simulates a pre-dedup v1 entry / stale carry.
+# Matched via endswith() baked into the jq PROGRAM TEXT, not --arg: this
+# machine's jq is a native Windows binary, and MSYS/Git-Bash auto-translates
+# a POSIX-look `--arg` value (e.g. "/tmp/tmp.XXX/...") into a Windows path
+# before jq ever sees it, so an exact-match `.[$p]` silently misses (verified:
+# `jq -n --arg p "/tmp/x" '$p'` prints "C:/Users/.../Temp/x"). endswith() on a
+# literal in the program itself is immune to that argv mangling.
+jq 'to_entries | map(if (.key | endswith("fileB.jsonl")) then .value |= del(.v) else . end) | from_entries' \
+    "$V2_INDEX" > "$V2_INDEX.tmp" && mv "$V2_INDEX.tmp" "$V2_INDEX"
+sleep 1
+
+FA_REF="$TMPDIR_V2/famref"; touch -r "$V2_PROJ/pa/fileA.jsonl" "$FA_REF"
+echo '{"type":"assistant","message":{"id":"va2","usage":{"input_tokens":9,"output_tokens":9,"cache_creation_input_tokens":900,"cache_read_input_tokens":999}}}' > "$V2_PROJ/pa/fileA.jsonl"
+touch -r "$FA_REF" "$V2_PROJ/pa/fileA.jsonl"
+
+FB_REF="$TMPDIR_V2/fbref"; touch -r "$V2_PROJ/pb/fileB.jsonl" "$FB_REF"
+echo '{"type":"assistant","message":{"id":"vb2","usage":{"input_tokens":8,"output_tokens":8,"cache_creation_input_tokens":800,"cache_read_input_tokens":888}}}' > "$V2_PROJ/pb/fileB.jsonl"
+touch -r "$FB_REF" "$V2_PROJ/pb/fileB.jsonl"
+
+rebuild_all_sessions_index "$V2_PROJ" "$V2_CACHE" "$V2_INDEX" || true
+assert_eq "v2 entry carried forward UNTOUCHED (fileA reads stay 111, bytes on disk changed to 999 but ignored)" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("fileA.jsonl")) | .value.reads' "$V2_INDEX" 2>/dev/null)" "111"
+assert_eq "stale/v-less entry RE-ENTERS recompute (fileB reads now 888, re-read despite unchanged mtime)" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("fileB.jsonl")) | .value.reads' "$V2_INDEX" 2>/dev/null)" "888"
+assert_eq "re-entered entry stamped current v=2 on success" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("fileB.jsonl")) | .value.v' "$V2_INDEX" 2>/dev/null)" "2"
+rm -rf "$TMPDIR_V2"
+
+# ── HIMMEL-1300 R3-3: jq failure -> sentinel (never a zero), attempts count,
+# reset-on-success, and v:-1 parking after 3 consecutive failures ───────────
+TMPDIR_FAIL=$(mktemp -d)
+FAIL_PROJ="$TMPDIR_FAIL/.claude/projects"; mkdir -p "$FAIL_PROJ/p"
+FAIL_FILE="$FAIL_PROJ/p/flaky.jsonl"
+echo '{"type":"assistant","message":{"id":"good1","usage":{"input_tokens":5,"output_tokens":5,"cache_creation_input_tokens":50,"cache_read_input_tokens":100}}}' > "$FAIL_FILE"
+FAIL_CACHE="$TMPDIR_FAIL/cache.json"; FAIL_INDEX="$TMPDIR_FAIL/index.json"
+sleep 1
+rebuild_all_sessions_index "$FAIL_PROJ" "$FAIL_CACHE" "$FAIL_INDEX" || true
+assert_eq "pre-failure: good sums indexed (reads=100)" "$(jq -r '.reads' "$FAIL_CACHE" 2>/dev/null)" "100"
+
+# Corrupt the file (invalid JSON -> jq -rs fails, empty stdout) and touch it
+# newer so it enters this pass's recompute set via -newer.
+sleep 1
+printf 'not json{{{\n' > "$FAIL_FILE"
+rebuild_all_sessions_index "$FAIL_PROJ" "$FAIL_CACHE" "$FAIL_INDEX" || true
+assert_eq "jq-failure sentinel: aggregate does NOT dip (still 100, not 0)" \
+    "$(jq -r '.reads' "$FAIL_CACHE" 2>/dev/null)" "100"
+assert_eq "jq-failure sentinel: attempts=1 after first failure" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("flaky.jsonl")) | .value.attempts' "$FAIL_INDEX" 2>/dev/null)" "1"
+assert_eq "jq-failure sentinel: no current v (keeps retrying via the missing-set)" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("flaky.jsonl")) | .value.v' "$FAIL_INDEX" 2>/dev/null)" "null"
+
+# Second consecutive failure — picked up via the backfill missing-set this
+# time (the entry has no v, so it is not "known" regardless of mtime).
+rebuild_all_sessions_index "$FAIL_PROJ" "$FAIL_CACHE" "$FAIL_INDEX" || true
+assert_eq "jq-failure sentinel: attempts=2 (second consecutive failure)" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("flaky.jsonl")) | .value.attempts' "$FAIL_INDEX" 2>/dev/null)" "2"
+assert_eq "jq-failure sentinel: still carries the old sums at attempts=2 (no dip)" \
+    "$(jq -r '.reads' "$FAIL_CACHE" 2>/dev/null)" "100"
+
+# Third consecutive failure -> parked at v:-1 (excluded from pending).
+rebuild_all_sessions_index "$FAIL_PROJ" "$FAIL_CACHE" "$FAIL_INDEX" || true
+assert_eq "jq-failure: 3rd consecutive failure parks v:-1" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("flaky.jsonl")) | .value.v' "$FAIL_INDEX" 2>/dev/null)" "-1"
+assert_eq "jq-failure: parked entry excluded from pending" \
+    "$(jq -r '.pending' "$FAIL_CACHE" 2>/dev/null)" "0"
+rm -rf "$TMPDIR_FAIL"
+
+# ── Reset-on-success: a failing file that later recovers clears `attempts` ──
+TMPDIR_RESET=$(mktemp -d)
+RESET_PROJ="$TMPDIR_RESET/.claude/projects"; mkdir -p "$RESET_PROJ/p"
+RESET_FILE="$RESET_PROJ/p/flaky2.jsonl"
+echo '{"type":"assistant","message":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":10,"cache_read_input_tokens":20}}}' > "$RESET_FILE"
+RESET_CACHE="$TMPDIR_RESET/cache.json"; RESET_INDEX="$TMPDIR_RESET/index.json"
+sleep 1
+rebuild_all_sessions_index "$RESET_PROJ" "$RESET_CACHE" "$RESET_INDEX" || true
+sleep 1
+printf 'not json{{{\n' > "$RESET_FILE"
+rebuild_all_sessions_index "$RESET_PROJ" "$RESET_CACHE" "$RESET_INDEX" || true
+assert_eq "reset-on-success setup: attempts=1 before recovery" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("flaky2.jsonl")) | .value.attempts' "$RESET_INDEX" 2>/dev/null)" "1"
+sleep 1
+echo '{"type":"assistant","message":{"id":"r2","usage":{"input_tokens":2,"output_tokens":2,"cache_creation_input_tokens":20,"cache_read_input_tokens":40}}}' > "$RESET_FILE"
+rebuild_all_sessions_index "$RESET_PROJ" "$RESET_CACHE" "$RESET_INDEX" || true
+assert_eq "reset-on-success: attempts cleared after a success" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("flaky2.jsonl")) | .value.attempts' "$RESET_INDEX" 2>/dev/null)" "null"
+assert_eq "reset-on-success: v stamped current (2) on success" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("flaky2.jsonl")) | .value.v' "$RESET_INDEX" 2>/dev/null)" "2"
+assert_eq "reset-on-success: sums reflect the NEW post-recovery content (40, not the old 20)" \
+    "$(jq -r '.reads' "$RESET_CACHE" 2>/dev/null)" "40"
+rm -rf "$TMPDIR_RESET"
+
+# ── HIMMEL-1300 R3-5: checkpointing — a pass killed mid-run still persists
+# completed entries (the §1.6 fix: before checkpointing, a killed pass wrote
+# NOTHING, so a history whose scan never finishes inside the hook timeout made
+# ZERO progress forever). A "slow jq" (a PATH-shadowed jq wrapper that adds a
+# fixed delay before delegating to the real binary) turns the normally-instant
+# per-file/per-checkpoint jq calls into a long enough pass to reliably
+# interrupt with `timeout -s TERM`. Assertions are RANGE-based, not exact
+# counts: which file the kill lands on is a real race — the invariant under
+# test is "some but not all persisted, and a follow-up pass heals the rest".
+CACHE_FUNCS_FILE=$(mktemp)
+sed -n '/^# ── Cache metrics functions/,/^# ── End cache metrics functions/p' "$STATUSLINE" > "$CACHE_FUNCS_FILE"
+
+TMPDIR_CKPT=$(mktemp -d)
+CKPT_PROJ="$TMPDIR_CKPT/.claude/projects"; mkdir -p "$CKPT_PROJ"
+for n in 1 2 3; do
+    mkdir -p "$CKPT_PROJ/p$n"
+    echo '{"type":"assistant","message":{"id":"ckid'"$n"'","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":'"$((n*1000))"'}}}' > "$CKPT_PROJ/p$n/f.jsonl"
+done
+CKPT_CACHE="$TMPDIR_CKPT/cache.json"; CKPT_INDEX="$TMPDIR_CKPT/index.json"
+
+SLOWJQ_DIR=$(mktemp -d)
+REAL_JQ_BIN=$(command -v jq)
+cat > "$SLOWJQ_DIR/jq" <<SLOWEOF
+#!/usr/bin/env bash
+sleep 0.5
+exec "$REAL_JQ_BIN" "\$@"
+SLOWEOF
+chmod +x "$SLOWJQ_DIR/jq"
+
+# `timeout`'s own exit status is 124 on a genuine kill — that IS the expected,
+# successful outcome here, not a script error. Left unguarded under this
+# file's `set -e`, a bare 124 aborts the WHOLE suite immediately (no further
+# tests run, no "Results:" line, and the abort's 124 becomes the file's own
+# exit code) — exactly the bug a prior run of this test hit. `|| true` makes
+# the expected-nonzero outcome non-fatal. `--kill-after=3` is a hard backstop:
+# this platform's signal delivery to a process chain that has exec'd into a
+# native-Windows binary (jq.exe) has been observed to lag well past a bare
+# `-s TERM`'s deadline, so escalate to an unmaskable SIGKILL 3s later rather
+# than risk an orphaned process lingering (and burning CPU / racing shared
+# fixtures) long after this test itself has moved on.
+#
+# `timeout` is GNU coreutils, NOT POSIX: a stock macOS has neither it nor
+# (without Homebrew coreutils) its `gtimeout` alias. Resolve whichever exists
+# and SKIP the two kill assertions when neither does — an absent tool is not a
+# product defect, and hard-failing on it would make this suite red on any
+# machine that cannot run the scenario at all. The heal assertions below do NOT
+# depend on the kill and still run either way.
+CKPT_TIMEOUT_BIN=""
+for _cand in timeout gtimeout; do
+    if command -v "$_cand" >/dev/null 2>&1; then CKPT_TIMEOUT_BIN="$_cand"; break; fi
+done
+if [ -z "$CKPT_TIMEOUT_BIN" ]; then
+    echo "SKIP: checkpoint survives a kill -> neither timeout(1) nor gtimeout(1) available"
+else
+HIMMEL_STATUSLINE_CHECKPOINT_EVERY=1 PATH="$SLOWJQ_DIR:$PATH" \
+    "$CKPT_TIMEOUT_BIN" --kill-after=3 -s TERM 7 bash -c '. "$1"; rebuild_all_sessions_index "$2" "$3" "$4"' _ \
+    "$CACHE_FUNCS_FILE" "$CKPT_PROJ" "$CKPT_CACHE" "$CKPT_INDEX" >/dev/null 2>&1 || true
+CKPT_KILLED_COUNT=$(jq -r 'length' "$CKPT_INDEX" 2>/dev/null); [ -n "$CKPT_KILLED_COUNT" ] || CKPT_KILLED_COUNT=0
+CKPT_KILLED_READS=$(jq -r '.reads // 0' "$CKPT_CACHE" 2>/dev/null); [ -n "$CKPT_KILLED_READS" ] || CKPT_KILLED_READS=0
+# The invariant is PROGRESS PERSISTED, not "the kill landed mid-pass". Whether
+# 7s is long enough to finish all 3 slow-jq files is a property of the host, not
+# of the code under test: on a fast box the pass completes and persists all 3 —
+# still a correct outcome, and failing it would make this a machine-speed
+# assertion. A count of 0 remains the real regression (the pre-checkpoint
+# behaviour: a killed pass wrote NOTHING).
+if [ "$CKPT_KILLED_COUNT" -gt 0 ] 2>/dev/null && [ "$CKPT_KILLED_COUNT" -le 3 ] 2>/dev/null; then
+    if [ "$CKPT_KILLED_COUNT" -eq 3 ]; then
+        echo "PASS: checkpoint survives a kill -> pass ran to completion, all 3 files persisted (reads=$CKPT_KILLED_READS)"; PASS=$(( PASS + 1 ))
+    else
+        echo "PASS: checkpoint survives a kill -> partial progress persisted ($CKPT_KILLED_COUNT/3 files, reads=$CKPT_KILLED_READS)"; PASS=$(( PASS + 1 ))
+    fi
+else
+    echo "FAIL: checkpoint survives a kill -> expected 1-3 of 3 files persisted, got count='$CKPT_KILLED_COUNT'"; FAIL=$(( FAIL + 1 ))
+fi
+if [ "$CKPT_KILLED_READS" -gt 0 ] 2>/dev/null && [ "$CKPT_KILLED_READS" -le 6000 ] 2>/dev/null; then
+    echo "PASS: checkpoint survives a kill -> totals persisted (reads=$CKPT_KILLED_READS, not the pre-checkpoint 0)"; PASS=$(( PASS + 1 ))
+else
+    echo "FAIL: checkpoint survives a kill -> reads should be in (0,6000], got $CKPT_KILLED_READS"; FAIL=$(( FAIL + 1 ))
+fi
+fi
+
+# A follow-up pass (ordinary/unthrottled jq) must heal the rest.
+rebuild_all_sessions_index "$CKPT_PROJ" "$CKPT_CACHE" "$CKPT_INDEX" || true
+assert_eq "checkpoint heal: index has all 3 files after a follow-up pass" \
+    "$(jq -r 'length' "$CKPT_INDEX" 2>/dev/null)" "3"
+assert_eq "checkpoint heal: totals reach the full sum (1000+2000+3000)" \
+    "$(jq -r '.reads' "$CKPT_CACHE" 2>/dev/null)" "6000"
+assert_eq "checkpoint heal: pending reaches 0" \
+    "$(jq -r '.pending' "$CKPT_CACHE" 2>/dev/null)" "0"
+rm -rf "$TMPDIR_CKPT" "$SLOWJQ_DIR"
+
+# ── HIMMEL-1300 R3-1 (CRITICAL) — mtime pinning ──────────────────────────────
+# The next pass's recompute set is `find -newer "$index_file"`, keyed on the
+# index's mtime. Without pinning, a checkpoint's `mv` would advance that mtime
+# mid-pass, so a file that is (a) already known/v-current, (b) modified DURING
+# the pass (after recompute_paths was fixed, before the pass reaches it), and
+# (c) not yet reached when the pass ends, becomes invisible FOREVER afterward:
+# not -newer (checkpoint mtime raced past it), not missing (already known),
+# not stale-schema. This drives _hud_write_index_checkpoint directly (its
+# caller-scope vars, via bash dynamic scoping — the same contract
+# rebuild_all_sessions_index itself relies on) to model "a checkpoint fires
+# mid-pass" deterministically, without racing a real timeout/kill.
+TMPDIR_PIN=$(mktemp -d)
+PIN_PROJ="$TMPDIR_PIN/.claude/projects"; mkdir -p "$PIN_PROJ/proj-a"
+echo '{"type":"assistant","message":{"id":"pinA1","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":10,"cache_read_input_tokens":500}}}' > "$PIN_PROJ/proj-a/fileA.jsonl"
+PIN_CACHE="$TMPDIR_PIN/cache.json"; PIN_INDEX="$TMPDIR_PIN/index.json"
+rebuild_all_sessions_index "$PIN_PROJ" "$PIN_CACHE" "$PIN_INDEX" || true
+assert_eq "mtime-pin setup: fileA seeded at reads=500" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("fileA.jsonl")) | .value.reads' "$PIN_INDEX" 2>/dev/null)" "500"
+
+sleep 1
+# The pass-start reference, exactly as rebuild_all_sessions_index creates one.
+PIN_REF=$(mktemp)
+sleep 1
+# fileA "modified during the pass": new content + a fresh mtime, strictly
+# AFTER the pass-start ref above — the file the (simulated) pass hasn't
+# reached yet when a checkpoint fires.
+echo '{"type":"assistant","message":{"id":"pinA2","usage":{"input_tokens":2,"output_tokens":2,"cache_creation_input_tokens":20,"cache_read_input_tokens":999}}}' > "$PIN_PROJ/proj-a/fileA.jsonl"
+
+# Drive ONE checkpoint publish as if it fired mid-pass having recomputed
+# NOTHING yet (fileA not reached): $recomputed empty, carrying the old index
+# forward untouched — exactly rebuild_all_sessions_index's own transport
+# contract ($recomputed/$tmp_old/$tmp_all/$tmp_rc read from the CALLER's scope).
+recomputed=""
+tmp_old=$(mktemp); tmp_all=$(mktemp); tmp_rc=$(mktemp)
+printf '%s' "$(cat "$PIN_INDEX")" > "$tmp_old"
+printf '%s\n' "$PIN_PROJ/proj-a/fileA.jsonl" > "$tmp_all"
+_hud_write_index_checkpoint "$PIN_CACHE" "$PIN_INDEX" "$PIN_REF"
+
+PIN_IDX_MTIME=$(stat -c %Y "$PIN_INDEX" 2>/dev/null || stat -f %m "$PIN_INDEX" 2>/dev/null)
+PIN_FILEA_MTIME=$(stat -c %Y "$PIN_PROJ/proj-a/fileA.jsonl" 2>/dev/null || stat -f %m "$PIN_PROJ/proj-a/fileA.jsonl" 2>/dev/null)
+if [ "$PIN_IDX_MTIME" -lt "$PIN_FILEA_MTIME" ] 2>/dev/null; then
+    echo "PASS: mtime pin -> checkpoint publish did NOT advance index mtime past fileA's mid-pass edit ($PIN_IDX_MTIME < $PIN_FILEA_MTIME)"; PASS=$(( PASS + 1 ))
+else
+    echo "FAIL: mtime pin -> index mtime ($PIN_IDX_MTIME) is not older than fileA's ($PIN_FILEA_MTIME); a later pass's -newer check would miss it forever"; FAIL=$(( FAIL + 1 ))
+fi
+assert_eq "mtime pin: fileA carried forward untouched by the mid-pass checkpoint (still 500)" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("fileA.jsonl")) | .value.reads' "$PIN_INDEX" 2>/dev/null)" "500"
+
+# The critical end-to-end proof: the NEXT real pass must see fileA as -newer
+# (thanks to the pin) and pick up its NEW content — not stay frozen forever,
+# which is exactly the failure mode R3-1 describes without the pin.
+rebuild_all_sessions_index "$PIN_PROJ" "$PIN_CACHE" "$PIN_INDEX" || true
+assert_eq "mtime pin: NEXT pass re-scans fileA and picks up the NEW content (999, not still 500)" \
+    "$(jq -r 'to_entries[] | select(.key|endswith("fileA.jsonl")) | .value.reads' "$PIN_INDEX" 2>/dev/null)" "999"
+rm -f "$PIN_REF" "$tmp_old" "$tmp_all" "$tmp_rc" "$CACHE_FUNCS_FILE"
+rm -rf "$TMPDIR_PIN"
+
+# ── HIMMEL-1300 §3.4: cold start recomputes a BOUNDED slice, not all paths ──
+# Cold start (no index_file yet) used to scan every path unbounded (§1.4's
+# "live hole" — a wiped /tmp/claude then meant every pass tried all files, was
+# killed, wrote nothing, so the next pass was cold too: permanent 0). The fix
+# bounds even the FIRST pass to HIMMEL_STATUSLINE_BACKFILL_MAX, healing over
+# successive passes — and `pending` (§3.5) must decrease monotonically to 0
+# as those passes land.
+TMPDIR_COLD=$(mktemp -d)
+COLD_PROJ="$TMPDIR_COLD/.claude/projects"; mkdir -p "$COLD_PROJ"
+for n in 1 2 3 4 5; do
+    mkdir -p "$COLD_PROJ/p$n"
+    echo '{"type":"assistant","message":{"id":"cold'"$n"'","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":'"$((n*100))"'}}}' > "$COLD_PROJ/p$n/f.jsonl"
+done
+COLD_CACHE="$TMPDIR_COLD/cache.json"; COLD_INDEX="$TMPDIR_COLD/index.json"
+HIMMEL_STATUSLINE_BACKFILL_MAX=2 rebuild_all_sessions_index "$COLD_PROJ" "$COLD_CACHE" "$COLD_INDEX" || true
+assert_eq "cold start pass 1: bounded to BACKFILL_MAX (2 of 5 files), not all paths" \
+    "$(jq -r 'length' "$COLD_INDEX" 2>/dev/null)" "2"
+assert_eq "cold start pass 1: pending = 3 remaining unindexed files" \
+    "$(jq -r '.pending' "$COLD_CACHE" 2>/dev/null)" "3"
+
+HIMMEL_STATUSLINE_BACKFILL_MAX=2 rebuild_all_sessions_index "$COLD_PROJ" "$COLD_CACHE" "$COLD_INDEX" || true
+assert_eq "cold start pass 2: another bounded slice (4 of 5 total)" \
+    "$(jq -r 'length' "$COLD_INDEX" 2>/dev/null)" "4"
+assert_eq "cold start pass 2: pending decreases monotonically (3 -> 1)" \
+    "$(jq -r '.pending' "$COLD_CACHE" 2>/dev/null)" "1"
+
+HIMMEL_STATUSLINE_BACKFILL_MAX=2 rebuild_all_sessions_index "$COLD_PROJ" "$COLD_CACHE" "$COLD_INDEX" || true
+assert_eq "cold start pass 3: fully healed (5 of 5), never scanned all-at-once" \
+    "$(jq -r 'length' "$COLD_INDEX" 2>/dev/null)" "5"
+assert_eq "cold start pass 3: pending reaches 0" \
+    "$(jq -r '.pending' "$COLD_CACHE" 2>/dev/null)" "0"
+rm -rf "$TMPDIR_COLD"
+
+# ── HIMMEL-1300: CRLF — the known-set pipeline classifies an already-known
+# path as NOT missing ────────────────────────────────────────────────────────
+# The backfill's known-set query pipes jq output through `sort -u` / `comm
+# -23`; a native-Windows jq emits CRLF line endings, and without `tr -d '\r'`
+# every line keeps a trailing \r that `comm -23` never matches against the
+# CR-less `find` output — so EVERY known path looks "missing" and gets
+# needlessly re-scanned every pass. This machine's jq is exactly that
+# CRLF-emitting build (verified: jq -r '.a' | xxd shows a trailing 0d0a), so
+# this test exercises the real bug class, not just its logic in the abstract.
+TMPDIR_CRLF=$(mktemp -d)
+CRLF_PROJ="$TMPDIR_CRLF/.claude/projects"; mkdir -p "$CRLF_PROJ/p"
+CRLF_FILE="$CRLF_PROJ/p/f.jsonl"
+echo '{"type":"assistant","message":{"id":"crlf1","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":123}}}' > "$CRLF_FILE"
+CRLF_CACHE="$TMPDIR_CRLF/cache.json"; CRLF_INDEX="$TMPDIR_CRLF/index.json"
+sleep 1
+rebuild_all_sessions_index "$CRLF_PROJ" "$CRLF_CACHE" "$CRLF_INDEX" || true
+assert_eq "CRLF setup: file indexed at v=2, reads=123" "$(jq -r '.reads' "$CRLF_CACHE" 2>/dev/null)" "123"
+
+# Modify content but PRESERVE the old (pre-index) mtime — not -newer. A known
+# (v=2) path must classify as NOT missing regardless.
+CRLF_REF=$(mktemp); touch -r "$CRLF_FILE" "$CRLF_REF"
+echo '{"type":"assistant","message":{"id":"crlf2","usage":{"input_tokens":9,"output_tokens":9,"cache_creation_input_tokens":9,"cache_read_input_tokens":999}}}' > "$CRLF_FILE"
+touch -r "$CRLF_REF" "$CRLF_FILE"
+rm -f "$CRLF_REF"
+
+rebuild_all_sessions_index "$CRLF_PROJ" "$CRLF_CACHE" "$CRLF_INDEX" || true
+assert_eq "CRLF: known v=2 path classified as NOT missing (sums stay 123, not needlessly re-scanned to 999)" \
+    "$(jq -r '.reads' "$CRLF_CACHE" 2>/dev/null)" "123"
+rm -rf "$TMPDIR_CRLF"
 
 echo ""; echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

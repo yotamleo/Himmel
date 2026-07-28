@@ -207,5 +207,52 @@ echo '{"kind":"avail","ts":"2026-03-01T00:00:00Z","branch":"b","head":"EH1","mod
 empty_reason_out="$(CR_LEDGER="$L7" bash "$CS" 2>&1)"
 not_contains "empty-string reason does not trigger breakdown section" "$empty_reason_out" "Unavailability breakdown"
 
+# ── HIMMEL-1299: --by-branch review spend ──────────────────────────────────
+# The claim under test: a call is one `avail` record = one (head, model) pair,
+# and rounds are the distinct heads. A branch reviewed over 3 rounds by 2 lanes
+# therefore cost 6 calls — the number that was unanswerable before, and the
+# reason a fix-then-re-review loop could run twelve rounds unnoticed.
+LB="$tmp/by-branch.jsonl"
+{
+  for h in BH1 BH2 BH3; do
+    echo '{"kind":"avail","ts":"2026-04-01T00:00:00Z","branch":"feat/costly","head":"'"$h"'","model":"coderabbit","status":"ok"}'
+    echo '{"kind":"avail","ts":"2026-04-01T00:00:00Z","branch":"feat/costly","head":"'"$h"'","model":"codex","status":"ok"}'
+  done
+  echo '{"kind":"avail","ts":"2026-04-01T00:00:00Z","branch":"feat/cheap","head":"CH1","model":"codex","status":"unavailable","reason":"timeout"}'
+  echo '{"kind":"finding","ts":"2026-04-01T00:00:00Z","branch":"feat/costly","head":"BH1","model":"codex","finding_id":"codex-1","severity":"imp","file":"f","line":1,"verdict":"agreed"}'
+  echo '{"kind":"usage","ts":"2026-04-01T00:00:00Z","branch":"feat/costly","head":"BH1","model":"codex","est_total_tokens":4242}'
+} > "$LB"
+bb_out="$(CR_LEDGER="$LB" bash "$CS" --by-branch 2>&1)"
+contains "by-branch reports the costly branch" "$bb_out" "feat/costly"
+contains "by-branch counts one call per (head, model)" "$bb_out" "3 round(s), 6 critic call(s), 1 finding(s) recorded"
+contains "by-branch counts a FAILED call as spend too" "$bb_out" "1 round(s), 1 critic call(s), 0 finding(s) recorded"
+contains "by-branch carries the token estimate" "$bb_out" "4242"
+contains "by-branch names the most expensive branch" "$bb_out" "Most expensive branch: feat/costly"
+
+# A branch filter scopes the report and drops the cross-branch superlative.
+bb_one="$(CR_LEDGER="$LB" bash "$CS" --by-branch feat/cheap 2>&1)"
+contains "branch filter keeps the requested branch" "$bb_one" "feat/cheap"
+not_contains "branch filter excludes other branches" "$bb_one" "feat/costly"
+not_contains "branch filter drops the cross-branch superlative" "$bb_one" "Most expensive branch"
+
+# An unknown branch is an explicit no-data message, not an empty table.
+bb_none="$(CR_LEDGER="$LB" bash "$CS" --by-branch feat/does-not-exist 2>&1)"
+contains "unknown branch says so" "$bb_none" "no review spend recorded for branch feat/does-not-exist"
+
+# --by-branch must not swallow a following FLAG as its optional branch arg.
+bb_flag="$(CR_LEDGER="$LB" bash "$CS" --by-branch --window 5 2>&1)"
+contains "--by-branch does not eat a following flag" "$bb_flag" "feat/costly"
+
+# Records predating the branch field are not attributable and must be skipped,
+# not bucketed under a phantom branch.
+LBN="$tmp/by-branch-nobranch.jsonl"
+echo '{"kind":"avail","ts":"2026-04-01T00:00:00Z","head":"NH1","model":"codex","status":"ok"}' > "$LBN"
+bb_nb="$(CR_LEDGER="$LBN" bash "$CS" --by-branch 2>&1)"
+contains "branch-less records are not attributed" "$bb_nb" "no branch-attributed review spend recorded yet"
+
+# The default report must not gain the new section.
+base_out="$(CR_LEDGER="$L" bash "$CS" 2>&1)"
+not_contains "default output does not gain the spend table" "$base_out" "Review spend per branch"
+
 # ── Final ──────────────────────────────────────────────────────────────────
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
