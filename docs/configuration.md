@@ -358,6 +358,26 @@ each bridged var's own comment there names its bridging reader.
 | `ARMAUTOMERGE` | OFF | env | arms `merge-on-green.sh` (private auto-merge — full condition list in [§3.3](#33-merge--publish-gates)) |
 | `MERGE_ON_GREEN_LOG` | `<gitdir>/merge-on-green.log` | env | auto-merge audit log path |
 
+**himmel's own review posture (HIMMEL-1299, operator decision 2026-07-28).**
+The knobs above are general; this is the setting this repo actually runs.
+**The codex+glm critic panel is the steady-state reviewer, every round, and the
+CodeRabbit CLI is OFF by default** — the App still reviews every PR in CI, so
+the local pass was a second charge against the same rate-limited account for a
+signal already in hand. In `.env`:
+
+```sh
+CR_PROFILE=paid            # select the paid panel (codex + glm)
+CODERABBIT_CLI_DISABLE=1   # keep the scarce CLI out of the per-round loop
+```
+
+Why configured rather than remembered: the fix-then-re-review loop had no
+budget and no way to see what it was spending, and one PR (#523) ran twelve
+rounds spending a CodeRabbit call on nearly every one. Measure a branch's cost
+with `scripts/cr/cr-scores.sh --by-branch <branch>`. Unset
+`CODERABBIT_CLI_DISABLE` for a deliberate final pass when a change warrants a
+third opinion. The rationale, and the budget/termination legs deliberately NOT
+implemented yet, are in the HIMMEL-1299 design note in the state repo.
+
 **Initiative & autonomy** — grammar first, since
 [getting-started.md](getting-started.md) intentionally covers only the
 default subset:
