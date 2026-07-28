@@ -21,8 +21,39 @@
 param(
   [string]$Repo = $(if ($env:HIMMEL_REPO) { $env:HIMMEL_REPO } else { (Resolve-Path "$PSScriptRoot/../..").Path }),
   [int]$SettleSeconds = 12,
-  [switch]$StatusOnly
+  [switch]$StatusOnly,
+  # Dot-source seam for the hermetic test: define the pure functions, then
+  # return WITHOUT touching the live process table or the bridge.
+  [switch]$AsLibrary
 )
+
+# Attribute a `bun server.ts` that survived OUTSIDE the reaped bridge set
+# (HIMMEL-1309). `server.ts` is the entry point of EVERY himmel codex plugin MCP
+# server, not just telegram-himmel's, and this script used to call all of them a
+# "rogue telegram-himmel child … live 2nd getUpdates consumer" on the bare
+# `server.ts` cmdline alone. On 2026-07-27 that reported 45 `luna-correlate` MCP
+# servers as telegram rogues and sent an investigation down the wrong path (it is
+# the wrong diagnosis recorded in HIMMEL-1309's own description). The launcher's
+# `--cwd <plugin>` is the identity, so read it before claiming telegram.
+# Returns 'telegram' | 'codex-plugin' | 'unattributable'.
+function Get-ServerTsAttribution {
+  param([Parameter(Mandatory)]$Proc, [Parameter(Mandatory)][hashtable]$ByPid)
+  $parent = $null
+  if ($null -ne $Proc.ParentProcessId) { $parent = $ByPid[[string]$Proc.ParentProcessId] }
+  if ($null -eq $parent) { return 'unattributable' }        # launcher already gone
+  $pcl = [string]$parent.CommandLine
+  if (-not $pcl) { return 'unattributable' }                # launcher cmdline not readable
+  if ($pcl -match '(?:^|\s)--cwd[ =](?:"([^"]+)"|(\S+))') {
+    $cwd = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+    if (($cwd -replace '\\', '/') -match '(?i)/telegram-himmel(?:[/@]|$)') { return 'telegram' }
+    return 'codex-plugin'
+  }
+  if ($pcl -match '(?i)telegram-himmel') { return 'telegram' }
+  if ($pcl -match '(?i)[\\/]\.codex[\\/]plugins[\\/]cache[\\/]') { return 'codex-plugin' }
+  return 'unattributable'
+}
+
+if ($AsLibrary) { return }
 
 $ErrorActionPreference = 'Stop'
 $bridgeDir = Join-Path $Repo 'scripts/telegram'
@@ -98,17 +129,29 @@ if (Test-Path "$log.err")  { $conflicts += (Select-String -Path "$log.err"  -Pat
 
 Write-Host ("[restart-bridge] after start: bridgeProcs={0} conflictLines={1}" -f $now.Count, $conflicts)
 
-# Orphan warning (HIMMEL-228): Get-BridgeProcs reaps the rogue `bun server.ts`
-# child only by PARENT-PID linkage to a live telegram-himmel launcher (the safe
-# under-reap). If the launcher already died, its orphaned server.ts child is a
-# live 2nd getUpdates consumer that we did NOT reap — yet the verify below could
-# still print "OK". Surface any such orphan (a `bun server.ts` outside the
-# reaped set) by PID so the operator can taskkill it / rerun.
+# Orphan warning (HIMMEL-228, re-scoped HIMMEL-1309): Get-BridgeProcs reaps the
+# rogue `bun server.ts` child only by PARENT-PID linkage to a live
+# telegram-himmel launcher (the safe under-reap). If the launcher already died,
+# its orphaned server.ts child is a live 2nd getUpdates consumer that we did NOT
+# reap — yet the verify below could still print "OK". Surface such orphans by
+# PID — but ATTRIBUTE them first: most `bun server.ts` on this box are other
+# codex plugins' MCP servers and have nothing to do with telegram.
+$allBun = @(Get-CimInstance Win32_Process -Filter "Name = 'bun.exe'")
+$bunByPid = @{}
+foreach ($b in $allBun) { $bunByPid[[string]$b.ProcessId] = $b }
 $reapedPids = @($now | ForEach-Object { $_.ProcessId })
-$orphans = @(Get-CimInstance Win32_Process -Filter "Name = 'bun.exe'" `
-              | Where-Object { $_.CommandLine -and $_.CommandLine -match 'server\.ts' -and ($reapedPids -notcontains $_.ProcessId) })
-if ($orphans.Count) {
-  Write-Warning ("[restart-bridge] {0} orphaned 'bun server.ts' process(es) survive OUTSIDE the bridge set (PID(s): {1}) — likely a rogue telegram-himmel child whose launcher already died. It is a live 2nd getUpdates consumer; kill it by PID (Stop-Process -Id <pid> -Force) then rerun." -f $orphans.Count, (($orphans | ForEach-Object { $_.ProcessId }) -join ', '))
+$orphans = @($allBun | Where-Object { $_.CommandLine -and $_.CommandLine -match 'server\.ts' -and ($reapedPids -notcontains $_.ProcessId) })
+$byKind = @{ telegram = @(); 'codex-plugin' = @(); unattributable = @() }
+foreach ($o in $orphans) { $byKind[(Get-ServerTsAttribution -Proc $o -ByPid $bunByPid)] += $o }
+
+if ($byKind['telegram'].Count) {
+  Write-Warning ("[restart-bridge] {0} orphaned telegram-himmel 'bun server.ts' process(es) survive OUTSIDE the bridge set (PID(s): {1}) — a rogue child whose launcher already died. It is a live 2nd getUpdates consumer; kill it by PID (Stop-Process -Id <pid> -Force) then rerun." -f $byKind['telegram'].Count, (($byKind['telegram'] | ForEach-Object { $_.ProcessId }) -join ', '))
+}
+if ($byKind['codex-plugin'].Count) {
+  Write-Host ("[restart-bridge] note: {0} 'bun server.ts' process(es) belong to OTHER codex plugin MCP servers (PID(s): {1}) — not telegram, not a getUpdates consumer, nothing to do here. Duplicates of those are scripts/codex/reap-superseded-fleets.ps1's job." -f $byKind['codex-plugin'].Count, (($byKind['codex-plugin'] | ForEach-Object { $_.ProcessId }) -join ', '))
+}
+if ($byKind['unattributable'].Count) {
+  Write-Warning ("[restart-bridge] {0} 'bun server.ts' process(es) could not be attributed (PID(s): {1}) — their launcher is gone or its command line is unreadable, so this may be a telegram rogue OR another codex plugin's MCP server. Check the PID before killing it." -f $byKind['unattributable'].Count, (($byKind['unattributable'] | ForEach-Object { $_.ProcessId }) -join ', '))
 }
 
 if ($now.Count -ge 1 -and $conflicts -eq 0) {

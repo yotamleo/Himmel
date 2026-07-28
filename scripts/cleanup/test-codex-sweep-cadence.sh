@@ -269,7 +269,25 @@ reset_state() {
     rm -rf "$BAT_DIR"
 }
 
+# Self-contained payload root (HIMMEL-1309). The default run_sc used to arm
+# against the caller's REAL primary checkout, so the whole arm suite silently
+# depended on that checkout already carrying every payload script — which a
+# feature worktree adding a NEW payload never does until it merges. Stub roots
+# keep the arm suite hermetic; the ONE test that must exercise the real
+# git-common-dir derivation calls run_sc_real_root below instead.
+FIXTURE_ROOT="$TMP_ROOT/fixture-himmel-root"
+mkdir -p "$FIXTURE_ROOT/scripts/cleanup" "$FIXTURE_ROOT/scripts/codex"
+: > "$FIXTURE_ROOT/scripts/cleanup/sweep-codex-orphans.ps1"
+: > "$FIXTURE_ROOT/scripts/codex/reap-mcp-fleet.ps1"
+: > "$FIXTURE_ROOT/scripts/codex/reap-superseded-fleets.ps1"
+
 run_sc() {
+    env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$BAT_DIR" SWEEP_PWSH="$FAKE_PWSH" \
+        SWEEP_HIMMEL_ROOT="$FIXTURE_ROOT" HOME="$HOME" "$REAL_BASH" "$SCRIPT" "$@"
+}
+
+# No SWEEP_HIMMEL_ROOT — the script resolves the primary checkout itself.
+run_sc_real_root() {
     env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$BAT_DIR" SWEEP_PWSH="$FAKE_PWSH" \
         HOME="$HOME" "$REAL_BASH" "$SCRIPT" "$@"
 }
@@ -289,9 +307,10 @@ calls=$(cat "$STATE/calls.log" 2>/dev/null || echo MISSING)
 assert_contains "schtasks invoked with /create /tn HIMMEL-CodexOrphanSweep /xml" "/create /tn HIMMEL-CodexOrphanSweep /xml" "$calls"
 
 bat=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
-assert_contains "bat stamps the format version (HIMMEL-588)" "himmel-cadence-runner-format: 5" "$bat"
+assert_contains "bat stamps the format version (HIMMEL-588)" "himmel-cadence-runner-format: 6" "$bat"
 assert_contains "bat fires sweep-codex-orphans.ps1 -Kill" "sweep-codex-orphans.ps1" "$bat"
 assert_contains "bat fires reap-mcp-fleet.ps1 -Kill" "reap-mcp-fleet.ps1" "$bat"
+assert_contains "bat fires reap-superseded-fleets.ps1 -Kill (HIMMEL-1309 third leg)" "reap-superseded-fleets.ps1" "$bat"
 assert_contains "bat passes -Kill to the sweep payload" "sweep-codex-orphans.ps1" "$bat"
 if printf '%s' "$bat" | grep -qE 'sweep-codex-orphans\.ps1"[^\r\n]*-Kill'; then
     pass "sweep payload line carries -Kill"
@@ -303,8 +322,20 @@ if printf '%s' "$bat" | grep -qE 'reap-mcp-fleet\.ps1"[^\r\n]*-Kill'; then
 else
     fail "reap payload line missing -Kill"
 fi
+if printf '%s' "$bat" | grep -qE 'reap-superseded-fleets\.ps1"[^\r\n]*-Kill'; then
+    pass "supersede payload line carries -Kill"
+else
+    fail "supersede payload line missing -Kill"
+fi
 assert_contains "bat stamps sweep exit rc" "sweep exit rc=%ERRORLEVEL%" "$bat"
 assert_contains "bat stamps reap exit rc" "reap exit rc=%ERRORLEVEL%" "$bat"
+assert_contains "bat stamps supersede exit rc" "supersede exit rc=%ERRORLEVEL%" "$bat"
+# Leg ORDER is load-bearing (HIMMEL-1309): the superseded-fleet check runs LAST,
+# after both orphan sweeps have removed everything whose supervisor is already
+# gone, so it only ever adjudicates fleets under a still-LIVE app-server.
+_leg_order=$(printf '%s' "$bat" | grep -oE '(sweep-codex-orphans|reap-mcp-fleet|reap-superseded-fleets)\.ps1' | tr '\n' ' ')
+assert_contains "payload legs fire in sweep -> reap -> supersede order" \
+    "sweep-codex-orphans.ps1 reap-mcp-fleet.ps1 reap-superseded-fleets.ps1" "$_leg_order"
 assert_contains "bat rotates the log (move /y)" "move /y" "$bat"
 fake_pwsh_win=$(cygpath -w "$FAKE_PWSH")
 assert_contains "bat carries the resolved pwsh path" "$fake_pwsh_win" "$bat"
@@ -319,6 +350,63 @@ assert_contains "XML RunLevel LeastPrivilege" "<RunLevel>LeastPrivilege</RunLeve
 assert_contains "XML StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAvailable>" "$xml"
 assert_contains "XML default time 09:00" "T09:00:00" "$xml"
 assert_contains "XML Actions Context=Author" '<Actions Context="Author">' "$xml"
+assert_contains "XML repeats every 4h by default (HIMMEL-1309)" "<Interval>PT4H</Interval>" "$xml"
+assert_contains "XML repetition spans the day" "<Duration>P1D</Duration>" "$xml"
+assert_contains "XML never cuts an in-flight sweep short" "<StopAtDurationEnd>false</StopAtDurationEnd>" "$xml"
+# Element ORDER, not just presence (glm-1 CR finding, HIMMEL-1309). Round-tripping
+# through TaskDefinition.XmlText — the COM layer `schtasks /create /xml` parses
+# with — shows it canonicalizes every trigger to
+# `Repetition > StartBoundary > Enabled > ScheduleByDay`. A stricter parser build
+# could drop a misplaced <Repetition>, silently downgrading this cadence back to
+# daily-only: invisible in every assertion that only checks presence.
+_trigger_order=$(printf '%s' "$xml" | grep -oE '<(Repetition|StartBoundary|Enabled|ScheduleByDay)>' | tr -d '<>' | tr '\n' ' ')
+assert_contains "Repetition is the FIRST child of CalendarTrigger (canonical order)" \
+    "Repetition StartBoundary Enabled ScheduleByDay" "$_trigger_order"
+
+# TEST: --repeat-hours (HIMMEL-1309 gap 6)
+#
+# Deliberately spawn-frugal. The runner caps each suite at SUITE_TIMEOUT (180s,
+# scripts/ci/run-shell-tests.sh) and every case here costs a full subprocess —
+# process spawn dominates on Windows Git Bash. An earlier draft of this block ran
+# 12 invocations and pushed the suite past the cap: green standalone, rc=124
+# under the runner. Coverage is chosen per distinct CODE PATH, not per value:
+#   * one accepted non-default value, via the `=` form (covers value handling AND
+#     the equals-form parse; the space form is covered by the reject cases below)
+#   * 0, the only value that changes the emitted SHAPE (no <Repetition>)
+#   * the default (4) is already asserted in T1b, so it is not re-armed here
+#   * three rejects, one per regex branch: out-of-range, non-numeric, empty
+#   * arm-only enforcement on ONE subcommand — status and disarm share a single
+#     guard, and --time already covers both for that code path
+echo "TEST: --repeat-hours (HIMMEL-1309 gap 6)"
+reset_state
+run_sc arm --repeat-hours=6 >/dev/null
+xml=$(cat "$STATE/tasks/HIMMEL-CodexOrphanSweep" 2>/dev/null || echo MISSING)
+assert_contains "--repeat-hours=6 (equals form) -> PT6H" "<Interval>PT6H</Interval>" "$xml"
+reset_state
+run_sc arm --repeat-hours 0 >/dev/null
+xml=$(cat "$STATE/tasks/HIMMEL-CodexOrphanSweep" 2>/dev/null || echo MISSING)
+assert_not_contains "--repeat-hours 0 emits NO Repetition (daily-only, pre-1309 shape)" "<Repetition>" "$xml"
+assert_contains "--repeat-hours 0 still emits the daily schedule" "<ScheduleByDay>" "$xml"
+# Rejects run BEFORE the platform gate and never reach schtasks, so they are the
+# cheap cases — one per regex branch.
+for bad in 24 abc ''; do
+    reset_state
+    rc=0; out=$(run_sc arm --repeat-hours "$bad" 2>&1) || rc=$?
+    assert_rc "--repeat-hours '$bad' rejected -> rc 1" 1 "$rc"
+    if [ ! -f "$STATE/calls.log" ]; then
+        pass "--repeat-hours '$bad' touched no schtasks"
+    else
+        fail "--repeat-hours '$bad' reached schtasks" "$(cat "$STATE/calls.log")"
+    fi
+done
+reset_state
+rc=0; out=$(run_sc arm --repeat-hours 2>&1) || rc=$?
+assert_rc "--repeat-hours with no value -> rc 1 (not a raw bash shift error)" 1 "$rc"
+assert_contains "--repeat-hours no-value message is a usage error" "--repeat-hours requires a value" "$out"
+reset_state
+rc=0; out=$(run_sc status --repeat-hours 4 2>&1) || rc=$?
+assert_rc "--repeat-hours is arm-only -> rc 1 on status" 1 "$rc"
+assert_contains "status names --repeat-hours as arm-only" "--repeat-hours is arm-only" "$out"
 
 # Test FIX-A: HIMMEL_ROOT resolves to the PRIMARY checkout, not this script's
 # own dirname (codex-adv-1, HIMMEL-892) --------------------------------------
@@ -340,10 +428,24 @@ if [ -n "$_common_dir" ]; then
     _primary_root=$(cd "$(dirname "$_common_dir")" && pwd)
     _primary_sweep_win=$(cygpath -w "$_primary_root/scripts/cleanup/sweep-codex-orphans.ps1")
     _primary_reap_win=$(cygpath -w "$_primary_root/scripts/codex/reap-mcp-fleet.ps1")
-    run_sc arm >/dev/null
-    bat=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
-    assert_contains "bat sweep payload path is the git-common-dir-derived primary root" "$_primary_sweep_win" "$bat"
-    assert_contains "bat reap payload path is the git-common-dir-derived primary root" "$_primary_reap_win" "$bat"
+    _primary_supersede_win=$(cygpath -w "$_primary_root/scripts/codex/reap-superseded-fleets.ps1")
+    # This is the one test that must NOT use the stub root — it proves the
+    # derivation itself. That means it needs every payload to exist in the real
+    # primary checkout, which is false while running from a worktree whose new
+    # payload has not merged yet. Skip loudly in exactly that case (CI runs on a
+    # plain branch checkout, where the derivation lands on the repo itself and
+    # all three files are present, so CI always executes this).
+    if [ -f "$_primary_root/scripts/cleanup/sweep-codex-orphans.ps1" ] \
+        && [ -f "$_primary_root/scripts/codex/reap-mcp-fleet.ps1" ] \
+        && [ -f "$_primary_root/scripts/codex/reap-superseded-fleets.ps1" ]; then
+        run_sc_real_root arm >/dev/null
+        bat=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
+        assert_contains "bat sweep payload path is the git-common-dir-derived primary root" "$_primary_sweep_win" "$bat"
+        assert_contains "bat reap payload path is the git-common-dir-derived primary root" "$_primary_reap_win" "$bat"
+        assert_contains "bat supersede payload path is the git-common-dir-derived primary root" "$_primary_supersede_win" "$bat"
+    else
+        echo "  SKIP: primary checkout $_primary_root is missing a payload script — running from a worktree whose new payload has not merged yet. The derivation assertions need the real primary checkout; re-run after merge, or run this suite from a plain branch checkout (as CI does)."
+    fi
 else
     fail "could not independently compute the primary root via git-common-dir (test setup broken)"
 fi
@@ -361,6 +463,23 @@ if [ ! -f "$STATE/tasks/HIMMEL-CodexOrphanSweep" ] && [ ! -f "$STATE/calls.log" 
     pass "no task/schtasks call made when payload missing"
 else
     fail "schtasks touched despite missing payload" "$(cat "$STATE/calls.log" 2>/dev/null || true)"
+fi
+
+echo "TEST: a root carrying the two OLD payloads but not the HIMMEL-1309 third -> rc 2 (a partial checkout must not arm a two-leg cadence silently)"
+reset_state
+PARTIAL_ROOT="$TMP_ROOT/partial-payloads"
+mkdir -p "$PARTIAL_ROOT/scripts/cleanup" "$PARTIAL_ROOT/scripts/codex"
+: > "$PARTIAL_ROOT/scripts/cleanup/sweep-codex-orphans.ps1"
+: > "$PARTIAL_ROOT/scripts/codex/reap-mcp-fleet.ps1"
+rc=0
+out=$(env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$BAT_DIR" SWEEP_PWSH="$FAKE_PWSH" \
+    SWEEP_HIMMEL_ROOT="$PARTIAL_ROOT" HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
+assert_rc "missing third payload -> rc 2" 2 "$rc"
+assert_contains "message names reap-superseded-fleets.ps1" "reap-superseded-fleets.ps1 not found" "$out"
+if [ ! -f "$STATE/calls.log" ]; then
+    pass "no schtasks call made when the third payload is missing"
+else
+    fail "schtasks touched despite missing third payload" "$(cat "$STATE/calls.log" 2>/dev/null || true)"
 fi
 
 echo "TEST: --time 06:30 flips the StartBoundary"
@@ -481,7 +600,7 @@ fi
 probe=$(cat "$STATE/create-time-runner-probe.bat" 2>/dev/null || echo MISSING)
 assert_contains "create-time probe carries the full new runner content (sweep payload)" "sweep-codex-orphans.ps1" "$probe"
 assert_contains "create-time probe carries the full new runner content (reap payload)" "reap-mcp-fleet.ps1" "$probe"
-assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 5" "$probe"
+assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 6" "$probe"
 
 # Test T6: --dry-run touches nothing ------------------------------------------
 
@@ -508,7 +627,7 @@ echo "TEST: hostile %&^ in BAT_DIR lands on the REAL dir in the .bat (T7)"
 reset_state
 EVIL_DIR="$TMP_ROOT/cr%on rnr&x^y"
 out=$(env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$EVIL_DIR" SWEEP_PWSH="$FAKE_PWSH" \
-    HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm)
+    SWEEP_HIMMEL_ROOT="$FIXTURE_ROOT" HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm)
 evil_bat=$(cat "$EVIL_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
 # HIMMEL-1281: only % -> %% ; & and ^ arrive verbatim because every value sits
 # inside double quotes. The `set LOG=` line was the one bare-context emitter
@@ -526,7 +645,7 @@ assert_contains "LOG assignment is the real dir, fully quoted (% doubled, & ^ ve
 assert_not_contains "no caret-escaped ampersand" '^&' "$evil_bat"
 assert_not_contains "no doubled caret" '^^' "$evil_bat"
 env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$EVIL_DIR" SWEEP_PWSH="$FAKE_PWSH" \
-    HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm >/dev/null 2>&1 || true
+    SWEEP_HIMMEL_ROOT="$FIXTURE_ROOT" HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm >/dev/null 2>&1 || true
 
 # Test T7b: no pwsh/powershell resolvable -> rc 2 -----------------------------
 
@@ -534,7 +653,7 @@ echo "TEST: SWEEP_PWSH unset + no pwsh/powershell on PATH -> rc 2 (T7b)"
 reset_state
 CYGPATH_DIR="$(dirname "$(command -v cygpath)")"
 rc=0
-out=$(env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$BAT_DIR" HOME="$HOME" \
+out=$(env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$BAT_DIR" SWEEP_HIMMEL_ROOT="$FIXTURE_ROOT" HOME="$HOME" \
     PATH="$TMP_ROOT/bin:$CYGPATH_DIR" "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
 assert_rc "no payload shell resolvable -> rc 2" 2 "$rc"
 assert_contains "no payload shell message" "pwsh" "$out"
@@ -559,24 +678,36 @@ echo "TEST: status when armed -> task name + Next Run Time + log evidence (T9)"
 reset_state
 run_sc arm >/dev/null
 mkdir -p "$BAT_DIR"
-printf '[fired 07/10/2026 09:00:00.00]\r\n[sweep exit rc=0]\r\n[reap exit rc=0]\r\n' > "$BAT_DIR/codex-sweep.log"
+printf '[fired 07/10/2026 09:00:00.00]\r\n[sweep exit rc=0]\r\n[reap exit rc=0]\r\n[supersede exit rc=0]\r\n' > "$BAT_DIR/codex-sweep.log"
 rc=0; out=$(run_sc status 2>&1) || rc=$?
 assert_rc "status armed -> rc 0" 0 "$rc"
 assert_contains "status armed -> ARMED" "ARMED" "$out"
 assert_contains "status armed -> task name" "HIMMEL-CodexOrphanSweep" "$out"
 assert_contains "status armed -> Next Run Time evidence" "next run:" "$out"
 assert_contains "status armed -> log path evidence" "codex-sweep.log" "$out"
-assert_not_contains "status armed, both rc=0 -> no WARN" "WARN" "$out"
+assert_not_contains "status armed, all three rc=0 -> no WARN" "WARN" "$out"
 
 echo "TEST: status WARN when sweep exit rc is non-zero, reap rc=0 (T9b, deliberate delta)"
-printf '[fired 07/10/2026 09:00:00.00]\r\n[sweep exit rc=1]\r\n[reap exit rc=0]\r\n' > "$BAT_DIR/codex-sweep.log"
+printf '[fired 07/10/2026 09:00:00.00]\r\n[sweep exit rc=1]\r\n[reap exit rc=0]\r\n[supersede exit rc=0]\r\n' > "$BAT_DIR/codex-sweep.log"
 rc=0; out=$(run_sc status 2>&1) || rc=$?
 assert_contains "status WARN present (sweep rc=1, reap rc=0 — a tail-1 port would miss this)" "WARN: last fire had non-zero payload rc" "$out"
 
-echo "TEST: status WARN when both stamps are rc=0 -> no WARN (T9b)"
+echo "TEST: status WARN when the THIRD leg fails and the first two are clean (HIMMEL-1309)"
+printf '[fired 07/10/2026 09:00:00.00]\r\n[sweep exit rc=0]\r\n[reap exit rc=0]\r\n[supersede exit rc=1]\r\n' > "$BAT_DIR/codex-sweep.log"
+rc=0; out=$(run_sc status 2>&1) || rc=$?
+assert_contains "status WARN present (supersede rc=1 only)" "WARN: last fire had non-zero payload rc" "$out"
+assert_contains "WARN names the supersede rc" "supersede exit rc=1" "$out"
+
+echo "TEST: a v5 log (no supersede stamp at all) nudges arm --force, not a payload fault (HIMMEL-1309)"
 printf '[fired 07/10/2026 09:00:00.00]\r\n[sweep exit rc=0]\r\n[reap exit rc=0]\r\n' > "$BAT_DIR/codex-sweep.log"
 rc=0; out=$(run_sc status 2>&1) || rc=$?
-assert_not_contains "status no WARN when both rc=0" "WARN: last fire had non-zero payload rc" "$out"
+assert_contains "stale-runner WARN present" "predates HIMMEL-1309's third leg" "$out"
+assert_not_contains "stale runner is NOT reported as a non-zero payload rc" "WARN: last fire had non-zero payload rc" "$out"
+
+echo "TEST: status WARN when all three stamps are rc=0 -> no WARN (T9b)"
+printf '[fired 07/10/2026 09:00:00.00]\r\n[sweep exit rc=0]\r\n[reap exit rc=0]\r\n[supersede exit rc=0]\r\n' > "$BAT_DIR/codex-sweep.log"
+rc=0; out=$(run_sc status 2>&1) || rc=$?
+assert_not_contains "status no WARN when all three rc=0" "WARN" "$out"
 
 echo "TEST: status reports rotated log when .log absent but .log.prev present (T9c)"
 mv -f "$BAT_DIR/codex-sweep.log" "$BAT_DIR/codex-sweep.log.prev"
