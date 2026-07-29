@@ -10,7 +10,18 @@
 # sweep-codex-orphans.ps1 (name-verified stop) and scripts/codex/
 # reap-mcp-fleet.ps1 (dead-registry MCP fleet reap) already exist and are
 # live-validated manually; what's missing is the scheduler/arm layer. This
-# is that layer: ONE daily task that fires both payloads with -Kill.
+# is that layer: ONE task that fires all THREE payloads with -Kill.
+#
+# THIRD LEG + INTRA-DAY REPEAT (HIMMEL-1309): both original payloads skip
+# anything under a LIVE app-server, so duplicate MCP fleets accumulating INSIDE
+# one live broker were swept by neither — 45 luna-correlate pairs under a single
+# app-server on 2026-07-27. scripts/codex/reap-superseded-fleets.ps1 is that
+# third check and fires last (it is the narrowest; the two orphan sweeps ahead
+# of it have already removed everything whose supervisor is gone). Same run also
+# added <Repetition>: ~9 GB accumulated in well under a day against a daily-only
+# fire, so the trigger now repeats every --repeat-hours (default 4) across the
+# day. Repeats inherit the InteractiveToken principal, so they still only fire
+# while the operator is logged on.
 #
 # ONE task, daily, default 09:00 local. WHY 09:00 (not off-peak/overnight):
 # the task Principal is InteractiveToken (see below) — it fires only while
@@ -133,6 +144,7 @@ else
 fi
 SWEEP_SCRIPT="$HIMMEL_ROOT/scripts/cleanup/sweep-codex-orphans.ps1"
 REAP_SCRIPT="$HIMMEL_ROOT/scripts/codex/reap-mcp-fleet.ps1"
+SUPERSEDE_SCRIPT="$HIMMEL_ROOT/scripts/codex/reap-superseded-fleets.ps1"
 
 # Runner-format version stamp (HIMMEL-588): shared with the other cadences so
 # a stale-format armed runner is detectable via the same marker convention.
@@ -141,6 +153,7 @@ REAP_SCRIPT="$HIMMEL_ROOT/scripts/codex/reap-mcp-fleet.ps1"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/cadence-format.sh"
 
 SWEEP_TIME="09:00"
+REPEAT_HOURS=4
 DRY_RUN=0
 FORCE=0
 
@@ -149,9 +162,10 @@ usage() {
 Usage: codex-sweep-cadence.sh <arm|status|disarm> [flags]
 
 Arm the OS scheduler with the recurring codex broker-orphan sweep cadence
-(HIMMEL-892): ONE daily task that fires sweep-codex-orphans.ps1 -Kill then
-reap-mcp-fleet.ps1 -Kill, as the arming user (InteractiveToken /
-LeastPrivilege) so client command lines stay visible to the sweep.
+(HIMMEL-892): ONE task that fires sweep-codex-orphans.ps1 -Kill, then
+reap-mcp-fleet.ps1 -Kill, then reap-superseded-fleets.ps1 -Kill, as the arming
+user (InteractiveToken / LeastPrivilege) so client command lines stay visible
+to the sweep. Fires at --time and then every --repeat-hours across the day.
 
 Subcommands:
   arm      Register the daily task. Dedup-guarded: refuses (rc=3) if
@@ -163,6 +177,10 @@ Subcommands:
 Flags (arm only, except --dry-run):
   --time <HH:MM>  Daily fire time, 24h local (default 09:00 — reliably
                   inside the logged-on window InteractiveToken needs).
+                  arm-only — rejected (rc=1) on status/disarm.
+  --repeat-hours <n>
+                  Re-fire every n hours after --time, all day (default 4;
+                  0 = fire once daily, the pre-HIMMEL-1309 behaviour).
                   arm-only — rejected (rc=1) on status/disarm.
   --force         Replace an already-armed HIMMEL-CodexOrphanSweep task
   --dry-run       Print what would happen, touch nothing (honored by
@@ -188,6 +206,7 @@ case "$SUBCMD" in
 esac
 
 TIME_SET=0
+REPEAT_SET=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --time)
@@ -202,6 +221,16 @@ while [ $# -gt 0 ]; do
             fi
             SWEEP_TIME="$2"; TIME_SET=1; shift 2 ;;
         --time=*)   SWEEP_TIME="${1#--time=}"; TIME_SET=1; shift ;;
+        --repeat-hours)
+            # Same value-slot guard as --time above: a bare `shift 2` with
+            # nothing after the flag dies on "shift count out of range".
+            if [ $# -lt 2 ]; then
+                echo "ERR codex-sweep-cadence: --repeat-hours requires a value (0-23)" >&2
+                usage >&2
+                exit 1
+            fi
+            REPEAT_HOURS="$2"; REPEAT_SET=1; shift 2 ;;
+        --repeat-hours=*) REPEAT_HOURS="${1#--repeat-hours=}"; REPEAT_SET=1; shift ;;
         --force)    FORCE=1; shift ;;
         --dry-run)  DRY_RUN=1; shift ;;
         -h|--help)  usage; exit 0 ;;
@@ -218,6 +247,19 @@ done
 # the format check so the error names the real reason, not a format gripe.
 if [ "$TIME_SET" -eq 1 ] && [ "$SUBCMD" != "arm" ]; then
     echo "ERR codex-sweep-cadence: --time is arm-only" >&2
+    exit 1
+fi
+if [ "$REPEAT_SET" -eq 1 ] && [ "$SUBCMD" != "arm" ]; then
+    echo "ERR codex-sweep-cadence: --repeat-hours is arm-only" >&2
+    exit 1
+fi
+
+# Validated alongside --time, BEFORE the platform gate, for the same reason:
+# an input error must be rc 1 on every platform, not rc 2 on POSIX. Capped at
+# 23 — an interval of 24h or more never re-fires inside the P1D duration, so
+# it would silently mean "daily", which is what 0 already says explicitly.
+if ! [[ "$REPEAT_HOURS" =~ ^([0-9]|1[0-9]|2[0-3])$ ]]; then
+    echo "ERR codex-sweep-cadence: --repeat-hours must be an integer 0-23 (0 = daily only), got: $REPEAT_HOURS" >&2
     exit 1
 fi
 
@@ -255,7 +297,7 @@ run_schtasks() { MSYS_NO_PATHCONV=1 "$SCHTASKS_BIN" "$@"; }
 # the log — a silently-refusing sweep (the exact failure class HIMMEL-892
 # exists to kill) must be auditable from the log alone.
 emit_bat() {
-    local bat_dir_esc="$1" pwsh_esc="$2" sweep_esc="$3" reap_esc="$4"
+    local bat_dir_esc="$1" pwsh_esc="$2" sweep_esc="$3" reap_esc="$4" supersede_esc="$5"
     printf '@echo off\r\n'
     printf 'rem codex-sweep-cadence runner (HIMMEL-892)\r\n'
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
@@ -273,6 +315,8 @@ emit_bat() {
     printf 'echo [sweep exit rc=%%ERRORLEVEL%%] >> "%%LOG%%"\r\n'
     printf '"%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$reap_esc"
     printf 'echo [reap exit rc=%%ERRORLEVEL%%] >> "%%LOG%%"\r\n'
+    printf '"%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$supersede_esc"
+    printf 'echo [supersede exit rc=%%ERRORLEVEL%%] >> "%%LOG%%"\r\n'
 }
 
 # --- schtasks task XML (StartWhenAvailable + InteractiveToken Principal) ---
@@ -292,14 +336,40 @@ schedule_daily_xml() {
     printf '      <ScheduleByDay>\n        <DaysInterval>1</DaysInterval>\n      </ScheduleByDay>'
 }
 
+# Intra-day repetition fragment (HIMMEL-1309). Emits nothing when --repeat-hours
+# is 0 (daily-only, the pre-1309 behaviour). Duration P1D with Interval PTnH
+# re-fires the trigger every n hours until the next day's StartBoundary takes
+# over; StopAtDurationEnd=false so an in-flight sweep is never cut short.
+# Emitted as the FIRST child of <CalendarTrigger>, before <StartBoundary>
+# (glm-1 CR finding, HIMMEL-1309). Verified rather than assumed: round-tripping
+# both orderings through TaskDefinition.XmlText — the same COM layer
+# `schtasks /create /xml` parses with — shows it canonicalizes every trigger to
+# `Repetition > StartBoundary > Enabled > ScheduleByDay`, so Repetition-first IS
+# the canonical order. Both orderings were accepted here with PT4H intact (the
+# "silently dropped interval" half of the finding did NOT reproduce), but
+# emitting what the scheduler itself emits costs nothing and removes the risk on
+# a stricter parser build, where a dropped <Repetition> would quietly downgrade
+# this cadence back to daily — the exact failure that would be invisible.
+#
+# Emits a LEADING newline (not a trailing one) because `$(...)` strips trailing
+# newlines: the caller interpolates it directly after the <CalendarTrigger> tag,
+# so the fragment has to carry its own line break in front, and an empty fragment
+# then leaves the surrounding lines exactly as they were.
+repetition_xml() {
+    local hours="$1"
+    [ "$hours" -gt 0 ] || return 0
+    printf '\n      <Repetition>\n        <Interval>PT%sH</Interval>\n        <Duration>P1D</Duration>\n        <StopAtDurationEnd>false</StopAtDurationEnd>\n      </Repetition>' "$hours"
+}
+
 # Emit the task XML: a CalendarTrigger at the given local time, daily
 # schedule, StartWhenAvailable=true, an InteractiveToken/LeastPrivilege
 # Principal, and the .bat runner as the Exec Command. Declared UTF-16 (what
 # schtasks /create /xml expects) but the bytes are plain ASCII (cmd.exe's
 # OEM codepage mojibakes non-ASCII — same rule as graphmap-cadence).
 emit_task_xml() {
-    local command_raw="$1" start_time="$2" schedule_xml="$3" command
+    local command_raw="$1" start_time="$2" schedule_xml="$3" repeat_hours="${4:-0}" command repetition
     command=$(xml_escape "$command_raw")
+    repetition=$(repetition_xml "$repeat_hours")
     cat <<XML
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -307,7 +377,7 @@ emit_task_xml() {
     <Description>himmel codex-sweep-cadence (HIMMEL-892)</Description>
   </RegistrationInfo>
   <Triggers>
-    <CalendarTrigger>
+    <CalendarTrigger>${repetition}
       <StartBoundary>2020-01-01T${start_time}:00</StartBoundary>
       <Enabled>true</Enabled>
 ${schedule_xml}
@@ -336,12 +406,12 @@ XML
 # Create the task from an XML definition (so StartWhenAvailable + the
 # Principal delta apply). Mirrors graphmap-cadence's schtasks_create_xml.
 schtasks_create_xml() {
-    local name="$1" schedule_xml="$2" start_time="$3" bat_win="$4" err_file="$5"
+    local name="$1" schedule_xml="$2" start_time="$3" bat_win="$4" err_file="$5" repeat_hours="${6:-0}"
     local xml_file xml_win rc
     if ! xml_file=$(mktemp -t codex-sweep-cadence.xml.XXXXXX 2>"$err_file"); then
         return 1
     fi
-    emit_task_xml "$bat_win" "$start_time" "$schedule_xml" > "$xml_file"
+    emit_task_xml "$bat_win" "$start_time" "$schedule_xml" "$repeat_hours" > "$xml_file"
     if ! xml_win=$(cygpath -w "$xml_file" 2>"$err_file"); then
         rm -f "$xml_file"
         return 1
@@ -487,7 +557,7 @@ delete_task() {
 # both `[sweep exit rc=` and `[reap exit rc=` stamps and WARNs if either is
 # non-zero.
 status_log() {
-    local log="$1" mtime last sweep_rc reap_rc
+    local log="$1" mtime last sweep_rc reap_rc supersede_rc
     if [ -f "$log" ]; then
         mtime=$(date -r "$log" '+%Y-%m-%d %H:%M' 2>/dev/null \
             || stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$log" 2>/dev/null \
@@ -499,8 +569,16 @@ status_log() {
         fi
         sweep_rc=$(grep -o '\[sweep exit rc=[0-9]*\]' "$log" 2>/dev/null | tail -1 | grep -o '[0-9]*' || true)
         reap_rc=$(grep -o '\[reap exit rc=[0-9]*\]' "$log" 2>/dev/null | tail -1 | grep -o '[0-9]*' || true)
-        if { [ -n "$sweep_rc" ] && [ "$sweep_rc" != "0" ]; } || { [ -n "$reap_rc" ] && [ "$reap_rc" != "0" ]; }; then
-            echo "  WARN: last fire had non-zero payload rc (sweep exit rc=${sweep_rc:-?}, reap exit rc=${reap_rc:-?})"
+        supersede_rc=$(grep -o '\[supersede exit rc=[0-9]*\]' "$log" 2>/dev/null | tail -1 | grep -o '[0-9]*' || true)
+        if { [ -n "$sweep_rc" ] && [ "$sweep_rc" != "0" ]; } \
+            || { [ -n "$reap_rc" ] && [ "$reap_rc" != "0" ]; } \
+            || { [ -n "$supersede_rc" ] && [ "$supersede_rc" != "0" ]; }; then
+            echo "  WARN: last fire had non-zero payload rc (sweep exit rc=${sweep_rc:-?}, reap exit rc=${reap_rc:-?}, supersede exit rc=${supersede_rc:-?})"
+        fi
+        # An armed v5 runner has no third leg at all, so its log never carries a
+        # supersede stamp — that is the stale-format nudge, not a payload fault.
+        if [ -z "$supersede_rc" ] && [ -n "$sweep_rc" ]; then
+            echo "  WARN: last fire logged no [supersede exit rc=] stamp — this runner predates HIMMEL-1309's third leg. Re-arm with: bash scripts/cleanup/codex-sweep-cadence.sh arm --force"
         fi
     elif [ -f "$log.prev" ]; then
         echo "  run log    $log (rotated — see .log.prev; no run since last rotation)"
@@ -531,6 +609,10 @@ cmd_arm() {
     fi
     if [ ! -f "$REAP_SCRIPT" ]; then
         echo "ERR codex-sweep-cadence: reap-mcp-fleet.ps1 not found at $REAP_SCRIPT" >&2
+        exit 2
+    fi
+    if [ ! -f "$SUPERSEDE_SCRIPT" ]; then
+        echo "ERR codex-sweep-cadence: reap-superseded-fleets.ps1 not found at $SUPERSEDE_SCRIPT" >&2
         exit 2
     fi
 
@@ -576,7 +658,7 @@ cmd_arm() {
         *) exit 2 ;;
     esac
 
-    local pwsh_win sweep_win reap_win bat_dir_win
+    local pwsh_win sweep_win reap_win supersede_win bat_dir_win
     if ! pwsh_win=$(cygpath -w "$pwsh_posix" 2>&1); then
         echo "ERR codex-sweep-cadence: cygpath -w failed for pwsh path: $pwsh_win" >&2
         exit 4
@@ -589,6 +671,10 @@ cmd_arm() {
         echo "ERR codex-sweep-cadence: cygpath -w failed for reap script: $reap_win" >&2
         exit 4
     fi
+    if ! supersede_win=$(cygpath -w "$SUPERSEDE_SCRIPT" 2>&1); then
+        echo "ERR codex-sweep-cadence: cygpath -w failed for supersede script: $supersede_win" >&2
+        exit 4
+    fi
     if [ "$DRY_RUN" -eq 0 ]; then
         mkdir -p "$BAT_DIR"
     fi
@@ -597,10 +683,11 @@ cmd_arm() {
         exit 4
     fi
 
-    local pwsh_esc sweep_esc reap_esc bat_dir_esc
+    local pwsh_esc sweep_esc reap_esc supersede_esc bat_dir_esc
     pwsh_esc=$(cadence_cmd_escape "$pwsh_win")
     sweep_esc=$(cadence_cmd_escape "$sweep_win")
     reap_esc=$(cadence_cmd_escape "$reap_win")
+    supersede_esc=$(cadence_cmd_escape "$supersede_win")
     bat_dir_esc=$(cadence_cmd_escape "$bat_dir_win")
 
     local bat_file="$BAT_DIR/codex-sweep.bat" bat_win
@@ -614,9 +701,9 @@ cmd_arm() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY codex-sweep-cadence: would write $bat_file:"
-        emit_bat "$bat_dir_esc" "$pwsh_esc" "$sweep_esc" "$reap_esc" | sed 's/^/    /'
-        echo "DRY codex-sweep-cadence: would schtasks /create /tn $TASK_NAME /xml <daily $SWEEP_TIME, StartWhenAvailable=true, InteractiveToken/LeastPrivilege> /f"
-        emit_task_xml "$bat_win" "$SWEEP_TIME" "$sched" | sed 's/^/    /'
+        emit_bat "$bat_dir_esc" "$pwsh_esc" "$sweep_esc" "$reap_esc" "$supersede_esc" | sed 's/^/    /'
+        echo "DRY codex-sweep-cadence: would schtasks /create /tn $TASK_NAME /xml <daily $SWEEP_TIME, repeat every ${REPEAT_HOURS}h, StartWhenAvailable=true, InteractiveToken/LeastPrivilege> /f"
+        emit_task_xml "$bat_win" "$SWEEP_TIME" "$sched" "$REPEAT_HOURS" | sed 's/^/    /'
         echo "codex-sweep-cadence: dry-run complete (no changes made)"
         return 0
     fi
@@ -645,7 +732,7 @@ cmd_arm() {
     # (cygpath, mktemp) still leave any pre-existing .bat byte-identical.
     local bat_tmp
     bat_tmp=$(mktemp "$BAT_DIR/.codex-sweep.bat.XXXXXX")
-    emit_bat "$bat_dir_esc" "$pwsh_esc" "$sweep_esc" "$reap_esc" > "$bat_tmp"
+    emit_bat "$bat_dir_esc" "$pwsh_esc" "$sweep_esc" "$reap_esc" "$supersede_esc" > "$bat_tmp"
     if ! mv -f "$bat_tmp" "$bat_file"; then
         echo "ERR codex-sweep-cadence: failed to publish runner to $bat_file" >&2
         rm -f "$bat_tmp"
@@ -654,7 +741,7 @@ cmd_arm() {
 
     local err_file
     err_file=$(mktemp -t codex-sweep-cadence.err.XXXXXX)
-    if ! schtasks_create_xml "$TASK_NAME" "$sched" "$SWEEP_TIME" "$bat_win" "$err_file"; then
+    if ! schtasks_create_xml "$TASK_NAME" "$sched" "$SWEEP_TIME" "$bat_win" "$err_file" "$REPEAT_HOURS"; then
         echo "ERR codex-sweep-cadence: schtasks /create $TASK_NAME failed:" >&2
         cat "$err_file" >&2
         rm -f "$err_file"
@@ -737,9 +824,10 @@ cmd_arm() {
 
 ================================================================
   CODEX-SWEEP CADENCE ARMED (HIMMEL-892)
-  $TASK_NAME    daily $SWEEP_TIME
+  $TASK_NAME    daily $SWEEP_TIME$(if [ "$REPEAT_HOURS" -gt 0 ]; then printf ', repeating every %sh' "$REPEAT_HOURS"; fi)
     -> sweep-codex-orphans.ps1 -Kill
     -> reap-mcp-fleet.ps1 -Kill
+    -> reap-superseded-fleets.ps1 -Kill
   Principal: InteractiveToken / LeastPrivilege (fires only while logged on
   -- StartWhenAvailable catches a missed fire at next logon)
   Next run: $next

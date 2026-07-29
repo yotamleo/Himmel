@@ -52,7 +52,7 @@
 #   5. -Kill also removes stale `$env:TEMP\cxc-<token>\broker.pid` files whose
 #      token belonged to a swept tree AND whose broker was confirmed stopped.
 #   Allow set (name-verified kill): node, cmd, bash, codex, conhost, pwsh,
-#   python, bun, uv, uvx, node_repl, mcp-obsidian, qmd.
+#   python, bun, uv, uvx, node_repl, mcp-obsidian, qmd, tokensave.
 #
 # USAGE:
 #   pwsh -NoProfile -File scripts/cleanup/sweep-codex-orphans.ps1           # dry run (default): report orphan trees
@@ -257,7 +257,12 @@ function Get-CodexOrphanTrees {
 # case-insensitive) must be in the set. Keep in sync with the header allow set.
 function Test-ProcessNameAllowed {
   param([Parameter(Mandatory)][AllowEmptyString()][string]$Name)
-  $allow = @('node','cmd','bash','codex','conhost','pwsh','python','bun','uv','uvx','node_repl','mcp-obsidian','qmd')
+  # `tokensave` added HIMMEL-1309: it is a plugin MCP server the codex app-server
+  # spawns like any other fleet member (six superseded `tokensave|serve` roots on
+  # the 2026-07-27 live table), so omitting it made every classified tokensave
+  # orphan report as name-skipped and survive the sweep forever. This gate only
+  # ever permits stopping a process the classifier ALREADY judged reapable.
+  $allow = @('node','cmd','bash','codex','conhost','pwsh','python','bun','uv','uvx','node_repl','mcp-obsidian','qmd','tokensave')
   $base = $Name
   if ($base -match '\.exe$') { $base = $base -replace '\.exe$', '' }
   return ($allow -contains $base)

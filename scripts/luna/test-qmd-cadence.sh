@@ -320,7 +320,7 @@ runner=$(cat "$CRON_DIR/qmd-reindex.sh" 2>/dev/null || echo MISSING)
 # The sh runner embeds paths via printf %q (backslash-escapes); strip the
 # escapes before multi-word / path asserts.
 runner_plain=${runner//\\/}
-assert_contains "runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 5" "$runner"
+assert_contains "runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 6" "$runner"
 assert_contains "runner fires qmd-reindex.sh" "qmd-reindex.sh" "$runner_plain"
 assert_contains "runner points at the SHIPPED reindex script" \
     "$HIMMEL_ROOT_EXP/scripts/luna/qmd-reindex.sh" "$runner_plain"
@@ -765,7 +765,7 @@ assert_contains "Exec points at the runner bat" "qmd-reindex.bat" "$task_xml"
 
 echo "TEST: .bat runner fires bash qmd-reindex.sh (deterministic, no claude)"
 bat=$(cat "$BAT_DIR/qmd-reindex.bat" 2>/dev/null || echo MISSING)
-assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 5" "$bat"
+assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 6" "$bat"
 assert_contains "bat cds into himmel root" 'cd /d "' "$bat"
 assert_contains "bat fires qmd-reindex.sh" "qmd-reindex.sh" "$bat"
 assert_contains "bat pins the resolved qmd absolute path" "--qmd-bin \"$QMD_BIN_DIR/qmd\"" "$bat"
