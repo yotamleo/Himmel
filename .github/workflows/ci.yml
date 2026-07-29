@@ -108,6 +108,71 @@ jobs:
       # luna-correlate is out of scope for this guard.
       - run: cd marketplace/plugins/luna-correlate && bun install --frozen-lockfile
 
+  # CLAUDE.md-derived content invariants (HIMMEL-1305). The local pre-commit
+  # copies of these gates judge the STAGED source, but they execute the repo's
+  # own tooling — scripts/agents-md/generate.mjs, scripts/guardrails/lib.sh, and
+  # the gate scripts themselves — from the WORKING TREE. An unstaged edit to
+  # that tooling can therefore approve a commit the edit is not part of.
+  # himmel accepts working-tree execution as the local convention (rationale:
+  # docs/internals/enforcement.md § Gates execute working-tree tooling); this
+  # job is the backstop. A CI checkout has no working tree to diverge from, so
+  # running the SAME gate scripts here validates committed source with committed
+  # tooling by construction.
+  #
+  # WHERE THIS RUNS: Actions is disabled on the private repo by design (the
+  # split is pre-commit locally, Actions on the public mirror), so this job
+  # gates the PUBLIC tree after propagation — not the private PR. That is still
+  # worth having: propagation is a re-projection, an independent diff surface
+  # where a CLAUDE.md/AGENTS.md/debrand inconsistency would land unchecked.
+  # Do not read a green private PR as evidence these gates ran.
+  #
+  # These gates are himmel-dev-only — they no-op without the gitignored
+  # `.himmel-dev` marker, which keeps them off for adopters running himmel as a
+  # harness. CI is a contributor context, so create the marker first, otherwise
+  # every step below silently passes without checking anything.
+  doc-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Enable the himmel-dev gates in this checkout
+        run: touch .himmel-dev
+      # Guard the guard: proves the three gates below catch a stale AGENTS.md,
+      # an orphaned debrand rule, and a re-introduced lane-inventory token —
+      # and that they do NOT without the staging step.
+      #
+      # MUST run BEFORE the staging step. It clones this checkout, and the
+      # staging step leaves HEAD on an unborn branch — cloning a repo whose HEAD
+      # is unborn yields "you appear to have cloned an empty repository" and an
+      # EMPTY worktree, so the test would validate nothing and die on setup.
+      - name: The doc-invariants job itself is not a no-op
+        run: bash scripts/hooks/test-ci-doc-invariants.sh
+      # LOAD-BEARING — do not remove (HIMMEL-1305). These gates are pre-commit
+      # hooks: each triggers off `git diff --cached` and exits 0 when its inputs
+      # are not staged. A CI checkout's index is identical to HEAD, so without
+      # this step every gate below no-ops and the job goes green having checked
+      # nothing.
+      #
+      # `checkout --orphan` (NOT `read-tree --empty && add -A`) — the difference
+      # is not cosmetic. Re-adding against an unborn HEAD stages the whole tree;
+      # re-adding against the REAL HEAD reconstructs an index identical to it, so
+      # `git diff --cached` is empty again and nothing fires. That variant appears
+      # to work on Windows only because CRLF normalization leaves incidental
+      # differences — on this ubuntu runner it stages exactly nothing.
+      #
+      # This is destructive to the checkout's HEAD, so it goes LAST before the
+      # gates and nothing after it may rely on HEAD being a real branch.
+      - name: Stage the committed tree so the gates actually fire
+        run: git checkout -q --orphan ci-doc-invariants && git add -A
+      - name: AGENTS.md is regenerated from CLAUDE.md
+        run: bash scripts/hooks/check-agents-md-fresh.sh
+      - name: Every debrand rule still matches CLAUDE.md
+        run: bash scripts/hooks/check-debrand-coverage.sh
+      - name: Lane inventory stays out of CLAUDE.md prose
+        run: bash scripts/hooks/check-lanes-inventory.sh
+
   # Security / dependency scanning lane (HIMMEL-510): mirrors the local
   # pre-commit/pre-push security gates (.pre-commit-config.yaml) by invoking the
   # SAME scripts/hooks/* gate scripts, so CI and the author-time hooks stay in

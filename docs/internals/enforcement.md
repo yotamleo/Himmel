@@ -87,6 +87,105 @@ Stages currently wired:
   attestation for non-docs code changes; HIMMEL-176, see
   `docs/security-review.md`).
 
+### Gates execute working-tree tooling — and the CI backstop (HIMMEL-1305)
+
+**The convention: local gates judge the INDEX but run from the WORKING TREE.**
+`check-debrand-coverage.sh` materializes the staged (or `HEAD`) copies of
+`CLAUDE.md` and `debrand.json` into a tempdir and validates those — correct
+about *what* is being committed. But it executes the generator
+(`scripts/agents-md/generate.mjs`) from the working tree, as does every other
+gate here with the helper it sources (`scripts/guardrails/lib.sh`) and with the
+gate script itself (pre-commit reads it off disk).
+
+So an unstaged edit to that tooling can approve a commit the edit is not part
+of: stage a `CLAUDE.md` change that orphans a live debrand rule, separately
+(unstaged) weaken the generator's coverage branch, and the gate passes on code
+that is not in the resulting commit.
+
+**Decision: keep working-tree execution; add a CI backstop.** Materializing
+tooling from the index was considered and rejected — it does not actually close
+the hole (the hook script and `lib.sh` are still read from disk, so a real fix
+means materializing the *entire* hook chain from the index) and it would make
+one gate the odd one out without changing the class. These gates are drift
+guards, not a security boundary against local edits: anyone able to edit
+`generate.mjs` unstaged can equally edit the gate.
+
+The backstop is the layer that has the property for free. The `doc-invariants`
+job in `.github/workflows/ci.yml` runs the SAME gate scripts against a clean
+checkout, where committed source and committed tooling are the same tree by
+construction. Mirrored there: `check-agents-md-fresh.sh`,
+`check-debrand-coverage.sh`, `check-lanes-inventory.sh` — the gates whose
+subject is a whole-tree invariant rather than a staged diff. `check-doc-guard.sh`
+is deliberately NOT mirrored: it keys on files being *added* in a commit, so it
+has nothing to assert about a clean checkout.
+
+**Where that job actually runs — read this before relying on it.** GitHub
+Actions is **disabled on the private repo by design** (`gh api
+repos/{owner}/{repo}/actions/permissions` → `{"enabled": false}`); the
+workflow is listed `active`, but nothing dispatches it and `gh run list` shows
+only Dependabot. The deliberate split is **pre-commit locally, Actions on the
+public mirror**, where Actions is enabled.
+
+So `doc-invariants` gates the **public** tree after propagation, not the private
+PR. On private, the pre-commit gates are the only enforcement — which is exactly
+why the working-tree caveat above is a caveat and not a solved problem. The
+public run still earns its keep: propagation is a re-projection and therefore an
+independent diff surface, so it is where a CLAUDE.md/AGENTS.md/debrand
+inconsistency would otherwise land unchecked.
+
+Do not read a green private PR as evidence these gates ran — on private they run
+only at commit time, on your machine.
+
+**Three gotchas when adding to that job — all fail SILENTLY GREEN.** A gate that
+no-ops is indistinguishable from a gate that passed, so a mistake here does not
+break CI; it quietly removes the check.
+
+1. **The `.himmel-dev` marker.** These gates are himmel-dev-only and no-op
+   without the gitignored marker (which keeps them off for adopters). CI has no
+   marker, so the job creates one first.
+2. **The staging step.** These are *pre-commit* hooks — each triggers off
+   `git diff --cached` and exits 0 when its inputs are not staged
+   (`check-agents-md-fresh.sh` greps the staged names for `CLAUDE.md` /
+   `AGENTS.md` / `scripts/agents-md/`; `check-debrand-coverage.sh` computes a
+   `relevant` count the same way; `check-lanes-inventory.sh` is a one-line
+   `grep -x 'CLAUDE.md' || exit 0`). A CI checkout's index is identical to
+   HEAD, so **nothing is staged and all three no-op.** The job runs
+   `git checkout --orphan ci-doc-invariants && git add -A` first: against an
+   unborn HEAD, `add -A` stages the whole committed tree, so every trigger
+   fires against committed bytes.
+
+   The orphan is load-bearing, not stylistic. `git read-tree --empty &&
+   git add -A` looks equivalent and is not — re-adding against the *real* HEAD
+   rebuilds an index identical to it, leaving `git diff --cached` empty again.
+   It appears to work on Windows only because CRLF normalization leaves
+   incidental differences; on the ubuntu runner it stages exactly nothing.
+
+   Because the orphan leaves HEAD unborn, **nothing after that step may clone
+   the checkout** — cloning an unborn HEAD yields an empty worktree. That is
+   why `test-ci-doc-invariants.sh` (which clones) runs *before* it.
+
+3. **Never `grep -q` on the staged list.** Under `set -o pipefail`, `-q` exits
+   at the first match and closes the pipe; the writer upstream dies of SIGPIPE
+   and the *pipeline* reports 141 even though grep matched, so the trigger reads
+   as "not staged" and the gate exits 0. It only bites once the staged list
+   outruns the ~64KB pipe buffer — invisible on ordinary commits, and a
+   fail-open on exactly the large ones you most want checked. Plain `grep`
+   (output to `/dev/null`) drains the stream and is safe. This bit
+   `check-agents-md-fresh.sh` and `check-lanes-inventory.sh`; it is also why
+   the whole-tree staging above made them *look* broken.
+
+Both are pinned by `scripts/hooks/test-ci-doc-invariants.sh`, which runs
+before the staging step. It clones the repo (a fresh clone, not a linked worktree — a
+worktree resolves the marker from the primary checkout and would not reproduce
+CI), breaks the tree three ways, and asserts each gate blocks **with** the
+staging step and is a **false green without it**. That second assertion is the
+point: it fails the moment someone simplifies the staging step away.
+
+The first version of this job shipped without the staging step and was caught by
+the codex adversarial CR lane, not by CI — the job was green on a tree it had
+never looked at. Verifying it by hand had the same blind spot: running the gates
+in a clean worktree returns rc=0 whether they checked anything or not.
+
 ### Portable export — `.pre-commit-hooks.yaml` (HIMMEL-214)
 
 Worktree isolation was structurally enforced only in himmel; other repos

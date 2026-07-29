@@ -17,6 +17,11 @@ rc=0; is_himmel_dev_repo || rc=$?
 [ "$rc" -eq 1 ] && exit 0
 [ "${LANES_GUARD_OK:-0}" = "1" ] && { echo "→ lanes-inventory-guard: LANES_GUARD_OK=1 — skipping" >&2; exit 0; }
 
-git diff --cached --name-only | grep -qx 'CLAUDE.md' || exit 0   # only when CLAUDE.md is staged
+# Only when CLAUDE.md is staged. NOT `grep -q` (HIMMEL-1305): under pipefail,
+# -q exits on the first match and closes the pipe, so `git diff` dies of
+# SIGPIPE (141), the pipeline reports 141, and `|| exit 0` fires despite the
+# match — a silent fail-open on any staged list bigger than the ~64KB pipe
+# buffer. Plain grep drains the stream, so the writer never gets SIGPIPE.
+git diff --cached --name-only | grep -x 'CLAUDE.md' >/dev/null || exit 0
 # Validate the STAGED bytes, not the worktree (R1 M7). Drift → check.mjs exits 1, propagates (no || true).
 git show ":CLAUDE.md" | node "$HERE/../lanes/check.mjs"

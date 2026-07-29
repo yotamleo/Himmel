@@ -20,8 +20,15 @@ if [ "${AGENTS_MD_OK:-0}" = "1" ]; then
 fi
 
 # Trigger only when an input that affects AGENTS.md is staged.
+# NOT `grep -q` (HIMMEL-1305): under `set -o pipefail`, -q exits on the FIRST
+# match and closes the pipe, so printf dies of SIGPIPE (141) and the PIPELINE
+# reports 141 even though grep matched. `if !` then reads that as "no match"
+# and the gate exits 0 — a silent fail-open, and only when the staged list is
+# big enough to outrun the ~64KB pipe buffer, i.e. exactly the large commits
+# this gate most needs to check. Plain grep consumes the whole stream, so the
+# writer never gets SIGPIPE.
 staged=$(git diff --cached --name-only)
-if ! printf '%s\n' "$staged" | grep -qE '^CLAUDE\.md$|^AGENTS\.md$|^scripts/agents-md/'; then
+if ! printf '%s\n' "$staged" | grep -E '^CLAUDE\.md$|^AGENTS\.md$|^scripts/agents-md/' >/dev/null; then
     exit 0
 fi
 
