@@ -21,6 +21,15 @@ if [ ! -f "$RUNNER" ]; then
   exit 1
 fi
 
+# Point every invocation below at a throwaway lock (HIMMEL-1338). Without
+# this, the cases here would contend for the real machine-wide lock with any
+# full-suite run happening elsewhere on the box and refuse with rc 2 — a red
+# suite that says nothing about the behaviour under test. Lock ACQUISITION is
+# covered on purpose in test-suite-concurrency.sh, against its own sandbox.
+SUITE_LOCK_SANDBOX=$(mktemp -d)
+export SUITE_LOCK_DIR="$SUITE_LOCK_SANDBOX/suite.lock"
+trap 'rm -rf "$SUITE_LOCK_SANDBOX"' EXIT
+
 failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures + 1)); }
