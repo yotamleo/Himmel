@@ -258,10 +258,11 @@ Register-LogonTask `
   -WorkingDirectory $grafanaHome `
   -StartupDelay 'PT3M'
 
+# HIMMEL-1161: disable the 'service' collector — it leaks kernel handles (paged pool) every scrape.
 Register-LogonTask `
   -TaskName 'himmel-observability-windows-exporter' `
   -Execute $windowsExporterExe `
-  -Arguments "--web.listen-address=127.0.0.1:9182" `
+  -Arguments "--web.listen-address=127.0.0.1:9182 --collectors.disabled=service" `
   -WorkingDirectory $stateRoot
 
 Register-LogonTask `
