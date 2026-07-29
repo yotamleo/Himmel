@@ -78,5 +78,65 @@ reviews:
         the same directory. Only when that same-named .sh counterpart exists,
         flag behavioral drift between the pair rather than style differences;
         standalone .ps1 files (no .sh twin) carry no parity requirement.
+    # ── Disproved-class scope narrowings (CR-learnings tuning, 2026-07-28) ──
+    # Each entry narrows a rule to where it is RIGHT; none is a mute.
+    - path: "scripts/**/*.sh"
+      instructions: >-
+        Handover-root resolution: the rule "source scripts/lib/handover-path.sh
+        and call handover_root instead of hardcoding the path" applies to any
+        script that reads or writes handover state at runtime, test scripts
+        included. Do not flag: scripts/lib/handover-path.sh itself (it is the
+        resolver and legitimately constructs "$repo_root/handovers"), a
+        test-*.sh file that redirects HANDOVER_DIR (or equivalent) to a temp
+        fixture before touching handover state, hooks/guards that merely
+        pattern-match the string "handovers/" in paths, or comments/prose. DO
+        flag a runtime read or write of a literal ./handovers/ or
+        "$repo_root/handovers" path in a script that bypasses the resolver —
+        including a test-*.sh that touches a real/default handover root
+        instead of a redirected fixture.
+    - path: "scripts/**/*.sh"
+      instructions: >-
+        House style is `set -uo pipefail` WITHOUT errexit; the repo's shell-lint
+        gate flags `set -e` itself as a defect (errexit leaks into sourcing
+        shells). In a file whose prologue does not enable errexit, never raise
+        errexit-interaction findings — claims that an `&&` list, `a && b || c`,
+        or an unguarded command "aborts the script" or "silently bypasses set
+        -e" have no premise, and short-circuit lists with explicit
+        `|| { …; exit N; }` handling are the intended error style. Errexit
+        findings are valid only in a file that itself sets -e/-o errexit, and
+        only where a non-zero exit is genuinely masked with a behavioral
+        consequence.
+    - path: "scripts/**/*.sh"
+      instructions: >-
+        Bash test brackets ([ x -gt y ], [ x -eq y ]) parse operands as
+        DECIMAL — leading zeros (e.g. `date +%m` yielding "08") never trigger
+        octal interpretation there. Raise octal-interpretation findings only in
+        arithmetic contexts ($(( )), (( )), let) where a leading-zero-capable
+        operand is not already normalized via the repo's $((10#$var)) idiom.
+    - path: "scripts/**/test-*.sh"
+      instructions: >-
+        Bare `wait` (no PID) in these test harnesses is deliberate: they spawn
+        background stubs and assert outcomes via marker files and captured
+        output, not via wait's exit status. Do not flag bare `wait` here for
+        discarding per-job exit codes or waiting on unintended jobs.
+    - path: "scripts/**/*.sh"
+      instructions: >-
+        `rm -f` on a quoted single-file temp/marker/lock path — typically in a
+        `trap '…' EXIT` cleanup — is the intended idempotent idiom; the target
+        legitimately may not exist, and that is not a masked error. Do not flag
+        it for missing existence checks or suppressed failures. Still flag:
+        recursive deletion of any variable-built path that could be empty or
+        unset, unquoted expansions in rm arguments, or deletion targets outside
+        the script's own temp/marker files.
+    - path: "docs/**/*.md"
+      instructions: >-
+        Paths like <state-repo>/handovers/…, $HANDOVER_DIR, <handover-root>/…,
+        handovers/<USER_SLUG>/…, and C:/Users/<you>/… are parameterized
+        references to the READER'S OWN machine or private handover state repo
+        (configured via /handover-setup) — deliberately not resolvable inside
+        this repository. Do not flag them as broken links or private-repo
+        leaks. DO flag a literal operator-specific path (a real username in an
+        absolute path) or a link to a specific private repository — those are
+        genuine leaks (precedent: HIMMEL-1352 scrubbed one from fixtures).
 chat:
   auto_reply: true

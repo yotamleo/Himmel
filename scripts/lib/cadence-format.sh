@@ -40,8 +40,13 @@
 # keeps firing the corrupted form, so an operator whose bat dir / repo root /
 # vault path carries one of those characters must `arm --force` to pick the fix
 # up. Everyone else's regenerated runner is byte-identical bar the stamp.
+# v6 (HIMMEL-1309): the codex-sweep runner gained a THIRD payload leg
+# (reap-superseded-fleets.ps1 -Kill, the duplicate-fleet-under-a-LIVE-broker
+# check) and its trigger gained an intra-day <Repetition>. An armed v5 cadence
+# still fires, but only the two old legs and only once a day — so the leak class
+# this version exists to cover keeps accumulating unswept. Nudge `arm --force`.
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=5
+CADENCE_RUNNER_FORMAT_VERSION=6
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).

@@ -196,6 +196,59 @@ the reap primitive is invoked with the codex **child's** pid (env overrides
 `CODEX_JOBS_DIR` / `CODEX_REAP_HELPER` inject a tmpdir and a stub - no real
 process table or `$HOME` state is touched).
 
+### Superseded fleets under a LIVE app-server (HIMMEL-1309)
+
+Both reapers above skip anything under a **live** app-server, because that
+fleet is "legitimately in use". That is right for one fleet and wrong for N
+duplicates: a long-lived app-server spawns a fresh MCP fleet **per client
+connection** and never reaps the previous one, so each duplicate looks in-use
+individually while collectively leaking. One app-server accumulated **45**
+`luna-correlate` pairs on 2026-07-27; the armed sweep correctly judged its
+tree LIVE and skipped it. `reap-superseded-fleets.ps1` is the third check.
+
+A **fleet root** is a direct child of a live `codex.exe app-server`; its
+**fleet key** is the launcher's `--cwd <plugin>` path when present, else its
+command line minus the leading executable token (so `bun`, `uvx`,
+`node_repl`, `cmd`/`npx` and `tokensave` roots are all keyed, not just bun).
+Within one `(app-server, key)` group the newest roots are current and older
+ones are **superseded**. Three gates then narrow the kill set, and each can
+only ever REMOVE targets:
+
+- `-KeepNewest <n>` (default 1) — newest n per group are never candidates.
+- `-MinAgeMinutes <n>` (default 30) — a younger superseded root is kept. This
+  is the **primary** protection: genuinely-concurrent parallel tool calls are
+  seconds-to-minutes apart, so the gate is what separates "duplicate
+  generation" from "parallel call".
+- CPU-idle veto — the candidate's subtree is sampled twice `-SampleSeconds`
+  apart and kept if its processor time advanced >50 ms. A net, not a
+  guarantee: a superseded-but-in-use server that is idle during the window is
+  not protected by this gate; the age gate is.
+
+What keeps the operator's own processes safe is **lineage, not shape**: a
+target must descend from a live app-server, and the v2 telegram bridge, the
+operator's qmd MCP server and the live claude session never do. Note the
+tripwire deliberately does NOT list qmd — codex spawns its own qmd MCP server
+as a plugin fleet member, and a shape-based entry protected exactly the
+duplicates this tool exists to reap.
+
+Deliberately out of scope: **app-server accumulation** (reported as a census,
+never reaped — a live app-server whose pipe a client holds is in use by
+definition) and **unkeyable roots** whose CommandLine WMI will not show us
+(counted blind, never reaped). Kill safety is not reimplemented: the script
+dot-sources `sweep-codex-orphans.ps1 -AsLibrary` and reuses its descendant
+walk plus both pid-reuse gates verbatim.
+
+```sh
+pwsh -NoProfile -File scripts/codex/reap-superseded-fleets.ps1          # dry run
+pwsh -NoProfile -File scripts/codex/reap-superseded-fleets.ps1 -Kill
+```
+
+Tests: `scripts/codex/test-reap-superseded-fleets.ps1` (hermetic; the fixture
+mirrors the live reproduction — two app-servers, a young burst that must
+survive, cross-type keys, and a codex-owned qmd fleet that must stay
+reapable). Fires last in the `HIMMEL-CodexOrphanSweep` cadence, after both
+orphan sweeps have removed everything whose supervisor is already gone.
+
 ## Skill loading caveat
 
 Enabling `himmel-ops` makes its **hooks** fire under Codex (e.g.

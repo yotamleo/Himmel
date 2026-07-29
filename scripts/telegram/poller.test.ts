@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
 import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
-import { isAllowed, vaultForChat } from "./gate";
+import { GROUP_ANONYMOUS_BOT_ID, isAllowed, isOperatorIdentity, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
 import type { TriageVerdict } from "./triage";
 
@@ -718,6 +718,95 @@ test("operator floor keys on GLOBAL allowFrom: a per-group allowFrom member is s
   await handleInbound(rOp, { from:5, chat_id:-50, text:"try again.." },
     async (s:string) => { opRan.push(s); }, undefined, ignoreTriage, isOperator);
   expect(opRan).toEqual(["group_-50"]);                // operator: floored, never dropped
+});
+
+// HIMMEL-1358 — an operator posting in a group with "Remain anonymous" enabled
+// has GroupAnonymousBot substituted for their real id, so a floor keyed on raw
+// from.id could never match. The links were classified `ignore` and hit the
+// PERMANENT drop with only a supervisor.log line to show for it. Composes the
+// REAL production predicate (what main() passes), not a mock — the wiring is the
+// thing that was wrong. Ids below are synthetic.
+test("an anonymous group admin reaches the spawn floor, not the drop path (HIMMEL-1358)", async () => {
+  const access = { allowFrom: ["1000000001"], groups: { "-1009999999": { trustAnonymousAdmins: true } } };
+  const isOperator = (from: number, chat_id: number) => isOperatorIdentity(access, from, chat_id);
+  const ignoreTriage = async (): Promise<TriageVerdict> => "ignore";
+
+  const r = root(); const ran: string[] = [];
+  await handleInbound(r, { from: GROUP_ANONYMOUS_BOT_ID, chat_id: -1009999999, text: "https://example.com/a" },
+    async (s: string) => { ran.push(s); }, undefined, ignoreTriage, isOperator);
+
+  expect(ran).toEqual(["group_-1009999999"]);
+  expect((await peekPending(r, "group_-1009999999")).count).toBe(1);   // durable, not dropped
+});
+
+// End-to-end, ingest → handler (codex adversarial CR asked for exactly this):
+// Telegram's sender_chat says which chat an on-behalf-of-chat post represents.
+// A post carrying the anonymous sender id but a sender_chat that is NOT the
+// destination chat is a different trust principal and must stay triaged — and
+// the check is only reachable if ingest actually PRESERVES the field, which is
+// why this drives the real ingestUpdates rather than hand-building the message.
+test("ingest preserves sender_chat, and a mismatched one is not floored (HIMMEL-1358)", async () => {
+  const access = { allowFrom: ["1000000001"], groups: { "-1009999999": { trustAnonymousAdmins: true } } };
+  const isOperator = (from: number, chat_id: number, sender_chat?: number) => isOperatorIdentity(access, from, chat_id, sender_chat);
+  const ignoreTriage = async (): Promise<TriageVerdict> => "ignore";
+
+  const r = root();
+  await ingestUpdates(r, [
+    { update_id: 1, message: { chat: { id: -1009999999 }, from: { id: GROUP_ANONYMOUS_BOT_ID },
+                               sender_chat: { id: -1009999999 }, text: "genuine anonymous admin post" } },
+    { update_id: 2, message: { chat: { id: -1009999999 }, from: { id: GROUP_ANONYMOUS_BOT_ID },
+                               sender_chat: { id: -777 }, text: "on behalf of some OTHER chat" } },
+  ], allowAll);
+  const lines = await readNewLines(join(r, "inbound.jsonl"), join(r, "inbound.jsonl.cursor"));
+  expect(lines.length).toBe(2);
+  expect(lines[0].sender_chat).toBe(-1009999999);   // preserved, not merely used as the fromId fallback
+  expect(lines[1].sender_chat).toBe(-777);
+
+  const ran: string[] = [];
+  for (const l of lines) {
+    await handleInbound(root(), { from: l.from, chat_id: l.chat_id, text: l.text, ts: l.ts, sender_chat: l.sender_chat },
+      async (s: string) => { ran.push(`${l.update_id}:${s}`); }, undefined, ignoreTriage, isOperator);
+  }
+  expect(ran).toEqual(["1:group_-1009999999"]);     // matching floored; mismatched dropped
+});
+
+// sender_chat is spread into all FOUR ingest branches, and the media ones append
+// their record only AFTER the download settles (`{ ...rec, ...path }`), so the
+// field survives by construction rather than by an explicit copy. Pin the two
+// that go through that post-download finalization (panel CR glm-1) — the plain
+// text path is covered above, and voice shares the ready.push shape.
+test("ingest preserves sender_chat through the post-download media branches (HIMMEL-1358)", async () => {
+  const r = root();
+  const fetchDoc = async () => "/tmp/att/1.pdf";
+  const fetchImg: FetchImageFn = async () => "/tmp/att/2.jpg";
+  await ingestUpdates(r, [
+    { update_id: 1, message: { chat: { id: -1009999999 }, from: { id: GROUP_ANONYMOUS_BOT_ID },
+                               sender_chat: { id: -1009999999 }, caption: "a pdf",
+                               document: { file_id: "d1", file_name: "x.pdf" } } },
+    { update_id: 2, message: { chat: { id: -1009999999 }, from: { id: GROUP_ANONYMOUS_BOT_ID },
+                               sender_chat: { id: -1009999999 }, caption: "a photo",
+                               photo: [{ file_id: "p1" }] } },
+  ], allowAll, undefined, fetchImg, fetchDoc);
+  const lines = await readNewLines(join(r, "inbound.jsonl"), join(r, "inbound.jsonl.cursor"));
+  expect(lines.length).toBe(2);
+  expect(lines.map((l) => l.sender_chat)).toEqual([-1009999999, -1009999999]);
+});
+
+// The scope guard on the rescue above: the anon id only means "an admin of THIS
+// group" where the operator opted that group in. Anywhere else it is an unknown
+// sender and stays fully triaged, so the floor cannot be reached by posting
+// anonymously in an arbitrary chat.
+test("the anonymous-admin id is still triaged in a non-opted-in group (HIMMEL-1358)", async () => {
+  const access = { allowFrom: ["1000000001"], groups: { "-1009999999": { trustAnonymousAdmins: true } } };
+  const isOperator = (from: number, chat_id: number) => isOperatorIdentity(access, from, chat_id);
+
+  const r = root(); const ran: string[] = [];
+  await handleInbound(r, { from: GROUP_ANONYMOUS_BOT_ID, chat_id: -50, text: "lol nice" },
+    async (s: string) => { ran.push(s); }, undefined,
+    async (): Promise<TriageVerdict> => "ignore", isOperator);
+
+  expect(ran).toEqual([]);
+  expect(await readMeta(r, "group_-50")).toBeNull();
 });
 
 // A dispatch failure happens AFTER the message is durable, so it must not
