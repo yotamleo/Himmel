@@ -170,7 +170,7 @@ quietly compounds and one with silent gaps.
 | Tier | What it captures | Entry point |
 |------|------------------|-------------|
 | **Automatic** | Session **summary** (decisions/commands/follow-ups) on graceful `SessionEnd` — enabled by default (HIMMEL-469) | `end-session-wiki` hook — no action required |
-| **Semi-automatic** (scheduled) | Inbox clips → triaged + synthesized notes; periodic vault health | `/pipeline-cadence arm` schedules `/harvest-clips`→`/triage-clips` (daily), `/synthesize-clips`→`/archive-clips` (daily), `/obsidian-health` (weekly) — each leg pinned to a cheap `--model` (HIMMEL-506). Generic `/schedule` + `/loop` drive any recurring pass. |
+| **Semi-automatic** (scheduled) | Inbox clips → triaged + synthesized notes; periodic vault health | `/pipeline-cadence arm` schedules `/harvest-clips`→`/triage-clips` (daily), `/synthesize-clips`→`/archive-clips` (daily), `vault-lint` (obsidian-triage:vault-lint, daily) — each leg pinned to a cheap `--model` (HIMMEL-506). Generic `/schedule` + `/loop` drive any recurring pass. |
 | **Manual** (you invoke it) | The mid-session findings/sources the automatic path misses | see list below |
 
 **Manual capture — what you must invoke explicitly:**

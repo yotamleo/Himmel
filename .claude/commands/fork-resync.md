@@ -73,14 +73,21 @@ remote without `--push`.
 | 1 | already on the target base | nothing to do; if the guard still says BEHIND, the registry disagrees with reality — report that, don't "fix" it by editing `synced_base` |
 | 2 | usage / registry / missing git or network | abort and report |
 | 3 | SKIP — no `fork` block | not in scope for this command |
-| 4 | rebase CONFLICTED, or the delta is NOT additive | **stop and escalate** — see below |
+| 4 | rebase CONFLICTED, the delta is NOT additive, OR a pin-literal failure (`PIN_FILE_MISSING`/`PIN_NOT_FOUND`/`PIN_AMBIGUOUS`) | **stop and escalate** — see below |
 
-**On rc 4, do not resolve the conflict yourself in an unattended run.** Report:
-the conflicting paths (or the upstream files the delta modifies/deletes), the
-fork's commit list, and the upstream target. A conflicted fork re-sync is a
-design decision about which side wins — that is the operator's call, and getting
-it wrong silently corrupts a dependency every machine installs. Leave the entry
-BEHIND and file a ticket describing the conflict.
+**On rc 4, do not resolve the conflict yourself in an unattended run.** For a
+CONFLICTED/non-additive rebase, report: the conflicting paths (or the upstream
+files the delta modifies/deletes), the fork's commit list, and the upstream
+target. A conflicted fork re-sync is a design decision about which side wins —
+that is the operator's call, and getting it wrong silently corrupts a
+dependency every machine installs. Leave the entry BEHIND and file a ticket
+describing the conflict.
+
+A `PIN_FILE_MISSING`/`PIN_NOT_FOUND`/`PIN_AMBIGUOUS` rc 4 is a DIFFERENT failure
+mode — the registry's `fork.pin_file`/`fork.pin_template` is stale, not a
+rebase judgment call. Report the pin mismatch instead (entry name, the
+missing/ambiguous path or template) — the conflicting-paths/commit-list report
+above does not apply.
 
 ## 4. Publish the rebased fork — OPERATOR-GATED, never unattended
 

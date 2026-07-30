@@ -633,7 +633,18 @@ if ($PreflightOnly) {
     # reads healthy (Invoke-WebRequest throws on non-2xx).
     $resp = $_.Exception.Response
     $code = $null; if ($resp) { try { $code = [int]$resp.StatusCode } catch { } }
+    # HIMMEL-1404 CR: the stringified ErrorRecord ("$_") is not the server body —
+    # it is PowerShell's own exception-message text and never contains
+    # `auth_unavailable` or the classifier tokens below, so those checks always
+    # fell through. On PS7 (Core, per #Requires above) Invoke-WebRequest's
+    # non-2xx exception carries a real System.Net.Http.HttpResponseMessage in
+    # .Response — read its Content so the classifier sees what the bash twin's
+    # curl body sees. Falls back to the stringified exception only if there is
+    # no response at all (a transport failure, already routed to exit 20 below).
     $respBody = "$_"
+    if ($resp -and $resp.Content) {
+      try { $respBody = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult() } catch { }
+    }
     if ($respBody -match 'auth_unavailable') { exit 20 }
     if ($code -eq 408) { exit 20 }
     if ($code -eq 429) { exit 20 }

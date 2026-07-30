@@ -404,6 +404,7 @@ fi
 T="$TMP/t27-tmpl"; V="$TMP/t27-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
 gen_claude() {  # $1 = per-marker prefix (BASE/OURS/THEIRS); 5 divergent lines, 10 common apart
     local pfx="$1"
+    local i
     printf '# Operating Manual\n'
     for i in 1 2 3 4 5; do
         printf 'c1\nc2\nc3\nc4\nc5\nc6\nc7\nc8\nc9\nc10\n'   # 10 lines identical in all three

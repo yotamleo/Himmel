@@ -448,7 +448,7 @@ try {
     function Get-ScrubbedCommand {
         param([string]$Cmd)
         if (-not $Cmd) { return $Cmd }
-        $lines = $Cmd -split "`n"
+        $lines = ($Cmd -replace "`r`n", "`n") -split "`n"
         $outLines = foreach ($line in $lines) {
             $script:WordChanged = $false
             $words = @($line -split '[ \t]+' | Where-Object { $_ -ne '' })

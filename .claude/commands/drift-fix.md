@@ -79,6 +79,9 @@ influence whether a PR gets opened. Per probe entry collected above:
 bash scripts/upstreams/apply-tool-upgrade.sh <name> <target-version> --unattended
 ```
 
+With `--dry-run`, add `--dry-run` to each call — it must not touch the
+operator's installed CLIs.
+
 **Always pass the target version** from the guard's BEHIND line. Without it the
 script cannot tell "already the newest release" from "the upgrade silently did
 nothing" — both look like an rc-0 command and an unchanged version — so it

@@ -81,8 +81,10 @@
 #      block / missing tooling (git, python3) / target or base ref would not
 #      resolve
 #   3  SKIP — the entry declares no `fork` block (not a tracked resync target)
-#   4  rebase CONFLICTED, or the delta is NOT strictly additive — a human
-#      must resolve it; nothing was pushed
+#   4  rebase CONFLICTED, or the delta is NOT strictly additive, OR a
+#      pin-literal failure (PIN_FILE_MISSING / PIN_NOT_FOUND / PIN_AMBIGUOUS —
+#      a stale fork.pin_file/pin_template in the registry, not a rebase
+#      problem) — a human must resolve it; nothing was pushed
 set -uo pipefail
 
 SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

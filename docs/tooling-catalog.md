@@ -1247,8 +1247,10 @@ private repo has Actions off by design.
   conflicted or non-additive rebase). Driven by a `fork` block on the registry
   entry (`fork_repo`, `upstream_repo`, `pin_file`, `pin_template`, `work_dir`).
   Exit codes: `0` clean + additive, `1` already on target, `2`
-  usage/registry/tooling, `3` SKIP (no `fork` block), `4` CONFLICTED or
-  non-additive — a human decides. Hermetic test: `test-resync-fork.sh`.
+  usage/registry/tooling, `3` SKIP (no `fork` block), `4` CONFLICTED,
+  non-additive, or a pin-literal failure (`PIN_FILE_MISSING`/`PIN_NOT_FOUND`/
+  `PIN_AMBIGUOUS`, a stale registry pin — not a rebase judgment call) — a human
+  decides. Hermetic test: `test-resync-fork.sh`.
 - `scripts/upstreams/drift-fix-cadence.sh arm|status|disarm` — arms TWO daily
   local scheduled tasks (schtasks on Windows, crontab on Linux/macOS; sibling of
   `codex-sweep-cadence.sh` / `pipeline-cadence.sh`), each firing an INTERACTIVE

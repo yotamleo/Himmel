@@ -189,8 +189,17 @@ cr_merge_gate() {
             repo_canon="$_CMG_CANON"
             local_canon=""
             if _cmg_canon_nwo "$(_cmg_local_nwo || true)"; then local_canon="$_CMG_CANON"; fi
-            if [ -z "$local_canon" ] || ! _cmg_nwo_eq "$repo_canon" "$local_canon"; then
-                return 0
+            if [ -n "$local_canon" ]; then
+                _cmg_nwo_eq "$repo_canon" "$local_canon" || return 0
+            else
+                # Origin didn't parse (no origin remote, a file:// origin, a
+                # trailing-slash URL, ...). Arming is a deliberate per-clone
+                # act, so an armed-but-unparseable clone is treated as LOCAL
+                # (fall through and gate) rather than silently disabled as
+                # foreign (HIMMEL-1404 T9). An unarmed clone still exits here
+                # via the same cr_app_configured check used below, preserving
+                # today's unarmed behaviour.
+                cr_app_configured "$PWD" || return 0
             fi
         fi
     fi
@@ -269,10 +278,12 @@ cr_merge_gate() {
                 echo "BLOCK: head $head of PR #$num has more commit statuses than one API page (100) and none of them is CodeRabbit's — cannot certify the review. Check manually, or bypass with CR_MERGE_GATE_OK=1."
                 return 2 ;;
             skipped)
-                # HIMMEL-1317: CodeRabbit posted success but SAID it did not
-                # review (auto-reviews disabled). A declined review must not
-                # merge, for the same reason `absent` must not.
-                echo "BLOCK: CodeRabbit SKIPPED the review on head $head of PR #$num — it posted success, but its description says it did not review (automatic reviews are disabled on this repo). A DECLINED review is not a clean one. Trigger it with a '@coderabbitai review' comment, wait for it to conclude, then re-check. If this repo has no CodeRabbit, set CR_PROFILE=none. Bypass: CR_MERGE_GATE_OK=1."
+                # HIMMEL-1317/1354: CodeRabbit posted success but SAID it did
+                # not review — either auto-reviews are disabled, or the review
+                # is rate limited. A declined review must not merge, for the
+                # same reason `absent` must not. Wording aligned with
+                # check-ci.sh's twin arm so both gates agree.
+                echo "BLOCK: CodeRabbit SKIPPED the review on head $head of PR #$num — it posted success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-check), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop). If this repo has no CodeRabbit, set CR_PROFILE=none. Bypass: CR_MERGE_GATE_OK=1."
                 return 2 ;;
             *)
                 # Fail CLOSED on an unrecognised state. This case had no

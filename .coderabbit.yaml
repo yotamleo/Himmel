@@ -39,7 +39,9 @@ reviews:
     # HIMMEL-1252: comment-triggered, not per-push. false = the App does not
     # auto-review on push/open; a reviewer posts `@coderabbitai review` (or
     # `@coderabbitai full review`) to run it on demand. Conserves the shared CR
-    # rate limit; the /pr-check CLI lane remains the primary gate. The
+    # rate limit; the App (triggered structurally on `gh pr create`) stays the
+    # PRIMARY reviewer, with the /pr-check CLI lane as a second, optional pass.
+    # The
     # base_branches setting below is inert while this is false (it only scopes
     # which bases get AUTO-reviewed) — kept so re-enabling needs no re-derivation.
     enabled: false

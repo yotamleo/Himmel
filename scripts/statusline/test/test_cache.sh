@@ -759,14 +759,14 @@ echo '{"reads":6000,"writes":4000,"inputs":5}' > "$UK_WIN"
 # Unknown model → the session-row net MUST carry the `?` guess-marker.
 HOME="$TMPDIR_UK" HIMMEL_STATUSLINE_PERIOD=month HIMMEL_STATUSLINE_NOW="$UK_NOW" \
     build_cache_lines "$UK_TX" "zzz-unknown" ""
-uk_sess=$(printf "%b" "$cache_lines" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^session ')
+uk_sess=$(printf "%b" "$cache_lines" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^session ') || uk_sess=""
 echo "$uk_sess" | grep -qE 'net [+-]\$[0-9.]+[?]' \
     && { echo "PASS: unknown model net carries ? marker: $uk_sess"; PASS=$(( PASS + 1 )); } \
     || { echo "FAIL: unknown model net missing ? marker: $uk_sess"; FAIL=$(( FAIL + 1 )); }
 # Recognised model, SAME fixture → the session-row net must NOT carry `?`.
 HOME="$TMPDIR_UK" HIMMEL_STATUSLINE_PERIOD=month HIMMEL_STATUSLINE_NOW="$UK_NOW" \
     build_cache_lines "$UK_TX" "claude-sonnet-4-6" ""
-kn_sess=$(printf "%b" "$cache_lines" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^session ')
+kn_sess=$(printf "%b" "$cache_lines" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^session ') || kn_sess=""
 echo "$kn_sess" | grep -qE 'net [+-]\$[0-9.]+[?]' \
     && { echo "FAIL: recognised model net should NOT carry ? marker: $kn_sess"; FAIL=$(( FAIL + 1 )); } \
     || { echo "PASS: recognised model net has no ? marker: $kn_sess"; PASS=$(( PASS + 1 )); }

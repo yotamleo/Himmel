@@ -138,7 +138,7 @@ assert_not_contains() {
 count_slots() {
     case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         msys*|cygwin*|win32*|MINGW*)
-            if [ -f "$1" ]; then grep -c . "$1" 2>/dev/null || echo 0; else echo 0; fi ;;
+            if [ -f "$1" ]; then local c; c=$(grep -c . "$1" 2>/dev/null); echo "${c:-0}"; else echo 0; fi ;;
         *)
             find "$2" -maxdepth 1 -name 'job-*' 2>/dev/null | wc -l | tr -d ' ' ;;
     esac

@@ -1506,11 +1506,22 @@ test("toPermissionPath: already-POSIX / non-drive input is normalized (backslash
 });
 
 test("composeWorkerSettings: dontAsk + worktree/sessionDir path rules for Edit/Read (bare + single-segment + multi-dir) + the curated Bash allow-list (HIMMEL-1378, live-verified glob coverage)", () => {
-  const out = JSON.parse(composeWorkerSettings(undefined, "C:\\repo\\.claude\\worktrees\\glm+t1", "C:\\Users\\me\\.claude\\handover\\bridge\\glm-sessions\\glm-t1-1"));
+  const worktreeIn = "C:\\repo\\.claude\\worktrees\\glm+t1";
+  const sessionDirIn = "C:\\Users\\me\\.claude\\handover\\bridge\\glm-sessions\\glm-t1-1";
+  const out = JSON.parse(composeWorkerSettings(undefined, worktreeIn, sessionDirIn));
   expect(out.permissions.defaultMode).toBe("dontAsk");
   const allow: string[] = out.permissions.allow;
-  const wt = "//c/repo/.claude/worktrees/glm+t1";
-  const sd = "//c/Users/me/.claude/handover/bridge/glm-sessions/glm-t1-1";
+  // Derived the same way composeWorkerSettings derives them (toPermissionPath
+  // of the resolved input), not hardcoded as literal `//c/...` strings — on
+  // Linux, resolve() treats a Windows-shaped input as an ordinary relative
+  // path and resolves it against cwd, so a hardcoded drive-letter expectation
+  // would never match there (HIMMEL-1404 CR/T13). This file is not wired into
+  // any CI job (bun-suites only covers scripts/luna-vitals and
+  // marketplace/plugins/luna-correlate), so the mismatch was latent rather
+  // than a live CI failure, but deriving the expectation keeps the assertion
+  // meaningful on every platform this suite is run on by hand.
+  const wt = toPermissionPath(resolve(worktreeIn));
+  const sd = toPermissionPath(resolve(sessionDirIn));
   // Edit(<dir>/**) ALONE was live-proven insufficient for a file that is a
   // DIRECT child of <dir> (outbox.jsonl/context.md always are) — bare + /*
   // must both be present alongside /**, for BOTH the worktree and sessionDir.

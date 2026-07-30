@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
 import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, isHelpFlag } from "./spawn-glm";
+import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag } from "./spawn-glm";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
@@ -735,6 +735,8 @@ async function main(): Promise<void> {
   // design rationale (twin lane, identical hang class + fix).
   const bypassRefusal = refuseBypassPermissions(permModeArg);
   if (bypassRefusal) { console.error(`spawn-claudex: ${bypassRefusal}`); console.error(usage); process.exit(2); }
+  const unknownModeRefusal = refuseUnknownPermissionMode(permModeArg);
+  if (unknownModeRefusal) { console.error(`spawn-claudex: ${unknownModeRefusal}`); console.error(usage); process.exit(2); }
   const permMode: PermissionMode = permModeArg ?? "dontAsk";
   const absCwd = resolve(cwd);
   // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —

@@ -468,6 +468,7 @@ scrub_opaque_tokens() {
     BEGIN { SQ = sprintf("%c", 39) }
     {
         CHANGED = 0
+        sub(/\r$/, "")
         n = split($0, words, /[ \t]+/)
         out = ""
         for (i = 1; i <= n; i++) {

@@ -4,7 +4,7 @@
 // paths), run.log persistence from the returned tail, meta.json transitions.
 // Sessions live under <BRIDGE_ROOT>/glm-sessions/ — the live poller scans ONLY
 // <root>/sessions/, so nothing here can be double-spawned or Telegram-flushed.
-import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -328,6 +328,19 @@ export function refuseBypassPermissions(mode: string | undefined): string | unde
   return mode === "bypassPermissions"
     ? "bypassPermissions is forbidden on this lane (strips every guardrail) — use the worker default (dontAsk) or omit --permission-mode entirely"
     : undefined;
+}
+
+// HIMMEL-1404 CR/T15: refuseBypassPermissions only refuses ONE specific
+// value; any other string — a typo, or a real Claude Code mode this lane does
+// not support (acceptEdits/plan/default/...) — fell through unvalidated and
+// only failed later, inside the spawned, stdin-closed worker (silent hang or
+// a confusing claude-side error, never this launcher's clean usage exit).
+// This lane supports exactly one non-default mode (dontAsk, the worker
+// default); bypassPermissions is refused separately above, so anything else
+// is a usage error here. Shared by spawn-claudex (identical check, twin lane).
+export function refuseUnknownPermissionMode(mode: string | undefined): string | undefined {
+  if (mode === undefined || mode === "dontAsk" || mode === "bypassPermissions") return undefined;
+  return `unknown --permission-mode '${mode}' — this lane supports only 'dontAsk' (bypassPermissions is forbidden; omit the flag for the default)`;
 }
 
 // opts.shared (HIMMEL-800): the shared-branch-mode variant of the branch
@@ -708,7 +721,16 @@ export async function executeRun(deps: {
   let livePid: number | undefined;
   const runLogPath = join(deps.sessionDir, "run.log");
   const writeRunningMeta = (extra: Record<string, unknown>) => {
-    try { writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...extra }, null, 2)); }
+    // HIMMEL-1404 CR/T14: write-then-rename, not a truncating in-place write —
+    // await-glm-worker.sh polls this same file every POLL_SECS, and a read
+    // landing mid-truncate could see a partial object (e.g. started_at present,
+    // last_output_at not yet written), which the stall check misreads as a
+    // spurious STALLED on a healthy worker. rename() is atomic within a dir.
+    try {
+      const tmpPath = `${deps.metaPath}.tmp-${process.pid}`;
+      writeFileSync(tmpPath, JSON.stringify({ ...deps.runningMeta, ...extra }, null, 2));
+      renameSync(tmpPath, deps.metaPath);
+    }
     catch (e) { console.error(`spawn-glm: live meta.json update failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
   };
   const observe: RunObserver = {
@@ -895,6 +917,8 @@ async function main(): Promise<void> {
   // refusal naming why.
   const bypassRefusal = refuseBypassPermissions(permModeArg);
   if (bypassRefusal) { console.error(`spawn-glm: ${bypassRefusal}`); console.error(usage); process.exit(2); }
+  const unknownModeRefusal = refuseUnknownPermissionMode(permModeArg);
+  if (unknownModeRefusal) { console.error(`spawn-glm: ${unknownModeRefusal}`); console.error(usage); process.exit(2); }
   // HIMMEL-1378: dontAsk is the worker-lane DEFAULT (never bypassPermissions,
   // never the settings-inherited "auto" default that let the HIMMEL-1378 hang
   // through) — an explicit --permission-mode still overrides for a future

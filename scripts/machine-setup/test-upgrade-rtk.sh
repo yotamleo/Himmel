@@ -38,7 +38,9 @@ assert_contains() {
   esac
 }
 
-TMP_ROOT="$(mktemp -d)"
+# Explicit template: BSD `mktemp -d` (stock macOS) requires one and exits
+# non-zero without it, so the suite would die before its first case there.
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/upgrade-rtk-test.XXXXXX")"
 cleanup() { rm -rf "$TMP_ROOT" 2>/dev/null || true; }
 trap cleanup EXIT
 

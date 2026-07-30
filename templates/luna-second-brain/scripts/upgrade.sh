@@ -350,6 +350,17 @@ claude_threeway() {
     local base_use="$base"
     [ -f "$base" ] || base_use="$theirs"
     local merged mf_err rc
+    # Preflight the git launcher itself: `git merge-file` exits with the
+    # conflict-hunk count TRUNCATED TO 127, so 126/127 from the merge are
+    # legitimate high-conflict results — indistinguishable from the shell's
+    # own 126 ("found but not executable") / 127 ("command not found") for a
+    # broken git install. Proving git runs HERE removes that ambiguity: any
+    # later 126/127 is a real conflict count, never a launcher failure.
+    if ! git --version >/dev/null 2>&1; then
+        CLAUDE_MERGE_RESULT="error"
+        echo "  ERROR: git is missing or not runnable — cannot 3-way merge _CLAUDE.md" >&2
+        return 0
+    fi
     merged="$(mktemp)"; mf_err="$(mktemp)"
     git merge-file -p "$ours" "$base_use" "$theirs" > "$merged" 2>"$mf_err"; rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -364,8 +375,11 @@ claude_threeway() {
                 WRITE_FAILURES=$((WRITE_FAILURES+1))
             fi
         fi
-    elif [ "$rc" -ge 1 ] && [ "$rc" -lt 128 ]; then
-        # merge-file returns the conflict HUNK COUNT (1..127); >=128 is an error.
+    elif [ "$rc" -ge 1 ] && [ "$rc" -le 127 ]; then
+        # merge-file returns the conflict HUNK COUNT, truncated to 127; the
+        # launcher preflight above already proved git runs, so 126/127 here
+        # are real (extreme) conflict counts, not launcher failures. >=128
+        # is a genuine error.
         CLAUDE_MERGE_RESULT="conflict"
         # Leave _CLAUDE.md untouched; write the conflicted merge to a sidecar.
         # Do NOT advance the base snapshot (so the conflict re-surfaces).
