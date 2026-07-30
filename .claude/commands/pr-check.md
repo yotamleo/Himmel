@@ -112,6 +112,71 @@ Steps:
 
 3. **Cross-model finding passes (critic panel, codex, CodeRabbit), then adjudication (HIMMEL-178, HIMMEL-270, HIMMEL-415, HIMMEL-926).**
 
+   **Step 3 kickoff — background-launch the codex adversarial pass first, harvest in step 3.1 (HIMMEL-1407).** Root cause of 28 lifetime `/pr-check` timeouts: the codex companion's `adversarial-review --wait` is HEALTHY at kill time — it emits its verdict, then runs the repo's test suites to verify before finalizing, and the old foreground `CRITIC_TIMEOUT_SECS*2` timebox killed it mid-verification on every test-heavy diff, burning OpenAI quota for zero collected signal each time. The companion parses `--background` for `adversarial-review` but `handleReviewCommand` always runs foreground regardless (the flag is dead — not fixable here, the companion is not vendored in this repo). Fix at the runbook level instead: LAUNCH the pass as a real OS background job here, before the critic panel fence below even starts, so its wall-clock overlaps the panel instead of stacking after it; step 3.1 below HARVESTS it with a bounded additional wait after the panel finishes, so the common case adds ~zero wall-clock over the panel alone. Gate + resolution are identical to step 3.1's own (CR_PROFILE=none skip, companion-absent skip with the same one-line message, HIMMEL-741c glob resolution — never `ls`, the `cygpath -m` conversion). This fence is independent of every other fence in this runbook, so it re-resolves `$db` + `CR_PROFILE` itself:
+
+   ```bash
+   db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
+   . scripts/lib/load-dotenv.sh; load_dotenv CR_PROFILE || true
+   export CR_PROFILE
+   branch=$(git branch --show-current)
+   git_dir=$(git rev-parse --git-common-dir)
+   # Branch-scoped under the SHARED git-common-dir, same convention as
+   # cr-pending/cr-prior-blocking (HIMMEL-1219) — concurrent /pr-check runs on
+   # different branches must not collide on one file. mkdir -p the parent
+   # because a branch name contains '/' (e.g. fix/himmel-1407-...).
+   codex_out="${git_dir}/codex-adv-out/${branch}"
+   codex_pid_file="${codex_out}.pid"
+   codex_rc_file="${codex_out}.rc"
+   # Companion stderr goes to its OWN sibling file, not merged into
+   # $codex_out (glm-3, CR round 2, HIMMEL-1407): findings capture must stay
+   # stdout-only, or diagnostic chatter on an otherwise-successful run gets
+   # forwarded to adjudication as review output. Preserved (not deleted) by
+   # the harvest fence below for debugging — the old `2>/dev/null` discard is
+   # exactly what hid this ticket's root cause for 28 runs.
+   codex_err_file="${codex_out}.err"
+   mkdir -p "$(dirname "$codex_out")"
+   # Overwrite per run — no unbounded growth, and a stale pid/rc/err from a
+   # PRIOR run on this branch can never be mistaken for this run's job.
+   rm -f "$codex_pid_file" "$codex_rc_file"; : > "$codex_out"; : > "$codex_err_file"
+   # Resolve via bash glob, NOT `ls` (HIMMEL-741c: Git Bash `ls` classify suffix
+   # `*` on executables corrupts the path). Last glob match = highest lexical.
+   companion=""
+   for _c in "$HOME/.claude/plugins/cache/openai-codex/codex/"*/scripts/codex-companion.mjs; do
+       [ -f "$_c" ] && companion="$_c"
+   done
+   # Windows node mangles an MSYS /c/... path into C:\c\... — hand it a native
+   # (mixed-form) path when cygpath exists; POSIX systems pass through unchanged.
+   if [ -n "$companion" ] && command -v cygpath >/dev/null 2>&1; then
+       companion=$(cygpath -m "$companion")
+   fi
+   if [ "${CR_PROFILE:-}" = "none" ]; then
+       echo "claude-only (CR_PROFILE=none) — codex adversarial pass not launched"
+       : # claude-only — codex adversarial pass also skipped under none (step 3.1's harvest skips too).
+   elif [ -z "$companion" ]; then
+       echo "codex adversarial pass skipped (codex not configured)"
+   else
+       # A real OS background job, NOT `timeout`-wrapped (that would just
+       # reintroduce the foreground timebox one level up — the exact thing
+       # this restructure removes). The pid file records NODE's own pid,
+       # written from INSIDE the wrapper subshell — not the wrapper's $!:
+       # signaling a bash wrapper does not propagate to its running child, so
+       # a wrapper-pid kill on the timeout path would leave node alive and
+       # orphaned, still consuming quota (the exact cost HIMMEL-1407 exists
+       # to stop; also the Windows grandchild-kill trap). The wrapper lingers
+       # only to write node's exit status to $codex_rc_file after node exits,
+       # so step 3.1's harvest — a separate bash fence with no job-table link
+       # back to this one — can tell "still running" apart from "ran and
+       # failed" using only the pid + rc files on disk.
+       ( node "$companion" adversarial-review --wait --base "$db" >"$codex_out" 2>"$codex_err_file" &
+         _node_pid=$!
+         echo "$_node_pid" > "$codex_pid_file"
+         wait "$_node_pid"
+         echo $? > "$codex_rc_file" ) &
+       disown 2>/dev/null || true
+       echo "codex adversarial pass launched in background — harvested in step 3.1 after the critic panel (HIMMEL-1407)"
+   fi
+   ```
+
    **Step 3.0 — critic panel first-pass (decimal substep, runs BEFORE any Agent dispatch):**
 
    `/pr-check` runs the cross-model panel (~2min — bounded by the 240 s per-member `CRITIC_TIMEOUT_SECS`, but ONLY when the `timeout` binary is present; without it each member runs unbounded — see step 3.0's hang-protection note) by **default**. Control via `CR_PROFILE`.
@@ -223,50 +288,97 @@ Steps:
    forwarded to agents — append them directly to the aggregate
    `## Suggestions` section in step 3's output (step 7 files them).
 
-   **Step 3.1 — codex adversarial-review pass (decimal substep, runs AFTER the critic panel, still before any Agent dispatch; HIMMEL-694).** An ADDITIONAL pre-merge cross-model pass of the paid/pair tier: the codex companion's `adversarial-review` mode. It is **availability-gated** — it consumes the operator's OpenAI usage bank, so it runs ONLY when codex is configured and silently skips (one-line note, never an error) otherwise, mirroring how the paid codex critic is gated in `critics.json` / the `CR_PROFILE=paid` lane. Like the panel, this pass is **fail-open**: absence, timeout, or error degrades to claude-only and never blocks the gate.
+   **Step 3.1 — codex adversarial-review pass: harvest (decimal substep, runs AFTER the critic panel, still before any Agent dispatch; HIMMEL-694, HIMMEL-1407).** The pass itself was already LAUNCHED as a background job in the step-3 kickoff fence above — this substep HARVESTS it. It is **availability-gated** — it consumes the operator's OpenAI usage bank, so it runs ONLY when codex is configured (the kickoff fence's skip note already covers the unconfigured case), mirroring how the paid codex critic is gated in `critics.json` / the `CR_PROFILE=paid` lane. Like the panel, this pass is **fail-open**: absence, timeout, or error degrades to claude-only and never blocks the gate.
 
-   Gate, checked FIRST:
-   - `CR_PROFILE=none` → skip (none = instant claude-only; the codex adversarial pass is ALSO skipped under none).
-   - codex companion absent → print one line `codex adversarial pass skipped (codex not configured)` and continue. Do NOT hardcode the version segment in the path (brittle — `1.0.5` drifts on plugin update); the fence below resolves the installed copy with a **bash glob loop, never `ls`** (HIMMEL-741c: Git Bash `ls` appends a classify `*` to executables, corrupting the captured path into `…codex-companion.mjs*` → `MODULE_NOT_FOUND` → silent rc=1). Glob order is lexical, so the last match is "highest lexical", not strictly highest semver — revisit only if a `1.0.10`-vs-`1.0.5` ordering bite appears. On Windows the MSYS `/c/…` form must also be converted to a native path before it reaches `node` (which reads `/c/…` as `C:\c\…`) — hence the `cygpath -m` step.
-
-   The pass (~3min typical), timeboxed at `CRITIC_TIMEOUT_SECS*2` (≈480s — twice the per-member panel budget; the adversarial run is a single heavier call). Each bash fence in this runbook is independent, so re-resolve `$db` + `CR_PROFILE`:
+   **Harvest budget (HIMMEL-1407 — replaces the old foreground `CRITIC_TIMEOUT_SECS*2` timebox that caused 28 lifetime timeouts).** After the panel completes, poll for the backgrounded process's exit up to `CRITIC_TIMEOUT_SECS*2` MORE seconds (≈480s default — the same per-pass budget the old foreground timebox used, now measured from harvest-start instead of launch-start). Net time available to the review is panel-wall-clock + ≈480s (typically 12–20min total), with ~zero added wall-clock in the common case where the review finishes during or shortly after the panel. If the process is still alive once that budget is exhausted, kill it and record a timeout — the same fail-open outcome as before, just far less likely to fire on a healthy review still running its post-verdict test-suite verification. Each bash fence in this runbook is independent, so re-resolve `$db` + `CR_PROFILE` and the branch-scoped pid/rc/output files the kickoff fence wrote:
    ```bash
    db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
    . scripts/lib/load-dotenv.sh; load_dotenv CR_PROFILE || true
    export CR_PROFILE
+   branch=$(git branch --show-current)
+   git_dir=$(git rev-parse --git-common-dir)
+   codex_out="${git_dir}/codex-adv-out/${branch}"
+   codex_pid_file="${codex_out}.pid"
+   codex_rc_file="${codex_out}.rc"
+   codex_err_file="${codex_out}.err"  # companion stderr, kept for debugging — see kickoff fence (glm-3, CR round 2)
    codex_findings=""; codex_rc=0
-   # Resolve via bash glob, NOT `ls` (HIMMEL-741c: Git Bash `ls` classify suffix
-   # `*` on executables corrupts the path). Last glob match = highest lexical.
-   companion=""
-   for _c in "$HOME/.claude/plugins/cache/openai-codex/codex/"*/scripts/codex-companion.mjs; do
-       [ -f "$_c" ] && companion="$_c"
-   done
-   # Windows node mangles an MSYS /c/... path into C:\c\... — hand it a native
-   # (mixed-form) path when cygpath exists; POSIX systems pass through unchanged.
-   if [ -n "$companion" ] && command -v cygpath >/dev/null 2>&1; then
-       companion=$(cygpath -m "$companion")
-   fi
    if [ "${CR_PROFILE:-}" = "none" ]; then
-       : # claude-only — codex adversarial pass also skipped under none.
-   elif [ -z "$companion" ]; then
-       echo "codex adversarial pass skipped (codex not configured)"
+       : # claude-only — codex adversarial pass also skipped under none (kickoff fence never launched a job).
+   elif [ ! -s "$codex_pid_file" ]; then
+       # No job was launched — companion was absent at kickoff time (already
+       # reported there with "codex adversarial pass skipped (codex not
+       # configured)").
+       : # nothing to harvest.
    else
+       codex_pid=$(cat "$codex_pid_file")
        # 10# forces base 10: `$(( ))` reads a LEADING ZERO as octal, so
        # CRITIC_TIMEOUT_SECS=08 would die here with "value too great for base",
-       # leave codex_to empty, and surface as "codex adversarial pass failed" —
-       # a wrong cause for a value that looks perfectly configured. Same fix
-       # critic-panel.sh applies to its own copy of this variable.
-       codex_to=$(( 10#${CRITIC_TIMEOUT_SECS:-240} * 2 ))
-       if command -v timeout >/dev/null 2>&1; then
-           codex_findings=$(timeout -k 5 "$codex_to" node "$companion" adversarial-review --wait --base "$db" 2>/dev/null) || codex_rc=$?
+       # leave codex_to empty, and surface as a wrong cause for a value that
+       # looks perfectly configured. Same fix critic-panel.sh applies to its
+       # own copy of this variable.
+       # Normalize BEFORE the 10# arithmetic: a non-numeric value (e.g. "abc")
+       # dies the `$(( ))` outright, and a negative or zero value yields an
+       # instant timeout — neither matches the documented contract
+       # (critic-panel.sh falls back to 240 on the same bad-value cases).
+       codex_timeout=${CRITIC_TIMEOUT_SECS:-240}
+       case "$codex_timeout" in ''|*[!0-9]*) codex_timeout=240 ;; esac
+       [ "$codex_timeout" -gt 0 ] || codex_timeout=240
+       codex_to=$(( 10#$codex_timeout * 2 ))
+       # Bounded poll loop, NOT `timeout` (Windows note, HIMMEL-1407): `timeout`
+       # cannot wrap an already-detached background PID, and a poll loop
+       # degrades gracefully on any host regardless of whether `timeout` is
+       # installed — unlike the old foreground fence's `command -v timeout`
+       # branch, this harvest needs no such fallback.
+       waited=0
+       while kill -0 "$codex_pid" 2>/dev/null; do
+           [ "$waited" -ge "$codex_to" ] && break
+           sleep 5
+           waited=$((waited + 5))
+       done
+       if kill -0 "$codex_pid" 2>/dev/null; then
+           # Still running after the bounded additional wait — kill it and
+           # record a timeout, same fail-open outcome as the old rc=124/137 case.
+           # Prefer a Windows tree-kill: plain `kill "$codex_pid"` reaches node
+           # but not the subprocesses the companion spawns (test suites) —
+           # double-slash `//PID`/`//T`/`//F` guards against MSYS path-mangling
+           # rewriting a leading `/` into a path. Full portable process-group
+           # kill is HIMMEL-1409; the POSIX kill chain stays as the fallback.
+           if command -v taskkill >/dev/null 2>&1; then
+               taskkill //PID "$codex_pid" //T //F 2>/dev/null
+           fi
+           kill "$codex_pid" 2>/dev/null; sleep 1; kill -9 "$codex_pid" 2>/dev/null
+           echo "codex adversarial pass timed out (>${codex_to}s after the panel finished; stderr: $codex_err_file) — continuing without it" >&2
+           codex_findings=""; codex_rc=124
        else
-           codex_findings=$(node "$companion" adversarial-review --wait --base "$db" 2>/dev/null) || codex_rc=$?
+           # Node has exited (kill -0 above just failed), but the wrapper
+           # subshell writes $codex_rc_file a BEAT LATER — after `wait
+           # "$_node_pid"` returns — so a genuinely successful run landing in
+           # that window must not be discarded as "no recorded status"
+           # (codex-1, CR round 2, HIMMEL-1407: this was a real race, not a
+           # theoretical one). Poll briefly for the rc file to appear before
+           # falling through to the fail-open no-status branch.
+           rc_wait=0
+           while [ ! -s "$codex_rc_file" ] && [ "$rc_wait" -lt 10 ]; do
+               sleep 1
+               rc_wait=$((rc_wait + 1))
+           done
+           if [ -s "$codex_rc_file" ]; then
+               codex_rc=$(cat "$codex_rc_file")
+               case "$codex_rc" in
+                   0) codex_findings=$(cat "$codex_out" 2>/dev/null) ;;  # success — findings (if any) captured
+                   *) echo "codex adversarial pass failed (rc=$codex_rc; stderr: $codex_err_file) — continuing without it" >&2; codex_findings="" ;;
+               esac
+           else
+               # rc file genuinely never appeared (killed pre-write, or a
+               # crash) — same fail-open "continuing without it" outcome.
+               echo "codex adversarial pass exited without a recorded status (waited ${rc_wait}s; stderr: $codex_err_file) — continuing without it" >&2
+               codex_findings=""; codex_rc=1
+           fi
        fi
-       case "$codex_rc" in
-           0) ;;  # success — findings (if any) captured
-           124|137) echo "codex adversarial pass timed out — continuing without it"; codex_findings="" ;;
-           *) echo "codex adversarial pass failed (rc=$codex_rc) — continuing without it" >&2; codex_findings="" ;;
-       esac
+       # $codex_err_file is intentionally NOT removed here (glm-3, CR round 2)
+       # — companion stderr stays on disk for debugging; only pid/rc, whose
+       # job is done once harvested, are cleaned up.
+       rm -f "$codex_pid_file" "$codex_rc_file"
    fi
    # Surface findings (if any) so they flow into the step-3 adjudication prepend.
    [ -n "$codex_findings" ] && printf '%s\n' "$codex_findings"
@@ -280,7 +392,7 @@ Steps:
    # candidate and a `- [low] …` line as a Suggestion, which is never a
    # blocker and needs no verdict for conservation.)
    ```
-   (`timeout` absent degrades to unbounded — same graceful-degrade convention as `critic-panel.sh`; the run still fails open on any non-zero / empty result. `--base "$db"` is the runbook's default-branch var from step 3.0.)
+   (`--base "$db"` at launch is the runbook's default-branch var from step 3.0's sibling resolution above; the harvest fence itself needs no `timeout` binary — see the poll-loop note in the fence.)
 
    **Findings merge (HIMMEL-694):** the pass's Critical/Important findings are BLOCKING CANDIDATES exactly like panel `[<slug>-N]` findings, tagged `[codex-adv-N]`. Merge them into the SAME adjudication flow:
    - Forwarded under the cross-model adjudication directive below alongside the panel findings (slug `codex-adv`); the mandatory adjudicator (the session itself by default; the `code-reviewer` agent under `CR_CLAUDE_AGENTS=1` — step 3.5) renders a `VERDICT [codex-adv-N] = …` on each (the generic `[<slug>-N]` machinery in step 4 and the adjudicator note below treat `codex-adv` as the slug, so codex findings are never orphaned).

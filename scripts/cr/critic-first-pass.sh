@@ -229,7 +229,7 @@ if [ "$artifact_mode" -eq 1 ]; then
 - Replace N with the exact bullet count under that heading (0 is allowed; then put no bullets under it).
 - Every bullet MUST end with a [<file>#<heading>] citation naming a section heading that exists in the artifact.
 - Number IDs sequentially across all sections.
-- Critical = certain bug / security / data-loss. Important = likely bug or risky pattern. Suggestion = style / cleanup.
+- Critical = certain bug / security / data-loss. Important = likely bug or risky pattern. Suggestion = style / cleanup, OR a minor / lower-confidence functional or security finding that doesn't clear Important (HIMMEL-1405) — Suggestion is not limited to cosmetic issues.
 - DO NOT INVENT FINDINGS. Every bullet must cite something that is actually in the artifact. A fabricated finding is worse than a missed one, and an empty review is acceptable when the artifact is genuinely clean.
 - But do NOT withhold a real finding because it is minor or because you are unsure it will be acted on. Report it as a Suggestion. Filtering happens in a LATER pass (the merge gates on Critical + Important; the rest is auto-filed as deferred issues) — a finding you omit here is destroyed, not filtered.
 - When uncertain between two severities, pick the LOWER — downgrade, do not drop.
@@ -259,7 +259,7 @@ else
 - Replace N with the exact bullet count under that heading (0 is allowed; then put no bullets under it).
 - Every bullet MUST end with a [<file>:<line>] citation pointing into the diff (new-file line numbers).
 - Number IDs sequentially across all sections.
-- Critical = certain bug / security / data-loss. Important = likely bug or risky pattern. Suggestion = style / cleanup.
+- Critical = certain bug / security / data-loss. Important = likely bug or risky pattern. Suggestion = style / cleanup, OR a minor / lower-confidence functional or security finding that doesn't clear Important (HIMMEL-1405) — Suggestion is not limited to cosmetic issues.
 - DO NOT INVENT FINDINGS. Every bullet must cite something that is actually in the diff. A fabricated finding is worse than a missed one, and an empty review is acceptable when the diff is genuinely clean.
 - But do NOT withhold a real finding because it is minor or because you are unsure it will be acted on. Report it as a Suggestion. Filtering happens in a LATER pass (the merge gates on Critical + Important; the rest is auto-filed as deferred issues) — a finding you omit here is destroyed, not filtered.
 - When uncertain between two severities, pick the LOWER — downgrade, do not drop.

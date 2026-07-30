@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        e39bafc6d778d61f41592eced53f8aa58bf5239c  # post-v0.6.0 main HEAD (jj status indicators #685; HIMMEL-1254)
 pinned_upstream_tree: 4fcbfe47ab8780e1b11c2ddb36c18be1b24a371f  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   4476fb2597f49a065c60c5b93144fb4d7c2678a213c95f48f9f92a639441f1bb  # sha256 over VENDORED.manifest
+vendored_tree_hash:   208ec6f9fcb092cdb11957200d13f4341d74e5d235e9a1e6b85085b48237b04c  # sha256 over VENDORED.manifest
 vendored_at:          2026-07-21
 ```
 
@@ -125,7 +125,9 @@ protected: editing it without bumping the pin trips the guard.
   bump can land here WITHOUT a re-vendor, and the vendored tree then legitimately
   differs from `pinned_upstream_tree` by those hunks. Landed so far:
   `brace-expansion` 5.0.6 → 5.0.7 (dev-only transitive, PR #1374 /
-  `a386a624`, re-recorded in HIMMEL-1262). Dependabot does NOT run
+  `a386a624`, re-recorded in HIMMEL-1262); `brace-expansion` 5.0.7 → 5.0.9
+  (dev-only transitive via minimatch `^5.0.2`, dependabot alert #26,
+  HIMMEL-1408). Dependabot does NOT run
   `check-hud-drift.sh --write`, so each such bump needs a follow-up pin re-record
   commit (`--write`, then commit `VENDORED.md` + `VENDORED.manifest`) or every
   contributor commit trips the pre-commit drift gate. `pinned_commit` /
