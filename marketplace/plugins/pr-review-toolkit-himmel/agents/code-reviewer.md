@@ -109,7 +109,7 @@ absent, downgrade — the finding is too speculative for Critical.
 
 ## Output Format
 
-Start by listing what you're reviewing. For each high-confidence issue provide:
+Start by listing what you're reviewing. For every finding you report — regardless of confidence — provide:
 
 - Clear description and confidence score
 - File path and line number
@@ -117,8 +117,8 @@ Start by listing what you're reviewing. For each high-confidence issue provide:
 - Concrete fix suggestion
 - **For Critical findings:** include a one-line verify-before-critical attestation: `verified: <cited-content> found at <file:line>` OR `verified-via-context: <surrounding-content> found at <file:line>` (refactor-edge-case).
 
-Group issues by severity (Critical: 91-100, Important: 80-90).
+Group issues by severity (Critical: 91-100, Important: 80-90, Suggestion: below 80). Per HIMMEL-1405, the Suggestion group is not optional — it is where the Issue Confidence Scoring section's mandate to report every finding, including 51-75, actually lands in the output.
 
-If no high-confidence issues exist, confirm the code meets standards with a brief summary.
+If zero findings exist across all three severities, confirm the code meets standards with a brief summary.
 
-Be thorough but filter aggressively - quality over quantity. Focus on issues that truly matter.
+Be thorough. Weight your attention toward the issues that truly matter, but never filter a real finding out of the report — lower-confidence and minor findings land as Suggestions, not on the cutting-room floor (HIMMEL-1405).

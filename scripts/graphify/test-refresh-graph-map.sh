@@ -11,6 +11,14 @@ pass() { echo "  ok: $1"; }
 fail() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 
 WS="$(mktemp -d)"; trap 'rm -rf "$WS"' EXIT
+# HIMMEL-1406: scope the default scratch parent to $WS. Most tests below
+# don't pass --scratch, so refresh-graph-map.sh falls back to
+# ${TMPDIR:-/tmp} -- and a promote-refusal now quarantines the extracted
+# graphify-out there (see _scratch_cleanup) instead of deleting it. Without
+# this, every leak/refusal test in this file would leave a quarantine dir
+# behind in the REAL system temp dir on every run. Scoping TMPDIR to $WS
+# keeps them inside the hermetic workspace this file's own EXIT trap sweeps.
+export TMPDIR="$WS/tmp"; mkdir -p "$TMPDIR"
 CORPUS="$WS/vault"; mkdir -p "$CORPUS/notes"; printf '# n\ncontent\n' > "$CORPUS/notes/a.md"
 MAPS="$WS/vault/60-Maps"; mkdir -p "$MAPS"
 
@@ -636,14 +644,20 @@ out=$( GRAPHIFY_MAP_BIN="$MULTIBIN/graphify" PATH="$MULTIBIN:$PATH" \
 # alternatives added in Part B are still worth keeping (explicit,
 # defense-in-depth against a future edit that narrows/removes the bare
 # alternative), but this test is NOT a red/green differentiator for Part B
-# the way T12 is for Part A -- it stays green on both sides of that change. ---
+# the way T12 is for Part A -- it stays green on both sides of that change.
+# HIMMEL-1406: the leaked value now sits on `source_file` rather than the
+# synthetic `path` key this fixture originally used -- the guard's graph.json
+# scan is now scoped to STRUCTURAL fields only (id/source_file/source_url/
+# source/target, per graphify's real schema), so a leak has to live on one of
+# those field names to still be caught; `source_file` is real schema, `path`
+# is not. ---
 JSONBIN="$WS/jsonbin"; mkdir -p "$JSONBIN"
 cat > "$JSONBIN/graphify" <<'STUB'
 #!/usr/bin/env bash
 target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out"
-printf '{"nodes":[{"id":"n1","path":"C:\\\\Users\\\\leaker\\\\AppData\\\\Local\\\\Temp\\\\case"}],"edges":[]}' \
+printf '{"nodes":[{"id":"n1","source_file":"C:\\\\Users\\\\leaker\\\\AppData\\\\Local\\\\Temp\\\\case"}],"edges":[]}' \
   > "$target/graphify-out/graph.json"
 printf '# Graph Report - X  (2026-07-17)\n\n## Summary\n- 1 nodes . 0 edges . 1 communities (1 shown)\n' \
   > "$target/graphify-out/GRAPH_REPORT.md"
@@ -1350,6 +1364,135 @@ NOCACHEOUT="$NOCACHECORPUS/graphify-out"
   || fail "T24 graph.json missing after a cache-less refresh: $out"
 [ ! -e "$NOCACHEOUT/cache" ] && pass "T24 stale cache removed when scratch produced none" \
   || fail "T24 stale \$OUT_DIR/cache survived a refresh that produced no staged cache (should be removed)"
+
+# --- T25 (HIMMEL-1406, defect 1): a promote-refusal must PRESERVE the
+# extracted scratch graphify-out instead of the EXIT trap deleting it --
+# the real 2026-07-30 luna/glm incident spent a full extraction (14,569
+# nodes, 16.7M tokens in) only to have the refusal's cleanup discard the
+# only copy, leaving the offending line unverifiable. Reuses a T11-style
+# report-body leak (sentinel graph.json content + a leaking GRAPH_REPORT.md)
+# and asserts: (a) the refusal message names a quarantine path, (b) that
+# path exists and holds the promoted-would-be graph.json + GRAPH_REPORT.md
+# (the paid artifact, byte-identical to what extraction produced) plus a
+# semantic-cache marker (HIMMEL-1406: "keep any semantic cache reusable for
+# the next run"), (c) a non-printed context snippet file also landed there,
+# and (d) the leaked host path itself never appears in stdout/stderr (same
+# redaction rule as T11/T20 -- the quarantine message must not itself leak
+# the secret it's preserving). ---
+QBIN="$WS/qbin"; mkdir -p "$QBIN"
+cat > "$QBIN/graphify" <<'STUB'
+#!/usr/bin/env bash
+target=""
+if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
+mkdir -p "$target/graphify-out/cache"
+printf 'SENTINEL-PAID-EXTRACTION-CACHE' > "$target/graphify-out/cache/semantic.cache"
+printf '{"nodes":[{"id":"sentinel-node"}],"edges":[]}' > "$target/graphify-out/graph.json"
+{
+  printf '# Graph Report - X  (2026-07-17)\n\n'
+  printf '## Summary\n- 42 nodes . 30 edges . 5 communities (5 shown)\n\n'
+  printf '## God Nodes (most connected - your core abstractions)\n'
+  printf '1. `C:/Users/quarantoken/AppData/Local/Temp/case` - 9 edges\n\n'
+  printf '## Communities (5 total)\n\n### Community 0 - "Alpha"\nCohesion: 0.06\nNodes (20): a, b (+18 more)\n'
+} > "$target/graphify-out/GRAPH_REPORT.md"
+exit 0
+STUB
+chmod +x "$QBIN/graphify"
+QCORPUS="$WS/qcorpus"; QMAPS="$WS/qmaps"; mkdir -p "$QCORPUS/notes" "$QMAPS"
+printf '# n\ncontent\n' > "$QCORPUS/notes/n.md"
+out=$( GRAPHIFY_MAP_BIN="$QBIN/graphify" PATH="$QBIN:$PATH" \
+  bash "$SCRIPT" --name quarantest --corpus-root "$QCORPUS" --backend deepseek \
+  --maps-dir "$QMAPS" --title "Q Map" --slug q-map --corpus-tag q 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] && pass "T25 leaking refresh still fails loudly (rc=2)" \
+  || fail "T25 leaking refresh should fail loudly with rc=2 (got $rc): $out"
+qdir=$(printf '%s\n' "$out" | grep -oE '/[^ ]*\.quarantine' | head -n1)
+[ -n "$qdir" ] && pass "T25 refusal message names a quarantine path" \
+  || fail "T25 refusal message should name a quarantine path: $out"
+[ -n "$qdir" ] && [ -d "$qdir" ] && pass "T25 quarantine path exists as a directory" \
+  || fail "T25 quarantine path missing/not a directory: $qdir"
+[ -n "$qdir" ] && grep -q "sentinel-node" "$qdir/graph.json" 2>/dev/null \
+  && pass "T25 quarantined graph.json preserves the paid extraction" \
+  || fail "T25 quarantined graph.json missing/does not match the extracted artifact"
+[ -n "$qdir" ] && [ -f "$qdir/GRAPH_REPORT.md" ] \
+  && pass "T25 quarantined GRAPH_REPORT.md preserved" \
+  || fail "T25 quarantined GRAPH_REPORT.md missing"
+[ -n "$qdir" ] && grep -q "SENTINEL-PAID-EXTRACTION-CACHE" "$qdir/cache/semantic.cache" 2>/dev/null \
+  && pass "T25 quarantined semantic cache preserved (reusable for the next run)" \
+  || fail "T25 quarantined semantic cache missing"
+[ -n "$qdir" ] && [ -f "$qdir/.leak-context-GRAPH_REPORT.md.txt" ] \
+  && pass "T25 leak context snippet saved into the quarantine copy" \
+  || fail "T25 leak context snippet file missing from quarantine copy"
+echo "$out" | grep -q "quarantoken" \
+  && fail "T25 refusal/quarantine message exposes the rejected host path: $out" \
+  || pass "T25 refusal/quarantine message redacts the rejected host path"
+[ -e "$QCORPUS/graphify-out/graph.json" ] \
+  && fail "T25 leaking refresh still promoted into \$CORPUS_ROOT/graphify-out" \
+  || pass "T25 nothing promoted under \$CORPUS_ROOT on a leaking refresh"
+
+# --- T26 (HIMMEL-1406, defect 2): graph.json's host-path scan is scoped to
+# STRUCTURAL fields only. Two halves against the SAME node shape (id/label/
+# source_file), differing only in WHICH field carries the host path:
+# (a) the path lives only in `label` (a content/summary field a vault note's
+#     extracted text can legitimately carry, e.g. a rationale quoting
+#     C:\Users\...) -- must PROMOTE normally (rc 0), and the promoted
+#     graph.json still carries that content verbatim (scoping the SCAN, not
+#     redacting the artifact);
+# (b) the path lives on `source_file` (a structural field graphify itself
+#     writes) -- must still REFUSE (rc 2), proving the scoping didn't
+#     collaterally blind the guard to a real structural leak. ---
+CONTENTBIN="$WS/contentbin"; mkdir -p "$CONTENTBIN"
+cat > "$CONTENTBIN/graphify" <<'STUB'
+#!/usr/bin/env bash
+target=""
+if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
+mkdir -p "$target/graphify-out"
+printf '{"nodes":[{"id":"n1","label":"See C:\\\\Users\\\\labelleaktoken\\\\notes.md for details","source_file":"notes/a.md"}],"edges":[]}' \
+  > "$target/graphify-out/graph.json"
+printf '# Graph Report - X  (2026-07-17)\n\n## Summary\n- 1 nodes . 0 edges . 1 communities (1 shown)\n' \
+  > "$target/graphify-out/GRAPH_REPORT.md"
+exit 0
+STUB
+chmod +x "$CONTENTBIN/graphify"
+CONTENTCORPUS="$WS/contentcorpus"; CONTENTMAPS="$WS/contentmaps"; mkdir -p "$CONTENTCORPUS/notes" "$CONTENTMAPS"
+printf '# n\ncontent\n' > "$CONTENTCORPUS/notes/n.md"
+out=$( GRAPHIFY_MAP_BIN="$CONTENTBIN/graphify" PATH="$CONTENTBIN:$PATH" \
+  bash "$SCRIPT" --name contenttest --corpus-root "$CONTENTCORPUS" --backend deepseek \
+  --maps-dir "$CONTENTMAPS" --title "Content Map" --slug content-map --corpus-tag content 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] && pass "T26a host path ONLY in a content field (label) promotes normally (rc=0)" \
+  || fail "T26a content-only host path should promote (got rc=$rc): $out"
+[ -f "$CONTENTMAPS/content-map.md" ] && pass "T26a MOC published despite the content-borne host path" \
+  || fail "T26a MOC not published: $out"
+grep -q "labelleaktoken" "$CONTENTCORPUS/graphify-out/graph.json" 2>/dev/null \
+  && pass "T26a promoted graph.json still carries the content verbatim (scan scoped, artifact untouched)" \
+  || fail "T26a promoted graph.json lost the content-borne text"
+
+STRUCTBIN="$WS/structbin"; mkdir -p "$STRUCTBIN"
+cat > "$STRUCTBIN/graphify" <<'STUB'
+#!/usr/bin/env bash
+target=""
+if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
+mkdir -p "$target/graphify-out"
+printf '{"nodes":[{"id":"n1","label":"a perfectly ordinary node","source_file":"C:\\\\Users\\\\structleaktoken\\\\notes.md"}],"edges":[]}' \
+  > "$target/graphify-out/graph.json"
+printf '# Graph Report - X  (2026-07-17)\n\n## Summary\n- 1 nodes . 0 edges . 1 communities (1 shown)\n' \
+  > "$target/graphify-out/GRAPH_REPORT.md"
+exit 0
+STUB
+chmod +x "$STRUCTBIN/graphify"
+STRUCTCORPUS="$WS/structcorpus"; STRUCTMAPS="$WS/structmaps"; mkdir -p "$STRUCTCORPUS/notes" "$STRUCTMAPS"
+printf '# n\ncontent\n' > "$STRUCTCORPUS/notes/n.md"
+out=$( GRAPHIFY_MAP_BIN="$STRUCTBIN/graphify" PATH="$STRUCTBIN:$PATH" \
+  bash "$SCRIPT" --name structtest --corpus-root "$STRUCTCORPUS" --backend deepseek \
+  --maps-dir "$STRUCTMAPS" --title "Struct Map" --slug struct-map --corpus-tag struct 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] && pass "T26b host path in a structural field (source_file) still refuses (rc=2)" \
+  || fail "T26b structural-field host path should still refuse (got rc=$rc): $out"
+echo "$out" | grep -q "graph.json" \
+  && pass "T26b error names graph.json as the offending artifact" || fail "T26b error should name graph.json: $out"
+echo "$out" | grep -q "structleaktoken" \
+  && fail "T26b error output exposes the rejected host path: $out" \
+  || pass "T26b error output redacts the rejected host path"
+[ ! -e "$STRUCTCORPUS/graphify-out/graph.json" ] \
+  && pass "T26b nothing promoted under \$CORPUS_ROOT on a structural-field leak" \
+  || fail "T26b leaking refresh still promoted into \$CORPUS_ROOT/graphify-out"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

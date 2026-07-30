@@ -284,6 +284,86 @@ _promote_lock_acquire() {
   done
 }
 
+# _scratch_cleanup -- EXIT-trap cleanup for the owned $SCRATCH subdir
+# (HIMMEL-1406). Previously this was a bare `rm -rf "$SCRATCH"`, which ran
+# on EVERY exit including a promote-refusal (host-path guard, a missing
+# scratch artifact, a failed sideline cache mv, ...) AFTER the paid
+# extraction had already completed -- discarding the only copy of a full,
+# possibly $2+ extraction (the 2026-07-30 luna/glm regen: 14,569 nodes,
+# 16.7M tokens in) with no way to inspect what tripped the refusal. On a
+# FAILURE exit where the extraction actually produced a
+# $SCRATCH/graphify-out/graph.json, quarantine that dir (graph.json,
+# GRAPH_REPORT.md, semantic cache, markers -- the "paid" artifact) to a
+# sibling path instead of deleting it, so it survives for inspection/reuse;
+# only the disposable corpus md copy under $SCRATCH is then removed. A
+# SUCCESS exit already rm -rf's $SCRATCH eagerly before this trap fires (see
+# "eager clean on success" below), and a failure BEFORE extraction produced
+# anything (graphify not on PATH, corpus scan/copy failure, graphify
+# --update itself failing with no output, ...) has nothing worth quarantining
+# -- both fall through to the original unconditional rm -rf, unchanged.
+_scratch_cleanup() {
+  local rc=$?
+  if [ "$rc" -ne 0 ] && [ -d "$SCRATCH/graphify-out" ] && [ -f "$SCRATCH/graphify-out/graph.json" ]; then
+    local qdir="${SCRATCH}.quarantine"
+    rm -rf "$qdir" 2>/dev/null || true
+    if mv "$SCRATCH/graphify-out" "$qdir" 2>/dev/null; then
+      echo "refresh-graph-map: promote did not complete -- preserved the extracted graphify-out (graph.json, GRAPH_REPORT.md, semantic cache) at $qdir for inspection/reuse; nothing under $CORPUS_ROOT was touched" >&2
+    else
+      echo "refresh-graph-map: WARN promote did not complete AND quarantining $SCRATCH/graphify-out to $qdir failed -- the extracted artifact may be lost on cleanup" >&2
+    fi
+  fi
+  rm -rf "$SCRATCH" 2>/dev/null || true
+}
+
+# _graph_structural_fields <graph.json> <out_txt> -- HIMMEL-1406. Extracts
+# ONLY the structural fields graphify itself writes as artifact structure
+# (node id/source_file/source_url; link source/target/source_file; hyperedge
+# id/source_file/member node ids -- per graph.json's actual schema) into a
+# flat text file, so the host-path guard below can scan JUST that instead of
+# the full graph.json. Deliberately EXCLUDED: `label` (and anything derived
+# from it) -- for an extracted markdown corpus this can be a free-text
+# excerpt (e.g. a `file_type: rationale` node's docstring/summary) that
+# legitimately QUOTES a Windows path in prose; the luna vault routinely does
+# (handover specs quoting C:\Users\...). The artifact lands in the PRIVATE
+# vault, not a public repo, so a content-borne host path there is not a leak
+# (policy decision, HIMMEL-1406) -- only a path graphify wrote into the
+# artifact's own STRUCTURE is.
+# jq is preferred (matches this repo's `command -v jq` convention used
+# throughout scripts/); python3 is the fallback and is UNCONDITIONALLY
+# available whenever this runs (the DO_UPDATE=1 preflight above already
+# requires it), so the fallback is never a real degrade on this path.
+# Returns the extractor's exit status; a non-zero rc means the scan below
+# must fail closed (same "leak SCAN FAILED" convention as a grep scan error).
+_graph_structural_fields() {
+  local graph_json="$1" out_txt="$2"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '
+      ((.nodes // [])[]      | "node id=\(.id // "") source_file=\(.source_file // "") source_url=\(.source_url // "")"),
+      ((.links // [])[]      | "link source=\(.source // "") target=\(.target // "") source_file=\(.source_file // "")"),
+      ((.hyperedges // [])[] | "hyperedge id=\(.id // "") source_file=\(.source_file // "") nodes=\(((.nodes // []) | join(",")))")
+    ' "$graph_json" > "$out_txt" 2>/dev/null
+    return $?
+  fi
+  python3 - "$graph_json" > "$out_txt" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(1)
+def s(v):
+    return "" if v is None else str(v)
+for n in data.get("nodes") or []:
+    print("node id=%s source_file=%s source_url=%s" % (s(n.get("id")), s(n.get("source_file")), s(n.get("source_url"))))
+for l in data.get("links") or []:
+    print("link source=%s target=%s source_file=%s" % (s(l.get("source")), s(l.get("target")), s(l.get("source_file"))))
+for h in data.get("hyperedges") or []:
+    nodes_field = ",".join(s(x) for x in (h.get("nodes") or []))
+    print("hyperedge id=%s source_file=%s nodes=%s" % (s(h.get("id")), s(h.get("source_file")), nodes_field))
+PYEOF
+  return $?
+}
+
 if [ "$DO_UPDATE" -eq 1 ]; then
   command -v "$GRAPHIFY_MAP" >/dev/null 2>&1 || { echo "refresh-graph-map: '$GRAPHIFY_MAP' not on PATH (needed for --update; use --no-update to publish from an existing report)" >&2; exit 2; }
   # F3 (HIMMEL-907): python3 writes the freshness manifest (see stamp step
@@ -301,7 +381,10 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"
   # Clean the owned subdir on ANY exit — a graphify/cluster-only failure (exit 2)
   # otherwise leaks it (CR suggestion). Scoped to the PID-owned dir only.
-  trap 'rm -rf "$SCRATCH" 2>/dev/null || true; _promote_stage_cleanup; _promote_lock_release' EXIT
+  # _scratch_cleanup (HIMMEL-1406) quarantines the extracted graphify-out
+  # instead of deleting it when the exit is a FAILURE and extraction had
+  # already produced one — see its definition above.
+  trap '_scratch_cleanup; _promote_stage_cleanup; _promote_lock_release' EXIT
   # pull-before-regenerate (HIMMEL-1050): refresh the corpus from its remote
   # before copying to scratch, so the graph reflects the latest pushed state, not
   # a stale local checkout. Best-effort + advisory: a miss regenerates from the
@@ -711,6 +794,22 @@ if [ "$DO_UPDATE" -eq 1 ]; then
     # previously $OUT_DIR/graph.json) can itself carry the corpus/home path
     # -- error messages below print only the filename, never the full path.
     leak_artifact_name="${leak_artifact##*/}"
+    scan_target="$leak_artifact"
+    scan_target_note=""
+    if [ "$leak_artifact" = "$SCRATCH_GRAPH" ]; then
+      # HIMMEL-1406: scope graph.json's scan to STRUCTURAL fields only,
+      # instead of the full raw JSON text -- see _graph_structural_fields
+      # above for the field list + why (a vault note's content-borne host
+      # path, e.g. a rationale/summary quoting C:\Users\..., is
+      # policy-allowed here; a path graphify wrote into the artifact's own
+      # structure is not).
+      scan_target="$SCRATCH/.graph-structural-fields.$$"
+      if ! _graph_structural_fields "$SCRATCH_GRAPH" "$scan_target"; then
+        echo "refresh-graph-map: REFUSING to promote -- leak SCAN FAILED for $leak_artifact_name (could not extract structural fields for the scoped host-path scan)" >&2
+        exit 2
+      fi
+      scan_target_note=" (structural field; line number refers to the scoped extract, not the raw file -- see the quarantined copy for the full artifact)"
+    fi
     # -m1: grep stops after its OWN first match (rc 0 hit / rc 1 miss) -- no
     # pipe to `head`, so no SIGPIPE. Under `set -o pipefail` (line 30), a
     # `grep | head -n 1` pipeline where grep gets SIGPIPE'd by head closing
@@ -734,11 +833,11 @@ if [ "$DO_UPDATE" -eq 1 ]; then
     # error message depends on and makes a real leak's detectability
     # unpredictable on adversarial/binary content. Force text mode instead
     # -- both artifacts are supposed to be text (a report is markdown, the
-    # graph is JSON), so treating a NUL as just another byte is correct
-    # here, not a workaround.
+    # graph is JSON -- or, for graph.json, a flat text extract of it), so
+    # treating a NUL as just another byte is correct here, not a workaround.
     leak_line=""
     grep_rc=0
-    leak_line="$(grep -a -m1 -inE "$leak_pattern" "$leak_artifact")" || grep_rc=$?
+    leak_line="$(grep -a -m1 -inE "$leak_pattern" "$scan_target")" || grep_rc=$?
     if [ "$grep_rc" -eq 0 ]; then
       # HIMMEL-1134 CR follow-up: do NOT echo $leak_line -- it's the matched
       # grep line, i.e. it CONTAINS the leaked host path. Printing it here
@@ -747,7 +846,17 @@ if [ "$DO_UPDATE" -eq 1 ]; then
       # output). Report only the file NAME + the line NUMBER (grep's own
       # "N:..." prefix, stripped at the first colon).
       leak_line_number="${leak_line%%:*}"
-      echo "refresh-graph-map: REFUSING to promote -- host path detected in $leak_artifact_name at line $leak_line_number" >&2
+      # HIMMEL-1406: save a FEW lines of context around the match into the
+      # scratch graphify-out, so it travels with the quarantine copy
+      # _scratch_cleanup preserves on this refusal (see its definition
+      # above) -- for offline inspection only. This file DOES contain the
+      # leaked path (that's the point), so -- same rule as $leak_line above
+      # -- it must never be echoed to stdout/stderr here.
+      leak_context_file="$SCRATCH_OUT/.leak-context-${leak_artifact_name}.txt"
+      leak_ctx_start=$(( leak_line_number > 2 ? leak_line_number - 2 : 1 ))
+      leak_ctx_end=$(( leak_line_number + 2 ))
+      sed -n "${leak_ctx_start},${leak_ctx_end}p" "$scan_target" > "$leak_context_file" 2>/dev/null || true
+      echo "refresh-graph-map: REFUSING to promote -- host path detected in $leak_artifact_name at line $leak_line_number${scan_target_note} (context saved to graphify-out/${leak_context_file##*/} in the quarantined copy -- not printed here to avoid leaking the path into logs)" >&2
       exit 2
     elif [ "$grep_rc" -gt 1 ]; then
       echo "refresh-graph-map: REFUSING to promote -- leak SCAN FAILED for $leak_artifact_name (grep rc=$grep_rc)" >&2
