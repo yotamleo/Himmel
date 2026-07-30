@@ -1,5 +1,5 @@
 // scripts/telegram/spawn-claudex.test.ts
-import { expect, test } from "bun:test";
+import { expect, test, spyOn } from "bun:test";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -24,6 +24,7 @@ import {
   parseAuthRetryDelaysMs,
   probeClaudexAuth,
   runAuthPreflightWithBackoff,
+  PROBE_TIMEOUT_MS,
   DEFAULT_AUTH_RETRY_DELAYS_MS,
   CLAUDEX_PREFLIGHT_GAP_EXIT,
   claudexLauncherPath,
@@ -63,6 +64,30 @@ test("composeClaudexWorkerPrompt shared mode: teaches the no-rebase/no-new-branc
   expect(p).toMatch(/ADD new commits on top only/i);
   expect(p).toMatch(/lock serializes writers/i);
   expect(p).toContain("fix the CR findings");
+});
+
+test("composeClaudexWorkerPrompt shared mode: the permitted integration op is publishable under the prompt's own push rules (HIMMEL-1342 design fix)", () => {
+  const p = composeClaudexWorkerPrompt("catch up the branch", "/tmp/cs/claudex-a-1", "feat/live-pr", { shared: true });
+  // The sanctioned base-integration verb is `git merge main` — a merge commit
+  // ADDS to history without rewriting any existing SHA, so the validating
+  // session that owns the git surface can publish it with an ordinary
+  // fast-forward push. No force-push is ever required by a permitted op.
+  // Match the sanctioned INSTRUCTION, not the bare keyword: a prompt that
+  // merely mentions `git merge main` while permitting something else would
+  // satisfy a keyword match (CR round 2 on PR #1458).
+  expect(p).toContain("run `git merge main` and resolve any conflicts");
+  // Self-consistency guard: the prompt must never PERMIT a SHA-rewriting
+  // integration op (rebase), because publishing a rewritten branch requires
+  // the force-push the same prompt bans — that carve-out was inert as written
+  // (HIMMEL-1342 CR round on PR #1458). `rebase` may appear only inside a ban.
+  // Broader than the original `MAY run …`: any permissive verb in front of
+  // `git rebase` reopens the inert carve-out this PR removed.
+  expect(p).not.toMatch(/(?:run|allow|permit(?:ted)?|may)\s+[`'"]?git rebase(?:\s+main)?/i);
+  expect(p).toMatch(/do NOT reset\/rebase\/amend\/force-anything/i);
+  // force-push stays named-and-banned — and nothing the prompt permits needs it.
+  // force-push must appear in a BANNED context, not merely be named.
+  expect(p).toMatch(/force-push.*(?:banned|never)/i);
+  expect(p).toContain("catch up the branch");
 });
 
 test("composeClaudexWorkerPrompt default (no opts) is UNCHANGED from the own-branch text", () => {
@@ -622,8 +647,10 @@ test("runAuthPreflightWithBackoff: worst case runs the FULL schedule (n+1 attemp
   expect(r.fatal).toBe(false);
   expect(r.attempts).toBe(delaysMs.length + 1); // 4 attempts — the final wait IS followed by a probe
   expect(slept).toEqual(delaysMs);              // every configured delay ran in full, none truncated
-  // honest hard bound: Σdelays + (n+1) probe allowance
-  expect(clock).toBeLessThanOrEqual(60_000 + 4 * 12_000);
+  // honest hard bound: Σdelays + (n+1) probe allowance (HIMMEL-1380: was a
+  // hardcoded 12_000 literal that silently drifted from PROBE_TIMEOUT_MS
+  // when the constant was raised to 25s — import the real constant instead)
+  expect(clock).toBeLessThanOrEqual(60_000 + 4 * PROBE_TIMEOUT_MS);
 });
 
 test("runAuthPreflightWithBackoff: recovery on the LAST probe (after the final delay) is still detected", async () => {
@@ -669,6 +696,21 @@ test("probeClaudexAuth: exit 0 -> ok, exit 20 (gap) -> unavailable, exit 2/other
   } finally { rmSync(repoRoot, { recursive: true, force: true }); }
 });
 
+test("probeClaudexAuth: on a fatal exit, the launcher's own stderr evidence line is forwarded verbatim (HIMMEL-1380 — named evidence, not an asserted cause)", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "cxprobe-ev-"));
+  const spy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    mkdirSync(join(repoRoot, "scripts"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "scripts", "claude-codex"),
+      '#!/usr/bin/env bash\necho "claude-codex: preflight probe observed HTTP 400 — body: totally bogus" >&2\nexit 21\n',
+    );
+    const r = probeClaudexAuth(repoRoot, repoRoot);
+    expect(r).toBe("fatal");
+    expect(spy.mock.calls.some((c) => String(c[0]).includes("preflight probe observed HTTP 400"))).toBe(true);
+  } finally { spy.mockRestore(); rmSync(repoRoot, { recursive: true, force: true }); }
+});
+
 test("probeClaudexAuth: a probe that exceeds the per-probe timeout is KILLED and read as transient, never fatal (codex/coderabbit CR)", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "cxprobe-to-"));
   try {
@@ -711,10 +753,17 @@ test("claude-codex --preflight-only probes /v1/messages (NOT the registry) and e
   expect(bash.includes("--preflight-only) PREFLIGHT_ONLY=1")).toBe(true);
   // the probe hits the real upstream transport, not the gap-blind registry
   expect(bash.includes('"$CODEX_PROXY_BASE_URL/v1/messages"')).toBe(true);
-  // transient statuses (429/5xx/000/auth_unavailable) map to the DEDICATED retry code 20; 4xx -> fatal 21
-  expect(bash.includes("429|5??|000) exit 20 ;;")).toBe(true);
+  // transient statuses (408/429/5xx/000/auth_unavailable) map to the DEDICATED
+  // retry code 20 (HIMMEL-1380: 408 is a probe TIMEOUT, not a deterministic
+  // auth failure); 401/403/other unproven 4xx -> fatal 21
+  expect(bash.includes("408|429|5??|000) exit 20 ;;")).toBe(true);
   expect(bash.includes("*auth_unavailable*) exit 20")).toBe(true);
-  expect(bash.includes("*) exit 21 ;;")).toBe(true);
+  expect(bash.includes("exit 21 ;;")).toBe(true);
+  // HIMMEL-1380: a 400 whose body proves auth (complains about the model/params,
+  // not auth) reads as healthy rather than a deterministic 4xx
+  expect(bash.includes("*model*|*max_tokens*|*invalid_request_error*")).toBe(true);
+  // HIMMEL-1380: the fatal path names the actual evidence, not an asserted cause
+  expect(bash.includes("preflight probe observed HTTP $probe_code")).toBe(true);
   expect(CLAUDEX_PREFLIGHT_GAP_EXIT).toBe(20); // TS + launcher agree on the gap code
   // the probe block sits before exec claude, and seeding is skipped for a probe
   const probeIdx = bash.indexOf('if [ "$PREFLIGHT_ONLY" -eq 1 ]; then');
@@ -732,6 +781,9 @@ test("claude-codex --preflight-only probes /v1/messages (NOT the registry) and e
   // .ps1 classifier mirrors the bash three-way outcome (codex-adv CR)
   expect(ps1.includes("exit 20")).toBe(true);
   expect(ps1.includes("exit 21")).toBe(true);
+  // .ps1 mirrors the HIMMEL-1380 408-is-transient + auth-proving-400 fixes
+  expect(ps1.includes("if ($code -eq 408) { exit 20 }")).toBe(true);
+  expect(ps1.includes("(?i)model|max_tokens|invalid_request_error")).toBe(true);
 });
 
 test("claude-codex --preflight-only classifies REAL HTTP responses: 2xx->0, 503/auth_unavailable/429/5xx->20, 4xx->21, connect-fail->20 (live loopback endpoint, no production seam)", async () => {
@@ -762,10 +814,16 @@ test("claude-codex --preflight-only classifies REAL HTTP responses: 2xx->0, 503/
     expect(await run(500, "internal error")).toBe(20);                // any 5xx = transient
     expect(await run(502, "bad gateway")).toBe(20);                   // 5xx transient
     expect(await run(429, "slow down")).toBe(20);                     // rate limit = transient
-    expect(await run(400, "bad request")).toBe(21);                   // deterministic 4xx = fatal
+    expect(await run(400, "bad request")).toBe(21);                   // unproven 4xx = fatal
     expect(await run(401, "invalid api key")).toBe(21);               // bad key = fatal
     expect(await run(403, "forbidden")).toBe(21);                     // fatal
     expect(await run(404, "not found")).toBe(21);                     // fatal
+    // HIMMEL-1380: 408 is a probe TIMEOUT, not a deterministic auth failure —
+    // this was the actual bug (leg 7): a healthy lane got misclassified fatal.
+    expect(await run(408, "stream closed before response.completed")).toBe(20);
+    // HIMMEL-1380: a 400 whose body complains about the model/params (not auth)
+    // PROVES the request reached the model layer through valid auth — reads healthy.
+    expect(await run(400, '{"type":"invalid_request_error","message":"model gpt-5.6-sol does not support max_tokens=1"}')).toBe(0);
     // transport failure: nothing listening on this loopback port -> curl rc!=0,
     // http_code 000 -> transient, never healthy (codex-adv r9/r10). Bind an
     // ephemeral port and release it rather than assuming a fixed one is free —
@@ -775,14 +833,18 @@ test("claude-codex --preflight-only classifies REAL HTTP responses: 2xx->0, 503/
     dead.stop(true);
     expect(await run(200, "x", `http://127.0.0.1:${deadPort}`)).toBe(20);
   } finally { server.stop(true); }
-}, 60_000); // sequential bash spawns are slow on Windows — well past bun-test's 5s default
+}, 240_000); // sequential bash spawns are slow on Windows (observed ~9-10s each here) — well past bun-test's 5s default; HIMMEL-1380 added 2 more sequential calls (408, auth-proving 400)
 
 test("claude-codex --preflight-only: a stalled body (200 headers, then hang) is NOT healthy — curl transport rc wins (coderabbit/codex-adv r10)", async () => {
-  // The launcher's curl uses -m 8; a server that sends a 200 then never finishes
+  // The launcher's curl uses -m 10 (HIMMEL-1380); a server that sends a 200 then never finishes
   // the body makes curl exit 28 (timeout) while %{http_code} still reads 200.
   // The transport-status guard must classify that transient (20), never 0.
+  // idleTimeout must exceed curl's -m so the SERVER never closes the stalled
+  // connection first (Bun's default idleTimeout is 10s, same as curl's -m —
+  // that race let the server's own timeout close the response "cleanly" and
+  // masked the intended client-side-timeout scenario, HIMMEL-1380).
   const server = Bun.serve({
-    port: 0, hostname: "127.0.0.1",
+    port: 0, hostname: "127.0.0.1", idleTimeout: 60,
     fetch: () => new Response(new ReadableStream({ start() { /* headers sent; body never completes */ } }), { status: 200 }),
   });
   try {

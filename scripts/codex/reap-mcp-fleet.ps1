@@ -37,6 +37,26 @@
 #     killed (no marker to prove they are ours; the conservative "when unsure,
 #     exclude" rule from the app-server fingerprint applies here too).
 #
+# HIMMEL-1328 EXTENSION: a second, entirely distinct leak class - duplicate
+# MCP-fleet children under a LIVE app-server. Get-OrphanFleet above only ever
+# fires when the supervisor is DEAD; a job that respawns its fleet (e.g. one
+# `luna-correlate` MCP server per retried request) while the app-server stays
+# alive the whole time produces N live instances of the same server under one
+# supervisor, and the orphan scan truthfully reports 0 - the ancestor chain is
+# fully live, so nothing is "orphaned". Observed on this machine 2026-07-28:
+# one live codex.exe had 5 concurrent luna-correlate servers, a second had 3
+# more - 8 processes silently holding memory with zero signal anywhere. Report-
+# only (no -Kill for this class - killing a duplicate under a live supervisor
+# is a separate, riskier decision the operator has not made): for each LIVE
+# app-server (Name codex.exe - never the broker; multiple live app-servers
+# under one broker are the ALREADY-DOCUMENTED normal topology below, not a
+# duplicate), groups its IMMEDIATE children by server identity (the plugin-
+# cache package name for a `bun --cwd .../plugins/cache/<vendor>/<name>/...`
+# launch, the leading package argument for `uvx`/`npx`, else the process
+# Name) and flags any identity with more than one live instance. Printed as
+# its own report block plus its own summary-line count, distinct from the
+# orphan count (HIMMEL-1328: "0 orphans, 8 duplicates" must be expressible).
+#
 # GROUNDING (verified on this machine, 2026-07-07):
 #   Live topology, one app-server subtree (`Get-CimInstance Win32_Process`):
 #     codex.exe app-server (pid 51184)               <- SUPERVISOR
@@ -142,6 +162,195 @@ function Get-OrphanFleet {
     if ($fleetRelated -and -not $anc.HasLiveSupervisor -and $null -ne $anc.DeadAncestorPid) {
       $p | Add-Member -NotePropertyName DeadAncestorPid -NotePropertyValue $anc.DeadAncestorPid -Force
       [void]$out.Add($p)
+    }
+  }
+  return $out.ToArray()
+}
+
+# Test-AppServerSupervisor (HIMMEL-1328) - narrower than Test-FleetSupervisor:
+# true only for the actual MCP-fleet owner (codex.exe app-server / desktop
+# app), never the broker. Multiple LIVE app-servers under one broker are a
+# normal, already-documented topology (see GROUNDING above) and must never be
+# flagged as duplicates - only an app-server's OWN immediate MCP-fleet
+# children are candidates for the duplicate-instance check below.
+function Test-AppServerSupervisor {
+  param([Parameter(Mandatory)]$Proc)
+  return [bool]($Proc.Name -and ($Proc.Name -ieq 'codex.exe'))
+}
+
+# Get-ServerIdentity (HIMMEL-1328) - normalizes a fleet child's CommandLine
+# into the "which server is this" identity used to group duplicates. Prefers
+# the plugin-cache package name (distinguishes `luna-correlate` from
+# `telegram-himmel` even though both launch as bun.exe), then the LEADING
+# package argument of a uvx/npx invocation - including the `cmd.exe /c npx
+# <pkg>` wrapper shape the HIMMEL-840 EXTENSION above documents (without this,
+# every cmd.exe-wrapped npx server would collapse into one "cmd.exe" bucket
+# regardless of which package it launches - a false-positive risk for two
+# genuinely different servers, not just repeated instances of one). Falls
+# back to the process Name when nothing more specific is found.
+#
+# KNOWN LIMITATION, deliberately deferred (codex adversarial review,
+# HIMMEL-1328): the plugin-cache branch captures only the PACKAGE segment
+# (`luna-correlate`), discarding the VENDOR segment that precedes it
+# (`himmel`) - two different vendors publishing a same-named package would
+# collapse to one identity. Every plugin observed on this host (and in this
+# file's own GROUNDING) installs under the single `himmel` vendor namespace,
+# so this is real for a multi-vendor deployment but not for this one; fixing
+# it means changing the captured identity shape (`vendor/package`), which
+# ripples through every existing fixture/assertion below - deferred rather
+# than done reflexively at the tail of an already-long review cycle. File a
+# follow-up ticket if a multi-vendor plugin cache is ever in play.
+#
+# Takes the FIRST qualifying token, not the last (panel review, HIMMEL-1328):
+# uvx/npx CLI convention is `uvx|npx [flags] <package> [package's own args]`,
+# so the package name is the leading positional argument, not the trailing
+# one - `uvx mcp-obsidian --extra positional-arg` must resolve to
+# `mcp-obsidian`, not `positional-arg`.
+#
+# Walks the split tokens in order rather than filtering the whole array at
+# once (codex adversarial review, HIMMEL-1328 - two rounds): a naive
+# "drop flag names, take the first survivor" filter still fails when a flag
+# TAKES A VALUE - the value itself has no `-` prefix, so it survives the
+# filter and gets mistaken for the package. `uvx --python 3.12 server-a` and
+# `--python 3.12 server-b` both resolved to `3.12`; `uvx --from ./local-pkg
+# mcp-server` resolved to `./local-pkg` - both reproduced directly before
+# fixing. $ValueTakingFlags is a best-effort, not exhaustive, list of the
+# uvx/npx (uv/npm) flags known to consume a following value; the walk skips
+# a listed flag AND its value together, skips any OTHER `-`-leading token
+# alone (an unknown or boolean flag), and returns the first remaining token
+# that also isn't a path fragment, a bare version number, an npx/uvx/cmd
+# executable name itself, or a Windows-style `/flag` (cmd.exe's own
+# switches, e.g. `/e:ON`, when this walk is scanning a `cmd.exe /c npx ...`
+# wrapper's full command line). The `[:\\]` exclusion drops a split artifact
+# from a quoted Windows path containing a space (e.g. `"C:\Program
+# Files\nodejs\npx.cmd"` splits into `C:\Program` + `Files\...` on the
+# quote/whitespace delimiter) so that fragment can never be picked ahead of
+# the real package token that follows it.
+#
+# Tokenization (CodeRabbit App review, HIMMEL-1328): splitting on runs of
+# quote-or-whitespace chars (`-split '["\s]+'`) fragments a QUOTED,
+# space-containing flag VALUE into multiple raw tokens, so `$i += 2` only
+# consumes the first fragment and a later fragment (e.g. `dir` from `--with
+# "some dir"`) reaches the candidate filter and gets mistaken for the
+# package - reproduced directly before fixing. `[regex]::Matches` with
+# `"[^"]+"|[^"\s]+` keeps a non-empty quoted span as ONE token instead. A
+# naive quote-aware pattern like `"[^"]*"|\S+` (permitting EMPTY quoted
+# content, and matching quote chars via `\S`) looks equivalent but breaks
+# the doubled-quote `cmd.exe /c "".." "` fixture below: it turns the
+# adjacent opening quotes into a spurious empty `""` token (which then
+# passes every filter and is returned as `""`) and leaves a stray trailing
+# quote glued onto the real package token. Requiring non-empty quoted
+# content, and excluding bare quote chars from the plain-token alternative,
+# avoids both - adjacent/unpaired quote chars are simply skipped, matching
+# the old delimiter-based split's behavior for that fixture. Filtering runs
+# against the quote-stripped token ($tUnquoted) rather than the raw one, so
+# a whole quoted span (e.g. a quoted `.exe` path) is still caught by the
+# extension/colon/backslash exclusions the same way a delimiter-split
+# fragment of it would have been.
+$script:ValueTakingUvxNpxFlags = @(
+  '--python', '-p', '--from', '--with', '--package',
+  '--index', '--index-url', '--extra-index-url', '--index-strategy',
+  '--config-file', '--project', '--directory'
+)
+function Get-ServerIdentity {
+  param([Parameter(Mandatory)]$Proc)
+  $cl = [string]$Proc.CommandLine
+  if ($cl) {
+    if ($cl -match '[\\/]+\.codex[\\/]+plugins[\\/]+cache[\\/]+[^\\/]+[\\/]+([^\\/]+)[\\/]+') {
+      return $Matches[1]
+    }
+    $isUvxNpx = $Proc.Name -and ($Proc.Name -ieq 'uvx.exe' -or $Proc.Name -ieq 'npx.exe')
+    $isCmdNpx = $Proc.Name -and ($Proc.Name -ieq 'cmd.exe') -and ($cl -match 'npx(\.cmd)?["\s]')
+    if ($isUvxNpx -or $isCmdNpx) {
+      $rawTokens = @([regex]::Matches($cl, '"[^"]+"|[^"\s]+') | ForEach-Object { $_.Value })
+      $i = 0
+      while ($i -lt $rawTokens.Count) {
+        $t = $rawTokens[$i]
+        if ($script:ValueTakingUvxNpxFlags -contains $t) { $i += 2; continue }  # skip the flag AND its value
+        if ($t -match '^-') { $i += 1; continue }                              # skip an unknown/boolean flag alone
+        $tUnquoted = $t.Trim('"')
+        $isCandidate = ($tUnquoted -notmatch '^/') -and ($tUnquoted -notmatch '\.(exe|cmd)$') -and
+          ($tUnquoted -notmatch '^(cmd|npx|uvx)$') -and ($tUnquoted -notmatch '[:\\]') -and
+          ($tUnquoted -notmatch '^\d+(\.\d+)*$')
+        if ($isCandidate) { return $tUnquoted }
+        $i += 1
+      }
+    }
+  }
+  # A generic OS shell/wrapper OR generic language-runtime launcher is never
+  # itself a distinct server identity - falling back to its bare Name would
+  # group unrelated invocations as if they were the same duplicated server,
+  # corrupting the report (panel + codex adversarial review, HIMMEL-1328;
+  # `node.exe`/`bun.exe`/`uvx.exe`/`npx.exe` added on a follow-up panel round
+  # - glm-3 - same reasoning as the shell wrappers: a bare `node.exe`/
+  # `bun.exe` child that does NOT match the plugin-cache regex above, or a
+  # `uvx.exe`/`npx.exe` child whose command line yields zero tokens above,
+  # could launch ANY package - the executable name alone identifies nothing).
+  # Return $null instead of guessing; Get-DuplicateFleets excludes children
+  # with no resolved identity from grouping entirely rather than lump them
+  # under a meaningless shared key. Every OTHER process shape (node_repl.exe,
+  # qmd.exe, tokensave.exe, ...) still falls through to its own bare Name
+  # below - those ARE legitimate, already-observed distinct server identities
+  # in their own right (a purpose-built binary name IS the identity), unlike
+  # a generic runtime/wrapper that says nothing about what it is running.
+  if ($Proc.Name -and ($Proc.Name -in @('cmd.exe', 'powershell.exe', 'pwsh.exe', 'conhost.exe', 'node.exe', 'bun.exe', 'uvx.exe', 'npx.exe'))) {
+    return $null
+  }
+  return [string]$Proc.Name
+}
+
+# Get-DuplicateFleets (HIMMEL-1328) - pure grouping filter, sibling to
+# Get-OrphanFleet. For each LIVE app-server (Test-AppServerSupervisor), groups
+# its IMMEDIATE children (ParentProcessId = the app-server's own pid) by
+# Get-ServerIdentity and flags any identity with more than one live instance.
+# This is deliberately independent of Resolve-Ancestry/Get-OrphanFleet - every
+# process involved here is fully live, so "orphan" evidence (a dead ancestor)
+# neither applies nor is required. Returns group records: SupervisorPid,
+# Identity, Count, Pids (array of the duplicate instances' ProcessIds).
+function Get-DuplicateFleets {
+  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs)
+  $out = New-Object System.Collections.ArrayList
+  $supervisors = @($Procs | Where-Object { Test-AppServerSupervisor -Proc $_ })
+  foreach ($sup in $supervisors) {
+    # Exclude children Get-ServerIdentity refuses to identify (a generic
+    # shell/wrapper Name with no more specific signal - see its own comment)
+    # BEFORE grouping, so they never collapse into one meaningless "$null" bucket.
+    #
+    # Stale-PPID guard (codex adversarial review, HIMMEL-1328): Windows does
+    # NOT clear a process's recorded ParentProcessId when its real parent
+    # exits, so pid reuse can make an unrelated, long-dead-parent process
+    # appear as a "child" of a freshly-started supervisor that was simply
+    # assigned the same pid its true parent used to hold. reap-superseded-
+    # fleets.ps1's Select-VerifiedDescendants solves the identical problem
+    # for a DIFFERENT (kill-context) walk in this same directory - mirror its
+    # convention (2s tolerance for creation-time rounding/conversion, per its
+    # own comment) rather than inventing a new one. Deliberately BEST-EFFORT,
+    # not fail-closed like that kill-context sibling: this file's own
+    # Get-OrphanFleet/Resolve-Ancestry above never required CreationDate
+    # either, and a report-only false positive is a much lower-stakes miss
+    # than a wrongful kill - so when CreationDate is unavailable on either
+    # side (e.g. a hermetic test fixture that never sets it), the check is
+    # skipped rather than excluding the child outright.
+    $supCreated = $null
+    if ($sup.PSObject.Properties['CreationDate'] -and ($sup.CreationDate -is [datetime])) { $supCreated = $sup.CreationDate }
+    $children = @($Procs | Where-Object {
+      if ($_.ParentProcessId -ne $sup.ProcessId) { return $false }
+      if (-not (Get-ServerIdentity -Proc $_)) { return $false }
+      if ($null -ne $supCreated -and $_.PSObject.Properties['CreationDate'] -and ($_.CreationDate -is [datetime])) {
+        if ((New-TimeSpan -Start $supCreated -End $_.CreationDate).TotalSeconds -lt -2) { return $false }  # predates the supervisor - stale PPID, not a real child
+      }
+      return $true
+    })
+    if ($children.Count -eq 0) { continue }
+    $groups = $children | Group-Object -Property { Get-ServerIdentity -Proc $_ }
+    foreach ($g in $groups) {
+      if ($g.Count -le 1) { continue }
+      [void]$out.Add([pscustomobject]@{
+        SupervisorPid = $sup.ProcessId
+        Identity      = $g.Name
+        Count         = $g.Count
+        Pids          = @($g.Group | ForEach-Object { $_.ProcessId })
+      })
     }
   }
   return $out.ToArray()
@@ -320,6 +529,30 @@ if ($orphans.Count -eq 0) {
   }
 }
 
+# --- HIMMEL-1328: duplicate MCP-fleet children under a LIVE app-server ------
+# Distinct leak class from the orphan scan above - every process here is
+# fully live throughout, so it is invisible to Get-OrphanFleet by design.
+# Report-only: no -Kill wiring for this class (see header).
+$duplicates = @(Get-DuplicateFleets -Procs $records)
+$duplicateInstanceTotal = 0
+if ($duplicates.Count -gt 0) { $duplicateInstanceTotal = ($duplicates | Measure-Object -Property Count -Sum).Sum }
+
+if ($duplicates.Count -eq 0) {
+  Write-Host "[reap-mcp-fleet] no duplicate MCP-fleet servers found under any live app-server."
+} else {
+  $dupRows = $duplicates | ForEach-Object {
+    [pscustomobject]@{
+      Supervisor = $_.SupervisorPid
+      Identity   = $_.Identity
+      Count      = $_.Count
+      Pids       = ($_.Pids -join ',')
+    }
+  }
+  Write-Host ("[reap-mcp-fleet] {0} duplicate MCP-server group(s) under LIVE app-server(s) ({1} instance(s) total):" -f $duplicates.Count, $duplicateInstanceTotal)
+  $dupRows | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+  Write-Host "[reap-mcp-fleet] report-only - duplicates under a live supervisor are never killed by this tool."
+}
+
 # --- HIMMEL-840: registry-driven maintenance (visibility surface, point 4) --
 # Every job dispatch-codex-exec.sh registered under CODEX_JOBS_DIR whose
 # codex_pid is now dead is a leak the dispatcher's own EXIT-trap reap never
@@ -373,7 +606,7 @@ foreach ($p in $records) {
   if (-not $byPidAll.ContainsKey([string]$p.ParentProcessId)) { $unregisteredDeadParent++ }
 }
 
-Write-Host ("[reap-mcp-fleet] registry: {0} job(s) live, {1} job(s) dead ({2} descendant fleet proc(s)); app-server orphans: {3}; unregistered dead-parent MCP-shaped proc(s): {4} (report-only, never reaped)" `
-  -f $liveJobs, $deadJobs, $deadFleetTotal, $orphans.Count, $unregisteredDeadParent)
+Write-Host ("[reap-mcp-fleet] registry: {0} job(s) live, {1} job(s) dead ({2} descendant fleet proc(s)); app-server orphans: {3}; duplicates under live supervisor: {4} instance(s) in {5} group(s) (report-only, never reaped); unregistered dead-parent MCP-shaped proc(s): {6} (report-only, never reaped)" `
+  -f $liveJobs, $deadJobs, $deadFleetTotal, $orphans.Count, $duplicateInstanceTotal, $duplicates.Count, $unregisteredDeadParent)
 
 exit 0

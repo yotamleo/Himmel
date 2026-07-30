@@ -106,6 +106,31 @@ else
     fail "session economics -> got: $(printf '%s\n' "$out" | grep -F 'session' || echo '(no session line)')"
 fi
 
+# ── Case 2b: unknown-model guess marker, END-TO-END (HIMMEL-1316, glm-2) ────
+# The composer renders the net through format_econ_line, a DIFFERENT code path
+# from the legacy bar's build_cache_lines. test/test_cache.sh cannot cover it —
+# that suite sources only bin/statusline.sh, which does not define
+# format_econ_line — so without this case the composer could drop the marker
+# and every suite would still be green. The composer is the future default
+# renderer, so this is the path that ends up mattering most.
+#
+# PAIRED against Case 2 immediately above, which is the negative control: it
+# runs the SAME fixture through the recognised `claude-opus-4-8` and asserts the
+# exact string `net +$8.5000` with no marker. "Mark every net" would pass this
+# case and fail that one.
+unknown_json="$(printf '{"model":{"id":"zzz-not-a-real-model"},"transcript_path":"%s","cwd":"%s"}' "$TRANSCRIPT" "$WT")"
+out_unknown="$(printf '%s' "$unknown_json" | \
+    HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HANDOVER_DIR="$HROOT" \
+    CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" \
+    HIMMEL_WHERE_ARE_WE_SEG_TIMEOUT=30 \
+    bash "$COMPOSER" 2>/dev/null)"
+# LC_ALL=C for the same reason Case 4 needs it — see the note there.
+if printf '%s\n' "$out_unknown" | LC_ALL=C grep -qE '^session .*net [+-]\$[0-9.]+\?'; then
+    pass "unknown model -> composer marks the net with '?' (guess, not fact)"
+else
+    fail "unknown model -> no '?' marker: $(printf '%s\n' "$out_unknown" | grep -E '^session ' || echo '(no session line)')"
+fi
+
 # ── Case 3: all-sessions economics line (exact computed values) ─────────────
 # net = 45e6*4.5e-6 - 12e6*5e-6 = 202.5 - 60 = 142.5. hit = 45e6*100/48e6 = 93.
 if printf '%s\n' "$out" | grep -qE '^all +r:45\.0M  w:12\.0M  hit:93%  net [+]\$142\.5000$'; then
@@ -171,12 +196,48 @@ else
 fi
 
 # ── Case 7: fail-open — missing transcript + missing caches → still exits 0 ──
+# HIMMEL-797: a missing transcript means the session's cache stats are
+# UNKNOWN, not zero — a bare "r:0 w:0" is indistinguishable from a session
+# that genuinely computed to zero usage. The composer now renders the
+# explicit "session~ r:? w:? hit:?% net ?" marker for this case (see
+# read_session_cache_stats' sess_unknown in hud-custom-lines.sh).
 out_empty="$(printf '{"model":{"id":"claude-opus-4-8"},"transcript_path":"/nonexistent","cwd":"%s"}' "$WT" | \
     CLAUDE_ALL_SESSIONS_CACHE_DIR="$TMP/empty" bash "$COMPOSER" 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s\n' "$out_empty" | grep -qF 'session  r:0  w:0  hit:0%  net +$0.0000'; then
-    pass "fail-open -> missing inputs render zeros, exit 0"
+if [ "$rc" -eq 0 ] && printf '%s\n' "$out_empty" | grep -qF 'session~  r:?  w:?  hit:?%  net ?'; then
+    pass "fail-open -> missing transcript renders the unknown marker, exit 0"
 else
     fail "fail-open -> rc=$rc out='$out_empty'"
+fi
+
+# ── Case 8: HIMMEL-797 regression — a slow/hung transcript parse must not ────
+# blank the WHOLE render. Reproduced live: read_session_cache_stats' jq -rs
+# re-parses the FULL transcript, uncached, on every render; on a large
+# real transcript (tens of MB) that alone measured 6-30s+, well past hud's
+# OWN 3s render budget (custom-line-cmd.ts TIMEOUT_MS=3000, which discards
+# ALL stdout on timeout) — so one slow session silently blanked EVERY line,
+# including the all/total rows below, which read a cheap pre-computed cache
+# and have nothing to do with the slow parse. Stubs `jq` to outlive
+# HIMMEL_SESSION_CACHE_TIMEOUT and asserts the session row degrades to the
+# unknown marker while the all/total rows still render correctly.
+REAL_JQ="$(command -v jq)"
+STUBDIR="$TMP/stubbin"; mkdir -p "$STUBDIR"
+cat > "$STUBDIR/jq" <<STUBEOF
+#!/usr/bin/env bash
+sleep 3
+exec "$REAL_JQ" "\$@"
+STUBEOF
+chmod +x "$STUBDIR/jq"
+out_slow="$(printf '%s' "$stdin_json" | HIMMEL_SESSION_CACHE_TIMEOUT=1 PATH="$STUBDIR:$PATH" \
+    HIMMEL_WHERE_ARE_WE=0 CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$COMPOSER" 2>/dev/null)"; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s\n' "$out_slow" | grep -qF 'session~  r:?  w:?  hit:?%  net ?'; then
+    pass "HIMMEL-797: slow transcript parse -> session row degrades to unknown marker, exit 0"
+else
+    fail "HIMMEL-797: slow transcript parse -> rc=$rc session line: $(printf '%s\n' "$out_slow" | grep -F 'session' || echo '(none)')"
+fi
+if printf '%s\n' "$out_slow" | grep -qE '^all +r:45\.0M  w:12\.0M  hit:93%  net [+]\$142\.5000$'; then
+    pass "HIMMEL-797: slow transcript parse -> all row still renders (isolated from the slow session parse)"
+else
+    fail "HIMMEL-797: slow transcript parse -> all row missing/wrong: $(printf '%s\n' "$out_slow" | grep -E '^all ' || echo '(none)')"
 fi
 
 echo "---"

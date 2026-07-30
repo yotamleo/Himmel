@@ -8,6 +8,22 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.1] — 2026-07-28
+
+### Changed
+- **`_CLAUDE.md` trimmed to directives (HIMMEL-480).** The operating manual is read
+  every session in every vault instantiated from this template, so reference-shaped
+  content earns its place or goes. Removed: an internal himmel process note about
+  escalating a producing command, upstream-path asides pointing outside the vault,
+  internal ticket identifiers in headings and prose, and rationale wording in the
+  Contradiction-Resolution Policy. 9,155 → 8,731 bytes.
+- **No contract changed.** Every directive stayed: the AI-First rules, auto-save
+  rules, per-type frontmatter requirements, the decision-note `claim:`/`assumption:`
+  quoting trap (an unquoted value containing a colon breaks the parse; a
+  space-preceded `#` silently truncates), propose-only conflict handling, and the
+  Do Not Touch list. This is a readability and cost change, not a behaviour change —
+  a vault upgrading from 0.3.0 needs no migration.
+
 ## [0.3.0] — 2026-07-13
 
 ### Added

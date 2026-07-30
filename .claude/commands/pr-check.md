@@ -800,7 +800,7 @@ Steps:
    if [ "$pr_rc" -ne 0 ]; then
        echo "4.8: gh pr list failed ($pr_lookup) — thread state UNKNOWN, treat as BLOCKING" >&2
    elif [ -z "$pr_lookup" ]; then
-       echo "4.8: no PR yet — thread gate skipped (re-applies after gh pr create; /check-ci enforces it at merge time)"
+       echo "4.8: no PR yet — thread gate NOT RUN (it cannot be: there are no threads before a PR exists). This run says NOTHING about review threads. The CodeRabbit App reviews only AFTER gh pr create, so its findings appear after this gate has already cleared the marker — /check-ci is what enforces them, at merge time (HIMMEL-1125)."
        threads_rc=0
    else
        threads_rc=0
@@ -810,6 +810,7 @@ Steps:
    ```
    `threads_rc` is the single status steps 5/6 consume — the no-PR skip sets it to 0 (pass) explicitly, so no path leaves it undefined:
    - `threads_rc = 0` → gate passed (zero unresolved threads, or no PR yet).
+   > **A clean `/pr-check` is NOT a clean thread state** (HIMMEL-1125) — different signals at different times. This gate runs at PRE-PUSH; the CodeRabbit App reviews only after `gh pr create`. On PR #1262 the CLI returned 0 findings and the panel 0/0/0, the marker cleared, the PR opened — and *then* `check-ci` returned `exit=3`: one unresolved App thread carrying a real finding. Nothing in the pre-push flow can catch that. So after opening or refreshing a PR, **loop `scripts/check-ci.sh` until it exits 0** before any merge, handover, or "the PR is done" claim. Operator directive 2026-07-17: *"keep pulling until PRs are green and no unresolved comments from CodeRabbit."* Zero-token watcher: the `check-ci` skill.
    - ANY other `threads_rc` → BLOCKING in step 6 — 3 = unresolved threads or changes requested, 2 = lookup/query failed (fail-closed), and any unexpected code is treated the same: address each comment, resolve its thread (always resolve the thread when fixing a CR finding), then re-run.
 
 5. If both `N == 0` AND step 4.8 reported `threads_rc = 0`, clear the marker via

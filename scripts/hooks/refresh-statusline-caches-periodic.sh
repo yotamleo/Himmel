@@ -221,7 +221,51 @@ if command -v rebuild_all_sessions_index >/dev/null 2>&1 \
             lock_mtime=$(stat -c %Y "$lock_ref" 2>/dev/null || stat -f %m "$lock_ref" 2>/dev/null || echo 0)
             [ "$(( $(date +%s) - lock_mtime ))" -gt 300 ] && lock_stale=1
         fi
-        [ "$lock_stale" -eq 1 ] && _econ_release_lock
+        if [ "$lock_stale" -eq 1 ]; then
+            # Own-or-lose reap (HIMMEL-1327). The old `[ stale ] && _econ_release_lock`
+            # raced a concurrent refresher: two hooks that both classified the same
+            # lock stale would both release it; A then mkdir'd a FRESH lock, but B
+            # (still holding its stale verdict) ran its own release and deleted A's
+            # LIVE lock, and B's mkdir succeeded too — two refreshers rebuilding the
+            # same cache files at once. This hook is PERIODIC and fires from every
+            # session, so concurrent invocation is the normal case, not an edge.
+            #
+            # (1) Re-validate the owner BEFORE reaping. The verdict above is against
+            # the lock as it was when classified; a concurrent refresher may have
+            # since reaped it and acquired a FRESH lock (a LIVE owner.pid, or a
+            # just-created dir). Reaping THAT pulls the rug from a live owner and
+            # reopens the double-writer, so a now-live owner — or a now-fresh lock —
+            # aborts the reap, and the mkdir below then loses to that lock instead.
+            # The check mirrors the classification above so the two can never
+            # disagree on the same state (a recycled pid with a stale heartbeat
+            # still ages out; a live owner with a fresh heartbeat still survives).
+            reap_pid=""
+            [ -f "$lock/owner.pid" ] && reap_pid=$(tr -dc '0-9' < "$lock/owner.pid" 2>/dev/null)
+            reap_ok=0
+            if [ -n "$reap_pid" ] && ! kill -0 "$reap_pid" 2>/dev/null; then
+                reap_ok=1
+            else
+                # A LIVE pid falls through here too, exactly as the
+                # classification does: an alive-but-silent pid is a recycled
+                # PID number sitting on a dead lock and must still age out.
+                # Gating the age fallback behind "no pid" instead would let a
+                # recycled PID pin a dead lock forever.
+                reap_ref="$lock"
+                [ -f "$lock/heartbeat" ] && reap_ref="$lock/heartbeat"
+                reap_mtime=$(stat -c %Y "$reap_ref" 2>/dev/null || stat -f %m "$reap_ref" 2>/dev/null || echo 0)
+                [ "$(( $(date +%s) - reap_mtime ))" -gt 300 ] && reap_ok=1
+            fi
+            # (2) Rename-first. Only the refresher whose mv wins performs the
+            # removal, so a concurrent reaper that lost the rename finds nothing to
+            # move, removes nothing, and its mkdir then loses to the winner's fresh
+            # lock. The copy it removes is its own private `.dead.$$` sibling, so it
+            # can never touch another owner's live lock. (Plain `rm -rf "$lock"`
+            # shared the reap target with every concurrent reaper; a private rename
+            # does not.)
+            if [ "$reap_ok" -eq 1 ] && mv "$lock" "$lock.dead.$$" 2>/dev/null; then
+                rm -rf "$lock.dead.$$" 2>/dev/null || true
+            fi
+        fi
     fi
     if mkdir "$lock" 2>/dev/null; then
         printf '%s\n' "$$" > "$lock/owner.pid" 2>/dev/null || true

@@ -78,6 +78,45 @@ check "headRefSha is rejected" 1 \
 check "headRefOid is accepted" 0 \
     '    head=$(gh pr view "$pr" --repo "$REPO" --json headRefOid -q .headRefOid)'
 
+# HIMMEL-1326: backslash continuation splits `gh` and `--json` across two
+# physical lines, so the per-physical-line grep saw neither half and the
+# bogus field shipped. The gate must join them into one logical command.
+# Fixtures are built with a heredoc so the backslash-newline is a REAL
+# continuation (a `printf '...\n...'` would keep it on one physical line,
+# match cleanly, and mask the bug — the trap the previous session hit).
+invalid_cont=$(cat <<'EOF'
+gh pr view "$pr" --repo "$REPO" \
+    --json headRefSha -q .headRefSha
+EOF
+)
+check "backslash-continued bogus field is rejected" 1 "$invalid_cont"
+
+valid_cont=$(cat <<'EOF'
+gh pr view "$pr" --repo "$REPO" \
+    --json headRefOid -q .headRefOid
+EOF
+)
+check "backslash-continued real field is accepted" 0 "$valid_cont"
+
+# The join must concatenate with NO separator, exactly as the shell removes the
+# `\`+newline PAIR: `headRef\` + `Oid` is the single token `headRefOid`. Joining
+# with a space would split it into `headRef` and `Oid` and reject valid code —
+# a false positive, which is worse for a lint than the miss it replaces.
+split_token=$(cat <<'EOF'
+gh pr view "$pr" --repo "$REPO" --json headRef\
+Oid -q .headRefOid
+EOF
+)
+check "field token split across the continuation is accepted" 0 "$split_token"
+
+# ...and the same split must NOT launder a bogus field past the gate.
+split_token_bad=$(cat <<'EOF'
+gh pr view "$pr" --repo "$REPO" --json headRef\
+Sha -q .headRefSha
+EOF
+)
+check "field token split across the continuation is still validated" 1 "$split_token_bad"
+
 # Multi-field CSV: one bad name among good ones still fails.
 check "bad field inside a CSV is rejected" 1 \
     'gh pr list --head "$b" --state open --json number,headRefSha'

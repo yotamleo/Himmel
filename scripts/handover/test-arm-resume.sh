@@ -796,11 +796,12 @@ make_stateful_sched() {
 # Stateful schtasks stub. State = $SCHED_DB (flat file, one task name/line).
 db="${SCHED_DB:?SCHED_DB unset}"
 cmd="${1:-}"; shift || true
-tn=""
+tn=""; xml=0
 while [ $# -gt 0 ]; do
     case "$1" in
         /tn)   tn="${2:-}"; shift 2 ;;
         /tn=*) tn="${1#/tn=}"; shift ;;
+        /xml)  xml=1; shift 2 ;;
         *)     shift ;;
     esac
 done
@@ -811,7 +812,22 @@ case "$cmd" in
             [ -n "$t" ] && printf '"\\%s","2026-01-01","Ready"\n' "$t"
         done < "$db"
         exit 0 ;;
-    /create) printf '%s\n' "$tn" >> "$db"; exit 0 ;;
+    /create)
+        if [ "$xml" -eq 1 ] && [ "${SCHED_XML_CREATE_FAIL:-0}" = "1" ]; then
+            echo "stub: schtasks /create /xml deliberately failing" >&2
+            exit 9
+        fi
+        # Real schtasks /create /f OVERWRITES a task of the same name in
+        # place (arm-resume.sh always passes /f) — a same-name re-create is
+        # not a second row. Model that here (HIMMEL-1304): drop any existing
+        # line for this name before appending the fresh one, so a --force
+        # re-arm of the SAME handover nets zero change in row count, matching
+        # a real scheduler instead of accumulating a duplicate.
+        if [ -f "$db" ]; then
+            grep -vFx "$tn" "$db" > "$db.tmp" 2>/dev/null || : > "$db.tmp"
+            mv "$db.tmp" "$db"
+        fi
+        printf '%s\n' "$tn" >> "$db"; exit 0 ;;
     /delete)
         if [ -f "$db" ]; then
             grep -vFx "$tn" "$db" > "$db.tmp" 2>/dev/null || : > "$db.tmp"
@@ -998,15 +1014,26 @@ assert_rc "T28c --dedup-any on empty scheduler arms (rc 0)" 0 "$rc"
 # can't silently pass. Contrast T30: WITHOUT --dedup-any, --force is scoped to
 # the arming handover and sibling slots survive.
 #
-# CHARACTERIZATION, NOT ENDORSEMENT (HIMMEL-1304). This pins what the code
-# does TODAY so the warning text can't drift from it — it does not bless the
-# design. The deletion happens BEFORE the rc 7 queue-lock check, the rc 8
-# cross-host registry check, and schedule_arm itself, so an arm that deletes
-# and THEN exits 7/8 (or fails to schedule) leaves the siblings destroyed with
-# no replacement and no rollback. That non-transactional ordering is a real
-# pre-existing defect tracked in HIMMEL-1304; when it is fixed, this test
-# should be re-pointed at the new (transactional) contract rather than kept as
-# a guarantee that multi-delete stays unconditional.
+# RE-POINTED AT THE TRANSACTIONAL CONTRACT (HIMMEL-1304). This was written as a
+# CHARACTERIZATION test, pinning an ordering that was a known defect: the
+# deletion used to happen BEFORE the rc 7 queue-lock check, the rc 8 cross-host
+# registry check, and schedule_arm itself, so an arm that deleted and THEN
+# exited 7/8 (or failed to schedule) left the siblings destroyed with no
+# replacement and no rollback.
+#
+# That ordering is now fixed. The multi-delete SCOPE is unchanged and still
+# worth pinning — `--dedup-any --force` genuinely matches every resume job, so
+# the T28a warning text must stay tied to real behaviour — but the deletion is
+# now TRANSACTIONAL: it runs only AFTER the new job is registered and its
+# post-arm verify passes. What this test asserts is therefore the SUCCESS path
+# of that contract (a successful arm still collapses both siblings into the one
+# new slot), which is unchanged and is now an endorsement rather than a
+# characterization.
+#
+# The FAILURE half of the contract — that the siblings SURVIVE when the arm
+# refuses rc 7 / rc 8 or fails inside schedule_arm — is covered by G3.1-G3.4 in
+# test-arm-resume-identity.sh rather than duplicated here, because it needs a
+# create-failure injection seam this suite's stub does not carry.
 DB28F="$TMP/db28f.tasks"; DB28FD="$TMP/db28f.atdir"; : > "$DB28F"; mkdir -p "$DB28FD"
 HO_F1=$(make_handover "$WORK_REPO")
 HO_F2=$(make_handover "$WORK_REPO")
@@ -1193,6 +1220,78 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
             assert_not_contains "T32 crontab self-clean is not unanchored grep -vF" "grep -vF '# HIMMEL-Resume-" "$out"
             assert_contains "T32 crontab note says one-shot" "self-removes on first fire" "$out"
         fi
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# T33: --automerge (HIMMEL-1382) wires ARMAUTOMERGE=1 + CR_MERGE_GATE_OK=1 into
+#      the relaunched session's environment BEFORE invoking claude — opt-in
+#      only. Fix round: every generated launch body ALWAYS clears both vars
+#      first (defense against ambient-env carryover, e.g. `at` snapshotting
+#      the submitting shell's env), then conditionally re-grants them ONLY
+#      when --automerge was explicit on THIS arm. So the default (no
+#      --automerge) body now contains the CLEAR form but never the GRANT
+#      ("=1") form.
+# ---------------------------------------------------------------------------
+HO=$(make_handover "$WORK_REPO")
+out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --automerge --force --dry-run 2>&1)
+rc=$?
+assert_rc "T33a --automerge dry-run exits 0" 0 "$rc"
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_contains "T33a .bat sets ARMAUTOMERGE=1" 'set "ARMAUTOMERGE=1"' "$out"
+        assert_contains "T33a .bat sets CR_MERGE_GATE_OK=1" 'set "CR_MERGE_GATE_OK=1"' "$out"
+        ;;
+    *)
+        assert_contains "T33a launch command carries ARMAUTOMERGE=1" "ARMAUTOMERGE=1" "$out"
+        assert_contains "T33a launch command carries CR_MERGE_GATE_OK=1" "CR_MERGE_GATE_OK=1" "$out"
+        ;;
+esac
+
+HO=$(make_handover "$WORK_REPO")
+out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T33b default (no --automerge) dry-run exits 0" 0 "$rc"
+assert_not_contains "T33b default does not GRANT ARMAUTOMERGE=1" "ARMAUTOMERGE=1" "$out"
+assert_not_contains "T33b default does not GRANT CR_MERGE_GATE_OK=1" "CR_MERGE_GATE_OK=1" "$out"
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_contains "T33b default still CLEARS ARMAUTOMERGE (defense-in-depth)" 'set "ARMAUTOMERGE="' "$out"
+        assert_contains "T33b default still CLEARS CR_MERGE_GATE_OK (defense-in-depth)" 'set "CR_MERGE_GATE_OK="' "$out"
+        ;;
+    *)
+        assert_contains "T33b default still CLEARS both vars (defense-in-depth)" "unset ARMAUTOMERGE CR_MERGE_GATE_OK" "$out"
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# T33c: two-hop cap re-arm (HIMMEL-1382 fix round). Hop 1 arms WITH
+#       --automerge. Hop 2 mirrors auto-arm-on-cap.sh's own invocation shape
+#       (--dedup-any, NO --automerge, a DIFFERENT handover — a cap re-arm is
+#       never the arm that asked) using the SCHED_STUB_T17 empty-scheduler
+#       stub so the query sees no existing job and proceeds instead of
+#       dedup-blocking. The hop-2 job body must explicitly CLEAR both vars
+#       and must NOT set either to "1" — the grant must not leak across the
+#       automatic re-arm, regardless of what hop 1's ambient env carried.
+# ---------------------------------------------------------------------------
+HO1=$(make_handover "$WORK_REPO")
+out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO1" --automerge --force --dry-run 2>&1)
+rc=$?
+assert_rc "T33c hop-1 (--automerge) dry-run exits 0" 0 "$rc"
+
+HO2=$(make_handover "$WORK_REPO")
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --dedup-any --time "$FUTURE_TIME" --handover "$HO2" --dry-run 2>&1)
+rc=$?
+assert_rc "T33c hop-2 (simulated auto-arm-on-cap re-arm, no --automerge) dry-run exits 0" 0 "$rc"
+assert_not_contains "T33c hop-2 does not GRANT ARMAUTOMERGE=1" "ARMAUTOMERGE=1" "$out"
+assert_not_contains "T33c hop-2 does not GRANT CR_MERGE_GATE_OK=1" "CR_MERGE_GATE_OK=1" "$out"
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_contains "T33c hop-2 CLEARS ARMAUTOMERGE" 'set "ARMAUTOMERGE="' "$out"
+        assert_contains "T33c hop-2 CLEARS CR_MERGE_GATE_OK" 'set "CR_MERGE_GATE_OK="' "$out"
+        ;;
+    *)
+        assert_contains "T33c hop-2 CLEARS both vars" "unset ARMAUTOMERGE CR_MERGE_GATE_OK" "$out"
         ;;
 esac
 
@@ -1757,6 +1856,82 @@ if [ "$n" -eq 2 ]; then echo "PASS macOS --force on A leaves sibling B (2 slots)
 if [ -n "$b_line" ] && grep -qF "$b_line" "$CRON_STORE" 2>/dev/null; then echo "PASS macOS sibling B line survived --force on A"; else echo "FAIL macOS sibling B line wiped"; FAILED=$((FAILED+1)); fi
 
 # ---------------------------------------------------------------------------
+# T-awkfail (HIMMEL-1304 CR): _crontab_delete must never fall through to
+# `crontab -` with empty input just because its OWN awk filter failed
+# (missing binary, runtime error, unreadable snapshot). Pre-fix, an unchecked
+# awk rc left $filtered empty on ANY awk failure, `[ -z "$filtered" ]` read
+# that as "the crontab is now correctly empty", and installed an EMPTY
+# crontab -- wiping every entry, himmel's and the operator's unrelated ones
+# alike -- and because that write "succeeded", the $snap backup made for
+# exactly this recovery case was then deleted too. A legitimately-empty
+# $filtered (the removed line was the only one queued) must stay a valid,
+# non-fatal outcome -- only awk itself failing is the abort condition.
+#
+# Forces the failure with an `awk` shim that intercepts ONLY the specific
+# one-shot-delete program `_crontab_delete` runs (matched on its
+# `ENVIRON["MARKER"]` literal) and delegates every other awk invocation
+# (frontmatter parsing, etc.) to the real binary, so nothing upstream of the
+# delete step is disturbed by the injected failure.
+#
+# The --force below reaps the superseded slot through the post-commit sweep
+# (delete_existing ... soft — see :1714-1722 / :1424-1430), which is SOFT
+# mode: the new arm is already registered and verified by the time this awk
+# failure hits, so per HIMMEL-1304 finding 1 it must WARN + keep the arm
+# (rc=0), never exit 2 -- pre-fix, both crontab call sites in delete_existing
+# ignored the soft flag and always hard-exited here, which is what this case
+# used to assert (rc=2) before the fix landed.
+# ---------------------------------------------------------------------------
+AWKFAIL_REAL_AWK="$(command -v awk)"
+AWKFAIL_DIR="$TMP/awkfail-bin"; mkdir -p "$AWKFAIL_DIR"
+cat > "$AWKFAIL_DIR/awk" <<AWKEOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+    case "\$a" in
+        *'ENVIRON["MARKER"]'*) echo "stub: awk forced failure (test)" >&2; exit 2 ;;
+    esac
+done
+exec "$AWKFAIL_REAL_AWK" "\$@"
+AWKEOF
+chmod +x "$AWKFAIL_DIR/awk"
+AWKFAIL_MACBIN="$TMP/awkfail-macbin"; mkdir -p "$AWKFAIL_MACBIN"
+AWKFAIL_CRON_STORE="$TMP/awkfail-cron.store"; : > "$AWKFAIL_CRON_STORE"
+printf '#!/bin/sh\nexit 1\n' > "$AWKFAIL_MACBIN/at"; chmod +x "$AWKFAIL_MACBIN/at"
+printf '#!/bin/sh\nexit 0\n' > "$AWKFAIL_MACBIN/atq"; chmod +x "$AWKFAIL_MACBIN/atq"
+cat > "$AWKFAIL_MACBIN/crontab" <<CRONEOF3
+#!/bin/sh
+case "\$1" in
+  -l) cat "$AWKFAIL_CRON_STORE" 2>/dev/null ;;
+  -) cat > "$AWKFAIL_CRON_STORE" ;;
+  *) exit 0 ;;
+esac
+CRONEOF3
+chmod +x "$AWKFAIL_MACBIN/crontab"
+awkfail_env() { env PATH="$AWKFAIL_DIR:$AWKFAIL_MACBIN:$PATH" OSTYPE="darwin23" "$@"; }
+
+AWKFAIL_HO="$(make_handover "$WORK_REPO")"
+awkfail_env bash "$ARM" --time "$FUTURE_TIME" --handover "$AWKFAIL_HO" >/dev/null 2>&1   # seed (real awk; no ENVIRON["MARKER"] call yet)
+seed_n="$(grep -c 'HIMMEL-Resume-' "$AWKFAIL_CRON_STORE" 2>/dev/null)" || seed_n=0
+if [ "$seed_n" -eq 1 ]; then echo "PASS T-awkfail seed: pre-existing slot armed"; else echo "FAIL T-awkfail seed left $seed_n slot(s) (expected 1)"; FAILED=$((FAILED+1)); fi
+
+out=$(awkfail_env bash "$ARM" --time "$FUTURE_TIME" --handover "$AWKFAIL_HO" --force 2>&1)
+rc=$?
+assert_rc "T-awkfail soft-mode awk failure does NOT kill the script (rc=0)" 0 "$rc"
+assert_contains "T-awkfail WARN names the awk failure" "could NOT be removed (awk rc=" "$out"
+assert_contains "T-awkfail WARN says the sibling is still queued" "STILL QUEUED" "$out"
+assert_contains "T-awkfail WARN surfaces the un-reaped count" "superseded job(s) could not be reaped" "$out"
+assert_contains "T-awkfail the new arm still stands" "RESUME ARMED" "$out"
+assert_not_contains "T-awkfail does NOT print the misleading success line" "removed crontab entry" "$out"
+n="$(grep -c 'HIMMEL-Resume-' "$AWKFAIL_CRON_STORE" 2>/dev/null)" || n=0
+if [ "$n" -eq 2 ]; then echo "PASS T-awkfail both the un-reaped old entry and the new arm remain (2 entries)"; else echo "FAIL T-awkfail expected 2 entries (old un-reaped + new), got $n"; FAILED=$((FAILED+1)); fi
+snap_path=$(printf '%s' "$out" | grep -oE '/[^ ]*crontab\.snap\.[A-Za-z0-9]+' | head -1)
+if [ -n "$snap_path" ] && [ -s "$snap_path" ]; then
+    echo "PASS T-awkfail snapshot preserved ($snap_path)"
+else
+    echo "FAIL T-awkfail snapshot missing or empty (path='$snap_path')"
+    FAILED=$((FAILED+1))
+fi
+
+# ---------------------------------------------------------------------------
 # V1-V5 (HIMMEL-938): Windows /sd locale-aware render + post-arm NextRunTime
 # verify. arm-resume selects PLATFORM from OSTYPE (falling back to uname -s),
 # so — exactly like mac_env above forces OSTYPE=darwin23 to exercise the
@@ -1833,7 +2008,10 @@ assert_contains "T-wsl body uses unquoted distro + login shell" 'wsl.exe -d ubun
 # HIMMEL-998: a quoted -d value reaches wsl.exe verbatim from the .bat (cmd
 # does not strip it, wsl.exe does not either) -> WSL_E_DISTRO_NOT_FOUND.
 assert_not_contains "T-wsl body never quotes the -d value" 'wsl.exe -d "' "$out"
-assert_contains "T-wsl body has in-distro cd+claude" "cd '$WSL_CWD' && claude" "$out"
+# HIMMEL-1382 fix round: the launch body now unsets ARMAUTOMERGE/
+# CR_MERGE_GATE_OK unconditionally between cd and claude (always-clear
+# contract — see arm-resume.sh's schedule_arm WSL branch comment).
+assert_contains "T-wsl body has in-distro cd+unset+claude" "cd '$WSL_CWD' && unset ARMAUTOMERGE CR_MERGE_GATE_OK && claude" "$out"
 assert_not_contains "T-wsl no caret escapes inside CMD quotes" '^&' "$out"
 assert_contains "T-wsl prompt precedes channels" "'load $WSL_HO overnight mode' --channels 'plugin:test@local'" "$out"
 assert_not_contains "T-wsl body drops Windows cd" "cd /d" "$out"
@@ -2340,6 +2518,97 @@ out=$(TMPDIR="$TMP" win_env "$V9" bash "$ARM" --time "$FUTURE_TIME" --handover "
 rc=$?
 assert_rc "V9 rejection with failed delete still refuses (rc=2)" 2 "$rc"
 assert_contains "V9 residual-task risk surfaced loudly" "STILL SCHEDULED" "$out"
+
+# ---------------------------------------------------------------------------
+# FIND2 (HIMMEL-1304 round-4 finding 2): `schtasks /create /f` overwrites a
+# same-identity task IN PLACE, so a --force re-arm of the SAME handover
+# leaves no separate old row for the post-commit reap sweep to defer
+# deleting (_arm_marker_is_new_arm treats it as "nothing to reap" -- see the
+# comment above the sweep near schedule_arm). If the post-arm verify then
+# rejects the overwritten registration, _win_delete_bad_task deletes it --
+# and pre-fix that left NO arm at all, contradicting the :1714-1722 "old arm
+# only given up once a new one demonstrably exists" guarantee for this one
+# path. Reuses make_stateful_sched (SCHED_DB-backed schtasks, already proven
+# for real dedup flows in T25+) with a counter-based powershell stub: call 1
+# (the real first arm) reports the exact matching epoch and stands; call 2
+# (the --force re-arm, same handover -> same TASK_NAME -> same-identity
+# overwrite) reports a mismatched epoch, forcing the HIMMEL-938 fail-closed
+# delete.
+# ---------------------------------------------------------------------------
+FIND2_EPOCH=$(python3 -c '
+import datetime, sys
+hh, mm = (int(x) for x in sys.argv[1].split(":"))
+now = datetime.datetime.now().astimezone()
+cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(int(cand.timestamp()))
+' "$FUTURE_TIME")
+FIND2="$TMP/find2-stub-bin"
+make_stateful_sched "$FIND2"
+cat > "$FIND2/powershell" <<EOF
+#!/usr/bin/env bash
+n=\$(cat "$FIND2/.pscount" 2>/dev/null || echo 0); n=\$((n + 1))
+printf '%s' "\$n" > "$FIND2/.pscount"
+if [ "\$n" -eq 1 ]; then
+    echo $FIND2_EPOCH
+else
+    echo $((FIND2_EPOCH + 10000))
+fi
+EOF
+chmod +x "$FIND2/powershell"
+DB_F2="$TMP/find2.tasks"; DBD_F2="$TMP/find2.atdir"; : > "$DB_F2"; mkdir -p "$DBD_F2"
+
+FIND2_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" SCHED_DB="$DB_F2" SCHED_DB_DIR="$DBD_F2" win_env "$FIND2" bash "$ARM" --time "$FUTURE_TIME" --handover "$FIND2_HO" 2>&1)
+rc=$?
+assert_rc "FIND2 first arm succeeds (rc=0)" 0 "$rc"
+# count_slots reads the CALLER's own $OSTYPE to pick which state location to
+# count (SCHED_DB file vs SCHED_DB_DIR job-* files) -- but win_env above only
+# forces OSTYPE=msys for the ARM SUBPROCESS, so arm-resume.sh took the
+# schtasks/Windows path (recording into $DB_F2) while an unforced count_slots
+# call, on a host whose real $OSTYPE isn't msys/cygwin/win32/MINGW (i.e. any
+# Linux CI runner), would read the POSIX at/atq side ($DBD_F2) instead --
+# always empty here -- and report 0 slots regardless of what actually got
+# armed. This test deliberately exercises the Windows/schtasks-overwrite
+# behavior on ANY host (that's the whole point of win_env), so count_slots
+# must be told the same forced perspective, not the real host OS.
+if [ "$(OSTYPE=msys count_slots "$DB_F2" "$DBD_F2")" = "1" ]; then
+    echo "PASS FIND2 first arm registered (1 slot)"
+else
+    echo "FAIL FIND2 first arm did not register ($(OSTYPE=msys count_slots "$DB_F2" "$DBD_F2") slots)"
+    FAILED=$((FAILED+1))
+fi
+
+out=$(TMPDIR="$TMP" SCHED_DB="$DB_F2" SCHED_DB_DIR="$DBD_F2" win_env "$FIND2" bash "$ARM" --time "$FUTURE_TIME" --handover "$FIND2_HO" --force 2>&1)
+rc=$?
+assert_rc "FIND2 same-identity --force whose verify rejects still refuses (rc=2)" 2 "$rc"
+assert_contains "FIND2 ERR names the mismatch" "120s tolerance" "$out"
+assert_contains "FIND2 previous arm was restored" "restored the previous arm" "$out"
+if [ "$(OSTYPE=msys count_slots "$DB_F2" "$DBD_F2")" = "1" ]; then
+    echo "PASS FIND2 previous arm survives the rejected re-arm (1 slot, not 0)"
+else
+    echo "FAIL FIND2 previous arm was LOST after the rejected re-arm ($(OSTYPE=msys count_slots "$DB_F2" "$DBD_F2") slots, expected 1)"
+    FAILED=$((FAILED+1))
+fi
+
+# FIND2b (HIMMEL-1304 round-5): if restoring that backup itself fails, the
+# refusal must surface the failure and retain the XML as the operator's sole
+# recovery artifact. SCHED_XML_CREATE_FAIL affects only `/create /xml`, so the
+# replacement registration still succeeds and reaches the rejected-verify path.
+out=$(SCHED_XML_CREATE_FAIL=1 TMPDIR="$TMP" SCHED_DB="$DB_F2" SCHED_DB_DIR="$DBD_F2" \
+    win_env "$FIND2" bash "$ARM" --time "$FUTURE_TIME" --handover "$FIND2_HO" --force 2>&1)
+rc=$?
+assert_rc "FIND2b failed backup restore still refuses (rc=2)" 2 "$rc"
+assert_contains "FIND2b restore failure is surfaced" "FAILED to restore the previous arm" "$out"
+assert_contains "FIND2b error names the retained recovery XML" "Backup XML retained at" "$out"
+FIND2_BACKUP=$(printf '%s\n' "$out" | sed -n "s/.*Backup XML retained at '\([^']*\)'.*/\1/p")
+if [ -n "$FIND2_BACKUP" ] && [ -s "$FIND2_BACKUP" ]; then
+    echo "PASS FIND2b failed restore preserves the named backup XML ($FIND2_BACKUP)"
+else
+    echo "FAIL FIND2b failed restore lost the named backup XML (path='$FIND2_BACKUP')"
+    FAILED=$((FAILED+1))
+fi
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -316,13 +316,34 @@ function Get-BlindClientPids {
   return , ($out.ToArray())
 }
 
+# Platform guard (HIMMEL-1321, following the [codex-1]/[glm-3] fix already
+# ported to scripts/codex/reap-superseded-fleets.ps1 for the identical bug in
+# HIMMEL-1309). `$IsWindows` is a PowerShell 6+ AUTOMATIC VARIABLE — under
+# Windows PowerShell 5.1 it is simply UNDEFINED ($null), so the obvious
+# `if (-not $IsWindows)` evaluates TRUE and the script exits 0 announcing
+# "non-Windows" on the exact platform it exists for.
+#
+# That path is reachable in production, not theoretical: codex-sweep-cadence.sh's
+# resolve_pwsh falls back to `powershell` when `pwsh` is not on PATH, so an
+# adopter without PowerShell 7 gets an armed daily cadence whose sweep leg
+# no-ops on every fire while the runner log records a clean rc=0 — a silent,
+# self-reporting success that never sweeps anything.
+#
+# 5.1 ships only on Windows, so an undefined $IsWindows means Windows; $env:OS
+# is the explicit corroborating signal rather than an assumption.
+function Test-OnWindows {
+  param([AllowNull()]$IsWindowsValue, [AllowNull()][AllowEmptyString()][string]$OsEnv)
+  if ($null -eq $IsWindowsValue) { return ($OsEnv -eq 'Windows_NT') }
+  return [bool]$IsWindowsValue
+}
+
 if ($AsLibrary) { return }
 
 # --- production path ---------------------------------------------------------
 
 # OS guard: the broker leak is a Windows-observed pattern; on any other OS there
 # is nothing to sweep. Exit 0 (not an error) after a clear message.
-if (-not $IsWindows) {
+if (-not (Test-OnWindows -IsWindowsValue $IsWindows -OsEnv $env:OS)) {
   Write-Host "[sweep-codex-orphans] non-Windows host (broker leak is a Windows pattern) - nothing to sweep."
   exit 0
 }

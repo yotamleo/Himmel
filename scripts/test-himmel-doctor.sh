@@ -643,6 +643,163 @@ else
     pass "C16 -> WARN (skipped: node/jq not both available on this host)"
 fi
 
+# ── C17: dependency readiness -- enabled skill vs required API key (HIMMEL-1393) ──
+echo "== C17: skill not enabled -> OK (nothing to check, no false-positive) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/claude/commands"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'OK   C17-dep-readiness' && [ "$rc" -eq 0 ]; then
+    pass "C17 -> OK (no declared skill enabled)"
+else
+    fail "C17 not-enabled -> rc=$rc; $(printf '%s' "$out" | grep C17)"
+fi
+rm -rf "$t"
+
+echo "== C17: enabled + keyed + doc clean -> OK C17-dep-readiness =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/claude/commands" "$t/home/.config/obsidian-second-brain"
+write_settings "$t/claude" "$WRAPPER"
+printf 'x-read command\n' > "$t/claude/commands/x-read.md"
+printf 'XAI_API_KEY=abc123\n' > "$t/home/.config/obsidian-second-brain/.env"
+printf 'nothing stale here\n' > "$t/catalog.md"
+out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'OK   C17-dep-readiness' && [ "$rc" -eq 0 ]; then
+    pass "C17 -> OK (enabled, keyed, doc clean)"
+else
+    fail "C17 clean -> rc=$rc; $(printf '%s' "$out" | grep C17)"
+fi
+rm -rf "$t"
+
+echo "== C17: enabled but key absent -> WARN C17-dep-readiness (key-missing) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/claude/commands" "$t/home/.config/obsidian-second-brain"
+write_settings "$t/claude" "$WRAPPER"
+printf 'x-read command\n' > "$t/claude/commands/x-read.md"
+printf 'SOME_OTHER_KEY=x\n' > "$t/home/.config/obsidian-second-brain/.env"
+printf 'nothing stale here\n' > "$t/catalog.md"
+out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'WARN C17-dep-readiness' && printf '%s' "$out" | grep -q 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
+    pass "C17 -> WARN (key-missing, never-fatal)"
+else
+    fail "C17 key-missing -> rc=$rc; $(printf '%s' "$out" | grep -A4 C17)"
+fi
+rm -rf "$t"
+
+echo "== C17: enabled + keyed but catalog still says disabled -> WARN (doc-disabled) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/claude/commands" "$t/home/.config/obsidian-second-brain"
+write_settings "$t/claude" "$WRAPPER"
+printf 'x-read command\n' > "$t/claude/commands/x-read.md"
+printf 'XAI_API_KEY=abc123\n' > "$t/home/.config/obsidian-second-brain/.env"
+printf '**Research toolkit:** disabled (needs XAI + Perplexity API keys)\n' > "$t/catalog.md"
+out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'WARN C17-dep-readiness' && printf '%s' "$out" | grep -q 'x-read is enabled+keyed but a doc still marks its toolkit disabled' && [ "$rc" -eq 0 ]; then
+    pass "C17 -> WARN (doc-disabled, never-fatal)"
+else
+    fail "C17 doc-disabled -> rc=$rc; $(printf '%s' "$out" | grep -A4 C17)"
+fi
+rm -rf "$t"
+
+echo "== C17: enabled but key is quoted-empty (KEY=\"\") -> WARN (key-missing) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/claude/commands" "$t/home/.config/obsidian-second-brain"
+write_settings "$t/claude" "$WRAPPER"
+printf 'x-read command\n' > "$t/claude/commands/x-read.md"
+printf 'XAI_API_KEY=""\n' > "$t/home/.config/obsidian-second-brain/.env"
+printf 'nothing stale here\n' > "$t/catalog.md"
+out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'WARN C17-dep-readiness' && printf '%s' "$out" | grep -q 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
+    pass "C17 -> WARN (quoted-empty value treated as missing)"
+else
+    fail "C17 quoted-empty -> rc=$rc; $(printf '%s' "$out" | grep -A4 C17)"
+fi
+rm -rf "$t"
+
+echo "== C17: enabled but key is quoted whitespace-only (KEY=\"   \") -> WARN (key-missing) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/claude/commands" "$t/home/.config/obsidian-second-brain"
+write_settings "$t/claude" "$WRAPPER"
+printf 'x-read command\n' > "$t/claude/commands/x-read.md"
+printf 'XAI_API_KEY="   "\n' > "$t/home/.config/obsidian-second-brain/.env"
+printf 'nothing stale here\n' > "$t/catalog.md"
+out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'WARN C17-dep-readiness' && printf '%s' "$out" | grep -q 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
+    pass "C17 -> WARN (quoted whitespace-only value treated as missing)"
+else
+    fail "C17 quoted-whitespace -> rc=$rc; $(printf '%s' "$out" | grep -A4 C17)"
+fi
+rm -rf "$t"
+
+# ── C18: monitored zero-usage command cluster (2026-07-29 skill-hygiene spec) ──
+echo "== C18: monitored command absent (removed) -> OK, never flagged =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
+OLD="$(date -d '-90 days' +%Y-%m-%d 2>/dev/null || date -v-90d +%Y-%m-%d 2>/dev/null)"
+out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="removed-tool|$OLD|99" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
+    pass "C18 -> OK (removed command silently drops out)"
+else
+    fail "C18 removed -> rc=$rc; $(printf '%s' "$out" | grep C18)"
+fi
+rm -rf "$t"
+
+echo "== C18: present + fresh (age<30d) -> OK, not flagged =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
+FRESH="$(date -d '-10 days' +%Y-%m-%d 2>/dev/null || date -v-10d +%Y-%m-%d 2>/dev/null)"
+printf 'fresh command\n' > "$t/c18cmds/fresh-tool.md"
+out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="fresh-tool|$FRESH|99" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
+    pass "C18 -> OK (fresh, under both thresholds)"
+else
+    fail "C18 fresh -> rc=$rc; $(printf '%s' "$out" | grep C18)"
+fi
+rm -rf "$t"
+
+echo "== C18: present + age>60d -> WARN C18-skill-usage =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
+STALE="$(date -d '-70 days' +%Y-%m-%d 2>/dev/null || date -v-70d +%Y-%m-%d 2>/dev/null)"
+printf 'stale command\n' > "$t/c18cmds/stale-tool.md"
+out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="stale-tool|$STALE|10" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'WARN C18-skill-usage' && printf '%s' "$out" | grep -q 'stale-tool' && [ "$rc" -eq 0 ]; then
+    pass "C18 -> WARN (age>60d, never-fatal)"
+else
+    fail "C18 stale -> rc=$rc; $(printf '%s' "$out" | grep -A4 C18)"
+fi
+rm -rf "$t"
+
+echo "== C18: present + age>30d AND cost>50 -> WARN C18-skill-usage (pricier caught sooner) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
+MID="$(date -d '-40 days' +%Y-%m-%d 2>/dev/null || date -v-40d +%Y-%m-%d 2>/dev/null)"
+printf 'pricier command\n' > "$t/c18cmds/pricier-tool.md"
+out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="pricier-tool|$MID|71" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'WARN C18-skill-usage' && printf '%s' "$out" | grep -q 'pricier-tool' && [ "$rc" -eq 0 ]; then
+    pass "C18 -> WARN (age>30d + cost>50, never-fatal)"
+else
+    fail "C18 pricier -> rc=$rc; $(printf '%s' "$out" | grep -A4 C18)"
+fi
+rm -rf "$t"
+
+echo "== C18: present + age>30d, cost<=50 -> OK, not flagged (below both thresholds) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
+MID="$(date -d '-40 days' +%Y-%m-%d 2>/dev/null || date -v-40d +%Y-%m-%d 2>/dev/null)"
+printf 'cheap command\n' > "$t/c18cmds/cheap-tool.md"
+out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="cheap-tool|$MID|10" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
+    pass "C18 -> OK (age>30d but cost<=50, below both thresholds)"
+else
+    fail "C18 cheap-mid-age -> rc=$rc; $(printf '%s' "$out" | grep C18)"
+fi
+rm -rf "$t"
+
 rm -rf "$FAKEROOT"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

@@ -62,7 +62,11 @@ summary() {
     [ "$FAIL" -gt 0 ] && exit 1 || exit 0
 }
 
-TMP_ROOT=$(mktemp -d)
+# Explicit template: BSD `mktemp -d` (stock macOS) requires one and exits
+# non-zero without it, so the suite would die before its first case there.
+# Pairs with the physical resolution below — both are macOS-only failures that
+# are invisible on Windows and Linux CI, arrived at independently.
+TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/qmd-cadence-test.XXXXXX")
 # PHYSICALLY resolve the root (public-PR CR), same reason and same shape as
 # test-qmd-reindex.sh and scripts/lib/test-qmd-bin.sh. The arm under test pins
 # its tokens through qmd_pinned_invocation -> _qmd_abs_path, which canonicalizes
@@ -285,6 +289,69 @@ assert_contains "dry-run daily entry at 05:00" "00 05 * * *" "$out"
 assert_contains "dry-run marker" "# HIMMEL-Qmd-Reindex" "$out"
 assert_contains "dry-run fires qmd-reindex.sh" "qmd-reindex.sh" "$out"
 assert_contains "dry-run pins the qmd binary" "--qmd-bin" "$out"
+
+# Test C4b: --ship-to swaps the runner, keeping ONE task (HIMMEL-1286) ---------
+#
+# The push-only transport needs the host to ship on a cadence. It stays a SINGLE
+# task because ship-index.sh's step 1 IS qmd-reindex.sh — a second task on a
+# later clock would ship whatever was on disk instead of what the reindex just
+# built. The pin must ride along: ship-index.sh forwards --qmd-bin/--qmd-js to
+# its own reindex leg, and without it the unattended run dies at rc 3 (the
+# resolver needs bun on PATH, and a scheduler has none).
+echo "TEST: --ship-to arms ship-index.sh with the pin AND the host"
+out=$(run_cron arm --ship-to win2 --dry-run)
+assert_contains "ship mode fires ship-index.sh" "ship-index.sh" "$out"
+assert_contains "ship mode passes the host" "--host win2" "$out"
+assert_contains "ship mode still pins qmd" "--qmd-bin" "$out"
+# Anchored on the SCRIPT PATH, not the bare filename: the emitted runner file is
+# named qmd-reindex.sh in both modes (disarm finds it by that name), so a bare
+# "qmd-reindex.sh" needle matches the runner's own path and proves nothing.
+assert_not_contains "ship mode does not ALSO invoke the bare reindex" "luna/qmd-reindex.sh" "$out"
+assert_contains "ship mode keeps the single task marker" "# HIMMEL-Qmd-Reindex" "$out"
+assert_contains "ship mode keeps the daily slot" "00 05 * * *" "$out"
+
+echo "TEST: without --ship-to nothing ship-related is emitted"
+out=$(run_cron arm --dry-run)
+assert_not_contains "default mode emits no ship runner" "ship-index.sh" "$out"
+assert_not_contains "default mode emits no --host" "--host" "$out"
+
+echo "TEST: --ship-to demands a value"
+# BOTH spellings must validate identically. The `=` form was the hole: an unset
+# var expanding to `--ship-to=` set SHIP_TO empty and silently armed
+# reindex-ONLY, so the operator asked for a ship cadence and got a scheduler
+# that never ships, with no error to notice.
+rc=0; run_cron arm --ship-to --dry-run >/dev/null 2>&1 || rc=$?
+assert_rc "--ship-to without a host is rc 1" 1 "$rc"
+rc=0; run_cron arm --ship-to= --dry-run >/dev/null 2>&1 || rc=$?
+assert_rc "--ship-to= (empty, = form) is rc 1, not a silent no-op" 1 "$rc"
+rc=0; run_cron arm "--ship-to=--dry-run" >/dev/null 2>&1 || rc=$?
+assert_rc "--ship-to=--dry-run (flag-shaped, = form) is rc 1" 1 "$rc"
+# And the flag-shaped space form must not eat the following flag.
+rc=0; run_cron arm --ship-to --force >/dev/null 2>&1 || rc=$?
+assert_rc "--ship-to --force does not swallow --force as a host" 1 "$rc"
+
+echo "TEST: --ship-to refuses anything that is not a plain ssh host"
+# This is the ONE operator-supplied string baked into a PERSISTENT scheduled
+# .bat, and cadence_cmd_escape's header states the rule outright: backslash
+# does not escape a quote for cmd.exe, so "do not extend this function to a
+# value that can carry an arbitrary quote — refuse instead". A host carrying a
+# quote would terminate the quoted argument and expose command metacharacters,
+# i.e. arbitrary execution under the operator's account on every fire.
+# shellcheck disable=SC2016  # the metacharacters are the FIXTURE — they must stay unexpanded
+for bad in 'win2"&calc' 'win2;rm -rf /' 'win2|whoami' 'win2$(id)' 'win2`id`' 'win2 extra' 'win2%PATH%'; do
+    rc=0; out=$(run_cron arm --ship-to "$bad" --dry-run 2>&1) || rc=$?
+    assert_rc "rejects --ship-to '$bad'" 1 "$rc"
+done
+# And still accepts the shapes a real ssh target takes.
+for good in win2 my-host.example.com user@win2 10.0.0.5 host_1; do
+    rc=0; run_cron arm --ship-to "$good" --dry-run >/dev/null 2>&1 || rc=$?
+    assert_rc "accepts --ship-to '$good'" 0 "$rc"
+done
+# Belt and braces on the actual artifact: no rejected character can reach the
+# generated runner, because none of them can get past the validator.
+rc=0; out=$(run_cron arm --ship-to 'win2"&calc' 2>&1) || rc=$?
+assert_rc "a hostile host never arms anything" 1 "$rc"
+assert_not_contains "and never reaches a runner" "calc" "$(cat "$CRON_DIR/qmd-reindex.sh" 2>/dev/null || echo NONE)"
 if [ ! -f "$CSTATE/crontab" ]; then
     pass "dry-run installed no crontab"
 else
@@ -302,6 +369,7 @@ echo "TEST: cron arm installs the entry with defaults, preserves unrelated lines
 printf '5 5 * * * /usr/bin/true # keep-me\n' > "$CSTATE/crontab"
 out=$(run_cron arm)
 assert_contains "cron arm banner" "QMD REINDEX CADENCE ARMED" "$out"
+assert_contains "default banner names the reindex runner" "fires bash + qmd-reindex.sh" "$out"
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 assert_contains "daily entry 05:00" "00 05 * * *" "$tab"
 assert_contains "entry marker-tagged" "# HIMMEL-Qmd-Reindex" "$tab"
@@ -320,7 +388,7 @@ runner=$(cat "$CRON_DIR/qmd-reindex.sh" 2>/dev/null || echo MISSING)
 # The sh runner embeds paths via printf %q (backslash-escapes); strip the
 # escapes before multi-word / path asserts.
 runner_plain=${runner//\\/}
-assert_contains "runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 6" "$runner"
+assert_contains "runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 7" "$runner"
 assert_contains "runner fires qmd-reindex.sh" "qmd-reindex.sh" "$runner_plain"
 assert_contains "runner points at the SHIPPED reindex script" \
     "$HIMMEL_ROOT_EXP/scripts/luna/qmd-reindex.sh" "$runner_plain"
@@ -333,6 +401,53 @@ assert_contains "runner points at the SHIPPED reindex script" \
 assert_contains "runner pins the resolved qmd absolute path" \
     "--qmd-bin $QMD_BIN_DIR_PATH/qmd" "$runner_plain"
 assert_contains "runner cds into himmel root" "cd $HIMMEL_ROOT_EXP" "$runner_plain"
+# Self-overlap guard. cron has no MultipleInstancesPolicy, so unlike the
+# Windows task the POSIX runner has to serialize itself — and once --ship-to
+# points it at ship-index.sh, two overlapping runs race on the receiver's
+# single `<target>.preship` rollback copy and can leave no recoverable index.
+# shellcheck disable=SC2016  # literal $lock/$log needles — expanded at fire time
+assert_contains "runner takes a self-overlap lock" 'mkdir "$lock"' "$runner"
+# shellcheck disable=SC2016
+assert_contains "a live owner makes the run stand down" 'kill -0 "$_prev"' "$runner"
+assert_contains "and says so in the log" 'still running' "$runner"
+# A killed run must not wedge the cadence forever — that trades a rare overlap
+# for a permanent silent stop, the very failure this ticket exists to kill.
+# A dead owner's lock is NOT taken over automatically — see the emitter's note.
+# Three successive attempts at shell stale-lock recovery each shipped a distinct
+# identity race, because judging an owner dead and then removing a directory you
+# do not own cannot be made atomic here. mkdir is the whole protocol now, so
+# nothing ever removes a lock it did not create. A stale lock stops the cadence
+# LOUDLY instead.
+assert_contains "a stale lock BLOCKS rather than being seized" 'BLOCKED' "$runner"
+# The owner pid must be READ before it is judged. An edit once dropped this
+# assignment and the tests still passed, because the pid-less re-read branch
+# silently covered for it — every contended fire just slept a second first.
+# Assert the first read exists, positionally: it has to precede the re-read.
+# shellcheck disable=SC2016  # literal needles — the runner expands them at fire time
+first_read_ln=$(printf '%s\n' "$runner" | grep -n '_prev=\$(cat "\$lock/pid"' | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016
+zcheck_ln=$(printf '%s\n' "$runner" | grep -n 'if \[ -z "\$_prev" \]' | head -1 | cut -d: -f1)
+if [ -n "$first_read_ln" ] && [ -n "$zcheck_ln" ] && [ "$first_read_ln" -lt "$zcheck_ln" ]; then
+    pass "the owner pid is read BEFORE it is judged"
+else
+    fail "the owner pid is read BEFORE it is judged" "read@${first_read_ln:-none} check@${zcheck_ln:-none}"
+fi
+assert_contains "and says how to clear it" 'Remove that directory to resume' "$runner"
+assert_not_contains "no mv-based takeover remains" '_nonce' "$runner"
+# shellcheck disable=SC2016
+assert_contains "the lock is released on exit" 'rmdir "$lock"' "$runner"
+# ORDER MATTERS: the rotation below is itself destructive across concurrent
+# runs (a second run rotates the first's live log away), so the lock must be
+# held before it. Asserted structurally by line number, not by eye.
+# shellcheck disable=SC2016  # literal needles — the runner expands them at fire time
+lock_ln=$(printf '%s\n' "$runner" | grep -n 'mkdir "$lock"' | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016
+rot_ln=$(printf '%s\n' "$runner" | grep -n 'mv -f "$log"' | head -1 | cut -d: -f1)
+if [ -n "$lock_ln" ] && [ -n "$rot_ln" ] && [ "$lock_ln" -lt "$rot_ln" ]; then
+    pass "the lock is acquired BEFORE the log rotation"
+else
+    fail "the lock is acquired BEFORE the log rotation" "lock@${lock_ln:-?} rotate@${rot_ln:-?}"
+fi
 # shellcheck disable=SC2016  # literal $log needles — the runner expands them at fire time
 assert_contains "runner rotates the log" 'mv -f "$log" "$log.prev"' "$runner"
 assert_contains "runner stamps every fire" '[fired' "$runner"
@@ -380,6 +495,117 @@ for want_rc in 0 5; do
     "$REAL_BASH" "$probe_dir/runner-$want_rc.sh" >/dev/null 2>&1 || got_rc=$?
     assert_rc "runner exits $want_rc when the payload exits $want_rc" "$want_rc" "$got_rc"
 done
+
+# Test C6c: the self-overlap lock actually SERIALIZES (HIMMEL-1286) ------------
+#
+# Behavioural, like C6b, and for the same reason: the textual assertions above
+# prove the lock code is PRESENT, which is not the same as proving it works —
+# and a concurrency guard that is merely present is the kind that gets found
+# out in production. cron has no MultipleInstancesPolicy, so once --ship-to
+# points this runner at ship-index.sh, two overlapping fires race on the
+# receiver's single `<target>.preship` rollback copy.
+#
+# The probe swaps the payload for a marker-then-sleep so a second fire lands
+# squarely inside the first one's critical section.
+echo "TEST: generated cron runner serializes concurrent fires"
+# A pid that is VERIFIED dead, rather than a large number assumed to be free:
+# a hardcoded 999999 is within range on a busy Linux host, and if it happened to
+# be live the stale-lock cases would flip to the still-running branch and fail
+# for a reason having nothing to do with the code. Spawn a process, reap it,
+# then reuse its pid — briefly reusable in principle, but not concurrently live.
+dead_pid=$("$REAL_BASH" -c 'exec sh -c "echo \$\$"')
+wait 2>/dev/null || true
+if [ -z "$dead_pid" ] || kill -0 "$dead_pid" 2>/dev/null; then
+    dead_pid=999999   # fall back; the assertions below still hold if it is free
+fi
+lock_dir="$TMP_ROOT/lock-probe"
+mkdir -p "$lock_dir"
+lock_log="$lock_dir/run.log"
+# Same `@` delimiter + substitution-landed check as C6b: a payload line that
+# changed shape would silently fire the REAL reindex and make this meaningless.
+printf '%s\n' "$runner_src" \
+    | sed "s@^log=.*@log=$lock_log@" \
+    | sed "s@^    _rc=0; .*@    _rc=0; { echo PAYLOAD-RAN; sleep 3; } || _rc=\$?@" \
+    | sed "s@^    cd .*@    cd . || exit 1@" \
+    > "$lock_dir/runner.sh"
+chmod +x "$lock_dir/runner.sh"
+if ! grep -qF 'PAYLOAD-RAN' "$lock_dir/runner.sh" || ! grep -qF "log=$lock_log" "$lock_dir/runner.sh"; then
+    fail "lock-probe substitution matched nothing" "runner payload/log line shape changed; update the sed expressions"
+else
+    "$REAL_BASH" "$lock_dir/runner.sh" >/dev/null 2>&1 &
+    lock_first=$!
+    sleep 1
+    second_rc=0
+    "$REAL_BASH" "$lock_dir/runner.sh" >/dev/null 2>&1 || second_rc=$?
+    wait "$lock_first" 2>/dev/null || true
+    lock_log_body=$(cat "$lock_log" 2>/dev/null || echo MISSING)
+    # Standing down is a SUCCESS, not an error: cron mailing a failure every
+    # time a long run overlaps the next fire trains the operator to ignore it.
+    assert_rc "the overlapping fire stands down with rc 0" 0 "$second_rc"
+    assert_contains "and says why, in the log" "still running" "$lock_log_body"
+    # The assertion that matters: the payload ran ONCE, not twice.
+    ran_count=$(printf '%s\n' "$lock_log_body" | grep -c 'PAYLOAD-RAN' || true)
+    if [ "$ran_count" = "1" ]; then
+        pass "the payload ran exactly once across two concurrent fires"
+    else
+        fail "the payload ran exactly once across two concurrent fires" "ran $ran_count time(s)"
+    fi
+    if [ -d "$lock_log.lock" ]; then
+        fail "the lock is released when the run ends" "$lock_log.lock still present"
+    else
+        pass "the lock is released when the run ends"
+    fi
+    # A killed run leaves its lock behind, and the runner does NOT seize it.
+    # Three successive attempts at shell stale-lock recovery each shipped a
+    # distinct identity race (see the emitter's note), because judging an owner
+    # dead and then removing a directory you do not own cannot be made atomic
+    # here. So the run BLOCKS, loudly, and a human clears it. That is the safe
+    # direction: it fails toward a stopped cadence — which the staleness guard
+    # in this same ticket notices downstream — rather than toward two concurrent
+    # ships destroying each other's rollback.
+    mkdir -p "$lock_log.lock"
+    echo "$dead_pid" > "$lock_log.lock/pid"   # a pid VERIFIED dead, not assumed
+    : > "$lock_log"
+    stale_rc=0
+    "$REAL_BASH" "$lock_dir/runner.sh" >/dev/null 2>&1 || stale_rc=$?
+    assert_rc "a stale lock BLOCKS the run with a distinct rc" 75 "$stale_rc"
+    stale_body=$(cat "$lock_log" 2>/dev/null || echo MISSING)
+    assert_contains "the block is logged" "BLOCKED" "$stale_body"
+    assert_contains "and names the directory to remove" "$lock_log.lock" "$stale_body"
+    assert_not_contains "the payload did NOT run behind a stale lock" "PAYLOAD-RAN" "$stale_body"
+    # The critical invariant: nothing removes a lock it did not create, so a
+    # stale lock is still there afterwards rather than silently seized.
+    if [ -d "$lock_log.lock" ]; then
+        pass "the stale lock is left intact for the operator"
+    else
+        fail "the stale lock is left intact for the operator" "it was removed"
+    fi
+
+    # SIMULTANEOUS contenders against one stale lock: ALL of them must block,
+    # and none may fire. Under the previous mv-claim design exactly one would
+    # take over — which is where the identity races lived. Fired together to
+    # make them race.
+    : > "$lock_log"
+    for _i in 1 2 3; do
+        "$REAL_BASH" "$lock_dir/runner.sh" >/dev/null 2>&1 &
+    done
+    wait
+    race_body=$(cat "$lock_log" 2>/dev/null || echo MISSING)
+    race_ran=$(printf '%s\n' "$race_body" | grep -c 'PAYLOAD-RAN' || true)
+    if [ "$race_ran" = "0" ]; then
+        pass "no contender fires behind a stale lock (0 of 3)"
+    else
+        fail "no contender fires behind a stale lock (0 of 3)" "ran $race_ran time(s)"
+    fi
+    # Clear it the way an operator would, and prove the cadence resumes.
+    rm -f "$lock_log.lock/pid" 2>/dev/null || true
+    rmdir "$lock_log.lock" 2>/dev/null || true
+    : > "$lock_log"
+    resume_rc=0
+    "$REAL_BASH" "$lock_dir/runner.sh" >/dev/null 2>&1 || resume_rc=$?
+    assert_rc "clearing the lock resumes the cadence" 0 "$resume_rc"
+    assert_contains "and the payload runs again" "PAYLOAD-RAN" "$(cat "$lock_log" 2>/dev/null || echo MISSING)"
+fi
 
 # Test C7: status after arm ----------------------------------------------------
 
@@ -626,6 +852,23 @@ env OSTYPE=linux-gnu QMD_CADENCE_CRONTAB="$FAKE_CRONTAB" \
     PATH="$BUN_BIN_PATH:$STUB_DIR_PATH:$PATH_NOQMD" \
     "$REAL_BASH" "$SCRIPT" disarm >/dev/null 2>&1 || true
 
+# Test C19b: the ARM BANNER names the runner that was actually armed ----------
+#
+# The banner's "the entry fires bash + <script>" line was hard-coded to
+# qmd-reindex.sh in BOTH emitters, so arming a SHIP cadence contradicted itself
+# two lines apart — the arrow line said "reindex + SHIP to win2" and the
+# sentence under it said a plain reindex. That sentence is the one place the
+# operator reads to confirm what will actually run unattended, so a stale
+# literal there is worse than no sentence. Asserted on a REAL arm: --dry-run
+# returns before the banner is printed.
+echo "TEST: ship-mode arm banner names ship-index.sh (C19b)"
+rc=0; out=$(run_cron arm --ship-to win2 --force 2>&1) || rc=$?
+assert_rc "ship-mode arm succeeds" 0 "$rc"
+assert_contains "banner arrow line names the ship runner" "SHIP to win2" "$out"
+assert_contains "banner sentence names the ship runner too" "fires bash + ship-index.sh" "$out"
+assert_not_contains "banner no longer claims a plain reindex" "fires bash + qmd-reindex.sh" "$out"
+run_cron disarm >/dev/null 2>&1 || true
+
 # Test C17: unknown platform exits 2 ----------------------------------------------
 
 echo "TEST: unknown platform (OSTYPE=beos) exits 2"
@@ -751,6 +994,7 @@ fi
 echo "TEST: schtasks arm registers HIMMEL-Qmd-Reindex daily 05:00"
 out=$(run_qc arm)
 assert_contains "arm banner" "QMD REINDEX CADENCE ARMED" "$out"
+assert_contains "default banner names the reindex runner" "fires bash + qmd-reindex.sh" "$out"
 task_xml=$(cat "$STATE/tasks/HIMMEL-Qmd-Reindex" 2>/dev/null || echo MISSING)
 assert_contains "daily schedule (XML)" "<ScheduleByDay>" "$task_xml"
 assert_contains "default time (XML)" "T05:00:00" "$task_xml"
@@ -765,7 +1009,7 @@ assert_contains "Exec points at the runner bat" "qmd-reindex.bat" "$task_xml"
 
 echo "TEST: .bat runner fires bash qmd-reindex.sh (deterministic, no claude)"
 bat=$(cat "$BAT_DIR/qmd-reindex.bat" 2>/dev/null || echo MISSING)
-assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 6" "$bat"
+assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 7" "$bat"
 assert_contains "bat cds into himmel root" 'cd /d "' "$bat"
 assert_contains "bat fires qmd-reindex.sh" "qmd-reindex.sh" "$bat"
 assert_contains "bat pins the resolved qmd absolute path" "--qmd-bin \"$QMD_BIN_DIR/qmd\"" "$bat"

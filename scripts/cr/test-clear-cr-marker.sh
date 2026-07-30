@@ -680,6 +680,59 @@ stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 15 "ticket key with a trailing non-digit still blocks → exit 15"
 rm -rf "$tmp"
 
+# 6g. HIMMEL-1327 — the blocking-findings deferral hint must print the head in the
+# form the ledger ACTUALLY stores (short), and the printed command must WORK when
+# run. This hint is the SANCTIONED escape route out of a wedged gate, so one whose
+# --head never matches its target sends the operator into the dead end HIMMEL-1294
+# exists to close. clear-cr-marker resolves the tip as a FULL sha; the ledger
+# records SHORT heads (pr-check.md: `git rev-parse --short`), and ledger-append's
+# amend matches them with strict === — so a full-sha hint exits 3 and amends
+# nothing. This captures the PRINTED hint and RUNS it end-to-end (substituting
+# only its placeholders), not a hand-written equivalent.
+make_repo
+# Record the blocker the way /pr-check does: at the SHORT head. The amend match
+# is strict === on head, so the finding's head and the hint's --head must be the
+# same string — compute the short rather than hardcode a width (git's --short
+# length varies per repo).
+_short=$(git -C "$tmp" rev-parse --short "$sha")
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "blocker at short head" finding \
+    --branch feat/x --head "$_short" --model codex --id codex-1 \
+    --severity imp --file scripts/example.sh --line 7 --verdict agreed
+append_ledger "$tmp" "responder at short head" avail \
+    --branch feat/x --head "$_short" --model codex --status ok
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+_rc=0
+out=$(cd "$tmp" && PATH="$tmp/bin:$PATH" bash "$tmp/scripts/cr/clear-cr-marker.sh" 2>&1) || _rc=$?
+if [ "$_rc" -eq 15 ]; then pass; else fail "blocking finding → exit 15 (got $_rc): $out"; fi
+# Capture the printed amend hint and the --head it carries.
+hint=$(printf '%s\n' "$out" | grep 'ledger-append.sh amend' | sed 's/^[[:space:]]*//')
+if [ -n "$hint" ]; then pass; else fail "no amend hint printed"; fi
+hint_head=$(printf '%s' "$hint" | sed -n 's/.*--head \([^ ]*\).*/\1/p')
+# The crux: the hint's head is the SHORT form the ledger stores, not the full tip.
+if [ "$hint_head" = "$_short" ]; then pass; else fail "hint --head is the recorded short form (got '$hint_head', expected '$_short')"; fi
+if [ -n "$hint_head" ] && [ "$hint_head" != "$sha" ]; then pass; else fail "hint --head must NOT be the full sha (HIMMEL-1327 regression)"; fi
+# Run the PRINTED hint end-to-end: substitute its placeholders and execute it
+# verbatim. The relative `scripts/cr/ledger-append.sh` resolves from $tmp, where
+# make_repo copied the script tree — so this exercises the real amend path with
+# the hint's own --head value.
+cmd="$hint"
+cmd=${cmd//<finding-id>/codex-1}
+cmd=${cmd//<TICKET>/HIMMEL-1327}
+cmd=${cmd//<why it is out of scope here>/pre-existing}
+_amend_rc=0
+_amend_out=$(cd "$tmp" && bash -c "$cmd" 2>&1) || _amend_rc=$?
+if [ "$_amend_rc" -eq 0 ]; then pass; else fail "printed amend hint runs end-to-end (rc=$_amend_rc): $_amend_out"; fi
+# And it must actually have amended the target: re-running the gate now clears
+# (the finding is a tracked deferral, no longer blocking) — exit 0, marker GONE.
+# A hint whose --head never matched would have left the finding blocking (exit 15).
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+_clear_rc=0
+(cd "$tmp" && PATH="$tmp/bin:$PATH" bash "$tmp/scripts/cr/clear-cr-marker.sh" >/dev/null 2>&1) || _clear_rc=$?
+if [ "$_clear_rc" -eq 0 ]; then pass; else fail "after running the printed hint, the finding is deferred and the gate clears (got $_clear_rc)"; fi
+if marker_exists "$tmp"; then fail "after the printed amend, the marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
 # 6b. A Suggestion never blocks.
 make_repo
 write_marker "$tmp" "$sha"

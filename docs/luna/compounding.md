@@ -170,7 +170,7 @@ quietly compounds and one with silent gaps.
 | Tier | What it captures | Entry point |
 |------|------------------|-------------|
 | **Automatic** | Session **summary** (decisions/commands/follow-ups) on graceful `SessionEnd` — enabled by default (HIMMEL-469) | `end-session-wiki` hook — no action required |
-| **Semi-automatic** (scheduled) | Inbox clips → triaged + synthesized notes; periodic vault health | `/pipeline-cadence arm` schedules `/harvest-clips`→`/triage-clips` (daily), `/synthesize-clips`→`/archive-clips` (daily), `/obsidian-health` (weekly) — each leg pinned to a cheap `--model` (HIMMEL-506). Generic `/schedule` + `/loop` drive any recurring pass. |
+| **Semi-automatic** (scheduled) | Inbox clips → triaged + synthesized notes; periodic vault health | `/pipeline-cadence arm` schedules `/harvest-clips`→`/triage-clips` (daily), `/synthesize-clips`→`/archive-clips` (daily), `vault-lint` (obsidian-triage:vault-lint, daily) — each leg pinned to a cheap `--model` (HIMMEL-506). Generic `/schedule` + `/loop` drive any recurring pass. |
 | **Manual** (you invoke it) | The mid-session findings/sources the automatic path misses | see list below |
 
 **Manual capture — what you must invoke explicitly:**
@@ -183,8 +183,9 @@ quietly compounds and one with silent gaps.
   classifies, and files a structured note under `30-Resources/Tech/`.
 - **A Telegram message / URL / forward** → `/telegram-clip` files it into
   `Clippings/` for the harvest pipeline to pick up.
-- **Open-web research** → the obsidian-second-brain research toolkit
-  (`/research`, `/research-deep`); grounded research → `/notebooklm`.
+- **Grounded research** → `/notebooklm` (open-web `/research`/`/research-deep`
+  from the obsidian-second-brain research toolkit are **not adopted** —
+  2026-07-29, no active Perplexity subscription; see `docs/tooling-catalog.md`).
 - **Historical Claude Code sessions** (pre-vault) → `/luna-backfill`.
 - **Claude Code's own auto-memory** → the distil pass in
   [the section above](#a-second-loop-auto-memory--vault).

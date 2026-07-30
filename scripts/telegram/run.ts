@@ -9,11 +9,22 @@ import { fileURLToPath } from "node:url";
 // `claude "<p>" </dev/null` exits 0 (~6s, Max quota, no -p). Strips
 // TELEGRAM_OWN_POLLER from the child env so the spawned session never owns the
 // poller. NO -p/--print/--channels — interactive billing + behaviour only.
-// PermissionMode (HIMMEL-578): the only mode the bridge ever injects is
-// "bypassPermissions" (for vault sessions — see runSession). A union (not bare
-// string) makes a typo a compile error instead of a malformed `--permission-mode`
-// flag that only fails inside the spawned, stdin-closed claude run.
-export type PermissionMode = "bypassPermissions";
+// PermissionMode (HIMMEL-578): "bypassPermissions" is the vault-session mode
+// (see runSession). "dontAsk" (HIMMEL-1378) is the GLM/claudex WORKER default —
+// verified (`claude --help`, v2.1.220) as one of the CLI's native
+// --permission-mode values, and the one Claude Code docs confirm auto-DENIES
+// any tool call not explicitly allow-listed rather than ever prompting. That
+// is the load-bearing property for an unattended, stdin-closed worker: a
+// prompt it cannot answer would otherwise hang until the external timeout
+// kills it (the HIMMEL-203 native-permission-matcher-bails shape this hook
+// comment documents: scripts/hooks/auto-approve-safe-bash.sh). bypassPermissions
+// is NEVER used for an unattended worker (forbidden — see spawn-glm.ts's
+// REFUSE_BYPASS_PERMISSIONS) precisely because it strips every guardrail
+// instead of narrowing to what the worker legitimately needs. A union (not
+// bare string) makes a typo a compile error instead of a malformed
+// `--permission-mode` flag that only fails inside the spawned, stdin-closed
+// claude run.
+export type PermissionMode = "bypassPermissions" | "dontAsk";
 // Model pin (HIMMEL-671): without an explicit --model, every bounded run
 // inherits the operator's default model — currently Fable, whose quota is
 // time-limited and reserved for the main thread (see the subagent policy).
@@ -203,7 +214,40 @@ export function laneModel(lane?: "glm"): string | undefined {
   return lane === "glm" ? GLM_MODEL_ALIAS : undefined;
 }
 
-export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
+// Observability hooks (HIMMEL-1378): a silently-hung worker (native permission
+// matcher bails to an unanswerable prompt on stdin="ignore" — HIMMEL-203) used
+// to be INVISIBLE for the entire RUN_TIMEOUT_MS window — run.log was appended
+// only from the FINAL tail (spawn-glm.ts executeRun), post-exit, so a session
+// that never exits leaves zero trace until its caller's timeout fires. onSpawn
+// fires once, synchronously after spawn, with the real child pid (meta.json
+// previously stayed pid:0 for the whole "running" window — no way for an
+// external watcher to check process liveness). onChunk fires once per stdout/
+// stderr chunk AS IT ARRIVES, so a caller can append it to run.log live and/or
+// stamp a last-output timestamp a watchdog can compare against "now" to detect
+// a stall well before the full timeout. Both are best-effort observability —
+// a throwing callback must never abort the run, so each call is wrapped.
+export type RunObserver = { onSpawn?: (pid: number) => void; onChunk?: (chunk: string) => void };
+
+// Drain a stdout/stderr stream chunk-by-chunk (replaces the old buffer-until-
+// EOF `new Response(stream).text()`, which made onChunk impossible — that
+// helper does not expose intermediate chunks, only the final joined text).
+// Bun's ReadableStream supports async iteration; each chunk is decoded with
+// `stream: true` so a multi-byte UTF-8 character split across two chunks
+// decodes correctly, and a trailing decode() flush after the loop empties the
+// decoder's internal buffer.
+async function drain(stream: ReadableStream<Uint8Array>, onChunk?: (s: string) => void): Promise<string> {
+  const decoder = new TextDecoder();
+  let acc = "";
+  for await (const c of stream) {
+    const s = decoder.decode(c, { stream: true });
+    acc += s;
+    if (s && onChunk) { try { onChunk(s); } catch { /* best-effort observability, never abort the run */ } }
+  }
+  acc += decoder.decode();
+  return acc;
+}
+
+export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: RunObserver): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
   const env = sessionEnv(lane);
   // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
@@ -220,6 +264,7 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane), settings);
   const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
+  if (observe?.onSpawn) { try { observe.onSpawn(pid); } catch { /* best-effort, never abort the run */ } }
   const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000);
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; killTree(pid, (s) => p.kill(s as any)); }, timeoutMs);
@@ -228,7 +273,7 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   // have been recycled by the OS.
   let out: string, err: string, code: number;
   try {
-    [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    [out, err, code] = await Promise.all([drain(p.stdout, observe?.onChunk), drain(p.stderr, observe?.onChunk), p.exited]);
   } finally {
     clearTimeout(timer);
   }

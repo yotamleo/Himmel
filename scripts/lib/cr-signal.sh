@@ -30,13 +30,37 @@
 # posts several per head (queued -> in progress -> completed), so the FIRST match
 # is the current verdict — the same one the combined endpoint dedupes to.
 #
+# SKIPPED IS NOT SUCCESS (HIMMEL-1317) — the second shape nobody checked:
+# when a repo disables automatic reviews (the standing posture since HIMMEL-1314
+# made the App the reviewer and CODERABBIT_CLI_DISABLE=1 retired the CLI leg),
+# CodeRabbit still posts a status on every untriggered PR — and posts it as
+#   state=success  description="Review skipped: automatic reviews are disabled"
+# This reader used to project ONLY .state, so a refusal to review and a clean
+# review were the same byte to every caller. check-ci then certified exit 0 on a
+# PR nobody had reviewed, and merge-on-green (which gates solely on check-ci:0)
+# would squash-merge it. Reproduced on PR #1429, 2026-07-27.
+# The fix is to read the field that carries the meaning: a `success` whose
+# description says it skipped becomes its own state, which callers fail CLOSED on
+# exactly like `absent`.
+#
+# WHY WE MATCH "skipped" AND DO NOT REQUIRE "completed": requiring a known-good
+# description makes the gate an enumeration of CodeRabbit's wording, and an
+# enumeration rots — the day the App renames "Review completed" every PR in the
+# repo goes uncertifiable at once (rot-to-RED, a self-inflicted outage). Matching
+# the skip vocabulary degrades the other way: an unrecognised NEW skip phrasing
+# reads as success, i.e. exactly today's behaviour, no worse. Asymmetric on
+# purpose. If CodeRabbit adds a skip phrasing, extend _CRS_SKIP_RE.
+#
 # cr_signal_state <owner> <name> <sha>
-#   stdout: success | pending | failure | error | absent | paged
+#   stdout: success | pending | failure | error | absent | paged | skipped
 #           "absent" = CodeRabbit has posted NOTHING for this SHA. It is NOT a
 #           pass. Callers gate on it (HIMMEL-1072: absent must never read green).
 #           "paged" = page one was FULL and held no CodeRabbit status, so its
 #           verdict may sit on an unread page — indeterminate, never "absent".
 #           Callers must fail CLOSED on it (coderabbit-2).
+#           "skipped" = CodeRabbit posted success but SAID it did not review
+#           (auto-reviews disabled). A declined review, never a pass — callers
+#           fail CLOSED on it (HIMMEL-1317). Clear it with `@coderabbitai review`.
 #   rc 0 = state determined (incl. "absent"); rc 1 = cannot evaluate (query or
 #           parse failure) — the caller decides open/closed, this reader does not.
 #
@@ -68,6 +92,98 @@ _crs_gh() { "${GH_CMD:-gh}" "$@"; }
 cr_signal_bot_id()  { printf '%s\n' "${CR_BOT_USER_ID:-136622811}"; }
 cr_signal_context() { printf '%s\n' "${CR_STATUS_CONTEXT:-CodeRabbit}"; }
 
+# Descriptions that mean "I did not review this" (HIMMEL-1317). Case-insensitive,
+# applied ONLY to a `success` status — a skip vocabulary on failure/error changes
+# nothing, those already fail closed. Kept as one regex in one place so the skip
+# vocabulary has a single owner; see the header for why this matches the skip
+# words rather than requiring the success words.
+#
+# Every alternative here must be UNAMBIGUOUS, because the two error directions
+# are not symmetric (glm-1). A false NEGATIVE degrades to the pre-HIMMEL-1317
+# behaviour — a missed skip reads as success, no worse than yesterday. A false
+# POSITIVE blocks a genuinely clean review and cannot be cleared by re-running,
+# which is the rot-to-RED outage this design exists to avoid. So loose substrings
+# are excluded even when they read as skip-ish: a bare `no review` matches
+# "No review changes requested" — a COMPLETED review — and would have blocked
+# that merge. Verified against the real string and that hazard:
+#   "Review skipped: automatic reviews are disabled" -> match
+#   "No review changes requested"                    -> NO match
+#   "Review completed"                               -> NO match
+_CRS_SKIP_RE="${CR_SKIP_DESC_RE:-skipped|reviews? (are|is) disabled|review disabled|rate.?limit}"
+
+# HIMMEL-1354 — the deny-list above is now a SECOND line of defence, not the
+# first. The reasoning in the block above ("a missed skip reads as success, no
+# worse than yesterday") was measured against reality on 2026-07-28 and is
+# WRONG in its cost estimate, so the default is inverted here.
+#
+# What happened: CodeRabbit declined a review for rate limiting and posted
+#   state=success  description="Review rate limited"
+# on PR #1456 @ 46358386. That wording matched none of the deny-list
+# alternatives, so it classified as a clean success; `gh pr checks` bucketed it
+# `pass`; and check-ci printed "all checks green" + "verdict exit=0" on a head
+# that — by its own cr-body-findings line, one line earlier — had NO CodeRabbit
+# review at all. A missed skip is therefore not "no worse than yesterday": it
+# CERTIFIES UNREVIEWED CODE AS MERGE-READY, which is the exact failure this
+# file exists to prevent. That is the second drift of this class (HIMMEL-1317
+# was the first), and repo doctrine escalates to structural on the second.
+#
+# The corrected asymmetry, which is the whole argument for inverting:
+#   false negative (unknown skip wording reads as success) -> merges unreviewed
+#     code. Silent, and discovered only by the damage.
+#   false positive (a genuine pass is not recognised)      -> blocks a clean PR.
+#     Loud, immediate, and clearable in one command (see the override below).
+# A loud recoverable stop beats a silent unrecoverable merge.
+#
+# So: state=success is green ONLY when the description affirmatively says the
+# review completed. Anything else CodeRabbit may invent in future — a wording we
+# have never seen — now fails CLOSED by construction instead of being a hole
+# waiting for its own incident.
+#
+# Observed vocabulary (2026-07-28, verified across three reviewed heads):
+#   success + "Review completed"                              -> success
+#   success + "No review changes requested"                   -> success
+#   success + "Review skipped: automatic reviews are disabled" -> skipped
+#   success + "Review rate limited"                            -> skipped
+#   pending + "Review in progress" / "Review queued"           -> pending
+#
+# "No review changes requested" is a GENUINE completed review with different
+# wording — it is the `cr-nearmiss` fixture, and test 34d exists precisely to
+# assert it does not block. An allow-list of "review completed" alone regresses
+# it to RED. That fixture caught this while writing HIMMEL-1354, which is the
+# concrete demonstration of the header's false-positive hazard: the allow-list
+# MUST enumerate every genuine success wording, and the escape hatch below is
+# what makes that enumeration survivable when CodeRabbit adds one.
+#
+# OUTAGE ESCAPE HATCH (this is what makes the inversion safe to ship): if
+# CodeRabbit renames its success description, EVERY PR blocks at once. The
+# operator clears that without touching code by widening the allow-list:
+#   CR_OK_DESC_RE='^(review completed|no review changes requested|review finished)$' \
+#       bash scripts/check-ci.sh <pr>
+# Keep the ^(...)$ anchors: CR_OK_DESC_RE is matched the same unanchored way as
+# the default (see the CR follow-up note below), so a copy-paste that drops
+# them lets a decline description merely CONTAINING an allow-listed phrase
+# (e.g. "No review completed") pass as clean again (HIMMEL-1354 R2) — exactly
+# the hole this override exists to help close, not reopen.
+# CR_OK_DESC_RE REPLACES the default rather than extending it, so the override
+# MUST carry every default alternative it still wants honoured — an example that
+# lists only the renamed wording NARROWS the allow-list and regresses the very
+# test-34d `cr-nearmiss` case described above to RED.
+# Both knobs stay live: CR_SKIP_DESC_RE still force-classifies a wording as a
+# skip even if it would otherwise pass the allow-list.
+#
+# CR follow-up (HIMMEL-1354 R2): consumed below as `test($ok; "i")`, which is
+# jq's UNANCHORED search — a description that merely CONTAINS an allow-listed
+# phrase (e.g. "No review completed" contains "review completed") would
+# substring-match and read as a clean success, reopening the exact hole this
+# file exists to close. The DEFAULT is anchored (^...$) so only an EXACT
+# allow-listed description passes. CR_OK_DESC_RE itself is deliberately left
+# UNANCHORED IN CODE — test 34g's escape-hatch widening intentionally matches a
+# bare partial phrase against an unenumerated FULL sentence, not just an exact
+# one, so forcing an anchor around whatever the operator supplies would break
+# that already-shipped behaviour. The documented recipe above carries its own
+# anchors instead; it is on the operator to keep them when copying it verbatim.
+_CRS_OK_RE="${CR_OK_DESC_RE:-^(review completed|no review changes requested)$}"
+
 cr_signal_state() {
     local probe
     probe=$(cr_signal_probe "$@") || return 1
@@ -97,14 +213,40 @@ cr_signal_probe() {
 
     # Identity match on creator.id (+ type Bot), context as the secondary filter.
     # First match wins = newest = current verdict (see ORDERING above).
+    # The `skip` remap happens HERE, inside the single projection, so every
+    # caller of both cr_signal_state and cr_signal_probe gets it by construction
+    # — the mistake this file exists to prevent is a second place that reads
+    # CodeRabbit's verdict and disagrees with this one. Output contract is
+    # unchanged ("<state> <created_at>"), so no caller has to be taught a new
+    # shape; `skipped` simply joins the state vocabulary.
     local pair state created
-    pair=$(printf '%s' "$json" | jq -r --arg ctx "$ctx" --argjson uid "$uid" '
+    pair=$(printf '%s' "$json" | jq -r --arg ctx "$ctx" --argjson uid "$uid" --arg skip "$_CRS_SKIP_RE" --arg ok "$_CRS_OK_RE" '
         [ .[]?
           | select(.creator.id == $uid)
           | select(.creator.type == "Bot")
           | select(.context == $ctx)
         ] | first
-          | if . == null then "absent " else "\(.state) \(.created_at // "")" end' 2>/dev/null || true)
+          | if . == null then "absent "
+            else
+              # HIMMEL-1354: a success is green ONLY if the description
+              # affirmatively matches the allow-list. The deny-list is kept as a
+              # force-skip override (CR_SKIP_DESC_RE), so a wording can still be
+              # condemned explicitly even if it would pass the allow-list.
+              # An ABSENT/empty description keeps the pre-HIMMEL-1354 reading
+              # (success). Scoping the allow-list to a NON-EMPTY description is
+              # what keeps the blast radius at the real hole: every decline
+              # wording CodeRabbit has ever posted is non-empty and says so, so
+              # requiring the allow-list only when it actually said something
+              # closes the incident class without turning "no description" into
+              # a repo-wide RED. Verified: the unscoped form failed 38 unrelated
+              # cases in this suite, whose payloads carry no description.
+              ( if (.state == "success")
+                   and ( (((.description // "") | test($skip; "i")))
+                         or ( ((.description // "") != "")
+                              and ((((.description // "") | test($ok; "i"))) | not) ) )
+                then "skipped" else .state end ) as $s
+              | "\($s) \(.created_at // "")"
+            end' 2>/dev/null || true)
 
     state=${pair%% *}
     created=${pair#* }
@@ -132,7 +274,7 @@ cr_signal_probe() {
     fi
 
     case "$state" in
-        success|pending|failure|error|absent)
+        success|pending|failure|error|absent|skipped)
             printf '%s %s\n' "$state" "$created"
             return 0 ;;
         *) return 1 ;;

@@ -196,8 +196,8 @@ documented at the top of [`.env.example`](../../.env.example):
 | `LUNA_VAULT_PATH` | Luna vault root for end-session capture. | Your Obsidian vault path. **Not** bridged — export it. Unset → `~/Documents/luna`. |
 | `CLAUDE_LANE_AUTO_RESEED` | Optional opt-out for the lane launchers' config auto-refresh (HIMMEL-819). By default `claude-glm`/`claude-routed` re-seed their isolated config dir when your `~/.claude` settings or plugin registry changed, so lane workers pick up plugin-profile changes automatically. Set `0` to restore the once-only seed (first launch + explicit `--reseed`) if the auto-refresh ever blocks a launch in your setup. | Leave unset (default on). **Not** bridged from `.env` — set it in the launching shell. Only relevant if you use the offload lanes. |
 | `HIMMEL_INITIATIVE` | Drive-to-ship legs (opt-in, default OFF). | Uncomment one line in `.env` (leg grammar documented inline in `.env.example`); read from `.env` by the SessionStart hook. |
-| `PERPLEXITY_API_KEY` | Perplexity Sonar — `/research`, `/research-deep`. | Perplexity API settings. Optional (blank = feature off). |
-| `XAI_API_KEY` | xAI Grok — `/x-read`, `/x-pulse`, `/youtube`. | xAI API console. Optional. |
+| `PERPLEXITY_API_KEY` | Perplexity Sonar — `/research`, `/research-deep`. **Provisional — pending operator sign-off** (2026-07-29, no active subscription — see `docs/tooling-catalog.md`). | Perplexity API settings. Optional (blank = feature off). |
+| `XAI_API_KEY` | xAI Grok — `/x-read`, `/x-pulse`, `/youtube`. **Provisional — pending operator sign-off** (2026-07-29, no active subscription — see `docs/tooling-catalog.md`). | xAI API console. Optional. |
 | `GEMINI_API_KEY` | Gemini — `scripts/gemini/invoke.sh`. | Google AI Studio API key. Optional. |
 
 ### OLLAMA_NO_CLOUD (optional — ollama zero-egress defense-in-depth pin)

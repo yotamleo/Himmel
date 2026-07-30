@@ -45,8 +45,17 @@
 # check) and its trigger gained an intra-day <Repetition>. An armed v5 cadence
 # still fires, but only the two old legs and only once a day — so the leak class
 # this version exists to cover keeps accumulating unswept. Nudge `arm --force`.
+# v7 (HIMMEL-1286): the generated cron runner takes a self-overlap lock before
+# rotating its log and firing the payload. cron has no MultipleInstancesPolicy,
+# so the POSIX leg was the unguarded one — and once `qmd-cadence.sh arm
+# --ship-to` can point that runner at ship-index.sh, two overlapping runs race
+# on the receiver's single `<target>.preship` rollback copy and can leave no
+# recoverable index. An armed v6 cron runner keeps firing WITHOUT the lock, so
+# an operator running the cadence on POSIX must `arm --force` to pick it up.
+# Windows runners are unaffected (the scheduler already serialized them) but
+# stamp v7 too, so one version answers "is this runner current".
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=6
+CADENCE_RUNNER_FORMAT_VERSION=7
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).
@@ -55,7 +64,7 @@ CADENCE_FORMAT_MARKER="himmel-cadence-runner-format:"
 # Basename registry for generated cadence runners. Keep explicit: a stray
 # foreign *.bat/*.sh in a runner dir must not poison the staleness probe.
 # shellcheck disable=SC2034  # consumed by cadence_runner_stamp callers/tests
-CADENCE_RUNNER_BASENAMES="pipeline-harvest pipeline-synthesize pipeline-health codex-sweep graphmap-luna graphmap-himmel qmd-reindex"
+CADENCE_RUNNER_BASENAMES="pipeline-harvest pipeline-synthesize pipeline-health codex-sweep graphmap-luna graphmap-himmel qmd-reindex drift-fix fork-resync"
 
 # cadence_user_home
 # The runner homes the EMITTERS write under key off resolve_user_home

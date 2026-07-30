@@ -552,6 +552,194 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 15: a high-entropy operand is elided; surrounding text survives ----
+# (HIMMEL-1345) The exact real-world shape that wedged the vault autosync: a
+# GitHub GraphQL global node ID copied verbatim into a session note tripped
+# gitleaks' generic-api-key rule. Command/subcommand/flags/paths must remain
+# readable; only the opaque threadId value is replaced.
+#
+# The three secret-shaped fixture values below are assembled from concatenated
+# chunks at runtime, rather than written as single contiguous literals, so no
+# realistic-looking secret sits in tracked source (this repo's own gitleaks
+# pre-commit gate already passes on these fixtures as plain literals — this is
+# hygiene/futureproofing against EXTERNAL scanners, e.g. GitHub push
+# protection or a downstream/adopter gitleaks config, not a fix for a live
+# leak). The same variables are reused in the negative assertions below so the
+# fixture and the assertion can never drift apart.
+TOK_GQL="PRRT_k""wDOS8W""KNM6UP""mnU"
+TOK_KEY="api-Live_8""JxQ2mN7pR4""vT9yW6cK1h""F5dG0zB3uE"
+TOK_B64="AbCdEfGhIj""KlMnOpQrSt""UvWxYz0123""456789+/=="
+SB="$(make_sandbox)"
+printf '%s\n' \
+  '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}' \
+  '{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"resolved the thread"},{"type":"tool_use","name":"Bash","input":{"command":"gh api graphql -F threadId=\"'"$TOK_GQL"'\" -F body=@\"C:/Users/op/note.md\""}},{"type":"tool_use","name":"Bash","input":{"command":"client --api-key '"$TOK_KEY"'"}},{"type":"tool_use","name":"Bash","input":{"command":"client --blob='"$TOK_B64"'"}},{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}' \
+  > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE15="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if [ -n "$NOTE15" ] && grep -q '<elided>' "$NOTE15"; then
+    pass "HIMMEL-1345: high-entropy operand elided"
+else
+    fail "HIMMEL-1345: high-entropy operand was NOT elided"
+fi
+if [ -n "$NOTE15" ] && ! grep -qF "$TOK_GQL" "$NOTE15"; then
+    pass "HIMMEL-1345: the raw high-entropy token does not appear in the note"
+else
+    fail "HIMMEL-1345: the raw high-entropy token leaked into the note"
+fi
+if [ -n "$NOTE15" ] && grep -qF 'gh api graphql -F threadId="<elided>"' "$NOTE15"; then
+    pass "HIMMEL-1345: program/subcommand/flag text survives around the elision"
+else
+    fail "HIMMEL-1345: surrounding command text did not survive the scrub"
+fi
+if [ -n "$NOTE15" ] && grep -qF 'client --api-key <elided>' "$NOTE15" && ! grep -qF "$TOK_KEY" "$NOTE15"; then
+    pass "HIMMEL-1345: API key containing a hyphen is elided"
+else
+    fail "HIMMEL-1345: API key containing a hyphen leaked or lost surrounding text"
+fi
+if [ -n "$NOTE15" ] && grep -qF 'client --blob=<elided>' "$NOTE15" && ! grep -qF "$TOK_B64" "$NOTE15"; then
+    pass "HIMMEL-1345: base64 blob containing +, /, and = padding is elided"
+else
+    fail "HIMMEL-1345: base64 blob containing +, /, and = padding leaked or lost surrounding text"
+fi
+if [ -n "$NOTE15" ] && grep -q 'git status' "$NOTE15"; then
+    pass "HIMMEL-1345: an unrelated ordinary command in the same session is untouched"
+else
+    fail "HIMMEL-1345: an ordinary command in the same session was altered"
+fi
+rm -rf "$SB"
+
+# --- Case 16: an ordinary command with no high-entropy operand is unchanged --
+# Negative case: proves the scrubber is not over-aggressive (a scrubber that
+# elides everything would still pass Case 15 alone). Uses a command with
+# REPEATED internal spaces and a spacing-sensitive quoted argument — a
+# scrubber that unconditionally splits-on-whitespace-and-rejoins-with-a-
+# single-space (rather than only rewriting a line that actually had a token
+# elided) would silently collapse both, passing this case vacuously.
+SB="$(make_sandbox)"
+printf '%s\n' \
+  '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}' \
+  '{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"checked history"},{"type":"tool_use","name":"Bash","input":{"command":"git   log --oneline"}},{"type":"tool_use","name":"Bash","input":{"command":"git commit -m \"a  b\""}},{"type":"tool_use","name":"Bash","input":{"command":"deploy --dry-run --date 2026-07-29 /tmp/releases/2026-07-29/artifact https://example.com/releases/2026-07-29"}}]}}' \
+  > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE16="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if [ -n "$NOTE16" ] && ! grep -q '<elided>' "$NOTE16"; then
+    pass "HIMMEL-1345: ordinary commands pass through with no elision"
+else
+    fail "HIMMEL-1345: an ordinary command was unexpectedly elided"
+fi
+if [ -n "$NOTE16" ] && grep -qF 'git   log --oneline' "$NOTE16" && grep -qF 'git commit -m "a  b"' "$NOTE16" && grep -qF 'deploy --dry-run --date 2026-07-29 /tmp/releases/2026-07-29/artifact https://example.com/releases/2026-07-29' "$NOTE16"; then
+    pass "HIMMEL-1345: ordinary commands are byte-for-byte unchanged (spacing, dates, paths, URLs, and flags survive)"
+else
+    fail "HIMMEL-1345: an ordinary command's text was altered"
+fi
+rm -rf "$SB"
+
+# --- Case 17: single-case high-entropy tokens are NOT elided (mixed-case gate)
+# Negative coverage for the mixed-case requirement inside is_opaque(): a
+# token can clear length (>=20), charset ([A-Za-z0-9_./+=-]), and entropy
+# (>=3.8) and STILL survive if it is single-case. Two shapes, excluded for
+# different stated reasons:
+#   - all-lowercase (the hex-SHA shape) — hex SHAs must stay readable.
+#   - ALL-UPPERCASE / SCREAMING_SNAKE — env-var/identifier-style tokens must
+#     stay readable.
+# Each fixture below was verified offline against the awk is_opaque() gate
+# to fail ONLY the mixed-case check (length/charset/entropy all pass) — so
+# the ONLY reason either survives is the mixed-case rule; a fixture that
+# failed some other gate too would prove nothing.
+# This is the regression guard for the PS1 twin's `-notmatch` -> `-cnotmatch`
+# fix: case-insensitive `-notmatch` never enforced mixed case at all, and no
+# suite had a negative case here to catch it shipping, or to catch it
+# regressing back.
+#
+# Built from concatenated chunks at runtime (see Case 15's TOK_GQL/TOK_KEY/
+# TOK_B64 above) so no secret-shaped literal sits in tracked source. The
+# SAME variables are reused in the fixture and the assertion so they cannot
+# drift apart.
+TOK_HEX_LOWER="f3a9c81b4e""72d0f6a1c8""9b3e5d7a02""c4f81b6e93"
+TOK_SCREAM_UPPER="API_TOKEN_""9XQ2M7B4RT""6PLW3ZN8H5""JC1FYD"
+SB="$(make_sandbox)"
+printf '%s\n' \
+  '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}' \
+  '{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"checked hashes"},{"type":"tool_use","name":"Bash","input":{"command":"client --sha '"$TOK_HEX_LOWER"'"}},{"type":"tool_use","name":"Bash","input":{"command":"client --env '"$TOK_SCREAM_UPPER"'"}}]}}' \
+  > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE17="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if [ -n "$NOTE17" ] && grep -qF "client --sha $TOK_HEX_LOWER" "$NOTE17"; then
+    pass "HIMMEL-1345: all-lowercase high-entropy token (hex-SHA shape) is NOT elided"
+else
+    fail "HIMMEL-1345: all-lowercase high-entropy token was elided or altered"
+fi
+if [ -n "$NOTE17" ] && grep -qF "client --env $TOK_SCREAM_UPPER" "$NOTE17"; then
+    pass "HIMMEL-1345: ALL-UPPERCASE/SCREAMING_SNAKE high-entropy token is NOT elided"
+else
+    fail "HIMMEL-1345: ALL-UPPERCASE/SCREAMING_SNAKE high-entropy token was elided or altered"
+fi
+rm -rf "$SB"
+
+# --- Case 18: a STANDALONE padded base64 operand (no key= prefix) is elided --
+# Regression guard for the scrub_word() key=value mis-split bug: the function
+# used to find the FIRST "=" in a token and treat everything before it as a
+# "key=" prefix, testing ONLY the suffix for opacity. A standalone padded
+# base64 token's first "=" is its own PADDING, so the tested suffix collapsed
+# to "="/"==" — too short to ever clear the length gate — and the secret
+# leaked verbatim. Every pre-existing fixture (TOK_B64 above) carries a
+# genuine "--blob=" prefix, which hid this. This case has NO key= prefix at
+# all: the token appears bare as a positional argument.
+#
+# Built from concatenated chunks (twin pattern of TOK_GQL/TOK_KEY/TOK_B64
+# above) so no secret-shaped literal sits in tracked source.
+TOK_B64_STANDALONE="QwErTyUiOp""AsDfGhJkLz""XcVbNm2468""013579+/=="
+SB="$(make_sandbox)"
+printf '%s\n' \
+  '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}' \
+  '{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"pushed the blob"},{"type":"tool_use","name":"Bash","input":{"command":"client push '"$TOK_B64_STANDALONE"'"}},{"type":"tool_use","name":"Bash","input":{"command":"git config env=prod"}}]}}' \
+  > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE18="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if [ -n "$NOTE18" ] && grep -qF 'client push <elided>' "$NOTE18" && ! grep -qF "$TOK_B64_STANDALONE" "$NOTE18"; then
+    pass "HIMMEL-1345: standalone padded base64 operand (no key= prefix) is elided"
+else
+    fail "HIMMEL-1345: standalone padded base64 operand leaked verbatim"
+fi
+if [ -n "$NOTE18" ] && grep -qF 'git config env=prod' "$NOTE18"; then
+    pass "HIMMEL-1345: an ordinary short key=value word is untouched"
+else
+    fail "HIMMEL-1345: an ordinary short key=value word was altered"
+fi
+rm -rf "$SB"
+
+# --- Case 19: a MIXED-CASE opaque prefix before a non-padding "=" is elided
+# whole (CodeRabbit finding, HIMMEL-1345 second round). Case 18's charset-only
+# keypart gate is not enough on its own: it accepts ANY alphanumeric prefix,
+# so a standalone opaque token whose "=" sits partway through on a
+# non-padding boundary — e.g. "AbCdEfGhIjKlMnOpQrStUvWxYz=tail" — is misread
+# as key="AbCdEfGhIjKlMnOpQrStUvWxYz" value="tail"; the short suffix again
+# never clears the length gate and the whole secret leaks. The fix reuses
+# is_opaque() on the keypart itself: a real key/flag/field name is always too
+# short to independently clear its own length gate (even a camelCase one
+# like the GraphQL "threadId" field, preserved by the existing Case 15
+# fixture), so only a keypart that is itself opaque — like this mixed-case,
+# high-entropy one — is rejected as a key, and the WHOLE token is tested for
+# opacity instead.
+#
+# Built from concatenated chunks (twin pattern of TOK_GQL/TOK_KEY/TOK_B64
+# above) so no secret-shaped literal sits in tracked source.
+TOK_MIXED_PREFIX="AbCdEfGhIj""KlMnOpQrSt""UvWxYz"
+TOK_POC="${TOK_MIXED_PREFIX}=tail"
+SB="$(make_sandbox)"
+printf '%s\n' \
+  '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}' \
+  '{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"synced"},{"type":"tool_use","name":"Bash","input":{"command":"client sync '"$TOK_POC"'"}}]}}' \
+  > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE19="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | head -1)"
+if [ -n "$NOTE19" ] && grep -qF 'client sync <elided>' "$NOTE19" && ! grep -qF '<elided>=tail' "$NOTE19" && ! grep -qF "$TOK_POC" "$NOTE19" && ! grep -qF "$TOK_MIXED_PREFIX" "$NOTE19"; then
+    pass "HIMMEL-1345: mixed-case opaque prefix before a non-padding = is elided whole"
+else
+    fail "HIMMEL-1345: mixed-case opaque prefix before a non-padding = leaked verbatim"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

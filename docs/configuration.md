@@ -493,7 +493,9 @@ the statusline segment):
 | `LUNA_VAULT_PATH` | `~/Documents/luna` | env (`~/.claude/settings.json` `env` block, or your shell profile) | which vault the luna tooling targets. `/end-session-wiki-setup` and `scripts/adopt.sh` persist it via `scripts/lib/wire-luna-vault.{sh,ps1}`. On Windows the value must be drive-qualified (`C:/…`) however it is set — a Git-Bash `/c/…` value resolves under `\c\Users\…` in the PowerShell hook; convert with `cygpath -m`. Exception: `/himmel-update`'s luna-template step (`scripts/himmel-update.sh`) bridges it from `.env` — every other reader needs a live-env value |
 | `CLAUDE_END_SESSION_WIKI` | unset | env | `0` disables the SessionEnd vault capture hook |
 | `OBSIDIAN_API_KEY` | unset (on-disk fallback works) | `.env` | Obsidian REST plugin access |
-| `PERPLEXITY_API_KEY` / `XAI_API_KEY` / `DASHSCOPE_API_KEY` | blank = feature off | `.env` | research/x-read skills, fleet-control providers |
+| `PERPLEXITY_API_KEY` | blank = feature off | `.env` | backs `/research`, `/research-deep` — **not adopted** (2026-07-29, no active subscription; see `docs/tooling-catalog.md`) |
+| `XAI_API_KEY` | blank = feature off | `.env` | backs `/x-read`, `/x-pulse`, `/youtube` — **not adopted** (2026-07-29, no active subscription; see `docs/tooling-catalog.md`) |
+| `DASHSCOPE_API_KEY` | blank = feature off | `.env` | fleet-control providers |
 | `SKILL_INDEX_DIR`, `SKILL_TELEMETRY_DISABLE`/`_DIR` | `~/.claude/skill-index` / on | env / shell | skill index + telemetry |
 | `ubuntu_vm_user`/`ubuntu_vm_pass`, `windows_vm_user`/`windows_vm_pass` | — | `.env` | test-VM credentials (deliberately lower-case names) |
 | `HIMMEL_REPO` | auto-resolved | env | pin the himmel checkout used by `/himmel-update` and the hooks' `.env` bridge |

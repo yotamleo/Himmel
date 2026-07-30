@@ -962,6 +962,37 @@ sync_graphify() {
     return 0
 }
 
+# ─── dependency-readiness advisory (HIMMEL-1393) ─────────────────────────────
+# Best-effort mirror of himmel-doctor's C17 (scripts/himmel-doctor.sh):
+# surfaces the SAME two drift directions (an enabled skill missing its
+# declared API key; an enabled+keyed skill whose docs still call its toolkit
+# disabled) right after an update, since a `git pull` is exactly the kind of
+# event that can introduce or fix a stale doc without the operator noticing.
+# Shares scripts/lib/dependency-readiness.sh's declaration map with the
+# doctor check — one source of truth. Presence-only, no network probes.
+# Advisory; never fails the update.
+report_dependency_readiness() {
+    local lib="$ROOT/scripts/lib/dependency-readiness.sh"
+    echo ""
+    echo "==> dependency readiness (HIMMEL-1393)"
+    if [ ! -f "$lib" ]; then echo "    skip: dependency-readiness.sh not found."; return 0; fi
+    # shellcheck source=scripts/lib/dependency-readiness.sh
+    # shellcheck disable=SC1091
+    . "$lib"
+    local out; out="$(REPO_ROOT="$ROOT" dependency_readiness_scan 2>/dev/null)"
+    local total; total="$(printf '%s\n' "$out" | grep -c '^READY-DRIFT ' || true)"
+    if [ "${total:-0}" -eq 0 ]; then
+        echo "    OK: no enabled skill missing its declared key, no ready toolkit mis-marked disabled."
+        return 0
+    fi
+    echo "    $total dependency-readiness finding(s) (presence-only, key values never read):"
+    # $3=skill $4=key — READY-DRIFT lines are "READY-DRIFT <direction> <skill> <key>";
+    # $2 is the direction label (the same off-by-one check_c17 had, fixed in lockstep).
+    printf '%s\n' "$out" | grep '^READY-DRIFT key-missing ' | awk '{print "      · "$3" is enabled but "$4" is absent/blank"}'
+    printf '%s\n' "$out" | grep '^READY-DRIFT doc-disabled ' | awk '{print "      · "$3" is enabled+keyed but a doc still marks its toolkit disabled"}'
+    return 0
+}
+
 # ─── existing advisory steps (best-effort; ALWAYS run, chain outcome or not)─
 # None of these are managed CHAIN items (headroom is HIMMEL-890 pending; graphify
 # is now covered by the best-effort sync_graphify step above, HIMMEL-1048) — they
@@ -976,6 +1007,7 @@ report_plugin_gap
 reconcile_plugins apply
 report_cadence_stale
 report_guardrail_block
+report_dependency_readiness
 
 print_status_table
 

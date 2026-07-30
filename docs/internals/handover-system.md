@@ -197,6 +197,11 @@ Consumed by `scripts/handover/auto-commit.sh`,
 `docs/handover/overnight-mode.md` Phase 1 (plans-root resolution per
 HIMMEL-133).
 
+`arm-resume.sh --automerge` (HIMMEL-1382) opt-in wires `ARMAUTOMERGE=1` and
+`CR_MERGE_GATE_OK=1` into the relaunched session's environment, so an armed
+chain's `merge` leg can actually reach `merge-on-green.sh`; omitted (both
+vars absent) by default.
+
 Scripts, commands, and skills must NOT hardcode `./handovers/`.
 Source `scripts/lib/handover-path.sh` and call `handover_root`
 instead. The resolver fails CLOSED when `HANDOVER_DIR` is set but

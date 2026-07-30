@@ -36,12 +36,19 @@ mkdir -p "$(dirname "$HO")"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 test handover\n' > "$HO"
 
 FAILED=0
+# On a mismatch, dump the arm's captured combined output (every call site
+# assigns it to $out). Without this the suite reported bare "expected rc=0, got
+# rc=2" lines and swallowed the one message that names the cause -- which is
+# what made HIMMEL-1301 cost a session to diagnose rather than a minute.
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
     if [ "$actual" = "$expected" ]; then
         echo "PASS $label (rc=$actual)"
     else
         echo "FAIL $label -- expected rc=$expected, got rc=$actual"
+        if [ -n "${out:-}" ]; then
+            printf '%s\n' "$out" | sed 's/^/    | /' >&2
+        fi
         FAILED=$((FAILED + 1))
     fi
 }
@@ -78,7 +85,48 @@ cat > "$SCHED_STUB/at" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at"
+# HIMMEL-1301 / HIMMEL-938: the schtasks /create above is a stateless "always
+# succeeds" fake -- it never registers anything with the real OS scheduler. On
+# an ACTUAL Windows box (this suite runs on Windows dev machines, not just
+# Linux CI), arm-resume's post-arm NextRunTime verify would otherwise fall
+# through to the REAL powershell, query the REAL (nonexistent, since /create
+# was faked) task, and correctly-but-spuriously refuse rc=2 -- deleting the
+# task -- on EVERY non-dry-run arm through this stub. That is exactly the
+# 17-assertion red this suite carried: T10/T11/T12/T15/T19/T20/T21/T22 all
+# arm for real, and the registry assertions cascaded off the rc=2.
+# Stubbing powershell as an unavailable probe takes arm-resume's documented
+# fail-OPEN path (WARN, arm stands) and keeps the fake create/verify pair
+# internally consistent. Faking a real NextRunTime instead would need the
+# requested TARGET_EPOCH, which the stub cannot know; the fail-open path is
+# the honest fake for tests that exercise queue-lock/registry behaviour, not
+# the verify feature itself. Same convention (and same reasoning) as
+# SCHED_STUB_T17 / make_stateful_sched in test-arm-resume.sh; the verify
+# feature has its own dedicated coverage there.
+cat > "$SCHED_STUB/powershell" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+# The powershell stub above only fail-OPENs while locale detection is HEALTHY.
+# arm-resume marks the locale path degraded when _win_short_date_pattern falls
+# back (`reg` missing/unreadable, or an empty sShortDate) or when the pattern
+# cannot be rendered numerically (a month-name picture like 'dd-MMM-yy'), and a
+# dead verify probe PLUS a degraded locale is the deliberate DUAL-failure
+# refuse: rc=2 and the task is deleted. Leaving the real `reg` in play would
+# therefore make this suite's result depend on the developer machine's locale
+# and registry access -- green here, and the same 17-assertion cascade back on
+# a month-name-locale box or wherever `reg` cannot be read. Pin a supported
+# pattern so the probe stub reliably exercises the intended fail-open path on
+# every host, and so Linux CI (no real `reg` at all) does not fall into the
+# dual-failure branch either. Same reasoning, same stub, as V5 in
+# test-arm-resume.sh; V8 there owns the dual-failure case on purpose.
+cat > "$SCHED_STUB/reg" <<'EOF'
+#!/usr/bin/env bash
+echo "HKEY_CURRENT_USER\\Control Panel\\International"
+echo "    sShortDate    REG_SZ    M/d/yyyy"
+exit 0
+EOF
+chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" \
+    "$SCHED_STUB/powershell" "$SCHED_STUB/reg"
 export PATH="$SCHED_STUB:$PATH"
 
 # --- T1: no lock, no registry -> plain dry-run arm succeeds -----------------

@@ -724,6 +724,97 @@ check_c15() {
         "reclaim: bash \"$REPO_ROOT/scripts/machine-setup/reconcile-enabled-plugins.sh\" (or set HIMMEL_RECONCILE_PLUGINS=1 so /himmel-update enforces it). Keep any you want by adding \"<plugin>\": true to ~/.claude/settings.local.json first."
 }
 
+# --- C17: dependency readiness -- enabled skills vs their required API keys ----
+# (HIMMEL-1393). Delegates to scripts/lib/dependency-readiness.sh (mirrors how
+# C10 delegates to propagation-drift.sh) so the SAME declaration map + logic
+# is shared with himmel-update's dependency-readiness advisory step. Two
+# drift directions, both WARN-only, never FAIL: (1) an enabled skill declares
+# a required env key that is absent/blank; (2) an enabled+keyed skill whose
+# toolkit a doc still calls disabled. Presence-only -- never reads/prints a
+# key VALUE. See the lib's own header comment for the motivating case (a
+# credentials file existing is not evidence of an active subscription).
+check_c17() {
+    local lib="$REPO_ROOT/scripts/lib/dependency-readiness.sh"
+    if [ ! -f "$lib" ]; then
+        emit INFO C17-dep-readiness "scripts/lib/dependency-readiness.sh not found -- skipped"
+        return
+    fi
+    # shellcheck source=scripts/lib/dependency-readiness.sh
+    # shellcheck disable=SC1091
+    . "$lib"
+    local out; out="$(dependency_readiness_scan 2>/dev/null)"
+    local total; total="$(printf '%s\n' "$out" | grep -c '^READY-DRIFT ' || true)"
+    if [ "${total:-0}" -eq 0 ]; then
+        emit OK C17-dep-readiness "no enabled skill is missing its declared API key, and no ready toolkit is mis-marked disabled"
+        return
+    fi
+    emit WARN C17-dep-readiness \
+        "$total dependency-readiness finding(s) -- presence-only check, key values never read" \
+        "key-missing: confirm the key in its .env, or disable the skill if there's no active subscription. doc-disabled: correct the doc."
+    printf '%s\n' "$out" | grep '^READY-DRIFT key-missing ' | awk '{print "       · "$3" is enabled but "$4" is absent/blank"}'
+    printf '%s\n' "$out" | grep '^READY-DRIFT doc-disabled ' | awk '{print "       · "$3" is enabled+keyed but a doc still marks its toolkit disabled"}'
+}
+
+# --- C18: monitored zero-usage command cluster (2026-07-29 skill-hygiene spec) --
+# WARN-only, "flag but don't auto-fix" like C15. That survey found five
+# project-scope commands with WEAK evidence (no supersession found anywhere,
+# "never used" is the only signal) and disposed them KEEP-monitor rather than
+# removed. No persistent usage-tracking mechanism exists yet (the survey's own
+# open question, §4 Q5) -- so this check applies the survey's own age/cost
+# thresholds (never-used AND age>60d, OR never-used AND age>30d AND cost>50
+# tok) to a STATIC declared table rather than a live usage counter. A command
+# dropping out of `.claude/commands/` (disabled/removed) silently drops out of
+# this check too -- nothing to update there. Update/remove an entry once a
+# fresh usage signal actually resolves it; don't let this table go stale.
+DOCTOR_C18_MONITORED='
+quiet-run|2026-05-18|17
+retitle|2026-06-22|37
+improve|2026-05-25|40
+guardrail-sim|2026-06-21|71
+cr-scores|2026-06-19|21
+'
+
+# portable YYYY-MM-DD -> epoch seconds; GNU date first (Git Bash/Linux), then
+# BSD date -j (macOS). Echoes nothing (rc=1) on an unparsable/foreign date --
+# callers must treat that as "skip", never crash.
+_c18_epoch() {
+    date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
+}
+
+check_c18() {
+    local cmds_dir="${DOCTOR_C18_COMMANDS_DIR:-$REPO_ROOT/.claude/commands}"
+    # Test seam only (default unset -- production always uses the built-in
+    # table above): lets the hermetic test supply landed-dates relative to
+    # its own run time instead of asserting against a live-clock threshold
+    # crossing on the real, fixed 2026-xx-xx dates.
+    local monitored="${DOCTOR_C18_MONITORED_OVERRIDE:-$DOCTOR_C18_MONITORED}"
+    local now; now="$(date +%s)"
+    local name landed cost added_epoch age_days hits hit_n
+    hits=""; hit_n=0
+    while IFS='|' read -r name landed cost; do
+        [ -n "$name" ] || continue
+        [ -f "$cmds_dir/$name.md" ] || continue   # already disabled/removed -- nothing to flag
+        added_epoch="$(_c18_epoch "$landed")"
+        case "$added_epoch" in ''|*[!0-9]*) continue ;; esac   # unparsable date -- skip, never crash
+        age_days=$(( (now - added_epoch) / 86400 ))
+        if [ "$age_days" -gt 60 ] || { [ "$age_days" -gt 30 ] && [ "${cost:-0}" -gt 50 ]; }; then
+            hits="${hits}${name} (${age_days}d old, ~${cost} tok)
+"
+            hit_n=$((hit_n + 1))
+        fi
+    done <<EOF
+$monitored
+EOF
+    if [ "$hit_n" -eq 0 ]; then
+        emit OK C18-skill-usage "no monitored zero-usage command has crossed its staleness threshold"
+        return
+    fi
+    emit WARN C18-skill-usage \
+        "$hit_n monitored command(s) from the 2026-07-29 skill-hygiene survey are still zero-usage past their threshold" \
+        "re-confirm real usage; disable/remove if still unused, or clear the entry in check_c18 if it's now in active use"
+    printf '%s' "$hits" | sed '/^$/d' | sed 's/^/       · /'
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -743,6 +834,8 @@ check_c13
 check_c14
 check_c15
 check_c16
+check_c17
+check_c18
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

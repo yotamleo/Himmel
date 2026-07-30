@@ -548,7 +548,10 @@ format_usd() {
         else                      printf "%.4f", n;
     }'
 }
-# Sets read_savings_rate and write_overhead_rate (USD per token, float)
+# Sets read_savings_rate and write_overhead_rate (USD per token, float) and
+# model_rate_known (1 = an explicit rate card matched; 0 = the *) fallback,
+# priced at Sonnet rates as a guess). The 0 flags the guess so a `?` is shown
+# on the net (HIMMEL-1316) instead of the operator reading a guess as a fact.
 get_model_savings_rate() {
     local model_id="${1:-claude-sonnet}"
     local input_price cache_read_price cache_write_price
@@ -556,6 +559,7 @@ get_model_savings_rate() {
     # input (1h TTL; 5m write = 1.25x). Cache rows derived from the standard
     # prompt-caching multipliers. Case ORDER matters: higher-priced /
     # more-specific globs must precede glm/gpt/default so they win.
+    model_rate_known=1
     case "$model_id" in
         claude-fable*)  input_price=10.00; cache_read_price=1.00;  cache_write_price=20.00 ;; # 1h; 5m=12.50
         claude-mythos*) input_price=10.00; cache_read_price=1.00;  cache_write_price=20.00 ;; # 1h; 5m=12.50
@@ -564,7 +568,7 @@ get_model_savings_rate() {
         claude-sonnet*) input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ;; # 1h; 5m=3.75
         glm-*)          input_price=1.40;  cache_read_price=0.26;  cache_write_price=1.40  ;; # z.ai promo: free cache-write, write_overhead 0
         gpt-5*)         input_price=5.00;  cache_read_price=0.50;  cache_write_price=5.00  ;; # gpt-5.5 standard tier: no write premium, write_overhead 0
-        *)              input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ;;
+        *)              input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ; model_rate_known=0 ;;
     esac
     read_savings_rate=$(awk  -v i="$input_price" -v r="$cache_read_price"  'BEGIN{printf "%.8f",(i-r)/1000000}')
     write_overhead_rate=$(awk -v w="$cache_write_price" -v i="$input_price" 'BEGIN{printf "%.8f",(w-i)/1000000}')
@@ -1147,6 +1151,13 @@ build_cache_lines() {
     read_session_cache_stats "$transcript_path"
     get_model_savings_rate "$model_id"
 
+    # HIMMEL-1316: a trailing `?` on the net flags a model priced by the *)
+    # fallback (Sonnet rates as a guess) so the operator does not read a guess
+    # as a fact. Recognised models render unchanged — model_rate_known stays 1.
+    # Fail-safe default so an unset flag never spuriously marks a recognised row.
+    local net_q=""
+    [ "${model_rate_known:-1}" -eq 0 ] && net_q="?"
+
     # ── TTL lines ──────────────────────────────────────────
     # Compute both tiers up front, then hide an *expired* tier when the other
     # is still live — otherwise a single early 5m-cache write leaves a permanent
@@ -1209,7 +1220,7 @@ build_cache_lines() {
     local sess_line="${white}session${reset}  "
     sess_line+="${dim}r:${reset}${white}${r_fmt}${reset}  ${dim}w:${reset}${white}${w_fmt}${reset}  "
     sess_line+="${dim}hit:${reset}${white}${hit_pct}%${reset}  "
-    sess_line+="${dim}net${reset} ${net_color}${net_sign}\$${net_abs}${reset}${cost_part}"
+    sess_line+="${dim}net${reset} ${net_color}${net_sign}\$${net_abs}${net_q}${reset}${cost_part}"
 
     # ── All-sessions stats line ────────────────────────────
     # Bottom-row period (HIMMEL-617): week | month | all (default all). An
@@ -1244,7 +1255,7 @@ build_cache_lines() {
     esac
     all_line+="${dim}r:${reset}${white}${ar_fmt}${reset}  ${dim}w:${reset}${white}${aw_fmt}${reset}  "
     all_line+="${dim}hit:${reset}${white}${all_hit}%${reset}  "
-    all_line+="${dim}net${reset} ${all_color}${all_sign}\$${all_abs}${reset}"
+    all_line+="${dim}net${reset} ${all_color}${all_sign}\$${all_abs}${net_q}${reset}"
 
     cache_lines="${ttl_lines}${sess_line}\n${all_line}"
 }
