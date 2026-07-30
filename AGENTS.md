@@ -238,17 +238,6 @@ Non-obvious: `/worktree` refuses a branch whose PR is already MERGED (bypass:
 `REUSE_MERGED_BRANCH_OK=1`), and `/himmel-doctor` C7 flags lingering merged-PR
 worktrees read-only (points to `/clean`; no `--fix`).
 
-### Tests (the non-guessable invocations)
-- **Every shell suite:** `bash scripts/ci/run-shell-tests.sh` (`--list` = plan
-  only). Its SKIP_LIST is the ledger of suites needing the agent stack, a VM,
-  or network.
-- **Lanes:** `node --test "scripts/lanes/tests/**/*.test.mjs"` — no
-  `package.json` by design, so `npm test` does NOT reach it.
-- **Bun:** `cd scripts/luna-vitals && bun test`.
-
-Actions is **OFF on the private repo by design** (pre-commit locally; CI on the
-public mirror) — a green private PR is not evidence any suite ran.
-
 ### Handover
 All personal handover state is centralized in your handover state repo
 (configured via `/handover-setup` / `$HANDOVER_DIR`; himmel `handovers/`
