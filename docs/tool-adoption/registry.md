@@ -23,6 +23,8 @@
   - `parked-idea` is a fourth label, used only in the own-items index
     below: an in-house item we like and want searchable to borrow from —
     NOT a community ADOPT/REJECT decision, and NOT committed to ship.
+  - `provisional` is a fifth label: not yet a rubric decision state — an
+    ADR exists but awaits operator sign-off. The row must name the ADR.
 - **KPI** is the desired outcome-per-session, never %-tokens
   ([rubric §1](rubric.md#1-goal-articulation) — the vanity-metric trap).
 - **Measuring `in-use` rows** — the before/after protocol only applies to

@@ -98,7 +98,7 @@ usage() {
   echo "  --dry-run  run the audit, never push (even with --push)" >&2
   echo "  --push     push the rebased branch to fork_repo when clean + additive" >&2
   echo "  exit: 0 clean+additive | 1 already on target | 2 usage/registry/refs" >&2
-  echo "        | 3 SKIP no fork block | 4 conflicted or not additive" >&2
+  echo "        | 3 SKIP no fork block | 4 conflicted/non-additive or pin-literal (PIN_FILE_MISSING/PIN_NOT_FOUND/PIN_AMBIGUOUS)" >&2
 }
 
 NAME=""
