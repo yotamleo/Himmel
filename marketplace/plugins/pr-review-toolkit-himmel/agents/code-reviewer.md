@@ -95,7 +95,7 @@ debating whether the reviewer is right or wrong rather than fixing
 real bugs.
 
 **This rule applies ONLY to Critical (91-100) findings.** Important
-(80-89) and below findings do not require verbatim verification —
+(76-90) and below findings do not require verbatim verification —
 those tiers tolerate some inference and pattern-matching. Critical
 findings block PRs; they must be verified.
 
@@ -117,7 +117,7 @@ Start by listing what you're reviewing. For every finding you report — regardl
 - Concrete fix suggestion
 - **For Critical findings:** include a one-line verify-before-critical attestation: `verified: <cited-content> found at <file:line>` OR `verified-via-context: <surrounding-content> found at <file:line>` (refactor-edge-case).
 
-Group issues by severity (Critical: 91-100, Important: 80-90, Suggestion: below 80). Per HIMMEL-1405, the Suggestion group is not optional — it is where the Issue Confidence Scoring section's mandate to report every finding, including 51-75, actually lands in the output.
+Group issues by severity (Critical: 91-100, Important: 76-90, Suggestion: below 76). Per HIMMEL-1405, the Suggestion group is not optional — it is where the Issue Confidence Scoring section's mandate to report every finding, including 51-75, actually lands in the output.
 
 If zero findings exist across all three severities, confirm the code meets standards with a brief summary.
 

@@ -150,6 +150,7 @@ Steps:
        companion=$(cygpath -m "$companion")
    fi
    if [ "${CR_PROFILE:-}" = "none" ]; then
+       echo "claude-only (CR_PROFILE=none) — codex adversarial pass not launched"
        : # claude-only — codex adversarial pass also skipped under none (step 3.1's harvest skips too).
    elif [ -z "$companion" ]; then
        echo "codex adversarial pass skipped (codex not configured)"
@@ -315,7 +316,14 @@ Steps:
        # leave codex_to empty, and surface as a wrong cause for a value that
        # looks perfectly configured. Same fix critic-panel.sh applies to its
        # own copy of this variable.
-       codex_to=$(( 10#${CRITIC_TIMEOUT_SECS:-240} * 2 ))
+       # Normalize BEFORE the 10# arithmetic: a non-numeric value (e.g. "abc")
+       # dies the `$(( ))` outright, and a negative or zero value yields an
+       # instant timeout — neither matches the documented contract
+       # (critic-panel.sh falls back to 240 on the same bad-value cases).
+       codex_timeout=${CRITIC_TIMEOUT_SECS:-240}
+       case "$codex_timeout" in ''|*[!0-9]*) codex_timeout=240 ;; esac
+       [ "$codex_timeout" -gt 0 ] || codex_timeout=240
+       codex_to=$(( 10#$codex_timeout * 2 ))
        # Bounded poll loop, NOT `timeout` (Windows note, HIMMEL-1407): `timeout`
        # cannot wrap an already-detached background PID, and a poll loop
        # degrades gracefully on any host regardless of whether `timeout` is
@@ -330,6 +338,14 @@ Steps:
        if kill -0 "$codex_pid" 2>/dev/null; then
            # Still running after the bounded additional wait — kill it and
            # record a timeout, same fail-open outcome as the old rc=124/137 case.
+           # Prefer a Windows tree-kill: plain `kill "$codex_pid"` reaches node
+           # but not the subprocesses the companion spawns (test suites) —
+           # double-slash `//PID`/`//T`/`//F` guards against MSYS path-mangling
+           # rewriting a leading `/` into a path. Full portable process-group
+           # kill is HIMMEL-1409; the POSIX kill chain stays as the fallback.
+           if command -v taskkill >/dev/null 2>&1; then
+               taskkill //PID "$codex_pid" //T //F 2>/dev/null
+           fi
            kill "$codex_pid" 2>/dev/null; sleep 1; kill -9 "$codex_pid" 2>/dev/null
            echo "codex adversarial pass timed out (>${codex_to}s after the panel finished; stderr: $codex_err_file) — continuing without it" >&2
            codex_findings=""; codex_rc=124

@@ -339,7 +339,7 @@ _graph_structural_fields() {
   if command -v jq >/dev/null 2>&1; then
     jq -r '
       ((.nodes // [])[]      | "node id=\(.id // "") source_file=\(.source_file // "") source_url=\(.source_url // "")"),
-      ((.links // [])[]      | "link source=\(.source // "") target=\(.target // "") source_file=\(.source_file // "")"),
+      ((((.links // []) + (.edges // []))[]) | "link source=\(.source // "") target=\(.target // "") source_file=\(.source_file // "")"),
       ((.hyperedges // [])[] | "hyperedge id=\(.id // "") source_file=\(.source_file // "") nodes=\(((.nodes // []) | join(",")))")
     ' "$graph_json" > "$out_txt" 2>/dev/null
     return $?
@@ -355,7 +355,7 @@ def s(v):
     return "" if v is None else str(v)
 for n in data.get("nodes") or []:
     print("node id=%s source_file=%s source_url=%s" % (s(n.get("id")), s(n.get("source_file")), s(n.get("source_url"))))
-for l in data.get("links") or []:
+for l in (data.get("links") or []) + (data.get("edges") or []):
     print("link source=%s target=%s source_file=%s" % (s(l.get("source")), s(l.get("target")), s(l.get("source_file"))))
 for h in data.get("hyperedges") or []:
     nodes_field = ",".join(s(x) for x in (h.get("nodes") or []))

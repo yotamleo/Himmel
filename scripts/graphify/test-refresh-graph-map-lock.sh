@@ -51,7 +51,7 @@ make_stub() {
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[],"gen":"$gen"}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[],"gen":"$gen"}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $content
 RPT

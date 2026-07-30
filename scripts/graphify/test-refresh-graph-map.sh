@@ -53,7 +53,7 @@ cat > "$BIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -100,7 +100,7 @@ printf '%s\n' "\$@" >> "$BACKEND_LOG"
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -247,7 +247,7 @@ cat > "$EBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -304,7 +304,7 @@ cat > "$PBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -341,7 +341,7 @@ cat > "$GBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 printf '# Graph Report - X\ntotally unparseable garbage body - no recognizable sections at all\n' > "\$target/graphify-out/GRAPH_REPORT.md"
 exit 0
 STUB
@@ -483,7 +483,7 @@ done
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -517,7 +517,7 @@ cat > "$LEAKBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 winpath="C:/Users/testop/AppData/Local/Temp/\$(basename "\$target")"
 {
   printf '# Graph Report - %s  (2026-07-17)\n\n' "\$winpath"
@@ -562,7 +562,7 @@ cat > "$GUARDBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 {
   printf '# Graph Report - X  (2026-07-17)\n\n'
   printf '## Summary\n- 42 nodes . 30 edges . 5 communities (5 shown)\n\n'
@@ -610,7 +610,7 @@ cat > "$MULTIBIN/graphify" <<'STUB'
 target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "$target/graphify-out/graph.json"
 {
   printf '# Graph Report - X  (2026-07-17)\n'
   i=1
@@ -657,7 +657,7 @@ cat > "$JSONBIN/graphify" <<'STUB'
 target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out"
-printf '{"nodes":[{"id":"n1","source_file":"C:\\\\Users\\\\leaker\\\\AppData\\\\Local\\\\Temp\\\\case"}],"edges":[]}' \
+printf '{"nodes":[{"id":"n1","source_file":"C:\\\\Users\\\\leaker\\\\AppData\\\\Local\\\\Temp\\\\case"}],"links":[]}' \
   > "$target/graphify-out/graph.json"
 printf '# Graph Report - X  (2026-07-17)\n\n## Summary\n- 1 nodes . 0 edges . 1 communities (1 shown)\n' \
   > "$target/graphify-out/GRAPH_REPORT.md"
@@ -712,7 +712,7 @@ cat > "$FPBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $FP_REPORT_FIXTURE
 RPT
@@ -752,7 +752,7 @@ cat > "$TPBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $TP_REPORT_FIXTURE
 RPT
@@ -800,7 +800,7 @@ cat > "$SCANBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -848,7 +848,7 @@ cat > "$AWKBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -906,7 +906,7 @@ cat > "$PRIORBIN/graphify" <<STUB
 target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 {
   printf '# Graph Report - X  (2026-07-17)\n\n'
   printf '## Summary\n- 42 nodes . 30 edges . 5 communities (5 shown)\n\n'
@@ -1016,7 +1016,7 @@ cat > "$BADHDRBIN/graphify" <<'STUB'
 target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "$target/graphify-out/graph.json"
 printf 'Totally Different Header Format\nnot a graphify report at all\n' > "$target/graphify-out/GRAPH_REPORT.md"
 exit 0
 STUB
@@ -1073,7 +1073,7 @@ cat > "$NULBIN/graphify" <<'STUB'
 target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out"
-printf '{"nodes":[],"edges":[]}' > "$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "$target/graphify-out/graph.json"
 {
   printf '# Graph Report - X\n\nsome text'
   printf '\0'
@@ -1225,7 +1225,7 @@ if [ "\$1" != "cluster-only" ]; then
 else
   rm -f "\$target/graphify-out/.graphify_analysis.json"
 fi
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -1297,7 +1297,7 @@ target=""
 if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
 mkdir -p "\$target/graphify-out/cache"
 printf 'STAGED' > "\$target/graphify-out/cache/staged.marker"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -1342,7 +1342,7 @@ mkdir -p "\$target/graphify-out"
 # The refresh produced NO semantic cache: drop whatever the runner seeded into
 # scratch and write none back.
 rm -rf "\$target/graphify-out/cache"
-printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
 cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
 $REPORT_FIXTURE
 RPT
@@ -1386,7 +1386,7 @@ target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out/cache"
 printf 'SENTINEL-PAID-EXTRACTION-CACHE' > "$target/graphify-out/cache/semantic.cache"
-printf '{"nodes":[{"id":"sentinel-node"}],"edges":[]}' > "$target/graphify-out/graph.json"
+printf '{"nodes":[{"id":"sentinel-node"}],"links":[]}' > "$target/graphify-out/graph.json"
 {
   printf '# Graph Report - X  (2026-07-17)\n\n'
   printf '## Summary\n- 42 nodes . 30 edges . 5 communities (5 shown)\n\n'
@@ -1445,7 +1445,7 @@ cat > "$CONTENTBIN/graphify" <<'STUB'
 target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out"
-printf '{"nodes":[{"id":"n1","label":"See C:\\\\Users\\\\labelleaktoken\\\\notes.md for details","source_file":"notes/a.md"}],"edges":[]}' \
+printf '{"nodes":[{"id":"n1","label":"See C:\\\\Users\\\\labelleaktoken\\\\notes.md for details","source_file":"notes/a.md"}],"links":[]}' \
   > "$target/graphify-out/graph.json"
 printf '# Graph Report - X  (2026-07-17)\n\n## Summary\n- 1 nodes . 0 edges . 1 communities (1 shown)\n' \
   > "$target/graphify-out/GRAPH_REPORT.md"
@@ -1471,7 +1471,7 @@ cat > "$STRUCTBIN/graphify" <<'STUB'
 target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out"
-printf '{"nodes":[{"id":"n1","label":"a perfectly ordinary node","source_file":"C:\\\\Users\\\\structleaktoken\\\\notes.md"}],"edges":[]}' \
+printf '{"nodes":[{"id":"n1","label":"a perfectly ordinary node","source_file":"C:\\\\Users\\\\structleaktoken\\\\notes.md"}],"links":[]}' \
   > "$target/graphify-out/graph.json"
 printf '# Graph Report - X  (2026-07-17)\n\n## Summary\n- 1 nodes . 0 edges . 1 communities (1 shown)\n' \
   > "$target/graphify-out/GRAPH_REPORT.md"
