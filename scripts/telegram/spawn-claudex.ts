@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
 import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, isHelpFlag } from "./spawn-glm";
+import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, isHelpFlag } from "./spawn-glm";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
@@ -47,8 +47,21 @@ export function claudexSessionRoot(): string {
 export function composeClaudexWorkerPrompt(task: string, sessionDir: string, branch: string, opts?: { shared?: boolean }): string {
   const outbox = join(sessionDir, "outbox.jsonl");
   const context = join(sessionDir, "context.md");
+  // HIMMEL-1342: shared mode's ONE sanctioned base-integration verb is
+  // `git merge main`. An earlier revision of this PR permitted `git rebase
+  // main` instead (per-commit conflict surfacing is gentler on a stale
+  // branch: one merge once produced a ~400-file conflict set where a rebase
+  // would have surfaced ~7 small ones) — but a rebase REWRITES the branch's
+  // published SHAs, and publishing a rewritten branch requires the force-push
+  // this same brief bans, so the carve-out was inert as written: permitted,
+  // never publishable (PR #1458 CR round). A merge commit ADDS to history
+  // without touching any existing SHA, so the validating session that owns
+  // the git surface publishes the result with an ordinary fast-forward push.
+  // reset/rebase/amend/force stay banned wholesale. Single-writer is
+  // unaffected: the merge runs under the lock during runBody, exactly like
+  // any other worker git op.
   const branchLine = opts?.shared
-    ? `Work ONLY inside your current directory (a dedicated git worktree). The branch ${branch} is a SHARED PR branch with EXISTING history, already checked out — do NOT create a new branch, do NOT reset/rebase/amend/force-anything; ADD new commits on top only. A lock serializes writers, so no other worker touches this branch while you run.`
+    ? `Work ONLY inside your current directory (a dedicated git worktree). The branch ${branch} is a SHARED PR branch with EXISTING history, already checked out — do NOT create a new branch, do NOT reset/rebase/amend/force-anything. To make a change, ADD new commits on top only — never rewrite an existing commit to alter what it did. To bring this branch up to date with its PR base, run \`git merge main\` and resolve any conflicts — a merge commit ADDS to history without rewriting any existing SHA, so the session that publishes your branch needs only an ordinary fast-forward push; a rebase would rewrite the branch's published SHAs and force a force-push, and both stay banned (HIMMEL-1342). A lock serializes writers, so no other worker touches this branch while you run.`
     : `Work ONLY inside your current directory (a dedicated git worktree). Commit your work on the branch ${branch} which is already checked out.`;
   return [
     `You are an unattended claudex-lane worker session (himmel offload, codex weekly bank, HIMMEL-654/979/1003) — do the scoped chunk below and stop, do not expand scope.`,
@@ -57,6 +70,10 @@ export function composeClaudexWorkerPrompt(task: string, sessionDir: string, bra
     // HIMMEL-1218: RETASK channel — see spawn-glm.ts's composeWorkerPrompt for
     // the same block; imported verbatim so both lanes carry identical rules text.
     composeRetaskBlock(mintRetaskNonce()),
+    // HIMMEL-1378: same HIMMEL-203 bash-shape warning as the GLM twin — see
+    // spawn-glm.ts's composeBashShapeWarning for the root-cause evidence.
+    composeBashShapeWarning(outbox),
+    composeOutboxWriteHint(outbox),
     `Report progress by APPENDING one JSON line {"text":"<note>"} per update to ${outbox}. That is the only channel to the operator.`,
     `THE TASK: ${task}`,
     `As your FINAL action, append a one-line summary of what you did to ${context}, then stop.`,
@@ -449,17 +466,25 @@ export const MAX_TOTAL_BACKOFF_MS = 180_000;
 export const CLAUDEX_PREFLIGHT_GAP_EXIT = 20;
 // Hard per-probe wall-clock cap so ONE synchronous probe can never blow the
 // preflight's absolute deadline (codex/coderabbit CR: spawnSync is not
-// cancellable, so bound it at the source). Comfortably above the launcher's own
-// curl -m 8 plus bash/guard overhead; a probe killed at this cap is transient.
-export const PROBE_TIMEOUT_MS = 12_000;
+// cancellable, so bound it at the source). HIMMEL-1380 (codex-adv CR): the old
+// 12s cap left too little headroom once curl's own budget rose to -m 10 — the
+// launcher's bash/guard overhead ALONE (sourcing config, egress checks, etc.,
+// with no real network latency) was independently measured at several
+// seconds on Windows Git Bash, so 10s curl + that overhead could exceed 12s
+// and get the probe KILLED (misread as "unavailable") even on a healthy lane
+// — the exact misclassification this ticket exists to fix. Raised to 25s:
+// curl's 10s ceiling + a generous overhead allowance + margin.
+export const PROBE_TIMEOUT_MS = 25_000;
 export type AuthProbeResult = "ok" | "unavailable" | "fatal";
 
 // Run the launcher's --preflight-only auth probe (no worker spawned). The
-// launcher exercises the REAL upstream provider (a 1-token /v1/messages call),
-// so this distinguishes:
+// launcher exercises the REAL upstream provider (a 16-token /v1/messages call,
+// HIMMEL-1380 — a reasoning model emits reasoning tokens before content, so a
+// 1-token budget was a poor liveness test), so this distinguishes:
 //   exit 0                        ⇒ "ok"        (auth healthy, or a non-gap
 //                                                 status the real run surfaces)
-//   exit CLAUDEX_PREFLIGHT_GAP_EXIT⇒ "unavailable" (transient 503 refresh gap → retry)
+//   exit CLAUDEX_PREFLIGHT_GAP_EXIT⇒ "unavailable" (transient 503 refresh gap,
+//                                                 408 probe timeout, etc. → retry)
 //   any other nonzero             ⇒ "fatal"     (missing key / config / egress
 //                                                 refusal — permanent; abort, do
 //                                                 NOT retry or mint a worktree)
@@ -473,6 +498,12 @@ export function probeClaudexAuth(repoRoot: string, cwd: string, timeoutMs: numbe
   if (r.exitCode === null || r.signalCode != null) return "unavailable"; // killed / timed out
   if (r.exitCode === 0) return "ok";
   if (r.exitCode === CLAUDEX_PREFLIGHT_GAP_EXIT) return "unavailable";
+  // HIMMEL-1380: the launcher already logged "HTTP <code> — body: …" to its own
+  // stderr right before this exit — forward it verbatim so the operator-facing
+  // fatal message (below, in the caller) is backed by what was actually
+  // measured instead of a fixed list of suspected causes.
+  const evidence = r.stderr?.toString().trim();
+  if (evidence) console.error(`spawn-claudex: ${evidence}`);
   return "fatal";
 }
 
@@ -691,14 +722,20 @@ export async function runClaudexSharedDispatch(p: {
 // there is no exit-3 GLM-guard equivalent here — claude-codex owns PHI/egress
 // guarding itself, D1).
 async function main(): Promise<void> {
-  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--effort low|medium|high|xhigh] [--profile <name>] [--add-plugins a@m,b@m] [--force] [--skip-auth-preflight]";
+  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--effort low|medium|high|xhigh] [--profile <name>] [--add-plugins a@m,b@m] [--force] [--skip-auth-preflight] (default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
   const rawArgv = process.argv.slice(2);
   // HIMMEL-1225: help short-circuit — before parseClaudexArgs, before any side effect.
   if (isHelpFlag(rawArgv)) { console.log(usage); process.exit(0); }
   const parsed = parseClaudexArgs(rawArgv);
   if (!parsed.ok) { console.error(`spawn-claudex: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, effort, force, skipAuthPreflight, profile, addPlugins } = parsed.args;
+  const { task, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, effort, force, skipAuthPreflight, profile, addPlugins } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
+  // HIMMEL-1378: same structural forbid + worker default as spawn-glm.ts — see
+  // its composeWorkerSettings/refuseBypassPermissions comment for the full
+  // design rationale (twin lane, identical hang class + fix).
+  const bypassRefusal = refuseBypassPermissions(permModeArg);
+  if (bypassRefusal) { console.error(`spawn-claudex: ${bypassRefusal}`); console.error(usage); process.exit(2); }
+  const permMode: PermissionMode = permModeArg ?? "dontAsk";
   const absCwd = resolve(cwd);
   // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —
   // an unknown --profile / malformed --add-plugins id is a clean usage refusal
@@ -771,8 +808,14 @@ async function main(): Promise<void> {
     const pf = await runAuthPreflightWithBackoff((t) => probeClaudexAuth(REPO_ROOT, absCwd, t), { delaysMs: preflightDelaysMs, sleep, log: (m) => console.error(m) });
     if (!pf.ready) {
       console.error(pf.fatal
-        ? "spawn-claudex: codex auth preflight reports a PERMANENT failure (missing/invalid CLIPROXY_API_KEY, a deterministic auth 4xx like 401/403, curl unavailable, or a config/egress refusal — NOT a transient 5xx/timeout, which is retried) — aborting before any worktree; fix the claude-codex config, then re-dispatch (HIMMEL-1037)."
-        : "spawn-claudex: codex auth still unavailable (503 refresh gap / transient 5xx/timeout) after the full backoff budget — refusing rather than launch into a known-doomed auth state (would reproduce the failure and strand a worktree); re-dispatch once the gateway recovers (HIMMEL-1037).");
+        // HIMMEL-1380: name what was measured, not an asserted cause — the
+        // "spawn-claudex: preflight probe observed HTTP …" line above (forwarded
+        // from the launcher's own stderr) carries the actual status + body
+        // excerpt. Only a 401/403 is a deterministic invalid-key signal; curl
+        // unavailable and egress refusal are the other permanent causes, but a
+        // bare CLIPROXY_API_KEY accusation is no longer asserted here.
+        ? "spawn-claudex: codex auth preflight reports a PERMANENT failure — see the preflight-probe evidence line above for the observed status/body (only 401/403 means an invalid CLIPROXY_API_KEY; other causes: curl unavailable, or a config/egress refusal — NOT a transient 5xx/408/timeout, which is retried) — aborting before any worktree; fix the claude-codex config, then re-dispatch (HIMMEL-1037/1380)."
+        : "spawn-claudex: codex auth still unavailable (503 refresh gap / transient 5xx/408/timeout) after the full backoff budget — refusing rather than launch into a known-doomed auth state (would reproduce the failure and strand a worktree); re-dispatch once the gateway recovers (HIMMEL-1037).");
       process.exit(2);
     }
   }
@@ -792,9 +835,11 @@ async function main(): Promise<void> {
     // "running" write a throw would leave meta stuck at running (a phantom worker
     // for fleet control). Resolving here keeps the "meta.json ALWAYS leaves
     // running" invariant. Uses the WORKTREE — the cwd the worker runs in.
-    let settings: string | undefined;
+    let settings: string;
     try {
-      settings = resolveProfileSettings(profile, addPlugins, worktree);
+      // HIMMEL-1378: same permission-hardening overlay as spawn-glm.ts's twin —
+      // never optional, so --settings is now unconditionally passed.
+      settings = composeWorkerSettings(resolveProfileSettings(profile, addPlugins, worktree), worktree, sessionDir);
     } catch (e) {
       // HIMMEL-1094: the resolve NEEDS the worktree cwd (branch-local settings
       // layers), so it necessarily runs after `worktree add` — which is why a

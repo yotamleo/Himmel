@@ -344,6 +344,153 @@ fi
 
 filter_commands "$COMMANDS"
 
+# scrub_opaque_tokens <text> — replace long, high-entropy, opaque operands
+# (GitHub GraphQL node IDs, API keys, base64-ish blobs) with `<elided>` before
+# a command is copied into a vault note (HIMMEL-1345). The commands captured
+# here are transcript-derived and copied VERBATIM — a public but high-entropy
+# operand (e.g. a GraphQL global node ID, not a secret) still trips gitleaks'
+# generic-api-key rule in the vault repo and silently wedges the autosync.
+# Scrubbing at the source closes the whole class instead of allowlisting one
+# shape (HIMMEL-1340 already allowlisted the exact reported shape in luna's
+# .gitleaks.toml; this is the durable half — the next opaque token shouldn't
+# need its own allowlist entry).
+#
+# Tokenizes each line on whitespace and elides only an opaque VALUE (never
+# the surrounding command/subcommand/flag/path text), so `-F threadId="…"`
+# reads as `-F threadId="<elided>"` — a human still knows WHICH command ran.
+# A token is opaque iff ALL of:
+#   - length >= 20
+#   - every character is [A-Za-z0-9_./+=-]  (widened from [A-Za-z0-9_.] so
+#     real API keys and base64 blobs — which routinely contain `-` `/` `+`
+#     `=` — are actually matched; still excludes `\`, `:`, `@`, whitespace,
+#     and quote characters)
+#   - contains BOTH an uppercase and a lowercase letter (excludes hex SHAs —
+#     lowercase-only — ALL_CAPS identifiers/SCREAMING_SNAKE_CASE env vars,
+#     and most file paths/URLs/branch/ticket slugs, which are conventionally
+#     lowercase or a single-case compound)
+#   - Shannon entropy (bits/char, over the token's own character
+#     distribution) >= 3.8
+# Now that `/` and `-` are accepted, charset alone no longer excludes file
+# paths, URLs, flags, or branch/ticket slugs — what keeps those readable in
+# practice is the mixed-case gate (they're conventionally single-case:
+# lowercase paths/URLs/slugs, or ALL_CAPS env vars) plus the length and
+# entropy gates. Thresholds were tuned against the real wedging case (a
+# 21-char GH GraphQL node ID, entropy ~4.1 bits/char — comfortably clears
+# every gate) and this repo's own command history (full git SHAs, branch
+# names, flag names, SCREAMING_SNAKE env vars, file paths — all comfortably
+# excluded, now via the mixed-case gate rather than charset). Known gap: a
+# long mixed-case compound identifier that also clears length + entropy —
+# e.g. an invented 30+-char camelCase symbol name, or (new with this
+# charset widening) a mixed-case URL/path/branch segment — could in
+# principle get elided; no such case was found in this repo's real command
+# history.
+scrub_opaque_tokens() {
+    local text="$1"
+    printf '%s\n' "$text" | awk '
+    function shannon_entropy(s,    i, c, n, counts, ent, p) {
+        n = length(s)
+        if (n == 0) return 0
+        delete counts
+        for (i = 1; i <= n; i++) {
+            c = substr(s, i, 1)
+            counts[c]++
+        }
+        ent = 0
+        for (c in counts) {
+            p = counts[c] / n
+            ent -= p * log(p) / log(2)
+        }
+        return ent
+    }
+    function is_opaque(tok,    n) {
+        n = length(tok)
+        if (n < 20) return 0
+        if (tok !~ /^[A-Za-z0-9_./+=-]+$/) return 0
+        if (tok !~ /[a-z]/ || tok !~ /[A-Z]/) return 0
+        if (shannon_entropy(tok) < 3.8) return 0
+        return 1
+    }
+    function scrub_word(w,    eq, prefix, val, q, first, last, vlen, keypart, suffix) {
+        prefix = ""
+        val = w
+        eq = index(val, "=")
+        if (eq > 0) {
+            # Only treat this as a key=value pair when the part before "="
+            # actually looks like a key/flag AND the part after "=" is more
+            # than bare padding. Without this gate, a STANDALONE padded
+            # base64 token (e.g. "AbCdEf...xyz+/==") is misread as
+            # key="AbCdEf...xyz+/" value="==" — the tested suffix collapses
+            # to just padding, never clears the length gate, and the whole
+            # secret leaks verbatim (HIMMEL-1345).
+            #
+            # The charset check alone is NOT enough: a charset-only gate
+            # accepts ANY alphanumeric prefix, so a standalone opaque token
+            # with a non-padding "=" partway through (e.g.
+            # "AbCdEfGhIjKlMnOpQrStUvWxYz=tail") is misread the same way —
+            # key="AbCdEfGhIjKlMnOpQrStUvWxYz" value="tail", and the short
+            # suffix again never clears the length gate (CodeRabbit finding
+            # on HIMMEL-1345, second round). A real key/flag/field name (even
+            # a camelCase one like the GraphQL "threadId" field) is always
+            # too SHORT to independently clear the is_opaque() length gate,
+            # so reuse is_opaque() on the keypart itself: only treat it as a
+            # key when it is NOT, on its own, opaque. (An earlier "keypart
+            # must be single-case" draft was rejected — it wrongly rejected
+            # "threadId" as a key, breaking the existing threadId= fixture.
+            # Whole-token-first was also considered and rejected: it would
+            # elide the genuine "--blob=<base64>" fixture in its entirety,
+            # losing the "--blob=" flag text — the combined string clears
+            # is_opaque() on its own, entropy ~5.27 bits/char.)
+            keypart = substr(val, 1, eq - 1)
+            suffix = substr(val, eq + 1)
+            if (keypart ~ /^(--)?[A-Za-z0-9_.-]+$/ \
+                && !is_opaque(keypart) \
+                && suffix != "" && suffix !~ /^=+$/) {
+                prefix = substr(val, 1, eq)
+                val = suffix
+            }
+        }
+        q = ""
+        vlen = length(val)
+        if (vlen >= 2) {
+            first = substr(val, 1, 1)
+            last = substr(val, vlen, 1)
+            if ((first == "\"" || first == SQ) && first == last) {
+                q = first
+                val = substr(val, 2, vlen - 2)
+            }
+        }
+        if (is_opaque(val)) {
+            val = "<elided>"
+            CHANGED = 1
+        }
+        return prefix q val q
+    }
+    BEGIN { SQ = sprintf("%c", 39) }
+    {
+        CHANGED = 0
+        n = split($0, words, /[ \t]+/)
+        out = ""
+        for (i = 1; i <= n; i++) {
+            if (words[i] == "") continue
+            piece = scrub_word(words[i])
+            out = (out == "" ? piece : out " " piece)
+        }
+        # Only emit the rebuilt (whitespace-normalized) line when a token was
+        # ACTUALLY elided; otherwise print the line verbatim. The split/rejoin
+        # above is not whitespace-preserving (collapses runs of spaces/tabs,
+        # drops leading/trailing whitespace) — fine for a line that changed
+        # anyway, but it must not rewrite a line that had nothing to scrub
+        # (HIMMEL-1345 CR).
+        if (CHANGED) {
+            print out
+        } else {
+            print $0
+        }
+    }
+    '
+}
+KEPT_COMMANDS="$(scrub_opaque_tokens "$KEPT_COMMANDS")"
+
 # ---------- 4. Compute path --------------------------------------------------
 
 slugify() {

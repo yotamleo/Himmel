@@ -365,6 +365,158 @@ try {
     if ($argvLinesM -contains 'arg=cfg-pin-model') { Fail 'model(hook): config model leaked into argv despite env override' } else { Pass 'model(hook): config model correctly absent when env override is set' }
     Remove-Item -LiteralPath $modelCfg -Force -ErrorAction SilentlyContinue
 
+    # Case 13 (HIMMEL-1345): a high-entropy operand is elided; surrounding
+    # command/flag/path text and an unrelated ordinary command both survive.
+    # Exact real-world shape that wedged the vault autosync: a GitHub GraphQL
+    # global node ID copied verbatim tripped gitleaks' generic-api-key rule.
+    # Own vault (not the shared $huskVault) so the note-selection in this case
+    # and Case 14 can't collide on a LastWriteTime tie (twin parity with the
+    # .sh suite's fresh sandbox per case).
+    $elideVault = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-elide-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $elideVault -Force | Out-Null
+    $elideTs = Join-Path $huskProj 'transcript-elide.jsonl'
+    # The three secret-shaped fixture values below are assembled from concatenated
+    # chunks at runtime, rather than written as single contiguous literals, so no
+    # realistic-looking secret sits in tracked source (this repo's own gitleaks
+    # pre-commit gate already passes on these fixtures as plain literals — this is
+    # hygiene/futureproofing against EXTERNAL scanners, e.g. GitHub push
+    # protection or a downstream/adopter gitleaks config, not a fix for a live
+    # leak). The same variables are reused in the negative assertions below so the
+    # fixture and the assertion can never drift apart. Twin of the .sh suite's
+    # Case 15 TOK_GQL/TOK_KEY/TOK_B64.
+    $TokGql = 'PRRT_k' + 'wDOS8W' + 'KNM6UP' + 'mnU'
+    $TokKey = 'api-Live_8' + 'JxQ2mN7pR4' + 'vT9yW6cK1h' + 'F5dG0zB3uE'
+    $TokB64 = 'AbCdEfGhIj' + 'KlMnOpQrSt' + 'UvWxYz0123' + '456789+/=='
+    Set-Content -LiteralPath $elideTs -Value @(
+        '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}',
+        ('{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"resolved the thread"},{"type":"tool_use","name":"PowerShell","input":{"command":"gh api graphql -F threadId=\"' + $TokGql + '\" -F body=@\"C:/Users/op/note.md\""}},{"type":"tool_use","name":"PowerShell","input":{"command":"client --api-key ' + $TokKey + '"}},{"type":"tool_use","name":"PowerShell","input":{"command":"client --blob=' + $TokB64 + '"}},{"type":"tool_use","name":"PowerShell","input":{"command":"git status"}}]}}')
+    )
+    Invoke-HookCustom -Transcript $elideTs -VaultPath $elideVault -ProjPath $huskProj
+    $elideNote = Notes (Join-Path $elideVault 'sessions') | Sort-Object LastWriteTime | Select-Object -Last 1
+    $elideContent = if ($elideNote) { Get-Content -LiteralPath $elideNote.FullName -Raw } else { '' }
+    if ($elideContent -match '<elided>') { Pass 'HIMMEL-1345: high-entropy operand elided' } else { Fail 'HIMMEL-1345: high-entropy operand was NOT elided' }
+    if ($elideContent -notmatch [regex]::Escape($TokGql)) { Pass 'HIMMEL-1345: the raw high-entropy token does not appear in the note' } else { Fail 'HIMMEL-1345: the raw high-entropy token leaked into the note' }
+    if ($elideContent -match [regex]::Escape('gh api graphql -F threadId="<elided>"')) { Pass 'HIMMEL-1345: program/subcommand/flag text survives around the elision' } else { Fail 'HIMMEL-1345: surrounding command text did not survive the scrub' }
+    if (($elideContent -match [regex]::Escape('client --api-key <elided>')) -and ($elideContent -notmatch [regex]::Escape($TokKey))) { Pass 'HIMMEL-1345: API key containing a hyphen is elided' } else { Fail 'HIMMEL-1345: API key containing a hyphen leaked or lost surrounding text' }
+    if (($elideContent -match [regex]::Escape('client --blob=<elided>')) -and ($elideContent -notmatch [regex]::Escape($TokB64))) { Pass 'HIMMEL-1345: base64 blob containing +, /, and = padding is elided' } else { Fail 'HIMMEL-1345: base64 blob containing +, /, and = padding leaked or lost surrounding text' }
+    if ($elideContent -match 'git status') { Pass 'HIMMEL-1345: an unrelated ordinary command in the same session is untouched' } else { Fail 'HIMMEL-1345: an ordinary command in the same session was altered' }
+    Remove-Item -LiteralPath $elideVault -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Case 14 (HIMMEL-1345): ordinary commands with no high-entropy operand are
+    # unchanged. Negative case — a scrubber that elides everything would still
+    # pass Case 13 alone. Uses a command with REPEATED internal spaces and a
+    # spacing-sensitive quoted argument — a scrubber that unconditionally
+    # splits-on-whitespace-and-rejoins-with-a-single-space (rather than only
+    # rewriting a line that actually had a token elided) would silently
+    # collapse both, passing this case vacuously. Own vault, see Case 13.
+    $noElideVault = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-noelide-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $noElideVault -Force | Out-Null
+    $noElideTs = Join-Path $huskProj 'transcript-noelide.jsonl'
+    Set-Content -LiteralPath $noElideTs -Value @(
+        '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}',
+        '{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"checked history"},{"type":"tool_use","name":"PowerShell","input":{"command":"git   log --oneline"}},{"type":"tool_use","name":"PowerShell","input":{"command":"git commit -m \"a  b\""}},{"type":"tool_use","name":"PowerShell","input":{"command":"deploy --dry-run --date 2026-07-29 /tmp/releases/2026-07-29/artifact https://example.com/releases/2026-07-29"}}]}}'
+    )
+    Invoke-HookCustom -Transcript $noElideTs -VaultPath $noElideVault -ProjPath $huskProj
+    $noElideNote = Notes (Join-Path $noElideVault 'sessions') | Sort-Object LastWriteTime | Select-Object -Last 1
+    $noElideContent = if ($noElideNote) { Get-Content -LiteralPath $noElideNote.FullName -Raw } else { '' }
+    if ($noElideContent -notmatch '<elided>') { Pass 'HIMMEL-1345: ordinary commands pass through with no elision' } else { Fail 'HIMMEL-1345: an ordinary command was unexpectedly elided' }
+    if (($noElideContent -match [regex]::Escape('git   log --oneline')) -and ($noElideContent -match [regex]::Escape('git commit -m "a  b"')) -and ($noElideContent -match [regex]::Escape('deploy --dry-run --date 2026-07-29 /tmp/releases/2026-07-29/artifact https://example.com/releases/2026-07-29'))) {
+        Pass 'HIMMEL-1345: ordinary commands are byte-for-byte unchanged (spacing, dates, paths, URLs, and flags survive)'
+    } else { Fail "HIMMEL-1345: an ordinary command's text was altered" }
+    Remove-Item -LiteralPath $noElideVault -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Case 15 (HIMMEL-1345): single-case high-entropy tokens are NOT elided
+    # (mixed-case gate negative coverage). Regression guard for THIS twin's
+    # `-notmatch` -> `-cnotmatch` fix: case-insensitive `-notmatch` never
+    # enforced mixed case at all, and no suite had a negative case here to
+    # catch it shipping, or to catch it regressing back. Twin of the .sh
+    # suite's Case 17 — see its comment for the full rationale.
+    #
+    # Each fixture below was verified offline against the awk is_opaque()
+    # gate (identical logic to Test-OpaqueToken) to fail ONLY the mixed-case
+    # check (length >=20, charset, and entropy >=3.8 all pass on their own)
+    # — so the ONLY reason either survives is the mixed-case rule. Built
+    # from concatenated chunks (twin of Case 13's TokGql/TokKey/TokB64) so
+    # no secret-shaped literal sits in tracked source; the SAME variables
+    # are reused in the fixture and the assertion so they cannot drift.
+    $singleCaseVault = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-singlecase-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $singleCaseVault -Force | Out-Null
+    $singleCaseTs = Join-Path $huskProj 'transcript-singlecase.jsonl'
+    $TokHexLower = 'f3a9c81b4e' + '72d0f6a1c8' + '9b3e5d7a02' + 'c4f81b6e93'
+    $TokScreamUpper = 'API_TOKEN_' + '9XQ2M7B4RT' + '6PLW3ZN8H5' + 'JC1FYD'
+    Set-Content -LiteralPath $singleCaseTs -Value @(
+        '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}',
+        ('{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"checked hashes"},{"type":"tool_use","name":"PowerShell","input":{"command":"client --sha ' + $TokHexLower + '"}},{"type":"tool_use","name":"PowerShell","input":{"command":"client --env ' + $TokScreamUpper + '"}}]}}')
+    )
+    Invoke-HookCustom -Transcript $singleCaseTs -VaultPath $singleCaseVault -ProjPath $huskProj
+    $singleCaseNote = Notes (Join-Path $singleCaseVault 'sessions') | Sort-Object LastWriteTime | Select-Object -Last 1
+    $singleCaseContent = if ($singleCaseNote) { Get-Content -LiteralPath $singleCaseNote.FullName -Raw } else { '' }
+    if ($singleCaseContent -match [regex]::Escape("client --sha $TokHexLower")) { Pass 'HIMMEL-1345: all-lowercase high-entropy token (hex-SHA shape) is NOT elided' } else { Fail 'HIMMEL-1345: all-lowercase high-entropy token was elided or altered' }
+    if ($singleCaseContent -match [regex]::Escape("client --env $TokScreamUpper")) { Pass 'HIMMEL-1345: ALL-UPPERCASE/SCREAMING_SNAKE high-entropy token is NOT elided' } else { Fail 'HIMMEL-1345: ALL-UPPERCASE/SCREAMING_SNAKE high-entropy token was elided or altered' }
+    Remove-Item -LiteralPath $singleCaseVault -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Case 16 (HIMMEL-1345): a STANDALONE padded base64 operand (no key=
+    # prefix) is elided. Regression guard for the Get-ScrubbedWord key=value
+    # mis-split bug: it used to find the FIRST "=" in a token and treat
+    # everything before it as a "key=" prefix, testing ONLY the suffix for
+    # opacity. A standalone padded base64 token's first "=" is its own
+    # PADDING, so the tested suffix collapsed to "="/"==" -- too short to
+    # ever clear the length gate -- and the secret leaked verbatim. Every
+    # pre-existing fixture (TokB64 above) carries a genuine "--blob=" prefix,
+    # which hid this. This case has NO key= prefix at all: the token appears
+    # bare as a positional argument. Twin of the .sh suite's Case 18. Built
+    # from concatenated chunks (twin of Case 13's TokGql/TokKey/TokB64) so no
+    # secret-shaped literal sits in tracked source.
+    $standaloneVault = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-standalone-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $standaloneVault -Force | Out-Null
+    $standaloneTs = Join-Path $huskProj 'transcript-standalone.jsonl'
+    $TokB64Standalone = 'QwErTyUiOp' + 'AsDfGhJkLz' + 'XcVbNm2468' + '013579+/=='
+    Set-Content -LiteralPath $standaloneTs -Value @(
+        '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}',
+        ('{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"pushed the blob"},{"type":"tool_use","name":"PowerShell","input":{"command":"client push ' + $TokB64Standalone + '"}},{"type":"tool_use","name":"PowerShell","input":{"command":"git config env=prod"}}]}}')
+    )
+    Invoke-HookCustom -Transcript $standaloneTs -VaultPath $standaloneVault -ProjPath $huskProj
+    $standaloneNote = Notes (Join-Path $standaloneVault 'sessions') | Sort-Object LastWriteTime | Select-Object -Last 1
+    $standaloneContent = if ($standaloneNote) { Get-Content -LiteralPath $standaloneNote.FullName -Raw } else { '' }
+    if (($standaloneContent -match [regex]::Escape('client push <elided>')) -and ($standaloneContent -notmatch [regex]::Escape($TokB64Standalone))) {
+        Pass 'HIMMEL-1345: standalone padded base64 operand (no key= prefix) is elided'
+    } else { Fail 'HIMMEL-1345: standalone padded base64 operand leaked verbatim' }
+    if ($standaloneContent -match [regex]::Escape('git config env=prod')) { Pass 'HIMMEL-1345: an ordinary short key=value word is untouched' } else { Fail 'HIMMEL-1345: an ordinary short key=value word was altered' }
+    Remove-Item -LiteralPath $standaloneVault -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Case 17 (HIMMEL-1345, second round): a MIXED-CASE opaque prefix before a
+    # non-padding "=" is elided whole (CodeRabbit finding). Case 16's
+    # charset-only keypart gate is not enough on its own: it accepts ANY
+    # alphanumeric prefix, so a standalone opaque token whose "=" sits
+    # partway through on a non-padding boundary -- e.g.
+    # "AbCdEfGhIjKlMnOpQrStUvWxYz=tail" -- is misread as
+    # key="AbCdEfGhIjKlMnOpQrStUvWxYz" value="tail"; the short suffix again
+    # never clears the length gate and the whole secret leaks. The fix reuses
+    # Test-OpaqueToken on the keypart itself: a real key/flag/field name is
+    # always too short to independently clear its own length gate (even a
+    # camelCase one like the GraphQL "threadId" field, preserved by the
+    # existing Case 13 fixture), so only a keypart that is itself opaque --
+    # like this mixed-case, high-entropy one -- is rejected as a key, and the
+    # WHOLE token is tested for opacity instead. Twin of the .sh suite's
+    # Case 19. Built from concatenated chunks so no secret-shaped literal
+    # sits in tracked source.
+    $pocVault = Join-Path ([System.IO.Path]::GetTempPath()) ("eswt-poc-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $pocVault -Force | Out-Null
+    $pocTs = Join-Path $huskProj 'transcript-poc.jsonl'
+    $TokMixedPrefix = 'AbCdEfGhIj' + 'KlMnOpQrSt' + 'UvWxYz'
+    $TokPoc = "$TokMixedPrefix=tail"
+    Set-Content -LiteralPath $pocTs -Value @(
+        '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"go"}}',
+        ('{"timestamp":"2026-06-17T00:00:05Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"synced"},{"type":"tool_use","name":"PowerShell","input":{"command":"client sync ' + $TokPoc + '"}}]}}')
+    )
+    Invoke-HookCustom -Transcript $pocTs -VaultPath $pocVault -ProjPath $huskProj
+    $pocNote = Notes (Join-Path $pocVault 'sessions') | Sort-Object LastWriteTime | Select-Object -Last 1
+    $pocContent = if ($pocNote) { Get-Content -LiteralPath $pocNote.FullName -Raw } else { '' }
+    if (($pocContent -match [regex]::Escape('client sync <elided>')) -and ($pocContent -notmatch [regex]::Escape('<elided>=tail')) -and ($pocContent -notmatch [regex]::Escape($TokPoc)) -and ($pocContent -notmatch [regex]::Escape($TokMixedPrefix))) {
+        Pass 'HIMMEL-1345: mixed-case opaque prefix before a non-padding = is elided whole'
+    } else { Fail 'HIMMEL-1345: mixed-case opaque prefix before a non-padding = leaked verbatim' }
+    Remove-Item -LiteralPath $pocVault -Recurse -Force -ErrorAction SilentlyContinue
+
     Remove-Item -LiteralPath $huskVault -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $huskProj  -Recurse -Force -ErrorAction SilentlyContinue
 

@@ -132,6 +132,7 @@ assert_eq "usd 2.5e9"   "$(format_usd 2500000000)" "2.5B"
 get_model_savings_rate "claude-sonnet-4-6"
 assert_eq "sonnet read_savings_rate"   "$read_savings_rate"   "0.00000270"
 assert_eq "sonnet write_overhead_rate" "$write_overhead_rate" "0.00000300"
+assert_eq "sonnet model_rate_known (HIMMEL-1316)" "$model_rate_known" "1"
 
 get_model_savings_rate "claude-opus-4-7"
 assert_eq "opus read_savings_rate"     "$read_savings_rate"   "0.00000450"
@@ -164,6 +165,7 @@ assert_eq "gpt5 write_overhead_rate"   "$write_overhead_rate" "0.00000000"
 
 get_model_savings_rate "unknown-model"
 assert_eq "fallback read_savings_rate" "$read_savings_rate"   "0.00000270"
+assert_eq "fallback model_rate_known flags the guess (HIMMEL-1316)" "$model_rate_known" "0"
 
 # ── compute_cache_ttl tests ────────────────────────────────
 NOW=$(date +%s)
@@ -656,7 +658,11 @@ rebuild_all_sessions_index "$PF" "$PF_C" "$PF_I" "$window_start" "$window_end" |
 assert_eq "prefilter: windowed reads = in-window file only"  "$(jq -r '.reads'  "$PF_C" 2>/dev/null)" "900"
 assert_eq "prefilter: windowed writes = in-window file only" "$(jq -r '.writes' "$PF_C" 2>/dev/null)" "300"
 assert_eq "prefilter: windowed inputs = in-window file only" "$(jq -r '.inputs' "$PF_C" 2>/dev/null)" "7"
-PF_READS=$(jq -r '.reads' "$PF_C" 2>/dev/null)
+# HIMMEL-1349, same shape as the checkpoint block below: the rebuild above is
+# `|| true`, so $PF_C may legitimately not exist — and jq exits 2 on a missing
+# file, which under `set -e` aborts here before the `${PF_READS:-0}` default can
+# apply. Guard the substitution, not just its output.
+PF_READS=$(jq -r '.reads' "$PF_C" 2>/dev/null) || PF_READS=0
 if [ "${PF_READS:-0}" -gt 0 ] 2>/dev/null; then
     echo "PASS: windowed reads non-zero (regression: timeout left it at 0)"; PASS=$(( PASS + 1 ))
 else
@@ -699,6 +705,79 @@ EOF
 else
     echo "FAIL: golden fixture $GOLDEN missing"; FAIL=$(( FAIL + 1 ))
 fi
+
+# ── HIMMEL-1316: unknown-model net carries `?`; recognised does not ─────
+# PAIRED on purpose: "mark every net" would pass the unknown half but FAIL
+# the known half — that is the whole point of pairing them. Both calls share
+# the SAME fixture, so the only difference is the marker (an unknown model is
+# priced at Sonnet rates, same as claude-sonnet, so the numbers are identical).
+# period=month + a per-window cache touches neither the shared all-stats cache
+# nor spawns a rebuild; the session-row net depends only on the transcript + the
+# rate card, not the all-sessions cache.
+#
+# codex-1: read_all_sessions_cache_stats HARDCODES /tmp/claude (there is no
+# cache-dir seam — that is why this suite carries the R3-8 restore trap at all),
+# so this case cannot be redirected into its own tempdir; it MUST write into the
+# operator's real cache dir. It therefore pins a window that can never BE a real
+# cache (June 1999) rather than 2026-06, and backs up / restores anything already
+# sitting at that path. Two hazards, both real, both closed:
+#   - clobbering a genuine cache file. A hard-killed run destroyed the operator's
+#     live totals this same night, so "it is only a test file" is not a safe
+#     assumption in this directory.
+#   - colliding with the HIMMEL-617 case below, which legitimately owns
+#     cache-month-202606.json. Sharing one fixed path across two cases makes
+#     their ORDER load-bearing, and the unconditional `rm -f` at the end of this
+#     block would delete a file that case still needs.
+UK_NOW=$(mkdate "1999-06-16 12:00:00")
+UK_WIN=/tmp/claude/cache-month-199906.json
+TMPDIR_UK=$(mktemp -d)
+UK_TX="$TMPDIR_UK/s.jsonl"
+echo '{"type":"assistant","timestamp":"1999-06-10T10:00:00.000Z","message":{"model":"zzz-unknown","usage":{"input_tokens":100,"cache_creation_input_tokens":5000,"cache_read_input_tokens":20000,"output_tokens":50}}}' > "$UK_TX"
+mkdir -p /tmp/claude
+UK_HAD_WIN=false
+if [ -f "$UK_WIN" ]; then UK_HAD_WIN=true; cp "$UK_WIN" "$TMPDIR_UK/win.bak"; fi
+# CR #1469 (CodeRabbit Major): an abort between the write below and the
+# normal-path restore at the end of this block would strand the synthetic
+# 199906 file in the shared cache dir. Chain a GUARDED cleanup onto the
+# suite's combined EXIT trap (a single EXIT slot replaces, not adds — chain
+# explicitly, same rule as the usage-cache + R3-8 combined trap above). The
+# normal path calls uk_restore_win directly and disarms it, so the trap-time
+# call is a no-op there; only an abort path does real work here.
+uk_restore_win() {
+    [ "${UK_CLEANUP_ARMED:-0}" -eq 1 ] || return 0
+    if [ "$UK_HAD_WIN" = true ] && [ -f "$TMPDIR_UK/win.bak" ]; then
+        mv -f "$TMPDIR_UK/win.bak" "$UK_WIN"
+    else
+        rm -f "$UK_WIN"
+    fi
+    rm -rf "$TMPDIR_UK"
+    UK_CLEANUP_ARMED=0
+}
+trap 'uk_restore_win; restore_usage_cache; restore_allstats_cache' EXIT
+UK_CLEANUP_ARMED=1
+echo '{"reads":6000,"writes":4000,"inputs":5}' > "$UK_WIN"
+# Unknown model → the session-row net MUST carry the `?` guess-marker.
+HOME="$TMPDIR_UK" HIMMEL_STATUSLINE_PERIOD=month HIMMEL_STATUSLINE_NOW="$UK_NOW" \
+    build_cache_lines "$UK_TX" "zzz-unknown" ""
+uk_sess=$(printf "%b" "$cache_lines" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^session ')
+echo "$uk_sess" | grep -qE 'net [+-]\$[0-9.]+[?]' \
+    && { echo "PASS: unknown model net carries ? marker: $uk_sess"; PASS=$(( PASS + 1 )); } \
+    || { echo "FAIL: unknown model net missing ? marker: $uk_sess"; FAIL=$(( FAIL + 1 )); }
+# Recognised model, SAME fixture → the session-row net must NOT carry `?`.
+HOME="$TMPDIR_UK" HIMMEL_STATUSLINE_PERIOD=month HIMMEL_STATUSLINE_NOW="$UK_NOW" \
+    build_cache_lines "$UK_TX" "claude-sonnet-4-6" ""
+kn_sess=$(printf "%b" "$cache_lines" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^session ')
+echo "$kn_sess" | grep -qE 'net [+-]\$[0-9.]+[?]' \
+    && { echo "FAIL: recognised model net should NOT carry ? marker: $kn_sess"; FAIL=$(( FAIL + 1 )); } \
+    || { echo "PASS: recognised model net has no ? marker: $kn_sess"; PASS=$(( PASS + 1 )); }
+# NOTE: the COMPOSER's renderer (format_econ_line in hud-custom-lines.sh) is a
+# SEPARATE code path from build_cache_lines' net_q above, and it is deliberately
+# NOT covered here — this suite sources only bin/statusline.sh, which does not
+# define format_econ_line at all. Its coverage lives in
+# test-hud-composer-parity.sh, which executes the composer end-to-end (glm-2).
+# Restore whatever was at the pinned window path (see the codex-1 note above) —
+# via the guarded cleanup, which disarms itself so the EXIT-trap call no-ops.
+uk_restore_win
 
 # ── Label reflects the active period (HIMMEL-617) ────────────────
 # End-to-end through build_cache_lines: period=month renders a "month" label and
@@ -959,8 +1038,23 @@ else
 HIMMEL_STATUSLINE_CHECKPOINT_EVERY=1 PATH="$SLOWJQ_DIR:$PATH" \
     "$CKPT_TIMEOUT_BIN" --kill-after=3 -s TERM 7 bash -c '. "$1"; rebuild_all_sessions_index "$2" "$3" "$4"' _ \
     "$CACHE_FUNCS_FILE" "$CKPT_PROJ" "$CKPT_CACHE" "$CKPT_INDEX" >/dev/null 2>&1 || true
-CKPT_KILLED_COUNT=$(jq -r 'length' "$CKPT_INDEX" 2>/dev/null); [ -n "$CKPT_KILLED_COUNT" ] || CKPT_KILLED_COUNT=0
-CKPT_KILLED_READS=$(jq -r '.reads // 0' "$CKPT_CACHE" 2>/dev/null); [ -n "$CKPT_KILLED_READS" ] || CKPT_KILLED_READS=0
+# HIMMEL-1349: the `|| VAR=0` guards the SUBSTITUTION; the `[ -n … ]` guards its
+# OUTPUT. They cover different failures and both are needed.
+#   jq exits *2* on a nonexistent file — not 1, not 0-with-empty-output — and
+#   under this file's `set -e` a failing `VAR=$(…)` aborts the script THERE, so
+#   the `[ -n … ]` on the next `;` segment was unreachable in exactly the case it
+#   was written for. That is not hypothetical: when the machine is loaded enough
+#   that the kill above lands BEFORE the first checkpoint writes $CKPT_INDEX, the
+#   file genuinely does not exist, and the whole suite died at this line with
+#   exit 2, no "Results:" line, and ~13 later cases silently unrun — output whose
+#   every visible line reads PASS. A false green, self-inflicted by the harness.
+# A zero count is a legitimate assertion input here, not an error: the case below
+# asserts 1..3 of 3 persisted, so 0 correctly FAILS as the pre-checkpoint
+# regression instead of aborting the run.
+CKPT_KILLED_COUNT=$(jq -r 'length' "$CKPT_INDEX" 2>/dev/null) || CKPT_KILLED_COUNT=0
+[ -n "$CKPT_KILLED_COUNT" ] || CKPT_KILLED_COUNT=0
+CKPT_KILLED_READS=$(jq -r '.reads // 0' "$CKPT_CACHE" 2>/dev/null) || CKPT_KILLED_READS=0
+[ -n "$CKPT_KILLED_READS" ] || CKPT_KILLED_READS=0
 # The invariant is PROGRESS PERSISTED, not "the kill landed mid-pass". Whether
 # 7s is long enough to finish all 3 slow-jq files is a property of the host, not
 # of the code under test: on a fast box the pass completes and persists all 3 —

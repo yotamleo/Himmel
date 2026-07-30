@@ -944,7 +944,10 @@ cat > "$MISSBIN/graphify" <<'STUB'
 target=""
 if [ "$1" = "cluster-only" ]; then target="$2"; else target="$1"; fi
 mkdir -p "$target/graphify-out"
-# Deliberately OMIT graph.json -- simulates a partial extraction.
+# The runner now seeds prior graphify-out before --update (HIMMEL-1097), so
+# remove the seeded graph and deliberately OMIT its replacement to simulate a
+# partial extraction whose final staging area genuinely lacks graph.json.
+rm -f "$target/graphify-out/graph.json"
 printf '# Graph Report - X\n' > "$target/graphify-out/GRAPH_REPORT.md"
 exit 0
 STUB
@@ -1160,6 +1163,193 @@ out=$( GRAPHIFY_MAX_CONCURRENCY=abc bash "$SCRIPT" --name luna --corpus-root "$C
 echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be" \
   && fail "T21d --no-update wrongly validated the irrelevant throttle value: $out" \
   || pass "T21d --no-update skips throttle validation (invalid value tolerated on publish-only path)"
+
+# --- T22 (HIMMEL-1097): semantic cache continuity. graphify keeps its
+# content-keyed cache inside graphify-out/, while refresh extracts from a fresh
+# scratch path. Seed only the live cache artifacts (never derived reports); the
+# stub records whether they were present BEFORE an actual --update invocation,
+# then writes refreshed cache state and removes one seeded artifact during
+# cluster-only. The runner must (a) seed only cache state, (b) transactionally
+# mirror the final scratch cache/markers without preserving stale artifacts, and
+# (c) replace graphify's native manifest with the synthesized HIMMEL-907
+# freshness manifest keyed by corpus markdown paths. ---
+CACHECORPUS="$WS/cachecorpus"; CACHEMAPS="$WS/cachemaps"; CACHEBIN="$WS/cachebin"
+mkdir -p "$CACHECORPUS/notes" "$CACHEMAPS" "$CACHEBIN" "$CACHECORPUS/graphify-out/cache"
+printf '# cache\ncontent\n' > "$CACHECORPUS/notes/cache.md"
+printf 'PRIOR-CACHE' > "$CACHECORPUS/graphify-out/cache/prior.cache"
+printf 'PRIOR-MARKER' > "$CACHECORPUS/graphify-out/.graphify_semantic_marker"
+printf '{"state":"prior"}' > "$CACHECORPUS/graphify-out/.graphify_analysis.json"
+printf 'PRIOR-REPORT' > "$CACHECORPUS/graphify-out/GRAPH_REPORT.md"
+printf 'PRIOR-HTML' > "$CACHECORPUS/graphify-out/graph.html"
+printf '{"nodes":["prior"]}' > "$CACHECORPUS/graphify-out/graph.json"
+printf '{"prior_native":true}' > "$CACHECORPUS/graphify-out/manifest.json"
+printf '.' > "$CACHECORPUS/graphify-out/.graphify_root"
+CACHE_LOG="$WS/cache-seed.log"; : > "$CACHE_LOG"
+cat > "$CACHEBIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  if [ "\$2" = "--update" ] \
+     && [ -f "\$target/graphify-out/cache/prior.cache" ] \
+     && grep -q 'PRIOR-MARKER' "\$target/graphify-out/.graphify_semantic_marker" \
+     && grep -q '"state":"prior"' "\$target/graphify-out/.graphify_analysis.json" \
+     && [ ! -e "\$target/graphify-out/GRAPH_REPORT.md" ] \
+     && [ ! -e "\$target/graphify-out/graph.html" ] \
+     && [ ! -e "\$target/graphify-out/graph.json" ] \
+     && [ ! -e "\$target/graphify-out/manifest.json" ] \
+     && [ ! -e "\$target/graphify-out/.graphify_root" ]; then
+    printf 'seeded\n' > "$CACHE_LOG"
+  else
+    printf 'missing-or-derived\n' > "$CACHE_LOG"
+  fi
+  mkdir -p "\$target/graphify-out/cache"
+  printf 'FRESH-CACHE' > "\$target/graphify-out/cache/fresh.cache"
+  printf 'FRESH-MARKER' > "\$target/graphify-out/.graphify_semantic_marker"
+  printf '{"state":"fresh"}' > "\$target/graphify-out/.graphify_analysis.json"
+  printf '{"graphify_native":true}' > "\$target/graphify-out/manifest.json"
+else
+  rm -f "\$target/graphify-out/.graphify_analysis.json"
+fi
+printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$CACHEBIN/graphify"
+out=$( GRAPHIFY_MAP_BIN="$CACHEBIN/graphify" PATH="$CACHEBIN:$PATH" \
+  bash "$SCRIPT" --name cachetest --corpus-root "$CACHECORPUS" --backend deepseek \
+  --maps-dir "$CACHEMAPS" --title "Cache Map" --slug cache-map --corpus-tag cache 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T22 cache refresh exit 0 (got $rc): $out"
+grep -qx 'seeded' "$CACHE_LOG" 2>/dev/null \
+  && pass "T22a only semantic cache artifacts seeded into scratch before --update" \
+  || fail "T22a cache seed missing, derived output copied, or --update evidence absent"
+CACHEOUT="$CACHECORPUS/graphify-out"
+[ -f "$CACHEOUT/cache/prior.cache" ] && [ -f "$CACHEOUT/cache/fresh.cache" ] \
+  && pass "T22b refreshed cache directory persisted back to OUT_DIR" \
+  || fail "T22b cache directory did not persist back to OUT_DIR"
+grep -q 'FRESH-MARKER' "$CACHEOUT/.graphify_semantic_marker" 2>/dev/null \
+  && pass "T22b semantic marker persisted back to OUT_DIR" \
+  || fail "T22b semantic marker did not persist back to OUT_DIR"
+[ ! -e "$CACHEOUT/.graphify_analysis.json" ] \
+  && pass "T22b semantic artifact removed when absent from final scratch output" \
+  || fail "T22b stale seeded analysis survived despite absence from scratch output"
+python3 - "$CACHEOUT/manifest.json" <<'PY' 2>/dev/null \
+  && pass "T22c synthesized HIMMEL-907 manifest replaces graphify native manifest" \
+  || fail "T22c promoted manifest is not the synthesized freshness manifest"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert "notes/cache.md" in d
+assert "graphify_native" not in d
+PY
+
+# --- T23 (HIMMEL-1097 CR follow-up): the sideline `mv "$OUT_DIR/cache"
+# "$CACHE_BACKUP"` that makes room for the staged cache was unguarded (no
+# `if !`, no error message, no controlled exit). This script runs under
+# `set -euo pipefail`, so a bare failing `mv` here DOES still halt it via
+# errexit -- but uncontrolled: the raw mv stderr (no "refresh-graph-map:"
+# prefix or explanation of what failed) is the only diagnostic, and the exit
+# code is whatever `mv` returned (commonly 1) rather than this script's own
+# "2 = fence/tooling failure" convention used by every sibling failure in
+# this same promote block. Guard it explicitly instead: on failure, emit a
+# clear prefixed error, exit 2 (matching the sibling `! mv ...; exit 2` right
+# below it), and make sure the staged cache is never subsequently moved onto
+# the still-occupied destination (which -- on a shell WITHOUT errexit, or a
+# platform where the sideline mv fails partway rather than outright -- is
+# exactly the nesting corruption CodeRabbit flagged: `mv src dst` nests src
+# inside dst when dst already exists, rather than replacing it). Shadow `mv`
+# with a stub that fails ONLY the exact sideline call (matched on its source
+# arg, "$OUT_DIR/cache") so every other mv in the script (graph.json,
+# GRAPH_REPORT.md, the staged-cache install itself, semantic artifacts, the
+# manifest/marker stamps) still goes through to the real mv. ---
+REALMV="$(command -v mv)"
+MVFAILCORPUS="$WS/mvfailcorpus"; MVFAILMAPS="$WS/mvfailmaps"; MVFAILBIN="$WS/mvfailbin"
+mkdir -p "$MVFAILCORPUS/notes" "$MVFAILMAPS" "$MVFAILBIN" "$MVFAILCORPUS/graphify-out/cache"
+printf '# n\ncontent\n' > "$MVFAILCORPUS/notes/n.md"
+printf 'ORIGINAL' > "$MVFAILCORPUS/graphify-out/cache/original.marker"
+cat > "$MVFAILBIN/mv" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "$MVFAILCORPUS/graphify-out/cache" ]; then
+  echo "simulated sideline mv failure" >&2
+  exit 1
+fi
+exec "$REALMV" "\$@"
+STUB
+chmod +x "$MVFAILBIN/mv"
+cat > "$MVFAILBIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out/cache"
+printf 'STAGED' > "\$target/graphify-out/cache/staged.marker"
+printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$MVFAILBIN/graphify"
+out=$( GRAPHIFY_MAP_BIN="$MVFAILBIN/graphify" PATH="$MVFAILBIN:$PATH" \
+  bash "$SCRIPT" --name mvfail --corpus-root "$MVFAILCORPUS" --backend deepseek \
+  --maps-dir "$MVFAILMAPS" --title "Mv Fail Map" --slug mvfail-map --corpus-tag mvfail 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] && pass "T23a failed sideline mv aborts promotion (rc=2), not a silent rc=0" \
+  || fail "T23a a failed sideline mv should abort the promotion with rc=2 (got $rc): $out"
+echo "$out" | grep -q "failed to sideline existing cache" \
+  && pass "T23a error names the sideline failure explicitly" \
+  || fail "T23a error should mention the sideline failure: $out"
+MVFAILOUT="$MVFAILCORPUS/graphify-out"
+[ ! -d "$MVFAILOUT/cache/cache" ] \
+  && pass "T23b destination cache not nested (staged cache never moved onto the still-occupied dir)" \
+  || fail "T23b staged cache was nested inside the existing cache dir (\$OUT_DIR/cache/cache exists) -- promotion corruption"
+[ -f "$MVFAILOUT/cache/original.marker" ] \
+  && pass "T23b original cache left untouched after the aborted promotion" \
+  || fail "T23b original cache content was lost despite the promotion aborting"
+[ ! -e "$MVFAILOUT/cache/staged.marker" ] \
+  && pass "T23b staged cache content did not leak into the existing cache dir" \
+  || fail "T23b staged cache content appeared in \$OUT_DIR/cache despite the aborted promotion"
+
+# --- T24 (HIMMEL-1097 CR follow-up): when the refreshed scratch output has NO
+# staged semantic cache, a prior $OUT_DIR/cache must NOT survive -- the cache
+# path must be consistent with the sibling semantic artifacts handled right
+# below it (which rm -f the unstaged marker/analysis), else stale cache
+# artifacts persist in graphify-out and silently reseed later runs. The runner
+# seeds the live cache into scratch before --update; this stub RECEIVES that
+# seeded cache, then DROPS it (rm -rf) and writes none back -- a refresh whose
+# extraction produced no cache. RED against the pre-fix code: the
+# `if [ -d "$PROMOTE_STAGE/cache" ]` promote block had no else branch, so a
+# missing staged cache left the stale $OUT_DIR/cache untouched. ---
+NOCACHEBIN="$WS/nocachebin"; mkdir -p "$NOCACHEBIN"
+cat > "$NOCACHEBIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+# The refresh produced NO semantic cache: drop whatever the runner seeded into
+# scratch and write none back.
+rm -rf "\$target/graphify-out/cache"
+printf '{"nodes":[],"edges":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$NOCACHEBIN/graphify"
+NOCACHECORPUS="$WS/nocachecorpus"; NOCACHEMAPS="$WS/nocachemaps"
+mkdir -p "$NOCACHECORPUS/notes" "$NOCACHEMAPS" "$NOCACHECORPUS/graphify-out/cache"
+printf '# n\ncontent\n' > "$NOCACHECORPUS/notes/n.md"
+# Prior stale cache in the LIVE out dir -- the artifact the defect lets survive.
+printf 'STALE-CACHE' > "$NOCACHECORPUS/graphify-out/cache/stale.marker"
+out=$( GRAPHIFY_MAP_BIN="$NOCACHEBIN/graphify" PATH="$NOCACHEBIN:$PATH" \
+  bash "$SCRIPT" --name nocache --corpus-root "$NOCACHECORPUS" --backend deepseek \
+  --maps-dir "$NOCACHEMAPS" --title "NoCache Map" --slug nocache-map --corpus-tag nocache 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] && pass "T24 cache-less refresh exit 0" \
+  || fail "T24 cache-less refresh should exit 0 (got $rc): $out"
+NOCACHEOUT="$NOCACHECORPUS/graphify-out"
+[ -f "$NOCACHEOUT/graph.json" ] && pass "T24 graph still promoted despite no cache" \
+  || fail "T24 graph.json missing after a cache-less refresh: $out"
+[ ! -e "$NOCACHEOUT/cache" ] && pass "T24 stale cache removed when scratch produced none" \
+  || fail "T24 stale \$OUT_DIR/cache survived a refresh that produced no staged cache (should be removed)"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

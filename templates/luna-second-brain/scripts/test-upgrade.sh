@@ -390,5 +390,46 @@ else
     assert_eq "T26 marketplace.json metadata.version == .vault-template.json version (no drift)" "$mkt_ver" "$seed_ver"
 fi
 
+# ---------------------------------------------------------------------------
+# T27 (HIMMEL-1366): a _CLAUDE.md conflict with 2+ HUNKS must still be
+# classified as a conflict, not an error. git merge-file's exit code is the
+# NUMBER of conflict hunks (0 = clean, 1..127 = N-hunk conflict, >=128 = a real
+# error). The old code only treated rc==1 as a conflict, so any multi-hunk
+# conflict (rc>=2) fell through to the error branch: no sidecar written, the
+# error message pointed at a file that was never created, and the operator had
+# nothing to resolve. The divergences here are WELL-SEPARATED (10 identical
+# lines between each) so git emits separate hunks (rc=5, not rc=1) — without
+# that spacing git coalesces them into one hunk and this silently degrades into
+# the single-hunk case T6 already covers.
+T="$TMP/t27-tmpl"; V="$TMP/t27-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+gen_claude() {  # $1 = per-marker prefix (BASE/OURS/THEIRS); 5 divergent lines, 10 common apart
+    local pfx="$1"
+    printf '# Operating Manual\n'
+    for i in 1 2 3 4 5; do
+        printf 'c1\nc2\nc3\nc4\nc5\nc6\nc7\nc8\nc9\nc10\n'   # 10 lines identical in all three
+        printf '%s-marker-%s\n' "$pfx" "$i"                   # the line both sides edit differently
+    done
+}
+gen_claude BASE   > "$V/.vault-template.base/_CLAUDE.md"
+gen_claude OURS   > "$V/_CLAUDE.md"
+gen_claude THEIRS > "$T/_CLAUDE.md"
+ours_before=$(sha_of "$V/_CLAUDE.md")
+out=$(run_upgrade --yes 2>&1); rc=$?
+# (a) classified as a conflict, NOT an error. The conflict branch writes the
+#     sidecar and plans "(CONFLICT — ...)" ; the error branch writes no sidecar
+#     and plans "(ERROR — git merge-file failed)". Either alone discriminates.
+if [ -f "$V/_CLAUDE.md.template-merge" ]; then pass "T27 multi-hunk classified as conflict (sidecar written)"; else fail "T27 multi-hunk classified as conflict (sidecar written)" "no sidecar — fell into the error branch (HIMMEL-1366)"; fi
+case "$out" in *"ERROR — git merge-file failed"*) fail "T27 multi-hunk not classified as error" "error plan hit: $out" ;; *) pass "T27 multi-hunk not classified as error" ;; esac
+# (b) the sidecar actually holds the conflicted 3-way merge (>=2 conflict markers).
+if [ -f "$V/_CLAUDE.md.template-merge" ]; then markers=$(grep -c '<<<<<<<' "$V/_CLAUDE.md.template-merge"); else markers=0; fi
+if [ "$markers" -ge 2 ]; then pass "T27 sidecar holds $markers conflict hunks"; else fail "T27 sidecar holds 2+ conflict hunks" "markers=$markers"; fi
+# (c) the vault's _CLAUDE.md is left byte-identical.
+assert_eq "T27 multi-hunk leaves _CLAUDE.md untouched" "$ours_before" "$(sha_of "$V/_CLAUDE.md")"
+# (d) the version stamp is NOT advanced (so a re-run re-surfaces the conflict).
+got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
+assert_eq "T27 multi-hunk does not advance the stamp" "0.1.0" "$got_ver"
+# A conflict must also exit non-zero.
+if [ "$rc" -ne 0 ]; then pass "T27 multi-hunk conflict exits non-zero"; else fail "T27 multi-hunk conflict exits non-zero" "rc=0"; fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

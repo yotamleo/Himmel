@@ -281,6 +281,22 @@ function Test-FailsFast([string[]]$ExtraArgs, [string]$Name) {
 Test-FailsFast @('-NonexistentFlag') 'unknown parameter fails fast (no hang)'
 Test-FailsFast @('bogus-positional') 'stray positional fails fast (no hang)'
 
+# --- Test 8: platform guard survives Windows PowerShell 5.1 (HIMMEL-1321) ----
+Write-Host "Test 8: platform guard survives Windows PowerShell 5.1 (HIMMEL-1321)"
+# $IsWindows is a PS6+ automatic variable. Under 5.1 it is UNDEFINED ($null), so a
+# bare `-not $IsWindows` is TRUE and the sweep exits 0 as "non-Windows" on the
+# very platform it targets — while the cadence runner logs a clean rc=0. That path
+# is reachable: codex-sweep-cadence.sh's resolve_pwsh falls back to powershell.exe
+# when pwsh is absent, so a PowerShell-7-less adopter gets a daily no-op sweep.
+Check 'PS 7 on Windows  ($IsWindows=$true)  -> Windows'  (Test-OnWindows -IsWindowsValue $true -OsEnv 'Windows_NT')
+Check 'PS 7 on Linux    ($IsWindows=$false) -> NOT Windows' (-not (Test-OnWindows -IsWindowsValue $false -OsEnv $null))
+Check 'PS 5.1 on Windows ($IsWindows undefined, OS=Windows_NT) -> Windows (the regression)' `
+  (Test-OnWindows -IsWindowsValue $null -OsEnv 'Windows_NT')
+Check 'undefined $IsWindows with a non-Windows OS env -> NOT Windows' `
+  (-not (Test-OnWindows -IsWindowsValue $null -OsEnv 'Linux'))
+Check 'undefined $IsWindows with an EMPTY OS env -> NOT Windows (no blind assume)' `
+  (-not (Test-OnWindows -IsWindowsValue $null -OsEnv ''))
+
 Write-Host "Results: $Pass passed, $Fail failed"
 if ($Fail -ne 0) { exit 1 }
 exit 0

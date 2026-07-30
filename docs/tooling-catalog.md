@@ -162,10 +162,22 @@ README's fork-delta section).
 **Repo:** `eugeniughelbur/obsidian-second-brain`
 **Install path:** `~/.claude/plugins/obsidian-second-brain/` (cloned)
 **Skill link:** `~/.claude/skills/obsidian-second-brain`
-**Commands:** 33 slash commands installed to `~/.claude/commands/`
+**Commands:** 33 slash commands installed to `~/.claude/commands/` (5 research-toolkit
+commands are NOT adopted — see Research toolkit line below)
 **Version:** v0.8 (May 2026) | **Installed:** 2026-05-16
 **Update:** `git pull` in `~/.claude/plugins/obsidian-second-brain/`
-**Research toolkit:** disabled (needs XAI + Perplexity API keys — re-run install.sh to enable)
+**Research toolkit:** NOT ADOPTED (proposed 2026-07-29, pending ADR sign-off) —
+operator confirmed no active XAI/Grok or Perplexity subscription. A
+`~/.config/obsidian-second-brain/.env`
+credentials file exists (since 2026-06-12) but is presence-without-validity —
+having the file is not evidence of a working subscription. `/x-read`, `/x-pulse`,
+`/research`, `/research-deep`, `/youtube` should be removed from
+`~/.claude/commands/` (operator action — these are user-scope files, not
+tracked by this repo). `/notebooklm` (Gemini File Search) uses a different key
+and is unaffected by this decision. Decision record:
+`docs/tool-adoption/registry.md` (research-toolkit row) and
+`docs/tool-adoption/adr-obsidian-second-brain-research-toolkit.md`. Revisit if
+a subscription lands.
 
 **Commands:**
 
@@ -1183,6 +1195,75 @@ Windows-only scheduled cleanup for orphaned codex processes and stale MCP fleet.
 
 - `scripts/cleanup/codex-sweep-cadence.sh` — Scheduler that arms a Windows scheduled task (`HIMMEL-CodexOrphanSweep`, default 09:00 local, repeating every 4h across the day) firing a persistent `.bat` runner with exit-code stamping. The runner fires `scripts/cleanup/sweep-codex-orphans.ps1 -Kill` (codex orphan-process reaper), then `scripts/codex/reap-mcp-fleet.ps1 -Kill` (MCP fleet killer), then `scripts/codex/reap-superseded-fleets.ps1 -Kill` (duplicate fleets under a LIVE app-server, HIMMEL-1309 — fires last, once the two orphan sweeps have removed everything whose supervisor is gone). `arm`/`status`/`disarm` subcommands with `--time HH:MM` (arm-only, 24h HH:MM), `--repeat-hours N` (arm-only, 0-23; 0 = daily only), `--force` (replace existing), `--dry-run` (preview). Dedup-guarded; hermetic test `test-codex-sweep-cadence.sh`. Arming is operator-invoked (Windows task maintenance); lean-invoke: `bash scripts/cleanup/codex-sweep-cadence.sh arm`. An already-armed pre-HIMMEL-1309 task keeps firing only the two old legs — `status` warns and nudges `arm --force`.
 - `scripts/codex/reap-superseded-fleets.ps1` — Reports (default) / reaps (`-Kill`) MCP fleets that a still-LIVE codex app-server has superseded: it spawns a fresh fleet per client connection and never reaps the previous one, a leak both other reapers skip by design because the tree is legitimately live. Groups fleet roots by `(app-server, --cwd plugin | command tail)` and keeps the newest, gated by `-KeepNewest` (default 1), `-MinAgeMinutes` (default 30 — the parallel-tool-call protection) and a CPU-idle veto. Safety comes from lineage (a target must descend from a live app-server, which the telegram bridge / qmd MCP / claude session never do); app-server accumulation and unkeyable roots are reported, never reaped. Test: `scripts/codex/test-reap-superseded-fleets.ps1`.
+
+---
+
+## Upstream drift-fix cadence (`scripts/upstreams/`, HIMMEL-1323)
+
+The REPAIR half of the nightly `fork-drift` drift-detection Action (HIMMEL-1046,
+`check-plugin-drift.sh`), which only detects and files a tracking issue. Runs
+LOCALLY on purpose (operator decision, 2026-07-28) rather than in CI — the
+private repo has Actions off by design.
+
+- `scripts/upstreams/apply-drift-bump.sh <name> <new-version> [--dry-run]` —
+  deterministic pin bumper for one `tag_release`/`mode: base` entry in
+  `scripts/upstreams.json`. Moves the in-repo pin literal (the entry's new
+  optional `version_pin: {file, template}` field) and `synced_base` together,
+  then re-parses and verifies; restores both files byte-identical on any
+  failure. No network — the caller passes the target version in. Exit codes:
+  `0` bumped, `1` already current, `2` usage/registry error (including a
+  refused downgrade), `3` SKIP — no `version_pin` declared, not auto-bumpable
+  (qmd is the standing case: its pin is a fork SHA, not a version), `4` bump
+  failed (both files restored). Hermetic test: `test-apply-drift-bump.sh`.
+- `scripts/upstreams/apply-tool-upgrade.sh <name> [target-version] [--dry-run] [--unattended]` —
+  the `mode: probe` counterpart: upgrades an INSTALLED vendor CLI (rtk,
+  twitter-cli) whose version lives on the machine, not in the repo, so there is
+  no pin to move and no PR to open. Runs the entry's `upgrade.command` (an argv
+  ARRAY, executed as argv — never through a shell), then RE-PROBES and requires
+  the version to have strictly advanced: a command that exits 0 without moving
+  the version is rc `4`, not success. Pass `target-version` (from the drift
+  guard's BEHIND line) whenever you have it — the cadence always does. Without
+  it, "already the newest release" and "the upgrade silently did nothing" are
+  indistinguishable from inside the script, so an unchanged version reports rc
+  `1` with the claim marked unverified instead of guessing; with it, not
+  reaching the target is a hard rc `4`. `--unattended` — which the cadence always
+  passes — refuses any entry not marked `upgrade.unattended: true`. That is the
+  structural gate for the per-entry policy; read the registry for who is gated
+  rather than trusting this line. As of 2026-07-28 BOTH probe entries are
+  `unattended: true`: twitter-cli (Tier A) and rtk, which the operator approved
+  that day, overriding its Tier B default (the entry's note records the
+  reservation and the revert path). Exit codes: `0` upgraded,
+  `1` already current, `2` usage/registry/**tool not installed** (it upgrades,
+  it never bootstraps), `3` SKIP (no `upgrade` block, or operator-triggered
+  only), `4` ran but the version did not advance. Hermetic test:
+  `test-apply-tool-upgrade.sh`.
+- `scripts/upstreams/resync-fork.sh <name> [--target <ref>] [--dry-run] [--push]`
+  — the FORK counterpart, and the only honest repair for that class. When
+  upstream tags past a fork's `synced_base`, bumping `synced_base` would claim a
+  base the fork never rebased onto, so instead this rebases the fork's own delta
+  onto the new upstream base **in a scratch clone**, audits that the delta is
+  still strictly additive, and reports the resulting SHA. It never edits the pin
+  and never writes to a remote without `--push` (which itself refuses a
+  conflicted or non-additive rebase). Driven by a `fork` block on the registry
+  entry (`fork_repo`, `upstream_repo`, `pin_file`, `pin_template`, `work_dir`).
+  Exit codes: `0` clean + additive, `1` already on target, `2`
+  usage/registry/tooling, `3` SKIP (no `fork` block), `4` CONFLICTED or
+  non-additive — a human decides. Hermetic test: `test-resync-fork.sh`.
+- `scripts/upstreams/drift-fix-cadence.sh arm|status|disarm` — arms TWO daily
+  local scheduled tasks (schtasks on Windows, crontab on Linux/macOS; sibling of
+  `codex-sweep-cadence.sh` / `pipeline-cadence.sh`), each firing an INTERACTIVE
+  `claude --model <M>` session (never `-p`/`--print`, HIMMEL-128):
+  `HIMMEL-DriftFix` at 05:00 on the `/drift-fix` runbook, and
+  `HIMMEL-ForkResync` at 05:30 on `/fork-resync`. Two legs rather than one
+  because a fork re-sync can legitimately end "conflicted, a human must decide",
+  and a stuck re-sync must not block routine pin bumps; ONE script rather than
+  two because the arm/status/disarm machinery (locale-independent query
+  classification, `StartWhenAvailable` XML, fail-closed crontab reads) is the
+  part that is hard to get right and must not be copy-pasted. Flags (arm only):
+  `--time HH:MM` (drift leg, default 05:00), `--resync-time HH:MM` (default
+  05:30), `--model` (default sonnet), `--force`, `--dry-run`. Dedup-guarded;
+  hermetic test `test-drift-fix-cadence.sh`. Arming is operator-invoked:
+  `bash scripts/upstreams/drift-fix-cadence.sh arm`.
 
 ---
 

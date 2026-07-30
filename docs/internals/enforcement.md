@@ -662,13 +662,77 @@ thread query still runs and its evidence still blocks, because an unresolved
 thread is evidence even when the status endpoint is down (observed live — GitHub
 503'd `/commits/<sha>/statuses` on 2026-07-17).
 
-**Adopter note:** a repo without the CodeRabbit app now has NO status on any
-head, so the gate blocks every merge there. Such repos must set `CR_PROFILE=none`
-(the established per-user CR opt-out) — the gate is no longer silently inert.
+### CodeRabbit availability — arm it per repo (HIMMEL-1125)
+
+**⚠️ Setup step. On a repo that HAS the CodeRabbit App, run this once:**
+
+```bash
+git config --local himmel.coderabbit true
+```
+
+**Until you do, the CodeRabbit merge gates are a no-op there.** That is the
+deliberate trade-off below — read it before deciding it is a bug.
+
+**Why.** A repo without the CodeRabbit App has NO status on any head, so an
+armed gate blocks every merge there *forever*. HIMMEL-1072 shipped exactly that:
+the gate was armed by default on repos it could never pass on, and adopters had
+to discover `CR_PROFILE=none` to work at all. So the gate is now
+**availability-gated** — `scripts/lib/cr-available.sh` answers "is CodeRabbit's
+App configured for THIS repo?", and the gate arms only when it says yes.
+
+**The signal is a repo-scoped, NON-VERSIONED git config value** — deliberately
+not a committed `.coderabbit.yaml`. A committed file is evidence of a *config*,
+never of an *installation*, and it is wrong in both directions:
+
+- **Config without the App** — `.coderabbit.yaml` is tracked, so every clone/fork
+  inherits it while inheriting no App installation. This harness ships *by being
+  cloned*, so that is the main adopter path: arming on the file would block their
+  merges forever. (Found by the codex adversarial pass on the original design.)
+- **App without config** — an App on defaults publishes no file, so the gate
+  would silently disarm on a repo that really does have CodeRabbit.
+
+A tracked file is also PR-controlled at exactly the moment the gate matters: a
+diff that *deleted* it would disarm the requirement reviewing it. `git config
+--local` lives in `.git/config` — outside any tree, so it cannot be inherited by
+a fork, added or deleted by a PR, or copied around. `--local` and not global:
+availability is per-repo, and a `~/.gitconfig` value would arm every repo on the
+machine (the same over-reach, one level up).
+
+**The trade-off, stated plainly:** this **reverses the HIMMEL-1072 fail-closed
+default**. An operator who never arms a repo silently has no CodeRabbit merge
+gate there. That is the accepted cost of never blocking an adopter who has no
+CodeRabbit at all (operator call, 2026-07-17), and it is why arming is a
+documented setup step rather than inferred.
+
+**Overrides:** `CR_APP=1` arms without the config (shallow CI, or an App on
+defaults); `CR_APP=0` disarms without touching the critic profile;
+`CR_PROFILE=none` still disarms and outranks both.
+
+**Scope of the disarm** — the part worth being precise about: it turns off only
+the **CodeRabbit-specific** requirement (an absent CR verdict stops being a
+blocker). The generic unresolved-**review-thread** gate in `check-ci.sh` is NOT
+keyed on the probe: it blocks on any reviewer's unresolved thread, human
+included, for everyone, and "cannot evaluate" still fails closed for everyone.
+Disarming CodeRabbit never turns a real finding green.
+
+**Cross-repo:** the probe describes the local clone, so `cr_merge_gate` refuses
+to apply the local answer to a foreign `gh pr merge --repo other/thing` target —
+it holds no signal for that repo, so it does not gate it. A *malformed* `--repo`
+value is not treated as foreign; it falls through to the rc=3 re-anchor path, or
+a quoted `--repo` would silently disable the gate.
+
+**Caveat — `CR_PROFILE=none` is overloaded.** It is a critic-panel *profile*
+("claude-only review", `.env.example`) AND, since HIMMEL-1072, the CodeRabbit
+merge-gate opt-out read here. So choosing claude-only review also silently drops
+this gate. HIMMEL-1125 preserves that coupling rather than widening it; `CR_APP`
+is the unambiguous availability switch.
 
 **Bypass:** `CR_MERGE_GATE_OK=1` set in the shell that LAUNCHED Claude
-(same session-sticky convention as the other block-* hooks). Setting
-`CR_PROFILE=none` (the per-user CR opt-out) skips the gate entirely.
+(same session-sticky convention as the other block-* hooks). `CR_PROFILE=none`
+or `CR_APP=0` skip the gate entirely, and a repo that was never armed
+(`git config --local himmel.coderabbit true`) does not gate at all. Precedence,
+highest first: `CR_PROFILE=none` → `CR_APP` (`1` arms, `0` disarms) → the
+repo-scoped `himmel.coderabbit` config → **default: disarmed**.
 
 **Delivery:** shipped via the **himmel-ops plugin `hooks.json`** (same
 exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as `block-docker-privesc` /
@@ -1100,6 +1164,104 @@ session starts. Stdout on exit 0 is injected as additional context.
 SessionStart hook, `inject-where-are-we.sh` (HIMMEL-516, plugin-delivered via
 the himmel-ops `hooks.json`), injects the relevant slice of the where-are-we
 ledger; opt-in behind `HIMMEL_WHERE_ARE_WE`, fail-open and advisory.
+
+### `qmd-staleness-notice.sh` — qmd index trust advisory (HIMMEL-1286)
+
+Default: ON, but **silent unless something is wrong**. Runs
+`scripts/luna/qmd-staleness.sh --quiet` and prints a `<system-reminder>` only
+when the local qmd index is STALE (older than `QMD_STALENESS_MAX_AGE_HOURS`,
+default 36h), INCOMPLETE (chunks pending embedding), MISSING a required
+collection (opt-in, see below), or UNREADABLE (`qmd status`'s report could not
+be parsed — fail-loud, because an unparseable report is not evidence of
+health). A fresh index prints nothing at all: every line a SessionStart hook
+emits is paid for in every session, and a daily "index is fine" banner is the
+always-on noise that trains a reader to skip the block — taking the real
+warning with it.
+
+This is the one always-on exception to the HIMMEL-177 lean-invoke default, and
+the trigger is the safety-critical row: the failure mode is a session answering
+confidently off a stale index, and the session that would remember to run a
+manual check is not the session that gets burned. `qmd status` is a local
+sqlite read, so the per-session cost is one cheap subprocess.
+
+Never blocks, always exits 0. A station with no qmd installed (guard rc 2) is
+silent — adopters who do not use qmd are never nagged about a tool they never
+installed. The notice explicitly tells a *receiving* station NOT to reindex:
+it embeds ~50x slower than the host, so the fix is a host-side push
+(`scripts/luna/ship-index.sh`, armable via `qmd-cadence.sh arm --ship-to`),
+never a local rebuild.
+
+**rc 2 is the ONLY silent non-verdict — and only while no qmd policy is
+declared.** Everything else that is not a freshness verdict is reported as
+**UNVERIFIED**: `qmd status` failing (rc 7 — a corrupt or locked index, a
+crashed or wedged qmd), the probe timing out (124/137), and any exit code the
+hook does not recognise. Those were all silent once, which recreated the exact
+hole this ticket closes one level up — the check quietly stopped checking. "I
+could not verify" is a *trust* claim, not a staleness claim, and the advisory
+says so explicitly so a reader does not conclude the index is stale when it may
+be fine. Setting `QMD_STALENESS_REQUIRE_COLLECTIONS` revokes the rc 2 exemption
+for that station: it is an explicit declaration that qmd matters here, so a
+vanished qmd is a substrate that disappeared, not an adopter who never
+installed one.
+
+The probe is bounded on **both** paths. Where **GNU coreutils** `timeout`
+exists it bounds the guard; otherwise the hook runs a foreground poll loop
+rather than an unbounded call. The GNU part is load-bearing on Windows:
+`command -v timeout` also matches `C:\Windows\System32\timeout.exe`, which is a
+*sleep*, not a command runner — invoking it GNU-style fails instantly, and the
+hook would read that as the guard's own rc 1 and print a MISCONFIGURED
+advisory blaming the operator's env vars while never checking the index.
+`qmd-cadence.sh`'s liveness probe carries the same `timeout --version` /
+`*oreutils*` discriminator for the same reason. The distinction is not academic: the
+SessionStart entry's own timeout bounds the hang by killing the hook *process*,
+and the hook prints nothing until the guard returns — so an unbounded fallback
+meant a hung qmd took the warning down with it and the session heard silence on
+exactly the wedged-index condition. An outer timeout bounds the hang; only an
+inner one can report it.
+
+**Required collections (opt-in).** Freshness and completeness are properties
+of the documents that *are* indexed, so a station missing an entire collection
+scores perfectly on both — the shape measured on win2 (index fresh, `salus`
+absent outright). Set `QMD_STALENESS_REQUIRE_COLLECTIONS` in the launching
+shell to a comma-separated list (e.g. `himmel,luna`) and the guard exits 8 with
+a banner naming every absent one. Opt-in because the required set is
+per-station policy this script cannot infer. A required set that cannot be
+checked (no readable `Collections` block) fails closed on rc 6, never 0.
+
+**What the freshness figure actually measures — do not build on it blindly.**
+`qmd status`'s `Updated:` is *not* a refresh timestamp. qmd computes it as
+`SELECT MAX(modified_at) FROM documents WHERE active = 1`, and `modified_at` is
+written from the **source file's** mtime — so it means "the newest document
+this index knows about was edited *n* ago". It is a proxy, and an asymmetric
+one: a corpus that has simply been quiet reads as old even when the index was
+rebuilt minutes ago, and one busy collection can keep the global figure recent
+while another collection's new files sit un-indexed. The banner therefore
+states the observation and *both* of its readings rather than asserting
+staleness — an always-on warning that is wrong daily is one the reader learns
+to skip, which would take the real warning with it. The durable
+refresh/receipt timestamp that would settle it is **HIMMEL-1307** (it spans
+`qmd-reindex.sh` and the receiver leg, so it is not the guard's to invent).
+The proxy is still worth having for the case this was built for: a receiving
+station whose index stopped arriving while the source corpus kept moving is
+exactly what it detects correctly.
+
+**Budget granularity.** `qmd status` reports ages under a day to the hour and
+everything above it as whole days (its formatter floors), so `1d ago` denotes
+the whole interval [24h, 48h). The guard resolves a floored label to its
+**worst case**, so an index at or above 24h is not certifiable under the 36h
+default — the practical effect is "warn once the index crosses a day". Reading
+the floor instead made the 36h budget behave like a ~48h one and reported a
+two-day-old index fresh. Set `QMD_STALENESS_MAX_AGE_HOURS=47` for the literal
+one-missed-fire-plus-headroom behaviour.
+
+Guard exit codes (`scripts/luna/qmd-staleness.sh`): 0 healthy · 1 usage/config
+· 2 qmd not installed · 3 STALE · 4 INCOMPLETE · 5 both · 6 unreadable report ·
+7 `qmd status` failed · 8 required collection absent (outranks 3/4/5 in the
+exit code; the banner still names every condition). A bad
+`QMD_STALENESS_MAX_AGE_HOURS` or `QMD_STALENESS_REQUIRE_COLLECTIONS` surfaces
+as a loud MISCONFIGURED banner (rc 1) rather than a check that silently stops
+running. Suites: `scripts/luna/test-qmd-staleness.sh` (guard) and
+`scripts/hooks/test-qmd-staleness-notice.sh` (the hook's routing table).
 
 ### `inject-initiative.sh` — opt-in initiative mode (HIMMEL-425)
 

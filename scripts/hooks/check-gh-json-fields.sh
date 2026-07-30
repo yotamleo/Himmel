@@ -90,6 +90,50 @@ for f in "${files[@]}"; do
         scripts/hooks/check-gh-json-fields.sh|scripts/hooks/test-check-gh-json-fields.sh) continue ;;
     esac
 
+    # Match `gh <sub> … --json <fields>` on LOGICAL lines: backslash
+    # continuations are joined first, so a command split across two physical
+    # lines is seen whole (HIMMEL-1326). awk prints
+    # "<first-physical-line>:<joined text>" — the lineno kept below is the first
+    # physical line of the logical line, so the message still points somewhere
+    # useful. grep then filters exactly as it did on physical lines (awk, not a
+    # subshell, keeps this bash 3.2-safe).
+    #
+    # The join is a BARE concatenation, with no separator inserted. That is what
+    # the shell itself does: `\` + newline is removed as a PAIR, so
+    # `--json headRef\` + `Oid` is the single token `headRefOid`. Inserting a
+    # space would split that into `headRef` and `Oid` and reject a perfectly
+    # valid field — a false positive on correct code, which is worse for a lint
+    # than the miss it replaces. Whitespace belonging to the source (the space
+    # before the `\`, the indent on the next line) is preserved verbatim, so
+    # normally-formatted continuations still tokenize correctly.
+    #
+    # Preprocessing failures must NOT read as "no matches". grep exiting 1 on a
+    # genuine no-match is normal and stays absorbed by `|| true`; an awk error or
+    # an unreadable file is not, and folding it into the same `|| true` would
+    # silently pass the file unchecked — the exact fail-open this gate exists to
+    # prevent. So awk runs separately and its status IS checked; only grep's is
+    # forgiven.
+    joined=$(mktemp -t ghjson-joined-XXXXXX) || {
+        echo "⛔ check-gh-json-fields: mktemp failed — cannot preprocess $f" >&2
+        exit 1
+    }
+    if ! awk '
+        {
+            line = $0
+            cont = (line ~ /\\$/)
+            if (cont) line = substr(line, 1, length(line) - 1)
+            if (start) buf = buf line
+            else { start = NR; buf = line }
+            if (!cont) { print start ":" buf; start = 0; buf = "" }
+        }
+        END { if (start) print start ":" buf }
+        ' < "$f" > "$joined" 2>/dev/null; then
+        rm -f "$joined"
+        echo "⛔ check-gh-json-fields: could not preprocess $f (awk error or unreadable file)." >&2
+        echo "   Refusing to report it clean — an unchecked file must not pass as checked." >&2
+        exit 1
+    fi
+
     while IFS= read -r hit; do
         [ -n "$hit" ] || continue
         lineno=${hit%%:*}
@@ -118,7 +162,8 @@ for f in "${files[@]}"; do
   $f:$lineno: gh $sub --json … unknown field \"$fld\"" ;;
             esac
         done
-    done < <(grep -nE '(^|[^A-Za-z0-9_-])gh[[:space:]]+[a-z][a-z-]*([[:space:]]+[a-z][a-z-]*)*[^|;&]*--json[[:space:]]+[A-Za-z][A-Za-z0-9_,]*' -- "$f" 2>/dev/null || true)
+    done < <(grep -E '(^|[^A-Za-z0-9_-])gh[[:space:]]+[a-z][a-z-]*([[:space:]]+[a-z][a-z-]*)*[^|;&]*--json[[:space:]]+[A-Za-z][A-Za-z0-9_,]*' "$joined" || true)
+    rm -f "$joined"
 done
 
 [ -n "$violations" ] || exit 0

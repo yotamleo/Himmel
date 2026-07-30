@@ -34,6 +34,12 @@ import {
   DEFAULT_LANE_PROFILE,
   mintRetaskNonce,
   composeRetaskBlock,
+  composeBashShapeWarning,
+  composeOutboxWriteHint,
+  toPermissionPath,
+  composeWorkerSettings,
+  refuseBypassPermissions,
+  WORKER_BASH_ALLOW,
   isHelpFlag,
   type CapGuardDeps,
 } from "./spawn-glm";
@@ -846,8 +852,9 @@ test("main() validates the profile pre-side-effect but resolves the BASELINE fro
   const src = _rf("scripts/telegram/spawn-glm.ts", "utf8");
   // pre-side-effect validation passes installed:[] (pure name/overlay check)
   expect(src).toMatch(/resolveProfileSettings\(profile, addPlugins, absCwd, \[\]\)/);
-  // the REAL resolve happens in runBody against the worktree the worker runs in
-  expect(src).toMatch(/settings = resolveProfileSettings\(profile, addPlugins, worktree\)/);
+  // the REAL resolve happens in runBody against the worktree the worker runs in,
+  // then HIMMEL-1378's permission-hardening overlay merges on top (never optional).
+  expect(src).toMatch(/settings = composeWorkerSettings\(resolveProfileSettings\(profile, addPlugins, worktree\), worktree, sessionDir\)/);
 });
 
 // HIMMEL-1094 — the teardown's BLAST RADIUS is the whole point of these pins:
@@ -874,7 +881,7 @@ test("HIMMEL-1094: own-branch dispatch passes a teardown; shared mode does NOT (
 test("HIMMEL-1094: onSetupFail fires ONLY in the resolve catch, never around executeRun (blast-radius pin)", () => {
   for (const f of ["scripts/telegram/spawn-glm.ts", "scripts/telegram/spawn-claudex.ts"]) {
     const src = _rf(f, "utf8");
-    expect(src).toMatch(/settings = resolveProfileSettings\(profile, addPlugins, worktree\);\s*\}\s*catch \(e\) \{[^}]*onSetupFail\?\.\(\);\s*throw e;\s*\}/);
+    expect(src).toMatch(/settings = composeWorkerSettings\(resolveProfileSettings\(profile, addPlugins, worktree\), worktree, sessionDir\);\s*\}\s*catch \(e\) \{[^}]*onSetupFail\?\.\(\);\s*throw e;\s*\}/);
     // Exactly one invocation site — a second one could only be a wider scope.
     expect(src.match(/onSetupFail\?\.\(\)/g)?.length).toBe(1);
   }
@@ -884,7 +891,7 @@ test("HIMMEL-1094: teardown fires ONLY on the resolve throw, never around execut
   for (const f of ["scripts/telegram/spawn-glm.ts", "scripts/telegram/spawn-claudex.ts"]) {
     const src = _rf(f, "utf8");
     // the catch that calls onSetupFail must be the one wrapping the resolve
-    expect(src).toMatch(/settings = resolveProfileSettings\(profile, addPlugins, worktree\);\s*\}\s*catch \(e\) \{[\s\S]{0,400}?onSetupFail\?\.\(\);\s*throw e;/);
+    expect(src).toMatch(/settings = composeWorkerSettings\(resolveProfileSettings\(profile, addPlugins, worktree\), worktree, sessionDir\);\s*\}\s*catch \(e\) \{[\s\S]{0,400}?onSetupFail\?\.\(\);\s*throw e;/);
     // executeRun must NOT be inside a teardown-bearing catch: that worktree holds
     // the worker's WORK. Exactly one onSetupFail call site per file.
     expect(src.match(/onSetupFail\?\.\(\)/g)?.length).toBe(1);
@@ -1467,4 +1474,84 @@ test("composeWorkerPrompt carries a fresh RETASK block on every dispatch (own + 
   expect(ownToken).toBeTruthy();
   expect(sharedToken).toBeTruthy();
   expect(ownToken).not.toBe(sharedToken); // fresh nonce per dispatch
+});
+
+// --- HIMMEL-1378: permission hardening (prevention) ------------------------
+
+test("composeBashShapeWarning names the deny-fast behavior (HIMMEL-1378), not a hang", () => {
+  const w = composeBashShapeWarning("/sess/glm-a-1/outbox.jsonl");
+  expect(w).toMatch(/dontAsk/);
+  expect(w).toMatch(/DENIED/i);
+  expect(w).not.toMatch(/hang/i);
+  expect(w).toContain("/sess/glm-a-1/outbox.jsonl");
+});
+
+test("composeOutboxWriteHint: gives a ready-to-use node -e fallback with a forward-slash path (HIMMEL-1378 live probe finding)", () => {
+  const hint = composeOutboxWriteHint("C:\\sess\\glm-a-1\\outbox.jsonl");
+  expect(hint).toMatch(/DENIED/);
+  expect(hint).toContain("C:/sess/glm-a-1/outbox.jsonl"); // forward-slash, not backslash
+  expect(hint).not.toContain("/c/sess"); // never the MSYS form that broke the live probe
+  expect(hint).toMatch(/node -e/);
+  expect(hint).toMatch(/appendFileSync/);
+});
+
+test("toPermissionPath: Windows absolute path -> POSIX //<drive>/... form", () => {
+  expect(toPermissionPath("C:\\Users\\alice\\repo")).toBe("//c/Users/alice/repo");
+  expect(toPermissionPath("D:\\a\\b\\c")).toBe("//d/a/b/c");
+});
+
+test("toPermissionPath: already-POSIX / non-drive input is normalized (backslash only), not drive-mangled", () => {
+  expect(toPermissionPath("/already/posix")).toBe("/already/posix");
+  expect(toPermissionPath("relative\\path")).toBe("relative/path");
+});
+
+test("composeWorkerSettings: dontAsk + worktree/sessionDir path rules for Edit/Read (bare + single-segment + multi-dir) + the curated Bash allow-list (HIMMEL-1378, live-verified glob coverage)", () => {
+  const out = JSON.parse(composeWorkerSettings(undefined, "C:\\repo\\.claude\\worktrees\\glm+t1", "C:\\Users\\me\\.claude\\handover\\bridge\\glm-sessions\\glm-t1-1"));
+  expect(out.permissions.defaultMode).toBe("dontAsk");
+  const allow: string[] = out.permissions.allow;
+  const wt = "//c/repo/.claude/worktrees/glm+t1";
+  const sd = "//c/Users/me/.claude/handover/bridge/glm-sessions/glm-t1-1";
+  // Edit(<dir>/**) ALONE was live-proven insufficient for a file that is a
+  // DIRECT child of <dir> (outbox.jsonl/context.md always are) — bare + /*
+  // must both be present alongside /**, for BOTH the worktree and sessionDir.
+  for (const tool of ["Edit", "Read"]) {
+    for (const p of [wt, sd]) {
+      expect(allow).toContain(`${tool}(${p})`);
+      expect(allow).toContain(`${tool}(${p}/*)`);
+      expect(allow).toContain(`${tool}(${p}/**)`);
+    }
+  }
+  // Grep/Glob rule kinds are CONFIRMED INERT (Claude Code's own startup
+  // warning: only Read/Edit are consulted) — must NOT be emitted as dead
+  // weight / false-confidence noise.
+  expect(allow.some((r) => r.startsWith("Grep("))).toBe(false);
+  expect(allow.some((r) => r.startsWith("Glob("))).toBe(false);
+  for (const rule of WORKER_BASH_ALLOW) expect(allow).toContain(rule);
+});
+
+test("composeWorkerSettings: merges ONTO the plugin-profile settings, preserving enabledPlugins and any pre-existing permissions.allow", () => {
+  const plugin = JSON.stringify({ enabledPlugins: { "foo@bar": true }, permissions: { allow: ["Bash(pre-existing *)"] } });
+  const out = JSON.parse(composeWorkerSettings(plugin, "/repo/wt", "/sess/dir"));
+  expect(out.enabledPlugins).toEqual({ "foo@bar": true });
+  expect(out.permissions.allow).toContain("Bash(pre-existing *)");
+  expect(out.permissions.defaultMode).toBe("dontAsk");
+});
+
+test("refuseBypassPermissions: forbids bypassPermissions, allows everything else (undefined, dontAsk, a typo — validated elsewhere)", () => {
+  expect(refuseBypassPermissions("bypassPermissions")).toMatch(/forbidden/);
+  expect(refuseBypassPermissions("dontAsk")).toBeUndefined();
+  expect(refuseBypassPermissions(undefined)).toBeUndefined();
+});
+
+test("main() refuses --permission-mode bypassPermissions BEFORE any side effect, and defaults to dontAsk otherwise (wiring pin)", () => {
+  const src = _rf("scripts/telegram/spawn-glm.ts", "utf8");
+  expect(src).toMatch(/const bypassRefusal = refuseBypassPermissions\(permModeArg\);/);
+  expect(src).toMatch(/if \(bypassRefusal\) \{ console\.error\(`spawn-glm: \$\{bypassRefusal\}`\); console\.error\(usage\); process\.exit\(2\); \}/);
+  expect(src).toMatch(/const permMode: PermissionMode = permModeArg \?\? "dontAsk";/);
+});
+
+test("spawn-claudex main() carries the identical bypassPermissions refusal + dontAsk default (wiring pin, twin lane)", () => {
+  const src = _rf("scripts/telegram/spawn-claudex.ts", "utf8");
+  expect(src).toMatch(/const bypassRefusal = refuseBypassPermissions\(permModeArg\);/);
+  expect(src).toMatch(/const permMode: PermissionMode = permModeArg \?\? "dontAsk";/);
 });

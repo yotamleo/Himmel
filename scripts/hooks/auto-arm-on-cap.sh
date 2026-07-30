@@ -517,6 +517,11 @@ PY
     # --dedup-any (HIMMEL-340): this is a machine-wide SAFETY arm, not a
     # per-handover work arm — it must defer to ANY queued resume so a wedged
     # cache across concurrent sessions can never fan out duplicate relaunches.
+    # HIMMEL-1382: automerge is per-arm opt-in — this automatic re-arm never
+    # forwards --automerge, by design (fail-closed policy: a cap re-arm is
+    # not the arm that asked). arm-resume.sh's own always-clear-first fix
+    # backstops this even if the ambient env carried a grant.
+    warn "automerge grant NOT carried across automatic re-arm (per-arm opt-in, HIMMEL-1382)"
     arm_out=$(bash "$ARM_BIN" --dedup-any --time "$slot_hhmm" --handover "$snapshot" 2>&1)
     arm_rc=$?
     set -e
@@ -801,6 +806,11 @@ set +e
 # safety arm must defer to ANY queued resume (operator/supervisor/sibling
 # session) so concurrent sessions hitting the cap never double-book the
 # scheduler. Per-handover multislot is for explicit work arms, not this.
+# HIMMEL-1382: automerge is per-arm opt-in — this automatic re-arm never
+# forwards --automerge, by design (fail-closed policy: a cap re-arm is not
+# the arm that asked). arm-resume.sh's own always-clear-first fix backstops
+# this even if the ambient env carried a grant.
+warn "automerge grant NOT carried across automatic re-arm (per-arm opt-in, HIMMEL-1382)"
 arm_out=$(bash "$ARM_BIN" --dedup-any --time smart --handover "$snapshot" 2>&1)
 arm_rc=$?
 set -e

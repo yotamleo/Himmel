@@ -57,7 +57,7 @@ REAL_BASH="$(command -v bash)"
 # to the CI timeout (the same shape test-graphmap-cadence.sh documents for bash).
 REAL_NODE="$(command -v node 2>/dev/null || true)"
 [ -n "$REAL_NODE" ] || { echo "SKIP: node not on PATH"; exit 0; }
-TMP_ROOT=$(mktemp -d)
+TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/ship-index-test.XXXXXX")
 BIN="$TMP_ROOT/bin"
 STATE="$TMP_ROOT/state"
 mkdir -p "$BIN" "$STATE"
@@ -224,6 +224,140 @@ rc=0; out=$(env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" \
 assert_rc "failed reindex rc 3" 3 "$rc"
 assert_contains "says nothing was shipped" "NOTHING shipped" "$out"
 assert_not_contains "no upload attempted after a failed reindex" "scp " "$(calls)"
+
+# ============================================================================
+echo "TEST: the pinned qmd is forwarded to the reindex leg (HIMMEL-1286)"
+# ============================================================================
+# WHY THIS MATTERS: qmd-reindex.sh resolves qmd through qmd_pinned_invocation,
+# which needs `command -v bun` (or a bare `command -v qmd`) to succeed. A
+# scheduler fires with a MINIMAL PATH carrying neither, so before this passthrough
+# existed every unattended ship died at rc 3 having shipped nothing — i.e. the
+# script could not be put on a cadence at all, which is what HIMMEL-1286's
+# push-only transport requires. The assertion is on the ARGS the reindex leg
+# actually received, not on a log line, so a silently-dropped forward fails here.
+ARGS_FILE="$TMP_ROOT/reindex-args.txt"
+# One argument PER LINE, not "$*". Joining collapses argv into a string, so a
+# flag and its value fused into a single argument would still satisfy a
+# substring assertion — the exact defect the forwarding must not have.
+# The stub also stamps `__invoked__` before its argv. Without that marker the
+# NEGATIVE assertion below ("an unpinned run forwards nothing") passes just as
+# happily when qmd-reindex.sh was never reached at all — and run_sandbox_ship
+# swallows ship-index.sh's exit code, so a script that died before the reindex
+# leg would read as a clean pass. Absence of a flag only means something once
+# the stub proves it ran.
+printf '#!/bin/sh\nprintf "__invoked__\\n" > "%s"\nprintf "%%s\\n" "$@" >> "%s"\nexit 0\n' \
+    "$ARGS_FILE" "$ARGS_FILE" > "$SANDBOX/qmd-reindex.sh"
+chmod +x "$SANDBOX/qmd-reindex.sh"
+FAKE_QMD="$TMP_ROOT/fake-qmd-bin"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE_QMD"
+chmod +x "$FAKE_QMD"
+
+run_sandbox_ship() {
+    env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" \
+        "$REAL_BASH" "$SANDBOX/ship-index.sh" --no-graph "$@" 2>&1 || true
+}
+
+# assert_arg_pair NAME FLAG VALUE FILE — FLAG and VALUE must appear as ADJACENT
+# lines, in that order.
+#
+# A two-line needle handed to `grep -F` does NOT do this: grep -F treats each
+# line of the pattern as a SEPARATE fixed string and ORs them, so
+# `assert_contains "--qmd-bin\n<path>"` passed when only `--qmd-bin` was
+# present — with its value dropped, fused to it, or somewhere else entirely.
+# That is the exact defect these assertions exist to catch, so the assertion
+# itself has to be positional.
+assert_arg_pair() {
+    local name="$1" flag="$2" val="$3" file="$4"
+    if awk -v f="$flag" -v v="$val" '
+            prev == f && $0 == v { found = 1 }
+            { prev = $0 }
+            END { exit !found }' "$file"; then
+        pass "$name"
+    else
+        fail "$name" "no adjacent '$flag' -> '$val' in $(printf '%s' "$(cat "$file")" | tr '\n' '|')"
+    fi
+}
+
+: > "$ARGS_FILE"
+run_sandbox_ship --qmd-bin "$FAKE_QMD" >/dev/null
+assert_contains "the reindex leg actually ran" "__invoked__" "$(cat "$ARGS_FILE")"
+assert_arg_pair "--qmd-bin reaches qmd-reindex.sh with its value" "--qmd-bin" "$FAKE_QMD" "$ARGS_FILE"
+
+# BOTH halves of the pair, in the same run: a bun-served qmd is only invocable
+# as `<bun> <qmd.js>`, so forwarding one token without the other pins something
+# that cannot run. Asserting only --qmd-js here would have missed a dropped
+# --qmd-bin entirely.
+# DISTINCT fixtures for the two halves. Passing $FAKE_QMD as both would let
+# ship-index.sh forward the wrong variable — `--qmd-js "$QMD_BIN"` — and still
+# satisfy every assertion, which is the specific mistake a paired-flag
+# passthrough is most likely to make.
+FAKE_QMD_JS="$TMP_ROOT/fake-qmd.js"
+printf 'console.log("stub");\n' > "$FAKE_QMD_JS"
+: > "$ARGS_FILE"
+run_sandbox_ship --qmd-bin "$FAKE_QMD" --qmd-js "$FAKE_QMD_JS" >/dev/null
+assert_arg_pair "--qmd-bin survives the paired form" "--qmd-bin" "$FAKE_QMD" "$ARGS_FILE"
+assert_arg_pair "--qmd-js rides along with its OWN value" "--qmd-js" "$FAKE_QMD_JS" "$ARGS_FILE"
+
+# The interactive path must be untouched: no pin passed => nothing forwarded, so
+# qmd-reindex.sh keeps resolving qmd itself exactly as it did before.
+: > "$ARGS_FILE"
+run_sandbox_ship >/dev/null
+assert_contains "an unpinned run still reaches the reindex leg" "__invoked__" "$(cat "$ARGS_FILE")"
+assert_not_contains "an unpinned run forwards no --qmd-bin" "--qmd-bin" "$(cat "$ARGS_FILE")"
+# Both halves, not just the one: asserting only --qmd-bin's absence would miss a
+# stray --qmd-js leaking through on its own, which qmd-reindex.sh rejects as a
+# usage error — so the unattended run would die at rc 1 having shipped nothing.
+assert_not_contains "an unpinned run forwards no --qmd-js either" "--qmd-js" "$(cat "$ARGS_FILE")"
+
+# --qmd-js is the SCRIPT ARG for --qmd-bin, never a standalone qmd.
+rc=0; env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" "$REAL_BASH" \
+    "$SANDBOX/ship-index.sh" --no-graph --qmd-js "$FAKE_QMD" >/dev/null 2>&1 || rc=$?
+assert_rc "--qmd-js without --qmd-bin is refused" 1 "$rc"
+
+# A pin that cannot run is a 05:00 failure waiting to happen — refuse at invoke
+# time rather than forwarding it and failing deeper in.
+rc=0; env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" "$REAL_BASH" \
+    "$SANDBOX/ship-index.sh" --no-graph --qmd-bin "relative/qmd" >/dev/null 2>&1 || rc=$?
+assert_rc "a relative --qmd-bin is refused" 1 "$rc"
+rc=0; env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" "$REAL_BASH" \
+    "$SANDBOX/ship-index.sh" --no-graph --qmd-bin "$TMP_ROOT/not-there" >/dev/null 2>&1 || rc=$?
+assert_rc "a MISSING --qmd-bin is refused" 2 "$rc"
+# A file that EXISTS but is not executable exercises the `! -x` branch, which
+# the missing-file case above never reaches — the assertion was named for a
+# check it was not performing. The fixture carries NO shebang on purpose: MSYS
+# reports a shebanged file as -x regardless of its mode, so only a plain file
+# can test this on Git Bash.
+NOT_EXEC="$TMP_ROOT/not-executable-qmd"
+printf 'not a program\n' > "$NOT_EXEC"
+chmod 644 "$NOT_EXEC"
+if [ -x "$NOT_EXEC" ]; then
+    pass "non-executable --qmd-bin SKIPPED (this filesystem reports 644 as -x)"
+else
+    rc=0; env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" "$REAL_BASH" \
+        "$SANDBOX/ship-index.sh" --no-graph --qmd-bin "$NOT_EXEC" >/dev/null 2>&1 || rc=$?
+    assert_rc "a present-but-non-executable --qmd-bin is refused" 2 "$rc"
+fi
+
+# With --no-reindex there is no reindex leg to pin, so the pin is inert and must
+# not be validated into a spurious failure.
+rc=0; env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" "$REAL_BASH" \
+    "$SANDBOX/ship-index.sh" --no-graph --no-reindex --qmd-bin "relative/qmd" >/dev/null 2>&1 || rc=$?
+assert_rc "--no-reindex makes the pin inert, not fatal" 0 "$rc"
+
+# The `=` spelling must validate like the space form. An empty `--qmd-bin=` (an
+# unset var expanding to nothing) would otherwise forward NO pin and recreate
+# the unpinned-scheduler failure this passthrough exists to prevent — silently,
+# at 05:00, having shipped nothing.
+rc=0; env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" "$REAL_BASH" \
+    "$SANDBOX/ship-index.sh" --no-graph "--qmd-bin=" >/dev/null 2>&1 || rc=$?
+assert_rc "--qmd-bin= (empty, = form) is rc 1, not a silent unpin" 1 "$rc"
+rc=0; env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" "$REAL_BASH" \
+    "$SANDBOX/ship-index.sh" --no-graph "--qmd-js=" >/dev/null 2>&1 || rc=$?
+assert_rc "--qmd-js= (empty, = form) is rc 1" 1 "$rc"
+# And the = form still WORKS when given a real value.
+: > "$ARGS_FILE"
+run_sandbox_ship "--qmd-bin=$FAKE_QMD" >/dev/null
+assert_arg_pair "--qmd-bin= forwards a real value" "--qmd-bin" "$FAKE_QMD" "$ARGS_FILE"
 
 # ============================================================================
 echo "TEST: remote_collections parses ROWS, never the header (HIMMEL-1284)"

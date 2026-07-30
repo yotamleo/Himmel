@@ -50,6 +50,12 @@
 #   --no-graph          do not ship the graphify graph
 #   --keep-staging      keep the local staging copy for inspection
 #   --dry-run           print the plan; build nothing, copy nothing, change nothing
+#   --qmd-bin <path>    absolute qmd, forwarded to the reindex leg. REQUIRED
+#                       under a scheduler: qmd-reindex.sh otherwise resolves qmd
+#                       via `command -v bun`/`command -v qmd`, and neither is on
+#                       the minimal PATH schtasks/cron fire with, so the run dies
+#                       at rc 3 having shipped nothing (HIMMEL-1286).
+#   --qmd-js <path>     script arg for --qmd-bin, when qmd is bun-served
 #
 # Exit codes:
 #   0  shipped + verified
@@ -70,6 +76,11 @@ DO_GRAPH=1
 KEEP_STAGING=0
 DRY_RUN=0
 COLLECTIONS=""
+# Pinned qmd, forwarded to the reindex leg (HIMMEL-1286). Empty = let
+# qmd-reindex.sh resolve qmd itself, which is correct interactively and WRONG
+# under a scheduler — see the note above the reindex call for why this exists.
+QMD_BIN=""
+QMD_JS=""
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REINDEX_SCRIPT="$HERE/qmd-reindex.sh"
@@ -92,6 +103,11 @@ usage() {
     cat <<'EOF'
 Usage: ship-index.sh [--host <ssh-host>] [--no-reindex] [--collections a,b]
                      [--no-graph] [--keep-staging] [--dry-run]
+                     [--qmd-bin <path>] [--qmd-js <path>]
+
+--qmd-bin/--qmd-js pin the qmd handed to the reindex leg. Pass them from any
+SCHEDULED context: the resolver needs bun or qmd on PATH, and a scheduler's
+minimal PATH has neither, so an unpinned unattended run dies at rc 3.
 
 Build the qmd index LOCALLY and ship the artifact to a receiving machine that
 is too slow to build its own (win2 embeds ~50x slower; an in-place reindex
@@ -114,6 +130,29 @@ while [ $# -gt 0 ]; do
             fi
             HOST="$2"; shift 2 ;;
         --host=*)        HOST="${1#--host=}"; shift ;;
+        --qmd-bin)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "ERR ship-index: --qmd-bin requires a value" >&2; exit 1
+            fi
+            QMD_BIN="$2"; shift 2 ;;
+        --qmd-bin=*)
+            # The `=` form validates like the space form. An empty
+            # `--qmd-bin=` (an unset var expanding to nothing) would otherwise
+            # leave QMD_BIN empty, forward NO pin to the reindex leg, and
+            # recreate the precise unpinned-scheduler failure this passthrough
+            # exists to prevent — silently, at 05:00, having shipped nothing.
+            QMD_BIN="${1#--qmd-bin=}"
+            [ -n "$QMD_BIN" ] || { echo "ERR ship-index: --qmd-bin requires a value" >&2; exit 1; }
+            shift ;;
+        --qmd-js)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "ERR ship-index: --qmd-js requires a value" >&2; exit 1
+            fi
+            QMD_JS="$2"; shift 2 ;;
+        --qmd-js=*)
+            QMD_JS="${1#--qmd-js=}"
+            [ -n "$QMD_JS" ] || { echo "ERR ship-index: --qmd-js requires a value" >&2; exit 1; }
+            shift ;;
         --collections)
             if [ $# -lt 2 ] || [ -z "$2" ]; then
                 echo "ERR ship-index: --collections requires a value" >&2; exit 1
@@ -164,6 +203,27 @@ done
 # there is nothing that could create it, so the check applies immediately.
 if [ "$DO_REINDEX" -eq 0 ] && [ ! -f "$LOCAL_INDEX" ]; then
     die 2 "local qmd index not found at $LOCAL_INDEX and --no-reindex was given (set QMD_INDEX_PATH, or drop --no-reindex to build it)"
+fi
+
+# --qmd-js is the SCRIPT ARG for --qmd-bin (a bun-served qmd is invoked as two
+# tokens), so it is meaningless alone. Refusing beats forwarding a half-pin that
+# qmd-reindex.sh would reject later, after the caller already believed it pinned.
+if [ -n "$QMD_JS" ] && [ -z "$QMD_BIN" ]; then
+    die 1 "--qmd-js requires --qmd-bin (it is the script argument handed to that interpreter, not a standalone qmd)"
+fi
+# A pin that cannot run is a scheduling failure waiting to happen at 05:00, so
+# say so at arm/invoke time instead. Mirrors qmd-reindex.sh's own discipline.
+if [ -n "$QMD_BIN" ] && [ "$DO_REINDEX" -eq 1 ]; then
+    case "$QMD_BIN" in
+        /*|[A-Za-z]:[/\\]*) : ;;
+        *) die 1 "--qmd-bin must be an absolute path (got '$QMD_BIN') — a relative path or shell alias is meaningless to a scheduled runner that has cd'd elsewhere" ;;
+    esac
+    # -f AND -x, matching qmd-reindex.sh's own discipline: -x alone is TRUE for a
+    # directory, so a path like /usr/bin passed the check and then failed at fire
+    # time as a "command not found" nobody reads.
+    if [ ! -f "$QMD_BIN" ] || [ ! -x "$QMD_BIN" ]; then
+        die 2 "--qmd-bin '$QMD_BIN' is not an executable file"
+    fi
 fi
 
 # --- receiver's collection set ----------------------------------------------
@@ -267,7 +327,19 @@ fi
 # --- 1. build local ----------------------------------------------------------
 if [ "$DO_REINDEX" -eq 1 ]; then
     say "[1/5] local reindex (qmd-reindex.sh)"
-    bash "$REINDEX_SCRIPT" || die 3 "local reindex failed — NOTHING shipped (the receiver keeps its current index)"
+    # Forward the pinned qmd (HIMMEL-1286). Without this the reindex leg resolves
+    # qmd itself, and qmd_pinned_invocation needs `command -v bun` (or a bare
+    # `command -v qmd`) to succeed — neither is on the MINIMAL PATH a scheduler
+    # fires with. So an unattended ship died at rc 3 "local reindex failed" with
+    # nothing shipped, which made this script effectively un-schedulable and left
+    # "the host pushes on a cadence" unbuildable. Empty stays empty: an
+    # interactive run passes nothing and the resolver works fine there.
+    reindex_args=()
+    if [ -n "$QMD_BIN" ]; then reindex_args+=(--qmd-bin "$QMD_BIN"); fi
+    if [ -n "$QMD_JS" ]; then reindex_args+=(--qmd-js "$QMD_JS"); fi
+    # ${a[@]+"${a[@]}"} — an empty array under `set -u` is an unbound-variable
+    # error on bash 3.2, which macOS still ships.
+    bash "$REINDEX_SCRIPT" ${reindex_args[@]+"${reindex_args[@]}"} || die 3 "local reindex failed — NOTHING shipped (the receiver keeps its current index)"
 else
     say "[1/5] local reindex SKIPPED (--no-reindex) — shipping the index as it stands"
 fi

@@ -535,13 +535,21 @@ if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
     echo "claude-codex: --preflight-only needs curl to verify codex auth — refusing to report healthy without it (fatal)." >&2
     exit 21
   fi
+  # HIMMEL-1380: max_tokens 16 / -m 10 (was 1 / 8) — the old 1-token, 8s budget
+  # was hostile to a reasoning model (it emits reasoning tokens before any
+  # content, so it can miss an 8s window even on a fully healthy lane).
+  # codex-adv CR: probeClaudexAuth's outer wall-clock cap (PROBE_TIMEOUT_MS)
+  # was raised in lockstep to 25s — 10s alone did NOT leave room for this
+  # script's own bash/guard overhead (measured several seconds on Windows Git
+  # Bash with no network latency at all) on top of curl's budget.
   probe_out="$(printf 'header "Authorization: Bearer %s"\n' "$CLIPROXY_API_KEY" \
-    | curl -s -w '\n%{http_code}' -m 8 --noproxy '*' -K - \
+    | curl -s -w '\n%{http_code}' -m 10 --noproxy '*' -K - \
       -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
-      -d '{"model":"'"$CODEX_MODEL"'","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' \
+      -d '{"model":"'"$CODEX_MODEL"'","max_tokens":16,"messages":[{"role":"user","content":"ping"}]}' \
       "$CODEX_PROXY_BASE_URL/v1/messages" 2>/dev/null)"
   curl_rc=$?   # curl's OWN exit — a nonzero rc means the transfer FAILED
   probe_code="${probe_out##*$'\n'}"   # last line = %{http_code} (000 on connect failure)
+  probe_body="${probe_out%$'\n'*}"    # everything before the last line = the response body
   # Transport-status guard (codex-adv CR): trust %{http_code} ONLY when curl
   # itself succeeded. A partial/stalled 200 (headers arrive, then the body times
   # out or truncates) prints "200" yet exits nonzero (e.g. 28 = timeout) — that
@@ -549,20 +557,35 @@ if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
   # We control the curl invocation (validated loopback URL, no user args), so the
   # deterministic-config curl rc's do not occur at runtime; all nonzero = transient.
   if [ "$curl_rc" -ne 0 ]; then exit 20; fi
-  # Three DISTINCT outcomes so the caller never confuses them (HIMMEL-1037,
-  # codex-adv CR): exit 0 = auth healthy (any 2xx); exit 20 = TRANSIENT and
-  # retry-worthy — the 503/auth_unavailable refresh gap PLUS other momentary
-  # failures that clear on their own (000 transport/proxy-restart, 429 rate
-  # limit, any 5xx gateway hiccup); exit 21 = a DETERMINISTIC failure that a
-  # retry cannot fix (4xx auth/config — 400/401/403/404…) → the caller ABORTS
-  # before minting a worktree. A non-2xx must NEVER read as healthy.
+  # Four DISTINCT outcomes so the caller never confuses them (HIMMEL-1037/1380,
+  # codex-adv CR): exit 0 = auth healthy (any 2xx, OR a 400 whose body proves the
+  # request reached the model layer — see below); exit 20 = TRANSIENT and
+  # retry-worthy — the 503/auth_unavailable refresh gap, a 408 request-timeout
+  # (the probe itself didn't finish; that says nothing about auth), PLUS other
+  # momentary failures that clear on their own (000 transport/proxy-restart, 429
+  # rate limit, any 5xx gateway hiccup); exit 21 = a DETERMINISTIC failure that a
+  # retry cannot fix (401/403 = invalid key, or another 4xx whose body does NOT
+  # prove auth) → the caller ABORTS before minting a worktree. A non-2xx must
+  # NEVER read as healthy.
   case "$probe_code" in
-    2??) exit 0 ;;              # any 2xx = upstream healthy
-    429|5??|000) exit 20 ;;     # rate-limit / any 5xx / transport failure = transient
+    2??) exit 0 ;;                   # any 2xx = upstream healthy
+    408|429|5??|000) exit 20 ;;      # 408 timeout / rate-limit / any 5xx / transport failure = transient
+    400)
+      case "$probe_body" in
+        *auth_unavailable*) exit 20 ;;
+        *model*|*max_tokens*|*invalid_request_error*)
+          exit 0 ;;                  # rejected on params, not auth — proves the key works
+        *)
+          echo "claude-codex: preflight probe observed HTTP $probe_code — body: $(printf '%.300s' "$probe_body")" >&2
+          exit 21 ;;
+      esac
+      ;;
     *)
-      case "$probe_out" in
+      case "$probe_body" in
         *auth_unavailable*) exit 20 ;;   # the gap can arrive with a non-5xx status too
-        *) exit 21 ;;                    # deterministic 4xx (400/401/403/404…) = fatal
+        *)
+          echo "claude-codex: preflight probe observed HTTP $probe_code — body: $(printf '%.300s' "$probe_body")" >&2
+          exit 21 ;;                    # deterministic 4xx (401/403/404…) = fatal
       esac ;;
   esac
 fi

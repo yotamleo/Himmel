@@ -46,18 +46,28 @@
 # See cr_body_gate (in scripts/lib/cr-body-findings.sh). Runs on BOTH the full
 # path and --threads-only (the latter now binds its own head to do so).
 #
-# Exit codes:
-#   0 — all checks green AND all review threads resolved AND CodeRabbit concluded
-#       success on the head SHA AND zero outside-diff-range body findings (safe
-#       to merge; nitpick/additional body findings are surfaced, non-blocking)
-#   1 — at least one check failed (--fail-fast: returns on the first red), or
-#       CodeRabbit's own status is failure/error
+# That CodeRabbit requirement is AVAILABILITY-GATED (HIMMEL-1125): it arms only
+# on a repo that declares CodeRabbit (scripts/lib/cr-available.sh). On a repo
+# without it, "absent" is the permanent steady state, so the armed gate exited 2
+# on every merge forever unless the adopter discovered CR_PROFILE=none. The
+# unresolved-THREAD gate below is NOT availability-gated — it is generic (it
+# blocks on any reviewer's unresolved thread, human included) and is unchanged.
+#
+# Exit codes (the CodeRabbit clauses below apply ONLY when the signal gate is
+# ARMED — see the availability note above; on a disarmed repo they simply do not
+# fire, and the checks + thread verdicts stand on their own):
+#   0 — all checks green AND all review threads resolved AND, WHEN ARMED,
+#       CodeRabbit concluded success on the head SHA AND zero outside-diff-range
+#       body findings (safe to merge; nitpick/additional body findings are
+#       surfaced, non-blocking)
+#   1 — at least one check failed (--fail-fast: returns on the first red), or —
+#       when armed — CodeRabbit's own status is failure/error
 #   2 — cannot evaluate: usage error / no PR found / no checks registered
 #       within --grace / gh error on the probe or the watch / thread-state
 #       query failed or returned a malformed page / PR head moved during the run
-#       / CodeRabbit's status is absent or still pending on the head SHA / the
-#       review-body-findings reader could not evaluate (infra failure or an
-#       anti-drift canary — both fail closed here, see cr-body-findings.sh)
+#       / (when armed) CodeRabbit's status is absent or still pending on the head
+#       SHA / the review-body-findings reader could not evaluate (infra failure
+#       or an anti-drift canary — both fail closed here, see cr-body-findings.sh)
 #   3 — checks green but the review state blocks the merge: unresolved review
 #       threads remain, a review requests changes, or CodeRabbit's review body
 #       reports an outside-diff-range finding — address, resolve, re-run
@@ -72,7 +82,11 @@
 #   CR_ESCALATE_WAIT       — --escalate total wait budget (default 600)
 #   CR_ESCALATE_POLL       — --escalate seconds between re-reads (default 120)
 #   CR_PROFILE=none        — this repo has no CodeRabbit: skip the required-signal
-#                            gate. Without it, a CodeRabbit-less repo exits 2.
+#                            gate. Still honored, but no longer something an
+#                            adopter must discover — see the availability gate
+#                            below.
+#   CR_APP=1|0             — force the required-signal gate on/off, overriding
+#                            the probe (see scripts/lib/cr-available.sh)
 #   CR_BOT_USER_ID         — creator.id to trust as CodeRabbit (see cr-signal.sh)
 #
 # The HIMMEL-980 zombie-check-run override is GONE: it keyed off a CodeRabbit
@@ -89,17 +103,25 @@ set -uo pipefail
 usage() {
     cat >&2 <<'EOF'
 usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only] [--escalate]
-exit codes: 0 = checks green + all review threads resolved + CodeRabbit concluded success on the head SHA
+exit codes: 0 = checks green + all review threads resolved
+                + (if CodeRabbit is armed) CodeRabbit concluded success on the head SHA
                 + zero outside-diff-range body findings,
-            1 = a check failed, or CodeRabbit's status is failure/error,
+            1 = a check failed, or (if armed) CodeRabbit's status is failure/error,
             2 = cannot evaluate (usage / no PR / no checks within --grace / thread query failed / PR head moved
-                / CodeRabbit's status absent or still pending on the head SHA / body-findings reader failed),
-            3 = checks green but unresolved review threads remain, a review requests changes, or CodeRabbit's
-                review body reports an outside-diff-range finding,
-            4 = CodeRabbit concluded incrementally but posted no review object at the head while a prior head
-                had outside-diff findings; request @coderabbitai full review or use --escalate
+                / (if armed) CodeRabbit's status absent or still pending on the head SHA / body-findings
+                reader failed),
+            3 = checks green but unresolved review threads remain, a review requests changes, or (if armed)
+                CodeRabbit's review body reports an outside-diff-range finding,
+            4 = (if armed) CodeRabbit concluded incrementally but posted no review object at the head while a
+                prior head had outside-diff findings; request @coderabbitai full review or use --escalate
 env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings gates (repos without CodeRabbit)
+     CR_APP=1|0 forces those same gates on/off, overriding the automatic probe (see scripts/lib/cr-available.sh)
      CR_ESCALATE_WAIT / CR_ESCALATE_POLL tune --escalate (defaults 600 / 120 seconds)
+note: "armed" above means the required-CodeRabbit-signal + body-findings gates are active — DISARMED
+      by default. On a repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
+      CR_APP=1|0 overrides; CR_PROFILE=none outranks both. On a disarmed repo the CodeRabbit-conditional
+      clauses above simply do not apply, and exit 0 requires no CodeRabbit status at all. The
+      unresolved-review-thread requirement (exit 3) is NOT keyed on this and applies to everyone.
 EOF
 }
 
@@ -187,12 +209,23 @@ if ! command -v gh >/dev/null 2>&1; then
     exit 2
 fi
 # jq is needed to read CodeRabbit's status + review-body findings, so require
-# it only when CR_PROFILE=none does not skip both gates entirely (coderabbit-7,
-# extended by HIMMEL-1126): --threads-only USED to be a pure GraphQL+gh path,
+# it only when the CodeRabbit signal gate is ARMED (coderabbit-7, extended by
+# HIMMEL-1126/HIMMEL-1125): --threads-only USED to be a pure GraphQL+gh path,
 # but it now also runs cr_signal_gate + cr_body_gate (S1 — a body-only finding
 # is exactly as invisible to /pr-check step 4.8's threads-only call as it is to
 # the full run), so it needs jq too whenever CodeRabbit is in play.
-if [ "${CR_PROFILE:-}" != "none" ]; then
+# Is the CodeRabbit App configured for this repo at all (HIMMEL-1125)? The
+# signal + body gates below are armed ONLY when it is: on a repo without
+# CodeRabbit, "absent" is the permanent steady state, so an armed gate exits 2
+# on every merge forever. Probed once here; cr_signal_gate/cr_body_gate read
+# the result.
+# shellcheck source=scripts/lib/cr-available.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "$0")" && pwd)/lib/cr-available.sh"
+CR_ARMED=0
+cr_app_configured "$PWD" && CR_ARMED=1
+
+if [ "$CR_ARMED" -eq 1 ]; then
     if ! command -v jq >/dev/null 2>&1; then
         echo "check-ci: jq not found on PATH (required to read CodeRabbit's status)" >&2
         exit 2
@@ -438,7 +471,12 @@ review_state_gate
 # Runs AFTER the watch + settle so the normal registration race resolves itself
 # in the window that already exists; only a signal still missing by then fails.
 cr_signal_gate() {
-    [ "${CR_PROFILE:-}" = "none" ] && return 0
+    # Availability gate (HIMMEL-1125): no CodeRabbit App on this repo -> no-op.
+    # Silent on purpose — an adopter without CodeRabbit must not notice that a
+    # CodeRabbit gate exists. Note this turns OFF only the CodeRabbit-status
+    # requirement; review_state_gate above is a generic unresolved-THREAD gate
+    # (human reviewers included) and stays armed for everyone, unchanged.
+    [ "$CR_ARMED" -eq 1 ] || return 0
 
     local state
     state=$(cr_signal_state "$owner" "$repo" "$head0") || {
@@ -454,11 +492,25 @@ cr_signal_gate() {
             echo "check-ci: CodeRabbit reported '$state' on head $head0 of PR #$num — its review did not complete" >&2
             exit 1 ;;
         absent)
-            echo "check-ci: CodeRabbit has posted NO status on head $head0 of PR #$num — an unreviewed head is not a green one (HIMMEL-1072). Wait for the review and re-run; if this repo has no CodeRabbit, set CR_PROFILE=none." >&2
+            # Remediation names CR_APP=0, not CR_PROFILE=none (coderabbit-7):
+            # reaching this line means the gate is ARMED, so the fix is to
+            # disarm availability — and CR_PROFILE=none would ALSO silently
+            # change the critic-panel profile (it is overloaded; see
+            # .env.example). CR_APP=0 says only the thing meant here.
+            echo "check-ci: CodeRabbit has posted NO status on head $head0 of PR #$num — an unreviewed head is not a green one (HIMMEL-1072). Wait for the review and re-run; if this repo has no CodeRabbit, it should not be armed: unset it with 'git config --local --unset himmel.coderabbit' (or CR_APP=0 for this run)." >&2
             exit 2 ;;
         paged)
             # Indeterminate, not absent (coderabbit-2) — see cr-signal.sh.
             echo "check-ci: head $head0 of PR #$num has more commit statuses than one API page (100) and none is CodeRabbit's — cannot certify the review; check manually" >&2
+            exit 2 ;;
+        skipped)
+            # HIMMEL-1317. Distinct from `absent`: CodeRabbit DID post, and posted
+            # state=success — it just said in the description that it did not
+            # review. Until this arm existed that success was indistinguishable
+            # from a clean review, and this gate certified exit 0 on a PR nobody
+            # had looked at (reproduced on PR #1429, 2026-07-27). Actionable
+            # rather than merely closed: the operator's next move is one comment.
+            echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num — it posted state=success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-run), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop, and note the CLI lane 'bash scripts/cr/coderabbit-review.sh --branch <b> --base main' is a separate, independently-limited path). If CodeRabbit has simply renamed its success wording, widen the allow-list for one run with CR_OK_DESC_RE='^(review completed|no review changes requested|<new wording>)\$' — CR_OK_DESC_RE REPLACES the default, so carry BOTH default alternatives or you narrow it instead of widening it, and KEEP the ^(...)\$ anchors or a decline description merely containing one of these phrases (e.g. 'No review completed') passes as clean again (HIMMEL-1354 R2). If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
             exit 2 ;;
         *)
             echo "check-ci: unrecognized CodeRabbit state '$state' on head $head0 — cannot evaluate the gate; re-run" >&2
@@ -583,7 +635,11 @@ _cr_body_escalate() {
 }
 
 cr_body_gate() {
-    [ "${CR_PROFILE:-}" = "none" ] && return 0
+    # Availability gate (HIMMEL-1125), same posture as cr_signal_gate above:
+    # cr_body_findings lives in cr-body-findings.sh, which is only SOURCED when
+    # CR_ARMED=1 (see the sourcing block near the top of this script) — reaching
+    # past this early return while disarmed would call an undefined function.
+    [ "$CR_ARMED" -eq 1 ] || return 0
 
     _cr_body_read
 
@@ -624,7 +680,7 @@ if [ "$THREADS_ONLY" -eq 1 ]; then
     # was invisible here too): cr_signal_gate/cr_body_gate both need a head0,
     # and /pr-check step 4.8 calling this path must get the SAME body-finding
     # protection as the full run, not just the thread gate.
-    if [ "${CR_PROFILE:-}" != "none" ]; then
+    if [ "$CR_ARMED" -eq 1 ]; then
         head0=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
         if [ -z "$head0" ]; then
             echo "check-ci: cannot read the PR head SHA — cannot bind the verdict; re-run" >&2

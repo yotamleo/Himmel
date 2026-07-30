@@ -16,6 +16,10 @@ case "${GH_STUB_MODE:?}" in
 esac
 case "$1 $2" in
   "pr view")
+    # A malformed --repo value (quotes survived tokenization) is what real gh
+    # REJECTS — reproduce that so the malformed-repo case exercises the actual
+    # rc=3 re-anchor path instead of an incidental success (coderabbit-10).
+    case "$*" in *'"'*) exit 1 ;; esac
     # api-error mode: pr view SUCCEEDS, later api calls fail (distinguishes
     # rc=3 selector-unresolvable from rc=0 downstream-API fail-open).
     echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}' ;;
@@ -45,6 +49,21 @@ case "$1 $2" in
       cr-degraded-unresolved) echo "statuses boom" >&2; exit 1 ;;
       inflight) echo '[{"context":"CodeRabbit","state":"pending","created_at":"2026-07-16T19:08:46Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       cr-absent) echo '[]' ;;
+      # HIMMEL-1317: what a repo with automatic reviews DISABLED posts on every
+      # untriggered PR — state=success, refusal only in .description. Reading
+      # .state alone made a declined review identical to a clean one, and this
+      # gate's case statement had no catch-all, so the unhandled state fell
+      # straight through to the merge path: fail-open by omission.
+      cr-skipped) echo '[{"context":"CodeRabbit","state":"success","description":"Review skipped: automatic reviews are disabled","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+      # Positive control: same state, a real review — must still ALLOW, so the
+      # block above cannot be satisfied by breaking `success` wholesale.
+      cr-completed) echo '[{"context":"CodeRabbit","state":"success","description":"Review completed","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+      # glm-1 (round 2): the false-positive guard must exist in BOTH gate suites.
+      # check-ci and cr-merge-gate consume the same reader, so a loosened skip
+      # regex would be caught by only one of them — and the merge gate is the one
+      # that actually stops a merge. A completed review whose wording merely
+      # CONTAINS skip-ish words must not block.
+      cr-nearmiss) echo '[{"context":"CodeRabbit","state":"success","description":"No review changes requested","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       cr-failure) echo '[{"context":"CodeRabbit","state":"failure","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       # An impostor: right context + right login, WRONG creator.id. The whole
       # point of HIMMEL-1058's identity match — display names are spoofable,
@@ -84,6 +103,19 @@ export PATH="$TMP/bin:$PATH"
 . "$SCRIPT_DIR/cr-merge-gate.sh"
 
 pass=0; fail=0
+# ── the repo the gate runs IN (HIMMEL-1125) ──────────────────────────────────
+# Availability is now a repo-scoped, non-versioned git config, and the gate only
+# answers for the repo it is standing in (codex-adv-2). Every case below calls
+# `cr_merge_gate 42 o/r`, so the cwd must BE o/r and must be armed — otherwise
+# the gate short-circuits to "allow" and every block-case would pass vacuously.
+# Pinned explicitly rather than inherited from the real checkout: the suite must
+# not change meaning with the ambient repo's config.
+mkdir -p "$TMP/repo"
+git -C "$TMP/repo" init --quiet >/dev/null 2>&1
+git -C "$TMP/repo" remote add origin https://github.com/o/r.git
+git -C "$TMP/repo" config --local himmel.coderabbit true
+cd "$TMP/repo" || { echo "FATAL: cannot cd to the test repo"; exit 1; }
+
 t() { # t <name> <expected-rc> — runs cr_merge_gate 42 o/r with current env
   local name="$1" want="$2" rc=0
   export GH_STUB_LOG="$TMP/calls-$name.log"; : > "$GH_STUB_LOG"
@@ -104,6 +136,15 @@ GH_STUB_MODE=inflight      t cr-status-pending-blocks 2
 # The regression that got #1243 merged: no CodeRabbit signal at all read as a
 # pass. An unreviewed head must BLOCK, not allow.
 GH_STUB_MODE=cr-absent     t cr-status-absent-blocks 2
+# HIMMEL-1317: a DECLINED review must block for the same reason an absent one
+# does. Paired with its positive control so the block cannot be satisfied by
+# breaking `success` outright.
+GH_STUB_MODE=cr-skipped    t cr-status-skipped-blocks 2
+GH_STUB_MODE=cr-completed  t cr-status-completed-allows 0
+# glm-1 (round 2): mirror check-ci's 34d near-miss guard here. Both gates read
+# the same cr-signal.sh, so a loosened skip regex must fail in BOTH suites —
+# and this is the gate that actually stops a merge.
+GH_STUB_MODE=cr-nearmiss   t cr-status-skipish-wording-allows 0
 GH_STUB_MODE=cr-failure    t cr-status-failure-blocks 2
 # Identity, not display name (HIMMEL-1058): a status carrying the CodeRabbit
 # context + login but a foreign creator.id must NOT satisfy the gate.
@@ -150,6 +191,125 @@ unset CR_MERGE_GATE_OK
 GH_STUB_MODE=unresolved CR_PROFILE=none t cr-profile-none-allows 0
 [ -s "$TMP/calls-cr-profile-none-allows.log" ] && { echo "FAIL profile-none called gh"; fail=$((fail+1)); }
 unset CR_PROFILE
+
+# HIMMEL-1125 — the adopter WITHOUT CodeRabbit, at the surface that actually
+# blocks `gh pr merge`. This whole gate is CodeRabbit-specific, so with no
+# CodeRabbit it must be a NO-OP: allow, and (like the other two short-circuits
+# above) do not spend a single gh call proving what the probe already knows.
+# Pre-1125 this shape BLOCKED every merge on "absent", forever, until the
+# adopter discovered CR_PROFILE=none.
+GH_STUB_MODE=unresolved CR_APP=0 t cr-app-absent-allows 0
+[ -s "$TMP/calls-cr-app-absent-allows.log" ] && { echo "FAIL cr-app-absent called gh"; fail=$((fail+1)); }
+unset CR_APP
+
+# HIMMEL-1125 — the marker is what arms this suite, so prove the gate is really
+# keyed on it: same blocking fixture, marker off -> allow. Default-disarmed is
+# the posture, and an unarmed repo is now the DEFAULT an adopter lands on.
+git -C "$TMP/repo" config --local --unset himmel.coderabbit
+GH_STUB_MODE=unresolved t unarmed-repo-allows 0
+[ -s "$TMP/calls-unarmed-repo-allows.log" ] && { echo "FAIL unarmed repo called gh"; fail=$((fail+1)); }
+git -C "$TMP/repo" config --local himmel.coderabbit true
+
+# codex-adv-2 — availability describes THIS clone, so it must not be applied to a
+# foreign --repo target. Local is armed (o/r); the merge targets other/thing,
+# which we hold no signal for -> no gate, and no gh call spent guessing. Before
+# this, the local answer leaked onto any --repo target: it would falsely BLOCK a
+# target without CodeRabbit and falsely PASS one that uses it.
+GH_STUB_LOG="$TMP/calls-foreign.log"; : > "$GH_STUB_LOG"
+export GH_STUB_LOG
+foreign_rc=0
+GH_STUB_MODE=unresolved cr_merge_gate 42 other/thing >/dev/null 2>&1 || foreign_rc=$?
+if [ "$foreign_rc" = 0 ]; then pass=$((pass+1)); echo "ok   foreign-repo-target-not-gated"
+else fail=$((fail+1)); echo "FAIL foreign-repo-target-not-gated (rc=$foreign_rc want=0)"; fi
+[ -s "$TMP/calls-foreign.log" ] && { echo "FAIL foreign target called gh"; fail=$((fail+1)); }
+
+# ...but ONLY a well-formed owner/name is a foreign target. A MIS-TOKENIZED repo
+# value (here: the quotes survived extraction, HIMMEL-936 codex-1) must NOT be
+# read as "some other repo" and waved through — treating garbage as foreign would
+# let `--repo "o/r"` silently disable this gate, a worse bypass than the one the
+# foreign check closes. Real gh rejects such a value, so the faithful outcome is
+# the rc=3 re-anchor path (coderabbit-10): the gate did NOT wave it through, and
+# the hook re-anchors on the cwd branch. The property under test is "not 0".
+GH_STUB_LOG="$TMP/calls-malformed.log"; : > "$GH_STUB_LOG"
+export GH_STUB_LOG
+malformed_rc=0
+GH_STUB_MODE=unresolved cr_merge_gate 42 '"o/r"' >/dev/null 2>&1 || malformed_rc=$?
+if [ "$malformed_rc" = 3 ]; then pass=$((pass+1)); echo "ok   malformed-repo-value-reanchors-not-waved-through"
+else fail=$((fail+1)); echo "FAIL malformed-repo-value-reanchors-not-waved-through (rc=$malformed_rc want=3)"; fi
+
+# coderabbit-9 — a mere SPELLING of the local repo must not read as foreign and
+# skip the gate. Both are `o/r`, gh's own accepted forms:
+#   O/R            GitHub owner/name is case-INSENSITIVE
+#   github.com/o/r gh accepts [HOST/]OWNER/REPO
+# Each must still BLOCK on the unresolved thread (rc 2), not be waved through.
+for spelling in 'O/R' 'github.com/o/r' 'GitHub.com/O/r'; do
+    GH_STUB_LOG="$TMP/calls-spell.log"; : > "$GH_STUB_LOG"
+    export GH_STUB_LOG
+    spell_rc=0
+    GH_STUB_MODE=unresolved cr_merge_gate 42 "$spelling" >/dev/null 2>&1 || spell_rc=$?
+    if [ "$spell_rc" = 2 ]; then pass=$((pass+1)); echo "ok   local-repo-spelling-still-gated ($spelling)"
+    else fail=$((fail+1)); echo "FAIL local-repo-spelling-still-gated ($spelling) (rc=$spell_rc want=2)"; fi
+done
+
+# coderabbit-11 — the flip side of coderabbit-9: same owner/name on a DIFFERENT
+# host is a DIFFERENT repo. Origin is github.com/o/r (armed); a merge targeting
+# ghe.example.com/o/r must be treated FOREIGN (no signal, no gate), not gated
+# with the local github answer. Dropping the host made these collide.
+GH_STUB_LOG="$TMP/calls-crosshost.log"; : > "$GH_STUB_LOG"
+export GH_STUB_LOG
+crosshost_rc=0
+GH_STUB_MODE=unresolved cr_merge_gate 42 ghe.example.com/o/r >/dev/null 2>&1 || crosshost_rc=$?
+if [ "$crosshost_rc" = 0 ]; then pass=$((pass+1)); echo "ok   cross-host-same-nwo-not-gated"
+else fail=$((fail+1)); echo "FAIL cross-host-same-nwo-not-gated (rc=$crosshost_rc want=0)"; fi
+[ -s "$TMP/calls-crosshost.log" ] && { echo "FAIL cross-host target called gh"; fail=$((fail+1)); }
+
+# coderabbit-15 — an ssh://git@HOST/o/r origin must still identify the LOCAL
+# repo, so a merge targeting its OWN o/r is gated, not waved through as foreign.
+# The `git@` userinfo used to survive into the canonical form, whose `@` failed
+# the charset check -> local unidentifiable -> every --repo bypassed the gate.
+# Fresh armed repo with an ssh origin (the shared o/r stub repo uses https).
+mkdir -p "$TMP/sshrepo"
+git -C "$TMP/sshrepo" init --quiet >/dev/null 2>&1
+git -C "$TMP/sshrepo" remote add origin ssh://git@github.com/o/r.git
+git -C "$TMP/sshrepo" config --local himmel.coderabbit true
+GH_STUB_LOG="$TMP/calls-ssh.log"; : > "$GH_STUB_LOG"
+export GH_STUB_LOG
+ssh_rc=0
+( cd "$TMP/sshrepo" && GH_STUB_MODE=unresolved cr_merge_gate 42 o/r ) >/dev/null 2>&1 || ssh_rc=$?
+if [ "$ssh_rc" = 2 ]; then pass=$((pass+1)); echo "ok   ssh-origin-identifies-local-repo (gated, not bypassed)"
+else fail=$((fail+1)); echo "FAIL ssh-origin-identifies-local-repo (rc=$ssh_rc want=2)"; fi
+
+# CodeRabbit port-normalization finding, PR #1470 — a scheme-style origin with
+# an explicit PORT must still identify the LOCAL repo. `ssh://git@ghe.example.
+# com:2222/o/r` left ":2222" glued onto the host segment; _cmg_canon_nwo's
+# charset check rejects ':', so the local clone became unidentifiable and a
+# matching `--repo ghe.example.com/o/r` was waved through as foreign. `--repo`
+# itself never carries a port, so the two must still compare equal once the
+# origin's port is stripped.
+mkdir -p "$TMP/sshportrepo"
+git -C "$TMP/sshportrepo" init --quiet >/dev/null 2>&1
+git -C "$TMP/sshportrepo" remote add origin ssh://git@ghe.example.com:2222/o/r.git
+git -C "$TMP/sshportrepo" config --local himmel.coderabbit true
+GH_STUB_LOG="$TMP/calls-sshport.log"; : > "$GH_STUB_LOG"
+export GH_STUB_LOG
+sshport_rc=0
+( cd "$TMP/sshportrepo" && GH_STUB_MODE=unresolved cr_merge_gate 42 ghe.example.com/o/r ) >/dev/null 2>&1 || sshport_rc=$?
+if [ "$sshport_rc" = 2 ]; then pass=$((pass+1)); echo "ok   ssh-origin-with-port-identifies-local-repo (gated, not bypassed)"
+else fail=$((fail+1)); echo "FAIL ssh-origin-with-port-identifies-local-repo (rc=$sshport_rc want=2)"; fi
+
+# Same finding, https origin on a custom port (no userinfo, so this exercises
+# the plain scheme-style path rather than the `@`-stripping added by
+# coderabbit-15).
+mkdir -p "$TMP/httpsportrepo"
+git -C "$TMP/httpsportrepo" init --quiet >/dev/null 2>&1
+git -C "$TMP/httpsportrepo" remote add origin https://ghe.example.com:8443/o/r.git
+git -C "$TMP/httpsportrepo" config --local himmel.coderabbit true
+GH_STUB_LOG="$TMP/calls-httpsport.log"; : > "$GH_STUB_LOG"
+export GH_STUB_LOG
+httpsport_rc=0
+( cd "$TMP/httpsportrepo" && GH_STUB_MODE=unresolved cr_merge_gate 42 ghe.example.com/o/r ) >/dev/null 2>&1 || httpsport_rc=$?
+if [ "$httpsport_rc" = 2 ]; then pass=$((pass+1)); echo "ok   https-origin-with-port-identifies-local-repo (gated, not bypassed)"
+else fail=$((fail+1)); echo "FAIL https-origin-with-port-identifies-local-repo (rc=$httpsport_rc want=2)"; fi
 
 # ── HIMMEL-1126/1147: review-BODY findings (S1) — checks/threads clean on
 # every mode below (default graphql/statuses fixtures), so these exercise

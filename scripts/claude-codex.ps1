@@ -612,23 +612,36 @@ if (-not $isLoopback) {
 # status (let the real run surface a genuine error). Mirrors the bash twin.
 if ($PreflightOnly) {
   try {
-    $body = '{"model":"' + $CodexModel + '","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}'
-    Invoke-WebRequest -UseBasicParsing -TimeoutSec 8 -NoProxy -Method Post `
+    # HIMMEL-1380: max_tokens 16 / -TimeoutSec 10 (was 1 / 8) — the old 1-token,
+    # 8s budget was hostile to a reasoning model (it emits reasoning tokens
+    # before any content, so it can miss an 8s window even on a fully healthy
+    # lane).
+    $body = '{"model":"' + $CodexModel + '","max_tokens":16,"messages":[{"role":"user","content":"ping"}]}'
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -NoProxy -Method Post `
       -Headers @{Authorization="Bearer $key"; 'content-type'='application/json'; 'anthropic-version'='2023-06-01'} `
       -Body $body -Uri "$CodexProxyBaseUrl/v1/messages" | Out-Null
     exit 0   # any 2xx = upstream healthy (Invoke-WebRequest throws on non-2xx)
   } catch {
-    # Three DISTINCT outcomes (HIMMEL-1037, codex-adv CR), mirroring the bash
-    # twin: exit 20 = TRANSIENT (auth_unavailable gap, 429 rate-limit, any 5xx,
-    # OR a connection failure with no response = proxy restart); exit 21 =
-    # DETERMINISTIC 4xx (400/401/403/404…) a retry cannot fix → the caller ABORTS.
-    # A non-2xx never reads healthy (Invoke-WebRequest throws on non-2xx).
+    # Four DISTINCT outcomes (HIMMEL-1037/1380, codex-adv CR), mirroring the
+    # bash twin: exit 0 = healthy, INCLUDING a 400 whose body proves the
+    # request reached the model layer (not auth); exit 20 = TRANSIENT
+    # (auth_unavailable gap, a 408 request-timeout — the probe itself didn't
+    # finish, which says nothing about auth — 429 rate-limit, any 5xx, OR a
+    # connection failure with no response = proxy restart); exit 21 =
+    # DETERMINISTIC 4xx (401/403 = invalid key, or another 4xx whose body does
+    # NOT prove auth) a retry cannot fix → the caller ABORTS. A non-2xx never
+    # reads healthy (Invoke-WebRequest throws on non-2xx).
     $resp = $_.Exception.Response
     $code = $null; if ($resp) { try { $code = [int]$resp.StatusCode } catch { } }
-    if (("$_" -match 'auth_unavailable')) { exit 20 }
+    $respBody = "$_"
+    if ($respBody -match 'auth_unavailable') { exit 20 }
+    if ($code -eq 408) { exit 20 }
     if ($code -eq 429) { exit 20 }
     if ($null -ne $code -and $code -ge 500 -and $code -le 599) { exit 20 }  # any 5xx = transient
     if ($null -eq $code) { exit 20 }                                        # no response = transport failure = transient
+    if ($code -eq 400 -and $respBody -match '(?i)model|max_tokens|invalid_request_error') { exit 0 } # rejected on params, not auth
+    $excerpt = $respBody.Substring(0, [Math]::Min(300, $respBody.Length))
+    [Console]::Error.WriteLine("claude-codex: preflight probe observed HTTP $code — body: $excerpt")
     exit 21   # deterministic 4xx = fatal
   }
 }

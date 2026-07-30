@@ -359,6 +359,112 @@ try {
     $trivialPattern = '^(ls|cd|pwd|echo)(\s|$)'
     $keptCommands = @($bashCommands | Where-Object { $_ -notmatch $trivialPattern } | Select-Object -Last 20)
 
+    # Get-ShannonEntropy / Test-OpaqueToken / Get-ScrubbedWord / Get-ScrubbedCommand
+    # — replace long, high-entropy, opaque operands (GitHub GraphQL node IDs,
+    # API keys, base64-ish blobs) with `<elided>` before a command is copied
+    # into a vault note (HIMMEL-1345). Byte-for-byte the same heuristic as the
+    # .sh twin's scrub_opaque_tokens — see its comment for the full rationale
+    # and the threshold tuning notes (real wedging case ~4.1 bits/char vs.
+    # this repo's own SHAs/branch names/flags/env vars, all comfortably
+    # excluded). Only the opaque VALUE is replaced, never the surrounding
+    # command/flag/path text.
+    function Get-ShannonEntropy {
+        param([string]$Text)
+        if ($Text.Length -eq 0) { return 0 }
+        $counts = @{}
+        foreach ($ch in $Text.ToCharArray()) {
+            if ($counts.ContainsKey($ch)) { $counts[$ch]++ } else { $counts[$ch] = 1 }
+        }
+        $n = $Text.Length
+        $entropy = 0.0
+        foreach ($c in $counts.Values) {
+            $p = $c / $n
+            $entropy -= $p * [Math]::Log($p, 2)
+        }
+        return $entropy
+    }
+    function Test-OpaqueToken {
+        param([string]$Token)
+        if ($Token.Length -lt 20) { return $false }
+        if ($Token -notmatch '^[A-Za-z0-9_./+=-]+$') { return $false }
+        if ($Token -cnotmatch '[a-z]' -or $Token -cnotmatch '[A-Z]') { return $false }
+        if ((Get-ShannonEntropy -Text $Token) -lt 3.8) { return $false }
+        return $true
+    }
+    function Get-ScrubbedWord {
+        param([string]$Word)
+        $prefix = ''
+        $val = $Word
+        $eq = $Word.IndexOf('=')
+        if ($eq -ge 0) {
+            # Only treat this as a key=value pair when the part before "="
+            # actually looks like a key/flag AND the part after "=" is more
+            # than bare padding. Without this gate, a STANDALONE padded
+            # base64 token (e.g. "AbCdEf...xyz+/==") is misread as
+            # key="AbCdEf...xyz+/" value="==" -- the tested suffix collapses
+            # to just padding, never clears the length gate, and the whole
+            # secret leaks verbatim (HIMMEL-1345).
+            #
+            # The charset check alone is NOT enough: a charset-only gate
+            # accepts ANY alphanumeric prefix, so a standalone opaque token
+            # with a non-padding "=" partway through (e.g.
+            # "AbCdEfGhIjKlMnOpQrStUvWxYz=tail") is misread the same way --
+            # key="AbCdEfGhIjKlMnOpQrStUvWxYz" value="tail", and the short
+            # suffix again never clears the length gate (CodeRabbit finding
+            # on HIMMEL-1345, second round). A real key/flag/field name (even
+            # a camelCase one like the GraphQL "threadId" field) is always
+            # too SHORT to independently clear the Test-OpaqueToken length
+            # gate, so reuse Test-OpaqueToken on the keypart itself: only
+            # treat it as a key when it is NOT, on its own, opaque. (An
+            # earlier "keypart must be single-case" draft was rejected -- it
+            # wrongly rejected "threadId" as a key, breaking the existing
+            # threadId= fixture.
+            # Whole-token-first was also considered and rejected: it would
+            # elide the genuine "--blob=<base64>" fixture in its entirety,
+            # losing the "--blob=" flag text -- the combined string clears
+            # Test-OpaqueToken on its own, entropy ~5.27 bits/char.)
+            $keypart = $Word.Substring(0, $eq)
+            $suffix = $Word.Substring($eq + 1)
+            if (($keypart -match '^(--)?[A-Za-z0-9_.-]+$') -and -not (Test-OpaqueToken -Token $keypart) -and $suffix -and ($suffix -notmatch '^=+$')) {
+                $prefix = $Word.Substring(0, $eq + 1)
+                $val = $suffix
+            }
+        }
+        $q = ''
+        if ($val.Length -ge 2) {
+            $first = $val.Substring(0, 1)
+            $last = $val.Substring($val.Length - 1, 1)
+            if (($first -eq '"' -or $first -eq "'") -and $first -eq $last) {
+                $q = $first
+                $val = $val.Substring(1, $val.Length - 2)
+            }
+        }
+        if (Test-OpaqueToken -Token $val) {
+            $val = '<elided>'
+            $script:WordChanged = $true
+        }
+        return "$prefix$q$val$q"
+    }
+    function Get-ScrubbedCommand {
+        param([string]$Cmd)
+        if (-not $Cmd) { return $Cmd }
+        $lines = $Cmd -split "`n"
+        $outLines = foreach ($line in $lines) {
+            $script:WordChanged = $false
+            $words = @($line -split '[ \t]+' | Where-Object { $_ -ne '' })
+            $rebuilt = if ($words.Count -eq 0) { '' } else { ($words | ForEach-Object { Get-ScrubbedWord -Word $_ }) -join ' ' }
+            # Only emit the rebuilt (whitespace-normalized) line when a token
+            # was ACTUALLY elided; otherwise emit the line verbatim. The
+            # split/rejoin above is not whitespace-preserving (collapses runs
+            # of spaces/tabs, drops leading/trailing whitespace) — fine for a
+            # line that changed anyway, but it must not rewrite a line that
+            # had nothing to scrub (HIMMEL-1345 CR).
+            if ($script:WordChanged) { $rebuilt } else { $line }
+        }
+        return ($outLines -join "`n")
+    }
+    $keptCommands = @($keptCommands | ForEach-Object { Get-ScrubbedCommand -Cmd $_ })
+
     # ---------- 4. Compute path -------------------------------------------------
 
     function Get-Slug {

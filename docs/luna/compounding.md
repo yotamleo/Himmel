@@ -183,8 +183,9 @@ quietly compounds and one with silent gaps.
   classifies, and files a structured note under `30-Resources/Tech/`.
 - **A Telegram message / URL / forward** → `/telegram-clip` files it into
   `Clippings/` for the harvest pipeline to pick up.
-- **Open-web research** → the obsidian-second-brain research toolkit
-  (`/research`, `/research-deep`); grounded research → `/notebooklm`.
+- **Grounded research** → `/notebooklm` (open-web `/research`/`/research-deep`
+  from the obsidian-second-brain research toolkit are **not adopted** —
+  2026-07-29, no active Perplexity subscription; see `docs/tooling-catalog.md`).
 - **Historical Claude Code sessions** (pre-vault) → `/luna-backfill`.
 - **Claude Code's own auto-memory** → the distil pass in
   [the section above](#a-second-loop-auto-memory--vault).

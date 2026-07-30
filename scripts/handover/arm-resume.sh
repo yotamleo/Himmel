@@ -105,6 +105,7 @@ CHANNELS=""
 DEDUP_ANY=0
 WORKTREE_BRANCH=""
 WSL_DISTRO=""
+AUTOMERGE=0
 
 # Local HH:MM from an epoch (armored python3 — portable, no GNU `date -d`;
 # capture via file so a wedged Store stub can't hang the $() call sites).
@@ -112,7 +113,7 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--dedup-any] [--dry-run]
+Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--dedup-any] [--dry-run] [--automerge]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
@@ -175,6 +176,10 @@ Optional:
                      Default (omitted) is per-handover dedup — N distinct
                      handovers each get their own slot (HIMMEL-340).
   --dry-run          Print what would be scheduled, touch nothing
+  --automerge        Set ARMAUTOMERGE=1 and CR_MERGE_GATE_OK=1 in the
+                     relaunched session's environment (HIMMEL-1382, feature
+                     lineage HIMMEL-1042 armed auto-merge opt-in). Default
+                     omits both vars.
 
 Env:
   ARM_MAX_SLOTS           Soft cap on concurrent resume slots (default 4, 0
@@ -229,6 +234,7 @@ while [ $# -gt 0 ]; do
         --force)       FORCE=1; shift ;;
         --dedup-any)   DEDUP_ANY=1; shift ;;
         --dry-run)     DRY_RUN=1; shift ;;
+        --automerge)   AUTOMERGE=1; shift ;;
         -h|--help)     usage; exit 0 ;;
         *)             echo "ERR arm-resume: unknown arg: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -303,6 +309,116 @@ _arm_realpath() {
     fi
     [ -n "$_p" ] || _p="$1"
     printf '%s\n' "$_p"
+}
+
+# _arm_identity_path <path> — the CANONICAL identity of a handover: the single
+# value every dedup key is derived from (HIMMEL-1304). The scheduler row name
+# IS the dedup key, so two spellings of one handover that produce two names arm
+# TWO slots for the same file — the double-fire this guard exists to prevent.
+#
+# _arm_realpath alone is NOT enough on Windows, verified on the operator's box:
+# it collapses relative / ./ / .. / symlink spellings, but PRESERVES whichever
+# drive form was typed, so `C:/x`, `C:\x` and `/c/x` stay three distinct
+# strings for one file. cygpath -u folds all three onto the /c/... form. Then
+# case-fold, because NTFS is case-insensitive and `C:/Users` vs `C:/users` name
+# the same file. Case-folding is scoped to Windows deliberately: on Linux two
+# spellings differing only in case are genuinely two different files, so
+# folding there would MERGE distinct handovers into one slot — the opposite bug.
+# (macOS is case-insensitive by default but can be formatted case-sensitive;
+# left unfolded rather than guessed, so macOS keeps its pre-1304 behaviour.)
+_arm_identity_path() {
+    local _p
+    _p=$(_arm_realpath "$1")
+    if [ "$PLATFORM" = windows ]; then
+        if command -v cygpath >/dev/null 2>&1; then
+            _p=$(cygpath -u "$_p" 2>/dev/null) || _p=$(_arm_realpath "$1")
+        fi
+        _p=$(printf '%s' "$_p" | tr '[:upper:]' '[:lower:]')
+    fi
+    printf '%s' "$_p"
+}
+
+# _arm_path_hash <canonical-path> — a short stable digest of the canonical
+# identity: the collision-proof half of the task name (HIMMEL-1304). The
+# readable half is built with `tr -cd '[:alnum:]_-'`, which DELETES every
+# out-of-class byte, so `.../a+b.md` and `.../ab.md` both reduce to the same
+# suffix — a spurious rc-3 refusal, and worse, a `--force` that replaces the
+# OTHER handover's slot. Hashing the canonical path restores injectivity while
+# the readable prefix keeps `schtasks /query` / `atq` rows scannable.
+#
+# Prints the empty string when NO hasher is available. That degrades to the
+# pre-1304 (collision-prone) identity rather than bricking every arm on this
+# machine — the same fail-open-on-missing-infra contract the queue-lock and
+# workspace-trust checks use. The caller WARNs once when it happens.
+_arm_path_hash() {
+    local _h=""
+    if command -v sha256sum >/dev/null 2>&1; then
+        _h=$(printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1) || _h=""
+    fi
+    if [ -z "$_h" ] && command -v shasum >/dev/null 2>&1; then
+        _h=$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1) || _h=""
+    fi
+    if [ -z "$_h" ]; then
+        if py_armor_capture -c 'import sys,hashlib;print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest())' "$1" 2>/dev/null; then
+            _h="$PY_ARMOR_OUT"
+        fi
+    fi
+    # Keep only hex and clip to 12 chars: enough that a collision across one
+    # machine's handovers is not a practical concern, short enough to leave the
+    # readable half of the name doing its job.
+    _h=$(printf '%s' "$_h" | tr -cd '0-9a-f')
+    printf '%s' "${_h:0:12}"
+}
+
+# _arm_own_identity_match [line-prefix] — filter stdin to the lines that are one
+# of THIS arm's identities: the current $TASK_NAME or the pre-HIMMEL-1304
+# $TASK_NAME_LEGACY. Exact whole-line compare.
+#
+# The legacy arm is the upgrade migration, and it is load-bearing rather than a
+# nicety: an in-flight slot armed by the OLD derivation carries the OLD name, so
+# a post-upgrade arm-resume that only matched the NEW name would not SEE it —
+# `--force` would not replace it, and both the orphaned old slot and the new one
+# would fire. That is precisely the double-fire this ticket is closing, so the
+# fix must not open it on the way through. Matching both names makes the
+# upgrade a no-op for dedup: the old slot is found and replaced as before.
+#
+# awk with exact `==` compares rather than `grep -Fx`: the legacy name can be
+# empty, and an empty `grep -e ''` pattern matches EVERY line (it would report
+# every queued job as this arm's own). awk also always exits 0, so a no-match
+# read cannot abort an errexit caller.
+_arm_own_identity_match() {
+    local _pfx="${1:-}"
+    awk -v a="${_pfx}${TASK_NAME}" -v b="${TASK_NAME_LEGACY:+${_pfx}${TASK_NAME_LEGACY}}" \
+        '$0 != "" && ($0 == a || (b != "" && $0 == b))'
+}
+
+# _arm_marker_is_new_arm <marker> — true when <marker> names the job this run
+# just created, rather than a superseded sibling (HIMMEL-1304). See the
+# post-commit reap sweep near schedule_arm for why each arm matters.
+#
+# windows-only: `schtasks /create /f` overwrites a task of the SAME name in
+# place, so a same-identity re-arm leaves no separate old row to reap — a
+# marker equal to $TASK_NAME already IS the row schedule_arm just wrote.
+# POSIX (at-job / crontab) never gets that in-place overwrite: an at-job
+# always registers under a fresh job id (a captured marker is never the id
+# schedule_arm is about to mint), and _crontab_schedule's `_crontab_delete`
+# always APPENDS a new line rather than replacing a same-marker one already
+# queued (see the comment above the post-commit sweep). So a marker captured
+# BEFORE schedule_arm ran is, on POSIX, always the superseded entry and must
+# always be reaped — treating a same-identity crontab marker as "already
+# ours" (the pre-fix `*"# $TASK_NAME")  return 0` case) left the stale line
+# unreaped while the append created a second one: a genuine double-fire, not
+# just a test artifact (HIMMEL-1304 fix).
+_arm_marker_is_new_arm() {
+    local _m="$1"
+    case "$PLATFORM" in
+        windows)
+            [ "$_m" = "$TASK_NAME" ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # _cmd_metachar_escape <value> — echo <value> with the same CMD-metachar
@@ -1021,20 +1137,73 @@ fi
 # convention so broad cross-route dedup (the HIMMEL-Resume- prefix grep)
 # still matches between routes.
 _ho_ticket=$(_infer_ticket "$HANDOVER_PATH")
+# HIMMEL-1304: derive the identity from the CANONICAL path, not the path as
+# typed, and make the suffix injective. Pre-1304 this read $HANDOVER_PATH
+# directly, which broke dedup in BOTH directions at once:
+#   false-negative — no canonicalization, so `x.md` / `./x.md` / an absolute
+#     path / a symlink / a Windows case-or-drive-form variant each produced a
+#     DIFFERENT name ⇒ two slots armed for ONE handover (the double-fire).
+#   false-positive — `tr -cd` DELETES out-of-class bytes, so `a+b.md` and
+#     `ab.md` collapsed to the SAME name ⇒ a spurious rc-3 refusal, and a
+#     `--force` that replaced the OTHER handover's slot.
+# It also silently defeated the cross-machine arms-registry dedup (rc 8), which
+# keys on this same identity.
+_ho_ident=$(_arm_identity_path "$HANDOVER_PATH")
+_path_hash=$(_arm_path_hash "$_ho_ident")
 # shellcheck disable=SC1003  # `\\` in single quotes is two backslashes which tr collapses to one literal `\` — intentional
-_path_suffix=$(printf '%s' "$HANDOVER_PATH" | tr '/\\' '__' | tr -cd '[:alnum:]_-')
-_name_seg=$(_compose_arm_name "$_ho_ticket" "$HANDOVER_PATH" task)
+_path_readable=$(printf '%s' "$_ho_ident" | tr '/\\' '__' | tr -cd '[:alnum:]_-')
+# Keep the TAIL when clipping: the filename end of the path is what
+# distinguishes sibling handovers, and a schtasks task name is length-bounded
+# (the pre-1304 suffix was the whole path, unbounded). Uniqueness rides on the
+# hash, so clipping the readable half is safe.
+if [ "${#_path_readable}" -gt 72 ]; then
+    _path_readable="${_path_readable: -72}"
+fi
+if [ -n "$_path_hash" ]; then
+    _path_suffix="${_path_readable}-h${_path_hash}"
+else
+    # No hasher on this machine — degrade to the pre-1304 readable-only suffix
+    # rather than refuse to arm, but say so: sanitization collisions are back
+    # for this arm, so a --force here can still hit a same-suffix neighbour.
+    echo "WARN arm-resume: no sha256 hasher (sha256sum/shasum/python) available -- the arm identity falls back to the sanitized path alone, so two handover paths that differ only in punctuation can still collide (HIMMEL-1304). Install one to restore collision-proof dedup." >&2
+    _path_suffix="$_path_readable"
+fi
+# The name segment is part of the IDENTITY too, so it must come from the
+# canonical path as well — deriving it from $HANDOVER_PATH while the suffix came
+# from the canonical form left the two halves disagreeing: on Windows
+# `.../T/alias.md` and `.../T/ALIAS.md` produced a matching suffix+hash but
+# name segments `alias` vs `ALIAS`, so the whole name still differed and the
+# arm still took two slots. (The directory half of the path already folded,
+# which is exactly why this only showed up on a basename case variant.)
+# SESSION_NAME below deliberately keeps the RAW path — it is the human-facing
+# session title, where preserving the operator's own capitalisation is right.
+_name_seg=$(_compose_arm_name "$_ho_ticket" "$_ho_ident" task)
 if [ -n "$_name_seg" ]; then
     TASK_NAME="HIMMEL-Resume-${_name_seg}-${_path_suffix}"
 else
     TASK_NAME="HIMMEL-Resume-${_path_suffix}"
 fi
+# The pre-HIMMEL-1304 name for this same handover. Dedup matches EITHER, so a
+# slot armed before this upgrade is still found (and still replaced by --force)
+# instead of being orphaned into an unseen second fire. See
+# _arm_own_identity_match for why this migration is required, not optional.
+# shellcheck disable=SC1003  # `\\` in single quotes is two backslashes which tr collapses to one literal `\` — intentional
+_path_suffix_legacy=$(printf '%s' "$HANDOVER_PATH" | tr '/\\' '__' | tr -cd '[:alnum:]_-')
+# Both halves reproduce the pre-1304 derivation, which read the RAW path — a
+# legacy name built from the canonical name segment would match nothing.
+_name_seg_legacy=$(_compose_arm_name "$_ho_ticket" "$HANDOVER_PATH" task)
+if [ -n "$_name_seg_legacy" ]; then
+    TASK_NAME_LEGACY="HIMMEL-Resume-${_name_seg_legacy}-${_path_suffix_legacy}"
+else
+    TASK_NAME_LEGACY="HIMMEL-Resume-${_path_suffix_legacy}"
+fi
+[ "$TASK_NAME_LEGACY" = "$TASK_NAME" ] && TASK_NAME_LEGACY=""
 # The armed relaunch's `claude -n` session title (HIMMEL-702/716) - the same
 # composer renders both surfaces from one identity, so the scheduler row name
 # and the session/tab title can never disagree.
 SESSION_NAME=$(_compose_arm_name "$_ho_ticket" "$HANDOVER_PATH" title)
 FLOW_RUN_NOTE=$(_infer_slug "$HANDOVER_PATH")
-unset _ho_ticket _path_suffix _name_seg
+unset _ho_ticket _path_suffix _name_seg _ho_ident _path_hash _path_readable _path_suffix_legacy _name_seg_legacy
 
 # Pre-trust the resolved cwd (HIMMEL-386) so the fired relaunch doesn't stall
 # on Claude Code's interactive workspace-trust prompt ("Is this a project you
@@ -1064,10 +1233,19 @@ fi
 _crontab_list() {
     local scope="${1:-all}"
     if [ "$scope" = task ]; then
-        # Anchor the marker comment at end-of-line so a prefix task name can't
-        # match a longer one. TASK_NAME is sanitized to [:alnum:]_- so it
-        # carries no BRE specials.
-        crontab -l 2>/dev/null | grep -E "# ${TASK_NAME}$" || true
+        # The crontab marker is a trailing `# <TASK_NAME>` on a longer command
+        # line, so this cannot use the whole-line _arm_own_identity_match the
+        # other two sites share — match the anchored suffix per identity
+        # instead. TASK_NAME is sanitized to [:alnum:]_- so it carries no BRE
+        # specials. HIMMEL-1304: also match the legacy identity, guarded on
+        # non-empty — an empty alternative would anchor to `# $` and sweep in
+        # unrelated lines.
+        if [ -n "${TASK_NAME_LEGACY:-}" ]; then
+            crontab -l 2>/dev/null \
+                | grep -E "# (${TASK_NAME}|${TASK_NAME_LEGACY})$" || true
+        else
+            crontab -l 2>/dev/null | grep -E "# ${TASK_NAME}$" || true
+        fi
     else
         crontab -l 2>/dev/null | grep -F 'HIMMEL-Resume-' || true
     fi
@@ -1129,7 +1307,9 @@ list_existing() {
         windows)
             _ensure_schtasks_cache
             if [ "$scope" = task ]; then
-                printf '%s\n' "$_SCHTASKS_NAMES" | grep -Fx "$TASK_NAME" || true
+                # Matches the current identity OR the pre-HIMMEL-1304 one, so an
+                # already-armed slot survives the upgrade as a dedup hit.
+                printf '%s\n' "$_SCHTASKS_NAMES" | _arm_own_identity_match
             else
                 printf '%s\n' "$_SCHTASKS_NAMES"
             fi
@@ -1166,7 +1346,11 @@ list_existing() {
                     if [ "$scope" = task ]; then
                         # Exact whole-line marker (# $TASK_NAME) so a task
                         # whose name is a prefix of another's can't match it.
-                        if at -c "$job_id" 2>/dev/null | grep -qxF "# $TASK_NAME"; then
+                        # HIMMEL-1304: the POSIX at-job marker is the SAME
+                        # identity as the Windows task name, so it moves in
+                        # lockstep — including the legacy-name migration arm.
+                        if at -c "$job_id" 2>/dev/null \
+                            | _arm_own_identity_match '# ' | grep -q .; then
                             printf 'at-job-%s\n' "$job_id"
                         fi
                     else
@@ -1187,33 +1371,74 @@ list_existing() {
     esac
 }
 
-# _crontab_delete <marker> — remove exactly one crontab LINE (HIMMEL-594:
-# shared by the linux crontab branch + the macOS crontab-only branch).
+# _crontab_delete <marker> [soft] — remove exactly one crontab LINE (HIMMEL-594:
+# shared by the linux crontab branch + the macOS crontab-only branch). `soft`
+# (HIMMEL-1304) mirrors delete_existing's windows/at-job soft handling: a
+# failed delete WARNs and returns 1 instead of exiting 2, because soft mode is
+# only used by the post-commit replace sweep where the new arm is already
+# registered and verified -- see the `delete_existing` comment for why exiting
+# there would be a lie in the operator's most decision-relevant direction.
+# `hard` mode (the pre-arm dedup path, where aborting is correct) is
+# byte-identical to before. Soft vs hard changes ONLY whether this function
+# exits or returns -- never whether $snap is discarded once it holds real
+# data (see the awk-rc comment below: an awk failure keeps $snap either way).
 _crontab_delete() {
-    local marker="$1"
+    local marker="$1" mode="${2:-hard}"
     # marker is the full matched crontab LINE — rewrite without exactly that
     # line (HIMMEL-340: scoped delete so a --force on one handover can't wipe
     # sibling slots). Snapshot first so a mid-pipeline failure doesn't wipe.
     local snap
     snap=$(mktemp -t crontab.snap.XXXXXX)
     if ! crontab -l > "$snap" 2>/dev/null; then
-        echo "ERR arm-resume: crontab -l failed; aborting before rewrite" >&2
         rm -f "$snap"
+        if [ "$mode" = soft ]; then
+            echo "WARN arm-resume: the new arm is registered, but the superseded crontab entry '$marker' could NOT be removed (crontab -l failed) -- it is STILL QUEUED and will fire alongside the new one. Remove it manually: crontab -e" >&2
+            return 1
+        fi
+        echo "ERR arm-resume: crontab -l failed; aborting before rewrite" >&2
         exit 2
     fi
-    # grep -v exits 1 when it filters out EVERY line (deleting the LAST entry is
-    # a valid empty result, not an error). Under `set -o pipefail` the old
-    # `grep … | crontab -` read that grep-rc-1 as a rewrite failure and aborted
-    # before schedule_arm could re-add — so capture tolerantly (rc 1 ok, rc>1 =
-    # real grep error), then write + check crontab's OWN rc.
+    # HIMMEL-1304: drop only the FIRST line exactly matching $marker, not every
+    # occurrence. _crontab_schedule always APPENDS rather than overwriting a
+    # same-marker line in place, so a --force re-arm at the same time can
+    # leave the superseded line and the freshly-created one byte-identical —
+    # the old `grep -vxF` (whole-file, every match) would then strip BOTH,
+    # deleting the arm we just made along with the one it superseded. awk
+    # with a one-shot guard removes exactly the superseded copy and leaves any
+    # duplicate (the new arm) standing. Reads the marker via ENVIRON, not
+    # `-v m=`: a crontab entry embeds a %q-escaped session name, which can
+    # contain a literal backslash-space (`load\ /path`), and POSIX awk's `-v`
+    # assignment runs C-string escape processing on its value — it silently
+    # drops that backslash, corrupting the comparison so it can never match
+    # (verified: this is why the first attempt at this fix left both
+    # duplicate lines in place). ENVIRON values are not escape-processed.
+    # Capture awk's own exit status separately from "matched nothing" (CR
+    # round: an unchecked awk rc let ANY awk failure -- missing binary,
+    # runtime error, unreadable snapshot -- fall through with $filtered empty,
+    # which `[ -z "$filtered" ]` then reads as "the crontab is now empty" and
+    # installs an EMPTY crontab, wiping every entry (himmel's and the
+    # operator's unrelated ones) -- and since that write "succeeded", the
+    # $snap backup made for exactly this case was then deleted too. An empty
+    # $filtered is legitimately correct when the removed line was the only
+    # one queued, so it must stay a valid outcome -- only a nonzero awk rc is
+    # the failure to abort on, same shape as the crontab-read guard above
+    # (exit 2, keep $snap).
     local filtered rc=0
-    filtered=$(grep -vxF "$marker" "$snap") || rc=$?
-    if [ "$rc" -gt 1 ]; then
-        echo "ERR arm-resume: crontab filter failed (grep rc=$rc); original saved at $snap" >&2
+    filtered=$(MARKER="$marker" awk '$0 == ENVIRON["MARKER"] && !d { d = 1; next } { print }' "$snap") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        if [ "$mode" = soft ]; then
+            echo "WARN arm-resume: the new arm is registered, but the superseded crontab entry '$marker' could NOT be removed (awk rc=$rc); original saved at $snap -- it is STILL QUEUED and will fire alongside the new one. Remove it manually: crontab -e" >&2
+            return 1
+        fi
+        echo "ERR arm-resume: crontab filter failed (awk rc=$rc); original saved at $snap" >&2
         exit 2
     fi
     # $filtered empty → install an empty crontab (correct); else write the lines.
     if ! { [ -z "$filtered" ] || printf '%s\n' "$filtered"; } | crontab - 2>/dev/null; then
+        if [ "$mode" = soft ]; then
+            echo "WARN arm-resume: the new arm is registered, but the superseded crontab entry '$marker' could NOT be removed (crontab rewrite failed); original saved at $snap -- it is STILL QUEUED and will fire alongside the new one. Remove it manually: crontab -e" >&2
+            return 1
+        fi
         echo "ERR arm-resume: crontab rewrite failed; original saved at $snap" >&2
         exit 2
     fi
@@ -1221,13 +1446,25 @@ _crontab_delete() {
     echo "arm-resume: removed crontab entry: $marker"
 }
 
+# delete_existing <marker> [soft]
+#
+# `soft` (HIMMEL-1304) turns the hard `exit 2` on a failed delete into a WARN +
+# return 1. It is used ONLY by the post-commit replace sweep, which runs AFTER
+# the new job is registered and verified: at that point exiting 2 would be a lie
+# in the operator's most decision-relevant direction — it reads as "the arm
+# failed" when in fact the arm SUCCEEDED and all that remains is an
+# un-reaped sibling. A stale extra slot is a much smaller harm than believing
+# you have no arm when you do, and it is still surfaced loudly.
 delete_existing() {
-    local marker="$1"
+    local marker="$1" mode="${2:-hard}"
     case "$PLATFORM" in
         windows)
             # MSYS_NO_PATHCONV=1: see HIMMEL-125 note in list_existing.
             if MSYS_NO_PATHCONV=1 schtasks /delete /tn "$marker" /f >/dev/null 2>&1; then
                 echo "arm-resume: deleted scheduled task: $marker"
+            elif [ "$mode" = soft ]; then
+                echo "WARN arm-resume: the new arm is registered, but the superseded task '$marker' could NOT be deleted -- it is STILL SCHEDULED and will fire alongside the new one. Remove it manually: schtasks /delete /tn \"$marker\" /f" >&2
+                return 1
             else
                 echo "ERR arm-resume: failed to delete scheduled task: $marker" >&2
                 exit 2
@@ -1238,18 +1475,21 @@ delete_existing() {
                 local job_id="${marker#at-job-}"
                 if atrm "$job_id" 2>/dev/null; then
                     echo "arm-resume: removed at job: $job_id"
+                elif [ "$mode" = soft ]; then
+                    echo "WARN arm-resume: the new arm is registered, but the superseded at job $job_id could NOT be removed -- it is STILL QUEUED and will fire alongside the new one. Remove it manually: atrm $job_id" >&2
+                    return 1
                 else
                     echo "ERR arm-resume: failed to atrm $job_id" >&2
                     exit 2
                 fi
             else
-                _crontab_delete "$marker"
+                _crontab_delete "$marker" "$mode"
             fi
             ;;
         macos)
             # macOS: crontab-only, so the marker is always a crontab line
             # (the at-job-* arm is unreachable here).
-            _crontab_delete "$marker"
+            _crontab_delete "$marker" "$mode"
             ;;
     esac
 }
@@ -1498,16 +1738,27 @@ if [ "$PLATFORM" = windows ]; then
     _ensure_schtasks_cache
 fi
 existing=$(list_existing "$DEDUP_SCOPE")
+# HIMMEL-1304: markers a --force replace must reap, deleted only AFTER the new
+# job is registered and verified. Pre-1304 the deletion happened right here,
+# BEFORE the rc-7 queue-lock refusal, the rc-8 cross-host refusal, and
+# schedule_arm itself — so an arm that deleted and then refused (or failed
+# inside schedule_arm, or failed partway through a multi-job deletion) left the
+# previous slot(s) destroyed with no replacement and no rollback. Worst under
+# `--dedup-any --force`, whose scope matches EVERY resume job on the machine:
+# one failed arm could wipe every queued relaunch. Deferring the deletion makes
+# the replace transactional in the direction that matters — the old arm is only
+# given up once a new one demonstrably exists.
+ARM_REPLACE_MARKERS=""
 if [ -n "$existing" ]; then
     if [ "$FORCE" -eq 1 ]; then
-        echo "arm-resume: --force set; replacing existing job(s):" >&2
+        echo "arm-resume: --force set; replacing existing job(s) AFTER the new one is registered:" >&2
         while IFS= read -r marker; do
             [ -z "$marker" ] && continue
             echo "  $marker" >&2
             if [ "$DRY_RUN" -eq 0 ]; then
-                delete_existing "$marker"
+                ARM_REPLACE_MARKERS="${ARM_REPLACE_MARKERS}${marker}"$'\n'
             else
-                echo "DRY arm-resume: would delete $marker"
+                echo "DRY arm-resume: would delete $marker (after the new job is registered)"
             fi
         done <<< "$existing"
     else
@@ -1530,18 +1781,20 @@ if [ -n "$existing" ]; then
                 echo "Dedup safeguard — never want two claude sessions cron-relaunched"
                 echo "for the SAME handover. A DIFFERENT handover normally"
                 echo "arms concurrently with no flag at all. To replace, use --force."
-                echo "The match is on the DERIVED task name, which strips punctuation"
-                echo "(HIMMEL-1304), so two distinct paths can collide — CONFIRM the job"
-                echo "above is really this handover's, before --force replaces it. Inspect:"
+                echo "The match is on the DERIVED task name, which since HIMMEL-1304 is"
+                echo "the CANONICAL handover path plus a hash of it — so a different"
+                echo "spelling of this same file matches (as it should), and two distinct"
+                echo "paths no longer collide just because punctuation was stripped."
+                echo "Inspect:"
             else
                 echo "--dedup-any safety-arm semantics — defer to whatever resume slot is"
                 echo "already queued, whichever handover it points at. To arm this handover"
                 echo "alongside it, drop --dedup-any. Adding --force in THIS scope"
                 echo "deletes EVERY job listed above, not just one — sibling"
-                echo "relaunches included. That deletion happens FIRST, before the"
-                echo "remaining refusals and before the new job is scheduled, so a"
-                echo "later failure can leave you with NO arm at all and no rollback"
-                echo "(HIMMEL-1304). Inspect:"
+                echo "relaunches included. Since HIMMEL-1304 that deletion is"
+                echo "TRANSACTIONAL: it happens only AFTER the new job is registered and"
+                echo "verified, so a later refusal or failure leaves the existing slot(s)"
+                echo "untouched rather than wiping them with no replacement. Inspect:"
             fi
             case "$PLATFORM" in
                 windows) echo "    schtasks /query /tn \"<task-name>\"" ;;
@@ -1960,13 +2213,21 @@ _crontab_schedule() {
     # printf: cron treats an unescaped % in the command as end-of-command +
     # stdin, so a printf format string would truncate the entry. `\$(date)`
     # lands literally and evaluates at fire time.
-    local tail="claude ${q_name}$q_prompt $q_channels"
+    local q_automerge=""
+    [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+    # HIMMEL-1382 fix round: unset both vars unconditionally before the
+    # (possibly empty) grant prefix — same always-clear contract as the
+    # `at`/Windows/WSL launch bodies, so a crontab entry never depends on
+    # whatever env cron happened to run it under. `&&`, not `;`, so a failed
+    # unset (should never happen) can't fall through to an ungated claude
+    # launch outside the entry's `cd ... && $tail` gate.
+    local tail="unset ARMAUTOMERGE CR_MERGE_GATE_OK && ${q_automerge}claude ${q_name}$q_prompt $q_channels"
     if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
         local q_hb q_log q_curl
         q_hb=$(printf '%q' "$HEADROOM_BIN")
         q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
         q_curl=$(printf '%q' "$HEADROOM_CURL")
-        tail="{ $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 claude ${q_name}$q_prompt $q_channels; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; claude ${q_name}$q_prompt $q_channels; fi; }"
+        tail="{ unset ARMAUTOMERGE CR_MERGE_GATE_OK; $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 ${q_automerge}claude ${q_name}$q_prompt $q_channels; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; ${q_automerge}claude ${q_name}$q_prompt $q_channels; fi; }"
     fi
     local q_flow_lib q_task q_note
     q_flow_lib=$(printf '%q' "$SCRIPT_DIR/../lib/flow-run-ledger.sh")
@@ -2040,6 +2301,27 @@ _win_delete_bad_task() {
         return 0
     fi
     echo "ERR arm-resume: FAILED to delete the rejected task '$1' -- a known-mistimed task is STILL SCHEDULED. Remove it manually: schtasks /delete /tn \"$1\" /f" >&2
+    return 1
+}
+
+# _win_restore_backup_task <task-name> <backup-xml> (HIMMEL-1304 finding 2):
+# `schtasks /create /f` overwrites a same-named task IN PLACE, so a
+# same-identity re-arm leaves no separate old row for the post-commit reap
+# sweep to defer deleting (see _arm_marker_is_new_arm above) -- the
+# :1714-1722 "old arm only given up once a new one demonstrably exists"
+# guarantee does not hold here on its own. Call this after
+# _win_delete_bad_task removes a verify-rejected new task, so the PREVIOUS
+# registration (exported to <backup-xml> before the overwrite) comes back
+# instead of leaving nothing armed. Returns 1 when restoration fails so callers
+# retain <backup-xml>; no-op when it is empty/missing (normal first-arm case).
+_win_restore_backup_task() {
+    local _tn="$1" _xml="$2"
+    [ -n "$_xml" ] && [ -s "$_xml" ] || return 0
+    if MSYS_NO_PATHCONV=1 schtasks /create /tn "$_tn" /xml "$_xml" /f >/dev/null 2>&1; then
+        echo "arm-resume: restored the previous arm for '$_tn' after the new registration was rejected." >&2
+        return 0
+    fi
+    echo "ERR arm-resume: FAILED to restore the previous arm for '$_tn' after the new registration was rejected -- the PREVIOUS arm is ALSO LOST. Backup XML retained at '$_xml'; restore it manually with: schtasks /create /tn \"$_tn\" /xml \"$_xml\" /f" >&2
     return 1
 }
 
@@ -2192,7 +2474,13 @@ schedule_arm() {
                 q_prompt=$(_bash_single_quote "$RESUME_PROMPT")
                 [ -n "$SESSION_NAME" ] && q_name=" -n $(_bash_single_quote "$SESSION_NAME")"
                 [ -n "$CHANNELS" ] && q_channels=" --channels $(_bash_single_quote "$CHANNELS")"
-                wsl_command="cd $q_cwd && claude$q_name $q_prompt$q_channels"
+                local q_automerge=""
+                [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                # HIMMEL-1382 fix round: unset both vars first (defense against
+                # ambient carryover), THEN conditionally re-grant via the
+                # per-command prefix — same always-clear contract as the
+                # Windows/at/crontab launch bodies below.
+                wsl_command="cd $q_cwd && unset ARMAUTOMERGE CR_MERGE_GATE_OK && ${q_automerge}claude$q_name $q_prompt$q_channels"
                 # The composed command sits INSIDE the .bat line's double
                 # quotes, where CMD treats ^ as a LITERAL character —
                 # caret-escaping here reaches bash verbatim and shatters the
@@ -2364,6 +2652,20 @@ schedule_arm() {
                     printf 'wsl.exe -d %s -e bash -lc "%s"\r\n' "$WSL_DISTRO" "$wsl_launch"
                 else
                     printf 'cd /d "%s" || exit /b 1\r\n' "$c"
+                    # HIMMEL-1382 fix round: ALWAYS clear both vars first, then
+                    # conditionally re-grant when --automerge was explicit on
+                    # THIS arm. A cap-triggered auto re-arm never passes
+                    # --automerge (auto-arm-on-cap.sh), so its generated .bat
+                    # must not depend on schtasks NOT having carried an
+                    # ambient ARMAUTOMERGE/CR_MERGE_GATE_OK through from
+                    # whatever launched it -- the emitted text enforces its
+                    # own contract regardless of ambient env.
+                    printf 'set "ARMAUTOMERGE="\r\n'
+                    printf 'set "CR_MERGE_GATE_OK="\r\n'
+                    if [ "$AUTOMERGE" -eq 1 ]; then
+                        printf 'set "ARMAUTOMERGE=1"\r\n'
+                        printf 'set "CR_MERGE_GATE_OK=1"\r\n'
+                    fi
                     if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
                         printf '"%s" -s -m 5 http://127.0.0.1:%s/livez >nul 2>&1\r\n' "$cu" "$HEADROOM_PROXY_PORT"
                         printf 'if errorlevel 1 (\r\n'
@@ -2428,13 +2730,25 @@ schedule_arm() {
                 return 0
             fi
 
+            # HIMMEL-1304 finding 2: export whatever is currently registered
+            # under $TASK_NAME before the /create below overwrites it in
+            # place (see _win_restore_backup_task above for why). A query
+            # failure just means there was nothing to back up -- the normal
+            # first-arm case, not an error.
+            local _backup_xml
+            _backup_xml=$(mktemp -t arm-resume.task-backup.XXXXXX.xml)
+            if ! MSYS_NO_PATHCONV=1 schtasks /query /tn "$TASK_NAME" /xml ONE > "$_backup_xml" 2>/dev/null; then
+                rm -f "$_backup_xml"
+                _backup_xml=""
+            fi
+
             local err_file
             err_file=$(mktemp -t arm-resume.err.XXXXXX)
             # MSYS_NO_PATHCONV=1: see HIMMEL-125 note in list_existing.
             if ! MSYS_NO_PATHCONV=1 schtasks /create /tn "$TASK_NAME" /tr "$bat_path_win" /sc ONCE /st "$RESUME_TIME" /sd "$_win_sd" /f 2>"$err_file"; then
                 echo "ERR arm-resume: schtasks /create failed:" >&2
                 cat "$err_file" >&2
-                rm -f "$err_file" "$bat_path"
+                rm -f "$err_file" "$bat_path" "$_backup_xml"
                 exit 4
             fi
             rm -f "$err_file"
@@ -2499,6 +2813,9 @@ schedule_arm() {
                     sed 's/^/    /' "$_verify_err" >&2
                     rm -f "$_verify_err"
                     _win_delete_bad_task "$TASK_NAME" || true
+                    if _win_restore_backup_task "$TASK_NAME" "$_backup_xml"; then
+                        rm -f "$_backup_xml"
+                    fi
                     rm -f "$bat_path"
                     exit 2
                 fi
@@ -2537,6 +2854,9 @@ schedule_arm() {
                     else
                         echo "ERR arm-resume: post-arm verify found NO NextRunTime for '$TASK_NAME' (requested $RESUME_TIME on $_win_sd, epoch=$TARGET_EPOCH, lead=${_lead}s, create-done=$_create_done_epoch -- a still-future target cannot have fired, and a task created after its target never fires). Deleting the bad task -- this is the HIMMEL-938 silent-misarm class." >&2
                         _win_delete_bad_task "$TASK_NAME" || true
+                        if _win_restore_backup_task "$TASK_NAME" "$_backup_xml"; then
+                            rm -f "$_backup_xml"
+                        fi
                         rm -f "$bat_path"
                         exit 2
                     fi
@@ -2549,6 +2869,9 @@ schedule_arm() {
                             # either (codex-adv-9).
                             echo "ERR arm-resume: locale detection fell back to MM/dd/yyyy AND the post-arm verify returned a non-numeric NextRunTime ('$_ps_out') -- with both safeguards unavailable a mistimed arm would be silent. Deleting the task; fix 'reg'/'powershell' availability and re-arm." >&2
                             _win_delete_bad_task "$TASK_NAME" || true
+                            if _win_restore_backup_task "$TASK_NAME" "$_backup_xml"; then
+                                rm -f "$_backup_xml"
+                            fi
                             rm -f "$bat_path"
                             exit 2
                         fi
@@ -2570,6 +2893,9 @@ schedule_arm() {
                         if [ "$_diff" -gt 120 ]; then
                             echo "ERR arm-resume: post-arm verify mismatch for '$TASK_NAME' -- requested epoch=$TARGET_EPOCH ($RESUME_TIME on $_win_sd), registered NextRunTime epoch=$_ps_out (diff=${_diff}s > 120s tolerance). Deleting the bad task -- this is the HIMMEL-938 mistimed-arm class." >&2
                             _win_delete_bad_task "$TASK_NAME" || true
+                            if _win_restore_backup_task "$TASK_NAME" "$_backup_xml"; then
+                                rm -f "$_backup_xml"
+                            fi
                             rm -f "$bat_path"
                             exit 2
                         fi
@@ -2577,6 +2903,10 @@ schedule_arm() {
                 esac
                 fi
             fi
+            # Every path above that did NOT exit is a success (verified,
+            # unverified-but-standing, or consumed) -- the new arm stands
+            # and the pre-overwrite backup is no longer needed.
+            rm -f "$_backup_xml"
             ;;
         linux)
             if command -v at >/dev/null 2>&1; then
@@ -2616,19 +2946,30 @@ schedule_arm() {
                 # + one mode-marker echo per branch (HIMMEL-897 trail).
                 # `\$(date)` is escaped so it lands LITERALLY in the job
                 # body and evaluates at FIRE time, not arm time.
-                local launch_lines="claude ${q_name}$q_prompt $q_channels"
+                local q_automerge=""
+                [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                # HIMMEL-1382 fix round: `at` snapshots the submitting shell's
+                # ambient env, so an automerge-armed session's `at -t` job
+                # would otherwise silently RETAIN CR_MERGE_GATE_OK/ARMAUTOMERGE
+                # even when THIS arm's generated text sets neither. Unset both
+                # unconditionally as the first line of the job body so the
+                # emitted text — not the ambient env it was submitted from —
+                # is what governs.
+                local launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK
+${q_automerge}claude ${q_name}$q_prompt $q_channels"
                 if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
                     local q_hb q_log q_curl
                     q_hb=$(printf '%q' "$HEADROOM_BIN")
                     q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
                     q_curl=$(printf '%q' "$HEADROOM_CURL")
-                    launch_lines="$q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }
+                    launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK
+$q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }
 if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then
     echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log
-    ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 claude ${q_name}$q_prompt $q_channels
+    ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 ${q_automerge}claude ${q_name}$q_prompt $q_channels
 else
     echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log
-    claude ${q_name}$q_prompt $q_channels
+    ${q_automerge}claude ${q_name}$q_prompt $q_channels
 fi"
                 fi
                 local q_flow_lib q_task q_note
@@ -2687,6 +3028,45 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "RESUME_CWD=$RESUME_CWD"
     echo "arm-resume: dry-run complete (no changes made)"
     exit 0
+fi
+
+# HIMMEL-1304: the second half of the transactional --force replace. Everything
+# that can refuse (rc 7 queue lock, rc 8 cross-host registry, rc 6 collision)
+# and schedule_arm itself — including its HIMMEL-938 post-arm NextRunTime
+# verify, which DELETES a task it judges misregistered and exits 2 — has now
+# run. Only here is a new arm known to exist, so only here is it safe to give up
+# the old one. Reached only on the --force path; ARM_REPLACE_MARKERS is empty
+# otherwise (and under --dry-run, which already printed its intent and exited).
+#
+# _arm_marker_is_new_arm skips a marker that names the job we JUST created —
+# but that in-place-overwrite assumption is only ever TRUE on windows:
+#   windows — `schtasks /create /f` FORCE-overwrites a same-named task, so a
+#     same-identity re-arm replaced the old row IN PLACE and there is no
+#     separate old row left to reap; deleting that name deletes the new arm.
+#     _arm_marker_is_new_arm's skip is scoped to this platform for exactly
+#     that reason.
+#   POSIX (crontab / at) never gets that in-place overwrite: _crontab_schedule
+#     always APPENDS rather than replacing a same-marker line, and an at-job
+#     always registers under a fresh job id — so every marker captured here,
+#     on POSIX, is genuinely superseded and _arm_marker_is_new_arm always
+#     reaps it. On crontab, _crontab_delete removes only the FIRST line
+#     exactly matching the marker (not every occurrence), so a byte-identical
+#     re-arm's freshly-appended duplicate survives even though the superseded
+#     line it was captured from gets deleted.
+if [ -n "${ARM_REPLACE_MARKERS:-}" ]; then
+    _arm_reap_failed=0
+    while IFS= read -r _rm; do
+        [ -z "$_rm" ] && continue
+        if _arm_marker_is_new_arm "$_rm"; then
+            echo "arm-resume: superseded '$_rm' in place (same identity) — nothing to reap"
+            continue
+        fi
+        delete_existing "$_rm" soft || _arm_reap_failed=$((_arm_reap_failed + 1))
+    done <<< "$ARM_REPLACE_MARKERS"
+    if [ "$_arm_reap_failed" -gt 0 ]; then
+        echo "WARN arm-resume: the arm is registered, but $_arm_reap_failed superseded job(s) could not be reaped (listed above). The new arm STANDS -- prune the leftovers manually so they do not fire alongside it." >&2
+    fi
+    unset _arm_reap_failed _rm
 fi
 
 # Telemetry (HIMMEL-236): a successful arm IS the re-launch signal the

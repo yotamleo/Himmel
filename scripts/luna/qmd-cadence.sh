@@ -26,6 +26,18 @@
 #   HIMMEL-Qmd-Reindex   daily (default 05:00 local)
 #       bash <himmel>/scripts/luna/qmd-reindex.sh --qmd-bin <qmd>
 #
+# WITH --ship-to <host> (HIMMEL-1286) the SAME single task fires the ship
+# runner instead:
+#       bash <himmel>/scripts/luna/ship-index.sh --qmd-bin <qmd> --host <host>
+#
+# Still ONE task, not two. ship-index.sh's step 1 IS qmd-reindex.sh — the
+# transport was built to ship AFTER a successful local reindex, so a separate
+# ship task on a later clock would push whatever happened to be on disk and
+# reintroduce the race the design avoids. This is the "host pushes on a cadence"
+# half of HIMMEL-1286's transport decision: the receiving station embeds ~50x
+# slower than the host, so it RECEIVES and never builds, and nothing but this
+# cadence gets an index there without a human remembering.
+#
 # WHY 05:00 LOCAL: it lands AFTER the whole pipeline-cadence chain has finished
 # writing to the vault (HIMMEL-Pipeline-Harvest 02:00, -Synthesize 03:00,
 # -Health 04:00), so the reindex actually picks up what those legs just wrote
@@ -116,6 +128,15 @@ BAT_DIR="${QMD_CADENCE_BAT_DIR:-$(resolve_user_home)/.claude/qmd-cadence}"
 # the runner fires the shipped qmd-reindex.sh by absolute path.
 HIMMEL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
 REINDEX_SCRIPT="$HIMMEL_ROOT/scripts/luna/qmd-reindex.sh"
+SHIP_SCRIPT="$HIMMEL_ROOT/scripts/luna/ship-index.sh"
+# --ship-to <host> (HIMMEL-1286): arm the SHIP runner instead of the bare
+# reindex. It is ONE task either way, not two, because ship-index.sh's step 1 IS
+# qmd-reindex.sh — the transport was designed to ship AFTER a successful local
+# reindex rather than on a blind clock, so a second task fired 30 minutes later
+# would ship whatever happened to be on disk and reintroduce exactly the race the
+# design avoids. RUNNER_SCRIPT is resolved from this after arg parsing.
+SHIP_TO=""
+RUNNER_SCRIPT="$REINDEX_SCRIPT"
 
 # Runner-format version stamp (HIMMEL-588): emit_bat / emit_runner stamp
 # CADENCE_RUNNER_FORMAT_VERSION into the runner so a stale-format armed cadence
@@ -165,6 +186,11 @@ Subcommands:
 
 Flags (arm only, except --dry-run):
   --time <HH:MM>  Daily reindex time, 24h local (default 05:00)
+  --ship-to <h>   Arm ship-index.sh --host <h> instead of the bare reindex,
+                  so the host PUSHES the fresh index to a receiving station
+                  on the same daily beat. Still ONE task: ship-index.sh's
+                  step 1 IS qmd-reindex.sh, so the ship follows a successful
+                  reindex rather than a blind clock.
   --force         Replace an existing HIMMEL-Qmd-* task
   --dry-run       Print what would happen, touch nothing
                   (honored by arm AND disarm)
@@ -201,6 +227,54 @@ case "$SUBCMD" in
         ;;
 esac
 
+# Shared by BOTH --ship-to spellings (space and `=`), so the two can never drift
+# apart — the drift is what let `--ship-to=` through as a silent no-op while
+# `--ship-to ""` was correctly refused.
+#
+# Rejects two shapes, for the same reason in both cases: the operator asked for a
+# ship cadence, and anything that quietly yields "no ship" is worse than an error.
+#   empty       — an unset var expanded to nothing; would arm reindex-ONLY.
+#   flag-shaped — `--ship-to --dry-run` takes "--dry-run" as the HOSTNAME, so
+#                 --dry-run is CONSUMED, DRY_RUN stays 0, and a command written
+#                 as a rehearsal arms the task for real against a garbage host.
+validate_ship_to() {
+    if [ -z "$1" ]; then
+        echo "ERR qmd-cadence: --ship-to requires a value (ssh host)" >&2
+        usage >&2
+        exit 1
+    fi
+    case "$1" in
+        -*)
+            echo "ERR qmd-cadence: --ship-to needs an ssh host, got the flag '$1'" >&2
+            usage >&2
+            exit 1 ;;
+    esac
+    # REFUSE anything outside an ssh-target grammar. This value is the ONE
+    # operator-supplied string that gets baked into a PERSISTENT scheduled .bat,
+    # and cadence_cmd_escape's own header states the rule it has to obey:
+    #
+    #   "Do not extend this function to a value that can carry an arbitrary
+    #    quote — refuse instead."
+    #
+    # It says that because backslash does NOT escape a quote for cmd.exe, so a
+    # host containing `"` would terminate the quoted argument and expose command
+    # metacharacters — turning a scheduled task into arbitrary execution under
+    # the operator's account on every fire. Every other value that escaper sees
+    # is a Windows path, where `"` is illegal by construction; --ship-to was the
+    # first one that could carry one, so the refusal belongs here.
+    #
+    # The allowed set covers real ssh targets — hostnames, ~/.ssh/config
+    # aliases, IPv4, and user@host — and nothing else. A target this rejects is
+    # still reachable: put it in ~/.ssh/config and arm the alias.
+    case "$1" in
+        *[!A-Za-z0-9._@-]*)
+            echo "ERR qmd-cadence: --ship-to '$1' is not a plain ssh host — allowed: letters, digits, . _ - @" >&2
+            echo "    (this value is baked into a scheduled runner; a quote or shell metacharacter there is arbitrary execution)" >&2
+            echo "    For a target needing more, define a Host alias in ~/.ssh/config and pass the alias." >&2
+            exit 1 ;;
+    esac
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --time)
@@ -213,6 +287,26 @@ while [ $# -gt 0 ]; do
             fi
             REINDEX_TIME="$2"; shift 2 ;;
         --time=*)   REINDEX_TIME="${1#--time=}"; shift ;;
+        --ship-to)
+            if [ $# -lt 2 ]; then
+                echo "ERR qmd-cadence: --ship-to requires a value (ssh host)" >&2
+                usage >&2
+                exit 1
+            fi
+            validate_ship_to "$2"
+            SHIP_TO="$2"; shift 2 ;;
+        --ship-to=*)
+            # The `=` form gets the SAME validation as the space form. Without
+            # it `--ship-to=` (an unset var expanding to nothing is the common
+            # way to get here) set SHIP_TO empty and silently armed
+            # reindex-ONLY — the operator asked for a ship cadence and got a
+            # scheduler that never ships, with no error to notice. The --time=
+            # sibling survives the same shape only because a later HH:MM regex
+            # rejects the empty value; --ship-to has no such downstream check,
+            # so it must reject here.
+            _ship_to_val="${1#--ship-to=}"
+            validate_ship_to "$_ship_to_val"
+            SHIP_TO="$_ship_to_val"; unset _ship_to_val; shift ;;
         --force)    FORCE=1; shift ;;
         --dry-run)  DRY_RUN=1; shift ;;
         -h|--help)  usage; exit 0 ;;
@@ -223,6 +317,26 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# Resolve which runner the task will fire (HIMMEL-1286). Done ONCE here so the
+# schtasks and cron emitters below stay identical apart from their escaping —
+# the two payload sites already diverged into cmd_escape vs printf %q, and
+# branching on SHIP_TO in both would be a third place to keep in sync by hand.
+RUNNER_DESC="qmd update + qmd embed"
+if [ -n "$SHIP_TO" ]; then
+    RUNNER_SCRIPT="$SHIP_SCRIPT"
+    # The success banner has to say what was actually armed. Reporting
+    # "qmd update + qmd embed" after arming a SHIP cadence tells the operator
+    # the destination was ignored, which is the one thing they would want to
+    # catch at arm time rather than discover from a stale receiver days later.
+    RUNNER_DESC="reindex + SHIP to $SHIP_TO (ship-index.sh)"
+fi
+# The banners' "the task fires bash + <script>" line is derived from the SAME
+# resolution, not spelled out again: both emitters used to hard-code
+# "qmd-reindex.sh" there, so an armed SHIP cadence described itself as a plain
+# reindex two lines under a banner that had just said otherwise — and the one
+# thing that sentence exists to answer is which script actually runs.
+RUNNER_NAME=$(basename "$RUNNER_SCRIPT")
 
 # Platform detect (same matrix as the sibling cadences).
 case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
@@ -528,8 +642,15 @@ validate_arm_inputs() {
         echo "ERR qmd-cadence: --time must be HH:MM (24h), got: $REINDEX_TIME" >&2
         exit 1
     fi
-    if [ ! -f "$REINDEX_SCRIPT" ]; then
-        echo "ERR qmd-cadence: qmd-reindex.sh not found at $REINDEX_SCRIPT" >&2
+    if [ ! -f "$RUNNER_SCRIPT" ]; then
+        echo "ERR qmd-cadence: runner not found at $RUNNER_SCRIPT" >&2
+        exit 2
+    fi
+    # With --ship-to the armed runner is ship-index.sh, which invokes
+    # qmd-reindex.sh as its own step 1 — so BOTH must exist, and the missing one
+    # has to surface at arm time rather than at 05:00 in a log nobody reads.
+    if [ -n "$SHIP_TO" ] && [ ! -f "$REINDEX_SCRIPT" ]; then
+        echo "ERR qmd-cadence: ship-index.sh needs qmd-reindex.sh, not found at $REINDEX_SCRIPT" >&2
         exit 2
     fi
     # FAIL FAST on a missing `qmd`. The scheduler fires with a MINIMAL PATH that
@@ -699,8 +820,8 @@ cmd_arm() {
     # bash consumes these paths (POSIX/mixed C:/ form via cygpath -m, which
     # Git-Bash reads); the himmel cd target is a Windows path.
     local script_mixed qmd_mixed qmd_js_mixed="" himmel_win
-    if ! script_mixed=$(cygpath -m "$REINDEX_SCRIPT" 2>&1); then
-        echo "ERR qmd-cadence: cygpath -m failed for reindex script: $script_mixed" >&2
+    if ! script_mixed=$(cygpath -m "$RUNNER_SCRIPT" 2>&1); then
+        echo "ERR qmd-cadence: cygpath -m failed for runner script: $script_mixed" >&2
         exit 4
     fi
     if ! qmd_mixed=$(cygpath -m "$QMD_BIN" 2>&1); then
@@ -768,6 +889,17 @@ cmd_arm() {
     local payload
     payload="\"$bash_win_esc\" \"$script_esc\" --qmd-bin \"$qmd_esc\""
     [ -n "$qmd_js_esc" ] && payload="$payload --qmd-js \"$qmd_js_esc\""
+    # --ship-to (HIMMEL-1286): the runner is ship-index.sh, which takes the SAME
+    # --qmd-bin/--qmd-js pin and forwards it to its own reindex leg — that
+    # passthrough is what makes an unattended ship possible at all, since the
+    # resolver needs bun on PATH and a scheduler has none. The host is escaped
+    # like every other interpolated value (HIMMEL-1281 closed the divergence
+    # where one emitter left a value raw).
+    if [ -n "$SHIP_TO" ]; then
+        local ship_to_esc
+        ship_to_esc=$(cadence_cmd_escape "$SHIP_TO")
+        payload="$payload --host \"$ship_to_esc\""
+    fi
 
     local bat="$BAT_DIR/qmd-reindex.bat"
 
@@ -836,13 +968,13 @@ cmd_arm() {
 
 ================================================================
   QMD REINDEX CADENCE ARMED (HIMMEL-568)
-  $TASK_REINDEX  daily $REINDEX_TIME  -> qmd update + qmd embed
+  $TASK_REINDEX  daily $REINDEX_TIME  -> $RUNNER_DESC
   Scope:  all configured qmd collections
   qmd:    $(qmd_invocation_desc)
   Himmel: $HIMMEL_ROOT
   Runner .bat: $BAT_DIR
 
-  The task fires bash + qmd-reindex.sh directly (no claude session).
+  The task fires bash + $RUNNER_NAME directly (no claude session).
   StartWhenAvailable=true: a run missed because the PC was off/asleep
   fires when the PC is next on. Disarm anytime with:
       bash scripts/luna/qmd-cadence.sh disarm
@@ -929,6 +1061,76 @@ emit_runner() {
     printf '# %s runner — generated by qmd-cadence.sh arm (HIMMEL-568)\n' "$name"
     printf '# %s %s\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     printf 'log=%s\n' "$q_log"
+    # SELF-OVERLAP GUARD (cron only). The Windows task carries
+    # MultipleInstancesPolicy=IgnoreNew, which is what lets the payload take no
+    # lock of its own; cron has no equivalent, so this leg was unguarded — and
+    # under --ship-to that is not merely a wasted double reindex: two ship runs
+    # race on the receiver's single `<target>.preship` rollback copy, so one can
+    # reap the other's rollback mid-swap and leave no recoverable index.
+    # Acquired BEFORE the rotation below, which is itself destructive across
+    # concurrent runs (the second run rotates the first run's live log away).
+    # mkdir, not a lockfile: it is the one atomic create-or-fail primitive
+    # available in POSIX sh with no flock dependency (absent on macOS).
+    printf 'lock="$log.lock"\n'
+    printf 'if ! mkdir "$lock" 2>/dev/null; then\n'
+    # NO AUTOMATIC STALE-LOCK TAKEOVER — deliberately, after three attempts at
+    # one. Recovering a stale lock in shell means reading an owner pid, judging
+    # it dead, and then removing a directory you do not own; every version of
+    # that has an identity window between the judgement and the removal, and
+    # review found a distinct bug in each:
+    #   1. non-atomic takeover — two contenders both saw the dead owner and both
+    #      fired.
+    #   2. `mv`-claim, treating pid-less as stale — stole the lock from a LIVE
+    #      owner inside the un-stamped mkdir/pid window.
+    #   3. `mv`-claim with a re-read — between reading a dead pid and the mv,
+    #      another contender can complete its own takeover and install a live
+    #      lock, which the mv then steals; and the EXIT trap removes whatever
+    #      sits at $lock, not the instance this process created.
+    # Each fix produced the next, which is what a lock at the wrong layer looks
+    # like. The resource being protected lives on the RECEIVER, and only the
+    # receiver can see every sender, so that is where real serialization belongs
+    # (HIMMEL-1306).
+    #
+    # So: mkdir is the whole protocol. It is atomic, this process runs ONLY if
+    # its own mkdir succeeded, and nothing ever removes a lock it did not
+    # create — which also scopes the EXIT trap correctly by construction. The
+    # cost is that a SIGKILLed run leaves a lock behind and the cadence stops
+    # until a human removes it. That is the SAFE direction: it stops LOUDLY
+    # (every fire logs it, and the exit code is non-zero so cron reports it),
+    # whereas the alternative fails toward two concurrent ships destroying each
+    # other's rollback. A stopped cadence is also exactly what the staleness
+    # guard in this same ticket exists to notice downstream.
+    # Read the owner FIRST. A pid-less lock is then re-read once after a beat,
+    # because mkdir and the pid write cannot be one atomic step: an owner that
+    # has just won the lock is briefly un-stamped, and judging it on that first
+    # empty read would call a live run abandoned.
+    printf '    _prev=$(cat "$lock/pid" 2>/dev/null || echo "")\n'
+    printf '    if [ -z "$_prev" ]; then\n'
+    printf '        sleep 1\n'
+    printf '        _prev=$(cat "$lock/pid" 2>/dev/null || echo "")\n'
+    printf '    fi\n'
+    printf '    if [ -n "$_prev" ] && kill -0 "$_prev" 2>/dev/null; then\n'
+    printf '        echo "[skipped $(date '\''+%%Y-%%m-%%d %%H:%%M:%%S'\''): pid $_prev still running]" >> "$log" 2>&1\n'
+    printf '        exit 0\n'
+    printf '    fi\n'
+    printf '    echo "[BLOCKED $(date '\''+%%Y-%%m-%%d %%H:%%M:%%S'\''): stale lock $lock (owner ${_prev:-unknown} is gone); this run did NOT fire. Remove that directory to resume the cadence.]" >> "$log" 2>&1\n'
+    printf '    exit 75\n'
+    printf 'fi\n'
+    # Trap FIRST, then stamp. We own the lock the moment mkdir succeeded, so the
+    # release must be armed before anything that can fail — otherwise a failed
+    # stamp exits leaving the directory behind.
+    printf 'trap '\''rm -f "$lock/pid" 2>/dev/null; rmdir "$lock" 2>/dev/null'\'' EXIT\n'
+    # A failed stamp used to be swallowed with `|| true`, which turned a LIVE
+    # run into a false BLOCKED for the next contender: an un-stamped lock reads
+    # as empty after the 1s re-read, the contender takes the stale branch, and
+    # cron gets a hard rc-75 failure naming a lock nobody needs to remove. No
+    # corruption — but a misleading alarm is its own cost in a cadence whose
+    # whole job is to be believed. Fail here instead; the trap above releases
+    # the lock on the way out, so the next fire starts clean.
+    printf 'if ! echo $$ > "$lock/pid" 2>/dev/null; then\n'
+    printf '    echo "[BLOCKED $(date '\''+%%Y-%%m-%%d %%H:%%M:%%S'\''): could not write $lock/pid (read-only or full?); refusing to run un-stamped]" >> "$log" 2>&1\n'
+    printf '    exit 75\n'
+    printf 'fi\n'
     printf 'if [ -f "$log" ]; then\n'
     printf '    mv -f "$log" "$log.prev" || echo "[rotation failed: mv $log -> $log.prev]" >> "$log" 2>&1\n'
     printf 'fi\n'
@@ -1033,7 +1235,7 @@ cron_arm() {
 
     local q_bash q_script q_qmd q_himmel q_log q_qmd_js=""
     q_bash=$(printf '%q' "$bash_bin")
-    q_script=$(printf '%q' "$REINDEX_SCRIPT")
+    q_script=$(printf '%q' "$RUNNER_SCRIPT")
     q_qmd=$(printf '%q' "$QMD_BIN")
     q_himmel=$(printf '%q' "$HIMMEL_ROOT")
     q_log=$(printf '%q' "$BAT_DIR/qmd-reindex.log")
@@ -1044,6 +1246,13 @@ cron_arm() {
     local payload
     payload="$q_bash $q_script --qmd-bin $q_qmd"
     [ -n "$q_qmd_js" ] && payload="$payload --qmd-js $q_qmd_js"
+    # Mirror of the Windows branch above (HIMMEL-1286), differing only in the
+    # escaping this path uses.
+    if [ -n "$SHIP_TO" ]; then
+        local q_ship_to
+        q_ship_to=$(printf '%q' "$SHIP_TO")
+        payload="$payload --host $q_ship_to"
+    fi
 
     local hh mm
     hh="${REINDEX_TIME%:*}"; mm="${REINDEX_TIME#*:}"
@@ -1089,13 +1298,13 @@ cron_arm() {
 
 ================================================================
   QMD REINDEX CADENCE ARMED (HIMMEL-568, cron)
-  $TASK_REINDEX  daily $REINDEX_TIME  -> qmd update + qmd embed
+  $TASK_REINDEX  daily $REINDEX_TIME  -> $RUNNER_DESC
   Scope:  all configured qmd collections
   qmd:    $(qmd_invocation_desc)
   Himmel: $HIMMEL_ROOT
   Runner .sh: $BAT_DIR
 
-  The entry fires bash + qmd-reindex.sh directly (no claude session).
+  The entry fires bash + $RUNNER_NAME directly (no claude session).
   Disarm anytime:
       bash scripts/luna/qmd-cadence.sh disarm
 ================================================================

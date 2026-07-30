@@ -87,7 +87,7 @@ wrappers that shell the same `scripts/` the Claude `.claude/commands/` use
 `guardrail-sim`, `pr-check`, the handover-flow cluster (`handover-commit`,
 `handover-flush`, `handover-arm-resume`, `context-hop`, `handover-link`,
 `handover-pr-open`, `handover-pr-merge`), and `cr-scores`, `retitle`, `quiet-run`,
-`pipeline-cadence`, `luna-backfill`, `skill-find`, `pr-triage`. Tier-A skills
+`pipeline-cadence`, `luna-backfill`, `skill-find`. Tier-A skills
 (minerva, handover, stuck-playbook, vm, himmel-update) load from the plugins.
 Claude `.claude/commands/*.md` do **not** auto-load — Codex has its own slash
 surface.

@@ -141,6 +141,16 @@ if [ -z "$tip" ]; then
     audit "REFUSED reason=no-branch-tip branch=$branch"
     exit 12
 fi
+# The SHORT form of the tip, for the amend hint below. The ledger stores heads
+# SHORT (.claude/commands/pr-check.md records them with `git rev-parse --short`),
+# and ledger-append.sh's amend matches them with STRICT ===. The hint suggests an
+# amend against the tip, so its --head must be the same short form the ledger
+# stores — a full sha never string-equals a stored short, so the suggested
+# command would exit 3 and send the operator into the dead end HIMMEL-1294 exists
+# to close (HIMMEL-1327). Computed, never hardcoded: `--short` length varies per
+# repo, and this is the exact form pr-check records. ($tip stays full for the
+# gate's own resolve-then-compare reads above; the DISPLAY lines use ${tip:0:8}.)
+tip_short=$(git rev-parse --short "$tip" 2>/dev/null || true)
 
 # Marker format (check-cr-before-push.sh): "<iso-ts> | <full-sha> | <lane>".
 marker_sha=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$marker" 2>/dev/null)
@@ -391,7 +401,7 @@ if [ -n "$blocking" ]; then
     # the FINDING's reason, while --reason documents why the RECORD was wrong.
     # Omitting it leaves the deferral rejected for a missing reason, i.e. this
     # very hint would send the reader into a dead end.
-    echo "    scripts/cr/ledger-append.sh amend --head $tip --id <finding-id> --set verdict=deferred --set deferred_to=<TICKET> --set reason=\"<why it is out of scope here>\" --reason \"deferred after review\"" >&2
+    echo "    scripts/cr/ledger-append.sh amend --head ${tip_short:-$tip} --id <finding-id> --set verdict=deferred --set deferred_to=<TICKET> --set reason=\"<why it is out of scope here>\" --reason \"deferred after review\"" >&2
     audit "REFUSED reason=blocking-findings branch=$branch sha=$tip findings=$blocking"
     exit 15
 fi

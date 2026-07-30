@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, sta
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { runSession, BASH_BIN, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow } from "./run";
+import { runSession, BASH_BIN, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow, type RunObserver } from "./run";
 import { checkGlmGuards } from "./glm-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, glmContextPreset, type SettingsConflict, type GlmUsage } from "./glm-env";
 import { appendQuotaGauge, buildGlmRow, isGlmPeak } from "./quota-gauge";
@@ -170,6 +170,166 @@ export function composeRetaskBlock(nonce: string): string {
   ].join("\n");
 }
 
+// HIMMEL-1378: the worker prompt never told the model about the HIMMEL-203
+// hang shape. Root-cause evidence (a leg-8 worker stalled for the full
+// RUN_TIMEOUT_MS producing ZERO bytes of output on even a trivial task):
+// Claude Code's NATIVE permission matcher bails to an interactive prompt on
+// certain Bash command shapes ($var/$(...)/backticks/compound operators) even
+// under auto-mode — a CLI-level limitation the auto-approve hook cannot
+// always cover (documented in its own header, scripts/hooks/auto-approve-
+// safe-bash.sh). Every GLM/claudex worker now dispatches under
+// --permission-mode dontAsk (see composeWorkerSettings/REFUSE_BYPASS below),
+// which structurally converts that unanswerable prompt into a fast, visible
+// DENY instead of a silent hang — so this warning's job changed from
+// "avoid an unrecoverable hang" to "avoid burning a step on an avoidable
+// deny": a compound/dynamic shape whose pieces aren't on the worker's
+// allow-list now fails FAST (visible in run.log/outbox), never hangs.
+// Lane-agnostic (imported into spawn-claudex.ts) so both worker twins carry
+// it verbatim.
+export function composeBashShapeWarning(outbox: string): string {
+  return `BASH SHAPE (HIMMEL-203/1378): this session runs under --permission-mode dontAsk with a narrow allow-list (worktree file access, a curated set of literal commands) — a Bash command shaped with $var/$(...)/backticks/pipes/redirects/compound operators, or ANY command outside the allow-list, is auto-DENIED FAST (check run.log/outbox for the deny message) rather than prompted. Prefer literal single commands for everything inside your worktree; for ${outbox} and other session-dir files, see the OUTBOX WRITE note below — do not retry a denied step blindly, note it and move on.`;
+}
+
+// HIMMEL-1378 (RETASK-a8k5vn live probe finding): the Write/Edit TOOL is
+// unreliable for the session dir specifically — live-reproduced against the
+// real CLI: an identical Edit-path allow-rule set (bare + /* + /**) that
+// WORKS for a file inside the worktree (any dot-segment included — verified)
+// consistently DENIES a Write to the session dir (outbox.jsonl/context.md),
+// which sits under a dot-directory (~/.claude/handover/bridge/glm-sessions/…)
+// OUTSIDE the worktree tree the session's cwd lives in. This reproduces
+// across the //<drive>/ and ~/ anchor forms and bare/single-segment/multi-
+// segment glob suffixes alike — no --settings allow-rule shape overrides it,
+// so it reads as a CLI-level safety boundary around dot-directories outside
+// the working tree, not a rule-authoring mistake. The worker's OWN
+// discovery-by-trial-and-error cost it real wall-clock time (~30s of retries
+// + reasoning) and, once, a broken fallback (an MSYS "/c/..." path handed to
+// Node's fs, which rejects it) — so hand it the WORKING shape directly rather
+// than let it rediscover this each dispatch.
+export function composeOutboxWriteHint(outbox: string): string {
+  const posix = outbox.replace(/\\/g, "/");
+  return `OUTBOX WRITE (HIMMEL-1378): the Write/Edit tool is OFTEN DENIED for ${outbox} (a Claude Code safety boundary on dot-directory paths outside your worktree — no permission rule can override it). If Write/Edit there is denied, use this literal Bash command instead (a forward-slash path, exactly as shown — NEVER an MSYS "/c/..." form, which Node's fs rejects): node -e "require('fs').appendFileSync('${posix}', JSON.stringify({text:'<note>'})+'\\n')"`;
+}
+
+// ── HIMMEL-1378: permission hardening (prevention, not just detection) ─────
+//
+// Design: bypassPermissions is FORBIDDEN for an unattended worker (it strips
+// EVERY guardrail — block-glm-external-writes.sh, block-read-secrets.sh, the
+// pushurl tripwire's own permission surface, all of it — trading the hang
+// class this ticket fixes for a much worse one). The chosen mechanism is
+// `--permission-mode dontAsk` (verified via `claude --help` on the installed
+// v2.1.220 CLI as a real accepted value, and via current Claude Code
+// permission docs as the ONLY mode documented to auto-DENY an unmatched tool
+// call rather than ever prompting) PLUS a worker-scoped `--settings` overlay
+// whose `permissions.allow` covers exactly the shapes composeWorkerPrompt
+// already tells the worker to use: Edit/Read/Grep/Glob under its own worktree
+// and its session dir (the outbox/context/grants files live OUTSIDE the
+// worktree by design — HIMMEL-740 — so both roots need their own rule), plus
+// a curated literal-command Bash allow-list mirroring auto-approve-safe-
+// bash.sh's own safe set (git read ops + commit/add, the Jira CLI, common
+// test runners, common read-only inspection binaries). Anything the worker
+// asks for outside that envelope now fails FAST and VISIBLY instead of
+// hanging — the envelope is not wider than what the worker prompt already
+// asks of it.
+//
+// Rejected alternatives (operator RETASK-a8k5vn, evaluated honestly):
+//   - bypassPermissions: forbidden by design (see above).
+//   - acceptEdits: only changes Edit/Write handling; it does not touch
+//     Bash's native-matcher-bail class at all (the ORIGINAL hang class this
+//     ticket started from), so it does not "provably cannot hang" — dontAsk
+//     is the only mode documented to deny-not-ask universally, across every
+//     tool.
+//   - A bespoke PreToolUse "deny with message" hook: strictly more code than
+//     the built-in dontAsk mode for the identical guarantee (a hook can
+//     already emit an explicit ALLOW — auto-approve-safe-bash.sh does — but
+//     a hook that stays silent still falls through to the mode's own
+//     default, which is exactly the behavior dontAsk fixes at the source).
+
+// Windows absolute path -> the POSIX form Claude Code's path-scoped
+// permission rules require (`C:\a\b` -> `//c/a/b`; verified against current
+// permission docs). Non-Windows-shaped input (already POSIX, or relative) is
+// returned with backslashes normalized only — callers always pass an
+// already-`resolve()`d absolute path.
+export function toPermissionPath(p: string): string {
+  const posix = p.replace(/\\/g, "/");
+  const m = posix.match(/^([A-Za-z]):\/(.*)$/);
+  return m ? `//${m[1].toLowerCase()}/${m[2]}` : posix;
+}
+
+// Curated literal-command Bash allow-list (HIMMEL-1378): mirrors auto-
+// approve-safe-bash.sh's own safe-binary set (that hook already proves these
+// are safe enough to auto-grant for the OPERATOR's own auto-mode sessions)
+// plus the specific write-shaped commands composeWorkerPrompt's own COMMIT
+// EARLY / ATTESTATION rules and CLAUDE.md's Jira/test-suite conventions
+// require of a worker: `git add`/`git commit` (the hook's safe set is
+// deliberately read-only-only), the Jira CLI + general node/bun/npm test
+// runners, and running a suite script directly (CLAUDE.md's own documented
+// `bash scripts/.../test-*.sh` shape). Each entry is a Claude Code
+// `Bash(<prefix>*)` PREFIX rule — a compound command still needs EVERY
+// subcommand to match some rule (Claude Code evaluates each subcommand of a
+// compound independently; a single rule never covers a whole compound
+// string), so this list widens what a worker can do, never what one
+// disallowed subcommand of a compound can slip through as.
+export const WORKER_BASH_ALLOW: readonly string[] = [
+  "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)", "Bash(git show*)",
+  "Bash(git branch*)", "Bash(git add *)", "Bash(git commit*)",
+  "Bash(node *)", "Bash(bun *)", "Bash(npm *)", "Bash(bash *)", "Bash(pre-commit*)",
+  "Bash(cat *)", "Bash(ls*)", "Bash(grep*)", "Bash(find *)", "Bash(head*)",
+  "Bash(tail*)", "Bash(wc*)", "Bash(sed -n*)", "Bash(pwd)", "Bash(which *)",
+];
+
+// Merge the worker's permission-hardening overlay onto whatever plugin-
+// profile settings resolveProfileSettings already produced (HIMMEL-1040),
+// into ONE `--settings` JSON string — `--settings` loads as an ADDITIONAL
+// layer (verified against current Claude Code docs), so the operator's own
+// ~/.claude hooks (block-glm-external-writes.sh, block-read-secrets.sh,
+// block-edit-on-main.sh, auto-approve-safe-bash.sh) keep firing unchanged;
+// this only ADDS allow-rules and (redundantly, defense-in-depth alongside
+// the --permission-mode CLI flag) restates defaultMode. Always returns a
+// defined string — unlike resolveProfileSettings (undefined = "no plugin
+// injection"), the permission hardening is NEVER optional, so `--settings`
+// is now unconditionally passed for a worker dispatch.
+export function composeWorkerSettings(pluginSettingsJson: string | undefined, worktree: string, sessionDir: string): string {
+  const base = pluginSettingsJson ? JSON.parse(pluginSettingsJson) : {};
+  const wt = toPermissionPath(resolve(worktree));
+  const sd = toPermissionPath(resolve(sessionDir));
+  // Live-verified against the installed CLI (HIMMEL-1378 RETASK-a8k5vn probe):
+  // `Edit(<dir>/**)` ALONE does not reliably cover a file that is a DIRECT
+  // child of <dir> — confirmed by a real dontAsk deny ("Permission to use
+  // Write has been denied") on outbox.jsonl/context.md, which live directly
+  // in sessionDir, never in a subdirectory. Adding `<dir>/*` (single-segment)
+  // and the bare `<dir>` alongside `<dir>/**` fixed it in the same live
+  // reproduction. Only `Edit` and `Read` rule kinds are consulted at all —
+  // Claude Code's OWN startup warning states this outright ("only Read(path)
+  // rules are [consulted]... Read rules cover all file-reading tools"), so a
+  // Grep/Glob-typed rule is dead weight (accepted but never checked); this
+  // list deliberately omits both.
+  const pathAllow = [wt, sd].flatMap((p) => [
+    `Edit(${p})`, `Edit(${p}/*)`, `Edit(${p}/**)`,
+    `Read(${p})`, `Read(${p}/*)`, `Read(${p}/**)`,
+  ]);
+  const existingAllow: string[] = Array.isArray(base.permissions?.allow) ? base.permissions.allow : [];
+  return JSON.stringify({
+    ...base,
+    permissions: {
+      ...(base.permissions ?? {}),
+      defaultMode: "dontAsk",
+      allow: [...existingAllow, ...pathAllow, ...WORKER_BASH_ALLOW],
+    },
+  });
+}
+
+// Structural forbid (HIMMEL-1378, operator design constraint): bypassPermissions
+// strips every guardrail this lane relies on (block-glm-external-writes.sh,
+// block-read-secrets.sh, the deny-list, all of it) — the same reason
+// arm-resume.sh never relaunches a session with skip-permissions. A caller
+// asking for it is a usage error (exit 2), not a silent downgrade to
+// something safer and not a silent honor of the request either.
+export function refuseBypassPermissions(mode: string | undefined): string | undefined {
+  return mode === "bypassPermissions"
+    ? "bypassPermissions is forbidden on this lane (strips every guardrail) — use the worker default (dontAsk) or omit --permission-mode entirely"
+    : undefined;
+}
+
 // opts.shared (HIMMEL-800): the shared-branch-mode variant of the branch
 // instruction line — the branch is an EXISTING PR branch with history, not a
 // fresh throwaway one, so the worker must be told explicitly not to touch its
@@ -187,6 +347,8 @@ export function composeWorkerPrompt(task: string, sessionDir: string, branch: st
     `COMMIT EARLY (HIMMEL-1200): the MOMENT your tests pass — or the change is otherwise coherent — git commit your work on ${branch}, then keep refining in FOLLOW-UP commits. Use a CONVENTIONAL commit message ("type(scope): [HIMMEL-N ]summary", type one of feat|fix|chore|docs|refactor|test; the [HIMMEL-N ] ticket ref is optional but validated if present) — the commit-msg gate REJECTS a non-conventional message, and a rejected commit would recreate the very uncommitted-timeout failure this rule prevents. Do NOT hold all your work for one final commit: a committed-but-imperfect branch is recoverable by the parent, but an uncommitted timeout at the wall loses everything.`,
     `ATTESTATION (HIMMEL-1210): the pre-push gate needs two trailers on that first commit, and they must be TRUE — actually do the work they claim, then attest it, never paste them by rote. If you touched a shell/script file, run/exercise it, then add \`Platforms tested: <os>\` naming the OS you actually tested on. On any non-docs code change, actually read back your own diff, then add \`Security reviewed: <token>\` with whichever of these matches what you did: manual, claude-code-security-review, pr-review-toolkit, ad-hoc.`,
     composeRetaskBlock(mintRetaskNonce()),
+    composeBashShapeWarning(outbox),
+    composeOutboxWriteHint(outbox),
     `Report progress by APPENDING one JSON line {"text":"<note>"} per update to ${outbox}. That is the only channel to the operator.`,
     `THE TASK: ${task}`,
     `If a step is hard-blocked by the GLM-lane guard, do NOT retry or give up: APPEND one escalation line {"type":"escalation","capability":"<the command>","arm":"<git-push|git-url|gh|network>","reason":"<why>","step":"<which step>","ts":"<ISO>"} to ${outbox}, SKIP that step, continue the rest of the task, and note the skipped step in your final ${context} summary.`,
@@ -526,14 +688,49 @@ export async function executeRun(deps: {
   // operator profile / no injection). Threaded to runSession's 6th arg.
   settings?: string;
 }): Promise<{ code: number }> {
+  // HIMMEL-1378: live observability. A worker that hangs at its very first
+  // tool call (the documented HIMMEL-203 shape — a native permission prompt
+  // the closed-stdin session can never answer) used to be INVISIBLE for the
+  // entire RUN_TIMEOUT_MS window: run.log was appended only from the final
+  // `res.tail`, below, AFTER runSession resolves — which for a truly-hung
+  // worker never happens until the timeout kill. onSpawn records the REAL pid
+  // (meta.json previously stayed pid:0 for the whole "running" window, so an
+  // external watcher had no pid to check liveness against — see
+  // await-glm-worker.sh's new stall/phantom check) and stamps a first
+  // last_output_at; onChunk live-appends every stdout/stderr chunk to run.log
+  // AS IT ARRIVES and refreshes last_output_at, so a watcher can detect "no
+  // output for N minutes" long before the full timeout. Both writers are
+  // best-effort (never allowed to throw into the run) and merge over
+  // deps.runningMeta so "status" stays "running" until the terminal write
+  // below. liveChunksSeen gates the legacy final-tail append (next block)
+  // so a real run's output is never written to run.log TWICE.
+  let liveChunksSeen = false;
+  let livePid: number | undefined;
+  const runLogPath = join(deps.sessionDir, "run.log");
+  const writeRunningMeta = (extra: Record<string, unknown>) => {
+    try { writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...extra }, null, 2)); }
+    catch (e) { console.error(`spawn-glm: live meta.json update failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
+  };
+  const observe: RunObserver = {
+    onSpawn: (pid) => { livePid = pid; writeRunningMeta({ pid, last_output_at: new Date().toISOString() }); },
+    onChunk: (chunk) => {
+      liveChunksSeen = true;
+      try { appendFileSync(runLogPath, chunk); }
+      catch (e) { console.error(`spawn-glm: live run.log append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
+      writeRunningMeta({ pid: livePid ?? 0, last_output_at: new Date().toISOString() });
+    },
+  };
   try {
-    const res = await deps.runSession(deps.prompt, deps.worktree, deps.permMode, "glm", undefined, deps.settings);
+    const res = await deps.runSession(deps.prompt, deps.worktree, deps.permMode, "glm", undefined, deps.settings, observe);
     // run.log append is COSMETIC persistence (the debug tail). Isolate it (#849):
     // an I/O failure here (EACCES/EISDIR/ENOSPC) must NOT throw into the outer
     // catch — that writes status:failed + rethrows, flipping a successful run to
     // failed. The final-meta write below is the load-bearing terminal-state record.
-    if (res.tail !== undefined) {
-      try { appendFileSync(join(deps.sessionDir, "run.log"), res.tail); }
+    // Skipped when the live onChunk path already streamed the run's output
+    // (HIMMEL-1378) — deps.runSession stubs in tests never call onChunk, so
+    // this stays the ONLY write path for every existing pinned test.
+    if (res.tail !== undefined && !liveChunksSeen) {
+      try { appendFileSync(runLogPath, res.tail); }
       catch (e) { console.error(`spawn-glm: run.log append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
     }
     const fm = finalMeta(res.code, res.pid, res.capped, res.blocked, res.timedOut);
@@ -685,14 +882,25 @@ export async function runSharedDispatch(p: {
 }
 
 async function main(): Promise<void> {
-  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode bypassPermissions] [--context big|small] [--profile <name>] [--add-plugins a@m,b@m]";
+  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--context big|small] [--profile <name>] [--add-plugins a@m,b@m] (default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
   const rawArgv = process.argv.slice(2);
   // HIMMEL-1225: help short-circuit — before parseArgs, before any side effect.
   if (isHelpFlag(rawArgv)) { console.log(usage); process.exit(0); }
   const parsed = parseArgs(rawArgv);
   if (!parsed.ok) { console.error(`spawn-glm: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins } = parsed.args;
+  const { task, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
+  // HIMMEL-1378: structural forbid, before any side effect. Never a silent
+  // downgrade — a caller asking for bypassPermissions gets a clean usage
+  // refusal naming why.
+  const bypassRefusal = refuseBypassPermissions(permModeArg);
+  if (bypassRefusal) { console.error(`spawn-glm: ${bypassRefusal}`); console.error(usage); process.exit(2); }
+  // HIMMEL-1378: dontAsk is the worker-lane DEFAULT (never bypassPermissions,
+  // never the settings-inherited "auto" default that let the HIMMEL-1378 hang
+  // through) — an explicit --permission-mode still overrides for a future
+  // narrower need, but omitting the flag no longer means "inherit whatever
+  // ~/.claude/settings.json's permissions.defaultMode happens to be".
+  const permMode: PermissionMode = permModeArg ?? "dontAsk";
   const absCwd = resolve(cwd);
   // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —
   // an unknown --profile / malformed --add-plugins id is a clean usage refusal
@@ -788,9 +996,12 @@ async function main(): Promise<void> {
     // its deadline. Resolving here keeps the "meta.json ALWAYS leaves running"
     // invariant: nothing has been written yet, so a throw simply aborts the
     // dispatch. Uses the WORKTREE (the cwd the worker runs in), which exists by now.
-    let settings: string | undefined;
+    let settings: string;
     try {
-      settings = resolveProfileSettings(profile, addPlugins, worktree);
+      // HIMMEL-1378: the permission-hardening overlay is NEVER optional (unlike
+      // the plugin profile, whose "operator" sentinel means no injection) — it
+      // always merges in, so `--settings` is now unconditionally passed.
+      settings = composeWorkerSettings(resolveProfileSettings(profile, addPlugins, worktree), worktree, sessionDir);
     } catch (e) {
       // HIMMEL-1094: the resolve NEEDS the worktree cwd (branch-local settings
       // layers), so it necessarily runs after `worktree add` — which is why a

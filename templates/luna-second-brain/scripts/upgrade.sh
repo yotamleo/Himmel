@@ -316,13 +316,14 @@ if execute and added:
 PY
 }
 
-# 3-way merge _CLAUDE.md into a temp. git merge-file -p exit code: 0 = clean,
-# 1 = conflict, >1 = error (missing/unreadable input, etc.). clean/copied =>
-# replace + advance the base snapshot; conflict => sidecar + alert; error =>
-# surface git's stderr. The base snapshot is advanced ONLY on a clean/copied
-# result — leaving it on conflict/error means a future template bump re-runs the
-# same 3-way and re-surfaces the unresolved change rather than silently
-# resolving it ours-wins.
+# 3-way merge _CLAUDE.md into a temp. git merge-file -p exits with the NUMBER
+# OF CONFLICT HUNKS: 0 = clean, 1..127 = a conflict (exit code = hunk count, so
+# a multi-hunk conflict returns 2, 3, ... and is STILL a conflict), >=128 =
+# genuine error (missing/unreadable input, etc.). clean/copied => replace +
+# advance the base snapshot; conflict => sidecar + alert; error => surface git's
+# stderr. The base snapshot is advanced ONLY on a clean/copied result — leaving
+# it on conflict/error means a future template bump re-runs the same 3-way and
+# re-surfaces the unresolved change rather than silently resolving it ours-wins.
 claude_threeway() {
     local execute="$1"
     local ours="$VAULT_DIR/_CLAUDE.md"
@@ -363,15 +364,26 @@ claude_threeway() {
                 WRITE_FAILURES=$((WRITE_FAILURES+1))
             fi
         fi
-    elif [ "$rc" -eq 1 ]; then
+    elif [ "$rc" -ge 1 ] && [ "$rc" -lt 128 ]; then
+        # merge-file returns the conflict HUNK COUNT (1..127); >=128 is an error.
         CLAUDE_MERGE_RESULT="conflict"
         # Leave _CLAUDE.md untouched; write the conflicted merge to a sidecar.
         # Do NOT advance the base snapshot (so the conflict re-surfaces).
-        [ "$execute" = 1 ] && cp "$merged" "$VAULT_DIR/_CLAUDE.md.template-merge"
+        # A silent `cp` failure here would recreate the very bug this change
+        # fixes one path over: the operator is told there is a conflict and
+        # pointed at a sidecar that does not exist. Fail loudly instead.
+        if [ "$execute" = 1 ] && ! cp "$merged" "$VAULT_DIR/_CLAUDE.md.template-merge"; then
+            CLAUDE_MERGE_RESULT="error"
+            echo "  ERROR: could not write the _CLAUDE.md merge sidecar to $VAULT_DIR/_CLAUDE.md.template-merge" >&2
+        fi
     else
         CLAUDE_MERGE_RESULT="error"
-        echo "  ERROR: git merge-file failed for _CLAUDE.md (rc=$rc):" >&2
-        sed 's/^/    /' "$mf_err" >&2
+        echo "  ERROR: git merge-file failed for _CLAUDE.md (rc=$rc)" >&2
+        if [ -s "$mf_err" ]; then
+            sed 's/^/    /' "$mf_err" >&2
+        else
+            echo "    (git produced no diagnostic output)" >&2
+        fi
     fi
     rm -f "$merged" "$mf_err"
 }

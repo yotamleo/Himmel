@@ -50,7 +50,7 @@
 # (HIMMEL-891) -- without carrying a fork. A pin bump is a reviewed change to this
 # line, paired with `synced_base` in scripts/upstreams.json so the nightly
 # fork-drift guard stays truthful.
-_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.25}"; }
+_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.30}"; }
 _graphify_pypi_name() { printf '%s\n' "graphifyy"; }
 # The `uv tool install` package spec: `graphifyy==<version>`.
 _graphify_pinned_source() { printf '%s==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
@@ -675,7 +675,7 @@ graphify_update() {
   extras="$(_graphify_installed_extras)"
   spec="$(_graphify_pypi_name)${extras}==${pin}"
   # Every place this spec is PRINTED as a copy-paste repair command single-quotes
-  # it (public-PR CR). With extras recorded it reads `graphifyy[all]==0.9.25`, and
+  # it (public-PR CR). With extras recorded it reads `graphifyy[all]==0.9.30`, and
   # zsh — the macOS default — globs the brackets: pasting the unquoted form dies
   # with "no matches found" instead of installing. The quotes are for the reader's
   # shell only; the `uv tool install` this script runs itself passes "$spec" as

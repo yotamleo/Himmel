@@ -44,7 +44,6 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 
 | Command | What it does |
 |---|---|
-| /pr-triage | Lightweight 4-step PR triage gate (steipete) — decide if a PR is even worth a deep multi-agent CR before running /pr-check |
 | /pr-check | Run the multi-agent CR review on the current branch and clear the pre-push marker on clean output |
 | /check-ci | Token-free PR merge-gate watcher — one process loops inside gh pr checks --watch --fail-fast, then verifies zero unresolved review threads and no changes-requested review, and returns a single exit code (0=green+resolved, 1=red, 2=cannot evaluate/no PR/usage error, 3=unresolved threads or changes requested), so merge-on-green costs ~zero tokens (HIMMEL-949). |
 | /cr-public | Babysit a PUBLIC propagation PR (default repo yotamleo/Himmel) to CR-clean + CI-green before the operator merges — creates the PR if the branch is pushed but has none, watches the CodeRabbit App review + CI via check-ci.sh, loops fixes, and STOPS at PR-ready. The public squash-merge stays an operator action (HIMMEL-1196). |
@@ -76,7 +75,9 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 | /context-hop | Mid-session jump to a fresh claude session when context window is approaching the soft budget. Sibling of /handover-arm-resume. HIMMEL-130. |
 | /retitle | Infer a himmel-canonical session name (TICKET-ID + meaningful name) from the current branch and print a ready-to-paste built-in /rename line. |
 | /overnight-shift | Auto-dispatch N tickets from Jira as parallel subagents — emits plan + confirms before fanout (HIMMEL-134). |
-| /pipeline-cadence | Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, daily /synthesize-clips + /archive-clips, weekly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped with per-leg --model pins. Dedup-guarded. HIMMEL-255/265/357/506. |
+| /pipeline-cadence | Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, daily /synthesize-clips + /archive-clips, daily vault-lint) via schtasks (Windows) or cron (POSIX), interactive-claude shaped with per-leg --model pins. Dedup-guarded. HIMMEL-255/265/357/506/1383/1386. |
+| /drift-fix | Resolve upstream fork-drift end-to-end — run the drift guard, mechanically bump every auto-bumpable pin, land it on PRIVATE main, then open a PUBLIC PR and STOP for the operator to merge. The payload of the nightly drift-fix cadence (HIMMEL-1323). |
+| /fork-resync | Re-sync a carried FORK onto a newer upstream base — rebase the fork's additive delta and audit that it is still additive. An operator-run invocation may continue on to push the fork and move the pin; the nightly fork-resync cadence (HIMMEL-1323) runs unattended and STOPS after the audit — it never pushes and never moves the pin. |
 | /end-session-wiki-setup | Configure which Obsidian vault the end-session-wiki hook captures sessions into — writes env.LUNA_VAULT_PATH into ~/.claude/settings.json (global) or the .claude/end-session-wiki.json vault or vault_path key (this repo only). |
 | /stop | Graceful-halt marker for in-progress /overnight-shift sessions (HIMMEL-137). |
 

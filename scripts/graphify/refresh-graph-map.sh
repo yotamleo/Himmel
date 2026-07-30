@@ -11,9 +11,10 @@
 #
 # FENCE SAFETY: extraction never runs on a live vault — we operate on a
 # scratchpad COPY carrying a `.graphify-corpus` marker (same discipline as the
-# harvest tools + the egress matrix). The derived graph.json + full
-# GRAPH_REPORT.md land in the corpus's repo-local `graphify-out/` (the "latest
-# in repo" substrate); only the curated MOC is published to the vault's
+# harvest tools + the egress matrix). The derived graph.json, full
+# GRAPH_REPORT.md, and semantic cache artifacts land in the corpus's repo-local
+# `graphify-out/` (the "latest in repo" substrate); only the curated MOC is
+# published to the vault's
 # 60-Maps/ (the tracked artifact that "moves" on update).
 #
 # Usage:
@@ -165,6 +166,27 @@ PROMOTE_LOCK_TIMEOUT_SECONDS="${GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS:-120}"
 PROMOTE_LOCK_STALE_SECONDS="${GRAPHIFY_PROMOTE_LOCK_STALE_SECONDS:-600}"
 PROMOTE_LOCK_HELD=0
 PROMOTE_LOCK_TOKEN=""
+PROMOTE_STAGE=""
+CACHE_BACKUP=""
+
+# _promote_stage_cleanup -- remove an incomplete same-filesystem staging dir.
+# If a cache swap failed after sidelining the prior complete cache, restore it
+# before releasing the promote lock. The freshness stamps remain invalidated,
+# so even a later failure still fails closed rather than attesting mixed output.
+_promote_stage_cleanup() {
+  if [ -n "$CACHE_BACKUP" ] && { [ -e "$CACHE_BACKUP" ] || [ -L "$CACHE_BACKUP" ]; }; then
+    if [ ! -e "$OUT_DIR/cache" ] && [ ! -L "$OUT_DIR/cache" ]; then
+      mv "$CACHE_BACKUP" "$OUT_DIR/cache" 2>/dev/null || true
+    else
+      rm -rf "$CACHE_BACKUP" 2>/dev/null || true
+    fi
+  fi
+  CACHE_BACKUP=""
+  if [ -n "$PROMOTE_STAGE" ]; then
+    rm -rf "$PROMOTE_STAGE" 2>/dev/null || true
+    PROMOTE_STAGE=""
+  fi
+}
 
 # _promote_lock_release -- owner-tokened (CR r1 [codex-1]): a former holder
 # that was taken over while paused (stale takeover) must NOT, on wake,
@@ -279,7 +301,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"
   # Clean the owned subdir on ANY exit — a graphify/cluster-only failure (exit 2)
   # otherwise leaks it (CR suggestion). Scoped to the PID-owned dir only.
-  trap 'rm -rf "$SCRATCH" 2>/dev/null || true; _promote_lock_release' EXIT
+  trap 'rm -rf "$SCRATCH" 2>/dev/null || true; _promote_stage_cleanup; _promote_lock_release' EXIT
   # pull-before-regenerate (HIMMEL-1050): refresh the corpus from its remote
   # before copying to scratch, so the graph reflects the latest pushed state, not
   # a stale local checkout. Best-effort + advisory: a miss regenerates from the
@@ -455,6 +477,26 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   ( cd "$CORPUS_ROOT" && find . -type f -name '*.md' -not -path './graphify-out/*' -print0 \
       | tar --null -T - -cf - ) | ( cd "$SCRATCH" && tar -xf - ) \
     || { echo "refresh-graph-map: corpus scan/copy failed (see find/tar output above)" >&2; exit 1; }
+  # HIMMEL-1097: graphify's semantic cache is corpus-relative and content-keyed,
+  # but it lives under graphify-out/. Seed only the cache artifacts into the
+  # fresh scratch path BEFORE --update so unchanged files are cache hits instead
+  # of a full semantic re-extraction. Derived reports/graphs are deliberately not
+  # copied back into the corpus scratch.
+  SCRATCH_OUT="$SCRATCH/graphify-out"
+  if [ -d "$OUT_DIR/cache" ] || [ -f "$OUT_DIR/.graphify_semantic_marker" ] \
+     || [ -f "$OUT_DIR/.graphify_analysis.json" ]; then
+    mkdir -p "$SCRATCH_OUT"
+    if [ -d "$OUT_DIR/cache" ]; then
+      cp -R "$OUT_DIR/cache" "$SCRATCH_OUT/cache" \
+        || { echo "refresh-graph-map: graphify cache seed failed" >&2; exit 1; }
+    fi
+    for semantic_artifact in .graphify_semantic_marker .graphify_analysis.json; do
+      if [ -f "$OUT_DIR/$semantic_artifact" ]; then
+        cp "$OUT_DIR/$semantic_artifact" "$SCRATCH_OUT/$semantic_artifact" \
+          || { echo "refresh-graph-map: graphify cache seed failed" >&2; exit 1; }
+      fi
+    done
+  fi
   printf '%s\n' "$CORPUS_CLASS" > "$SCRATCH/.graphify-corpus"
   # CLEAR THE CLAUDE REROUTE SELECTORS before dispatching (HIMMEL-1070,
   # codex-adv-1). graphify-fence.sh hard-denies these, but the fence is a
@@ -507,9 +549,11 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # the KEYS to prove the corpus still exists; values are free-form, so we carry
   # the file mtime as honest provenance — stored as an INT epoch for compact,
   # human-greppable provenance — and invent nothing else); .graphify_root =
-  # first non-blank line is the corpus root. graphify itself emits no manifest,
-  # so we synthesize one from the same corpus predicate the extraction copy used
-  # (find -name '*.md' -not -path './graphify-out/*'). A zero-md corpus stamps
+  # first non-blank line is the corpus root. graphify emits its own differently
+  # shaped graphify-out/manifest.json; we separately synthesize the HIMMEL-907
+  # freshness manifest from the same corpus predicate the extraction copy used
+  # (`find -name '*.md' -not -path './graphify-out/*'`) and explicitly install
+  # ours during promote (never graphify's native manifest). A zero-md corpus stamps
   # `{}`, which the guard rejects with rc=2 — fail-loud by design, no
   # special-casing. Only written on a SUCCESSFUL refresh — this branch is reached
   # solely after graphify --update + cluster-only both succeeded; a failed run
@@ -529,7 +573,6 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   mkdir -p "$OUT_DIR"
   # (CORPUS_ROOT_ABS removed with HIMMEL-1116 — the .graphify_root marker is now
   # relative, and that assignment was its only consumer.)
-  OUT_DIR_ABS="$(cd "$OUT_DIR" && pwd)"
   SCRATCH_ABS="$(cd "$SCRATCH" && pwd)"
   # HIMMEL-910: acquire the exclusive per-out-dir lock (see its definition
   # above) around the WHOLE promote block that follows -- steps 1-4 below
@@ -714,11 +757,29 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   done
   # ONLY past this point (guard passed clean) does anything in $OUT_DIR
   # change -- everything above ran against $SCRATCH only.
-  # 1. build the new manifest from the scratch corpus into a tmp name (atomic
-  #    content write is fine — it's a tmp name, not the stamp itself).
-  python3 - "$SCRATCH_ABS" "$OUT_DIR_ABS" <<'PYEOF'
+  # 1. STAGE every promoted artifact inside $OUT_DIR (same filesystem as the
+  #    final paths). Files and the cache directory are fully copied under a
+  #    hidden per-run name before any prior artifact is invalidated, so final
+  #    installs use atomic rename rather than exposing a half-copied cache.
+  PROMOTE_STAGE="$OUT_DIR/.promote-stage.$$.$RANDOM"
+  rm -rf "$PROMOTE_STAGE"
+  mkdir "$PROMOTE_STAGE"
+  cp "$SCRATCH_GRAPH" "$PROMOTE_STAGE/graph.json"
+  cp "$SCRATCH_REPORT" "$PROMOTE_STAGE/GRAPH_REPORT.md"
+  if [ -d "$SCRATCH_OUT/cache" ]; then
+    cp -R "$SCRATCH_OUT/cache" "$PROMOTE_STAGE/cache"
+  fi
+  for semantic_artifact in .graphify_semantic_marker .graphify_analysis.json; do
+    if [ -f "$SCRATCH_OUT/$semantic_artifact" ]; then
+      cp "$SCRATCH_OUT/$semantic_artifact" "$PROMOTE_STAGE/$semantic_artifact"
+    fi
+  done
+  # Build the synthesized HIMMEL-907 freshness manifest directly in the stage.
+  # graphify's native scratch manifest is intentionally NOT among the promoted
+  # artifacts: the guard consumes this corpus-path-keyed shape instead.
+  python3 - "$SCRATCH_ABS" "$PROMOTE_STAGE/manifest.json" <<'PYEOF'
 import json, os, sys
-root, out = sys.argv[1], sys.argv[2]
+root, manifest_path = sys.argv[1], sys.argv[2]
 scratch_out = os.path.join(root, "graphify-out")
 manifest = {}
 for dirpath, dirs, files in os.walk(root):
@@ -735,19 +796,62 @@ for dirpath, dirs, files in os.walk(root):
         except OSError:
             mtime = 0
         manifest[rel] = {"mtime": mtime}
-with open(os.path.join(out, ".manifest.tmp"), "w") as fh:
+with open(manifest_path, "w") as fh:
     json.dump(manifest, fh, sort_keys=True)
     fh.write("\n")
 PYEOF
+  printf '%s\n' "." > "$PROMOTE_STAGE/.graphify_root"
   # 2. INVALIDATE the old stamps so a half-promoted out dir is never mistaken
   #    for fresh (no manifest marker <-> guard fails closed).
   rm -f "$OUT_DIR/manifest.json" "$OUT_DIR/.graphify_root"
-  # 3. promote the (already sanitized + guard-scanned) derived artifacts into
-  #    the corpus's repo-local out.
-  cp "$SCRATCH_GRAPH" "$OUT_DIR/graph.json"
-  cp "$SCRATCH_REPORT" "$REPORT"
-  # 4. STAMP: same-dir rename = atomic install of the manifest, then (re)write
-  #    the marker. The guard joins the corpus-relative manifest keys against the
+  # 3. PROMOTE the already sanitized + guard-scanned artifacts by same-dir
+  #    atomic rename. Replacing a directory needs a short cache swap: sideline
+  #    the prior complete cache, rename the fully staged cache into place, then
+  #    remove the backup. The EXIT cleanup restores the prior cache if the
+  #    second rename fails; at no point is a partially copied cache final.
+  mv "$PROMOTE_STAGE/graph.json" "$OUT_DIR/graph.json"
+  mv "$PROMOTE_STAGE/GRAPH_REPORT.md" "$REPORT"
+  if [ -d "$PROMOTE_STAGE/cache" ]; then
+    CACHE_BACKUP="$OUT_DIR/.cache.previous.$$.$RANDOM"
+    rm -rf "$CACHE_BACKUP"
+    if [ -e "$OUT_DIR/cache" ] || [ -L "$OUT_DIR/cache" ]; then
+      if ! mv "$OUT_DIR/cache" "$CACHE_BACKUP"; then
+        echo "refresh-graph-map: failed to sideline existing cache" >&2
+        CACHE_BACKUP=""
+        exit 2
+      fi
+    else
+      CACHE_BACKUP=""
+    fi
+    if ! mv "$PROMOTE_STAGE/cache" "$OUT_DIR/cache"; then
+      echo "refresh-graph-map: failed to install staged semantic cache" >&2
+      exit 2
+    fi
+    if [ -n "$CACHE_BACKUP" ]; then
+      rm -rf "$CACHE_BACKUP"
+      CACHE_BACKUP=""
+    fi
+  else
+    # No staged semantic cache this refresh (the refreshed scratch output
+    # produced none): mirror the sibling semantic artifacts handled just below
+    # (they rm -f the marker/analysis that are absent from scratch) so a prior
+    # $OUT_DIR/cache does NOT survive and silently reseed later runs (HIMMEL-
+    # 1097). Guard the target the same way _promote_stage_cleanup guards its
+    # rm -rf below ([ -n "$VAR" ]) -- an empty/unset OUT_DIR must not
+    # degenerate to a bare-root rm (rm -rf "/cache").
+    if [ -n "$OUT_DIR" ]; then
+      rm -rf "$OUT_DIR/cache"
+    fi
+  fi
+  for semantic_artifact in .graphify_semantic_marker .graphify_analysis.json; do
+    if [ -f "$PROMOTE_STAGE/$semantic_artifact" ]; then
+      mv "$PROMOTE_STAGE/$semantic_artifact" "$OUT_DIR/$semantic_artifact"
+    else
+      rm -f "$OUT_DIR/$semantic_artifact"
+    fi
+  done
+  # 4. STAMP: same-dir renames atomically install the synthesized manifest and
+  #    marker. The guard joins the corpus-relative manifest keys against the
   #    resolved corpus root.
   #
   #    .graphify_root is RELATIVE (".") — not CORPUS_ROOT_ABS (HIMMEL-1116).
@@ -761,12 +865,14 @@ PYEOF
   #    tell that station to rebuild the very graph we shipped it to avoid
   #    rebuilding. The guard already supported relative markers; nothing there
   #    changes.
-  mv "$OUT_DIR/.manifest.tmp" "$OUT_DIR/manifest.json"
-  printf '%s\n' "." > "$OUT_DIR/.graphify_root"
+  mv "$PROMOTE_STAGE/manifest.json" "$OUT_DIR/manifest.json"
+  mv "$PROMOTE_STAGE/.graphify_root" "$OUT_DIR/.graphify_root"
+  rm -rf "$PROMOTE_STAGE"
+  PROMOTE_STAGE=""
   # CR r2 [codex-adv-r2]: do NOT release here -- the publish step below
-  # READS $REPORT from the shared out dir, and a second refresh's promote
-  # overwrites it with a non-atomic cp; releasing before that read let a
-  # truncated/mixed report be published despite the serialized promote.
+  # READS $REPORT from the shared out dir, and a second refresh's promote can
+  # replace it before that read; releasing early could publish the wrong run's
+  # report despite the serialized promote.
   # The lock is held THROUGH publish and released after it (the EXIT trap
   # stays the failure-path backstop).
   rm -rf "$SCRATCH"   # eager clean on success; the EXIT trap is the failure-path backstop

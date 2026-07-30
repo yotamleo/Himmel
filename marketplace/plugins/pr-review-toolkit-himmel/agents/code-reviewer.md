@@ -34,7 +34,25 @@ Rate each issue from 0-100:
 - **76-90**: Important issue requiring attention
 - **91-100**: Critical bug or explicit CLAUDE.md violation
 
-**Only report issues with confidence ≥ 80**
+**Report every issue you find, at the confidence you actually assign it —
+including 51-75.** Do NOT withhold a finding because it is low-impact or
+because you are unsure it will be acted on.
+
+Filtering happens in a SEPARATE, later pass, not here: `/pr-check` gates the
+merge on Critical + Important only, and auto-files the rest as deferred issues
+(`scripts/cr/file-deferred-issues.sh`). A finding you suppress is not "filtered"
+— it is destroyed before the pass that would have triaged it.
+
+This is deliberate (HIMMEL-480). A confidence floor in the reviewer prompt
+reads as "report less", and the model complies literally: Anthropic's Opus 5
+prompting guidance calls out exactly this — *"if your review prompt says 'only
+report high-severity issues' or 'be conservative,' the model may follow that
+instruction literally and report less; ask it to report everything and filter
+in a separate pass instead."*
+
+The confidence scale above is still how you LABEL a finding — it is just no
+longer a gate on emitting one. Accuracy is enforced by the verify-before-critical
+rule below, which is about evidence, not severity.
 
 ## Verify-before-critical (HIMMEL-178)
 

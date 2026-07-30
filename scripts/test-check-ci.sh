@@ -95,6 +95,46 @@ if [ "$cmd" = "api" ]; then
                 cr-failure)     echo '[{"context":"CodeRabbit","state":"failure","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
                 cr-spoofed)     echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":999999,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
                 cr-query-error) echo "statuses boom" >&2; exit 1 ;;
+                # HIMMEL-1317: the REAL payload a repo with automatic reviews
+                # disabled gets on every untriggered PR. state=success, and the
+                # refusal lives ONLY in .description — which this reader used to
+                # drop, making a declined review byte-identical to a clean one.
+                cr-skipped)     echo '[{"context":"CodeRabbit","state":"success","description":"Review skipped: automatic reviews are disabled","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                # The positive control for the pair: the SAME state with a real
+                # review. Without it the skip assertion could be satisfied by
+                # breaking `success` outright, which would pass while making the
+                # gate useless — the parent lesson's instance #6, in this suite.
+                cr-completed)   echo '[{"context":"CodeRabbit","state":"success","description":"Review completed","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                # glm-1: a COMPLETED review whose wording merely CONTAINS
+                # skip-ish words. The first cut of the skip regex carried a bare
+                # `no review` alternative, which matches this and would have
+                # blocked a clean merge — a false positive fails toward RED and
+                # cannot be cleared by re-running, unlike a false negative which
+                # merely restores the old behaviour. Pins the regex to
+                # unambiguous phrasings.
+                cr-nearmiss)    echo '[{"context":"CodeRabbit","state":"success","description":"No review changes requested","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                # HIMMEL-1354: the REAL payload observed on PR #1456 @ 46358386
+                # on 2026-07-28 when CodeRabbit declined for rate limiting.
+                # state=success again, refusal again only in .description — and
+                # this wording matched NONE of the HIMMEL-1317 deny-list
+                # alternatives, so it classified as a clean success and check-ci
+                # printed "all checks green" + "verdict exit=0" on a head that
+                # had no review at all.
+                cr-ratelimited) echo '[{"context":"CodeRabbit","state":"success","description":"Review rate limited","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                # HIMMEL-1354: a wording NOBODY has enumerated, in either list.
+                # Under the old deny-list this passed as clean by default; under
+                # the allow-list it fails CLOSED. This is the structural point of
+                # the inversion — it asserts behaviour on the UNKNOWN case, which
+                # is the one that keeps producing incidents.
+                cr-unknownword) echo '[{"context":"CodeRabbit","state":"success","description":"Review deferred for reasons we have never seen","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                # CR follow-up (HIMMEL-1354 R2): jq's test() is an UNANCHORED
+                # search, so an unanchored allow-list SUBSTRING-matches this
+                # description ("No review completed" contains "review
+                # completed") and would read as a clean success — reopening
+                # the exact hole HIMMEL-1354 exists to close. Pins that the
+                # built-in default is anchored so only an EXACT allow-listed
+                # description passes.
+                cr-substrmatch) echo '[{"context":"CodeRabbit","state":"success","description":"No review completed","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
                 # A full page with no CodeRabbit on it: indeterminate, not
                 # absent — the verdict may be on page two (coderabbit-2).
                 cr-paged)       jq -nc '[range(100) | {context: "ci/ctx\(.)", state: "success", created_at: "2026-07-16T19:10:05Z", creator: {id: 1, login: "ci", type: "Bot"}}]' ;;
@@ -282,7 +322,7 @@ case "$GH_STUB_MODE" in
     watch-error)
         if [ "$is_watch" -eq 1 ]; then echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1; fi
         exit 8 ;;
-    cr-absent|cr-pending|cr-failure|cr-spoofed|cr-query-error|cr-paged)
+    cr-absent|cr-pending|cr-failure|cr-spoofed|cr-query-error|cr-paged|cr-skipped|cr-completed|cr-nearmiss|cr-ratelimited|cr-unknownword|cr-substrmatch)
         # Checks are GREEN and threads are clean in every one of these — the
         # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
@@ -307,6 +347,15 @@ ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0
 # CR_PROFILE_OVERRIDE=none exercises the CodeRabbit-less-repo opt-out
 # (HIMMEL-1072); empty = a normal repo where the signal is required.
 CR_PROFILE_OVERRIDE=""
+# CR_APP_OVERRIDE pins the HIMMEL-1125 availability probe EXPLICITLY. Default 1
+# = "this repo has CodeRabbit", which is what every pre-1125 case assumed. It is
+# set rather than left to the probe on purpose: the probe reads the checkout's
+# repo-local `git config himmel.coderabbit` (NOT the committed .coderabbit.yaml
+# — rejected as a signal, see cr-available.sh), so an un-pinned suite would
+# silently flip the meaning of ~30 cases with the arming state of whichever
+# clone the tests happen to run from.
+# CR_APP_OVERRIDE=0 = the adopter WITHOUT CodeRabbit (cases 35+).
+CR_APP_OVERRIDE=1
 # run <mode> [args...]
 run() {
     local mode="$1"; shift
@@ -338,13 +387,14 @@ run() {
         CR_ESCALATE_WAIT="$ESCALATE_WAIT_OVERRIDE" \
         CR_ESCALATE_POLL="$ESCALATE_POLL_OVERRIDE" \
         CR_PROFILE="$CR_PROFILE_OVERRIDE" \
+        CR_APP="$CR_APP_OVERRIDE" \
         bash "$SCRIPT" "$@" >"$of" 2>"$ef"
     RC=$?
     OUT=$(cat "$of"); ERR=$(cat "$ef")
     rm -f "$of" "$ef"
     SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
     ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0
-    CR_PROFILE_OVERRIDE=""
+    CR_PROFILE_OVERRIDE=""; CR_APP_OVERRIDE=1
 }
 
 assert_rc()      { if [ "$RC" -eq "$1" ]; then pass "$2"; else fail "$2" "rc=$RC want $1"; fi; }
@@ -607,6 +657,106 @@ run cr-paged
 assert_rc 2 "34 full status page without CodeRabbit rc 2"
 assert_err_has "more commit statuses than one API page" "34 page-limit reason"
 
+# 34b/34c — HIMMEL-1317: a SKIPPED review is not a clean one. With automatic
+# reviews disabled CodeRabbit posts state=success on every untriggered PR and
+# puts the refusal in .description alone, so reading only .state certified exit 0
+# on a PR nobody had reviewed (reproduced on PR #1429, 2026-07-27) — and
+# merge-on-green, which gates solely on check-ci:0, would have squash-merged it.
+# The pair is deliberate: 34b proves the skip BLOCKS, 34c proves an ordinary
+# review still PASSES, so the fix cannot be satisfied by breaking `success`.
+run cr-skipped
+assert_rc 2 "34b skipped CodeRabbit review is not certifiable"
+assert_err_has "SKIPPED the review" "34b skip reason surfaced"
+assert_err_has "@coderabbitai review" "34b skip names the remedy"
+
+run cr-completed
+assert_rc 0 "34c a genuinely completed review still certifies"
+
+# 34d — glm-1: the skip match must be UNAMBIGUOUS. A completed review worded
+# "No review changes requested" contains skip-ish words; the first cut of the
+# regex matched it and would have blocked a clean merge. The two error
+# directions are not symmetric — a false negative restores the old behaviour,
+# a false positive is an outage nobody can clear by re-running.
+run cr-nearmiss
+assert_rc 0 "34d skip-ish wording on a COMPLETED review does not block"
+
+# 34e/34f — HIMMEL-1354, the SECOND drift of the 34b class. HIMMEL-1317 closed
+# the "automatic reviews are disabled" wording with a DENY-LIST of known-bad
+# descriptions. On 2026-07-28 CodeRabbit declined for RATE LIMITING and said so
+# in a wording that matched none of those alternatives, so it classified as a
+# clean success: `gh pr checks` bucketed it `pass` and check-ci printed
+# "all checks green" + "verdict exit=0" on PR #1456 @ 46358386 — a head whose
+# own cr-body-findings line, printed one line earlier, said there was NO
+# CodeRabbit review. A missed skip does not "degrade to yesterday": it certifies
+# unreviewed code as merge-ready.
+#
+# 34e pins that exact payload. 34f is the structural half and matters more: it
+# asserts the behaviour on a wording NOBODY enumerated. A deny-list is silent on
+# the unknown case by construction and passes it as clean; the allow-list fails
+# it closed. Without 34f this fix would be one more entry in a list that leaks
+# again the next time CodeRabbit invents a phrase.
+# Pin the DEFAULT allow/deny lists for 34e/34f. Both assert cr-signal.sh's
+# built-in fail-closed behaviour, so an ambient CR_OK_DESC_RE / CR_SKIP_DESC_RE
+# in the operator's shell must not leak in and decide the result — a
+# permissive inherited value would let these pass without exercising the
+# default at all. (CR review of this branch, 2026-07-28.)
+unset CR_OK_DESC_RE CR_SKIP_DESC_RE
+
+run cr-ratelimited
+assert_rc 2 "34e rate-limited CodeRabbit review is not certifiable"
+assert_err_has "SKIPPED the review" "34e rate-limit reason surfaced"
+assert_err_has "RATE LIMITED" "34e names rate limiting as a known cause"
+
+run cr-unknownword
+assert_rc 2 "34f an UNENUMERATED success wording fails closed, not open"
+assert_err_has "does not say the review completed" "34f allow-list reason surfaced"
+
+# 34g — the escape hatch that makes the allow-list safe to ship. If CodeRabbit
+# renames its success description, every PR blocks at once; the operator must be
+# able to clear that without a code change. Widening CR_OK_DESC_RE re-certifies
+# the otherwise-unknown wording from 34f.
+# Set + export explicitly rather than `VAR=x run ...`: `run` is a shell
+# function, and a prefix assignment on a function has version-dependent
+# persistence in bash. cr-signal.sh reads CR_OK_DESC_RE at SOURCE time in the
+# child, so it must be exported before the child starts.
+export CR_OK_DESC_RE='review completed|review deferred for reasons'
+run cr-unknownword
+assert_rc 0 "34g CR_OK_DESC_RE widens the allow-list without a code change"
+unset CR_OK_DESC_RE
+
+# 34h — CR follow-up (HIMMEL-1354 R2): the allow-list is consumed via jq's
+# test(), which is an UNANCHORED search, not a full-string match. A future
+# decline wording that merely CONTAINS an allow-listed phrase — e.g. "No
+# review completed" contains "review completed" — would substring-match the
+# allow-list and read as a clean success, reopening the exact hole this file
+# exists to close. Pins that the built-in DEFAULT is anchored (^...$) so only
+# an exact allow-listed description passes; CR_OK_DESC_RE (34g) stays a
+# free-form operator override, unaffected by anchoring the default.
+unset CR_OK_DESC_RE CR_SKIP_DESC_RE
+run cr-substrmatch
+assert_rc 2 "34h a description merely CONTAINING an allow-listed phrase fails closed"
+assert_err_has "SKIPPED the review" "34h substring-match reason surfaced"
+assert_err_has "does not say the review completed" "34h allow-list reason surfaced"
+
+# 34i — codex adversarial follow-up (HIMMEL-1354 R2): anchoring only the
+# built-in DEFAULT (34h) left the escape hatch itself unanchored, and
+# CR_OK_DESC_RE REPLACES the default's regex verbatim — so an operator who
+# widens the allow-list during an outage using the OLD documented recipe
+# (no anchors) re-admits the exact substring hole 34h just closed, on the
+# recovery path most likely to be exercised during that same drift. The
+# documented recipe (scripts/lib/cr-signal.sh's OUTAGE ESCAPE HATCH block,
+# scripts/check-ci.sh's skipped-arm operator message) is fixed here to carry
+# its own ^(...)$ anchors; CR_OK_DESC_RE stays unanchored IN CODE — forcing
+# an anchor there would break 34g's already-shipped loose partial-phrase
+# widening (a bare keyword matching an unenumerated FULL sentence), so the
+# anchors live in the recipe operators copy, not in code. Pins that following
+# the CURRENT documented recipe verbatim still fails closed on a description
+# that merely contains an allow-listed phrase.
+export CR_OK_DESC_RE='^(review completed|no review changes requested|review finished)$'
+run cr-substrmatch
+assert_rc 2 "34i the anchored documented recipe still fails closed on a substring match"
+unset CR_OK_DESC_RE
+
 # 33 — an unresolved thread landing DURING the watch (head SHA unmoved) is
 # caught by the post-watch review-state re-verification, not certified from
 # the stale pre-watch snapshot (codex-adv 980-r2).
@@ -792,7 +942,56 @@ run body-a2-escalate --escalate
 assert_rc 0 "52 leading-zero wait 007 still evaluates"
 assert_err_has "waiting up to 7s" "52 wait 007 normalized to decimal 7 (not octal)"
 
+# ── HIMMEL-1125: the availability gate ────────────────────────────────────────
+# CR_APP=0 stubs "CodeRabbit is not configured for this repo" (no CLI, no App),
+# which is the acceptance criterion's adopter. The contract these cases pin:
+# the CodeRabbit-SPECIFIC requirement disarms; every generic gate stays armed.
+
+# 53 — THE adopter case. No CodeRabbit, so no CodeRabbit status will EVER exist
+# on any head. Pre-1125 this exited 2 on every merge, forever, unless the
+# adopter discovered CR_PROFILE=none. Now it is simply green.
+CR_APP_OVERRIDE=0
+run cr-absent
+assert_rc 0 "53 adopter without CodeRabbit: absent status is not a blocker"
+
+# 54 — the deviation from the ticket's literal step 1, pinned deliberately.
+# The ticket asked to skip "the thread gate" when CodeRabbit is absent. But
+# review_state_gate is NOT a CodeRabbit gate — it blocks on ANY reviewer's
+# unresolved thread, humans included. Skipping it would DELETE a live block for
+# every adopter who uses human reviewers, contradicting the same ticket's
+# "identical behaviour to today". So it stays armed with CodeRabbit absent.
+CR_APP_OVERRIDE=0
+THREADS_OVERRIDE=2
+run register-then-green
+assert_rc 3 "54 without CodeRabbit, unresolved HUMAN threads still block"
+
+# 55 — fail-closed survives the disarm: "cannot evaluate" is never "clean", and
+# that rule is not CodeRabbit's to own. An adopter gets it too.
+CR_APP_OVERRIDE=0
+THREADS_OVERRIDE=fail
+run register-then-green
+assert_rc 2 "55 without CodeRabbit, an unreadable thread state still blocks (fail-closed)"
+
+# 56 — /pr-check step 4.8's path (--threads-only) is unaffected by the disarm.
+CR_APP_OVERRIDE=0
+THREADS_OVERRIDE=2
+run red --threads-only
+assert_rc 3 "56 without CodeRabbit, --threads-only still blocks on unresolved threads"
+
+# 57 — "an adopter must not notice it exists". A disarmed gate must not narrate
+# itself: no CodeRabbit word anywhere in the output of a clean adopter run.
+CR_APP_OVERRIDE=0
+run cr-absent
+# Assert the run SUCCEEDED before reading its silence (coderabbit-6): a failing
+# run that happens not to say "CodeRabbit" would otherwise pass this case.
+assert_rc 0 "57 adopter clean run succeeds"
+if printf '%s%s' "$OUT" "$ERR" | grep -i "coderabbit" >/dev/null; then
+    fail "57 disarmed gate is silent about CodeRabbit" "output mentioned CodeRabbit: $ERR"
+else
+    pass "57 disarmed gate is silent about CodeRabbit"
+fi
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 53 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 53"; exit 1; fi
+if [ "$COUNT" -ne 66 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 66"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

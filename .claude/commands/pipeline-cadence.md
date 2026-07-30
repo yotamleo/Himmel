@@ -1,6 +1,6 @@
 ---
-description: Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, daily /synthesize-clips + /archive-clips, weekly /obsidian-health) via schtasks (Windows) or cron (POSIX), interactive-claude shaped with per-leg --model pins. Dedup-guarded. HIMMEL-255/265/357/506.
-argument-hint: arm|status|disarm [--harvest-time HH:MM] [--synth-time HH:MM] [--health-day DAY] [--health-time HH:MM] [--harvest-model M] [--synth-model M] [--health-model M] [--vault PATH] [--force] [--dry-run]
+description: Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, daily /synthesize-clips + /archive-clips, daily vault-lint) via schtasks (Windows) or cron (POSIX), interactive-claude shaped with per-leg --model pins. Dedup-guarded. HIMMEL-255/265/357/506/1383/1386.
+argument-hint: arm|status|disarm [--harvest-time HH:MM] [--synth-time HH:MM] [--health-time HH:MM] [--harvest-model M] [--synth-model M] [--health-model M] [--vault PATH] [--force] [--dry-run]
 ---
 
 Register the luna clip-pipeline's recurring maintenance runs with the OS
@@ -18,7 +18,7 @@ via flags):
 |---|---|---|---|
 | `HIMMEL-Pipeline-Harvest` | daily 02:00 | sonnet | `/harvest-clips`, then `/triage-clips` chained in the same session |
 | `HIMMEL-Pipeline-Synthesize` | daily 03:00 | sonnet | `/synthesize-clips`, then `/archive-clips` chained in the same session |
-| `HIMMEL-Pipeline-Health` | weekly Sun 04:00 | haiku | `/obsidian-health` |
+| `HIMMEL-Pipeline-Health` | daily 04:00 | haiku | `obsidian-triage:vault-lint` (HIMMEL-1386; `/obsidian-health` stays available for manual use) |
 
 Each leg launches with an explicit cheap **`--model` pin** (HIMMEL-506) so the
 cadence never inherits the operator's saved default (the scarcest tier) — the
@@ -26,7 +26,8 @@ cheap pins are what make the higher frequencies affordable. **Daily**
 harvest+triage is cheap and idempotent so it keeps the `Clippings/` inbox
 flowing; **daily** synthesize+archive runs every night (synthesis is cheap
 enough once model-pinned, so cross-clip themes surface without a week's lag);
-**weekly** health is the periodic vault check.
+**daily** health is the nightly vault check (HIMMEL-1383 — weekly meant vault
+drift was only visible once a week, and the haiku pin makes nightly cheap).
 
 Each task launches a **bounded interactive** claude session in the luna
 vault — `claude --model <pin> --settings <fragment> "<prompt>" < NUL` on
@@ -89,7 +90,7 @@ bash scripts/luna/pipeline-cadence.sh $ARGUMENTS
 Common invocations:
 - `/pipeline-cadence status`
 - `/pipeline-cadence arm`
-- `/pipeline-cadence arm --harvest-time 01:30 --synth-time 02:30 --health-day MON --force`
+- `/pipeline-cadence arm --harvest-time 01:30 --synth-time 02:30 --health-time 04:30 --force`
 - `/pipeline-cadence arm --dry-run`
 - `/pipeline-cadence disarm`
 

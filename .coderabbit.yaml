@@ -11,10 +11,19 @@
 #     (CR-marker hook); a bot "request changes" state adds a second,
 #     unenforced gate on a repo merged via --admin.
 #   - auto_review off (HIMMEL-1252): the App reviews ONLY on an explicit
-#     `@coderabbitai review` comment, not on every push. himmel's PRIMARY CR
-#     gate is the CLI lane (/pr-check step 3.2, coderabbit-review.sh), which is
-#     independent of the App and unaffected by this flag; the per-push App
-#     auto-review was a duplicative signal burning the shared CR rate limit.
+#     `@coderabbitai review` comment, not on every push — a per-push
+#     auto-review would burn the shared CR rate limit on every commit,
+#     including WIP ones. That comment is posted STRUCTURALLY, not left to
+#     agent discretion: scripts/hooks/trigger-cr-on-pr-create.sh (HIMMEL-1362)
+#     fires it automatically on every `gh pr create`, so the App is the
+#     PRIMARY CodeRabbit reviewer — one review per PR, at PR-ready time — on
+#     BOTH repos, with GitHub Actions off on the private repo by design
+#     (HIMMEL-1305) ruling out a CI-native trigger there. The local CLI lane
+#     (/pr-check step 3.2, coderabbit-review.sh) is a SECOND, optional pass on
+#     the same account — opt-out via CODERABBIT_CLI_DISABLE=1 in .env, and its
+#     Windows/WSL fallback is opt-in-only via CODERABBIT_ALLOW_WSL (HIMMEL-1339;
+#     probing wsl.exe to find the CLI is what boots the whole distro, so that
+#     lane is off by default rather than paying that cost unasked).
 #     Consequence: CodeRabbit is no longer a merge gate — it was also dropped
 #     from the public repo's branch-protection required checks (it would
 #     otherwise be an unsatisfiable required context with auto-review off).

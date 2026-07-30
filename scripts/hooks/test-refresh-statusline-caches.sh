@@ -294,6 +294,72 @@ else
     fi
 fi
 
+# ── Case 3.5: own-or-lose reap (HIMMEL-1327) ────────────────────────────────
+# The stale-lock reap must be OWN-OR-LOSE: only the refresher whose rename wins
+# removes anything, and it removes its OWN private `.dead.$$` copy — never
+# another owner's live lock. Before this the reap shared its target (`rm -rf
+# "$lock"`) with every concurrent refresher, so two that both classified the same
+# lock stale could both delete it (and one could delete the other's freshly-
+# acquired LIVE lock). Three assertions:
+#   (a) runtime  — a stale lock is reaped through the hook and leaves NO orphaned
+#                  `.dead.*` sibling (the rename-first reap removed its copy);
+#   (b) unit     — the rename is own-or-lose: of two concurrent reapers of the
+#                  same lock, exactly one wins;
+#   (c) static   — the hook reaps via the private rename (regression guard).
+
+# (a) Stale lock (dead owner) reaped end-to-end, no `.dead.*` orphan left behind.
+ECON_OL="$TMP/econ-ol"; mkdir -p "$ECON_OL"
+LOCK_OL="$ECON_OL/cache-all-stats-index.json.lock"; mkdir -p "$LOCK_OL"
+( exit 0 ) & dead_pid=$!; wait "$dead_pid" 2>/dev/null
+printf '%s\n' "$dead_pid" > "$LOCK_OL/owner.pid"
+if kill -0 "$dead_pid" 2>/dev/null; then
+    echo "SKIP own-or-lose reap -> reaped pid $dead_pid is somehow still alive (pid reuse)"
+else
+    run_hook_econ "$ECON_OL"
+    if [ -f "$ECON_OL/cache-all-stats.json" ]; then
+        pass "own-or-lose reap -> stale lock reaped, refresh ran"
+    else
+        fail "own-or-lose reap -> stale lock not reaped, refresh never ran"
+    fi
+    if [ -z "$(find "$ECON_OL" -name '*.dead.*' 2>/dev/null)" ]; then
+        pass "own-or-lose reap -> no orphaned .dead.* reaped-lock sibling left"
+    else
+        fail "own-or-lose reap -> orphaned .dead.* left behind ($(find "$ECON_OL" -name '*.dead.*'))"
+    fi
+fi
+
+# (b) The rename the reap relies on is own-or-lose: two concurrent `mv` reaps of
+# the SAME lock dir → exactly one wins (rename is atomic on one volume; the
+# loser's source is already gone). This is what stops two refreshers both
+# deleting the same stale lock.
+OL2="$TMP/econ-ol2"; mkdir -p "$OL2"; mkdir -p "$OL2/ol.lock"
+rm -f "$OL2/a" "$OL2/b"
+( mv "$OL2/ol.lock" "$OL2/ol.lock.dead.a" 2>/dev/null && : >"$OL2/a" ) &
+( mv "$OL2/ol.lock" "$OL2/ol.lock.dead.b" 2>/dev/null && : >"$OL2/b" ) &
+wait
+_wins=0
+[ -f "$OL2/a" ] && _wins=$((_wins + 1))
+[ -f "$OL2/b" ] && _wins=$((_wins + 1))
+if [ "$_wins" -eq 1 ]; then
+    pass "own-or-lose reap -> exactly one of two concurrent reapers wins the rename"
+else
+    fail "own-or-lose reap -> $_wins of two reapers won the rename (expected exactly 1)"
+fi
+rm -rf "$OL2/ol.lock.dead.a" "$OL2/ol.lock.dead.b"
+
+# (c) Static guard: the hook reaps via a private `.dead.$$` rename, not a shared
+# `rm -rf "$lock"` on the reap path.
+# shellcheck disable=SC2016  # single quotes are required: this is a LITERAL
+# source-text pattern to find inside $HOOK, not an expression to expand here.
+if grep -qF 'mv "$lock" "$lock.dead.$$"' "$HOOK"; then
+    # Single-quoted: `.dead.$$` is the literal source pattern being asserted on,
+    # not this test's own pid. Double quotes printed `.dead.4271`, which reads as
+    # a different claim than the FAIL branch right below it.
+    pass 'own-or-lose reap -> hook reaps via a private .dead.$$ rename'
+else
+    fail "own-or-lose reap -> hook does not reap via a private rename (regression?)"
+fi
+
 # ── Case 4: static no-spawn — the hook itself carries no detached-fork pattern
 strip_comments() { sed -E 's/^[[:space:]]*#.*//; s/([[:space:]])#.*/\1/' "$1"; }
 if [ -z "$(strip_comments "$HOOK" | grep -nE '&[[:space:]]*disown|\([^)]*&[[:space:]]*\)|[^&>|]&[[:space:]]*$' || true)" ]; then

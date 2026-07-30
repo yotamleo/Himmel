@@ -14,6 +14,11 @@
 # (§Decisions render-native-map — CUSTOM set):
 #   1. where-are-we  : ⎇ <KEY>[ 📋][ <ledger-status>][ · <EPIC> <done>/<total>]
 #   2. session econ  : session  r:<r>  w:<w>  hit:<h>%  net <±>$<n>
+#                      (HIMMEL-797: renders `session~ r:? w:? hit:?% net ?`
+#                      when the transcript is missing or its per-render parse
+#                      couldn't complete — see read_session_cache_stats. A
+#                      silent zero there is indistinguishable from a session
+#                      that genuinely has no usage yet.)
 #   3. all-sessions  : <all[~]|week|month>  r:<r>  w:<w>  hit:<h>%  net <±>$<n>
 #                      (the `~` is the HIMMEL-1300 healing marker — see §3.5)
 #   4. token volume  : total  cache:<read+creation>  used:<in+read+creation+out>
@@ -85,10 +90,14 @@ format_usd() {
         else                      printf "%.4f", n;
     }'
 }
-# Sets read_savings_rate and write_overhead_rate (USD per token, float).
+# Sets read_savings_rate and write_overhead_rate (USD per token, float) and
+# model_rate_known (1 = an explicit rate card matched; 0 = the *) fallback,
+# priced at Sonnet rates as a guess). The 0 flags the guess so a `?` is shown
+# on the net (HIMMEL-1316) instead of the operator reading a guess as a fact.
 get_model_savings_rate() {
     local model_id="${1:-claude-sonnet}"
     local input_price cache_read_price cache_write_price
+    model_rate_known=1
     case "$model_id" in
         claude-fable*)  input_price=10.00; cache_read_price=1.00;  cache_write_price=20.00 ;;
         claude-mythos*) input_price=10.00; cache_read_price=1.00;  cache_write_price=20.00 ;;
@@ -97,7 +106,7 @@ get_model_savings_rate() {
         claude-sonnet*) input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ;;
         glm-*)          input_price=1.40;  cache_read_price=0.26;  cache_write_price=1.40  ;;
         gpt-5*)         input_price=5.00;  cache_read_price=0.50;  cache_write_price=5.00  ;;
-        *)              input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ;;
+        *)              input_price=3.00;  cache_read_price=0.30;  cache_write_price=6.00  ; model_rate_known=0 ;;
     esac
     read_savings_rate=$(awk  -v i="$input_price" -v r="$cache_read_price"  'BEGIN{printf "%.8f",(i-r)/1000000}')
     write_overhead_rate=$(awk -v w="$cache_write_price" -v i="$input_price" 'BEGIN{printf "%.8f",(w-i)/1000000}')
@@ -160,17 +169,54 @@ def sum4:
     ([.[].i] | add // 0), ([.[].o] | add // 0) ];
 '
 # Reads session cache stats from transcript JSONL. Sets: sess_reads sess_writes
-# sess_inputs sess_outputs (last_5m/last_1h timestamps are the TTL lines'
-# concern — hud native promptCache — so we do NOT read them here).
+# sess_inputs sess_outputs sess_unknown (last_5m/last_1h timestamps are the TTL
+# lines' concern — hud native promptCache — so we do NOT read them here).
 # Deduped per _HUD_DEDUP_JQ; UNWINDOWED, so no timestamp filter.
+#
+# sess_unknown=1 means "could not be determined" (missing transcript, or the
+# jq parse below failed/timed out) — DISTINCT from a successful parse that
+# legitimately sums to zero (a brand-new session with no assistant turns yet).
+# The caller renders an explicit marker for the former; the latter still shows
+# real (zero) numbers, because they ARE real.
 read_session_cache_stats() {
     local transcript="$1"
-    sess_reads=0; sess_writes=0; sess_inputs=0; sess_outputs=0
-    [ -z "$transcript" ] || [ ! -f "$transcript" ] && return
-    local stats US=$'\037'
-    stats=$(jq -rs --arg sep "$US" "$_HUD_DEDUP_JQ"'
-        (dedup_usage | sum4) | map(tostring) | join($sep)' "$transcript" 2>/dev/null) || return
-    [ -n "$stats" ] || return
+    sess_reads=0; sess_writes=0; sess_inputs=0; sess_outputs=0; sess_unknown=0
+    if [ -z "$transcript" ] || [ ! -f "$transcript" ]; then
+        sess_unknown=1
+        return
+    fi
+    local stats US=$'\037' rc
+    # BOUNDED (HIMMEL-797): unlike the all-sessions index, this jq -rs slurps
+    # the WHOLE transcript fresh on EVERY render — there is no per-session
+    # cache. On a large/long-running transcript (tens of MB) that alone
+    # measured 6-30s+ on this machine, which blows past hud's OWN 3s render
+    # budget (custom-line-cmd.ts TIMEOUT_MS=3000 — discards ALL stdout on
+    # timeout, see file header). Left unbounded, one slow session silently
+    # blanked the ENTIRE render — including the all/total rows below, which
+    # read a cheap pre-computed cache and have nothing to do with the slow
+    # parse. Bounding it here, well under hud's external budget, converts
+    # "everything vanishes" into "only the session row shows the unknown
+    # marker" — same timeout/gtimeout seam as seg_timeout/prod_timeout above.
+    local sess_timeout="${HIMMEL_SESSION_CACHE_TIMEOUT:-2}"
+    case "$sess_timeout" in ''|*[!0-9]*) sess_timeout=2 ;; esac
+    # CR #1474: GNU `timeout 0` DISABLES the limit — a 0 (or 00) here would
+    # silently reopen the unbounded-parse hole this seam exists to close.
+    [ "$sess_timeout" -gt 0 ] || sess_timeout=2
+    local sess_to=""
+    # CR #1474: validate with --version so a PATH that resolves `timeout` to
+    # Windows' native timeout.exe (no GNU semantics; errors on this shape) is
+    # never used as the seam — GNU coreutils passes, timeout.exe fails and we
+    # fall through to gtimeout/unbounded exactly like a missing binary.
+    if command -v timeout >/dev/null 2>&1 && timeout --version >/dev/null 2>&1; then sess_to="timeout $sess_timeout"
+    elif command -v gtimeout >/dev/null 2>&1; then sess_to="gtimeout $sess_timeout"; fi
+    # shellcheck disable=SC2086  # sess_to is the intentional "timeout N" seam word-split
+    stats=$($sess_to jq -rs --arg sep "$US" "$_HUD_DEDUP_JQ"'
+        (dedup_usage | sum4) | map(tostring) | join($sep)' "$transcript" 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$stats" ]; then
+        sess_unknown=1
+        return
+    fi
     IFS="$US" read -r sess_reads sess_writes sess_inputs sess_outputs <<EOF
 $stats
 EOF
@@ -183,7 +229,7 @@ EOF
 # $4=inputs. Uses the model rates already set by get_model_savings_rate.
 format_econ_line() {
     local label="$1" reads="$2" writes="$3" inputs="$4"
-    local r_fmt w_fmt hit denom net abs sign
+    local r_fmt w_fmt hit denom net abs sign qmark
     r_fmt=$(format_tokens "$reads")
     w_fmt=$(format_tokens "$writes")
     denom=$(( inputs + reads ))
@@ -192,9 +238,26 @@ format_econ_line() {
           'BEGIN{printf "%.4f", r*rs - w*wo}')
     abs=$(format_usd "$(awk -v n="$net" 'BEGIN{if(n<0)n=-n; printf "%.4f",n}')")
     if awk -v n="$net" 'BEGIN{exit !(n >= 0)}'; then sign="+"; else sign="-"; fi
+    # HIMMEL-1316: a trailing `?` after the net flags a model priced by the *)
+    # fallback (Sonnet rates as a guess). Recognised models render unchanged —
+    # model_rate_known defaults to 1, so qmark stays empty. Fail-safe default so
+    # an unset flag never spuriously marks a recognised model.
+    qmark=""
+    [ "${model_rate_known:-1}" -eq 0 ] && qmark="?"
     # Pad the label to 7 cols (= "session") so the r: columns of the session and
     # all-sessions rows align, matching the legacy bar's 9-col label gutter.
-    printf '%-7s  r:%s  w:%s  hit:%s%%  net %s$%s' "$label" "$r_fmt" "$w_fmt" "$hit" "$sign" "$abs"
+    printf '%-7s  r:%s  w:%s  hit:%s%%  net %s$%s%s' "$label" "$r_fmt" "$w_fmt" "$hit" "$sign" "$abs" "$qmark"
+}
+# HIMMEL-797: explicit-unknown counterpart to format_econ_line, for when a
+# row's own figures could not be determined (see read_session_cache_stats'
+# sess_unknown). Renders "?" placeholders rather than silently-zero numbers,
+# which are visually indistinguishable from a row that genuinely computed to
+# zero. Reuses the same 7-col label gutter; the caller passes a `~`-suffixed
+# label, the same "not fully known" marker the all-sessions row already uses
+# for its own pending state (§HIMMEL-1300 3.5).
+format_econ_unknown_line() {
+    local label="$1"
+    printf '%-7s  r:?  w:?  hit:?%%  net ?' "$label"
 }
 # Formats the token-volume row (plain text) for the ACTIVE all-sessions window.
 # Args: $1=reads $2=writes $3=inputs $4=outputs.
@@ -293,7 +356,11 @@ fi
 # ── Lines 2-3: session + all-sessions economics (cache/transcript reads only) ─
 get_model_savings_rate "$model_id"
 read_session_cache_stats "$transcript_path"
-append "$(format_econ_line "session" "$sess_reads" "$sess_writes" "$sess_inputs")"
+if [ "$sess_unknown" = "1" ]; then
+    append "$(format_econ_unknown_line "session~")"
+else
+    append "$(format_econ_line "session" "$sess_reads" "$sess_writes" "$sess_inputs")"
+fi
 
 # All-sessions: resolve the window for the active period, READ its pre-computed
 # cache (never rebuild — that's the hook's job), format the row.

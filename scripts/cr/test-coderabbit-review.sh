@@ -71,6 +71,7 @@ case "$err" in
     *) ok "T1 no availability line" ;;
 esac
 
+
 # --- T2: native lane success — real clone+fetch, stub review -----------------
 export STUB_LOG="$tmp/stub.log"
 : > "$STUB_LOG"
@@ -134,6 +135,9 @@ esac
 [ $? -eq 2 ] && ok "T5 whitespace branch rc=2" || bad "T5: whitespace branch not refused"
 
 # --- T6: wsl lane via CODERABBIT_WSL seam ------------------------------------
+# Requires CODERABBIT_ALLOW_WSL=1 (HIMMEL-1339 — the wsl lane is opt-in by
+# default so the probe itself never boots WSL unasked; see T14/T15 below for
+# the default-off behaviour this test's explicit opt-in bypasses).
 # Fake wsl: drops the -e flag and execs the rest under a PATH that carries the
 # coderabbit stub + a passthrough wslpath (so a C:/ src on a Windows test host
 # resolves; Git Bash git accepts C:/ paths directly).
@@ -157,6 +161,7 @@ mkdir -p "$fake_home"
 printf 'export PATH="%s:$PATH"\n' "$stubs" > "$fake_home/.bash_profile"
 : > "$STUB_LOG"
 out="$(cd "$repo" && HOME="$fake_home" CODERABBIT_BIN=coderabbit CODERABBIT_WSL="$tmp/fake-wsl" \
+    CODERABBIT_ALLOW_WSL=1 \
     PATH="$(dirname "$(command -v git)"):/usr/bin:/bin" \
     bash "$SCRIPT" --branch feat/x --base main 2>"$tmp/t6.err")"
 rc=$?
@@ -298,13 +303,13 @@ STUB_CONFIG_LOG="$tmp/stub-config.log"
 # --- T9: clean HTTPS origin is copied verbatim to the clone -------------------
 : > "$STUB_CONFIG_LOG"
 src_clean="$tmp/src-clean"
-make_src_repo "$src_clean" "https://github.com/yotamleo/himmel-private.git"
+make_src_repo "$src_clean" "https://github.com/example/repo.git"
 (cd "$src_clean" && CODERABBIT_BIN="$stubs/coderabbit" STUB_CONFIG_LOG="$STUB_CONFIG_LOG" \
     bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t9.err")
 rc=$?
 [ "$rc" -eq 0 ] && ok "T9 rc=0 with clean upstream origin" || bad "T9: rc=$rc (want 0; err: $(cat "$tmp/t9.err"))"
 clone_url="$(config_origin_url "$STUB_CONFIG_LOG")"
-[ "$clone_url" = "https://github.com/yotamleo/himmel-private.git" ] \
+[ "$clone_url" = "https://github.com/example/repo.git" ] \
     && ok "T9 clone origin rewritten to the upstream URL" \
     || bad "T9: clone origin not the upstream URL (got: $clone_url)"
 
@@ -333,13 +338,13 @@ esac
 # AND that the secret is absent from the WHOLE config dump.
 : > "$STUB_CONFIG_LOG"
 src_cred="$tmp/src-cred"
-make_src_repo "$src_cred" "https://yotamleo:ghp_TOKENSECRET@github.com/yotamleo/himmel-private.git"
+make_src_repo "$src_cred" "https://exampleuser:ghp_TOKENSECRET@github.com/example/repo.git"
 (cd "$src_cred" && CODERABBIT_BIN="$stubs/coderabbit" STUB_CONFIG_LOG="$STUB_CONFIG_LOG" \
     bash "$SCRIPT" --branch feat/x --base main >/dev/null 2>"$tmp/t11.err")
 rc=$?
 [ "$rc" -eq 0 ] && ok "T11 rc=0 with credentialed origin" || bad "T11: rc=$rc (want 0; err: $(cat "$tmp/t11.err"))"
 clone_url="$(config_origin_url "$STUB_CONFIG_LOG")"
-[ "$clone_url" = "https://github.com/yotamleo/himmel-private.git" ] \
+[ "$clone_url" = "https://github.com/example/repo.git" ] \
     && ok "T11 clone origin stripped to bare HTTPS" \
     || bad "T11: clone origin not stripped to bare HTTPS (got: $clone_url)"
 if grep -q 'TOKENSECRET' "$STUB_CONFIG_LOG"; then
@@ -354,7 +359,7 @@ fi
 # distro, which is the cost this switch exists to avoid. A wsl stub that logs
 # every invocation proves the probe never ran.
 src_dis="$tmp/src-disable"
-make_src_repo "$src_dis" "https://github.com/yotamleo/himmel-private.git"
+make_src_repo "$src_dis" "https://github.com/example/repo.git"
 WSL_CALL_LOG="$tmp/wsl-calls.log"
 : > "$WSL_CALL_LOG"
 cat > "$stubs/wsl-probe-spy" <<EOF
@@ -408,6 +413,42 @@ rc=$?
     && ok "T13d unset live value lets .env=1 disable the CLI (bridge works)" \
     || bad "T13d: rc=$rc (want 3; err: $(cat "$tmp/t13d.err"))"
 rm -f "$src_dis/.env"
+
+# --- T14/T15 (HIMMEL-1339): the WSL lane is opt-IN, not opt-out -------------
+# T14: no native binary, wsl.exe present, CODERABBIT_ALLOW_WSL explicitly
+# empty — set-but-empty both skips the script's .env bridge and fails its =1
+# check, so the test is isolated from an inherited opt-in or a checkout .env.
+# The lane probe (which would boot the distro) must never run, and the skip
+# note must name the opt-in. Reuses T13's wsl-probe-spy stub to prove no
+# invocation.
+: > "$WSL_CALL_LOG"
+out="$(cd "$repo" && CODERABBIT_BIN="$tmp/nonexistent-bin" \
+    CODERABBIT_WSL="$stubs/wsl-probe-spy" \
+    CODERABBIT_ALLOW_WSL='' \
+    bash "$SCRIPT" --branch feat/x --base main >"$tmp/t14.out" 2>"$tmp/t14.err")"
+rc=$?
+[ "$rc" -eq 3 ] && ok "T14 rc=3 when WSL lane not opted in" || bad "T14: rc=$rc (want 3)"
+grep -q 'CODERABBIT_ALLOW_WSL=1' "$tmp/t14.err" \
+    && ok "T14 skip note names the opt-in" \
+    || bad "T14: skip note does not name CODERABBIT_ALLOW_WSL (got: $(cat "$tmp/t14.err"))"
+[ -s "$WSL_CALL_LOG" ] \
+    && bad "T14: WSL probe ran despite no opt-in (would boot WSL): $(cat "$WSL_CALL_LOG")" \
+    || ok "T14 WSL probe never ran (WSL not booted)"
+
+# T15: CODERABBIT_ALLOW_WSL=1 (live env) lets the wsl lane run — control,
+# proving T14 failed because of the missing opt-in, not a broken wsl lane.
+: > "$STUB_LOG"
+out="$(cd "$repo" && HOME="$fake_home" CODERABBIT_BIN=coderabbit CODERABBIT_WSL="$tmp/fake-wsl" \
+    CODERABBIT_ALLOW_WSL=1 \
+    PATH="$(dirname "$(command -v git)"):/usr/bin:/bin" \
+    bash "$SCRIPT" --branch feat/x --base main 2>"$tmp/t15.err")"
+rc=$?
+[ "$rc" -eq 0 ] && ok "T15 CODERABBIT_ALLOW_WSL=1 lets the wsl lane run" \
+    || bad "T15: rc=$rc (want 0; err: $(cat "$tmp/t15.err"))"
+case "$out" in
+    *saw-branch-marker*) ok "T15 wsl lane reached the review" ;;
+    *) bad "T15: wsl lane did not run (got: $out)" ;;
+esac
 
 echo
 if [ "$fail" -eq 0 ]; then

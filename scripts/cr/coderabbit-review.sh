@@ -9,9 +9,16 @@
 # never blocks the gate - the caller degrades to the remaining critics.
 #
 # Invocation lanes (resolved in order):
-#   1. native - `coderabbit` on PATH (Linux/macOS).
-#   2. wsl    - Windows host with the CLI installed inside WSL (the supported
-#               install on Windows). wsl.exe is probed for the binary.
+#   1. native - `coderabbit` on PATH (Linux/macOS, or any host with a native
+#               install). Always available when present - never gated.
+#   2. wsl    - Windows host with the CLI installed inside WSL. OPT-IN via
+#               CODERABBIT_ALLOW_WSL=1 (HIMMEL-1339) - probing wsl.exe is what
+#               BOOTS the whole distro (and dockerd/containerd/ollama with it,
+#               HIMMEL-1314) just to answer "is the CLI here?", so this lane is
+#               skipped by default rather than paying that cost on every run.
+#               The CodeRabbit APP is the default/primary reviewer on Windows
+#               (structural PR-create trigger, HIMMEL-1362); this lane is for
+#               an operator who deliberately wants the local CLI pass too.
 #   Neither -> exit 3 with a one-line skip note (caller prints it and moves on).
 #
 # Both lanes review a TEMP CLONE of the primary checkout, not the live tree:
@@ -35,6 +42,12 @@
 #          the cost this switch exists to avoid. Only "1" activates; any other
 #          value (including "0") leaves the CLI enabled, matching the
 #          HIMMEL_HEADROOM_PROXY convention.
+#      CODERABBIT_ALLOW_WSL - operator opt-IN (HIMMEL-1339). The wsl lane is
+#          skipped by default (exit 3, same skip contract as CLI_DISABLE)
+#          because PROBING wsl.exe for the binary is what boots the distro -
+#          the cost was already paid just to find out the CLI isn't wanted.
+#          Set to exactly "1" to allow this lane. Same set-ness/live-env-wins
+#          bridge convention as CODERABBIT_CLI_DISABLE.
 #      CODERABBIT_TIMEOUT_SECS - wall-clock cap for the review call inside the
 #          clone; clone/fetch use one quarter (default 900).
 #      CODERABBIT_BIN - test seam: overrides the binary probed/invoked.
@@ -127,6 +140,22 @@ if [ "${CODERABBIT_CLI_DISABLE:-}" = "1" ]; then
     exit 3
 fi
 
+# WSL lane opt-IN (HIMMEL-1339). Default OFF: unlike CODERABBIT_CLI_DISABLE
+# (an opt-OUT of the whole CLI leg), this narrows just the wsl.exe fallback —
+# a native install (macOS/Linux, or any future native Windows binary) is
+# NEVER gated by this and reaches LANE="native" below regardless. It exists
+# because on a Windows host with no native binary, the wsl.exe PROBE ITSELF
+# boots the distro (dockerd/containerd/ollama autostart alongside it,
+# HIMMEL-1314 measured vmmemWSL at 3.45GB) — so leaving the fallback
+# opt-out (rather than opt-in) still pays that cost on every /pr-check run
+# unless CODERABBIT_CLI_DISABLE is ALSO set. Same bridge/set-ness convention
+# as CODERABBIT_CLI_DISABLE just above.
+if [ -z "${CODERABBIT_ALLOW_WSL+x}" ] && [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/load-dotenv.sh"
+    load_dotenv CODERABBIT_ALLOW_WSL 2>/dev/null || true
+fi
+
 # Timeout validation (same convention as critic-panel.sh).
 CODERABBIT_TIMEOUT_SECS="${CODERABBIT_TIMEOUT_SECS:-900}"
 if expr "$CODERABBIT_TIMEOUT_SECS" : '^[0-9][0-9]*$' > /dev/null 2>&1 && [ "$CODERABBIT_TIMEOUT_SECS" -gt 0 ]; then
@@ -148,11 +177,14 @@ case "$CR_BIN" in
     *[!A-Za-z0-9._/-]*) echo "coderabbit-review: CODERABBIT_BIN contains unsupported characters" >&2; exit 2 ;;
 esac
 
-# Lane resolution: native binary first, then WSL probe (Windows).
+# Lane resolution: native binary first, then WSL probe (Windows) — the WSL
+# probe itself is gated on CODERABBIT_ALLOW_WSL=1 (HIMMEL-1339): probing
+# wsl.exe is what boots the distro, so an unset/non-"1" value skips straight
+# to the "neither" skip below rather than paying that cost by default.
 LANE=""
 if command -v "$CR_BIN" >/dev/null 2>&1; then
     LANE="native"
-elif command -v "$WSL_BIN" >/dev/null 2>&1; then
+elif [ "${CODERABBIT_ALLOW_WSL:-}" = "1" ] && command -v "$WSL_BIN" >/dev/null 2>&1; then
     probe_rc=0
     if command -v timeout >/dev/null 2>&1; then
         timeout -k 5 30 "$WSL_BIN" -e bash -lc "command -v $CR_BIN" >/dev/null 2>&1 || probe_rc=$?
@@ -172,7 +204,11 @@ elif command -v "$WSL_BIN" >/dev/null 2>&1; then
     fi
 fi
 if [ -z "$LANE" ]; then
-    echo "coderabbit pass skipped (coderabbit CLI not found on PATH or in WSL)" >&2
+    if [ "${CODERABBIT_ALLOW_WSL:-}" != "1" ] && command -v "$WSL_BIN" >/dev/null 2>&1; then
+        echo "coderabbit pass skipped (no native CLI; WSL lane available but not enabled — set CODERABBIT_ALLOW_WSL=1 to allow booting WSL for it, or leave it off and rely on the CodeRabbit App, HIMMEL-1339)" >&2
+    else
+        echo "coderabbit pass skipped (coderabbit CLI not found on PATH or in WSL)" >&2
+    fi
     exit 3
 fi
 

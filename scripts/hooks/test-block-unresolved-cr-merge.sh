@@ -7,6 +7,19 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
 
+# The repo the hook runs IN (HIMMEL-1125). CodeRabbit availability is now a
+# repo-scoped, non-versioned git config, and cr_merge_gate only answers for the
+# repo it stands in. The fixtures all resolve to PR o/r#42, so the cwd must BE
+# o/r and must be armed — otherwise the gate short-circuits to "allow" and every
+# block-case below would pass vacuously. Pinned explicitly so the suite cannot
+# change meaning with the ambient checkout's config. $HOOK is absolute, so the
+# cd is safe.
+mkdir -p "$TMP/repo"
+git -C "$TMP/repo" init --quiet >/dev/null 2>&1
+git -C "$TMP/repo" remote add origin https://github.com/o/r.git
+git -C "$TMP/repo" config --local himmel.coderabbit true
+cd "$TMP/repo" || { echo "FATAL: cannot cd to the test repo"; exit 1; }
+
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
