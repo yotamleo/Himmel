@@ -315,7 +315,11 @@ fi
 # `gh pr merge` is reached. Existing cases above stay green by design: their
 # stub returns non-JSON for the gate's pr-view (headRefOid branch, STUB_CR_BLOCK
 # unset), so cr_merge_gate degrades and fails open (plan-critic #4).
-if STUB_CR_BLOCK=1 \
+# CR_APP=1 (HIMMEL-1125/1470): cr_merge_gate is now a no-op unless CodeRabbit's
+# App is armed for the repo (git config himmel.coderabbit / CR_APP=1). This
+# fixture repo is never armed, so without this the gate would silently allow —
+# arm it here so the block this case exists to prove is actually exercised.
+if STUB_CR_BLOCK=1 CR_APP=1 \
     run_case "handover/x-slug" 5 "CR-gate block exits 5 before check"; then
     assert_log_lacks "pr merge" "CR-gate block does not attempt merge"
     assert_err_has    "CR gate" "CR-gate block reports CR gate on stderr"

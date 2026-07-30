@@ -352,17 +352,28 @@ grep -q '"gen":"K"' "$OUT6/graph.json" 2>/dev/null && pass "T6 promote completed
   || fail "T6 promote did not complete after the garbage-stamp takeover"
 
 # --- T7 (CR r1, pr-test-analyzer): the EXIT trap must release the lock on a
-# POST-acquire promote failure -- a pre-planted $OUT/.manifest.tmp DIRECTORY
-# makes the python manifest open() fail right after acquire; the run must
-# fail non-zero, leave NO lock behind, and an immediate re-run (blocker
-# removed) must succeed with no stale/takeover warning. ---
+# POST-acquire promote failure. The original blocker (a pre-planted
+# $OUT/.manifest.tmp DIRECTORY, making python's manifest open() fail) was
+# retired by HIMMEL-1134's stage-then-install refactor (30045a63): the
+# manifest is now built inside a per-run RANDOMIZED PROMOTE_STAGE dir
+# (.promote-stage.$$.$RANDOM), so a fixed-name .manifest.tmp blocker no
+# longer intercepts anything and the run quietly succeeds (rc=0), which is
+# the bug this suite caught. Target the current fixed-name write instead: a
+# pre-planted $OUT/manifest.json DIRECTORY makes the post-stage
+# stamp-invalidation `rm -f "$OUT_DIR/manifest.json"` fail (rm refuses to
+# remove a directory) under the script's `set -euo pipefail`, aborting
+# mid-promote -- well after lock acquire and the stage build, same
+# "post-acquire failure" shape the test exists to cover. The run must fail
+# non-zero, leave NO lock behind, and an immediate re-run (blocker removed)
+# must succeed with no stale/takeover warning. ---
 echo "T7: EXIT trap releases the lock on a post-acquire promote failure"
 CORPUS7="$WS/c7"; mkdir -p "$CORPUS7/notes"
 MAPS7="$WS/m7"; mkdir -p "$MAPS7"
 OUT7="$CORPUS7/graphify-out"
 printf '# l\ncontent l\n' > "$CORPUS7/notes/l.md"
 LBIN7="$WS/l7bin"; make_stub "$LBIN7" "L"
-mkdir -p "$OUT7/.manifest.tmp"   # a DIRECTORY at the tmp name -> python open() fails post-acquire
+mkdir -p "$OUT7/manifest.json"   # a DIRECTORY at the final manifest.json path -> the
+                                 # stamp-invalidation rm -f fails post-acquire
 out_l=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
   bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend deepseek \
   --maps-dir "$MAPS7" --title "Lock Map 7" --slug lock-map-7 --corpus-tag lock7 2>&1 ); rc_l=$?
@@ -370,7 +381,7 @@ out_l=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
   || fail "T7 planted promote failure should exit non-zero (got $rc_l): $out_l"
 [ -d "$OUT7/.promote.lock" ] && fail "T7 lock left behind after a post-acquire failure (EXIT trap did not release)" \
   || pass "T7 lock released by the EXIT trap after the post-acquire failure"
-rmdir "$OUT7/.manifest.tmp" 2>/dev/null || rm -rf "$OUT7/.manifest.tmp"
+rmdir "$OUT7/manifest.json" 2>/dev/null || rm -rf "$OUT7/manifest.json"
 out_l2=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
   bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend deepseek \
   --maps-dir "$MAPS7" --title "Lock Map 7" --slug lock-map-7 --corpus-tag lock7 2>&1 ); rc_l2=$?

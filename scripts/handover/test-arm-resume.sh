@@ -2563,10 +2563,20 @@ FIND2_HO="$(make_handover "$WORK_REPO")"
 out=$(TMPDIR="$TMP" SCHED_DB="$DB_F2" SCHED_DB_DIR="$DBD_F2" win_env "$FIND2" bash "$ARM" --time "$FUTURE_TIME" --handover "$FIND2_HO" 2>&1)
 rc=$?
 assert_rc "FIND2 first arm succeeds (rc=0)" 0 "$rc"
-if [ "$(count_slots "$DB_F2" "$DBD_F2")" = "1" ]; then
+# count_slots reads the CALLER's own $OSTYPE to pick which state location to
+# count (SCHED_DB file vs SCHED_DB_DIR job-* files) -- but win_env above only
+# forces OSTYPE=msys for the ARM SUBPROCESS, so arm-resume.sh took the
+# schtasks/Windows path (recording into $DB_F2) while an unforced count_slots
+# call, on a host whose real $OSTYPE isn't msys/cygwin/win32/MINGW (i.e. any
+# Linux CI runner), would read the POSIX at/atq side ($DBD_F2) instead --
+# always empty here -- and report 0 slots regardless of what actually got
+# armed. This test deliberately exercises the Windows/schtasks-overwrite
+# behavior on ANY host (that's the whole point of win_env), so count_slots
+# must be told the same forced perspective, not the real host OS.
+if [ "$(OSTYPE=msys count_slots "$DB_F2" "$DBD_F2")" = "1" ]; then
     echo "PASS FIND2 first arm registered (1 slot)"
 else
-    echo "FAIL FIND2 first arm did not register ($(count_slots "$DB_F2" "$DBD_F2") slots)"
+    echo "FAIL FIND2 first arm did not register ($(OSTYPE=msys count_slots "$DB_F2" "$DBD_F2") slots)"
     FAILED=$((FAILED+1))
 fi
 
@@ -2575,10 +2585,10 @@ rc=$?
 assert_rc "FIND2 same-identity --force whose verify rejects still refuses (rc=2)" 2 "$rc"
 assert_contains "FIND2 ERR names the mismatch" "120s tolerance" "$out"
 assert_contains "FIND2 previous arm was restored" "restored the previous arm" "$out"
-if [ "$(count_slots "$DB_F2" "$DBD_F2")" = "1" ]; then
+if [ "$(OSTYPE=msys count_slots "$DB_F2" "$DBD_F2")" = "1" ]; then
     echo "PASS FIND2 previous arm survives the rejected re-arm (1 slot, not 0)"
 else
-    echo "FAIL FIND2 previous arm was LOST after the rejected re-arm ($(count_slots "$DB_F2" "$DBD_F2") slots, expected 1)"
+    echo "FAIL FIND2 previous arm was LOST after the rejected re-arm ($(OSTYPE=msys count_slots "$DB_F2" "$DBD_F2") slots, expected 1)"
     FAILED=$((FAILED+1))
 fi
 

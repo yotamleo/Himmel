@@ -108,17 +108,23 @@ assert_file_missing "sonnet model: no fire-log written" "$LOG3"
 
 # --- Case 4: always allows regardless of trigger (jq missing -> fail-open) ---
 LOG4="$TMP/fires4.jsonl"
-# A PATH with every jq DIRECTORY filtered out — everything else (bash, tr,
-# cat, mkdir, date, tail) still resolves from its own directory.
-NO_JQ_PATH=""
-while IFS= read -r dir; do
-    if [ -x "$dir/jq" ] || [ -x "$dir/jq.exe" ]; then
-        continue
-    fi
-    NO_JQ_PATH="${NO_JQ_PATH:+$NO_JQ_PATH:}$dir"
-done <<< "$(printf '%s' "$PATH" | tr ':' '\n')"
+# The hook's own fail-open check (`command -v jq`, line ~77) is reached using
+# ONLY bash builtins (`[`, `command`, `echo`, `exit`) — no external tool is
+# forked before it. So the ONE thing this case must guarantee is that jq
+# itself is unresolvable while bash can still be LAUNCHED. Emptying PATH and
+# invoking bash by its already-resolved ABSOLUTE path (captured before PATH
+# is emptied) does exactly that, portably: on Linux, stripping every PATH dir
+# that CONTAINS jq (the previous approach) also strips /usr/bin — and on a
+# merged-usr layout /bin is a symlink to it, so bash/coreutils themselves
+# became unresolvable and the outer `bash "$HOOK"` call itself failed with
+# rc=127 before the hook's fail-open logic ever ran. Resolving bash up front
+# and calling it by absolute path sidesteps PATH lookup for the interpreter
+# entirely, so only jq's absence is under test — no stub-bin directory or
+# binary copying needed (a copied bash.exe on Windows would also need its
+# msys-2.0.dll alongside it, which this avoids).
+BASH_BIN=$(command -v bash)
 PAYLOAD4=$(jq -nc --arg tp "$OPUS_TRANSCRIPT" '{tool_name:"Edit",session_id:"sess-4",transcript_path:$tp,tool_input:{file_path:"scripts/hooks/foo.sh"}}')
-OUT4=$(PATH="$NO_JQ_PATH" ORCH_GUARD_LOG="$LOG4" bash "$HOOK" <<< "$PAYLOAD4" 2>/dev/null)
+OUT4=$(PATH="" ORCH_GUARD_LOG="$LOG4" "$BASH_BIN" "$HOOK" <<< "$PAYLOAD4" 2>/dev/null)
 RC4=$?
 assert_rc "jq missing: fail-open allow" 0 "$RC4"
 assert_rc "jq missing: no additionalContext" 0 "$([ -z "$OUT4" ] && echo 0 || echo 1)"
