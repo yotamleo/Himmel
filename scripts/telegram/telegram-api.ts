@@ -2,10 +2,33 @@ import { writeFile } from "node:fs/promises";
 
 const API = (t: string, m: string) => `https://api.telegram.org/bot${t}/${m}`;
 type F = typeof fetch;
-export async function getUpdates(token: string, offset: number, timeout = 30, f: F = fetch): Promise<any[]> {
-  const res = await f(API(token, "getUpdates") + `?offset=${offset}&timeout=${timeout}`);
+// A non-ok response (HIMMEL-1401 — e.g. a Telegram-API-side Bad Gateway storm)
+// THROWS instead of returning []. poller.ts's main loop already wraps getUpdates
+// in a try/catch for network errors; folding the API-level failure into that same
+// path lets it back off instead of hot-looping with zero delay, which is what a
+// silent [] used to produce. An ok:true call still never throws (below) — that
+// path stays fail-open for a malformed result array.
+//
+// Client-side abort deadline (HIMMEL-1401 CR round 2 — codex adversarial pass).
+// `timeout` above is only a QUERY PARAMETER telling Telegram how long to hold the
+// connection open server-side; it does NOT bound the fetch itself. Without a
+// client-side abort, a stalled transport (or a response whose body never
+// completes) left `await f(...)` / `await res.json()` pending forever — no
+// reject, so the catch/backoff above (and the HIMMEL-1401 outage marker) never
+// fired, and the bridge went silently deaf while the process stayed alive and
+// the supervisor saw nothing wrong. The deadline is set slightly LONGER than the
+// server-side long-poll timeout, so a healthy long poll — which returns at or
+// before `timeout` seconds, whether from an update arriving or Telegram's own
+// timeout — is never cut short. Per the WHATWG fetch spec, aborting a signal
+// aborts BOTH the in-flight request and, once headers have arrived, the response
+// body stream, so this one signal covers res.json() too — the same pattern
+// getFile/downloadFile below already use for FILE_FETCH_TIMEOUT_MS.
+const GETUPDATES_ABORT_MARGIN_MS = 10_000;
+export async function getUpdates(token: string, offset: number, timeout = 30, f: F = fetch, abortMarginMs = GETUPDATES_ABORT_MARGIN_MS): Promise<any[]> {
+  const res = await f(API(token, "getUpdates") + `?offset=${offset}&timeout=${timeout}`,
+    { signal: AbortSignal.timeout(timeout * 1000 + abortMarginMs) });
   const j: any = await res.json();
-  if (!j.ok) { console.error(`[telegram] getUpdates not ok: ${j.description ?? res.status}`); return []; }
+  if (!j.ok) throw new Error(`getUpdates not ok: ${j.description ?? res.status}`);
   return j.result ?? [];   // tolerate a malformed ok:true with no result array (never throw downstream)
 }
 // Best-effort "typing…" indicator (HIMMEL-260). No retries, failures swallowed —

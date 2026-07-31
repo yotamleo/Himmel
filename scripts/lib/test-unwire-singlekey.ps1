@@ -1,7 +1,8 @@
 # test-unwire-singlekey.ps1 -- committed PS test for the single-key unwire helpers
-# (unwire-statusline.ps1, unwire-himmel-repo.ps1, unwire-luna-vault.ps1; SC6).
-# Plus a .sh/.ps1 byte-parity assertion (both libs normalize through `jq --indent 2`,
-# so identical input must yield identical output). Run:
+# (unwire-statusline.ps1, unwire-himmel-repo.ps1, unwire-luna-vault.ps1,
+# unwire-handover-dir.ps1; SC6 + HIMMEL-839). Plus a .sh/.ps1 byte-parity
+# assertion (both libs normalize through `jq --indent 2`, so identical input
+# must yield identical output). Run:
 #   pwsh -File test-unwire-singlekey.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -9,6 +10,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'unwire-statusline.ps1')
 . (Join-Path $here 'unwire-himmel-repo.ps1')
 . (Join-Path $here 'unwire-luna-vault.ps1')
+. (Join-Path $here 'unwire-handover-dir.ps1')
 $fails = 0
 function Check($name, $got, $want) {
     if ("$got" -eq "$want") { Write-Host "ok - $name" }
@@ -68,6 +70,13 @@ Remove-LunaVault -SettingsPath $s | Out-Null
 Check 'LUNA_VAULT_PATH removed' (JqVal $s '.env.LUNA_VAULT_PATH // "ABSENT"') 'ABSENT'
 Check 'HIMMEL_REPO kept'        (JqVal $s '.env.HIMMEL_REPO') 'C:/h'
 
+# 5b. handover-dir (HIMMEL-839): removes key, preserves siblings.
+$s = Join-Path $td 'hd1.json'
+'{"env":{"HANDOVER_DIR":"C:/v/handovers","HIMMEL_REPO":"C:/h"}}' | Set-Content $s -Encoding utf8
+Remove-HandoverDir -SettingsPath $s | Out-Null
+Check 'HANDOVER_DIR removed'     (JqVal $s '.env.HANDOVER_DIR // "ABSENT"') 'ABSENT'
+Check 'HIMMEL_REPO kept (hd)'    (JqVal $s '.env.HIMMEL_REPO') 'C:/h'
+
 # 6. shared invariants: absent file -> no-op; invalid JSON refused.
 $missing = Join-Path $td 'missing.json'
 Remove-HimmelRepo -SettingsPath $missing | Out-Null
@@ -87,6 +96,7 @@ if ($gitBash) {
     $pairs = @(
         @{ ps = { param($p) Remove-HimmelRepo -SettingsPath $p }; sh = 'unwire-himmel-repo.sh'; json = '{"env":{"HIMMEL_REPO":"C:/h","HIMMEL_INITIATIVE":"all"}}' },
         @{ ps = { param($p) Remove-LunaVault -SettingsPath $p };  sh = 'unwire-luna-vault.sh';  json = '{"env":{"LUNA_VAULT_PATH":"C:/v","K":"1"}}' },
+        @{ ps = { param($p) Remove-HandoverDir -SettingsPath $p }; sh = 'unwire-handover-dir.sh'; json = '{"env":{"HANDOVER_DIR":"C:/v/handovers","K":"1"}}' },
         @{ ps = { param($p) Remove-Statusline -SettingsPath $p }; sh = 'unwire-statusline.sh';  json = '{"statusLine":{"type":"command","command":"bash \"C:/h/scripts/statusline/bin/statusline.sh\""},"env":{"X":"1"}}' }
     )
     foreach ($pair in $pairs) {

@@ -37,7 +37,7 @@ state repo (e.g. `<state-repo>`); it is always the operator-chosen location. The
 |---|---|---|
 | `name` | repo-root basename, slugged | non-empty, kebab-case, ≤30 chars, unique in registry |
 | `path` | canonical `parent(git -C $cwd rev-parse --git-common-dir)` | abs path, exists, is a git repo |
-| `user` | slugged `git -C <path> config user.name` (fallback `$USER`) | non-empty, kebab-case |
+| `user` | resolved via `scripts/lib/user-slug.sh`'s `user_slug` (HIMMEL-145 — `$USER_SLUG` env, then forge username, then slugged `git config user.name`); ask via `AskUserQuestion` if it cannot be resolved (HIMMEL-839 — do NOT fall back to the raw `$USER` OS account name, which on a fresh/shared machine is a generic login like `osboxes`, not the operator's identity) | non-empty, kebab-case |
 | `aliases` | `[name]` | optional, kebab-case list |
 | `keywords` | `[]` | optional, free-text list |
 | `branch_prefix` | `handover/` | optional, must end with `/`; used by worktree gate for `<branch_prefix><slug>`. Scopes **handover-mutation** branches (`new-epic`, `new-task`, `new-standalone`, `end-session`, `update-status`) — distinct from general feature-branch prefixes used by `/worktree.sh` (CLAUDE.md `type/slug` convention) |

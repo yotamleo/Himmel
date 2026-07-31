@@ -4,10 +4,9 @@
 # Usage:
 #   ./scripts/clean-garden.sh [branch-name] [flags]
 #
-# Prune phase: removes any non-primary worktree whose branch has a merged PR
-# (preferred signal: the forge seam's merged-PR query — GitHub or Bitbucket,
-# HIMMEL-326) or is marked [gone] in `git branch -v` (fallback when the forge
-# CLI is unavailable).
+# Prune phase: removes any non-primary worktree whose branch tip exactly matches
+# the recorded head of a merged PR. After pruning, every kept worktree is
+# accounted for and origin's unmerged remote branches are classified.
 #
 # Create phase: when branch-name supplied, delegates to scripts/_new-worktree.sh
 # after the prune.
@@ -22,6 +21,7 @@
 #   --no-prune           Skip the prune phase; just create.
 #   --no-install         Forwarded to _new-worktree.sh.
 #   --dry-run            Show what would happen, do nothing.
+#   --include-puborigin  Also account for puborigin's remote branches.
 #   --verbose, -v        Stream subprocess output.
 #   -h, --help           Print usage.
 set -euo pipefail
@@ -44,6 +44,7 @@ Flags:
   --no-prune            Skip prune; only create.
   --no-install          Forward to _new-worktree.sh (skip jira install).
   --dry-run             Show plan; do nothing.
+  --include-puborigin   Also report unmerged branches from puborigin.
   --verbose, -v         Stream subprocess output.
   -h, --help            This message.
 
@@ -65,14 +66,16 @@ PRUNE_ONLY=0
 NO_PRUNE=0
 NO_INSTALL=0
 DRY_RUN=0
+INCLUDE_PUBORIGIN=0
 VERBOSE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --prune-only) PRUNE_ONLY=1; shift ;;
         --no-prune)   NO_PRUNE=1; shift ;;
         --no-install) NO_INSTALL=1; shift ;;
-        --dry-run)    DRY_RUN=1; shift ;;
-        --verbose|-v) VERBOSE=1; shift ;;
+        --dry-run)           DRY_RUN=1; shift ;;
+        --include-puborigin) INCLUDE_PUBORIGIN=1; shift ;;
+        --verbose|-v)        VERBOSE=1; shift ;;
         -h|--help)    print_help ;;
         -*)           echo "Unknown flag: $1" >&2; usage_err ;;
         *)
@@ -119,34 +122,169 @@ if FORGE_KIND=$(forge_in_primary forge_detect 2>/dev/null) && forge_in_primary f
     HAVE_FORGE=1
     FORGE_NWO=$(forge_in_primary forge_repo_nwo 2>/dev/null || true)
     if [ -n "$FORGE_NWO" ]; then
-        log "clean-garden: $FORGE_KIND CLI available — using merged-PR signal (repo: $FORGE_NWO)"
+        log "clean-garden: $FORGE_KIND CLI available (repo: $FORGE_NWO)"
     else
-        log "clean-garden: $FORGE_KIND CLI available but repo lookup failed — queries use the origin's repo"
+        log "clean-garden: $FORGE_KIND CLI available but repo lookup failed"
     fi
 else
-    log "clean-garden: forge CLI unavailable — falling back to [gone] tracking"
+    log "clean-garden: forge CLI unavailable — PR accounting unknown; worktrees are kept"
 fi
 
-# Return 0 if the branch has a merged PR (or is [gone] in fallback mode).
-# Returns 1 (do-not-prune) on any error so transient failures are safe.
+# GitHub accounting cache. One paginated API walk per repository replaces the
+# old per-worktree PR queries and records the PR head SHA needed to distinguish
+# a squash-merged branch from post-merge commits on the same branch.
+ORIGIN_NWO="$FORGE_NWO"
+ORIGIN_PR_CACHE=""
+ORIGIN_PR_CACHE_OK=0
+PUBORIGIN_NWO=""
+PUBORIGIN_PR_CACHE=""
+PUBORIGIN_PR_CACHE_OK=0
+
+# KNOWN LIMITATION: rows key on head.repo.full_name == nwo, so a PR opened
+# from a fork (head repo != base repo) is filtered out even though its base
+# is this repo. Local worktree/remote-tracking branches are pushed straight
+# to origin on this private repo, so a fork PR would only coincidentally
+# share a branch name with one of them — rare enough here not to warrant the
+# extra base.repo.full_name plumbing + matching-rule complexity. Revisit if
+# this repo starts taking fork PRs.
+fetch_github_pr_cache() {
+    local nwo="$1"
+    forge_in_primary _gh api --paginate "repos/$nwo/pulls?state=all&per_page=100" \
+        --jq '.[] | [(.head.repo.full_name // ""), .head.ref, (if .state == "open" then "open" elif .merged_at != null then "merged" else "closed" end), .head.sha] | @tsv'
+}
+
+github_nwo_from_remote() {
+    local remote="$1" url path
+    url=$(git -C "$PRIMARY_WORKTREE" remote get-url "$remote" 2>/dev/null) || return 1
+    case "$url" in
+        https://github.com/*|http://github.com/*) path="${url#*github.com/}" ;;
+        git@github.com:*) path="${url#git@github.com:}" ;;
+        ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
+        *) return 1 ;;
+    esac
+    path="${path%.git}"
+    path="${path%/}"
+    case "$path" in
+        */*) printf '%s\n' "$path" ;;
+        *) return 1 ;;
+    esac
+}
+
+if [ "$HAVE_FORGE" -eq 1 ] && [ "$FORGE_KIND" = "github" ]; then
+    if [ -z "$ORIGIN_NWO" ]; then
+        # forge_repo_nwo (gh repo view) failed — fall back to parsing origin's
+        # remote URL directly rather than silently degrading accounting.
+        if ORIGIN_NWO=$(github_nwo_from_remote origin); then
+            log "clean-garden: origin repo lookup recovered from remote URL: $ORIGIN_NWO"
+        fi
+    fi
+    if [ -n "$ORIGIN_NWO" ]; then
+        if ORIGIN_PR_CACHE=$(fetch_github_pr_cache "$ORIGIN_NWO" 2>/dev/null); then
+            ORIGIN_PR_CACHE_OK=1
+        else
+            echo "WARN clean-garden: GitHub PR cache failed for origin — accounting will keep uncertain work" >&2
+        fi
+    else
+        echo "WARN clean-garden: could not determine origin's GitHub repo (gh repo view + remote URL parse both failed) — PR accounting degraded to unknown for origin" >&2
+    fi
+fi
+if [ "$INCLUDE_PUBORIGIN" -eq 1 ]; then
+    if ! git -C "$PRIMARY_WORKTREE" remote get-url puborigin >/dev/null 2>&1; then
+        echo "WARN clean-garden: --include-puborigin requested but no puborigin remote exists" >&2
+    elif PUBORIGIN_NWO=$(github_nwo_from_remote puborigin); then
+        if PUBORIGIN_PR_CACHE=$(fetch_github_pr_cache "$PUBORIGIN_NWO" 2>/dev/null); then
+            PUBORIGIN_PR_CACHE_OK=1
+        else
+            echo "WARN clean-garden: GitHub PR cache failed for puborigin — accounting will keep uncertain work" >&2
+        fi
+    else
+        echo "WARN clean-garden: puborigin is not a GitHub remote — PR accounting unavailable" >&2
+    fi
+fi
+
+# Sets PR_STATE and PR_HEAD_MATCH for a branch tip. PR_STATE is one of
+# open/merged/closed/none when the cache is authoritative, or unknown when the
+# forge could not be queried. A merged PR wins over a closed PR, but an open PR
+# wins over both. Among merged PRs, an exact recorded head match is remembered.
+resolve_pr_state() {
+    local remote="$1" branch="$2" tip="$3"
+    local cache cache_ok nwo row_repo row_branch row_state row_sha
+    local saw_closed=0 saw_merged=0 exact_merged=0
+    PR_STATE="unknown"
+    PR_HEAD_MATCH=0
+
+    case "$remote" in
+        origin)
+            cache="$ORIGIN_PR_CACHE"
+            cache_ok="$ORIGIN_PR_CACHE_OK"
+            nwo="$ORIGIN_NWO"
+            ;;
+        puborigin)
+            cache="$PUBORIGIN_PR_CACHE"
+            cache_ok="$PUBORIGIN_PR_CACHE_OK"
+            nwo="$PUBORIGIN_NWO"
+            ;;
+        *) return 0 ;;
+    esac
+    [ "$cache_ok" -eq 1 ] || return 0
+
+    PR_STATE="none"
+    while IFS=$'\t' read -r row_repo row_branch row_state row_sha; do
+        [ -n "$row_branch" ] || continue
+        [ "$row_repo" = "$nwo" ] || continue
+        [ "$row_branch" = "$branch" ] || continue
+        case "$row_state" in
+            open)
+                PR_STATE="open"
+                return 0
+                ;;
+            merged)
+                saw_merged=1
+                [ "$row_sha" = "$tip" ] && exact_merged=1
+                ;;
+            closed)
+                saw_closed=1
+                ;;
+        esac
+    done <<EOF
+$cache
+EOF
+    if [ "$saw_merged" -eq 1 ]; then
+        PR_STATE="merged"
+        PR_HEAD_MATCH="$exact_merged"
+    elif [ "$saw_closed" -eq 1 ]; then
+        PR_STATE="closed"
+    fi
+}
+
+# Return 0 only when the current branch tip exactly matches the recorded head
+# of a merged PR. A mere "this branch once had a merged PR" signal is unsafe:
+# commits may have been added after the squash merge (the HIMMEL-1410 loss mode).
+#
+# The cached-listing accounting above (ORIGIN_PR_CACHE) is GitHub-only. On a
+# non-github forge, fall back to the forge-agnostic per-branch signal the
+# cache replaced (forge_pr_has_merged) so pruning keeps working — accounting
+# rows still show pr-state=unknown there, but that is a display-only gap, not
+# a stuck-worktree regression.
+NON_GITHUB_PRUNE_DEGRADED_WARNED=0
 is_branch_mergeable_for_prune() {
-    local branch="$1"
-    if [ "$HAVE_FORGE" -eq 1 ]; then
+    local branch="$1" tip
+    tip=$(git -C "$PRIMARY_WORKTREE" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null) || return 1
+    if [ "$HAVE_FORGE" -eq 1 ] && [ "$FORGE_KIND" != "github" ]; then
+        if [ "$NON_GITHUB_PRUNE_DEGRADED_WARNED" -eq 0 ]; then
+            echo "WARN clean-garden: $FORGE_KIND PR accounting is degraded (pr-state=unknown for kept worktrees) — prune decisions fall back to the legacy per-branch merged-PR check" >&2
+            NON_GITHUB_PRUNE_DEGRADED_WARNED=1
+        fi
         local count
         if ! count=$(forge_in_primary forge_pr_has_merged "$branch" 2>/dev/null); then
             echo "WARN clean-garden: forge PR query failed for $branch — treating as not-mergeable (worktree kept)" >&2
             return 1
         fi
-        # The test exit code is intentionally the function's return value.
         [ "${count:-0}" -gt 0 ]
         return
     fi
-    # Fallback: parse `git branch -v` for [gone]. Assumes the worktree branch
-    # also exists in the primary repo's branch list — true for branches
-    # created via scripts/_new-worktree.sh (always created from primary).
-    git -C "$PRIMARY_WORKTREE" branch -v 2>/dev/null \
-        | sed 's/^[+* ]//' \
-        | awk -v b="$branch" '$1 == b && /\[gone\]/ { found=1 } END { exit !found }'
+    resolve_pr_state origin "$branch" "$tip"
+    [ "$PR_STATE" = "merged" ] && [ "$PR_HEAD_MATCH" -eq 1 ]
 }
 
 # Is an untracked path a known, discardable stray? (HIMMEL-431)
@@ -257,6 +395,220 @@ human_kib() {
             printf "%.1f%s", value, unit[idx]
         }
     }'
+}
+
+MAIN_REF=""
+if git -C "$PRIMARY_WORKTREE" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+    MAIN_REF="refs/remotes/origin/main"
+elif git -C "$PRIMARY_WORKTREE" rev-parse --verify --quiet refs/heads/main >/dev/null; then
+    MAIN_REF="refs/heads/main"
+fi
+
+last_commit_age() {
+    local tip="$1" committed now elapsed
+    committed=$(git -C "$PRIMARY_WORKTREE" show -s --format=%ct "$tip" 2>/dev/null) || {
+        printf '?'; return 0;
+    }
+    now=$(date +%s)
+    elapsed=$((now - committed))
+    [ "$elapsed" -lt 0 ] && elapsed=0
+    if [ "$elapsed" -ge 86400 ]; then
+        printf '%dd' "$((elapsed / 86400))"
+    elif [ "$elapsed" -ge 3600 ]; then
+        printf '%dh' "$((elapsed / 3600))"
+    else
+        printf '%dm' "$((elapsed / 60))"
+    fi
+}
+
+scan_worktree_counts() {
+    local wt="$1" status_line status_output
+    WT_SCAN_OK=1
+    WT_DIRTY_COUNT=0
+    WT_UNTRACKED_COUNT=0
+    if ! status_output=$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null); then
+        WT_SCAN_OK=0
+        return 0
+    fi
+    while IFS= read -r status_line; do
+        [ -n "$status_line" ] || continue
+        case "$status_line" in
+            "?? "*) WT_UNTRACKED_COUNT=$((WT_UNTRACKED_COUNT+1)) ;;
+            *)       WT_DIRTY_COUNT=$((WT_DIRTY_COUNT+1)) ;;
+        esac
+    done <<EOF
+$status_output
+EOF
+}
+
+commits_not_on_main() {
+    local tip="$1"
+    if [ -z "$MAIN_REF" ]; then
+        printf '?'
+        return 0
+    fi
+    git -C "$PRIMARY_WORKTREE" rev-list --count "$MAIN_REF..$tip" 2>/dev/null || printf '?'
+}
+
+LOCAL_KEPT=0
+LOCAL_UNKNOWN=0
+report_kept_worktree() {
+    local wt="$1" branch="$2" tip="$3" locked="$4"
+    local branch_label ahead age verdict why wt_norm
+    LOCAL_KEPT=$((LOCAL_KEPT+1))
+    branch_label="$branch"
+    [ -n "$branch_label" ] || branch_label="(detached:${tip:0:12})"
+    ahead=$(commits_not_on_main "$tip")
+    age=$(last_commit_age "$tip")
+    scan_worktree_counts "$wt"
+    wt_norm=$(cd "$wt" 2>/dev/null && pwd || echo "$wt")
+
+    if [ "$WT_SCAN_OK" -eq 0 ]; then
+        PR_STATE="unknown"
+        verdict="UNKNOWN"
+        why="working-tree scan failed"
+    elif [ $((WT_DIRTY_COUNT + WT_UNTRACKED_COUNT)) -gt 0 ]; then
+        if [ -n "$branch" ]; then
+            resolve_pr_state origin "$branch" "$tip"
+        else
+            PR_STATE="none"
+        fi
+        verdict="PARKED-WIP"
+        why="working tree is not clean"
+    elif [ "$wt_norm" = "$PRIMARY_WORKTREE" ]; then
+        if [ -n "$branch" ]; then
+            resolve_pr_state origin "$branch" "$tip"
+        else
+            PR_STATE="none"
+        fi
+        verdict="ACTIVE"
+        why="primary worktree"
+    elif [ -z "$branch" ]; then
+        PR_STATE="none"
+        if [ "$ahead" = "0" ]; then
+            verdict="SUPERSEDED"
+            why="detached tip is already on main"
+        else
+            verdict="UNKNOWN"
+            why="detached tip has commits not on main"
+        fi
+    else
+        resolve_pr_state origin "$branch" "$tip"
+        case "$PR_STATE:$PR_HEAD_MATCH:$ahead" in
+            open:*)
+                verdict="ACTIVE"
+                why="open PR"
+                ;;
+            merged:1:*)
+                verdict="SUPERSEDED"
+                why="tip matches merged PR head"
+                ;;
+            merged:0:*)
+                verdict="UNKNOWN"
+                why="branch tip differs from merged PR head"
+                ;;
+            *:*:0)
+                verdict="SUPERSEDED"
+                why="tip is already on main"
+                ;;
+            closed:*)
+                verdict="UNKNOWN"
+                why="closed PR left commits off main"
+                ;;
+            none:*)
+                verdict="UNKNOWN"
+                why="no PR for commits off main"
+                ;;
+            *)
+                verdict="UNKNOWN"
+                why="PR state could not be resolved"
+                ;;
+        esac
+    fi
+    [ "$locked" -eq 0 ] || why="$why; worktree locked"
+    [ "$verdict" != "UNKNOWN" ] || LOCAL_UNKNOWN=$((LOCAL_UNKNOWN+1))
+    printf 'KEEP clean-garden: branch=%s pr=%s commits-not-main=%s dirty=%s untracked=%s age=%s verdict=%s why=%s path=%s\n' \
+        "$branch_label" "$PR_STATE" "$ahead" "$WT_DIRTY_COUNT" "$WT_UNTRACKED_COUNT" \
+        "$age" "$verdict" "$why" "$wt"
+}
+
+report_kept_worktrees() {
+    local wt="" branch="" tip="" locked=0 line
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*)
+                if [ -n "$wt" ]; then
+                    report_kept_worktree "$wt" "$branch" "$tip" "$locked"
+                fi
+                wt="${line#worktree }"
+                branch=""
+                tip=""
+                locked=0
+                ;;
+            "HEAD "*)
+                tip="${line#HEAD }"
+                ;;
+            "branch refs/heads/"*)
+                branch="${line#branch refs/heads/}"
+                ;;
+            "locked"*)
+                locked=1
+                ;;
+            "")
+                if [ -n "$wt" ]; then
+                    report_kept_worktree "$wt" "$branch" "$tip" "$locked"
+                    wt=""
+                fi
+                ;;
+        esac
+    done < <(git -C "$PRIMARY_WORKTREE" worktree list --porcelain)
+    if [ -n "$wt" ]; then
+        report_kept_worktree "$wt" "$branch" "$tip" "$locked"
+    fi
+}
+
+REMOTE_MERGED_CLEAN=0
+REMOTE_TIP_DIFFERS=0
+REMOTE_CLOSED_UNMERGED=0
+REMOTE_NO_PR=0
+REMOTE_UNKNOWN=0
+report_remote_orphans() {
+    local remote="$1" branch tip category
+    git -C "$PRIMARY_WORKTREE" remote get-url "$remote" >/dev/null 2>&1 || return 0
+    while IFS=' ' read -r branch tip; do
+        [ -n "$branch" ] || continue
+        [ "$branch" != "HEAD" ] || continue
+        if [ -n "$MAIN_REF" ] && git -C "$PRIMARY_WORKTREE" merge-base --is-ancestor "$tip" "$MAIN_REF" 2>/dev/null; then
+            continue
+        fi
+        resolve_pr_state "$remote" "$branch" "$tip"
+        [ "$PR_STATE" != "open" ] || continue
+        case "$PR_STATE:$PR_HEAD_MATCH" in
+            merged:1)
+                category="MERGED-CLEAN"
+                REMOTE_MERGED_CLEAN=$((REMOTE_MERGED_CLEAN+1))
+                ;;
+            merged:0)
+                category="TIP-DIFFERS"
+                REMOTE_TIP_DIFFERS=$((REMOTE_TIP_DIFFERS+1))
+                ;;
+            closed:*)
+                category="CLOSED-UNMERGED"
+                REMOTE_CLOSED_UNMERGED=$((REMOTE_CLOSED_UNMERGED+1))
+                ;;
+            none:*)
+                category="NO-PR"
+                REMOTE_NO_PR=$((REMOTE_NO_PR+1))
+                ;;
+            *)
+                category="UNKNOWN"
+                REMOTE_UNKNOWN=$((REMOTE_UNKNOWN+1))
+                ;;
+        esac
+        printf 'REMOTE clean-garden: remote=%s branch=%s pr=%s category=%s tip=%s\n' \
+            "$remote" "$branch" "$PR_STATE" "$category" "${tip:0:12}"
+    done < <(git -C "$PRIMARY_WORKTREE" for-each-ref \
+        --format='%(refname:strip=3) %(objectname)' "refs/remotes/$remote")
 }
 
 PRUNED=0
@@ -470,6 +822,19 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             fi
         done < <(find "$CR_DIR" -type f 2>/dev/null | sort)
         echo "clean-garden: cr-pending sweep — $CR_SWEPT swept, $CR_KEPT kept (branch exists), $CR_NOTED kept (open PR)"
+    fi
+
+    echo "clean-garden: full accounting — kept worktrees"
+    report_kept_worktrees
+    echo "clean-garden: full accounting — remote orphans"
+    report_remote_orphans origin
+    if [ "$INCLUDE_PUBORIGIN" -eq 1 ]; then
+        report_remote_orphans puborigin
+    fi
+    echo "clean-garden: accounting summary — $LOCAL_KEPT kept worktrees; $REMOTE_MERGED_CLEAN MERGED-CLEAN, $REMOTE_TIP_DIFFERS TIP-DIFFERS, $REMOTE_CLOSED_UNMERGED CLOSED-UNMERGED, $REMOTE_NO_PR NO-PR"
+    ACCOUNTING_UNKNOWN=$((LOCAL_UNKNOWN + REMOTE_UNKNOWN))
+    if [ "$ACCOUNTING_UNKNOWN" -gt 0 ] || [ "$REMOTE_TIP_DIFFERS" -gt 0 ] || [ "$REMOTE_NO_PR" -gt 0 ]; then
+        echo "ALERT clean-garden: attention required — $ACCOUNTING_UNKNOWN UNKNOWN, $REMOTE_TIP_DIFFERS TIP-DIFFERS, $REMOTE_NO_PR NO-PR"
     fi
 fi
 

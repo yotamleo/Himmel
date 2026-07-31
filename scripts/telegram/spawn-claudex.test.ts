@@ -34,6 +34,21 @@ import {
 } from "./spawn-claudex";
 import { BASH_BIN } from "./run";
 
+// HIMMEL-1096 (codex-adv round 2): runClaudexSharedDispatch now trust-seeds
+// UNCONDITIONALLY (needsWorktreeAdd true or false), so every test below that
+// exercises it would otherwise read/rewrite the OPERATOR'S REAL ~/.claude.json
+// on every dispatch — slow (JSON parse/stringify of a live, 100KB+ file,
+// pushing already-borderline Windows subprocess timing over Bun's 5s default
+// test timeout — observed as spurious "lock release failed (rc=null)" +
+// EBUSY-on-cleanup once the timeout kills the process mid-dispatch) AND a
+// real side effect (leaves throwaway temp-worktree paths trusted in the
+// operator's live config forever). Point every ensureWorkspaceTrust call in
+// this file's tests at a scratch config instead. TRUST_WRITE_JITTER_MS=0
+// drops the (up to 500ms) launch-race jitter — the dedicated jitter behavior
+// is exercised by scripts/lib/test-ensure-workspace-trust.sh, not here.
+process.env.WORKSPACE_TRUST_CONFIG = join(tmpdir(), `spawn-claudex-test-trust-${process.pid}.json`);
+process.env.TRUST_WRITE_JITTER_MS = "0";
+
 // --- claudexSessionRoot ------------------------------------------------------
 
 test("claudexSessionRoot is OUTSIDE the poller's sessions/ tree and distinct from the GLM sessions root", () => {
@@ -288,6 +303,29 @@ test("runClaudexSharedDispatch: acquires under lane 'codex' (not 'glm'), restore
     expect(run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt).stdout.toString().trim()).toBe("git@example.com:orig/repo.git");
     expect(lockStatus(repo, "feat/live-pr")).toBe("free");
   } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("runClaudexSharedDispatch (HIMMEL-1096, codex-adv round): needsWorktreeAdd:false (REUSED worktree, gitAdd never called) still gets trust-seeded", async () => {
+  const { repo, wt } = makeSharedRepo();
+  const trustCfg = join(tmpdir(), `trust-reuse-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const prevCfg = process.env.WORKSPACE_TRUST_CONFIG;
+  process.env.WORKSPACE_TRUST_CONFIG = trustCfg;
+  try {
+    const res = await runClaudexSharedDispatch({
+      repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT,
+      gitAdd: () => { throw new Error("gitAdd must NOT be called when needsWorktreeAdd is false"); },
+      runBody: async () => 0,
+    });
+    expect(res.ok).toBe(true);
+    const cfg = JSON.parse(readFileSync(trustCfg, "utf8"));
+    const keys = Object.keys(cfg.projects ?? {});
+    expect(keys.length).toBe(1);
+    expect(cfg.projects[keys[0]].hasTrustDialogAccepted).toBe(true);
+  } finally {
+    if (prevCfg === undefined) delete process.env.WORKSPACE_TRUST_CONFIG; else process.env.WORKSPACE_TRUST_CONFIG = prevCfg;
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(trustCfg, { force: true });
+  }
 });
 
 test("revalidateSharedWorktree: fresh worktree (needsWorktreeAdd) -> ok when the mapping is still absent, never checks dirtiness", () => {
@@ -1040,9 +1078,14 @@ test("own-branch (flag-less) path mints its own branch with -b, no shared lock (
 
 test("shared-branch lock is acquired BEFORE any worktree mutation (wiring pin)", () => {
   const src = readFileSync("scripts/telegram/spawn-claudex.ts", "utf8");
+  // acquire → worktree add → trust-seed (HIMMEL-1096, unconditional) → poison
   const acquireIdx = src.indexOf('"acquire", p.repoDir, p.branch, "codex"');
-  const addIdx = src.indexOf("if (p.needsWorktreeAdd) p.gitAdd()");
+  const addIdx = src.indexOf("if (p.needsWorktreeAdd) p.gitAdd();");
+  const trustIdx = src.indexOf("ensureWorkspaceTrust(p.worktree);");
   const poisonIdx = src.indexOf("poisonPushUrl(p.repoDir, p.worktree)");
+  expect(trustIdx).toBeGreaterThan(-1);
+  expect(acquireIdx).toBeLessThan(trustIdx);    // lock before trust-seed
+  expect(addIdx).toBeLessThan(trustIdx);        // worktree add before trust-seed
   expect(acquireIdx).toBeGreaterThan(-1);
   expect(acquireIdx).toBeLessThan(addIdx);
   expect(acquireIdx).toBeLessThan(poisonIdx);

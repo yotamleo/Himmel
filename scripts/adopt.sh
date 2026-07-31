@@ -246,6 +246,61 @@ wire_luna_vault_path() {
   bash "$HIMMEL_ROOT/scripts/lib/wire-luna-vault.sh" "$settings" "$dest"
 }
 
+# env.HANDOVER_DIR — seed the handover state root at the scaffolded luna vault
+# (HIMMEL-839). Without this, a fresh adopter's handover state silently
+# defaults to the inline <repo-root>/handovers/ stub and the operator has to
+# discover + set HANDOVER_DIR by hand (observed on a fresh ubuntu_new install
+# with no prior state). Creates <dest>/handovers/ so Mode B resolves cleanly
+# out of the box (handover_root's pure resolver fails closed on a missing
+# dir — scripts/lib/handover-path.sh). Sibling of wire_luna_vault_path; $1 =
+# the scaffolded vault dir.
+wire_handover_dir_luna() {
+  local dest="$1" hdir settings envfile existing
+  hdir="$dest/handovers"
+  if [[ "$SCOPE" == "project" ]]; then
+    settings="$TARGET/.claude/settings.json"
+  else
+    settings="$HOME/.claude/settings.json"
+  fi
+  # PRESERVE an operator-selected HANDOVER_DIR (HIMMEL-839 CR round-2): a
+  # routine re-adopt must reproduce state, never silently reset it.
+  # /handover-setup is documented as "the only place the state-root location
+  # is chosen interactively" (handover-setup.md) — adopt.sh must not become a
+  # second, silent place that overrides that choice. Two places it could
+  # already live:
+  #   1. This settings.json's own env.HANDOVER_DIR (a prior adopt run).
+  #   2. The primary checkout's .env (set-handover-dir.sh / Mode B — the
+  #      actual file /handover-setup writes to). settings.json env takes
+  #      PROCESS-ENV precedence over .env (scripts/lib/load-dotenv.sh only
+  #      fills currently-unset vars), so writing here would silently SHADOW
+  #      that choice even though the .env file itself stayed untouched.
+  if [[ -f "$settings" ]] && command -v jq >/dev/null 2>&1; then
+    existing="$(jq -r '.env.HANDOVER_DIR // empty' "$settings" 2>/dev/null || true)"
+    if [[ -n "$existing" ]]; then
+      echo "  env.HANDOVER_DIR already set in $settings ($existing) — leaving it (re-adopt reproduces, never resets; HIMMEL-839)"
+      return
+    fi
+  fi
+  envfile="$HIMMEL_ROOT/.env"
+  if [[ -f "$envfile" ]] && grep -qE '^[[:space:]]*HANDOVER_DIR=' "$envfile"; then
+    echo "  HANDOVER_DIR already set in $envfile (via /handover-setup) — leaving it, not wiring env.HANDOVER_DIR into $settings (HIMMEL-839)"
+    return
+  fi
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: mkdir -p $hdir"
+    echo "DRY: wire env.HANDOVER_DIR → $settings (handover dir: $hdir)"
+    return
+  fi
+  mkdir -p "$hdir"
+  # Canonicalize to an absolute path (HIMMEL-839 CR round-2): a relative
+  # --luna-target would otherwise persist a CWD-dependent relative path into
+  # settings.json, resolving against whatever CWD a later session happens to
+  # launch from. Same idiom scripts/handover/set-handover-dir.sh already uses.
+  # shellcheck disable=SC1003  # '\\' is a literal backslash for tr, not a quote escape
+  hdir="$(cd "$hdir" && pwd | tr '\\' '/')"
+  bash "$HIMMEL_ROOT/scripts/lib/wire-handover-dir.sh" "$settings" "$hdir"
+}
+
 # --fill-env (HIMMEL-453): fill the himmel clone's .env. We target
 # $HIMMEL_ROOT/.env (NOT $TARGET/.env) for BOTH scopes because adopt copies only
 # portable hooks — never the Jira CLI — so an adopted repo always invokes
@@ -434,6 +489,8 @@ do_luna() {
   # Persist the vault path UNCONDITIONALLY — a re-run over an existing scaffold
   # (skipped copy above) must still wire a previously-unwired install (HIMMEL-458).
   wire_luna_vault_path "$dest"
+  # Seed HANDOVER_DIR the same way, same reasoning (HIMMEL-839).
+  wire_handover_dir_luna "$dest"
   # G5 (HIMMEL-752): register the scaffolded vault as a qmd collection so it is
   # queryable immediately. Skip + note when qmd/bun unavailable; WARN-not-fail.
   # For --profile all, do_core (→ wire_qmd_core) has already installed qmd; for

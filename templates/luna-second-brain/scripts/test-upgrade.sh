@@ -432,5 +432,44 @@ assert_eq "T27 multi-hunk does not advance the stamp" "0.1.0" "$got_ver"
 # A conflict must also exit non-zero.
 if [ "$rc" -ne 0 ]; then pass "T27 multi-hunk conflict exits non-zero"; else fail "T27 multi-hunk conflict exits non-zero" "rc=0"; fi
 
+# ---------------------------------------------------------------------------
+# T28 (HIMMEL-525): bundled plugin assets (main.js, manifest.json, styles.css
+# under .obsidian/plugins/*/) are FIRST-POPULATION ONLY (skipexists), never
+# overwrite. A vault whose installed plugin is NEWER than the template bundle
+# must NOT be downgraded (live incident: obsidian-local-rest-api 4.1.3 -> 4.0.1,
+# qmd-as-md-obsidian 0.4.3 -> 0.3.4). data.json is already skipexists (T4); the
+# three asset files now match it.
+#   (a) downgrade protection — a newer installed plugin is left byte-identical.
+#   (b) first-population — an ABSENT plugin is still seeded from the bundle.
+T="$TMP/t28-tmpl"; V="$TMP/t28-vault"; make_template "$T" "1.0.0"
+mkdir -p "$V/.obsidian/plugins/obsidian-local-rest-api"; stamp_vault "$V" "0.1.0"
+# Template BUNDLES the plugin at an OLDER version (4.0.1).
+mkdir -p "$T/.obsidian/plugins/obsidian-local-rest-api"
+printf '{"id":"obsidian-local-rest-api","version":"4.0.1"}\n' > "$T/.obsidian/plugins/obsidian-local-rest-api/manifest.json"
+printf 'TEMPLATE-MAIN-JS-4.0.1\n'                              > "$T/.obsidian/plugins/obsidian-local-rest-api/main.js"
+printf 'TEMPLATE-STYLES-4.0.1\n'                               > "$T/.obsidian/plugins/obsidian-local-rest-api/styles.css"
+# Vault has the SAME plugin at a NEWER version (4.1.3) the adopter self-updated to.
+printf '{"id":"obsidian-local-rest-api","version":"4.1.3"}\n' > "$V/.obsidian/plugins/obsidian-local-rest-api/manifest.json"
+printf 'VAULT-MAIN-JS-4.1.3\n'                                 > "$V/.obsidian/plugins/obsidian-local-rest-api/main.js"
+printf 'VAULT-STYLES-4.1.3\n'                                  > "$V/.obsidian/plugins/obsidian-local-rest-api/styles.css"
+m_before=$(sha_of "$V/.obsidian/plugins/obsidian-local-rest-api/manifest.json")
+j_before=$(sha_of "$V/.obsidian/plugins/obsidian-local-rest-api/main.js")
+s_before=$(sha_of "$V/.obsidian/plugins/obsidian-local-rest-api/styles.css")
+run_upgrade --yes >/dev/null 2>&1
+assert_eq "T28 newer manifest.json NOT downgraded" "$m_before" "$(sha_of "$V/.obsidian/plugins/obsidian-local-rest-api/manifest.json")"
+assert_eq "T28 newer main.js NOT downgraded"       "$j_before" "$(sha_of "$V/.obsidian/plugins/obsidian-local-rest-api/main.js")"
+assert_eq "T28 newer styles.css NOT downgraded"    "$s_before" "$(sha_of "$V/.obsidian/plugins/obsidian-local-rest-api/styles.css")"
+# (b) first-population: a fresh vault with the plugin ABSENT must still be seeded.
+# NOTE: run_upgrade() closes over $V, so call upgrade.sh directly for the $V2
+# vault (same pattern T11/T16 use for a non-default vault dir).
+V2="$TMP/t28-vault-fp"; mkdir -p "$V2"; stamp_vault "$V2" "0.1.0"
+# Precondition (CR): the fixture must actually be plugin-absent, or (b) stops
+# covering first-population without failing.
+test ! -e "$V2/.obsidian/plugins/obsidian-local-rest-api"
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V2" --yes >/dev/null 2>&1
+assert_eq "T28 first-population seeds absent manifest.json" "$(sha_of "$T/.obsidian/plugins/obsidian-local-rest-api/manifest.json")" "$(sha_of "$V2/.obsidian/plugins/obsidian-local-rest-api/manifest.json")"
+assert_eq "T28 first-population seeds absent main.js"       "$(sha_of "$T/.obsidian/plugins/obsidian-local-rest-api/main.js")"       "$(sha_of "$V2/.obsidian/plugins/obsidian-local-rest-api/main.js")"
+assert_eq "T28 first-population seeds absent styles.css"    "$(sha_of "$T/.obsidian/plugins/obsidian-local-rest-api/styles.css")"    "$(sha_of "$V2/.obsidian/plugins/obsidian-local-rest-api/styles.css")"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

@@ -89,14 +89,66 @@ function deriveTarget(manifest, cachedAnswers) {
   return { profile, scope, items, lastEnsured: null };
 }
 
+// Backfill any manifest item IDs an existing target entry doesn't yet carry
+// (HIMMEL-1017): ensureTarget's derive-if-missing path only ever runs ONCE,
+// on a target's first-ever encounter — a manifest item added to
+// scripts/install/manifest.json AFTER that point never gets an `items` entry
+// on an already-existing target, so it reads `entry === undefined` in
+// statusReport (desired:false, "not enabled for this target") forever, on
+// every future run, until the target is deleted and re-derived from scratch.
+// This is the missing state-schema migration: for each manifest item the
+// target's `items` map doesn't yet carry, derive its `enabled` flag with the
+// SAME pure membership rule deriveTarget() uses (the handover-wiring
+// exception included). Every item already present in `target.items` is left
+// completely untouched — enabled flags, overrides, all of it. Mutates
+// `target.items` in place; returns true if anything was added, so a caller
+// can decide whether the mutation needs persisting.
+//
+// CR fix (HIMMEL-1017 CR round): scope membership is checked against
+// cachedAnswers.scope — the AUTHORITATIVE invocation scope (the exact value
+// ensureTarget() used to compute the target's own key) — never
+// `target.scope`. `target.scope` is a persisted, independently-editable
+// copy of that same fact (same class of drift risk as `lastEnsured`/
+// `overrides` above, or `target.scope` vs the invocation scope in
+// cmdEnsure's own Step 0 comment on reconcileTarget): a state.json entry
+// keyed under a project path but whose persisted `.scope` field somehow read
+// "user" (hand-edit, schema drift) used to backfill every project-only new
+// item disabled — and, once backfilled, `ensureTarget`'s own
+// `if (target.items[item.id]) continue` guard means that wrong value is
+// never revisited on a later run. `target.profile`, in contrast, genuinely
+// CAN diverge intentionally from a fresh derive (an explicit `ensure
+// --profile` reconcile) — that one is still read from the persisted target,
+// matching this function's "existing item state is never second-guessed"
+// contract.
+function migrateTargetItems(target, manifest, cachedAnswers) {
+  const scope = cachedAnswers.scope;
+  let changed = false;
+  for (const item of manifest.items) {
+    if (target.items[item.id]) continue;
+    let enabled = item.profiles.includes(target.profile) && item.scopes.includes(scope);
+    if (item.id === 'handover-wiring') {
+      enabled = Boolean(cachedAnswers.handover) && cachedAnswers.handover.mode !== 'none';
+    }
+    target.items[item.id] = { enabled, overrides: {} };
+    changed = true;
+  }
+  return changed;
+}
+
 // Add the derived entry for this target if missing; return the (possibly
-// pre-existing) entry either way. Never overwrites an existing entry — a
-// target that already has state is left alone (re-deriving/repairing belongs
-// to a later reconcile path, not this first-run seam).
+// pre-existing) entry either way. An existing entry is never re-derived —
+// its profile/scope and every already-tracked item's enabled/overrides are
+// left alone (re-deriving/repairing those belongs to reconcileTarget(), not
+// this first-run seam) — but it IS migrated: any manifest item ID missing
+// from its `items` map gets backfilled via migrateTargetItems() above, so an
+// existing target never silently loses visibility into a newly-added
+// manifest item.
 function ensureTarget(state, manifest, cachedAnswers) {
   const key = targetKeyForScope(cachedAnswers.scope);
   if (!state.targets[key]) {
     state.targets[key] = deriveTarget(manifest, cachedAnswers);
+  } else {
+    migrateTargetItems(state.targets[key], manifest, cachedAnswers);
   }
   return state.targets[key];
 }
@@ -154,4 +206,4 @@ function reconcileTarget(state, manifest, cachedAnswers, { profile, scope }) {
   return entry;
 }
 
-module.exports = { load, save, deriveTarget, ensureTarget, reconcileTarget };
+module.exports = { load, save, deriveTarget, ensureTarget, reconcileTarget, migrateTargetItems };

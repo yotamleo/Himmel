@@ -1518,8 +1518,16 @@ async function cmdStatus(args) {
 
   const state = stateLib.load();
   const existedBefore = Boolean(state.targets[targetKey]);
-  stateLib.ensureTarget(state, manifest, cachedAnswers);
-  if (!existedBefore) stateLib.save(state);
+  const itemCountBefore = existedBefore ? Object.keys(state.targets[targetKey].items).length : 0;
+  const target = stateLib.ensureTarget(state, manifest, cachedAnswers);
+  // HIMMEL-1017: persist not only a brand-new derive but also a migration —
+  // ensureTarget() now backfills manifest items an EXISTING target was
+  // missing (a manifest update since the target was last derived). Without
+  // this, the migrated items would live only in-memory for this one run and
+  // never make it into state.json, so the very next `status` invocation
+  // would silently re-migrate them (harmless, but the on-disk artifact would
+  // never catch up).
+  if (!existedBefore || Object.keys(target.items).length !== itemCountBefore) stateLib.save(state);
 
   const report = statusReportLib.statusReport({
     manifest, scope, targetPath: baseTargetPath, answers: cachedAnswers, itemIds: args.items,
@@ -1606,8 +1614,13 @@ async function cmdEnsure(args) {
   // reconciled bookkeeping immediately is correct and intentionally kept.
   const state = stateLib.load();
   const existedBefore = Boolean(state.targets[targetKey]);
+  const itemCountBefore = existedBefore ? Object.keys(state.targets[targetKey].items).length : 0;
   let target = stateLib.ensureTarget(state, manifest, cachedAnswers);
-  let stateChanged = !existedBefore;
+  // HIMMEL-1017: ensureTarget() can now also MIGRATE an existing target (add
+  // manifest items it was missing) — count that as a state change too, same
+  // as a brand-new derive, so the migrated items get persisted rather than
+  // silently staying in-memory-only for this one run.
+  let stateChanged = !existedBefore || Object.keys(target.items).length !== itemCountBefore;
 
   // Step 0: reconcile FIRST whenever --profile is explicitly supplied —
   // CR fix: NOT only when it differs from the target's stored profile. A

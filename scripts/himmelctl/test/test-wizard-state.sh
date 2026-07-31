@@ -142,4 +142,135 @@ cmp -s "$work/state-save1.json" "$statePathC" \
   || fail "caseC: state.json should round-trip byte-identically across two saves"
 echo "ok: caseC write->read round-trips byte-stably across two saves"
 
+# ── Case D (HIMMEL-1017): ensureTarget() migrates a PRE-CHANGE existing
+# target — it backfills manifest items the target's persisted `items` map
+# doesn't yet carry (simulating a manifest that gained items after this
+# target was first derived, e.g. an install predating this repo's most
+# recent `himmel-update`), leaving every already-tracked item's enabled flag
+# and overrides byte-for-byte untouched. ─────────────────────────────────────
+caseD_dir="$work/caseD-target"; mkdir -p "$caseD_dir"
+homeD="$work/homeD"; mkdir -p "$homeD"
+cacheD="$work/cacheD"
+
+outD=$(cd "$caseD_dir" && HOME="$homeD" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" "$node_bin" -e "
+const state = require('$state_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const answers = {
+  role: 'adopter', tier: 'standard', scope: 'project',
+  vault: { mode: 'default-template', path: '~/vault' },
+  handover: { mode: 'external', path: '~/h' },
+  pluginSet: 'lean', lanes: [], alwaysOn: false,
+};
+
+// Simulate a PRE-CHANGE state.json: derive against an OLDER manifest missing
+// two real items (one that should end up enabled:true under this target's
+// profile/scope — 'qmd-binary' — and one that should end up enabled:false —
+// 'pre-commit-hooks', scope:['project'] only under profiles core/all, and
+// this target's profile is 'all' from vault.mode default-template — wait,
+// pre-commit-hooks IS profiles:['core','all'] so it WOULD be true; pick a
+// genuinely-false one instead: a user-scope-only item under a project-scope
+// target reads false regardless of profile).
+const oldManifest = { schemaVersion: manifest.schemaVersion, harness: manifest.harness,
+  items: manifest.items.filter((i) => i.id !== 'qmd-binary' && i.id !== 'graphify') };
+if (oldManifest.items.length === manifest.items.length) throw new Error('fixture drift: expected the real manifest to still carry qmd-binary + graphify');
+
+let s = state.load();
+const preChange = state.ensureTarget(s, oldManifest, answers);
+if (preChange.items['qmd-binary']) throw new Error('fixture drift: qmd-binary should be ABSENT from the pre-change derive');
+if (preChange.items['graphify']) throw new Error('fixture drift: graphify should be ABSENT from the pre-change derive');
+// Hand-set an override + a non-default enabled flag on an item that DOES
+// survive the migration untouched — proves migration never re-derives
+// already-tracked items.
+preChange.items['pre-commit-hooks'].overrides = { note: 'pre-change-override' };
+preChange.items['pre-commit-hooks'].enabled = false; // deliberately wrong vs. a fresh derive, to prove it survives verbatim
+state.save(s);
+
+const before = JSON.parse(JSON.stringify(s));
+
+// Now ensureTarget against the CURRENT (full) manifest — the 'upgrade'.
+const migrated = state.ensureTarget(s, manifest, answers);
+state.save(s);
+
+console.log(JSON.stringify({ before, after: s, migrated }));
+")
+
+echo "$outD" | jq -e '.migrated.items["qmd-binary"].enabled == true' >/dev/null \
+  || fail "caseD: migrated qmd-binary should be backfilled enabled:true under profile 'all' (got: $outD)"
+echo "ok: caseD — qmd-binary backfilled enabled:true"
+
+# graphify is scope:["user"] only; this target is scope 'project', so its
+# backfilled membership check (scopes.includes('project')) reads false —
+# asserted explicitly so the migration's per-item rule (not just presence) is
+# exercised in both directions.
+echo "$outD" | jq -e '.migrated.items["graphify"].enabled == false' >/dev/null \
+  || fail "caseD: migrated graphify (scope:user-only) should backfill enabled:false under a project-scope target (got: $outD)"
+echo "ok: caseD — ensureTarget backfills missing manifest items (qmd-binary:true, graphify:false) into an existing target"
+
+echo "$outD" | jq -e '.migrated.items["pre-commit-hooks"].enabled == false and .migrated.items["pre-commit-hooks"].overrides == {"note":"pre-change-override"}' >/dev/null \
+  || fail "caseD: an already-tracked item (pre-commit-hooks) must survive migration byte-for-byte unchanged (got: $outD)"
+echo "ok: caseD — an already-tracked item's enabled flag + overrides survive migration untouched"
+
+migratedCount=$(echo "$outD" | jq '.migrated.items | keys | length')
+manifestCount=$(jq '.items | length' "$manifest_path")
+[ "$migratedCount" -eq "$manifestCount" ] || fail "caseD: migrated target should carry ALL $manifestCount manifest item ids (got $migratedCount)"
+echo "ok: caseD — migrated target carries every manifest item id"
+
+echo "$outD" | jq -e '.after.targets | to_entries[0].value.items["qmd-binary"].enabled == true' >/dev/null \
+  || fail "caseD: the migration should round-trip through save() (got: $outD)"
+echo "ok: caseD — migration round-trips through save()/load()"
+
+# ── Case E (HIMMEL-1017 CR round): migration membership must key off the
+# AUTHORITATIVE invocation scope (cachedAnswers.scope — the same value that
+# picked which target entry we're even operating on), NEVER the target's own
+# PERSISTED `.scope` field, which can independently drift (a hand-edit, a
+# pre-schema-fix state file — the same class of defect `lastEnsured`/
+# `overrides` already guard against). Repro: a project-scope target whose
+# persisted `.scope` somehow reads "user" gains a project-ONLY item after an
+# upgrade — the item must still backfill enabled:true (project scope really
+# is desired here), not enabled:false (what a naive read of the stale
+# persisted scope would produce, forever, since the item-exists guard skips
+# it on every later run once wrongly backfilled). ─────────────────────────
+caseE_dir="$work/caseE-target"; mkdir -p "$caseE_dir"
+homeE="$work/homeE"; mkdir -p "$homeE"
+cacheE="$work/cacheE"
+
+outE=$(cd "$caseE_dir" && HOME="$homeE" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" "$node_bin" -e "
+const state = require('$state_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const answers = {
+  role: 'adopter', tier: 'standard', scope: 'project',
+  vault: { mode: 'none', path: '' },
+  handover: { mode: 'none', path: '' },
+  pluginSet: 'lean', lanes: [], alwaysOn: false,
+};
+
+// PRE-CHANGE state: derive against a manifest missing pre-commit-hooks
+// (scopes:['project'], profiles:['core','all'] — desired under THIS
+// target's real profile 'core' + authoritative scope 'project').
+const oldManifest = { schemaVersion: manifest.schemaVersion, harness: manifest.harness,
+  items: manifest.items.filter((i) => i.id !== 'pre-commit-hooks') };
+if (oldManifest.items.length === manifest.items.length) throw new Error('fixture drift: expected the real manifest to still carry pre-commit-hooks');
+
+let s = state.load();
+const key = state.ensureTarget(s, oldManifest, answers) && Object.keys(s.targets)[0];
+if (s.targets[key].items['pre-commit-hooks']) throw new Error('fixture drift: pre-commit-hooks should be ABSENT from the pre-change derive');
+if (s.targets[key].scope !== 'project') throw new Error('fixture drift: freshly-derived scope should be project before corruption');
+
+// Corrupt the PERSISTED .scope field only — cachedAnswers.scope (what
+// ensureTarget uses to pick this very target key) stays 'project'
+// throughout; only the target's own redundant copy drifts.
+s.targets[key].scope = 'user';
+state.save(s);
+
+// The 'upgrade': ensureTarget against the CURRENT (full) manifest.
+const migrated = state.ensureTarget(s, manifest, answers);
+state.save(s);
+
+console.log(JSON.stringify({ migrated }));
+")
+
+echo "$outE" | jq -e '.migrated.items["pre-commit-hooks"].enabled == true' >/dev/null \
+  || fail "caseE: a project-only item backfilled under a target with a STALE persisted scope:'user' must still key off the AUTHORITATIVE invocation scope 'project' (got: $outE)"
+echo "ok: caseE — migration membership uses the authoritative invocation scope, never a stale persisted target.scope"
+
 echo "PASS"

@@ -250,19 +250,50 @@ function probeQmdIndex(item, ctx) {
 
 // ── mcp-registered ───────────────────────────────────────────────────────
 
+// CR fix (HIMMEL-1017 CR round): SCOPE-AWARE file resolution. Claude Code's
+// own `claude mcp add -s <scope>` writes to a DIFFERENT config file per
+// scope (graphify-bin.sh's graphify_register_mcp() comment + docs/setup/
+// new-machine.md: project scope -> a COMMITTED <target>/.mcp.json;
+// user/local scope -> the personal ~/.claude.json) — this probe used to read
+// ~/.claude.json UNCONDITIONALLY, so a correctly-registered project-scope
+// server (graphify-mcp AND tokensave-mcp both carry scopes:["project",
+// "user"]) always read absent. Both files share the same
+// `{"mcpServers": {...}}` shape, so the parse/lookup logic below is scope-
+// agnostic; only the path differs.
+function mcpConfigPath(ctx) {
+  if (ctx.scope === 'project') return path.join(ctx.targetPath, '.mcp.json');
+  return path.join((ctx.env && ctx.env.HOME) || os.homedir(), '.claude.json');
+}
+
 function probeMcpRegistered(item, ctx) {
-  const filePath = path.join((ctx.env && ctx.env.HOME) || os.homedir(), '.claude.json');
+  const filePath = mcpConfigPath(ctx);
   let data;
   try {
     data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch (_e) {
-    return { actual: 'absent', detail: `cannot read/parse ${filePath}` };
+  } catch (e) {
+    // configError: true (CR fix, HIMMEL-1017 round) marks a genuinely BROKEN
+    // config — unreadable for a reason other than "it doesn't exist yet", or
+    // present-but-unparseable — as opposed to a clean, expected absence. A
+    // MISSING file (ENOENT) is the ordinary, common case for project-scope
+    // .mcp.json specifically (a committed file that only exists once
+    // SOMETHING has been registered at project scope — most projects never
+    // have one) — that is exactly "never opted in", not an error, so it does
+    // NOT get configError. Any other read failure (permission denied) or a
+    // present-but-unparseable file DOES: a consumer that wants to treat
+    // "genuinely never opted in" differently from "the config is broken"
+    // (status-report.js's graphify-mcp opt-in downgrade) needs this signal;
+    // every other existing caller ignores the extra field (additive, not a
+    // breaking change to the {actual, detail} contract).
+    if (e && e.code === 'ENOENT') {
+      return { actual: 'absent', detail: `${filePath} does not exist` };
+    }
+    return { actual: 'absent', detail: `cannot read/parse ${filePath}`, configError: true };
   }
   // A valid-JSON but non-object root (null, array, string) has no mcpServers —
-  // guard before dereferencing so a malformed ~/.claude.json reads absent
-  // rather than throwing out of the whole status sweep.
+  // guard before dereferencing so a malformed config reads absent rather
+  // than throwing out of the whole status sweep.
   if (data === null || typeof data !== 'object' || Array.isArray(data)) {
-    return { actual: 'absent', detail: `unexpected JSON shape in ${filePath}` };
+    return { actual: 'absent', detail: `unexpected JSON shape in ${filePath}`, configError: true };
   }
   const server = item.probe.server;
   if (data.mcpServers && Object.prototype.hasOwnProperty.call(data.mcpServers, server)) {

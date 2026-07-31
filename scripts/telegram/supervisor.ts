@@ -2,6 +2,7 @@ import { spawn } from "bun";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { bridgeRoot } from "./bus";
+import { installTimestampedLogging } from "./log-timestamp";
 
 export function breakerTrips(consecutiveImmediateFails: number, maxFails: number): boolean {
   return consecutiveImmediateFails >= maxFails;
@@ -106,6 +107,7 @@ export function killBridge(killFn: (pid: number) => void = (pid) => process.kill
 }
 
 async function main(): Promise<void> {
+  installTimestampedLogging();   // HIMMEL-1401: every supervisor.log line gets an ISO timestamp
   if (process.argv.includes("--kill")) { process.exit(killBridge()); }
   writePidfile({ supervisor: process.pid, poller: null });
   let fails = 0;

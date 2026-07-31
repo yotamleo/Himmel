@@ -21,7 +21,15 @@ $script:Failed = 0
 $Cli = Join-Path $PSScriptRoot 'uninstall.ps1'
 
 function Assert-Rc {
-    param([string]$Label, [int]$Expected, [int]$Actual)
+    # HIMMEL-839 CR round-2: [int]-typed Expected/Actual made every non-numeric
+    # call in the SC6 settings-unwire block (e.g. 'statusLine removed' 'null'
+    # ...) throw a non-terminating ParameterBindingArgumentTransformation
+    # error -- PowerShell writes it to the error stream and silently skips
+    # the call (no PASS/FAIL, no $script:Failed increment), so ~12 assertions
+    # (incl. the file-diff checks at the end) were never actually evaluated
+    # and the suite still reported ALL PASS. [string] compares correctly for
+    # both the genuine rc callers (0/1/2 as strings) and these value callers.
+    param([string]$Label, [string]$Expected, [string]$Actual)
     if ($Actual -eq $Expected) {
         Write-Host "PASS $Label (rc=$Actual)"
     } else {
@@ -341,7 +349,7 @@ function Unregister-ScheduledTask {
         @'
 {
   "statusLine": {"type":"command","command":"bash \"C:/h/scripts/statusline/bin/statusline.sh\""},
-  "env": {"HIMMEL_REPO":"C:/h","LUNA_VAULT_PATH":"C:/v","KEEP_ME":"1"},
+  "env": {"HIMMEL_REPO":"C:/h","LUNA_VAULT_PATH":"C:/v","HANDOVER_DIR":"C:/v/handovers","KEEP_ME":"1"},
   "hooks": {
     "PreToolUse": [
       {"matcher":"Bash","hooks":[
@@ -374,6 +382,7 @@ function Unregister-ScheduledTask {
     Assert-Rc 'statusLine removed'      'null' (JqU '.statusLine // "null"')
     Assert-Rc 'HIMMEL_REPO removed'     'null' (JqU '.env.HIMMEL_REPO // "null"')
     Assert-Rc 'LUNA_VAULT_PATH removed' 'null' (JqU '.env.LUNA_VAULT_PATH // "null"')
+    Assert-Rc 'HANDOVER_DIR removed'    'null' (JqU '.env.HANDOVER_DIR // "null"')
     Assert-Rc 'non-himmel env kept'     '1'    (JqU '.env.KEEP_ME')
     Assert-Rc 'UNIVERSAL hook removed'  '0'    (JqU '[.hooks.PreToolUse[].hooks[].command|select(test("auto-approve-safe-bash"))]|length')
     Assert-Rc 'rtk guard preserved'     '1'    (JqU '[.hooks.PreToolUse[].hooks[].command|select(test("rtk-hook-guard"))]|length')

@@ -5,6 +5,7 @@ import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta
 import { classify, type Route } from "./router";
 import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
+import { installTimestampedLogging } from "./log-timestamp";
 import { isAllowed, isGroupAllowed, isOperatorIdentity, loadAccess, vaultForChat, type Access } from "./gate";
 import { runSession, buildPrompt, BASH_BIN, type BusPaths, type PermissionMode } from "./run";
 import { classifyForSpawn, type TriageVerdict, type TriageModelOverride } from "./triage";
@@ -1445,7 +1446,42 @@ export async function replyViaOutbox(root: string, chat_id: number, text: string
   await appendLine(join(sessionDir(root, session), "outbox.jsonl"), JSON.stringify({ text }));
 }
 
+// --- getUpdates outage handling (HIMMEL-1401) ---
+// Before this, a non-ok getUpdates response (e.g. a Telegram-API-side Bad
+// Gateway storm) returned [] silently and the main loop's catch — the ONLY
+// place that slept — was never reached, so the loop re-hit the API every tick
+// with zero delay for as long as the outage lasted. getUpdates now throws on
+// non-ok (telegram-api.ts), routing it through the same catch as a network
+// error; these two pure helpers decide how long to back off and when a
+// still-ongoing outage is loud enough to need a log marker.
+
+// Grows 1s -> 2s -> 4s ... capped at 30s across consecutive getUpdates
+// failures; the caller resets to 0 on the next successful call, so a healthy
+// poll never carries residual delay from a past outage.
+export function getUpdatesBackoffMs(consecutiveFails: number): number {
+  if (consecutiveFails <= 0) return 0;
+  return Math.min(30_000, 1000 * 2 ** (consecutiveFails - 1));
+}
+
+// How long getUpdates has to be failing continuously before the outage is
+// worth a loud log line (constant, not env-tunable — this is a fixed
+// observability threshold, not an operator-facing knob).
+export const OUTAGE_ALERT_AFTER_MS = 5 * 60 * 1000;
+
+// Pure + testable without real timers. `outageStartedAt` is the ms timestamp of
+// the first consecutive failure in the current episode; `lastAlertAt` is null
+// until the first alert fires. True once the outage has run >= OUTAGE_ALERT_AFTER_MS
+// AND (no alert has fired yet OR a full interval has passed since the last one) —
+// so a stuck outage keeps re-announcing itself at a bounded rate (a later reader
+// can see it was still down, not just that it once was) instead of alerting once
+// and going silent for the rest of the outage.
+export function shouldAlertOutage(now: number, outageStartedAt: number, lastAlertAt: number | null): boolean {
+  if (now - outageStartedAt < OUTAGE_ALERT_AFTER_MS) return false;
+  return lastAlertAt === null || now - lastAlertAt >= OUTAGE_ALERT_AFTER_MS;
+}
+
 export async function main(): Promise<void> {
+  installTimestampedLogging();
   const root = bridgeRoot();
   const repoCwd = process.env.HIMMEL_REPO ?? process.cwd();
   const bridgeEnv = await loadBridgeEnv();
@@ -1586,10 +1622,40 @@ export async function main(): Promise<void> {
   const FLUSH_MS = intervalEnvMs(process.env.TELEGRAM_FLUSH_MS, 1000);
   const flushTimer = setInterval(guarded(() => flushOutboxes(root, send)), FLUSH_MS);
   if (typeof flushTimer.unref === "function") flushTimer.unref();
+  // Outage tracking across loop iterations (HIMMEL-1401): consecutive getUpdates
+  // failures drive the backoff, outageStartedAt/lastOutageAlertAt drive the
+  // rate-limited log marker. All three reset together on the next clean call.
+  let pollFails = 0;
+  let outageStartedAt: number | null = null;
+  let lastOutageAlertAt: number | null = null;
   for (;;) {
     const offset = await loadOffset(root);
     let updates: any[] = [];
-    try { updates = await getUpdates(token, offset, 30); } catch (e) { console.error("[poller] getUpdates failed: " + e); await Bun.sleep(1000); continue; }
+    try {
+      updates = await getUpdates(token, offset, 30);
+      if (outageStartedAt !== null) {
+        const downSec = Math.round((Date.now() - outageStartedAt) / 1000);
+        console.error(`[poller] getUpdates recovered after ${pollFails} consecutive failure(s) — outage ran ~${downSec}s (started ${new Date(outageStartedAt).toISOString()})`);
+      }
+      pollFails = 0; outageStartedAt = null; lastOutageAlertAt = null;
+    } catch (e) {
+      pollFails++;
+      if (outageStartedAt === null) outageStartedAt = Date.now();
+      const backoffMs = getUpdatesBackoffMs(pollFails);
+      console.error(`[poller] getUpdates failed (consecutive=${pollFails}, backoff=${backoffMs}ms): ${e}`);
+      if (shouldAlertOutage(Date.now(), outageStartedAt, lastOutageAlertAt)) {
+        lastOutageAlertAt = Date.now();
+        const downMin = Math.round((Date.now() - outageStartedAt) / 60000);
+        // Log-only (HIMMEL-1401): no non-Telegram operator-alert path (e.g. a
+        // PushNotification/hermes hook) exists in this repo to raise this on —
+        // and Telegram itself is exactly what's down, so this can't alert
+        // through it either. The recovery line above closes the span for a
+        // later reader of this (now timestamped) log.
+        console.error(`[poller] *** PROLONGED OUTAGE: getUpdates has been failing continuously since ${new Date(outageStartedAt).toISOString()} (~${downMin}min) ***`);
+      }
+      await Bun.sleep(backoffMs);
+      continue;
+    }
     await ingestUpdates(root, updates, allow, fetchImage, fetchVoice, fetchDoc, notifyDocFail);
     const fresh = await readNewLines<Inbound>(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"));
     // Per-BATCH, so it resets every poll tick: a chat whose fault persists is

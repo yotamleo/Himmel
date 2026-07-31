@@ -11,7 +11,8 @@
 #         (machine-setup/uninstall-plugins.sh — user-scope, affects all repos)
 #   [5/6] uninstall git hooks (pre-commit/pre-push/commit-msg)
 #   [6/6] unwire ~/.claude/settings.json (statusLine, env.HIMMEL_REPO,
-#         env.LUNA_VAULT_PATH, the UNIVERSAL hooks — what setup.sh/adopt wired)
+#         env.LUNA_VAULT_PATH, env.HANDOVER_DIR, the UNIVERSAL hooks — what
+#         setup.sh/adopt wired)
 #
 # Destructive. Fail-closed: without --yes an interactive run prompts; a
 # non-interactive run aborts (rc=2). --dry-run prints every action without
@@ -124,7 +125,7 @@ else
 fi
 if [ "$SKIP_SETTINGS" -eq 0 ]; then
   echo "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
-  echo "     LUNA_VAULT_PATH, UNIVERSAL hooks — non-himmel keys untouched)"
+  echo "     LUNA_VAULT_PATH, HANDOVER_DIR, UNIVERSAL hooks — non-himmel keys untouched)"
 else
   echo "  6. keep ~/.claude/settings.json wiring (--skip-settings)"
 fi
@@ -363,11 +364,12 @@ echo ""
 
 # --- [6/6] unwire user-scope settings.json (HIMMEL-460) ----------------------
 # Symmetric inverse of setup.sh [9/10] + adopt --scope user: remove the
-# statusLine, env.HIMMEL_REPO, env.LUNA_VAULT_PATH, and the UNIVERSAL hooks that
-# himmel wired into ~/.claude/settings.json. Each helper removes ONLY its own
-# key/stanza (refuses invalid JSON, preserves every non-himmel key: rtk guard,
-# the operator's own hooks, MCP config). --dry-run flows through to each.
-echo "[6/6] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, hooks)..."
+# statusLine, env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR
+# (HIMMEL-839), and the UNIVERSAL hooks that himmel wired into
+# ~/.claude/settings.json. Each helper removes ONLY its own key/stanza
+# (refuses invalid JSON, preserves every non-himmel key: rtk guard, the
+# operator's own hooks, MCP config). --dry-run flows through to each.
+echo "[6/6] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks)..."
 _user_settings="$USER_SETTINGS"
 if [ "$SKIP_SETTINGS" -eq 1 ]; then
   echo "  kept (--skip-settings)."
@@ -376,11 +378,11 @@ elif [ ! -f "$_user_settings" ]; then
 elif [ "$DRY_RUN" -eq 1 ]; then
   # The single-key unwire helpers have no dry-run flag, so gate at this level to
   # keep --dry-run a true no-op (SC6). unwire-pretooluse-hooks has its own flag.
-  echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH from $_user_settings"
+  echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $_user_settings"
   bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$_user_settings" 1 \
     || echo "  WARN: unwire-pretooluse-hooks dry-run reported a problem." >&2
 else
-  for _unwire in unwire-statusline unwire-himmel-repo unwire-luna-vault; do
+  for _unwire in unwire-statusline unwire-himmel-repo unwire-luna-vault unwire-handover-dir; do
     if ! bash "$REPO_ROOT/scripts/lib/$_unwire.sh" "$_user_settings"; then
       echo "  WARN: $_unwire reported a problem; setup-state may remain." >&2
     fi

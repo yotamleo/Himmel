@@ -342,6 +342,24 @@ assert_contains "bat carries the resolved pwsh path" "$fake_pwsh_win" "$bat"
 for what in --settings "< NUL" "< /dev/null"; do
     assert_not_contains "bat has no claude-session marker ($what)" "$what" "$bat"
 done
+# Folded in from former FIX 1c/1d blocks (HIMMEL-1324): both exercised this
+# exact same successful-default-arm scenario (reset_state; run_sc arm) with
+# no state divergence from T1 above, so they are the same code path -- merged
+# into T1's single arm call instead of re-arming twice more.
+if ls "$BAT_DIR"/.codex-sweep.bat.* >/dev/null 2>&1; then
+    fail "temp runner file left behind after success" "$(ls "$BAT_DIR"/.codex-sweep.bat.* 2>/dev/null)"
+else
+    pass "no temp runner file left behind after success (FIX 1c)"
+fi
+if [ -f "$STATE/create-time-runner-probe.bat" ]; then
+    pass "runner was readable at its final path at /create time (publish-before-create ordering holds, FIX 1d)"
+else
+    fail "runner NOT readable at its final path at /create time -- publish-before-create ordering broken"
+fi
+probe=$(cat "$STATE/create-time-runner-probe.bat" 2>/dev/null || echo MISSING)
+assert_contains "create-time probe carries the full new runner content (sweep payload)" "sweep-codex-orphans.ps1" "$probe"
+assert_contains "create-time probe carries the full new runner content (reap payload)" "reap-mcp-fleet.ps1" "$probe"
+assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 7" "$probe"
 
 echo "TEST: created XML carries InteractiveToken/LeastPrivilege + default 09:00 (T1b)"
 xml=$(cat "$STATE/tasks/HIMMEL-CodexOrphanSweep" 2>/dev/null || echo MISSING)
@@ -371,10 +389,14 @@ assert_contains "Repetition is the FIRST child of CalendarTrigger (canonical ord
 # 12 invocations and pushed the suite past the cap: green standalone, rc=124
 # under the runner. Coverage is chosen per distinct CODE PATH, not per value:
 #   * one accepted non-default value, via the `=` form (covers value handling AND
-#     the equals-form parse; the space form is covered by the reject cases below)
+#     the equals-form parse; the space form is covered by the reject case below)
 #   * 0, the only value that changes the emitted SHAPE (no <Repetition>)
 #   * the default (4) is already asserted in T1b, so it is not re-armed here
-#   * three rejects, one per regex branch: out-of-range, non-numeric, empty
+#   * one reject (HIMMEL-1324): codex-sweep-cadence.sh validates --repeat-hours
+#     with a SINGLE regex line (`^([0-9]|1[0-9]|2[0-3])$`), so an out-of-range,
+#     a non-numeric, and an empty value all fail the exact same branch with the
+#     exact same message -- three inputs, one code path. Kept the out-of-range
+#     case (24); dropped abc/'' as same-branch duplicates.
 #   * arm-only enforcement on ONE subcommand — status and disarm share a single
 #     guard, and --time already covers both for that code path
 echo "TEST: --repeat-hours (HIMMEL-1309 gap 6)"
@@ -387,18 +409,16 @@ run_sc arm --repeat-hours 0 >/dev/null
 xml=$(cat "$STATE/tasks/HIMMEL-CodexOrphanSweep" 2>/dev/null || echo MISSING)
 assert_not_contains "--repeat-hours 0 emits NO Repetition (daily-only, pre-1309 shape)" "<Repetition>" "$xml"
 assert_contains "--repeat-hours 0 still emits the daily schedule" "<ScheduleByDay>" "$xml"
-# Rejects run BEFORE the platform gate and never reach schtasks, so they are the
-# cheap cases — one per regex branch.
-for bad in 24 abc ''; do
-    reset_state
-    rc=0; out=$(run_sc arm --repeat-hours "$bad" 2>&1) || rc=$?
-    assert_rc "--repeat-hours '$bad' rejected -> rc 1" 1 "$rc"
-    if [ ! -f "$STATE/calls.log" ]; then
-        pass "--repeat-hours '$bad' touched no schtasks"
-    else
-        fail "--repeat-hours '$bad' reached schtasks" "$(cat "$STATE/calls.log")"
-    fi
-done
+# Reject runs BEFORE the platform gate and never reaches schtasks, so it is a
+# cheap case -- one representative input for the single regex branch.
+reset_state
+rc=0; out=$(run_sc arm --repeat-hours 24 2>&1) || rc=$?
+assert_rc "--repeat-hours '24' rejected -> rc 1" 1 "$rc"
+if [ ! -f "$STATE/calls.log" ]; then
+    pass "--repeat-hours '24' touched no schtasks"
+else
+    fail "--repeat-hours '24' reached schtasks" "$(cat "$STATE/calls.log")"
+fi
 reset_state
 rc=0; out=$(run_sc arm --repeat-hours 2>&1) || rc=$?
 assert_rc "--repeat-hours with no value -> rc 1 (not a raw bash shift error)" 1 "$rc"
@@ -508,6 +528,11 @@ rm -f "$STATE/verify-epoch"
 
 echo "TEST: post-arm verify NEXTRUN-NONE answer rolls back, rc 4 (T3)"
 reset_state
+# Sentinel pre-existing .bat folded in from former FIX 1b (HIMMEL-1324): same
+# NEXTRUN-NONE rollback scenario, so the sentinel-replacement check is added
+# to this arm call instead of re-arming from scratch a second time.
+mkdir -p "$BAT_DIR"
+printf 'SENTINEL-PRE-EXISTING-BAT\r\n' > "$BAT_DIR/codex-sweep.bat"
 touch "$STATE/verify-nextrun-none"
 rc=0; out=$(run_sc arm 2>&1) || rc=$?
 assert_rc "post-arm verify NEXTRUN-NONE -> rc 4" 4 "$rc"
@@ -519,6 +544,14 @@ fi
 deleted=$(cat "$STATE/deleted.log" 2>/dev/null || echo MISSING)
 assert_contains "rollback recorded a /delete call" "HIMMEL-CodexOrphanSweep" "$deleted"
 assert_contains "rollback NOTE names the --force re-arm recovery command (FIX B)" "re-arm with: bash scripts/cleanup/codex-sweep-cadence.sh arm" "$out"
+bat_after=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
+assert_not_contains "pre-existing sentinel .bat is GONE after NEXTRUN-NONE rollback (publish happens before /create now, FIX 1b)" "SENTINEL-PRE-EXISTING-BAT" "$bat_after"
+assert_contains "bat holds the COMPLETE new runner content after NEXTRUN-NONE rollback (inert without the deleted task, FIX 1b)" "sweep-codex-orphans.ps1" "$bat_after"
+if ls "$BAT_DIR"/.codex-sweep.bat.* >/dev/null 2>&1; then
+    fail "temp runner file left behind after NEXTRUN-NONE rollback" "$(ls "$BAT_DIR"/.codex-sweep.bat.* 2>/dev/null)"
+else
+    pass "no temp runner file left behind after NEXTRUN-NONE rollback (FIX 1b)"
+fi
 rm -f "$STATE/verify-nextrun-none"
 
 # Test T3b: probe failure fails OPEN -- arm stands, rc 0, WARN present -------
@@ -559,48 +592,11 @@ else
 fi
 rm -f "$STATE/fail-create"
 
-echo "TEST: atomic runner publication -- NEXTRUN-NONE rollback deletes the task but still leaves the published COMPLETE new .bat (not the old sentinel), no temp left (FIX 1b, round-3 reorder)"
-reset_state
-mkdir -p "$BAT_DIR"
-printf 'SENTINEL-PRE-EXISTING-BAT\r\n' > "$BAT_DIR/codex-sweep.bat"
-touch "$STATE/verify-nextrun-none"
-rc=0; out=$(run_sc arm 2>&1) || rc=$?
-assert_rc "arm with NEXTRUN-NONE rollback -> rc 4" 4 "$rc"
-bat_after=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
-assert_not_contains "pre-existing sentinel .bat is GONE after NEXTRUN-NONE rollback (publish happens before /create now)" "SENTINEL-PRE-EXISTING-BAT" "$bat_after"
-assert_contains "bat holds the COMPLETE new runner content after NEXTRUN-NONE rollback (inert without the deleted task)" "sweep-codex-orphans.ps1" "$bat_after"
-if ls "$BAT_DIR"/.codex-sweep.bat.* >/dev/null 2>&1; then
-    fail "temp runner file left behind after NEXTRUN-NONE rollback" "$(ls "$BAT_DIR"/.codex-sweep.bat.* 2>/dev/null)"
-else
-    pass "no temp runner file left behind after NEXTRUN-NONE rollback"
-fi
-rm -f "$STATE/verify-nextrun-none"
-
-echo "TEST: atomic runner publication -- success path publishes new .bat content, no temp left (FIX 1c)"
-reset_state
-rc=0; out=$(run_sc arm 2>&1) || rc=$?
-assert_rc "arm success -> rc 0" 0 "$rc"
-bat=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
-assert_contains "published .bat holds new runner content" "sweep-codex-orphans.ps1" "$bat"
-if ls "$BAT_DIR"/.codex-sweep.bat.* >/dev/null 2>&1; then
-    fail "temp runner file left behind after success" "$(ls "$BAT_DIR"/.codex-sweep.bat.* 2>/dev/null)"
-else
-    pass "no temp runner file left behind after success"
-fi
-
-echo "TEST: immediate-fire regression -- the runner is fully published and readable at its FINAL path AT /create TIME, before the task can possibly exist (FIX 1d, round-3 CR fix, HIMMEL-892)"
-reset_state
-rc=0; out=$(run_sc arm 2>&1) || rc=$?
-assert_rc "arm success -> rc 0" 0 "$rc"
-if [ -f "$STATE/create-time-runner-probe.bat" ]; then
-    pass "runner was readable at its final path at /create time (publish-before-create ordering holds)"
-else
-    fail "runner NOT readable at its final path at /create time -- publish-before-create ordering broken"
-fi
-probe=$(cat "$STATE/create-time-runner-probe.bat" 2>/dev/null || echo MISSING)
-assert_contains "create-time probe carries the full new runner content (sweep payload)" "sweep-codex-orphans.ps1" "$probe"
-assert_contains "create-time probe carries the full new runner content (reap payload)" "reap-mcp-fleet.ps1" "$probe"
-assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 7" "$probe"
+# FIX 1b (NEXTRUN-NONE rollback sentinel-replacement check) folded into T3
+# above -- same rollback scenario, same arm call (HIMMEL-1324).
+# FIX 1c (success-path publish) and FIX 1d (immediate-fire create-time probe)
+# used to re-arm from a clean state here to check exactly what T1's own
+# successful default arm already produces -- folded into T1 above (HIMMEL-1324).
 
 # Test T6: --dry-run touches nothing ------------------------------------------
 
@@ -644,8 +640,6 @@ assert_contains "LOG assignment is the real dir, fully quoted (% doubled, & ^ ve
     "$EVIL_LOG_EXPECTED" "$evil_bat"
 assert_not_contains "no caret-escaped ampersand" '^&' "$evil_bat"
 assert_not_contains "no doubled caret" '^^' "$evil_bat"
-env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$EVIL_DIR" SWEEP_PWSH="$FAKE_PWSH" \
-    SWEEP_HIMMEL_ROOT="$FIXTURE_ROOT" HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm >/dev/null 2>&1 || true
 
 # Test T7b: no pwsh/powershell resolvable -> rc 2 -----------------------------
 
@@ -722,11 +716,19 @@ echo "TEST: second arm without --force -> rc 3, no new /create recorded (T10)"
 reset_state
 run_sc arm >/dev/null
 creates_before=$(grep -c '^/create ' "$STATE/calls.log" 2>/dev/null || true)
+deletes_before=$(grep -c '^/delete ' "$STATE/calls.log" 2>/dev/null || true)
 rc=0; out=$(run_sc arm 2>&1) || rc=$?
 assert_rc "second arm without --force -> rc 3" 3 "$rc"
 assert_contains "dedup message names the task" "HIMMEL-CodexOrphanSweep" "$out"
 creates_after=$(grep -c '^/create ' "$STATE/calls.log" 2>/dev/null || true)
 assert_rc "no new /create call recorded" "$creates_before" "$creates_after"
+deletes_after=$(grep -c '^/delete ' "$STATE/calls.log" 2>/dev/null || true)
+# T11b (HIMMEL-1324 CR round): this /delete check was T11b's ONE unique
+# assertion -- a regression where the dedup path deletes the armed task
+# before returning rc=3 would pass every other T10 check while silently
+# disarming the cadence. Restored here (same arm call, no extra spawn)
+# instead of re-adding the full duplicate re-arm sequence.
+assert_rc "dedup block makes no /delete call" "$deletes_before" "$deletes_after"
 
 echo "TEST: arm --force replaces create-only, NO /delete (transactional --force, FIX B / codex-adv-2, T11)"
 : > "$STATE/calls.log"
@@ -743,40 +745,18 @@ else
     fail "arm --force /create call missing /f" "$(cat "$STATE/calls.log")"
 fi
 
-echo "TEST: dedup unchanged -- plain arm still rc 3 when already armed; arm --force proceeds create-only (T11b)"
-reset_state
-run_sc arm >/dev/null
-: > "$STATE/calls.log"
-rc=0; out=$(run_sc arm 2>&1) || rc=$?
-assert_rc "plain arm against an already-armed task -> rc 3 (dedup unchanged)" 3 "$rc"
-calls_after_plain=$(cat "$STATE/calls.log" 2>/dev/null || echo "")
-assert_not_contains "plain arm dedup block makes no /create call" "/create " "$calls_after_plain"
-assert_not_contains "plain arm dedup block makes no /delete call" "/delete " "$calls_after_plain"
-: > "$STATE/calls.log"
-rc=0; out=$(run_sc arm --force 2>&1) || rc=$?
-assert_rc "arm --force against an already-armed task -> rc 0 (proceeds)" 0 "$rc"
-calls_after_force=$(cat "$STATE/calls.log" 2>/dev/null || echo "")
-assert_not_contains "arm --force still makes no /delete call" "/delete " "$calls_after_force"
-assert_contains "arm --force makes exactly the /create call" "/create /tn HIMMEL-CodexOrphanSweep /xml" "$calls_after_force"
+# T11b (HIMMEL-1324): dropped. It re-ran the identical dedup-reject-then-force-
+# succeed sequence from a second fresh arm, asserting the same two outcomes
+# T10 (dedup rejects, no /create) and T11 (--force proceeds, no /delete, one
+# /create) already assert on the SAME code paths -- three full arm/query/force
+# invocations for zero net-new coverage.
 
-# Test T12: disarm removes task + idempotency ----------------------------------
-
-echo "TEST: disarm removes task; disarm again -> rc 0 idempotent (T12)"
-reset_state
-run_sc arm >/dev/null
-rc=0; out=$(run_sc disarm 2>&1) || rc=$?
-assert_rc "disarm -> rc 0" 0 "$rc"
-assert_contains "disarm reports removal" "disarmed" "$out"
-if [ ! -f "$STATE/tasks/HIMMEL-CodexOrphanSweep" ]; then
-    pass "disarm deleted the task"
-else
-    fail "disarm left the task behind"
-fi
-rc=0; out=$(run_sc disarm 2>&1) || rc=$?
-assert_rc "second disarm -> rc 0 idempotent" 0 "$rc"
-assert_contains "second disarm -> no-op message" "nothing armed" "$out"
-
-# Test T12b: disarm --dry-run while armed touches nothing --------------------
+# Test T12 / T12b: disarm --dry-run, then real disarm + idempotency -----------
+#
+# One arm shared across both (HIMMEL-1324): T12b's dry-run-while-armed
+# assertions don't mutate anything (that's the point of the test), so they run
+# FIRST against the still-armed state, then T12's real disarm + idempotent
+# second disarm consume the same arm without re-arming from scratch.
 
 echo "TEST: disarm --dry-run while armed -> rc 0, no /delete, .bat still present (T12b)"
 reset_state
@@ -796,6 +776,19 @@ if [ -f "$STATE/tasks/HIMMEL-CodexOrphanSweep" ]; then
 else
     fail "disarm --dry-run removed the task"
 fi
+
+echo "TEST: disarm removes task; disarm again -> rc 0 idempotent (T12)"
+rc=0; out=$(run_sc disarm 2>&1) || rc=$?
+assert_rc "disarm -> rc 0" 0 "$rc"
+assert_contains "disarm reports removal" "disarmed" "$out"
+if [ ! -f "$STATE/tasks/HIMMEL-CodexOrphanSweep" ]; then
+    pass "disarm deleted the task"
+else
+    fail "disarm left the task behind"
+fi
+rc=0; out=$(run_sc disarm 2>&1) || rc=$?
+assert_rc "second disarm -> rc 0 idempotent" 0 "$rc"
+assert_contains "second disarm -> no-op message" "nothing armed" "$out"
 
 # Test T13: not-found stderr classification fails CLOSED on unrelated error --
 

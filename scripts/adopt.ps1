@@ -221,6 +221,63 @@ function Wire-LunaVaultPath([string]$Dest) {
     if ($LASTEXITCODE -ne 0) { throw "wire-luna-vault failed (exit $LASTEXITCODE)" }
 }
 
+# env.HANDOVER_DIR — seed the handover state root at the scaffolded luna vault
+# (HIMMEL-839). Without this, a fresh adopter's handover state silently
+# defaults to the inline <repo-root>/handovers/ stub. Creates <Dest>/handovers
+# so Mode B resolves cleanly out of the box. Sibling of Wire-LunaVaultPath;
+# $Dest = the scaffolded vault dir.
+function Wire-HandoverDirLuna([string]$Dest) {
+    $hdir = Join-Path $Dest 'handovers'
+    $settings = if ($Scope -eq 'project') {
+        Join-Path $Target '.claude\settings.json'
+    } else {
+        Join-Path $HOME '.claude\settings.json'
+    }
+
+    # PRESERVE an operator-selected HANDOVER_DIR (HIMMEL-839 CR round-2): a
+    # routine re-adopt must reproduce state, never silently reset it.
+    # /handover-setup is documented as "the only place the state-root location
+    # is chosen interactively" -- adopt.ps1 must not become a second, silent
+    # place that overrides that choice. Two places it could already live:
+    #   1. This settings.json's own env.HANDOVER_DIR (a prior adopt run).
+    #   2. The primary checkout's .env (set-handover-dir.sh / Mode B -- the
+    #      actual file /handover-setup writes to). settings.json env takes
+    #      PROCESS-ENV precedence over .env, so writing here would silently
+    #      SHADOW that choice even though the .env file itself stayed
+    #      untouched. Same rationale as the .sh twin.
+    if (Test-Path $settings) {
+        $existing = $null
+        try {
+            $existingCfg = Get-Content $settings -Raw | ConvertFrom-Json
+            $existing = $existingCfg.env.HANDOVER_DIR
+        } catch {
+            $existing = $null
+        }
+        if ($existing) {
+            Write-Host "  env.HANDOVER_DIR already set in $settings ($existing) — leaving it (re-adopt reproduces, never resets; HIMMEL-839)"
+            return
+        }
+    }
+    $envFile = Join-Path $HimmelRoot '.env'
+    if ((Test-Path $envFile) -and (Select-String -Path $envFile -Pattern '^\s*HANDOVER_DIR=' -Quiet)) {
+        Write-Host "  HANDOVER_DIR already set in $envFile (via /handover-setup) — leaving it, not wiring env.HANDOVER_DIR into $settings (HIMMEL-839)"
+        return
+    }
+
+    if ($DryRun) {
+        Write-Host "DRY: mkdir -p $hdir"
+        Write-Host "DRY: wire env.HANDOVER_DIR → $settings (handover dir: $hdir)"
+        return
+    }
+    New-Item -ItemType Directory -Force -Path $hdir | Out-Null
+    # Canonicalize to an absolute path (HIMMEL-839 CR round-2): a relative
+    # -LunaTarget would otherwise persist a CWD-dependent relative path.
+    $hdir = (Resolve-Path $hdir).Path
+    $whd = Join-Path $HimmelRoot 'scripts\lib\wire-handover-dir.ps1'
+    & pwsh -NoProfile -File $whd -SettingsPath $settings -HandoverDir $hdir
+    if ($LASTEXITCODE -ne 0) { throw "wire-handover-dir failed (exit $LASTEXITCODE)" }
+}
+
 # -FillEnv (HIMMEL-453): fill the himmel clone's .env via the bash fill-env.sh.
 # Targets $HimmelRoot\.env for BOTH scopes (adopt copies hooks, never the Jira
 # CLI, so an adopted repo always uses the clone's CLI reading $HimmelRoot\.env).
@@ -629,6 +686,8 @@ function Do-Luna([string]$Dest) {
     # Persist the vault path UNCONDITIONALLY — a re-run over an existing scaffold
     # must still wire a previously-unwired install (HIMMEL-458).
     Wire-LunaVaultPath $Dest
+    # Seed HANDOVER_DIR the same way, same reasoning (HIMMEL-839).
+    Wire-HandoverDirLuna $Dest
     # G5 (HIMMEL-752): register the scaffolded vault as a qmd collection so it
     # is queryable immediately. Skip + note when qmd/bun unavailable; WARN-not-fail.
     # For -Profile all, Do-Core (-> Wire-QmdCore) has already installed qmd; for

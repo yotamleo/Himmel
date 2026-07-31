@@ -1,5 +1,5 @@
 ---
-description: Update this himmel checkout (harness) — six-item dependency chain (pull, marketplace, jira CLI dist, qmd fork, hermes, luna template) with per-item status + abort-on-first-failure, plus five best-effort advisory steps (codex re-sanitize, statusLine re-wire, plugin gap report, plugin-set reconcile, cadence/guardrail drift checks). `himmelctl update` runs the same engine. autoUpdate does NOT deliver the checkout (git pull) or the core hooks/slash-commands — it only re-syncs installed plugins from the on-disk dir. A configured LUNA_VAULT_PATH is already refreshed by step 6 of this chain; use /luna-upgrade only for an explicit Luna-only run, and /himmel-update-all for multi-vault workflows.
+description: Update this himmel checkout (harness) — six-item dependency chain (pull, marketplace, jira CLI dist, qmd fork, hermes, luna template) with per-item status + abort-on-first-failure, plus seven best-effort advisory steps (codex re-sanitize, statusLine re-wire, graphify pin sync, plugin gap report, plugin-set reconcile, cadence/guardrail drift checks, dependency-readiness check). `himmelctl update` runs the same engine. autoUpdate does NOT deliver the checkout (git pull) or the core hooks/slash-commands — it only re-syncs installed plugins from the on-disk dir. A configured LUNA_VAULT_PATH is already refreshed by step 6 of this chain; use /luna-upgrade only for an explicit Luna-only run, and /himmel-update-all for multi-vault workflows.
 ---
 
 Updates an existing himmel install. **`git pull` is the only thing that
@@ -32,17 +32,25 @@ the chain** — later items report `not-attempted`, the table still prints, and
 the script exits non-zero.
 
 After the chain (win or lose — these never abort and always run, restoring
-their pre-existing best-effort behavior even on a chain failure) come five
+their pre-existing best-effort behavior even on a chain failure) come seven
 advisory steps: a **codex plugin re-sync + hooks.json re-sanitize**
-(HIMMEL-742), a **statusLine hud re-wire** (HIMMEL-718), a **plugin
-install-state report** — `marketplace update` only re-syncs plugins that are
-*already installed*, so it can't tell you a himmel-marketplace plugin is
-missing, or is being served from a non-`@himmel` marketplace whose
-`autoUpdate` shadows the himmel SHA pin (HIMMEL-434; the report prints the
-`claude plugin install …@himmel` / migrate commands for any gap) — a **lean
-plugin-set reconcile** (HIMMEL-1032, warn-only unless
-`HIMMEL_RECONCILE_PLUGINS=1`), and stale **cadence-runner** / **guardrail-mode
-block** drift checks.
+(HIMMEL-742), a **statusLine hud re-wire** (HIMMEL-718), a **graphify pin
+sync** (HIMMEL-1048) — rolls an EXISTING `uv`-managed graphify install
+forward to the pinned version, so a pin bump in this checkout actually
+reaches the machine (`git pull` alone only updates the resolver script, not
+the installed tool); it reinstalls graphify via `uv` when the pinned version
+differs, skips cleanly when `uv` or the install is absent, and never aborts
+the chain on failure — a **plugin install-state report** — `marketplace
+update` only re-syncs plugins that are *already installed*, so it can't tell
+you a himmel-marketplace plugin is missing, or is being served from a
+non-`@himmel` marketplace whose `autoUpdate` shadows the himmel SHA pin
+(HIMMEL-434; the report prints the `claude plugin install …@himmel` /
+migrate commands for any gap) — a **lean plugin-set reconcile** (HIMMEL-1032,
+warn-only unless `HIMMEL_RECONCILE_PLUGINS=1`), stale **cadence-runner** /
+**guardrail-mode block** drift checks, and a **dependency-readiness check**
+(HIMMEL-1393) — surfaces an enabled skill missing its declared API key, or
+an enabled+keyed skill whose docs still mark its toolkit disabled
+(presence-only, no key values read).
 
 This command can run from **any directory** (HIMMEL-459), so first resolve the
 himmel checkout using the same checkout-resolution order as
