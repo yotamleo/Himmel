@@ -266,7 +266,8 @@ stats.vec0 = vec0Used;
 const count = (sql) => db.prepare(sql).get().c;
 stats.before = {
   collections: count('select count(*) c from store_collections'),
-  documents: count('select count(*) c from documents'),
+  // WHERE active = 1 -- see the SAME predicate on stats.after below for why.
+  documents: count('select count(*) c from documents where active = 1'),
   content: count('select count(*) c from content'),
   contentVectors: count('select count(*) c from content_vectors'),
   vectors: count('select count(*) c from vectors_vec'),
@@ -329,7 +330,15 @@ try {
 
 stats.after = {
   collections: count('select count(*) c from store_collections'),
-  documents: count('select count(*) c from documents'),
+  // WHERE active = 1 -- matches qmd's own `qmd status` count EXACTLY (its
+  // "Total: N files indexed" is `SELECT COUNT(*) FROM documents WHERE
+  // active = 1`, verified against the qmd fork source). A bare COUNT(*) here
+  // counts soft-deleted rows too, so this staged count and the receiver's
+  // post-swap qmd status were comparing different predicates -- not different
+  // data -- and a swap that fully succeeded (vectors matched, nothing
+  // pending) died on a doc-count "mismatch" that was really just inactive
+  // rows the receiver's own count already excludes (HIMMEL-1416).
+  documents: count('select count(*) c from documents where active = 1'),
   content: count('select count(*) c from content'),
   contentVectors: count('select count(*) c from content_vectors'),
   vectors: count('select count(*) c from vectors_vec'),

@@ -32,11 +32,44 @@ is data.
 | Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; high for substantial judgment work — not just the hardest; xhigh for the hardest |
 
 Beyond the Claude tiers the fleet includes machine-specific impl/critic/bulk
-lanes (paid/optional — they exist only where the operator configured them).
+lanes (paid/optional — they exist only where the operator configured them). See
+[Non-Claude lane calibration](#non-claude-lane-calibration) below.
 
 Labels above mirror `scripts/lanes/lanes.json`, which is authoritative. When a
 tier's underlying model ships a new generation, update `lanes.json` first and
 this table follows — never the reverse.
+
+## Non-Claude lane calibration
+
+Every lane `scripts/lanes/lanes.json` registers gets a row here. The columns
+are the **invariant** calibration facts (class, effort convention, context
+ceiling, cost/quota posture, calibration status) — not the full description,
+chokepoint invocation, or roster detail, which stay in `lanes.json` (data) and
+[`tooling-catalog.md`](../tooling-catalog.md#other-delegation-lane-dispatch-chokepoints-scriptslaneslanesjson-registry-himmel-689)
+(dispatch shape). Restating that prose here would create a second copy that
+silently drifts (the HIMMEL-1021 class) — this table is deliberately thin.
+
+`quota bank` reflects the `quota.bank` field in `lanes.json`; a lane without
+one is **dashboard-omitted** from the quota exporter (HIMMEL-1000) — that's a
+registry fact, not a doc gap. `cost-optimal context window` is exactly that —
+NOT a hard ceiling: larger inputs remain possible past it at higher cost (e.g.
+2× billing past 272k on the codex-quota lanes), per the registry's own wording.
+
+| Lane (`lanes.json` id) | Class | Default effort convention | Cost-optimal context window | Quota bank | Calibration status |
+|---|---|---|---|---|---|
+| `glm` — GLM lane (spawn-glm.ts) | impl | small-context discipline — chunk big plans | 1M | glm (flat-rate overflow, not per-token) | calibrated |
+| `glm-subagent` — GLM inline subagent | impl | same as `glm`, inline in-session dispatch | 1M | glm | calibrated |
+| `claudex` — claudex lane (claude-codex over CLIProxyAPI) | impl | launcher default `high`; `xhigh` rare; never `ultra`/`max` | 272k (2× bill past) | codex | calibrated (HIMMEL-1001/1002) |
+| `hermes-critics` — hermes free critics (qwen3coder) | critic | — (critic pass, not effort-tiered) | unverified/varies | none (dashboard-omitted) | calibrated — CR panel only (`/pr-check`) |
+| `codex` (paid, via hermes) | critic | — (critic pass) | 272k | none (dashboard-omitted); opt-in `CR_PROFILE=paid` | calibrated — CR escalation / second opinions only |
+| `copilot-cli` — GitHub Copilot CLI (free tier) | bulk | small tasks; model tier is mini-class unless the caller overrides the auto pin | unverified/varies | none (dashboard-omitted); 2,000 completions/mo bank | **not calibrated yet** — worker-spawn-matrix row UNVERIFIED (live smoke pending eval); route only for free chores / second opinions, and only through the `dispatch-copilot.sh` chokepoint |
+| `hermes-oneshot` — hermes one-shot dispatch | impl | no internal timeout — caller wraps | unverified/varies | none (dashboard-omitted) | calibrated — live-proven spawn path |
+| `codex-exec` — codex CLI sandbox | impl | well-scoped chunks; job registry is per-workspace | 272k | codex | calibrated (HIMMEL-741) |
+| `codex-wsl` — codex WSL lane | impl | well-scoped chunks; brief via `--brief-file` | 272k | codex | calibrated (HIMMEL-999) |
+| `antigravity-cli` — Antigravity CLI (Google AI Plus) | bulk | simple tasks; `--output-format` drift seen on Windows builds | unverified/varies | none (dashboard-omitted); free AI-Plus bank | **not calibrated yet** — roster + quota shape TO VERIFY at eval (HIMMEL-772); parity/guards UNVERIFIED (permission flags only, no hook surface); egress-DENIED for vault corpora, himmel-code only; route only for free-bank chores / second opinions |
+| `ollama-local` — ollama (local models) | bulk | slow, small tasks | unverified/varies | none (dashboard-omitted); free, local wall-clock | calibrated — zero-egress guarantee is structural; the only salus-eligible backend |
+| `openrouter-free` — OpenRouter free models | bulk | simple tasks only; rate-limited | unverified/varies | none (dashboard-omitted) | **not calibrated yet** — parity/guards UNVERIFIED pending eval; probe live availability before routing, route only for simple free-tier chores |
+| `ollama-cloud` — Ollama Cloud (free tier) | bulk | simple tasks; free-bank caps | unverified/varies | none (dashboard-omitted) | **not calibrated yet** — parity/guards UNVERIFIED pending eval; egresses to ollama.com, an undeclared egress-matrix provider — vault corpora default-DENY (himmel-code only) until the operator declares a cell; route only for free-bank chores on non-vault corpora |
 
 ## Effort calibration
 

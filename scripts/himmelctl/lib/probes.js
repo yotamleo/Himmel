@@ -937,65 +937,252 @@ function probeCmdCadenceArmed(item, ctx) {
 // has its own drift check in himmel-update.sh (report_guardrail_block) but
 // zero manifest presence. Spawns node directly with an ARGV ARRAY (not
 // `bash -c` + string command) — no shell involved at all, so there is no
-// quoting/interpolation surface to get wrong in the first place. Parses the
-// script's own `guardrail-mode=<mode> node-resolves=<yes|no>` stdout (the
-// same status line report_guardrail_block already prints) rather than
-// re-implementing detectMode()/nodeResolves() a second way.
-//   mode=project              -> 'absent' (never armed globally — the
-//                                ordinary default; global mode is an explicit
-//                                `setup-hooks.sh --guardrail-mode global` opt-in,
-//                                never part of the automatic install path).
-//   mode=global, resolves=yes -> 'present'.
-//   mode=global, resolves=no  -> 'degraded' (armed but the baked node path
-//                                rotted — exactly the drift report_guardrail_
-//                                block itself exists to catch).
-//   anything else (nonzero exit, unparseable stdout) -> 'degraded'.
+// quoting/interpolation surface to get wrong in the first place.
+//
+// HIMMEL-1418: uses the richer `status --json` verb (guardrail-block.mjs's
+// statusDetail() contract) instead of the plain `guardrail-mode=<mode>
+// node-resolves=<yes|no>` text line the probe used through HIMMEL-1100. The
+// plain line only ever proves "at least one owned hook exists and ITS node
+// path resolves" (detectMode()'s `.some()` over every group, nodeResolves()'s
+// first-match return) — a 1-of-3 partial install (only one of the three
+// GUARDRAILS wired, the other two missing or pointing at dead paths) was
+// INDISTINGUISHABLE from a complete one, so every mode=global reading had to
+// map to 'degraded' (round 3, codex-adv-1) — 'present' was structurally
+// unreachable. `status --json` enumerates each expected hook's own presence,
+// ACTUAL matcher, and bash/node/wrapper/script resolution (`complete` is
+// true only when ALL of that holds for every hook), so this probe can now
+// trust a genuine full install the way handover-dir/qmd-index already trust
+// THEIR CLI's own richer output.
+//
+// CR fixes (same ticket, codex adversarial pass on 68c0b82c):
+//   codex-adv-1: statusDetail() used to report each hook's EXPECTED matcher
+//     (from GUARDRAILS) rather than the ACTUAL configured one — a settings.json
+//     where all 3 owned hooks were moved into a single `Bash` matcher group
+//     (so block-edit-on-main.sh never fires on Edit/Write, block-read-secrets
+//     never fires on PowerShell/Read/Grep) still read complete:true. Fixed by
+//     surfacing the actual matcher + an exact-match matcherMatches flag;
+//     complete now requires matcherMatches on every hook too.
+//   codex-adv-2: the baked GUARDRAIL_BASH path was parsed and then discarded
+//     — a nonexistent bash executable (the wrapper fails closed on this at
+//     runtime) still read complete:true, since only node/wrapper/script were
+//     checked. Fixed by surfacing bashPath/bashResolves; complete now
+//     requires bashResolves on every hook too.
+//   codex-adv-3 (round 3): the *Resolves fields used fs.existsSync(), which
+//     accepts a DIRECTORY (or, for node/bash, a non-executable file) as
+//     "resolves" — reproduced complete:true with a baked path pointing at a
+//     plain directory. Fixed in guardrail-block.mjs's isReadableFile()/
+//     isRunnableExecutable() (isFile() + access() mode check); see that
+//     file's contract comment for the Windows X_OK caveat.
+//   codex-adv-4 (round 3): statusDetail() only ever looked at the FIRST
+//     owned entry per basename — a second, dead-pathed duplicate (the exact
+//     drift state installData()'s own dedup step exists to clean up) was
+//     invisible, so a valid-plus-dead-duplicate pair still read
+//     complete:true even though the duplicate can independently fire and
+//     fail closed at runtime. Fixed by enumerating every owned entry
+//     (entryCount, duplicates[]); complete now requires entryCount === 1.
+//   codex-adv-5 (round 4): ownership was decided by substring-searching the
+//     WHOLE command string for the guardrail's basename, while the parser
+//     independently took the first three quoted args and ignored anything
+//     after them — reproduced: a command whose real script arg is a decoy
+//     (e.g. "claude-stub.sh") with the guardrail's basename sitting ONLY in
+//     a trailing shell comment still read complete:true, while the real
+//     protection was never wired. Fixed in guardrail-block.mjs by binding
+//     ownership to the PARSED command's structure: the whole string must
+//     match the exact generated shape (4 quoted segments, nothing
+//     trailing) AND the parsed script arg's basename must equal the
+//     guardrail's basename exactly (path.basename(), never a substring
+//     check) — a decoy is now not owned by ANY guardrail at all (reads
+//     present:false/entryCount:0, identical to "never wired"; see that
+//     file's contract comment for why "not owned" was chosen over "owned
+//     but flagged").
+//   codex-adv-7 (companion finding "basename-only ownership lets a
+//     same-named no-op file elsewhere pass", tracked as HIMMEL-1422): round
+//     4's anchored GENERATED_COMMAND_RE correctly rejects a true decoy, but
+//     it ALSO made an entry with the SAME wrapper/script identity plus a
+//     trailing extra token invisible entirely — yet guardrail-skip-in-
+//     himmel.js reads only process.argv[2] and ignores anything after it,
+//     so Claude Code still executes such an entry identically to a
+//     canonical one. A dead-pathed duplicate wired in this shape reopened
+//     round 3's own blind spot (entryCount stayed 1, complete:true) through
+//     a different command shape. Fixed via a bounded, NON-substring
+//     structural test (referencesGuardrailIdentity(): every quoted
+//     segment's path.basename() checked against WRAPPER/the guardrail's
+//     basename, never String#includes over the whole string — a
+//     comment-only mention still correctly reads as a decoy, no regression
+//     on codex-adv-5) that surfaces this as its own
+//     `nonCanonicalCount`/`nonCanonical` anomaly, distinct from both a
+//     decoy (present:false) and a canonical duplicate (entryCount > 1);
+//     complete now also requires nonCanonicalCount === 0.
+//   HIMMEL-1422 (trust anchor, resolving codex-adv-7's own companion
+//     finding above): basename-only ownership meant a settings.json
+//     referencing a same-named file in a WRONG directory (a stale/moved
+//     checkout, or an unrelated no-op stub with the right filename) still
+//     read present:true/resolves:true — "present" attested wiring, not
+//     that the wired file IS the real himmel copy. guardrail-block.mjs's
+//     statusDetail() now realpath-compares the configured wrapper/script
+//     paths against a resolved trust anchor (HIMMEL_REPO env, else the
+//     running guardrail-block.mjs's own checkout) via
+//     wrapperMatchesAnchor/scriptMatchesAnchor; a mismatch never flips
+//     present:false (ownership stays basename-only, per codex-adv-5) but
+//     DOES force complete:false, with anchorWrapperPath/anchorScriptPath
+//     naming the anchor precisely. Separately, wrapperResolves/
+//     scriptResolves now also require non-trivial content
+//     (isSaneContentFile()) — a truncated/empty file at an otherwise-
+//     correct, even anchor-matching, path no longer reads resolves:true
+//     either. This probe's recompute (guardrailEntryIsFullyValid below) and
+//     its `problems` naming were extended in lockstep — see both below.
+//   SCOPE: this probe attests the FULL GENERATED COMMAND IDENTITY —
+//     presence, resolution, matcher, uniqueness, shape, AND trust-anchor
+//     identity — of the CONFIGURED wiring. It does not attempt deeper
+//     runtime proof (executing the hook chain, node/bash version checks,
+//     full content hashing beyond the cheap sanity floor, or semantic
+//     equivalence of a differently-formed command); those belong to
+//     follow-up tickets against the contract, not this probe.
+//   mode=project    -> 'absent' (never armed globally — the ordinary
+//                      default; global mode is an explicit `setup-hooks.sh
+//                      --guardrail-mode global` opt-in, never part of the
+//                      automatic install path).
+//   mode=global,
+//   complete=true   -> 'present' (every GUARDRAILS hook has EXACTLY ONE
+//                      owned entry, no non-canonical duplicates reference
+//                      its identity, its ACTUAL matcher exactly matches
+//                      what it needs for full tool coverage, and its
+//                      bash/node/wrapper/script paths are all usable).
+//   mode=global,
+//   complete=false  -> 'degraded', detail names exactly which hook(s) are
+//                      missing, duplicated (canonical or non-canonical),
+//                      matcher-mismatched, or have an unusable path
+//                      (partial install, duplicate/anomalous wiring, a
+//                      hand-edited matcher, or a genuinely fully-armed
+//                      install that rotted).
+//   anything else (nonzero exit, unparseable JSON, missing mode/hooks
+//   fields) -> 'degraded'.
 function probeGuardrailBlockStatus(item, ctx) {
   const scriptPath = path.resolve(ctx.repoRoot, item.probe.script);
-  const r = spawnProbeSync(process.execPath, [scriptPath, 'status'], { env: ctx.env || process.env, encoding: 'utf8' });
+  const r = spawnProbeSync(process.execPath, [scriptPath, 'status', '--json'], { env: ctx.env || process.env, encoding: 'utf8' });
   if (r.timedOut) return { actual: 'degraded', detail: 'cmd:guardrail_block_status probe timed out after 10s' };
   if (r.error) return { actual: 'degraded', detail: `spawn error: ${r.error.message}` };
   if (r.status !== 0) {
     const stderr = (r.stderr || '').trim();
-    return { actual: 'degraded', detail: `guardrail-block.mjs status exited rc=${r.status}${stderr ? `: ${stderr}` : ''}` };
+    return { actual: 'degraded', detail: `guardrail-block.mjs status --json exited rc=${r.status}${stderr ? `: ${stderr}` : ''}` };
   }
   const out = (r.stdout || '').trim();
-  const modeMatch = out.match(/guardrail-mode=(\S+)/);
-  const resolvesMatch = out.match(/node-resolves=(\S+)/);
-  if (!modeMatch) return { actual: 'degraded', detail: `guardrail-block.mjs status produced unparseable output: ${out || '(empty)'}` };
-  const mode = modeMatch[1];
-  if (mode !== 'global') return { actual: 'absent', detail: out };
-  // CR fix (HIMMEL-1100 round 2, glm-3): a MISSING node-resolves field is
-  // not proof of resolution — it used to fall through to 'present' (the
-  // `resolves === 'no'` check is simply false for null). An absent field
-  // means the script's output shape changed/broke, which is a wiring
-  // problem, not a confirmed-working global-mode install.
-  if (!resolvesMatch) return { actual: 'degraded', detail: `${out} — missing 'node-resolves' field in guardrail-block.mjs status output` };
-  if (resolvesMatch[1] === 'no') return { actual: 'degraded', detail: `${out} — global mode armed but the baked node path no longer resolves` };
-  // CR fix (HIMMEL-1100 round 3, codex-adv-1, bounded to status output
-  // alone — no rewrite of guardrail-block.mjs, no reading settings.json
-  // around it): guardrail-block.mjs's own `status` verb declares
-  // mode=global whenever ANY owned hook exists at all (detectMode: `.some`
-  // over every group — one hit is enough) and derives node-resolves from
-  // ONLY the FIRST owned hook it iterates to (nodeResolves returns inside
-  // its loop on first match). It never counts or enumerates the 3 expected
-  // guardrail hooks (auto-approve-safe-bash.sh / block-edit-on-main.sh /
-  // block-read-secrets.sh — GUARDRAILS in guardrail-block.mjs). So
-  // "mode=global, node-resolves=yes" proves only "at least one guardrail
-  // hook is wired and ITS OWN node path resolves" — a partial install (1 of
-  // 3 wired, the other two missing or pointing at dead paths) is
-  // INDISTINGUISHABLE from a complete one using this output alone; status
-  // exposes no per-hook data to deepen against (self-verified: this file's
-  // own tests construct exactly that 1-hook fixture and it read 'present'
-  // before this fix). 'present' therefore claims MORE than status output
-  // can honestly attest, so it is never reached from a real armed reading —
-  // every mode=global case reads 'degraded' until guardrail-block.mjs grows
-  // a richer verb (e.g. `status --json` enumerating each expected hook's
-  // own resolution), which would let this branch trust a genuine "all 3
-  // present and resolving" answer the way handover-dir/qmd-index already
-  // trust THEIR CLI's own richer output. Filed as a follow-up rather than
-  // built here (bounded scope for this round).
-  return { actual: 'degraded', detail: `${out} — global mode armed, but guardrail-block.mjs's status verb cannot confirm all 3 guardrail hooks are wired (only that at least one is, and its own node path resolves); a richer status verb is needed to verify completeness` };
+  let parsed;
+  try {
+    parsed = JSON.parse(out);
+  } catch (_e) {
+    return { actual: 'degraded', detail: `guardrail-block.mjs status --json produced unparseable output: ${out || '(empty)'}` };
+  }
+  // CR fix (codex-1-r6, round 6): Array.isArray([]) is true — without a
+  // non-empty check, a malformed/truncated {mode:"global",complete:true,
+  // hooks:[]} would sail past this guard and straight into the
+  // `complete === true` branch below, trusted as 'present' despite
+  // attesting ZERO guardrails. `hooks.length > 0` is the strictest check
+  // available without duplicating guardrail-block.mjs's own GUARDRAILS
+  // count here: hardcoding "3" (or requiring the .mjs's ESM export into
+  // this CommonJS file) would itself be a second, driftable copy of that
+  // knowledge — a non-empty array is the honest floor a CONSUMER can assert
+  // without owning the producer's vocabulary.
+  if (!parsed || typeof parsed.mode !== 'string' || !Array.isArray(parsed.hooks) || parsed.hooks.length === 0) {
+    return { actual: 'degraded', detail: `guardrail-block.mjs status --json missing expected 'mode'/'hooks' fields: ${out || '(empty)'}` };
+  }
+  if (parsed.mode !== 'global') return { actual: 'absent', detail: `guardrail-mode=${parsed.mode}` };
+  // CR fix (codex-1-r7, round 7 — third raise of this shape check, each
+  // stricter): round 6 closed the empty-array case, but a TRUNCATED payload
+  // — complete:true with only 1 hook object, that one object itself fully
+  // healthy — still sailed through on parsed.complete alone. RECOMPUTE
+  // completeness from the entries themselves rather than trusting the
+  // producer's own summary flag: every entry must independently satisfy the
+  // same fields the contract defines completeness by (present, matcherMatches,
+  // bashResolves, nodeResolves, wrapperResolves, scriptResolves, entryCount
+  // === 1, nonCanonicalCount === 0). 'present' now requires parsed.complete
+  // === true AND this recomputed value to AGREE — a payload whose entries
+  // contradict its own complete flag is untrustworthy, not present.
+  //
+  // ACCEPTED FLOOR (documented, not fixed here — out of HIMMEL-1422's
+  // trust-anchor scope, a distinct residual gap): this still cannot catch
+  // an INTERNALLY CONSISTENT truncated array — e.g. complete:true with
+  // exactly 1 well-formed, fully-healthy hook object, when the real
+  // contract enumerates 3. Detecting "too few entries" requires knowing the
+  // EXPECTED count, which only the producer (guardrail-block.mjs's own
+  // GUARDRAILS array) owns; asserting a count here (hardcoded "3", or a
+  // `>1` guess) would be exactly the kind of producer-vocabulary
+  // duplication round 6 already rejected, and a real producer always emits
+  // its full fixed-order set regardless — this probe takes the floor: a
+  // non-empty, internally-self-consistent payload is trusted.
+  //
+  // HIMMEL-1422: also requires wrapperMatchesAnchor/scriptMatchesAnchor —
+  // an entry whose configured wrapper/script paths do NOT match the trust
+  // anchor's own scripts/hooks/ copies (a same-basename file wired from a
+  // wrong/stale checkout) must not independently recompute as valid either,
+  // even if every other field on it looks healthy.
+  const guardrailEntryIsFullyValid = (h) => Boolean(h)
+    && h.present === true
+    && h.entryCount === 1
+    && (h.nonCanonicalCount || 0) === 0
+    && h.matcherMatches === true
+    && h.bashResolves === true
+    && h.nodeResolves === true
+    && h.wrapperResolves === true
+    && h.scriptResolves === true
+    && h.wrapperMatchesAnchor === true
+    && h.scriptMatchesAnchor === true;
+  const recomputedComplete = parsed.hooks.every(guardrailEntryIsFullyValid);
+  if (parsed.complete === true) {
+    if (!recomputedComplete) {
+      return { actual: 'degraded', detail: `guardrail-block.mjs status --json declares complete=true but its own hooks[] entries do not all independently support it — self-contradictory payload, not trusted: ${out}` };
+    }
+    return { actual: 'present', detail: `guardrail-mode=global — all ${parsed.hooks.length} guardrail hooks present, correctly matched, and resolving` };
+  }
+  // complete !== true: name exactly which hook(s) fall short, rather than
+  // just saying "incomplete" — the whole point of the richer verb is to let
+  // an operator (or `himmelctl doctor`) act on a specific broken hook.
+  const problems = parsed.hooks
+    .filter((h) => !(h && h.present && h.entryCount === 1 && (h.nonCanonicalCount || 0) === 0
+      && h.matcherMatches && h.bashResolves && h.nodeResolves && h.wrapperResolves && h.scriptResolves
+      && h.wrapperMatchesAnchor && h.scriptMatchesAnchor))
+    .map((h) => {
+      // CR fix (codex-adv-7): even a hook with NO canonical entry at all can
+      // still have a runtime-relevant non-canonical one wired (same
+      // wrapper/script identity, non-generated shape) — "missing" alone
+      // would understate that, so it's named here too, not just below when
+      // a canonical entry is also present.
+      if (!h || !h.present) {
+        const label = `${h && h.basename ? h.basename : '?'}: missing`;
+        if (h && typeof h.nonCanonicalCount === 'number' && h.nonCanonicalCount > 0) {
+          return `${label} (canonical entry absent, but ${h.nonCanonicalCount} non-canonical entr${h.nonCanonicalCount === 1 ? 'y' : 'ies'} referencing this guardrail's identity ${h.nonCanonicalCount === 1 ? 'is' : 'are'} still wired and runtime-relevant)`;
+        }
+        return label;
+      }
+      const reasons = [];
+      // CR fix (codex-adv-4): a duplicate owned entry is a problem in its own
+      // right, independent of whether the FIRST-FOUND one is fully valid — a
+      // dead-pathed duplicate is still independently wired and can fail
+      // closed at runtime, so it's named even when the primary entry alone
+      // would otherwise pass every other check.
+      if (typeof h.entryCount === 'number' && h.entryCount > 1) reasons.push(`${h.entryCount} duplicate entries wired (expected exactly 1)`);
+      // CR fix (codex-adv-7): a non-canonical entry (same wrapper/script
+      // identity, non-generated shape — e.g. a trailing extra token) is
+      // still runtime-relevant (guardrail-skip-in-himmel.js only reads
+      // argv[2]) even though it's excluded from entryCount, so it must be
+      // named independently of whether the canonical entry alone is valid.
+      if (typeof h.nonCanonicalCount === 'number' && h.nonCanonicalCount > 0) reasons.push(`${h.nonCanonicalCount} non-canonical entr${h.nonCanonicalCount === 1 ? 'y' : 'ies'} reference this guardrail's identity outside the generated shape (still runtime-relevant)`);
+      if (!h.matcherMatches) reasons.push(`matcher mismatch (configured '${h.matcher}', expected '${h.expectedMatcher}')`);
+      const broken = ['bash', 'node', 'wrapper', 'script'].filter((part) => !h[`${part}Resolves`]);
+      if (broken.length > 0) reasons.push(`${broken.join('/')} path does not resolve`);
+      // HIMMEL-1422: a wrapper/script that resolves but is NOT the trust
+      // anchor's own copy (same basename, wrong/stale checkout) is a
+      // distinct problem from "does not resolve" — name it with the exact
+      // anchor path expected, so an operator can see precisely which
+      // checkout the wiring should point at.
+      const anchorMismatches = [];
+      if (h.wrapperMatchesAnchor === false) anchorMismatches.push(`wrapper (expected ${h.anchorWrapperPath})`);
+      if (h.scriptMatchesAnchor === false) anchorMismatches.push(`script (expected ${h.anchorScriptPath})`);
+      if (anchorMismatches.length > 0) reasons.push(`does not match trust anchor: ${anchorMismatches.join(', ')}`);
+      return `${h.basename}: ${reasons.join('; ')}`;
+    });
+  const summary = problems.length > 0 ? problems.join('; ') : 'guardrail-block.mjs status --json reports complete=false with no per-hook gap identified';
+  return { actual: 'degraded', detail: `guardrail-mode=global but incomplete — ${summary}` };
 }
 
 // ── dispatch ─────────────────────────────────────────────────────────────

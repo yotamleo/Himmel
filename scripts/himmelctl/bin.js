@@ -2110,9 +2110,13 @@ async function cmdEnsure(args) {
       // CR fix (HIMMEL-1100 round 6, CodeRabbit App PR #1500 thread #4):
       // this branch used to push the blocker UNCONDITIONALLY, without ever
       // probing the item's actual state — so a full-offboard-only item that
-      // is PERMANENTLY degraded (e.g. guardrail-block-global, which per
-      // this ticket's own round-3 fix never reaches 'present' from status
-      // output alone) wedged EVERY `ensure` run the moment a profile change
+      // is PERMANENTLY degraded (e.g. guardrail-block-global, which through
+      // this ticket's own round-3 fix could never reach 'present' from
+      // status output alone — HIMMEL-1418 later gave it a `status --json`
+      // verb rich enough to confirm a genuine full install, so it is no
+      // longer an example of a permanently-degraded item, but the general
+      // shape still applies to any probe that structurally can't confirm
+      // 'present') wedged EVERY `ensure` run the moment a profile change
       // put it in towardDisabled, with no way to ever clear it (there is no
       // unwire descriptor to run — full-offboard-only items don't have one
       // by definition). Only a genuinely 'present' item blocks (the

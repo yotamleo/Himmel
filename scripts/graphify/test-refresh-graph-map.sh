@@ -1494,5 +1494,292 @@ echo "$out" | grep -q "structleaktoken" \
   && pass "T26b nothing promoted under \$CORPUS_ROOT on a structural-field leak" \
   || fail "T26b leaking refresh still promoted into \$CORPUS_ROOT/graphify-out"
 
+# --- T27 (HIMMEL-1415): corpus-copy excludes graphify's own published
+# derived pages -- <maps-dir>/graph/* (per-node/community notes graphify
+# mints there) and <maps-dir>/<slug>.md (the curated MOC this script's own
+# publish step writes) -- from the extraction corpus, closing the feedback
+# loop where graphify's own output gets re-extracted into itself. A
+# legitimate, hand-authored note living directly under maps-dir (not under
+# graph/, not the MOC) must still reach the corpus -- this isn't "exclude all
+# of maps-dir wholesale". The stub snapshots what the corpus-copy actually
+# staged into the scratch dir before writing its own output. ---
+EXCLBIN="$WS/exclbin"; mkdir -p "$EXCLBIN"
+cat > "$EXCLBIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCLBIN/graphify"
+EXCLCORPUS="$WS/exclcorpus"; EXCLMAPS="$EXCLCORPUS/60-Maps"
+mkdir -p "$EXCLCORPUS/notes" "$EXCLMAPS/graph"
+printf '# n\ncontent\n' > "$EXCLCORPUS/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$EXCLMAPS/graph/some-node.md"
+printf '# Legit Maps Note\nhand-authored, not graphify output\n' > "$EXCLMAPS/legit-note.md"
+# Pre-seed the MOC this run's OWN publish step will (re)write -- simulates a
+# prior run's published output already sitting in the vault when the NEXT
+# refresh's corpus-copy runs.
+printf '# stale MOC from a prior run\n' > "$EXCLMAPS/excl-map.md"
+out=$( GRAPHIFY_MAP_BIN="$EXCLBIN/graphify" PATH="$EXCLBIN:$PATH" \
+  bash "$SCRIPT" --name excltest --corpus-root "$EXCLCORPUS" --backend deepseek \
+  --maps-dir "$EXCLMAPS" --title "Excl Map" --slug excl-map --corpus-tag excl 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T27 run exit 0 (got $rc): $out"
+if grep -qF "60-Maps/graph/some-node.md" "$WS/excl-scratch-listing.txt" 2>/dev/null; then
+  fail "T27 derived-page note (maps-dir/graph/*) leaked into the extraction corpus"
+else
+  pass "T27 derived-page note (maps-dir/graph/*) excluded from the extraction corpus"
+fi
+if grep -qF "60-Maps/excl-map.md" "$WS/excl-scratch-listing.txt" 2>/dev/null; then
+  fail "T27 the corpus's own published MOC (maps-dir/slug.md) leaked into the extraction corpus"
+else
+  pass "T27 the corpus's own published MOC (maps-dir/slug.md) excluded from the extraction corpus"
+fi
+if grep -qF "60-Maps/legit-note.md" "$WS/excl-scratch-listing.txt" 2>/dev/null; then
+  pass "T27 a hand-authored maps-dir note (not under graph/, not the MOC) still reaches the corpus"
+else
+  fail "T27 over-excluded: a legitimate maps-dir note was dropped from the corpus"
+fi
+
+# --- T28 (HIMMEL-1415 CR follow-up, codex-adv-1): the computed maps-prefix
+# and slug land inside `find -path` PATTERN arguments, where *, ?, and [ are
+# fnmatch wildcard syntax even though the arguments are shell-quoted -- shell
+# quoting only stops the SHELL from globbing them; find's own matcher still
+# treats them as wildcards. A maps-dir/slug containing one of these could
+# either (a) fail to match its OWN literal path (its derived pages re-enter
+# the corpus, reopening the feedback loop T27 just closed) or (b) over-match
+# an unrelated sibling (silently dropping real content). Uses a maps-dir
+# literally named "60-[Maps]" (the CR's own example) and a slug containing
+# "[v2]" -- both real, valid filename characters (unlike a literal "*", which
+# a native Win32 file API refuses even though MSYS/bash can create one --
+# tried, and publish-graph-map.mjs's write ENOENT'd on it -- so "[" "]" alone
+# carries this regression without depending on Windows/MSYS path-translation
+# quirks). ---
+EXCL2BIN="$WS/excl2bin"; mkdir -p "$EXCL2BIN"
+cat > "$EXCL2BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl2-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL2BIN/graphify"
+EXCL2CORPUS="$WS/excl2corpus"
+EXCL2MAPS="$EXCL2CORPUS/60-[Maps]"
+EXCL2SLUG='map-[v2]-note'
+mkdir -p "$EXCL2CORPUS/notes" "$EXCL2MAPS/graph"
+printf '# n\ncontent\n' > "$EXCL2CORPUS/notes/n.md"
+# The derived page + the MOC this run's own publish step will (re)write --
+# both must be EXCLUDED (the "under-match" direction: escaping must not
+# break the exclusion on its own metachar-laden literal path). Unescaped,
+# the bracket class "[Maps]" matches exactly ONE char from {M,a,p,s} -- it
+# can never match the literal 6-char "[Maps]" substring in the real dirname,
+# so without the fix these would leak straight back into the corpus.
+printf '# derived node note\nminted by graphify\n' > "$EXCL2MAPS/graph/some-node.md"
+printf '# stale MOC from a prior run\n' > "$EXCL2MAPS/$EXCL2SLUG.md"
+# A sibling maps-dir named "60-M" -- exactly what the UNESCAPED bracket class
+# "[Maps]" (one char from {M,a,p,s}) would ALSO match -- carrying its own
+# unrelated graph/ page. Proves no over-match spillover into a
+# similarly-named sibling once escaped (the "over-match" direction).
+mkdir -p "$EXCL2CORPUS/60-M/graph"
+printf '# unrelated sibling page\nnot derived from THIS maps-dir\n' > "$EXCL2CORPUS/60-M/graph/sibling.md"
+# A file directly under the real maps-dir whose name is exactly what the
+# UNESCAPED slug pattern "map-[v2]-note.md" ([v2] -> one char from {v,2})
+# would also match -- "map-v-note.md" -- must survive as real corpus
+# content, not get swept up by an over-permissive class.
+printf '# unrelated note\nresembles the slug pattern, is not the MOC\n' > "$EXCL2MAPS/map-v-note.md"
+out=$( GRAPHIFY_MAP_BIN="$EXCL2BIN/graphify" PATH="$EXCL2BIN:$PATH" \
+  bash "$SCRIPT" --name excl2test --corpus-root "$EXCL2CORPUS" --backend deepseek \
+  --maps-dir "$EXCL2MAPS" --title "Excl2 Map" --slug "$EXCL2SLUG" --corpus-tag excl2 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T28 run exit 0 (got $rc): $out"
+if grep -qF "60-[Maps]/graph/some-node.md" "$WS/excl2-scratch-listing.txt" 2>/dev/null; then
+  fail "T28 derived-page under a metachar-laden maps-dir leaked into the corpus (escaping broke the exclusion)"
+else
+  pass "T28 derived-page under a metachar-laden maps-dir still excluded"
+fi
+if grep -qF "60-[Maps]/map-[v2]-note.md" "$WS/excl2-scratch-listing.txt" 2>/dev/null; then
+  fail "T28 the MOC under a metachar-laden slug leaked into the corpus (escaping broke the exclusion)"
+else
+  pass "T28 the MOC under a metachar-laden slug still excluded"
+fi
+if grep -qF "60-M/graph/sibling.md" "$WS/excl2-scratch-listing.txt" 2>/dev/null; then
+  pass "T28 a similarly-named sibling maps-dir's page still reaches the corpus (no bracket-class over-match)"
+else
+  fail "T28 over-matched: an unrelated sibling maps-dir's page was wrongly excluded"
+fi
+if grep -qF "60-[Maps]/map-v-note.md" "$WS/excl2-scratch-listing.txt" 2>/dev/null; then
+  pass "T28 a note resembling the slug pattern still reaches the corpus (no bracket-class over-match)"
+else
+  fail "T28 over-matched: a legitimate note resembling the slug pattern was wrongly excluded"
+fi
+
+# --- T29 (HIMMEL-1415 CR follow-up round 2, codex-1-r2): a trailing slash on
+# --maps-dir must not defeat the exclusion. Passed raw, "$MAPS_DIR" ends with
+# "/" and the exclusion pattern becomes "./60-Maps//graph/*" -- find's -path
+# matcher never matches that against the real "./60-Maps/graph/..." path, so
+# the derived page silently leaks back into the corpus (the exact feedback
+# loop T27 exists to close). Same fixture shape as T27, just with a trailing
+# slash on --maps-dir. ---
+EXCL3BIN="$WS/excl3bin"; mkdir -p "$EXCL3BIN"
+cat > "$EXCL3BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl3-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL3BIN/graphify"
+EXCL3CORPUS="$WS/excl3corpus"; EXCL3MAPS="$EXCL3CORPUS/60-Maps"
+mkdir -p "$EXCL3CORPUS/notes" "$EXCL3MAPS/graph"
+printf '# n\ncontent\n' > "$EXCL3CORPUS/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$EXCL3MAPS/graph/some-node.md"
+printf '# stale MOC from a prior run\n' > "$EXCL3MAPS/excl3-map.md"
+out=$( GRAPHIFY_MAP_BIN="$EXCL3BIN/graphify" PATH="$EXCL3BIN:$PATH" \
+  bash "$SCRIPT" --name excl3test --corpus-root "$EXCL3CORPUS" --backend deepseek \
+  --maps-dir "$EXCL3MAPS/" --title "Excl3 Map" --slug excl3-map --corpus-tag excl3 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T29 run exit 0 (got $rc): $out"
+if grep -qF "60-Maps/graph/some-node.md" "$WS/excl3-scratch-listing.txt" 2>/dev/null; then
+  fail "T29 derived-page leaked into the corpus with a trailing-slash --maps-dir (double-slash pattern no-op)"
+else
+  pass "T29 derived-page still excluded with a trailing-slash --maps-dir"
+fi
+if grep -qF "60-Maps/excl3-map.md" "$WS/excl3-scratch-listing.txt" 2>/dev/null; then
+  fail "T29 the MOC leaked into the corpus with a trailing-slash --maps-dir (double-slash pattern no-op)"
+else
+  pass "T29 the MOC still excluded with a trailing-slash --maps-dir"
+fi
+# CodeRabbit App follow-up: a bare `[ -f ]` here would pass even if publish
+# never ran at all (the pre-seeded stale MOC from setup, above, already
+# satisfies existence). Assert the stale sentinel is GONE -- proof the
+# publish step actually rewrote the file at the trimmed path, not proof of
+# nothing.
+if [ -f "$EXCL3MAPS/excl3-map.md" ] && ! grep -qF "stale MOC from a prior run" "$EXCL3MAPS/excl3-map.md" 2>/dev/null; then
+  pass "T29 MOC republished (stale sentinel replaced) without a double slash in its path"
+else
+  fail "T29 MOC not republished at the expected (trimmed) path (missing, or still the stale sentinel)"
+fi
+
+# --- T30a (HIMMEL-1415 CR follow-up round 3, codex-adv-3): a CALLER-generated
+# internal double slash must not defeat the exclusion. graphmap-cadence.sh
+# accepts a --vault value that may itself end in "/" and constructs
+# --maps-dir as "$VAULT/60-Maps" by naive concatenation -- if $VAULT already
+# ends in "/", that produces an internal double slash the --maps-dir-only
+# trailing-slash trim (T29) never sees (it isn't a trailing slash on
+# --maps-dir itself; --corpus-root ends in "/", --maps-dir does not). Mirrors
+# the exact repro: --corpus-root "$vault/" --maps-dir "$vault//60-Maps". ---
+EXCL4BIN="$WS/excl4bin"; mkdir -p "$EXCL4BIN"
+cat > "$EXCL4BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl4-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL4BIN/graphify"
+CADENCE_VAULT="$WS/cadence-vault"
+mkdir -p "$CADENCE_VAULT/notes" "$CADENCE_VAULT/60-Maps/graph"
+printf '# n\ncontent\n' > "$CADENCE_VAULT/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$CADENCE_VAULT/60-Maps/graph/some-node.md"
+printf '# stale MOC from a prior run\n' > "$CADENCE_VAULT/60-Maps/excl4-map.md"
+printf '# Legit Maps Note\nhand-authored, not graphify output\n' > "$CADENCE_VAULT/60-Maps/legit-note.md"
+CADENCE_VAULT_TS="$CADENCE_VAULT/"          # mimics `--vault /vault/`
+CADENCE_MAPS_ARG="$CADENCE_VAULT_TS/60-Maps" # mimics `$VAULT/60-Maps` -> internal "//"
+out=$( GRAPHIFY_MAP_BIN="$EXCL4BIN/graphify" PATH="$EXCL4BIN:$PATH" \
+  bash "$SCRIPT" --name excl4test --corpus-root "$CADENCE_VAULT_TS" --backend deepseek \
+  --maps-dir "$CADENCE_MAPS_ARG" --title "Excl4 Map" --slug excl4-map --corpus-tag excl4 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T30a run exit 0 (got $rc): $out"
+if grep -qF "60-Maps/graph/some-node.md" "$WS/excl4-scratch-listing.txt" 2>/dev/null; then
+  fail "T30a derived-page leaked into the corpus via a cadence-generated internal double slash"
+else
+  pass "T30a derived-page still excluded via a cadence-generated internal double slash"
+fi
+if grep -qF "60-Maps/excl4-map.md" "$WS/excl4-scratch-listing.txt" 2>/dev/null; then
+  fail "T30a the MOC leaked into the corpus via a cadence-generated internal double slash"
+else
+  pass "T30a the MOC still excluded via a cadence-generated internal double slash"
+fi
+if grep -qF "60-Maps/legit-note.md" "$WS/excl4-scratch-listing.txt" 2>/dev/null; then
+  pass "T30a a hand-authored maps-dir note still reaches the corpus despite the internal double slash"
+else
+  fail "T30a over-excluded: a legitimate maps-dir note was dropped from the corpus"
+fi
+
+# --- T30b (HIMMEL-1415 CR follow-up round 3): a DOUBLE trailing slash on
+# --maps-dir (e.g. "60-Maps//") must be fully trimmed, not just one of the
+# two -- pins that the trailing-slash trim is a loop, not a single `%/`. ---
+EXCL5BIN="$WS/excl5bin"; mkdir -p "$EXCL5BIN"
+cat > "$EXCL5BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl5-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL5BIN/graphify"
+EXCL5CORPUS="$WS/excl5corpus"; EXCL5MAPS="$EXCL5CORPUS/60-Maps"
+mkdir -p "$EXCL5CORPUS/notes" "$EXCL5MAPS/graph"
+printf '# n\ncontent\n' > "$EXCL5CORPUS/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$EXCL5MAPS/graph/some-node.md"
+printf '# stale MOC from a prior run\n' > "$EXCL5MAPS/excl5-map.md"
+out=$( GRAPHIFY_MAP_BIN="$EXCL5BIN/graphify" PATH="$EXCL5BIN:$PATH" \
+  bash "$SCRIPT" --name excl5test --corpus-root "$EXCL5CORPUS" --backend deepseek \
+  --maps-dir "$EXCL5MAPS//" --title "Excl5 Map" --slug excl5-map --corpus-tag excl5 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T30b run exit 0 (got $rc): $out"
+if grep -qF "60-Maps/graph/some-node.md" "$WS/excl5-scratch-listing.txt" 2>/dev/null; then
+  fail "T30b derived-page leaked into the corpus with a double-trailing-slash --maps-dir"
+else
+  pass "T30b derived-page still excluded with a double-trailing-slash --maps-dir"
+fi
+if grep -qF "60-Maps/excl5-map.md" "$WS/excl5-scratch-listing.txt" 2>/dev/null; then
+  fail "T30b the MOC leaked into the corpus with a double-trailing-slash --maps-dir"
+else
+  pass "T30b the MOC still excluded with a double-trailing-slash --maps-dir"
+fi
+# CodeRabbit App follow-up: a bare `[ -f ]` here would pass even if publish
+# never ran at all (the pre-seeded stale MOC from setup, above, already
+# satisfies existence). Assert the stale sentinel is GONE -- proof the
+# publish step actually rewrote the file at the fully-trimmed path, not
+# proof of nothing.
+if [ -f "$EXCL5MAPS/excl5-map.md" ] && ! grep -qF "stale MOC from a prior run" "$EXCL5MAPS/excl5-map.md" 2>/dev/null; then
+  pass "T30b MOC republished (stale sentinel replaced) without a lingering double slash in its path"
+else
+  fail "T30b MOC not republished at the expected (fully-trimmed) path (missing, or still the stale sentinel)"
+fi
+
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

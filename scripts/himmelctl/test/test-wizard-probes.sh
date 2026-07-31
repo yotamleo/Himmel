@@ -1591,22 +1591,49 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 echo "$outGCp" | jq -e '.actual == "present"' >/dev/null || fail "cmd:cadence_armed (graphmap-cadence) present via GRAPHMAP_BAT_DIR: (got: $outGCp)"
 echo "ok: cmd:cadence_armed envVar wiring — codex-sweep-cadence/graphmap-cadence each route to their OWN dir"
 
-# ── cmd:guardrail_block_status (guardrail-block-global) — HIMMEL-1100 ───────
-# CR fix (round 3, codex-adv-1): guardrail-block.mjs's status verb declares
-# mode=global off ANY single owned hook (detectMode: `.some`) and derives
-# node-resolves from only the FIRST owned hook it iterates to — it never
-# enumerates all 3 expected guardrail hooks. This fixture is DELIBERATELY a
-# 1-of-3 partial install (only auto-approve-safe-bash.sh wired) — exactly
-# what used to false-green as 'present' before this round's fix. Bounded to
-# what status output alone can attest: 'present' is unreachable through this
-# data source (see the probe's own comment) until guardrail-block.mjs grows
-# a richer verb — every mode=global reading is 'degraded'.
-gb_node_stub="$work/gb-node-stub"; : > "$gb_node_stub"
+# ── cmd:guardrail_block_status (guardrail-block-global) — HIMMEL-1100/1418 ──
+# HIMMEL-1418: guardrail-block.mjs grew a `status --json` verb enumerating
+# all 3 expected GUARDRAILS hooks with per-hook presence + node/wrapper/
+# script resolution, and the probe now consumes it instead of the plain
+# `guardrail-mode=<mode> node-resolves=<yes|no>` text line (which only ever
+# proved "at least one owned hook exists and ITS node path resolves" —
+# detectMode()'s `.some()`, nodeResolves()'s first-match return). This
+# fixture is DELIBERATELY a 1-of-3 partial install (only auto-approve-safe-
+# bash.sh wired, and even that one hook's wrapper/script paths are FAKE
+# /x/... paths that don't resolve) — exactly what used to false-green as
+# 'present' pre-HIMMEL-1100, and what the round-3 fix could only bound to
+# 'degraded' for lack of per-hook data. It must still read degraded — the
+# genuine 'present' path is proven separately below (full-install fixture).
+gb_node_stub="$work/gb-node-stub"; : > "$gb_node_stub"; chmod +x "$gb_node_stub"
+# A REAL, RUNNABLE stub file for the baked bash path too (CR fix, codex-adv-2
+# then codex-adv-3): every fixture below that hardcoded the literal string
+# "/bin/bash" was a POSIX-only path that never resolves on native Windows
+# (fs.existsSync('/bin/bash') is false here) — harmless before bashResolves
+# existed, but now feeds directly into `complete`. `chmod +x` on both stubs
+# (round 3, codex-adv-3): the new node/bash usability check requires X_OK —
+# a POSIX CI run would otherwise fail the full-install fixture below on a
+# plain non-executable stub file (Windows' X_OK is a no-op, so this was
+# masked here, but not on POSIX).
+gb_bash_stub="$work/gb-bash-stub"; : > "$gb_bash_stub"; chmod +x "$gb_bash_stub"
 gb_settings_present="$work/gb-settings-present/.claude"; mkdir -p "$gb_settings_present"
+# CR fix (glm-2-r6, round 6): this fixture used to hardcode the literal
+# string "/bin/bash" for GUARDRAIL_BASH — which RESOLVES on POSIX (ubuntu
+# CI has a real /bin/bash) but never resolves on native Windows. The
+# assertion below names the EXACT combination of broken parts
+# ("bash/wrapper/script"), so a platform where bash happens to resolve
+# would drop the "bash/" prefix and string-mismatch — red on the public
+# mirror's ubuntu shell-unit job while staying green here. Fixed by baking
+# a DELIBERATELY dead bash path instead (this fixture already wants
+# everything about the one wired hook to be broken, so a genuinely
+# nonexistent bash path is thematically consistent, not just a workaround):
+# now bashResolves is false on EVERY platform, and the asserted detail
+# string is identical everywhere.
+gb_dead_bash_present="$(winpath "$work")/nonexistent-bash-for-partial-install"
 "$node_bin" -e "
 const fs = require('fs');
 const nodePath = '$(winpath "$gb_node_stub")';
-const command = 'GUARDRAIL_BASH=\"/bin/bash\" ' + JSON.stringify(nodePath) + ' \"/x/scripts/hooks/guardrail-skip-in-himmel.js\" \"/x/scripts/hooks/auto-approve-safe-bash.sh\"';
+const deadBashPath = '$gb_dead_bash_present';
+const command = 'GUARDRAIL_BASH=' + JSON.stringify(deadBashPath) + ' ' + JSON.stringify(nodePath) + ' \"/x/scripts/hooks/guardrail-skip-in-himmel.js\" \"/x/scripts/hooks/auto-approve-safe-bash.sh\"';
 const settings = { hooks: { PreToolUse: [ { matcher: 'Bash', hooks: [ { type: 'command', command } ] } ] } };
 fs.writeFileSync('$(winpath "$gb_settings_present")/settings.json', JSON.stringify(settings, null, 2));
 "
@@ -1619,10 +1646,399 @@ const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outGBp" | jq -e '.actual == "degraded"' >/dev/null \
-  || fail "cmd:guardrail_block_status: a 1-of-3-hooks partial install (mode=global, node-resolves=yes for the one wired hook) must read degraded, NEVER present (status output cannot attest all 3 hooks): (got: $outGBp)"
-echo "$outGBp" | jq -e '.detail | contains("cannot confirm all 3")' >/dev/null \
-  || fail "cmd:guardrail_block_status partial-install detail should explain the status-verb limitation (got: $outGBp)"
-echo "ok: cmd:guardrail_block_status — a partial (1-of-3) install reads degraded, never a false present"
+  || fail "cmd:guardrail_block_status: a 1-of-3-hooks partial install (mode=global, node-resolves=yes for the one wired hook, but its bash/wrapper/script paths are fake) must read degraded, NEVER present: (got: $outGBp)"
+echo "$outGBp" | jq -e '.detail | contains("block-edit-on-main.sh: missing")' >/dev/null \
+  || fail "cmd:guardrail_block_status partial-install detail should name the missing hooks (got: $outGBp)"
+echo "$outGBp" | jq -e '.detail | contains("auto-approve-safe-bash.sh: bash/wrapper/script path does not resolve")' >/dev/null \
+  || fail "cmd:guardrail_block_status partial-install detail should name the wired hook's own broken paths, including its (now deliberately dead, platform-invariant) bash path (got: $outGBp)"
+echo "ok: cmd:guardrail_block_status — a partial (1-of-3) install reads degraded, never a false present, with per-hook detail"
+
+# ── full (3-of-3) install, every hook's matcher CORRECT and every path
+# (bash/node/wrapper/script) genuinely resolving → present ─────────────────
+# HIMMEL-1418's whole point: `complete` in status --json can only be true
+# when EVERY GUARDRAILS hook is present, its ACTUAL matcher exactly matches
+# what it needs for full tool coverage, and bash/node/wrapper/script paths
+# ALL resolve — so a genuinely fully-armed machine now reads present instead
+# of being permanently bounded to degraded. HIMMEL-1422: this fixture bakes
+# wrapper/script paths under $repo_root_w, so its ctx.env below PINS
+# HIMMEL_REPO to that same $repo_root_w — hermetic against whatever
+# HIMMEL_REPO the ambient shell running this suite happens to carry (a real
+# operator machine auto-sets it in ~/.claude/settings.json, typically
+# pointing at the PRIMARY checkout, not necessarily this worktree); without
+# the pin, guardrail-block.mjs's trust-anchor check would compare this
+# fixture's baked paths against a DIFFERENT checkout and read a false
+# anchor mismatch.
+gb_settings_full="$work/gb-settings-full/.claude"; mkdir -p "$gb_settings_full"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const bashPath = '$(winpath "$gb_bash_stub")';
+const repoRoot = '$repo_root_w';
+const basenames = ['auto-approve-safe-bash.sh', 'block-edit-on-main.sh', 'block-read-secrets.sh'];
+const matchers = { 'auto-approve-safe-bash.sh': 'Bash', 'block-edit-on-main.sh': 'Edit|Write|MultiEdit|NotebookEdit', 'block-read-secrets.sh': 'Bash|PowerShell|Read|Grep' };
+const wrapper = repoRoot + '/scripts/hooks/guardrail-skip-in-himmel.js';
+const groups = basenames.map((basename) => ({
+  matcher: matchers[basename],
+  hooks: [ { type: 'command', command: 'GUARDRAIL_BASH=' + JSON.stringify(bashPath) + ' ' + JSON.stringify(nodePath) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(repoRoot + '/scripts/hooks/' + basename) } ],
+}));
+fs.writeFileSync('$(winpath "$gb_settings_full")/settings.json', JSON.stringify({ hooks: { PreToolUse: groups } }, null, 2));
+"
+outGBf=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_full")/settings.json', HIMMEL_REPO: '$repo_root_w' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBf" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a genuine 3-of-3 install (every hook wired under its correct matcher, bash/node/wrapper/script all resolving, HIMMEL-1422 trust anchor matching) must read present: (got: $outGBf)"
+echo "$outGBf" | jq -e '.detail | contains("3 guardrail hooks present, correctly matched, and resolving")' >/dev/null \
+  || fail "cmd:guardrail_block_status present detail should confirm all 3 hooks (got: $outGBf)"
+echo "ok: cmd:guardrail_block_status — a genuine full (3-of-3) install now reads present via status --json"
+
+# ── HIMMEL-1422: same-basename, WRONG-checkout wiring → degraded, never
+# present, even though every other check (basename ownership, matcher,
+# bash/node/wrapper/script resolution) is genuinely fine. This is the
+# ticket's motivating scenario: a stale/moved checkout (or an unrelated
+# same-named stub elsewhere) that ownsGuardrail()'s basename-only identity
+# check alone cannot distinguish from the real thing. auto-approve-safe-
+# bash.sh's wrapper+script here live under a SEPARATE, real, non-empty
+# checkout ($gb_wrong_checkout) — not $repo_root_w, the pinned trust
+# anchor — so the probe must flag it, not the wrapper/script *Resolves
+# checks (which stay true: the files genuinely exist and are readable). ───
+gb_wrong_checkout="$work/gb-wrong-checkout"; mkdir -p "$gb_wrong_checkout/scripts/hooks"
+: > "$gb_wrong_checkout/scripts/hooks/guardrail-skip-in-himmel.js"
+printf '// real content, not a truncated stub\n' > "$gb_wrong_checkout/scripts/hooks/guardrail-skip-in-himmel.js"
+printf '# real content, not a truncated stub\n' > "$gb_wrong_checkout/scripts/hooks/auto-approve-safe-bash.sh"
+gb_settings_wrong_checkout="$work/gb-settings-wrong-checkout/.claude"; mkdir -p "$gb_settings_wrong_checkout"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const bashPath = '$(winpath "$gb_bash_stub")';
+const wrongRepo = '$(winpath "$gb_wrong_checkout")';
+const command = 'GUARDRAIL_BASH=' + JSON.stringify(bashPath) + ' ' + JSON.stringify(nodePath) + ' ' + JSON.stringify(wrongRepo + '/scripts/hooks/guardrail-skip-in-himmel.js') + ' ' + JSON.stringify(wrongRepo + '/scripts/hooks/auto-approve-safe-bash.sh');
+const settings = { hooks: { PreToolUse: [ { matcher: 'Bash', hooks: [ { type: 'command', command } ] } ] } };
+fs.writeFileSync('$(winpath "$gb_settings_wrong_checkout")/settings.json', JSON.stringify(settings, null, 2));
+"
+outGBwc=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_wrong_checkout")/settings.json', HIMMEL_REPO: '$repo_root_w' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBwc" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a same-basename wrapper/script wired from a WRONG checkout (not the pinned trust anchor) must read degraded, never present (HIMMEL-1422): (got: $outGBwc)"
+echo "$outGBwc" | jq -e '.detail | contains("does not match trust anchor")' >/dev/null \
+  || fail "cmd:guardrail_block_status wrong-checkout detail should name the trust-anchor mismatch (got: $outGBwc)"
+echo "ok: cmd:guardrail_block_status — same-basename wiring from a wrong checkout reads degraded with the trust-anchor mismatch named, never present (HIMMEL-1422)"
+
+# ── HIMMEL-1422: correct-checkout, correct path, but a TRUNCATED (empty)
+# script file → degraded, never present. Uses its OWN fake anchor checkout
+# ($gb_truncated_anchor, HIMMEL_REPO pinned to it) rather than truncating a
+# file under the real $repo_root_w scripts/hooks/ (which would break this
+# very test run's own guardrail wiring) — the wrapper/script paths baked
+# into settings.json live UNDER that anchor, so wrapperMatchesAnchor/
+# scriptMatchesAnchor stay true (this is NOT the wrong-checkout case above);
+# only the script's CONTENT is a no-op, exactly the empty-guardrail-skip-
+# in-himmel.js scenario from the ticket's motivating report. ───────────────
+gb_truncated_anchor="$work/gb-truncated-anchor"; mkdir -p "$gb_truncated_anchor/scripts/hooks"
+printf '// real content, not a truncated stub\n' > "$gb_truncated_anchor/scripts/hooks/guardrail-skip-in-himmel.js"
+: > "$gb_truncated_anchor/scripts/hooks/auto-approve-safe-bash.sh"
+gb_settings_empty_script="$work/gb-settings-empty-script/.claude"; mkdir -p "$gb_settings_empty_script"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const bashPath = '$(winpath "$gb_bash_stub")';
+const anchorRepo = '$(winpath "$gb_truncated_anchor")';
+const wrapper = anchorRepo + '/scripts/hooks/guardrail-skip-in-himmel.js';
+const command = 'GUARDRAIL_BASH=' + JSON.stringify(bashPath) + ' ' + JSON.stringify(nodePath) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(anchorRepo + '/scripts/hooks/auto-approve-safe-bash.sh');
+const settings = { hooks: { PreToolUse: [ { matcher: 'Bash', hooks: [ { type: 'command', command } ] } ] } };
+fs.writeFileSync('$(winpath "$gb_settings_empty_script")/settings.json', JSON.stringify(settings, null, 2));
+"
+outGBes=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_empty_script")/settings.json', HIMMEL_REPO: '$(winpath "$gb_truncated_anchor")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBes" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: an anchor-matching but EMPTY script file must read degraded, never present (HIMMEL-1422 truncation floor): (got: $outGBes)"
+echo "$outGBes" | jq -e '.detail | contains("does not match trust anchor") | not' >/dev/null \
+  || fail "cmd:guardrail_block_status empty-script detail should be a content problem, NOT an anchor mismatch — the path IS the anchor's own copy (got: $outGBes)"
+echo "$outGBes" | jq -e '.detail | contains("script")' >/dev/null \
+  || fail "cmd:guardrail_block_status empty-script detail should name script as the broken part (got: $outGBes)"
+echo "ok: cmd:guardrail_block_status — an anchor-matching but empty (truncated) script file reads degraded, never present (HIMMEL-1422 content-sanity floor)"
+
+# ── codex-adv-1: all 3 hooks wired, every path resolving, but under the
+# WRONG matcher (all 3 crammed into a single 'Bash' group) → degraded, never
+# present. Without this check, block-edit-on-main.sh would never fire on
+# Edit/Write/MultiEdit/NotebookEdit and block-read-secrets.sh would never
+# fire on PowerShell/Read/Grep, while status --json still claimed complete. ─
+gb_settings_bad_matcher="$work/gb-settings-bad-matcher/.claude"; mkdir -p "$gb_settings_bad_matcher"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const bashPath = '$(winpath "$gb_bash_stub")';
+const repoRoot = '$repo_root_w';
+const basenames = ['auto-approve-safe-bash.sh', 'block-edit-on-main.sh', 'block-read-secrets.sh'];
+const wrapper = repoRoot + '/scripts/hooks/guardrail-skip-in-himmel.js';
+const hooks = basenames.map((basename) => ({ type: 'command', command: 'GUARDRAIL_BASH=' + JSON.stringify(bashPath) + ' ' + JSON.stringify(nodePath) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(repoRoot + '/scripts/hooks/' + basename) }));
+fs.writeFileSync('$(winpath "$gb_settings_bad_matcher")/settings.json', JSON.stringify({ hooks: { PreToolUse: [ { matcher: 'Bash', hooks } ] } }, null, 2));
+"
+outGBm=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_bad_matcher")/settings.json' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBm" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: all 3 hooks wired, every path resolving, but under the WRONG matcher must read degraded, never present (codex-adv-1): (got: $outGBm)"
+echo "$outGBm" | jq -e '.detail | contains("matcher mismatch")' >/dev/null \
+  || fail "cmd:guardrail_block_status wrong-matcher detail should name the matcher mismatch (got: $outGBm)"
+echo "$outGBm" | jq -e '.detail | contains("block-edit-on-main.sh")' >/dev/null \
+  || fail "cmd:guardrail_block_status wrong-matcher detail should name block-edit-on-main.sh specifically (got: $outGBm)"
+echo "ok: cmd:guardrail_block_status — all-paths-resolving under the WRONG matcher reads degraded, never present (codex-adv-1)"
+
+# ── codex-adv-2: all 3 hooks wired under their CORRECT matcher, node/
+# wrapper/script all resolving, but the baked GUARDRAIL_BASH executable is
+# missing → degraded, never present. The wrapper fails closed on a missing
+# bash at runtime; a status --json that ignored bash would claim complete
+# while the guardrail is machine-wide broken. ──────────────────────────────
+gb_settings_dead_bash="$work/gb-settings-dead-bash/.claude"; mkdir -p "$gb_settings_dead_bash"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const repoRoot = '$repo_root_w';
+const basenames = ['auto-approve-safe-bash.sh', 'block-edit-on-main.sh', 'block-read-secrets.sh'];
+const matchers = { 'auto-approve-safe-bash.sh': 'Bash', 'block-edit-on-main.sh': 'Edit|Write|MultiEdit|NotebookEdit', 'block-read-secrets.sh': 'Bash|PowerShell|Read|Grep' };
+const wrapper = repoRoot + '/scripts/hooks/guardrail-skip-in-himmel.js';
+const deadBash = repoRoot + '/scripts/hooks/NONEXISTENT-bash.exe';
+const groups = basenames.map((basename) => ({
+  matcher: matchers[basename],
+  hooks: [ { type: 'command', command: 'GUARDRAIL_BASH=' + JSON.stringify(deadBash) + ' ' + JSON.stringify(nodePath) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(repoRoot + '/scripts/hooks/' + basename) } ],
+}));
+fs.writeFileSync('$(winpath "$gb_settings_dead_bash")/settings.json', JSON.stringify({ hooks: { PreToolUse: groups } }, null, 2));
+"
+outGBb=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_dead_bash")/settings.json' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBb" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: all 3 hooks correctly wired but the baked bash executable is missing must read degraded, never present (codex-adv-2): (got: $outGBb)"
+echo "$outGBb" | jq -e '.detail | contains("bash")' >/dev/null \
+  || fail "cmd:guardrail_block_status dead-bash detail should name bash as unresolved (got: $outGBb)"
+echo "$outGBb" | jq -e '.detail | contains("path does not resolve")' >/dev/null \
+  || fail "cmd:guardrail_block_status dead-bash detail should say the path does not resolve (got: $outGBb)"
+echo "ok: cmd:guardrail_block_status — a genuinely wired install with a dead baked bash path reads degraded, never present (codex-adv-2)"
+
+# ── codex-adv-3 (round 3): fs.existsSync() alone accepts a DIRECTORY as
+# "resolves" — all 3 hooks wired, matcher correct, but the baked node path
+# is a DIRECTORY (not a file) → degraded, never present, even though
+# fs.existsSync() on that path would return true. ──────────────────────────
+gb_node_dir="$work/gb-node-is-a-directory"; mkdir -p "$gb_node_dir"
+gb_settings_node_dir="$work/gb-settings-node-dir/.claude"; mkdir -p "$gb_settings_node_dir"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_dir")';
+const bashPath = '$(winpath "$gb_bash_stub")';
+const repoRoot = '$repo_root_w';
+const basenames = ['auto-approve-safe-bash.sh', 'block-edit-on-main.sh', 'block-read-secrets.sh'];
+const matchers = { 'auto-approve-safe-bash.sh': 'Bash', 'block-edit-on-main.sh': 'Edit|Write|MultiEdit|NotebookEdit', 'block-read-secrets.sh': 'Bash|PowerShell|Read|Grep' };
+const wrapper = repoRoot + '/scripts/hooks/guardrail-skip-in-himmel.js';
+const groups = basenames.map((basename) => ({
+  matcher: matchers[basename],
+  hooks: [ { type: 'command', command: 'GUARDRAIL_BASH=' + JSON.stringify(bashPath) + ' ' + JSON.stringify(nodePath) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(repoRoot + '/scripts/hooks/' + basename) } ],
+}));
+fs.writeFileSync('$(winpath "$gb_settings_node_dir")/settings.json', JSON.stringify({ hooks: { PreToolUse: groups } }, null, 2));
+"
+outGBnd=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_node_dir")/settings.json' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBnd" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a DIRECTORY at the baked node path must read degraded, never present, even though fs.existsSync() would call it present (codex-adv-3): (got: $outGBnd)"
+echo "$outGBnd" | jq -e '.detail | contains("node")' >/dev/null \
+  || fail "cmd:guardrail_block_status directory-at-node-path detail should name node as unresolved (got: $outGBnd)"
+echo "ok: cmd:guardrail_block_status — a DIRECTORY at the baked node path reads degraded, never present (codex-adv-3)"
+
+# ── codex-adv-4 (round 3): duplicate owned entries per basename were
+# invisible past the first match — 6 configured entries (one valid + one
+# dead-node duplicate per guardrail) used to report only the 3 valid ones
+# and read complete:true, even though the dead duplicate is still
+# independently wired and can fail closed at runtime. ──────────────────────
+gb_dup_dead_node="$work/gb-dup-dead-node"
+gb_settings_dup="$work/gb-settings-dup/.claude"; mkdir -p "$gb_settings_dup"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const deadNodePath = '$(winpath "$gb_dup_dead_node")';
+const bashPath = '$(winpath "$gb_bash_stub")';
+const repoRoot = '$repo_root_w';
+const basenames = ['auto-approve-safe-bash.sh', 'block-edit-on-main.sh', 'block-read-secrets.sh'];
+const matchers = { 'auto-approve-safe-bash.sh': 'Bash', 'block-edit-on-main.sh': 'Edit|Write|MultiEdit|NotebookEdit', 'block-read-secrets.sh': 'Bash|PowerShell|Read|Grep' };
+const wrapper = repoRoot + '/scripts/hooks/guardrail-skip-in-himmel.js';
+const cmdFor = (node, basename) => 'GUARDRAIL_BASH=' + JSON.stringify(bashPath) + ' ' + JSON.stringify(node) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(repoRoot + '/scripts/hooks/' + basename);
+// ONE valid group per guardrail (the genuine install) PLUS one extra group
+// per guardrail wired to a dead node path — 6 owned entries total, exactly
+// the reproduced shape.
+const validGroups = basenames.map((basename) => ({ matcher: matchers[basename], hooks: [ { type: 'command', command: cmdFor(nodePath, basename) } ] }));
+const dupGroups = basenames.map((basename) => ({ matcher: matchers[basename], hooks: [ { type: 'command', command: cmdFor(deadNodePath, basename) } ] }));
+fs.writeFileSync('$(winpath "$gb_settings_dup")/settings.json', JSON.stringify({ hooks: { PreToolUse: [ ...validGroups, ...dupGroups ] } }, null, 2));
+"
+outGBdup=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_dup")/settings.json' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBdup" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a valid entry PLUS a dead-node duplicate per guardrail (6 entries total) must read degraded, never present (codex-adv-4): (got: $outGBdup)"
+echo "$outGBdup" | jq -e '.detail | contains("duplicate entries wired")' >/dev/null \
+  || fail "cmd:guardrail_block_status duplicate-entry detail should name the duplication (got: $outGBdup)"
+echo "ok: cmd:guardrail_block_status — a valid entry plus a dead-node duplicate per guardrail reads degraded, never present (codex-adv-4)"
+
+# ── codex-adv-5 (round 4): ownership by whole-string substring search let a
+# DECOY command through — the real (4th quoted) script arg for all 3 groups
+# is a stub file, and each guardrail's actual basename appears ONLY in a
+# trailing shell comment. The pre-fix isOwnedHook()/parseOwnedCommand() pair
+# would have reported this as "owned, script resolves" per guardrail. Fixed
+# semantic: NOT owned by any guardrail at all (present:false/entryCount:0 —
+# reads identically to "never wired"), so this must read degraded (mode
+# still reads global off the decoy — detectMode()'s loose match is
+# unchanged/out of scope — but no guardrail has a genuine owned entry). ────
+gb_decoy_script="$work/gb-decoy-script.sh"; : > "$gb_decoy_script"
+gb_settings_decoy="$work/gb-settings-decoy/.claude"; mkdir -p "$gb_settings_decoy"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const bashPath = '$(winpath "$gb_bash_stub")';
+const decoyScript = '$(winpath "$gb_decoy_script")';
+const repoRoot = '$repo_root_w';
+const basenames = ['auto-approve-safe-bash.sh', 'block-edit-on-main.sh', 'block-read-secrets.sh'];
+const matchers = { 'auto-approve-safe-bash.sh': 'Bash', 'block-edit-on-main.sh': 'Edit|Write|MultiEdit|NotebookEdit', 'block-read-secrets.sh': 'Bash|PowerShell|Read|Grep' };
+const wrapper = repoRoot + '/scripts/hooks/guardrail-skip-in-himmel.js';
+// Real script arg is the SAME decoy for all 3; the guardrail's own basename
+// sits ONLY in a trailing comment — no quoted-argument parse ever sees it.
+const groups = basenames.map((basename) => ({
+  matcher: matchers[basename],
+  hooks: [ { type: 'command', command: 'GUARDRAIL_BASH=' + JSON.stringify(bashPath) + ' ' + JSON.stringify(nodePath) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(decoyScript) + ' # ' + basename } ],
+}));
+fs.writeFileSync('$(winpath "$gb_settings_decoy")/settings.json', JSON.stringify({ hooks: { PreToolUse: groups } }, null, 2));
+"
+outGBdecoy=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_decoy")/settings.json' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBdecoy" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a decoy script arg with the real basename only in a trailing comment must read degraded, never present (codex-adv-5): (got: $outGBdecoy)"
+echo "$outGBdecoy" | jq -e '.detail | contains("auto-approve-safe-bash.sh: missing")' >/dev/null \
+  || fail "cmd:guardrail_block_status decoy detail should report the guardrail as missing (not owned by a comment mention) (got: $outGBdecoy)"
+echo "$outGBdecoy" | jq -e '.detail | contains("block-edit-on-main.sh: missing")' >/dev/null \
+  || fail "cmd:guardrail_block_status decoy detail should report block-edit-on-main.sh as missing too (got: $outGBdecoy)"
+echo "$outGBdecoy" | jq -e '.detail | contains("block-read-secrets.sh: missing")' >/dev/null \
+  || fail "cmd:guardrail_block_status decoy detail should report block-read-secrets.sh as missing too (got: $outGBdecoy)"
+echo "ok: cmd:guardrail_block_status — a decoy script with the real guardrail basename only in a trailing comment reads degraded (not owned by any guardrail), never present (codex-adv-5)"
+
+# ── codex-adv-7 (round 5): a canonical (fully valid) entry for all 3
+# guardrails PLUS a SAME-IDENTITY duplicate with a TRAILING EXTRA ARGUMENT
+# on auto-approve-safe-bash.sh — guardrail-skip-in-himmel.js reads only
+# process.argv[2] (the script path) and ignores anything after it, so this
+# duplicate is RUNTIME-RELEVANT (Claude still executes it identically to
+# the canonical one), not a decoy. Round 4's anchored regex alone would make
+# it invisible entirely (entryCount would stay 1, complete:true) even
+# though it's wired with a DEAD node path — reopening round 3's own blind
+# spot via a different command shape. Must read degraded, never present. ──
+gb_noncanon_dead_node="$work/gb-noncanon-dead-node"
+gb_settings_noncanon="$work/gb-settings-noncanon/.claude"; mkdir -p "$gb_settings_noncanon"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const deadNodePath = '$(winpath "$gb_noncanon_dead_node")';
+const bashPath = '$(winpath "$gb_bash_stub")';
+const repoRoot = '$repo_root_w';
+const basenames = ['auto-approve-safe-bash.sh', 'block-edit-on-main.sh', 'block-read-secrets.sh'];
+const matchers = { 'auto-approve-safe-bash.sh': 'Bash', 'block-edit-on-main.sh': 'Edit|Write|MultiEdit|NotebookEdit', 'block-read-secrets.sh': 'Bash|PowerShell|Read|Grep' };
+const wrapper = repoRoot + '/scripts/hooks/guardrail-skip-in-himmel.js';
+const cmdFor = (node, basename, trailing) => 'GUARDRAIL_BASH=' + JSON.stringify(bashPath) + ' ' + JSON.stringify(node) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(repoRoot + '/scripts/hooks/' + basename) + (trailing ? ' \"extra-trailing-arg\"' : '');
+// ONE canonical, fully-valid entry per guardrail, PLUS a non-canonical
+// (trailing-arg) duplicate on auto-approve-safe-bash.sh alone, wired to a
+// dead node path.
+const canonicalGroups = basenames.map((basename) => ({ matcher: matchers[basename], hooks: [ { type: 'command', command: cmdFor(nodePath, basename, false) } ] }));
+const noncanonGroup = { matcher: 'Bash', hooks: [ { type: 'command', command: cmdFor(deadNodePath, 'auto-approve-safe-bash.sh', true) } ] };
+fs.writeFileSync('$(winpath "$gb_settings_noncanon")/settings.json', JSON.stringify({ hooks: { PreToolUse: [ ...canonicalGroups, noncanonGroup ] } }, null, 2));
+"
+outGBnc=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_noncanon")/settings.json' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBnc" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a canonical entry PLUS a same-identity trailing-arg duplicate must read degraded, never present (codex-adv-7): (got: $outGBnc)"
+echo "$outGBnc" | jq -e '.detail | contains("non-canonical entr")' >/dev/null \
+  || fail "cmd:guardrail_block_status non-canonical-duplicate detail should name the anomaly (got: $outGBnc)"
+echo "$outGBnc" | jq -e '.detail | contains("auto-approve-safe-bash.sh")' >/dev/null \
+  || fail "cmd:guardrail_block_status non-canonical-duplicate detail should name auto-approve-safe-bash.sh specifically (got: $outGBnc)"
+echo "ok: cmd:guardrail_block_status — a canonical entry plus a same-identity trailing-arg duplicate reads degraded, never present (codex-adv-7)"
+
+# ── full install but the WRAPPER itself has rotted (a moved/deleted himmel
+# checkout — exactly the drift class report_guardrail_block exists to
+# catch) → degraded, never present, even though all 3 hooks are wired. ────
+gb_settings_dead_wrapper="$work/gb-settings-dead-wrapper/.claude"; mkdir -p "$gb_settings_dead_wrapper"
+"$node_bin" -e "
+const fs = require('fs');
+const nodePath = '$(winpath "$gb_node_stub")';
+const repoRoot = '$repo_root_w';
+const basenames = ['auto-approve-safe-bash.sh', 'block-edit-on-main.sh', 'block-read-secrets.sh'];
+const matchers = { 'auto-approve-safe-bash.sh': 'Bash', 'block-edit-on-main.sh': 'Edit|Write|MultiEdit|NotebookEdit', 'block-read-secrets.sh': 'Bash|PowerShell|Read|Grep' };
+// Basename stays 'guardrail-skip-in-himmel.js' (isOwnedHook matches on that
+// substring) but lives under a directory that doesn't exist — the file
+// itself does not resolve.
+const wrapper = repoRoot + '/scripts/hooks/NONEXISTENT-DIR/guardrail-skip-in-himmel.js';
+const groups = basenames.map((basename) => ({
+  matcher: matchers[basename],
+  hooks: [ { type: 'command', command: 'GUARDRAIL_BASH=\"/bin/bash\" ' + JSON.stringify(nodePath) + ' ' + JSON.stringify(wrapper) + ' ' + JSON.stringify(repoRoot + '/scripts/hooks/' + basename) } ],
+}));
+fs.writeFileSync('$(winpath "$gb_settings_dead_wrapper")/settings.json', JSON.stringify({ hooks: { PreToolUse: groups } }, null, 2));
+"
+outGBw=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { CLAUDE_USER_SETTINGS: '$(winpath "$gb_settings_dead_wrapper")/settings.json' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBw" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: all 3 hooks wired but the shared wrapper path is dead must read degraded, not present: (got: $outGBw)"
+echo "$outGBw" | jq -e '.detail | contains("wrapper")' >/dev/null \
+  || fail "cmd:guardrail_block_status dead-wrapper detail should name the wrapper as unresolved (got: $outGBw)"
+echo "$outGBw" | jq -e '.detail | contains("path does not resolve")' >/dev/null \
+  || fail "cmd:guardrail_block_status dead-wrapper detail should say the path does not resolve (got: $outGBw)"
+echo "ok: cmd:guardrail_block_status — a rotted wrapper path on an otherwise-3-of-3 install reads degraded, never present"
 
 gb_settings_absent="$work/gb-settings-absent"; mkdir -p "$gb_settings_absent"
 outGBa=$("$node_bin" -e "
@@ -1652,7 +2068,7 @@ const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outGBd" | jq -e '.actual == "degraded"' >/dev/null || fail "cmd:guardrail_block_status degraded (global mode, node path rotted): (got: $outGBd)"
-echo "$outGBd" | jq -e '.detail | contains("no longer resolves")' >/dev/null || fail "cmd:guardrail_block_status degraded detail should say node no longer resolves (got: $outGBd)"
+echo "$outGBd" | jq -e '.detail | contains("path does not resolve")' >/dev/null || fail "cmd:guardrail_block_status degraded detail should say a path no longer resolves (got: $outGBd)"
 
 gb_bad_script_dir="$work/gb-bad-script"; mkdir -p "$gb_bad_script_dir/scripts/hooks"
 cat > "$gb_bad_script_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
@@ -1668,14 +2084,14 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 echo "$outGBu" | jq -e '.actual == "degraded"' >/dev/null || fail "cmd:guardrail_block_status degraded (unparseable output): (got: $outGBu)"
 echo "$outGBu" | jq -e '.detail | contains("unparseable")' >/dev/null || fail "cmd:guardrail_block_status unparseable-output detail should name it (got: $outGBu)"
 
-# CR fix (HIMMEL-1100 round 2, glm-3): mode=global but node-resolves is
-# MISSING entirely (distinct from the unparseable case above — mode itself
-# IS present/parseable here) used to fall through to 'present', since
-# `resolves === 'no'` is simply false for a missing field. A missing field is
-# not proof of resolution.
+# HIMMEL-1418: mode is valid JSON and present, but the 'hooks' array is
+# MISSING entirely (a wiring/shape break in guardrail-block.mjs's own
+# output, distinct from the plain-unparseable case above) — must NOT be
+# treated as a confirmed install; same "missing field is not proof" stance
+# as HIMMEL-1100 round 2's node-resolves check, now against the richer verb.
 gb_missing_field_dir="$work/gb-missing-field"; mkdir -p "$gb_missing_field_dir/scripts/hooks"
 cat > "$gb_missing_field_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
-process.stdout.write('guardrail-mode=global\n');
+process.stdout.write(JSON.stringify({ mode: 'global' }) + '\n');
 JS
 outGBmf=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
@@ -1685,10 +2101,117 @@ const ctx = { repoRoot: '$(winpath "$gb_missing_field_dir")', targetPath: '$repo
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outGBmf" | jq -e '.actual == "degraded"' >/dev/null \
-  || fail "cmd:guardrail_block_status degraded (mode=global but node-resolves field missing — must NOT fall through to present): (got: $outGBmf)"
-echo "$outGBmf" | jq -e '.detail | contains("missing")' >/dev/null \
-  || fail "cmd:guardrail_block_status missing-field detail should name it (got: $outGBmf)"
-echo "ok: cmd:guardrail_block_status degraded when mode=global but node-resolves is missing from the output"
+  || fail "cmd:guardrail_block_status degraded (mode=global but 'hooks' array missing — must NOT fall through to present): (got: $outGBmf)"
+echo "$outGBmf" | jq -e '.detail | contains("missing expected")' >/dev/null \
+  || fail "cmd:guardrail_block_status missing-hooks-field detail should name it (got: $outGBmf)"
+echo "ok: cmd:guardrail_block_status degraded when mode=global but the 'hooks' array is missing from status --json output"
+
+# CR fix (codex-1-r6, round 6): mode=global, complete=TRUE, but 'hooks' is a
+# genuinely present, well-typed EMPTY array. Array.isArray([]) is true, so
+# without an explicit non-empty check this would sail straight past the
+# shape guard and into the `complete === true` branch, trusted as 'present'
+# despite attesting ZERO guardrails — a malformed/truncated producer output
+# read as a clean, complete install. Raised as a suggestion in round 2,
+# re-raised as Important in round 6.
+gb_empty_hooks_dir="$work/gb-empty-hooks"; mkdir -p "$gb_empty_hooks_dir/scripts/hooks"
+cat > "$gb_empty_hooks_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
+process.stdout.write(JSON.stringify({ mode: 'global', complete: true, hooks: [] }) + '\n');
+JS
+outGBeh=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$(winpath "$gb_empty_hooks_dir")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBeh" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status degraded (mode=global, complete=true, but hooks=[] — must NOT be trusted as present): (got: $outGBeh)"
+echo "$outGBeh" | jq -e '.detail | contains("missing expected")' >/dev/null \
+  || fail "cmd:guardrail_block_status empty-hooks-array detail should name the shape problem (got: $outGBeh)"
+echo "ok: cmd:guardrail_block_status degraded when mode=global, complete=true, but the 'hooks' array is empty (codex-1-r6)"
+
+# ── codex-1-r7 (round 7 — third raise, each stricter): round 6 closed the
+# EMPTY hooks[] case, but a TRUNCATED payload — complete:true with FEWER
+# hook objects than the real contract enumerates, that one object itself
+# fully healthy — still sailed through on parsed.complete alone, since
+# nothing recomputed completeness FROM the entries. The probe now requires
+# parsed.complete AND an independent per-entry recomputation to AGREE. ────
+
+# Case 1 (the accepted floor, DOCUMENTED not fixed — a residual gap distinct
+# from HIMMEL-1422's trust-anchor scope, which this fixture's payload now
+# also satisfies via wrapperMatchesAnchor/scriptMatchesAnchor: true): a
+# non-empty, INTERNALLY CONSISTENT array with only 1 (of the real 3) hook
+# objects, that one fully healthy (including anchor-matching) — complete:true
+# and the recomputation over the given entries agree (both say "healthy"),
+# so this reads present. This is the accepted limit: detecting "too few
+# entries" needs the EXPECTED count, which only the producer owns; asserting
+# a count here would duplicate producer vocabulary the same way round 6
+# already rejected.
+gb_truncated_dir="$work/gb-truncated"; mkdir -p "$gb_truncated_dir/scripts/hooks"
+cat > "$gb_truncated_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
+process.stdout.write(JSON.stringify({
+  mode: 'global',
+  anchor: { repo: '/fake/repo', source: 'HIMMEL_REPO' },
+  complete: true,
+  hooks: [
+    {
+      basename: 'auto-approve-safe-bash.sh', matcher: 'Bash', expectedMatcher: 'Bash', matcherMatches: true,
+      present: true, entryCount: 1,
+      bashPath: '/fake/bash', bashResolves: true,
+      nodePath: '/fake/node', nodeResolves: true,
+      wrapperPath: '/fake/wrapper.js', wrapperResolves: true,
+      anchorWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAnchor: true,
+      scriptPath: '/fake/script.sh', scriptResolves: true,
+      anchorScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAnchor: true,
+      duplicates: [], nonCanonicalCount: 0, nonCanonical: [],
+    },
+  ],
+}) + '\n');
+JS
+outGBtr=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$(winpath "$gb_truncated_dir")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBtr" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:guardrail_block_status: an internally-consistent TRUNCATED payload (1 of 3 real hooks, that one fully healthy) reads present under the documented floor (got: $outGBtr)"
+echo "ok: cmd:guardrail_block_status — an internally-consistent truncated payload (fewer entries than the real contract, all healthy) reads present under the documented accepted floor (codex-1-r7, case 1)"
+
+# Case 2 (the NON-NEGOTIABLE case): complete:true, but the ONE hook entry's
+# OWN fields say it is NOT healthy (wrapperResolves:false) — the payload
+# contradicts itself. Must read degraded, never present.
+gb_contradiction_dir="$work/gb-contradiction"; mkdir -p "$gb_contradiction_dir/scripts/hooks"
+cat > "$gb_contradiction_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
+process.stdout.write(JSON.stringify({
+  mode: 'global',
+  complete: true,
+  hooks: [
+    {
+      basename: 'auto-approve-safe-bash.sh', matcher: 'Bash', expectedMatcher: 'Bash', matcherMatches: true,
+      present: true, entryCount: 1,
+      bashPath: '/fake/bash', bashResolves: true,
+      nodePath: '/fake/node', nodeResolves: true,
+      wrapperPath: '/fake/wrapper.js', wrapperResolves: false,
+      scriptPath: '/fake/script.sh', scriptResolves: true,
+      duplicates: [], nonCanonicalCount: 0, nonCanonical: [],
+    },
+  ],
+}) + '\n');
+JS
+outGBcon=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$(winpath "$gb_contradiction_dir")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBcon" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: complete=true with an entry whose OWN fields say it is unhealthy (wrapperResolves:false) is self-contradictory and must read degraded, never present (got: $outGBcon)"
+echo "$outGBcon" | jq -e '.detail | contains("self-contradictory")' >/dev/null \
+  || fail "cmd:guardrail_block_status self-contradictory-payload detail should name it as such (got: $outGBcon)"
+echo "ok: cmd:guardrail_block_status — complete=true contradicted by its own hooks[] entry reads degraded, never present (codex-1-r7, case 2, non-negotiable)"
 
 gb_bad_exit_dir="$work/gb-bad-exit"; mkdir -p "$gb_bad_exit_dir/scripts/hooks"
 cat > "$gb_bad_exit_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
@@ -1704,7 +2227,7 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outGBe" | jq -e '.actual == "degraded"' >/dev/null || fail "cmd:guardrail_block_status degraded (script exits nonzero): (got: $outGBe)"
 echo "$outGBe" | jq -e '.detail | contains("rc=2")' >/dev/null || fail "cmd:guardrail_block_status nonzero-exit detail should name the rc (got: $outGBe)"
-echo "ok: cmd:guardrail_block_status (guardrail-block-global) absent/degraded (rotted node path / unparseable output / nonzero exit) — 'present' is unreachable from status output alone, see the partial-install case above"
+echo "ok: cmd:guardrail_block_status (guardrail-block-global) absent/degraded (rotted node path / unparseable output / missing hooks field / nonzero exit) — 'present' is reserved for the genuine full-install case proven above"
 # SKIP NOTE: a spawn-error path (process.execPath itself unresolvable) is not
 # exercised — this probe spawns by ABSOLUTE execPath, never a bash/PATH
 # lookup for node, so the r.error branch has no realistic trigger here (unlike
