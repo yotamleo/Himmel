@@ -12,9 +12,27 @@ const path = require('path');
 // the Windows executable extensions so the same scan works on win32/posix.
 // Uses path.delimiter, which is the separator Node actually sees in
 // process.env.PATH (';' on win32, ':' on posix).
-function which(tool) {
+//
+// CR fix (HIMMEL-1093 round 2, codex-2): optional `env` param, defaulting to
+// process.env when omitted — preserves probeDep's documented exception
+// (probes.js: which() reads process.env.PATH directly by design, a hermetic
+// test controls it via the OUTER shell PATH, not ctx.env), while letting a
+// caller that already threads a fully-controlled ctx.env (probeMcpRegistered's
+// bin check) resolve PATH from THAT env instead of silently falling back to
+// the real process env. The `env.Path` fallback mirrors scripts/lanes/
+// resolve.mjs's pathHasFactory() — a manually-constructed env object built by
+// spreading process.env can carry either casing on Windows.
+//
+// CR fix (HIMMEL-1093 round 5, codex-1): pick the first KEY PRESENT, not the
+// first TRUTHY value. `e.PATH || e.Path || ''` treated a deliberately
+// scrubbed `PATH: ''` as falsy and fell through to `e.Path` — so a hermetic
+// caller that explicitly empties PATH (to prove "nothing resolves") silently
+// resolved from an inherited Windows `Path` instead, defeating the scrub.
+function which(tool, env) {
+  const e = env || process.env;
   const exts = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : [''];
-  const dirs = (process.env.PATH || '').split(path.delimiter);
+  const rawPath = ('PATH' in e) ? e.PATH : (('Path' in e) ? e.Path : '');
+  const dirs = String(rawPath || '').split(path.delimiter);
   for (const dir of dirs) {
     if (!dir) continue;
     for (const ext of exts) {

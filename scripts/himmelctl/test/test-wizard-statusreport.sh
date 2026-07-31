@@ -33,6 +33,11 @@
 #      passes an in-memory reconcile here without persisting it first — a
 #      regression that made statusReport ignore `state` and re-load() would
 #      silently read stale on-disk desired flags (the preview would lie).
+#   e. (HIMMEL-1093, CR round 2) doc-guard-map's opt-in n/a downgrade fires
+#      ONLY on a genuinely clean probe absence (marker sourced fine, just not
+#      present) — a broken probe (resolver fails to source, probe.actual
+#      'degraded') must read severity degraded end-to-end, never get
+#      silently swallowed into the same friendly opt-in n/a message.
 
 set -euo pipefail
 
@@ -330,5 +335,99 @@ echo "$outD" | jq -e '.diskStillEnabled == true' >/dev/null \
 echo "$outD" | jq -e '.stateUnchanged == true' >/dev/null \
   || fail "case d: statusReport must perform NO state.json write — the persisted baseline must stay byte-identical across the call (got: $outD)"
 echo "ok: case d — statusReport honors a caller-provided UNSAVED reconciled state (reports its desired, not the on-disk one) and writes NO state.json"
+
+# ── case e (HIMMEL-1093, CR round 2): doc-guard-map's opt-in n/a downgrade
+# fires ONLY on a genuinely clean absence (marker not present, sourced fine),
+# never on a broken probe. probes.js's cmd:is_himmel_dev now distinguishes
+# "resolver failed to source" (degraded) from "sourced fine, marker absent"
+# (absent) — this proves status-report.js's item.id==='doc-guard-map' branch
+# only reaches the friendly-opt-in override for the latter. The CR's own
+# glm-3/glm-4 findings (claiming 'degraded' also gets swallowed to n/a) were
+# adjudicated DISPROVED by code inspection (statusReport's degraded branch is
+# a separate `else if` that never falls into the red/n/a-override block) —
+# this end-to-end case pins that as regression protection, not just the
+# probes.js-level unit coverage in test-wizard-probes.sh. ─────────────────
+caseE_dir="$work/caseE-target"; mkdir -p "$caseE_dir"
+homeE="$work/homeE"; mkdir -p "$homeE"
+cacheE="$work/cacheE"; mkdir -p "$cacheE"
+
+manifestE="$work/manifestE.json"
+cat > "$manifestE" <<'JSON'
+{
+  "schemaVersion": 2,
+  "harness": "claude",
+  "items": [
+    {
+      "id": "doc-guard-map",
+      "kind": "wiring",
+      "scopes": ["project"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "cmd:is_himmel_dev", "resolver": "scripts/guardrails/lib.sh" }
+    }
+  ]
+}
+JSON
+MANIFEST_E_PATH="$(winpath "$manifestE")"
+export MANIFEST_E_PATH
+
+answersE() {
+  cat <<'JS'
+const answers = {
+  role: 'adopter', tier: 'standard', scope: 'project',
+  vault: { mode: 'none', path: '' },
+  handover: { mode: 'none', path: '' },
+  pluginSet: 'lean', lanes: [], alwaysOn: false,
+};
+JS
+}
+
+# ── e1: marker genuinely absent (sourced fine, rc 1) -> n/a, opt-in detail ──
+fixtureRepoE1="$work/repoE1"; mkdir -p "$fixtureRepoE1/scripts/guardrails"
+cat > "$fixtureRepoE1/scripts/guardrails/lib.sh" <<'SH'
+is_himmel_dev_repo() { return 1; }
+SH
+fixtureRepoE1_w="$(winpath "$fixtureRepoE1")"
+cacheE1="$work/cacheE1"; mkdir -p "$cacheE1"
+
+outE1=$(cd "$caseE_dir" && HOME="$homeE" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE1")" HIMMELCTL_REPO_ROOT="$fixtureRepoE1_w" "$node_bin" -e "
+const { statusReport } = require(process.env.STATUS_REPORT_LIB);
+const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_E_PATH, 'utf8'));
+$(answersE)
+const report = statusReport({ manifest, scope: 'project', targetPath: process.cwd(), answers });
+console.log(JSON.stringify(report));
+")
+echo "$outE1" | jq -e '.items[0].actual == "absent"' >/dev/null \
+  || fail "case e1: doc-guard-map probe.actual should be absent (marker genuinely absent) (got: $outE1)"
+echo "$outE1" | jq -e '.items[0].severity == "n/a"' >/dev/null \
+  || fail "case e1: doc-guard-map clean absence should downgrade to n/a, not red (got: $outE1)"
+echo "$outE1" | jq -e '.items[0].detail | test("opt-in"; "i")' >/dev/null \
+  || fail "case e1: doc-guard-map n/a detail should name it as opt-in (got: $outE1)"
+echo "$outE1" | jq -e '.summary.red == 0' >/dev/null \
+  || fail "case e1: doc-guard-map clean absence must not count toward summary.red (got: $outE1)"
+echo "ok: case e1 — doc-guard-map with a genuinely absent marker (resolver sourced fine) downgrades to n/a"
+
+# ── e2: resolver missing (probe wiring broken, rc 3) -> degraded, NEVER n/a ──
+fixtureRepoE2="$work/repoE2"; mkdir -p "$fixtureRepoE2/scripts/guardrails"
+# Deliberately NO scripts/guardrails/lib.sh — `.` fails to source it.
+fixtureRepoE2_w="$(winpath "$fixtureRepoE2")"
+cacheE2="$work/cacheE2"; mkdir -p "$cacheE2"
+
+outE2=$(cd "$caseE_dir" && HOME="$homeE" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE2")" HIMMELCTL_REPO_ROOT="$fixtureRepoE2_w" "$node_bin" -e "
+const { statusReport } = require(process.env.STATUS_REPORT_LIB);
+const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_E_PATH, 'utf8'));
+$(answersE)
+const report = statusReport({ manifest, scope: 'project', targetPath: process.cwd(), answers });
+console.log(JSON.stringify(report));
+")
+echo "$outE2" | jq -e '.items[0].actual == "degraded"' >/dev/null \
+  || fail "case e2: doc-guard-map probe.actual should be degraded (resolver failed to source) (got: $outE2)"
+echo "$outE2" | jq -e '.items[0].severity == "degraded"' >/dev/null \
+  || fail "case e2: doc-guard-map with a broken resolver must read severity degraded, NEVER n/a — proves status-report's opt-in override never reaches the degraded branch (got: $outE2)"
+echo "$outE2" | jq -e '.items[0].detail | test("opt-in"; "i") | not' >/dev/null \
+  || fail "case e2: a broken probe must NOT read the friendly opt-in message (got: $outE2)"
+echo "$outE2" | jq -e '.summary.degraded == 1 and .summary.na == 0' >/dev/null \
+  || fail "case e2: a broken doc-guard-map probe must count toward summary.degraded, not summary.na (got: $outE2)"
+echo "ok: case e2 — doc-guard-map with a broken resolver (probe wiring failure) reads degraded, never silently swallowed to n/a"
 
 echo "PASS"

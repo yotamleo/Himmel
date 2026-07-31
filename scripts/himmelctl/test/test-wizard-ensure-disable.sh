@@ -93,6 +93,15 @@
 #      NEVER be dispatched either (the abort skips Step 5 entirely, not
 #      just the rest of the disable loop). --dry-run's own enumerate-
 #      everything behavior (case d) is unaffected by this fix.
+#   p. (CR fix, HIMMEL-1100 round 6, CodeRabbit App PR #1500 thread #4) a
+#      full-offboard-only item that probes DEGRADED (not 'present', not
+#      'absent') logs an advisory and lets the run PROCEED (exit 0) instead
+#      of permanently blocking every ensure the way a 'present' item still
+#      does — the removal gate used to push ANY non-absent probe as an
+#      unconditional blocker, wedging a probe that can structurally never
+#      confirm 'present' (e.g. guardrail-block-global) forever, with no
+#      unwire descriptor to ever converge it. Asserted across TWO
+#      consecutive runs (not a one-shot fluke).
 
 set -euo pipefail
 
@@ -1275,5 +1284,78 @@ fi
 [ ! -f "$targetO/o-a.marker" ] || fail "case o: o-a.marker must be GONE — item-a was unwired (the run proceeded, not rejected)"
 grep -qF 'unwire-item-a' "$logO" || fail "case o: item-a's unwire must have RUN (the false rejection would have skipped it) — spy log: $(cat "$logO")"
 echo "ok: case o — the TRANSITIVE reverse walk STOPS at an absent undesired intermediate: unwiring item-a proceeds (exit 0, marker removed) instead of a false rejection on the unreachable item-c"
+
+# ── case p (CR fix, HIMMEL-1100 round 6, CodeRabbit App PR #1500 thread #4):
+# a full-offboard-only item that probes DEGRADED (not fully 'present', not
+# 'absent') must NOT block/abort an `ensure` run the way a 'present' one
+# does — the toward-disabled removal gate used to push ANY non-absent probe
+# as an unconditional blocker, so a probe that structurally can never
+# confirm 'present' from status output alone (e.g. guardrail-block-global)
+# wedged EVERY run permanently, with no unwire descriptor to ever converge
+# it. The fix probes the item first: 'present' still blocks (case b, above,
+# unchanged); 'degraded' logs an ADVISORY line instead and the run PROCEEDS
+# (exit 0); 'absent' needs no note. Reuses the settings-hooks probe shape
+# from case c (1/3 himmel PreToolUse markers -> 'degraded', never 'present'
+# and never 'absent') on a full-offboard-only item (no unwire descriptor at
+# all — the exact shape this bug targeted). ────────────────────────────────
+repoP="$work/repoP"; mkdir -p "$repoP/scripts/install"
+cat > "$repoP/scripts/install/manifest.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "harness": "claude",
+  "items": [
+    {
+      "id": "degraded-offboard-item", "kind": "wiring", "scopes": ["project"], "profiles": ["luna", "all"], "deps": [],
+      "probe": { "type": "settings-hooks", "file": ".claude/settings.json", "key": "hooks.PreToolUse" },
+      "install": { "type": "wire", "target": "pretooluse-hooks" },
+      "removable": "full-offboard-only"
+    }
+  ]
+}
+JSON
+
+targetP="$work/targetP"; mkdir -p "$targetP/.claude"
+# 1 of 3 himmel PreToolUse markers present -> probeSettingsHooks reads
+# 'degraded', never 'present' and never 'absent' (mirrors case c's fixture).
+cat > "$targetP/.claude/settings.json" <<'JSON'
+{"hooks":{"PreToolUse":[
+  {"matcher":"Bash","hooks":[{"type":"command","command":"bash \"/x/scripts/hooks/auto-approve-safe-bash.sh\""}]}
+]}}
+JSON
+cacheP="$work/cacheP"; mkdir -p "$cacheP"
+homeP="$work/homeP"; mkdir -p "$homeP"
+# vault.mode=none -> profile 'core', which EXCLUDES degraded-offboard-item
+# (profiles:["luna","all"]) -> desired:false from the very first run, no
+# --profile reconcile needed to reach the toward-disabled path (mirrors
+# case c's setup).
+write_cache "$cacheP/install-profile.json" adopter project none "" inline "" lean
+
+runEnsureP() {
+  ( cd "$targetP" && HIMMELCTL_REPO_ROOT="$(winpath "$repoP")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheP")" HOME="$homeP" \
+      "$node_bin" "$wizard" ensure --yes 2>&1 </dev/null )
+}
+
+set +e
+outP1=$(runEnsureP); rcP1=$?
+set -e
+[ "$rcP1" -eq 0 ] || fail "case p: ensure must exit 0 when the only toward-disabled item is full-offboard-only AND degraded (must not permanently wedge the run) (got rc=$rcP1): $outP1"
+echo "$outP1" | grep -qF 'degraded-offboard-item' || fail "case p: the advisory line should name degraded-offboard-item (got: $outP1)"
+echo "$outP1" | grep -qi 'degraded' || fail "case p: the advisory line should say the item is degraded (got: $outP1)"
+echo "$outP1" | grep -qF 'himmelctl uninstall' || fail "case p: the advisory line should point at 'himmelctl uninstall' (got: $outP1)"
+echo "$outP1" | grep -qF 'if you want it fully removed' || fail "case p: the advisory should use the degraded-specific phrasing, distinct from the present-blocker's error (got: $outP1)"
+if echo "$outP1" | grep -qF 'to remove it'; then
+  fail "case p: a degraded full-offboard-only item must NOT surface the 'present'-only blocker error shape (got: $outP1)"
+fi
+# settings.json is untouched -- full-offboard-only never unwires (no
+# descriptor exists to run in the first place).
+grep -qF 'auto-approve-safe-bash' "$targetP/.claude/settings.json" || fail "case p: settings.json should still carry its one marker (nothing ran against it)"
+
+# Run it a SECOND time to prove this is not a one-shot fluke: a permanently
+# degraded item must never wedge, on any run.
+set +e
+outP2=$(runEnsureP); rcP2=$?
+set -e
+[ "$rcP2" -eq 0 ] || fail "case p: a SECOND ensure run must also exit 0 -- a permanently degraded full-offboard-only item must never wedge (got rc=$rcP2): $outP2"
+echo "ok: case p — a DEGRADED (not 'present') full-offboard-only item logs an advisory and lets the run proceed (exit 0), instead of permanently blocking every ensure"
 
 echo "PASS"

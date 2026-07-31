@@ -100,7 +100,7 @@
       "scopes": ["project", "user"],
       "profiles": ["luna", "all"],
       "deps": ["tokensave-binary"],
-      "probe": { "type": "mcp-registered", "server": "tokensave" },
+      "probe": { "type": "mcp-registered", "server": "tokensave", "bin": "tokensave", "initMarker": ".tokensave" },
       "removable": "full-offboard-only"
     },
     {
@@ -165,12 +165,22 @@
       "removable": "full-offboard-only"
     },
     {
+      "id": "hermes-checkout",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "cmd:hermes_checkout" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
       "id": "hermes-lanes",
       "kind": "lane",
       "scopes": ["user"],
       "profiles": ["core", "all"],
-      "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/lanes/lanes.json" },
+      "deps": ["hermes-checkout"],
+      "probe": { "type": "cmd:has_hermes", "resolver": "scripts/lib/resolve-hermes-py.sh" },
       "removable": "full-offboard-only"
     },
     {
@@ -179,7 +189,7 @@
       "scopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/telegram/telegram-api.ts" },
+      "probe": { "type": "telegram-access", "envFile": ".claude/channels/telegram/.env", "tokenKey": "TELEGRAM_BOT_TOKEN", "accessFile": ".claude/channels/telegram/access.json" },
       "removable": "full-offboard-only"
     },
     {
@@ -320,7 +330,7 @@
       "scopes": ["user"],
       "profiles": ["core", "luna", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/graphify/check-graph-freshness.sh" },
+      "probe": { "type": "dep", "cmd": "graphify" },
       "removable": "full-offboard-only",
       "offboard": "advise"
     },
@@ -330,9 +340,78 @@
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/lib/doc-guard-map.sh" },
+      "probe": { "type": "cmd:is_himmel_dev", "resolver": "scripts/guardrails/lib.sh" },
       "install": { "type": "adopt" },
       "removable": "full-offboard-only"
+    },
+    {
+      "id": "codex-cli",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "cmd:codex_provisioned" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "pipeline-cadence",
+      "kind": "scheduler",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "cmd:cadence_armed", "resolver": "scripts/lib/cadence-format.sh", "envVar": "PIPELINE_BAT_DIR", "defaultSubdir": ".claude/pipeline-cadence" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "codex-sweep-cadence",
+      "kind": "scheduler",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "cmd:cadence_armed", "resolver": "scripts/lib/cadence-format.sh", "envVar": "SWEEP_BAT_DIR", "defaultSubdir": ".claude/codex-sweep-cadence" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "graphmap-cadence",
+      "kind": "scheduler",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "cmd:cadence_armed", "resolver": "scripts/lib/cadence-format.sh", "envVar": "GRAPHMAP_BAT_DIR", "defaultSubdir": ".claude/graphmap-cadence" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "guardrail-block-global",
+      "kind": "wiring",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "cmd:guardrail_block_status", "script": "scripts/hooks/guardrail-block.mjs" },
+      "removable": "full-offboard-only"
+    },
+    {
+      "id": "obsidian-second-brain",
+      "kind": "plugin",
+      "scopes": ["user"],
+      "profiles": ["luna", "all"],
+      "deps": [],
+      "probe": { "type": "file-exists", "path": "{homePath}/.claude/plugins/obsidian-second-brain/.git" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "gemini-cli",
+      "kind": "dep",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "dep", "cmd": "gemini" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     }
   ]
 }

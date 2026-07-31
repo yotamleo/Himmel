@@ -74,6 +74,31 @@ assert_contains "fires: emits additionalContext nudge" "$OUT1" "orchestrating pa
 assert_contains "fires: log records the model" "$(cat "$LOG1" 2>/dev/null || true)" "claude-opus-4-8"
 assert_contains "fires: log records the path" "$(cat "$LOG1" 2>/dev/null || true)" "scripts/hooks/foo.sh"
 
+# --- Case 1b: worker exemption (HIMMEL-1417) — `agent_id` present (the
+# documented signal a PreToolUse hook fires inside a subagent call, per
+# code.claude.com/docs/en/hooks) silences the advisory even though the
+# payload would otherwise fire (same top-tier-model transcript, same
+# implementation path) ---
+LOG1B="$TMP/fires1b.jsonl"
+PAYLOAD1_SUBAGENT=$(printf '%s' "$PAYLOAD1" | jq -c '. + {agent_id:"agent-worker-1"}')
+OUT1B=$(run_hook "$PAYLOAD1_SUBAGENT" "$LOG1B")
+RC1B=$?
+assert_rc "worker exemption: still allow" 0 "$RC1B"
+assert_rc "worker exemption: no additionalContext" 0 "$([ -z "$OUT1B" ] && echo 0 || echo 1)"
+assert_file_missing "worker exemption: no fire-log written" "$LOG1B"
+
+# --- Case 1c: parent ground truth (HIMMEL-1417 retask) — a REJECTED earlier
+# fix keyed the exemption on CLAUDE_CODE_CHILD_SESSION=1, which is ALSO set
+# on a genuine top-level orchestrator session launched via the standard
+# armed/scheduled path (a Task/Agent dispatch shares the parent's session
+# rather than getting its own). Pin that: the env var present but no
+# `agent_id` in the payload (top-level shape) must still fire. ---
+LOG1C="$TMP/fires1c.jsonl"
+OUT1C=$(CLAUDE_CODE_CHILD_SESSION=1 run_hook "$PAYLOAD1" "$LOG1C")
+RC1C=$?
+assert_rc "parent ground truth: always exits allow" 0 "$RC1C"
+assert_contains "parent ground truth: still fires despite CLAUDE_CODE_CHILD_SESSION=1" "$OUT1C" "orchestrating parent"
+
 # --- Case 2: does NOT fire on a docs path (README.md under docs/) ---
 LOG2="$TMP/fires2.jsonl"
 PAYLOAD2=$(jq -nc --arg tp "$OPUS_TRANSCRIPT" '{tool_name:"Edit",session_id:"sess-2",transcript_path:$tp,tool_input:{file_path:"docs/internals/enforcement.md"}}')
