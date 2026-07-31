@@ -215,10 +215,22 @@ echo "ok: case b — a malformed graphify-mcp config stays red with its raw diag
 # ── present: register it in <targetB>/.mcp.json -> severity green, same as
 # any other present item — the fix must not stop tracking it once it IS
 # there, and project scope must resolve .mcp.json (not ~/.claude.json).
+# HIMMEL-1093 round 3: graphify-mcp's `bin` descriptor field was DROPPED
+# (redundant/wrong — see manifest.json's comment); the registered entry's
+# OWN `command` ("graphify-mcp", a bare name here) is now what must resolve,
+# unconditionally. The stub is named to match that EXACT registered command
+# — not the (now-irrelevant) `graphify` CLI name — and prepended ahead of
+# the real PATH so the assertion doesn't depend on whether graphify-mcp
+# happens to be installed on the test-runner's machine (this dev machine
+# genuinely has one at ~/.local/bin/graphify-mcp.exe, which is exactly the
+# false-hermeticity trap a mismatched stub name would silently paper over).
 printf '{"mcpServers":{"graphify":{"command":"graphify-mcp"}}}' > "$targetB/.mcp.json"
-outB3=$(runStatusB) || fail "case b: status run (graphify-mcp present) failed"
+graphifyBinDir="$work/graphify-bin"; mkdir -p "$graphifyBinDir"
+: > "$graphifyBinDir/graphify-mcp"
+chmod +x "$graphifyBinDir/graphify-mcp"
+outB3=$(PATH="$graphifyBinDir:$PATH" runStatusB) || fail "case b: status run (graphify-mcp present) failed"
 echo "$outB3" | jq -e '.items[0].severity == "green"' >/dev/null \
-  || fail "case b: graphify-mcp registered in <targetB>/.mcp.json (project scope) should read green (got: $outB3)"
-echo "ok: case b — graphify-mcp registered (project-scope .mcp.json) reads green, same as any other present desired item"
+  || fail "case b: graphify-mcp registered in <targetB>/.mcp.json (project scope) with its registered command 'graphify-mcp' resolvable on PATH should read green (got: $outB3)"
+echo "ok: case b — graphify-mcp registered (project-scope .mcp.json) + its registered command resolvable reads green, same as any other present desired item"
 
 echo "PASS"

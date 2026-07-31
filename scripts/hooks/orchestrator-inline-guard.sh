@@ -67,6 +67,43 @@
 #   ORCH_GUARD_TRANSCRIPT_TAIL   lines tailed from transcript_path when
 #                                sniffing the model (test seam; default 60)
 #
+# ============================================================================
+# WORKER EXEMPTION (HIMMEL-1417)
+# ============================================================================
+# This advisory targets a TOP-TIER PARENT implementing inline — never a
+# dispatched Agent-tool worker executing its own assigned brief (the exact
+# case CLAUDE.md's subagent policy wants: Sonnet as default implementor for
+# a well-specified brief). The model-tail-sniffing above cannot tell the two
+# apart: a worker's hook subprocess can end up tailing a transcript whose
+# most recent assistant turn is the DISPATCHING PARENT's (Opus/Fable), not
+# the worker's own model — a false fire on every worker edit (observed live,
+# leg 14, CR rounds 3-6).
+#
+# A first attempt at this fix keyed the exemption on the CLAUDE_CODE_CHILD_
+# SESSION=1 env var, on the basis that a dispatched worker's session carried
+# it. That was FALSIFIED by direct parent-side ground truth: the genuine
+# top-level orchestrator session (the one this guard exists to fire on) also
+# has CLAUDE_CODE_CHILD_SESSION=1 when launched via the standard armed/
+# scheduled overnight path — because in this harness a Task/Agent-tool
+# dispatch runs as a nested sub-invocation of the SAME top-level session
+# (same CLAUDE_CODE_SESSION_ID, same transcript file), not a separate CLI
+# process with its own session identity. That env var reads as "this CLI
+# process was itself launched as a child of something" (e.g. schtasks),
+# unrelated to Agent-tool dispatch — so it would have silenced the guard for
+# the exact parent it targets. Reverted.
+#
+# The correct, DOCUMENTED discriminator (code.claude.com/docs/en/hooks,
+# "Common Input Fields"): when a PreToolUse hook fires inside a subagent
+# call, the JSON payload carries an `agent_id` field ("Present only when the
+# hook fires inside a subagent call. Use this to distinguish subagent hook
+# calls from main-thread calls."). Unlike the env var or transcript-tail
+# model sniffing, this is a first-class, explicitly-for-this-purpose field,
+# not an inferred heuristic — so it is trusted directly rather than treated
+# as best-effort. Absence of `agent_id` (top-level session) falls through
+# unchanged to the existing model-tier heuristic below, preserving current
+# fire-on-ambiguity behavior for the genuine parent-implements-inline case.
+# ============================================================================
+#
 # bash 3.2-compatible (no ${var,,}, no mapfile, no associative arrays).
 set -uo pipefail
 
@@ -78,6 +115,13 @@ command -v jq >/dev/null 2>&1 || { warn "jq not on PATH — allowing (fail-open,
 
 input=$(cat 2>/dev/null || true)
 [ -n "$input" ] || exit 0
+
+# Worker exemption (HIMMEL-1417) — see header. `agent_id` is present ONLY
+# when this hook fires inside a subagent (Agent-tool dispatched) call; a
+# dispatched worker's own edits are the desired pattern, not the anti-pattern
+# this advisory exists to catch.
+agent_id=$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null || true)
+[ -n "$agent_id" ] && exit 0
 
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 case "$tool" in

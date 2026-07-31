@@ -154,6 +154,70 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
         severity = 'n/a';
         detail = `${probe.detail} — opt-in (adopt.sh --with-graphify / claude mcp add graphify)`;
       }
+      // HIMMEL-1093: doc-guard-map's deepened probe (cmd:is_himmel_dev) reads
+      // 'absent' for the ordinary, expected case — any checkout that isn't a
+      // himmel CONTRIBUTOR checkout (the .himmel-dev marker is an opt-in
+      // dropped by contributor setup; adopters/most engineers never have it,
+      // by design — see scripts/guardrails/lib.sh's is_himmel_dev_repo()).
+      // profiles:["core","all"] makes this desired:true for every project
+      // target, so without this downgrade the fix for the OLD tautological
+      // false-green would just become a false red for nearly everyone.
+      // 'degraded' (repo root unresolvable — a genuine problem) is a
+      // DIFFERENT probe.actual and never reaches this branch.
+      if (item.id === 'doc-guard-map') {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (himmel contributor setup only; adopted/non-contributor checkouts intentionally have the gate off)`;
+      }
+      // HIMMEL-1100: the three cadence runners are armed via an explicit,
+      // one-time `arm` operator action — never part of setup.sh/adopt.sh's
+      // automatic install path (unlike codex-cli/hermes-checkout, which DO
+      // have a dedicated installer script the operator is expected to have
+      // run, and so stay on the plain red-if-absent path with every other
+      // `dep`/`lane` item). profiles:["core","all"] makes these desired:true
+      // broadly; without the downgrade, "never armed" (the common case for
+      // most operators) would read as a false red rather than the honest
+      // "opt-in, not armed" it actually is. 'degraded' (a broken resolver /
+      // unexpected rc) is a DIFFERENT probe.actual and never reaches here.
+      if (item.id === 'pipeline-cadence') {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (bash scripts/luna/pipeline-cadence.sh arm)`;
+      }
+      if (item.id === 'codex-sweep-cadence') {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (bash scripts/cleanup/codex-sweep-cadence.sh arm)`;
+      }
+      if (item.id === 'graphmap-cadence') {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (bash scripts/luna/graphmap-cadence.sh arm)`;
+      }
+      // HIMMEL-1100: the user-scope guardrail block is armed via an explicit
+      // `setup-hooks.sh --guardrail-mode global` opt-in — never the default
+      // (project mode). 'degraded' (armed but the baked node path rotted —
+      // exactly what report_guardrail_block's own drift check exists to
+      // catch) is a DIFFERENT probe.actual and never reaches here.
+      if (item.id === 'guardrail-block-global') {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (bash scripts/setup-hooks.sh --guardrail-mode global --yes)`;
+      }
+      // HIMMEL-1100: obsidian-second-brain is a MANUAL clone only — no himmel
+      // script ever installs it (docs/setup/new-machine.md: "manual clone,
+      // NOT in himmel marketplace"), the same "no automated path exists"
+      // shape as graphify-mcp/doc-guard-map above.
+      if (item.id === 'obsidian-second-brain') {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (manual clone: git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/plugins/obsidian-second-brain)`;
+      }
+      // HIMMEL-1100 round 5 (glm-3): gemini-cli is an optional second-opinion
+      // lane (gemini-subagent, /x-read family), not core tooling every
+      // operator needs — unlike codex-cli/hermes-checkout, which stay
+      // red-if-absent because they ARE core lanes here. profiles:["core",
+      // "all"] makes this desired:true broadly, so a non-Gemini operator
+      // would otherwise carry a permanent false red — exactly the noise
+      // HIMMEL-1093/1100 exist to kill.
+      if (item.id === 'gemini-cli') {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (npm install -g @google/gemini-cli)`;
+      }
     }
     results.push({ id: item.id, kind: item.kind, desired: true, actual: probe.actual, severity, detail });
   }

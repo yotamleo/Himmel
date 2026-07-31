@@ -2107,10 +2107,35 @@ async function cmdEnsure(args) {
       }
       disabled.push({ id: item.id });
     } else {
-      disableErrors.push(`${item.id}: removable:full-offboard-only — run 'himmelctl uninstall' to remove it`);
-      if (args.dryRun) continue;
-      disableAborted = true;
-      break;
+      // CR fix (HIMMEL-1100 round 6, CodeRabbit App PR #1500 thread #4):
+      // this branch used to push the blocker UNCONDITIONALLY, without ever
+      // probing the item's actual state — so a full-offboard-only item that
+      // is PERMANENTLY degraded (e.g. guardrail-block-global, which per
+      // this ticket's own round-3 fix never reaches 'present' from status
+      // output alone) wedged EVERY `ensure` run the moment a profile change
+      // put it in towardDisabled, with no way to ever clear it (there is no
+      // unwire descriptor to run — full-offboard-only items don't have one
+      // by definition). Only a genuinely 'present' item blocks (the
+      // operator has real convergeable work, via `himmelctl uninstall`);
+      // 'degraded' logs an advisory instead of erroring (nothing this loop
+      // can DO about it, and a probe that structurally can't confirm
+      // 'present' must not permanently wedge every run); 'absent' needs no
+      // note at all — it's already gone.
+      const probeCtx = { repoRoot: repoRoot(), targetPath: baseTargetPath, scope, env: process.env };
+      const probe = probesLib.runProbe(item, probeCtx);
+      if (probe.actual === 'present') {
+        disableErrors.push(`${item.id}: removable:full-offboard-only — run 'himmelctl uninstall' to remove it`);
+        if (args.dryRun) continue;
+        disableAborted = true;
+        break;
+      }
+      if (probe.actual === 'degraded') {
+        console.log(`himmelctl: ${item.id} is removable:full-offboard-only and currently degraded (${probe.detail}) — nothing to converge here; run 'himmelctl uninstall' if you want it fully removed.`);
+        continue;
+      }
+      // absent — already gone, nothing to do; counts toward the "disabled"
+      // summary the same way a genuinely-run unwire would.
+      disabled.push({ id: item.id });
     }
   }
 
