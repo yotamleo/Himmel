@@ -509,7 +509,26 @@ Steps:
        coderabbit_avail=$(grep '^panel-availability:' "$cr_tmp" || true)
        case "$coderabbit_rc" in
            0) ;;  # review completed — findings (possibly none) captured
-           3) echo "coderabbit pass skipped (CLI not configured)" ;;
+           3)
+               # CLI absent. For an App-less repo this CLI pass is the ONLY
+               # pre-CI CodeRabbit signal (HIMMEL-1164) — reuse cr-available.sh's
+               # cr_app_configured (HIMMEL-1125) rather than inventing another
+               # probe, so the message escalates only when it's actually true
+               # that nothing will review this PR. Guard the source (codex-1,
+               # CR round 3): a missing helper must degrade to the generic skip
+               # message, never break the handler itself (fail-open).
+               if [ ! -f scripts/lib/cr-available.sh ]; then
+                   echo "coderabbit pass skipped (CLI not configured)"
+               else
+                   # shellcheck source=scripts/lib/cr-available.sh
+                   . scripts/lib/cr-available.sh
+                   if cr_app_configured; then
+                       echo "coderabbit pass skipped (CLI not configured) — the CodeRabbit App is armed for this repo, so CI still reviews this PR"
+                   else
+                       echo "coderabbit pass skipped (CLI not configured) AND the CodeRabbit App is not armed here — this PR will ship with NO CodeRabbit signal. Install the CLI for the sanctioned pre-CI path (docs/internals/enforcement.md#coderabbit-pre-ci-path--app-present-vs-app-absent-himmel-1164), or arm the App with \`git config --local himmel.coderabbit true\` if one is installed." >&2
+                   fi
+               fi
+               ;;
            4) echo "coderabbit pass RATE-LIMITED/quota-exhausted (rc=4) — retry later; recording unavailable (a rate-limited reviewer is a MISSING signal, NOT clean)" >&2 ;;
            *) echo "coderabbit pass failed (rc=$coderabbit_rc) — continuing without it" >&2; coderabbit_findings="" ;;
        esac

@@ -38,6 +38,13 @@ marketplace (`obsidian@obsidian-skills`).
   `scripts/jira/` deps, so raw `bun test` here starts RED ("Cannot find module
   '@modelcontextprotocol/sdk/…'") and masks real regressions; the helper
   `bun install`s first so the baseline is GREEN.
+- **A command mirrored in both `.claude/commands/<name>.md` and a plugin's
+  `commands/<name>.md` (himmel-ops' `himmel-update.md` /
+  `himmel-update-all.md` — kept in both places on purpose, HIMMEL-459: the
+  project copy is the bootstrap path when the plugin isn't installed yet, the
+  plugin copy is what makes it reachable from any cwd) needs BOTH edited
+  together.** They drifted once (HIMMEL-459) when only the project copy kept
+  getting updated — diff the two before committing a change to either.
 
 ## Reference
 - Tooling catalog (what each plugin does):

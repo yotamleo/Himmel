@@ -442,6 +442,31 @@ export function poisonPushUrl(repoRoot: string, worktree: string): void {
   g(["config", "--worktree", "remote.origin.pushurl", POISON_SENTINEL], worktree);
 }
 
+// HIMMEL-1096: pre-trust a freshly-created worktree in Claude Code's config
+// (~/.claude.json) so the spawned worker's `claude` launch does not stall on
+// the interactive workspace-trust prompt — an unattended GLM/claudex dispatch
+// has no human present to answer it. Delegates to the shared helper
+// (scripts/lib/ensure-workspace-trust.sh, HIMMEL-386), already used by
+// arm-resume.sh and vmsdk.py for the same reason. Exported (mirrors
+// poisonPushUrl) so the claudex lane reuses it as-is. Non-fatal by the
+// helper's own contract (documented there: any nonzero exit is warn-and-
+// continue, never abort) — a trust pre-seed failure must never block a spawn.
+export function ensureWorkspaceTrust(worktree: string): void {
+  const script = join(REPO_ROOT, "scripts", "lib", "ensure-workspace-trust.sh");
+  try {
+    // env: process.env (CR-round finding, this ticket): Bun.spawnSync's default
+    // env is a snapshot from process start, NOT live process.env at call time —
+    // a runtime override (WORKSPACE_TRUST_CONFIG/TRUST_WRITE_JITTER_MS, the
+    // helper's own test seams) would silently miss the child without this.
+    const r = Bun.spawnSync([BASH_BIN, script, worktree], { stdout: "pipe", stderr: "pipe", env: process.env });
+    if (r.exitCode !== 0) {
+      console.error(`spawn-glm: WARNING - workspace-trust pre-seed failed for ${worktree} (rc=${r.exitCode}); spawn continues, first launch may prompt to trust the folder: ${r.stderr.toString().trim()}`);
+    }
+  } catch (e) {
+    console.error(`spawn-glm: WARNING - workspace-trust pre-seed threw (${String((e as any)?.message ?? e)}); spawn continues, first launch may prompt to trust the folder`);
+  }
+}
+
 export type SpawnPlan = { ok: true; slug: string; worktree: string; branch: string; warnings: SettingsConflict[] } | { ok: false; reason: string };
 // Pure decision logic — deps injected so every refusal branch is testable.
 export function planSpawn(
@@ -849,6 +874,10 @@ export async function runSharedDispatch(p: {
   let poisoned = false;
   try {
     if (p.needsWorktreeAdd) p.gitAdd(); // NO -b: an existing branch, never minted here
+    // Unconditional (codex-adv, HIMMEL-1096 CR round): a REUSED managed
+    // worktree (needsWorktreeAdd=false) from a pre-change or failed dispatch
+    // may never have been trust-seeded — seeding is idempotent, so cover both.
+    ensureWorkspaceTrust(p.worktree);
     // Capture any pre-existing per-worktree pushurl immediately before
     // poisoning so the finally can restore exactly what was there. Crash-
     // recovery constraint (I2): a prior shared-mode run that crashed between
@@ -1105,6 +1134,7 @@ async function main(): Promise<void> {
   let code: number;
   if (!sharedMode) {
     g(["worktree", "add", worktree, "-b", branch]);
+    ensureWorkspaceTrust(worktree);
     poisonPushUrl(absCwd, worktree);
     // HIMMEL-1094: this dispatch MINTED both the worktree and the branch (-b), so
     // it owns them until the worker starts. Teardown is passed ONLY here — shared

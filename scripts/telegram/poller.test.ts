@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, getUpdatesBackoffMs, shouldAlertOutage, OUTAGE_ALERT_AFTER_MS, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { GROUP_ANONYMOUS_BOT_ID, isAllowed, isOperatorIdentity, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -2753,4 +2753,31 @@ test("one session's dispatch failure does not abort the flush of others", async 
   await c.flushDue(now);                   // must not reject
   expect(runs).toEqual(["fine"]);          // the healthy session still went
   expect(c.isHolding("boom")).toBe(false); // and the failed hold was released
+});
+
+// --- getUpdates outage backoff + prolonged-outage alert (HIMMEL-1401) ---
+
+test("getUpdatesBackoffMs: 0 failures = no backoff; grows 1s -> 2s -> 4s ... capped at 30s", () => {
+  expect(getUpdatesBackoffMs(0)).toBe(0);
+  expect(getUpdatesBackoffMs(1)).toBe(1000);
+  expect(getUpdatesBackoffMs(2)).toBe(2000);
+  expect(getUpdatesBackoffMs(3)).toBe(4000);
+  expect(getUpdatesBackoffMs(4)).toBe(8000);
+  expect(getUpdatesBackoffMs(5)).toBe(16000);
+  expect(getUpdatesBackoffMs(6)).toBe(30000);   // 32s would-be value clamps to the cap
+  expect(getUpdatesBackoffMs(20)).toBe(30000);  // stays capped, never grows unbounded
+});
+
+test("shouldAlertOutage: silent before the threshold, fires once at it, then re-fires only after a full interval", () => {
+  const start = 1_000_000;
+  // Before threshold — never alerts, first-alert or repeat.
+  expect(shouldAlertOutage(start, start, null)).toBe(false);
+  expect(shouldAlertOutage(start + OUTAGE_ALERT_AFTER_MS - 1, start, null)).toBe(false);
+  // Crosses the threshold — first alert fires.
+  expect(shouldAlertOutage(start + OUTAGE_ALERT_AFTER_MS, start, null)).toBe(true);
+  // Right after a first alert, does not immediately re-fire.
+  const firstAlertAt = start + OUTAGE_ALERT_AFTER_MS;
+  expect(shouldAlertOutage(firstAlertAt + 1000, start, firstAlertAt)).toBe(false);
+  // A full interval after the last alert, it re-fires (still ongoing).
+  expect(shouldAlertOutage(firstAlertAt + OUTAGE_ALERT_AFTER_MS, start, firstAlertAt)).toBe(true);
 });

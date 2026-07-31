@@ -22,6 +22,38 @@ test("getUpdates returns [] on a malformed ok:true with no result array (no thro
   const r = await getUpdates("TOKEN", 0, 30, fakeFetch as any);
   expect(r).toEqual([]);
 });
+test("getUpdates THROWS on a non-ok response (HIMMEL-1401) so the poller's catch can back off instead of hot-looping", async () => {
+  const fakeFetch = async () => new Response(JSON.stringify({ ok: false, description: "Bad Gateway" }), { status: 502 });
+  await expect(getUpdates("TOKEN", 0, 30, fakeFetch as any)).rejects.toThrow(/Bad Gateway/);
+});
+test("getUpdates non-ok error falls back to the HTTP status when description is absent", async () => {
+  const fakeFetch = async () => new Response(JSON.stringify({ ok: false }), { status: 502 });
+  await expect(getUpdates("TOKEN", 0, 30, fakeFetch as any)).rejects.toThrow(/502/);
+});
+test("getUpdates aborts a stalled request within its client-side deadline (HIMMEL-1401 CR round 2) — a transport that never resolves must still REJECT, not hang forever, so the poller's catch/backoff fires", async () => {
+  // Models a stuck transport: the fetch promise never resolves on its own, only
+  // rejecting when the AbortSignal getUpdates wires up actually fires — exactly
+  // what a real fetch implementation does under an AbortSignal (this is the same
+  // contract getFile/downloadFile already rely on for FILE_FETCH_TIMEOUT_MS).
+  // `timeout=0` and a 20ms abortMarginMs keep the deadline (0*1000+20=20ms) tiny
+  // so the test doesn't wait out a real long-poll window.
+  const stallForever = (_url: string, init?: { signal?: AbortSignal }) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("The operation was aborted.")));
+    });
+  const start = Date.now();
+  await expect(getUpdates("TOKEN", 0, 0, stallForever as any, 20)).rejects.toThrow();
+  expect(Date.now() - start).toBeLessThan(2000);   // rejected via the 20ms deadline, not left hanging
+});
+test("getUpdates passes an AbortSignal to fetch so a stalled request CAN be aborted (wiring pin)", async () => {
+  let sawSignal: AbortSignal | undefined;
+  const fakeFetch = async (_url: string, init?: { signal?: AbortSignal }) => {
+    sawSignal = init?.signal;
+    return new Response(JSON.stringify({ ok: true, result: [] }));
+  };
+  await getUpdates("TOKEN", 0, 30, fakeFetch as any);
+  expect(sawSignal).toBeInstanceOf(AbortSignal);
+});
 test("sendMessage honors 429 retry_after then succeeds", async () => {
   let n = 0; const sleeps: number[] = [];
   const fakeFetch = async () => { n++;

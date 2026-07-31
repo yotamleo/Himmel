@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2015
 # test-unwire-singlekey.sh -- hermetic tests for the single-key unwire helpers
-# (unwire-statusline.sh, unwire-himmel-repo.sh, unwire-luna-vault.sh; SC6). Each:
-# removes only its key/stanza, preserves siblings, idempotent, absent -> no-op,
-# refuses invalid JSON. statusLine removal is conditional (himmel binary only).
+# (unwire-statusline.sh, unwire-himmel-repo.sh, unwire-luna-vault.sh,
+# unwire-handover-dir.sh; SC6 + HIMMEL-839). Each: removes only its
+# key/stanza, preserves siblings, idempotent, absent -> no-op, refuses
+# invalid JSON. statusLine removal is conditional (himmel binary only).
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 sl="$here/unwire-statusline.sh"
 hr="$here/unwire-himmel-repo.sh"
 lv="$here/unwire-luna-vault.sh"
+hd="$here/unwire-handover-dir.sh"
 fails=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 td="$(mktemp -d)"
@@ -74,8 +76,16 @@ bash "$lv" "$s" >/dev/null
 check "LUNA_VAULT_PATH removed"  "$(jq -r '.env.LUNA_VAULT_PATH // "ABSENT"' "$s")" "ABSENT"
 check "HIMMEL_REPO kept"         "$(jq -r '.env.HIMMEL_REPO' "$s")" "C:/h"
 
-# ── shared invariants for all three ─────────────────────────────────────────
-for h in "$sl" "$hr" "$lv"; do
+# ── unwire-handover-dir (HIMMEL-839) ────────────────────────────────────────
+# 6. removes HANDOVER_DIR, preserves sibling env keys.
+s="$td/hd1.json"
+printf '%s' '{"env":{"HANDOVER_DIR":"C:/v/handovers","HIMMEL_REPO":"C:/h"}}' > "$s"
+bash "$hd" "$s" >/dev/null
+check "HANDOVER_DIR removed"     "$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$s")" "ABSENT"
+check "HIMMEL_REPO kept (hd)"    "$(jq -r '.env.HIMMEL_REPO' "$s")" "C:/h"
+
+# ── shared invariants for all four ──────────────────────────────────────────
+for h in "$sl" "$hr" "$lv" "$hd"; do
   n="$(basename "$h")"
   # absent file -> rc 0, not created.
   m="$td/missing-$n.json"

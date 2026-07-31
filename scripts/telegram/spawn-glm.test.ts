@@ -13,6 +13,7 @@ import {
   transcriptDirFor,
   glmSessionRoot,
   poisonPushUrl,
+  ensureWorkspaceTrust,
   planSpawn,
   planSharedSpawn,
   gitBranchExists,
@@ -46,6 +47,23 @@ import {
 import { BASH_BIN } from "./run";
 import type { SettingsConflict } from "./glm-env";
 import { composeGrantLine, nextGrantId, classifyShape, authorityGate, composeEscalationForRefusedGrant } from "./grants";
+
+// HIMMEL-1096 (codex-adv round 2): runSharedDispatch now trust-seeds
+// UNCONDITIONALLY (needsWorktreeAdd true or false), so every test below that
+// exercises it would otherwise read/rewrite the OPERATOR'S REAL ~/.claude.json
+// on every dispatch — slow (JSON parse/stringify of a live, 100KB+ file,
+// pushing already-borderline Windows subprocess timing over Bun's 5s default
+// test timeout — observed as spurious "lock release failed (rc=null)" +
+// EBUSY-on-cleanup once the timeout kills the process mid-dispatch) AND a
+// real side effect (leaves throwaway temp-worktree paths trusted in the
+// operator's live config forever). Point every ensureWorkspaceTrust call in
+// this file's tests at a scratch config instead. TRUST_WRITE_JITTER_MS=0
+// drops the (up to 500ms) launch-race jitter — the dedicated jitter behavior
+// is exercised by scripts/lib/test-ensure-workspace-trust.sh, not here.
+// (My own HIMMEL-1096 test below layers its OWN scoped override/restore on
+// top of this default for its byte-exact assertion — both compose cleanly.)
+process.env.WORKSPACE_TRUST_CONFIG = join(tmpdir(), `spawn-glm-test-trust-${process.pid}.json`);
+process.env.TRUST_WRITE_JITTER_MS = "0";
 
 test("session root is OUTSIDE the poller's sessions/ tree", () => {
   const root = glmSessionRoot();
@@ -206,14 +224,19 @@ test("main() writes shared_branch into runningMeta only in shared mode (wiring p
 
 test("shared-branch lock is acquired BEFORE any worktree mutation, and main() guards before dispatching (wiring pin)", () => {
   const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
-  // acquire → worktree add → poison ordering inside runSharedDispatch
+  // acquire → worktree add → trust-seed (HIMMEL-1096, unconditional) → poison
+  // ordering inside runSharedDispatch
   const acquireIdx = src.indexOf('"acquire", p.repoDir, p.branch, "glm"');
-  const addIdx = src.indexOf("if (p.needsWorktreeAdd) p.gitAdd()");
+  const addIdx = src.indexOf("if (p.needsWorktreeAdd) p.gitAdd();");
+  const trustIdx = src.indexOf("ensureWorkspaceTrust(p.worktree);");
   const poisonIdx = src.indexOf("poisonPushUrl(p.repoDir, p.worktree)");
   expect(acquireIdx).toBeGreaterThan(-1);
   expect(addIdx).toBeGreaterThan(-1);
+  expect(trustIdx).toBeGreaterThan(-1);
   expect(poisonIdx).toBeGreaterThan(-1);
   expect(acquireIdx).toBeLessThan(addIdx);      // lock before worktree add
+  expect(acquireIdx).toBeLessThan(trustIdx);    // lock before trust-seed
+  expect(addIdx).toBeLessThan(trustIdx);        // worktree add before trust-seed
   expect(acquireIdx).toBeLessThan(poisonIdx);   // lock before poison
   // main() runs the GLM guard before it dispatches into the shared lifecycle
   const guardIdx = src.indexOf("checkGlmGuards(worktree)");
@@ -368,6 +391,55 @@ test("runSharedDispatch (I7): needsWorktreeAdd:true invokes gitAdd exactly once 
     expect(adds).toBe(1);
     expect(lockStatus(repo, "feat/live-pr")).toBe("free");
   } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("runSharedDispatch (HIMMEL-1096): needsWorktreeAdd:true pre-trusts the worktree via ensure-workspace-trust.sh", async () => {
+  const { repo, wt } = makeSharedRepo();
+  const trustCfg = join(tmpdir(), `trust-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const prevCfg = process.env.WORKSPACE_TRUST_CONFIG;
+  const prevJitter = process.env.TRUST_WRITE_JITTER_MS;
+  process.env.WORKSPACE_TRUST_CONFIG = trustCfg;
+  process.env.TRUST_WRITE_JITTER_MS = "0"; // no launch-race jitter needed for a single call
+  try {
+    const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: true, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => 0 });
+    expect(res.ok).toBe(true);
+    const cfg = JSON.parse(readFileSync(trustCfg, "utf8"));
+    const keys = Object.keys(cfg.projects ?? {});
+    expect(keys.length).toBe(1);
+    expect(cfg.projects[keys[0]].hasTrustDialogAccepted).toBe(true);
+  } finally {
+    if (prevCfg === undefined) delete process.env.WORKSPACE_TRUST_CONFIG; else process.env.WORKSPACE_TRUST_CONFIG = prevCfg;
+    if (prevJitter === undefined) delete process.env.TRUST_WRITE_JITTER_MS; else process.env.TRUST_WRITE_JITTER_MS = prevJitter;
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(trustCfg, { force: true });
+  }
+});
+
+test("ensureWorkspaceTrust is non-fatal: a bad dir never throws, just warns", () => {
+  expect(() => ensureWorkspaceTrust(join(tmpdir(), "himmel-no-such-dir-1096"))).not.toThrow();
+});
+
+test("runSharedDispatch (HIMMEL-1096, codex-adv round): needsWorktreeAdd:false (REUSED worktree, gitAdd never called) still gets trust-seeded", async () => {
+  const { repo, wt } = makeSharedRepo();
+  const trustCfg = join(tmpdir(), `trust-reuse-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const prevCfg = process.env.WORKSPACE_TRUST_CONFIG;
+  process.env.WORKSPACE_TRUST_CONFIG = trustCfg;
+  try {
+    const res = await runSharedDispatch({
+      repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT,
+      gitAdd: () => { throw new Error("gitAdd must NOT be called when needsWorktreeAdd is false"); },
+      runBody: async () => 0,
+    });
+    expect(res.ok).toBe(true);
+    const cfg = JSON.parse(readFileSync(trustCfg, "utf8"));
+    const keys = Object.keys(cfg.projects ?? {});
+    expect(keys.length).toBe(1);
+    expect(cfg.projects[keys[0]].hasTrustDialogAccepted).toBe(true);
+  } finally {
+    if (prevCfg === undefined) delete process.env.WORKSPACE_TRUST_CONFIG; else process.env.WORKSPACE_TRUST_CONFIG = prevCfg;
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(trustCfg, { force: true });
+  }
 });
 
 // --- gitIsDirty / gitBranchExists (CR round 2 F1): the REAL git-probe

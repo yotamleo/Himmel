@@ -8,7 +8,8 @@
 #   [4/6] uninstall Claude plugins + marketplaces (uninstall-plugins.ps1)
 #   [5/6] uninstall git hooks (pre-commit/pre-push/commit-msg)
 #   [6/6] unwire ~/.claude/settings.json (statusLine, env.HIMMEL_REPO,
-#         env.LUNA_VAULT_PATH, the UNIVERSAL hooks — what setup.ps1/adopt wired)
+#         env.LUNA_VAULT_PATH, env.HANDOVER_DIR, the UNIVERSAL hooks — what
+#         setup.ps1/adopt wired)
 #
 # Destructive. Fail-closed: without -Yes an interactive run prompts; a
 # non-interactive run aborts (rc=2). -DryRun prints actions only.
@@ -80,7 +81,7 @@ if (-not $SkipHooks) {
 }
 if (-not $SkipSettings) {
     Write-Host "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
-    Write-Host "     LUNA_VAULT_PATH, UNIVERSAL hooks -- non-himmel keys untouched)"
+    Write-Host "     LUNA_VAULT_PATH, HANDOVER_DIR, UNIVERSAL hooks -- non-himmel keys untouched)"
 } else {
     Write-Host "  6. keep ~/.claude/settings.json wiring (-SkipSettings)"
 }
@@ -302,20 +303,21 @@ Write-Host ""
 
 # --- [6/6] unwire user-scope settings.json (HIMMEL-460) ----------------------
 # Symmetric inverse of setup.ps1 [9/10] + adopt -Scope user: remove the
-# statusLine, env.HIMMEL_REPO, env.LUNA_VAULT_PATH, and the UNIVERSAL hooks.
-# Each helper removes ONLY its own key/stanza (refuses invalid JSON, preserves
-# every non-himmel key). The single-key helpers have no dry-run flag, so -DryRun
-# is gated here; unwire-pretooluse-hooks has its own switch.
-Write-Host "[6/6] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, hooks)..."
+# statusLine, env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR
+# (HIMMEL-839), and the UNIVERSAL hooks. Each helper removes ONLY its own
+# key/stanza (refuses invalid JSON, preserves every non-himmel key). The
+# single-key helpers have no dry-run flag, so -DryRun is gated here;
+# unwire-pretooluse-hooks has its own switch.
+Write-Host "[6/6] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks)..."
 if ($SkipSettings) {
     Write-Host "  kept (-SkipSettings)."
 } elseif (-not (Test-Path $UserSettings)) {
     Write-Host "  no $UserSettings -- nothing to unwire."
 } elseif ($DryRun) {
-    Write-Host "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH from $UserSettings"
+    Write-Host "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $UserSettings"
     & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\lib\unwire-pretooluse-hooks.ps1') -SettingsPath $UserSettings -DryRun
 } else {
-    foreach ($u in @('unwire-statusline', 'unwire-himmel-repo', 'unwire-luna-vault')) {
+    foreach ($u in @('unwire-statusline', 'unwire-himmel-repo', 'unwire-luna-vault', 'unwire-handover-dir')) {
         & pwsh -NoProfile -File (Join-Path $RepoRoot "scripts\lib\$u.ps1") -SettingsPath $UserSettings
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  WARN: $u reported a problem; setup-state may remain." -ForegroundColor Yellow

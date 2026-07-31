@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
 import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag } from "./spawn-glm";
+import { transcriptDirFor, poisonPushUrl, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag } from "./spawn-glm";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
@@ -681,6 +681,10 @@ export async function runClaudexSharedDispatch(p: {
   try {
     if (p.revalidateClean) { const rv = p.revalidateClean(); if (!rv.ok) return rv; } // stale-clean guard, lock released in finally
     if (p.needsWorktreeAdd) p.gitAdd(); // NO -b: an existing branch, never minted here
+    // Unconditional (codex-adv, HIMMEL-1096 CR round): a REUSED managed
+    // worktree (needsWorktreeAdd=false) from a pre-change or failed dispatch
+    // may never have been trust-seeded — seeding is idempotent, so cover both.
+    ensureWorkspaceTrust(p.worktree);
     const priorRes = Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "--get", "remote.origin.pushurl"], { stdout: "pipe", stderr: "pipe" });
     if (priorRes.exitCode === 0) {
       const got = priorRes.stdout.toString().trim();
@@ -873,6 +877,7 @@ async function main(): Promise<void> {
   let code: number;
   if (!sharedMode) {
     g(["worktree", "add", worktree, "-b", branch]);
+    ensureWorkspaceTrust(worktree);
     poisonPushUrl(absCwd, worktree);
     // HIMMEL-1094: this dispatch MINTED both the worktree and the branch (-b), so
     // it owns them until the worker starts. Teardown is passed ONLY here — shared

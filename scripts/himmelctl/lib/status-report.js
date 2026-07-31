@@ -124,6 +124,36 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
       // never lays this file) — that is the intended "does THIS project
       // carry the gate" semantic, not a broken install; say so plainly.
       if (item.id === 'pre-commit-hooks') detail = 'no .pre-commit-config.yaml in this project';
+      // CR follow-up (HIMMEL-1017, HIMMEL-1012 review): graphify-mcp carries
+      // profiles:["luna","all"] like any other luna-profile item, so every
+      // luna/all target reads it desired:true — but registering the
+      // graphify MCP server is a genuinely OPT-IN, manual step (adopt.sh's
+      // --with-graphify flag / `claude mcp add graphify`; adopt.sh's own
+      // wire_graphify_core() comment: "unlike qmd, graphify is NOT wired by
+      // default"), and unlike qmd-binary/qmd-index it carries no `install`
+      // descriptor of its own for `ensure` to converge — it is HINT-only
+      // (see cmdEnsure's towardEnabled/hints split). Demanding it
+      // unconditionally therefore produced a false red for every luna/all
+      // operator who simply never opted in. Downgrade to n/a (informational)
+      // instead of red: it is still probed every run (desired stays true),
+      // so an operator who DOES register the MCP server still sees it flip
+      // green — this only silences the alarm for the "never opted in" case.
+      //
+      // CR fix (HIMMEL-1017 CR round): only for a CLEAN absence —
+      // probeMcpRegistered's 'absent' also covers an unreadable/unparseable
+      // or malformed-shape config (probe.configError:true), which is NOT
+      // "never opted in", it's a broken config that may well have LOST a
+      // real registration (e.g. ~/.claude.json got corrupted after the
+      // operator genuinely ran --with-graphify). That case must stay on the
+      // standard red path with probe.detail intact, not get silently
+      // swallowed into the same friendly opt-in message. And even for the
+      // clean-absence case, the underlying probe diagnostic is APPENDED
+      // rather than discarded, so the n/a row still names exactly which
+      // file/server was checked.
+      if (item.id === 'graphify-mcp' && !probe.configError) {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (adopt.sh --with-graphify / claude mcp add graphify)`;
+      }
     }
     results.push({ id: item.id, kind: item.kind, desired: true, actual: probe.actual, severity, detail });
   }

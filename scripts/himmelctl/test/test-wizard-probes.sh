@@ -22,8 +22,13 @@
 #   cmd:has_qmd    qmd-binary, via a stubbed `qmd` on PATH.
 #   qmd-index      present (all 4 collections) / degraded (2 of 4) / absent
 #                  (no qmd on PATH).
-#   mcp-registered tokensave-mcp present / server missing / file missing,
-#                  resolving .claude.json from ctx.env.HOME.
+#   mcp-registered tokensave-mcp present / server missing / file missing
+#                  (ENOENT, clean) / malformed JSON / unexpected shape
+#                  (the latter two carry configError:true), resolving
+#                  .claude.json from ctx.env.HOME; plus graphify-mcp
+#                  scope-awareness — project scope resolves <targetPath>/
+#                  .mcp.json, user scope resolves ~/.claude.json, no
+#                  cross-scope bleed (HIMMEL-1017 CR round).
 #   handover-dir   handover-wiring — HANDOVER_DIR set (ctx.env pass-through,
 #                  not process.env mutation) / unset with a non-repo cwd.
 #   dep            single-cmd (rtk) and the win32/posix platform union
@@ -394,7 +399,7 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 echo "$outQIa" | jq -e '.actual == "absent"' >/dev/null || fail "qmd-index absent (no qmd on PATH): (got: $outQIa)"
 echo "ok: qmd-index present/degraded/absent"
 
-# ── mcp-registered: present / server missing / file missing ───────────────
+# ── mcp-registered: present / server missing / file missing / malformed ────
 mcp_present_home="$work/mcp-present-home"; mkdir -p "$mcp_present_home"
 printf '{"mcpServers":{"tokensave":{"command":"tokensave-mcp"}}}' > "$mcp_present_home/.claude.json"
 mcp_server_missing_home="$work/mcp-server-missing-home"; mkdir -p "$mcp_server_missing_home"
@@ -402,6 +407,12 @@ printf '{"mcpServers":{"graphify":{"command":"graphify-mcp"}}}' > "$mcp_server_m
 mcp_file_missing_home="$work/mcp-file-missing-home"; mkdir -p "$mcp_file_missing_home"
 mcp_null_root_home="$work/mcp-null-root-home"; mkdir -p "$mcp_null_root_home"
 printf 'null' > "$mcp_null_root_home/.claude.json"
+# CR fix (HIMMEL-1017 CR round): a present-but-UNPARSEABLE config is a
+# genuinely different case from a MISSING one — both used to read identically
+# (actual:absent, generic "cannot read/parse" detail); configError now
+# distinguishes them (see probes.js's probeMcpRegistered).
+mcp_malformed_json_home="$work/mcp-malformed-json-home"; mkdir -p "$mcp_malformed_json_home"
+printf '{not valid json' > "$mcp_malformed_json_home/.claude.json"
 
 outMCP=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
@@ -416,15 +427,52 @@ console.log(JSON.stringify([
   probeHome('$(winpath "$mcp_server_missing_home")'),
   probeHome('$(winpath "$mcp_file_missing_home")'),
   probeHome('$(winpath "$mcp_null_root_home")'),
+  probeHome('$(winpath "$mcp_malformed_json_home")'),
 ]));
 ")
-echo "$outMCP" | jq -e '.[0].actual == "present" and .[1].actual == "absent" and .[2].actual == "absent" and .[3].actual == "absent"' >/dev/null \
-  || fail "mcp-registered present/server-missing/file-missing/null-root: (got: $outMCP)"
-echo "$outMCP" | jq -e '.[2].detail | contains("cannot read/parse")' >/dev/null \
-  || fail "mcp-registered file-missing detail should report cannot read/parse (got: $outMCP)"
+echo "$outMCP" | jq -e '.[0].actual == "present" and .[1].actual == "absent" and .[2].actual == "absent" and .[3].actual == "absent" and .[4].actual == "absent"' >/dev/null \
+  || fail "mcp-registered present/server-missing/file-missing/null-root/malformed: (got: $outMCP)"
+echo "$outMCP" | jq -e '.[2].detail | contains("does not exist")' >/dev/null \
+  || fail "mcp-registered file-missing (ENOENT) detail should report 'does not exist' (got: $outMCP)"
 echo "$outMCP" | jq -e '.[3].detail | contains("unexpected JSON shape")' >/dev/null \
   || fail "mcp-registered null-root detail should report unexpected JSON shape (got: $outMCP)"
-echo "ok: mcp-registered (tokensave-mcp) present/server-missing/file-missing/null-root via ctx.env.HOME"
+echo "$outMCP" | jq -e '.[4].detail | contains("cannot read/parse")' >/dev/null \
+  || fail "mcp-registered malformed-JSON detail should report cannot read/parse (got: $outMCP)"
+# CR fix (HIMMEL-1017 CR round): configError distinguishes a genuinely BROKEN
+# config (malformed JSON, unexpected shape) from a clean absence (present-
+# but-server-missing, OR the file simply doesn't exist yet — ENOENT is the
+# ORDINARY case for project-scope .mcp.json, never an error by itself).
+echo "$outMCP" | jq -e '(.[0].configError // false) == false and (.[1].configError // false) == false and (.[2].configError // false) == false' >/dev/null \
+  || fail "mcp-registered present/server-missing/file-missing (ENOENT) should carry NO configError (got: $outMCP)"
+echo "$outMCP" | jq -e '.[3].configError == true and .[4].configError == true' >/dev/null \
+  || fail "mcp-registered null-root/malformed-JSON should carry configError:true (got: $outMCP)"
+echo "ok: mcp-registered (tokensave-mcp) present/server-missing/file-missing/null-root/malformed via ctx.env.HOME, configError distinguishes broken config from clean absence"
+
+# ── mcp-registered: scope-aware file resolution (CR fix, HIMMEL-1017 round) ─
+# project scope reads <targetPath>/.mcp.json, NOT ~/.claude.json — proven in
+# both directions: a project-scope registration in .mcp.json reads present
+# even with a DIFFERENT server registered in ~/.claude.json (never bleeds
+# across scopes), and a user-scope-only registration is correctly invisible
+# to a project-scope probe.
+mcp_project_target="$work/mcp-project-target"; mkdir -p "$mcp_project_target"
+printf '{"mcpServers":{"graphify":{"command":"graphify-mcp"}}}' > "$mcp_project_target/.mcp.json"
+mcp_scope_home="$work/mcp-scope-home"; mkdir -p "$mcp_scope_home"
+printf '{"mcpServers":{"tokensave":{"command":"tokensave-mcp"}}}' > "$mcp_scope_home/.claude.json"
+
+outScope=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const graphifyItem = manifest.items.find((i) => i.id === 'graphify-mcp');
+const env = Object.assign({}, process.env, { HOME: '$(winpath "$mcp_scope_home")' });
+const projectHit = runProbe(graphifyItem, { repoRoot: '$repo_root_w', targetPath: '$(winpath "$mcp_project_target")', scope: 'project', env });
+const userMiss = runProbe(graphifyItem, { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env });
+console.log(JSON.stringify({ projectHit, userMiss }));
+")
+echo "$outScope" | jq -e '.projectHit.actual == "present"' >/dev/null \
+  || fail "mcp-registered project-scope should read <targetPath>/.mcp.json, not ~/.claude.json (got: $outScope)"
+echo "$outScope" | jq -e '.userMiss.actual == "absent"' >/dev/null \
+  || fail "mcp-registered user-scope probe for graphify should NOT see the project-scope .mcp.json registration (got: $outScope)"
+echo "ok: mcp-registered is scope-aware — project scope resolves .mcp.json, user scope resolves ~/.claude.json, never cross-bleeding"
 
 # ── handover-dir (handover-wiring) ──────────────────────────────────────────
 hd_present_dir="$work/hd-present-handoverdir"; mkdir -p "$hd_present_dir"

@@ -54,10 +54,26 @@ if [ -e "$real_jira_node_modules" ]; then
   node_modules_backup="$work/node_modules-backup"
   mv "$real_jira_node_modules" "$node_modules_backup"
 fi
+# HIMMEL-839 CR round-2: the repo-.env-preserve scenario below temporarily
+# writes a HANDOVER_DIR= line into THIS repo's real .env ($HIMMEL_ROOT is
+# resolved by adopt.sh from its own script path — not overridable via HOME —
+# so there is no fake-checkout stand-in for it). Declared here, set only at
+# the point of mutation, and restored unconditionally in cleanup() — same
+# backup-then-trap-restore shape as the jira dist/node_modules pair above, so
+# a `fail()` (which exits immediately) mid-scenario can never strand a
+# mutated .env in the real worktree.
+real_env="$repo_root/.env"
+env_backup=""
+env_mutated=0
 cleanup() {
   rm -rf "$real_jira_dist" "$real_jira_node_modules"
   if [ -n "$dist_backup" ]; then mv "$dist_backup" "$real_jira_dist"; fi
   if [ -n "$node_modules_backup" ]; then mv "$node_modules_backup" "$real_jira_node_modules"; fi
+  if [ -n "$env_backup" ]; then
+    mv "$env_backup" "$real_env"
+  elif [ "$env_mutated" -eq 1 ]; then
+    rm -f "$real_env"
+  fi
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -221,6 +237,60 @@ lv=$(jq -r '.env.LUNA_VAULT_PATH' "$vault/.claude/settings.json" 2>/dev/null)
 [ "$lv" = "$(norm "$vault")" ] || fail "luna/project did not persist LUNA_VAULT_PATH ([$lv] != [$(norm "$vault")])"
 echo "ok: luna scaffolds the vault + persists LUNA_VAULT_PATH (project scope)"
 
+# HIMMEL-839: luna profile also seeds HANDOVER_DIR at <vault>/handovers so a
+# fresh adopter's handover state doesn't silently default to the inline
+# <repo-root>/handovers stub.
+hd=$(jq -r '.env.HANDOVER_DIR' "$vault/.claude/settings.json" 2>/dev/null)
+[ "$hd" = "$(norm "$vault/handovers")" ] || fail "luna/project did not persist HANDOVER_DIR ([$hd] != [$(norm "$vault/handovers")])"
+[ -d "$vault/handovers" ] || fail "luna/project did not create <vault>/handovers"
+echo "ok: luna scaffolds the vault + persists HANDOVER_DIR (project scope)"
+
+# ── 4b. HIMMEL-839 CR round-2: PRESERVE an existing settings.json HANDOVER_DIR ──
+# A routine re-adopt must reproduce state, never silently reset an
+# operator-selected root (own settings.json env.HANDOVER_DIR from a prior
+# /handover-setup or adopt run).
+preserve_vault="$work/preserve-vault"
+preserve_target="$work/preserve-target"; mkdir -p "$preserve_target/.claude"
+printf '%s' '{"env":{"HANDOVER_DIR":"/some/operator/chosen/handovers"}}' > "$preserve_target/.claude/settings.json"
+out=$(HOME="$base_home" bash "$adopt" --profile luna --target "$preserve_target" --luna-target "$preserve_vault" 2>&1)
+hd=$(jq -r '.env.HANDOVER_DIR' "$preserve_target/.claude/settings.json" 2>/dev/null)
+[ "$hd" = "/some/operator/chosen/handovers" ] || fail "HIMMEL-839 preserve: existing settings.json HANDOVER_DIR was overwritten ([$hd])"
+printf '%s' "$out" | grep -q 'leaving it' || fail "HIMMEL-839 preserve: missing the leaving-it message (got: $out)"
+echo "ok: HIMMEL-839 preserves an existing settings.json env.HANDOVER_DIR (re-adopt reproduces, not resets)"
+
+# ── 4c. HIMMEL-839 CR round-2: PRESERVE an existing repo .env HANDOVER_DIR ──
+# The other place HANDOVER_DIR can already live: the primary checkout's own
+# .env (set-handover-dir.sh / Mode B — what /handover-setup actually writes).
+# settings.json env takes PROCESS-ENV precedence over .env, so writing it here
+# would silently shadow that choice even with the .env file itself untouched.
+if [ -f "$real_env" ]; then
+  env_backup="$work/env-backup"
+  mv "$real_env" "$env_backup"
+fi
+printf 'HANDOVER_DIR=/some/dotenv/handovers\n' > "$real_env"
+env_mutated=1
+preserve_vault2="$work/preserve-vault2"
+preserve_target2="$work/preserve-target2"; mkdir -p "$preserve_target2"
+out=$(HOME="$base_home" bash "$adopt" --profile luna --target "$preserve_target2" --luna-target "$preserve_vault2" 2>&1)
+if [ -n "$env_backup" ]; then mv "$env_backup" "$real_env"; env_backup=""; else rm -f "$real_env"; fi
+env_mutated=0
+hd=$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$preserve_target2/.claude/settings.json" 2>/dev/null)
+[ "$hd" = "ABSENT" ] || fail "HIMMEL-839 preserve: .env-configured HANDOVER_DIR was shadowed by a settings.json write ([$hd])"
+printf '%s' "$out" | grep -q 'via /handover-setup' || fail "HIMMEL-839 preserve: missing the .env-preserve message (got: $out)"
+echo "ok: HIMMEL-839 preserves an existing repo .env HANDOVER_DIR (does not shadow it via settings.json)"
+
+# ── 4d. HIMMEL-839 CR round-2: canonicalize a relative --luna-target ────────
+# A relative --luna-target must not persist a CWD-dependent relative path.
+relhome="$work/relhome"; mkdir -p "$relhome"
+relbase="$work/relbase"; mkdir -p "$relbase"
+( cd "$relbase" && HOME="$relhome" bash "$adopt" --profile luna --luna-target "rel-vault" >/dev/null )
+relsettings="$relbase/.claude/settings.json"
+hd=$(jq -r '.env.HANDOVER_DIR' "$relsettings" 2>/dev/null)
+expected_rel="$(norm "$relbase/rel-vault/handovers")"
+[ "$hd" = "$expected_rel" ] || fail "HIMMEL-839 canonicalize: relative --luna-target persisted a wrong/non-canonical HANDOVER_DIR ([$hd] != [$expected_rel])"
+case "$hd" in /*|[A-Za-z]:/*) : ;; *) fail "HIMMEL-839 canonicalize: HANDOVER_DIR is not absolute: $hd" ;; esac
+echo "ok: HIMMEL-839 canonicalizes a relative --luna-target to an absolute HANDOVER_DIR"
+
 # ── 6. all — core→--target, vault→--luna-target (no leak) ────────────────────
 allrepo="$work/allrepo"; allvault="$work/allvault"; mkdir -p "$allrepo"
 HOME="$base_home" bash "$adopt" --profile all --scope project --target "$allrepo" --luna-target "$allvault" >/dev/null
@@ -230,7 +300,12 @@ HOME="$base_home" bash "$adopt" --profile all --scope project --target "$allrepo
 # F1 (HIMMEL-458): project scope wires LUNA_VAULT_PATH=$allvault into $allrepo/.claude.
 lv=$(jq -r '.env.LUNA_VAULT_PATH' "$allrepo/.claude/settings.json" 2>/dev/null)
 [ "$lv" = "$(norm "$allvault")" ] || fail "all/project did not persist LUNA_VAULT_PATH ([$lv] != [$(norm "$allvault")])"
-echo "ok: all routes core→--target, vault→--luna-target (no leak) + persists LUNA_VAULT_PATH"
+# HIMMEL-839: same for HANDOVER_DIR=$allvault/handovers — this is the exact
+# --profile all repro shape from the ticket (VM adopter needed HANDOVER_DIR
+# set manually; adopt.sh should seed it).
+hd=$(jq -r '.env.HANDOVER_DIR' "$allrepo/.claude/settings.json" 2>/dev/null)
+[ "$hd" = "$(norm "$allvault/handovers")" ] || fail "all/project did not persist HANDOVER_DIR ([$hd] != [$(norm "$allvault/handovers")])"
+echo "ok: all routes core→--target, vault→--luna-target (no leak) + persists LUNA_VAULT_PATH + HANDOVER_DIR"
 
 # ── 7. core/user idempotency (re-run into populated ~/.claude keeps 3) ────────
 HOME="$home" bash "$adopt" --profile core --scope user --target "$work/ignored" >/dev/null
@@ -244,6 +319,11 @@ HOME="$fh" bash "$adopt" --profile all --scope user --target "$work/ign-a" --lun
 got=$(jq -r '.env.LUNA_VAULT_PATH' "$fh/.claude/settings.json")
 [ "$got" = "$(norm "$fv")" ] || fail "F1-SC1(a) all/user: LUNA_VAULT_PATH=[$got] != [$(norm "$fv")]"
 echo "ok: F1-SC1(a) all/user --luna-target persists LUNA_VAULT_PATH"
+# HIMMEL-839: this is the literal ticket repro shape (`adopt.sh --profile all
+# --scope user --luna-target ...`) — HANDOVER_DIR must land in ~/.claude too.
+got=$(jq -r '.env.HANDOVER_DIR' "$fh/.claude/settings.json")
+[ "$got" = "$(norm "$fv/handovers")" ] || fail "HIMMEL-839 all/user: HANDOVER_DIR=[$got] != [$(norm "$fv/handovers")]"
+echo "ok: HIMMEL-839 all/user --luna-target persists HANDOVER_DIR"
 
 # 8b. F1-SC1(b): luna/user --target -> env.LUNA_VAULT_PATH in ~/.claude.
 fh2="$work/f1b-home"; mkdir -p "$fh2"; fv2="$work/f1b-vault"
@@ -330,6 +410,10 @@ printf '%s' "$out" | grep -q 'DRY: qmd_install'      || fail "dry-run missing qm
 printf '%s' "$out" | grep -q 'DRY: qmd pull'         || fail "dry-run missing qmd pull DRY line"
 printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* himmel$' || fail "dry-run missing himmel register DRY line"
 printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* luna$'   || fail "dry-run missing luna register DRY line"
+# HIMMEL-839: dry-run must also report the HANDOVER_DIR seed step (no mkdir,
+# no settings.json write — mirrors the mkdir-then-wire pair as DRY lines).
+printf '%s' "$out" | grep -q 'DRY: mkdir -p .*/qvault/handovers$' || fail "dry-run missing HANDOVER_DIR mkdir DRY line"
+printf '%s' "$out" | grep -q 'DRY: wire env.HANDOVER_DIR' || fail "dry-run missing HANDOVER_DIR wire DRY line"
 printf '%s' "$out" | grep -q 'Wiring graphify (opt-in' || fail "dry-run --with-graphify missing the graphify wiring banner"
 printf '%s' "$out" | grep -q 'DRY: graphify_install'   || fail "dry-run --with-graphify missing graphify_install DRY line"
 # HIMMEL-1047: --with-graphify also registers the MCP server at the adopt scope

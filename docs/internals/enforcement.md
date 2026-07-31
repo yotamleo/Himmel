@@ -745,6 +745,36 @@ Paired artifacts: `scripts/lib/cr-merge-gate.sh` (predicate),
 construction), `scripts/lib/test-cr-merge-gate.sh` and
 `scripts/hooks/test-block-unresolved-cr-merge.sh` (smoke suites).
 
+### CodeRabbit pre-CI path — App-present vs App-absent (HIMMEL-1164)
+
+CodeRabbit has two independent surfaces (also documented at the top of
+`scripts/lib/cr-available.sh`), and each covers a *different* adopter:
+
+- **App present (armed via HIMMEL-1125 above)** — reviews the PR in CI, after
+  `gh pr create`. That review is what the merge gates above key off of. This is
+  the **CI-side** path.
+- **App absent** — no App means no CI-side review, ever, on this repo. The
+  **sanctioned pre-CI path** is the CodeRabbit CLI wrapper,
+  `scripts/cr/coderabbit-review.sh`, run as part of `/pr-check` (step 3.2 phase
+  B in `.claude/commands/pr-check.md`) before the PR ever opens.
+
+**`/pr-check` already runs the CLI pass by default, regardless of App
+presence** — an App-less repo gets CodeRabbit signal from the CLI leg with no
+extra setup. What HIMMEL-1164 adds is *degrading loudly* when that pass is
+unavailable too (`coderabbit-review.sh` rc 3 — CLI not on PATH and, on
+Windows, WSL not opted into via `CODERABBIT_ALLOW_WSL`): the step reuses
+`cr_app_configured` from `scripts/lib/cr-available.sh` (HIMMEL-1125's
+availability probe — never a second, invented probe) to tell whether CI will
+still catch this PR. When the App **is** armed, the CLI-absent message stays
+quiet (CI covers it). When the App is **not** armed, the message escalates to
+say the PR is shipping with **no CodeRabbit signal at all**, and points at
+installing the CLI or arming the App.
+
+The reverse case — an App-present repo running the CLI pass too — is
+intentional duplicate coverage, not a bug; an operator who wants to avoid
+spending a second CodeRabbit call against the same rate-limited account sets
+`CODERABBIT_CLI_DISABLE=1` (documented in `coderabbit-review.sh`).
+
 ### CI-green merge gate (HIMMEL-1043)
 
 Runs on the SAME `gh pr merge` path as the CodeRabbit gate above, one step

@@ -417,7 +417,7 @@ seed_settings() {
   cat > "$HIMMEL_USER_SETTINGS" <<'JSON'
 {
   "statusLine": {"type":"command","command":"bash \"C:/h/scripts/statusline/bin/statusline.sh\""},
-  "env": {"HIMMEL_REPO":"C:/h","LUNA_VAULT_PATH":"C:/v","KEEP_ME":"1"},
+  "env": {"HIMMEL_REPO":"C:/h","LUNA_VAULT_PATH":"C:/v","HANDOVER_DIR":"C:/v/handovers","KEEP_ME":"1"},
   "hooks": {
     "PreToolUse": [
       {"matcher":"Bash","hooks":[
@@ -447,6 +447,7 @@ assert_has "[6/6] banner present" "[6/6] Unwiring" "$out"
 assert_rc "statusLine removed"      "null"   "$(jq -r '.statusLine // "null"' "$HIMMEL_USER_SETTINGS")"
 assert_rc "HIMMEL_REPO removed"     "null"   "$(jq -r '.env.HIMMEL_REPO // "null"' "$HIMMEL_USER_SETTINGS")"
 assert_rc "LUNA_VAULT_PATH removed" "null"   "$(jq -r '.env.LUNA_VAULT_PATH // "null"' "$HIMMEL_USER_SETTINGS")"
+assert_rc "HANDOVER_DIR removed"    "null"   "$(jq -r '.env.HANDOVER_DIR // "null"' "$HIMMEL_USER_SETTINGS")"
 assert_rc "non-himmel env kept"     "1"      "$(jq -r '.env.KEEP_ME' "$HIMMEL_USER_SETTINGS")"
 assert_rc "UNIVERSAL hook removed"  "0"      "$(jq -r '[.hooks.PreToolUse[].hooks[].command|select(test("auto-approve-safe-bash"))]|length' "$HIMMEL_USER_SETTINGS")"
 assert_rc "rtk guard preserved"     "1"      "$(jq -r '[.hooks.PreToolUse[].hooks[].command|select(test("rtk-hook-guard"))]|length' "$HIMMEL_USER_SETTINGS")"

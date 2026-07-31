@@ -60,6 +60,14 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: template-version
+        name: template content change requires metadata.version bump (himmel-dev only, HIMMEL-524)
+        entry: bash scripts/hooks/check-template-version.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: agents-md-fresh
         name: AGENTS.md must be regenerated from CLAUDE.md (himmel-dev only)
         entry: bash scripts/hooks/check-agents-md-fresh.sh
@@ -222,6 +230,14 @@ repos:
       - id: doc-guard-push
         name: command/skill added requires catalog update (pre-push range)
         entry: bash scripts/hooks/check-doc-guard.sh --pre-push
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: template-version-push
+        name: template content change requires metadata.version bump (pre-push range, HIMMEL-524)
+        entry: bash scripts/hooks/check-template-version.sh --pre-push
         language: system
         always_run: true
         pass_filenames: false
