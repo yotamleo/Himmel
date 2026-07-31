@@ -113,6 +113,15 @@ case "$*" in
       # matches the PER-INVOCATION name (ship-index-remote.<tag>.ps1), not a
       # fixed one — the orchestrator uniquifies remote paths per run.
       if [ -e "$STATE/remote-fail" ]; then echo "SHIP-REMOTE: swapped=no" >&2; exit 5; fi
+      # rc 6 (HIMMEL-1416 round 4): the PRIMARY receiver contract (swap +
+      # plain daemon + verify) fully succeeded -- only the HTTP-singleton
+      # daemon restore failed. Distinct from remote-fail above (a genuine
+      # transport failure, rc 5).
+      if [ -e "$STATE/remote-http-restore-fail" ]; then
+          echo "SHIP-REMOTE: verified=ok"
+          echo "SHIP-REMOTE: http_daemon_restored=FAILED" >&2
+          exit 6
+      fi
       echo "SHIP-REMOTE: verified=ok" ;;
 esac
 exit 0'
@@ -217,6 +226,12 @@ mkdir -p "$SANDBOX"
 cp "$SCRIPT" "$SANDBOX/ship-index.sh"
 cp "$SCRIPT_DIR/prepare-ship-index.mjs" "$SANDBOX/"
 cp "$SCRIPT_DIR/ship-index-remote.ps1" "$SANDBOX/"
+# ship-index.sh also resolves ensure-qmd-daemon.ps1 from ../qmd relative to its
+# OWN directory (HIMMEL-1416 round 2) -- mirror that sibling layout here too,
+# or the preflight existence check dies rc 2 before reaching anything this
+# sandbox exists to exercise.
+mkdir -p "$SANDBOX/../qmd"
+cp "$SCRIPT_DIR/../qmd/ensure-qmd-daemon.ps1" "$SANDBOX/../qmd/"
 printf '#!/bin/sh\necho "reindex exploded" >&2\nexit 3\n' > "$SANDBOX/qmd-reindex.sh"
 chmod +x "$SANDBOX/qmd-reindex.sh"
 rc=0; out=$(env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" \
@@ -461,6 +476,10 @@ assert_contains "passed that set to prepare" "--collections himmel,luna" "$(call
 assert_contains "uploaded the index" "scp " "$(calls)"
 assert_contains "ran the receiver script" "ship-index-remote.ps1" "$(calls)"
 assert_contains "reports the shipped counts" "14782 docs / 50698 vectors" "$out"
+# HIMMEL-1416 round 2: ensure-qmd-daemon.ps1 rides along so the receiver can
+# restore the HTTP-singleton MCP daemon if the stop sweep kills it.
+assert_contains "uploaded ensure-qmd-daemon.ps1 alongside the receiver script" "ensure-qmd-daemon" "$(calls)"
+assert_contains "passed -EnsureScript to the receiver invocation" "-EnsureScript" "$(calls)"
 
 echo "TEST: remote paths are DERIVED from the receiver, never hardcoded"
 # A baked C:/Users/<name>/... default would tie the script to one operator's
@@ -556,6 +575,27 @@ assert_rc "receiver failure rc 6" 6 "$rc"
 assert_contains "points at the receiver's own output" "SHIP-REMOTE" "$out"
 
 # ============================================================================
+echo "TEST: receiver rc 6 (HTTP restore failed) still runs the graph leg and exits 8 (HIMMEL-1416 round 4 [codex-adv-6])"
+# ============================================================================
+# The receiver's PRIMARY contract (swap + plain daemon + verify) succeeded --
+# only its secondary HTTP-daemon restore failed. This must NOT take the
+# generic die-6 "receiver-side ship failed" path above (that would skip the
+# graph leg entirely, recreating the exact blocked-graph-leg bug this ticket
+# already fixed once for a different reason) -- it must run the graph leg
+# normally and THEN exit non-zero (8) so unattended automation still gets a
+# signal, rather than a silent, misleadingly clean 0.
+reset_calls
+touch "$STATE/remote-http-restore-fail"
+REAL_GRAPH="$TMP_ROOT/real-graph-for-rc6-test.json"
+printf '{"nodes":[]}' > "$REAL_GRAPH"
+rc=0; out=$(env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" GRAPHIFY_GRAPH_PATH="$REAL_GRAPH" \
+    "$REAL_BASH" "$SCRIPT" --no-reindex 2>&1) || rc=$?
+assert_rc "receiver rc 6 -> sender exits 8 (not 0, not the generic die-6)" 8 "$rc"
+assert_contains "warns loudly about the HTTP restore failure" "HTTP-singleton MCP daemon restore FAILED" "$out"
+assert_contains "the graph leg actually ran (shipped the real graph file)" "graph shipped" "$out"
+assert_not_contains "did NOT take the generic die-6 receiver-failure path" "receiver-side ship failed" "$out"
+
+# ============================================================================
 echo "TEST: the receiver script's Fail() preserves its stage-specific exit code"
 # ============================================================================
 # Regression pin for CR finding [codex-1]. ship-index-remote.ps1 runs under
@@ -622,6 +662,587 @@ else
         "$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PS_PROBE" >/dev/null 2>&1 || ps_rc=$?
         assert_rc "Fail 5 really exits 5 (not collapsed to 1)" 5 "$ps_rc"
     fi
+fi
+
+# ============================================================================
+echo "TEST: Test-IsQmdHostProcess matches all qmd-hosting process shapes (HIMMEL-1416)"
+# ============================================================================
+# Regression pin for the live stop-sweep miss: a bun.exe-only filter left a
+# compiled qmd.exe and a node-hosted qmd.js MCP daemon running through four
+# straight ship failures (rc=6 "file being used by another process",
+# stopped_pids=none every time; two holders had to be killed by hand over
+# ssh). Extract the REAL function (so this cannot drift from it) and probe it
+# against every shape the sweep must now catch, plus the shapes it must still
+# leave alone.
+if [ -z "$PS_BIN" ]; then
+    echo "  SKIP: no powershell/pwsh on this host (Test-IsQmdHostProcess check)"
+else
+    HOST_PROBE="$TMP_ROOT/qmdhost-probe.ps1"
+    {
+        sed -n '/^function Test-IsQmdHostProcess/,/^}/p' "$SCRIPT_DIR/ship-index-remote.ps1"
+        cat <<'HOST_EOF'
+$cases = @(
+    @{ Name = 'bun.exe';  Cmd = '"C:\Users\op\.bun\bin\qmd.exe" mcp --keep-models'; Want = $true;  Label = 'bun.exe launching a qmd.exe command line' }
+    @{ Name = 'bun.exe';  Cmd = '"C:\Users\op\.bun\bin\bun.exe" run --cwd C:\plugins\luna-correlate\0.2.0 --shell=bun --silent start'; Want = $false; Label = 'unrelated bun.exe (luna-correlate)' }
+    @{ Name = 'qmd.exe';  Cmd = '"C:\Users\op\.bun\bin\qmd.exe" mcp --keep-models'; Want = $true;  Label = 'qmd.exe compiled binary (HIMMEL-1416, invisible to a bun.exe-only filter)' }
+    @{ Name = 'qmd.exe';  Cmd = $null; Want = $true;  Label = 'qmd.exe with no visible command line -- access-denied to an elevated/other-session process, exactly the Services-session case (CR codex-1)' }
+    @{ Name = 'node.exe'; Cmd = 'node "C:\Users\op\.bun\install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js" mcp --http --daemon'; Want = $true;  Label = 'node-hosted qmd.js HTTP-singleton daemon (HIMMEL-592)' }
+    @{ Name = 'node.exe'; Cmd = 'node C:\some\other\app\server.js --port 3000'; Want = $false; Label = 'unrelated node.exe' }
+    @{ Name = 'node.exe'; Cmd = $null; Want = $false; Label = 'node.exe with no command line -- the null guard still applies to non-qmd.exe shapes' }
+)
+$failed = $false
+foreach ($c in $cases) {
+    $got = Test-IsQmdHostProcess -Name $c.Name -CommandLine $c.Cmd
+    if ($got -ne $c.Want) {
+        Write-Output "MISMATCH: $($c.Label) -> got $got, want $($c.Want)"
+        $failed = $true
+    }
+}
+if ($failed) { exit 1 } else { exit 0 }
+HOST_EOF
+    } > "$HOST_PROBE"
+    if ! grep -q 'function Test-IsQmdHostProcess' "$HOST_PROBE"; then
+        fail "could not extract Test-IsQmdHostProcess from ship-index-remote.ps1" "the function shape changed; update this test"
+    else
+        host_rc=0
+        host_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$HOST_PROBE" 2>&1) || host_rc=$?
+        assert_rc "Test-IsQmdHostProcess matches every qmd-hosting shape and only those" 0 "$host_rc"
+        [ "$host_rc" -eq 0 ] || printf '    %s\n' "$host_out"
+    fi
+fi
+
+# ============================================================================
+echo "TEST: Test-IsHttpDaemonProcess flags the HTTP-singleton daemon shape (HIMMEL-1416 round 2)"
+# ============================================================================
+# Round-2 CR [codex-adv-2], verified: Start-QmdDaemon's own restart relaunches
+# only the plain `mcp --keep-models` form, never the HIMMEL-592 HTTP-singleton
+# daemon (`mcp --http --daemon`). This function decides whether a STOPPED
+# process was that HTTP daemon, so the restart step knows to restore it via
+# ensure-qmd-daemon.ps1. Matched on CommandLine alone (not process name): the
+# daemon can be bun- or node-hosted, but ensure-qmd-daemon.ps1 always launches
+# it with `--http`, which the plain daemon's command line never carries.
+if [ -z "$PS_BIN" ]; then
+    echo "  SKIP: no powershell/pwsh on this host (Test-IsHttpDaemonProcess check)"
+else
+    HTTP_PROBE="$TMP_ROOT/httpdaemon-probe.ps1"
+    {
+        sed -n '/^function Test-IsHttpDaemonProcess/,/^}/p' "$SCRIPT_DIR/ship-index-remote.ps1"
+        cat <<'HTTP_EOF'
+$cases = @(
+    @{ Cmd = '"C:\Users\op\.bun\bin\qmd.exe" mcp --http --daemon'; Want = $true;  Label = 'qmd.exe HTTP-singleton daemon' }
+    @{ Cmd = 'node "C:\Users\op\.bun\install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js" mcp --http --daemon'; Want = $true;  Label = 'node-hosted qmd.js HTTP-singleton daemon' }
+    @{ Cmd = '"C:\Users\op\.bun\bin\qmd.exe" mcp --keep-models'; Want = $false; Label = 'the plain stdio daemon Start-QmdDaemon itself relaunches' }
+    @{ Cmd = $null; Want = $false; Label = 'no command line at all' }
+)
+$failed = $false
+foreach ($c in $cases) {
+    $got = Test-IsHttpDaemonProcess -CommandLine $c.Cmd
+    if ($got -ne $c.Want) {
+        Write-Output "MISMATCH: $($c.Label) -> got $got, want $($c.Want)"
+        $failed = $true
+    }
+}
+if ($failed) { exit 1 } else { exit 0 }
+HTTP_EOF
+    } > "$HTTP_PROBE"
+    if ! grep -q 'function Test-IsHttpDaemonProcess' "$HTTP_PROBE"; then
+        fail "could not extract Test-IsHttpDaemonProcess from ship-index-remote.ps1" "the function shape changed; update this test"
+    else
+        http_rc=0
+        http_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$HTTP_PROBE" 2>&1) || http_rc=$?
+        assert_rc "Test-IsHttpDaemonProcess flags --http command lines and only those" 0 "$http_rc"
+        [ "$http_rc" -eq 0 ] || printf '    %s\n' "$http_out"
+    fi
+fi
+
+# ============================================================================
+echo "TEST: Get-ShipVerdict fails on any doc-count mismatch (HIMMEL-1416 round 2)"
+# ============================================================================
+# Round-2 CR [codex-adv-1], verified against the qmd fork source: the live
+# false-fail (receiver docs 14844 != sender-staged docs 15189, despite vectors
+# 52967==52967 and pending 0) was a PREDICATE mismatch -- qmd status counts
+# `WHERE active = 1`, prepare-ship-index.mjs staged a bare COUNT(*). Now that
+# the sender counts with the same active=1 predicate, a genuine post-swap
+# mismatch means something is actually wrong, so it goes back to being a HARD
+# failure -- same as an unparseable count. The 14844/15189 regression values
+# are asserted FATAL here: the fix for the live incident is the sender
+# predicate change (prepare-ship-index.mjs), not tolerance in this function.
+if [ -z "$PS_BIN" ]; then
+    echo "  SKIP: no powershell/pwsh on this host (Get-ShipVerdict check)"
+else
+    VERDICT_PROBE="$TMP_ROOT/verdict-probe.ps1"
+    {
+        sed -n '/^function Get-ShipVerdict/,/^}/p' "$SCRIPT_DIR/ship-index-remote.ps1"
+        cat <<'VERDICT_EOF'
+function Check($label, $got, $wantFailCode) {
+    if ($got.FailCode -ne $wantFailCode) {
+        Write-Output "MISMATCH: $label -> FailCode=$($got.FailCode) (want FailCode=$wantFailCode)"
+        return $false
+    }
+    return $true
+}
+$ok = $true
+if (-not (Check 'unparsed vectors is fatal' (Get-ShipVerdict -Docs 100 -Vecs $null -Pending 0 -ExpectDocs -1 -ExpectVectors -1) 5)) { $ok = $false }
+if (-not (Check 'unparsed docs is fatal' (Get-ShipVerdict -Docs $null -Vecs 100 -Pending 0 -ExpectDocs -1 -ExpectVectors -1) 5)) { $ok = $false }
+if (-not (Check 'pending>0 is fatal' (Get-ShipVerdict -Docs 100 -Vecs 100 -Pending 3 -ExpectDocs -1 -ExpectVectors -1) 5)) { $ok = $false }
+if (-not (Check 'vector count mismatch is fatal' (Get-ShipVerdict -Docs 100 -Vecs 90 -Pending 0 -ExpectDocs -1 -ExpectVectors 100) 5)) { $ok = $false }
+if (-not (Check 'doc count mismatch is fatal' (Get-ShipVerdict -Docs 90 -Vecs 100 -Pending 0 -ExpectDocs 100 -ExpectVectors -1) 5)) { $ok = $false }
+if (-not (Check 'live regression (14844 vs 15189) is now FATAL, not tolerated' (Get-ShipVerdict -Docs 14844 -Vecs 52967 -Pending 0 -ExpectDocs 15189 -ExpectVectors 52967) 5)) { $ok = $false }
+if (-not (Check 'same-predicate counts equal -> clean verify' (Get-ShipVerdict -Docs 100 -Vecs 100 -Pending 0 -ExpectDocs 100 -ExpectVectors 100) 0)) { $ok = $false }
+if ($ok) { exit 0 } else { exit 1 }
+VERDICT_EOF
+    } > "$VERDICT_PROBE"
+    if ! grep -q 'function Get-ShipVerdict' "$VERDICT_PROBE"; then
+        fail "could not extract Get-ShipVerdict from ship-index-remote.ps1" "the function shape changed; update this test"
+    else
+        verdict_rc=0
+        verdict_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$VERDICT_PROBE" 2>&1) || verdict_rc=$?
+        assert_rc "Get-ShipVerdict: doc/vector count mismatches and unparseable counts are all hard failures" 0 "$verdict_rc"
+        [ "$verdict_rc" -eq 0 ] || printf '    %s\n' "$verdict_out"
+    fi
+fi
+
+# ============================================================================
+echo "TEST: Invoke-EnsureRestore is wired into every post-sweep exit path (HIMMEL-1416 round 3)"
+# ============================================================================
+# Round-3 [codex-adv-3]/[codex-adv-4]: the restore must be UNCONDITIONAL and
+# run on every post-sweep exit, not gated on classifying what was stopped, and
+# not just on the happy path. These drive the REAL ship-index-remote.ps1
+# end-to-end -- dot-sourced verbatim, so its own functions run unmodified, no
+# sed extraction and no drift risk -- with the WMI/process cmdlets it calls
+# fault-injected via function shadowing (Get-CimInstance, Stop-Process,
+# Invoke-CimMethod, Get-Command). Fixture-level fault injection throughout;
+# never a live process, a real qmd binary, or a real bun/node daemon.
+if [ -z "$PS_BIN" ]; then
+    echo "  SKIP: no powershell/pwsh on this host (Invoke-EnsureRestore wiring check)"
+else
+    REAL_REMOTE_SCRIPT="$SCRIPT_DIR/ship-index-remote.ps1"
+
+    # Git-Bash auto-translates a POSIX path to its Windows form ONLY when the
+    # path is its OWN whole argv token on a command line handed to a native
+    # (non-MSYS) process -- which is why `-File "$SOME_PROBE"` elsewhere in
+    # this suite just works. It does NOT reach into a path written as literal
+    # TEXT inside a generated .ps1 file's CONTENT: PowerShell's own parser
+    # reads that text directly, with zero Git-Bash involvement, so a bare
+    # "/c/Users/..." or "/tmp/..." string there is parsed as a literal
+    # (nonexistent) path and fails with CommandNotFoundException /
+    # DirectoryNotFoundException. Every path embedded INSIDE a probe file
+    # below (dot-source args, $env:SENTINEL_PATH, the $env:PATH prepend, and
+    # the -Command string in make_staged) needs this explicit conversion;
+    # bash-side operations (mkdir, printf >, rm -f, [ -f ]) keep using the
+    # original bash-native path throughout -- both spellings name the
+    # identical file, bash just needs its own.
+    winpath() {
+        local w
+        w="$(cygpath -w "$1" 2>/dev/null)"
+        if [ -n "$w" ]; then printf '%s' "$w" | tr "\\\\" "/"; else printf '%s' "$1"; fi
+    }
+
+    # A staged index must exist and be >=50MB to pass ship-index-remote.ps1's
+    # own truncation guard -- write one for real rather than special-casing
+    # that guard, so these tests exercise it too instead of routing around it.
+    make_staged() {
+        "$PS_BIN" -NoProfile -ExecutionPolicy Bypass -Command \
+            "[System.IO.File]::WriteAllBytes('$(winpath "$1")', (New-Object byte[] 52428800))"
+    }
+    # Shared fake ensure-script body: touches $env:SENTINEL_PATH and exits 0 --
+    # standing in for the real ensure-qmd-daemon.ps1 without starting anything.
+    make_fake_ensure() {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf 'New-Item -ItemType File -Force -Path $env:SENTINEL_PATH | Out-Null\nexit 0\n' > "$1"
+    }
+
+    # ---- (a) sweep-stopped-something + a genuine success path ----------------
+    # The fullest form: also fakes `qmd status` on PATH so the run completes
+    # with a real rc 0, proving the restore fires on an ACTUAL successful ship,
+    # not just on a path that happens to call the function.
+    SENT_A="$TMP_ROOT/sentinel-a.txt"; rm -f "$SENT_A"
+    STAGED_A="$TMP_ROOT/staged-a.sqlite"; TARGET_A="$TMP_ROOT/target-a.sqlite"
+    make_staged "$STAGED_A"
+    printf 'old-index' > "$TARGET_A"
+    ENSURE_A="$TMP_ROOT/ensure-a.ps1"; make_fake_ensure "$ENSURE_A"
+    FAKEBIN_A="$TMP_ROOT/fakebin-a"; mkdir -p "$FAKEBIN_A"
+    {
+        printf '@echo off\r\n'
+        printf 'echo QMD Status\r\n'
+        printf 'echo.\r\n'
+        printf 'echo Documents\r\n'
+        printf 'echo   Total:    100 files indexed\r\n'
+        printf 'echo   Vectors:  100 embedded\r\n'
+        printf 'exit /b 0\r\n'
+    } > "$FAKEBIN_A/qmd.cmd"
+    PROBE_A="$TMP_ROOT/wiring-success-probe.ps1"
+    cat > "$PROBE_A" <<'PROBE_A_EOF'
+function Get-CimInstance {
+    param($ClassName, [string]$Filter, $ErrorAction)
+    return @([pscustomobject]@{ Name = 'qmd.exe'; ProcessId = 4242; CommandLine = '"C:\fake\qmd.exe" mcp --keep-models' })
+}
+function Stop-Process {
+    param($Id, [switch]$Force, $ErrorAction)
+}
+function Invoke-CimMethod {
+    param($ClassName, $MethodName, $Arguments)
+    return [pscustomobject]@{ ReturnValue = 0; ProcessId = 9999 }
+}
+function Get-Command {
+    param($Name, $ErrorAction)
+    if ($Name -eq 'qmd') { return [pscustomobject]@{ Source = 'qmd' } }
+    return $null
+}
+PROBE_A_EOF
+    {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:PATH = "%s;" + $env:PATH\n' "$(winpath "$FAKEBIN_A")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_A")"
+        # `&`, NOT dot-source (`.`): a dot-sourced script's `exit` inside a
+        # FUNCTION (Fail(), here) does not propagate as this WRAPPER's own
+        # process exit code -- measured empirically, it comes back 0 every
+        # time regardless of the real code. `&` runs it as a child script
+        # invocation instead: its `exit N` sets $LASTEXITCODE correctly in
+        # the caller, while fake functions defined above (Get-CimInstance
+        # etc.) remain visible to it via normal PowerShell scope inheritance.
+        printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s" -ExpectDocs 100 -ExpectVectors 100\n' \
+            "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_A")" "$(winpath "$TARGET_A")" "$(winpath "$ENSURE_A")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf 'exit $LASTEXITCODE\n'
+    } >> "$PROBE_A"
+    a_rc=0
+    a_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PROBE_A" 2>&1) || a_rc=$?
+    assert_rc "(a) success path: the real script exits 0 (transport verified)" 0 "$a_rc"
+    [ "$a_rc" -eq 0 ] || printf '    %s\n' "$a_out"
+    if [ -f "$SENT_A" ]; then pass "(a) success path: Invoke-EnsureRestore actually ran the ensure script"; else fail "(a) success path: ensure script never ran"; fi
+
+    # ---- (b) stop-failure AFTER a first successful stop -----------------------
+    # Two qualifying processes; the first Stop-Process succeeds ($stopped
+    # becomes non-empty), the second throws -- landing in the stop-sweep's own
+    # catch with $stopped.Count -gt 0, before any swap is attempted.
+    SENT_B="$TMP_ROOT/sentinel-b.txt"; rm -f "$SENT_B"
+    STAGED_B="$TMP_ROOT/staged-b.sqlite"; TARGET_B="$TMP_ROOT/target-b.sqlite"
+    make_staged "$STAGED_B"
+    printf 'old-index' > "$TARGET_B"
+    ENSURE_B="$TMP_ROOT/ensure-b.ps1"; make_fake_ensure "$ENSURE_B"
+    PROBE_B="$TMP_ROOT/wiring-stopfail-probe.ps1"
+    cat > "$PROBE_B" <<'PROBE_B_EOF'
+function Get-CimInstance {
+    param($ClassName, [string]$Filter, $ErrorAction)
+    return @(
+        [pscustomobject]@{ Name = 'qmd.exe'; ProcessId = 4242; CommandLine = $null },
+        [pscustomobject]@{ Name = 'qmd.exe'; ProcessId = 4243; CommandLine = $null }
+    )
+}
+function Stop-Process {
+    param($Id, [switch]$Force, $ErrorAction)
+    if ($Id -eq 4243) { throw 'Access is denied' }
+}
+function Invoke-CimMethod {
+    param($ClassName, $MethodName, $Arguments)
+    return [pscustomobject]@{ ReturnValue = 0; ProcessId = 9999 }
+}
+function Get-Command {
+    param($Name, $ErrorAction)
+    if ($Name -eq 'qmd') { return [pscustomobject]@{ Source = 'qmd' } }
+    return $null
+}
+PROBE_B_EOF
+    {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_B")"
+        # `&`, not dot-source -- see the comment on the (a) probe for why.
+        printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s"\n' \
+            "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_B")" "$(winpath "$TARGET_B")" "$(winpath "$ENSURE_B")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf 'exit $LASTEXITCODE\n'
+    } >> "$PROBE_B"
+    b_rc=0
+    b_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PROBE_B" 2>&1) || b_rc=$?
+    assert_rc "(b) stop-failure after a partial stop: exits 2" 2 "$b_rc"
+    [ "$b_rc" -eq 2 ] || printf '    %s\n' "$b_out"
+    if [ -f "$SENT_B" ]; then pass "(b) stop-failure: Invoke-EnsureRestore ran before Fail 2"; else fail "(b) stop-failure: ensure script never ran"; fi
+    # Round 4 [codex-adv-7]: this catch never attempted the PLAIN daemon form
+    # before, leaving a stopped plain daemon down on a failed deploy. The fake
+    # Invoke-CimMethod above (used by Start-QmdDaemon) reports success, so
+    # Complete-PostSweepFailure's -AlsoRestartPlainDaemon attempt should Emit
+    # a real PID here, not skip straight to the HTTP restore alone.
+    assert_contains "(b) stop-failure: the PLAIN daemon restart was also attempted" "restarted_after_failure=9999" "$b_out"
+
+    # ---- (c) swap-failure recovery ---------------------------------------------
+    # The stop sweep succeeds cleanly ($stopped.Count -gt 0); the swap itself
+    # fails because $Target's parent directory does not exist, so Move-Item
+    # into it throws -- a genuine filesystem failure, not a faked cmdlet --
+    # landing in the swap catch's rollback/restart-best-effort block.
+    SENT_C="$TMP_ROOT/sentinel-c.txt"; rm -f "$SENT_C"
+    STAGED_C="$TMP_ROOT/staged-c.sqlite"
+    make_staged "$STAGED_C"
+    TARGET_C="$TMP_ROOT/nonexistent-dir-c/target.sqlite"
+    ENSURE_C="$TMP_ROOT/ensure-c.ps1"; make_fake_ensure "$ENSURE_C"
+    PROBE_C="$TMP_ROOT/wiring-swapfail-probe.ps1"
+    cat > "$PROBE_C" <<'PROBE_C_EOF'
+function Get-CimInstance {
+    param($ClassName, [string]$Filter, $ErrorAction)
+    return @([pscustomobject]@{ Name = 'qmd.exe'; ProcessId = 5000; CommandLine = $null })
+}
+function Stop-Process {
+    param($Id, [switch]$Force, $ErrorAction)
+}
+function Invoke-CimMethod {
+    param($ClassName, $MethodName, $Arguments)
+    return [pscustomobject]@{ ReturnValue = 0; ProcessId = 9999 }
+}
+function Get-Command {
+    param($Name, $ErrorAction)
+    if ($Name -eq 'qmd') { return [pscustomobject]@{ Source = 'qmd' } }
+    return $null
+}
+PROBE_C_EOF
+    {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_C")"
+        # `&`, not dot-source -- see the comment on the (a) probe for why.
+        printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s"\n' \
+            "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_C")" "$(winpath "$TARGET_C")" "$(winpath "$ENSURE_C")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf 'exit $LASTEXITCODE\n'
+    } >> "$PROBE_C"
+    c_rc=0
+    c_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PROBE_C" 2>&1) || c_rc=$?
+    assert_rc "(c) swap-failure recovery: exits 3" 3 "$c_rc"
+    [ "$c_rc" -eq 3 ] || printf '    %s\n' "$c_out"
+    if [ -f "$SENT_C" ]; then pass "(c) swap-failure: Invoke-EnsureRestore ran during rollback recovery"; else fail "(c) swap-failure: ensure script never ran"; fi
+
+    # ---- (d) Start-QmdDaemon returns null (round 4 [codex-adv-5]) -------------
+    # The stop sweep and swap both succeed; the restart's Start-QmdDaemon
+    # returns $null (Get-Command finds no qmd), landing in the `if (-not
+    # $newPid)` branch that used to call Fail 4 directly -- BEFORE the HTTP
+    # restore further down ever ran.
+    SENT_D="$TMP_ROOT/sentinel-d.txt"; rm -f "$SENT_D"
+    STAGED_D="$TMP_ROOT/staged-d.sqlite"; TARGET_D="$TMP_ROOT/target-d.sqlite"
+    make_staged "$STAGED_D"
+    printf 'old-index' > "$TARGET_D"
+    ENSURE_D="$TMP_ROOT/ensure-d.ps1"; make_fake_ensure "$ENSURE_D"
+    PROBE_D="$TMP_ROOT/wiring-restartnull-probe.ps1"
+    cat > "$PROBE_D" <<'PROBE_D_EOF'
+function Get-CimInstance {
+    param($ClassName, [string]$Filter, $ErrorAction)
+    return @([pscustomobject]@{ Name = 'qmd.exe'; ProcessId = 6000; CommandLine = $null })
+}
+function Stop-Process {
+    param($Id, [switch]$Force, $ErrorAction)
+}
+function Invoke-CimMethod {
+    param($ClassName, $MethodName, $Arguments)
+    return [pscustomobject]@{ ReturnValue = 0; ProcessId = 9999 }
+}
+function Get-Command {
+    param($Name, $ErrorAction)
+    return $null
+}
+PROBE_D_EOF
+    {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_D")"
+        printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s"\n' \
+            "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_D")" "$(winpath "$TARGET_D")" "$(winpath "$ENSURE_D")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf 'exit $LASTEXITCODE\n'
+    } >> "$PROBE_D"
+    d_rc=0
+    d_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PROBE_D" 2>&1) || d_rc=$?
+    assert_rc "(d) Start-QmdDaemon returns null: exits 4" 4 "$d_rc"
+    [ "$d_rc" -eq 4 ] || printf '    %s\n' "$d_out"
+    if [ -f "$SENT_D" ]; then pass "(d) restart-returns-null: Invoke-EnsureRestore still ran before Fail 4"; else fail "(d) restart-returns-null: ensure script never ran"; fi
+
+    # ---- (e) Start-QmdDaemon throws (round 4 [codex-adv-5]) --------------------
+    # Same shape as (d), but Get-Command resolves qmd fine and Invoke-CimMethod
+    # (the WMI process-create call inside Start-QmdDaemon) throws instead --
+    # the OTHER branch that used to call Fail 4 directly.
+    SENT_E="$TMP_ROOT/sentinel-e.txt"; rm -f "$SENT_E"
+    STAGED_E="$TMP_ROOT/staged-e.sqlite"; TARGET_E="$TMP_ROOT/target-e.sqlite"
+    make_staged "$STAGED_E"
+    printf 'old-index' > "$TARGET_E"
+    ENSURE_E="$TMP_ROOT/ensure-e.ps1"; make_fake_ensure "$ENSURE_E"
+    PROBE_E="$TMP_ROOT/wiring-restartthrow-probe.ps1"
+    cat > "$PROBE_E" <<'PROBE_E_EOF'
+function Get-CimInstance {
+    param($ClassName, [string]$Filter, $ErrorAction)
+    return @([pscustomobject]@{ Name = 'qmd.exe'; ProcessId = 7000; CommandLine = $null })
+}
+function Stop-Process {
+    param($Id, [switch]$Force, $ErrorAction)
+}
+function Invoke-CimMethod {
+    param($ClassName, $MethodName, $Arguments)
+    throw 'WMI create failed'
+}
+function Get-Command {
+    param($Name, $ErrorAction)
+    if ($Name -eq 'qmd') { return [pscustomobject]@{ Source = 'qmd' } }
+    return $null
+}
+PROBE_E_EOF
+    {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_E")"
+        printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s"\n' \
+            "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_E")" "$(winpath "$TARGET_E")" "$(winpath "$ENSURE_E")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf 'exit $LASTEXITCODE\n'
+    } >> "$PROBE_E"
+    e_rc=0
+    e_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PROBE_E" 2>&1) || e_rc=$?
+    assert_rc "(e) Start-QmdDaemon throws: exits 4" 4 "$e_rc"
+    [ "$e_rc" -eq 4 ] || printf '    %s\n' "$e_out"
+    if [ -f "$SENT_E" ]; then pass "(e) restart-throws: Invoke-EnsureRestore still ran before Fail 4"; else fail "(e) restart-throws: ensure script never ran"; fi
+
+    # ---- (f) restore FAILS after an otherwise-full success (round 4 [codex-adv-6]) --
+    # The fullest form again (fakes `qmd status` too, like (a)), but this time
+    # the ensure script itself touches the sentinel THEN exits 1 -- proving it
+    # was genuinely invoked and failed, not merely skipped. The transport
+    # verified cleanly; only the auxiliary HTTP-daemon restore failed, so this
+    # must exit 6, not 0.
+    SENT_F="$TMP_ROOT/sentinel-f.txt"; rm -f "$SENT_F"
+    STAGED_F="$TMP_ROOT/staged-f.sqlite"; TARGET_F="$TMP_ROOT/target-f.sqlite"
+    make_staged "$STAGED_F"
+    printf 'old-index' > "$TARGET_F"
+    ENSURE_F="$TMP_ROOT/ensure-f.ps1"
+    # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+    printf 'New-Item -ItemType File -Force -Path $env:SENTINEL_PATH | Out-Null\nexit 1\n' > "$ENSURE_F"
+    FAKEBIN_F="$TMP_ROOT/fakebin-f"; mkdir -p "$FAKEBIN_F"
+    {
+        printf '@echo off\r\n'
+        printf 'echo QMD Status\r\n'
+        printf 'echo.\r\n'
+        printf 'echo Documents\r\n'
+        printf 'echo   Total:    100 files indexed\r\n'
+        printf 'echo   Vectors:  100 embedded\r\n'
+        printf 'exit /b 0\r\n'
+    } > "$FAKEBIN_F/qmd.cmd"
+    PROBE_F="$TMP_ROOT/wiring-restorefail-probe.ps1"
+    cat > "$PROBE_F" <<'PROBE_F_EOF'
+function Get-CimInstance {
+    param($ClassName, [string]$Filter, $ErrorAction)
+    return @([pscustomobject]@{ Name = 'qmd.exe'; ProcessId = 8000; CommandLine = '"C:\fake\qmd.exe" mcp --keep-models' })
+}
+function Stop-Process {
+    param($Id, [switch]$Force, $ErrorAction)
+}
+function Invoke-CimMethod {
+    param($ClassName, $MethodName, $Arguments)
+    return [pscustomobject]@{ ReturnValue = 0; ProcessId = 9999 }
+}
+function Get-Command {
+    param($Name, $ErrorAction)
+    if ($Name -eq 'qmd') { return [pscustomobject]@{ Source = 'qmd' } }
+    return $null
+}
+PROBE_F_EOF
+    {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:PATH = "%s;" + $env:PATH\n' "$(winpath "$FAKEBIN_F")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_F")"
+        printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s" -ExpectDocs 100 -ExpectVectors 100\n' \
+            "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_F")" "$(winpath "$TARGET_F")" "$(winpath "$ENSURE_F")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf 'exit $LASTEXITCODE\n'
+    } >> "$PROBE_F"
+    f_rc=0
+    f_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PROBE_F" 2>&1) || f_rc=$?
+    assert_rc "(f) restore failure after a full successful verify: exits 6" 6 "$f_rc"
+    [ "$f_rc" -eq 6 ] || printf '    %s\n' "$f_out"
+    if [ -f "$SENT_F" ]; then pass "(f) restore failure: the ensure script actually ran (and reported failure)"; else fail "(f) restore failure: ensure script never ran at all"; fi
+    assert_contains "(f) restore failure: the verify stage itself still reported ok" "verified=ok" "$f_out"
+
+    # ---- (g) self-swap validation now fails PRE-SWEEP (round 5 [codex-adv-8]) --
+    # Moved before the stop sweep entirely -- a collision must exit 1 WITHOUT
+    # ever touching a process. Fakes that THROW if called prove this: reaching
+    # them would land in the sweep's own catch (Complete-PostSweepFailure
+    # -Code 2), producing rc 2, not rc 1 -- so asserting exactly rc 1 already
+    # proves the sweep was never reached, and "the restore question vanishes"
+    # as the finding puts it: nothing was ever stopped, so nothing needs
+    # restoring, so a plain Fail 1 is correct.
+    SENT_G="$TMP_ROOT/sentinel-g.txt"; rm -f "$SENT_G"
+    STAGED_G="$TMP_ROOT/staged-g.sqlite"
+    make_staged "$STAGED_G"
+    ENSURE_G="$TMP_ROOT/ensure-g.ps1"; make_fake_ensure "$ENSURE_G"
+    PROBE_G="$TMP_ROOT/wiring-selfswap-probe.ps1"
+    cat > "$PROBE_G" <<'PROBE_G_EOF'
+function Get-CimInstance { throw 'the stop sweep must never run for a self-swap collision' }
+function Stop-Process { throw 'the stop sweep must never run for a self-swap collision' }
+function Invoke-CimMethod { throw 'Start-QmdDaemon must never run for a self-swap collision' }
+function Get-Command { throw 'Start-QmdDaemon must never run for a self-swap collision' }
+PROBE_G_EOF
+    {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_G")"
+        # -Target IS -Staged: the exact self-swap collision.
+        printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s"\n' \
+            "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_G")" "$(winpath "$STAGED_G")" "$(winpath "$ENSURE_G")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf 'exit $LASTEXITCODE\n'
+    } >> "$PROBE_G"
+    g_rc=0
+    g_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PROBE_G" 2>&1) || g_rc=$?
+    assert_rc "(g) self-swap collision fails pre-sweep: exits 1, not 2" 1 "$g_rc"
+    [ "$g_rc" -eq 1 ] || printf '    %s\n' "$g_out"
+    assert_contains "(g) self-swap: names the collision" "refusing to swap a file onto itself" "$g_out"
+    if [ -f "$SENT_G" ]; then fail "(g) self-swap: recovery ran even though nothing was ever stopped" "$g_out"; else pass "(g) self-swap: no restore attempted (correctly -- nothing was stopped)"; fi
+
+    # ---- (h) stopped>0 + missing ensure script -> rc 6, not 0 (round 5 [codex-adv-9]) --
+    # The full genuine-success harness (like (a)/(f)), but -EnsureScript is
+    # omitted entirely -- the legitimate standalone/debug invocation the
+    # receiver script's own default ('') supports. Something WAS stopped, so
+    # Invoke-EnsureRestore's skipped-no-ensure-script branch must now set
+    # EnsureRestoreFailed: a null-CommandLine qmd.exe cannot be classified
+    # either way, so a receiver with no ensure script genuinely cannot confirm
+    # the HTTP surface came back, and this must not silently read as success.
+    STAGED_H="$TMP_ROOT/staged-h.sqlite"; TARGET_H="$TMP_ROOT/target-h.sqlite"
+    make_staged "$STAGED_H"
+    printf 'old-index' > "$TARGET_H"
+    FAKEBIN_H="$TMP_ROOT/fakebin-h"; mkdir -p "$FAKEBIN_H"
+    {
+        printf '@echo off\r\n'
+        printf 'echo QMD Status\r\n'
+        printf 'echo.\r\n'
+        printf 'echo Documents\r\n'
+        printf 'echo   Total:    100 files indexed\r\n'
+        printf 'echo   Vectors:  100 embedded\r\n'
+        printf 'exit /b 0\r\n'
+    } > "$FAKEBIN_H/qmd.cmd"
+    PROBE_H="$TMP_ROOT/wiring-noensure-probe.ps1"
+    cat > "$PROBE_H" <<'PROBE_H_EOF'
+function Get-CimInstance {
+    param($ClassName, [string]$Filter, $ErrorAction)
+    return @([pscustomobject]@{ Name = 'qmd.exe'; ProcessId = 9001; CommandLine = $null })
+}
+function Stop-Process {
+    param($Id, [switch]$Force, $ErrorAction)
+}
+function Invoke-CimMethod {
+    param($ClassName, $MethodName, $Arguments)
+    return [pscustomobject]@{ ReturnValue = 0; ProcessId = 9999 }
+}
+function Get-Command {
+    param($Name, $ErrorAction)
+    if ($Name -eq 'qmd') { return [pscustomobject]@{ Source = 'qmd' } }
+    return $null
+}
+PROBE_H_EOF
+    {
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:PATH = "%s;" + $env:PATH\n' "$(winpath "$FAKEBIN_H")"
+        # No -EnsureScript at all -- exercises the parameter's own empty default.
+        printf '& "%s" -Staged "%s" -Target "%s" -ExpectDocs 100 -ExpectVectors 100\n' \
+            "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_H")" "$(winpath "$TARGET_H")"
+        # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
+        printf 'exit $LASTEXITCODE\n'
+    } >> "$PROBE_H"
+    h_rc=0
+    h_out=$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$PROBE_H" 2>&1) || h_rc=$?
+    assert_rc "(h) stopped>0 + no ensure script: exits 6, not 0" 6 "$h_rc"
+    [ "$h_rc" -eq 6 ] || printf '    %s\n' "$h_out"
+    assert_contains "(h) reports skipped-no-ensure-script" "http_daemon_restored=skipped-no-ensure-script" "$h_out"
+    assert_contains "(h) the verify stage itself still reported ok" "verified=ok" "$h_out"
 fi
 
 summary

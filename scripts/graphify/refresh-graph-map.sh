@@ -51,7 +51,31 @@ while [ $# -gt 0 ]; do
     --name) NAME="${2:-}"; shift 2 ;;
     --corpus-root) CORPUS_ROOT="${2:-}"; shift 2 ;;
     --backend) BACKEND="${2:-}"; shift 2 ;;
-    --maps-dir) MAPS_DIR="${2:-}"; shift 2 ;;
+    # HIMMEL-1415 CR follow-up rounds 2-4 (codex-1-r2, codex-adv-3,
+    # CodeRabbit App): trim trailing slash(es) at parse time -- a raw
+    # "--maps-dir /vault/60-Maps/" (or "//") propagated unmodified made the
+    # HIMMEL-1415 exclusion patterns become "./60-Maps//graph/*", which
+    # find's -path matcher never matches against the real
+    # "./60-Maps/graph/..." path -- the exclusion silently no-ops and
+    # derived pages leak back into the corpus. Looped, not a single `%/`, so
+    # it closes MULTIPLE trailing slashes too (round-3 panel flagged the
+    # single-trim as incomplete). Trimmed here (not just at the exclusion
+    # site, matching CORPUS_ROOT_TRIMMED there) so every downstream use --
+    # the exclusion AND the OUT_NOTE publish path below, which would
+    # otherwise get the same double slash -- sees the same clean value.
+    #
+    # Guarded with `[ -n "${MAPS_DIR%/}" ]` (CodeRabbit App, round 4): a bare
+    # `--maps-dir /` would otherwise be stripped to the EMPTY string (each
+    # iteration removes the one slash, `%/` on "" is a no-op, loop exits with
+    # nothing left) -- silently losing the maps dir entirely for every
+    # downstream use, including the `[ -z "$MAPS_DIR" ]` usage-check at line
+    # ~64, which would then wrongly reject a technically-valid (if absurd)
+    # root maps-dir as a missing flag. The guard stops stripping once only
+    # the bare "/" remains, so root is preserved as "/" instead of "".
+    --maps-dir)
+      MAPS_DIR="${2:-}"
+      while [ -n "${MAPS_DIR%/}" ] && [ "${MAPS_DIR%/}" != "$MAPS_DIR" ]; do MAPS_DIR="${MAPS_DIR%/}"; done
+      shift 2 ;;
     --title) TITLE="${2:-}"; shift 2 ;;
     --slug) SLUG="${2:-}"; shift 2 ;;
     --corpus-tag) CORPUS_TAG="${2:-}"; shift 2 ;;
@@ -557,7 +581,101 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # Both corpora are 100% regular files today (luna 15,239 / himmel 9,114, zero
   # dirs or symlinks named *.md), so this is a no-op on current data and a guard
   # against a silently-wrong corpus later.
-  ( cd "$CORPUS_ROOT" && find . -type f -name '*.md' -not -path './graphify-out/*' -print0 \
+  #
+  # HIMMEL-1415: also exclude graphify's OWN published derived pages --
+  # <maps-dir>/graph/* (the per-node/community notes graphify mints there) and
+  # <maps-dir>/<slug>.md (the curated MOC this script's own publish step,
+  # below, writes). Extracting the graph's own published output back into the
+  # graph is a feedback loop: a leg-14 luna regen found these derived pages
+  # dense enough to blow a rate-limited backend's per-chunk output cap
+  # (bisect-retry storms, depth-3 partials, outright-skipped chunks -- ALL
+  # from 60-Maps/graph sources). Computed via a plain bash prefix match, NOT
+  # a python3 round-trip: --corpus-root and --maps-dir are always constructed
+  # by the SAME caller in the SAME invocation (e.g. graphmap-cadence.sh builds
+  # both from one $VAULT), so they already share syntactic path form --
+  # handing them to a SEPARATE native python3.exe process for
+  # os.path.relpath instead invites MSYS's own argv-to-Windows-path
+  # translation, which was observed (HIMMEL-1415 CR follow-up test) to
+  # resolve the two strings to DIFFERENT drive roots for a maps-dir
+  # containing "[", silently disabling the exclusion -- strictly worse than
+  # the drive-letter mismatch a python3 round-trip was meant to guard
+  # against. When --maps-dir isn't actually a subdirectory of --corpus-root
+  # there's nothing under the corpus to exclude and this stays empty (a
+  # no-op below). Only "graph/" and the slug MOC are excluded -- a
+  # hand-authored, non-derived note living directly under maps-dir is real
+  # corpus content and still gets extracted.
+  MAPS_EXCL_REL=""
+  CORPUS_ROOT_TRIMMED="${CORPUS_ROOT%/}"
+  case "$MAPS_DIR" in
+    "$CORPUS_ROOT_TRIMMED"/*) MAPS_EXCL_REL="${MAPS_DIR#"$CORPUS_ROOT_TRIMMED"/}" ;;
+    "$CORPUS_ROOT_TRIMMED") MAPS_EXCL_REL="." ;;
+  esac
+  # HIMMEL-1415 CR follow-up round 3 (codex-adv-3): strip any LEADING
+  # slash(es) left on MAPS_EXCL_REL after the prefix-strip above. A caller
+  # that builds --maps-dir by naive concatenation against a --corpus-root
+  # that ALREADY ends in "/" (e.g. graphmap-cadence.sh accepting
+  # `--vault /vault/` and constructing maps-dir as `$VAULT/60-Maps` ->
+  # "/vault//60-Maps") leaves an internal double slash that --maps-dir's own
+  # trailing-slash trim above never sees (it isn't a TRAILING slash on
+  # --maps-dir itself). The case's prefix-strip only consumes ONE "/" as
+  # part of the "$CORPUS_ROOT_TRIMMED/" match, so MAPS_EXCL_REL is left as
+  # e.g. "/60-Maps" -- MAPS_EXCL_PREFIX would then become ".//60-Maps", and
+  # find's -path matcher never matches that literal double slash against a
+  # real "./60-Maps/..." target, silently no-opping the exclusion. Looped so
+  # it also closes multiple leading slashes, not just one.
+  #
+  # NOT given the round-4 "preserve a bare all-slash value" guard the
+  # --maps-dir parse-time trim above got (CodeRabbit App asked us to verify,
+  # not blanket-apply): unlike --maps-dir, this value can never legitimately
+  # be reduced to "all slashes" here. --maps-dir's OWN trailing-slash trim
+  # (above, already guarded) runs first and strips every trailing slash off
+  # the raw flag value before this case statement ever sees it, so the only
+  # way MAPS_EXCL_REL could still be all-slashes at this point is if
+  # --corpus-root itself is the filesystem root ("/", so
+  # CORPUS_ROOT_TRIMMED="") AND --maps-dir is also "/" -- a corpus-root of
+  # "/" is already nonsensical on unrelated grounds (the corpus-copy below
+  # would try to walk the entire filesystem for *.md) and is not a
+  # configuration any of these CR rounds have tried to harden, so adding
+  # branching here for a state that can't arise from any real caller would
+  # be speculative complexity, not a fix. And unlike the --maps-dir case
+  # (where losing "/" silently trips the UNRELATED `-z "$MAPS_DIR"`
+  # usage-check), an empty MAPS_EXCL_REL here just disables this one
+  # exclusion (`[ -n "$MAPS_EXCL_REL" ]` below) -- a narrower, already-inert
+  # failure mode given the corpus-root-is-"/" precondition, not an
+  # equivalent-but-different bug worth mirroring the guard for.
+  while [ "${MAPS_EXCL_REL#/}" != "$MAPS_EXCL_REL" ]; do MAPS_EXCL_REL="${MAPS_EXCL_REL#/}"; done
+  #
+  # HIMMEL-1415 CR follow-up (glm panel + codex-adv-1): $MAPS_EXCL_PREFIX and
+  # $SLUG land inside `find -path` PATTERN arguments, where *, ?, and [ are
+  # fnmatch wildcard syntax even though the arguments are shell-quoted --
+  # shell quoting only stops the SHELL from globbing them; find's own -path
+  # matcher still interprets them as wildcards. A maps-dir or slug containing
+  # one of these (e.g. "60-[Maps]") would fail to match its OWN literal path
+  # -- its derived pages re-enter the corpus, reopening the feedback loop --
+  # and a stray "*"/"?" could over-match unrelated siblings, silently
+  # excluding legitimate notes. Escape backslash FIRST so a backslash
+  # inserted by a later replacement isn't itself re-escaped by a subsequent
+  # pass. Only the computed PREFIX/SLUG are escaped -- the literal "/graph/*"
+  # suffix's trailing "*" stays an intentional wildcard, and the pre-existing
+  # graphify-out/* exclusion (a fixed literal with no wildcard chars) is
+  # untouched.
+  _find_glob_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\*/\\*}"
+    s="${s//\?/\\?}"
+    s="${s//\[/\\[}"
+    printf '%s' "$s"
+  }
+  CORPUS_FIND_EXCLUDES=(-not -path './graphify-out/*')
+  if [ -n "$MAPS_EXCL_REL" ]; then
+    MAPS_EXCL_PREFIX="./$MAPS_EXCL_REL"
+    [ "$MAPS_EXCL_REL" = "." ] && MAPS_EXCL_PREFIX="."
+    MAPS_EXCL_PREFIX_ESC="$(_find_glob_escape "$MAPS_EXCL_PREFIX")"
+    SLUG_ESC="$(_find_glob_escape "$SLUG")"
+    CORPUS_FIND_EXCLUDES+=(-not -path "$MAPS_EXCL_PREFIX_ESC/graph/*" -not -path "$MAPS_EXCL_PREFIX_ESC/$SLUG_ESC.md")
+  fi
+  ( cd "$CORPUS_ROOT" && find . -type f -name '*.md' "${CORPUS_FIND_EXCLUDES[@]}" -print0 \
       | tar --null -T - -cf - ) | ( cd "$SCRATCH" && tar -xf - ) \
     || { echo "refresh-graph-map: corpus scan/copy failed (see find/tar output above)" >&2; exit 1; }
   # HIMMEL-1097: graphify's semantic cache is corpus-relative and content-keyed,

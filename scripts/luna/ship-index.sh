@@ -65,9 +65,20 @@
 #   4  prepare/staging failed — nothing shipped
 #   5  upload failed          — receiver untouched
 #   6  receiver-side failure  (see its SHIP-REMOTE output; it reports whether the
-#                              index was swapped before failing)
+#                              index was swapped before failing). NOTE: this is
+#                              a SEPARATE numbering space from the receiver's
+#                              OWN internal exit codes (ship-index-remote.ps1's
+#                              rc 6 means something entirely different — see
+#                              rc 8 below); this script's die-6 fires for ANY
+#                              receiver rc except that one specific case.
 #   7  graph leg failed       (index shipped OK — reported separately, non-fatal
 #                              to the index result but a non-zero overall exit)
+#   8  index shipped + verified OK, but the receiver's HTTP-singleton MCP
+#      daemon restore FAILED (HIMMEL-1416 round 4 [codex-adv-6]) — the
+#      transport succeeded (receiver rc 6), so the graph leg still RUNS; this
+#      exit fires AFTER it completes, so a graph-leg failure (7) is reported
+#      instead when both happened (7 is more code-specific; the restore
+#      failure was already printed as a WARN either way).
 set -euo pipefail
 
 HOST="win2"
@@ -86,6 +97,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REINDEX_SCRIPT="$HERE/qmd-reindex.sh"
 PREPARE_SCRIPT="$HERE/prepare-ship-index.mjs"
 REMOTE_SCRIPT="$HERE/ship-index-remote.ps1"
+# Uploaded alongside REMOTE_SCRIPT and invoked BY it (never sourced in-process
+# -- see ship-index-remote.ps1's own comment on why) to restore the HTTP-
+# singleton MCP daemon if the stop sweep killed one (HIMMEL-1416 round 2).
+ENSURE_SCRIPT="$HERE/../qmd/ensure-qmd-daemon.ps1"
 
 LOCAL_INDEX="${QMD_INDEX_PATH:-$HOME/.cache/qmd/index.sqlite}"
 LOCAL_GRAPH="${GRAPHIFY_GRAPH_PATH:-$HOME/.graphify/global-graph.json}"
@@ -118,7 +133,7 @@ can never create an orphan collection there; and it refuses outright if the
 receiver expects a collection the source does not have.
 
 Exit: 0 ok | 1 usage | 2 prereq | 3 reindex | 4 prepare | 5 upload
-      6 receiver | 7 graph leg
+      6 receiver | 7 graph leg | 8 shipped+verified but HTTP restore failed
 EOF
 }
 
@@ -196,6 +211,7 @@ for tool in ssh scp node; do
 done
 [ -f "$PREPARE_SCRIPT" ] || die 2 "prepare-ship-index.mjs not found at $PREPARE_SCRIPT"
 [ -f "$REMOTE_SCRIPT" ]  || die 2 "ship-index-remote.ps1 not found at $REMOTE_SCRIPT"
+[ -f "$ENSURE_SCRIPT" ]  || die 2 "ensure-qmd-daemon.ps1 not found at $ENSURE_SCRIPT"
 [ "$DO_REINDEX" -eq 0 ] || [ -f "$REINDEX_SCRIPT" ] || die 2 "qmd-reindex.sh not found at $REINDEX_SCRIPT"
 # The index-EXISTS check deliberately does NOT run here. On a first-ever run the
 # reindex step is what CREATES the index, so demanding it up front would fail
@@ -319,6 +335,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     say "  would run         : node $PREPARE_SCRIPT --src $LOCAL_INDEX --out <staging> --collections <set>"
     say "  would upload      : <staging> -> $HOST:$REMOTE_TMP/qmd-index.incoming.sqlite"
     say "  would upload      : $REMOTE_SCRIPT -> $HOST:$REMOTE_TMP/ship-index-remote.ps1"
+    say "  would upload      : $ENSURE_SCRIPT -> $HOST:$REMOTE_TMP/ensure-qmd-daemon.ps1"
     say "  would run THERE   : ship-index-remote.ps1 (daemon fence -> swap -> WMI restart -> verify -> reap)"
     say "dry-run complete (no changes made)"
     exit 0
@@ -390,6 +407,7 @@ say "[4/5] uploading to $HOST"
 RUN_TAG="$$-$(date +%s 2>/dev/null || echo 0)"
 REMOTE_STAGED="$REMOTE_TMP/qmd-index.incoming.$RUN_TAG.sqlite"
 REMOTE_PS1="$REMOTE_TMP/ship-index-remote.$RUN_TAG.ps1"
+REMOTE_ENSURE="$REMOTE_TMP/ensure-qmd-daemon.$RUN_TAG.ps1"
 scp -q "$STAGING" "$HOST:$REMOTE_STAGED" || die 5 "upload of the index failed — receiver untouched"
 if ! scp -q "$REMOTE_SCRIPT" "$HOST:$REMOTE_PS1"; then
     # The INDEX upload already succeeded, so a ~400MB staged file is sitting on
@@ -399,6 +417,14 @@ if ! scp -q "$REMOTE_SCRIPT" "$HOST:$REMOTE_PS1"; then
     ssh "$HOST" "cmd /c del /q \"${REMOTE_STAGED//\//\\}\"" >/dev/null 2>&1 || true
     die 5 "upload of the receiver script failed — receiver untouched (staged index reaped)"
 fi
+# ensure-qmd-daemon.ps1 lets ship-index-remote.ps1 restore the HTTP-singleton
+# MCP daemon if its stop sweep kills one (HIMMEL-1416 round 2). Same reap
+# discipline as the receiver script upload above.
+if ! scp -q "$ENSURE_SCRIPT" "$HOST:$REMOTE_ENSURE"; then
+    # shellcheck disable=SC2029  # client-side expansion is intended (paths resolved here)
+    ssh "$HOST" "cmd /c del /q \"${REMOTE_STAGED//\//\\}\" \"${REMOTE_PS1//\//\\}\"" >/dev/null 2>&1 || true
+    die 5 "upload of ensure-qmd-daemon.ps1 failed — receiver untouched (staged index + receiver script reaped)"
+fi
 
 # --- 5. receive (fence -> swap -> restart -> verify -> reap) -----------------
 say "[5/5] running the receiver-side swap on $HOST"
@@ -407,18 +433,37 @@ say "[5/5] running the receiver-side swap on $HOST"
 remote_rc=0
 # shellcheck disable=SC2029  # client-side expansion is INTENDED: the paths and
 # counts are resolved HERE and baked into the command the receiver runs.
-ssh "$HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File \"$REMOTE_PS1\" -Staged \"$REMOTE_STAGED\" -Target \"$REMOTE_INDEX\" -ExpectDocs $SHIP_DOCS -ExpectVectors $SHIP_VECS" || remote_rc=$?
+ssh "$HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File \"$REMOTE_PS1\" -Staged \"$REMOTE_STAGED\" -Target \"$REMOTE_INDEX\" -ExpectDocs $SHIP_DOCS -ExpectVectors $SHIP_VECS -EnsureScript \"$REMOTE_ENSURE\"" || remote_rc=$?
+
+# Receiver rc 6: the PRIMARY contract (swap + plain daemon + verify) fully
+# succeeded on the receiver -- only its secondary, best-effort HTTP-singleton
+# MCP daemon restore failed (HIMMEL-1416 round 4 [codex-adv-6]). Transport is
+# genuinely verified, so this is NOT "receiver-side ship failed": clean up and
+# proceed exactly like a normal success, but remember to surface it loudly and
+# exit non-zero at the very end -- unattended automation must not see a clean
+# 0 while port 8181 may still be down. Do NOT `die` here: that would skip the
+# graph leg below, which is gated on a verified index ship and this one is --
+# recreating the exact blocked-graph-leg bug HIMMEL-1416 round 2 already fixed
+# once for a different reason.
+http_restore_failed=0
+if [ "$remote_rc" -eq 6 ]; then
+    http_restore_failed=1
+    echo "WARN ship-index: receiver's HTTP-singleton MCP daemon restore FAILED after the stop sweep -- the index itself shipped and verified. Check port 8181 on $HOST; the receiver's SHIP-REMOTE output above has the details." >&2
+    remote_rc=0
+fi
+
 if [ "$remote_rc" -ne 0 ]; then
     # Best-effort: do not leave this run's per-invocation artifacts behind on the
     # receiver. A failed swap already left its own state; the uploads are ours.
     # shellcheck disable=SC2029  # client-side expansion is intended (paths resolved here)
-    ssh "$HOST" "cmd /c del /q \"${REMOTE_STAGED//\//\\}\" \"${REMOTE_PS1//\//\\}\"" >/dev/null 2>&1 || true
+    ssh "$HOST" "cmd /c del /q \"${REMOTE_STAGED//\//\\}\" \"${REMOTE_PS1//\//\\}\" \"${REMOTE_ENSURE//\//\\}\"" >/dev/null 2>&1 || true
     die 6 "receiver-side ship failed (rc=$remote_rc). Its SHIP-REMOTE output above states whether the index was swapped before the failure."
 fi
 # On success the receiver consumed the staged index (it was MOVED into place);
-# only our copy of the script needs reaping.
-# shellcheck disable=SC2029  # client-side expansion is intended (path resolved here)
-ssh "$HOST" "cmd /c del /q \"${REMOTE_PS1//\//\\}\"" >/dev/null 2>&1 || true
+# our copies of the two scripts still need reaping (ensure-qmd-daemon.ps1 is
+# invoked in place, never moved).
+# shellcheck disable=SC2029  # client-side expansion is intended (paths resolved here)
+ssh "$HOST" "cmd /c del /q \"${REMOTE_PS1//\//\\}\" \"${REMOTE_ENSURE//\//\\}\"" >/dev/null 2>&1 || true
 
 say "index shipped + verified on $HOST (${SHIP_DOCS} docs / ${SHIP_VECS} vectors)"
 
@@ -441,4 +486,14 @@ if [ "$DO_GRAPH" -eq 1 ]; then
     fi
 fi
 
-exit "$graph_rc"
+# Final status (HIMMEL-1416 round 4 [codex-adv-6]): a graph-leg failure keeps
+# its own specific code (7) even when the HTTP restore ALSO failed -- the WARN
+# above already printed that regardless of which code wins, so nothing is
+# silently lost; 7 is simply the more specific of the two when both are true.
+if [ "$graph_rc" -ne 0 ]; then
+    exit "$graph_rc"
+fi
+if [ "$http_restore_failed" -eq 1 ]; then
+    exit 8
+fi
+exit 0
