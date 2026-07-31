@@ -996,30 +996,46 @@ function probeCmdCadenceArmed(item, ctx) {
 //     file's contract comment for why "not owned" was chosen over "owned
 //     but flagged").
 //   codex-adv-7 (companion finding "basename-only ownership lets a
-//     same-named no-op file elsewhere pass" is tracked in HIMMEL-1422,
-//     linked to this ticket: binding wrapper/script identity beyond
-//     basename needs a trust-anchor decision — realpath vs
-//     content-integrity vs configurable HIMMEL_REPO anchor): round 4's anchored
-//     GENERATED_COMMAND_RE correctly rejects a true decoy, but it ALSO made
-//     an entry with the SAME wrapper/script identity plus a trailing extra
-//     token invisible entirely — yet guardrail-skip-in-himmel.js reads only
-//     process.argv[2] and ignores anything after it, so Claude Code still
-//     executes such an entry identically to a canonical one. A dead-pathed
-//     duplicate wired in this shape reopened round 3's own blind spot
-//     (entryCount stayed 1, complete:true) through a different command
-//     shape. Fixed via a bounded, NON-substring structural test
-//     (referencesGuardrailIdentity(): every quoted segment's
-//     path.basename() checked against WRAPPER/the guardrail's basename,
-//     never String#includes over the whole string — a comment-only mention
-//     still correctly reads as a decoy, no regression on codex-adv-5) that
-//     surfaces this as its own `nonCanonicalCount`/`nonCanonical` anomaly,
-//     distinct from both a decoy (present:false) and a canonical duplicate
-//     (entryCount > 1); complete now also requires nonCanonicalCount === 0.
+//     same-named no-op file elsewhere pass", tracked as HIMMEL-1422): round
+//     4's anchored GENERATED_COMMAND_RE correctly rejects a true decoy, but
+//     it ALSO made an entry with the SAME wrapper/script identity plus a
+//     trailing extra token invisible entirely — yet guardrail-skip-in-
+//     himmel.js reads only process.argv[2] and ignores anything after it,
+//     so Claude Code still executes such an entry identically to a
+//     canonical one. A dead-pathed duplicate wired in this shape reopened
+//     round 3's own blind spot (entryCount stayed 1, complete:true) through
+//     a different command shape. Fixed via a bounded, NON-substring
+//     structural test (referencesGuardrailIdentity(): every quoted
+//     segment's path.basename() checked against WRAPPER/the guardrail's
+//     basename, never String#includes over the whole string — a
+//     comment-only mention still correctly reads as a decoy, no regression
+//     on codex-adv-5) that surfaces this as its own
+//     `nonCanonicalCount`/`nonCanonical` anomaly, distinct from both a
+//     decoy (present:false) and a canonical duplicate (entryCount > 1);
+//     complete now also requires nonCanonicalCount === 0.
+//   HIMMEL-1422 (trust anchor, resolving codex-adv-7's own companion
+//     finding above): basename-only ownership meant a settings.json
+//     referencing a same-named file in a WRONG directory (a stale/moved
+//     checkout, or an unrelated no-op stub with the right filename) still
+//     read present:true/resolves:true — "present" attested wiring, not
+//     that the wired file IS the real himmel copy. guardrail-block.mjs's
+//     statusDetail() now realpath-compares the configured wrapper/script
+//     paths against a resolved trust anchor (HIMMEL_REPO env, else the
+//     running guardrail-block.mjs's own checkout) via
+//     wrapperMatchesAnchor/scriptMatchesAnchor; a mismatch never flips
+//     present:false (ownership stays basename-only, per codex-adv-5) but
+//     DOES force complete:false, with anchorWrapperPath/anchorScriptPath
+//     naming the anchor precisely. Separately, wrapperResolves/
+//     scriptResolves now also require non-trivial content
+//     (isSaneContentFile()) — a truncated/empty file at an otherwise-
+//     correct, even anchor-matching, path no longer reads resolves:true
+//     either. This probe's recompute (guardrailEntryIsFullyValid below) and
+//     its `problems` naming were extended in lockstep — see both below.
 //   SCOPE: this probe attests the FULL GENERATED COMMAND IDENTITY —
-//     presence, resolution, matcher, uniqueness, and shape — of the
-//     CONFIGURED wiring. It does not attempt deeper runtime proof
-//     (executing the hook chain, node/bash version checks,
-//     ACL/trust-anchor analysis — tracked in HIMMEL-1422 — or semantic
+//     presence, resolution, matcher, uniqueness, shape, AND trust-anchor
+//     identity — of the CONFIGURED wiring. It does not attempt deeper
+//     runtime proof (executing the hook chain, node/bash version checks,
+//     full content hashing beyond the cheap sanity floor, or semantic
 //     equivalence of a differently-formed command); those belong to
 //     follow-up tickets against the contract, not this probe.
 //   mode=project    -> 'absent' (never armed globally — the ordinary
@@ -1083,18 +1099,23 @@ function probeGuardrailBlockStatus(item, ctx) {
   // === true AND this recomputed value to AGREE — a payload whose entries
   // contradict its own complete flag is untrustworthy, not present.
   //
-  // ACCEPTED FLOOR (documented, not fixed here — HIMMEL-1422 territory):
-  // this still cannot catch an INTERNALLY CONSISTENT truncated array —
-  // e.g. complete:true with exactly 1 well-formed, fully-healthy hook
-  // object, when the real contract enumerates 3. Detecting "too few
-  // entries" requires knowing the EXPECTED count, which only the producer
-  // (guardrail-block.mjs's own GUARDRAILS array) owns; asserting a count
-  // here (hardcoded "3", or a `>1` guess) would be exactly the kind of
-  // producer-vocabulary duplication round 6 already rejected, and a real
-  // producer always emits its full fixed-order set regardless — this probe
-  // takes the floor: a non-empty, internally-self-consistent payload is
-  // trusted, and the count-verification gap stays deferred to HIMMEL-1422's
-  // trust-anchor work.
+  // ACCEPTED FLOOR (documented, not fixed here — out of HIMMEL-1422's
+  // trust-anchor scope, a distinct residual gap): this still cannot catch
+  // an INTERNALLY CONSISTENT truncated array — e.g. complete:true with
+  // exactly 1 well-formed, fully-healthy hook object, when the real
+  // contract enumerates 3. Detecting "too few entries" requires knowing the
+  // EXPECTED count, which only the producer (guardrail-block.mjs's own
+  // GUARDRAILS array) owns; asserting a count here (hardcoded "3", or a
+  // `>1` guess) would be exactly the kind of producer-vocabulary
+  // duplication round 6 already rejected, and a real producer always emits
+  // its full fixed-order set regardless — this probe takes the floor: a
+  // non-empty, internally-self-consistent payload is trusted.
+  //
+  // HIMMEL-1422: also requires wrapperMatchesAnchor/scriptMatchesAnchor —
+  // an entry whose configured wrapper/script paths do NOT match the trust
+  // anchor's own scripts/hooks/ copies (a same-basename file wired from a
+  // wrong/stale checkout) must not independently recompute as valid either,
+  // even if every other field on it looks healthy.
   const guardrailEntryIsFullyValid = (h) => Boolean(h)
     && h.present === true
     && h.entryCount === 1
@@ -1103,7 +1124,9 @@ function probeGuardrailBlockStatus(item, ctx) {
     && h.bashResolves === true
     && h.nodeResolves === true
     && h.wrapperResolves === true
-    && h.scriptResolves === true;
+    && h.scriptResolves === true
+    && h.wrapperMatchesAnchor === true
+    && h.scriptMatchesAnchor === true;
   const recomputedComplete = parsed.hooks.every(guardrailEntryIsFullyValid);
   if (parsed.complete === true) {
     if (!recomputedComplete) {
@@ -1116,7 +1139,8 @@ function probeGuardrailBlockStatus(item, ctx) {
   // an operator (or `himmelctl doctor`) act on a specific broken hook.
   const problems = parsed.hooks
     .filter((h) => !(h && h.present && h.entryCount === 1 && (h.nonCanonicalCount || 0) === 0
-      && h.matcherMatches && h.bashResolves && h.nodeResolves && h.wrapperResolves && h.scriptResolves))
+      && h.matcherMatches && h.bashResolves && h.nodeResolves && h.wrapperResolves && h.scriptResolves
+      && h.wrapperMatchesAnchor && h.scriptMatchesAnchor))
     .map((h) => {
       // CR fix (codex-adv-7): even a hook with NO canonical entry at all can
       // still have a runtime-relevant non-canonical one wired (same
@@ -1146,6 +1170,15 @@ function probeGuardrailBlockStatus(item, ctx) {
       if (!h.matcherMatches) reasons.push(`matcher mismatch (configured '${h.matcher}', expected '${h.expectedMatcher}')`);
       const broken = ['bash', 'node', 'wrapper', 'script'].filter((part) => !h[`${part}Resolves`]);
       if (broken.length > 0) reasons.push(`${broken.join('/')} path does not resolve`);
+      // HIMMEL-1422: a wrapper/script that resolves but is NOT the trust
+      // anchor's own copy (same basename, wrong/stale checkout) is a
+      // distinct problem from "does not resolve" — name it with the exact
+      // anchor path expected, so an operator can see precisely which
+      // checkout the wiring should point at.
+      const anchorMismatches = [];
+      if (h.wrapperMatchesAnchor === false) anchorMismatches.push(`wrapper (expected ${h.anchorWrapperPath})`);
+      if (h.scriptMatchesAnchor === false) anchorMismatches.push(`script (expected ${h.anchorScriptPath})`);
+      if (anchorMismatches.length > 0) reasons.push(`does not match trust anchor: ${anchorMismatches.join(', ')}`);
       return `${h.basename}: ${reasons.join('; ')}`;
     });
   const summary = problems.length > 0 ? problems.join('; ') : 'guardrail-block.mjs status --json reports complete=false with no per-hook gap identified';

@@ -14,8 +14,29 @@ export const GUARDRAILS = [
   { basename: 'block-read-secrets.sh', matcher: 'Bash|PowerShell|Read|Grep' },
 ];
 
+// HIMMEL-1422: single source of truth for the guardrail-block "trust
+// anchor" — the himmel checkout whose scripts/hooks/ copies of the wrapper
+// + guardrail scripts are treated as authoritative. HIMMEL_REPO (env), when
+// set, names it explicitly (multi-checkout installs, e.g. a global install
+// pointing at a non-default clone); otherwise it falls back to the checkout
+// this guardrail-block.mjs is itself running from (self-checkout —
+// import.meta.url, not cwd, so it's correct regardless of invocation dir).
+// install()/global bake the anchor's own scripts/hooks/ paths into the
+// generated command (repoRoot() below); statusDetail()'s status --json
+// reuses the SAME anchor to realpath-compare whatever is ACTUALLY wired
+// against it, so drift (settings.json baked from a different/stale
+// checkout, or a same-basename file dropped in an unrelated directory) is
+// detectable even though ownsGuardrail() stays basename-only by design
+// (codex-adv-5) — the anchor check is a SEPARATE, additive signal, not a
+// change to ownership semantics.
+function resolveAnchor() {
+  const envRepo = process.env.HIMMEL_REPO;
+  if (envRepo) return { repo: path.resolve(envRepo), source: 'HIMMEL_REPO' };
+  return { repo: path.resolve(path.join(MODULE_DIR, '..', '..')), source: 'self-checkout' };
+}
+
 function repoRoot() {
-  return path.resolve(process.env.HIMMEL_REPO || path.join(MODULE_DIR, '..', '..'));
+  return resolveAnchor().repo;
 }
 
 function settingsPath() {
@@ -340,13 +361,56 @@ function isRunnableExecutable(p) {
   return true;
 }
 
+// HIMMEL-1422: cheap content-sanity floor for the wrapper/script files —
+// isReadableFile() alone accepts a truncated-to-zero-bytes (or
+// whitespace-only) file sitting at an otherwise-correct path, which is
+// exactly the "no-op guardrail" shape from the ticket's motivating scenario
+// (an empty guardrail-skip-in-himmel.js). Deliberately cheap (a content
+// check, not a real JS/bash parse or a hash) per the approved design —
+// "full hashing only if it falls out naturally", and it didn't here.
+function isSaneContentFile(p) {
+  if (!isReadableFile(p)) return false;
+  try {
+    return fs.readFileSync(p, 'utf8').trim().length > 0;
+  } catch (_e) {
+    return false;
+  }
+}
+
+// HIMMEL-1422: realpath-compare a configured (parsed) path against the
+// trust anchor's expected copy. realpathSync resolves symlinks AND
+// normalizes OS-reported case, so two paths naming the SAME file compare
+// equal even if written with different separators/casing; a path that
+// doesn't exist can't be realpath'd (ENOENT), so this falls back to a plain
+// path.resolve() normalization — cheap, and the *Resolves fields already
+// flag a nonexistent path as broken on their own, so a fallback-only
+// mismatch there is never the ONLY signal. Windows path comparison is
+// case-insensitive; POSIX stays case-sensitive.
+function resolvedPath(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch (_e) {
+    return path.resolve(p);
+  }
+}
+
+function pathsMatchAnchor(configuredPath, anchorPath) {
+  const a = resolvedPath(configuredPath);
+  const b = resolvedPath(anchorPath);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 // Resolves ONE owned entry ({ hook, matcher, parsed } from
 // findGuardrailEntries — `parsed` is already strictly matched, so no null
 // check is needed here) into its status --json shape (everything but
 // basename/present/entryCount, which the caller already knows). Shared by
 // the "primary" (first-found) entry and every entry in `duplicates`, so
-// both are checked identically.
-function resolveOwnedEntry(info, guardrail) {
+// both are checked identically. `anchor` is statusDetail()'s single
+// resolveAnchor() result (HIMMEL-1422), threaded through rather than
+// re-resolved per entry.
+function resolveOwnedEntry(info, guardrail, anchor) {
+  const anchorWrapperPath = path.join(anchor.repo, 'scripts', 'hooks', WRAPPER);
+  const anchorScriptPath = path.join(anchor.repo, 'scripts', 'hooks', guardrail.basename);
   return {
     matcher: info.matcher ?? null,
     matcherMatches: (info.matcher ?? null) === guardrail.matcher,
@@ -355,9 +419,13 @@ function resolveOwnedEntry(info, guardrail) {
     nodePath: info.parsed.nodePath,
     nodeResolves: isRunnableExecutable(info.parsed.nodePath),
     wrapperPath: info.parsed.wrapperPath,
-    wrapperResolves: isReadableFile(info.parsed.wrapperPath),
+    wrapperResolves: isSaneContentFile(info.parsed.wrapperPath),
+    anchorWrapperPath,
+    wrapperMatchesAnchor: pathsMatchAnchor(info.parsed.wrapperPath, anchorWrapperPath),
     scriptPath: info.parsed.scriptPath,
-    scriptResolves: isReadableFile(info.parsed.scriptPath),
+    scriptResolves: isSaneContentFile(info.parsed.scriptPath),
+    anchorScriptPath,
+    scriptMatchesAnchor: pathsMatchAnchor(info.parsed.scriptPath, anchorScriptPath),
   };
 }
 
@@ -413,15 +481,44 @@ function resolveOwnedEntry(info, guardrail) {
 // "global" off a decoy alone) simply yields entryCount:0/nonCanonicalCount:0
 // for every real guardrail, so `complete` still correctly reads false and
 // the probe's detail still correctly says "<basename>: missing" — never a
-// false "present". Shape:
+// false "present".
+//
+// HIMMEL-1422 (trust anchor + content-sanity floor, companion finding to
+// codex-adv-5/7): basename-only ownership means a settings.json referencing
+// a same-named file in a WRONG directory (a stale/moved checkout, or an
+// unrelated no-op stub) passed every prior check — "present" attested
+// wiring, not that the wired file IS the real himmel copy. Two additive
+// fixes, neither changing ownership semantics (still basename-only, per
+// codex-adv-5's deliberate choice):
+//   1. `anchor` (top-level, resolveAnchor()): HIMMEL_REPO env when set,
+//      else the checkout guardrail-block.mjs is itself running from
+//      (self-checkout, import.meta.url-derived). The SAME anchor
+//      install()/global already bake paths from (repoRoot() === anchor.repo).
+//   2. Per-hook anchorWrapperPath/wrapperMatchesAnchor and
+//      anchorScriptPath/scriptMatchesAnchor: realpath-compare the
+//      CONFIGURED wrapper/script paths against the anchor's own
+//      scripts/hooks/ copies (pathsMatchAnchor()). A mismatch never flips
+//      present:false (ownership is unchanged) but DOES force
+//      complete:false — the affected hook reads present:true,
+//      *MatchesAnchor:false, so a consumer can name the anchor precisely
+//      instead of a bare "missing".
+// Separately, *Resolves (wrapperResolves/scriptResolves) now also requires
+// non-trivial content (isSaneContentFile(), not just isReadableFile()) — a
+// truncated-to-zero-bytes or whitespace-only file at an otherwise-correct
+// (even anchor-matching) path is a no-op guardrail and must not read
+// resolves:true either. Shape:
 //   {
 //     "mode": "global" | "project",
+//     "anchor": { "repo": string, "source": "HIMMEL_REPO" | "self-checkout" },
+//                            // the trust anchor statusDetail() itself
+//                            // resolved for THIS run (see above).
 //     "complete": boolean,  // true iff mode === "global" AND every hook
 //                            // below has EXACTLY ONE owned entry
 //                            // (entryCount === 1), that entry's ACTUAL
-//                            // matcher exactly equals expectedMatcher, and
-//                            // its bash/node/wrapper/script paths are all
-//                            // USABLE (see below). false otherwise.
+//                            // matcher exactly equals expectedMatcher, its
+//                            // bash/node/wrapper/script paths are all
+//                            // USABLE (see below), AND its wrapper/script
+//                            // both match the anchor. false otherwise.
 //     "hooks": [
 //       {
 //         "basename": string,        // e.g. "auto-approve-safe-bash.sh"
@@ -459,12 +556,28 @@ function resolveOwnedEntry(info, guardrail) {
 //         "nodeResolves": boolean,   // this block minus basename/present/
 //         "wrapperPath": string|null,// entryCount/duplicates itself.
 //         "wrapperResolves": boolean,
+//         "anchorWrapperPath": string, // HIMMEL-1422: the anchor's own
+//                                    // scripts/hooks/<WRAPPER> path — shown
+//                                    // even when the hook is absent, so a
+//                                    // consumer always knows where the
+//                                    // anchor's copy WOULD be.
+//         "wrapperMatchesAnchor": boolean, // HIMMEL-1422: realpath-compare
+//                                    // (pathsMatchAnchor()) wrapperPath
+//                                    // against anchorWrapperPath. false for
+//                                    // an absent hook (no wrapperPath to
+//                                    // compare).
 //         "scriptPath": string|null,
-//         "scriptResolves": boolean, // *Resolves fields (CR fix, codex-adv-3):
-//                                    // "usable", not merely fs.existsSync().
+//         "scriptResolves": boolean, // *Resolves fields (CR fix, codex-adv-3,
+//                                    // extended HIMMEL-1422): "usable", not
+//                                    // merely fs.existsSync().
 //                                    // wrapper/script (passed as ARGUMENTS to
 //                                    // node/bash, never exec'd directly) need
-//                                    // only be a regular, READABLE file.
+//                                    // to be a regular, READABLE file WITH
+//                                    // non-trivial content (isSaneContentFile()
+//                                    // — HIMMEL-1422: a zero-byte or
+//                                    // whitespace-only file at an otherwise-
+//                                    // correct path is a no-op guardrail and
+//                                    // must not read resolves:true).
 //                                    // node/bash (spawned as the executable
 //                                    // itself) additionally need X_OK. isFile()
 //                                    // is the load-bearing, fully portable
@@ -479,6 +592,12 @@ function resolveOwnedEntry(info, guardrail) {
 //                                    // — so a non-executable-but-readable file
 //                                    // baked as the node/bash path will NOT
 //                                    // be caught on Windows, only on POSIX.
+//         "anchorScriptPath": string, // HIMMEL-1422: the anchor's own
+//                                    // scripts/hooks/<basename> path —
+//                                    // same shown-even-when-absent rule as
+//                                    // anchorWrapperPath.
+//         "scriptMatchesAnchor": boolean, // HIMMEL-1422: same as
+//                                    // wrapperMatchesAnchor, for scriptPath.
 //         "duplicates": [ /* same per-entry shape as above, one per
 //                            ADDITIONAL owned entry beyond the first-found;
 //                            [] when entryCount <= 1 */ ],
@@ -504,6 +623,7 @@ function resolveOwnedEntry(info, guardrail) {
 // contract (scripts/himmelctl/lib/probes.js's cmd:guardrail_block_status).
 export function statusDetail(data) {
   const mode = detectMode(data);
+  const anchor = resolveAnchor();
   const hooks = GUARDRAILS.map((guardrail) => {
     const found = findGuardrailEntries(data, guardrail);
     const nonCanonical = findNonCanonicalEntries(data, guardrail);
@@ -520,14 +640,18 @@ export function statusDetail(data) {
       nodeResolves: false,
       wrapperPath: null,
       wrapperResolves: false,
+      anchorWrapperPath: path.join(anchor.repo, 'scripts', 'hooks', WRAPPER),
+      wrapperMatchesAnchor: false,
       scriptPath: null,
       scriptResolves: false,
+      anchorScriptPath: path.join(anchor.repo, 'scripts', 'hooks', guardrail.basename),
+      scriptMatchesAnchor: false,
       duplicates: [],
       nonCanonicalCount: nonCanonical.length,
       nonCanonical: nonCanonical.map((info) => ({ matcher: info.matcher ?? null, command: info.hook.command })),
     };
     if (found.length > 0) {
-      const primary = resolveOwnedEntry(found[0], guardrail);
+      const primary = resolveOwnedEntry(found[0], guardrail, anchor);
       entry.matcher = primary.matcher;
       entry.matcherMatches = primary.matcherMatches;
       entry.bashPath = primary.bashPath;
@@ -536,17 +660,20 @@ export function statusDetail(data) {
       entry.nodeResolves = primary.nodeResolves;
       entry.wrapperPath = primary.wrapperPath;
       entry.wrapperResolves = primary.wrapperResolves;
+      entry.wrapperMatchesAnchor = primary.wrapperMatchesAnchor;
       entry.scriptPath = primary.scriptPath;
       entry.scriptResolves = primary.scriptResolves;
-      entry.duplicates = found.slice(1).map((info) => resolveOwnedEntry(info, guardrail));
+      entry.scriptMatchesAnchor = primary.scriptMatchesAnchor;
+      entry.duplicates = found.slice(1).map((info) => resolveOwnedEntry(info, guardrail, anchor));
     }
     return entry;
   });
   const complete = mode === 'global' && hooks.every((h) => (
     h.entryCount === 1 && h.nonCanonicalCount === 0
       && h.matcherMatches && h.bashResolves && h.nodeResolves && h.wrapperResolves && h.scriptResolves
+      && h.wrapperMatchesAnchor && h.scriptMatchesAnchor
   ));
-  return { mode, complete, hooks };
+  return { mode, anchor, complete, hooks };
 }
 
 function run(argv = process.argv.slice(2)) {

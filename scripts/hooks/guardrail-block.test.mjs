@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +37,18 @@ function run(args, ctx, opts = {}) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+}
+
+// HIMMEL-1422: every other helper in this file pins HIMMEL_REPO to ctx.repo
+// (the fixture's own scratch checkout), so the anchor is always
+// deterministic in those tests. This variant deliberately DROPS it (even
+// if the outer test-runner process happens to have HIMMEL_REPO set) to
+// exercise the self-checkout fallback — resolveAnchor() must fall back to
+// the checkout this guardrail-block.mjs is itself running from.
+function runNoAnchorEnv(args, ctx) {
+  const env = { ...process.env, CLAUDE_USER_SETTINGS: ctx.settings };
+  delete env.HIMMEL_REPO;
+  return execFileSync(process.execPath, [MODULE, ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 function runCode(args, ctx) {
@@ -669,4 +681,127 @@ test('plain status output is unchanged by the --json addition (himmel-update.sh 
   install(ctx);
 
   assert.equal(run(['status'], ctx), 'guardrail-mode=global node-resolves=yes\n');
+});
+
+// ── trust anchor (HIMMEL-1422) ──────────────────────────────────────────────
+// Companion finding to codex-adv-5/7: ownsGuardrail() is deliberately
+// basename-only (a settings.json referencing a same-named file passes
+// ownership regardless of WHERE that file lives), so a stale/moved checkout
+// — or an unrelated same-named no-op stub — previously still read
+// present:true/*Resolves:true. These tests cover the two additive gates
+// this ticket adds: (1) realpath-compare the configured wrapper/script
+// against a resolved trust anchor (HIMMEL_REPO env, else self-checkout),
+// and (2) a cheap content-sanity floor so a truncated/empty file at an
+// otherwise-correct (even anchor-matching) path still can't read resolves.
+
+test('status --json: with HIMMEL_REPO set, anchor.source is "HIMMEL_REPO" and anchor.repo is the resolved env value', () => {
+  const ctx = work();
+  writeJson(ctx.settings, {});
+
+  const out = JSON.parse(run(['status', '--json'], ctx));
+
+  assert.equal(out.anchor.source, 'HIMMEL_REPO');
+  assert.equal(out.anchor.repo, resolve(ctx.repo));
+});
+
+test('status --json: with HIMMEL_REPO unset, anchor falls back to self-checkout — the running guardrail-block.mjs\'s own two-levels-up repo root', () => {
+  const ctx = work();
+  writeJson(ctx.settings, {});
+
+  const out = JSON.parse(runNoAnchorEnv(['status', '--json'], ctx));
+
+  assert.equal(out.anchor.source, 'self-checkout');
+  assert.equal(out.anchor.repo, resolve(HERE, '..', '..'));
+});
+
+test('status --json: an install() run reports wrapperMatchesAnchor/scriptMatchesAnchor=true on every hook (the anchor it baked from is the anchor status reads back)', () => {
+  const ctx = work();
+  writeJson(ctx.settings, {});
+  writeHookStubs(ctx);
+  install(ctx);
+
+  const out = JSON.parse(run(['status', '--json'], ctx));
+
+  for (const hook of out.hooks) {
+    assert.equal(hook.wrapperMatchesAnchor, true);
+    assert.equal(hook.scriptMatchesAnchor, true);
+    assert.equal(hook.anchorScriptPath, join(resolve(ctx.repo), 'scripts', 'hooks', hook.basename));
+  }
+});
+
+test('status --json: same-basename wiring from a WRONG (non-anchor) checkout reports present=true but *MatchesAnchor=false, and forces complete=false (HIMMEL-1422 same-basename no-op)', () => {
+  const ctx = work();
+  writeJson(ctx.settings, {});
+  writeHookStubs(ctx);
+  install(ctx);
+
+  // Simulate a stale/global install pointing at a DIFFERENT, otherwise-real
+  // checkout: same basenames (wrapper + auto-approve-safe-bash.sh), real
+  // non-empty content, but under a directory that is NOT ctx.repo (the
+  // pinned trust anchor).
+  const otherRepo = join(ctx.dir, 'other-checkout');
+  mkdirSync(join(otherRepo, 'scripts', 'hooks'), { recursive: true });
+  writeFileSync(join(otherRepo, 'scripts', 'hooks', 'guardrail-skip-in-himmel.js'), '// real content, not empty\n');
+  writeFileSync(join(otherRepo, 'scripts', 'hooks', 'auto-approve-safe-bash.sh'), '# real content, not empty\n');
+
+  const data = readJson(ctx.settings);
+  for (const group of data.hooks.PreToolUse) {
+    group.hooks = group.hooks.filter((hook) => !hook.command?.includes('auto-approve-safe-bash.sh'));
+  }
+  data.hooks.PreToolUse.push({
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command: ownedCommand({ ctx: { repo: otherRepo }, basename: 'auto-approve-safe-bash.sh' }) }],
+  });
+  writeJson(ctx.settings, data);
+
+  const out = JSON.parse(run(['status', '--json'], ctx));
+  const hook = out.hooks.find((h) => h.basename === 'auto-approve-safe-bash.sh');
+
+  assert.equal(hook.present, true, 'basename ownership is unchanged (codex-adv-5) — still counted as owned');
+  assert.equal(hook.entryCount, 1);
+  assert.equal(hook.wrapperResolves, true, 'the wrong-checkout wrapper is a real, non-empty, readable file');
+  assert.equal(hook.scriptResolves, true, 'the wrong-checkout script is a real, non-empty, readable file');
+  assert.equal(hook.wrapperMatchesAnchor, false, 'wrapper is NOT the anchor\'s own copy');
+  assert.equal(hook.scriptMatchesAnchor, false, 'script is NOT the anchor\'s own copy');
+  assert.equal(hook.anchorScriptPath, join(resolve(ctx.repo), 'scripts', 'hooks', 'auto-approve-safe-bash.sh'), 'anchorScriptPath names the TRUE anchor, not the wrong-checkout path');
+  assert.equal(out.complete, false, 'a same-basename wrong-checkout script must never read complete');
+  // The other two guardrails are untouched by this — still anchor-matching.
+  for (const other of ['block-edit-on-main.sh', 'block-read-secrets.sh']) {
+    const otherHook = out.hooks.find((h) => h.basename === other);
+    assert.equal(otherHook.wrapperMatchesAnchor, true);
+    assert.equal(otherHook.scriptMatchesAnchor, true);
+  }
+});
+
+test('status --json: a ZERO-BYTE script file at the CORRECT (anchor-matching) path reports scriptResolves=false, not present-with-a-no-op (HIMMEL-1422 truncation floor)', () => {
+  const ctx = work();
+  writeJson(ctx.settings, {});
+  writeHookStubs(ctx);
+  install(ctx);
+  // Truncate in place — same path, same anchor, only the CONTENT changes.
+  writeFileSync(join(ctx.repo, 'scripts', 'hooks', 'auto-approve-safe-bash.sh'), '');
+
+  const out = JSON.parse(run(['status', '--json'], ctx));
+  const hook = out.hooks.find((h) => h.basename === 'auto-approve-safe-bash.sh');
+
+  assert.equal(hook.present, true);
+  assert.equal(hook.scriptMatchesAnchor, true, 'the path IS the anchor\'s own copy — only the content is a no-op');
+  assert.equal(hook.scriptResolves, false, 'a zero-byte file must never read as a resolving/usable script');
+  assert.equal(out.complete, false);
+});
+
+test('status --json: a WHITESPACE-ONLY (near-empty) wrapper file at the correct path reports wrapperResolves=false (content-sanity floor is not just a size-zero check)', () => {
+  const ctx = work();
+  writeJson(ctx.settings, {});
+  writeHookStubs(ctx);
+  install(ctx);
+  writeFileSync(join(ctx.repo, 'scripts', 'hooks', 'guardrail-skip-in-himmel.js'), '   \n\n\t\n');
+
+  const out = JSON.parse(run(['status', '--json'], ctx));
+
+  assert.equal(out.complete, false);
+  for (const hook of out.hooks) {
+    assert.equal(hook.wrapperMatchesAnchor, true, 'the shared wrapper path is still the anchor\'s own copy');
+    assert.equal(hook.wrapperResolves, false, 'a whitespace-only file must never read as a resolving/usable wrapper');
+  }
 });

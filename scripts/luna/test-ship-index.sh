@@ -852,6 +852,100 @@ else
         printf 'New-Item -ItemType File -Force -Path $env:SENTINEL_PATH | Out-Null\nexit 0\n' > "$1"
     }
 
+    # The separator PowerShell actually splits $env:PATH on for THIS OS:
+    # ';' under real Windows PowerShell (Git-Bash/MSYS), ':' under pwsh on
+    # Linux/macOS. A hardcoded ';' on non-Windows collapses the whole
+    # prepended entry into ONE bogus path segment -- the directory inside it
+    # is never resolved at all, regardless of what stub lives there.
+    ps_path_sep() {
+        case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*) printf ';' ;;
+            *) printf ':' ;;
+        esac
+    }
+
+    # Emits a `$env:PATH = "..."` line prepending one or more directories
+    # ahead of the inherited PATH, using the OS-appropriate separator so the
+    # generated probe resolves stubs on both real Windows PowerShell and pwsh
+    # on Linux.
+    ps_prepend_path_line() {
+        local sep joined d w
+        sep="$(ps_path_sep)"
+        joined=""
+        for d in "$@"; do
+            [ -z "$d" ] && continue
+            w="$(winpath "$d")"
+            joined="${joined}${w}${sep}"
+        done
+        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
+        printf '$env:PATH = "%s" + $env:PATH\n' "$joined"
+    }
+
+    # Fake `qmd status`, resolvable as a bare `qmd` on PATH. Real Windows
+    # PowerShell resolves an extensionless command through PATHEXT, so a
+    # .cmd batch file works there -- but pwsh on non-Windows does NOT do
+    # PATHEXT-style resolution: it needs a file literally named `qmd`,
+    # executable, with a shebang. Without this, `& qmd status` throws
+    # CommandNotFoundException on Linux (measured: exactly the "qmd status
+    # failed after swap: The term 'qmd' is not recognized" failure on the
+    # ubuntu CI runner).
+    make_qmd_stub() {
+        local dir="$1"
+        mkdir -p "$dir"
+        case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*)
+                {
+                    printf '@echo off\r\n'
+                    printf 'echo QMD Status\r\n'
+                    printf 'echo.\r\n'
+                    printf 'echo Documents\r\n'
+                    printf 'echo   Total:    100 files indexed\r\n'
+                    printf 'echo   Vectors:  100 embedded\r\n'
+                    printf 'exit /b 0\r\n'
+                } > "$dir/qmd.cmd"
+                ;;
+            *)
+                {
+                    printf '#!/bin/sh\n'
+                    printf 'echo "QMD Status"\n'
+                    printf 'echo\n'
+                    printf 'echo "Documents"\n'
+                    printf 'echo "  Total:    100 files indexed"\n'
+                    printf 'echo "  Vectors:  100 embedded"\n'
+                    printf 'exit 0\n'
+                } > "$dir/qmd"
+                chmod +x "$dir/qmd"
+                ;;
+        esac
+    }
+
+    # Fake `powershell`, forwarding to $PS_BIN. ship-index-remote.ps1's
+    # Invoke-EnsureRestore hardcodes a literal `powershell` invocation to
+    # relaunch the ensure script as a genuinely separate process -- correct
+    # on the real receiver (win2, real Windows PowerShell 5.1), but
+    # `powershell` does not exist at all on the Linux CI runner (only
+    # `pwsh`), so that call throws CommandNotFoundException and the ensure
+    # script body never runs (measured: SHIP-REMOTE: http_daemon_restored=
+    # FAILED, and the sentinel file the ensure script writes never appears).
+    # A same-named forwarding shim makes the hardcoded name resolve without
+    # touching the CR-certified receiver script. Windows-only, real
+    # `powershell` already resolves there -- and, measured, real Windows
+    # PowerShell's own command resolution picks an extensionless same-named
+    # PATH entry over the real powershell.exe rather than skipping it, so
+    # shadowing it on Windows would break the real interpreter instead of
+    # leaving it alone. PSSHIM_DIR stays empty (never prepended -- see
+    # ps_prepend_path_line's blank-arg skip) on Windows.
+    PSSHIM_DIR=""
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) ;;
+        *)
+            PSSHIM_DIR="$TMP_ROOT/psshim"
+            mkdir -p "$PSSHIM_DIR"
+            { printf '#!/bin/sh\nexec "%s" "$@"\n' "$PS_BIN"; } > "$PSSHIM_DIR/powershell"
+            chmod +x "$PSSHIM_DIR/powershell"
+            ;;
+    esac
+
     # ---- (a) sweep-stopped-something + a genuine success path ----------------
     # The fullest form: also fakes `qmd status` on PATH so the run completes
     # with a real rc 0, proving the restore fires on an ACTUAL successful ship,
@@ -861,16 +955,7 @@ else
     make_staged "$STAGED_A"
     printf 'old-index' > "$TARGET_A"
     ENSURE_A="$TMP_ROOT/ensure-a.ps1"; make_fake_ensure "$ENSURE_A"
-    FAKEBIN_A="$TMP_ROOT/fakebin-a"; mkdir -p "$FAKEBIN_A"
-    {
-        printf '@echo off\r\n'
-        printf 'echo QMD Status\r\n'
-        printf 'echo.\r\n'
-        printf 'echo Documents\r\n'
-        printf 'echo   Total:    100 files indexed\r\n'
-        printf 'echo   Vectors:  100 embedded\r\n'
-        printf 'exit /b 0\r\n'
-    } > "$FAKEBIN_A/qmd.cmd"
+    FAKEBIN_A="$TMP_ROOT/fakebin-a"; make_qmd_stub "$FAKEBIN_A"
     PROBE_A="$TMP_ROOT/wiring-success-probe.ps1"
     cat > "$PROBE_A" <<'PROBE_A_EOF'
 function Get-CimInstance {
@@ -891,8 +976,7 @@ function Get-Command {
 }
 PROBE_A_EOF
     {
-        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
-        printf '$env:PATH = "%s;" + $env:PATH\n' "$(winpath "$FAKEBIN_A")"
+        ps_prepend_path_line "$FAKEBIN_A" "$PSSHIM_DIR"
         # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
         printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_A")"
         # `&`, NOT dot-source (`.`): a dot-sourced script's `exit` inside a
@@ -946,6 +1030,7 @@ function Get-Command {
 }
 PROBE_B_EOF
     {
+        ps_prepend_path_line "$PSSHIM_DIR"
         # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
         printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_B")"
         # `&`, not dot-source -- see the comment on the (a) probe for why.
@@ -996,6 +1081,7 @@ function Get-Command {
 }
 PROBE_C_EOF
     {
+        ps_prepend_path_line "$PSSHIM_DIR"
         # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
         printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_C")"
         # `&`, not dot-source -- see the comment on the (a) probe for why.
@@ -1039,6 +1125,7 @@ function Get-Command {
 }
 PROBE_D_EOF
     {
+        ps_prepend_path_line "$PSSHIM_DIR"
         # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
         printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_D")"
         printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s"\n' \
@@ -1081,6 +1168,7 @@ function Get-Command {
 }
 PROBE_E_EOF
     {
+        ps_prepend_path_line "$PSSHIM_DIR"
         # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
         printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_E")"
         printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s"\n' \
@@ -1107,16 +1195,7 @@ PROBE_E_EOF
     ENSURE_F="$TMP_ROOT/ensure-f.ps1"
     # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
     printf 'New-Item -ItemType File -Force -Path $env:SENTINEL_PATH | Out-Null\nexit 1\n' > "$ENSURE_F"
-    FAKEBIN_F="$TMP_ROOT/fakebin-f"; mkdir -p "$FAKEBIN_F"
-    {
-        printf '@echo off\r\n'
-        printf 'echo QMD Status\r\n'
-        printf 'echo.\r\n'
-        printf 'echo Documents\r\n'
-        printf 'echo   Total:    100 files indexed\r\n'
-        printf 'echo   Vectors:  100 embedded\r\n'
-        printf 'exit /b 0\r\n'
-    } > "$FAKEBIN_F/qmd.cmd"
+    FAKEBIN_F="$TMP_ROOT/fakebin-f"; make_qmd_stub "$FAKEBIN_F"
     PROBE_F="$TMP_ROOT/wiring-restorefail-probe.ps1"
     cat > "$PROBE_F" <<'PROBE_F_EOF'
 function Get-CimInstance {
@@ -1137,8 +1216,7 @@ function Get-Command {
 }
 PROBE_F_EOF
     {
-        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
-        printf '$env:PATH = "%s;" + $env:PATH\n' "$(winpath "$FAKEBIN_F")"
+        ps_prepend_path_line "$FAKEBIN_F" "$PSSHIM_DIR"
         # shellcheck disable=SC2016  # PowerShell syntax, same reason as above
         printf '$env:SENTINEL_PATH = "%s"\n' "$(winpath "$SENT_F")"
         printf '& "%s" -Staged "%s" -Target "%s" -EnsureScript "%s" -ExpectDocs 100 -ExpectVectors 100\n' \
@@ -1199,16 +1277,7 @@ PROBE_G_EOF
     STAGED_H="$TMP_ROOT/staged-h.sqlite"; TARGET_H="$TMP_ROOT/target-h.sqlite"
     make_staged "$STAGED_H"
     printf 'old-index' > "$TARGET_H"
-    FAKEBIN_H="$TMP_ROOT/fakebin-h"; mkdir -p "$FAKEBIN_H"
-    {
-        printf '@echo off\r\n'
-        printf 'echo QMD Status\r\n'
-        printf 'echo.\r\n'
-        printf 'echo Documents\r\n'
-        printf 'echo   Total:    100 files indexed\r\n'
-        printf 'echo   Vectors:  100 embedded\r\n'
-        printf 'exit /b 0\r\n'
-    } > "$FAKEBIN_H/qmd.cmd"
+    FAKEBIN_H="$TMP_ROOT/fakebin-h"; make_qmd_stub "$FAKEBIN_H"
     PROBE_H="$TMP_ROOT/wiring-noensure-probe.ps1"
     cat > "$PROBE_H" <<'PROBE_H_EOF'
 function Get-CimInstance {
@@ -1229,8 +1298,7 @@ function Get-Command {
 }
 PROBE_H_EOF
     {
-        # shellcheck disable=SC2016  # PowerShell syntax -- must stay literal until the .ps1 file is parsed, not expand as bash now
-        printf '$env:PATH = "%s;" + $env:PATH\n' "$(winpath "$FAKEBIN_H")"
+        ps_prepend_path_line "$FAKEBIN_H"
         # No -EnsureScript at all -- exercises the parameter's own empty default.
         printf '& "%s" -Staged "%s" -Target "%s" -ExpectDocs 100 -ExpectVectors 100\n' \
             "$(winpath "$REAL_REMOTE_SCRIPT")" "$(winpath "$STAGED_H")" "$(winpath "$TARGET_H")"

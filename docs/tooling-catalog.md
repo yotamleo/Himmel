@@ -600,13 +600,18 @@ proxy.
 model and `env.ANTHROPIC_*`, refreshed by the shared `CLAUDE_LANE_*` reseed and
 lock knobs, and never copies credentials or history.
 
-**Prerequisite:** install a CLIProxyAPI release binary from
-`github.com/router-for-me/CLIProxyAPI`, write `~/.cli-proxy-api/config.yaml` with
-`host: "127.0.0.1"` (the default empty host binds ALL interfaces — that would
-LAN-expose the OAuth-wrapped endpoint), `port: 8317`, and an `api-keys` entry
-matching `CLIPROXY_API_KEY`, run `cli-proxy-api --codex-login` once to complete
-browser OAuth, and keep the proxy running while the lane is in use. This is subscription OAuth re-exposure; the
-ToS-risk posture is operator-accepted for HIMMEL-979.
+**Prerequisite:** the CLIProxyAPI binary is **not on PATH** — it's installed to
+`~/.cli-proxy-api/cli-proxy-api.exe` and driven through the per-host bring-up
+script, never invoked bare. Run `.\scripts\setup\cli-proxy-lane.ps1 -Install`
+(downloads the pinned release, writes `~/.cli-proxy-api/config.yaml` with
+`host: "127.0.0.1"` — the default empty host binds ALL interfaces, which would
+LAN-expose the OAuth-wrapped endpoint — and `port: 8317`), then `-Login` (device-code
+OAuth, no local browser needed) and `-Register` (windowless logon task, starts it
+now). An `api-keys` entry in `config.yaml` must match `CLIPROXY_API_KEY`. Full
+per-host checksheet + re-login recovery (device-flow re-auth when the codex token
+invalidates): [`docs/setup/cli-proxy-lane.md`](setup/cli-proxy-lane.md). This is
+subscription OAuth re-exposure; the ToS-risk posture is operator-accepted for
+HIMMEL-979.
 
 **Coexistence:** plain `claude` (Anthropic subscription, `~/.claude`, native
 OAuth) and `claude-codex` run side by side, even concurrently, because the lane's
@@ -872,6 +877,31 @@ monitor-orphan trap: a silently-dead monitor stranded the parent session ~4h,
 the `glm-subagent` lane in `scripts/lanes/lanes.json` (same `ZAI_API_KEY` probe as
 the `glm` lane). Reuses spawn-glm's worktree isolation + guard chain verbatim (no
 new fence surface). Red-path test: `scripts/hooks/test-glm-subagent-path.sh`.
+
+---
+
+## Other delegation-lane dispatch chokepoints (`scripts/lanes/lanes.json` registry, HIMMEL-689)
+
+The lanes below are registered in `scripts/lanes/lanes.json` (the `/lanes`
+source of truth) but don't otherwise get a full write-up in this file — their
+`bestFor` field in the registry IS the authoritative description (effort,
+traps, roster caveats); restating that prose here would just create a second
+copy that drifts (HIMMEL-1021 class; see also
+[`lane-calibration.md`](internals/lane-calibration.md#non-claude-lane-calibration)).
+What's pinned here is the **exact dispatch shape** — several of these lanes
+enforce a wrapper chokepoint, and calling the underlying binary bare is either
+wrong (not on PATH) or bypasses the wrapper's guards (hook-blocked).
+
+| Lane (`lanes.json` id) | Dispatch — never call the bare binary/underlying CLI directly where a chokepoint is named |
+|---|---|
+| GitHub Copilot CLI (`copilot-cli`, HIMMEL-772) | `bash scripts/copilot/dispatch-copilot.sh --worktree <wt> <args>` — enforces allow-list passthrough, worktree containment, granular grants |
+| hermes one-shot (`hermes-oneshot`) | `bash scripts/hermes/dispatch-trusted.sh <args>` (trusted-engine writes) or `scripts/hermes/invoke.sh` (untrusted default `todo` toolset) — the `/pr-check`-internal `hermes-critics`/`codex(paid)` critic lanes route through this same chokepoint; see the CR Scripts section below |
+| codex CLI sandbox (`codex-exec`, HIMMEL-741) | `bash scripts/codex/dispatch-codex-exec.sh --worktree <wt> <args>` — ACL preflight fail-closed, `gpt-5.5` pin |
+| codex WSL lane (`codex-wsl`, HIMMEL-999) | `bash scripts/codex/dispatch-codex-wsl.sh --distro <name> --clone <in-distro-abs-path> [--brief-file <path>] [args...]` — raw `wsl ... codex exec` is hook-blocked |
+| Antigravity CLI (`antigravity-cli`) | `agy -p <prompt>` (headless; PATH-installed CLI, no repo wrapper — permission flags only, no hook surface today) |
+| ollama, local (`ollama-local`) | `ollama run <model>` — bare model name only; zero-egress guarantee is structural (cloud requires the explicit `-cloud` suffix) |
+| Ollama Cloud (`ollama-cloud`) | `ollama run <model>-cloud` — same CLI, opt-in cloud suffix; content egresses to ollama.com |
+| OpenRouter free models (`openrouter-free`) | `OPENROUTER_API_KEY`-gated API calls, not a CLI dispatch; `scripts/openrouter/free-watch.sh` (below) watches catalog churn, it does not dispatch work |
 
 ---
 
