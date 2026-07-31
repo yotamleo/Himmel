@@ -517,8 +517,11 @@ function resolveOwnedEntry(info, guardrail, anchor) {
 //                            // (entryCount === 1), that entry's ACTUAL
 //                            // matcher exactly equals expectedMatcher, its
 //                            // bash/node/wrapper/script paths are all
-//                            // USABLE (see below), AND its wrapper/script
-//                            // both match the anchor. false otherwise.
+//                            // USABLE (see below), its wrapper/script
+//                            // both match the anchor, AND it has ZERO
+//                            // runtime-relevant NON-CANONICAL duplicate
+//                            // entries (nonCanonicalCount === 0).
+//                            // false otherwise.
 //     "hooks": [
 //       {
 //         "basename": string,        // e.g. "auto-approve-safe-bash.sh"

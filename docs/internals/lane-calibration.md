@@ -51,9 +51,11 @@ silently drifts (the HIMMEL-1021 class) — this table is deliberately thin.
 
 `quota bank` reflects the `quota.bank` field in `lanes.json`; a lane without
 one is **dashboard-omitted** from the quota exporter (HIMMEL-1000) — that's a
-registry fact, not a doc gap.
+registry fact, not a doc gap. `cost-optimal context window` is exactly that —
+NOT a hard ceiling: larger inputs remain possible past it at higher cost (e.g.
+2× billing past 272k on the codex-quota lanes), per the registry's own wording.
 
-| Lane (`lanes.json` id) | Class | Default effort convention | Context ceiling | Quota bank | Calibration status |
+| Lane (`lanes.json` id) | Class | Default effort convention | Cost-optimal context window | Quota bank | Calibration status |
 |---|---|---|---|---|---|
 | `glm` — GLM lane (spawn-glm.ts) | impl | small-context discipline — chunk big plans | 1M | glm (flat-rate overflow, not per-token) | calibrated |
 | `glm-subagent` — GLM inline subagent | impl | same as `glm`, inline in-session dispatch | 1M | glm | calibrated |
