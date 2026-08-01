@@ -257,6 +257,21 @@ epilogue() { printf '%s' "$1" | sed -n '/delegation lanes/,$p'; }
 # pipeline, so the status is grep's own verdict and nothing else.
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
+# HIMMEL-1447: the wizard resolves the ollama install command per-platform
+# (adopter-profile.js pickByPlatform), so the suite asserts the ACTIVE
+# platform's EXACT string. The previous win32 literal failed on ubuntu CI and
+# passed vacuously on POSIX; an any-platform alternation was rejected in CR —
+# it would keep CI green if the wizard regressed to another platform's hint.
+# (Library-level platform mapping for all three platforms is pinned by caseQ.)
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) OLLAMA_INSTALL_HINT='winget install Ollama.Ollama' ;;
+  Darwin)               OLLAMA_INSTALL_HINT='brew install ollama' ;;
+  *)                    OLLAMA_INSTALL_HINT='see https://ollama.com/download' ;;
+esac
+# Negative asserts reject EVERY platform's hint — a foreign-platform leak
+# (winget on Linux) must fail too (CR round 2 [codex-adv-r2-1]).
+OLLAMA_ANY_HINT_RE='winget install Ollama[.]Ollama|ollama[.]com/download|brew install ollama'
+
 # ── Case A: lanes absent -> MISSING + manual entry with the install command ──
 sA="$work/a"; mkdir -p "$sA"; hA="$work/a-home"; mkdir -p "$hA"
 fA="$work/a-fix"; make_fixture "$fA"
@@ -309,7 +324,7 @@ grepq "$ep" 'cannot confirm setup' \
   || fail "caseB: a present lane's unverified setup must stay visible: $ep"
 grepq "$ep" 'ollama pull' \
   || fail "caseB: the retained setup step should name the model pull: $ep"
-grepq "$ep" 'winget install Ollama.Ollama' \
+grepq "$ep" -E "$OLLAMA_ANY_HINT_RE" \
   && fail "caseB: a present lane must not be sent back to the package manager: $ep"
 echo "ok: caseB present lane -> binary present + setup step retained, never re-installed"
 
@@ -696,8 +711,8 @@ grepq "$ep" -E '\-\- +ollama +DISABLED' \
 grepq "$ep" 'config set lanes.ollama-local on' \
   || fail "caseM: the fix for a disabled lane is a config flip, and must be named: $ep"
 # It is installed — so it must NOT be reported as something to go install.
-grepq "$ep" 'winget install Ollama.Ollama' \
-  && fail "caseM: a DISABLED-but-installed lane must not be sent back to winget: $ep"
+grepq "$ep" -E "$OLLAMA_ANY_HINT_RE" \
+  && fail "caseM: a DISABLED-but-installed lane must not be sent back to the package manager: $ep"
 # Sanity: the same fixture WITHOUT the overlay reads available, proving the
 # difference comes from the overlay and not from the stub being broken.
 fM2="$work/m2-fix"; make_fixture "$fM2"
@@ -785,7 +800,7 @@ grepq "$ep" -E '(ok|~) +ollama' \
   && fail "caseP1: an always-overlay must NOT make an uninstalled lane read present: $ep"
 grepq "$ep" -E 'XX +ollama +MISCONFIGURED' \
   || fail "caseP1: forced-on-but-absent should read MISCONFIGURED: $ep"
-grepq "$ep" 'winget install Ollama.Ollama' \
+grepq "$ep" -F "$OLLAMA_INSTALL_HINT" \
   || fail "caseP1: the install command must survive a bogus override: $ep"
 
 # P2 — forced ON with the binary actually there: still present, and the detail
@@ -1037,7 +1052,7 @@ capture "$sU2" "$hU2" "$fU2"
 ep=$(epilogue "$out")
 grepq "$ep" -E 'XX +ollama +MISCONFIGURED' \
   || fail "caseU2: forced-on-but-absent should read MISCONFIGURED: $ep"
-grepq "$ep" 'winget install Ollama.Ollama' \
+grepq "$ep" -F "$OLLAMA_INSTALL_HINT" \
   || fail "caseU2: the install command must survive: $ep"
 grepq "$ep" 'ollama pull' \
   || fail "caseU2: a MISCONFIGURED lane must keep its setup step: $ep"
@@ -1056,7 +1071,7 @@ printf '{ "lanes": [ { "id": "ollama-local", "probe": { "kind": "never" } } ] }\
 capture "$sV" "$hV" "$fV"
 [ "$rc" -eq 0 ] || fail "caseV: dry-run should succeed (got rc=$rc): $out"
 ep=$(epilogue "$out")
-grepq "$ep" 'winget install Ollama.Ollama' \
+grepq "$ep" -F "$OLLAMA_INSTALL_HINT" \
   || fail "caseV: the install command must be listed: $ep"
 grepq "$ep" 'config set lanes.ollama-local on' \
   || fail "caseV: the overlay re-enable must ALSO be listed: $ep"
@@ -1065,7 +1080,7 @@ grepq "$ep" 'ollama pull' \
 grepq "$ep" 'DISABLED by scripts/lanes/lanes.local.json' \
   || fail "caseV: the row should say the overlay also blocks it: $ep"
 # Ordering: install, then re-enable, then setup.
-i_install=$(printf '%s' "$ep" | grep -n 'winget install Ollama.Ollama' | head -1 | cut -d: -f1)
+i_install=$(printf '%s' "$ep" | grep -nF "$OLLAMA_INSTALL_HINT" | head -1 | cut -d: -f1)
 i_enable=$(printf '%s' "$ep" | grep -n 'config set lanes.ollama-local on' | head -1 | cut -d: -f1)
 i_setup=$(printf '%s' "$ep" | grep -n 'ollama pull' | head -1 | cut -d: -f1)
 { [ "$i_install" -lt "$i_enable" ] && [ "$i_enable" -lt "$i_setup" ]; } \
