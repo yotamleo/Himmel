@@ -2140,7 +2140,19 @@ mkdir -p "$EXCL10CORPUS/notes" "$EXCL10MAPS/graph"
 printf '# n\ncontent\n' > "$EXCL10CORPUS/notes/n.md"
 printf '# derived node note\nminted by graphify\n' > "$EXCL10MAPS/graph/some-node.md"
 printf '# stale MOC from a prior run\n' > "$EXCL10MAPS/excl10-map.md"
-EXCL10MAPS_ARG="$(printf '%s' "$EXCL10CORPUS" | tr '[:lower:]' '[:upper:]')/60-Maps"
+# HIMMEL-1444: case-flip ONLY the corpus-root subdir under the writable $WS
+# temp root, not the whole $WS path. The original uppercased the entire
+# absolute path, rooting the publish target at "/TMP" (uppercased "/tmp") --
+# non-creatable for a non-root user on a case-SENSITIVE filesystem (the public
+# mirror's ubuntu CI), so publish-graph-map.mjs's recursive mkdirSync died with
+# EACCES and refresh-graph-map.sh exited 1 (the "pull-before-regenerate
+# skipped ... not a clean git toplevel" line above is an unrelated advisory --
+# these corpora aren't git repos on either platform). Flipping just the subdir
+# keeps the case-variant prefix the containment comparison exercises (still a
+# DIFFERENT path when folding is forced off) while leaving the publish target
+# creatable on every platform. On a case-insensitive fs the flipped spelling
+# resolves to the same real dir, so the publish target there is unchanged.
+EXCL10MAPS_ARG="$WS/$(printf '%s' "${EXCL10CORPUS##*/}" | tr '[:lower:]' '[:upper:]')/60-Maps"
 out=$( GRAPHIFY_FS_CASE_INSENSITIVE=0 GRAPHIFY_MAP_BIN="$EXCL10BIN/graphify" PATH="$EXCL10BIN:$PATH" \
   bash "$SCRIPT" --name excl10test --corpus-root "$EXCL10CORPUS" --backend deepseek \
   --maps-dir "$EXCL10MAPS_ARG" --title "Excl10 Map" --slug excl10-map --corpus-tag excl10 2>&1 ); rc=$?
@@ -2184,7 +2196,8 @@ EXCL11CORPUS="$WS/excl11corpus"; EXCL11MAPS="$EXCL11CORPUS/60-Maps"
 mkdir -p "$EXCL11CORPUS/notes" "$EXCL11MAPS/graph"
 printf '# n\ncontent\n' > "$EXCL11CORPUS/notes/n.md"
 printf '# derived node note\nminted by graphify\n' > "$EXCL11MAPS/graph/some-node.md"
-EXCL11MAPS_ARG="$(printf '%s' "$EXCL11CORPUS" | tr '[:lower:]' '[:upper:]')/60-Maps"
+# HIMMEL-1444: same root-under-$WS case-flip as T36 -- see that test's comment.
+EXCL11MAPS_ARG="$WS/$(printf '%s' "${EXCL11CORPUS##*/}" | tr '[:lower:]' '[:upper:]')/60-Maps"
 # env -u scrubs any inherited override so the real filesystem probe decides;
 # GNU/BSD/MSYS `env` all support -u. If env -u is somehow unavailable this
 # still degrades correctly because nothing in this suite exports the var.

@@ -148,6 +148,18 @@ seed_repo() {
     git init -q --initial-branch=main "$repo" 2>/dev/null || git init -q "$repo"
     (
         cd "$repo"
+        # HIMMEL-1444: pin a REPO-LOCAL committer identity. graph-publish.sh's
+        # own publish `git commit` (unlike seed_repo's -c user.email/-c
+        # user.name commits below) inherits the repo config, so on a CLEAN
+        # gitconfig -- the public mirror's ubuntu CI ships NO global
+        # user.email/user.name -- that commit dies "unable to auto-detect
+        # email address" (rc=8) before the push. The branch is then never
+        # created and the happy-path's later `git show
+        # refs/heads/chore/graph-publish-t6-repo` aborts the whole suite at
+        # rc=128. The operator's Windows box has a global identity, so this is
+        # a no-op there (the local value just shadows it inside the fixture).
+        git config user.email t@test.com
+        git config user.name test
         git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
         mkdir -p graphify-out
         printf 'graphify-out/*\n!graphify-out/graph.json\n!graphify-out/GRAPH_REPORT.md\n' > .gitignore

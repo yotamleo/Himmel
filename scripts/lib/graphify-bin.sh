@@ -675,7 +675,7 @@ graphify_update() {
   extras="$(_graphify_installed_extras)"
   spec="$(_graphify_pypi_name)${extras}==${pin}"
   # Every place this spec is PRINTED as a copy-paste repair command single-quotes
-  # it (public-PR CR). With extras recorded it reads `graphifyy[all]==0.9.30`, and
+  # it (public-PR CR). With extras recorded it reads `graphifyy[all]==0.9.31`, and
   # zsh — the macOS default — globs the brackets: pasting the unquoted form dies
   # with "no matches found" instead of installing. The quotes are for the reader's
   # shell only; the `uv tool install` this script runs itself passes "$spec" as

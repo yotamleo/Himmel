@@ -1082,7 +1082,7 @@ drift-fix-cadence ARMED (HIMMEL-1323)
     - $LEG_RESYNC runs /fork-resync: rebase every BEHIND registry fork
       against upstream and audit it — a no-op most nights. The unattended
       run ALWAYS stops after each audit (clean, conflicted, or deliberately
-      non-additive alike): it never pushes and opens nothing, leaving that
+      non-additive alike): it never pushes or opens anything, leaving that
       for a human instead.
 
   The public squash-merge stays yours — neither leg ever merges it.

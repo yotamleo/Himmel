@@ -402,26 +402,48 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseE: profile install should succeed (got rc=$rc): $out"
 grepq "$out" 'CHECKLIST ONLY' \
   || fail "caseE: alwaysOn=true must print the checklist banner: $out"
-grepq "$out" 'powercfg /hibernate off' \
-  || fail "caseE: the checklist must carry the real Phase-6 commands: $out"
 [ -f "$sentinel" ] \
   && fail "caseE: HARDENING WAS EXECUTED — powercfg stub ran (sentinel $sentinel exists)"
-# CR round 11 [codex-adv-r10-1]: sshd reads its config at START, so
-# `Start-Service` against an already-running daemon is a no-op and the OLD
-# (possibly password-auth) config stays live — which would make the whole
-# policy-before-enable ordering cosmetic. The checklist must restart a running
-# service, and the access policy must precede the enable step.
-grepq "$out" 'Restart-Service sshd' \
-  || fail "caseE: the checklist must RESTART an already-running sshd: $out"
-grepq "$out" "Get-Service sshd).Status -eq 'Running'" \
-  || fail "caseE: the checklist should branch on the current service state: $out"
-policy_line=$(printf '%s' "$out" | grep -n 'SSH access policy' | head -1 | cut -d: -f1)
-enable_line=$(printf '%s' "$out" | grep -n 'Enable sshd' | head -1 | cut -d: -f1)
-[ "$policy_line" -lt "$enable_line" ] \
-  || fail "caseE: the access policy must be printed BEFORE the enable step: $out"
-grepq "$out" 'PreferredAuthentications=password' \
-  || fail "caseE: the off-box password-refusal verification must survive: $out"
-echo "ok: caseE alwaysOn=true prints the checklist (policy before enable, restart-aware) and executes NONE of it"
+# HIMMEL-1444: the hardening checklist is platform-branched
+# (hardeningChecklistLines filters HARDENING_CHECKLIST by platform; every step
+# is win32-only so far). caseE drives the REAL wizard on the HOST, so it must
+# assert the host-appropriate content: the real Phase-6 commands on win32, and
+# the honest "no steps published for <platform>" note on any other host (the
+# emission is already platform-correct; caseQ separately pins the cross-
+# platform emission via forced-platform library renders). caseE's own job is
+# the integration invariant -- alwaysOn=true PRINTS the checklist and
+# EXECUTES none of it -- which holds on every platform.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    grepq "$out" 'powercfg /hibernate off' \
+      || fail "caseE: the checklist must carry the real Phase-6 commands: $out"
+    # CR round 11 [codex-adv-r10-1]: sshd reads its config at START, so
+    # `Start-Service` against an already-running daemon is a no-op and the OLD
+    # (possibly password-auth) config stays live — which would make the whole
+    # policy-before-enable ordering cosmetic. The checklist must restart a
+    # running service, and the access policy must precede the enable step.
+    grepq "$out" 'Restart-Service sshd' \
+      || fail "caseE: the checklist must RESTART an already-running sshd: $out"
+    grepq "$out" "Get-Service sshd).Status -eq 'Running'" \
+      || fail "caseE: the checklist should branch on the current service state: $out"
+    policy_line=$(printf '%s' "$out" | grep -n 'SSH access policy' | head -1 | cut -d: -f1)
+    enable_line=$(printf '%s' "$out" | grep -n 'Enable sshd' | head -1 | cut -d: -f1)
+    [ "$policy_line" -lt "$enable_line" ] \
+      || fail "caseE: the access policy must be printed BEFORE the enable step: $out"
+    grepq "$out" 'PreferredAuthentications=password' \
+      || fail "caseE: the off-box password-refusal verification must survive: $out"
+    ;;
+  *)
+    # Non-win32 host: the checklist honestly reports no platform-specific
+    # hardening steps yet. Assert that note is present and that NO Windows-only
+    # command leaked into a POSIX host's checklist.
+    grepq "$out" 'no hardening steps are published for platform' \
+      || fail "caseE: a non-win32 host should get the honest 'no steps for platform' note: $out"
+    grepq "$out" 'powercfg' \
+      && fail "caseE: a non-win32 host's checklist must not carry Windows-only powercfg commands: $out"
+    ;;
+esac
+echo "ok: caseE alwaysOn=true prints the checklist and executes NONE of it (platform-correct content)"
 
 # ── Case F: alwaysOn=false -> pointer only, no powercfg text ────────────────
 sF="$work/f"; mkdir -p "$sF"; hF="$work/f-home"; mkdir -p "$hF"
