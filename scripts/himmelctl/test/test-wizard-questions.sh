@@ -10,11 +10,14 @@
 # so ~/.claude/himmel/ is redirected via this env seam instead).
 #
 # Covers (T2):
-#   1. adopter stdin sequence -> 5 main questions (role+scope+vault+handover+
-#      pluginSet) + the answer summary with role=adopter.
+#   1. adopter stdin sequence -> 7 main questions (role+scope+vault+handover+
+#      pluginSet, then the HIMMEL-862 adopter-profile pair lanes+alwaysOn) +
+#      the answer summary with role=adopter.
 #   2. contributor sequence (git stub origin = himmel URL AND a .himmel-dev
 #      marker at the stubbed repo toplevel — CR r5: the marker is the
 #      contributor signal, the origin name alone is not) -> 4 main questions
+#      (HIMMEL-862's lanes+alwaysOn are ADOPTER-only, so the contributor flow
+#      is unchanged — contributor-dev profile work is HIMMEL-1423)
 #      (no scope) + the printed heuristic reasoning line naming contributor.
 #   3. invalid enum answer -> the question repeats once, then accepts.
 #   4. non-interactive without --from-profile -> refuses (non-zero + message),
@@ -123,10 +126,10 @@ STUB
 }
 
 # Count main (enum) question headers in a captured output blob. Path sub-
-# prompts carry no '[' so they are excluded; adopter -> 5, contributor -> 4.
+# prompts carry no '[' so they are excluded; adopter -> 7, contributor -> 4.
 count_questions() { printf '%s' "$1" | grep -cE '^\? .*\[' || true; }
 
-# ── Case 1: adopter sequence -> 5 questions + summary role=adopter ─────────────
+# ── Case 1: adopter sequence -> 7 questions + summary role=adopter ─────────────
 stub1="$work/case1"; mkdir -p "$stub1"
 c1path=$(build_path "$stub1" bash jq python3 npm -- )
 make_git_stub "$stub1" "https://github.com/someone/other-repo.git"
@@ -139,19 +142,21 @@ project
 none
 inline
 lean
+ollama
+no
 INPUT
 )
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case1: adopter run should succeed (got rc=$rc)"
 qs=$(count_questions "$out")
-[ "$qs" -eq 5 ] \
-  || fail "case1: adopter should ask 5 main questions (got $qs): $out"
+[ "$qs" -eq 7 ] \
+  || fail "case1: adopter should ask 7 main questions (got $qs): $out"
 printf '%s' "$out" | grep -q '"role": "adopter"' \
   || fail "case1: summary should show role=adopter (got: $out)"
 printf '%s' "$out" | grep -q '? scope \[' \
   || fail "case1: adopter should be asked scope (got: $out)"
-echo "ok: case1 adopter -> 5 questions + summary role=adopter"
+echo "ok: case1 adopter -> 7 questions + summary role=adopter"
 
 # ── Case 2: contributor sequence -> 4 questions + contributor reasoning ───────
 # CR r5: a himmel-named origin alone no longer defaults contributor — the
@@ -244,6 +249,8 @@ project
 none
 inline
 lean
+none
+no
 INPUT
 )
 rc=$?
@@ -257,10 +264,13 @@ printf '%s' "$cache_body" | grep -q '"role": "adopter"' \
   || fail "case5: cache should record role=adopter (got: $cache_body)"
 printf '%s' "$cache_body" | grep -q '"tier": "standard"' \
   || fail "case5: cache should carry the tier placeholder (got: $cache_body)"
+# HIMMEL-862: lanes/alwaysOn are ANSWERED rows now, not placeholders — this
+# case answers 'none'/'no' so the empty selection is what round-trips (case1
+# above covers a non-empty one).
 printf '%s' "$cache_body" | grep -q '"lanes": \[\]' \
-  || fail "case5: cache should carry the lanes placeholder (got: $cache_body)"
+  || fail "case5: cache should record the answered empty lane set (got: $cache_body)"
 printf '%s' "$cache_body" | grep -q '"alwaysOn": false' \
-  || fail "case5: cache should carry the alwaysOn placeholder (got: $cache_body)"
+  || fail "case5: cache should record the answered alwaysOn=no (got: $cache_body)"
 # Now replay the cache non-interactively: ZERO prompts + byte-stable JSON.
 # Non-interactive --from-profile (T4) skips the confirm and shells out for
 # real, so HIMMELCTL_REPO_ROOT is pointed at a throwaway fixture carrying a

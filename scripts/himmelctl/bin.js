@@ -31,6 +31,7 @@ const statusReportLib = require('./lib/status-report.js');
 const installEngineLib = require('./lib/install-engine.js');
 const probesLib = require('./lib/probes.js');
 const depsEngineLib = require('./lib/deps-engine.js');
+const adopterProfileLib = require('./lib/adopter-profile.js');
 
 // Tools every himmel adopter needs before any question makes sense — mirrors
 // adopt.sh require_tools (bash/git/jq/python3) PLUS at least one JS package
@@ -84,6 +85,18 @@ commands:
 options:
   --from-profile <path>  install non-interactively from a saved profile cache
   --default-scope <s>    install question default: project|user (answer remains confirmable)
+  --lanes <csv>          install (adopter): the delegation lanes to select —
+                          ${adopterProfileLib.SELECTABLE_LANE_IDS.join('|')}, or 'none'
+                          (default: ${adopterProfileLib.DEFAULT_LANE_IDS.join(',')}). Skips the lanes question.
+  --with-codex           install (adopter): additionally select the codex lane (opt-in)
+  --with-hermes          install (adopter): additionally select the hermes lane (opt-in)
+                          What selecting a lane DOES in v1: records the choice in
+                          the install profile, probes the lane, and reports what is
+                          missing or unfinished. It does NOT install the lane CLI
+                          and does NOT switch the lane on. The selection is also not
+                          yet enforced at runtime — /lanes still resolves every lane
+                          your machine has, selected or not (tracked separately as
+                          HIMMEL-1428).
   --advanced             reserved: surface advanced options (parsed, not yet honored)
   --dry-run              print the derived plan/actions without executing
   --items <a,b>          status/ensure: scope the run to these item ids (comma list)
@@ -102,7 +115,7 @@ options:
 // each option (so passing the DEFAULT value explicitly is never flagged —
 // only a genuinely-set option outside the whitelist is).
 const ALLOWED_OPTIONS = {
-  install: ['fromProfile', 'defaultScope', 'advanced', 'dryRun'],
+  install: ['fromProfile', 'defaultScope', 'advanced', 'dryRun', 'lanes', 'withCodex', 'withHermes'],
   uninstall: ['dryRun'],
   update: ['dryRun'],
   status: ['items', 'json'],
@@ -137,10 +150,12 @@ const OPTION_FLAGS = {
   fromProfile: '--from-profile', defaultScope: '--default-scope', advanced: '--advanced', dryRun: '--dry-run',
   items: '--items', json: '--json', profile: '--profile', yes: '--yes',
   withModels: '--with-models',
+  lanes: '--lanes', withCodex: '--with-codex', withHermes: '--with-hermes',
 };
 const OPTION_DEFAULTS = {
   fromProfile: null, defaultScope: null, advanced: false, dryRun: false, items: null, json: false, profile: null, yes: false,
   withModels: false,
+  lanes: null, withCodex: false, withHermes: false,
 };
 
 // Parse the CLI args into a plain object. Unknown args are a hard error (exit
@@ -162,6 +177,9 @@ function parseArgs(argv) {
     targetScope: null, // scope set: 'project' | 'user' (null = none given)
     depsVerb: null,    // deps: status|ensure|upgrade (consumed positionally, see the 'deps' case)
     withModels: false, // deps upgrade: --with-models
+    lanes: null,       // install: --lanes csv (null = ask, or take the default)
+    withCodex: false,  // install: --with-codex (opt-in lane)
+    withHermes: false, // install: --with-hermes (opt-in lane)
   };
   // CR fix (CodeRabbit round 17, item 4): the last process.exit(2) sites in
   // this parser, converted to the process.exitCode + return pattern the
@@ -308,6 +326,31 @@ function parseArgs(argv) {
       case '--advanced':
         args.advanced = true;
         break;
+      // HIMMEL-862: the v1 adopter lane subset. Validated HERE (not at use
+      // time) so a typo'd lane id is rejected before the preflight ever runs
+      // a package-manager install — same posture as --default-scope above.
+      case '--lanes': {
+        const v = argv[++i];
+        if (v === undefined) {
+          console.error(`himmelctl: --lanes requires a value (${adopterProfileLib.SELECTABLE_LANE_IDS.join('|')}, comma-separated, or 'none')`);
+          process.exitCode = 2;
+          return args;
+        }
+        const parsed = adopterProfileLib.parseLaneList(v);
+        if (!parsed.ok) {
+          console.error(`himmelctl: --lanes: ${parsed.error}`);
+          process.exitCode = 2;
+          return args;
+        }
+        args.lanes = parsed.lanes;
+        break;
+      }
+      case '--with-codex':
+        args.withCodex = true;
+        break;
+      case '--with-hermes':
+        args.withHermes = true;
+        break;
       case '--dry-run':
         args.dryRun = true;
         break;
@@ -379,6 +422,21 @@ function parseArgs(argv) {
         // above — see its own comment for why.
         process.exitCode = 2;
         return args;
+      }
+    }
+    // HIMMEL-862: a saved profile already CARRIES its lane selection, and
+    // --from-profile is explicit unattended-execution consent to replay that
+    // file verbatim. Silently letting a lane flag override one field of it
+    // would make the replayed install differ from the profile it names, so
+    // the combination is refused outright rather than resolved by precedence.
+    if (args.subcommand === 'install' && args.fromProfile !== null) {
+      for (const key of ['lanes', 'withCodex', 'withHermes']) {
+        if (args[key] !== OPTION_DEFAULTS[key]) {
+          console.error(`himmelctl: ${OPTION_FLAGS[key]} cannot be combined with --from-profile`);
+          console.error('  (the profile already carries its lane selection — edit the profile, or drop --from-profile)');
+          process.exitCode = 2;
+          return args;
+        }
       }
     }
   }
@@ -588,9 +646,13 @@ function serialize(answers) {
   return JSON.stringify(answers, null, 2);
 }
 
-// Build the Draft-A answer object. tier/lanes/alwaysOn are schema placeholders
-// never asked in P1 (they reserve the row for the future-755 profile work).
-function buildAnswers(role, scope, vaultMode, vaultPath, handoverMode, handoverPath, pluginSet) {
+// Build the Draft-A answer object. `tier` is still a schema placeholder;
+// `lanes`/`alwaysOn` were placeholders too until HIMMEL-862 filled them with
+// the v1 adopter-user profile (contributor installs leave both at their empty
+// defaults — the contributor-dev profile is HIMMEL-1423, not this ticket).
+// Key ORDER is load-bearing: serialize() is the cache format AND the printed
+// summary, and both must round-trip byte-for-byte through --from-profile.
+function buildAnswers(role, scope, vaultMode, vaultPath, handoverMode, handoverPath, pluginSet, lanes, alwaysOn) {
   return {
     role: role,
     tier: 'standard',
@@ -598,8 +660,8 @@ function buildAnswers(role, scope, vaultMode, vaultPath, handoverMode, handoverP
     vault: { mode: vaultMode, path: vaultPath },
     handover: { mode: handoverMode, path: handoverPath },
     pluginSet: pluginSet,
-    lanes: [],
-    alwaysOn: false,
+    lanes: lanes || [],
+    alwaysOn: Boolean(alwaysOn),
   };
 }
 
@@ -674,8 +736,34 @@ async function askPath(ask, prompt, defaultVal) {
   return t === '' ? defaultVal : t;
 }
 
+// HIMMEL-862: ask the lane subset. Free-form CSV (not askEnum — the answer is
+// a SET, not one value), re-prompting on an invalid id the same way askEnum
+// re-emits its header. Empty accepts the default; 'none' selects nothing.
+async function askLanes(ask, defaultLanes) {
+  const opts = adopterProfileLib.SELECTABLE_LANE_IDS.join(',');
+  const prompt = `? lanes [${opts}|none] (default: ${defaultLanes.join(',') || 'none'})\n> `;
+  for (;;) {
+    const ans = await ask(prompt);
+    const t = (ans || '').trim();
+    if (t === '') return defaultLanes.slice();
+    const parsed = adopterProfileLib.parseLaneList(t);
+    if (parsed.ok) return parsed.lanes;
+    // CR round 1 [glm-2]: say WHY before re-prompting. parseLaneList already
+    // distinguishes "unknown lane" from "that one is opt-in, use --with-<id>";
+    // discarding that left a bare re-prompt that looks like the input was
+    // ignored rather than rejected. The reason goes to stderr so it can never
+    // be mistaken for one of the `? ...` question headers on stdout.
+    console.error(`  ! ${parsed.error}`);
+  }
+}
+
 // Walk all questions interactively and return the answer object.
-async function askQuestions(defaultScope) {
+// `laneOpts` = { lanes, withCodex, withHermes } from the CLI flags: a given
+// --lanes SKIPS the lanes question entirely (the operator already answered
+// it), while --with-codex/--with-hermes append to whatever the base selection
+// turns out to be. Both opt-in lanes stay flag-only — the lanes question
+// never offers them, so there is exactly ONE door to each.
+async function askQuestions(defaultScope, laneOpts) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   const ask = makeAsk(rl);
 
@@ -710,16 +798,43 @@ async function askQuestions(defaultScope) {
   // 5. pluginSet.
   const pluginSet = await askEnum(ask, '? pluginSet [lean|full] (default: lean)\n> ', ['lean', 'full'], 'lean');
 
+  // 6/7 (HIMMEL-862). ADOPTER ONLY — the contributor-dev profile is
+  // HIMMEL-1423, so a contributor run asks neither and keeps the empty
+  // defaults, leaving its existing 4-question flow byte-identical.
+  const opts = laneOpts || {};
+  let lanes = [];
+  let alwaysOn = false;
+  if (role === 'adopter') {
+    // 6. lanes. --lanes already answered it; otherwise prompt.
+    const base = opts.lanes !== null && opts.lanes !== undefined
+      ? opts.lanes
+      : await askLanes(ask, adopterProfileLib.DEFAULT_LANE_IDS);
+    lanes = adopterProfileLib.applyOptIns(base, opts);
+    // 7. alwaysOn. Decides checklist-vs-pointer only — NOTHING is executed
+    //    either way (rescope: hardening is printed, never run).
+    const ao = await askEnum(ask, '? always-on machine (unattended/scheduled runs) [yes|no] (default: no)\n> ', ['yes', 'no'], 'no');
+    alwaysOn = ao === 'yes';
+  }
+
   rl.close();
-  return buildAnswers(role, role === 'contributor' ? 'user' : scope, vaultMode, vaultPath, handoverMode, handoverPath, pluginSet);
+  return buildAnswers(role, role === 'contributor' ? 'user' : scope, vaultMode, vaultPath, handoverMode, handoverPath, pluginSet, lanes, alwaysOn);
 }
 
 // All-default answers (no prompts) for --dry-run previews. Still prints the
 // role reasoning line so the preview shows what would happen.
-function defaultAnswers(defaultScope) {
+function defaultAnswers(defaultScope, laneOpts) {
   const det = detectRole();
   console.log(`detected: ${det.reason}`);
-  return buildAnswers(det.role, det.role === 'contributor' ? 'user' : (defaultScope || 'project'), 'none', '', 'inline', '', 'lean');
+  const opts = laneOpts || {};
+  // The lane rows honor the flags even in an all-defaults preview, so
+  // `--dry-run --with-codex` actually previews the codex lane.
+  const lanes = det.role === 'adopter'
+    ? adopterProfileLib.applyOptIns(
+      (opts.lanes !== null && opts.lanes !== undefined) ? opts.lanes : adopterProfileLib.DEFAULT_LANE_IDS,
+      opts,
+    )
+    : [];
+  return buildAnswers(det.role, det.role === 'contributor' ? 'user' : (defaultScope || 'project'), 'none', '', 'inline', '', 'lean', lanes, false);
 }
 
 // ── T3: answer schema + cache ────────────────────────────────────────────────
@@ -794,6 +909,25 @@ function loadProfile(p) {
   checkEnum('handover.mode', obj.handover.mode, ['inline', 'external']);
   if (obj.handover.mode === 'external' && (typeof obj.handover.path !== 'string' || obj.handover.path === '')) {
     profileError(p, "field 'handover.path' is required when handover.mode=external");
+  }
+  // HIMMEL-862: lanes/alwaysOn join the strictly-validated set for the same
+  // reason every other field is in it — --from-profile is unattended-execution
+  // consent, so a skewed field must fail loud BEFORE any side effect rather
+  // than be silently reinterpreted. Every profile buildAnswers has ever
+  // written carries both (as [] / false), so pre-862 caches still validate.
+  // Note the OPT-IN lanes ARE accepted here: a profile is an explicit,
+  // hand-reviewed artifact, so naming codex/hermes in it IS the consent that
+  // --with-codex/--with-hermes provides on the command line.
+  if (!Array.isArray(obj.lanes)) {
+    profileError(p, `field 'lanes' must be an array (got ${JSON.stringify(obj.lanes)})`);
+  }
+  for (const l of obj.lanes) {
+    if (adopterProfileLib.ALL_LANE_IDS.indexOf(l) === -1) {
+      profileError(p, `field 'lanes' contains unknown lane ${JSON.stringify(l)} (known: ${adopterProfileLib.ALL_LANE_IDS.join(', ')})`);
+    }
+  }
+  if (typeof obj.alwaysOn !== 'boolean') {
+    profileError(p, `field 'alwaysOn' must be a boolean (got ${JSON.stringify(obj.alwaysOn)})`);
   }
   return obj;
 }
@@ -1089,6 +1223,79 @@ function previewHandoverAndPlugins(answers) {
   }
 }
 
+// HIMMEL-862: the adopter-user epilogue — lane probe report, the always-on
+// hardening CHECKLIST, and the final honest summary. Printed at the END of
+// every adopter run, dry-run included: every part of it is a READ — it mutates
+// nothing — so it is equally truthful before and after the install shell-out,
+// and a --dry-run preview is worth exactly as much. (Corrected in CR round 5:
+// this used to claim "probeLane never spawns", which is false — buildCtx shells
+// out to `git`, and the manifest-backed readiness probes may run a tool to
+// check it. Probing under --dry-run is fine; documenting a guarantee we do not
+// provide is not.)
+//
+// Contributor runs print nothing here — the contributor-dev profile is
+// HIMMEL-1423, and inventing half of it now would be the speculative
+// machinery this v1 is explicitly scoped away from.
+// `dryRun` is threaded in (not re-derived from args) so the summary's
+// installed-vs-planned bucket can never drift from what the caller actually
+// did — CR round 1 [codex-1]: the summary used to claim `installed:` under
+// --dry-run, when nothing had run at all.
+// `pluginResult` is the {rc, failed, total} applyPluginStep returned, or null
+// when the step never ran (dry-run, lean plugin set, or the T5b branch's own
+// ordering) — CR round 1 [codex-adv-2]: without it the summary claimed the
+// full plugin set was enabled even when its commands had failed.
+//
+// async because the lane probe now loads the CANONICAL ESM resolver rather
+// than re-implementing its semantics; every call site is already inside the
+// async runPlan.
+async function printAdopterEpilogue(answers, derived, dryRun, pluginResult, vaultScaffolded) {
+  if (answers.role !== 'adopter') return;
+  const laneProbe = await adopterProfileLib.loadLaneProbe(repoRoot(), process.env);
+  const ctx = { repoRoot: repoRoot(), env: process.env, platform: process.platform, laneProbe: laneProbe };
+  const rows = adopterProfileLib.probeSelection(answers.lanes || [], ctx);
+
+  console.log('');
+  console.log('── delegation lanes (PROBED — himmelctl does not install lane CLIs in v1) ──');
+  for (const row of rows) {
+    if (!row.selected) {
+      const why = row.optIn ? `not selected (opt in with --with-${row.id})` : 'not selected';
+      console.log(`  .  ${row.id.padEnd(9)} ${why}`);
+    } else if (row.state === 'present' && row.setupState === 'ready') {
+      console.log(`  ok ${row.id.padEnd(9)} ready — ${row.detail}; ${row.setupDetail}`);
+    } else if (row.state === 'present') {
+      // Deliberately NOT "available": the probe saw a binary, not a working
+      // lane (CR round 4 [codex-adv-r3-2]). The remaining step is named in
+      // the summary's `still manual` section.
+      const why = row.setupState === 'incomplete' ? `setup INCOMPLETE — ${row.setupDetail}` : 'setup not verified';
+      console.log(`  ~  ${row.id.padEnd(9)} binary present — ${row.detail}; ${why}`);
+    } else if (row.state === 'disabled') {
+      console.log(`  -- ${row.id.padEnd(9)} DISABLED — ${row.detail}`);
+    } else if (row.state === 'misconfigured') {
+      console.log(`  XX ${row.id.padEnd(9)} MISCONFIGURED — ${row.detail}`);
+    } else if (row.state === 'absent') {
+      console.log(`  !! ${row.id.padEnd(9)} MISSING — ${row.detail}`);
+    } else {
+      console.log(`  ?? ${row.id.padEnd(9)} UNKNOWN — ${row.detail}`);
+    }
+  }
+
+  const hardening = answers.alwaysOn
+    ? adopterProfileLib.hardeningChecklistLines(process.platform)
+    : adopterProfileLib.hardeningPointerLines();
+  for (const line of hardening) console.log(line);
+
+  const summary = adopterProfileLib.buildSummary(answers, rows, {
+    derived: derived,
+    dryRun: Boolean(dryRun),
+    pluginFailures: pluginResult ? pluginResult.failed : null,
+    vaultScaffolded: vaultScaffolded !== false,
+    pluginTotal: pluginResult ? pluginResult.total : 0,
+    vaultPath: answers.vault && answers.vault.path ? expandHome(answers.vault.path) : '',
+    handoverPath: answers.handover && answers.handover.path ? expandHome(answers.handover.path) : '',
+  });
+  for (const line of adopterProfileLib.summaryLines(summary)) console.log(line);
+}
+
 // T4.5 helper: handover.mode=external write, fail-closed (FIX 3 semantics).
 // inline → no-op. Returns true if the caller may proceed, false if the
 // caller must abort with rc=1 (writeHandoverDir already printed the error).
@@ -1105,13 +1312,20 @@ function applyHandoverStep(answers) {
 // failed (the core install already succeeded, so the caller still prints the
 // uninstall footer). Shared by the main path and the T5b existing-vault path
 // (FIX 5).
+// CR round 1 [codex-adv-2]: returns {rc, failed, total} rather than a bare rc.
+// The failed-command list used to die here (only a WARN line survived), so the
+// adopter epilogue had no way to know the step had partially failed and went
+// on to claim the full set was enabled while the process exited nonzero.
 function applyPluginStep(answers) {
-  if (answers.pluginSet !== 'full') return 0;
-  const failed = runPluginEnable();
-  if (failed.length === 0) return 0;
+  // The lean early-return stays BEFORE fullPluginEnableCommands(): that call
+  // reads the enable table off disk and throws when it is absent, so hoisting
+  // it made a lean install fail on any checkout without the table.
+  if (answers.pluginSet !== 'full') return { rc: 0, failed: [], total: 0 };
   const total = fullPluginEnableCommands().length;
+  const failed = runPluginEnable();
+  if (failed.length === 0) return { rc: 0, failed: [], total: total };
   console.error(`himmelctl: WARN: ${failed.length} of ${total} plugin command(s) failed — re-run install to retry (idempotent)`);
-  return 1;
+  return { rc: 1, failed: failed, total: total };
 }
 
 // T4/T4.5/T5a/T5b plan: derivation, vault gate, handover/pluginSet, shell-out.
@@ -1140,6 +1354,7 @@ async function runPlan(answers, args) {
     // plugin-enable step were previously dropped here entirely.
     if (args.dryRun) {
       previewHandoverAndPlugins(answers);
+      await printAdopterEpilogue(answers, displayCommand(plan.apply), args.dryRun, null);
       return 0;
     }
     if (isInteractive(args)) {
@@ -1155,9 +1370,40 @@ async function runPlan(answers, args) {
     if (wireRc !== 0) return wireRc;
     const applyRc = runSpawn(plan.apply);
     if (applyRc !== 0) return applyRc;
-    const pluginRc = applyPluginStep(answers);
+    const pluginResult = applyPluginStep(answers);
+    await printAdopterEpilogue(answers, displayCommand(plan.apply), args.dryRun, pluginResult);
     printUninstallFooter();
-    return pluginRc;
+    return pluginResult.rc;
+  }
+
+  // CR round 8 [codex-adv-r7-3]: vault.mode=default-template hands adopt.sh a
+  // --luna-target, and adopt.sh's do_luna() SKIPS the template copy whenever
+  // the destination already EXISTS (`[[ -e "$dest" ]]`), printing a notice and
+  // continuing with rc 0. So pointing default-template at an occupied,
+  // unrelated directory quietly promoted that directory to "your vault" — the
+  // run succeeded and the summary claimed it had been scaffolded.
+  //
+  // Fail closed on exactly the case that is unsafe: destination exists and is
+  // NOT a stamped luna vault. A stamped one is fine (that is a re-run; the
+  // copy is correctly skipped and the summary now says so). Checked BEFORE the
+  // shell-out, and isStampedLunaVault is a pure fs read, so the refusal path
+  // runs nothing at all. --dry-run reports the same refusal and exits 0, the
+  // same posture the T5b unstamped refusal above already takes.
+  let vaultScaffolded = true;
+  if (answers.role === 'adopter' && answers.vault && answers.vault.mode === 'default-template' && answers.vault.path) {
+    const dest = expandHome(answers.vault.path);
+    if (fs.existsSync(dest)) {
+      if (!isStampedLunaVault(dest)) {
+        console.error(`himmelctl: refusing to adopt ${dest} as a luna vault — it already exists and carries no luna-second-brain stamp (.vault-template.json).`);
+        console.error('  adopt.sh would SKIP the template copy and silently treat this directory as your vault.');
+        console.error('  Move/remove it, pick another --luna-target, or answer vault=existing if it really is a luna vault.');
+        return args.dryRun ? 0 : 1;
+      }
+      // Stamped: the copy will be skipped, which is correct for a re-run —
+      // but the summary must not then claim anything was scaffolded.
+      vaultScaffolded = false;
+      console.log(`note: ${dest} is an existing stamped luna vault — adopt.sh will skip the template copy.`);
+    }
   }
 
   const cmd = deriveCommand(answers);
@@ -1168,6 +1414,7 @@ async function runPlan(answers, args) {
   // executing or mutating anything.
   if (args.dryRun) {
     previewHandoverAndPlugins(answers);
+    await printAdopterEpilogue(answers, displayCommand(cmd), args.dryRun, null, vaultScaffolded);
     return 0;
   }
 
@@ -1195,6 +1442,39 @@ async function runPlan(answers, args) {
   // rather than silently proceed with an unwired handover destination.
   if (!applyHandoverStep(answers)) return 1;
 
+  // CR round 11 [codex-adv-r10-2], NARROWED. The occupied-vault gate above
+  // runs before the plan print, the confirm and the handover write, so minutes
+  // can pass before adopt.sh actually looks at the destination — long enough
+  // for a cloud-sync client to create it. Re-evaluate here, at the last
+  // instruction before the spawn, so both the refusal and the summary reflect
+  // the state adopt.sh is about to see.
+  //
+  // The summary flag is derived from `fs.existsSync(dest)` rather than by
+  // parsing adopt.sh's skip notice out of its output, for two reasons: this is
+  // the SAME predicate adopt.sh's do_luna() branches on (`[[ -e "$dest" ]]`),
+  // so it is the fact itself rather than a report of it; and capturing stdout
+  // to grep for prose would both couple us to that message's wording and cost
+  // the operator live output from a long install (spawnSync cannot stream and
+  // capture at once).
+  //
+  // RESIDUAL WINDOW, stated honestly: a directory created between this line
+  // and adopt.sh's own check still slips through, and adopt.sh would then skip
+  // the copy while the summary says it scaffolded. Closing that entirely
+  // requires adopt.sh to make the decision atomically and report it — its
+  // owner's scope, not this wrapper's.
+  if (answers.role === 'adopter' && answers.vault && answers.vault.mode === 'default-template' && answers.vault.path) {
+    const dest = expandHome(answers.vault.path);
+    const existsNow = fs.existsSync(dest);
+    if (existsNow && !isStampedLunaVault(dest)) {
+      console.error(`himmelctl: ${dest} appeared (or changed) since the preflight check and is not a luna vault — aborting before adopt.sh runs.`);
+      return 1;
+    }
+    if (existsNow !== !vaultScaffolded) {
+      console.log(`note: ${dest} ${existsNow ? 'now exists' : 'no longer exists'} — adopt.sh will ${existsNow ? 'skip' : 'perform'} the template copy.`);
+    }
+    vaultScaffolded = !existsNow;
+  }
+
   // T4: execute the derived command VERBATIM; propagate its rc (skip the
   // post-install enable step if the core install itself failed).
   const rc = runSpawn(cmd);
@@ -1202,9 +1482,10 @@ async function runPlan(answers, args) {
 
   // T4.5: pluginSet=full → the documented per-plugin enable step. lean → no-op
   // (adopt.sh's/setup.sh's settings-template default, HIMMEL-816).
-  const pluginRc = applyPluginStep(answers);
+  const pluginResult = applyPluginStep(answers);
+  await printAdopterEpilogue(answers, displayCommand(cmd), args.dryRun, pluginResult, vaultScaffolded);
   printUninstallFooter();
-  return pluginRc;
+  return pluginResult.rc;
 }
 
 // `install` subcommand handler. T1: the preflight-first gate runs BEFORE any
@@ -1239,14 +1520,18 @@ async function cmdInstall(args) {
   //    (and caches the result); --dry-run previews all defaults.
   //    Non-interactive with no profile refuses cleanly — it NEVER blocks on
   //    stdin.
+  //    HIMMEL-862: the lane flags shape the interactive + dry-run paths only.
+  //    The --from-profile branch never sees them — parseArgs already refused
+  //    that combination, so the profile stays the single authority there.
+  const laneOpts = { lanes: args.lanes, withCodex: args.withCodex, withHermes: args.withHermes };
   let answers;
   if (profileAnswers) {
     answers = profileAnswers;
   } else if (shouldPrompt(args)) {
-    answers = await askQuestions(args.defaultScope);
+    answers = await askQuestions(args.defaultScope, laneOpts);
     writeCache(answers);
   } else if (args.dryRun) {
-    answers = defaultAnswers(args.defaultScope);
+    answers = defaultAnswers(args.defaultScope, laneOpts);
   } else {
     console.error('himmelctl: non-interactive install requires --from-profile <path>');
     console.error('  (or set HIMMELCTL_INTERACTIVE=1 to answer prompts interactively)');

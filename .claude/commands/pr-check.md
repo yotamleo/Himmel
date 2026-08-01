@@ -290,6 +290,8 @@ Steps:
 
    **Step 3.1 — codex adversarial-review pass: harvest (decimal substep, runs AFTER the critic panel, still before any Agent dispatch; HIMMEL-694, HIMMEL-1407).** The pass itself was already LAUNCHED as a background job in the step-3 kickoff fence above — this substep HARVESTS it. It is **availability-gated** — it consumes the operator's OpenAI usage bank, so it runs ONLY when codex is configured (the kickoff fence's skip note already covers the unconfigured case), mirroring how the paid codex critic is gated in `critics.json` / the `CR_PROFILE=paid` lane. Like the panel, this pass is **fail-open**: absence, timeout, or error degrades to claude-only and never blocks the gate.
 
+   **Completion sentinel (HIMMEL-1420 — rc=0 alone is NOT sufficient evidence of a clean pass.)** Observed 8x across HIMMEL-1420 under this same background-launch pattern: the companion node process exits rc=0 with EMPTY or truncated stdout and a truncated `.err` — no final verdict ever emitted (proven: the HIMMEL-1416 retry on one such diff came back needs-attention with two `[high]` findings the rc=0/empty run had silently dropped). The old fence here read rc=0 alone as success (`codex_findings=$(cat "$codex_out")`). The fence below classifies rc=0 via `scripts/cr/codex-adv-completion-check.sh` (tested — `scripts/cr/test-codex-adv-completion-check.sh`), which is the SINGLE SOURCE OF TRUTH for the completion contract — do not re-derive its logic or its assertion/step count here, both keep growing across CR rounds and any number quoted in this prose drifts stale immediately; see the script's own header comment for the current contract (a line-walk anchored to the real companion source at `scripts/lib/render.mjs`, not free-text search — the renderer's own parse-error/validation-error banners reuse the identical heading under rc=0 and can echo the model's raw output verbatim) and its test suite for the exhaustive fixture set. rc=0 that fails the script's check is treated as **UNAVAILABLE**, never clean, and gets ONE bounded synchronous retry (bounded by the same `$codex_timeout` the async kickoff used, with a `timeout -k` kill-after grace) before finalizing. The `.err` tail is captured for diagnostics only — a last line matching `Turn completion inferred` tells you the companion process itself believed it finished, distinct from an actually-killed mid-review process, but it never flips the unavailable verdict; the contract lives entirely in the tested script, not the companion's internal state.
+
    **Harvest budget (HIMMEL-1407 — replaces the old foreground `CRITIC_TIMEOUT_SECS*2` timebox that caused 28 lifetime timeouts).** After the panel completes, poll for the backgrounded process's exit up to `CRITIC_TIMEOUT_SECS*2` MORE seconds (≈480s default — the same per-pass budget the old foreground timebox used, now measured from harvest-start instead of launch-start). Net time available to the review is panel-wall-clock + ≈480s (typically 12–20min total), with ~zero added wall-clock in the common case where the review finishes during or shortly after the panel. If the process is still alive once that budget is exhausted, kill it and record a timeout — the same fail-open outcome as before, just far less likely to fire on a healthy review still running its post-verdict test-suite verification. Each bash fence in this runbook is independent, so re-resolve `$db` + `CR_PROFILE` and the branch-scoped pid/rc/output files the kickoff fence wrote:
    ```bash
    db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
@@ -301,7 +303,7 @@ Steps:
    codex_pid_file="${codex_out}.pid"
    codex_rc_file="${codex_out}.rc"
    codex_err_file="${codex_out}.err"  # companion stderr, kept for debugging — see kickoff fence (glm-3, CR round 2)
-   codex_findings=""; codex_rc=0
+   codex_findings=""; codex_rc=0; codex_avail_status=""
    if [ "${CR_PROFILE:-}" = "none" ]; then
        : # claude-only — codex adversarial pass also skipped under none (kickoff fence never launched a job).
    elif [ ! -s "$codex_pid_file" ]; then
@@ -348,7 +350,7 @@ Steps:
            fi
            kill "$codex_pid" 2>/dev/null; sleep 1; kill -9 "$codex_pid" 2>/dev/null
            echo "codex adversarial pass timed out (>${codex_to}s after the panel finished; stderr: $codex_err_file) — continuing without it" >&2
-           codex_findings=""; codex_rc=124
+           codex_findings=""; codex_rc=124; codex_avail_status="unavailable"
        else
            # Node has exited (kill -0 above just failed), but the wrapper
            # subshell writes $codex_rc_file a BEAT LATER — after `wait
@@ -365,14 +367,106 @@ Steps:
            if [ -s "$codex_rc_file" ]; then
                codex_rc=$(cat "$codex_rc_file")
                case "$codex_rc" in
-                   0) codex_findings=$(cat "$codex_out" 2>/dev/null) ;;  # success — findings (if any) captured
-                   *) echo "codex adversarial pass failed (rc=$codex_rc; stderr: $codex_err_file) — continuing without it" >&2; codex_findings="" ;;
+                   0)
+                       # HIMMEL-1420: rc=0 alone is NOT sufficient evidence of a
+                       # clean pass — classify via the tested completion check
+                       # (scripts/cr/codex-adv-completion-check.sh /
+                       # test-codex-adv-completion-check.sh), whose header
+                       # comment carries the current contract (hardened across
+                       # three CR rounds against the real companion source —
+                       # do not re-derive it here).
+                       cac_check=$(bash scripts/cr/codex-adv-completion-check.sh 0 "$codex_out" "$codex_err_file" 2>/dev/null)
+                       if [ $? -eq 0 ]; then
+                           codex_findings=$(cat "$codex_out" 2>/dev/null)  # success — findings (if any) captured
+                           codex_avail_status="ok"
+                       else
+                           cac_err_tail=$(printf '%s\n' "$cac_check" | sed -n 's/^err_tail=//p')
+                           echo "codex adversarial pass rc=0 with no 'Verdict:' marker on stdout — silent death suspected (err tail: ${cac_err_tail:-<none>}; stderr: $codex_err_file) — taking one bounded retry" >&2
+                           # ONE bounded retry (HIMMEL-1420, ticket-sanctioned).
+                           # Synchronous here, bounded by the same $codex_timeout
+                           # the async kickoff used — that async slot is already
+                           # spent, so the retry runs foreground in this fence.
+                           # This fence is independent of the kickoff fence (no
+                           # shared shell state across bash-tool calls), so
+                           # $companion must be RE-resolved here — same glob +
+                           # cygpath logic as the kickoff fence (HIMMEL-741c).
+                           companion=""
+                           for _rc_c in "$HOME/.claude/plugins/cache/openai-codex/codex/"*/scripts/codex-companion.mjs; do
+                               [ -f "$_rc_c" ] && companion="$_rc_c"
+                           done
+                           if [ -n "$companion" ] && command -v cygpath >/dev/null 2>&1; then
+                               companion=$(cygpath -m "$companion")
+                           fi
+                           if [ -z "$companion" ]; then
+                               echo "codex adversarial pass retry skipped — companion path could not be re-resolved in this fence — recording unavailable" >&2
+                               codex_findings=""; codex_avail_status="unavailable"
+                           else
+                               : > "$codex_out"; : > "$codex_err_file"
+                               if command -v timeout >/dev/null 2>&1; then
+                                   # -k grace (CR round 2 [codex-adv-2], HIMMEL-1420):
+                                   # without it a SIGTERM-ignoring companion
+                                   # outlives the advertised bound and its
+                                   # child test-suite processes can survive
+                                   # node's own exit — same
+                                   # CRITIC_KILL_GRACE_SECS pattern
+                                   # critic-panel.sh already uses for every
+                                   # member timeout.
+                                   # $codex_timeout: raised 4x across CR rounds as
+                                   # "undefined here" and disproved each time —
+                                   # normalized once at the TOP of THIS SAME bash
+                                   # fence (~line 325, the `codex_timeout=${CRITIC_TIMEOUT_SECS:-240}` /
+                                   # `case ... esac` / `[ "$codex_timeout" -gt 0 ]`
+                                   # block), not the step-3 kickoff fence's. Fence
+                                   # delimiters (```bash … ```) prove this whole
+                                   # block from that normalization down through
+                                   # this retry is ONE continuous fence — if you're
+                                   # about to re-raise this, re-check the fence
+                                   # boundaries first, not just the line numbers.
+                                   timeout -k "${CRITIC_KILL_GRACE_SECS:-5}s" "${codex_timeout}s" node "$companion" adversarial-review --wait --base "$db" >"$codex_out" 2>"$codex_err_file"
+                                   codex_retry_rc=$?
+                               else
+                                   node "$companion" adversarial-review --wait --base "$db" >"$codex_out" 2>"$codex_err_file" &
+                                   codex_retry_pid=$!
+                                   codex_retry_waited=0
+                                   while kill -0 "$codex_retry_pid" 2>/dev/null; do
+                                       [ "$codex_retry_waited" -ge "$codex_timeout" ] && break
+                                       sleep 5
+                                       codex_retry_waited=$((codex_retry_waited + 5))
+                                   done
+                                   if kill -0 "$codex_retry_pid" 2>/dev/null; then
+                                       if command -v taskkill >/dev/null 2>&1; then
+                                           taskkill //PID "$codex_retry_pid" //T //F 2>/dev/null
+                                       fi
+                                       kill "$codex_retry_pid" 2>/dev/null; sleep 1; kill -9 "$codex_retry_pid" 2>/dev/null
+                                       codex_retry_rc=124
+                                   else
+                                       wait "$codex_retry_pid"
+                                       codex_retry_rc=$?
+                                   fi
+                               fi
+                               cac_retry_check=$(bash scripts/cr/codex-adv-completion-check.sh "$codex_retry_rc" "$codex_out" "$codex_err_file" 2>/dev/null)
+                               if [ $? -eq 0 ]; then
+                                   codex_findings=$(cat "$codex_out" 2>/dev/null)
+                                   codex_avail_status="ok"
+                                   echo "codex adversarial pass retry succeeded — 'Verdict:' marker present" >&2
+                               else
+                                   cac_retry_err_tail=$(printf '%s\n' "$cac_retry_check" | sed -n 's/^err_tail=//p')
+                                   echo "codex adversarial pass retry ALSO failed (rc=$codex_retry_rc; err tail: ${cac_retry_err_tail:-<none>}; stderr: $codex_err_file) — recording unavailable, not clean" >&2
+                                   codex_findings=""; codex_avail_status="unavailable"
+                               fi
+                           fi
+                       fi
+                       ;;
+                   *)
+                       echo "codex adversarial pass failed (rc=$codex_rc; stderr: $codex_err_file) — continuing without it" >&2
+                       codex_findings=""; codex_avail_status="unavailable"
+                       ;;
                esac
            else
                # rc file genuinely never appeared (killed pre-write, or a
                # crash) — same fail-open "continuing without it" outcome.
                echo "codex adversarial pass exited without a recorded status (waited ${rc_wait}s; stderr: $codex_err_file) — continuing without it" >&2
-               codex_findings=""; codex_rc=1
+               codex_findings=""; codex_rc=1; codex_avail_status="unavailable"
            fi
        fi
        # $codex_err_file is intentionally NOT removed here (glm-3, CR round 2)
@@ -749,7 +843,7 @@ Steps:
    **Availability records are ALWAYS appended — never skipped (HIMMEL-1064).** The step-5 chokepoint requires at least one `avail … status=ok` at this HEAD to certify that a review actually happened, so a reviewer that responds CLEANLY (zero findings) must still be recorded — otherwise the gate reads "no responders" and refuses (exit 14) on a genuinely clean review. Findings are what varies; availability is what proves the review ran. In particular:
    - A critic that responded with zero findings → still record `avail --status ok`.
    - A critic that failed / rate-limited → record `avail --status unavailable`. That is a MISSING signal, and the chokepoint treats it as such.
-   - **The step-3.1 codex adversarial pass**, when it ran and returned (rc 0) — including a zero-finding `approve` verdict, which emits no `panel-availability:` line of its own → record `avail --model codex-adv --status ok`. A skip/timeout/failure → `--status unavailable`.
+   - **The step-3.1 codex adversarial pass** — record `avail --model codex-adv --status "$codex_avail_status"` whenever the harvest fence set `$codex_avail_status` (i.e. a job was launched). `ok` requires rc=0 AND `scripts/cr/codex-adv-completion-check.sh` classifying the stdout as a genuine completion — see that script's header comment for the exact, current contract (HIMMEL-1420, hardened across three CR rounds against the real companion source; a zero-finding `approve` verdict still satisfies it — the renderer always emits a findings-indicator line whether or not there are findings). The harvest fence takes ONE bounded, kill-graced retry before finalizing; a still-failing rc=0 after the retry, any non-zero rc, or a harvest timeout all set `codex_avail_status=unavailable`. When no job was launched at all (companion absent, or `CR_PROFILE=none`), `$codex_avail_status` stays unset — no avail line, same as before.
    - **Claude-only path** (`CR_PROFILE=none`, or every cross-model source skipped/failed): you performed the step-3.5 backstop review yourself, so record THAT as the evidence — `bash scripts/cr/ledger-append.sh avail --branch "$branch" --head "$head" --model claude --status ok` — plus a `finding` record per blocking issue you found. Without it the claude-only mode can never clear its own marker. **(HIMMEL-1224 — this row IS the Claude-only floor: on a zero-external-critic adopter it is the ONLY `avail … ok` row, and what makes the gate adopter-portable. It is the escape hatch for lane ABSENCE — it is NOT written for a lane that ATTEMPTED and failed, which records `unavailable` instead per HIMMEL-1126.)**
    - **Docs-audit lane** (step 2.5): it skips step 3 entirely, so NO cross-model source runs and nothing else would record availability — record the audit you performed the same way (`--model claude --status ok`, plus a `finding` per `[ACCURACY|DEAD-LINK|STALE|EXAMPLE|CONSISTENCY]` blocker — `[CONSISTENCY]` is Important per step 2.5, so it blocks too and must be recorded, or the chokepoint sees zero blockers and clears despite it). A docs-only push DOES write a marker (lane `docs-audit`), so without this record the docs lane can never clear it either.
 

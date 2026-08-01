@@ -604,12 +604,261 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # no-op below). Only "graph/" and the slug MOC are excluded -- a
   # hand-authored, non-derived note living directly under maps-dir is real
   # corpus content and still gets extracted.
+  #
+  # HIMMEL-1421: the plain lexical prefix match above (git blame: HIMMEL-1415)
+  # only catches --maps-dir/--corpus-root spelled with a SHARED literal
+  # prefix. Two equivalent-path spellings slip through it:
+  #   (a) relative-vs-absolute -- e.g. `--corpus-root . --maps-dir
+  #       "$PWD/60-Maps"` share no string prefix even though maps-dir IS
+  #       "./60-Maps", silently disabling the exclusion and reopening the
+  #       HIMMEL-1415 feedback loop; and
+  #   (b) Windows case variants (C:/Users vs c:/users) -- NTFS is
+  #       case-insensitive but a bash `case` pattern match is not.
+  # Fixed by canonicalizing both to absolute paths FIRST (below), then doing
+  # the containment comparison case-insensitively.
+  #
+  # Resolved with ONLY bash builtins (`cd` + `pwd -P`, in a subshell so the
+  # cd never leaks into the script's own $PWD) -- deliberately NOT a
+  # python3/external-process round-trip. HIMMEL-1415's CR follow-up TRIED
+  # exactly that (os.path.relpath in a spawned python3.exe) and it was
+  # WORSE: MSYS's argv-to-Windows-path translation resolved --corpus-root
+  # and --maps-dir to DIFFERENT drive roots for a maps-dir containing "[",
+  # silently disabling the exclusion (observed live, T28). `cd`/`pwd -P`
+  # never cross into a separate native process -- the path stays a plain,
+  # always-quoted bash string throughout, so a literal "[" is just a
+  # directory-name byte, never glob syntax, and that translation never gets
+  # a chance to run.
+  #
+  # _abs_path -- anchor a possibly-relative path at $PWD. Recognizes
+  # POSIX/MSYS-absolute ("/...") and Windows drive-absolute ("C:/..." or
+  # "C:\...") forms; anything else is relative and gets $PWD prepended.
+  _abs_path() {
+    case "$1" in
+      /*) printf '%s\n' "$1" ;;
+      [A-Za-z]:[/\\]*) printf '%s\n' "$1" ;;
+      *) printf '%s\n' "$PWD/$1" ;;
+    esac
+  }
+  # _canon_path -- resolve to a canonical absolute path. Walks up from the
+  # absolutized input to the deepest EXISTING ancestor (maps-dir need not
+  # exist yet -- e.g. a vault's 60-Maps/ on its first-ever refresh), `cd`s
+  # into that ancestor and takes `pwd -P` there to collapse any "." / ".."
+  # segments. Any non-existent tail is reattached verbatim in its ORIGINAL
+  # case: there is no on-disk truth for a path segment that doesn't exist
+  # yet, so preserving the caller's spelling is the closest available
+  # truth (and it's exactly the case still needed downstream to build the
+  # `find -path` exclusion pattern once the dir DOES exist).
+  #
+  # CR round 1 (codex-1 + glm-3, HIMMEL-1421): backslashes are normalized to
+  # forward slashes UP FRONT -- the walk below only ever splits on "/", and
+  # _abs_path accepts a backslash-form Windows-drive-absolute input
+  # ("C:\Users\...") as already-absolute without touching its separators.
+  # Without this, a non-existent backslash-form path has no "/" to strip,
+  # so `${abs%/*}` is a no-op on every iteration and the walk spins
+  # forever. The loop also gets an explicit structural terminator for the
+  # same failure mode in forward-slash form (e.g. a non-existent
+  # drive-absolute path shrinks down to a bare "Q:" with no "/" left to
+  # strip) -- break the instant a strip attempt produces no change, rather
+  # than relying on eventually reaching "/" or empty (which a bare drive
+  # token never does).
+  _canon_path() {
+    (
+      local abs suffix comp new
+      abs="$(_abs_path "$1")"
+      abs="${abs//\\//}"
+      suffix=""
+      while [ ! -d "$abs" ] && [ "$abs" != "/" ] && [ -n "$abs" ]; do
+        new="${abs%/*}"
+        if [ "$new" = "$abs" ]; then
+          # Nothing left to strip (e.g. a bare "Q:" that isn't itself a
+          # directory) -- stop shrinking. $abs is left OUT of the
+          # reattached suffix; the `[ -d "$abs" ]` check right below will
+          # correctly find it's not a directory and skip the cd/pwd -P
+          # step, so the caller's original spelling for this remainder
+          # passes through unchanged.
+          break
+        fi
+        comp="${abs##*/}"
+        if [ -n "$suffix" ]; then suffix="$comp/$suffix"; else suffix="$comp"; fi
+        abs="$new"
+        [ -n "$abs" ] || abs="/"
+      done
+      if [ -d "$abs" ]; then
+        abs="$(cd "$abs" && pwd -P)"
+      fi
+      if [ -n "$suffix" ]; then
+        printf '%s/%s\n' "${abs%/}" "$suffix"
+      else
+        printf '%s\n' "$abs"
+      fi
+    )
+  }
+  # _lc -- lowercase via `tr`, NOT `${var,,}` (CR round 1 addendum,
+  # codex-adv-1): `${var,,}` is a Bash 4+ case-conversion expansion and
+  # dies with "bad substitution" on Bash 3.2 (macOS system bash, this
+  # repo's documented compatibility floor for scripts outside a narrow
+  # exception list) -- which would kill every refresh before extraction
+  # even started. `tr` in a command substitution is POSIX and 3.2-safe.
+  _lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+  # _fs_case_insensitive -- true iff the filesystem the CORPUS actually
+  # lives on is case-insensitive. PROBE-FIRST (CR round 3, [codex-1]): the
+  # previous implementation keyed off OS TYPE (msys/cygwin/mingw/win32 ->
+  # insensitive, everything else -> sensitive), but macOS APFS is
+  # case-INSENSITIVE by default while $OSTYPE reports "darwin" -- so on this
+  # repo's Bash-3.2 macOS floor, a maps-dir passed with a case-variant
+  # corpus-root prefix would still bypass the HIMMEL-1415 exclusion this
+  # branch exists to close. A mounted case-sensitive volume anywhere defeats
+  # an OS-type guess just the same. So instead we PROBE the corpus's own
+  # filesystem and let IT answer. CR round 1 (codex-2) still holds: the
+  # containment comparison below must NOT fold unconditionally -- this
+  # script also runs on ubuntu CI in the public mirror, where the fs is
+  # case-sensitive and folding would treat e.g. "/tmp/Corpus" as contained
+  # in "/tmp/corpus" (wrong exclusions, over-matching). Precedence +
+  # fallback:
+  #   1. GRAPHIFY_FS_CASE_INSENSITIVE=1/0 override still wins, so a test
+  #      can force either branch without a real case-(in)sensitive fs.
+  #   2. Otherwise PROBE the corpus filesystem ONCE per run -- write a
+  #      uniquely-named lowercase file under the canonical corpus root and
+  #      test whether the UPPERCASE spelling resolves (cache in
+  #      _GRAPHIFY_FS_CASE so a second consult never re-probes).
+  #   3. If the probe cannot run (corpus root read-only/unwritable/not a
+  #      directory yet), FALL BACK to the OS-type heuristic below -- never
+  #      fail the refresh because of the probe itself.
+  _fs_case_insensitive() {
+    case "${GRAPHIFY_FS_CASE_INSENSITIVE:-}" in
+      1) return 0 ;;
+      0) return 1 ;;
+    esac
+    # Replay the cached verdict so the probe is one-shot per run.
+    if [ -n "${_GRAPHIFY_FS_CASE:+x}" ]; then
+      [ "$_GRAPHIFY_FS_CASE" -eq 1 ] && return 0 || return 1
+    fi
+    # Probe the filesystem the corpus lives on. The probe file is
+    # dot-prefixed (a crashed leftover is recognizable + won't read as
+    # content) and removed on every path before returning -- it must never
+    # leak into the corpus. CREATE-UNIQUE + NO-CLOBBER + BOTH-TWINS-ABSENT
+    # (CR round 4, [codex-r4-1]/[codex-r4-2]), not a single `printf >`:
+    #   * NO-CLOBBER (`set -C` inside the subshell ONLY, so the outer
+    #     shell's options are untouched): a plain `>` clobbers a pre-existing
+    #     file at the candidate name (a stale leftover after PID reuse) and
+    #     FOLLOWS a stale symlink there, write-through to its target. `set -C`
+    #     makes the redirect FAIL rather than truncate/follow, closing the
+    #     TOCTOU between the existence check below and the write.
+    #   * BOTH TWINS ABSENT: on a case-SENSITIVE fs a stale UPPERCASE leftover
+    #     (.GRAPHIFY-FS-PROBE-...-X) from a crashed prior run (possibly with a
+    #     reused PID) would make the post-write `[ -e "$probe_up" ]` wrongly
+    #     report case-insensitive, so a candidate whose uppercase twin already
+    #     exists is SKIPPED before any verdict is trusted. The check is
+    #     `[ -e ] || [ -L ]` (not `[ -e ]` alone): `-L` catches a DANGLING
+    #     symlink that `-e` misses (it resolves the link, so a broken link
+    #     reads as absent under `-e` but present under `-L`).
+    #   * SUFFIX LOOP (0..9, explicit list -- NOT `{0..9}`, which is Bash 4.0+
+    #     sequence brace expansion and breaks the 3.2 floor, see T37): makes a
+    #     no-clobber candidate almost always available even when a couple of
+    #     stale siblings linger; skip any occupied candidate and try the next.
+    #     We do NOT use `mktemp` (XXXXXX): its suffix is mixed-case/random, so
+    #     the uppercase twin's bytes are UNCONTROLLED and the whole probe
+    #     hinges on a controlled lowercase->UPPERCASE contrast.
+    #   * Pathological (all 10 occupied, or every no-clobber write still
+    #     fails -- e.g. read-only corpus root): fall through to the OS-type
+    #     heuristic below; never fail the refresh over the probe itself.
+    # Declares are split from the assignments (SC2155), matching _canon_path
+    # above: a `local x="$(...)"` would mask the command substitution's
+    # status under set -e.
+    local probe_lo probe_up i
+    for i in 0 1 2 3 4 5 6 7 8 9; do
+      probe_lo="$CORPUS_ROOT_CANON/.graphify-fs-probe-$$-$i-x"
+      probe_up="$CORPUS_ROOT_CANON/$(printf '%s' ".graphify-fs-probe-$$-$i-x" | tr '[:lower:]' '[:upper:]')"
+      # Skip this candidate if EITHER the lowercase name or its uppercase
+      # twin already exists as a regular file OR a (possibly dangling) symlink.
+      if [ -e "$probe_lo" ] || [ -L "$probe_lo" ] \
+         || [ -e "$probe_up" ] || [ -L "$probe_up" ]; then
+        continue
+      fi
+      # NO-CLOBBER create (set -C confined to this subshell): the redirect
+      # FAILS -- rather than truncate/follow -- if the path appears between
+      # the check above and here, or if the FS rejects the write.
+      if ( umask 077; set -C; printf 'x' > "$probe_lo" ) 2>/dev/null; then
+        if [ -e "$probe_up" ]; then
+          _GRAPHIFY_FS_CASE=1
+        else
+          _GRAPHIFY_FS_CASE=0
+        fi
+        # Cleanup the LOWERCASE file only -- we never create the uppercase
+        # twin (the case contrast IS the probe), so it is not ours to remove.
+        rm -f "$probe_lo" 2>/dev/null || true
+        break
+      fi
+    done
+    if [ -z "${_GRAPHIFY_FS_CASE:+x}" ]; then
+      # Corpus root unwritable / read-only / not a directory yet, OR every
+      # candidate name was occupied (pathological) -- the probe cannot run.
+      # Fall back to the former OS-type heuristic (CR round 1) rather than
+      # fail the whole refresh over the probe itself; the fold direction it
+      # picks is still strictly safer than no fold. NOT silent (CR round 5,
+      # codex-adv): on a case-insensitive fs the OS-type answer can be WRONG
+      # (macOS/APFS reads as case-sensitive here -- the exact misread the
+      # probe exists to avoid), so a fallback is worth a loud advisory: the
+      # operator can set GRAPHIFY_FS_CASE_INSENSITIVE=1/0 to pin the truth.
+      echo "WARN refresh-graph-map: case-sensitivity probe could not run in $CORPUS_ROOT_CANON (unwritable, or all candidate names occupied) -- falling back to the OS-type heuristic, which can misread e.g. macOS/APFS as case-sensitive. Pin with GRAPHIFY_FS_CASE_INSENSITIVE=1/0 if the exclusion misbehaves." >&2
+      local ostype="${OSTYPE:-}"
+      [ -n "$ostype" ] || ostype="$(uname 2>/dev/null || true)"
+      case "$(_lc "$ostype")" in
+        msys*|cygwin*|mingw*|win32*) _GRAPHIFY_FS_CASE=1 ;;
+        *) _GRAPHIFY_FS_CASE=0 ;;
+      esac
+    fi
+    [ "$_GRAPHIFY_FS_CASE" -eq 1 ] && return 0 || return 1
+  }
+  CORPUS_ROOT_CANON="$(_canon_path "$CORPUS_ROOT")"
+  MAPS_DIR_CANON="$(_canon_path "$MAPS_DIR")"
   MAPS_EXCL_REL=""
-  CORPUS_ROOT_TRIMMED="${CORPUS_ROOT%/}"
-  case "$MAPS_DIR" in
-    "$CORPUS_ROOT_TRIMMED"/*) MAPS_EXCL_REL="${MAPS_DIR#"$CORPUS_ROOT_TRIMMED"/}" ;;
-    "$CORPUS_ROOT_TRIMMED") MAPS_EXCL_REL="." ;;
+  CORPUS_ROOT_TRIMMED="${CORPUS_ROOT_CANON%/}"
+  # Containment test, folded ONLY on a case-insensitive filesystem (CR
+  # round 1, codex-2 -- see _fs_case_insensitive above for why this is
+  # gated, not unconditional). `_lc` (tr-based, Bash-3.2-safe -- see its
+  # definition above) is length-preserving for the ASCII path text these
+  # values are built from, so the fold's string length can be used to
+  # slice the ORIGINAL-CASE $MAPS_DIR_CANON below -- keeping the real (or
+  # caller-supplied, for a not-yet-existing tail) casing in MAPS_EXCL_REL,
+  # which the `find -path` exclusion below needs (find's -path match is
+  # byte-literal, not case-folded, even on a case-insensitive filesystem).
+  # On a case-SENSITIVE filesystem the "fold" is a no-op copy, so the same
+  # length-slice logic below stays correct in both branches. A plain
+  # `${var#pattern}` prefix-removal was tried instead of the length slice
+  # and confirmed NOT to honor `shopt -s nocasematch` in this bash (it
+  # silently strips nothing on a case-differing match) -- the length slice
+  # is deterministic regardless.
+  if _fs_case_insensitive; then
+    CORPUS_ROOT_FOLD="$(_lc "$CORPUS_ROOT_TRIMMED")"
+    MAPS_DIR_FOLD="$(_lc "$MAPS_DIR_CANON")"
+  else
+    CORPUS_ROOT_FOLD="$CORPUS_ROOT_TRIMMED"
+    MAPS_DIR_FOLD="$MAPS_DIR_CANON"
+  fi
+  case "$MAPS_DIR_FOLD" in
+    "$CORPUS_ROOT_FOLD"/*) MAPS_EXCL_REL="${MAPS_DIR_CANON:$(( ${#CORPUS_ROOT_FOLD} + 1 ))}" ;;
+    "$CORPUS_ROOT_FOLD") MAPS_EXCL_REL="." ;;
   esac
+  # Ambiguous-form advisory: a maps-dir genuinely OUTSIDE corpus-root stays
+  # a sanctioned no-op (nothing to exclude) -- but when the two paths share
+  # NO prefix even after canonicalization AND were passed in different form
+  # classes (one relative, one absolute), that specific combination is
+  # exactly what silently disabled the HIMMEL-1415 exclusion before this
+  # fix, so it's worth a loud WARN instead of a silent no-op.
+  if [ -z "$MAPS_EXCL_REL" ]; then
+    case "$CORPUS_ROOT" in
+      /*|[A-Za-z]:[/\\]*) CORPUS_ROOT_WAS_ABS=1 ;;
+      *) CORPUS_ROOT_WAS_ABS=0 ;;
+    esac
+    case "$MAPS_DIR" in
+      /*|[A-Za-z]:[/\\]*) MAPS_DIR_WAS_ABS=1 ;;
+      *) MAPS_DIR_WAS_ABS=0 ;;
+    esac
+    if [ "$CORPUS_ROOT_WAS_ABS" != "$MAPS_DIR_WAS_ABS" ]; then
+      echo "refresh-graph-map: WARN --corpus-root and --maps-dir share no common path after canonicalization (resolved to '$CORPUS_ROOT_TRIMMED' and '$MAPS_DIR_CANON') and were passed in different forms (one relative, one absolute) -- treating maps-dir as outside the corpus (no derived-page exclusion applied); pass both in the same form if maps-dir is meant to live inside corpus-root" >&2
+    fi
+  fi
   # HIMMEL-1415 CR follow-up round 3 (codex-adv-3): strip any LEADING
   # slash(es) left on MAPS_EXCL_REL after the prefix-strip above. A caller
   # that builds --maps-dir by naive concatenation against a --corpus-root

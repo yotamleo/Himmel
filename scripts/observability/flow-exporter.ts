@@ -31,6 +31,15 @@ export type ObservabilityConfig = {
     codex_sessions_dir?: string;
     glm_ledger_path?: string;
   };
+  // HIMMEL-1129: repos whose tracked graphify-out/graph.json (HIMMEL-1123)
+  // should be watched for shipped-graph staleness. Absent/empty = the family
+  // is omitted entirely (opt-in, no obligation on single-station adopters).
+  // default_branch (default "main") is the LOCAL ref read — see
+  // readShippedGraphCommitTime's doc comment for why an explicit ref matters.
+  // This is operator-edited JSON, not a value this module produces itself, so
+  // consumers runtime-validate it (validateGraphifyRepos) rather than trusting
+  // this static type at the JSON.parse boundary.
+  graphify_repos?: Array<{ corpus: string; repo_path: string; default_branch?: string }>;
 };
 
 type ScheduledTaskSample = {
@@ -79,6 +88,8 @@ export type ExporterCache = {
   hostDetectors?: Cached<HostDetectorResult>;
   luna?: Cached<{ samples: string[] }>;
   lunaGit?: Cached<GitDivergenceResult>;
+  // Keyed by repo_path (a single scrape may watch several corpora/repos).
+  shippedGraphAge?: Record<string, Cached<ShippedGraphAgeResult>>;
 };
 
 export type RenderMetricsOptions = {
@@ -92,6 +103,12 @@ export type RenderMetricsOptions = {
   schedulerRunner?: SchedulerRunner;
   hostDetectorRunner?: HostDetectorRunner;
   gitRunner?: GitRunner;
+  graphAgeRunner?: ShippedGraphAgeRunner;
+  // Total wall-clock budget for the WHOLE shipped-graph-age family across all
+  // configured repos (CR round 2, codex-adv-4). Defaults to
+  // DEFAULT_SHIPPED_GRAPH_AGE_BUDGET_MS; tests override with a small value so
+  // a budget-exceeded path is exercisable without a real multi-second wait.
+  graphAgeBudgetMs?: number;
   cache?: ExporterCache;
 };
 
@@ -666,6 +683,197 @@ async function lunaGitMetrics(
   }
 }
 
+// HIMMEL-1129 (option 3): shipped-graph age observability. HIMMEL-1123
+// tracks graphify-out/graph.json + GRAPH_REPORT.md so stations that can't
+// afford a re-extract (win2) pull the graph instead — but a pulled checkout's
+// FILE MTIME is checkout time, not content age, so check-graph-freshness.sh's
+// mtime read is meaningless on a shipped/pulled copy (it always reads FRESH).
+// The real age of what was SHIPPED is the git commit time of the last commit
+// that touched graphify-out/graph.json — that's what these two series expose.
+//
+// Deliberately NOT named graphify_graph_age_seconds{corpus} (the name
+// HIMMEL-1124 proposes for a LOCAL graph's mtime-based age, still unimplemented
+// at time of writing — verified: HIMMEL-1124 is "To Do", no commits exist
+// under that key anywhere in history). Reusing that exact name here would
+// collide two different measurements (git-commit-time vs. mtime) under one
+// series; graphify_shipped_graph_age_seconds keeps 1124's naming convention
+// and PromQL shape (per-corpus gauge, HELP/TYPE lines) while staying
+// unambiguous about what it measures.
+export type ShippedGraphAgeResult = { epochSeconds: number } | null;
+export type ShippedGraphAgeRunner = (repoPath: string, ref: string) => Promise<ShippedGraphAgeResult>;
+
+const SHIPPED_GRAPH_PATH = "graphify-out/graph.json";
+const DEFAULT_SHIPPED_GRAPH_REF = "main";
+
+// Exported for unit tests (mirrors runGitDivergence's raw-command-runner seam):
+// null = the path has no commit history in this repo (never tracked there);
+// a thrown error = ambiguous (timeout, spawn error, non-numeric output) and
+// must PROPAGATE so the caller omits the whole family rather than reading it
+// as "no history" (same discipline as HIMMEL-1199's runGitDivergence).
+//
+// `ref` MUST be explicit (CR round 1, codex-adv-1): `git log -1 -- <path>`
+// with no starting ref reads whatever branch is CURRENTLY CHECKED OUT in
+// repoPath, not the protected default. A checkout sitting on a feature or
+// publish branch would then report a fresh unmerged graph while `main`
+// itself stayed stale — silently defeating the whole alert. `ref` is a
+// LOCAL branch name (default "main", per config.graphify_repos[].default_branch)
+// — this function does no `git fetch` (same passivity invariant as
+// lunaGitMetrics/runGitDivergence), so it reads whatever that local ref
+// happens to point at and CAN LAG the remote if nothing else keeps it
+// updated on the exporter's host.
+export async function readShippedGraphCommitTime(repoPath: string, ref: string = DEFAULT_SHIPPED_GRAPH_REF, run: GitCommandRunner = runGitCommand): Promise<ShippedGraphAgeResult> {
+  const res = await run(["log", "-1", "--format=%ct", ref, "--", SHIPPED_GRAPH_PATH], repoPath, GIT_QUERY_TIMEOUT_MS);
+  if (res.exitCode !== 0) {
+    const detail = (res.stderr.trim() || res.stdout.trim() || "no output").slice(0, 200);
+    throw new Error(`git log -1 ${ref} -- ${SHIPPED_GRAPH_PATH} exited ${res.exitCode}: ${detail}`);
+  }
+  const out = res.stdout.trim();
+  if (!out) return null;
+  const epochSeconds = Number(out);
+  if (!Number.isFinite(epochSeconds)) {
+    throw new Error(`git log produced a non-numeric commit time: ${out.slice(0, 80)}`);
+  }
+  return { epochSeconds };
+}
+
+function shippedGraphAgeOmitComment(corpus: string, reason: string): string {
+  return `# graphify_shipped_graph_age_seconds omitted (corpus=${corpus}): ${reason.replace(/\s+/g, " ").trim() || "shipped-graph query failed"}`;
+}
+
+type GraphifyRepoEntry = { corpus: string; repo_path: string; default_branch?: string };
+
+// CR round 1 (codex-adv-5): config.graphify_repos is OPERATOR-EDITED JSON, not
+// a value this module produces itself — a malformed entry (wrong shape, an
+// object instead of an array, a non-string corpus) must never crash the whole
+// /metrics scrape (Prometheus would see a hard 500 across EVERY family, not
+// just this one). Invalid entries are skipped with a comment; valid siblings
+// still render. Duplicate `corpus` values are also rejected (second-and-later
+// occurrence skipped) — two samples of the same gauge under an identical
+// label set is a malformed exposition, not "last write wins".
+function validateGraphifyRepos(raw: unknown): { valid: GraphifyRepoEntry[]; comments: string[] } {
+  if (raw === undefined) return { valid: [], comments: [] };
+  if (!Array.isArray(raw)) {
+    return { valid: [], comments: ["# graphify_shipped_graph_age_seconds omitted: config.graphify_repos is not an array"] };
+  }
+  const comments: string[] = [];
+  const seenCorpus = new Set<string>();
+  const valid: GraphifyRepoEntry[] = [];
+  raw.forEach((entry, i) => {
+    if (!entry || typeof entry !== "object") {
+      comments.push(`# graphify_shipped_graph_age_seconds omitted: graphify_repos[${i}] is not an object`);
+      return;
+    }
+    const e = entry as Record<string, unknown>;
+    const corpus = typeof e.corpus === "string" ? e.corpus.trim() : "";
+    const repo_path = typeof e.repo_path === "string" ? e.repo_path.trim() : "";
+    const default_branch = typeof e.default_branch === "string" && e.default_branch.trim() ? e.default_branch.trim() : undefined;
+    if (!corpus || !repo_path) {
+      comments.push(`# graphify_shipped_graph_age_seconds omitted: graphify_repos[${i}] needs non-empty string corpus + repo_path`);
+      return;
+    }
+    if (seenCorpus.has(corpus)) {
+      comments.push(`# graphify_shipped_graph_age_seconds omitted: graphify_repos[${i}] duplicate corpus="${corpus}" (first occurrence wins)`);
+      return;
+    }
+    seenCorpus.add(corpus);
+    valid.push({ corpus, repo_path, default_branch });
+  });
+  return { valid, comments };
+}
+
+// CR round 2 default (codex-adv-4): with N repos queried SEQUENTIALLY, each up
+// to GIT_QUERY_TIMEOUT_MS (10s) on a hung/degraded git spawn, the worst case
+// was N*10s -- large enough on its own to blow past a typical Prometheus
+// scrape_timeout and lose EVERY family in the response, not just this one.
+// Queries below run CONCURRENTLY (bounding the worst case near a single
+// query's own timeout regardless of N) AND are individually raced against
+// this shared, shrinking budget, so a scrape returns well inside a normal
+// external timeout even if some individual git spawn is still hung — the
+// slow repo is reported via an omit comment (retried on the NEXT scrape,
+// picked up fresh once its own query completes), never left to block the
+// whole /metrics response.
+const DEFAULT_SHIPPED_GRAPH_AGE_BUDGET_MS = 8000;
+
+const BUDGET_EXCEEDED = Symbol("shipped-graph-age budget exceeded");
+
+async function raceBudget<T>(promise: Promise<T>, budgetMs: number): Promise<T | typeof BUDGET_EXCEEDED> {
+  if (budgetMs <= 0) return BUDGET_EXCEEDED;
+  return Promise.race([
+    promise,
+    new Promise<typeof BUDGET_EXCEEDED>((resolve) => setTimeout(() => resolve(BUDGET_EXCEEDED), budgetMs)),
+  ]);
+}
+
+async function shippedGraphAgeMetrics(
+  config: ObservabilityConfig,
+  opts: Required<Pick<RenderMetricsOptions, "nowMs" | "cache">> & { graphAgeRunner?: ShippedGraphAgeRunner; budgetMs?: number },
+): Promise<{ lines: string[]; comments: string[] }> {
+  const { valid: repos, comments: validationComments } = validateGraphifyRepos(config.graphify_repos);
+  if (repos.length === 0) return { lines: [], comments: validationComments };
+
+  const runner = opts.graphAgeRunner ?? readShippedGraphCommitTime;
+  const cacheMap = opts.cache.shippedGraphAge ?? (opts.cache.shippedGraphAge = {});
+  const budgetMs = opts.budgetMs ?? DEFAULT_SHIPPED_GRAPH_AGE_BUDGET_MS;
+  const started = performance.now();
+
+  // Per-repo isolation: each entry's own try/catch means one failing/slow
+  // repo can never reject (or stall resolving) the shared Promise.all below.
+  const perRepo = await Promise.all(repos.map(async (entry) => {
+    const { corpus, repo_path, default_branch } = entry;
+    const ref = default_branch ?? DEFAULT_SHIPPED_GRAPH_REF;
+    // Composite key (CR round 2, codex-2/codex-adv-3): repo_path ALONE
+    // aliased two config entries watching different branches of the SAME
+    // repo onto one cache slot -- the second entry silently inherited the
+    // first's ref/result, and a default_branch EDIT in config was masked
+    // until the (up to 60s) TTL happened to expire on its own.
+    const cacheKey = `${repo_path}\0${ref}`;
+    const cached = cacheMap[cacheKey];
+    if (cached && opts.nowMs - cached.fetchedAtMs < CACHE_TTL_MS) {
+      return { corpus, ref, ok: true as const, result: cached.value };
+    }
+    const remainingMs = Math.max(0, budgetMs - (performance.now() - started));
+    try {
+      const outcome = await raceBudget(runner(repo_path, ref), remainingMs);
+      if (outcome === BUDGET_EXCEEDED) {
+        return { corpus, ref, ok: false as const, message: `exceeded the ${budgetMs}ms shipped-graph query budget` };
+      }
+      cacheMap[cacheKey] = { key: cacheKey, fetchedAtMs: opts.nowMs, value: outcome };
+      return { corpus, ref, ok: true as const, result: outcome };
+    } catch (e) {
+      delete cacheMap[cacheKey];
+      const message = e instanceof Error && e.message ? e.message : "shipped-graph query failed";
+      return { corpus, ref, ok: false as const, message };
+    }
+  }));
+
+  const ageSamples: string[] = [];
+  const tsSamples: string[] = [];
+  const comments: string[] = [...validationComments];
+
+  for (const entry of perRepo) {
+    if (!entry.ok) {
+      comments.push(shippedGraphAgeOmitComment(entry.corpus, entry.message));
+      continue;
+    }
+    if (entry.result === null) {
+      comments.push(shippedGraphAgeOmitComment(entry.corpus, `${SHIPPED_GRAPH_PATH} has no commit history on ${entry.ref} in this repo (never tracked, or wrong default_branch)`));
+      continue;
+    }
+    const ageSeconds = Math.max(0, opts.nowMs / 1000 - entry.result.epochSeconds);
+    ageSamples.push(sample("graphify_shipped_graph_age_seconds", { corpus: entry.corpus }, ageSeconds));
+    tsSamples.push(sample("graphify_shipped_graph_commit_timestamp", { corpus: entry.corpus }, entry.result.epochSeconds));
+  }
+
+  const lines: string[] = [];
+  addFamily(lines, "graphify_shipped_graph_age_seconds",
+    "Seconds since the last commit touching the tracked graphify-out/graph.json (HIMMEL-1129) — the SHIPPED graph's real age, from git commit time, NOT file mtime (a pulled checkout's mtime is checkout time, always reading FRESH regardless of content age).",
+    "gauge", ageSamples);
+  addFamily(lines, "graphify_shipped_graph_commit_timestamp",
+    "Epoch seconds of the last commit touching the tracked graphify-out/graph.json.",
+    "gauge", tsSamples);
+  return { lines, comments };
+}
+
 // HIMMEL-1000: real per-lane bank gauges. Each lanes.json lane that declares
 // quota.bank fans out one series per live window of that bank; lanes without
 // a machine-readable source (or whose bank has no live reading) emit an
@@ -754,6 +962,10 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   const lunaGit = await lunaGitMetrics(cfg, { nowMs, cache, gitRunner: options.gitRunner });
   lines.push(...lunaGit.comments);
   lines.push(...lunaGit.lines);
+
+  const shippedGraph = await shippedGraphAgeMetrics(cfg, { nowMs, cache, graphAgeRunner: options.graphAgeRunner, budgetMs: options.graphAgeBudgetMs });
+  lines.push(...shippedGraph.comments);
+  lines.push(...shippedGraph.lines);
 
   const quota = quotaMetrics(cfg, env, quotaPath, lanesPath, options.platform ?? process.platform, nowMs);
   lines.push(...quota.comments);
