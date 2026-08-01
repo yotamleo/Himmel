@@ -12,6 +12,16 @@
 
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/queue-lock.sh"
 
@@ -50,7 +60,7 @@ if [ -f "$lockdir/owner.json" ] \
 else
     fail "T1: owner.json missing/incomplete ($(cat "$lockdir/owner.json" 2>/dev/null || echo 'MISSING'))"
 fi
-if printf '%s' "$out" | grep -q '^release-token: session-a$'; then
+if grepq "$out" '^release-token: session-a$'; then
     pass "T1: acquire prints the release-token line"
 else
     fail "T1: acquire output missing 'release-token: session-a' (got: $out)"
@@ -64,7 +74,7 @@ if [ "$rc" -eq 2 ]; then
 else
     fail "T2: second acquire while FRESH rc=2 (got $rc: $err)"
 fi
-if printf '%s' "$err" | grep -q 'session=session-a' && printf '%s' "$err" | grep -qi 'QUEUE_LOCK_TAKEOVER'; then
+if grepq "$err" 'session=session-a' && grepq "$err" -i 'QUEUE_LOCK_TAKEOVER'; then
     pass "T2: stderr has holder info + takeover override hint"
 else
     fail "T2: stderr missing holder info / override hint: $err"
@@ -73,7 +83,7 @@ fi
 # --- T3: status FRESH -> rc 11 + owner contents ------------------------------
 out="$(bash "$LIB" status "$HO1" 2>&1)"
 rc=$?
-if [ "$rc" -eq 11 ] && printf '%s' "$out" | grep -q '"session":"session-a"' && printf '%s' "$out" | grep -qi 'FRESH'; then
+if [ "$rc" -eq 11 ] && grepq "$out" '"session":"session-a"' && grepq "$out" -i 'FRESH'; then
     pass "T3: status held-FRESH rc=11 + owner contents"
 else
     fail "T3: status held-FRESH rc=11 + owner contents (got rc=$rc out=$out)"
@@ -146,7 +156,7 @@ fi
 # --- T9: stale takeover -- QUEUE_LOCK_TTL_SECONDS=0 makes any lock STALE ----
 out="$(QUEUE_LOCK_TTL_SECONDS=0 bash "$LIB" status "$HO1" 2>&1)"
 rc=$?
-if [ "$rc" -eq 12 ] && printf '%s' "$out" | grep -qi 'STALE'; then
+if [ "$rc" -eq 12 ] && grepq "$out" -i 'STALE'; then
     pass "T9: status STALE under TTL=0 rc=12"
 else
     fail "T9: status STALE under TTL=0 rc=12 (got rc=$rc out=$out)"
@@ -179,7 +189,7 @@ if [ "$rc" -eq 0 ]; then
 else
     fail "T10: forced takeover of a FRESH lock rc=0 (got $rc: $err)"
 fi
-if printf '%s' "$err" | grep -qi 'forced'; then
+if grepq "$err" -i 'forced'; then
     pass "T10: forced-takeover message names the reason"
 else
     fail "T10: forced-takeover message missing 'forced' reason: $err"
@@ -319,7 +329,7 @@ if [ "$rc" -eq 2 ] && [ -d "$LOCKDIR15" ]; then
 else
     fail "T15: token-less release refused rc=2 + held (got rc=$rc, dir-exists=$([ -d "$LOCKDIR15" ] && echo yes || echo no))"
 fi
-if printf '%s' "$err" | grep -q 'session-t15' && printf '%s' "$err" | grep -q 'QUEUE_LOCK_FORCE_RELEASE'; then
+if grepq "$err" 'session-t15' && grepq "$err" 'QUEUE_LOCK_FORCE_RELEASE'; then
     pass "T15: refusal names the current holder + the emergency override"
 else
     fail "T15: refusal missing holder info / override hint: $err"
@@ -352,12 +362,12 @@ HO16="$HANDOVER_DIR/HIMMEL-856-test/next-session-16.md"
 : > "$HO16"
 LOCKDIR16="$HANDOVER_DIR/.locks/queue/HIMMEL-856-test__next-session-16.lock"
 t16_out=$(bash -c '. "$1"; _ql_write_owner() { return 1; }; queue_lock_acquire "$2" "sess-t16"; echo "RC=$?"' _ "$LIB" "$HO16" 2>&1)
-if printf '%s' "$t16_out" | grep -q 'RC=1' && [ ! -d "$LOCKDIR16" ]; then
+if grepq "$t16_out" 'RC=1' && [ ! -d "$LOCKDIR16" ]; then
     pass "T16: failed owner write -> rc=1 and the lock dir is removed"
 else
     fail "T16: failed owner write (out=$t16_out, dir-exists=$([ -d "$LOCKDIR16" ] && echo yes || echo no))"
 fi
-if printf '%s' "$t16_out" | grep -q 'acquire FAILED' && ! printf '%s' "$t16_out" | grep -q 'release-token:'; then
+if grepq "$t16_out" 'acquire FAILED' && ! grepq "$t16_out" 'release-token:'; then
     pass "T16: loud failure, no acquired/token line emitted"
 else
     fail "T16: failure output wrong (no loud error, or a token line leaked): $t16_out"
@@ -370,7 +380,7 @@ LOCKDIR17="$HANDOVER_DIR/.locks/queue/HIMMEL-856-test__next-session-17.lock"
 mkdir -p "$LOCKDIR17"   # lock dir with NO owner.json = corrupt
 out="$(bash "$LIB" status "$HO17" 2>&1)"
 rc=$?
-if [ "$rc" -eq 11 ] && printf '%s' "$out" | grep -q 'CORRUPT'; then
+if [ "$rc" -eq 11 ] && grepq "$out" 'CORRUPT'; then
     pass "T17: corrupt lock dir -> rc=11 (fail-closed) and says CORRUPT"
 else
     fail "T17: corrupt lock dir status (got rc=$rc out=$out)"
@@ -388,7 +398,7 @@ printf '{"session":"ager","host":"h","handover":"%s","started":"2020-01-01T00:00
     "$HO18" > "$LOCKDIR18/owner.json"
 err="$(QUEUE_LOCK_TTL_SECONDS=300000000 bash "$LIB" status "$HO18" 2>&1 1>/dev/null)"
 rc=$?
-if [ "$rc" -eq 11 ] && printf '%s' "$err" | grep -qi 'AGING'; then
+if [ "$rc" -eq 11 ] && grepq "$err" -i 'AGING'; then
     pass "T18: FRESH lock past half-TTL warns AGING (rc stays 11)"
 else
     fail "T18: aging warning (got rc=$rc err=$err)"
@@ -397,7 +407,7 @@ printf '{"session":"ager","host":"h","handover":"%s","started":"garbage","heartb
     "$HO18" > "$LOCKDIR18/owner.json"
 err="$(bash "$LIB" status "$HO18" 2>&1 1>/dev/null)"
 rc=$?
-if [ "$rc" -eq 11 ] && printf '%s' "$err" | grep -qi 'could not parse heartbeat'; then
+if [ "$rc" -eq 11 ] && grepq "$err" -i 'could not parse heartbeat'; then
     pass "T18: unparsable heartbeat -> WARN + treated FRESH (rc=11)"
 else
     fail "T18: unparsable-heartbeat warn (got rc=$rc err=$err)"
@@ -449,7 +459,7 @@ if [ "$(wc -l < "$ARMS_REGISTRY")" -eq 2 ]; then
 else
     fail "T19: unexpected registry line count ($(cat "$ARMS_REGISTRY" 2>/dev/null))"
 fi
-if printf '%s' "$err" | grep -qi 'consumed'; then
+if grepq "$err" -i 'consumed'; then
     pass "T19: loud trail on the consumed stderr line"
 else
     fail "T19: no loud trail for the consume rewrite ($err)"
@@ -499,7 +509,7 @@ bash "$LIB" release "$HO21" "session-t21" >/dev/null 2>&1
 printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t21-solo"}' \
     "$THIS_HOST" "$HO21" > "$ARMS_REGISTRY"   # single matching record, NO newline
 err="$(bash "$LIB" acquire "$HO21" "session-t21b" 2>&1 1>/dev/null)"
-if printf '%s' "$err" | grep -qi 'consumed' && ! grep -q 't21-solo' "$ARMS_REGISTRY"; then
+if grepq "$err" -i 'consumed' && ! grep -q 't21-solo' "$ARMS_REGISTRY"; then
     pass "T21: solo no-newline matching record was SEEN and consumed (loud trail)"
 else
     fail "T21: solo no-newline record not consumed / no trail (err=$err reg=$(cat "$ARMS_REGISTRY" 2>/dev/null))"
@@ -595,7 +605,7 @@ printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMME
     "$THIS_HOST" "$HO24" > "$ARMS_REGISTRY"
 err="$(bash "$LIB" acquire "$HO24" "session-t24" 2>&1 1>/dev/null)"
 rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$err" | grep -qi 'took over'; then
+if [ "$rc" -eq 0 ] && grepq "$err" -i 'took over'; then
     pass "T24: acquire went through the stale-takeover path rc=0"
 else
     fail "T24: expected a stale takeover (got rc=$rc: $err)"
@@ -651,12 +661,12 @@ HO26="$HANDOVER_DIR/HIMMEL-856-test/next-session-26.md"
 printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t26-failopen"}\n' \
     "$THIS_HOST" "$HO26" > "$ARMS_REGISTRY"
 t26_out=$(bash -c '. "$1"; mkdir -p "$2.tmp.$$"; queue_lock_acquire "$3" "sess-t26"; rc=$?; rmdir "$2.tmp.$$" 2>/dev/null; echo "RC=$rc"' _ "$LIB" "$ARMS_REGISTRY" "$HO26" 2>&1)
-if printf '%s' "$t26_out" | grep -q 'RC=0' && printf '%s' "$t26_out" | grep -q 'release-token: sess-t26'; then
+if grepq "$t26_out" 'RC=0' && grepq "$t26_out" 'release-token: sess-t26'; then
     pass "T26: acquire still succeeds when the registry rewrite cannot start"
 else
     fail "T26: acquire failed on a registry write failure (out=$t26_out)"
 fi
-if printf '%s' "$t26_out" | grep -q 'could not rewrite the arms registry'; then
+if grepq "$t26_out" 'could not rewrite the arms registry'; then
     pass "T26: loud WARN names the skipped consume"
 else
     fail "T26: no WARN for the failed registry rewrite (out=$t26_out)"
@@ -698,14 +708,14 @@ t27_out=$(bash -c '
     fi
     _ql_arms_mutex_release "$reg" "$thief" >/dev/null 2>&1
 ' _ "$LIB" "$ARMS_REGISTRY" 2>&1)
-if printf '%s' "$t27_out" | grep -q 'RECLAIMED'; then
+if grepq "$t27_out" 'RECLAIMED'; then
     pass "T27: 70s-backdated held mutex is reclaimed by a contender"
 else
     fail "T27: backdated mutex was not reclaimed (out=$t27_out)"
 fi
-if printf '%s' "$t27_out" | grep -q 'REL_RC=1' \
-    && printf '%s' "$t27_out" | grep -q 'reclaimed by another writer' \
-    && printf '%s' "$t27_out" | grep -q 'THIEF_INTACT'; then
+if grepq "$t27_out" 'REL_RC=1' \
+    && grepq "$t27_out" 'reclaimed by another writer' \
+    && grepq "$t27_out" 'THIEF_INTACT'; then
     pass "T27: original holder detects the theft -> WARN + skips rmdir (thief lock intact)"
 else
     fail "T27: theft not detected / thief lock clobbered (out=$t27_out)"
@@ -722,8 +732,8 @@ t27b_out=$(bash -c '
     queue_lock_acquire "$3" "sess-t27b"
     echo "RC=$?"
 ' _ "$LIB" "$ARMS_REGISTRY" "$HO27" 2>&1)
-if printf '%s' "$t27b_out" | grep -q 'RC=0' \
-    && printf '%s' "$t27b_out" | grep -q 'reclaimed by another writer' \
+if grepq "$t27b_out" 'RC=0' \
+    && grepq "$t27b_out" 'reclaimed by another writer' \
     && grep -q 'HIMMEL-Resume-t27-victim' "$ARMS_REGISTRY" \
     && [ "$(cat "$ARMS_REGISTRY.lock/owner" 2>/dev/null)" = "thief-tok" ]; then
     pass "T27: mid-rewrite theft skips the stale mv (no corruption) + acquire stays rc=0"
@@ -765,7 +775,7 @@ t31_out=$(bash -c '
     echo "RC=$?"
     echo "TOK=$_QL_ARMS_MUTEX_TOKEN"
 ' _ "$LIB" "$ARMS_REGISTRY" 2>&1)
-if printf '%s' "$t31_out" | grep -q '^RC=0$' && printf '%s' "$t31_out" | grep -q '^TOK=pid'; then
+if grepq "$t31_out" '^RC=0$' && grepq "$t31_out" '^TOK=pid'; then
     pass "T31: a ~58s-stale mutex is reclaimed via periodic re-probe within the retry budget"
 else
     fail "T31: ~58s-stale mutex was not reclaimed within budget (out=$t31_out)"
@@ -821,7 +831,7 @@ t29_out=$(bash -c '
     _hp_json_field "$line" task-name
     [ "$_HP_FIELD" = "t" ] && echo "NEXT_FIELD_OK"
 ' _ "$SCRIPT_DIR/../lib/handover-path.sh" 2>&1)
-if printf '%s' "$t29_out" | grep -q 'ROUNDTRIP_OK' && printf '%s' "$t29_out" | grep -q 'NEXT_FIELD_OK'; then
+if grepq "$t29_out" 'ROUNDTRIP_OK' && grepq "$t29_out" 'NEXT_FIELD_OK'; then
     pass "T29: escaped-quote + backslash value round-trips through escape->extract"
 else
     fail "T29: escaped-quote round-trip broken (out=$t29_out)"
@@ -867,9 +877,9 @@ t32_out=$(bash -c '
     echo "CLAIM_OWNER=$(cat "$claim/owner" 2>/dev/null)"
     echo "LOCK_OWNER=$(cat "$lockdir/owner.json" 2>/dev/null)"
 ' _ "$LIB" "$LOCKDIR32" "$HO32" 2>&1)
-if printf '%s' "$t32_out" | grep -q '^RC=2$' \
-    && printf '%s' "$t32_out" | grep -q '^CLAIM_OWNER=winner-claim$' \
-    && printf '%s' "$t32_out" | grep -q 'LOCK_OWNER=.*"session":"dead-session"'; then
+if grepq "$t32_out" '^RC=2$' \
+    && grepq "$t32_out" '^CLAIM_OWNER=winner-claim$' \
+    && grepq "$t32_out" 'LOCK_OWNER=.*"session":"dead-session"'; then
     pass "T32: claim-arbiter loser leaves winner claim + stale generation intact"
 else
     fail "T32: claim-arbiter loser damaged winner state (out=$t32_out)"
@@ -909,10 +919,10 @@ t33_out=$(bash -c '
     echo "LOCK_OWNER=$(cat "$lockdir/owner.json" 2>/dev/null)"
     [ -e "${lockdir}.claim" ] && echo "CLAIM_LEFT=yes" || echo "CLAIM_LEFT=no"
 ' _ "$LIB" "$LOCKDIR33" "$HO33" 2>&1)
-if printf '%s' "$t33_out" | grep -q '^RC=2$' \
-    && printf '%s' "$t33_out" | grep -q '^ARBITER=winner-reacquire$' \
-    && printf '%s' "$t33_out" | grep -q 'LOCK_OWNER=.*"session":"winner-reacquire"' \
-    && printf '%s' "$t33_out" | grep -q '^CLAIM_LEFT=no$'; then
+if grepq "$t33_out" '^RC=2$' \
+    && grepq "$t33_out" '^ARBITER=winner-reacquire$' \
+    && grepq "$t33_out" 'LOCK_OWNER=.*"session":"winner-reacquire"' \
+    && grepq "$t33_out" '^CLAIM_LEFT=no$'; then
     pass "T33: post-rm arbiter loser leaves winner lock intact + drops own claim"
 else
     fail "T33: post-rm arbiter loser damaged winner state (out=$t33_out)"

@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
   omniroute-config-lint.ps1 — structural WS6-dedup enforcement for the self-hosted
   OmniRoute router config (HIMMEL-654 WS2, child HIMMEL-666). PowerShell twin of

@@ -166,12 +166,13 @@ make_repos() {
 #   $root/upstream (local paths — git handles these as ordinary remotes) and
 #   work_dir at ${RESYNC_TEST_WORKROOT} (expanded via the env var set by the
 #   caller), exercising the same $VAR-expansion path a real machine uses.
-#   pin-file-mode: "single" (default, one occurrence), "missing" (no
+#   pin-file-mode: "single" (default, one SHA occurrence), "ref" (an
+#   installable tag in marketplace.json via pin_ref_template), "missing" (no
 #   occurrence), "double" (two occurrences), "no-fork" (entry with no fork
 #   block at all).
 make_registry() {
   local root="$1" pin_sha="${2:-}" synced_base="${3:-1.0.0}" pin_mode="${4:-single}"
-  mkdir -p "$root/scripts/lib"
+  mkdir -p "$root/scripts/lib" "$root/marketplace/.claude-plugin"
 
   case "$pin_mode" in
     single)
@@ -182,6 +183,10 @@ make_registry() {
       # supplies the SHA.
       printf '_fakefork_ref() { printf "%%s\\n" "${FAKEFORK_REF:-%s}"; }\n' "$pin_sha" \
         > "$root/scripts/lib/fakefork-bin.sh"
+      ;;
+    ref)
+      printf '{"plugins":[{"name":"fakefork","source":{"ref":"%s"}}]}\n' "$pin_sha" \
+        > "$root/marketplace/.claude-plugin/marketplace.json"
       ;;
     missing)
       printf '_fakefork_ref() { printf "%%s\\n" "no pin literal here"; }\n' \
@@ -210,13 +215,22 @@ entry = {
     "note": "fixture entry",
 }
 if pin_mode != "no-fork":
-    entry["fork"] = {
+    fork = {
         "fork_repo": os.path.join(root, "fork").replace("\\", "/"),
         "upstream_repo": os.path.join(root, "upstream").replace("\\", "/"),
-        "pin_file": "scripts/lib/fakefork-bin.sh",
-        "pin_template": "FAKEFORK_REF:-{sha}",
         "work_dir": "${RESYNC_TEST_WORKROOT}",
     }
+    if pin_mode == "ref":
+        fork.update({
+            "pin_file": "marketplace/.claude-plugin/marketplace.json",
+            "pin_ref_template": '"ref":"{ref}"',
+        })
+    else:
+        fork.update({
+            "pin_file": "scripts/lib/fakefork-bin.sh",
+            "pin_template": "FAKEFORK_REF:-{sha}",
+        })
+    entry["fork"] = fork
 reg = {"_comment": "fixture", "entries": [entry]}
 json.dump(reg, open(os.path.join(root, "scripts", "upstreams.json"), "w"), indent=2)
 PY
@@ -358,6 +372,25 @@ if [ -d "$root/scratch/fakefork/.git" ]; then
   pass "work_dir \${VAR} expansion produced a real scratch clone"
 else
   fail "expected scratch clone at $root/scratch/fakefork"
+fi
+rm -rf "$root"
+
+echo "[test-resync-fork] installable fork-tag pin resolves to its commit and stays unchanged"
+root=$(mktemp -d)
+make_repos additive "$root"
+sha=$(git -C "$root/fork" rev-parse HEAD)
+tag="v1.0.0-himmel.1"
+git -C "$root/fork" tag "$tag" "$sha"
+make_registry "$root" "$tag" "1.0.0" "ref"
+out=$(run_resync "$root" fakefork 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ]; then pass "tag-pinned clean additive rebase exits 0"; else fail "tag-pinned rebase — expected rc=0 got rc=$rc: $out"; fi
+assert_contains "$out" "pinned tag:     $tag -> $sha" "reports the immutable tag and resolved commit"
+assert_contains "$out" "cut and push a NEW immutable fork tag" "tag pin guidance requires a new installable tag, never a bare SHA"
+if grep -qF "\"ref\":\"$tag\"" "$root/marketplace/.claude-plugin/marketplace.json"; then
+  pass "marketplace tag pin itself was never edited"
+else
+  fail "marketplace tag pin changed unexpectedly"
 fi
 rm -rf "$root"
 

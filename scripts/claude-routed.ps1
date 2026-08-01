@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
   claude-routed.ps1 - thin launcher: Claude Code on the LOCAL loopback OmniRoute
   router. HIMMEL-654 WS2 (child HIMMEL-666). PowerShell twin of scripts/claude-routed

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Hermetic tests for sanitize-plugin-hooks.ps1 (HIMMEL-651) — PowerShell twin of
   test-sanitize-plugin-hooks.sh.

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Surface a DEGRADED Codex CLI startup (HIMMEL-747) — twin of startup-health.sh.
 

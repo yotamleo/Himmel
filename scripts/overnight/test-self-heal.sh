@@ -27,9 +27,20 @@
 #    17.  missing subcommand / unknown subcommand / missing required args → exit 1.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/self-heal.sh"
 REPORT="$SCRIPT_DIR/morning-report.sh"
+SHELL_LINT="$SCRIPT_DIR/../lint/shell-lint.sh"
 TAB="$(printf '\t')"
 
 PASS=0; FAIL=0; TMP_ROOT=""
@@ -46,11 +57,11 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 assert_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
+    if grepq "$haystack" -F -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
 }
 refute_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then fail "$name" "unexpected: $needle"; else pass "$name"; fi
+    if grepq "$haystack" -F -- "$needle"; then fail "$name" "unexpected: $needle"; else pass "$name"; fi
 }
 assert_before() {
     local name="$1" first="$2" second="$3" haystack="$4" l1 l2
@@ -314,6 +325,47 @@ printf '%s\n' "HIMMEL-23${TAB}feat/h23${TAB}-${TAB}blocked${TAB}oops${TAB}$lf" >
 printf '%s\n' "HIMMEL-23${TAB}feat/h23${TAB}-${TAB}blocked${TAB}part${TAB}one${TAB}$lf" > "$LEDGER"
 rc=0; out=$(bash "$SCRIPT" classify --rows-in "$LEDGER" --rows-out "$ROWS" 2>&1) || rc=$?
 case "$rc" in 1) pass "stray tab → loud reject (NF>6), never a silent auto-fix";; *) fail "want rc=1, got $rc" "$out";; esac
+
+echo "TEST 24: cross-script integration — [PS1-ENCODING] operator-gated, [PS1-NO-BOM] encoding (REAL shell-lint output)"
+# Generate REAL shell-lint output by running the linter against tmp .ps1 fixtures,
+# then feed that output through self-heal classify. This locks the HIMMEL-1432 CR
+# r5 invariant ([codex-adv-r4-1]): an unidentifiable-encoding finding can NEVER
+# produce an automated fix dispatch, while a valid-UTF-8 no-BOM .ps1 IS
+# mechanically fixable. The linter's own summary line carries a "shell-lint"
+# token that matches _RE_LINT — so without the r5 manual-triage arm, (a) would
+# be dispatched as a lint fix (the regression this test pins).
+# (a) [PS1-ENCODING]: non-ASCII byte that is NOT valid UTF-8. Mirrors the linter's
+#     own case 16f fixture (a raw 0xA0 continuation byte — invalid as a UTF-8
+#     leading byte, so iconv rejects it) so this cross-script test is byte-parallel
+#     with test-shell-lint.sh.
+enc_fix="$TMP_ROOT/enc.ps1"
+printf 'Write-Output hi\n\xA0\xA0\n' > "$enc_fix"
+enc_out="$(bash "$SHELL_LINT" "$enc_fix" 2>&1 || true)"
+assert_contains "fixture (a) really emits [PS1-ENCODING]" "[PS1-ENCODING]" "$enc_out"
+enc_lf="$TMP_ROOT/enc-lint.log"; printf '%s\n' "$enc_out" > "$enc_lf"
+printf '%s\n' "HIMMEL-24a${TAB}fix/h24a${TAB}-${TAB}blocked${TAB}precommit${TAB}$enc_lf" > "$LEDGER"
+bash "$SCRIPT" classify --rows-in "$LEDGER" --rows-out "$ROWS" --dispatch-out "$PLAN" 2>/dev/null
+rows_a="$(cat "$ROWS")"; plan_a="$(cat "$PLAN" 2>/dev/null || true)"
+assert_contains "(a) PS1-ENCODING → operator-gated (no auto-fix)" "operator-gated blocker" "$rows_a"
+assert_contains "(a) PS1-ENCODING → manual-triage reason" "unidentifiable file encoding" "$rows_a"
+refute_contains "(a) PS1-ENCODING NOT in a dispatch spec" "HIMMEL-24a" "$plan_a"
+if [ -s "$PLAN" ]; then fail "(a) [PS1-ENCODING] produced a dispatch spec (regression)"; else pass "(a) [PS1-ENCODING] produced no dispatch spec"; fi
+# (b) [PS1-NO-BOM]: VALID UTF-8 non-ASCII (em-dash E2 80 94), no BOM — its fix
+#     (add EF BB BF) IS mechanically safe, so it MUST classify encoding/dispatch.
+#     Requires iconv: the linter prescribes the BOM add only after validating UTF-8.
+if command -v iconv >/dev/null 2>&1; then
+    nobom_fix="$TMP_ROOT/nobom.ps1"
+    printf '# ps1 fixture with a UTF-8 em-dash here \xe2\x80\x94 no BOM\n' > "$nobom_fix"
+    nobom_out="$(bash "$SHELL_LINT" "$nobom_fix" 2>&1 || true)"
+    assert_contains "fixture (b) really emits [PS1-NO-BOM]" "[PS1-NO-BOM]" "$nobom_out"
+    nobom_lf="$TMP_ROOT/nobom-lint.log"; printf '%s\n' "$nobom_out" > "$nobom_lf"
+    printf '%s\n' "HIMMEL-24b${TAB}fix/h24b${TAB}-${TAB}blocked${TAB}precommit${TAB}$nobom_lf" > "$LEDGER"
+    bash "$SCRIPT" classify --rows-in "$LEDGER" --rows-out "$ROWS" --dispatch-out "$PLAN" 2>/dev/null
+    plan_b="$(cat "$PLAN")"
+    assert_contains "(b) PS1-NO-BOM → encoding (mechanical dispatch)" "HIMMEL-24b${TAB}fix/h24b${TAB}encoding${TAB}" "$plan_b"
+else
+    echo "  SKIP (b): iconv absent — [PS1-NO-BOM] cannot be produced deterministically"
+fi
 
 echo
 echo "===================================="

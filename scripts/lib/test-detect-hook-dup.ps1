@@ -1,4 +1,4 @@
-# test-detect-hook-dup.ps1 -- committed PS test for detect-hook-dup.ps1 (SC5).
+﻿# test-detect-hook-dup.ps1 -- committed PS test for detect-hook-dup.ps1 (SC5).
 # Warns iff a UNIVERSAL hook is wired at BOTH user + a NON-himmel project; silent
 # in-repo and when nothing is shared. (SC11's benign-double-fire uses the bash
 # hooks and lives in test-detect-hook-dup.sh.) Run: pwsh -File test-detect-hook-dup.ps1

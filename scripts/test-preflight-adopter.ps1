@@ -1,4 +1,4 @@
-<#
+﻿<#
   test-preflight-adopter.ps1 — smoke tests for the standalone check-only
   adopter preflight PS1 twin (HIMMEL-842 CR round-2, F4):
   scripts/preflight-adopter.ps1 + its shared lib scripts/lib/preflight-adopter.ps1.

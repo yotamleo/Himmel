@@ -1,4 +1,4 @@
-<#
+﻿<#
   vault-autosync.ps1 — OPT-IN auto-commit + push for a luna-brain vault.
   Lockstep with vault-autosync.sh.
 

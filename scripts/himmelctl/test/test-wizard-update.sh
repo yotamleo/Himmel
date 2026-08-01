@@ -34,6 +34,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -107,7 +117,7 @@ out=$(PATH="$cA" HOME="$hA" HIMMELCTL_INTERACTIVE=0 HIMMELCTL_BASH=bash \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseA: dry-run should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -qE 'derived:.*bash .*himmel-update\.sh$' \
+grepq "$out" -E 'derived:.*bash .*himmel-update\.sh$' \
   || fail "caseA: expected 'derived: bash .../himmel-update.sh' (got: $out)"
 [ -f "$fixtureA/update-calls.log" ] \
   && fail "caseA: --dry-run must NOT execute himmel-update.sh (got: $(cat "$fixtureA/update-calls.log"))"
@@ -125,7 +135,7 @@ out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseB: exit 0 on a successful update (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'Proceed?' \
+grepq "$out" 'Proceed?' \
   && fail "caseB: update must NOT show a confirm prompt (got: $out)"
 [ -f "$fixtureB/update-calls.log" ] \
   || fail "caseB: expected himmel-update.sh to be invoked (out: $out)"
@@ -170,7 +180,7 @@ out=$(PATH="$cD" HOME="$hD" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "caseD: expected rc=2 for an unsupported option (got rc=$rc): $out"
-printf '%s' "$out" | grep -q -- '--items is not valid' \
+grepq "$out" -- '--items is not valid' \
   || fail "caseD: expected an option-not-valid diagnostic naming --items (got: $out)"
 [ -f "$fixtureD/update-args.log" ] \
   && fail "caseD: --items rejection must NOT invoke himmel-update.sh (got: $(cat "$fixtureD/update-args.log"))"
@@ -203,7 +213,7 @@ derived_line=$(printf '%s\n' "$out" | grep 'derived:')
 case "$derived_line" in
   *\\*) fail "caseE: derived command still contains a backslash — toBashPath not applied: $derived_line" ;;
 esac
-printf '%s' "$derived_line" | grep -qE 'bash C:/Users/test/himmel/scripts/himmel-update\.sh' \
+grepq "$derived_line" -E 'bash C:/Users/test/himmel/scripts/himmel-update\.sh' \
   || fail "caseE: expected forward-slashed script path in derived command (got: $derived_line)"
 echo "ok: caseE backslash repo root -> derived command forward-slashed (toBashPath applied)"
 
@@ -242,13 +252,13 @@ set -e
 derived_lineF=$(printf '%s\n' "$out" | grep 'derived:')
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
-    printf '%s' "$derived_lineF" | grep -qE '[/\\]Git[/\\](usr[/\\])?bin[/\\]bash\.exe' \
+    grepq "$derived_lineF" -E '[/\\]Git[/\\](usr[/\\])?bin[/\\]bash\.exe' \
       || fail "caseF(win32): resolveBash should resolve a concrete Git Bash (…\\Git\\…\\bash.exe), not bare 'bash' — is Git for Windows installed under %ProgramFiles%? (got: $derived_lineF)"
-    printf '%s' "$derived_lineF" | grep -qE 'derived: bash ' \
+    grepq "$derived_lineF" -E 'derived: bash ' \
       && fail "caseF(win32): derived launcher is bare 'bash' — resolveBash fell back to PATH instead of Git Bash, which on a PowerShell PATH is WSL (got: $derived_lineF)"
     ;;
   *)
-    printf '%s' "$derived_lineF" | grep -qE 'derived: bash .*himmel-update\.sh$' \
+    grepq "$derived_lineF" -E 'derived: bash .*himmel-update\.sh$' \
       || fail "caseF(posix): resolveBash should fall through to bare 'bash' off-Windows (got: $derived_lineF)"
     ;;
 esac

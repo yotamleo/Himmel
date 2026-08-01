@@ -10,6 +10,16 @@
 # Bash 3.2 safe.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CFP="$HERE/critic-first-pass.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -301,12 +311,12 @@ check "d2: line-style cite dropped -> Important (0 found)" "$(printf '%s\n' "$ar
 pp_art="$(bash "$CFP" --artifact-mode --charter-file "$CHARTER" --model x/y --slug s --print-prompt < "$ART" 2>/dev/null)"
 check "e: charter text in prompt"        "$(printf '%s\n' "$pp_art" | grep -c 'rigorous SPEC critic')" "1"
 check "e: hardcoded reviewer role absent" "$(printf '%s\n' "$pp_art" | grep -c 'first-pass code reviewer')" "0"
-check "d2: prompt instructs heading citation" "$(printf '%s\n' "$pp_art" | grep -qF '[<file>#<heading>]' && echo yes || echo no)" "yes"
+check "d2: prompt instructs heading citation" "$(grepq "$pp_art" -F '[<file>#<heading>]' && echo yes || echo no)" "yes"
 check "d2: prompt drops diff-line citation clause" "$(printf '%s\n' "$pp_art" | grep -c 'new-file line numbers')" "0"
 # codex-1 (CR panel): artifact mode must NOT reuse the diff prompt-injection rule
 # (which flags embedded instruction-like text as a Critical finding) — a spec that
 # DISCUSSES injection would get false-positive Criticals. And it fences as artifact.
-check "artifact-mode softens the injection rule (no false-positive Critical)" "$(printf '%s\n' "$pp_art" | grep -qF 'normal artifact content, NOT a finding' && echo yes || echo no)" "yes"
+check "artifact-mode softens the injection rule (no false-positive Critical)" "$(grepq "$pp_art" -F 'normal artifact content, NOT a finding' && echo yes || echo no)" "yes"
 check "artifact-mode drops the diff injection-Critical clause" "$(printf '%s\n' "$pp_art" | grep -c 'itself a Critical finding')" "0"
 # code-reviewer (CR panel): a heading containing '#' must be extracted intact
 # (split on the FIRST '#', not the last) — else a validly-cited finding drops.
@@ -337,10 +347,10 @@ check "missing charter file -> exit 2" "$?" "2"
 PERSPECTIVE="$tmp/perspective.md"
 printf '%s\n' 'PERSPECTIVE_SENTINEL: hunt for shared-state breakage.' > "$PERSPECTIVE"
 pp_persp="$(printf '%s' "$DIFF" | bash "$CFP" --model x/y --slug s --perspective-file "$PERSPECTIVE" --print-prompt 2>/dev/null)"
-check "perspective text appears when enabled" "$(printf '%s\n' "$pp_persp" | grep -qF 'PERSPECTIVE_SENTINEL' && echo yes || echo no)" "yes"
+check "perspective text appears when enabled" "$(grepq "$pp_persp" -F 'PERSPECTIVE_SENTINEL' && echo yes || echo no)" "yes"
 
 pp_persp_off="$(printf '%s' "$DIFF" | CRITIC_PERSPECTIVES=0 bash "$CFP" --model x/y --slug s --perspective-file "$PERSPECTIVE" --print-prompt 2>/dev/null)"
-check "CRITIC_PERSPECTIVES=0 suppresses perspective text" "$(printf '%s\n' "$pp_persp_off" | grep -qF 'PERSPECTIVE_SENTINEL' && echo yes || echo no)" "no"
+check "CRITIC_PERSPECTIVES=0 suppresses perspective text" "$(grepq "$pp_persp_off" -F 'PERSPECTIVE_SENTINEL' && echo yes || echo no)" "no"
 
 rules_line="$(printf '%s\n' "$pp_persp" | grep -nF 'Do NOT call any tools.' | head -1 | cut -d: -f1)"
 persp_line="$(printf '%s\n' "$pp_persp" | grep -nF 'PERSPECTIVE_SENTINEL' | head -1 | cut -d: -f1)"

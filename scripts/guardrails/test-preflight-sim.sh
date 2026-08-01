@@ -12,6 +12,16 @@
 
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SIM="$SCRIPT_DIR/preflight-sim.sh"
 FIX="$SCRIPT_DIR/fixtures/preflight"
@@ -80,7 +90,7 @@ golden "learnings rules match fixture" "$FIX/learnings.expected" "$OUT3"
 printf '\nCase 4: --help\n'
 HELP="$(bash "$SIM" --help 2>&1)"; HEC=$?
 if [ "$HEC" -eq 0 ]; then pass "--help exits 0"; else fail "--help expected 0, got $HEC"; fi
-if printf '%s' "$HELP" | grep -qF -- '--learnings'; then pass "--help documents --learnings"; else fail "--help should mention --learnings"; fi
+if grepq "$HELP" -F -- '--learnings'; then pass "--help documents --learnings"; else fail "--help should mention --learnings"; fi
 
 # ---------------------------------------------------------------------------
 printf '\n====================================\n'

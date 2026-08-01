@@ -1,4 +1,4 @@
-# scripts/himmelctl/lib/job-run.ps1 -- HIMMEL-755 CR round: win32 process-
+﻿# scripts/himmelctl/lib/job-run.ps1 -- HIMMEL-755 CR round: win32 process-
 # tree-kill via a Windows Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
 #
 # WHY (not `taskkill /PID <pid> /T /F`, install-engine.js's own shipped

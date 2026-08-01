@@ -9,6 +9,16 @@
 # Exit: 0 = all cases pass, 1 = at least one failed.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HOOK_DIR/inject-where-are-we.sh"
 REPO_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
@@ -48,9 +58,9 @@ out2="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=main \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2=$?
 if [ "$rc2" = 0 ] \
-    && printf '%s' "$out2" | grep -qF '<system-reminder>' \
-    && printf '%s' "$out2" | grep -qF 'where-are-we ·' \
-    && printf '%s' "$out2" | grep -qF 'digest not loaded' \
+    && grepq "$out2" -F '<system-reminder>' \
+    && grepq "$out2" -F 'where-are-we ·' \
+    && grepq "$out2" -F 'digest not loaded' \
     && [ -s "$state2/latest.md" ] \
     && grep -qF 'where-are-we ·' "$state2/latest.md"; then
     pass "digest route -> injects pointer + persists latest.md, exit 0"
@@ -70,8 +80,8 @@ out2b2="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2b2" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=main \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2b2=$?
 if [ "$rc2b2" = 0 ] \
-    && printf '%s' "$out2b2" | grep -qF '<system-reminder>' \
-    && printf '%s' "$out2b2" | grep -qF 'digest not loaded' \
+    && grepq "$out2b2" -F '<system-reminder>' \
+    && grepq "$out2b2" -F 'digest not loaded' \
     && [ -s "$state2b2/latest.md" ]; then
     pass "large digest -> pointer still injected (no EPIPE silent exit), exit 0"
 else
@@ -87,9 +97,9 @@ out2c="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2c" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=feat/himmel-9-card \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2card=$?
 if [ "$rc2card" = 0 ] \
-    && printf '%s' "$out2c" | grep -qF '# HIMMEL-9' \
-    && printf '%s' "$out2c" | grep -qF 'status:' \
-    && ! printf '%s' "$out2c" | grep -qF 'digest not loaded' \
+    && grepq "$out2c" -F '# HIMMEL-9' \
+    && grepq "$out2c" -F 'status:' \
+    && ! grepq "$out2c" -F 'digest not loaded' \
     && [ ! -e "$state2c/latest.md" ]; then
     pass "card route -> injected inline, latest.md reserved (not written), exit 0"
 else
@@ -126,8 +136,8 @@ out2ca="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2ca" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=feat/himmel-9-card \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2ca=$?
 if [ "$rc2ca" = 0 ] \
-    && printf '%s' "$out2ca" | grep -qF '# HIMMEL-9' \
-    && ! printf '%s' "$out2ca" | grep -qF 'digest not loaded'; then
+    && grepq "$out2ca" -F '# HIMMEL-9' \
+    && ! grepq "$out2ca" -F 'digest not loaded'; then
     pass "card w/ embedded heading -> still inline (not misclassified), exit 0"
 else
     fail "card w/ embedded heading -> expected inline+0, got rc=$rc2ca out='$out2ca'"
@@ -145,9 +155,9 @@ out2a="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2a" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=main \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2a=$?
 if [ "$rc2a" = 0 ] \
-    && printf '%s' "$out2a" | grep -qF '<system-reminder>' \
-    && printf '%s' "$out2a" | grep -qF 'where-are-we ·' \
-    && ! printf '%s' "$out2a" | grep -qF 'digest not loaded'; then
+    && grepq "$out2a" -F '<system-reminder>' \
+    && grepq "$out2a" -F 'where-are-we ·' \
+    && ! grepq "$out2a" -F 'digest not loaded'; then
     pass "persist fails -> fail-open, full digest injected inline, exit 0"
 else
     fail "persist fails -> expected full inline digest+0, got rc=$rc2a out='$out2a'"

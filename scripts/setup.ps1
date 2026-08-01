@@ -1,4 +1,4 @@
-# New-machine setup for the himmel repo.
+﻿# New-machine setup for the himmel repo.
 # Run once after cloning: .\scripts\setup.ps1 [-WithJira] [-WithGraphify]
 #
 # -WithJira      : require Jira configuration — abort if JIRA_PROJECT_KEY is

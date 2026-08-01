@@ -1,4 +1,4 @@
-# Pure vault-root resolver for the end-session-wiki hook — PowerShell twin of
+﻿# Pure vault-root resolver for the end-session-wiki hook — PowerShell twin of
 # scripts/lib/vault-resolve.sh (HIMMEL-403). Dot-source it, then call
 # Resolve-VaultRoot. Returns the resolved vault root (a leading "~/" or "~\" is
 # left LITERAL for the caller to expand once) OR an empty string => the caller

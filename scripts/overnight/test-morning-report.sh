@@ -29,6 +29,16 @@
 #  17. CRLF row file -> parsed clean (no \r polluting the last field).
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/morning-report.sh"
 
@@ -48,7 +58,7 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 assert_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
+    if grepq "$haystack" -F -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
 }
 # Assert needle1 appears on an earlier line than needle2.
 assert_before() {
@@ -218,7 +228,7 @@ case "$rc" in
     *) fail "expected rc=2, got $rc" "$out" ;;
 esac
 assert_contains "fail-closed diagnostic" "fix HANDOVER_DIR or pass --out" "$out"
-if printf '%s' "$out" | grep -qi "falling back"; then
+if grepq "$out" -i "falling back"; then
     fail "broken HANDOVER_DIR fell back instead of failing closed" "$out"
 else
     pass "no fallback on broken HANDOVER_DIR"
@@ -248,7 +258,7 @@ git -C "$repo_dry" init -q
 out=$(cd "$repo_dry" && env -u HANDOVER_DIR bash "$SCRIPT" --rows "$ROWS" --dry-run)
 assert_contains "dry-run still prints body" "HIMMEL-370" "$out"
 assert_contains "previews real <repo>/handovers/ path" "mode-a-dry-repo/handovers/overnight-report-" "$out"
-if printf '%s' "$out" | grep -qF '<unresolved-handover-root>'; then
+if grepq "$out" -F '<unresolved-handover-root>'; then
     fail "Mode A --dry-run printed the placeholder instead of the real path" "$out"
 else
     pass "no placeholder in Mode A --dry-run preview"
@@ -298,7 +308,7 @@ echo "TEST: CRLF row file parsed clean"
 printf 'HIMMEL-374\tfeat/HIMMEL-374-crlf\thttps://example.com/pr/11\tdone\tShipped CRLF\r\n' > "$ROWS"
 report=$(HANDOVER_DIR="$hroot" bash "$SCRIPT" --rows "$ROWS" --dry-run)
 assert_contains "CRLF row renders clean last field" '| done | Shipped CRLF |' "$report"
-if printf '%s' "$report" | grep -q $'\r'; then
+if grepq "$report" $'\r'; then
     fail "report output contains a stray CR"
 else
     pass "no CR chars leak into the report"
@@ -320,7 +330,7 @@ assert_before "tickets before standing actions" "## Tickets" "## Standing operat
 echo "TEST: blank actions file -> no standing-actions section"
 printf '   \n\n' > "$acts"
 report=$(HANDOVER_DIR="$hroot" bash "$SCRIPT" --rows "$ROWS" --actions "$acts" --dry-run)
-if printf '%s' "$report" | grep -qF "## Standing operator actions"; then
+if grepq "$report" -F "## Standing operator actions"; then
     fail "blank actions file produced a section"
 else
     pass "blank actions file -> no section"

@@ -1,4 +1,4 @@
-# test-install-plugins-verify.ps1 — hermetic test for the HIMMEL-361 post-install
+﻿# test-install-plugins-verify.ps1 — hermetic test for the HIMMEL-361 post-install
 # PRESENCE verification in scripts/machine-setup/install-plugins.ps1 (PowerShell
 # twin of test-install-plugins-verify.sh; HIMMEL-364).
 #

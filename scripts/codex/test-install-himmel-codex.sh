@@ -8,6 +8,16 @@
 # is non-destructive (never removes/disables anything).
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER="$SCRIPT_DIR/install-himmel-codex.sh"
 
@@ -113,7 +123,7 @@ printf 'openai-bundled\n' > "$S/marketplaces.txt"; : > "$S/plugins.txt"
 out="$(run "$S" --dry-run)"
 assert_log_lacks "$S/calls.log" "marketplace add" "--dry-run issues no marketplace add"
 assert_log_lacks "$S/calls.log" "plugin add"      "--dry-run issues no plugin add"
-if printf '%s' "$out" | grep -qiE 'would|dry'; then pass "--dry-run reports intended changes"; else fail "--dry-run gave no change report"; fi
+if grepq "$out" -iE 'would|dry'; then pass "--dry-run reports intended changes"; else fail "--dry-run gave no change report"; fi
 
 echo "== scenario E: codex CLI missing -> exit 1, no calls =="
 S="$TMP/E"; mk_state "$S"

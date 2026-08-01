@@ -3,6 +3,16 @@
 # Real macOS behavior is unverified (no Mac); this asserts the script wires the
 # statusline, registers the auto-arm hook, verifies crontab, and is idempotent.
 set -uo pipefail
+
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 M="$REPO_ROOT/scripts/machine-setup/macos.sh"
 [ -f "$M" ] || { echo "FAIL: $M not found"; exit 1; }
@@ -23,7 +33,7 @@ if [ "$rc" -eq 0 ]; then pass "macos.sh rc0"; else fail "macos.sh rc=$rc: $out";
 if [ -f "$t/home/.claude/settings.json" ]; then pass "settings.json created"; else fail "no settings.json"; fi
 if grep -q 'statusLine' "$t/home/.claude/settings.json"; then pass "statusline wired"; else fail "no statusLine"; fi
 if grep -q 'auto-arm-on-cap' "$t/home/.claude/settings.json"; then pass "auto-arm hook registered"; else fail "no auto-arm hook"; fi
-if printf '%s' "$out" | grep -qi 'alpha'; then pass "alpha notice printed"; else fail "no alpha notice"; fi
+if grepq "$out" -i 'alpha'; then pass "alpha notice printed"; else fail "no alpha notice"; fi
 
 # idempotency: 2nd run, hook still registered exactly once
 run >/dev/null 2>&1

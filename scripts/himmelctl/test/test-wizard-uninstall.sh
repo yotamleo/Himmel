@@ -26,6 +26,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -118,10 +128,10 @@ JSON
 
 # ── Case A: flag-assertion guard — script-flag drift ───────────────────────
 sh_help=$(bash "$repo_root/scripts/uninstall.sh" --help 2>&1)
-printf '%s' "$sh_help" | grep -qF -- '--yes' \
+grepq "$sh_help" -F -- '--yes' \
   || fail "flag-assertion: uninstall.sh --help is missing derivable flag '--yes' (script-flag drift)"
 ps1_usage=$(head -n 20 "$repo_root/scripts/uninstall.ps1")
-printf '%s' "$ps1_usage" | grep -qF -- '-Yes' \
+grepq "$ps1_usage" -F -- '-Yes' \
   || fail "flag-assertion: uninstall.ps1's usage comment is missing derivable flag '-Yes' (script-flag drift)"
 echo "ok: caseA flag-assertion guard -- uninstall.sh/uninstall.ps1 usage surfaces carry the --yes/-Yes flag the wizard always derives"
 
@@ -138,13 +148,13 @@ out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=0 \
 set -e
 [ "$rc" -eq 0 ] || fail "caseB: dry-run should exit 0 (got rc=$rc): $out"
 if is_win32; then
-  printf '%s' "$out" | grep -qE 'derived:.*powershell -ExecutionPolicy Bypass -File .*uninstall\.ps1 -Yes$' \
+  grepq "$out" -E 'derived:.*powershell -ExecutionPolicy Bypass -File .*uninstall\.ps1 -Yes$' \
     || fail "caseB(win32): expected 'powershell -ExecutionPolicy Bypass -File ...uninstall.ps1 -Yes' (got: $out)"
 else
-  printf '%s' "$out" | grep -qE 'derived:.*bash .*uninstall\.sh --yes$' \
+  grepq "$out" -E 'derived:.*bash .*uninstall\.sh --yes$' \
     || fail "caseB(posix): expected 'bash .../uninstall.sh --yes' (got: $out)"
 fi
-printf '%s' "$out" | grep -q 'Proceed?' \
+grepq "$out" 'Proceed?' \
   && fail "caseB: --dry-run must NOT show the confirm prompt (got: $out)"
 [ -f "$fixtureB/uninstall-calls.log" ] \
   && fail "caseB: --dry-run must NOT execute uninstall.sh/uninstall.ps1 (got: $(cat "$fixtureB/uninstall-calls.log"))"
@@ -162,9 +172,9 @@ out=$(PATH="$cC" HOME="$hC" HIMMELCTL_INTERACTIVE=1 \
       <<<"n" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseC: decline should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'Proceed? \[Y/n\]' \
+grepq "$out" 'Proceed? \[Y/n\]' \
   || fail "caseC: expected the confirm prompt to be shown (got: $out)"
-printf '%s' "$out" | grep -q 'declined; nothing run' \
+grepq "$out" 'declined; nothing run' \
   || fail "caseC: expected the decline message (got: $out)"
 [ -f "$fixtureC/uninstall-calls.log" ] \
   && fail "caseC: declining must NOT invoke uninstall.sh/uninstall.ps1 (got: $(cat "$fixtureC/uninstall-calls.log"))"
@@ -205,7 +215,7 @@ out=$(PATH="$cE" HOME="$hE" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseE: closed-stdin decline should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'declined; nothing run' \
+grepq "$out" 'declined; nothing run' \
   || fail "caseE: expected the decline message on EOF (got: $out)"
 [ -f "$fixtureE/uninstall-calls.log" ] \
   && fail "caseE: a closed stdin (no explicit answer) must NEVER run uninstall unattended (got: $(cat "$fixtureE/uninstall-calls.log"))"

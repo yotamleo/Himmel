@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
   Hermetic tests for scripts/omniroute-config-lint.ps1 (HIMMEL-654 WS2, child
   HIMMEL-666) - Windows twin of test-omniroute-config-lint.sh. Same fixtures,

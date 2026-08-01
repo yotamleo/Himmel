@@ -22,6 +22,16 @@
 #      from tool_input).
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$SCRIPT_DIR/trigger-cr-on-pr-create.sh"
 
@@ -261,7 +271,7 @@ nojq_payload=$(jq -nc \
     '{tool_name:"Bash",tool_input:{command:$cmd},tool_response:{stdout:"",stderr:""}}')
 rc=0
 out=$(printf '%s' "$nojq_payload" | env PATH="$NOJQ_BIN:$GHSTUB_DIR" "$REAL_BASH" "$HOOK" 2>&1) || rc=$?
-if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] && printf '%s\n' "$out" | grep -q 'jq not in PATH'; then
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] && grepq "$out" 'jq not in PATH'; then
     pass "no-jq run posted nothing and warned about the missing jq"
 else
     fail "expected rc=0, 0 posts, and a 'jq not in PATH' warning; got rc=$rc posted=$(posted_count)" "out: $out"

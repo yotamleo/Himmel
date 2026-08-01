@@ -1,4 +1,4 @@
-# Integration smoke for scripts/hooks/end-session-wiki.ps1 (HIMMEL-403) — the
+﻿# Integration smoke for scripts/hooks/end-session-wiki.ps1 (HIMMEL-403) — the
 # .ps1 is the hook that actually runs on Windows, so the vault-NAME wiring and
 # the fail-closed skip are exercised end-to-end here, not just via the lib.
 #

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Upgrade the installed rtk binary (rtk-ai/rtk) to the latest GitHub release.
   Windows twin of upgrade-rtk.sh (HIMMEL-1323) -- see that file for the WHY.

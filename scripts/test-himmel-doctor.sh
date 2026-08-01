@@ -3,6 +3,16 @@
 # Usage: bash scripts/test-himmel-doctor.sh
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 DOC="$REPO_ROOT/scripts/himmel-doctor.sh"
 [ -f "$DOC" ] || { echo "FAIL: $DOC not found"; exit 1; }
@@ -104,11 +114,11 @@ echo "== STATIC: shipped settings-template.json carries no dangling <node-path> 
 _tmpl="$REPO_ROOT/docs/setup/settings-template.json"
 _cav_cmds="$(jq -r '[.hooks.UserPromptSubmit[]?.hooks[]?, .hooks.SessionStart[]?.hooks[]?]
     | map(.command // "") | map(select(test("caveman-(activate|mode-tracker)\\.js"))) | .[]' "$_tmpl")"
-if printf '%s' "$_cav_cmds" | grep -q '<node-path>'; then
+if grepq "$_cav_cmds" '<node-path>'; then
     fail "template caveman cmd still carries <node-path>"
 elif [ -z "$_cav_cmds" ]; then
     fail "template has no caveman hook commands to check"
-elif printf '%s' "$_cav_cmds" | grep -q 'run-node.sh'; then
+elif grepq "$_cav_cmds" 'run-node.sh'; then
     pass "template caveman cmds are wrapper-form (no <node-path>)"
 else
     fail "template caveman cmds are neither wrapper-form nor dangling: $_cav_cmds"
@@ -117,19 +127,19 @@ fi
 echo "== clean (wrapper-form, node resolvable) -> exit 0, C1 OK =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$WRAPPER"
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'OK   C1-node'; then pass "clean -> rc0, C1 OK"; else fail "clean -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
+if [ "$rc" -eq 0 ] && grepq "$out" 'OK   C1-node'; then pass "clean -> rc0, C1 OK"; else fail "clean -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
 rm -rf "$t"
 
 echo "== dangling <node-path> -> C1 FAIL, exit 1 =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"
 out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'FAIL C1-node'; then pass "dangling -> rc1, C1 FAIL"; else fail "dangling -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
+if [ "$rc" -eq 1 ] && grepq "$out" 'FAIL C1-node'; then pass "dangling -> rc1, C1 FAIL"; else fail "dangling -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
 rm -rf "$t"
 
 echo "== --fix heals dangling (faked Linux uname) -> C1 OK =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --fix --no-color 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'OK   C1-node'; then pass "--fix -> healed, rc0"; else fail "--fix -> rc=$rc; $out"; fi
+if [ "$rc" -eq 0 ] && grepq "$out" 'OK   C1-node'; then pass "--fix -> healed, rc0"; else fail "--fix -> rc=$rc; $out"; fi
 # confirm the settings file now points at the wrapper
 if grep -q 'run-node.sh' "$t/claude/settings.json"; then pass "--fix wrote wrapper form"; else fail "--fix did not write wrapper"; fi
 rm -rf "$t"
@@ -137,19 +147,19 @@ rm -rf "$t"
 echo "== wrapper-form but NO node anywhere -> C1 FAIL (R4/P5) =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$WRAPPER"
 out="$(PATH="$NODELESS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'FAIL C1-node'; then pass "wrapper+no-node -> rc1 FAIL"; else fail "wrapper+no-node -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
+if [ "$rc" -eq 1 ] && grepq "$out" 'FAIL C1-node'; then pass "wrapper+no-node -> rc1 FAIL"; else fail "wrapper+no-node -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
 rm -rf "$t"
 
 echo "== --file-issue with gh stub -> creates with resolved repo =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"; make_gh "$t/gh" create
 out="$(PATH="$t/gh:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --file-issue --repo me/repo --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'CREATE me/repo'; then pass "file-issue -> created"; else fail "file-issue -> $(printf '%s' "$out" | tail -3)"; fi
+if grepq "$out" 'CREATE me/repo'; then pass "file-issue -> created"; else fail "file-issue -> $(printf '%s' "$out" | tail -3)"; fi
 rm -rf "$t"
 
 echo "== --file-issue dedup (existing open issue) -> skip create =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"; make_gh "$t/gh" exists
 out="$(PATH="$t/gh:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --file-issue --repo me/repo --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'already exists' && ! printf '%s' "$out" | grep -q 'CREATE'; then pass "dedup -> skipped"; else fail "dedup -> $(printf '%s' "$out" | tail -3)"; fi
+if grepq "$out" 'already exists' && ! grepq "$out" 'CREATE'; then pass "dedup -> skipped"; else fail "dedup -> $(printf '%s' "$out" | tail -3)"; fi
 rm -rf "$t"
 
 echo "== --file-issue with gh ABSENT -> graceful, no crash =="
@@ -158,7 +168,7 @@ echo "== --file-issue with gh ABSENT -> graceful, no crash =="
 if PATH="$NOGH" bash -c 'git --version >/dev/null 2>&1 && jq --version >/dev/null 2>&1 && ! command -v gh >/dev/null 2>&1' 2>/dev/null; then
     t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"
     out="$(PATH="$NOGH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --file-issue --repo me/repo --no-color 2>&1)"; rc=$?
-    if printf '%s' "$out" | grep -q 'gh not found' && { [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; }; then pass "gh-absent -> graceful (rc=$rc)"; else fail "gh-absent -> rc=$rc; $(printf '%s' "$out" | tail -3)"; fi
+    if grepq "$out" 'gh not found' && { [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; }; then pass "gh-absent -> graceful (rc=$rc)"; else fail "gh-absent -> rc=$rc; $(printf '%s' "$out" | tail -3)"; fi
     rm -rf "$t"
 else
     pass "gh-absent -> (skipped: could not build a gh-less PATH on this host)"
@@ -167,13 +177,13 @@ fi
 echo "== bare 'node' caveman cmd + node off PATH -> C1 WARN =="
 t="$(mktemp -d)"; write_settings "$t/claude" '"node \"X/hooks/caveman-activate.js\""'
 out="$(PATH="$NODELESS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C1-node'; then pass "bare-node -> C1 WARN"; else fail "bare-node -> $(printf '%s' "$out" | grep C1-node)"; fi
+if grepq "$out" 'WARN C1-node'; then pass "bare-node -> C1 WARN"; else fail "bare-node -> $(printf '%s' "$out" | grep C1-node)"; fi
 rm -rf "$t"
 
 echo "== C2: shadowed claude-obsidian marketplace -> WARN =="
 t="$(mktemp -d)"; mkdir -p "$t/claude/plugins/cache/claude-obsidian-marketplace"; write_settings "$t/claude" "$WRAPPER"
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C2-obsidian'; then pass "C2 -> WARN (shadow)"; else fail "C2 -> $(printf '%s' "$out" | grep C2)"; fi
+if grepq "$out" 'WARN C2-obsidian'; then pass "C2 -> WARN (shadow)"; else fail "C2 -> $(printf '%s' "$out" | grep C2)"; fi
 rm -rf "$t"
 
 echo "== C3: dirty single-writer luna vault -> WARN =="
@@ -182,7 +192,7 @@ git -C "$v" init -q 2>/dev/null; git -C "$v" config user.email t@t; git -C "$v" 
 : > "$v/.single-writer"; echo dirty > "$v/note.md"
 write_settings "$t/claude" "$WRAPPER"
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C3-luna'; then pass "C3 -> WARN (dirty single-writer)"; else fail "C3 -> $(printf '%s' "$out" | grep C3)"; fi
+if grepq "$out" 'WARN C3-luna'; then pass "C3 -> WARN (dirty single-writer)"; else fail "C3 -> $(printf '%s' "$out" | grep C3)"; fi
 rm -rf "$t"
 
 echo "== C6: bare-interpreter MCP server -> WARN =="
@@ -191,7 +201,7 @@ cat > "$t/claude/settings.json" <<'EOF'
 { "mcpServers": { "obsidian-vault": { "command": "uvx", "args": ["mcp-obsidian"] } }, "hooks": {} }
 EOF
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C6-mcp' && printf '%s' "$out" | grep -q 'obsidian-vault(uvx)'; then pass "C6 -> WARN (uvx)"; else fail "C6 -> $(printf '%s' "$out" | grep C6)"; fi
+if grepq "$out" 'WARN C6-mcp' && grepq "$out" 'obsidian-vault(uvx)'; then pass "C6 -> WARN (uvx)"; else fail "C6 -> $(printf '%s' "$out" | grep C6)"; fi
 rm -rf "$t"
 
 echo "== C6: absolute-command MCP server -> OK =="
@@ -200,7 +210,7 @@ cat > "$t/claude/settings.json" <<'EOF'
 { "mcpServers": { "x": { "command": "/usr/local/bin/foo" } }, "hooks": {} }
 EOF
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C6-mcp'; then pass "C6 -> OK (absolute)"; else fail "C6 -> $(printf '%s' "$out" | grep C6)"; fi
+if grepq "$out" 'OK   C6-mcp'; then pass "C6 -> OK (absolute)"; else fail "C6 -> $(printf '%s' "$out" | grep C6)"; fi
 rm -rf "$t"
 
 # C6-hooks (HIMMEL-611): a hook command leading with a bare interpreter that is
@@ -214,7 +224,7 @@ if PATH="$TOOLS_PATH" bash -c '! command -v pwsh >/dev/null 2>&1' 2>/dev/null; t
 { "mcpServers": {}, "hooks": { "SessionEnd": [ { "hooks": [ { "type": "command", "command": "pwsh -NoProfile -File \"/x/end-session-wiki.ps1\"", "shell": "powershell" } ] } ] } }
 EOF
     out="$(PATH="$TOOLS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-    if printf '%s' "$out" | grep -q 'WARN C6-hooks' && printf '%s' "$out" | grep -q 'pwsh'; then pass "C6-hooks -> WARN (pwsh absent)"; else fail "C6-hooks -> $(printf '%s' "$out" | grep C6-hooks)"; fi
+    if grepq "$out" 'WARN C6-hooks' && grepq "$out" 'pwsh'; then pass "C6-hooks -> WARN (pwsh absent)"; else fail "C6-hooks -> $(printf '%s' "$out" | grep C6-hooks)"; fi
     rm -rf "$t"
 else
     pass "C6-hooks -> WARN (skipped: pwsh present under TOOLS_PATH on this host)"
@@ -226,7 +236,7 @@ cat > "$t/claude/settings.json" <<'EOF'
 { "mcpServers": {}, "hooks": { "SessionEnd": [ { "hooks": [ { "type": "command", "command": "bash \"/x/scripts/lib/run-pwsh.sh\" \"/x/end-session-wiki.ps1\"", "shell": "bash" } ] } ] } }
 EOF
 out="$(PATH="$TOOLS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C6-hooks'; then pass "C6-hooks -> OK (wrapper-routed)"; else fail "C6-hooks -> $(printf '%s' "$out" | grep C6-hooks)"; fi
+if grepq "$out" 'OK   C6-hooks'; then pass "C6-hooks -> OK (wrapper-routed)"; else fail "C6-hooks -> $(printf '%s' "$out" | grep C6-hooks)"; fi
 rm -rf "$t"
 
 # ── C7: merged-PR worktree detective check ───────────────────────────────────
@@ -279,7 +289,7 @@ out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.jso
     FORGE=github GH_CMD="$t/stub/gh" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN' && printf '%s' "$out" | grep -q 'C7-shipped' && printf '%s' "$out" | grep -q 'feat/shipped'; then
+if grepq "$out" 'WARN' && grepq "$out" 'C7-shipped' && grepq "$out" 'feat/shipped'; then
     pass "C7 -> WARN (merged branch flagged)"
 else
     fail "C7 -> expected WARN C7-shipped feat/shipped; got: $(printf '%s' "$out" | grep C7)"
@@ -299,7 +309,7 @@ out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.jso
     FORGE=github GH_CMD="$t/stub/gh" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C7-shipped'; then
+if grepq "$out" 'OK   C7-shipped'; then
     pass "C7 -> OK (no merged worktrees)"
 else
     fail "C7 -> expected OK C7-shipped; got: $(printf '%s' "$out" | grep C7)"
@@ -319,7 +329,7 @@ out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.jso
     FORGE=github GH_CMD="$t/stub/gh" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'INFO' && printf '%s' "$out" | grep -q 'C7-shipped' && printf '%s' "$out" | grep -q 'skipped'; then
+if grepq "$out" 'INFO' && grepq "$out" 'C7-shipped' && grepq "$out" 'skipped'; then
     pass "C7 -> INFO (forge unreachable)"
 else
     fail "C7 -> expected INFO C7-shipped skipped; got: $(printf '%s' "$out" | grep C7)"
@@ -354,7 +364,7 @@ echo "== C7 STATIC: check_c7 body must not contain destructive git verbs =="
 _c7_body="$(awk '/^check_c7\(\)/{found=1} found{print} found && /^\}$/{exit}' "$DOC")"
 _static_fail=0
 for _verb in "worktree remove" "branch -D" " push " " reset " " checkout " "rm " "git clean" "clean -"; do
-    if printf '%s' "$_c7_body" | grep -qF "$_verb"; then
+    if grepq "$_c7_body" -F "$_verb"; then
         fail "C7 STATIC: found forbidden verb '$_verb' in check_c7 body"
         _static_fail=1
     fi
@@ -370,7 +380,7 @@ out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" 
     SWEEP_BAT_DIR="$t/sweep-empty" GRAPHMAP_BAT_DIR="$t/graphmap-empty" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C8-cadence: no armed cadence runners (skipped)'; then pass "C8 -> OK (no runners)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
+if grepq "$out" 'OK   C8-cadence: no armed cadence runners (skipped)'; then pass "C8 -> OK (no runners)"; else fail "C8 -> $(printf '%s' "$out" | grep C8)"; fi
 rm -rf "$t"
 
 echo "== C8: stale codex-sweep runner -> WARN + codex re-arm hint =="
@@ -380,8 +390,8 @@ out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" 
     SWEEP_BAT_DIR="$t/sweep" GRAPHMAP_BAT_DIR="$t/graphmap-empty" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C8-cadence: codex-sweep-cadence runners are stale' \
-    && printf '%s' "$out" | grep -q 'bash scripts/cleanup/codex-sweep-cadence.sh arm --force'; then
+if grepq "$out" 'WARN C8-cadence: codex-sweep-cadence runners are stale' \
+    && grepq "$out" 'bash scripts/cleanup/codex-sweep-cadence.sh arm --force'; then
     pass "C8 -> WARN (stale codex-sweep runner)"
 else
     fail "C8 -> $(printf '%s' "$out" | grep C8)"
@@ -395,8 +405,8 @@ out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" 
     SWEEP_BAT_DIR="$t/sweep-empty" GRAPHMAP_BAT_DIR="$t/graphmap" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C8-cadence: graphmap-cadence runners are stale' \
-    && printf '%s' "$out" | grep -q 'bash scripts/luna/graphmap-cadence.sh arm --force'; then
+if grepq "$out" 'WARN C8-cadence: graphmap-cadence runners are stale' \
+    && grepq "$out" 'bash scripts/luna/graphmap-cadence.sh arm --force'; then
     pass "C8 -> WARN (stale graphmap runner)"
 else
     fail "C8 -> $(printf '%s' "$out" | grep C8)"
@@ -411,8 +421,8 @@ out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" 
     QMD_CADENCE_BAT_DIR="$t/qmd" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C8-cadence: qmd-cadence runners are stale' \
-    && printf '%s' "$out" | grep -q 'bash scripts/luna/qmd-cadence.sh arm --force'; then
+if grepq "$out" 'WARN C8-cadence: qmd-cadence runners are stale' \
+    && grepq "$out" 'bash scripts/luna/qmd-cadence.sh arm --force'; then
     pass "C8 -> WARN (stale qmd runner)"
 else
     fail "C8 -> $(printf '%s' "$out" | grep C8)"
@@ -426,8 +436,8 @@ out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline" \
     SWEEP_BAT_DIR="$t/sweep-empty" GRAPHMAP_BAT_DIR="$t/graphmap-empty" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C8-cadence: pipeline-cadence runners current' \
-    && ! printf '%s' "$out" | grep -q 'WARN C8-cadence'; then
+if grepq "$out" 'OK   C8-cadence: pipeline-cadence runners current' \
+    && ! grepq "$out" 'WARN C8-cadence'; then
     pass "C8 -> OK (pipeline-only current runner)"
 else
     fail "C8 -> $(printf '%s' "$out" | grep C8)"
@@ -439,7 +449,7 @@ t="$(mktemp -d)"; b="$t/bin"; mkdir -p "$b"
 printf '#!/bin/sh\nexit 0\n' > "$b/at"; chmod +x "$b/at"
 out="$(SCHEDULER_BACKEND_OS=linux SCHEDULER_BACKEND_ATD_ACTIVE=1 PATH="$b:$TOOLS_PATH" \
        CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C9-scheduler'; then pass "C9 linux ok"; else fail "C9 linux ok: $(printf '%s' "$out" | grep C9)"; fi
+if grepq "$out" 'OK   C9-scheduler'; then pass "C9 linux ok"; else fail "C9 linux ok: $(printf '%s' "$out" | grep C9)"; fi
 rm -rf "$t"
 
 echo "== C9 linux at+atd dead -> WARN + remediation =="
@@ -447,8 +457,8 @@ t="$(mktemp -d)"; b="$t/bin"; mkdir -p "$b"
 printf '#!/bin/sh\nexit 0\n' > "$b/at"; chmod +x "$b/at"
 out="$(SCHEDULER_BACKEND_OS=linux SCHEDULER_BACKEND_ATD_ACTIVE=0 PATH="$b:$TOOLS_PATH" \
        CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C9-scheduler'; then pass "C9 linux disabled WARN"; else fail "C9 disabled: $(printf '%s' "$out" | grep C9)"; fi
-if printf '%s' "$out" | grep -q 'systemctl enable --now atd'; then pass "C9 remediation shown"; else fail "C9 remediation missing"; fi
+if grepq "$out" 'WARN C9-scheduler'; then pass "C9 linux disabled WARN"; else fail "C9 disabled: $(printf '%s' "$out" | grep C9)"; fi
+if grepq "$out" 'systemctl enable --now atd'; then pass "C9 remediation shown"; else fail "C9 remediation missing"; fi
 rm -rf "$t"
 
 echo "== C9 macos crontab -> WARN ok-cron, NOT 'install at' =="
@@ -456,8 +466,8 @@ t="$(mktemp -d)"; b="$t/bin"; mkdir -p "$b"
 printf '#!/bin/sh\nexit 0\n' > "$b/crontab"; chmod +x "$b/crontab"
 out="$(SCHEDULER_BACKEND_OS=macos PATH="$b:$TOOLS_PATH" \
        CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C9-scheduler'; then pass "C9 macos warn"; else fail "C9 macos: $(printf '%s' "$out" | grep C9)"; fi
-if printf '%s' "$out" | grep -q 'apt install'; then fail "C9 macos wrongly suggests apt"; else pass "C9 macos no apt advice"; fi
+if grepq "$out" 'WARN C9-scheduler'; then pass "C9 macos warn"; else fail "C9 macos: $(printf '%s' "$out" | grep C9)"; fi
+if grepq "$out" 'apt install'; then fail "C9 macos wrongly suggests apt"; else pass "C9 macos no apt advice"; fi
 rm -rf "$t"
 
 # ── C10: private→public propagation drift (HIMMEL-640) ────────────────────────
@@ -473,7 +483,7 @@ echo "== C10: no public clone -> OK C10-propagation (skip-clean) =="
 t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 out="$(HIMMEL_PUBLIC_CLONE="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'OK   C10-propagation' && [ "$rc" -eq 0 ]; then pass "C10 -> OK (skip, no clone)"; else fail "C10 -> rc=$rc; $(printf '%s' "$out" | grep C10)"; fi
+if grepq "$out" 'OK   C10-propagation' && [ "$rc" -eq 0 ]; then pass "C10 -> OK (skip, no clone)"; else fail "C10 -> rc=$rc; $(printf '%s' "$out" | grep C10)"; fi
 rm -rf "$t"
 
 # Public/adopter clones lack the private-only mirror tooling
@@ -494,9 +504,9 @@ out="$(HIMMEL_PRIV_ROOT="$t/pc" HIMMEL_PUBLIC_CLONE="$t/uc" HIMMEL_PUBLIC_REMOTE
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
 if [ "$C10_TOOLING" -eq 1 ]; then
-    if printf '%s' "$out" | grep -q 'WARN C10-propagation' && printf '%s' "$out" | grep -q 'onlypriv.md'; then pass "C10 -> WARN (seeded drift, MISSING flagged)"; else fail "C10 -> $(printf '%s' "$out" | grep -A6 C10)"; fi
+    if grepq "$out" 'WARN C10-propagation' && grepq "$out" 'onlypriv.md'; then pass "C10 -> WARN (seeded drift, MISSING flagged)"; else fail "C10 -> $(printf '%s' "$out" | grep -A6 C10)"; fi
 else
-    if printf '%s' "$out" | grep -q 'OK   C10-propagation' && printf '%s' "$out" | grep -q 'skipped (no private mirror tooling)'; then pass "C10 -> skip (public checkout, no mirror tooling)"; else fail "C10 -> $(printf '%s' "$out" | grep -A6 C10)"; fi
+    if grepq "$out" 'OK   C10-propagation' && grepq "$out" 'skipped (no private mirror tooling)'; then pass "C10 -> skip (public checkout, no mirror tooling)"; else fail "C10 -> $(printf '%s' "$out" | grep -A6 C10)"; fi
 fi
 rm -rf "$t"
 
@@ -514,9 +524,9 @@ out="$(HIMMEL_PRIV_ROOT="$ps" HIMMEL_PUBLIC_CLONE="$t/uc" HIMMEL_PUBLIC_REMOTE="
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
 if [ "$C10_TOOLING" -eq 1 ]; then
-    if printf '%s' "$out" | grep -q 'WARN C10-propagation' && ! printf '%s' "$out" | grep -q 'OK   C10-propagation'; then pass "C10 -> WARN (unreadable refs, not false-clean)"; else fail "C10 unreadable -> $(printf '%s' "$out" | grep -A4 C10)"; fi
+    if grepq "$out" 'WARN C10-propagation' && ! grepq "$out" 'OK   C10-propagation'; then pass "C10 -> WARN (unreadable refs, not false-clean)"; else fail "C10 unreadable -> $(printf '%s' "$out" | grep -A4 C10)"; fi
 else
-    if printf '%s' "$out" | grep -q 'OK   C10-propagation' && printf '%s' "$out" | grep -q 'skipped (no private mirror tooling)'; then pass "C10 -> skip (public checkout, no mirror tooling)"; else fail "C10 unreadable -> $(printf '%s' "$out" | grep -A4 C10)"; fi
+    if grepq "$out" 'OK   C10-propagation' && grepq "$out" 'skipped (no private mirror tooling)'; then pass "C10 -> skip (public checkout, no mirror tooling)"; else fail "C10 unreadable -> $(printf '%s' "$out" | grep -A4 C10)"; fi
 fi
 rm -rf "$t"
 
@@ -527,13 +537,13 @@ cat > "$t/plugin-hooks/hooks.json" <<'EOF'
 EOF
 out="$(DOCTOR_HIMMEL_OPS_HOOKS_JSON="$t/plugin-hooks/hooks.json" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C13-plugin-hooks' && printf '%s' "$out" | grep -q 'scripts/hooks/no-such-hook.sh'; then pass "C13 -> WARN (missing hook target)"; else fail "C13 -> $(printf '%s' "$out" | grep C13)"; fi
+if grepq "$out" 'WARN C13-plugin-hooks' && grepq "$out" 'scripts/hooks/no-such-hook.sh'; then pass "C13 -> WARN (missing hook target)"; else fail "C13 -> $(printf '%s' "$out" | grep C13)"; fi
 rm -rf "$t"
 
 echo "== C13: shipped himmel-ops hooks.json targets exist -> OK C13-plugin-hooks =="
 t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C13-plugin-hooks'; then pass "C13 -> OK (shipped hook targets exist)"; else fail "C13 -> $(printf '%s' "$out" | grep C13)"; fi
+if grepq "$out" 'OK   C13-plugin-hooks'; then pass "C13 -> OK (shipped hook targets exist)"; else fail "C13 -> $(printf '%s' "$out" | grep C13)"; fi
 rm -rf "$t"
 
 # ── C14: ollama zero-egress defense-in-depth pin (OLLAMA_NO_CLOUD) ────────────
@@ -552,21 +562,21 @@ echo "== C14: ollama not on PATH -> OK C14-ollama-no-cloud (skipped) =="
 t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 out="$(PATH="$TOOLS_PATH" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C14-ollama-no-cloud' && printf '%s' "$out" | grep -q 'not on PATH'; then pass "C14 -> OK (ollama absent, skipped)"; else fail "C14 absent -> $(printf '%s' "$out" | grep C14)"; fi
+if grepq "$out" 'OK   C14-ollama-no-cloud' && grepq "$out" 'not on PATH'; then pass "C14 -> OK (ollama absent, skipped)"; else fail "C14 absent -> $(printf '%s' "$out" | grep C14)"; fi
 rm -rf "$t"
 
 echo "== C14: ollama present, OLLAMA_NO_CLOUD unset -> WARN C14-ollama-no-cloud =="
 t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 out="$(PATH="$FAKEOLLAMA:$TOOLS_PATH" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" env -u OLLAMA_NO_CLOUD bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'WARN C14-ollama-no-cloud' && printf '%s' "$out" | grep -q 'pin unset'; then pass "C14 -> WARN (ollama present, pin unset)"; else fail "C14 unset -> $(printf '%s' "$out" | grep C14)"; fi
+if grepq "$out" 'WARN C14-ollama-no-cloud' && grepq "$out" 'pin unset'; then pass "C14 -> WARN (ollama present, pin unset)"; else fail "C14 unset -> $(printf '%s' "$out" | grep C14)"; fi
 rm -rf "$t"
 
 echo "== C14: ollama present, OLLAMA_NO_CLOUD=1 -> OK C14-ollama-no-cloud =="
 t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 out="$(PATH="$FAKEOLLAMA:$TOOLS_PATH" OLLAMA_NO_CLOUD=1 DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if printf '%s' "$out" | grep -q 'OK   C14-ollama-no-cloud' && printf '%s' "$out" | grep -q 'pin is set'; then pass "C14 -> OK (pin set)"; else fail "C14 set -> $(printf '%s' "$out" | grep C14)"; fi
+if grepq "$out" 'OK   C14-ollama-no-cloud' && grepq "$out" 'pin is set'; then pass "C14 -> OK (pin set)"; else fail "C14 set -> $(printf '%s' "$out" | grep C14)"; fi
 rm -rf "$t"
 
 # ── C16: delegate to `himmelctl status --json` for install/wiring truth (HIMMEL-755 F) ──
@@ -585,7 +595,7 @@ t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 EMPTYCACHE="$t/cache-empty"; mkdir -p "$EMPTYCACHE"
 out="$(HIMMELCTL_CACHE_DIR="$(winpath "$EMPTYCACHE")" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'INFO C16-status' && printf '%s' "$out" | grep -q 'no himmelctl install profile found' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'INFO C16-status' && grepq "$out" 'no himmelctl install profile found' && [ "$rc" -eq 0 ]; then
     pass "C16 -> INFO (no profile, graceful skip, rc0)"
 else
     fail "C16 no-profile -> rc=$rc; $(printf '%s' "$out" | grep C16)"
@@ -633,7 +643,7 @@ JSON
         capture && /^(FAIL|WARN|INFO|OK)[[:space:]]/ { exit }
         capture { print }
     ')"
-    if [ -n "$c16block" ] && printf '%s' "$c16block" | grep -q 'pre-commit-hooks'; then
+    if [ -n "$c16block" ] && grepq "$c16block" 'pre-commit-hooks'; then
         pass "C16 -> WARN (delegated red item surfaced)"
     else
         fail "C16 red-item -> $(printf '%s' "$out" | grep -A6 C16-status)"
@@ -648,7 +658,7 @@ echo "== C17: skill not enabled -> OK (nothing to check, no false-positive) =="
 t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/claude/commands"; write_settings "$t/claude" "$WRAPPER"
 out="$(DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'OK   C17-dep-readiness' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'OK   C17-dep-readiness' && [ "$rc" -eq 0 ]; then
     pass "C17 -> OK (no declared skill enabled)"
 else
     fail "C17 not-enabled -> rc=$rc; $(printf '%s' "$out" | grep C17)"
@@ -663,7 +673,7 @@ printf 'XAI_API_KEY=abc123\n' > "$t/home/.config/obsidian-second-brain/.env"
 printf 'nothing stale here\n' > "$t/catalog.md"
 out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'OK   C17-dep-readiness' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'OK   C17-dep-readiness' && [ "$rc" -eq 0 ]; then
     pass "C17 -> OK (enabled, keyed, doc clean)"
 else
     fail "C17 clean -> rc=$rc; $(printf '%s' "$out" | grep C17)"
@@ -678,7 +688,7 @@ printf 'SOME_OTHER_KEY=x\n' > "$t/home/.config/obsidian-second-brain/.env"
 printf 'nothing stale here\n' > "$t/catalog.md"
 out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'WARN C17-dep-readiness' && printf '%s' "$out" | grep -q 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'WARN C17-dep-readiness' && grepq "$out" 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
     pass "C17 -> WARN (key-missing, never-fatal)"
 else
     fail "C17 key-missing -> rc=$rc; $(printf '%s' "$out" | grep -A4 C17)"
@@ -693,7 +703,7 @@ printf 'XAI_API_KEY=abc123\n' > "$t/home/.config/obsidian-second-brain/.env"
 printf '**Research toolkit:** disabled (needs XAI + Perplexity API keys)\n' > "$t/catalog.md"
 out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'WARN C17-dep-readiness' && printf '%s' "$out" | grep -q 'x-read is enabled+keyed but a doc still marks its toolkit disabled' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'WARN C17-dep-readiness' && grepq "$out" 'x-read is enabled+keyed but a doc still marks its toolkit disabled' && [ "$rc" -eq 0 ]; then
     pass "C17 -> WARN (doc-disabled, never-fatal)"
 else
     fail "C17 doc-disabled -> rc=$rc; $(printf '%s' "$out" | grep -A4 C17)"
@@ -708,7 +718,7 @@ printf 'XAI_API_KEY=""\n' > "$t/home/.config/obsidian-second-brain/.env"
 printf 'nothing stale here\n' > "$t/catalog.md"
 out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'WARN C17-dep-readiness' && printf '%s' "$out" | grep -q 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'WARN C17-dep-readiness' && grepq "$out" 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
     pass "C17 -> WARN (quoted-empty value treated as missing)"
 else
     fail "C17 quoted-empty -> rc=$rc; $(printf '%s' "$out" | grep -A4 C17)"
@@ -723,7 +733,7 @@ printf 'XAI_API_KEY="   "\n' > "$t/home/.config/obsidian-second-brain/.env"
 printf 'nothing stale here\n' > "$t/catalog.md"
 out="$(DEP_READY_CATALOG="$t/catalog.md" DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'WARN C17-dep-readiness' && printf '%s' "$out" | grep -q 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'WARN C17-dep-readiness' && grepq "$out" 'x-read is enabled but XAI_API_KEY is absent/blank' && [ "$rc" -eq 0 ]; then
     pass "C17 -> WARN (quoted whitespace-only value treated as missing)"
 else
     fail "C17 quoted-whitespace -> rc=$rc; $(printf '%s' "$out" | grep -A4 C17)"
@@ -737,7 +747,7 @@ OLD="$(date -d '-90 days' +%Y-%m-%d 2>/dev/null || date -v-90d +%Y-%m-%d 2>/dev/
 out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="removed-tool|$OLD|99" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
     pass "C18 -> OK (removed command silently drops out)"
 else
     fail "C18 removed -> rc=$rc; $(printf '%s' "$out" | grep C18)"
@@ -751,7 +761,7 @@ printf 'fresh command\n' > "$t/c18cmds/fresh-tool.md"
 out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="fresh-tool|$FRESH|99" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
     pass "C18 -> OK (fresh, under both thresholds)"
 else
     fail "C18 fresh -> rc=$rc; $(printf '%s' "$out" | grep C18)"
@@ -765,7 +775,7 @@ printf 'stale command\n' > "$t/c18cmds/stale-tool.md"
 out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="stale-tool|$STALE|10" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'WARN C18-skill-usage' && printf '%s' "$out" | grep -q 'stale-tool' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'WARN C18-skill-usage' && grepq "$out" 'stale-tool' && [ "$rc" -eq 0 ]; then
     pass "C18 -> WARN (age>60d, never-fatal)"
 else
     fail "C18 stale -> rc=$rc; $(printf '%s' "$out" | grep -A4 C18)"
@@ -779,7 +789,7 @@ printf 'pricier command\n' > "$t/c18cmds/pricier-tool.md"
 out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="pricier-tool|$MID|71" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'WARN C18-skill-usage' && printf '%s' "$out" | grep -q 'pricier-tool' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'WARN C18-skill-usage' && grepq "$out" 'pricier-tool' && [ "$rc" -eq 0 ]; then
     pass "C18 -> WARN (age>30d + cost>50, never-fatal)"
 else
     fail "C18 pricier -> rc=$rc; $(printf '%s' "$out" | grep -A4 C18)"
@@ -793,7 +803,7 @@ printf 'cheap command\n' > "$t/c18cmds/cheap-tool.md"
 out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="cheap-tool|$MID|10" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if printf '%s' "$out" | grep -q 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
+if grepq "$out" 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
     pass "C18 -> OK (age>30d but cost<=50, below both thresholds)"
 else
     fail "C18 cheap-mid-age -> rc=$rc; $(printf '%s' "$out" | grep C18)"

@@ -10,6 +10,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 hook="$repo_root/scripts/hooks/improve-on-submit.sh"
 
@@ -43,7 +53,7 @@ fi
 # ---------- 2. IMPROVE_ON_SUBMIT=1 → active ----------
 echo "Test 2: IMPROVE_ON_SUBMIT=1 → active"
 out=$(IMPROVE_ON_SUBMIT=1 printf '{"prompt":"hello"}' | IMPROVE_ON_SUBMIT=1 bash "$hook")
-if echo "$out" | grep -q "IMPROVE_ON_SUBMIT is active"; then
+if grepq "$out" "IMPROVE_ON_SUBMIT is active"; then
     assert_pass "context injected when env=1"
 else
     assert_fail "expected 'IMPROVE_ON_SUBMIT is active' in output, got: $out"
@@ -53,7 +63,7 @@ fi
 echo "Test 3: other truthy values activate"
 for val in true TRUE on ON yes YES; do
     out=$(IMPROVE_ON_SUBMIT="$val" printf '{}' | IMPROVE_ON_SUBMIT="$val" bash "$hook")
-    if echo "$out" | grep -q "IMPROVE_ON_SUBMIT is active"; then
+    if grepq "$out" "IMPROVE_ON_SUBMIT is active"; then
         assert_pass "truthy value '$val' activates"
     else
         assert_fail "truthy value '$val' should activate but did not"
@@ -74,7 +84,7 @@ done
 # ---------- 5. No stdin payload ----------
 echo "Test 5: no stdin payload still works"
 out=$(IMPROVE_ON_SUBMIT=1 bash "$hook" </dev/null)
-if echo "$out" | grep -q "IMPROVE_ON_SUBMIT is active"; then
+if grepq "$out" "IMPROVE_ON_SUBMIT is active"; then
     assert_pass "no stdin payload tolerated"
 else
     assert_fail "expected activation even without stdin, got: $out"

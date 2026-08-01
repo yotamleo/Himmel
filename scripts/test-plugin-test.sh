@@ -3,6 +3,16 @@
 # Structural arg-handling checks + one end-to-end run that proves the helper
 # self-bootstraps a plugin's deps and reaches a GREEN baseline.
 set -uo pipefail
+
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/scripts/plugin-test.sh"
 fails=0
@@ -31,7 +41,7 @@ if [ "$rc" -eq 2 ]; then ok "no package.json -> exit 2"; else bad "no-package.js
 if [ -f "$ROOT/marketplace/plugins/luna-correlate/package.json" ]; then
   out="$(bash "$SCRIPT" luna-correlate 2>&1)"; rc=$?
   if [ "$rc" -eq 0 ]; then ok "luna-correlate end-to-end exits 0 (green baseline)"; else bad "luna-correlate exited $rc; output tail: $(printf '%s' "$out" | tail -5)"; fi
-  if printf '%s' "$out" | grep -q "0 fail"; then ok "luna-correlate test run reports 0 fail"; else bad "no '0 fail' line in output"; fi
+  if grepq "$out" "0 fail"; then ok "luna-correlate test run reports 0 fail"; else bad "no '0 fail' line in output"; fi
 else
   ok "luna-correlate absent — skipping end-to-end (no plugin to test)"
 fi

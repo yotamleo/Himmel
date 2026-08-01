@@ -5,6 +5,16 @@
 # Exit: 0 = all pass, 1 = at least one failed.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 SUT="$DIR/statusline-rollup.sh"
 [ -x "$SUT" ] || chmod +x "$SUT" 2>/dev/null || true
@@ -67,8 +77,8 @@ fi
 
 # --- Case 2: list invocation includes --jql passthrough + --limit 500 --------
 args1="$(cat "$TMP/c1.args" 2>/dev/null)"
-if printf '%s' "$args1" | grep -qF -- '--jql parent = HIMMEL-514' \
-   && printf '%s' "$args1" | grep -qF -- '--limit 500'; then
+if grepq "$args1" -F -- '--jql parent = HIMMEL-514' \
+   && grepq "$args1" -F -- '--limit 500'; then
     pass "list invocation uses --jql passthrough + --limit 500"
 else
     fail "list invocation args wrong: '$args1'"

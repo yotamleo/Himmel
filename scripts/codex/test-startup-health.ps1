@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Hermetic tests for startup-health.ps1 (HIMMEL-747) — twin of test-startup-health.sh.
 .DESCRIPTION

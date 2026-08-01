@@ -1,4 +1,4 @@
-# wire-statusline.ps1 — PowerShell counterpart of wire-statusline.sh
+﻿# wire-statusline.ps1 — PowerShell counterpart of wire-statusline.sh
 # (HIMMEL-359). Single source of truth for wiring the himmel statusLine into a
 # Claude Code settings.json. Used by adopt.ps1, setup.ps1, and
 # machine-setup/win11.ps1.

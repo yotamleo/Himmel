@@ -5,6 +5,16 @@
 # with explicit --template-dir and --roots so nothing touches a real vault.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$HERE/luna-upgrade-all.sh"
 REAL_UPGRADE="$HERE/../templates/luna-second-brain/scripts/upgrade.sh"
@@ -337,7 +347,7 @@ assert_eq "T-sw behind-clean to version" "1.0.0" "$behind_to"
 # We need to run dry-run separately for this
 behind_dry=$(HOME="$THOME" bash "$T_SW/scripts/upgrade.sh" \
     --template-dir "$T_SW" --vault-dir "$SW_BEHIND" --dry-run 2>&1)
-if printf '%s\n' "$behind_dry" | grep -qE '^ +(WRITE|MERGE-JSON|MERGE-3WAY)'; then
+if grepq "$behind_dry" -E '^ +(WRITE|MERGE-JSON|MERGE-3WAY)'; then
     pass "T-sw behind-clean has ≥1 plan line in dry-run"
 else
     fail "T-sw behind-clean has ≥1 plan line in dry-run" "no plan lines in: $behind_dry"
@@ -494,30 +504,30 @@ if [ -f "$t5_backup_dest/manifest.tsv" ]; then
     t5_manifest=$(cat "$t5_backup_dest/manifest.tsv")
 
     # community-plugins.json is ABSENT -> should be 'new'
-    if printf '%s\n' "$t5_manifest" | grep -q "^new	.obsidian/community-plugins.json"; then
+    if grepq "$t5_manifest" "^new	.obsidian/community-plugins.json"; then
         pass "T5-a: absent community-plugins.json recorded as new"
     else
         fail "T5-a: absent community-plugins.json recorded as new" "manifest: $t5_manifest"
     fi
 
     # .vault-template.base is ABSENT -> should be 'new'
-    if printf '%s\n' "$t5_manifest" | grep -q "^new	.vault-template.base$"; then
+    if grepq "$t5_manifest" "^new	.vault-template.base$"; then
         pass "T5-a: absent .vault-template.base recorded as new"
     else
         fail "T5-a: absent .vault-template.base recorded as new" "manifest: $t5_manifest"
     fi
 
     # REPORT lines should NOT appear
-    if printf '%s\n' "$t5_manifest" | grep -q "^existing	_Templates/"; then
+    if grepq "$t5_manifest" "^existing	_Templates/"; then
         fail "T5-a: REPORT lines excluded from manifest" "manifest has _Templates/ entry"
-    elif printf '%s\n' "$t5_manifest" | grep -q "^new	_Templates/"; then
+    elif grepq "$t5_manifest" "^new	_Templates/"; then
         fail "T5-a: REPORT lines excluded from manifest" "manifest has _Templates/ entry"
     else
         pass "T5-a: REPORT lines excluded from manifest"
     fi
 
     # .vault-template.json should appear as existing (it was stamped)
-    if printf '%s\n' "$t5_manifest" | grep -q "^existing	.vault-template.json"; then
+    if grepq "$t5_manifest" "^existing	.vault-template.json"; then
         pass "T5-a: .vault-template.json recorded as existing"
     else
         fail "T5-a: .vault-template.json recorded as existing" "manifest: $t5_manifest"
@@ -541,7 +551,7 @@ if [ -n "$t5b_backup_dest" ] && [ -d "$t5b_backup_dest" ]; then
     t5b_manifest=$(cat "$t5b_backup_dest/manifest.tsv" 2>/dev/null || true)
 
     # .vault-template.base should be existing
-    if printf '%s\n' "$t5b_manifest" | grep -q "^existing	.vault-template.base$"; then
+    if grepq "$t5b_manifest" "^existing	.vault-template.base$"; then
         pass "T5-b: present .vault-template.base recorded as existing"
     else
         fail "T5-b: present .vault-template.base recorded as existing" "manifest: $t5b_manifest"
@@ -555,7 +565,7 @@ if [ -n "$t5b_backup_dest" ] && [ -d "$t5b_backup_dest" ]; then
     fi
 
     # The file entry should appear in manifest as existing
-    if printf '%s\n' "$t5b_manifest" | grep -q "^existing	.vault-template.base/_CLAUDE.md"; then
+    if grepq "$t5b_manifest" "^existing	.vault-template.base/_CLAUDE.md"; then
         pass "T5-b: .vault-template.base/_CLAUDE.md in manifest as existing"
     else
         fail "T5-b: .vault-template.base/_CLAUDE.md in manifest as existing" "manifest: $t5b_manifest"
@@ -599,7 +609,7 @@ printf 'STALE HOOK\n' > "$T6_VAULT/scripts/hooks/check-commit-msg.sh"
 # Assert dry-run has ≥1 plan line first (anti-no-op-masquerade)
 t6_dry=$(HOME="$THOME" bash "$T6_TMPL/scripts/upgrade.sh" \
     --template-dir "$T6_TMPL" --vault-dir "$T6_VAULT" --dry-run 2>&1)
-if printf '%s\n' "$t6_dry" | grep -qE '^ +(WRITE|MERGE-JSON|MERGE-3WAY)'; then
+if grepq "$t6_dry" -E '^ +(WRITE|MERGE-JSON|MERGE-3WAY)'; then
     pass "T6-a: behind-clean dry-run has ≥1 plan line"
 else
     fail "T6-a: behind-clean dry-run has ≥1 plan line" "dry-run: $t6_dry"
@@ -608,7 +618,7 @@ fi
 t6_out=$(run_engine apply --template-dir "$T6_TMPL" --vault "$T6_VAULT" 2>&1)
 t6_rc=$?
 assert_eq "T6-a: apply exits 0 for behind-clean" "0" "$t6_rc"
-if printf '%s\n' "$t6_out" | grep -q "^OK	"; then
+if grepq "$t6_out" "^OK	"; then
     pass "T6-a: apply emits OK line"
 else
     fail "T6-a: apply emits OK line" "got: $t6_out"
@@ -641,7 +651,7 @@ t6b_rc=0
 t6b_out=$(run_engine apply --template-dir "$T6B_TMPL" --vault "$T6B_VAULT" 2>&1) || t6b_rc=$?
 assert_eq "T6-b: CONFLICT apply exits 1" "1" "$t6b_rc"
 
-if printf '%s\n' "$t6b_out" | grep -q "^CONFLICT	"; then
+if grepq "$t6b_out" "^CONFLICT	"; then
     pass "T6-b: apply emits CONFLICT line"
 else
     fail "T6-b: apply emits CONFLICT line" "got: $t6b_out"
@@ -682,7 +692,7 @@ t6e_out=$(run_engine apply --template-dir "$T6E_TMPL" --vault "$T6E_VAULT" 2>&1)
 
 # CONFLICT-vs-PARTIAL isolation block
 assert_eq "T6-e: PARTIAL apply exits 1" "1" "$t6e_rc"
-if printf '%s\n' "$t6e_out" | grep -q "^PARTIAL	"; then
+if grepq "$t6e_out" "^PARTIAL	"; then
     pass "T6-e: apply emits PARTIAL line (not CONFLICT)"
 else
     fail "T6-e: apply emits PARTIAL line (not CONFLICT)" "got: $t6e_out"
@@ -702,13 +712,13 @@ git_init_dirty "$T6C_VAULT"
 t6c_rc=0
 t6c_out=$(run_engine apply --template-dir "$T6C_TMPL" --vault "$T6C_VAULT" 2>&1) || t6c_rc=$?
 assert_eq "T6-c: dirty git exits 3" "3" "$t6c_rc"
-if printf '%s\n' "$t6c_out" | grep -q "^SKIPPED-DIRTY	"; then
+if grepq "$t6c_out" "^SKIPPED-DIRTY	"; then
     pass "T6-c: apply emits SKIPPED-DIRTY"
 else
     fail "T6-c: apply emits SKIPPED-DIRTY" "got: $t6c_out"
 fi
 # No backup created for dirty vault
-if printf '%s\n' "$t6c_out" | grep -q "^BACKUP	"; then
+if grepq "$t6c_out" "^BACKUP	"; then
     fail "T6-c: no backup created for dirty vault" "BACKUP line found: $t6c_out"
 else
     pass "T6-c: no backup created for dirty vault"
@@ -757,7 +767,7 @@ t7_restore_out=$(run_engine restore --template-dir "$T7_TMPL" --vault "$T7_VAULT
 t7_restore_rc=$?
 assert_eq "T7-a: restore exits 0" "0" "$t7_restore_rc"
 
-if printf '%s\n' "$t7_restore_out" | grep -q "^RESTORED	"; then
+if grepq "$t7_restore_out" "^RESTORED	"; then
     pass "T7-a: restore emits RESTORED line"
 else
     fail "T7-a: restore emits RESTORED line" "got: $t7_restore_out"
@@ -882,7 +892,7 @@ make_conflict_vault "$T8_VAULT" "$T8_TMPL"
 t8_apply1_rc=0
 t8_apply1_out=$(run_engine apply --template-dir "$T8_TMPL" --vault "$T8_VAULT" 2>&1) || t8_apply1_rc=$?
 assert_eq "T8: first apply exits 1 (CONFLICT)" "1" "$t8_apply1_rc"
-if printf '%s\n' "$t8_apply1_out" | grep -q "^CONFLICT	"; then
+if grepq "$t8_apply1_out" "^CONFLICT	"; then
     pass "T8: first apply emits CONFLICT"
 else
     fail "T8: first apply emits CONFLICT" "got: $t8_apply1_out"
@@ -897,7 +907,7 @@ rm -f "$T8_VAULT/_CLAUDE.md.template-merge"
 t8_apply2_out=$(run_engine apply --template-dir "$T8_TMPL" --vault "$T8_VAULT" 2>&1)
 t8_apply2_rc=$?
 assert_eq "T8: second apply exits 0 (OK)" "0" "$t8_apply2_rc"
-if printf '%s\n' "$t8_apply2_out" | grep -q "^OK	"; then
+if grepq "$t8_apply2_out" "^OK	"; then
     pass "T8: second apply emits OK"
 else
     fail "T8: second apply emits OK" "got: $t8_apply2_out"
@@ -1053,7 +1063,7 @@ if [ -d "$REAL_HOME_BACKUP_DIR" ]; then
         _ps_name="$(basename "$_post_slug")"
         # Check if this slug was in the pre-suite snapshot (newline-separated string).
         # Use printf+grep so there's no glob expansion in the pattern.
-        if printf '%s\n' "$_real_home_pre_slugs" | grep -qxF "$_ps_name"; then
+        if grepq "$_real_home_pre_slugs" -xF "$_ps_name"; then
             : # pre-existed — OK
         else
             _new_slugs="${_new_slugs:+$_new_slugs }$_ps_name"
@@ -1107,7 +1117,7 @@ else
 fi
 
 # No OK or BACKUP success line
-if printf '%s\n' "$c1_inj_out" | grep -q "^OK	"; then
+if grepq "$c1_inj_out" "^OK	"; then
     fail "C1-injection: no OK line emitted when backup fails" "got: $c1_inj_out"
 else
     pass "C1-injection: no OK line emitted when backup fails"
@@ -1121,7 +1131,7 @@ assert_eq "C1-injection: vault stamp unchanged after backup failure" \
     "$c1_inj_pre_stamp" "$c1_inj_post_stamp"
 
 # No false BACKUP line
-if printf '%s\n' "$c1_inj_out" | grep -q "^BACKUP	"; then
+if grepq "$c1_inj_out" "^BACKUP	"; then
     fail "C1-injection: no false BACKUP line when backup fails" "got: $c1_inj_out"
 else
     pass "C1-injection: no false BACKUP line when backup fails"
@@ -1177,7 +1187,7 @@ else
 fi
 
 # Must NOT print RESTORED
-if printf '%s\n' "$c3_restore_out" | grep -q "^RESTORED	"; then
+if grepq "$c3_restore_out" "^RESTORED	"; then
     fail "C3-injection: no false RESTORED line on missing backup source" \
         "got: $c3_restore_out"
 else

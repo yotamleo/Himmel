@@ -26,6 +26,16 @@
 #   17. valid + invalid arg (HIMMEL-430 bad!) → rc 1, stderr names the invalid one
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/retitle.sh"
 
@@ -64,13 +74,13 @@ suggestion() { printf '%s\n' "$OUT" | grep '^  /rename ' | head -1 | sed 's/^  *
 
 assert_rc()         { if [ "$RC" -eq "$1" ]; then pass "$2"; else fail "$2" "rc=$RC want $1"; fi; }
 assert_suggestion() { local g; g=$(suggestion); if [ "$g" = "$1" ]; then pass "$2"; else fail "$2" "got [$g] want [$1]"; fi; }
-assert_out_has()    { if printf '%s' "$OUT" | grep -qF -- "$1"; then pass "$2"; else fail "$2" "stdout missing: $1"; fi; }
-assert_err_has()    { if printf '%s' "$ERR" | grep -qiF -- "$1"; then pass "$2"; else fail "$2" "stderr missing: $1"; fi; }
+assert_out_has()    { if grepq "$OUT" -F -- "$1"; then pass "$2"; else fail "$2" "stdout missing: $1"; fi; }
+assert_err_has()    { if grepq "$ERR" -iF -- "$1"; then pass "$2"; else fail "$2" "stderr missing: $1"; fi; }
 refute_suggestion_ticket() {
     local g; g=$(suggestion)
-    if printf '%s' "$g" | grep -qE '[A-Z][A-Z0-9]*-[0-9]+'; then fail "$1" "unexpected ticket in: $g"; else pass "$1"; fi
+    if grepq "$g" -E '[A-Z][A-Z0-9]*-[0-9]+'; then fail "$1" "unexpected ticket in: $g"; else pass "$1"; fi
 }
-refute_out_has() { if printf '%s' "$OUT" | grep -qF -- "$1"; then fail "$2" "unexpected: $1"; else pass "$2"; fi; }
+refute_out_has() { if grepq "$OUT" -F -- "$1"; then fail "$2" "unexpected: $1"; else pass "$2"; fi; }
 
 # Precondition (plan-critic F1): a temp dir OUTSIDE any git tree where rev-parse fails.
 NONREPO=$(mktemp -d)

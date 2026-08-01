@@ -4,6 +4,16 @@
 # asserts rc and stderr signal-words.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GUARD="$REPO_ROOT/scripts/guardrails/guard-gh.sh"
 
@@ -40,7 +50,7 @@ run_in() {
 echo "== pr-create on main → refuse rc=2 =="
 d=$(setup_repo main)
 out=$(run_in "$d" pr-create); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qi "refus.*main"; then
+if [ "$rc" -eq 2 ] && grepq "$out" -i "refus.*main"; then
     pass "main refused"
 else
     fail "expected rc=2 + 'refus*main' got rc=$rc out=$out"
@@ -59,7 +69,7 @@ d=$(setup_repo feat/x)
 git -C "$d" commit --allow-empty -q -m "feat"
 echo dirty > "$d/file.txt"
 out=$(run_in "$d" pr-create); rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qi "dirty"; then pass "dirty warns"; else fail "expected rc=1 + dirty got rc=$rc out=$out"; fi
+if [ "$rc" -eq 1 ] && grepq "$out" -i "dirty"; then pass "dirty warns"; else fail "expected rc=1 + dirty got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== pr-create on dirty feat with --allow-dirty → proceed rc=0 =="
@@ -77,7 +87,7 @@ git -C "$d" checkout -q main
 git -C "$d" merge --no-ff -q feat/x -m "merge"
 git -C "$d" checkout -q feat/x
 out=$(run_in "$d" pr-create); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qi "merg"; then pass "merged refused"; else fail "expected rc=2 + 'merg' got rc=$rc out=$out"; fi
+if [ "$rc" -eq 2 ] && grepq "$out" -i "merg"; then pass "merged refused"; else fail "expected rc=2 + 'merg' got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== pr-create on merged branch with --allow-merged-base → proceed rc=0 =="
@@ -93,7 +103,7 @@ rm -rf "$d"
 echo "== pr-merge --admin → refuse rc=2 =="
 d=$(setup_repo feat/x)
 out=$(run_in "$d" pr-merge --admin 99); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qi "admin"; then pass "admin refused"; else fail "expected rc=2 + 'admin' got rc=$rc out=$out"; fi
+if [ "$rc" -eq 2 ] && grepq "$out" -i "admin"; then pass "admin refused"; else fail "expected rc=2 + 'admin' got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== pr-merge --admin with GH_ADMIN_MERGE_OK=1 → proceed rc=0 =="
@@ -111,7 +121,7 @@ rm -rf "$d"
 echo "== unknown verb → rc=2 with stderr =="
 d=$(setup_repo feat/x)
 out=$(run_in "$d" pr-bogus); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qi "unknown"; then pass "unknown verb rejected"; else fail "expected rc=2 + unknown got rc=$rc out=$out"; fi
+if [ "$rc" -eq 2 ] && grepq "$out" -i "unknown"; then pass "unknown verb rejected"; else fail "expected rc=2 + unknown got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== pr-create --allow-dirty --title foo → cleaned argv excludes --allow-dirty =="
@@ -119,7 +129,7 @@ d=$(setup_repo feat/x)
 git -C "$d" commit --allow-empty -q -m "feat"
 echo dirty > "$d/file.txt"
 out=$(cd "$d" && bash "$GUARD" pr-create --allow-dirty --title foo 2>/dev/null); rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^--title$' && printf '%s' "$out" | grep -q '^foo$' && ! printf '%s' "$out" | grep -q '^--allow-dirty$'; then
+if [ "$rc" -eq 0 ] && grepq "$out" '^--title$' && grepq "$out" '^foo$' && ! grepq "$out" '^--allow-dirty$'; then
     pass "cleaned argv on stdout"
 else
     fail "expected stdout to have --title + foo but no --allow-dirty; got rc=$rc out=$out"
@@ -133,7 +143,7 @@ git -C "$d" checkout -q main
 git -C "$d" merge --no-ff -q feat/x -m "merge"
 git -C "$d" checkout -q feat/x
 out=$(cd "$d" && bash "$GUARD" pr-create --allow-merged-base --title foo 2>/dev/null); rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^--title$' && ! printf '%s' "$out" | grep -q '^--allow-merged-base$'; then
+if [ "$rc" -eq 0 ] && grepq "$out" '^--title$' && ! grepq "$out" '^--allow-merged-base$'; then
     pass "--allow-merged-base stripped"
 else
     fail "expected --title in stdout, no --allow-merged-base; got rc=$rc out=$out"
@@ -145,7 +155,7 @@ d=$(setup_repo feat/x)
 git -C "$d" commit --allow-empty -q -m "feat"
 echo dirty > "$d/file.txt"
 stdout=$(cd "$d" && bash "$GUARD" pr-create --title foo 2>/dev/null); rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$stdout" | grep -q '^--title$' && printf '%s' "$stdout" | grep -q '^foo$'; then
+if [ "$rc" -eq 1 ] && grepq "$stdout" '^--title$' && grepq "$stdout" '^foo$'; then
     pass "rc=1 emits forward argv"
 else
     fail "expected rc=1 + --title/foo in stdout; got rc=$rc stdout=$stdout"
@@ -160,7 +170,7 @@ git -C "$d" merge --no-ff -q feat/x -m "merge"
 git -C "$d" checkout -q feat/x
 echo dirty > "$d/file.txt"
 out=$(run_in "$d" pr-create); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qi "merg" && ! printf '%s' "$out" | grep -qi "warn"; then
+if [ "$rc" -eq 2 ] && grepq "$out" -i "merg" && ! grepq "$out" -i "warn"; then
     pass "merged precedes dirty"
 else
     fail "expected rc=2 + 'merg' (not WARN); got rc=$rc out=$out"
@@ -180,7 +190,7 @@ git -C "$work" push -q origin main
 git -C "$work" checkout -q feat/z
 git -C "$work" fetch -q origin
 out=$(run_in "$work" pr-push); rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qi "behind"; then
+if [ "$rc" -eq 1 ] && grepq "$out" -i "behind"; then
     pass "behind warns"
 else
     fail "expected rc=1 + 'behind' got rc=$rc out=$out"
@@ -190,7 +200,7 @@ out=$(run_in "$work" pr-push --allow-stale); rc=$?
 if [ "$rc" -eq 0 ]; then pass "--allow-stale proceeds"; else fail "expected rc=0 got rc=$rc"; fi
 # --allow-stale stripped from cleaned argv
 stdout=$(cd "$work" && bash "$GUARD" pr-push --allow-stale --foo bar 2>/dev/null); rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$stdout" | grep -q '^--foo$' && ! printf '%s' "$stdout" | grep -q '^--allow-stale$'; then
+if [ "$rc" -eq 0 ] && grepq "$stdout" '^--foo$' && ! grepq "$stdout" '^--allow-stale$'; then
     pass "--allow-stale stripped"
 else
     fail "expected --foo in stdout, no --allow-stale; got rc=$rc stdout=$stdout"
@@ -211,7 +221,7 @@ rm -rf "$work" "$origin"
 echo "== pr-merge --admin (allowed) → cleaned argv keeps --admin =="
 d=$(setup_repo feat/x)
 stdout=$(cd "$d" && GH_ADMIN_MERGE_OK=1 bash "$GUARD" pr-merge --admin 99 --squash 2>/dev/null); rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$stdout" | grep -q '^--admin$' && printf '%s' "$stdout" | grep -q '^99$' && printf '%s' "$stdout" | grep -q '^--squash$'; then
+if [ "$rc" -eq 0 ] && grepq "$stdout" '^--admin$' && grepq "$stdout" '^99$' && grepq "$stdout" '^--squash$'; then
     pass "--admin forwarded (not stripped)"
 else
     fail "expected --admin + 99 + --squash in stdout; got rc=$rc stdout=$stdout"
@@ -221,7 +231,7 @@ rm -rf "$d"
 echo "== guard-gh outside git repo → fail-closed refuse rc=2 =="
 ngd=$(mktemp -d)
 out=$(cd "$ngd" && bash "$GUARD" pr-create --title foo 2>&1); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qi "rc=2"; then
+if [ "$rc" -eq 2 ] && grepq "$out" -i "rc=2"; then
     pass "non-git refused fail-closed"
 else
     fail "expected rc=2 + 'rc=2' diagnostic; got rc=$rc out=$out"

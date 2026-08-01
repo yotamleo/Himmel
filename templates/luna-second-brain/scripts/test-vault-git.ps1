@@ -1,4 +1,4 @@
-<#
+﻿<#
   Smoke test for the C4 (HIMMEL-438) PowerShell twins — setup.ps1's git-state
   bootstrap + vault-autosync.ps1. Proves the PS ports wire through on Windows;
   the exhaustive behaviour (gate matrix, secret-block) is covered by the bash

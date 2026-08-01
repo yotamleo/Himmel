@@ -1,4 +1,4 @@
-<#
+﻿<#
   Smoke test for upgrade.ps1 (HIMMEL-389) — verifies the PowerShell twin locates
   Git Bash and delegates to upgrade.sh: a --dry-run mutates nothing, and a --yes
   run applies the engine's overwrite policy. The exhaustive per-file behavior is

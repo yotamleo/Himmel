@@ -7,6 +7,16 @@
 # + <T>/scripts/hooks/...) so the test proves the wrapper derives the repo root
 # from its OWN location, independent of the real repo.
 set -uo pipefail
+
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 HOOKS="$(cd "$(dirname "$0")" && pwd)"
 WRAPPER="$HOOKS/../../.codex/run-hook.cmd"
 ADAPTER="$HOOKS/../../.codex/codex-hook-adapter.sh"
@@ -152,18 +162,18 @@ esac
 #    guardrail block.
 # 3a) Missing script name -> fail closed (deny, rc 0), not a non-blocking error.
 nout="$(printf '' | bash "$T/.codex/run-hook.cmd" 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$nout" | grep -q '"permissionDecision":"deny"'; then
+if [ "$rc" -eq 0 ] && grepq "$nout" '"permissionDecision":"deny"'; then
   ok "missing script name -> fail-closed deny (rc 0)"
 else bad "missing script name -> fail-closed deny (rc=$rc, out=$nout)"; fi
 # 3b) Referenced guardrail file does not exist -> fail closed (deny, rc 0).
 gout="$(printf '{}' | bash "$T/.codex/run-hook.cmd" nonexistent-guardrail.sh 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$gout" | grep -q '"permissionDecision":"deny"'; then
+if [ "$rc" -eq 0 ] && grepq "$gout" '"permissionDecision":"deny"'; then
   ok "missing guardrail file -> fail-closed deny (rc 0)"
 else bad "missing guardrail file -> fail-closed deny (rc=$rc, out=$gout)"; fi
 # 3c) Adapter invoked with CLAUDE_PROJECT_DIR unset -> fail closed (deny, rc 0).
 #     (The wrapper always exports it; this locks the adapter's own guard.)
 uout="$(printf '{}' | env -u CLAUDE_PROJECT_DIR bash "$T/.codex/codex-hook-adapter.sh" somehook.sh 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$uout" | grep -q '"permissionDecision":"deny"'; then
+if [ "$rc" -eq 0 ] && grepq "$uout" '"permissionDecision":"deny"'; then
   ok "unset CLAUDE_PROJECT_DIR -> fail-closed deny (rc 0)"
 else bad "unset CLAUDE_PROJECT_DIR -> fail-closed deny (rc=$rc, out=$uout)"; fi
 

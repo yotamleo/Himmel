@@ -1,4 +1,4 @@
-# Hermetic tests for reap-superseded-fleets.ps1 (HIMMEL-1309).
+﻿# Hermetic tests for reap-superseded-fleets.ps1 (HIMMEL-1309).
 # Get-CimInstance is NOT mocked: the .ps1 exposes pure classifiers that take a
 # synthetic process-records array. We dot-source with -AsLibrary (defines
 # functions, skips the live scan) and assert the superseded set for a topology

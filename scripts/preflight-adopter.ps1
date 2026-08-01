@@ -1,4 +1,4 @@
-# preflight-adopter.ps1 — standalone check-only adopter preflight (HIMMEL-842
+﻿# preflight-adopter.ps1 — standalone check-only adopter preflight (HIMMEL-842
 # fix-batch). An adopter can run this BEFORE committing to adopt.ps1 to surface
 # the common fresh-machine gaps (uv/pipx, npm-less distro node, unbuilt
 # scripts/jira/dist) in one pass, instead of discovering them one abort at a

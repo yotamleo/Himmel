@@ -35,6 +35,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
@@ -117,7 +127,7 @@ runB wiring-statusline >/dev/null || fail "setup: seed run against B failed"
 
 targetKeys=$(jq -r '.targets | keys[]' "$cacheDir/state.json")
 [ "$(echo "$targetKeys" | wc -l)" -eq 2 ] || fail "setup: expected exactly 2 target entries in state.json (got: $targetKeys)"
-echo "$targetKeys" | grep -qx 'user' || fail "setup: expected a 'user' target entry (got: $targetKeys)"
+grepq "$targetKeys" -x 'user' || fail "setup: expected a 'user' target entry (got: $targetKeys)"
 targetKeyA=$(echo "$targetKeys" | grep -vx 'user')
 [ -n "$targetKeyA" ] || fail "setup: could not identify target A's key"
 

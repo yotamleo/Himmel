@@ -22,6 +22,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 lint="$repo_root/scripts/install/deps-lint.mjs"
 deps_path="$repo_root/scripts/install/deps.json"
@@ -97,7 +107,7 @@ set +e
 errA=$(run_lint "$caseA" 2>&1); rcA=$?
 set -e
 [ "$rcA" -eq 1 ] || fail "case a: an unknown extra key should exit 1 (got rc=$rcA): $errA"
-echo "$errA" | grep -qi 'bogusKey' || fail "case a: error should name the unknown key (got: $errA)"
+grepq "$errA" -i 'bogusKey' || fail "case a: error should name the unknown key (got: $errA)"
 echo "ok: case a — an unknown extra dep key exits 1, naming it"
 
 # ── case b: minVersion not null and not a dotted version -> exit 1 ─────────
@@ -107,7 +117,7 @@ set +e
 errB=$(run_lint "$caseB" 2>&1); rcB=$?
 set -e
 [ "$rcB" -eq 1 ] || fail "case b: a non-dotted minVersion should exit 1 (got rc=$rcB): $errB"
-echo "$errB" | grep -qi 'minVersion' || fail "case b: error should mention minVersion (got: $errB)"
+grepq "$errB" -i 'minVersion' || fail "case b: error should mention minVersion (got: $errB)"
 echo "ok: case b — minVersion not null/not a dotted version exits 1"
 
 # ── case c: an unknown install manager -> exit 1 ───────────────────────────
@@ -117,7 +127,7 @@ set +e
 errC=$(run_lint "$caseC" 2>&1); rcC=$?
 set -e
 [ "$rcC" -eq 1 ] || fail "case c: an unknown manager should exit 1 (got rc=$rcC): $errC"
-echo "$errC" | grep -qi 'manager' || fail "case c: error should mention manager (got: $errC)"
+grepq "$errC" -i 'manager' || fail "case c: error should mention manager (got: $errC)"
 echo "ok: case c — an install manager outside the closed vocabulary exits 1"
 
 # ── case d: install missing one of linux/macos/win32 -> exit 1 ────────────
@@ -127,7 +137,7 @@ set +e
 errD=$(run_lint "$caseD" 2>&1); rcD=$?
 set -e
 [ "$rcD" -eq 1 ] || fail "case d: install missing win32 should exit 1 (got rc=$rcD): $errD"
-echo "$errD" | grep -qF 'missing=[win32]' || fail "case d: error should name the missing OS key (got: $errD)"
+grepq "$errD" -F 'missing=[win32]' || fail "case d: error should name the missing OS key (got: $errD)"
 echo "ok: case d — install missing one of linux/macos/win32 exits 1, naming it"
 
 # ── case e: manager:winget missing 'id' -> exit 1 ──────────────────────────
@@ -137,7 +147,7 @@ set +e
 errE=$(run_lint "$caseE" 2>&1); rcE=$?
 set -e
 [ "$rcE" -eq 1 ] || fail "case e: winget without 'id' should exit 1 (got rc=$rcE): $errE"
-echo "$errE" | grep -qF "requires 'id'" || fail "case e: error should name the missing 'id' field (got: $errE)"
+grepq "$errE" -F "requires 'id'" || fail "case e: error should name the missing 'id' field (got: $errE)"
 echo "ok: case e — manager:winget without 'id' exits 1"
 
 # ── case f: manager:script with a non-array 'args' -> exit 1 ──────────────
@@ -147,7 +157,7 @@ set +e
 errF=$(run_lint "$caseF" 2>&1); rcF=$?
 set -e
 [ "$rcF" -eq 1 ] || fail "case f: a non-array args should exit 1 (got rc=$rcF): $errF"
-echo "$errF" | grep -qi 'args' || fail "case f: error should mention args (got: $errF)"
+grepq "$errF" -i 'args' || fail "case f: error should mention args (got: $errF)"
 echo "ok: case f — manager:script with a non-array 'args' exits 1"
 
 # ── case g: duplicate dep ids -> exit 1 ────────────────────────────────────
@@ -157,7 +167,7 @@ set +e
 errG=$(run_lint "$caseG" 2>&1); rcG=$?
 set -e
 [ "$rcG" -eq 1 ] || fail "case g: duplicate dep ids should exit 1 (got rc=$rcG): $errG"
-echo "$errG" | grep -qi 'duplicate' || fail "case g: error should say duplicate (got: $errG)"
+grepq "$errG" -i 'duplicate' || fail "case g: error should say duplicate (got: $errG)"
 echo "ok: case g — duplicate dep ids exit 1"
 
 # ── case h: the real deps.json lints clean -> exit 0 ───────────────────────
@@ -181,7 +191,7 @@ set +e
 errJ=$(run_lint "$caseJ" 2>&1); rcJ=$?
 set -e
 [ "$rcJ" -eq 1 ] || fail "case j: ensure-tools with an extra field should exit 1 (got rc=$rcJ): $errJ"
-echo "$errJ" | grep -qi 'unexpected field' || fail "case j: error should name the unexpected field (got: $errJ)"
+grepq "$errJ" -i 'unexpected field' || fail "case j: error should name the unexpected field (got: $errJ)"
 echo "ok: case j — manager:ensure-tools with an unexpected extra field exits 1"
 
 # ── case k: whitespace-only 'pkg' (brew) -> exit 1 ─────────────────────────
@@ -195,7 +205,7 @@ set +e
 errK=$(run_lint "$caseK" 2>&1); rcK=$?
 set -e
 [ "$rcK" -eq 1 ] || fail "case k: a whitespace-only pkg should exit 1 (got rc=$rcK): $errK"
-echo "$errK" | grep -qi 'pkg' || fail "case k: error should mention pkg (got: $errK)"
+grepq "$errK" -i 'pkg' || fail "case k: error should mention pkg (got: $errK)"
 echo "ok: case k — a whitespace-only 'pkg' exits 1 (non-blank identifier check)"
 
 # ── case l: whitespace-only winget 'id' / dep 'cmd' -> exit 1 ───────────────
@@ -209,7 +219,7 @@ set +e
 errL=$(run_lint "$caseL" 2>&1); rcL=$?
 set -e
 [ "$rcL" -eq 1 ] || fail "case l: a whitespace-only winget id should exit 1 (got rc=$rcL): $errL"
-echo "$errL" | grep -qF "requires 'id'" || fail "case l: error should name the winget 'id' field (got: $errL)"
+grepq "$errL" -F "requires 'id'" || fail "case l: error should name the winget 'id' field (got: $errL)"
 
 caseL2="$work/case-l2.json"
 mutate_base "$caseL2" "m.deps[0].cmd = '  ';"
@@ -217,7 +227,7 @@ set +e
 errL2=$(run_lint "$caseL2" 2>&1); rcL2=$?
 set -e
 [ "$rcL2" -eq 1 ] || fail "case l: a whitespace-only cmd should exit 1 (got rc=$rcL2): $errL2"
-echo "$errL2" | grep -qF "'cmd'" || fail "case l: error should name the 'cmd' field (got: $errL2)"
+grepq "$errL2" -F "'cmd'" || fail "case l: error should name the 'cmd' field (got: $errL2)"
 echo "ok: case l — whitespace-only winget 'id' AND dep 'cmd' exit 1 (non-blank identifier check)"
 
 echo "PASS"

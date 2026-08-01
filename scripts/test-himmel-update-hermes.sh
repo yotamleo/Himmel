@@ -3,6 +3,16 @@
 # script via its HIMMEL_UPDATE_LIB seam so the function runs in isolation with
 # HERMES_HOME fixtures — no network, no repo mutation.
 set -uo pipefail
+
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 HIMMEL_UPDATE_LIB=1 . "$HERE/himmel-update.sh"
@@ -10,7 +20,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fail=0
 
 check() {  # <description> <expected-substring> <actual-output>
-  if printf '%s' "$3" | grep -Eq "$2"; then
+  if grepq "$3" -E "$2"; then
     echo "ok: $1"
   else
     echo "FAIL: $1"; echo "  expected /$2/ in:"; printf '%s\n' "$3" | sed 's/^/    /'

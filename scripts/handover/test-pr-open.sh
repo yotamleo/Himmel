@@ -22,6 +22,16 @@
 #  10. HANDOVER_PR_AUTO=0 short-circuits pr-open (exit 0, no gh calls).
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_OPEN="$SCRIPT_DIR/pr-open.sh"
 PR_MERGE="$SCRIPT_DIR/pr-merge.sh"
@@ -43,7 +53,7 @@ fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FA
 
 assert_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grepq "$haystack" -F -- "$needle"; then
         pass "$name"
     else
         fail "$name" "needle '$needle' missing from haystack"

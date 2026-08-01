@@ -37,6 +37,16 @@
 # Exit 0 if all cases pass, 1 otherwise.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 STATUSLINE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$STATUSLINE_DIR/../.." && pwd)"
 HUD_DIST="$REPO_ROOT/marketplace/plugins/claude-hud/dist/index.js"
@@ -87,7 +97,7 @@ check_exact() { if [ "$1" = "$2" ]; then pass "$4: $3=$2"; else fail "$4: $3 exp
 check_ctx() {  # $1=actual $2=expected hud round-half-up value $3=label (legacy floor is == or 1pp lower)
   if [ "${1:-}" = "$2" ]; then pass "$3: ctx=$2%"; else fail "$3: ctx expected $2% got '${1:-none}'"; fi
 }
-check_absent() { if printf '%s' "$1" | grep -q "$2"; then fail "$4: '$2' should be absent ($3)"; else pass "$4: no $3"; fi; }
+check_absent() { if grepq "$1" "$2"; then fail "$4: '$2' should be absent ($3)"; else pass "$4: no $3"; fi; }
 
 echo "== static config wiring =="
 check_exact "$(jq -r '.display.externalUsagePath' "$HUD_CONFIG")" \

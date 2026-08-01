@@ -28,6 +28,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 if ! command -v jq >/dev/null 2>&1; then
     echo "FAIL: jq not on PATH — required by these fixtures" >&2
     exit 1
@@ -157,14 +167,14 @@ fi
 
 echo "Test 3: bare-entry regex boundaries"
 for cmd_should_match in 'rtk hook claude' '  rtk  hook  claude' 'rtk hook claude --foo'; do
-    if printf '%s' "$cmd_should_match" | grep -qE "$BARE_RTK_RE"; then
+    if grepq "$cmd_should_match" -E "$BARE_RTK_RE"; then
         assert_pass "matches bare: '$cmd_should_match'"
     else
         assert_fail "should match bare entry: '$cmd_should_match'"
     fi
 done
 for cmd_should_skip in 'bash "/opt/himmel/scripts/hooks/rtk-hook-guard.sh"' 'rtk hook claudette' 'echo rtk hook claude'; do
-    if printf '%s' "$cmd_should_skip" | grep -qE "$BARE_RTK_RE"; then
+    if grepq "$cmd_should_skip" -E "$BARE_RTK_RE"; then
         assert_fail "must NOT match: '$cmd_should_skip'"
     else
         assert_pass "skips: '$cmd_should_skip'"
@@ -206,7 +216,7 @@ if printf '%s' "$patched" | jq -e . >/dev/null 2>&1; then
 else
     assert_fail "patch filter produced invalid JSON"
 fi
-if printf '%s' "$patched" | grep -qF '<himmel-path>'; then
+if grepq "$patched" -F '<himmel-path>'; then
     assert_fail "dangling <himmel-path> remains in patched output"
 else
     assert_pass "no <himmel-path> placeholder remains"

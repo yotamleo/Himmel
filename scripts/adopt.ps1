@@ -1,4 +1,4 @@
-# adopt.ps1 — one-click installer: bring the himmel harness and/or the luna
+﻿# adopt.ps1 — one-click installer: bring the himmel harness and/or the luna
 # vault scaffold into your own repo (project scope) or user scope.
 # PowerShell counterpart of adopt.sh — keep both in lockstep.
 #

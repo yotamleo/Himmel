@@ -5,6 +5,16 @@
 # Exit: 0 = all pass, 1 = at least one failed.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 COMPOSER="$DIR/hud-custom-lines.sh"
@@ -100,7 +110,8 @@ run_composer() {
 # claude-opus: read_savings=(5-0.5)/1e6, write_overhead=(10-5)/1e6.
 # net = 2e6*4.5e-6 - 1e5*5e-6 = 9.0 - 0.5 = 8.5. hit = 2e6*100/2.05e6 = 97.
 out="$(run_composer)"
-if printf '%s\n' "$out" | grep -qF 'session  r:2.0M  w:100k  hit:97%  net +$8.5000'; then
+# shellcheck disable=SC2016 # $ is literal fixed-string text, not an expansion
+if grepq "$out" -F 'session  r:2.0M  w:100k  hit:97%  net +$8.5000'; then
     pass "session economics -> exact 'r:2.0M w:100k hit:97% net +\$8.5000'"
 else
     fail "session economics -> got: $(printf '%s\n' "$out" | grep -F 'session' || echo '(no session line)')"
@@ -125,7 +136,7 @@ out_unknown="$(printf '%s' "$unknown_json" | \
     HIMMEL_WHERE_ARE_WE_SEG_TIMEOUT=30 \
     bash "$COMPOSER" 2>/dev/null)"
 # LC_ALL=C for the same reason Case 4 needs it — see the note there.
-if printf '%s\n' "$out_unknown" | LC_ALL=C grep -qE '^session .*net [+-]\$[0-9.]+\?'; then
+if LC_ALL=C grepq "$out_unknown" -E '^session .*net [+-]\$[0-9.]+\?'; then
     pass "unknown model -> composer marks the net with '?' (guess, not fact)"
 else
     fail "unknown model -> no '?' marker: $(printf '%s\n' "$out_unknown" | grep -E '^session ' || echo '(no session line)')"
@@ -133,7 +144,8 @@ fi
 
 # ── Case 3: all-sessions economics line (exact computed values) ─────────────
 # net = 45e6*4.5e-6 - 12e6*5e-6 = 202.5 - 60 = 142.5. hit = 45e6*100/48e6 = 93.
-if printf '%s\n' "$out" | grep -qE '^all +r:45\.0M  w:12\.0M  hit:93%  net [+]\$142\.5000$'; then
+# shellcheck disable=SC2016 # $ anchors/literals are regex text, not expansion
+if grepq "$out" -E '^all +r:45\.0M  w:12\.0M  hit:93%  net [+]\$142\.5000$'; then
     pass "all-sessions economics -> exact 'all r:45.0M w:12.0M hit:93% net +\$142.5000'"
 else
     fail "all-sessions economics -> got: $(printf '%s\n' "$out" | grep -E '^all ' || echo '(no all line)')"
@@ -151,13 +163,13 @@ if [ -n "$key" ]; then
     # LC_ALL=C and does not under LC_ALL=en_GB.UTF-8, while `⎇` (3-byte) and the
     # ASCII parts match under both. This test compares BYTES for a byte-identity
     # claim, so the C locale is also the semantically correct choice.
-    if [ -n "$seg_line" ] && printf '%s\n' "$out" | LC_ALL=C grep -qF "$seg_line"; then
+    if [ -n "$seg_line" ] && LC_ALL=C grepq "$out" -F "$seg_line"; then
         pass "WAW parity -> composer emits the segment line verbatim ('$seg_line')"
     else
         fail "WAW parity -> seg='$seg_line' not found in composer out"
     fi
     # And it must carry the seeded epic rollup.
-    if printf '%s\n' "$out" | grep -qF 'HIMMEL-654 7/20'; then
+    if grepq "$out" -F 'HIMMEL-654 7/20'; then
         pass "WAW rollup -> 'HIMMEL-654 7/20' present"
     else
         fail "WAW rollup -> epic part missing"
@@ -171,7 +183,7 @@ out_off="$(printf '%s' "$stdin_json" | HIMMEL_WHERE_ARE_WE=0 \
     HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HANDOVER_DIR="$HROOT" \
     CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$COMPOSER" 2>/dev/null)"
 first_line="$(printf '%s\n' "$out_off" | head -n1)"
-if ! printf '%s\n' "$out_off" | grep -qF '⎇'; then
+if ! grepq "$out_off" -F '⎇'; then
     pass "env-knob HIMMEL_WHERE_ARE_WE=0 -> WAW suppressed (first line: '$first_line')"
 else
     fail "env-knob HIMMEL_WHERE_ARE_WE=0 -> WAW still present"
@@ -189,7 +201,7 @@ printf '%s\n' '{"reads":1000000,"writes":2000,"inputs":500}' > "$ECON_DIR/cache-
 out_wk="$(printf '%s' "$stdin_json" | HIMMEL_STATUSLINE_PERIOD=week HIMMEL_STATUSLINE_NOW=$NOW_FIXED \
     HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HANDOVER_DIR="$HROOT" \
     CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$COMPOSER" 2>/dev/null)"
-if printf '%s\n' "$out_wk" | grep -qE '^week +r:1.0M  w:2k  hit:'; then
+if grepq "$out_wk" -E '^week +r:1.0M  w:2k  hit:'; then
     pass "env-knob HIMMEL_STATUSLINE_PERIOD=week -> 'week' row from week cache"
 else
     fail "env-knob period=week -> got: $(printf '%s\n' "$out_wk" | grep -E '^(week|all) ' || echo '(no period line)')"
@@ -203,7 +215,7 @@ fi
 # read_session_cache_stats' sess_unknown in hud-custom-lines.sh).
 out_empty="$(printf '{"model":{"id":"claude-opus-4-8"},"transcript_path":"/nonexistent","cwd":"%s"}' "$WT" | \
     CLAUDE_ALL_SESSIONS_CACHE_DIR="$TMP/empty" bash "$COMPOSER" 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s\n' "$out_empty" | grep -qF 'session~  r:?  w:?  hit:?%  net ?'; then
+if [ "$rc" -eq 0 ] && grepq "$out_empty" -F 'session~  r:?  w:?  hit:?%  net ?'; then
     pass "fail-open -> missing transcript renders the unknown marker, exit 0"
 else
     fail "fail-open -> rc=$rc out='$out_empty'"
@@ -229,12 +241,13 @@ STUBEOF
 chmod +x "$STUBDIR/jq"
 out_slow="$(printf '%s' "$stdin_json" | HIMMEL_SESSION_CACHE_TIMEOUT=1 PATH="$STUBDIR:$PATH" \
     HIMMEL_WHERE_ARE_WE=0 CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$COMPOSER" 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s\n' "$out_slow" | grep -qF 'session~  r:?  w:?  hit:?%  net ?'; then
+if [ "$rc" -eq 0 ] && grepq "$out_slow" -F 'session~  r:?  w:?  hit:?%  net ?'; then
     pass "HIMMEL-797: slow transcript parse -> session row degrades to unknown marker, exit 0"
 else
     fail "HIMMEL-797: slow transcript parse -> rc=$rc session line: $(printf '%s\n' "$out_slow" | grep -F 'session' || echo '(none)')"
 fi
-if printf '%s\n' "$out_slow" | grep -qE '^all +r:45\.0M  w:12\.0M  hit:93%  net [+]\$142\.5000$'; then
+# shellcheck disable=SC2016 # $ anchors/literals are regex text, not expansion
+if grepq "$out_slow" -E '^all +r:45\.0M  w:12\.0M  hit:93%  net [+]\$142\.5000$'; then
     pass "HIMMEL-797: slow transcript parse -> all row still renders (isolated from the slow session parse)"
 else
     fail "HIMMEL-797: slow transcript parse -> all row missing/wrong: $(printf '%s\n' "$out_slow" | grep -E '^all ' || echo '(none)')"

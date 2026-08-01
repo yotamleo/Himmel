@@ -15,7 +15,12 @@
 # 7-10. heredoc-body set -e, --staged-from-subdir, missing-file exit 2, set -Ee.
 # 11-17. CR-learnings advisory checks (HIMMEL-1315, 2026-07-28): regex-class,
 #        mktemp template, bash32 constructs, echo-e, gnu-flag (+BSD-fallback
-#        exclusion + gnu-ok exemption), BOM covers .ps1, --staged admits .ps1.
+#        exclusion + gnu-ok exemption), BOM policy split by file type (.ps1:
+#        BOM clean / non-ASCII no-BOM = trap), --staged admits .ps1.
+# 16d-f. CR r3 (HIMMEL-1432, [codex-adv-r2-1]): UTF-16LE/BE BOM'd .ps1 clean;
+#        non-UTF-8 no-BOM .ps1 = [PS1-ENCODING] (never an automated BOM add).
+# 16g. CR r4 (HIMMEL-1432, [codex-r3p-1]): a UTF-16LE-BOM'd SHELL script is a
+#        [BOM] error (breaks the shebang) — r3 over-broadly blessed UTF-16/32.
 #  18. self-check (HIMMEL-1355): shell-lint reports no findings against this
 #      suite's own file (its fixtures/assertions are exempted from advisory
 #      checks the same way shell-lint.sh exempts its own source).
@@ -23,6 +28,16 @@
 # Exit: 0 all passed, 1 any failed. bash 3.2-safe; shellcheck-clean.
 
 set -uo pipefail
+
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LINT="$SCRIPT_DIR/shell-lint.sh"
@@ -46,14 +61,19 @@ fail() {
     FAIL=$((FAIL + 1))
 }
 assert_contains() {
-    if printf '%s' "$3" | grep -qF -- "$2"; then pass "$1"; else fail "$1" "missing: $2"; fi
+    if grepq "$3" -F -- "$2"; then pass "$1"; else fail "$1" "missing: $2"; fi
 }
 assert_not_contains() {
-    if printf '%s' "$3" | grep -qF -- "$2"; then fail "$1" "unexpected: $2"; else pass "$1"; fi
+    if grepq "$3" -F -- "$2"; then fail "$1" "unexpected: $2"; else pass "$1"; fi
 }
 
 HAVE_SHELLCHECK=0
 command -v shellcheck >/dev/null 2>&1 && HAVE_SHELLCHECK=1
+# iconv backs the [PS1-NO-BOM] vs [PS1-ENCODING] split (HIMMEL-1432 CR r3). The
+# [PS1-NO-BOM] assertion (valid UTF-8 + no BOM) is iconv-dependent: without
+# iconv the linter fails SAFE to [PS1-ENCODING] unverified, so guard it.
+HAVE_ICONV=0
+command -v iconv >/dev/null 2>&1 && HAVE_ICONV=1
 
 TMP_ROOT="$(mktemp -d)"
 
@@ -165,7 +185,7 @@ for variant in "set -eu" "set -euo pipefail" "set -o errexit"; do
     f="$TMP_ROOT/ee.sh"
     printf '#!/usr/bin/env bash\n%s\necho hi\n' "$variant" > "$f"
     o="$(bash "$LINT" "$f" 2>&1)"; e=$?
-    if [ "$e" -eq 1 ] && printf '%s' "$o" | grep -qF errexit; then
+    if [ "$e" -eq 1 ] && grepq "$o" -F errexit; then
         pass "errexit flagged: '$variant'"
     else
         fail "errexit should be flagged: '$variant'" "$o"
@@ -176,7 +196,7 @@ for ok in "set -uo pipefail" "set -o pipefail" "set -u"; do
     f="$TMP_ROOT/ok.sh"
     printf '#!/usr/bin/env bash\n%s\necho ok\n' "$ok" > "$f"
     o="$(bash "$LINT" "$f" 2>&1)"; e=$?
-    if printf '%s' "$o" | grep -qF errexit; then
+    if grepq "$o" -F errexit; then
         fail "errexit FALSE positive: '$ok'" "$o"
     else
         pass "errexit not flagged (correct): '$ok'"
@@ -229,7 +249,7 @@ printf '\nCase 10: set -Ee flagged\n'
 EE2="$TMP_ROOT/ee2.sh"
 printf '#!/usr/bin/env bash\nset -Ee\necho hi\n' > "$EE2"
 OUT10="$(bash "$LINT" "$EE2" 2>&1)"; EC10=$?
-if [ "$EC10" -eq 1 ] && printf '%s' "$OUT10" | grep -qF errexit; then
+if [ "$EC10" -eq 1 ] && grepq "$OUT10" -F errexit; then
     pass "set -Ee flagged as errexit"
 else
     fail "set -Ee should be flagged" "$OUT10"
@@ -249,7 +269,7 @@ set -uo pipefail
 grep -E '\s+' file
 EOF
 OUT11="$(bash "$LINT" "$RC_BAD" 2>&1)"
-if printf '%s' "$OUT11" | grep -qF '[regex-class]'; then pass "regex-class flags \\s in grep -E"; else fail "regex-class should flag \\s" "$OUT11"; fi
+if grepq "$OUT11" -F '[regex-class]'; then pass "regex-class flags \\s in grep -E"; else fail "regex-class should flag \\s" "$OUT11"; fi
 RC_GOOD="$TMP_ROOT/rc_good.sh"
 cat > "$RC_GOOD" <<'EOF'
 #!/usr/bin/env bash
@@ -257,7 +277,7 @@ set -uo pipefail
 grep -E '[[:space:]]+' file
 EOF
 OUT11b="$(bash "$LINT" "$RC_GOOD" 2>&1)"
-if printf '%s' "$OUT11b" | grep -qF '[regex-class]'; then fail "regex-class false positive on POSIX class" "$OUT11b"; else pass "regex-class ignores POSIX [[:space:]]"; fi
+if grepq "$OUT11b" -F '[regex-class]'; then fail "regex-class false positive on POSIX class" "$OUT11b"; else pass "regex-class ignores POSIX [[:space:]]"; fi
 
 # Case 12: [mktemp] — no-template mktemp/-d is flagged; a templated form is not.
 printf '\nCase 12: mktemp template detection\n'
@@ -268,7 +288,7 @@ set -uo pipefail
 d="$(mktemp -d)"
 EOF
 OUT12="$(bash "$LINT" "$MT_BAD" 2>&1)"
-if printf '%s' "$OUT12" | grep -qF '[mktemp]'; then pass "mktemp flags no-template mktemp -d"; else fail "mktemp should flag no-template" "$OUT12"; fi
+if grepq "$OUT12" -F '[mktemp]'; then pass "mktemp flags no-template mktemp -d"; else fail "mktemp should flag no-template" "$OUT12"; fi
 MT_GOOD="$TMP_ROOT/mt_good.sh"
 cat > "$MT_GOOD" <<'EOF'
 #!/usr/bin/env bash
@@ -276,7 +296,7 @@ set -uo pipefail
 d="$(mktemp -d -t prefix.XXXXXX)"
 EOF
 OUT12b="$(bash "$LINT" "$MT_GOOD" 2>&1)"
-if printf '%s' "$OUT12b" | grep -qF '[mktemp]'; then fail "mktemp false positive on templated form" "$OUT12b"; else pass "mktemp ignores templated form"; fi
+if grepq "$OUT12b" -F '[mktemp]'; then fail "mktemp false positive on templated form" "$OUT12b"; else pass "mktemp ignores templated form"; fi
 
 # Case 13: [bash32] — declare -A is flagged.
 printf '\nCase 13: bash32 detection\n'
@@ -287,7 +307,7 @@ set -uo pipefail
 declare -A seen
 EOF
 OUT13="$(bash "$LINT" "$B32" 2>&1)"
-if printf '%s' "$OUT13" | grep -qF '[bash32]'; then pass "bash32 flags declare -A"; else fail "bash32 should flag declare -A" "$OUT13"; fi
+if grepq "$OUT13" -F '[bash32]'; then pass "bash32 flags declare -A"; else fail "bash32 should flag declare -A" "$OUT13"; fi
 
 # Case 14: [echo-e] — echo -e is flagged.
 printf '\nCase 14: echo-e detection\n'
@@ -298,7 +318,7 @@ set -uo pipefail
 echo -e "hi"
 EOF
 OUT14="$(bash "$LINT" "$EFLAG" 2>&1)"
-if printf '%s' "$OUT14" | grep -qF '[echo-e]'; then pass "echo-e flags echo -e"; else fail "echo-e should flag echo -e" "$OUT14"; fi
+if grepq "$OUT14" -F '[echo-e]'; then pass "echo-e flags echo -e"; else fail "echo-e should flag echo -e" "$OUT14"; fi
 
 # Case 15: [gnu-flag] — grep -P flagged; GNU||BSD portable idiom not; gnu-ok
 # marker (preceding line) exempts.
@@ -310,7 +330,7 @@ set -uo pipefail
 echo "$x" | grep -oP '"id"'
 EOF
 OUT15="$(bash "$LINT" "$GF_BAD" 2>&1)"
-if printf '%s' "$OUT15" | grep -qF '[gnu-flag]'; then pass "gnu-flag flags grep -P"; else fail "gnu-flag should flag grep -P" "$OUT15"; fi
+if grepq "$OUT15" -F '[gnu-flag]'; then pass "gnu-flag flags grep -P"; else fail "gnu-flag should flag grep -P" "$OUT15"; fi
 GF_FB="$TMP_ROOT/gf_fb.sh"
 cat > "$GF_FB" <<'EOF'
 #!/usr/bin/env bash
@@ -318,7 +338,7 @@ set -uo pipefail
 mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f")
 EOF
 OUT15b="$(bash "$LINT" "$GF_FB" 2>&1)"
-if printf '%s' "$OUT15b" | grep -qF '[gnu-flag]'; then fail "gnu-flag false positive on GNU||BSD fallback" "$OUT15b"; else pass "gnu-flag ignores GNU||BSD portable idiom"; fi
+if grepq "$OUT15b" -F '[gnu-flag]'; then fail "gnu-flag false positive on GNU||BSD fallback" "$OUT15b"; else pass "gnu-flag ignores GNU||BSD portable idiom"; fi
 GF_OK="$TMP_ROOT/gf_ok.sh"
 cat > "$GF_OK" <<'EOF'
 #!/usr/bin/env bash
@@ -327,24 +347,106 @@ set -uo pipefail
 echo "$x" | grep -oP '"id"'
 EOF
 OUT15c="$(bash "$LINT" "$GF_OK" 2>&1)"
-if printf '%s' "$OUT15c" | grep -qF '[gnu-flag]'; then fail "gnu-ok marker did not exempt grep -P" "$OUT15c"; else pass "gnu-ok marker exempts grep -P"; fi
+if grepq "$OUT15c" -F '[gnu-flag]'; then fail "gnu-ok marker did not exempt grep -P" "$OUT15c"; else pass "gnu-ok marker exempts grep -P"; fi
 
-# Case 16: [BOM] covers *.ps1, and a .ps1 runs NO shell-specific check.
-printf '\nCase 16: BOM covers .ps1; .ps1 skips shell checks\n'
-PS1="$TMP_ROOT/thing.ps1"
-_write_bom_file "$PS1" <<'EOF'
-Write-Output "hi"
-EOF
-OUT16="$(bash "$LINT" "$PS1" 2>&1)"
-if printf '%s' "$OUT16" | grep -qF '[BOM]'; then pass "BOM detected in .ps1"; else fail "BOM should be detected in .ps1" "$OUT16"; fi
-if printf '%s' "$OUT16" | grep -qE '\[(errexit|shellcheck|regex-class|mktemp|bash32|gnu-flag|echo-e)\]'; then
-    fail ".ps1 ran a shell-specific check" "$OUT16"
+# Case 16: BOM policy is split by file type (HIMMEL-1432). A BOM is CORRECT for
+# *.ps1 (PS5.1 needs it to decode UTF-8) -> [BOM] is never reported on a .ps1.
+# Instead a .ps1 with non-ASCII bytes (>0x7F) but NO BOM is the trap itself
+# ([PS1-NO-BOM]); a pure-ASCII .ps1 without a BOM is fine. Fixtures use printf
+# octal escapes (\303\251 = e-acute) so THIS test file stays pure-ASCII. A .ps1
+# still runs no shell-specific check.
+printf '\nCase 16: BOM policy split by file type (HIMMEL-1432)\n'
+
+# 16a: non-ASCII .ps1 WITH a BOM -> clean (the BOM is correct; the very content
+#      that is the trap without one is fine with one).
+PS1B="$TMP_ROOT/bom.ps1"
+printf '\xEF\xBB\xBF' > "$PS1B"
+printf 'Write-Output "caf\303\251"\n' >> "$PS1B"
+OUT16="$(bash "$LINT" "$PS1B" 2>&1)"; EC16=$?
+if [ "$EC16" -eq 0 ]; then pass "16a: non-ASCII .ps1 + BOM exits 0 (BOM is correct)"; else fail "16a: expected exit 0, got $EC16" "$OUT16"; fi
+assert_not_contains "16a: no [BOM] on a .ps1" "[BOM]" "$OUT16"
+assert_not_contains "16a: no [PS1-NO-BOM] when BOM present" "[PS1-NO-BOM]" "$OUT16"
+# grepq, not printf|grep -qE (HIMMEL-1430 merge resolution: this suite runs
+# under pipefail and the sweep converts single-producer grep -q pipelines).
+if grepq "$OUT16" -E '\[(errexit|shellcheck|regex-class|mktemp|bash32|gnu-flag|echo-e)\]'; then
+    fail "16a: .ps1 ran a shell-specific check" "$OUT16"
 else
-    pass ".ps1 reaches [BOM] only"
+    pass "16a: .ps1 runs no shell-specific check"
 fi
 
-# Case 17: --staged lints a staged .ps1 (BOM) — the gathering admits *.ps1.
-printf '\nCase 17: --staged lints a staged .ps1\n'
+# 16b: non-ASCII .ps1 WITHOUT a BOM -> [PS1-NO-BOM] (the HIMMEL-1432 trap).
+PS1N="$TMP_ROOT/nobom.ps1"
+printf 'Write-Output "caf\303\251"\n' > "$PS1N"
+OUT16b="$(bash "$LINT" "$PS1N" 2>&1)"; EC16b=$?
+if [ "$EC16b" -eq 1 ]; then pass "16b: non-ASCII no-BOM .ps1 exits 1"; else fail "16b: expected exit 1, got $EC16b" "$OUT16b"; fi
+if [ "$HAVE_ICONV" -eq 1 ]; then
+    assert_contains "16b: [PS1-NO-BOM] fires on the trap (valid UTF-8, no BOM)" "[PS1-NO-BOM]" "$OUT16b"
+else
+    printf '  SKIP: iconv not installed — 16b [PS1-NO-BOM] assertion skipped (fail-safe emits [PS1-ENCODING] unverified)\n'
+fi
+assert_not_contains "16b: no [BOM] reported (BOM absent, not the issue)" "[BOM]" "$OUT16b"
+
+# 16c: pure-ASCII .ps1 WITHOUT a BOM -> clean (BOM is optional when ASCII-only).
+PS1A="$TMP_ROOT/ascii.ps1"
+printf 'Write-Output "hi"\n' > "$PS1A"
+OUT16c="$(bash "$LINT" "$PS1A" 2>&1)"; EC16c=$?
+if [ "$EC16c" -eq 0 ]; then pass "16c: pure-ASCII no-BOM .ps1 exits 0"; else fail "16c: expected exit 0, got $EC16c" "$OUT16c"; fi
+assert_not_contains "16c: no [PS1-NO-BOM] on ASCII-only .ps1" "[PS1-NO-BOM]" "$OUT16c"
+
+# 16d-16f (HIMMEL-1432 CR r3, [codex-adv-r2-1]): r2 recognized only EF BB BF,
+# so a UTF-16/UTF-32 .ps1 fell into the no-BOM branch and was told to "add a
+# UTF-8 BOM" — corrupting a valid script. These lock the fix: a UTF-16/32 BOM'd
+# .ps1 is CLEAN, and a non-UTF-8 no-BOM .ps1 gets [PS1-ENCODING] (manual),
+# never an automated BOM add. Fixtures use printf byte escapes (not iconv) so
+# they build everywhere; NUL bytes go straight to the file via redirection.
+
+# 16d: UTF-16LE .ps1 (FF FE BOM + "hi" = 68 00 69 00) -> clean. PowerShell 5.1
+#      decodes BOM'd UTF-16 natively.
+PS1U16LE="$TMP_ROOT/u16le.ps1"
+printf '\xFF\xFE\x68\x00\x69\x00' > "$PS1U16LE"
+OUT16d="$(bash "$LINT" "$PS1U16LE" 2>&1)"; EC16d=$?
+if [ "$EC16d" -eq 0 ]; then pass "16d: UTF-16LE BOM .ps1 exits 0 (valid encoding)"; else fail "16d: expected exit 0, got $EC16d" "$OUT16d"; fi
+assert_not_contains "16d: no [PS1-NO-BOM] on a UTF-16LE .ps1" "[PS1-NO-BOM]" "$OUT16d"
+assert_not_contains "16d: no [PS1-ENCODING] on a UTF-16LE .ps1" "[PS1-ENCODING]" "$OUT16d"
+assert_not_contains "16d: no [BOM] on a UTF-16LE .ps1" "[BOM]" "$OUT16d"
+
+# 16e: UTF-16BE .ps1 (FE FF BOM + "hi" = 00 68 00 69) -> clean.
+PS1U16BE="$TMP_ROOT/u16be.ps1"
+printf '\xFE\xFF\x00\x68\x00\x69' > "$PS1U16BE"
+OUT16e="$(bash "$LINT" "$PS1U16BE" 2>&1)"; EC16e=$?
+if [ "$EC16e" -eq 0 ]; then pass "16e: UTF-16BE BOM .ps1 exits 0 (valid encoding)"; else fail "16e: expected exit 0, got $EC16e" "$OUT16e"; fi
+assert_not_contains "16e: no [PS1-NO-BOM] on a UTF-16BE .ps1" "[PS1-NO-BOM]" "$OUT16e"
+assert_not_contains "16e: no [PS1-ENCODING] on a UTF-16BE .ps1" "[PS1-ENCODING]" "$OUT16e"
+
+# 16f: non-UTF-8 no-BOM .ps1 -> [PS1-ENCODING], NOT [PS1-NO-BOM]. A raw 0xA0
+#      byte is invalid as a UTF-8 leading byte, so iconv rejects it; the linter
+#      must NOT prescribe adding a UTF-8 BOM (that would corrupt the file). This
+#      is the fail-safe that closes the corruption path. Robust without iconv:
+#      both the iconv-absent and invalid-UTF-8 paths emit [PS1-ENCODING].
+PS1BAD="$TMP_ROOT/badenc.ps1"
+printf 'Write-Output hi\n\xA0\xA0\n' > "$PS1BAD"
+OUT16f="$(bash "$LINT" "$PS1BAD" 2>&1)"; EC16f=$?
+if [ "$EC16f" -eq 1 ]; then pass "16f: non-UTF-8 no-BOM .ps1 exits 1"; else fail "16f: expected exit 1, got $EC16f" "$OUT16f"; fi
+assert_contains "16f: [PS1-ENCODING] on invalid-UTF-8 no-BOM .ps1" "[PS1-ENCODING]" "$OUT16f"
+assert_not_contains "16f: no [PS1-NO-BOM] (must not prescribe a BOM add on non-UTF-8)" "[PS1-NO-BOM]" "$OUT16f"
+
+# 16g (HIMMEL-1432 CR r4, [codex-r3p-1]): r3 blessed UTF-16/32 on EVERY file
+# type, so a UTF-16LE-BOM'd SHELL script passed clean. A shell script's first
+# two bytes must be `#!`; ANY byte-order mark breaks the shebang, so the very
+# same UTF-16LE bytes that are CLEAN on a .ps1 (16d) must be a [BOM] ERROR on a
+# .sh. Fixture mirrors 16d (printf byte escapes — no iconv, builds everywhere).
+SHU16LE="$TMP_ROOT/u16le.sh"
+printf '\xFF\xFE\x68\x00\x69\x00' > "$SHU16LE"
+OUT16g="$(bash "$LINT" "$SHU16LE" 2>&1)"; EC16g=$?
+if [ "$EC16g" -eq 1 ]; then pass "16g: UTF-16LE BOM .sh exits 1 (breaks shebang)"; else fail "16g: expected exit 1, got $EC16g" "$OUT16g"; fi
+assert_contains "16g: [BOM] fires on a UTF-16LE .sh" "[BOM]" "$OUT16g"
+assert_contains "16g: [BOM] names the UTF-16LE kind" "UTF-16LE" "$OUT16g"
+assert_not_contains "16g: a .sh is never routed through the .ps1 policy" "[PS1-NO-BOM]" "$OUT16g"
+
+# Case 17: --staged admits *.ps1 and the new BOM policy applies there too. A
+# staged non-ASCII no-BOM .ps1 is flagged [PS1-NO-BOM] -> proves --staged gathers
+# .ps1 AND the trap fires under --staged.
+printf '\nCase 17: --staged lints a staged .ps1 (BOM policy split)\n'
 REPO2="$TMP_ROOT/repo2"
 mkdir -p "$REPO2"
 (
@@ -352,15 +454,19 @@ mkdir -p "$REPO2"
     git init -q
     git config user.email t@t.t
     git config user.name t
-    printf '\xEF\xBB\xBF' > staged.ps1
-    printf 'Write-Output hi\n' >> staged.ps1
+    printf 'Write-Output "caf\303\251"\n' > staged.ps1
     git add staged.ps1
 )
 OUT17="$(cd "$REPO2" && bash "$LINT" --staged 2>&1)"
-if printf '%s' "$OUT17" | grep -qF 'staged.ps1' && printf '%s' "$OUT17" | grep -qF '[BOM]'; then
-    pass "--staged detects BOM in staged .ps1"
+if [ "$HAVE_ICONV" -eq 1 ]; then
+    # grepq, not printf|grep -qF (HIMMEL-1430 merge resolution).
+    if grepq "$OUT17" -F 'staged.ps1' && grepq "$OUT17" -F '[PS1-NO-BOM]'; then
+        pass "--staged flags [PS1-NO-BOM] on a staged non-ASCII no-BOM .ps1"
+    else
+        fail "--staged should flag a staged non-ASCII no-BOM .ps1" "$OUT17"
+    fi
 else
-    fail "--staged should lint a staged .ps1 BOM" "$OUT17"
+    printf '  SKIP: iconv not installed — Case 17 [PS1-NO-BOM] assertion skipped\n'
 fi
 
 # Case 18: shell-lint reports no findings against its own test file
@@ -374,7 +480,7 @@ printf '\nCase 18: shell-lint has no findings on its own test file\n'
 SELF="$SCRIPT_DIR/test-shell-lint.sh"
 OUT18="$(bash "$LINT" "$SELF" 2>&1)"; EC18=$?
 if [ "$EC18" -eq 0 ]; then pass "shell-lint exits 0 on test-shell-lint.sh"; else fail "expected exit 0, got $EC18" "$OUT18"; fi
-if printf '%s' "$OUT18" | grep -qE '\[(regex-class|mktemp|bash32|gnu-flag|echo-e)\]'; then
+if grepq "$OUT18" -E '\[(regex-class|mktemp|bash32|gnu-flag|echo-e)\]'; then
     fail "shell-lint should not report advisory findings on its own test file" "$OUT18"
 else
     pass "no advisory findings on test-shell-lint.sh"

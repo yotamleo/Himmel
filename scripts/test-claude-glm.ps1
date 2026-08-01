@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
   Hermetic tests for scripts/claude-glm.ps1 (HIMMEL-665) - Windows twin of
   test-claude-glm.sh. Sandbox: fake $env:USERPROFILE -> temp dir, a mock

@@ -5,6 +5,16 @@
 # Exit: 0 = all pass, 1 = at least one failed.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 SUT="$DIR/statusline-segment.sh"
 [ -x "$SUT" ] || chmod +x "$SUT" 2>/dev/null || true
@@ -48,7 +58,7 @@ done
 for on in "" "  "; do
     o="$(HIMMEL_WHERE_ARE_WE="$on" HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_COLD" \
          bash "$SUT" --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl" </dev/null 2>/dev/null)"
-    if printf '%s' "$o" | grep -qF '⎇ HIMMEL-538'; then
+    if grepq "$o" -F '⎇ HIMMEL-538'; then
         pass "default ON (HIMMEL_WHERE_ARE_WE='$on') -> ticket renders"
     else
         fail "default ON ('$on') -> '$o'"
@@ -65,7 +75,7 @@ if [ -z "$o" ]; then pass "no-ticket branch -> empty"; else fail "no-ticket -> '
 
 # --- Case 4: breadcrumb present → contains the ticket + 📋 -------------------
 o="$(run --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl")"
-if printf '%s' "$o" | grep -qF '⎇ HIMMEL-538' && printf '%s' "$o" | grep -qF '📋'; then
+if grepq "$o" -F '⎇ HIMMEL-538' && grepq "$o" -F '📋'; then
     pass "breadcrumb present -> ticket + 📋"
 else
     fail "breadcrumb present -> '$o'"
@@ -75,7 +85,7 @@ fi
 HROOT2="$TMP/handover-empty"; mkdir -p "$HROOT2/breadcrumbs"
 o="$(HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT2" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_COLD" \
      bash "$SUT" --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl" </dev/null 2>/dev/null)"
-if printf '%s' "$o" | grep -qF '⎇ HIMMEL-538' && ! printf '%s' "$o" | grep -qF '📋'; then
+if grepq "$o" -F '⎇ HIMMEL-538' && ! grepq "$o" -F '📋'; then
     pass "breadcrumb absent -> no 📋"
 else
     fail "breadcrumb absent -> '$o'"
@@ -83,7 +93,7 @@ fi
 
 # --- Case 6: ledger status in-progress → shown -----------------------------
 o="$(run --branch feat/HIMMEL-538-x --ledger "$LEDGER_INPROG")"
-if printf '%s' "$o" | grep -qF 'in-progress'; then
+if grepq "$o" -F 'in-progress'; then
     pass "ledger status -> 'in-progress' shown"
 else
     fail "ledger status -> '$o'"
@@ -91,7 +101,7 @@ fi
 
 # --- Case 7: ledger status null (—) → omitted -------------------------------
 o="$(run --branch feat/HIMMEL-538-x --ledger "$LEDGER_NULLSTATUS")"
-if ! printf '%s' "$o" | grep -qF '—'; then
+if ! grepq "$o" -F '—'; then
     pass "ledger null status (—) -> omitted"
 else
     fail "ledger null status -> leaked em-dash: '$o'"
@@ -99,7 +109,7 @@ fi
 
 # --- Case 8: corrupt ledger → no status, still exits 0 ----------------------
 o="$(run --branch feat/HIMMEL-538-x --ledger "$LEDGER_CORRUPT")"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$o" | grep -qF '⎇ HIMMEL-538'; then
+if [ "$rc" -eq 0 ] && grepq "$o" -F '⎇ HIMMEL-538'; then
     pass "corrupt ledger -> fail-open, ticket still shown, exit 0"
 else
     fail "corrupt ledger -> rc=$rc out='$o'"
@@ -108,7 +118,7 @@ fi
 # --- Case 9: warm rollup → epic d/t -----------------------------------------
 o="$(HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_WARM" \
      bash "$SUT" --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl" </dev/null 2>/dev/null)"
-if printf '%s' "$o" | grep -qF 'HIMMEL-514 6/9'; then
+if grepq "$o" -F 'HIMMEL-514 6/9'; then
     pass "warm rollup -> 'HIMMEL-514 6/9'"
 else
     fail "warm rollup -> '$o'"
@@ -116,7 +126,7 @@ fi
 
 # --- Case 10: cold rollup → no epic -----------------------------------------
 o="$(run --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl")"
-if ! printf '%s' "$o" | grep -qF 'HIMMEL-514'; then
+if ! grepq "$o" -F 'HIMMEL-514'; then
     pass "cold rollup -> no epic part"
 else
     fail "cold rollup -> '$o'"
@@ -125,7 +135,7 @@ fi
 # --- Case 11: wrong-shape rollup JSON → no epic, no crash -------------------
 o="$(HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_BADSHAPE" \
      bash "$SUT" --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl" </dev/null 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && ! printf '%s' "$o" | grep -qF '/'; then
+if [ "$rc" -eq 0 ] && ! grepq "$o" -F '/'; then
     pass "wrong-shape rollup -> no epic, no crash"
 else
     fail "wrong-shape rollup -> rc=$rc out='$o'"
@@ -140,7 +150,7 @@ if [ -n "$old" ]; then touch -t "$old" "$ROLLDIR_STALE/where-are-we-rollup-HIMME
 mkdir -p "$ROLLDIR_STALE/where-are-we-rollup-HIMMEL-538.json.lock"
 o="$(HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_STALE" \
      bash "$SUT" --branch feat/HIMMEL-538-x --ledger "$TMP/none.jsonl" </dev/null 2>/dev/null)"
-if printf '%s' "$o" | grep -qF 'HIMMEL-514 3/9'; then
+if grepq "$o" -F 'HIMMEL-514 3/9'; then
     pass "stale-but-present rollup -> still shows last 3/9"
 else
     fail "stale rollup -> '$o'"
@@ -195,7 +205,7 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
          HIMMEL_WHERE_ARE_WE_NODE_TIMEOUT=1 \
          bash "$SUT" --branch feat/HIMMEL-538-x --ledger "$LEDGER_INPROG" </dev/null 2>/dev/null)"
     elapsed="$(( $(date +%s) - start ))"
-    if printf '%s' "$o" | grep -qF '⎇ HIMMEL-538' && ! printf '%s' "$o" | grep -qF 'in-progress' && [ "$elapsed" -lt 10 ]; then
+    if grepq "$o" -F '⎇ HIMMEL-538' && ! grepq "$o" -F 'in-progress' && [ "$elapsed" -lt 10 ]; then
         pass "hanging node -> bounded by timeout, no status, ticket still shown (${elapsed}s)"
     else
         fail "hanging node -> elapsed=${elapsed}s out='$o'"
@@ -241,7 +251,7 @@ if [ -n "$exp_key" ]; then
     o="$(printf '%s' '{"cwd":"'"$WT"'"}' | HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT2" \
          HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_COLD" HIMMEL_WHERE_ARE_WE_ROLLUP_CMD="true" \
          bash "$SUT" --ledger "$TMP/none.jsonl" 2>/dev/null)"
-    if printf '%s' "$o" | grep -qF "⎇ $exp_key"; then
+    if grepq "$o" -F "⎇ $exp_key"; then
         pass "stdin .cwd + git branch detection -> ticket shown ($exp_key)"
     else
         fail "stdin .cwd path -> '$o' (expected ⎇ $exp_key)"

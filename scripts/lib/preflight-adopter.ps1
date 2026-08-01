@@ -1,4 +1,4 @@
-# preflight-adopter.ps1 — shared adopter preflight checks (HIMMEL-842 fix-batch).
+﻿# preflight-adopter.ps1 — shared adopter preflight checks (HIMMEL-842 fix-batch).
 #
 # Dot-sourced (not executed) by both scripts/adopt.ps1 (auto-invoked from
 # Require-Tools) and scripts/preflight-adopter.ps1 (the standalone check-only

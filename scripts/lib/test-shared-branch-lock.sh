@@ -16,6 +16,16 @@
 
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$LIB_DIR/shared-branch-lock.sh"
 
@@ -62,7 +72,7 @@ if [ "$rc" -eq 11 ]; then
 else
     fail "T2: second acquire rc=11 (got $rc)"
 fi
-if printf '%s' "$err" | grep -q '"lane":"lane-a"' && printf '%s' "$err" | grep -qi "recovery"; then
+if grepq "$err" '"lane":"lane-a"' && grepq "$err" -i "recovery"; then
     pass "T2: stderr has holder info + recovery hint"
 else
     fail "T2: stderr missing holder info / recovery hint: $err"
@@ -105,7 +115,7 @@ fi
 bash "$LIB" acquire "$REPO" "feat/t5" "lane-d" >/dev/null 2>&1
 out="$(bash "$LIB" status "$REPO" "feat/t5" 2>&1)"
 rc=$?
-if [ "$rc" -eq 11 ] && printf '%s' "$out" | grep -q '"lane":"lane-d"'; then
+if [ "$rc" -eq 11 ] && grepq "$out" '"lane":"lane-d"'; then
     pass "T5: status held rc=11 + owner contents"
 else
     fail "T5: status held rc=11 + owner contents (got rc=$rc out=$out)"
@@ -181,7 +191,7 @@ if [ "$rc" -eq 2 ]; then
 else
     fail "T9: acquire with a file blocking the lock root rc=2 (got $rc: $err)"
 fi
-if printf '%s' "$err" | grep -qi "cannot create lock dir"; then
+if grepq "$err" -i "cannot create lock dir"; then
     pass "T9: rc-2 refusal names the real mkdir failure"
 else
     fail "T9: rc-2 refusal missing the real mkdir error: $err"

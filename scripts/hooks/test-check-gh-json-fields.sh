@@ -17,6 +17,16 @@
 # shellcheck disable=SC2016
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 GATE="$HERE/check-gh-json-fields.sh"
 TMP=$(mktemp -d)
@@ -149,7 +159,7 @@ check "unrelated file is clean" 0 \
 BASH_ABS=$(command -v bash)
 printf '%s\n' 'gh pr view --json headRefSha' >"$TMP/case.md"
 out=$(cd "$TMP" && PATH="/nonexistent" "$BASH_ABS" "$GATE" case.md 2>&1); got=$?
-if [ "$got" -eq 0 ] && printf '%s' "$out" | grep -q 'skipping'; then
+if [ "$got" -eq 0 ] && grepq "$out" 'skipping'; then
     echo "ok   — missing gh skips loudly"
     pass=$((pass + 1))
 else

@@ -8,6 +8,16 @@
 # fixed paths under the temp repo's own .git, exactly as the real ones resolve.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLEAR="$SCRIPT_DIR/clear-cr-marker.sh"
@@ -261,7 +271,7 @@ _amb_err=$(LC_ALL=C git -C "$tmp" rev-parse --verify "${_tip7}^{commit}" 2>&1 >/
 _amb_rc=$?
 if [ "$_amb_rc" -eq 0 ]; then
     fail "2d setup: '${_tip7}' still resolves — the ambiguity was not created"
-elif ! printf '%s' "$_amb_err" | grep -q 'is ambiguous'; then
+elif ! grepq "$_amb_err" 'is ambiguous'; then
     fail "2d setup: '${_tip7}' failed to resolve but NOT from ambiguity — the collision shape was not reproduced (git said: ${_amb_err})"
 else
     write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "$_tip7")"
@@ -939,13 +949,13 @@ help_out=$(bash "$CLEAR" --help 2>&1)
 help_rc=$?
 if [ "$help_rc" -eq 0 ]; then pass; else fail "--help exits 0 (got $help_rc)"; fi
 for _code in 0 10 11 12 13 14 15 16; do
-    if printf '%s' "$help_out" | grep -qE "^ *${_code} +[a-z]"; then
+    if grepq "$help_out" -E "^ *${_code} +[a-z]"; then
         pass
     else
         fail "--help documents exit code ${_code}"
     fi
 done
-if printf '%s' "$help_out" | grep -q 'set -uo pipefail'; then
+if grepq "$help_out" 'set -uo pipefail'; then
     fail "--help leaks the 'set -uo pipefail' code line"
 else
     pass

@@ -23,6 +23,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 hook="$repo_root/scripts/hooks/inject-initiative.sh"
 
@@ -61,7 +71,7 @@ assert_fail() {
 
 # assert_has <desc> <bre-needle> <haystack> — haystack must contain the needle.
 assert_has() {
-    if printf '%s' "$3" | grep -q "$2"; then
+    if grepq "$3" "$2"; then
         assert_pass "$1"
     else
         assert_fail "$1 (missing: $2)"
@@ -73,7 +83,7 @@ assert_has() {
 # (CodeRabbit, HIMMEL-1080 round-1): use for needles containing regex
 # metacharacters (e.g. `.`) that must match EXACTLY, not loosely.
 assert_has_fixed() {
-    if printf '%s' "$3" | grep -qF -- "$2"; then
+    if grepq "$3" -F -- "$2"; then
         assert_pass "$1"
     else
         assert_fail "$1 (missing: $2)"
@@ -82,7 +92,7 @@ assert_has_fixed() {
 
 # assert_lacks <desc> <bre-needle> <haystack> — haystack must NOT contain it.
 assert_lacks() {
-    if printf '%s' "$3" | grep -q "$2"; then
+    if grepq "$3" "$2"; then
         assert_fail "$1 (unexpected: $2)"
     else
         assert_pass "$1"
@@ -101,7 +111,7 @@ fi
 # ---------- 2. HIMMEL_INITIATIVE=1 → active ----------
 echo "Test 2: HIMMEL_INITIATIVE=1 → active"
 out=$(printf '{}' | HIMMEL_INITIATIVE=1 bash "$hook")
-if echo "$out" | grep -q "HIMMEL_INITIATIVE is active"; then
+if grepq "$out" "HIMMEL_INITIATIVE is active"; then
     assert_pass "directive injected when env=1"
 else
     assert_fail "expected 'HIMMEL_INITIATIVE is active' in output, got: $out"
@@ -111,7 +121,7 @@ fi
 echo "Test 3: other truthy values activate"
 for val in true TRUE on ON yes YES; do
     out=$(printf '{}' | HIMMEL_INITIATIVE="$val" bash "$hook")
-    if echo "$out" | grep -q "HIMMEL_INITIATIVE is active"; then
+    if grepq "$out" "HIMMEL_INITIATIVE is active"; then
         assert_pass "truthy value '$val' activates"
     else
         assert_fail "truthy value '$val' should activate but did not"
@@ -136,7 +146,7 @@ done
 # ---------- 5. No stdin payload ----------
 echo "Test 5: no stdin payload still works"
 out=$(HIMMEL_INITIATIVE=1 bash "$hook" </dev/null)
-if echo "$out" | grep -q "HIMMEL_INITIATIVE is active"; then
+if grepq "$out" "HIMMEL_INITIATIVE is active"; then
     assert_pass "no stdin payload tolerated"
 else
     assert_fail "expected activation even without stdin, got: $out"
@@ -145,7 +155,7 @@ fi
 # ---------- 6. Directive does not authorize merge ----------
 echo "Test 6: directive does not instruct merge (operator gate preserved)"
 out=$(HIMMEL_INITIATIVE=1 bash "$hook" </dev/null)
-if echo "$out" | grep -qi "do NOT merge"; then
+if grepq "$out" -i "do NOT merge"; then
     assert_pass "directive explicitly excludes merge"
 else
     assert_fail "directive must explicitly exclude merge, got: $out"

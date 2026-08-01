@@ -9,6 +9,16 @@
 # the pinned repo via --repo throughout (never cwd-derived).
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MPOG="$SCRIPT_DIR/merge-public-on-green.sh"
 
@@ -334,14 +344,14 @@ help_out=$(CLAUDECODE='' bash "$MPOG" --help 2>&1)
 help_rc=$?
 if [ "$help_rc" -eq 0 ]; then pass; else fail "--help exits 0 (got $help_rc)"; fi
 for _code in 0 1 10 11 12 13 14 15 16 17 18 19; do
-    if printf '%s' "$help_out" | grep -qE "^ *${_code} +[A-Za-z]"; then pass
+    if grepq "$help_out" -E "^ *${_code} +[A-Za-z]"; then pass
     else fail "--help documents exit code ${_code}"; fi
 done
 for _doc in CR_PUBLIC_REPO MERGE_PUBLIC_ON_GREEN_LOG 'GATE INTEGRITY' CLAUDECODE; do
-    if printf '%s' "$help_out" | grep -q "$_doc"; then pass
+    if grepq "$help_out" "$_doc"; then pass
     else fail "--help includes $_doc"; fi
 done
-if printf '%s' "$help_out" | grep -q 'set -uo pipefail'; then
+if grepq "$help_out" 'set -uo pipefail'; then
     fail "--help leaks the 'set -uo pipefail' code line"
 else
     pass

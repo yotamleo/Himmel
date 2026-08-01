@@ -42,6 +42,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 resolve_mjs="$repo_root/scripts/lanes/resolve.mjs"
@@ -101,7 +111,7 @@ run_cfg() {
 fxA="$work/fixtureA"; build_fixture "$fxA"
 run_cfg "$fxA" set initiative.execute on
 [ "$CFG_RC" -eq 0 ] || fail "caseA: set initiative.execute on should exit 0 (got rc=$CFG_RC): $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'HIMMEL_INITIATIVE -> execute' \
+grepq "$CFG_OUT" -F 'HIMMEL_INITIATIVE -> execute' \
   || fail "caseA: expected confirmation line (got: $CFG_OUT)"
 grep -qE '^HIMMEL_INITIATIVE=execute$' "$fxA/.env" \
   || fail "caseA: fixture .env should carry HIMMEL_INITIATIVE=execute (got: $(cat "$fxA/.env" 2>&1))"
@@ -113,7 +123,7 @@ grep -qE '^HIMMEL_INITIATIVE=pr$' "$fxA/.env" \
   || fail "caseA: toggling execute off should remove ONLY execute (got: $(cat "$fxA/.env" 2>&1))"
 run_cfg "$fxA" set initiative.bogus on
 [ "$CFG_RC" -eq 2 ] || fail "caseA: unknown leg should exit 2 (got rc=$CFG_RC): $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'unknown initiative leg' \
+grepq "$CFG_OUT" -F 'unknown initiative leg' \
   || fail "caseA: expected 'unknown initiative leg' message (got: $CFG_OUT)"
 grep -qE '^HIMMEL_INITIATIVE=pr$' "$fxA/.env" \
   || fail "caseA: an unknown-leg rejection must not touch the .env (got: $(cat "$fxA/.env" 2>&1))"
@@ -122,13 +132,13 @@ echo "ok: caseA initiative.<leg> set on/off toggles HIMMEL_INITIATIVE; unknown l
 # ── Case B: initiative get ──────────────────────────────────────────────────
 run_cfg "$fxA" get initiative
 [ "$CFG_RC" -eq 0 ] || fail "caseB: get initiative should exit 0 (got rc=$CFG_RC): $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'active legs: pr' \
+grepq "$CFG_OUT" -F 'active legs: pr' \
   || fail "caseB: expected 'active legs: pr' (got: $CFG_OUT)"
 run_cfg "$fxA" get initiative.pr
-printf '%s' "$CFG_OUT" | grep -qF 'initiative.pr: on' \
+grepq "$CFG_OUT" -F 'initiative.pr: on' \
   || fail "caseB: expected 'initiative.pr: on' (got: $CFG_OUT)"
 run_cfg "$fxA" get initiative.execute
-printf '%s' "$CFG_OUT" | grep -qF 'initiative.execute: off' \
+grepq "$CFG_OUT" -F 'initiative.execute: off' \
   || fail "caseB: expected 'initiative.execute: off' (got: $CFG_OUT)"
 echo "ok: caseB initiative get (whole + single leg) reports the persisted .env state"
 
@@ -151,19 +161,19 @@ grep -qF '"id": "haiku"' "$fxC/scripts/lanes/lanes.local.json" \
   || fail "caseC: a second lane's override must not drop the first (got: $(cat "$fxC/scripts/lanes/lanes.local.json"))"
 run_cfg "$fxC" set lanes.bogus-lane on
 [ "$CFG_RC" -eq 2 ] || fail "caseC: unknown lane id should exit 2 (got rc=$CFG_RC): $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'unknown lane id' \
+grepq "$CFG_OUT" -F 'unknown lane id' \
   || fail "caseC: expected 'unknown lane id' message (got: $CFG_OUT)"
 echo "ok: caseC lanes.<id> set on/off writes ONLY lanes.local.json (repo lanes.json byte-unchanged); unknown id rejected"
 
 # ── Case D: lanes get ────────────────────────────────────────────────────────
 run_cfg "$fxC" get lanes.haiku
-printf '%s' "$CFG_OUT" | grep -qF 'probe.kind=never' \
+grepq "$CFG_OUT" -F 'probe.kind=never' \
   || fail "caseD: expected haiku override to report probe.kind=never (got: $CFG_OUT)"
 run_cfg "$fxC" get lanes.opus
-printf '%s' "$CFG_OUT" | grep -qF 'no override' \
+grepq "$CFG_OUT" -F 'no override' \
   || fail "caseD: opus has no override -- expected 'no override' (got: $CFG_OUT)"
 run_cfg "$fxC" get lanes
-printf '%s' "$CFG_OUT" | grep -qF '"id": "sonnet"' \
+grepq "$CFG_OUT" -F '"id": "sonnet"' \
   || fail "caseD: whole-namespace get should print the full overlay file (got: $CFG_OUT)"
 echo "ok: caseD lanes get (whole + single id) distinguishes override vs no-override"
 
@@ -171,7 +181,7 @@ echo "ok: caseD lanes get (whole + single id) distinguishes override vs no-overr
 fxE="$work/fixtureE"; build_fixture "$fxE"
 run_cfg "$fxE" set initiative.execute on --dry-run
 [ "$CFG_RC" -eq 0 ] || fail "caseE: dry-run initiative set should exit 0 (got rc=$CFG_RC): $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'DRY:' \
+grepq "$CFG_OUT" -F 'DRY:' \
   || fail "caseE: expected a DRY: preview line (got: $CFG_OUT)"
 [ -f "$fxE/.env" ] \
   && fail "caseE: --dry-run must not create/write the fixture .env (got: $(cat "$fxE/.env" 2>&1))"
@@ -194,7 +204,7 @@ outL=$(HOME="$_hL" HIMMELCTL_REPO_ROOT="$(winpath "$fxL")" \
 rcL=$?
 set -e
 [ "$rcL" -eq 0 ] || fail "caseL: '--dry-run config set …' should exit 0 (got rc=$rcL): $outL"
-printf '%s' "$outL" | grep -qF 'DRY:' \
+grepq "$outL" -F 'DRY:' \
   || fail "caseL: leading --dry-run must reach config AND be honored — expected a DRY: line (got: $outL)"
 [ -f "$fxL/.env" ] \
   && fail "caseL: --dry-run before config must not write the fixture .env (got: $(cat "$fxL/.env" 2>&1))"
@@ -228,12 +238,12 @@ outM=$(HOME="$_hM" HIMMELCTL_REPO_ROOT="$(winpath "$fxM")" \
   "$node_bin" "$wizard" --items config status 2>&1)
 rcM=$?
 set -e
-printf '%s' "$outM" | grep -qF 'config: unknown argument' \
+grepq "$outM" -F 'config: unknown argument' \
   && fail "caseM: '--items config status' misrouted to cmdConfig (got: $outM)"
-printf '%s' "$outM" | grep -qF 'what would you like to configure' \
+grepq "$outM" -F 'what would you like to configure' \
   && fail "caseM: '--items config status' wrongly entered the config TUI (got: $outM)"
 [ "$rcM" -eq 2 ] || fail "caseM: '--items config status' should reach cmdStatus's own --items validation and exit 2 (got rc=$rcM): $outM"
-printf '%s' "$outM" | grep -qF 'unknown --items id: config' \
+grepq "$outM" -F 'unknown --items id: config' \
   || fail "caseM: expected cmdStatus's own diagnostic 'unknown --items id: config' (got: $outM)"
 echo "ok: caseM an --items VALUE of 'config' routes to status, never the config subcommand"
 
@@ -245,19 +255,19 @@ echo "ok: caseM an --items VALUE of 'config' routes to status, never the config 
 fxF="$work/fixtureF"; build_fixture "$fxF"
 run_cfg "$fxF" set hooks.improveOnSubmit on
 [ "$CFG_RC" -eq 2 ] || fail "caseF: set hooks.improveOnSubmit must exit 2 (no-op write), got rc=$CFG_RC: $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'not settable via config' \
+grepq "$CFG_OUT" -F 'not settable via config' \
   || fail "caseF: expected the 'not settable via config' rejection (got: $CFG_OUT)"
-printf '%s' "$CFG_OUT" | grep -qF 'export IMPROVE_ON_SUBMIT=1' \
+grepq "$CFG_OUT" -F 'export IMPROVE_ON_SUBMIT=1' \
   || fail "caseF: expected the manual enable instruction (got: $CFG_OUT)"
 [ -f "$fxF/.env" ] \
   && fail "caseF: hooks.improveOnSubmit must NEVER write the fixture .env (got: $(cat "$fxF/.env" 2>&1))"
 run_cfg "$fxF" set hooks.improveOnSubmit off
 [ "$CFG_RC" -eq 2 ] || fail "caseF: set hooks.improveOnSubmit off must exit 2, got rc=$CFG_RC: $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'unset IMPROVE_ON_SUBMIT' \
+grepq "$CFG_OUT" -F 'unset IMPROVE_ON_SUBMIT' \
   || fail "caseF: expected the manual disable instruction (got: $CFG_OUT)"
 run_cfg "$fxF" get hooks.improveOnSubmit
 [ "$CFG_RC" -eq 2 ] || fail "caseF: get hooks.improveOnSubmit must exit 2 (not a readable value), got rc=$CFG_RC: $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'does not report hook state' \
+grepq "$CFG_OUT" -F 'does not report hook state' \
   || fail "caseF: get hooks.* must reject with the 'no hook state' message (got: $CFG_OUT)"
 run_cfg "$fxF" get hooks
 [ "$CFG_RC" -eq 2 ] || fail "caseF: get hooks (whole) must exit 2, got rc=$CFG_RC: $CFG_OUT"
@@ -306,7 +316,7 @@ echo "ok: caseG hooks.plugin.<name> invokes 'claude plugin enable/disable <name>
 # ── Case H: value/path validation ───────────────────────────────────────────
 run_cfg "$fxA" set initiative.execute maybe
 [ "$CFG_RC" -eq 2 ] || fail "caseH: non on/off value should exit 2 (got rc=$CFG_RC): $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF "must be 'on' or 'off'" \
+grepq "$CFG_OUT" -F "must be 'on' or 'off'" \
   || fail "caseH: expected the on/off validation message (got: $CFG_OUT)"
 run_cfg "$fxA" set bogus.path on
 [ "$CFG_RC" -eq 2 ] || fail "caseH: unknown top-level path should exit 2 (got rc=$CFG_RC): $CFG_OUT"
@@ -320,7 +330,7 @@ outI=$(HOME="$work/homeI" HIMMELCTL_REPO_ROOT="$(winpath "$fxA")" \
   "$node_bin" "$wizard" config </dev/null 2>&1); rcI=$?
 set -e
 [ "$rcI" -eq 0 ] || fail "caseI: closed-stdin interactive config should exit 0 (got rc=$rcI): $outI"
-printf '%s' "$outI" | grep -qF 'what would you like to configure' \
+grepq "$outI" -F 'what would you like to configure' \
   || fail "caseI: expected the top-level menu prompt (got: $outI)"
 echo "ok: caseI interactive config with closed stdin quits immediately (rc=0), never hangs"
 
@@ -346,9 +356,9 @@ set +e
 outJ=$("$node_bin" "$fxJ/resolve.mjs" --json 2>&1); rcJ=$?
 set -e
 [ "$rcJ" -eq 0 ] || fail "caseJ: resolve.mjs --json should exit 0 (got rc=$rcJ): $outJ"
-printf '%s' "$outJ" | grep -q '"id": "other"' \
+grepq "$outJ" '"id": "other"' \
   || fail "caseJ: the un-overridden lane should still resolve (got: $outJ)"
-printf '%s' "$outJ" | grep -q '"id": "always-on"' \
+grepq "$outJ" '"id": "always-on"' \
   && fail "caseJ: the never-overridden lane must NOT resolve despite its base probe being 'always' (got: $outJ)"
 lanes_after=$(cat "$fxJ/lanes.json")
 [ "$lanes_before" = "$lanes_after" ] \
@@ -403,7 +413,7 @@ mkdir "$fxN/.env"
 run_cfg "$fxN" set initiative.ticket on
 [ "$CFG_RC" -ne 0 ] \
   || fail "caseN: an unreadable .env must abort (non-zero), not treat it as unset (got rc=$CFG_RC): $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qiE 'EISDIR|EACCES' \
+grepq "$CFG_OUT" -iE 'EISDIR|EACCES' \
   || fail "caseN: expected the underlying read error to surface (got: $CFG_OUT)"
 echo "ok: caseN a non-ENOENT .env read error aborts before any write (no silent token drop)"
 
@@ -417,7 +427,7 @@ printf '%s' '{"lanes":{}}' > "$fxO/scripts/lanes/lanes.local.json"
 run_cfg "$fxO" get lanes.haiku
 [ "$CFG_RC" -ne 0 ] \
   || fail "caseO: a wrong-shape lanes overlay must abort, not report empty (got rc=$CFG_RC): $CFG_OUT"
-printf '%s' "$CFG_OUT" | grep -qF 'malformed lanes overlay' \
+grepq "$CFG_OUT" -F 'malformed lanes overlay' \
   || fail "caseO: expected the 'malformed lanes overlay' message (got: $CFG_OUT)"
 printf 'not json' > "$fxO/scripts/lanes/lanes.local.json"
 run_cfg "$fxO" get lanes.haiku

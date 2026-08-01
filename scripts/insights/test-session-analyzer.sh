@@ -21,6 +21,16 @@
 
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANALYZER="$SCRIPT_DIR/session-analyzer.sh"
 
@@ -45,7 +55,7 @@ fail() {
 }
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grepq "$haystack" -F -- "$needle"; then
         pass "$label"
     else
         fail "$label" "missing: $needle"
@@ -53,7 +63,7 @@ assert_contains() {
 }
 assert_not_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grepq "$haystack" -F -- "$needle"; then
         fail "$label" "unexpected: $needle"
     else
         pass "$label"
@@ -140,9 +150,9 @@ printf '\nCase 1-4: session count, date range, monthly buckets, subagent exclusi
 REPORT="$(bash "$ANALYZER" --projects-dir "$PROJ_ROOT" 2>&1)"
 
 # Session count (4 non-subagent)
-if printf '%s' "$REPORT" | grep -qE 'Sessions analyzed: *4($|[^0-9])'; then
+if grepq "$REPORT" -E 'Sessions analyzed: *4($|[^0-9])'; then
     pass "session-count: 4 non-subagent sessions counted"
-elif printf '%s' "$REPORT" | grep -qE '[Ss]essions.*: *4($|[^0-9])'; then
+elif grepq "$REPORT" -E '[Ss]essions.*: *4($|[^0-9])'; then
     pass "session-count: 4 non-subagent sessions counted (variant format)"
 else
     fail "session-count: expected 4 sessions" "$(printf '%s' "$REPORT" | grep -i session | head -5)"
@@ -159,12 +169,12 @@ assert_contains "date-range: max date present" "2026-02-15" "$REPORT"
 assert_contains "per-month: 2026-01 bucket" "2026-01" "$REPORT"
 assert_contains "per-month: 2026-02 bucket" "2026-02" "$REPORT"
 # Both months should show count 2
-if printf '%s' "$REPORT" | grep -q "2026-01.*2" || printf '%s' "$REPORT" | grep -q "2.*2026-01"; then
+if grepq "$REPORT" "2026-01.*2" || grepq "$REPORT" "2.*2026-01"; then
     pass "per-month: 2026-01 count=2"
 else
     fail "per-month: 2026-01 should have count 2" "$(printf '%s' "$REPORT" | grep '2026-01')"
 fi
-if printf '%s' "$REPORT" | grep -q "2026-02.*2" || printf '%s' "$REPORT" | grep -q "2.*2026-02"; then
+if grepq "$REPORT" "2026-02.*2" || grepq "$REPORT" "2.*2026-02"; then
     pass "per-month: 2026-02 count=2"
 else
     fail "per-month: 2026-02 should have count 2" "$(printf '%s' "$REPORT" | grep '2026-02')"
@@ -185,9 +195,9 @@ printf '\nCase 6: --since filter\n'
 REPORT6="$(bash "$ANALYZER" --projects-dir "$PROJ_ROOT" --since 2026-02-01 2>&1)"
 
 # Only sessions from 2026-02 should be counted (2 sessions)
-if printf '%s' "$REPORT6" | grep -qE 'Sessions analyzed: *2($|[^0-9])'; then
+if grepq "$REPORT6" -E 'Sessions analyzed: *2($|[^0-9])'; then
     pass "--since: 2 sessions counted from 2026-02 onward"
-elif printf '%s' "$REPORT6" | grep -qE '[Ss]essions.*: *2($|[^0-9])'; then
+elif grepq "$REPORT6" -E '[Ss]essions.*: *2($|[^0-9])'; then
     pass "--since: 2 sessions counted from 2026-02 onward (variant format)"
 else
     fail "--since: expected 2 sessions from 2026-02-01 onward" \
@@ -240,7 +250,7 @@ printf '\nCase 9: value-option missing-argument guard\n'
 for _opt in --projects-dir --out --since; do
     _err="$(bash "$ANALYZER" "$_opt" 2>&1)"
     _ec=$?
-    if [ "$_ec" -ne 0 ] && printf '%s' "$_err" | grep -qF "requires a value"; then
+    if [ "$_ec" -ne 0 ] && grepq "$_err" -F "requires a value"; then
         pass "missing-arg: $_opt errors cleanly (exit $_ec)"
     else
         fail "missing-arg: $_opt should error with 'requires a value'" "$_err"
@@ -289,7 +299,7 @@ REPORT10="$(bash "$ANALYZER" --projects-dir "$PROJ_ROOT2" 2>&1)"
 assert_contains "genuine-block: friction table has Genuine Blocks column" "Genuine Blocks" "$REPORT10"
 
 # block-edit-on-main: 1 mention (s-block-main), 1 genuine (s-block-main)
-if printf '%s' "$REPORT10" | grep -qE 'block-edit-on-main *\| *1 *\| *1 *\|'; then
+if grepq "$REPORT10" -E 'block-edit-on-main *\| *1 *\| *1 *\|'; then
     pass "genuine-block: block-edit-on-main mentions=1 genuine=1"
 else
     fail "genuine-block: block-edit-on-main should be 1/1" "$(printf '%s' "$REPORT10" | grep 'block-edit-on-main')"
@@ -298,14 +308,14 @@ fi
 # platforms-tested-gate: 2 mentions (trailer + push-block), 1 genuine (push-block).
 # This is the metric-gaming gate: the passing trailer inflates mentions but is
 # NOT a genuine block.
-if printf '%s' "$REPORT10" | grep -qE 'platforms-tested-gate *\| *2 *\| *1 *\|'; then
+if grepq "$REPORT10" -E 'platforms-tested-gate *\| *2 *\| *1 *\|'; then
     pass "genuine-block: platforms-tested-gate mentions=2 genuine=1 (trailer excluded)"
 else
     fail "genuine-block: platforms-tested-gate should be 2/1" "$(printf '%s' "$REPORT10" | grep 'platforms-tested-gate')"
 fi
 
 # security-reviewed-gate: same shape — 2 mentions, 1 genuine.
-if printf '%s' "$REPORT10" | grep -qE 'security-reviewed-gate *\| *2 *\| *1 *\|'; then
+if grepq "$REPORT10" -E 'security-reviewed-gate *\| *2 *\| *1 *\|'; then
     pass "genuine-block: security-reviewed-gate mentions=2 genuine=1 (trailer excluded)"
 else
     fail "genuine-block: security-reviewed-gate should be 2/1" "$(printf '%s' "$REPORT10" | grep 'security-reviewed-gate')"
@@ -313,14 +323,14 @@ fi
 
 # pre-commit-failure: the `- exit code: N` block signature begins with a dash —
 # guards that grep -E -- reads it as a regex, not an option (genuine must be 1).
-if printf '%s' "$REPORT10" | grep -qE 'pre-commit-failure *\| *1 *\| *1 *\|'; then
+if grepq "$REPORT10" -E 'pre-commit-failure *\| *1 *\| *1 *\|'; then
     pass "genuine-block: pre-commit-failure mentions=1 genuine=1 (dash-pattern guard)"
 else
     fail "genuine-block: pre-commit-failure should be 1/1" "$(printf '%s' "$REPORT10" | grep 'pre-commit-failure')"
 fi
 
 # block-read-secrets: exercises that gate's genuine ⛔ ERE (1 mention, 1 genuine).
-if printf '%s' "$REPORT10" | grep -qE 'block-read-secrets *\| *1 *\| *1 *\|'; then
+if grepq "$REPORT10" -E 'block-read-secrets *\| *1 *\| *1 *\|'; then
     pass "genuine-block: block-read-secrets mentions=1 genuine=1"
 else
     fail "genuine-block: block-read-secrets should be 1/1" "$(printf '%s' "$REPORT10" | grep 'block-read-secrets')"
@@ -328,7 +338,7 @@ fi
 
 # Zero-genuine path: shellcheck is mentioned but never genuinely blocked, so its
 # Genuine Blocks tally must be 0 (missing-.block default), NOT the mention count.
-if printf '%s' "$REPORT10" | grep -qE 'shellcheck-failure *\| *1 *\| *0 *\|'; then
+if grepq "$REPORT10" -E 'shellcheck-failure *\| *1 *\| *0 *\|'; then
     pass "genuine-block: shellcheck-failure mentions=1 genuine=0 (zero-genuine default)"
 else
     fail "genuine-block: shellcheck-failure should be 1/0" "$(printf '%s' "$REPORT10" | grep 'shellcheck-failure')"

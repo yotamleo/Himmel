@@ -319,15 +319,77 @@ the required-environment table (HIMMEL-460).
 |---|---|---|
 | role | `adopter` \| `contributor` | Default: `contributor` only when origin ends in `himmel` AND the repo root carries a `.himmel-dev` marker (a contributor dev checkout); every other case — including a fresh official clone — defaults to `adopter`. |
 | scope | `project` \| `user` | Adopter only (contributor is always `user`). |
-| vault | `none` \| `default-template` \| `existing` | `none` scaffolds no vault; `default-template` scaffolds a luna vault from template; `existing` wires a STAMPED luna vault (non-luna→luna conversion deferred — HIMMEL-862). Skipping adopt.sh/setup.sh wiring entirely (no pre-commit hooks/guardrails/statusline/env.HIMMEL_REPO — operator wires manually) has no in-wizard option: don't run the wizard. |
+| vault | `none` \| `default-template` \| `existing` | `none` scaffolds no vault; `default-template` scaffolds a luna vault from template — if the destination already exists it is **refused** unless it carries the luna stamp (`adopt.sh` would skip the copy and silently adopt whatever is there), and a stamped destination is reused with the summary saying so rather than claiming a scaffold; `existing` wires a STAMPED luna vault (non-luna→luna conversion deferred — HIMMEL-862). Skipping adopt.sh/setup.sh wiring entirely (no pre-commit hooks/guardrails/statusline/env.HIMMEL_REPO — operator wires manually) has no in-wizard option: don't run the wizard. |
 | handover | `inline` \| `external` | `external` persists `HANDOVER_DIR` to an external state repo. |
 | pluginSet | `lean` \| `full` | `lean` is the default (HIMMEL-816); `full` runs the documented per-plugin enable step (§6). |
+| lanes | `ollama` \| `copilot` \| `none` (comma list) | Adopter only. Default `ollama,copilot`. The `codex` and `hermes` lanes are **opt-in** and reachable only via `--with-codex` / `--with-hermes` — naming them in `--lanes` is refused, so each has exactly one door (HIMMEL-862). |
+| alwaysOn | `yes` \| `no` | Adopter only. Default `no`. Chooses the machine-hardening **checklist** over a one-line pointer — nothing is executed either way (see below). |
 
 Flags: `--dry-run` prints the derived plan without executing; `--from-profile
 <path>` replays a saved answer profile non-interactively (the wizard caches your
-answers, so the same install replays verbatim); `--advanced` is reserved. To
-offboard later: `node scripts/himmelctl/bin.js uninstall` — a thin wrapper over
-`scripts/uninstall.sh` / `uninstall.ps1` (§8.7).
+answers, so the same install replays verbatim); `--lanes <csv|none>`,
+`--with-codex` and `--with-hermes` answer the lane question up front (all three
+are refused alongside `--from-profile` — a saved profile already carries its
+lane selection and stays the sole authority on a replay); `--advanced` is
+reserved. To offboard later: `node scripts/himmelctl/bin.js uninstall` — a thin
+wrapper over `scripts/uninstall.sh` / `uninstall.ps1` (§8.7).
+
+**What the adopter profile does NOT do (HIMMEL-862 v1, deliberate).** Two
+things it reports rather than performs, because in both cases doing them would
+mean the installer asserting something it cannot stand behind:
+
+- **Lanes are probed, never installed or force-activated.** The wizard resolves
+  each selected lane through the *same* evaluator and the *same* merged
+  configuration `/lanes` uses (`scripts/lanes/probe.mjs` + `resolve.mjs`, base
+  `lanes.json` overlaid with `lanes.local.json`), so the two can never
+  disagree — notably `hermes` is detected via `$HERMES_PY` / venvs under
+  `$HERMES_HOME`, not by looking for `hermes` on `PATH`, and a lane you have
+  turned off locally reports `DISABLED` (with the `config set` command that
+  re-enables it) rather than `available`, and a corrupt `lanes.local.json`
+  makes lanes report `UNKNOWN` naming that file rather than quietly falling
+  back to the base registry. A single overlay *entry* that is degenerate (a
+  null/unknown-kind probe) fails closed the same way the resolver does — the
+  lane reads not-usable with the reason named, because `/lanes` excludes it
+  too. Whenever a lane needs an overlay fix, the summary lists that fix
+  **and** the lane's own setup step, in that order — including the case where
+  a lane is both missing *and* locally disabled, where installing the CLI
+  alone would leave `/lanes` still excluding it. Under the resolver's
+  `LANES_REGISTRY` test override the same replacement-no-overlay semantics
+  apply here, so the report never describes a different lane set than
+  `/lanes` resolves. Physical presence is always decided by the *base*
+  registry probe, never by the overlay: an override can turn a lane off, but
+  `config set lanes.<id> on` cannot conjure a binary you never installed —
+  that combination reports `MISCONFIGURED` and keeps its install command.
+  Note the probes establish that a **binary
+  exists** — not that a lane is *configured*: ollama still needs its model
+  pulled and copilot an interactive login, so those steps stay listed under
+  `still manual` as verify items. Only a lane with a richer readiness probe
+  (codex, via the manifest's provisioning check) can report `ready`. A lane whose
+  CLI is already present is reported as binary already present and skipped (so a re-run is
+  idempotent); a lane that is *absent* is listed under `still manual` with its
+  install command. Both that command and the follow-up setup step are chosen
+  per platform, so a Linux/macOS adopter is pointed at
+  `scripts/codex/install-himmel-codex.sh` and the POSIX branch of
+  `docs/hermes-runbook.md` rather than at PowerShell scripts. It is NOT
+  installed for you, and the `lanes.local.json` override is NOT written —
+  `himmelctl config set lanes.<id> on` writes `probe.kind=always`, which would
+  make an absent lane report as available.
+- **Machine hardening is printed, never executed.** With `alwaysOn=yes` the run
+  ends in a checklist of the
+  [Phase-6 steps](./windows-clean-machine.md) — power profile, no-lock-on-wake,
+  sshd, auto-logon. They are machine-wide, need an elevated shell, and
+  `himmelctl uninstall` cannot undo them, so they stay a checklist you run by
+  hand.
+
+Every run ends with an honest summary: what was installed, what was skipped and
+why, and what remains manual. Under `--dry-run` the first bucket is labelled
+`would install` and the `installed` list is empty — a preview never reports
+work it did not do. Likewise a `pluginSet=full` run whose `claude plugin`
+commands failed reports them under `still manual` with a retry hint, instead
+of claiming the full set was enabled.
+
+Selecting a lane records and reports it; it does not yet *restrict* the
+runtime `/lanes` inventory (deferred — HIMMEL-1428).
 
 **Node-less (clean) machine?** `himmelctl install` itself needs node. Run the
 bootstrap shim first — it installs node (+ bun on macOS via brew; apt has no

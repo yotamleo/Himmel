@@ -79,6 +79,19 @@ _RE_SUBSTANTIVE='assert|traceback|merge conflict|[[:<:]]CONFLICT[[:>:]]|[[:<:]]c
 _RE_LINT='shellcheck|shell-lint|SC[0-9]{4}'
 _RE_ENCODING='byte-order mark|[[:<:]]BOM[[:>:]]|SC1082|CRLF|invalid (utf-?8|encoding)'
 _RE_DIFFRANGE='diff[- ]range|merge-base|two-dot|wrong base|patch context'
+# Unknown/unverified file encoding (HIMMEL-1432 CR r5). The shell-lint
+# [PS1-ENCODING] tag means the linter COULD NOT identify a .ps1's encoding (no
+# recognized BOM and the bytes are not valid UTF-8 — or iconv is absent so they
+# cannot be verified). An automated fix is UNSAFE here: prepending or stripping a
+# BOM would corrupt a payload whose encoding is unknown. So this MUST route to
+# OPERATOR-GATED triage, never a mechanical dispatch spec. The TAG is the stable
+# contract; the wording tokens are belt-and-braces. [codex-adv-r4-1]: this
+# finding otherwise matched NONE of _RE_SUBSTANTIVE / _RE_ENCODING (it says
+# "byte-order signature", not "byte-order mark"; "not valid UTF-8", not "invalid
+# encoding"; and r3 deliberately avoided the bare token "BOM") and fell through to
+# _RE_LINT via the "shell-lint" token present in every report's summary line —
+# dispatched as a mechanical lint fix and reopening the corruption path r3 closed.
+_RE_MANUAL_TRIAGE='PS1-ENCODING|unsupported/unknown encoding|inspect manually'
 
 # GNU/BSD grep spells word boundaries differently; [[:<:]]/[[:>:]] are BSD-only
 # and \b is the GNU form. Probe once and normalise the patterns so the same
@@ -97,11 +110,21 @@ else
     _RE_ENCODING="$(printf '%s' "$_RE_ENCODING" | sed 's/\[\[:<:\]\]/\\b/g; s/\[\[:>:\]\]/\\b/g')"
 fi
 
-# classify_failure CONTENT -> echoes one of: substantive|lint|encoding|diff-range
+# classify_failure CONTENT -> echoes one of: substantive|manual-triage|lint|encoding|diff-range
+#   (substantive + manual-triage are OPERATOR-GATED — never produce a dispatch spec.)
 _classify_failure() {
     local content="$1"
     if printf '%s' "$content" | grep -Eiq -- "$_RE_SUBSTANTIVE"; then
         echo substantive; return
+    fi
+    # Unidentifiable encoding ([PS1-ENCODING]) is UNSAFE to auto-fix, so probe it
+    # BEFORE the mechanical classes. It must land ahead of the generic _RE_LINT
+    # match in particular: every shell-lint report carries a "shell-lint" token in
+    # its summary line, which would otherwise classify this finding as mechanical
+    # lint and dispatch an automated fix on a file whose encoding the linter could
+    # not identify. Belt-and-braces it also sits ahead of _RE_ENCODING. Fail-safe.
+    if printf '%s' "$content" | grep -Eiq -- "$_RE_MANUAL_TRIAGE"; then
+        echo manual-triage; return
     fi
     # Encoding signatures (BOM / SC1082 / CRLF) are MORE SPECIFIC than the
     # generic lint match, and a BOM finding is often surfaced via shell-lint
@@ -120,7 +143,7 @@ _fix_instruction() {
         lint)
             printf 'On branch %s ONLY: run scripts/lint/shell-lint.sh --staged (or on the changed shell files), fix the reported shellcheck/lint findings ONLY (do NOT change logic), re-commit keeping the SAME attestation trailers in the first commit, and push. Re-collect the result.' "$branch" ;;
         encoding)
-            printf 'On branch %s ONLY: strip the UTF-8 BOM / fix the CRLF or encoding finding on the changed files (content-preserving), re-commit keeping the SAME attestation trailers, and push. Do NOT change logic. Re-collect the result.' "$branch" ;;
+            printf 'On branch %s ONLY: fix the BOM/CRLF/encoding finding on the changed files, content-preserving, and push. BOM policy is split by file type (HIMMEL-1432). For a SHELL file STRIP a UTF-8 BOM (it breaks the shebang; SC1082). For a *.ps1: FIRST read the leading bytes for a Unicode byte-order mark — UTF-8 (EF BB BF), UTF-16LE (FF FE), UTF-16BE (FE FF), UTF-32LE (FF FE 00 00), UTF-32BE (00 00 FE FF); if ANY recognized BOM is present LEAVE THE FILE ALONE — PowerShell 5.1 decodes BOM-prefixed UTF-16/UTF-32 natively, and adding or stripping a BOM would corrupt it. If NO recognized BOM is present but the file has non-ASCII bytes, the automated repair is to ADD a UTF-8 BOM (EF BB BF) — BUT ONLY after confirming the payload is valid UTF-8 (run: iconv -f UTF-8 -t UTF-8 <file> — it must exit 0); if the bytes are NOT valid UTF-8 (e.g. a UTF-16/UTF-32 payload whose BOM was lost), do NOT prepend a UTF-8 BOM — that corrupts the file — flag it for manual triage instead. NEVER strip a BOM from a *.ps1. Re-commit keeping the SAME attestation trailers. Do NOT change logic. Re-collect the result.' "$branch" ;;
         diff-range)
             printf 'On branch %s ONLY: recompute the diff range against the correct merge-base (use the merge-base range, not two-dot), re-run the affected step, re-commit, and push. Do NOT change logic. Re-collect the result.' "$branch" ;;
         *)
@@ -200,6 +223,9 @@ cmd_classify() {
         case "$class" in
             substantive)
                 out_rows="$out_rows$key$TAB$branch$TAB$pr$TAB$status$TAB$outcome${TAB}operator-gated blocker: substantive failure — no auto-fix"$'\n'
+                n_sub=$((n_sub + 1)) ;;
+            manual-triage)
+                out_rows="$out_rows$key$TAB$branch$TAB$pr$TAB$status$TAB$outcome${TAB}operator-gated blocker: unidentifiable file encoding — manual triage (no auto-fix)"$'\n'
                 n_sub=$((n_sub + 1)) ;;
             *)
                 # Mechanical → HELD (not a report row yet); emit a dispatch spec.

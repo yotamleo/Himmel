@@ -1,4 +1,4 @@
-# Hermetic test for the salus medical overlay (PowerShell twin of test-salus-overlay.sh).
+﻿# Hermetic test for the salus medical overlay (PowerShell twin of test-salus-overlay.sh).
 # No real data touched: everything happens under a fresh temp vault.
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $PSCommandPath

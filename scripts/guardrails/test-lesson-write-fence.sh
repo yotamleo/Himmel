@@ -8,6 +8,16 @@
 # harness style (temp dirs, pass/fail counters, explicit bash invocation).
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 FENCE="$REPO_ROOT/scripts/guardrails/lesson-write-fence.sh"
 REAL_POLICY="$REPO_ROOT/scripts/guardrails/enforcement-paths.json"
@@ -200,9 +210,9 @@ echo "== 9: check mode =="
 out=$(env LESSON_FENCE_POLICY="$POLICY_COPY" "$BASH_BIN" "$FENCE" check \
     "$REPO/scripts/hooks/a.sh" "$REPO/.claude/settings.json" "$REPO/README.md" 2>&1); rc=$?
 if [ "$rc" -eq 2 ] \
-    && printf '%s\n' "$out" | grep -qE '^deny[[:space:]]+hooks[[:space:]]' \
-    && printf '%s\n' "$out" | grep -qE '^deny[[:space:]]+settings[[:space:]]' \
-    && printf '%s\n' "$out" | grep -qE '^allow[[:space:]]+-[[:space:]]'; then
+    && grepq "$out" -E '^deny[[:space:]]+hooks[[:space:]]' \
+    && grepq "$out" -E '^deny[[:space:]]+settings[[:space:]]' \
+    && grepq "$out" -E '^allow[[:space:]]+-[[:space:]]'; then
     pass "9: mixed list -> per-line verdicts + exit 2"
 else
     fail "9: mixed list rc=$rc out=$out"
@@ -440,7 +450,7 @@ run_hook allow "18: cat scripts/hooks/a.sh (plain read, no procsub, still allowe
 
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s\n' "$out" | grep -qi deny; then
+if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then
     pass "real policy: live smoke shows 2 denies + exit 2"
 else
     fail "real policy live smoke: rc=$rc out=$out"

@@ -1,4 +1,4 @@
-# test-win11-shim.ps1 — HIMMEL-887 T8. win11.ps1 is soft-deprecated: it KEEPS
+﻿# test-win11-shim.ps1 — HIMMEL-887 T8. win11.ps1 is soft-deprecated: it KEEPS
 # its full-toolchain provisioning (locked O4 option (b) — zero capability
 # loss) but stops doing himmel/luna WIRING itself and delegates that to
 # `himmelctl bootstrap` (the correct entry for a node-less machine; `install`

@@ -1,4 +1,4 @@
-# restart-bridge.ps1 — safely (re)start the Telegram bridge on Windows.
+﻿# restart-bridge.ps1 — safely (re)start the Telegram bridge on Windows.
 #
 # Why this exists: the bridge enforces a SINGLE getUpdates owner per bot token.
 # Duplicate pollers (left over from prior sessions or a failed launch) cause

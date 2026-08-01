@@ -63,6 +63,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -189,7 +199,7 @@ errA=$( cd "$targetA" && HIMMELCTL_REPO_ROOT="$(winpath "$repoA")" HIMMELCTL_CAC
 rcA=$?
 set -e
 [ "$rcA" -eq 2 ] || fail "case a: bare ensure with no cache should exit 2 (got rc=$rcA): $errA"
-echo "$errA" | grep -qF 'run himmelctl install first' || fail "case a: expected the 'run himmelctl install first' message (got: $errA)"
+grepq "$errA" -F 'run himmelctl install first' || fail "case a: expected the 'run himmelctl install first' message (got: $errA)"
 [ ! -f "$cacheA/state.json" ] || fail "case a: state.json must NOT be created when no install-profile cache exists"
 snapAAfter=$(snapshot_dir "$work")
 [ "$snapABefore" = "$snapAAfter" ] || fail "case a: bare ensure with no cache should make zero mutations"
@@ -235,7 +245,7 @@ set +e
 outB=$(runEnsureB); rcB=$?
 set -e
 [ "$rcB" -eq 0 ] || fail "case b: an already-green fixture should exit 0 (got rc=$rcB): $outB"
-echo "$outB" | grep -qF 'already at the desired state' || fail "case b: expected a no-op message (got: $outB)"
+grepq "$outB" -F 'already at the desired state' || fail "case b: expected a no-op message (got: $outB)"
 snapBAfter=$(snapshot_dir "$work")
 [ "$snapBBefore" = "$snapBAfter" ] || fail "case b: an already-green ensure run should leave the fixture tree byte-identical"
 echo "ok: case b — an already-green fixture is a no-op, exit 0, byte-identical tree"
@@ -277,7 +287,7 @@ outD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CAC
   "$node_bin" "$wizard" ensure --dry-run </dev/null ); rcD=$?
 set -e
 [ "$rcD" -eq 0 ] || fail "case d: --dry-run should exit 0 (got rc=$rcD): $outD"
-echo "$outD" | grep -q 'DRY:' || fail "case d: --dry-run should print the ordered plan as DRY lines (got: $outD)"
+grepq "$outD" 'DRY:' || fail "case d: --dry-run should print the ordered plan as DRY lines (got: $outD)"
 [ ! -s "$logD" ] || fail "case d: --dry-run must invoke NOTHING — spy log should stay empty (got: $(cat "$logD")))"
 snapDAfter=$(snapshot_dir "$work")
 [ "$snapDBefore" = "$snapDAfter" ] || fail "case d: --dry-run should make zero mutations"
@@ -298,7 +308,7 @@ outG2=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CA
   "$node_bin" "$wizard" ensure --dry-run --yes </dev/null ); rcG2=$?
 set -e
 [ "$rcG2" -eq 0 ] || fail "case g: --yes should exit 0 non-interactively (got rc=$rcG2): $outG2"
-echo "$outG2" | grep -qv 'about to ' >/dev/null 2>&1 || true
+grepq "$outG2" -v 'about to ' >/dev/null 2>&1 || true
 offerCount2=$(echo "$outG2" | grep -c 'about to ' || true)
 [ "$offerCount2" -eq 0 ] || fail "case g: --yes should suppress the consolidated offer entirely (got $offerCount2 lines): $outG2"
 echo "ok: case g — the consolidated offer prints exactly once without --yes; --yes suppresses it; neither hangs"
@@ -317,7 +327,7 @@ outJ=$( cd "$targetJ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CAC
     "$node_bin" "$wizard" ensure 2>&1 </dev/null ); rcJ=$?
 set -e
 [ "$rcJ" -eq 2 ] || fail "case j: a non-interactive ensure without --yes should exit 2 (got rc=$rcJ): $outJ"
-echo "$outJ" | grep -qF 'non-interactive ensure requires --yes' || fail "case j: expected the non-interactive-requires---yes message (got: $outJ)"
+grepq "$outJ" -F 'non-interactive ensure requires --yes' || fail "case j: expected the non-interactive-requires---yes message (got: $outJ)"
 [ ! -f "$cacheJ/state.json" ] || fail "case j: state.json must NOT be created when ensure is refused for lacking --yes"
 [ ! -s "$logJ" ] || fail "case j: no primitive should have been invoked (spy log: $(cat "$logJ"))"
 snapJAfter=$(snapshot_dir "$work")
@@ -337,7 +347,7 @@ outK=$( cd "$targetK" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CAC
     "$node_bin" "$wizard" ensure <<<"n" 2>&1 ); rcK=$?
 set -e
 [ "$rcK" -eq 0 ] || fail "case k: an interactive decline should exit 0 (got rc=$rcK): $outK"
-echo "$outK" | grep -qF 'declined; nothing run' || fail "case k: expected the decline message (got: $outK)"
+grepq "$outK" -F 'declined; nothing run' || fail "case k: expected the decline message (got: $outK)"
 [ ! -f "$cacheK/state.json" ] || fail "case k: state.json must NOT be created after an interactive decline"
 [ ! -s "$logK" ] || fail "case k: no primitive should have been invoked after a decline (spy log: $(cat "$logK"))"
 snapKAfter=$(snapshot_dir "$work")
@@ -395,7 +405,7 @@ runEnsureC() {
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 outC0=$(runEnsureC --yes)
-echo "$outC0" | grep -qF 'already at the desired state' || fail "case c setup: under profile core, luna-item should not be desired yet (got: $outC0)"
+grepq "$outC0" -F 'already at the desired state' || fail "case c setup: under profile core, luna-item should not be desired yet (got: $outC0)"
 [ ! -f "$targetC/luna.marker" ] || fail "case c setup: luna.marker should not exist before the --profile luna reconcile"
 
 set +e
@@ -437,13 +447,13 @@ runEnsureI() {
 # Seed under core (the ONE sanctioned derive-if-missing write) BEFORE the
 # purity snapshot — luna-item is not yet desired, same as case c's setup.
 outI0=$(runEnsureI --yes)
-echo "$outI0" | grep -qF 'already at the desired state' || fail "case i setup: under profile core, luna-item should not be desired yet (got: $outI0)"
+grepq "$outI0" -F 'already at the desired state' || fail "case i setup: under profile core, luna-item should not be desired yet (got: $outI0)"
 
 snapIBefore=$(snapshot_dir "$work")
 outI1=$(runEnsureI --profile luna --dry-run)
-echo "$outI1" | grep -qF 'luna-item' \
+grepq "$outI1" -F 'luna-item' \
   || fail "case i: ensure --profile luna --dry-run should PREVIEW luna-item's convergence (proving the reconcile is reflected) (got: $outI1)"
-echo "$outI1" | grep -q 'DRY:' || fail "case i: --profile luna --dry-run should print DRY plan lines (got: $outI1)"
+grepq "$outI1" 'DRY:' || fail "case i: --profile luna --dry-run should print DRY plan lines (got: $outI1)"
 [ ! -f "$targetI/luna.marker" ] || fail "case i: --dry-run must NOT have invoked the stub primitive (luna.marker exists)"
 snapIAfter=$(snapshot_dir "$work")
 [ "$snapIBefore" = "$snapIAfter" ] || fail "case i: ensure --profile luna --dry-run should make ZERO mutations (no state.json write either)"
@@ -482,7 +492,7 @@ set -e
 [ "$rcX" -ne 0 ] \
   || fail "case x: a no-vault --profile luna run must FAIL CLOSED (nonzero exit) after surfacing the hint — got rc=0 (the hint printed but ensure returned success: a false green). out: $outX"
 # The guard must surface the hint naming the missing vault path...
-echo "$outX" | grep -qF 'no luna vault path configured' \
+grepq "$outX" -F 'no luna vault path configured' \
   || fail "case x: a no-vault --profile luna run must surface the 'no luna vault path configured' hint (got: $outX)"
 # ...and must NEVER invoke qmd_register_collection (empty path or otherwise) —
 # the spy log stays empty, proving no corrupt registration was attempted.
@@ -667,8 +677,8 @@ outH=$( cd "$targetH" && HIMMELCTL_REPO_ROOT="$(winpath "$repoH")" HIMMELCTL_CAC
 set -e
 [ "$rcH" -eq 0 ] || fail "case h: hint-only reds must NOT fail-close ensure (got rc=$rcH): $outH"
 [ ! -s "$logH" ] || fail "case h: neither config-item nor mcp-item should ever be dispatched (spy log should stay empty; got: $(cat "$logH"))"
-echo "$outH" | grep -qF 'config-item' || fail "case h: the hint message should name config-item (got: $outH)"
-echo "$outH" | grep -qF 'mcp-item' || fail "case h: the hint message should name mcp-item (got: $outH)"
+grepq "$outH" -F 'config-item' || fail "case h: the hint message should name config-item (got: $outH)"
+grepq "$outH" -F 'mcp-item' || fail "case h: the hint message should name mcp-item (got: $outH)"
 echo "ok: case h — a red config-type item and a red no-install item are hint-only: not dispatched, do not fail-close ensure"
 
 # ── case l (CR fix round 3, HIMMEL-755): a genuinely FAILED install must
@@ -705,7 +715,7 @@ outL=$( cd "$targetL" && HIMMELCTL_REPO_ROOT="$(winpath "$repoL")" HIMMELCTL_CAC
 set -e
 [ -f "$targetL/external.marker" ] || fail "case l setup: the stub should have created the marker before exiting 1 (fixture drift)"
 [ "$rcL" -ne 0 ] || fail "case l: a genuinely failed install must fail ensure even though the post-check probe reads green (marker exists) (got rc=0): $outL"
-echo "$outL" | grep -qF 'coincidence-item' || fail "case l: the failure should name coincidence-item (got: $outL)"
+grepq "$outL" -F 'coincidence-item' || fail "case l: the failure should name coincidence-item (got: $outL)"
 echo "ok: case l — a failed install fails ensure even when the post-check probe coincidentally passes"
 
 # ── case m (CR fix round 3, HIMMEL-755): the toward-disabled loop must
@@ -747,7 +757,7 @@ scopeLogM="$work/scope-log-m.txt"; : > "$scopeLogM"
 
 outM=$( cd "$targetM" && HIMMELCTL_REPO_ROOT="$(winpath "$repoM")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheM")" HOME="$work/home" SCOPE_LOG="$(winpath "$scopeLogM")" \
     "$node_bin" "$wizard" ensure --yes </dev/null )
-echo "$outM" | grep -qF 'already at the desired state' || fail "case m: a project-scope run should see NOTHING to converge (user-only-item is out of scope) (got: $outM)"
+grepq "$outM" -F 'already at the desired state' || fail "case m: a project-scope run should see NOTHING to converge (user-only-item is out of scope) (got: $outM)"
 [ ! -s "$scopeLogM" ] || fail "case m: user-only-item's unwire must NEVER be invoked from a project-scope run (spy log: $(cat "$scopeLogM"))"
 [ -f "$targetM/user-only.marker" ] || fail "case m: user-only-item's marker must be left untouched (scope bleed would have removed it)"
 echo "ok: case m — the toward-disabled loop respects item.scopes; a project-scope run never touches a user-only removable item"
@@ -789,7 +799,7 @@ outN=$( cd "$targetN" && HIMMELCTL_REPO_ROOT="$(winpath "$repoN")" HIMMELCTL_CAC
 set -e
 [ "$rcN" -eq 0 ] || fail "case n: real-item should converge cleanly (got rc=$rcN): $outN"
 [ -f "$targetN/real.marker" ] || fail "case n: real-item's stub should have run (marker missing)"
-echo "$outN" | grep -qF 'hint-item' || fail "case n: hint-item should STILL be surfaced even though real convergence work also happened (got: $outN)"
+grepq "$outN" -F 'hint-item' || fail "case n: hint-item should STILL be surfaced even though real convergence work also happened (got: $outN)"
 echo "ok: case n — hints are surfaced even on a run that also does real convergence work"
 
 # ── case o (CR fix round 6, HIMMEL-755): reconcile must run whenever
@@ -853,7 +863,7 @@ rm -f "$targetO/stale.marker"
 # Sanity: with the corruption in place and NO --profile, stale-item reads
 # as not-desired (fixture-drift guard for the corruption step itself).
 outO0=$(runEnsureO --yes)
-echo "$outO0" | grep -qF 'already at the desired state' \
+grepq "$outO0" -F 'already at the desired state' \
   || fail "case o setup: after corrupting state.json, a plain ensure (no --profile) should see nothing to converge (got: $outO0)"
 [ ! -f "$targetO/stale.marker" ] || fail "case o setup: stale.marker should not exist yet (fixture drift)"
 
@@ -917,8 +927,8 @@ outP=$( cd "$targetP" && HIMMELCTL_REPO_ROOT="$(winpath "$repoPQR")" HIMMELCTL_C
     "$node_bin" "$wizard" ensure --items item-b --yes 2>&1 </dev/null ); rcP=$?
 set -e
 [ "$rcP" -eq 2 ] || fail "case p: --items item-b (prereq item-a excluded) should exit 2 (got rc=$rcP): $outP"
-echo "$outP" | grep -qF 'item-a' || fail "case p: the rejection should name the excluded prerequisite item-a (got: $outP)"
-echo "$outP" | grep -qF 'item-b' || fail "case p: the rejection should name the requesting item item-b (got: $outP)"
+grepq "$outP" -F 'item-a' || fail "case p: the rejection should name the excluded prerequisite item-a (got: $outP)"
+grepq "$outP" -F 'item-b' || fail "case p: the rejection should name the requesting item item-b (got: $outP)"
 [ ! -s "$logP" ] || fail "case p: no primitive should have been invoked (spy log: $(cat "$logP"))"
 [ ! -f "$targetP/item-a.marker" ] || fail "case p: item-a.marker must NOT exist (zero mutation)"
 [ ! -f "$targetP/item-b.marker" ] || fail "case p: item-b.marker must NOT exist (zero mutation)"
@@ -1017,7 +1027,7 @@ outS=$( cd "$targetS" && HIMMELCTL_REPO_ROOT="$(winpath "$repoS")" HIMMELCTL_CAC
 set -e
 [ "$rcS" -eq 0 ] || fail "case s: pre-commit-hooks as a hint must NOT fail-close ensure (got rc=$rcS): $outS"
 [ ! -s "$logS" ] || fail "case s: adopt.sh must NEVER be invoked for pre-commit-hooks (spy log should stay empty; got: $(cat "$logS"))"
-echo "$outS" | grep -qF 'pre-commit-hooks' || fail "case s: the hint message should name pre-commit-hooks (got: $outS)"
+grepq "$outS" -F 'pre-commit-hooks' || fail "case s: the hint message should name pre-commit-hooks (got: $outS)"
 echo "ok: case s — pre-commit-hooks is hint-only: ensure reports it as a hint, never dispatches adopt.sh, exits 0"
 
 # ── case t (CR fix, MAJOR — the toward-ENABLED mirror of case k's bug):
@@ -1063,8 +1073,8 @@ outT=$( cd "$targetT" && HIMMELCTL_REPO_ROOT="$(winpath "$repoT")" HIMMELCTL_CAC
     "$node_bin" "$wizard" ensure --items dependent-item,hint-prereq --yes 2>&1 </dev/null ); rcT=$?
 set -e
 [ "$rcT" -eq 2 ] || fail "case t: --items dependent-item,hint-prereq (prereq included but hint-only) should exit 2 (got rc=$rcT): $outT"
-echo "$outT" | grep -qF 'dependent-item' || fail "case t: the rejection should name dependent-item (got: $outT)"
-echo "$outT" | grep -qF 'hint-prereq' || fail "case t: the rejection should name hint-prereq (got: $outT)"
+grepq "$outT" -F 'dependent-item' || fail "case t: the rejection should name dependent-item (got: $outT)"
+grepq "$outT" -F 'hint-prereq' || fail "case t: the rejection should name hint-prereq (got: $outT)"
 [ ! -f "$targetT/dependent.marker" ] || fail "case t: dependent.marker must NOT exist (zero mutation — dependent-item was never installed)"
 echo "ok: case t — --items naming a hint-only prerequisite is REJECTED too (membership alone was never sufficient on the enabled side either), zero mutation"
 
@@ -1082,12 +1092,12 @@ outU=$( cd "$targetT" && HIMMELCTL_REPO_ROOT="$(winpath "$repoT")" HIMMELCTL_CAC
     "$node_bin" "$wizard" ensure --items dependent-item --yes 2>&1 </dev/null ); rcU=$?
 set -e
 [ "$rcU" -eq 2 ] || fail "case u: --items dependent-item (hint-prereq excluded entirely) should exit 2 (got rc=$rcU): $outU"
-echo "$outU" | grep -qF 'dependent-item' || fail "case u: the rejection should name dependent-item (got: $outU)"
-echo "$outU" | grep -qF 'hint-prereq' || fail "case u: the rejection should name hint-prereq (got: $outU)"
-if echo "$outU" | grep -qF 'add it: --items'; then
+grepq "$outU" -F 'dependent-item' || fail "case u: the rejection should name dependent-item (got: $outU)"
+grepq "$outU" -F 'hint-prereq' || fail "case u: the rejection should name hint-prereq (got: $outU)"
+if grepq "$outU" -F 'add it: --items'; then
   fail "case u: the rejection must NOT advise adding hint-prereq to --items -- it's hint-only and would never converge even if added (got: $outU)"
 fi
-echo "$outU" | grep -qF 'hint-only' || fail "case u: the rejection should say hint-prereq is hint-only (got: $outU)"
+grepq "$outU" -F 'hint-only' || fail "case u: the rejection should say hint-prereq is hint-only (got: $outU)"
 [ ! -f "$targetT/dependent.marker" ] || fail "case u: dependent.marker must NOT exist (zero mutation)"
 echo "ok: case u — a hint-only prerequisite excluded from --items entirely gets the same 'converge manually' guidance as being named-but-hint-only, never the useless 'add it' advice"
 
@@ -1165,7 +1175,7 @@ rm -f "$targetV/drift.marker"
 # Sanity: with the corruption in place and NO --profile, drift-item reads as
 # not-desired — a fixture-drift guard for the corruption step itself.
 outV0=$(runEnsureV --yes)
-echo "$outV0" | grep -qF 'already at the desired state' \
+grepq "$outV0" -F 'already at the desired state' \
   || fail "case v setup: after corrupting state.json, a plain ensure (no --profile) should see nothing to converge (got: $outV0)"
 [ ! -f "$targetV/drift.marker" ] || fail "case v setup: drift.marker should not exist yet (fixture drift)"
 
@@ -1236,7 +1246,7 @@ set -e
 [ "$rcW" -eq 0 ] || fail "case w: converging both adopt items should exit 0 (got rc=$rcW): $outW"
 [ -f "$targetW/adopt1.marker" ] || fail "case w: adopt1.marker should exist (the coalesced adopt.sh converges both)"
 [ -f "$targetW/adopt2.marker" ] || fail "case w: adopt2.marker should exist (the coalesced adopt.sh converges both)"
-echo "$outW" | grep -qF 'ensure complete (2 converged)' \
+grepq "$outW" -F 'ensure complete (2 converged)' \
   || fail "case w: 2 coalesced adopt items must report '2 converged' (manifest items), not '1 converged' (the single plan entry / ran.length) (got: $outW)"
 echo "ok: case w — coalesced adopt items report the manifest-item count (2 converged), not the plan-entry count"
 
@@ -1331,8 +1341,8 @@ set +e
 outY1=$(runEnsureY --items item-c --yes 2>&1); rcY1=$?
 set -e
 [ "$rcY1" -eq 2 ] || fail "case y: --items item-c (transitive prereq item-a missing behind green item-b) should exit 2 (got rc=$rcY1): $outY1"
-echo "$outY1" | grep -qF 'item-a' || fail "case y: the rejection should name the missing TRANSITIVE prerequisite item-a (got: $outY1)"
-echo "$outY1" | grep -qF 'item-c' || fail "case y: the rejection should name the requesting item item-c (got: $outY1)"
+grepq "$outY1" -F 'item-a' || fail "case y: the rejection should name the missing TRANSITIVE prerequisite item-a (got: $outY1)"
+grepq "$outY1" -F 'item-c' || fail "case y: the rejection should name the requesting item item-c (got: $outY1)"
 [ ! -f "$targetY/c.marker" ] || fail "case y: c.marker must NOT exist (zero mutation — item-c was never installed atop missing item-a)"
 echo "ok: case y — a red/desired prerequisite hidden behind a GREEN middle node is still caught by the TRANSITIVE walk (exit 2, names item-a), zero mutation"
 

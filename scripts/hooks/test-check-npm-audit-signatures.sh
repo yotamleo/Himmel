@@ -17,6 +17,16 @@
 # Usage: bash scripts/hooks/test-check-npm-audit-signatures.sh
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SIG_SH="$SCRIPT_DIR/check-npm-audit-signatures.sh"
 
@@ -54,7 +64,7 @@ d1=$(make_pkg '{"name":"z","devDependencies":{"typescript":"^6.0.0"}}')
 rc=0
 out1=$( cd "$d1" && bash "$SIG_SH" 2>&1 ) || rc=$?
 assert_eq "zero-prod-dep pkg → gate exits 0 (skip)" "0" "$rc"
-if printf '%s' "$out1" | grep -q 'nothing to verify'; then
+if grepq "$out1" 'nothing to verify'; then
     echo "PASS zero-prod-dep pkg → 'nothing to verify' skip notice"
 else
     echo "FAIL zero-prod-dep pkg → skip notice"
@@ -69,7 +79,7 @@ d2=$(make_pkg '{"name":"p","dependencies":{"leftpad":"1.0.0"}}')
 rc=0
 out2=$( cd "$d2" && bash "$SIG_SH" 2>&1 ) || rc=$?
 assert_eq "prod-dep pkg, no node_modules → gate blocks (exit 1)" "1" "$rc"
-if printf '%s' "$out2" | grep -q 'no node_modules'; then
+if grepq "$out2" 'no node_modules'; then
     echo "PASS prod-dep pkg, no node_modules → block message printed"
 else
     echo "FAIL prod-dep pkg, no node_modules → block message printed"
@@ -83,7 +93,7 @@ d3=$(make_pkg '{"name":"b","dependencies":{"x":"1.0.0"}}' bunlock)
 rc=0
 out3=$( cd "$d3" && bash "$SIG_SH" 2>&1 ) || rc=$?
 assert_eq "bun.lock pkg → gate exits 0 (skip)" "0" "$rc"
-if printf '%s' "$out3" | grep -q 'skipping.*bun'; then
+if grepq "$out3" 'skipping.*bun'; then
     echo "PASS bun.lock pkg → bun skip notice printed"
 else
     echo "FAIL bun.lock pkg → bun skip notice printed"
@@ -118,7 +128,7 @@ d5=$(make_pkg '{"name":"o","optionalDependencies":{"fsevents":"2.3.0"}}')
 rc=0
 out5=$( cd "$d5" && bash "$SIG_SH" 2>&1 ) || rc=$?
 assert_eq "optionalDependencies-only pkg, no node_modules → gate blocks (exit 1, not skipped)" "1" "$rc"
-if printf '%s' "$out5" | grep -q 'nothing to verify'; then
+if grepq "$out5" 'nothing to verify'; then
     echo "FAIL optionalDependencies-only pkg was wrongly skipped as zero-dep"
     echo "     output: $out5"
     FAILED=$((FAILED + 1))

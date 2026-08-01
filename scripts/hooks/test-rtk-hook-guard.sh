@@ -40,6 +40,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 # The stub (and the guard's primary extraction path) needs jq.
 if ! command -v jq >/dev/null 2>&1; then
     echo "FAIL: jq not on PATH — required by the test stub" >&2
@@ -99,7 +109,7 @@ run_hook() { # $1 = command string (JSON-escaped); stdout = hook output
 echo "Test 1: simple find keeps the rtk rewrite"
 for cmd in 'find . -name \"*.md\" -type f' 'find /tmp -maxdepth 1 -name x'; do
     out=$(run_hook "$cmd")
-    if printf '%s' "$out" | grep -q '"rtk find '; then
+    if grepq "$out" '"rtk find '; then
         assert_pass "rewrite forwarded: $cmd"
     else
         assert_fail "expected rtk rewrite for '$cmd', got: $out"
@@ -135,7 +145,7 @@ done
 echo "Test 3: non-find rewrites untouched"
 for cmd in 'git status' 'sort -o out.txt in.txt' 'ls -a /tmp'; do
     out=$(run_hook "$cmd")
-    if printf '%s' "$out" | grep -q '"rtk '; then
+    if grepq "$out" '"rtk '; then
         assert_pass "rewrite forwarded: $cmd"
     else
         assert_fail "expected rtk rewrite for '$cmd', got: $out"
@@ -214,7 +224,7 @@ chmod +x "$reason_dir/rtk"
 out=$(printf '{"tool_name":"Bash","tool_input":{"command":"find . -name x"}}' \
     | PATH="$reason_dir:$PATH" bash "$hook")
 rm -rf "$reason_dir"
-if printf '%s' "$out" | grep -q '"rtk find '; then
+if grepq "$out" '"rtk find '; then
     assert_pass "reason-only token did not suppress the rewrite"
 else
     assert_fail "expected forwarded rewrite despite '-not' in reason, got: $out"
@@ -253,7 +263,7 @@ else
 fi
 out=$(printf '{"tool_name":"Bash","tool_input":{"command":"find . -name \\"*.md\\" -type f"}}' \
     | PATH="$nojq_dir:$PATH" bash "$hook")
-if printf '%s' "$out" | grep -q '"rtk find '; then
+if grepq "$out" '"rtk find '; then
     assert_pass "fallback forwarded simple find"
 else
     assert_fail "expected forwarded rewrite via fallback, got: $out"
@@ -267,7 +277,7 @@ rm -rf "$nojq_dir"
 echo "Test 10: payload with trailing field still parsed by the stub"
 out=$(printf '{"tool_name":"Bash","tool_input":{"command":"find . -name x","description":"trailing field"}}' \
     | PATH="$stub_dir:$PATH" bash "$hook")
-if printf '%s' "$out" | grep -q '"rtk find '; then
+if grepq "$out" '"rtk find '; then
     assert_pass "trailing field tolerated, rewrite forwarded"
 else
     assert_fail "expected forwarded rewrite with trailing field, got: $out"
@@ -308,7 +318,7 @@ else
 fi
 out=$(printf '{"tool_name":"Bash","tool_input":{"command":"git status"}}' \
     | PATH="$drift_dir:$PATH" bash "$hook")
-if printf '%s' "$out" | grep -q '"rtk git status"'; then
+if grepq "$out" '"rtk git status"'; then
     assert_pass "drifted non-find output forwarded verbatim"
 else
     assert_fail "expected forwarded drifted non-find output, got: $out"

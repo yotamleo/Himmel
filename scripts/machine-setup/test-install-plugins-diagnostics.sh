@@ -6,6 +6,16 @@
 # (HIMMEL-438 — C2.)
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "PASS (skipped)"; exit 0; }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,8 +63,8 @@ out1=$(PATH="$STUB_DIR:$PATH" STUB_INSTALL_FAIL=1 STUB_PRESENT="" \
 rc1=$?
 set -e
 [ "$rc1" -ne 0 ] || fail "real failure should exit non-zero (got $rc1)"
-printf '%s' "$out1" | grep -q "step FAILED"            || fail "missing loud 'step FAILED' marker"
-printf '%s' "$out1" | grep -q "network unreachable"    || fail "captured CLI error text not surfaced"
+grepq "$out1" "step FAILED"            || fail "missing loud 'step FAILED' marker"
+grepq "$out1" "network unreachable"    || fail "captured CLI error text not surfaced"
 
 # ── Case 2: benign already-installed + present in list → quiet + exit 0
 set +e
@@ -63,7 +73,7 @@ out2=$(PATH="$STUB_DIR:$PATH" STUB_INSTALL_BENIGN=1 STUB_PRESENT="foo@mp" \
 rc2=$?
 set -e
 [ "$rc2" -eq 0 ] || fail "benign already-installed re-run should exit 0 (got $rc2): $out2"
-printf '%s' "$out2" | grep -q "already present"        || fail "benign path should print quiet 'already present'"
-printf '%s' "$out2" | grep -q "step FAILED"            && fail "benign path must NOT print 'step FAILED'"
+grepq "$out2" "already present"        || fail "benign path should print quiet 'already present'"
+grepq "$out2" "step FAILED"            && fail "benign path must NOT print 'step FAILED'"
 
 echo "PASS"

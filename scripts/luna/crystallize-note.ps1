@@ -1,4 +1,4 @@
-# crystallize-note.ps1 — Windows twin of crystallize-note.sh (HIMMEL-576).
+﻿# crystallize-note.ps1 — Windows twin of crystallize-note.sh (HIMMEL-576).
 # Upgrades a mechanical session note into an LLM synthesis: asks a bounded
 # `claude "<prompt>"` run (interactive, NOT headless -p -> HIMMEL-128-safe; Max
 # plan, no API key) to rewrite the four body sections and flip crystallized: true.

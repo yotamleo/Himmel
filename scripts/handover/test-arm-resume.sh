@@ -6,6 +6,16 @@
 # real scheduler jobs are created.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 [ -x "$ARM" ] || chmod +x "$ARM"
 
@@ -1081,7 +1091,7 @@ fi
 _ids_after=$(_slot_ids | sort -u)
 _surviving=$(printf '%s\n' "$_ids_after" | grep -c . || true)
 if [ "$_surviving" = "1" ] && [ -n "$_ids_before" ] \
-   && ! printf '%s\n' "$_ids_before" | grep -qxF "$_ids_after"; then
+   && ! grepq "$_ids_before" -xF "$_ids_after"; then
     echo "PASS T28d the surviving slot is the NEW arm, not a leftover sibling"
 else
     echo "FAIL T28d surviving slot identity wrong (before='$(printf '%s' "$_ids_before" | tr '\n' ',')' after='$(printf '%s' "$_ids_after" | tr '\n' ',')')"

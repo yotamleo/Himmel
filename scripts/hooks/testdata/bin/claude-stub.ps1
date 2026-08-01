@@ -1,4 +1,4 @@
-# claude-stub.ps1 — Windows twin of claude-stub.sh: a deterministic `claude`
+﻿# claude-stub.ps1 — Windows twin of claude-stub.sh: a deterministic `claude`
 # stand-in for crystallize-note.ps1 tests (HIMMEL-576). Pointed at via
 # CRYSTALLIZE_CLAUDE_BIN so the suite stays hermetic (no model call / network).
 #

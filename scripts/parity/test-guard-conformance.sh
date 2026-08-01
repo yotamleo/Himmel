@@ -37,6 +37,16 @@
 # Exit codes: 0 = PASS, 1 = FAIL.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DOC="${REPO}/docs/internals/lane-parity.md"
@@ -135,10 +145,10 @@ validate_cell() {
         fi
         CELL_HAS_TESTED=1
     done < <(printf '%s' "$stripped" | grep -oE 'tested:[A-Za-z0-9_./-]+' | sed 's/^tested://')
-    if printf '%s' "$stripped" | grep -qE '(^|[[:space:]])GAP([[:space:]]|$)'; then
+    if grepq "$stripped" -E '(^|[[:space:]])GAP([[:space:]]|$)'; then
         CELL_HAS_GAP=1
     fi
-    if printf '%s' "$stripped" | grep -qE 'pending:Task[0-9]+'; then
+    if grepq "$stripped" -E 'pending:Task[0-9]+'; then
         CELL_HAS_PENDING=1
     fi
     residual="$(printf '%s' "$stripped" \
@@ -165,7 +175,7 @@ lanecount=0
 
 while IFS= read -r line; do
     # Skip the header separator row (only |, -, :, whitespace).
-    if printf '%s' "$line" | grep -qE '^[[:space:]|:-]+$'; then
+    if grepq "$line" -E '^[[:space:]|:-]+$'; then
         continue
     fi
     row_to_fields "$line"

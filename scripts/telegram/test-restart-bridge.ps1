@@ -1,4 +1,4 @@
-# Hermetic tests for restart-bridge.ps1's server.ts attribution (HIMMEL-1309).
+﻿# Hermetic tests for restart-bridge.ps1's server.ts attribution (HIMMEL-1309).
 # Get-CimInstance is NOT mocked: the .ps1 exposes a pure classifier,
 # Get-ServerTsAttribution, fed a synthetic parent lookup. We dot-source with
 # -AsLibrary (defines the function, never touches the bridge) and assert the

@@ -1,4 +1,4 @@
-# New-machine setup for the luna-brain repo (Windows PowerShell).
+﻿# New-machine setup for the luna-brain repo (Windows PowerShell).
 # Run once after cloning: .\scripts\setup.ps1 [-Medical]
 #   -Medical: also apply the salus medical-vault overlay (medic skill +
 #   PHI-egress floor + skin scaffolds). Lockstep with setup.sh --medical.

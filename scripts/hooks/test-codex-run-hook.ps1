@@ -1,4 +1,4 @@
-# Unit test for .codex/run-hook.cmd + .codex/codex-hook-adapter.sh — the Codex
+﻿# Unit test for .codex/run-hook.cmd + .codex/codex-hook-adapter.sh — the Codex
 # hook wrapper + decision adapter (HIMMEL-427). Tests the WINDOWS (cmd.exe)
 # branch of the polyglot on its native interpreter (cmd.exe via PowerShell). The
 # Unix/bash branch is covered by the .sh twin. Mirrors the .sh assertions:

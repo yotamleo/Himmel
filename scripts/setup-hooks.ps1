@@ -1,4 +1,4 @@
-#requires -Version 5
+﻿#requires -Version 5
 # HIMMEL-709 — PowerShell twin of setup-hooks.sh (git hooks + guardrail mode toggle).
 [CmdletBinding()]
 param(

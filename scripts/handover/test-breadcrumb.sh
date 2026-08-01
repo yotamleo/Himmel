@@ -25,6 +25,16 @@
 #    14.  missing/unknown subcommand → exit 1.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/breadcrumb.sh"
 
@@ -42,11 +52,11 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 assert_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
+    if grepq "$haystack" -F -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
 }
 refute_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then fail "$name" "unexpected: $needle"; else pass "$name"; fi
+    if grepq "$haystack" -F -- "$needle"; then fail "$name" "unexpected: $needle"; else pass "$name"; fi
 }
 
 TMP_ROOT=$(mktemp -d)
@@ -181,7 +191,7 @@ assert_contains "jira failure degrades to git-only" "jira lookup failed" "$out"
 echo "TEST 12: degraded NEVER silently degrades (flag + exit 3 are coupled)"
 rm -f "$BC"
 rc=0; out=$(bash "$SCRIPT" resolve --ticket HIMMEL-477 --cwd "$REPO" --no-jira 2>&1) || rc=$?
-if [ "$rc" -eq 3 ] && printf '%s' "$out" | grep -qF "DEGRADED — confirm before proceeding"; then
+if [ "$rc" -eq 3 ] && grepq "$out" -F "DEGRADED — confirm before proceeding"; then
     pass "degraded couples exit 3 + explicit flag"
 else
     fail "degraded did not couple flag+exit3 (rc=$rc)" "$out"
@@ -195,7 +205,7 @@ HEADV=$(git -C "$REPO" rev-parse HEAD)
 bash "$SCRIPT" write --ticket HIMMEL-477 --cwd "$REPO" --head-sha "$HEADV" \
     --branch feat/himmel-477-resolver --next-step "open the PR" --completed "CR clean" >/dev/null 2>&1
 rc=0; out=$(bash "$SCRIPT" resolve --ticket HIMMEL-477 --cwd "$REPO" --no-jira 2>&1) || rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF "NEXT STEP: open the PR"; then
+if [ "$rc" -eq 0 ] && grepq "$out" -F "NEXT STEP: open the PR"; then
     pass "valid breadcrumb → deterministic resume (exit 0)"
 else
     fail "valid breadcrumb not deterministic (rc=$rc)" "$out"
@@ -204,9 +214,9 @@ fi
 rm -f "$BC"
 rc=0; out=$(bash "$SCRIPT" resolve --ticket HIMMEL-477 --cwd "$REPO" --jira-cmd "$JCMD" 2>&1) || rc=$?
 if [ "$rc" -eq 3 ] \
-   && printf '%s' "$out" | grep -qF "DEGRADED" \
-   && printf '%s' "$out" | grep -qF "RECONSTRUCTED" \
-   && printf '%s' "$out" | grep -qF "HIMMEL-477"; then
+   && grepq "$out" -F "DEGRADED" \
+   && grepq "$out" -F "RECONSTRUCTED" \
+   && grepq "$out" -F "HIMMEL-477"; then
     pass "deleted breadcrumb → flagged recovery from git+jira (exit 3)"
 else
     fail "deleted breadcrumb recovery not flagged (rc=$rc)" "$out"

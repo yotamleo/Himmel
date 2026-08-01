@@ -14,6 +14,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 script="$repo_root/scripts/improve/save-artifact.sh"
 
@@ -114,7 +124,7 @@ fi
 echo "Test 5: dry-run prints body, writes nothing"
 tmp_handover=$(mktemp -d)
 out=$(HANDOVER_DIR="$tmp_handover" bash "$script" --original "x" --refined "y" --dry-run)
-if echo "$out" | grep -q "would write to" && [ ! -d "$tmp_handover/.improve" ]; then
+if grepq "$out" "would write to" && [ ! -d "$tmp_handover/.improve" ]; then
     assert_pass "dry-run prints + writes nothing"
 else
     assert_fail "dry-run: expected 'would write to' + no .improve/ dir (out=$out)"

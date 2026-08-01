@@ -1,4 +1,4 @@
-<#
+﻿<#
   Hermetic native-exit test for adopt.ps1 (HIMMEL-802). The child run uses
   stub tools on PATH; the stub pwsh fails only the install-plugins.ps1 child
   call so the test proves adopt.ps1 itself checks that native exit code.

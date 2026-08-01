@@ -13,6 +13,16 @@
 # Self-contained — uses tmp git repos + bare-origin. No network.
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_UNDER_TEST="$SCRIPT_DIR/auto-commit.sh"
 
@@ -48,7 +58,7 @@ assert_eq() {
 
 assert_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -q -- "$needle"; then
+    if grepq "$haystack" -- "$needle"; then
         echo "  PASS: $name"
         PASS=$((PASS+1))
     else
@@ -233,7 +243,7 @@ mkdir -p "$HANDOVER_REPO/handovers/$SLUG"
 echo "nopush content" > "$HANDOVER_REPO/handovers/$SLUG/nopush.md"
 out=$(run_auto_commit --no-push "HIMMEL-999 nopush check" 2>&1)
 printf '%s\n' "$out" | awk '{print "  > "$0}'
-if printf '%s' "$out" | grep -q "auto-commit: pushed."; then
+if grepq "$out" "auto-commit: pushed."; then
     echo "  FAIL: --no-push pushed anyway"
     FAIL=$((FAIL+1))
 else
@@ -449,7 +459,7 @@ rc=0; out=$(run_sw_auto_commit --dry-run --no-push "HIMMEL-571 dry happy" 2>&1) 
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 assert_rc "sw5: dry-run happy exits 0" "0" "$rc"
 assert_contains "sw5: dry-run names .single-writer trigger" ".single-writer" "$out"
-if printf '%s' "$out" | grep -q "HANDOVER_DIRECT_MAIN"; then
+if grepq "$out" "HANDOVER_DIRECT_MAIN"; then
     echo "  FAIL: sw5: dry-run mislabels trigger as HANDOVER_DIRECT_MAIN"; FAIL=$((FAIL+1))
 else
     echo "  PASS: sw5: dry-run does not mislabel the trigger"; PASS=$((PASS+1))

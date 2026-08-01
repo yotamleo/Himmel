@@ -1781,5 +1781,519 @@ else
   fail "T30b MOC not republished at the expected (fully-trimmed) path (missing, or still the stale sentinel)"
 fi
 
+# --- T31 (HIMMEL-1421): relative-vs-absolute corpus-root/maps-dir spellings
+# must still be recognized as CONTAINED. Mirrors the exact bypass repro from
+# the ticket: `--corpus-root . --maps-dir "$PWD/60-Maps"` share no literal
+# string prefix (one begins with ".", the other with an absolute path) even
+# though maps-dir IS "./60-Maps" -- the OLD lexical-prefix check silently
+# disabled the HIMMEL-1415 exclusion for exactly this spelling, reopening
+# the derived-page feedback loop. ---
+EXCL6BIN="$WS/excl6bin"; mkdir -p "$EXCL6BIN"
+cat > "$EXCL6BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl6-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL6BIN/graphify"
+EXCL6CORPUS="$WS/excl6corpus"; EXCL6MAPS="$EXCL6CORPUS/60-Maps"
+mkdir -p "$EXCL6CORPUS/notes" "$EXCL6MAPS/graph"
+printf '# n\ncontent\n' > "$EXCL6CORPUS/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$EXCL6MAPS/graph/some-node.md"
+printf '# stale MOC from a prior run\n' > "$EXCL6MAPS/excl6-map.md"
+printf '# Legit Maps Note\nhand-authored, not graphify output\n' > "$EXCL6MAPS/legit-note.md"
+out=$( cd "$EXCL6CORPUS" && GRAPHIFY_MAP_BIN="$EXCL6BIN/graphify" PATH="$EXCL6BIN:$PATH" \
+  bash "$SCRIPT" --name excl6test --corpus-root . --backend deepseek \
+  --maps-dir "$EXCL6CORPUS/60-Maps" --title "Excl6 Map" --slug excl6-map --corpus-tag excl6 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T31 run exit 0 (got $rc): $out"
+if grep -qF "60-Maps/graph/some-node.md" "$WS/excl6-scratch-listing.txt" 2>/dev/null; then
+  fail "T31 derived-page leaked into the corpus with a relative --corpus-root + absolute --maps-dir pairing"
+else
+  pass "T31 derived-page still excluded with a relative --corpus-root + absolute --maps-dir pairing"
+fi
+if grep -qF "60-Maps/excl6-map.md" "$WS/excl6-scratch-listing.txt" 2>/dev/null; then
+  fail "T31 the MOC leaked into the corpus with a relative --corpus-root + absolute --maps-dir pairing"
+else
+  pass "T31 the MOC still excluded with a relative --corpus-root + absolute --maps-dir pairing"
+fi
+if grep -qF "60-Maps/legit-note.md" "$WS/excl6-scratch-listing.txt" 2>/dev/null; then
+  pass "T31 a hand-authored maps-dir note still reaches the corpus despite the relative/absolute pairing"
+else
+  fail "T31 over-excluded: a legitimate maps-dir note was dropped from the corpus"
+fi
+
+# --- Case-insensitive filesystem probe (HIMMEL-1421 CR round 1 addendum,
+# codex-adv-4): T32/T33 below assert that a REAL case-variant --maps-dir
+# spelling still resolves to the SAME on-disk directory as --corpus-root --
+# true only on a case-insensitive filesystem (Windows/NTFS, default
+# macOS). On a genuinely case-sensitive filesystem (Linux -- the public
+# mirror's ubuntu shell-unit CI job), uppercasing the whole absolute tmp
+# path produces a DIFFERENT, non-existent directory the exclusion can
+# never legitimately match against the real corpus files, so those two
+# tests would fail for real (not hang) and gate that CI job -- the exact
+# failure class #543 is fixing separately, so this avoids adding a second
+# instance rather than duplicating that fix here. Probed once, cheaply:
+# write "x", stat "X" in a throwaway dir. The portable, OS-independent
+# regression for the underlying containment logic itself (not tied to
+# real on-disk case resolution) is T36 below, which forces the comparison
+# via GRAPHIFY_FS_CASE_INSENSITIVE instead of relying on the real
+# filesystem's behavior.
+FS_PROBE_DIR="$WS/case-probe"; mkdir -p "$FS_PROBE_DIR"
+printf 'x' > "$FS_PROBE_DIR/x"
+if [ -f "$FS_PROBE_DIR/X" ]; then FS_IS_CASE_INSENSITIVE=1; else FS_IS_CASE_INSENSITIVE=0; fi
+
+# --- T32 (HIMMEL-1421): Windows case variants (C:/Users vs c:/users) must
+# still be recognized as CONTAINED -- NTFS is case-insensitive but the
+# pre-fix `case` pattern prefix match was case-sensitive. --corpus-root is
+# passed with its real spelling; --maps-dir is passed with its corpus-root
+# PREFIX case-flipped (same physical directory, different bytes). Only
+# meaningful on a case-insensitive filesystem -- see the probe above. ---
+if [ "$FS_IS_CASE_INSENSITIVE" -ne 1 ]; then
+  pass "T32 SKIPPED (filesystem is case-sensitive; this real-directory scenario needs a case-insensitive fs -- the comparison logic itself is covered portably by T36)"
+else
+EXCL7BIN="$WS/excl7bin"; mkdir -p "$EXCL7BIN"
+cat > "$EXCL7BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl7-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL7BIN/graphify"
+EXCL7CORPUS="$WS/excl7corpus"; EXCL7MAPS="$EXCL7CORPUS/60-Maps"
+mkdir -p "$EXCL7CORPUS/notes" "$EXCL7MAPS/graph"
+printf '# n\ncontent\n' > "$EXCL7CORPUS/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$EXCL7MAPS/graph/some-node.md"
+printf '# stale MOC from a prior run\n' > "$EXCL7MAPS/excl7-map.md"
+printf '# Legit Maps Note\nhand-authored, not graphify output\n' > "$EXCL7MAPS/legit-note.md"
+EXCL7MAPS_ARG="$(printf '%s' "$EXCL7CORPUS" | tr '[:lower:]' '[:upper:]')/60-Maps"
+out=$( GRAPHIFY_MAP_BIN="$EXCL7BIN/graphify" PATH="$EXCL7BIN:$PATH" \
+  bash "$SCRIPT" --name excl7test --corpus-root "$EXCL7CORPUS" --backend deepseek \
+  --maps-dir "$EXCL7MAPS_ARG" --title "Excl7 Map" --slug excl7-map --corpus-tag excl7 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T32 run exit 0 (got $rc): $out"
+if grep -qF "60-Maps/graph/some-node.md" "$WS/excl7-scratch-listing.txt" 2>/dev/null; then
+  fail "T32 derived-page leaked into the corpus with a case-variant --maps-dir prefix"
+else
+  pass "T32 derived-page still excluded with a case-variant --maps-dir prefix"
+fi
+if grep -qF "60-Maps/excl7-map.md" "$WS/excl7-scratch-listing.txt" 2>/dev/null; then
+  fail "T32 the MOC leaked into the corpus with a case-variant --maps-dir prefix"
+else
+  pass "T32 the MOC still excluded with a case-variant --maps-dir prefix"
+fi
+if grep -qF "60-Maps/legit-note.md" "$WS/excl7-scratch-listing.txt" 2>/dev/null; then
+  pass "T32 a hand-authored maps-dir note still reaches the corpus despite the case-variant prefix"
+else
+  fail "T32 over-excluded: a legitimate maps-dir note was dropped from the corpus"
+fi
+fi
+
+# --- T33 (HIMMEL-1421): the THREE required regressions TOGETHER --
+# relative-vs-absolute, case variants, AND a metacharacter/space-laden path
+# -- is exactly the combination that broke the python3-round-trip attempt
+# tried on the HIMMEL-1415 branch (MSYS's argv-to-Windows-path translation
+# resolved --corpus-root/--maps-dir to DIFFERENT drive roots for a maps-dir
+# containing "[", silently disabling the exclusion -- observed live, T28).
+# --corpus-root is relative ("."), --maps-dir is absolute with its
+# corpus-root prefix case-flipped, and the maps-dir/slug both carry "[" "]"
+# and a space. Proves the pure-bash cd/pwd -P canonicalization survives the
+# combination the python3 approach could not. Only meaningful on a
+# case-insensitive filesystem -- see the probe above T32. ---
+if [ "$FS_IS_CASE_INSENSITIVE" -ne 1 ]; then
+  pass "T33 SKIPPED (filesystem is case-sensitive; this real-directory scenario needs a case-insensitive fs -- the comparison logic itself is covered portably by T36)"
+else
+EXCL8BIN="$WS/excl8bin"; mkdir -p "$EXCL8BIN"
+cat > "$EXCL8BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl8-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL8BIN/graphify"
+EXCL8CORPUS="$WS/excl8corpus"
+EXCL8SLUG='map-[v2] note'
+EXCL8MAPS="$EXCL8CORPUS/60 [Maps v2]"
+mkdir -p "$EXCL8CORPUS/notes" "$EXCL8MAPS/graph"
+printf '# n\ncontent\n' > "$EXCL8CORPUS/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$EXCL8MAPS/graph/some-node.md"
+printf '# stale MOC from a prior run\n' > "$EXCL8MAPS/$EXCL8SLUG.md"
+printf '# Legit Maps Note\nhand-authored, not graphify output\n' > "$EXCL8MAPS/legit-note.md"
+EXCL8MAPS_ARG="$(printf '%s' "$EXCL8CORPUS" | tr '[:lower:]' '[:upper:]')/60 [Maps v2]"
+out=$( cd "$EXCL8CORPUS" && GRAPHIFY_MAP_BIN="$EXCL8BIN/graphify" PATH="$EXCL8BIN:$PATH" \
+  bash "$SCRIPT" --name excl8test --corpus-root . --backend deepseek \
+  --maps-dir "$EXCL8MAPS_ARG" --title "Excl8 Map" --slug "$EXCL8SLUG" --corpus-tag excl8 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T33 run exit 0 (got $rc): $out"
+if grep -qF "60 [Maps v2]/graph/some-node.md" "$WS/excl8-scratch-listing.txt" 2>/dev/null; then
+  fail "T33 derived-page leaked into the corpus under the combined relative+case+metachar spelling"
+else
+  pass "T33 derived-page still excluded under the combined relative+case+metachar spelling"
+fi
+if grep -qF "60 [Maps v2]/$EXCL8SLUG.md" "$WS/excl8-scratch-listing.txt" 2>/dev/null; then
+  fail "T33 the MOC leaked into the corpus under the combined relative+case+metachar spelling"
+else
+  pass "T33 the MOC still excluded under the combined relative+case+metachar spelling"
+fi
+if grep -qF "60 [Maps v2]/legit-note.md" "$WS/excl8-scratch-listing.txt" 2>/dev/null; then
+  pass "T33 a hand-authored maps-dir note still reaches the corpus under the combined spelling"
+else
+  fail "T33 over-excluded: a legitimate maps-dir note was dropped from the corpus"
+fi
+fi
+
+# --- T34a (HIMMEL-1421): a maps-dir genuinely OUTSIDE corpus-root stays a
+# SANCTIONED no-op (never an error) -- but when the two paths share no
+# common prefix even after canonicalization AND were passed in different
+# FORM CLASSES (one relative, one absolute), that's the ambiguous case the
+# design calls out for a loud advisory instead of a silent no-op. Own
+# GRAPHIFY_MAP_BIN/PATH stub (CR round 1 addendum, glm-4 sug): T31-T33 each
+# set one explicitly; T34a/T34b previously relied on the global $BIN stub
+# exported at the top of this file instead. ---
+T34BIN="$WS/t34bin"; mkdir -p "$T34BIN"
+cat > "$T34BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$T34BIN/graphify"
+T34_OUTSIDE="$WS/t34-outside"; mkdir -p "$T34_OUTSIDE"
+T34_CORPUS="$WS/t34-corpus"; mkdir -p "$T34_CORPUS/notes"
+printf '# n\ncontent\n' > "$T34_CORPUS/notes/n.md"
+out=$( cd "$T34_CORPUS" && GRAPHIFY_MAP_BIN="$T34BIN/graphify" PATH="$T34BIN:$PATH" \
+  bash "$SCRIPT" --name t34a --corpus-root . --backend deepseek \
+  --maps-dir "$T34_OUTSIDE" --title "T34a Map" --slug t34a-map --corpus-tag t34a 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T34a run exit 0 (got $rc; a genuinely-outside maps-dir must be a sanctioned no-op, not an error): $out"
+if printf '%s' "$out" | grep -qF "WARN --corpus-root and --maps-dir share no common path"; then
+  pass "T34a WARN advisory emitted for a no-prefix, mixed-form (relative vs absolute) corpus-root/maps-dir pair"
+else
+  fail "T34a expected a WARN advisory for the ambiguous mixed-form, no-overlap case; none seen: $out"
+fi
+
+# --- T34b: same no-overlap outside-maps-dir case, but SAME form class (both
+# absolute) -- must stay a silent no-op with no advisory (the design
+# constraint reserves the WARN for the mixed-form case only). ---
+T34B_CORPUS="$WS/t34b-corpus"; mkdir -p "$T34B_CORPUS/notes"
+printf '# n\ncontent\n' > "$T34B_CORPUS/notes/n.md"
+out=$( GRAPHIFY_MAP_BIN="$T34BIN/graphify" PATH="$T34BIN:$PATH" \
+  bash "$SCRIPT" --name t34b --corpus-root "$T34B_CORPUS" --backend deepseek \
+  --maps-dir "$T34_OUTSIDE" --title "T34b Map" --slug t34b-map --corpus-tag t34b 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T34b run exit 0 (got $rc; a genuinely-outside maps-dir must be a sanctioned no-op, not an error): $out"
+if printf '%s' "$out" | grep -qF "WARN --corpus-root and --maps-dir share no common path"; then
+  fail "T34b unexpected WARN advisory for a same-form (both absolute), no-overlap corpus-root/maps-dir pair: $out"
+else
+  pass "T34b no WARN advisory for a same-form, no-overlap corpus-root/maps-dir pair (silent no-op, as designed)"
+fi
+
+# --- T35 (HIMMEL-1421 CR round 1, codex-1 + glm-3, sharpened by codex-adv):
+# _canon_path's ancestor walk must TERMINATE for a maps-dir that can never
+# resolve to an existing ancestor via forward-slash splitting -- a bare
+# drive-absolute form with nothing beneath it, a backslash-form path (no
+# "/" to strip at all), and (for completeness/pinning) a relative
+# non-existent path. Each run is bounded by `timeout` -- a hang shows up
+# as rc=124 (timeout's own "killed" exit code), not as a normal script
+# failure, so the test itself would otherwise hang forever without the
+# bound.
+#
+# CR round 2 (codex-r2-1): `timeout` is GNU coreutils and is NOT present by
+# default on macOS (this repo's Bash-3.2/macOS compatibility floor, which
+# this same CR round just went out of its way to protect elsewhere -- T35
+# unconditionally requiring it would break the suite on exactly that
+# floor). Probed once, cheaply, and SKIPPED (via pass(), not silently) when
+# absent -- mirrors the T32/T33 filesystem-capability probe/skip pattern
+# above. The loop-termination property stays guarded wherever `timeout` IS
+# available (Linux/Windows CI, and any macOS box with GNU coreutils
+# installed). A bash-native watchdog was considered instead (fork the run,
+# background it, poll+kill on a deadline) but is a materially bigger diff
+# for the same coverage this probe+skip already gets on the CI platforms
+# that actually run this suite. ---
+if ! command -v timeout >/dev/null 2>&1; then
+  pass "T35a SKIPPED (no 'timeout' binary -- GNU coreutils, not present by default on macOS; loop-termination is still guarded on Linux/Windows CI)"
+  pass "T35b SKIPPED (no 'timeout' binary -- GNU coreutils, not present by default on macOS; loop-termination is still guarded on Linux/Windows CI)"
+  pass "T35c SKIPPED (no 'timeout' binary -- GNU coreutils, not present by default on macOS; loop-termination is still guarded on Linux/Windows CI)"
+else
+T35BIN="$WS/t35bin"; mkdir -p "$T35BIN"
+cat > "$T35BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$T35BIN/graphify"
+T35_CORPUS="$WS/t35-corpus"; mkdir -p "$T35_CORPUS/notes"
+printf '# n\ncontent\n' > "$T35_CORPUS/notes/n.md"
+
+# T35a: non-existent drive-absolute maps-dir -- the walk must shrink down
+# to a bare "Q:" (no "/" left) and stop, not spin.
+out=$( cd "$T35_CORPUS" && GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
+  timeout -k 5 20 bash "$SCRIPT" --name t35a --corpus-root "$T35_CORPUS" --backend deepseek \
+  --maps-dir "Q:/nope-1421/deeply/nested" --title "T35a Map" --slug t35a-map --corpus-tag t35a 2>&1 ); rc=$?
+if [ "$rc" -eq 124 ]; then
+  fail "T35a HUNG (timeout killed it, rc=124) on a non-existent drive-absolute --maps-dir"
+elif [ "$rc" -eq 0 ]; then
+  pass "T35a terminated (rc=0) on a non-existent drive-absolute --maps-dir"
+elif printf '%s' "$out" | grep -qF "ENOENT" && printf '%s' "$out" | grep -qF "mkdir"; then
+  # A non-existent DRIVE LETTER can never be created by Node's mkdirSync at
+  # publish time (Windows has no notion of creating a new drive root) --
+  # this is an EXPECTED, PROMPT downstream failure, not a hang. What T35a
+  # actually verifies is termination of _canon_path's ancestor walk (the
+  # loop-fix); success against an inherently uncreatable target is a
+  # separate, unrelated property this test isn't making a claim about.
+  pass "T35a terminated promptly (rc=$rc, expected ENOENT creating a non-existent drive at publish time) on a non-existent drive-absolute --maps-dir"
+else
+  fail "T35a terminated but with an unexpected failure (rc=$rc): $out"
+fi
+
+# T35b: backslash-form maps-dir -- _abs_path accepts it as already-absolute
+# but the pre-fix walk only ever split on "/"; without the up-front
+# backslash -> forward-slash normalization this never shrinks and spins
+# forever.
+out=$( cd "$T35_CORPUS" && GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
+  timeout -k 5 20 bash "$SCRIPT" --name t35b --corpus-root "$T35_CORPUS" --backend deepseek \
+  --maps-dir 'C:\nonexistent-1421-backslash\deep\path' --title "T35b Map" --slug t35b-map --corpus-tag t35b 2>&1 ); rc=$?
+if [ "$rc" -eq 124 ]; then
+  fail "T35b HUNG (timeout killed it, rc=124) on a backslash-form --maps-dir"
+elif [ "$rc" -eq 0 ]; then
+  pass "T35b terminated (rc=0) on a backslash-form --maps-dir"
+else
+  fail "T35b terminated but unexpectedly failed (rc=$rc): $out"
+fi
+
+# T35c: relative non-existent maps-dir -- already worked before this CR
+# round (the walk always had forward slashes to strip via $PWD); pinned
+# here so a future change to the walk can't silently regress it.
+out=$( cd "$T35_CORPUS" && GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
+  timeout -k 5 20 bash "$SCRIPT" --name t35c --corpus-root . --backend deepseek \
+  --maps-dir "nonexistent-1421-rel/deeply/nested" --title "T35c Map" --slug t35c-map --corpus-tag t35c 2>&1 ); rc=$?
+if [ "$rc" -eq 124 ]; then
+  fail "T35c HUNG (timeout killed it, rc=124) on a relative non-existent --maps-dir"
+elif [ "$rc" -eq 0 ]; then
+  pass "T35c terminated (rc=0) on a relative non-existent --maps-dir"
+else
+  fail "T35c terminated but unexpectedly failed (rc=$rc): $out"
+fi
+fi
+
+# --- T36 (HIMMEL-1421 CR round 1, codex-2, doubles as codex-adv-4's
+# "comparison-level test"): on a case-SENSITIVE filesystem (this script
+# also runs on ubuntu CI in the public mirror), the containment comparison
+# must NOT fold case -- a maps-dir spelled with a different-case
+# corpus-root prefix is a DIFFERENT path there, not the same directory.
+# GRAPHIFY_FS_CASE_INSENSITIVE=0 forces the case-sensitive comparison
+# branch deterministically and portably (this doesn't depend on the real
+# filesystem's actual case behavior -- only on the forced flag -- so it
+# runs identically on Windows/macOS/Linux, unlike T32/T33 above). Mirrors
+# T32's case-variant setup but asserts the OPPOSITE outcome: the derived
+# page must LEAK (not be excluded), proving a case-variant maps-dir prefix
+# is correctly treated as a DIFFERENT, non-contained path when folding is
+# off. ---
+EXCL10BIN="$WS/excl10bin"; mkdir -p "$EXCL10BIN"
+cat > "$EXCL10BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl10-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL10BIN/graphify"
+EXCL10CORPUS="$WS/excl10corpus"; EXCL10MAPS="$EXCL10CORPUS/60-Maps"
+mkdir -p "$EXCL10CORPUS/notes" "$EXCL10MAPS/graph"
+printf '# n\ncontent\n' > "$EXCL10CORPUS/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$EXCL10MAPS/graph/some-node.md"
+printf '# stale MOC from a prior run\n' > "$EXCL10MAPS/excl10-map.md"
+# HIMMEL-1444: case-flip ONLY the corpus-root subdir under the writable $WS
+# temp root, not the whole $WS path. The original uppercased the entire
+# absolute path, rooting the publish target at "/TMP" (uppercased "/tmp") --
+# non-creatable for a non-root user on a case-SENSITIVE filesystem (the public
+# mirror's ubuntu CI), so publish-graph-map.mjs's recursive mkdirSync died with
+# EACCES and refresh-graph-map.sh exited 1 (the "pull-before-regenerate
+# skipped ... not a clean git toplevel" line above is an unrelated advisory --
+# these corpora aren't git repos on either platform). Flipping just the subdir
+# keeps the case-variant prefix the containment comparison exercises (still a
+# DIFFERENT path when folding is forced off) while leaving the publish target
+# creatable on every platform. On a case-insensitive fs the flipped spelling
+# resolves to the same real dir, so the publish target there is unchanged.
+EXCL10MAPS_ARG="$WS/$(printf '%s' "${EXCL10CORPUS##*/}" | tr '[:lower:]' '[:upper:]')/60-Maps"
+out=$( GRAPHIFY_FS_CASE_INSENSITIVE=0 GRAPHIFY_MAP_BIN="$EXCL10BIN/graphify" PATH="$EXCL10BIN:$PATH" \
+  bash "$SCRIPT" --name excl10test --corpus-root "$EXCL10CORPUS" --backend deepseek \
+  --maps-dir "$EXCL10MAPS_ARG" --title "Excl10 Map" --slug excl10-map --corpus-tag excl10 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T36 run exit 0 (got $rc): $out"
+if grep -qF "60-Maps/graph/some-node.md" "$WS/excl10-scratch-listing.txt" 2>/dev/null; then
+  pass "T36 derived-page LEAKS into the corpus on the forced case-sensitive branch (case-variant prefix correctly treated as a DIFFERENT, non-contained path)"
+else
+  fail "T36 over-excluded: the forced case-sensitive comparison wrongly treated a case-variant maps-dir prefix as contained"
+fi
+
+# --- T38 (HIMMEL-1421 CR round 3, [codex-1]): _fs_case_insensitive now
+# PROBES the corpus filesystem instead of trusting OS type. Assert the
+# predicate's decision AGREES with an independent write-"x"/stat-"X" probe
+# of the test workspace (FS_IS_CASE_INSENSITIVE, set once near T32 above):
+# with GRAPHIFY_FS_CASE_INSENSITIVE UNSET (so the real probe decides, not a
+# forced branch), a case-variant --maps-dir prefix must be treated as
+# CONTAINED -- derived page excluded -- iff the workspace filesystem is
+# actually case-insensitive, and as a DIFFERENT non-contained path -- derived
+# page leaks -- iff it is case-sensitive. Portable: it asserts AGREEMENT
+# with the real filesystem, not a fixed value, so it runs (and passes) on
+# Windows, macOS, AND Linux CI without skipping -- unlike T32/T33, which
+# skip on a case-sensitive fs. This is the direct regression for the
+# probe-first path the round-3 rework introduced. ---
+EXCL11BIN="$WS/excl11bin"; mkdir -p "$EXCL11BIN"
+cat > "$EXCL11BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+if [ "\$1" != "cluster-only" ]; then
+  ( cd "\$target" && find . -type f -name '*.md' | sort ) > "$WS/excl11-scratch-listing.txt"
+fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$EXCL11BIN/graphify"
+EXCL11CORPUS="$WS/excl11corpus"; EXCL11MAPS="$EXCL11CORPUS/60-Maps"
+mkdir -p "$EXCL11CORPUS/notes" "$EXCL11MAPS/graph"
+printf '# n\ncontent\n' > "$EXCL11CORPUS/notes/n.md"
+printf '# derived node note\nminted by graphify\n' > "$EXCL11MAPS/graph/some-node.md"
+# HIMMEL-1444: same root-under-$WS case-flip as T36 -- see that test's comment.
+EXCL11MAPS_ARG="$WS/$(printf '%s' "${EXCL11CORPUS##*/}" | tr '[:lower:]' '[:upper:]')/60-Maps"
+# env -u scrubs any inherited override so the real filesystem probe decides;
+# GNU/BSD/MSYS `env` all support -u. If env -u is somehow unavailable this
+# still degrades correctly because nothing in this suite exports the var.
+out=$( env -u GRAPHIFY_FS_CASE_INSENSITIVE GRAPHIFY_MAP_BIN="$EXCL11BIN/graphify" PATH="$EXCL11BIN:$PATH" \
+  bash "$SCRIPT" --name excl11test --corpus-root "$EXCL11CORPUS" --backend deepseek \
+  --maps-dir "$EXCL11MAPS_ARG" --title "Excl11 Map" --slug excl11-map --corpus-tag excl11 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T38 run exit 0 (got $rc): $out"
+if [ "$FS_IS_CASE_INSENSITIVE" -eq 1 ]; then
+  if grep -qF "60-Maps/graph/some-node.md" "$WS/excl11-scratch-listing.txt" 2>/dev/null; then
+    fail "T38 derived-page LEAKED on a case-insensitive fs -- the probe-first predicate should have folded (case-variant prefix must read as contained) but did not"
+  else
+    pass "T38 derived-page excluded on a case-insensitive fs -- probe-first predicate AGREES with the independent write-x/stat-X probe"
+  fi
+else
+  if grep -qF "60-Maps/graph/some-node.md" "$WS/excl11-scratch-listing.txt" 2>/dev/null; then
+    pass "T38 derived-page leaks on a case-sensitive fs -- probe-first predicate AGREES with the independent write-x/stat-X probe (no fold; case-variant prefix is a different, non-contained path)"
+  else
+    fail "T38 over-excluded on a case-sensitive fs -- the probe-first predicate should NOT have folded (case-variant prefix is a different path) but treated it as contained"
+  fi
+fi
+
+# --- T39 (HIMMEL-1421 CR round 4, [codex-r4-2]): a stale UPPERCASE probe
+# leftover (.GRAPHIFY-FS-PROBE-<pid>-0-X) from a crashed prior run must NOT
+# poison the verdict -- the candidate whose uppercase twin already exists
+# must be SKIPPED, and the probe must still agree with the real filesystem.
+# _fs_case_insensitive is a NESTED function inside _corpus_clean (not
+# sourceable in isolation), and a child `bash "$SCRIPT"` has its own
+# unknowable $$, so an end-to-end poison can never deterministically land on
+# the child's candidate-0 twin. So this exercises the production probe loop
+# in THIS shell (shared, known $$) on a poisoned corpus -- a faithful mirror
+# of refresh-graph-map.sh's _fs_case_insensitive loop; keep the two in sync.
+# It asserts (a) candidate 0 is SKIPPED (the loop lands on a later suffix)
+# and (b) the verdict still AGREES with the independent write-x/stat-X
+# reference probe (FS_IS_CASE_INSENSITIVE) with the poisoned twin present.
+# Portable -- passes on case-insensitive AND case-sensitive filesystems: on
+# the former the poisoned uppercase name IS the lowercase inode (the
+# existence check still rejects candidate 0); on the latter it is a separate
+# file (the twin check rejects it). ---
+T39PROBE="$WS/excl12probe"; mkdir -p "$T39PROBE"
+# Poison candidate 0's UPPERCASE twin with THIS shell's $$ (the in-shell
+# replica loop below uses the same $$). This is exactly the [codex-r4-2]
+# hazard: a leftover a crashed prior run (possibly with a reused PID) leaves
+# behind that a single-shot probe would mistake for case-insensitivity.
+printf 'stale' > "$T39PROBE/$(printf '%s' ".graphify-fs-probe-$$-0-x" | tr '[:lower:]' '[:upper:]')"
+unset GRAPHIFY_FS_CASE_INSENSITIVE
+CORPUS_ROOT_CANON="$T39PROBE"
+_GRAPHIFY_FS_CASE=""
+suffix_used=""
+probe_lo=""; probe_up=""; i=""
+# --- in-process mirror of refresh-graph-map.sh _fs_case_insensitive loop ---
+for i in 0 1 2 3 4 5 6 7 8 9; do
+  probe_lo="$CORPUS_ROOT_CANON/.graphify-fs-probe-$$-$i-x"
+  probe_up="$CORPUS_ROOT_CANON/$(printf '%s' ".graphify-fs-probe-$$-$i-x" | tr '[:lower:]' '[:upper:]')"
+  if [ -e "$probe_lo" ] || [ -L "$probe_lo" ] \
+     || [ -e "$probe_up" ] || [ -L "$probe_up" ]; then
+    continue
+  fi
+  if ( umask 077; set -C; printf 'x' > "$probe_lo" ) 2>/dev/null; then
+    if [ -e "$probe_up" ]; then
+      _GRAPHIFY_FS_CASE=1
+    else
+      _GRAPHIFY_FS_CASE=0
+    fi
+    suffix_used="$i"
+    rm -f "$probe_lo" 2>/dev/null || true
+    break
+  fi
+done
+# Sweep the poison + any stray candidate file (case-insensitive fs: the two
+# names are one inode; case-sensitive fs: only the uppercase poison lingers,
+# the chosen lowercase file was already removed above).
+rm -f "$T39PROBE/.GRAPHIFY-FS-PROBE-$$-0-X" "$T39PROBE/.graphify-fs-probe-$$-0-x" 2>/dev/null || true
+if [ -z "$suffix_used" ] || [ "$suffix_used" -eq 0 ]; then
+  fail "T39 stale-uppercase leftover was NOT skipped (probe landed on suffix '${suffix_used:-<none>}'); candidate 0 should have been rejected by the both-twins-absent check"
+elif [ "$_GRAPHIFY_FS_CASE" -ne "$FS_IS_CASE_INSENSITIVE" ]; then
+  fail "T39 probe verdict ($_GRAPHIFY_FS_CASE) DISAGREES with the independent write-x/stat-X reference probe ($FS_IS_CASE_INSENSITIVE) with a poisoned candidate-0 twin present"
+else
+  pass "T39 stale-uppercase probe leftover skipped (landed on suffix $suffix_used) and verdict ($_GRAPHIFY_FS_CASE) AGREES with the reference probe -- [codex-r4-2] hazard closed"
+fi
+unset probe_lo probe_up i suffix_used _GRAPHIFY_FS_CASE CORPUS_ROOT_CANON
+
+# --- T37 (HIMMEL-1421 CR round 1 addendum, codex-adv-1): this repo's
+# documented shell compatibility floor (outside a narrow exception list)
+# is Bash 3.2 (macOS system bash), which does NOT support the
+# `${var,,}`/`${var^^}` case-conversion expansions -- Bash 4+ only, "bad
+# substitution" on 3.2, which would kill every refresh before extraction
+# even started. shellcheck does not flag this (it's a version-gated
+# feature, not a syntax error under shellcheck's default target).
+# Grep-guard the whole script for the 4.x-only syntax (excluding comment
+# lines, which legitimately reference the pattern as documentation of what
+# NOT to do) so a future edit can't silently reintroduce it. ---
+if grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)' "$SCRIPT" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+  fail "T37 refresh-graph-map.sh uses a Bash 4+-only \${var,,}/\${var^^} case-conversion expansion (breaks on Bash 3.2 / macOS system bash)"
+else
+  pass "T37 refresh-graph-map.sh contains no Bash 4+-only \${var,,}/\${var^^} case-conversion expansions"
+fi
+
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

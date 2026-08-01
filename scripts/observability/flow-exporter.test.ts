@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderMetrics, createExporterCache, parseHostDetectorJson, runGitDivergence } from "./flow-exporter";
+import { renderMetrics, createExporterCache, parseHostDetectorJson, runGitDivergence, readShippedGraphCommitTime } from "./flow-exporter";
 import { serializeFlowRunEnd, serializeFlowRunStart, type FlowRunEnd, type FlowRunStart } from "../telegram/flow-run-ledger";
 import { serializeQuotaGauge, type QuotaGaugeRecord } from "../telegram/quota-gauge";
 
@@ -334,6 +334,377 @@ test("luna git divergence is omitted with no vault_path configured, without invo
   });
   expect(called).toBe(false);
   expect(body).not.toContain("luna_git_");
+});
+
+// Shipped-graph age (HIMMEL-1129, option 3). config.graphify_repos is opt-in
+// (undefined/empty -> family fully omitted, no obligation on single-station
+// adopters); graphAgeRunner is injected so the render-level wiring is
+// exercised without a real git spawn.
+
+test("shipped-graph age is omitted entirely with no graphify_repos configured, without invoking the runner", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, []);
+  let called = false;
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: join(tmp, "missing-observability.json"), flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async () => { called = true; return { epochSeconds: 0 }; },
+  });
+  expect(called).toBe(false);
+  expect(body).not.toContain("graphify_shipped_graph_");
+});
+
+test("shipped-graph age renders age + commit timestamp per corpus from an injected runner", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({ graphify_repos: [{ corpus: "himmel", repo_path: "C:/himmel" }] }));
+  const commitEpoch = Math.floor(NOW / 1000) - 3600; // 1h old
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async () => ({ epochSeconds: commitEpoch }),
+  });
+  expect(body).toContain('# HELP graphify_shipped_graph_age_seconds');
+  expect(body).toContain(`graphify_shipped_graph_age_seconds{corpus="himmel"} 3600`);
+  expect(body).toContain(`graphify_shipped_graph_commit_timestamp{corpus="himmel"} ${commitEpoch}`);
+});
+
+test("shipped-graph age omits one corpus (never tracked there) while still rendering another", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "himmel", repo_path: "C:/himmel" },
+      { corpus: "luna", repo_path: "C:/luna" },
+    ],
+  }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async (repoPath) => (repoPath === "C:/luna" ? null : { epochSeconds: Math.floor(NOW / 1000) }),
+  });
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="himmel"}');
+  expect(body).not.toContain('corpus="luna"');
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted (corpus=luna): graphify-out/graph.json has no commit history on main in this repo (never tracked, or wrong default_branch)");
+});
+
+test("shipped-graph age passes each entry's default_branch through to the runner (falls back to main when absent)", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "himmel", repo_path: "C:/himmel", default_branch: "release/9.9" },
+      { corpus: "luna", repo_path: "C:/luna" },
+    ],
+  }));
+  const seenRefs: Record<string, string> = {};
+
+  await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async (repoPath, ref) => { seenRefs[repoPath] = ref; return { epochSeconds: Math.floor(NOW / 1000) }; },
+  });
+  expect(seenRefs["C:/himmel"]).toBe("release/9.9");
+  expect(seenRefs["C:/luna"]).toBe("main");
+});
+
+// CR round 2 (codex-2/codex-adv-3): the shipped-graph cache used to be keyed
+// by repo_path ALONE, so two config entries watching different branches of
+// the SAME repo aliased onto one cache slot -- the second entry silently
+// inherited the first's result. The composite key (repo_path + ref) fixes
+// this; these two tests exercise it directly.
+
+test("shipped-graph age keys the cache by repo_path+ref: two corpora on the same repo, different branches, render independently", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "himmel-main", repo_path: "C:/himmel", default_branch: "main" },
+      { corpus: "himmel-release", repo_path: "C:/himmel", default_branch: "release/9.9" },
+    ],
+  }));
+  const calls: Array<{ repoPath: string; ref: string }> = [];
+  const epochByRef: Record<string, number> = {
+    main: Math.floor(NOW / 1000) - 100,
+    "release/9.9": Math.floor(NOW / 1000) - 9999,
+  };
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async (repoPath, ref) => { calls.push({ repoPath, ref }); return { epochSeconds: epochByRef[ref] }; },
+  });
+  // Both entries queried the runner -- neither was skipped as a cache "hit"
+  // aliased from the other's slot.
+  expect(calls.length).toBe(2);
+  expect(body).toContain(`graphify_shipped_graph_age_seconds{corpus="himmel-main"} 100`);
+  expect(body).toContain(`graphify_shipped_graph_age_seconds{corpus="himmel-release"} 9999`);
+});
+
+test("shipped-graph age cache: a repeat scrape with the SAME repo_path+ref reuses the cache (still just one runner call each)", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "himmel-main", repo_path: "C:/himmel", default_branch: "main" },
+      { corpus: "himmel-release", repo_path: "C:/himmel", default_branch: "release/9.9" },
+    ],
+  }));
+  let calls = 0;
+  const cache = createExporterCache();
+  const runner = async () => { calls++; return { epochSeconds: Math.floor(NOW / 1000) }; };
+
+  await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), cache, graphAgeRunner: runner });
+  await renderMetrics({ nowMs: NOW + 1000, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), cache, graphAgeRunner: runner });
+  expect(calls).toBe(2); // one per (repo_path, ref) pair, not one per scrape
+});
+
+// CR round 2 (codex-adv-4): sequential per-repo awaits meant N degraded repos
+// = up to N * GIT_QUERY_TIMEOUT_MS before the family (and the WHOLE /metrics
+// response) returned. Concurrency + a shared budget bound the family's total
+// wall time near a single budget window regardless of N, with slow repos
+// individually omitted (not blocking the fast ones or the overall response).
+
+test("shipped-graph age runs per-repo queries CONCURRENTLY: total wall time stays near one slow call, not the sum of several", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  const DELAY_MS = 150;
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "a", repo_path: "C:/a" },
+      { corpus: "b", repo_path: "C:/b" },
+      { corpus: "c", repo_path: "C:/c" },
+    ],
+  }));
+
+  // platform/gitRunner pinned (same reason as HIMMEL-1199's luna-git tests):
+  // without these, this timing-sensitive test also triggers a REAL
+  // host-detector powershell spawn + a real git spawn, polluting elapsedMs.
+  const start = performance.now();
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux", gitRunner: async () => ({ unpushed: null, uncommittedFiles: 0 }),
+    graphAgeRunner: async () => { await new Promise((r) => setTimeout(r, DELAY_MS)); return { epochSeconds: Math.floor(NOW / 1000) }; },
+  });
+  const elapsedMs = performance.now() - start;
+
+  // Sequential would take >= 3 * DELAY_MS (450ms); concurrent stays close to
+  // one DELAY_MS window. A generous ceiling (well under the sequential sum)
+  // keeps this from being flaky under CI/host scheduling jitter.
+  expect(elapsedMs).toBeLessThan(DELAY_MS * 2.5);
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="a"}');
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="b"}');
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="c"}');
+});
+
+test("shipped-graph age: a query exceeding the total budget is omitted with a budget-specific comment, without blocking a faster sibling", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "fast", repo_path: "C:/fast" },
+      { corpus: "hung", repo_path: "C:/hung" },
+    ],
+  }));
+
+  const start = performance.now();
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux", gitRunner: async () => ({ unpushed: null, uncommittedFiles: 0 }),
+    graphAgeBudgetMs: 40,
+    graphAgeRunner: async (repoPath) => {
+      if (repoPath === "C:/hung") {
+        // Never resolves within the test lifetime -- simulates a truly hung
+        // git spawn. The budget race must return without waiting on this.
+        return new Promise(() => {});
+      }
+      return { epochSeconds: Math.floor(NOW / 1000) };
+    },
+  });
+  const elapsedMs = performance.now() - start;
+
+  expect(elapsedMs).toBeLessThan(2000); // returned promptly, did not hang the scrape
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="fast"}');
+  expect(body).not.toContain('corpus="hung"');
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted (corpus=hung): exceeded the 40ms shipped-graph query budget");
+});
+
+// Malformed graphify_repos config (CR round 1, codex-adv-5): this is
+// operator-edited JSON, never trusted at the JSON.parse boundary — a bad
+// shape must degrade to an omit comment, never a thrown exception (a crash
+// here would 500 the WHOLE /metrics scrape, not just this one family).
+
+test("shipped-graph age omits with a comment (not a crash) when graphify_repos is not an array", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({ graphify_repos: { corpus: "himmel", repo_path: "C:/himmel" } }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async () => ({ epochSeconds: Math.floor(NOW / 1000) }),
+  });
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted: config.graphify_repos is not an array");
+  expect(body).not.toContain("graphify_shipped_graph_age_seconds{");
+});
+
+test("shipped-graph age skips an entry missing corpus/repo_path while still rendering a valid sibling", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "", repo_path: "C:/himmel" },
+      { repo_path: "C:/no-corpus" },
+      "not-even-an-object",
+      { corpus: "luna", repo_path: "C:/luna" },
+    ],
+  }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async () => ({ epochSeconds: Math.floor(NOW / 1000) }),
+  });
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="luna"}');
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted: graphify_repos[0] needs non-empty string corpus + repo_path");
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted: graphify_repos[1] needs non-empty string corpus + repo_path");
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted: graphify_repos[2] is not an object");
+});
+
+test("shipped-graph age skips a duplicate corpus label (second occurrence) rather than emitting two samples", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "himmel", repo_path: "C:/himmel-a" },
+      { corpus: "himmel", repo_path: "C:/himmel-b" },
+    ],
+  }));
+  let calls = 0;
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async () => { calls++; return { epochSeconds: Math.floor(NOW / 1000) }; },
+  });
+  expect(calls).toBe(1);
+  const matches = body.match(/graphify_shipped_graph_age_seconds\{corpus="himmel"\}/g) ?? [];
+  expect(matches.length).toBe(1);
+  expect(body).toContain('# graphify_shipped_graph_age_seconds omitted: graphify_repos[1] duplicate corpus="himmel" (first occurrence wins)');
+});
+
+test("shipped-graph age rejects only line breaks in corpus; quotes/backslashes render as escaped labels", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "with\nnewline", repo_path: "C:/nl" },
+      { corpus: "with\rreturn", repo_path: "C:/cr" },
+      { corpus: 'with"quote', repo_path: "C:/dq" },
+      { corpus: "with\\backslash", repo_path: "C:/bs" },
+      { corpus: "luna", repo_path: "C:/luna" },
+    ],
+  }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async () => ({ epochSeconds: Math.floor(NOW / 1000) }),
+  });
+
+  // Line breaks are the only genuinely dangerous characters: corpus is
+  // interpolated RAW into the omit comments, where a break would inject a new
+  // exposition line. Both newline and carriage return are rejected.
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted: graphify_repos[0] corpus contains a line break (newline or carriage return) that would inject a new Prometheus exposition line in a comment");
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted: graphify_repos[1] corpus contains a line break (newline or carriage return) that would inject a new Prometheus exposition line in a comment");
+
+  // Quotes and backslashes are SAFE on the label path -- escLabel escapes
+  // backslash, newline, and double-quote, and sample() applies it to every
+  // label value -- so they are ACCEPTED and render as valid escaped labels
+  // (regression: the round-1 guard wrongly rejected these).
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="with\\"quote"}');
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="with\\\\backslash"}');
+
+  // The clean sibling still renders.
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="luna"}');
+
+  // A line break can never inject an exposition line: the rejected corpora
+  // produce no sample, and no fragment after a raw newline/CR ever starts a
+  // line of the exposition.
+  const expoLines = body.split(/\r\n|\r|\n/);
+  expect(expoLines.some((line) => line.startsWith("newline") || line.startsWith("return"))).toBe(false);
+});
+
+test("shipped-graph age family is omitted, fail-soft, when the runner errors or times out", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({ graphify_repos: [{ corpus: "himmel", repo_path: "C:/himmel" }] }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async () => { throw new Error("git log timed out"); },
+  });
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted (corpus=himmel): git log timed out");
+  expect(body).not.toContain('graphify_shipped_graph_age_seconds{corpus="himmel"}');
+  expect(body).not.toContain('graphify_shipped_graph_commit_timestamp{corpus="himmel"}');
+});
+
+// readShippedGraphCommitTime branch discrimination (mirrors runGitDivergence's
+// discipline below): a genuinely untracked path returns null; ANY git failure
+// (nonzero exit, non-numeric output) must PROPAGATE so the caller omits the
+// family rather than reading a failure as "never tracked".
+
+test("readShippedGraphCommitTime: happy path returns the last commit's epoch seconds", async () => {
+  const result = await readShippedGraphCommitTime("C:/himmel", "main", gitCmd({
+    log: { exitCode: 0, stdout: "1752400000\n" },
+  }));
+  expect(result).toEqual({ epochSeconds: 1752400000 });
+});
+
+test("readShippedGraphCommitTime: empty output (path never committed here) returns null", async () => {
+  const result = await readShippedGraphCommitTime("C:/himmel", "main", gitCmd({
+    log: { exitCode: 0, stdout: "" },
+  }));
+  expect(result).toBeNull();
+});
+
+test("readShippedGraphCommitTime: nonzero git exit propagates (not read as null-clean)", async () => {
+  await expect(readShippedGraphCommitTime("C:/himmel", "main", gitCmd({
+    log: { exitCode: 128, stderr: "fatal: not a git repository\n" },
+  }))).rejects.toThrow();
+});
+
+test("readShippedGraphCommitTime: non-numeric output propagates (ambiguous, not null-clean)", async () => {
+  await expect(readShippedGraphCommitTime("C:/himmel", "main", gitCmd({
+    log: { exitCode: 0, stdout: "not-a-number\n" },
+  }))).rejects.toThrow();
+});
+
+test("readShippedGraphCommitTime: passes the given ref explicitly (CR round 1, codex-adv-1) rather than reading the current checkout", async () => {
+  let seenArgs: string[] = [];
+  const run = async (args: string[]) => { seenArgs = args; return { exitCode: 0, stdout: "1700000000\n", stderr: "" }; };
+  await readShippedGraphCommitTime("C:/himmel", "release/9.9", run);
+  expect(seenArgs).toContain("release/9.9");
+  // the ref must precede the `--` path separator (a revision, not a pathspec).
+  expect(seenArgs.indexOf("release/9.9")).toBeLessThan(seenArgs.indexOf("--"));
 });
 
 // runGitDivergence branch discrimination (HIMMEL-1199 CR fix). A genuine

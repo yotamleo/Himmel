@@ -1,4 +1,4 @@
-# Hermetic tests for sweep-codex-orphans.ps1 (HIMMEL-892).
+﻿# Hermetic tests for sweep-codex-orphans.ps1 (HIMMEL-892).
 # Get-CimInstance is NOT mocked and NO real process is killed: the .ps1 exposes
 # pure helpers (token extraction, broker/client predicates, the client-pipe
 # orphan classifier, the descendant walk, the name allow-list) that take a

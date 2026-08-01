@@ -14,6 +14,16 @@
 # shellcheck disable=SC1091
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LIB="$REPO_ROOT/scripts/guardrails/lib.sh"
 
@@ -324,7 +334,7 @@ rm -rf "$td" "$wtparent"
 echo "== warn_doc_guard_off =="
 R=$(mktemp -d); git -C "$R" init -q; mkdir -p "$R/docs"; : > "$R/docs/commands-catalog.md"; : > "$R/.pre-commit-config.yaml"
 out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$R" 2>&1 ); rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qi "\.himmel-dev"; then pass "warns when source checkout lacks marker"; else fail "warns when source checkout lacks marker (rc=$rc)"; fi
+if [ "$rc" -eq 0 ] && grepq "$out" -i "\.himmel-dev"; then pass "warns when source checkout lacks marker"; else fail "warns when source checkout lacks marker (rc=$rc)"; fi
 
 : > "$R/.himmel-dev"
 out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$R" 2>&1 ); rc=$?
@@ -346,7 +356,7 @@ out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$wtd" 2>&1 
 if [ "$rc" -eq 0 ] && [ -z "$out" ]; then pass "silent from a worktree when marker is on primary"; else fail "silent from a worktree when marker is on primary (rc=$rc)"; fi
 rm -f "$td/.himmel-dev"
 out=$( . "$REPO_ROOT/scripts/guardrails/lib.sh"; warn_doc_guard_off "$wtd" 2>&1 ); rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qi "\.himmel-dev"; then pass "warns from a worktree when primary marker absent"; else fail "warns from a worktree when primary marker absent (rc=$rc)"; fi
+if [ "$rc" -eq 0 ] && grepq "$out" -i "\.himmel-dev"; then pass "warns from a worktree when primary marker absent"; else fail "warns from a worktree when primary marker absent (rc=$rc)"; fi
 git -C "$td" worktree remove --force "$wtd" 2>/dev/null
 rm -rf "$td" "$wtparent"
 

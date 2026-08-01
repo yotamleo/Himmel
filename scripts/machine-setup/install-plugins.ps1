@@ -1,4 +1,4 @@
-# install-plugins.ps1 — install all true-flagged Claude Code plugins listed
+﻿# install-plugins.ps1 — install all true-flagged Claude Code plugins listed
 # in docs/setup/settings-template.json. PowerShell counterpart of
 # install-plugins.sh.
 #

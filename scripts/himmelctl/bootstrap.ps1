@@ -1,4 +1,4 @@
-# scripts/himmelctl/bootstrap.ps1 — node-less bootstrap shim for himmelctl
+﻿# scripts/himmelctl/bootstrap.ps1 — node-less bootstrap shim for himmelctl
 # (HIMMEL-887 T7). For a genuinely node-less clean Windows machine: detect
 # node absent, install ONLY node via winget (bun has no reliable winget
 # query-by-bare-name match — `winget install node bun` resolves as a single

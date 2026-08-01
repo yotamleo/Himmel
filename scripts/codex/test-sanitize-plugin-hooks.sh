@@ -7,6 +7,16 @@
 # files untouched, and exits 0 when there is no cache dir.
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANITIZER="$SCRIPT_DIR/sanitize-plugin-hooks.sh"
 
@@ -60,10 +70,10 @@ bad_before="$(cat "$CACHE/ext-bad/hooks/hooks.json")"
 
 # --- 1. dry-run reports but mutates nothing -----------------------------------
 out="$(CODEX_HOME="$TMP/.codex" bash "$SANITIZER" --dry-run 2>&1)"
-echo "$out" | grep -q "WOULD STRIP : .*ext-desc/" || fail "dry-run did not flag ext-desc"
-echo "$out" | grep -q "WOULD STRIP : .*ext-desc2/" || fail "dry-run did not flag ext-desc2"
-echo "$out" | grep -q "DRY-RUN: 2 of 4" || fail "dry-run count wrong (want 2 of 4): $out"
-echo "$out" | grep -q "SKIP (unparseable): .*ext-bad" || fail "dry-run did not report ext-bad as unparseable"
+grepq "$out" "WOULD STRIP : .*ext-desc/" || fail "dry-run did not flag ext-desc"
+grepq "$out" "WOULD STRIP : .*ext-desc2/" || fail "dry-run did not flag ext-desc2"
+grepq "$out" "DRY-RUN: 2 of 4" || fail "dry-run count wrong (want 2 of 4): $out"
+grepq "$out" "SKIP (unparseable): .*ext-bad" || fail "dry-run did not report ext-bad as unparseable"
 if jq -e 'has("description")' "$CACHE/ext-desc/hooks/hooks.json" >/dev/null 2>&1; then
   pass "dry-run left description in place"
 else
@@ -72,9 +82,9 @@ fi
 
 # --- 2. real run strips description, preserves hooks --------------------------
 out="$(CODEX_HOME="$TMP/.codex" bash "$SANITIZER" 2>&1)"
-echo "$out" | grep -q "STRIPPED    : .*ext-desc/" || fail "real run did not strip ext-desc"
-echo "$out" | grep -q "STRIPPED    : .*ext-desc2/" || fail "real run did not strip ext-desc2"
-echo "$out" | grep -q "OK: sanitized 2 of 4" || fail "real-run summary wrong (want 2 of 4): $out"
+grepq "$out" "STRIPPED    : .*ext-desc/" || fail "real run did not strip ext-desc"
+grepq "$out" "STRIPPED    : .*ext-desc2/" || fail "real run did not strip ext-desc2"
+grepq "$out" "OK: sanitized 2 of 4" || fail "real-run summary wrong (want 2 of 4): $out"
 if jq -e 'has("description")' "$CACHE/ext-desc/hooks/hooks.json" >/dev/null 2>&1; then
   fail "description NOT removed from ext-desc"
 else
@@ -102,7 +112,7 @@ fi
 
 # --- 3. idempotent re-run -----------------------------------------------------
 out="$(CODEX_HOME="$TMP/.codex" bash "$SANITIZER" 2>&1)"
-echo "$out" | grep -q "OK: nothing to sanitize" || fail "re-run not idempotent: $out"
+grepq "$out" "OK: nothing to sanitize" || fail "re-run not idempotent: $out"
 
 # --- 4. no cache dir -> graceful exit 0 ---------------------------------------
 empty="$TMP/empty-home"
@@ -110,7 +120,7 @@ mkdir -p "$empty"
 rc=0
 out="$(CODEX_HOME="$empty/.codex" bash "$SANITIZER" 2>&1)" || rc=$?
 if [ "$rc" -eq 0 ]; then pass "no-cache exits 0"; else fail "no-cache exit $rc (want 0)"; fi
-echo "$out" | grep -q "no Codex plugin cache" || fail "no-cache message missing"
+grepq "$out" "no Codex plugin cache" || fail "no-cache message missing"
 
 # --- 5. unknown arg rejected (exit 2) -----------------------------------------
 rc=0
