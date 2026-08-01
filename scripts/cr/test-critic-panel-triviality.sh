@@ -6,6 +6,16 @@
 # (stubbed, records every invoked model). Bash 3.2 safe.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 # Hermetic: the panel reads CR_PROFILE (HIMMEL-558). Clear ambient values; each
 # case sets CR_PROFILE explicitly.
 unset CR_PROFILE CRITIC_PANEL_TIERS CR_TRIVIALITY_OVERRIDE 2>/dev/null || true
@@ -27,7 +37,7 @@ check() {
 }
 
 check_contains() {
-    if printf '%s' "$2" | grep -qF -- "$3"; then
+    if grepq "$2" -F -- "$3"; then
         echo "ok - $1"
     else
         echo "FAIL - $1: expected to contain [$3]"

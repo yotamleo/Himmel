@@ -22,6 +22,16 @@
 # Usage: bash scripts/hooks/test-check-npm-audit.sh
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 AUDIT_SH="$SCRIPT_DIR/check-npm-audit.sh"
 
@@ -103,7 +113,7 @@ missed=$(printf '%s\n' \
     plugins/himmel-gh/package.json \
     plugins/himmel-jira/package.json)
 present=$( printf '%s\n' "$missed" | while IFS= read -r m; do
-    printf '%s\n' "$new_out" | grep -qxF "$m" && echo "$m"
+    grepq "$new_out" -xF "$m" && echo "$m"
 done | sort )
 assert_eq "all 4 formerly-missed packages (outside scripts/) are covered now" "$(printf '%s' "$missed" | sort)" "$present"
 
@@ -115,7 +125,7 @@ assert_eq "old find-scripts pattern catches only the 2 scripts/ packages" "$EXPE
 
 # Case 4: node_modules exclusion holds — neither the untracked nor the
 # force-tracked nested package.json appears in the new enumeration.
-if printf '%s\n' "$new_out" | grep -q 'node_modules'; then
+if grepq "$new_out" 'node_modules'; then
     echo "FAIL node_modules package.json excluded from enumeration"
     FAILED=$((FAILED + 1))
 else
@@ -214,7 +224,7 @@ repo_nolock=$(make_install_repo nolock)
 rc=0
 out_nolock=$( cd "$repo_nolock" && PATH="$NPM_STUB:$PATH" NPM_LOG="/dev/null" bash "$AUDIT_SH" 2>&1 ) || rc=$?
 assert_eq "no-lockfile npm pkg → gate blocks (exit 1)" "1" "$rc"
-if printf '%s' "$out_nolock" | grep -q 'package-lock.json\|package-lock-only'; then
+if grepq "$out_nolock" 'package-lock.json\|package-lock-only'; then
     echo "PASS no-lockfile npm pkg → ENOLOCK message mentions package-lock.json and fix"
 else
     echo "FAIL no-lockfile npm pkg → ENOLOCK message mentions package-lock.json and fix"
@@ -267,7 +277,7 @@ repo_bun_lock=$(make_bun_repo lockfile)
 rc=0
 out_bun_lock=$( cd "$repo_bun_lock" && bash "$AUDIT_SH" 2>&1 ) || rc=$?
 assert_eq "bun.lock present → gate exits 0 (skip, not error)" "0" "$rc"
-if printf '%s' "$out_bun_lock" | grep -q 'skipping.*bun'; then
+if grepq "$out_bun_lock" 'skipping.*bun'; then
     echo "PASS bun.lock present → skip notice printed"
 else
     echo "FAIL bun.lock present → skip notice printed"
@@ -282,7 +292,7 @@ repo_bun_scripts=$(make_bun_repo scripts)
 rc=0
 out_bun_scripts=$( cd "$repo_bun_scripts" && bash "$AUDIT_SH" 2>&1 ) || rc=$?
 assert_eq "bun-install-scripts, no bun.lock → gate exits 0 (skip, not error)" "0" "$rc"
-if printf '%s' "$out_bun_scripts" | grep -q 'skipping.*bun'; then
+if grepq "$out_bun_scripts" 'skipping.*bun'; then
     echo "PASS bun-install-scripts → skip notice printed"
 else
     echo "FAIL bun-install-scripts → skip notice printed"

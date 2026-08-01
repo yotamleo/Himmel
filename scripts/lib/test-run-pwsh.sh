@@ -4,6 +4,16 @@
 # pwsh-present exec path. Usage: bash scripts/lib/test-run-pwsh.sh
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 WRAP="$SELF_DIR/run-pwsh.sh"
 [ -f "$WRAP" ] || { echo "FAIL: $WRAP not found"; exit 1; }
@@ -40,7 +50,7 @@ fi
 t="$(mktemp -d)"; mkdir -p "$t/bin"
 printf '#!/bin/sh\necho "PWSH-ARGS: $*"\n' > "$t/bin/pwsh"; chmod +x "$t/bin/pwsh"
 out="$(PATH="$t/bin:$TP" CLAUDE_DIR="$t/claude" bash "$WRAP" "/some/x.ps1" extra 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'PWSH-ARGS: -NoProfile -File /some/x.ps1 extra'; then
+if [ "$rc" -eq 0 ] && grepq "$out" 'PWSH-ARGS: -NoProfile -File /some/x.ps1 extra'; then
     pass "pwsh present -> exec pwsh -NoProfile -File <script> <args>"
 else
     fail "pwsh present -> rc=$rc out='$out'"

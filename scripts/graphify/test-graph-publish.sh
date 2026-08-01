@@ -388,17 +388,32 @@ seed_repo "$REPO" "$BARE"
 ( cd "$REPO" && echo '{"nodes":[{"id":"ours"}],"v":2}' > graphify-out/graph.json )
 RACE_CLONE="$TMP_ROOT/t13-race-clone"
 RACE_BRANCH="chore/graph-publish-t13-repo"
-# Wrapped in a SUBSHELL (parens): `eval` runs in-process, not a forked shell,
-# so an unparenthesized `cd` here would leak into graph-publish.sh's OWN
-# working directory for every command after the hook -- corrupting the very
-# checkout/commit/push sequence this test means to observe. Cloned with an
+# The race hook is an EXECUTABLE SCRIPT FILE, and GRAPH_PUBLISH_TEST_RACE_HOOK
+# passes its PATH (the new contract, CR security hardening) -- graph-publish.sh
+# runs that file directly, never eval'ing a string of shell, so a
+# code-injection seam can never sit in a script that pushes with operator
+# credentials. Executing the file forks a CHILD shell, so the `cd` inside it
+# cannot leak into graph-publish.sh's OWN working directory (the old eval form
+# needed an explicit subshell wrap for exactly that reason). Cloned with an
 # explicit `-b main`: seed_repo's `git init --bare` leaves the bare's HEAD at
 # an unborn default branch (master), so a branchless clone checks out NOTHING
 # ("remote HEAD refers to nonexistent ref") and the hook would die writing
 # graphify-out/graph.json into an empty working tree.
-RACE_HOOK="(set -e; rm -rf '$RACE_CLONE'; git clone -q -b main '$BARE' '$RACE_CLONE'; cd '$RACE_CLONE'; git -c user.email=race@test.com -c user.name=race checkout -q -b '$RACE_BRANCH'; echo '{\"nodes\":[{\"id\":\"concurrent-publisher\"}]}' > graphify-out/graph.json; git -c user.email=race@test.com -c user.name=race commit -q -am 'chore: concurrent publisher landed first'; git push -q origin '$RACE_BRANCH')"
+RACE_HOOK_FILE="$TMP_ROOT/t13-race-hook.sh"
+cat > "$RACE_HOOK_FILE" <<RACE_EOF
+#!/usr/bin/env bash
+set -e
+rm -rf '$RACE_CLONE'
+git clone -q -b main '$BARE' '$RACE_CLONE'
+cd '$RACE_CLONE'
+git -c user.email=race@test.com -c user.name=race checkout -q -b '$RACE_BRANCH'
+echo '{"nodes":[{"id":"concurrent-publisher"}]}' > graphify-out/graph.json
+git -c user.email=race@test.com -c user.name=race commit -q -am 'chore: concurrent publisher landed first'
+git push -q origin '$RACE_BRANCH'
+RACE_EOF
+chmod +x "$RACE_HOOK_FILE"
 rc=0
-out=$(cd "$REPO" && FORGE=github GH_CMD="$FAKE_GH" GRAPH_PUBLISH_TEST_RACE_HOOK="$RACE_HOOK" bash "$PUBLISH" --no-fetch 2>&1) || rc=$?
+out=$(cd "$REPO" && FORGE=github GH_CMD="$FAKE_GH" GRAPH_PUBLISH_TEST_RACE_HOOK="$RACE_HOOK_FILE" bash "$PUBLISH" --no-fetch 2>&1) || rc=$?
 assert_eq        "interleaved-publisher rc=8 (rejected, not overwritten)" "8" "$rc"
 assert_contains  "interleaved-publisher message names the collision" "moved on origin" "$out"
 remote_content=$(git -C "$BARE" show "refs/heads/${RACE_BRANCH}:graphify-out/graph.json")

@@ -73,6 +73,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 deps_engine_lib="$repo_root/scripts/himmelctl/lib/deps-engine.js"
@@ -296,9 +306,9 @@ echo "ok: case i — versionGte: below/equal/above a floor, and a v-prefixed act
 
 # ── case j: --help / deps with no args list the deps verbs ────────────────
 outJ=$("$node_bin" "$wizard" --help)
-echo "$outJ" | grep -q 'deps status' || fail "case j: --help should list 'deps status' (got: $outJ)"
-echo "$outJ" | grep -q 'deps ensure' || fail "case j: --help should list 'deps ensure' (got: $outJ)"
-echo "$outJ" | grep -q 'deps upgrade' || fail "case j: --help should list 'deps upgrade' (got: $outJ)"
+grepq "$outJ" 'deps status' || fail "case j: --help should list 'deps status' (got: $outJ)"
+grepq "$outJ" 'deps ensure' || fail "case j: --help should list 'deps ensure' (got: $outJ)"
+grepq "$outJ" 'deps upgrade' || fail "case j: --help should list 'deps upgrade' (got: $outJ)"
 echo "ok: case j — --help lists deps status|ensure|upgrade"
 
 # ── case k: deps with no verb / an unknown verb -> exit 2 ─────────────────
@@ -306,7 +316,7 @@ set +e
 errK1=$("$node_bin" "$wizard" deps 2>&1); rcK1=$?
 set -e
 [ "$rcK1" -eq 2 ] || fail "case k: 'deps' with no verb should exit 2 (got rc=$rcK1): $errK1"
-echo "$errK1" | grep -qF 'status|ensure|upgrade' || fail "case k: error should name the verb requirement (got: $errK1)"
+grepq "$errK1" -F 'status|ensure|upgrade' || fail "case k: error should name the verb requirement (got: $errK1)"
 set +e
 errK2=$("$node_bin" "$wizard" deps bogus 2>&1); rcK2=$?
 set -e
@@ -426,13 +436,13 @@ set +e
 outL=$(runDeps status </dev/null 2>&1); rcL=$?
 set -e
 [ "$rcL" -eq 0 ] || fail "case l: deps status should exit 0 (got rc=$rcL): $outL"
-echo "$outL" | grep -qE 'green +greentool +present \(3\.2\.1\)' \
+grepq "$outL" -E 'green +greentool +present \(3\.2\.1\)' \
   || fail "case l: greentool should read green with its version (got: $outL)"
-echo "$outL" | grep -qE "red +redtool +'redtool-does-not-exist' not found on PATH" \
+grepq "$outL" -E "red +redtool +'redtool-does-not-exist' not found on PATH" \
   || fail "case l: redtool should read red naming the missing cmd (got: $outL)"
-echo "$outL" | grep -qE '^red +qmd' \
+grepq "$outL" -E '^red +qmd' \
   || fail "case l: qmd should also read red (marker not yet created — got: $outL)"
-echo "$outL" | grep -qF '2 red, 0 degraded, 1 green' \
+grepq "$outL" -F '2 red, 0 degraded, 1 green' \
   || fail "case l: summary should be '2 red, 0 degraded, 1 green' (redtool + qmd both absent — got: $outL)"
 echo "ok: case l — deps status: green/red rows with correct detail, summary matches"
 
@@ -450,13 +460,13 @@ set +e
 outN=$(runDeps ensure --dry-run </dev/null 2>&1); rcN=$?
 set -e
 [ "$rcN" -eq 0 ] || fail "case n: ensure --dry-run should exit 0 (both missing recipes are runnable — got rc=$rcN): $outN"
-echo "$outN" | grep -qF 'DRY:' || fail "case n: expected DRY: lines (got: $outN)"
+grepq "$outN" -F 'DRY:' || fail "case n: expected DRY: lines (got: $outN)"
 # Assert the SPECIFIC planned actions, not just "some DRY line" — one line
 # per missing dep (redtool, qmd), each naming its script recipe + args.
-echo "$outN" | grep -qF 'fake-install.sh' || fail "case n: expected redtool's install script path in the DRY plan (got: $outN)"
-echo "$outN" | grep -qE 'fake-install\.sh[^[:space:]]* redtool' || fail "case n: expected redtool's script arg in the DRY plan (got: $outN)"
-echo "$outN" | grep -qF 'fake-qmd-bin.sh' || fail "case n: expected qmd's install script path in the DRY plan (got: $outN)"
-echo "$outN" | grep -qE 'fake-qmd-bin\.sh[^[:space:]]* install' || fail "case n: expected qmd's 'install' arg in the DRY plan (got: $outN)"
+grepq "$outN" -F 'fake-install.sh' || fail "case n: expected redtool's install script path in the DRY plan (got: $outN)"
+grepq "$outN" -E 'fake-install\.sh[^[:space:]]* redtool' || fail "case n: expected redtool's script arg in the DRY plan (got: $outN)"
+grepq "$outN" -F 'fake-qmd-bin.sh' || fail "case n: expected qmd's install script path in the DRY plan (got: $outN)"
+grepq "$outN" -E 'fake-qmd-bin\.sh[^[:space:]]* install' || fail "case n: expected qmd's 'install' arg in the DRY plan (got: $outN)"
 [ -f "$installLog" ] && fail "case n: --dry-run must NOT execute the install script (got: $(cat "$installLog")))"
 echo "ok: case n — ensure --dry-run prints DRY lines naming every planned dep + recipe, executes nothing"
 
@@ -466,7 +476,7 @@ set +e
 errO=$(runDeps ensure </dev/null 2>&1); rcO=$?
 set -e
 [ "$rcO" -eq 2 ] || fail "case o: non-interactive ensure without --yes should exit 2 (got rc=$rcO): $errO"
-echo "$errO" | grep -qF 'requires --yes' || fail "case o: error should name the --yes requirement (got: $errO)"
+grepq "$errO" -F 'requires --yes' || fail "case o: error should name the --yes requirement (got: $errO)"
 [ -f "$installLog" ] && fail "case o: a refused ensure must NOT execute the install script"
 echo "ok: case o — ensure non-interactive without --yes exits 2, nothing executed"
 
@@ -493,9 +503,9 @@ grep -qxF 'install' "$installLog" || fail "case p: install log should contain qm
 # qmd's install CONVERGED -> the presence marker now exists (re-probe reads it).
 [ -f "$qmdPresentMarker" ] || fail "case p: qmd's converging install should have created the presence marker"
 # redtool's install did NOT land -> the re-probe fail-closed reason is printed.
-echo "$outP" | grep -qF 'redtool: installed but still not found on PATH' \
+grepq "$outP" -F 'redtool: installed but still not found on PATH' \
   || fail "case p: redtool should be reported failed with the re-probe reason (got: $outP)"
-echo "$outP" | grep -qF '1 installed, 1 failed' \
+grepq "$outP" -F '1 installed, 1 failed' \
   || fail "case p: expected '1 installed, 1 failed' (qmd converged, redtool didn't — got: $outP)"
 echo "ok: case p — ensure --yes re-probes: qmd kept (converged), redtool fail-closed (didn't land)"
 
@@ -524,7 +534,7 @@ set +e
 outQ=$(HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" PATH="$depsPathQ" "$node_bin" "$wizard" deps ensure --yes </dev/null 2>&1); rcQ=$?
 set -e
 [ "$rcQ" -eq 0 ] || fail "case q: ensure with nothing missing should exit 0 (got rc=$rcQ): $outQ"
-echo "$outQ" | grep -qF 'nothing to converge' || fail "case q: expected the nothing-to-converge message (got: $outQ)"
+grepq "$outQ" -F 'nothing to converge' || fail "case q: expected the nothing-to-converge message (got: $outQ)"
 [ -f "$installLog" ] && fail "case q: nothing should have been installed (got: $(cat "$installLog"))"
 echo "ok: case q — ensure with every declared dep present prints 'nothing to converge', exit 0, no install run"
 
@@ -543,7 +553,7 @@ grep -qF 'greentool' "$installLog" || fail "case r: install log should reference
 # CodeRabbit: qmd's distinct upgrade entry (bare 'install' line) too, not
 # only greentool's 'install greentool'.
 grep -qxF 'install' "$installLog" || fail "case r: install log should contain qmd's distinct 'install' entry (got: $(cat "$installLog"))"
-echo "$outR" | grep -qF 'skipping qmd model pull' \
+grepq "$outR" -F 'skipping qmd model pull' \
   || fail "case r: expected the qmd model-pull skip message (non-interactive, no --with-models) (got: $outR)"
 [ -f "$modelsLog" ] && fail "case r: the model pull must NOT have run without --with-models (got: $(cat "$modelsLog"))"
 echo "ok: case r — upgrade --yes runs present deps' recipes, skips the qmd model pull without --with-models"
@@ -561,7 +571,7 @@ grep -qF 'pull' "$modelsLog" || fail "case s: models log should record the pull 
 # in installLog too, not only the pull line in modelsLog.
 [ -f "$installLog" ] || fail "case s: expected greentool/qmd's upgrade scripts to have run (no install log file)"
 grep -qxF 'install' "$installLog" || fail "case s: install log should contain qmd's distinct 'install' entry (got: $(cat "$installLog"))"
-echo "$outS" | grep -qF 'skipping qmd model pull' \
+grepq "$outS" -F 'skipping qmd model pull' \
   && fail "case s: --with-models must NOT print the skip message (got: $outS)"
 echo "ok: case s — upgrade --yes --with-models also runs the qmd model pull, no prompt shown"
 
@@ -571,15 +581,15 @@ set +e
 outT=$(runDeps upgrade --dry-run </dev/null 2>&1); rcT=$?
 set -e
 [ "$rcT" -eq 0 ] || fail "case t: upgrade --dry-run should exit 0 for these runnable recipes (got rc=$rcT): $outT"
-echo "$outT" | grep -qF 'DRY:' || fail "case t: expected DRY: lines (got: $outT)"
+grepq "$outT" -F 'DRY:' || fail "case t: expected DRY: lines (got: $outT)"
 # Assert the SPECIFIC planned actions — present set is [greentool, qmd]
 # (redtool stays absent on depsPath), plus the qmd model-pull prompt DRY
 # line (no --with-models passed).
-echo "$outT" | grep -qF 'fake-install.sh' || fail "case t: expected greentool's upgrade script path in the DRY plan (got: $outT)"
-echo "$outT" | grep -qE 'fake-install\.sh[^[:space:]]* greentool' || fail "case t: expected greentool's script arg in the DRY plan (got: $outT)"
-echo "$outT" | grep -qF 'fake-qmd-bin.sh' || fail "case t: expected qmd's upgrade script path in the DRY plan (got: $outT)"
-echo "$outT" | grep -qE 'fake-qmd-bin\.sh[^[:space:]]* install' || fail "case t: expected qmd's 'install' arg in the DRY plan (got: $outT)"
-echo "$outT" | grep -qF 'prompt to pull qmd embedding/rerank models' || fail "case t: expected the qmd model-pull DRY prompt line (got: $outT)"
+grepq "$outT" -F 'fake-install.sh' || fail "case t: expected greentool's upgrade script path in the DRY plan (got: $outT)"
+grepq "$outT" -E 'fake-install\.sh[^[:space:]]* greentool' || fail "case t: expected greentool's script arg in the DRY plan (got: $outT)"
+grepq "$outT" -F 'fake-qmd-bin.sh' || fail "case t: expected qmd's upgrade script path in the DRY plan (got: $outT)"
+grepq "$outT" -E 'fake-qmd-bin\.sh[^[:space:]]* install' || fail "case t: expected qmd's 'install' arg in the DRY plan (got: $outT)"
+grepq "$outT" -F 'prompt to pull qmd embedding/rerank models' || fail "case t: expected the qmd model-pull DRY prompt line (got: $outT)"
 [ -f "$installLog" ] && fail "case t: --dry-run must NOT execute the upgrade script"
 [ -f "$modelsLog" ] && fail "case t: --dry-run must NOT execute the model pull"
 echo "ok: case t — upgrade --dry-run prints DRY lines naming every planned dep + recipe + the model-pull prompt, executes nothing"

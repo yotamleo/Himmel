@@ -46,6 +46,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 lint="$repo_root/scripts/install/manifest-lint.mjs"
@@ -189,17 +199,17 @@ out=$(PATH="$cA" HOME="$hA" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseA: dry-run should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -qF 'himmel-owned wiring & repo-local artifacts' \
+grepq "$out" -F 'himmel-owned wiring & repo-local artifacts' \
   || fail "caseA: expected the owned/unwire plan header (got: $out)"
-printf '%s' "$out" | grep -qF 'fixture-owned' \
+grepq "$out" -F 'fixture-owned' \
   || fail "caseA: expected fixture-owned in the owned/unwire plan (got: $out)"
-printf '%s' "$out" | grep -qF "Shared tools himmel installed or requires (NOT removed" \
+grepq "$out" -F "Shared tools himmel installed or requires (NOT removed" \
   || fail "caseA: expected the shared-tools advisory header (got: $out)"
-printf '%s' "$out" | grep -qF 'fixture-advise' \
+grepq "$out" -F 'fixture-advise' \
   || fail "caseA: expected fixture-advise in the advisory (got: $out)"
-printf '%s' "$out" | grep -qF 'left untouched (your data): fixture-keep' \
+grepq "$out" -F 'left untouched (your data): fixture-keep' \
   || fail "caseA: expected fixture-keep reported as left-untouched (got: $out)"
-printf '%s' "$out" | grep -q 'Proceed?' \
+grepq "$out" 'Proceed?' \
   && fail "caseA: --dry-run must NOT show the confirm prompt (got: $out)"
 [ -f "$fixtureA/uninstall-calls.log" ] \
   && fail "caseA: --dry-run must NOT execute uninstall.sh/uninstall.ps1 (got: $(cat "$fixtureA/uninstall-calls.log"))"
@@ -221,11 +231,11 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseB: accept should exit 0 (got rc=$rc): $out"
 [ -f "$fixtureB/uninstall-calls.log" ] \
   || fail "caseB: a blank-Enter accept should invoke uninstall.sh/uninstall.ps1 (out: $out)"
-printf '%s' "$out" | grep -qF 'fixture-advise' \
+grepq "$out" -F 'fixture-advise' \
   || fail "caseB: expected fixture-advise listed in the advisory (got: $out)"
-printf '%s' "$out" | grep -qF 'left untouched (your data): fixture-keep' \
+grepq "$out" -F 'left untouched (your data): fixture-keep' \
   || fail "caseB: expected fixture-keep reported as left-untouched (got: $out)"
-printf '%s' "$out" | grep -qi 'WARN' \
+grepq "$out" -i 'WARN' \
   && fail "caseB: nothing was pre-wired — the completeness check must NOT WARN (got: $out)"
 [ -f "$hB/.claude/settings.json" ] \
   && fail "caseB: cmdUninstall must never WRITE a settings.json for an advise/keep item (got a file at $hB/.claude/settings.json)"
@@ -253,7 +263,7 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseC: accept should exit 0 even with a residue WARN (got rc=$rc): $out"
 [ -f "$fixtureC/uninstall-calls.log" ] \
   || fail "caseC: a blank-Enter accept should invoke uninstall.sh/uninstall.ps1 (out: $out)"
-printf '%s' "$out" | grep -qE 'WARN.*fixture-owned' \
+grepq "$out" -E 'WARN.*fixture-owned' \
   || fail "caseC: expected a single completeness WARN line naming fixture-owned since the stub never actually unwired it (got: $out)"
 echo "ok: caseC accepted run with pre-wired owned state -> completeness WARN fires naming the residue, rc still 0"
 
@@ -287,7 +297,7 @@ set -e
 [ "$rc" -eq 1 ] || fail "caseE: a failed teardown (uninstall.sh exit 1) should propagate rc=1 (got rc=$rc): $out"
 [ -f "$fixtureE/uninstall-calls.log" ] \
   || fail "caseE: a blank-Enter accept should still invoke uninstall.sh/uninstall.ps1 even though it fails (out: $out)"
-printf '%s' "$out" | grep -qE 'WARN.*fixture-owned' \
+grepq "$out" -E 'WARN.*fixture-owned' \
   || fail "caseE: expected a single completeness WARN line naming fixture-owned — the failed stub never actually unwired it (got: $out)"
 echo "ok: caseE a failed teardown propagates rc=1 (not masked), and the completeness WARN still fires"
 
@@ -317,7 +327,7 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseF: accept should exit 0 even with a project-scope residue WARN (got rc=$rc): $out"
 [ -f "$fixtureF/uninstall-calls.log" ] \
   || fail "caseF: a blank-Enter accept should invoke uninstall.sh/uninstall.ps1 (out: $out)"
-printf '%s' "$out" | grep -qE 'WARN.*fixture-owned \(present, project\)' \
+grepq "$out" -E 'WARN.*fixture-owned \(present, project\)' \
   || fail "caseF: expected the completeness WARN to name fixture-owned's PROJECT-scope residue specifically (got: $out)"
 [ -f "$hF/.claude/settings.json" ] \
   && fail "caseF: nothing should have written the fake HOME's settings.json (got a file at $hF/.claude/settings.json)"

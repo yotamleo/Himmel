@@ -1,4 +1,4 @@
-# test-uninstall.ps1 — PowerShell smoke test for scripts/uninstall.ps1
+﻿# test-uninstall.ps1 — PowerShell smoke test for scripts/uninstall.ps1
 # (HIMMEL-227 offboard; PS sibling of test-uninstall.sh, CR round 1).
 # State-touching invocations point $env:TELEGRAM_CHANNEL_DIR + $env:BRIDGE_ROOT
 # at temp dirs and pass -SkipTasks -SkipPlugins -SkipHooks, so the operator's

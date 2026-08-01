@@ -1,4 +1,4 @@
-# unwire-statusline.ps1 -- PowerShell counterpart of unwire-statusline.sh.
+﻿# unwire-statusline.ps1 -- PowerShell counterpart of unwire-statusline.sh.
 # Rolls back .statusLine in a Claude Code settings.json ONLY when it points at a
 # himmel statusLine -- the hud renderer (marketplace/plugins/claude-hud/dist/index.js;
 # HIMMEL-718), the where-are-we wrapper (HIMMEL-538), or the older vendored bar.

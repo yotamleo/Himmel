@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,25 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE = join(HERE, 'guardrail-block.mjs');
 const NODE = process.execPath;
-const BASH = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : '/bin/bash';
+// The full-install fixture needs a bash path the wrapper resolves as runnable
+// (isRunnableExecutable: isFile + R_OK + X_OK). Hardcoding
+// "C:/Program Files/Git/bin/bash.exe" assumes one Git layout — the real install
+// resolves bash across install locations and PATH, so a machine with Git
+// elsewhere (Program Files (x86), Scoop, or none at all) would read
+// bashResolves=false and flip these tests red for no real reason. A temp
+// executable stub is layout-independent and resolves identically everywhere
+// (X_OK is a no-op on Windows; the chmod covers POSIX) — the direct analog of
+// writeHookStubs() stubbing the wrapper/script files so their baked paths
+// resolve. The deadBash negative test still uses its own nonexistent path.
+function makeBashStub() {
+  const dir = mkdtempSync(join(tmpdir(), 'gblock-bash-stub-'));
+  const stub = join(dir, 'bash');
+  writeFileSync(stub, '#!/bin/sh\nexit 0\n');
+  chmodSync(stub, 0o755);
+  return stub;
+}
+const BASH = makeBashStub();
+process.on('exit', () => { try { rmSync(dirname(BASH), { recursive: true, force: true }); } catch { /* best-effort tmp cleanup */ } });
 const GUARDS = [
   ['auto-approve-safe-bash.sh', 'Bash'],
   ['block-edit-on-main.sh', 'Edit|Write|MultiEdit|NotebookEdit'],

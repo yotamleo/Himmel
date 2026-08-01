@@ -1,4 +1,4 @@
-# test-onboard-telegram.ps1 — PowerShell smoke test for
+﻿# test-onboard-telegram.ps1 — PowerShell smoke test for
 # scripts/setup/onboard-telegram.ps1 (HIMMEL-227; PS sibling of
 # test-onboard-telegram.sh, CR round 1). Everything runs against a temp
 # TELEGRAM_CHANNEL_DIR — never touches the operator's real channel dir,

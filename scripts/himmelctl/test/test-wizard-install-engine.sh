@@ -148,6 +148,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 install_engine_lib="$repo_root/scripts/himmelctl/lib/install-engine.js"
 install_plugins_sh="$repo_root/scripts/machine-setup/install-plugins.sh"
@@ -331,7 +341,7 @@ else
   # failure (the stub claude/jq preflight is fully satisfied above), not
   # something to swallow — assert success explicitly instead of `|| true`.
   [ "$rcF" -eq 0 ] || fail "case f: install-plugins.sh --scope project with HIMMEL_RECONCILE_PLUGINS=1 should exit 0 (got rc=$rcF): $outF"
-  echo "$outF" | grep -q "Reconciling enabledPlugins to lean floor" \
+  grepq "$outF" "Reconciling enabledPlugins to lean floor" \
     || fail "case f: install-plugins.sh --scope project with HIMMEL_RECONCILE_PLUGINS=1 should still run the lean-floor reconcile step (got: $outF)"
   echo "ok: case f — install-plugins.sh at a non-default --scope project still runs its lean-floor reconcile (orchestrator preserved)"
 fi
@@ -454,7 +464,7 @@ fi
 # serialized / printed without leaking the credential. Verified to BITE: see
 # the sabotage note in the commit/PR — temporarily re-attaching the password
 # to the entry (the old plan-time shape) makes this assertion fail.
-if echo "$outK" | grep -qF 's3cr3t-pw'; then
+if grepq "$outK" -F 's3cr3t-pw'; then
   fail "case k: the password must appear NOWHERE in the serialized plan object (got: $outK)"
 fi
 echo "ok: case k — HIMMELCTL_SUDO_PASSWORD set: the plan carries only a non-secret marker (needsSudoPassword + repoRoot); the ENTIRE serialized plan contains the secret nowhere"
@@ -604,11 +614,11 @@ const ctx = { repoRoot: '/fake/repo-nonexistent-n', scope: 'project', profile: '
 const p = planInstall(items, ctx)[0];
 console.log(\`DRY: \${p.cmd} \${p.args.join(' ')}\`);
 ")
-if echo "$outN" | grep -qF 'n-secret-pw'; then
+if grepq "$outN" -F 'n-secret-pw'; then
   fail "case n: the DRY: print line leaked the password (got: $outN)"
 fi
-echo "$outN" | grep -qF 'DRY: sudo -S -p' || fail "case n: expected the DRY line to show the sudo -S -p form (got: $outN)"
-echo "$outN" | grep -qF 'apt-get install -y sometool' || fail "case n: expected the DRY line to show the apt-get install shape (got: $outN)"
+grepq "$outN" -F 'DRY: sudo -S -p' || fail "case n: expected the DRY line to show the sudo -S -p form (got: $outN)"
+grepq "$outN" -F 'apt-get install -y sometool' || fail "case n: expected the DRY line to show the apt-get install shape (got: $outN)"
 echo "ok: case n — the DRY: print line for a password-bearing entry contains no secret material"
 
 # ── case o (addendum): no password + 2 linux dep items -> the diagnostic
@@ -663,7 +673,7 @@ echo "$outP" | jq -e '.[0].cmd == "sudo" and .[0].needsSudoPassword == true' >/d
 if echo "$outP" | jq -e '.[0] | has("input")' >/dev/null 2>&1; then
   fail "case p: the written plan must NOT carry an 'input' field (got: $outP)"
 fi
-if echo "$outP" | grep -qF 'p-secret-pw'; then
+if grepq "$outP" -F 'p-secret-pw'; then
   fail "case p: the password must appear NOWHERE in the serialized plan file (got: $outP)"
 fi
 echo "ok: case p — HIMMELCTL_SUDO_PASSWORD set: no diagnostic printed, no product-code output on stdout/stderr, and the plan file carries no secret"
@@ -723,14 +733,14 @@ const plan = [
 const result = runInstall(plan, { dryRun: false });
 console.log('RESULT_JSON:' + JSON.stringify(result));
 ")
-echo "$outR" | grep -qF 'OTHER_MARKER_R=should-survive-r' \
+grepq "$outR" -F 'OTHER_MARKER_R=should-survive-r' \
   || fail "case r: an unrelated env var should survive into the child's env (got: $outR)"
-echo "$outR" | grep -qF 'HIMMELCTL_SUDO_PASSWORD_PRESENT=no' \
+grepq "$outR" -F 'HIMMELCTL_SUDO_PASSWORD_PRESENT=no' \
   || fail "case r: HIMMELCTL_SUDO_PASSWORD must be ABSENT from the child's environment (got: $outR)"
-if echo "$outR" | grep -qF 'r-env-secret'; then
+if grepq "$outR" -F 'r-env-secret'; then
   fail "case r: the password VALUE must never appear anywhere in the child's output (got: $outR)"
 fi
-echo "$outR" | grep -qF 'r-stdin-password' \
+grepq "$outR" -F 'r-stdin-password' \
   || fail "case r: the password must STILL arrive via stdin (cat should have echoed it back) (got: $outR)"
 resultLineR=$(echo "$outR" | grep '^RESULT_JSON:')
 jsonR=${resultLineR#RESULT_JSON:}

@@ -365,7 +365,7 @@ mean the installer asserting something it cannot stand behind:
   pulled and copilot an interactive login, so those steps stay listed under
   `still manual` as verify items. Only a lane with a richer readiness probe
   (codex, via the manifest's provisioning check) can report `ready`. A lane whose
-  CLI is already present is reported as available and skipped (so a re-run is
+  CLI is already present is reported as binary already present and skipped (so a re-run is
   idempotent); a lane that is *absent* is listed under `still manual` with its
   install command. Both that command and the follow-up setup step are chosen
   per platform, so a Linux/macOS adopter is pointed at

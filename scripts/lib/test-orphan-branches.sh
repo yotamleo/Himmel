@@ -17,6 +17,16 @@
 #   gh pr checks <number>      (rc 0 => green, rc 1 => failed, rc 8 => pending)
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── temp dir setup ────────────────────────────────────────────────────────────
@@ -130,7 +140,7 @@ fi
 # count_orphans <scan_output>
 count_orphans() { printf '%s\n' "$1" | grep -c '^ORPHAN ' || true; }
 # has_orphan <scan_output> <branch>
-has_orphan() { printf '%s\n' "$1" | grep -qF "ORPHAN $2"; }
+has_orphan() { grepq "$1" -F "ORPHAN $2"; }
 # (has_chain removed — it was never called and was broken anyway: it used $1 as
 # BOTH the scan output and the state pattern, ignoring $2/$3, so it would have
 # silently returned false for every caller. chain_state_of is the working
@@ -162,7 +172,7 @@ chmod +x "$TMPDIR_ROOT/ci-no"
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$TMPDIR_ROOT/ci-no" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if ! has_orphan "$out" "feat/open" && printf '%s\n' "$out" | grep -q '^chain: pr .*ci=failed'; then
+if ! has_orphan "$out" "feat/open" && grepq "$out" '^chain: pr .*ci=failed'; then
     pass "T2: open-PR branch + failed CI -> chain: pr, ci=failed (not orphan)"
 else
     fail "T2: expected chain: pr feat/open with ci=failed, no ORPHAN; got: $(printf '%s\n' "$out" | grep -E '^(ORPHAN|chain:)' )"
@@ -177,7 +187,7 @@ make_head_stub "$stub" "$TMPDIR_ROOT/sent-t3" "feat/merged:7:MERGED:abc123"
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$TMPDIR_ROOT/ci-no" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50 ORPHAN_PUBLIC_CLONE=""
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if ! has_orphan "$out" "feat/merged" && printf '%s\n' "$out" | grep -q '^chain: merged '; then
+if ! has_orphan "$out" "feat/merged" && grepq "$out" '^chain: merged '; then
     pass "T3: merged-PR branch -> chain: merged (not orphan)"
 else
     fail "T3: expected chain: merged feat/merged; got: $(printf '%s\n' "$out" | grep -E '^(ORPHAN|chain:)')"
@@ -214,7 +224,7 @@ stub="$TMPDIR_ROOT/gh-t5"
 write_stub "$stub" 'exit 0'
 export FORGE=github GH_CMD="$stub" ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if has_orphan "$out" "feat/x" && ! printf '%s\n' "$out" | grep -qE '^(ORPHAN|chain:) main( |$)'; then
+if has_orphan "$out" "feat/x" && ! grepq "$out" -E '^(ORPHAN|chain:) main( |$)'; then
     pass "T5: 'main' excluded from scan"
 else
     fail "T5: main leaked into scan: $(printf '%s\n' "$out" | grep -E 'main')"
@@ -230,7 +240,7 @@ write_stub "$stub" 'exit 0'
 export FORGE=github GH_CMD="$stub" ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50 \
     ORPHAN_BRANCH_IGNORE='renovate/*'
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if has_orphan "$out" "feat/y" && ! printf '%s\n' "$out" | grep -q 'renovate/deps'; then
+if has_orphan "$out" "feat/y" && ! grepq "$out" 'renovate/deps'; then
     pass "T6: ORPHAN_BRANCH_IGNORE glob excludes renovate/*"
 else
     fail "T6: ignore glob failed: $(printf '%s\n' "$out" | grep -E 'renovate|feat/y')"
@@ -245,8 +255,8 @@ stub="$TMPDIR_ROOT/gh-t7"
 write_stub "$stub" 'exit 0'
 export FORGE=github GH_CMD="$stub" ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if has_orphan "$out" "feat/recent" && ! printf '%s\n' "$out" | grep -q 'feat/old' \
-   && printf '%s\n' "$out" | grep -q 'window=30'; then
+if has_orphan "$out" "feat/recent" && ! grepq "$out" 'feat/old' \
+   && grepq "$out" 'window=30'; then
     pass "T7: window=30 bounds old branch out + bound stated"
 else
     fail "T7: window bounding failed: $(printf '%s\n' "$out" | grep -E 'feat/old|feat/recent|window=')"
@@ -261,7 +271,7 @@ write_stub "$stub" 'exit 1'   # every gh call fails (unauthed/offline shape)
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$stub" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if ! has_orphan "$out" "feat/q" && printf '%s\n' "$out" | grep -q '^uncertain:'; then
+if ! has_orphan "$out" "feat/q" && grepq "$out" '^uncertain:'; then
     pass "T8: forge-error -> uncertain (no false orphan)"
 else
     fail "T8: expected uncertain feat/q, no ORPHAN; got: $(printf '%s\n' "$out" | grep -E '^(ORPHAN|uncertain:)')"
@@ -279,7 +289,7 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
     _ts=$(date +%s)
     out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
     _te=$(date +%s); _el=$(( _te - _ts ))
-    if ! has_orphan "$out" "feat/slow" && printf '%s\n' "$out" | grep -q '^uncertain:' && [ "$_el" -lt 10 ]; then
+    if ! has_orphan "$out" "feat/slow" && grepq "$out" '^uncertain:' && [ "$_el" -lt 10 ]; then
         pass "T9: slow gh -> uncertain, bounded (${_el}s < 10s)"
     else
         fail "T9: timeout handling failed (el=${_el}s): $(printf '%s\n' "$out" | grep -E '^(ORPHAN|uncertain:)')"
@@ -302,8 +312,8 @@ export FORGE=github GH_CMD="$stub" OB_CI_CMD="$TMPDIR_ROOT/ci-no" \
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
 _n=$(count_orphans "$out")
 if [ "$_n" = "1" ] && has_orphan "$out" "feat/orphan2" \
-   && printf '%s\n' "$out" | grep -q '^chain: pr .*feat/open2' \
-   && printf '%s\n' "$out" | grep -q '^chain: merged .*feat/merged2'; then
+   && grepq "$out" '^chain: pr .*feat/open2' \
+   && grepq "$out" '^chain: merged .*feat/merged2'; then
     pass "T10: mixed repo — 1 orphan + correct chain labels"
 else
     fail "T10: mixed classification wrong (orphans=$_n): $(printf '%s\n' "$out" | grep -E '^(ORPHAN|chain:)')"
@@ -323,7 +333,7 @@ make_head_stub "$stub" "$TMPDIR_ROOT/sent-t11" "feat/prop:77:MERGED:$oid"
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$TMPDIR_ROOT/ci-no" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50 ORPHAN_PUBLIC_CLONE="$pub"
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if printf '%s\n' "$out" | grep -q '^chain: propagated .*feat/prop'; then
+if grepq "$out" '^chain: propagated .*feat/prop'; then
     pass "T11: merged + mergeCommit in public clone -> propagated"
 else
     fail "T11: expected propagated; got: $(printf '%s\n' "$out" | grep -E '^chain:')"
@@ -340,7 +350,7 @@ ci_yes="$TMPDIR_ROOT/ci-yes"
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$ci_yes" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if printf '%s\n' "$out" | grep -q '^chain: ci-green .*feat/green'; then
+if grepq "$out" '^chain: ci-green .*feat/green'; then
     pass "T12: open PR + green CI -> ci-green"
 else
     fail "T12: expected ci-green; got: $(printf '%s\n' "$out" | grep -E '^chain:')"
@@ -355,7 +365,7 @@ make_head_stub "$stub" "$TMPDIR_ROOT/sent-t13" "feat/closed:33:CLOSED:-"
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$TMPDIR_ROOT/ci-no" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if ! has_orphan "$out" "feat/closed" && printf '%s\n' "$out" | grep -q '^chain: closed .*feat/closed'; then
+if ! has_orphan "$out" "feat/closed" && grepq "$out" '^chain: closed .*feat/closed'; then
     pass "T13: closed-only PR -> chain: closed (abandoned, not orphan)"
 else
     fail "T13: expected chain: closed; got: $(printf '%s\n' "$out" | grep -E '^(ORPHAN|chain:)')"
@@ -409,7 +419,7 @@ mk_remote_branch "$t/rep" "feat/orphan3" 1
 stub="$TMPDIR_ROOT/gh-t15"; write_stub "$stub" 'exit 0'
 out="$(FORGE=github GH_CMD="$stub" ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50 \
     OB_PRIMARY="$t/rep" bash "$OB_LIB" 2>/dev/null)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q '^ORPHAN feat/orphan3'; then
+if [ "$rc" -ne 0 ] && grepq "$out" '^ORPHAN feat/orphan3'; then
     pass "T15: dual-mode run -> report + non-zero exit on orphan"
 else
     fail "T15: dual-mode failed (rc=$rc): $(printf '%s\n' "$out" | grep -E '^(ORPHAN|orphan-branches:)' | head -3)"
@@ -471,7 +481,7 @@ ci_pending="$TMPDIR_ROOT/ci-pending"
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$ci_pending" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if printf '%s\n' "$out" | grep -q '^chain: pr .*feat/pending.*ci=pending'; then
+if grepq "$out" '^chain: pr .*feat/pending.*ci=pending'; then
     pass "T19: open PR + pending CI -> chain: pr, ci=pending"
 else
     fail "T19: expected ci=pending; got: $(printf '%s\n' "$out" | grep -E '^chain:')"
@@ -493,7 +503,7 @@ ci_none="$TMPDIR_ROOT/ci-none"
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$ci_none" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if ! has_orphan "$out" "feat/nochecks" && printf '%s\n' "$out" | grep -q '^chain: pr .*feat/nochecks.*ci=none'; then
+if ! has_orphan "$out" "feat/nochecks" && grepq "$out" '^chain: pr .*feat/nochecks.*ci=none'; then
     pass "T20: rc=1 + empty output (no checks) -> ci=none (not failed)"
 else
     fail "T20: expected ci=none for no-checks rc=1; got: $(printf '%s\n' "$out" | grep -E '^(ORPHAN|chain:|uncertain:)')"
@@ -513,7 +523,7 @@ ci_nomsg="$TMPDIR_ROOT/ci-nomsg"
 export FORGE=github GH_CMD="$stub" OB_CI_CMD="$ci_nomsg" \
     ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
-if ! has_orphan "$out" "feat/nomsg" && printf '%s\n' "$out" | grep -q '^chain: pr .*feat/nomsg.*ci=none'; then
+if ! has_orphan "$out" "feat/nomsg" && grepq "$out" '^chain: pr .*feat/nomsg.*ci=none'; then
     pass "T21: rc=1 + 'no checks reported' on stdout -> ci=none (matched by message)"
 else
     fail "T21: expected ci=none for no-checks message; got: $(printf '%s\n' "$out" | grep -E '^(ORPHAN|chain:|uncertain:)')"
@@ -531,7 +541,7 @@ write_stub "$stub" 'exit 0'
 export FORGE=github GH_CMD="$stub" ORPHAN_BRANCH_DAYS=08 ORPHAN_BRANCH_MAX=50
 out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
 # window=8d (not 08d) + the orphan surfaced => days was read base-10, not octal.
-if has_orphan "$out" "feat/oct" && printf '%s\n' "$out" | grep -q 'window=8d'; then
+if has_orphan "$out" "feat/oct" && grepq "$out" 'window=8d'; then
     pass "T22: ORPHAN_BRANCH_DAYS=08 parsed base-10 (window=8d, orphan found)"
 else
     fail "T22: leading-zero days misparsed as octal: $(printf '%s\n' "$out" | grep -E '^(ORPHAN|chain:|orphan-branches:)' | head)"
@@ -562,7 +572,7 @@ _te=$(date +%s); _el=$(( _te - _ts ))
 _spid="$(cat "$TMPDIR_ROOT/t23-pid" 2>/dev/null)"
 _left=0; kill -0 "$_spid" 2>/dev/null && _left=1
 eval "$_orig_tcmd"                             # restore the real _ob_timeout_cmd
-if ! has_orphan "$out" "feat/slow2" && printf '%s\n' "$out" | grep -q '^uncertain:' \
+if ! has_orphan "$out" "feat/slow2" && grepq "$out" '^uncertain:' \
    && [ "$_el" -lt 10 ] && [ "$_left" = 0 ]; then
     pass "T23: no-timeout-binary fallback bounded (${_el}s<10s) -> uncertain, child reaped"
 else

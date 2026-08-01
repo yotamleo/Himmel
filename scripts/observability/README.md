@@ -177,11 +177,13 @@ task, the installer exports its current definition; if a later step in the
 same run fails — a sibling task's registration throws, or the replacement
 registers but never actually starts (`Register-ScheduledTask -Force`
 overwrites the definition unconditionally, so a bare restart would just
-retry the new, possibly-broken one) — it restores that saved definition,
-starts it, and confirms it reaches Running, so an aborted run doesn't leave
+retry the new, possibly-broken one) — it restores that saved definition
+and, only if that task was running before this run (StartAfterRestore),
+starts it again and confirms it reaches Running, so an aborted run doesn't leave
 a previously-working exporter offline running a broken replacement. The
 final "Scheduled tasks" listing reports each exporter's actual state
-(`started`, `RESTORED`, or `NOT STARTED`/live state as appropriate) —
+(`started`, `RESTORED`, `RECOVERED`, `INDETERMINATE`, `REMOVED`, or `NOT
+STARTED`/live state as appropriate) —
 registration succeeding doesn't guarantee the process launched; S4U in
 particular can fail on missing "Log on as a batch job" rights or
 EFS/network access under the S4U token.

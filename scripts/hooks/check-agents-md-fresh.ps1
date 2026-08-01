@@ -1,4 +1,4 @@
-# Drift guard: block a commit where AGENTS.md is stale vs CLAUDE.md (HIMMEL-471).
+﻿# Drift guard: block a commit where AGENTS.md is stale vs CLAUDE.md (HIMMEL-471).
 # AGENTS.md is generated from CLAUDE.md (scripts/agents-md/generate.mjs); this
 # keeps the two from drifting. himmel-dev-only (gated by .himmel-dev, mirrors
 # doc-guard) -- no-op in adopter clones. Fires only when CLAUDE.md / AGENTS.md /

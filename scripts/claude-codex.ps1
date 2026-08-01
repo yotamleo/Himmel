@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
   claude-codex.ps1 - thin launcher: Claude Code on the codex-subscription lane
   via a local CLIProxyAPI proxy. HIMMEL-979. PowerShell twin of

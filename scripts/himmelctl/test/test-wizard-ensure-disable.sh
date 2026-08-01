@@ -106,6 +106,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 state_lib="$repo_root/scripts/himmelctl/lib/state.js"
@@ -296,8 +306,8 @@ set -e
 # ── case b: the full-offboard-only item ERRORS naming itself + pointing at
 # 'himmelctl uninstall'; its marker is left UNTOUCHED (zero mutation) ──────
 [ -f "$targetDir/offboard.marker" ] || fail "case b: offboard.marker should be left UNTOUCHED (full-offboard-only never unwires)"
-echo "$out2b" | grep -qF 'full-offboard-item' || fail "case b: the error should name 'full-offboard-item' (got: $out2b)"
-echo "$out2b" | grep -qF 'himmelctl uninstall' || fail "case b: the error should point at 'himmelctl uninstall' (got: $out2b)"
+grepq "$out2b" -F 'full-offboard-item' || fail "case b: the error should name 'full-offboard-item' (got: $out2b)"
+grepq "$out2b" -F 'himmelctl uninstall' || fail "case b: the error should point at 'himmelctl uninstall' (got: $out2b)"
 echo "ok: case b — the full-offboard-only item errors naming itself + pointing at 'himmelctl uninstall'; its marker is untouched"
 
 # ── case c (CR fix): a DEGRADED (not fully present) removable item is
@@ -351,8 +361,8 @@ outDeg=$( cd "$targetDeg" && HIMMELCTL_REPO_ROOT="$(winpath "$repoDeg")" HIMMELC
 set -e
 [ "$rcDeg" -ne 0 ] || fail "case c: ensure should exit non-zero (the degraded item's unwire doesn't actually clear it) (got rc=0): $outDeg"
 grep -qF 'unwire-pretooluse-hooks' "$logDeg" || fail "case c: the degraded item's unwire primitive should have been invoked (queued despite not being fully 'present') (spy log: $(cat "$logDeg"))"
-echo "$outDeg" | grep -qF 'degraded-item' || fail "case c: the failure should name 'degraded-item' (got: $outDeg)"
-echo "$outDeg" | grep -qi 'degraded' || fail "case c: the failure should mention the resource is still degraded, not trusting the exit-0 primitive alone (got: $outDeg)"
+grepq "$outDeg" -F 'degraded-item' || fail "case c: the failure should name 'degraded-item' (got: $outDeg)"
+grepq "$outDeg" -i 'degraded' || fail "case c: the failure should mention the resource is still degraded, not trusting the exit-0 primitive alone (got: $outDeg)"
 # settings.json is untouched by the do-nothing stub -- still exactly 1/3 markers.
 grep -qF 'auto-approve-safe-bash' "$targetDeg/.claude/settings.json" || fail "case c: settings.json should still carry its one marker (stub never touched it)"
 echo "ok: case c — a degraded (not fully present) removable item is still queued for disable; a successful-exit unwire that leaves it non-absent is treated as a failure"
@@ -389,9 +399,9 @@ set +e
 outDry=$(runEnsureD --dry-run --items full-offboard-item 2>&1); rcDry=$?
 set -e
 [ "$rcDry" -ne 0 ] || fail "case d: --dry-run must NOT silently return 0 when a full-offboard-only blocker exists (got rc=0): $outDry"
-echo "$outDry" | grep -qF 'DRY:' || fail "case d: expected at least one DRY: line (got: $outDry)"
-echo "$outDry" | grep -qF 'full-offboard-item' || fail "case d: the DRY output should name full-offboard-item (got: $outDry)"
-echo "$outDry" | grep -qF 'himmelctl uninstall' || fail "case d: the DRY output should point at himmelctl uninstall (got: $outDry)"
+grepq "$outDry" -F 'DRY:' || fail "case d: expected at least one DRY: line (got: $outDry)"
+grepq "$outDry" -F 'full-offboard-item' || fail "case d: the DRY output should name full-offboard-item (got: $outDry)"
+grepq "$outDry" -F 'himmelctl uninstall' || fail "case d: the DRY output should point at himmelctl uninstall (got: $outDry)"
 [ -f "$targetD/offboard.marker" ] || fail "case d: --dry-run must make zero mutations (offboard.marker should still exist)"
 echo "ok: case d — --dry-run surfaces a full-offboard-only blocker as a DRY line and fails its own exit code"
 
@@ -515,8 +525,8 @@ outF=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repoF")" HIMMELCTL_CAC
     "$node_bin" "$wizard" ensure --dry-run 2>&1 </dev/null ); rcF=$?
 set -e
 [ "$rcF" -ne 0 ] || fail "case f: --dry-run with an unrunnable unwire descriptor must NOT silently return 0 (got rc=0): $outF"
-echo "$outF" | grep -qF 'unrunnable-unwire-item' || fail "case f: the DRY output should name unrunnable-unwire-item (got: $outF)"
-echo "$outF" | grep -qF 'DRY:' || fail "case f: expected at least one DRY: line (got: $outF)"
+grepq "$outF" -F 'unrunnable-unwire-item' || fail "case f: the DRY output should name unrunnable-unwire-item (got: $outF)"
+grepq "$outF" -F 'DRY:' || fail "case f: expected at least one DRY: line (got: $outF)"
 [ -f "$targetF/item.marker" ] || fail "case f: --dry-run must make zero mutations (item.marker should still exist)"
 echo "ok: case f — --dry-run over a removable:per-item item with an unrunnable unwire descriptor surfaces the blocker and fails"
 
@@ -599,8 +609,8 @@ set +e
 outG1=$(runEnsureG --profile core --yes --items item-x 2>&1); rcG1=$?
 set -e
 [ "$rcG1" -eq 2 ] || fail "case g: --items item-x (dependent item-y excluded) should exit 2 (got rc=$rcG1): $outG1"
-echo "$outG1" | grep -qF 'item-y' || fail "case g: the rejection should name the excluded dependent item-y (got: $outG1)"
-echo "$outG1" | grep -qF 'item-x' || fail "case g: the rejection should name item-x (got: $outG1)"
+grepq "$outG1" -F 'item-y' || fail "case g: the rejection should name the excluded dependent item-y (got: $outG1)"
+grepq "$outG1" -F 'item-x' || fail "case g: the rejection should name item-x (got: $outG1)"
 # CR fix (codex round 4, Suggestion): the OLD message told the operator to
 # "add it: --items item-x,item-y" -- advice that doesn't work, since
 # item-y is still DESIRED and merely naming it in --items was proven this
@@ -609,11 +619,11 @@ echo "$outG1" | grep -qF 'item-x' || fail "case g: the rejection should name ite
 # instead of resolving anything. The message must instead name the two
 # remediations that actually work: reconciling item-y toward undesired
 # too, or dropping item-x from this run.
-if echo "$outG1" | grep -qF 'add it: --items'; then
+if grepq "$outG1" -F 'add it: --items'; then
   fail "case g: the rejection must NOT advise merely adding item-y to --items -- that advice doesn't resolve anything (a still-desired dependent is rejected regardless of --items membership) (got: $outG1)"
 fi
-echo "$outG1" | grep -qiF 'undesired' || fail "case g: the rejection should name reconciling item-y toward undesired as a working remediation (got: $outG1)"
-echo "$outG1" | grep -qF 'drop' || fail "case g: the rejection should name dropping item-x from this run as the other working remediation (got: $outG1)"
+grepq "$outG1" -iF 'undesired' || fail "case g: the rejection should name reconciling item-y toward undesired as a working remediation (got: $outG1)"
+grepq "$outG1" -F 'drop' || fail "case g: the rejection should name dropping item-x from this run as the other working remediation (got: $outG1)"
 [ ! -s "$logG" ] || fail "case g: item-x's unwire must NOT have run (spy log: $(cat "$logG"))"
 [ -f "$targetG/x.marker" ] || fail "case g: x.marker must still exist (zero mutation — item-x was never unwired)"
 [ -f "$targetG/y.marker" ] || fail "case g: y.marker must still exist (item-y was never touched)"
@@ -715,11 +725,11 @@ outH1=$(runEnsureH --profile core --yes); rcH1=$?
 set -e
 [ "$rcH1" -eq 0 ] || fail "case h: reconciling to core should cleanly unwire leaky-item (got rc=$rcH1): $outH1"
 [ ! -f "$targetH/leaky.marker" ] || fail "case h: leaky.marker should be removed after the unwire runs"
-echo "$outH1" | grep -qF 'OTHER_MARKER_H=should-survive-h' \
+grepq "$outH1" -F 'OTHER_MARKER_H=should-survive-h' \
   || fail "case h: an unrelated env var should survive into the unwire primitive's env (got: $outH1)"
-echo "$outH1" | grep -qF 'HIMMELCTL_SUDO_PASSWORD_PRESENT=no' \
+grepq "$outH1" -F 'HIMMELCTL_SUDO_PASSWORD_PRESENT=no' \
   || fail "case h: HIMMELCTL_SUDO_PASSWORD must be ABSENT from the unwire primitive's environment (got: $outH1)"
-if echo "$outH1" | grep -qF 'h-env-secret'; then
+if grepq "$outH1" -F 'h-env-secret'; then
   fail "case h: the password VALUE must never appear anywhere in the unwire primitive's output (got: $outH1)"
 fi
 echo "ok: case h — the unwire primitive's environment has HIMMELCTL_SUDO_PASSWORD stripped (an unrelated var survives)"
@@ -782,8 +792,8 @@ outI1=$(cd "$targetI" && HIMMELCTL_REPO_ROOT="$(winpath "$repoI")" HIMMELCTL_CAC
     "$node_bin" "$wizard" ensure --profile core --yes 2>&1 </dev/null); rcI1=$?
 set -e
 [ "$rcI1" -ne 0 ] || fail "case i: a timed-out unwire should exit non-zero (got rc=0): $outI1"
-echo "$outI1" | grep -qF 'wedged-unwire-item' || fail "case i: the failure should name wedged-unwire-item (got: $outI1)"
-echo "$outI1" | grep -qF 'timed out after' || fail "case i: the failure reason should mention the timeout (got: $outI1)"
+grepq "$outI1" -F 'wedged-unwire-item' || fail "case i: the failure should name wedged-unwire-item (got: $outI1)"
+grepq "$outI1" -F 'timed out after' || fail "case i: the failure reason should mention the timeout (got: $outI1)"
 
 [ -f "$grandchildPidFileI" ] || fail "case i: the grandchild's pid file was never written — it never even started before the timeout fired"
 grandchildPidI=$(cat "$grandchildPidFileI")
@@ -873,7 +883,7 @@ set -e
 [ "$rcJ1" -eq 0 ] || fail "case j: reconciling to core should cleanly disable item-x and install item-y (got rc=$rcJ1): $outJ1"
 [ ! -f "$targetJ/x.marker" ] || fail "case j: x.marker should be removed (item-x unwired)"
 [ -f "$targetJ/y.marker" ] || fail "case j: y.marker should exist (item-y installed)"
-echo "$outJ1" | grep -qF 'ensure complete (2 converged)' \
+grepq "$outJ1" -F 'ensure complete (2 converged)' \
   || fail "case j: the completion count should be 2 (1 install + 1 unwire), not just ran.length (got: $outJ1)"
 echo "ok: case j — the completion count includes successful unwires, not just installs (1 install + 1 unwire = 2 converged)"
 
@@ -908,8 +918,8 @@ set +e
 outK1=$(runEnsureK --profile core --yes --items item-x,item-y 2>&1); rcK1=$?
 set -e
 [ "$rcK1" -eq 2 ] || fail "case k: --items item-x,item-y (item-y included but still desired) should exit 2 (got rc=$rcK1): $outK1"
-echo "$outK1" | grep -qF 'item-y' || fail "case k: the rejection should name item-y (got: $outK1)"
-echo "$outK1" | grep -qF 'item-x' || fail "case k: the rejection should name item-x (got: $outK1)"
+grepq "$outK1" -F 'item-y' || fail "case k: the rejection should name item-y (got: $outK1)"
+grepq "$outK1" -F 'item-x' || fail "case k: the rejection should name item-x (got: $outK1)"
 [ ! -s "$logK" ] || fail "case k: item-x's unwire must NOT have run (spy log: $(cat "$logK"))"
 [ -f "$targetK/x.marker" ] || fail "case k: x.marker must still exist (zero mutation — item-x was never unwired)"
 echo "ok: case k — --items INCLUDING a still-desired dependent is REJECTED too (membership alone was never sufficient), zero mutation"
@@ -1016,8 +1026,8 @@ set +e
 outL1=$(runEnsureL --profile core --yes 2>&1); rcL1=$?
 set -e
 [ "$rcL1" -ne 0 ] || fail "case l: a failed unwire should exit non-zero (got rc=0): $outL1"
-echo "$outL1" | grep -qF 'item-y' || fail "case l: the failure should name item-y (got: $outL1)"
-echo "$outL1" | grep -qF 'unwire failed' || fail "case l: the failure reason should say the unwire failed (got: $outL1)"
+grepq "$outL1" -F 'item-y' || fail "case l: the failure should name item-y (got: $outL1)"
+grepq "$outL1" -F 'unwire failed' || fail "case l: the failure reason should say the unwire failed (got: $outL1)"
 
 # item-y's own unwire ran (and failed) — it's the first item processed.
 grep -qF 'unwire-item-y' "$orderLogL" \
@@ -1070,8 +1080,8 @@ set +e
 outM1=$(runEnsureM --profile core --yes 2>&1); rcM1=$?
 set -e
 [ "$rcM1" -eq 2 ] || fail "case m: an UNFILTERED ensure must REJECT (exit 2) when unwiring item-x would break the still-desired item-y (got rc=$rcM1): $outM1"
-echo "$outM1" | grep -qF 'item-y' || fail "case m: the rejection should name the still-desired dependent item-y (got: $outM1)"
-echo "$outM1" | grep -qF 'item-x' || fail "case m: the rejection should name item-x (got: $outM1)"
+grepq "$outM1" -F 'item-y' || fail "case m: the rejection should name the still-desired dependent item-y (got: $outM1)"
+grepq "$outM1" -F 'item-x' || fail "case m: the rejection should name item-x (got: $outM1)"
 # CR fix (round 19): the message must no longer claim --items on an unfiltered run.
 # `-e` is REQUIRED, not decoration: without it grep parses the leading `--` of
 # the pattern as its own flag ("grep: unknown option -- items would disable",
@@ -1079,7 +1089,7 @@ echo "$outM1" | grep -qF 'item-x' || fail "case m: the rejection should name ite
 # dead from the round-19 commit that introduced it until round 23 caught it.
 # A negative assertion that cannot fire is worse than no assertion: it reads as
 # coverage. Verified: `grep -qF '--items…'` => rc=2; `grep -qF -e '--items…'` => rc=0.
-if echo "$outM1" | grep -qF -e '--items would disable'; then
+if grepq "$outM1" -F -e '--items would disable'; then
   fail "case m: the rejection must NOT say '--items would disable' on an UNFILTERED run (got: $outM1)"
 fi
 [ ! -s "$logM" ] || fail "case m: item-x's unwire must NOT have run (spy log: $(cat "$logM"))"
@@ -1179,9 +1189,9 @@ set +e
 outN1=$(runEnsureN --profile core --yes 2>&1); rcN1=$?
 set -e
 [ "$rcN1" -eq 2 ] || fail "case n: --profile core (transitive still-desired dependent item-c behind undesired item-b) should exit 2 (got rc=$rcN1): $outN1"
-echo "$outN1" | grep -qF 'item-c' || fail "case n: the rejection should name the still-desired TRANSITIVE dependent item-c (got: $outN1)"
-echo "$outN1" | grep -qF 'item-a' || fail "case n: the rejection should name the disabled item-a (got: $outN1)"
-echo "$outN1" | grep -qF 'item-c -> item-b -> item-a' \
+grepq "$outN1" -F 'item-c' || fail "case n: the rejection should name the still-desired TRANSITIVE dependent item-c (got: $outN1)"
+grepq "$outN1" -F 'item-a' || fail "case n: the rejection should name the disabled item-a (got: $outN1)"
+grepq "$outN1" -F 'item-c -> item-b -> item-a' \
   || fail "case n: a TRANSITIVE break should name the whole chain 'item-c -> item-b -> item-a', not only the endpoints (got: $outN1)"
 [ ! -s "$logN" ] || fail "case n: item-a's unwire must NOT have run (spy log: $(cat "$logN"))"
 [ -f "$targetN/n-a.marker" ] || fail "case n: n-a.marker must still exist (zero mutation — item-a was never unwired)"
@@ -1279,7 +1289,7 @@ set +e
 outO1=$(runEnsureO --profile core --yes 2>&1); rcO1=$?
 set -e
 [ "$rcO1" -eq 0 ] || fail "case o: unwiring item-a must PROCEED (exit 0) when the intermediate item-b is ABSENT — the chain is already broken, so blocking is a false rejection (got rc=$rcO1): $outO1"
-if echo "$outO1" | grep -qF 'item-c'; then
+if grepq "$outO1" -F 'item-c'; then
   fail "case o: the run must NOT name item-c as a blocking dependent — it is unreachable behind the absent item-b (got: $outO1)"
 fi
 [ ! -f "$targetO/o-a.marker" ] || fail "case o: o-a.marker must be GONE — item-a was unwired (the run proceeded, not rejected)"
@@ -1341,11 +1351,11 @@ set +e
 outP1=$(runEnsureP); rcP1=$?
 set -e
 [ "$rcP1" -eq 0 ] || fail "case p: ensure must exit 0 when the only toward-disabled item is full-offboard-only AND degraded (must not permanently wedge the run) (got rc=$rcP1): $outP1"
-echo "$outP1" | grep -qF 'degraded-offboard-item' || fail "case p: the advisory line should name degraded-offboard-item (got: $outP1)"
-echo "$outP1" | grep -qi 'degraded' || fail "case p: the advisory line should say the item is degraded (got: $outP1)"
-echo "$outP1" | grep -qF 'himmelctl uninstall' || fail "case p: the advisory line should point at 'himmelctl uninstall' (got: $outP1)"
-echo "$outP1" | grep -qF 'if you want it fully removed' || fail "case p: the advisory should use the degraded-specific phrasing, distinct from the present-blocker's error (got: $outP1)"
-if echo "$outP1" | grep -qF 'to remove it'; then
+grepq "$outP1" -F 'degraded-offboard-item' || fail "case p: the advisory line should name degraded-offboard-item (got: $outP1)"
+grepq "$outP1" -i 'degraded' || fail "case p: the advisory line should say the item is degraded (got: $outP1)"
+grepq "$outP1" -F 'himmelctl uninstall' || fail "case p: the advisory line should point at 'himmelctl uninstall' (got: $outP1)"
+grepq "$outP1" -F 'if you want it fully removed' || fail "case p: the advisory should use the degraded-specific phrasing, distinct from the present-blocker's error (got: $outP1)"
+if grepq "$outP1" -F 'to remove it'; then
   fail "case p: a degraded full-offboard-only item must NOT surface the 'present'-only blocker error shape (got: $outP1)"
 fi
 # settings.json is untouched -- full-offboard-only never unwires (no

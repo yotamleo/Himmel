@@ -24,6 +24,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 preflight="$repo_root/scripts/preflight-adopter.sh"
 lib="$repo_root/scripts/lib/preflight-adopter.sh"
@@ -91,8 +101,8 @@ mkdir -p "$real_jira_node_modules"
 out=$(PATH="$c1bin:$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "clean env: expected exit 0, got $rc"
-printf '%s' "$out" | grep -q '0 warnings' || fail "clean env: missing '0 warnings' summary (got: $out)"
-if printf '%s' "$out" | grep -q 'WARN:'; then fail "clean env: unexpected WARN line (got: $out)"; fi
+grepq "$out" '0 warnings' || fail "clean env: missing '0 warnings' summary (got: $out)"
+if grepq "$out" 'WARN:'; then fail "clean env: unexpected WARN line (got: $out)"; fi
 echo "ok: standalone clean env reports 0 warnings, exit 0"
 
 # ── 2. pipx present (uv absent) -> clean, exit 0 (F6: the check is uv OR pipx) ─
@@ -103,8 +113,8 @@ mkdir -p "$real_jira_node_modules"
 out=$(PATH="$c2bin:$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "pipx-only: expected exit 0, got $rc"
-printf '%s' "$out" | grep -q '0 warnings' || fail "pipx-only: missing '0 warnings' summary (got: $out)"
-if printf '%s' "$out" | grep -q 'WARN:'; then fail "pipx-only: unexpected WARN line (got: $out)"; fi
+grepq "$out" '0 warnings' || fail "pipx-only: missing '0 warnings' summary (got: $out)"
+if grepq "$out" 'WARN:'; then fail "pipx-only: unexpected WARN line (got: $out)"; fi
 echo "ok: pipx present (uv absent) reports 0 warnings, exit 0"
 
 # ── 3. uv+pipx both absent -> WARN, exit 0 (non-strict default) ──────────────
@@ -113,8 +123,8 @@ mkdir -p "$real_jira_node_modules"
 out=$(PATH="$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "uv/pipx gap: non-strict should exit 0, got $rc"
-printf '%s' "$out" | grep -q "neither 'uv' nor 'pipx' found" || fail "uv/pipx gap: missing WARN text (got: $out)"
-printf '%s' "$out" | grep -q 'warning(s)' || fail "uv/pipx gap: missing warning-count summary (got: $out)"
+grepq "$out" "neither 'uv' nor 'pipx' found" || fail "uv/pipx gap: missing WARN text (got: $out)"
+grepq "$out" 'warning(s)' || fail "uv/pipx gap: missing warning-count summary (got: $out)"
 echo "ok: uv+pipx absent WARNs and exits 0 (non-strict)"
 
 # ── 4. node present + npm absent -> WARN, exit 0 (non-strict) ────────────────
@@ -126,7 +136,7 @@ mkdir -p "$real_jira_node_modules"
 out=$(PATH="$c4bin:$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "node-without-npm: non-strict should exit 0, got $rc"
-printf '%s' "$out" | grep -q "'node' found but 'npm' is missing" || fail "node-without-npm: missing WARN text (got: $out)"
+grepq "$out" "'node' found but 'npm' is missing" || fail "node-without-npm: missing WARN text (got: $out)"
 echo "ok: node-without-npm WARNs and exits 0 (non-strict)"
 
 # ── 5. jira dist+node_modules absent -> WARN, exit 0 (non-strict) ────────────
@@ -135,7 +145,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$c5bin/uv"; chmod +x "$c5bin/uv"
 # real_jira_dist / real_jira_node_modules stay absent (moved-aside baseline).
 out=$(PATH="$c5bin:$work/bin:$tool_free_path" bash "$preflight" 2>&1); rc=$?
 [ "$rc" -eq 0 ] || fail "jira-dist gap: non-strict should exit 0, got $rc"
-printf '%s' "$out" | grep -q 'scripts/jira/dist/index.js not built' || fail "jira-dist gap: missing WARN text (got: $out)"
+grepq "$out" 'scripts/jira/dist/index.js not built' || fail "jira-dist gap: missing WARN text (got: $out)"
 echo "ok: jira dist+node_modules absent WARNs and exits 0 (non-strict)"
 
 # ── 6. --strict with a WARN present -> exit 1 ─────────────────────────────────
@@ -146,7 +156,7 @@ set +e
 out=$(PATH="$c6bin:$work/bin:$tool_free_path" bash "$preflight" --strict 2>&1); rc=$?
 set -e
 [ "$rc" -eq 1 ] || fail "--strict with a WARN present should exit 1, got $rc"
-printf '%s' "$out" | grep -q 'Re-run with --strict' || true  # informational only when warns==0; not asserted here
+grepq "$out" 'Re-run with --strict' || true  # informational only when warns==0; not asserted here
 echo "ok: --strict exits 1 when any WARN is present"
 
 # ── 7. --strict with a fully clean env -> exit 0 ──────────────────────────────
@@ -157,7 +167,7 @@ mkdir -p "$real_jira_node_modules"
 out=$(PATH="$c7bin:$work/bin:$tool_free_path" bash "$preflight" --strict 2>&1); rc=$?
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "--strict with a clean env should exit 0, got $rc"
-printf '%s' "$out" | grep -q '0 warnings' || fail "--strict clean env: missing '0 warnings' summary (got: $out)"
+grepq "$out" '0 warnings' || fail "--strict clean env: missing '0 warnings' summary (got: $out)"
 echo "ok: --strict exits 0 on a fully clean env"
 
 # ── 8. structural: adopt.sh's require_tools() reuses the shared lib ──────────
@@ -181,8 +191,8 @@ echo "ok: adopt.sh's require_tools() calls the shared preflight-adopter.sh lib f
 # surface, not silently pass. Source the lib directly (not via the standalone
 # runner, which always sets HIMMEL_ROOT) in a subshell with it unset.
 out=$(bash -c 'unset HIMMEL_ROOT; source "'"$lib"'"; preflight_check_jira_dist; echo "rc=$?"' 2>&1)
-printf '%s' "$out" | grep -q 'HIMMEL_ROOT not set' || fail "F2: missing HIMMEL_ROOT-unset WARN text (got: $out)"
-printf '%s' "$out" | grep -q 'rc=1' || fail "F2: preflight_check_jira_dist should return 1 when HIMMEL_ROOT unset (got: $out)"
+grepq "$out" 'HIMMEL_ROOT not set' || fail "F2: missing HIMMEL_ROOT-unset WARN text (got: $out)"
+grepq "$out" 'rc=1' || fail "F2: preflight_check_jira_dist should return 1 when HIMMEL_ROOT unset (got: $out)"
 echo "ok: preflight_check_jira_dist WARNs + returns 1 when HIMMEL_ROOT is unset (F2)"
 
 echo "PASS"

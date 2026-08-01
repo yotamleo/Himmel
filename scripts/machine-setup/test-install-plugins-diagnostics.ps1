@@ -1,4 +1,4 @@
-# test-install-plugins-diagnostics.ps1 — install-plugins.ps1 surfaces a real
+﻿# test-install-plugins-diagnostics.ps1 — install-plugins.ps1 surfaces a real
 # step failure LOUDLY (with the CLI's own output) and exits non-zero via the
 # presence-verify, while a benign "already installed" re-run stays exit 0.
 # PowerShell twin of test-install-plugins-diagnostics.sh (HIMMEL-438 — C2).

@@ -2,12 +2,22 @@
 # shellcheck disable=SC2015
 # Hermetic tests for resume.sh — no git repo needed (uses --repo-root override).
 set -uo pipefail
+
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 HERE="$(cd "$(dirname "$0")" && pwd)"; R="$HERE/resume.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fails=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
-has(){ printf '%s' "$2" | grep -q "$3" && echo "ok - $1" || { echo "FAIL - $1: missing [$3]"; fails=$((fails+1)); }; }
-hasnt(){ printf '%s' "$2" | grep -q "$3" && { echo "FAIL - $1: unexpected [$3]"; fails=$((fails+1)); } || echo "ok - $1"; }
+has(){ grepq "$2" "$3" && echo "ok - $1" || { echo "FAIL - $1: missing [$3]"; fails=$((fails+1)); }; }
+hasnt(){ grepq "$2" "$3" && { echo "FAIL - $1: unexpected [$3]"; fails=$((fails+1)); } || echo "ok - $1"; }
 
 # --- fixture handover tree (Mode B bucket layout) + fake registry ---
 root="$tmp/handovers"; base="$root/yotamleo/himmel"

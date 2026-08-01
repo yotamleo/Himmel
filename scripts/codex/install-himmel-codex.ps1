@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Provision himmel under the Codex CLI (HIMMEL-597) — the codex-CLI half of the
   install split, twin of scripts/codex/install-himmel-codex.sh.

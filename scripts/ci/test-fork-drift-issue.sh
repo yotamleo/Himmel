@@ -3,6 +3,16 @@
 # so no gh, no auth, no network — asserts the issue-state decisions per guard
 # exit code from the emitted DRY: gh command lines.
 set -uo pipefail
+
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/scripts/ci/fork-drift-issue.sh"
 fails=0
@@ -12,8 +22,8 @@ bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 REP="$(mktemp)"; printf 'graphify: BEHIND (v0.9.16)\n' >"$REP"
 
 # has/hasnt: assert a substring is present / absent in captured output.
-has()   { if printf '%s' "$2" | grep -q "$1"; then ok "$3"; else bad "$3; out: $2"; fi; }
-hasnt() { if printf '%s' "$2" | grep -q "$1"; then bad "$3; out: $2"; else ok "$3"; fi; }
+has()   { if grepq "$2" "$1"; then ok "$3"; else bad "$3; out: $2"; fi; }
+hasnt() { if grepq "$2" "$1"; then bad "$3; out: $2"; else ok "$3"; fi; }
 
 # 1. Syntax.
 if bash -n "$SCRIPT"; then ok "syntax (bash -n)"; else bad "syntax"; fi

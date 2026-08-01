@@ -48,6 +48,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 lint="$repo_root/scripts/install/manifest-lint.mjs"
 manifest_path="$repo_root/scripts/install/manifest.json"
@@ -135,8 +145,8 @@ set +e
 errA=$(run_lint "$caseA" 2>&1); rcA=$?
 set -e
 [ "$rcA" -eq 1 ] || fail "case a: install.type:bogus should exit 1 (got rc=$rcA): $errA"
-echo "$errA" | grep -q "a:" || fail "case a: error should be a per-item message naming item 'a' (got: $errA)"
-echo "$errA" | grep -qi "install.type" || fail "case a: error should mention install.type (got: $errA)"
+grepq "$errA" "a:" || fail "case a: error should be a per-item message naming item 'a' (got: $errA)"
+grepq "$errA" -i "install.type" || fail "case a: error should mention install.type (got: $errA)"
 echo "ok: case a — install.type:bogus exits 1 with a per-item message"
 
 # ── case b: removable:"per-item" with no unwire -> exit 1 ─────────────────
@@ -146,7 +156,7 @@ set +e
 errB=$(run_lint "$caseB" 2>&1); rcB=$?
 set -e
 [ "$rcB" -eq 1 ] || fail "case b: removable:per-item with no unwire should exit 1 (got rc=$rcB): $errB"
-echo "$errB" | grep -q "a:" || fail "case b: error should be a per-item message naming item 'a' (got: $errB)"
+grepq "$errB" "a:" || fail "case b: error should be a per-item message naming item 'a' (got: $errB)"
 echo "ok: case b — removable:per-item with no unwire exits 1"
 
 # ── case c: scopes:["projects"] (typo) -> exit 1 ───────────────────────────
@@ -156,8 +166,8 @@ set +e
 errC=$(run_lint "$caseC" 2>&1); rcC=$?
 set -e
 [ "$rcC" -eq 1 ] || fail "case c: scopes:[projects] should exit 1 (got rc=$rcC): $errC"
-echo "$errC" | grep -q "a:" || fail "case c: error should be a per-item message naming item 'a' (got: $errC)"
-echo "$errC" | grep -qi "scopes" || fail "case c: error should mention scopes (got: $errC)"
+grepq "$errC" "a:" || fail "case c: error should be a per-item message naming item 'a' (got: $errC)"
+grepq "$errC" -i "scopes" || fail "case c: error should mention scopes (got: $errC)"
 echo "ok: case c — scopes:[projects] (not in enum) exits 1"
 
 # ── case d: unknown extra item key -> exit 1 ───────────────────────────────
@@ -167,8 +177,8 @@ set +e
 errD=$(run_lint "$caseD" 2>&1); rcD=$?
 set -e
 [ "$rcD" -eq 1 ] || fail "case d: unknown extra item key should exit 1 (got rc=$rcD): $errD"
-echo "$errD" | grep -q "a:" || fail "case d: error should be a per-item message naming item 'a' (got: $errD)"
-echo "$errD" | grep -qi "bogusExtraKey" || fail "case d: error should name the unknown key (got: $errD)"
+grepq "$errD" "a:" || fail "case d: error should be a per-item message naming item 'a' (got: $errD)"
+grepq "$errD" -i "bogusExtraKey" || fail "case d: error should name the unknown key (got: $errD)"
 echo "ok: case d — an unknown extra item key exits 1 (schema stays closed)"
 
 # ── case e: deps[] cycle (a deps b, b deps a) -> exit 1 ────────────────────
@@ -178,7 +188,7 @@ set +e
 errE=$(run_lint "$caseE" 2>&1); rcE=$?
 set -e
 [ "$rcE" -eq 1 ] || fail "case e: a deps[] cycle should exit 1 (got rc=$rcE): $errE"
-echo "$errE" | grep -qi "cycle" || fail "case e: error should name the cycle (got: $errE)"
+grepq "$errE" -i "cycle" || fail "case e: error should name the cycle (got: $errE)"
 echo "ok: case e — a deps[] cycle exits 1 naming it"
 
 # ── case f: the real manifest.json (post-v2) lints clean -> exit 0 ────────
@@ -195,7 +205,7 @@ set +e
 errG=$(run_lint "$caseG" 2>&1); rcG=$?
 set -e
 [ "$rcG" -eq 1 ] || fail "case g: a non-array scopes should exit 1 (got rc=$rcG): $errG"
-echo "$errG" | grep -qF "'scopes' must be an array" || fail "case g: error should say scopes must be an array (got: $errG)"
+grepq "$errG" -F "'scopes' must be an array" || fail "case g: error should say scopes must be an array (got: $errG)"
 echo "ok: case g — a non-array scopes exits 1 with a clear message (not a silently-skipped enum check)"
 
 # ── case h: a non-string deps[] entry (a number) -> exit 1, no crash ──────
@@ -205,8 +215,8 @@ set +e
 errH=$(run_lint "$caseH" 2>&1); rcH=$?
 set -e
 [ "$rcH" -eq 1 ] || fail "case h: a non-string deps[] entry should exit 1, not crash (got rc=$rcH): $errH"
-echo "$errH" | grep -qF 'must be a string' || fail "case h: error should say the deps entry must be a string (got: $errH)"
-if echo "$errH" | grep -qi 'TypeError\|stack\|at Object'; then
+grepq "$errH" -F 'must be a string' || fail "case h: error should say the deps entry must be a string (got: $errH)"
+if grepq "$errH" -i 'TypeError\|stack\|at Object'; then
   fail "case h: a non-string deps entry must not crash with a stack trace (got: $errH)"
 fi
 echo "ok: case h — a non-string deps[] entry exits 1 with a clear message, no crash"
@@ -218,7 +228,7 @@ set +e
 errI1=$(run_lint "$caseI_both" 2>&1); rcI1=$?
 set -e
 [ "$rcI1" -eq 1 ] || fail "case i: install.type:config with BOTH key and keys should exit 1 (got rc=$rcI1): $errI1"
-echo "$errI1" | grep -qF "exactly one of 'key'" || fail "case i: error should name the key XOR keys requirement (got: $errI1)"
+grepq "$errI1" -F "exactly one of 'key'" || fail "case i: error should name the key XOR keys requirement (got: $errI1)"
 echo "ok: case i (part 1) — install.type:config with both key and keys exits 1"
 
 caseI_keys="$work/case-i-keys.json"
@@ -239,7 +249,7 @@ set +e
 errJ=$(run_lint "$caseJ" 2>&1); rcJ=$?
 set -e
 [ "$rcJ" -eq 1 ] || fail "case j: a singular install.key against a 4-key probe should exit 1 (got rc=$rcJ): $errJ"
-echo "$errJ" | grep -qF 'singular' || fail "case j: error should call out the singular key vs multi-key probe mismatch (got: $errJ)"
+grepq "$errJ" -F 'singular' || fail "case j: error should call out the singular key vs multi-key probe mismatch (got: $errJ)"
 echo "ok: case j — install.type:config with a singular 'key' against a probe checking multiple keys exits 1"
 
 # ── case k (CR fix): probe has 4 keys + install.keys missing one -> exit 1 ─
@@ -252,7 +262,7 @@ set +e
 errK=$(run_lint "$caseK" 2>&1); rcK=$?
 set -e
 [ "$rcK" -eq 1 ] || fail "case k: install.keys missing one of the probe's 4 keys should exit 1 (got rc=$rcK): $errK"
-echo "$errK" | grep -qF 'missing=[D]' || fail "case k: error should name the missing key 'D' (got: $errK)"
+grepq "$errK" -F 'missing=[D]' || fail "case k: error should name the missing key 'D' (got: $errK)"
 echo "ok: case k — install.keys missing one of the probe's keys exits 1, naming the missing key"
 
 # ── case l (CR fix): install.keys == the probe's key set exactly -> accepted
@@ -281,8 +291,8 @@ set +e
 errM=$(run_lint "$caseM" 2>&1); rcM=$?
 set -e
 [ "$rcM" -eq 1 ] || fail "case m: mismatched install/unwire wire targets should exit 1 (got rc=$rcM): $errM"
-echo "$errM" | grep -qF "install.target 'statusline'" || fail "case m: error should name install.target 'statusline' (got: $errM)"
-echo "$errM" | grep -qF "unwire.target 'pretooluse-hooks'" || fail "case m: error should name unwire.target 'pretooluse-hooks' (got: $errM)"
+grepq "$errM" -F "install.target 'statusline'" || fail "case m: error should name install.target 'statusline' (got: $errM)"
+grepq "$errM" -F "unwire.target 'pretooluse-hooks'" || fail "case m: error should name unwire.target 'pretooluse-hooks' (got: $errM)"
 echo "ok: case m — mismatched install/unwire wire targets exit 1, naming both"
 
 # ── case n (CR fix): install/unwire both type:"wire" with MATCHING targets
@@ -315,11 +325,11 @@ set +e
 errO1=$(run_lint "$caseO_missing" 2>&1); rcO1=$?
 set -e
 [ "$rcO1" -eq 1 ] || fail "case o: unwire present with NO removable should exit 1 (got rc=$rcO1): $errO1"
-echo "$errO1" | grep -qF "removable === 'per-item' iff 'unwire' is present" \
+grepq "$errO1" -F "removable === 'per-item' iff 'unwire' is present" \
   || fail "case o: error should identify the removable<=>unwire relationship (got: $errO1)"
 # hasUnwire=true distinguishes THIS direction from case b's (hasUnwire=false) —
 # proves the message carries the converse half, not just the one case b pins.
-echo "$errO1" | grep -qF "hasUnwire=true" \
+grepq "$errO1" -F "hasUnwire=true" \
   || fail "case o: error should report hasUnwire=true (the unwire-present direction, distinct from case b) (got: $errO1)"
 echo "ok: case o (part 1) — unwire present with no removable exits 1, naming the biconditional"
 
@@ -333,7 +343,7 @@ set +e
 errO2=$(run_lint "$caseO_wrong" 2>&1); rcO2=$?
 set -e
 [ "$rcO2" -eq 1 ] || fail "case o: unwire present with removable:'full-offboard-only' (not per-item) should exit 1 (got rc=$rcO2): $errO2"
-echo "$errO2" | grep -qF "removable === 'per-item' iff 'unwire' is present" \
+grepq "$errO2" -F "removable === 'per-item' iff 'unwire' is present" \
   || fail "case o: error should identify the removable<=>unwire relationship (got: $errO2)"
 echo "ok: case o (part 2) — unwire present with removable not 'per-item' exits 1, naming the biconditional"
 
@@ -346,7 +356,7 @@ set +e
 errP=$(run_lint "$caseP" 2>&1); rcP=$?
 set -e
 [ "$rcP" -eq 1 ] || fail "case p: offboard:'bogus' should exit 1 (got rc=$rcP): $errP"
-echo "$errP" | grep -qF "offboard 'bogus' not in [unwire, advise, keep]" \
+grepq "$errP" -F "offboard 'bogus' not in [unwire, advise, keep]" \
   || fail "case p: error should name the bad offboard value and the closed vocabulary (got: $errP)"
 echo "ok: case p (part 1) — offboard:'bogus' (not in the closed vocabulary) exits 1"
 

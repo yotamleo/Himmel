@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
   Hermetic tests for scripts/claude-routed.ps1 (HIMMEL-666) - Windows twin of
   test-claude-routed.sh, itself a copy-and-edit of the WS1 claude-glm suite where

@@ -9,6 +9,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NEW_WT="$SCRIPT_DIR/_new-worktree.sh"
 
@@ -114,7 +124,7 @@ if ! _has_timeout; then
     _skip "$NAME" "neither 'timeout' nor 'gtimeout' found — cannot exercise timeout wrapper"
 else
     _run "$BRANCH_MERGED" "GH_CMD=$GH_MERGED"
-    if [ "$_LAST_RC" -eq 1 ] && printf '%s' "$_LAST_STDERR" | grep -q "maps to a merged PR"; then
+    if [ "$_LAST_RC" -eq 1 ] && grepq "$_LAST_STDERR" "maps to a merged PR"; then
         _pass "$NAME"
     else
         _fail "$NAME" "rc=$_LAST_RC stderr=[$_LAST_STDERR]"
@@ -134,13 +144,13 @@ else
     _run "$BRANCH_MERGED" "GH_CMD=$GH_MERGED" "REUSE_MERGED_BRANCH_OK=1"
     no_uniqueness_err=0
     reaches_fetch=0
-    if ! printf '%s' "$_LAST_STDERR" | grep -q "maps to a merged PR"; then
+    if ! grepq "$_LAST_STDERR" "maps to a merged PR"; then
         no_uniqueness_err=1
     fi
     # Either stderr mentions fetch, OR combined output does, OR exit != 0 for
     # a different reason than the uniqueness guard.
     combined="$_LAST_STDOUT $_LAST_STDERR"
-    if printf '%s' "$combined" | grep -qi "fetch\|remote\|network\|connect\|not found"; then
+    if grepq "$combined" -i "fetch\|remote\|network\|connect\|not found"; then
         reaches_fetch=1
     fi
     # Also acceptable: exit 1 for a reason OTHER than "maps to a merged PR"
@@ -161,12 +171,12 @@ if ! _has_timeout; then
 else
     _run "$BRANCH_CLEAN" "GH_CMD=$GH_NOT_MERGED"
     no_uniqueness_err=0
-    if ! printf '%s' "$_LAST_STDERR" | grep -q "maps to a merged PR"; then
+    if ! grepq "$_LAST_STDERR" "maps to a merged PR"; then
         no_uniqueness_err=1
     fi
     combined="$_LAST_STDOUT $_LAST_STDERR"
     reaches_fetch=0
-    if printf '%s' "$combined" | grep -qi "fetch\|remote\|network\|connect\|not found"; then
+    if grepq "$combined" -i "fetch\|remote\|network\|connect\|not found"; then
         reaches_fetch=1
     fi
     if [ "$no_uniqueness_err" -eq 1 ]; then
@@ -187,10 +197,10 @@ else
     _run "$BRANCH_CLEAN" "GH_CMD=$GH_ERROR"
     has_warn=0
     no_uniqueness_err=0
-    if printf '%s' "$_LAST_STDERR" | grep -q "uniqueness-vs-merged-PR check skipped"; then
+    if grepq "$_LAST_STDERR" "uniqueness-vs-merged-PR check skipped"; then
         has_warn=1
     fi
-    if ! printf '%s' "$_LAST_STDERR" | grep -q "maps to a merged PR"; then
+    if ! grepq "$_LAST_STDERR" "maps to a merged PR"; then
         no_uniqueness_err=1
     fi
     if [ "$has_warn" -eq 1 ] && [ "$no_uniqueness_err" -eq 1 ]; then

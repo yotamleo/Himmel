@@ -17,6 +17,16 @@
 # shellcheck disable=SC2016
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 HOOK="$(cd "$(dirname "$0")" && pwd)/auto-approve-safe-bash.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK"
 
@@ -29,7 +39,7 @@ j_pwsh() { printf '{"tool_name":"PowerShell","tool_input":{"command":%s}}' "$(pr
 decide() {
     local out
     out=$(printf '%s' "$1" | bash "$HOOK" 2>/dev/null)
-    if printf '%s' "$out" | grep -q '"permissionDecision":"allow"'; then
+    if grepq "$out" '"permissionDecision":"allow"'; then
         echo "ALLOW"
     else
         echo "PASS"
@@ -212,7 +222,7 @@ assert "unbalanced quote fails"    PASS  "$(decide "$(j_bash "node scripts/jira/
 decide_in() {
     local dir="$1" out
     out=$(cd "$dir" && printf '%s' "$2" | bash "$HOOK" 2>/dev/null)
-    if printf '%s' "$out" | grep -q '"permissionDecision":"allow"'; then echo "ALLOW"; else echo "PASS"; fi
+    if grepq "$out" '"permissionDecision":"allow"'; then echo "ALLOW"; else echo "PASS"; fi
 }
 
 FWL_ROOT=$(mktemp -d); if command -v cygpath >/dev/null 2>&1; then FWL_ROOT=$(cygpath -m "$FWL_ROOT"); fi

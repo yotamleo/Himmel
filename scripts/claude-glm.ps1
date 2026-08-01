@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
   claude-glm.ps1 - thin launcher: Claude Code on the Z.ai GLM flat-rate lane.
   HIMMEL-654 WS1 (child HIMMEL-665). PowerShell twin of scripts/claude-glm

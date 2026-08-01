@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # shell-lint.sh — Pre-emptive advisory shell lint (HIMMEL-478, C4).
 #
-# Runs shellcheck plus advisory byte/regex portability checks (BOM incl. *.ps1,
-# errexit leak, POSIX-ERE classes, mktemp template, bash-3.2 constructs, GNU-only
+# Runs shellcheck plus advisory byte/regex portability checks (BOM split by
+# file type, errexit leak, POSIX-ERE classes, mktemp template, bash-3.2 constructs, GNU-only
 # flags, echo -e/-n) BEFORE the commit attempt, so the autonomous loop fixes
 # issues instead of bouncing off the real pre-commit gate mid-run. The
 # authoritative gate (.pre-commit-config.yaml) stays the source of truth and is
@@ -15,8 +15,20 @@
 #   bash scripts/lint/shell-lint.sh --help
 #
 # Checks:
-#   [BOM]         UTF-8 byte-order mark at file start (breaks the shebang; SC1082).
-#                 Runs on shell AND *.ps1 files — a BOM breaks PowerShell too.
+#   [BOM]          UTF-8 BOM (EF BB BF) at file start on a SHELL file (breaks
+#                  the shebang; SC1082). Never reported on *.ps1 — a BOM is
+#                  CORRECT there (Windows PowerShell 5.1 needs it to decode
+#                  UTF-8; HIMMEL-1432). A UTF-16/UTF-32 BOM is also valid on a
+#                  .ps1 (PS5.1 decodes those natively) and never reported.
+#   [PS1-NO-BOM]   a *.ps1 carrying non-ASCII bytes (>0x7F), NO recognized BOM,
+#                  whose bytes VALIDATE as UTF-8 (iconv) — PS5.1 mojibake-decodes
+#                  a no-BOM UTF-8 file as cp1252 and fails to parse. Add the BOM
+#                  (EF BB BF). A pure-ASCII .ps1 without a BOM is fine.
+#   [PS1-ENCODING] a *.ps1 carrying non-ASCII bytes, NO recognized BOM, whose
+#                  bytes do NOT validate as UTF-8 (or iconv is absent so it
+#                  cannot be verified) — unsupported/unknown encoding. Inspect
+#                  manually; do NOT prepend a UTF-8 BOM (that corrupts a
+#                  non-UTF-8 payload such as UTF-16). (HIMMEL-1432 CR r3.)
 #   [errexit]     `set -e` / `-eu` / `-euo` / `-o errexit` — errexit leaks into a
 #                 sourcing shell; himmel convention is `set -uo pipefail`.
 #   [shellcheck]  the same linter the pre-commit gate runs (when installed).
@@ -55,14 +67,39 @@ _is_shell_file() {
     return 1
 }
 
-# Like _is_shell_file but also admits *.ps1 (the [BOM] check covers PowerShell
-# too). The shell-specific checks below still gate on _is_shell_file, so a .ps1
-# only ever reaches [BOM].
+# Like _is_shell_file but also admits *.ps1 (the BOM policy covers PowerShell: a
+# BOM is correct there, and a non-ASCII no-BOM .ps1 is the HIMMEL-1432 trap). The
+# shell-specific checks below still gate on _is_shell_file, so a .ps1 only ever
+# reaches the BOM policy ([BOM] never fires on .ps1; [PS1-NO-BOM] may).
 _is_lint_target() {
     case "$1" in
         *.ps1) return 0 ;;
     esac
     _is_shell_file "$1"
+}
+
+# _bom_kind FILE -> echoes one of: utf8 | utf16le | utf16be | utf32le | utf32be,
+# or prints nothing (no recognized Unicode byte-order mark). The 4-byte UTF-32
+# forms are probed BEFORE the 2-byte UTF-16 forms: UTF-32LE (FF FE 00 00) shares
+# its first two bytes (FF FE) with UTF-16LE, so a 2-byte-first check would
+# mis-tag a UTF-32LE file. od -An -tx1 is byte-accurate and locale-independent;
+# head -c4 on a <4-byte file yields fewer bytes, so the prefix globs still match.
+# (HIMMEL-1432 CR r3: PowerShell 5.1 decodes BOM'd UTF-16/UTF-32 natively, so a
+# .ps1 carrying any of these is a VALID script — never a defect to mutate. The
+# r2 code only recognized EF BB BF, so a UTF-16LE .ps1 (FF FE ...) fell into the
+# no-BOM branch and was told to "add a UTF-8 BOM", corrupting it. [codex-adv-r2-1].)
+_bom_kind() {
+    local h4
+    h4="$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')"
+    case "$h4" in
+        0000feff) printf 'utf32be'; return ;;
+        fffe0000) printf 'utf32le'; return ;;
+    esac
+    case "$h4" in
+        feff*) printf 'utf16be'; return ;;
+        fffe*) printf 'utf16le'; return ;;
+        efbbbf*) printf 'utf8'; return ;;
+    esac
 }
 
 # Print "lineno: line" for every non-comment line in file $1 matching ERE $2.
@@ -167,6 +204,10 @@ fi
 
 command -v shellcheck >/dev/null 2>&1 && HAVE_SHELLCHECK=1 || HAVE_SHELLCHECK=0
 [ "$HAVE_SHELLCHECK" -eq 1 ] || printf 'shell-lint: shellcheck not installed — running BOM + errexit checks only\n' >&2
+# iconv validates a no-BOM .ps1's bytes as UTF-8 before prescribing a BOM add
+# (HIMMEL-1432 CR r3). Ships with Git Bash; when absent the .ps1 policy fails
+# SAFE (never prescribes an automated UTF-8-BOM add on unverified bytes).
+command -v iconv >/dev/null 2>&1 && HAVE_ICONV=1 || HAVE_ICONV=0
 
 CHECKED=0
 MISSING=0
@@ -187,16 +228,113 @@ while IFS= read -r f; do
     file_issues=0
     file_report=""
 
-    # [BOM] — first three bytes EF BB BF. Runs on shell AND *.ps1 (a BOM breaks
-    # PowerShell too). No 2>/dev/null: a genuine od/head failure should surface,
-    # not be absorbed into a false "no BOM".
-    first3="$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')"
-    if [ "$first3" = "efbbbf" ]; then
-        file_report="$file_report  [BOM] UTF-8 byte-order mark at file start — strip it (breaks shebang; shellcheck SC1082)"$'\n'
-        file_issues=$((file_issues + 1))
+    # BOM policy is split by file type (HIMMEL-1432):
+    #   shell (.sh / sh shebang) — a UTF-8 BOM is an ERROR: it breaks the
+    #     shebang (shellcheck SC1082). Report it ([BOM]).
+    #   *.ps1 — a UTF-8 BOM is CORRECT and REQUIRED for non-ASCII content:
+    #     Windows PowerShell 5.1 decodes a no-BOM UTF-8 file as cp1252
+    #     (mojibake) and its parser then explodes on em-dashes etc. A UTF-8 BOM
+    #     is therefore NEVER reported on a .ps1. A UTF-16/UTF-32 BOM is ALSO
+    #     valid (PS5.1 decodes those natively) and never mutated. The trap is a
+    #     .ps1 carrying non-ASCII bytes (>0x7F) but NO recognized BOM — but only
+    #     prescribe adding a UTF-8 BOM when the bytes actually validate as
+    #     UTF-8; otherwise the payload is some other encoding and prepending
+    #     EF BB BF would corrupt it ([PS1-ENCODING], manual triage). A pure-ASCII
+    #     .ps1 without a BOM is fine (the BOM is optional there).
+    # CR r3 (HIMMEL-1432): r2 recognized only EF BB BF, so a UTF-16LE .ps1
+    # (FF FE ...) fell into the no-BOM branch, read as non-ASCII, and was told
+    # to "add a UTF-8 BOM" — corrupting a valid script. [codex-adv-r2-1].
+    # No 2>/dev/null on od/head: a genuine failure should surface, not be
+    # absorbed into a false "no BOM".
+    bom="$(_bom_kind "$f")"
+    if [ -n "$bom" ]; then
+        # A recognized Unicode byte-order mark is present.
+        case "$bom" in
+            utf8)
+                case "$f" in
+                    *.ps1) : ;;  # UTF-8 BOM is correct for .ps1 — never report
+                    *)
+                        file_report="$file_report  [BOM] UTF-8 byte-order mark at file start — strip it (breaks the shebang; shellcheck SC1082)"$'\n'
+                        file_issues=$((file_issues + 1)) ;;
+                esac ;;
+            utf16le|utf16be|utf32le|utf32be)
+                # Split by file type exactly like the utf8 arm above:
+                #   *.ps1 — PowerShell 5.1 decodes BOM'd UTF-16/UTF-32 natively,
+                #     so a .ps1 carrying one is a VALID script, never a defect to
+                #     mutate (HIMMEL-1432 CR r3 [codex-adv-r2-1]).
+                #   everything else (shell) — the first two bytes MUST be the `#!`
+                #     shebang; ANY byte-order mark (UTF-16LE/BE or UTF-32LE/BE)
+                #     pushes `#!` off byte 0 and the kernel won't exec the file.
+                #     This is the SAME defect class as a UTF-8 BOM on a shell
+                #     script, so reuse the [BOM] tag. You cannot just strip the
+                #     mark: the whole payload is UTF-16/32, not only the signature,
+                #     so the file must be re-saved as UTF-8 WITHOUT a BOM.
+                #     (HIMMEL-1432 CR r4 [codex-r3p-1]: r3 over-broadly blessed
+                #     UTF-16/32 on EVERY file type, so a UTF-16-BOM'd .sh passed
+                #     the linter with an explicit clean bill of health.)
+                case "$f" in
+                    *.ps1) : ;;
+                    *)
+                        case "$bom" in
+                            utf16le) bom_name='UTF-16LE' ;;
+                            utf16be) bom_name='UTF-16BE' ;;
+                            utf32le) bom_name='UTF-32LE' ;;
+                            utf32be) bom_name='UTF-32BE' ;;
+                        esac
+                        file_report="$file_report  [BOM] ${bom_name} byte-order mark at file start — a shell script cannot start with any BOM (breaks the shebang); convert the file to UTF-8 WITHOUT a BOM"$'\n'
+                        file_issues=$((file_issues + 1)) ;;
+                esac ;;
+        esac
+    else
+        # No recognized BOM. For .ps1, flag non-ASCII content that lacks the BOM
+        # it needs — but only prescribe adding a UTF-8 BOM when the bytes really
+        # are UTF-8; otherwise flag an unknown encoding (fail-safe: never mutate).
+        case "$f" in
+            *.ps1)
+                # Non-ASCII byte (>0x7F) present? tr deletes every 0x00-0x7F
+                # byte; any remaining byte means non-ASCII content (e.g. an
+                # em-dash) that PS5.1 would mojibake-decode without a BOM.
+                # LC_ALL=C forces BYTE-WISE processing on BOTH stages: an env
+                # prefix coats only the first pipeline command, so grep must be
+                # coated too. Otherwise, in a UTF-8 locale, '.' does not match a
+                # lone invalid-UTF-8 byte (0xA0/0xFF) and the non-ASCII check
+                # silently misses it — [PS1-ENCODING] never fired, reopening the
+                # very corruption path this policy exists to gate. (HIMMEL-1432
+                # CR r5; without this test 16f goes red on a UTF-8 machine.)
+                # Full-consuming probe (CR r5, codex-adv): `tr | grep -q` under
+                # this script's own pipefail is the HIMMEL-1430 SIGPIPE class —
+                # grep -q exits on the first non-ASCII byte, tr takes SIGPIPE on
+                # a file larger than a pipe buffer, the pipeline reads nonzero,
+                # and a heavily non-ASCII .ps1 silently SKIPS the encoding
+                # guard. `wc -c` consumes everything, so the pipeline result is
+                # size-independent.
+                if [ "$(LC_ALL=C tr -d '\000-\177' < "$f" | wc -c)" -gt 0 ]; then
+                    if [ "$HAVE_ICONV" -eq 1 ] && iconv -f UTF-8 -t UTF-8 "$f" >/dev/null 2>&1; then
+                        file_report="$file_report  [PS1-NO-BOM] non-ASCII bytes present but no UTF-8 BOM — Windows PowerShell 5.1 decodes this as cp1252 mojibake and fails to parse; add a UTF-8 BOM (EF BB BF) (HIMMEL-1432)"$'\n'
+                    else
+                        # No recognized BOM AND not valid UTF-8 (or iconv absent
+                        # so it CANNOT be verified) — never prescribe an
+                        # automated UTF-8-BOM add; that would corrupt a
+                        # non-UTF-8 payload. Routing to operator-gated triage is
+                        # done by the [PS1-ENCODING] TAG: self-heal's classifier
+                        # has a dedicated manual-triage arm matching it, checked
+                        # BEFORE the generic lint match. (Avoiding the bare token
+                        # "BOM" does NOT route here — it only dodged _RE_ENCODING;
+                        # the report's "shell-lint" summary token still matched
+                        # _RE_LINT and dispatched a fix. HIMMEL-1432 CR r5.)
+                        if [ "$HAVE_ICONV" -eq 1 ]; then
+                            file_report="$file_report  [PS1-ENCODING] non-ASCII bytes, no recognized byte-order signature, and the bytes are not valid UTF-8 — unsupported/unknown encoding; inspect manually. Do NOT prepend the EF BB BF UTF-8 signature (it corrupts a non-UTF-8 payload such as UTF-16). (HIMMEL-1432)"$'\n'
+                        else
+                            file_report="$file_report  [PS1-ENCODING] non-ASCII bytes, no recognized byte-order signature, encoding UNVERIFIED (iconv not installed) — inspect manually. Do NOT prepend the EF BB BF UTF-8 signature. (HIMMEL-1432)"$'\n'
+                        fi
+                    fi
+                    file_issues=$((file_issues + 1))
+                fi ;;
+        esac
     fi
 
-    # The remaining checks are shell-specific; a .ps1 only reached [BOM] above.
+    # The remaining checks are shell-specific; a .ps1 only reached the BOM policy
+    # above ([BOM] never fires on .ps1; [PS1-NO-BOM] may have).
     if _is_shell_file "$f"; then
 
     # [errexit] — set -e / -eu / -euo / -o errexit in the prologue. A real
@@ -283,7 +421,7 @@ EOF
 
     fi   # end advisory checks (_skip_advisory)
 
-    fi   # end shell-specific checks (gate on _is_shell_file; .ps1 hit only [BOM])
+    fi   # end shell-specific checks (gate on _is_shell_file; .ps1 hit BOM policy only)
 
     if [ "$file_issues" -gt 0 ]; then
         ISSUE_FILES=$((ISSUE_FILES + 1))

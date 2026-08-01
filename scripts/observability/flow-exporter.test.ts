@@ -608,6 +608,49 @@ test("shipped-graph age skips a duplicate corpus label (second occurrence) rathe
   expect(body).toContain('# graphify_shipped_graph_age_seconds omitted: graphify_repos[1] duplicate corpus="himmel" (first occurrence wins)');
 });
 
+test("shipped-graph age rejects only line breaks in corpus; quotes/backslashes render as escaped labels", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeLines(ledger, []);
+  writeFileSync(config, JSON.stringify({
+    graphify_repos: [
+      { corpus: "with\nnewline", repo_path: "C:/nl" },
+      { corpus: "with\rreturn", repo_path: "C:/cr" },
+      { corpus: 'with"quote', repo_path: "C:/dq" },
+      { corpus: "with\\backslash", repo_path: "C:/bs" },
+      { corpus: "luna", repo_path: "C:/luna" },
+    ],
+  }));
+
+  const body = await renderMetrics({
+    nowMs: NOW, configPath: config, flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"),
+    graphAgeRunner: async () => ({ epochSeconds: Math.floor(NOW / 1000) }),
+  });
+
+  // Line breaks are the only genuinely dangerous characters: corpus is
+  // interpolated RAW into the omit comments, where a break would inject a new
+  // exposition line. Both newline and carriage return are rejected.
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted: graphify_repos[0] corpus contains a line break (newline or carriage return) that would inject a new Prometheus exposition line in a comment");
+  expect(body).toContain("# graphify_shipped_graph_age_seconds omitted: graphify_repos[1] corpus contains a line break (newline or carriage return) that would inject a new Prometheus exposition line in a comment");
+
+  // Quotes and backslashes are SAFE on the label path -- escLabel escapes
+  // backslash, newline, and double-quote, and sample() applies it to every
+  // label value -- so they are ACCEPTED and render as valid escaped labels
+  // (regression: the round-1 guard wrongly rejected these).
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="with\\"quote"}');
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="with\\\\backslash"}');
+
+  // The clean sibling still renders.
+  expect(body).toContain('graphify_shipped_graph_age_seconds{corpus="luna"}');
+
+  // A line break can never inject an exposition line: the rejected corpora
+  // produce no sample, and no fragment after a raw newline/CR ever starts a
+  // line of the exposition.
+  const expoLines = body.split(/\r\n|\r|\n/);
+  expect(expoLines.some((line) => line.startsWith("newline") || line.startsWith("return"))).toBe(false);
+});
+
 test("shipped-graph age family is omitted, fail-soft, when the runner errors or times out", async () => {
   const ledger = join(tmp, "flow-runs.jsonl");
   const config = join(tmp, "observability.json");

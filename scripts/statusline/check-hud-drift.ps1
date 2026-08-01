@@ -1,4 +1,4 @@
-# hud-drift: fail when the vendored claude-hud tree diverges from its recorded
+﻿# hud-drift: fail when the vendored claude-hud tree diverges from its recorded
 # pin (HIMMEL-718 Task 1.2). himmel-contributor-only (gated by .himmel-dev).
 #
 # Windows PowerShell twin of check-hud-drift.sh — keep both in lockstep.

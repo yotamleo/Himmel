@@ -15,6 +15,16 @@
 # Usage: bash scripts/hooks/test-check-npm-licenses.sh
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-npm-licenses.sh"
 
 FAILED=0
@@ -94,7 +104,7 @@ missed=$(printf '%s\n' \
     plugins/himmel-gh/package.json \
     plugins/himmel-jira/package.json)
 present=$( printf '%s\n' "$missed" | while IFS= read -r m; do
-    printf '%s\n' "$new_out" | grep -qxF "$m" && echo "$m"
+    grepq "$new_out" -xF "$m" && echo "$m"
 done | sort )
 assert_eq "all 4 formerly-missed packages are covered now" "$(printf '%s' "$missed" | sort)" "$present"
 
@@ -106,7 +116,7 @@ assert_eq "old find-scripts pattern catches only the 2 scripts/ packages" "$EXPE
 
 # Case 4: node_modules exclusion holds — neither the untracked nor the
 # force-tracked nested package.json appears in the new enumeration.
-if printf '%s\n' "$new_out" | grep -q 'node_modules'; then
+if grepq "$new_out" 'node_modules'; then
     echo "FAIL node_modules package.json excluded from enumeration"
     FAILED=$((FAILED + 1))
 else
@@ -130,7 +140,7 @@ BUN_REPO=$(mktemp -d)
     git -c commit.gpgsign=false commit -q -m "bun-only package"
 )
 bun_out=$( cd "$BUN_REPO" && bash "$SCRIPT" 2>&1 ); bun_rc=$?
-if [ "$bun_rc" -eq 0 ] && printf '%s' "$bun_out" | grep -qi "bun-managed"; then
+if [ "$bun_rc" -eq 0 ] && grepq "$bun_out" -i "bun-managed"; then
     echo "PASS bun-managed package skipped — gate passes (rc 0), no 'No packages found'"
 else
     echo "FAIL bun-managed skip: rc=$bun_rc"

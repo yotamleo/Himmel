@@ -36,9 +36,11 @@
 #        b. tag_release — compare a local version to the tracked repo's latest
 #           STABLE version tag (highest semver via sort -V, prereleases excluded —
 #           same discipline as the claude-obsidian fork override). mode `base`
-#           takes the version from `synced_base`; mode `probe` runs
-#           `version_command` and extracts the version via `version_regex` — for
-#           installed binaries/CLIs (rtk, twitter-cli). Optional `latest_source:
+#           takes the version from `synced_base` (carried forks and the six
+#           third-party Obsidian assets bundled in the luna template); mode
+#           `probe` runs `version_command` and extracts the version via
+#           `version_regex` — for installed binaries/CLIs (rtk, twitter-cli).
+#           Optional `latest_source:
 #           release` reads the maintainer's latest-non-prerelease via the Releases
 #           API instead of the highest semver tag — for upstreams whose tags are
 #           NON-MONOTONIC (a stale higher-semver tag would otherwise be a phantom
@@ -53,15 +55,13 @@
 #      by design) from a genuinely stale pin. An absent checkout / uninstalled
 #      tool / unreachable upstream is UNCHECKED, never drift.
 #
-# Additive-only-delta audit (true forks: claude-obsidian, telegram-himmel,
-# pr-review-toolkit-himmel, qmd) is a MANUAL step — verifying that each fork's
-# diff vs its synced base is the expected whitelisted delta and nothing else is a
-# per-fork judgment this script does not automate (the deltas differ per fork and
-# are reviewed in their own tickets). One-liner per fork, runnable when gh is up:
-#   claude-obsidian:    gh api 'repos/AgriciDaniel/claude-obsidian/compare/v1.9.2...yotamleo:claude-obsidian:v1.9.2-himmel.1'
-#   telegram-himmel:    diff the fork's server.ts vs the UPSTREAM_PIN sha256 base
-#   pr-review-tk-himmel: diff the fork's agents/code-reviewer.md vs the UPSTREAM_PIN base
-#   qmd:                gh api 'repos/tobi/qmd/compare/<base>...yotamleo:qmd:<fork-head>'  (base = last synced tag)
+# Fork-delta audit is split by storage shape. Registry forks (qmd and
+# claude-obsidian) are mechanically rebased + classified by
+# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence. A
+# NON-ADDITIVE claude-obsidian result is expected — it deliberately modifies
+# upstream files — and the unattended cadence stops at that report, never pushes.
+# Vendored single-file forks (telegram-himmel, pr-review-toolkit-himmel) still
+# require a manual file-level delta judgment when their UPSTREAM_PIN changes.
 #
 # Exit codes (a cadence keys its alert on these):
 #   0  every plugin verified CURRENT, OR gh is absent/unauthenticated (fail-open
@@ -289,8 +289,9 @@ done
 
 echo ""
 echo "== carried upstreams (registry + installed marketplaces; HIMMEL-869) =="
-# scripts/upstreams.json enumerates the fleet the two classes above don't reach
-# (claude-hud, claude-statusline, hermes-agent, rtk, twitter-cli); installed
+# scripts/upstreams.json enumerates the rest of the carried fleet (including
+# claude-hud, claude-obsidian's resync metadata, the luna template's bundled
+# third-party assets, hermes-agent, rtk, twitter-cli, graphify, and qmd); installed
 # marketplaces are discovered from known_marketplaces.json. Both paths are
 # env-overridable so the test harness can point at fixtures / a stubbed gh.
 REGISTRY="${DRIFT_REGISTRY:-$ROOT/scripts/upstreams.json}"

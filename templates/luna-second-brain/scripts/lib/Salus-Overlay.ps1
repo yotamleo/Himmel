@@ -1,4 +1,4 @@
-# salus medical-vault overlay (PowerShell twin of lib/salus-overlay.sh).
+﻿# salus medical-vault overlay (PowerShell twin of lib/salus-overlay.sh).
 # Dot-source then call: Invoke-SalusOverlay -RepoRoot <path>
 #   - code/config assets (.claude/skills/medic, egress hook, settings.json) →
 #     always (re)installed; settings.json only if absent.

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Content-preserving vault/template upgrade (HIMMEL-389) — PowerShell twin.
 

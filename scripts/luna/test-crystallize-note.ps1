@@ -1,4 +1,4 @@
-# test-crystallize-note.ps1 — hermetic smoke tests for crystallize-note.ps1
+﻿# test-crystallize-note.ps1 — hermetic smoke tests for crystallize-note.ps1
 # (HIMMEL-576). A `claude` stub (CRYSTALLIZE_CLAUDE_BIN -> claude-stub.ps1) keeps
 # the suite offline. Run: pwsh -NoProfile -File scripts/luna/test-crystallize-note.ps1
 $ErrorActionPreference = 'Stop'

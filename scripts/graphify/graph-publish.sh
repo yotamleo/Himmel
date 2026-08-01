@@ -287,8 +287,25 @@ remote_oid=$(git rev-parse --verify --quiet "origin/$BRANCH" 2>/dev/null || echo
 # origin between the OID recorded above and the push below, proving the
 # pinned lease actually rejects a stale-vs-current mismatch rather than
 # silently winning. A no-op unless the env var is set.
+# Contract (security hardening): GRAPH_PUBLISH_TEST_RACE_HOOK is a PATH to an
+# executable hook FILE, never a string of shell to eval -- an eval here would
+# let any caller inject arbitrary code into a script that pushes with
+# operator credentials. We execute that file directly, and refuse anything
+# that is not a present, executable regular file.
 if [ -n "${GRAPH_PUBLISH_TEST_RACE_HOOK:-}" ]; then
-    eval "$GRAPH_PUBLISH_TEST_RACE_HOOK"
+    hook_path="$GRAPH_PUBLISH_TEST_RACE_HOOK"
+    # Force a path-form invocation: a slash-less relative value would pass the
+    # -f/-x checks against ./name but PATH-search on execution, so the file
+    # validated and the file run could differ (CR round 1, codex-1).
+    case "$hook_path" in
+        */*) : ;;
+        *) hook_path="./$hook_path" ;;
+    esac
+    if [ ! -f "$hook_path" ] || [ ! -x "$hook_path" ]; then
+        echo "ERR graph-publish: GRAPH_PUBLISH_TEST_RACE_HOOK is set but '$hook_path' is not a present, executable file -- refusing to run it." >&2
+        exit 1
+    fi
+    "$hook_path"
 fi
 
 paths=("$GRAPH_PATH" "$REPORT_PATH")

@@ -68,6 +68,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -179,23 +189,23 @@ stamp_vault() {
 adopt_help=$(bash "$repo_root/scripts/adopt.sh" --help 2>&1)
 setup_help=$(bash "$repo_root/scripts/setup.sh" --help 2>&1)
 for f in '--profile' '--scope' '--luna-target'; do
-  printf '%s' "$adopt_help" | grep -qF -- "$f" \
+  grepq "$adopt_help" -F -- "$f" \
     || fail "flag-assertion: adopt.sh --help is missing derivable flag '$f' (script-flag drift)"
 done
-printf '%s' "$setup_help" | grep -q 'Usage' \
+grepq "$setup_help" 'Usage' \
   || fail "flag-assertion: setup.sh --help did not produce a usage line"
 # T5b: wire-luna-vault.sh takes 2 positional args (settings, vault) — no
 # --help support, so its own usage line (printed on arg-count mismatch)
 # is the script-drift signal.
 wire_usage=$(bash "$repo_root/scripts/lib/wire-luna-vault.sh" 2>&1 || true)
-printf '%s' "$wire_usage" | grep -qF 'vault-path' \
+grepq "$wire_usage" -F 'vault-path' \
   || fail "flag-assertion: wire-luna-vault.sh's usage line no longer mentions vault-path (script-flag drift)"
 # T5b: luna-upgrade-all.sh apply --vault must still be its documented surface,
 # and --force-unstamped must never be something the wizard derives.
 lua_help=$(bash "$repo_root/scripts/luna-upgrade-all.sh" --help 2>&1)
-printf '%s' "$lua_help" | grep -qF -- '--vault' \
+grepq "$lua_help" -F -- '--vault' \
   || fail "flag-assertion: luna-upgrade-all.sh --help is missing derivable flag '--vault' (script-flag drift)"
-printf '%s' "$lua_help" | grep -qF 'apply' \
+grepq "$lua_help" -F 'apply' \
   || fail "flag-assertion: luna-upgrade-all.sh --help no longer documents the apply subcommand (script-flag drift)"
 grep -q -- '--force-unstamped' "$wizard" \
   && fail "flag-assertion: bin.js must NEVER derive --force-unstamped for T5b (found the literal in source)"
@@ -213,9 +223,9 @@ out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseB: dry-run should succeed (got rc=$rc): $out"
-printf '%s' "$out" | grep -qE 'derived:.*adopt\.sh --profile core --scope project$' \
+grepq "$out" -E 'derived:.*adopt\.sh --profile core --scope project$' \
   || fail "caseB: expected 'adopt.sh --profile core --scope project' (got: $out)"
-printf '%s' "$out" | grep -q -- '--luna-target' \
+grepq "$out" -- '--luna-target' \
   && fail "caseB: vault=none must not derive --luna-target (got: $out)"
 echo "ok: caseB adopter + vault=none -> --profile core --scope project, no --luna-target"
 
@@ -232,13 +242,13 @@ out=$(PATH="$cC" HOME="$hC" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseC: dry-run should succeed (got rc=$rc): $out"
-printf '%s' "$out" | grep -qE 'derived:.*adopt\.sh --profile all --scope project --luna-target' \
+grepq "$out" -E 'derived:.*adopt\.sh --profile all --scope project --luna-target' \
   || fail "caseC: expected '--profile all --scope project --luna-target ...' (got: $out)"
-printf '%s' "$out" | grep -q 'caseC-luna' \
+grepq "$out" 'caseC-luna' \
   || fail "caseC: derived --luna-target should carry the vault path (got: $out)"
-printf '%s' "$out" | grep -qi 'luna-upgrade-all\.sh' \
+grepq "$out" -i 'luna-upgrade-all\.sh' \
   && fail "caseC: default-template must NOT call luna-upgrade-all.sh (got: $out)"
-printf '%s' "$out" | grep -qi 'wire-luna-vault\.sh' \
+grepq "$out" -i 'wire-luna-vault\.sh' \
   && fail "caseC: default-template must NOT call wire-luna-vault.sh (got: $out)"
 echo "ok: caseC adopter + vault=default-template -> --profile all --luna-target, no luna-upgrade-all/wire-luna-vault"
 
@@ -256,9 +266,9 @@ out=$(PATH="$cD" HOME="$hD" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "caseD: vault=existing unstamped (non-dry-run) should exit non-zero (got rc=$rc): $out"
-printf '%s' "$out" | grep -qi 'deferred' \
+grepq "$out" -i 'deferred' \
   || fail "caseD: expected the O1-deferral refusal message (got: $out)"
-printf '%s' "$out" | grep -q '^derived:' \
+grepq "$out" '^derived:' \
   && fail "caseD: vault=existing unstamped must derive nothing (got: $out)"
 [ -f "$fixtureD/wire-luna-vault-calls.log" ] \
   && fail "caseD: unstamped must NOT invoke wire-luna-vault.sh (got: $(cat "$fixtureD/wire-luna-vault-calls.log"))"
@@ -288,15 +298,15 @@ out=$(PATH="$cL" HOME="$hL" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseL: stamped dry-run should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -qE 'derived:.*wire-luna-vault\.sh' \
+grepq "$out" -E 'derived:.*wire-luna-vault\.sh' \
   || fail "caseL: expected a derived wire-luna-vault.sh line (got: $out)"
-printf '%s' "$out" | grep -qE 'derived:.*luna-upgrade-all\.sh apply --vault' \
+grepq "$out" -E 'derived:.*luna-upgrade-all\.sh apply --vault' \
   || fail "caseL: expected a derived 'luna-upgrade-all.sh apply --vault' line (got: $out)"
 wire_line=$(printf '%s' "$out" | grep -n 'wire-luna-vault\.sh' | head -1 | cut -d: -f1)
 apply_line=$(printf '%s' "$out" | grep -n 'luna-upgrade-all\.sh apply' | head -1 | cut -d: -f1)
 [ "$wire_line" -lt "$apply_line" ] \
   || fail "caseL: wire-luna-vault.sh must be derived BEFORE luna-upgrade-all.sh apply (got: $out)"
-printf '%s' "$out" | grep -q -- '--force-unstamped' \
+grepq "$out" -- '--force-unstamped' \
   && fail "caseL: stamped plan must never carry --force-unstamped (got: $out)"
 [ -f "$fixtureL/wire-luna-vault-calls.log" ] \
   && fail "caseL: --dry-run must NOT execute wire-luna-vault.sh (got: $(cat "$fixtureL/wire-luna-vault-calls.log"))"
@@ -329,9 +339,9 @@ grep -q -- 'apply --vault' "$fixtureM/luna-upgrade-all-calls.log" \
 # so match on the unique temp-dir basename rather than the full literal path.
 grep -q 'hM' "$fixtureM/wire-luna-vault-calls.log" \
   || fail "caseM: user-scope wire-luna-vault.sh should target the FAKE HOME's settings.json, not the real one (got: $(cat "$fixtureM/wire-luna-vault-calls.log"))"
-printf '%s' "$out" | grep -qF 'BACKUP' \
+grepq "$out" -F 'BACKUP' \
   || fail "caseM: expected the apply BACKUP line to be surfaced verbatim (got: $out)"
-printf '%s' "$out" | grep -qF 'To uninstall later: node scripts/himmelctl/bin.js uninstall' \
+grepq "$out" -F 'To uninstall later: node scripts/himmelctl/bin.js uninstall' \
   || fail "caseM: expected the uninstall footer after a successful stamped install (got: $out)"
 echo "ok: caseM stamped existing-vault accept -> wire then apply invoked, BACKUP surfaced, uninstall footer printed"
 
@@ -350,13 +360,13 @@ out=$(PATH="$cN" HOME="$hN" HIMMELCTL_INTERACTIVE=1 \
       <<<"n" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseN: stamped decline should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'declined; nothing run' \
+grepq "$out" 'declined; nothing run' \
   || fail "caseN: expected the decline message (got: $out)"
 [ -f "$fixtureN/wire-luna-vault-calls.log" ] \
   && fail "caseN: declining must NOT invoke wire-luna-vault.sh"
 [ -f "$fixtureN/luna-upgrade-all-calls.log" ] \
   && fail "caseN: declining must NOT invoke luna-upgrade-all.sh"
-printf '%s' "$out" | grep -qF 'To uninstall later' \
+grepq "$out" -F 'To uninstall later' \
   && fail "caseN: declining must NOT print the uninstall footer (got: $out)"
 echo "ok: caseN stamped existing-vault decline -> neither script invoked, no footer, rc=0"
 
@@ -386,9 +396,9 @@ outDry=$(PATH="$cQ" HOME="$hQ" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rcDry=$?
 set -e
 [ "$rcDry" -eq 0 ] || fail "caseQ(dry): should exit 0 (got rc=$rcDry): $outDry"
-printf '%s' "$outDry" | grep -q '^DRY: HANDOVER_DIR ->' \
+grepq "$outDry" '^DRY: HANDOVER_DIR ->' \
   || fail "caseQ(dry): expected a DRY HANDOVER_DIR preview line on the T5b branch (got: $outDry)"
-printf '%s' "$outDry" | grep -q '^DRY: claude plugin install github@claude-plugins-official --scope user$' \
+grepq "$outDry" '^DRY: claude plugin install github@claude-plugins-official --scope user$' \
   || fail "caseQ(dry): expected a DRY claude plugin-enable preview line on the T5b branch (got: $outDry)"
 
 set +e
@@ -410,7 +420,7 @@ grep -qE 'HANDOVER_DIR=.*caseQ-handover-target' "$fixtureQ/.env" \
   || fail "caseQ: expected the T5b branch to run the pluginSet=full enable step"
 grep -q 'plugin install github@claude-plugins-official --scope user' "$stubQ/claude-calls.log" \
   || fail "caseQ: missing github@claude-plugins-official enable on the T5b branch"
-printf '%s' "$out" | grep -qF 'To uninstall later' \
+grepq "$out" -F 'To uninstall later' \
   || fail "caseQ: expected the uninstall footer after a successful T5b install"
 echo "ok: caseQ T5b existing-vault STAMPED honors handover.mode=external + pluginSet=full (dry-run DRY previews + real writes on accept), matching the main path"
 
@@ -428,15 +438,15 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseE: dry-run should succeed (got rc=$rc): $out"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
-    printf '%s' "$out" | grep -qE 'derived:.*powershell -ExecutionPolicy Bypass -File .*setup\.ps1$' \
+    grepq "$out" -E 'derived:.*powershell -ExecutionPolicy Bypass -File .*setup\.ps1$' \
       || fail "caseE(win32): expected 'powershell -ExecutionPolicy Bypass -File ...setup.ps1' (got: $out)"
     ;;
   *)
-    printf '%s' "$out" | grep -qE 'derived:.*bash .*setup\.sh$' \
+    grepq "$out" -E 'derived:.*bash .*setup\.sh$' \
       || fail "caseE(posix): expected 'bash .../setup.sh' (got: $out)"
     ;;
 esac
-printf '%s' "$out" | grep '^derived:' | grep -q 'adopt\.sh' \
+grepq "$out" '^derived:.*adopt\.sh' \
   && fail "caseE: contributor must never derive adopt.sh (got: $out)"
 echo "ok: caseE contributor -> the platform-appropriate setup launcher, never adopt.sh"
 
@@ -454,13 +464,13 @@ out=$(PATH="$cF" HOME="$hF" HIMMELCTL_INTERACTIVE=1 \
       <<<"n" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseF: decline should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'Proceed? \[Y/n\]' \
+grepq "$out" 'Proceed? \[Y/n\]' \
   || fail "caseF: expected the confirm prompt to be shown (got: $out)"
-printf '%s' "$out" | grep -q 'declined; nothing run' \
+grepq "$out" 'declined; nothing run' \
   || fail "caseF: expected the decline message (got: $out)"
 [ -f "$fixtureF/adopt-calls.log" ] \
   && fail "caseF: declining must NOT invoke adopt.sh (got: $(cat "$fixtureF/adopt-calls.log"))"
-printf '%s' "$out" | grep -qF 'To uninstall later' \
+grepq "$out" -F 'To uninstall later' \
   && fail "caseF: declining must NOT print the uninstall footer (got: $out)"
 echo "ok: caseF interactive confirm decline -> adopt.sh not invoked, no footer, rc=0"
 
@@ -482,7 +492,7 @@ set -e
   || fail "caseG: a blank-Enter accept should invoke adopt.sh (no adopt-calls.log; out: $out)"
 grep -q -- '--profile core --scope project' "$fixtureG/adopt-calls.log" \
   || fail "caseG: adopt.sh should have been called with --profile core --scope project (got: $(cat "$fixtureG/adopt-calls.log"))"
-printf '%s' "$out" | grep -qF 'To uninstall later: node scripts/himmelctl/bin.js uninstall' \
+grepq "$out" -F 'To uninstall later: node scripts/himmelctl/bin.js uninstall' \
   || fail "caseG: expected the uninstall footer after a successful install (got: $out)"
 echo "ok: caseG interactive confirm accept (blank Enter) -> adopt.sh invoked with the exact derived argv, footer printed"
 
@@ -508,7 +518,7 @@ set -e
 [ "$rc" -eq 1 ] || fail "caseP: a failed adopt.sh should propagate rc=1 (got rc=$rc): $out"
 [ -f "$fixtureP/adopt-calls.log" ] \
   || fail "caseP: adopt.sh should still have been invoked"
-printf '%s' "$out" | grep -qF 'To uninstall later' \
+grepq "$out" -F 'To uninstall later' \
   && fail "caseP: a failed install must NOT print the uninstall footer (got: $out)"
 echo "ok: caseP failed install shell-out (rc=1) -> rc propagated, no uninstall footer"
 
@@ -526,7 +536,7 @@ out=$(PATH="$cH" HOME="$hH" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseH: non-interactive automation should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'Proceed?' \
+grepq "$out" 'Proceed?' \
   && fail "caseH: non-interactive --from-profile must NOT show the confirm (got: $out)"
 [ -f "$fixtureH/adopt-calls.log" ] \
   || fail "caseH: non-interactive --from-profile should auto-proceed and invoke adopt.sh"
@@ -549,7 +559,7 @@ out=$(PATH="$cO" HOME="$hO" HIMMELCTL_INTERACTIVE=1 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseO: closed-stdin decline should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'declined; nothing run' \
+grepq "$out" 'declined; nothing run' \
   || fail "caseO: expected the decline message on closed stdin (got: $out)"
 [ -f "$fixtureO/adopt-calls.log" ] \
   && fail "caseO: a closed stdin at the confirm must NOT invoke adopt.sh (got: $(cat "$fixtureO/adopt-calls.log"))"
@@ -633,11 +643,11 @@ out=$(PATH="$cS" HOME="$hS" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 1 ] || fail "caseS: a failed plugin-enable command should propagate rc=1 (got rc=$rc): $out"
-printf '%s' "$out" | grep -qE 'WARN: [0-9]+ of [0-9]+ plugin command\(s\) failed' \
+grepq "$out" -E 'WARN: [0-9]+ of [0-9]+ plugin command\(s\) failed' \
   || fail "caseS: expected the WARN failure-summary line (got: $out)"
 [ -f "$fixtureS/adopt-calls.log" ] \
   || fail "caseS: the core install should still have run before the plugin-enable step"
-printf '%s' "$out" | grep -qF 'To uninstall later' \
+grepq "$out" -F 'To uninstall later' \
   || fail "caseS: the uninstall footer should still print after a successful core install even if plugin-enable fails"
 echo "ok: caseS a failed plugin-enable command -> WARN summary printed, rc=1, uninstall footer still printed"
 
@@ -656,7 +666,7 @@ out=$(PATH="$cJ" HOME="$hJ" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseJ(external): should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -qE 'HANDOVER_DIR -> .*caseJ-handover-target.*\(written to .*\.env\)' \
+grepq "$out" -E 'HANDOVER_DIR -> .*caseJ-handover-target.*\(written to .*\.env\)' \
   || fail "caseJ(external): expected the ONE HANDOVER_DIR summary line (got: $out)"
 [ -f "$fixtureJ/.env" ] \
   || fail "caseJ(external): expected $fixtureJ/.env to be written"
@@ -677,7 +687,7 @@ out2=$(PATH="$cJ2" HOME="$hJ2" HIMMELCTL_INTERACTIVE=0 \
        </dev/null 2>&1); rc2=$?
 set -e
 [ "$rc2" -eq 0 ] || fail "caseJ(inline): should exit 0 (got rc=$rc2): $out2"
-printf '%s' "$out2" | grep -q 'HANDOVER_DIR ->' \
+grepq "$out2" 'HANDOVER_DIR ->' \
   && fail "caseJ(inline): handover.mode=inline must be a no-op (got: $out2)"
 [ -f "$fixtureJ2/.env" ] \
   && fail "caseJ(inline): handover.mode=inline must not write .env (got: $(cat "$fixtureJ2/.env"))"
@@ -704,7 +714,7 @@ out=$(PATH="$cR" HOME="$hR" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "caseR: a failed handover write should abort with non-zero rc (got rc=$rc): $out"
-printf '%s' "$out" | grep -qi 'failed to write HANDOVER_DIR' \
+grepq "$out" -i 'failed to write HANDOVER_DIR' \
   || fail "caseR: expected the handover-write failure message (got: $out)"
 [ -f "$fixtureR/adopt-calls.log" ] \
   && fail "caseR: a failed handover write must abort BEFORE the core install shell-out (adopt.sh was invoked: $(cat "$fixtureR/adopt-calls.log"))"
@@ -739,17 +749,17 @@ runT() { # runT <profile> — replay under the stubbed fixture, echo rc
 
 runT "$badT1"
 [ "$rcT" -eq 2 ] || fail "caseT(scope): missing scope should hard-error rc=2 (got rc=$rcT): $outT"
-printf '%s' "$outT" | grep -q "field 'scope'" \
+grepq "$outT" "field 'scope'" \
   || fail "caseT(scope): expected the error to name field 'scope' (got: $outT)"
 
 runT "$badT2"
 [ "$rcT" -eq 2 ] || fail "caseT(vault.mode): bogus vault.mode should hard-error rc=2 (got rc=$rcT): $outT"
-printf '%s' "$outT" | grep -q "field 'vault.mode'" \
+grepq "$outT" "field 'vault.mode'" \
   || fail "caseT(vault.mode): expected the error to name field 'vault.mode' (got: $outT)"
 
 runT "$badT3"
 [ "$rcT" -eq 2 ] || fail "caseT(handover.path): external without path should hard-error rc=2 (got rc=$rcT): $outT"
-printf '%s' "$outT" | grep -q "field 'handover.path'" \
+grepq "$outT" "field 'handover.path'" \
   || fail "caseT(handover.path): expected the error to name field 'handover.path' (got: $outT)"
 
 [ -f "$fixtureT/adopt-calls.log" ] \
@@ -788,11 +798,11 @@ set -e
   && fail "caseK: dry-run must NOT invoke claude (got: $(cat "$stubK/claude-calls.log"))"
 [ -f "$fixtureK/.env" ] \
   && fail "caseK: dry-run must NOT write .env (got: $(cat "$fixtureK/.env"))"
-printf '%s' "$out" | grep -q '^DRY: HANDOVER_DIR ->' \
+grepq "$out" '^DRY: HANDOVER_DIR ->' \
   || fail "caseK: expected a DRY HANDOVER_DIR preview line (got: $out)"
-printf '%s' "$out" | grep -q '^DRY: claude plugin install github@claude-plugins-official --scope user$' \
+grepq "$out" '^DRY: claude plugin install github@claude-plugins-official --scope user$' \
   || fail "caseK: expected a DRY claude plugin-enable preview line (got: $out)"
-printf '%s' "$out" | grep -qE 'derived:.*adopt\.sh --profile all --scope project --luna-target' \
+grepq "$out" -E 'derived:.*adopt\.sh --profile all --scope project --luna-target' \
   || fail "caseK: expected the --profile all --luna-target derived line (got: $out)"
 echo "ok: caseK --dry-run (full + external + default-template combo) -> zero mutation, DRY previews only"
 
@@ -828,9 +838,9 @@ out=$(PATH="$cU" HOME="$hU" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "caseU: simulated EACCES should fail before wiring (got rc=0): $out"
-printf '%s' "$out" | grep -q 'target settings.json is not writable' \
+grepq "$out" 'target settings.json is not writable' \
   || fail "caseU: expected the friendly settings writability diagnostic (got: $out)"
-printf '%s' "$out" | grep -q 'EACCES' \
+grepq "$out" 'EACCES' \
   || fail "caseU: expected the EACCES code in the diagnostic (got: $out)"
 [ -f "$fixtureU/wire-luna-vault-calls.log" ] \
   && fail "caseU: EACCES pre-check must abort before wire-luna-vault.sh"

@@ -30,6 +30,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -161,7 +171,7 @@ echo "ok: seed — project-scope install wired (wire-item green, project target 
 # ── case a + b: project -> user switch ──────────────────────────────────────
 switchOut=$( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cache")" HOME="$home" \
   "$node_bin" "$wizard" scope set user --yes </dev/null )
-echo "$switchOut" | grep -qF "scope switched 'project' -> 'user'" \
+grepq "$switchOut" -F "scope switched 'project' -> 'user'" \
   || fail "case a: expected the switch success line (got: $switchOut)"
 # (a) the OLD (project) scope's wiring is GONE:
 [ "$(jq '.statusLine' "$target/.claude/settings.json")" = "null" ] \
@@ -252,12 +262,12 @@ outC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CAC
   "$node_bin" "$wizard" scope set user --yes 2>&1 </dev/null ); rcC=$?
 set -e
 [ "$rcC" -eq 1 ] || fail "case c: fail-closed should exit 1 (got rc=$rcC): $outC"
-echo "$outC" | grep -qF 'stuck-item' || fail "case c: the refusal should name stuck-item (got: $outC)"
-if echo "$outC" | grep -qF 'wire-item'; then
+grepq "$outC" -F 'stuck-item' || fail "case c: the refusal should name stuck-item (got: $outC)"
+if grepq "$outC" -F 'wire-item'; then
   fail "case c: the unwireable wire-item must NOT be listed as a fail-closed blocker (got: $outC)"
 fi
-echo "$outC" | grep -qF 'HIMMEL-1172' || fail "case c: the refusal should mention HIMMEL-1172 (got: $outC)"
-echo "$outC" | grep -qi 'both scopes' || fail "case c: the refusal should explain the both-scopes risk (got: $outC)"
+grepq "$outC" -F 'HIMMEL-1172' || fail "case c: the refusal should mention HIMMEL-1172 (got: $outC)"
+grepq "$outC" -i 'both scopes' || fail "case c: the refusal should explain the both-scopes risk (got: $outC)"
 # zero mutation: fail-closed returns BEFORE any state save or dispatch — the
 # seeded project state entry must survive UN-re-keyed (no 'user' target added).
 [ "$(jq '.targets | has("user")' "$cacheC/state.json")" = "false" ] \
@@ -289,11 +299,11 @@ outD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACH
   "$node_bin" "$wizard" scope set user --dry-run </dev/null ); rcD=$?
 set -e
 [ "$rcD" -eq 0 ] || fail "case d: --dry-run should exit 0 (got rc=$rcD): $outD"
-echo "$outD" | grep -qF 'DRY: unwire wire-item (from project)' \
+grepq "$outD" -F 'DRY: unwire wire-item (from project)' \
   || fail "case d: dry-run should preview the unwire of the old scope (got: $outD)"
-echo "$outD" | grep -q 'DRY:.*wire-statusline' \
+grepq "$outD" 'DRY:.*wire-statusline' \
   || fail "case d: dry-run should preview the wire of the new scope (got: $outD)"
-echo "$outD" | grep -qF 'DRY: re-key state' || fail "case d: dry-run should preview the re-key (got: $outD)"
+grepq "$outD" -F 'DRY: re-key state' || fail "case d: dry-run should preview the re-key (got: $outD)"
 snapDAfter=$(snapshot_dir "$work")
 [ "$snapDBefore" = "$snapDAfter" ] || fail "case d: --dry-run should make ZERO mutations"
 [ "$(jq -r '.scope' "$cacheD/install-profile.json")" = "project" ] \
@@ -321,7 +331,7 @@ outE=$( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACH
   "$node_bin" "$wizard" scope set user 2>&1 </dev/null ); rcE=$?
 set -e
 [ "$rcE" -eq 2 ] || fail "case e: non-interactive scope switch without --yes should exit 2 (got rc=$rcE): $outE"
-echo "$outE" | grep -qF 'non-interactive scope switch requires --yes' \
+grepq "$outE" -F 'non-interactive scope switch requires --yes' \
   || fail "case e: expected the requires---yes message (got: $outE)"
 snapEAfter=$(snapshot_dir "$work")
 [ "$snapEBefore" = "$snapEAfter" ] || fail "case e: a refused non-interactive switch should make ZERO mutations"
@@ -348,7 +358,7 @@ outG=$( cd "$wrongG" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE
   "$node_bin" "$wizard" scope set user --yes 2>&1 </dev/null ); rcG=$?
 set -e
 [ "$rcG" -eq 2 ] || fail "case g: scope set from the wrong dir should exit 2 (got rc=$rcG): $outG"
-echo "$outG" | grep -qF 'not the recorded project install' \
+grepq "$outG" -F 'not the recorded project install' \
   || fail "case g: expected the wrong-directory refusal (got: $outG)"
 snapGAfter=$(snapshot_dir "$work")
 [ "$snapGBefore" = "$snapGAfter" ] || fail "case g: a wrong-directory refusal should make ZERO mutations"

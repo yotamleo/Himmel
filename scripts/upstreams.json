@@ -1,6 +1,37 @@
 {
-  "_comment": "Fleet-wide registry of carried upstreams for scripts/check-plugin-drift.sh (HIMMEL-869). Covers the upstreams NOT already reached by the two existing checks (marketplace.json pinned remotes incl. the claude-obsidian fork override in plugin-upstreams.json; vendored forks with a marketplace/plugins/<p>/UPSTREAM_PIN). Each entry names a TRUE upstream and how to detect that it has advanced past what himmel carries, so the goal state 'always sync + additive' (fork deltas stay strictly additive on a current upstream base) is observable. Two detection kinds, each a discriminated union on `kind`: (1) commit_head — compare a local commit to the tracked repo's default-branch HEAD. `mode: pin` takes the commit from `pinned_commit` (full or short SHA; short is resolved via gh). `mode: checkout` takes it from a local git checkout at `checkout_path` ($VAR/${VAR} expanded cross-platform by the script's python emitter; absent checkout -> UNCHECKED, never drift). Use `pin` for vendored copies (the dir is NOT a git checkout of upstream — claude-hud) and `checkout` for editable/installed git checkouts (hermes-agent). (2) tag_release — compare a local version to the tracked repo's latest STABLE version tag (highest semver via sort -V, prereleases excluded — same discipline as the claude-obsidian fork override). `mode: base` takes the version from `synced_base` (a recorded literal). `mode: probe` runs `version_command` (simple space-separated tokens) and extracts the version via `version_regex` (a pattern matching the bare version, e.g. `[0-9]+\\\\.[0-9]+\\\\.[0-9]+[0-9A-Za-z.-]*`; no capture group — grep -oE prints the whole match). Use `probe` for installed binaries/CLIs whose version is only knowable by running them (rtk, twitter-cli). A `mode: base` entry MAY additionally declare `version_pin` — `{file, template}`, where `template` is a LITERAL string carrying a `{version}` placeholder that occurs EXACTLY ONCE in `file` (e.g. graphify's `GRAPHIFY_VERSION:-{version}` in scripts/lib/graphify-bin.sh). That field is what makes the entry AUTO-BUMPABLE by scripts/upstreams/apply-drift-bump.sh (the nightly drift-fix cadence, HIMMEL-1323): the bumper rewrites the in-repo pin literal and `synced_base` together, so the two can never diverge. A `mode: probe` entry has no in-repo pin at all — its drift is repaired by upgrading the INSTALLED tool on this machine, so it MAY instead declare `upgrade` — `{command, unattended, note}`, where `command` is an argv ARRAY (never a shell string: no shell means no injection surface) run from the repo root. `scripts/upstreams/apply-tool-upgrade.sh` runs it, then re-probes and requires the version to have STRICTLY advanced — a command that exits 0 without moving the version is a failure, not a success. `unattended` is the policy gate the nightly cadence enforces structurally: the cadence always passes `--unattended`, which refuses any entry not marked `unattended: true`, so a Tier B tool (rtk) keeps a working one-command upgrader while still requiring an operator to pull the trigger. An entry WITHOUT `version_pin` (base) or `upgrade` (probe) is reported SKIP (manual) and never touched — that is deliberate for qmd, whose in-repo pin is a fork SHA (`_qmd_fork_ref`), not a version: moving its `synced_base` alone would flip the guard to CURRENT while the fork sits unrebased, laundering the very signal the entry exists to raise. `tier` is informational only (A=proactive-adopt, B=reactive-adopt per the HIMMEL-850 audit) and appears in the guard's output so a reader can tell expected-churn (Tier B usually reads BEHIND by design) from a genuine stale pin. Installed marketplaces (caveman, obsidian-skills, openai-codex, claude-video, claude-plugins-official, ...) are NOT listed here: they are discovered dynamically from ~/.claude/plugins/known_marketplaces.json (DRIFT_KNOWN_MARKETPLACES override) so the guard auto-covers any future marketplace install, each checked as a commit_head/checkout against its source repo. The additive-only-delta audit for the true forks (claude-obsidian, telegram-himmel, pr-review-toolkit-himmel, qmd) is a documented MANUAL step — see the script header.",
+  "_comment": "Fleet-wide registry of carried upstreams for scripts/check-plugin-drift.sh (HIMMEL-869/HIMMEL-1435). Covers the remaining shipped fleet and may deliberately overlap a detection surface when this registry supplies repair metadata: claude-obsidian is release-checked through plugin-upstreams.json AND declared here so the nightly fork-resync cadence can audit its rebase. Each entry names a TRUE upstream and how to detect that it has advanced past what himmel carries, so the goal state 'always sync + additive' (fork deltas stay strictly additive on a current upstream base) is observable. Two detection kinds, each a discriminated union on `kind`: (1) commit_head — compare a local commit to the tracked repo's default-branch HEAD. `mode: pin` takes the commit from `pinned_commit` (full or short SHA; short is resolved via gh). `mode: checkout` takes it from a local git checkout at `checkout_path` ($VAR/${VAR} expanded cross-platform by the script's python emitter; absent checkout -> UNCHECKED, never drift). Use `pin` for vendored copies (the dir is NOT a git checkout of upstream — claude-hud) and `checkout` for editable/installed git checkouts (hermes-agent). (2) tag_release — compare a local version to the tracked repo's latest STABLE version tag (highest semver via sort -V, prereleases excluded — same discipline as the claude-obsidian fork override). `mode: base` takes the version from `synced_base` (a recorded literal). `mode: probe` runs `version_command` (simple space-separated tokens) and extracts the version via `version_regex` (a pattern matching the bare version, e.g. `[0-9]+\\\\.[0-9]+\\\\.[0-9]+[0-9A-Za-z.-]*`; no capture group — grep -oE prints the whole match). Use `probe` for installed binaries/CLIs whose version is only knowable by running them (rtk, twitter-cli). A `mode: base` entry MAY additionally declare `version_pin` — `{file, template}`, where `template` is a LITERAL string carrying a `{version}` placeholder that occurs EXACTLY ONCE in `file` (e.g. graphify's `GRAPHIFY_VERSION:-{version}` in scripts/lib/graphify-bin.sh). That field is what makes the entry AUTO-BUMPABLE by scripts/upstreams/apply-drift-bump.sh (the nightly drift-fix cadence, HIMMEL-1323): the bumper rewrites the in-repo pin literal and `synced_base` together, so the two can never diverge. A `mode: probe` entry has no in-repo pin at all — its drift is repaired by upgrading the INSTALLED tool on this machine, so it MAY instead declare `upgrade` — `{command, unattended, note}`, where `command` is an argv ARRAY (never a shell string: no shell means no injection surface) run from the repo root. `scripts/upstreams/apply-tool-upgrade.sh` runs it, then re-probes and requires the version to have STRICTLY advanced — a command that exits 0 without moving the version is a failure, not a success. `unattended` is the policy gate the nightly cadence enforces structurally: the cadence always passes `--unattended`, which refuses any entry not marked `unattended: true`, so a Tier B tool (rtk) keeps a working one-command upgrader while still requiring an operator to pull the trigger. An entry WITHOUT `version_pin` (base) or `upgrade` (probe) is reported SKIP (manual) and never touched — that is deliberate for qmd, whose in-repo pin is a fork SHA (`_qmd_fork_ref`), not a version: moving its `synced_base` alone would flip the guard to CURRENT while the fork sits unrebased, laundering the very signal the entry exists to raise. `tier` is informational only (A=proactive-adopt, B=reactive-adopt per the HIMMEL-850 audit) and appears in the guard's output so a reader can tell expected-churn (Tier B usually reads BEHIND by design) from a genuine stale pin. Installed marketplaces (caveman, obsidian-skills, openai-codex, claude-video, claude-plugins-official, ...) are NOT listed here: they are discovered dynamically from ~/.claude/plugins/known_marketplaces.json (DRIFT_KNOWN_MARKETPLACES override) so the guard auto-covers any future marketplace install, each checked as a commit_head/checkout against its source repo. Registry forks (qmd and claude-obsidian) are mechanically rebased and delta-classified by resync-fork.sh; claude-obsidian is deliberately non-additive and its unattended audit stops without pushing. UPSTREAM_PIN vendored forks retain a manual file-level delta judgment — see the script header. The six luna-* rows cover third-party Obsidian plugin assets bundled in templates/luna-second-brain; they have no version_pin because repair is a reviewed re-vendor, so the nightly bump leg reports SKIP (manual) while detection remains automatic.",
+  "coverage_audit": {
+    "_comment": "HIMMEL-1435 zero-gap inventory across marketplace pins, plugin-upstreams overrides, vendored UPSTREAM_PIN files, this registry, and known_marketplaces dynamic discovery. Keep explicit SKIP rows for deliberately untracked carried code so absence never looks accidental.",
+    "covered_elsewhere": [
+      { "name": "marketplace pinned remotes", "surface": "marketplace/.claude-plugin/marketplace.json + scripts/plugin-upstreams.json" },
+      { "name": "telegram-himmel and pr-review-toolkit-himmel", "surface": "marketplace/plugins/*/UPSTREAM_PIN" },
+      { "name": "claude-hud", "surface": "claude-hud registry row + scripts/statusline/check-hud-drift.sh vendored-tree hash" },
+      { "name": "scripts/lib pinned binaries", "surface": "graphify and qmd registry rows; no other scripts/lib helper carries an upstream pin" },
+      { "name": "codex companion and installed marketplaces", "surface": "known_marketplaces.json dynamic discovery" }
+    ],
+    "skips": [
+      { "name": "claude-statusline", "reason": "Archived rollback-only subtree superseded by claude-hud; its fork is archived and re-vendor path deliberately closed (scripts/statusline/VENDORED.md)." },
+      { "name": "luna optional plugin pointers", "reason": "Templater, Excalidraw, Thino, and Charts are documentation-only suggestions, not bundled assets; user-managed Obsidian installs own their updates." }
+    ]
+  },
   "entries": [
+    {
+      "name": "claude-obsidian",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "AgriciDaniel/claude-obsidian",
+      "synced_base": "v2.1.0",
+      "tier": "A",
+      "fork": {
+        "fork_repo": "https://github.com/yotamleo/claude-obsidian.git",
+        "upstream_repo": "https://github.com/AgriciDaniel/claude-obsidian.git",
+        "pin_file": "marketplace/.claude-plugin/marketplace.json",
+        "pin_ref_template": "\"ref\": \"{ref}\"",
+        "work_dir": "${HOME}/.himmel/fork-resync",
+        "note": "Nightly resync audit target. The marketplace pin is an installable fork tag, not a SHA, so resync-fork.sh resolves the tag to its commit and reports the rebased SHA; after operator review the fork tag must be re-cut and the marketplace ref updated. The carried delta modifies upstream files by design (removed hooks and locking patches), so a NON-ADDITIVE audit is expected and still useful; unattended cadence stops after the report and never pushes. synced_base deliberately duplicates scripts/plugin-upstreams.json and tests require equality."
+      },
+      "note": "True fork yotamleo/claude-obsidian, installed from marketplace/.claude-plugin/marketplace.json at an immutable tag. Upstream release drift is also detected through scripts/plugin-upstreams.json; this row adds the fork-resync audit surface. Keep synced_base equal in both registries on every re-sync."
+    },
     {
       "name": "claude-hud",
       "kind": "commit_head",
@@ -50,11 +81,65 @@
       "note": "Installed CLI at ~/.local/bin/twitter (consumed by the telegram clipper). Tier A (proactive). UNCHECKED if twitter absent / --version yields no parseable version."
     },
     {
+      "name": "luna-calendar",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "liamcain/obsidian-calendar-plugin",
+      "synced_base": "1.5.10",
+      "tier": "A",
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/calendar. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor of main.js, manifest.json, and LICENSE together."
+    },
+    {
+      "name": "luna-dataview",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "blacksmithgu/obsidian-dataview",
+      "synced_base": "0.5.68",
+      "tier": "A",
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/dataview. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor of the complete licensed asset set."
+    },
+    {
+      "name": "luna-github-sync",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "kevinmkchin/Obsidian-GitHub-Sync",
+      "synced_base": "1.0.7",
+      "tier": "A",
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/github-sync. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json stays a credential-free template fixture."
+    },
+    {
+      "name": "luna-obsidian-banners",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "noatpad/obsidian-banners",
+      "synced_base": "1.3.3",
+      "tier": "A",
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/obsidian-banners. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor of the complete licensed asset set."
+    },
+    {
+      "name": "luna-obsidian-local-rest-api",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "coddingtonbear/obsidian-local-rest-api",
+      "synced_base": "4.0.1",
+      "tier": "A",
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/obsidian-local-rest-api. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json is intentionally never shipped."
+    },
+    {
+      "name": "luna-qmd-as-md-obsidian",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "danieltomasz/qmd-as-md-obsidian",
+      "synced_base": "0.3.4",
+      "tier": "A",
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/qmd-as-md-obsidian. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor of the complete licensed asset set."
+    },
+    {
       "name": "graphify",
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "Graphify-Labs/graphify",
-      "synced_base": "0.9.30",
+      "synced_base": "0.9.31",
       "latest_source": "release",
       "version_pin": { "file": "scripts/lib/graphify-bin.sh", "template": "GRAPHIFY_VERSION:-{version}" },
       "tier": "A",

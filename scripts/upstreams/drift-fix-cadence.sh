@@ -144,7 +144,7 @@ LEG_RESYNC="HIMMEL-ForkResync"
 # reason. The real runbooks live in .claude/commands/{drift-fix,fork-resync}.md
 # — these are only the invocations.
 PROMPT_DRIFT="Run /drift-fix to completion. This is the scheduled nightly upstream-drift repair cadence (HIMMEL-1323) - fully autonomous, no user prompts; follow the runbook exactly, STOP at the public PR, and report what landed."
-PROMPT_RESYNC="Run /fork-resync to completion. This is the scheduled nightly carried-fork re-sync cadence (HIMMEL-1323) - fully autonomous, no user prompts; follow the runbook exactly: unattended mode STOPS at the end of step 3 (the audit), NEVER runs resync-fork.sh --push, and does not open a branch or PR; report what landed."
+PROMPT_RESYNC="Run /fork-resync to completion. This is the scheduled nightly carried-fork re-sync cadence (HIMMEL-1323/HIMMEL-1435) - fully autonomous, no user prompts; audit every BEHIND scripts/upstreams.json entry with a fork block, including claude-obsidian (its non-additive delta is expected), then STOP at the end of step 3; NEVER run resync-fork.sh --push and do not open a branch or PR; report every result."
 
 # leg_prompt / leg_log / leg_runner <task-name> — the per-leg lookups, kept as
 # functions rather than an associative array (bash 3.2 has none; macOS ships 3.2).
@@ -1079,10 +1079,11 @@ drift-fix-cadence ARMED (HIMMEL-1323)
       registry entry is marked upgrade.unattended:true, bump every repo
       pin apply-drift-bump.sh can bump, land it on PRIVATE main, then
       open a PUBLIC PR and STOP.
-    - $LEG_RESYNC runs /fork-resync: rebase the carried fork against
-      upstream and audit it — a no-op most nights. The unattended run
-      ALWAYS stops after the audit (clean or conflicted alike): it never
-      pushes and opens nothing, leaving that for a human instead.
+    - $LEG_RESYNC runs /fork-resync: rebase every BEHIND registry fork
+      against upstream and audit it — a no-op most nights. The unattended
+      run ALWAYS stops after each audit (clean, conflicted, or deliberately
+      non-additive alike): it never pushes and opens nothing, leaving that
+      for a human instead.
 
   The public squash-merge stays yours — neither leg ever merges it.
 

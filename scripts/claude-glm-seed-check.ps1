@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
   claude-glm-seed-check.ps1 -- read-only drift check for the glm-launcher seeded set.
   HIMMEL-654 WS5 Task 1. PowerShell twin of scripts/claude-glm-seed-check.sh

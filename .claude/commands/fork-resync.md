@@ -52,9 +52,11 @@ Take every `BEHIND` entry that declares a **`fork`** block in
 Nothing BEHIND with a `fork` block → report "no fork drift" and stop. This is
 the expected outcome most nights; upstream tags rarely.
 
-The other fork families in the guard's output are **not** in scope and each needs
-its own judgment call — say so rather than touching them:
-- pinned remotes (`claude-obsidian`) — a fork-tag re-cut, tracked separately.
+Any registry entry that declares a `fork` block is in scope — since
+HIMMEL-1435 that includes the pinned-remote fork `claude-obsidian` (its
+marketplace pin is an installable fork TAG, so publishing is a tag re-cut, but
+the nightly rebase-audit runs here like any other fork). Still **not** in
+scope, each needing its own judgment call — say so rather than touching them:
 - vendored forks with an `UPSTREAM_PIN` (`telegram-himmel`,
   `pr-review-toolkit-himmel`) — a re-vendor plus a file-level delta audit.
 
@@ -73,7 +75,16 @@ remote without `--push`.
 | 1 | already on the target base | nothing to do; if the guard still says BEHIND, the registry disagrees with reality — report that, don't "fix" it by editing `synced_base` |
 | 2 | usage / registry / missing git or network | abort and report |
 | 3 | SKIP — no `fork` block | not in scope for this command |
-| 4 | rebase CONFLICTED, the delta is NOT additive, OR a pin-literal failure (`PIN_FILE_MISSING`/`PIN_NOT_FOUND`/`PIN_AMBIGUOUS`) | **stop and escalate** — see below |
+| 4 | rebase CONFLICTED, the delta is NOT additive, OR a pin-literal failure (`PIN_FILE_MISSING`/`PIN_NOT_FOUND`/`PIN_AMBIGUOUS`) | **stop and escalate** — see below; expected-non-additive entries are the exception |
+
+**Expected-non-additive entries (HIMMEL-1435).** An entry whose `fork.note`
+declares the delta non-additive BY DESIGN (`claude-obsidian`: it modifies
+upstream files — removed hooks, locking patches) reports rc 4 NON-ADDITIVE on
+every healthy audit. For such an entry that outcome IS the report — record the
+drift + rebase-feasibility result and **continue with the remaining forks**; do
+not escalate it and do not let it terminate an unattended sweep. A CONFLICTED
+rebase or a pin-literal failure on the SAME entry is still a real stop-and-
+escalate — only the declared non-additive shape is expected.
 
 **On rc 4, do not resolve the conflict yourself in an unattended run.** For a
 CONFLICTED/non-additive rebase, report: the conflicting paths (or the upstream

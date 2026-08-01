@@ -21,6 +21,16 @@
 #   9. Missing settings file  — exits 0 (nothing to reconcile).
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 script="$repo_root/scripts/machine-setup/reconcile-enabled-plugins.sh"
 [ -f "$script" ] || { echo "FAIL: $script not found" >&2; exit 1; }
@@ -62,7 +72,7 @@ echo "ok: whitelist — floor kept, template-false + unknown forced off, other k
 before=$(cat "$s")
 out=$(bash "$script" --settings "$s" --template "$tmpl")
 [ "$(cat "$s")" = "$before" ] || fail "second run must not mutate the file"
-printf '%s' "$out" | grep -q "no drift" || fail "second run should report 'no drift'"
+grepq "$out" "no drift" || fail "second run should report 'no drift'"
 echo "ok: idempotent — re-run is a no-op reporting no drift"
 
 # ── 4 + 5: settings.local.json overrides win both ways ───────────────────────
@@ -90,7 +100,7 @@ rc=0; out=$(bash "$script" --settings "$s2b" --template "$tmpl" 2>&1) || rc=$?
 [ "$rc" -ne 0 ] || fail "invalid settings.local.json should exit non-zero (override must not be silently dropped)"
 # Assert the SPECIFIC diagnostic, not just a non-zero exit — otherwise any
 # unrelated failure would satisfy this case.
-printf '%s' "$out" | grep -qi "not valid JSON" || fail "invalid local should report a 'not valid JSON' diagnostic (got: $out)"
+grepq "$out" -i "not valid JSON" || fail "invalid local should report a 'not valid JSON' diagnostic (got: $out)"
 unchanged "$s2b" || fail "settings.json must be untouched when local override is invalid"
 rm -f "$tmp/settings.local.json"
 echo "ok: invalid settings.local.json fails loud, base settings untouched"
@@ -99,7 +109,7 @@ echo "ok: invalid settings.local.json fails loud, base settings untouched"
 #        protected override input) — via --settings AND via --scope local ──────
 rc=0; out=$(bash "$script" --settings "$tmp/settings.local.json" --template "$tmpl" 2>&1) || rc=$?
 [ "$rc" -eq 2 ] || fail "targeting settings.local.json should exit 2 (protected override input), got $rc"
-printf '%s' "$out" | grep -qi "protected override" || fail "refusal should name the protected override input"
+grepq "$out" -i "protected override" || fail "refusal should name the protected override input"
 rc=0; bash "$script" --scope local --template "$tmpl" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "--scope local should be rejected (exit 2), got $rc"
 # Case variant (Windows FS is case-insensitive) must also be refused.
@@ -115,7 +125,7 @@ JSON
 printf '{ "enabledPlugins": "not-an-object" }' > "$tmp/settings.local.json"; snapshot "$s4d"
 rc=0; out=$(bash "$script" --settings "$s4d" --template "$tmpl" 2>&1) || rc=$?
 [ "$rc" -ne 0 ] || fail "non-object local enabledPlugins should exit non-zero"
-printf '%s' "$out" | grep -qi "non-object" || fail "should report a non-object enabledPlugins diagnostic (got: $out)"
+grepq "$out" -i "non-object" || fail "should report a non-object enabledPlugins diagnostic (got: $out)"
 unchanged "$s4d" || fail "settings.json untouched when local shape is invalid"
 rm -f "$tmp/settings.local.json"
 echo "ok: non-object settings.local.json enabledPlugins refused"
@@ -125,7 +135,7 @@ s4e="$tmp/settings.json"; rm -f "$s4e"
 printf '{ "enabledPlugins": ["a","b"] }' > "$s4e"
 rc=0; out=$(bash "$script" --settings "$s4e" --template "$tmpl" 2>&1) || rc=$?
 [ "$rc" -ne 0 ] || fail "non-object live enabledPlugins should exit non-zero"
-printf '%s' "$out" | grep -qi "non-object" || fail "should report a non-object diagnostic for live settings (got: $out)"
+grepq "$out" -i "non-object" || fail "should report a non-object diagnostic for live settings (got: $out)"
 echo "ok: non-object live enabledPlugins refused"
 
 # ── 4f: key-order-insensitive "unchanged" — a map already at the floor but with
@@ -135,7 +145,7 @@ s4f="$tmp/settings.json"; rm -f "$s4f"
 printf '{ "enabledPlugins": { "demote@mkt": false, "keep@mkt": true } }' > "$s4f"
 snapshot "$s4f"
 out=$(bash "$script" --settings "$s4f" --template "$tmpl")
-printf '%s' "$out" | grep -qi "unchanged" || fail "reordered-but-equal map should report unchanged (got: $out)"
+grepq "$out" -i "unchanged" || fail "reordered-but-equal map should report unchanged (got: $out)"
 unchanged "$s4f" || fail "reordered-but-equal map must not be rewritten"
 echo "ok: key-order-insensitive unchanged detection"
 
@@ -144,7 +154,7 @@ s4g="$tmp/settings.json"; rm -f "$s4g"
 printf '{ "enabledPlugins": { "keep@mkt": "false" } }' > "$s4g"; snapshot "$s4g"
 rc=0; out=$(bash "$script" --settings "$s4g" --template "$tmpl" 2>&1) || rc=$?
 [ "$rc" -ne 0 ] || fail "non-boolean enabledPlugins value should exit non-zero"
-printf '%s' "$out" | grep -qi "not a boolean" || fail "should report a non-boolean value diagnostic (got: $out)"
+grepq "$out" -i "not a boolean" || fail "should report a non-boolean value diagnostic (got: $out)"
 unchanged "$s4g" || fail "settings.json must be untouched when a value is non-boolean"
 echo "ok: non-boolean enabledPlugins value refused (settings untouched)"
 
@@ -156,7 +166,7 @@ JSON
 snapshot "$s3"
 out=$(bash "$script" --dry-run --settings "$s3" --template "$tmpl")
 unchanged "$s3" || fail "--dry-run must not write"
-printf '%s' "$out" | grep -q "DRY:" || fail "--dry-run should print a DRY line"
+grepq "$out" "DRY:" || fail "--dry-run should print a DRY line"
 echo "ok: --dry-run reports the plan, writes nothing"
 
 # ── 8: invalid settings JSON exits non-zero, file untouched ──────────────────
@@ -169,7 +179,7 @@ echo "ok: invalid settings JSON — non-zero exit, file untouched"
 # ── 9: missing settings file exits 0 ─────────────────────────────────────────
 rc=0; out=$(bash "$script" --settings "$tmp/nope.json" --template "$tmpl" 2>&1) || rc=$?
 [ "$rc" -eq 0 ] || fail "missing settings file should exit 0 (nothing to reconcile), got $rc"
-printf '%s' "$out" | grep -qi "nothing to reconcile" || fail "missing file should say nothing to reconcile"
+grepq "$out" -i "nothing to reconcile" || fail "missing file should say nothing to reconcile"
 echo "ok: missing settings file — exit 0, nothing to reconcile"
 
 echo "PASS"

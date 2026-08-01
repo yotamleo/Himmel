@@ -1,4 +1,4 @@
-# Smoke test (executable spec) for scripts/lib/vault-resolve.ps1 — HIMMEL-403.
+﻿# Smoke test (executable spec) for scripts/lib/vault-resolve.ps1 — HIMMEL-403.
 # Run: pwsh scripts/lib/test-vault-resolve.ps1
 $ErrorActionPreference = 'Stop'   # any unhandled error must fail the run, not skip checks
 . (Join-Path $PSScriptRoot 'vault-resolve.ps1')

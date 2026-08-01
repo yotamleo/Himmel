@@ -8,6 +8,16 @@
 # "In-flight WIP", "Stale worktrees", "Backlog (", "TL;DR", "Suggested order").
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/generate-morning-briefing.sh"
 
@@ -33,7 +43,7 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 assert_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
+    if grepq "$haystack" -F -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
 }
 
 TMP_ROOT=$(mktemp -d)
@@ -184,7 +194,7 @@ assert_contains "PR row #42"         "#42"                          "$file"
 assert_contains "commit cited"       "HIMMEL-901"                   "$file"
 assert_contains "marker echoed"      "$MARKER"                      "$file"
 # Removed section must NOT reappear:
-if printf '%s' "$file" | grep -q 'Items for operator review'; then fail "stale 'Items for operator review' section present"; else pass "operator-review section removed"; fi
+if grepq "$file" 'Items for operator review'; then fail "stale 'Items for operator review' section present"; else pass "operator-review section removed"; fi
 
 # Test 2: local-date default -----------------------------------------
 
@@ -251,7 +261,7 @@ HIMMEL-999\tTask\tDone\tNot in commits' \
 file=$(cat "$OUT7")
 assert_contains "Done block has HIMMEL-901" "HIMMEL-901 — Task — A" "$file"
 assert_contains "Done block has HIMMEL-902" "HIMMEL-902 — Task — B" "$file"
-if printf '%s' "$file" | grep -q 'HIMMEL-999'; then
+if grepq "$file" 'HIMMEL-999'; then
     fail "Done block leaked unrelated ticket HIMMEL-999"
 else
     pass "Done block filtered out HIMMEL-999 (not in commits)"
@@ -281,8 +291,8 @@ assert_contains "stale flags merged" "feat/himmel-901-thing" "$file"
 # Stale-table rows are the only "| \`branch\` |" lines in the report.
 stale_tbl=$(printf '%s\n' "$file" | grep -E '^\| `' || true)
 # shellcheck disable=SC2016  # literal backtick-main-backtick in the table row, no expansion intended
-if printf '%s\n' "$stale_tbl" | grep -qE '`main`'; then fail "stale flagged main"; else pass "main not flagged stale"; fi
-if printf '%s\n' "$stale_tbl" | grep -q 'feat/random-slug'; then fail "stale flagged OPEN-PR worktree"; else pass "open-PR worktree not flagged stale"; fi
+if grepq "$stale_tbl" -E '`main`'; then fail "stale flagged main"; else pass "main not flagged stale"; fi
+if grepq "$stale_tbl" 'feat/random-slug'; then fail "stale flagged OPEN-PR worktree"; else pass "open-PR worktree not flagged stale"; fi
 
 # Test 11: non-github origin degrades gracefully ---------------------
 
@@ -306,7 +316,7 @@ out=$(FAKE_JIRA_TODO=$'HIMMEL-801\tTask\tTo Do\tAlpha\nHIMMEL-802\tTask\tTo Do\t
 file=$(cat "$OUT_BL")
 assert_contains "backlog item 1" "HIMMEL-801" "$file"
 assert_contains "backlog item 2" "HIMMEL-802" "$file"
-if printf '%s' "$file" | grep -q 'HIMMEL-803'; then fail "backlog ignored --backlog-limit 2"; else pass "backlog capped at 2"; fi
+if grepq "$file" 'HIMMEL-803'; then fail "backlog ignored --backlog-limit 2"; else pass "backlog capped at 2"; fi
 assert_contains "backlog total noted" "1 more" "$file"
 
 # Test 13: TL;DR + Suggested order heuristics ------------------------

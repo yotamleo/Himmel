@@ -1467,6 +1467,9 @@ async function runPlan(answers, args) {
     const existsNow = fs.existsSync(dest);
     if (existsNow && !isStampedLunaVault(dest)) {
       console.error(`himmelctl: ${dest} appeared (or changed) since the preflight check and is not a luna vault — aborting before adopt.sh runs.`);
+      if (answers.handover && answers.handover.mode === 'external') {
+        console.error('  The handover wiring was already applied (applyHandoverStep persisted HANDOVER_DIR to .env) — review or remove that entry if you re-run with a different vault path.');
+      }
       return 1;
     }
     if (existsNow !== !vaultScaffolded) {

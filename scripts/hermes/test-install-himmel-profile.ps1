@@ -1,4 +1,4 @@
-<#
+﻿<#
   Hermetic tests for install-himmel-profile.ps1 (HIMMEL-782) — asserts the
   Windows twin traps NATIVE exit codes at mutation sites the same way the
   .sh twin's `set -euo pipefail` does ($ErrorActionPreference="Stop" alone

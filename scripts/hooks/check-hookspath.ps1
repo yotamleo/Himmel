@@ -1,4 +1,4 @@
-# Detects core.hooksPath misconfiguration that silently bypasses git hooks.
+﻿# Detects core.hooksPath misconfiguration that silently bypasses git hooks.
 # See scripts/hooks/check-hookspath.sh for the full background — this file
 # mirrors that script for native PowerShell on Windows.
 #

@@ -1,4 +1,4 @@
-<#
+﻿<#
   Hermetic tests for install-himmel-codex.ps1 (HIMMEL-597) — Windows twin of
   test-install-himmel-codex.sh. A stub `codex` CLI (codex-stub.ps1) simulates
   `plugin marketplace list/add` + `plugin list/add`, driven by test-controlled

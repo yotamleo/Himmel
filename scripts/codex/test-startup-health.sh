@@ -9,6 +9,16 @@
 # scoping); oversized _where-are-we -> 1; missing CODEX_HOME -> 2; bad arg -> 2.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DETECT="$SCRIPT_DIR/startup-health.sh"
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq required" >&2; exit 1; }
@@ -64,7 +74,7 @@ _where-are-we
 
 # check_rc <want> <got> <msg>  /  want_line <needle> <text> <msg>
 check_rc()   { if [ "$2" -eq "$1" ]; then pass "$3"; else fail "$3 (got exit $2)"; fi; }
-want_line()  { if printf '%s\n' "$2" | grep -q "$1"; then pass "$3"; else fail "$3 (out: $2)"; fi; }
+want_line()  { if grepq "$2" "$1"; then pass "$3"; else fail "$3 (out: $2)"; fi; }
 
 # --- 1. healthy: current session, no warn rows, small where-are-we -> exit 0 ----
 H="$(make_home healthy "$NEW_TID" "$SMALL_WAW")"
@@ -105,7 +115,7 @@ rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
 check_rc 1 "$rc" "upstream candidate -> exit 1"
 want_line 'ralph-loop' "$out" "upstream candidate names the plugin path"
 want_line 'NOT correlated' "$out" "upstream candidate is not correlated to the failure"
-if printf '%s\n' "$out" | grep -q 'safe to route'; then
+if grepq "$out" 'safe to route'; then
   fail "upstream candidate must NOT declare the lane safe to route (out: $out)"
 else
   pass "upstream candidate does not declare the lane safe (fail-closed)"
@@ -130,7 +140,7 @@ printf '%s\n' '{"Description":"x","hooks":{"SessionStart":[]}}' > "$H/plugins/ca
 { db_noise_row "$NEW_TID"; db_hook_row "$NEW_TID"; } > "$H/logs_2.sqlite"
 rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
 check_rc 1 "$rc" "case-variant Description -> exit 1"
-if printf '%s\n' "$out" | grep -q 'casey'; then
+if grepq "$out" 'casey'; then
   fail "case-variant 'Description' must NOT be flagged as a description offender (out: $out)"
 else
   pass "case-variant Description is not flagged (jq/serde case-sensitivity)"

@@ -3,6 +3,16 @@
 # Structural checks (no network needed) + one end-to-end run (uses network iff
 # gh is available; the script itself fail-opens when it isn't).
 set -uo pipefail
+
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/scripts/check-plugin-drift.sh"
 MJSON="$ROOT/marketplace/.claude-plugin/marketplace.json"
@@ -27,8 +37,8 @@ for p in m.get("plugins", []):
         print(p["name"])
 PY
 )"
-if echo "$pins" | grep -qx "claude-obsidian"; then ok "parser finds claude-obsidian pin"; else bad "parser missing claude-obsidian"; fi
-if echo "$pins" | grep -qx "obsidian"; then bad "obsidian pin still present — should have been dropped (HIMMEL-435)"; else ok "obsidian (kepano) pin absent — dropped as expected"; fi
+if grepq "$pins" -x "claude-obsidian"; then ok "parser finds claude-obsidian pin"; else bad "parser missing claude-obsidian"; fi
+if grepq "$pins" -x "obsidian"; then bad "obsidian pin still present — should have been dropped (HIMMEL-435)"; else ok "obsidian (kepano) pin absent — dropped as expected"; fi
 
 # 3. Every fork UPSTREAM_PIN carries the generic fields the checker reads.
 for pin in "$ROOT"/marketplace/plugins/*/UPSTREAM_PIN; do
@@ -106,8 +116,64 @@ for e in d.get("entries",[]):
         print("|".join([e.get("name",""), e.get("tracked_repo",""), e.get("kind",""), e.get("mode",""), e.get("latest_source","")]))
 PY
 )"
-if printf '%s\n' "$reg_probe" | grep -q 'graphify|Graphify-Labs/graphify|tag_release|base|release'; then ok "graphify entry -> true upstream Graphify-Labs, tag_release/base, latest_source=release"; else bad "graphify registry entry wrong/missing: $(printf '%s' "$reg_probe" | grep graphify)"; fi
-if printf '%s\n' "$reg_probe" | grep -q 'qmd|tobi/qmd|tag_release|base'; then ok "qmd entry -> true upstream tobi/qmd, tag_release/base"; else bad "qmd registry entry wrong/missing: $(printf '%s' "$reg_probe" | grep '^qmd')"; fi
+if grepq "$reg_probe" 'graphify|Graphify-Labs/graphify|tag_release|base|release'; then ok "graphify entry -> true upstream Graphify-Labs, tag_release/base, latest_source=release"; else bad "graphify registry entry wrong/missing: $(printf '%s' "$reg_probe" | grep graphify)"; fi
+if grepq "$reg_probe" 'qmd|tobi/qmd|tag_release|base'; then ok "qmd entry -> true upstream tobi/qmd, tag_release/base"; else bad "qmd registry entry wrong/missing: $(printf '%s' "$reg_probe" | grep '^qmd')"; fi
+
+# 3e. HIMMEL-1435 zero-gap inventory: claude-obsidian must be a tag-pinned
+#     resync target whose duplicated synced_base matches plugin-upstreams.json;
+#     every third-party plugin actually bundled in the luna template must have a
+#     registry row whose base matches its manifest; deliberate omissions stay
+#     explicit in coverage_audit rather than disappearing silently.
+audit_out="$(python3 - "$ROOT" "$REG" "$UPS" <<'PY' 2>&1
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+reg = json.load(open(sys.argv[2], encoding='utf-8'))
+ups = json.load(open(sys.argv[3], encoding='utf-8'))
+entries = {e['name']: e for e in reg.get('entries', [])}
+
+co = entries['claude-obsidian']
+assert co['tracked_repo'] == 'AgriciDaniel/claude-obsidian'
+assert co['synced_base'] == ups['claude-obsidian']['synced_base']
+assert co['fork']['fork_repo'] == 'https://github.com/yotamleo/claude-obsidian.git'
+assert co['fork']['upstream_repo'] == 'https://github.com/AgriciDaniel/claude-obsidian.git'
+assert co['fork']['pin_file'] == 'marketplace/.claude-plugin/marketplace.json'
+assert co['fork']['pin_ref_template'].count('{ref}') == 1
+
+plugin_root = root / 'templates/luna-second-brain/.obsidian/plugins'
+community = json.load(open(root / 'templates/luna-second-brain/.obsidian/community-plugins.json', encoding='utf-8'))
+expected = {
+    'calendar': ('luna-calendar', 'liamcain/obsidian-calendar-plugin'),
+    'dataview': ('luna-dataview', 'blacksmithgu/obsidian-dataview'),
+    'github-sync': ('luna-github-sync', 'kevinmkchin/Obsidian-GitHub-Sync'),
+    'obsidian-banners': ('luna-obsidian-banners', 'noatpad/obsidian-banners'),
+    'obsidian-local-rest-api': ('luna-obsidian-local-rest-api', 'coddingtonbear/obsidian-local-rest-api'),
+    'qmd-as-md-obsidian': ('luna-qmd-as-md-obsidian', 'danieltomasz/qmd-as-md-obsidian'),
+}
+assert set(community) == set(expected), (community, sorted(expected))
+for plugin_id, (entry_name, repo) in expected.items():
+    manifest = json.load(open(plugin_root / plugin_id / 'manifest.json', encoding='utf-8'))
+    entry = entries[entry_name]
+    assert entry['tracked_repo'] == repo, (entry_name, entry['tracked_repo'], repo)
+    assert entry['kind'] == 'tag_release' and entry['mode'] == 'base'
+    assert entry['synced_base'].lstrip('v') == manifest['version'].lstrip('v'), (entry_name, entry['synced_base'], manifest['version'])
+    assert 'version_pin' not in entry
+
+audit = reg['coverage_audit']
+covered = {row['name'] for row in audit['covered_elsewhere']}
+skips = {row['name'] for row in audit['skips']}
+assert 'scripts/lib pinned binaries' in covered
+assert 'codex companion and installed marketplaces' in covered
+assert 'claude-statusline' in skips
+assert 'luna optional plugin pointers' in skips
+print('ok')
+PY
+)"
+audit_rc=$?
+if [ "$audit_rc" -eq 0 ]; then
+  ok "zero-gap inventory covers claude-obsidian, all six bundled luna plugins, scripts/lib pins, codex dynamic discovery, and explicit skips"
+else
+  bad "zero-gap inventory invalid: $audit_out"
+fi
 
 # 4. End-to-end: the script runs to completion with a sane exit code —
 #    0 (all current / fail-open), 2 (drift), or 3 (incomplete). Anything else
@@ -120,9 +186,9 @@ esac
 # When gh ran (not the fail-open path), both section headers must appear, and the
 # claude-obsidian line must reference its TRUE upstream (AgriciDaniel), proving the
 # override routed the check away from our fork repo.
-if ! printf '%s' "$out" | grep -q "fail-open"; then
-  if printf '%s' "$out" | grep -q "pinned remotes"; then ok "output has pinned-remotes section"; else bad "no pinned-remotes section"; fi
-  if printf '%s' "$out" | grep -q "vendored forks"; then ok "output has vendored-forks section"; else bad "no vendored-forks section"; fi
+if ! grepq "$out" "fail-open"; then
+  if grepq "$out" "pinned remotes"; then ok "output has pinned-remotes section"; else bad "no pinned-remotes section"; fi
+  if grepq "$out" "vendored forks"; then ok "output has vendored-forks section"; else bad "no vendored-forks section"; fi
   if printf '%s' "$out" | grep "claude-obsidian" | grep -q "AgriciDaniel/claude-obsidian"; then
     ok "claude-obsidian drift tracks true upstream (AgriciDaniel), not the fork"
   else
@@ -135,7 +201,7 @@ fi
 # 5. Fail-open path, deterministically (hide gh from PATH). The script's headline
 #    safety property: gh absent -> exit 0 + skip, so CI / fresh clones never break.
 fo_out="$(PATH=/usr/bin:/bin bash "$SCRIPT" 2>&1)"; fo_rc=$?
-if [ "$fo_rc" -eq 0 ] && printf '%s' "$fo_out" | grep -q "fail-open"; then
+if [ "$fo_rc" -eq 0 ] && grepq "$fo_out" "fail-open"; then
   ok "fail-open: gh absent -> exit 0 + skip message"
 else
   bad "fail-open broken: rc=$fo_rc out=$fo_out"
@@ -211,7 +277,7 @@ else
   ok "sha256sum-mask: sha256sum unresolvable"
 fi
 hash_out="$(PATH="$W5C/bin:$W5C/nosha" DRIFT_MJSON="$W5C/empty_mjson.json" DRIFT_UPSTREAMS="$W5C/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5C/scripts/check-plugin-drift.sh" 2>&1)"; hash_rc=$?
-if printf '%s' "$hash_out" | grep -q '^  hash-pin: CURRENT'; then ok "sha256sum absent -> shasum fallback verifies vendored fork CURRENT"; else bad "sha256sum fallback did not verify CURRENT; $(printf '%s' "$hash_out" | grep hash-pin)"; fi
+if grepq "$hash_out" '^  hash-pin: CURRENT'; then ok "sha256sum absent -> shasum fallback verifies vendored fork CURRENT"; else bad "sha256sum fallback did not verify CURRENT; $(printf '%s' "$hash_out" | grep hash-pin)"; fi
 if printf '%s' "$hash_out" | grep 'hash-pin' | grep -q 'DRIFT'; then bad "sha256sum absent was reported as DRIFT"; else ok "sha256sum absent never reported as DRIFT"; fi
 if [ "$hash_rc" -eq 0 ]; then ok "sha256sum fallback-only run exits 0"; else bad "sha256sum fallback run rc=$hash_rc; expected 0"; fi
 
@@ -251,7 +317,7 @@ if [ "$notool_rc" -eq 3 ]; then ok "both-tools-absent run exits 3 (incomplete, n
 #    Both checks fire BEFORE any gh call, but the script's top-level fail-open gate
 #    means the pin loop only runs when gh is present — so gate this on the real run
 #    not having taken the fail-open path.
-if ! printf '%s' "$out" | grep -q "fail-open"; then
+if ! grepq "$out" "fail-open"; then
   fix_m="$(mktemp)"; fix_u="$(mktemp)"
   cat >"$fix_m" <<'JSON'
 {"plugins":[
@@ -379,16 +445,16 @@ GHSTATE="$W7/state" PATH="$W7/bin:$PATH" \
   bash "$SCRIPT" >"$W7/out.txt" 2>&1; rc7=$?
 sec7="$(sed -n '/carried upstreams/,$p' "$W7/out.txt")"
 # 7a. commit_head paths.
-if printf '%s' "$sec7" | grep -q '^  pin-full: CURRENT'; then ok "commit_head pin full-SHA -> CURRENT"; else bad "commit_head pin-full not CURRENT; $(printf '%s' "$sec7" | grep pin-full)"; fi
-if printf '%s' "$sec7" | grep -q '^  pin-short: BEHIND'; then ok "commit_head pin short-SHA resolved -> BEHIND"; else bad "commit_head pin-short not BEHIND; $(printf '%s' "$sec7" | grep pin-short)"; fi
-if printf '%s' "$sec7" | grep -q '^  checkout-ok: CURRENT'; then ok "commit_head checkout present -> CURRENT"; else bad "checkout-ok not CURRENT; $(printf '%s' "$sec7" | grep checkout-ok)"; fi
+if grepq "$sec7" '^  pin-full: CURRENT'; then ok "commit_head pin full-SHA -> CURRENT"; else bad "commit_head pin-full not CURRENT; $(printf '%s' "$sec7" | grep pin-full)"; fi
+if grepq "$sec7" '^  pin-short: BEHIND'; then ok "commit_head pin short-SHA resolved -> BEHIND"; else bad "commit_head pin-short not BEHIND; $(printf '%s' "$sec7" | grep pin-short)"; fi
+if grepq "$sec7" '^  checkout-ok: CURRENT'; then ok "commit_head checkout present -> CURRENT"; else bad "checkout-ok not CURRENT; $(printf '%s' "$sec7" | grep checkout-ok)"; fi
 if printf '%s' "$sec7" | grep 'checkout-missing' | grep -q 'UNCHECKED'; then ok "commit_head checkout absent -> UNCHECKED"; else bad "checkout-missing not UNCHECKED"; fi
 if printf '%s' "$sec7" | grep 'weird-mode' | grep -q "mode 'bogus' unknown"; then ok "commit_head unknown mode -> UNCHECKED"; else bad "weird-mode not flagged"; fi
 # 7b. tag_release paths.
-if printf '%s' "$sec7" | grep -q '^  base-cur: CURRENT'; then ok "tag_release base synced -> CURRENT"; else bad "base-cur not CURRENT"; fi
-if printf '%s' "$sec7" | grep -q '^  base-behind: BEHIND'; then ok "tag_release base stale -> BEHIND"; else bad "base-behind not BEHIND"; fi
-if printf '%s' "$sec7" | grep -q '^  probe-cur: CURRENT'; then ok "tag_release probe synced -> CURRENT"; else bad "probe-cur not CURRENT"; fi
-if printf '%s' "$sec7" | grep -q '^  probe-behind: BEHIND'; then ok "tag_release probe stale -> BEHIND"; else bad "probe-behind not BEHIND"; fi
+if grepq "$sec7" '^  base-cur: CURRENT'; then ok "tag_release base synced -> CURRENT"; else bad "base-cur not CURRENT"; fi
+if grepq "$sec7" '^  base-behind: BEHIND'; then ok "tag_release base stale -> BEHIND"; else bad "base-behind not BEHIND"; fi
+if grepq "$sec7" '^  probe-cur: CURRENT'; then ok "tag_release probe synced -> CURRENT"; else bad "probe-cur not CURRENT"; fi
+if grepq "$sec7" '^  probe-behind: BEHIND'; then ok "tag_release probe stale -> BEHIND"; else bad "probe-behind not BEHIND"; fi
 if printf '%s' "$sec7" | grep 'probe-ahead' | grep -q 'CURRENT'; then ok "tag_release probe installed-ahead -> CURRENT (not a phantom BEHIND)"; else bad "probe-ahead not CURRENT; $(printf '%s' "$sec7" | grep probe-ahead)"; fi
 # 7b-extra (HIMMEL-869 CR fix): a version_regex containing a literal '|'
 # (regex alternation) must round-trip through the emitter/consumer protocol
@@ -407,15 +473,15 @@ else
   ok "probe-pipe-regex line does not leak regex remainder (fields correctly delimited)"
 fi
 # 7c. marketplace discovery.
-if printf '%s' "$sec7" | grep -q '^  mkt:fixt-mkt: CURRENT'; then ok "marketplace github-sourced checkout -> CURRENT"; else bad "mkt:fixt-mkt not CURRENT; $(printf '%s' "$sec7" | grep 'mkt:')"; fi
-if printf '%s' "$sec7" | grep -q 'mkt:dir-src'; then bad "directory-sourced marketplace should be skipped (not checked)"; else ok "directory-sourced marketplace correctly skipped"; fi
+if grepq "$sec7" '^  mkt:fixt-mkt: CURRENT'; then ok "marketplace github-sourced checkout -> CURRENT"; else bad "mkt:fixt-mkt not CURRENT; $(printf '%s' "$sec7" | grep 'mkt:')"; fi
+if grepq "$sec7" 'mkt:dir-src'; then bad "directory-sourced marketplace should be skipped (not checked)"; else ok "directory-sourced marketplace correctly skipped"; fi
 # 7d. unknown kind + exit code (drift from pin-short/base-behind/probe-behind => 2).
 if printf '%s' "$sec7" | grep 'weird-kind' | grep -q "unknown kind 'bogus'"; then ok "unknown kind -> UNCHECKED"; else bad "weird-kind not flagged"; fi
 if [ "$rc7" -eq 2 ]; then ok "carried-upstreams drift run exits 2 (drift, precedence over incomplete)"; else bad "carried-upstreams drift run rc=$rc7; expected 2"; fi
 # 7e. malformed registry -> class UNCHECKED (never a false all-clear).
 printf '{not valid json' >"$W7/bad.json"
 bad_out="$(GHSTATE="$W7/state" PATH="$W7/bin:$PATH" DRIFT_REGISTRY="$W7/bad.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$empty_mjson" DRIFT_UPSTREAMS="$W7/empty_ups.json" bash "$SCRIPT" 2>&1)"; bad_rc=$?
-if printf '%s' "$bad_out" | grep -q 'carried-upstreams class UNCHECKED'; then ok "malformed registry -> class UNCHECKED"; else bad "malformed registry not UNCHECKED; $bad_out"; fi
+if grepq "$bad_out" 'carried-upstreams class UNCHECKED'; then ok "malformed registry -> class UNCHECKED"; else bad "malformed registry not UNCHECKED; $bad_out"; fi
 if [ "$bad_rc" -eq 3 ]; then ok "malformed registry run exits 3 (incomplete, not a false 0)"; else bad "malformed registry rc=$bad_rc; expected 3"; fi
 # 7f. empty/missing registry -> no entries (clean, not UNCHECKED). (Overall exit
 #     code is not asserted: the vendored-forks section still globs the REAL
@@ -423,7 +489,7 @@ if [ "$bad_rc" -eq 3 ]; then ok "malformed registry run exits 3 (incomplete, not
 #     the empty-registry property under test — that the carried-upstreams section
 #     emits no spurious entries.)
 empty_out="$(GHSTATE="$W7/state" PATH="$W7/bin:$PATH" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$empty_mjson" DRIFT_UPSTREAMS="$W7/empty_ups.json" bash "$SCRIPT" 2>&1)"
-if printf '%s' "$empty_out" | grep -q 'carried upstreams' && ! printf '%s' "$empty_out" | sed -n '/carried upstreams/,$p' | grep -Eq '^  [a-z].*: (CURRENT|BEHIND|UNCHECKED|unknown)'; then
+if grepq "$empty_out" 'carried upstreams' && ! printf '%s' "$empty_out" | sed -n '/carried upstreams/,$p' | grep -Eq '^  [a-z].*: (CURRENT|BEHIND|UNCHECKED|unknown)'; then
   ok "empty registry -> carried-upstreams section header only (no spurious entries/UNCHECKED)"
 else
   bad "empty registry emitted entries or parse error; $(printf '%s' "$empty_out" | sed -n '/carried upstreams/,$p')"
@@ -475,9 +541,9 @@ w8_start=$(date +%s)
 w8_out="$(PATH="$NOTIMEOUT_PATH" DRIFT_REGISTRY="$W8/upstreams.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W8/empty_mjson.json" DRIFT_UPSTREAMS="$W8/empty_ups.json" bash "$SCRIPT" 2>&1)"; w8_rc=$?
 w8_elapsed=$(( $(date +%s) - w8_start ))
 if [ "$w8_elapsed" -lt 20 ]; then ok "hanging probe watchdog: run completed in ${w8_elapsed}s (<20s)"; else bad "hanging probe watchdog: run took ${w8_elapsed}s (>=20s) — watchdog did not bound it"; fi
-if printf '%s' "$w8_out" | grep -q "watchdog fallback"; then ok "hanging probe: fallback-watchdog note emitted"; else bad "hanging probe: no fallback-watchdog note; out: $w8_out"; fi
+if grepq "$w8_out" "watchdog fallback"; then ok "hanging probe: fallback-watchdog note emitted"; else bad "hanging probe: no fallback-watchdog note; out: $w8_out"; fi
 if printf '%s' "$w8_out" | grep 'hang-tool' | grep -q 'probe timed out'; then ok "hanging probe: entry reads 'probe timed out' UNCHECKED"; else bad "hanging probe: no timeout note; $(printf '%s' "$w8_out" | grep hang-tool)"; fi
-if printf '%s' "$w8_out" | grep -qE '^  hang-tool: (CURRENT|BEHIND)'; then bad "hanging probe: entry read CURRENT/BEHIND instead of UNCHECKED"; else ok "hanging probe: entry never read CURRENT/BEHIND"; fi
+if grepq "$w8_out" -E '^  hang-tool: (CURRENT|BEHIND)'; then bad "hanging probe: entry read CURRENT/BEHIND instead of UNCHECKED"; else ok "hanging probe: entry never read CURRENT/BEHIND"; fi
 if [ "$w8_rc" -eq 3 ]; then ok "hanging probe run exits 3 (incomplete)"; else bad "hanging probe run rc=$w8_rc; expected 3"; fi
 rm -rf "$W8"
 
@@ -548,7 +614,7 @@ w10_out="$(PATH="$TIMEOUT_PATH" DRIFT_REGISTRY="$W10/upstreams.json" DRIFT_KNOWN
 w10_elapsed=$(( $(date +%s) - w10_start ))
 if [ "$w10_elapsed" -lt 20 ]; then ok "timeout-path hanging probe: run completed in ${w10_elapsed}s (<20s)"; else bad "timeout-path hanging probe: run took ${w10_elapsed}s (>=20s) — 'timeout' did not bound it"; fi
 if printf '%s' "$w10_out" | grep 'timedprobe-tool' | grep -q 'probe timed out (10s)'; then ok "timeout-path hanging probe: entry reads 'probe timed out (10s)' UNCHECKED"; else bad "timeout-path hanging probe: no timeout note; $(printf '%s' "$w10_out" | grep timedprobe-tool)"; fi
-if printf '%s' "$w10_out" | grep -qE '^  timedprobe-tool: (CURRENT|BEHIND)'; then bad "timeout-path hanging probe: entry read CURRENT/BEHIND instead of UNCHECKED (partial pre-hang output was parsed)"; else ok "timeout-path hanging probe: entry never read CURRENT/BEHIND"; fi
+if grepq "$w10_out" -E '^  timedprobe-tool: (CURRENT|BEHIND)'; then bad "timeout-path hanging probe: entry read CURRENT/BEHIND instead of UNCHECKED (partial pre-hang output was parsed)"; else ok "timeout-path hanging probe: entry never read CURRENT/BEHIND"; fi
 if [ "$w10_rc" -eq 3 ]; then ok "timeout-path hanging probe run exits 3 (incomplete)"; else bad "timeout-path hanging probe run rc=$w10_rc; expected 3"; fi
 rm -rf "$W10"
 
@@ -617,7 +683,7 @@ cat > "$W11/reg-bad.json" <<'JSON'
 JSON
 bad_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-bad.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"; bad_rc=$?
 if printf '%s' "$bad_out" | grep 'bad-src' | grep -q "unknown latest_source"; then ok "unknown latest_source -> UNCHECKED (not silent tag-mode)"; else bad "unknown latest_source not UNCHECKED; $(printf '%s' "$bad_out" | grep bad-src)"; fi
-if printf '%s' "$bad_out" | grep -qE '^  bad-src: (CURRENT|BEHIND)'; then bad "unknown latest_source fell through to a tag-mode verdict"; else ok "unknown latest_source never produced a CURRENT/BEHIND verdict"; fi
+if grepq "$bad_out" -E '^  bad-src: (CURRENT|BEHIND)'; then bad "unknown latest_source fell through to a tag-mode verdict"; else ok "unknown latest_source never produced a CURRENT/BEHIND verdict"; fi
 rm -rf "$W11"
 
 echo ""

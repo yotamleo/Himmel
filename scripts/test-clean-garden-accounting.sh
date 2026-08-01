@@ -4,6 +4,15 @@
 # PR head, and remote-only branches are classified from one cached PR listing.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLEAN_GARDEN="$SCRIPT_DIR/clean-garden.sh"
 
@@ -179,7 +188,7 @@ assert_line "remote merged head is MERGED-CLEAN" "$out" "remote=origin branch=ch
 assert_line "remote post-merge tip is TIP-DIFFERS" "$out" "remote=origin branch=chore/post-merge" "category=TIP-DIFFERS"
 assert_line "remote closed PR is CLOSED-UNMERGED" "$out" "remote=origin branch=chore/closed" "category=CLOSED-UNMERGED"
 assert_line "remote branch without PR is NO-PR" "$out" "remote=origin branch=chore/no-pr" "category=NO-PR"
-if printf '%s\n' "$out" | grep -Fq "remote=origin branch=chore/open"; then
+if grepq "$out" -F "remote=origin branch=chore/open"; then
     fail "open-PR remote branch should not be an orphan row" "$out"
 else
     pass "open-PR remote branch is excluded from orphan rows"
@@ -192,7 +201,7 @@ if [ "$origin_calls" -eq 1 ]; then
 else
     fail "expected one origin PR API call, got $origin_calls" "$out"
 fi
-if printf '%s\n' "$out" | grep -Fq "remote=puborigin"; then
+if grepq "$out" -F "remote=puborigin"; then
     fail "puborigin was reported without the opt-in flag" "$out"
 else
     pass "puborigin is disabled by default"

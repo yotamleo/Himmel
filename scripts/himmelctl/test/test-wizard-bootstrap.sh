@@ -45,6 +45,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 bootstrap_sh="$repo_root/scripts/himmelctl/bootstrap.sh"
 bootstrap_ps1="$repo_root/scripts/himmelctl/bootstrap.ps1"
@@ -151,7 +161,7 @@ out=$(PATH="$cA" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureA")" \
       "$bash_bin" "$bootstrap_sh" --default-scope user 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseA(sh): node-present should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'node found' \
+grepq "$out" 'node found' \
   || fail "caseA(sh): expected the node-found hand-off message (got: $out)"
 [ -f "$fixtureA/scripts/himmelctl/bin-js-calls.log" ] \
   || fail "caseA(sh): expected bin.js to be invoked (out: $out)"
@@ -171,9 +181,9 @@ out=$(PATH="$cB" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureB")" \
       "$bash_bin" "$bootstrap_sh" --dry-run 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseB(sh): --dry-run should exit 0 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'install plan' \
+grepq "$out" 'install plan' \
   || fail "caseB(sh): expected the install-plan line (got: $out)"
-printf '%s' "$out" | grep -q 'hand-off after install' \
+grepq "$out" 'hand-off after install' \
   || fail "caseB(sh): expected the hand-off line (got: $out)"
 [ -f "$stubB/install-calls.log" ] \
   && fail "caseB(sh): --dry-run must NOT invoke the installer"
@@ -232,13 +242,13 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseF(sh): --dry-run should exit 0 (got rc=$rc): $out"
 case "$(uname -s)" in
   Darwin)
-    printf '%s' "$out" | grep -qE 'install plan: brew install node bun' \
+    grepq "$out" -E 'install plan: brew install node bun' \
       || fail "caseF(sh,darwin): expected 'brew install node bun' in the plan (got: $out)"
     ;;
   *)
-    printf '%s' "$out" | grep -qE 'install plan: sudo apt-get install -y nodejs npm$' \
+    grepq "$out" -E 'install plan: sudo apt-get install -y nodejs npm$' \
       || fail "caseF(sh,non-darwin): expected 'sudo apt-get install -y nodejs npm' in the plan (got: $out)"
-    printf '%s' "$out" | grep -qi 'bun' \
+    grepq "$out" -i 'bun' \
       && fail "caseF(sh,non-darwin): the apt plan/dry-run preview must NOT mention bun (got: $out)"
     ;;
 esac
@@ -262,9 +272,9 @@ set -e
 [ "$rc" -ne 0 ] || fail "caseG(sh): a genuinely failed install should exit non-zero (got rc=$rc): $out"
 [ -f "$stubG/install-calls.log" ] \
   || fail "caseG(sh): expected the installer to have been invoked (out: $out)"
-printf '%s' "$out" | grep -q 'node install failed' \
+grepq "$out" 'node install failed' \
   || fail "caseG(sh): expected the 'node install failed' message (got: $out)"
-printf '%s' "$out" | grep -q 're-run' \
+grepq "$out" 're-run' \
   && fail "caseG(sh): a genuine install failure must abort BEFORE the re-run/PATH-refresh message (got: $out)"
 [ -f "$fixtureG/scripts/himmelctl/bin-js-calls.log" ] \
   && fail "caseG(sh): a genuine install failure must NOT chain to bin.js"
@@ -292,9 +302,9 @@ out=$(PATH="$cH" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureH")" \
       "$bash_bin" "$bootstrap_sh" 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "caseH(sh): a non-Darwin host without apt-get should fail closed (got rc=$rc): $out"
-printf '%s' "$out" | grep -qi 'install Node.js' \
+grepq "$out" -i 'install Node.js' \
   || fail "caseH(sh): expected the 'install Node.js >=18 manually' pointer (got: $out)"
-printf '%s' "$out" | grep -qi 'Linux' \
+grepq "$out" -i 'Linux' \
   || fail "caseH(sh): expected the detected platform named in the message (got: $out)"
 [ -f "$stubH/install-calls.log" ] \
   && fail "caseH(sh): the installer (sudo apt-get) must NOT be invoked when apt-get is absent (got: $out)"
@@ -333,7 +343,7 @@ else
         "$pwsh_bin" -NoProfile -File "$(winpath "$bootstrap_ps1")" -DefaultScope user 2>&1); rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "caseA(ps1): node-present should exit 0 (got rc=$rc): $out"
-  printf '%s' "$out" | grep -q 'node found' \
+  grepq "$out" 'node found' \
     || fail "caseA(ps1): expected the node-found hand-off message (got: $out)"
   [ -f "$fixtureA2/scripts/himmelctl/bin-js-calls.log" ] \
     || fail "caseA(ps1): expected bin.js to be invoked (out: $out)"
@@ -356,9 +366,9 @@ STUB
         "$pwsh_bin" -NoProfile -File "$(winpath "$bootstrap_ps1")" -DryRun 2>&1); rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "caseB(ps1): -DryRun should exit 0 (got rc=$rc): $out"
-  printf '%s' "$out" | grep -q 'install plan' \
+  grepq "$out" 'install plan' \
     || fail "caseB(ps1): expected the install-plan line (got: $out)"
-  printf '%s' "$out" | grep -q 'hand-off after install' \
+  grepq "$out" 'hand-off after install' \
     || fail "caseB(ps1): expected the hand-off line (got: $out)"
   [ -f "$stubB2/install-calls.log" ] \
     && fail "caseB(ps1): -DryRun must NOT invoke winget"
@@ -401,9 +411,9 @@ STUB
         "$pwsh_bin" -NoProfile -File "$(winpath "$bootstrap_ps1")" -DryRun 2>&1); rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "caseF(ps1): -DryRun should exit 0 (got rc=$rc): $out"
-  printf '%s' "$out" | grep -qF -- '--id OpenJS.NodeJS.LTS -e' \
+  grepq "$out" -F -- '--id OpenJS.NodeJS.LTS -e' \
     || fail "caseF(ps1): expected the explicit '--id OpenJS.NodeJS.LTS -e' winget plan (got: $out)"
-  printf '%s' "$out" | grep -qi 'bun' \
+  grepq "$out" -i 'bun' \
     && fail "caseF(ps1): the winget plan/dry-run preview must NOT mention bun (got: $out)"
   echo "ok: caseF(ps1) winget plan targets --id OpenJS.NodeJS.LTS -e, no bare 'node bun' query"
 
@@ -423,11 +433,11 @@ STUB
   [ "$rc" -ne 0 ] || fail "caseG(ps1): a genuinely failed winget should exit non-zero (got rc=$rc): $out"
   [ -f "$stubG2/install-calls.log" ] \
     || fail "caseG(ps1): expected winget to have been invoked (out: $out)"
-  printf '%s' "$out" | grep -qi 'exited 1' \
+  grepq "$out" -i 'exited 1' \
     || fail "caseG(ps1): expected the Write-Warning 'exited 1' message (got: $out)"
-  printf '%s' "$out" | grep -qi 'winget install failed' \
+  grepq "$out" -i 'winget install failed' \
     || fail "caseG(ps1): expected the fail-closed 'winget install failed' message (HIMMEL-935) (got: $out)"
-  printf '%s' "$out" | grep -q 'open a new terminal' \
+  grepq "$out" 'open a new terminal' \
     && fail "caseG(ps1): a genuine winget failure must NOT print the PATH-refresh re-run line (would loop forever) (got: $out)"
   [ -f "$fixtureG2/scripts/himmelctl/bin-js-calls.log" ] \
     && fail "caseG(ps1): must NOT chain to bin.js when node is still unresolvable after a failed winget"

@@ -2057,7 +2057,7 @@ printf '# n\ncontent\n' > "$T35_CORPUS/notes/n.md"
 
 # T35a: non-existent drive-absolute maps-dir -- the walk must shrink down
 # to a bare "Q:" (no "/" left) and stop, not spin.
-out=$( GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
+out=$( cd "$T35_CORPUS" && GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
   timeout -k 5 20 bash "$SCRIPT" --name t35a --corpus-root "$T35_CORPUS" --backend deepseek \
   --maps-dir "Q:/nope-1421/deeply/nested" --title "T35a Map" --slug t35a-map --corpus-tag t35a 2>&1 ); rc=$?
 if [ "$rc" -eq 124 ]; then
@@ -2080,7 +2080,7 @@ fi
 # but the pre-fix walk only ever split on "/"; without the up-front
 # backslash -> forward-slash normalization this never shrinks and spins
 # forever.
-out=$( GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
+out=$( cd "$T35_CORPUS" && GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
   timeout -k 5 20 bash "$SCRIPT" --name t35b --corpus-root "$T35_CORPUS" --backend deepseek \
   --maps-dir 'C:\nonexistent-1421-backslash\deep\path' --title "T35b Map" --slug t35b-map --corpus-tag t35b 2>&1 ); rc=$?
 if [ "$rc" -eq 124 ]; then

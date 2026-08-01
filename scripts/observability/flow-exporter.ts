@@ -771,6 +771,20 @@ function validateGraphifyRepos(raw: unknown): { valid: GraphifyRepoEntry[]; comm
       comments.push(`# graphify_shipped_graph_age_seconds omitted: graphify_repos[${i}] needs non-empty string corpus + repo_path`);
       return;
     }
+    // CR r2 (codex-adv): narrowed from "newline, double-quote, or backslash"
+    // to line breaks only. The label path is already safe for quotes and
+    // backslashes -- escLabel escapes backslash, newline, and double-quote,
+    // and sample() applies it to every label value, so such a corpus renders
+    // as a valid escaped label. The DANGER is the OMIT-COMMENT paths (this
+    // duplicate skip and shippedGraphAgeOmitComment below), which interpolate
+    // corpus RAW: a line break there injects a whole new exposition line.
+    // (carriage return included -- codex-2; escLabel does not escape \r
+    // either.) Rejecting quotes/backslashes was over-broad and made a valid
+    // config silently lose both graph-age series (and its stale-graph alert).
+    if (/[\r\n]/.test(corpus)) {
+      comments.push(`# graphify_shipped_graph_age_seconds omitted: graphify_repos[${i}] corpus contains a line break (newline or carriage return) that would inject a new Prometheus exposition line in a comment`);
+      return;
+    }
     if (seenCorpus.has(corpus)) {
       comments.push(`# graphify_shipped_graph_age_seconds omitted: graphify_repos[${i}] duplicate corpus="${corpus}" (first occurrence wins)`);
       return;
@@ -798,10 +812,21 @@ const BUDGET_EXCEEDED = Symbol("shipped-graph-age budget exceeded");
 
 async function raceBudget<T>(promise: Promise<T>, budgetMs: number): Promise<T | typeof BUDGET_EXCEEDED> {
   if (budgetMs <= 0) return BUDGET_EXCEEDED;
-  return Promise.race([
-    promise,
-    new Promise<typeof BUDGET_EXCEEDED>((resolve) => setTimeout(() => resolve(BUDGET_EXCEEDED), budgetMs)),
-  ]);
+  // CR: capture the budget timer and clear it once the race settles. Without
+  // this, a WON race (the promise resolves first) leaves the setTimeout
+  // pending for up to budgetMs, keeping the Node event loop alive after the
+  // scrape is otherwise done.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<typeof BUDGET_EXCEEDED>((resolve) => {
+        timer = setTimeout(() => resolve(BUDGET_EXCEEDED), budgetMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function shippedGraphAgeMetrics(

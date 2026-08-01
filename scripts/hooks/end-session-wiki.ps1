@@ -1,4 +1,4 @@
-# end-session-wiki.ps1 — Claude Code SessionEnd hook (Windows / PowerShell)
+﻿# end-session-wiki.ps1 — Claude Code SessionEnd hook (Windows / PowerShell)
 #
 # Epic #7 — end-session-wiki-hook, tasks #26 (vault-write-integration) +
 # #27 (opt-out-and-failure-handling).

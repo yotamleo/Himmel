@@ -1,4 +1,4 @@
-# sweep-codex-orphans.ps1 (HIMMEL-892) - report/sweep ORPHANED Codex
+﻿# sweep-codex-orphans.ps1 (HIMMEL-892) - report/sweep ORPHANED Codex
 # app-server-broker daemon TREES via the client-side pipe-token liveness test.
 #
 # WHY: the openai-codex plugin's app-server-broker.mjs daemon spawns a whole

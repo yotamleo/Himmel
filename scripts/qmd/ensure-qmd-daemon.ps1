@@ -1,4 +1,4 @@
-# ensure-qmd-daemon.ps1 - operator-facing MANUAL Windows twin of the qmd
+﻿# ensure-qmd-daemon.ps1 - operator-facing MANUAL Windows twin of the qmd
 # plugin's ensure script (HIMMEL-592).
 #
 # The SessionStart hook path is the bash script INSIDE the vendored plugin

@@ -206,6 +206,17 @@ assert_not_contains "dry-run does not print a stray backslash-apostrophe" "recei
 assert_contains "dry-run mentions the reconcile query" "qmd collection list" "$out"
 assert_contains "dry-run mentions the receiver script" "ship-index-remote.ps1" "$out"
 assert_contains "dry-run names the fence/swap/verify order" "daemon fence -> swap -> WMI restart -> verify -> reap" "$out"
+assert_contains "dry-run labels the per-invocation remote suffix as a <run-tag> template" "<run-tag>" "$out"
+assert_not_contains "dry-run does not claim a fixed index upload name the real run would not use" "qmd-index.incoming.sqlite" "$out"
+# REMOTE_TMP is resolved to the receiver's AppData/Local/Temp only AFTER the
+# dry-run exits (resolve_remote_paths), so it is empty here. A naive
+# interpolation printed "win2:/qmd-index..." -- a misleading root-level path
+# in exactly the safety preview an operator validates the swap target with.
+# Default mode must show a truthful <receiver-user-profile>/... placeholder
+# instead, and must NOT emit the bare host-colon-slash root path.
+assert_contains "dry-run shows a receiver-tmp placeholder for the upload destination" "<receiver-user-profile>/AppData/Local/Temp" "$out"
+assert_contains "dry-run labels the tmp default as derived at run time" "(derived at run time)" "$out"
+assert_not_contains "dry-run default mode prints NO bare host-colon-slash tmp path" "win2:/qmd-index" "$out"
 if [ ! -s "$STATE/calls" ]; then
     pass "dry-run made no ssh/scp/node calls at all"
 else
@@ -513,6 +524,20 @@ assert_rc "dry-run with override rc 0" 0 "$rc"
 assert_contains "dry-run shows the override value" "D:/idx/index.sqlite" "$out"
 assert_contains "dry-run labels it an override" "SHIP_REMOTE_INDEX override" "$out"
 assert_not_contains "dry-run does not claim it will be derived" "derived from the receiver's" "$out"
+
+echo "TEST: dry-run shows a SHIP_REMOTE_TMP override in the upload destinations"
+# The other half of the truthful-remote-tmp fix. With an explicit
+# SHIP_REMOTE_TMP, the dry-run must print the override value (not the
+# <receiver-user-profile> placeholder) in the upload destinations, and label
+# it as the override -- mirroring the SHIP_REMOTE_INDEX override line above.
+reset_calls
+rc=0; out=$(env PATH="$BIN:$PATH" QMD_INDEX_PATH="$FAKE_INDEX" \
+    GRAPHIFY_GRAPH_PATH="$TMP_ROOT/nograph.json" SHIP_REMOTE_TMP="D:/tmp/ship" \
+    "$REAL_BASH" "$SCRIPT" --dry-run 2>&1) || rc=$?
+assert_rc "dry-run with SHIP_REMOTE_TMP override rc 0" 0 "$rc"
+assert_contains "dry-run shows the tmp override value in the upload destination" "D:/tmp/ship/qmd-index.incoming.<run-tag>.sqlite" "$out"
+assert_contains "dry-run labels the tmp override" "SHIP_REMOTE_TMP override" "$out"
+assert_not_contains "dry-run does not show the receiver-tmp placeholder when overridden" "<receiver-user-profile>" "$out"
 
 echo "TEST: SHIP_REMOTE_* overrides skip the receiver query entirely"
 reset_calls

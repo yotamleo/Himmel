@@ -1,4 +1,4 @@
-# reap-superseded-fleets.ps1 (HIMMEL-1309) - report/reap SUPERSEDED Codex MCP
+﻿# reap-superseded-fleets.ps1 (HIMMEL-1309) - report/reap SUPERSEDED Codex MCP
 # fleets that accumulate UNDER A STILL-LIVE app-server.
 #
 # WHY (the gap the two existing tools structurally cannot cover):

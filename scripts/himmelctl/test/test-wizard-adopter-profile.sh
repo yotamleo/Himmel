@@ -1156,4 +1156,4 @@ grepq "$(epilogue "$out")" 'DISABLED' \
   || fail "caseY: without the override the overlay must still apply: $(epilogue "$out")"
 echo "ok: caseY LANES_REGISTRY replaces the registry and skips the overlay, like the resolver"
 
-echo "PASS: test-wizard-adopter-profile.sh (27 cases)"
+echo "PASS: test-wizard-adopter-profile.sh (26 cases)"

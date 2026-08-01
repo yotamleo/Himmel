@@ -21,6 +21,16 @@
 
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKFILL="$SCRIPT_DIR/backfill-sessions.sh"
 GOLDEN="$SCRIPT_DIR/../hooks/testdata/session-note.golden.md"
@@ -50,7 +60,7 @@ fail() {
 }
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grepq "$haystack" -F -- "$needle"; then
         pass "$label"
     else
         fail "$label" "missing: $needle"
@@ -58,7 +68,7 @@ assert_contains() {
 }
 assert_not_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grepq "$haystack" -F -- "$needle"; then
         fail "$label" "unexpected: $needle"
     else
         pass "$label"
@@ -382,7 +392,7 @@ note:   $(printf '%s' "$NOTE_HDRS" | tr '\n' '|')"
     FILES_VAL="$(awk '/^files_touched:/{print}' "$NOTE5")"
     assert_contains "shape-parity: branch empty in backfill" "branch:" "$BRANCH_VAL"
     # files_touched should be 0 (empty/no files)
-    if printf '%s' "$FILES_VAL" | grep -q 'files_touched: 0'; then
+    if grepq "$FILES_VAL" 'files_touched: 0'; then
         pass "shape-parity: files_touched is 0"
     else
         fail "shape-parity: files_touched should be 0" "$FILES_VAL"

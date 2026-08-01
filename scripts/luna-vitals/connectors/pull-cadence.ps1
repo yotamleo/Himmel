@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   ALPHA opt-in - cadence pull wrapper for the Google Health connector.
   PowerShell 7 twin of pull-cadence.sh (HIMMEL-609).

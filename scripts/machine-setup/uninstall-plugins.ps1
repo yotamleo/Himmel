@@ -1,4 +1,4 @@
-# uninstall-plugins.ps1 — remove all Claude Code plugins listed in
+﻿# uninstall-plugins.ps1 — remove all Claude Code plugins listed in
 # docs/setup/settings-template.json. PowerShell counterpart of
 # uninstall-plugins.sh; mirror of install-plugins.ps1 (HIMMEL-227 offboard).
 #

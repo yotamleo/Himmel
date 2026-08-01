@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Multi-vault luna template upgrade sweep (HIMMEL-462) — PowerShell thin forwarder.
 

@@ -20,6 +20,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 script="$repo_root/scripts/machine-setup/install-plugins.sh"
 [ -f "$script" ] || { echo "FAIL: $script not found" >&2; exit 1; }
@@ -32,7 +42,7 @@ set +e
 out=$(bash "$script" --dry-run --scope bogus 2>&1); rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "invalid scope should exit 2, got $rc"
-printf '%s' "$out" | grep -q "invalid --scope: bogus" || fail "missing invalid-scope diagnostic"
+grepq "$out" "invalid --scope: bogus" || fail "missing invalid-scope diagnostic"
 echo "ok: invalid scope rejected (exit 2)"
 
 # Tests 1 + 2 need the claude + jq preflight to pass.
@@ -45,9 +55,9 @@ fi
 assert_scope() {
     local want="$1"; shift
     local out; out=$(bash "$script" --dry-run "$@" 2>&1)
-    printf '%s' "$out" | grep -q "DRY: claude plugin marketplace add .* --scope $want" \
+    grepq "$out" "DRY: claude plugin marketplace add .* --scope $want" \
         || fail "marketplace add missing --scope $want (args: $*)"
-    printf '%s' "$out" | grep -q "DRY: claude plugin install .* --scope $want" \
+    grepq "$out" "DRY: claude plugin install .* --scope $want" \
         || fail "plugin install missing --scope $want (args: $*)"
     echo "ok: scope '$want' threads through (args: ${*:-<default>})"
 
@@ -60,7 +70,7 @@ assert_scope() {
       project) sf="$PWD/.claude/settings.json" ;;
       local)   sf="$PWD/.claude/settings.local.json" ;;
     esac
-    printf '%s' "$out" | grep -qF "DRY: set autoUpdate=true for 'himmel' in $sf" \
+    grepq "$out" -F "DRY: set autoUpdate=true for 'himmel' in $sf" \
         || fail "autoUpdate dry line missing/wrong file for scope $want (want $sf)"
     echo "ok: autoUpdate targets $sf for scope '$want'"
 }

@@ -1,4 +1,4 @@
-# test-install-plugins-autoupdate.ps1 — hermetic test for the HIMMEL-365
+﻿# test-install-plugins-autoupdate.ps1 — hermetic test for the HIMMEL-365
 # marketplace auto-update patch in scripts/machine-setup/install-plugins.ps1
 # (PowerShell twin of test-install-plugins-autoupdate.sh).
 #

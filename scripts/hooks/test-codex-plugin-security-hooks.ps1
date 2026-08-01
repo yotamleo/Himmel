@@ -1,4 +1,4 @@
-# Regression test (HIMMEL-589) — WINDOWS (cmd.exe) branch. The Unix/bash branch
+﻿# Regression test (HIMMEL-589) — WINDOWS (cmd.exe) branch. The Unix/bash branch
 # is covered by the .sh twin (which also exercises merged-pr end-to-end).
 #
 # Asserts the two plugin-delivered SECURITY guards are wired into

@@ -11,6 +11,16 @@
 #   1 — at least one case failed
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 GUARD="$(cd "$(dirname "$0")" && pwd)/check-no-secrets.sh"
 
 failures=0
@@ -48,7 +58,7 @@ printf 'name: Release\non: [push]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\
 out=$(bash "$GUARD" "$dir_b" 2>&1)
 rc=$?
 if [ "$rc" -eq 1 ]; then pass "leak.yml -> exit 1"; else fail "leak.yml -> expected 1 got $rc"; fi
-if printf '%s' "$out" | grep -qF "leak.yml"; then
+if grepq "$out" -F "leak.yml"; then
   pass "leak.yml -> filename reported"
 else
   fail "leak.yml -> expected filename in output, got: $out"

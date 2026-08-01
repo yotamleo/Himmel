@@ -1,4 +1,4 @@
-#requires -Version 5
+﻿#requires -Version 5
 # HIMMEL-709 — smoke test for setup-hooks.ps1 -GuardrailMode (parity with the .sh).
 # Hermetic: CLAUDE_USER_SETTINGS points at a temp file; never touches ~/.claude.
 $ErrorActionPreference = 'Stop'

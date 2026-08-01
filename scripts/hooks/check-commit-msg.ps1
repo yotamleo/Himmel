@@ -1,4 +1,4 @@
-# Windows PowerShell equivalent of check-commit-msg.sh
+﻿# Windows PowerShell equivalent of check-commit-msg.sh
 # Called by Git on Windows when bash is unavailable.
 # Usage: git config core.hooksPath scripts/hooks (then Git calls .ps1 on Windows)
 # Note: pre-commit framework uses the .sh version via Git Bash — this is a fallback.

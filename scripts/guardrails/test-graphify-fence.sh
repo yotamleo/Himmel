@@ -12,6 +12,16 @@
 # the outer environment cannot flip a fixture verdict.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 FENCE="$REPO_ROOT/scripts/guardrails/graphify-fence.sh"
 HOOK="$REPO_ROOT/scripts/hooks/block-graphify-egress.sh"
@@ -620,7 +630,7 @@ rm -f "$LEDGER"
 payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qi "DENY"; then pass "hook: graphify salus -> delegated deny rc=2"; else fail "hook: expected rc=2 + DENY got rc=$rc out=$out"; fi
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: graphify salus -> delegated deny rc=2"; else fail "hook: expected rc=2 + DENY got rc=$rc out=$out"; fi
 
 # graphify allow (himmel) delegated through the hook -> rc 0
 payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update %s --backend deepseek"}}' "$HIMMEL/scripts/thing.sh")

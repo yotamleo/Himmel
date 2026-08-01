@@ -1,4 +1,4 @@
-<#
+﻿<#
   Smoke test for luna-upgrade-all.ps1 (HIMMEL-462) — verifies the PowerShell
   forwarder locates Git Bash and delegates to luna-upgrade-all.sh: --help exits
   0, and a sweep against an empty temp roots dir exits 0 without touching real

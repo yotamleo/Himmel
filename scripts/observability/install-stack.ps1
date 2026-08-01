@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$RepoRoot,
   # -Hidden registers the long-running exporter tasks with an S4U principal so
   # they run in session 0 with no visible console window (the default Interactive

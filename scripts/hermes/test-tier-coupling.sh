@@ -26,6 +26,16 @@
 # needs no .ps1 twin (project convention: a documented platform guard suffices).
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 # --- the tier-coupling rule ---------------------------------------------------
 # Trusted write engines (D3b: codex-5.5 / GLM-5.2 1M workhorse; gpt-5.5 is the
 # codex provider's model id per the runbook). EXACT allowlist anchored on the
@@ -38,7 +48,7 @@ TRUSTED_RE='^([a-z0-9._-]+/)?(codex|codex-5\.5|gpt-5\.5|gpt-5\.5-codex|glm-5\.2\
 
 is_trusted_model() {
     # arg 1 = model slug (already lower-cased). return 0 if a trusted write engine.
-    printf '%s' "$1" | grep -qE "$TRUSTED_RE"
+    grepq "$1" -E "$TRUSTED_RE"
 }
 
 # full control = the profile is wired with parity_guard (write/git/PR allowed),

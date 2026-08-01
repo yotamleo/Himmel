@@ -25,6 +25,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -78,9 +88,9 @@ out=$(PATH="$c1path" HOME="$h1" HIMMELCTL_INTERACTIVE=0 \
       "$node_bin" "$wizard" install </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "case1: missing jq should exit non-zero (got $rc)"
-printf '%s' "$out" | grep -q 'jq' \
+grepq "$out" 'jq' \
   || fail "case1: missing-tool message should mention jq (got: $out)"
-if printf '%s' "$out" | grep -q 'Install missing tools now'; then
+if grepq "$out" 'Install missing tools now'; then
   fail "case1: non-interactive run must NOT prompt to install (saw prompt)"
 fi
 echo "ok: case1 non-interactive missing jq -> message + exit non-zero, no prompt"
@@ -94,7 +104,7 @@ out=$(PATH="$c2path" HOME="$h2" \
       "$node_bin" "$wizard" install --dry-run </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case2: all tools present should reach preflight OK (got rc=$rc)"
-printf '%s' "$out" | grep -q 'preflight OK' \
+grepq "$out" 'preflight OK' \
   || fail "case2: expected 'preflight OK' (got: $out)"
 echo "ok: case2 all hard-gate tools present -> install --dry-run reaches preflight OK"
 
@@ -148,13 +158,13 @@ out=$(PATH="$c3path" HOME="$h3" HIMMELCTL_INTERACTIVE=1 \
       "$node_bin" "$wizard" install <<<"y" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case3: install+recheck should reach preflight OK (got rc=$rc)"
-printf '%s' "$out" | grep -q 'Install missing tools now' \
+grepq "$out" 'Install missing tools now' \
   || fail "case3: interactive run should prompt to install (got: $out)"
 calls=0
 [ -f "$log3" ] && calls=$(wc -l < "$log3")
 [ "$calls" = "1" ] \
   || fail "case3: expected exactly 1 pkg-mgr call (got $calls): $(cat "$log3" 2>/dev/null)"
-printf '%s' "$out" | grep -q 'preflight OK' \
+grepq "$out" 'preflight OK' \
   || fail "case3: recheck should reach preflight OK (got: $out)"
 echo "ok: case3 interactive -> exactly 1 $pkgmgr call + recheck passes -> preflight OK"
 
@@ -190,7 +200,7 @@ STUB
       || fail "case3b: bash + git must deduplicate to one Git.Git install (got $calls): $(cat "$log3b")"
     grep -q 'Git.Git' "$log3b" \
       || fail "case3b: the one winget call must install Git.Git (got: $(cat "$log3b"))"
-    printf '%s' "$out" | grep -q 'preflight OK' \
+    grepq "$out" 'preflight OK' \
       || fail "case3b: recheck should reach preflight OK (got: $out)"
     echo "ok: case3b Windows missing bash + git -> one cmd/winget Git.Git install + recheck passes"
     ;;
@@ -245,7 +255,7 @@ if [ "$rc" -eq 124 ] || [ "$rc" -ge 128 ]; then
 fi
 out="$(cat "$c4_out" 2>/dev/null)"
 [ "$rc" -ne 0 ] || fail "case4: closed-stdin decline at the install confirm should exit non-zero (got rc=$rc): $out"
-printf '%s' "$out" | grep -q 'Install missing tools now' \
+grepq "$out" 'Install missing tools now' \
   || fail "case4: expected the install-confirm prompt to be shown (got: $out)"
 echo "ok: case4 interactive missing-tool, closed stdin at the confirm -> declines safely (no hang, ${c4_budget}s watchdog), exit non-zero"
 
@@ -258,11 +268,11 @@ out=$(PATH="$c5path" HOME="$h5" HIMMELCTL_INTERACTIVE=0 \
       "$node_bin" "$wizard" install uninstall </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "case5: 'install uninstall' should hard-error with rc=2 (got rc=$rc): $out"
-printf '%s' "$out" | grep -q "multiple subcommands given ('install' and 'uninstall')" \
+grepq "$out" "multiple subcommands given ('install' and 'uninstall')" \
   || fail "case5: expected the multiple-subcommands error message (got: $out)"
-printf '%s' "$out" | grep -q 'preflight OK' \
+grepq "$out" 'preflight OK' \
   && fail "case5: a rejected arg line must not reach the preflight gate (got: $out)"
-printf '%s' "$out" | grep -q 'derived:' \
+grepq "$out" 'derived:' \
   && fail "case5: a rejected arg line must derive/run nothing (got: $out)"
 echo "ok: case5 'install uninstall' -> rc=2 multiple-subcommands error, nothing derived or run"
 

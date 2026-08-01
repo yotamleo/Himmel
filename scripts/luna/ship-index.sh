@@ -324,6 +324,23 @@ if [ "$DRY_RUN" -eq 1 ]; then
     else
         say "  remote index      : (derived from the receiver's USERPROFILE at run time)"
     fi
+    # The receiver's Temp dir is derived at run time inside
+    # resolve_remote_paths, which runs only AFTER this dry-run exits, so
+    # REMOTE_TMP is empty here unless an explicit SHIP_REMOTE_TMP override is
+    # set. Interpolating the bare $REMOTE_TMP would print "$HOST:/qmd-index..."
+    # -- a misleading root-level destination in the very safety preview an
+    # operator uses to validate the swap target before a remote index swap.
+    # Render the prefix truthfully, mirroring the remote-index line just above:
+    # the override value when set, else an angle-bracket placeholder for the
+    # receiver-side default (the same <...> template convention as <run-tag> /
+    # <staging> for the other run-time-resolved values below).
+    if [ -n "$REMOTE_TMP" ]; then
+        DRY_REMOTE_TMP="$REMOTE_TMP"
+        say "  remote tmp        : $DRY_REMOTE_TMP (SHIP_REMOTE_TMP override)"
+    else
+        DRY_REMOTE_TMP="<receiver-user-profile>/AppData/Local/Temp"
+        say "  remote tmp        : $DRY_REMOTE_TMP (derived at run time)"
+    fi
     say "  reindex first     : $([ "$DO_REINDEX" -eq 1 ] && echo yes || echo no)"
     say "  ship graph        : $([ "$DO_GRAPH" -eq 1 ] && echo yes || echo no)"
     if [ -n "$COLLECTIONS" ]; then
@@ -333,10 +350,17 @@ if [ "$DRY_RUN" -eq 1 ]; then
     fi
     say "  would run         : $REINDEX_SCRIPT"
     say "  would run         : node $PREPARE_SCRIPT --src $LOCAL_INDEX --out <staging> --collections <set>"
-    say "  would upload      : <staging> -> $HOST:$REMOTE_TMP/qmd-index.incoming.sqlite"
-    say "  would upload      : $REMOTE_SCRIPT -> $HOST:$REMOTE_TMP/ship-index-remote.ps1"
-    say "  would upload      : $ENSURE_SCRIPT -> $HOST:$REMOTE_TMP/ensure-qmd-daemon.ps1"
-    say "  would run THERE   : ship-index-remote.ps1 (daemon fence -> swap -> WMI restart -> verify -> reap)"
+    # The real upload writes per-invocation RUN_TAG-suffixed remote names (a
+    # dot, the PID+epoch run tag, then a dot before the extension) so two
+    # concurrent ships can't overwrite each other. The tag is inherently
+    # per-invocation, so it can't be known in a dry-run (this run is never the
+    # real one) — print it as a <run-tag> template, consistent with the
+    # <staging>/<set> placeholders above for other run-time-resolved values,
+    # rather than a fixed name the real run would not use.
+    say "  would upload      : <staging> -> $HOST:$DRY_REMOTE_TMP/qmd-index.incoming.<run-tag>.sqlite"
+    say "  would upload      : $REMOTE_SCRIPT -> $HOST:$DRY_REMOTE_TMP/ship-index-remote.<run-tag>.ps1"
+    say "  would upload      : $ENSURE_SCRIPT -> $HOST:$DRY_REMOTE_TMP/ensure-qmd-daemon.<run-tag>.ps1"
+    say "  would run THERE   : ship-index-remote.<run-tag>.ps1 (daemon fence -> swap -> WMI restart -> verify -> reap)"
     say "dry-run complete (no changes made)"
     exit 0
 fi

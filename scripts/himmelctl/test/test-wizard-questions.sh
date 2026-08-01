@@ -129,6 +129,17 @@ STUB
 # prompts carry no '[' so they are excluded; adopter -> 7, contributor -> 4.
 count_questions() { printf '%s' "$1" | grep -cE '^\? .*\[' || true; }
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf-into-`grep -q` is a trap under this file's `set -o pipefail`:
+# grep -q exits the instant it matches, printf then takes SIGPIPE writing the
+# remainder, and pipefail reports the PIPELINE as failed — so a SUCCESSFUL match
+# returns non-zero whenever the match lands early in a large input (the outcome
+# depends on how far down the match sits). A here-string is not a pipeline, so
+# the status is grep's own verdict alone. (grep -c, as in count_questions above,
+# is unaffected: it reads all input before printing, so it never exits early and
+# the producer never takes SIGPIPE.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 # ── Case 1: adopter sequence -> 7 questions + summary role=adopter ─────────────
 stub1="$work/case1"; mkdir -p "$stub1"
 c1path=$(build_path "$stub1" bash jq python3 npm -- )
@@ -152,9 +163,9 @@ set -e
 qs=$(count_questions "$out")
 [ "$qs" -eq 7 ] \
   || fail "case1: adopter should ask 7 main questions (got $qs): $out"
-printf '%s' "$out" | grep -q '"role": "adopter"' \
+grepq "$out" '"role": "adopter"' \
   || fail "case1: summary should show role=adopter (got: $out)"
-printf '%s' "$out" | grep -q '? scope \[' \
+grepq "$out" '? scope \[' \
   || fail "case1: adopter should be asked scope (got: $out)"
 echo "ok: case1 adopter -> 7 questions + summary role=adopter"
 
@@ -182,11 +193,11 @@ set -e
 qs=$(count_questions "$out")
 [ "$qs" -eq 4 ] \
   || fail "case2: contributor should ask 4 main questions (got $qs): $out"
-printf '%s' "$out" | grep -q '^detected:.*contributor' \
+grepq "$out" '^detected:.*contributor' \
   || fail "case2: reasoning line should name contributor (got: $out)"
-printf '%s' "$out" | grep -q '? scope \[' \
+grepq "$out" '? scope \[' \
   && fail "case2: contributor must NOT be asked scope (got: $out)"
-printf '%s' "$out" | grep -q '"role": "contributor"' \
+grepq "$out" '"role": "contributor"' \
   || fail "case2: summary should show role=contributor (got: $out)"
 echo "ok: case2 contributor -> 4 questions + reasoning + no scope"
 
@@ -224,9 +235,9 @@ out=$(PATH="$c4path" HOME="$h4" HIMMELCTL_INTERACTIVE=0 \
       "$node_bin" "$wizard" install </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "case4: non-interactive no-profile should exit non-zero (got $rc)"
-printf '%s' "$out" | grep -q 'requires --from-profile' \
+grepq "$out" 'requires --from-profile' \
   || fail "case4: should print a --from-profile hint (got: $out)"
-printf '%s' "$out" | grep -q '^detected:' \
+grepq "$out" '^detected:' \
   && fail "case4: non-interactive refuse must NOT start the question engine (got: $out)"
 echo "ok: case4 non-interactive no profile -> refuse + message, no hang"
 
@@ -260,16 +271,16 @@ cachefile="$cache5_posix/install-profile.json"
 [ -f "$cachefile" ] || fail "case5: cache file should be written (expected $cachefile)"
 cache_body=$(cat "$cachefile")
 # Draft-A schema sanity on the written cache.
-printf '%s' "$cache_body" | grep -q '"role": "adopter"' \
+grepq "$cache_body" '"role": "adopter"' \
   || fail "case5: cache should record role=adopter (got: $cache_body)"
-printf '%s' "$cache_body" | grep -q '"tier": "standard"' \
+grepq "$cache_body" '"tier": "standard"' \
   || fail "case5: cache should carry the tier placeholder (got: $cache_body)"
 # HIMMEL-862: lanes/alwaysOn are ANSWERED rows now, not placeholders — this
 # case answers 'none'/'no' so the empty selection is what round-trips (case1
 # above covers a non-empty one).
-printf '%s' "$cache_body" | grep -q '"lanes": \[\]' \
+grepq "$cache_body" '"lanes": \[\]' \
   || fail "case5: cache should record the answered empty lane set (got: $cache_body)"
-printf '%s' "$cache_body" | grep -q '"alwaysOn": false' \
+grepq "$cache_body" '"alwaysOn": false' \
   || fail "case5: cache should record the answered alwaysOn=no (got: $cache_body)"
 # Now replay the cache non-interactively: ZERO prompts + byte-stable JSON.
 # Non-interactive --from-profile (T4) skips the confirm and shells out for
@@ -318,10 +329,10 @@ out=$(PATH="$c6path" HOME="$h6" HIMMELCTL_INTERACTIVE=0 \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "case6: missing-role profile should exit non-zero (got $rc)"
-printf '%s' "$out" | grep -qi 'role' \
+grepq "$out" -i 'role' \
   || fail "case6: should mention the missing role field (got: $out)"
 # No hang: it returned (we reached here). And it must not have started prompting.
-printf '%s' "$out" | grep -qE '^\? ' \
+grepq "$out" -E '^\? ' \
   && fail "case6: missing-role profile must NOT start the question engine (got: $out)"
 echo "ok: case6 --from-profile missing role -> non-zero + message, no hang"
 
@@ -351,17 +362,17 @@ INPUT
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case7: official-clone adopter run should succeed (got rc=$rc): $out"
-printf '%s' "$out" | grep -q '^detected:.*without a \.himmel-dev marker.*default adopter' \
+grepq "$out" '^detected:.*without a \.himmel-dev marker.*default adopter' \
   || fail "case7: reasoning line should name the missing marker + adopter default (got: $out)"
-printf '%s' "$out" | grep -q '? scope \[' \
+grepq "$out" '? scope \[' \
   || fail "case7: the adopter default must ask scope (got: $out)"
-printf '%s' "$out" | grep -q '"role": "adopter"' \
+grepq "$out" '"role": "adopter"' \
   || fail "case7: summary should show role=adopter (got: $out)"
-printf '%s' "$out" | grep -qE 'derived:.*adopt\.sh --profile all --scope project --luna-target' \
+grepq "$out" -E 'derived:.*adopt\.sh --profile all --scope project --luna-target' \
   || fail "case7: expected adopt.sh derived with the vault flags honored (got: $out)"
-printf '%s' "$out" | grep -q 'case7-luna' \
+grepq "$out" 'case7-luna' \
   || fail "case7: derived --luna-target should carry the answered vault path (got: $out)"
-printf '%s' "$out" | grep '^derived:' | grep -q 'setup\.sh' \
+grepq "$out" '^derived:.*setup\.sh' \
   && fail "case7: an official-clone adopter must never derive setup.sh (got: $out)"
 echo "ok: case7 himmel origin without .himmel-dev -> adopter default, scope asked, adopt.sh derived with vault flags"
 
@@ -383,11 +394,11 @@ INPUT
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case8: user-scope hint run should succeed (got rc=$rc): $out"
-printf '%s' "$out" | grep -qF '? scope [project|user] (default: user)' \
+grepq "$out" -F '? scope [project|user] (default: user)' \
   || fail "case8: scope question should display user as its default (got: $out)"
-printf '%s' "$out" | grep -q '"scope": "user"' \
+grepq "$out" '"scope": "user"' \
   || fail "case8: accepting the scope default should record user (got: $out)"
-printf '%s' "$out" | grep -qE 'derived:.*adopt\.sh --profile core --scope user$' \
+grepq "$out" -E 'derived:.*adopt\.sh --profile core --scope user$' \
   || fail "case8: accepted hint should derive the normal user-scope plan (got: $out)"
 echo "ok: case8 --default-scope user -> confirmable scope default=user + normal derived plan"
 

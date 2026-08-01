@@ -1,4 +1,4 @@
-# install-logon-task.ps1 — register / remove / report the logon scheduled task
+﻿# install-logon-task.ps1 — register / remove / report the logon scheduled task
 # that auto-starts the Telegram bun bridge after a Windows reboot.
 #
 # Why this exists: the bun bridge is a detached process; nothing relaunches it

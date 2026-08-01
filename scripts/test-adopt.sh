@@ -18,6 +18,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 adopt="$repo_root/scripts/adopt.sh"
 [ -f "$adopt" ] || { echo "FAIL: $adopt not found" >&2; exit 1; }
@@ -175,7 +185,7 @@ set +e
 out=$(bash "$adopt" --profile bogus --scope project 2>&1); rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "invalid --profile should exit 2 (got $rc)"
-printf '%s' "$out" | grep -q "invalid --profile" || fail "missing invalid-profile diagnostic"
+grepq "$out" "invalid --profile" || fail "missing invalid-profile diagnostic"
 set +e
 out=$(bash "$adopt" --profile core --scope bogus 2>&1); rc=$?
 set -e
@@ -255,7 +265,7 @@ printf '%s' '{"env":{"HANDOVER_DIR":"/some/operator/chosen/handovers"}}' > "$pre
 out=$(HOME="$base_home" bash "$adopt" --profile luna --target "$preserve_target" --luna-target "$preserve_vault" 2>&1)
 hd=$(jq -r '.env.HANDOVER_DIR' "$preserve_target/.claude/settings.json" 2>/dev/null)
 [ "$hd" = "/some/operator/chosen/handovers" ] || fail "HIMMEL-839 preserve: existing settings.json HANDOVER_DIR was overwritten ([$hd])"
-printf '%s' "$out" | grep -q 'leaving it' || fail "HIMMEL-839 preserve: missing the leaving-it message (got: $out)"
+grepq "$out" 'leaving it' || fail "HIMMEL-839 preserve: missing the leaving-it message (got: $out)"
 echo "ok: HIMMEL-839 preserves an existing settings.json env.HANDOVER_DIR (re-adopt reproduces, not resets)"
 
 # ── 4c. HIMMEL-839 CR round-2: PRESERVE an existing repo .env HANDOVER_DIR ──
@@ -276,7 +286,7 @@ if [ -n "$env_backup" ]; then mv "$env_backup" "$real_env"; env_backup=""; else 
 env_mutated=0
 hd=$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$preserve_target2/.claude/settings.json" 2>/dev/null)
 [ "$hd" = "ABSENT" ] || fail "HIMMEL-839 preserve: .env-configured HANDOVER_DIR was shadowed by a settings.json write ([$hd])"
-printf '%s' "$out" | grep -q 'via /handover-setup' || fail "HIMMEL-839 preserve: missing the .env-preserve message (got: $out)"
+grepq "$out" 'via /handover-setup' || fail "HIMMEL-839 preserve: missing the .env-preserve message (got: $out)"
 echo "ok: HIMMEL-839 preserves an existing repo .env HANDOVER_DIR (does not shadow it via settings.json)"
 
 # ── 4d. HIMMEL-839 CR round-2: canonicalize a relative --luna-target ────────
@@ -405,23 +415,23 @@ out=$(PATH="$qbin:$work/bin:$qmd_free_path" HOME="$qhome" bash "$adopt" \
       --profile all --scope user --target "$work/ign-q" --luna-target "$work/qvault" --with-graphify --dry-run 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "dry-run adopt exited rc=$rc (expected 0)"
-printf '%s' "$out" | grep -q 'DRY:.*fix-qmd-stub'    || fail "dry-run missing fix-qmd-stub DRY line"
-printf '%s' "$out" | grep -q 'DRY: qmd_install'      || fail "dry-run missing qmd_install DRY line"
-printf '%s' "$out" | grep -q 'DRY: qmd pull'         || fail "dry-run missing qmd pull DRY line"
-printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* himmel$' || fail "dry-run missing himmel register DRY line"
-printf '%s' "$out" | grep -q 'DRY: qmd_register_collection .* luna$'   || fail "dry-run missing luna register DRY line"
+grepq "$out" 'DRY:.*fix-qmd-stub'    || fail "dry-run missing fix-qmd-stub DRY line"
+grepq "$out" 'DRY: qmd_install'      || fail "dry-run missing qmd_install DRY line"
+grepq "$out" 'DRY: qmd pull'         || fail "dry-run missing qmd pull DRY line"
+grepq "$out" 'DRY: qmd_register_collection .* himmel$' || fail "dry-run missing himmel register DRY line"
+grepq "$out" 'DRY: qmd_register_collection .* luna$'   || fail "dry-run missing luna register DRY line"
 # HIMMEL-839: dry-run must also report the HANDOVER_DIR seed step (no mkdir,
 # no settings.json write — mirrors the mkdir-then-wire pair as DRY lines).
-printf '%s' "$out" | grep -q 'DRY: mkdir -p .*/qvault/handovers$' || fail "dry-run missing HANDOVER_DIR mkdir DRY line"
-printf '%s' "$out" | grep -q 'DRY: wire env.HANDOVER_DIR' || fail "dry-run missing HANDOVER_DIR wire DRY line"
-printf '%s' "$out" | grep -q 'Wiring graphify (opt-in' || fail "dry-run --with-graphify missing the graphify wiring banner"
-printf '%s' "$out" | grep -q 'DRY: graphify_install'   || fail "dry-run --with-graphify missing graphify_install DRY line"
+grepq "$out" 'DRY: mkdir -p .*/qvault/handovers$' || fail "dry-run missing HANDOVER_DIR mkdir DRY line"
+grepq "$out" 'DRY: wire env.HANDOVER_DIR' || fail "dry-run missing HANDOVER_DIR wire DRY line"
+grepq "$out" 'Wiring graphify (opt-in' || fail "dry-run --with-graphify missing the graphify wiring banner"
+grepq "$out" 'DRY: graphify_install'   || fail "dry-run --with-graphify missing graphify_install DRY line"
 # HIMMEL-1047: --with-graphify also registers the MCP server at the adopt scope
 # (here --scope user), so the dry-run must emit the mcp-add DRY line.
-printf '%s' "$out" | grep -q 'DRY: claude mcp add -s user graphify' || fail "dry-run --with-graphify missing the graphify MCP registration DRY line"
+grepq "$out" 'DRY: claude mcp add -s user graphify' || fail "dry-run --with-graphify missing the graphify MCP registration DRY line"
 # HIMMEL-842 gap 3: build_jira_cli runs after install_plugins; with npm scrubbed
 # suite-wide and bun stubbed present, it picks bun and emits its DRY build line.
-printf '%s' "$out" | grep -q 'DRY:.*(cd scripts/jira && bun install && bun run build)' || fail "dry-run missing build_jira_cli DRY line"
+grepq "$out" 'DRY:.*(cd scripts/jira && bun install && bun run build)' || fail "dry-run missing build_jira_cli DRY line"
 echo "ok: dry-run emits all qmd step DRY lines (core G1/G3/G4 + luna G5) + build_jira_cli + graphify opt-in DRY"
 
 # ── 11. HIMMEL-877 qmd WARN-not-fail: a failing qmd install never aborts adopt
@@ -459,11 +469,11 @@ out=$(PATH="$fbin:$work/bin:$qmd_free_path" HOME="$fhome" bash "$adopt" \
       --profile core --scope user --target "$work/ign-f" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "adopt must exit 0 when qmd install fails (WARN-not-fail), got rc=$rc"
-printf '%s' "$out" | grep -q 'Installing qmd fork' || fail "qmd_install not invoked (call order)"
-printf '%s' "$out" | grep -Eq 'WARNING.*qmd install failed' || fail "missing qmd install WARNING (WARN-not-fail)"
+grepq "$out" 'Installing qmd fork' || fail "qmd_install not invoked (call order)"
+grepq "$out" -E 'WARNING.*qmd install failed' || fail "missing qmd install WARNING (WARN-not-fail)"
 echo "ok: qmd install failure WARNs and adopt continues (WARN-not-fail, rc=0)"
 # HIMMEL-891 CR-5a: graphify default-OFF, behaviorally asserted on the run above.
-if printf '%s' "$out" | grep -q 'Wiring graphify'; then
+if grepq "$out" 'Wiring graphify'; then
   fail "default core adopt (no --with-graphify) ran the graphify wiring (opt-in regression)"
 fi
 if grep -q 'tool install' "$work/uv-calls-11"; then
@@ -515,9 +525,9 @@ out=$(PATH="$mbin:$work/bin:$qmd_free_path" HOME="$mhome" bash "$adopt" \
       --profile core --scope user --target "$work/ign-m" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "migration adopt exited rc=$rc (expected 0)"
-printf '%s' "$out" | grep -q 'Installing qmd fork' \
+grepq "$out" 'Installing qmd fork' \
   || fail "upstream-present install did not trigger the fork install (presence-gate regression)"
-printf '%s' "$out" | grep -q 'moving aside' || fail "upstream dir was not moved aside"
+grepq "$out" 'moving aside' || fail "upstream dir was not moved aside"
 [ -d "$mhome/.bun/install/global/node_modules/@tobilu/qmd.pre-fork-backup" ] \
   || fail "upstream backup dir missing after migration"
 [ -e "$mhome/.himmel/qmd-fork/dist/cli/qmd.js" ] || fail "fork clone was not built"
@@ -550,9 +560,9 @@ out=$(PATH="$nbin:$work/bin:$npm_free_path" HOME="$nhome" bash "$adopt" \
       --profile core --scope project --target "$ntarget" 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "node-without-npm + no bun should exit non-zero (got $rc)"
-printf '%s' "$out" | grep -q 'npm' || fail "node-without-npm msg missing 'npm'"
-printf '%s' "$out" | grep -q 'bun.sh' || fail "node-without-npm msg missing bun.sh hint"
-printf '%s' "$out" | grep -qi 'nodesource' || fail "node-without-npm msg missing nodesource hint"
+grepq "$out" 'npm' || fail "node-without-npm msg missing 'npm'"
+grepq "$out" 'bun.sh' || fail "node-without-npm msg missing bun.sh hint"
+grepq "$out" -i 'nodesource' || fail "node-without-npm msg missing nodesource hint"
 echo "ok: node-without-npm + no JS package manager -> hard fail (rc=$rc) + install hints"
 
 # ── 13. HIMMEL-842 gap 2: node-without-npm WITH bun -> soft warn, adopt proceeds ─
@@ -567,8 +577,8 @@ out=$(PATH="$nbin2:$work/bin:$npm_free_path" HOME="$nhome2" bash "$adopt" \
       --profile core --scope project --target "$ntarget2" --dry-run 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "node-without-npm + bun should proceed (got $rc)"
-printf '%s' "$out" | grep -q 'npm' || fail "node-without-npm+bun missing soft warn"
-if printf '%s' "$out" | grep -q 'no JS package manager'; then
+grepq "$out" 'npm' || fail "node-without-npm+bun missing soft warn"
+if grepq "$out" 'no JS package manager'; then
   fail "node-without-npm+bun must NOT hard-fail (saw hard-fail message)"
 fi
 echo "ok: node-without-npm + bun present -> soft warn, adopt proceeds (rc=0)"
@@ -586,9 +596,9 @@ out=$(PATH="$bjbin:$work/bin:$qmd_free_path" HOME="$bjhome" bash "$adopt" \
       --profile core --scope user --target "$work/ign-bj" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "build_jira_cli success path: adopt should exit 0 (got $rc)"
-printf '%s' "$out" | grep -q 'Building jira CLI' || fail "build_jira_cli: missing 'Building jira CLI' header"
-printf '%s' "$out" | grep -q 'jira CLI built'    || fail "build_jira_cli: missing success message"
-if printf '%s' "$out" | grep -q 'jira CLI build failed'; then
+grepq "$out" 'Building jira CLI' || fail "build_jira_cli: missing 'Building jira CLI' header"
+grepq "$out" 'jira CLI built'    || fail "build_jira_cli: missing success message"
+if grepq "$out" 'jira CLI build failed'; then
   fail "build_jira_cli: success path must not print a build-failed warning"
 fi
 echo "ok: build_jira_cli success path (stub npm) reports built, adopt exits 0"
@@ -604,8 +614,8 @@ out=$(PATH="$bfbin:$work/bin:$qmd_free_path" HOME="$bfhome" bash "$adopt" \
       --profile core --scope user --target "$work/ign-bf" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "build_jira_cli WARN-not-fail: adopt must exit 0 on a build failure (got $rc)"
-printf '%s' "$out" | grep -Eq 'WARNING.*jira CLI build failed' || fail "build_jira_cli: missing build-failed WARNING"
-printf '%s' "$out" | grep -q 'npm install && npm run build'     || fail "build_jira_cli: missing manual command in WARNING"
+grepq "$out" -E 'WARNING.*jira CLI build failed' || fail "build_jira_cli: missing build-failed WARNING"
+grepq "$out" 'npm install && npm run build'     || fail "build_jira_cli: missing manual command in WARNING"
 echo "ok: build_jira_cli failure WARNs with manual command, adopt continues (rc=0)"
 
 # ── 16. HIMMEL-842 gap 3: build_jira_cli skip when no JS package manager ──────
@@ -618,8 +628,8 @@ out=$(PATH="$work/bin:$qmd_free_path" HOME="$skhome" bash "$adopt" \
       --profile core --scope user --target "$work/ign-sk" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "build_jira_cli skip path: adopt should exit 0 (got $rc)"
-printf '%s' "$out" | grep -q 'jira CLI: skipping build (no npm or bun' || fail "build_jira_cli: missing no-pm skip note"
-if printf '%s' "$out" | grep -q 'Building jira CLI'; then
+grepq "$out" 'jira CLI: skipping build (no npm or bun' || fail "build_jira_cli: missing no-pm skip note"
+if grepq "$out" 'Building jira CLI'; then
   fail "build_jira_cli: no-pm path must NOT attempt a build (saw build header)"
 fi
 echo "ok: build_jira_cli skips (no npm/bun) with manual command, no build attempted"
@@ -640,8 +650,8 @@ out=$(PATH="$bjbin:$work/bin:$qmd_free_path" HOME="$bjhome2" bash "$adopt" \
 set -e
 rm -rf "$real_jira_dist" "$real_jira_node_modules"
 [ "$rc" -eq 0 ] || fail "build_jira_cli idempotent path: adopt should exit 0 (got $rc)"
-printf '%s' "$out" | grep -q 'jira CLI dist already built' || fail "build_jira_cli: missing 'already built' skip"
-if printf '%s' "$out" | grep -q 'Building jira CLI'; then
+grepq "$out" 'jira CLI dist already built' || fail "build_jira_cli: missing 'already built' skip"
+if grepq "$out" 'Building jira CLI'; then
   fail "build_jira_cli: already-built path must NOT attempt a build"
 fi
 echo "ok: build_jira_cli idempotent when dist/index.js + node_modules already present (skips build)"
@@ -659,8 +669,8 @@ out=$(PATH="$bjbin:$work/bin:$qmd_free_path" HOME="$bjhome3" bash "$adopt" \
 set -e
 rm -rf "$real_jira_dist"
 [ "$rc" -eq 0 ] || fail "dist-present/node_modules-absent: adopt should exit 0 (got $rc)"
-printf '%s' "$out" | grep -q 'Building jira CLI' || fail "dist-present/node_modules-absent: build_jira_cli should NOT skip (missing build header)"
-if printf '%s' "$out" | grep -q 'jira CLI dist already built'; then
+grepq "$out" 'Building jira CLI' || fail "dist-present/node_modules-absent: build_jira_cli should NOT skip (missing build header)"
+if grepq "$out" 'jira CLI dist already built'; then
   fail "dist-present/node_modules-absent: must NOT take the already-built skip branch"
 fi
 echo "ok: build_jira_cli builds when dist present but node_modules absent (F3 invariant)"
@@ -685,9 +695,9 @@ out=$(PATH="$bubin:$work/bin:$qmd_free_path" HOME="$buhome" bash "$adopt" \
       --profile core --scope user --target "$work/ign-bu" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "build_jira_cli bun real-invocation: adopt should exit 0 (got $rc)"
-printf '%s' "$out" | grep -q 'BUN_INSTALL_STUB_RAN' || fail "build_jira_cli bun real-invocation: bun install did not run"
-printf '%s' "$out" | grep -q 'BUN_BUILD_STUB_RAN'   || fail "build_jira_cli bun real-invocation: bun run build did not run"
-printf '%s' "$out" | grep -q 'jira CLI built' || fail "build_jira_cli bun real-invocation: missing success message"
+grepq "$out" 'BUN_INSTALL_STUB_RAN' || fail "build_jira_cli bun real-invocation: bun install did not run"
+grepq "$out" 'BUN_BUILD_STUB_RAN'   || fail "build_jira_cli bun real-invocation: bun run build did not run"
+grepq "$out" 'jira CLI built' || fail "build_jira_cli bun real-invocation: missing success message"
 echo "ok: build_jira_cli bun branch real-invocation runs install + build (F5)"
 
 # ── 20. HIMMEL-887 T10: himmelctl wizard + machine-setup shim suites ──────────

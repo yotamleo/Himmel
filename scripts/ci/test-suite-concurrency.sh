@@ -20,6 +20,16 @@
 # Exit codes: 0 -- all cases passed; 1 -- at least one failed.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 CI_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$CI_DIR/run-shell-tests.sh"
 
@@ -78,18 +88,18 @@ if [ "$rc1" -eq 2 ]; then
 else
   fail "held lock -> expected rc 2 got $rc1; output: $out1"
 fi
-if printf '%s' "$out1" | grep -qF 'REFUSED'; then
+if grepq "$out1" -F 'REFUSED'; then
   pass "refusal message names the condition"
 else
   fail "refusal message missing REFUSED; output: $out1"
 fi
-if printf '%s' "$out1" | grep -qF "pid=$$"; then
+if grepq "$out1" -F "pid=$$"; then
   pass "refusal message names the holder"
 else
   fail "refusal message does not name the holding pid; output: $out1"
 fi
 # The refused run must not have executed anything.
-if printf '%s' "$out1" | grep -qF '[PASS]'; then
+if grepq "$out1" -F '[PASS]'; then
   fail "refused run executed a suite anyway"
 else
   pass "refused run executed nothing"
@@ -191,7 +201,7 @@ if [ "$rc2" -eq 0 ]; then
 else
   fail "dead holder -> expected rc 0 got $rc2; output: $out2"
 fi
-if printf '%s' "$out2" | grep -qF 'abandoned'; then
+if grepq "$out2" -F 'abandoned'; then
   pass "reclaim is announced, not silent"
 else
   fail "reclaim was silent; output: $out2"
@@ -245,7 +255,7 @@ if [ "$rc2c" -eq 0 ]; then
 else
   fail "unbranded lock -> expected rc 0 got $rc2c; output: $out2c"
 fi
-if printf '%s' "$out2c" | grep -qF 'unbranded'; then
+if grepq "$out2c" -F 'unbranded'; then
   pass "unbranded-lock clearing is announced"
 else
   fail "unbranded-lock clearing was silent; output: $out2c"
@@ -314,7 +324,7 @@ if [ "$rc2d" -eq 2 ]; then
 else
   fail "unusable lock path -> expected rc 2 got $rc2d; output: $out2d"
 fi
-if printf '%s' "$out2d" | grep -qF 'not look like a suite lock'; then
+if grepq "$out2d" -F 'not look like a suite lock'; then
   pass "the refusal explains what it will not touch"
 else
   fail "refusal did not explain itself; output: $out2d"
@@ -389,7 +399,7 @@ if [ "$rc2f" -eq 0 ]; then
 else
   fail "stranded claim wedged the takeover: expected rc 0 got $rc2f; output: $out2f"
 fi
-if printf '%s' "$out2f" | grep -qF 'stranded takeover claim'; then
+if grepq "$out2f" -F 'stranded takeover claim'; then
   pass "the claim expiry is announced, not silent"
 else
   fail "claim expiry was silent; output: $out2f"
@@ -429,7 +439,7 @@ if ln -s "$target" "$link" 2>/dev/null && [ -L "$link" ]; then
   else
     fail "symlinked lock path -> expected rc 2 got $rc2d3; output: $out2d3"
   fi
-  if printf '%s' "$out2d3" | grep -qF 'is a symlink'; then
+  if grepq "$out2d3" -F 'is a symlink'; then
     pass "the refusal names the reason"
   else
     fail "symlink refusal did not name the reason; output: $out2d3"
@@ -581,14 +591,14 @@ if [ "$elapsed5" -lt 120 ]; then
 else
   fail "blocking suite -> run took ${elapsed5}s; the cap did not fire"
 fi
-if printf '%s' "$out5" | grep -qF '[TIME]'; then
+if grepq "$out5" -F '[TIME]'; then
   pass "timeout is reported as a timeout, not a plain failure"
 else
   fail "no [TIME] marker in output: $out5"
 fi
 # The suite AFTER the blocking one must still have run -- a cap that takes the
 # whole run down with it is just a slower hang.
-if printf '%s' "$out5" | grep -qF '[PASS]'; then
+if grepq "$out5" -F '[PASS]'; then
   pass "run continued past the capped suite"
 else
   fail "run did not continue past the capped suite; output: $out5"
@@ -678,12 +688,12 @@ if [ "$rc5c" -eq 1 ]; then
 else
   fail "TERM-handling suite -> expected rc 1 got $rc5c; output: $out5c"
 fi
-if printf '%s' "$out5c" | grep -qF '[TIME]'; then
+if grepq "$out5c" -F '[TIME]'; then
   pass "an over-time suite that exited 0 is recorded as a timeout"
 else
   fail "an over-time suite that exited 0 was NOT recorded as a timeout; output: $out5c"
 fi
-if printf '%s' "$out5c" | grep -qF '[PASS]'; then
+if grepq "$out5c" -F '[PASS]'; then
   fail "the over-time suite was counted as a PASS"
 else
   pass "no PASS recorded for the over-time suite"
@@ -735,7 +745,7 @@ else
   pass "the stdin reader saw EOF (stdin is /dev/null)"
 fi
 # All three must be accounted for in the summary.
-if printf '%s' "$out6" | grep -qF 'OK: all 3 run suites passed'; then
+if grepq "$out6" -F 'OK: all 3 run suites passed'; then
   pass "summary counts all three suites"
 else
   fail "summary did not count three suites; output: $out6"
@@ -775,7 +785,7 @@ if [ ! -f "$sb7/never.ran" ]; then
 else
   fail "expired budget -> the remaining suite ran anyway"
 fi
-if printf '%s' "$out7" | grep -qF 'test-b-never.sh'; then
+if grepq "$out7" -F 'test-b-never.sh'; then
   pass "expired budget -> the unrun suite is named"
 else
   fail "expired budget -> unrun suites not named; output: $out7"
@@ -862,7 +872,7 @@ if [ -d "$lock8c" ] && grep -qF 'host=some-other-host' "$lock8c/owner" 2>/dev/nu
 else
   fail "the original holder deleted the successor's lock — concurrent runs would be admitted"
 fi
-if printf '%s' "$out8c" | grep -qF 'taken over'; then
+if grepq "$out8c" -F 'taken over'; then
   pass "the skipped release is announced, not silent"
 else
   fail "the skipped release was silent; output: $out8c"
@@ -891,7 +901,7 @@ if [ "$rc9" -eq 0 ]; then
 else
   fail "non-numeric SUITE_TIMEOUT -> expected rc 0 got $rc9; output: $out9"
 fi
-if printf '%s' "$out9" | grep -qF 'SUITE_TIMEOUT="abc"'; then
+if grepq "$out9" -F 'SUITE_TIMEOUT="abc"'; then
   pass "the bad value is named in the warning"
 else
   fail "no warning naming the bad SUITE_TIMEOUT; output: $out9"
@@ -920,7 +930,7 @@ if [ "$rc9c" -eq 2 ]; then
 else
   fail "SUITE_LOCK_TTL=0 defeated the guard: expected rc 2 got $rc9c; output: $out9c"
 fi
-if printf '%s' "$out9c" | grep -qF 'must be >= 1'; then
+if grepq "$out9c" -F 'must be >= 1'; then
   pass "the zero value is rejected with a reason"
 else
   fail "no warning rejecting the zero TTL; output: $out9c"
@@ -935,7 +945,7 @@ if [ "$rc9b" -eq 0 ]; then
 else
   fail "zero-padded SUITE_TIMEOUT -> expected rc 0 got $rc9b; output: $out9b"
 fi
-if printf '%s' "$out9b" | grep -qE 'value too great for base|invalid octal'; then
+if grepq "$out9b" -E 'value too great for base|invalid octal'; then
   fail "zero-padded value was parsed as octal; output: $out9b"
 else
   pass "no octal parse error on a zero-padded value"

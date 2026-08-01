@@ -44,6 +44,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -85,7 +95,7 @@ set +e
 outA=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" status --profile core </dev/null 2>&1); rcA=$?
 set -e
 [ "$rcA" -eq 2 ] || fail "case a: 'status --profile core' should exit 2 (got rc=$rcA): $outA"
-echo "$outA" | grep -qF -- "--profile is not valid with 'status'" \
+grepq "$outA" -F -- "--profile is not valid with 'status'" \
   || fail "case a: expected a message naming --profile + 'status' (got: $outA)"
 echo "ok: case a — 'status --profile' is rejected with exit 2"
 
@@ -94,7 +104,7 @@ set +e
 outB=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" status --yes </dev/null 2>&1); rcB=$?
 set -e
 [ "$rcB" -eq 2 ] || fail "case b: 'status --yes' should exit 2 (got rc=$rcB): $outB"
-echo "$outB" | grep -qF -- "--yes is not valid with 'status'" \
+grepq "$outB" -F -- "--yes is not valid with 'status'" \
   || fail "case b: expected a message naming --yes + 'status' (got: $outB)"
 echo "ok: case b — 'status --yes' is rejected with exit 2"
 
@@ -103,7 +113,7 @@ set +e
 outC=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" ensure --json </dev/null 2>&1); rcC=$?
 set -e
 [ "$rcC" -eq 2 ] || fail "case c: 'ensure --json' should exit 2 (got rc=$rcC): $outC"
-echo "$outC" | grep -qF -- "--json is not valid with 'ensure'" \
+grepq "$outC" -F -- "--json is not valid with 'ensure'" \
   || fail "case c: expected a message naming --json + 'ensure' (got: $outC)"
 echo "ok: case c — 'ensure --json' is rejected with exit 2"
 
@@ -112,7 +122,7 @@ set +e
 outD=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" install --items a,b </dev/null 2>&1); rcD=$?
 set -e
 [ "$rcD" -eq 2 ] || fail "case d: 'install --items a,b' should exit 2 (got rc=$rcD): $outD"
-echo "$outD" | grep -qF -- "--items is not valid with 'install'" \
+grepq "$outD" -F -- "--items is not valid with 'install'" \
   || fail "case d: expected a message naming --items + 'install' (got: $outD)"
 echo "ok: case d — 'install --items' is rejected with exit 2"
 
@@ -121,7 +131,7 @@ set +e
 outE=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" uninstall --profile core </dev/null 2>&1); rcE=$?
 set -e
 [ "$rcE" -eq 2 ] || fail "case e: 'uninstall --profile core' should exit 2 (got rc=$rcE): $outE"
-echo "$outE" | grep -qF -- "--profile is not valid with 'uninstall'" \
+grepq "$outE" -F -- "--profile is not valid with 'uninstall'" \
   || fail "case e: expected a message naming --profile + 'uninstall' (got: $outE)"
 echo "ok: case e — 'uninstall --profile' is rejected with exit 2"
 
@@ -130,7 +140,7 @@ set +e
 outF=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" uninstall --items a </dev/null 2>&1); rcF=$?
 set -e
 [ "$rcF" -eq 2 ] || fail "case f: 'uninstall --items a' should exit 2 (got rc=$rcF): $outF"
-echo "$outF" | grep -qF -- "--items is not valid with 'uninstall'" \
+grepq "$outF" -F -- "--items is not valid with 'uninstall'" \
   || fail "case f: expected a message naming --items + 'uninstall' (got: $outF)"
 echo "ok: case f — 'uninstall --items' is rejected with exit 2"
 
@@ -150,9 +160,9 @@ outG1=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HOME="$homeG" \
   "$node_bin" "$wizard" status --items x --json </dev/null 2>&1); rcG1=$?
 set -e
 [ "$rcG1" -eq 2 ] || fail "case g: 'status --items x --json' should reach cmdStatus and exit 2 for no profile (got rc=$rcG1): $outG1"
-echo "$outG1" | grep -qF 'no himmelctl install profile found' \
+grepq "$outG1" -F 'no himmelctl install profile found' \
   || fail "case g: 'status --items x --json' should pass option validation (got: $outG1)"
-if echo "$outG1" | grep -qF 'is not valid with'; then
+if grepq "$outG1" -F 'is not valid with'; then
   fail "case g: 'status --items x --json' incorrectly hit the option-validation error (got: $outG1)"
 fi
 
@@ -161,9 +171,9 @@ outG2=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HOME="$homeG" \
   "$node_bin" "$wizard" ensure --items x --profile core --yes --dry-run </dev/null 2>&1); rcG2=$?
 set -e
 [ "$rcG2" -eq 2 ] || fail "case g: the full valid ensure combo should reach cmdEnsure and exit 2 for no profile (got rc=$rcG2): $outG2"
-echo "$outG2" | grep -qF 'no himmelctl install profile found' \
+grepq "$outG2" -F 'no himmelctl install profile found' \
   || fail "case g: the full valid ensure combo should pass option validation (got: $outG2)"
-if echo "$outG2" | grep -qF 'is not valid with'; then
+if grepq "$outG2" -F 'is not valid with'; then
   fail "case g: the full valid ensure combo incorrectly hit the option-validation error (got: $outG2)"
 fi
 echo "ok: case g — 'status --items --json' and every ensure flag together both pass validation and reach their handler"
@@ -175,9 +185,9 @@ set +e
 outH=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" status --bogus-flag </dev/null 2>&1); rcH=$?
 set -e
 [ "$rcH" -eq 2 ] || fail "case h: an unrecognized flag should exit 2 (got rc=$rcH): $outH"
-echo "$outH" | grep -qF 'unknown argument: --bogus-flag' \
+grepq "$outH" -F 'unknown argument: --bogus-flag' \
   || fail "case h: expected the 'unknown argument' line (got: $outH)"
-echo "$outH" | grep -qF "Run 'himmelctl --help' for usage." \
+grepq "$outH" -F "Run 'himmelctl --help' for usage." \
   || fail "case h: expected the usage-pointer line too — BOTH must flush, not just the first (got: $outH)"
 echo "ok: case h — an unrecognized flag exits 2 with BOTH diagnostic lines flushed (no truncation under piped output)"
 
@@ -196,9 +206,9 @@ outI=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheI")" HOME="$homeI" \
   "$node_bin" "$wizard" --items x --json status </dev/null 2>&1); rcI=$?
 set -e
 [ "$rcI" -eq 2 ] || fail "case i: '--items x --json status' should reach cmdStatus and exit 2 for no profile (got rc=$rcI): $outI"
-echo "$outI" | grep -qF 'no himmelctl install profile found' \
+grepq "$outI" -F 'no himmelctl install profile found' \
   || fail "case i: '--items x --json status' should pass option validation (got: $outI)"
-if echo "$outI" | grep -qF 'is not valid with'; then
+if grepq "$outI" -F 'is not valid with'; then
   fail "case i: '--items x --json status' incorrectly hit the option-validation error (got: $outI)"
 fi
 echo "ok: case i — valid flags placed BEFORE the subcommand ('--items x --json status') pass validation and reach cmdStatus"
@@ -211,7 +221,7 @@ set +e
 outJ=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" --profile core status </dev/null 2>&1); rcJ=$?
 set -e
 [ "$rcJ" -eq 2 ] || fail "case j: '--profile core status' should exit 2 (got rc=$rcJ): $outJ"
-echo "$outJ" | grep -qF -- "--profile is not valid with 'status'" \
+grepq "$outJ" -F -- "--profile is not valid with 'status'" \
   || fail "case j: expected the same rejection message as the post-subcommand form (got: $outJ)"
 echo "ok: case j — an invalid flag placed BEFORE the subcommand ('--profile core status') is rejected exactly like its post-subcommand form"
 

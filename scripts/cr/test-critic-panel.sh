@@ -3,6 +3,16 @@
 # Bash 3.2 safe.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 # Hermetic: the panel now reads CR_PROFILE (HIMMEL-558) — and has always read
 # CRITIC_PANEL_TIERS — from the environment. Clear any ambient values so the
 # default-behaviour tests are not perturbed by the operator's shell (.env often
@@ -26,7 +36,7 @@ check() {
 }
 
 check_contains() {
-    if printf '%s' "$2" | grep -qF -- "$3"; then
+    if grepq "$2" -F -- "$3"; then
         echo "ok - $1"
     else
         echo "FAIL - $1: expected to contain [$3]"
@@ -203,8 +213,8 @@ if command -v timeout > /dev/null 2>&1; then
         j_rc=0
         stderr_j="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=2 CRITICS_JSON="$HANG_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
             timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j_rc=$?
-        printf '%s' "$stderr_j" | grep -qF "unavailable (timeout 2s)" \
-            && printf '%s' "$stderr_j" | grep -qF "hang-critic" \
+        grepq "$stderr_j" -F "unavailable (timeout 2s)" \
+            && grepq "$stderr_j" -F "hang-critic" \
             && [ "$j_rc" = "1" ]
     }
     retry_once j1_case
@@ -223,8 +233,8 @@ if command -v timeout > /dev/null 2>&1; then
         j2_rc=0
         stderr_j2="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=20 CRITICS_JSON="$HANG_OVERRIDE_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
             timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j2_rc=$?
-        printf '%s' "$stderr_j2" | grep -qF "unavailable (timeout 1s)" \
-            && printf '%s' "$stderr_j2" | grep -qF "hang-critic2" \
+        grepq "$stderr_j2" -F "unavailable (timeout 1s)" \
+            && grepq "$stderr_j2" -F "hang-critic2" \
             && [ "$j2_rc" = "1" ]
     }
     retry_once j2_case
@@ -243,8 +253,8 @@ if command -v timeout > /dev/null 2>&1; then
         j3_rc=0
         stderr_j3="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=2 CRITICS_JSON="$HANG_BAD_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
             timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j3_rc=$?
-        printf '%s' "$stderr_j3" | grep -qF "unavailable (timeout 2s)" \
-            && printf '%s' "$stderr_j3" | grep -qF "hang-critic3" \
+        grepq "$stderr_j3" -F "unavailable (timeout 2s)" \
+            && grepq "$stderr_j3" -F "hang-critic3" \
             && [ "$j3_rc" = "1" ]
     }
     retry_once j3_case
@@ -368,8 +378,8 @@ PYEOF
     k2_case() {
         stderr_k2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" CRITIC_PARALLEL=1 timeout 60 bash "$PANEL" 2>&1 >/dev/null)"
         out_k2="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" CRITIC_PARALLEL=1 timeout 60 bash "$PANEL" 2>/dev/null)"
-        printf '%s' "$stderr_k2" | grep -qF 'panel-availability: kimi unavailable' \
-            && printf '%s' "$out_k2" | grep -qF '(2/3 critics responded)'
+        grepq "$stderr_k2" -F 'panel-availability: kimi unavailable' \
+            && grepq "$out_k2" -F '(2/3 critics responded)'
     }
     retry_once k2_case
     check "K2: parallel kimi unavailable" "$(printf '%s\n' "$stderr_k2" | grep -cF 'panel-availability: kimi unavailable')" "1"
@@ -527,7 +537,7 @@ printf '%s' '{"panel":[{"slug":"plain","model":"fake/plain","provider":"test","t
 out_p1="$(printf '%s' "$DIFF" | CRITICS_JSON="$PERSPECTIVE_JSON" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" 2>/dev/null)"
 check "P1: perspective flag passed to first-pass" "$(grep -c -- '--perspective-file' "$CAPTURE_FILE")" "1"
 check "P1: perspective path passed to first-pass" "$(grep -c 'perspectives/skeptic.md' "$CAPTURE_FILE")" "1"
-check "P3: merged stdout keeps pr-check bullet contract" "$(printf '%s\n' "$out_p1" | grep -Eq '^- \[[a-z0-9]+-[0-9]+\]: .*\[[^]]+:[0-9]+\]$' && echo yes || echo no)" "yes"
+check "P3: merged stdout keeps pr-check bullet contract" "$(grepq "$out_p1" -E '^- \[[a-z0-9]+-[0-9]+\]: .*\[[^]]+:[0-9]+\]$' && echo yes || echo no)" "yes"
 
 : > "$CAPTURE_FILE"
 printf '%s' "$DIFF" | CRITICS_JSON="$PLAIN_JSON" CRITIC_FIRST_PASS="$CAPTURE_STUB" bash "$PANEL" >/dev/null 2>&1
@@ -655,7 +665,7 @@ check_contains "W5: invalid total timeout warns and uses the default" "$inv_out"
 _lz_backdated=$(( $(date +%s) - 5000 ))
 lz_out="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/dl-critics.json" CRITIC_PANEL_TOTAL_TIMEOUT_SECS=08 CRITIC_PANEL_STARTED_AT="$_lz_backdated" CRITIC_FIRST_PASS="$SLOW_STUB" bash "$tmp/panelcopy/critic-panel.sh" 2>&1 >/dev/null)"
 check_contains "W5b: a leading-zero total timeout is honoured, not silently disabled" "$lz_out" "reason=panel-deadline"
-if printf '%s' "$lz_out" | grep -q 'value too great for base'; then
+if grepq "$lz_out" 'value too great for base'; then
     fails=$((fails+1)); echo "  FAIL: W5b: no octal arithmetic error leaked to stderr"
 else
     echo "  ok: W5b: no octal arithmetic error leaked to stderr"

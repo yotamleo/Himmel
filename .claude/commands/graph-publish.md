@@ -40,5 +40,6 @@ Exit codes:
 - `8` checkout/commit/push failed
 - `9` pushed, but the PR step did NOT complete (forge undetectable, or `gh pr create`/`gh pr edit` failed) — branch is pushed; open the PR manually
 - `10` graphify-out/manifest.json is missing — refresh-graph-map.sh's transaction marker is absent, so graph.json/GRAPH_REPORT.md may be an inconsistent pair; re-run refresh-graph-map.sh first
+- `11` graphify-out/GRAPH_REPORT.md is missing while graph.json is present — refresh-graph-map.sh always promotes both together, so this is anomalous (report deleted after a completed refresh?); restore GRAPH_REPORT.md or re-run refresh-graph-map.sh, then retry
 
 `--dry-run` implies `--no-fetch` (no git/gh calls at all, network included).

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Provision the ADDITIVE `himmel_agent` hermes profile (HIMMEL-557, HIMMEL-744)
   — himmel's main-tier orchestrator (Codex / GPT-5.5) — then wire parity_guard
@@ -57,7 +57,8 @@ else {
   }
 }
 if (-not $Py) {
-  $c = (Get-Command python3 -ErrorAction SilentlyContinue) ?? (Get-Command python -ErrorAction SilentlyContinue)
+  $c = Get-Command python3 -ErrorAction SilentlyContinue
+  if ($null -eq $c) { $c = Get-Command python -ErrorAction SilentlyContinue }
   if ($c) { $Py = $c.Source }
 }
 if (-not $Py) { throw "no python interpreter found (set HERMES_PY)" }

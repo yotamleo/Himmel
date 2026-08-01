@@ -29,6 +29,15 @@
 # shellcheck disable=SC2329  # same as SC2317 (alias in newer shellcheck versions)
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 STATUSLINE_DIR="$(cd "$(dirname "$0")" && pwd)"
 PRODUCER="$STATUSLINE_DIR/usage-cache-producer.sh"
 COMPOSER="$STATUSLINE_DIR/hud-custom-lines.sh"   # HIMMEL-718 Task 2.3 real driver
@@ -114,9 +123,9 @@ chmod +x "$ARM_STUB"
 run_test "(1) cap-reset-time.sh reads the produced cache -> valid HH:MM (five-hour + seven-day)" '
   W=$(mktemp -d); produce_cache "$W" 63.4 12.7 || exit 1;
   out=$(bash "$CAP_RESET" --cache "$W/cache.json" --max-age 0) || exit 1;
-  printf "%s" "$out" | grep -Eq "^([01][0-9]|2[0-3]):[0-5][0-9]$" || exit 1;
+  grepq "$out" -E "^([01][0-9]|2[0-3]):[0-5][0-9]$" || exit 1;
   out7=$(bash "$CAP_RESET" --window seven-day --cache "$W/cache.json" --max-age 0) || exit 1;
-  printf "%s" "$out7" | grep -Eq "^([01][0-9]|2[0-3]):[0-5][0-9]$" || exit 1;
+  grepq "$out7" -E "^([01][0-9]|2[0-3]):[0-5][0-9]$" || exit 1;
 '
 
 run_test "(2a) auto-arm-on-cap.sh below threshold: utilization read is non-null, no MALFUNCTION, no arm" '

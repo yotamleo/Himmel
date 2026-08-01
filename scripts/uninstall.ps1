@@ -1,4 +1,4 @@
-# uninstall.ps1 — offboard the himmel operator surface (HIMMEL-227).
+﻿# uninstall.ps1 — offboard the himmel operator surface (HIMMEL-227).
 # PowerShell counterpart of uninstall.sh. Symmetric teardown of what
 # setup.ps1 + install-plugins.ps1 onboard:
 #

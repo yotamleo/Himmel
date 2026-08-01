@@ -5,16 +5,22 @@
 #
 # WHY a third script instead of extending the other two: apply-drift-bump.sh
 # moves a version PIN (a text literal); apply-tool-upgrade.sh upgrades an
-# INSTALLED BINARY. Neither fits qmd. himmel's qmd is a SHA-pinned fork
-# (yotamleo/qmd, pin = _qmd_fork_ref() in scripts/lib/qmd-bin.sh) carrying its
+# INSTALLED BINARY. Neither fits a carried fork. himmel carries both SHA-pinned
+# forks (qmd) and installable-tag-pinned forks (claude-obsidian), each with its
 # own delta on top of a recorded upstream base (`synced_base` in
 # scripts/upstreams.json). When upstream tags past that base, bumping
 # synced_base alone would claim the fork sits on a base it never rebased onto
-# — laundering the exact signal the entry exists to raise (see the registry's
-# qmd entry note). The honest repair is: rebase the fork's delta onto the new
-# base, confirm the delta is STILL additive, then hand the operator a new SHA
-# to review and land by hand. This script does the mechanical, verifiable
-# half; a human (or an agent session) drives the judgment call on the result.
+# — laundering the exact signal the entry exists to raise. The honest repair
+# is: resolve the current SHA or fork tag to a commit, rebase that delta onto
+# the new base, audit whether it is additive, then hand the operator a new SHA
+# to review. This script does the mechanical, verifiable half; a human (or an
+# agent session) drives the judgment call on the result.
+#
+# Some forks are deliberately NOT strictly additive. claude-obsidian removes
+# upstream hooks and patches locking, so its audit is expected to report
+# NON-ADDITIVE (rc=4). That is still a useful nightly result: the cadence stops
+# after this report, never pushes, and surfaces rebase feasibility + touched
+# paths for operator judgment.
 #
 # STRICTLY ADDITIVE, defined: every path touched by the fork's own delta
 # (the commits reachable from the pinned SHA but not from the recorded base)
@@ -50,12 +56,15 @@
 #              "fork": {
 #                "fork_repo":     "<git URL/path of the himmel fork>",
 #                "upstream_repo": "<git URL/path of the true upstream>",
-#                "pin_file":      "<repo-relative path carrying the pinned SHA>",
-#                "pin_template":  "<literal with a {sha} placeholder, exactly once>",
+#                "pin_file":      "<repo-relative path carrying the pin>",
+#                "pin_template":  "<literal with {sha}, exactly once>" OR
+#                "pin_ref_template": "<literal with {ref}, exactly once>",
 #                "work_dir":      "<scratch clone location, $VAR/${VAR}/%VAR% expanded>"
 #              }
 #            declared on a kind=tag_release/mode=base entry (it needs
-#            `synced_base` as the resync's base tag).
+#            `synced_base` as the resync's base tag). pin_ref_template is for
+#            an immutable installable TAG (for example claude-obsidian's
+#            marketplace ref); the tag is resolved to a commit before audit.
 # --target   upstream ref (tag or branch) to rebase onto. Default: the
 #            highest stable version tag on upstream_repo (same discipline as
 #            check-plugin-drift.sh — sort -V-shaped comparison, prereleases
@@ -83,7 +92,7 @@
 #   3  SKIP — the entry declares no `fork` block (not a tracked resync target)
 #   4  rebase CONFLICTED, or the delta is NOT strictly additive, OR a
 #      pin-literal failure (PIN_FILE_MISSING / PIN_NOT_FOUND / PIN_AMBIGUOUS —
-#      a stale fork.pin_file/pin_template in the registry, not a rebase
+#      a stale fork.pin_file/pin_template/pin_ref_template, not a rebase
 #      problem) — a human must resolve it; nothing was pushed
 set -uo pipefail
 
@@ -206,13 +215,20 @@ if not synced_base:
 if not isinstance(fork, dict):
     out('MALFORMED_FORK', 'fork is not an object'); sys.exit(0)
 
-required = ['fork_repo', 'upstream_repo', 'pin_file', 'pin_template', 'work_dir']
+required = ['fork_repo', 'upstream_repo', 'pin_file', 'work_dir']
 missing = [k for k in required if not fork.get(k)]
 if missing:
     out('MALFORMED_FORK', ','.join(missing)); sys.exit(0)
 
 pin_file = fork['pin_file']
-pin_template = fork['pin_template']
+sha_template = fork.get('pin_template') or ''
+ref_template = fork.get('pin_ref_template') or ''
+if bool(sha_template) == bool(ref_template):
+    out('MALFORMED_FORK', 'declare exactly one of pin_template or pin_ref_template'); sys.exit(0)
+if sha_template:
+    pin_kind, pin_template, placeholder = 'sha', sha_template, '{sha}'
+else:
+    pin_kind, pin_template, placeholder = 'ref', ref_template, '{ref}'
 
 # Same repo-relative safety as apply-drift-bump.sh's version_pin.file: the
 # registry is in-repo, but a pin path is still a READ target here (and would
@@ -221,8 +237,8 @@ pin_template = fork['pin_template']
 if os.path.isabs(pin_file) or '..' in pin_file.replace('\\', '/').split('/'):
     out('BAD_PIN_PATH', pin_file); sys.exit(0)
 
-if pin_template.count('{sha}') != 1:
-    out('BAD_PLACEHOLDER'); sys.exit(0)
+if pin_template.count(placeholder) != 1:
+    out('BAD_PLACEHOLDER', 'pin_template' if pin_kind == 'sha' else 'pin_ref_template', placeholder); sys.exit(0)
 
 pin_path = os.path.join(repo_root, pin_file)
 if not os.path.isfile(pin_path):
@@ -232,20 +248,19 @@ with open(pin_path, encoding='utf-8', newline='') as fh:
     text = fh.read()
 
 # Unlike apply-drift-bump.sh (which already KNOWS the old version from
-# synced_base, so it can look for an exact literal), this script does not
-# know the pinned SHA in advance — extracting it IS the point. So the
-# template is compiled to a regex: the literal prefix/suffix around {sha}
-# stay literal (re.escape'd), and {sha} becomes a capturing group over a
-# short-or-full git hex SHA. Same "not found / not unique" discipline either
-# way: exactly one match is required.
-prefix, suffix = pin_template.split('{sha}')
-rx = re.compile(re.escape(prefix) + r'([0-9a-fA-F]{7,40})' + re.escape(suffix))
+# synced_base, so it can look for an exact literal), this script does not know
+# the pin in advance — extracting it IS the point. A SHA template accepts a
+# short-or-full hex commit; a ref template accepts the installable tag spelling
+# from marketplace.json, then the shell resolves that exact tag to a commit.
+prefix, suffix = pin_template.split(placeholder)
+value_rx = r'([0-9a-fA-F]{7,40})' if pin_kind == 'sha' else r'([0-9A-Za-z][0-9A-Za-z._/-]*)'
+rx = re.compile(re.escape(prefix) + value_rx + re.escape(suffix))
 hits = rx.findall(text)
 if len(hits) == 0:
     out('PIN_NOT_FOUND', pin_template); sys.exit(0)
 if len(hits) > 1:
     out('PIN_AMBIGUOUS', str(len(hits))); sys.exit(0)
-old_sha = hits[0]
+old_pin = hits[0]
 
 def expand(p):
     # Cross-platform env expansion ($VAR / ${VAR} / %VAR%), mirroring
@@ -267,7 +282,7 @@ work_dir = expand(fork['work_dir'])
 if not work_dir or work_dir.startswith('/.') or work_dir == '/' or '//' in work_dir:
     out('BAD_WORK_DIR', fork['work_dir'], work_dir); sys.exit(0)
 
-out('OK', fork['fork_repo'], fork['upstream_repo'], pin_file, work_dir, synced_base, old_sha)
+out('OK', fork['fork_repo'], fork['upstream_repo'], pin_file, work_dir, synced_base, pin_kind, old_pin)
 PY
 )
 entry_rc=$?
@@ -278,8 +293,8 @@ if [ "$entry_rc" -ne 0 ]; then
 fi
 
 STATUS=""
-F1=""; F2=""; F3=""; F4=""; F5=""; F6=""
-IFS=$'\x1f' read -r STATUS F1 F2 F3 F4 F5 F6 <<< "$entry_out"
+F1=""; F2=""; F3=""; F4=""; F5=""; F6=""; F7=""
+IFS=$'\x1f' read -r STATUS F1 F2 F3 F4 F5 F6 F7 <<< "$entry_out"
 
 case "$STATUS" in
   NO_ENTRY)
@@ -307,16 +322,16 @@ case "$STATUS" in
     echo "resync-fork: entry '$NAME' fork.pin_file must be a repo-relative path without '..' (got '$F1')" >&2
     exit 2 ;;
   BAD_PLACEHOLDER)
-    echo "resync-fork: entry '$NAME' fork.pin_template must contain the {sha} placeholder exactly once" >&2
+    echo "resync-fork: entry '$NAME' fork.$F1 must contain the $F2 placeholder exactly once" >&2
     exit 2 ;;
   PIN_FILE_MISSING)
     echo "resync-fork: fork.pin_file not found: $F1" >&2
     exit 4 ;;
   PIN_NOT_FOUND)
-    echo "resync-fork: pin literal (template '$F1') not found in $REPO_ROOT — fix fork.pin_template" >&2
+    echo "resync-fork: pin literal (template '$F1') not found in $REPO_ROOT — fix the fork pin template" >&2
     exit 4 ;;
   PIN_AMBIGUOUS)
-    echo "resync-fork: pin literal occurs $F1 time(s) — expected exactly 1; fix fork.pin_template" >&2
+    echo "resync-fork: pin literal occurs $F1 time(s) — expected exactly 1; fix the fork pin template" >&2
     exit 4 ;;
   BAD_WORK_DIR)
     echo "resync-fork: entry '$NAME' fork.work_dir did not fully resolve — refusing to mkdir/rm -rf it:" >&2
@@ -335,7 +350,9 @@ UPSTREAM_REPO="$F2"
 PIN_FILE="$F3"
 WORK_DIR="$F4"
 SYNCED_BASE="$F5"
-OLD_SHA="$F6"
+PIN_KIND="$F6"
+OLD_PIN="$F7"
+OLD_SHA=""
 
 # --------------------------------------------------------------------------
 # highest_version: same "highest major.minor.patch via sort -V-shaped compare"
@@ -401,10 +418,24 @@ git -C "$CLONE_DIR" config commit.gpgsign false
 # real default for this scratch clone specifically.
 git -C "$CLONE_DIR" config core.hooksPath .git/hooks
 
-if ! git -C "$CLONE_DIR" cat-file -e "${OLD_SHA}^{commit}" 2>/dev/null; then
-  echo "resync-fork: pinned commit $OLD_SHA (from $PIN_FILE) was not found in the fork clone" >&2
-  echo "    — is the pin stale, or does fork_repo not carry the branch it's on?" >&2
-  exit 2
+if [ "$PIN_KIND" = "ref" ]; then
+  if ! git check-ref-format "refs/tags/$OLD_PIN" >/dev/null 2>&1; then
+    echo "resync-fork: pinned ref '$OLD_PIN' (from $PIN_FILE) is not a valid immutable tag name" >&2
+    exit 2
+  fi
+  if ! git -C "$CLONE_DIR" show-ref --verify --quiet "refs/tags/$OLD_PIN"; then
+    echo "resync-fork: pinned tag '$OLD_PIN' (from $PIN_FILE) was not found in the fork clone" >&2
+    echo "    — is the marketplace pin stale, or was the tag never pushed to fork_repo?" >&2
+    exit 2
+  fi
+  OLD_SHA=$(git -C "$CLONE_DIR" rev-parse "refs/tags/${OLD_PIN}^{commit}")
+else
+  if ! git -C "$CLONE_DIR" cat-file -e "${OLD_PIN}^{commit}" 2>/dev/null; then
+    echo "resync-fork: pinned commit $OLD_PIN (from $PIN_FILE) was not found in the fork clone" >&2
+    echo "    — is the pin stale, or does fork_repo not carry the branch it's on?" >&2
+    exit 2
+  fi
+  OLD_SHA=$(git -C "$CLONE_DIR" rev-parse "${OLD_PIN}^{commit}")
 fi
 
 if ! git -C "$CLONE_DIR" remote add upstream "$UPSTREAM_REPO" 2>&1; then
@@ -539,7 +570,11 @@ fi
 echo "== resync-fork: $NAME =="
 echo "  fork_repo:      $FORK_REPO"
 echo "  upstream_repo:  $UPSTREAM_REPO"
-echo "  pinned SHA:     $OLD_SHA  (from $PIN_FILE)"
+if [ "$PIN_KIND" = "ref" ]; then
+  echo "  pinned tag:     $OLD_PIN -> $OLD_SHA  (from $PIN_FILE)"
+else
+  echo "  pinned SHA:     $OLD_PIN  (resolved $OLD_SHA; from $PIN_FILE)"
+fi
 echo "  base:           $SYNCED_BASE  ($BASE_SHA)"
 echo "  target:         $TARGET_LABEL  ($TARGET_SHA)"
 echo ""
@@ -606,12 +641,18 @@ fi
 if [ "$FINAL_RC" -eq 0 ]; then
   echo "resync-fork: rebase clean, delta additive. Review $CLONE_DIR (branch resync-tmp, $NEW_SHA),"
   echo "    then move the pin by hand — this script never edits $PIN_FILE itself:"
-  echo "      1. replace $OLD_SHA with $NEW_SHA in $PIN_FILE"
-  echo "      2. bump synced_base for '$NAME' in scripts/upstreams.json from $SYNCED_BASE to $TARGET_LABEL"
-  echo "    (apply-drift-bump.sh does not cover this — it only moves a version_pin literal,"
-  echo "    not a fork SHA — so that edit stays a reviewed, hand-driven step.)"
+  if [ "$PIN_KIND" = "ref" ]; then
+    echo "      1. cut and push a NEW immutable fork tag at $NEW_SHA (current tag: $OLD_PIN)"
+    echo "      2. replace $OLD_PIN with that new tag in $PIN_FILE"
+    echo "      3. bump synced_base for '$NAME' in scripts/upstreams.json from $SYNCED_BASE to $TARGET_LABEL"
+  else
+    echo "      1. replace $OLD_PIN with $NEW_SHA in $PIN_FILE"
+    echo "      2. bump synced_base for '$NAME' in scripts/upstreams.json from $SYNCED_BASE to $TARGET_LABEL"
+  fi
+  echo "    (apply-drift-bump.sh does not cover fork SHA/tag pins, so this stays a"
+  echo "    reviewed, hand-driven step.)"
 else
-  echo "resync-fork: a human must resolve this before the pin can move (see above)." >&2
+  echo "resync-fork: a human must review or resolve this before the pin can move (see above)." >&2
 fi
 
 exit "$FINAL_RC"

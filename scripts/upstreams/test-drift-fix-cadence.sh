@@ -12,6 +12,16 @@
 # bash 3.2-safe (macOS ships 3.2): no mapfile, no associative arrays.
 set -uo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CADENCE="$SCRIPT_DIR/drift-fix-cadence.sh"
 
@@ -237,6 +247,10 @@ assert_has "$out" "# HIMMEL-DriftFix" "drift cron entry is marker-tagged"
 assert_has "$out" "# HIMMEL-ForkResync" "resync cron entry is marker-tagged"
 assert_has "$out" "/drift-fix" "drift runner fires the /drift-fix runbook"
 assert_has "$out" "/fork-resync" "resync runner fires the /fork-resync runbook"
+assert_has "$out" "scripts/upstreams.json" "resync prompt selects registered fork entries, not qmd only"
+assert_has "$out" "claude-obsidian" "resync prompt names claude-obsidian coverage"
+assert_has "$out" "non-additive" "resync prompt treats claude-obsidian non-additive audit as designed"
+assert_has "$out" "--push" "unattended resync prompt explicitly forbids the push path"
 assert_has "$out" "< /dev/null" "runner gives the session stdin EOF"
 assert_lacks "$out" "--print" "runner never uses --print (HIMMEL-128 billing)"
 assert_lacks "$out" " -p " "runner never uses -p (HIMMEL-128 billing)"
@@ -399,12 +413,12 @@ fi
 out=$(cron_env bash "$CADENCE" disarm 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "disarm exits 0"; else fail "disarm rc=$rc: $out"; fi
 tab=$(cat "$state/tab")
-if printf '%s' "$tab" | grep -qF "# HIMMEL-DriftFix"; then
+if grepq "$tab" -F "# HIMMEL-DriftFix"; then
   fail "disarm left the drift cron entry behind"
 else
   pass "disarm removed the drift cron entry"
 fi
-if printf '%s' "$tab" | grep -qF "# HIMMEL-ForkResync"; then
+if grepq "$tab" -F "# HIMMEL-ForkResync"; then
   fail "disarm left the resync cron entry behind"
 else
   pass "disarm removed the resync cron entry"

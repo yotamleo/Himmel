@@ -1,4 +1,4 @@
-# Hermetic tests for reap-mcp-fleet.ps1 (HIMMEL-741).
+﻿# Hermetic tests for reap-mcp-fleet.ps1 (HIMMEL-741).
 # Get-CimInstance is NOT mocked: the .ps1 exposes a pure filter, Get-OrphanFleet,
 # that takes a synthetic process-records array. We dot-source the script with
 # -AsLibrary (defines functions, skips the live scan) and assert the orphan set

@@ -663,7 +663,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # token never does).
   _canon_path() {
     (
-      local abs suffix comp new
+      local abs suffix comp new resolved
       abs="$(_abs_path "$1")"
       abs="${abs//\\//}"
       suffix=""
@@ -684,7 +684,17 @@ if [ "$DO_UPDATE" -eq 1 ]; then
         [ -n "$abs" ] || abs="/"
       done
       if [ -d "$abs" ]; then
-        abs="$(cd "$abs" && pwd -P)"
+        # CR (data integrity): a cd INSIDE a command substitution is NOT
+        # guarded by errexit -- a failing cd just yields an empty string,
+        # which would overwrite abs with "" and silently disable the
+        # maps-directory containment exclusion downstream. Capture into a
+        # temp and only adopt it on success; on failure keep the original
+        # spelling and warn. Bash 3.2-safe (this repo's compat floor).
+        if resolved="$(cd "$abs" 2>/dev/null && pwd -P)" && [ -n "$resolved" ]; then
+          abs="$resolved"
+        else
+          echo "refresh-graph-map: WARN canonicalizing '$abs' via cd/pwd failed -- keeping the original path spelling" >&2
+        fi
       fi
       if [ -n "$suffix" ]; then
         printf '%s/%s\n' "${abs%/}" "$suffix"

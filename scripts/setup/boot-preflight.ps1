@@ -1,4 +1,4 @@
-# boot-preflight.ps1 (HIMMEL-1163) - boot/logon readiness-check WATCHDOG.
+﻿# boot-preflight.ps1 (HIMMEL-1163) - boot/logon readiness-check WATCHDOG.
 #
 # WHY: a stale codex-gateway credential, a missing lane API key, or a
 # disarmed orphan-sweep cadence is otherwise only discovered MID-RUN, hours

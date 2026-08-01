@@ -31,6 +31,16 @@
 
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
@@ -93,9 +103,9 @@ ENV
 
 # ── case a: --help / status --help both list the status subcommand ────────
 outHelp1=$("$node_bin" "$wizard" --help)
-echo "$outHelp1" | grep -q 'status' || fail "case a: bare --help should list the status subcommand (got: $outHelp1)"
+grepq "$outHelp1" 'status' || fail "case a: bare --help should list the status subcommand (got: $outHelp1)"
 outHelp2=$("$node_bin" "$wizard" status --help)
-echo "$outHelp2" | grep -q 'status' || fail "case a: 'status --help' should list the status subcommand (got: $outHelp2)"
+grepq "$outHelp2" 'status' || fail "case a: 'status --help' should list the status subcommand (got: $outHelp2)"
 echo "ok: case a — --help / status --help list the status subcommand"
 
 # ── shared target + cache for cases b/e/f/g (one target, sequential runs) ──
@@ -181,7 +191,7 @@ errC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELC
 rcC=$?
 set -e
 [ "$rcC" -eq 2 ] || fail "case c: an unknown --items id should exit 2 (got rc=$rcC): $errC"
-echo "$errC" | grep -q 'bogus-unknown-id' || fail "case c: the unknown-id error should name it (got: $errC)"
+grepq "$errC" 'bogus-unknown-id' || fail "case c: the unknown-id error should name it (got: $errC)"
 echo "ok: case c — --items scoping + unknown id exits 2 naming it"
 
 set +e
@@ -190,7 +200,7 @@ errC2=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMEL
 rcC2=$?
 set -e
 [ "$rcC2" -eq 2 ] || fail "case c: --items with no non-whitespace ids should exit 2 (got rc=$rcC2): $errC2"
-echo "$errC2" | grep -qF 'requires at least one non-empty id' || fail "case c: the empty-items error should name the requirement (got: $errC2)"
+grepq "$errC2" -F 'requires at least one non-empty id' || fail "case c: the empty-items error should name the requirement (got: $errC2)"
 echo "ok: case c — --items with only commas/whitespace exits 2"
 
 # ── case d: missing install-profile cache -> exit 2, no state.json ────────
@@ -203,8 +213,8 @@ errD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELC
 rcD=$?
 set -e
 [ "$rcD" -eq 2 ] || fail "case d: missing install-profile cache should exit 2 (got rc=$rcD): $errD"
-echo "$errD" | grep -qF 'no himmelctl install profile found' || fail "case d: expected the 'no himmelctl install profile found' message (got: $errD)"
-echo "$errD" | grep -qF 'run himmelctl install first' || fail "case d: expected the 'run himmelctl install first' message (got: $errD)"
+grepq "$errD" -F 'no himmelctl install profile found' || fail "case d: expected the 'no himmelctl install profile found' message (got: $errD)"
+grepq "$errD" -F 'run himmelctl install first' || fail "case d: expected the 'run himmelctl install first' message (got: $errD)"
 [ ! -f "$cacheD/state.json" ] || fail "case d: state.json must NOT be created when the install-profile cache is missing"
 echo "ok: case d — missing install-profile cache exits 2 with the exact message, no state.json created"
 

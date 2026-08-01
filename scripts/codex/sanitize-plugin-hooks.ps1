@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Strip the top-level `description` key from external-plugin hooks.json under the
   Codex plugin cache (HIMMEL-651) — twin of sanitize-plugin-hooks.sh.

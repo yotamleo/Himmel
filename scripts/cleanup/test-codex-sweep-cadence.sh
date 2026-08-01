@@ -11,6 +11,16 @@
 # Windows-only, mirroring scripts/luna/test-graphmap-cadence.sh's SKIP block.
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/codex-sweep-cadence.sh"
 
@@ -30,11 +40,11 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 assert_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
+    if grepq "$haystack" -F -- "$needle"; then pass "$name"; else fail "$name" "missing: $needle"; fi
 }
 assert_not_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then fail "$name" "unexpected: $needle"; else pass "$name"; fi
+    if grepq "$haystack" -F -- "$needle"; then fail "$name" "unexpected: $needle"; else pass "$name"; fi
 }
 assert_rc() {
     local name="$1" want="$2" got="$3"
@@ -312,17 +322,17 @@ assert_contains "bat fires sweep-codex-orphans.ps1 -Kill" "sweep-codex-orphans.p
 assert_contains "bat fires reap-mcp-fleet.ps1 -Kill" "reap-mcp-fleet.ps1" "$bat"
 assert_contains "bat fires reap-superseded-fleets.ps1 -Kill (HIMMEL-1309 third leg)" "reap-superseded-fleets.ps1" "$bat"
 assert_contains "bat passes -Kill to the sweep payload" "sweep-codex-orphans.ps1" "$bat"
-if printf '%s' "$bat" | grep -qE 'sweep-codex-orphans\.ps1"[^\r\n]*-Kill'; then
+if grepq "$bat" -E 'sweep-codex-orphans\.ps1"[^\r\n]*-Kill'; then
     pass "sweep payload line carries -Kill"
 else
     fail "sweep payload line missing -Kill"
 fi
-if printf '%s' "$bat" | grep -qE 'reap-mcp-fleet\.ps1"[^\r\n]*-Kill'; then
+if grepq "$bat" -E 'reap-mcp-fleet\.ps1"[^\r\n]*-Kill'; then
     pass "reap payload line carries -Kill"
 else
     fail "reap payload line missing -Kill"
 fi
-if printf '%s' "$bat" | grep -qE 'reap-superseded-fleets\.ps1"[^\r\n]*-Kill'; then
+if grepq "$bat" -E 'reap-superseded-fleets\.ps1"[^\r\n]*-Kill'; then
     pass "supersede payload line carries -Kill"
 else
     fail "supersede payload line missing -Kill"
