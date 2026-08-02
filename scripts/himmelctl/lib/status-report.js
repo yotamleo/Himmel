@@ -119,11 +119,6 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
       severity = 'degraded';
     } else {
       severity = 'red';
-      // Review carry-forward (bin.js pre-extraction #3): pre-commit-hooks
-      // reads absent for a generic adopter (targetPath-relative, adopt.sh
-      // never lays this file) — that is the intended "does THIS project
-      // carry the gate" semantic, not a broken install; say so plainly.
-      if (item.id === 'pre-commit-hooks') detail = 'no .pre-commit-config.yaml in this project';
       // CR follow-up (HIMMEL-1017, HIMMEL-1012 review): graphify-mcp carries
       // profiles:["luna","all"] like any other luna-profile item, so every
       // luna/all target reads it desired:true — but registering the

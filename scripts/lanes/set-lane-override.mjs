@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// scripts/lanes/set-lane-override.mjs — idempotent per-lane probe-override
-// writer for scripts/lanes/lanes.local.json (HIMMEL-758, `himmelctl config`).
+// scripts/lanes/set-lane-override.mjs — idempotent machine-local overlay
+// writer for scripts/lanes/lanes.local.json (HIMMEL-758 / HIMMEL-1428).
 //
 // Writes/merges ONE lane's `probe` override by id into the gitignored
 // machine-local overlay file that resolve.mjs's loadRegistry() reads on top
@@ -20,7 +20,7 @@
 // understands; a config toggle that needs a genuinely conditional probe
 // (env/path/installed/crprofile) is hand-authored in lanes.local.json
 // directly, same as lanes.json itself.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync, renameSync, accessSync, constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,8 +33,8 @@ const SHARED_REGISTRY = join(SCRIPT_DIR, 'lanes.json');
 // applyLaneOverride(local, laneId, probeKind) -> new local registry object.
 // Pure (no I/O): replaces the matching-id entry's `probe`, or appends a new
 // { id, probe } entry when laneId isn't already present in `local.lanes`.
-// Every other entry is returned unchanged (same object references) so a
-// caller diffing before/after sees only the touched entry move.
+// Force-on also extends an active adopter profile when the lane is in its
+// wizard-owned scope; every other lane entry remains unchanged.
 export function applyLaneOverride(local, laneId, probeKind) {
   const lanes = (local && Array.isArray(local.lanes)) ? local.lanes : [];
   const idx = lanes.findIndex((l) => l && l.id === laneId);
@@ -45,17 +45,73 @@ export function applyLaneOverride(local, laneId, probeKind) {
     // than `probe` (e.g. a conditional-probe lane augmented with an override)
     // survive the upsert instead of being dropped.
     : lanes.map((l, i) => (i === idx ? { ...l, id: laneId, probe } : l));
-  return { ...(local || {}), lanes: nextLanes };
+  const next = { ...(local || {}), lanes: nextLanes };
+  // An explicit force-on is also consent to route a lane that the adopter
+  // profile previously excluded. Without this, the profile filter runs after
+  // the probe override and turns a successful config set into a no-op. The
+  // scope condition mirrors resolveLaneInventory's suppression rule exactly:
+  // a LEGACY allowlist without profileAllowlistScope constrains EVERY lane
+  // (global semantics), so the extension must fire there too — scoping the
+  // consent to scope-carrying files only left the legacy shape with the same
+  // false-success this fix removes (CR round 4 [codex-1]).
+  if (probeKind === 'always'
+      && Array.isArray(next.profileAllowlist)
+      && (!Array.isArray(next.profileAllowlistScope)
+        || next.profileAllowlistScope.includes(laneId))
+      && !next.profileAllowlist.includes(laneId)) {
+    next.profileAllowlist = [...next.profileAllowlist, laneId];
+  }
+  return next;
+}
+
+// The adopter profile allowlist is independent of per-lane probe overrides.
+// It can only suppress an otherwise-resolving lane; it never replaces that
+// lane's real probe. profileAllowlistScope limits that suppression to the
+// wizard-owned subset, so lanes the wizard never offers stay on their base
+// probes. A legacy scope-less allowlist is global, so preserve its non-wizard
+// members instead of converting it to scoped semantics. Preserve every existing
+// override and de-duplicate ids in first-seen order so repeated installs converge.
+export function applyProfileAllowlist(local, laneIds, scopeLaneIds) {
+  const lanes = (local && Array.isArray(local.lanes)) ? local.lanes : [];
+  const dedupeIds = (ids) => {
+    const out = [];
+    for (const id of ids || []) {
+      if (typeof id === 'string' && !out.includes(id)) out.push(id);
+    }
+    return out;
+  };
+  const selected = dedupeIds(laneIds);
+  const legacyGlobal = Array.isArray(local?.profileAllowlist)
+    && !Array.isArray(local?.profileAllowlistScope);
+  if (legacyGlobal) {
+    const wizardScope = new Set(dedupeIds(scopeLaneIds));
+    const preserved = dedupeIds(local.profileAllowlist).filter((id) => !wizardScope.has(id));
+    const next = { ...(local || {}), lanes, profileAllowlist: dedupeIds([...preserved, ...selected]) };
+    delete next.profileAllowlistScope;
+    return next;
+  }
+  const next = { ...(local || {}), lanes, profileAllowlist: selected };
+  if (Array.isArray(scopeLaneIds)) next.profileAllowlistScope = dedupeIds(scopeLaneIds);
+  return next;
 }
 
 function loadLocal(file) {
   if (!existsSync(file)) return { lanes: [] };
+  let parsed;
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'));
-    return (parsed && typeof parsed === 'object') ? parsed : { lanes: [] };
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
   } catch (e) {
     throw new Error(`set-lane-override: ${file} is not valid JSON: ${e.message}`);
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const shape = Array.isArray(parsed) ? 'top-level array' : String(parsed);
+    throw new Error(`set-lane-override: ${file} must be a non-array object whose 'lanes' property is an array or absent (got ${shape})`);
+  }
+  if (parsed.lanes !== undefined && !Array.isArray(parsed.lanes)) {
+    const shape = parsed.lanes === null ? 'null' : typeof parsed.lanes;
+    throw new Error(`set-lane-override: ${file} must be a non-array object whose 'lanes' property is an array or absent (got 'lanes' ${shape})`);
+  }
+  return parsed;
 }
 
 // Advisory lock via mkdirSync (atomic create-exclusive), mirroring
@@ -148,6 +204,85 @@ function releaseLock(file) {
   }
 }
 
+function sameAsSharedRegistry(file) {
+  // Case-fold on the case-insensitive default filesystems — win32 (NTFS) AND
+  // macOS (APFS/HFS+): `LANES.JSON` opens the same file as `lanes.json`.
+  const ciFs = process.platform === 'win32' || process.platform === 'darwin';
+  return ciFs
+    ? resolve(file).toLowerCase() === resolve(SHARED_REGISTRY).toLowerCase()
+    : resolve(file) === resolve(SHARED_REGISTRY);
+}
+
+export function validateProfileAllowlistTarget(file) {
+  const target = file || DEFAULT_FILE;
+  if (sameAsSharedRegistry(target)) {
+    throw new Error(`set-lane-override: --file must not point at the shared registry (${SHARED_REGISTRY})`);
+  }
+  loadLocal(target);
+  let probe = dirname(target);
+  while (!existsSync(probe)) {
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  try {
+    if (!statSync(probe).isDirectory()) throw new Error('parent is not a directory');
+    accessSync(probe, constants.W_OK);
+    if (existsSync(target)) {
+      if (!statSync(target).isFile()) throw new Error('target is not a regular file');
+      accessSync(target, constants.W_OK);
+    }
+  } catch (e) {
+    const code = e && e.code ? ` (${e.code})` : '';
+    throw new Error(`set-lane-override: overlay target is not writable: ${target}${code}`);
+  }
+  return target;
+}
+
+function writeLocal(file, update) {
+  if (sameAsSharedRegistry(file)) {
+    throw new Error(`set-lane-override: --file must not point at the shared registry (${SHARED_REGISTRY})`);
+  }
+  mkdirSync(dirname(file), { recursive: true });
+  acquireLock(file);
+  try {
+    const next = update(loadLocal(file));
+    // Atomic write: a direct writeFileSync can be interrupted mid-write and
+    // leave a truncated overlay that every later resolve run would fail to
+    // parse; write to a pid-suffixed temp then renameSync (atomic on the same
+    // filesystem), so readers only ever see the old or the new complete file.
+    const tmp = `${file}.tmp.${process.pid}`;
+    try {
+      writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n');
+      renameSync(tmp, file);
+    } catch (e) {
+      // A failed renameSync (or writeFileSync) must not orphan the
+      // pid-suffixed temp next to the overlay — remove it before the lock is
+      // released in finally (CodeRabbit #1525 nit). force tolerates an
+      // already-gone path (e.g. writeFileSync itself threw before creating it).
+      // force tolerates ENOENT, but NOT an EPERM/EBUSY unlink (Windows) —
+      // letting that throw would replace the real write/rename failure with a
+      // cleanup error the caller can do nothing about (panel r1, codex-1+glm-2
+      // converged). Cleanup is best-effort; `e` is always what surfaces.
+      try { rmSync(tmp, { force: true }); } catch { /* leave the temp behind */ }
+      throw e;
+    }
+  } finally {
+    releaseLock(file);
+  }
+}
+
+export function writeProfileAllowlist(file, laneIds, scopeLaneIds) {
+  const target = validateProfileAllowlistTarget(file);
+  let preservedLegacyGlobal = false;
+  writeLocal(target, (local) => {
+    preservedLegacyGlobal = Array.isArray(local.profileAllowlist)
+      && !Array.isArray(local.profileAllowlistScope);
+    return applyProfileAllowlist(local, laneIds, scopeLaneIds);
+  });
+  return preservedLegacyGlobal;
+}
+
 function main(argv) {
   let laneId = null;
   let probeKind = null;
@@ -173,39 +308,19 @@ function main(argv) {
   }
   // Read-only shared-registry contract: --file may point at any local overlay
   // or a distinct temp path (tests), but never at the shared lanes.json that
-  // resolve.mjs treats as the base layer. Compare case-insensitively on win32:
-  // NTFS is case-insensitive, so a differently-cased --file (e.g. LANES.JSON)
-  // opens the SAME physical file and must not slip past this guard.
-  // Case-fold on the case-insensitive default filesystems — win32 (NTFS) AND
-  // macOS (APFS/HFS+): `LANES.JSON` opens the same file as `lanes.json` on both,
-  // so the shared-registry guard must compare case-insensitively there or it is
-  // bypassable by casing on macOS too (codex CR #470).
-  const _ciFs = process.platform === 'win32' || process.platform === 'darwin';
-  const _sameAsRegistry = (p) =>
-    _ciFs
-      ? resolve(p).toLowerCase() === resolve(SHARED_REGISTRY).toLowerCase()
-      : resolve(p) === resolve(SHARED_REGISTRY);
-  if (_sameAsRegistry(file)) {
-    throw new Error(`set-lane-override: --file must not point at the shared registry (${SHARED_REGISTRY})`);
-  }
-  mkdirSync(dirname(file), { recursive: true });
-  acquireLock(file);
-  try {
-    const local = loadLocal(file);
+  // resolve.mjs treats as the base layer. writeLocal owns that guard, locking,
+  // and the atomic sibling-temp rename for every overlay update.
+  let extendedProfileAllowlist = false;
+  writeLocal(file, (local) => {
     const next = applyLaneOverride(local, laneId, probeKind);
-    // Atomic write: write a sibling temp file, then rename over the target.
-    // writeFileSync(file, ...) truncates the live overlay before the new bytes
-    // land, so an interruption/disk error would leave invalid JSON that
-    // resolve.mjs then refuses to parse (die 2). rename() within the same dir is
-    // atomic — a concurrent reader sees either the old file or the fully-written
-    // new one, never a half-written truncation.
-    const tmp = `${file}.tmp.${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n');
-    renameSync(tmp, file);
-  } finally {
-    releaseLock(file);
-  }
-  process.stdout.write(`OK set-lane-override: lane '${laneId}' -> probe.kind=${probeKind} in ${file}\n`);
+    extendedProfileAllowlist = Array.isArray(local.profileAllowlist)
+      && Array.isArray(next.profileAllowlist)
+      && !local.profileAllowlist.includes(laneId)
+      && next.profileAllowlist.includes(laneId);
+    return next;
+  });
+  const profileNote = extendedProfileAllowlist ? '; added to profileAllowlist' : '';
+  process.stdout.write(`OK set-lane-override: lane '${laneId}' -> probe.kind=${probeKind}${profileNote} in ${file}\n`);
 }
 
 if (process.argv[1]?.endsWith('set-lane-override.mjs')) {

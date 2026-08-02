@@ -29,7 +29,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 CI_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$CI_DIR/run-shell-tests.sh"
 

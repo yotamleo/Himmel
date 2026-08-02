@@ -558,9 +558,12 @@ opt-in except the cap watchdogs (rung 2), which ship enabled with the hooks:
 The registry (`scripts/lanes/lanes.json`) declares each lane's `probe`
 (availability condition) and quota bank; `/lanes` prints what is actually
 available on this machine (`scripts/lanes/resolve.mjs` — merges the repo
-`.env`, your `lanes.local.json` overlay, and PATH/install checks). Probe
-kinds: `always` (Claude tiers), `env:<KEY>`, `path:<cli>`, `installed:hermes`,
-`crprofile:<token>`, `never` (forced off).
+`.env`, your `lanes.local.json` overlay, and PATH/install checks). An adopter
+install may add a top-level `profileAllowlist` to that overlay: it only narrows
+optional lanes after their real probes run, and `/lanes` reports detected but
+declined lanes as `suppressed-by-profile`. With no allowlist, behaviour is
+unchanged. Probe kinds: `always` (Claude tiers), `env:<KEY>`, `path:<cli>`,
+`installed:hermes`, `crprofile:<token>`, `never` (forced off).
 
 Claude tiers (haiku/sonnet/opus/fable) are always available as native
 subagents. External lanes appear only when configured — see the

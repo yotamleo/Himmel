@@ -17,6 +17,36 @@ Together: harvest → **enrich** (X body-fill via `tools/fxtwitter-enrich.mjs` �
 
 The **enrich** stage runs `fxtwitter-enrich.mjs` (X), `ig-embed-enrich.mjs` (Instagram) and `reddit-enrich.mjs` (Reddit — cookie-authenticated `.json`, burner-account cookies at `~/.luna/cookies/reddit.txt`) between harvest and triage. For X it fills a thin telegram bare-URL stub's `## The Idea` from the tweet text and de-anonymizes `author`/`title` (the `x.com/i/status/<id>` forwards), so triage tags a rich body on its first pass. The same enrich also fires **inline** at `telegram-clip` filing time (best-effort) so group links are usually born rich. Authenticated long tail (protected tweets, login-walled IG) defers to the `playwright-crawl-*` rung. Reddit's anonymous `.json` is 403-blocked (verified 2026-07-08); the rung uses exported burner cookies. If cookies prove brittle, the escalation path is a free official OAuth script app (100 QPM, app registration) — documented here, not built; `--firecrawl-thin` treating reddit as article-like is the noisy, credit-metered last resort.
 
+### Daily fetch health (HIMMEL-1449)
+
+`scripts/luna/fetch-health.py` runs one cheap known-good probe for every live
+external fetch integration. It is a plain Python script: no Claude invocation,
+no clip mutation, and no fetched response content is written to the Luna vault.
+The existing `pipeline-cadence` scheduler arms it daily at **01:30** as
+`HIMMEL-Pipeline-FetchHealth`, before harvest.
+
+| Source integration | Real authentication artifact | Daily probe |
+|---|---|---|
+| Reddit enrichment | Netscape cookies at `~/.luna/cookies/reddit.txt` (`REDDIT_COOKIE_FILE` override) | Known public thread `.json?raw_json=1`, validated as a Reddit listing |
+| X thin-clip enrichment | None | FxTwitter API response for a known tweet |
+| Instagram caption enrichment | None | Instagram `embed/captioned` response for a known post |
+| Instagram media enrichment | Netscape cookies at `~/.luna/cookies/instagram.txt` | `gallery-dl --simulate --cookies ...` against a known post |
+| X media enrichment | Netscape cookies at `~/.luna/cookies/twitter.txt` | `gallery-dl --simulate --cookies ...` against a known tweet |
+| X CLI enrichment | `TWITTER_AUTH_TOKEN` + `TWITTER_CT0` in the process environment | `twitter tweet 20 --json` |
+| YouTube Playwright enrichment | `~/.luna/playwright-state/youtube.json` storage state | YouTube request carrying the matching storage-state cookies |
+| GitHub harvest / ingest | Authenticated `gh` CLI | `gh api repos/cli/cli` |
+| Bitbucket ingest | `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN`, including primary-checkout `.env` lookup | Authenticated `GET /2.0/user` |
+| Firecrawl article enrichment | `FIRECRAWL_API_KEY` (`FIRECRAWL_BASE_URL` optional) | `POST /v2/scrape` for `https://example.com/` |
+
+Every result is classified as exactly `ok`, `auth-or-cookie-expired`,
+`blocked-or-rate-limited`, or `transport-fail`. Missing credentials, cookie
+files, storage state, or required CLIs become classified health failures rather
+than crashes. Current status and the preserved last-success epoch are written
+atomically to `~/.himmel/fetch-health.json` (override:
+`HIMMEL_FETCH_HEALTH_STATE`) and exported by the existing passive flow exporter
+at `http://127.0.0.1:9877/metrics` as `clip_fetch_source_status` and
+`clip_fetch_source_last_success_timestamp`.
+
 ### Instagram media rung: `/ig-media-enrich` (HIMMEL-770)
 
 The heavyweight escalation rung AFTER `ig-embed-enrich.mjs`. When the caption

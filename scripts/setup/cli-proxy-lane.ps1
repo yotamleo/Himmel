@@ -11,10 +11,18 @@
   Per-host order:  -Install  ->  -Login (once)  ->  -Start  ->  -Register
   Run with no switch for a status report + the next command to run.
 
+  Lifecycle: -Stop / -Restart bounce the running instance (HIMMEL-1451). They
+  refuse while a client is actively connected (a bounce kills an in-flight
+  codex-lane render) unless -Force is given. -Restart relaunches windowless and
+  verifies /v1/models answers before exiting 0.
+
 .PARAMETER Install   Download the CLIProxyAPI binary + write config.yaml if missing.
 .PARAMETER Login     One-time codex OAuth via device-code flow (no local browser needed).
 .PARAMETER Start     Start the proxy in the foreground (Ctrl-C to stop).
 .PARAMETER Register  Register a logon scheduled task so the proxy restarts at each sign-in.
+.PARAMETER Stop      Stop the running proxy (idempotent: no error if not running).
+.PARAMETER Restart   Stop then relaunch the proxy windowless; verify /v1/models answers.
+.PARAMETER Force     Override the claudex-live guard on -Stop / -Restart.
 .PARAMETER Verify    Curl the running proxy.
 
 .EXAMPLE
@@ -27,6 +35,11 @@
   .\cli-proxy-lane.ps1 -Login
   .\cli-proxy-lane.ps1 -Start
   .\cli-proxy-lane.ps1 -Register
+
+.EXAMPLE
+  # roll a pinned-binary bump over a RUNNING proxy (HIMMEL-1451): either three
+  # separate calls (-Stop; -Install; -Start) or the single combined form
+  .\cli-proxy-lane.ps1 -Install -Restart
 #>
 [CmdletBinding()]
 param(
@@ -34,6 +47,9 @@ param(
     [switch]$Login,
     [switch]$Start,
     [switch]$Register,
+    [switch]$Stop,
+    [switch]$Restart,
+    [switch]$Force,
     [switch]$Verify
 )
 
@@ -44,7 +60,7 @@ $Exe     = Join-Path $Dir 'cli-proxy-api.exe'
 $Cfg     = Join-Path $Dir 'config.yaml'
 $ApiKey  = 'himmel-local-claudex'   # local proxy token; must match config.yaml api-keys
 $Port    = 8317
-$Version = '7.2.77'
+$Version = '7.2.113'
 $Release = "https://github.com/router-for-me/CLIProxyAPI/releases/download/v$Version/CLIProxyAPI_${Version}_windows_amd64.zip"
 
 function Test-OAuth {
@@ -67,9 +83,93 @@ function Assert-Config {
     if (-not (Test-Path $Cfg)) { throw "config missing at $Cfg - run with -Install first" }
 }
 
+# --- lifecycle helpers (-Stop / -Restart, HIMMEL-1451) -----------------------
+
+function Get-ProxyProcess {
+    # Find the running proxy by process name. The exe is cli-proxy-api.exe, so
+    # the process name is 'cli-proxy-api'. This catches BOTH the logon-task
+    # instance AND one manually relaunched outside the task (the deployment
+    # quirk -Restart has to converge from regardless of how it was started).
+    Get-Process -Name 'cli-proxy-api' -ErrorAction SilentlyContinue
+}
+
+function Test-LaneWorkersLive {
+    # claudex-live guard: a proxy bounce under an ACTIVE codex-lane worker kills
+    # its in-flight render. Detect that the cheapest reliable way -- an
+    # ESTABLISHED TCP connection to the proxy port means a client is connected
+    # right now (mid-stream or on a keep-alive), the exact condition under which
+    # a bounce hurts. Chosen over a process list (which would over-block the
+    # operator's own idle session) and worktree lock files (which miss
+    # throwaway-branch workers): it measures the risk directly and only refuses
+    # when something is ACTIVELY connected. Conservative on both edges.
+    [bool](Get-NetTCPConnection -LocalPort $Port -State Established -ErrorAction SilentlyContinue)
+}
+
+function Assert-BounceSafe {
+    # Shared by -Stop and -Restart. -Force overrides the guard.
+    if ($Force) { return }
+    if (Test-LaneWorkersLive) {
+        throw "refusing proxy bounce: a client is actively connected on port $Port (an in-flight codex-lane render would be killed). Re-run with -Force to override."
+    }
+}
+
+function Stop-ProxyInstance {
+    # Stop every running proxy process, then wait for it to release the port.
+    # Returns $true if a process was stopped, $false if nothing was running.
+    $procs = Get-ProxyProcess
+    if (-not $procs) { return $false }
+    $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-ProxyProcess)) { return $true }
+        Start-Sleep -Milliseconds 300
+    }
+    throw "proxy process did not exit within 10s"
+}
+
+function Start-ProxyBackground {
+    # Canonical windowless relaunch. If the logon task 'cli-proxy-api' is
+    # registered, /run it (the same path -Register uses to start the proxy now);
+    # otherwise launch the exe detached + hidden, so -Restart brings the proxy up
+    # regardless of how the old instance was started (manually vs via the task).
+    $useTask = $false
+    schtasks /query /tn 'cli-proxy-api' 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        schtasks /run /tn 'cli-proxy-api' 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $useTask = $true }
+    }
+    if (-not $useTask) {
+        Start-Process -FilePath $Exe -ArgumentList "-config `"$Cfg`"" -WindowStyle Hidden
+    }
+}
+
 if ($Install) {
     New-Item -ItemType Directory -Force $Dir | Out-Null
-    if (-not (Test-Path $Exe)) {
+    # Version stamp makes -Install pin-aware (CR r1 codex-1, HIMMEL-1451): a
+    # bare exe-exists check would skip the download forever, so bumping $Version
+    # could never roll an existing install and the drift-row's documented
+    # recovery path (-Install then -Restart) would silently no-op. A missing
+    # stamp (legacy install) reads as version-unknown and re-downloads the
+    # pinned release once, converging the host.
+    $VerStamp = Join-Path $Dir 'cli-proxy-api.version'
+    $installedVer = if (Test-Path $VerStamp) { (Get-Content $VerStamp -ErrorAction SilentlyContinue | Select-Object -First 1) } else { $null }
+    if ((-not (Test-Path $Exe)) -or ($installedVer -ne $Version)) {
+        if ((Test-Path $Exe) -and (Get-ProxyProcess)) {
+            # Windows locks a running exe - the pinned swap cannot land over a
+            # live instance. A combined -Install -Restart (or -Install -Stop)
+            # can stop the proxy in THIS invocation instead of failing, so the
+            # documented pin-roll shape works as one sequence (HIMMEL-1451 r3);
+            # the later $Restart/$Stop block then finds nothing to stop.
+            if ($Restart -or $Stop) {
+                Assert-BounceSafe   # -Force still overrides the live-client refusal
+                Write-Host "stopping cli-proxy-api to roll the pinned binary ..."
+                Stop-ProxyInstance | Out-Null
+            } else {
+                # Standalone -Install: refuse loudly with the working order
+                # instead of failing later on an opaque Copy-Item lock error.
+                throw "installed version '$(if ($installedVer) { $installedVer } else { 'unknown' })' != pinned v$Version and the proxy is RUNNING - run -Stop first, then -Install, then -Start (or use the combined -Install -Restart)"
+            }
+        }
         # Unique per-run temp paths; cleanup in finally so a failed download/extract
         # leaves no orphaned artifacts. Trust boundary = pinned HTTPS release URL
         # (operator-accepted, HIMMEL-979); upstream publishes no per-asset checksum.
@@ -83,12 +183,13 @@ if ($Install) {
             $src = Get-ChildItem -Recurse $tmp -Filter 'cli-proxy-api.exe' | Select-Object -First 1 -ExpandProperty FullName
             if (-not $src) { throw "cli-proxy-api.exe not found in release archive" }
             Copy-Item $src $Exe -Force
-            Write-Host "installed binary: $Exe"
+            Set-Content -Path $VerStamp -Value $Version
+            Write-Host "installed binary: $Exe (v$Version)"
         } finally {
             Remove-Item -Recurse -Force $tmp, $zip -ErrorAction SilentlyContinue
         }
     } else {
-        Write-Host "binary already present: $Exe"
+        Write-Host "binary already present at pinned v${Version}: $Exe"
     }
     if (-not (Test-Path $Cfg)) {
         # host 127.0.0.1 ONLY: the default empty host binds ALL interfaces, which
@@ -145,7 +246,40 @@ if ($Verify) {
     Write-Host "proxy http://127.0.0.1:$Port -> HTTP $code  (200/401 = reachable; 000 = not running)"
 }
 
-if (-not ($Install -or $Login -or $Start -or $Register -or $Verify)) {
+if ($Stop) {
+    Assert-BounceSafe
+    if (Get-ProxyProcess) {
+        Write-Host "stopping cli-proxy-api ..."
+        Stop-ProxyInstance | Out-Null
+        Write-Host "stopped."
+    } else {
+        Write-Host "no running cli-proxy-api process (nothing to stop)."
+    }
+}
+
+if ($Restart) {
+    Assert-Exe; Assert-Config
+    Assert-BounceSafe
+    if (Get-ProxyProcess) {
+        Write-Host "stopping cli-proxy-api ..."
+        Stop-ProxyInstance | Out-Null
+    }
+    Write-Host "relaunching proxy (windowless) ..."
+    Start-ProxyBackground
+    # Verify /v1/models answers (200 = up + key accepted; 401 = up, key rejected).
+    $deadline = (Get-Date).AddSeconds(20)
+    $up = $false
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Running) { $up = $true; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $up) {
+        throw "proxy did not come up on 127.0.0.1:$Port within 20s (run -Verify, or -Start in the foreground to see the error)"
+    }
+    Write-Host "proxy back up on 127.0.0.1:$Port."
+}
+
+if (-not ($Install -or $Login -or $Start -or $Register -or $Stop -or $Restart -or $Verify)) {
     Write-Host "== CLIProxyAPI codex lane (HOST-only; serves this host + its WSL via 127.0.0.1:$Port) =="
     $hasExe = Test-Path $Exe
     $hasCfg = Test-Path $Cfg

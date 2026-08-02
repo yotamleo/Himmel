@@ -15,7 +15,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 # Hermetic: the panel reads CR_PROFILE (HIMMEL-558). Clear ambient values; each
 # case sets CR_PROFILE explicitly.
 unset CR_PROFILE CRITIC_PANEL_TIERS CR_TRIVIALITY_OVERRIDE 2>/dev/null || true

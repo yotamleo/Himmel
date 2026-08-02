@@ -115,6 +115,92 @@ function probeFileExists(item, ctx) {
   return { actual: fs.existsSync(resolved) ? 'present' : 'absent', detail: resolved };
 }
 
+// ── git-hooks ────────────────────────────────────────────────────────────
+
+// Read a checkout's LOCAL core.hooksPath — the override that points git at a
+// non-default hooks dir (e.g. `git config core.hooksPath scripts/hooks`, the
+// legitimate in-repo layout check-commit-msg.ps1 documents and check-hookspath
+// validates). LOCAL scope only: the status-probe fixtures below resolve hooks
+// by pure-fs .git/gitdir/commondir traversal and carry no local config, so
+// `--local` returns '' for them and leaves that path unchanged; a GLOBAL
+// core.hooksPath is check-hookspath's authoritative concern, not this probe's
+// (HIMMEL-1470).
+function configuredHooksPath(targetPath) {
+  try {
+    const r = spawnSync('git', ['-C', targetPath, 'config', '--local', '--get', 'core.hooksPath'], { encoding: 'utf8' });
+    if (r.status === 0) return (r.stdout || '').trim();
+  } catch (_e) {}
+  return '';
+}
+
+// Resolve a checkout's effective hooks directory. A core.hooksPath override
+// wins; otherwise a normal clone stores hooks at .git/hooks, and a linked
+// worktree's .git points to .git/worktrees/<name> whose `commondir` points back
+// at the shared repository metadata whose hooks/ is authoritative.
+function gitHooksDir(targetPath) {
+  const configured = configuredHooksPath(targetPath);
+  if (configured) {
+    return path.isAbsolute(configured) ? path.resolve(configured) : path.resolve(targetPath, configured);
+  }
+  const dotGit = path.join(targetPath, '.git');
+  let st;
+  try {
+    st = fs.statSync(dotGit);
+  } catch (_e) {
+    return null;
+  }
+  if (st.isDirectory()) return path.join(dotGit, 'hooks');
+  if (!st.isFile()) return null;
+
+  let raw;
+  try {
+    raw = fs.readFileSync(dotGit, 'utf8').trim();
+  } catch (_e) {
+    return null;
+  }
+  const m = raw.match(/^gitdir:\s*(.+)$/i);
+  if (!m) return null;
+  const gitDir = path.resolve(targetPath, m[1]);
+  try {
+    const common = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+    if (common) return path.join(path.resolve(gitDir, common), 'hooks');
+  } catch (_e) {
+    // A gitlink without commondir uses its own metadata directory.
+  }
+  return path.join(gitDir, 'hooks');
+}
+
+function installedHook(p, platform) {
+  let st;
+  try {
+    st = fs.statSync(p);
+  } catch (_e) {
+    return false;
+  }
+  if (!st.isFile()) return false;
+  if (platform === 'win32') return true;
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+function probeGitHooks(item, ctx) {
+  const hooksDir = gitHooksDir(ctx.targetPath || ctx.repoRoot);
+  if (!hooksDir) {
+    return { actual: 'absent', detail: `cannot resolve git hooks directory; missing hook type(s): ${item.probe.hooks.join(', ')}` };
+  }
+  const platform = ctx.platform || process.platform;
+  const missing = item.probe.hooks.filter((hook) => !installedHook(path.join(hooksDir, hook), platform));
+  if (missing.length === 0) {
+    return { actual: 'present', detail: `installed hook type(s): ${item.probe.hooks.join(', ')} (${hooksDir})` };
+  }
+  const actual = missing.length === item.probe.hooks.length ? 'absent' : 'degraded';
+  return { actual, detail: `missing hook type(s): ${missing.join(', ')} (${hooksDir})` };
+}
+
 // ── settings-key / settings-hooks shared file resolution ────────────────
 
 // Resolve a settings-key/settings-hooks descriptor's `file` against the
@@ -1132,7 +1218,102 @@ function probeGuardrailBlockStatus(item, ctx) {
     if (!recomputedComplete) {
       return { actual: 'degraded', detail: `guardrail-block.mjs status --json declares complete=true but its own hooks[] entries do not all independently support it — self-contradictory payload, not trusted: ${out}` };
     }
-    return { actual: 'present', detail: `guardrail-mode=global — all ${parsed.hooks.length} guardrail hooks present, correctly matched, and resolving` };
+    // ── HIMMEL-1427 (attestation v2 binding, CR round 1; fail-closed in
+    //    round 2 — codex-adv finding 1) ────────────────────────────────────
+    // The legacy `complete` flag attests the GENERATED COMMAND IDENTITY
+    // (presence, matcher, resolution, trust-anchor basename ownership —
+    // recomputedComplete above). guardrail-block.mjs's statusDetail() grew a
+    // SECOND, audit-independent layer atop it: a content-integrity hash of
+    // each wired wrapper/script against its git:HEAD object (per-hook
+    // wrapperIntegrity/scriptIntegrity, verdict 'healthy' | …) and a realpath
+    // compare of the configured paths against an AUDIT anchor distinct from
+    // the HIMMEL_REPO trust anchor (per-hook wrapperMatchesAuditAnchor/
+    // scriptMatchesAuditAnchor + top-level anchorMatchesAudit), summarized as
+    // contentIntegrityComplete / auditAnchorComplete / attestationComplete
+    // (= complete && contentIntegrityComplete && auditAnchorComplete). A
+    // content-tampered wrapper or a divergent audit anchor yields
+    // attestationComplete:false while `complete` still reads true — so WITHOUT
+    // this binding the attestation exists in the payload but never reaches the
+    // health surface (doctor still reports the guardrails 'present').
+    //
+    // FAIL-CLOSED (CR round 2): this probe spawns the checkout's OWN
+    // guardrail-block.mjs, so producer and consumer ship in lockstep — a
+    // payload with NO v2 fields is either version skew (HIMMEL_REPO aimed at
+    // an older checkout) or deliberately stripped/tampered output, and a
+    // PARTIAL v2 payload (some fields present, the set not whole) is
+    // self-contradictory/incomplete. Round 1's fail-OPEN back-compat
+    // (v2-absent → 'present') let a stale OR stripped producer read green
+    // with tamper-evidence silently absent — exactly the downgrade path the
+    // attestation exists to close. A CONSUMER never owns the producer's
+    // version; it detects v2 by the fields' PRESENCE, then fails CLOSED on
+    // absence OR a partial set rather than silently downgrading to the v1
+    // 'present' verdict.
+    const v2SummaryPresent = typeof parsed.attestationComplete === 'boolean'
+      || typeof parsed.contentIntegrityComplete === 'boolean'
+      || typeof parsed.auditAnchorComplete === 'boolean'
+      || typeof parsed.anchorMatchesAudit === 'boolean';
+    const v2PerHookPresent = parsed.hooks.some((h) => h && (
+      h.wrapperIntegrity !== undefined || h.scriptIntegrity !== undefined
+      || h.wrapperMatchesAuditAnchor !== undefined || h.scriptMatchesAuditAnchor !== undefined));
+    if (!(v2SummaryPresent || v2PerHookPresent)) {
+      return { actual: 'degraded', detail: 'guardrail-mode=global, v1 complete, but producer emitted no attestation-v2 fields — stale checkout or stripped output; guardrail content integrity UNVERIFIED' };
+    }
+    // A COMPLETE v2 payload carries the whole fixed set (top-level
+    // attestationComplete / contentIntegrityComplete / auditAnchorComplete /
+    // anchorMatchesAudit, plus per-hook wrapperIntegrity / scriptIntegrity /
+    // wrapperMatchesAuditAnchor / scriptMatchesAuditAnchor). A PARTIAL set —
+    // per-hook integrity fields present but the summary booleans missing, or
+    // anchorMatchesAudit absent while audit-anchor divergence is visible — is
+    // self-contradictory/incomplete and must NOT silently fall back to a v1
+    // classification: degraded, never 'present' (panel sug codex-1).
+    const v2SummaryComplete = typeof parsed.attestationComplete === 'boolean'
+      && typeof parsed.contentIntegrityComplete === 'boolean'
+      && typeof parsed.auditAnchorComplete === 'boolean'
+      && typeof parsed.anchorMatchesAudit === 'boolean';
+    const v2PerHookComplete = parsed.hooks.every((h) => h && (
+      h.wrapperIntegrity !== undefined
+      && h.scriptIntegrity !== undefined
+      && h.wrapperMatchesAuditAnchor !== undefined
+      && h.scriptMatchesAuditAnchor !== undefined));
+    if (!(v2SummaryComplete && v2PerHookComplete)) {
+      return { actual: 'degraded', detail: `guardrail-mode=global, v1 complete, but attestation v2 payload is incomplete — some v2 fields present but the set is not whole (self-contradictory payload, not trusted): ${out}` };
+    }
+    // Same self-consistency posture as recomputedComplete: do NOT trust the
+    // producer's own attestationComplete flag on its own — RECOMPUTE the v2
+    // composite from the payload's own parts. The flag must AGREE with its
+    // three summary parts (complete && contentIntegrityComplete &&
+    // auditAnchorComplete), and those summaries must AGREE with the per-hook
+    // integrity verdicts / audit-anchor matches that ground them. A payload
+    // whose flags contradict their own evidence is untrustworthy, not present
+    // (the same "self-contradictory, not trusted" stance as the v1 recompute
+    // above — a CONSUMER recomputes; it does not rubber-stamp the producer).
+    const healthyIntegrity = (i) => i && typeof i === 'object' && i.verdict === 'healthy';
+    const recomputedContentIntegrity = parsed.hooks.every((h) => healthyIntegrity(h.wrapperIntegrity) && healthyIntegrity(h.scriptIntegrity));
+    const recomputedAuditAnchor = parsed.anchorMatchesAudit === true
+      && parsed.hooks.every((h) => h.wrapperMatchesAuditAnchor === true && h.scriptMatchesAuditAnchor === true);
+    const recomputedAttestation = recomputedComplete && recomputedContentIntegrity && recomputedAuditAnchor;
+    const summaryImplied = parsed.complete === true && parsed.contentIntegrityComplete === true && parsed.auditAnchorComplete === true;
+    const flagsConsistent = parsed.attestationComplete === summaryImplied
+      && parsed.contentIntegrityComplete === recomputedContentIntegrity
+      && parsed.auditAnchorComplete === recomputedAuditAnchor;
+    if (recomputedAttestation && parsed.attestationComplete === true && flagsConsistent) {
+      return { actual: 'present', detail: `guardrail-mode=global — all ${parsed.hooks.length} guardrail hooks present, correctly matched, and resolving (attestation v2 complete: content-integrity + audit-anchor verified)` };
+    }
+    // v2 present but NOT satisfied: name the failing dimension(s), per hook —
+    // content-integrity vs audit-anchor, wrapper vs script — mirroring the
+    // `problems` builder below, so an operator (or himmelctl doctor) can act
+    // on a specific broken attestation rather than a bare "incomplete".
+    const v2Problems = [];
+    if (!flagsConsistent) v2Problems.push('self-contradictory attestation v2 payload — summary flags disagree with their own parts, not trusted');
+    if (parsed.anchorMatchesAudit === false) v2Problems.push('audit anchor diverges from self-checkout (anchor.repo does not match auditAnchor.repo)');
+    for (const h of parsed.hooks) {
+      const name = (h && h.basename) ? h.basename : '?';
+      if (!healthyIntegrity(h && h.wrapperIntegrity)) v2Problems.push(`${name}: content integrity not verified — wrapper (${(h && h.wrapperIntegrity && h.wrapperIntegrity.reason) || 'unknown'})`);
+      if (!healthyIntegrity(h && h.scriptIntegrity)) v2Problems.push(`${name}: content integrity not verified — script (${(h && h.scriptIntegrity && h.scriptIntegrity.reason) || 'unknown'})`);
+      if (h && h.wrapperMatchesAuditAnchor === false) v2Problems.push(`${name}: does not match audit anchor — wrapper (expected ${h.auditWrapperPath})`);
+      if (h && h.scriptMatchesAuditAnchor === false) v2Problems.push(`${name}: does not match audit anchor — script (expected ${h.auditScriptPath})`);
+    }
+    return { actual: 'degraded', detail: `guardrail-mode=global, v1 complete, but attestation v2 not satisfied — ${v2Problems.join('; ')}` };
   }
   // complete !== true: name exactly which hook(s) fall short, rather than
   // just saying "incomplete" — the whole point of the richer verb is to let
@@ -1189,6 +1370,7 @@ function probeGuardrailBlockStatus(item, ctx) {
 
 const PROBES = {
   'file-exists': probeFileExists,
+  'git-hooks': probeGitHooks,
   'settings-key': probeSettingsKey,
   'settings-hooks': probeSettingsHooks,
   'cmd:has_qmd': probeCmdHasQmd,

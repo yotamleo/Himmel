@@ -7,7 +7,7 @@
 # the manual hint -- ensure_tools never claims success it didn't achieve.
 #
 # Tools with a known package name are attempted via the package manager (git,
-# jq, python3). bun has no homebrew-core/apt/dnf package, so it is bootstrapped
+# jq, python3, shellcheck). bun has no homebrew-core/apt/dnf package, so it is bootstrapped
 # via its official installer (HIMMEL-548). Tools that still need a bespoke
 # installer (node, gh) are left to the caller's hint.
 #
@@ -19,10 +19,11 @@ set -uo pipefail
 # "not auto-installable here" (caller keeps its manual hint).
 _ensure_pkg_for() {
   case "$1" in
-    git)     echo git ;;
-    jq)      echo jq ;;
-    python3) echo python3 ;;
-    *)       echo "" ;;
+    git)        echo git ;;
+    jq)         echo jq ;;
+    python3)    echo python3 ;;
+    shellcheck) echo shellcheck ;;
+    *)          echo "" ;;
   esac
 }
 

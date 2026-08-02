@@ -16,8 +16,35 @@ const LOCAL_REGISTRY = join(SCRIPT_DIR, 'lanes.local.json');
 
 const die = (code, msg) => { process.stderr.write(msg + '\n'); process.exit(code); };
 
+// The adopter profile is a NARROWING overlay: a listed lane still has to pass
+// its real probe, while an otherwise-available non-Claude lane omitted from the
+// allowlist is reported as suppressed-by-profile rather than as absent. When a
+// profileAllowlistScope is present, only that wizard-owned subset is constrained;
+// registry lanes outside it stay on their real probes. Absence of the allowlist
+// preserves the pre-HIMMEL-1428 behaviour for existing installs, while absence
+// of the scope preserves the original global-allowlist semantics for old files.
+export function resolveLaneInventory(registry, ctx) {
+  const allowlist = Array.isArray(registry.profileAllowlist)
+    ? new Set(registry.profileAllowlist)
+    : null;
+  const allowlistScope = Array.isArray(registry.profileAllowlistScope)
+    ? new Set(registry.profileAllowlistScope)
+    : null;
+  return (registry.lanes ?? [])
+    .filter((l) => evalProbe(l.probe, ctx))
+    .map((lane) => ({
+      lane,
+      suppressedByProfile: Boolean(allowlist)
+        && lane.class !== 'claude-tier'
+        && (!allowlistScope || allowlistScope.has(lane.id))
+        && !allowlist.has(lane.id),
+    }));
+}
+
 export function resolveLanes(registry, ctx) {
-  return (registry.lanes ?? []).filter((l) => evalProbe(l.probe, ctx));
+  return resolveLaneInventory(registry, ctx)
+    .filter((row) => !row.suppressedByProfile)
+    .map((row) => row.lane);
 }
 
 // mergeLocalOverlay(base, local) -> merged registry object (HIMMEL-758). A
@@ -42,7 +69,14 @@ export function mergeLocalOverlay(base, local) {
   for (const patch of localLanes) {
     if (patch && patch.id && !baseIds.has(patch.id)) merged.push(byId.get(patch.id));
   }
-  return { ...base, lanes: merged };
+  // Only supported top-level local policy overlays the base; unknown/typoed
+  // keys must not shadow shared registry fields. Per-lane entries still use the
+  // id-aware merge above.
+  const out = { ...base, lanes: merged };
+  for (const key of ['profileAllowlist', 'profileAllowlistScope']) {
+    if (local && Object.prototype.hasOwnProperty.call(local, key)) out[key] = local[key];
+  }
+  return out;
 }
 
 // Parse a KEY=VALUE from a .env line (one surrounding quote-pair stripped), matching glm-env.ts semantics.
@@ -118,6 +152,14 @@ function loadRegistry() {
   if (!base || typeof base !== 'object' || !Array.isArray(base.lanes)) {
     die(2, `lanes: cannot evaluate — registry ${REGISTRY} must be an object with a 'lanes' array`);
   }
+  if (base.profileAllowlist !== undefined
+      && (!Array.isArray(base.profileAllowlist) || !base.profileAllowlist.every((id) => typeof id === 'string'))) {
+    die(2, `lanes: cannot evaluate — registry ${REGISTRY} profileAllowlist must be an array of lane ids`);
+  }
+  if (base.profileAllowlistScope !== undefined
+      && (!Array.isArray(base.profileAllowlistScope) || !base.profileAllowlistScope.every((id) => typeof id === 'string'))) {
+    die(2, `lanes: cannot evaluate — registry ${REGISTRY} profileAllowlistScope must be an array of lane ids`);
+  }
   // LANES_REGISTRY (explicit full-override — tests/CI) replaces wholesale,
   // exactly as before HIMMEL-758: no local overlay applied on top of an
   // explicit override. Only the DEFAULT registry path layers lanes.local.json.
@@ -127,6 +169,14 @@ function loadRegistry() {
   catch (e) { die(2, `lanes: cannot evaluate — lanes.local.json is not valid JSON: ${e.message}`); }
   if (!local || typeof local !== 'object' || !Array.isArray(local.lanes)) {
     die(2, `lanes: cannot evaluate — ${LOCAL_REGISTRY} must be an object with a 'lanes' array`);
+  }
+  if (local.profileAllowlist !== undefined
+      && (!Array.isArray(local.profileAllowlist) || !local.profileAllowlist.every((id) => typeof id === 'string'))) {
+    die(2, `lanes: cannot evaluate — ${LOCAL_REGISTRY} profileAllowlist must be an array of lane ids`);
+  }
+  if (local.profileAllowlistScope !== undefined
+      && (!Array.isArray(local.profileAllowlistScope) || !local.profileAllowlistScope.every((id) => typeof id === 'string'))) {
+    die(2, `lanes: cannot evaluate — ${LOCAL_REGISTRY} profileAllowlistScope must be an array of lane ids`);
   }
   return mergeLocalOverlay(base, local);
 }
@@ -140,12 +190,17 @@ export function fmtCtx(n) {
   return String(n);
 }
 
-function renderText(lanes) {
+function renderText(lanes, suppressed) {
   const rows = lanes.map((l) => {
     const ctx = fmtCtx(l.contextWindow);
     return `- ${l.label} — ${l.bestFor} (${l.effort})` + (ctx ? ` [ctx: ${ctx}]` : '');
   });
-  return `Available delegation lanes on this machine (${lanes.length}):\n` + rows.join('\n') +
+  let out = `Available delegation lanes on this machine (${lanes.length}):\n` + rows.join('\n');
+  if (suppressed.length > 0) {
+    out += `\n\nSuppressed by adopter profile (${suppressed.length}; physically available, not routable):\n` +
+      suppressed.map((l) => `- ${l.label} — suppressed-by-profile`).join('\n');
+  }
+  return out +
     '\n\nNote: codex(paid) reflects CR_PROFILE=paid (opt-in preference, not a funded-bank guarantee).\n' +
     'Note: [ctx: N] = the lane\'s max usable context; absent = unverified/varies. Route work to a lane whose window holds it (codex lanes are 272k, not 1M).\n';
 }
@@ -189,11 +244,13 @@ function runCodexHealth(repoRoot, env) {
 const mode = process.argv[2];
 if (process.argv[1]?.endsWith('resolve.mjs')) {
   const registry = loadRegistry();
-  const lanes = resolveLanes(registry, buildCtx(REPO_ROOT, process.env));
+  const inventory = resolveLaneInventory(registry, buildCtx(REPO_ROOT, process.env));
+  const lanes = inventory.filter((row) => !row.suppressedByProfile).map((row) => row.lane);
+  const suppressed = inventory.filter((row) => row.suppressedByProfile).map((row) => row.lane);
   if (mode === '--json') process.stdout.write(JSON.stringify(lanes, null, 2) + '\n');
   else {
     const { rc, out } = runCodexHealth(REPO_ROOT, process.env);
-    process.stdout.write(renderText(lanes) + formatCodexHealth(rc, out));
+    process.stdout.write(renderText(lanes, suppressed) + formatCodexHealth(rc, out));
   }
   process.exit(0);
 }

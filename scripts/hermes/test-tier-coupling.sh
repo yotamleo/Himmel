@@ -35,7 +35,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 # --- the tier-coupling rule ---------------------------------------------------
 # Trusted write engines (D3b: codex-5.5 / GLM-5.2 1M workhorse; gpt-5.5 is the
 # codex provider's model id per the runbook). EXACT allowlist anchored on the

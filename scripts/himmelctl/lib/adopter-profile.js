@@ -27,9 +27,9 @@
 //      docs/setup/windows-clean-machine.md Phase-6 steps as a checklist the
 //      operator runs by hand.
 //
-// Everything here is NON-MUTATING: it writes nothing, installs nothing, and
-// changes no machine state, which is what lets the hermetic suite exercise the
-// whole surface on a machine where none of the lane CLIs are installed.
+// Lane probing and hardening remain non-mutating. The one deliberate write is
+// HIMMEL-1428's applied-install persistence of the selected lane ids into the
+// gitignored lanes.local.json profile allowlist; dry-runs still write nothing.
 //
 // It is NOT spawn-free, and this comment used to claim it was (corrected in CR
 // round 5). Inspecting a machine sometimes means running something: the
@@ -117,6 +117,7 @@ const V1_LANES = [
 ];
 
 const ALL_LANE_IDS = V1_LANES.map((l) => l.id);
+const PROFILE_LANE_REGISTRY_IDS = V1_LANES.map((l) => l.registryId);
 const DEFAULT_LANE_IDS = V1_LANES.filter((l) => !l.optIn).map((l) => l.id);
 const OPT_IN_LANE_IDS = V1_LANES.filter((l) => l.optIn).map((l) => l.id);
 // The lane ids an operator may name directly (interactively or via --lanes).
@@ -191,6 +192,48 @@ function applyOptIns(baseLanes, opts) {
   if (opts && opts.withCodex && out.indexOf('codex') === -1) out.push('codex');
   if (opts && opts.withHermes && out.indexOf('hermes') === -1) out.push('hermes');
   return out;
+}
+
+function registryIdsForSelection(selected) {
+  const out = [];
+  for (const id of selected || []) {
+    const lane = laneById(id);
+    if (!lane) throw new Error(`unknown adopter lane '${id}'`);
+    if (out.indexOf(lane.registryId) === -1) out.push(lane.registryId);
+  }
+  return out;
+}
+
+// Validate the profile-overlay conditions that are predictable before the core
+// installer runs. The real write repeats the same checks after the install so a
+// change during the run still fails closed; interruption inside the core
+// installer remains outside this bounded preflight.
+async function preflightProfileLaneAllowlist(repoRoot) {
+  // LANES_REGISTRY is a wholesale resolver override: resolve.mjs deliberately
+  // skips lanes.local.json while it is set. Writing the default overlay here
+  // would therefore report a consent boundary that the active resolver ignores.
+  if (process.env.LANES_REGISTRY) {
+    throw new Error('LANES_REGISTRY is set, so the active resolver ignores lanes.local.json; refusing to report the adopter lane profile as persisted');
+  }
+  const lanesDir = path.resolve(__dirname, '..', '..', 'lanes');
+  const writer = await import(pathToFileURL(path.join(lanesDir, 'set-lane-override.mjs')).href);
+  const file = path.join(repoRoot || process.cwd(), 'scripts', 'lanes', 'lanes.local.json');
+  writer.validateProfileAllowlistTarget(file);
+  return { writer, file };
+}
+
+// Persist the adopter selection as a top-level profileAllowlist in the SAME
+// gitignored overlay the resolver already reads. profileAllowlistScope limits
+// the policy to the lanes this wizard actually owns; every other registry lane
+// stays on its real base probe. Legacy scope-less allowlists keep their global
+// semantics instead. The allowlist is still applied AFTER each real probe, so
+// it can suppress but never conjure availability. The writer preserves existing
+// per-lane overrides and uses its proven lock + atomic-rename path.
+async function persistProfileLaneAllowlist(selected, repoRoot) {
+  const { writer, file } = await preflightProfileLaneAllowlist(repoRoot);
+  const ids = registryIdsForSelection(selected);
+  const preservedLegacyGlobal = writer.writeProfileAllowlist(file, ids, PROFILE_LANE_REGISTRY_IDS);
+  return { ids, preservedLegacyGlobal };
 }
 
 // ── probing ─────────────────────────────────────────────────────────────────
@@ -523,12 +566,11 @@ function laneSetupState(lane, ctx) {
 // Non-selected lanes are still reported (as skipped) so the summary can say
 // WHY a lane the operator might expect is missing.
 //
-// DEFERRED (HIMMEL-1428) — ENFORCEMENT only. These rows now READ the same
-// merged configuration the resolver does (base lanes.json + lanes.local.json),
-// so what they report matches what `/lanes` reports; that accuracy half was
-// CR round 2 [codex-adv-r2-1]. What is still deferred is the other direction:
-// the adopter's selection is not consumed as an ALLOWLIST, so a lane they did
-// not select still resolves as available to the delegation machinery.
+// HIMMEL-1428 persists the selected registry ids as the resolver's narrowing
+// profile allowlist after an applied install. These rows still probe only the
+// selected v1 lanes for the install summary; `/lanes` separately reports any
+// physically-available non-selected lane in this wizard-owned subset as
+// suppressed-by-profile. Registry lanes outside the subset remain unconstrained.
 function probeSelection(selected, ctx) {
   return V1_LANES.map((lane) => {
     const chosen = selected.indexOf(lane.id) !== -1;
@@ -957,6 +999,9 @@ module.exports = {
   EVALUABLE_PROBE_KINDS,
   parseLaneList,
   applyOptIns,
+  registryIdsForSelection,
+  preflightProfileLaneAllowlist,
+  persistProfileLaneAllowlist,
   probeLane,
   probeSelection,
   HARDENING_CHECKLIST,

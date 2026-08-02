@@ -56,6 +56,56 @@ deny() {
     exit 2
 }
 
+# Sanctioned CLIProxyAPI proxy lifecycle (HIMMEL-1451): bouncing the proxy
+# needs process termination (taskkill / Stop-Process / schtasks /end), all of
+# which the deny floor below refuses at command position. The SAFE path is the
+# cli-proxy-lane.ps1 -Restart/-Stop verb, which does that termination INTERNALLY
+# -- this hook only ever sees the command the agent hands the shell, never a
+# script's internals. Permit EXACTLY these literal invocation shapes: a `case`
+# on the WHOLE lowercased command with QUOTED (non-glob) alternatives, so the
+# match is anchored end-to-end with no wildcards -- a near-miss (a different
+# script path, an appended destructive command, or a direct taskkill) does NOT
+# inherit a free pass and still hits the deny floor below. powershell and pwsh
+# both carry the script (HIMMEL-1432 dual-shell convention). r3 documented the
+# combined -Install -Restart [-Force] one-shot pin-roll (.EXAMPLE); r4 added it
+# here so the sanctioned forms enumerated below match the documented lifecycle
+# (HIMMEL-1451 r4 / glm-4).
+#
+# codex-1 (CR r4) -- why this carve-out carries NO cwd/repo-root anchor. The
+# sanctioned path is RELATIVE, so a roamed shell CWD could in principle resolve
+# it to an impostor `scripts/setup/cli-proxy-lane.ps1`. But anchoring THIS
+# carve-out cannot close that vector, because the deny floor below INDEPENDENTLY
+# allows `powershell/pwsh -NoProfile -File <any relative script>`: no deny rule
+# matches (the CMDPOS grammar only arms `-c` as a launcher wrapper, not `-File`,
+# and -restart/-stop/-install/-force are not destructive primitives at command
+# position). An escaped/impostor relative invocation that does NOT match this
+# exact case therefore still passes the floor (rc=0 -- verified empirically: a
+# `./`-prefixed path, a `../` escape, and a `cd x; ...` prefix all return rc=0).
+# The relative-resolution vector is a FLOOR-LEVEL residual (script-internals
+# unseen -- the documented no-general-parser gap, HIMMEL-912 class), not a hole
+# this carve-out opens or can close; narrowing the carve-out's text would only
+# hide the blessing while the floor keeps allowing the impostor. The carve-out's
+# real job is forward-compat stability + explicit blessing of the sanctioned
+# shapes (so a future floor rule that DOES match -File/-restart cannot silently
+# break the documented lifecycle) -- not gatekeeping the relative path. Closing
+# the residual belongs to a HIMMEL-912 floor follow-up, out of scope for r4.
+case "$cmd_lc" in
+    'powershell -noprofile -file scripts/setup/cli-proxy-lane.ps1 -restart'|\
+    'powershell -noprofile -file scripts/setup/cli-proxy-lane.ps1 -restart -force'|\
+    'powershell -noprofile -file scripts/setup/cli-proxy-lane.ps1 -stop'|\
+    'powershell -noprofile -file scripts/setup/cli-proxy-lane.ps1 -stop -force'|\
+    'powershell -noprofile -file scripts/setup/cli-proxy-lane.ps1 -install -restart'|\
+    'powershell -noprofile -file scripts/setup/cli-proxy-lane.ps1 -install -restart -force'|\
+    'pwsh -noprofile -file scripts/setup/cli-proxy-lane.ps1 -restart'|\
+    'pwsh -noprofile -file scripts/setup/cli-proxy-lane.ps1 -restart -force'|\
+    'pwsh -noprofile -file scripts/setup/cli-proxy-lane.ps1 -stop'|\
+    'pwsh -noprofile -file scripts/setup/cli-proxy-lane.ps1 -stop -force'|\
+    'pwsh -noprofile -file scripts/setup/cli-proxy-lane.ps1 -install -restart'|\
+    'pwsh -noprofile -file scripts/setup/cli-proxy-lane.ps1 -install -restart -force')
+        exit 0
+        ;;
+esac
+
 # Binary boundary helpers are inlined in the patterns below. Every binary atom
 # that parity_guard names tolerates an optional .exe suffix for the Windows lane.
 # Bare-name atoms (format/schtasks/taskkill/shutdown/icacls classes) anchor to

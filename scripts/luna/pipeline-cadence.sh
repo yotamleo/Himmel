@@ -7,10 +7,12 @@
 # big ingests") — but nothing was scheduled; every run was operator-
 # remembered. The pipeline is idempotent at every stage by design
 # (markers: harvested_at, processed, synthesis dedup window, _done/
-# move) — exactly the cron-safe shape. This script registers the three
+# move) — exactly the cron-safe shape. This script registers the four
 # recurring jobs with the OS scheduler, following the
 # scripts/handover/arm-resume.sh precedent (HIMMEL-122):
 #
+#   HIMMEL-Pipeline-FetchHealth daily  (default 01:30, no LLM)          HIMMEL-1449
+#       python fetch-health.py
 #   HIMMEL-Pipeline-Harvest     daily   (default 02:00, model: sonnet)  HIMMEL-357/798
 #       claude --model sonnet "/harvest-clips ... then /triage-clips ... then /ig-media-enrich ..." < NUL
 #   HIMMEL-Pipeline-Synthesize  daily   (default 03:00, model: sonnet)
@@ -56,8 +58,8 @@
 # arm-resume's crontab entry).
 #
 # Usage:
-#   bash scripts/luna/pipeline-cadence.sh arm [--harvest-time HH:MM]
-#       [--ig-limit N] [--synth-time HH:MM]
+#   bash scripts/luna/pipeline-cadence.sh arm [--fetch-health-time HH:MM]
+#       [--harvest-time HH:MM] [--ig-limit N] [--synth-time HH:MM]
 #       [--health-time HH:MM] [--harvest-model M] [--synth-model M]
 #       [--health-model M] [--vault PATH] [--force] [--dry-run]
 #   bash scripts/luna/pipeline-cadence.sh status
@@ -78,6 +80,7 @@
 set -euo pipefail
 
 TASK_PREFIX="HIMMEL-Pipeline-"
+TASK_FETCH_HEALTH="${TASK_PREFIX}FetchHealth"
 TASK_HARVEST="${TASK_PREFIX}Harvest"
 TASK_SYNTH="${TASK_PREFIX}Synthesize"
 TASK_HEALTH="${TASK_PREFIX}Health"
@@ -131,7 +134,9 @@ SETTINGS_FRAGMENT="$BAT_DIR/cadence-settings.json"
 # shift on HIMMEL-506, 2026-07-11: synth weekly->daily, health
 # monthly->weekly, per-leg --model pins so the cadence never inherits
 # the operator's saved default tier; health weekly->daily on
-# HIMMEL-1383, 2026-07-29).
+# HIMMEL-1383, 2026-07-29; no-LLM fetch health added on HIMMEL-1449,
+# 2026-08-02).
+FETCH_HEALTH_TIME="01:30"
 HARVEST_TIME="02:00"
 IG_LIMIT="10"
 SYNTH_TIME="03:00"
@@ -169,7 +174,8 @@ usage() {
 Usage: pipeline-cadence.sh <arm|status|disarm> [flags]
 
 Arm the OS scheduler with the recurring clip-pipeline cadence
-(HIMMEL-255/357/798): daily /harvest-clips (+ /triage-clips and
+(HIMMEL-255/357/798/1449): daily no-LLM source fetch-health probes,
+daily /harvest-clips (+ /triage-clips and
 /ig-media-enrich chained after in the same session), daily
 /synthesize-clips (+ /archive-clips chained after) and daily
 vault-lint (obsidian-triage:vault-lint, HIMMEL-1386), run against the
@@ -178,7 +184,7 @@ with an explicit cheap --model pin (HIMMEL-506) so the cadence never
 inherits the operator's saved default.
 
 Subcommands:
-  arm      Register all three recurring tasks. Dedup-guarded: refuses
+  arm      Register all four recurring tasks. Dedup-guarded: refuses
            (rc=3) if any HIMMEL-Pipeline-* task already exists; --force
            replaces.
   status   Show which cadence tasks are armed (+ next run time + the
@@ -186,6 +192,7 @@ Subcommands:
   disarm   Remove all tasks (idempotent; rc=0 if nothing was armed).
 
 Flags (arm only, except --dry-run):
+  --fetch-health-time <HH:MM> Daily no-LLM fetch-health time (default 01:30)
   --harvest-time <HH:MM> Daily harvest+triage+ig-media-enrich time,
                          24h local (default 02:00)
   --ig-limit <N>         Daily /ig-media-enrich --limit N (default 10;
@@ -223,6 +230,8 @@ esac
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --fetch-health-time)   FETCH_HEALTH_TIME="${2:-}"; shift 2 ;;
+        --fetch-health-time=*) FETCH_HEALTH_TIME="${1#--fetch-health-time=}"; shift ;;
         --harvest-time)   HARVEST_TIME="${2:-}"; shift 2 ;;
         --harvest-time=*) HARVEST_TIME="${1#--harvest-time=}"; shift ;;
         --ig-limit)      IG_LIMIT="${2:-}"; shift 2 ;;
@@ -391,6 +400,7 @@ query_one() {
 # rc 0 = query trusted (armed or not-armed), rc 2 = query errored.
 task_summary() {
     case "$1" in
+        "$TASK_FETCH_HEALTH") printf ' -> clip-source fetch probes [no LLM]' ;;
         "$TASK_HARVEST") printf ' -> %s' "$DAILY_CHAIN" ;;
     esac
 }
@@ -401,6 +411,7 @@ task_summary() {
 runner_for_name() {
     local base ext
     case "$1" in
+        "$TASK_FETCH_HEALTH") base="pipeline-fetch-health" ;;
         "$TASK_HARVEST") base="pipeline-harvest" ;;
         "$TASK_SYNTH")   base="pipeline-synthesize" ;;
         "$TASK_HEALTH")  base="pipeline-health" ;;
@@ -502,6 +513,8 @@ cmd_status() {
     # scripted callers read a broken query tool as "all fine").
     local status_rc=0
     echo "pipeline-cadence status:"
+    status_one "$TASK_FETCH_HEALTH" || status_rc=2
+    status_log "$BAT_DIR/pipeline-fetch-health.log"
     status_one "$TASK_HARVEST" || status_rc=2
     status_log "$BAT_DIR/pipeline-harvest.log"
     status_one "$TASK_SYNTH" || status_rc=2
@@ -513,7 +526,7 @@ cmd_status() {
 
 cmd_disarm() {
     local name found=0 qrc
-    for name in "$TASK_HARVEST" "$TASK_SYNTH" "$TASK_HEALTH"; do
+    for name in "$TASK_FETCH_HEALTH" "$TASK_HARVEST" "$TASK_SYNTH" "$TASK_HEALTH"; do
         qrc=0
         query_one "$name" || qrc=$?
         case "$qrc" in
@@ -538,7 +551,7 @@ cmd_disarm() {
     # every delete succeeded (delete_task exits 4 otherwise) — safe to
     # remove the runners now.
     if [ "$DRY_RUN" -eq 0 ]; then
-        rm -f "$BAT_DIR/pipeline-harvest.bat" "$BAT_DIR/pipeline-synthesize.bat" "$BAT_DIR/pipeline-health.bat" "$SETTINGS_FRAGMENT"
+        rm -f "$BAT_DIR/pipeline-fetch-health.bat" "$BAT_DIR/pipeline-harvest.bat" "$BAT_DIR/pipeline-synthesize.bat" "$BAT_DIR/pipeline-health.bat" "$SETTINGS_FRAGMENT"
     fi
     if [ "$found" -eq 0 ]; then
         echo "pipeline-cadence: nothing armed — disarm is a no-op"
@@ -606,6 +619,28 @@ emit_bat() {
     printf 'exit /b %%FLOW_RUN_RC%%\r\n'
 }
 
+# Emit the plain-script fetch-health runner. It rotates one prior log, writes
+# no fetched response content, and returns the probe's aggregate exit code.
+emit_fetch_health_bat() {
+    local python_win_esc="$1" script_win_esc="$2" log_win_esc="$3" env_file_win_esc="$4"
+    printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
+    printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
+    printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
+    # Source the repo's gitignored .env at FIRE time (not arm time) so the
+    # credentialed probes (bitbucket/firecrawl) inherit env-sourced secrets
+    # under schtasks' minimal environment — mirrors emit_fetch_health_runner's
+    # `[ -f .env ] && . .env` (HIMMEL-1449 r2). Only the PATH is embedded
+    # (quoted); the values are parsed by cmd at fire time, never baked into the
+    # .bat — secrets stay in the gitignored file (HIMMEL-1470). `for /f` skips
+    # blank lines; eol=# skips comments; tokens=1,* with delims== keeps `=` in
+    # values; the quoted `set "K=V"` survives value metacharacters (& | < >).
+    printf 'if exist "%s" for /f "usebackq eol=# tokens=1,* delims==" %%%%K in ("%s") do set "%%%%K=%%%%L"\r\n' "$env_file_win_esc" "$env_file_win_esc"
+    printf '"%s" "%s" >> "%s" 2>&1\r\n' "$python_win_esc" "$script_win_esc" "$log_win_esc"
+    printf 'set "FETCH_HEALTH_RC=%%ERRORLEVEL%%"\r\n'
+    printf 'echo [exit rc=%%FETCH_HEALTH_RC%%] >> "%s" 2>&1\r\n' "$log_win_esc"
+    printf 'exit /b %%FETCH_HEALTH_RC%%\r\n'
+}
+
 # Emit the JSON settings fragment that wires the auto-approve-safe-bash hook by
 # absolute path (HIMMEL-575). hook_path must be a forward-slash, JSON-safe
 # absolute path (no backslashes — use cygpath -m on Windows). The command is
@@ -652,7 +687,7 @@ JSON
 # schema default (true) so a battery laptop catches up when next on AC
 # rather than draining on battery.
 
-# Escape the three XML-significant characters for text interpolated into an
+# Escape the XML-significant characters for text interpolated into an
 # element body (the Exec <Command> path — a BAT_DIR path may legally
 # contain `&`). `&` first so the `&` in the &lt;/&gt; entities isn't
 # re-escaped. Implemented with sed, NOT bash `${s//&/&amp;}`: bash 5.1+
@@ -664,8 +699,9 @@ xml_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-# The <CalendarTrigger> schedule fragment. All three legs are daily
-# (harvest + synthesize on HIMMEL-506; health on HIMMEL-1383).
+# The <CalendarTrigger> schedule fragment. All four legs are daily
+# (harvest + synthesize on HIMMEL-506; health on HIMMEL-1383;
+# fetch health on HIMMEL-1449).
 schedule_daily_xml() {
     printf '      <ScheduleByDay>\n        <DaysInterval>1</DaysInterval>\n      </ScheduleByDay>'
 }
@@ -775,6 +811,10 @@ validate_model_name() {
 
 # Input validation shared by the schtasks and cron arm paths.
 validate_arm_inputs() {
+    if ! [[ "$FETCH_HEALTH_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+        echo "ERR pipeline-cadence: --fetch-health-time must be HH:MM (24h), got: $FETCH_HEALTH_TIME" >&2
+        exit 1
+    fi
     if ! [[ "$HARVEST_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
         echo "ERR pipeline-cadence: --harvest-time must be HH:MM (24h), got: $HARVEST_TIME" >&2
         exit 1
@@ -813,13 +853,21 @@ cmd_arm() {
 
     # Resolve claude to an absolute Windows path so the .bat doesn't
     # depend on PATH in whatever cmd shell schtasks spawns.
-    local claude_posix claude_win bash_posix bash_win flow_lib_m
+    local claude_posix claude_win bash_posix bash_win flow_lib_m python_posix python_win fetch_script_win
     if ! claude_posix=$(command -v claude 2>/dev/null); then
         echo "ERR pipeline-cadence: 'claude' not on PATH at arm time" >&2
         exit 2
     fi
     if ! bash_posix=$(command -v bash 2>/dev/null); then
         echo "ERR pipeline-cadence: 'bash' not on PATH at arm time" >&2
+        exit 2
+    fi
+    if python_posix=$(command -v python3 2>/dev/null); then
+        :
+    elif python_posix=$(command -v python 2>/dev/null); then
+        :
+    else
+        echo "ERR pipeline-cadence: python3/python not on PATH at arm time (required for fetch-health)" >&2
         exit 2
     fi
     command -v cygpath >/dev/null 2>&1 || {
@@ -832,6 +880,22 @@ cmd_arm() {
     fi
     if ! bash_win=$(cygpath -w "$bash_posix" 2>&1); then
         echo "ERR pipeline-cadence: cygpath -w failed for bash path: $bash_win" >&2
+        exit 4
+    fi
+    if ! python_win=$(cygpath -w "$python_posix" 2>&1); then
+        echo "ERR pipeline-cadence: cygpath -w failed for python path: $python_win" >&2
+        exit 4
+    fi
+    if ! fetch_script_win=$(cygpath -w "$HIMMEL_ROOT/scripts/luna/fetch-health.py" 2>&1); then
+        echo "ERR pipeline-cadence: cygpath -w failed for fetch-health.py: $fetch_script_win" >&2
+        exit 4
+    fi
+    # HIMMEL-1470: the repo .env (gitignored, may be absent) is sourced by the
+    # .bat at FIRE time so credentialed probes inherit env-sourced secrets under
+    # schtasks' minimal environment. cygpath -w is a pure string transform, so a
+    # missing .env still resolves; the .bat guards the load with `if exist`.
+    if ! env_file_win=$(cygpath -w "$HIMMEL_ROOT/.env" 2>&1); then
+        echo "ERR pipeline-cadence: cygpath -w failed for repo .env: $env_file_win" >&2
         exit 4
     fi
     if ! flow_lib_m=$(cygpath -m "$HIMMEL_ROOT/scripts/lib/flow-run-ledger.sh" 2>&1); then
@@ -927,10 +991,13 @@ cmd_arm() {
     # emitter (public-PR CR — see emit_bat's header). Escaped once and reused by
     # both the dry-run preview and the real write below, so the two can never
     # disagree about what lands in the .bat.
-    local claude_win_esc bash_win_esc flow_lib_m_esc
+    local claude_win_esc bash_win_esc flow_lib_m_esc python_win_esc fetch_script_win_esc env_file_win_esc
     claude_win_esc=$(cadence_cmd_escape "$claude_win")
     bash_win_esc=$(cadence_cmd_escape "$bash_win")
     flow_lib_m_esc=$(cadence_cmd_escape "$flow_lib_m")
+    python_win_esc=$(cadence_cmd_escape "$python_win")
+    fetch_script_win_esc=$(cadence_cmd_escape "$fetch_script_win")
+    env_file_win_esc=$(cadence_cmd_escape "$env_file_win")
     local harvest_model_esc synth_model_esc health_model_esc
     harvest_model_esc=$(cadence_cmd_escape "$HARVEST_MODEL")
     synth_model_esc=$(cadence_cmd_escape "$SYNTH_MODEL")
@@ -948,17 +1015,19 @@ cmd_arm() {
     flow_harvest_esc=$(cadence_cmd_escape "pipeline-harvest")
     flow_synth_esc=$(cadence_cmd_escape "pipeline-synthesize")
     flow_health_esc=$(cadence_cmd_escape "pipeline-health")
+    local bat_fetch_health="$BAT_DIR/pipeline-fetch-health.bat"
     local bat_harvest="$BAT_DIR/pipeline-harvest.bat"
     local bat_synth="$BAT_DIR/pipeline-synthesize.bat"
     local bat_health="$BAT_DIR/pipeline-health.bat"
 
     # Fire-time run logs live next to the .bats (cmd-escaped for the
     # `>>` redirect target inside the .bat).
-    local bat_dir_win log_harvest_esc log_synth_esc log_health_esc
+    local bat_dir_win log_fetch_health_esc log_harvest_esc log_synth_esc log_health_esc
     if ! bat_dir_win=$(cygpath -w "$BAT_DIR" 2>&1); then
         echo "ERR pipeline-cadence: cygpath -w failed for bat dir: $bat_dir_win" >&2
         exit 4
     fi
+    log_fetch_health_esc=$(cadence_cmd_escape "$bat_dir_win\\pipeline-fetch-health.log")
     log_harvest_esc=$(cadence_cmd_escape "$bat_dir_win\\pipeline-harvest.log")
     log_synth_esc=$(cadence_cmd_escape "$bat_dir_win\\pipeline-synthesize.log")
     log_health_esc=$(cadence_cmd_escape "$bat_dir_win\\pipeline-health.log")
@@ -978,7 +1047,8 @@ cmd_arm() {
 
     # Per-cadence schedule fragments for the task XML (HIMMEL-362). Built
     # once and reused by the dry-run preview and the real create below.
-    local sched_harvest sched_synth sched_health
+    local sched_fetch_health sched_harvest sched_synth sched_health
+    sched_fetch_health=$(schedule_daily_xml)
     sched_harvest=$(schedule_daily_xml)
     sched_synth=$(schedule_daily_xml)
     sched_health=$(schedule_daily_xml)
@@ -987,7 +1057,11 @@ cmd_arm() {
     # string transform (the .bat need not exist yet), so resolve the win
     # paths before the dry-run preview too — the XML preview must show the
     # real Exec Command.
-    local bat_harvest_win bat_synth_win bat_health_win
+    local bat_fetch_health_win bat_harvest_win bat_synth_win bat_health_win
+    if ! bat_fetch_health_win=$(cygpath -w "$bat_fetch_health" 2>&1); then
+        echo "ERR pipeline-cadence: cygpath -w failed: $bat_fetch_health_win" >&2
+        exit 4
+    fi
     if ! bat_harvest_win=$(cygpath -w "$bat_harvest" 2>&1); then
         echo "ERR pipeline-cadence: cygpath -w failed: $bat_harvest_win" >&2
         exit 4
@@ -1004,12 +1078,16 @@ cmd_arm() {
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$hook_path_m" | sed 's/^/    /'
+        echo "DRY pipeline-cadence: would write $bat_fetch_health:"
+        emit_fetch_health_bat "$python_win_esc" "$fetch_script_win_esc" "$log_fetch_health_esc" "$env_file_win_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_harvest:"
         emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_synth:"
         emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc" "$log_synth_esc" "$settings_esc" "$synth_model_esc" "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_health:"
         emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc" "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
+        echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_FETCH_HEALTH /xml <daily $FETCH_HEALTH_TIME, StartWhenAvailable=true> /f"
+        emit_task_xml "$bat_fetch_health_win" "$FETCH_HEALTH_TIME" "$sched_fetch_health" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_HARVEST /xml <daily $HARVEST_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_harvest_win" "$HARVEST_TIME" "$sched_harvest" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_SYNTH /xml <daily $SYNTH_TIME, StartWhenAvailable=true> /f"
@@ -1022,6 +1100,7 @@ cmd_arm() {
 
     mkdir -p "$BAT_DIR"
     emit_settings_fragment "$hook_path_m" > "$SETTINGS_FRAGMENT"
+    emit_fetch_health_bat "$python_win_esc" "$fetch_script_win_esc" "$log_fetch_health_esc" "$env_file_win_esc" > "$bat_fetch_health"
     emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_harvest"
     emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$synth_model_esc"   "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_synth"
     emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc"  "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_health"
@@ -1063,12 +1142,25 @@ cmd_arm() {
         exit 4
     fi
     if [ -s "$err_file" ]; then cat "$err_file" >&2; fi
+    if ! schtasks_create_xml "$TASK_FETCH_HEALTH" "$bat_fetch_health_win" "$sched_fetch_health" "$FETCH_HEALTH_TIME" "$err_file"; then
+        echo "ERR pipeline-cadence: schtasks /create $TASK_FETCH_HEALTH failed:" >&2
+        cat "$err_file" >&2
+        rm -f "$err_file"
+        for name in "$TASK_HARVEST" "$TASK_SYNTH" "$TASK_HEALTH"; do
+            if ! run_schtasks /delete /tn "$name" /f >/dev/null 2>&1; then
+                echo "WARN: rollback of $name failed — run disarm" >&2
+            fi
+        done
+        exit 4
+    fi
+    if [ -s "$err_file" ]; then cat "$err_file" >&2; fi
     rm -f "$err_file"
 
     cat <<EOF
 
 ================================================================
-  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-357 / HIMMEL-506 / HIMMEL-798 / HIMMEL-1383)
+  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-357 / HIMMEL-506 / HIMMEL-798 / HIMMEL-1383 / HIMMEL-1449)
+  $TASK_FETCH_HEALTH  daily   $FETCH_HEALTH_TIME  [no LLM]  -> clip-source fetch probes
   $TASK_HARVEST  daily   $HARVEST_TIME  [model: $HARVEST_MODEL]  -> $DAILY_CHAIN
   $TASK_SYNTH    daily   $SYNTH_TIME    [model: $SYNTH_MODEL]    -> /synthesize-clips + /archive-clips
   $TASK_HEALTH   daily   $HEALTH_TIME   [model: $HEALTH_MODEL]   -> vault-lint (obsidian-triage:vault-lint)
@@ -1092,6 +1184,7 @@ EOF
 # state to roll back. Runner .sh files mirror the .bat runners: log
 # rotation, fire stamp, cd-into-vault, bounded interactive claude run.
 
+CRON_RUNNER_FETCH_HEALTH="$BAT_DIR/pipeline-fetch-health.sh"
 CRON_RUNNER_HARVEST="$BAT_DIR/pipeline-harvest.sh"
 CRON_RUNNER_SYNTH="$BAT_DIR/pipeline-synthesize.sh"
 CRON_RUNNER_HEALTH="$BAT_DIR/pipeline-health.sh"
@@ -1210,12 +1303,36 @@ emit_runner() {
     printf '} >> "$log" 2>&1\n'
 }
 
+# shellcheck disable=SC2016  # single-quoted $log/$(date)/_rc are emitted literally for the runner's own /bin/sh to expand at fire time
+emit_fetch_health_runner() {
+    local q_python="$1" q_script="$2" q_log="$3" q_arm_path="$4" q_env_file="$5"
+    printf '#!/bin/sh\n'
+    printf '# %s runner — generated by pipeline-cadence.sh arm (HIMMEL-1449)\n' "$TASK_FETCH_HEALTH"
+    printf '# %s %s\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
+    # Restore the arming shell's PATH so the probes' shelled-out CLIs (gallery-dl,
+    # twitter, gh) resolve under cron's minimal PATH=/usr/bin:/bin, and source the
+    # repo's gitignored .env (if present) so env-sourced credentials (Twitter/
+    # Firecrawl) are available — mirrors fetch-health.py's load_repo_env. Both
+    # lines flow through printf %s with pre-quoted q_ vars (SC2016-safe) (HIMMEL-1449 r2).
+    printf 'PATH=%s; export PATH\n' "$q_arm_path"
+    printf '[ -f %s ] && . %s\n' "$q_env_file" "$q_env_file"
+    printf 'log=%s\n' "$q_log"
+    printf 'if [ -f "$log" ]; then mv -f "$log" "$log.prev" || exit 1; fi\n'
+    printf '{\n'
+    printf '    echo "[fired $(date '\''+%%Y-%%m-%%d %%H:%%M:%%S'\'')]"\n'
+    printf '    _rc=0; %s %s || _rc=$?\n' "$q_python" "$q_script"
+    printf '    echo "[exit rc=$_rc]"\n'
+    printf '    exit "$_rc"\n'
+    printf '} >> "$log" 2>&1\n'
+}
+
 cron_status() {
     cron_read
     echo "pipeline-cadence status:"
     local name log entry sched
-    for name in "$TASK_HARVEST" "$TASK_SYNTH" "$TASK_HEALTH"; do
+    for name in "$TASK_FETCH_HEALTH" "$TASK_HARVEST" "$TASK_SYNTH" "$TASK_HEALTH"; do
         case "$name" in
+            "$TASK_FETCH_HEALTH") log="$BAT_DIR/pipeline-fetch-health.log" ;;
             "$TASK_HARVEST") log="$BAT_DIR/pipeline-harvest.log" ;;
             "$TASK_SYNTH")  log="$BAT_DIR/pipeline-synthesize.log" ;;
             *)              log="$BAT_DIR/pipeline-health.log" ;;
@@ -1239,7 +1356,7 @@ cron_disarm() {
         # Trusted-empty read (cron_read exits 2 otherwise) — safe to
         # sweep the runners like the schtasks path does.
         if [ "$DRY_RUN" -eq 0 ]; then
-            rm -f "$CRON_RUNNER_HARVEST" "$CRON_RUNNER_SYNTH" "$CRON_RUNNER_HEALTH" "$SETTINGS_FRAGMENT"
+            rm -f "$CRON_RUNNER_FETCH_HEALTH" "$CRON_RUNNER_HARVEST" "$CRON_RUNNER_SYNTH" "$CRON_RUNNER_HEALTH" "$SETTINGS_FRAGMENT"
         fi
         echo "pipeline-cadence: nothing armed — disarm is a no-op"
         return 0
@@ -1260,7 +1377,7 @@ cron_disarm() {
     # removed — a failed install (exit 4) leaves the entries live and
     # they must keep pointing at existing runner files.
     cron_install "$newtab" || exit 4
-    rm -f "$CRON_RUNNER_HARVEST" "$CRON_RUNNER_SYNTH" "$CRON_RUNNER_HEALTH" "$SETTINGS_FRAGMENT"
+    rm -f "$CRON_RUNNER_FETCH_HEALTH" "$CRON_RUNNER_HARVEST" "$CRON_RUNNER_SYNTH" "$CRON_RUNNER_HEALTH" "$SETTINGS_FRAGMENT"
     echo "pipeline-cadence: cadence disarmed"
 }
 
@@ -1271,9 +1388,17 @@ cron_arm() {
     # depend on cron's minimal PATH. Also capture node's directory so
     # the runner can prepend it to PATH — nvm-managed node won't be in
     # cron's minimal PATH even when claude_bin is an absolute shim (#317).
-    local claude_bin node_dir
+    local claude_bin node_dir python_bin
     if ! claude_bin=$(command -v claude 2>/dev/null); then
         echo "ERR pipeline-cadence: 'claude' not on PATH at arm time" >&2
+        exit 2
+    fi
+    if python_bin=$(command -v python3 2>/dev/null); then
+        :
+    elif python_bin=$(command -v python 2>/dev/null); then
+        :
+    else
+        echo "ERR pipeline-cadence: python3/python not on PATH at arm time (required for fetch-health)" >&2
         exit 2
     fi
     node_dir=""
@@ -1323,14 +1448,17 @@ cron_arm() {
         fi
     fi
 
-    local q_vault q_claude q_node_dir q_flow_lib q_harvest_prompt q_synth_prompt q_health_prompt q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
+    local q_vault q_claude q_python q_fetch_script q_node_dir q_flow_lib q_harvest_prompt q_synth_prompt q_health_prompt q_log_fetch_health q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
     q_vault=$(printf '%q' "$VAULT")
     q_claude=$(printf '%q' "$claude_bin")
+    q_python=$(printf '%q' "$python_bin")
+    q_fetch_script=$(printf '%q' "$HIMMEL_ROOT/scripts/luna/fetch-health.py")
     q_flow_lib=$(printf '%q' "$HIMMEL_ROOT/scripts/lib/flow-run-ledger.sh")
     q_node_dir=$([ -n "$node_dir" ] && printf '%q' "$node_dir" || printf '')
     q_harvest_prompt=$(printf '%q' "$HARVEST_PROMPT")
     q_synth_prompt=$(printf '%q' "$SYNTH_PROMPT")
     q_health_prompt=$(printf '%q' "$HEALTH_PROMPT")
+    q_log_fetch_health=$(printf '%q' "$BAT_DIR/pipeline-fetch-health.log")
     q_log_harvest=$(printf '%q' "$BAT_DIR/pipeline-harvest.log")
     q_log_synth=$(printf '%q' "$BAT_DIR/pipeline-synthesize.log")
     q_log_health=$(printf '%q' "$BAT_DIR/pipeline-health.log")
@@ -1338,18 +1466,28 @@ cron_arm() {
     q_synth_model=$(printf '%q' "$SYNTH_MODEL")
     q_health_model=$(printf '%q' "$HEALTH_MODEL")
     # Settings fragment (HIMMEL-575): the `claude --settings` target, shared by
-    # all three runners. The hook path inside the fragment is the POSIX absolute
+    # the three Claude runners. The hook path inside the fragment is the POSIX absolute
     # path (JSON-safe — no backslashes — and bash-readable).
     local q_settings
     q_settings=$(printf '%q' "$SETTINGS_FRAGMENT")
+    # Capture the arming shell's PATH and the repo .env path for the fetch-health
+    # runner: under real cron (PATH=/usr/bin:/bin, no user env) the probes'
+    # shelled-out CLIs and env-sourced credentials go missing. PATH is non-secret
+    # (embedded quoted); .env is sourced at fire time, never embedded — secrets
+    # stay in the gitignored file (HIMMEL-1449 r2).
+    local q_arm_path q_env_file
+    q_arm_path=$(printf '%q' "$PATH")
+    q_env_file=$(printf '%q' "$HIMMEL_ROOT/.env")
     [ -r "$AUTO_APPROVE_HOOK" ] || \
         echo "WARN pipeline-cadence: auto-approve hook not readable at $AUTO_APPROVE_HOOK (cadence runs may stall on compound-bash prompts)" >&2
 
-    local harvest_hh harvest_mm synth_hh synth_mm health_hh health_mm
+    local fetch_health_hh fetch_health_mm harvest_hh harvest_mm synth_hh synth_mm health_hh health_mm
+    fetch_health_hh="${FETCH_HEALTH_TIME%:*}"; fetch_health_mm="${FETCH_HEALTH_TIME#*:}"
     harvest_hh="${HARVEST_TIME%:*}"; harvest_mm="${HARVEST_TIME#*:}"
     synth_hh="${SYNTH_TIME%:*}"; synth_mm="${SYNTH_TIME#*:}"
     health_hh="${HEALTH_TIME%:*}"; health_mm="${HEALTH_TIME#*:}"
-    local entry_harvest entry_synth entry_health
+    local entry_fetch_health entry_harvest entry_synth entry_health
+    entry_fetch_health="$fetch_health_mm $fetch_health_hh * * * $(cron_escape "$CRON_RUNNER_FETCH_HEALTH") # $TASK_FETCH_HEALTH"
     entry_harvest="$harvest_mm $harvest_hh * * * $(cron_escape "$CRON_RUNNER_HARVEST") # $TASK_HARVEST"
     entry_synth="$synth_mm $synth_hh * * * $(cron_escape "$CRON_RUNNER_SYNTH") # $TASK_SYNTH"
     entry_health="$health_mm $health_hh * * * $(cron_escape "$CRON_RUNNER_HEALTH") # $TASK_HEALTH"
@@ -1357,6 +1495,8 @@ cron_arm() {
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$AUTO_APPROVE_HOOK" | sed 's/^/    /'
+        echo "DRY pipeline-cadence: would write $CRON_RUNNER_FETCH_HEALTH:"
+        emit_fetch_health_runner "$q_python" "$q_fetch_script" "$q_log_fetch_health" "$q_arm_path" "$q_env_file" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HARVEST:"
         emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_SYNTH:"
@@ -1364,6 +1504,7 @@ cron_arm() {
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HEALTH:"
         emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" "$q_health_model" "pipeline-health" "$q_flow_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would add crontab entries:"
+        echo "    $entry_fetch_health"
         echo "    $entry_harvest"
         echo "    $entry_synth"
         echo "    $entry_health"
@@ -1382,15 +1523,16 @@ cron_arm() {
     # leave an orphan cadence-settings.json on a failed fresh arm, and under a
     # --force re-arm that changes HIMMEL_ROOT then fails to install, the live old
     # runners would silently pick up the new hook path via the shared fragment.
-    local tmp_harvest="$CRON_RUNNER_HARVEST.tmp.$$" tmp_synth="$CRON_RUNNER_SYNTH.tmp.$$" tmp_health="$CRON_RUNNER_HEALTH.tmp.$$"
+    local tmp_fetch_health="$CRON_RUNNER_FETCH_HEALTH.tmp.$$" tmp_harvest="$CRON_RUNNER_HARVEST.tmp.$$" tmp_synth="$CRON_RUNNER_SYNTH.tmp.$$" tmp_health="$CRON_RUNNER_HEALTH.tmp.$$"
     local tmp_settings="$SETTINGS_FRAGMENT.tmp.$$"
     emit_settings_fragment "$AUTO_APPROVE_HOOK" > "$tmp_settings"
+    emit_fetch_health_runner "$q_python" "$q_fetch_script" "$q_log_fetch_health" "$q_arm_path" "$q_env_file" > "$tmp_fetch_health"
     emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_node_dir" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" > "$tmp_harvest"
     emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_node_dir" "$q_synth_model"   "pipeline-synthesize" "$q_flow_lib" > "$tmp_synth"
     emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_node_dir" "$q_health_model"  "pipeline-health" "$q_flow_lib" > "$tmp_health"
-    chmod +x "$tmp_harvest" "$tmp_synth" "$tmp_health"
+    chmod +x "$tmp_fetch_health" "$tmp_harvest" "$tmp_synth" "$tmp_health"
 
-    # Single atomic rewrite: everything that isn't ours, then all three
+    # Single atomic rewrite: everything that isn't ours, then all four
     # cadence entries.
     local newtab
     newtab=$(mktemp -t pipeline-cadence.cron.XXXXXX)
@@ -1398,15 +1540,16 @@ cron_arm() {
         if [ -n "$CRON_TAB" ]; then
             printf '%s\n' "$CRON_TAB" | grep -vF "$TASK_PREFIX" || true
         fi
-        printf '%s\n' "$entry_harvest" "$entry_synth" "$entry_health"
+        printf '%s\n' "$entry_fetch_health" "$entry_harvest" "$entry_synth" "$entry_health"
     } > "$newtab"
     if ! cron_install "$newtab"; then
         # Pre-existing runners were never touched; sweep the staged
         # new-config ones (runners + fragment) so no half-state survives.
-        rm -f "$tmp_harvest" "$tmp_synth" "$tmp_health" "$tmp_settings"
+        rm -f "$tmp_fetch_health" "$tmp_harvest" "$tmp_synth" "$tmp_health" "$tmp_settings"
         echo "    existing runner files left untouched" >&2
         exit 4
     fi
+    mv -f "$tmp_fetch_health" "$CRON_RUNNER_FETCH_HEALTH"
     mv -f "$tmp_harvest" "$CRON_RUNNER_HARVEST"
     mv -f "$tmp_synth"  "$CRON_RUNNER_SYNTH"
     mv -f "$tmp_health" "$CRON_RUNNER_HEALTH"
@@ -1415,7 +1558,8 @@ cron_arm() {
     cat <<EOF
 
 ================================================================
-  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-265 cron / HIMMEL-357 / HIMMEL-506 / HIMMEL-798 / HIMMEL-1383)
+  PIPELINE CADENCE ARMED (HIMMEL-255 / HIMMEL-265 cron / HIMMEL-357 / HIMMEL-506 / HIMMEL-798 / HIMMEL-1383 / HIMMEL-1449)
+  $TASK_FETCH_HEALTH  daily   $FETCH_HEALTH_TIME  [no LLM]  -> clip-source fetch probes
   $TASK_HARVEST  daily   $HARVEST_TIME  [model: $HARVEST_MODEL]  -> $DAILY_CHAIN
   $TASK_SYNTH    daily   $SYNTH_TIME    [model: $SYNTH_MODEL]    -> /synthesize-clips + /archive-clips
   $TASK_HEALTH   daily   $HEALTH_TIME   [model: $HEALTH_MODEL]   -> vault-lint (obsidian-triage:vault-lint)

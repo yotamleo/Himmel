@@ -77,7 +77,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -104,6 +103,14 @@ winpath() {
   esac
 }
 
+# HIMMEL-1446 r3: a non-dry-run install (the stamped accept cases, e.g. caseM)
+# reaches applyHimmelctlPathShim(), whose default binDir is the operator's REAL
+# ~/.local/bin (win32 ignores HOME entirely). Isolate binDir for the WHOLE
+# suite so no case touches the real bin dir — mirrors test-wizard-update.sh /
+# test-wizard-uninstall.sh. winpath'd so win32 node resolves it cleanly.
+HIMMELCTL_BIN_DIR="$(winpath "$work/isolated-bin")"
+export HIMMELCTL_BIN_DIR
+
 # build_path <stub_dir> <present_tools...> -- <absent_tools...>
 # (Copied from the sibling suites: link the named present tools off the
 # CURRENT PATH into <stub_dir>, then echo a PATH with the stub prepended and
@@ -129,7 +136,7 @@ build_path() {
 #             <handover-path> <plugin-set> — a minimal valid Draft-A profile.
 write_cache() {
   cat > "$1" <<JSON
-{"role":"$2","tier":"standard","scope":"$3","vault":{"mode":"$4","path":"$5"},"handover":{"mode":"$6","path":"$7"},"pluginSet":"$8","lanes":[],"alwaysOn":false}
+{"role":"$2","tier":"standard","scope":"$3","vault":{"mode":"$4","path":"$5"},"handover":{"mode":"$6","path":"$7"},"pluginSet":"$8","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
 JSON
 }
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env node
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 
 const WRAPPER = 'guardrail-skip-in-himmel.js';
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -32,6 +35,11 @@ export const GUARDRAILS = [
 function resolveAnchor() {
   const envRepo = process.env.HIMMEL_REPO;
   if (envRepo) return { repo: path.resolve(envRepo), source: 'HIMMEL_REPO' };
+  return { repo: path.resolve(path.join(MODULE_DIR, '..', '..')), source: 'self-checkout' };
+}
+
+function resolveAuditAnchor(ctx = {}) {
+  if (ctx.repoRoot) return { repo: path.resolve(ctx.repoRoot), source: 'ctx.repoRoot' };
   return { repo: path.resolve(path.join(MODULE_DIR, '..', '..')), source: 'self-checkout' };
 }
 
@@ -377,6 +385,556 @@ function isSaneContentFile(p) {
   }
 }
 
+function sha256(buf) {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+function readGitDir(repo) {
+  const dotGit = path.join(repo, '.git');
+  let stat;
+  try {
+    stat = fs.statSync(dotGit);
+  } catch (_e) {
+    return null;
+  }
+  if (stat.isDirectory()) return dotGit;
+  if (!stat.isFile()) return null;
+  try {
+    const text = fs.readFileSync(dotGit, 'utf8').trim();
+    const match = text.match(/^gitdir:\s*(.+)$/i);
+    if (!match) return null;
+    return path.resolve(repo, match[1]);
+  } catch (_e) {
+    return null;
+  }
+}
+
+// HIMMEL-1427 (r4, codex-adv-3): for a linked worktree, the gitdir that
+// readGitDir() resolves (.git/worktrees/<name>) carries refs/HEAD but NOT the
+// objects/, packed-refs, or branch refs — those live in the shared COMMON dir.
+// A worktree's per-worktree gitdir points at it via a `commondir` file (a path
+// relative to that gitdir). A primary checkout has no such file and IS its own
+// common dir, so this is a no-op there.
+function resolveCommonDir(gitDir) {
+  try {
+    const text = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+    return path.resolve(gitDir, text);
+  } catch (_e) {
+    return gitDir;
+  }
+}
+
+function readPackedRef(commonDir, ref) {
+  try {
+    const lines = fs.readFileSync(path.join(commonDir, 'packed-refs'), 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      if (!line || line.startsWith('#') || line.startsWith('^')) continue;
+      const [oid, name] = line.split(' ');
+      if (name === ref && /^[0-9a-f]{40}$/.test(oid)) return oid;
+    }
+  } catch (_e) {
+    // packed-refs is optional.
+  }
+  return null;
+}
+
+function readHeadOid(gitDir, commonDir) {
+  let head;
+  try {
+    head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+  } catch (_e) {
+    return null;
+  }
+  if (/^[0-9a-f]{40}$/.test(head)) return head;
+  const match = head.match(/^ref:\s*(.+)$/);
+  if (!match) return null;
+  const ref = match[1];
+  try {
+    const oid = fs.readFileSync(path.join(commonDir, ref), 'utf8').trim();
+    if (/^[0-9a-f]{40}$/.test(oid)) return oid;
+  } catch (_e) {
+    return readPackedRef(commonDir, ref);
+  }
+  return null;
+}
+
+function readLooseObject(commonDir, oid) {
+  if (!/^[0-9a-f]{40}$/.test(oid)) return null;
+  const objectPath = path.join(commonDir, 'objects', oid.slice(0, 2), oid.slice(2));
+  let inflated;
+  try {
+    inflated = zlib.inflateSync(fs.readFileSync(objectPath));
+  } catch (_e) {
+    return null;
+  }
+  const nul = inflated.indexOf(0);
+  if (nul < 0) return null;
+  const header = inflated.subarray(0, nul).toString('utf8');
+  const [type] = header.split(' ');
+  return { type, body: inflated.subarray(nul + 1) };
+}
+
+// ── packed-object support (HIMMEL-1427 r4, codex-adv-3) ────────────────────
+// After a `git gc` / `git repack -d`, loose objects are deleted and live only
+// in objects/pack/*.pack, indexed by the matching *.idx — so a loose-only
+// reader returned reference-unavailable and a healthy install read degraded
+// whenever the git subprocess was unavailable. The reader below parses the idx
+// (v2) to locate the oid, then inflates from the .pack, resolving OFS_DELTA
+// and REF_DELTA chains. Alternates (objects/info/alternates) are intentionally
+// NOT followed — a missing base degrades honestly to reference-unavailable
+// rather than silently crossing into another object store. Minimal and
+// dependency-free, like the loose reader above.
+
+function readUint32BE(buf, off) {
+  return (buf[off] * 0x1000000) + ((buf[off + 1] << 16) + (buf[off + 2] << 8) + buf[off + 3]);
+}
+
+function readUint64BE(buf, off) {
+  return readUint32BE(buf, off) * 0x100000000 + readUint32BE(buf, off + 4);
+}
+
+const PACK_IDX_MAGIC = [0xff, 0x74, 0x4f, 0x63]; // "\377tOc"
+const PACK_TYPE_NAMES = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' };
+
+// Returns the oid's byte offset into its .pack, or null if the oid is absent.
+// A v2 idx is header(8) + fanout(256*4) + oid(total*20) + crc(total*4) +
+// offset(total*4) [+ large-offset] tables. A truncated/crafted idx can
+// advertise a fanout total or large-offset index that points past idx.length,
+// and the Buffer.compare/readUint32BE calls below then THROW ERR_OUT_OF_RANGE —
+// uncaught, that crashes status --json instead of returning
+// reference-unavailable. Every derived range (table span, large-offset entry,
+// fanout search window) is checked against idx.length/total so a malformed idx
+// returns null (honest "absent") rather than throwing (CodeRabbit on #1527).
+export function findPackOffset(idx, oidHex) {
+  if (idx.length < 1032) return null; // header(8) + fanout(256*4) minimum
+  if (idx[0] !== PACK_IDX_MAGIC[0] || idx[1] !== PACK_IDX_MAGIC[1] || idx[2] !== PACK_IDX_MAGIC[2] || idx[3] !== PACK_IDX_MAGIC[3]) return null;
+  if (readUint32BE(idx, 4) !== 2) return null; // v2 idx only
+  const fanoutOff = 8;
+  const total = readUint32BE(idx, fanoutOff + 255 * 4);
+  if (total === 0) return null;
+  const oidsOff = fanoutOff + 256 * 4;
+  const crcsOff = oidsOff + total * 20;
+  const offsOff = crcsOff + total * 4;
+  const largeOff = offsOff + total * 4;
+  // Require the whole oid+crc+offset table span to fit before touching any of
+  // it — an absurd fanout total (e.g. 0xffffffff in a 1032-byte idx) fails here.
+  if (largeOff > idx.length) return null;
+  const oid = Buffer.from(oidHex, 'hex');
+  if (oid.length !== 20) return null; // malformed hex oid → no match
+  const firstByte = oid[0];
+  const lo = firstByte === 0 ? 0 : readUint32BE(idx, fanoutOff + (firstByte - 1) * 4);
+  const hi = readUint32BE(idx, fanoutOff + firstByte * 4);
+  // Fanout must be monotonic non-decreasing and bounded by total — a crafted
+  // idx with hi > total (or lo > hi) yields an out-of-range search window.
+  if (hi > total || lo > hi) return null;
+  let left = lo;
+  let right = hi;
+  while (left < right) {
+    const mid = (left + right) >>> 1;
+    const cmp = idx.compare(oid, 0, 20, oidsOff + mid * 20, oidsOff + mid * 20 + 20);
+    if (cmp === 0) {
+      let off = readUint32BE(idx, offsOff + mid * 4);
+      if (off & 0x80000000) {
+        const largeIdx = off & 0x7fffffff;
+        // Large-offset entries are 8-byte, after the 4-byte offset table — a
+        // crafted largeIdx can point past idx.length.
+        if (largeOff + largeIdx * 8 + 8 > idx.length) return null;
+        off = readUint64BE(idx, largeOff + largeIdx * 8);
+      }
+      return off;
+    }
+    if (cmp < 0) left = mid + 1;
+    else right = mid;
+  }
+  return null;
+}
+
+// Maximum object size the delta reader will reconstruct (HIMMEL-1427 r10). git's
+// practical single-object cap is well under 4 GiB; a size varint encoding more is
+// a crafted stream. Capping the non-wrapping decode below bounds the math AND
+// rejects a delta whose declared sizes would otherwise overflow past 32 bits.
+const MAX_OBJECT_SIZE = 0xffffffff; // 4 GiB - 1
+
+// Decodes a LEB128 base-128 size varint from `buf` starting at index `p`, using
+// NON-WRAPPING Number math (HIMMEL-1427 r10). The prior `val |= (b & 0x7f) << shift`
+// accumulation used JS bitwise ops, which coerce to a SIGNED 32-bit Int32 — so a
+// 5-byte size varint like [0x81,0x80,0x80,0x80,0x10] (== 4_294_967_297, i.e.
+// 2^32 + 1) WRAPPED to 1, silently bypassing the declared-base-size check
+// instead of degrading. Multiply by 0x80 per byte and add (plain Number math — no
+// bitwise coercion), range-check against MAX_OBJECT_SIZE, and reject a runaway
+// run of continuation bytes. Returns { value, next } or null on a
+// malformed/oversized varint (the caller reads null as 'degraded').
+function decodeSizeVarint(buf, p) {
+  let value = 0;
+  let mult = 1;
+  for (let count = 1; ; count++) {
+    if (p >= buf.length) return null;
+    const b = buf[p++];
+    value += (b & 0x7f) * mult;
+    // A real git object size needs at most 5 base-128 bytes (5*7 = 35 bits ≥ 32);
+    // count > 10 is unreachable for a legitimate size and bounds a runaway run of
+    // 0x80 continuation bytes (whose contribution is 0, so `value` alone could
+    // never trip the size cap). value > MAX_OBJECT_SIZE rejects the 2^32+1 case.
+    if (count > 10 || value > MAX_OBJECT_SIZE) return null;
+    if (!(b & 0x80)) break;
+    mult *= 0x80;
+  }
+  return { value, next: p };
+}
+
+// Applies a git delta (copy/insert op stream) onto a base object body. Returns
+// the reconstructed body, or null on any malformed/truncated delta — the caller
+// reads null as 'degraded', never a silent short/empty result. Exported so the
+// r8 regressions can exercise the offset/varint math directly on small buffers.
+export function applyDelta(base, delta) {
+  let p = 0;
+  // Base-size varint (HIMMEL-1427 r9/r10): CAPTURED via NON-WRAPPING math and
+  // validated against the actual base length — a mismatch means the delta belongs
+  // to a different base object, so degrade instead of applying it against the
+  // wrong base. (r8 added the in-bounds termination check; r10 replaced the
+  // bitwise-shift accumulator — which wrapped a 5-byte size varint past 2^32 and
+  // could land back on base.length, bypassing this very check — with
+  // decodeSizeVarint, which rejects the oversized value instead.)
+  const baseHdr = decodeSizeVarint(delta, p);
+  if (!baseHdr) return null;
+  const baseSize = baseHdr.value;
+  p = baseHdr.next;
+  if (baseSize !== base.length) return null; // declared base size must match the actual base
+  // Target-size varint (HIMMEL-1427 r10): same non-wrapping decode. A wrapped
+  // target size could falsely match the reconstructed length on a 32-bit boundary
+  // and accept a malformed delta; decodeSizeVarint rejects the oversized value.
+  const targetHdr = decodeSizeVarint(delta, p);
+  if (!targetHdr) return null;
+  const targetSize = targetHdr.value;
+  p = targetHdr.next;
+  const chunks = [];
+  while (p < delta.length) {
+    const op = delta[p++];
+    if (op & 0x80) {
+      // Copy offset uses UNSIGNED assembly (HIMMEL-1427 r8): `<< 24` yields a
+      // signed Int32, so a 4th offset byte >= 0x80 made cpOff negative and
+      // corrupted copies on >2GB base objects. Multiply by 0x1000000 (matching
+      // readUint32BE) and accumulate with `+` so cpOff stays a plain Number
+      // across the full 32-bit range instead of being coerced back to Int32.
+      let cpOff = 0;
+      if (op & 0x01) cpOff += delta[p++];
+      if (op & 0x02) cpOff += delta[p++] * 0x100;
+      if (op & 0x04) cpOff += delta[p++] * 0x10000;
+      if (op & 0x08) cpOff += delta[p++] * 0x1000000;
+      let cpSize = 0;
+      if (op & 0x10) cpSize |= delta[p++];
+      if (op & 0x20) cpSize |= delta[p++] << 8;
+      if (op & 0x40) cpSize |= delta[p++] << 16;
+      if (p > delta.length) return null; // truncated copy command
+      if (cpSize === 0) cpSize = 0x10000;
+      // Validate the copy range against the actual base buffer (HIMMEL-1427 r9):
+      // Buffer.subarray CLAMPS an overrun instead of throwing, so a copy past the
+      // base end was silently truncated and could still match targetSize → a
+      // false healthy verdict on malformed pack data. Reject non-finite/negative
+      // values and any range past the base end; degrade instead.
+      if (!Number.isFinite(cpOff) || !Number.isFinite(cpSize) ||
+          cpOff < 0 || cpSize < 0 || cpOff + cpSize > base.length) {
+        return null;
+      }
+      chunks.push(base.subarray(cpOff, cpOff + cpSize));
+    } else if (op > 0) {
+      if (p + op > delta.length) return null; // truncated insert payload
+      chunks.push(delta.subarray(p, p + op));
+      p += op;
+    } else {
+      return null; // op 0 is reserved
+    }
+  }
+  const out = Buffer.concat(chunks);
+  return out.length === targetSize ? out : null;
+}
+
+// Reads one packed object at byte offset `off`, resolving OFS_DELTA against a
+// base in the SAME pack and REF_DELTA against a base resolved by oid (loose or
+// packed). Returns { type, body } or null.
+// Delta chains are bounded (CodeRabbit on #1526): a malformed/crafted pack can
+// otherwise recurse forever — an OFS_DELTA whose offset varint decodes to 0
+// re-reads the SAME entry, and a REF_DELTA can name a base that resolves back
+// to itself through readObject. Both would end in a RangeError stack overflow,
+// making contentIntegrity THROW instead of returning its honest 'degraded'.
+// git itself caps delta depth (pack.depth default 50); 64 matches that posture.
+const MAX_DELTA_DEPTH = 64;
+
+function readPackEntry(commonDir, pack, idx, off, depth = 0, lookup) {
+  if (depth > MAX_DELTA_DEPTH) return null;
+  let b = pack[off];
+  const type = (b >> 4) & 7;
+  let p = off + 1;
+  while (b & 0x80) { b = pack[p++]; } // skip the size varint
+  const dataStart = p;
+  if (type === 6) { // OFS_DELTA: base is at (off - negOff) in the same pack
+    b = pack[dataStart];
+    p = dataStart + 1;
+    // negOff varint (HIMMEL-1427 r10): git's OFS_DELTA offset encoding, decoded
+    // with NON-WRAPPING math. The prior `(negOff + 1) << 7` accumulator coerced to
+    // a signed Int32 and wrapped past 2^31, so a crafted varint could decode to a
+    // small positive value that passed the `> off` range check while naming the
+    // wrong base. Multiply by 0x80 per byte (no bitwise coercion), cap the byte
+    // run, and let the existing `> off` check reject any value pointing before the
+    // pack start.
+    let negOff = b & 0x7f;
+    let count = 1;
+    while (b & 0x80) {
+      if (p >= pack.length) return null;
+      b = pack[p++];
+      if (++count > 10) return null;
+      negOff = (negOff + 1) * 0x80 + (b & 0x7f);
+    }
+    if (!(negOff > 0) || negOff > off) return null; // 0 = self-reference loop; > off = out of range
+    let delta;
+    try { delta = zlib.inflateSync(pack.subarray(p)); } catch (_e) { return null; }
+    const base = readPackEntry(commonDir, pack, idx, off - negOff, depth + 1, lookup);
+    if (!base) return null;
+    const body = applyDelta(base.body, delta);
+    return body ? { type: base.type, body } : null;
+  }
+  if (type === 7) { // REF_DELTA: base named by the following 20-byte oid
+    const baseOid = pack.subarray(dataStart, dataStart + 20).toString('hex');
+    let delta;
+    try { delta = zlib.inflateSync(pack.subarray(dataStart + 20)); } catch (_e) { return null; }
+    const base = readObject(commonDir, baseOid, depth + 1, lookup); // cycle-checked via lookup.visited
+    if (!base) return null;
+    const body = applyDelta(base.body, delta);
+    return body ? { type: base.type, body } : null;
+  }
+  const typeName = PACK_TYPE_NAMES[type];
+  let body;
+  try { body = zlib.inflateSync(pack.subarray(dataStart)); } catch (_e) { return null; }
+  return typeName ? { type: typeName, body } : null;
+}
+
+function readPackedObject(commonDir, oid, depth = 0, lookup) {
+  let entries;
+  try {
+    entries = fs.readdirSync(path.join(commonDir, 'objects', 'pack'));
+  } catch (_e) {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith('.idx')) continue;
+    const idxPath = path.join(commonDir, 'objects', 'pack', entry);
+    const packPath = `${idxPath.slice(0, -4)}.pack`;
+    // Read each pack's idx+pack buffers at most once per top-level lookup: a
+    // REF_DELTA chain re-enters readPackedObject per delta level, and re-reading
+    // the whole pack each level (while earlier frames still hold their buffers)
+    // multiplies resident memory by chain depth. `lookup.packCache` is one
+    // shared cache across the whole lookup.
+    let idx;
+    let pack;
+    try {
+      let cached = lookup.packCache.get(idxPath);
+      if (!cached) {
+        cached = { idx: fs.readFileSync(idxPath), pack: fs.readFileSync(packPath) };
+        lookup.packCache.set(idxPath, cached);
+      }
+      idx = cached.idx;
+      pack = cached.pack;
+    } catch (_e) {
+      continue;
+    }
+    // Wrap per-index parsing so a malformed idx/pack is SKIPPED to the next
+    // pack (or reference-unavailable) — never a throw out of the integrity
+    // path. findPackOffset validates the idx; the pack body / delta stream can
+    // still surprise, so readPackEntry is covered here too.
+    try {
+      const off = findPackOffset(idx, oid);
+      if (off === null) continue;
+      return readPackEntry(commonDir, pack, idx, off, depth, lookup);
+    } catch (_e) {
+      continue;
+    }
+  }
+  return null;
+}
+
+// Picks the git object-id hash algorithm by oid length (HIMMEL-1427 r10): sha1
+// oids are 40 hex chars, sha256 (git's objectFormat=sha256) are 64. Any other
+// length is not a git oid → degrade rather than guess.
+function hashAlgoForOid(oid) {
+  if (oid.length === 40 && /^[0-9a-f]{40}$/.test(oid)) return 'sha1';
+  if (oid.length === 64 && /^[0-9a-f]{64}$/.test(oid)) return 'sha256';
+  return null;
+}
+
+// Recomputes a git object id from its { type, body } (HIMMEL-1427 r10): git's oid
+// is the hash of "<type> <size>\0<body>". Hashed in two update() steps so the
+// (possibly large, binary) body is fed as raw bytes — never round-tripped through
+// a JS string. `algo` must already be validated by hashAlgoForOid.
+function computeGitOid(type, body, algo) {
+  return crypto.createHash(algo)
+    .update(`${type} ${body.length}\0`, 'utf8')
+    .update(body)
+    .digest('hex');
+}
+
+// The integrity fallback's single object lookup: loose first, then packed.
+// `depth` carries the REF_DELTA chain budget; `lookup` (created once per
+// top-level lookup) carries a visited-OID cycle set and a pack/idx buffer
+// cache. A REF_DELTA can name a base that resolves back to itself — depth
+// caps it at MAX_DELTA_DEPTH but only after 64 wasted per-level pack
+// re-reads, so a repeat oid in one lookup degrades immediately, and each
+// pack file is read at most once per lookup (CodeRabbit on #1527).
+export function readObject(commonDir, oid, depth = 0, lookup) {
+  if (!lookup) lookup = { visited: new Set(), packCache: new Map() };
+  if (lookup.visited.has(oid)) return null; // REF_DELTA cycle → degrade, don't loop
+  lookup.visited.add(oid);
+  const loose = readLooseObject(commonDir, oid);
+  const obj = loose || readPackedObject(commonDir, oid, depth, lookup);
+  // Recompute the object id and compare to the request (HIMMEL-1427 r10): a
+  // crafted/corrupt idx can map oid→offset at the WRONG object, and a tampered
+  // loose file can sit at an oid-derived path whose content hashes elsewhere —
+  // either serves a blob that does NOT correspond to the requested oid, and the
+  // integrity comparison would then read false-healthy. Verify at this single
+  // chokepoint (every loose + packed result, including delta-reconstructed
+  // objects whose final { type, body } flows through here): rehash
+  // "<type> <len>\0<body>" with the algo picked by oid length and degrade on any
+  // mismatch → reference-unavailable (fail-closed), never a wrong blob.
+  if (obj) {
+    const algo = hashAlgoForOid(oid);
+    if (!algo || computeGitOid(obj.type, obj.body, algo) !== oid) return null;
+  }
+  return obj;
+}
+
+function commitTreeOid(body) {
+  const lineEnd = body.indexOf(10);
+  const firstLine = body.subarray(0, lineEnd < 0 ? body.length : lineEnd).toString('utf8');
+  const match = firstLine.match(/^tree ([0-9a-f]{40})$/);
+  return match ? match[1] : null;
+}
+
+function findTreeEntry(treeBody, name) {
+  let i = 0;
+  while (i < treeBody.length) {
+    const space = treeBody.indexOf(32, i);
+    if (space < 0) return null;
+    const nul = treeBody.indexOf(0, space + 1);
+    if (nul < 0 || nul + 21 > treeBody.length) return null;
+    const mode = treeBody.subarray(i, space).toString('utf8');
+    const entryName = treeBody.subarray(space + 1, nul).toString('utf8');
+    const oid = treeBody.subarray(nul + 1, nul + 21).toString('hex');
+    if (entryName === name) return { mode, oid };
+    i = nul + 21;
+  }
+  return null;
+}
+
+// HIMMEL-1427 (CR round 2, codex-adv finding 2): the integrity reference
+// lookup below spawns `git -C <resolved repo root> show HEAD:<path>`. Inherited
+// GIT_* repository/object/index/config override variables (GIT_DIR,
+// GIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_COMMON_DIR,
+// GIT_CEILING_DIRECTORIES, …) redirect repository discovery EVEN WITH an
+// explicit -C — reproduced: a poisoned GIT_DIR made `git -C <worktree>
+// rev-parse HEAD` resolve a DIFFERENT repo (main, not the worktree). Git
+// itself exports GIT_DIR in hook contexts, so this fires in normal operation
+// (a pre-push-invoked status probe), not just adversarially. Every git spawn
+// in the integrity path therefore runs with a SANITIZED env: a copy of
+// process.env with every /^GIT_/ key removed EXCEPT GIT_TERMINAL_PROMPT (a
+// benign UI hint an operator may set deliberately). The explicit -C repo
+// root it already passes then wins. Safe simple rule, per the round-2 brief.
+// Exported so the round-4 regression (HIMMEL-1427, codex-adv-2) can unit-test
+// the case-insensitive rule directly, isolated from the git subprocess.
+export function sanitizedGitEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    // Windows env-var names are case-insensitive for the spawned git child
+    // while JS preserves spelling, so a case-sensitive startsWith('GIT_')
+    // filter let mixed-case `git_dir` / `Git_Dir` through — and git still
+    // honors them, redirecting the integrity reference. Compare
+    // case-insensitively on BOTH the prefix filter and the GIT_TERMINAL_PROMPT
+    // exception; delete off the ORIGINAL key name so the actual env entry is
+    // removed whatever its spelling.
+    if (key.toUpperCase().startsWith('GIT_') && key.toUpperCase() !== 'GIT_TERMINAL_PROMPT') {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+function readHeadBlobFromGit(repo, relativePath) {
+  try {
+    return {
+      ok: true,
+      body: execFileSync('git', ['-C', repo, 'show', `HEAD:${relativePath}`], {
+        encoding: 'buffer',
+        maxBuffer: 10 * 1024 * 1024,
+        env: sanitizedGitEnv(),
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }),
+    };
+  } catch (_e) {
+    return null;
+  }
+}
+
+function readHeadBlob(repo, relativePath) {
+  const fromGit = readHeadBlobFromGit(repo, relativePath);
+  if (fromGit) return fromGit;
+  const gitDir = readGitDir(repo);
+  if (!gitDir) return { ok: false, reason: 'reference-unavailable' };
+  // HIMMEL-1427 (r4, codex-adv-3): for a linked worktree, readGitDir() returns
+  // the per-worktree gitdir (.git/worktrees/<name>), but refs, packed-refs, and
+  // objects/ live in the COMMON dir. resolveCommonDir() follows the commondir
+  // pointer back to it (a no-op for a primary checkout, which has no such file
+  // and IS its own common dir). HEAD stays read from the per-worktree gitdir —
+  // that is where a worktree's HEAD lives — while every ref/object lookup uses
+  // the common dir.
+  const commonDir = resolveCommonDir(gitDir);
+  const headOid = readHeadOid(gitDir, commonDir);
+  if (!headOid) return { ok: false, reason: 'reference-unavailable' };
+  const commit = readObject(commonDir, headOid);
+  if (!commit || commit.type !== 'commit') return { ok: false, reason: 'reference-unavailable' };
+  let treeOid = commitTreeOid(commit.body);
+  if (!treeOid) return { ok: false, reason: 'reference-unavailable' };
+  const parts = relativePath.split('/');
+  for (let i = 0; i < parts.length; i += 1) {
+    const tree = readObject(commonDir, treeOid);
+    if (!tree || tree.type !== 'tree') return { ok: false, reason: 'reference-unavailable' };
+    const entry = findTreeEntry(tree.body, parts[i]);
+    if (!entry) return { ok: false, reason: 'reference-unavailable' };
+    if (i === parts.length - 1) {
+      const blob = readObject(commonDir, entry.oid);
+      if (!blob || blob.type !== 'blob') return { ok: false, reason: 'reference-unavailable' };
+      return { ok: true, body: blob.body };
+    }
+    treeOid = entry.oid;
+  }
+  return { ok: false, reason: 'reference-unavailable' };
+}
+
+function contentIntegrity(p, anchor, relativePath) {
+  const reference = `git:HEAD:${relativePath}`;
+  let actual;
+  try {
+    if (!isReadableFile(p)) throw new Error('unreadable');
+    actual = fs.readFileSync(p);
+  } catch (_e) {
+    return { verdict: 'degraded', reason: 'unreadable', sha256: null, reference, referenceSha256: null };
+  }
+  const actualSha = sha256(actual);
+  const blob = readHeadBlob(anchor.repo, relativePath);
+  if (!blob.ok) {
+    return { verdict: 'degraded', reason: blob.reason, sha256: actualSha, reference, referenceSha256: null };
+  }
+  const referenceSha = sha256(blob.body);
+  return {
+    verdict: actualSha === referenceSha ? 'healthy' : 'degraded',
+    reason: actualSha === referenceSha ? 'matches-git-object' : 'content-mismatch',
+    sha256: actualSha,
+    reference,
+    referenceSha256: referenceSha,
+  };
+}
+
+function missingIntegrity(relativePath) {
+  return { verdict: 'degraded', reason: 'missing-path', sha256: null, reference: `git:HEAD:${relativePath}`, referenceSha256: null };
+}
+
 // HIMMEL-1422: realpath-compare a configured (parsed) path against the
 // trust anchor's expected copy. realpathSync resolves symlinks AND
 // normalizes OS-reported case, so two paths naming the SAME file compare
@@ -408,9 +966,13 @@ function pathsMatchAnchor(configuredPath, anchorPath) {
 // both are checked identically. `anchor` is statusDetail()'s single
 // resolveAnchor() result (HIMMEL-1422), threaded through rather than
 // re-resolved per entry.
-function resolveOwnedEntry(info, guardrail, anchor) {
+function resolveOwnedEntry(info, guardrail, anchor, auditAnchor) {
+  const wrapperRelativePath = `scripts/hooks/${WRAPPER}`;
+  const scriptRelativePath = `scripts/hooks/${guardrail.basename}`;
   const anchorWrapperPath = path.join(anchor.repo, 'scripts', 'hooks', WRAPPER);
   const anchorScriptPath = path.join(anchor.repo, 'scripts', 'hooks', guardrail.basename);
+  const auditWrapperPath = path.join(auditAnchor.repo, 'scripts', 'hooks', WRAPPER);
+  const auditScriptPath = path.join(auditAnchor.repo, 'scripts', 'hooks', guardrail.basename);
   return {
     matcher: info.matcher ?? null,
     matcherMatches: (info.matcher ?? null) === guardrail.matcher,
@@ -422,10 +984,16 @@ function resolveOwnedEntry(info, guardrail, anchor) {
     wrapperResolves: isSaneContentFile(info.parsed.wrapperPath),
     anchorWrapperPath,
     wrapperMatchesAnchor: pathsMatchAnchor(info.parsed.wrapperPath, anchorWrapperPath),
+    auditWrapperPath,
+    wrapperMatchesAuditAnchor: pathsMatchAnchor(info.parsed.wrapperPath, auditWrapperPath),
+    wrapperIntegrity: contentIntegrity(info.parsed.wrapperPath, anchor, wrapperRelativePath),
     scriptPath: info.parsed.scriptPath,
     scriptResolves: isSaneContentFile(info.parsed.scriptPath),
     anchorScriptPath,
     scriptMatchesAnchor: pathsMatchAnchor(info.parsed.scriptPath, anchorScriptPath),
+    auditScriptPath,
+    scriptMatchesAuditAnchor: pathsMatchAnchor(info.parsed.scriptPath, auditScriptPath),
+    scriptIntegrity: contentIntegrity(info.parsed.scriptPath, anchor, scriptRelativePath),
   };
 }
 
@@ -624,12 +1192,16 @@ function resolveOwnedEntry(info, guardrail, anchor) {
 //   }
 // Field names/order and hook order are fixed once shipped — this is a probe
 // contract (scripts/himmelctl/lib/probes.js's cmd:guardrail_block_status).
-export function statusDetail(data) {
+export function statusDetail(data, ctx = {}) {
   const mode = detectMode(data);
   const anchor = resolveAnchor();
+  const auditAnchor = resolveAuditAnchor(ctx);
+  const anchorMatchesAudit = pathsMatchAnchor(anchor.repo, auditAnchor.repo);
   const hooks = GUARDRAILS.map((guardrail) => {
     const found = findGuardrailEntries(data, guardrail);
     const nonCanonical = findNonCanonicalEntries(data, guardrail);
+    const wrapperRelativePath = `scripts/hooks/${WRAPPER}`;
+    const scriptRelativePath = `scripts/hooks/${guardrail.basename}`;
     const entry = {
       basename: guardrail.basename,
       matcher: null,
@@ -645,16 +1217,22 @@ export function statusDetail(data) {
       wrapperResolves: false,
       anchorWrapperPath: path.join(anchor.repo, 'scripts', 'hooks', WRAPPER),
       wrapperMatchesAnchor: false,
+      auditWrapperPath: path.join(auditAnchor.repo, 'scripts', 'hooks', WRAPPER),
+      wrapperMatchesAuditAnchor: false,
+      wrapperIntegrity: missingIntegrity(wrapperRelativePath),
       scriptPath: null,
       scriptResolves: false,
       anchorScriptPath: path.join(anchor.repo, 'scripts', 'hooks', guardrail.basename),
       scriptMatchesAnchor: false,
+      auditScriptPath: path.join(auditAnchor.repo, 'scripts', 'hooks', guardrail.basename),
+      scriptMatchesAuditAnchor: false,
+      scriptIntegrity: missingIntegrity(scriptRelativePath),
       duplicates: [],
       nonCanonicalCount: nonCanonical.length,
       nonCanonical: nonCanonical.map((info) => ({ matcher: info.matcher ?? null, command: info.hook.command })),
     };
     if (found.length > 0) {
-      const primary = resolveOwnedEntry(found[0], guardrail, anchor);
+      const primary = resolveOwnedEntry(found[0], guardrail, anchor, auditAnchor);
       entry.matcher = primary.matcher;
       entry.matcherMatches = primary.matcherMatches;
       entry.bashPath = primary.bashPath;
@@ -664,10 +1242,14 @@ export function statusDetail(data) {
       entry.wrapperPath = primary.wrapperPath;
       entry.wrapperResolves = primary.wrapperResolves;
       entry.wrapperMatchesAnchor = primary.wrapperMatchesAnchor;
+      entry.wrapperMatchesAuditAnchor = primary.wrapperMatchesAuditAnchor;
+      entry.wrapperIntegrity = primary.wrapperIntegrity;
       entry.scriptPath = primary.scriptPath;
       entry.scriptResolves = primary.scriptResolves;
       entry.scriptMatchesAnchor = primary.scriptMatchesAnchor;
-      entry.duplicates = found.slice(1).map((info) => resolveOwnedEntry(info, guardrail, anchor));
+      entry.scriptMatchesAuditAnchor = primary.scriptMatchesAuditAnchor;
+      entry.scriptIntegrity = primary.scriptIntegrity;
+      entry.duplicates = found.slice(1).map((info) => resolveOwnedEntry(info, guardrail, anchor, auditAnchor));
     }
     return entry;
   });
@@ -676,7 +1258,10 @@ export function statusDetail(data) {
       && h.matcherMatches && h.bashResolves && h.nodeResolves && h.wrapperResolves && h.scriptResolves
       && h.wrapperMatchesAnchor && h.scriptMatchesAnchor
   ));
-  return { mode, anchor, complete, hooks };
+  const contentIntegrityComplete = hooks.every((h) => h.wrapperIntegrity.verdict === 'healthy' && h.scriptIntegrity.verdict === 'healthy');
+  const auditAnchorComplete = anchorMatchesAudit && hooks.every((h) => h.wrapperMatchesAuditAnchor && h.scriptMatchesAuditAnchor);
+  const attestationComplete = complete && contentIntegrityComplete && auditAnchorComplete;
+  return { mode, anchor, auditAnchor, anchorMatchesAudit, complete, contentIntegrityComplete, auditAnchorComplete, attestationComplete, hooks };
 }
 
 function run(argv = process.argv.slice(2)) {

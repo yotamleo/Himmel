@@ -8,7 +8,7 @@
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": ".pre-commit-config.yaml" },
+      "probe": { "type": "git-hooks", "hooks": ["pre-commit", "commit-msg", "pre-push"] },
       "removable": "full-offboard-only"
     },
     {

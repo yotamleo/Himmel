@@ -26,7 +26,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── temp dir setup ────────────────────────────────────────────────────────────
@@ -379,7 +378,11 @@ _lib_src="$OB_LIB"
 # Strip comment lines BEFORE the check: the lib's header deliberately quotes the
 # anti-pattern (`gh pr list --state all --limit 1000`) to document the trap, and
 # matching that prose is a false positive on the test's own documentation.
-if grep -vE '^[[:space:]]*#' "$_lib_src" | grep -E 'pr list' | grep -qv -- '--head'; then
+# Guard the no-candidate case: an empty substitution would reach grepq as a
+# here-string holding ONE blank line, which `-v -- '--head'` matches — falsely
+# failing T14 when the lib has no `pr list` lines at all (CR r1 codex-1).
+_pr_lines="$(grep -vE '^[[:space:]]*#' "$_lib_src" | grep -E 'pr list')" || _pr_lines=""
+if [ -n "$_pr_lines" ] && grepq "$_pr_lines" -v -- '--head'; then
     fail "T14 STATIC: lib issues a headless 'gh pr list' (truncation-trap root cause)"
 else
     pass "T14 STATIC: every 'gh pr list' in the lib carries --head (no global membership test)"

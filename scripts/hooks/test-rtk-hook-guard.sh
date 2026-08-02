@@ -49,7 +49,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 # The stub (and the guard's primary extraction path) needs jq.
 if ! command -v jq >/dev/null 2>&1; then
     echo "FAIL: jq not on PATH — required by the test stub" >&2

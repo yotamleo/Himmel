@@ -31,7 +31,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_OPEN="$SCRIPT_DIR/pr-open.sh"
 PR_MERGE="$SCRIPT_DIR/pr-merge.sh"

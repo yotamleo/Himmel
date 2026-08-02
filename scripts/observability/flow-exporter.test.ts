@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,8 +8,17 @@ import { serializeFlowRunEnd, serializeFlowRunStart, type FlowRunEnd, type FlowR
 import { serializeQuotaGauge, type QuotaGaugeRecord } from "../telegram/quota-gauge";
 
 let tmp: string;
-beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), "flow-exporter-")); });
-afterEach(() => { rmSync(tmp, { recursive: true, force: true }); });
+let previousFetchHealthState: string | undefined;
+beforeEach(() => {
+  tmp = mkdtempSync(join(tmpdir(), "flow-exporter-"));
+  previousFetchHealthState = process.env.HIMMEL_FETCH_HEALTH_STATE;
+  process.env.HIMMEL_FETCH_HEALTH_STATE = join(tmp, "missing-fetch-health.json");
+});
+afterEach(() => {
+  if (previousFetchHealthState === undefined) delete process.env.HIMMEL_FETCH_HEALTH_STATE;
+  else process.env.HIMMEL_FETCH_HEALTH_STATE = previousFetchHealthState;
+  rmSync(tmp, { recursive: true, force: true });
+});
 
 const NOW = Date.parse("2026-07-13T12:00:00Z");
 
@@ -135,6 +145,87 @@ flow_exporter_ledger_rows 7
 `);
   expect(body).not.toContain('flow_run_last_success_timestamp{flow="pipeline-silent"');
   expect(body).not.toContain('flow_run_items_processed{flow="pipeline-synthesize"');
+});
+
+test("fetch-health probe runner state roundtrips through exporter metrics", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const state = join(tmp, "fetch-health.json");
+  const producer = join(import.meta.dir, "..", "luna", "fetch-health.py");
+  const fixture = `
+import importlib.util
+import sys
+from datetime import datetime, timezone
+
+spec = importlib.util.spec_from_file_location("fetch_health", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module.utc_now = lambda: datetime(2026, 8, 1, tzinfo=timezone.utc)
+module.run_probes = lambda env: {"reddit": module.ProbeResult("ok", "known-good")}
+assert module.main(["--state", sys.argv[2]]) == 0
+module.utc_now = lambda: datetime(2026, 8, 2, tzinfo=timezone.utc)
+module.run_probes = lambda env: {
+    "reddit": module.ProbeResult("auth-or-cookie-expired", "secret payload must not render"),
+    "x-fxtwitter": module.ProbeResult("ok", "known-good"),
+}
+raise SystemExit(module.main(["--state", sys.argv[2]]))
+`;
+  let probe = spawnSync(process.env.PYTHON ?? "python3", ["-c", fixture, producer, state], { encoding: "utf8" });
+  if (probe.error && !process.env.PYTHON) {
+    // Windows hosts often expose only `python` (no `python3` on PATH); fall back
+    // so the suite does not go red for an environment reason (HIMMEL-1470).
+    probe = spawnSync("python", ["-c", fixture, producer, state], { encoding: "utf8" });
+  }
+  expect(probe.error).toBeUndefined();
+  expect(probe.status).toBe(1);
+  writeLines(ledger, []);
+
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    fetchHealthStatePath: state,
+  });
+
+  expect(body).toContain('# HELP clip_fetch_source_status One-hot daily fetch-health classification for each live Luna clip source.');
+  expect(body).toContain('clip_fetch_source_status{source="reddit",status="auth-or-cookie-expired"} 1');
+  expect(body).toContain('clip_fetch_source_status{source="reddit",status="ok"} 0');
+  expect(body).toContain('clip_fetch_source_status{source="x-fxtwitter",status="ok"} 1');
+  expect(body).toContain('clip_fetch_source_last_success_timestamp{source="reddit"} 1785542400');
+  expect(body).not.toContain("secret payload must not render");
+});
+
+test("fetch-health state is passive and fail-soft", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const malformed = join(tmp, "fetch-health.json");
+  writeLines(ledger, []);
+  writeFileSync(malformed, "{not-json");
+
+  const failed = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    fetchHealthStatePath: malformed,
+  });
+  expect(failed).toContain("# clip_fetch_source_* omitted:");
+  expect(failed).not.toContain("clip_fetch_source_status{");
+
+  const missing = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    fetchHealthStatePath: join(tmp, "absent.json"),
+  });
+  expect(missing).not.toContain("clip_fetch_source_");
 });
 
 test("stall inference separates expired unpaired starts from in-flight starts", async () => {

@@ -79,6 +79,14 @@ winpath() {
   esac
 }
 
+# HIMMEL-1446 r3: a non-dry-run install (case5 --from-profile) reaches
+# applyHimmelctlPathShim(), whose default binDir is the operator's REAL
+# ~/.local/bin (win32 ignores HOME entirely). Isolate binDir for the WHOLE
+# suite so no case touches the real bin dir — mirrors test-wizard-update.sh /
+# test-wizard-uninstall.sh. winpath'd so win32 node resolves it cleanly.
+HIMMELCTL_BIN_DIR="$(winpath "$work/isolated-bin")"
+export HIMMELCTL_BIN_DIR
+
 # build_path <stub_dir> <present_tools...> -- <absent_tools...>
 # (Copied from test-wizard-preflight.sh: link the named present tools off the
 # CURRENT PATH into <stub_dir>, then echo a PATH with the stub prepended and

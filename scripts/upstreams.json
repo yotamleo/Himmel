@@ -146,6 +146,16 @@
       "note": "Upstream PyPI graphifyy, version-pinned in scripts/lib/graphify-bin.sh (_graphify_version). DE-FORKED from yotamleo/graphify in HIMMEL-1048 / issue #469: the fork carried ZERO delta over upstream (its only purpose — declaring the mcp dep, which upstream keeps optional — is handled by the `--with mcp` install flag), so himmel tracks upstream directly. tracked_repo is the TRUE upstream (Graphify-Labs). synced_base = the pinned upstream release. latest_source=release because upstream tags are NON-MONOTONIC: a stale v1.0.0 (2026-04) predates the current v0.9.x line, so highest-semver-tag would report a permanent phantom BEHIND; the Releases API returns the real latest. BEHIND here means: bump _graphify_version in graphify-bin.sh to the new release AND bump synced_base here (a one-line pair — no fork rebase). `version_pin` above declares where that in-repo literal lives, so scripts/upstreams/apply-drift-bump.sh applies BOTH halves mechanically; review happens on the resulting PR, not on hand-editing the two spots."
     },
     {
+      "name": "cli-proxy-api",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "router-for-me/CLIProxyAPI",
+      "synced_base": "7.2.113",
+      "version_pin": { "file": "scripts/setup/cli-proxy-lane.ps1", "template": "$Version = '{version}'" },
+      "tier": "A",
+      "note": "CLIProxyAPI codex-lane proxy (HOST process on 127.0.0.1:8317; installed + run by scripts/setup/cli-proxy-lane.ps1). Added to the nightly drift machinery (HIMMEL-1451) so a new upstream release SURFACES as a drift finding instead of needing manual surgery: v7.2.77 threw ~3-min bursts of instant upstream 502s every ~25 min that killed codex-adv renders (Claude Code retries 502s but the companion's render turn does not), and the validated fix was a manual swap to v7.2.113 -- both legs completed clean that night. AUTO-BUMP policy is deliberately SURFACE-ONLY and matches the existing rows' conservatism: apply-drift-bump.sh moves the in-repo pin literal ($Version in cli-proxy-lane.ps1) and synced_base TOGETHER, but NOTHING here restarts the running proxy -- bumping the pin does NOT swap a live instance. The drift leg lands the pin bump as a PR, and the operator runs cli-proxy-lane.ps1 -Install + -Restart (HIMMEL-1451 lifecycle verbs) to actually roll the host. Default tag-mode (highest stable tag, prereleases excluded -- CLIProxyAPI tags are monotonic, so no latest_source override is needed); synced_base lacks the leading 'v' but the guard normalizes both sides before comparing (v7.2.113 tag == 7.2.113 base). tracked_repo is the TRUE upstream (router-for-me/CLIProxyAPI)."
+    },
+    {
       "name": "qmd",
       "kind": "tag_release",
       "mode": "base",

@@ -141,10 +141,10 @@ function isExecutableFile(p) {
 function probePresence(dep, ctx) {
   if (dep.resolver) {
     const resolverPath = path.join(ctx.repoRoot, dep.resolver);
-    const r = spawnSync('bash', ['-c', '. "$1" && has_qmd', 'himmel-dep', resolverPath], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
+    const r = spawnSync('bash', ['-c', '. "$1" && has_qmd', 'himmel-dep', resolverPath], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
     return !r.error && r.status === 0;
   }
-  const resolved = which(dep.cmd);
+  const resolved = which(dep.cmd, ctx.env);
   return Boolean(resolved) && isExecutableFile(resolved);
 }
 
@@ -175,9 +175,9 @@ function probeVersion(dep, ctx) {
   let r;
   if (dep.resolver) {
     const resolverPath = path.join(ctx.repoRoot, dep.resolver);
-    r = spawnSync('bash', ['-c', '. "$1" && qmd_cmd "${@:2}"', 'himmel-dep', resolverPath, ...versionArgs], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
+    r = spawnSync('bash', ['-c', '. "$1" && qmd_cmd "${@:2}"', 'himmel-dep', resolverPath, ...versionArgs], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
   } else {
-    r = spawnSync('bash', ['-c', '"$1" "${@:2}"', 'himmel-dep', dep.cmd, ...versionArgs], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
+    r = spawnSync('bash', ['-c', '"$1" "${@:2}"', 'himmel-dep', dep.cmd, ...versionArgs], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
   }
   if (r.error || r.status !== 0) return null;
   const out = `${r.stdout || ''}\n${r.stderr || ''}`;

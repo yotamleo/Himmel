@@ -19,7 +19,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 # Hermetic: the panel reads CR_PROFILE (HIMMEL-558). Clear ambient values so the
 # default free-tier path is used.
 unset CR_PROFILE CRITIC_PANEL_TIERS 2>/dev/null || true

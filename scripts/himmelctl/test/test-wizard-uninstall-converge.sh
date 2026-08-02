@@ -55,7 +55,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 lint="$repo_root/scripts/install/manifest-lint.mjs"
@@ -83,6 +82,14 @@ winpath() {
     *) printf '%s' "$1" ;;
   esac
 }
+
+# HIMMEL-1446 r2 (glm-1): cmdUninstall now removes PATH launchers from binDir.
+# Isolate binDir for the WHOLE suite so an accept-case never touches the
+# operator's real ~/.local/bin (on win32 himmelctlBinDir() ignores HOME and
+# would otherwise resolve to the real home). winpath'd so win32 node resolves it
+# cleanly; the dir need not exist (removeMarkedLauncher treats ENOENT as no-op).
+HIMMELCTL_BIN_DIR="$(winpath "$work/isolated-bin")"
+export HIMMELCTL_BIN_DIR
 
 # build_path <stub_dir> <present_tools...>
 build_path() {

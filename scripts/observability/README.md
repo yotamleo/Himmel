@@ -84,6 +84,20 @@ Rules:
 Flow metrics are derived from `~/.himmel/flow-runs.jsonl` unless
 `HIMMEL_FLOW_RUNS_LEDGER` overrides the path.
 
+Daily clip-source fetch health is read passively from
+`~/.himmel/fetch-health.json` unless `HIMMEL_FETCH_HEALTH_STATE` overrides the
+path. The no-LLM probe runner writes one exact status per source:
+`ok`, `auth-or-cookie-expired`, `blocked-or-rate-limited`, or `transport-fail`.
+The exporter exposes:
+
+- `clip_fetch_source_status{source,status}` — one-hot current classification.
+- `clip_fetch_source_last_success_timestamp{source}` — epoch seconds of the
+  latest successful known-good probe, preserved across later failures.
+
+A missing state file omits both families. Malformed state also fails soft: the
+scrape remains available and includes a `# clip_fetch_source_* omitted: ...`
+comment. Probe response bodies and credential values are never exported.
+
 Lane quota gauges (`lane_quota_used_pct{lane,bank,window}`, HIMMEL-1000) read
 real bank sources via `scripts/observability/quota-sources.ts`: the claude
 bank from the statusline usage cache (5h + weekly windows), the codex bank

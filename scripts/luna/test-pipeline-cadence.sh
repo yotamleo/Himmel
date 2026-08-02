@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Smoke test for scripts/luna/pipeline-cadence.sh (HIMMEL-255 schtasks
 # path + HIMMEL-265 cron path + HIMMEL-357 daily harvest+triage leg +
-# HIMMEL-362 XML-based schtasks create carrying StartWhenAvailable).
+# HIMMEL-362 XML-based schtasks create carrying StartWhenAvailable +
+# HIMMEL-1449 no-LLM fetch-health leg).
 #
-# Three cadence tasks are armed: HIMMEL-Pipeline-Harvest (daily 02:00 ->
+# Four cadence tasks are armed: HIMMEL-Pipeline-FetchHealth (daily 01:30 ->
+# direct fetch-health.py), HIMMEL-Pipeline-Harvest (daily 02:00 ->
 # /harvest-clips + /triage-clips), HIMMEL-Pipeline-Synthesize (daily 03:00
-# -> /synthesize-clips + /archive-clips), HIMMEL-Pipeline-Health (daily
+# -> /synthesize-clips + /archive-clips), and HIMMEL-Pipeline-Health (daily
 # 04:00 -> vault-lint / obsidian-triage:vault-lint, HIMMEL-1383/HIMMEL-1386).
-# Each leg launches with an explicit
-# --model pin (harvest/synth=sonnet, health=haiku — HIMMEL-506). The
-# harvest leg is exercised alongside synth/health throughout the dry-run
-# / arm / shape / status / dedup / force / disarm / rollback tests below.
+# The three Claude legs launch with explicit --model pins
+# (harvest/synth=sonnet, health=haiku — HIMMEL-506); fetch health is a plain
+# Python script. All four legs are exercised throughout the dry-run / arm /
+# shape / status / dedup / force / disarm / rollback tests below.
 #
 # Strategy: replace the scheduler with a fake — schtasks via the
 # PIPELINE_SCHTASKS seam (records /create args + simulates /query and
@@ -24,17 +26,17 @@
 #
 # Cron suite covers (C*):
 #   C1.  status with empty crontab ("no crontab for user") -> not armed.
-#   C2.  arm --dry-run prints runner bodies + all three entries, touches nothing.
-#   C3.  arm installs the marker-tagged entries (all daily: 00 02/03/04
-#        * * *) + executable runner .sh files; pre-existing
+#   C2.  arm --dry-run prints runner bodies + all four entries, touches nothing.
+#   C3.  arm installs the marker-tagged entries (all daily: 30 01 and
+#        00 02/03/04 * * *) + executable runner .sh files; pre-existing
 #        unrelated crontab lines survive.
 #   C4.  Runner .sh is interactive-claude shaped: bounded `< /dev/null`,
 #        chained synthesize->archive prompt, NO -p/--print/--bg, log
 #        rotation + fire stamp.
-#   C5.  status after arm -> both ARMED (+ run-log line).
+#   C5.  status after arm -> all four ARMED (+ run-log line).
 #   C6.  Re-arm without --force -> exit 3 (dedup), nothing duplicated.
 #   C7.  Re-arm --force + flag overrides -> entries replaced, unrelated
-#        line still intact, still exactly two markers.
+#        line still intact, still exactly four markers.
 #   C8.  disarm removes entries + runners, keeps unrelated lines;
 #        second disarm is a no-op (rc 0).
 #   C9.  Fail-closed: crontab -l fails (rc 1 + stderr) -> arm/status
@@ -63,26 +65,28 @@
 #   1.  Missing/unknown subcommand -> exit 1.
 #   2.  Invalid --synth-time / removed --synth-day / removed --health-day
 #       / vault -> exit 1.
-#   3.  status with empty scheduler -> both tasks "not armed".
+#   3.  status with empty scheduler -> all four tasks "not armed".
 #   4.  arm --dry-run prints the XML creates (trigger + StartWhenAvailable)
 #       + .bat bodies, registers nothing.
-#   5.  arm registers all three tasks from XML carrying StartWhenAvailable
-#       (HIMMEL-362) at the operator-decision defaults (DAILY 02:00, WEEKLY
-#       SUN 03:00, MONTHLY 1 04:00) + writes the .bats.
+#   5.  arm registers all four daily tasks from XML carrying
+#       StartWhenAvailable (HIMMEL-362) at 01:30/02:00/03:00/04:00 + writes
+#       the .bats.
 #   6.  Armed .bats are interactive-claude shaped: bounded `< NUL`,
 #       chained synthesize->archive prompt, NO -p/--print/--bg.
-#   7.  status after arm -> both ARMED.
+#   7.  status after arm -> all four ARMED.
 #   7b. status surfaces the rotated .log.prev (mtime + last line) next
 #       to the current .log.
 #   8.  Re-arm without --force -> exit 3 (dedup), nothing duplicated.
 #   9.  Re-arm --force + flag overrides -> tasks replaced with overrides.
-#   10. disarm removes both tasks + .bats; second disarm is a no-op (rc 0).
+#   10. disarm removes all four tasks + .bats; second disarm is a no-op (rc 0).
 #   11. cmd_escape: hostile-but-legal vault dirname (% & ^) lands escaped
 #       in the .bat (%%, ^&, ^^) — no fire-time injection.
-#   12. Half-arm: last /create (health) fails -> rc 4, harvest + synth
-#       rolled back, no task state left.
-#   12b. Mid-create (synth) fails -> rc 4, harvest rolled back, health
-#        never attempted, no task state left.
+#   12. Health /create fails -> rc 4, harvest + synth rolled back,
+#       fetch health never attempted, no task state left.
+#   12b. Mid-create (synth) fails -> rc 4, harvest rolled back, health and
+#        fetch health never attempted, no task state left.
+#   12c. Final /create (fetch health) fails -> rc 4, all prior tasks rolled
+#        back, no task state left.
 #   13. Fail-closed dedup: /query listing fails (rc 1 + stderr) -> arm
 #       exits 2 instead of treating the scheduler as empty.
 #   14. Disarm under /query failure -> nonzero exit, .bats NOT deleted,
@@ -109,7 +113,6 @@ set -euo pipefail
 # the match lands early in a large input. A here-string is not a pipeline,
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
-
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/pipeline-cadence.sh"
@@ -328,6 +331,7 @@ run_cron() {
 
 echo "TEST: cron status with no crontab installed"
 out=$(run_cron status)
+assert_contains "cron fetch-health not armed" "not armed  HIMMEL-Pipeline-FetchHealth" "$out"
 assert_contains "cron harvest not armed"    "not armed  HIMMEL-Pipeline-Harvest"    "$out"
 assert_contains "cron harvest not-armed summary names the full daily chain" "-> /harvest-clips + /triage-clips + /ig-media-enrich" "$out"
 assert_contains "cron synthesize not armed" "not armed  HIMMEL-Pipeline-Synthesize" "$out"
@@ -336,6 +340,8 @@ assert_contains "cron health not armed"     "not armed  HIMMEL-Pipeline-Health" 
 # Test C12: shared validation wired into the cron path -----------------------
 
 echo "TEST: cron arm rejects invalid input (shared validation)"
+rc=0; out=$(run_cron arm --vault "$VAULT" --fetch-health-time 24:61 2>&1) || rc=$?
+assert_rc "cron bad --fetch-health-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_cron arm --vault "$VAULT" --harvest-time 24:61 2>&1) || rc=$?
 assert_rc "cron bad --harvest-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_cron arm --vault "$VAULT" --synth-time 25:00 2>&1) || rc=$?
@@ -362,6 +368,9 @@ assert_rc "cron empty --health-model -> rc 1 (HIMMEL-506)" 1 "$rc"
 
 echo "TEST: cron arm --dry-run prints plan, installs nothing"
 out=$(run_cron arm --vault "$VAULT" --dry-run)
+assert_contains "dry-run daily fetch-health entry" "30 01 * * *" "$out"
+assert_contains "dry-run fetch-health marker" "# HIMMEL-Pipeline-FetchHealth" "$out"
+assert_contains "dry-run fetch-health runner is no-LLM" "fetch-health.py" "$out"
 assert_contains "dry-run daily harvest entry" "00 02 * * *" "$out"
 assert_contains "dry-run daily synth entry"   "00 03 * * *" "$out"
 assert_contains "dry-run daily health entry"  "00 04 * * *" "$out"
@@ -392,6 +401,9 @@ if command -v node >/dev/null 2>&1; then
     assert_contains "cron arm pre-trusts vault in config" "true" "$trust"
 fi
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
+assert_contains "daily fetch-health entry 01:30" "30 01 * * *" "$tab"
+assert_contains "fetch-health entry marker-tagged" "# HIMMEL-Pipeline-FetchHealth" "$tab"
+assert_contains "fetch-health entry fires the runner" "pipeline-fetch-health.sh" "$tab"
 assert_contains "daily harvest entry 02:00"  "00 02 * * *" "$tab"
 assert_contains "daily synth entry 03:00"    "00 03 * * *" "$tab"
 assert_contains "daily health entry 04:00"   "00 04 * * *" "$tab"
@@ -402,7 +414,7 @@ assert_contains "harvest entry fires the runner" "pipeline-harvest.sh"    "$tab"
 assert_contains "synth entry fires the runner"  "pipeline-synthesize.sh" "$tab"
 assert_contains "health entry fires the runner" "pipeline-health.sh"     "$tab"
 assert_contains "unrelated entry preserved" "keep-me" "$tab"
-if [ -x "$CRON_DIR/pipeline-harvest.sh" ] && [ -x "$CRON_DIR/pipeline-synthesize.sh" ] && [ -x "$CRON_DIR/pipeline-health.sh" ]; then
+if [ -x "$CRON_DIR/pipeline-fetch-health.sh" ] && [ -x "$CRON_DIR/pipeline-harvest.sh" ] && [ -x "$CRON_DIR/pipeline-synthesize.sh" ] && [ -x "$CRON_DIR/pipeline-health.sh" ]; then
     pass "runner .sh files written + executable"
 else
     fail "runner .sh files missing or not executable" "$(ls -l "$CRON_DIR" 2>/dev/null || true)"
@@ -411,9 +423,58 @@ fi
 # Test C4: runner .sh is interactive-claude shaped -----------------------------
 
 echo "TEST: runner .sh is bounded interactive claude (no headless flags)"
+fetch_health_sh=$(cat "$CRON_DIR/pipeline-fetch-health.sh" 2>/dev/null || echo MISSING)
 harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
 synth_sh=$(cat "$CRON_DIR/pipeline-synthesize.sh" 2>/dev/null || echo MISSING)
 health_sh=$(cat "$CRON_DIR/pipeline-health.sh" 2>/dev/null || echo MISSING)
+assert_contains "fetch-health runner stamps the format version" "# himmel-cadence-runner-format: 7" "$fetch_health_sh"
+assert_contains "fetch-health runner invokes the plain probe script" "fetch-health.py" "$fetch_health_sh"
+assert_not_contains "fetch-health runner invokes no claude" "claude --model" "$fetch_health_sh"
+assert_contains "fetch-health runner restores arming PATH (HIMMEL-1449 r2)" '; export PATH' "$fetch_health_sh"
+assert_contains "fetch-health runner guards the repo .env source (HIMMEL-1449 r2)" '] && . ' "$fetch_health_sh"
+assert_contains "fetch-health runner .env source targets the repo env file (HIMMEL-1449 r2)" '/.env' "$fetch_health_sh"
+
+# Test C4d: fetch-health runner PATH export restores binary resolution under
+# cron's empty environment (HIMMEL-1449 r2). The real failure mode: cron runs
+# with PATH=/usr/bin:/bin and no user env, so the probes' shelled-out CLIs
+# (gallery-dl, twitter, gh) vanish and every night is a false exit 1. The
+# emitted runner bakes the arming shell's PATH in, so a binary present at arm
+# time stays resolvable when the ambient PATH is stripped. Host-gated (needs
+# `env -i` + /bin/sh); the emission asserts above run on every host.
+echo "TEST: fetch-health runner PATH export resolves a probe binary under env -i (HIMMEL-1449 r2)"
+if command -v env >/dev/null 2>&1 && [ -x /bin/sh ]; then
+    # Clean POSIX stub dir + a probe-shaped binary on it. cygpath -u (when
+    # available) keeps the dir POSIX-form: a C:/ mixed-form PATH entry splits on
+    # the drive colon under plain /bin/sh and silently never resolves (the same
+    # trap the C15 claude-stub arm avoids). The stub dir leads a clean PATH baked
+    # with the emitter's own printf %q pattern, so the fixture exercises the real
+    # emit form independent of the host's ambient PATH.
+    stub_dir="$TMP_ROOT/c4d-stubbin"
+    mkdir -p "$stub_dir"
+    if command -v cygpath >/dev/null 2>&1; then stub_dir=$(cygpath -u "$stub_dir"); fi
+    probe_stub="$stub_dir/fetch-health-probe-stub"
+    printf '#!/bin/sh\nexit 0\n' > "$probe_stub"
+    chmod +x "$probe_stub"
+    q_clean_path=$(printf '%q' "$stub_dir:/usr/bin:/bin")
+    with_export="$TMP_ROOT/env-i-with-path.sh"
+    without_export="$TMP_ROOT/env-i-without-path.sh"
+    {
+        printf '#!/bin/sh\n'
+        printf 'PATH=%s; export PATH\n' "$q_clean_path"
+        printf 'command -v fetch-health-probe-stub >/dev/null 2>&1\n'
+    } > "$with_export"
+    printf '#!/bin/sh\ncommand -v fetch-health-probe-stub >/dev/null 2>&1\n' > "$without_export"
+    chmod +x "$with_export" "$without_export"
+    # Pass ONLY if the export makes the stub resolve AND, without it, it can't —
+    # proving resolution rides on the emitted PATH line, not ambient PATH.
+    if env -i /bin/sh "$with_export" >/dev/null 2>&1 && ! env -i /bin/sh "$without_export" >/dev/null 2>&1; then
+        pass "fetch-health runner PATH export restores binary resolution under env -i (HIMMEL-1449 r2)"
+    else
+        fail "fetch-health runner PATH export did not gate binary resolution under env -i" "clean_path=$q_clean_path"
+    fi
+else
+    pass "fetch-health runner env -i execution skipped (host lacks env -i / /bin/sh)"
+fi
 assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 7" "$harvest_sh"
 assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 7" "$synth_sh"
 assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 7" "$health_sh"
@@ -515,6 +576,8 @@ fi
 
 echo "TEST: cron status reflects armed entries"
 out=$(run_cron status)
+assert_contains "cron fetch-health armed" "ARMED      HIMMEL-Pipeline-FetchHealth" "$out"
+assert_contains "cron fetch-health status is no-LLM" "clip-source fetch probes [no LLM]" "$out"
 assert_contains "cron harvest armed"    "ARMED      HIMMEL-Pipeline-Harvest"    "$out"
 assert_contains "cron synthesize armed" "ARMED      HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "cron health armed"     "ARMED      HIMMEL-Pipeline-Health"     "$out"
@@ -545,7 +608,7 @@ assert_contains "cron rotated-log message says rotated" "rotated" "$out"
 # The synth log line must say "rotated", not "absent — task has not fired yet".
 # (The health log legitimately says "absent" since neither .log nor .log.prev
 # exist for it — we only check the synth log line here.)
-if printf '%s\n' "$out" | grep -F "pipeline-synthesize.log " | grep -qF "absent — task has not fired yet"; then
+if grepq "$(printf '%s\n' "$out" | grep -F "pipeline-synthesize.log ")" -F "absent — task has not fired yet"; then
     fail "cron synth rotated-log must not say 'absent'" "$(printf '%s\n' "$out" | grep -F 'pipeline-synthesize.log ')"
 else
     pass "cron synth rotated-log does not say 'absent'"
@@ -579,7 +642,7 @@ echo "TEST: cron re-arm without --force blocked (rc 3)"
 rc=0; out=$(run_cron arm --vault "$VAULT" 2>&1) || rc=$?
 assert_rc "cron dedup block rc 3" 3 "$rc"
 assert_contains "cron dedup message names existing entries" "HIMMEL-Pipeline-Synthesize" "$out"
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 4 ]; then
     pass "no duplicate entries after blocked re-arm"
 else
     fail "entry count changed on blocked re-arm" "$(cat "$CSTATE/crontab")"
@@ -589,9 +652,10 @@ fi
 
 echo "TEST: cron re-arm --force applies flag overrides"
 out=$(run_cron arm --vault "$VAULT" --force \
-    --harvest-time 01:15 --ig-limit 25 --synth-time 02:30 --health-time 05:00 --harvest-model opus 2>&1)
+    --fetch-health-time 00:45 --harvest-time 01:15 --ig-limit 25 --synth-time 02:30 --health-time 05:00 --harvest-model opus 2>&1)
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
+assert_contains "cron daily fetch-health override"             "45 00 * * *" "$tab"
 assert_contains "cron daily harvest override"                  "15 01 * * *" "$tab"
 # %q-escaped prompt: strip backslashes for the multi-word assert (HIMMEL-798).
 assert_contains "cron --ig-limit override reaches harvest runner" "/ig-media-enrich --limit 25" "${harvest_sh//\\/}"
@@ -599,8 +663,8 @@ assert_contains "cron --harvest-model override reaches runner (HIMMEL-506)" "--m
 assert_contains "cron daily synth override (time only, daily)" "30 02 * * *" "$tab"
 assert_contains "cron daily health override (time only, daily)" "00 05 * * *" "$tab"
 assert_contains "unrelated entry survives --force re-arm" "keep-me" "$tab"
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
-    pass "still exactly three entries after --force re-arm"
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 4 ]; then
+    pass "still exactly four entries after --force re-arm"
 else
     fail "duplicate entries after --force re-arm" "$(cat "$CSTATE/crontab")"
 fi
@@ -615,12 +679,12 @@ echo "TEST: cron dry-run disarm prints DRY tail, touches nothing"
 out=$(run_cron disarm --dry-run)
 assert_contains "cron dry disarm lists removals" "would remove crontab entry" "$out"
 assert_contains "cron dry disarm closing summary" "no changes made" "$out"
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 4 ]; then
     pass "dry-run disarm removed no entries"
 else
     fail "dry-run disarm changed crontab state" "$(cat "$CSTATE/crontab")"
 fi
-if [ -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ -f "$CRON_DIR/pipeline-health.sh" ]; then
+if [ -f "$CRON_DIR/pipeline-fetch-health.sh" ] && [ -f "$CRON_DIR/pipeline-harvest.sh" ] && [ -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ -f "$CRON_DIR/pipeline-health.sh" ]; then
     pass "dry-run disarm kept the runner .sh files"
 else
     fail "dry-run disarm deleted runner .sh files"
@@ -634,7 +698,7 @@ assert_contains "cron disarm reports" "cadence disarmed" "$out"
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 assert_not_contains "cadence entries removed" "HIMMEL-Pipeline-" "$tab"
 assert_contains "unrelated entry survives disarm" "keep-me" "$tab"
-if [ ! -f "$CRON_DIR/pipeline-harvest.sh" ] && [ ! -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ ! -f "$CRON_DIR/pipeline-health.sh" ]; then
+if [ ! -f "$CRON_DIR/pipeline-fetch-health.sh" ] && [ ! -f "$CRON_DIR/pipeline-harvest.sh" ] && [ ! -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ ! -f "$CRON_DIR/pipeline-health.sh" ]; then
     pass "runner .sh files removed"
 else
     fail "runner .sh files left after disarm"
@@ -664,7 +728,7 @@ touch "$CSTATE/fail-list"
 rc=0; out=$(run_cron disarm 2>&1) || rc=$?
 assert_rc "cron fail-closed disarm rc 2" 2 "$rc"
 assert_not_contains "no false no-op on failing crontab -l" "no-op" "$out"
-if [ -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ -f "$CRON_DIR/pipeline-health.sh" ]; then
+if [ -f "$CRON_DIR/pipeline-fetch-health.sh" ] && [ -f "$CRON_DIR/pipeline-harvest.sh" ] && [ -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ -f "$CRON_DIR/pipeline-health.sh" ]; then
     pass "runner .sh files NOT deleted on crontab -l failure"
 else
     fail "runner .sh files deleted despite crontab -l failure"
@@ -680,7 +744,7 @@ touch "$CSTATE/fail-list-255"
 rc=0; out=$(run_cron disarm 2>&1) || rc=$?
 assert_rc "cron crashed-list disarm rc 2" 2 "$rc"
 assert_not_contains "no false no-op on crashed crontab -l" "no-op" "$out"
-if [ -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ -f "$CRON_DIR/pipeline-health.sh" ]; then
+if [ -f "$CRON_DIR/pipeline-fetch-health.sh" ] && [ -f "$CRON_DIR/pipeline-harvest.sh" ] && [ -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ -f "$CRON_DIR/pipeline-health.sh" ]; then
     pass "runner .sh files NOT deleted on crashed crontab -l"
 else
     fail "runner .sh files deleted despite crashed crontab -l"
@@ -700,7 +764,7 @@ if ! grep -q 'HIMMEL-Pipeline-' "$CSTATE/crontab" 2>/dev/null; then
 else
     fail "cadence entries installed despite write failure" "$(cat "$CSTATE/crontab")"
 fi
-if [ ! -f "$CRON_DIR/pipeline-harvest.sh" ] && [ ! -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ ! -f "$CRON_DIR/pipeline-health.sh" ]; then
+if [ ! -f "$CRON_DIR/pipeline-fetch-health.sh" ] && [ ! -f "$CRON_DIR/pipeline-harvest.sh" ] && [ ! -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ ! -f "$CRON_DIR/pipeline-health.sh" ]; then
     pass "no runner promoted to its final path on write failure"
 else
     fail "runner files left despite write failure" "$(ls "$CRON_DIR" 2>/dev/null || true)"
@@ -740,7 +804,7 @@ if ! compgen -G "$CRON_DIR/*.tmp.*" >/dev/null; then
 else
     fail "staged .tmp runner litter left" "$(ls "$CRON_DIR")"
 fi
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 4 ]; then
     pass "old entries still armed after failed --force re-arm"
 else
     fail "entry count changed on failed --force re-arm" "$(cat "$CSTATE/crontab")"
@@ -759,12 +823,12 @@ touch "$CSTATE/fail-write"
 rc=0; out=$(run_cron disarm 2>&1) || rc=$?
 assert_rc "cron disarm install failure rc 4" 4 "$rc"
 assert_contains "disarm install failure surfaces stderr" "error writing new crontab" "$out"
-if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 3 ]; then
+if [ "$(grep -c 'HIMMEL-Pipeline-' "$CSTATE/crontab")" -eq 4 ]; then
     pass "entries still in crontab after failed disarm install"
 else
     fail "entries lost despite failed disarm install" "$(cat "$CSTATE/crontab")"
 fi
-if [ -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ -f "$CRON_DIR/pipeline-health.sh" ]; then
+if [ -f "$CRON_DIR/pipeline-fetch-health.sh" ] && [ -f "$CRON_DIR/pipeline-harvest.sh" ] && [ -f "$CRON_DIR/pipeline-synthesize.sh" ] && [ -f "$CRON_DIR/pipeline-health.sh" ]; then
     pass "runner .sh files NOT deleted on failed disarm install"
 else
     fail "runner .sh files deleted despite failed disarm install"
@@ -1051,6 +1115,8 @@ assert_rc "unknown subcommand -> rc 1" 1 "$rc"
 # Test 2: input validation --------------------------------------------------
 
 echo "TEST: invalid inputs rejected"
+rc=0; out=$(run_pc arm --vault "$VAULT" --fetch-health-time 9:00 2>&1) || rc=$?
+assert_rc "bad --fetch-health-time -> rc 1" 1 "$rc"
 rc=0; out=$(run_pc arm --vault "$VAULT" --harvest-time 9:00 2>&1) || rc=$?
 assert_rc "bad --harvest-time (no leading zero) -> rc 1" 1 "$rc"
 rc=0; out=$(run_pc arm --vault "$VAULT" --synth-time 25:00 2>&1) || rc=$?
@@ -1091,8 +1157,10 @@ assert_rc "missing vault dir -> rc 1" 1 "$rc"
 
 echo "TEST: status with nothing armed"
 out=$(run_pc status)
-assert_contains "synthesize not armed" "not armed  HIMMEL-Pipeline-Synthesize" "$out"
-assert_contains "health not armed"     "not armed  HIMMEL-Pipeline-Health"     "$out"
+assert_contains "fetch-health not armed" "not armed  HIMMEL-Pipeline-FetchHealth" "$out"
+assert_contains "harvest not armed"      "not armed  HIMMEL-Pipeline-Harvest"     "$out"
+assert_contains "synthesize not armed"   "not armed  HIMMEL-Pipeline-Synthesize"  "$out"
+assert_contains "health not armed"       "not armed  HIMMEL-Pipeline-Health"      "$out"
 
 # Test 4: arm --dry-run touches nothing -------------------------------------
 
@@ -1100,11 +1168,13 @@ echo "TEST: arm --dry-run prints plan, registers nothing"
 out=$(run_pc arm --vault "$VAULT" --dry-run)
 # HIMMEL-362: create is now XML-based; dry-run previews the /xml create line
 # + the generated task XML (trigger + StartWhenAvailable).
+assert_contains "dry-run daily fetch-health create" "/tn HIMMEL-Pipeline-FetchHealth /xml" "$out"
+assert_contains "dry-run fetch-health runner invokes plain script" "fetch-health.py" "$out"
 assert_contains "dry-run daily create"         "/tn HIMMEL-Pipeline-Harvest /xml" "$out"
 assert_contains "dry-run daily synth create"   "/tn HIMMEL-Pipeline-Synthesize /xml" "$out"
 assert_contains "dry-run daily health create"  "/tn HIMMEL-Pipeline-Health /xml" "$out"
 assert_contains "dry-run XML has StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAvailable>" "$out"
-assert_contains "dry-run XML daily schedule (all three legs)" "<ScheduleByDay>" "$out"
+assert_contains "dry-run XML daily schedule (all four legs)" "<ScheduleByDay>" "$out"
 assert_not_contains "dry-run XML has no monthly schedule (HIMMEL-506)" "<Day>" "$out"
 assert_not_contains "dry-run XML has no weekly schedule (HIMMEL-1383)" "<ScheduleByWeek>" "$out"
 assert_contains "dry-run shows bounded run" "< NUL" "$out"
@@ -1119,15 +1189,20 @@ else
     fail "dry-run wrote .bat files" "$(ls "$BAT_DIR")"
 fi
 
-# Test 5: arm registers both tasks with operator-decision defaults ----------
+# Test 5: arm registers all tasks with operator-decision defaults -----------
 
-echo "TEST: arm registers daily 02:00/03:00/04:00"
+echo "TEST: arm registers daily 01:30/02:00/03:00/04:00"
 out=$(run_pc arm --vault "$VAULT")
 assert_contains "arm banner" "PIPELINE CADENCE ARMED" "$out"
+fetch_health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-FetchHealth" 2>/dev/null || echo MISSING)
 harvest_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Harvest" 2>/dev/null || echo MISSING)
 synth_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Synthesize" 2>/dev/null || echo MISSING)
 health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Health" 2>/dev/null || echo MISSING)
 # HIMMEL-362: tasks are created from XML; the fake records the XML content.
+assert_contains "daily fetch-health schedule (XML)" "<ScheduleByDay>" "$fetch_health_args"
+assert_contains "daily fetch-health time (XML)" "T01:30:00" "$fetch_health_args"
+assert_contains "fetch-health XML StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAvailable>" "$fetch_health_args"
+assert_contains "fetch-health Exec points at runner bat" "pipeline-fetch-health.bat" "$fetch_health_args"
 assert_contains "daily harvest schedule (XML)" "<ScheduleByDay>"  "$harvest_args"
 assert_contains "daily harvest time (XML)"     "T02:00:00"        "$harvest_args"
 assert_contains "daily synth schedule (XML)"   "<ScheduleByDay>"  "$synth_args"
@@ -1144,9 +1219,15 @@ assert_contains "health Exec points at runner bat" "pipeline-health.bat"     "$h
 # Test 6: .bat runners are interactive-claude shaped ------------------------
 
 echo "TEST: .bat runners are bounded interactive claude (no headless flags)"
+fetch_health_bat=$(cat "$BAT_DIR/pipeline-fetch-health.bat" 2>/dev/null || echo MISSING)
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
 synth_bat=$(cat "$BAT_DIR/pipeline-synthesize.bat" 2>/dev/null || echo MISSING)
 health_bat=$(cat "$BAT_DIR/pipeline-health.bat" 2>/dev/null || echo MISSING)
+assert_contains "fetch-health bat stamps the format version" "rem himmel-cadence-runner-format: 7" "$fetch_health_bat"
+assert_contains "fetch-health bat invokes the plain probe script" "fetch-health.py" "$fetch_health_bat"
+assert_not_contains "fetch-health bat invokes no claude" "claude --model" "$fetch_health_bat"
+assert_contains "fetch-health bat loads repo .env via for /f at fire time (HIMMEL-1470)" 'for /f' "$fetch_health_bat"
+assert_contains "fetch-health bat .env load targets the repo env file (HIMMEL-1470)" '.env"' "$fetch_health_bat"
 assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 7" "$harvest_bat"
 assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 7" "$synth_bat"
 assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 7" "$health_bat"
@@ -1230,6 +1311,8 @@ esac
 
 echo "TEST: status reflects armed tasks"
 out=$(run_pc status)
+assert_contains "fetch-health armed" "ARMED      HIMMEL-Pipeline-FetchHealth" "$out"
+assert_contains "fetch-health status is no-LLM" "clip-source fetch probes [no LLM]" "$out"
 assert_contains "harvest armed"    "ARMED      HIMMEL-Pipeline-Harvest"    "$out"
 assert_contains "synthesize armed" "ARMED      HIMMEL-Pipeline-Synthesize" "$out"
 assert_contains "health armed"     "ARMED      HIMMEL-Pipeline-Health"     "$out"
@@ -1269,7 +1352,7 @@ echo "TEST: re-arm without --force blocked (rc 3)"
 rc=0; out=$(run_pc arm --vault "$VAULT" 2>&1) || rc=$?
 assert_rc "dedup block rc 3" 3 "$rc"
 assert_contains "dedup message names existing tasks" "HIMMEL-Pipeline-Synthesize" "$out"
-if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
+if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 4 ]; then
     pass "no duplicate tasks after blocked re-arm"
 else
     fail "task count changed on blocked re-arm" "$(ls "$STATE/tasks")"
@@ -1279,11 +1362,13 @@ fi
 
 echo "TEST: re-arm --force applies flag overrides"
 out=$(run_pc arm --vault "$VAULT" --force \
-    --harvest-time 01:15 --ig-limit 0 --synth-time 02:30 --health-time 05:00 --harvest-model opus 2>&1)
+    --fetch-health-time 00:45 --harvest-time 01:15 --ig-limit 0 --synth-time 02:30 --health-time 05:00 --harvest-model opus 2>&1)
+fetch_health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-FetchHealth" 2>/dev/null || echo MISSING)
 harvest_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Harvest" 2>/dev/null || echo MISSING)
 synth_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Synthesize" 2>/dev/null || echo MISSING)
 health_args=$(cat "$STATE/tasks/HIMMEL-Pipeline-Health" 2>/dev/null || echo MISSING)
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
+assert_contains "daily fetch-health override (XML time)"  "T00:45:00"   "$fetch_health_args"
 assert_contains "daily harvest override (XML time)"       "T01:15:00"   "$harvest_args"
 assert_contains "--ig-limit 0 reaches harvest bat"         "/ig-media-enrich --limit 0" "$harvest_bat"
 assert_contains "--harvest-model override reaches bat (HIMMEL-506)" '--model "opus"' "$harvest_bat"
@@ -1291,8 +1376,8 @@ assert_contains "daily synth override (daily schedule)"   "<ScheduleByDay>" "$sy
 assert_contains "daily synth override (XML time)"         "T02:30:00"   "$synth_args"
 assert_contains "daily health override (daily schedule)"  "<ScheduleByDay>" "$health_args"
 assert_contains "daily health override (XML time)"        "T05:00:00"   "$health_args"
-if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
-    pass "still exactly three tasks after --force re-arm"
+if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 4 ]; then
+    pass "still exactly four tasks after --force re-arm"
 else
     fail "duplicate tasks after --force re-arm" "$(ls "$STATE/tasks")"
 fi
@@ -1349,7 +1434,7 @@ if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ]; then
 else
     fail "tasks left after disarm" "$(ls "$STATE/tasks")"
 fi
-if [ ! -f "$BAT_DIR/pipeline-harvest.bat" ] && [ ! -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ ! -f "$BAT_DIR/pipeline-health.bat" ]; then
+if [ ! -f "$BAT_DIR/pipeline-fetch-health.bat" ] && [ ! -f "$BAT_DIR/pipeline-harvest.bat" ] && [ ! -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ ! -f "$BAT_DIR/pipeline-health.bat" ]; then
     pass ".bat runners removed"
 else
     fail ".bat runners left after disarm"
@@ -1422,6 +1507,20 @@ else
 fi
 rm -f "$STATE/fail-create-HIMMEL-Pipeline-Synthesize"
 
+# Test 12c: the final plain-script task must roll back all three tasks that
+# registered before it when its own /create fails.
+echo "TEST: fetch-health /create failure rolls back all prior tasks (rc 4)"
+touch "$STATE/fail-create-HIMMEL-Pipeline-FetchHealth"
+rc=0; out=$(run_pc arm --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "fetch-health half-arm fails rc 4" 4 "$rc"
+assert_contains "failure names the fetch-health create" "HIMMEL-Pipeline-FetchHealth failed" "$out"
+if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ]; then
+    pass "no task state left after fetch-health rollback"
+else
+    fail "task state left after fetch-health rollback" "$(ls "$STATE/tasks")"
+fi
+rm -f "$STATE/fail-create-HIMMEL-Pipeline-FetchHealth"
+
 # Test 13: dedup listing failure is fail-CLOSED (pins the inverted classifier)
 
 echo "TEST: arm with failing /query listing exits 2 (fail-closed dedup)"
@@ -1448,7 +1547,7 @@ assert_not_contains "no false no-op on query failure" "no-op" "$out"
 # not-found stderr lands in this same branch, so the error carries the
 # manual verify/remove commands.
 assert_contains "query failure prints manual delete escape hatch" "schtasks /delete /tn" "$out"
-if [ -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ -f "$BAT_DIR/pipeline-health.bat" ]; then
+if [ -f "$BAT_DIR/pipeline-fetch-health.bat" ] && [ -f "$BAT_DIR/pipeline-harvest.bat" ] && [ -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ -f "$BAT_DIR/pipeline-health.bat" ]; then
     pass ".bat runners NOT deleted on query failure"
 else
     fail ".bat runners deleted despite query failure"
@@ -1467,7 +1566,7 @@ touch "$STATE/fail-query-255"
 rc=0; out=$(run_pc disarm 2>&1) || rc=$?
 assert_rc "disarm crashed-query rc 2" 2 "$rc"
 assert_not_contains "no false no-op on crashed query" "no-op" "$out"
-if [ -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ -f "$BAT_DIR/pipeline-health.bat" ]; then
+if [ -f "$BAT_DIR/pipeline-fetch-health.bat" ] && [ -f "$BAT_DIR/pipeline-harvest.bat" ] && [ -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ -f "$BAT_DIR/pipeline-health.bat" ]; then
     pass ".bat runners NOT deleted on crashed query"
 else
     fail ".bat runners deleted despite crashed query"
@@ -1496,12 +1595,12 @@ echo "TEST: dry-run disarm prints DRY tail, touches nothing"
 out=$(run_pc disarm --dry-run)
 assert_contains "dry disarm lists deletions" "would delete" "$out"
 assert_contains "dry disarm closing summary" "no changes made" "$out"
-if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
+if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 4 ]; then
     pass "dry-run disarm deleted no tasks"
 else
     fail "dry-run disarm changed task state" "$(ls "$STATE/tasks")"
 fi
-if [ -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ -f "$BAT_DIR/pipeline-health.bat" ]; then
+if [ -f "$BAT_DIR/pipeline-fetch-health.bat" ] && [ -f "$BAT_DIR/pipeline-harvest.bat" ] && [ -f "$BAT_DIR/pipeline-synthesize.bat" ] && [ -f "$BAT_DIR/pipeline-health.bat" ]; then
     pass "dry-run disarm kept the .bat runners"
 else
     fail "dry-run disarm deleted .bat runners"
@@ -1516,8 +1615,10 @@ run_pc disarm >/dev/null
 echo "TEST: rc=1 + 'cannot find the file' stderr reads as not armed"
 rc=0; out=$(run_pc status 2>&1) || rc=$?
 assert_rc "status with not-found stderr rc 0" 0 "$rc"
-assert_contains "synthesize reads not armed" "not armed  HIMMEL-Pipeline-Synthesize" "$out"
-assert_contains "health reads not armed"     "not armed  HIMMEL-Pipeline-Health"     "$out"
+assert_contains "fetch-health reads not armed" "not armed  HIMMEL-Pipeline-FetchHealth" "$out"
+assert_contains "harvest reads not armed"      "not armed  HIMMEL-Pipeline-Harvest"     "$out"
+assert_contains "synthesize reads not armed"   "not armed  HIMMEL-Pipeline-Synthesize"  "$out"
+assert_contains "health reads not armed"       "not armed  HIMMEL-Pipeline-Health"      "$out"
 assert_not_contains "no QUERY ERR on real not-found stderr" "QUERY ERR" "$out"
 rc=0; out=$(run_pc disarm 2>&1) || rc=$?
 assert_rc "disarm with not-found stderr rc 0" 0 "$rc"
@@ -1531,8 +1632,10 @@ echo "TEST: rc=1 + 'task name does not exist' stderr reads as not armed"
 touch "$STATE/notfound-stderr-v2"
 rc=0; out=$(run_pc status 2>&1) || rc=$?
 assert_rc "status with task-name not-found stderr rc 0" 0 "$rc"
-assert_contains "synthesize reads not armed" "not armed  HIMMEL-Pipeline-Synthesize" "$out"
-assert_contains "health reads not armed"     "not armed  HIMMEL-Pipeline-Health"     "$out"
+assert_contains "fetch-health reads not armed" "not armed  HIMMEL-Pipeline-FetchHealth" "$out"
+assert_contains "harvest reads not armed"      "not armed  HIMMEL-Pipeline-Harvest"     "$out"
+assert_contains "synthesize reads not armed"   "not armed  HIMMEL-Pipeline-Synthesize"  "$out"
+assert_contains "health reads not armed"       "not armed  HIMMEL-Pipeline-Health"      "$out"
 assert_not_contains "no QUERY ERR on task-name not-found stderr" "QUERY ERR" "$out"
 rm -f "$STATE/notfound-stderr-v2"
 
@@ -1670,7 +1773,7 @@ fi
 # on the next person to weaken or delete the guard to make a spurious red go
 # away. A trailing comment on a real code line is still caught: the filter drops
 # only lines that BEGIN with #, so `x=$(cadence_cmd_escape "$y")  # note` stays.
-if printf '%s' "$emit_body" | grep -Ev '^[[:space:]]*#' | grep -q 'cadence_cmd_escape'; then
+if grepq "$(printf '%s' "$emit_body" | grep -Ev '^[[:space:]]*#')" 'cadence_cmd_escape'; then
     fail "emit_bat does not escape internally" "found a cadence_cmd_escape call inside emit_bat"
 else
     pass "emit_bat does not escape internally"

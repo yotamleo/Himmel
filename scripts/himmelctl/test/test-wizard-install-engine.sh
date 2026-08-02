@@ -157,7 +157,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 repo_root=$(git rev-parse --show-toplevel)
 install_engine_lib="$repo_root/scripts/himmelctl/lib/install-engine.js"
 install_plugins_sh="$repo_root/scripts/machine-setup/install-plugins.sh"

@@ -15,7 +15,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 [ -x "$ARM" ] || chmod +x "$ARM"
 

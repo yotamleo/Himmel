@@ -14,7 +14,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 DIR="$(cd "$(dirname "$0")" && pwd)"
 SUT="$DIR/statusline-segment.sh"
 [ -x "$SUT" ] || chmod +x "$SUT" 2>/dev/null || true

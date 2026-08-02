@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_comment": "himmelctl deps status|ensure|upgrade (HIMMEL-759). A version-aware toolchain declaration, SEPARATE from scripts/install/manifest.json's presence-only kind:\"dep\" items -- see this ticket's design note in scripts/himmelctl/lib/deps-engine.js for why the two coexist (different lifecycles: manifest.json drives the wizard's install/ensure wiring reconcile; deps.json is a flat, standalone toolchain-version view). minVersion carries the floors already documented in docs/setup/new-machine.md (git 2.30, node 18, bun 1.0, python3 3.10, jq 1.6, pre-commit 3.5); uv and qmd have no documented floor so they stay null (presence-only). bootstrap:true marks node/bun -- himmelctl (a node script) cannot install node itself, so their install recipes always shell out to a bash layer (ensure-tools.sh / a package manager), never inline node logic.",
+  "_comment": "himmelctl deps status|ensure|upgrade (HIMMEL-759). A version-aware toolchain declaration, SEPARATE from scripts/install/manifest.json's presence-only kind:\"dep\" items -- see this ticket's design note in scripts/himmelctl/lib/deps-engine.js for why the two coexist (different lifecycles: manifest.json drives the wizard's install/ensure wiring reconcile; deps.json is a flat, standalone toolchain-version view). minVersion carries the floors already documented in docs/setup/new-machine.md (git 2.30, node 18, bun 1.0, python3 3.10, jq 1.6, pre-commit 3.5); shellcheck, gitleaks, uv, and qmd have no documented floor so they stay null (presence-only). bootstrap:true marks node/bun -- himmelctl (a node script) cannot install node itself, so their install recipes always shell out to a bash layer (ensure-tools.sh / a package manager), never inline node logic.",
   "deps": [
     {
       "id": "node",
@@ -85,6 +85,30 @@
         "linux": { "manager": "pip", "pkg": "pre-commit" },
         "macos": { "manager": "pip", "pkg": "pre-commit" },
         "win32": { "manager": "pip", "pkg": "pre-commit" }
+      }
+    },
+    {
+      "id": "shellcheck",
+      "cmd": "shellcheck",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": null,
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "ensure-tools" },
+        "macos": { "manager": "ensure-tools" },
+        "win32": { "manager": "winget", "id": "koalaman.shellcheck" }
+      }
+    },
+    {
+      "id": "gitleaks",
+      "cmd": "gitleaks",
+      "versionProbe": { "args": ["version"] },
+      "minVersion": null,
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "hint", "detail": "install gitleaks from its official release tarball, then re-run" },
+        "macos": { "manager": "brew", "pkg": "gitleaks" },
+        "win32": { "manager": "winget", "id": "Gitleaks.Gitleaks" }
       }
     },
     {

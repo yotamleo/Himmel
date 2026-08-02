@@ -13,6 +13,9 @@
 #                  relative exception (jira-cli-dist-build — proves it
 #                  ignores a targetPath that DOES carry the file), and the
 #                  {vaultPath} placeholder (luna-vault-scaffold).
+#   git-hooks      pre-commit-hooks absent (none installed) / degraded
+#                  (partial install) / present (pre-commit + commit-msg +
+#                  pre-push), including linked-worktree commondir resolution.
 #   settings-key   dot-path single key (wiring-statusline), simple
 #                  non-dotted key (claude-plugins-pluginSet), and the .env
 #                  ALL-keys-required union resolving against repoRoot for
@@ -102,6 +105,17 @@
 #                  NEVER present — status output cannot attest all 3
 #                  guardrail hooks, only that at least one is wired, so
 #                  'present' is bounded to unreachable via this data source.
+#                  (HIMMEL-1427, CR round 1) 'present' additionally requires
+#                  the v2 attestation layer (contentIntegrityComplete /
+#                  auditAnchorComplete / attestationComplete + per-hook
+#                  wrapperIntegrity/scriptIntegrity and *MatchesAuditAnchor),
+#                  recomputed from the payload's own parts for self-consistency;
+#                  a content-tampered wrapper or divergent audit anchor reads
+#                  degraded naming the dimension, and (CR round 2) a payload
+#                  with NO v2 fields (stale checkout or stripped/tampered
+#                  output) OR a PARTIAL v2 set FAILS CLOSED — degraded, never
+#                  the v1 'present' (round 1's fail-OPEN back-compat re-opened
+#                  the downgrade path the attestation exists to close).
 #   dep            (HIMMEL-1100) gemini-cli — present/absent via stub PATH.
 #   cmd:hermes_checkout (HIMMEL-1100 round 3, codex-adv-3) hermes-checkout —
 #                  pure fs, no git spawn: resolves update_hermes()'s OWN
@@ -285,6 +299,67 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 echo "$outB2" | jq -e '.actual == "present"' >/dev/null \
   || fail "file-exists repoRoot-relative exception: expected present (repoRoot has the file; targetPath doesn't exist at all) (got: $outB2)"
 echo "ok: file-exists repoRoot-relative exception (jira-cli-dist-build) ignores targetPath"
+
+# ── git-hooks: all configured pre-commit hook types ────────────────────────
+hooks_repo="$work/hooks-repo"; mkdir -p "$hooks_repo/.git/hooks"
+hooks_common="$work/hooks-common"; mkdir -p "$hooks_common/hooks" "$hooks_common/worktrees/dev"
+printf '../..\n' > "$hooks_common/worktrees/dev/commondir"
+hooks_linked="$work/hooks-linked"; mkdir -p "$hooks_linked"
+printf 'gitdir: %s\n' "$(winpath "$hooks_common/worktrees/dev")" > "$hooks_linked/.git"
+
+probe_hooks() {
+  local _target="$1"
+  "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'pre-commit-hooks');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$_target")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+outHooksAbsent=$(probe_hooks "$hooks_repo")
+echo "$outHooksAbsent" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "git-hooks none installed should read absent: (got: $outHooksAbsent)"
+echo "$outHooksAbsent" | jq -e '.detail | contains("pre-commit") and contains("commit-msg") and contains("pre-push")' >/dev/null \
+  || fail "git-hooks absent detail should name all missing hook types: (got: $outHooksAbsent)"
+
+printf '#!/usr/bin/env bash\nexit 0\n' > "$hooks_repo/.git/hooks/pre-commit"
+chmod +x "$hooks_repo/.git/hooks/pre-commit"
+outHooksPartial=$(probe_hooks "$hooks_repo")
+echo "$outHooksPartial" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "git-hooks partial install should read degraded: (got: $outHooksPartial)"
+echo "$outHooksPartial" | jq -e '.detail | contains("commit-msg") and contains("pre-push")' >/dev/null \
+  || fail "git-hooks partial detail should name the two missing hook types: (got: $outHooksPartial)"
+
+for _hook in pre-commit commit-msg pre-push; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$hooks_common/hooks/$_hook"
+  chmod +x "$hooks_common/hooks/$_hook"
+done
+outHooksPresent=$(probe_hooks "$hooks_linked")
+echo "$outHooksPresent" | jq -e '.actual == "present"' >/dev/null \
+  || fail "git-hooks linked-worktree commondir with all hooks should read present: (got: $outHooksPresent)"
+echo "$outHooksPresent" | jq -e '.detail | contains("pre-commit, commit-msg, pre-push")' >/dev/null \
+  || fail "git-hooks present detail should attest all configured hook types: (got: $outHooksPresent)"
+echo "ok: git-hooks verifies absent/partial/all-three states and linked-worktree commondir resolution"
+
+# ── git-hooks: core.hooksPath override (HIMMEL-1470) ───────────────────────
+# A legitimate LOCAL `git config core.hooksPath <dir>` (the in-repo layout
+# check-commit-msg.ps1 documents and check-hookspath validates) must resolve at
+# that dir, NOT fall through to .git/hooks (left intentionally empty here) and
+# read a false absent.
+hooks_hp_repo="$work/hooks-hp-repo"; mkdir -p "$hooks_hp_repo/custom-hooks"
+( cd "$hooks_hp_repo" && git init -q && git config core.hooksPath custom-hooks )
+for _hook in pre-commit commit-msg pre-push; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$hooks_hp_repo/custom-hooks/$_hook"
+  chmod +x "$hooks_hp_repo/custom-hooks/$_hook"
+done
+outHooksHP=$(probe_hooks "$hooks_hp_repo")
+echo "$outHooksHP" | jq -e '.actual == "present"' >/dev/null \
+  || fail "git-hooks core.hooksPath override should read present (got: $outHooksHP)"
+echo "$outHooksHP" | jq -e '.detail | contains("custom-hooks")' >/dev/null \
+  || fail "git-hooks core.hooksPath detail should name the configured dir (got: $outHooksHP)"
+echo "ok: git-hooks honors a local core.hooksPath override instead of defaulting to .git/hooks (HIMMEL-1470)"
 
 # ── file-exists: {vaultPath} placeholder (luna-vault-scaffold) ─────────────
 feC_present="$work/feC-vault-present"; mkdir -p "$feC_present"
@@ -2146,13 +2221,20 @@ echo "ok: cmd:guardrail_block_status degraded when mode=global, complete=true, b
 # so this reads present. This is the accepted limit: detecting "too few
 # entries" needs the EXPECTED count, which only the producer owns; asserting
 # a count here would duplicate producer vocabulary the same way round 6
-# already rejected.
+# already rejected. (CR round 2: the payload now also carries the FULL v2
+# attestation set, so the round-2 fail-closed-on-v2-absence gate does NOT
+# trip it — isolating the COUNT question this case exists to document.)
 gb_truncated_dir="$work/gb-truncated"; mkdir -p "$gb_truncated_dir/scripts/hooks"
 cat > "$gb_truncated_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
 process.stdout.write(JSON.stringify({
   mode: 'global',
   anchor: { repo: '/fake/repo', source: 'HIMMEL_REPO' },
+  auditAnchor: { repo: '/fake/repo', source: 'self-checkout' },
+  anchorMatchesAudit: true,
   complete: true,
+  contentIntegrityComplete: true,
+  auditAnchorComplete: true,
+  attestationComplete: true,
   hooks: [
     {
       basename: 'auto-approve-safe-bash.sh', matcher: 'Bash', expectedMatcher: 'Bash', matcherMatches: true,
@@ -2161,8 +2243,12 @@ process.stdout.write(JSON.stringify({
       nodePath: '/fake/node', nodeResolves: true,
       wrapperPath: '/fake/wrapper.js', wrapperResolves: true,
       anchorWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAnchor: true,
+      auditWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAuditAnchor: true,
+      wrapperIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'abc', reference: 'git:HEAD:scripts/hooks/guardrail-skip-in-himmel.js', referenceSha256: 'abc' },
       scriptPath: '/fake/script.sh', scriptResolves: true,
       anchorScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAnchor: true,
+      auditScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAuditAnchor: true,
+      scriptIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'def', reference: 'git:HEAD:scripts/hooks/auto-approve-safe-bash.sh', referenceSha256: 'def' },
       duplicates: [], nonCanonicalCount: 0, nonCanonical: [],
     },
   ],
@@ -2212,6 +2298,248 @@ echo "$outGBcon" | jq -e '.actual == "degraded"' >/dev/null \
 echo "$outGBcon" | jq -e '.detail | contains("self-contradictory")' >/dev/null \
   || fail "cmd:guardrail_block_status self-contradictory-payload detail should name it as such (got: $outGBcon)"
 echo "ok: cmd:guardrail_block_status — complete=true contradicted by its own hooks[] entry reads degraded, never present (codex-1-r7, case 2, non-negotiable)"
+
+# ── HIMMEL-1427 (attestation v2 binding, CR round 1; fail-closed in round 2
+# — codex-adv finding 1): the probe requires the v2 attestation layer —
+# top-level contentIntegrityComplete / auditAnchorComplete /
+# attestationComplete plus per-hook wrapperIntegrity / scriptIntegrity and
+# wrapperMatchesAuditAnchor / scriptMatchesAuditAnchor — for 'present'. The
+# probe spawns the checkout's OWN guardrail-block.mjs, so producer and
+# consumer ship in lockstep: a payload with NO v2 fields (stale checkout or
+# stripped/tampered output) OR a PARTIAL v2 set reads DEGRADED, never the v1
+# 'present' verdict — round 1's fail-OPEN back-compat re-opened the downgrade
+# path the attestation exists to close. Five cases, each a STUB
+# guardrail-block.mjs emitting a hand-crafted status --json payload (same
+# harness as the codex-1-r7 self-consistency fixtures above) so the probe's v2
+# binding is exercised directly, isolated from the producer's git-blob
+# mechanics. The motivating gap: a content-tampered wrapper or a divergent
+# audit anchor yields attestationComplete:false while the legacy v1 `complete`
+# flag still reads true — so WITHOUT this binding the attestation exists in
+# the payload but never reaches the health surface (doctor still reports the
+# guardrails 'present').
+
+# Case 1: a fully healthy v2 payload (complete + content-integrity +
+# audit-anchor all green, flags internally consistent) → present.
+gb_v2_healthy_dir="$work/gb-v2-healthy"; mkdir -p "$gb_v2_healthy_dir/scripts/hooks"
+cat > "$gb_v2_healthy_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
+process.stdout.write(JSON.stringify({
+  mode: 'global',
+  anchor: { repo: '/fake/repo', source: 'HIMMEL_REPO' },
+  auditAnchor: { repo: '/fake/repo', source: 'self-checkout' },
+  anchorMatchesAudit: true,
+  complete: true,
+  contentIntegrityComplete: true,
+  auditAnchorComplete: true,
+  attestationComplete: true,
+  hooks: [
+    {
+      basename: 'auto-approve-safe-bash.sh', matcher: 'Bash', expectedMatcher: 'Bash', matcherMatches: true,
+      present: true, entryCount: 1,
+      bashPath: '/fake/bash', bashResolves: true,
+      nodePath: '/fake/node', nodeResolves: true,
+      wrapperPath: '/fake/wrapper.js', wrapperResolves: true,
+      anchorWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAnchor: true,
+      auditWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAuditAnchor: true,
+      wrapperIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'abc', reference: 'git:HEAD:scripts/hooks/guardrail-skip-in-himmel.js', referenceSha256: 'abc' },
+      scriptPath: '/fake/script.sh', scriptResolves: true,
+      anchorScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAnchor: true,
+      auditScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAuditAnchor: true,
+      scriptIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'def', reference: 'git:HEAD:scripts/hooks/auto-approve-safe-bash.sh', referenceSha256: 'def' },
+      duplicates: [], nonCanonicalCount: 0, nonCanonical: [],
+    },
+  ],
+}) + '\n');
+JS
+outGBv2h=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$(winpath "$gb_v2_healthy_dir")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBv2h" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a fully healthy v2 payload (complete + content-integrity + audit-anchor all green) must read present (HIMMEL-1427): (got: $outGBv2h)"
+echo "$outGBv2h" | jq -e '.detail | contains("attestation v2 complete")' >/dev/null \
+  || fail "cmd:guardrail_block_status healthy-v2 detail should name attestation v2 complete (got: $outGBv2h)"
+echo "ok: cmd:guardrail_block_status — a fully healthy v2 attestation payload reads present (HIMMEL-1427)"
+
+# Case 2: a content-tampered wrapper — v1 complete stays true, but
+# wrapperIntegrity.verdict is 'degraded', so contentIntegrityComplete:false and
+# attestationComplete:false. The probe must NOT rubber-stamp 'present' on the v1
+# flag alone; it reads degraded and names the content-integrity dimension.
+gb_v2_content_dir="$work/gb-v2-content-tampered"; mkdir -p "$gb_v2_content_dir/scripts/hooks"
+cat > "$gb_v2_content_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
+process.stdout.write(JSON.stringify({
+  mode: 'global',
+  anchor: { repo: '/fake/repo', source: 'HIMMEL_REPO' },
+  auditAnchor: { repo: '/fake/repo', source: 'self-checkout' },
+  anchorMatchesAudit: true,
+  complete: true,
+  contentIntegrityComplete: false,
+  auditAnchorComplete: true,
+  attestationComplete: false,
+  hooks: [
+    {
+      basename: 'auto-approve-safe-bash.sh', matcher: 'Bash', expectedMatcher: 'Bash', matcherMatches: true,
+      present: true, entryCount: 1,
+      bashPath: '/fake/bash', bashResolves: true,
+      nodePath: '/fake/node', nodeResolves: true,
+      wrapperPath: '/fake/wrapper.js', wrapperResolves: true,
+      anchorWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAnchor: true,
+      auditWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAuditAnchor: true,
+      wrapperIntegrity: { verdict: 'degraded', reason: 'content-mismatch', sha256: 'tampered', reference: 'git:HEAD:scripts/hooks/guardrail-skip-in-himmel.js', referenceSha256: 'abc' },
+      scriptPath: '/fake/script.sh', scriptResolves: true,
+      anchorScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAnchor: true,
+      auditScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAuditAnchor: true,
+      scriptIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'def', reference: 'git:HEAD:scripts/hooks/auto-approve-safe-bash.sh', referenceSha256: 'def' },
+      duplicates: [], nonCanonicalCount: 0, nonCanonical: [],
+    },
+  ],
+}) + '\n');
+JS
+outGBv2c=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$(winpath "$gb_v2_content_dir")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBv2c" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a content-tampered wrapper (wrapperIntegrity degraded, attestationComplete:false) must read degraded, NEVER present, even though v1 complete stays true (HIMMEL-1427): (got: $outGBv2c)"
+echo "$outGBv2c" | jq -e '.detail | contains("content integrity")' >/dev/null \
+  || fail "cmd:guardrail_block_status content-tampered detail should name the content-integrity dimension (got: $outGBv2c)"
+echo "ok: cmd:guardrail_block_status — a content-tampered wrapper reads degraded naming content integrity, never a v1-flag-only present (HIMMEL-1427)"
+
+# Case 3: a divergent audit anchor — content integrity is healthy, but the
+# configured wrapper points at a DIFFERENT checkout than the audit anchor
+# (wrapperMatchesAuditAnchor:false), so auditAnchorComplete:false and
+# attestationComplete:false. Reads degraded, naming the audit-anchor dimension.
+gb_v2_anchor_dir="$work/gb-v2-anchor-divergent"; mkdir -p "$gb_v2_anchor_dir/scripts/hooks"
+cat > "$gb_v2_anchor_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
+process.stdout.write(JSON.stringify({
+  mode: 'global',
+  anchor: { repo: '/fake/repo', source: 'HIMMEL_REPO' },
+  auditAnchor: { repo: '/fake/repo', source: 'self-checkout' },
+  anchorMatchesAudit: true,
+  complete: true,
+  contentIntegrityComplete: true,
+  auditAnchorComplete: false,
+  attestationComplete: false,
+  hooks: [
+    {
+      basename: 'auto-approve-safe-bash.sh', matcher: 'Bash', expectedMatcher: 'Bash', matcherMatches: true,
+      present: true, entryCount: 1,
+      bashPath: '/fake/bash', bashResolves: true,
+      nodePath: '/fake/node', nodeResolves: true,
+      wrapperPath: '/fake/wrapper.js', wrapperResolves: true,
+      anchorWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAnchor: true,
+      auditWrapperPath: '/different/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAuditAnchor: false,
+      wrapperIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'abc', reference: 'git:HEAD:scripts/hooks/guardrail-skip-in-himmel.js', referenceSha256: 'abc' },
+      scriptPath: '/fake/script.sh', scriptResolves: true,
+      anchorScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAnchor: true,
+      auditScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAuditAnchor: true,
+      scriptIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'def', reference: 'git:HEAD:scripts/hooks/auto-approve-safe-bash.sh', referenceSha256: 'def' },
+      duplicates: [], nonCanonicalCount: 0, nonCanonical: [],
+    },
+  ],
+}) + '\n');
+JS
+outGBv2a=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$(winpath "$gb_v2_anchor_dir")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBv2a" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a divergent audit anchor (wrapperMatchesAuditAnchor:false, attestationComplete:false) must read degraded, NEVER present, even with healthy content integrity (HIMMEL-1427): (got: $outGBv2a)"
+echo "$outGBv2a" | jq -e '.detail | contains("audit anchor")' >/dev/null \
+  || fail "cmd:guardrail_block_status audit-anchor-divergent detail should name the audit-anchor dimension (got: $outGBv2a)"
+echo "ok: cmd:guardrail_block_status — a divergent audit anchor reads degraded naming the audit anchor, never present (HIMMEL-1427)"
+
+# Case 4 (fail-closed on absence — CR round 2, finding 1): a payload that
+# emits NO attestation v2 fields at all (a stale checkout aimed at an older
+# guardrail-block.mjs, OR deliberately stripped/tampered output) — complete:true,
+# internally consistent, but no attestationComplete / contentIntegrityComplete /
+# auditAnchorComplete and no per-hook wrapperIntegrity / scriptIntegrity. Round 1
+# kept the v1 'present' verdict here (back-compat); round 2 fails CLOSED: this
+# re-opens the downgrade path the attestation exists to close, so it reads
+# degraded naming the situation, never a silent v1 'present'.
+gb_v1_no_v2_dir="$work/gb-v1-no-v2"; mkdir -p "$gb_v1_no_v2_dir/scripts/hooks"
+cat > "$gb_v1_no_v2_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
+process.stdout.write(JSON.stringify({
+  mode: 'global',
+  complete: true,
+  hooks: [
+    {
+      basename: 'auto-approve-safe-bash.sh', matcher: 'Bash', expectedMatcher: 'Bash', matcherMatches: true,
+      present: true, entryCount: 1,
+      bashPath: '/fake/bash', bashResolves: true,
+      nodePath: '/fake/node', nodeResolves: true,
+      wrapperPath: '/fake/wrapper.js', wrapperResolves: true,
+      anchorWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAnchor: true,
+      scriptPath: '/fake/script.sh', scriptResolves: true,
+      anchorScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAnchor: true,
+      duplicates: [], nonCanonicalCount: 0, nonCanonical: [],
+    },
+  ],
+}) + '\n');
+JS
+outGBv1=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$(winpath "$gb_v1_no_v2_dir")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBv1" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a payload with NO v2 fields must read degraded (fail-closed on absence — stale checkout or stripped output re-opens the downgrade path), NEVER present (HIMMEL-1427 CR round 2): (got: $outGBv1)"
+echo "$outGBv1" | jq -e '.detail | contains("producer emitted no attestation-v2 fields")' >/dev/null \
+  || fail "cmd:guardrail_block_status v1-no-v2 detail should name the fail-closed situation (got: $outGBv1)"
+echo "ok: cmd:guardrail_block_status — a payload without v2 fields reads degraded (fail-closed), never a silent v1 present (HIMMEL-1427 CR round 2)"
+
+# Case 5 (fail-closed on a PARTIAL v2 set — CR round 2, finding 1, panel sug
+# codex-1): a payload whose per-hook integrity fields ARE present but whose
+# summary booleans (attestationComplete / contentIntegrityComplete /
+# auditAnchorComplete) and anchorMatchesAudit are MISSING — some v2 fields
+# present, the set not whole. This is self-contradictory/incomplete and must
+# NOT silently fall back to a v1 classification: degraded, never 'present'.
+gb_v2_partial_dir="$work/gb-v2-partial"; mkdir -p "$gb_v2_partial_dir/scripts/hooks"
+cat > "$gb_v2_partial_dir/scripts/hooks/guardrail-block.mjs" <<'JS'
+process.stdout.write(JSON.stringify({
+  mode: 'global',
+  complete: true,
+  hooks: [
+    {
+      basename: 'auto-approve-safe-bash.sh', matcher: 'Bash', expectedMatcher: 'Bash', matcherMatches: true,
+      present: true, entryCount: 1,
+      bashPath: '/fake/bash', bashResolves: true,
+      nodePath: '/fake/node', nodeResolves: true,
+      wrapperPath: '/fake/wrapper.js', wrapperResolves: true,
+      anchorWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAnchor: true,
+      auditWrapperPath: '/fake/repo/scripts/hooks/guardrail-skip-in-himmel.js', wrapperMatchesAuditAnchor: true,
+      wrapperIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'abc', reference: 'git:HEAD:scripts/hooks/guardrail-skip-in-himmel.js', referenceSha256: 'abc' },
+      scriptPath: '/fake/script.sh', scriptResolves: true,
+      anchorScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAnchor: true,
+      auditScriptPath: '/fake/repo/scripts/hooks/auto-approve-safe-bash.sh', scriptMatchesAuditAnchor: true,
+      scriptIntegrity: { verdict: 'healthy', reason: 'matches-git-object', sha256: 'def', reference: 'git:HEAD:scripts/hooks/auto-approve-safe-bash.sh', referenceSha256: 'def' },
+      duplicates: [], nonCanonicalCount: 0, nonCanonical: [],
+    },
+  ],
+}) + '\n');
+JS
+outGBv2p=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-block-global');
+const ctx = { repoRoot: '$(winpath "$gb_v2_partial_dir")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGBv2p" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:guardrail_block_status: a PARTIAL v2 payload (per-hook integrity present, summary booleans missing) must read degraded, NEVER silently v1-classified as present (HIMMEL-1427 CR round 2): (got: $outGBv2p)"
+echo "$outGBv2p" | jq -e '.detail | contains("incomplete")' >/dev/null \
+  || fail "cmd:guardrail_block_status partial-v2 detail should name the payload as incomplete (got: $outGBv2p)"
+echo "ok: cmd:guardrail_block_status — a partial v2 payload (some fields present, set not whole) reads degraded, never a silent v1 present (HIMMEL-1427 CR round 2)"
 
 gb_bad_exit_dir="$work/gb-bad-exit"; mkdir -p "$gb_bad_exit_dir/scripts/hooks"
 cat > "$gb_bad_exit_dir/scripts/hooks/guardrail-block.mjs" <<'JS'

@@ -189,7 +189,7 @@ esac
 if ! grepq "$out" "fail-open"; then
   if grepq "$out" "pinned remotes"; then ok "output has pinned-remotes section"; else bad "no pinned-remotes section"; fi
   if grepq "$out" "vendored forks"; then ok "output has vendored-forks section"; else bad "no vendored-forks section"; fi
-  if printf '%s' "$out" | grep "claude-obsidian" | grep -q "AgriciDaniel/claude-obsidian"; then
+  if grepq "$(printf '%s' "$out" | grep "claude-obsidian")" "AgriciDaniel/claude-obsidian"; then
     ok "claude-obsidian drift tracks true upstream (AgriciDaniel), not the fork"
   else
     bad "claude-obsidian line does not reference true upstream AgriciDaniel; output: $(printf '%s' "$out" | grep claude-obsidian)"
@@ -224,7 +224,7 @@ printf '{"plugins":[]}' >"$W5B/empty_mjson.json"
 printf '{}' >"$W5B/empty_ups.json"
 badpin_out="$(PATH="$W5B/bin:$PATH" DRIFT_MJSON="$W5B/empty_mjson.json" DRIFT_UPSTREAMS="$W5B/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5B/scripts/check-plugin-drift.sh" 2>&1)"; badpin_rc=$?
 rm -rf "$W5B"
-if printf '%s' "$badpin_out" | grep 'bad-pin' | grep -q 'UNCHECKED'; then ok "malformed UPSTREAM_PIN -> named UNCHECKED"; else bad "malformed UPSTREAM_PIN not UNCHECKED; $(printf '%s' "$badpin_out" | grep bad-pin)"; fi
+if grepq "$(printf '%s' "$badpin_out" | grep 'bad-pin')" 'UNCHECKED'; then ok "malformed UPSTREAM_PIN -> named UNCHECKED"; else bad "malformed UPSTREAM_PIN not UNCHECKED; $(printf '%s' "$badpin_out" | grep bad-pin)"; fi
 if [ "$badpin_rc" -eq 3 ]; then ok "malformed UPSTREAM_PIN run exits 3 (incomplete, not false all-current)"; else bad "malformed UPSTREAM_PIN rc=$badpin_rc; expected 3"; fi
 
 # 5c. Vendored-fork hashing on systems without sha256sum (stock macOS):
@@ -278,7 +278,7 @@ else
 fi
 hash_out="$(PATH="$W5C/bin:$W5C/nosha" DRIFT_MJSON="$W5C/empty_mjson.json" DRIFT_UPSTREAMS="$W5C/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5C/scripts/check-plugin-drift.sh" 2>&1)"; hash_rc=$?
 if grepq "$hash_out" '^  hash-pin: CURRENT'; then ok "sha256sum absent -> shasum fallback verifies vendored fork CURRENT"; else bad "sha256sum fallback did not verify CURRENT; $(printf '%s' "$hash_out" | grep hash-pin)"; fi
-if printf '%s' "$hash_out" | grep 'hash-pin' | grep -q 'DRIFT'; then bad "sha256sum absent was reported as DRIFT"; else ok "sha256sum absent never reported as DRIFT"; fi
+if grepq "$(printf '%s' "$hash_out" | grep 'hash-pin')" 'DRIFT'; then bad "sha256sum absent was reported as DRIFT"; else ok "sha256sum absent never reported as DRIFT"; fi
 if [ "$hash_rc" -eq 0 ]; then ok "sha256sum fallback-only run exits 0"; else bad "sha256sum fallback run rc=$hash_rc; expected 0"; fi
 
 # 5c-neg. Same sandbox, mismatched pin sha -> the shasum fallback path must
@@ -290,7 +290,7 @@ upstream_path=file.txt
 upstream_sha256=0000000000000000000000000000000000000000000000000000000000000000
 PIN
 drift_out="$(PATH="$W5C/bin:$W5C/nosha" DRIFT_MJSON="$W5C/empty_mjson.json" DRIFT_UPSTREAMS="$W5C/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5C/scripts/check-plugin-drift.sh" 2>&1)"; drift_rc=$?
-if printf '%s' "$drift_out" | grep '^  hash-pin: DRIFT' | grep -q "now ${HELLO_SHA:0:12}"; then ok "mismatched pin sha -> DRIFT via shasum fallback (computed hash in message)"; else bad "mismatched pin sha not reported as DRIFT with computed hash; $(printf '%s' "$drift_out" | grep hash-pin)"; fi
+if grepq "$(printf '%s' "$drift_out" | grep '^  hash-pin: DRIFT')" "now ${HELLO_SHA:0:12}"; then ok "mismatched pin sha -> DRIFT via shasum fallback (computed hash in message)"; else bad "mismatched pin sha not reported as DRIFT with computed hash; $(printf '%s' "$drift_out" | grep hash-pin)"; fi
 if [ "$drift_rc" -eq 2 ]; then ok "shasum-fallback DRIFT run exits 2"; else bad "shasum-fallback DRIFT run rc=$drift_rc; expected 2"; fi
 
 # 5d. BOTH hash tools absent -> the tool-failure branch: named UNCHECKED
@@ -310,8 +310,8 @@ else
 fi
 notool_out="$(PATH="$W5C/nohash:$W5C/nosha" DRIFT_MJSON="$W5C/empty_mjson.json" DRIFT_UPSTREAMS="$W5C/empty_ups.json" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$W5C/scripts/check-plugin-drift.sh" 2>&1)"; notool_rc=$?
 rm -rf "$W5C"
-if printf '%s' "$notool_out" | grep 'hash-pin' | grep 'could not compute sha256' | grep -q 'UNCHECKED'; then ok "both hash tools absent -> named UNCHECKED (could not compute sha256)"; else bad "both-tools-absent not UNCHECKED; $(printf '%s' "$notool_out" | grep hash-pin)"; fi
-if printf '%s' "$notool_out" | grep 'hash-pin' | grep -q 'DRIFT'; then bad "both hash tools absent was reported as DRIFT"; else ok "both hash tools absent never reported as DRIFT"; fi
+if grepq "$(printf '%s' "$notool_out" | grep 'hash-pin' | grep 'could not compute sha256')" 'UNCHECKED'; then ok "both hash tools absent -> named UNCHECKED (could not compute sha256)"; else bad "both-tools-absent not UNCHECKED; $(printf '%s' "$notool_out" | grep hash-pin)"; fi
+if grepq "$(printf '%s' "$notool_out" | grep 'hash-pin')" 'DRIFT'; then bad "both hash tools absent was reported as DRIFT"; else ok "both hash tools absent never reported as DRIFT"; fi
 if [ "$notool_rc" -eq 3 ]; then ok "both-tools-absent run exits 3 (incomplete, not false all-current)"; else bad "both-tools-absent run rc=$notool_rc; expected 3"; fi
 # 6. Override-branch UNCHECKED paths via fixtures (DRIFT_MJSON/DRIFT_UPSTREAMS).
 #    Both checks fire BEFORE any gh call, but the script's top-level fail-open gate
@@ -336,8 +336,8 @@ JSON
   # carried-upstream checks firing alongside the fixture under test).
   fx_out="$(DRIFT_MJSON="$fix_m" DRIFT_UPSTREAMS="$fix_u" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$SCRIPT" 2>&1)"; fx_rc=$?
   rm -f "$fix_m" "$fix_u"
-  if printf '%s' "$fx_out" | grep "fix-missing-base" | grep -q "missing synced_base"; then ok "missing synced_base -> UNCHECKED (not a phantom BEHIND)"; else bad "missing synced_base not UNCHECKED; out: $(printf '%s' "$fx_out" | grep fix-missing-base)"; fi
-  if printf '%s' "$fx_out" | grep "fix-bad-track" | grep -q "unknown track"; then ok "unknown track -> UNCHECKED"; else bad "bad track not UNCHECKED; out: $(printf '%s' "$fx_out" | grep fix-bad-track)"; fi
+  if grepq "$(printf '%s' "$fx_out" | grep "fix-missing-base")" "missing synced_base"; then ok "missing synced_base -> UNCHECKED (not a phantom BEHIND)"; else bad "missing synced_base not UNCHECKED; out: $(printf '%s' "$fx_out" | grep fix-missing-base)"; fi
+  if grepq "$(printf '%s' "$fx_out" | grep "fix-bad-track")" "unknown track"; then ok "unknown track -> UNCHECKED"; else bad "bad track not UNCHECKED; out: $(printf '%s' "$fx_out" | grep fix-bad-track)"; fi
   if [ "$fx_rc" -eq 3 ] || [ "$fx_rc" -eq 2 ]; then ok "fixture run signals incomplete/drift (rc=$fx_rc, never a false all-clear)"; else bad "fixture run rc=$fx_rc; expected 3 (incomplete) — UNCHECKED must not read as exit 0"; fi
 else
   ok "gh unavailable — override-branch fixture checks skipped (consistent with fail-open)"
@@ -448,26 +448,26 @@ sec7="$(sed -n '/carried upstreams/,$p' "$W7/out.txt")"
 if grepq "$sec7" '^  pin-full: CURRENT'; then ok "commit_head pin full-SHA -> CURRENT"; else bad "commit_head pin-full not CURRENT; $(printf '%s' "$sec7" | grep pin-full)"; fi
 if grepq "$sec7" '^  pin-short: BEHIND'; then ok "commit_head pin short-SHA resolved -> BEHIND"; else bad "commit_head pin-short not BEHIND; $(printf '%s' "$sec7" | grep pin-short)"; fi
 if grepq "$sec7" '^  checkout-ok: CURRENT'; then ok "commit_head checkout present -> CURRENT"; else bad "checkout-ok not CURRENT; $(printf '%s' "$sec7" | grep checkout-ok)"; fi
-if printf '%s' "$sec7" | grep 'checkout-missing' | grep -q 'UNCHECKED'; then ok "commit_head checkout absent -> UNCHECKED"; else bad "checkout-missing not UNCHECKED"; fi
-if printf '%s' "$sec7" | grep 'weird-mode' | grep -q "mode 'bogus' unknown"; then ok "commit_head unknown mode -> UNCHECKED"; else bad "weird-mode not flagged"; fi
+if grepq "$(printf '%s' "$sec7" | grep 'checkout-missing')" 'UNCHECKED'; then ok "commit_head checkout absent -> UNCHECKED"; else bad "checkout-missing not UNCHECKED"; fi
+if grepq "$(printf '%s' "$sec7" | grep 'weird-mode')" "mode 'bogus' unknown"; then ok "commit_head unknown mode -> UNCHECKED"; else bad "weird-mode not flagged"; fi
 # 7b. tag_release paths.
 if grepq "$sec7" '^  base-cur: CURRENT'; then ok "tag_release base synced -> CURRENT"; else bad "base-cur not CURRENT"; fi
 if grepq "$sec7" '^  base-behind: BEHIND'; then ok "tag_release base stale -> BEHIND"; else bad "base-behind not BEHIND"; fi
 if grepq "$sec7" '^  probe-cur: CURRENT'; then ok "tag_release probe synced -> CURRENT"; else bad "probe-cur not CURRENT"; fi
 if grepq "$sec7" '^  probe-behind: BEHIND'; then ok "tag_release probe stale -> BEHIND"; else bad "probe-behind not BEHIND"; fi
-if printf '%s' "$sec7" | grep 'probe-ahead' | grep -q 'CURRENT'; then ok "tag_release probe installed-ahead -> CURRENT (not a phantom BEHIND)"; else bad "probe-ahead not CURRENT; $(printf '%s' "$sec7" | grep probe-ahead)"; fi
+if grepq "$(printf '%s' "$sec7" | grep 'probe-ahead')" 'CURRENT'; then ok "tag_release probe installed-ahead -> CURRENT (not a phantom BEHIND)"; else bad "probe-ahead not CURRENT; $(printf '%s' "$sec7" | grep probe-ahead)"; fi
 # 7b-extra (HIMMEL-869 CR fix): a version_regex containing a literal '|'
 # (regex alternation) must round-trip through the emitter/consumer protocol
 # intact. Under a pipe-delimited protocol this record's own fields would
 # misalign (v2/version_regex truncates at the first '|', the remainder spills
 # into tier) — assert the verdict line is well-formed: CURRENT, with tier
 # exactly "[A]" and no leaked regex remainder.
-if printf '%s' "$sec7" | grep '^  probe-pipe-regex: CURRENT' | grep -q '\[A\]$'; then
+if grepq "$(printf '%s' "$sec7" | grep '^  probe-pipe-regex: CURRENT')" '\[A\]$'; then
   ok "tag_release probe: version_regex containing '|' parses into correct fields (well-formed CURRENT line, tier intact)"
 else
   bad "probe-pipe-regex line malformed (delimiter/field misalignment?); $(printf '%s' "$sec7" | grep probe-pipe-regex)"
 fi
-if printf '%s' "$sec7" | grep 'probe-pipe-regex' | grep -q 'nomatchxyz'; then
+if grepq "$(printf '%s' "$sec7" | grep 'probe-pipe-regex')" 'nomatchxyz'; then
   bad "probe-pipe-regex line leaked regex remainder into tier/verdict — field misalignment"
 else
   ok "probe-pipe-regex line does not leak regex remainder (fields correctly delimited)"
@@ -476,7 +476,7 @@ fi
 if grepq "$sec7" '^  mkt:fixt-mkt: CURRENT'; then ok "marketplace github-sourced checkout -> CURRENT"; else bad "mkt:fixt-mkt not CURRENT; $(printf '%s' "$sec7" | grep 'mkt:')"; fi
 if grepq "$sec7" 'mkt:dir-src'; then bad "directory-sourced marketplace should be skipped (not checked)"; else ok "directory-sourced marketplace correctly skipped"; fi
 # 7d. unknown kind + exit code (drift from pin-short/base-behind/probe-behind => 2).
-if printf '%s' "$sec7" | grep 'weird-kind' | grep -q "unknown kind 'bogus'"; then ok "unknown kind -> UNCHECKED"; else bad "weird-kind not flagged"; fi
+if grepq "$(printf '%s' "$sec7" | grep 'weird-kind')" "unknown kind 'bogus'"; then ok "unknown kind -> UNCHECKED"; else bad "weird-kind not flagged"; fi
 if [ "$rc7" -eq 2 ]; then ok "carried-upstreams drift run exits 2 (drift, precedence over incomplete)"; else bad "carried-upstreams drift run rc=$rc7; expected 2"; fi
 # 7e. malformed registry -> class UNCHECKED (never a false all-clear).
 printf '{not valid json' >"$W7/bad.json"
@@ -542,7 +542,7 @@ w8_out="$(PATH="$NOTIMEOUT_PATH" DRIFT_REGISTRY="$W8/upstreams.json" DRIFT_KNOWN
 w8_elapsed=$(( $(date +%s) - w8_start ))
 if [ "$w8_elapsed" -lt 20 ]; then ok "hanging probe watchdog: run completed in ${w8_elapsed}s (<20s)"; else bad "hanging probe watchdog: run took ${w8_elapsed}s (>=20s) — watchdog did not bound it"; fi
 if grepq "$w8_out" "watchdog fallback"; then ok "hanging probe: fallback-watchdog note emitted"; else bad "hanging probe: no fallback-watchdog note; out: $w8_out"; fi
-if printf '%s' "$w8_out" | grep 'hang-tool' | grep -q 'probe timed out'; then ok "hanging probe: entry reads 'probe timed out' UNCHECKED"; else bad "hanging probe: no timeout note; $(printf '%s' "$w8_out" | grep hang-tool)"; fi
+if grepq "$(printf '%s' "$w8_out" | grep 'hang-tool')" 'probe timed out'; then ok "hanging probe: entry reads 'probe timed out' UNCHECKED"; else bad "hanging probe: no timeout note; $(printf '%s' "$w8_out" | grep hang-tool)"; fi
 if grepq "$w8_out" -E '^  hang-tool: (CURRENT|BEHIND)'; then bad "hanging probe: entry read CURRENT/BEHIND instead of UNCHECKED"; else ok "hanging probe: entry never read CURRENT/BEHIND"; fi
 if [ "$w8_rc" -eq 3 ]; then ok "hanging probe run exits 3 (incomplete)"; else bad "hanging probe run rc=$w8_rc; expected 3"; fi
 rm -rf "$W8"
@@ -565,12 +565,12 @@ KJSON
 printf '{"plugins":[]}' >"$W9/empty_mjson.json"
 printf '{}' >"$W9/empty_ups.json"
 w9_out="$(PATH="$W9/bin:$PATH" DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES="$W9/km.json" DRIFT_MJSON="$W9/empty_mjson.json" DRIFT_UPSTREAMS="$W9/empty_ups.json" bash "$SCRIPT" 2>&1)"; w9_rc=$?
-if printf '%s' "$w9_out" | grep 'mkt:no-install-loc-marketplace' | grep -q 'lacks installLocation'; then
+if grepq "$(printf '%s' "$w9_out" | grep 'mkt:no-install-loc-marketplace')" 'lacks installLocation'; then
   ok "marketplace entry without installLocation -> named per-entry UNCHECKED skip"
 else
   bad "missing-installLocation marketplace entry not flagged; $(printf '%s' "$w9_out" | grep 'no-install-loc-marketplace')"
 fi
-if printf '%s' "$w9_out" | grep 'mkt:no-install-loc-marketplace' | grep -q 'checkout not present'; then
+if grepq "$(printf '%s' "$w9_out" | grep 'mkt:no-install-loc-marketplace')" 'checkout not present'; then
   bad "missing-installLocation entry fell through to the empty-path checkout-missing branch"
 else
   ok "missing-installLocation entry did not fall through to checkout-missing"
@@ -613,7 +613,7 @@ w10_start=$(date +%s)
 w10_out="$(PATH="$TIMEOUT_PATH" DRIFT_REGISTRY="$W10/upstreams.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W10/empty_mjson.json" DRIFT_UPSTREAMS="$W10/empty_ups.json" bash "$SCRIPT" 2>&1)"; w10_rc=$?
 w10_elapsed=$(( $(date +%s) - w10_start ))
 if [ "$w10_elapsed" -lt 20 ]; then ok "timeout-path hanging probe: run completed in ${w10_elapsed}s (<20s)"; else bad "timeout-path hanging probe: run took ${w10_elapsed}s (>=20s) — 'timeout' did not bound it"; fi
-if printf '%s' "$w10_out" | grep 'timedprobe-tool' | grep -q 'probe timed out (10s)'; then ok "timeout-path hanging probe: entry reads 'probe timed out (10s)' UNCHECKED"; else bad "timeout-path hanging probe: no timeout note; $(printf '%s' "$w10_out" | grep timedprobe-tool)"; fi
+if grepq "$(printf '%s' "$w10_out" | grep 'timedprobe-tool')" 'probe timed out (10s)'; then ok "timeout-path hanging probe: entry reads 'probe timed out (10s)' UNCHECKED"; else bad "timeout-path hanging probe: no timeout note; $(printf '%s' "$w10_out" | grep timedprobe-tool)"; fi
 if grepq "$w10_out" -E '^  timedprobe-tool: (CURRENT|BEHIND)'; then bad "timeout-path hanging probe: entry read CURRENT/BEHIND instead of UNCHECKED (partial pre-hang output was parsed)"; else ok "timeout-path hanging probe: entry never read CURRENT/BEHIND"; fi
 if [ "$w10_rc" -eq 3 ]; then ok "timeout-path hanging probe run exits 3 (incomplete)"; else bad "timeout-path hanging probe run rc=$w10_rc; expected 3"; fi
 rm -rf "$W10"
@@ -649,9 +649,9 @@ JSON
 printf '{"plugins":[]}' >"$W11/empty_mjson.json"; printf '{}' >"$W11/empty_ups.json"
 rel_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-release.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"
 tag_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-tag.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"
-if printf '%s' "$rel_out" | grep 'nonmono-rel' | grep -q 'v0.9.16'; then ok "latest_source=release compares against Releases API (v0.9.16)"; else bad "release-mode did not use releases/latest; $(printf '%s' "$rel_out" | grep nonmono-rel)"; fi
-if printf '%s' "$rel_out" | grep 'nonmono-rel' | grep -q 'v1.0.0'; then bad "release-mode leaked the stale v1.0.0 tag"; else ok "latest_source=release ignores the stale v1.0.0 highest tag"; fi
-if printf '%s' "$tag_out" | grep 'nonmono-tag' | grep -q 'v1.0.0'; then ok "default tag-mode control picks the highest tag v1.0.0 — confirms the opt-in changes the source"; else bad "tag-mode control did not pick v1.0.0; $(printf '%s' "$tag_out" | grep nonmono-tag)"; fi
+if grepq "$(printf '%s' "$rel_out" | grep 'nonmono-rel')" 'v0.9.16'; then ok "latest_source=release compares against Releases API (v0.9.16)"; else bad "release-mode did not use releases/latest; $(printf '%s' "$rel_out" | grep nonmono-rel)"; fi
+if grepq "$(printf '%s' "$rel_out" | grep 'nonmono-rel')" 'v1.0.0'; then bad "release-mode leaked the stale v1.0.0 tag"; else ok "latest_source=release ignores the stale v1.0.0 highest tag"; fi
+if grepq "$(printf '%s' "$tag_out" | grep 'nonmono-tag')" 'v1.0.0'; then ok "default tag-mode control picks the highest tag v1.0.0 — confirms the opt-in changes the source"; else bad "tag-mode control did not pick v1.0.0; $(printf '%s' "$tag_out" | grep nonmono-tag)"; fi
 # releases/latest unreachable -> UNCHECKED (never a phantom compare).
 cat > "$W11/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -663,7 +663,7 @@ exit 0
 GH
 chmod +x "$W11/bin/gh"
 unreach_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-release.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"; unreach_rc=$?
-if printf '%s' "$unreach_out" | grep 'nonmono-rel' | grep -q 'UNCHECKED'; then ok "latest_source=release: no latest release -> UNCHECKED"; else bad "release-mode unreachable not UNCHECKED; $(printf '%s' "$unreach_out" | grep nonmono-rel)"; fi
+if grepq "$(printf '%s' "$unreach_out" | grep 'nonmono-rel')" 'UNCHECKED'; then ok "latest_source=release: no latest release -> UNCHECKED"; else bad "release-mode unreachable not UNCHECKED; $(printf '%s' "$unreach_out" | grep nonmono-rel)"; fi
 if [ "$unreach_rc" -eq 3 ]; then ok "release-mode unreachable run exits 3 (incomplete)"; else bad "release-mode unreachable rc=$unreach_rc; expected 3"; fi
 # An UNKNOWN latest_source (typo like "releases") must be UNCHECKED, never a
 # silent fall-through to tag mode (which would re-introduce the phantom drift).
@@ -682,7 +682,7 @@ cat > "$W11/reg-bad.json" <<'JSON'
 ]}
 JSON
 bad_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-bad.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W11/empty_mjson.json" DRIFT_UPSTREAMS="$W11/empty_ups.json" bash "$SCRIPT" 2>&1)"; bad_rc=$?
-if printf '%s' "$bad_out" | grep 'bad-src' | grep -q "unknown latest_source"; then ok "unknown latest_source -> UNCHECKED (not silent tag-mode)"; else bad "unknown latest_source not UNCHECKED; $(printf '%s' "$bad_out" | grep bad-src)"; fi
+if grepq "$(printf '%s' "$bad_out" | grep 'bad-src')" "unknown latest_source"; then ok "unknown latest_source -> UNCHECKED (not silent tag-mode)"; else bad "unknown latest_source not UNCHECKED; $(printf '%s' "$bad_out" | grep bad-src)"; fi
 if grepq "$bad_out" -E '^  bad-src: (CURRENT|BEHIND)'; then bad "unknown latest_source fell through to a tag-mode verdict"; else ok "unknown latest_source never produced a CURRENT/BEHIND verdict"; fi
 rm -rf "$W11"
 

@@ -43,7 +43,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -69,6 +68,17 @@ winpath() {
     *) printf '%s' "$1" ;;
   esac
 }
+
+# HIMMEL-1446 r3: every `update` case reaches applyHimmelctlPathShim() (dry-run
+# prints the resolved binDir; the accept cases B/C write the launcher into it).
+# Without a pin, himmelctlBinDir() resolves to the operator's REAL ~/.local/bin
+# (on win32 it ignores HOME entirely and uses os.homedir()), so caseB has been
+# writing a launcher there on every suite run since the shim landed — and now
+# refuses (rc=1) on the unmarked pre-r2 file a prior run left behind. Isolate
+# binDir for the WHOLE suite, mirroring test-wizard-uninstall.sh's convention,
+# so no case ever touches the real bin dir. winpath'd so win32 node resolves it.
+HIMMELCTL_BIN_DIR="$(winpath "$work/isolated-bin")"
+export HIMMELCTL_BIN_DIR
 
 build_path() {
   local _stub="$1"; shift
@@ -265,5 +275,36 @@ esac
 [ -f "$fixtureF/update-calls.log" ] \
   && fail "caseF: --dry-run must NOT execute himmel-update.sh (got: $(cat "$fixtureF/update-calls.log"))"
 echo "ok: caseF resolveBash -> deterministic Git Bash on win32 / bare 'bash' fallback on posix (never WSL)"
+
+# ── Case G (HIMMEL-1446 r4 glm-5): a launcher write failure does not mask a ──
+# ── successful update — rc stays 0 with a LOUD warning. ──────────────────────
+# The PATH launcher is a best-effort rider on `update`: when the update engine
+# (himmel-update.sh) succeeds but applyHimmelctlPathShim() refuses/fails (here:
+# an unmarked third-party himmelctl.js collision at the loader dest), cmdUpdate
+# must NOT return non-zero (that false-fails exit-code automation that keys off
+# rc 0/!=0), but WARN loudly so the operator sees the launcher is missing.
+# Pre-r4 this returned rc 1.
+stubG="$work/caseG"; mkdir -p "$stubG"
+cG=$(build_path "$stubG" bash git jq python3 npm -- )
+hG="$work/hG"; mkdir -p "$hG"
+fixtureG="$work/caseG-fixture"; build_fixture "$fixtureG" 0
+# Pre-existing UNMARKED file at the loader dest -> writeMarkedLauncher refuses.
+printf 'third-party\n' > "$work/isolated-bin/himmelctl.js"
+set +e
+out=$(PATH="$cG" HOME="$hG" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureG")" \
+      "$node_bin" "$wizard" update \
+      </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "caseG: launcher failure must NOT mask a successful update (got rc=$rc): $out"
+[ -f "$fixtureG/update-calls.log" ] \
+  || fail "caseG: the update engine must still run on a successful update (out: $out)"
+grepq "$out" 'WARN: update succeeded' \
+  || fail "caseG: expected a LOUD warning that the launcher could not be written (got: $out)"
+grepq "$out" 'refusing to overwrite' \
+  || fail "caseG: expected the specific refusal from applyHimmelctlPathShim (got: $out)"
+[ "$(cat "$work/isolated-bin/himmelctl.js")" = 'third-party' ] \
+  || fail "caseG: the refused unmarked file must be left untouched"
+echo "ok: caseG launcher failure on a successful update -> rc 0 + LOUD warning (best-effort rider)"
 
 echo "PASS"

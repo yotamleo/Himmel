@@ -19,7 +19,9 @@
 #   C. lanes.<id> — set on/off writes ONLY lanes.local.json (probe.kind
 #      always/never); the fixture's lanes.json (repo-registry stand-in) is
 #      NEVER modified; unknown id -> rc=2.
-#   D. lanes get (whole + single id, override vs no-override).
+#   D. lanes get (whole + single id, override vs no-override), including the
+#      adopter-profile suppression state and an out-of-scope lane that remains
+#      unconstrained.
 #   E. --dry-run — set initiative AND set lanes write NOTHING (no .env, no
 #      lanes.local.json).
 #   F. hooks.improveOnSubmit — advisory only: prints the manual instructions,
@@ -50,7 +52,6 @@ set -euo pipefail
 # the match lands early in a large input. A here-string is not a pipeline,
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
-
 
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
@@ -175,7 +176,30 @@ grepq "$CFG_OUT" -F 'no override' \
 run_cfg "$fxC" get lanes
 grepq "$CFG_OUT" -F '"id": "sonnet"' \
   || fail "caseD: whole-namespace get should print the full overlay file (got: $CFG_OUT)"
-echo "ok: caseD lanes get (whole + single id) distinguishes override vs no-override"
+cat > "$fxC/scripts/lanes/lanes.local.json" <<'PROFILE'
+{
+  "lanes": [],
+  "profileAllowlist": ["ollama-local"],
+  "profileAllowlistScope": ["ollama-local", "copilot-cli"]
+}
+PROFILE
+run_cfg "$fxC" get lanes.copilot-cli
+grepq "$CFG_OUT" -F 'suppressed-by-profile' \
+  || fail "caseD: config get must report a profile-suppressed lane honestly (got: $CFG_OUT)"
+run_cfg "$fxC" get lanes.ollama-cloud
+grepq "$CFG_OUT" -F 'not constrained by adopter profile' \
+  || fail "caseD: a lane outside the wizard-owned scope must report unconstrained (got: $CFG_OUT)"
+# The allowlisted, in-scope lane must stay ROUTABLE: a resolver that suppressed
+# every lane in profileAllowlistScope would pass the two checks above, so assert
+# the selected lane ollama-local is NOT suppressed (CodeRabbit #1525 nit).
+run_cfg "$fxC" get lanes.ollama-local
+if grepq "$CFG_OUT" -F 'suppressed-by-profile'; then
+  fail "caseD: allowlisted selected lane ollama-local must stay routable, not be suppressed-by-profile (got: $CFG_OUT)"
+fi
+run_cfg "$fxC" get lanes
+grepq "$CFG_OUT" -F 'profile policy suppresses when base probes pass: copilot-cli' \
+  || fail "caseD: whole-namespace get must summarize profile suppression (got: $CFG_OUT)"
+echo "ok: caseD lanes get reports overrides and adopter-profile suppression without constraining out-of-scope lanes"
 
 # ── Case E: --dry-run writes NOTHING (initiative AND lanes) ────────────────
 fxE="$work/fixtureE"; build_fixture "$fxE"
@@ -231,7 +255,7 @@ mkdir -p "$fxM/scripts/install"
 cp "$repo_root/scripts/install/manifest.json" "$fxM/scripts/install/manifest.json"
 _hM="$work/home-M-$$-$RANDOM"; mkdir -p "$_hM/.claude/himmel"
 cat > "$_hM/.claude/himmel/install-profile.json" <<'JSON'
-{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"alwaysOn":false}
+{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
 JSON
 set +e
 outM=$(HOME="$_hM" HIMMELCTL_REPO_ROOT="$(winpath "$fxM")" \

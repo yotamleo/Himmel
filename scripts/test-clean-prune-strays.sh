@@ -5,6 +5,15 @@
 # pattern of scripts/test-cr-marker-sweep.sh.
 set -euo pipefail
 
+# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
+# pipeline. printf/echo-into-`grep -q` is a trap under this file's
+# `set -o pipefail`: grep -q exits the instant it matches, the producer
+# then takes SIGPIPE writing the remainder, and pipefail reports the
+# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
+# the match lands early in a large input. A here-string is not a pipeline,
+# so the status is grep's own verdict alone. (HIMMEL-1430.)
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLEAN_GARDEN="$SCRIPT_DIR/clean-garden.sh"
 
@@ -125,7 +134,7 @@ else
     fail "6: dry-run removed a non-stray worktree" "$dry_out"
 fi
 # A fully-clean worktree's dry-run line must NOT carry stray text.
-if printf '%s\n' "$dry_out" | grep -F "feat/clean" | grep -q "discarding"; then
+if grepq "$(printf '%s\n' "$dry_out" | grep -F "feat/clean")" "discarding"; then
     fail "6: dry-run clean worktree wrongly shows strays text" "$dry_out"
 else
     pass "6: dry-run clean worktree plain would-prune (no strays text)"
@@ -139,7 +148,7 @@ out=$(run_clean)
 # (grep per-line so the NOTE for feat/lock is matched on a single line, not
 # across worktree boundaries.)
 if [ ! -d "$WT_LOCK" ]; then pass "1: lock-stray worktree pruned (force-remove worked)"; else fail "1: lock-stray worktree NOT pruned" "$out"; fi
-if printf '%s\n' "$out" | grep -F "feat/lock" | grep -q "discarding untracked strays: package-lock.json"; then
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/lock")" "discarding untracked strays: package-lock.json"; then
     pass "1: NOTE names package-lock.json"
 else
     fail "1: expected strays NOTE naming package-lock.json for feat/lock" "$out"
@@ -157,7 +166,7 @@ case "$out" in *"not known strays"*"notes.txt"*) pass "3: WARN names notes.txt" 
 if [ -d "$WT_WIP" ]; then pass "4: tracked-WIP worktree kept"; else fail "4: tracked-WIP worktree was pruned" "$out"; fi
 case "$out" in *"feat/wip has uncommitted changes"*) pass "4: WARN reports uncommitted changes" ;; *) fail "4: expected 'has uncommitted changes' for feat/wip" "$out" ;; esac
 # negative: tracked-precedence means feat/wip must NOT be reported as a stray discard.
-if printf '%s\n' "$out" | grep -F "feat/wip" | grep -q "discarding untracked strays"; then
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/wip")" "discarding untracked strays"; then
     fail "4: tracked-WIP wrongly took the strays path (D1 precedence broken)" "$out"
 else
     pass "4: tracked-WIP did NOT take the strays path (D1 wins over D2)"
@@ -168,7 +177,7 @@ fi
 # branch and the strays text — checking the whole blob would false-match other
 # worktrees' NOTEs.)
 if [ ! -d "$WT_CLEAN" ]; then pass "5: clean worktree pruned"; else fail "5: clean worktree NOT pruned" "$out"; fi
-if printf '%s\n' "$out" | grep -F "feat/clean" | grep -q "discarding untracked strays"; then
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/clean")" "discarding untracked strays"; then
     fail "5: clean worktree wrongly took the strays/force path" "$out"
 else
     pass "5: clean worktree took plain-remove path (no strays NOTE)"
@@ -176,7 +185,7 @@ fi
 
 # case 8: nested package-lock.json (depth invariance) -> pruned
 if [ ! -d "$WT_NESTED" ]; then pass "8: nested-lockfile worktree pruned (depth invariance)"; else fail "8: nested-lockfile worktree NOT pruned" "$out"; fi
-if printf '%s\n' "$out" | grep -F "feat/nested" | grep -q "discarding untracked strays:.*package-lock.json"; then
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/nested")" "discarding untracked strays:.*package-lock.json"; then
     pass "8: NOTE names the nested package-lock.json"
 else
     fail "8: expected strays NOTE naming pkg/sub/package-lock.json" "$out"
@@ -184,7 +193,7 @@ fi
 
 # case 9: stray + non-stray together -> kept + WARN names only the non-stray
 if [ -d "$WT_MIXED" ]; then pass "9: mixed (stray+non-stray) worktree kept"; else fail "9: mixed worktree was pruned (a coexisting stray must not mask forgotten work)" "$out"; fi
-if printf '%s\n' "$out" | grep -F "feat/mixed" | grep -q "not known strays.*notes.txt"; then
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/mixed")" "not known strays.*notes.txt"; then
     pass "9: WARN names the non-stray notes.txt"
 else
     fail "9: expected 'not known strays' WARN naming notes.txt for feat/mixed" "$out"
@@ -192,7 +201,7 @@ fi
 
 # case 10: AGENTS.md.bak is NOT AGENTS.md -> non-stray -> kept (allowlist boundary)
 if [ -d "$WT_BAK" ]; then pass "10: AGENTS.md.bak worktree kept (boundary: .bak != AGENTS.md)"; else fail "10: AGENTS.md.bak wrongly classified as stray and pruned" "$out"; fi
-if printf '%s\n' "$out" | grep -F "feat/bak" | grep -q "not known strays.*AGENTS.md.bak"; then
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/bak")" "not known strays.*AGENTS.md.bak"; then
     pass "10: kept AS forgotten — WARN names AGENTS.md.bak"
 else
     fail "10: expected 'not known strays' WARN naming AGENTS.md.bak for feat/bak" "$out"

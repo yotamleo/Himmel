@@ -99,6 +99,7 @@ export type RenderMetricsOptions = {
   flowLedgerPath?: string;
   quotaLedgerPath?: string;
   lanesPath?: string;
+  fetchHealthStatePath?: string;
   platform?: NodeJS.Platform;
   schedulerRunner?: SchedulerRunner;
   hostDetectorRunner?: HostDetectorRunner;
@@ -301,6 +302,57 @@ function buildFlowMetrics(path: string, config: ObservabilityConfig, nowMs: numb
     stats.map((s) => sample("flow_run_in_flight", { flow: s.flow }, s.inFlight)));
 
   return { lines, ledgerRows };
+}
+
+const FETCH_HEALTH_STATUSES = [
+  "ok",
+  "auth-or-cookie-expired",
+  "blocked-or-rate-limited",
+  "transport-fail",
+] as const;
+
+type FetchHealthStatus = typeof FETCH_HEALTH_STATUSES[number];
+
+function defaultFetchHealthStatePath(env: Record<string, string | undefined>): string {
+  const override = env.HIMMEL_FETCH_HEALTH_STATE;
+  if (override && override.trim()) return override;
+  return join(env.USERPROFILE ?? env.HOME ?? homedir(), ".himmel", "fetch-health.json");
+}
+
+function fetchHealthMetrics(path: string): { lines: string[]; comments: string[] } {
+  if (!existsSync(path)) return { lines: [], comments: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") throw new Error("state is not an object");
+    const sources = (parsed as Record<string, unknown>).sources;
+    if (!sources || typeof sources !== "object" || Array.isArray(sources)) {
+      throw new Error("sources is not an object");
+    }
+
+    const statusSamples: string[] = [];
+    const successSamples: string[] = [];
+    for (const [source, value] of Object.entries(sources).sort(([a], [b]) => a.localeCompare(b))) {
+      if (!source || /[\r\n]/.test(source) || !value || typeof value !== "object" || Array.isArray(value)) continue;
+      const row = value as Record<string, unknown>;
+      const status = row.status;
+      if (typeof status !== "string" || !FETCH_HEALTH_STATUSES.includes(status as FetchHealthStatus)) continue;
+      for (const candidate of FETCH_HEALTH_STATUSES) {
+        statusSamples.push(sample("clip_fetch_source_status", { source, status: candidate }, candidate === status ? 1 : 0));
+      }
+      const lastSuccess = row.last_success_timestamp;
+      if (typeof lastSuccess === "number" && Number.isFinite(lastSuccess) && lastSuccess >= 0) {
+        successSamples.push(sample("clip_fetch_source_last_success_timestamp", { source }, lastSuccess));
+      }
+    }
+
+    const lines: string[] = [];
+    addFamily(lines, "clip_fetch_source_status", "One-hot daily fetch-health classification for each live Luna clip source.", "gauge", statusSamples);
+    addFamily(lines, "clip_fetch_source_last_success_timestamp", "Epoch seconds of the last successful known-good fetch probe per Luna clip source.", "gauge", successSamples);
+    return { lines, comments: [] };
+  } catch (e) {
+    const message = e instanceof Error && e.message ? e.message : "state parse failed";
+    return { lines: [], comments: [`# clip_fetch_source_* omitted: ${message.replace(/\s+/g, " ").trim()}`] };
+  }
 }
 
 function normalizeTaskSamples(raw: unknown): ScheduledTaskSample[] {
@@ -964,6 +1016,10 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   const lines: string[] = [];
   const flow = buildFlowMetrics(flowPath, cfg, nowMs);
   lines.push(...flow.lines);
+
+  const fetchHealth = fetchHealthMetrics(options.fetchHealthStatePath ?? defaultFetchHealthStatePath(env));
+  lines.push(...fetchHealth.comments);
+  lines.push(...fetchHealth.lines);
 
   const scheduled = await scheduledTaskMetrics(cfg, {
     platform: options.platform ?? process.platform,
