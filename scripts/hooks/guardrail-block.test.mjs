@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { install as installStatusData, statusDetail, sanitizedGitEnv, findPackOffset, readObject, applyDelta } from './guardrail-block.mjs';
+import { install as installStatusData, statusDetail, sanitizedGitEnv, findPackOffset, readObject, applyDelta, readHeadOid } from './guardrail-block.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE = join(HERE, 'guardrail-block.mjs');
@@ -1588,4 +1588,57 @@ test('readObject: a correct pack/idx pair still resolves (no false-degrade from 
 
   assert.deepEqual(readObject(commonDir, oidA), { type: 'blob', body: Buffer.from('AAA') });
   assert.deepEqual(readObject(commonDir, oidB), { type: 'blob', body: Buffer.from('BBBBB') });
+});
+
+// HIMMEL-1468: the manual ref/HEAD fallback parser (used when the git subprocess
+// is unavailable) used to accept only 40-hex sha1 OIDs, degrading a sha256 repo
+// even though readObject supports sha256. readHeadOid must now accept 40- OR
+// 64-hex detached OIDs, and a ref: pointing at a loose ref or a packed-ref.
+const HEAD_SHA1 = '0123456789abcdef0123456789abcdef01234567';
+const HEAD_SHA256 = '0123456789abcdef'.repeat(4); // 64 hex chars
+
+function buildHeadFixture({ head, looseRef, packedRef } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'gblock-head-'));
+  const gitDir = join(dir, 'git');
+  mkdirSync(gitDir, { recursive: true });
+  writeFileSync(join(gitDir, 'HEAD'), head);
+  if (looseRef) {
+    const [refName, oid] = looseRef;
+    const refPath = join(gitDir, ...refName.split('/'));
+    mkdirSync(dirname(refPath), { recursive: true });
+    writeFileSync(refPath, `${oid}\n`);
+  }
+  if (packedRef) {
+    writeFileSync(join(gitDir, 'packed-refs'), `${packedRef[1]} ${packedRef[0]}\n`);
+  }
+  return { dir, gitDir };
+}
+
+function dropOnExit(dir) {
+  process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort tmp cleanup */ } });
+}
+
+test('readHeadOid: accepts a 64-hex sha256 detached HEAD and still rejects non-hex (HIMMEL-1468)', () => {
+  const sha256 = buildHeadFixture({ head: `${HEAD_SHA256}\n` });
+  dropOnExit(sha256.dir);
+  assert.equal(readHeadOid(sha256.gitDir, sha256.gitDir), HEAD_SHA256, '64-hex sha256 detached HEAD must resolve');
+
+  const sha1 = buildHeadFixture({ head: `${HEAD_SHA1}\n` });
+  dropOnExit(sha1.dir);
+  assert.equal(readHeadOid(sha1.gitDir, sha1.gitDir), HEAD_SHA1, '40-hex sha1 detached HEAD still resolves (control)');
+
+  const junk = buildHeadFixture({ head: 'not-an-oid\n' });
+  dropOnExit(junk.dir);
+  assert.equal(readHeadOid(junk.gitDir, junk.gitDir), null, 'non-hex HEAD is rejected');
+});
+
+test('readHeadOid: follows ref: to a 64-hex sha256 loose ref and to packed-refs (HIMMEL-1468)', () => {
+  const loose = buildHeadFixture({ head: 'ref: refs/heads/main\n', looseRef: ['refs/heads/main', HEAD_SHA256] });
+  dropOnExit(loose.dir);
+  assert.equal(readHeadOid(loose.gitDir, loose.gitDir), HEAD_SHA256, 'loose ref carrying a sha256 oid resolves');
+
+  // No loose ref → readHeadOid falls through to readPackedRef.
+  const packed = buildHeadFixture({ head: 'ref: refs/heads/main\n', packedRef: ['refs/heads/main', HEAD_SHA256] });
+  dropOnExit(packed.dir);
+  assert.equal(readHeadOid(packed.gitDir, packed.gitDir), HEAD_SHA256, 'packed-ref carrying a sha256 oid resolves');
 });

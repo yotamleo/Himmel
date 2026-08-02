@@ -424,13 +424,21 @@ function resolveCommonDir(gitDir) {
   }
 }
 
+// The ref/HEAD OID predicates accept 40-hex (sha1) OR 64-hex (sha256), matching
+// readObject via hashAlgoForOid (HIMMEL-1468): the fallback ref/HEAD parser
+// hardcoded-tested only {40}, so a sha256 repo (objectFormat=sha256) degraded to
+// reference-unavailable whenever the git subprocess was unavailable — an
+// internal inconsistency with r10's sha256 object support. This repo is sha1,
+// so this is consistency, not a live bug. Exported for direct unit tests; a full
+// sha256 round-trip is not exercisable end-to-end (the loose/tree readers stay
+// sha1), so the predicate is the testable seam.
 function readPackedRef(commonDir, ref) {
   try {
     const lines = fs.readFileSync(path.join(commonDir, 'packed-refs'), 'utf8').split(/\r?\n/);
     for (const line of lines) {
       if (!line || line.startsWith('#') || line.startsWith('^')) continue;
       const [oid, name] = line.split(' ');
-      if (name === ref && /^[0-9a-f]{40}$/.test(oid)) return oid;
+      if (name === ref && hashAlgoForOid(oid)) return oid;
     }
   } catch (_e) {
     // packed-refs is optional.
@@ -438,20 +446,20 @@ function readPackedRef(commonDir, ref) {
   return null;
 }
 
-function readHeadOid(gitDir, commonDir) {
+export function readHeadOid(gitDir, commonDir) {
   let head;
   try {
     head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
   } catch (_e) {
     return null;
   }
-  if (/^[0-9a-f]{40}$/.test(head)) return head;
+  if (hashAlgoForOid(head)) return head;
   const match = head.match(/^ref:\s*(.+)$/);
   if (!match) return null;
   const ref = match[1];
   try {
     const oid = fs.readFileSync(path.join(commonDir, ref), 'utf8').trim();
-    if (/^[0-9a-f]{40}$/.test(oid)) return oid;
+    if (hashAlgoForOid(oid)) return oid;
   } catch (_e) {
     return readPackedRef(commonDir, ref);
   }

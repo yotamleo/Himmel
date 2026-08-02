@@ -154,16 +154,20 @@ if ($Install) {
     $VerStamp = Join-Path $Dir 'cli-proxy-api.version'
     $installedVer = if (Test-Path $VerStamp) { (Get-Content $VerStamp -ErrorAction SilentlyContinue | Select-Object -First 1) } else { $null }
     if ((-not (Test-Path $Exe)) -or ($installedVer -ne $Version)) {
+        # Windows locks a running exe - the pinned swap cannot land over a live
+        # instance, so a combined -Install -Restart (or -Install -Stop) stops the
+        # proxy in THIS invocation and the later $Restart/$Stop block then finds
+        # nothing to stop (HIMMEL-1451 r3). The stop is DEFERRED until just before
+        # Copy-Item (HIMMEL-1468): it used to run BEFORE the download, so a
+        # download/extract failure left the proxy DOWN until manual recovery. Now
+        # the temp download/extract resolves first and the running instance is
+        # touched only once the new binary is staged, shrinking the downtime
+        # window to the Copy-Item itself; any failure above this point leaves the
+        # old binary serving.
+        $stopForSwap = $false
         if ((Test-Path $Exe) -and (Get-ProxyProcess)) {
-            # Windows locks a running exe - the pinned swap cannot land over a
-            # live instance. A combined -Install -Restart (or -Install -Stop)
-            # can stop the proxy in THIS invocation instead of failing, so the
-            # documented pin-roll shape works as one sequence (HIMMEL-1451 r3);
-            # the later $Restart/$Stop block then finds nothing to stop.
             if ($Restart -or $Stop) {
-                Assert-BounceSafe   # -Force still overrides the live-client refusal
-                Write-Host "stopping cli-proxy-api to roll the pinned binary ..."
-                Stop-ProxyInstance | Out-Null
+                $stopForSwap = $true
             } else {
                 # Standalone -Install: refuse loudly with the working order
                 # instead of failing later on an opaque Copy-Item lock error.
@@ -182,6 +186,11 @@ if ($Install) {
             Expand-Archive -Force $zip $tmp
             $src = Get-ChildItem -Recurse $tmp -Filter 'cli-proxy-api.exe' | Select-Object -First 1 -ExpandProperty FullName
             if (-not $src) { throw "cli-proxy-api.exe not found in release archive" }
+            if ($stopForSwap) {
+                Assert-BounceSafe   # -Force still overrides the live-client refusal
+                Write-Host "stopping cli-proxy-api to roll the pinned binary ..."
+                Stop-ProxyInstance | Out-Null
+            }
             Copy-Item $src $Exe -Force
             Set-Content -Path $VerStamp -Value $Version
             Write-Host "installed binary: $Exe (v$Version)"

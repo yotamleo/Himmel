@@ -599,8 +599,12 @@ try {
   $env:MOCK_ENV_OUT           = $ChildEnv
   $env:MOCK_ARGV_OUT          = $ArgvOut
   $env:PATH = $BIN + [IO.Path]::PathSeparator + $OrigEnv['PATH']
-  $pa = Start-Process pwsh -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
-  $pb = Start-Process pwsh -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
+  # HIMMEL-1426: resolve pwsh by absolute path so Start-Process doesn't fall
+  # back to ShellExecute bare-name resolution (the "how do you want to open
+  # this file?" picker). Same idiom as the $PwshDir line at the top of the file.
+  $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
+  $pa = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
+  $pb = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
   $pa.WaitForExit(); $pb.WaitForExit()
   if ($pa.ExitCode -eq 0 -and $pb.ExitCode -eq 0) { Pass 'both concurrent launches exit 0' } else { Fail "concurrent launches exit A=$($pa.ExitCode) B=$($pb.ExitCode)" }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\.seeded')) { Pass 'concurrent seed left a sentinel' } else { Fail 'concurrent seed left no sentinel' }

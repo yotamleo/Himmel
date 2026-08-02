@@ -11,8 +11,8 @@
 # reusable sweep.
 #
 # THE TEST (client-side pipe-token liveness - the VALIDATED signal):
-#   A broker tree is LIVE  iff  some claude.exe or ChatGPT.exe process exists
-#   whose command line references the same `cxc-<token>-codex-app-server` pipe
+#   A broker tree is LIVE  iff  any process OUTSIDE every broker tree has a
+#   command line that references the same `cxc-<token>-codex-app-server` pipe
 #   (that is the client still holding it). Otherwise the tree is an ORPHAN.
 #
 #   Two signals are DELIBERATELY NOT used, because they are documented false
@@ -23,8 +23,8 @@
 #       by dead-parent alone reaps live, in-use trees. Do NOT do it.
 #     * A codex.exe descendant is NOT sufficient. codex.exe lives INSIDE the
 #       broker tree; it is present whether or not a client is still attached, so
-#       it can never distinguish live from orphan. Only the OUTSIDE client
-#       (claude.exe / ChatGPT.exe) holding the pipe can.
+#       it can never distinguish live from orphan. Only an OUTSIDE process
+#       holding the pipe can; its image name is not part of the signal.
 #   This tool is the complement of scripts/codex/reap-mcp-fleet.ps1: that one
 #   reaps MCP FLEETS under a dead app-server via codex-lineage fingerprints;
 #   this one reaps the BROKER TREES themselves via the client-pipe test.
@@ -33,9 +33,10 @@
 #   1. Enumerate node.exe processes whose CommandLine matches
 #      `app-server-broker.mjs serve --endpoint pipe:\\.\pipe\cxc-<token>-codex-app-server`;
 #      capture the cxc token per broker.
-#   2. Collect the set of tokens held by LIVE clients = every claude.exe /
-#      ChatGPT.exe whose CommandLine references a `cxc-<token>-codex-app-server`
-#      pipe. A broker whose token is NOT in that set is an ORPHAN.
+#   2. Build the union of every broker tree, then collect the set of tokens
+#      referenced by any process OUTSIDE that union. Excluding all broker roots
+#      and descendants prevents their own pipe arguments from self-marking live.
+#      A broker whose token is NOT in that set is an ORPHAN.
 #   3. For each orphan broker, walk descendants via CIM Win32_Process
 #      ParentProcessId (child map built once) to collect the full tree
 #      (broker + all descendants).
@@ -46,9 +47,10 @@
 #      insensitive) is in the allow set below AND its live StartTime matches
 #      the enumeration snapshot's CreationDate - PID-reuse safety against
 #      recycling into an unrelated image AND into another allow-listed image.
-#      -Kill REFUSES to run (exit 1) when any client's CommandLine is not
-#      visible to the caller (elevation/session gap) - an invisible client
-#      may hold a pipe, so every orphan verdict is then unverifiable.
+#      -Kill REFUSES to run (exit 1) when any plausible outside client image
+#      (claude.exe, ChatGPT.exe, node.exe, bun.exe) has no visible CommandLine.
+#      Cross-session processes of unrelated names are routinely invisible and
+#      do not disable the sweep.
 #   5. -Kill also removes stale `$env:TEMP\cxc-<token>\broker.pid` files whose
 #      token belonged to a swept tree AND whose broker was confirmed stopped.
 #   Allow set (name-verified kill): node, cmd, bash, codex, conhost, pwsh,
@@ -110,12 +112,14 @@ function Test-IsCodexAppServerBroker {
   return ($null -ne (Get-CxcToken -CommandLine $cl))
 }
 
-# Client = the outside holder of the pipe (claude desktop / codex desktop app).
-function Test-IsCodexAppServerClient {
+# Plausible outside-client IMAGE for the degraded-visibility fail-safe. This is
+# deliberately broader than the original desktop-only set because detached
+# codex-companion renders are node.exe clients (HIMMEL-1467). It is NOT the
+# liveness classifier: every visible outside-tree process is searched by token.
+function Test-IsPlausibleCodexAppServerClient {
   param([Parameter(Mandatory)]$Proc)
   if (-not $Proc.Name) { return $false }
-  $n = $Proc.Name
-  return ($n -ieq 'claude.exe') -or ($n -ieq 'ChatGPT.exe')
+  return @('claude.exe','ChatGPT.exe','node.exe','bun.exe') -contains [string]$Proc.Name
 }
 
 # Best-effort cwd LABEL for the table (purely cosmetic, never gates a decision).
@@ -133,31 +137,41 @@ function Get-BrokerCwd {
   return '(unknown)'
 }
 
-# Tokens currently held by at least one live client (claude.exe / ChatGPT.exe).
+# Tokens referenced by at least one visible process OUTSIDE every broker tree.
+# Image names are irrelevant to liveness: detached codex-companion node.exe is
+# a real client. The exclusion is essential because each broker's own argv and
+# its codex.exe descendants can reference the token after the real client dies.
 function Get-LiveClientTokens {
-  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs)
+  param(
+    [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs,
+    [Parameter(Mandatory)]$BrokerTreePids
+  )
   $set = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
   foreach ($p in $Procs) {
-    if (-not (Test-IsCodexAppServerClient -Proc $p)) { continue }
+    if ($BrokerTreePids.Contains([int]$p.ProcessId)) { continue }
     foreach ($t in (Get-CxcTokens -CommandLine ([string]$p.CommandLine))) { [void]$set.Add($t) }
   }
   return , ([string[]]@($set))
 }
 
 # Pure classification: the orphan brokers in $Procs - brokers whose token no
-# live client holds. Each returned record carries BrokerPid, Token, Cwd.
-# Records expose ProcessId, ParentProcessId, Name, CommandLine (WorkingSetSize
-# optional). Dead-parent and codex.exe-descendant are INTENTIONALLY ignored
-# (documented false signals) - only the client-pipe test decides.
+# outside-tree process references. Each returned record carries BrokerPid,
+# Token, Cwd. The broker-tree union is built once and excludes roots plus all
+# descendants before tokens are collected. Dead-parent and codex.exe-descendant
+# remain INTENTIONALLY ignored (documented false signals).
 function Get-CodexOrphanBrokers {
-  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs)
-  $liveTokens = Get-LiveClientTokens -Procs $Procs
+  param(
+    [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs,
+    [AllowNull()]$BrokerTreePids = $null
+  )
+  if ($null -eq $BrokerTreePids) { $BrokerTreePids = Get-CodexBrokerTreePids -Procs $Procs }
+  $liveTokens = Get-LiveClientTokens -Procs $Procs -BrokerTreePids $BrokerTreePids
   $out = New-Object System.Collections.ArrayList
   foreach ($p in $Procs) {
     if (-not (Test-IsCodexAppServerBroker -Proc $p)) { continue }
     $tok = Get-CxcToken -CommandLine ([string]$p.CommandLine)
     if ($null -eq $tok) { continue }
-    if ($liveTokens -contains $tok) { continue }   # a client still holds it -> LIVE
+    if ($liveTokens -contains $tok) { continue }   # an outside client still holds it -> LIVE
     [void]$out.Add([pscustomobject]@{
       BrokerPid = [int]$p.ProcessId
       Token     = [string]$tok
@@ -165,6 +179,25 @@ function Get-CodexOrphanBrokers {
     })
   }
   return $out.ToArray()
+}
+
+# Build the child + creation-time maps once when several broker roots must be
+# walked against the same process snapshot. Get-DescendantPids still builds its
+# own index when called directly, preserving the public pure-helper seam.
+function Get-ProcessTreeIndex {
+  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs)
+  $created = @{}
+  $byParent = @{}
+  foreach ($p in $Procs) {
+    if ($p.PSObject.Properties['CreationDate'] -and $null -ne $p.CreationDate) {
+      $created[[string]$p.ProcessId] = [datetime]$p.CreationDate
+    }
+    if ($null -eq $p.ParentProcessId) { continue }
+    $key = [string]$p.ParentProcessId
+    if (-not $byParent.ContainsKey($key)) { $byParent[$key] = New-Object System.Collections.ArrayList }
+    [void]$byParent[$key].Add([int]$p.ProcessId)
+  }
+  return [pscustomobject]@{ Created = $created; ByParent = $byParent }
 }
 
 # Pure descendant walk. Returns every LIVE pid in $Procs reachable from $RootPid
@@ -177,29 +210,23 @@ function Get-CodexOrphanBrokers {
 # would sweep it in. The canonical filter is creation-time ordering: a real
 # child can never be OLDER than its parent, while a stale-PPID impostor
 # predates the recycled pid it points at. A claimed child older than its
-# claimed parent (2s tolerance, matching Test-ProcessStartMatches) is
-# skipped; either CreationDate missing keeps the link (fail-open to the
-# pre-existing PPID-only level - the orphan CLASSIFICATION is still gated by
-# the client-pipe test, and the kill loop's name + identity gates run per
-# pid regardless).
+# claimed parent (2s tolerance, matching Test-ProcessStartMatches) is skipped.
+#
+# The default kill-tree walk keeps an edge when either CreationDate is missing
+# (fail-open for orphan-descendant completeness); the downstream name + process
+# identity gates still protect every kill. -VerifiedEdgesOnly instead drops
+# such unverifiable edges (fail-closed for broker-tree evidence suppression),
+# so an outside client with a stale PPID cannot be hidden from liveness.
 function Get-DescendantPids {
   param(
     [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs,
-    [Parameter(Mandatory)][int]$RootPid
+    [Parameter(Mandatory)][int]$RootPid,
+    [AllowNull()]$TreeIndex = $null,
+    [switch]$VerifiedEdgesOnly
   )
-  $created = @{}
-  foreach ($p in $Procs) {
-    if ($p.PSObject.Properties['CreationDate'] -and $null -ne $p.CreationDate) {
-      $created[[string]$p.ProcessId] = [datetime]$p.CreationDate
-    }
-  }
-  $byParent = @{}
-  foreach ($p in $Procs) {
-    if ($null -eq $p.ParentProcessId) { continue }
-    $key = [string]$p.ParentProcessId
-    if (-not $byParent.ContainsKey($key)) { $byParent[$key] = New-Object System.Collections.ArrayList }
-    [void]$byParent[$key].Add([int]$p.ProcessId)
-  }
+  if ($null -eq $TreeIndex) { $TreeIndex = Get-ProcessTreeIndex -Procs $Procs }
+  $created = $TreeIndex.Created
+  $byParent = $TreeIndex.ByParent
   $result = New-Object System.Collections.ArrayList
   $queue = New-Object System.Collections.Generic.Queue[int]
   $queue.Enqueue($RootPid)
@@ -221,8 +248,21 @@ function Get-DescendantPids {
       if ($seen.ContainsKey($childKey)) { continue }   # pid-reuse cycle guard
       # Creation-time ordering (codex round 4): a claimed child measurably
       # OLDER than its claimed parent is a stale-PPID impostor, not kin.
-      if ($created.ContainsKey($childKey) -and $created.ContainsKey($curKey)) {
-        if (($created[$curKey] - $created[$childKey]).TotalSeconds -gt 2) { continue }
+      $hasChildCreated = $created.ContainsKey($childKey)
+      $hasParentCreated = $created.ContainsKey($curKey)
+      if ($VerifiedEdgesOnly -and (-not $hasChildCreated -or -not $hasParentCreated)) { continue }
+      if ($hasChildCreated -and $hasParentCreated) {
+        # Both timestamps come from the SAME CIM snapshot, so a real child is
+        # never older than its parent at all - the 2s tolerance exists for the
+        # CROSS-read comparisons (Test-ProcessStartMatches, snapshot vs live).
+        # The verified walk therefore rejects ANY older-than-parent child
+        # (codex-adv r2: a stale PPID recycled within the 2s window would
+        # otherwise read as verified kin and suppress client evidence); the
+        # kill-tree walk keeps the lenient cross-read-shaped tolerance.
+        $gap = ($created[$curKey] - $created[$childKey]).TotalSeconds
+        if ($VerifiedEdgesOnly) {
+          if ($gap -gt 0) { continue }
+        } elseif ($gap -gt 2) { continue }
       }
       $seen[$childKey] = $true
       [void]$result.Add($child)
@@ -232,12 +272,35 @@ function Get-DescendantPids {
   return $result.ToArray()
 }
 
+# Union of every broker root + VERIFIED descendant pid in the snapshot. A
+# process inside ANY broker tree cannot be client evidence for ANY token, but an
+# unverifiable edge must fail closed here: suppressing a real outside client's
+# evidence could make its live broker look orphaned. Cross-tree references with
+# verified ancestry remain excluded. The process-tree index is built once and
+# reused for every root.
+function Get-CodexBrokerTreePids {
+  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs)
+  $set = New-Object System.Collections.Generic.HashSet[int]
+  $treeIndex = Get-ProcessTreeIndex -Procs $Procs
+  foreach ($p in $Procs) {
+    if (-not (Test-IsCodexAppServerBroker -Proc $p)) { continue }
+    [void]$set.Add([int]$p.ProcessId)
+    foreach ($procId in (Get-DescendantPids -Procs $Procs -RootPid ([int]$p.ProcessId) -TreeIndex $treeIndex -VerifiedEdgesOnly)) {
+      [void]$set.Add([int]$procId)
+    }
+  }
+  return , $set
+}
+
 # Headline pure classifier the brief asks for: given a synthetic proc table,
 # return one object per orphan tree - { BrokerPid, Token, Cwd, TreePids (broker
 # + descendants), TreeProcCount }. Testable end-to-end without real processes.
 function Get-CodexOrphanTrees {
-  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs)
-  $orphans = @(Get-CodexOrphanBrokers -Procs $Procs)
+  param(
+    [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs,
+    [AllowNull()]$BrokerTreePids = $null
+  )
+  $orphans = @(Get-CodexOrphanBrokers -Procs $Procs -BrokerTreePids $BrokerTreePids)
   $out = New-Object System.Collections.ArrayList
   foreach ($o in $orphans) {
     $desc = @(Get-DescendantPids -Procs $Procs -RootPid $o.BrokerPid)
@@ -300,17 +363,24 @@ function Test-CxcTokenPathSafe {
 
 # Degraded-visibility probe (silent-failure CR): WMI returns an EMPTY
 # CommandLine for a process the caller lacks rights to inspect (cross-
-# elevation / cross-session). If that hits a CLIENT (claude.exe /
-# ChatGPT.exe), its token silently drops out of the live-token set and its
-# broker tree misclassifies as ORPHAN - the exact wrong-kill this tool must
-# never make, invisible in the report. Returns the pids of clients whose
-# CommandLine is not visible; ANY entry means orphan classifications are
-# unverifiable (the caller warns on dry run and refuses -Kill).
+# elevation / cross-session). If that hits a plausible OUTSIDE client image
+# (claude.exe, ChatGPT.exe, node.exe, bun.exe), its token could silently drop
+# out of the live-token set and a broker could misclassify as ORPHAN.
+#
+# Do NOT gate on every invisible process: unrelated cross-session / SYSTEM
+# processes routinely hide CommandLine from a non-elevated sweep, which would
+# disable -Kill permanently. Processes inside any broker tree are also excluded;
+# descendants are known non-client false signals even when their argv is hidden.
 function Get-BlindClientPids {
-  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs)
+  param(
+    [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs,
+    [AllowNull()]$BrokerTreePids = $null
+  )
+  if ($null -eq $BrokerTreePids) { $BrokerTreePids = Get-CodexBrokerTreePids -Procs $Procs }
   $out = New-Object System.Collections.ArrayList
   foreach ($p in $Procs) {
-    if (-not (Test-IsCodexAppServerClient -Proc $p)) { continue }
+    if ($BrokerTreePids.Contains([int]$p.ProcessId)) { continue }
+    if (-not (Test-IsPlausibleCodexAppServerClient -Proc $p)) { continue }
     if ([string]::IsNullOrEmpty([string]$p.CommandLine)) { [void]$out.Add([int]$p.ProcessId) }
   }
   return , ($out.ToArray())
@@ -369,7 +439,10 @@ try {
   exit 1
 }
 
-$trees = @(Get-CodexOrphanTrees -Procs $records)
+# Build the broker-tree exclusion union once for both liveness classification
+# and the blind-client gate; no process inside any tree can be client evidence.
+$brokerTreePids = Get-CodexBrokerTreePids -Procs $records
+$trees = @(Get-CodexOrphanTrees -Procs $records -BrokerTreePids $brokerTreePids)
 
 # byPid lookup for working-set summation + name-verified kill.
 $byPid = @{}
@@ -406,17 +479,21 @@ $totalMB = [math]::Round((($rows | Measure-Object -Property TreeWSMB -Sum).Sum),
 $flatPids = ($trees | ForEach-Object { $_.TreePids } | Sort-Object -Unique)
 
 Write-Host ("[sweep-codex-orphans] {0} orphaned broker tree(s), {1} proc(s), ~{2} MB:" -f $trees.Count, $totalProcs, $totalMB)
+foreach ($t in $trees) {
+  Write-Host ("[sweep-codex-orphans] orphan evidence: token cxc-{0}-codex-app-server; no visible outside-broker-tree process command line referenced it." -f $t.Token)
+}
 $rows | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 Write-Host ("[sweep-codex-orphans] flat PID list ({0}): {1}" -f $flatPids.Count, ($flatPids -join ', '))
 
-# Blind-client gate (silent-failure CR): a client whose CommandLine WMI hides
-# from us may be holding a pipe we cannot see, so every ORPHAN verdict above is
-# suspect. Warn always; refuse -Kill (report stays useful, nothing is stopped).
+# Blind-client gate (silent-failure CR): a plausible outside client whose
+# CommandLine WMI hides may hold a pipe we cannot see, so every ORPHAN verdict
+# above is suspect. Warn always; refuse -Kill (report stays useful, nothing is
+# stopped). The broker-tree union excludes hidden descendants from this gate.
 # NB: NO @() wrap on the call (HIMMEL-930) - Get-BlindClientPids returns via
 # unary comma so the array survives raw assignment (wrapping it in @() would
 # re-box an EMPTY result into a 1-element wrapper, permanently tripping this
 # gate: Count=1 even with zero blind clients).
-$blindClients = Get-BlindClientPids -Procs $records
+$blindClients = Get-BlindClientPids -Procs $records -BrokerTreePids $brokerTreePids
 if ($blindClients.Count -gt 0) {
   Write-Warning ("[sweep-codex-orphans] client pid(s) {0} have no visible CommandLine (elevation/session gap) - the client-liveness signal is unreliable; orphan classifications above may be WRONG." -f ($blindClients -join ', '))
 }
@@ -428,7 +505,7 @@ if (-not $Kill) {
 }
 
 if ($blindClients.Count -gt 0) {
-  Write-Warning "[sweep-codex-orphans] refusing -Kill while client command lines are invisible - re-run from a context that can see every claude.exe/ChatGPT.exe command line (e.g. the same elevation as the clients)."
+  Write-Warning "[sweep-codex-orphans] refusing -Kill while plausible outside client command lines are invisible - re-run from a context that can see claude.exe/ChatGPT.exe/node.exe/bun.exe clients (e.g. the same elevation as the clients)."
   exit 1
 }
 
