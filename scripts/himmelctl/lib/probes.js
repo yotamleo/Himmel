@@ -117,11 +117,31 @@ function probeFileExists(item, ctx) {
 
 // ── git-hooks ────────────────────────────────────────────────────────────
 
-// Resolve a checkout's effective hooks directory without spawning git. A
-// normal clone stores it at .git/hooks. A linked worktree's .git is a pointer
-// to .git/worktrees/<name>; that directory's `commondir` points back to the
-// shared repository metadata, whose hooks/ directory is authoritative.
+// Read a checkout's LOCAL core.hooksPath — the override that points git at a
+// non-default hooks dir (e.g. `git config core.hooksPath scripts/hooks`, the
+// legitimate in-repo layout check-commit-msg.ps1 documents and check-hookspath
+// validates). LOCAL scope only: the status-probe fixtures below resolve hooks
+// by pure-fs .git/gitdir/commondir traversal and carry no local config, so
+// `--local` returns '' for them and leaves that path unchanged; a GLOBAL
+// core.hooksPath is check-hookspath's authoritative concern, not this probe's
+// (HIMMEL-1470).
+function configuredHooksPath(targetPath) {
+  try {
+    const r = spawnSync('git', ['-C', targetPath, 'config', '--local', '--get', 'core.hooksPath'], { encoding: 'utf8' });
+    if (r.status === 0) return (r.stdout || '').trim();
+  } catch (_e) {}
+  return '';
+}
+
+// Resolve a checkout's effective hooks directory. A core.hooksPath override
+// wins; otherwise a normal clone stores hooks at .git/hooks, and a linked
+// worktree's .git points to .git/worktrees/<name> whose `commondir` points back
+// at the shared repository metadata whose hooks/ is authoritative.
 function gitHooksDir(targetPath) {
+  const configured = configuredHooksPath(targetPath);
+  if (configured) {
+    return path.isAbsolute(configured) ? path.resolve(configured) : path.resolve(targetPath, configured);
+  }
   const dotGit = path.join(targetPath, '.git');
   let st;
   try {

@@ -243,6 +243,37 @@ grepq "$report" 'would run the idempotent contributor setup primitive' \
   || fail "caseA: contributor dry-run must not persist an adopter lane allowlist"
 echo "ok: caseA dry-run reports contributor state/guidance and mutates nothing"
 
+# ── Case A2: legacy contributor profile (lanes:[] w/o lanesMeaningful) ──────
+# HIMMEL-1470: lanes is adopter-only (buildAnswers gives contributor lanes:[];
+# applyLaneProfileStep short-circuits non-adopter), so a pre-HIMMEL-862
+# contributor cache — lanes:[] with NO lanesMeaningful — must NOT be refused
+# over the empty placeholder. The adopter caseD2 refusal stays (lanes is
+# meaningful there); this is the role-specific counterpart that used to exit 2.
+sA2="$work/a2-stub"; mkdir -p "$sA2"
+hA2="$work/a2-home"; mkdir -p "$hA2"
+fA2="$work/a2-fixture"; make_fixture "$fA2"
+pA2="$work/a2-legacy-profile.json"
+cat > "$pA2" <<'JSON'
+{
+  "role": "contributor",
+  "tier": "standard",
+  "scope": "user",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": [],
+  "alwaysOn": false
+}
+JSON
+set +e
+out=$(run_contributor "$sA2" "$hA2" "$fA2" "$pA2" --dry-run); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "caseA2: legacy contributor lanes:[] profile must succeed, not exit 2 (got rc=$rc): $out"
+if printf '%s' "$out" | grep -q 'legacy profile has lanes:\[\]'; then
+  fail "caseA2: legacy contributor profile must not hit the adopter lanes-placeholder refusal: $out"
+fi
+echo "ok: caseA2 legacy contributor lanes:[] profile is accepted (lanes is adopter-only)"
+
 # ── Case B: applied setup is followed by actual-state re-probes ────────────
 sB="$work/b-stub"; mkdir -p "$sB"
 hB="$work/b-home"; mkdir -p "$hB"

@@ -931,7 +931,14 @@ function loadProfile(p) {
   if (obj.lanesMeaningful !== undefined && obj.lanesMeaningful !== true) {
     profileError(p, `field 'lanesMeaningful' must be true when present (got ${JSON.stringify(obj.lanesMeaningful)})`);
   }
-  if (obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
+  // HIMMEL-1470: the lanes question is adopter-only — buildAnswers gives a
+  // contributor lanes:[] and applyLaneProfileStep short-circuits non-adopter —
+  // so the legacy-placeholder refusal must NOT fire for a contributor. A
+  // pre-HIMMEL-862 contributor cache (lanes:[] with no lanesMeaningful) used
+  // to be wrongly exit-2'd over a field the role never answers; gating on
+  // adopter keeps the caseD2 refusal where lanes is meaningful and lets the
+  // contributor profile through (its [] is a harmless placeholder).
+  if (obj.role === 'adopter' && obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
     profileError(p, "legacy profile has lanes:[] without lanesMeaningful=true; re-run the installer and reconfirm lane selection (use 'none' for an explicit empty allowlist)");
   }
   if (typeof obj.alwaysOn !== 'boolean') {

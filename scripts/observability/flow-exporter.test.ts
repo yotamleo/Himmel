@@ -170,7 +170,12 @@ module.run_probes = lambda env: {
 }
 raise SystemExit(module.main(["--state", sys.argv[2]]))
 `;
-  const probe = spawnSync(process.env.PYTHON ?? "python3", ["-c", fixture, producer, state], { encoding: "utf8" });
+  let probe = spawnSync(process.env.PYTHON ?? "python3", ["-c", fixture, producer, state], { encoding: "utf8" });
+  if (probe.error && !process.env.PYTHON) {
+    // Windows hosts often expose only `python` (no `python3` on PATH); fall back
+    // so the suite does not go red for an environment reason (HIMMEL-1470).
+    probe = spawnSync("python", ["-c", fixture, producer, state], { encoding: "utf8" });
+  }
   expect(probe.error).toBeUndefined();
   expect(probe.status).toBe(1);
   writeLines(ledger, []);

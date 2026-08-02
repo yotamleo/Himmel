@@ -76,6 +76,25 @@ class FetchHealthTests(unittest.TestCase):
             result = fetch_health.probe_reddit({"HOME": tmp}, lambda *args, **kwargs: fetch_health.HttpResult(200, b"<html>login</html>"))
             self.assertEqual(result.status, "auth-or-cookie-expired")
 
+    def test_reddit_unreadable_cookie_file_classifies_expired_without_raising(self):
+        # Regression for HIMMEL-1470: a malformed (non-Netscape) cookie file is
+        # the precise case the except clause exists for — MozillaCookieJar.load()
+        # raises http.cookiejar.LoadError. The injected `http` callable parameter
+        # used to shadow the `http.cookiejar` module, so the handler evaluated
+        # `http.cookiejar.LoadError` at raise time, resolved `http` to the
+        # callable, and raised AttributeError instead of classifying. Importing
+        # LoadError by name removes the `http.` attribute access from the
+        # shadowed scope. probe_reddit is called DIRECTLY (not via run_probes)
+        # so the pre-fix AttributeError propagates instead of being masked.
+        with tempfile.TemporaryDirectory() as tmp:
+            cookie = Path(tmp) / ".luna" / "cookies" / "reddit.txt"
+            cookie.parent.mkdir(parents=True)
+            cookie.write_text("this is not a netscape cookie file\n", encoding="utf-8")
+            forbidden_http = lambda *args, **kwargs: self.fail("network should not run")
+            result = fetch_health.probe_reddit({"HOME": tmp}, forbidden_http)
+            self.assertEqual(result.status, "auth-or-cookie-expired")
+            self.assertEqual(result.reason, "reddit cookie file unreadable")
+
     def test_auth_free_probes_validate_expected_response_shape(self):
         fxt = fetch_health.probe_fxtwitter({}, lambda *args, **kwargs: fetch_health.HttpResult(200, b'{"code":200,"tweet":{"id":"20"}}'))
         ig = fetch_health.probe_instagram_embed({}, lambda *args, **kwargs: fetch_health.HttpResult(200, b'<div class="Caption">hello</div>'))

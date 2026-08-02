@@ -164,6 +164,12 @@ assert_rc "sanctioned -Stop (pwsh7)"           0 "$(run_case "$(j_bash 'pwsh -No
 # pin-roll (.EXAMPLE) is now an enumerated sanctioned shape (rc=0 on both shells).
 assert_rc "sanctioned -Install -Restart (pwsh5)"       0 "$(run_case "$(j_bash 'powershell -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Install -Restart')")"
 assert_rc "sanctioned -Install -Restart -Force (pwsh7)" 0 "$(run_case "$(j_bash 'pwsh -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Install -Restart -Force')")"
+# HIMMEL-1470: close the remaining 2-of-4 combined coverage gap. r4 delivered
+# "8 standalone + 2 combined"; the carve-out (block-destructive-commands.sh)
+# enumerates all 4 combined shapes (powershell/pwsh x -Install -Restart[-Force]),
+# so exercise the other two shells here too -> 4-of-4 combined, 12-of-12 total.
+assert_rc "sanctioned -Install -Restart -Force (pwsh5)" 0 "$(run_case "$(j_bash 'powershell -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Install -Restart -Force')")"
+assert_rc "sanctioned -Install -Restart (pwsh7)"        0 "$(run_case "$(j_bash 'pwsh -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Install -Restart')")"
 # codex-1 (CR r4): NO negative "out-of-root relative invocation -> DENIED" case
 # here. The premise (that this carve-out GATES the relative path) is disproved:
 # the floor INDEPENDENTLY allows `powershell/pwsh -NoProfile -File <relative>`

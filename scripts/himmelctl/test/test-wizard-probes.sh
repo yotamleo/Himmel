@@ -343,6 +343,24 @@ echo "$outHooksPresent" | jq -e '.detail | contains("pre-commit, commit-msg, pre
   || fail "git-hooks present detail should attest all configured hook types: (got: $outHooksPresent)"
 echo "ok: git-hooks verifies absent/partial/all-three states and linked-worktree commondir resolution"
 
+# ── git-hooks: core.hooksPath override (HIMMEL-1470) ───────────────────────
+# A legitimate LOCAL `git config core.hooksPath <dir>` (the in-repo layout
+# check-commit-msg.ps1 documents and check-hookspath validates) must resolve at
+# that dir, NOT fall through to .git/hooks (left intentionally empty here) and
+# read a false absent.
+hooks_hp_repo="$work/hooks-hp-repo"; mkdir -p "$hooks_hp_repo/custom-hooks"
+( cd "$hooks_hp_repo" && git init -q && git config core.hooksPath custom-hooks )
+for _hook in pre-commit commit-msg pre-push; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$hooks_hp_repo/custom-hooks/$_hook"
+  chmod +x "$hooks_hp_repo/custom-hooks/$_hook"
+done
+outHooksHP=$(probe_hooks "$hooks_hp_repo")
+echo "$outHooksHP" | jq -e '.actual == "present"' >/dev/null \
+  || fail "git-hooks core.hooksPath override should read present (got: $outHooksHP)"
+echo "$outHooksHP" | jq -e '.detail | contains("custom-hooks")' >/dev/null \
+  || fail "git-hooks core.hooksPath detail should name the configured dir (got: $outHooksHP)"
+echo "ok: git-hooks honors a local core.hooksPath override instead of defaulting to .git/hooks (HIMMEL-1470)"
+
 # ── file-exists: {vaultPath} placeholder (luna-vault-scaffold) ─────────────
 feC_present="$work/feC-vault-present"; mkdir -p "$feC_present"
 : > "$feC_present/.vault-template.json"

@@ -622,10 +622,19 @@ emit_bat() {
 # Emit the plain-script fetch-health runner. It rotates one prior log, writes
 # no fetched response content, and returns the probe's aggregate exit code.
 emit_fetch_health_bat() {
-    local python_win_esc="$1" script_win_esc="$2" log_win_esc="$3"
+    local python_win_esc="$1" script_win_esc="$2" log_win_esc="$3" env_file_win_esc="$4"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
+    # Source the repo's gitignored .env at FIRE time (not arm time) so the
+    # credentialed probes (bitbucket/firecrawl) inherit env-sourced secrets
+    # under schtasks' minimal environment — mirrors emit_fetch_health_runner's
+    # `[ -f .env ] && . .env` (HIMMEL-1449 r2). Only the PATH is embedded
+    # (quoted); the values are parsed by cmd at fire time, never baked into the
+    # .bat — secrets stay in the gitignored file (HIMMEL-1470). `for /f` skips
+    # blank lines; eol=# skips comments; tokens=1,* with delims== keeps `=` in
+    # values; the quoted `set "K=V"` survives value metacharacters (& | < >).
+    printf 'if exist "%s" for /f "usebackq eol=# tokens=1,* delims==" %%%%K in ("%s") do set "%%%%K=%%%%L"\r\n' "$env_file_win_esc" "$env_file_win_esc"
     printf '"%s" "%s" >> "%s" 2>&1\r\n' "$python_win_esc" "$script_win_esc" "$log_win_esc"
     printf 'set "FETCH_HEALTH_RC=%%ERRORLEVEL%%"\r\n'
     printf 'echo [exit rc=%%FETCH_HEALTH_RC%%] >> "%s" 2>&1\r\n' "$log_win_esc"
@@ -881,6 +890,14 @@ cmd_arm() {
         echo "ERR pipeline-cadence: cygpath -w failed for fetch-health.py: $fetch_script_win" >&2
         exit 4
     fi
+    # HIMMEL-1470: the repo .env (gitignored, may be absent) is sourced by the
+    # .bat at FIRE time so credentialed probes inherit env-sourced secrets under
+    # schtasks' minimal environment. cygpath -w is a pure string transform, so a
+    # missing .env still resolves; the .bat guards the load with `if exist`.
+    if ! env_file_win=$(cygpath -w "$HIMMEL_ROOT/.env" 2>&1); then
+        echo "ERR pipeline-cadence: cygpath -w failed for repo .env: $env_file_win" >&2
+        exit 4
+    fi
     if ! flow_lib_m=$(cygpath -m "$HIMMEL_ROOT/scripts/lib/flow-run-ledger.sh" 2>&1); then
         echo "ERR pipeline-cadence: cygpath -m failed for flow-run-ledger.sh: $flow_lib_m" >&2
         exit 4
@@ -974,12 +991,13 @@ cmd_arm() {
     # emitter (public-PR CR — see emit_bat's header). Escaped once and reused by
     # both the dry-run preview and the real write below, so the two can never
     # disagree about what lands in the .bat.
-    local claude_win_esc bash_win_esc flow_lib_m_esc python_win_esc fetch_script_win_esc
+    local claude_win_esc bash_win_esc flow_lib_m_esc python_win_esc fetch_script_win_esc env_file_win_esc
     claude_win_esc=$(cadence_cmd_escape "$claude_win")
     bash_win_esc=$(cadence_cmd_escape "$bash_win")
     flow_lib_m_esc=$(cadence_cmd_escape "$flow_lib_m")
     python_win_esc=$(cadence_cmd_escape "$python_win")
     fetch_script_win_esc=$(cadence_cmd_escape "$fetch_script_win")
+    env_file_win_esc=$(cadence_cmd_escape "$env_file_win")
     local harvest_model_esc synth_model_esc health_model_esc
     harvest_model_esc=$(cadence_cmd_escape "$HARVEST_MODEL")
     synth_model_esc=$(cadence_cmd_escape "$SYNTH_MODEL")
@@ -1061,7 +1079,7 @@ cmd_arm() {
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$hook_path_m" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_fetch_health:"
-        emit_fetch_health_bat "$python_win_esc" "$fetch_script_win_esc" "$log_fetch_health_esc" | sed 's/^/    /'
+        emit_fetch_health_bat "$python_win_esc" "$fetch_script_win_esc" "$log_fetch_health_esc" "$env_file_win_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_harvest:"
         emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_synth:"
@@ -1082,7 +1100,7 @@ cmd_arm() {
 
     mkdir -p "$BAT_DIR"
     emit_settings_fragment "$hook_path_m" > "$SETTINGS_FRAGMENT"
-    emit_fetch_health_bat "$python_win_esc" "$fetch_script_win_esc" "$log_fetch_health_esc" > "$bat_fetch_health"
+    emit_fetch_health_bat "$python_win_esc" "$fetch_script_win_esc" "$log_fetch_health_esc" "$env_file_win_esc" > "$bat_fetch_health"
     emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_harvest"
     emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$synth_model_esc"   "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_synth"
     emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc"  "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_health"

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import http.cookiejar
+from http.cookiejar import LoadError
 import json
 import os
 import re
@@ -154,7 +155,7 @@ def probe_reddit(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeR
     url = env.get("FETCH_HEALTH_REDDIT_URL", DEFAULT_URLS["reddit"]).rstrip("/") + ".json?raw_json=1"
     try:
         cookies = cookie_header(cookie_file, url)
-    except (OSError, http.cookiejar.LoadError):
+    except (OSError, LoadError):
         return ProbeResult("auth-or-cookie-expired", "reddit cookie file unreadable")
     if not cookies:
         return ProbeResult("auth-or-cookie-expired", "reddit cookie file has no matching cookies")

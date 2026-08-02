@@ -1226,6 +1226,8 @@ health_bat=$(cat "$BAT_DIR/pipeline-health.bat" 2>/dev/null || echo MISSING)
 assert_contains "fetch-health bat stamps the format version" "rem himmel-cadence-runner-format: 7" "$fetch_health_bat"
 assert_contains "fetch-health bat invokes the plain probe script" "fetch-health.py" "$fetch_health_bat"
 assert_not_contains "fetch-health bat invokes no claude" "claude --model" "$fetch_health_bat"
+assert_contains "fetch-health bat loads repo .env via for /f at fire time (HIMMEL-1470)" 'for /f' "$fetch_health_bat"
+assert_contains "fetch-health bat .env load targets the repo env file (HIMMEL-1470)" '.env"' "$fetch_health_bat"
 assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 7" "$harvest_bat"
 assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 7" "$synth_bat"
 assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 7" "$health_bat"
