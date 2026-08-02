@@ -1286,7 +1286,18 @@ async function printContributorProfile(answers, derived, dryRun) {
     // buildReport() is third-party-shaped and could reject with null/undefined
     // (a non-Error rejection), in which case reading e.message would itself
     // throw and re-escape as exit 1 — the exact abort the guard exists to prevent.
-    console.error(`himmelctl: WARN: contributor dev profile unavailable (${e?.message ?? String(e)}) — profile report skipped; install is unaffected`);
+    // HIMMEL-1476: stringifying the rejection is the last throw site — coercing
+    // a {message: Symbol()} or Object.create(null) (no toString) rejection would
+    // throw, re-escaping as exit 1. Build the detail via a template inside its
+    // own try/catch (a template always yields a string when it doesn't throw, so
+    // the console.error below can never throw); fall back to a constant.
+    let detail;
+    try {
+      detail = `${e?.message ?? String(e)}`;
+    } catch (_e) {
+      detail = 'unformattable error';
+    }
+    console.error(`himmelctl: WARN: contributor dev profile unavailable (${detail}) — profile report skipped; install is unaffected`);
     return;
   }
   for (const line of contributorProfileLib.reportLines(report, { dryRun, derived })) {

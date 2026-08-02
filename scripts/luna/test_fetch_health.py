@@ -216,6 +216,7 @@ class FetchHealthTests(unittest.TestCase):
         # bare mid-token `#` (kept), and an unmatched opening quote (verbatim).
         clean = fetch_health._clean_dotenv_value
         self.assertEqual(clean('"secret"'), "secret")
+        self.assertEqual(clean(r'"abc\"def"'), r'abc\"def')  # HIMMEL-1476: escaped quote is not the delimiter
         self.assertEqual(clean("'secret'"), "secret")
         self.assertEqual(clean('"value" # trailing comment'), "value")
         self.assertEqual(clean("tok_abc # scoped to fetch-health"), "tok_abc")
@@ -257,9 +258,10 @@ class FetchHealthTests(unittest.TestCase):
             "https://api.firecrawl.dev/",
         ):
             seen = {}
-            http = lambda url, **kwargs: seen.update(url=url) or fetch_health.HttpResult(
-                200, b'{"success":true,"data":{"markdown":"x"}}'
-            )
+
+            def http(url, **kwargs):
+                seen.update(url=url)
+                return fetch_health.HttpResult(200, b'{"success":true,"data":{"markdown":"x"}}')
             result = fetch_health.probe_firecrawl({"FIRECRAWL_API_KEY": "secret", "FIRECRAWL_BASE_URL": base_url}, http)
             self.assertEqual(result.status, "ok", base_url)
             self.assertEqual(seen["url"], "https://api.firecrawl.dev/v2/scrape", base_url)

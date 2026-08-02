@@ -332,11 +332,17 @@ def _clean_dotenv_value(raw: str) -> str:
     # where it closes), then drop a trailing unquoted inline comment: a `#`
     # preceded by whitespace, mirroring python-dotenv so a bare mid-token `#`
     # (KEY=a#b) is preserved and a quoted value keeps the `#` inside its quotes.
+    # HIMMEL-1476: scan for the first UNESCAPED closing quote (prev char not a
+    # backslash) so an embedded `\"` no longer counts as the delimiter — the
+    # prior value.find(value[0], 1) truncated `"abc\"def"` to `abc\`. A full
+    # escape parser is out of scope, so `\\"` (escaped backslash, then the real
+    # closing quote) still reads as escaped and over-runs — accepted here.
     value = raw.strip()
     if value and value[0] in ('"', "'"):
-        close = value.find(value[0], 1)
-        if close != -1:
-            return value[1:close]
+        quote = value[0]
+        for close in range(1, len(value)):
+            if value[close] == quote and value[close - 1] != "\\":
+                return value[1:close]
     return re.sub(r"\s+#.*", "", value)
 
 
