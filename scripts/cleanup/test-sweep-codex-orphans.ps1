@@ -22,6 +22,9 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail = '') { if ($Ok) { Pass
 function Rec($procId, $parentId, $name, $cl) {
   [pscustomobject]@{ ProcessId = $procId; ParentProcessId = $parentId; Name = $name; CommandLine = $cl }
 }
+function RecT($procId, $parentId, $name, $cl, $created) {
+  [pscustomobject]@{ ProcessId = $procId; ParentProcessId = $parentId; Name = $name; CommandLine = $cl; CreationDate = $created }
+}
 
 # Fixture command lines derive from the running user's profile dir (no literal
 # home paths in source - the propagation leak scan fail-closes on them).
@@ -30,8 +33,8 @@ function BrokerLine($token) {
   "node $UserHome\.claude\plugins\cache\openai-codex\codex\1.0.5\scripts\app-server-broker.mjs serve --endpoint pipe:\\.\pipe\cxc-$token-codex-app-server"
 }
 function ClientRef($token) {
-  # A client (claude.exe / ChatGPT.exe) connects to the broker's named pipe;
-  # its command line carries the same pipe-name fragment.
+  # Any outside client connects to the broker's named pipe; its command line
+  # carries the same pipe-name fragment regardless of image name.
   "claude-code.exe --mcp-endpoint \\.\pipe\cxc-$token-codex-app-server --session xyz"
 }
 
@@ -55,38 +58,46 @@ Check 'plain node NOT a broker'         (-not (Test-IsCodexAppServerBroker -Proc
 Check 'broker.mjs without serve NOT broker' (-not (Test-IsCodexAppServerBroker -Proc (Rec 1 0 'node.exe' "node x\app-server-broker.mjs")))
 Check 'broker.mjs without pipe NOT broker'  (-not (Test-IsCodexAppServerBroker -Proc (Rec 1 0 'node.exe' "node x\app-server-broker.mjs serve --endpoint elsewhere")))
 Check 'non-node NOT a broker'           (-not (Test-IsCodexAppServerBroker -Proc (Rec 1 0 'python.exe' $bl)))
-Check 'claude.exe is a client'          (Test-IsCodexAppServerClient -Proc (Rec 2 0 'claude.exe' 'anything'))
-Check 'ChatGPT.exe is a client'         (Test-IsCodexAppServerClient -Proc (Rec 2 0 'ChatGPT.exe' 'anything'))
-Check 'node.exe NOT a client'           (-not (Test-IsCodexAppServerClient -Proc (Rec 2 0 'node.exe' 'anything')))
-Check 'codex.exe NOT a client (lives in-tree)' (-not (Test-IsCodexAppServerClient -Proc (Rec 2 0 'codex.exe' 'anything')))
+Check 'claude.exe plausible blind client'  (Test-IsPlausibleCodexAppServerClient -Proc (Rec 2 0 'claude.exe' 'anything'))
+Check 'ChatGPT.exe plausible blind client' (Test-IsPlausibleCodexAppServerClient -Proc (Rec 2 0 'ChatGPT.exe' 'anything'))
+Check 'node.exe plausible blind client'    (Test-IsPlausibleCodexAppServerClient -Proc (Rec 2 0 'node.exe' 'anything'))
+Check 'bun.exe plausible blind client'     (Test-IsPlausibleCodexAppServerClient -Proc (Rec 2 0 'bun.exe' 'anything'))
+Check 'codex.exe NOT plausible outside client' (-not (Test-IsPlausibleCodexAppServerClient -Proc (Rec 2 0 'codex.exe' 'anything')))
 
 # --- Test 3: live/orphan classification on a synthetic table -----------------
-# The four guards the algorithm hinges on:
-#   (a) live  = client holds the token           -> NOT orphan
-#   (b) orphan = no client holds the token       -> orphan
-#   (c) dead-parent is a FALSE signal            -> client holding wins, NOT orphan
-#   (d) codex.exe descendant is NOT sufficient   -> still orphan with no client
-Write-Host "Test 3: live/orphan classification (client-pipe test; dead-parent + codex.exe guards)"
+# The five guards the algorithm hinges on:
+#   (a) live  = outside process holds token      -> NOT orphan
+#   (b) orphan = no outside process holds token  -> orphan
+#   (c) dead-parent is a FALSE signal            -> outside holder wins, NOT orphan
+#   (d) broker/descendant token refs are FALSE   -> still orphan
+#   (e) detached companion node holds token      -> NOT orphan (HIMMEL-1467 repro)
+Write-Host "Test 3: live/orphan classification (outside-tree pipe test; self/descendant guards)"
+$tClass = Get-Date '2026-07-11 01:00:00'
 $procs = @(
   # (a) LIVE: broker 100 token aaa111, client 110 holds aaa111.
   (Rec 100 1   'node.exe'   (BrokerLine 'aaa111'))
   (Rec 110 1   'claude.exe' (ClientRef 'aaa111'))   # holds the pipe -> broker LIVE
 
   # (b) ORPHAN: broker 200 token bbb222, NO client holds bbb222.
-  (Rec 200 1   'node.exe'   (BrokerLine 'bbb222'))
-  (Rec 201 200 'codex.exe'  'codex.exe app-server') # in-tree, irrelevant to liveness
-  (Rec 202 200 'node.exe'   'node mcp-fleet.js')    # in-tree descendant
+  (RecT 200 1   'node.exe'   (BrokerLine 'bbb222') $tClass)
+  (RecT 201 200 'codex.exe'  'codex.exe app-server' ($tClass.AddSeconds(1))) # in-tree, irrelevant to liveness
+  (RecT 202 200 'node.exe'   'node mcp-fleet.js'    ($tClass.AddSeconds(2))) # in-tree descendant
 
   # (c) dead-parent FALSE SIGNAL: broker 300 has DEAD parent (999 absent) BUT
   #     client 310 holds ccc333 -> MUST be LIVE (dead-parent must not reap it).
   (Rec 300 999 'node.exe'   (BrokerLine 'ccc333'))
   (Rec 310 1   'ChatGPT.exe' (ClientRef 'ccc333'))  # holds the pipe -> LIVE despite dead parent
 
-  # (d) codex.exe-descendant NOT sufficient: broker 400 token ddd444 has a
-  #     codex.exe descendant but NO outside client -> MUST be ORPHAN.
-  (Rec 400 1   'node.exe'   (BrokerLine 'ddd444'))
-  (Rec 401 400 'codex.exe'  'codex.exe app-server') # in-tree, cannot mark live
-  (Rec 402 401 'node.exe'   'node mcp.js')           # grandchild
+  # (d) self/descendant references are NOT sufficient: both the broker argv
+  #     and its codex.exe child carry ddd444, but no OUTSIDE process does.
+  (RecT 400 1   'node.exe'   (BrokerLine 'ddd444') $tClass)
+  (RecT 401 400 'codex.exe'  (ClientRef 'ddd444')  ($tClass.AddSeconds(1))) # in-tree token ref -> ignored
+  (RecT 402 401 'node.exe'   'node mcp.js'         ($tClass.AddSeconds(2))) # grandchild
+
+  # (e) HIMMEL-1467 exact repro: detached codex-companion node.exe is outside
+  #     the broker tree and holds eee555 -> broker MUST be LIVE.
+  (Rec 600 1   'node.exe'   (BrokerLine 'eee555'))
+  (Rec 610 1   'node.exe'   ("node codex-companion.mjs adversarial-review " + (ClientRef 'eee555')))
 
   # Non-broker node must never be a candidate.
   (Rec 500 1   'node.exe'   'node playwright-mcp.js')
@@ -97,7 +108,41 @@ $obPids = @($orphanBrokers | ForEach-Object { $_.BrokerPid } | Sort-Object)
 Check 'orphan brokers = {200,400}'     (($obPids -join ',') -eq '200,400') "got=$($obPids -join ',')"
 Check 'live broker 100 excluded'       (-not ($obPids -contains 100))
 Check 'dead-parent-but-held 300 excluded' (-not ($obPids -contains 300))
+Check 'self/descendant-only broker 400 stays orphan' ($obPids -contains 400)
+Check 'standalone companion node keeps 600 live' (-not ($obPids -contains 600))
 Check 'non-broker node 500 excluded'   (-not ($obPids -contains 500))
+
+# Exclusion is the union of ALL broker trees, not just the tree being judged:
+# a descendant under one broker that mentions another token is still internal
+# fleet evidence and must not keep the other broker alive.
+$crossTreeProcs = @(
+  (RecT 650 1   'node.exe'  (BrokerLine 'left11')  $tClass)
+  (RecT 651 650 'node.exe'  (ClientRef 'right22') ($tClass.AddSeconds(1)))
+  (RecT 660 1   'node.exe'  (BrokerLine 'right22') $tClass)
+)
+$crossTreeOrphans = @((Get-CodexOrphanBrokers -Procs $crossTreeProcs) | ForEach-Object { $_.BrokerPid } | Sort-Object)
+Check 'cross-tree token reference cannot mark broker live' (($crossTreeOrphans -join ',') -eq '650,660') "got=$($crossTreeOrphans -join ',')"
+
+# A detached outside client can retain a stale PPID after its real parent dies.
+# If its CreationDate is unavailable, exclusion membership must fail closed:
+# do not follow the unverifiable edge, so its visible token still proves LIVE.
+$staleClientProcs = @(
+  (RecT 670 1   'node.exe' (BrokerLine 'stale67') $tClass)
+  (Rec  671 670 'node.exe' (ClientRef 'stale67'))
+)
+$staleClientOrphans = @((Get-CodexOrphanBrokers -Procs $staleClientProcs) | ForEach-Object { $_.BrokerPid })
+Check 'undated stale-PPID outside token-holder keeps broker live' (-not ($staleClientOrphans -contains 670)) "got=$($staleClientOrphans -join ',')"
+
+# codex-adv r2: a stale PPID recycled into a broker created within the OLD 2s
+# tolerance window must not read as verified kin. The client (681) is 1 second
+# OLDER than the broker (680) its stale PPID points at - strict same-snapshot
+# ordering drops the edge, so its token still proves the broker LIVE.
+$narrowStaleProcs = @(
+  (RecT 680 1   'node.exe' (BrokerLine 'stale68') $tClass)
+  (RecT 681 680 'node.exe' (ClientRef 'stale68') ($tClass.AddSeconds(-1)))
+)
+$narrowStaleOrphans = @((Get-CodexOrphanBrokers -Procs $narrowStaleProcs) | ForEach-Object { $_.BrokerPid })
+Check '1s-older stale-PPID client still proves broker live (strict verified ordering)' (-not ($narrowStaleOrphans -contains 680)) "got=$($narrowStaleOrphans -join ',')"
 
 # --- Test 4: orphan TREE composition (broker + descendants) ------------------
 Write-Host "Test 4: orphan tree = broker pid + full descendant walk"
@@ -159,10 +204,7 @@ Check 'cycle: peer listed exactly once'    ((@($cycDesc | Where-Object { $_ -eq 
 # Stale-PPID impostor (codex CR round 4): an unrelated process whose recorded
 # PPID was recycled into a tree pid is OLDER than its claimed parent - the
 # creation-time ordering filter must drop it, keep real (younger) children,
-# and fail open when a CreationDate is missing.
-function RecT($procId, $parentId, $name, $cl, $created) {
-  [pscustomobject]@{ ProcessId = $procId; ParentProcessId = $parentId; Name = $name; CommandLine = $cl; CreationDate = $created }
-}
+# and fail open when a CreationDate is missing for the kill-tree walk.
 $tWalk = Get-Date '2026-07-11 03:00:00'
 $ppidProcs = @(
   (RecT 730 1   'node.exe'   'walk-root'      $tWalk)
@@ -173,7 +215,9 @@ $ppidProcs = @(
 $ppidDesc = @(Get-DescendantPids -Procs $ppidProcs -RootPid 730)
 Check 'younger real child kept'        ($ppidDesc -contains 731) "got=$($ppidDesc -join ',')"
 Check 'stale-PPID impostor excluded'   (-not ($ppidDesc -contains 732)) "got=$($ppidDesc -join ',')"
-Check 'undated child kept (fail-open)' ($ppidDesc -contains 733) "got=$($ppidDesc -join ',')"
+Check 'kill-tree keeps undated child (fail-open)' ($ppidDesc -contains 733) "got=$($ppidDesc -join ',')"
+$verifiedPpidDesc = @(Get-DescendantPids -Procs $ppidProcs -RootPid 730 -VerifiedEdgesOnly)
+Check 'exclusion walk drops undated edge (fail-closed)' (-not ($verifiedPpidDesc -contains 733)) "got=$($verifiedPpidDesc -join ',')"
 
 # --- Test 6: name allow-list filtering (kill-safety) -------------------------
 Write-Host "Test 6: name allow-list (PID-reuse safety gate)"
@@ -213,19 +257,28 @@ Check 'empty token NOT safe'           (-not (Test-CxcTokenPathSafe -Token ''))
 
 # --- Test 6c: blind-client visibility probe (silent-failure CR) --------------
 Write-Host "Test 6c: Get-BlindClientPids (degraded CommandLine visibility)"
+$tVis = Get-Date '2026-07-11 04:00:00'
 $visProcs = @(
-  (Rec 900 1 'claude.exe'  '')                       # client, INVISIBLE cmdline -> blind
-  (Rec 901 1 'claude.exe'  (ClientRef 'tok9'))       # client, visible -> not blind
-  (Rec 902 1 'ChatGPT.exe' $null)                    # client, null cmdline -> blind
-  (Rec 903 1 'node.exe'    '')                       # NOT a client -> ignored
+  (Rec 900 1   'claude.exe'  '')                       # plausible outside client, blind
+  (Rec 901 1   'claude.exe'  (ClientRef 'tok9'))       # plausible client, visible
+  (Rec 902 1   'ChatGPT.exe' $null)                    # plausible outside client, blind
+  (Rec 903 1   'node.exe'    '')                       # detached companion could be client -> blind
+  (Rec 904 1   'bun.exe'     $null)                    # plausible outside client, blind
+  (Rec 905 1   'svchost.exe' '')                       # unrelated hidden SYSTEM proc -> ignored
+  (RecT 920 1   'node.exe'    (BrokerLine 'blindtree') $tVis)
+  (RecT 921 920 'node.exe'    '' ($tVis.AddSeconds(1))) # verified hidden broker descendant -> ignored
+  (Rec  922 920 'node.exe'    '')                       # undated stale PPID -> outside, blind
 )
 # Raw assignment, no @() wrap / no pipe on the call itself: the function
 # returns via unary comma (same contract as Get-CxcTokens - see the note at
 # its call site) so the array survives assignment as ONE object.
 $blindRaw = Get-BlindClientPids -Procs $visProcs
 $blind = @($blindRaw | Sort-Object)
-Check 'blind clients = {900,902}'      (($blind -join ',') -eq '900,902') "got=$($blind -join ',')"
-$noBlind = Get-BlindClientPids -Procs @( (Rec 901 1 'claude.exe' (ClientRef 'tok9')) )
+Check 'blind outside clients = {900,902,903,904,922}' (($blind -join ',') -eq '900,902,903,904,922') "got=$($blind -join ',')"
+Check 'verified hidden broker descendant 921 excluded' (-not ($blind -contains 921)) "got=$($blind -join ',')"
+Check 'undated stale-PPID plausible client 922 stays blind' ($blind -contains 922) "got=$($blind -join ',')"
+Check 'unrelated hidden svchost 905 ignored' (-not ($blind -contains 905)) "got=$($blind -join ',')"
+$noBlind = Get-BlindClientPids -Procs @( (Rec 901 1 'node.exe' (ClientRef 'tok9')) )
 Check 'all-visible -> empty'           ($noBlind.Count -eq 0) "got count=$($noBlind.Count)"
 
 # --- Test 6d: caller-path @() wrap regression (HIMMEL-930) -------------------

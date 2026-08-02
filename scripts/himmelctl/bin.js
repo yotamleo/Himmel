@@ -1282,7 +1282,11 @@ async function printContributorProfile(answers, derived, dryRun) {
       platform: process.platform,
     });
   } catch (e) {
-    console.error(`himmelctl: WARN: contributor dev profile unavailable (${e.message}) — profile report skipped; install is unaffected`);
+    // HIMMEL-1466 made this non-gating; HIMMEL-1468 hardens the catch itself:
+    // buildReport() is third-party-shaped and could reject with null/undefined
+    // (a non-Error rejection), in which case reading e.message would itself
+    // throw and re-escape as exit 1 — the exact abort the guard exists to prevent.
+    console.error(`himmelctl: WARN: contributor dev profile unavailable (${e?.message ?? String(e)}) — profile report skipped; install is unaffected`);
     return;
   }
   for (const line of contributorProfileLib.reportLines(report, { dryRun, derived })) {

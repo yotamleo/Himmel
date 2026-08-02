@@ -323,6 +323,23 @@ def primary_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _clean_dotenv_value(raw: str) -> str:
+    # Normalize a dotenv value (HIMMEL-1468): the prior raw value.strip() left
+    # BITBUCKET_API_TOKEN="secret" holding literal quotes, so Basic auth failed
+    # on any non-cron path where no shell pre-sources the file, and an inline
+    # `# comment` was kept on the value. Strip MATCHED surrounding single or
+    # double quotes (an unmatched opening quote is left verbatim — don't guess
+    # where it closes), then drop a trailing unquoted inline comment: a `#`
+    # preceded by whitespace, mirroring python-dotenv so a bare mid-token `#`
+    # (KEY=a#b) is preserved and a quoted value keeps the `#` inside its quotes.
+    value = raw.strip()
+    if value and value[0] in ('"', "'"):
+        close = value.find(value[0], 1)
+        if close != -1:
+            return value[1:close]
+    return re.sub(r"\s+#.*", "", value)
+
+
 def load_repo_env(env: dict[str, str], repo_root: Path) -> dict[str, str]:
     loaded = dict(env)
     env_file = repo_root / ".env"
@@ -334,7 +351,7 @@ def load_repo_env(env: dict[str, str], repo_root: Path) -> dict[str, str]:
             if not stripped or stripped.startswith("#") or "=" not in stripped:
                 continue
             key, value = stripped.split("=", 1)
-            loaded.setdefault(key.strip(), value.strip())
+            loaded.setdefault(key.strip(), _clean_dotenv_value(value))
     except OSError:
         pass
     return loaded
@@ -370,7 +387,10 @@ def probe_firecrawl(env: dict[str, str], http: Callable[..., HttpResult]) -> Pro
     api_key = env.get("FIRECRAWL_API_KEY", "").strip()
     if not api_key:
         return ProbeResult("auth-or-cookie-expired", "Firecrawl API key missing")
-    base_url = env.get("FIRECRAWL_BASE_URL", "").strip().rstrip("/") or "https://api.firecrawl.dev"
+    # Normalize the base (HIMMEL-1468): rstrip("/") alone left a FIRECRAWL_BASE_URL
+    # set WITH a /v2 suffix composing /v2/v2/scrape. Drop a trailing /v2 (then any
+    # newly-exposed slash) before appending the /v2 path ourselves.
+    base_url = re.sub(r"/v2$", "", env.get("FIRECRAWL_BASE_URL", "").strip().rstrip("/")) or "https://api.firecrawl.dev"
     url = env.get("FETCH_HEALTH_FIRECRAWL_URL", DEFAULT_URLS["firecrawl"])
     payload = json.dumps({"url": url, "formats": ["markdown"]}).encode()
     api_host = (urllib.parse.urlparse(base_url).hostname or "").lower()

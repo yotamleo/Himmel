@@ -208,6 +208,32 @@ class FetchHealthTests(unittest.TestCase):
             self.assertTrue(seen["headers"]["Authorization"].startswith("Basic "))
             self.assertNotIn("token", seen["headers"]["Authorization"])
 
+    def test_load_repo_env_strips_quotes_and_inline_comments(self):
+        # HIMMEL-1468: a raw value.strip() left a quoted dotenv value holding
+        # its literal quotes (Basic auth then fails on non-cron paths) and kept
+        # an inline `# comment` on the value. Covered: double + single quoted
+        # values, a quoted value with a trailing comment, an inline comment, a
+        # bare mid-token `#` (kept), and an unmatched opening quote (verbatim).
+        clean = fetch_health._clean_dotenv_value
+        self.assertEqual(clean('"secret"'), "secret")
+        self.assertEqual(clean("'secret'"), "secret")
+        self.assertEqual(clean('"value" # trailing comment'), "value")
+        self.assertEqual(clean("tok_abc # scoped to fetch-health"), "tok_abc")
+        self.assertEqual(clean("a#b"), "a#b")  # no whitespace before # → kept
+        self.assertEqual(clean('"unmatched'), '"unmatched')  # leave unmatched alone
+        # End-to-end via load_repo_env: a quoted token + inline comment parse
+        # to the bare secret, and a leading export stays part of an unquoted value.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text(
+                'BITBUCKET_API_TOKEN="quoted-secret"  # operator-injected\n'
+                "BITBUCKET_EMAIL=ops@example.com # noqa\n",
+                encoding="utf-8",
+            )
+            loaded = fetch_health.load_repo_env({}, root)
+            self.assertEqual(loaded["BITBUCKET_API_TOKEN"], "quoted-secret")
+            self.assertEqual(loaded["BITBUCKET_EMAIL"], "ops@example.com")
+
     def test_firecrawl_uses_v2_scrape_and_validates_markdown(self):
         seen = {}
 
@@ -220,6 +246,23 @@ class FetchHealthTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(seen["url"], "https://api.firecrawl.dev/v2/scrape")
         self.assertEqual(json.loads(seen["data"]), {"url": "https://example.com/", "formats": ["markdown"]})
+
+    def test_firecrawl_normalizes_base_url_with_v2_suffix(self):
+        # HIMMEL-1468: a FIRECRAWL_BASE_URL set WITH a /v2 suffix (or a trailing
+        # slash) used to compose /v2/v2/scrape. Each variant must collapse to the
+        # single canonical /v2 path.
+        for base_url in (
+            "https://api.firecrawl.dev/v2",
+            "https://api.firecrawl.dev/v2/",
+            "https://api.firecrawl.dev/",
+        ):
+            seen = {}
+            http = lambda url, **kwargs: seen.update(url=url) or fetch_health.HttpResult(
+                200, b'{"success":true,"data":{"markdown":"x"}}'
+            )
+            result = fetch_health.probe_firecrawl({"FIRECRAWL_API_KEY": "secret", "FIRECRAWL_BASE_URL": base_url}, http)
+            self.assertEqual(result.status, "ok", base_url)
+            self.assertEqual(seen["url"], "https://api.firecrawl.dev/v2/scrape", base_url)
 
     def test_redirect_handler_strips_auth_off_scope(self):
         handler = fetch_health.AuthScopedRedirectHandler({"www.reddit.com"})
