@@ -40,7 +40,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
@@ -72,7 +71,7 @@ winpath() {
 #             (same shape test-wizard-derive.sh's write_cache writes).
 write_cache() {
   cat > "$1" <<JSON
-{"role":"$2","tier":"standard","scope":"$3","vault":{"mode":"$4","path":"$5"},"handover":{"mode":"$6","path":"$7"},"pluginSet":"$8","lanes":[],"alwaysOn":false}
+{"role":"$2","tier":"standard","scope":"$3","vault":{"mode":"$4","path":"$5"},"handover":{"mode":"$6","path":"$7"},"pluginSet":"$8","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
 JSON
 }
 
@@ -132,10 +131,10 @@ outB=$(runStatusBE --json); rcB=$?
 set -e
 [ "$rcB" -eq 0 ] || fail "case b: status should exit 0 regardless of reds (got rc=$rcB)"
 echo "$outB" | jq -e '.items[] | select(.id=="pre-commit-hooks") | .severity == "red"' >/dev/null \
-  || fail "case b: pre-commit-hooks should be red when .pre-commit-config.yaml is absent (got: $outB)"
-echo "$outB" | jq -e '.items[] | select(.id=="pre-commit-hooks") | .detail == "no .pre-commit-config.yaml in this project"' >/dev/null \
-  || fail "case b: pre-commit-hooks detail should plainly name the missing file, not imply a broken install (got: $outB)"
-echo "ok: case b — known-missing enabled item (pre-commit-hooks) reads red, exit 0, plain detail"
+  || fail "case b: pre-commit-hooks should be red when the configured hooks are absent (got: $outB)"
+echo "$outB" | jq -e '.items[] | select(.id=="pre-commit-hooks") | .detail | contains("pre-commit") and contains("commit-msg") and contains("pre-push")' >/dev/null \
+  || fail "case b: pre-commit-hooks detail should plainly name all missing hook types (got: $outB)"
+echo "ok: case b — known-missing enabled item (pre-commit-hooks) reads red, exit 0, names all hook types"
 
 # ── case f: no-prompt guard — stdin closed must not hang or error ──────────
 set +e

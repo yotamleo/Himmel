@@ -17,7 +17,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HOOK_DIR/block-merged-pr-commit.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK" 2>/dev/null || true

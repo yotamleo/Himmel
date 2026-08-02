@@ -44,6 +44,12 @@ trap cleanup EXIT
 # engine `himmelctl update` (deriveUpdateCommand) delegates to. Same class:
 # an enumerated existing-script shell-out, not new inline logic. It was
 # omitted when `update` landed (#1279), leaving this guard red; added here.
+#
+# HIMMEL-1446: himmelctl.ps1 — NOT a script bin.js shells out to; it is the
+# PATH-launcher FILENAME the shim (writeMarkedLauncher/removeMarkedLauncher)
+# writes/removes in the user's binDir. Listed here only because
+# extract_script_targets()'s conservative quoted-*.ps1 scan catches the
+# literal — the trip-wire still fires on any genuinely-new shell-out script.
 allow_full="$work/allow-full.txt"
 cat > "$allow_full" <<'NAMES'
 preflight-adopter.sh
@@ -56,6 +62,7 @@ set-handover-dir.sh
 uninstall.sh
 uninstall.ps1
 himmel-update.sh
+himmelctl.ps1
 set-env-var.sh
 set-lane-override.mjs
 NAMES
@@ -108,13 +115,20 @@ for name in "${allow_names[@]}"; do
 done
 echo "ok: caseB dropping any single allow-set name breaks the guard (proves it constrains)"
 
-# ── Case C: the ONLY file write is the profile cache (writeCache) ──────────
+# ── Case C: the only DIRECT file writes are the documented ones ────────────
+# The profile cache (writeCache -> cachePath()) and, since HIMMEL-1446, the
+# PATH-launcher shim's atomic tmp write (writeMarkedLauncher). No other file
+# write — keeps the wizard from reimplementing plugin-install/hook-wire/
+# settings-merge logic inline. Both sites are pinned below so a THIRD,
+# undocumented write still trips the guard (count + site match).
 writes=$(grep -c 'fs\.writeFileSync' "$wizard")
-[ "$writes" -eq 1 ] \
-  || fail "caseC: expected exactly 1 fs.writeFileSync call (the profile cache), got $writes"
+[ "$writes" -eq 2 ] \
+  || fail "caseC: expected exactly 2 fs.writeFileSync calls (profile cache + PATH-launcher tmp), got $writes"
 grep -q 'fs.writeFileSync(cachePath()' "$wizard" \
-  || fail "caseC: the one fs.writeFileSync call should target cachePath() (the profile cache)"
-echo "ok: caseC bin.js's only fs.writeFileSync is the profile-cache write"
+  || fail "caseC: missing the profile-cache write (cachePath())"
+grep -q 'fs.writeFileSync(tmp,' "$wizard" \
+  || fail "caseC: missing the PATH-launcher shim write (writeMarkedLauncher tmp, HIMMEL-1446)"
+echo "ok: caseC bin.js's only fs.writeFileSync calls are the profile cache + PATH-launcher shim"
 
 # ── Case D: only node builtins are required -- zero npm deps ───────────────
 required=$(grep -oE "require\('[a-zA-Z_/-]+'\)" "$wizard" | sed -E "s/require\('(.*)'\)/\1/" | sort -u)

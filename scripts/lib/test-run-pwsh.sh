@@ -13,7 +13,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 WRAP="$SELF_DIR/run-pwsh.sh"
 [ -f "$WRAP" ] || { echo "FAIL: $WRAP not found"; exit 1; }

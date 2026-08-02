@@ -54,7 +54,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 repo_root=$(git rev-parse --show-toplevel)
 bootstrap_sh="$repo_root/scripts/himmelctl/bootstrap.sh"
 bootstrap_ps1="$repo_root/scripts/himmelctl/bootstrap.ps1"

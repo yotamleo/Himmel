@@ -82,7 +82,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 deps_engine_lib="$repo_root/scripts/himmelctl/lib/deps-engine.js"
@@ -145,7 +144,7 @@ echo "$outA" | jq -e '.cmd == "bash" and .args[0] == "-c" and (.args[1] | contai
   || fail "case a: expected an ensure_tools \$2 dispatch (got: $outA)"
 echo "$outA" | jq -e '.args[-1] == "git"' >/dev/null \
   || fail "case a: cmd name should be the LAST positional arg (got: $outA)"
-echo "$outA" | jq -er '.args[3]' | grep -qF 'ensure-tools.sh' \
+grepq "$(echo "$outA" | jq -er '.args[3]')" -F 'ensure-tools.sh' \
   || fail "case a: the ensure-tools.sh path should be a positional arg (got: $outA)"
 echo "ok: case a — manager:ensure-tools (non-bun) dispatches via ensure_tools \$2, positional args"
 
@@ -156,7 +155,7 @@ const dep = { id: 'bun', cmd: 'bun', install: { macos: { manager: 'ensure-tools'
 const ctx = { repoRoot: '/fake/repo', platform: 'darwin' };
 console.log(JSON.stringify(buildDepEntry(dep, ctx)));
 ")
-echo "$outB1" | jq -er '.args[1]' | grep -qF 'ensure_tools bun' \
+grepq "$(echo "$outB1" | jq -er '.args[1]')" -F 'ensure_tools bun' \
   || fail "case b (install): expected 'ensure_tools bun' (got: $outB1)"
 outB2=$("$node_bin" -e "
 const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);
@@ -164,7 +163,7 @@ const dep = { id: 'bun', cmd: 'bun', install: { macos: { manager: 'ensure-tools'
 const ctx = { repoRoot: '/fake/repo', platform: 'darwin' };
 console.log(JSON.stringify(buildDepEntry(dep, ctx, { upgrade: true })));
 ")
-echo "$outB2" | jq -er '.args[1]' | grep -qF '_ensure_install_bun' \
+grepq "$(echo "$outB2" | jq -er '.args[1]')" -F '_ensure_install_bun' \
   || fail "case b (upgrade): expected '_ensure_install_bun' (got: $outB2)"
 echo "ok: case b — bun ensure-tools: install -> ensure_tools bun, upgrade -> _ensure_install_bun"
 
@@ -183,7 +182,7 @@ const dep = { id: 'node', cmd: 'node', install: { macos: { manager: 'brew', pkg:
 const ctx = { repoRoot: '/fake/repo', platform: 'darwin' };
 console.log(JSON.stringify(buildDepEntry(dep, ctx, { upgrade: true })));
 ")
-echo "$outC2" | jq -er '.args[1]' | grep -qF 'brew upgrade' \
+grepq "$(echo "$outC2" | jq -er '.args[1]')" -F 'brew upgrade' \
   || fail "case c (upgrade): expected 'brew upgrade' in the line (got: $outC2)"
 # CodeRabbit: assert the COMPLETE documented upgrade shape — brew upgrade
 # with its `|| brew install "$1"` fallback (and the literal "$1" placeholder),
@@ -191,7 +190,7 @@ echo "$outC2" | jq -er '.args[1]' | grep -qF 'brew upgrade' \
 # placeholder text, matched with grep -F — single-quoted so the shell never
 # expands it.)
 # shellcheck disable=SC2016
-echo "$outC2" | jq -er '.args[1]' | grep -qF 'brew upgrade "$1" 2>/dev/null || brew install "$1"' \
+grepq "$(echo "$outC2" | jq -er '.args[1]')" -F 'brew upgrade "$1" 2>/dev/null || brew install "$1"' \
   || fail "case c (upgrade): expected the full 'brew upgrade ... || brew install' fallback line (got: $outC2)"
 echo "ok: case c — manager:brew: install -> brew install, upgrade -> brew upgrade (fallback to install)"
 
@@ -205,12 +204,12 @@ console.log(JSON.stringify(buildDepEntry(dep, ctx)));
 # shellcheck disable=SC2016
 # Single-quoted on purpose — grep -F matches the LITERAL "$1" positional-arg
 # placeholder text buildDepEntry emits, not an expanded shell variable.
-echo "$outD1" | jq -er '.args[1]' | grep -qF 'winget install --id "$1"' \
+grepq "$(echo "$outD1" | jq -er '.args[1]')" -F 'winget install --id "$1"' \
   || fail "case d (install): expected 'winget install --id \"\$1\"' (got: $outD1)"
 # CodeRabbit: winget's required -e --silent flags must be present on install
 # (exact-case match + non-interactive) — `--` so grep doesn't read the
 # leading -e as one of its own flags.
-echo "$outD1" | jq -er '.args[1]' | grep -qF -- '-e --silent' \
+grepq "$(echo "$outD1" | jq -er '.args[1]')" -F -- '-e --silent' \
   || fail "case d (install): winget line must carry '-e --silent' (got: $outD1)"
 echo "$outD1" | jq -e '.args[-1] == "jqlang.jq"' >/dev/null \
   || fail "case d (install): the winget id should be the last positional arg (got: $outD1)"
@@ -222,10 +221,10 @@ console.log(JSON.stringify(buildDepEntry(dep, ctx, { upgrade: true })));
 ")
 # shellcheck disable=SC2016
 # Same as above — the literal "$1" placeholder text, not an expansion.
-echo "$outD2" | jq -er '.args[1]' | grep -qF 'winget upgrade --id "$1"' \
+grepq "$(echo "$outD2" | jq -er '.args[1]')" -F 'winget upgrade --id "$1"' \
   || fail "case d (upgrade): expected 'winget upgrade --id \"\$1\"' (got: $outD2)"
 # CodeRabbit: the same -e --silent flags are required on upgrade too.
-echo "$outD2" | jq -er '.args[1]' | grep -qF -- '-e --silent' \
+grepq "$(echo "$outD2" | jq -er '.args[1]')" -F -- '-e --silent' \
   || fail "case d (upgrade): winget line must carry '-e --silent' (got: $outD2)"
 echo "ok: case d — manager:winget: install -> winget install, upgrade -> winget upgrade"
 

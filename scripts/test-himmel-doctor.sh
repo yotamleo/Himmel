@@ -12,7 +12,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 DOC="$REPO_ROOT/scripts/himmel-doctor.sh"
 [ -f "$DOC" ] || { echo "FAIL: $DOC not found"; exit 1; }
@@ -351,7 +350,7 @@ out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.jso
     CLAUDE_DIR="$t/claude" HOME="$t/home" \
     bash "$DOC" --no-color 2>&1)"
 # Locked worktree must NOT produce a WARN for feat/locked-merged.
-if printf '%s' "$out" | grep 'WARN' | grep -q 'C7-shipped'; then
+if grepq "$(printf '%s' "$out" | grep 'WARN')" 'C7-shipped'; then
     fail "C7 -> locked worktree must not be flagged; got WARN"
 else
     pass "C7 -> locked worktree not flagged"
@@ -626,7 +625,7 @@ if command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
 JSON
     cacheC16="$t/cache"; mkdir -p "$cacheC16"
     cat > "$cacheC16/install-profile.json" <<'JSON'
-{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"alwaysOn":false}
+{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
 JSON
 
     out="$(cd "$targetC16" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC16")" \

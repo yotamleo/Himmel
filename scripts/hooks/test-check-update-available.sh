@@ -29,7 +29,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 HOOK="$(cd "$(dirname "$0")" && pwd)/check-update-available.sh"
 
 if [ ! -f "$HOOK" ]; then

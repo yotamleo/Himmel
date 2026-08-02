@@ -24,7 +24,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-npm-licenses.sh"
 
 FAILED=0

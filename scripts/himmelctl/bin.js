@@ -32,6 +32,7 @@ const installEngineLib = require('./lib/install-engine.js');
 const probesLib = require('./lib/probes.js');
 const depsEngineLib = require('./lib/deps-engine.js');
 const adopterProfileLib = require('./lib/adopter-profile.js');
+const contributorProfileLib = require('./lib/contributor-profile.js');
 
 // Tools every himmel adopter needs before any question makes sense — mirrors
 // adopt.sh require_tools (bash/git/jq/python3) PLUS at least one JS package
@@ -90,13 +91,11 @@ options:
                           (default: ${adopterProfileLib.DEFAULT_LANE_IDS.join(',')}). Skips the lanes question.
   --with-codex           install (adopter): additionally select the codex lane (opt-in)
   --with-hermes          install (adopter): additionally select the hermes lane (opt-in)
-                          What selecting a lane DOES in v1: records the choice in
-                          the install profile, probes the lane, and reports what is
-                          missing or unfinished. It does NOT install the lane CLI
-                          and does NOT switch the lane on. The selection is also not
-                          yet enforced at runtime — /lanes still resolves every lane
-                          your machine has, selected or not (tracked separately as
-                          HIMMEL-1428).
+                          Selecting a lane records the choice, probes it, and on an
+                          applied adopter install persists a resolver allowlist.
+                          Selected lanes still have to pass their real probes; the
+                          allowlist only suppresses non-selected optional lanes.
+                          It does NOT install a lane CLI or force a lane present.
   --advanced             reserved: surface advanced options (parsed, not yet honored)
   --dry-run              print the derived plan/actions without executing
   --items <a,b>          status/ensure: scope the run to these item ids (comma list)
@@ -661,6 +660,7 @@ function buildAnswers(role, scope, vaultMode, vaultPath, handoverMode, handoverP
     handover: { mode: handoverMode, path: handoverPath },
     pluginSet: pluginSet,
     lanes: lanes || [],
+    lanesMeaningful: true,
     alwaysOn: Boolean(alwaysOn),
   };
 }
@@ -913,11 +913,10 @@ function loadProfile(p) {
   // HIMMEL-862: lanes/alwaysOn join the strictly-validated set for the same
   // reason every other field is in it — --from-profile is unattended-execution
   // consent, so a skewed field must fail loud BEFORE any side effect rather
-  // than be silently reinterpreted. Every profile buildAnswers has ever
-  // written carries both (as [] / false), so pre-862 caches still validate.
-  // Note the OPT-IN lanes ARE accepted here: a profile is an explicit,
-  // hand-reviewed artifact, so naming codex/hermes in it IS the consent that
-  // --with-codex/--with-hermes provides on the command line.
+  // than be silently reinterpreted. Note the OPT-IN lanes ARE accepted here: a
+  // profile is an explicit, hand-reviewed artifact, so naming codex/hermes in
+  // it IS the consent that --with-codex/--with-hermes provides on the command
+  // line.
   if (!Array.isArray(obj.lanes)) {
     profileError(p, `field 'lanes' must be an array (got ${JSON.stringify(obj.lanes)})`);
   }
@@ -925,6 +924,15 @@ function loadProfile(p) {
     if (adopterProfileLib.ALL_LANE_IDS.indexOf(l) === -1) {
       profileError(p, `field 'lanes' contains unknown lane ${JSON.stringify(l)} (known: ${adopterProfileLib.ALL_LANE_IDS.join(', ')})`);
     }
+  }
+  // Pre-HIMMEL-862 caches carried lanes:[] only as a schema placeholder. A new
+  // profile marks the field meaningful so [] can safely mean explicit none;
+  // legacy profiles that name lanes explicitly remain unambiguous and valid.
+  if (obj.lanesMeaningful !== undefined && obj.lanesMeaningful !== true) {
+    profileError(p, `field 'lanesMeaningful' must be true when present (got ${JSON.stringify(obj.lanesMeaningful)})`);
+  }
+  if (obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
+    profileError(p, "legacy profile has lanes:[] without lanesMeaningful=true; re-run the installer and reconfirm lane selection (use 'none' for an explicit empty allowlist)");
   }
   if (typeof obj.alwaysOn !== 'boolean') {
     profileError(p, `field 'alwaysOn' must be a boolean (got ${JSON.stringify(obj.alwaysOn)})`);
@@ -1248,6 +1256,33 @@ function previewHandoverAndPlugins(answers) {
 // async because the lane probe now loads the CANONICAL ESM resolver rather
 // than re-implementing its semantics; every call site is already inside the
 // async runPlan.
+async function printContributorProfile(answers, derived, dryRun) {
+  if (answers.role !== 'contributor') return;
+  // HIMMEL-1466: the contributor profile runs AFTER the core install already
+  // succeeded (dry-run path ~1474; applied path ~1550, right after runSpawn and
+  // the PATH-launcher write). It is reporting, not gating, so a failure in the
+  // report build — a missing/malformed scripts/install/manifest.json (the
+  // #1530 regression), a missing deps.json, or any probe throw — must never
+  // abort the install. Pre-fix, loadManifest()'s throw escaped here to main()'s
+  // catch and turned a green install into exit 1. Mirror the cmdUninstall guard
+  // (~1756): WARN via console.error naming the error, skip ONLY the profile
+  // report, leave the install rc untouched.
+  let report;
+  try {
+    report = await contributorProfileLib.buildReport({
+      repoRoot: repoRoot(),
+      env: process.env,
+      platform: process.platform,
+    });
+  } catch (e) {
+    console.error(`himmelctl: WARN: contributor dev profile unavailable (${e.message}) — profile report skipped; install is unaffected`);
+    return;
+  }
+  for (const line of contributorProfileLib.reportLines(report, { dryRun, derived })) {
+    console.log(line);
+  }
+}
+
 async function printAdopterEpilogue(answers, derived, dryRun, pluginResult, vaultScaffolded) {
   if (answers.role !== 'adopter') return;
   const laneProbe = await adopterProfileLib.loadLaneProbe(repoRoot(), process.env);
@@ -1307,6 +1342,38 @@ function applyHandoverStep(answers) {
   return true;
 }
 
+// Validate predictable profile-persistence failures before any installer,
+// handover or vault mutation. The post-install write stays authoritative and
+// repeats these checks to catch changes during the core install.
+async function preflightLaneProfileStep(answers) {
+  if (answers.role !== 'adopter') return true;
+  try {
+    await adopterProfileLib.preflightProfileLaneAllowlist(repoRoot());
+    return true;
+  } catch (e) {
+    console.error(`himmelctl: lane profile preflight failed: ${e && e.message ? e.message : e}`);
+    return false;
+  }
+}
+
+// HIMMEL-1428: persist an APPLIED adopter install's selected optional lanes as
+// the resolver's narrowing profile allowlist. This runs only after the core
+// install succeeds; dry-run and contributor paths never write it. Failure is
+// fatal because silently leaving every detected backend routable would violate
+// the consent boundary the profile selection now represents.
+async function applyLaneProfileStep(answers) {
+  if (answers.role !== 'adopter') return true;
+  try {
+    const { ids, preservedLegacyGlobal } = await adopterProfileLib.persistProfileLaneAllowlist(answers.lanes || [], repoRoot());
+    console.log(`lane profile: allowlisted ${ids.length > 0 ? ids.join(', ') : '(none)'}; unselected adopter-profile lanes are suppressed-by-profile`);
+    if (preservedLegacyGlobal) console.log('lane profile: preserved legacy global allowlist semantics');
+    return true;
+  } catch (e) {
+    console.error(`himmelctl: could not persist the lane profile allowlist: ${e && e.message ? e.message : e}`);
+    return false;
+  }
+}
+
 // T4.5 helper: pluginSet=full enable step + WARN failure summary (FIX 4
 // semantics). lean → no-op. Returns 0 normally, 1 if any plugin command
 // failed (the core install already succeeded, so the caller still prints the
@@ -1354,6 +1421,7 @@ async function runPlan(answers, args) {
     // plugin-enable step were previously dropped here entirely.
     if (args.dryRun) {
       previewHandoverAndPlugins(answers);
+      applyHimmelctlPathShim(args);
       await printAdopterEpilogue(answers, displayCommand(plan.apply), args.dryRun, null);
       return 0;
     }
@@ -1364,16 +1432,19 @@ async function runPlan(answers, args) {
         return 0;
       }
     }
+    if (!await preflightLaneProfileStep(answers)) return 1;
     if (!settingsTargetsWritable(answers)) return 1;
     if (!applyHandoverStep(answers)) return 1;
     const wireRc = runSpawn(plan.wire);
     if (wireRc !== 0) return wireRc;
     const applyRc = runSpawn(plan.apply);
     if (applyRc !== 0) return applyRc;
+    if (!await applyLaneProfileStep(answers)) return 1;
     const pluginResult = applyPluginStep(answers);
+    const shimOk = applyHimmelctlPathShim(args);
     await printAdopterEpilogue(answers, displayCommand(plan.apply), args.dryRun, pluginResult);
     printUninstallFooter();
-    return pluginResult.rc;
+    return pluginResult.rc || (shimOk ? 0 : 1);
   }
 
   // CR round 8 [codex-adv-r7-3]: vault.mode=default-template hands adopt.sh a
@@ -1414,6 +1485,8 @@ async function runPlan(answers, args) {
   // executing or mutating anything.
   if (args.dryRun) {
     previewHandoverAndPlugins(answers);
+    applyHimmelctlPathShim(args);
+    await printContributorProfile(answers, displayCommand(cmd), args.dryRun);
     await printAdopterEpilogue(answers, displayCommand(cmd), args.dryRun, null, vaultScaffolded);
     return 0;
   }
@@ -1431,9 +1504,10 @@ async function runPlan(answers, args) {
     }
   }
 
-  // Fail before any installer/wire/plugin mutation when the relevant target
-  // settings.json cannot be written, so EACCES is actionable rather than a raw
-  // downstream script error.
+  // Fail before any installer/wire/plugin mutation when lane-profile
+  // persistence or the relevant target settings.json cannot be written, so a
+  // predictable consent-boundary failure never lands after the core install.
+  if (!await preflightLaneProfileStep(answers)) return 1;
   if (!settingsTargetsWritable(answers)) return 1;
 
   // T4.5: handover.mode=external → persist HANDOVER_DIR before the install.
@@ -1482,13 +1556,16 @@ async function runPlan(answers, args) {
   // post-install enable step if the core install itself failed).
   const rc = runSpawn(cmd);
   if (rc !== 0) return rc;
+  if (!await applyLaneProfileStep(answers)) return 1;
 
   // T4.5: pluginSet=full → the documented per-plugin enable step. lean → no-op
   // (adopt.sh's/setup.sh's settings-template default, HIMMEL-816).
   const pluginResult = applyPluginStep(answers);
+  const shimOk = applyHimmelctlPathShim(args);
+  await printContributorProfile(answers, displayCommand(cmd), args.dryRun);
   await printAdopterEpilogue(answers, displayCommand(cmd), args.dryRun, pluginResult, vaultScaffolded);
   printUninstallFooter();
-  return pluginResult.rc;
+  return pluginResult.rc || (shimOk ? 0 : 1);
 }
 
 // `install` subcommand handler. T1: the preflight-first gate runs BEFORE any
@@ -1714,7 +1791,236 @@ async function cmdUninstall(args) {
   }
   const rc = runSpawn(cmd);
   if (offboard) checkUninstallCompleteness(offboard.unwireItems);
+  // HIMMEL-1446 r4 (codex-1/codex-adv converged blocker): strip the managed
+  // PATH launchers ONLY when the teardown succeeded. A failed teardown (rc!=0)
+  // leaves the machine in a partial state and the user will likely retry, so
+  // removing the launchers now would strand the machine with no working
+  // `himmelctl` for the retry. Preserve them and WARN naming the failure.
+  if (rc === 0) {
+    removeHimmelctlLaunchers();
+  } else {
+    console.error(`himmelctl: WARN: uninstall teardown exited ${rc} — PATH launchers left in place; fix the failure and re-run \`himmelctl uninstall\`.`);
+  }
   return rc;
+}
+
+// ── PATH launcher (HIMMEL-1446) ──────────────────────────────────────────
+//
+// setup.sh already treats ~/.local/bin as himmel's shared user-bin directory
+// (uv, jira, pre-commit). Reuse it rather than inventing another PATH surface.
+// HIMMELCTL_BIN_DIR / HIMMELCTL_SHIM_PLATFORM are hermetic-test seams; normal
+// runs always use ~/.local/bin and the real process platform.
+function himmelctlBinDir() {
+  if (process.env.HIMMELCTL_BIN_DIR) return path.resolve(process.env.HIMMELCTL_BIN_DIR);
+  return path.join(process.platform === 'win32' ? os.homedir() : (process.env.HOME || os.homedir()), '.local', 'bin');
+}
+
+function himmelctlShimPlatform() {
+  return process.env.HIMMELCTL_SHIM_PLATFORM || process.platform;
+}
+
+function pathContainsDir(dir, platform) {
+  const raw = process.env.PATH || process.env.Path || '';
+  const delimiter = platform === 'win32' ? ';' : path.delimiter;
+  const key = (p) => {
+    let resolved = path.resolve(String(p).replace(/^"|"$/g, ''));
+    if (platform === 'win32') resolved = resolved.replace(/\//g, '\\').toLowerCase();
+    return resolved;
+  };
+  const wanted = key(dir);
+  return raw.split(delimiter).some((entry) => entry && key(entry) === wanted);
+}
+
+function printHimmelctlPathInstruction(binDir, platform) {
+  if (pathContainsDir(binDir, platform)) return;
+  if (platform === 'win32') {
+    const quoted = binDir.replace(/'/g, "''");
+    // Idempotent (HIMMEL-1446 r4 glm-3): the printed snippet prepends binDir
+    // only when it is not already an element of the persisted User PATH, so
+    // re-running `himmelctl update` before opening a new shell — and pasting the
+    // line a second time — cannot duplicate the entry. pathContainsDir above
+    // checks the PROCESS Path, but this mutates the PERSISTED User Path, so the
+    // guard lives in the printed snippet itself.
+    console.log(`himmelctl: ${binDir} is not on PATH; run this in PowerShell (safe to repeat — it adds the entry only once), then open a new shell: $p=[Environment]::GetEnvironmentVariable('Path','User'); if(-not(($p -split ';') -contains '${quoted}')){[Environment]::SetEnvironmentVariable('Path','${quoted};'+$p,'User')}`);
+    return;
+  }
+  const quoted = `'${binDir.replace(/'/g, "'\\''")}'`;
+  console.log(`himmelctl: ${binDir} is not on PATH; add this line to your shell profile, then open a new shell: export PATH=${quoted}:"$PATH"`);
+}
+
+// Write a tiny relative wrapper plus a JS target loader. The wrapper never
+// embeds the checkout path: Windows uses %~dp0 and POSIX uses its own
+// directory, so paths with spaces stay quoted. Re-running install/update
+// rewrites only the loader's absolute target, which re-points a moved checkout.
+//
+// HIMMEL-1446 r2 (codex adversarial review, 3 agreed blockers):
+//  • The loader target is the PRIMARY checkout, not repoRoot() — a launcher
+//    written from a linked feature worktree must not bind to the disposable
+//    worktree (see primaryCheckoutRoot).
+//  • Every generated file carries SHIM_MARKER; an existing destination is
+//    overwritten ONLY if it already carries the marker (writeMarkedLauncher).
+//    A third-party `himmelctl`, an operator's hand-written launcher, or a
+//    symlink is refused, never clobbered. Writes go via a sibling tmp + atomic
+//    rename so a partial write can never leave a broken launcher.
+//  • No himmelctl.ps1 is written: PowerShell command precedence resolves a .ps1
+//    before the .cmd of the same basename, and a clean Windows client defaults
+//    to ExecutionPolicy=Restricted → bare `himmelctl` throws PSSecurityException.
+//    Letting PowerShell resolve the .cmd avoids that. A stale marked .ps1 from a
+//    prior install is removed (removeMarkedLauncher).
+const SHIM_MARKER = 'generated by himmelctl (HIMMEL-1446)';
+
+// Resolve the PRIMARY checkout root — the parent of `git rev-parse
+// --git-common-dir` — so a launcher written from a linked feature worktree
+// targets the stable primary checkout, not the disposable worktree (which after
+// pruning leaves a MODULE_NOT_FOUND launcher `himmelctl update` can't
+// self-repair). Same primary-checkout convention scripts/lib/load-dotenv.sh
+// uses. When repoRoot() is already the primary, or git is absent (tarball
+// install), behavior is unchanged: returns repoRoot(). (codex-adv-2.)
+//
+// The parent resolution runs INSIDE bash (`cd "$d/.." && pwd`): on win32 node,
+// `git rev-parse --git-common-dir` via Git-Bash returns a POSIX-form (/c/...)
+// path that node's win32 path.resolve would misresolve, so resolving the parent
+// in bash (and `pwd -W` for the Windows form on MSYS, plain `pwd` elsewhere)
+// hands node a path in the form it expects.
+function primaryCheckoutRoot() {
+  const root = repoRoot();
+  const r = spawnSync(resolveBash(),
+    ['-c', 'd=$(git rev-parse --git-common-dir 2>/dev/null) && cd "$d/.." && { pwd -W 2>/dev/null || pwd; }'],
+    { cwd: root, encoding: 'utf8' });
+  if (r.error || r.status !== 0 || !r.stdout) return root;
+  const resolved = r.stdout.trim();
+  return resolved ? path.resolve(resolved) : root;
+}
+
+// True iff <filePath> exists and its contents carry our ownership marker. An
+// absent file is "not marked" (ENOENT -> false); any other read error throws.
+function fileCarriesMarker(filePath) {
+  let content;
+  try {
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return false;
+    throw e;
+  }
+  return content.includes(SHIM_MARKER);
+}
+
+// Write <contents> to <dest> (optional <mode> for chmod), but ONLY when dest is
+// absent OR already carries our ownership marker. A third-party file, an
+// operator's hand-written launcher, or a symlink (lstat, never followed) is
+// refused with a clear message — never clobbered. Writes go via a sibling tmp +
+// atomic rename, so a crash mid-write or a failed write can never leave a
+// partial launcher at dest (the orphaned tmp is a hidden dotfile). Returns true
+// on success, false on a refused collision. Throws on I/O error. (codex-adv-3.)
+function writeMarkedLauncher(dest, contents, mode) {
+  // Existence is probed with lstatSync, NOT fs.existsSync (HIMMEL-1446 r4 glm-2):
+  // existsSync FOLLOWS symlinks, so a BROKEN (dangling) symlink at dest returns
+  // false, skipping the symlink/ownership check and letting renameSync clobber
+  // the link — violating the never-clobber-a-symlink contract. lstatSync never
+  // follows, so ANY symlink (broken included) reaches the isSymbolicLink()
+  // refusal. ENOENT (truly absent) is the only skip-to-write case.
+  let st = null;
+  try {
+    st = fs.lstatSync(dest);
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') throw e; // ENOENT -> st stays null: absent, safe to write
+  }
+  if (st) {
+    if (st.isSymbolicLink()) {
+      console.error(`himmelctl: refusing to overwrite symlink ${dest} (remove it first if you want himmelctl to manage it)`);
+      return false;
+    }
+    if (!fileCarriesMarker(dest)) {
+      console.error(`himmelctl: refusing to overwrite ${dest} (not a himmelctl-managed file — move it aside first)`);
+      return false;
+    }
+  }
+  const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(tmp, contents, 'utf8');
+    if (mode !== undefined) fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, dest);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort tmp cleanup */ }
+    throw e;
+  }
+  return true;
+}
+
+// Remove <filePath> only if it carries our ownership marker; an unmarked file
+// (a third-party `himmelctl`) or a symlink is left untouched. Absent file is a
+// no-op. Used by the shim (stale .ps1 cleanup) and cmdUninstall.
+function removeMarkedLauncher(filePath) {
+  let st;
+  try {
+    st = fs.lstatSync(filePath);
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return;
+    throw e;
+  }
+  if (st.isSymbolicLink()) return; // never follow/remove an unowned symlink
+  if (!fileCarriesMarker(filePath)) return; // never remove an unmarked file
+  fs.unlinkSync(filePath);
+}
+
+function applyHimmelctlPathShim(args) {
+  const binDir = himmelctlBinDir();
+  const platform = himmelctlShimPlatform();
+  const target = path.join(primaryCheckoutRoot(), 'scripts', 'himmelctl', 'bin.js');
+  if (args.dryRun) {
+    console.log(`DRY: himmelctl launcher -> ${target} (would write to ${binDir})`);
+    printHimmelctlPathInstruction(binDir, platform);
+    return true;
+  }
+
+  try {
+    fs.mkdirSync(binDir, { recursive: true });
+    const jsBody = `'use strict';\n// ${SHIM_MARKER}\nrequire(${JSON.stringify(target)});\n`;
+    if (!writeMarkedLauncher(path.join(binDir, 'himmelctl.js'), jsBody)) return false;
+    if (platform === 'win32') {
+      const cmdBody = `@echo off\r\nREM ${SHIM_MARKER}\r\nnode "%~dp0himmelctl.js" %*\r\n`;
+      if (!writeMarkedLauncher(path.join(binDir, 'himmelctl.cmd'), cmdBody)) return false;
+      // No himmelctl.ps1 (codex-adv-1): a stale marked .ps1 from a prior install
+      // is removed; an unmarked/symlinked one is left untouched. Removal is a
+      // best-effort cleanup of a LEGACY artifact, not part of writing the PATH
+      // launcher, so its I/O errors WARN here with an accurate message and never
+      // fail the shim write (HIMMEL-1446 r4 glm-4: previously caught by the
+      // surrounding try/catch and misreported as "failed to write PATH launcher").
+      try {
+        removeMarkedLauncher(path.join(binDir, 'himmelctl.ps1'));
+      } catch (e) {
+        console.error(`himmelctl: WARN: could not remove stale launcher ${path.join(binDir, 'himmelctl.ps1')} (${e.message}) — the PATH launcher was written; remove the stale file manually if needed`);
+      }
+    } else {
+      const launcher = path.join(binDir, 'himmelctl');
+      const shBody = `#!/usr/bin/env sh\n# ${SHIM_MARKER}\nexec node "$(dirname "$0")/himmelctl.js" "$@"\n`;
+      if (!writeMarkedLauncher(launcher, shBody, 0o755)) return false;
+    }
+  } catch (e) {
+    console.error(`himmelctl: failed to write PATH launcher in ${binDir}: ${e.message}`);
+    return false;
+  }
+
+  console.log(`himmelctl: launcher -> ${target} (written to ${binDir})`);
+  printHimmelctlPathInstruction(binDir, platform);
+  return true;
+}
+
+// HIMMEL-1446 r2 (glm-1): uninstall.sh/.ps1 tears down himmel's machine wiring
+// but does not know about the PATH launchers install/update wrote into binDir
+// (~/.local/bin), so they'd go stale (dangling once the clone is deleted).
+// Remove each known launcher name that carries our ownership marker; never
+// touch an unmarked or symlinked file. Best-effort: WARNs on errors and never
+// changes cmdUninstall's exit code.
+function removeHimmelctlLaunchers() {
+  const binDir = himmelctlBinDir();
+  for (const name of ['himmelctl.js', 'himmelctl', 'himmelctl.cmd', 'himmelctl.ps1']) {
+    try {
+      removeMarkedLauncher(path.join(binDir, name));
+    } catch (e) {
+      console.error(`himmelctl: WARN: could not remove launcher ${path.join(binDir, name)} (${e.message}) — skipping`);
+    }
+  }
 }
 
 // ── update (HIMMEL-893) ──────────────────────────────────────────────────
@@ -1746,8 +2052,21 @@ function deriveUpdateCommand() {
 async function cmdUpdate(args) {
   const cmd = deriveUpdateCommand();
   console.log(`derived: ${displayCommand(cmd)}`);
-  if (args.dryRun) return 0;
-  return runSpawn(cmd);
+  if (args.dryRun) {
+    applyHimmelctlPathShim(args);
+    return 0;
+  }
+  const rc = runSpawn(cmd);
+  if (rc !== 0) return rc;
+  // The PATH launcher is a best-effort rider on a successful update
+  // (HIMMEL-1446 r4 glm-5): applyHimmelctlPathShim has already printed the
+  // specific refusal/error. A failed launcher write must NOT mask the update's
+  // success in this exit code (automation keys off rc 0/!=0), so surface a LOUD
+  // warning and keep rc 0 — the launcher is best-effort, never a hard dependency.
+  if (!applyHimmelctlPathShim(args)) {
+    console.error('himmelctl: WARN: update succeeded, but the PATH launcher could not be written (see above); the update is complete — the launcher is best-effort');
+  }
+  return 0;
 }
 
 // ── status (HIMMEL-756 T1.5/T1.6) ────────────────────────────────────────
@@ -3144,19 +3463,22 @@ function lanesBasePath() {
 function lanesLocalPath() {
   return path.join(repoRoot(), 'scripts', 'lanes', 'lanes.local.json');
 }
-// Returns the base registry's lane ids as an array (possibly empty when the
-// registry legitimately declares no lanes), or `null` when the registry is
-// missing/unreadable/malformed. The null-vs-[] distinction lets callers FAIL
-// CLOSED: an unreadable registry must never let an arbitrary id through
-// validation (the [] fallback used to do exactly that).
-function knownLaneIds() {
+// Returns the base registry object, or `null` when it is missing, unreadable or
+// malformed. The null distinction lets callers FAIL CLOSED: an unreadable
+// registry must never let an arbitrary id through validation.
+function readLanesBase() {
   try {
     const base = JSON.parse(fs.readFileSync(lanesBasePath(), 'utf8'));
-    if (!base || typeof base !== 'object' || !Array.isArray(base.lanes)) return null;
-    return base.lanes.map((l) => l && l.id).filter((id) => typeof id === 'string' && id !== '');
+    return base && typeof base === 'object' && Array.isArray(base.lanes) ? base : null;
   } catch (_e) {
     return null;
   }
+}
+function knownLaneIds() {
+  const base = readLanesBase();
+  return base
+    ? base.lanes.map((l) => l && l.id).filter((id) => typeof id === 'string' && id !== '')
+    : null;
 }
 function readLanesLocal() {
   let raw;
@@ -3177,6 +3499,23 @@ function readLanesLocal() {
     throw new Error(`malformed lanes overlay ${lanesLocalPath()} — expected an object with a "lanes" array`);
   }
   return parsed;
+}
+
+// Report the resolver's adopter-profile decision for one lane from the same
+// base + local data config get already owns. A scoped profile constrains only
+// its wizard-owned ids; legacy profiles without a scope retain their original
+// all-optional-lanes meaning. Probe overrides are intentionally separate.
+function laneProfileState(base, local, laneId) {
+  if (!Array.isArray(local.profileAllowlist)) return 'no adopter profile allowlist';
+  if (!base) return 'unknown (base lane registry is missing or unreadable)';
+  const lane = base.lanes.find((l) => l && l.id === laneId);
+  if (!lane) return 'unknown (lane absent from base registry)';
+  if (lane.class === 'claude-tier') return 'not constrained (Claude tier)';
+  const scope = Array.isArray(local.profileAllowlistScope) ? local.profileAllowlistScope : null;
+  if (scope && scope.indexOf(laneId) === -1) return 'not constrained by adopter profile';
+  return local.profileAllowlist.indexOf(laneId) === -1
+    ? 'suppressed-by-profile'
+    : 'allowlisted by adopter profile';
 }
 
 function cmdConfigSetLane(laneId, onOff, args) {
@@ -3202,28 +3541,44 @@ function cmdConfigSetLane(laneId, onOff, args) {
     console.error(`himmelctl: failed to write lane override via ${script}${detail ? `: ${detail}` : ''}`);
     return 1;
   }
-  console.log(`lane '${laneId}' -> probe.kind=${probeKind} (written to ${target})`);
+  const profileNote = (r.stdout || '').includes('added to profileAllowlist')
+    ? '; added to adopter profile allowlist'
+    : '';
+  console.log(`lane '${laneId}' -> probe.kind=${probeKind}${profileNote} (written to ${target})`);
   return 0;
 }
 
 function cmdConfigGetLane(laneId) {
   const target = lanesLocalPath();
+  const base = readLanesBase();
   if (!laneId) {
     console.log(`lanes overlay: ${target}`);
     if (!fs.existsSync(target)) {
       console.log('  (no overrides — scripts/lanes/lanes.json applies as-is)');
+      console.log('profile suppression: no adopter profile allowlist');
       return 0;
     }
-    console.log(JSON.stringify(readLanesLocal(), null, 2));
+    const local = readLanesLocal();
+    console.log(JSON.stringify(local, null, 2));
+    if (!base) {
+      console.log('profile suppression: unknown (base lane registry is missing or unreadable)');
+      return 0;
+    }
+    const suppressed = base.lanes
+      .filter((lane) => lane && laneProfileState(base, local, lane.id) === 'suppressed-by-profile')
+      .map((lane) => lane.id);
+    console.log(`profile policy suppresses when base probes pass: ${suppressed.length > 0 ? suppressed.join(', ') : '(none)'}`);
     return 0;
   }
   const local = readLanesLocal();
   const override = (local.lanes || []).find((l) => l && l.id === laneId);
-  if (!override) {
-    console.log(`lane '${laneId}': no override (falls back to the base probe in scripts/lanes/lanes.json)`);
-    return 0;
-  }
-  console.log(`lane '${laneId}': override probe.kind=${override.probe && override.probe.kind}`);
+  const profileState = laneProfileState(base, local, laneId);
+  console.log(override
+    ? `lane '${laneId}': override probe.kind=${override.probe && override.probe.kind}`
+    : `lane '${laneId}': no override (falls back to the base probe in scripts/lanes/lanes.json)`);
+  console.log(`lane '${laneId}' profile: ${profileState === 'suppressed-by-profile'
+    ? 'suppressed-by-profile when its base probe passes'
+    : profileState}`);
   return 0;
 }
 

@@ -46,7 +46,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 STATUSLINE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$STATUSLINE_DIR/../.." && pwd)"
 HUD_DIST="$REPO_ROOT/marketplace/plugins/claude-hud/dist/index.js"

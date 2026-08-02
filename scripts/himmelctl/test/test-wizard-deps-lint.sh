@@ -31,7 +31,6 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 repo_root=$(git rev-parse --show-toplevel)
 lint="$repo_root/scripts/install/deps-lint.mjs"
 deps_path="$repo_root/scripts/install/deps.json"

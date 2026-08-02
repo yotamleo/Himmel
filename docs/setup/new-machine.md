@@ -371,9 +371,11 @@ mean the installer asserting something it cannot stand behind:
   per platform, so a Linux/macOS adopter is pointed at
   `scripts/codex/install-himmel-codex.sh` and the POSIX branch of
   `docs/hermes-runbook.md` rather than at PowerShell scripts. It is NOT
-  installed for you, and the `lanes.local.json` override is NOT written —
-  `himmelctl config set lanes.<id> on` writes `probe.kind=always`, which would
-  make an absent lane report as available.
+  installed for you. An applied adopter install writes the top-level
+  `profileAllowlist` and `profileAllowlistScope` fields to `lanes.local.json`;
+  selected lanes keep their real base probes. It does **not** call
+  `himmelctl config set lanes.<id> on`, because that would write
+  `probe.kind=always` and make an absent lane report as available.
 - **Machine hardening is printed, never executed.** With `alwaysOn=yes` the run
   ends in a checklist of the
   [Phase-6 steps](./windows-clean-machine.md) — power profile, no-lock-on-wake,
@@ -388,8 +390,10 @@ work it did not do. Likewise a `pluginSet=full` run whose `claude plugin`
 commands failed reports them under `still manual` with a retry hint, instead
 of claiming the full set was enabled.
 
-Selecting a lane records and reports it; it does not yet *restrict* the
-runtime `/lanes` inventory (deferred — HIMMEL-1428).
+On an applied adopter install, the selection narrows the runtime `/lanes`
+inventory. Non-selected optional lanes whose real probes succeed remain visible
+under `suppressed-by-profile`; they are physically available but not routable.
+No `profileAllowlist` means the pre-profile resolver behaviour is unchanged.
 
 **Node-less (clean) machine?** `himmelctl install` itself needs node. Run the
 bootstrap shim first — it installs node (+ bun on macOS via brew; apt has no

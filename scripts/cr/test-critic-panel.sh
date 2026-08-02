@@ -12,7 +12,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 # Hermetic: the panel now reads CR_PROFILE (HIMMEL-558) — and has always read
 # CRITIC_PANEL_TIERS — from the environment. Clear any ambient values so the
 # default-behaviour tests are not perturbed by the operator's shell (.env often

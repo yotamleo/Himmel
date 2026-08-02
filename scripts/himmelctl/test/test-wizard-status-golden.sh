@@ -100,7 +100,7 @@ snapshot_dir() {
 #             (same shape test-wizard-status-cmd.sh's write_cache writes).
 write_cache() {
   cat > "$1" <<JSON
-{"role":"$2","tier":"standard","scope":"$3","vault":{"mode":"$4","path":"$5"},"handover":{"mode":"$6","path":"$7"},"pluginSet":"$8","lanes":[],"alwaysOn":false}
+{"role":"$2","tier":"standard","scope":"$3","vault":{"mode":"$4","path":"$5"},"handover":{"mode":"$6","path":"$7"},"pluginSet":"$8","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
 JSON
 }
 

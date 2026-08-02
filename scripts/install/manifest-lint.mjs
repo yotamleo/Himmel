@@ -35,6 +35,7 @@
 //   type              | fields (all required unless noted)
 //   ------------------|--------------------------------------------------
 //   file-exists       | path: string
+//   git-hooks         | hooks: non-empty string[]
 //   settings-key      | file: string; EXACTLY ONE of key: string XOR
 //                     | keys: non-empty string[]
 //   settings-hooks    | file: string; key: string
@@ -126,7 +127,7 @@ const KINDS = ['hook', 'plugin', 'dep', 'wiring', 'vault', 'scheduler', 'lane', 
 // cmd:guardrail_block_status / cmd:hermes_checkout (round 3) added for
 // subsystems the harness actively installs/updates that the manifest had
 // never heard of.
-const PROBE_TYPES = ['file-exists', 'settings-key', 'settings-hooks', 'cmd:has_qmd', 'qmd-index', 'mcp-registered', 'handover-dir', 'dep', 'cmd:has_hermes', 'cmd:is_himmel_dev', 'telegram-access', 'cmd:codex_provisioned', 'cmd:cadence_armed', 'cmd:guardrail_block_status', 'cmd:hermes_checkout'];
+const PROBE_TYPES = ['file-exists', 'git-hooks', 'settings-key', 'settings-hooks', 'cmd:has_qmd', 'qmd-index', 'mcp-registered', 'handover-dir', 'dep', 'cmd:has_hermes', 'cmd:is_himmel_dev', 'telegram-access', 'cmd:codex_provisioned', 'cmd:cadence_armed', 'cmd:guardrail_block_status', 'cmd:hermes_checkout'];
 const ITEM_KEYS = ['id', 'kind', 'scopes', 'profiles', 'deps', 'probe'];
 // Optional schema-v2 consumer keys (HIMMEL-755 A1). Permitted by the
 // exact-key check but not required — items authored under schemaVersion:1
@@ -171,6 +172,11 @@ function checkProbeShape(probe, label, errors) {
     case 'file-exists': {
       if (typeof probe.path !== 'string') errors.push(`${label}: probe type 'file-exists' requires 'path' (string)`);
       reportExtra(['path']);
+      break;
+    }
+    case 'git-hooks': {
+      if (!isNonEmptyStringArray(probe.hooks)) errors.push(`${label}: probe type 'git-hooks' requires 'hooks' (non-empty string[])`);
+      reportExtra(['hooks']);
       break;
     }
     case 'settings-key': {

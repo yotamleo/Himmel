@@ -30,7 +30,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKFILL="$SCRIPT_DIR/backfill-sessions.sh"
 GOLDEN="$SCRIPT_DIR/../hooks/testdata/session-note.golden.md"

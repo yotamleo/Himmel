@@ -144,6 +144,44 @@ assert_rc "env -u path printenv benign" 0 "$(run_case "$(j_bash 'env -u path pri
 assert_rc "non-terminal tool"          0 "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"README.md"}}')"
 assert_rc "empty payload"              0 "$(run_case '{}')"
 
+# --- HIMMEL-1451 cli-proxy sanctioned carve-out ---
+# The proxy bounce needs process termination (taskkill / schtasks /end), all
+# refused at command position below. The SAFE path is the cli-proxy-lane.ps1
+# -Restart/-Stop verb, which terminates internally (never inspected here). The
+# sanctioned shapes PASS; the dangerous primitives and an appended kill (proving
+# the carve-out is anchored to the WHOLE command, not a prefix) still BLOCK.
+assert_rc "sanctioned -Restart (pwsh5)"  0 "$(run_case "$(j_bash 'powershell -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Restart')")"
+assert_rc "sanctioned -Stop (pwsh5)"     0 "$(run_case "$(j_bash 'powershell -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Stop')")"
+assert_rc "sanctioned -Restart -Force"   0 "$(run_case "$(j_bash 'powershell -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Restart -Force')")"
+assert_rc "sanctioned -Stop -Force (pwsh7)" 0 "$(run_case "$(j_bash 'pwsh -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Stop -Force')")"
+# CR r4 (HIMMEL-1451): close the 4-of-8 standalone coverage gap -- exercise the
+# other shell for every verb-shape so all 8 carve-out patterns are hit, not 4.
+assert_rc "sanctioned -Stop -Force (pwsh5)"    0 "$(run_case "$(j_bash 'powershell -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Stop -Force')")"
+assert_rc "sanctioned -Restart (pwsh7)"        0 "$(run_case "$(j_bash 'pwsh -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Restart')")"
+assert_rc "sanctioned -Restart -Force (pwsh7)" 0 "$(run_case "$(j_bash 'pwsh -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Restart -Force')")"
+assert_rc "sanctioned -Stop (pwsh7)"           0 "$(run_case "$(j_bash 'pwsh -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Stop')")"
+# CR r4 (HIMMEL-1451 / glm-4): the combined -Install -Restart [-Force] one-shot
+# pin-roll (.EXAMPLE) is now an enumerated sanctioned shape (rc=0 on both shells).
+assert_rc "sanctioned -Install -Restart (pwsh5)"       0 "$(run_case "$(j_bash 'powershell -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Install -Restart')")"
+assert_rc "sanctioned -Install -Restart -Force (pwsh7)" 0 "$(run_case "$(j_bash 'pwsh -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Install -Restart -Force')")"
+# codex-1 (CR r4): NO negative "out-of-root relative invocation -> DENIED" case
+# here. The premise (that this carve-out GATES the relative path) is disproved:
+# the floor INDEPENDENTLY allows `powershell/pwsh -NoProfile -File <relative>`
+# (no deny rule matches -- `-File` is not the armed `-c` wrapper the CMDPOS
+# grammar arms), so an impostor/escaped path returns rc=0 regardless of this
+# carve-out. That residual is a floor-level gap (script-internals-unseen, the
+# documented no-general-parser residual, HIMMEL-912 class), not a hole this
+# carve-out opens or can close -- see the comment at the carve-out above.
+# Asserting rc=0 for an impostor shape here would read as blessing it, so the
+# documenting probe lives only in the r4 work note, not in the suite.
+# Near-miss: the direct primitive an operator might reach for instead of the
+# script still hits the deny floor (the carve-out did NOT widen it).
+assert_rc "direct taskkill proxy"        2 "$(run_case "$(j_bash 'taskkill /F /IM cli-proxy-api.exe')")"
+assert_rc "direct schtasks /end proxy"   2 "$(run_case "$(j_bash 'schtasks /end /tn cli-proxy-api')")"
+# Near-miss: the sanctioned PREFIX does not whitelist an appended kill -- the
+# case match is on the whole command, so the trailing taskkill still blocks.
+assert_rc "sanctioned prefix + appended kill" 2 "$(run_case "$(j_bash 'powershell -NoProfile -File scripts/setup/cli-proxy-lane.ps1 -Restart; taskkill /F /IM x')")"
+
 # --- MALFORMED JSON case (expect rc=2, fail closed) ---
 assert_rc "truncated JSON + rm -rf" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"')"
 

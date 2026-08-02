@@ -168,7 +168,8 @@ make_repos() {
 #   caller), exercising the same $VAR-expansion path a real machine uses.
 #   pin-file-mode: "single" (default, one SHA occurrence), "ref" (an
 #   installable tag in marketplace.json via pin_ref_template), "missing" (no
-#   occurrence), "double" (two occurrences), "no-fork" (entry with no fork
+#   occurrence), "double" (two SHA occurrences), "ref_double" (two ref-sourced
+#   plugins → pin_ref_template matches twice), "no-fork" (entry with no fork
 #   block at all).
 make_registry() {
   local root="$1" pin_sha="${2:-}" synced_base="${3:-1.0.0}" pin_mode="${4:-single}"
@@ -186,6 +187,13 @@ make_registry() {
       ;;
     ref)
       printf '{"plugins":[{"name":"fakefork","source":{"ref":"%s"}}]}\n' "$pin_sha" \
+        > "$root/marketplace/.claude-plugin/marketplace.json"
+      ;;
+    ref_double)
+      # Two ref-sourced plugins → the pin_ref_template regex ("ref":"{ref}")
+      # matches twice → PIN_AMBIGUOUS via the REF value regex (distinct from
+      # the sha "double" mode, which exercises the hex value regex).
+      printf '{"plugins":[{"name":"fakefork","source":{"ref":"%s"}},{"name":"fakefork2","source":{"ref":"%s"}}]}\n' "$pin_sha" "$pin_sha" \
         > "$root/marketplace/.claude-plugin/marketplace.json"
       ;;
     missing)
@@ -220,7 +228,7 @@ if pin_mode != "no-fork":
         "upstream_repo": os.path.join(root, "upstream").replace("\\", "/"),
         "work_dir": "${RESYNC_TEST_WORKROOT}",
     }
-    if pin_mode == "ref":
+    if pin_mode in ("ref", "ref_double"):
         fork.update({
             "pin_file": "marketplace/.claude-plugin/marketplace.json",
             "pin_ref_template": '"ref":"{ref}"',
@@ -333,6 +341,19 @@ out=$(run_resync "$root" fakefork 2>&1)
 rc=$?
 if [ "$rc" -eq 4 ]; then pass "ambiguous pin literal is rc=4"; else fail "ambiguous pin literal — expected rc=4 got $rc: $out"; fi
 assert_contains "$out" "occurs 2 time(s)" "reports the match count"
+rm -rf "$root"
+
+echo "[test-resync-fork] pin_ref_template matches twice -> rc=4 (ref path)"
+root=$(mktemp -d)
+make_repos additive "$root"
+sha=$(git -C "$root/fork" rev-parse HEAD)
+tag="v1.0.0-himmel.1"
+git -C "$root/fork" tag "$tag" "$sha"
+make_registry "$root" "$tag" "1.0.0" "ref_double"
+out=$(run_resync "$root" fakefork 2>&1)
+rc=$?
+if [ "$rc" -eq 4 ]; then pass "ambiguous ref pin literal is rc=4"; else fail "ambiguous ref pin literal — expected rc=4 got $rc: $out"; fi
+assert_contains "$out" "occurs 2 time(s)" "reports the match count via the ref value regex"
 rm -rf "$root"
 
 echo "[test-resync-fork] already on target -> rc=1"

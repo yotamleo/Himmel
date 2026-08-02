@@ -38,7 +38,6 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LINT="$SCRIPT_DIR/shell-lint.sh"
 
@@ -385,6 +384,32 @@ else
     printf '  SKIP: iconv not installed — 16b [PS1-NO-BOM] assertion skipped (fail-safe emits [PS1-ENCODING] unverified)\n'
 fi
 assert_not_contains "16b: no [BOM] reported (BOM absent, not the issue)" "[BOM]" "$OUT16b"
+
+# 16b-big (HIMMEL-1432 r6, ledger codex-adv-r5-2): the non-ASCII detector in
+# shell-lint.sh reads the WHOLE file (`tr -d '\000-\177' | wc -c`, not `grep -q`).
+# A `grep -q` detector exits on the first non-ASCII byte, SIGPIPEs `tr` under
+# pipefail, and the `if PIPELINE; then flag` wrapper then reads that PIPE failure
+# as "no non-ASCII" -> a heavily non-ASCII .ps1 SILENTLY SKIPS [PS1-NO-BOM].
+# This guards that regression with a fixture LARGER than any pipe buffer (>=1MB):
+# any early-exit detector SIGPIPEs at this size and the trap goes unflagged.
+# Fixture is generated at runtime (never commit a 1MB blob); octal escapes keep
+# THIS test file pure-ASCII (see Case 16 header).
+PS1BIG="$TMP_ROOT/big-nobom.ps1"
+_e_chunk="$TMP_ROOT/_e_chunk"
+# A 64KiB valid-UTF-8 non-ASCII chunk: 32768 e-acute pairs (C3 A9) = 65536 bytes.
+printf '\303\251%.0s' {1..32768} > "$_e_chunk"
+# 17 chunks -> 17 * 65536 = 1114112 bytes (~1.06 MiB), all valid UTF-8, no BOM.
+: > "$PS1BIG"
+for _ in {1..17}; do cat "$_e_chunk" >> "$PS1BIG"; done
+rm -f "$_e_chunk"
+OUT16big="$(bash "$LINT" "$PS1BIG" 2>&1)"; EC16big=$?
+if [ "$EC16big" -eq 1 ]; then pass "16b-big: >1MB non-ASCII no-BOM .ps1 exits 1 (detector read the whole file)"; else fail "16b-big: expected exit 1, got $EC16big" "$OUT16big"; fi
+if [ "$HAVE_ICONV" -eq 1 ]; then
+    assert_contains "16b-big: [PS1-NO-BOM] fires on a >1MB non-ASCII no-BOM .ps1 (no SIGPIPE short-circuit)" "[PS1-NO-BOM]" "$OUT16big"
+else
+    printf '  SKIP: iconv not installed — 16b-big [PS1-NO-BOM] assertion skipped\n'
+fi
+assert_not_contains "16b-big: no [BOM] reported (BOM absent)" "[BOM]" "$OUT16big"
 
 # 16c: pure-ASCII .ps1 WITHOUT a BOM -> clean (BOM is optional when ASCII-only).
 PS1A="$TMP_ROOT/ascii.ps1"

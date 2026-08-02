@@ -5,9 +5,13 @@ import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { resolveLanes, formatCodexHealth, buildCtx, fmtCtx, mergeLocalOverlay } from '../resolve.mjs';
+import { execFileSync } from 'node:child_process';
+import { resolveLanes, resolveLaneInventory, formatCodexHealth, buildCtx, fmtCtx, mergeLocalOverlay } from '../resolve.mjs';
+import { applyLaneOverride, applyProfileAllowlist, writeProfileAllowlist } from '../set-lane-override.mjs';
 
-const REG = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'lanes.json'), 'utf8'));
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const RESOLVER = join(TEST_DIR, '..', 'resolve.mjs');
+const REG = JSON.parse(readFileSync(join(TEST_DIR, '..', 'lanes.json'), 'utf8'));
 const ctx = (o = {}) => ({ env: o.env ?? {}, pathHas: (c) => (o.paths ?? []).includes(c), installed: o.installed ?? {} });
 
 test('bare machine (no keys, no optional CLIs) → only the 4 Claude tiers', () => {
@@ -75,6 +79,72 @@ test('registry is valid JSON with the required per-lane keys', () => {
 test('malformed/empty registry → [] (the ?? [] guard, no throw)', () => {
   assert.deepEqual(resolveLanes({}, ctx()), []);
   assert.deepEqual(resolveLanes({ lanes: [] }, ctx()), []);
+});
+
+test('profile allowlist narrows optional lanes but keeps Claude tiers and real probes', () => {
+  const registry = {
+    profileAllowlist: ['selected'],
+    lanes: [
+      { id: 'core', class: 'claude-tier', probe: { kind: 'always' } },
+      { id: 'selected', class: 'impl', probe: { kind: 'path', cli: 'selected' } },
+      { id: 'declined', class: 'impl', probe: { kind: 'path', cli: 'declined' } },
+      { id: 'selected-but-absent', class: 'impl', probe: { kind: 'path', cli: 'missing' } },
+    ],
+  };
+  const c = ctx({ paths: ['selected', 'declined'] });
+  assert.deepEqual(resolveLanes(registry, c).map((l) => l.id), ['core', 'selected']);
+  assert.deepEqual(
+    resolveLaneInventory(registry, c)
+      .filter((row) => row.suppressedByProfile)
+      .map((row) => row.lane.id),
+    ['declined'],
+  );
+  assert.ok(!resolveLaneInventory(registry, c).some((row) => row.lane.id === 'selected-but-absent'),
+    'allowlisting an absent lane must never force it present');
+});
+
+test('profile allowlist scope leaves lanes outside the wizard-owned subset on their real probes', () => {
+  const registry = {
+    profileAllowlist: ['selected'],
+    profileAllowlistScope: ['selected', 'declined'],
+    lanes: [
+      { id: 'selected', class: 'impl', probe: { kind: 'always' } },
+      { id: 'declined', class: 'impl', probe: { kind: 'always' } },
+      { id: 'outside-wizard', class: 'impl', probe: { kind: 'always' } },
+    ],
+  };
+  assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['selected', 'outside-wizard']);
+  assert.deepEqual(
+    resolveLaneInventory(registry, ctx())
+      .filter((row) => row.suppressedByProfile)
+      .map((row) => row.lane.id),
+    ['declined'],
+  );
+});
+
+test('absent profile allowlist preserves the pre-profile inventory', () => {
+  const registry = { lanes: [{ id: 'optional', class: 'impl', probe: { kind: 'always' } }] };
+  assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['optional']);
+  assert.equal(resolveLaneInventory(registry, ctx())[0].suppressedByProfile, false);
+});
+
+test('/lanes text distinguishes suppressed-by-profile while --json stays effective-only', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lanes-profile-'));
+  const file = join(dir, 'registry.json');
+  writeFileSync(file, JSON.stringify({
+    profileAllowlist: [],
+    lanes: [
+      { id: 'core', label: 'Core', class: 'claude-tier', bestFor: 'native', effort: 'low', probe: { kind: 'always' } },
+      { id: 'optional', label: 'Optional', class: 'impl', bestFor: 'external', effort: 'low', probe: { kind: 'always' } },
+    ],
+  }));
+  const env = { ...process.env, LANES_REGISTRY: file };
+  const text = execFileSync(process.execPath, [RESOLVER], { env, encoding: 'utf8' });
+  assert.match(text, /Available delegation lanes on this machine \(1\):/);
+  assert.match(text, /Suppressed by adopter profile \(1; physically available, not routable\):/);
+  assert.match(text, /Optional — suppressed-by-profile/);
+  const json = JSON.parse(execFileSync(process.execPath, [RESOLVER, '--json'], { env, encoding: 'utf8' }));
+  assert.deepEqual(json.map((lane) => lane.id), ['core']);
 });
 
 // HIMMEL-747 — codex startup-health annotation for /lanes.
@@ -145,6 +215,103 @@ test('mergeLocalOverlay: malformed/empty inputs never throw', () => {
   assert.deepEqual(mergeLocalOverlay({ lanes: [] }, { lanes: [] }).lanes, []);
   assert.deepEqual(mergeLocalOverlay(undefined, undefined).lanes, []);
 });
+test('mergeLocalOverlay: carries top-level profile policy without disturbing lane overrides', () => {
+  const base = { lanes: [{ id: 'a', probe: { kind: 'always' } }] };
+  const local = {
+    lanes: [{ id: 'a', probe: { kind: 'never' } }],
+    profileAllowlist: ['a'],
+    profileAllowlistScope: ['a', 'b'],
+  };
+  const merged = mergeLocalOverlay(base, local);
+  assert.deepEqual(merged.profileAllowlist, ['a']);
+  assert.deepEqual(merged.profileAllowlistScope, ['a', 'b']);
+  assert.deepEqual(merged.lanes[0].probe, { kind: 'never' });
+});
+test('mergeLocalOverlay: unknown top-level local keys cannot shadow the base registry', () => {
+  const base = { schemaVersion: 1, lanes: [{ id: 'a', probe: { kind: 'always' } }] };
+  const local = { schemaVersion: 999, typoedPolicy: ['a'], lanes: [] };
+  const merged = mergeLocalOverlay(base, local);
+  assert.equal(merged.schemaVersion, 1);
+  assert.ok(!Object.prototype.hasOwnProperty.call(merged, 'typoedPolicy'));
+});
+test('applyProfileAllowlist: preserves overrides and converges allowlist + scope ids', () => {
+  const local = { lanes: [{ id: 'a', probe: { kind: 'never' } }], other: true };
+  const next = applyProfileAllowlist(local, ['b', 'b', 'a'], ['a', 'b', 'a']);
+  assert.deepEqual(next, {
+    lanes: local.lanes,
+    other: true,
+    profileAllowlist: ['b', 'a'],
+    profileAllowlistScope: ['a', 'b'],
+  });
+});
+test('applyProfileAllowlist: legacy global persistence preserves non-wizard resolver verdicts', () => {
+  const base = {
+    lanes: [
+      { id: 'wizard-selected', class: 'impl', probe: { kind: 'always' } },
+      { id: 'wizard-declined', class: 'impl', probe: { kind: 'always' } },
+      { id: 'outside-listed', class: 'impl', probe: { kind: 'always' } },
+      { id: 'outside-suppressed', class: 'impl', probe: { kind: 'always' } },
+    ],
+  };
+  const local = { lanes: [], profileAllowlist: ['outside-listed'] };
+  assert.deepEqual(resolveLanes(mergeLocalOverlay(base, local), ctx()).map((l) => l.id), ['outside-listed']);
+
+  const next = applyProfileAllowlist(
+    local,
+    ['wizard-selected'],
+    ['wizard-selected', 'wizard-declined'],
+  );
+  assert.deepEqual(next.profileAllowlist, ['outside-listed', 'wizard-selected']);
+  assert.ok(!Object.prototype.hasOwnProperty.call(next, 'profileAllowlistScope'));
+  assert.deepEqual(
+    resolveLanes(mergeLocalOverlay(base, next), ctx()).map((l) => l.id),
+    ['wizard-selected', 'outside-listed'],
+  );
+});
+test('applyLaneOverride: force-on extends the scoped profile allowlist before resolution', () => {
+  const base = {
+    lanes: [
+      { id: 'selected', class: 'impl', probe: { kind: 'always' } },
+      { id: 'declined', class: 'impl', probe: { kind: 'never' } },
+    ],
+  };
+  const local = {
+    lanes: [],
+    profileAllowlist: ['selected'],
+    profileAllowlistScope: ['selected', 'declined'],
+  };
+  const next = applyLaneOverride(local, 'declined', 'always');
+  assert.deepEqual(next.profileAllowlist, ['selected', 'declined']);
+  assert.deepEqual(resolveLanes(mergeLocalOverlay(base, next), ctx()).map((l) => l.id), ['selected', 'declined']);
+});
+test('applyLaneOverride: force-on extends a LEGACY scope-less allowlist too', () => {
+  // No profileAllowlistScope: legacy global semantics — the allowlist
+  // constrains every lane, so the force-on consent must extend it as well
+  // (CR round 4 [codex-1]).
+  const base = {
+    lanes: [
+      { id: 'selected', class: 'impl', probe: { kind: 'always' } },
+      { id: 'declined', class: 'impl', probe: { kind: 'never' } },
+    ],
+  };
+  const local = { lanes: [], profileAllowlist: ['selected'] };
+  const next = applyLaneOverride(local, 'declined', 'always');
+  assert.deepEqual(next.profileAllowlist, ['selected', 'declined']);
+  assert.deepEqual(resolveLanes(mergeLocalOverlay(base, next), ctx()).map((l) => l.id), ['selected', 'declined']);
+});
+test('writeProfileAllowlist: malformed overlays are refused without changing file bytes', () => {
+  for (const raw of ['{"lanes":{"bad":true}}\n', '[{"id":"a"}]\n']) {
+    const dir = mkdtempSync(join(tmpdir(), 'lanes-malformed-'));
+    const file = join(dir, 'lanes.local.json');
+    writeFileSync(file, raw);
+    assert.throws(
+      () => writeProfileAllowlist(file, ['a'], ['a']),
+      /must be a non-array object whose 'lanes' property is an array or absent/,
+    );
+    assert.equal(readFileSync(file, 'utf8'), raw);
+  }
+});
+
 test('mergeLocalOverlay: never applied against the REAL lanes.json base + a synthetic override, resolveLanes then suppresses that lane', () => {
   const local = { lanes: [{ id: 'haiku', probe: { kind: 'never' } }] };
   const merged = mergeLocalOverlay(REG, local);

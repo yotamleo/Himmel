@@ -34,7 +34,8 @@
 #   E. hardening is PRINTED, NEVER EXECUTED — alwaysOn=true prints the
 #      checklist while a sentinel `powercfg` stub on PATH proves nothing ran.
 #   F. alwaysOn=false -> the one-line pointer, and NO powercfg text at all.
-#   G. contributor runs print NO adopter epilogue (HIMMEL-1423 owns that).
+#   G. contributor runs print their own contributor-dev report, never the
+#      adopter lane/hardening summary owned by this module.
 #   H. two identical runs produce byte-identical epilogues (idempotent, and
 #      the probe never mutates state).
 #   I. an unreadable lane registry degrades to UNKNOWN — never to a false
@@ -103,6 +104,13 @@
 #   Y. LANES_REGISTRY replaces the registry AND skips the overlay, exactly as
 #      resolve.mjs does (CR round 11 [codex-adv-r10-3]), with a no-override
 #      control proving the overlay otherwise applies.
+#   Z. an APPLIED adopter install persists the resolver's narrow-only profile
+#      allowlist plus its wizard-owned scope. `none`, the default selection,
+#      codex-only opt-in, hermes-only opt-in and both opt-ins constrain only that
+#      subset; ollama-cloud and every other unoffered registry lane stay on their
+#      real base probes.
+#   AA. LANES_REGISTRY makes applied profile persistence fail loudly before an
+#      ignored lanes.local.json write; success is never reported.
 #
 # Cases N, O, P, Q, R, T, U, V, W, X and Y are mutation-verified: disabling the
 # overlay-error branch fails N, dropping the retained setup note fails B,
@@ -142,6 +150,14 @@ winpath() {
     *) printf '%s' "$1" ;;
   esac
 }
+
+# HIMMEL-1446 r3: a non-dry-run install (caseE --from-profile) reaches
+# applyHimmelctlPathShim(), whose default binDir is the operator's REAL
+# ~/.local/bin (win32 ignores HOME entirely). Isolate binDir for the WHOLE
+# suite so no case touches the real bin dir — mirrors test-wizard-update.sh /
+# test-wizard-uninstall.sh. winpath'd so win32 node resolves it cleanly.
+HIMMELCTL_BIN_DIR="$(winpath "$work/isolated-bin")"
+export HIMMELCTL_BIN_DIR
 
 # build_path <stub_dir> <present_tools...> -- <absent_tools...>
 build_path() {
@@ -277,6 +293,8 @@ sA="$work/a"; mkdir -p "$sA"; hA="$work/a-home"; mkdir -p "$hA"
 fA="$work/a-fix"; make_fixture "$fA"
 capture "$sA" "$hA" "$fA"
 [ "$rc" -eq 0 ] || fail "caseA: dry-run should succeed (got rc=$rc): $out"
+grepq "$out" '"lanesMeaningful": true' \
+  || fail "caseA: newly-built profiles must mark lane selections as meaningful: $out"
 ep=$(epilogue "$out")
 grepq "$ep" -E '!! +ollama +MISSING' \
   || fail "caseA: ollama should probe MISSING on a scrubbed PATH: $ep"
@@ -381,6 +399,37 @@ grepq "$conflict_out" -iE 'ENOENT|no such file|not valid JSON|invalid profile' \
   && fail "caseD: the profile must not even be OPENED when the flags conflict: $conflict_out"
 echo "ok: caseD bad/opt-in/empty --lanes and --from-profile conflicts all exit 2 with the conflict message"
 
+# ── Case D2: legacy empty lane placeholder requires reconfirmation ──────────
+sD2="$work/d2"; mkdir -p "$sD2"; hD2="$work/d2-home"; mkdir -p "$hD2"
+fD2="$work/d2-fix"; make_fixture "$fD2"
+profD2="$work/d2-legacy-profile.json"
+cat > "$profD2" <<'JSON'
+{
+  "role": "adopter",
+  "tier": "standard",
+  "scope": "project",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": [],
+  "alwaysOn": false
+}
+JSON
+pD2=$(build_path "$sD2" bash jq python3 npm -- "${LANE_TOOLS[@]}")
+make_git_stub "$sD2" "https://github.com/someone/other-repo.git"
+set +e
+out=$(PATH="$pD2" HOME="$hD2" HIMMELCTL_INTERACTIVE=0 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fD2")" \
+      "$node_bin" "$wizard" install --from-profile "$(winpath "$profD2")" \
+      </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "caseD2: legacy lanes:[] profile must exit 2 (got rc=$rc): $out"
+grepq "$out" 'legacy profile has lanes:\[\]' \
+  || fail "caseD2: refusal must identify the legacy empty placeholder: $out"
+grepq "$out" 'reconfirm lane selection' \
+  || fail "caseD2: refusal must tell the operator how to recover: $out"
+echo "ok: caseD2 legacy lanes:[] profile fails loud and requires lane-selection reconfirmation"
+
 # ── Case E: hardening PRINTED, never EXECUTED ───────────────────────────────
 # A sentinel `powercfg` stub: if the installer ever shelled out to it, the
 # sentinel file would exist. This is the assertion the whole rescope turns on.
@@ -403,6 +452,7 @@ cat > "$profE" <<'JSON'
   "handover": { "mode": "inline", "path": "" },
   "pluginSet": "lean",
   "lanes": [],
+  "lanesMeaningful": true,
   "alwaysOn": true
 }
 JSON
@@ -470,9 +520,12 @@ grepq "$out" 'powercfg' \
   && fail "caseF: alwaysOn=false must not dump the checklist: $out"
 echo "ok: caseF alwaysOn=false -> pointer line only, no checklist"
 
-# ── Case G: contributor prints no adopter epilogue ──────────────────────────
+# ── Case G: contributor gets its own report, not the adopter epilogue ───────
 sG="$work/g"; mkdir -p "$sG"; hG="$work/g-home"; mkdir -p "$hG"
 fG="$work/g-fix"; make_fixture "$fG"
+mkdir -p "$fG/scripts/install"
+cp "$repo_root/scripts/install/manifest.json" "$fG/scripts/install/manifest.json"
+cp "$repo_root/scripts/install/deps.json" "$fG/scripts/install/deps.json"
 topG="$work/g-top"; mkdir -p "$topG"; touch "$topG/.himmel-dev"
 pG=$(build_path "$sG" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sG" "https://github.com/user/himmel.git" "$(winpath "$topG")"
@@ -484,11 +537,13 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseG: contributor dry-run should succeed (got rc=$rc): $out"
 grepq "$out" '"role": "contributor"' \
   || fail "caseG: fixture should resolve to contributor: $out"
+grepq "$out" 'contributor dev profile' \
+  || fail "caseG: contributor should print its contributor-dev report: $out"
 grepq "$out" 'delegation lanes' \
-  && fail "caseG: contributor must print NO lane report: $out"
+  && fail "caseG: contributor must print NO adopter lane report: $out"
 grepq "$out" 'install summary' \
   && fail "caseG: contributor must print NO adopter summary: $out"
-echo "ok: caseG contributor -> no adopter epilogue (HIMMEL-1423 owns that)"
+echo "ok: caseG contributor -> contributor-dev report, no adopter epilogue"
 
 # ── Case H: two identical runs -> byte-identical epilogue ───────────────────
 sH="$work/h"; mkdir -p "$sH"; hH="$work/h-home"; mkdir -p "$hH"
@@ -563,6 +618,7 @@ cat > "$profJ" <<'JSON'
   "handover": { "mode": "inline", "path": "" },
   "pluginSet": "lean",
   "lanes": [],
+  "lanesMeaningful": true,
   "alwaysOn": false
 }
 JSON
@@ -645,6 +701,7 @@ cat > "$profL" <<'JSON'
   "handover": { "mode": "inline", "path": "" },
   "pluginSet": "full",
   "lanes": [],
+  "lanesMeaningful": true,
   "alwaysOn": false
 }
 JSON
@@ -869,7 +926,7 @@ echo "ok: caseQ POSIX platforms get POSIX guidance; win32 keeps its PowerShell g
 # Unstamped -> refuse before any shell-out; stamped -> proceed but never claim
 # scaffolding happened.
 rVault_profile() {
-  printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "project",\n  "vault": { "mode": "default-template", "path": "%s" },\n  "handover": { "mode": "inline", "path": "" },\n  "pluginSet": "lean",\n  "lanes": [],\n  "alwaysOn": false\n}\n' "$1"
+  printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "project",\n  "vault": { "mode": "default-template", "path": "%s" },\n  "handover": { "mode": "inline", "path": "" },\n  "pluginSet": "lean",\n  "lanes": [],\n  "lanesMeaningful": true,\n  "alwaysOn": false\n}\n' "$1"
 }
 sR="$work/r"; mkdir -p "$sR"; hR="$work/r-home"; mkdir -p "$hR"
 fR="$work/r-fix"; make_fixture "$fR"
@@ -1136,7 +1193,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$fX/scripts/handover/set-handover-dir.
 chmod +x "$fX/scripts/handover/set-handover-dir.sh"
 raceX="$work/x-vault-appears"          # deliberately does NOT exist yet
 profX="$work/x-profile.json"
-printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "project",\n  "vault": { "mode": "default-template", "path": "%s" },\n  "handover": { "mode": "external", "path": "%s" },\n  "pluginSet": "lean",\n  "lanes": [],\n  "alwaysOn": false\n}\n' \
+printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "project",\n  "vault": { "mode": "default-template", "path": "%s" },\n  "handover": { "mode": "external", "path": "%s" },\n  "pluginSet": "lean",\n  "lanes": [],\n  "lanesMeaningful": true,\n  "alwaysOn": false\n}\n' \
   "$(winpath "$raceX")" "$(winpath "$raceX")" > "$profX"
 pX=$(build_path "$sX" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sX" "https://github.com/someone/other-repo.git"
@@ -1193,4 +1250,180 @@ grepq "$(epilogue "$out")" 'DISABLED' \
   || fail "caseY: without the override the overlay must still apply: $(epilogue "$out")"
 echo "ok: caseY LANES_REGISTRY replaces the registry and skips the overlay, like the resolver"
 
-echo "PASS: test-wizard-adopter-profile.sh (26 cases)"
+# ── Case Z: applied selections constrain only the wizard-owned lane subset ──
+# Every optional probe the fixture can satisfy is made true below. That makes
+# suppression observable while also proving registry lanes outside the persisted
+# wizard scope remain on their base probes.
+profile_scope='ollama-local,copilot-cli,codex-exec,hermes-oneshot'
+for _combo in none default codex hermes both; do
+  sZ="$work/z-$_combo"; mkdir -p "$sZ"; hZ="$work/z-$_combo-home"; mkdir -p "$hZ"
+  fZ="$work/z-$_combo-fix"; make_fixture "$fZ"
+  profZ="$work/z-$_combo-profile.json"
+  case "$_combo" in
+    none)    _profile_lanes='[]'; _expected='' ;;
+    default) _profile_lanes='["ollama","copilot"]'; _expected='ollama-local,copilot-cli' ;;
+    codex)   _profile_lanes='["ollama","copilot","codex"]'; _expected='ollama-local,copilot-cli,codex-exec' ;;
+    hermes)  _profile_lanes='["ollama","copilot","hermes"]'; _expected='ollama-local,copilot-cli,hermes-oneshot' ;;
+    both)    _profile_lanes='["ollama","copilot","codex","hermes"]'; _expected='ollama-local,copilot-cli,codex-exec,hermes-oneshot' ;;
+  esac
+  printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "project",\n  "vault": { "mode": "none", "path": "" },\n  "handover": { "mode": "inline", "path": "" },\n  "pluginSet": "lean",\n  "lanes": %s,\n  "lanesMeaningful": true,\n  "alwaysOn": false\n}\n' \
+    "$_profile_lanes" > "$profZ"
+  pZ=$(build_path "$sZ" bash jq python3 npm -- "${LANE_TOOLS[@]}")
+  make_git_stub "$sZ" "https://github.com/someone/other-repo.git"
+  set +e
+  out=$(PATH="$pZ" HOME="$hZ" HIMMELCTL_INTERACTIVE=0 \
+        HIMMELCTL_REPO_ROOT="$(winpath "$fZ")" \
+        "$node_bin" "$wizard" install --from-profile "$(winpath "$profZ")" \
+        </dev/null 2>&1); rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "caseZ/$_combo: applied install should succeed (got rc=$rc): $out"
+  [ -f "$fZ/scripts/lanes/lanes.local.json" ] \
+    || fail "caseZ/$_combo: applied install did not write lanes.local.json"
+  # shellcheck disable=SC2016
+  "$node_bin" -e '
+  (async () => {
+    const fs = require("fs");
+    const path = require("path");
+    const { pathToFileURL } = require("url");
+    const root = process.argv[1];
+    const expected = process.argv[2] ? process.argv[2].split(",") : [];
+    const m = await import(pathToFileURL(process.argv[3]).href);
+    const scope = process.argv[4].split(",");
+    const base = JSON.parse(fs.readFileSync(path.join(root, "scripts", "lanes", "lanes.json"), "utf8"));
+    const local = JSON.parse(fs.readFileSync(path.join(root, "scripts", "lanes", "lanes.local.json"), "utf8"));
+    if (JSON.stringify(local.profileAllowlist) !== JSON.stringify(expected)) {
+      throw new Error("persisted allowlist mismatch: " + JSON.stringify(local.profileAllowlist) + " != " + JSON.stringify(expected));
+    }
+    if (JSON.stringify(local.profileAllowlistScope) !== JSON.stringify(scope)) {
+      throw new Error("persisted allowlist scope mismatch: " + JSON.stringify(local.profileAllowlistScope) + " != " + JSON.stringify(scope));
+    }
+    const merged = m.mergeLocalOverlay(base, local);
+    const ctx = {
+      env: { ZAI_API_KEY: "k", CLIPROXY_API_KEY: "k", OPENROUTER_API_KEY: "k", CR_PROFILE: "paid" },
+      pathHas: () => true,
+      installed: { hermes: true },
+    };
+    const optionalIds = (registry) => m.resolveLanes(registry, ctx)
+      .filter((lane) => lane.class !== "claude-tier").map((lane) => lane.id).sort();
+    const baseAvailable = optionalIds(base);
+    const effective = optionalIds(merged);
+    const effectiveInScope = effective.filter((id) => scope.includes(id));
+    const want = [...expected].sort();
+    if (JSON.stringify(effectiveInScope) !== JSON.stringify(want)) {
+      throw new Error("effective wizard-owned inventory mismatch: " + JSON.stringify(effectiveInScope) + " != " + JSON.stringify(want));
+    }
+    const outsideScope = baseAvailable.filter((id) => !scope.includes(id));
+    const missingOutside = outsideScope.filter((id) => !effective.includes(id));
+    if (missingOutside.length > 0) {
+      throw new Error("out-of-scope registry lanes were suppressed: " + JSON.stringify(missingOutside));
+    }
+    const suppressed = m.resolveLaneInventory(merged, ctx)
+      .filter((row) => row.suppressedByProfile).map((row) => row.lane.id);
+    if (suppressed.some((id) => !scope.includes(id))) {
+      throw new Error("out-of-scope lane reported suppressed-by-profile: " + JSON.stringify(suppressed));
+    }
+    if (suppressed.some((id) => expected.includes(id))) {
+      throw new Error("allowlisted lane reported suppressed: " + JSON.stringify(suppressed));
+    }
+  })().catch((e) => { console.error(e && e.message ? e.message : e); process.exit(1); });
+  ' "$(winpath "$fZ")" "$_expected" "$(winpath "$repo_root/scripts/lanes/resolve.mjs")" "$profile_scope" \
+    || fail "caseZ/$_combo: persisted profile did not produce the expected resolver inventory"
+done
+echo "ok: caseZ applied profiles constrain only the wizard-owned subset; all other registry lanes stay on base probes"
+
+# ── Case AA: LANES_REGISTRY makes overlay persistence fail loudly ───────────
+sAA="$work/aa"; mkdir -p "$sAA"; hAA="$work/aa-home"; mkdir -p "$hAA"
+fAA="$work/aa-fix"; make_fixture "$fAA"
+mutationAA="$work/aa-core-install-ran"
+cat > "$fAA/scripts/adopt.sh" <<STUB
+#!/usr/bin/env bash
+printf 'ran\n' > "$mutationAA"
+exit 0
+STUB
+chmod +x "$fAA/scripts/adopt.sh"
+profAA="$work/aa-profile.json"
+cat > "$profAA" <<'JSON'
+{
+  "role": "adopter",
+  "tier": "standard",
+  "scope": "project",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": ["ollama"],
+  "alwaysOn": false
+}
+JSON
+pAA=$(build_path "$sAA" bash jq python3 npm -- "${LANE_TOOLS[@]}")
+make_git_stub "$sAA" "https://github.com/someone/other-repo.git"
+set +e
+out=$(PATH="$pAA" HOME="$hAA" HIMMELCTL_INTERACTIVE=0 \
+      LANES_REGISTRY="$(winpath "$fAA/scripts/lanes/lanes.json")" \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fAA")" \
+      "$node_bin" "$wizard" install --from-profile "$(winpath "$profAA")" \
+      </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] \
+  || fail "caseAA: applied install under LANES_REGISTRY must fail instead of reporting ignored persistence: $out"
+grepq "$out" 'LANES_REGISTRY is set' \
+  || fail "caseAA: failure must name the active registry override: $out"
+grepq "$out" 'ignores lanes.local.json' \
+  || fail "caseAA: failure must explain why persistence cannot bind: $out"
+grepq "$out" 'lane profile: allowlisted' \
+  && fail "caseAA: ignored persistence must never print a success line: $out"
+grepq "$out" 'lane profile preflight failed' \
+  || fail "caseAA: LANES_REGISTRY must fail in the pre-install validation phase: $out"
+[ -f "$mutationAA" ] \
+  && fail "caseAA: LANES_REGISTRY preflight must abort before adopt.sh mutates anything"
+[ -f "$fAA/scripts/lanes/lanes.local.json" ] \
+  && fail "caseAA: refusal should happen before writing an overlay the resolver ignores"
+echo "ok: caseAA LANES_REGISTRY aborts in preflight before the core installer or overlay write"
+
+# ── Case AB: unwritable overlay dir aborts T5b before any mutation ───────────
+sAB="$work/ab"; mkdir -p "$sAB"; hAB="$work/ab-home"; mkdir -p "$hAB"
+fAB="$work/ab-fix"; make_fixture "$fAB"
+vaultAB="$work/ab-vault"; mkdir -p "$vaultAB"
+printf '{ "template": "luna-second-brain" }\n' > "$vaultAB/.vault-template.json"
+handoverAB="$work/ab-handover"
+profAB="$work/ab-profile.json"
+printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "user",\n  "vault": { "mode": "existing", "path": "%s" },\n  "handover": { "mode": "external", "path": "%s" },\n  "pluginSet": "lean",\n  "lanes": [],\n  "lanesMeaningful": true,\n  "alwaysOn": false\n}\n' \
+  "$(winpath "$vaultAB")" "$(winpath "$handoverAB")" > "$profAB"
+denyAB="$work/deny-lane-overlay-write.js"
+cat > "$denyAB" <<'JS'
+const fs = require('fs');
+const path = require('path');
+const realAccessSync = fs.accessSync;
+fs.accessSync = function (p, mode) {
+  if (path.resolve(String(p)) === path.resolve(process.env.DENY_LANE_OVERLAY_DIR)) {
+    const err = new Error('simulated permission denied');
+    err.code = 'EACCES';
+    throw err;
+  }
+  return realAccessSync.call(fs, p, mode);
+};
+require('module').syncBuiltinESMExports();
+JS
+pAB=$(build_path "$sAB" bash jq python3 npm -- "${LANE_TOOLS[@]}")
+make_git_stub "$sAB" "https://github.com/someone/other-repo.git"
+set +e
+out=$(PATH="$pAB" HOME="$hAB" HIMMELCTL_INTERACTIVE=0 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fAB")" \
+      DENY_LANE_OVERLAY_DIR="$(winpath "$fAB/scripts/lanes")" \
+      NODE_OPTIONS="--require=$(winpath "$denyAB")" \
+      "$node_bin" "$wizard" install --from-profile "$(winpath "$profAB")" \
+      </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "caseAB: unwritable lane overlay dir must fail before T5b mutation: $out"
+grepq "$out" 'overlay target is not writable' \
+  || fail "caseAB: failure must name the unwritable overlay target: $out"
+grepq "$out" 'EACCES' \
+  || fail "caseAB: failure must surface the permission code: $out"
+grepq "$out" 'lane profile preflight failed' \
+  || fail "caseAB: unwritable target must fail in the pre-install validation phase: $out"
+[ -e "$handoverAB" ] \
+  && fail "caseAB: T5b preflight must abort before applyHandoverStep creates the external handover dir"
+[ -f "$fAB/.env" ] \
+  && fail "caseAB: T5b preflight must abort before applyHandoverStep writes HANDOVER_DIR"
+echo "ok: caseAB unwritable overlay dir aborts T5b before handover, wire or upgrade mutation"
+
+echo "PASS: test-wizard-adopter-profile.sh (30 cases)"
