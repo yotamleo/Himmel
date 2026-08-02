@@ -73,6 +73,33 @@ snapshot_real_bin() {
   printf '%s' "$_out"
 }
 
+# Coreutils this suite and its targets shell out to, which must survive the
+# scrub (HIMMEL-1469). scrub_path drops a PATH dir WHOLESALE when it carries any
+# scrubbed tool, and this suite's scrub list includes shellcheck / pre-commit /
+# gh — all of which live in /usr/bin on stock Ubuntu, so the scrub takes
+# /usr/bin (and every coreutil in it) with them. Windows hid this: node and the
+# scrubbed CLIs live in their own directories there, so Git-Bash's /usr/bin
+# survives and every local run stayed green while Linux CI failed with
+# `uname: command not found` / `dirname: command not found` / `mkdir: command
+# not found`. hermetic-path.sh's header already states the contract this
+# restores: link whatever the target needs BEFORE calling scrub_path.
+# Entries that do not resolve to a real binary are skipped rather than fatal:
+# the list spans platforms, and `command -v` reports a SHELL BUILTIN for names
+# like printf (bare "printf", not a path) — linking that would plant a dangling
+# symlink that any non-bash execve of printf would then trip over.
+HERMETIC_COREUTILS=(uname dirname basename mkdir chmod cat cp rm ls sed grep
+                    mktemp env sort head tail tr wc find date printf sha256sum)
+
+# True when <stub>/<tool> was already planted, so linking is a no-op.
+# caseC runs the SAME stub dir through build_path twice, and re-linking is not
+# harmless on Linux: link_hermetic_tool's `ln -s` fails when the entry exists,
+# and its wrapper fallback then writes THROUGH the existing symlink into the
+# real binary (`/usr/bin/uname: Permission denied`). Windows never hit this —
+# `ln -s` fails there, so the first pass leaves a plain wrapper file that the
+# second pass simply truncates. The same latent hazard exists in the shared
+# link_hermetic_tool for any suite that re-links one stub dir (HIMMEL-1469).
+already_linked() { [ -e "$1/$2" ] || [ -L "$1/$2" ]; }
+
 build_path() {
   local _stub="$1"; shift
   local _present=() _absent=() _stage=0 _t
@@ -80,7 +107,16 @@ build_path() {
     if [ "$_t" = "--" ]; then _stage=1; continue; fi
     if [ "$_stage" -eq 0 ]; then _present+=("$_t"); else _absent+=("$_t"); fi
   done
-  for _t in "${_present[@]}"; do link_hermetic_tool "$_t" "$_stub"; done
+  local _src
+  for _t in "${HERMETIC_COREUTILS[@]}"; do
+    already_linked "$_stub" "$_t" && continue
+    _src=$(command -v "$_t" 2>/dev/null) || continue
+    case "$_src" in /*) link_hermetic_tool "$_t" "$_stub" ;; esac
+  done
+  for _t in "${_present[@]}"; do
+    already_linked "$_stub" "$_t" && continue
+    link_hermetic_tool "$_t" "$_stub"
+  done
   local _scrubbed="$PATH"
   if [ "${#_absent[@]}" -gt 0 ]; then
     _scrubbed=$(scrub_path "$PATH" "${_absent[@]}")
