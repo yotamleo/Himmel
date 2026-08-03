@@ -26,16 +26,20 @@
 # USAGE (source it, then call):
 #   . scripts/lib/proc-tree.sh
 #   set -m; some_command & pid=$!; set +m
-#   proc_tree_terminate "$pid" [grace-seconds]
+#   proc_tree_terminate "$pid" [grace-seconds] [expected-identity]
 #   wait "$pid" 2>/dev/null    # caller reaps; this helper never does
 #
-# proc_tree_terminate returns 0 when the group is gone by the time it returns
-# and 1 when something survived every escalation (a caller that cares can say
-# so in its report; there is no further lever to pull).
+# proc_tree_terminate returns 0 when the group is gone by the time it returns,
+# 1 when something survived every verified escalation, and 2 when a supplied
+# expected identity is empty or cannot be confirmed before the next signal.
+# proc_tree_group_terminate is the leader-exited variant: it signals only
+# identity-verified observed member pids, never an unowned numeric group id.
 #
-# COVERAGE lives in scripts/ci/test-suite-concurrency.sh (cases 5 and 5b: a
-# wedged descendant is reaped, and a TERM-ignoring suite is still killed),
-# exercised through the one caller rather than duplicated here. A standalone
+# COVERAGE lives in scripts/ci/test-suite-concurrency.sh (cases 4b-4e, 5, and
+# 5b: empty/recycled identities refuse unsafe signals, leader-exit members are
+# revalidated, a wedged descendant is reaped, and a TERM-ignoring suite is still
+# killed). The process cases are exercised through
+# the one caller rather than duplicated here. A standalone
 # unit suite would have to spawn and reap its own processes a second time, and
 # the ticket this helper comes from is about shell suites taking too long.
 #
@@ -56,11 +60,64 @@ proc_tree_winpid() {
     cat "/proc/$1/winpid" 2>/dev/null
 }
 
+# proc_tree_process_identity <pid> -- print a stable start-time identity for a
+# live process. POSIX uses start time + command; Git Bash maps its pid to the
+# native Windows pid and reads the full-resolution Get-Process StartTime.
+proc_tree_process_identity() {
+    local pid="$1" value="" winpid="" pwsh_bin="" candidate
+    [ -n "$pid" ] || return 1
+
+    if proc_tree_is_windows; then
+        winpid=$(proc_tree_winpid "$pid")
+        case "$winpid" in ''|*[!0-9]*) return 1 ;; esac
+        for candidate in pwsh pwsh.exe powershell.exe powershell; do
+            if command -v "$candidate" >/dev/null 2>&1; then
+                pwsh_bin=$candidate
+                break
+            fi
+        done
+        [ -n "$pwsh_bin" ] || return 1
+        value=$("$pwsh_bin" -NoProfile -NonInteractive -Command "try { (Get-Process -Id $winpid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks } catch { exit 1 }" 2>/dev/null) || value=""
+        [ -n "$value" ] || return 1
+        printf 'win:%s:%s\n' "$winpid" "$value"
+        return 0
+    fi
+
+    value=$(LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || value=""
+    [ -n "$value" ] || return 1
+    printf 'posix:%s\n' "$value"
+}
+
+# proc_tree_process_alive <pid> -- 0 when the numeric pid currently names a
+# live process. This is deliberately identity-free so callers can distinguish a
+# confirmed exit from a live process whose identity no longer matches.
+proc_tree_process_alive() {
+    local pid="$1"
+    [ -n "$pid" ] || return 1
+    if proc_tree_is_windows; then
+        [ -d "/proc/$pid" ]
+    else
+        kill -0 "$pid" 2>/dev/null
+    fi
+}
+
+# proc_tree_process_identity_matches <pid> <identity> -- 0 when the live
+# process still has the launch identity, 1 on confirmed mismatch/exit, and 2
+# when the identity probe is unavailable. Callers may wait through rc 2, but
+# must never signal unless they received rc 0.
+proc_tree_process_identity_matches() {
+    local pid="$1" expected="$2" actual=""
+    [ -n "$expected" ] || return 2
+    proc_tree_process_alive "$pid" || return 1
+    actual=$(proc_tree_process_identity "$pid") || return 2
+    [ "$actual" = "$expected" ]
+}
+
 # proc_tree_group_members <pgid> -- print the pids still in a process group,
-# one per line. Prints nothing when the group is empty OR when neither `ps`
-# form works -- callers treat "no members" as "cannot see any", which is why
-# proc_tree_terminate escalates unconditionally rather than only when it can
-# observe a survivor.
+# one per line. Prints nothing when the group is empty and returns nonzero when
+# the process table cannot be read. Existing liveness callers treat either as
+# "cannot see any"; snapshot callers inspect the status so an observation
+# failure can never become a falsely definitive empty survivor set.
 #
 # NOT `ps -g <pgid>`: POSIX defines -g as select-by-SESSION-leader, and procps
 # overloads it with effective-group-name, so it is the wrong axis on Linux and
@@ -81,7 +138,7 @@ proc_tree_winpid() {
 # reaps quickly enough that it has not been observed.
 _PROC_TREE_PS_MODE=""
 proc_tree_group_members() {
-    local pgid="$1"
+    local pgid="$1" table=""
     if [ -z "$_PROC_TREE_PS_MODE" ]; then
         # The probe asks only whether the FORM works: this shell is always in
         # the table, so an empty result means unsupported, not "no processes".
@@ -92,11 +149,12 @@ proc_tree_group_members() {
         fi
     fi
     if [ "$_PROC_TREE_PS_MODE" = "posix" ]; then
-        ps -e -o pid=,pgid=,stat= 2>/dev/null |
-            awk -v g="$pgid" '$2==g && $3 !~ /^Z/ { print $1 }'
+        table=$(ps -e -o pid=,pgid=,stat= 2>/dev/null) || return 1
+        printf '%s\n' "$table" | awk -v g="$pgid" '$2==g && $3 !~ /^Z/ { print $1 }'
         return 0
     fi
-    ps 2>/dev/null | awk -v g="$pgid" 'NR>1 && $3==g { print $1 }'
+    table=$(ps 2>/dev/null) || return 1
+    printf '%s\n' "$table" | awk -v g="$pgid" 'NR>1 && $3==g { print $1 }'
 }
 
 # proc_tree_group_alive <pgid> -- 0 when at least one process is still in the
@@ -108,24 +166,39 @@ proc_tree_group_alive() {
     [ -n "$(proc_tree_group_members "$1")" ]
 }
 
-# proc_tree_terminate <pid> [grace-seconds] -- TERM the group, wait out the
-# grace period, KILL the group, and only THEN check whether anything is left.
-# On Windows a survivor gets one more pass through `taskkill /F` on its
-# Windows pid, which does not go through the MSYS signal layer at all.
-#
-# The escalation is unconditional up to KILL: a group signal that silently
-# reached nothing looks identical to one that worked, so "did TERM succeed?"
-# is not a question worth asking. KILL cannot be blocked or handled, so
-# anything alive after it is a signal-delivery failure, not a stubborn
-# process -- which is precisely when the Windows path earns its keep.
+# proc_tree_terminate <pid> [grace-seconds] [expected-identity] -- TERM the
+# group, wait out the grace period, KILL the group, and only THEN check whether
+# anything is left. When expected-identity is supplied, the leader identity is
+# revalidated immediately before every group signal, and a failed group signal
+# never falls back to the bare pid. Windows fallback targets only survivors
+# whose current identity can be captured and immediately revalidated.
 proc_tree_terminate() {
-    local pid="$1" grace="${2:-3}" survivor w
+    local pid="$1" grace="${2:-3}" expected_identity="${3:-}" survivor survivor_identity w guarded=0 identity_unverified=0
+    local member member_identity i leader_identity_rc survivor_verified=0
+    local -a member_pids=() member_identities=()
     [ -n "$pid" ] || return 0
+    [ "$#" -ge 3 ] && guarded=1
 
-    # Negative pid = the whole group. The bare-pid fallback covers a shell
-    # without job control, where killing the wrapper still beats killing
-    # nothing.
-    kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    if [ "$guarded" -eq 1 ]; then
+        proc_tree_process_identity_matches "$pid" "$expected_identity" || return 2
+        # The leader can honor TERM while a descendant ignores it. Snapshot every
+        # observable member identity before TERM so an exited/recycled leader does
+        # not strand survivors or authorize signals to newly-reused numeric pids.
+        for member in $(proc_tree_group_members "$pid"); do
+            member_identity=$(proc_tree_process_identity "$member") || member_identity=''
+            [ -n "$member_identity" ] || continue
+            member_pids[${#member_pids[@]}]="$member"
+            member_identities[${#member_identities[@]}]="$member_identity"
+        done
+        if ! kill -TERM -"$pid" 2>/dev/null; then
+            proc_tree_group_alive "$pid" || return 0
+            return 2
+        fi
+    else
+        # Without an ownership identity, preserve the legacy best-effort bare-pid
+        # fallback for callers that did not establish a dedicated process group.
+        kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    fi
 
     # Sleep the grace out flat rather than polling it away. Reading the
     # process table costs seconds on a loaded Windows box -- the state this
@@ -134,7 +207,37 @@ proc_tree_terminate() {
     # nothing downstream needs to know precisely when it stopped needing it.
     sleep "$grace"
 
-    kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    proc_tree_group_alive "$pid" || return 0
+    if [ "$guarded" -eq 1 ]; then
+        # The original leader may exit and its numeric pid may be recycled during
+        # the TERM grace. If it still matches, the group signal remains owned. If
+        # not, escalate only member pids whose pre-TERM identities still match.
+        leader_identity_rc=0
+        proc_tree_process_identity_matches "$pid" "$expected_identity" || leader_identity_rc=$?
+        if [ "$leader_identity_rc" -eq 0 ]; then
+            if ! kill -KILL -"$pid" 2>/dev/null; then
+                proc_tree_group_alive "$pid" || return 0
+                return 2
+            fi
+        else
+            i=0
+            while [ "$i" -lt "${#member_pids[@]}" ]; do
+                member=${member_pids[$i]}
+                member_identity=${member_identities[$i]}
+                if proc_tree_process_identity_matches "$member" "$member_identity"; then
+                    survivor_verified=1
+                    kill -KILL "$member" 2>/dev/null || true
+                fi
+                i=$((i + 1))
+            done
+            [ "$survivor_verified" -eq 1 ] || return 2
+            sleep 1
+            proc_tree_group_alive "$pid" || return 0
+            return 1
+        fi
+    else
+        kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    fi
     sleep 1
 
     # ONE table read, after the only signal that cannot be ignored. Anything
@@ -143,6 +246,13 @@ proc_tree_terminate() {
 
     if proc_tree_is_windows; then
         for survivor in $(proc_tree_group_members "$pid"); do
+            if [ "$guarded" -eq 1 ]; then
+                survivor_identity=$(proc_tree_process_identity "$survivor") || survivor_identity=''
+                if [ -z "$survivor_identity" ] || ! proc_tree_process_identity_matches "$survivor" "$survivor_identity"; then
+                    identity_unverified=1
+                    continue
+                fi
+            fi
             w=$(proc_tree_winpid "$survivor")
             [ -n "$w" ] || continue
             # MSYS_NO_PATHCONV: without it MSYS rewrites the /PID and /F
@@ -153,5 +263,64 @@ proc_tree_terminate() {
         proc_tree_group_alive "$pid" || return 0
     fi
 
+    [ "$identity_unverified" -eq 0 ] || return 2
+    return 1
+}
+
+# proc_tree_group_terminate <pgid> [grace-seconds] -- clean descendants after
+# their leader exits. HIMMEL-1474 r4/r12: snapshot each observed member with
+# its identity, then revalidate that member immediately before every PID signal.
+# Never signal the unowned numeric group id or use a blind Windows tree-kill.
+proc_tree_group_terminate() {
+    local pid="$1" grace="${2:-3}" member member_identity i identity_unverified=0
+    local -a member_pids=() member_identities=()
+    [ -n "$pid" ] || return 0
+    proc_tree_group_alive "$pid" || return 0
+
+    for member in $(proc_tree_group_members "$pid"); do
+        member_identity=$(proc_tree_process_identity "$member") || member_identity=''
+        if [ -z "$member_identity" ]; then
+            identity_unverified=1
+            continue
+        fi
+        member_pids[${#member_pids[@]}]="$member"
+        member_identities[${#member_identities[@]}]="$member_identity"
+    done
+
+    i=0
+    while [ "$i" -lt "${#member_pids[@]}" ]; do
+        member=${member_pids[$i]}
+        member_identity=${member_identities[$i]}
+        if proc_tree_process_identity_matches "$member" "$member_identity"; then
+            kill -TERM "$member" 2>/dev/null || true
+        else
+            identity_unverified=1
+        fi
+        i=$((i + 1))
+    done
+    sleep "$grace"
+    if ! proc_tree_group_alive "$pid"; then
+        [ "$identity_unverified" -eq 0 ] || return 2
+        return 0
+    fi
+
+    i=0
+    while [ "$i" -lt "${#member_pids[@]}" ]; do
+        member=${member_pids[$i]}
+        member_identity=${member_identities[$i]}
+        if proc_tree_process_identity_matches "$member" "$member_identity"; then
+            kill -KILL "$member" 2>/dev/null || true
+        else
+            identity_unverified=1
+        fi
+        i=$((i + 1))
+    done
+    sleep 1
+    if ! proc_tree_group_alive "$pid"; then
+        [ "$identity_unverified" -eq 0 ] || return 2
+        return 0
+    fi
+
+    [ "$identity_unverified" -eq 0 ] || return 2
     return 1
 }

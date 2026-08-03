@@ -709,6 +709,23 @@ assert_contains "T23 record names the skill" '"skill":"handover-arm-resume"' "$t
 assert_contains "T23 record names the event" '"event":"armed"' "$tline"
 assert_contains "T23 record carries time" "\"time\":\"$FUTURE_TIME\"" "$tline"
 assert_contains "T23 record carries force" '"force":"0"' "$tline"
+# HIMMEL-1490: the measured gap (raw seconds) is emitted alongside the
+# long_gap flag. FUTURE_TIME is now+30m, so a real positive integer (<3600)
+# is expected — present AND numeric, not an exact value (timing-dependent).
+assert_contains "T23 record carries gap_sec field" '"gap_sec":"' "$tline"
+_t23_gap=${tline#*\"gap_sec\":\"}; _t23_gap=${_t23_gap%%\"*}
+case "$_t23_gap" in
+    ''|0|*[!0-9]*)
+        # '0' is rejected too: an explicit arm 30m out MUST measure a nonzero
+        # gap — 0 is the unset-_GAP_SEC default and would mask that regression.
+        echo "FAIL T23 gap_sec not a strictly positive integer (got '$_t23_gap')"
+        FAILED=$((FAILED + 1))
+        ;;
+    *)
+        echo "PASS T23 gap_sec is a strictly positive integer ($_t23_gap)"
+        ;;
+esac
+unset _t23_gap
 
 # ---------------------------------------------------------------------------
 # T23b: scheduler-create FAILURE emits NO record (HIMMEL-236) — the

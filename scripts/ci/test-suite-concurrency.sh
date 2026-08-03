@@ -50,7 +50,7 @@ this_host() {
   printf '%s' "${HOSTNAME:-${COMPUTERNAME:-$(hostname 2>/dev/null || echo unknown)}}"
 }
 
-WORK=$(mktemp -d)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-concurrency.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # Each case gets a fresh sandbox + a lock path inside it.
@@ -547,6 +547,222 @@ if [ "$rc4" -eq 0 ]; then
   pass "SUITE_LOCK=0 -> runs despite a held lock"
 else
   fail "SUITE_LOCK=0 -> expected rc 0 got $rc4; output: $out4"
+fi
+
+# --------------------------------------------------------------------------
+# Case 4b -- an explicitly EMPTY expected identity refuses to signal.
+#
+# The timeout harvest can have a pid but no readable identity sidecar. That is
+# not enough authority to signal a possibly-recycled pid: rc 2 means the helper
+# sent neither its POSIX group/bare-pid signal nor the Windows fallback.
+# --------------------------------------------------------------------------
+echo "== Case 4b: empty identity refuses to signal =="
+empty_identity_result=$(
+  # shellcheck source=scripts/lib/proc-tree.sh
+  # shellcheck disable=SC1091  # runtime path; library is checked separately
+  . "$CI_DIR/../lib/proc-tree.sh"
+  signal_calls=0
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  kill() { signal_calls=$((signal_calls + 1)); }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  taskkill() { signal_calls=$((signal_calls + 1)); }
+  terminate_rc=0
+  proc_tree_terminate 4242 0 "" || terminate_rc=$?
+  printf '%s:%s\n' "$terminate_rc" "$signal_calls"
+)
+if [ "$empty_identity_result" = "2:0" ]; then
+  pass "empty identity -> rc 2, no signal sent"
+else
+  fail "empty identity -> expected rc 2 and zero signals, got $empty_identity_result"
+fi
+
+# --------------------------------------------------------------------------
+# Case 4c -- a guarded leader recycled during TERM grace is never targeted.
+#
+# The first identity check authorizes TERM for the original group. Before KILL,
+# the leader identity has changed: cleanup returns unverified without sending
+# KILL to either the recycled group id or the recycled bare pid.
+# --------------------------------------------------------------------------
+echo "== Case 4c: recycled guarded leader blocks KILL and bare-pid fallback =="
+recycled_identity_result=$(
+  # shellcheck source=scripts/lib/proc-tree.sh
+  # shellcheck disable=SC1091  # runtime path; library is checked separately
+  . "$CI_DIR/../lib/proc-tree.sh"
+  signal_log=''
+  identity_checks=0
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_process_identity_matches() {
+    identity_checks=$((identity_checks + 1))
+    [ "$identity_checks" -eq 1 ]
+  }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_group_alive() { return 0; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  kill() { signal_log="${signal_log}${1}:${2},"; return 0; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  sleep() { :; }
+  terminate_rc=0
+  proc_tree_terminate 4242 0 test-identity || terminate_rc=$?
+  printf '%s:%s\n' "$terminate_rc" "$signal_log"
+)
+if [ "$recycled_identity_result" = "2:-TERM:-4242," ]; then
+  pass "recycled guarded leader -> TERM only, rc 2, no KILL or bare-pid signal"
+else
+  fail "recycled guarded leader -> expected only group TERM then rc 2, got $recycled_identity_result"
+fi
+
+# A failed guarded group signal must not retry against the bare leader pid.
+guarded_fallback_result=$(
+  # shellcheck source=scripts/lib/proc-tree.sh
+  # shellcheck disable=SC1091  # runtime path; library is checked separately
+  . "$CI_DIR/../lib/proc-tree.sh"
+  signal_log=''
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_process_identity_matches() { return 0; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_group_alive() { return 0; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  kill() { signal_log="${signal_log}${1}:${2},"; return 1; }
+  terminate_rc=0
+  proc_tree_terminate 4242 0 test-identity || terminate_rc=$?
+  printf '%s:%s\n' "$terminate_rc" "$signal_log"
+)
+if [ "$guarded_fallback_result" = "2:-TERM:-4242," ]; then
+  pass "guarded group signal failure -> rc 2 without bare-pid fallback"
+else
+  fail "guarded group signal failure -> expected no bare-pid fallback, got $guarded_fallback_result"
+fi
+
+# A leader that exits during the grace does not revoke authority over member
+# identities captured before TERM. Escalate the still-matching child by pid,
+# never the now-unowned numeric group id.
+leader_exit_survivor_result=$(
+  # shellcheck source=scripts/lib/proc-tree.sh
+  # shellcheck disable=SC1091  # runtime path; library is checked separately
+  . "$CI_DIR/../lib/proc-tree.sh"
+  signal_log=''
+  leader_checks=0
+  alive_checks=0
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_group_members() { printf '%s\n' 4242 500; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_process_identity() { printf 'identity-%s\n' "$1"; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_process_identity_matches() {
+    if [ "$1" = "4242" ]; then
+      leader_checks=$((leader_checks + 1))
+      [ "$leader_checks" -eq 1 ]
+    else
+      [ "$1" = "500" ] && [ "$2" = "identity-500" ]
+    fi
+  }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_group_alive() {
+    alive_checks=$((alive_checks + 1))
+    [ "$alive_checks" -eq 1 ]
+  }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  kill() { signal_log="${signal_log}${1}:${2},"; return 0; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  sleep() { :; }
+  terminate_rc=0
+  proc_tree_terminate 4242 0 identity-4242 || terminate_rc=$?
+  printf '%s:%s\n' "$terminate_rc" "$signal_log"
+)
+if [ "$leader_exit_survivor_result" = "0:-TERM:-4242,-KILL:500," ]; then
+  pass "guarded leader exit -> KILL only the identity-verified survivor, rc 0"
+else
+  fail "guarded leader exit -> expected group TERM then verified survivor KILL, got $leader_exit_survivor_result"
+fi
+
+# --------------------------------------------------------------------------
+# Case 4d -- leader-exit cleanup revalidates every observed member.
+#
+# The numeric group id has no surviving ownership anchor after leader exit.
+# Snapshot member identities, signal only identity-matching pids, and return rc 2
+# rather than group-KILLing or taskkilling a member whose identity changed.
+# --------------------------------------------------------------------------
+echo "== Case 4d: leader-exit group sweep verifies each member identity =="
+group_member_identity_result=$(
+  # shellcheck source=scripts/lib/proc-tree.sh
+  # shellcheck disable=SC1091  # runtime path; library is checked separately
+  . "$CI_DIR/../lib/proc-tree.sh"
+  signal_log=''
+  identity_checks=0
+  taskkill_calls=0
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  proc_tree_group_alive() { return 0; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  proc_tree_group_members() { printf '%s\n' 500 501; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  proc_tree_process_identity() { printf 'identity-%s\n' "$1"; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  proc_tree_process_identity_matches() {
+    identity_checks=$((identity_checks + 1))
+    [ "$1" = "500" ]
+  }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  kill() { signal_log="${signal_log}${1}:${2},"; return 0; }
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_group_terminate
+  taskkill() { taskkill_calls=$((taskkill_calls + 1)); return 0; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  sleep() { :; }
+  terminate_rc=0
+  proc_tree_group_terminate 4242 0 || terminate_rc=$?
+  printf '%s:%s:%s:%s\n' "$terminate_rc" "$identity_checks" "$signal_log" "$taskkill_calls"
+)
+if [ "$group_member_identity_result" = "2:4:-TERM:500,-KILL:500,:0" ]; then
+  pass "leader-exit sweep -> per-member TERM/KILL validation, rc 2, no blind fallback"
+else
+  fail "leader-exit sweep -> expected only verified pid signals and rc 2, got $group_member_identity_result"
+fi
+
+# --------------------------------------------------------------------------
+# Case 4e -- a guarded leader that exits on TERM must not strand an ignoring
+# descendant. The guarded helper snapshots member identities before TERM, then
+# escalates only the still-matching survivor after the leader identity is gone.
+# --------------------------------------------------------------------------
+echo "== Case 4e: guarded leader exit escalates verified survivors =="
+sb4e=$(new_sandbox)
+cat > "$sb4e/leader.sh" <<'SHEOF'
+#!/usr/bin/env bash
+node -e 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)' &
+printf '%s\n' "$!" > "${HIMMEL_R13_CHILD_PID_FILE:?}"
+trap 'exit 0' TERM
+while :; do sleep 1; done
+SHEOF
+# shellcheck source=scripts/lib/proc-tree.sh
+# shellcheck disable=SC1091
+. "$CI_DIR/../lib/proc-tree.sh"
+set -m
+HIMMEL_R13_CHILD_PID_FILE="$sb4e/child.pid" bash "$sb4e/leader.sh" &
+leader4e=$!
+set +m
+waited4e=0
+while [ ! -s "$sb4e/child.pid" ] && kill -0 "$leader4e" 2>/dev/null && [ "$waited4e" -lt 50 ]; do
+  sleep 0.1
+  waited4e=$((waited4e + 1))
+done
+leader_identity4e=$(proc_tree_process_identity "$leader4e") || leader_identity4e=''
+terminate4e_rc=0
+proc_tree_terminate "$leader4e" 1 "$leader_identity4e" || terminate4e_rc=$?
+wait "$leader4e" 2>/dev/null || true
+child4e=$(cat "$sb4e/child.pid" 2>/dev/null || echo '')
+if [ "$terminate4e_rc" -eq 0 ]; then
+  pass "leader exits during TERM grace -> verified survivor cleanup returns rc 0"
+else
+  fail "leader exits during TERM grace -> expected cleanup rc 0 got $terminate4e_rc"
+fi
+if [ -n "$child4e" ] && ! kill -0 "$child4e" 2>/dev/null; then
+  pass "leader exits during TERM grace -> TERM-ignoring child is gone"
+else
+  fail "leader exits during TERM grace -> TERM-ignoring child survived (pid=${child4e:-missing})"
+  if [ -n "$child4e" ]; then
+    kill -9 "$child4e" 2>/dev/null || true
+    if command -v taskkill >/dev/null 2>&1; then
+      MSYS_NO_PATHCONV=1 taskkill /PID "$child4e" /T /F >/dev/null 2>&1 || true
+    fi
+  fi
 fi
 
 # --------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 // paths), run.log persistence from the returned tail, meta.json transitions.
 // Sessions live under <BRIDGE_ROOT>/glm-sessions/ — the live poller scans ONLY
 // <root>/sessions/, so nothing here can be double-spawned or Telegram-flushed.
-import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync, renameSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -712,6 +712,37 @@ export function detectPromptTooLong(tail: string): boolean {
   return /prompt is too long/i.test(tail);
 }
 
+type LiveMetaReplace = (tmpPath: string, metaPath: string, json: string) => void;
+
+// Publish live worker metadata atomically. If the replace fails, pid:0 is the
+// unsafe fallback: downstream census reads it as dead. Rewrite a loud,
+// explicitly-unprobeable running marker instead, so reconciliation and arming
+// fail toward POSSIBLY ALIVE until the terminal metadata write succeeds.
+export function writeLiveWorkerMeta(
+  metaPath: string,
+  runningMeta: Record<string, unknown>,
+  extra: Record<string, unknown>,
+  label: string,
+  replace: LiveMetaReplace = (tmpPath, destPath, json) => {
+    writeFileSync(tmpPath, json);
+    renameSync(tmpPath, destPath);
+  },
+): void {
+  const tmpPath = `${metaPath}.tmp-${process.pid}`;
+  try {
+    replace(tmpPath, metaPath, JSON.stringify({ ...runningMeta, ...extra }, null, 2));
+  } catch (e) {
+    console.error(`ERR ${label}: live meta.json update failed; worker liveness is unprobeable and must be treated as possibly alive: ${String((e as any)?.message ?? e)}`);
+    const marker = { ...runningMeta, ...extra, status: "running", pid_probe: "unprobeable" };
+    delete marker.pid;
+    try {
+      writeFileSync(tmpPath, JSON.stringify(marker, null, 2));
+      renameSync(tmpPath, metaPath);
+    } catch (markerError) { console.error(`ERR ${label}: could not write the unprobeable live-worker marker: ${String((markerError as any)?.message ?? markerError)}`); }
+    try { unlinkSync(tmpPath); } catch (_) {}
+  }
+}
+
 // The run-and-record step, extracted so the meta-transition contract is
 // testable with an injected runSession. meta.json ALWAYS leaves "running": the
 // success path writes finalMeta (done/failed/capped/blocked), and a thrown
@@ -751,12 +782,7 @@ export async function executeRun(deps: {
     // landing mid-truncate could see a partial object (e.g. started_at present,
     // last_output_at not yet written), which the stall check misreads as a
     // spurious STALLED on a healthy worker. rename() is atomic within a dir.
-    try {
-      const tmpPath = `${deps.metaPath}.tmp-${process.pid}`;
-      writeFileSync(tmpPath, JSON.stringify({ ...deps.runningMeta, ...extra }, null, 2));
-      renameSync(tmpPath, deps.metaPath);
-    }
-    catch (e) { console.error(`spawn-glm: live meta.json update failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
+    writeLiveWorkerMeta(deps.metaPath, deps.runningMeta, extra, "spawn-glm");
   };
   const observe: RunObserver = {
     onSpawn: (pid) => { livePid = pid; writeRunningMeta({ pid, last_output_at: new Date().toISOString() }); },
@@ -862,7 +888,10 @@ export async function runSharedDispatch(p: {
   repoDir: string; worktree: string; branch: string; needsWorktreeAdd: boolean;
   lockScript: string; gitAdd: () => void; runBody: () => Promise<number>;
 }): Promise<{ ok: true; code: number } | { ok: false; reason: string }> {
-  const acquire = Bun.spawnSync([BASH_BIN, p.lockScript, "acquire", p.repoDir, p.branch, "glm"], { stdout: "pipe", stderr: "pipe" });
+  const acquire = Bun.spawnSync([BASH_BIN, p.lockScript, "acquire", p.repoDir, p.branch, "glm"], {
+    stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, SHARED_BRANCH_LOCK_HOLDER_PID: String(process.pid) },
+  });
   if (acquire.exitCode !== 0) return { ok: false, reason: acquire.stderr.toString().trim() || `spawn-glm: shared-branch-lock acquire failed (rc=${acquire.exitCode})` };
   let priorPushUrl: string | undefined;
   // CR round 2 F5: only true once poisonPushUrl has actually completed — gates

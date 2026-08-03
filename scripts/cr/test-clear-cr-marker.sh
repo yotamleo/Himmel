@@ -8,6 +8,14 @@
 # fixed paths under the temp repo's own .git, exactly as the real ones resolve.
 set -uo pipefail
 
+# HIMMEL-1495 — an --automerge-armed launching shell carries ARMAUTOMERGE=1 +
+# CR_MERGE_GATE_OK=1 by design; an ambient value in the operator's shell must
+# not decide the result (the 34e/34f precedent in test-check-ci.sh,
+# generalized). clear-cr-marker.sh does not consult either var today, so this
+# is defense-in-depth for the day a sourced lib reads one — the canary case
+# below pins today's insensitivity.
+unset ARMAUTOMERGE CR_MERGE_GATE_OK
+
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
 # `set -o pipefail`: grep -q exits the instant it matches, the producer
@@ -959,6 +967,22 @@ if grepq "$help_out" 'set -uo pipefail'; then
 else
     pass
 fi
+
+# HIMMEL-1495 hermeticity canary. clear-cr-marker.sh does not consult the
+# armed-session bypass env (ARMAUTOMERGE/CR_MERGE_GATE_OK), so a block fixture
+# STILL blocks (exit 13, stale marker) with both exported into the suite's env
+# — pinning that insensitivity so a future change wiring either var into the
+# clear chokepoint fails HERE (clears an unreviewed marker) rather than failing
+# open. The startup unset above is the matching defense-in-depth.
+export ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1
+make_repo
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "later work") >/dev/null 2>&1
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 13 "armed bypass env does not clear a stale marker (HIMMEL-1495)"
+if marker_exists "$tmp"; then pass; else fail "armed-env stale marker: marker must REMAIN"; fi
+rm -rf "$tmp"
+unset ARMAUTOMERGE CR_MERGE_GATE_OK
 
 echo
 echo "clear-cr-marker: $PASS passed, $FAIL failed"

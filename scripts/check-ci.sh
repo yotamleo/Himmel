@@ -476,6 +476,23 @@ review_state_gate
 #
 # Runs AFTER the watch + settle so the normal registration race resolves itself
 # in the window that already exists; only a signal still missing by then fails.
+_cr_panel_carries_absent_signal() {
+    local absent_signal="$1"
+    if _cr_panel_evidence=$(cr_ledger_carries_gate "$head0"); then
+        case "$absent_signal" in
+            rate-limited)
+                # Preserve the HIMMEL-1465 audit line byte-for-byte.
+                echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num; the critic panel carries the gate ($_cr_panel_evidence) — not failing the verdict on the App (HIMMEL-1465)." ;;
+            review-object)
+                echo "check-ci: review object absent at head $head0 of PR #$num; threads resolved; panel carries — HIMMEL-1502/1506 ($_cr_panel_evidence)." ;;
+            *)
+                echo "check-ci: CodeRabbit $absent_signal on head $head0 of PR #$num; the critic panel carries the gate ($_cr_panel_evidence) — not failing the verdict on the absent App signal (HIMMEL-1506)." ;;
+        esac
+        return 0
+    fi
+    return 1
+}
+
 cr_signal_gate() {
     # Availability gate (HIMMEL-1125): no CodeRabbit App on this repo -> no-op.
     # Silent on purpose — an adopter without CodeRabbit must not notice that a
@@ -517,35 +534,33 @@ cr_signal_gate() {
             # had looked at (reproduced on PR #1429, 2026-07-27). Actionable
             # rather than merely closed: the operator's next move is one comment.
             #
-            # HIMMEL-1465: cr_signal_state collapses EVERY decline wording to
-            # `skipped`, but only the RATE-LIMITED one is panel-carriable. Read
-            # the description and, when (and ONLY when) it is the rate-limit
-            # shape, consult the CR ledger the same way clear-cr-marker.sh does:
-            # a CLEAN critic panel (>=1 `avail ... ok`, no blocking finding) at
-            # THIS head carries the gate (operator standing rule), so the
-            # rate-limited App does not fail the verdict. Any other skip wording
-            # — auto-reviews-disabled, or a decline CodeRabbit invents later —
-            # keeps failing closed exactly as before. Evidence-gated and
-            # fail-closed: no clean panel => current exit-2 behaviour stands.
-            local rl_desc rl_low rl_panel
-            if rl_desc=$(cr_signal_description "$owner" "$repo" "$head0"); then
-                rl_low=$(printf '%s' "$rl_desc" | tr '[:upper:]' '[:lower:]')
+            # HIMMEL-1506: every skip-classified description means the App's
+            # review signal is absent. A CLEAN critic panel (>=1 `avail ... ok`,
+            # no blocking finding) at THIS exact head carries each shape; absent
+            # or dirty evidence keeps the existing fail-closed verdict/message.
+            local skip_desc skip_low
+            if skip_desc=$(cr_signal_description "$owner" "$repo" "$head0"); then
+                skip_low=$(printf '%s' "$skip_desc" | tr '[:upper:]' '[:lower:]')
             else
+                if _cr_panel_carries_absent_signal "description is unreadable"; then return 0; fi
                 echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num and its description could not be read to tell rate-limiting from a disabled review — cannot evaluate the panel-carried allowance; re-run. If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
                 exit 2
             fi
             # Rate-limit vocabulary (mirrors cr-signal.sh's _CRS_SKIP_RE
             # `rate.?limit` arm): "rate limit" / "rate-limit" / "ratelimit".
-            case "$rl_low" in
+            case "$skip_low" in
                 *rate?limit*|*ratelimit*)
-                    if rl_panel=$(cr_ledger_carries_gate "$head0"); then
-                        echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num; the critic panel carries the gate ($rl_panel) — not failing the verdict on the App (HIMMEL-1465)."
-                        return 0
-                    fi
-                    echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $rl_panel) — a rate-limited App with no clean panel is not a green one. Wait for the App's limit to reset, or run /pr-check on this HEAD so a panel reviews it. Bypass: CR_APP=0 (or CR_PROFILE=none)." >&2
+                    if _cr_panel_carries_absent_signal "rate-limited"; then return 0; fi
+                    echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $_cr_panel_evidence) — a rate-limited App with no clean panel is not a green one. Wait for the App's limit to reset, or run /pr-check on this HEAD so a panel reviews it. Bypass: CR_APP=0 (or CR_PROFILE=none)." >&2
                     exit 2 ;;
+                '')
+                    if _cr_panel_carries_absent_signal "description is absent"; then return 0; fi ;;
+                *automatic*reviews*disabled*)
+                    if _cr_panel_carries_absent_signal "reports automatic reviews are disabled"; then return 0; fi ;;
+                *)
+                    if _cr_panel_carries_absent_signal "posted skip-classified wording"; then return 0; fi ;;
             esac
-            echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num — it posted state=success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-run), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop, and note the CLI lane 'bash scripts/cr/coderabbit-review.sh --branch <b> --base main' is a separate, independently-limited path). If CodeRabbit has simply renamed its success wording, widen the allow-list for one run with CR_OK_DESC_RE='^(review completed|no review changes requested|<new wording>)\$' — CR_OK_DESC_RE REPLACES the default, so carry BOTH default alternatives or you narrow it instead of widening it, and KEEP the ^(...)\$ anchors or a decline description merely containing one of these phrases (e.g. 'No review completed') passes as clean again (HIMMEL-1354 R2). If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
+            echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num — it posted state=success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-run), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop, and note the CLI lane 'bash scripts/cr/coderabbit-review.sh --branch <b> --base main' is a separate, independently-limited path). A clean exact-head critic panel carries every skip-classified state (HIMMEL-1506) — run /pr-check on this HEAD if no panel evidence exists yet. If CodeRabbit merely RENAMED its success wording (an OK review misclassified as a skip), widen the OK allow-list for one run with CR_OK_DESC_RE — keep both default alternatives and the ^(...)\$ anchors (HIMMEL-1354 R2); the knob does NOT apply to genuine skip wordings. If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
             exit 2 ;;
         *)
             echo "check-ci: unrecognized CodeRabbit state '$state' on head $head0 — cannot evaluate the gate; re-run" >&2
@@ -685,6 +700,10 @@ cr_body_gate() {
     # full review. Default observers stay read-only and return rc 4; --escalate
     # opts into posting the command once and boundedly re-reading.
     if [ "$_cbg_prior_outside" -gt 0 ] && [ "$_cbg_head_reviews" -eq 0 ]; then
+        # review_state_gate already proved the thread set resolved immediately
+        # before this body read. Exact-head panel evidence may therefore carry
+        # this otherwise-only missing review-object signal (HIMMEL-1502/1506).
+        if [ "$_cbg_outside" -eq 0 ] && _cr_panel_carries_absent_signal "review-object"; then return 0; fi
         if [ "$ESCALATE" -eq 0 ]; then
             echo "check-ci: ${ctx}PR #$num had unresolved outside-diff findings at a prior head, but CodeRabbit's incremental pass posted no review object at current head $head0 — request @coderabbitai full review, then re-run" >&2
             exit 4

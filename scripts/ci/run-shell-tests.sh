@@ -151,8 +151,10 @@ gemini/test-invoke.sh                # needs the gemini-cli binary
 cr/test-hermes-critic.sh             # integration: needs the hermes runtime (no keys on CI) — VM e2e covers it
 handover/test-hop.sh                 # integration: needs a live 'claude' (--print relaunch) — VM e2e covers it
 handover/test-resume-armed.sh        # integration: needs the bun runtime + armed-resume flow — VM e2e covers it
+handover/test-arm-resume.sh          # timing-heavy Windows scheduler lifecycle suite exceeds the 180s hermetic runner cap; runnable individually, no VM e2e coverage
 luna/test-pipeline-cadence.sh        # integration: drives a live 'claude' (--settings fragment) — VM e2e covers it
 test-plugin-test.sh                  # integration: self-bootstraps a plugin's deps over npm/network — VM e2e covers it
+test-adopt.sh                        # timing-heavy full adoption matrix exceeds the 180s hermetic runner cap on Windows; runnable individually, no VM e2e coverage
 "
 
 # extra_skips accumulates paths added via --skip-extra flags.

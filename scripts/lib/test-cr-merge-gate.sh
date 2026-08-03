@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Tests for scripts/lib/cr-merge-gate.sh (HIMMEL-936). Hermetic: gh is stubbed.
 set -uo pipefail
+
+# HIMMEL-1495 — an --automerge-armed launching shell carries ARMAUTOMERGE=1 +
+# CR_MERGE_GATE_OK=1 by design; an ambient value in the operator's shell must
+# not decide the result (the 34e/34f precedent in test-check-ci.sh,
+# generalized). cr_merge_gate short-circuits to allow on CR_MERGE_GATE_OK=1
+# (cr-merge-gate.sh:166) before any gh call, so without this scrub every
+# block-case below inherits the bypass and reads rc 0.
+unset ARMAUTOMERGE CR_MERGE_GATE_OK
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -118,6 +127,22 @@ git -C "$TMP/repo" init --quiet >/dev/null 2>&1
 git -C "$TMP/repo" remote add origin https://github.com/o/r.git
 git -C "$TMP/repo" config --local himmel.coderabbit true
 cd "$TMP/repo" || { echo "FATAL: cannot cd to the test repo"; exit 1; }
+
+# HIMMEL-1495 hermeticity probe — when this suite re-execs itself under the
+# armed bypass env (see the guard at the end), short-circuit here: the startup
+# unset has already scrubbed ARMAUTOMERGE/CR_MERGE_GATE_OK, so a block fixture
+# must STILL block. Exit 0 = scrub held (rc EXACTLY 2, the block code); any
+# other rc — 0 = the bypass leaked and cr_merge_gate failed open, else = a
+# broken fixture/gate — exits 1 so an errored probe can never falsely validate
+# the guard. Keeps the reinvoked copy to ONE gate call.
+if [ "${HIMMEL_1495_SELF:-0}" = "1" ]; then
+    export GH_STUB_LOG="$TMP/armed-probe.log"; : > "$GH_STUB_LOG"
+    export GH_STUB_MODE=unresolved
+    probe_rc=0
+    cr_merge_gate 42 o/r >/dev/null 2>&1 || probe_rc=$?
+    [ "$probe_rc" = "2" ] || exit 1
+    exit 0
+fi
 
 t() { # t <name> <expected-rc> — runs cr_merge_gate 42 o/r with current env
   local name="$1" want="$2" rc=0
@@ -353,6 +378,21 @@ grep -qi "unresolved" "$TMP/out-unresolved-cr-thread-blocks" || { echo "FAIL blo
 # degradation notes land on stderr on both fail-open shapes
 grep -qi "degraded" "$TMP/err-gh-error-selector-unresolvable" || { echo "FAIL degradation note missing (rc3)"; fail=$((fail+1)); }
 grep -qi "degraded" "$TMP/err-downstream-api-error-fails-open" || { echo "FAIL degradation note missing (rc0)"; fail=$((fail+1)); }
+
+# HIMMEL-1495 hermeticity guard — prove the startup scrub holds. Re-run this
+# whole suite in a subprocess EXPORTING the exact armed bypass env an
+# --automerge-armed shell carries; the reinvoked copy's own startup unset must
+# neutralize it, so its block-cases still block and it exits 0. Remove the
+# startup `unset ARMAUTOMERGE CR_MERGE_GATE_OK` and this reinvocation instead
+# fails its block-cases (rc 0) and exits non-zero. Recursion-safe: the sentinel
+# suppresses the guard in the reinvoked copy.
+if [ "${HIMMEL_1495_SELF:-0}" != "1" ]; then
+    if CR_MERGE_GATE_OK=1 ARMAUTOMERGE=1 HIMMEL_1495_SELF=1 bash "$SCRIPT_DIR/test-cr-merge-gate.sh" >"$TMP/armed.log" 2>&1; then
+        pass=$((pass+1)); echo "ok   hermetic-to-armed-env (self-reinvoke exits 0)"
+    else
+        fail=$((fail+1)); echo "FAIL hermetic-to-armed-env (startup scrub missing?)"; sed 's/^/  armed: /' "$TMP/armed.log"
+    fi
+fi
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -13,6 +13,13 @@
 # the real scheduler, the real cache, or the real ledger.
 set -u -o pipefail
 
+# Exercise the shipped watchdog defaults, not operator/lane overrides inherited
+# from the session running this suite.
+unset ANTHROPIC_BASE_URL HERMES_ENGINE CODEX_ADAPTER CODEX_THREAD_ID
+unset AUTO_ARM_DISABLE AUTO_ARM_THRESHOLD AUTO_ARM_CACHE AUTO_ARM_STATE_DIR
+unset AUTO_ARM_CHECK_INTERVAL AUTO_ARM_MAX_CACHE_AGE AUTO_ARM_MAX_ARM_FAILURES
+unset AUTO_ARM_STALE_ESCALATE_AGE AUTO_ARM_STALE_MIN_CHECKS AUTO_ARM_BIN
+
 HOOK="$(cd "$(dirname "$0")" && pwd)/auto-arm-on-cap.sh"
 # Repo root, so an out-of-tree baseline copy (T24) still resolves the hook's
 # sibling libs via the hook's $CLAUDE_PROJECT_DIR/scripts/lib fallback.
