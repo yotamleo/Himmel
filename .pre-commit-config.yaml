@@ -252,7 +252,7 @@ repos:
         stages: [pre-push]
 
       - id: conventional-commit-msg
-        name: Conventional commit message + optional HIMMEL-N
+        name: Conventional commit message + ticket ID (strict when TICKET_ID_REQUIRED=1, HIMMEL-1483)
         language: system
         entry: bash scripts/hooks/check-commit-msg.sh
         pass_filenames: false

@@ -50,6 +50,13 @@
 #                      (with --dedup-any, any existing HIMMEL-Resume job).
 #                      Default refuses (rc=3) — explicit opt-in only.
 #                      Also bypasses the time-collision check (HIMMEL-407).
+#   --long-gap         Sanction an explicit HH:MM more than 60 min out
+#                      (HIMMEL-1475). Default REFUSES (rc=9) a far park so a
+#                      long wait is an explicit choice, not a silent default
+#                      (ALWAYS-CONTINUE: an orchestrator leg arms <=30-60 min
+#                      out while work remains). Automated safety arms
+#                      (ARM_RESUME_SAFETY_ARM=1) and the smart/auto sentinels
+#                      are exempt.
 #   --dedup-any        Dedup against ANY HIMMEL-Resume job, not just this
 #                      handover's (HIMMEL-340 safety-arm semantics).
 #   --dry-run          Print what would be scheduled, touch nothing.
@@ -61,6 +68,11 @@
 #                           that trigger a WARN (default 5). An exact-minute
 #                           match always refuses (rc=6) unless --force.
 #   ARM_COLLISION_WINDOW    Test seam: overrides COLLISION_WINDOW_MINUTES.
+#   ARM_RESUME_SAFETY_ARM   Internal signal (=1) marking an automated
+#                           machine-wide SAFETY arm (auto-arm-on-cap.sh,
+#                           spawn-glm cap-respawn) so the HIMMEL-1475 long-gap
+#                           guard exempts it. NOT a public flag: set only by
+#                           the in-repo automated callers in their child env.
 #   ARM_NAME_TEMPLATE       Naming template for the derived session identity
 #                           (HIMMEL-716): placeholders {ticket} {slug}
 #                           {session}. Unset = the built-in ticket-first
@@ -94,6 +106,11 @@
 #      this script also prunes ITS OWN host's prior records for the same
 #      handover on every re-arm, so neither a fired arm nor a superseded
 #      re-arm blocks a later cross-host arm forever.
+#   9  long-gap refused — an explicit --time HH:MM more than 60 min out
+#      without --long-gap (HIMMEL-1475). Pass --long-gap to sanction an
+#      overnight/idle wait, or pick a nearer --time. Automated safety arms
+#      (ARM_RESUME_SAFETY_ARM=1) are exempt; smart/auto sentinels are exempt
+#      by design.
 set -euo pipefail
 
 RESUME_TIME=""
@@ -106,6 +123,7 @@ DEDUP_ANY=0
 WORKTREE_BRANCH=""
 WSL_DISTRO=""
 AUTOMERGE=0
+LONG_GAP=0
 
 # Local HH:MM from an epoch (armored python3 — portable, no GNU `date -d`;
 # capture via file so a wedged Store stub can't hang the $() call sites).
@@ -113,7 +131,7 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--dedup-any] [--dry-run] [--automerge]
+Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
@@ -169,6 +187,11 @@ Optional:
                      interpreted as an in-distro path.
   --force            Replace the existing same-handover HIMMEL-Resume job;
                      also bypasses the time-collision check (HIMMEL-407).
+  --long-gap         Sanction an explicit --time HH:MM more than 60 min out
+                     (HIMMEL-1475). Default REFUSES (rc=9) a far park so a long
+                     wait is an explicit choice (ALWAYS-CONTINUE: arm <=30-60
+                     min out while work remains). Safety arms
+                     (ARM_RESUME_SAFETY_ARM=1) and smart/auto are exempt.
   --dedup-any        Dedup against ANY HIMMEL-Resume job, not just this
                      handover's: arm only if NO resume slot exists at all.
                      The safety-arm semantics the auto-arm watchdogs use so
@@ -188,6 +211,11 @@ Env:
                           fire time that trigger a near-collision WARN (default
                           5). An exact-minute overlap always refuses (rc=6)
                           unless --force. Set ARM_COLLISION_WINDOW in tests.
+  ARM_RESUME_SAFETY_ARM   Internal signal (=1) marking an automated
+                          machine-wide SAFETY arm (auto-arm-on-cap.sh,
+                          spawn-glm cap-respawn) so the HIMMEL-1475 long-gap
+                          guard exempts it. NOT a public flag — set only by the
+                          in-repo automated callers in their child env.
   ARM_NAME_TEMPLATE       Template for the derived session identity
                           (HIMMEL-716). Placeholders: {ticket} (inferred key),
                           {slug} (worktree/handover name-half), {session}
@@ -232,6 +260,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --force)       FORCE=1; shift ;;
+        --long-gap)    LONG_GAP=1; shift ;;
         --dedup-any)   DEDUP_ANY=1; shift ;;
         --dry-run)     DRY_RUN=1; shift ;;
         --automerge)   AUTOMERGE=1; shift ;;
@@ -522,13 +551,55 @@ now = datetime.now().astimezone()
 cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
 if cand <= now:          # time already passed today -> tomorrow
     cand += timedelta(days=1)
-print(int(cand.timestamp()), cand.strftime("%H:%M"), cand.strftime("%m/%d/%Y"), cand.strftime("%Y%m%d%H%M"))
+print(int(cand.timestamp()), cand.strftime("%H:%M"), cand.strftime("%m/%d/%Y"), cand.strftime("%Y%m%d%H%M"), int((cand - now).total_seconds()))
 ' "$RESUME_TIME" || {
             echo "ERR arm-resume: could not resolve --time $RESUME_TIME to an epoch (python3 failed/timed out)" >&2
             exit 2
         }
-        read -r TARGET_EPOCH RESUME_TIME START_DATE AT_STAMP <<<"$PY_ARMOR_OUT"
+        # 5th field is the gap in RAW SECONDS (HIMMEL-1475 CR-fix): a floored-
+        # to-minutes value made 60m01s-60m59s read as 60 and slip past a
+        # >60min check. The guard compares gap_sec > 3600 directly.
+        read -r TARGET_EPOCH RESUME_TIME START_DATE AT_STAMP _GAP_SEC <<<"$PY_ARMOR_OUT"
         _SCHED_FIELDS_DERIVED=1
+        # HIMMEL-1475 long-gap guard. An explicit HH:MM work arm parked more
+        # than 60 min out is a deliberate choice, not a default: the
+        # ALWAYS-CONTINUE directive says an orchestrator leg should arm
+        # <=30-60 min out while work remains (the original failure was a leg
+        # parking the chain 4 HOURS on operator-blocked items while
+        # independent work sat idle). Refuse (rc=9) unless the operator owns
+        # the choice with --long-gap (mirrors the --force dedup override).
+        # The gap is compared in RAW SECONDS (>3600), not floored minutes: a
+        # //60 floor made 60m01s-60m59s read as 60 and slip past a >60 check.
+        #
+        # EXEMPT — these are NOT explicit work-arm choices, so the guard does
+        # not target them:
+        #   * ARM_RESUME_SAFETY_ARM=1 marks an automated machine-wide SAFETY
+        #     arm (auto-arm-on-cap.sh's stale-cache escalation + spawn-glm's
+        #     cap-respawn both set it in their child env; those callers arm at
+        #     a multi-hour cap reset and cannot pass --long-gap). This is a
+        #     dedicated internal signal, NOT a public flag: --dedup-any is a
+        #     dedup-scope knob any caller can add, so it must NOT bypass the
+        #     guard (a far arm with only --dedup-any is still refused — LG5b).
+        #   * smart/auto are system-computed sentinels resolved in their own
+        #     branches above and never reach this HH:MM arm.
+        # Only an explicit per-handover work arm (the orchestrator's
+        # --time HH:MM) is guarded.
+        # The exemption is an EXACT string compare on literal "1" (CR-fix):
+        # a numeric `-ne 1` treats a non-numeric ambient value (e.g. "yes",
+        # "true", garbage) as a FAILED expression whose non-zero return makes
+        # the whole && chain false and SKIPS the refusal — the guard silently
+        # drops. Anything other than the literal "1" (unset, "0", junk) → the
+        # guard applies. See also the launch-body unset that prevents this var
+        # leaking into a resumed session (HIMMEL-1475).
+        if [ "${_GAP_SEC:-0}" -gt 3600 ] && [ "$LONG_GAP" -eq 0 ] && [ "${ARM_RESUME_SAFETY_ARM:-}" != "1" ]; then
+            _gh=$(( _GAP_SEC / 3600 )); _gm=$(( (_GAP_SEC % 3600) / 60 ))
+            {
+                echo "WARN arm-resume: arming ${_gh}h${_gm}m out ($RESUME_TIME) — is the queue actually empty? ALWAYS-CONTINUE directive says arm <=30-60 min while work remains."
+                echo "    Refusing without --long-gap (rc=9). A longer park is fine for an overnight/idle"
+                echo "    wait but must be an explicit choice — re-run with --long-gap, or pick a nearer --time."
+            } >&2
+            exit 9
+        fi
         ;;
 esac
 
@@ -2221,13 +2292,17 @@ _crontab_schedule() {
     # whatever env cron happened to run it under. `&&`, not `;`, so a failed
     # unset (should never happen) can't fall through to an ungated claude
     # launch outside the entry's `cd ... && $tail` gate.
-    local tail="unset ARMAUTOMERGE CR_MERGE_GATE_OK && ${q_automerge}claude ${q_name}$q_prompt $q_channels"
+    # HIMMEL-1475: also unset ARM_RESUME_SAFETY_ARM — a crontab entry fired by
+    # an automated safety arm (auto-arm-on-cap/spawn-glm set the var in their
+    # child env) must NOT hand the long-gap exemption to the resumed session,
+    # or a later far HH:MM arm it makes silently bypasses the guard.
+    local tail="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM && ${q_automerge}claude ${q_name}$q_prompt $q_channels"
     if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
         local q_hb q_log q_curl
         q_hb=$(printf '%q' "$HEADROOM_BIN")
         q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
         q_curl=$(printf '%q' "$HEADROOM_CURL")
-        tail="{ unset ARMAUTOMERGE CR_MERGE_GATE_OK; $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 ${q_automerge}claude ${q_name}$q_prompt $q_channels; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; ${q_automerge}claude ${q_name}$q_prompt $q_channels; fi; }"
+        tail="{ unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM; $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 ${q_automerge}claude ${q_name}$q_prompt $q_channels; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; ${q_automerge}claude ${q_name}$q_prompt $q_channels; fi; }"
     fi
     local q_flow_lib q_task q_note
     q_flow_lib=$(printf '%q' "$SCRIPT_DIR/../lib/flow-run-ledger.sh")
@@ -2479,8 +2554,10 @@ schedule_arm() {
                 # HIMMEL-1382 fix round: unset both vars first (defense against
                 # ambient carryover), THEN conditionally re-grant via the
                 # per-command prefix — same always-clear contract as the
-                # Windows/at/crontab launch bodies below.
-                wsl_command="cd $q_cwd && unset ARMAUTOMERGE CR_MERGE_GATE_OK && ${q_automerge}claude$q_name $q_prompt$q_channels"
+                # Windows/at/crontab launch bodies below. HIMMEL-1475: the same
+                # unset also drops ARM_RESUME_SAFETY_ARM so the resumed in-distro
+                # session does not inherit a leaked long-gap exemption.
+                wsl_command="cd $q_cwd && unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM && ${q_automerge}claude$q_name $q_prompt$q_channels"
                 # The composed command sits INSIDE the .bat line's double
                 # quotes, where CMD treats ^ as a LITERAL character —
                 # caret-escaping here reaches bash verbatim and shatters the
@@ -2660,8 +2737,13 @@ schedule_arm() {
                     # ambient ARMAUTOMERGE/CR_MERGE_GATE_OK through from
                     # whatever launched it -- the emitted text enforces its
                     # own contract regardless of ambient env.
+                    # HIMMEL-1475: clear ARM_RESUME_SAFETY_ARM too, for the same
+                    # reason and by symmetry with the POSIX launch bodies — the
+                    # fired .bat session must not inherit a leaked long-gap
+                    # exemption from the submitting safety-arm env.
                     printf 'set "ARMAUTOMERGE="\r\n'
                     printf 'set "CR_MERGE_GATE_OK="\r\n'
+                    printf 'set "ARM_RESUME_SAFETY_ARM="\r\n'
                     if [ "$AUTOMERGE" -eq 1 ]; then
                         printf 'set "ARMAUTOMERGE=1"\r\n'
                         printf 'set "CR_MERGE_GATE_OK=1"\r\n'
@@ -2954,15 +3036,20 @@ schedule_arm() {
                 # even when THIS arm's generated text sets neither. Unset both
                 # unconditionally as the first line of the job body so the
                 # emitted text — not the ambient env it was submitted from —
-                # is what governs.
-                local launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK
+                # is what governs. HIMMEL-1475: the same line also unsets
+                # ARM_RESUME_SAFETY_ARM — on Linux `at` snapshots the submitter
+                # env, so without this the RESUMED claude session inherits the
+                # sticky long-gap exemption from the safety arm that scheduled
+                # it, and every later far HH:MM arm it makes silently bypasses
+                # the guard.
+                local launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM
 ${q_automerge}claude ${q_name}$q_prompt $q_channels"
                 if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
                     local q_hb q_log q_curl
                     q_hb=$(printf '%q' "$HEADROOM_BIN")
                     q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
                     q_curl=$(printf '%q' "$HEADROOM_CURL")
-                    launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK
+                    launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM
 $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }
 if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then
     echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log
@@ -3072,7 +3159,7 @@ fi
 # Telemetry (HIMMEL-236): a successful arm IS the re-launch signal the
 # measure-during protocol wants — one append, after the dry-run gate so
 # --dry-run keeps its "touch nothing" contract.
-telemetry_emit handover-arm-resume armed "time=$RESUME_TIME" "force=$FORCE"
+telemetry_emit handover-arm-resume armed "time=$RESUME_TIME" "force=$FORCE" "long_gap=$LONG_GAP"
 
 # HIMMEL-856: record this arm in the cross-machine arms registry, same
 # dry-run gate as telemetry above. Best-effort -- a registry write failure

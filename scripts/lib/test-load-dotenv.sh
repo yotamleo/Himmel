@@ -110,6 +110,77 @@ assert_eq "T13 --root non-clobbering" "live" "$got"
 out=$( cd "$NONGIT" && unset HIMMEL_INITIATIVE && load_dotenv --root "$NONGIT" HIMMEL_INITIATIVE; rc=$?; printf '%s|%s' "${HIMMEL_INITIATIVE:-<unset>}" "$rc" )
 assert_eq "T14 --root no .env no-op" "<unset>|0" "$out"
 
+# ── _load_dotenv_primary_for (HIMMEL-1482): primary-checkout fallback for a ───
+# pinned --root — the claude-codex path. A launcher invoked from a worktree copy
+# of itself has <parent> = worktree root (no .env); the helper resolves the
+# primary and reads .env there. canonicalize() compares paths by their resolved
+# form (avoids macOS /tmp → /private/tmp and drive-form mismatches).
+canon() { ( cd "$1" 2>/dev/null && pwd ); }
+PFREPO="$TMP/pf-repo"; mkdir -p "$PFREPO"; git -C "$PFREPO" init --quiet
+git -C "$PFREPO" config user.email t@example.com
+git -C "$PFREPO" config user.name tester
+git -C "$PFREPO" commit --allow-empty -q -m init
+printf 'CLIPROXY_API_KEY=pk-from-primary\n' > "$PFREPO/.env"   # gitleaks:allow
+PFWT="$TMP/pf-wt"
+git -C "$PFREPO" worktree add -q "$PFWT" -b pf-branch
+
+# T15: candidate is a linked worktree with NO .env → resolves the PRIMARY (which
+# has .env), and emits exactly ONE advisory line to stderr.
+root=$( _load_dotenv_primary_for "$PFWT" 2>/dev/null )
+assert_eq "T15 worktree → primary root" "$(canon "$PFREPO")" "$(canon "$root")"
+adv=$( _load_dotenv_primary_for "$PFWT" 2>&1 1>/dev/null )
+case "$adv" in *"reading the primary checkout's .env"*) echo "PASS T15 advisory emitted" ;; *) echo "FAIL T15 advisory — got: $adv"; FAILED=$((FAILED + 1)) ;; esac
+
+# T16: candidate is the primary (has .env) → returned unchanged, NO advisory.
+assert_eq "T16 primary unchanged" "$(canon "$PFREPO")" "$(canon "$(_load_dotenv_primary_for "$PFREPO" 2>/dev/null)")"
+adv=$( _load_dotenv_primary_for "$PFREPO" 2>&1 1>/dev/null )
+if [ -z "$adv" ]; then echo "PASS T16 no advisory on primary"; else echo "FAIL T16 advisory leaked: $adv"; FAILED=$((FAILED + 1)); fi
+
+# T17: both missing (worktree AND primary have no .env) → returns the candidate
+# unchanged, NO advisory (the caller's missing-.env path applies — load_dotenv
+# no-ops, the key stays unset, the launcher's own error message surfaces).
+rm -f "$PFREPO/.env"
+root=$( _load_dotenv_primary_for "$PFWT" 2>/dev/null )
+assert_eq "T17 both-missing returns candidate" "$(canon "$PFWT")" "$(canon "$root")"
+adv=$( _load_dotenv_primary_for "$PFWT" 2>&1 1>/dev/null )
+if [ -z "$adv" ]; then echo "PASS T17 no advisory on both-missing"; else echo "FAIL T17 advisory leaked: $adv"; FAILED=$((FAILED + 1)); fi
+printf 'CLIPROXY_API_KEY=pk-from-primary\n' > "$PFREPO/.env"   # gitleaks:allow  (restore for T18)
+
+# T18: integration — load_dotenv --root <helper-resolved worktree> finds the key
+# in the PRIMARY .env (exactly what claude-codex does). Run from the worktree's
+# own cwd to prove --root + helper reaches the primary regardless of CWD.
+got=$( cd "$PFWT" && unset CLIPROXY_API_KEY && load_dotenv --root "$(_load_dotenv_primary_for "$PFWT")" CLIPROXY_API_KEY && printf '%s' "${CLIPROXY_API_KEY:-<unset>}" )
+assert_eq "T18 load_dotenv via helper finds primary key" "pk-from-primary" "$got"
+
+# T19: a non-git candidate dir → returned unchanged (git fails, no fallback, no
+# advisory) — hermetic tests that pin the root to a temp dir are unaffected.
+PFNONGIT="$TMP/pf-nongit"; mkdir -p "$PFNONGIT"
+assert_eq "T19 non-git returns candidate" "$(canon "$PFNONGIT")" "$(canon "$(_load_dotenv_primary_for "$PFNONGIT" 2>/dev/null)")"
+adv=$( _load_dotenv_primary_for "$PFNONGIT" 2>&1 1>/dev/null )
+if [ -z "$adv" ]; then echo "PASS T19 no advisory on non-git"; else echo "FAIL T19 advisory leaked: $adv"; FAILED=$((FAILED + 1)); fi
+
+# T20 (HIMMEL-1482 R2): a NESTED dir INSIDE a worktree (NOT the worktree root)
+# must NOT read the primary .env. A hermetically pinned root like
+# <worktree>/scripts resolves common-dir to the real .git and (under r1) differed
+# from the candidate → silently loaded the operator's .env. The candidate is not
+# the checkout root, so the fallback must NOT fire (primary .env still present).
+PFWTNEST="$PFWT/nested"; mkdir -p "$PFWTNEST"
+root=$( _load_dotenv_primary_for "$PFWTNEST" 2>/dev/null )
+assert_eq "T20 nested-in-worktree returns candidate" "$(canon "$PFWTNEST")" "$(canon "$root")"
+adv=$( _load_dotenv_primary_for "$PFWTNEST" 2>&1 1>/dev/null )
+if [ -z "$adv" ]; then echo "PASS T20 no advisory on nested-in-worktree"; else echo "FAIL T20 advisory leaked: $adv"; FAILED=$((FAILED + 1)); fi
+
+# T21 (HIMMEL-1482 R2): a NESTED dir INSIDE the primary checkout must NOT fall
+# back either — git-dir == git-common-dir here (primary checkout), so there is no
+# linked worktree to fall back from, and the candidate is not the toplevel.
+PFPRIMNEST="$PFREPO/nested"; mkdir -p "$PFPRIMNEST"
+root=$( _load_dotenv_primary_for "$PFPRIMNEST" 2>/dev/null )
+assert_eq "T21 nested-in-primary returns candidate" "$(canon "$PFPRIMNEST")" "$(canon "$root")"
+adv=$( _load_dotenv_primary_for "$PFPRIMNEST" 2>&1 1>/dev/null )
+if [ -z "$adv" ]; then echo "PASS T21 no advisory on nested-in-primary"; else echo "FAIL T21 advisory leaked: $adv"; FAILED=$((FAILED + 1)); fi
+
+git -C "$PFREPO" worktree remove --force "$PFWT" 2>/dev/null || true
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "All load-dotenv tests passed."

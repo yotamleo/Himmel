@@ -64,8 +64,14 @@ Stages currently wired:
   every `package.json` under `scripts/` needs a tracked, in-sync sibling
   lockfile), uv-lock-integrity, pip-hashes (requirements*.txt must use
   --generate-hashes).
-- **Commit-msg:** conventional-commit-msg (validates conventional format +
-  optional HIMMEL-N).
+- **Commit-msg / PR traceability (HIMMEL-1483):** conventional-commit-msg
+  validates conventional format and, when `TICKET_ID_REQUIRED=1`, requires a
+  ticket matching `TICKET_ID_PATTERN` or the derived `JIRA_PROJECT_KEY-N` form.
+  The gate defaults OFF for adopters; this repo enables it in checked-in CI
+  config. Merge/revert commits and the configurable comma-list
+  `TICKET_ID_EXEMPT_AUTHORS` (default `dependabot[bot],dependabot`) are exempt.
+  `propagate-public.sh ship/reship` defaults the same policy ON and checks the PR
+  title and/or commit file before any push or PR creation.
 - **Doc-guard (pre-commit + pre-push, himmel-dev only):** check-doc-guard
   (blocks ADDING a command/skill file without a matching update to
   `docs/commands-catalog.md`; gated behind `.himmel-dev` marker so adopters
@@ -1685,7 +1691,11 @@ A ticket (`^[A-Z][A-Z0-9]+-[0-9]+$`) resolves to a resume handover under
 `handover_root` (case-insensitive, `specs/` excluded, `type: handover` preferred,
 ambiguity refused — never silently picked); a path must exist and resolve **under**
 `handover_root`. The bridge shells `auto-action.sh` → `arm-resume.sh` (per-handover
-dedup; no `--force`/`--dedup-any` remotely).
+dedup; no `--force`/`--dedup-any` remotely). An explicit `at HH:MM` rides
+`--long-gap` — a HUMAN typing a far time on Telegram IS the explicit choice the
+HIMMEL-1475 long-gap guard exists to force (the guard targets the orchestrator
+silently defaulting to a far park, not a typed one); `smart`/`auto` keep the bare
+call (the guard exempts those sentinels by design).
 
 **Activation flag — `TELEGRAM_AUTO_ACTIONS` (default OFF, operator-only).** A per-op
 enable-list whose grammar **mirrors `HIMMEL_INITIATIVE`** (so users learn one

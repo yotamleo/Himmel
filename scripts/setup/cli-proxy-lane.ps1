@@ -50,7 +50,9 @@ param(
     [switch]$Stop,
     [switch]$Restart,
     [switch]$Force,
-    [switch]$Verify
+    [switch]$Verify,
+    [Parameter(DontShow = $true)]
+    [switch]$AsLibrary
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +77,9 @@ function Test-Running {
     # 200 = up + our key accepted; 401 = up but key rejected (still the proxy speaking HTTP).
     $c = Get-ProxyCode
     ($c -eq '200') -or ($c -eq '401')
+}
+function Test-Healthy {
+    (Get-ProxyCode) -eq '200'
 }
 function Assert-Exe {
     if (-not (Test-Path $Exe)) { throw "binary missing at $Exe - run with -Install first" }
@@ -143,8 +148,281 @@ function Start-ProxyBackground {
     }
 }
 
+function Wait-ProxyRunning([int]$TimeoutSeconds = 20, [switch]$RequireHealthy) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $running = if ($RequireHealthy) { Test-Healthy } else { Test-Running }
+        if ($running) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
+# Serialize the read/swap/recovery window with a held exclusive file handle.
+# Process death releases the handle automatically; metadata is diagnostic only.
+$script:ProxyInstallLockPath = $null
+$script:ProxyInstallLockHandle = $null
+$script:ProxyInstallLockDetail = ''
+
+function Get-ProxyInstallLockHost {
+    if ($env:COMPUTERNAME) { return $env:COMPUTERNAME }
+    try { return [System.Net.Dns]::GetHostName() } catch { return 'unknown' }
+}
+
+function Remove-ProxyInstallLock {
+    if (-not $script:ProxyInstallLockHandle) { return }
+    try {
+        $script:ProxyInstallLockHandle.Dispose()
+    } catch { }
+    $script:ProxyInstallLockHandle = $null
+    Remove-Item -LiteralPath $script:ProxyInstallLockPath -Force -ErrorAction SilentlyContinue
+}
+
+function Write-ProxyInstallLockOwner([System.IO.FileStream]$Handle) {
+    try {
+        $metadata = "pid=$PID`nhost=$(Get-ProxyInstallLockHost)`nstarted=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())`n"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($metadata)
+        $Handle.SetLength(0)
+        $Handle.Position = 0
+        $Handle.Write($bytes, 0, $bytes.Length)
+        $Handle.Flush()
+    } catch { }
+}
+
+function Enter-ProxyInstallLock([string]$Path) {
+    $script:ProxyInstallLockPath = $Path
+    $script:ProxyInstallLockHandle = $null
+    $script:ProxyInstallLockDetail = ''
+
+    try {
+        $script:ProxyInstallLockHandle = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+    } catch [System.IO.IOException] {
+        # FileShare.None makes owner metadata unreadable until the holder exits.
+        $script:ProxyInstallLockDetail = "another install already holds the lock (owner details unavailable while held) -- $Path"
+        return $false
+    } catch {
+        $script:ProxyInstallLockDetail = "could not acquire install lock at ${Path}: $($_.Exception.Message)"
+        return $false
+    }
+
+    Write-ProxyInstallLockOwner $script:ProxyInstallLockHandle
+    return $true
+}
+
+function Invoke-ProxyBinarySwap {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$VersionStamp,
+        [Parameter(Mandatory = $true)][string]$PinnedVersion,
+        [switch]$StopForSwap,
+        [switch]$RestartAfterSwap
+    )
+
+    # Stage both the candidate and rollback material beside the destination so
+    # existing files can be replaced atomically on the same volume. Nothing
+    # running is stopped until the candidate has been copied and validated.
+    $swapId = [guid]::NewGuid().ToString('N')
+    $stagedExe = "$Destination.$swapId.new"
+    $rollbackExe = "$Destination.$swapId.rollback"
+    $stagedStamp = "$VersionStamp.$swapId.new"
+    $rollbackStamp = "$VersionStamp.$swapId.rollback"
+    $hadDestination = Test-Path -LiteralPath $Destination
+    $hadVersionStamp = Test-Path -LiteralPath $VersionStamp
+    $restartAfterFailure = [bool]($StopForSwap -or $RestartAfterSwap)
+    $swapAttempted = $false
+    $candidateStartAttempted = $false
+    $retainRollbackArtifacts = $false
+
+    try {
+        Copy-Item -LiteralPath $Source -Destination $stagedExe -Force
+        $stagedInfo = Get-Item -LiteralPath $stagedExe
+        if ($stagedInfo.Length -le 0) { throw "staged cli-proxy-api.exe is empty" }
+
+        if ($hadDestination) {
+            Copy-Item -LiteralPath $Destination -Destination $rollbackExe -Force
+        }
+        if ($hadVersionStamp) {
+            Copy-Item -LiteralPath $VersionStamp -Destination $rollbackStamp -Force
+        }
+
+        if ($StopForSwap) {
+            Assert-BounceSafe
+            Write-Host "stopping cli-proxy-api to roll the pinned binary ..."
+            Stop-ProxyInstance | Out-Null
+        }
+
+        $swapAttempted = $true
+        if ($hadDestination) {
+            [System.IO.File]::Replace($stagedExe, $Destination, [System.Management.Automation.Language.NullString]::Value)
+        } else {
+            Move-Item -LiteralPath $stagedExe -Destination $Destination -Force
+        }
+        Set-Content -LiteralPath $stagedStamp -Value $PinnedVersion
+        if ($hadVersionStamp) {
+            [System.IO.File]::Replace($stagedStamp, $VersionStamp, [System.Management.Automation.Language.NullString]::Value)
+        } else {
+            Move-Item -LiteralPath $stagedStamp -Destination $VersionStamp -Force
+        }
+
+        if ($RestartAfterSwap) {
+            Write-Host "relaunching proxy (windowless) ..."
+            $candidateStartAttempted = $true
+            Start-ProxyBackground
+            if (-not (Wait-ProxyRunning -RequireHealthy)) {
+                throw "candidate deployment failed: proxy did not come up healthy on 127.0.0.1:$Port within 20s"
+            }
+            Write-Host "proxy back up on 127.0.0.1:$Port."
+        }
+    } catch {
+        $installFailure = $_
+        $recoveryFailures = @()
+        $restorationFailed = $false
+
+        if ($candidateStartAttempted -and (Get-ProxyProcess)) {
+            try {
+                Stop-ProxyInstance | Out-Null
+            } catch {
+                $recoveryFailures += "candidate stop failed: $($_.Exception.Message)"
+            }
+        }
+        if ($swapAttempted) {
+            try {
+                if ($hadDestination) {
+                    if (-not (Test-Path -LiteralPath $rollbackExe)) {
+                        throw "rollback executable is missing: $rollbackExe"
+                    }
+                    if (Test-Path -LiteralPath $Destination) {
+                        [System.IO.File]::Replace($rollbackExe, $Destination, [System.Management.Automation.Language.NullString]::Value)
+                    } else {
+                        Move-Item -LiteralPath $rollbackExe -Destination $Destination -Force
+                    }
+                } else {
+                    Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                $restorationFailed = $true
+                $recoveryFailures += "executable rollback failed: $($_.Exception.Message)"
+            }
+
+            try {
+                if ($hadVersionStamp) {
+                    if (-not (Test-Path -LiteralPath $rollbackStamp)) {
+                        throw "rollback version stamp is missing: $rollbackStamp"
+                    }
+                    if (Test-Path -LiteralPath $VersionStamp) {
+                        [System.IO.File]::Replace($rollbackStamp, $VersionStamp, [System.Management.Automation.Language.NullString]::Value)
+                    } else {
+                        Move-Item -LiteralPath $rollbackStamp -Destination $VersionStamp -Force
+                    }
+                } else {
+                    Remove-Item -LiteralPath $VersionStamp -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                $restorationFailed = $true
+                $stampRollbackFailure = $_.Exception.Message
+                try {
+                    if (Test-Path -LiteralPath $VersionStamp) {
+                        Remove-Item -LiteralPath $VersionStamp -Force -ErrorAction Stop
+                    }
+                    $recoveryFailures += "version stamp rollback failed: $stampRollbackFailure; live version stamp invalidated: $VersionStamp"
+                } catch {
+                    $recoveryFailures += "version stamp rollback failed: $stampRollbackFailure; live version stamp invalidation failed: $($_.Exception.Message)"
+                }
+            }
+        }
+
+        if ($restartAfterFailure -and -not (Get-ProxyProcess)) {
+            $destinationUsable = $false
+            try {
+                $destinationUsable = (Test-Path -LiteralPath $Destination) -and ((Get-Item -LiteralPath $Destination).Length -gt 0)
+            } catch {
+                $recoveryFailures += "could not validate executable before proxy restart: $($_.Exception.Message)"
+            }
+            if ($destinationUsable) {
+                try {
+                    Start-ProxyBackground
+                    if (-not (Wait-ProxyRunning -RequireHealthy)) {
+                        throw "proxy did not come up healthy on 127.0.0.1:$Port within 20s"
+                    }
+                } catch {
+                    $recoveryFailures += "proxy restart failed: $($_.Exception.Message)"
+                }
+            } else {
+                $recoveryFailures += "proxy restart skipped because no usable executable exists at $Destination"
+            }
+        }
+
+        if ($recoveryFailures.Count -gt 0) {
+            $message = "install failed: $($installFailure.Exception.Message); recovery failed: $($recoveryFailures -join '; ')"
+            if ($restorationFailed) {
+                $retainRollbackArtifacts = $true
+                $retainedPaths = @($rollbackExe, $rollbackStamp) | Where-Object { Test-Path -LiteralPath $_ }
+                if (@($retainedPaths).Count -gt 0) {
+                    $message += "; rollback artifacts retained: $($retainedPaths -join ', ')"
+                }
+            }
+            throw $message
+        }
+        throw $installFailure
+    } finally {
+        Remove-Item -LiteralPath $stagedExe, $stagedStamp -Force -ErrorAction SilentlyContinue
+        if (-not $retainRollbackArtifacts) {
+            Remove-Item -LiteralPath $rollbackExe, $rollbackStamp -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Install-ProxyBinary {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$VersionStamp,
+        [Parameter(Mandatory = $true)][string]$PinnedVersion,
+        [switch]$StopForSwap,
+        [switch]$RestartAfterSwap
+    )
+
+    $lockPath = "$Destination.install.lock"
+    if (-not (Enter-ProxyInstallLock $lockPath)) {
+        $exception = [System.InvalidOperationException]::new("cli-proxy install refused: $script:ProxyInstallLockDetail")
+        $exception.Data['ExitCode'] = 3
+        throw $exception
+    }
+
+    try {
+        Invoke-ProxyBinarySwap @PSBoundParameters
+    } finally {
+        Remove-ProxyInstallLock
+    }
+}
+
+if ($AsLibrary) { return }
+
+$restartCompletedDuringInstall = $false
+
 if ($Install) {
     New-Item -ItemType Directory -Force $Dir | Out-Null
+    if (-not (Test-Path $Cfg)) {
+        # host 127.0.0.1 ONLY: the default empty host binds ALL interfaces, which
+        # would LAN-expose the OAuth-wrapped subscription endpoint.
+        $yaml = @"
+host: "127.0.0.1"
+port: $Port
+auth-dir: "~/.cli-proxy-api"
+api-keys:
+  - "$ApiKey"
+"@
+        [System.IO.File]::WriteAllText($Cfg, $yaml, (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "wrote config: $Cfg"
+    } else {
+        Write-Host "config already present: $Cfg"
+    }
     # Version stamp makes -Install pin-aware (CR r1 codex-1, HIMMEL-1451): a
     # bare exe-exists check would skip the download forever, so bumping $Version
     # could never roll an existing install and the drift-row's documented
@@ -156,14 +434,15 @@ if ($Install) {
     if ((-not (Test-Path $Exe)) -or ($installedVer -ne $Version)) {
         # Windows locks a running exe - the pinned swap cannot land over a live
         # instance, so a combined -Install -Restart (or -Install -Stop) stops the
-        # proxy in THIS invocation and the later $Restart/$Stop block then finds
-        # nothing to stop (HIMMEL-1451 r3). The stop is DEFERRED until just before
-        # Copy-Item (HIMMEL-1468): it used to run BEFORE the download, so a
+        # proxy in THIS invocation. -Restart validates the candidate before the
+        # transaction ends; the later $Stop block finds nothing to stop. The stop
+        # is DEFERRED until just before
+        # the atomic swap (HIMMEL-1468): it used to run BEFORE the download, so a
         # download/extract failure left the proxy DOWN until manual recovery. Now
         # the temp download/extract resolves first and the running instance is
-        # touched only once the new binary is staged, shrinking the downtime
-        # window to the Copy-Item itself; any failure above this point leaves the
-        # old binary serving.
+        # touched only once the new binary and rollback copy are staged, shrinking
+        # the downtime window to the same-volume Move-Item; any failure above this
+        # point leaves the old binary serving.
         $stopForSwap = $false
         if ((Test-Path $Exe) -and (Get-ProxyProcess)) {
             if ($Restart -or $Stop) {
@@ -186,34 +465,23 @@ if ($Install) {
             Expand-Archive -Force $zip $tmp
             $src = Get-ChildItem -Recurse $tmp -Filter 'cli-proxy-api.exe' | Select-Object -First 1 -ExpandProperty FullName
             if (-not $src) { throw "cli-proxy-api.exe not found in release archive" }
-            if ($stopForSwap) {
-                Assert-BounceSafe   # -Force still overrides the live-client refusal
-                Write-Host "stopping cli-proxy-api to roll the pinned binary ..."
-                Stop-ProxyInstance | Out-Null
+            try {
+                $restartAfterSwap = [bool]$Restart
+                Install-ProxyBinary -Source $src -Destination $Exe -VersionStamp $VerStamp -PinnedVersion $Version -StopForSwap:$stopForSwap -RestartAfterSwap:$restartAfterSwap
+                $restartCompletedDuringInstall = $restartAfterSwap
+            } catch {
+                if ($_.Exception.Data['ExitCode'] -eq 3) {
+                    Write-Error $_.Exception.Message -ErrorAction Continue
+                    exit 3
+                }
+                throw
             }
-            Copy-Item $src $Exe -Force
-            Set-Content -Path $VerStamp -Value $Version
             Write-Host "installed binary: $Exe (v$Version)"
         } finally {
             Remove-Item -Recurse -Force $tmp, $zip -ErrorAction SilentlyContinue
         }
     } else {
         Write-Host "binary already present at pinned v${Version}: $Exe"
-    }
-    if (-not (Test-Path $Cfg)) {
-        # host 127.0.0.1 ONLY: the default empty host binds ALL interfaces, which
-        # would LAN-expose the OAuth-wrapped subscription endpoint.
-        $yaml = @"
-host: "127.0.0.1"
-port: $Port
-auth-dir: "~/.cli-proxy-api"
-api-keys:
-  - "$ApiKey"
-"@
-        [System.IO.File]::WriteAllText($Cfg, $yaml, (New-Object System.Text.UTF8Encoding $false))
-        Write-Host "wrote config: $Cfg"
-    } else {
-        Write-Host "config already present: $Cfg"
     }
 }
 
@@ -266,7 +534,7 @@ if ($Stop) {
     }
 }
 
-if ($Restart) {
+if ($Restart -and -not $restartCompletedDuringInstall) {
     Assert-Exe; Assert-Config
     Assert-BounceSafe
     if (Get-ProxyProcess) {
@@ -276,13 +544,7 @@ if ($Restart) {
     Write-Host "relaunching proxy (windowless) ..."
     Start-ProxyBackground
     # Verify /v1/models answers (200 = up + key accepted; 401 = up, key rejected).
-    $deadline = (Get-Date).AddSeconds(20)
-    $up = $false
-    while ((Get-Date) -lt $deadline) {
-        if (Test-Running) { $up = $true; break }
-        Start-Sleep -Milliseconds 500
-    }
-    if (-not $up) {
+    if (-not (Wait-ProxyRunning)) {
         throw "proxy did not come up on 127.0.0.1:$Port within 20s (run -Verify, or -Start in the foreground to see the error)"
     }
     Write-Host "proxy back up on 127.0.0.1:$Port."

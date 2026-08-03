@@ -38,12 +38,13 @@ operator's user-scope `~/.claude/CLAUDE.md`. Use judgement on trivial tasks.
 ### Git workflow
 - All feature work in git worktrees. Never commit directly to main.
 - All changes via PR. No direct pushes to main. PRs need ≥1 approval before merge.
-- Conventional commits; the `commit-msg` gate validates the shape plus an
-  optional `HIMMEL-N` ticket ID.
-- **Every private-repo PR carries a Jira ticket** (operator, 2026-07-16).
-  Retro-filing is fine — the ticket may be created after the work started —
-  but the PR must reference one (title and/or commits) before merge. Search
-  Jira first; extend an existing ticket rather than re-filing.
+- Conventional commits; the `commit-msg` + CI range gates require a ticket ID
+  for every non-exempt commit (`JIRA_PROJECT_KEY-N`, or `TICKET_ID_PATTERN`).
+- **Every private and public PR carries a ticket** (operator, 2026-07-16;
+  structurally enforced by HIMMEL-1483). Retro-filing is fine — the ticket may
+  be created after the work started — but commit/public-propagation gates block
+  untraceable changes. Search Jira first; extend an existing ticket rather than
+  re-filing.
 - Pre-push gates need attestation trailers (`Platforms tested: <os>` on
   shell/script diffs; `Security reviewed: <token>` on non-docs code) in the
   **FIRST commit** after genuinely testing + reviewing. Recovery when a gate

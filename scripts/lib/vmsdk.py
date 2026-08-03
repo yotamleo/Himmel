@@ -19,7 +19,7 @@ scripts/lib/load-dotenv.sh).
 CLI: python scripts/lib/vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|
                                       baseline NAME|clone [REF]|provision|e2e|
                                       push FILE [DEST]|
-                                      trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]>
+                                      trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]>
 """
 import hashlib
 import io
@@ -544,7 +544,8 @@ class VM:
         return absremote
 
     def trigger_claude(self, handover, cwd=None,
-                       when=None, timeout=600, inbox="~/handover-inbox"):
+                       when=None, timeout=600, inbox="~/handover-inbox",
+                       long_gap=False):
         """Fire a claude session ON the guest from a HOST handover file
         (HIMMEL-835 — the host->VM session-trigger seam).
 
@@ -572,8 +573,22 @@ class VM:
         The guest session runs on the guest's own claude login (its own quota)
         and commits with the guest's own credentials. Single-writer stays with
         the caller: do not trigger a ticket another writer owns.
+
+        long_gap (HIMMEL-1475): forward arm-resume.sh's --long-gap so a far
+          --at TIME (more than 60 min out) does not trip the long-gap guard
+          (rc 9). Only meaningful for a SCHEDULED arm (when is set); passing it
+          with when=None raises VMError rather than silently ignoring a flag
+          the caller believes is in effect.
         """
         locate_cwd = cwd if cwd is not None else "~/Documents/github/himmel-private"
+        # long_gap only modifies a SCHEDULED arm (when is set): it forwards
+        # arm-resume.sh's --long-gap past the HIMMEL-1475 long-gap guard. It is
+        # meaningless for an immediate drive (when=None -> drive_claude), so
+        # reject the combination loudly instead of silently no-op'ing a flag the
+        # caller thinks is in effect.
+        if long_gap and when is None:
+            raise VMError(
+                "trigger_claude: long_gap=True requires a scheduled arm (when=...)")
         self._safe_guest_path(locate_cwd, "trigger_claude: cwd")
         src = Path(handover).resolve()
         # Path(...).resolve() does not require existence — check explicitly so
@@ -618,6 +633,8 @@ class VM:
                f" --handover {shlex.quote(guest_handover)}")
         if cwd is not None:
             arm += f" --cwd {cwd}"
+        if long_gap:
+            arm += " --long-gap"
         try:
             rc, out = self.run(f"bash -lc {shlex.quote(arm)}", timeout=120)
         except Exception as e:
@@ -657,18 +674,26 @@ class VM:
 _USAGE = ("usage: vmsdk.py <vm> "
           "<up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e|"
           "push FILE [DEST]|"
-          "trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]>")
+          "trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]>")
 
 
 def _parse_trigger_args(rest):
-    """Parse `trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]`.
+    """Parse `trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]`.
 
     Returns (handover, kwargs) or raises ValueError on a malformed flag.
+    --long-gap (HIMMEL-1475) is a bare flag (forwards arm-resume.sh's --long-gap
+    past the long-gap guard) and is only valid alongside --at; on its own it
+    raises ValueError so the CLI surfaces exit 2 rather than arming an immediate
+    drive with a meaningless flag.
     """
     handover, opts, kw = rest[0], rest[1:], {}
     i = 0
     while i < len(opts):
         flag = opts[i]
+        if flag == "--long-gap":
+            kw["long_gap"] = True
+            i += 1
+            continue
         if i + 1 >= len(opts):
             raise ValueError(f"missing value for {flag}")
         val = opts[i + 1]
@@ -681,6 +706,9 @@ def _parse_trigger_args(rest):
         else:
             raise ValueError(f"unknown flag {flag}")
         i += 2
+    if kw.get("long_gap") and "when" not in kw:
+        raise ValueError(
+            "--long-gap requires --at TIME (it modifies a scheduled arm only)")
     return handover, kw
 
 

@@ -32,10 +32,11 @@ mkrepo() {
     for m in "$@"; do git -C "$d" commit -q --allow-empty -m "$m"; done
 }
 
-run_cr() { # <repo-dir> -> runs check-commit-range against <base>..HEAD
+run_cr() { # <repo-dir> -> runs strict check-commit-range against <base>..HEAD
     local d="$1" base
     base="$(cat "$d/.base")"
-    ( cd "$d" && bash "$CR" "$base" 2>&1 )
+    ( cd "$d" && TICKET_ID_REQUIRED=1 JIRA_PROJECT_KEY=HIMMEL \
+        TICKET_ID_TRUSTED_AUTHOR="${TICKET_ID_TRUSTED_AUTHOR:-}" bash "$CR" "$base" 2>&1 )
 }
 
 # --- one bad (non-conventional) commit -> rc1 + surfaces it ---
@@ -46,11 +47,33 @@ if [ "$rc" -eq 1 ]; then pass "non-conventional -> rc1"; else fail "expected rc1
 if grepq "$out" 'broken commit no type'; then pass "surfaces offending subject"; else fail "no offending subject: $out"; fi
 rm -rf "$t"
 
-# --- all-clean range -> rc0 ---
+# --- all-clean ticketed range -> rc0 ---
 t="$(mktemp -d)"
-mkrepo "$t" "fix(api): HIMMEL-2 ok" "chore: tidy"
+mkrepo "$t" "fix(api): HIMMEL-2 ok" "chore: HIMMEL-3 tidy"
 out="$(run_cr "$t")"; rc=$?
 if [ "$rc" -eq 0 ]; then pass "clean range -> rc0"; else fail "expected rc0, got $rc: $out"; fi
+rm -rf "$t"
+
+# --- a REAL merge commit in the range is skipped (HIMMEL-1483 CR1) ---
+# The hook's merge exemption is live-MERGE_HEAD only, so the range gate must
+# skip historical merges structurally (--no-merges; parent count >= 2).
+t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+mkrepo "$t" "fix(api): HIMMEL-2 ok"
+git -C "$t" checkout -q -b side
+git -C "$t" commit -q --allow-empty -m "feat(y): HIMMEL-4 side work"
+git -C "$t" checkout -q -
+git -C "$t" merge -q --no-ff --no-edit side
+out="$(run_cr "$t")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "range containing a real merge commit -> rc0"; else fail "expected rc0, got $rc: $out"; fi
+rm -rf "$t"
+
+# --- ...but a merge-SHAPED message with ONE parent is still validated ---
+# Parent count is the unfakeable signal: a hand-typed "Merge branch ..." subject
+# on an ordinary commit gets no skip and fails the gate (anti-spoof, r2 intent).
+t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+mkrepo "$t" "Merge branch 'fake' into main"
+out="$(run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "merge-shaped single-parent commit still fails"; else fail "expected rc1, got $rc: $out"; fi
 rm -rf "$t"
 
 # --- malformed HIMMEL- ticket -> rc1 + named ---
@@ -59,6 +82,38 @@ mkrepo "$t" "feat(x): HIMMEL-abc malformed ticket"
 out="$(run_cr "$t")"; rc=$?
 if [ "$rc" -eq 1 ]; then pass "malformed ticket -> rc1"; else fail "expected rc1, got $rc: $out"; fi
 if grepq "$out" -i 'malformed'; then pass "names malformed ticket"; else fail "no malformed msg: $out"; fi
+rm -rf "$t"
+
+# --- conventional but ticketless commit -> rc1 ---
+t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+mkrepo "$t" "chore: ticket omitted"
+out="$(run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "ticketless strict commit -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
+# --- spoofed dependabot commit metadata is not enough without a trusted PR author ---
+t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+mkrepo "$t"
+git -C "$t" -c user.name='dependabot[bot]' -c user.email='bot@example.invalid' \
+  commit -q --allow-empty -m "chore: bump dependency"
+out="$(run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "bot metadata without trusted author -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
+# --- trusted bot PR author still needs bot-authored commit metadata ---
+t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+mkrepo "$t" "chore: bump dependency"
+out="$(TICKET_ID_TRUSTED_AUTHOR='dependabot[bot]' run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "trusted bot with human commit author -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
+# --- trusted bot PR author plus bot commit metadata is exempt ---
+t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+mkrepo "$t"
+git -C "$t" -c user.name='dependabot[bot]' -c user.email='bot@example.invalid' \
+  commit -q --allow-empty -m "chore: bump dependency"
+out="$(TICKET_ID_TRUSTED_AUTHOR='dependabot[bot]' run_cr "$t")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "trusted bot and bot commit author -> rc0"; else fail "expected rc0, got $rc: $out"; fi
 rm -rf "$t"
 
 # --- unresolvable base ref -> rc2 (cannot evaluate the range) ---

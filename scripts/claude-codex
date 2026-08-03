@@ -52,9 +52,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # CLIPROXY key; CWD-resolution would exit 2 despite himmel/.env holding the key.
 # CLAUDE_CODEX_DOTENV_ROOT (test hook) overrides that root so hermetic tests
 # never read the real himmel .env — same production code path either way.
+# HIMMEL-1482: when this launcher is invoked from a linked worktree copy of
+# itself (e.g. a dispatch whose REPO_ROOT resolved to a worktree), $HERE/.. is a
+# worktree root with no .env — _load_dotenv_primary_for falls back to the primary
+# checkout so the key is still found. Same pin-to-the-launcher's-repo contract,
+# just primary-aware; the CWD repo is still never trusted.
 if [ -z "${CLIPROXY_API_KEY-}" ] && [ -f "$HERE/lib/load-dotenv.sh" ]; then
   . "$HERE/lib/load-dotenv.sh"
-  load_dotenv --root "${CLAUDE_CODEX_DOTENV_ROOT:-$HERE/..}" CLIPROXY_API_KEY
+  load_dotenv --root "$(_load_dotenv_primary_for "${CLAUDE_CODEX_DOTENV_ROOT:-$HERE/..}")" CLIPROXY_API_KEY
   # load_dotenv leaves surrounding quotes literal (the shared lib does not strip
   # them); drop ONE matching surrounding quote pair so a `.env` value written as
   # CLIPROXY_API_KEY="…" doesn't send the quotes to the API. bash 3.2-safe.

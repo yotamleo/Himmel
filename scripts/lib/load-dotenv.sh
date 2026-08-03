@@ -45,6 +45,62 @@ _load_dotenv_root() {
     ( cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd )
 }
 
+# _load_dotenv_primary_for <dir> (HIMMEL-1482) — resolve the .env-bearing root for
+# a CANDIDATE directory, for launchers that pin the .env to their OWN repo root via
+# `load_dotenv --root` (which deliberately bypasses _load_dotenv_root's CWD-based
+# resolution). The gitignored .env lives ONLY in the primary checkout and is never
+# copied into linked worktrees, so a launcher invoked from a worktree copy of itself
+# (its parent dir is a worktree root) finds no .env at <dir> and would exit 2.
+#   <dir>/.env present             → echo <dir> (already the .env-bearing root)
+#   <dir> is a linked git worktree → echo the PRIMARY checkout root (parent of
+#                                    `git rev-parse --git-common-dir`) when its
+#                                    .env exists; emit ONE advisory line to stderr
+#   otherwise                      → echo <dir> (caller's missing-.env path applies
+#                                    — load_dotenv then no-ops, rc 0)
+# Mirrors glm-env.ts mainCheckoutRoot() (HIMMEL-654) for the bash side. Returns the
+# path on stdout; the advisory is the helper's ONLY stderr output.
+_load_dotenv_primary_for() {  # $1 = candidate root dir
+    local dir="${1:-}" common primary dir_abs toplevel gitdir dir_phys
+    [ -n "$dir" ] || dir="$(_load_dotenv_root)"
+    [ -f "$dir/.env" ] && { printf '%s' "$dir"; return 0; }
+    dir_abs=$(cd "$dir" 2>/dev/null && pwd) || { printf '%s' "$dir"; return 0; }
+    # Resolve the primary only when <dir> is a linked worktree. cd into <dir>
+    # first so a relative --git-common-dir resolves against <dir> (not the shell
+    # cwd); an absolute path cd's equally well — `( cd "$common/.." && pwd )` is
+    # the same idiom _load_dotenv_root uses.
+    if common=$(cd "$dir" && git rev-parse --git-common-dir 2>/dev/null) && [ -n "$common" ]; then
+        primary=$(cd "$dir" && cd "$common/.." 2>/dev/null && pwd) || primary=""
+        # HIMMEL-1482 R2: restrict the fallback to GENUINE linked-worktree ROOTS.
+        # r1 gated only on `primary != candidate`, so ANY directory inside ANY
+        # checkout qualified — a hermetically pinned root like <worktree>/scripts
+        # (or <primary>/scripts) resolved common-dir to the real .git, differed
+        # from the candidate, and silently loaded the operator's .env, breaking
+        # the documented hermetic override. Two guards:
+        #  (1) the candidate must BE its checkout root: --show-toplevel (git's
+        #      resolved, physical form) == the candidate's physical path (pwd -P),
+        #      so a NESTED dir inside a worktree or the primary never qualifies;
+        #  (2) the checkout must be genuinely LINKED: --git-dir differs from
+        #      --git-common-dir (equal = primary checkout → nothing to fall back
+        #      FROM). Both resolve relative to <dir>, so the raw outputs compare.
+        dir_phys=$(cd "$dir" && pwd -P)
+        toplevel=$(cd "$dir" && git rev-parse --show-toplevel 2>/dev/null) || toplevel=""
+        # Re-resolve git's toplevel through bash cd+pwd -P so it lands in the
+        # same physical (MSYS on Windows) form as dir_phys — git for Windows
+        # prints a drive-letter path that never string-equals a bash pwd, and on
+        # macOS /tmp → /private/tmp must resolve identically on both sides.
+        [ -n "$toplevel" ] && toplevel=$(cd "$toplevel" 2>/dev/null && pwd -P)
+        gitdir=$(cd "$dir" && git rev-parse --git-dir 2>/dev/null) || gitdir=""
+        if [ -n "$primary" ] && [ -n "$toplevel" ] && [ "$toplevel" = "$dir_phys" ] \
+           && [ -n "$gitdir" ] && [ "$gitdir" != "$common" ] \
+           && [ "$primary" != "$dir_abs" ] && [ -f "$primary/.env" ]; then
+            echo "load-dotenv: .env absent under worktree '$dir_abs' — reading the primary checkout's .env at '$primary'." >&2
+            printf '%s' "$primary"
+            return 0
+        fi
+    fi
+    printf '%s' "$dir"
+}
+
 load_dotenv() {
     local root=""
     if [ "${1:-}" = "--root" ]; then

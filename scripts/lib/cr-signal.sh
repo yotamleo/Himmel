@@ -71,6 +71,15 @@
 #   which forks a subshell — a global set inside could never reach them.
 #   cr_signal_state is the thin wrapper for callers that only need the state.
 #
+# cr_signal_description <owner> <name> <sha>
+#   stdout: the CodeRabbit status DESCRIPTION on this SHA (empty when it carries
+#           none, or no CodeRabbit status exists). rc 0 = read ok (incl. empty);
+#           rc 1 = cannot evaluate. Same identity-matched query as the probe, so
+#           the description belongs to the status cr_signal_state classified.
+#           Added for HIMMEL-1465: a rate-limited skip and an auto-reviews-
+#           disabled skip both project to `skipped`, and only rate-limiting is
+#           panel-carriable — the gates need the description to tell them apart.
+#
 #   A SHA that does not exist returns `[]` with HTTP 200 on this endpoint, so it
 #   is indistinguishable from "no CodeRabbit status" and reports "absent". That
 #   conflation is safe in one direction only — every caller fails CLOSED on
@@ -188,6 +197,56 @@ cr_signal_state() {
     local probe
     probe=$(cr_signal_probe "$@") || return 1
     printf '%s\n' "${probe%% *}"
+}
+
+# cr_signal_description <owner> <name> <sha>
+#   stdout: CodeRabbit's status DESCRIPTION for this SHA (empty when the status
+#           carries no description, or no CodeRabbit status exists on the SHA).
+#   rc 0 = read ok (incl. an empty description); rc 1 = cannot evaluate (query
+#           or parse failure — the caller decides open/closed, this reader does
+#           not).
+#
+#   Reuses the SAME identity-matched /statuses LIST query as cr_signal_probe
+#   (first match = newest = current verdict), so the description this returns
+#   is the one belonging to the very status cr_signal_state classified — the
+#   ONE-reader invariant this file exists to hold.
+#
+#   HIMMEL-1465: cr_signal_state collapses every decline wording to a single
+#   `skipped` state (HIMMEL-1317/1354), so a caller cannot tell a RATE-LIMITED
+#   skip ("Review rate limited", which a clean critic PANEL may carry) from an
+#   auto-reviews-DISABLED skip ("Review skipped: ...", which nothing carries)
+#   from the state alone. This reader exposes the description so the MERGE
+#   gates can make that policy call themselves — it stays a NEUTRAL reader and
+#   owns no panel-carriable vocabulary (the rate-limit discrimination lives in
+#   check-ci.sh / cr-merge-gate.sh, where the merge verdict does).
+cr_signal_description() {
+    local owner="$1" name="$2" sha="$3"
+    local uid ctx
+    uid=$(cr_signal_bot_id)
+    ctx=$(cr_signal_context)
+
+    if [ -z "$owner" ] || [ -z "$name" ] || [ -z "$sha" ]; then return 1; fi
+    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
+
+    local json
+    json=$(_crs_gh api "repos/$owner/$name/commits/$sha/statuses?per_page=100" 2>/dev/null) || return 1
+
+    # Same canary as cr_signal_probe: a valid payload is a JSON array (possibly
+    # empty); anything else is a query/parse failure (rc 1), distinct from a
+    # well-formed array whose CodeRabbit status simply carries no description.
+    local kind
+    kind=$(printf '%s' "$json" | jq -r 'if type=="array" then "array" else empty end' 2>/dev/null || true)
+    [ "$kind" = "array" ] || return 1
+
+    # First identity match (newest-first). An absent status yields "" — the
+    # caller only reaches this on state=skipped, where a status provably exists.
+    printf '%s\n' "$(printf '%s' "$json" | jq -r --arg ctx "$ctx" --argjson uid "$uid" '
+        [ .[]?
+          | select(.creator.id == $uid)
+          | select(.creator.type == "Bot")
+          | select(.context == $ctx)
+        ] | first | (.description // "")' 2>/dev/null || true)"
+    return 0
 }
 
 cr_signal_probe() {

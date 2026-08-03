@@ -37,7 +37,7 @@ python scripts/lib/vmsdk.py <vm> <verb>
 Full usage line from the script:
 
 ```
-usage: vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e|push FILE [DEST]|trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]>
+usage: vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e|push FILE [DEST]|trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]>
 ```
 
 | Verb | What it does |
@@ -51,7 +51,7 @@ usage: vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|baseline NAME|clone [RE
 | `provision` | Run the per-OS provisioner (`ubuntu-vm-setup.py` or `windows-vm-setup.py`) |
 | `e2e` | Run the install/uninstall symmetry e2e against an Ubuntu VM (delegates to `scripts/test-install-symmetry-vm.sh`) |
 | `push FILE [DEST]` | Copy one host file to the guest via SFTP (`DEST` defaults to `~/handover-inbox/<name>`; `.env*` files refused) |
-| `trigger HANDOVER [--at TIME] [--cwd DIR] [--timeout N]` | Fire a claude session ON the guest from a host handover file (HIMMEL-835): pushes the handover, then either drives an immediate bounded session (default) or, with `--at`, arms the guest's own `arm-resume.sh` (at/atd backend). `--cwd` defaults to `~/Documents/github/himmel-private` (the ubuntu_new layout, verified 2026-07-09). Single-writer: do not trigger a ticket another writer owns |
+| `trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]` | Fire a claude session ON the guest from a host handover file (HIMMEL-835): pushes the handover, then either drives an immediate bounded session (default) or, with `--at`, arms the guest's own `arm-resume.sh` (at/atd backend). `--cwd` defaults to the guest's private-checkout path under `~/Documents/github/` (the ubuntu_new layout, verified 2026-07-09). `--long-gap` (HIMMEL-1475) forwards arm-resume's `--long-gap` so a far `--at TIME` (>60 min out) is not refused (rc 9) by the long-gap guard; only valid with `--at`. Single-writer: do not trigger a ticket another writer owns |
 
 **All invocations must be from the primary checkout** (not a worktree) — the
 SDK resolves `.env` via `git rev-parse --git-common-dir`; worktrees lack `.env`.

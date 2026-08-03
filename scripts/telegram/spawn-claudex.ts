@@ -564,8 +564,10 @@ export async function runAuthPreflightWithBackoff(
 // reliable when spawn-claudex.ts runs from the primary checkout (the common
 // case for a parent/orchestrator session, per the design brief's explicit
 // "resolved like run.ts's REPO_ROOT" instruction). A parent invoking this
-// script from a worktree copy of itself would need CLAUDE_CODEX_DOTENV_ROOT
-// set explicitly in its own env — out of v1 scope.
+// script from a worktree copy of itself resolves REPO_ROOT to that worktree;
+// claude-codex then self-heals its .env lookup via the worktree→primary fallback
+// (HIMMEL-1482, scripts/lib/load-dotenv.sh _load_dotenv_primary_for), so no
+// explicit CLAUDE_CODEX_DOTENV_ROOT is required for the key to resolve.
 export function claudexLauncherPath(repoRoot: string): string {
   return join(repoRoot, "scripts", "claude-codex");
 }

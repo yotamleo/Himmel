@@ -237,7 +237,7 @@ tries to close.
 | `worktree-isolation`, `merged-branch-check`, `hookspath-misconfig`, `lockfile-integrity`, `artifact-leakage`, `uv-lock-integrity`, `pip-hashes`, `mcp-plugin-refs` | pre-commit | HARD | fix the finding (`--no-verify` only) |
 | drift guards (`doc-guard`, `agents-md-fresh`, `lanes-inventory-guard`, `hud-drift`, `telegram-fork-drift`, `template-himmel-plugins`) | pre-commit (most carry no `stages:` pin, so today they fire at every installed stage, push included) | HARD | fix the finding |
 | `no-headless-claude` / `no-headless-gemini` (billing rule, HIMMEL-128) | pre-commit | HARD | `# headless-claude-ok: <reason>` marker on/above the line; docs paths exempt (`scripts/hooks/check-no-headless-claude.sh`) |
-| `conventional-commit-msg` — `type(scope): [HIMMEL-N ]msg` | commit-msg | HARD | fix the message (merge/fixup/revert exempt) |
+| `conventional-commit-msg` — conventional shape + strict ticket traceability when `TICKET_ID_REQUIRED=1` | commit-msg | HARD | fix the message; merge/revert and `TICKET_ID_EXEMPT_AUTHORS` exempt (fixup/squash skip shape only) |
 | `no-push-to-main` | pre-push | HARD | none — work through a PR |
 | `npm-audit` / `npm-licenses` / `npm-audit-signatures` | pre-push | HARD | fix the dependency |
 | `no-force-push` | pre-push | HARD for `main`; advisory elsewhere | `SKIP_FORCE_PUSH_GATE=1` silences the non-main warning only |

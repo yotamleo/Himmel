@@ -28,6 +28,7 @@ import {
   composeRespawnHandover,
   applyCarryFrom,
   buildArmArgv,
+  buildArmEnv,
   formatUsageWarn,
   parseWarnPct,
   resolveProfileSettings,
@@ -1317,6 +1318,15 @@ test("buildArmArgv matches arm-resume's documented flag contract", () => {
   expect(a[0]).toBe(BASH_BIN);
   expect(a[1]).toContain("arm-resume.sh");
   expect(a.slice(2)).toEqual(["--dedup-any", "--time", "04:10", "--handover", "C:/sess/respawn-handover.md"]);
+});
+
+test("buildArmEnv marks the auto-arm as a safety arm (long-gap exempt, HIMMEL-1475)", () => {
+  // ARM_RESUME_SAFETY_ARM=1 is the guard-exemption signal (a multi-hour
+  // cap-reset park is the safety arm's whole point); --dedup-any in the argv
+  // stays dedup-scope only and must NOT bypass the guard. Spreads process.env
+  // so the live PATH/.env-sourced vars still reach the child.
+  const e = buildArmEnv();
+  expect(e.ARM_RESUME_SAFETY_ARM).toBe("1");
 });
 
 test("formatUsageWarn tiers", () => {
