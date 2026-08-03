@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 # check-commit-range.sh — lint every commit message in a range against the
-# project's conventional-commit gate (scripts/hooks/check-commit-msg.sh) PLUS a
-# malformed-HIMMEL-ticket check, so a PR can't merge non-conventional or
-# bad-ticket commits (HIMMEL-594).
+# project's conventional-commit + ticket gate (scripts/hooks/check-commit-msg.sh),
+# so a PR can't merge non-conventional or untraceable commits (HIMMEL-594/1483).
 #
-# Local parity: the commit-msg hook already runs check-commit-msg.sh per commit
-# at author time. This re-checks the WHOLE PR range in CI (covering commits
-# authored where the local hook was bypassed) and ADDITIONALLY rejects a
-# present-but-malformed `HIMMEL-` ref — which the shared hook treats as prose.
-# CI being slightly stricter than the local gate is intentional (the operator
-# wants CI to FAIL on commit/ticket issues).
+# Local parity: the commit-msg hook runs check-commit-msg.sh per commit at author
+# time. This re-checks the WHOLE PR range in CI (covering commits authored where
+# the local hook was bypassed). Bot exemptions require both the trusted PR author
+# supplied by CI and each commit's author metadata to match the exemption list.
 #
 # Usage:
 #   check-commit-range.sh [<base-ref-or-sha>]
@@ -51,7 +48,12 @@ fi
 # otherwise reach here and `rev-list` would error — DON'T swallow it to an empty
 # "nothing to lint" pass. A genuinely empty range (base == HEAD) exits rev-list 0
 # with no output and is handled below.
-if ! commits="$(git rev-list "$BASE..HEAD" 2>/dev/null)"; then
+# --no-merges (HIMMEL-1483 CR1): the hook's merge exemption is live-MERGE_HEAD
+# only, so a HISTORICAL merge commit in the range would be validated as an
+# ordinary message and fail. Parent count is the unfakeable merge signal — a
+# message SHAPED like a merge still has one parent and is still validated —
+# so skipping real merges here keeps the r2 anti-spoof hardening intact.
+if ! commits="$(git rev-list --no-merges "$BASE..HEAD" 2>/dev/null)"; then
   echo "ERR commit-range: cannot walk range $BASE..HEAD (unresolvable base?)" >&2
   exit 2
 fi
@@ -65,19 +67,13 @@ tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 for sha in $commits; do
   subject="$(git log -1 --format='%s' "$sha")"
+  author="$(git log -1 --format='%an' "$sha")"
   git log -1 --format='%B' "$sha" > "$tmp"
-  if ! bash "$CHECK_MSG" "$tmp" >/dev/null 2>&1; then
-    echo "FAIL ${sha} non-conventional: ${subject}"
+  if ! TICKET_ID_AUTHOR="$author" TICKET_ID_TRUSTED_AUTHOR="${TICKET_ID_TRUSTED_AUTHOR:-}" \
+      bash "$CHECK_MSG" "$tmp" >/dev/null 2>&1; then
+    echo "FAIL ${sha} commit-message gate: ${subject}"
     fails=$((fails + 1))
-    continue
   fi
-  # A HIMMEL- ref in the ticket position MUST be HIMMEL-<digits> (the shared
-  # hook silently treats a malformed ref as message text).
-  body="${subject#*: }"
-  case "$body" in
-    HIMMEL-[0-9]*) : ;;
-    HIMMEL-*) echo "FAIL ${sha} malformed HIMMEL- ticket: ${subject}"; fails=$((fails + 1)) ;;
-  esac
 done
 
 if [ "$fails" -gt 0 ]; then

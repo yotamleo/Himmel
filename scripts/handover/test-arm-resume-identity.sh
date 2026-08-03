@@ -91,7 +91,9 @@ WORK_REPO="$TMP/work-repo"
 mkdir -p "$WORK_REPO"
 git init -q "$WORK_REPO"
 
-FUTURE_TIME="23:59"
+# A near future time keeps these identity/transaction fixtures inside the
+# HIMMEL-1475 explicit-HH:MM long-gap limit.
+FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
 FAILED=0
 
 # --- assertions -------------------------------------------------------------

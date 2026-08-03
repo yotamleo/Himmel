@@ -65,6 +65,9 @@ case "$1 $2" in
       # CONTAINS skip-ish words must not block.
       cr-nearmiss) echo '[{"context":"CodeRabbit","state":"success","description":"No review changes requested","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       cr-failure) echo '[{"context":"CodeRabbit","state":"failure","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+      # HIMMEL-1465: the rate-limit decline — same skipped-state projection as
+      # cr-skipped, but the ONE wording a clean critic panel may carry.
+      cr-ratelimited) echo '[{"context":"CodeRabbit","state":"success","description":"Review rate limited","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       # An impostor: right context + right login, WRONG creator.id. The whole
       # point of HIMMEL-1058's identity match — display names are spoofable,
       # the bot's user id is not.
@@ -156,6 +159,17 @@ GH_STUB_MODE=cr-superseded t cr-status-superseded-pending-allows 0
 GH_STUB_MODE=cr-paged       t cr-status-page-limit-blocks 2
 # ...but a match ON the full page is the newest by construction -> allow.
 GH_STUB_MODE=cr-paged-found t cr-status-found-on-full-page-allows 0
+# HIMMEL-1465: a rate-limited decline with NO panel evidence in this repo's CR
+# ledger keeps the block — evidence-gated, never a free pass.
+GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-no-panel-blocks 2
+# ...and the SAME decline with a clean panel avail-ok recorded at the head is
+# panel-carried: it falls through to the thread + body gates (clean here) and
+# allows. Head "abc123" is 6 chars — below atHead's 7-char isHex floor — so it
+# matches ONLY by atHead's equality-first check, never by prefix resolution.
+printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"abc123","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
+GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-panel-carried-allows 0
+# scrub the scratch ledger so no later case inherits the carry evidence
+rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
 
 # ORDER: the verdict must be read BEFORE the thread query (coderabbit-10).
 # Threads-first loses a race — snapshot threads (clean) -> CodeRabbit posts

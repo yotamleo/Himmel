@@ -946,6 +946,34 @@ class TestTriggerClaude(unittest.TestCase):
         # stay live so a re-trigger cannot silently replace a pending job.
         self.assertNotIn("--force", joined)
 
+    def test_scheduled_long_gap_forwards_flag(self):
+        """HIMMEL-1475: long_gap=True appends --long-gap to the guest arm-resume
+        command so a far --at TIME does not trip the long-gap guard (rc 9)."""
+        vm = self._vm()
+        cmds = []
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            return (0, "armed")
+        with mock.patch.object(vm, "push_file",
+                               return_value="/home/u/handover-inbox/next-session-1.md"), \
+             mock.patch.object(vm, "run", side_effect=fake_run):
+            rc, out = vm.trigger_claude(str(self.local), when="22:30", long_gap=True)
+        self.assertEqual(rc, 0)
+        joined = "\n".join(cmds)
+        self.assertIn("--long-gap", joined)
+        self.assertIn("--time 22:30", joined)
+
+    def test_long_gap_requires_scheduled_arm(self):
+        """long_gap without a when= is meaningless (no scheduler is armed) and
+        must raise a clean VMError rather than silently ignore the flag — and
+        must do so before the handover is pushed to the guest."""
+        vm = self._vm()
+        with mock.patch.object(vm, "push_file") as pf:
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.trigger_claude(str(self.local), long_gap=True)
+            pf.assert_not_called()  # rejected before the handover is pushed
+        self.assertIn("long_gap", str(cm.exception))
+
     def test_scheduled_without_cwd_omits_cwd_flag(self):
         """HIMMEL-835 CR finding 1: no explicit cwd -> --cwd must be ABSENT so
         arm-resume.sh's own priority (--cwd > resume_cwd: frontmatter >
@@ -1037,6 +1065,24 @@ class TestTriggerCLI(unittest.TestCase):
                              "--at", "22:30", "--cwd", "~/himmel", "--timeout", "60"])
         self.assertEqual(rc, 0)
         t.assert_called_once_with("h.md", when="22:30", cwd="~/himmel", timeout=60)
+
+    def test_trigger_parses_long_gap(self):
+        """HIMMEL-1475: the bare --long-gap flag parses to long_gap=True
+        alongside --at and flows through to trigger_claude."""
+        with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"), \
+             mock.patch.object(vmsdk.VM, "trigger_claude",
+                               return_value=(0, "armed")) as t:
+            rc = vmsdk.main(["ubuntu_new", "trigger", "h.md",
+                             "--at", "23:30", "--long-gap"])
+        self.assertEqual(rc, 0)
+        t.assert_called_once_with("h.md", when="23:30", long_gap=True)
+
+    def test_trigger_long_gap_without_at_exit_2(self):
+        """Rejection path: --long-gap only modifies a scheduled arm, so without
+        --at it is a usage error (exit 2), not a silent no-op."""
+        with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+            rc = vmsdk.main(["ubuntu_new", "trigger", "h.md", "--long-gap"])
+        self.assertEqual(rc, 2)
 
     def test_trigger_propagates_drive_rc(self):
         with self._env(), mock.patch.object(vmsdk, "_load_dotenv_into_env"), \

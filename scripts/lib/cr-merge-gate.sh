@@ -60,6 +60,13 @@ _cmg_degrade() { echo "cr-merge-gate: degraded ($*) - failing open" >&2; }
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-available.sh"
 
+# The CR-ledger evidence reader (HIMMEL-1465): tells the skipped arm below
+# whether a CLEAN critic panel carried the gate at the head, so a rate-limited
+# CodeRabbit App need not block a direct `gh pr merge` when the panel reviewed.
+# shellcheck source=scripts/lib/cr-ledger-evidence.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-ledger-evidence.sh"
+
 # _cmg_canon_nwo <value> — canonical lowercase "owner/name", rc 1 if <value> is
 # not one — as canonical "HOST/OWNER/NAME", host included. Two spellings would
 # otherwise smuggle a merge past the gate (coderabbit-9), because anything that
@@ -283,8 +290,36 @@ cr_merge_gate() {
                 # is rate limited. A declined review must not merge, for the
                 # same reason `absent` must not. Wording aligned with
                 # check-ci.sh's twin arm so both gates agree.
-                echo "BLOCK: CodeRabbit SKIPPED the review on head $head of PR #$num — it posted success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-check), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop). If this repo has no CodeRabbit, set CR_PROFILE=none. Bypass: CR_MERGE_GATE_OK=1."
-                return 2 ;;
+                #
+                # HIMMEL-1465: ONLY the rate-limited decline is panel-carriable.
+                # When the description is the rate-limit shape, a CLEAN critic
+                # panel at this head carries the gate (operator standing rule) —
+                # the same ledger evidence clear-cr-marker.sh gates 3-4 read,
+                # evaluated by cr_ledger_carries_gate. A carried panel does NOT
+                # merge here outright: it falls through to the thread + body
+                # gates below exactly like a `success`, so "0 unresolved threads"
+                # still binds. A rate-limited App with no clean panel, or any
+                # other skip wording, keeps the BLOCK. Evidence is required for
+                # the exception, so a description/ledger we cannot read falls
+                # back to the block (the default for `skipped`), not a fail-open
+                # allow.
+                local rl_desc rl_low rl_panel
+                rl_desc=$(cr_signal_description "$owner" "$name" "$head" 2>/dev/null || true)
+                rl_low=$(printf '%s' "$rl_desc" | tr '[:upper:]' '[:lower:]')
+                case "$rl_low" in
+                    *rate?limit*|*ratelimit*) : ;;  # only rate-limit is panel-carriable
+                    *)
+                        echo "BLOCK: CodeRabbit SKIPPED the review on head $head of PR #$num — it posted success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-check), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop). If this repo has no CodeRabbit, set CR_PROFILE=none. Bypass: CR_MERGE_GATE_OK=1."
+                        return 2 ;;
+                esac
+                if rl_panel=$(cr_ledger_carries_gate "$head"); then
+                    echo "ALLOW-note: CodeRabbit is rate-limited on head $head of PR #$num but the critic panel carries the gate ($rl_panel); the thread + body gates below still apply (HIMMEL-1465)." >&2
+                    # fall through to the thread + body gates (like a `success`)
+                else
+                    echo "BLOCK: CodeRabbit is rate-limited on head $head of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $rl_panel) — a rate-limited App with no clean panel is not a clean one. Wait for the App's limit to reset, or run /pr-check on this HEAD so a panel reviews it. Bypass: CR_MERGE_GATE_OK=1."
+                    return 2
+                fi
+                ;;
             *)
                 # Fail CLOSED on an unrecognised state. This case had no
                 # catch-all, so a state cr-signal.sh learns to emit LATER would

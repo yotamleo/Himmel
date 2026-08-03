@@ -703,9 +703,27 @@ assert_rc 0 "34d skip-ish wording on a COMPLETED review does not block"
 unset CR_OK_DESC_RE CR_SKIP_DESC_RE
 
 run cr-ratelimited
-assert_rc 2 "34e rate-limited CodeRabbit review is not certifiable"
-assert_err_has "SKIPPED the review" "34e rate-limit reason surfaced"
-assert_err_has "RATE LIMITED" "34e names rate limiting as a known cause"
+assert_rc 2 "34e rate-limited CodeRabbit review with no panel evidence is not certifiable"
+assert_err_has "rate-limited" "34e rate-limit reason surfaced"
+assert_err_has "did NOT carry the gate" "34e names the missing panel evidence (HIMMEL-1465)"
+
+# 34e2 (HIMMEL-1465) — the SAME rate-limited decline, but a CLEAN critic panel
+# recorded at the head in the CR ledger: the panel carries the gate and the
+# verdict certifies. A SCRATCH repo pins the ledger — cr-ledger-evidence.sh
+# deliberately reads only <git-common-dir>/cr-critic-scores.jsonl of the CWD
+# repo (never an env-pointed path), so the real checkout's ledger must not
+# decide this case. Head "sha1" matches by exact string equality in atHead
+# (it is not hex, so it can never prefix-resolve to anything else).
+LEDGER_REPO=$(mktemp -d "$STUBDIR/ledgerrepo.XXXXXX")
+git -C "$LEDGER_REPO" init --quiet
+git -C "$LEDGER_REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
+printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"sha1","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$LEDGER_REPO/.git/cr-critic-scores.jsonl"
+PRE_34E2_PWD=$PWD
+cd "$LEDGER_REPO" || { echo "FATAL: cannot cd to 34e2 scratch repo" >&2; exit 1; }
+run cr-ratelimited
+cd "$PRE_34E2_PWD" || { echo "FATAL: cannot cd back from 34e2 scratch repo" >&2; exit 1; }
+assert_rc 0 "34e2 rate-limited App with a clean panel at the head is panel-carried (HIMMEL-1465)"
+assert_out_has "the critic panel carries the gate" "34e2 carried-gate audit line surfaced"
 
 run cr-unknownword
 assert_rc 2 "34f an UNENUMERATED success wording fails closed, not open"
@@ -993,5 +1011,5 @@ fi
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 66 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 66"; exit 1; fi
+if [ "$COUNT" -ne 67 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 67"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

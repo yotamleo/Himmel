@@ -1125,7 +1125,7 @@ async function main(): Promise<void> {
       // re-dispatches on the SAME lane profile (not the lane-impl default).
       profile, addPlugins,
       fetchUsage: () => fetchGlmUsage(readZaiKey(REPO_ROOT).key),
-      arm: (hhmm, snap) => Bun.spawnSync(buildArmArgv(REPO_ROOT, hhmm, snap), { stdout: "inherit", stderr: "inherit" }).exitCode ?? 1,
+      arm: (hhmm, snap) => Bun.spawnSync(buildArmArgv(REPO_ROOT, hhmm, snap), { stdout: "inherit", stderr: "inherit", env: buildArmEnv() }).exitCode ?? 1,
     };
     const { code } = await executeRun({ runSession, prompt, worktree, permMode, sessionDir, metaPath, runningMeta, capGuard, settings });
     return code;
@@ -1258,6 +1258,19 @@ export type CapGuardDeps = {
 // (--dedup-any --time <HH:MM> --handover <path>) is unit-asserted.
 export function buildArmArgv(repoRoot: string, hhmm: string, handoverPath: string): string[] {
   return [BASH_BIN, join(repoRoot, "scripts", "handover", "arm-resume.sh"), "--dedup-any", "--time", hhmm, "--handover", handoverPath];
+}
+
+// Child env for the auto-arm invoker: ARM_RESUME_SAFETY_ARM=1 marks this as an
+// automated machine-wide SAFETY arm (the cap-respawn watchdog) so arm-resume's
+// long-gap guard (HIMMEL-1475) exempts it — a multi-hour cap-reset park is the
+// safety arm's whole point, not an orchestrator's silent far default. Pure so
+// the env contract is unit-asserted (the --dedup-any argv stays dedup-scope
+// only and does NOT bypass the guard). Spreads process.env so a runtime
+// override + the live PATH/.env-sourced vars still reach the child (Bun's
+// default env is a process-START snapshot, not live process.env — same reason
+// ensureWorkspaceTrust passes env: process.env).
+export function buildArmEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, ARM_RESUME_SAFETY_ARM: "1" };
 }
 
 // Preflight warn (spec (c)): warn-only — a heuristic-threshold refusal would

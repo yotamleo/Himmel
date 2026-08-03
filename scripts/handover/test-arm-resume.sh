@@ -93,8 +93,13 @@ HANDOVER_DIR="$TMP/statedocs/handovers"
 mkdir -p "$HANDOVER_DIR"
 git init -q "$TMP/statedocs"
 
-# A fixed time in the future (HH:MM format) — just needs to parse.
-FUTURE_TIME="23:59"
+# A NEAR future time (HH:MM, <=60 min out) so the HIMMEL-1475 long-gap guard
+# stays silent for every fixture below that just needs a valid future HH:MM.
+# Computed once (a hermetic shell suite finishes well inside the 30-min
+# window). Tests that deliberately arm FAR — T8 tomorrow-roll, T28d seeds,
+# T33-T36/N6 collision probes, the macOS multislot sibling — carry their own
+# far times + --long-gap.
+FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
 
 # ---------------------------------------------------------------------------
 # Helper: write a minimal handover file and return its path via stdout.
@@ -288,7 +293,7 @@ assert_not_contains "T7 no discoverability warning for CRLF handover" "no --cwd 
 HO=$(make_handover "$WORK_REPO")
 PAST_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
 # HIMMEL-966: host `at` must not be a dependency; pin the posix backend with the stub.
-out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --force --dry-run 2>&1)
+out=$(PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --long-gap --force --dry-run 2>&1)
 rc=$?
 assert_rc "T8 past --time exits 0 (force+dry)" 0 "$rc"
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
@@ -1053,9 +1058,9 @@ HO_F3=$(make_handover "$WORK_REPO")
 # (HIMMEL-407): on one that does, same-minute seeds would refuse rc=6 and the
 # test would fail during setup, before it ever exercised --dedup-any --force.
 TMPDIR="$TMP" SCHED_DB="$DB28F" SCHED_DB_DIR="$DB28FD" PATH="$STATEFUL_STUB:$PATH" \
-    bash "$ARM" --time "23:57" --handover "$HO_F1" >/dev/null 2>&1
+    bash "$ARM" --time "23:57" --handover "$HO_F1" --long-gap >/dev/null 2>&1
 TMPDIR="$TMP" SCHED_DB="$DB28F" SCHED_DB_DIR="$DB28FD" PATH="$STATEFUL_STUB:$PATH" \
-    bash "$ARM" --time "23:58" --handover "$HO_F2" >/dev/null 2>&1
+    bash "$ARM" --time "23:58" --handover "$HO_F2" --long-gap >/dev/null 2>&1
 if [ "$(count_slots "$DB28F" "$DB28FD")" = "2" ]; then
     echo "PASS T28d two sibling slots queued before the --dedup-any --force arm"
 else
@@ -1305,6 +1310,34 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
 esac
 
 # ---------------------------------------------------------------------------
+# T38: ARM_RESUME_SAFETY_ARM sticky-exemption clear (HIMMEL-1475 CR-fix). The
+#      automated safety callers (auto-arm-on-cap.sh, spawn-glm) set
+#      ARM_RESUME_SAFETY_ARM=1 in their child env so the long-gap guard exempts
+#      their multi-hour cap-reset arm. On Linux `at` snapshots the submitter
+#      env, so WITHOUT a clear in the launch body the RESUMED claude session
+#      inherits =1 and every later far HH:MM arm it makes silently bypasses the
+#      guard. Every generated launch body must CLEAR ARM_RESUME_SAFETY_ARM
+#      alongside ARMAUTOMERGE/CR_MERGE_GATE_OK — the exemption is for THIS
+#      safety arm only, never a property the resumed session keeps. Mirrors how
+#      the ARMAUTOMERGE unset is tested (T33b/c).
+# ---------------------------------------------------------------------------
+HO=$(make_handover "$WORK_REPO")
+out=$(PATH="$SCHED_STUB_T17:$PATH" ARM_RESUME_SAFETY_ARM=1 \
+    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dedup-any --dry-run 2>&1)
+rc=$?
+assert_rc "T38 safety-arm dry-run exits 0" 0 "$rc"
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_contains "T38 .bat CLEARS ARM_RESUME_SAFETY_ARM (sticky-exemption)" 'set "ARM_RESUME_SAFETY_ARM="' "$out"
+        ;;
+    *)
+        assert_contains "T38 launch body unsets ARM_RESUME_SAFETY_ARM (sticky-exemption)" "unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM" "$out"
+        ;;
+esac
+# The exemption VALUE is never granted to the resumed session — only cleared.
+assert_not_contains "T38 body does not grant ARM_RESUME_SAFETY_ARM=1" "ARM_RESUME_SAFETY_ARM=1" "$out"
+
+# ---------------------------------------------------------------------------
 # W1-W5: --worktree isolation for code arms (HIMMEL-387)
 # ---------------------------------------------------------------------------
 # W1: --worktree dry-run computes the type+slug path, resumes there, pre-trusts it.
@@ -1408,7 +1441,7 @@ DB33=$(_collision_db); DB33D=$(_collision_dbdir); : > "$DB33"; mkdir -p "$DB33D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB33" SCHED_DB_DIR="$DB33D" PATH="$STATEFUL_STUB:$PATH" \
     ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
-    bash "$ARM" --time "02:00" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "02:00" --handover "$HO" --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "T33 exact collision refuses (rc 6)" 6 "$rc"
 assert_contains "T33 ERR names the collision" "time collision" "$out"
@@ -1425,7 +1458,7 @@ DB34=$(_collision_db); DB34D=$(_collision_dbdir); : > "$DB34"; mkdir -p "$DB34D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB34" SCHED_DB_DIR="$DB34D" PATH="$STATEFUL_STUB:$PATH" \
     ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
-    bash "$ARM" --time "02:03" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "02:03" --handover "$HO" --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "T34 near collision still exits 0 (warn-only)" 0 "$rc"
 assert_contains "T34 WARN printed for near collision" "WARN arm-resume: near time collision" "$out"
@@ -1440,7 +1473,7 @@ DB35=$(_collision_db); DB35D=$(_collision_dbdir); : > "$DB35"; mkdir -p "$DB35D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB35" SCHED_DB_DIR="$DB35D" PATH="$STATEFUL_STUB:$PATH" \
     ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
-    bash "$ARM" --time "02:10" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "02:10" --handover "$HO" --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "T35 outside window exits 0 silently" 0 "$rc"
 assert_not_contains "T35 no collision warn outside window" "collision" "$out"
@@ -1452,7 +1485,7 @@ DB36=$(_collision_db); DB36D=$(_collision_dbdir); : > "$DB36"; mkdir -p "$DB36D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB36" SCHED_DB_DIR="$DB36D" PATH="$STATEFUL_STUB:$PATH" \
     ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
-    bash "$ARM" --time "02:00" --handover "$HO" --force --dry-run 2>&1)
+    bash "$ARM" --time "02:00" --handover "$HO" --long-gap --force --dry-run 2>&1)
 rc=$?
 assert_rc "T36 --force bypasses exact collision (rc 0)" 0 "$rc"
 assert_not_contains "T36 no ERR on --force collision bypass" "ERR arm-resume: time collision" "$out"
@@ -1461,11 +1494,17 @@ assert_contains "T36 --force emits override WARN" "WARN arm-resume: --force: ign
 # ---------------------------------------------------------------------------
 # T37: --dedup-any (unattended watchdog) exact collision → WARN-ONLY (rc=0),
 #      never refuses. Ensures unattended watchdog arms always succeed even when
-#      another HIMMEL-* task fires at the same time.
+#      another HIMMEL-* task fires at the same time. ARM_RESUME_SAFETY_ARM=1 is
+#      the watchdog's guard-exemption signal (HIMMEL-1475 CR-fix: --dedup-any
+#      is dedup-scope only and no longer bypasses the long-gap guard, so a real
+#      safety arm — auto-arm-on-cap.sh — sets this env var; this simulation
+#      mirrors it). The collision check's own --dedup-any warn-only behavior is
+#      what T37 actually asserts; the env var just gets it past the guard.
 # ---------------------------------------------------------------------------
 DB37=$(_collision_db); DB37D=$(_collision_dbdir); : > "$DB37"; mkdir -p "$DB37D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB37" SCHED_DB_DIR="$DB37D" PATH="$STATEFUL_STUB:$PATH" \
+    ARM_RESUME_SAFETY_ARM=1 \
     ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
     bash "$ARM" --time "02:00" --handover "$HO" --dedup-any --dry-run 2>&1)
 rc=$?
@@ -1542,7 +1581,7 @@ DBN6=$(_collision_db); DBN6D=$(_collision_dbdir); : > "$DBN6"; mkdir -p "$DBN6D"
 HO=$(make_handover_titled "Resume: HIMMEL-540 collision case")
 out=$(TMPDIR="$TMP" SCHED_DB="$DBN6" SCHED_DB_DIR="$DBN6D" PATH="$STATEFUL_STUB:$PATH" \
     ARM_COLLISION_CANDIDATES="$(printf 'HIMMEL-Pipeline-Harvest\t02:00')" \
-    bash "$ARM" --time "02:00" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "02:00" --handover "$HO" --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "N6 collision still HARD-REFUSES with a ticket-prefixed name (rc 6)" 6 "$rc"
 assert_contains "N6 ERR names the collision" "time collision" "$out"
@@ -1855,7 +1894,7 @@ if [ "$n" -eq 1 ]; then echo "PASS macOS --force keeps single entry"; else echo 
 # advisory collision check has nothing to flag.
 a_line="$(grep 'HIMMEL-Resume-' "$CRON_STORE" | head -1)"
 MAC_HO2="$(make_handover "$WORK_REPO")"
-mac_env bash "$ARM" --time "23:58" --handover "$MAC_HO2" >/dev/null 2>&1   # arm sibling B
+mac_env bash "$ARM" --time "23:58" --handover "$MAC_HO2" --long-gap >/dev/null 2>&1   # arm sibling B
 n="$(grep -c 'HIMMEL-Resume-' "$CRON_STORE" 2>/dev/null)" || n=0
 if [ "$n" -eq 2 ]; then echo "PASS macOS two distinct handovers coexist"; else echo "FAIL macOS expected 2 slots, got $n"; FAILED=$((FAILED+1)); fi
 b_line="$(grep -vF "$a_line" "$CRON_STORE" | grep 'HIMMEL-Resume-' | head -1)"
@@ -2019,8 +2058,10 @@ assert_contains "T-wsl body uses unquoted distro + login shell" 'wsl.exe -d ubun
 assert_not_contains "T-wsl body never quotes the -d value" 'wsl.exe -d "' "$out"
 # HIMMEL-1382 fix round: the launch body now unsets ARMAUTOMERGE/
 # CR_MERGE_GATE_OK unconditionally between cd and claude (always-clear
-# contract — see arm-resume.sh's schedule_arm WSL branch comment).
-assert_contains "T-wsl body has in-distro cd+unset+claude" "cd '$WSL_CWD' && unset ARMAUTOMERGE CR_MERGE_GATE_OK && claude" "$out"
+# contract — see arm-resume.sh's schedule_arm WSL branch comment). HIMMEL-1475:
+# the same unset also drops ARM_RESUME_SAFETY_ARM so a resumed in-distro session
+# does not inherit a leaked long-gap exemption.
+assert_contains "T-wsl body has in-distro cd+unset+claude" "cd '$WSL_CWD' && unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM && claude" "$out"
 assert_not_contains "T-wsl no caret escapes inside CMD quotes" '^&' "$out"
 assert_contains "T-wsl prompt precedes channels" "'load $WSL_HO overnight mode' --channels 'plugin:test@local'" "$out"
 assert_not_contains "T-wsl body drops Windows cd" "cd /d" "$out"

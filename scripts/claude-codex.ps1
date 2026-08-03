@@ -85,9 +85,48 @@ function Get-DotenvKey {
   return $null
 }
 
+# HIMMEL-1482 (twin of bash _load_dotenv_primary_for in lib/load-dotenv.sh):
+# resolve the .env-bearing root for a candidate dir. <dir>/.env present → <dir>.
+# Else if <dir> is a linked git worktree → the PRIMARY checkout (parent of
+# git-common-dir) when its .env exists, with ONE advisory to stderr (a launcher
+# invoked from a worktree copy of itself has <parent> = a worktree root with no
+# .env). Otherwise → <dir> unchanged (the missing-key path below applies).
+function Resolve-DotenvPrimary {
+  param([string]$Dir)
+  if (Test-Path -LiteralPath (Join-Path $Dir '.env')) { return $Dir }
+  try {
+    $common = & git -C $Dir rev-parse --git-common-dir 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $common) { return $Dir }
+    $dirAbs = (Resolve-Path -LiteralPath $Dir -ErrorAction Stop).Path
+    # HIMMEL-1482 R2: restrict the fallback to GENUINE linked-worktree ROOTS.
+    # r1 gated only on `primary != candidate`, so a NESTED dir inside any
+    # checkout (e.g. <worktree>/scripts) resolved common-dir to the real .git
+    # and silently loaded the operator's .env — breaking the hermetic override.
+    # Guard 1: candidate must BE its checkout root (show-toplevel == $dirAbs).
+    # Guard 2: checkout must be genuinely LINKED — git-dir differs from
+    # git-common-dir (equal = primary checkout → nothing to fall back from).
+    # Compare canonicalized paths case-insensitively (NTFS is case-insensitive).
+    $toplevel = & git -C $Dir rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $toplevel) { return $Dir }
+    $toplevelAbs = (Resolve-Path -LiteralPath $toplevel -ErrorAction Stop).Path
+    if (-not ($toplevelAbs -ieq $dirAbs)) { return $Dir }
+    $gitdir = & git -C $Dir rev-parse --git-dir 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $gitdir -or $gitdir -eq $common) { return $Dir }
+    # git may print a path relative to $Dir; root it before resolving '..'.
+    $commonFull = if ([System.IO.Path]::IsPathRooted($common)) { $common } else { Join-Path $Dir $common }
+    $primary = (Resolve-Path -LiteralPath (Join-Path $commonFull '..') -ErrorAction Stop).Path
+    if ($primary -ne $dirAbs -and (Test-Path -LiteralPath (Join-Path $primary '.env'))) {
+      [Console]::Error.WriteLine("claude-codex: .env absent under worktree '$dirAbs' — reading the primary checkout's .env at '$primary'.")
+      return $primary
+    }
+  } catch { }
+  return $Dir
+}
+
 $key = $env:CLIPROXY_API_KEY
 if ([string]::IsNullOrEmpty($key)) {
   $root = if ($env:CLAUDE_CODEX_DOTENV_ROOT) { $env:CLAUDE_CODEX_DOTENV_ROOT } else { Split-Path -Parent $PSScriptRoot }
+  $root = Resolve-DotenvPrimary -Dir $root
   $key = Get-DotenvKey -Root $root -Name 'CLIPROXY_API_KEY'
 }
 

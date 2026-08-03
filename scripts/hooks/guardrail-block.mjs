@@ -424,6 +424,243 @@ function resolveCommonDir(gitDir) {
   }
 }
 
+// HIMMEL-1472 (R4): the authoritative object-format width is the repository's
+// CONFIGURED format, NOT the HEAD/ref oid's own length. A crafted/corrupt DB in
+// a DEFAULT (sha1) repo whose HEAD ref carries a 64-hex oid with a fully
+// self-consistent sha256 commit→tree→blob chain passes every r3 width+rehash
+// check (the HEAD oid pinned width 32 and the foreign chain agreed) while git
+// itself rejects the repo (extensions.objectFormat says sha1); the mirror holds
+// for a configured sha256 repo with a 40-hex chain. Read the common dir's
+// config for [extensions] objectFormat and return the byte width it implies:
+// sha256 → 32, absent/sha1 → 20 (git's default). Fail CLOSED on a present-but-
+// unreadable config or an unrecognized value — degrade, never guess the width.
+// A MISSING config file is the healthy default (no objectFormat override → sha1),
+// matching git; any OTHER read error (permissions/I/O on a present file) degrades.
+//
+// HIMMEL-1472 (R5): apply git's FULL repository-format validation, not just the
+// objectFormat value. R4 read objectFormat and derived a width but skipped the
+// rules git uses to ACCEPT that config, so configs git REFUSES still yielded a
+// width and a healthy attestation: objectFormat=sha256 with
+// core.repositoryformatversion 0 (git: "repo version is 0, but v1-only extension
+// found"), repositoryformatversion > 1 (git: "Expected git repo version <= 1"),
+// an unknown extensions.* key (git: "unknown repository extension found"), or a
+// valueless objectFormat (git: "invalid value for 'extensions.objectformat'").
+// Mirror git's documented rule set and degrade on every config git itself rejects.
+// git's documented extension keys (Documentation/technical/repository-version.txt
+// + setup.c): the extensions.* keys git HONORS at repositoryformatversion >= 1. A
+// key outside this set is one git refuses outright ("unknown repository extension
+// found"), so attesting integrity against it would diverge from git. Keep this in
+// sync with git's current known set.
+const KNOWN_GIT_EXTENSIONS = new Set([
+  'objectformat',
+  'refstorage',
+  'worktreeconfig',
+  'preciousobjects',
+  'partialclone',
+  'compatobjectformat',
+]);
+
+// HIMMEL-1472 (R6): a known KEY is necessary but not sufficient — git also
+// validates each extension's VALUE and refuses the repo on a bad one ("invalid
+// value for 'extensions.<name>'"). R5 only checked the key set, so e.g.
+// refStorage=bogus attested healthy against a config git rejects. Mirror git's
+// accepted value sets: refStorage / compatObjectFormat take git's lowercase
+// canonical tokens (case-SENSITIVE, like git); worktreeConfig / preciousObjects
+// are git booleans (the literals below, case-INsensitive; a BARE key parses as
+// true); partialClone is any non-empty remote name. objectFormat is validated
+// by the width derivation below, not this table. A value outside its key's set
+// degrades — never attest against a config git refuses.
+const GIT_EXTENSION_VALUES = {
+  refstorage: ['files', 'reftable'],
+  compatobjectformat: ['sha1', 'sha256'],
+  worktreeconfig: 'bool',
+  preciousobjects: 'bool',
+  partialclone: 'nonempty',
+};
+// git config_bool accepts exactly these literals (case-insensitive). A bare
+// valueless variable (no `=`) is boolean true to git — the parse loop maps that
+// to 'true' before this table sees it.
+const GIT_BOOL_LITERALS = new Set(['true', 'false', 'yes', 'no', 'on', 'off', '1', '0']);
+// true iff `raw` is a value git accepts for extension `key`. objectFormat (and
+// any unconstrained key) is unconstrained here — objectFormat is normalized to
+// {sha1,sha256} by the width derivation.
+function validExtensionValue(key, raw) {
+  const spec = GIT_EXTENSION_VALUES[key];
+  if (!spec) return true;
+  const v = raw.trim().replace(/^"|"$/g, '');
+  if (spec === 'bool') return GIT_BOOL_LITERALS.has(v.toLowerCase());
+  if (spec === 'nonempty') return v.length > 0;
+  return spec.includes(v); // case-sensitive canonical token
+}
+// HIMMEL-1472 (R9): a STRICT value whitelist for the kv grammar. git's config
+// value grammar is broad (escapes, line continuations, mid-value comment
+// starts, ...) and chasing it exactly is a bottomless source of "looser than
+// git" findings. The invariant needs only one direction — never attest against
+// a config git REFUSES — so accept only the conservative shape every real
+// default config satisfies and degrade on EVERYTHING else. Two shapes pass:
+//   - bare value: no `"`, no `\`, no `;`/`#` (git reads ; and # as comment
+//     starts only outside quotes; rather than model that, refuse them), OR
+//   - fully quoted: optional surrounding whitespace then `"..."` with no `\`
+//     and no `"` inside.
+// Anything else — unbalanced/embedded quotes, any backslash (escapes and line
+// continuations), trailing garbage after a closing quote — fails. This is
+// fail-closed: a value git would ACCEPT but this refuses is safe (the
+// guardrail reports width-unavailable and degrades gracefully). `v` is the raw
+// text captured after `key =` (leading whitespace already consumed by the kv
+// regex).
+function valueIsWellFormed(v) {
+  if (!v.includes('"') && !v.includes('\\') && !v.includes(';') && !v.includes('#')) return true;
+  return /^\s*"[^"\\]*"\s*$/.test(v);
+}
+function configuredObjectByteWidth(commonDir) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(commonDir, 'config'), 'utf8');
+  } catch (e) {
+    return e.code === 'ENOENT' ? 20 : null;
+  }
+  let section = null; // bare section in scope, or null (outside / subsectioned)
+  let version = 0; // core.repositoryformatversion — git's default is 0
+  let versionMalformed = false;
+  let malformed = false; // a [core]/[extensions] line git's parser would reject
+  const extensions = new Map(); // [extensions] keys (lowercased) → raw value
+  // HIMMEL-1472 (R9) — CLOSURE RULE for the config-grammar class. This parser
+  // accepts ONLY the strict subset below (headers, key grammar, and the value
+  // whitelist in valueIsWellFormed); every shape outside it degrades. The
+  // invariant is one-directional: NEVER attest a width against a config git
+  // REFUSES. Degrading on a config git would ACCEPT is safe and by-design (the
+  // fallback reports width-unavailable; the guardrail degrades gracefully).
+  // So a future "parser is looser than git" finding must demonstrate a config
+  // this WHITELIST ACCEPTS while git REJECTS it (a fail-open); "git accepts but
+  // we degrade" is fail-closed and OUT OF SCOPE — that sentence is the decline
+  // template for future re-raises.
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+    const sec = line.match(/^\[([^\]]*)\]$/);
+    if (sec) {
+      // HIMMEL-1472 (R8): mirror git's config header grammar (Documentation/config.txt).
+      // Git accepts exactly two header forms — a bare `[name]` (name = alnum, `-`,
+      // `.`) or a subsection `[name "sub"]` (whitespace then a DOUBLE-QUOTED
+      // subsection, escapes \\ and \"). A header that looks like one but matches
+      // neither (e.g. an unquoted second word like `[bad section]`) makes git reject
+      // the whole file ("bad config line"), so degrade rather than silently scope it
+      // out and attest a width against a config git refuses.
+      const bareHeader = sec[1].match(/^([A-Za-z0-9.-]+)$/);
+      const subHeader = sec[1].match(/^([A-Za-z0-9.-]+)[ \t]+"((?:[^"\\\n]|\\.)*)"$/);
+      if (bareHeader) {
+        // HIMMEL-1472 (R11): the bare-header grammar admits dots, so git's legacy
+        // dotted subsection syntax `[name.sub]` lands here too. Git reads those keys
+        // as `<name>.<sub>.*`; for `[extensions.x]` that is `extensions.x.*`, which
+        // git refuses as an unknown extension at repositoryformatversion >= 1 — a
+        // config this whitelist ACCEPTS while git REJECTS it (the R9 closure rule's
+        // own fail-open), so degrade rather than silently scope it out and attest.
+        // Dotted `[core.x]` (and any other dotted section) is consistently IGNORED
+        // by both git's repo-format validation and this parser — extensions.* is the
+        // only divergence, so this guard is extensions-only. Case-insensitive (match
+        // lowercased); covers `[extensions.x]`, `[EXTENSIONS.X]`, `[extensions.]`.
+        const name = bareHeader[1].toLowerCase();
+        if (name.startsWith('extensions.')) malformed = true;
+        else section = name;
+      } else if (subHeader) {
+        // HIMMEL-1472 (R10): git reads `[extensions "x"]` keys as `extensions.x.*` and
+        // refuses them as unknown extensions at repositoryformatversion >= 1; at v0 any
+        // extension present is already a degrade. No real repo carries subsectioned
+        // extensions — degrade, never attest. `[core "x"]` and other subsections stay
+        // scoped out (they play no part in repo-format validation). Section names are
+        // case-insensitive in git config, so compare lowercased.
+        if (subHeader[1].toLowerCase() === 'extensions') malformed = true;
+        else section = null; // a subsectioned header (e.g. [remote "origin"]) is not the bare scope
+      } else {
+        malformed = true;
+      }
+      continue;
+    }
+    // git rejects the ENTIRE config file on a line its parser can't read, in
+    // ANY section ("bad config line N in file .git/config") — so shape-validate
+    // every line; only the SEMANTIC capture below is scoped to the bare
+    // [core]/[extensions] sections.
+    // HIMMEL-1472 (R8): a git variable name starts with a letter and allows only
+    // alnum + `-` (no leading digit/dot, no embedded dot). The key patterns below
+    // use that grammar so a key git rejects (9key, .key, key.sub) degrades instead
+    // of attesting against a config git refuses.
+    if (!section) {
+      // Subsectioned (e.g. [remote "origin"]) or pre-section scope: a kv or
+      // bare line is fine here in SHAPE; the VALUE is still whitelist-checked
+      // (R9) so a value git refuses degrades even out of scope, and anything
+      // else still chokes git's parser.
+      const oosKv = line.match(/^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$/);
+      if (oosKv) {
+        if (!valueIsWellFormed(oosKv[2])) malformed = true;
+      } else if (!/^[A-Za-z][A-Za-z0-9-]*$/.test(line)) {
+        malformed = true;
+      }
+      continue;
+    }
+    const kv = line.match(/^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$/);
+    if (kv) {
+      const key = kv[1].toLowerCase();
+      // R9: whitelist the value shape before any semantic capture, so a value
+      // git refuses (unclosed quote, escape, trailing garbage) degrades even
+      // under [core]/[extensions], where R6 only validated known extension keys.
+      if (!valueIsWellFormed(kv[2])) {
+        malformed = true;
+        continue;
+      }
+      if (section === 'core' && key === 'repositoryformatversion') {
+        const v = kv[2].trim();
+        if (/^\d+$/.test(v)) version = Number(v);
+        else versionMalformed = true;
+      } else if (section === 'extensions') {
+        // Capture every extensions.* key so an unknown one degrades below — git
+        // refuses an unknown extension outright at repositoryformatversion >= 1.
+        extensions.set(key, kv[2]);
+      }
+      continue;
+    }
+    // BARE key (no `=`): git parses a valueless variable as boolean true. For an
+    // extensions.* key this is its =true form — a known boolean extension stays
+    // valid (validated below); an unknown one still degrades on the key check.
+    // R9: under [core], a valueless `repositoryformatversion` is a key git reads
+    // as an integer — a valueless int key is one git rejects, so degrade.
+    const bare = line.match(/^([A-Za-z][A-Za-z0-9-]*)$/);
+    if (bare) {
+      const bkey = bare[1].toLowerCase();
+      if (section === 'extensions') extensions.set(bkey, 'true');
+      else if (section === 'core' && bkey === 'repositoryformatversion') versionMalformed = true;
+      continue;
+    }
+    // Neither `key = value` nor a bare `key`: a config line git would choke on.
+    malformed = true;
+  }
+  if (malformed) return null; // a line git's parser rejects, anywhere in the file
+  if (versionMalformed) return null; // non-numeric repositoryformatversion → degrade
+  if (version > 1) return null; // git: "Expected git repo version <= 1"
+  // Extensions are honored ONLY at repositoryformatversion >= 1. Any extension
+  // present at version 0 is malformed (a real repo is v0 with NO extensions, or
+  // v1+ WITH them); git refuses known v1-only extensions here ("repo version is
+  // 0, but v1-only extension found"). Degrade fail-closed rather than guess.
+  if (version === 0) return extensions.size > 0 ? null : 20;
+  // version === 1: extensions honored, but every key must be one git recognizes —
+  // an unknown one makes git refuse the repo outright.
+  for (const key of extensions.keys()) {
+    if (!KNOWN_GIT_EXTENSIONS.has(key)) return null;
+  }
+  // git also constrains each extension's VALUE — a value it refuses ("invalid
+  // value for 'extensions.<name>'") makes it refuse the repo, so degrade.
+  for (const [key, raw] of extensions) {
+    if (!validExtensionValue(key, raw)) return null;
+  }
+  if (!extensions.has('objectformat')) return 20; // no override → git default sha1
+  // git config values may be quoted; strip one layer. Lowercased because the
+  // only canonical forms are sha1/sha256 — anything else (incl. a valueless
+  // entry) degrades.
+  const objectFormat = extensions.get('objectformat').trim().replace(/^"|"$/g, '').toLowerCase();
+  if (objectFormat === 'sha256') return 32;
+  if (objectFormat === 'sha1') return 20;
+  return null; // unrecognized / valueless objectFormat → degrade, never guess
+}
+
 // The ref/HEAD OID predicates accept 40-hex (sha1) OR 64-hex (sha256), matching
 // readObject via hashAlgoForOid (HIMMEL-1468): the fallback ref/HEAD parser
 // hardcoded-tested only {40}, so a sha256 repo (objectFormat=sha256) degraded to
@@ -467,7 +704,11 @@ export function readHeadOid(gitDir, commonDir) {
 }
 
 function readLooseObject(commonDir, oid) {
-  if (!/^[0-9a-f]{40}$/.test(oid)) return null;
+  // HIMMEL-1472: accept sha1 (40-hex) OR sha256 (64-hex) oids, keyed by
+  // hashAlgoForOid (matching readObject's rehash chokepoint) — a sha256 repo's
+  // loose objects live at objects/<2>/<62>, which the prior {40}-only guard
+  // rejected, dead-ending the fallback one layer below readHeadOid's fix.
+  if (!hashAlgoForOid(oid)) return null;
   const objectPath = path.join(commonDir, 'objects', oid.slice(0, 2), oid.slice(2));
   let inflated;
   try {
@@ -505,8 +746,9 @@ const PACK_IDX_MAGIC = [0xff, 0x74, 0x4f, 0x63]; // "\377tOc"
 const PACK_TYPE_NAMES = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' };
 
 // Returns the oid's byte offset into its .pack, or null if the oid is absent.
-// A v2 idx is header(8) + fanout(256*4) + oid(total*20) + crc(total*4) +
-// offset(total*4) [+ large-offset] tables. A truncated/crafted idx can
+// A v2 idx is header(8) + fanout(256*4) + oid(total*<width>) + crc(total*4) +
+// offset(total*4) [+ large-offset] tables — <width> is 20 (sha1) or 32 (sha256),
+// keyed by the requested oid's format (HIMMEL-1472). A truncated/crafted idx can
 // advertise a fanout total or large-offset index that points past idx.length,
 // and the Buffer.compare/readUint32BE calls below then THROW ERR_OUT_OF_RANGE —
 // uncaught, that crashes status --json instead of returning
@@ -517,18 +759,23 @@ export function findPackOffset(idx, oidHex) {
   if (idx.length < 1032) return null; // header(8) + fanout(256*4) minimum
   if (idx[0] !== PACK_IDX_MAGIC[0] || idx[1] !== PACK_IDX_MAGIC[1] || idx[2] !== PACK_IDX_MAGIC[2] || idx[3] !== PACK_IDX_MAGIC[3]) return null;
   if (readUint32BE(idx, 4) !== 2) return null; // v2 idx only
+  // HIMMEL-1472: per-entry oid width is keyed by the repo object format — a sha1
+  // idx stores 20-byte oids, a sha256 (objectFormat=sha256) idx stores 32. The
+  // requested oid's hex length names it (oidByteWidth, matching hashAlgoForOid),
+  // so the request and the idx must agree; any other length is no match.
+  const width = oidByteWidth(oidHex);
+  if (!width) return null;
   const fanoutOff = 8;
   const total = readUint32BE(idx, fanoutOff + 255 * 4);
   if (total === 0) return null;
   const oidsOff = fanoutOff + 256 * 4;
-  const crcsOff = oidsOff + total * 20;
+  const crcsOff = oidsOff + total * width;
   const offsOff = crcsOff + total * 4;
   const largeOff = offsOff + total * 4;
   // Require the whole oid+crc+offset table span to fit before touching any of
   // it — an absurd fanout total (e.g. 0xffffffff in a 1032-byte idx) fails here.
   if (largeOff > idx.length) return null;
   const oid = Buffer.from(oidHex, 'hex');
-  if (oid.length !== 20) return null; // malformed hex oid → no match
   const firstByte = oid[0];
   const lo = firstByte === 0 ? 0 : readUint32BE(idx, fanoutOff + (firstByte - 1) * 4);
   const hi = readUint32BE(idx, fanoutOff + firstByte * 4);
@@ -539,7 +786,7 @@ export function findPackOffset(idx, oidHex) {
   let right = hi;
   while (left < right) {
     const mid = (left + right) >>> 1;
-    const cmp = idx.compare(oid, 0, 20, oidsOff + mid * 20, oidsOff + mid * 20 + 20);
+    const cmp = idx.compare(oid, 0, width, oidsOff + mid * width, oidsOff + mid * width + width);
     if (cmp === 0) {
       let off = readUint32BE(idx, offsOff + mid * 4);
       if (off & 0x80000000) {
@@ -668,7 +915,7 @@ export function applyDelta(base, delta) {
 // git itself caps delta depth (pack.depth default 50); 64 matches that posture.
 const MAX_DELTA_DEPTH = 64;
 
-function readPackEntry(commonDir, pack, idx, off, depth = 0, lookup) {
+function readPackEntry(commonDir, pack, idx, off, depth = 0, lookup, oidWidth) {
   if (depth > MAX_DELTA_DEPTH) return null;
   let b = pack[off];
   const type = (b >> 4) & 7;
@@ -696,16 +943,26 @@ function readPackEntry(commonDir, pack, idx, off, depth = 0, lookup) {
     if (!(negOff > 0) || negOff > off) return null; // 0 = self-reference loop; > off = out of range
     let delta;
     try { delta = zlib.inflateSync(pack.subarray(p)); } catch (_e) { return null; }
-    const base = readPackEntry(commonDir, pack, idx, off - negOff, depth + 1, lookup);
+    const base = readPackEntry(commonDir, pack, idx, off - negOff, depth + 1, lookup, oidWidth);
     if (!base) return null;
     const body = applyDelta(base.body, delta);
     return body ? { type: base.type, body } : null;
   }
-  if (type === 7) { // REF_DELTA: base named by the following 20-byte oid
-    const baseOid = pack.subarray(dataStart, dataStart + 20).toString('hex');
+  if (type === 7) { // REF_DELTA: base named by the following oid (20 bytes sha1, 32 sha256)
+    // HIMMEL-1472: the base-oid slice must be sized by the repo hash width, not a
+    // fixed 20. An objectFormat=sha256 pack carries a 32-byte base oid — a fixed
+    // 20 truncated it AND started the inflate 12 bytes inside the oid, so a
+    // sha256 REF_DELTA never resolved. `oidWidth` is derived from the requested
+    // oid (oidByteWidth in readPackedObject) the same way findPackOffset keys
+    // the idx; an unknown width can't size the oid, so degrade (fail-closed).
+    if (!oidWidth) return null;
+    const baseOid = pack.subarray(dataStart, dataStart + oidWidth).toString('hex');
     let delta;
-    try { delta = zlib.inflateSync(pack.subarray(dataStart + 20)); } catch (_e) { return null; }
-    const base = readObject(commonDir, baseOid, depth + 1, lookup); // cycle-checked via lookup.visited
+    try { delta = zlib.inflateSync(pack.subarray(dataStart + oidWidth)); } catch (_e) { return null; }
+    // HIMMEL-1472 (R3): thread the pinned width so a foreign-format REF_DELTA
+    // base (a mixed-format pack) is rejected at the readObject chokepoint rather
+    // than traversed into a false integrity attestation.
+    const base = readObject(commonDir, baseOid, depth + 1, lookup, oidWidth); // cycle-checked via lookup.visited
     if (!base) return null;
     const body = applyDelta(base.body, delta);
     return body ? { type: base.type, body } : null;
@@ -716,7 +973,7 @@ function readPackEntry(commonDir, pack, idx, off, depth = 0, lookup) {
   return typeName ? { type: typeName, body } : null;
 }
 
-function readPackedObject(commonDir, oid, depth = 0, lookup) {
+function readPackedObject(commonDir, oid, depth = 0, lookup, oidWidth) {
   let entries;
   try {
     entries = fs.readdirSync(path.join(commonDir, 'objects', 'pack'));
@@ -752,7 +1009,15 @@ function readPackedObject(commonDir, oid, depth = 0, lookup) {
     try {
       const off = findPackOffset(idx, oid);
       if (off === null) continue;
-      return readPackEntry(commonDir, pack, idx, off, depth, lookup);
+      // HIMMEL-1472: findPackOffset matched this oid against the idx, so its
+      // oidByteWidth (20 sha1 / 32 sha256) is the repo's hash width — thread it
+      // into readPackEntry so the REF_DELTA base oid is sized correctly (the same
+      // width source findPackOffset uses for the idx entries). R3: prefer the
+      // pinned width threaded from readObject (the repo's single object format);
+      // absent a pin (direct callers) derive it from the oid — both equal the
+      // oid's own width once readObject has rejected any mismatched request.
+      const width = oidWidth || oidByteWidth(oid);
+      return readPackEntry(commonDir, pack, idx, off, depth, lookup, width);
     } catch (_e) {
       continue;
     }
@@ -766,6 +1031,17 @@ function readPackedObject(commonDir, oid, depth = 0, lookup) {
 function hashAlgoForOid(oid) {
   if (oid.length === 40 && /^[0-9a-f]{40}$/.test(oid)) return 'sha1';
   if (oid.length === 64 && /^[0-9a-f]{64}$/.test(oid)) return 'sha256';
+  return null;
+}
+
+// Byte width of a git object id by its hex length (HIMMEL-1472): the companion
+// to hashAlgoForOid for the raw-byte readers below (pack-idx entries, tree
+// entries) that index oid BYTES rather than pick a hash algorithm — sha1 = 20,
+// sha256 = 32, else not a git oid. Function-declaration hoisting lets the
+// earlier findPackOffset and the findTreeEntry call site use it.
+function oidByteWidth(oid) {
+  if (oid.length === 40 && /^[0-9a-f]{40}$/.test(oid)) return 20;
+  if (oid.length === 64 && /^[0-9a-f]{64}$/.test(oid)) return 32;
   return null;
 }
 
@@ -787,12 +1063,21 @@ function computeGitOid(type, body, algo) {
 // caps it at MAX_DELTA_DEPTH but only after 64 wasted per-level pack
 // re-reads, so a repeat oid in one lookup degrades immediately, and each
 // pack file is read at most once per lookup (CodeRabbit on #1527).
-export function readObject(commonDir, oid, depth = 0, lookup) {
+export function readObject(commonDir, oid, depth = 0, lookup, oidWidth) {
   if (!lookup) lookup = { visited: new Set(), packCache: new Map() };
+  // HIMMEL-1472 (R3): when the caller pins a repo object-format width (threaded
+  // from readHeadBlob's HEAD/ref oid), reject any oid whose own width disagrees.
+  // Git forbids intermixing hash formats in one repository (hash-transition
+  // spec): a crafted/corrupt DB with a 40-hex sha1 commit naming a 64-hex sha256
+  // tree (or the mirror) would otherwise traverse and rehash green where
+  // `git show HEAD:<path>` rejects — a false integrity attestation on the
+  // git-unavailable fallback path. Without a pin (direct unit-test callers) the
+  // per-oid rehash below still self-validates each object.
+  if (oidWidth && oidByteWidth(oid) !== oidWidth) return null;
   if (lookup.visited.has(oid)) return null; // REF_DELTA cycle → degrade, don't loop
   lookup.visited.add(oid);
   const loose = readLooseObject(commonDir, oid);
-  const obj = loose || readPackedObject(commonDir, oid, depth, lookup);
+  const obj = loose || readPackedObject(commonDir, oid, depth, lookup, oidWidth);
   // Recompute the object id and compare to the request (HIMMEL-1427 r10): a
   // crafted/corrupt idx can map oid→offset at the WRONG object, and a tampered
   // loose file can sit at an oid-derived path whose content hashes elsewhere —
@@ -809,25 +1094,46 @@ export function readObject(commonDir, oid, depth = 0, lookup) {
   return obj;
 }
 
-function commitTreeOid(body) {
+function commitTreeOid(body, oidWidth) {
   const lineEnd = body.indexOf(10);
   const firstLine = body.subarray(0, lineEnd < 0 ? body.length : lineEnd).toString('utf8');
-  const match = firstLine.match(/^tree ([0-9a-f]{40})$/);
-  return match ? match[1] : null;
+  // HIMMEL-1472: accept sha1 (40-hex) OR sha256 (64-hex) tree oids, keyed
+  // consistently with hashAlgoForOid — a sha256 repo's commit carries a 64-hex
+  // tree line that the prior {40}-only regex silently dropped.
+  const match = firstLine.match(/^tree ([0-9a-f]{40}|[0-9a-f]{64})$/);
+  if (!match) return null;
+  // HIMMEL-1472 (R3): reject a tree oid whose width disagrees with the repo's
+  // pinned object format (threaded from readHeadBlob's HEAD/ref oid). Git
+  // forbids a sha1 commit naming a sha256 tree (and the mirror); without this a
+  // crafted/corrupt DB traversed into a false integrity attestation on the
+  // git-unavailable fallback path.
+  if (oidWidth && oidByteWidth(match[1]) !== oidWidth) return null;
+  return match[1];
 }
 
-function findTreeEntry(treeBody, name) {
+// HIMMEL-1472: a tree entry is "<mode> <name>\0<oid>" where the oid is 20 bytes
+// (sha1) or 32 (sha256). The nul+<width> advance and oid slice are keyed by
+// `oidWidth` — the tree's own oid width, passed by readHeadBlob's caller (a
+// tree object's entries carry oids of the repo's object format). The prior
+// hardcoded nul+21 walk silently truncated sha256 entry oids to their first 20
+// bytes and advanced past only 21, desynchronizing every subsequent entry.
+function findTreeEntry(treeBody, name, oidWidth) {
+  // HIMMEL-1472 (R3, panel glm-1): an undefined oidWidth made nul+1+oidWidth
+  // NaN, the oid subarray coerce to empty, and the loop index go NaN — silently
+  // wrong instead of null. The pinned width is threaded from readHeadBlob, but
+  // keep an explicit fail-closed guard matching the REF_DELTA arm regardless.
+  if (!oidWidth) return null;
   let i = 0;
   while (i < treeBody.length) {
     const space = treeBody.indexOf(32, i);
     if (space < 0) return null;
     const nul = treeBody.indexOf(0, space + 1);
-    if (nul < 0 || nul + 21 > treeBody.length) return null;
+    if (nul < 0 || nul + 1 + oidWidth > treeBody.length) return null;
     const mode = treeBody.subarray(i, space).toString('utf8');
     const entryName = treeBody.subarray(space + 1, nul).toString('utf8');
-    const oid = treeBody.subarray(nul + 1, nul + 21).toString('hex');
+    const oid = treeBody.subarray(nul + 1, nul + 1 + oidWidth).toString('hex');
     if (entryName === name) return { mode, oid };
-    i = nul + 21;
+    i = nul + 1 + oidWidth;
   }
   return null;
 }
@@ -880,7 +1186,7 @@ function readHeadBlobFromGit(repo, relativePath) {
   }
 }
 
-function readHeadBlob(repo, relativePath) {
+export function readHeadBlob(repo, relativePath) {
   const fromGit = readHeadBlobFromGit(repo, relativePath);
   if (fromGit) return fromGit;
   const gitDir = readGitDir(repo);
@@ -895,18 +1201,34 @@ function readHeadBlob(repo, relativePath) {
   const commonDir = resolveCommonDir(gitDir);
   const headOid = readHeadOid(gitDir, commonDir);
   if (!headOid) return { ok: false, reason: 'reference-unavailable' };
-  const commit = readObject(commonDir, headOid);
+  // HIMMEL-1472 (R4): pin the repo's object-format width from the CONFIGURED
+  // format (extensions.objectFormat in the common dir's config), NOT the HEAD/ref
+  // oid's own length — the HEAD oid is corrupt/attacker-controllable, the config
+  // is git's declared repo format. A crafted/corrupt default (sha1) repo whose
+  // HEAD ref carries a 64-hex oid with a fully self-consistent sha256 chain passes
+  // every r3 width+rehash check (the HEAD oid pinned width 32 and the chain
+  // agreed) while git itself rejects the repo (objectFormat says sha1); the mirror
+  // holds for a configured sha256 repo with a 40-hex chain. Derive the configured
+  // width (fail-closed), REJECT a HEAD oid whose width disagrees, and pin the
+  // CONFIGURED width into the traversal thread (readObject, commitTreeOid, the
+  // tree walk, readPackEntry's REF_DELTA arm) — every oid inside a repo shares its
+  // one object format (hash-transition spec), so a HEAD/oid disagreeing with the
+  // config is corrupt and degrades rather than attests.
+  const oidWidth = configuredObjectByteWidth(commonDir);
+  if (!oidWidth) return { ok: false, reason: 'reference-unavailable' };
+  if (oidByteWidth(headOid) !== oidWidth) return { ok: false, reason: 'reference-unavailable' };
+  const commit = readObject(commonDir, headOid, 0, undefined, oidWidth);
   if (!commit || commit.type !== 'commit') return { ok: false, reason: 'reference-unavailable' };
-  let treeOid = commitTreeOid(commit.body);
+  let treeOid = commitTreeOid(commit.body, oidWidth);
   if (!treeOid) return { ok: false, reason: 'reference-unavailable' };
   const parts = relativePath.split('/');
   for (let i = 0; i < parts.length; i += 1) {
-    const tree = readObject(commonDir, treeOid);
+    const tree = readObject(commonDir, treeOid, 0, undefined, oidWidth);
     if (!tree || tree.type !== 'tree') return { ok: false, reason: 'reference-unavailable' };
-    const entry = findTreeEntry(tree.body, parts[i]);
+    const entry = findTreeEntry(tree.body, parts[i], oidWidth);
     if (!entry) return { ok: false, reason: 'reference-unavailable' };
     if (i === parts.length - 1) {
-      const blob = readObject(commonDir, entry.oid);
+      const blob = readObject(commonDir, entry.oid, 0, undefined, oidWidth);
       if (!blob || blob.type !== 'blob') return { ok: false, reason: 'reference-unavailable' };
       return { ok: true, body: blob.body };
     }

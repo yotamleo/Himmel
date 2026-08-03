@@ -73,7 +73,9 @@ git init -q "$WORK_REPO"
 HANDOVER_DIR="$TMP/statedocs/handovers"
 mkdir -p "$HANDOVER_DIR"
 git init -q "$TMP/statedocs"
-FUTURE_TIME="23:59"
+# A near future time keeps these proxy fixtures inside the HIMMEL-1475
+# explicit-HH:MM long-gap limit.
+FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
 
 make_handover() {
     local path="$HANDOVER_DIR/handover-$RANDOM.md"

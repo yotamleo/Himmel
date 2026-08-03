@@ -22,10 +22,10 @@ keep that working at any team size.
    `type ∈ feat|fix|chore|docs|refactor|test`. The orchestrator
    enforces this.
 
-3. **Commit format:** conventional commits with optional ticket key.
+3. **Commit format:** conventional commits with a required ticket key in this repo.
 
-   ```
-   type(scope): [HIMMEL-N ]message
+   ```text
+   type(scope): HIMMEL-N message
 
    Optional longer body...
 
@@ -33,7 +33,10 @@ keep that working at any team size.
    Co-Authored-By: ...
    ```
 
-   `scripts/hooks/check-commit-msg.sh` validates the format on `commit-msg`.
+   `scripts/hooks/check-commit-msg.sh` validates the format on `commit-msg`;
+   CI rechecks every PR commit with `TICKET_ID_REQUIRED=1`. Adopters default to
+   ticket-optional and can opt in via `.env` using `JIRA_PROJECT_KEY`, or set a
+   custom `TICKET_ID_PATTERN` for another tracker.
 
    The `Co-Authored-By: Claude` trailer is emitted by Claude Code itself, not
    by any himmel script. To turn it off, set the `attribution` key in your

@@ -111,7 +111,7 @@ git commit -m "docs: [HIMMEL-289] toy change for daily-loop walkthrough"
 The **commit-msg gate** (`check-commit-msg.sh`) runs and validates:
 
 ```
-Pattern:  type[(scope)][!]: [HIMMEL-N ]message
+Pattern:  type[(scope)][!]: [HIMMEL-N] message
 Types:    feat fix chore docs refactor test style perf ci build revert
 ```
 
@@ -121,14 +121,14 @@ If you get the format wrong you see:
 COMMIT REJECTED: message does not match conventional commit format.
 
   Required:  type(scope): message
-  Optional:  type(scope): HIMMEL-N message
+  Ticket:    required only when TICKET_ID_REQUIRED=1
 
   Types: feat fix chore docs refactor test style perf ci build revert
 
   Examples:
-    feat(auth): add JWT validation
+    feat(auth): HIMMEL-22 add JWT validation
     fix(api): HIMMEL-23 correct status code on 404
-    chore: update dependencies
+    chore: HIMMEL-24 update dependencies
 
   Got: my bad message
 ```
@@ -330,7 +330,7 @@ gh pr create …                  # 7. open PR
 |---|---|---|
 | `block-edit-on-main` | PreToolUse (Edit/Write) | Blocks edits in primary worktree while on main |
 | `check-cr-marker-on-pr-create` | PreToolUse (Bash) | Blocks `gh pr create` while a CR marker exists |
-| `conventional-commit-msg` | commit-msg | Validates `type[(scope)]: [HIMMEL-N ]message` |
+| `conventional-commit-msg` | commit-msg | Validates conventional shape and required ticket traceability in this repo |
 | `code-review-before-push` | pre-push | Writes CR marker for non-docs changes |
 | `platforms-tested` | pre-push | Requires `Platforms tested:` trailer on shell/script diffs |
 | `security-reviewed` | pre-push | Requires `Security reviewed:` trailer on non-docs code |

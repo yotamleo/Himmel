@@ -23,6 +23,10 @@ assert_contains() {
     local label="$1" needle="$2" haystack="$3"
     case "$haystack" in *"$needle"*) echo "PASS $label" ;; *) echo "FAIL $label — missing: $needle"; FAILED=$((FAILED + 1)) ;; esac
 }
+assert_not_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    case "$haystack" in *"$needle"*) echo "FAIL $label — unexpectedly contains: $needle"; FAILED=$((FAILED + 1)) ;; *) echo "PASS $label" ;; esac
+}
 FAILED=0
 
 # --- Fixtures -------------------------------------------------------------
@@ -88,6 +92,9 @@ assert_contains "T3 echoes resolved basename" "resolved=2026-06-20-himmel-777-re
 args=$(cat "$ARM_ARGS_FILE" 2>/dev/null)
 assert_contains "T3 arm got --handover resolved path" "2026-06-20-himmel-777-resume.md" "$args"
 assert_contains "T3 arm got --time smart" "--time smart" "$args"
+# smart is a system-computed sentinel the long-gap guard exempts by design, so
+# the Telegram path must NOT ride --long-gap on it (HIMMEL-1475).
+assert_not_contains "T3 smart does not ride --long-gap" "--long-gap" "$args"
 
 # --- T4: ticket only matched under specs/ → excluded → no handover --------
 out=$(run arm-resume HIMMEL-888 smart); rc=$?
@@ -115,7 +122,11 @@ assert_rc "T8 path outside handover_root rejected" 3 "$rc"
 INSIDE="$HANDOVER_DIR/yotam/himmel/2026-06-20-himmel-777-resume.md"
 out=$(run arm-resume "$INSIDE" 02:00); rc=$?
 assert_rc "T9 valid in-root path arms" 0 "$rc"
-assert_contains "T9 arm got --time 02:00" "--time 02:00" "$(cat "$ARM_ARGS_FILE")"
+args9=$(cat "$ARM_ARGS_FILE")
+assert_contains "T9 arm got --time 02:00" "--time 02:00" "$args9"
+# an explicit HH:MM typed on Telegram rides --long-gap — a HUMAN typing a far
+# time IS the explicit choice the long-gap guard exists to force (HIMMEL-1475).
+assert_contains "T9 explicit HH:MM rides --long-gap" "--long-gap" "$args9"
 
 # --- T10: arm-resume dedup (rc 3) → auto-action rc 5 (already armed) -------
 out=$(ARM_STUB_RC=3 run arm-resume HIMMEL-777 smart); rc=$?
@@ -124,6 +135,12 @@ assert_rc "T10 already-armed maps to rc 5" 5 "$rc"
 # --- T11: arm-resume other failure (rc 2) → auto-action rc 6 --------------
 out=$(ARM_STUB_RC=2 run arm-resume HIMMEL-777 smart); rc=$?
 assert_rc "T11 arm failure maps to rc 6" 6 "$rc"
+
+# --- T11b: arm-resume long-gap refusal (rc 9) → auto-action rc 6 ----------
+# Should not occur once --long-gap rides along on the HH:MM branch, but the
+# honest error text is kept if it does (HIMMEL-1475).
+out=$(ARM_STUB_RC=9 run arm-resume HIMMEL-777 smart); rc=$?
+assert_rc "T11b long-gap refusal (rc 9) maps to rc 6" 6 "$rc"
 
 # --- merge-public (HIMMEL-1213) --------------------------------------------
 # merge-public-on-green stub: records argv, exits with MERGE_STUB_RC (default 0).

@@ -30,7 +30,9 @@ export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK 2>/dev/null || true
 
-FUTURE_TIME="23:59"
+# A near future time keeps these queue-lock fixtures inside the HIMMEL-1475
+# explicit-HH:MM long-gap limit.
+FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
 HO="$HANDOVER_DIR/HIMMEL-856-test/next-session-1.md"
 mkdir -p "$(dirname "$HO")"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 test handover\n' > "$HO"

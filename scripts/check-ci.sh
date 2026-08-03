@@ -240,6 +240,12 @@ if [ "$CR_ARMED" -eq 1 ]; then
     # shellcheck source=scripts/lib/cr-body-findings.sh
     # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
     . "$(cd "$(dirname "$0")" && pwd)/lib/cr-body-findings.sh"
+    # The CR-ledger evidence reader (HIMMEL-1465): tells cr_signal_gate below
+    # whether a CLEAN critic panel carried the gate at the head, so a
+    # rate-limited CodeRabbit App need not block when the panel already reviewed.
+    # shellcheck source=scripts/lib/cr-ledger-evidence.sh
+    # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+    . "$(cd "$(dirname "$0")" && pwd)/lib/cr-ledger-evidence.sh"
 fi
 
 pr_checks() {
@@ -510,6 +516,35 @@ cr_signal_gate() {
             # from a clean review, and this gate certified exit 0 on a PR nobody
             # had looked at (reproduced on PR #1429, 2026-07-27). Actionable
             # rather than merely closed: the operator's next move is one comment.
+            #
+            # HIMMEL-1465: cr_signal_state collapses EVERY decline wording to
+            # `skipped`, but only the RATE-LIMITED one is panel-carriable. Read
+            # the description and, when (and ONLY when) it is the rate-limit
+            # shape, consult the CR ledger the same way clear-cr-marker.sh does:
+            # a CLEAN critic panel (>=1 `avail ... ok`, no blocking finding) at
+            # THIS head carries the gate (operator standing rule), so the
+            # rate-limited App does not fail the verdict. Any other skip wording
+            # — auto-reviews-disabled, or a decline CodeRabbit invents later —
+            # keeps failing closed exactly as before. Evidence-gated and
+            # fail-closed: no clean panel => current exit-2 behaviour stands.
+            local rl_desc rl_low rl_panel
+            if rl_desc=$(cr_signal_description "$owner" "$repo" "$head0"); then
+                rl_low=$(printf '%s' "$rl_desc" | tr '[:upper:]' '[:lower:]')
+            else
+                echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num and its description could not be read to tell rate-limiting from a disabled review — cannot evaluate the panel-carried allowance; re-run. If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
+                exit 2
+            fi
+            # Rate-limit vocabulary (mirrors cr-signal.sh's _CRS_SKIP_RE
+            # `rate.?limit` arm): "rate limit" / "rate-limit" / "ratelimit".
+            case "$rl_low" in
+                *rate?limit*|*ratelimit*)
+                    if rl_panel=$(cr_ledger_carries_gate "$head0"); then
+                        echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num; the critic panel carries the gate ($rl_panel) — not failing the verdict on the App (HIMMEL-1465)."
+                        return 0
+                    fi
+                    echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $rl_panel) — a rate-limited App with no clean panel is not a green one. Wait for the App's limit to reset, or run /pr-check on this HEAD so a panel reviews it. Bypass: CR_APP=0 (or CR_PROFILE=none)." >&2
+                    exit 2 ;;
+            esac
             echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num — it posted state=success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-run), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop, and note the CLI lane 'bash scripts/cr/coderabbit-review.sh --branch <b> --base main' is a separate, independently-limited path). If CodeRabbit has simply renamed its success wording, widen the allow-list for one run with CR_OK_DESC_RE='^(review completed|no review changes requested|<new wording>)\$' — CR_OK_DESC_RE REPLACES the default, so carry BOTH default alternatives or you narrow it instead of widening it, and KEEP the ^(...)\$ anchors or a decline description merely containing one of these phrases (e.g. 'No review completed') passes as clean again (HIMMEL-1354 R2). If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
             exit 2 ;;
         *)

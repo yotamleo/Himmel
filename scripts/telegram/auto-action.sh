@@ -165,14 +165,26 @@ echo "resolved=$(basename "$RESOLVED")"
 # Invoke arm-resume.sh with the resolved handover as the --handover VALUE. Strip the
 # bot token (and TELEGRAM_OWN_POLLER) from the child env (M3 — arm doesn't need them).
 # Default per-handover dedup; no --force, no --dedup-any (remote arms can't force/clobber).
+# HIMMEL-1475: an explicit HH:MM rides --long-gap — a HUMAN typing a far time on
+# Telegram IS the explicit choice the long-gap guard exists to force (the guard
+# targets the ORCHESTRATOR silently defaulting to a far park, not a typed one).
+# smart/auto are system-computed sentinels the guard exempts by design, so they
+# keep the bare call shape.
 ARM_CMD="${AUTO_ACTION_ARM_CMD:-bash $SCRIPT_DIR/../handover/arm-resume.sh}"
-# ARM_CMD is an intentional command+args split — word-splitting wanted.
+case "$TIME" in
+    smart|auto) ARM_LONG_GAP="" ;;
+    *)          ARM_LONG_GAP="--long-gap" ;;
+esac
+# ARM_CMD / ARM_LONG_GAP are an intentional command+args split — word-splitting wanted.
 # shellcheck disable=SC2086
-out=$(TELEGRAM_BOT_TOKEN="" TELEGRAM_OWN_POLLER="" $ARM_CMD --handover "$RESOLVED" --time "$TIME" 2>&1)
+out=$(TELEGRAM_BOT_TOKEN="" TELEGRAM_OWN_POLLER="" $ARM_CMD --handover "$RESOLVED" --time "$TIME" $ARM_LONG_GAP 2>&1)
 arm_rc=$?
 
 case "$arm_rc" in
     0) exit 0 ;;
     3) echo "ERR auto-action: already armed for $(basename "$RESOLVED")" >&2; exit 5 ;;
+    # rc=9 should not occur once --long-gap rides along on the HH:MM branch above,
+    # but keep the honest text if it ever does (mapped to the generic failure exit).
+    9) echo "ERR auto-action: arm-resume refused the long gap (rc=9): $(printf '%s' "$out" | tail -1)" >&2; exit 6 ;;
     *) echo "ERR auto-action: arm-resume failed (rc=$arm_rc): $(printf '%s' "$out" | tail -1)" >&2; exit 6 ;;
 esac
