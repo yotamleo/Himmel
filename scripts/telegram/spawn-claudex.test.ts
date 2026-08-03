@@ -2,7 +2,7 @@
 import { expect, test, spyOn } from "bun:test";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   claudexSessionRoot,
@@ -30,6 +30,7 @@ import {
   claudexLauncherPath,
   buildClaudexRunArgs,
   claudexChildEnv,
+  writeClaudexLiveMeta,
   executeClaudexRun,
 } from "./spawn-claudex";
 import { BASH_BIN } from "./run";
@@ -990,6 +991,41 @@ const seedRunningMeta = () => {
   writeFileSync(metaPath, JSON.stringify(runningMeta, null, 2));
   return { dir, metaPath, runningMeta };
 };
+
+test("executeClaudexRun: onSpawn publishes the live worker pid while status stays running", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    let liveMeta: any;
+    const run = (async (_p: string, _c: string, _opts: unknown, onSpawn: (pid: number) => void) => {
+      onSpawn(321);
+      liveMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 321, tail: "" };
+    }) as any;
+    await executeClaudexRun({ run, prompt: "p", worktree: "/wt", repoRoot: "/repo", sessionDir: dir, metaPath, runningMeta });
+    expect(liveMeta.status).toBe("running");
+    expect(liveMeta.pid).toBe(321);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("writeClaudexLiveMeta: replace failure is loud and atomically leaves an unprobeable running marker", () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    writeClaudexLiveMeta(metaPath, runningMeta, { pid: 321 }, (tmpPath, _destPath, json) => {
+      writeFileSync(tmpPath, json);
+      throw new Error("rename denied");
+    });
+    const marker = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(marker.status).toBe("running");
+    expect(marker.pid).toBeUndefined();
+    expect(marker.pid_probe).toBe("unprobeable");
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("worker liveness is unprobeable and must be treated as possibly alive"));
+    expect(existsSync(`${metaPath}.tmp-${process.pid}`)).toBe(false);
+  } finally {
+    stderr.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("executeClaudexRun: a THROWING run() transitions meta running->failed(-1) then rethrows", async () => {
   const { dir, metaPath, runningMeta } = seedRunningMeta();

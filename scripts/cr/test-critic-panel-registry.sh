@@ -11,14 +11,21 @@ set -uo pipefail
 
 # Clear ambient tier controls so the panel's tier filter is deterministic
 # (.env often exports CR_PROFILE); each case sets what it needs explicitly.
-unset CR_PROFILE CRITIC_PANEL_TIERS CR_TRIVIALITY_OVERRIDE 2>/dev/null || true
+unset CR_PROFILE CRITIC_PANEL_TIERS CR_TRIVIALITY_OVERRIDE \
+    CRITIC_LEDGER_APPEND CR_LEDGER CRITIC_FIRST_PASS CRITICS_JSON \
+    CRITIC_PARALLEL CRITIC_TIMEOUT_SECS CRITIC_PANEL_TOTAL_TIMEOUT_SECS \
+    CRITIC_PANEL_STARTED_AT 2>/dev/null || true
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PANEL="$HERE/critic-panel.sh"
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d -t critic-panel-registry-test.XXXXXX)"
 # shellcheck disable=SC2064
 trap "rm -rf $tmp" EXIT
 fails=0
+LEDGER_NOOP="$tmp/ledger-noop.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$LEDGER_NOOP"
+chmod +x "$LEDGER_NOOP"
+export CRITIC_LEDGER_APPEND="$LEDGER_NOOP"
 
 check() {
     if [ "$2" = "$3" ]; then echo "ok - $1"; else
@@ -62,7 +69,7 @@ index 0000000..1111111 100644
 # ---------------------------------------------------------------------------
 repo="$tmp/repo"
 mkdir -p "$repo"
-( cd "$repo" && git init -q )
+( cd "$repo" && git init -q && git -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m init )
 SENTINEL="sentinel-zai-9f3a7c"
 printf 'ZAI_API_KEY=%s\n' "$SENTINEL" > "$repo/.env"
 printf '%s' '{"panel":[{"slug":"glm","model":"glm-5.2","provider":"zai","tier":"free","route_provider":"glm"}]}' > "$tmp/t1-reg.json"

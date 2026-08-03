@@ -51,6 +51,14 @@
 #   52. leading-zero wait 007 (silent octal) → normalized to decimal 7, rc 0
 set -uo pipefail
 
+# HIMMEL-1495 — an --automerge-armed launching shell carries ARMAUTOMERGE=1 +
+# CR_MERGE_GATE_OK=1 by design; an ambient value in the operator's shell must
+# not decide the result (the 34e/34f precedent that lives in THIS file,
+# generalized to the armed-session bypass pair). check-ci.sh does not consult
+# either var today, so this is defense-in-depth for the day a sourced lib reads
+# one — case 58 below pins today's insensitivity.
+unset ARMAUTOMERGE CR_MERGE_GATE_OK
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/check-ci.sh"
 
@@ -73,7 +81,7 @@ cat > "$STUBDIR/gh" <<'EOF'
 #!/usr/bin/env bash
 # gh stub for test-check-ci.sh — checks behavior via GH_STUB_MODE, probe/watch/
 # api/review/comment counters via GH_STUB_COUNT / GH_STUB_WATCH / GH_STUB_API /
-# GH_STUB_REVIEWS / GH_STUB_COMMENTS files, unresolved-thread count via
+# GH_STUB_STATUSES / GH_STUB_REVIEWS / GH_STUB_COMMENTS files, unresolved-thread count via
 # GH_STUB_THREADS ("fail" makes the graphql call
 # error; "paged" puts the unresolved thread on page two). graphql pages are
 # echoed in the script's parsed shape: "<count> <hasNextPage> <endCursor>".
@@ -100,6 +108,15 @@ if [ "$cmd" = "api" ]; then
                 # refusal lives ONLY in .description — which this reader used to
                 # drop, making a declined review byte-identical to a clean one.
                 cr-skipped)     echo '[{"context":"CodeRabbit","state":"success","description":"Review skipped: automatic reviews are disabled","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+                cr-desc-error)
+                    s=$(cat "$GH_STUB_STATUSES" 2>/dev/null)
+                    s=${s:-0}
+                    echo $((s+1)) > "$GH_STUB_STATUSES"
+                    if [ "$s" -eq 0 ]; then
+                        echo '[{"context":"CodeRabbit","state":"success","description":"Review skipped: automatic reviews are disabled","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]'
+                    else
+                        echo "statuses boom" >&2; exit 1
+                    fi ;;
                 # The positive control for the pair: the SAME state with a real
                 # review. Without it the skip assertion could be satisfied by
                 # breaking `success` outright, which would pass while making the
@@ -322,7 +339,7 @@ case "$GH_STUB_MODE" in
     watch-error)
         if [ "$is_watch" -eq 1 ]; then echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1; fi
         exit 8 ;;
-    cr-absent|cr-pending|cr-failure|cr-spoofed|cr-query-error|cr-paged|cr-skipped|cr-completed|cr-nearmiss|cr-ratelimited|cr-unknownword|cr-substrmatch)
+    cr-absent|cr-pending|cr-failure|cr-spoofed|cr-query-error|cr-paged|cr-skipped|cr-desc-error|cr-completed|cr-nearmiss|cr-ratelimited|cr-unknownword|cr-substrmatch)
         # Checks are GREEN and threads are clean in every one of these — the
         # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
@@ -368,6 +385,7 @@ run() {
     : > "$STUBDIR/watch"
     : > "$STUBDIR/api"
     : > "$STUBDIR/headc"
+    : > "$STUBDIR/statuses"
     : > "$STUBDIR/reviews"
     : > "$STUBDIR/comments"
     PATH="$STUBDIR:$PATH" \
@@ -377,6 +395,7 @@ run() {
         GH_STUB_WATCH="$STUBDIR/watch" \
         GH_STUB_API="$STUBDIR/api" \
         GH_STUB_HEADC="$STUBDIR/headc" \
+        GH_STUB_STATUSES="$STUBDIR/statuses" \
         GH_STUB_REVIEWS="$STUBDIR/reviews" \
         GH_STUB_COMMENTS="$STUBDIR/comments" \
         GH_STUB_HEAD="$HEAD_OVERRIDE" \
@@ -395,6 +414,13 @@ run() {
     SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
     ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0
     CR_PROFILE_OVERRIDE=""; CR_APP_OVERRIDE=1
+}
+
+run_in_repo() {
+    local repo="$1" previous="$PWD"; shift
+    cd "$repo" || { echo "FATAL: cannot cd to ledger fixture repo" >&2; exit 1; }
+    run "$@"
+    cd "$previous" || { echo "FATAL: cannot cd back from ledger fixture repo" >&2; exit 1; }
 }
 
 assert_rc()      { if [ "$RC" -eq "$1" ]; then pass "$2"; else fail "$2" "rc=$RC want $1"; fi; }
@@ -702,32 +728,64 @@ assert_rc 0 "34d skip-ish wording on a COMPLETED review does not block"
 # default at all. (CR review of this branch, 2026-07-28.)
 unset CR_OK_DESC_RE CR_SKIP_DESC_RE
 
-run cr-ratelimited
+# Exact-head ledger fixtures for every panel-carry shape below. The empty repo
+# proves no rows preserve the existing fail-closed verdict; the clean repo has
+# one responder at the fixture head and no blocking finding.
+EMPTY_LEDGER_REPO=$(mktemp -d "$STUBDIR/empty-ledger.XXXXXX")
+git -C "$EMPTY_LEDGER_REPO" init --quiet
+git -C "$EMPTY_LEDGER_REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
+: > "$EMPTY_LEDGER_REPO/.git/cr-critic-scores.jsonl"
+LEDGER_REPO=$(mktemp -d "$STUBDIR/clean-ledger.XXXXXX")
+git -C "$LEDGER_REPO" init --quiet
+git -C "$LEDGER_REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
+printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"sha1","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$LEDGER_REPO/.git/cr-critic-scores.jsonl"
+DIRTY_LEDGER_REPO=$(mktemp -d "$STUBDIR/dirty-ledger.XXXXXX")
+git -C "$DIRTY_LEDGER_REPO" init --quiet
+git -C "$DIRTY_LEDGER_REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
+printf '%s\n' \
+    '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"sha1","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' \
+    '{"kind":"finding","ts":"2026-08-03T00:00:01Z","branch":"feat/x","head":"sha1","finding_id":"H1506-test","severity":"crit","verdict":"confirmed","artifact":"diff","perspective":"off"}' \
+    > "$DIRTY_LEDGER_REPO/.git/cr-critic-scores.jsonl"
+
+# HIMMEL-1506: automatic-reviews-disabled wording is panel-carriable at the
+# exact head, but an explicitly empty ledger preserves the existing exit-2
+# message and remedy.
+run_in_repo "$EMPTY_LEDGER_REPO" cr-skipped
+assert_rc 2 "34b2 disabled wording with no ledger rows stays blocked"
+assert_err_has "@coderabbitai review" "34b2 disabled-wording remedy is unchanged"
+run_in_repo "$LEDGER_REPO" cr-skipped
+assert_rc 0 "34b3 disabled wording with a clean exact-head panel is carried"
+assert_out_has "reports automatic reviews are disabled" "34b3 distinct disabled-signal carry line surfaced"
+assert_out_has "carried responders=1 models=codex" "34b3 carry evidence surfaced"
+
+# A description read failure is also an absent App signal: clean exact-head
+# panel evidence carries it; no ledger rows keep the prior cannot-evaluate path.
+run_in_repo "$EMPTY_LEDGER_REPO" cr-desc-error
+assert_rc 2 "34b4 unreadable description with no ledger rows stays blocked"
+assert_err_has "description could not be read" "34b4 unreadable-description message is unchanged"
+run_in_repo "$LEDGER_REPO" cr-desc-error
+assert_rc 0 "34b5 unreadable description with a clean exact-head panel is carried"
+assert_out_has "description is unreadable" "34b5 distinct unreadable-description carry line surfaced"
+assert_out_has "carried responders=1 models=codex" "34b5 carry evidence surfaced"
+
+run_in_repo "$EMPTY_LEDGER_REPO" cr-ratelimited
 assert_rc 2 "34e rate-limited CodeRabbit review with no panel evidence is not certifiable"
 assert_err_has "rate-limited" "34e rate-limit reason surfaced"
 assert_err_has "did NOT carry the gate" "34e names the missing panel evidence (HIMMEL-1465)"
 
 # 34e2 (HIMMEL-1465) — the SAME rate-limited decline, but a CLEAN critic panel
 # recorded at the head in the CR ledger: the panel carries the gate and the
-# verdict certifies. A SCRATCH repo pins the ledger — cr-ledger-evidence.sh
-# deliberately reads only <git-common-dir>/cr-critic-scores.jsonl of the CWD
-# repo (never an env-pointed path), so the real checkout's ledger must not
-# decide this case. Head "sha1" matches by exact string equality in atHead
-# (it is not hex, so it can never prefix-resolve to anything else).
-LEDGER_REPO=$(mktemp -d "$STUBDIR/ledgerrepo.XXXXXX")
-git -C "$LEDGER_REPO" init --quiet
-git -C "$LEDGER_REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
-printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"sha1","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$LEDGER_REPO/.git/cr-critic-scores.jsonl"
-PRE_34E2_PWD=$PWD
-cd "$LEDGER_REPO" || { echo "FATAL: cannot cd to 34e2 scratch repo" >&2; exit 1; }
-run cr-ratelimited
-cd "$PRE_34E2_PWD" || { echo "FATAL: cannot cd back from 34e2 scratch repo" >&2; exit 1; }
+# verdict certifies. The exact audit line is pinned byte-for-byte.
+run_in_repo "$LEDGER_REPO" cr-ratelimited
 assert_rc 0 "34e2 rate-limited App with a clean panel at the head is panel-carried (HIMMEL-1465)"
-assert_out_has "the critic panel carries the gate" "34e2 carried-gate audit line surfaced"
+assert_out_has "check-ci: CodeRabbit is rate-limited on head sha1 of PR #42; the critic panel carries the gate (carried responders=1 models=codex) — not failing the verdict on the App (HIMMEL-1465)." "34e2 existing rate-limit carry line is byte-identical"
 
 run cr-unknownword
 assert_rc 2 "34f an UNENUMERATED success wording fails closed, not open"
 assert_err_has "does not say the review completed" "34f allow-list reason surfaced"
+run_in_repo "$LEDGER_REPO" cr-unknownword
+assert_rc 0 "34f2 unenumerated skip wording with a clean exact-head panel is carried"
+assert_out_has "posted skip-classified wording" "34f2 distinct generic-skip carry line surfaced"
 
 # 34g — the escape hatch that makes the allow-list safe to ship. If CodeRabbit
 # renames its success description, every PR blocks at once; the operator must be
@@ -762,9 +820,9 @@ assert_err_has "does not say the review completed" "34h allow-list reason surfac
 # widens the allow-list during an outage using the OLD documented recipe
 # (no anchors) re-admits the exact substring hole 34h just closed, on the
 # recovery path most likely to be exercised during that same drift. The
-# documented recipe (scripts/lib/cr-signal.sh's OUTAGE ESCAPE HATCH block,
-# scripts/check-ci.sh's skipped-arm operator message) is fixed here to carry
-# its own ^(...)$ anchors; CR_OK_DESC_RE stays unanchored IN CODE — forcing
+# documented recipe (scripts/lib/cr-signal.sh's OUTAGE ESCAPE HATCH block) is
+# fixed here to carry its own ^(...)$ anchors; CR_OK_DESC_RE stays unanchored
+# IN CODE — forcing
 # an anchor there would break 34g's already-shipped loose partial-phrase
 # widening (a bare keyword matching an unenumerated FULL sentence), so the
 # anchors live in the recipe operators copy, not in code. Pins that following
@@ -815,10 +873,26 @@ assert_err_has "could not read CodeRabbit's review-body findings" "38 body-query
 # 39 — incremental-silent: CodeRabbit concluded on sha1 but emitted no review
 # object there, while a prior head carries outside-diff findings. This is the
 # resolvable rc 4 state, not the genuinely unreadable rc 2 state.
-run body-a2
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2
 assert_rc 4 "39 incremental-silent body state rc 4"
 assert_err_has "@coderabbitai full review" "39 full-review resolution printed"
 assert_verdict 4 "39 un-maskable exit 4 verdict line"
+
+# HIMMEL-1502/1506: when the current-head review object is the ONLY missing
+# signal, resolved threads + a clean exact-head panel carry the gate. Either
+# unresolved threads or absent panel evidence preserves the prior block.
+run_in_repo "$LEDGER_REPO" body-a2
+assert_rc 0 "39b absent head review object with resolved threads and clean panel is carried"
+assert_out_has "check-ci: review object absent at head sha1 of PR #42; threads resolved; panel carries — HIMMEL-1502/1506 (carried responders=1 models=codex)." "39b exit-4 carry line byte-identical"
+assert_out_has "carried responders=1 models=codex" "39b exit-4 carry evidence surfaced"
+THREADS_OVERRIDE=2
+run_in_repo "$LEDGER_REPO" body-a2
+assert_rc 3 "39c unresolved threads still block despite clean panel evidence"
+assert_err_has "2 unresolved review thread(s)" "39c unresolved-thread reason is unchanged"
+THREADS_OVERRIDE=
+run_in_repo "$DIRTY_LEDGER_REPO" body-a2
+assert_rc 4 "39d a blocking panel finding keeps the absent-review-object arm blocked"
+assert_err_has "@coderabbitai full review" "39d dirty-ledger exit-4 remedy is unchanged"
 
 # 40 — --threads-only now ALSO runs the body gate (previously skipped head
 # binding entirely, S1 was invisible here too): an outside-diff finding
@@ -868,7 +942,7 @@ assert_out_has "all checks green + all review threads resolved" "43 benign shape
 
 # 44 — opt-in escalation posts one full-review request carrying the per-head
 # marker, then a clean review object appears on the immediate bounded re-read.
-run body-a2-escalate --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
 assert_rc 0 "44 escalation resolves incremental-silent state"
 posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
 if [ "$posts" -eq 1 ]; then pass "44 escalation posts exactly once"; else fail "44 escalation posts exactly once" "posts=$posts want 1"; fi
@@ -881,7 +955,7 @@ fi
 
 # 45 — a retry on the same head sees the exact marker and waits without
 # posting again; the subsequent read can still complete the normal gate.
-run body-a2-marker --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-marker --escalate
 assert_rc 0 "45 existing marker still evaluates the refreshed review"
 posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
 if [ "$posts" -eq 0 ]; then pass "45 existing marker suppresses duplicate post"; else fail "45 existing marker suppresses duplicate post" "posts=$posts want 0"; fi
@@ -889,7 +963,7 @@ assert_err_has "already requested" "45 existing marker path is surfaced"
 
 # 46 — bounded escalation never turns a missing review object into success.
 # A zero-second budget makes the timeout immediate and hermetic.
-run body-a2-timeout --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-timeout --escalate
 assert_rc 4 "46 escalation timeout rc 4"
 assert_err_has "DO-NOT-MERGE" "46 timeout is loud and merge-blocking"
 assert_verdict 4 "46 timeout prints exit 4 verdict"
@@ -902,21 +976,21 @@ assert_verdict 4 "46 timeout prints exit 4 verdict"
 # the fallen-back 120s poll (HIMMEL-1219).
 ESCALATE_WAIT_OVERRIDE=soon
 ESCALATE_POLL_OVERRIDE=0
-run body-a2-escalate --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
 assert_rc 0 "47 invalid escalation tuning still evaluates"
 assert_err_has "CR_ESCALATE_WAIT='soon'" "47 invalid wait warns + falls back"
 assert_err_has "CR_ESCALATE_POLL=0 is invalid" "47 zero poll vs positive wait warns + falls back"
 
 # 48 — escalation resolves only unreadability. A refreshed review carrying a
 # real outside-diff finding still flows through the normal rc 3 body gate.
-run body-a2-escalate-outside --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate-outside --escalate
 assert_rc 3 "48 escalated outside-diff finding still blocks"
 assert_err_has "outside-diff-range finding" "48 refreshed finding reaches normal evaluation"
 
 # 49 — a full review may also create inline threads after the normal thread
 # snapshot. Escalation must re-run that gate before it can certify success.
 THREADS_OVERRIDE=escalatethread
-run body-a2-escalate --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
 assert_rc 3 "49 escalated inline finding still blocks"
 assert_err_has "unresolved review thread" "49 full-review thread re-check runs"
 
@@ -924,7 +998,7 @@ assert_err_has "unresolved review thread" "49 full-review thread re-check runs"
 # back before the loop, so the stale-review fixture gets no API-hammering burst.
 ESCALATE_WAIT_OVERRIDE=1
 ESCALATE_POLL_OVERRIDE=0
-run body-a2-timeout --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-timeout --escalate
 assert_rc 4 "50 zero escalation poll still times out"
 assert_err_has "CR_ESCALATE_POLL=0 is invalid" "50 zero escalation poll warns + falls back"
 reads=$(cat "$STUBDIR/reviews" 2>/dev/null); reads=${reads:-0}
@@ -941,7 +1015,7 @@ fi
 # case proves 08 reaches a normal rc 4 timeout instead of erroring (HIMMEL-1219).
 ESCALATE_WAIT_OVERRIDE=08
 ESCALATE_POLL_OVERRIDE=0
-run body-a2-timeout --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-timeout --escalate
 assert_rc 4 "51 leading-zero wait 08 evaluates (no octal crash)"
 assert_err_has "waiting up to 8s" "51 wait 08 normalized to decimal 8"
 if printf '%s' "$ERR" | grep -F -- "value too great for base" >/dev/null; then
@@ -956,7 +1030,7 @@ fi
 # 7s rather than the literal "007s" (HIMMEL-1219).
 ESCALATE_WAIT_OVERRIDE=007
 ESCALATE_POLL_OVERRIDE=0
-run body-a2-escalate --escalate
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
 assert_rc 0 "52 leading-zero wait 007 still evaluates"
 assert_err_has "waiting up to 7s" "52 wait 007 normalized to decimal 7 (not octal)"
 
@@ -1009,7 +1083,18 @@ else
     pass "57 disarmed gate is silent about CodeRabbit"
 fi
 
+# 58 — HIMMEL-1495 hermeticity canary. This certifier does not consult the
+# armed-session bypass env (ARMAUTOMERGE/CR_MERGE_GATE_OK), so a block fixture
+# STILL blocks (rc 2) with both exported into the suite's env — pinning that
+# insensitivity so a future change wiring either var into check-ci.sh fails
+# HERE (the block-case reads rc 0) rather than failing every block-case open.
+# The startup unset above is the matching defense-in-depth.
+export ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1
+run cr-absent
+assert_rc 2 "58 armed bypass env does not open a block-case (HIMMEL-1495)"
+unset ARMAUTOMERGE CR_MERGE_GATE_OK
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 67 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 67"; exit 1; fi
+if [ "$COUNT" -ne 76 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 76"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

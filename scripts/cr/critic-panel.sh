@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # scripts/cr/critic-panel.sh — run the free-cloud critic panel over a diff (HIMMEL-415).
-# Reads a unified diff on stdin, runs each registry critic in the CRITIC_PANEL_TIERS
-# set (default free) via critic-first-pass.sh, merges findings (global renumber, per-model slug IDs).
+# Reads a unified diff on stdin, or computes main...HEAD itself with
+# --worktree <path>, then runs each registry critic in the CRITIC_PANEL_TIERS set
+# (default free) via critic-first-pass.sh and merges findings (global renumber,
+# per-model slug IDs). The panel appends its own availability + raw-finding rows
+# to the CR ledger before it exits.
 # Stdout = merged findings block. Stderr = panel-availability lines.
-# Exit 0 = >=1 responded; 1 = all failed (caller -> claude-only). Bash 3.2-safe.
+# Exit 0 = >=1 responded; 1 = all failed (caller -> claude-only); 2 = usage;
+# 3 = invalid --worktree; 4 = --worktree diff is empty; 5 = git/ledger failure.
+# Bash 3.2-safe.
 # Env: CR_PROFILE — the operator's opt-in critic profile (from repo-root .env,
 #      exported by /pr-check). AUTHORITATIVE when set (HIMMEL-558): the panel
 #      derives its tier filter from it directly, so an agent running /pr-check
@@ -69,6 +74,21 @@ export LC_ALL
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFP="${CRITIC_FIRST_PASS:-$SCRIPT_DIR/critic-first-pass.sh}"
 INVOKE="${CRITIC_INVOKE:-$SCRIPT_DIR/../hermes/invoke.sh}"
+LEDGER_APPEND="${CRITIC_LEDGER_APPEND:-$SCRIPT_DIR/ledger-append.sh}"
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: critic-panel.sh [--worktree <path>] [--check [--all-tiers]]
+  stdin                    review the unified diff read from stdin (back-compat)
+  --worktree <path>        review `git -C <path> diff <base>...HEAD` (sanctioned)
+                           <base> = CR_BASE_BRANCH env, else the remote's default
+                           branch (refs/remotes/origin/HEAD), else main
+  --check [--all-tiers]    probe registry health without reviewing a diff
+exit 3: --worktree path is not a git worktree
+exit 4: --worktree <base>...HEAD diff is empty (review refused)
+exit 5: git metadata, diff computation, or CR-ledger persistence failed
+USAGE
+}
 
 # failure-classify.sh (HIMMEL-1176): sole owner of the quota-exhaustion
 # signature table (is_quota_exhaustion, ex-HIMMEL-729 _is_quota_exhaustion)
@@ -324,6 +344,7 @@ fi
 
 CHECK_MODE="0"
 CHECK_ALL_TIERS="0"
+WORKTREE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --check)
@@ -334,12 +355,28 @@ while [ $# -gt 0 ]; do
             CHECK_ALL_TIERS="1"
             shift
             ;;
+        --worktree)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "critic-panel.sh: --worktree requires a path" >&2
+                usage
+                exit 2
+            fi
+            WORKTREE="$2"
+            shift 2
+            ;;
         *)
             echo "critic-panel.sh: unknown option $1" >&2
+            usage
             exit 2
             ;;
     esac
 done
+
+if [ "$CHECK_MODE" = "1" ] && [ -n "$WORKTREE" ]; then
+    echo "critic-panel.sh: --worktree cannot be combined with --check" >&2
+    usage
+    exit 2
+fi
 
 if [ "$CHECK_MODE" = "1" ]; then
     # Parse registry for a health probe: emit "slug<TAB>model<TAB>tier" for every row.
@@ -393,8 +430,123 @@ CHECKROWSEOF
     exit 0
 fi
 
-# Read diff from stdin and store it
-diff_in="$(cat)"
+# Resolve the reviewed repository + exact head before running any critic. The
+# --worktree path owns both the diff and the ledger location, so a stale caller
+# cwd cannot silently review/stamp a different checkout. Stdin mode deliberately
+# keeps its historical cwd-based repository context for back-compat.
+if [ -n "$WORKTREE" ]; then
+    _inside="$(git -C "$WORKTREE" rev-parse --is-inside-work-tree 2>/dev/null)" || _inside=""
+    if [ "$_inside" != "true" ]; then
+        echo "critic-panel.sh: --worktree path is not a git worktree: $WORKTREE" >&2
+        exit 3
+    fi
+    REVIEW_ROOT="$(git -C "$WORKTREE" rev-parse --show-toplevel 2>/dev/null)" || REVIEW_ROOT=""
+    if [ -z "$REVIEW_ROOT" ]; then
+        echo "critic-panel.sh: cannot resolve worktree root for: $WORKTREE" >&2
+        exit 3
+    fi
+    # Resolve the base branch instead of hardcoding `main` (HIMMEL-1494): a repo
+    # whose default branch is master/other always hit the empty-diff / diff-failed
+    # exits below. Order: an explicit CR_BASE_BRANCH override -> the remote's
+    # default branch (symbolic-ref of refs/remotes/origin/HEAD, with the
+    # refs/remotes/origin/ prefix stripped) -> main. The resolved name flows into
+    # the diff and every diagnostic so a non-main default branch works.
+    _base="${CR_BASE_BRANCH:-}"
+    _base_via_origin=0
+    if [ -z "$_base" ]; then
+        _oh="$(git -C "$REVIEW_ROOT" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null)" || _oh=""
+        case "$_oh" in
+            refs/remotes/origin/*) _base="${_oh#refs/remotes/origin/}"; _base_via_origin=1 ;;
+        esac
+        [ -n "$_base" ] || _base="main"
+    fi
+    # Re-resolve the bare name to a ref git can actually diff (HIMMEL-1494 r3).
+    # A clone or worktree that carries only origin/<name> (and never checked
+    # <name> out locally) fails on a bare name. An explicit CR_BASE_BRANCH
+    # override is honored VERBATIM (documented). Otherwise: prefer the bare LOCAL
+    # name when it verifies; else, for an origin/HEAD resolution, fall back to
+    # the REMOTE origin/<name> the symbolic-ref guaranteed exists. If neither
+    # verifies _base stays bare so the diff still fails loudly with the resolved
+    # name (preserving the documented exit-5 diagnostic).
+    # r4: verify refs/heads/<name> explicitly. A bare --verify <name> also
+    # matches a TAG named like the default branch, which then falsely satisfied
+    # this check and suppressed the origin/<name> fallback; qualifying the LOCAL
+    # branch ref means only a real branch satisfies it (HIMMEL-1494 r4).
+    if [ -z "${CR_BASE_BRANCH:-}" ]; then
+        if ! git -C "$REVIEW_ROOT" rev-parse --verify "refs/heads/$_base" >/dev/null 2>&1; then
+            if [ "$_base_via_origin" -eq 1 ]; then
+                _base="origin/$_base"
+            fi
+        fi
+    fi
+    # Capture the reviewed head ONCE (HIMMEL-1494 r4) and reuse it for BOTH the
+    # diff and the ledger stamp: a separate `git rev-parse HEAD` at stamp time
+    # could resolve a different commit if a concurrent commit lands between the
+    # two invocations, certifying a head that does not match the reviewed diff.
+    # The diagnostics still read "<base>...HEAD" (the operator-visible intent);
+    # $_head is that same HEAD, snapshotted here.
+    _head="$(git -C "$REVIEW_ROOT" rev-parse HEAD 2>/dev/null)" || _head=""
+    diff_in="$(git -C "$REVIEW_ROOT" diff "$_base...$_head")"
+    _diff_rc=$?
+    if [ "$_diff_rc" -ne 0 ]; then
+        echo "critic-panel.sh: git diff $_base...HEAD failed in $REVIEW_ROOT (rc=$_diff_rc)" >&2
+        exit 5
+    fi
+    if [ -z "$diff_in" ]; then
+        echo "critic-panel.sh: REFUSING empty --worktree diff (git -C $REVIEW_ROOT diff $_base...HEAD produced no output)" >&2
+        exit 4
+    fi
+else
+    diff_in="$(cat)"
+    REVIEW_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REVIEW_ROOT=""
+    # Capture the head once for stamping coherence (HIMMEL-1494 r4): the stdin
+    # diff is not HEAD-derived, but REVIEW_HEAD must still name the exact commit
+    # under review, snapshotted here rather than re-resolved at stamp time.
+    _head=""
+    if [ -n "$REVIEW_ROOT" ]; then
+        _head="$(git -C "$REVIEW_ROOT" rev-parse HEAD 2>/dev/null)" || _head=""
+    fi
+    if [ -z "$REVIEW_ROOT" ]; then
+        # Back-compat (HIMMEL-1494): the stdin path used to work anywhere; it
+        # only needs a worktree to STAMP ledger rows. Run the review anyway,
+        # skip the self-append, and warn loudly. Review output and the exit code
+        # behave exactly as pre-change. _SKIP_LEDGER gates every ledger step
+        # below (head/branch resolution, ledger path, the final append).
+        echo "critic-panel.sh: stdin review outside a git worktree — CR-ledger self-append skipped" >&2
+        _SKIP_LEDGER=1
+        REVIEW_HEAD=""
+        REVIEW_BRANCH=""
+    fi
+fi
+
+# Ledger stamping needs a worktree; the stdin-outside-worktree path skips all
+# of it (HIMMEL-1494). REVIEW_HEAD/REVIEW_BRANCH/PANEL_LEDGER stay unset and the
+# final _append_panel_ledger call is gated on the same flag below.
+if [ "${_SKIP_LEDGER:-0}" != "1" ]; then
+    REVIEW_HEAD="$_head"
+    REVIEW_BRANCH="$(git -C "$REVIEW_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)" || REVIEW_BRANCH=""
+    if [ -z "$REVIEW_HEAD" ] || [ -z "$REVIEW_BRANCH" ]; then
+        echo "critic-panel.sh: cannot resolve reviewed head/branch in $REVIEW_ROOT" >&2
+        exit 5
+    fi
+    if [ -n "${CR_LEDGER:-}" ]; then
+        PANEL_LEDGER="$CR_LEDGER"
+    else
+        _common_dir="$(git -C "$REVIEW_ROOT" rev-parse --git-common-dir 2>/dev/null)" || _common_dir=""
+        if [ -z "$_common_dir" ]; then
+            echo "critic-panel.sh: cannot resolve git common dir for ledger in $REVIEW_ROOT" >&2
+            exit 5
+        fi
+        case "$_common_dir" in
+            /*|[A-Za-z]:/*) PANEL_LEDGER="$_common_dir/cr-critic-scores.jsonl" ;;
+            *) PANEL_LEDGER="$REVIEW_ROOT/$_common_dir/cr-critic-scores.jsonl" ;;
+        esac
+    fi
+    if [ ! -r "$LEDGER_APPEND" ]; then
+        echo "critic-panel.sh: ledger append helper is not readable: $LEDGER_APPEND" >&2
+        exit 5
+    fi
+fi
 
 # Triviality gate (HIMMEL-737): a diff classified 'trivial' skips the PAID tier
 # to save codex spend. Only fires when 'paid' is in the effective tier filter
@@ -548,7 +700,21 @@ tmp="$(mktemp -t critic-panel.XXXXXX)"
 _seq_out=""
 _seq_err=""
 outdir=""
-trap 'rm -f "$tmp"; [ -n "$_seq_out" ] && rm -f "$_seq_out"; [ -n "${_seq_err:-}" ] && rm -f "$_seq_err"; [ -n "$outdir" ] && rm -rf "$outdir"; [ -n "$_MERGED_REG" ] && rm -f "$_MERGED_REG"' EXIT
+# Ledger evidence spool (HIMMEL-1494 r3; per-member r4): subshell-safe
+# replacement for the old parent-scope STRING accumulators. The parallel path
+# runs each member's critic in a background subshell; if process_member is ever
+# moved into that subshell, parent-scope string accumulation would be silently
+# lost (a subshell forks a copy-on-write snapshot of the vars). Appending to
+# FILES instead survives the member boundary in BOTH sequential and parallel
+# modes, and _append_panel_ledger reads them at the end.
+# r4: ONE spool file PER MEMBER (avail.<slug> / finding.<slug>), not a single
+# shared file. A single-printf O_APPEND row is atomic-ish on POSIX but NOT
+# guaranteed on Windows/MSYS, so no two members ever append to the same file.
+# Each member writes only its own file (a member is processed once, so its own
+# file is never written concurrently); _append_panel_ledger globs them all, and
+# bash sorts pathname expansion so the read order is deterministic.
+PANEL_SPOOL_DIR="$(mktemp -d -t critic-panel-spool.XXXXXX)"
+trap 'rm -f "$tmp"; [ -n "$_seq_out" ] && rm -f "$_seq_out"; [ -n "${_seq_err:-}" ] && rm -f "$_seq_err"; [ -n "$outdir" ] && rm -rf "$outdir"; [ -n "${PANEL_SPOOL_DIR:-}" ] && rm -rf "$PANEL_SPOOL_DIR"; [ -n "$_MERGED_REG" ] && rm -f "$_MERGED_REG"' EXIT
 printf '%s' "$diff_in" > "$tmp"
 
 # Run each panel member; collect per-member output and renumber globally.
@@ -561,6 +727,67 @@ global_id=0
 agg_crit=""
 agg_imp=""
 agg_sug=""
+
+# Ledger accumulators live in per-member spool files under PANEL_SPOOL_DIR
+# (created above with $tmp — subshell-safe file spools, HIMMEL-1494 r3; one file
+# per member r4). Keep availability and findings structured rather than reparsing
+# stderr/stdout: availability has intermediate fallback-failed diagnostics that
+# are NOT terminal member outcomes, while findings must preserve the exact
+# reviewed head even if the orchestrator later commits a fix before judging them.
+
+_queue_avail() {
+    # Subshell-safe + per-member (HIMMEL-1494 r3/r4): append the row to THIS
+    # member's own avail spool file, not a parent-scope string or a shared file.
+    # A file append persists across a background-subshell member boundary (a
+    # string mutation would not); per-member files mean no shared-file concurrent
+    # append. $1 is the member slug (a registry kebab-case identifier, filesystem-
+    # safe); _append_panel_ledger globs avail.* at the end.
+    printf '%s\034%s\034%s\034%s\034%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" \
+        >> "$PANEL_SPOOL_DIR/avail.$1"
+}
+
+_queue_finding() {
+    # Subshell-safe + per-member + symmetric set -u safety (HIMMEL-1494 r3/r4):
+    # see _queue_avail. The ${n:-} defaults mirror _queue_avail so a bare
+    # positional under set -u can never abort the append.
+    printf '%s\034%s\034%s\034%s\034%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" \
+        >> "$PANEL_SPOOL_DIR/finding.$1"
+}
+
+_append_panel_ledger() {
+    _apl_failed=0
+    # Glob the per-member spool files (HIMMEL-1494 r4): bash sorts pathname
+    # expansion, so the read order is deterministic. [ -f ] guards the no-match
+    # case (a finding.* glob with no findings would otherwise be a literal
+    # pattern). set -- inside the loop reassigns positionals; the for-loop
+    # iterates a named var, so it is unaffected.
+    for _apl_spool in "$PANEL_SPOOL_DIR"/avail.*; do
+        [ -f "$_apl_spool" ] || continue
+        while IFS=$'\034' read -r _apl_model _apl_status _apl_responding _apl_reason _apl_detail; do
+            [ -n "$_apl_model" ] || continue
+            set -- avail --branch "$REVIEW_BRANCH" --head "$REVIEW_HEAD" \
+                --model "$_apl_model" --status "$_apl_status"
+            [ -n "$_apl_responding" ] && set -- "$@" --responding-model "$_apl_responding"
+            [ -n "$_apl_reason" ] && set -- "$@" --reason "$_apl_reason"
+            [ -n "$_apl_detail" ] && set -- "$@" --detail "$_apl_detail"
+            CR_LEDGER="$PANEL_LEDGER" bash "$LEDGER_APPEND" "$@" || _apl_failed=1
+        done < "$_apl_spool"
+    done
+
+    for _apl_spool in "$PANEL_SPOOL_DIR"/finding.*; do
+        [ -f "$_apl_spool" ] || continue
+        while IFS=$'\034' read -r _apl_model _apl_id _apl_severity _apl_file _apl_line; do
+            [ -n "$_apl_id" ] || continue
+            CR_LEDGER="$PANEL_LEDGER" bash "$LEDGER_APPEND" finding \
+                --branch "$REVIEW_BRANCH" --head "$REVIEW_HEAD" \
+                --model "$_apl_model" --id "$_apl_id" \
+                --severity "$_apl_severity" --file "$_apl_file" \
+                --line "$_apl_line" --verdict "" || _apl_failed=1
+        done < "$_apl_spool"
+    done
+
+    [ "$_apl_failed" -eq 0 ]
+}
 
 # ---------------------------------------------------------------------------
 # _is_quota_exhaustion <out_file> <err_file> (HIMMEL-729)
@@ -667,6 +894,7 @@ process_member() {
     else
         _pm_avail="panel-availability: $_pm_slug ok"
     fi
+    _pm_responding_model="$_pm_model"
     _fb_out=""
     _fb_err=""
 
@@ -699,6 +927,7 @@ process_member() {
 
     if [ "$_pm_is_timeout" -eq 1 ] && [ "$_pm_do_fallback" -eq 0 ]; then
         echo "panel-availability: $_pm_slug unavailable (timeout ${_pm_timeout}s) reason=timeout" >&2
+        _queue_avail "$_pm_slug" unavailable "" timeout ""
         return
     fi
     if [ "$_pm_rc" -ne 0 ]; then
@@ -750,6 +979,7 @@ process_member() {
                         echo "WARN critic-panel: $_pm_slug failed (rc=$_pm_rc) - fell back to $_fb_model" >&2
                     fi
                     _pm_avail="panel-availability: $_pm_slug fallback($_fb_model)"
+                    _pm_responding_model="$_fb_model"
                     _pm_out_file="$_fb_out"
                     _fb_success=1
                     break
@@ -776,16 +1006,19 @@ process_member() {
                 else
                     echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc) reason=$_pm_reason detail=fallback-chain exhausted" >&2
                 fi
+                _queue_avail "$_pm_slug" unavailable "" "$_pm_reason" "fallback-chain exhausted"
                 return
             fi
         else
             _pm_reason="$(classify_failure "$_pm_rc" "$_pm_out_file" "$_pm_err_file" 2>/dev/null)"
             [ -n "$_pm_reason" ] || _pm_reason="generic-rc-$_pm_rc"
             echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc) reason=$_pm_reason" >&2
+            _queue_avail "$_pm_slug" unavailable "" "$_pm_reason" ""
             return
         fi
     fi
     echo "$_pm_avail" >&2
+    _queue_avail "$_pm_slug" ok "$_pm_responding_model" "" ""
     responded=$((responded + 1))
 
     # Parse the member output sections and renumber bullets globally.
@@ -816,12 +1049,31 @@ process_member() {
                 max_id++
                 b = $0
                 # Renumber: replace the ID with slug-max_id
+                id = slug "-" max_id
                 if (b ~ /^- \[[^]]*\]:/) {
-                    sub(/^- \[[^]]*\]:/, "- [" slug "-" max_id "]:", b)
+                    sub(/^- \[[^]]*\]:/, "- [" id "]:", b)
                 } else {
-                    sub(/^- /, "- [" slug "-" max_id "]: ", b)
+                    sub(/^- /, "- [" id "]: ", b)
                 }
-                print sec "\t" b
+                loc = b
+                sub(/^.*\[/, "", loc)
+                sub(/\]$/, "", loc)
+                # A finding citation is a TRAILING "[file:line]" (the merged
+                # output bullet contract). When none is present the last bracket
+                # is the ID "[slug-K]" (no colon, and the bullet does not end
+                # with "]"), so loc carries finding text, not a path:line token.
+                # Emit empty file/line then (HIMMEL-1494): the ledger absent-
+                # value convention (file:""/line:""), not the malformed values
+                # the old unguarded parse produced from the ID bracket.
+                file = ""
+                line = ""
+                if (b ~ /\]$/ && loc ~ /:[0-9]+$/) {
+                    file = loc
+                    sub(/:[^:]*$/, "", file)
+                    line = loc
+                    sub(/^.*:/, "", line)
+                }
+                print sec "\t" b "\t" id "\t" file "\t" line
             }
             next
         }
@@ -835,6 +1087,19 @@ process_member() {
     if [ -n "$max_used" ] && [ "$max_used" -gt "$global_id" ] 2>/dev/null; then
         global_id=$max_used
     fi
+
+    while IFS=$'\t' read -r _pf_sec _pf_bullet _pf_id _pf_file _pf_line; do
+        [ -n "$_pf_id" ] || continue
+        case "$_pf_sec" in
+            1) _pf_severity="crit" ;;
+            2) _pf_severity="imp" ;;
+            3) _pf_severity="sug" ;;
+            *) continue ;;
+        esac
+        _queue_finding "$_pm_slug" "$_pf_id" "$_pf_severity" "$_pf_file" "$_pf_line"
+    done << PARSEDFINDINGSEOF
+$member_parsed
+PARSEDFINDINGSEOF
 
     # Accumulate by section
     crit_bullets="$(printf '%s\n' "$member_parsed" | awk -F'\t' '$1=="1"{print $2}')"
@@ -887,9 +1152,11 @@ if [ "$CRITIC_PARALLEL" = "0" ]; then
         if _panel_deadline_passed; then
             echo "critic-panel.sh: TOTAL panel deadline ${CRITIC_PANEL_TOTAL_TIMEOUT_SECS}s exceeded after ${total} member(s) — skipping the rest (raise CRITIC_PANEL_TOTAL_TIMEOUT_SECS)" >&2
             echo "panel-availability: $slug unavailable (panel-deadline) reason=panel-deadline" >&2
+            _queue_avail "$slug" unavailable "" panel-deadline ""
             while IFS="	" read -r _s _rest; do
                 [ -n "$_s" ] || continue
                 echo "panel-availability: $_s unavailable (panel-deadline) reason=panel-deadline" >&2
+                _queue_avail "$_s" unavailable "" panel-deadline ""
             done
             break
         fi
@@ -956,9 +1223,11 @@ else
         if _panel_deadline_passed; then
             echo "critic-panel.sh: TOTAL panel deadline ${CRITIC_PANEL_TOTAL_TIMEOUT_SECS}s exceeded after launching ${i} member(s) — not launching the rest (raise CRITIC_PANEL_TOTAL_TIMEOUT_SECS)" >&2
             echo "panel-availability: $slug unavailable (panel-deadline) reason=panel-deadline" >&2
+            _queue_avail "$slug" unavailable "" panel-deadline ""
             while IFS="	" read -r _s _rest; do
                 [ -n "$_s" ] || continue
                 echo "panel-availability: $_s unavailable (panel-deadline) reason=panel-deadline" >&2
+                _queue_avail "$_s" unavailable "" panel-deadline ""
             done
             break
         fi
@@ -1060,6 +1329,16 @@ printf '## Important Issues (%d found)\n' "$ni"
 printf '\n'
 printf '## Suggestions (%d found)\n' "$ns"
 [ -n "$agg_sug" ] && printf '%s\n' "$agg_sug"
+
+# The stdin-outside-worktree path skips certification (HIMMEL-1494): the review
+# was emitted, but with no worktree there is nothing to stamp, so a failed (or
+# skipped) append never overrides the review's own exit code.
+if [ "${_SKIP_LEDGER:-0}" != "1" ]; then
+    if ! _append_panel_ledger; then
+        echo "critic-panel.sh: CR-ledger append failed; review output was emitted but this run is NOT certified" >&2
+        exit 5
+    fi
+fi
 
 [ "$responded" -ge 1 ] || exit 1
 exit 0

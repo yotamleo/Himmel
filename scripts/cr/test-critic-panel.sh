@@ -16,14 +16,25 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 # CRITIC_PANEL_TIERS — from the environment. Clear any ambient values so the
 # default-behaviour tests are not perturbed by the operator's shell (.env often
 # exports CR_PROFILE=free,paid). Each CR_PROFILE test below sets it explicitly.
-unset CR_PROFILE CRITIC_PANEL_TIERS 2>/dev/null || true
+unset CR_PROFILE CRITIC_PANEL_TIERS CRITIC_LEDGER_APPEND CR_LEDGER \
+    CRITIC_FIRST_PASS CRITICS_JSON CRITIC_PARALLEL CRITIC_TIMEOUT_SECS \
+    CRITIC_PANEL_TOTAL_TIMEOUT_SECS CRITIC_PANEL_STARTED_AT \
+    CR_TRIVIALITY_OVERRIDE 2>/dev/null || true
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PANEL="$HERE/critic-panel.sh"
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d -t critic-panel-test.XXXXXX)"
 # shellcheck disable=SC2064
 trap "rm -rf $tmp" EXIT
 fails=0
+
+# Most cases exercise panel behavior, not persistence; isolate them from the real
+# git-common-dir ledger and from each other's repeated finding IDs. Dedicated
+# ledger assertions below override this seam with the real helper.
+LEDGER_NOOP="$tmp/ledger-noop.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$LEDGER_NOOP"
+chmod +x "$LEDGER_NOOP"
+export CRITIC_LEDGER_APPEND="$LEDGER_NOOP"
 
 check() {
     if [ "$2" = "$3" ]; then
@@ -137,9 +148,382 @@ check "B: header 2/3" "$(printf '%s\n' "$out_b" | grep -cF '(2/3 critics respond
 printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-allfail.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" >/dev/null 2>&1
 check "C: all-fail -> exit 1" "$?" "1"
 
-# Test D: >=1 responds -> exit 0
+# Test D: >=1 responds -> exit 0 (the stdin shape remains supported).
 printf '%s' "$DIFF" | CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" >/dev/null 2>&1
-check "D: >=1 responds -> exit 0" "$?" "0"
+check "D: stdin shape + >=1 responds -> exit 0" "$?" "0"
+
+# Test LA: the panel persists its OWN evidence through ledger-append.sh. One run
+# contains two responders + one unavailable member and four findings, so it
+# covers both availability statuses and empty raw verdicts without orchestrator
+# glue. Every row must carry the exact head that was reviewed.
+LEDGER_CASE="$tmp/panel-ledger.jsonl"
+: > "$LEDGER_CASE"
+CR_LEDGER="$LEDGER_CASE" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+    CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" <<< "$DIFF" > "$tmp/ledger-out" 2> "$tmp/ledger-err"
+ledger_rc=$?
+reviewed_head="$(git rev-parse HEAD)"
+ledger_summary="$(python3 - "$LEDGER_CASE" "$reviewed_head" <<'PYEOF'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+head = sys.argv[2]
+avail = [r for r in rows if r.get('kind') == 'avail']
+findings = [r for r in rows if r.get('kind') == 'finding']
+print('avail=' + str(len(avail)))
+print('ok=' + str(sum(r.get('status') == 'ok' for r in avail)))
+print('unavailable=' + str(sum(r.get('status') == 'unavailable' for r in avail)))
+print('unavailable-reason=' + ('yes' if any(r.get('model') == 'kimi' and r.get('reason') == 'generic-rc-1' for r in avail) else 'no'))
+print('all-head=' + ('yes' if rows and all(r.get('head') == head for r in rows) else 'no'))
+print('findings=' + str(len(findings)))
+print('empty-verdicts=' + ('yes' if findings and all(r.get('verdict') == '' for r in findings) else 'no'))
+print('models=' + ','.join(sorted(r.get('model', '') for r in avail)))
+PYEOF
+)"
+check "LA: panel succeeds while self-appending" "$ledger_rc" "0"
+check "LA: one availability row per member" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^avail=//p')" "3"
+check "LA: responder availability rows are ok" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^ok=//p')" "2"
+check "LA: failed member availability row is unavailable" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^unavailable=//p')" "1"
+check "LA: unavailable row includes its classified reason" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^unavailable-reason=//p')" "yes"
+check "LA: availability models are the registry slugs" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^models=//p')" "gptoss,kimi,qwen3coder"
+check "LA: every row is stamped with the reviewed head" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^all-head=//p')" "yes"
+check "LA: every emitted finding self-appended" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^findings=//p')" "4"
+check "LA: raw finding verdicts are empty" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^empty-verdicts=//p')" "yes"
+
+# Test LAP: parallel mode self-appends the SAME ledger evidence as sequential
+# (HIMMEL-1494 r3; per-member spool files r4). The evidence path flows through
+# PER-MEMBER spool files (avail.<slug>/finding.<slug>), one per member, not a
+# shared file; this is the regression guard. If process_member is ever moved
+# into a background subshell, each member's spool must still land every row —
+# assert the parallel ledger has the same avail/finding counts AND the same
+# per-member model sets (avail + findings) as the sequential run over the
+# identical fixture, so a lost per-member file can't hide behind a matching count.
+LAP_SEQ="$tmp/lap-seq.jsonl"; : > "$LAP_SEQ"
+LAP_PAR="$tmp/lap-par.jsonl"; : > "$LAP_PAR"
+CR_LEDGER="$LAP_SEQ" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+    CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" <<< "$DIFF" > "$tmp/lap-seq-out" 2> "$tmp/lap-seq-err"
+CR_LEDGER="$LAP_PAR" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+    CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    CRITIC_PARALLEL=1 \
+    bash "$PANEL" <<< "$DIFF" > "$tmp/lap-par-out" 2> "$tmp/lap-par-err"
+lap_summary="$(python3 - "$LAP_SEQ" "$LAP_PAR" <<'PYEOF'
+import json, sys
+def shape(p):
+    rows = [json.loads(l) for l in open(p) if l.strip()]
+    a = [r for r in rows if r.get('kind') == 'avail']
+    f = [r for r in rows if r.get('kind') == 'finding']
+    return (len(a), len(f),
+            ','.join(sorted(r.get('model', '') for r in a)),
+            ','.join(sorted(r.get('model', '') for r in f)))
+sa, sf, sm, sfm = shape(sys.argv[1]); pa, pf, pm, pfm = shape(sys.argv[2])
+print('seq_avail=%d' % sa); print('seq_find=%d' % sf)
+print('par_avail=%d' % pa); print('par_find=%d' % pf)
+print('avail_same=%s' % (sa == pa)); print('find_same=%s' % (sf == pf))
+print('models_same=%s' % (sm == pm)); print('seq_models=%s' % sm)
+print('find_models_same=%s' % (sfm == pfm)); print('seq_find_models=%s' % sfm)
+PYEOF
+)"
+check "LAP: sequential avail rows (3)" "$(printf '%s\n' "$lap_summary" | sed -n 's/^seq_avail=//p')" "3"
+check "LAP: sequential finding rows (4)" "$(printf '%s\n' "$lap_summary" | sed -n 's/^seq_find=//p')" "4"
+check "LAP: parallel avail rows == sequential" "$(printf '%s\n' "$lap_summary" | sed -n 's/^avail_same=//p')" "True"
+check "LAP: parallel finding rows == sequential" "$(printf '%s\n' "$lap_summary" | sed -n 's/^find_same=//p')" "True"
+check "LAP: parallel avail model set == sequential" "$(printf '%s\n' "$lap_summary" | sed -n 's/^models_same=//p')" "True"
+check "LAP: parallel finding model set == sequential" "$(printf '%s\n' "$lap_summary" | sed -n 's/^find_models_same=//p')" "True"
+check "LAP: avail model set is the registry slugs" "$(printf '%s\n' "$lap_summary" | sed -n 's/^seq_models=//p')" "gptoss,kimi,qwen3coder"
+
+# Test WT: sanctioned --worktree mode computes main...HEAD itself. A real diff
+# runs and stamps that worktree's head; an empty diff and a non-worktree path
+# fail loudly with distinct documented exits.
+WT_REPO="$tmp/review-worktree"
+git init -q "$WT_REPO"
+git -C "$WT_REPO" checkout -q -b main
+git -C "$WT_REPO" config user.name test
+git -C "$WT_REPO" config user.email test@example.invalid
+printf 'base\n' > "$WT_REPO/review.txt"
+git -C "$WT_REPO" add review.txt
+git -C "$WT_REPO" commit -q -m base
+git -C "$WT_REPO" checkout -q -b feature
+printf 'changed\n' >> "$WT_REPO/review.txt"
+git -C "$WT_REPO" add review.txt
+git -C "$WT_REPO" commit -q -m feature
+wt_head="$(git -C "$WT_REPO" rev-parse HEAD)"
+WT_LEDGER="$tmp/worktree-ledger.jsonl"
+: > "$WT_LEDGER"
+CR_LEDGER="$WT_LEDGER" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+    CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" --worktree "$WT_REPO" > "$tmp/wt-out" 2> "$tmp/wt-err"
+wt_rc=$?
+check "WT1: --worktree real main...HEAD diff runs" "$wt_rc" "0"
+check_contains "WT1: --worktree still emits panel output" "$(cat "$tmp/wt-out")" "# Critic Panel Review"
+check "WT1: ledger rows use the reviewed worktree head" \
+    "$(python3 - "$WT_LEDGER" "$wt_head" <<'PYEOF'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+print('yes' if rows and all(r.get('head') == sys.argv[2] for r in rows) else 'no')
+PYEOF
+)" "yes"
+
+git -C "$WT_REPO" checkout -q main
+wt_empty_rc=0
+CR_LEDGER="$tmp/wt-empty-ledger.jsonl" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+    CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" --worktree "$WT_REPO" > "$tmp/wt-empty-out" 2> "$tmp/wt-empty-err" || wt_empty_rc=$?
+check "WT2: empty --worktree diff uses distinct exit" "$wt_empty_rc" "4"
+check_contains "WT2: empty --worktree diff refusal is loud" "$(cat "$tmp/wt-empty-err")" "REFUSING empty --worktree diff"
+
+mkdir -p "$tmp/not-a-worktree"
+wt_bad_rc=0
+bash "$PANEL" --worktree "$tmp/not-a-worktree" > "$tmp/wt-bad-out" 2> "$tmp/wt-bad-err" || wt_bad_rc=$?
+check "WT3: non-worktree path uses distinct exit" "$wt_bad_rc" "3"
+check_contains "WT3: non-worktree refusal is explicit" "$(cat "$tmp/wt-bad-err")" "is not a git worktree"
+
+# ── HIMMEL-1494 r2: stdin graceful degrade, base-branch resolution, ──────────
+#    citation-less ledger rows. Three panel suggestions, parent premise-
+#    verified; each fix has its own fixture and touches only critic-panel.sh.
+
+# Test NWS: stdin review from a NON-worktree cwd degrades gracefully — the
+# review runs, a loud warning names the skipped self-append, NO ledger rows are
+# written, and the exit code matches pre-change behavior (the review's own 0/1,
+# not the old exit 5). Pre-fix this path exited 5; the worktree is only needed
+# to STAMP ledger rows.
+NWS_DIR="$tmp/non-worktree-cwd"
+mkdir -p "$NWS_DIR"
+NWS_LEDGER="$tmp/nws-ledger.jsonl"
+: > "$NWS_LEDGER"
+nws_rc=0
+( cd "$NWS_DIR" && printf '%s' "$DIFF" \
+    | CR_LEDGER="$NWS_LEDGER" CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+      bash "$PANEL" > "$tmp/nws-out" 2> "$tmp/nws-err" ) || nws_rc=$?
+check "NWS: review runs from a non-worktree cwd (exit 0, was 5)" "$nws_rc" "0"
+check_contains "NWS: loud self-append-skipped warning" "$(cat "$tmp/nws-err")" "stdin review outside a git worktree"
+check_contains "NWS: warning names the skipped self-append" "$(cat "$tmp/nws-err")" "CR-ledger self-append skipped"
+check "NWS: merged review output still emitted" "$(grep -cF '# Critic Panel Review' "$tmp/nws-out")" "1"
+check "NWS: NO ledger rows written (self-append skipped)" "$(wc -l < "$NWS_LEDGER" | tr -d ' ')" "0"
+
+# Tests B1-B3: --worktree resolves the base branch instead of hardcoding main.
+# B1 — CR_BASE_BRANCH wins over origin/HEAD. Fixture: master base + feature
+# change, origin/HEAD -> master (valid). An override to a NONEXISTENT branch
+# must still win and produce the diff-failed exit naming the override, proving
+# origin/HEAD's master was never consulted.
+BR_REPO="$tmp/base-resolve-repo"
+git init -q "$BR_REPO"
+git -C "$BR_REPO" checkout -q -b master
+git -C "$BR_REPO" config user.name test
+git -C "$BR_REPO" config user.email test@example.invalid
+printf 'base\n' > "$BR_REPO/r.txt"
+git -C "$BR_REPO" add r.txt
+git -C "$BR_REPO" commit -q -m base
+# Point origin/HEAD at master so the override-only path is the discriminating one.
+git -C "$BR_REPO" update-ref refs/remotes/origin/master "$(git -C "$BR_REPO" rev-parse master)"
+git -C "$BR_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master
+git -C "$BR_REPO" checkout -q -b feature
+printf 'change\n' >> "$BR_REPO/r.txt"
+git -C "$BR_REPO" add r.txt
+git -C "$BR_REPO" commit -q -m feature
+b1_rc=0
+CR_BASE_BRANCH=zzz-nope-override CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" --worktree "$BR_REPO" > "$tmp/b1-out" 2> "$tmp/b1-err" || b1_rc=$?
+check "B1: CR_BASE_BRANCH override is honored (diff fails on the override, exit 5)" "$b1_rc" "5"
+check_contains "B1: failed diff names the OVERRIDE base, not origin/HEAD's master" "$(cat "$tmp/b1-err")" "diff zzz-nope-override...HEAD"
+
+# B2 — origin/HEAD fallback (no override). Same fixture; master is a real
+# branch, so diffing master...HEAD on feature runs and the panel succeeds —
+# proving origin/HEAD resolved to master (the old hardcoded `main` would have
+# failed, since this repo has no main branch).
+b2_rc=0
+CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" --worktree "$BR_REPO" > "$tmp/b2-out" 2> "$tmp/b2-err" || b2_rc=$?
+check "B2: origin/HEAD fallback resolves master and the diff runs (exit 0)" "$b2_rc" "0"
+check_contains "B2: panel output emitted (diff against master ran)" "$(cat "$tmp/b2-out")" "# Critic Panel Review"
+
+# B3 — final fallback `main`. A repo with NO origin/HEAD and NO CR_BASE_BRANCH,
+# on a `trunk` base branch; there is no `main`, so the diff fails and the
+# message reveals the resolved base is `main` (not trunk).
+BR3_REPO="$tmp/base-resolve-main-fallback"
+git init -q "$BR3_REPO"
+git -C "$BR3_REPO" checkout -q -b trunk
+git -C "$BR3_REPO" config user.name test
+git -C "$BR3_REPO" config user.email test@example.invalid
+printf 'base\n' > "$BR3_REPO/r.txt"
+git -C "$BR3_REPO" add r.txt
+git -C "$BR3_REPO" commit -q -m base
+git -C "$BR3_REPO" checkout -q -b feature
+printf 'change\n' >> "$BR3_REPO/r.txt"
+git -C "$BR3_REPO" add r.txt
+git -C "$BR3_REPO" commit -q -m feature
+b3_rc=0
+CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" --worktree "$BR3_REPO" > "$tmp/b3-out" 2> "$tmp/b3-err" || b3_rc=$?
+check "B3: no override + no origin/HEAD falls back to main (diff fails, exit 5)" "$b3_rc" "5"
+check_contains "B3: failed diff names the FINAL fallback base main" "$(cat "$tmp/b3-err")" "diff main...HEAD"
+
+# B4 — origin/HEAD base that exists ONLY as origin/<name> (no local branch).
+# A clone/worktree that never checked the default out locally carries no
+# refs/heads/<name>, so the bare name must NOT be diffed. The remote ref
+# origin/<name> (which origin/HEAD guaranteed exists) must be diffed instead
+# (HIMMEL-1494 r3). Without the fix the bare `develop` fails to resolve and the
+# panel exits 5; with it, origin/develop resolves and the diff runs.
+BR4_REPO="$tmp/base-resolve-origin-only"
+git init -q "$BR4_REPO"
+git -C "$BR4_REPO" checkout -q -b develop
+git -C "$BR4_REPO" config user.name test
+git -C "$BR4_REPO" config user.email test@example.invalid
+printf 'base\n' > "$BR4_REPO/r.txt"
+git -C "$BR4_REPO" add r.txt
+git -C "$BR4_REPO" commit -q -m base
+git -C "$BR4_REPO" update-ref refs/remotes/origin/develop "$(git -C "$BR4_REPO" rev-parse develop)"
+git -C "$BR4_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+git -C "$BR4_REPO" checkout -q -b feature
+printf 'change\n' >> "$BR4_REPO/r.txt"
+git -C "$BR4_REPO" add r.txt
+git -C "$BR4_REPO" commit -q -m feature
+git -C "$BR4_REPO" branch -D develop   # local develop GONE; only origin/develop remains
+b4_rc=0
+CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" --worktree "$BR4_REPO" > "$tmp/b4-out" 2> "$tmp/b4-err" || b4_rc=$?
+check "B4: origin-only base diffs origin/<name> and runs (exit 0)" "$b4_rc" "0"
+check_contains "B4: panel output emitted (diff against origin/develop ran)" "$(cat "$tmp/b4-out")" "# Critic Panel Review"
+
+# B5 — when BOTH a local <name> and origin/<name> exist and origin/HEAD -> <name>,
+# the bare LOCAL name is used (it verifies), NOT the stale remote (HIMMEL-1494
+# r3). Discriminating proof: local develop is AHEAD of origin/develop by one
+# commit, so an origin/<name> three-dot diff would include that ancestral change
+# while a bare-local diff excludes it. The critic stub echoes a marker derived
+# from its stdin (the computed diff), so the merged output names which ref was
+# diffed.
+BR5_REPO="$tmp/base-resolve-local-verifies"
+git init -q "$BR5_REPO"
+git -C "$BR5_REPO" checkout -q -b develop
+git -C "$BR5_REPO" config user.name test
+git -C "$BR5_REPO" config user.email test@example.invalid
+printf 'base\n' > "$BR5_REPO/r.txt"
+git -C "$BR5_REPO" add r.txt
+git -C "$BR5_REPO" commit -q -m base
+git -C "$BR5_REPO" update-ref refs/remotes/origin/develop "$(git -C "$BR5_REPO" rev-parse develop)"
+git -C "$BR5_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+printf 'origin-only-ancestral-marker\n' >> "$BR5_REPO/r.txt"
+git -C "$BR5_REPO" add r.txt
+git -C "$BR5_REPO" commit -q -m advance-local-develop   # local develop now AHEAD of origin/develop
+git -C "$BR5_REPO" checkout -q -b feature
+printf 'feature-change\n' >> "$BR5_REPO/r.txt"
+git -C "$BR5_REPO" add r.txt
+git -C "$BR5_REPO" commit -q -m feature
+B5_STUB="$tmp/b5-cfp.sh"
+cat > "$B5_STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+# Discriminate which base ref was diffed. The ancestral marker is ADDED only
+# when origin/develop (C0) is the base; when bare local develop (C0a, which
+# already contains the marker) is the base the marker is mere context, so the
+# unified-diff ADDITION prefix '+origin-only-ancestral-marker' is present in the
+# origin/ diff and absent from the bare-local diff.
+input="$(cat)"
+if printf '%s' "$input" | grep -qF '+origin-only-ancestral-marker'; then
+    ref='ORIGIN-REF-USED'
+else
+    ref='LOCAL-REF-USED'
+fi
+printf '# gptoss First-Pass Review\n\n## Critical Issues (1 found)\n- [gptoss-1]: %s [r.txt:3]\n\n## Important Issues (0 found)\n\n## Suggestions (0 found)\n' "$ref"
+STUBEOF
+chmod +x "$B5_STUB"
+b5_rc=0
+CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$B5_STUB" \
+    bash "$PANEL" --worktree "$BR5_REPO" > "$tmp/b5-out" 2> "$tmp/b5-err" || b5_rc=$?
+check "B5: local-verifies base diffs bare local name and runs (exit 0)" "$b5_rc" "0"
+check_contains "B5: bare LOCAL name used (not stale origin/)" "$(cat "$tmp/b5-out")" "LOCAL-REF-USED"
+
+# B6 — tag shadowing (HIMMEL-1494 r4 Fix 2). A repo with NO local branch
+# <name>, but BOTH a TAG named <name> AND origin/<name>. r3's bare
+# `--verify "$_base"` matched the TAG, falsely satisfying the local-branch
+# check and suppressing the origin/<name> fallback; r4 verifies
+# refs/heads/<name> so only a real local branch satisfies it, the fallback
+# fires, and the diff uses origin/<name>.
+# Discriminator (mirrors B5): the tag sits one ancestral commit ABOVE
+# origin/<name> (a marker line), so an origin/<name> three-dot diff includes
+# the marker as an ADDITION while a tag-based diff (base = the tag commit,
+# which is HEAD's ancestor) does not. A stub inspecting its stdin names which
+# ref ran.
+BR6_REPO="$tmp/base-resolve-tag-shadow"
+git init -q "$BR6_REPO"
+git -C "$BR6_REPO" checkout -q -b develop
+git -C "$BR6_REPO" config user.name test
+git -C "$BR6_REPO" config user.email test@example.invalid
+printf 'base\n' > "$BR6_REPO/r.txt"
+git -C "$BR6_REPO" add r.txt
+git -C "$BR6_REPO" commit -q -m base                 # C0: origin/<name> base
+_b6_c0="$(git -C "$BR6_REPO" rev-parse HEAD)"
+printf 'tag-only-ancestral-marker\n' >> "$BR6_REPO/r.txt"
+git -C "$BR6_REPO" add r.txt
+git -C "$BR6_REPO" commit -q -m tagpoint              # C1: the TAG's commit
+git -C "$BR6_REPO" tag develop                        # tag <name> -> C1
+git -C "$BR6_REPO" update-ref refs/remotes/origin/develop "$_b6_c0"
+git -C "$BR6_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+git -C "$BR6_REPO" checkout -q -b feature            # feature from C1
+printf 'feature-change\n' >> "$BR6_REPO/r.txt"
+git -C "$BR6_REPO" add r.txt
+git -C "$BR6_REPO" commit -q -m feature
+git -C "$BR6_REPO" branch -D develop                 # local branch GONE; tag + origin/<name> remain
+B6_STUB="$tmp/b6-cfp.sh"
+cat > "$B6_STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+# Discriminate which base ref was diffed. origin/develop (C0) as the base
+# includes the marker as an ADDITION (the marker is in C1, between C0 and
+# HEAD); the tag develop (C1) as the base is HEAD's ancestor, so the marker is
+# mere context and the '+...' addition is absent.
+input="$(cat)"
+if printf '%s' "$input" | grep -qF '+tag-only-ancestral-marker'; then
+    ref='ORIGIN-REF-USED'
+else
+    ref='TAG-REF-USED'
+fi
+printf '# gptoss First-Pass Review\n\n## Critical Issues (1 found)\n- [gptoss-1]: %s [r.txt:3]\n\n## Important Issues (0 found)\n\n## Suggestions (0 found)\n' "$ref"
+STUBEOF
+chmod +x "$B6_STUB"
+b6_rc=0
+CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$B6_STUB" \
+    bash "$PANEL" --worktree "$BR6_REPO" > "$tmp/b6-out" 2> "$tmp/b6-err" || b6_rc=$?
+check "B6: tag-shadowed base diffs origin/<name> and runs (exit 0)" "$b6_rc" "0"
+check_contains "B6: origin/<name> used (not the shadowing tag)" "$(cat "$tmp/b6-out")" "ORIGIN-REF-USED"
+
+# Test NC: a finding WITHOUT a trailing [file:line] citation must land in the
+# ledger with EMPTY file/line (the absent-value convention), not the malformed
+# values the old unguarded AWK parse produced from the ID bracket. Inline stub
+# so the test stays self-contained (stub-cfp.py is out of the file fence).
+NC_STUB="$tmp/nc-cfp.sh"
+cat > "$NC_STUB" <<'EOS'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "# nc First-Pass Review"
+echo ""
+echo "## Critical Issues (1 found)"
+echo "- [nc-1]: global concern with no code location"
+echo ""
+echo "## Important Issues (0 found)"
+echo ""
+echo "## Suggestions (0 found)"
+EOS
+chmod +x "$NC_STUB"
+NC_JSON="$tmp/critics-nc.json"
+printf '%s' '{"panel":[{"slug":"nc","model":"fake/nc","provider":"test","tier":"free"}]}' > "$NC_JSON"
+NC_LEDGER="$tmp/nc-ledger.jsonl"
+: > "$NC_LEDGER"
+printf '%s' "$DIFF" | CR_LEDGER="$NC_LEDGER" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+    CRITICS_JSON="$NC_JSON" CRITIC_FIRST_PASS="$NC_STUB" bash "$PANEL" > "$tmp/nc-out" 2> "$tmp/nc-err"
+nc_fields="$(python3 - "$NC_LEDGER" <<'PYEOF'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+f = [r for r in rows if r.get('kind') == 'finding']
+print('findings=' + str(len(f)))
+if f:
+    print('file=' + repr(f[0].get('file', '<MISSING>')))
+    print('line=' + repr(f[0].get('line', '<MISSING>')))
+else:
+    print('file=<no-finding>')
+    print('line=<no-finding>')
+PYEOF
+)"
+check "NC: citation-less finding self-appends (one finding row)" "$(printf '%s\n' "$nc_fields" | sed -n 's/^findings=//p')" "1"
+check "NC: citation-less finding has EMPTY file" "$(printf '%s\n' "$nc_fields" | sed -n 's/^file=//p')" "''"
+check "NC: citation-less finding has EMPTY line" "$(printf '%s\n' "$nc_fields" | sed -n 's/^line=//p')" "''"
 
 # Test E: missing registry -> anchor fallback
 stderr_e="$(printf '%s' "$DIFF" | CRITICS_JSON="$tmp/does-not-exist.json" CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"

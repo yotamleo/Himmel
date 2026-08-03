@@ -21,14 +21,21 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 # Hermetic: the panel reads CR_PROFILE (HIMMEL-558). Clear ambient values so the
 # default free-tier path is used.
-unset CR_PROFILE CRITIC_PANEL_TIERS 2>/dev/null || true
+unset CR_PROFILE CRITIC_PANEL_TIERS CRITIC_LEDGER_APPEND CR_LEDGER \
+    CRITIC_FIRST_PASS CRITICS_JSON CRITIC_PARALLEL CRITIC_TIMEOUT_SECS \
+    CRITIC_PANEL_TOTAL_TIMEOUT_SECS CRITIC_PANEL_STARTED_AT \
+    CR_TRIVIALITY_OVERRIDE 2>/dev/null || true
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PANEL="$HERE/critic-panel.sh"
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d -t critic-panel-fallback-test.XXXXXX)"
 # shellcheck disable=SC2064
 trap "rm -rf $tmp" EXIT
 fails=0
+LEDGER_NOOP="$tmp/ledger-noop.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$LEDGER_NOOP"
+chmod +x "$LEDGER_NOOP"
+export CRITIC_LEDGER_APPEND="$LEDGER_NOOP"
 
 check() {
     if [ "$2" = "$3" ]; then

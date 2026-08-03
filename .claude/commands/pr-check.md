@@ -117,8 +117,23 @@ Steps:
    ```bash
    db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
    . scripts/lib/load-dotenv.sh; load_dotenv CR_PROFILE || true
+   . scripts/lib/proc-tree.sh
    export CR_PROFILE
    branch=$(git branch --show-current)
+   # HIMMEL-1509 launch claim (subsumes HIMMEL-1496): one render per branch,
+   # coordinated through the render-lease registry instead of the retired :00
+   # launch window. This probe is the loud fast-path refusal; the ATOMIC claim
+   # lives inside run-codex-adversarial.sh (mkdir = the lock, taken before node
+   # spawns), so two kickoffs racing past this probe still cannot double-launch
+   # - the loser exits 75 with its own diagnostic. RENDER_LEASE_BRANCH is the
+   # launcher's opt-in.
+   # shellcheck source=scripts/lib/render-lease.sh
+   . scripts/lib/render-lease.sh
+   export RENDER_LEASE_BRANCH="$branch"
+   if [ -n "$branch" ] && ! render_lease_probe "$branch"; then
+       echo "codex adversarial kickoff BLOCKED: branch '$branch' holds a live render lease ($(render_lease_dir_for "$branch")) — a concurrent /pr-check render owns this branch (HIMMEL-1509); wait for it to finish, or adjudicate a stale lease via the sweep before retrying" >&2
+       exit 1
+   fi
    git_dir=$(git rev-parse --git-common-dir)
    # Branch-scoped under the SHARED git-common-dir, same convention as
    # cr-pending/cr-prior-blocking (HIMMEL-1219) — concurrent /pr-check runs on
@@ -126,7 +141,14 @@ Steps:
    # because a branch name contains '/' (e.g. fix/himmel-1407-...).
    codex_out="${git_dir}/codex-adv-out/${branch}"
    codex_pid_file="${codex_out}.pid"
+   codex_identity_file="${codex_pid_file}.identity"
+   codex_survivors_file="${codex_pid_file}.survivors"
+   codex_retry_pid_file="${codex_pid_file}.retry"
+   codex_retry_identity_file="${codex_retry_pid_file}.identity"
+   codex_retry_survivors_file="${codex_retry_pid_file}.survivors"
    codex_rc_file="${codex_out}.rc"
+   codex_cleanup_rc_file="${codex_pid_file}.cleanup-rc"
+   codex_retry_cleanup_rc_file="${codex_retry_pid_file}.cleanup-rc"
    # Companion stderr goes to its OWN sibling file, not merged into
    # $codex_out (glm-3, CR round 2, HIMMEL-1407): findings capture must stay
    # stdout-only, or diagnostic chatter on an otherwise-successful run gets
@@ -135,9 +157,103 @@ Steps:
    # exactly what hid this ticket's root cause for 28 runs.
    codex_err_file="${codex_out}.err"
    mkdir -p "$(dirname "$codex_out")"
-   # Overwrite per run — no unbounded growth, and a stale pid/rc/err from a
-   # PRIOR run on this branch can never be mistaken for this run's job.
-   rm -f "$codex_pid_file" "$codex_rc_file"; : > "$codex_out"; : > "$codex_err_file"
+   # HIMMEL-1474 r11 kickoff recovery start. Never overwrite a prior run's
+   # ownership handles. A completed clean record is stale and removable; an
+   # identity-verified leader or r14 survivor anchor is recovered; an active or
+   # unverifiable record blocks this kickoff with the handles intact.
+   recover_codex_survivor() {
+       local state_label="$1" survivor_pid="$2" survivor_identity="$3" identity_rc
+       if [ -z "$survivor_pid" ] || [ -z "$survivor_identity" ]; then
+           echo "codex adversarial kickoff BLOCKED: $state_label survivor record is malformed; manual recovery required" >&2
+           return 1
+       fi
+       identity_rc=0
+       proc_tree_process_identity_matches "$survivor_pid" "$survivor_identity" || identity_rc=$?
+       if [ "$identity_rc" -eq 1 ]; then
+           if proc_tree_process_alive "$survivor_pid"; then
+               echo "codex adversarial kickoff BLOCKED: $state_label survivor pid $survivor_pid has an identity mismatch; no signal sent" >&2
+               return 1
+           fi
+           return 0
+       fi
+       if [ "$identity_rc" -ne 0 ]; then
+           echo "codex adversarial kickoff BLOCKED: $state_label survivor pid $survivor_pid cannot be identity-verified (identity rc=$identity_rc); no signal sent" >&2
+           return 1
+       fi
+       kill -TERM "$survivor_pid" 2>/dev/null || true
+       sleep 1
+       identity_rc=0
+       proc_tree_process_identity_matches "$survivor_pid" "$survivor_identity" || identity_rc=$?
+       if [ "$identity_rc" -eq 0 ]; then
+           kill -KILL "$survivor_pid" 2>/dev/null || true
+           sleep 1
+           identity_rc=0
+           proc_tree_process_identity_matches "$survivor_pid" "$survivor_identity" || identity_rc=$?
+       fi
+       if [ "$identity_rc" -eq 1 ]; then
+           proc_tree_process_alive "$survivor_pid" || return 0
+       fi
+       echo "codex adversarial kickoff BLOCKED: $state_label survivor pid $survivor_pid remains live or unverifiable after recovery (identity rc=$identity_rc); preserve recovery sidecars" >&2
+       return 1
+   }
+   recover_codex_state() {
+       local state_label="$1" state_pid_file="$2" state_identity_file="${2}.identity" state_cleanup_rc_file="${2}.cleanup-rc" state_survivors_file="${2}.survivors"
+       local state_pid state_identity state_cleanup_rc identity_rc recovery_rc survivor_pid survivor_identity
+       [ -e "$state_pid_file" ] || { rm -f "$state_identity_file" "$state_cleanup_rc_file" "$state_survivors_file"; return 0; }
+       if [ ! -s "$state_pid_file" ] || [ ! -s "$state_identity_file" ]; then
+           echo "codex adversarial kickoff BLOCKED: $state_label ownership record is incomplete ($state_pid_file / $state_identity_file); refusing to overwrite it" >&2
+           return 1
+       fi
+       if [ ! -s "$state_cleanup_rc_file" ]; then
+           echo "codex adversarial kickoff BLOCKED: $state_label render is still active or cleanup status is missing; preserve $state_pid_file and $state_identity_file and recover it before retrying" >&2
+           return 1
+       fi
+       state_cleanup_rc=$(cat "$state_cleanup_rc_file")
+       if [ "$state_cleanup_rc" = "0" ]; then
+           rm -f "$state_pid_file" "$state_identity_file" "$state_cleanup_rc_file" "$state_survivors_file"
+           return 0
+       fi
+       state_pid=$(cat "$state_pid_file")
+       state_identity=$(cat "$state_identity_file")
+       identity_rc=0
+       proc_tree_process_identity_matches "$state_pid" "$state_identity" || identity_rc=$?
+       if [ "$identity_rc" -eq 1 ]; then
+           case "$state_cleanup_rc" in
+               1|2) ;;
+               *)
+                   echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc and launch identity no longer matches; no signal sent; preserve recovery sidecars" >&2
+                   return 1
+                   ;;
+           esac
+           if [ ! -e "$state_survivors_file" ]; then
+               echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc has a dead leader but no survivors sidecar (legacy pre-r14 record); manual recovery required before removing $state_pid_file / $state_identity_file / $state_cleanup_rc_file" >&2
+               return 1
+           fi
+           while IFS=$'\t' read -r survivor_pid survivor_identity || [ -n "$survivor_pid$survivor_identity" ]; do
+               recover_codex_survivor "$state_label" "$survivor_pid" "$survivor_identity" || return 1
+           done < "$state_survivors_file"
+           rm -f "$state_pid_file" "$state_identity_file" "$state_cleanup_rc_file" "$state_survivors_file"
+           echo "codex adversarial kickoff recovered prior $state_label render through survivor anchors" >&2
+           return 0
+       fi
+       if [ "$identity_rc" -ne 0 ]; then
+           echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc and launch identity cannot be verified (identity rc=$identity_rc); no signal sent; preserve recovery sidecars" >&2
+           return 1
+       fi
+       recovery_rc=0
+       proc_tree_terminate "$state_pid" 1 "$state_identity" || recovery_rc=$?
+       if [ "$recovery_rc" -ne 0 ]; then
+           echo "codex adversarial kickoff BLOCKED: $state_label recovery cleanup rc=$recovery_rc; preserve recovery sidecars" >&2
+           return 1
+       fi
+       rm -f "$state_pid_file" "$state_identity_file" "$state_cleanup_rc_file" "$state_survivors_file"
+       echo "codex adversarial kickoff recovered prior $state_label render pid/group $state_pid" >&2
+       return 0
+   }
+   recover_codex_state "primary" "$codex_pid_file" || exit 1
+   recover_codex_state "retry" "$codex_retry_pid_file" || exit 1
+   # HIMMEL-1474 r11 kickoff recovery end.
+   rm -f "$codex_rc_file" "$codex_cleanup_rc_file"; : > "$codex_out"; : > "$codex_err_file"
    # Resolve via bash glob, NOT `ls` (HIMMEL-741c: Git Bash `ls` classify suffix
    # `*` on executables corrupts the path). Last glob match = highest lexical.
    companion=""
@@ -157,8 +273,8 @@ Steps:
    else
        # A real OS background job, NOT `timeout`-wrapped (that would just
        # reintroduce the foreground timebox one level up — the exact thing
-       # this restructure removes). The pid file records NODE's own pid,
-       # written from INSIDE the wrapper subshell — not the wrapper's $!:
+       # this restructure removes). The shared launcher records NODE's own pid
+       # and starts its Layer B client-lease heartbeat — not the wrapper's $!:
        # signaling a bash wrapper does not propagate to its running child, so
        # a wrapper-pid kill on the timeout path would leave node alive and
        # orphaned, still consuming quota (the exact cost HIMMEL-1407 exists
@@ -167,10 +283,7 @@ Steps:
        # so step 3.1's harvest — a separate bash fence with no job-table link
        # back to this one — can tell "still running" apart from "ran and
        # failed" using only the pid + rc files on disk.
-       ( node "$companion" adversarial-review --wait --base "$db" >"$codex_out" 2>"$codex_err_file" &
-         _node_pid=$!
-         echo "$_node_pid" > "$codex_pid_file"
-         wait "$_node_pid"
+       ( bash scripts/cr/run-codex-adversarial.sh "$companion" "$db" "$codex_out" "$codex_err_file" "$codex_pid_file" 0 "$codex_cleanup_rc_file"
          echo $? > "$codex_rc_file" ) &
        disown 2>/dev/null || true
        echo "codex adversarial pass launched in background — harvested in step 3.1 after the critic panel (HIMMEL-1407)"
@@ -290,18 +403,26 @@ Steps:
 
    **Step 3.1 — codex adversarial-review pass: harvest (decimal substep, runs AFTER the critic panel, still before any Agent dispatch; HIMMEL-694, HIMMEL-1407).** The pass itself was already LAUNCHED as a background job in the step-3 kickoff fence above — this substep HARVESTS it. It is **availability-gated** — it consumes the operator's OpenAI usage bank, so it runs ONLY when codex is configured (the kickoff fence's skip note already covers the unconfigured case), mirroring how the paid codex critic is gated in `critics.json` / the `CR_PROFILE=paid` lane. Like the panel, this pass is **fail-open**: absence, timeout, or error degrades to claude-only and never blocks the gate.
 
-   **Completion sentinel (HIMMEL-1420 — rc=0 alone is NOT sufficient evidence of a clean pass.)** Observed 8x across HIMMEL-1420 under this same background-launch pattern: the companion node process exits rc=0 with EMPTY or truncated stdout and a truncated `.err` — no final verdict ever emitted (proven: the HIMMEL-1416 retry on one such diff came back needs-attention with two `[high]` findings the rc=0/empty run had silently dropped). The old fence here read rc=0 alone as success (`codex_findings=$(cat "$codex_out")`). The fence below classifies rc=0 via `scripts/cr/codex-adv-completion-check.sh` (tested — `scripts/cr/test-codex-adv-completion-check.sh`), which is the SINGLE SOURCE OF TRUTH for the completion contract — do not re-derive its logic or its assertion/step count here, both keep growing across CR rounds and any number quoted in this prose drifts stale immediately; see the script's own header comment for the current contract (a line-walk anchored to the real companion source at `scripts/lib/render.mjs`, not free-text search — the renderer's own parse-error/validation-error banners reuse the identical heading under rc=0 and can echo the model's raw output verbatim) and its test suite for the exhaustive fixture set. rc=0 that fails the script's check is treated as **UNAVAILABLE**, never clean, and gets ONE bounded synchronous retry (bounded by the same `$codex_timeout` the async kickoff used, with a `timeout -k` kill-after grace) before finalizing. The `.err` tail is captured for diagnostics only — a last line matching `Turn completion inferred` tells you the companion process itself believed it finished, distinct from an actually-killed mid-review process, but it never flips the unavailable verdict; the contract lives entirely in the tested script, not the companion's internal state.
+   **Completion sentinel (HIMMEL-1420 — rc=0 alone is NOT sufficient evidence of a clean pass.)** Observed 8x across HIMMEL-1420 under this same background-launch pattern: the companion node process exits rc=0 with EMPTY or truncated stdout and a truncated `.err` — no final verdict ever emitted (proven: the HIMMEL-1416 retry on one such diff came back needs-attention with two `[high]` findings the rc=0/empty run had silently dropped). The old fence here read rc=0 alone as success (`codex_findings=$(cat "$codex_out")`). The fence below classifies rc=0 via `scripts/cr/codex-adv-completion-check.sh` (tested — `scripts/cr/test-codex-adv-completion-check.sh`), which is the SINGLE SOURCE OF TRUTH for the completion contract — do not re-derive its logic or its assertion/step count here, both keep growing across CR rounds and any number quoted in this prose drifts stale immediately; see the script's own header comment for the current contract (a line-walk anchored to the real companion source at `scripts/lib/render.mjs`, not free-text search — the renderer's own parse-error/validation-error banners reuse the identical heading under rc=0 and can echo the model's raw output verbatim) and its test suite for the exhaustive fixture set. rc=0 that fails the script's check is treated as **UNAVAILABLE**, never clean, and gets ONE bounded synchronous retry (bounded by the same `$codex_timeout` the async kickoff used through the shared launcher, which owns and tree-kills the real node pid) before finalizing. The `.err` tail is captured for diagnostics only — a last line matching `Turn completion inferred` tells you the companion process itself believed it finished, distinct from an actually-killed mid-review process, but it never flips the unavailable verdict; the contract lives entirely in the tested script, not the companion's internal state.
 
    **Harvest budget (HIMMEL-1407 — replaces the old foreground `CRITIC_TIMEOUT_SECS*2` timebox that caused 28 lifetime timeouts).** After the panel completes, poll for the backgrounded process's exit up to `CRITIC_TIMEOUT_SECS*2` MORE seconds (≈480s default — the same per-pass budget the old foreground timebox used, now measured from harvest-start instead of launch-start). Net time available to the review is panel-wall-clock + ≈480s (typically 12–20min total), with ~zero added wall-clock in the common case where the review finishes during or shortly after the panel. If the process is still alive once that budget is exhausted, kill it and record a timeout — the same fail-open outcome as before, just far less likely to fire on a healthy review still running its post-verdict test-suite verification. Each bash fence in this runbook is independent, so re-resolve `$db` + `CR_PROFILE` and the branch-scoped pid/rc/output files the kickoff fence wrote:
    ```bash
    db=$(. scripts/guardrails/lib.sh 2>/dev/null && default_branch || echo main)
    . scripts/lib/load-dotenv.sh; load_dotenv CR_PROFILE || true
+   . scripts/lib/proc-tree.sh
    export CR_PROFILE
    branch=$(git branch --show-current)
+   # HIMMEL-1509: the bounded retry below re-invokes the shared launcher, so it
+   # must carry the branch launch claim too (the primary render's lease was
+   # released on its verified-clean exit before any retry can fire).
+   export RENDER_LEASE_BRANCH="$branch"
    git_dir=$(git rev-parse --git-common-dir)
    codex_out="${git_dir}/codex-adv-out/${branch}"
    codex_pid_file="${codex_out}.pid"
+   codex_identity_file="${codex_pid_file}.identity"
+   codex_survivors_file="${codex_pid_file}.survivors"
    codex_rc_file="${codex_out}.rc"
+   codex_cleanup_rc_file="${codex_pid_file}.cleanup-rc"
    codex_err_file="${codex_out}.err"  # companion stderr, kept for debugging — see kickoff fence (glm-3, CR round 2)
    codex_findings=""; codex_rc=0; codex_avail_status=""
    if [ "${CR_PROFILE:-}" = "none" ]; then
@@ -313,6 +434,7 @@ Steps:
        : # nothing to harvest.
    else
        codex_pid=$(cat "$codex_pid_file")
+       codex_identity=$(cat "$codex_identity_file" 2>/dev/null) || codex_identity=""
        # 10# forces base 10: `$(( ))` reads a LEADING ZERO as octal, so
        # CRITIC_TIMEOUT_SECS=08 would die here with "value too great for base",
        # leave codex_to empty, and surface as a wrong cause for a value that
@@ -326,35 +448,52 @@ Steps:
        case "$codex_timeout" in ''|*[!0-9]*) codex_timeout=240 ;; esac
        [ "$codex_timeout" -gt 0 ] || codex_timeout=240
        codex_to=$(( 10#$codex_timeout * 2 ))
-       # Bounded poll loop, NOT `timeout` (Windows note, HIMMEL-1407): `timeout`
-       # cannot wrap an already-detached background PID, and a poll loop
-       # degrades gracefully on any host regardless of whether `timeout` is
-       # installed — unlike the old foreground fence's `command -v timeout`
-       # branch, this harvest needs no such fallback.
+       # HIMMEL-1474 r4/r6b: rc is the first liveness fact. Only when no rc
+       # exists may the launch identity be probed; break only on a confirmed
+       # mismatch/exit, not when the identity probe is unavailable.
        waited=0
-       while kill -0 "$codex_pid" 2>/dev/null; do
+       while [ ! -s "$codex_rc_file" ]; do
+           identity_rc=0
+           proc_tree_process_identity_matches "$codex_pid" "$codex_identity" || identity_rc=$?
+           [ "$identity_rc" -eq 1 ] && break
            [ "$waited" -ge "$codex_to" ] && break
            sleep 5
            waited=$((waited + 5))
        done
-       if kill -0 "$codex_pid" 2>/dev/null; then
-           # Still running after the bounded additional wait — kill it and
-           # record a timeout, same fail-open outcome as the old rc=124/137 case.
-           # Prefer a Windows tree-kill: plain `kill "$codex_pid"` reaches node
-           # but not the subprocesses the companion spawns (test suites) —
-           # double-slash `//PID`/`//T`/`//F` guards against MSYS path-mangling
-           # rewriting a leading `/` into a path. Full portable process-group
-           # kill is HIMMEL-1409; the POSIX kill chain stays as the fallback.
-           if command -v taskkill >/dev/null 2>&1; then
-               taskkill //PID "$codex_pid" //T //F 2>/dev/null
+       harvest_timed_out=0
+       harvest_live_unreaped=0
+       harvest_survivors=0
+       harvest_cleanup_unverified=0
+       if [ ! -s "$codex_rc_file" ] && [ "$waited" -ge "$codex_to" ]; then
+           # Re-check rc FIRST immediately before the identity-guarded signal.
+           # proc_tree_terminate returns 2 without signaling when identity cannot
+           # be confirmed; rc 1 means escalated cleanup left survivors. Either
+           # outcome may still be live and needs its recovery sidecars.
+           if [ ! -s "$codex_rc_file" ]; then
+               proc_tree_terminate "$codex_pid" 1 "$codex_identity"
+               terminate_rc=$?
+               if [ "$terminate_rc" -eq 2 ]; then
+                   harvest_live_unreaped=1
+               else
+                   harvest_timed_out=1
+                   [ "$terminate_rc" -eq 1 ] && harvest_survivors=1
+               fi
            fi
-           kill "$codex_pid" 2>/dev/null; sleep 1; kill -9 "$codex_pid" 2>/dev/null
-           echo "codex adversarial pass timed out (>${codex_to}s after the panel finished; stderr: $codex_err_file) — continuing without it" >&2
+       fi
+       if [ "$harvest_live_unreaped" -eq 1 ]; then
+           echo "codex adversarial pass is live but unreaped: cleanup refused for pid/group $codex_pid (rc=2); preserving recovery sidecars $codex_pid_file and $codex_identity_file because no signal was sent — continuing without it" >&2
+           codex_findings=""; codex_rc=2; codex_avail_status="unavailable"
+       elif [ "$harvest_timed_out" -eq 1 ]; then
+           if [ "$harvest_survivors" -eq 1 ]; then
+               echo "codex adversarial pass timed out with survivors after escalated cleanup — sidecars preserved for recovery: $codex_pid_file and $codex_identity_file; continuing without it" >&2
+           else
+               echo "codex adversarial pass timed out (>${codex_to}s after the panel finished; stderr: $codex_err_file) — continuing without it" >&2
+           fi
            codex_findings=""; codex_rc=124; codex_avail_status="unavailable"
        else
-           # Node has exited (kill -0 above just failed), but the wrapper
-           # subshell writes $codex_rc_file a BEAT LATER — after `wait
-           # "$_node_pid"` returns — so a genuinely successful run landing in
+           # Node has exited (or its identity no longer matches), but the wrapper
+           # subshell writes $codex_rc_file a BEAT LATER — after the shared
+           # launcher's internal node wait returns — so a successful run landing in
            # that window must not be discarded as "no recorded status"
            # (codex-1, CR round 2, HIMMEL-1407: this was a real race, not a
            # theoretical one). Poll briefly for the rc file to appear before
@@ -401,48 +540,26 @@ Steps:
                                echo "codex adversarial pass retry skipped — companion path could not be re-resolved in this fence — recording unavailable" >&2
                                codex_findings=""; codex_avail_status="unavailable"
                            else
+                               codex_retry_pid_file="${codex_pid_file}.retry"
+                               codex_retry_identity_file="${codex_retry_pid_file}.identity"
+                               codex_retry_survivors_file="${codex_retry_pid_file}.survivors"
+                               codex_retry_cleanup_rc_file="${codex_retry_pid_file}.cleanup-rc"
+                               rm -f "$codex_retry_pid_file" "$codex_retry_identity_file" "$codex_retry_survivors_file" "$codex_retry_cleanup_rc_file"
                                : > "$codex_out"; : > "$codex_err_file"
-                               if command -v timeout >/dev/null 2>&1; then
-                                   # -k grace (CR round 2 [codex-adv-2], HIMMEL-1420):
-                                   # without it a SIGTERM-ignoring companion
-                                   # outlives the advertised bound and its
-                                   # child test-suite processes can survive
-                                   # node's own exit — same
-                                   # CRITIC_KILL_GRACE_SECS pattern
-                                   # critic-panel.sh already uses for every
-                                   # member timeout.
-                                   # $codex_timeout: raised 4x across CR rounds as
-                                   # "undefined here" and disproved each time —
-                                   # normalized once at the TOP of THIS SAME bash
-                                   # fence (~line 325, the `codex_timeout=${CRITIC_TIMEOUT_SECS:-240}` /
-                                   # `case ... esac` / `[ "$codex_timeout" -gt 0 ]`
-                                   # block), not the step-3 kickoff fence's. Fence
-                                   # delimiters (```bash … ```) prove this whole
-                                   # block from that normalization down through
-                                   # this retry is ONE continuous fence — if you're
-                                   # about to re-raise this, re-check the fence
-                                   # boundaries first, not just the line numbers.
-                                   timeout -k "${CRITIC_KILL_GRACE_SECS:-5}s" "${codex_timeout}s" node "$companion" adversarial-review --wait --base "$db" >"$codex_out" 2>"$codex_err_file"
-                                   codex_retry_rc=$?
+                               # Shared launcher owns the real node pid, starts the
+                               # Layer B client-lease heartbeat, and preserves the
+                               # existing bounded tree-kill behavior without relying
+                               # on an external timeout binary.
+                               bash scripts/cr/run-codex-adversarial.sh "$companion" "$db" "$codex_out" "$codex_err_file" "$codex_retry_pid_file" "$codex_timeout" "$codex_retry_cleanup_rc_file"
+                               codex_retry_rc=$?
+                               codex_retry_cleanup_rc=""
+                               if [ -s "$codex_retry_cleanup_rc_file" ]; then
+                                   codex_retry_cleanup_rc=$(cat "$codex_retry_cleanup_rc_file")
+                               fi
+                               if [ "$codex_retry_cleanup_rc" = "0" ]; then
+                                   rm -f "$codex_retry_pid_file" "$codex_retry_identity_file" "$codex_retry_survivors_file" "$codex_retry_cleanup_rc_file"
                                else
-                                   node "$companion" adversarial-review --wait --base "$db" >"$codex_out" 2>"$codex_err_file" &
-                                   codex_retry_pid=$!
-                                   codex_retry_waited=0
-                                   while kill -0 "$codex_retry_pid" 2>/dev/null; do
-                                       [ "$codex_retry_waited" -ge "$codex_timeout" ] && break
-                                       sleep 5
-                                       codex_retry_waited=$((codex_retry_waited + 5))
-                                   done
-                                   if kill -0 "$codex_retry_pid" 2>/dev/null; then
-                                       if command -v taskkill >/dev/null 2>&1; then
-                                           taskkill //PID "$codex_retry_pid" //T //F 2>/dev/null
-                                       fi
-                                       kill "$codex_retry_pid" 2>/dev/null; sleep 1; kill -9 "$codex_retry_pid" 2>/dev/null
-                                       codex_retry_rc=124
-                                   else
-                                       wait "$codex_retry_pid"
-                                       codex_retry_rc=$?
-                                   fi
+                                   echo "codex adversarial pass retry cleanup unverified (rc=${codex_retry_cleanup_rc:-missing}) — preserving recovery sidecars: $codex_retry_pid_file, $codex_retry_identity_file, and $codex_retry_survivors_file" >&2
                                fi
                                cac_retry_check=$(bash scripts/cr/codex-adv-completion-check.sh "$codex_retry_rc" "$codex_out" "$codex_err_file" 2>/dev/null)
                                if [ $? -eq 0 ]; then
@@ -469,10 +586,27 @@ Steps:
                codex_findings=""; codex_rc=1; codex_avail_status="unavailable"
            fi
        fi
+       # The launcher publishes cleanup independently because a nonzero companion
+       # rc remains the process exit status even when cleanup also failed.
+       harvest_cleanup_rc=""
+       if [ ! -s "$codex_rc_file" ]; then
+           harvest_cleanup_unverified=1
+           echo "codex adversarial pass launcher status missing — preserving recovery sidecars until both launcher and cleanup status are verified: $codex_pid_file and $codex_identity_file" >&2
+       else
+           if [ -s "$codex_cleanup_rc_file" ]; then
+               harvest_cleanup_rc=$(cat "$codex_cleanup_rc_file")
+           fi
+           if [ "$harvest_cleanup_rc" != "0" ]; then
+               harvest_cleanup_unverified=1
+               echo "codex adversarial pass cleanup unverified (rc=${harvest_cleanup_rc:-missing}) — preserving recovery sidecars: $codex_pid_file, $codex_identity_file, and $codex_survivors_file" >&2
+           fi
+       fi
        # $codex_err_file is intentionally NOT removed here (glm-3, CR round 2)
-       # — companion stderr stays on disk for debugging; only pid/rc, whose
-       # job is done once harvested, are cleaned up.
-       rm -f "$codex_pid_file" "$codex_rc_file"
+       # — companion stderr stays on disk for debugging. Jobs that may still be
+       # live keep their recovery handles; completed/terminated jobs are cleaned.
+       if [ "$harvest_live_unreaped" -eq 0 ] && [ "$harvest_survivors" -eq 0 ] && [ "$harvest_cleanup_unverified" -eq 0 ]; then
+           rm -f "$codex_pid_file" "$codex_identity_file" "$codex_survivors_file" "$codex_rc_file" "$codex_cleanup_rc_file"
+       fi
    fi
    # Surface findings (if any) so they flow into the step-3 adjudication prepend.
    [ -n "$codex_findings" ] && printf '%s\n' "$codex_findings"

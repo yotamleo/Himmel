@@ -8,11 +8,13 @@ set -u -o pipefail
 HOOK="$(cd "$(dirname "$0")" && pwd)/auto-arm-on-cap.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-# Hermetic lane env (HIMMEL-733): the hook now passes through on non-Claude
-# lane signals. Strip any such signal inherited from the RUNNING session
-# (e.g. a z.ai shell or a codex runtime) so baseline tests exercise the
-# Claude-lane paths; Test 1b re-sets them explicitly per case.
+# Hermetic lane/env knobs: operator overrides from the RUNNING session must not
+# change the shipped-default contract exercised below. Test 1b and individual
+# cases re-set the values they cover explicitly.
 unset ANTHROPIC_BASE_URL HERMES_ENGINE CODEX_ADAPTER CODEX_THREAD_ID
+unset AUTO_ARM_DISABLE AUTO_ARM_THRESHOLD AUTO_ARM_CACHE AUTO_ARM_STATE_DIR
+unset AUTO_ARM_CHECK_INTERVAL AUTO_ARM_MAX_CACHE_AGE AUTO_ARM_MAX_ARM_FAILURES
+unset AUTO_ARM_STALE_ESCALATE_AGE AUTO_ARM_STALE_MIN_CHECKS AUTO_ARM_BIN
 # Isolate the quota-gauge ledger so threshold-trip tests never pollute the
 # operator's real ~/.himmel/quota-gauge.jsonl (HIMMEL-687).
 export HIMMEL_QUOTA_GAUGE_LEDGER="$TMP/quota-gauge.jsonl"

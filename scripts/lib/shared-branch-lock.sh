@@ -48,14 +48,12 @@
 # "free" would not be.
 #
 # NO AUTO-STEAL, NO PID-LIVENESS PROBING: this file deliberately does not
-# try to detect a crashed holder (no `kill -0`). Windows-native PIDs under
-# MSYS bash do not map cleanly onto the POSIX pid space `kill -0` expects,
-# so a liveness probe would be unreliable in exactly the environment this
-# repo runs on -- a false "the holder is dead, steal the lock" is a
-# single-writer violation, which is worse than a false "still held". Stale
-# locks (crashed dispatcher, killed session) are cleared by a human or a
-# supervising process running `release` explicitly. `acquire`'s rc-11
-# message says so.
+# try to detect a crashed holder itself. Windows-native PIDs under MSYS bash
+# do not map cleanly onto the POSIX pid space `kill -0` expects, so that check
+# belongs to the cross-namespace reconciler (reconcile-workers.sh). Acquire
+# records SHARED_BRANCH_LOCK_HOLDER_PID when its dispatcher supplies one;
+# otherwise it preserves the historical diagnostic fallback of this shell's
+# pid. Stale locks are cleared by the reconciler or an explicit release.
 #
 # CONVENTIONS: bash 3.2-safe (no associative arrays, no ${var,,}, no
 # mapfile). `set -uo pipefail`, not -e -- callers care about specific exit
@@ -146,11 +144,15 @@ shared_branch_lock_acquire() {
     # (rc 2, C2), and the operator needs the real message for the latter.
     if _sbl_a_mkerr="$(mkdir "$_sbl_a_lockdir" 2>&1)"; then
         _sbl_a_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        _sbl_a_holder_pid="${SHARED_BRANCH_LOCK_HOLDER_PID:-$$}"
+        case "$_sbl_a_holder_pid" in
+            ''|*[!0-9]*|0) _sbl_a_holder_pid="$$" ;;
+        esac
         # owner.json is DIAGNOSTIC -- the lock is held by the dir itself. A
         # write failure here does not un-hold the lock, so warn and keep rc 0
         # (I4) rather than failing an acquire that actually succeeded.
         if ! printf '{"pid":%s,"lane":"%s","branch":"%s","acquired_at":"%s"}\n' \
-            "$$" \
+            "$_sbl_a_holder_pid" \
             "$(_sbl_json_escape "$_sbl_a_lane")" \
             "$(_sbl_json_escape "$_sbl_a_branch")" \
             "$_sbl_a_now" \

@@ -77,6 +77,9 @@
 #                           (HIMMEL-716): placeholders {ticket} {slug}
 #                           {session}. Unset = the built-in ticket-first
 #                           composition. See _compose_arm_name.
+#   ARM_WITH_LIVE_WORKERS   Exact value 1 bypasses the live lane-worker guard
+#                           with a loud warning. Use only when intentionally
+#                           killing in-flight workers at session exit.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -111,6 +114,10 @@
 #      overnight/idle wait, or pick a nearer --time. Automated safety arms
 #      (ARM_RESUME_SAFETY_ARM=1) are exempt; smart/auto sentinels are exempt
 #      by design.
+#   10 live workers refused — one or more GLM/claudex bridge rows are running
+#      with a live or unprobeable pid (HIMMEL-1463). Unprobeable fails closed as
+#      possibly alive. Wait for them or explicitly set ARM_WITH_LIVE_WORKERS=1
+#      to accept that session exit may kill them.
 set -euo pipefail
 
 RESUME_TIME=""
@@ -226,6 +233,9 @@ Env:
                           composition; e.g. '{slug}' for slug-only names. A
                           template that renders empty falls back to the plain
                           HIMMEL-Resume-<path> name with no -n.
+  ARM_WITH_LIVE_WORKERS   Exact value 1 bypasses the live lane-worker refusal
+                          with a loud warning. The armed session exit may kill
+                          those in-flight workers; wait for them by default.
 EOF
 }
 
@@ -280,6 +290,55 @@ if [ -z "$RESUME_TIME" ] || [ -z "$HANDOVER_PATH" ]; then
     exit 1
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# HIMMEL-1463: an unattended arm normally ends this Claude session, and the
+# harness then reaps its background task tree. Lane workers are children of
+# that tree, so arming while one is live silently kills it and can strand its
+# shared-branch lock. For a REAL arm, reconcile dead rows first and then fail
+# closed on every remaining running row whose pid is live or unprobeable. A
+# dry-run stays side-effect-free and skips the external worker census entirely.
+# ARM_WITH_LIVE_WORKERS=1 is deliberately loud: it accepts that data-loss risk,
+# rather than making a force-like flag easy to add accidentally.
+if [ "$DRY_RUN" -eq 0 ]; then
+    _WORKER_RECONCILER="$SCRIPT_DIR/reconcile-workers.sh"
+    if [ ! -f "$_WORKER_RECONCILER" ]; then
+        echo "ERR arm-resume: worker reconciler missing: $_WORKER_RECONCILER — refusing because live-worker state cannot be checked" >&2
+        exit 2
+    fi
+    set +e
+    bash "$_WORKER_RECONCILER"
+    _worker_reconcile_rc=$?
+    set -e
+    if [ "$_worker_reconcile_rc" -ne 0 ]; then
+        echo "ERR arm-resume: worker reconciliation failed (rc=$_worker_reconcile_rc) — refusing because live-worker state is uncertain" >&2
+        exit 2
+    fi
+    set +e
+    _live_workers=$(bash "$_WORKER_RECONCILER" --list-live)
+    _worker_list_rc=$?
+    set -e
+    if [ "$_worker_list_rc" -ne 0 ]; then
+        echo "ERR arm-resume: live-worker census failed (rc=$_worker_list_rc) — refusing to arm" >&2
+        exit 2
+    fi
+    if [ -n "$_live_workers" ]; then
+        if [ "${ARM_WITH_LIVE_WORKERS:-}" = "1" ]; then
+            {
+                echo "WARN arm-resume: ARM_WITH_LIVE_WORKERS=1 — arming despite live or unprobeable lane workers; exiting this session may kill them:"
+                printf '    %s\n' "${_live_workers//$'\n'/$'\n    '}"
+            } >&2
+        else
+            {
+                echo "ERR arm-resume: refusing to arm while lane workers are live or unprobeable (possibly alive) (rc=10):"
+                printf '    %s\n' "${_live_workers//$'\n'/$'\n    '}"
+                echo "    Wait for them to finish. Emergency override: ARM_WITH_LIVE_WORKERS=1"
+                echo "    (the armed session exit may kill those workers and orphan their work)."
+            } >&2
+            exit 10
+        fi
+    fi
+    unset _WORKER_RECONCILER _worker_reconcile_rc _worker_list_rc _live_workers
+fi
 
 # python3 hang armor (HIMMEL-249): the Windows Store python3 stub can wedge
 # (ignores SIGTERM, orphan child holds the $() pipe). The auto-arm-on-cap
@@ -3159,7 +3218,14 @@ fi
 # Telemetry (HIMMEL-236): a successful arm IS the re-launch signal the
 # measure-during protocol wants — one append, after the dry-run gate so
 # --dry-run keeps its "touch nothing" contract.
-telemetry_emit handover-arm-resume armed "time=$RESUME_TIME" "force=$FORCE" "long_gap=$LONG_GAP"
+# HIMMEL-1490: emit the MEASURED gap (raw seconds, the guard's canonical
+# unit — _GAP_SEC, deliberately not floored to minutes: the guard compares
+# >3600 directly because a //60 floor made 60m01s-60m59s read as 60). On the
+# Telegram HH:MM surface --long-gap rides every explicit arm (HIMMEL-1475),
+# so long_gap=1 alone can't tell a genuine >60-min park from a near arm in
+# the audit; gap_sec records how far out it actually is. Default 0 for the
+# smart/auto sentinel arms, which never derive _GAP_SEC (no measured park).
+telemetry_emit handover-arm-resume armed "time=$RESUME_TIME" "force=$FORCE" "long_gap=$LONG_GAP" "gap_sec=${_GAP_SEC:-0}"
 
 # HIMMEL-856: record this arm in the cross-machine arms registry, same
 # dry-run gate as telemetry above. Best-effort -- a registry write failure

@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Tests for scripts/hooks/block-unresolved-cr-merge.sh (HIMMEL-936). Hermetic.
 set -uo pipefail
+
+# HIMMEL-1495 — an --automerge-armed launching shell carries ARMAUTOMERGE=1 +
+# CR_MERGE_GATE_OK=1 by design; an ambient value in the operator's shell must
+# not decide the result (the 34e/34f precedent in test-check-ci.sh,
+# generalized). This hook sources cr_merge_gate, which short-circuits to allow
+# on CR_MERGE_GATE_OK=1 (cr-merge-gate.sh:166), so without this scrub every CR
+# block-case below inherits the bypass and reads rc 0 (the CI-gate-only cases
+# still block — the CI gate is independent of CR_MERGE_GATE_OK, HIMMEL-1043).
+unset ARMAUTOMERGE CR_MERGE_GATE_OK
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$SCRIPT_DIR/block-unresolved-cr-merge.sh"
 TMP="$(mktemp -d)"
@@ -81,6 +91,22 @@ t() { # t <name> <expected-rc> <tool> <command>
   else fail=$((fail+1)); echo "FAIL $name (rc=$rc want=$want)"; sed 's/^/  err: /' "$TMP/err-$name"; fi
 }
 
+# HIMMEL-1495 hermeticity probe — when this suite re-execs itself under the
+# armed bypass env (see the guard at the end), short-circuit here: the startup
+# unset has already scrubbed ARMAUTOMERGE/CR_MERGE_GATE_OK, so a CR block
+# fixture must STILL block. Exit 0 = scrub held (hook rc EXACTLY 2, the block
+# code); any other rc — 0 = the bypass leaked and the hook failed open, else =
+# a broken fixture/hook — exits 1 so an errored probe can never falsely
+# validate the guard. Keeps the reinvoked copy to ONE hook invocation.
+if [ "${HIMMEL_1495_SELF:-0}" = "1" ]; then
+    export GH_STUB_LOG="$TMP/armed-probe.log"; : > "$GH_STUB_LOG"
+    export GH_STUB_MODE=unresolved
+    probe_rc=0
+    payload Bash "gh pr merge 42 --squash" | bash "$HOOK" >/dev/null 2>&1 || probe_rc=$?
+    [ "$probe_rc" = "2" ] || exit 1
+    exit 0
+fi
+
 GH_STUB_MODE=unresolved t merge-with-unresolved-blocks   2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=error      t api-error-fails-open           0 Bash "gh pr merge 42 --squash"
@@ -138,6 +164,21 @@ grep -q "block-red-ci-merge" "$TMP/err-merge-over-red-ci-blocks" || { echo "FAIL
 # HIMMEL-1072: an absent review must say so — "no CodeRabbit status" is the
 # actionable half; a bare "blocked" would read as a false-block and get bypassed.
 grep -qi "has not reviewed" "$TMP/err-absent-review-blocks" || { echo "FAIL absent-review reason missing"; fail=$((fail+1)); }
+
+# HIMMEL-1495 hermeticity guard — prove the startup scrub holds. Re-run this
+# suite in a subprocess EXPORTING the exact armed bypass env an
+# --automerge-armed shell carries; the reinvoked copy's startup unset must
+# neutralize it, so its probe block-case still blocks and it exits 0. Remove
+# the startup `unset ARMAUTOMERGE CR_MERGE_GATE_OK` and the reinvoked copy's
+# CR block-case instead fails open (rc 0) and exits non-zero. Recursion-safe:
+# the sentinel suppresses the guard in the reinvoked copy.
+if [ "${HIMMEL_1495_SELF:-0}" != "1" ]; then
+    if CR_MERGE_GATE_OK=1 ARMAUTOMERGE=1 HIMMEL_1495_SELF=1 bash "$SCRIPT_DIR/test-block-unresolved-cr-merge.sh" >"$TMP/armed.log" 2>&1; then
+        pass=$((pass+1)); echo "ok   hermetic-to-armed-env (self-reinvoke exits 0)"
+    else
+        fail=$((fail+1)); echo "FAIL hermetic-to-armed-env (startup scrub missing?)"; sed 's/^/  armed: /' "$TMP/armed.log"
+    fi
+fi
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
 import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag } from "./spawn-glm";
+import { transcriptDirFor, poisonPushUrl, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta } from "./spawn-glm";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
@@ -609,12 +609,13 @@ export type ClaudexRunResult = { code: number; capped: boolean; blocked: boolean
 // run.log persistence). NOT unit-tested directly (it launches a real
 // process) — executeClaudexRun below takes it as an injected dependency so
 // tests stub it and never launch claude-codex/claude for real.
-export async function runClaudexSession(prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string; settings?: string }): Promise<ClaudexRunResult> {
+export async function runClaudexSession(prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string; settings?: string }, onSpawn?: (pid: number) => void): Promise<ClaudexRunResult> {
   const launcherPath = claudexLauncherPath(opts.repoRoot);
   const { cmd } = buildClaudexRunArgs(launcherPath, prompt, opts.permMode, opts.settings);
   const env = claudexChildEnv(process.env, opts.effort);
   const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
+  onSpawn?.(pid);
   const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000);
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; killTree(pid, (s) => p.kill(s as any)); }, timeoutMs);
@@ -628,20 +629,37 @@ export async function runClaudexSession(prompt: string, cwd: string, opts: { per
   return { code: timedOut ? -1 : code, capped: detectClaudexCap(tail), blocked: detectContentFilter(tail), timedOut, pid, tail };
 }
 
+export function writeClaudexLiveMeta(
+  metaPath: string,
+  runningMeta: Record<string, unknown>,
+  extra: Record<string, unknown>,
+  replace?: (tmpPath: string, destPath: string, json: string) => void,
+): void {
+  if (replace) writeLiveWorkerMeta(metaPath, runningMeta, extra, "spawn-claudex", replace);
+  else writeLiveWorkerMeta(metaPath, runningMeta, extra, "spawn-claudex");
+}
+
 // The run-and-record step (mirrors spawn-glm's executeRun, minus the
 // prompt-too-long classification and cap-guard resume scheduling — both
 // GLM-specific / deferred here). meta.json ALWAYS leaves "running": the
 // success path writes finalMeta (done/failed/capped/blocked/timeout), and a
 // thrown run() writes {status:"failed", exit_code:-1} THEN rethrows.
 export async function executeClaudexRun(deps: {
-  run: (prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string; settings?: string }) => Promise<ClaudexRunResult>;
+  run: (prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string; settings?: string }, onSpawn?: (pid: number) => void) => Promise<ClaudexRunResult>;
   prompt: string; worktree: string; permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string;
   sessionDir: string; metaPath: string; runningMeta: Record<string, unknown>;
   // HIMMEL-1040: the resolved --settings plugin-profile payload (undefined = operator / no injection).
   settings?: string;
 }): Promise<{ code: number }> {
+  const recordLivePid = (pid: number) => {
+    // Match spawn-glm's live metadata contract: arm-resume can only protect a
+    // running claudex worker if meta.json stops advertising the bootstrap pid 0.
+    // Write-then-rename keeps concurrent census readers off partial JSON; a
+    // failed replace leaves an explicit unprobeable marker, never pid:0.
+    writeClaudexLiveMeta(deps.metaPath, deps.runningMeta, { pid });
+  };
   try {
-    const res = await deps.run(deps.prompt, deps.worktree, { permMode: deps.permMode, effort: deps.effort, repoRoot: deps.repoRoot, settings: deps.settings });
+    const res = await deps.run(deps.prompt, deps.worktree, { permMode: deps.permMode, effort: deps.effort, repoRoot: deps.repoRoot, settings: deps.settings }, recordLivePid);
     // run.log append is COSMETIC persistence — isolated so an I/O failure here
     // never flips a successful run to failed (mirrors spawn-glm's executeRun).
     if (res.tail !== undefined) {
@@ -676,7 +694,10 @@ export async function runClaudexSharedDispatch(p: {
   // still releases the lock). Absent ⇒ skipped (own-mode / tests).
   revalidateClean?: () => { ok: true } | { ok: false; reason: string };
 }): Promise<{ ok: true; code: number } | { ok: false; reason: string }> {
-  const acquire = Bun.spawnSync([BASH_BIN, p.lockScript, "acquire", p.repoDir, p.branch, "codex"], { stdout: "pipe", stderr: "pipe" });
+  const acquire = Bun.spawnSync([BASH_BIN, p.lockScript, "acquire", p.repoDir, p.branch, "codex"], {
+    stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, SHARED_BRANCH_LOCK_HOLDER_PID: String(process.pid) },
+  });
   if (acquire.exitCode !== 0) return { ok: false, reason: acquire.stderr.toString().trim() || `spawn-claudex: shared-branch-lock acquire failed (rc=${acquire.exitCode})` };
   let priorPushUrl: string | undefined;
   let poisoned = false;

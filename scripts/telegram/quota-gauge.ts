@@ -168,11 +168,19 @@ export const GLM_PEAK_START_H = 14;
 export const GLM_PEAK_END_H = 18;
 export const GLM_PEAK_TZ_OFFSET_H = 8;
 
-// True iff `nowMs`, converted to UTC+8, falls in [14:00, 18:00). Pure — derives
-// the UTC+8 hour from the absolute instant, never reads a lane/arm/dispatch.
+// True iff `nowMs`, converted to UTC+8, falls in [14:00, 18:00) on a WEEKDAY
+// (Mon–Fri). Pure — derives the UTC+8 hour + weekday from the absolute instant
+// (DST-immune: UTC+8 is z.ai-fixed), never reads a lane/arm/dispatch. Weekends
+// bill 1× all day, so a Sat/Sun inside the peak hours is NOT peak (HIMMEL-1479).
 export function isGlmPeak(nowMs: number): boolean {
   const utc8Hour = Math.floor(((nowMs / 3600000) + GLM_PEAK_TZ_OFFSET_H) % 24 + 24) % 24;
-  return utc8Hour >= GLM_PEAK_START_H && utc8Hour < GLM_PEAK_END_H;
+  if (utc8Hour < GLM_PEAK_START_H || utc8Hour >= GLM_PEAK_END_H) return false;
+  // UTC+8 weekday. Days since the Unix epoch in UTC+8 wall-clock; 1970-01-01
+  // was a Thursday, so a JS-getDay-style weekday (Sun=0..Sat=6) = (4 + days) % 7.
+  // Sat=6, Sun=0 → weekdays Mon–Fri are 1..5.
+  const utc8Days = Math.floor((nowMs + GLM_PEAK_TZ_OFFSET_H * 3600000) / 86400000);
+  const utc8Day = (((4 + utc8Days) % 7) + 7) % 7;
+  return utc8Day >= 1 && utc8Day <= 5;
 }
 
 // Map the GLM monitor-endpoint reading to a canonical row. `null` (usage

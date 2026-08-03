@@ -8,6 +8,16 @@
 # --squash + --match-head-commit <certified-sha>.
 set -uo pipefail
 
+# HIMMEL-1495 — an --automerge-armed launching shell carries ARMAUTOMERGE=1 +
+# CR_MERGE_GATE_OK=1 by design; an ambient value in the operator's shell must
+# not decide the result (the 34e/34f precedent in test-check-ci.sh,
+# generalized). merge-on-green.sh gates on a truthy ARMAUTOMERGE
+# (merge-on-green.sh:153), so an ambient =1 would make the no-opt-in refusal
+# (case 1) read as opted-in. (Case 1's own inline `unset ARMAUTOMERGE` is
+# retained; this is the startup defense-in-depth + the CR_MERGE_GATE_OK scrub
+# for the day a sourced lib reads it.)
+unset ARMAUTOMERGE CR_MERGE_GATE_OK
+
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
 # `set -o pipefail`: grep -q exits the instant it matches, the producer
@@ -229,6 +239,18 @@ assert_state_requery() {
 
 echo "== merge-on-green.sh tests =="
 
+# HIMMEL-1495 hermeticity probe — when this suite re-execs itself under the
+# armed bypass env (see the guard at the end), short-circuit here. The startup
+# unset above must have already scrubbed the parent's exported ARMAUTOMERGE=1,
+# so the no-opt-in refusal STILL fires (exit 10). Exit 0 = scrub held; exit 1 =
+# ARMAUTOMERGE leaked and the wrapper read as opted-in (not exit 10). Relies on
+# the startup scrub (does NOT re-unset), so it guards THAT line. One run_mog.
+if [ "${HIMMEL_1495_SELF:-0}" = "1" ]; then
+    _probe_fail_before=$FAIL
+    STUB_NO_PR=1 run_mog 10 "armed-env scrubbed: no-opt-in still refuses"
+    [ "$FAIL" = "$_probe_fail_before" ] && exit 0 || exit 1
+fi
+
 # 1. No opt-in → refuse (exit 10). Unset in the PARENT shell (no subshell) so
 # pass()/fail() land in the top-level tally (coderabbit-1).
 unset ARMAUTOMERGE
@@ -437,6 +459,23 @@ if grepq "$help_out" 'set -uo pipefail'; then
     fail "--help leaks the 'set -uo pipefail' code line"
 else
     pass
+fi
+
+# HIMMEL-1495 hermeticity guard — prove the startup scrub holds. Re-run this
+# suite in a subprocess EXPORTING the exact armed bypass env an
+# --automerge-armed shell carries; the reinvoked copy's startup unset must
+# neutralize it, so its probe (no-opt-in still refuses) passes and it exits 0.
+# Remove the startup `unset ARMAUTOMERGE CR_MERGE_GATE_OK` and the reinvoked
+# copy instead reads ARMAUTOMERGE=1 as opted-in and exits non-zero.
+# Recursion-safe: the sentinel suppresses the guard in the reinvoked copy.
+if [ "${HIMMEL_1495_SELF:-0}" != "1" ]; then
+    _armed_log="$(mktemp)"
+    if CR_MERGE_GATE_OK=1 ARMAUTOMERGE=1 HIMMEL_1495_SELF=1 bash "$SCRIPT_DIR/test-merge-on-green.sh" >"$_armed_log" 2>&1; then
+        pass; echo "  hermetic-to-armed-env (self-reinvoke exits 0)"
+    else
+        fail "hermetic-to-armed-env (startup scrub missing?)"; sed 's/^/  armed: /' "$_armed_log" >&2
+    fi
+    rm -f "$_armed_log"
 fi
 
 echo

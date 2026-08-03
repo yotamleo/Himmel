@@ -299,13 +299,30 @@ test("T2 buildGlmRow(null) -> invisible row, used_pct null, no throw", () => {
   expect(row.note).toContain("invisible");
 });
 
-test("T3 isGlmPeak boundaries 13:59 / 14:00 / 17:59 / 18:00 UTC+8 (AC8)", () => {
+test("T3 isGlmPeak hour boundaries 13:59 / 14:00 / 17:59 / 18:00 UTC+8 (AC8)", () => {
   // a UTC instant whose UTC+8 wall-clock hour is `utc8h` -> UTC hour = utc8h-8.
-  const at = (utc8h: number, m: number) => Date.UTC(2026, 6, 4, (utc8h - 8 + 24) % 24, m, 0);
+  // Anchored on a WEEKDAY (2026-07-06 Mon) so the hour rule is isolated from
+  // the weekday rule (weekends are 1× all day — HIMMEL-1479).
+  const at = (utc8h: number, m: number) => Date.UTC(2026, 6, 6, (utc8h - 8 + 24) % 24, m, 0);
   expect(isGlmPeak(at(13, 59))).toBe(false);
   expect(isGlmPeak(at(14, 0))).toBe(true);
   expect(isGlmPeak(at(17, 59))).toBe(true);
   expect(isGlmPeak(at(18, 0))).toBe(false);
   // glm_peak is a bool on GLM rows (never null there); non-GLM rows carry null
   expect(buildGlmRow({ percentage: 1, nextResetTime: NOW_MS, level: "pro" }, NOW_MS).glm_peak).not.toBeNull();
+});
+
+test("T3b isGlmPeak weekday rule — weekends are 1× all day (HIMMEL-1479)", () => {
+  // SGT (UTC+8) wall-clock instant: day/hour/min are SGT; subtract 8h for UTC
+  // (Date.UTC normalizes the negative hour). 2026-07-10 Fri, 07-11 Sat, 07-13 Mon.
+  const sgt = (day: number, h: number, m = 0) => Date.UTC(2026, 6, day, h - 8, m, 0);
+  // weekend INSIDE the peak hours → NOT peak (the bug this fixes)
+  expect(isGlmPeak(sgt(11, 15))).toBe(false);  // Saturday 15:00 SGT, inside [14,18)
+  // weekday inside the peak hours → peak (existing behavior preserved)
+  expect(isGlmPeak(sgt(10, 15))).toBe(true);   // Friday 15:00 SGT
+  expect(isGlmPeak(sgt(13, 14))).toBe(true);   // Monday 14:00 SGT
+  // boundary: Fri 17:59 SGT peak; the instant SGT rolls to Sat 00:00 → not peak.
+  // Sat 00:00 SGT = Fri 16:00 UTC — exercises the UTC+8 (not UTC) weekday calc.
+  expect(isGlmPeak(sgt(10, 17, 59))).toBe(true);  // Friday 17:59 SGT
+  expect(isGlmPeak(sgt(11, 0, 0))).toBe(false);   // Saturday 00:00 SGT (= Fri 16:00 UTC)
 });
